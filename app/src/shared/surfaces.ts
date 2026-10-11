@@ -127,6 +127,33 @@ const WORKSPACE_VERBS: readonly SpawnRule[] = [
   { script: "cli/aos.js", args: argv("workspace", /hide|unhide/, PATH, "--json") },
 ];
 
+// The Brain hub's verbs (brain-hub D13, D14; spec §6). lib/memory-ops.js checks each again: a memory path against the four
+// type folders as a regular file inside the vault, a draft name against the drafts folder, set's hash against the file.
+// A memory: brain/memory/<type>/<slug>.md, a direct child of one of the four type folders (memory-ops.js PATH_RE).
+const MEMORY = /brain\/memory\/(?:user|feedback|projects|reference)\/[a-z0-9][a-z0-9.-]{0,120}\.md/;
+// A feedback draft's name (memory-ops.js SLUG_RE).
+const DRAFT = /[a-z0-9][a-z0-9.-]{0,120}/;
+/** At most this many memories per keep, archive or restore (obsidian-plugin/src/data/brainModel.ts MAX_PATHS_PER_CALL). */
+export const MAX_MEMORY_PATHS = 50;
+const MEMORY_WHOLE = new RegExp(`^(?:${MEMORY.source})$`);
+/** `memory <verb> <path>… --json` with 1 to MAX_MEMORY_PATHS memory paths. */
+const memoryPaths = (verb: string) => (a: readonly string[]): boolean => {
+  const paths = a.slice(2, -1);
+  return a[0] === "memory" && a[1] === verb && a[a.length - 1] === "--json" && paths.length >= 1 && paths.length <= MAX_MEMORY_PATHS && paths.every((p) => MEMORY_WHOLE.test(p));
+};
+/**
+ * The `aos memory` verbs the Brain tab runs, each with --json last: Review's keep, archive and supersede, Library's pin
+ * and status (compare-and-set on the hash the page read), restore, a draft's approve or reject, and "not duplicates".
+ * Never `list`: the page reads the memory files itself (data/brainModel.ts parses them as lib/memory-ops.js does).
+ */
+const MEMORY_VERBS: readonly SpawnRule[] = [
+  ...["keep", "archive", "restore"].map((verb): SpawnRule => ({ script: "cli/aos.js", args: memoryPaths(verb) })),
+  ...inOrder(["--dry-run"]).map((flags): SpawnRule => ({ script: "cli/aos.js", args: argv("memory", "set", MEMORY, "--set", JSON_OBJ, "--expect", HASH, ...flags, "--json") })),
+  { script: "cli/aos.js", args: argv("memory", "supersede", MEMORY, "--by", MEMORY, "--json") },
+  { script: "cli/aos.js", args: argv("memory", "draft", /approve|reject/, DRAFT, "--json") },
+  { script: "cli/aos.js", args: argv("memory", "notdup", MEMORY, MEMORY, "--json") },
+];
+
 // What the Files tab and the note editor never touch: the runtime's caches and vendored scripts, dependency folders, and
 // every dot-path. The Files tree and the vault index never show a dot-path; refusing them also keeps a compromised page
 // from planting a host's project config in the vault (.claude/settings.json hooks, .mcp.json, .codex/, .git/hooks).
@@ -198,8 +225,10 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "pulse",
     label: "Pulse",
-    source: "data/promoteTrail.ts (trail keep, edit, revert), views/PulseTab.ts and ui/PulsePopup.ts with data/fixQueue.ts and data/pipelines.ts (Fix Queue), ui/AnchorModal.ts (cost anchor), data/commandRegistry.ts (/scan, /reflect-week), the briefing band's ↻ (persona/briefing.js --force)",
-    writes: ["brain/memory/**/*.md", "MEMORY.md", "brain/_index/promote-log.jsonl"],
+    // Pulse summarises the brain and the Brain tab acts on it (brain-hub D14, D15): the trail's keep, edit and revert and
+    // their writes to brain/memory, MEMORY.md and the trail gave way to the brain surface's verbs.
+    source: "views/PulseTab.ts and ui/PulsePopup.ts with data/fixQueue.ts and data/pipelines.ts (Fix Queue), ui/AnchorModal.ts (cost anchor), data/commandRegistry.ts (/scan, /reflect-week), the briefing band's ↻ (persona/briefing.js --force)",
+    writes: [],
     spawns: [
       { script: "auto-cost.js", args: /^--backfill$/ },
       { script: "heartbeat-writer.js", args: /^$/ },
@@ -230,6 +259,21 @@ export const SURFACES: readonly Surface[] = [
     // (--pin), which, one draft with the provider pinned to Claude and one pinned to Codex (each labelled by who answered),
     // set --dry-run, set --expect and its refusal of a stale hash, archive, restore, archive again.
     verified: true,
+  },
+  {
+    id: "brain",
+    label: "Brain",
+    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore), data/brainModel.ts (memoryArgs)",
+    // The verbs write through the runtime (cli/memory.js → lib/memory-ops.js), never the page: a memory's own frontmatter
+    // lines, MEMORY.md, the trail and brain/_index/**, and BRAIN.md through build-brain-md.js. Nothing is deleted but a
+    // draft that is approved or rejected (brain-hub D6).
+    writes: [],
+    spawns: [
+      ...MEMORY_VERBS,
+      // After a verb the hub's cache follows the files at once (else the next scan rebuilds it): brain/_index/brain-hub.json.
+      { script: "brain-hub.js", args: /^$/ },
+    ],
+    verified: false,
   },
   {
     id: "teams",

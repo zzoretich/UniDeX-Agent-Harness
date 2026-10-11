@@ -153,6 +153,14 @@ const COMMANDS: Record<string, { ok: Array<[string, string[]]>; no: Array<[strin
       [NODE, [`${S}/cost-budget.js`, "--anchor", "12.5"]], [NODE, [`${S}/sdk/reflect-week.js`, "--local"]], [NODE, [`${S}/map-workspace.js`, "harbor app"]], [NODE, [`${S}/persona/briefing.js`, "--force"]]],
     no: [[NODE, [`${S}/cost-budget.js`, "--anchor", "-3"]], [NODE, [`${S}/cost-budget.js`, "--reset"]], [NODE, [`${S}/sdk/reflect-week.js`]], [NODE, [`${S}/persona/briefing.js`, "--root", "/tmp"]]],
   },
+  brain: {
+    ok: [[NODE, [`${S}/cli/aos.js`, "memory", "keep", "brain/memory/reference/release-checklist.md", "--json"]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "archive", "brain/memory/feedback/a.md", "brain/memory/projects/v1.5.0-shipped.md", "--json"]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "set", "brain/memory/feedback/a.md", "--set", '{"pin":true}', "--expect", "a".repeat(64), "--json"]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "draft", "reject", "ack-failures", "--json"]], [NODE, [`${S}/brain-hub.js`]]],
+    no: [[NODE, [`${S}/cli/aos.js`, "memory", "keep", "brain/memory/feedback/../../../TODO.md", "--json"]], [NODE, [`${S}/cli/aos.js`, "memory", "list", "--json"]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "set", "brain/memory/feedback/a.md", "--set", '{"pin":true}', "--json"]], [NODE, [`${S}/brain-hub.js`, "--json"]]],
+  },
   spaces: {
     ok: [[NODE, [`${S}/map-workspace.js`, "harbor"]], [NODE, [`${S}/map-workspace.js`, "harbor", "--file", "src/tide.ts"]], [NODE, [`${S}/regen-workspace-insight.js`, "harbor"]],
       [NODE, [`${S}/cli/aos.js`, "workspace", "new", "harbor-map", "--git", "--pin", "--json"]], [NODE, [`${S}/cli/aos.js`, "workspace", "draft", "harbor", "--json"]],
@@ -244,6 +252,48 @@ test("map and regen take a workspace name (WS) and a file inside it (REL), never
   assert.equal(all.canSpawn(NODE, map("harbor", "--file")), false);
   assert.equal(all.canSpawn(NODE, regen("harbor", "--file", "src/tide.ts")), false);
   assert.equal(pulse.canSpawn(NODE, map("harbor", "--file", "src/tide.ts")), false, "Pulse maps whole workspaces only");
+});
+
+test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per call, set compare-and-set, --json last (brain-hub D13, D14)", () => {
+  const brain = new WritePolicy(VAULT, ["brain"]);
+  const others = new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "brain"));
+  const all = new WritePolicy(VAULT, [...SURFACE_IDS]);
+  const mem = (...a: string[]): string[] => [`${S}/cli/aos.js`, "memory", ...a];
+  const A = "brain/memory/feedback/prefer-small-diffs.md";
+  const B = "brain/memory/reference/tide-api-notes.md";
+  const ok = [
+    mem("keep", A, "--json"), mem("keep", A, B, "--json"), mem("restore", B, "--json"), mem("archive", A, "--json"),
+    mem("keep", ...Array.from({ length: 50 }, (_, i) => `brain/memory/reference/r${i}.md`), "--json"),
+    mem("set", A, "--set", '{"status":"complete"}', "--expect", "0123456789abcdef", "--json"),
+    mem("set", A, "--set", '{"pin":false}', "--expect", "a".repeat(64), "--dry-run", "--json"),
+    mem("supersede", A, "--by", B, "--json"), mem("draft", "approve", "ack-failures.v2", "--json"), mem("notdup", A, B, "--json"),
+  ];
+  for (const a of ok) {
+    assert.equal(brain.canSpawn(NODE, a), true, a.join(" "));
+    assert.equal(others.canSpawn(NODE, a), false, `only Brain: ${a.join(" ")}`);
+  }
+  assert.equal(brain.canSpawn(NODE, [`${S}/brain-hub.js`]), true);
+  const no = [
+    mem("keep", "--json"), mem("keep", A), mem("keep", A, "--json", B), mem("keep", "--json", A),
+    mem("keep", ...Array.from({ length: 51 }, (_, i) => `brain/memory/reference/r${i}.md`), "--json"),
+    // Not a memory: a draft, a README, a sub-folder, a climb, another folder, a capital, a dash-led slug, an absolute path.
+    mem("keep", "brain/memory/feedback/_drafts/x.md", "--json"), mem("keep", "brain/memory/user/README.MD", "--json"),
+    mem("keep", "brain/memory/user/sub/x.md", "--json"), mem("archive", "brain/memory/user/../../TODO.md", "--json"),
+    mem("archive", "brain/patterns/debugging.md", "--json"), mem("keep", "brain/memory/user/Profile.md", "--json"),
+    mem("keep", "brain/memory/user/-x.md", "--json"), mem("keep", "/etc/hosts", "--json"),
+    mem("set", A, "--set", '{"pin":true}', "--json"), mem("set", A, "--set", "pin", "--expect", "none", "--json"),
+    mem("set", A, "--set", '{"pin":true}', "--expect", "XYZ", "--json"), mem("set", A, "--set", '{"pin":true}', "--dry-run", "--expect", "none", "--json"),
+    mem("supersede", A, "--json"), mem("supersede", A, "--by", "brain/memory/x.md", "--json"),
+    mem("draft", "delete", "x", "--json"), mem("draft", "approve", "../x", "--json"), mem("draft", "approve", "-x", "--json"),
+    mem("notdup", A, "--json"), mem("list", "--json"), mem("list"), mem("fix", "index", "--json"),
+  ];
+  for (const a of no) assert.equal(all.canSpawn(NODE, a), false, `never: ${a.join(" ")}`);
+  assert.equal(all.canSpawn(NODE, [`${S}/brain-hub.js`, "--dry-run"]), false);
+  // The page never writes a memory, MEMORY.md or the trail itself: Pulse no longer may (D14), and Brain writes nothing.
+  for (const id of ["brain", "pulse"]) {
+    const p = new WritePolicy(VAULT, [id]);
+    for (const rel of [A, "MEMORY.md", "brain/_index/promote-log.jsonl", "brain/_index/brain-hub.json"]) assert.equal(p.canWrite(`${VAULT}/${rel}`), false, `${id}: ${rel}`);
+  }
 });
 
 test("Spaces runs exactly the page's workspace verbs, each flag in one fixed place (spaces-redesign §4 PR 3, D29)", () => {

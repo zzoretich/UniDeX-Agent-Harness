@@ -98,7 +98,8 @@ export default class AgenticOSPlugin extends Plugin {
     // commands
     this.addCommand({ id: "open-workbench",       name: "Open Workbench",        callback: () => { void this.activate(VIEW_TYPE_WORKBENCH); } });
     for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "agents", "agent-teams", "chat", "term", "settings"] as const) {
-      const name = t === "todo" ? "To-Do" : t === "agent-teams" ? "Agent Teams" : t === "chat" ? "Sessions" : t === "term" ? "Code" : `${t[0].toUpperCase()}${t.slice(1)}`;
+      // The Brain tab keeps the id "memory" (brain-hub D16), so its command id holds and only the name changes.
+      const name = t === "todo" ? "To-Do" : t === "agent-teams" ? "Agent Teams" : t === "chat" ? "Sessions" : t === "term" ? "Code" : t === "memory" ? "Brain" : `${t[0].toUpperCase()}${t.slice(1)}`;
       this.addCommand({ id: `open-workbench-${t}`, name: `Open Workbench: ${name}`,
         callback: () => { void this.openWorkbenchTab(t); } });
     }
