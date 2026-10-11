@@ -3675,6 +3675,8 @@ button.aos-spc-addobj:not(.clickable-icon) { align-self: flex-start; height: 28p
 
 /* ── Brain hub (spec 2026-10-11-brain-hub D2, D23): the shell. Typographic, the --udx tokens in both themes, colour only
    for state and type; every .aos-brain-* class is the hub's own. ── */
+/* Full bleed like Spaces and Pulse: the panes meet the rail, and each pane scrolls on its own. */
+.aos-wb-content:has(> .aos-brain) { display: flex; padding: 0; overflow: hidden; }
 .aos-brain { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; overflow: hidden; background: var(--udx-bg); color: var(--udx-text); font-size: 13px; }
 .aos-brain-mono { font-family: var(--udx-mono); }
 .aos-brain-dim { color: var(--udx-text-3); }

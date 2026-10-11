@@ -26,7 +26,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **Pulse's keep, edit and revert on auto-promoted memories.** Revert deleted the memory file; the Brain tab archives instead (Restore undoes it), and nothing is deleted from the app.
 
 ### Security
-- **A `brain` write surface** runs only the `aos memory` verbs the Brain tab needs, each with an argument rule (memory paths only, at most 50 per call, compare-and-set for pin and status); the runtime checks every path again and deletes nothing. Pulse's surface no longer writes memory files, `MEMORY.md` or the trail.
+- **A `brain` write surface** runs only the `aos memory` verbs the Brain tab needs, each with an argument rule (memory paths only, at most 50 per call, compare-and-set for pin and status); the runtime checks every path again and deletes nothing. It is on by default, after a live check on each host's memories. Pulse's surface no longer writes memory files, `MEMORY.md` or the trail.
 
 ## [1.7.0] — 2026-10-10
 

@@ -273,7 +273,12 @@ export const SURFACES: readonly Surface[] = [
       // After a verb the hub's cache follows the files at once (else the next scan rebuilds it): brain/_index/brain-hub.json.
       { script: "brain-hub.js", args: /^$/ },
     ],
-    verified: false,
+    // Live check (brain-hub D14), 2026-10-11, on a copy of a real vault's brain with memories from both hosts' sessions:
+    // the page's argv (brainModel memoryArgs) through this policy, run by the vault's vendored runtime: for a memory from
+    // a Claude Code session and one from a Codex session, pin, a stale hash refused, unpin (the file back byte for byte),
+    // archive, restore and keep; notdup, supersede and restore on a real duplicate pair; a draft approved and one
+    // rejected; then brain-hub.js. Each was admitted with the surface on and refused with it off.
+    verified: true,
   },
   {
     id: "teams",
