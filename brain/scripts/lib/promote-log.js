@@ -2,13 +2,14 @@
 const fs = require('fs');
 const path = require('path');
 const { PATHS } = require('./paths.js');
+const fsx = require('./fsx.js');
 
 const TRAIL_PATH = path.join(PATHS.INDEX, 'promote-log.jsonl');
 
 function appendTrail(entry) {
   const row = { ts: new Date().toISOString(), ...entry };
-  fs.mkdirSync(path.dirname(TRAIL_PATH), { recursive: true });
-  fs.appendFileSync(TRAIL_PATH, JSON.stringify(row) + '\n');
+  // One locked append (brain-hub plan, PR 1): `aos memory` writes this trail too, from another process.
+  fsx.appendLineSync(TRAIL_PATH, JSON.stringify(row), { lock: true });
   return row;
 }
 
