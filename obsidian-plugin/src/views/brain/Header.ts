@@ -4,6 +4,10 @@
 import { setIcon } from "obsidian";
 import { BRAIN_MODES, BRAIN_MODE_LABEL, type BrainMode, type ModeBadge } from "../../data/brainModel";
 
+/** The panel the mode tabs control (BrainTab's body) and each tab's id, for aria-controls and aria-labelledby. */
+export const BRAIN_PANEL_ID = "aos-brain-panel";
+export const brainTabId = (m: BrainMode): string => `aos-brain-tab-${m}`;
+
 export interface HeaderHandlers {
   mode(m: BrainMode): void;
   search(q: string): void;
@@ -37,7 +41,11 @@ export class BrainHeader {
 
     const strip = this.el.createDiv({ cls: "aos-brain-modes", attr: { role: "tablist", "aria-label": "Brain modes" } });
     for (const m of BRAIN_MODES) {
-      const btn = strip.createEl("button", { cls: "aos-brain-mode", attr: { role: "tab", "data-mode": m, "aria-selected": "false", tabindex: "-1" } });
+      // Each tab controls the one panel the modes share (BrainTab's body, labelled by the tab shown; §4).
+      const btn = strip.createEl("button", {
+        cls: "aos-brain-mode",
+        attr: { role: "tab", id: brainTabId(m), "aria-controls": BRAIN_PANEL_ID, "data-mode": m, "aria-selected": "false", tabindex: "-1" },
+      });
       btn.createSpan({ cls: "aos-brain-modelabel", text: BRAIN_MODE_LABEL[m] });
       const badge = btn.createSpan({ cls: "aos-brain-modebadge aos-brain-mono is-empty" });
       btn.addEventListener("click", () => this.on.mode(m));

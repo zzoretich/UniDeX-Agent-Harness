@@ -1,12 +1,13 @@
 // Library's reader, the middle pane (spec 2026-10-11-brain-hub D1, D2, D4–D7, D23; canvas Library.dc.html): the open
 // memory's title, a mono meta line, its actions and its body rendered as markdown, with where BRAIN.md carries it.
 // Every action is an `aos memory` verb through ctx.run (D13): Pin and Status through `set --expect <hash>`, so a file
-// changed since it was read is refused, Keep, Archive and Restore (nothing is deleted, D6). Edit opens the file and
+// changed since it was read is refused, Keep, Archive and Restore (no memory is deleted, D6). Edit opens the file and
 // changes nothing by itself (D4); ⧉ pops it out into the Memory inspector, kept from the Memory tab (D23). A draft
 // offers Approve and Reject… (D6: a rejected draft is never drafted again); a pattern or a reflection, Edit and ⧉.
 import { Component, MarkdownRenderer, Notice, setIcon } from "obsidian";
 import {
-  SET_STATUSES, bodyWithoutTitle, brainMdSection, shortDay, type BrainDraft, type BrainMemory, type BrainNote, type SetStatus,
+  SET_STATUSES, bodyWithoutTitle, brainMdLine, brainMdSection, shortDay, type BrainDraft, type BrainMemory, type BrainNote,
+  type SetResult, type SetStatus,
 } from "../../data/brainModel";
 import type { BrainCtx } from "./types";
 
@@ -41,6 +42,11 @@ export class LibraryReader {
   private sig = "";
   private path: string | null = null;
   private busy = false;
+  /**
+   * What `set` answered while the load still holds the file before it (D17): the next Pin or Status sends the new hash,
+   * and Pin toggles from the new state, so a second press before the reload is not refused as changed (as Review does).
+   */
+  private sets = new Map<string, { was: string; now: string; pin: boolean }>();
 
   constructor(parent: HTMLElement, private ctx: BrainCtx, private on: ReaderHandlers) {
     this.el = parent.createEl("section", { cls: "aos-brain-main aos-lib-reader", attr: { "aria-label": "Reader" } });
@@ -49,6 +55,7 @@ export class LibraryReader {
   /** Show `item`, or `empty` when there is none. Redraws only when what it shows changed, keeping the scroll and focus. */
   show(item: ReaderItem | null, empty: string): void {
     const d = this.ctx.data();
+    for (const [p, x] of this.sets) if (d.byPath.get(p)?.hash !== x.was) this.sets.delete(p);
     const sig = item ? JSON.stringify(this.signature(item)) : `empty\n${empty}`;
     if (sig === this.sig) return;
     this.sig = sig;
@@ -99,10 +106,12 @@ export class LibraryReader {
     const tr = head.createDiv({ cls: "aos-lib-rtitle" });
     tr.createEl("h2", { cls: "aos-lib-h2", text: m.title });
     if (m.pin) {
+      // An archived or superseded memory keeps its pin (build-brain-md.js: a pin outlives an archive) but BRAIN.md leaves
+      // it out until it is restored.
       const pill = tr.createSpan({ cls: "aos-lib-pinpill" });
       const ic = pill.createSpan({ cls: "aos-brain-ic", attr: { "aria-hidden": "true" } });
       setIcon(ic, "pin");
-      pill.createSpan({ text: "Pinned to BRAIN.md" });
+      pill.createSpan({ text: m.live ? "Pinned to BRAIN.md" : "Pinned: back in BRAIN.md once restored" });
     }
     if (m.status === "archived") tr.createSpan({ cls: "aos-brain-pill is-off", text: m.archived ? `Archived ${shortDay(m.archived, now) || m.archived}` : "Archived" });
 
@@ -129,9 +138,17 @@ export class LibraryReader {
 
     const acts = this.actions(head);
     this.btn(acts, "edit", "Edit", () => this.ctx.edit(m.path));
-    if (m.live || m.pin) {
-      const pin = !m.pin;
-      this.btn(acts, pin ? "pin" : "unpin", pin ? "Pin" : "Unpin", () => this.ctx.run({ verb: "set", path: m.path, fields: { pin }, expect: m.hash }, pin ? "Pin" : "Unpin"), "pin");
+    // Pin and Status only on a live memory: `set` refuses an archived or superseded one until it is restored (memory-ops).
+    if (m.live) {
+      const pinned = this.fresh(m)?.pin ?? m.pin;
+      const b = this.btn(acts, pinned ? "unpin" : "pin", pinned ? "Unpin" : "Pin", async () => {
+        const on = !(this.fresh(m)?.pin ?? m.pin);
+        const r = await this.set(m, { pin: on }, on ? "Pin" : "Unpin");
+        if (!r) return;
+        // Shown at once; the reload after the verb redraws the pane from the file.
+        b.setText(on ? "Unpin" : "Pin");
+        b.setAttr("data-action", on ? "unpin" : "pin");
+      }, "pin");
     }
     if (m.live) this.status(acts, m);
     if (m.reviewed === false) this.btn(acts, "keep", "Keep", () => this.ctx.run({ verb: "keep", paths: [m.path] }, "Keep"));
@@ -142,11 +159,13 @@ export class LibraryReader {
     const art = this.body(m.body, m.title, m.path);
     const sec = brainMdSection(this.ctx.data().sources, m.path);
     if (sec) {
+      // brain-sources.json counts tokens per section (D10): the line says so when other memories share it, so the
+      // section's total never reads as this memory's own cost.
       const box = art.createDiv({ cls: "aos-lib-inbrain", attr: { "data-section": sec.section } });
       box.createSpan({ cls: "aos-brain-label", text: "IN BRAIN.MD AS" });
       const line = box.createSpan({ cls: "aos-lib-inbrainline" });
       line.createSpan({ cls: "aos-lib-inbrainsec", text: sec.label });
-      line.createSpan({ cls: "aos-brain-dim", text: ` · ${sec.tokens} tokens · every session, both hosts`, attr: { title: "The tokens of the whole section BRAIN.md carries it in" } });
+      line.createSpan({ cls: "aos-brain-dim", text: ` · ${brainMdLine(sec)}`, attr: { title: "BRAIN.md counts tokens per section, not per memory" } });
     } else if (this.ctx.data().sources?.omitted.includes(m.path)) {
       const box = art.createDiv({ cls: "aos-lib-inbrain is-out" });
       box.createSpan({ cls: "aos-brain-label", text: "LEFT OUT OF BRAIN.MD" });
@@ -170,8 +189,25 @@ export class LibraryReader {
       const status = sel.value as SetStatus;
       if (this.busy) { sel.value = cur; return; }
       if (status === cur) return;
-      void this.act(() => this.ctx.run({ verb: "set", path: m.path, fields: { status }, expect: m.hash }, "Status"));
+      // Refused without a change on disk (surface off, a timeout), the reload redraws nothing: the select goes back to
+      // what the label says, so picking the same status again is a change again.
+      void this.act(async () => { if (!(await this.set(m, { status }, "Status"))) sel.value = cur; });
     });
+  }
+
+  /** The answer `set` gave for `m` while the load still holds the text it was read from, else null. */
+  private fresh(m: BrainMemory): { now: string; pin: boolean } | null {
+    const x = this.sets.get(m.path);
+    return x && x.was === m.hash ? x : null;
+  }
+
+  /** `aos memory set` with the newest hash this page knows (D17); true when it went through. */
+  private async set(m: BrainMemory, fields: { pin?: boolean; status?: SetStatus }, label: string): Promise<boolean> {
+    const f = this.fresh(m);
+    const r = await this.ctx.run<SetResult>({ verb: "set", path: m.path, fields, expect: f?.now ?? m.hash }, label);
+    if (!r.ok) return false;
+    if (typeof r.json.hash === "string") this.sets.set(m.path, { was: m.hash, now: r.json.hash, pin: fields.pin ?? f?.pin ?? m.pin });
+    return true;
   }
 
   // ── a draft ──

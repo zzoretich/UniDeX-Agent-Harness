@@ -96,8 +96,11 @@ export class LibraryMode implements BrainModeView {
     this.drawTop();
     this.drawList();
     this.drawReader();
-    // An action that removed its own button (Keep, Approve, a draft gone) leaves the focus on the selected row, not lost.
-    if (had && !root.contains(doc.activeElement)) (this.rowEls.get(this.sel[this.filter.kind].sel ?? "") ?? this.list?.querySelector<HTMLElement>(".aos-lib-row"))?.focus({ preventScroll: true });
+    // An action that removed its own button (Keep, Approve, a draft gone) leaves the focus on the selected row, not lost;
+    // with no row left (the last draft approved), on the kind's chip, so the keys still reach the hub (§4).
+    if (had && !root.contains(doc.activeElement)) {
+      (this.rowEls.get(this.sel[this.filter.kind].sel ?? "") ?? this.list?.querySelector<HTMLElement>(".aos-lib-row") ?? this.kindBtns.get(this.filter.kind)?.btn)?.focus({ preventScroll: true });
+    }
   }
 
   /** A link into the hub (D15): show that memory, widening only the facets that hide it. */

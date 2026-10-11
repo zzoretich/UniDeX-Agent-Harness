@@ -1,7 +1,8 @@
 // Loads the Brain hub's data through the vault adapter (spec 2026-10-11-brain-hub D12): the memory files, the drafts,
 // patterns and reflections, MEMORY.md, the trail and the runtime's two caches. A real vault holds hundreds of memories,
 // so file texts are kept between loads: a vault event marks its path dirty and the next load re-reads only what is new
-// or dirty (each folder is listed again, which is cheap); showing the tab reloads everything.
+// or dirty (each folder is listed again, which is cheap); showing the tab reloads everything. Each memory is parsed (and
+// hashed) again only when its text or its MEMORY.md line changed.
 import type { App } from "obsidian";
 import {
   BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, DRAFTS_DIR, MEMORY_INDEX_PATH, MEMORY_ROOT, MEMORY_TYPES, PATTERNS_DIR, REFLECTIONS_DIR,
@@ -16,6 +17,8 @@ const SINGLES = [BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, MEMORY_INDEX_PATH, TRAIL_PA
 
 export class BrainStore {
   private texts = new Map<string, string>();
+  /** Each memory as last parsed, with the text and MEMORY.md description it was parsed from. */
+  private parsed = new Map<string, { raw: string; desc: string | undefined; m: BrainMemory | null }>();
   private dirty = new Set<string>();
   private dismissed = new Set<string>();
   private loading: Promise<BrainData> | null = null;
@@ -60,6 +63,17 @@ export class BrainStore {
     } catch { this.texts.delete(path); return null; }
   }
 
+  /** parseMemory, reusing the last answer for the same text and index line (a reload after one event re-reads one file;
+   *  without this every memory was parsed and hashed again). */
+  private memory(p: string, raw: string, index: ReadonlyMap<string, string>): BrainMemory | null {
+    const desc = index.get(p);
+    const c = this.parsed.get(p);
+    if (c && c.raw === raw && c.desc === desc) return c.m;
+    const m = parseMemory(p, raw, index);
+    this.parsed.set(p, { raw, desc, m });
+    return m;
+  }
+
   private async read(): Promise<BrainData> {
     const now = new Date();
     const [hubRaw, srcRaw, indexRaw, trailRaw] = await Promise.all(SINGLES.map((p) => this.text(p, true)));
@@ -70,7 +84,7 @@ export class BrainStore {
       for (const p of await this.list(`${MEMORY_ROOT}/${t}`)) {
         seen.add(p);
         const raw = await this.text(p);
-        const m = raw === null ? null : parseMemory(p, raw, index);
+        const m = raw === null ? null : this.memory(p, raw, index);
         if (m) memories.push(m);
       }
     }
@@ -95,6 +109,7 @@ export class BrainStore {
     const reflections = (await notes("reflections", REFLECTIONS_DIR)).sort((a, b) => b.path.localeCompare(a.path));
     // Files gone from their folder leave the cache.
     for (const p of [...this.texts.keys()]) if (!seen.has(p) && !SINGLES.includes(p)) this.texts.delete(p);
+    for (const p of [...this.parsed.keys()]) if (!seen.has(p)) this.parsed.delete(p);
 
     const hub = parseBrainHub(hubRaw);
     const trail = readTrailRows(trailRaw);

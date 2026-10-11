@@ -178,7 +178,7 @@ test("K keeps one memory: reviewed: true and nothing else in the file, a kept ro
   await expect(card(rel)).toHaveCount(0);
   await expect(card(b.paths[1])).toHaveAttribute("aria-current", "true");
   await expect(card(b.paths[1])).toBeFocused();
-  await expect(main().locator(".aos-brain-rv-lede")).toHaveText("Wrote 1 memory. It looks new.");
+  await expect(main().locator(".aos-brain-rv-lede")).toHaveText("1 left to review. It looks new.");
   // lib/memory-ops.js appendTrail's row: the memory's session, slug, type, title and path.
   await expect.poll(() => trailAdded().length).toBe(1);
   expect(trailAdded()[0]).toEqual({ ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/), session: B().sessions.codex, action: "kept", slug: "depth-contours-layer", type: "projects", title: "Depth contours layer", path: rel });
@@ -200,6 +200,9 @@ test("⇧K keeps the batch's new memories in one call and leaves the one that lo
   await pickBatch(b.key);
   await expect(main().locator("button.aos-brain-rv-keepnew")).toHaveText("Keep the 2 new⇧K");
   await focusCard(flagged);
+  // ⇧K from the button itself: it turns off ("Keep the 0 new"), so the keyboard goes to the card that is left, never
+  // to the page.
+  await main().locator("button.aos-brain-rv-keepnew").focus();
   await win.keyboard.press("Shift+K");
   for (const p of fresh) await expect.poll(() => read(p)).toBe(pristine(p).replace("reviewed: false\n", "reviewed: true\n"));
   await expect.poll(() => trailAdded().map((r) => [r.action, r.path])).toEqual(fresh.map((p) => ["kept", p]));
@@ -208,7 +211,8 @@ test("⇧K keeps the batch's new memories in one call and leaves the one that lo
   // Only the flagged card is left, still selected; nothing new is left to keep.
   await expect(main().locator("article.aos-brain-rv-card")).toHaveCount(1);
   await expect(card(flagged)).toHaveAttribute("aria-current", "true");
-  await expect(main().locator(".aos-brain-rv-lede")).toHaveText("Wrote 1 memory. It looks like one you already have.");
+  await expect(card(flagged)).toBeFocused();
+  await expect(main().locator(".aos-brain-rv-lede")).toHaveText("1 left to review. It looks like one you already have.");
   const keepNew = main().locator("button.aos-brain-rv-keepnew");
   await expect(keepNew).toHaveText("Keep the 0 new⇧K");
   await expect(keepNew).toBeDisabled();
@@ -365,6 +369,8 @@ test("a draft's Approve (Review) files it into brain/memory/feedback and the dra
   await expect(notices(win)).toContainText("Approved: “Name layers after their data” is a feedback memory now.");
   await expect(queue("drafts").locator(".aos-brain-chipn")).toHaveText("0");
   await expect(main().locator(".aos-brain-empty")).toHaveText("No feedback drafts.");
+  // The last draft took its Approve button with it: the keyboard lands on what the queue says now, not on the page.
+  await expect(main().locator(".aos-brain-empty")).toBeFocused();
   // Filed, the rule waits for review like any memory a session wrote.
   await reviewSees(B().unreviewed.length + 1);
   await idle();

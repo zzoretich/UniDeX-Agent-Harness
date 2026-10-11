@@ -3677,7 +3677,13 @@ button.aos-spc-addobj:not(.clickable-icon) { align-self: flex-start; height: 28p
    for state and type; every .aos-brain-* class is the hub's own. ── */
 /* Full bleed like Spaces and Pulse: the panes meet the rail, and each pane scrolls on its own. */
 .aos-wb-content:has(> .aos-brain) { display: flex; padding: 0; overflow: hidden; }
-.aos-brain { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; overflow: hidden; background: var(--udx-bg); color: var(--udx-text); font-size: 13px; }
+/* The hub is a size container: its folds (D2) follow the hub's own width, so Open in split (the Workbench at half the
+   window) or the drawer folds the panes as a narrow window does. Thresholds are the window widths D2 names less the
+   56 px rail: 1100 → 1044, 760 → 704. */
+.aos-brain {
+  display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; overflow: hidden; background: var(--udx-bg); color: var(--udx-text); font-size: 13px;
+  container: aos-brain / inline-size;
+}
 .aos-brain-mono { font-family: var(--udx-mono); }
 .aos-brain-dim { color: var(--udx-text-3); }
 .aos-brain-warn { color: var(--udx-warn); }
@@ -3880,6 +3886,8 @@ button.aos-brain-rv-menuitem:not(.clickable-icon) {
 button.aos-brain-rv-menuitem:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised-2); }
 button.aos-brain-rv-menuitem:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: -2px; background: var(--udx-raised-2); }
 .aos-brain-rv-cards { display: flex; flex-direction: column; gap: 6px; padding: 10px 24px 16px; }
+.aos-brain-rv button.aos-brain-rv-moreolder:not(.clickable-icon) { align-self: flex-start; margin: 6px 0 0; }
+.aos-brain-rv-list > button.aos-brain-rv-moreolder:not(.clickable-icon) { margin: 8px 8px 4px; }
 .aos-brain-rv-empty { padding: 24px; }
 
 /* A card (D4): type, title, flag, pin, the icon buttons; the summary; the comparison under it when open (M). */
@@ -3925,7 +3933,7 @@ button.aos-brain-rv-menuitem:not(.clickable-icon):focus-visible { outline: 2px s
 .aos-brain-markmodal .aos-brain-markline { margin: 10px 0 0; color: var(--udx-text); font-size: 12.5px; }
 .aos-brain-markmodal button:disabled { opacity: 0.5; cursor: default; }
 
-@media (max-width: 760px) {
+@container aos-brain (max-width: 704px) {
   .aos-brain-rv-head, .aos-brain-rv-cards, .aos-brain-rv-keys { padding-left: 16px; padding-right: 16px; }
   .aos-brain-pill.aos-brain-rv-flag { max-width: 100%; }
   .aos-brain-rv-chead { flex-wrap: wrap; }
@@ -4048,12 +4056,12 @@ button.aos-lib-clink:hover .aos-lib-clinkt { text-decoration: underline; text-de
 .aos-lib-ckind, .aos-lib-score { flex: none; color: var(--udx-text-3); font-size: 10.5px; }
 .aos-lib-score.is-close { color: var(--udx-warn); }
 
-@media (max-width: 1100px) {
+@container aos-brain (max-width: 1044px) {
   .aos-lib-split { flex-direction: column; overflow-y: auto; }
   .aos-lib-split > .aos-brain-main { flex: none; overflow: visible; }
   .aos-lib-split > .aos-brain-right { flex: none; max-width: none; overflow: visible; padding: 16px 28px 24px; border-left: none; border-top: 1px solid var(--udx-line); }
 }
-@media (max-width: 760px) {
+@container aos-brain (max-width: 704px) {
   .aos-lib-split { flex: none; overflow: visible; }
   .aos-lib-rhead { padding: 16px 16px 12px; }
   .aos-lib-article { padding: 4px 16px 20px; }
@@ -4086,16 +4094,16 @@ button.aos-lib-clink:hover .aos-lib-clinkt { text-decoration: underline; text-de
 .aos-brain-map .aos-cortex-svg text { font-family: var(--udx-sans); }
 .aos-brain-mapempty { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; padding: 24px; text-align: center; pointer-events: none; }
 .aos-brain-mapempty.is-shown { display: flex; }
-@media (max-width: 760px) {
+@container aos-brain (max-width: 704px) {
   .aos-brain-maphead { padding: 14px 16px 0; }
   .aos-brain-map .aos-cortex-header { padding: 10px 16px; }
   .aos-brain-map .aos-cortex-canvas { margin: 0 16px 16px; }
   .aos-brain-maphint { display: none; }
 }
 
-/* Narrower (D2): Library's right pane folds under the reader at 1100 px (its own rule, in the Library block); every
-   pane stacks under 760 px. */
-@media (max-width: 760px) {
+/* Narrower (D2): Library's right pane folds under the reader at a 1100 px window (its own rule, in the Library block);
+   every pane stacks under 760 px. Measured on the hub (.aos-brain is the container), less the rail. */
+@container aos-brain (max-width: 704px) {
   .aos-brain-head { padding-left: 16px; padding-right: 16px; }
   .aos-brain-search { width: 100%; }
   .aos-brain-panes { flex-direction: column; overflow-y: auto; }

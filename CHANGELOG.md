@@ -15,7 +15,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **`/consolidate-memory` carries out a section without deleting anything**: it retires a duplicate with `aos memory supersede` and a dead memory with `aos memory archive`, both undone by `aos memory restore`.
 
 ### Added
-- **`aos memory`** lists the memories and keeps, pins, archives, restores or supersedes one, changes its status or description, decides a feedback draft, and marks two memories as not duplicates, from any Claude Code or Codex session (each verb takes `--json`). Nothing is deleted, and pin and status changes rebuild `BRAIN.md`. These are the verbs the coming Brain hub runs.
+- **`aos memory`** lists the memories and keeps, pins, archives, restores or supersedes one, changes its status or description, decides a feedback draft, and marks two memories as not duplicates, from any Claude Code or Codex session (each verb takes `--json`). No memory is deleted (deciding a feedback draft removes the draft, as `feedback-review` always has), and pin and status changes rebuild `BRAIN.md`. These are the verbs the Brain tab runs.
 - **A memory usage log**: which memories reach a session (injected at its start, returned by `recall`, read with `memory_read`) is kept by path and host in `brain/_index/memory-usage.jsonl` while telemetry is on. No prompt or query is kept, and rows older than `memory.usageDays` fold into totals.
 - **Each scan writes `brain/_index/brain-hub.json`**: memories by state, the unreviewed ones grouped by the session that wrote them, likely duplicates and clusters (by title, text and, with Ollama, meaning, scored against the vault's own pairs), hygiene findings and active projects that look shipped. `brain-sources.json` records which memories `BRAIN.md` was built from. New settings: `memory.usageDays`, `memory.neverUsedDays`, `memory.dupScore`, `memory.clusterMin`, `memory.mapMin`.
 
@@ -23,10 +23,10 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **The promote trail is appended under a lock**, so two writers can no longer interleave a line.
 
 ### Removed
-- **Pulse's keep, edit and revert on auto-promoted memories.** Revert deleted the memory file; the Brain tab archives instead (Restore undoes it), and nothing is deleted from the app.
+- **Pulse's keep, edit and revert on auto-promoted memories.** Revert deleted the memory file; the Brain tab archives instead (Restore undoes it), and the app deletes no memory: only a feedback draft you approve (it becomes a memory) or reject is removed.
 
 ### Security
-- **A `brain` write surface** runs only the `aos memory` verbs the Brain tab needs, each with an argument rule (memory paths only, at most 50 per call, compare-and-set for pin and status); the runtime checks every path again and deletes nothing. It is on by default, after a live check on each host's memories. Pulse's surface no longer writes memory files, `MEMORY.md` or the trail.
+- **A `brain` write surface** runs only the `aos memory` verbs the Brain tab needs, each with an argument rule (memory paths only, at most 50 per call, compare-and-set for pin and status); the runtime checks every path again and deletes nothing but a feedback draft that is approved (it moves into the store) or rejected. It is on by default, after a live check on each host's memories. Pulse's surface no longer writes memory files, `MEMORY.md` or the trail.
 
 ## [1.7.0] — 2026-10-10
 

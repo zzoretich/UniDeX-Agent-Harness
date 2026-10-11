@@ -15,7 +15,7 @@ import * as path from "node:path";
 import {
   FX, badge, closeNotes, command, content, expected, guardWrites, notePath, openTab, rail, readVaultJson, useApp,
 } from "./harness";
-import { BRAIN_OFF_TEXT, batchMeta, batchWhen, defaultMarkBefore, shortDay } from "../../../obsidian-plugin/src/data/brainModel";
+import { BRAIN_OFF_TEXT, batchMeta, batchWhen, brainMdLine, defaultMarkBefore, shortDay } from "../../../obsidian-plugin/src/data/brainModel";
 
 const app = useApp();
 const C = () => content(app().win);
@@ -262,7 +262,7 @@ test.describe("Review", () => {
     await expect(main()).toHaveAttribute("aria-label", b.title);
     await expect(head.locator(".aos-brain-rv-meta")).toHaveText(batchMeta({ host: b.host, at: b.at, session: b.session }, new Date()));
     await expect(head.locator(".aos-brain-rv-meta")).toHaveText(/^claude · today \d{2}:\d{2} · session c1a0de00$/);
-    await expect(head.locator(".aos-brain-rv-lede")).toHaveText("Wrote 3 memories. 2 look new, 1 looks like one you already have.");
+    await expect(head.locator(".aos-brain-rv-lede")).toHaveText("3 left to review. 2 look new, 1 looks like one you already have.");
     const keepNew = head.locator("button.aos-brain-rv-keepnew");
     await expect(keepNew).toHaveText("Keep the 2 new⇧K");
     await expect(keepNew.locator("kbd")).toHaveText("⇧K");
@@ -320,15 +320,21 @@ test.describe("Review", () => {
     await expect(card(dupA).locator('button[data-act="merge"]')).toHaveAttribute("aria-expanded", "true");
     const boxes = cmp.locator(".aos-brain-rv-box");
     await expect(boxes).toHaveCount(2);
-    await expect(boxes.nth(0).locator(".aos-brain-label")).toHaveText("THIS ONE · NEW");
+    // Each box says which is the older, by the rule Keep the older one keeps with, and the day each was written (D7).
+    expect(localTime(writtenAt(dupB))).toBeLessThan(localTime(writtenAt(dupA)));
+    await expect(boxes.nth(0)).toHaveAttribute("data-path", dupA);
+    await expect(boxes.nth(0)).toHaveAttribute("data-age", "newer");
+    await expect(boxes.nth(0).locator(".aos-brain-label")).toHaveText("THIS ONE · NEWER");
     await expect(boxes.nth(0).locator(".aos-brain-rv-boxtext")).toHaveText(indexDesc(dupA));
-    await expect(boxes.nth(0).locator(".aos-brain-rv-boxmeta")).toHaveText("feedback/prefer-small-diffs-in-reviews.md");
+    await expect(boxes.nth(0).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback/prefer-small-diffs-in-reviews.md · ${shortDay(writtenAt(dupA), new Date())}`);
     await expect(boxes.nth(1)).toHaveAttribute("data-path", dupB);
-    await expect(boxes.nth(1).locator(".aos-brain-rv-boxlabel")).toHaveText(`LOOKS LIKE${score} similar`);
+    await expect(boxes.nth(1)).toHaveAttribute("data-age", "older");
+    await expect(boxes.nth(1).locator(".aos-brain-rv-boxlabel")).toHaveText(`LOOKS LIKE · OLDER${score} similar`);
     await expect(boxes.nth(1).locator(".aos-brain-rv-boxtitle")).toHaveText("Prefer small diffs");
     await expect(boxes.nth(1).locator(".aos-brain-rv-boxtext")).toHaveText(indexDesc(dupB));
-    await expect(boxes.nth(1).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback · ${shortDay(fmKey(dupB, "created"), new Date())}`);
+    await expect(boxes.nth(1).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback · ${shortDay(writtenAt(dupB), new Date())}`);
     await expect(card(dupA).locator(".aos-brain-rv-cmpacts button")).toHaveText(["Keep the older one", "Keep both", "Open both"]);
+    await expect(card(dupA).locator('.aos-brain-rv-cmpacts button[data-act="keepolder"]')).toHaveAttribute("title", "Keeps “Prefer small diffs”; this one is marked superseded by it");
     await win.keyboard.press("m");
     await expect(cmp).toHaveCount(0);
     await expect(card(dupA)).not.toHaveClass(/is-open/);
@@ -337,6 +343,12 @@ test.describe("Review", () => {
     await expect(card(dupA).locator(".aos-brain-rv-compare")).toHaveCount(1);
     await card(dupA).locator('button[data-act="merge"]').click();
     await expect(card(dupA).locator(".aos-brain-rv-compare")).toHaveCount(0);
+
+    // The keys act on the card the keyboard is in: Tab onto another card's buttons and that card is the selected one.
+    await card(dupA).locator(".aos-brain-rv-sum").click();
+    await card(b.paths[2]).locator('button[data-act="edit"]').focus();
+    await expect(card(b.paths[2])).toHaveAttribute("aria-current", "true");
+    await expect(card(dupA)).not.toHaveAttribute("aria-current", "true");
 
     // ↑↓ move the selection through the cards, the keyboard with it; it stops at either end.
     await card(dupA).locator(".aos-brain-rv-sum").click();
@@ -571,7 +583,10 @@ test.describe("Library", () => {
     const inBrain = reader().locator(".aos-lib-inbrain");
     await expect(inBrain).toHaveAttribute("data-section", "active");
     await expect(inBrain.locator(".aos-brain-label")).toHaveText("IN BRAIN.MD AS");
-    await expect(inBrain.locator(".aos-lib-inbrainline")).toHaveText(`Active context · ${src.sections.active.tokens} tokens · every session, both hosts`);
+    // The tokens are the section's (D10): with other memories in it, the line says so.
+    expect(src.sections.active.paths.length).toBeGreaterThan(1);
+    await expect(inBrain.locator(".aos-lib-inbrainline")).toHaveText(`Active context · one of ${src.sections.active.paths.length} memories, ${src.sections.active.tokens} tokens together · every session, both hosts`);
+    expect(brainMdLine({ tokens: src.sections.active.tokens, count: src.sections.active.paths.length })).toBe(`one of ${src.sections.active.paths.length} memories, ${src.sections.active.tokens} tokens together · every session, both hosts`);
     // A memory BRAIN.md does not carry has no such box.
     await libRow("brain/memory/reference/tide-api-notes.md").click();
     await expect(reader().locator("h2")).toHaveText("Tide API notes");
@@ -593,6 +608,11 @@ test.describe("Library", () => {
     await expect(split).not.toHaveClass(/is-empty/);
     await expect(split.locator(".workspace-leaf-content[data-type='agentic-os-memory-inspector']")).toContainText("The water-level overlay redraws once per six-minute reading");
     await expect(win.locator(".aos-host-tab.is-split")).toHaveCount(1);
+    // The panes fold on the hub's own width (D2; 1100 and 760 px windows less the 56 px rail): halved by the split, the
+    // reader keeps a readable width rather than what two fixed panes leave it.
+    const hubWidth = await C().locator(".aos-brain").evaluate((el) => el.getBoundingClientRect().width);
+    await expect(C().locator(".aos-lib-split")).toHaveCSS("flex-direction", hubWidth <= 1044 ? "column" : "row");
+    expect(await reader().evaluate((el) => el.getBoundingClientRect().width)).toBeGreaterThanOrEqual(Math.min(hubWidth, 380) - 2);
     await closeNotes(win);
     expect(read(rel)).toBe(pristine(rel));
   });
@@ -755,9 +775,10 @@ test("Health (until PR 3): the store's tiles, the hygiene counts, and duplicate 
 
 // ── the rail badge and links ─────────────────────────────────────────
 
-test("the rail badge counts memories written since Review was last open (D16): a new unreviewed memory reads 1 within seconds, and opening Brain on Review clears it", async () => {
+test("the rail badge counts memories written since Review was last open (D16): a new unreviewed memory reads 1 within seconds, a link to another mode leaves it, Review clears it, and one written while Review shows is not badged", async () => {
   const { win } = app();
   const rel = "brain/memory/reference/buoy-battery-swap.md";
+  const rel2 = "brain/memory/reference/buoy-light-check.md";
   const trailWas = read(TRAIL);
   // Brain was last left on Review, so the rail opens it there.
   await brain("review");
@@ -766,21 +787,35 @@ test("the rail badge counts memories written since Review was last open (D16): a
   await expect(badge(win, "memory")).toHaveText("");
   try {
     // A memory auto-wrap writes, as lib/memory-writer.js does, and its trail row (lib/promote-log.js appendTrail).
-    const at = new Date();
-    const d = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
-    fs.writeFileSync(FX.v(rel), `---\ntype: memory\ntags: [memory/reference, status/active]\ncreated: ${d}\nupdated: ${d}\nsource: auto-wrap\nsession: ${B().sessions.claude}\nreviewed: false\n---\n\n# Buoy battery swap\n\nSwap the buoy batteries every ninety days.\n`);
-    fs.appendFileSync(FX.v(TRAIL), `${JSON.stringify({ ts: at.toISOString(), session: B().sessions.claude, action: "written", slug: "buoy-battery-swap", type: "reference", title: "Buoy battery swap" })}\n`);
+    const write = (path: string, slug: string, title: string) => {
+      const at = new Date();
+      const d = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+      fs.writeFileSync(FX.v(path), `---\ntype: memory\ntags: [memory/reference, status/active]\ncreated: ${d}\nupdated: ${d}\nsource: auto-wrap\nsession: ${B().sessions.claude}\nreviewed: false\n---\n\n# ${title}\n\nCheck the buoy every ninety days.\n`);
+      fs.appendFileSync(FX.v(TRAIL), `${JSON.stringify({ ts: at.toISOString(), session: B().sessions.claude, action: "written", slug, type: "reference", title })}\n`);
+    };
+    write(rel, "buoy-battery-swap", "Buoy battery swap");
     await expect(badge(win, "memory")).toHaveText("1", { timeout: 10_000 });
     await expect(badge(win, "memory")).not.toHaveClass(/is-empty/);
     await expect(rail(win, "pulse")).toHaveClass(/is-active/);
-    // Opening Brain on Review: the badge counts from now, so it clears; the memory waits in Review.
-    await openTab(win, "memory");
-    await expect(modeTab("review")).toHaveAttribute("aria-selected", "true");
+    // A link from Pulse into another mode (BRAIN.md's % opens Bootstrap) shows Brain without Review: the badge stays.
+    await C().locator('.aos-pulse-tile[data-area="memory"] [data-brain-link="bootstrap"]').click();
+    await expect(modeTab("bootstrap")).toHaveAttribute("aria-selected", "true");
+    await expect(badge(win, "memory")).toHaveText("1");
+    // Review shown: the badge counts from now, so it clears; the memory waits in Review.
+    await mode("review");
     await expect(badge(win, "memory")).toHaveText("");
     await expect(badge(win, "memory")).toHaveClass(/is-empty/);
     await expect(modeTab("review").locator(".aos-brain-modebadge")).toHaveText(String(B().unreviewed.length + 1));
+    // One written while Review is on screen shows there and is not badged, then or after leaving by the rail.
+    write(rel2, "buoy-light-check", "Buoy light check");
+    await expect(modeTab("review").locator(".aos-brain-modebadge")).toHaveText(String(B().unreviewed.length + 2));
+    await expect(badge(win, "memory")).toHaveText("");
+    await openTab(win, "pulse");
+    await expect(badge(win, "memory")).toHaveText("");
+    await openTab(win, "memory");
   } finally {
     fs.rmSync(FX.v(rel), { force: true });
+    fs.rmSync(FX.v(rel2), { force: true });
     fs.writeFileSync(FX.v(TRAIL), trailWas);
   }
   await expect(modeTab("review").locator(".aos-brain-modebadge")).toHaveText(String(B().unreviewed.length));

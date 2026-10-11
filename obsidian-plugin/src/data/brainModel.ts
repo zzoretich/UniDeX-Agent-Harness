@@ -186,6 +186,18 @@ export function parseMemory(path: string, text: string, index: ReadonlyMap<strin
   };
 }
 
+/**
+ * Whether a memory's text still waits for review: `reviewed: false` and live (no `status/archived` or
+ * `status/superseded` tag). Archive and supersede leave `reviewed:` as it was (memory-ops.js retire), so a count of
+ * `reviewed: false` alone keeps what the hub retired (brain-hub D5, D7). The frontmatter only, no hash: the rail badge
+ * and Pulse read it per file. lib/pulse-facts.js pendingReview is its twin.
+ */
+export function pendingReview(text: string | null): boolean {
+  if (!text) return false;
+  const fm = splitFrontmatter(text);
+  return fm.has && fmKey(fm.lines, "reviewed") === "false" && !GONE_STATUSES.includes(fmStatus(fm.lines) ?? "");
+}
+
 export interface BrainDraft {
   slug: string;
   path: string;
@@ -321,13 +333,23 @@ export function brainMdPercent(src: BrainSources | null): number | null {
 
 const SECTION_LABEL: Record<BrainSection, string> = { who: "Who you are", rules: "Critical rules", active: "Active context" };
 
-/** The BRAIN.md section that carries `path` into every session (Library's "In BRAIN.md as"), or null. */
-export function brainMdSection(src: BrainSources | null, path: string): { section: BrainSection; label: string; tokens: number } | null {
+/**
+ * The BRAIN.md section that carries `path` into every session (Library's "In BRAIN.md as"), or null. `tokens` is the
+ * whole section's and `count` how many memories share it: brain-sources.json records tokens per section only (D10).
+ */
+export function brainMdSection(src: BrainSources | null, path: string): { section: BrainSection; label: string; tokens: number; count: number } | null {
   if (!src) return null;
   for (const k of ["who", "rules", "active"] as BrainSection[]) {
-    if (src.sections[k].paths.includes(path)) return { section: k, label: SECTION_LABEL[k], tokens: src.sections[k].tokens };
+    const s = src.sections[k];
+    if (s.paths.includes(path)) return { section: k, label: SECTION_LABEL[k], tokens: s.tokens, count: s.paths.length };
   }
   return null;
+}
+
+/** The line under IN BRAIN.MD AS: the section, then its tokens, as the section's total when others share it. */
+export function brainMdLine(sec: { tokens: number; count: number }): string {
+  const tokens = sec.count > 1 ? `one of ${sec.count} memories, ${sec.tokens} tokens together` : `${sec.tokens} tokens`;
+  return `${tokens} · every session, both hosts`;
 }
 
 // ── the trail ──
@@ -392,10 +414,15 @@ export interface ReviewBatch {
   at: string;
   /** The memories still to review, oldest written first. */
   paths: string[];
-  /** Those with no duplicate flag: what "Keep the N new" keeps (⇧K). */
+  /** Those the scan checked and found no duplicate for: what "Keep the N new" keeps (⇧K). */
   fresh: string[];
   /** Those that look like a memory you already have. */
   known: string[];
+  /**
+   * Those brain-hub.json does not hold yet (written since it was built, or no hub at all): nothing has checked them for
+   * duplicates, so ⇧K leaves them until it has (D3, D11). Showing the tab rebuilds the hub (BrainTab.checkHub).
+   */
+  unchecked: string[];
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i;
@@ -414,10 +441,11 @@ function batchKeyOf(m: BrainMemory, day: string): { key: string; session: string
  *
  * A memory no hub batch holds landed after the hub was built, so with no trail row (its `created:` is a day, not a time)
  * it counts as written no earlier than `builtAt`: a session that wrote one this afternoon sorts above this morning's.
+ * Nothing has checked it for duplicates either: it is `unchecked`, never `fresh`, until the hub is built again.
  */
 export function reviewBatches(memories: readonly BrainMemory[], hub: BrainHub | null, written: ReadonlyMap<string, string>, flags: ReadonlyMap<string, DupFlag>): ReviewBatch[] {
   const open = new Map(memories.filter((m) => m.live && m.reviewed === false).map((m) => [m.path, m]));
-  const groups = new Map<string, Omit<ReviewBatch, "fresh" | "known">>();
+  const groups = new Map<string, Omit<ReviewBatch, "fresh" | "known" | "unchecked">>();
   const seen = new Set<string>();
   const atOf = new Map<string, string>();
   for (const b of hub?.batches ?? []) {
@@ -445,7 +473,12 @@ export function reviewBatches(memories: readonly BrainMemory[], hub: BrainHub | 
   return [...groups.values()]
     .map((g) => {
       const paths = [...g.paths].sort((a, b) => t(a) - t(b) || a.localeCompare(b));
-      return { ...g, lead: g.lead ?? open.get(paths[0])?.title ?? null, paths, fresh: paths.filter((p) => !flags.has(p)), known: paths.filter((p) => flags.has(p)) };
+      // A hub batch holds only what its scan scored for duplicates; anything else waits for the next build (D11).
+      return {
+        ...g, lead: g.lead ?? open.get(paths[0])?.title ?? null, paths,
+        fresh: paths.filter((p) => !flags.has(p) && seen.has(p)), known: paths.filter((p) => flags.has(p)),
+        unchecked: paths.filter((p) => !flags.has(p) && !seen.has(p)),
+      };
     })
     .sort((a, b) => sortTime(b.at) - sortTime(a.at) || a.key.localeCompare(b.key));
 }
@@ -898,18 +931,28 @@ export function knownLabel(n: number): string {
   return n <= 0 ? "" : n === 1 ? "1 looks known" : `${n} look known`;
 }
 
-/** The batch header's lede: "Wrote 6 memories. 3 look new, 3 look like ones you already have." `total` is what is left
- *  to review, `known` those with a duplicate flag. */
-export function batchLede(total: number, known: number): string {
+/**
+ * The batch header's lede: "6 left to review. 3 look new, 3 look like ones you already have." `total` is what the
+ * session left to review (what was kept or archived is not counted, so the lede never claims what the session wrote),
+ * `known` those with a duplicate flag, `unchecked` those the duplicate check has not seen yet (D3, D11).
+ */
+export function batchLede(total: number, known: number, unchecked = 0): string {
   if (total <= 0) return "Nothing left to review from this session.";
   const k = Math.min(Math.max(0, known), total);
-  const fresh = total - k;
-  if (total === 1) return `Wrote 1 memory. It looks ${k ? "like one you already have" : "new"}.`;
-  const head = `Wrote ${total} memories.`;
+  const u = Math.min(Math.max(0, unchecked), total - k);
+  const fresh = total - k - u;
+  if (total === 1) return `1 left to review. It ${k ? "looks like one you already have" : u ? "waits for the duplicate check" : "looks new"}.`;
+  const head = `${total} left to review.`;
   const all = total === 2 ? "Both" : `All ${total}`;
-  if (!k) return `${head} ${all} look new.`;
-  if (!fresh) return `${head} ${all} look like ones you already have.`;
-  return `${head} ${fresh === 1 ? "1 looks new" : `${fresh} look new`}, ${k === 1 ? "1 looks like one you already have" : `${k} look like ones you already have`}.`;
+  if (fresh === total) return `${head} ${all} look new.`;
+  if (k === total) return `${head} ${all} look like ones you already have.`;
+  if (u === total) return `${head} ${all} wait for the duplicate check.`;
+  const parts = [
+    fresh ? (fresh === 1 ? "1 looks new" : `${fresh} look new`) : "",
+    k ? (k === 1 ? "1 looks like one you already have" : `${k} look like ones you already have`) : "",
+    u ? (u === 1 ? "1 waits for the duplicate check" : `${u} wait for the duplicate check`) : "",
+  ].filter(Boolean);
+  return `${head} ${parts.join(", ")}.`;
 }
 
 /** Two memories, the one written first first (then the earlier `created:`, then the path): "Keep the older one" (D7). */
@@ -921,6 +964,16 @@ export function olderFirst<M extends Pick<BrainMemory, "path" | "type" | "slug" 
   const cb = b.created ?? "";
   if (ca !== cb) return (ca || "￿") < (cb || "￿") ? [a, b] : [b, a];
   return a.path <= b.path ? [a, b] : [b, a];
+}
+
+/**
+ * M's comparison (D7): which of a card's memory and the one it looks like is the older, by the same rule "Keep the older
+ * one" picks its winner with (olderFirst), so the boxes' labels never disagree with what the button keeps.
+ */
+export function compareAges<M extends Pick<BrainMemory, "path" | "type" | "slug" | "created">>(mine: M, other: M, written: ReadonlyMap<string, string>): { mine: "OLDER" | "NEWER"; other: "OLDER" | "NEWER"; older: M; newer: M } {
+  const [older, newer] = olderFirst(mine, other, written);
+  const mineOlder = older.path === mine.path;
+  return { mine: mineOlder ? "OLDER" : "NEWER", other: mineOlder ? "NEWER" : "OLDER", older, newer };
 }
 
 /** The Older queue's months in the queue's order: "September 2026" and its memories ("Undated" for none). */

@@ -204,6 +204,18 @@ function facts(inputs, now = new Date()) {
 /** Open flags in persona/STATE.md — the status line's reader (lib/statusline-model.js), so both count the same flags. */
 function openFlags(text) { return require('./statusline-model.js').openFlags(text); }
 
+/**
+ * Whether a memory's text still waits for review: `reviewed: false` and live, read as lib/memory-ops.js reads
+ * frontmatter. Archive and supersede leave `reviewed:` as it was (memory-ops retire), so `reviewed: false` alone would
+ * keep counting what the Brain tab retired (brain-hub D5, D7). obsidian-plugin/src/data/brainModel.ts pendingReview.
+ */
+function pendingReview(text) {
+  if (!text) return false;
+  const ops = require('./memory-ops.js');
+  const fm = ops.splitFm(text);
+  return !!fm && ops.getKey(fm.lines, 'reviewed') === 'false' && !ops.GONE.includes(ops.getStatus(fm.lines));
+}
+
 /** The raw inputs from a vault. Each source on its own: a missing or unreadable file gives its empty value. */
 function read(vault, { now = new Date() } = {}) {
   const SL = require('./statusline-model.js');
@@ -253,7 +265,7 @@ function read(vault, { now = new Date() } = {}) {
         try { r = JSON.parse(line); } catch { continue; }
         if (!r || r.action !== 'written' || localDay(new Date(r.ts)) !== localDay(now)) continue;
         const file = readText(path.join(vault, 'brain', 'memory', String(r.type), `${r.slug}.md`));
-        out.push({ ts: r.ts, action: r.action, slug: r.slug, type: r.type, title: r.title || r.slug, pending: !!file && /^reviewed: false$/m.test(file) });
+        out.push({ ts: r.ts, action: r.action, slug: r.slug, type: r.type, title: r.title || r.slug, pending: pendingReview(file) });
       }
       return out;
     }, []),
@@ -261,4 +273,4 @@ function read(vault, { now = new Date() } = {}) {
   };
 }
 
-module.exports = { SCHEMA, AREAS, PIPELINE_STALE_MS, read, facts, pipelineHealth, todoItems, proposalOf, sinceMs, ageDays };
+module.exports = { SCHEMA, AREAS, PIPELINE_STALE_MS, read, facts, pipelineHealth, todoItems, proposalOf, sinceMs, ageDays, pendingReview };

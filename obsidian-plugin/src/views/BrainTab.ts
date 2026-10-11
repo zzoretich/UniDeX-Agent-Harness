@@ -2,7 +2,7 @@
 // across the top (D2): Review (session batches, D3–D7), Library (find and read, three panes), and Bootstrap, Map and
 // Health (stand-ins until PR 3; Map keeps the old force graph as "Every node", D19). The tab owns the data and the
 // header; each mode (views/brain/*) owns its panes. Actions are `aos memory` verbs through plugin.aosJson and the brain
-// surface (D13, D14): the page writes no memory file itself, and nothing is deleted (D6).
+// surface (D13, D14): the page writes no memory file itself, and no memory is deleted (D6).
 import { Notice, TAbstractFile } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import type { RevealTarget, WorkbenchView } from "./WorkbenchView";
@@ -13,7 +13,7 @@ import {
 import { CaptureModal } from "../ui/CaptureModal";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { setPendingMemory, VIEW_TYPE_MEMORY_INSPECTOR } from "./MemoryInspectorView";
-import { BrainHeader } from "./brain/Header";
+import { BRAIN_PANEL_ID, BrainHeader, brainTabId } from "./brain/Header";
 import { BrainStore } from "./brain/load";
 import { ReviewMode } from "./brain/ReviewMode";
 import { LibraryMode } from "./brain/LibraryMode";
@@ -37,6 +37,11 @@ export class BrainTab {
   private refreshDebounce: number | null = null;
   private hubRunning = false;
   private hubAgain = false;
+  /** The unchecked memories the last rebuild on showing was for (checkHub): one rebuild per set of them. */
+  private hubAsked = "";
+  /** Review was on screen since the badge's marker last moved (D16): leaving it, by a mode or a tab, moves it again. */
+  private reviewOnScreen = false;
+  private seenQueued = false;
   private ctx: BrainCtx;
 
   constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {
@@ -68,8 +73,9 @@ export class BrainTab {
       const on = (f: TAbstractFile, old?: string): void => {
         let hit = false;
         for (const p of old === undefined ? [f.path] : [f.path, old]) if (touchesBrain(p)) { this.store.touch(p); hit = true; }
-        // Hidden, the next showing reads everything again (refresh): no load in the background on each write.
-        if (hit && this.root) this.schedule();
+        // Hidden, the next showing reads everything again (refresh): no load in the background on each write. The tab is
+        // never unmounted on the way out, so whether it shows is the view's to say, not this.root's.
+        if (hit && this.root && this.view.isTabActive("memory")) this.schedule();
       };
       this.view.registerEvent(this.plugin.app.vault.on("create", (f) => on(f)));
       this.view.registerEvent(this.plugin.app.vault.on("modify", (f) => on(f)));
@@ -85,16 +91,17 @@ export class BrainTab {
       search: () => { if (this.mode !== "library") this.show({ mode: "library" }); else this.modes.library?.update(); },
       capture: () => new CaptureModal(this.plugin.app).open(),
     });
-    this.body = this.root.createDiv({ cls: "aos-brain-body" });
+    // The panel the mode tabs control (§4: a tablist); render() labels it by the tab shown.
+    this.body = this.root.createDiv({ cls: "aos-brain-body", attr: { id: BRAIN_PANEL_ID, role: "tabpanel" } });
     if (this.data) this.render();
     else this.body.createDiv({ cls: "aos-brain-loading", text: "Reading the brain…" });
   }
 
-  /** Showing the tab: read everything again. Shown on Review, Review is open: the rail badge counts from now (D16). */
+  /** Showing the tab: read everything again (the rail badge's marker moves when Review is drawn: render, D16). */
   async refresh(): Promise<void> {
-    if (this.mode === "review") this.view.markBrainSeen();
     this.data = await this.store.load(true);
     this.render();
+    this.checkHub();
   }
 
   /** A vault event or an action: re-read what changed, after `ms`. */
@@ -102,7 +109,7 @@ export class BrainTab {
     if (this.refreshDebounce !== null) window.clearTimeout(this.refreshDebounce);
     this.refreshDebounce = window.setTimeout(() => {
       this.refreshDebounce = null;
-      void this.store.load().then((d) => { this.data = d; this.render(); });
+      void this.store.load().then((d) => { this.data = d; this.render(); this.checkHub(); });
     }, ms);
   }
 
@@ -117,11 +124,41 @@ export class BrainTab {
 
   private show(t: BrainTarget): void {
     const m = t.mode ?? this.mode;
-    if (m !== this.mode && this.mode === "review") this.view.markBrainSeen();   // leaving Review: counted from now
+    if (m !== "review") this.leaveReview();
     this.mode = m;
     this.pending = t.queue || t.memory ? t : null;
-    if (m === "review") this.view.markBrainSeen();
     this.render();
+  }
+
+  /**
+   * Review is on screen: the rail badge counts from now (D16), so memories that land while it shows are seen as they
+   * appear rather than badged. Checked once the current task ends: a link that shows the tab and then another mode
+   * (WorkbenchView.open mounts the tab, then reveals the mode) never counts as having opened Review.
+   */
+  private noteReview(): void {
+    if (this.seenQueued) return;
+    this.seenQueued = true;
+    queueMicrotask(() => {
+      this.seenQueued = false;
+      if (this.mode !== "review" || this.shown !== "review" || !this.root || !this.view.isTabActive("memory")) return;
+      this.reviewOnScreen = true;
+      this.view.markBrainSeen();
+    });
+  }
+
+  /** Review leaves the screen (another mode, another tab, the view closing): what lands after now counts (D16). */
+  private leaveReview(): void {
+    if (!this.reviewOnScreen) return;
+    this.reviewOnScreen = false;
+    this.view.markBrainSeen();
+  }
+
+  /** WorkbenchView shows another tab; it never unmounts this one on the way out. Review leaves the screen, and a load a
+   *  vault event scheduled is dropped: the next showing reads everything again. */
+  leave(): void {
+    this.leaveReview();
+    if (this.refreshDebounce !== null) window.clearTimeout(this.refreshDebounce);
+    this.refreshDebounce = null;
   }
 
   private modeView(m: BrainMode): BrainModeView {
@@ -141,6 +178,7 @@ export class BrainTab {
       badges: modeBadges({ toReview, live: d.memories.filter((x) => x.live).length, brainPct: brainMdPercent(d.sources) }),
     });
     this.body.setAttr("data-mode", this.mode);
+    this.body.setAttr("aria-labelledby", brainTabId(this.mode));
     if (this.shown !== this.mode) {
       if (this.shown) this.modes[this.shown]?.unmount();
       this.body.empty();
@@ -154,6 +192,7 @@ export class BrainTab {
       this.pending = null;
       this.modeView(this.mode).reveal?.(p);
     }
+    if (this.mode === "review") this.noteReview();
   }
 
   // ── actions ──
@@ -183,6 +222,22 @@ export class BrainTab {
     return { done, failed: null };
   }
 
+  /**
+   * brain-hub.json lags the files until the next scan (D12): auto-wrap writes after the SessionEnd scan has run, and an
+   * in-session /wrap or an approved draft adds a memory no batch holds, with no session title, host or duplicate check.
+   * Shown with any such, the tab rebuilds the cache, once per set of them; Review calls them unchecked meanwhile and ⇧K
+   * leaves them (D3, D11).
+   */
+  private checkHub(): void {
+    const d = this.data;
+    if (!d || !this.root || !this.view.isTabActive("memory")) return;
+    const unseen = d.batches.flatMap((b) => b.unchecked).sort();
+    const sig = unseen.join("\n");
+    if (sig === this.hubAsked) return;
+    this.hubAsked = sig;
+    if (unseen.length) this.rebuildHub();
+  }
+
   /** brain-hub.json follows the files after an action (else only the next scan rebuilds it); one run at a time. */
   private rebuildHub(): void {
     if (this.hubRunning) { this.hubAgain = true; return; }
@@ -195,7 +250,7 @@ export class BrainTab {
   }
 
   unmount(): void {
-    if (this.mode === "review") this.view.markBrainSeen();
+    this.leaveReview();
     if (this.refreshDebounce !== null) window.clearTimeout(this.refreshDebounce);
     this.refreshDebounce = null;
     if (this.shown) this.modes[this.shown]?.unmount();

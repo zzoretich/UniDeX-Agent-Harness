@@ -2,13 +2,14 @@
 // holds the queues (By session, Drafts, Duplicates, Older than 30d) and their rows; the main pane shows the chosen batch
 // as cards, each with Keep, Edit, Merge, Archive and Pin and a key for each (↑↓ K E M A P ⇧K ⏎). Every action is an
 // `aos memory` verb through ctx.run (the brain surface, D13, D14). A card leaves as soon as its verb starts and comes back
-// if the verb fails; the card after it is then the selected one, and an emptied batch hands over to the next. Nothing is
-// deleted (D6): Archive tags in place (D5), and "Keep the older one" marks the newer memory superseded by the older (D7).
+// if the verb fails; the card after it is then the selected one, and an emptied batch hands over to the next. No memory
+// is deleted (D6): Archive tags in place (D5), and "Keep the older one" marks the newer memory superseded by the older
+// (D7); only a feedback draft goes, when it is approved (into the store) or rejected.
 // AI merge is PR 4: Merge here compares the two side by side.
 import { Notice, setIcon } from "obsidian";
 import {
-  REVIEW_QUEUES, REVIEW_QUEUE_LABEL, batchLede, batchMeta, batchWhen, defaultMarkBefore, knownLabel, olderByMonth, olderFirst,
-  olderQueue, reviewCounts, reviewKey, reviewSelection, shortDay, splitByWeek, weekUse, writtenAt, writtenBefore,
+  REVIEW_QUEUES, REVIEW_QUEUE_LABEL, batchLede, batchMeta, batchWhen, compareAges, defaultMarkBefore, knownLabel, olderByMonth,
+  olderFirst, olderQueue, reviewCounts, reviewKey, reviewSelection, shortDay, splitByWeek, weekUse, writtenAt, writtenBefore,
   type BrainDraft, type BrainMemory, type BrainTarget, type HubDup, type MemoryVerb, type ReviewBatch, type ReviewKey, type ReviewQueue,
   type SetResult,
 } from "../../data/brainModel";
@@ -18,6 +19,9 @@ import type { BrainCtx, BrainData, BrainModeView } from "./types";
 const pl = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 /** How long a row whose verb succeeded stays hidden while the files catch up (a reload takes well under it). */
 const GONE_MS = 10_000;
+/** Older than 30d draws this many cards and rows at a time, and "Show N more" the next: a real backlog runs to hundreds,
+ *  and every action redraws the queue. */
+const OLDER_PAGE = 50;
 /** A duplicate pair's key on this page (pairKey's order, with a separator an attribute holds). */
 const pk = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
 
@@ -46,7 +50,11 @@ interface View {
   shown: ReviewBatch[];
   drafts: BrainDraft[];
   pairs: HubDup[];
+  /** The whole Older queue (its count, Keep all, Archive all) and the part drawn (OLDER_PAGE at a time). */
   older: BrainMemory[];
+  olderShown: BrainMemory[];
+  /** The memories no scan has checked for duplicates yet (ReviewBatch.unchecked). */
+  unchecked: Set<string>;
 }
 
 export class ReviewMode implements BrainModeView {
@@ -78,6 +86,10 @@ export class ReviewMode implements BrainModeView {
   private resetMain = false;
   private focusSel = false;
   private showSel = false;
+  /** How much of the Older queue is drawn. */
+  private olderLimit = OLDER_PAGE;
+  /** Fires when the first hidden row or shown pin runs out of GONE_MS, so it comes back without waiting for a reload. */
+  private goneTimer: number | null = null;
 
   constructor(private ctx: BrainCtx) {}
 
@@ -86,6 +98,13 @@ export class ReviewMode implements BrainModeView {
     this.left = this.root.createEl("aside", { cls: "aos-brain-left aos-brain-rv-left", attr: { "aria-label": "Sessions that wrote memories" } });
     this.main = this.root.createEl("section", { cls: "aos-brain-main aos-brain-rv-main" });
     this.root.addEventListener("keydown", (e) => this.onKey(e));
+    // The keys act on the card the keyboard is in (§4): Tab onto a card's buttons selects that card, so K or A there
+    // never lands on another one that was selected by a click.
+    this.main.addEventListener("focusin", (e) => {
+      const card = e.target instanceof HTMLElement ? e.target.closest<HTMLElement>("[data-sel]") : null;
+      const key = card?.getAttribute("data-sel");
+      if (key && key !== this.sel[this.queue].key) this.selectQuiet(key);
+    });
     this.update();
   }
 
@@ -99,6 +118,7 @@ export class ReviewMode implements BrainModeView {
     this.drawLeft(v);
     this.drawMain(v);
     this.restorePlace(place);
+    this.armGone();
   }
 
   reveal(t: BrainTarget): void {
@@ -114,6 +134,9 @@ export class ReviewMode implements BrainModeView {
         this.compareOpen = null;
       } else if (v.older.some((m) => m.path === t.memory)) {
         this.setQueue("older");
+        // Drawn OLDER_PAGE at a time: far enough down the queue to hold it.
+        const i = v.older.findIndex((m) => m.path === t.memory);
+        this.olderLimit = Math.max(this.olderLimit, (Math.floor(i / OLDER_PAGE) + 1) * OLDER_PAGE);
         this.sel.older = { key: t.memory, index: 0 };
       }
     }
@@ -127,6 +150,8 @@ export class ReviewMode implements BrainModeView {
 
   unmount(): void {
     this.closeMenu(false);
+    if (this.goneTimer !== null) window.clearTimeout(this.goneTimer);
+    this.goneTimer = null;
     this.root = null;
     this.left = null;
     this.main = null;
@@ -155,18 +180,31 @@ export class ReviewMode implements BrainModeView {
     for (const [p, h] of this.hashes) if (d.byPath.get(p)?.hash !== h.was) this.hashes.delete(p);
   }
 
+  /** "Hidden until the files say so, or GONE_MS": a timer for the first that runs out, so a row the files still list
+   *  (a verb that went through but whose reload never came) shows again then, not at the next vault event. */
+  private armGone(): void {
+    if (this.goneTimer !== null) window.clearTimeout(this.goneTimer);
+    this.goneTimer = null;
+    const ats = [...this.gone.values(), ...[...this.pins.values()].map((x) => x.at)];
+    if (!ats.length || !this.root) return;
+    const wait = Math.max(0, Math.min(...ats) + GONE_MS - Date.now()) + 50;
+    this.goneTimer = window.setTimeout(() => { this.goneTimer = null; this.update(); }, wait);
+  }
+
   private view(d: BrainData): View {
     const vis = (k: string): boolean => !this.hidden(k);
     const batches = d.batches
-      .map((b) => ({ ...b, paths: b.paths.filter(vis), fresh: b.fresh.filter(vis), known: b.known.filter(vis) }))
+      .map((b) => ({ ...b, paths: b.paths.filter(vis), fresh: b.fresh.filter(vis), known: b.known.filter(vis), unchecked: b.unchecked.filter(vis) }))
       .filter((b) => b.paths.length);
     const { week, earlier } = splitByWeek(batches, d.now);
     const earlierOpen = this.earlier ?? !week.length;
+    const older = olderQueue(d.memories, d.written, d.now).filter((m) => vis(m.path));
     return {
       d, batches, week, earlier, earlierOpen, shown: earlierOpen ? [...week, ...earlier] : week,
       drafts: d.drafts.filter((x) => vis(`draft:${x.slug}`)),
       pairs: d.pairs.filter((p) => vis(`pair:${pk(p.a, p.b)}`)),
-      older: olderQueue(d.memories, d.written, d.now).filter((m) => vis(m.path)),
+      older, olderShown: older.slice(0, this.olderLimit),
+      unchecked: new Set(batches.flatMap((b) => b.unchecked)),
     };
   }
 
@@ -183,7 +221,7 @@ export class ReviewMode implements BrainModeView {
     this.sel.session = reviewSelection(b?.paths ?? [], this.sel.session.key, this.sel.session.index);
     this.sel.drafts = reviewSelection(v.drafts.map((x) => x.slug), this.sel.drafts.key, this.sel.drafts.index);
     this.sel.duplicates = reviewSelection(v.pairs.map((p) => pk(p.a, p.b)), this.sel.duplicates.key, this.sel.duplicates.index);
-    this.sel.older = reviewSelection(v.older.map((m) => m.path), this.sel.older.key, this.sel.older.index);
+    this.sel.older = reviewSelection(v.olderShown.map((m) => m.path), this.sel.older.key, this.sel.older.index);
     if (this.menu !== null && (this.queue !== "session" || this.menu !== this.batch.key)) this.closeMenu(false);
   }
 
@@ -225,9 +263,16 @@ export class ReviewMode implements BrainModeView {
     const sel = key ? findBy(this.main!, "data-sel", key) : null;
     if (this.focusSel && sel) sel.focus({ preventScroll: true });
     else if (p.where) {
-      // The focused row may have left (kept, archived): the keyboard goes to what is selected now, in the same pane.
-      const back = (p.key ? findBy(this.root!, "data-rv-key", p.key) : null)
-        ?? (p.where === "main" ? sel : this.left!.querySelector<HTMLElement>("[role=option][tabindex='0']"));
+      // The focused row may have left (kept, archived), or its control may be off now ("Keep the 0 new"): the keyboard
+      // goes to what is selected now, in the same pane; with nothing left there, to the empty state or the queue's chip,
+      // never to the page, where the keys no longer reach the hub (§4).
+      const same = p.key ? findBy(this.root!, "data-rv-key", p.key) : null;
+      const chip = this.left!.querySelector<HTMLElement>("[data-queue][aria-pressed='true']");
+      const back = (same && !same.matches(":disabled") ? same : null)
+        ?? (p.where === "main"
+          ? sel ?? this.main!.querySelector<HTMLElement>(".aos-brain-empty[tabindex]")
+          : this.left!.querySelector<HTMLElement>("[role=option][tabindex='0']"))
+        ?? chip;
       back?.focus({ preventScroll: true });
     }
     if ((this.focusSel || this.showSel) && sel) sel.scrollIntoView({ block: "nearest" });
@@ -262,7 +307,8 @@ export class ReviewMode implements BrainModeView {
       const mb = foot.createEl("button", { cls: "aos-brain-rv-markbtn", text: `Mark everything before ${shortDay(day, v.d.now)} reviewed…`, attr: { type: "button", "data-rv-key": "markbefore" } });
       mb.addEventListener("click", () => void this.markBefore());
     }
-    foot.createSpan({ text: "Reviewing never deletes. Kept memories leave this list." });
+    // Approve and Reject remove the draft file (D6): only the other queues can say nothing is deleted.
+    foot.createSpan({ text: this.queue === "drafts" ? "Approve files a draft as a memory; Reject removes the draft. No memory is deleted." : "Reviewing deletes no memory. Kept memories leave this list." });
   }
 
   private sessionList(list: HTMLElement, v: View): void {
@@ -300,10 +346,14 @@ export class ReviewMode implements BrainModeView {
       l2.createSpan({ cls: "aos-brain-mono", text: b.host ?? "wrap" });
       l2.createSpan({ text: `${b.paths.length} new` });
       if (b.known.length) l2.createSpan({ cls: "aos-brain-pill is-warn", text: knownLabel(b.known.length) });
+      if (b.unchecked.length) l2.createSpan({ cls: "aos-brain-pill is-off aos-brain-rv-unchecked", text: `${b.unchecked.length} not checked`, attr: { title: "Written since the duplicate check last ran; it runs again now" } });
       // Many sessions share one custom title: the first memory's title tells them apart.
       if (b.lead && b.lead !== b.title) r.createSpan({ cls: "aos-brain-rv-lead", text: b.lead, attr: { title: b.lead } });
-      const pips = r.createSpan({ cls: "aos-brain-rv-pips", attr: { "aria-hidden": "true" } });
-      for (const p of b.paths) pips.createSpan({ cls: `aos-brain-rv-pip is-${d.byPath.get(p)?.type ?? "none"}` });
+      // One bar per memory, coloured by type; the colours are named in words (§4: every coloured mark has a label).
+      const types = b.paths.map((p) => d.byPath.get(p)?.type ?? "none");
+      const words = [...new Set(types)].map((t) => `${types.filter((x) => x === t).length} ${t}`).join(" · ");
+      const pips = r.createSpan({ cls: "aos-brain-rv-pips", attr: { role: "img", "aria-label": words, title: words } });
+      for (const t of types) pips.createSpan({ cls: `aos-brain-rv-pip is-${t}` });
       r.addEventListener("click", () => this.pickBatch(b.key));
     }
   }
@@ -341,7 +391,7 @@ export class ReviewMode implements BrainModeView {
   }
 
   private olderList(list: HTMLElement, v: View): void {
-    for (const g of olderByMonth(v.older, v.d.written)) {
+    for (const g of olderByMonth(v.olderShown, v.d.written)) {
       const head = list.createDiv({ cls: "aos-brain-rv-group" });
       head.createSpan({ text: g.label.toUpperCase() });
       head.createSpan({ cls: "aos-brain-rv-groupn", text: pl(g.items.length, "memory", "memories") });
@@ -353,6 +403,16 @@ export class ReviewMode implements BrainModeView {
         l1.createSpan({ cls: "aos-brain-rv-when aos-brain-mono", text: shortDay(writtenAt(m, v.d.written), v.d.now) });
       }
     }
+    this.olderMore(list, v, "older:moreleft");
+  }
+
+  /** "Show N more" under the Older queue's rows and cards, while some are not drawn. */
+  private olderMore(parent: HTMLElement, v: View, key: string): void {
+    const rest = v.older.length - v.olderShown.length;
+    if (rest <= 0) return;
+    const n = Math.min(rest, OLDER_PAGE);
+    const b = parent.createEl("button", { cls: "aos-brain-btn is-small aos-brain-rv-moreolder", text: `Show ${n} more`, attr: { type: "button", "data-rv-key": key, title: `${rest} more not shown` } });
+    b.addEventListener("click", () => { this.olderLimit += OLDER_PAGE; this.update(); });
   }
 
   // ── the main pane ──
@@ -370,7 +430,7 @@ export class ReviewMode implements BrainModeView {
     const b = v.shown.find((x) => x.key === this.batch.key) ?? null;
     if (!b) {
       M.setAttr("aria-label", "Review");
-      M.createDiv({ cls: "aos-brain-empty aos-brain-rv-empty", text: v.batches.length ? "Pick a session on the left." : "Nothing to review. Memories your sessions write land here." });
+      M.createDiv({ cls: "aos-brain-empty aos-brain-rv-empty", text: v.batches.length ? "Pick a session on the left." : "Nothing to review. Memories your sessions write land here.", attr: { tabindex: "-1" } });
       return;
     }
     M.setAttr("aria-label", b.title);
@@ -379,12 +439,15 @@ export class ReviewMode implements BrainModeView {
     r1.createEl("h2", { cls: "aos-brain-h2", text: b.title });
     r1.createSpan({ cls: "aos-brain-rv-meta aos-brain-mono", text: batchMeta(b, v.d.now) });
     const r2 = head.createDiv({ cls: "aos-brain-rv-hrow" });
-    r2.createSpan({ cls: "aos-brain-rv-lede", text: batchLede(b.paths.length, b.known.length) });
+    r2.createSpan({ cls: "aos-brain-rv-lede", text: batchLede(b.paths.length, b.known.length, b.unchecked.length) });
     r2.createSpan({ cls: "aos-brain-sp" });
     const keep = r2.createEl("button", { cls: "aos-brain-btn is-primary aos-brain-rv-keepnew", attr: { type: "button", "aria-keyshortcuts": "Shift+K", "data-rv-key": "keepnew" } });
     keep.createSpan({ text: `Keep the ${b.fresh.length} new` });
     keep.createEl("kbd", { cls: "aos-brain-kbd aos-brain-mono", text: "⇧K", attr: { "aria-hidden": "true" } });
-    if (!b.fresh.length) { keep.disabled = true; keep.setAttr("title", "Every memory here looks like one you already have"); }
+    if (!b.fresh.length) {
+      keep.disabled = true;
+      keep.setAttr("title", b.unchecked.length ? "The duplicate check has not seen these yet; it runs again now" : "Every memory here looks like one you already have");
+    }
     keep.addEventListener("click", () => void this.keepFresh(this.currentBatch()));
     const n = b.paths.length;
     const what = (): string => `${n === 1 ? "the one memory" : `all ${n} memories`} left to review from “${b.title}”`;
@@ -403,7 +466,7 @@ export class ReviewMode implements BrainModeView {
     const head = M.createEl("header", { cls: "aos-brain-rv-head" });
     head.createDiv({ cls: "aos-brain-rv-hrow" }).createEl("h2", { cls: "aos-brain-h2", text: "Older than 30 days" });
     const cards = M.createDiv({ cls: "aos-brain-rv-cards", attr: { "aria-label": "Memories older than 30 days" } });
-    if (!n) { cards.createDiv({ cls: "aos-brain-empty", text: "Nothing older than 30 days waits for review." }); return; }
+    if (!n) { cards.createDiv({ cls: "aos-brain-empty", text: "Nothing older than 30 days waits for review.", attr: { tabindex: "-1" } }); return; }
     const r2 = head.createDiv({ cls: "aos-brain-rv-hrow" });
     r2.createSpan({ cls: "aos-brain-rv-lede", text: `${pl(n, "memory", "memories")} written more than 30 days ago ${n === 1 ? "waits" : "wait"} for review.` });
     r2.createSpan({ cls: "aos-brain-sp" });
@@ -414,7 +477,8 @@ export class ReviewMode implements BrainModeView {
       const paths = this.view(this.ctx.data()).older.map((m) => m.path);
       void this.archiveAll(paths, `${paths.length === 1 ? "the one memory" : `all ${paths.length} memories`} older than 30 days still in Review`);
     });
-    for (const m of v.older) this.card(cards, m, v, "older");
+    for (const m of v.olderShown) this.card(cards, m, v, "older");
+    this.olderMore(cards, v, "older:moremain");
     this.keysFooter(M, false);
   }
 
@@ -424,7 +488,7 @@ export class ReviewMode implements BrainModeView {
     head.createEl("h2", { cls: "aos-brain-h2", text: "Feedback drafts" });
     head.createSpan({ cls: "aos-brain-rv-lede", text: "Rules drafted from your corrections. Approve files one into brain/memory/feedback; Reject removes the draft and it is never drafted again." });
     const body = M.createDiv({ cls: "aos-brain-rv-cards", attr: { "aria-label": "Feedback drafts" } });
-    if (!v.drafts.length) { body.createDiv({ cls: "aos-brain-empty", text: "No feedback drafts." }); return; }
+    if (!v.drafts.length) { body.createDiv({ cls: "aos-brain-empty", text: "No feedback drafts.", attr: { tabindex: "-1" } }); return; }
     for (const x of v.drafts) {
       const on = this.sel.drafts.key === x.slug;
       const c = body.createEl("article", {
@@ -452,7 +516,7 @@ export class ReviewMode implements BrainModeView {
     head.createEl("h2", { cls: "aos-brain-h2", text: "Duplicates" });
     head.createSpan({ cls: "aos-brain-rv-lede", text: "Pairs that read alike, the closest first. Keeping one marks the other superseded by it; Restore in Library undoes it." });
     const body = M.createDiv({ cls: "aos-brain-rv-cards" });
-    if (!v.pairs.length) { body.createDiv({ cls: "aos-brain-empty", text: d.hub ? "No duplicates found." : "The scan has not built brain-hub.json yet." }); return; }
+    if (!v.pairs.length) { body.createDiv({ cls: "aos-brain-empty", text: d.hub ? "No duplicates found." : "The scan has not built brain-hub.json yet.", attr: { tabindex: "-1" } }); return; }
     const p = v.pairs.find((x) => pk(x.a, x.b) === this.sel.duplicates.key);
     const a = p ? d.byPath.get(p.a) : undefined;
     const b = p ? d.byPath.get(p.b) : undefined;
@@ -501,6 +565,7 @@ export class ReviewMode implements BrainModeView {
       const t = `looks like ${other?.title ?? flag.other} · ${flag.score.toFixed(2)}`;
       head.createSpan({ cls: "aos-brain-pill is-warn aos-brain-rv-flag", text: t, attr: { title: t } });
     }
+    if (!flag && v.unchecked.has(m.path)) head.createSpan({ cls: "aos-brain-pill is-off aos-brain-rv-unchecked", text: "not checked yet", attr: { title: "Written since the duplicate check last ran; it runs again now" } });
     if (pinned) head.createSpan({ cls: "aos-brain-pill is-info aos-brain-rv-pinned", text: "pinned" });
     if (q === "older") head.createSpan({ cls: "aos-brain-rv-cdate aos-brain-mono", text: shortDay(writtenAt(m, d.written), d.now) });
     const acts = head.createDiv({ cls: "aos-brain-rv-acts" });
@@ -521,25 +586,32 @@ export class ReviewMode implements BrainModeView {
     c.addEventListener("dblclick", (e) => { if (!(e.target as HTMLElement).closest("button")) this.ctx.show({ mode: "library", memory: m.path }); });
   }
 
-  /** M on a flagged card: this one and the one it looks like, side by side, and what to do about it (D7). */
+  /**
+   * M on a flagged card: this one and the one it looks like, side by side, and what to do about it (D7). Each box says
+   * which is the older by the rule "Keep the older one" picks with, with the day each was written: the card can be the
+   * older of its pair (both members of a pair are flagged), and then the button keeps it and retires the other.
+   */
   private compare(c: HTMLElement, m: BrainMemory, o: BrainMemory, score: number, d: BrainData): void {
+    const age = compareAges(m, o, d.written);
+    const day = (x: BrainMemory): string => shortDay(writtenAt(x, d.written), d.now);
     const wrap = c.createDiv({ cls: "aos-brain-rv-compare", attr: { "data-other": o.path } });
-    const mine = wrap.createDiv({ cls: "aos-brain-rv-box" });
-    mine.createSpan({ cls: "aos-brain-label", text: "THIS ONE · NEW" });
+    const mine = wrap.createDiv({ cls: "aos-brain-rv-box", attr: { "data-path": m.path, "data-age": age.mine.toLowerCase() } });
+    mine.createSpan({ cls: "aos-brain-label", text: `THIS ONE · ${age.mine}` });
     mine.createSpan({ cls: "aos-brain-rv-boxtext", text: m.summary || m.title });
-    mine.createSpan({ cls: "aos-brain-rv-boxmeta aos-brain-mono", text: `${m.type}/${m.slug}.md` });
-    const theirs = wrap.createDiv({ cls: "aos-brain-rv-box", attr: { "data-path": o.path } });
+    mine.createSpan({ cls: "aos-brain-rv-boxmeta aos-brain-mono", text: [`${m.type}/${m.slug}.md`, day(m)].filter(Boolean).join(" · ") });
+    const theirs = wrap.createDiv({ cls: "aos-brain-rv-box", attr: { "data-path": o.path, "data-age": age.other.toLowerCase() } });
     const label = theirs.createSpan({ cls: "aos-brain-label aos-brain-rv-boxlabel" });
-    label.createSpan({ text: "LOOKS LIKE" });
+    label.createSpan({ text: `LOOKS LIKE · ${age.other}` });
     label.createSpan({ cls: "aos-brain-mono aos-brain-warn", text: `${score.toFixed(2)} similar` });
     theirs.createSpan({ cls: "aos-brain-rv-boxtitle", text: o.title });
     theirs.createSpan({ cls: "aos-brain-rv-boxtext", text: o.summary || o.title });
-    theirs.createSpan({ cls: "aos-brain-rv-boxmeta aos-brain-mono", text: [o.type, shortDay(o.created ?? writtenAt(o, d.written), d.now), weekUse(d.hub, o.path)].filter(Boolean).join(" · ") });
+    theirs.createSpan({ cls: "aos-brain-rv-boxmeta aos-brain-mono", text: [o.type, day(o), weekUse(d.hub, o.path)].filter(Boolean).join(" · ") });
     const acts = c.createDiv({ cls: "aos-brain-rv-cmpacts" });
-    this.textBtn(acts, "Keep the older one", "is-primary", `cmp:${m.path}:keepolder`, "keepolder", () => {
-      const [older, newer] = olderFirst(m, o, this.ctx.data().written);
-      void this.keepOver(older, newer, "Keep the older one");
+    const keepOlder = this.textBtn(acts, "Keep the older one", "is-primary", `cmp:${m.path}:keepolder`, "keepolder", () => {
+      const now = compareAges(m, o, this.ctx.data().written);
+      void this.keepOver(now.older, now.newer, "Keep the older one");
     });
+    keepOlder.setAttr("title", `Keeps ${age.mine === "OLDER" ? "this one" : `“${o.title}”`}; ${age.mine === "OLDER" ? `“${o.title}”` : "this one"} is marked superseded by it`);
     this.textBtn(acts, "Keep both", "", `cmp:${m.path}:keepboth`, "keepboth", () => void this.keepBoth(m, o));
     this.textBtn(acts, "Open both", "", `cmp:${m.path}:openboth`, "openboth", () => { void this.ctx.edit(m.path); void this.ctx.edit(o.path); });
     acts.createSpan({ cls: "aos-brain-rv-hint", text: "Keep the older one marks the newer superseded by it; Restore undoes it. Merging two into one comes with the next update." });
@@ -720,7 +792,9 @@ export class ReviewMode implements BrainModeView {
       if (this.queue === "session") { e.preventDefault(); void this.keepFresh(this.currentBatch()); }
       return;
     }
-    const m = this.current();
+    // The card the keyboard is in, else the selected one (focusin keeps the two together; this is the belt to it).
+    const own = t && this.main.contains(t) ? t.closest<HTMLElement>("[data-sel]")?.getAttribute("data-sel") ?? null : null;
+    const m = own && !this.hidden(own) ? this.ctx.data().byPath.get(own) ?? null : this.current();
     if (!m) return;
     e.preventDefault();
     this.act(k, m);
@@ -749,6 +823,8 @@ export class ReviewMode implements BrainModeView {
   private async hideRun(keys: readonly string[], fn: () => Promise<readonly string[]>): Promise<number> {
     const q = this.queue;
     const before = { ...this.sel[q] };
+    // A queue's selection is a path, a draft's slug or a pair's key; what this hides is `draft:<slug>` and `pair:<a|b>`.
+    const hiddenAs = before.key === null ? null : q === "drafts" ? `draft:${before.key}` : q === "duplicates" ? `pair:${before.key}` : before.key;
     const beforeBatch = { ...this.batch };
     for (const k of keys) this.busy.add(k);
     this.update();
@@ -756,11 +832,15 @@ export class ReviewMode implements BrainModeView {
     try { done = await fn(); } catch (e) { new Notice(`Review: ${e instanceof Error ? e.message : String(e)}`); }
     const ok = new Set(done);
     for (const k of keys) { this.busy.delete(k); if (ok.has(k)) this.gone.set(k, Date.now()); }
+    this.armGone();
     if (ok.size < keys.length) {
       // A card that came back takes its selection back, and the keyboard with it when the keyboard is in the cards.
-      if (before.key && keys.includes(before.key) && !ok.has(before.key) && this.queue === q) {
+      if (hiddenAs && keys.includes(hiddenAs) && !ok.has(hiddenAs) && this.queue === q) {
         if (q === "session") this.batch = beforeBatch;
         this.sel[q] = before;
+        // Duplicates draws only the selected pair: it is drawn again, and its buttons share their keys with the pair that
+        // stood in, so the focus goes back to the same button on the right pair.
+        if (q === "duplicates") this.resetMain = true;
         const a = this.root?.ownerDocument.activeElement;
         this.focusSel = !!(a && this.main?.contains(a));
       }

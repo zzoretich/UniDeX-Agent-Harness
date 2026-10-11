@@ -489,6 +489,9 @@ export default class AgenticOSPlugin extends Plugin {
       const script = path.join(base, relScript);
       if (!fs.existsSync(script)) {
         if (opts.quiet) console.warn(`[agentic-os] script missing: ${relScript}`); else new Notice(`script missing: ${relScript}`);
+        // onDone still runs, as after a run that failed: a caller holding a "running" flag (the Brain tab's hub rebuild,
+        // the status line refresh) must not wait for a close that never comes.
+        if (onDone) window.setTimeout(onDone, 0);
         return;
       }
       // opts.env: the Routines tab pins AOS_VAULT/AOS_CONFIG so the runtime resolves the same vault and config dir the HUD shows.
@@ -502,6 +505,7 @@ export default class AgenticOSPlugin extends Plugin {
       if (!opts.quiet) new Notice(`▶ ${relScript.split("/").pop()} ${args.join(" ")}`.trim());
     } catch (e) {
       console.warn("[agentic-os] runBrainScript error:", e);
+      if (onDone) window.setTimeout(onDone, 0);
     }
   }
 

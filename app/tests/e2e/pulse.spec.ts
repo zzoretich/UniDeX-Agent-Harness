@@ -38,7 +38,10 @@ function brainNumbers(marker: string | null) {
   const written = [...today.values()].reverse().map((r) => ({ path: memoryFile(r), title: r.title || r.slug, state: stateOf(vaultText(memoryFile(r))) }));
   const after = new Set(trail.filter((r) => r.action === "written" && r.slug && marker !== null && Date.parse(r.ts) > Date.parse(marker)).map(memoryFile));
   const hub = vaultText("brain/_index/brain-hub.json");
-  const hubDoc = hub ? (JSON.parse(hub) as { schema?: number; counts?: { unreviewed?: unknown } }) : null;
+  const hubDoc = hub ? (JSON.parse(hub) as { schema?: number; counts?: { unreviewed?: unknown }; batches?: Array<{ paths?: string[] }> }) : null;
+  // brain-hub.json lags the files: today's memories that still wait and that no batch of it holds count too (D12).
+  const inHub = new Set((hubDoc?.batches ?? []).flatMap((b) => b.paths ?? []));
+  const unseen = written.filter((w) => w.state === "written" && !inHub.has(w.path)).length;
   const sources = vaultText("brain/_index/brain-sources.json");
   const src = sources ? (JSON.parse(sources) as { schema?: number; budget?: number; tokens?: number }) : null;
   const drafts = fs.existsSync(FX.v("brain/memory/feedback/_drafts")) ? fs.readdirSync(FX.v("brain/memory/feedback/_drafts")).filter((f) => f.endsWith(".md")).length : 0;
@@ -46,7 +49,7 @@ function brainNumbers(marker: string | null) {
     written,
     pending: written.filter((w) => w.state === "written").length,
     since: [...after].filter((p) => stateOf(vaultText(p)) === "written").length,
-    toReview: hubDoc?.schema === 1 ? (typeof hubDoc.counts?.unreviewed === "number" ? hubDoc.counts.unreviewed : 0) : null,
+    toReview: hubDoc?.schema === 1 ? (typeof hubDoc.counts?.unreviewed === "number" ? hubDoc.counts.unreviewed : 0) + unseen : null,
     drafts,
     pct: src?.schema === 1 && typeof src.budget === "number" && src.budget > 0 && typeof src.tokens === "number" ? Math.round((src.tokens / src.budget) * 100) : null,
   };

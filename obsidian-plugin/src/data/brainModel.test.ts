@@ -9,6 +9,7 @@ import {
   touchesBrain, isBrainMode, isReviewQueue, pairKey, DEFAULT_LIBRARY_FILTER, BRAIN_OFF_TEXT, BRAIN_UPGRADE_TEXT,
   MAX_PATHS_PER_CALL, shortDay, historyLine, bodyWithoutTitle, linkTargets, linksTo, linkSourceKind, nearbyBasis, filterShowing,
   librarySelection, batchWhen, batchMeta, knownLabel, batchLede, olderFirst, olderByMonth, reviewSelection, weekUse,
+  pendingReview, compareAges, brainMdLine,
   type BrainMemory, type BrainHub,
 } from "./brainModel";
 
@@ -103,8 +104,11 @@ test("parseBrainHub coerces every field and drops bad rows; anything else is nul
 test("brain-sources.json: the fill and which section carries a memory", () => {
   const src = parseBrainSources(JSON.stringify({ schema: 1, budget: 850, tokens: 875, sections: { who: { paths: [P("user", "profile")], tokens: 79 }, rules: { paths: [P("feedback", "graphify-first")], tokens: 42 }, active: { paths: [], omitted: [P("projects", "old")], tokens: 600 } } }))!;
   assert.equal(brainMdPercent(src), 103);
-  assert.deepEqual(brainMdSection(src, P("feedback", "graphify-first")), { section: "rules", label: "Critical rules", tokens: 42 });
+  assert.deepEqual(brainMdSection(src, P("feedback", "graphify-first")), { section: "rules", label: "Critical rules", tokens: 42, count: 1 });
   assert.equal(brainMdSection(src, P("projects", "old")), null);
+  // The tokens are the section's: with others in it, the line says so rather than reading as this memory's cost.
+  assert.equal(brainMdLine({ tokens: 42, count: 1 }), "42 tokens · every session, both hosts");
+  assert.equal(brainMdLine({ tokens: 558, count: 21 }), "one of 21 memories, 558 tokens together · every session, both hosts");
   assert.deepEqual(src.omitted, [P("projects", "old")]);
   assert.equal(brainMdPercent(null), null);
   assert.equal(parseBrainSources("{}"), null);
@@ -149,8 +153,11 @@ test("reviewBatches: the files win over a stale hub; a memory the scan missed ge
   assert.deepEqual(s1.paths, [P("feedback", "b"), P("reference", "c")]);   // c landed after the scan: after b's trail ts
   assert.equal(s1.at, "2026-10-11T12:00:00.000Z");
   assert.deepEqual(s1.known, [P("feedback", "b")]);
-  assert.deepEqual(s1.fresh, [P("reference", "c")]);
+  // c landed after the scan: nothing has checked it for duplicates, so ⇧K's "new" leaves it (D3, D11).
+  assert.deepEqual(s1.fresh, []);
+  assert.deepEqual(s1.unchecked, [P("reference", "c")]);
   const s2 = batches.find((b) => b.key === S2)!;
+  assert.deepEqual([s2.fresh, s2.unchecked], [[], [P("projects", "d")]]);
   assert.equal(s2.title, "Session 0c0ffee0 · 2026-10-11");
   assert.equal(s2.lead, "d");
   assert.equal(s2.at, "2026-10-11T12:00:00.000Z");     // a day only, after the scan: no earlier than builtAt
@@ -158,6 +165,13 @@ test("reviewBatches: the files win over a stale hub; a memory the scan missed ge
   // No hub: each batch keeps its own day, and a timestamp later that day sorts above a bare day.
   const own = reviewBatches(memories, null, writtenAtMap(readTrailRows(TRAIL)), new Map());
   assert.deepEqual(own.map((b) => b.key), [S1, S2, "in-session:2026-10-09"]);
+  // With no hub nothing is checked: every memory waits for the check, none is "new".
+  assert.deepEqual(own.flatMap((b) => b.fresh), []);
+  assert.equal(own.flatMap((b) => b.unchecked).length, 4);
+  // Once the hub holds a memory with no flag, it is new.
+  const all = parseBrainHub(HUB({ batches: [{ key: S1, session: S1, host: "claude", title: "T", lead: "B", at: "2026-10-11T12:00:00.000Z", paths: [P("feedback", "b"), P("reference", "c")] }] }));
+  const after = reviewBatches(memories, all, writtenAtMap(readTrailRows(TRAIL)), new Map()).find((b) => b.key === S1)!;
+  assert.deepEqual([[...after.fresh].sort(), after.unchecked], [[P("feedback", "b"), P("reference", "c")], []]);
   assert.deepEqual(reviewCounts(batches, [], pairs, []), { session: 4, drafts: 0, duplicates: 1, older: 0 });
 });
 
@@ -427,16 +441,22 @@ test("knownLabel and batchLede read right for none, one and many", () => {
   assert.equal(knownLabel(0), "");
   assert.equal(knownLabel(1), "1 looks known");
   assert.equal(knownLabel(3), "3 look known");
-  assert.equal(batchLede(6, 3), "Wrote 6 memories. 3 look new, 3 look like ones you already have.");
-  assert.equal(batchLede(6, 1), "Wrote 6 memories. 5 look new, 1 looks like one you already have.");
-  assert.equal(batchLede(6, 5), "Wrote 6 memories. 1 looks new, 5 look like ones you already have.");
-  assert.equal(batchLede(4, 0), "Wrote 4 memories. All 4 look new.");
-  assert.equal(batchLede(3, 3), "Wrote 3 memories. All 3 look like ones you already have.");
-  assert.equal(batchLede(2, 0), "Wrote 2 memories. Both look new.");
-  assert.equal(batchLede(2, 2), "Wrote 2 memories. Both look like ones you already have.");
-  assert.equal(batchLede(1, 0), "Wrote 1 memory. It looks new.");
-  assert.equal(batchLede(1, 1), "Wrote 1 memory. It looks like one you already have.");
+  // What is left to review, never "wrote": a batch shrinks as its memories are kept.
+  assert.equal(batchLede(6, 3), "6 left to review. 3 look new, 3 look like ones you already have.");
+  assert.equal(batchLede(6, 1), "6 left to review. 5 look new, 1 looks like one you already have.");
+  assert.equal(batchLede(6, 5), "6 left to review. 1 looks new, 5 look like ones you already have.");
+  assert.equal(batchLede(4, 0), "4 left to review. All 4 look new.");
+  assert.equal(batchLede(3, 3), "3 left to review. All 3 look like ones you already have.");
+  assert.equal(batchLede(2, 0), "2 left to review. Both look new.");
+  assert.equal(batchLede(2, 2), "2 left to review. Both look like ones you already have.");
+  assert.equal(batchLede(1, 0), "1 left to review. It looks new.");
+  assert.equal(batchLede(1, 1), "1 left to review. It looks like one you already have.");
   assert.equal(batchLede(0, 0), "Nothing left to review from this session.");
+  // Not checked for duplicates yet (written since the last scan).
+  assert.equal(batchLede(1, 0, 1), "1 left to review. It waits for the duplicate check.");
+  assert.equal(batchLede(3, 0, 3), "3 left to review. All 3 wait for the duplicate check.");
+  assert.equal(batchLede(4, 1, 1), "4 left to review. 2 look new, 1 looks like one you already have, 1 waits for the duplicate check.");
+  assert.equal(batchLede(3, 0, 2), "3 left to review. 1 looks new, 2 wait for the duplicate check.");
 });
 
 test("olderFirst: by when written (the trail, then created), then created, then path", () => {
@@ -450,6 +470,29 @@ test("olderFirst: by when written (the trail, then created), then created, then 
   assert.deepEqual(olderFirst(c, b, new Map()).map((m) => m.slug), ["b", "c"]);
   const written = new Map([["feedback/a", "2026-10-10T08:00:00.000Z"]]);
   assert.deepEqual(olderFirst(a, b, written).map((m) => m.slug), ["b", "a"]);
+});
+
+test("compareAges labels the two boxes by the rule Keep the older one keeps with: the card can be the older one", () => {
+  const ms = store({
+    [P("feedback", "sep")]: mem("feedback", "sep", { created: "2026-09-21" }),
+    [P("feedback", "oct")]: mem("feedback", "oct", { created: "2026-10-11" }),
+  });
+  const [sep, oct] = ms;
+  const onOct = compareAges(oct, sep, new Map());
+  assert.deepEqual([onOct.mine, onOct.other, onOct.older.slug, onOct.newer.slug], ["NEWER", "OLDER", "sep", "oct"]);
+  const onSep = compareAges(sep, oct, new Map());
+  assert.deepEqual([onSep.mine, onSep.other, onSep.older.slug, onSep.newer.slug], ["OLDER", "NEWER", "sep", "oct"]);
+});
+
+test("pendingReview: reviewed: false in a live memory's frontmatter; archived, superseded, kept or body-only text is not", () => {
+  assert.equal(pendingReview(mem("feedback", "a", { reviewed: false })), true);
+  assert.equal(pendingReview(mem("feedback", "a", { reviewed: false, tags: "status/active" })), true);
+  assert.equal(pendingReview(mem("feedback", "a", { reviewed: false, tags: "status/archived" })), false);
+  assert.equal(pendingReview(mem("feedback", "a", { reviewed: false, tags: "status/superseded" })), false);
+  assert.equal(pendingReview(mem("feedback", "a", { reviewed: true, body: "reviewed: false" })), false);
+  assert.equal(pendingReview(mem("feedback", "a", { reviewed: false }).replace("reviewed: false", 'reviewed: "false"')), true);
+  assert.equal(pendingReview("reviewed: false\n"), false);
+  assert.equal(pendingReview(null), false);
 });
 
 test("olderByMonth groups the queue's order by month; reviewSelection keeps the key, else the same index, else the last", () => {
