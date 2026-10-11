@@ -9,6 +9,7 @@ import { groupTodos, localDay, parseTodos } from "./todos";
 import { ageDays, isProposalFile, parseProposal, PROPOSALS_DIR } from "./proposals";
 import { NOTIFICATIONS_DIR, STATE_PATH, notificationId, parseNotification, parseState } from "./notifications";
 import { TRAIL_PATH, parseTrail } from "./promoteTrail";
+import { BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, brainMdPercent, parseBrainHub, parseBrainSources } from "./brainModel";
 import { SNAPSHOT_PATH } from "./snapshot";
 import { ROUTINES_STATE_PATH } from "./routines";
 import { diskAdapter, pendingGates, readTeams } from "./teams";
@@ -32,6 +33,12 @@ export interface PulseInputs {
   notifications: { id: string; level: string; title: string; from: string; created: string; read: boolean; archived: boolean }[];
   trail: { ts: string; action: string; slug: string; type: string; title: string; pending: boolean }[];
   spend: { usd: number; calls: number };
+  // The Brain tile's numbers (brain-hub D10, D12, D15), from the runtime's caches; the facts do not read them, so the twin
+  // in lib/pulse-facts.js has no such inputs.
+  /** brain-hub.json's counts.unreviewed: the live memories still to review; null before a scan has written it. */
+  toReview: number | null;
+  /** BRAIN.md against its budget, a whole percent (brain-sources.json); null before build-brain-md.js has written it. */
+  brainPct: number | null;
 }
 
 export interface NeedItem { tier: number; area: Area; kind: string; tone: Tone; title: string; since: string | null; ref: string }
@@ -51,7 +58,7 @@ export interface PulseFacts { schema: 1; at: string; persona: string | null; nee
 
 export const EMPTY_INPUTS: PulseInputs = {
   personaName: null, proposals: [], stateMd: null, drafts: 0, gates: [], issues: [], workspaces: [], pipelines: {}, routines: {},
-  todo: null, notifications: [], trail: [], spend: { usd: 0, calls: 0 },
+  todo: null, notifications: [], trail: [], spend: { usd: 0, calls: 0 }, toReview: null, brainPct: null,
 };
 
 const plural = (n: number, one: string, many = `${one}s`): string => (n === 1 ? one : many);
@@ -246,6 +253,7 @@ export async function gatherPulseInputs(app: App, vaultRoot: string, now: Date =
 
   const pipelines = (await json<{ pipelines?: Record<string, PipelineState> }>("brain/_index/pipelines.json"))?.pipelines ?? {};
   const routines = (await json<{ routines?: PulseInputs["routines"] }>(ROUTINES_STATE_PATH))?.routines ?? {};
+  const hub = parseBrainHub(await read(BRAIN_HUB_PATH));
   return {
     personaName: personaName(vaultRoot),
     proposals,
@@ -261,5 +269,7 @@ export async function gatherPulseInputs(app: App, vaultRoot: string, now: Date =
     notifications,
     trail,
     spend: spendToday(await read("brain/_index/provider-spend.jsonl"), now),
+    toReview: hub ? hub.counts.unreviewed : null,
+    brainPct: brainMdPercent(parseBrainSources(await read(BRAIN_SOURCES_PATH))),
   };
 }

@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { createRequire } from "module";
 import type { App } from "obsidian";
@@ -28,10 +30,37 @@ test("the HUD's own reads of the fixture vault give the runtime's facts", async 
   assert.deepEqual(inputs.gates.map((g) => g.item), ["site-02"]);
   // The fixture's hidden entries (_spikes, _archive/old-chart) are left out on both sides (spaces-redesign D22).
   assert.deepEqual(inputs.workspaces, [{ name: "harbor-map", status: "active" }, { name: "field-notes", status: "active" }, { name: "old-site", status: "idle" }]);
+  // No brain-hub.json or brain-sources.json there yet: the Brain tile says so rather than 0 (brain-hub D15).
+  assert.equal(inputs.toReview, null);
+  assert.equal(inputs.brainPct, null);
+});
+
+test("the Brain tile's inputs: brain-hub.json's unreviewed count and BRAIN.md's fill from brain-sources.json (brain-hub D15)", async () => {
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), "pulse-brain-"));
+  try {
+    fs.mkdirSync(path.join(vault, "brain/_index"), { recursive: true });
+    const write = (rel: string, doc: unknown) => fs.writeFileSync(path.join(vault, rel), JSON.stringify(doc));
+    write("brain/_index/brain-hub.json", { schema: 1, builtAt: "2026-10-08T07:00:00.000Z", counts: { memories: 12, unreviewed: 7, drafts: 1 }, batches: [] });
+    write("brain/_index/brain-sources.json", { schema: 1, builtAt: "2026-10-08T07:00:00.000Z", budget: 850, tokens: 875, sections: {} });
+    const app = { vault: { adapter: diskAdapter(vault) } } as unknown as App;
+    const inputs = await gatherPulseInputs(app, vault, NOW);
+    assert.equal(inputs.toReview, 7);
+    assert.equal(inputs.brainPct, 103);
+    // The facts never read them: the twin with lib/pulse-facts.js holds with or without.
+    assert.deepEqual(pulseFacts(inputs, NOW), pulseFacts({ ...inputs, toReview: null, brainPct: null }, NOW));
+    // A cache from another schema, or one that does not parse, is not a count.
+    write("brain/_index/brain-hub.json", { schema: 2, counts: { unreviewed: 7 } });
+    fs.writeFileSync(path.join(vault, "brain/_index/brain-sources.json"), "{torn");
+    const again = await gatherPulseInputs(app, vault, NOW);
+    assert.equal(again.toReview, null);
+    assert.equal(again.brainPct, null);
+  } finally {
+    fs.rmSync(vault, { recursive: true, force: true });
+  }
 });
 
 test("an empty vault: no items, nothing thrown", async () => {
-  const f = pulseFacts({ personaName: null, proposals: [], stateMd: null, drafts: 0, gates: [], issues: [], workspaces: [], pipelines: {}, routines: {}, todo: null, notifications: [], trail: [], spend: { usd: 0, calls: 0 } }, NOW);
+  const f = pulseFacts({ personaName: null, proposals: [], stateMd: null, drafts: 0, gates: [], issues: [], workspaces: [], pipelines: {}, routines: {}, todo: null, notifications: [], trail: [], spend: { usd: 0, calls: 0 }, toReview: null, brainPct: null }, NOW);
   assert.deepEqual(f.needsYou, []);
   assert.equal(f.summary.notifications.latest, null);
 });

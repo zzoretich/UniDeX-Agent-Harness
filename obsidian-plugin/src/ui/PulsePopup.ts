@@ -1,15 +1,16 @@
 // The popup every Pulse tile opens (spec 2026-10-08-pulse-cockpit-design P3, P4): the ten areas in a list on the left
 // (switch without closing; ↑↓ walk it), the open area's rows with their actions, and a way to its tab. Esc closes. The
-// Health area keeps the old Pulse's pipeline chips, rows and Fix Queue, and the Memory area its auto-promote trail.
+// Health area keeps the old Pulse's pipeline chips, rows and Fix Queue. The Brain area summarises and jumps; the Brain
+// tab acts, so nothing here keeps, edits or removes a memory (brain-hub D6, D15).
 import { App, Modal, setIcon } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import type { PulseTab } from "../views/PulseTab";
-import type { PulseModel } from "../views/pulse/model";
-import { AREA_LABEL, AREA_TAB } from "../views/pulse/meta";
-import { draftsCommand, markRead, needActions, openTab, runScript, tickTodo, type Act, type PulseCtx } from "../views/pulse/actions";
+import type { PulseModel, WrittenState } from "../views/pulse/model";
+import { AREA_LABEL, AREA_TAB, brainLinks } from "../views/pulse/meta";
+import { markRead, needActions, openBrain, openTab, runScript, tickTodo, type Act, type PulseCtx } from "../views/pulse/actions";
 import { AREAS, type Area, type Tone } from "../data/pulseFacts";
 import { reviewCommand, readAgenticosJson } from "../data/aosConfig";
-import { keepMemory, editMemory, revertMemory, memoryFilePath } from "../data/promoteTrail";
+import { MEMORY_PATH_RE } from "../data/brainModel";
 import { sweepLine } from "../data/maintenance";
 import { renderSystemDrawer } from "../views/SystemDrawer";
 import { groupTodos, localDay, doneThisWeek } from "../data/todos";
@@ -18,6 +19,12 @@ import { visibleWorkspaces } from "../data/snapshot";
 import type { FixAction } from "../data/fixQueue";
 
 const pl = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
+/** How a memory written today reads in the Brain area: still to review (written), kept, or out of recall (D5, D7). */
+const WRITTEN_STATE: Record<WrittenState, { tag: string; tone: Tone }> = {
+  written: { tag: "written", tone: "info" }, kept: { tag: "kept", tone: "ok" }, archived: { tag: "archived", tone: "off" },
+  superseded: { tag: "superseded", tone: "off" }, gone: { tag: "gone", tone: "off" },
+};
+const clock = (iso: string): string => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
 
 export class PulsePopup extends Modal {
   private chip: string | null = null;
@@ -87,7 +94,6 @@ export class PulsePopup extends Modal {
   private count(a: Area): [string, Tone] {
     const f = this.model.facts;
     const s = f.summary;
-    const top = (area: Area): Tone => f.needsYou.find((n) => n.area === area)?.tone ?? "ok";
     switch (a) {
       case "needs": return [String(f.needsYou.length), f.needsYou[0]?.tone ?? "ok"];
       case "health": return [s.health.errors ? `${s.health.errors} err` : String(s.health.warnings), s.health.errors ? "danger" : s.health.warnings ? "warn" : "ok"];
@@ -98,7 +104,11 @@ export class PulsePopup extends Modal {
       case "notifications": return [String(s.notifications.unread), s.notifications.breaking ? "danger" : s.notifications.unread ? "info" : "ok"];
       case "routines": return [String(s.routines.total), s.routines.failing ? "danger" : "ok"];
       case "spend": return [`$${s.spend.usd.toFixed(2)}`, "off"];
-      case "memory": return [String(s.memory.pendingReview + s.memory.drafts), top("memory") === "ok" && s.memory.drafts ? "gate" : top("memory")];
+      // Brain (brain-hub D15): what waits in Review, as the tile's "to review" counts it (today's, before the first scan).
+      case "memory": {
+        const n = this.model.inputs.toReview ?? s.memory.pendingReview;
+        return [String(n), n ? "warn" : s.memory.drafts ? "gate" : "ok"];
+      }
     }
   }
 
@@ -115,7 +125,7 @@ export class PulsePopup extends Modal {
       case "notifications": return `${s.notifications.unread} unread of ${s.notifications.total}`;
       case "routines": return `${pl(s.routines.total, "routine")} · ${s.routines.failing ? `${s.routines.failing} failing` : "none failing"}`;
       case "spend": return `$${s.spend.usd.toFixed(2)} today · ${pl(s.spend.calls, "model call")} · $${m.spendDays.reduce((n, d) => n + d.usd, 0).toFixed(2)} over 7 days`;
-      case "memory": return `${s.memory.writtenToday} written today · ${s.memory.pendingReview} to review · ${pl(s.memory.drafts, "feedback draft")}`;
+      case "memory": return `${s.memory.writtenToday} written today · ${m.brain.sinceLooked} since you looked · ${m.inputs.toReview ?? "—"} to review · ${pl(s.memory.drafts, "feedback draft")}`;
     }
   }
 
@@ -197,10 +207,9 @@ export class PulsePopup extends Modal {
       case "proposals": {
         const l = list();
         const rc = reviewCommand(readAgenticosJson());
-        const dc = draftsCommand();
         for (const d of m.decisions) {
           const act: Act = d.kind === "gate" ? { label: "Open →", jump: true, run: () => openTab(ctx, "agent-teams") }
-            : d.kind === "drafts" ? { label: "Review →", jump: true, run: () => { ctx.close(); ctx.view.runInTerm(dc.command, { host: dc.host, origin: "Pulse" }); } }
+            : d.kind === "drafts" ? { label: "Review →", jump: true, run: () => openBrain(ctx, { mode: "review", queue: "drafts" }) }
             : { label: "Review →", jump: true, run: () => { ctx.close(); ctx.view.runInTerm(rc.command, { host: rc.host, origin: "Pulse" }); } };
           this.row(l, { tone: d.kind === "flag" ? "warn" : "gate", title: d.title, meta: `${d.sub}${d.days !== null ? ` · ${pl(d.days, "day")}` : ""}`, acts: [act] });
         }
@@ -244,14 +253,7 @@ export class PulsePopup extends Modal {
         this.footer(main, "Background model calls from provider-spend.jsonl; your own sessions are on the Runs tab.");
         return;
       }
-      case "memory": {
-        if (m.inputs.drafts) {
-          const dc = draftsCommand();
-          this.row(list(), { tone: "gate", title: pl(m.inputs.drafts, "feedback rule draft"), meta: "brain/memory/feedback/_drafts · feedback-review", acts: [{ label: "Review →", jump: true, run: () => { ctx.close(); ctx.view.runInTerm(dc.command, { host: dc.host, origin: "Pulse" }); } }] });
-        }
-        this.renderTrail(main);
-        return;
-      }
+      case "memory": return this.renderBrain(main);
     }
   }
 
@@ -321,26 +323,24 @@ export class PulsePopup extends Modal {
     return "▸ open";
   }
 
-  // ── Memory: the auto-promote trail with keep / edit / revert ──
+  // ── Brain (brain-hub D15): the numbers that jump into the Brain tab, then today's writes, read only ──
 
-  private renderTrail(main: HTMLElement): void {
-    const app = this.plugin.app;
-    const trail = main.createDiv({ cls: "aos-trail" });
-    trail.createDiv({ text: "Recently auto-promoted", cls: "aos-trail-title" });
-    if (!this.model.trailRows.length) trail.createDiv({ text: "nothing auto-promoted yet", cls: "aos-dim" });
-    for (const { entry, pendingReview } of this.model.trailRows) {
-      const row = trail.createDiv({ cls: "aos-trail-row" });
-      row.createSpan({ text: entry.action.toUpperCase(), cls: `aos-trail-chip is-${entry.action}` });
-      row.createSpan({ text: entry.title, cls: "aos-trail-name" });
-      row.createSpan({ text: entry.type, cls: "aos-trail-type" });
-      if (entry.action !== "written" || !pendingReview) continue;
-      const actions = row.createSpan({ cls: "aos-trail-actions" });
-      actions.createEl("a", { text: "keep", cls: "aos-link", href: "#" }).addEventListener("click", async (e) => { e.preventDefault(); await keepMemory(app, entry); this.tab.schedule(); });
-      actions.createEl("a", { text: "edit", cls: "aos-link", href: "#" }).addEventListener("click", async (e) => {
-        e.preventDefault();
-        if (await editMemory(app, entry)) { this.close(); await app.workspace.openLinkText(memoryFilePath(entry), "", true); } else this.tab.schedule();
-      });
-      actions.createEl("a", { text: "revert", cls: "aos-link", href: "#" }).addEventListener("click", async (e) => { e.preventDefault(); await revertMemory(app, entry); this.tab.schedule(); });
+  private renderBrain(main: HTMLElement): void {
+    const m = this.model;
+    const ctx = this.ctx();
+    const sum = main.createDiv({ cls: "aos-pp-list" });
+    for (const l of brainLinks({ toReview: m.inputs.toReview ?? null, drafts: m.inputs.drafts, brainPct: m.inputs.brainPct ?? null })) {
+      this.row(sum, { tone: l.tone, title: l.row, meta: l.meta, acts: [{ label: l.act, jump: true, run: () => openBrain(ctx, l.target) }] }).setAttr("data-brain-link", l.id);
     }
+    main.createDiv({ cls: "aos-pp-section", text: "Written today" });
+    const today = main.createDiv({ cls: "aos-pp-list" });
+    for (const w of m.brain.written) {
+      const st = WRITTEN_STATE[w.state];
+      const open = w.state !== "gone" && MEMORY_PATH_RE.test(w.path);
+      const r = this.row(today, { tone: st.tone, title: w.title, meta: `${w.type} · ${clock(w.at)}`, tag: st.tag, acts: open ? [{ label: "Open →", jump: true, run: () => openBrain(ctx, { mode: "library", memory: w.path }) }] : [] });
+      r.setAttr("data-memory", w.path);
+      r.setAttr("data-state", w.state);
+    }
+    if (!m.brain.written.length) today.createDiv({ cls: "aos-pp-empty", text: "Nothing written today." });
   }
 }

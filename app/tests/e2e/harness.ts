@@ -446,7 +446,8 @@ export const drawer = (win: Page) => win.locator(".aos-wb-drawer");
 export async function pulseArea(win: Page, area: string): Promise<Locator> {
   const modal = win.locator(".modal.mod-pulse");
   if (await modal.count()) await modal.locator(`.aos-pp-navbtn[data-area="${area}"]`).click();
-  else await win.locator(area === "needs" ? `.aos-pulse-tile[data-area="needs"] .aos-pulse-tile-headbtn` : `.aos-pulse-tile[data-area="${area}"]`).click();
+  // Needs you and Brain are cards whose body holds buttons of its own: their head opens the popup.
+  else await win.locator(area === "needs" || area === "memory" ? `.aos-pulse-tile[data-area="${area}"] .aos-pulse-tile-headbtn` : `.aos-pulse-tile[data-area="${area}"]`).click();
   await expect(modal.locator(".aos-pp-navbtn.is-on")).toHaveAttribute("data-area", area);
   return modal;
 }

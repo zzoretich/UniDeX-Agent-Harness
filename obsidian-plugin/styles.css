@@ -1420,30 +1420,6 @@ body {
 .aos-pulse-deck { margin-bottom: 12px; }
 .aos-pulse-fix-detail { font-size: 11px; color: var(--aos-dim); margin: 2px 0 6px; }
 
-/* Recently auto-promoted trail (Task 7) — not in the brief's literal CSS block beyond
-   the aos-trail-* prefix; rows are lightweight list lines (mono chip + text) rather
-   than boxed cards like .aos-pulse-fix, since these are audit-log entries, not
-   actionable alerts. Disclosed in the task report. */
-.aos-trail { margin-top: 14px; }
-.aos-trail-title { color: var(--aos-cyan); font-family: var(--aos-mono); font-size: 11px; letter-spacing: 1px; margin-bottom: 8px; }
-.aos-trail-row {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  font-family: var(--aos-mono); font-size: 12px;
-  padding: 4px 6px; border-radius: 3px;
-}
-.aos-trail-row:hover { background: var(--aos-panel); }
-.aos-trail-chip {
-  font-size: 9px; letter-spacing: 0.5px; padding: 1px 6px;
-  border: 1px solid var(--aos-border); border-radius: 3px; white-space: nowrap;
-}
-.aos-trail-chip.is-written  { color: var(--udx-info);  border-color: var(--udx-info-dot); }
-.aos-trail-chip.is-kept     { color: var(--udx-ok); border-color: var(--udx-ok-dot); }
-.aos-trail-chip.is-reverted { color: var(--udx-danger);  border-color: var(--udx-danger-dot); }
-.aos-trail-chip.is-edited   { color: var(--udx-warn); border-color: var(--udx-warn-dot); }
-.aos-trail-name { color: var(--aos-text); flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aos-trail-type { color: var(--aos-dim); font-size: 10.5px; }
-.aos-trail-actions { display: flex; gap: 8px; }
-
 /* === XTERM.JS CSS (bundled from @xterm/xterm/css/xterm.css) === */
 /**
  * Copyright (c) 2014 The xterm.js authors. All rights reserved.
@@ -2241,7 +2217,7 @@ a.aos-at-itemid:hover { text-decoration: underline; text-underline-offset: 2px; 
 
 /* Headings: a tab's title, then the sections inside it. */
 .aos-rt-title { font-family: var(--udx-sans); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--udx-text); }
-.aos-title, .aos-term-title, .aos-deck-label, .aos-pulse-fixq-title, .aos-trail-title, .aos-wb-drawertitle, .aos-sb-title, .aos-capture-title {
+.aos-title, .aos-term-title, .aos-deck-label, .aos-pulse-fixq-title, .aos-wb-drawertitle, .aos-sb-title, .aos-capture-title {
   font-family: var(--udx-sans); font-size: 14px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--udx-text);
 }
 .aos-panel-bracket { display: none; }
@@ -2255,7 +2231,7 @@ a.aos-at-itemid:hover { text-decoration: underline; text-underline-offset: 2px; 
 .aos-panel-head, .aos-panel-title, .aos-tile-label, .aos-pulse-rowlabel, .aos-rt-subhead, .aos-at-label, .aos-at-colhead { color: var(--udx-text-3); }
 
 /* Pills, chips and badges: round, in the text face. */
-.aos-pill, .aos-pulse-chip, .aos-trail-chip, .aos-cortex-chip, .aos-ri-status, .aos-staff-fresh, .aos-omni-kind {
+.aos-pill, .aos-pulse-chip, .aos-cortex-chip, .aos-ri-status, .aos-staff-fresh, .aos-omni-kind {
   border-radius: 999px; font-family: var(--udx-sans); letter-spacing: 0;
 }
 .aos-pill { padding: 1px 9px; font-size: 11.5px; font-weight: 500; }
@@ -3075,6 +3051,36 @@ button.aos-tf-btn:not(.clickable-icon):focus-visible { outline: 2px solid var(--
 .aos-pulse-barfill.is-today { background: var(--udx-text); }
 .aos-pulse-barday, .aos-pulse-barval { font-size: 10.5px; color: var(--udx-text-3); font-family: var(--udx-mono); }
 
+/* ── Pulse: the Brain tile and area (brain-hub D15, canvas PulseAfter; PulseTab.renderBrain, PulsePopup.renderBrain). ── */
+/* Three numbers in a row, each a link into a mode of the Brain tab; colour only for state (warn waits, gate drafts). */
+.aos-pulse-tile[data-area="memory"] .aos-pulse-tile-body { container-type: inline-size; }
+.aos-pulse-tile[data-area="memory"] .aos-pulse-big-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-pulse-brainlinks { flex: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.aos-pulse-cockpit button.aos-pulse-brainlink:not(.clickable-icon) {
+  all: unset; box-sizing: border-box; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px;
+  border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-bg); cursor: pointer;
+}
+.aos-pulse-cockpit button.aos-pulse-brainlink:not(.clickable-icon):hover { border-color: var(--udx-line-2); background: var(--udx-surface); }
+.aos-pulse-brainlink-n { font-family: var(--udx-mono); font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 500; line-height: 1.25; color: var(--udx-text); }
+.aos-pulse-brainlink:is(.is-warn, .is-gate) .aos-pulse-brainlink-n { color: var(--t); }
+.aos-pulse-brainlink-k { font-size: 11.5px; color: var(--udx-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-pulse-cockpit button.aos-pulse-brainreview:not(.clickable-icon) {
+  all: unset; flex: none; align-self: flex-start; max-width: 100%; cursor: pointer; font-size: 12.5px; font-weight: 500; color: var(--udx-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aos-pulse-cockpit button.aos-pulse-brainreview:not(.clickable-icon):hover { color: var(--udx-text-2); text-decoration: underline; text-underline-offset: 3px; }
+.aos-pulse-cockpit button.aos-pulse-brainlink:not(.clickable-icon):focus-visible,
+.aos-pulse-cockpit button.aos-pulse-brainreview:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
+/* A narrow tile (a 960 px window): tighter boxes, so the three still share one row. */
+@container (max-width: 230px) {
+  .aos-pulse-brainlinks { gap: 6px; }
+  .aos-pulse-cockpit button.aos-pulse-brainlink:not(.clickable-icon) { padding: 6px 7px; }
+  .aos-pulse-brainlink-n { font-size: 14px; }
+  .aos-pulse-brainlink-k { font-size: 10.5px; }
+}
+/* The popup's Brain area: a small caps heading over today's writes. */
+.aos-pp-section { margin: 4px 2px 2px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--udx-text-3); }
+
 /* the popup (P3): the areas on the left, the open one on the right */
 .modal.mod-pulse { width: min(880px, calc(100vw - 48px)); height: min(600px, calc(100vh - 48px)); max-height: none; padding: 0; overflow: hidden; }
 .modal-container:has(> .modal.mod-pulse) { align-items: center; padding-top: 0; }
@@ -3678,7 +3684,7 @@ button.aos-spc-addobj:not(.clickable-icon) { align-self: flex-start; height: 28p
 .aos-brain-sp { flex: 1; }
 .aos-brain-label { margin: 0; color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .aos-brain-empty { padding: 8px 0; color: var(--udx-text-3); font-size: 12.5px; }
-.aos-brain-loading, .aos-brain-placeholder { padding: 24px; color: var(--udx-text-3); }
+.aos-brain-loading { padding: 24px; color: var(--udx-text-3); }
 
 /* The header: title, the store in one line, search, Capture; then the modes as tabs across the top. */
 .aos-brain-head { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 14px 24px 0; border-bottom: 1px solid var(--udx-line); }
@@ -3802,14 +3808,290 @@ button.aos-brain-silink .aos-brain-sititle { flex: 1; min-width: 0; overflow: hi
 .aos-brain-tilen { color: var(--udx-text); font-size: 18px; font-weight: 500; }
 .aos-brain-sinote { padding: 10px 12px; border: 1px dashed var(--udx-line-2); border-radius: 10px; color: var(--udx-text-2); font-size: 12px; line-height: 1.5; }
 
-/* ── Brain hub: Review (views/brain/ReviewMode.ts). Only the Review agent edits between these two markers. ── */
-/* ── end Brain hub: Review ── */
+/* ── Brain hub: Review (views/brain/ReviewMode.ts). ── */
+/* Review (D3, D4; canvas Main): the queues and session batches on the left, the batch's cards in the main pane. */
+.aos-brain-rv { position: relative; }
+.aos-brain-rv-queues { flex: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 12px 12px 6px; }
+.aos-brain-rv-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 8px; }
+.aos-brain-rv-group {
+  display: flex; align-items: center; gap: 6px; padding: 10px 8px 5px; color: var(--udx-text-3); font-size: 10.5px;
+  font-weight: 600; letter-spacing: 0.08em;
+}
+.aos-brain-rv-groupn { font-family: var(--udx-mono); font-weight: 400; letter-spacing: 0; }
+.aos-brain-rv-none { padding: 2px 8px 6px; color: var(--udx-text-3); font-size: 12px; }
+button.aos-brain-rv-fold:not(.clickable-icon) {
+  display: flex; align-items: center; gap: 6px; width: 100%; height: auto; padding: 12px 8px 5px; border: none; border-radius: 0;
+  background: none; box-shadow: none; color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-align: left;
+}
+button.aos-brain-rv-fold:not(.clickable-icon):hover:not(:disabled) { background: none; color: var(--udx-text); }
+.aos-brain-rv-chev { display: inline-flex; transition: transform 120ms ease; }
+.aos-brain-rv-chev svg { width: 10px; height: 10px; stroke-width: 2.4; }
+button.aos-brain-rv-fold[aria-expanded="true"] .aos-brain-rv-chev { transform: rotate(90deg); }
 
-/* ── Brain hub: Library (views/brain/LibraryMode.ts, Reader.ts, ContextPane.ts). Only the Library agent edits between these two markers. ── */
-/* ── end Brain hub: Library ── */
+/* A row of the left list (a batch, a draft, a pair, an older memory): a listbox option; the selected one raised. */
+button.aos-brain-rv-row:not(.clickable-icon) {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; height: auto; margin: 0 0 2px; padding: 8px 10px 9px;
+  box-sizing: border-box; border: 1px solid transparent; border-radius: 8px; background: transparent; box-shadow: none;
+  color: var(--udx-text); font-size: 12px; font-weight: 400; text-align: left; white-space: normal;
+}
+button.aos-brain-rv-row:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
+button.aos-brain-rv-row[aria-selected="true"]:not(.clickable-icon),
+button.aos-brain-rv-row[aria-selected="true"]:not(.clickable-icon):hover:not(:disabled) { border-color: var(--udx-line-2); background: var(--udx-bg); }
+.aos-brain-rv-rline { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.aos-brain-rv-rtitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.aos-brain-rv-when { flex: none; color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-rv-rmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-left: 16px; color: var(--udx-text-2); font-size: 12px; }
+.aos-brain-rv-rmeta .aos-brain-mono { font-size: 11px; }
+.aos-brain-rv-lead { padding-left: 16px; overflow: hidden; color: var(--udx-text-3); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.aos-brain-rv-pips { display: flex; flex-wrap: wrap; gap: 3px; padding-left: 16px; }
+.aos-brain-rv-pip { width: 14px; height: 4px; border-radius: 2px; background: var(--udx-off-dot); }
+.aos-brain-rv-pip.is-feedback { background: var(--udx-gate); }
+.aos-brain-rv-pip.is-projects { background: var(--udx-info); }
+.aos-brain-rv-pip.is-user { background: var(--udx-ok-dot); }
+.aos-brain-rv-foot {
+  flex: none; display: flex; flex-direction: column; gap: 6px; padding: 10px 14px 12px; border-top: 1px solid var(--udx-line);
+  color: var(--udx-text-3); font-size: 11.5px;
+}
+button.aos-brain-rv-markbtn:not(.clickable-icon) {
+  height: auto; padding: 0; border: none; background: none; box-shadow: none; color: var(--udx-text); font-size: 12px; font-weight: 500;
+  text-align: left; white-space: normal;
+}
+button.aos-brain-rv-markbtn:not(.clickable-icon):hover:not(:disabled) { background: none; text-decoration: underline; }
 
-/* ── Brain hub: Map (views/brain/MapMode.ts). Only the Map agent edits between these two markers. ── */
-/* ── end Brain hub: Map ── */
+/* The main pane: the batch's header (title, meta, lede, Keep the N new, the menu), its cards, the keys. */
+.aos-brain-rv-head { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 16px 24px 12px; border-bottom: 1px solid var(--udx-line); }
+.aos-brain-rv-hrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; }
+.aos-brain-rv-head .aos-brain-h2 { min-width: 0; overflow-wrap: anywhere; }
+.aos-brain-rv-meta { color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-rv-lede { color: var(--udx-text-2); font-size: 12.5px; line-height: 1.45; }
+.aos-brain-rv button.aos-brain-btn:not(.clickable-icon):disabled { opacity: 0.5; cursor: default; }
+.aos-brain-rv-morewrap { position: relative; display: inline-flex; }
+button.aos-brain-rv-more:not(.clickable-icon) { width: 30px; padding: 0; justify-content: center; }
+.aos-brain-rv-more .aos-brain-ic svg { width: 14px; height: 14px; }
+.aos-brain-rv-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; display: flex; flex-direction: column; gap: 1px; min-width: 200px;
+  padding: 6px; box-sizing: border-box; border: 1px solid var(--udx-line-2); border-radius: 10px; background: var(--udx-raised);
+  box-shadow: var(--udx-shadow);
+}
+button.aos-brain-rv-menuitem:not(.clickable-icon) {
+  display: flex; width: 100%; height: auto; padding: 7px 9px; border: none; border-radius: 7px; background: none; box-shadow: none;
+  color: var(--udx-text); font-size: 12.5px; font-weight: 400; text-align: left; white-space: nowrap;
+}
+button.aos-brain-rv-menuitem:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised-2); }
+button.aos-brain-rv-menuitem:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: -2px; background: var(--udx-raised-2); }
+.aos-brain-rv-cards { display: flex; flex-direction: column; gap: 6px; padding: 10px 24px 16px; }
+.aos-brain-rv-empty { padding: 24px; }
+
+/* A card (D4): type, title, flag, pin, the icon buttons; the summary; the comparison under it when open (M). */
+.aos-brain-rv .aos-brain-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 10px;
+  background: var(--udx-bg); outline: none;
+}
+.aos-brain-rv .aos-brain-card.is-selected { border-color: var(--udx-line-2); }
+.aos-brain-rv .aos-brain-card:focus-visible { box-shadow: 0 0 0 2px var(--udx-focus); }
+.aos-brain-rv-chead { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.aos-brain-rv-ctitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.aos-brain-pill.aos-brain-rv-flag { display: inline-block; flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+.aos-brain-rv-cdate { flex: none; color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-rv-acts { flex: none; display: flex; gap: 2px; }
+.aos-brain-rv-dacts { flex: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-brain-rv button.aos-brain-iconbtn:not(.clickable-icon):disabled { opacity: 0.35; cursor: default; }
+.aos-brain-rv button.aos-brain-iconbtn[aria-expanded="true"]:not(.clickable-icon) { background: var(--udx-raised); color: var(--udx-text); }
+.aos-brain-rv-sum { padding-left: 2px; color: var(--udx-text-2); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.aos-brain-rv-dmeta { padding-left: 2px; color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-rv-compare { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 4px; }
+.aos-brain-rv-box {
+  flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--udx-line);
+  border-radius: 8px; background: var(--udx-surface);
+}
+.aos-brain-rv-boxlabel { display: flex; align-items: center; gap: 8px; }
+.aos-brain-rv-boxlabel .aos-brain-mono { font-weight: 400; letter-spacing: 0; text-transform: none; }
+.aos-brain-rv-boxhead { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.aos-brain-rv-boxtitle { min-width: 0; font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.aos-brain-rv-boxtext { font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.aos-brain-rv-boxmeta { color: var(--udx-text-3); font-size: 11px; overflow-wrap: anywhere; }
+.aos-brain-rv-cmpacts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.aos-brain-rv-hint { flex: 1 1 240px; min-width: 0; color: var(--udx-text-3); font-size: 11.5px; line-height: 1.4; text-align: right; }
+.aos-brain-rv-dupscore { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 11px; }
+.aos-brain-rv-keys {
+  flex: none; margin-top: auto; display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 10px 24px; border-top: 1px solid var(--udx-line);
+  color: var(--udx-text-3); font-size: 11px;
+}
+
+/* "Mark everything before …" (MarkBeforeModal.ts), laid out like ConfirmModal. */
+.aos-brain-markmodal .aos-brain-markwhy { margin: 0 0 4px; color: var(--udx-text-2); font-size: 12.5px; line-height: 1.5; }
+.aos-brain-markmodal .aos-brain-markfield { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; color: var(--udx-text-2); font-size: 12.5px; }
+.aos-brain-markmodal input.aos-brain-markday { width: auto; }
+.aos-brain-markmodal .aos-brain-markline { margin: 10px 0 0; color: var(--udx-text); font-size: 12.5px; }
+.aos-brain-markmodal button:disabled { opacity: 0.5; cursor: default; }
+
+@media (max-width: 760px) {
+  .aos-brain-rv-head, .aos-brain-rv-cards, .aos-brain-rv-keys { padding-left: 16px; padding-right: 16px; }
+  .aos-brain-pill.aos-brain-rv-flag { max-width: 100%; }
+  .aos-brain-rv-chead { flex-wrap: wrap; }
+  .aos-brain-rv-hint { text-align: left; }
+}
+
+/* ── Brain hub: Library (views/brain/LibraryMode.ts, Reader.ts, ContextPane.ts). ── */
+/* The left pane (canvas Library.dc.html): the kinds as chips, the facets as dashed chips over native selects, the count
+   and the rows (a type dot, the title, a pin, the use in mono, amber when unused; the summary under it). */
+.aos-lib-top { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 12px 12px 8px; border-bottom: 1px solid var(--udx-line); }
+.aos-lib-kinds { display: flex; flex-wrap: wrap; gap: 4px; }
+.aos-lib-facets { display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-lib-facets[hidden], .aos-lib-facet[hidden], .aos-lib-more[hidden] { display: none; }
+.aos-lib-facet {
+  position: relative; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; box-sizing: border-box;
+  border: 1px dashed var(--udx-line-2); border-radius: 6px; color: var(--udx-text-2); font-size: 11px; white-space: nowrap; cursor: pointer;
+}
+.aos-lib-facet:hover { background: var(--udx-raised); }
+.aos-lib-facet.is-set { border-style: solid; color: var(--udx-text); }
+.aos-lib-facet:has(select:focus-visible), .aos-lib-statusbtn:has(select:focus-visible) { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
+.aos-lib-chev { display: inline-flex; }
+.aos-lib-chev svg { width: 9px; height: 9px; stroke-width: 2.4; }
+.aos-lib select.aos-lib-oversel {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: none; border-radius: inherit; opacity: 0;
+  cursor: pointer; font-size: 12px;
+}
+.aos-lib select.aos-lib-oversel[aria-disabled="true"] { cursor: default; }
+.aos-lib-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px 8px; }
+.aos-lib-counthead { display: flex; align-items: center; gap: 6px; padding: 6px 8px 5px; color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; }
+.aos-lib-sort { font-weight: 400; }
+button.aos-lib-row:not(.clickable-icon) {
+  position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 3px; width: 100%; height: auto; margin: 0 0 2px;
+  padding: 7px 10px 8px; box-sizing: border-box; border: 1px solid transparent; border-radius: 8px; background: transparent;
+  color: var(--udx-text); text-align: left; font-size: 12.5px; font-weight: 400; white-space: normal;
+}
+button.aos-lib-row:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
+button.aos-lib-row.is-selected:not(.clickable-icon), button.aos-lib-row.is-selected:not(.clickable-icon):hover:not(:disabled) { border-color: var(--udx-line-2); background: var(--udx-bg); }
+.aos-lib-rowtop { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.aos-lib-dot { flex: none; width: 7px; height: 7px; border-radius: 2px; background: var(--udx-off-dot); }
+.aos-lib-dot.is-feedback { background: var(--udx-gate-dot); }
+.aos-lib-dot.is-projects { background: var(--udx-info-dot); }
+.aos-lib-dot.is-user { background: var(--udx-ok-dot); }
+.aos-lib-dot.is-drafts { background: transparent; box-shadow: inset 0 0 0 1.5px var(--udx-gate-dot); }
+.aos-lib-rowtitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
+.aos-lib-rowtag { flex: none; color: var(--udx-text-3); font-size: 10px; }
+.aos-lib-pin { flex: none; display: inline-flex; color: var(--udx-text-2); }
+.aos-lib-pin svg { width: 11px; height: 11px; }
+.aos-lib-use { flex: none; color: var(--udx-text-3); font-size: 10.5px; }
+.aos-lib-use.is-unused { color: var(--udx-warn); }
+.aos-lib-rowsum { display: block; padding-left: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--udx-text-2); font-size: 11.5px; }
+.aos-lib-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.aos-lib-lempty { padding: 8px 10px; }
+.aos-lib-more { padding: 8px 10px 4px; color: var(--udx-text-3); font-size: 11.5px; }
+
+/* The reader and its context side by side; under 1100 px the context folds under the reader and both scroll as one. */
+.aos-lib-split { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; }
+.aos-lib-rempty { padding: 24px 28px; }
+.aos-lib-rhead { display: flex; flex-direction: column; gap: 10px; padding: 18px 28px 12px; }
+.aos-lib-rtitle { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.aos-lib-h2 { margin: 0; color: var(--udx-text); font-size: 20px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: anywhere; }
+.aos-lib-pinpill { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 999px; background: var(--udx-raised); font-size: 11.5px; font-weight: 500; }
+.aos-lib-pinpill svg { width: 11px; height: 11px; }
+.aos-lib-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--udx-text-3); font-size: 11px; }
+.aos-lib-metatype.is-feedback { color: var(--udx-gate); }
+.aos-lib-metatype.is-projects { color: var(--udx-info); }
+.aos-lib-metatype.is-reference { color: var(--udx-off); }
+.aos-lib-metatype.is-user { color: var(--udx-ok); }
+.aos-lib-ok { color: var(--udx-ok); }
+.aos-lib-warn { color: var(--udx-warn); }
+button.aos-lib-superby:not(.clickable-icon) {
+  align-self: flex-start; height: auto; padding: 0; border: none; border-radius: 4px; background: none; color: var(--udx-text-2);
+  font-size: 12.5px; font-weight: 500; white-space: normal; text-align: left; text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 3px;
+}
+button.aos-lib-superby:not(.clickable-icon):hover:not(:disabled) { background: none; color: var(--udx-text); }
+.aos-lib-superby.is-plain { color: var(--udx-text-3); font-size: 12.5px; overflow-wrap: anywhere; }
+.aos-lib-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.aos-lib-statusbtn {
+  position: relative; display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; box-sizing: border-box;
+  border: 1px solid var(--udx-line-2); border-radius: 7px; background: var(--udx-bg); color: var(--udx-text); font-size: 12px;
+  font-weight: 500; white-space: nowrap; cursor: pointer;
+}
+.aos-lib-statusbtn:hover { background: var(--udx-raised); }
+.aos-lib-statusbtn:has(select[aria-disabled="true"]), .aos-lib-actions button[aria-disabled="true"]:not(.clickable-icon) { opacity: 0.45; cursor: default; }
+button.aos-lib-popout:not(.clickable-icon) { width: 28px; height: 28px; border: 1px solid var(--udx-line-2); border-radius: 7px; background: var(--udx-bg); }
+.aos-lib-article { box-sizing: content-box; max-width: 640px; display: flex; flex-direction: column; gap: 12px; padding: 4px 28px 24px; }
+.aos-lib-md { color: var(--udx-text); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.aos-lib-md > :first-child { margin-top: 0; }
+.aos-lib-md > :last-child { margin-bottom: 0; }
+.aos-lib-md p, .aos-lib-md ul, .aos-lib-md ol, .aos-lib-md blockquote, .aos-lib-md pre, .aos-lib-md table { margin: 0 0 12px; }
+.aos-lib-md ul, .aos-lib-md ol { padding-left: 1.4em; }
+.aos-lib-md h1, .aos-lib-md h2, .aos-lib-md h3, .aos-lib-md h4 { margin: 18px 0 6px; color: var(--udx-text); font-size: 15px; font-weight: 650; line-height: 1.35; }
+.aos-lib-md h1 { font-size: 17px; }
+.aos-lib-md code { padding: 1px 4px; border: none; border-radius: 4px; background: var(--udx-raised); font-family: var(--udx-mono); font-size: 12.5px; }
+.aos-lib-md pre { padding: 10px 12px; overflow-x: auto; border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-surface); }
+.aos-lib-md pre code { padding: 0; background: none; }
+.aos-lib-md blockquote { padding-left: 12px; border-left: 3px solid var(--udx-line-2); color: var(--udx-text-2); }
+.aos-lib-md a { color: var(--udx-text); text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px; }
+.aos-lib-inbrain { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-surface); font-size: 11.5px; }
+.aos-lib-inbrainsec { color: var(--udx-text); font-size: 12px; font-weight: 500; }
+
+.aos-lib-csec { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.aos-lib-csec[data-section="use"] { gap: 8px; }
+.aos-lib-chead { display: flex; align-items: baseline; gap: 6px; }
+.aos-lib-csub { font-weight: 400; text-transform: none; }
+.aos-lib-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.aos-lib-stat { display: flex; flex-direction: column; }
+.aos-lib-statn { color: var(--udx-text); font-size: 16px; font-weight: 500; }
+.aos-lib-statn.is-unused { color: var(--udx-warn); }
+.aos-lib-statl { color: var(--udx-text-3); font-size: 11px; }
+.aos-lib-cline, .aos-lib-cnote { margin: 0; color: var(--udx-text-3); font-size: 11.5px; line-height: 1.45; }
+.aos-lib-csec[data-section="history"] .aos-lib-cline { color: var(--udx-text-2); font-size: 12px; }
+.aos-lib-cpath { margin: 0; color: var(--udx-text-3); font-size: 10.5px; overflow-wrap: anywhere; }
+button.aos-lib-clink:not(.clickable-icon) {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; height: auto; padding: 2px 0; border: none; border-radius: 4px;
+  background: none; color: var(--udx-text); text-align: left; font-size: 12.5px; font-weight: 400;
+}
+button.aos-lib-clink:not(.clickable-icon):hover:not(:disabled) { background: none; color: var(--udx-text-2); }
+button.aos-lib-clink:hover .aos-lib-clinkt { text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px; }
+.aos-lib-clinkt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-lib-ckind, .aos-lib-score { flex: none; color: var(--udx-text-3); font-size: 10.5px; }
+.aos-lib-score.is-close { color: var(--udx-warn); }
+
+@media (max-width: 1100px) {
+  .aos-lib-split { flex-direction: column; overflow-y: auto; }
+  .aos-lib-split > .aos-brain-main { flex: none; overflow: visible; }
+  .aos-lib-split > .aos-brain-right { flex: none; max-width: none; overflow: visible; padding: 16px 28px 24px; border-left: none; border-top: 1px solid var(--udx-line); }
+}
+@media (max-width: 760px) {
+  .aos-lib-split { flex: none; overflow: visible; }
+  .aos-lib-rhead { padding: 16px 16px 12px; }
+  .aos-lib-article { padding: 4px 16px 20px; }
+  .aos-lib-rempty { padding: 16px; }
+  .aos-lib-split > .aos-brain-right { padding: 16px; }
+}
+
+/* ── Brain hub: Map (views/brain/MapMode.ts). ── */
+/* Map until PR 3 (brain-hub D19): the Memory tab's force view as "Every node", filling the mode's height. The
+   .aos-cortex-* rules above still draw it; these fit it to the hub (canvas Map.dc.html: a rounded surface, 12 px). */
+.aos-brain-map { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.aos-brain-maphead { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 16px 24px 0; }
+.aos-brain-mapnote { margin: 0; max-width: 80ch; font-size: 12.5px; line-height: 1.5; }
+.aos-brain-map .aos-cortex-header { flex: none; flex-wrap: wrap; justify-content: flex-start; gap: 8px 12px; padding: 12px 24px; border-bottom: none; }
+.aos-brain-map .aos-cortex-chips { flex-wrap: wrap; gap: 4px; }
+.aos-brain-map button.aos-cortex-chip:not(.clickable-icon) {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--udx-line-2);
+  border-radius: 999px; background: var(--udx-bg); color: var(--udx-text); font-family: var(--udx-sans); font-size: 11.5px;
+  font-weight: 500; letter-spacing: 0; text-transform: none;
+}
+.aos-brain-map button.aos-cortex-chip:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
+.aos-brain-map button.aos-cortex-chip.aos-cortex-chip-off:not(.clickable-icon) { border-color: transparent; background: transparent; color: var(--udx-text-3); opacity: 1; }
+.aos-brain-mapdot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.aos-brain-map .aos-cortex-chip-off .aos-brain-mapdot { opacity: 0.35; }
+.aos-brain-map .aos-cortex-stats { margin: 0; font-size: 11px; }
+.aos-brain-maphint { font-size: 11.5px; }
+.aos-brain-map .aos-cortex-canvas {
+  flex: 1; min-height: 0; margin: 0 24px 20px; border: 1px solid var(--udx-line); border-radius: 12px; background: var(--udx-surface);
+}
+.aos-brain-map .aos-cortex-svg text { font-family: var(--udx-sans); }
+.aos-brain-mapempty { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; padding: 24px; text-align: center; pointer-events: none; }
+.aos-brain-mapempty.is-shown { display: flex; }
+@media (max-width: 760px) {
+  .aos-brain-maphead { padding: 14px 16px 0; }
+  .aos-brain-map .aos-cortex-header { padding: 10px 16px; }
+  .aos-brain-map .aos-cortex-canvas { margin: 0 16px 16px; }
+  .aos-brain-maphint { display: none; }
+}
 
 /* Narrower (D2): Library's right pane folds under the reader at 1100 px (its own rule, in the Library block); every
    pane stacks under 760 px. */

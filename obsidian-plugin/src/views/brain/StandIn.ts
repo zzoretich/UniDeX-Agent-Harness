@@ -17,12 +17,18 @@ export class StandInMode implements BrainModeView {
     this.update();
   }
 
+  /** A redraw keeps the scroll, and the focus on the same link (the n-th button), so a reload never drops the keyboard. */
   update(): void {
     const h = this.host;
     if (!h) return;
+    const buttons = (): HTMLElement[] => Array.from(h.querySelectorAll<HTMLElement>("button"));
+    const at = buttons().indexOf(h.ownerDocument.activeElement as HTMLElement);
+    const top = h.scrollTop;
     h.empty();
     if (this.mode === "bootstrap") this.bootstrap(h);
     else this.health(h);
+    h.scrollTop = top;
+    if (at >= 0) { const b = buttons(); b[Math.min(at, b.length - 1)]?.focus({ preventScroll: true }); }
   }
 
   private section(h: HTMLElement, title: string, sub?: string): HTMLElement {

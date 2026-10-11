@@ -64,7 +64,8 @@ export class BrainTab {
       const on = (f: TAbstractFile, old?: string): void => {
         let hit = false;
         for (const p of old === undefined ? [f.path] : [f.path, old]) if (touchesBrain(p)) { this.store.touch(p); hit = true; }
-        if (hit) this.schedule();
+        // Hidden, the next showing reads everything again (refresh): no load in the background on each write.
+        if (hit && this.root) this.schedule();
       };
       this.view.registerEvent(this.plugin.app.vault.on("create", (f) => on(f)));
       this.view.registerEvent(this.plugin.app.vault.on("modify", (f) => on(f)));

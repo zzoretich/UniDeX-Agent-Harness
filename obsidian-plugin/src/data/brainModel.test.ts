@@ -7,7 +7,9 @@ import {
   splitByWeek, olderQueue, writtenBefore, defaultMarkBefore, reviewCounts, reviewKey, brainBadge, sinceMarker, trailSince,
   headerStats, modeBadges, libraryRows, sourceOptions, nearby, hostSplit, memoryArgs, chunks, brainVerbResult,
   touchesBrain, isBrainMode, isReviewQueue, pairKey, DEFAULT_LIBRARY_FILTER, BRAIN_OFF_TEXT, BRAIN_UPGRADE_TEXT,
-  MAX_PATHS_PER_CALL, type BrainMemory, type BrainHub,
+  MAX_PATHS_PER_CALL, shortDay, historyLine, bodyWithoutTitle, linkTargets, linksTo, linkSourceKind, nearbyBasis, filterShowing,
+  librarySelection, batchWhen, batchMeta, knownLabel, batchLede, olderFirst, olderByMonth, reviewSelection, weekUse,
+  type BrainMemory, type BrainHub,
 } from "./brainModel";
 
 const mem = (type: string, slug: string, o: { title?: string; tags?: string; reviewed?: boolean; session?: string; created?: string; updated?: string; source?: string; pin?: boolean; description?: string; extra?: string; body?: string } = {}): string =>
@@ -309,4 +311,164 @@ test("touchesBrain, isBrainMode, isReviewQueue", () => {
   assert.equal(isBrainMode("graph"), false);
   assert.equal(isReviewQueue("drafts"), true);
   assert.equal(isReviewQueue("all"), false);
+});
+
+// ── Library's reader and context ──
+
+test("shortDay: month and day, the year only when it is not this year's, empty for a non-date", () => {
+  const now = new Date(2026, 9, 11, 12);
+  assert.equal(shortDay("2026-09-30", now), "Sep 30");
+  assert.equal(shortDay(new Date(2026, 9, 2, 15).toISOString(), now), "Oct 2");
+  assert.equal(shortDay("2025-12-31", now), "Dec 31 2025");
+  assert.equal(shortDay("someday", now), "");
+  assert.equal(shortDay(null, now), "");
+});
+
+test("historyLine: oldest first, written by the source, set names its fields, created when the trail has no written row", () => {
+  const now = new Date(2026, 9, 11, 12);
+  const at = (mo: number, d: number): string => new Date(2026, mo, d, 12).toISOString();
+  const row = (action: string, ts: string, extra: Record<string, unknown> = {}) => ({ ts, session: "", action, slug: "a", type: "feedback", title: "A", ...extra }) as never;
+  const rows = [row("archived", at(9, 5)), row("set", at(9, 3), { fields: ["pin"] }), row("kept", at(9, 2)), row("kept", at(9, 2)), row("written", at(8, 30))];
+  assert.equal(historyLine(rows, { source: "auto-wrap", created: "2026-09-30" }, now), "Written by auto-wrap Sep 30 · kept Oct 2 · set pin Oct 3 · archived Oct 5");
+  assert.equal(historyLine([row("kept", at(9, 2))], { source: null, created: "2026-09-29" }, now), "Created Sep 29 · kept Oct 2");
+  assert.equal(historyLine([row("<b>", at(9, 2))], { source: null, created: null }, now), "Changed Oct 2");
+  assert.equal(historyLine([], { source: null, created: null }, now), "");
+  const many = Array.from({ length: 10 }, (_, i) => row("kept", at(9, i + 1)));
+  const line = historyLine(many, { source: null, created: null }, now);
+  assert.match(line, /^Kept Oct 1 · … · kept Oct 5 · /);
+  assert.equal(line.split(" · ").length, 8);
+});
+
+test("bodyWithoutTitle drops the leading H1 only when it is the title", () => {
+  assert.equal(bodyWithoutTitle("\n# Graphify first\n\nAsk the graph.\n", "Graphify first"), "Ask the graph.\n");
+  assert.equal(bodyWithoutTitle("# Other\n\nText", "Graphify first"), "# Other\n\nText");
+  assert.equal(bodyWithoutTitle("Intro\n# Graphify first\n", "Graphify first"), "Intro\n# Graphify first\n");
+});
+
+test("linkTargets and linksTo: wiki-links by name (alias, heading, folder), markdown links by vault path", () => {
+  const t = linkTargets("See [[Graphify-First|the rule]], [[notes/tide#Top]], ![[img.png]] and [x](brain/memory/reference/graph-pass.md#why) or [y](./brain/memory/user/me.md \"t\") [z](https://example.com/a%20b)");
+  assert.ok(linksTo(t, "brain/memory/feedback/graphify-first.md"));
+  assert.ok(linksTo(t, "brain/memory/projects/tide.md"));
+  assert.ok(linksTo(t, "brain/memory/reference/graph-pass.md"));
+  assert.ok(linksTo(t, "brain/memory/user/me.md"));
+  assert.ok(!linksTo(t, "brain/memory/feedback/graph.md"));
+  assert.ok(t.paths.has("https://example.com/a b"));
+  assert.equal(linkTargets("[[#heading]] [[]]").wiki.size, 0);
+});
+
+test("linkSourceKind names what links a memory", () => {
+  assert.equal(linkSourceKind("brain/memory/reference/x.md"), "reference");
+  assert.equal(linkSourceKind("brain/memory/feedback/_drafts/x.md"), "draft");
+  assert.equal(linkSourceKind("MEMORY.md"), "index");
+  assert.equal(linkSourceKind("brain/_index/BRAIN.md"), "index");
+  assert.equal(linkSourceKind("brain/patterns/p.md"), "pattern");
+  assert.equal(linkSourceKind("brain/reflections/r.md"), "reflection");
+  assert.equal(linkSourceKind("AGENTICOS.md"), "vault");
+});
+
+test("nearbyBasis: meaning when a pair has an embedding score, words without, null with no pair", () => {
+  const a = P("feedback", "a"), b = P("feedback", "b"), c = P("feedback", "c");
+  const pairs = [{ a, b, score: 0.9, title: 0.5, text: 0.9, meaning: null }, { a: b, b: c, score: 0.8, title: 0.2, text: 0.6, meaning: 0.8 }];
+  assert.equal(nearbyBasis(pairs, a), "words");
+  assert.equal(nearbyBasis(pairs, b), "meaning");
+  assert.equal(nearbyBasis(pairs, P("user", "z")), null);
+});
+
+test("filterShowing clears or widens only the facets that hide the memory", () => {
+  const files = {
+    [P("feedback", "live")]: mem("feedback", "live", { source: "auto-wrap" }),
+    [P("projects", "gone")]: mem("projects", "gone", { tags: "status/archived" }),
+    [P("projects", "done")]: mem("projects", "done", { tags: "status/complete" }),
+  };
+  const [live, gone, done] = store(files);
+  const f = { ...DEFAULT_LIBRARY_FILTER, kind: "drafts" as const, query: "q", type: "projects" as const, source: "(none)", status: "paused" as const };
+  assert.deepEqual(filterShowing(f, live, null), { ...f, kind: "memories", type: null, source: null, status: "live" });
+  assert.deepEqual(filterShowing(f, gone, null), { ...f, kind: "memories", status: "any" });
+  assert.deepEqual(filterShowing({ ...DEFAULT_LIBRARY_FILTER, status: "complete" }, done, null), { ...DEFAULT_LIBRARY_FILTER, status: "complete" });
+  const hub = parseBrainHub(JSON.stringify({ schema: 1, usage: { since: "2026-10-01", paths: { [live.path]: { d30: 3 } } } }));
+  assert.equal(filterShowing({ ...DEFAULT_LIBRARY_FILTER, use: "unused" }, live, hub).use, "any");
+  assert.equal(filterShowing({ ...DEFAULT_LIBRARY_FILTER, use: "used" }, live, hub).use, "used");
+  assert.equal(filterShowing({ ...DEFAULT_LIBRARY_FILTER, use: "used" }, done, hub).use, "any");
+  assert.equal(filterShowing({ ...DEFAULT_LIBRARY_FILTER, use: "used" }, done, null).use, "used");
+});
+
+test("librarySelection keeps a chosen memory through a filter, an automatic one only while it matches", () => {
+  const rows = [{ path: "x" }, { path: "y" }];
+  const all = (): boolean => true;
+  assert.deepEqual(librarySelection(rows, null, false, all), { sel: "x", chosen: false });
+  assert.deepEqual(librarySelection(rows, "y", false, all), { sel: "y", chosen: false });
+  assert.deepEqual(librarySelection(rows, "z", false, all), { sel: "x", chosen: false });
+  assert.deepEqual(librarySelection(rows, "z", true, all), { sel: "z", chosen: true });
+  assert.deepEqual(librarySelection([], "z", true, all), { sel: "z", chosen: true });
+  assert.deepEqual(librarySelection(rows, "z", true, (p) => p !== "z"), { sel: "x", chosen: false });
+  assert.deepEqual(librarySelection([], null, false, all), { sel: null, chosen: false });
+});
+
+// ── Review's words and selection ──
+
+test("batchWhen and batchMeta: today's time, another day's date, a bare day, host or wrap, the session's first 8", () => {
+  const now = new Date(2026, 9, 11, 12);
+  const today = new Date(2026, 9, 11, 4, 36).toISOString();
+  const oct9 = new Date(2026, 9, 9, 14, 5).toISOString();
+  assert.equal(batchWhen(today, now), "04:36");
+  assert.equal(batchWhen(oct9, now), "Oct 9");
+  assert.equal(batchWhen("2026-10-11", now), "today");
+  assert.equal(batchWhen("2026-10-01", now), "Oct 1");
+  assert.equal(batchWhen("", now), "");
+  assert.equal(batchMeta({ host: "claude", at: today, session: S1 }, now), "claude · today 04:36 · session 2f25a8d9");
+  assert.equal(batchMeta({ host: "codex", at: oct9, session: null }, now), "codex · Oct 9 14:05");
+  assert.equal(batchMeta({ host: null, at: "2026-10-01", session: null }, now), "wrap · Oct 1");
+  assert.equal(batchMeta({ host: null, at: "", session: S2 }, now), "wrap · session 0c0ffee0");
+});
+
+test("knownLabel and batchLede read right for none, one and many", () => {
+  assert.equal(knownLabel(0), "");
+  assert.equal(knownLabel(1), "1 looks known");
+  assert.equal(knownLabel(3), "3 look known");
+  assert.equal(batchLede(6, 3), "Wrote 6 memories. 3 look new, 3 look like ones you already have.");
+  assert.equal(batchLede(6, 1), "Wrote 6 memories. 5 look new, 1 looks like one you already have.");
+  assert.equal(batchLede(6, 5), "Wrote 6 memories. 1 looks new, 5 look like ones you already have.");
+  assert.equal(batchLede(4, 0), "Wrote 4 memories. All 4 look new.");
+  assert.equal(batchLede(3, 3), "Wrote 3 memories. All 3 look like ones you already have.");
+  assert.equal(batchLede(2, 0), "Wrote 2 memories. Both look new.");
+  assert.equal(batchLede(2, 2), "Wrote 2 memories. Both look like ones you already have.");
+  assert.equal(batchLede(1, 0), "Wrote 1 memory. It looks new.");
+  assert.equal(batchLede(1, 1), "Wrote 1 memory. It looks like one you already have.");
+  assert.equal(batchLede(0, 0), "Nothing left to review from this session.");
+});
+
+test("olderFirst: by when written (the trail, then created), then created, then path", () => {
+  const ms = store({
+    [P("feedback", "a")]: mem("feedback", "a", { created: "2026-10-07" }),
+    [P("feedback", "b")]: mem("feedback", "b", { created: "2026-10-09" }),
+    [P("feedback", "c")]: mem("feedback", "c", { created: "2026-10-09" }),
+  });
+  const [a, b, c] = ms;
+  assert.deepEqual(olderFirst(b, a, new Map()).map((m) => m.slug), ["a", "b"]);
+  assert.deepEqual(olderFirst(c, b, new Map()).map((m) => m.slug), ["b", "c"]);
+  const written = new Map([["feedback/a", "2026-10-10T08:00:00.000Z"]]);
+  assert.deepEqual(olderFirst(a, b, written).map((m) => m.slug), ["b", "a"]);
+});
+
+test("olderByMonth groups the queue's order by month; reviewSelection keeps the key, else the same index, else the last", () => {
+  const ms = store({
+    [P("projects", "a")]: mem("projects", "a", { created: "2026-08-03" }),
+    [P("projects", "b")]: mem("projects", "b", { created: "2026-08-28" }),
+    [P("projects", "c")]: mem("projects", "c", { created: "2026-09-02" }),
+  });
+  assert.deepEqual(olderByMonth(ms, new Map()).map((g) => [g.label, g.items.map((m) => m.slug)]), [["August 2026", ["a", "b"]], ["September 2026", ["c"]]]);
+  assert.deepEqual(reviewSelection(["a", "b", "c"], "b", 0), { key: "b", index: 1 });
+  assert.deepEqual(reviewSelection(["a", "c"], "b", 1), { key: "c", index: 1 });   // b was kept: the next card
+  assert.deepEqual(reviewSelection(["a"], "c", 2), { key: "a", index: 0 });        // the last one went: the one before
+  assert.deepEqual(reviewSelection(["a", "b"], null, 0), { key: "a", index: 0 });
+  assert.deepEqual(reviewSelection([], "a", 3), { key: null, index: 0 });
+});
+
+test("weekUse: the 7-day count, not used, nothing with no usage log", () => {
+  const p = P("feedback", "a");
+  assert.equal(weekUse(null, p), "");
+  assert.equal(weekUse(parseBrainHub(HUB()), p), "");
+  const hub = parseBrainHub(HUB({ usage: { since: "2026-10-01T00:00:00Z", paths: { [p]: { d7: 6, d30: 9 } } } }));
+  assert.equal(weekUse(hub, p), "used 6× this week");
+  assert.equal(weekUse(hub, P("feedback", "b")), "not used this week");
 });

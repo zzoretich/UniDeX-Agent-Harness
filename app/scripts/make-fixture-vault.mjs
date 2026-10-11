@@ -64,6 +64,12 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const TODAY = day(0);
+/** A Date's local YYYY-MM-DD. */
+const dayOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+/** `ms` before now, but never before today's midnight: in the small hours the offsets shrink in proportion (their order
+ *  kept), so what the fixture says was written "a few hours ago" is still written today. */
+const MIDNIGHT = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate());
+const todayAgo = (ms, span = 6 * HOUR) => ago(Math.min(ms, Math.floor((ms * (NOW.getTime() - MIDNIGHT.getTime())) / span)));
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 // ── helpers ───────────────────────────────────────────────────────────
@@ -706,6 +712,89 @@ stage("telemetry: earlier runs (runs.jsonl / costs.jsonl rows per lib/runs-log.j
   return `${RUNS.length} rows`;
 });
 
+// What the Brain hub's Review and Library read (spec 2026-10-11-brain-hub D3, D5; §7 PR 2), named once so the stage
+// below and expected.json agree. Two sessions' auto-wrap memories still to review: a Claude Code session the session
+// index titles (its ai-title) and a Codex thread (the index gives it a host, no title); one of them all but repeats a
+// kept memory, so the hub flags the pair (D11). One memory left unreviewed for 45 days by a session whose transcript is
+// gone, a feedback draft and an archived memory. None names a workspace or carries `workspace:` (Spaces' Linked group
+// counts those), and no new title or slug says "tide" or "api" (the existing specs' searches keep their hits). The
+// near-duplicate's title holds its partner's whole title: a spec tells those two rows apart by an exact match.
+const BRAIN_FIXTURE = {
+  sessions: {
+    claude: WS_FIXTURE.claude["harbor-map"],            // "Tide parser in the chart view"
+    codex: WS_FIXTURE.codex.prompt,                     // yesterday's Codex CLI thread, wrapped today by a reconcile
+    pruned: "9c3d0e00-0000-4000-8000-000000000001",     // no transcript left: its batch reads "Session 9c3d0e00 · <day>"
+  },
+  duplicate: ["brain/memory/feedback/prefer-small-diffs-in-reviews.md", "brain/memory/feedback/prefer-small-diffs.md"],
+  draft: "name-layers-after-their-data",
+  archived: "brain/memory/projects/survey-boat-booking.md",
+};
+
+stage("brain hub review: auto-wrap memories, a draft, an archived memory (memory-writer.js shapes, appendTrail)", () => {
+  const req = createRequire(import.meta.url);
+  const { insertIndexLine } = req(path.join(SCRIPTS, "lib", "memory-index.js"));
+  const HEADING = { user: "## User", feedback: "## Feedback", projects: "## Project", reference: "## Reference" };
+  let index = fs.readFileSync(v("MEMORY.md"), "utf8");
+  const rows = [];
+  // As lib/memory-writer.js writes an auto-wrap memory (source, session, reviewed: false) and its MEMORY.md line (the
+  // runtime's own insertIndexLine); the trail's `written` row (auto-wrap.js) carries when it happened.
+  const autoWrap = (session, at, type, slug, title, description, body, { trail = true } = {}) => {
+    const rel = `brain/memory/${type}/${slug}.md`;
+    const d = dayOf(at);
+    write(v(rel), `---\ntype: memory\ntags: [memory/${type}, status/active]\ncreated: ${d}\nupdated: ${d}\nsource: auto-wrap\nsession: ${session}\nreviewed: false\n---\n\n# ${title}\n\n${body}\n`);
+    index = insertIndexLine(index, HEADING[type], `- [${title}](${rel}) — ${description}`);
+    if (trail) rows.push({ ts: at.toISOString(), session, action: "written", slug, type, title });
+    return rel;
+  };
+  // The archived memory as `aos memory archive` leaves it (lib/memory-ops.js retire): description kept, status_before,
+  // archived, status/archived; no MEMORY.md line; the trail's `archived` row.
+  const archivedAt = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() - 6, 11, 20);
+  write(v(BRAIN_FIXTURE.archived), `---\ntype: memory\ntags: [memory/projects, status/archived]\ncreated: ${day(-70)}\nupdated: ${day(-30)}\ndescription: Survey boat booked for two weekends of soundings; the season is over\nstatus_before: active\narchived: ${dayOf(archivedAt)}\n---\n\n# Survey boat booking\n\nBooked the survey boat for two weekends of soundings. The season is over and the booking ended with it.\n`);
+  rows.push({ ts: archivedAt.toISOString(), session: null, action: "archived", slug: "survey-boat-booking", type: "projects", title: "Survey boat booking", path: BRAIN_FIXTURE.archived });
+
+  // 45 days old, never reviewed, no trail row: the "Older than 30d" queue.
+  autoWrap(BRAIN_FIXTURE.sessions.pruned, new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() - 45, 16, 5), "reference", "chart-datum", "Chart datum",
+    "soundings are below mean lower low water",
+    "Soundings on the sample charts are depths below mean lower low water; a reading from the gauge adds to them.", { trail: false });
+
+  // The Codex thread, wrapped about four hours ago: a project note and a preference.
+  const cx = todayAgo(4 * HOUR);
+  autoWrap(BRAIN_FIXTURE.sessions.codex, cx, "projects", "depth-contours-layer", "Depth contours layer",
+    "contours stub behind a toggle; intervals from soundings next",
+    "The chart view has a contours layer stub behind a toggle. Contour intervals come from the survey soundings next; until then it draws a fixed five-metre step.");
+  autoWrap(BRAIN_FIXTURE.sessions.codex, new Date(cx.getTime() + 1000), "user", "depths-in-metres", "Depths in metres",
+    "metres with one decimal; feet only when asked",
+    "Show depths in metres with one decimal place. Feet only when asked for.");
+
+  // The Claude Code session that ended about three hours ago (its transcript above), wrapped at its end.
+  const cc = todayAgo(2 * HOUR + 55 * MIN);
+  autoWrap(BRAIN_FIXTURE.sessions.claude, cc, "feedback", "prefer-small-diffs-in-reviews", "Prefer small diffs in reviews",
+    "one reviewable change per sitting",
+    "Keep each change small enough to review in one sitting.\n\n**Why:** a large diff hid a regression in the parser review.\n\n**How to apply:** split refactors from behaviour changes, one commit each.");
+  autoWrap(BRAIN_FIXTURE.sessions.claude, new Date(cc.getTime() + 1000), "projects", "chart-overlay-refresh", "Chart overlay refresh",
+    "the overlay redraws once per reading, not on every pan",
+    "The water-level overlay redraws once per six-minute reading, not on every pan or zoom; the chart view keeps the last frame until the next reading lands.");
+  autoWrap(BRAIN_FIXTURE.sessions.claude, new Date(cc.getTime() + 2000), "reference", "station-id-format", "Station id format",
+    "five digits, kept as a string",
+    "Station ids are five digits and may start with a zero, so they are stored and compared as strings, never as numbers.");
+  write(v("MEMORY.md"), index);
+
+  // A feedback rule draft as lib/feedback-drafts.js writeDraft leaves it: not in MEMORY.md, no trail row.
+  write(v(`brain/memory/feedback/_drafts/${BRAIN_FIXTURE.draft}.md`), `---\ntype: memory\ntags: [memory/feedback, status/draft]\ncreated: ${TODAY}\nupdated: ${TODAY}\nsource: feedback-autoloop\nsession: ${BRAIN_FIXTURE.sessions.claude}\ndescription: Name a chart layer after the data it draws, never after its file\n---\n\n# Name layers after their data\n\nCall a chart layer by what it draws (contours, soundings, the water-level overlay), not by the file that holds it.\n\n**Why:** a review comment about "layer2" took three replies to place.\n\n**How to apply:** name the toggle, the class and the file after the data.\n`);
+
+  // The trail rows through the runtime's appendTrail, oldest first (an explicit ts wins over its own stamp), before the
+  // stage below adds today's: the file stays in time order, which the trail's readers assume.
+  const env = { ...process.env };
+  process.env.AOS_VAULT = VAULT; process.env.AOS_CONFIG = AOS_CONFIG; process.env.CLAUDE_CONFIG_DIR = CLAUDE; process.env.HOME = HOME;
+  try {
+    const P = req(path.join(SCRIPTS, "lib", "promote-log.js"));
+    for (const r of rows.sort((a, b) => a.ts.localeCompare(b.ts))) P.appendTrail(r);
+  } finally {
+    for (const k of ["AOS_VAULT", "AOS_CONFIG", "CLAUDE_CONFIG_DIR", "HOME"]) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k]; }
+  }
+  return `${rows.length} trail rows · draft ${BRAIN_FIXTURE.draft} · archived ${path.basename(BRAIN_FIXTURE.archived)}`;
+});
+
 stage("promote trail (lib/promote-log.js appendTrail)", () => {
   const req = createRequire(import.meta.url);
   const env = { ...process.env };
@@ -806,6 +895,31 @@ stage("expected values", () => {
   expected.snapshot = snap.scannedAt;
   // The Spaces redesign's workspaces and sessions, with the status the runtime gave each entry (spaces-redesign D11, D22).
   expected.workspaces = { ...WS_FIXTURE, status: Object.fromEntries((snap.workspaces ?? []).map((w) => [w.name, w.status ?? null])) };
+  // The Brain hub (brain-hub D3, D11, D12): the scan's brain-hub.json, `aos memory list --json` and the trail, so a spec
+  // asserts what the runtime built. `older` is Review's "Older than 30d" queue as brainModel.ts olderQueue reads it:
+  // live, unreviewed, written (the trail's `written` row, else `created:`) more than 30 days before generatedAt.
+  const hub = readJson(v("brain/_index/brain-hub.json"));
+  const list = parse(aos(["memory", "list", "--json"]));
+  const written = new Map();
+  for (const l of fs.readFileSync(v("brain/_index/promote-log.jsonl"), "utf8").split("\n").filter(Boolean)) {
+    const r = JSON.parse(l);
+    if (r.action === "written" && !(written.get(`${r.type}/${r.slug}`) > r.ts)) written.set(`${r.type}/${r.slug}`, r.ts);
+  }
+  const writtenAt = (m) => written.get(`${m.type}/${path.basename(m.path, ".md")}`) ?? m.created ?? "";
+  const ms = (s) => Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00` : s);
+  const open = list.memories.filter((m) => m.live && m.reviewed === false);
+  expected.brain = {
+    sessions: BRAIN_FIXTURE.sessions,
+    duplicate: BRAIN_FIXTURE.duplicate,
+    counts: hub.counts,
+    batches: hub.batches.map((b) => ({ key: b.key, session: b.session, title: b.title, host: b.host, lead: b.lead, at: b.at, paths: b.paths })),
+    dups: hub.dups.map(({ a, b, score }) => ({ a, b, score })),
+    drafts: list.drafts.map((d) => d.slug),
+    older: open.filter((m) => ms(writtenAt(m)) < NOW.getTime() - 30 * DAY).map((m) => m.path),
+    archived: list.memories.filter((m) => m.status === "archived").map((m) => m.path),
+    memories: list.memories.map((m) => m.path),
+    unreviewed: open.map((m) => m.path),
+  };
 });
 
 writeJson(path.join(OUT, "expected.json"), expected);

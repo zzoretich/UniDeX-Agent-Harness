@@ -745,3 +745,210 @@ export function brainVerbResult<T>(r: { code: number; stdout: string; stderr: st
   const line = own ? own.replace(/^aos( [a-z-]+)?: /, "") : r.code === 0 ? "aos answered in an unexpected shape" : `aos exited ${r.code}`;
   return fail(line, { stale: /changed since it was read/.test(line) });
 }
+
+// ── Library's reader and context (D1, D2): days, the history line, backlinks, the selection, the facets that show a memory ──
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "Sep 30" (local time), with the year when it is not `now`'s; "" for anything that is not a date. */
+export function shortDay(s: string | null | undefined, now: Date): string {
+  const t = timeOf(String(s ?? ""));
+  if (!Number.isFinite(t)) return "";
+  const d = new Date(t);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}${d.getFullYear() === now.getFullYear() ? "" : ` ${d.getFullYear()}`}`;
+}
+
+/**
+ * Library's History in one line, oldest first: "Written by auto-wrap Sep 30 · kept Oct 2 · archived Oct 5". `rows` are
+ * the memory's trail rows (historyFor, any order); with no `written` row the line starts at its `created:` day. A `set`
+ * row names its fields (memory-ops.js appendTrail). One action twice on one day reads once; a long trail keeps its first
+ * event and its last six.
+ */
+export function historyLine(rows: readonly TrailEntry[], m: Pick<BrainMemory, "source" | "created">, now: Date): string {
+  const asc = [...rows].sort((a, b) => sortTime(a.ts) - sortTime(b.ts));
+  const parts: string[] = [];
+  if (!asc.some((r) => r.action === "written") && m.created) { const c = shortDay(m.created, now); if (c) parts.push(`created ${c}`); }
+  for (const r of asc) {
+    const action = String(r.action);
+    const fields = arr<unknown>((r as { fields?: unknown }).fields).filter((f): f is string => typeof f === "string" && /^[a-z_]{1,30}$/.test(f));
+    const what = action === "written" ? `written by ${m.source || "auto-wrap"}`
+      : action === "set" ? (fields.length ? `set ${fields.join(", ")}` : "changed")
+      : /^[a-z-]{1,20}$/.test(action) ? action : "changed";
+    const day = shortDay(r.ts, now);
+    const part = day ? `${what} ${day}` : what;
+    if (parts[parts.length - 1] !== part) parts.push(part);
+  }
+  const shown = parts.length > 7 ? [parts[0], "…", ...parts.slice(-6)] : parts;
+  const line = shown.join(" · ");
+  return line ? line[0].toUpperCase() + line.slice(1) : "";
+}
+
+/** The body without its leading H1 when that is the title the reader already shows above it. */
+export function bodyWithoutTitle(body: string, title: string): string {
+  const m = /^\s*#[ \t]+(.+?)[ \t]*(?:\r?\n|$)/.exec(body);
+  return m && m[1] === title ? body.slice(m[0].length).replace(/^(?:[ \t]*\r?\n)+/, "") : body;
+}
+
+export interface LinkTargets { wiki: Set<string>; paths: Set<string> }
+
+/**
+ * What a markdown text links, lowercased (Library's "Linked from"): each wiki-link's note name (after its last `/`, no
+ * `.md`, no #heading or |alias) and each markdown link's path (decoded, no leading `./` or `/`, no #anchor).
+ */
+export function linkTargets(text: string): LinkTargets {
+  const wiki = new Set<string>();
+  const paths = new Set<string>();
+  for (const m of text.matchAll(/\[\[([^\]|#^\n]+)(?:[#^][^\]|\n]*)?(?:\|[^\]\n]*)?\]\]/g)) {
+    const name = m[1].trim().toLowerCase().replace(/\.md$/, "");
+    if (name) wiki.add(name.slice(name.lastIndexOf("/") + 1));
+  }
+  for (const m of text.matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)) {
+    let p = m[1].replace(/#.*$/, "");
+    try { p = decodeURI(p); } catch { /* keep it as written */ }
+    p = p.replace(/^\.?\//, "").toLowerCase();
+    if (p) paths.add(p);
+  }
+  return { wiki, paths };
+}
+
+/** Whether a file with these targets links `path`: [[name]], [[name|…]], [[name#…]] or ](path). */
+export function linksTo(t: LinkTargets, path: string): boolean {
+  const p = path.toLowerCase();
+  return t.wiki.has(p.slice(p.lastIndexOf("/") + 1).replace(/\.md$/, "")) || t.paths.has(p);
+}
+
+/** What "Linked from" calls a linking file: a memory's type, draft, pattern, reflection, index (MEMORY.md, the MOCs,
+ *  BRAIN.md) or vault. */
+export function linkSourceKind(path: string): string {
+  const m = MEMORY_PATH_RE.exec(path);
+  if (m) return m[1];
+  if (path.startsWith(`${DRAFTS_DIR}/`)) return "draft";
+  if (path === MEMORY_INDEX_PATH || path.startsWith("brain/_index/")) return "index";
+  if (path.startsWith(`${PATTERNS_DIR}/`)) return "pattern";
+  if (path.startsWith(`${REFLECTIONS_DIR}/`)) return "reflection";
+  return "vault";
+}
+
+/** How Nearby scored a memory's partners: "meaning" when one of its pairs has an embedding score, else "words"; null
+ *  when it has no pair (D11: no Ollama, BM25 only, labelled). */
+export function nearbyBasis(pairs: readonly HubDup[], path: string): "meaning" | "words" | null {
+  let any = false;
+  for (const d of pairs) if (d.a === path || d.b === path) { if (d.meaning !== null) return "meaning"; any = true; }
+  return any ? "words" : null;
+}
+
+/**
+ * The smallest change to Library's facets that shows `m` (a link into the hub, D15): the Memories kind, a type, source
+ * or use facet that hides it cleared, and the Status facet widened to "live", or to "any" when it is archived or
+ * superseded. The query is the header's and stays.
+ */
+export function filterShowing(f: LibraryFilter, m: BrainMemory, hub: BrainHub | null): LibraryFilter {
+  const used = hasUsage(hub) ? (hub!.usage.paths[m.path]?.d30 ?? 0) > 0 : null;
+  return {
+    ...f, kind: "memories",
+    type: f.type !== null && f.type !== m.type ? null : f.type,
+    status: statusMatches(m, f.status) ? f.status : m.live ? "live" : "any",
+    source: f.source !== null && f.source !== (m.source ?? "(none)") ? null : f.source,
+    use: f.use === "any" || used === null || (f.use === "used") === used ? f.use : "any",
+  };
+}
+
+/**
+ * Library's selection after its rows change. A selection whose file is gone is dropped. One the person chose stays
+ * (in the reader) even when a filter hides it, so clearing the search goes back to it; an automatic one (the first row)
+ * stays while it is in the rows. Otherwise the first row, chosen by nobody.
+ */
+export function librarySelection(rows: ReadonlyArray<{ path: string }>, sel: string | null, chosen: boolean, exists: (p: string) => boolean): { sel: string | null; chosen: boolean } {
+  if (sel && !exists(sel)) { sel = null; chosen = false; }
+  if (sel && (chosen || rows.some((r) => r.path === sel))) return { sel, chosen };
+  return { sel: rows[0]?.path ?? null, chosen: false };
+}
+
+// ── Review's words and selection (views/brain/ReviewMode.ts; D3, D4, D7) ──
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const hhmm = (d: Date): string => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+const isBareDay = (s: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(s);
+const sameLocalDay = (a: Date, b: Date): boolean => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+
+/** A batch row's time (D3): "04:36" (local) when it was written today, else "Oct 9"; "today" for a bare day that is today. */
+export function batchWhen(at: string, now: Date): string {
+  const t = timeOf(at);
+  if (!Number.isFinite(t)) return "";
+  const d = new Date(t);
+  if (!sameLocalDay(d, now)) return shortDay(at, now);
+  return isBareDay(at) ? "today" : hhmm(d);
+}
+
+/** The batch header's line: "claude · today 04:36 · session 2f25a8d9"; "wrap" with no host, unknown parts left out. */
+export function batchMeta(b: Pick<ReviewBatch, "host" | "at" | "session">, now: Date): string {
+  const t = timeOf(b.at);
+  let when = "";
+  if (Number.isFinite(t)) {
+    const d = new Date(t);
+    const day = sameLocalDay(d, now) ? "today" : shortDay(b.at, now);
+    when = isBareDay(b.at) ? day : `${day} ${hhmm(d)}`;
+  }
+  return [b.host ?? "wrap", when, b.session ? `session ${b.session.slice(0, 8)}` : ""].filter(Boolean).join(" · ");
+}
+
+/** A batch row's pill: "1 looks known", "3 look known"; "" for none. */
+export function knownLabel(n: number): string {
+  return n <= 0 ? "" : n === 1 ? "1 looks known" : `${n} look known`;
+}
+
+/** The batch header's lede: "Wrote 6 memories. 3 look new, 3 look like ones you already have." `total` is what is left
+ *  to review, `known` those with a duplicate flag. */
+export function batchLede(total: number, known: number): string {
+  if (total <= 0) return "Nothing left to review from this session.";
+  const k = Math.min(Math.max(0, known), total);
+  const fresh = total - k;
+  if (total === 1) return `Wrote 1 memory. It looks ${k ? "like one you already have" : "new"}.`;
+  const head = `Wrote ${total} memories.`;
+  const all = total === 2 ? "Both" : `All ${total}`;
+  if (!k) return `${head} ${all} look new.`;
+  if (!fresh) return `${head} ${all} look like ones you already have.`;
+  return `${head} ${fresh === 1 ? "1 looks new" : `${fresh} look new`}, ${k === 1 ? "1 looks like one you already have" : `${k} look like ones you already have`}.`;
+}
+
+/** Two memories, the one written first first (then the earlier `created:`, then the path): "Keep the older one" (D7). */
+export function olderFirst<M extends Pick<BrainMemory, "path" | "type" | "slug" | "created">>(a: M, b: M, written: ReadonlyMap<string, string>): [M, M] {
+  const ta = sortTime(writtenAt(a, written));
+  const tb = sortTime(writtenAt(b, written));
+  if (ta !== tb) return ta < tb ? [a, b] : [b, a];
+  const ca = a.created ?? "";
+  const cb = b.created ?? "";
+  if (ca !== cb) return (ca || "￿") < (cb || "￿") ? [a, b] : [b, a];
+  return a.path <= b.path ? [a, b] : [b, a];
+}
+
+/** The Older queue's months in the queue's order: "September 2026" and its memories ("Undated" for none). */
+export function olderByMonth<M extends Pick<BrainMemory, "type" | "slug" | "created">>(memories: readonly M[], written: ReadonlyMap<string, string>): Array<{ label: string; items: M[] }> {
+  const out: Array<{ label: string; items: M[] }> = [];
+  for (const m of memories) {
+    const t = timeOf(writtenAt(m, written));
+    const label = Number.isFinite(t) ? `${MONTH_NAMES[new Date(t).getMonth()]} ${new Date(t).getFullYear()}` : "Undated";
+    const last = out[out.length - 1];
+    if (last && last.label === label) last.items.push(m);
+    else out.push({ label, items: [m] });
+  }
+  return out;
+}
+
+/**
+ * Review's selection after a redraw (D4): `key` while it is still listed; else the row now at its old index, which is
+ * the next one after an action took it out (the last when it was the last); null when nothing is listed.
+ */
+export function reviewSelection(keys: readonly string[], key: string | null, index: number): { key: string | null; index: number } {
+  if (key !== null) { const i = keys.indexOf(key); if (i >= 0) return { key, index: i }; }
+  if (!keys.length) return { key: null, index: 0 };
+  const i = Math.max(0, Math.min(Number.isFinite(index) ? Math.trunc(index) : 0, keys.length - 1));
+  return { key: keys[i], index: i };
+}
+
+/** "used 6× this week", "not used this week", or "" with no usage log (Review's compare box, D8). */
+export function weekUse(hub: BrainHub | null, path: string): string {
+  if (!hasUsage(hub)) return "";
+  const n = hub!.usage.paths[path]?.d7 ?? 0;
+  return n > 0 ? `used ${n}× this week` : "not used this week";
+}
