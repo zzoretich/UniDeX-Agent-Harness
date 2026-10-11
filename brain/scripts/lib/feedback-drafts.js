@@ -101,8 +101,10 @@ function rejectDraft(slug) {
   return { slug: d.slug };
 }
 
-/** H1 titles of ACTIVE rules in brain/memory/feedback/ (excludes _drafts/). */
+/** H1 titles of ACTIVE rules in brain/memory/feedback/ (excludes _drafts/, and a rule archived or superseded in the
+ *  Brain tab: it no longer covers a correction, so a repeat of it is drafted again; brain-hub D5, D7). */
 function activeRuleTitles() {
+  const { splitFm, getStatus, GONE } = require('./memory-ops.js');
   const dir = path.join(PATHS.MEMORY_DIR, 'feedback');
   let names;
   try { names = fs.readdirSync(dir); } catch { return []; }
@@ -110,7 +112,9 @@ function activeRuleTitles() {
   for (const n of names) {
     if (!n.endsWith('.md')) continue;
     try {
-      const m = fs.readFileSync(path.join(dir, n), 'utf8').match(/^# (.+)$/m);
+      const text = fs.readFileSync(path.join(dir, n), 'utf8');
+      if (GONE.includes(getStatus((splitFm(text) || { lines: [] }).lines))) continue;
+      const m = text.match(/^# (.+)$/m);
       titles.push(m ? m[1].trim() : n.replace(/\.md$/, ''));
     } catch { /* unreadable — skip */ }
   }

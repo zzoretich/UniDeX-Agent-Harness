@@ -88,3 +88,21 @@ test('session_recall caps a long note and says how to read the rest', async () =
   assert.match(capped, /…\[truncated: 24000 of 30001 characters; call session_recall with maxChars: 30001 for all of it\]$/);
   assert.equal(await call('session_recall', { date: '2026-09-20', maxChars: 30001 }), NOTE);
 });
+
+test('feedback_rules leaves out a rule archived or superseded in the Brain tab (brain-hub D5, D7)', async () => {
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'mif-retired-'));
+  const write = (rel, text) => { fs.mkdirSync(path.dirname(path.join(vault, rel)), { recursive: true }); fs.writeFileSync(path.join(vault, rel), text); };
+  write('brain/config.json', JSON.stringify({ provider: 'none' }));
+  write('brain/memory/feedback/live-rule.md', memory('2026-10-01', 'A live rule', 'Still applies.'));
+  write('brain/memory/feedback/archived-rule.md', memory('2026-10-02', 'An archived rule', 'Retired.').replace('status/active', 'status/archived').replace('---\n\n#', 'archived: 2026-10-11\n---\n\n#'));
+  write('brain/memory/feedback/merged-rule.md', memory('2026-10-03', 'A superseded rule', 'Folded into the live one.').replace('status/active', 'status/superseded').replace('---\n\n#', 'superseded_by: brain/memory/feedback/live-rule.md\n---\n\n#'));
+  write('MEMORY.md', '# Memory Index\n\n## Feedback (how to work)\n- [A live rule](brain/memory/feedback/live-rule.md) — still applies\n');
+  const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER], env: { ...process.env, AOS_VAULT: vault, AOS_CONFIG: path.join(vault, 'none.json') } });
+  const client = new Client({ name: 'mcp-index-first-test', version: '0.0.0' });
+  await client.connect(transport);
+  try {
+    const out = JSON.parse((await client.callTool({ name: 'feedback_rules', arguments: {} })).content[0].text);
+    assert.equal(out.count, 1);
+    assert.deepEqual(out.rules.map((r) => r.path), ['brain/memory/feedback/live-rule.md']);
+  } finally { await client.close(); }
+});

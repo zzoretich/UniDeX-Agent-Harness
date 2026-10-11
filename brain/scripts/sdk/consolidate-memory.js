@@ -29,7 +29,9 @@ const CONSOLIDATION_FORMAT = 'The markdown draft described in the system prompt:
 
 /** Everything the model needs, or null with fewer than two memory files. */
 function buildConsolidation() {
-  const mems = brain.listMemories();
+  // Archived and superseded memories are already retired (brain-hub D5, D7): never offered for merging or deleting again.
+  const { isRetired } = require('./lib/recall.js');
+  const mems = brain.listMemories().filter((m) => !isRetired(m.frontmatter));
   const pats = brain.listPatterns();
   const all = [
     ...mems.map((m) => ({ path: m.path, type: m.type, content: brain.readIfExists(m.absPath) || '' })),

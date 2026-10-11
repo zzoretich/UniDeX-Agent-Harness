@@ -130,9 +130,12 @@ function isDraftPath(rel) {
   return String(rel).split('/').slice(3, -1).some(s => s.startsWith('_'));
 }
 
-/** Active feedback rules: brain/memory/feedback/**, drafts left out. */
+/** Active feedback rules: brain/memory/feedback/**, drafts left out, and an archived or superseded rule too (brain-hub D5,
+ *  D7: retiring a rule in the Brain tab takes it out of what every session loads, as it leaves recall and BRAIN.md).
+ *  recall.js requires this module at load, so its isRetired is required here lazily. */
 function listFeedback() {
-  return listMemories().filter(m => m.type === 'feedback' && !isDraftPath(m.path));
+  const { isRetired } = require('./recall.js');
+  return listMemories().filter(m => m.type === 'feedback' && !isDraftPath(m.path) && !isRetired(m.frontmatter));
 }
 
 /** MEMORY.md's `- [Title](path) — description` lines, by path. */

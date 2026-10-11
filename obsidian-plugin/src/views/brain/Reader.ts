@@ -7,7 +7,7 @@
 import { Component, MarkdownRenderer, Notice, setIcon } from "obsidian";
 import {
   SET_STATUSES, bodyWithoutTitle, brainMdLine, brainMdSection, shortDay, type BrainDraft, type BrainMemory, type BrainNote,
-  type SetResult, type SetStatus,
+  type SetResult, type SetStatus, sessionLabel,
 } from "../../data/brainModel";
 import type { BrainCtx } from "./types";
 
@@ -120,7 +120,7 @@ export class LibraryReader {
     meta.createSpan({ text: `status ${m.status ?? "active"}` });
     const upd = shortDay(m.updated ?? m.created, now);
     if (upd) meta.createSpan({ text: `updated ${upd}` });
-    const from = [m.source, m.session ? `session ${m.session.slice(0, 8)}` : null].filter(Boolean).join(" · ");
+    const from = [m.source, m.session ? sessionLabel(m.session) : null].filter(Boolean).join(" · ");
     if (from) meta.createSpan({ text: from, attr: m.session ? { title: `session ${m.session}` } : {} });
     if (m.reviewed === true) meta.createSpan({ cls: "aos-lib-ok", text: "reviewed" });
     else if (m.reviewed === false) meta.createSpan({ cls: "aos-lib-warn", text: "to review" });
@@ -222,7 +222,7 @@ export class LibraryReader {
     meta.createSpan({ cls: "aos-lib-metatype is-feedback", text: "feedback draft" });
     const c = shortDay(d.created, now);
     if (c) meta.createSpan({ text: `created ${c}` });
-    if (d.session) meta.createSpan({ text: `session ${d.session.slice(0, 8)}`, attr: { title: `session ${d.session}` } });
+    if (d.session) meta.createSpan({ text: sessionLabel(d.session), attr: { title: `session ${d.session}` } });
     const acts = this.actions(head);
     this.btn(acts, "approve", "Approve", async () => {
       const r = await this.ctx.run({ verb: "draft", action: "approve", slug: d.slug }, "Approve");

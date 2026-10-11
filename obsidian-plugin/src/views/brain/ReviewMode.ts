@@ -11,7 +11,7 @@ import {
   REVIEW_QUEUES, REVIEW_QUEUE_LABEL, batchLede, batchMeta, batchWhen, compareAges, defaultMarkBefore, knownLabel, olderByMonth,
   olderFirst, olderQueue, reviewCounts, reviewKey, reviewSelection, shortDay, splitByWeek, weekUse, writtenAt, writtenBefore,
   type BrainDraft, type BrainMemory, type BrainTarget, type HubDup, type MemoryVerb, type ReviewBatch, type ReviewKey, type ReviewQueue,
-  type SetResult,
+  type SetResult, sessionLabel,
 } from "../../data/brainModel";
 import { MarkBeforeModal } from "./MarkBeforeModal";
 import type { BrainCtx, BrainData, BrainModeView } from "./types";
@@ -442,7 +442,7 @@ export class ReviewMode implements BrainModeView {
     r2.createSpan({ cls: "aos-brain-rv-lede", text: batchLede(b.paths.length, b.known.length, b.unchecked.length) });
     r2.createSpan({ cls: "aos-brain-sp" });
     const keep = r2.createEl("button", { cls: "aos-brain-btn is-primary aos-brain-rv-keepnew", attr: { type: "button", "aria-keyshortcuts": "Shift+K", "data-rv-key": "keepnew" } });
-    keep.createSpan({ text: `Keep the ${b.fresh.length} new` });
+    keep.createSpan({ text: b.fresh.length ? `Keep the ${b.fresh.length} new` : b.unchecked.length ? "Waiting for the duplicate check" : "Nothing new to keep" });
     keep.createEl("kbd", { cls: "aos-brain-kbd aos-brain-mono", text: "⇧K", attr: { "aria-hidden": "true" } });
     if (!b.fresh.length) {
       keep.disabled = true;
@@ -503,7 +503,7 @@ export class ReviewMode implements BrainModeView {
       this.textBtn(acts, "Reject…", "", `dact:${x.slug}:reject`, "reject", () => void this.reject(x));
       this.textBtn(acts, "Edit", "", `dact:${x.slug}:edit`, "edit", () => void this.ctx.edit(x.path));
       c.createDiv({ cls: "aos-brain-rv-sum", text: x.summary || "No description yet." });
-      const meta = [shortDay(x.created, v.d.now), x.session ? `session ${x.session.slice(0, 8)}` : ""].filter(Boolean).join(" · ");
+      const meta = [shortDay(x.created, v.d.now), x.session ? sessionLabel(x.session) : ""].filter(Boolean).join(" · ");
       if (meta) c.createDiv({ cls: "aos-brain-rv-dmeta aos-brain-mono", text: meta });
       c.addEventListener("click", (e) => { if (!(e.target as HTMLElement).closest("button")) this.select(x.slug, { focus: true }); });
     }

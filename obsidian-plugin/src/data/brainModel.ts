@@ -427,6 +427,12 @@ export interface ReviewBatch {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i;
 
+/** A session as the hub names it: a host session's id by its first 8 characters, anything else ("in-session", a merge
+ *  note) whole, clipped. */
+export function sessionLabel(session: string): string {
+  return `session ${UUID.test(session) ? session.slice(0, 8) : clip(session, 40)}`;
+}
+
 /** brain-hub.js buildBatches' key and title for a memory the last scan did not see; `day` is when it was written. */
 function batchKeyOf(m: BrainMemory, day: string): { key: string; session: string | null; title: string } {
   const d = day || "undated";
@@ -923,7 +929,7 @@ export function batchMeta(b: Pick<ReviewBatch, "host" | "at" | "session">, now: 
     const day = sameLocalDay(d, now) ? "today" : shortDay(b.at, now);
     when = isBareDay(b.at) ? day : `${day} ${hhmm(d)}`;
   }
-  return [b.host ?? "wrap", when, b.session ? `session ${b.session.slice(0, 8)}` : ""].filter(Boolean).join(" · ");
+  return [b.host ?? "wrap", when, b.session ? sessionLabel(b.session) : ""].filter(Boolean).join(" · ");
 }
 
 /** A batch row's pill: "1 looks known", "3 look known"; "" for none. */
