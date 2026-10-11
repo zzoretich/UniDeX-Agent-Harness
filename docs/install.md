@@ -73,7 +73,7 @@ A *host* is the agent CLI a session runs under; a *provider* is the model that a
 
 **Three modes, one runtime.** Claude Code only, Codex only, or both on one vault behave the same: context on the first prompt, working memory on every stop, telemetry, costing and memory extraction at the end, the Chief of Staff and the routines in between. What differs is only how each host is wired (below) and how the runtime learns which host it is serving:
 
-1. `AOS_HOST` in the environment — set by every Codex hook entry and by the Codex MCP server's entry, in the Codex plugin and in the direct wiring alike (the Claude Code plugin sets nothing and is the default);
+1. `AOS_HOST` in the environment — set by every Codex hook entry and by the Codex MCP server's entry, in the Codex plugin and in the direct wiring alike, and by the Claude Code plugin's MCP server entry (`claude`), so the server tags the memory-usage rows it writes; Claude Code's hooks set nothing and claude is the default;
 2. else Claude Code's own hook environment (`CLAUDE_PROJECT_DIR`);
 3. else the session transcript named in the hook payload (`rollout-*.jsonl` under the Codex home is Codex; a file under `<claude config dir>/projects/` is Claude Code);
 4. else the `hosts` block when exactly one host is enabled;
