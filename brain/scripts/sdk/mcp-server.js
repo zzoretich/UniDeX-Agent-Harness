@@ -53,6 +53,19 @@ function jsonResult(obj) {
 
 const SESSION_MAX_CHARS = 24000;
 
+// Usage rows (brain-hub D9): recall's hits and a found memory_read, by path only, tagged with this server's host
+// (AOS_HOST from either plugin's .mcp.json). A record kept beside the answer, not a change made for the caller, so the
+// tools stay READ_ONLY; a failure here never touches the answer.
+function logUsage(how, paths) {
+  try {
+    require('../lib/memory-usage.js').logUsage({
+      vault: brain.PATHS.VAULT, how, paths,
+      host: require('../lib/host.js').currentHost(process.env),
+      cfg: require('../lib/config.js').loadConfig(),
+    });
+  } catch { /* never part of the answer */ }
+}
+
 server.registerTool(
   'memory_search',
   {
@@ -79,6 +92,7 @@ server.registerTool(
   async ({ path: relPath }) => {
     const content = brain.readMemory(relPath);
     if (content == null) return textResult(`Not found or outside vault: ${relPath}`);
+    logUsage('read', [relPath]);
     return textResult(content);
   }
 );
@@ -221,6 +235,7 @@ server.registerTool(
     }
     const { hybrid, hits } = await recall.queryRecallHybrid(index, query, { limit: limit || 5 });
     if (!hits.length) return textResult(`No recall hits for "${query}".`);
+    logUsage('recalled', hits.map((h) => h.path));
     return jsonResult({ query, hybrid, count: hits.length, hits });
   }
 );

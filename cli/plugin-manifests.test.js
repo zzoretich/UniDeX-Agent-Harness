@@ -61,9 +61,10 @@ test('the Codex hook table (cli/codex-host.js) carries every hooks.json command 
   assert.match(shim, /^\s*inject-conventions\) SCRIPT=inject-conventions\.js/m);
 });
 
-test('.mcp.json declares the agenticos stdio server through bin/aos', () => {
+test('.mcp.json declares the agenticos stdio server through bin/aos, naming its host', () => {
   const m = read('plugin/.mcp.json');
-  assert.deepEqual(m, { agenticos: { type: 'stdio', command: 'sh', args: ['${CLAUDE_PLUGIN_ROOT}/bin/aos', 'mcp-server'] } });
+  // AOS_HOST=claude (brain-hub D9): the server tags its usage rows without guessing, as codex-plugin's says codex.
+  assert.deepEqual(m, { agenticos: { type: 'stdio', command: 'sh', args: ['${CLAUDE_PLUGIN_ROOT}/bin/aos', 'mcp-server'], env: { AOS_HOST: 'claude' } } });
 });
 
 test('claude plugin validate accepts the plugin and the marketplace (skipped without claude)', (t) => {

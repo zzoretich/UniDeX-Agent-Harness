@@ -67,6 +67,9 @@ if (c.hosts.codex.install !== "direct") throw new Error("install: " + c.hosts.co
 
 echo "== the direct hook commands run for real"
 run_hooks "$CODEX_HOME/hooks.json" direct
+echo "== the injection logged the memories it carried, tagged codex (brain-hub D9)"
+INJ='"host":"codex","how":"injected","path":"brain/memory/user/profile.md"'
+grep -q "$INJ" "$VAULT/brain/_index/memory-usage.jsonl"
 
 echo "== doctor (direct codex rows, no claude rows)"
 DOC=$(FAKE_CODEX_NO_PLUGINS=1 node "$ROOT/cli/aos.js" doctor)
@@ -94,6 +97,7 @@ node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
 
 echo "== the plugin's hook commands run for real, the way Codex runs them (\${PLUGIN_ROOT}, no AOS_CONFIG)"
 PLUGIN_ROOT="$PLUGIN" run_hooks "$PLUGIN/hooks/hooks.json" plugin
+[ "$(grep -c "$INJ" "$VAULT/brain/_index/memory-usage.jsonl")" -ge 2 ] || { echo "the plugin's injection logged no codex row"; exit 1; }
 
 echo "== the plugin's MCP server answers initialize from the plugin folder"
 node -e '

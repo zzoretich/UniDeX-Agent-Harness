@@ -62,6 +62,9 @@ sh "$AOS" routines next sitrep | grep -q '^sitrep: Weekdays at 07:45'
 echo "== MCP recall over stdio"
 node "$ROOT/cli/rehearsal/mcp-call.js" recall '{"query":"workbench vault profile"}' | grep -q 'brain/memory/user/profile.md'
 
+echo "== the recall left a usage row tagged claude (brain-hub D9: paths only)"
+grep -q '"host":"claude","how":"recalled","path":"brain/memory/user/profile.md"' "$VAULT/brain/_index/memory-usage.jsonl"
+
 echo "== graph_overview over stdio (the graph init's first scan built)"
 node "$ROOT/cli/rehearsal/mcp-call.js" graph_overview '{}' | grep -Eq '"nodes": ?5'
 
