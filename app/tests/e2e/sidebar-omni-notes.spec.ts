@@ -125,7 +125,8 @@ test.describe("note view", () => {
     await expect(notePath(win)).toHaveText("MEMORY.md");
     await expect(noteBody(win).locator("h1")).toHaveText("Memory Index");
     await expect(noteBody(win).locator("h2")).toHaveText(["User", "Feedback (how to work)", "Project", "Reference", "Patterns"]);
-    await expect(noteBody(win).locator("a.internal-link")).toHaveCount(9);
+    // One link per indexed memory (the archived one has no line, brain-hub D5) and the pattern.
+    await expect(noteBody(win).locator("a.internal-link")).toHaveCount(15);
     await expect(noteBody(win).locator("[contenteditable], textarea")).toHaveCount(0);
     // With the Notes surface off, Edit is there but disabled, and says why.
     const editBtn = noteBar(win).locator("button.aos-note-edit");

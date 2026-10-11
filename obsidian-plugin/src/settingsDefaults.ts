@@ -62,6 +62,9 @@ export interface AgenticOSSettings {
   terminalSnippets: Array<{ title: string; text: string; host: "claude" | "codex" | null }>;
   // Pulse (spec 2026-10-08-pulse-cockpit-design P10): when Pulse was last left; "since you last looked" counts from it
   pulseSeenAt: string | null;
+  // Brain (spec 2026-10-11-brain-hub D16): when Review was last open on this machine; the rail badge counts memories
+  // written after it, so it reaches zero. Null until the first count, which sets it (the backlog is never the badge).
+  brainReviewSeenAt: string | null;
 }
 
 /** Keys data.json may still hold from earlier versions; loadSettings prunes them (the two HUD-only toggles, D10). */
@@ -87,6 +90,7 @@ export const DEFAULT_SETTINGS: AgenticOSSettings = {
   terminalChoice: { host: null, access: "host", agentPlace: "vault", recent: [] },
   terminalSnippets: [],
   pulseSeenAt: null,
+  brainReviewSeenAt: null,
 };
 
 // ── remembered choices (U12) ──

@@ -1,12 +1,13 @@
 // Pulse, the Workbench's Home (spec 2026-10-08-pulse-cockpit-design): the Chief of Staff's paragraph over ten tiles that
 // fill the pane without a scrollbar. A tile shows a count and as many rows as its height holds (P2); a click opens the
-// popup on its area (ui/PulsePopup.ts), where the rows act or jump (P4).
+// popup on its area (ui/PulsePopup.ts), where the rows act or jump (P4). The Brain tile summarises and its numbers jump
+// into the Brain tab, which acts (brain-hub D15).
 import { TAbstractFile, setIcon } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import { loadPulseModel, BRIEFING_ROUTINE_PATH, type PulseModel } from "./pulse/model";
-import { needActions, runScript, type Act, type PulseCtx } from "./pulse/actions";
-import { AREA_ICON, AREA_LABEL, BRIEFING_ROUTINE, bandLabels, touchesPulse } from "./pulse/meta";
+import { needActions, openBrain, runScript, type Act, type PulseCtx } from "./pulse/actions";
+import { AREA_ICON, AREA_LABEL, BRIEFING_ROUTINE, bandLabels, brainLinks, brainReviewLabel, brainTodayLabel, touchesPulse } from "./pulse/meta";
 import { fineOf, mentionParts, sayOf } from "../data/briefingBand";
 import type { Area, NeedItem, Tone } from "../data/pulseFacts";
 import type { FixAction } from "../data/fixQueue";
@@ -71,7 +72,7 @@ export class PulseTab {
   ctx(close: () => void = () => {}): PulseCtx {
     return {
       plugin: this.plugin, view: this.view, refresh: () => this.schedule(), close,
-      queue: () => this.getFixActions(), execute: (a) => this.execute(a), openArea: (area) => this.openArea(area as Area),
+      queue: () => this.getFixActions(), execute: (a) => this.execute(a),
     };
   }
 
@@ -97,7 +98,7 @@ export class PulseTab {
     this.renderNotifications(grid, m);
     this.renderRoutines(grid, m);
     this.renderSpend(grid, m);
-    this.renderMemory(grid, m);
+    this.renderBrain(grid, m);
     // A list also shrinks when the band grows (a paragraph that wraps once more, a font that loads late) while the root
     // keeps its size: watch every list, and only this render's.
     this.resize?.disconnect();
@@ -431,12 +432,27 @@ export class PulseTab {
     body.createDiv({ cls: "aos-pulse-dim aos-pulse-line", text: m.costActive ? m.costLine : `$${week.toFixed(2)} over 7 days` });
   }
 
-  private renderMemory(grid: HTMLElement, m: PulseModel): void {
-    const s = m.facts.summary.memory;
-    const body = this.tile(grid, "memory", { pill: s.drafts ? { text: pl(s.drafts, "draft"), tone: "gate" } : null });
-    this.big(body, String(s.writtenToday), "written today");
-    const list = this.list(body);
-    for (const r of m.inputs.trail) this.row(list, { tone: r.pending ? "off" : "ok", title: r.title, meta: r.type });
+  /**
+   * Brain (brain-hub D15, canvas PulseAfter): today's writes and those since Review was last open, then three numbers that
+   * each open a mode of the Brain tab, and a way into Review. A card, as Needs you is: its head opens the popup, and no
+   * button holds another.
+   */
+  private renderBrain(grid: HTMLElement, m: PulseModel): void {
+    const card = grid.createDiv({ cls: "aos-pulse-tile is-card", attr: { "data-area": "memory" } });
+    const headBtn = card.createEl("button", { cls: "aos-pulse-tile-headbtn", attr: { "aria-label": `${AREA_LABEL.memory}: open` } });
+    headBtn.addEventListener("click", () => this.openArea("memory"));
+    this.head(headBtn, "memory", null);
+    const body = card.createDiv({ cls: "aos-pulse-tile-body" });
+    this.big(body, String(m.facts.summary.memory.writtenToday), brainTodayLabel(m.brain.sinceLooked));
+    const links = body.createDiv({ cls: "aos-pulse-brainlinks" });
+    for (const l of brainLinks({ toReview: m.inputs.toReview ?? null, drafts: m.inputs.drafts, brainPct: m.inputs.brainPct ?? null })) {
+      const b = links.createEl("button", { cls: `aos-pulse-brainlink is-${l.tone}`, attr: { "data-brain-link": l.id, title: `${l.row} · opens ${l.dest}` } });
+      b.createSpan({ cls: "aos-pulse-brainlink-n", text: l.value });
+      b.createSpan({ cls: "aos-pulse-brainlink-k", text: `${l.label} →` });
+      b.addEventListener("click", () => openBrain(this.ctx(), l.target));
+    }
+    const go = body.createEl("button", { cls: "aos-pulse-brainreview", attr: { "data-brain-link": "today" }, text: brainReviewLabel(m.brain.pendingToday) });
+    go.addEventListener("click", () => openBrain(this.ctx(), { mode: "review", queue: "session" }));
   }
 
   // ── fitting rows to the height (P2) ──

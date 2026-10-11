@@ -1,13 +1,83 @@
 // Pulse (app-smoke: Pulse, Review readiness): pipeline LEDs from the runtime's ledger, the persona-named briefing,
-// COST and HEALTH rows, the Fix Queue, the command deck, auto-promoted memories, the SYSTEM drawer and the embedded
-// terminal. With the Pulse surface off, a trail keep and a Fix Queue run are refused. The writes themselves (keep /
-// edit / revert, the Fix Queue runs, re-anchor, /scan, /reflect-week) are in pulse-writes.spec.ts.
+// COST and HEALTH rows, the Fix Queue, the command deck, the Brain tile and area (they summarise, and their numbers jump
+// into the Brain tab, which acts: brain-hub D15), the SYSTEM drawer and the embedded terminal. With the Pulse surface
+// off, a Fix Queue run is refused. The writes themselves (the Fix Queue runs, re-anchor, /scan, /reflect-week) are in
+// pulse-writes.spec.ts.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs";
-import { FX, closeNotes, closePulse, content, drawer, expected, guardWrites, noteBody, notePath, openTab, pulseArea, rail, readVaultJson, resizeHud, useApp } from "./harness";
+import { FX, badge, closeNotes, closePulse, content, drawer, expected, guardWrites, noteBody, notePath, openTab, pulseArea, rail, readVaultJson, resizeHud, useApp } from "./harness";
 
 const app = useApp();
+
+// ── the Brain tile (brain-hub D15, D16) ──
+
+interface TrailRow { ts: string; action: string; slug: string; type: string; title?: string }
+type WrittenState = "written" | "kept" | "archived" | "superseded" | "gone";
+
+const localDay = (d: Date): string => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const vaultText = (rel: string): string | null => (fs.existsSync(FX.v(rel)) ? fs.readFileSync(FX.v(rel), "utf8") : null);
+const memoryFile = (r: TrailRow): string => `brain/memory/${r.type}/${r.slug}.md`;
+const stateOf = (text: string | null): WrittenState => {
+  if (text === null) return "gone";
+  const status = /^tags:.*\bstatus\/(archived|superseded)\b/m.exec(text);
+  if (status) return status[1] as WrittenState;
+  return /^reviewed: false$/m.test(text) ? "written" : "kept";
+};
+
+/**
+ * What the Brain tile and area show, read from the fixture's files as data/pulseFacts.ts, views/pulse/model.ts and
+ * data/brainModel.ts read them: today's `written` trail rows (one per memory, newest first) and the state of each file,
+ * brain-hub.json's unreviewed count, the feedback drafts, BRAIN.md against its budget (brain-sources.json), and the
+ * memories written after `marker` (when Review was last open) that still wait: the rail badge's count.
+ */
+function brainNumbers(marker: string | null) {
+  const trail = (vaultText("brain/_index/promote-log.jsonl") ?? "").split("\n").flatMap((l): TrailRow[] => { try { return l.trim() ? [JSON.parse(l) as TrailRow] : []; } catch { return []; } });
+  const today = new Map<string, TrailRow>();
+  for (const r of trail) if (r.action === "written" && r.slug && localDay(new Date(r.ts)) === localDay(new Date())) { today.delete(memoryFile(r)); today.set(memoryFile(r), r); }
+  const written = [...today.values()].reverse().map((r) => ({ path: memoryFile(r), title: r.title || r.slug, state: stateOf(vaultText(memoryFile(r))) }));
+  const after = new Set(trail.filter((r) => r.action === "written" && r.slug && marker !== null && Date.parse(r.ts) > Date.parse(marker)).map(memoryFile));
+  const hub = vaultText("brain/_index/brain-hub.json");
+  const hubDoc = hub ? (JSON.parse(hub) as { schema?: number; counts?: { unreviewed?: unknown }; batches?: Array<{ paths?: string[] }> }) : null;
+  // brain-hub.json lags the files: today's memories that still wait and that no batch of it holds count too (D12).
+  const inHub = new Set((hubDoc?.batches ?? []).flatMap((b) => b.paths ?? []));
+  const unseen = written.filter((w) => w.state === "written" && !inHub.has(w.path)).length;
+  const sources = vaultText("brain/_index/brain-sources.json");
+  const src = sources ? (JSON.parse(sources) as { schema?: number; budget?: number; tokens?: number }) : null;
+  const drafts = fs.existsSync(FX.v("brain/memory/feedback/_drafts")) ? fs.readdirSync(FX.v("brain/memory/feedback/_drafts")).filter((f) => f.endsWith(".md")).length : 0;
+  return {
+    written,
+    pending: written.filter((w) => w.state === "written").length,
+    since: [...after].filter((p) => stateOf(vaultText(p)) === "written").length,
+    toReview: hubDoc?.schema === 1 ? (typeof hubDoc.counts?.unreviewed === "number" ? hubDoc.counts.unreviewed : 0) + unseen : null,
+    drafts,
+    pct: src?.schema === 1 && typeof src.budget === "number" && src.budget > 0 && typeof src.tokens === "number" ? Math.round((src.tokens / src.budget) * 100) : null,
+  };
+}
+
+/** When Review was last open on this machine (the plugin's brainReviewSeenAt, brain-hub D16). */
+const reviewSeenAt = (win: Page): Promise<string | null> =>
+  win.evaluate(() => (window as unknown as { aosHost: { plugin: { settings: { brainReviewSeenAt: string | null } } } }).aosHost.plugin.settings.brainReviewSeenAt);
+
+const brainTile = (win: Page): Locator => content(win).locator('.aos-pulse-tile[data-area="memory"]');
+const brainMode = (win: Page, mode: string): Locator => content(win).locator(`.aos-brain-modes .aos-brain-mode[data-mode="${mode}"]`);
+
+/** The Brain tile is a card whose numbers jump into the Brain tab: its head opens the popup, as Needs you's does. */
+async function brainArea(win: Page): Promise<Locator> {
+  const modal = win.locator(".modal.mod-pulse");
+  if (await modal.count()) return pulseArea(win, "memory");
+  await brainTile(win).locator(".aos-pulse-tile-headbtn").click();
+  await expect(modal.locator(".aos-pp-navbtn.is-on")).toHaveAttribute("data-area", "memory");
+  return modal;
+}
+
+/** The Brain tab is showing `mode`, reached from Pulse (the rail id stays "memory", D16). */
+async function expectBrain(win: Page, mode: string): Promise<void> {
+  await expect(win.locator(".modal.mod-pulse")).toHaveCount(0);
+  await expect(rail(win, "memory")).toHaveClass(/is-active/);
+  await expect(brainMode(win, mode)).toHaveAttribute("aria-selected", "true");
+  await expect(content(win).locator(".aos-brain-body")).toHaveAttribute("data-mode", mode);
+}
 
 interface Snapshot { health: { issues: Array<{ severity: string; area: string }> } }
 interface Ledger { pipelines: Record<string, { lastRun: { status: string; reason?: string | null } | null }> }
@@ -138,18 +208,117 @@ test("command deck: /brain opens BRAIN.md; /remember and /pattern open their for
   expect(await guardWrites(h)).toEqual(writes);
 });
 
-test("recently auto-promoted: newest first; the unreviewed memory offers keep / edit / revert", async () => {
+test("the Brain tile: today and since you looked, the three numbers that jump, and a way into Review; no keep, edit or revert", async () => {
   const { win } = app();
-  await pulseArea(win, "memory");
-  const rows = win.locator(".aos-trail .aos-trail-row");
-  await expect(rows).toHaveCount(3);
-  await expect(rows.nth(0).locator(".aos-trail-chip")).toHaveText("WRITTEN");
-  await expect(rows.nth(0).locator(".aos-trail-name")).toHaveText("Release checklist");
-  await expect(rows.nth(0).locator(".aos-trail-actions a")).toHaveText(["keep", "edit", "revert"]);
-  await expect(rows.nth(1).locator(".aos-trail-chip")).toHaveText("KEPT");
-  await expect(rows.nth(1).locator(".aos-trail-name")).toHaveText("Tide API notes");
-  // A written memory that is no longer unreviewed has no actions.
-  await expect(rows.nth(2).locator(".aos-trail-actions")).toHaveCount(0);
+  const marker = await reviewSeenAt(win);
+  await openTab(win, "pulse");   // drawn again with that marker
+  const b = brainNumbers(marker);
+  // The fixture writes memories today, a feedback draft, and both caches (scan-vault, build-brain-md): none of this is vacuous.
+  expect(b.written.length).toBeGreaterThan(0);
+  expect(b.pending).toBeGreaterThan(0);
+  expect(b.drafts).toBeGreaterThan(0);
+  expect(b.toReview).not.toBeNull();
+  expect(b.pct).not.toBeNull();
+  const tile = brainTile(win);
+  await expect(tile).toHaveClass(/is-card/);
+  await expect(tile.locator(".aos-pulse-tile-label")).toHaveText("Brain");
+  await expect(tile.locator(".aos-pulse-tile-headbtn")).toHaveAttribute("aria-label", "Brain: open");
+  await expect(tile.locator(".aos-pulse-big-n")).toHaveText(String(b.written.length));
+  await expect(tile.locator(".aos-pulse-big-label")).toHaveText(`today · ${b.since} since you looked`);
+  const link = (id: string) => tile.locator(`[data-brain-link="${id}"]`);
+  await expect(tile.locator(".aos-pulse-brainlinks [data-brain-link]")).toHaveCount(3);
+  await expect(link("review").locator(".aos-pulse-brainlink-n")).toHaveText(String(b.toReview));
+  await expect(link("review").locator(".aos-pulse-brainlink-k")).toHaveText("to review →");
+  await expect(link("review")).toHaveClass(b.toReview ? /is-warn/ : /is-off/);
+  await expect(link("drafts").locator(".aos-pulse-brainlink-n")).toHaveText(String(b.drafts));
+  await expect(link("drafts").locator(".aos-pulse-brainlink-k")).toHaveText(`${b.drafts === 1 ? "draft" : "drafts"} →`);
+  await expect(link("drafts")).toHaveClass(/is-gate/);
+  await expect(link("bootstrap").locator(".aos-pulse-brainlink-n")).toHaveText(`${b.pct}%`);
+  await expect(link("bootstrap").locator(".aos-pulse-brainlink-k")).toHaveText("BRAIN.md →");
+  await expect(link("bootstrap")).toHaveClass(b.pct! >= 100 ? /is-warn/ : /is-off/);
+  await expect(link("today")).toHaveText(`Review today’s ${b.pending} in Brain →`);
+  // A card, not a button: no button holds another, and nothing on it keeps, edits or reverts (brain-hub D6).
+  expect(await tile.evaluate((el) => el.tagName)).toBe("DIV");
+  await expect(tile.locator("button button")).toHaveCount(0);
+  await expect(tile.locator("button, a").filter({ hasText: /^(keep|edit|revert)$/i })).toHaveCount(0);
+});
+
+test("the Brain tile's numbers open the Brain tab: to review and Review today's on Review, drafts on its Drafts queue, BRAIN.md on Bootstrap; nothing is written", async () => {
+  const h = app();
+  const { win } = h;
+  const writes = await guardWrites(h);
+  for (const [id, mode] of [["review", "review"], ["drafts", "review"], ["bootstrap", "bootstrap"], ["today", "review"]] as const) {
+    await openTab(win, "pulse");
+    await brainTile(win).locator(`[data-brain-link="${id}"]`).click();
+    await expectBrain(win, mode);
+    // The Drafts queue is the one Review shows pressed (its queue chips mark the open queue).
+    if (id === "drafts") await expect(content(win).locator('button.aos-brain-chip[data-queue="drafts"]')).toHaveAttribute("aria-pressed", "true");
+  }
+  // Review was open: the tile and the rail badge count from then (D16), so what was written before reads zero.
+  await openTab(win, "pulse");
+  const b = brainNumbers(await reviewSeenAt(win));
+  await expect(brainTile(win).locator(".aos-pulse-big-label")).toHaveText(`today · ${b.since} since you looked`);
+  if (!b.since) await expect(badge(win, "memory")).toHaveText("");
+  expect(await guardWrites(h)).toEqual(writes);
+});
+
+test("the Brain area: the numbers as rows that jump, then today's writes read only, each opening in Library; no keep, edit or revert", async () => {
+  const h = app();
+  const { win } = h;
+  const writes = await guardWrites(h);
+  const b = brainNumbers(await reviewSeenAt(win));
+  const modal = await brainArea(win);
+  await expect(modal.locator(".aos-pp-title")).toHaveText("Brain");
+  await expect(modal.locator(".aos-pp-head .aos-pp-btn", { hasText: "Open the Brain tab" })).toBeVisible();
+  await expect(modal.locator('.aos-pp-navbtn[data-area="memory"] .aos-pp-navlabel')).toHaveText("Brain");
+  await expect(modal.locator('.aos-pp-navbtn[data-area="memory"] .aos-pp-navcount')).toHaveText(String(b.toReview));
+  const sum = (id: string) => modal.locator(`.aos-pp-row[data-brain-link="${id}"]`);
+  await expect(sum("review").locator(".aos-pp-rowtitle")).toHaveText(`${b.toReview} to review`);
+  await expect(sum("review").locator("button")).toHaveText(["Review →"]);
+  await expect(sum("drafts").locator(".aos-pp-rowtitle")).toHaveText(`${b.drafts} feedback ${b.drafts === 1 ? "draft" : "drafts"}`);
+  await expect(sum("drafts").locator("button")).toHaveText(["Review →"]);
+  await expect(sum("bootstrap").locator(".aos-pp-rowtitle")).toHaveText(`BRAIN.md ${b.pct}% of its budget`);
+  await expect(sum("bootstrap").locator("button")).toHaveText(["Open →"]);
+  // Written today: newest first, one row per memory, its state as its file is now; only Open → on each.
+  await expect(modal.locator(".aos-pp-section")).toHaveText("Written today");
+  const rows = modal.locator(".aos-pp-row[data-memory]");
+  await expect(rows).toHaveCount(b.written.length);
+  expect(await rows.evaluateAll((els) => els.map((e) => [e.getAttribute("data-memory"), e.getAttribute("data-state")]))).toEqual(b.written.map((w) => [w.path, w.state]));
+  await expect(rows.locator(".aos-pp-rowtitle")).toHaveText(b.written.map((w) => w.title));
+  await expect(rows.locator("button")).toHaveText(b.written.filter((w) => w.state !== "gone").map(() => "Open →"));
+  await expect(modal.locator("button, a").filter({ hasText: /^(keep|edit|revert)$/i })).toHaveCount(0);
+  await expect(modal.locator(".aos-trail")).toHaveCount(0);
+  // Open → shows that memory in Library, selected.
+  const first = b.written.find((w) => w.state !== "gone")!;
+  const title = /^#[ \t]+(.+?)[ \t]*$/m.exec(vaultText(first.path)!.replace(/^---\n[\s\S]*?\n---\n/, ""))![1];
+  await modal.locator(`.aos-pp-row[data-memory="${first.path}"]`).locator("button", { hasText: "Open →" }).click();
+  await expectBrain(win, "library");
+  const row = content(win).locator(`button.aos-lib-row[role="option"][data-path="${first.path}"]`);
+  await expect(row).toHaveAttribute("aria-selected", "true");
+  await expect(row.locator(".aos-lib-rowtitle")).toHaveText(title);
+  // The summary rows land as the tile's numbers do.
+  for (const [id, mode] of [["review", "review"], ["drafts", "review"], ["bootstrap", "bootstrap"]] as const) {
+    await openTab(win, "pulse");
+    await (await brainArea(win)).locator(`.aos-pp-row[data-brain-link="${id}"] button`).click();
+    await expectBrain(win, mode);
+  }
+  await openTab(win, "pulse");
+  expect(await guardWrites(h)).toEqual(writes);
+});
+
+test("Needs you and Decisions: the memories to review and the feedback drafts jump into Brain's Review, not into a terminal", async () => {
+  const { win } = app();
+  const go = async (area: string, row: RegExp): Promise<void> => {
+    await openTab(win, "pulse");
+    const modal = await pulseArea(win, area);
+    await modal.locator(".aos-pp-row", { hasText: row }).locator("button", { hasText: "Review →" }).click();
+    await expectBrain(win, "review");
+    await expect(rail(win, "term")).not.toHaveClass(/is-active/);
+  };
+  await go("needs", /written today, not yet reviewed/);
+  await go("needs", /feedback drafts? waiting for review/);
+  await go("proposals", /feedback rule drafts?/);
+  await openTab(win, "pulse");
 });
 
 test("SYSTEM drawer: inventory counts and lists, the DISK donut and the COST DETAIL sparkline as SVG", async () => {
@@ -187,7 +356,7 @@ test("Pulse has no terminal: terminals live in the Code tab", async () => {
   await expect(content(win).locator(".xterm, .aos-term, .aos-term-collapsed")).toHaveCount(0);
 });
 
-test("listener leak: switching Pulse → Memory → Pulse → Code → Pulse does not add terminal-pool listeners", async () => {
+test("listener leak: switching Pulse → Brain → Pulse → Code → Pulse does not add terminal-pool listeners", async () => {
   const { win } = app();
   // Obsidian keeps them in Events._; the compat Events keeps them in _handlers.
   const count = () => win.evaluate(() => {
@@ -204,25 +373,15 @@ test("listener leak: switching Pulse → Memory → Pulse → Code → Pulse doe
   await expect(rail(win, "pulse")).toHaveClass(/is-active/);
 });
 
-test("with the Pulse surface off, keep and a Fix Queue run are refused: the memory, the trail and the costs stay as they were", async () => {
+test("with the Pulse surface off, a Fix Queue run is refused: the costs stay as they were", async () => {
   const h = app();
-  const memory = FX.v("brain/memory/reference/release-checklist.md");
-  const trail = FX.v("brain/_index/promote-log.jsonl");
-  const before = [fs.readFileSync(memory, "utf8"), fs.readFileSync(trail, "utf8")];
-  const errors = h.errors.length;
-  await pulseArea(h.win, "memory");
-  const row = h.win.locator(".aos-trail .aos-trail-row", { has: h.win.locator(".aos-trail-actions") });
-  await row.locator(".aos-trail-actions a", { hasText: "keep" }).click();
-  await expect.poll(() => guardWrites(h)).toContain("write brain/memory/reference/release-checklist.md");
-  // The trail's actions catch nothing: the refusal reaches the console as an unhandled rejection, and no Notice says so.
-  await expect.poll(() => h.errors.slice(errors).join("\n")).toContain("brain/memory/reference/release-checklist.md refused");
-  h.errors.splice(errors);
-  await expect(row).toHaveCount(1);
+  const costs = FX.v("brain/_index/agent-runs/costs.jsonl");
+  const before = fs.existsSync(costs) ? fs.readFileSync(costs, "utf8") : null;
   await pulseArea(h.win, "health");
   await h.win.locator(".aos-pulse-fixq .aos-pulse-fix", { hasText: "session(s) missing cost" }).locator("a").click();
   await expect(h.win.locator(".notice-container")).toContainText("spawn failed: brain/scripts/auto-cost.js");
   await expect.poll(async () => (await h.guard()).filter((e) => e.kind === "spawn").map((e) => e.what)).toEqual([expect.stringMatching(/\/auto-cost\.js --backfill$/)]);
-  expect([fs.readFileSync(memory, "utf8"), fs.readFileSync(trail, "utf8")]).toEqual(before);
+  expect(fs.existsSync(costs) ? fs.readFileSync(costs, "utf8") : null).toEqual(before);
   await h.win.evaluate(() => { (window as unknown as { aosHost: { guard: { log: unknown[] } } }).aosHost.guard.log.length = 0; });
 });
 

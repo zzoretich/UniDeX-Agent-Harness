@@ -1,11 +1,13 @@
 // What a Pulse row's buttons do (spec 2026-10-08-pulse-cockpit-design P4): safe actions act in place through the writers
-// and scripts the other tabs already use; decisions jump (their label ends "→") to the review that owns them.
+// and scripts the other tabs already use; decisions jump (their label ends "→") to the review that owns them. Memories
+// and feedback drafts jump into the Brain tab, which acts on them (brain-hub D15): Pulse writes no memory.
 import { Notice } from "obsidian";
 import type AgenticOSPlugin from "../../../main";
 import type { WorkbenchView } from "../WorkbenchView";
 import type { NeedItem } from "../../data/pulseFacts";
 import type { FixAction } from "../../data/fixQueue";
-import { readAgenticosJson, reviewCommand, sessionHosts, invocation, type SessionHost } from "../../data/aosConfig";
+import type { BrainTarget } from "../../data/brainModel";
+import { readAgenticosJson, reviewCommand, sessionHosts, type SessionHost } from "../../data/aosConfig";
 import { adapterOf as notificationAdapter, setFlags } from "../../data/notificationWriter";
 import { adapterOf as todoAdapter, applyTodoEdit } from "../../data/todoWriter";
 import { toggleTodo, localDay } from "../../data/todos";
@@ -20,7 +22,6 @@ export interface PulseCtx {
   close: () => void;
   queue: () => FixAction[];
   execute: (a: FixAction) => void;
-  openArea: (area: string) => void;
 }
 
 const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -30,13 +31,6 @@ const dq = (s: string): string => `"${s.replace(/["\\$`]/g, "\\$&")}"`;
  *  Codex in single quotes (so `$agenticos:…` is not expanded by the shell). */
 export function hostCommand(host: SessionHost, prompt: string): string {
   return host === "codex" ? `codex ${shq(prompt)}` : `claude ${dq(prompt)}`;
-}
-
-/** The feedback-review skill in the first host, worded like the Proposals tab's review (aosConfig reviewCommand). */
-export function draftsCommand(): { host: SessionHost; command: string } {
-  const cfg = readAgenticosJson();
-  const host = sessionHosts(cfg)[0] || "claude";
-  return { host, command: host === "codex" ? `codex ${shq(invocation("feedback-review", "codex", cfg))}` : 'claude "review the feedback drafts"' };
 }
 
 function term(ctx: PulseCtx, host: SessionHost, command: string): void {
@@ -52,6 +46,12 @@ export function openFile(ctx: PulseCtx, path: string): void {
 export function openTab(ctx: PulseCtx, id: string): void {
   ctx.close();
   ctx.view.setTab(id);
+}
+
+/** Into the Brain tab (rail id "memory") on a mode, Review's queue or a memory in Library (brain-hub D15). Select only. */
+export function openBrain(ctx: PulseCtx, target: BrainTarget): void {
+  ctx.close();
+  if (!ctx.view.open({ tab: "memory", ...target })) ctx.view.setTab("memory");
 }
 
 export function runScript(ctx: PulseCtx, script: string, args: string[], what: string): void {
@@ -84,10 +84,8 @@ export function needActions(ctx: PulseCtx, n: NeedItem, opts: { unreadIds?: stri
       const rc = reviewCommand(readAgenticosJson());
       return [{ label: "Review →", jump: true, primary: true, run: () => term(ctx, rc.host, rc.command) }];
     }
-    case "drafts": {
-      const dc = draftsCommand();
-      return [{ label: "Review →", jump: true, primary: true, run: () => term(ctx, dc.host, dc.command) }];
-    }
+    case "drafts":
+      return [{ label: "Review →", jump: true, primary: true, run: () => openBrain(ctx, { mode: "review", queue: "drafts" }) }];
     case "gate":
       return [{ label: "Open →", jump: true, primary: true, run: () => openTab(ctx, "agent-teams") }];
     case "pipeline": {
@@ -115,7 +113,7 @@ export function needActions(ctx: PulseCtx, n: NeedItem, opts: { unreadIds?: stri
         { label: "Open →", jump: true, run: () => openTab(ctx, "notifications") },
       ];
     case "review":
-      return [{ label: "Review", jump: false, primary: true, run: () => ctx.openArea("memory") }];
+      return [{ label: "Review →", jump: true, primary: true, run: () => openBrain(ctx, { mode: "review", queue: "session" }) }];
     default:
       return [];
   }

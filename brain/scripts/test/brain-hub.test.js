@@ -179,3 +179,25 @@ test('title similarity ignores stop words', () => {
   assert.equal(jaccard('The tide parser', 'A tide parser'), 1);
   assert.equal(jaccard('Present decisions', ''), 0);
 });
+
+test('batch titles follow the Sessions rule per host: own title, else Codex thread name, else the first prompt', () => {
+  const { sessionTitles } = require('../brain-hub.js');
+  const v = fs.mkdtempSync(path.join(os.tmpdir(), 'brain-hub-titles-'));
+  const codexHome = path.join(v, 'codex-home');
+  const CX = '01a12293-e107-7c51-be41-345c2e1df22b';
+  const CX2 = '01a11ce9-90d8-7682-bb28-0fb6c8c26c12';
+  const CL = '2f25a8d9-0000-4000-8000-000000000009';
+  put(v, 'brain/_index/session-index.json', JSON.stringify({ schema: 1, files: {
+    [`/c/${CX}.jsonl`]: { host: 'codex', title: null, head: { id: CX, title: null, firstPrompt: 'Sketch the depth contours layer' } },
+    [`/c/${CX2}.jsonl`]: { host: 'codex', title: null, head: { id: CX2, title: null, firstPrompt: 'Reply with one word:\n  ok' } },
+    [`/l/${CL}.jsonl`]: { host: 'claude', title: null, head: { id: CL, title: null, firstPrompt: 'Fix the tide parser' } },
+  } }));
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, 'session_index.jsonl'), `${JSON.stringify({ id: CX, thread_name: 'Chart depth layer', updated_at: '2026-10-09T21:40:00Z' })}\n`);
+  const t = sessionTitles(v, { cfg: {}, env: { CODEX_HOME: codexHome } });
+  assert.deepEqual(t.get(CX), { title: 'Chart depth layer', host: 'codex' });
+  assert.deepEqual(t.get(CX2), { title: 'Reply with one word: ok', host: 'codex' });
+  assert.deepEqual(t.get(CL), { title: 'Fix the tide parser', host: 'claude' });
+  // No Codex index at all: the first prompt still names the batch.
+  assert.equal(sessionTitles(v, { cfg: {}, env: { CODEX_HOME: path.join(v, 'none') } }).get(CX).title, 'Sketch the depth contours layer');
+});

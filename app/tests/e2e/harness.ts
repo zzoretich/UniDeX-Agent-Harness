@@ -55,6 +55,35 @@ export interface Expected {
   teamItems: Array<Record<string, unknown>>;
   runs: string[];
   snapshot: string;
+  /**
+   * The Brain hub (spec 2026-10-11-brain-hub D3, D11, D12), as the generator read it back from the runtime: the scan's
+   * brain-hub.json (counts, batches newest first, duplicate pairs), `aos memory list --json` (every memory path, the
+   * drafts, the archived and the unreviewed live ones) and Review's "Older than 30d" queue.
+   */
+  brain: ExpectedBrain;
+}
+
+export interface ExpectedBrainBatch { key: string; session: string | null; title: string; host: string | null; lead: string | null; at: string; paths: string[] }
+export interface ExpectedBrain {
+  /** The sessions whose memories the fixture seeds: a Claude Code one, a Codex one, and one whose transcript is gone. */
+  sessions: { claude: string; codex: string; pruned: string };
+  /** The near-duplicate the fixture writes and the kept memory it repeats. */
+  duplicate: [string, string];
+  counts: {
+    memories: number; byType: Record<string, number>; unreviewed: number; drafts: number; patterns: number; reflections: number;
+    archived: number; superseded: number;
+  };
+  batches: ExpectedBrainBatch[];
+  dups: Array<{ a: string; b: string; score: number }>;
+  /** The feedback drafts' slugs. */
+  drafts: string[];
+  /** Review's "Older than 30d" queue: live, unreviewed, written more than 30 days before the fixture was generated. */
+  older: string[];
+  archived: string[];
+  /** Every memory path, live or not. */
+  memories: string[];
+  /** The live memories with `reviewed: false`. */
+  unreviewed: string[];
 }
 
 let cachedExpected: Expected | null = null;
@@ -446,7 +475,8 @@ export const drawer = (win: Page) => win.locator(".aos-wb-drawer");
 export async function pulseArea(win: Page, area: string): Promise<Locator> {
   const modal = win.locator(".modal.mod-pulse");
   if (await modal.count()) await modal.locator(`.aos-pp-navbtn[data-area="${area}"]`).click();
-  else await win.locator(area === "needs" ? `.aos-pulse-tile[data-area="needs"] .aos-pulse-tile-headbtn` : `.aos-pulse-tile[data-area="${area}"]`).click();
+  // Needs you and Brain are cards whose body holds buttons of its own: their head opens the popup.
+  else await win.locator(area === "needs" || area === "memory" ? `.aos-pulse-tile[data-area="${area}"] .aos-pulse-tile-headbtn` : `.aos-pulse-tile[data-area="${area}"]`).click();
   await expect(modal.locator(".aos-pp-navbtn.is-on")).toHaveAttribute("data-area", area);
   return modal;
 }

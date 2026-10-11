@@ -1,4 +1,4 @@
-import { App, normalizePath, TFile, Notice } from "obsidian";
+import { App, normalizePath } from "obsidian";
 import { appendUnderHeading } from "./mdSections";
 
 export type MemoryType = "user" | "feedback" | "projects" | "reference";

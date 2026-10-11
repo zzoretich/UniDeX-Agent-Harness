@@ -21,6 +21,8 @@ const path = require('path');
 const ops = require('./lib/memory-ops.js');
 const usage = require('./lib/memory-usage.js');
 const fsx = require('./lib/fsx.js');
+const { hostDirs } = require('./lib/host.js');
+const { readSessionIndex } = require('./lib/transcript.js');
 
 const DEFAULTS = { usageDays: 90, neverUsedDays: 30, dupScore: 0.8, clusterMin: 3, mapMin: 8 };
 // Clusters link pairs this far under dupScore; a group larger than MAX_CLUSTER splits on stronger pairs.
@@ -206,14 +208,29 @@ function readIndexLines(raw) {
   return lines;
 }
 
-/** session id → { title, host } from session-index.json (written by the runtime from both hosts' sessions). */
-function sessionTitles(vault) {
+/**
+ * session id → { title, host } from session-index.json (written by the runtime from both hosts' sessions), titled the way
+ * collectors/hostSessions.js titles a session for Spaces and Sessions: its own title, else Codex's thread name
+ * (session_index.jsonl in the Codex home lib/host.js resolves; a rollout carries no title), else its first prompt.
+ */
+function sessionTitles(vault, { cfg, env = process.env } = {}) {
   const idx = readJson(path.join(vault, 'brain', '_index', 'session-index.json'));
   const out = new Map();
   if (!idx || !idx.files) return out;
+  let codexNames = null;
+  const codexName = (id) => {
+    if (codexNames === null) {
+      try { codexNames = readSessionIndex(hostDirs('codex', { env, userConfig: cfg }).index); } catch { codexNames = {}; }
+    }
+    return codexNames[id] ? codexNames[id].title : null;
+  };
   for (const row of Object.values(idx.files)) {
-    const id = row && row.head && row.head.id;
-    if (id && !out.has(id)) out.set(id, { title: row.title || (row.head && row.head.title) || null, host: row.host || null });
+    const head = (row && row.head) || {};
+    const id = head.id;
+    if (!id || out.has(id)) continue;
+    const prompt = typeof head.firstPrompt === 'string' ? head.firstPrompt.replace(/\s+/g, ' ').trim() : '';
+    const title = row.title || head.title || (row.host === 'codex' ? codexName(id) : null) || prompt || null;
+    out.set(id, { title, host: row.host || null });
   }
   return out;
 }
@@ -233,8 +250,8 @@ function writtenAt(vault) {
 }
 
 /** Unreviewed live memories grouped by the session that wrote them, newest first (D3). */
-function buildBatches(live, vault) {
-  const titles = sessionTitles(vault);
+function buildBatches(live, vault, cfg) {
+  const titles = sessionTitles(vault, { cfg });
   const lead = new Map(live.map((m) => [m.path, m.title]));
   const trail = writtenAt(vault);
   const groups = new Map();
@@ -317,7 +334,7 @@ function buildBrainHub({ vault, cfg = {}, now = Date.now(), write = true } = {})
 
   const hub = {
     schema: 1, builtAt: new Date(now).toISOString(), counts,
-    batches: buildBatches(live, vault),
+    batches: buildBatches(live, vault, cfg),
     dups: pairs, clusters,
     usage: usage.summarize(vault, { now }),
     hygiene, shipped,
@@ -338,4 +355,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildBrainHub, findDuplicates, findClusters, jaccard, DEFAULTS };
+module.exports = { buildBrainHub, findDuplicates, findClusters, jaccard, sessionTitles, DEFAULTS };

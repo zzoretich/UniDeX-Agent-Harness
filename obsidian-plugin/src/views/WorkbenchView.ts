@@ -2,7 +2,7 @@ import { ItemView, TAbstractFile, WorkspaceLeaf, setIcon } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import { PulseTab } from "./PulseTab";
 import { SpacesTab } from "./SpacesTab";
-import { MemoryTab } from "./MemoryTab";
+import { BrainTab } from "./BrainTab";
 import { FilesTab } from "./FilesTab";
 import { RunsTab } from "./RunsTab";
 import { RoutinesTab } from "./RoutinesTab";
@@ -22,6 +22,8 @@ import { NOTIFICATIONS_DIR, STATE_PATH, notificationId, parseNotification, parse
 import { badgeText, proposalBadge, todoBadge, touchesBadges } from "../data/badges";
 import { TODO_PATH, localDay } from "../data/todos";
 import { readTeams, diskAdapter, gateBadge } from "../data/teams";
+import { TRAIL_PATH } from "../data/promoteTrail";
+import { pendingReview, readTrailRows, touchesBrain, trailSince, type BrainMode, type ReviewQueue } from "../data/brainModel";
 import { CaptureModal } from "../ui/CaptureModal";
 import { HOST_APP_SETTINGS, HOST_TOGGLE_THEME, runHostCommand } from "../ui/hostCommands";
 import { currentTheme, onThemeChange } from "../ui/theme";
@@ -53,7 +55,8 @@ const RAIL_SECTIONS: RailTab[][] = [
     { id: "proposals", icon: "inbox", label: "Proposals" },
   ],
   [
-    { id: "memory", icon: "brain", label: "Memory" },
+    // The Brain hub (spec 2026-10-11-brain-hub D16): the label is Brain, the id stays "memory" so links and commands hold.
+    { id: "memory", icon: "brain", label: "Brain" },
     { id: "agent-teams", icon: "users", label: "Agent Teams" },
     { id: "agents", icon: "bot", label: "Agents" },
     { id: "skills", icon: "sparkles", label: "Skills" },
@@ -82,6 +85,10 @@ export interface WorkbenchTarget {
   pane?: SpacesPane | null;
   /** A thread id: Sessions opens that thread; Spaces shows it in the workspace's history. */
   thread?: string | null;
+  /** Brain only (brain-hub D15): the mode to show, Review's queue, a memory path to show in Library. */
+  mode?: BrainMode | null;
+  queue?: ReviewQueue | null;
+  memory?: string | null;
 }
 /** What a tab's reveal() is handed: the target without its tab, only the fields that were set. */
 export type RevealTarget = Omit<WorkbenchTarget, "tab">;
@@ -91,6 +98,8 @@ interface WorkbenchTab {
   mount(h: HTMLElement): void;
   refresh(): Promise<void>;
   unmount(): void;
+  /** Another tab is being shown. A tab is never unmounted on the way out (setTab only empties the content area). */
+  leave?(): void;
 }
 
 /**
@@ -114,6 +123,10 @@ export class WorkbenchView extends ItemView {
   private tabs: Partial<Record<string, WorkbenchTab>> = {};
   private activeTab = "pulse";
   private unwatchTheme: (() => void) | null = null;
+  /** The Brain badge's answer per memory (still live and unreviewed), kept until a vault event touches the file (D16). */
+  private brainPending = new Map<string, boolean>();
+  /** Bumped by every event on a brain path: an answer read across one is not kept. */
+  private brainEpoch = 0;
 
   constructor(leaf: WorkspaceLeaf, plugin: AgenticOSPlugin) { super(leaf); this.plugin = plugin; }
   getViewType(): string { return VIEW_TYPE_WORKBENCH; }
@@ -184,7 +197,12 @@ export class WorkbenchView extends ItemView {
     // rail badges (spec 2026-09-22-todo-and-proposals-tabs D7): recomputed on any vault event under a watched
     // path, whichever tab is active — tabs are built lazily, so they cannot own this.
     const onPath = (f: TAbstractFile, oldPath?: string) => {
-      const hit = (p: string) => touchesBadges(p) || touchesPulse(p);
+      const hit = (p: string) => touchesBadges(p) || touchesPulse(p) || touchesBrain(p);
+      if (touchesBrain(f.path) || (oldPath !== undefined && touchesBrain(oldPath))) {
+        this.brainPending.delete(f.path);
+        if (oldPath !== undefined) this.brainPending.delete(oldPath);
+        this.brainEpoch++;
+      }
       if (hit(f.path) || (oldPath !== undefined && hit(oldPath))) this.scheduleBadges();
     };
     this.registerEvent(this.app.vault.on("create", (f) => onPath(f)));
@@ -259,6 +277,46 @@ export class WorkbenchView extends ItemView {
     this.setBadge("notifications", n.count, n.breaking);
     await this.refreshTeamsBadge();
     await this.refreshPulseBadge();
+    await this.refreshBrainBadge();
+  }
+
+  /**
+   * Brain's badge (brain-hub D16): memories written since Review was last open on this machine, still live and
+   * unreviewed, so it reaches zero. The trail names what was written after the marker; only those files are read, by
+   * their frontmatter, and each answer is kept until a vault event touches that file (every badge refresh runs this, and
+   * the list grows while Review stays closed). The first count sets the marker, so the backlog never becomes the badge.
+   */
+  private async refreshBrainBadge(): Promise<void> {
+    const s = this.plugin.settings;
+    if (!s.brainReviewSeenAt) { s.brainReviewSeenAt = new Date().toISOString(); void this.plugin.saveSettings(); }
+    const marker = s.brainReviewSeenAt;
+    try {
+      const a = this.app.vault.adapter;
+      const trail = readTrailRows((await a.exists(TRAIL_PATH)) ? await a.read(TRAIL_PATH) : null);
+      const paths = trailSince(trail, marker);
+      let n = 0;
+      for (const p of paths) {
+        let v = this.brainPending.get(p);
+        if (v === undefined) {
+          const epoch = this.brainEpoch;
+          try { v = pendingReview(await a.read(p)); } catch { v = false; /* gone */ }
+          if (epoch === this.brainEpoch) this.brainPending.set(p, v);
+        }
+        if (v) n++;
+      }
+      const named = new Set(paths);
+      for (const p of [...this.brainPending.keys()]) if (!named.has(p)) this.brainPending.delete(p);
+      // Review was shown while this counted: markBrainSeen has already put its zero up, from a later marker.
+      if (s.brainReviewSeenAt !== marker) return;
+      this.setBadge("memory", n);
+    } catch { /* unreadable: no badge */ }
+  }
+
+  /** Review was shown (or left): the badge counts from now (brain-hub D16). */
+  markBrainSeen(): void {
+    this.plugin.settings.brainReviewSeenAt = new Date().toISOString();
+    void this.plugin.saveSettings();
+    this.setBadge("memory", 0);
   }
 
   /** Pulse's badge (P5): how many items need the user; rose while one of them is an error. */
@@ -410,6 +468,9 @@ export class WorkbenchView extends ItemView {
     if (target.workspace) reveal.workspace = target.workspace;
     if (target.pane) reveal.pane = target.pane;
     if (target.thread) reveal.thread = target.thread;
+    if (target.mode) reveal.mode = target.mode;
+    if (target.queue) reveal.queue = target.queue;
+    if (target.memory) reveal.memory = target.memory;
     if (Object.keys(reveal).length) revealOf(this.tabs[tab])?.(reveal);
     return true;
   }
@@ -425,7 +486,7 @@ export class WorkbenchView extends ItemView {
     if (id === "proposals") return new ProposalsTab(this.plugin, this);
     if (id === "notifications") return new NotificationsTab(this.plugin, this);
     if (id === "spaces") return new SpacesTab(this.plugin, this);
-    if (id === "memory") return new MemoryTab(this.plugin, this);
+    if (id === "memory") return new BrainTab(this.plugin, this);
     if (id === "runs") return new RunsTab(this.plugin, this);
     if (id === "routines") return new RoutinesTab(this.plugin, this);
     if (id === "skills") return new SkillsTab(this.plugin, this);
@@ -438,6 +499,8 @@ export class WorkbenchView extends ItemView {
   }
 
   setTab(id: string): void {
+    // The tab on its way out is told (it stays mounted in memory): Brain moves its badge marker when Review was shown (D16).
+    if (id !== this.activeTab) this.tabs[this.activeTab]?.leave?.();
     this.activeTab = id;
     this.railEl?.querySelectorAll(".aos-wb-railbtn").forEach((el) => {
       el.toggleClass("is-active", (el as HTMLElement).dataset.tab === id);

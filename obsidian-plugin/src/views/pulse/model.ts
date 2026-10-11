@@ -7,7 +7,8 @@ import { BRIEFING_PATH, chooseParagraph, parseBriefing, sinceLine, type Briefing
 import { loadSnapshot, visibleWorkspaces, type Snapshot, type WorkspaceEntry } from "../../data/snapshot";
 import { loadPipelines, pipelineStatuses, type PipelineStatus } from "../../data/pipelines";
 import { buildFixQueue, type FixAction } from "../../data/fixQueue";
-import { loadTrail, isPendingReview, type TrailEntry } from "../../data/promoteTrail";
+import { TRAIL_PATH } from "../../data/promoteTrail";
+import { brainBadge, parseMemory, readTrailRows, trailSince, writtenAtMap, type BrainMemory } from "../../data/brainModel";
 import { loadAllMaps, mapStats, type WorkspaceMap } from "../../data/workspaceMaps";
 import { buildMonthlyBudget, formatUSD, type BudgetConfig } from "../../data/cost";
 import { loadRunsForMonth, type AgentRun } from "../../data/runs";
@@ -40,6 +41,41 @@ export interface TeamRow { id: string; name: string; members: number; working: n
 export interface SpendFamily { family: string; usd: number; calls: number }
 export interface DecisionRow { kind: "proposal" | "gate" | "flag" | "drafts"; title: string; sub: string; ref: string; days: number | null }
 
+/** What a memory written today is now (brain-hub D15): still to review, kept, archived, superseded, or no longer there. */
+export type WrittenState = "written" | "kept" | "archived" | "superseded" | "gone";
+export interface WrittenRow { path: string; title: string; type: string; at: string; state: WrittenState }
+
+/** The Brain tile and area (brain-hub D15, D16): Pulse summarises, the Brain tab acts. */
+export interface BrainSummary {
+  /** Today's writes, newest first, one per memory (the popup's "Written today"). */
+  written: WrittenRow[];
+  /** Those still to review: "Review today's N in Brain →". */
+  pendingToday: number;
+  /** Memories written since Review was last open on this machine, still live and unreviewed: the rail badge's count. */
+  sinceLooked: number;
+}
+
+/**
+ * Today's `written` trail rows (inputs.trail, oldest first) as the popup lists them: newest first, one row per memory,
+ * each in the state its file is in now. `texts` holds each memory's text, null when its file is gone.
+ */
+export function writtenRows(trail: PulseInputs["trail"], texts: ReadonlyMap<string, string | null>): WrittenRow[] {
+  const out: WrittenRow[] = [];
+  const seen = new Set<string>();
+  for (const r of [...trail].reverse()) {
+    if (r.action !== "written" || !r.slug) continue;
+    const file = `brain/memory/${r.type}/${r.slug}.md`;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const text = texts.get(file) ?? null;
+    const m = text === null ? null : parseMemory(file, text);
+    const unreviewed = m ? m.reviewed === false : /^reviewed: false$/m.test(text ?? "");
+    const state: WrittenState = text === null ? "gone" : m && !m.live ? (m.status === "superseded" ? "superseded" : "archived") : unreviewed ? "written" : "kept";
+    out.push({ path: file, title: r.title || r.slug, type: r.type, at: r.ts, state });
+  }
+  return out;
+}
+
 export interface PulseModel {
   now: Date;
   inputs: PulseInputs;
@@ -56,7 +92,7 @@ export interface PulseModel {
   costActive: boolean;
   costLine: string;
   costWarn: boolean;
-  trailRows: { entry: TrailEntry; pendingReview: boolean }[];
+  brain: BrainSummary;
   staff: StaffAgent[];
   heartbeat: PersonaHeartbeat | null;
   live: LiveRow[];
@@ -229,8 +265,20 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
     costEnabled: costActive,
   });
 
-  const trail = await loadTrail(app, 8);
-  const trailRows = await Promise.all(trail.map(async (entry) => ({ entry, pendingReview: entry.action === "written" && (await isPendingReview(app, entry)) })));
+  // The Brain tile (brain-hub D15, D16): today's writes as their files are now, and those since Review was last open,
+  // counted as the rail badge counts them (WorkbenchView refreshBrainBadge), so the two agree.
+  const texts = new Map<string, string | null>();
+  for (const r of inputs.trail) { const p = `brain/memory/${r.type}/${r.slug}.md`; if (!texts.has(p)) texts.set(p, await read(p)); }
+  const written = writtenRows(inputs.trail, texts);
+  const marker = plugin.settings.brainReviewSeenAt ?? null;
+  const trail = readTrailRows(await read(TRAIL_PATH));
+  const since: BrainMemory[] = [];
+  for (const p of trailSince(trail, marker)) {
+    const text = texts.has(p) ? texts.get(p)! : await read(p);
+    const mem = text === null ? null : parseMemory(p, text);
+    if (mem) since.push(mem);
+  }
+  const brain: BrainSummary = { written, pendingToday: written.filter((w) => w.state === "written").length, sinceLooked: brainBadge(since, writtenAtMap(trail), marker) };
 
   let routineRows: RoutineRow[] = [];
   try { routineRows = buildRows(await listRoutines(app), await readRoutinesState(app), now); } catch { /* none */ }
@@ -251,7 +299,7 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
     decisions.push({ kind: "proposal", title, sub: `proposal · filed ${filed}`, ref: p.name, days: ageDays(filed, now) });
   }
   for (const n of facts.needsYou.filter((x) => x.kind === "flag")) decisions.push({ kind: "flag", title: n.title, sub: `flag${n.since ? ` · since ${n.since}` : ""} · persona/STATE.md`, ref: n.ref, days: n.since ? ageDays(n.since, now) : null });
-  if (inputs.drafts) decisions.push({ kind: "drafts", title: `${inputs.drafts} feedback rule draft${inputs.drafts === 1 ? "" : "s"}`, sub: "brain/memory/feedback/_drafts · feedback-review", ref: "feedback-drafts", days: null });
+  if (inputs.drafts) decisions.push({ kind: "drafts", title: `${inputs.drafts} feedback rule draft${inputs.drafts === 1 ? "" : "s"}`, sub: "brain/memory/feedback/_drafts · Brain › Review › Drafts", ref: "feedback-drafts", days: null });
 
   const live = await liveRows(plugin);
   return {
@@ -261,7 +309,7 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
     personaOff, briefingOff: persona.briefing?.enabled === false,
     routineInstalled: await a.exists(BRIEFING_ROUTINE_PATH).catch(() => false),
     snapshot, statuses, queue, costActive, costLine, costWarn: budget.stale || budget.calibration <= 0,
-    trailRows,
+    brain,
     staff: await loadStaff(app).catch(() => []),
     heartbeat: await loadPersonaHeartbeat(app).catch(() => null),
     live: live.rows,

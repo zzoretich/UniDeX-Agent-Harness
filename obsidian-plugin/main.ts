@@ -98,7 +98,8 @@ export default class AgenticOSPlugin extends Plugin {
     // commands
     this.addCommand({ id: "open-workbench",       name: "Open Workbench",        callback: () => { void this.activate(VIEW_TYPE_WORKBENCH); } });
     for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "agents", "agent-teams", "chat", "term", "settings"] as const) {
-      const name = t === "todo" ? "To-Do" : t === "agent-teams" ? "Agent Teams" : t === "chat" ? "Sessions" : t === "term" ? "Code" : `${t[0].toUpperCase()}${t.slice(1)}`;
+      // The Brain tab keeps the id "memory" (brain-hub D16), so its command id holds and only the name changes.
+      const name = t === "todo" ? "To-Do" : t === "agent-teams" ? "Agent Teams" : t === "chat" ? "Sessions" : t === "term" ? "Code" : t === "memory" ? "Brain" : `${t[0].toUpperCase()}${t.slice(1)}`;
       this.addCommand({ id: `open-workbench-${t}`, name: `Open Workbench: ${name}`,
         callback: () => { void this.openWorkbenchTab(t); } });
     }
@@ -488,6 +489,9 @@ export default class AgenticOSPlugin extends Plugin {
       const script = path.join(base, relScript);
       if (!fs.existsSync(script)) {
         if (opts.quiet) console.warn(`[agentic-os] script missing: ${relScript}`); else new Notice(`script missing: ${relScript}`);
+        // onDone still runs, as after a run that failed: a caller holding a "running" flag (the Brain tab's hub rebuild,
+        // the status line refresh) must not wait for a close that never comes.
+        if (onDone) window.setTimeout(onDone, 0);
         return;
       }
       // opts.env: the Routines tab pins AOS_VAULT/AOS_CONFIG so the runtime resolves the same vault and config dir the HUD shows.
@@ -501,6 +505,7 @@ export default class AgenticOSPlugin extends Plugin {
       if (!opts.quiet) new Notice(`▶ ${relScript.split("/").pop()} ${args.join(" ")}`.trim());
     } catch (e) {
       console.warn("[agentic-os] runBrainScript error:", e);
+      if (onDone) window.setTimeout(onDone, 0);
     }
   }
 

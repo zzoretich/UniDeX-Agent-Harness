@@ -114,3 +114,26 @@ test('a proposal is titled by its first heading, else its slug; filed by its fro
   assert.deepEqual(PF.proposalOf('2026-09-01-x.md', '---\nfiled: 2026-09-02\n---\n\n# Do the thing\n'), { title: 'Do the thing', filed: '2026-09-02' });
   assert.deepEqual(PF.proposalOf('2026-09-01-make-it-so.md', 'no heading'), { title: 'make-it-so', filed: '2026-09-01' });
 });
+
+test('a memory written today is pending only while it is live and unreviewed: archive and supersede keep `reviewed: false` (brain-hub D5, D7)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pulse-retired-'));
+  try {
+    const mem = (slug, tags, extra = '') => `---\ntype: memory\ntags: [memory/feedback, ${tags}]\ncreated: 2026-10-08\nreviewed: false\n${extra}---\n\n# ${slug}\n\nBody.\n`;
+    fs.mkdirSync(path.join(dir, 'brain', 'memory', 'feedback'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'brain', '_index'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'brain', 'memory', 'feedback', 'waits.md'), mem('waits', 'status/active'));
+    fs.writeFileSync(path.join(dir, 'brain', 'memory', 'feedback', 'archived.md'), mem('archived', 'status/archived', 'status_before: active\narchived: 2026-10-08\n'));
+    fs.writeFileSync(path.join(dir, 'brain', 'memory', 'feedback', 'superseded.md'), mem('superseded', 'status/superseded', 'superseded_by: brain/memory/feedback/waits.md\n'));
+    // `reviewed: false` in the body is not the frontmatter's.
+    fs.writeFileSync(path.join(dir, 'brain', 'memory', 'feedback', 'kept.md'), mem('kept', 'status/active').replace('reviewed: false\n', 'reviewed: true\n').replace('Body.', 'reviewed: false'));
+    const rows = ['waits', 'archived', 'superseded', 'kept'].map((slug, i) => JSON.stringify({ ts: `2026-10-08T0${i + 1}:00:00`, action: 'written', slug, type: 'feedback', title: slug }));
+    fs.writeFileSync(path.join(dir, 'brain', '_index', 'promote-log.jsonl'), `${rows.join('\n')}\n`);
+    const inputs = PF.read(dir, { now: NOW });
+    assert.deepEqual(inputs.trail.map((r) => [r.slug, r.pending]), [['waits', true], ['archived', false], ['superseded', false], ['kept', false]]);
+    const f = PF.facts(inputs, NOW);
+    assert.deepEqual(f.summary.memory, { writtenToday: 4, pendingReview: 1, drafts: 0 });
+    assert.deepEqual(f.needsYou.map((n) => n.title), ['1 memory written today, not yet reviewed']);
+    assert.equal(PF.pendingReview(null), false);
+    assert.equal(PF.pendingReview('reviewed: false\n'), false, 'no frontmatter, no memory');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
