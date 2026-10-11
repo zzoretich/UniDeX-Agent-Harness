@@ -3,7 +3,7 @@
 // a vault pass kept per file), the memories that score close to it (D11: by meaning with embeddings, else by words)
 // and its history from the trail in one line with its path. Under 1100 px the pane folds under the reader.
 import {
-  hasUsage, historyFor, historyLine, hostSplit, linkSourceKind, nearby, nearbyBasis, shortDay, type HubUsageRow,
+  hasUsage, historyFor, historyLine, hostSplit, linkSourceKind, nearby, nearbyBasis, shortDay, type HubUsageRow, sessionLabel,
 } from "../../data/brainModel";
 import { readerPath, focusedKey, refocus, type ReaderItem } from "./Reader";
 import { MAX_BACKLINKS, type LibraryLinks } from "./LibraryLinks";
@@ -104,7 +104,7 @@ export class LibraryContext {
       const c = shortDay(it.kind === "drafts" ? it.d.created : it.n.created, d.now);
       const u = it.kind === "drafts" ? "" : shortDay(it.n.updated, d.now);
       line = [c ? `${it.kind === "drafts" ? "Drafted" : "Created"} ${c}` : "", u && u !== c ? `updated ${u}` : "",
-        it.kind === "drafts" && it.d.session ? `session ${it.d.session.slice(0, 8)}` : ""].filter(Boolean).join(" · ");
+        it.kind === "drafts" && it.d.session ? sessionLabel(it.d.session) : ""].filter(Boolean).join(" · ");
     }
     h.createEl("p", { cls: "aos-lib-cline", text: line || "Nothing in the trail for it yet." });
     h.createEl("p", { cls: "aos-brain-mono aos-lib-cpath", text: path });

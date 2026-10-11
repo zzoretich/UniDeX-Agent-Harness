@@ -200,7 +200,7 @@ test("⇧K keeps the batch's new memories in one call and leaves the one that lo
   await pickBatch(b.key);
   await expect(main().locator("button.aos-brain-rv-keepnew")).toHaveText("Keep the 2 new⇧K");
   await focusCard(flagged);
-  // ⇧K from the button itself: it turns off ("Keep the 0 new"), so the keyboard goes to the card that is left, never
+  // ⇧K from the button itself: it turns off ("Nothing new to keep"), so the keyboard goes to the card that is left, never
   // to the page.
   await main().locator("button.aos-brain-rv-keepnew").focus();
   await win.keyboard.press("Shift+K");
@@ -214,7 +214,7 @@ test("⇧K keeps the batch's new memories in one call and leaves the one that lo
   await expect(card(flagged)).toBeFocused();
   await expect(main().locator(".aos-brain-rv-lede")).toHaveText("1 left to review. It looks like one you already have.");
   const keepNew = main().locator("button.aos-brain-rv-keepnew");
-  await expect(keepNew).toHaveText("Keep the 0 new⇧K");
+  await expect(keepNew).toHaveText("Nothing new to keep⇧K");
   await expect(keepNew).toBeDisabled();
   await expect(keepNew).toHaveAttribute("title", "Every memory here looks like one you already have");
   await expect(batchRow(b.key).locator(".aos-brain-rv-rmeta > span:nth-child(2)")).toHaveText("1 new");

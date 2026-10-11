@@ -76,6 +76,12 @@ test('activeRuleTitles reads H1s of active rules and ignores _drafts', () => {
     '---\ntype: memory\n---\n\n# Lead with the recommendation\n\nbody\n');
   writeDraft(DRAFT);
   assert.deepEqual(activeRuleTitles(), ['Lead with the recommendation']);
+  // A rule retired in the Brain tab no longer covers a correction (brain-hub D5, D7), inline or block-list tags alike.
+  fs.writeFileSync(path.join(TMP, 'brain', 'memory', 'feedback', 'retired-rule.md'),
+    '---\ntype: memory\ntags: [memory/feedback, status/archived]\n---\n\n# A retired rule\n');
+  fs.writeFileSync(path.join(TMP, 'brain', 'memory', 'feedback', 'merged-rule.md'),
+    '---\ntype: memory\ntags:\n  - memory/feedback\n  - status/superseded\n---\n\n# A merged rule\n');
+  assert.deepEqual(activeRuleTitles(), ['Lead with the recommendation']);
 });
 
 test('readEvents filters by age and survives corrupt lines', () => {

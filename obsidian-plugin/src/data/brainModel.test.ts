@@ -6,7 +6,7 @@ import {
   splitFrontmatter, fmStatus, readTrailRows, writtenAtMap, writtenAt, historyFor, livePairs, dupFlags, reviewBatches,
   splitByWeek, olderQueue, writtenBefore, defaultMarkBefore, reviewCounts, reviewKey, brainBadge, sinceMarker, trailSince,
   headerStats, modeBadges, libraryRows, sourceOptions, nearby, hostSplit, memoryArgs, chunks, brainVerbResult,
-  touchesBrain, isBrainMode, isReviewQueue, pairKey, DEFAULT_LIBRARY_FILTER, BRAIN_OFF_TEXT, BRAIN_UPGRADE_TEXT,
+  touchesBrain, isBrainMode, isReviewQueue, sessionLabel, pairKey, DEFAULT_LIBRARY_FILTER, BRAIN_OFF_TEXT, BRAIN_UPGRADE_TEXT,
   MAX_PATHS_PER_CALL, shortDay, historyLine, bodyWithoutTitle, linkTargets, linksTo, linkSourceKind, nearbyBasis, filterShowing,
   librarySelection, batchWhen, batchMeta, knownLabel, batchLede, olderFirst, olderByMonth, reviewSelection, weekUse,
   pendingReview, compareAges, brainMdLine,
@@ -518,4 +518,9 @@ test("weekUse: the 7-day count, not used, nothing with no usage log", () => {
   const hub = parseBrainHub(HUB({ usage: { since: "2026-10-01T00:00:00Z", paths: { [p]: { d7: 6, d30: 9 } } } }));
   assert.equal(weekUse(hub, p), "used 6× this week");
   assert.equal(weekUse(hub, P("feedback", "b")), "not used this week");
+});
+
+test("sessionLabel: a host session by its first 8 characters, anything else whole", () => {
+  assert.equal(sessionLabel("2f25a8d9-301b-4619-a341-db99b2c4d8e7"), "session 2f25a8d9");
+  assert.equal(sessionLabel("in-session"), "session in-session");
 });
