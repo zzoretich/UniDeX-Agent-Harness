@@ -66,6 +66,9 @@ const USAGE = `usage:
                 | adopt <path> --into <workspace> [--json] | adopt <path> [--name <slug>] | archive|restore <workspace> [--json]
                 | rename <workspace> <new-name> [--json] | hide|unhide <path> [--json] | draft <workspace> [--json]
                 | set <workspace> --set <json> [--expect <hash>] [--dry-run] [--json]]
+  aos memory [list [--json] | keep <path>… [--json] | set <path> --set <json> [--expect <hash>] [--dry-run] [--json]
+             | archive|restore <path>… [--json] | supersede <path> --by <path> [--json] | draft approve|reject <slug> [--json]
+             | notdup <path> <path> [--json]]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1382,13 +1385,30 @@ function updateCheck(flags) {
 function updateStatus(flags) {
   return require('./update-check.js').cmdUpdateStatus({ vault: updateVault(), configDir: configDir(), flags, io: console });
 }
+/** `aos memory <verb>` — cli/memory.js (spec 2026-10-11-brain-hub D13: every Brain hub action, for the page and sessions). */
+async function memory(sub, flags) {
+  const M = require('./memory.js');
+  const value = (flag, v) => (v !== undefined ? [`--${flag}`, v] : []);
+  const bool = (flag, v) => (v ? [`--${flag}`] : []);
+  try {
+    return await M.main([
+      ...sub, ...value('set', flags.set), ...value('expect', flags.expect), ...value('by', flags.by),
+      ...bool('dry-run', flags.dryRun), ...bool('json', flags.json),
+    ], { io: console });
+  } catch (e) {
+    if (e instanceof M.UsageError) throw new UsageError(e.message);
+    throw e;
+  }
+}
+
 function updateNotice() {
   return require('./update-check.js').cmdUpdateNotice({ vault: updateVault(), configDir: configDir(), io: console });
 }
 
 // ── args and main ─────────────────────────────────────────────────────────────
 // `aos workspace`'s own (spaces-redesign D28): --into, --cwd, --set, --expect take a value; --git, --pin, --empty do not.
-const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect']);
+// `aos memory`'s (brain-hub D13): --by takes a value (supersede's winner).
+const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by']);
 const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty']);
 // --no-obsidian is parsed and ignored: Obsidian is no longer installed, and a script written for an older release keeps working.
 const NEGATABLE_FLAGS = new Set(['obsidian']);
@@ -1429,7 +1449,7 @@ function parseArgs(argv) {
 async function main(argv) {
   const { cmd, sub, flags } = parseArgs(argv);
   // --dry-run is an init-only preview (contract §4.3); on a mutating command it must be a loud error, never a silent no-op.
-  if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset` and `aos workspace set`');
+  if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set` and `aos memory set`');
   switch (cmd) {
     case 'init': return init(flags);
     case 'upgrade': return upgrade(flags);
@@ -1443,6 +1463,7 @@ async function main(argv) {
     case 'agents': return agents(sub, flags);
     case 'config': return config(sub, flags);
     case 'workspace': return workspace(sub, flags);
+    case 'memory': return memory(sub, flags);
     case 'doctor': return doctor();
     case 'status': return status();
     case 'provider': return provider(sub[0]);
