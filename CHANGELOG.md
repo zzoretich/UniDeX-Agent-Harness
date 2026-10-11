@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-10-11
+
 ### Upgrading
 - **The Brain tab acts through this release's runtime** (`aos memory`): accept the runtime upgrade the app offers, or run `aos upgrade`. Until then its actions say so and change nothing.
 - **Nothing to re-trust.** No hook changed on either host, so Codex keeps the trust you gave its hooks; the upgrade adds the new `memory.*` settings to `brain/config.json` and keeps your values.
@@ -521,7 +523,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.8.0
 [1.7.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.7.0
 [1.6.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.6.0
 [1.5.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.5.0
