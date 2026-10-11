@@ -509,6 +509,24 @@ async function main(report) {
     console.error('[scan-vault] graph-semantic failed:', e.message);
   }
 
+  // The Brain hub (spec 2026-10-11-brain-hub D8, D12): fold old usage rows, then the hub's cache, which reads the recall,
+  // embed and graph outputs above. No model call.
+  try {
+    const { buildBrainHub } = require('./brain-hub.js');
+    await withReport('brain-hub', async (r) => {
+      const folded = require('./lib/memory-usage.js').foldUsage(VAULT, { days: cfg.memory.usageDays });
+      const hub = buildBrainHub({ vault: VAULT, cfg });
+      r.counts.memories = hub.counts.memories;
+      r.counts.unreviewed = hub.counts.unreviewed;
+      r.counts.duplicates = hub.dups.length;
+      r.counts.usageFolded = folded.folded;
+      r.wrote.push('brain/_index/brain-hub.json');
+      if (report) report.wrote.push(`brain/_index/brain-hub.json (${hub.counts.memories} memories, ${hub.dups.length} likely duplicates)`);
+    });
+  } catch (e) {
+    console.error('[scan-vault] brain-hub failed (loud in ledger):', e.message);
+  }
+
   if (argv.has('--json')) {
     process.stdout.write(JSON.stringify(snapshot, null, 2));
     return;

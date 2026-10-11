@@ -134,6 +134,17 @@ const SETTINGS = [
     help: 'Commit subjects, as regular expressions in a JSON list, that do not count as work in a folder the vault\'s own git tracks (automatic backups), unless the commit adds or changes a file other than workspace.md and the README.md, CLAUDE.md and AGENTS.md stubs.' },
   { key: 'workspaces.attributeByFiles', section: 'memory', label: 'Credit vault-root sessions by files', type: 'bool', applies: 'next-scan',
     help: 'Count a session started at the vault root for the workspace whose files it touched most (at least 3 touches, no tie).' },
+  // The Brain hub (spec 2026-10-11-brain-hub D25): the usage log's window and the cache's duplicate thresholds.
+  { key: 'memory.usageDays', section: 'memory', label: 'Keep memory use rows for', type: 'number', int: true, min: 30, applies: 'next-scan',
+    help: 'Days of rows memory-usage.jsonl keeps (which memories were injected, recalled or read, by path only); older rows fold into totals.' },
+  { key: 'memory.neverUsedDays', section: 'memory', label: 'Memory unused after', type: 'number', int: true, min: 7, applies: 'next-scan',
+    help: 'Days with no injection, recall or read before Brain lists a memory as dead weight (shown once the log is that old).' },
+  { key: 'memory.dupScore', section: 'memory', label: 'Duplicate threshold', type: 'number', min: 0.5, max: 1, applies: 'next-scan',
+    help: 'How alike two memories must be (0.5 to 1, against this vault\'s own pairs) before Brain flags them as likely duplicates.' },
+  { key: 'memory.clusterMin', section: 'memory', label: 'Cluster size', type: 'number', int: true, min: 2, applies: 'next-scan',
+    help: 'Memories that must link up as near duplicates before Brain offers them as one group to consolidate.' },
+  { key: 'memory.mapMin', section: 'memory', label: 'Map community size', type: 'number', int: true, min: 1, applies: 'next-scan',
+    help: 'Memories a graph community must hold to appear on Brain\'s map.' },
 
   // ── Chief of Staff ──────────────────────────────────────────────────────────
   { key: 'persona.enabled', section: 'persona', label: 'Chief of Staff', type: 'bool', risk: 'autonomy', applies: 'next-session',
@@ -305,6 +316,8 @@ const PICKS = {
   'workspaces.activeDays': { choices: [3, 5, 7, 10, 14, 21], unit: 'days' }, 'workspaces.idleDays': { choices: [14, 21, 30, 45, 60, 90], unit: 'days' },
   'workspaces.commits': { choices: [0, 5, 10, 20, 30] }, 'workspaces.recentSessions': { choices: [6, 12, 20, 30] },
   'workspaces.ignoreCommitSubjects': { editIn: 'file' },
+  'memory.usageDays': { choices: [30, 60, 90, 180, 365], unit: 'days' }, 'memory.neverUsedDays': { choices: [14, 30, 60, 90], unit: 'days' },
+  'memory.dupScore': { choices: [0.7, 0.75, 0.8, 0.85, 0.9] }, 'memory.clusterMin': { choices: [2, 3, 4, 5] }, 'memory.mapMin': { choices: [3, 5, 8, 12, 20] },
   'persona.watchdog.graceMinutes': { choices: [15, 30, 45, 60, 90, 120], unit: 'min' }, 'persona.tick.flagAgeDays': { choices: [3, 5, 7, 14, 30], unit: 'days' },
   'persona.briefing.staleHours': { choices: [1, 2, 3, 6, 12], unit: 'h' },
   'persona.tick.earlyReflect.corrections': { choices: [1, 2, 3, 5, 10] }, 'persona.tick.earlyReflect.dutyFailures': { choices: [1, 2, 3, 5, 10] },

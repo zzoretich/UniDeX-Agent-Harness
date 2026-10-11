@@ -107,6 +107,29 @@ process.stdin.on('end', () => {
     }
 
     fs.writeFileSync(marker, String(Date.now()));
+
+    // Which memories this session started with (brain-hub D9): BRAIN.md's sources by path (build-brain-md writes them,
+    // its bullets name titles only) and the recall-wake paths, when their blocks went out. After the write and the
+    // marker, on its own: a usage row never delays or changes what the session receives.
+    try {
+      const usage = require('./lib/memory-usage.js');
+      const paths = [];
+      if (brainContent) {
+        try {
+          const src = JSON.parse(fs.readFileSync(path.join(VAULT, 'brain/_index/brain-sources.json'), 'utf8'));
+          const s = (src && src.sections) || {};
+          for (const k of ['who', 'rules', 'active']) if (s[k] && Array.isArray(s[k].paths)) paths.push(...s[k].paths);
+        } catch (_) { /* BRAIN.md built before brain-sources.json existed: its rows start with the next build */ }
+      }
+      if (recallBlock) paths.push(...usage.wakePaths(recallBlock));
+      if (paths.length) {
+        usage.logUsage({
+          vault: VAULT, how: 'injected', paths,
+          host: require('./lib/host.js').currentHost(process.env, input),
+          cfg: require('./lib/config.js').loadConfig(),
+        });
+      }
+    } catch (_) { /* no sources yet, or telemetry off: nothing to log */ }
   } catch (_) {
     // Never block the user's message on error
     process.exit(0);

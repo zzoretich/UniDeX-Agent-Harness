@@ -23,6 +23,7 @@
   "routines": { "enabled": true, "runner": "auto", "codexModel": null, "perRunUsd": 2.0, "perDayUsd": 6.0, "tools": "Read,Glob,Grep", "externalLabels": [] },
   "sessions": { "perTurnUsd": 1.0, "perDayUsd": 10.0 },
   "workspaces": { "activeDays": 7, "idleDays": 30, "commits": 10, "recentSessions": 12, "ignoreCommitSubjects": ["^vault backup:"], "attributeByFiles": true },
+  "memory": { "usageDays": 90, "neverUsedDays": 30, "dupScore": 0.8, "clusterMin": 3, "mapMin": 8 },
   "crossReview": { "enabled": true, "claudeModel": null, "codexModel": null, "effort": null, "perCallUsd": 3.0, "perDayUsd": 10.0, "timeoutSec": 600, "rounds": 5 },
   "skills": { "sync": true, "exclude": [] },
   "agents": { "sync": true, "exclude": [] },

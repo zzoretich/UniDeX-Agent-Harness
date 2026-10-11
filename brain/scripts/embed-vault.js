@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const { VAULT } = require('./lib/paths.js');
 const { parseFrontmatter } = require('./sdk/lib/brain.js');
-const { collectCorpus } = require('./sdk/lib/recall.js');
+const { collectCorpus, isRetired } = require('./sdk/lib/recall.js');
 const { role } = require('./sdk/lib/models.js');
 
 const MAX_CHARS = 24000;
@@ -67,9 +67,11 @@ async function refreshEmbedIndex(opts = {}) {
 
   for (const abs of collectCorpus(vault)) {
     const rel = path.relative(vault, abs).replace(/\\/g, '/');
-    seen.add(rel);
     let raw;
-    try { raw = fs.readFileSync(abs, 'utf8'); } catch { continue; }
+    try { raw = fs.readFileSync(abs, 'utf8'); } catch { seen.add(rel); continue; }
+    // An archived or superseded note goes as a deleted one does: unseen, so its entry and chunks drop (brain-hub D5).
+    if (isRetired(parseFrontmatter(raw).frontmatter)) continue;
+    seen.add(rel);
     const hash = crypto.createHash('sha1').update(raw).digest('hex');
     if (files[rel] === hash && prev) {
       for (const c of prev.chunks) if (c.path === rel) keepChunks.push(c);

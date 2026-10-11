@@ -43,4 +43,23 @@ function insertIndexLine(raw, heading, entry) {
   return lines.join('\n');
 }
 
-module.exports = { deriveDescription, insertIndexLine };
+// The Brain hub's two index edits (brain-hub D5, D7; no memoryWriter.ts twin: only `aos memory` writes these). A line
+// belongs to a memory when it links `](<rel>)`, whatever its title or description says.
+function linksTo(line, rel) { return /^\s*-\s/.test(line) && line.includes(`](${rel})`); }
+
+/** Every index line for `rel` removed; the rest kept byte for byte. */
+function removeIndexLine(raw, rel) {
+  return raw.split('\n').filter((l) => !linksTo(l, rel)).join('\n');
+}
+
+/** `rel`'s first line replaced in place by `entry` (any later one dropped), else inserted as insertIndexLine does. */
+function upsertIndexLine(raw, heading, entry, rel) {
+  const lines = raw.split('\n');
+  const at = lines.findIndex((l) => linksTo(l, rel));
+  if (at === -1) return insertIndexLine(raw, heading, entry);
+  const out = [];
+  lines.forEach((l, i) => { if (i === at) out.push(entry); else if (!linksTo(l, rel)) out.push(l); });
+  return out.join('\n');
+}
+
+module.exports = { deriveDescription, insertIndexLine, removeIndexLine, upsertIndexLine };

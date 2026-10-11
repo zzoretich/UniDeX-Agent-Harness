@@ -63,6 +63,9 @@ export const PIPELINES_MANIFEST: Record<string, PipelineManifestEntry> = {
   "graph-build":        { short: "GRAPH",    staleMs: null,                  safeRerun: { script: "brain/scripts/graph-build.js", args: ["--quiet"] } },
   // The semantic pass (spec D5/D10): daily, capped, spends money — so no one-click rerun; `aos graph build --semantic` asks first.
   "graph-semantic":     { short: "SEM",      staleMs: null,                  safeRerun: null },
+  // The Brain hub's cache and the usage fold (spec 2026-10-11-brain-hub D12): a scan-vault stage like embed-vault, so
+  // its rerun is the scan and freshness follows the scan's own window.
+  "brain-hub":          { short: "HUB",      staleMs: null,                  safeRerun: { script: "brain/scripts/scan-vault.js", args: ["--quiet"] } },
 };
 const DIED_AFTER_MS = 10 * 60_000;
 

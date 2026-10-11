@@ -55,6 +55,13 @@ function collectCorpus(vault) {
   return files;
 }
 
+/** An archived or superseded note (brain-hub D5, D7): the recall and embed indexes leave it out. */
+function isRetired(frontmatter) {
+  const t = frontmatter && frontmatter.tags;
+  const tags = Array.isArray(t) ? t : typeof t === 'string' ? t.replace(/[[\]]/g, '').split(/[\s,]+/) : [];
+  return tags.some((x) => x === 'status/archived' || x === 'status/superseded');
+}
+
 function docAgeDays(abs, frontmatter, now) {
   const upd = frontmatter && typeof frontmatter.updated === 'string' &&
     /^\d{4}-\d{2}-\d{2}/.test(frontmatter.updated) ? frontmatter.updated.slice(0, 10) : null;
@@ -75,6 +82,7 @@ function buildRecallIndex(opts = {}) {
     let raw;
     try { raw = fs.readFileSync(abs, 'utf8'); } catch { continue; }
     const { frontmatter, body } = parseFrontmatter(raw);
+    if (isRetired(frontmatter)) continue;
     const toks = tokenize(path.basename(abs, '.md') + ' ' + body);
     const tf = {};
     for (const t of toks) tf[t] = (tf[t] || 0) + 1;
@@ -273,7 +281,7 @@ function writeWakeRecall(index, opts = {}) {
 }
 
 module.exports = {
-  tokenize, extractWikiLinks, collectCorpus, buildRecallIndex,
+  tokenize, extractWikiLinks, collectCorpus, isRetired, buildRecallIndex,
   saveIndex, loadIndex, queryRecall, queryRecallHybrid, loadEmbedIndex, writeWakeRecall,
   indexPath, wakePath, STALE_DAYS,
 };

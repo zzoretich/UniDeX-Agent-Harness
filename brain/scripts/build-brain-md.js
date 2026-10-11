@@ -99,14 +99,15 @@ function parseMemoryIndex() {
   return map;
 }
 
-/** Every memory file under brain/memory/** whose frontmatter carries pin: true. */
+/** Every memory file under brain/memory/** whose frontmatter carries pin: true, unless it is archived or superseded. */
 function findPinned() {
   const out = [];
   for (const type of ['user', 'feedback', 'reference', 'projects']) {
     const dir = path.join(PATHS.MEMORY_DIR, type);
     for (const f of listMdFiles(dir)) {
       const fm = readFrontmatter(path.join(dir, f));
-      if (fm.pin === 'true') out.push(`brain/memory/${type}/${f}`);
+      // A pin outlives an archive (brain-hub D5): Restore brings the rule back pinned, and until then it stays out.
+      if (fm.pin === 'true' && !/status\/(archived|superseded)\b/.test(fm.tags || '')) out.push(`brain/memory/${type}/${f}`);
     }
   }
   return out;
@@ -318,6 +319,27 @@ async function buildBrainMd({ report }) {
   }, { timeoutMs: 5000 });
   const tokens = estimateTokens(brainMdContent);
   wrote.push('brain/_index/BRAIN.md');
+
+  // What BRAIN.md was built from, by path (brain-hub D10): its bullets name titles, so the injection's usage rows and
+  // the hub's Bootstrap read the sources here. Best effort: a failure here never fails the compile that just landed.
+  try {
+    const profile = 'brain/memory/user/profile.md';
+    const pinned = findPinned();
+    const sources = {
+      schema: 1, builtAt: new Date().toISOString(), budget: BUDGET, tokens,
+      sections: {
+        who: { paths: fs.existsSync(path.join(PATHS.VAULT, profile)) ? [profile] : [], tokens: estimateTokens(renderWho()) },
+        rules: { paths: pinned, tokens: estimateTokens(renderCriticalRules(memIndex)) },
+        active: { paths: shown, omitted: active.slice(shownCount), tokens: estimateTokens(renderActiveContext(memIndex, shown, omitted)) },
+        links: { tokens: estimateTokens(QUICK_LINKS) },
+        lastSession: { tokens: estimateTokens(lastSession), clampedChars: current.length - lastSession.length },
+      },
+    };
+    fsx.writeAtomic(path.join(PATHS.INDEX, 'brain-sources.json'), JSON.stringify(sources, null, 2) + '\n');
+    wrote.push('brain/_index/brain-sources.json');
+  } catch (e) {
+    console.error('[build-brain-md] brain-sources.json not written:', e.message);
+  }
 
   if (report) {
     report.wrote.push('brain/_index/BRAIN.md');

@@ -2,6 +2,7 @@
   "agenticos": {
     "type": "stdio",
     "command": "sh",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/bin/aos", "mcp-server"]
+    "args": ["${CLAUDE_PLUGIN_ROOT}/bin/aos", "mcp-server"],
+    "env": { "AOS_HOST": "claude" }
   }
 }
