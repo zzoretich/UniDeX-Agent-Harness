@@ -162,8 +162,10 @@ test("reviewBatches: the files win over a stale hub; a memory the scan missed ge
   assert.equal(s2.lead, "d");
   assert.equal(s2.at, "2026-10-11T12:00:00.000Z");     // a day only, after the scan: no earlier than builtAt
   assert.equal(batches[2].title, "In-session wrap · 2026-10-09");
-  // No hub: each batch keeps its own day, and a timestamp later that day sorts above a bare day.
-  const own = reviewBatches(memories, null, writtenAtMap(readTrailRows(TRAIL)), new Map());
+  // No hub: each batch keeps its own day, and a timestamp after that day's local midnight sorts above a bare day. A bare
+  // day is local midnight, so the time is one past midnight on 2026-10-11 in every zone (UTC+14 to UTC−12: 18:00Z).
+  const late = writtenAtMap(readTrailRows(TRAIL.replace("2026-10-11T04:31:00.000Z", "2026-10-11T18:00:00.000Z")));
+  const own = reviewBatches(memories, null, late, new Map());
   assert.deepEqual(own.map((b) => b.key), [S1, S2, "in-session:2026-10-09"]);
   // With no hub nothing is checked: every memory waits for the check, none is "new".
   assert.deepEqual(own.flatMap((b) => b.fresh), []);
