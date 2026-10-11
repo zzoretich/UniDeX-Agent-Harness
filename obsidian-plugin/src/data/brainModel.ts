@@ -713,7 +713,7 @@ export interface SupersedeResult { path: string; by: string; already?: boolean; 
 export interface DraftResult { approved?: string | null; rejected?: string; slug?: string }
 export interface NotdupResult { pair: [string, string]; added: boolean }
 
-export const BRAIN_OFF_TEXT = "Brain's write surface is off in this app: turn on Brain under the app's write surfaces to act from here";
+export const BRAIN_OFF_TEXT = "Brain's write surface is off in this app: run the aos memory command in a terminal instead";
 export const BRAIN_UPGRADE_TEXT = "This vault's runtime predates the Brain hub: run aos upgrade";
 
 export interface BrainVerbFailure {
@@ -765,7 +765,8 @@ export function shortDay(s: string | null | undefined, now: Date): string {
  * event and its last six.
  */
 export function historyLine(rows: readonly TrailEntry[], m: Pick<BrainMemory, "source" | "created">, now: Date): string {
-  const asc = [...rows].sort((a, b) => sortTime(a.ts) - sortTime(b.ts));
+  // Rows in one millisecond keep no order of their own (historyFor hands them newest first): a memory is written first.
+  const asc = [...rows].sort((a, b) => sortTime(a.ts) - sortTime(b.ts) || Number(b.action === "written") - Number(a.action === "written"));
   const parts: string[] = [];
   if (!asc.some((r) => r.action === "written") && m.created) { const c = shortDay(m.created, now); if (c) parts.push(`created ${c}`); }
   for (const r of asc) {

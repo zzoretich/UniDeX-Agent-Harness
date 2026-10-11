@@ -184,7 +184,7 @@ UniDeX on a demo vault, in its light theme with one picture in dark. Everything 
 
 <p align="center">
   <img src="docs/assets/screens/pulse.png" width="960" alt="Pulse: the Chief of Staff's briefing over ten tiles" />
-  <br /><sub><b>Pulse.</b> Home: your Chief of Staff's briefing, then what needs you, system health, agents, workspaces, to-dos, decisions, notifications, routines, spend and memory. A tile opens one popup; its rows act in place, and decisions jump to their review.</sub>
+  <br /><sub><b>Pulse.</b> Home: your Chief of Staff's briefing, then what needs you, system health, agents, workspaces, to-dos, decisions, notifications, routines, spend and the brain. A tile opens one popup; its rows act in place, and decisions jump to their review.</sub>
 </p>
 
 <table>
@@ -241,8 +241,8 @@ UniDeX on a demo vault, in its light theme with one picture in dark. Everything 
 </table>
 
 <p align="center">
-  <img src="docs/assets/screens/graph.png" width="960" alt="The knowledge graph: memories, patterns, sessions and agents as a force graph" />
-  <br /><sub><b>Memory, in graph mode.</b> Memories, patterns, sessions and agents as a force graph.</sub>
+  <img src="docs/assets/screens/brain.png" width="960" alt="Brain, Review: a session's memories as cards, one of them set beside the kept memory it looks like" />
+  <br /><sub><b>Brain, Review.</b> Memories by the session that wrote them, with the one a new memory looks like beside it.</sub>
 </p>
 
 <p align="center"><img src="docs/assets/divider.svg" width="960" alt="" /></p>

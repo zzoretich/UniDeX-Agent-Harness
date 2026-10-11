@@ -8,7 +8,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, REPO, SETUP, appEnv, content, installSetupStubs, launchApp, openTab, restoreFixture, type AppHandle } from "../e2e/harness";
+import { FX, REPO, SETUP, appEnv, content, expected, installSetupStubs, launchApp, openTab, restoreFixture, type AppHandle } from "../e2e/harness";
 
 const OUT = path.resolve(process.env.AOS_SCREENS_OUT ?? path.join(REPO, "..", "docs", "assets", "screens"));
 const SIZE = { width: 1440, height: 900 };
@@ -86,11 +86,23 @@ test.describe("the Workbench", () => {
     await shot(h.win, "notifications");
   });
 
-  test("memory, as the graph", async () => {
+  test("brain, reviewing a session's memories", async () => {
+    // Review, By session, on the Claude Code session's batch (its key is the session id), with M pressed on the card the
+    // hub flags: the near-duplicate beside the kept memory it looks like.
+    const { sessions, duplicate: [dup] } = expected().brain;
     await openTab(h.win, "memory");
-    await content(h.win).locator(".aos-mem-chip", { hasText: "◈ graph" }).click();
-    await h.win.waitForTimeout(4000);   // the force layout settles
-    await shot(h.win, "graph");
+    await content(h.win).locator('.aos-brain-modes [role="tab"][data-mode="review"]').click();
+    await content(h.win).locator('.aos-brain-rv-queues button.aos-brain-chip[data-queue="session"]').click();
+    const batch = content(h.win).locator(`.aos-brain-rv-left button.aos-brain-rv-batch[data-key="${sessions.claude}"]`);
+    await batch.click();
+    await expect(batch).toHaveAttribute("aria-selected", "true");
+    const card = content(h.win).locator(`.aos-brain-rv-main article.aos-brain-rv-card[data-path="${dup}"]`);
+    await card.locator(".aos-brain-rv-sum").click();
+    await expect(card).toBeFocused();
+    await h.win.keyboard.press("m");
+    await expect(card.locator(".aos-brain-rv-compare")).toBeVisible();
+    await h.win.waitForTimeout(800);
+    await shot(h.win, "brain");
   });
 
   test("files, with a workspace open", async () => {

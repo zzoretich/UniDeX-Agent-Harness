@@ -1,14 +1,14 @@
-// Spaces, Memory and Runs (app-smoke: Spaces / Memory / Runs). Spaces is the three-pane dossier (spec
-// 2026-10-09-spaces-redesign, PR 2): the list grouped by status with its search, the hidden toggle and the outside list;
-// the dossier's header, pick-up card, Overview and Files; History and Linked; links into it; dark. Then the memory
-// browser, drawer inspector, split pop-out and graph, and the runs list, its drawer, pop-out, agents roster and live
-// tail. With the Spaces surface off, the read's ↻ and Describe N new are refused; with it on they run in
-// spaces-writes.spec.ts, and Resume in Code in term-deck.spec.ts and variants.spec.ts.
+// Spaces and Runs (app-smoke: Spaces / Runs). Spaces is the three-pane dossier (spec 2026-10-09-spaces-redesign, PR 2):
+// the list grouped by status with its search, the hidden toggle and the outside list; the dossier's header, pick-up
+// card, Overview and Files; History and Linked; links into it; dark. Then the runs list, its drawer, pop-out, agents
+// roster and live tail. With the Spaces surface off, the read's ↻ and Describe N new are refused; with it on they run in
+// spaces-writes.spec.ts, and Resume in Code in term-deck.spec.ts and variants.spec.ts. The Memory tab became the Brain
+// hub: brain.spec.ts.
 
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, closeNotes, content, drawer, emulateViewport, expected, notePath, openTab, pulseArea, rail, readVaultJson, useApp } from "./harness";
+import { FX, closeNotes, content, drawer, emulateViewport, notePath, openTab, pulseArea, rail, readVaultJson, useApp } from "./harness";
 
 const app = useApp();
 const C = () => content(app().win);
@@ -993,94 +993,6 @@ test.describe("Spaces", () => {
     expect(listing("workspaces/_archive")).toEqual(before.archive);
     expect(hidden()).toBe(before.hidden);
     await guardLog();
-  });
-});
-
-// ── Memory ───────────────────────────────────────────────────────────
-
-test.describe("Memory", () => {
-  test.beforeEach(async () => { await openTab(app().win, "memory"); });
-
-  const memoryFiles = () => {
-    const out: string[] = [];
-    for (const t of fs.readdirSync(FX.v("brain/memory"))) for (const f of fs.readdirSync(FX.v(`brain/memory/${t}`))) if (f.endsWith(".md")) out.push(`${t}/${f}`);
-    return out;
-  };
-
-  test("browse: every memory file, newest first, with type and the unreviewed marker", async () => {
-    const rows = C().locator(".aos-mem-row");
-    await expect(rows).toHaveCount(memoryFiles().length);
-    await expect(C().locator(".aos-mem-head .aos-mem-chip")).toHaveText(["all", "user", "feedback", "projects", "reference", "◈ graph"]);
-    await expect(rows.first().locator("span").first()).toHaveText("Harbor Map");
-    const unreviewed = rows.filter({ hasText: "Release checklist" });
-    await expect(unreviewed.locator(".aos-mem-unreviewed")).toHaveText("unreviewed");
-    await expect(C().locator(".aos-mem-unreviewed")).toHaveCount(1);
-  });
-
-  test("type chips and search narrow the list without losing focus", async () => {
-    const { win } = app();
-    await C().locator(".aos-mem-chip", { hasText: /^feedback$/ }).first().click();
-    const n = memoryFiles().filter((f) => f.startsWith("feedback/")).length;
-    await expect(C().locator(".aos-mem-row")).toHaveCount(n);
-    await C().locator(".aos-mem-chip", { hasText: /^all$/ }).click();
-    const search = C().locator("input.aos-mem-search");
-    await search.click();
-    await win.keyboard.type("tide");
-    await expect(C().locator(".aos-mem-row")).toHaveCount(1);
-    await expect(C().locator(".aos-mem-row span").first()).toHaveText("Tide API notes");
-    await expect(search).toBeFocused();
-    await search.fill("");
-  });
-
-  test("a row opens the drawer inspector: frontmatter, rendered body, backlinks", async () => {
-    const { win } = app();
-    await C().locator(".aos-mem-row", { hasText: "Tide API notes" }).click();
-    const d = drawer(win);
-    await expect(d.locator(".aos-wb-drawertitle")).toHaveText("Tide API notes");
-    await expect(d.locator(".aos-mem-fmrow")).toHaveText([/^pathbrain\/memory\/reference\/tide-api-notes\.md$/, /^typereference$/, /^created\d{4}-\d{2}-\d{2}$/, /^updated\d{4}-\d{2}-\d{2}$/, /^reviewed—$/]);
-    await expect(d.locator(".aos-memscope-body li")).toHaveText(["Rate limit: 60 requests a minute.", "Station ids are five digits."]);
-    await expect(d.locator(".aos-memscope-backrow")).toContainText(["MEMORY.md"]);
-    await expect(d.locator(".aos-mem-footer a")).toHaveText("▸ open as file");
-  });
-
-  test("the inspector pops out into the split pane (⧉), and ▸ open as file opens the note", async () => {
-    const { win } = app();
-    await C().locator(".aos-mem-row", { hasText: "Prefer small diffs" }).click();
-    await drawer(win).locator(".aos-wb-draweractions a[aria-label='Open in split']").click();
-    await expect(drawer(win)).not.toHaveClass(/is-open/);
-    const split = win.locator(".aos-host-pane.is-split");
-    await expect(split).not.toHaveClass(/is-empty/);
-    await expect(split.locator(".workspace-leaf-content[data-type='agentic-os-memory-inspector']")).toContainText("Keep each change reviewable in one sitting.");
-    await expect(win.locator(".aos-host-tab.is-split")).toHaveCount(1);
-    await closeNotes(win);
-    await openTab(win, "memory");
-    await C().locator(".aos-mem-row", { hasText: "Prefer small diffs" }).click();
-    await drawer(win).locator(".aos-mem-footer a").click();
-    await expect(notePath(win)).toHaveText("brain/memory/feedback/prefer-small-diffs.md");
-    await closeNotes(win);
-  });
-
-  test("graph: the Cortex renders nodes and edges; daily notes under dailyNote.layout are session nodes", async () => {
-    const { win } = app();
-    await C().locator(".aos-mem-chip", { hasText: "◈ graph" }).click();
-    await expect(C().locator(".aos-cortex-header .aos-title")).toHaveText("Knowledge graph");
-    await expect(C().locator(".aos-cortex-stats")).toHaveText(/^\d+ nodes · \d+ edges$/);
-    await expect(C().locator(".aos-cortex-chips button")).toHaveText(["memory", "pattern", "session", "agent"]);
-    const kinds = await win.evaluate(() => {
-      const w = window as unknown as { aosHost: { app: { workspace: { getLeavesOfType(t: string): Array<{ view: { getTab(id: string): { graph: { nodes: Array<{ kind: string; path: string }> } } } }> } } } };
-      const graph = w.aosHost.app.workspace.getLeavesOfType("agentic-os-workbench")[0].view.getTab("memory").graph;
-      return graph.nodes.map((n) => `${n.kind}:${n.path}`);
-    });
-    const sessions = kinds.filter((k) => k.startsWith("session:"));
-    expect(sessions).toHaveLength(2);   // today's and yesterday's daily notes
-    expect(sessions.some((k) => k.endsWith(`/${expected().today}.md`))).toBe(true);
-    const nodes = C().locator("svg.aos-cortex-svg g.aos-cortex-node");
-    await expect.poll(() => nodes.count()).toBe(kinds.length);
-    await C().locator(".aos-cortex-chips button", { hasText: "session" }).click();
-    await expect.poll(() => nodes.count()).toBe(kinds.length - sessions.length);
-    await C().locator(".aos-cortex-chips button", { hasText: "session" }).click();
-    await C().locator(".aos-mem-chip", { hasText: "◈ graph" }).click();
-    await expect(C().locator(".aos-mem-rows")).toBeVisible();
   });
 });
 

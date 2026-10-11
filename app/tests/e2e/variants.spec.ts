@@ -6,7 +6,7 @@ import { expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, RAIL_SECTIONS, appEnv, badge, claudeCalls, codexCalls, command, content, drawer, guardWrites, installChatStubs, openTab, rail, terminalText, useApp, closePulse, pulseArea } from "./harness";
+import { FX, RAIL_SECTIONS, appEnv, badge, claudeCalls, codexCalls, command, content, drawer, expected, guardWrites, installChatStubs, openTab, rail, terminalText, useApp, closePulse, pulseArea } from "./harness";
 import { SURFACES } from "../../src/shared/surfaces";
 
 const editJson = (file: string, fn: (j: Record<string, any>) => void) => {
@@ -25,7 +25,8 @@ const aos = (...args: string[]) => {
 test.describe("an empty vault: no persona, to-dos, notifications or teams", () => {
   const app = useApp({
     prepare: () => {
-      for (const rel of ["persona", "TODO.md", "brain/notifications", "brain/_index/persona-heartbeat.json"]) fs.rmSync(FX.v(rel), { recursive: true, force: true });
+      // The fixture's feedback draft (the Brain hub's, brain-hub D3) goes too: the status line counts drafts as a segment.
+      for (const rel of ["persona", "TODO.md", "brain/notifications", "brain/_index/persona-heartbeat.json", "brain/memory/feedback/_drafts"]) fs.rmSync(FX.v(rel), { recursive: true, force: true });
       // The runtime's own status-line refresh, so the model matches the emptied vault.
       const r = spawnSync(process.execPath, [FX.v("brain/scripts/statusline.js"), "refresh"], { env: appEnv(), encoding: "utf8" });
       if (r.status !== 0) throw new Error(`statusline refresh failed: ${r.stderr}`);
@@ -356,6 +357,48 @@ test.describe("a Codex-only machine", () => {
     await again.click();
     await expect.poll(times, { timeout: 10_000 }).toBeGreaterThan(was);
   });
+
+  test("Brain: Review shows the Codex session's batch beside Claude Code's, titled as Sessions titles the thread; nothing in the hub needs a host, and Library opens a memory (brain-hub §5)", async () => {
+    const { win } = app();
+    const C = content(win);
+    const b = expected().brain;
+    const modeTab = (m: string) => C.locator(`.aos-brain-modes [role="tab"][data-mode="${m}"]`);
+    const batch = (key: string) => C.locator(`.aos-brain-rv-left button.aos-brain-rv-batch[data-key="${key}"]`);
+    await openTab(win, "memory");
+    await modeTab("review").click();
+    await expect(modeTab("review")).toHaveAttribute("aria-selected", "true");
+    // The Codex thread has no name in Codex's session index, so its batch takes its first prompt, as Sessions does; the
+    // runtime read both hosts' sessions though only Codex is on.
+    const codex = b.batches.find((x) => x.key === b.sessions.codex)!;
+    expect(codex).toMatchObject({ host: "codex", title: "Sketch the depth contours layer for the chart view" });
+    await expect(batch(codex.key).locator(".aos-brain-rv-rtitle")).toHaveText(codex.title);
+    await expect(batch(codex.key).locator(".aos-brain-rv-rmeta > .aos-brain-mono")).toHaveText("codex");
+    await expect(batch(codex.key).locator(".aos-brain-dot")).toHaveClass(/is-codex/);
+    await expect(batch(b.sessions.claude).locator(".aos-brain-rv-rmeta > .aos-brain-mono")).toHaveText("claude");
+    await expect(batch(b.sessions.claude).locator(".aos-brain-dot")).toHaveClass(/is-claude/);
+    await batch(codex.key).click();
+    const main = C.locator(".aos-brain-rv-main");
+    await expect(main.locator("h2")).toHaveText(codex.title);
+    await expect(main.locator(".aos-brain-rv-meta")).toHaveText(new RegExp(`^codex · today \\d{2}:\\d{2} · session ${codex.key.slice(0, 8)}$`));
+    expect(await main.locator("article.aos-brain-rv-card").evaluateAll((els) => els.map((e) => e.getAttribute("data-path")))).toEqual(codex.paths);
+    await expect(main.locator("button.aos-brain-rv-keepnew")).toBeEnabled();
+    // No mode offers a host: no host menu, no ❯_ button, nothing that names Claude Code or Codex as a choice.
+    for (const m of ["review", "library", "bootstrap", "map", "health"]) {
+      await modeTab(m).click();
+      await expect(C.locator(".aos-brain-body")).toHaveAttribute("data-mode", m);
+      await expect(C.locator(".aos-brain [data-host], .aos-brain .aos-hm")).toHaveCount(0);
+      await expect(C.locator(".aos-brain button").filter({ hasText: /❯_|Claude Code|Codex/ })).toHaveCount(0);
+    }
+    // Library opens the Codex session's memory in the reader.
+    const rel = codex.paths[1];
+    await modeTab("library").click();
+    await C.locator(`.aos-lib-list button.aos-lib-row[data-path="${rel}"]`).click();
+    await expect(C.locator("section.aos-lib-reader")).toHaveAttribute("data-path", rel);
+    await expect(C.locator("section.aos-lib-reader h2")).toHaveText("Depths in metres");
+    await expect(C.locator("section.aos-lib-reader .aos-lib-meta > span").nth(3)).toHaveText(`auto-wrap · session ${codex.key.slice(0, 8)}`);
+    await expect(C.locator("section.aos-lib-reader .aos-lib-md")).toContainText("Show depths in metres with one decimal place.");
+    await modeTab("review").click();
+  });
 });
 
 test.describe("a Codex-only machine, the Spaces surface on", () => {
@@ -593,8 +636,13 @@ test.describe("a vault whose HUD ran in Obsidian first", () => {
     const { win } = app();
     await expect(win.locator(".aos-host-right .aos-sb-status")).toBeVisible();
     const before = fs.readFileSync(obsidianData, "utf8");
-    // Copied at first start, before any setting changes, so the old plugin folder can go (docs/migrating-to-1.0.md).
-    expect(JSON.parse(fs.readFileSync(appData, "utf8"))).toMatchObject(saved);
+    // Copied at first start, before any setting changes, so the old plugin folder can go (docs/migrating-to-1.0.md). The
+    // Brain badge's first count then records when Review was last open (brain-hub D16) and saves the settings, which
+    // keeps the HUD's own keys only: terminalEmbedHeight, one it no longer has, goes; every setting stays.
+    const copy = () => JSON.parse(fs.readFileSync(appData, "utf8")) as Record<string, unknown>;
+    await expect.poll(() => typeof copy().brainReviewSeenAt).toBe("string");
+    expect(copy()).toMatchObject({ autoOpenSidebarOnStart: saved.autoOpenSidebarOnStart, statusBarEnabled: saved.statusBarEnabled });
+    expect(copy()).not.toHaveProperty("terminalEmbedHeight");
     expect(await command(win, "host:settings")).toBe(true);
     const pane = win.locator(".modal.mod-settings .vertical-tab-content-container");
     const toggle = pane.locator(".setting-item", { has: win.locator(".setting-item-name", { hasText: /^Auto-open sidebar on start$/ }) }).locator(".checkbox-container");

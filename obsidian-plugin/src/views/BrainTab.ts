@@ -58,6 +58,10 @@ export class BrainTab {
   }
 
   mount(host: HTMLElement): void {
+    // WorkbenchView mounts a tab each time it is shown and never unmounts it on the way out: the mode drawn last time
+    // lets go of its old panes first (Library's list signature, Map's sim), so it draws into the new ones from scratch.
+    if (this.shown) this.modes[this.shown]?.unmount();
+    this.shown = null;
     this.host = host;
     if (!this.listenersRegistered) {
       this.listenersRegistered = true;
@@ -82,13 +86,13 @@ export class BrainTab {
       capture: () => new CaptureModal(this.plugin.app).open(),
     });
     this.body = this.root.createDiv({ cls: "aos-brain-body" });
-    this.shown = null;
     if (this.data) this.render();
     else this.body.createDiv({ cls: "aos-brain-loading", text: "Reading the brain…" });
   }
 
-  /** Showing the tab: read everything again. */
+  /** Showing the tab: read everything again. Shown on Review, Review is open: the rail badge counts from now (D16). */
   async refresh(): Promise<void> {
+    if (this.mode === "review") this.view.markBrainSeen();
     this.data = await this.store.load(true);
     this.render();
   }

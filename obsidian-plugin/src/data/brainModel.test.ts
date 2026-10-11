@@ -331,6 +331,8 @@ test("historyLine: oldest first, written by the source, set names its fields, cr
   const rows = [row("archived", at(9, 5)), row("set", at(9, 3), { fields: ["pin"] }), row("kept", at(9, 2)), row("kept", at(9, 2)), row("written", at(8, 30))];
   assert.equal(historyLine(rows, { source: "auto-wrap", created: "2026-09-30" }, now), "Written by auto-wrap Sep 30 · kept Oct 2 · set pin Oct 3 · archived Oct 5");
   assert.equal(historyLine([row("kept", at(9, 2))], { source: null, created: "2026-09-29" }, now), "Created Sep 29 · kept Oct 2");
+  // Written and kept in the same millisecond, handed over newest first (historyFor): the write still leads.
+  assert.equal(historyLine([row("kept", at(9, 2)), row("written", at(9, 2))], { source: null, created: null }, now), "Written by auto-wrap Oct 2 · kept Oct 2");
   assert.equal(historyLine([row("<b>", at(9, 2))], { source: null, created: null }, now), "Changed Oct 2");
   assert.equal(historyLine([], { source: null, created: null }, now), "");
   const many = Array.from({ length: 10 }, (_, i) => row("kept", at(9, i + 1)));
