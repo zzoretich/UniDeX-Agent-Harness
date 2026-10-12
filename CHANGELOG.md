@@ -27,6 +27,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 ### Removed
 - **Bootstrap's and Health's stand-ins**, the read-only summaries 1.8.0 showed until these modes could act.
 
+### Fixed
+- **A session started after `/clear` gets `BRAIN.md` and `SESSION.md` on its first prompt.** The first-prompt hook skipped any session whose transcript already held a user-role entry, and such a session opens with Claude Code's local-command caveat and the `/clear` command, so it was never given the brain context, the persona or recall-wake, and no memory use was logged for Health's dead weight. The hook now counts only prompts typed before this one, on both hosts (a transcript that already holds the prompt being submitted counts it as this one).
+
 ## [1.8.0] — 2026-10-11
 
 ### Upgrading
