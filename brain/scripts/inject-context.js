@@ -8,11 +8,24 @@ const { PATHS, dailyNotePath } = require('./lib/hook-entry.js').hookEntry();
 const fs = require('fs');
 const path = require('path');
 const { markerPath } = require('./lib/markers.js');
-const { readTranscriptFile } = require('./lib/transcript.js');
+const { readTranscriptFile, isRealPrompt } = require('./lib/transcript.js');
 
 const VAULT = PATHS.VAULT;
 const BRAIN = PATHS.BRAIN_MD;
 const SESSION = PATHS.SESSION_MD;
+
+/**
+ * How many prompts the user typed before this one, from either host's transcript (lib/transcript.js isRealPrompt:
+ * not Claude's isMeta entries, command envelopes or tool results, not Codex's injected context). The host may already
+ * have written the prompt being submitted, so a last typed prompt equal to `current` (whitespace aside) is this one.
+ */
+function earlierPrompts(t, current) {
+  const typed = ((t && t.turns) || []).filter(isRealPrompt);
+  let n = typed.length;
+  const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  if (n && current != null && norm(typed[n - 1].text) === norm(current)) n--;
+  return n;
+}
 
 let raw = '';
 process.stdin.on('data', chunk => raw += chunk);
@@ -36,10 +49,12 @@ process.stdin.on('end', () => {
     const marker = markerPath(`.injected-${sessionId}`);
     if (fs.existsSync(marker)) process.exit(0);
 
-    // Secondary safety: count user turns in the transcript (either host's format) if available
+    // Secondary safety, for a marker lost mid-session (its temp folder cleared): a session that already had a prompt
+    // the user typed gets nothing. Only typed prompts before this one count (earlierPrompts): a session started after
+    // /clear opens with Claude Code's local-command caveat and the command, which `userTurns` counted, so no such session
+    // was ever injected.
     if (transcriptPath && fs.existsSync(transcriptPath)) {
-      const userTurns = readTranscriptFile(transcriptPath).userTurns;
-      if (userTurns > 0) {
+      if (earlierPrompts(readTranscriptFile(transcriptPath), input.prompt) > 0) {
         fs.writeFileSync(marker, String(Date.now()));
         process.exit(0);
       }
