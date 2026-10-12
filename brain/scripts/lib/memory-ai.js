@@ -18,7 +18,7 @@
  *            with reason `ollama-only`; one resolving to none for another reason (a host signed out, a cap, `none`) is
  *            off with that reason, so a signed-out host still says to sign in.
  *   estimate(kind, { chars, outTokens, deps }) → Estimate { available, reason, provider, model, tokensIn, tokensOut,
- *            usd, cap } (A5): tokensIn = ceil(chars / 4) + OVERHEAD[provider], Codex's 20,000 counted as cached input;
+ *            usd, cap } (A5): tokensIn = ceil(chars / 4) + OVERHEAD[provider], all priced as fresh input;
  *            tokensOut = outTokens (default NUM_PREDICT[kind], the most a call may write); priced by model-pricing.js.
  *            Off: usd 0, provider none, and the cap that stopped it when a cap did. No call, nothing billed: it resolves
  *            with provider.js `deps.unbilled`, so Claude's login probe (a real `claude -p` call) never runs and no
@@ -53,9 +53,10 @@ const { dayCap } = require('./settings-schema.js');
 
 const KINDS = Object.freeze(['merge', 'sweep']);
 const FEATURES = Object.freeze({ merge: 'memory-merge', sweep: 'reason:memory-sweep' });
-// Input tokens a call costs beyond its prompt (A5): Claude's system prompt and schema; Codex's own agent preamble,
-// which its prompt cache serves, so it is priced as cached input.
-const OVERHEAD = Object.freeze({ claude: 600, codex: 20_000, ollama: 0, none: 0 });
+// Input tokens a call costs beyond its prompt (A5): Claude's system prompt and schema; Codex's own agent preamble. A
+// one-shot `codex exec --ephemeral` gets no prompt-cache hit: a live check's merge draft and sweep billed 26.5k and 28.9k
+// input tokens, none cached, for prompts of about 1.5k and 4k, so the preamble is about 25k, priced as fresh input.
+const OVERHEAD = Object.freeze({ claude: 600, codex: 25_000, ollama: 0, none: 0 });
 // A12: the page waits 150 s; the runtime gives up first.
 const TIMEOUT_MS = Object.freeze({ merge: 90_000, sweep: 120_000 });
 const NUM_PREDICT = Object.freeze({ merge: 2_000, sweep: 3_000 });
@@ -221,7 +222,7 @@ async function estimate(kind, { chars = 0, outTokens, deps } = {}) {
     return { available: false, reason: r.reason, provider: 'none', model: null, tokensIn: base, tokensOut, usd: 0, cap };
   }
   const tokensIn = base + OVERHEAD[r.provider];
-  const usage = { inputTokens: tokensIn, cachedInputTokens: r.provider === 'codex' ? OVERHEAD.codex : 0, outputTokens: tokensOut };
+  const usage = { inputTokens: tokensIn, cachedInputTokens: 0, outputTokens: tokensOut };
   const usd = require('../sdk/lib/model-pricing.js').priceUsd(r.provider, r.model, usage);
   return { available: true, reason: null, provider: r.provider, model: r.model, tokensIn, tokensOut, usd, cap: capOf(kind, r.provider, cfg, deps || {}) };
 }

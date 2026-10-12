@@ -283,7 +283,7 @@ test('merge-draft on Codex: codex exec in an empty temp folder on codex.model at
   const spawns = [];
   const e = await json(['merge-draft', A, B, '--estimate'], codexDeps(spawns, MERGED));
   assert.deepEqual([e.estimate.available, e.estimate.provider, e.estimate.model], [true, 'codex', 'gpt-5-mini']);
-  assert.equal(e.estimate.usd, codexPricing.priceUsd('gpt-5-mini', { inputTokens: e.estimate.tokensIn, cachedInputTokens: 20_000, outputTokens: e.estimate.tokensOut }));
+  assert.equal(e.estimate.usd, codexPricing.priceUsd('gpt-5-mini', { inputTokens: e.estimate.tokensIn, cachedInputTokens: 0, outputTokens: e.estimate.tokensOut }));
   assert.deepEqual(e.estimate.cap, { family: 'codex', perDayUsd: 0.5, spentToday: 0, perCallUsd: null }, 'no per-call cap under Codex');
   assert.deepEqual(spawns, []);
 

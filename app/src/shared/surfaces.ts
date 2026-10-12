@@ -336,6 +336,14 @@ export const SURFACES: readonly Surface[] = [
     // sessions alike; every frontmatter still parses as strict YAML); set pin, a stale hash refused and unpin back to the
     // same bytes on a Claude Code session's memory and a Codex session's; Mark complete and back; the recall preview
     // answered and wrote nothing (no usage row); brain-hub.js wrote a brain-map.json the page parses. 62 checks.
+    // PR 4's rules (brain-ai A13), 2026-10-12, on a fresh copy of the same vault with this runtime vendored into it and
+    // REAL model calls: a pair from Claude Code sessions drafted by Claude, a Codex session's memory and its partner
+    // drafted by Codex, and a pair drafted by the local Ollama; for each, merge-draft --estimate and the draft wrote no
+    // memory, merge left the oldest with the merged text, the other superseded by it and one MEMORY.md line, a second
+    // Save on the old hashes was refused, and unmerge put both files and MEMORY.md back byte for byte. A Map
+    // community's scoped sweep answered by Claude and by Codex wrote only memory-sweep.json, cards only for the scope,
+    // the page parsed it, and a dismissal stuck; provider none gave the by-hand draft and refused the sweep. Every argv
+    // was admitted with the surface on and refused with it off. 67 checks, $0.12 in all.
     verified: true,
   },
   {

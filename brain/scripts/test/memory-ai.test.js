@@ -112,7 +112,7 @@ afterEach(() => { ollama.chat = realOllamaChat; });
 test('the constants: a feature, an overhead, a timeout and an output cap per kind; the sweep is reasoner spend, the merge hook spend', async () => {
   assert.deepEqual(AI.KINDS, ['merge', 'sweep']);
   assert.deepEqual(AI.FEATURES, { merge: 'memory-merge', sweep: 'reason:memory-sweep' });
-  assert.deepEqual(AI.OVERHEAD, { claude: 600, codex: 20_000, ollama: 0, none: 0 });
+  assert.deepEqual(AI.OVERHEAD, { claude: 600, codex: 25_000, ollama: 0, none: 0 });
   assert.deepEqual(AI.TIMEOUT_MS, { merge: 90_000, sweep: 120_000 });
   assert.deepEqual(AI.NUM_PREDICT, { merge: 2_000, sweep: 3_000 });
   assert.ok(REASON_ROWS.test(AI.FEATURES.sweep) && HOOK_EXCLUDE.test(AI.FEATURES.sweep), 'the reasoner cap counts the sweep, the hook cap never does');
@@ -387,16 +387,16 @@ test('an estimate per host: the tokens with the host\'s overhead, the price, and
   e = await AI.estimate('sweep', { chars: 120_000, outTokens: 3000, deps: claudeDeps([], { claudeCall: never('claude') }) });
   assert.deepEqual([e.provider, e.model, e.tokensIn, e.usd, e.cap], ['claude', 'haiku', 30_600, 0.0456, { family: 'reasoner', perDayUsd: 5, spentToday: 0, perCallUsd: 0.5 }]);
 
-  // Codex: 20,000 overhead tokens priced as cached input; gpt-5-mini at $0.25 in, $2 out.
+  // Codex: 25,000 overhead tokens, priced as fresh input (a one-shot exec gets no cache hit); gpt-5-mini at $0.25 in, $2 out.
   dropState();
   setConfig({ codex: { model: 'gpt-5-mini' } }, CODEX_ONLY);
   e = await AI.estimate('merge', { chars: 4000, outTokens: 800, deps: codexDeps([], {}, { codexCall: never('codex') }) });
   assert.deepEqual(e, {
-    available: true, reason: null, provider: 'codex', model: 'gpt-5-mini', tokensIn: 21_000, tokensOut: 800, usd: 0.00235,
+    available: true, reason: null, provider: 'codex', model: 'gpt-5-mini', tokensIn: 26_000, tokensOut: 800, usd: 0.0081,
     cap: { family: 'codex', perDayUsd: 0.5, spentToday: 0, perCallUsd: null },
   });
   e = await AI.estimate('sweep', { chars: 4000, outTokens: 800, deps: codexDeps([], {}, { codexCall: never('codex') }) });
-  assert.deepEqual([e.provider, e.model, e.usd, e.cap], ['codex', 'gpt-5-mini', 0.00235, { family: 'reasoner-codex', perDayUsd: 5, spentToday: 0, perCallUsd: null }]);
+  assert.deepEqual([e.provider, e.model, e.usd, e.cap], ['codex', 'gpt-5-mini', 0.0081, { family: 'reasoner-codex', perDayUsd: 5, spentToday: 0, perCallUsd: null }]);
 
   // Ollama: local, free, no cap.
   dropState();
