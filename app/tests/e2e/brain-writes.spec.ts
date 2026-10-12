@@ -284,7 +284,8 @@ test("P pins through set --expect (D17): pin: true, BRAIN.md rebuilt naming it u
   await expect(card(rel).locator('button[data-act="pin"]')).toHaveAttribute("aria-label", "Unpin (P)");
   await expect.poll(() => read(rel)).toBe(pristine(rel).replace("reviewed: false\n---", "reviewed: false\npin: true\n---"));
   await expect.poll(() => read(BRAIN_MD)).toContain(bullet);
-  expect(readVaultJson<{ sections: { rules: { paths: string[] } } }>("brain/_index/brain-sources.json").sections.rules.paths).toContain(rel);
+  // build-brain-md writes BRAIN.md, then brain-sources.json: polled too, or a loaded machine reads it between the two.
+  await expect.poll(() => readVaultJson<{ sections: { rules: { paths: string[] } } }>("brain/_index/brain-sources.json").sections.rules.paths).toContain(rel);
   // The verb is done once the page rebuilds the hub after it (one action at a time: P waits for the first).
   await hubRebuilt(builtAt);
   builtAt = hub().builtAt;
