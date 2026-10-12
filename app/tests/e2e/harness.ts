@@ -84,7 +84,59 @@ export interface ExpectedBrain {
   memories: string[];
   /** The live memories with `reviewed: false`. */
   unreviewed: string[];
+
+  // Bootstrap, Map and Health (spec 2026-10-11-brain-hub D17–D20, PR 3): what the fixture seeds for them, named once in
+  // make-fixture-vault.mjs HUB_FIXTURE, and what the runtime made of it.
+  /** The pinned feedback rule approved from a draft; its draft, left behind, is `leftover`. */
+  pinned: string;
+  leftover: string;
+  /** The two active projects that look shipped: a version in the title, "released" in the index line. */
+  shipped: { version: string; released: string };
+  /** An active project whose index line says "merged" (never "looks shipped", D17). */
+  merged: string;
+  /** One memory per hygiene finding (`legacy` by its old source label). */
+  legacy: Record<"session" | "in-session", string>;
+  oldType: string;
+  unindexed: string;
+  misfiled: string;
+  /** The MEMORY.md line to a file that is gone. */
+  broken: string;
+  ruleSession: string;
+  /** The recall preview's two queries: one with hits, one with none. */
+  recall: { hit: string; none: string };
+  /** brain/_index/brain-sources.json as build-brain-md wrote it. */
+  sources: ExpectedSources;
+  /** brain/_index/brain-map.json as the scan wrote it from the fixture's graph. */
+  map: ExpectedMap;
+  /** brain-hub.json's `shipped`, `hygiene` and `clusters`. */
+  looksShipped: Array<{ path: string; why: string }>;
+  hygiene: { sources: Record<string, number>; oldType: string[]; noDescription: string[]; unindexed: string[]; misfiled: string[]; brokenIndex: string[]; leftoverDrafts: string[] };
+  clusters: Array<{ paths: string[]; label: string }>;
+  /** The usage log's first row, and the live memories by Dead weight's buckets (memory.neverUsedDays 30). */
+  usage: { since: string; used: string[]; quiet: string[]; never: string[] };
+  /** Each `aos memory fix <kind> --dry-run --json`, as the runtime answered at generation time. */
+  fixes: Record<"sources" | "types" | "descriptions" | "index" | "drafts", ExpectedFix>;
+  /** recall-cli.js's hits per query (`--limit 8 --json`). */
+  recallHits: Record<string, Array<{ path: string; score: number; flag: string; snippet: string; stale: boolean }>>;
 }
+
+export interface ExpectedSources {
+  budget: number; tokens: number;
+  sections: {
+    who: { paths: string[]; tokens: number }; rules: { paths: string[]; tokens: number };
+    active: { paths: string[]; omitted: string[]; tokens: number }; links: { tokens: number }; lastSession: { tokens: number };
+  };
+}
+export interface ExpectedMap {
+  state: string; mapMin: number; hubs: string[]; unlinked: number;
+  graph: { builtAt: string; mode: string | null; nodes: number; edges: number; communities: number };
+  communities: Array<{ id: string; name: string; lead: string; paths: string[]; edges: number }>;
+  links: Array<{ a: string; b: string; n: number }>;
+  memories: Record<string, { community: string | null; degree: number; neighbours: Array<{ path: string; n: number }> }>;
+  smaller: { communities: number; memories: number };
+}
+export interface ExpectedFixChange { path: string; action: string; before: string | null; after: string | null }
+export interface ExpectedFix { kind: string; dryRun: boolean; changes: ExpectedFixChange[]; files: number; brainMd: unknown }
 
 let cachedExpected: Expected | null = null;
 export function expected(): Expected {

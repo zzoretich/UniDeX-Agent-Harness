@@ -1,16 +1,19 @@
 // Brain (app-smoke: Brain; the Memory items of Spaces / Memory / Runs). The Memory tab became the Brain hub (spec
-// 2026-10-11-brain-hub, PR 2): the rail button and the palette command, the header with its five modes as a tablist,
-// their counts, ⌘F and the search that opens Library; Review's batches by session (THIS WEEK, EARLIER folded), a batch's
-// header and cards with the near-duplicate's flag, the comparison (M), ↑↓ and ⏎, the queues (Drafts, Duplicates,
-// Older than 30d) and "Mark everything before …"; Library's kinds, facets, reader (Edit, ⧉ into the split pane's Memory
-// inspector, IN BRAIN.MD AS) and context (LINKED FROM, NEARBY, HISTORY); Map's force view ("Every node"); the Bootstrap
-// and Health stand-ins; the rail badge; an agenticos:// link. Read-only: with the brain surface off a Keep is refused and
-// nothing changes. The writes themselves (keep, the batch, archive and restore, pin, keep the older one, keep both, a
-// draft's approve and reject, status, Mark everything before) are in brain-writes.spec.ts, and a Codex-only machine's
-// Brain in variants.spec.ts.
+// 2026-10-11-brain-hub): the rail button and the palette command, the header with its five modes as a tablist, their
+// counts, ⌘F and the search that opens Library; Review's batches by session (THIS WEEK, EARLIER folded), a batch's header
+// and cards with the near-duplicate's flag, the comparison (M), ↑↓ and ⏎, the queues (Drafts, Duplicates, Older than 30d)
+// and "Mark everything before …"; Library's kinds, facets (Use from the usage log), reader (Edit, ⧉ into the split pane's
+// Memory inspector, IN BRAIN.MD AS) and context (USE, LINKED FROM, NEARBY, HISTORY); Bootstrap (the budgets, BRAIN.md by
+// section, looks shipped, the left-out projects, SESSION.md, MEMORY.md, the recall preview read only); Map (Communities,
+// Around a memory, Every node, the empty states); Health (the tiles, duplicates, hygiene, dead weight); the rail badge; an
+// agenticos:// link. Read-only: with the brain surface off a Keep, a fix's preview and the recall preview are refused and
+// nothing changes. The writes themselves (Review's and Library's verbs, Bootstrap's Unpin and Mark complete, each hygiene
+// fix, Health's Not duplicates and Archive the N shipped…, the recall preview's hits) are in brain-writes.spec.ts, and a
+// Codex-only machine's Brain and a vault with no usage log yet in variants.spec.ts.
 
 import { expect, test, type Locator } from "@playwright/test";
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as path from "node:path";
 import {
   FX, badge, closeNotes, command, content, expected, guardWrites, notePath, openTab, rail, readVaultJson, useApp,
@@ -59,6 +62,25 @@ function memoryTree(root: string): Record<string, string> {
 }
 const live = () => B().memories.filter((p) => !B().archived.includes(p));
 const pl = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** What Health's fixes and the duplicates queue act on (its tab badge): the pairs and every hygiene finding a fix takes. */
+const healthFindings = (): number => {
+  const h = B().hygiene;
+  return B().dups.length + (h.sources.session ?? 0) + (h.sources["in-session"] ?? 0) + (h.sources.wrap ?? 0) + h.oldType.length + h.noDescription.length
+    + h.unindexed.length + h.misfiled.length + h.brokenIndex.length + h.leftoverDrafts.length;
+};
+/** How many times sessions used a memory in the last 7 days (brain-hub.json usage d7, from the fixture's usage log). */
+const weekUses = (rel: string): number => readVaultJson<{ usage: { paths: Record<string, { d7: number }> } }>("brain/_index/brain-hub.json").usage.paths[rel]?.d7 ?? 0;
+/** The vault's token estimate (text-budget.js): characters / 4, rounded up. */
+const tokensOf = (s: string): number => Math.ceil(s.length / 4);
+/** MEMORY.md's non-blank lines (Bootstrap's index card and Health's tile count these). */
+const lineCount = (s: string): number => s.split(/\r?\n/).filter((l) => l.trim()).length;
+/** A memory's H1, as BRAIN.md and the hub title it. */
+const titleOf = (rel: string): string => /^#[ \t]+(.+?)[ \t]*$/m.exec(read(rel).replace(/^---\n[\s\S]*?\n---\n/, ""))![1];
+/** BRAIN.md's bullets under `## <heading>`, each as the page shows it ("Title — description"), with its raw line. */
+const brainBullets = (heading: string): Array<{ text: string; line: string }> => {
+  const body = new RegExp(`\\n## ${heading}\\n([\\s\\S]*?)(?=\\n## |$)`).exec(`\n${read("brain/_index/BRAIN.md")}`)![1];
+  return body.split("\n").filter((l) => l.startsWith("- **")).map((l) => ({ text: l.replace(/^- \*\*(.+?)\*\* — /, "$1 — "), line: l }));
+};
 const thisWeek = () => B().batches.filter((b) => localTime(b.at) >= Date.now() - 7 * 24 * 3600 * 1000);
 const earlier = () => B().batches.filter((b) => !thisWeek().includes(b));
 const byKey = (key: string) => B().batches.find((b) => b.key === key)!;
@@ -135,7 +157,7 @@ test("the rail button reads Brain with its id still memory, and the palette's Op
   await expect(C().locator("h1.aos-brain-h1")).toHaveText("Brain");
 });
 
-test("the header: Brain, the store in one line, and the five modes as a tablist with Review's, Library's and Bootstrap's counts", async () => {
+test("the header: Brain, the store in one line, and the five modes as a tablist with Review's, Library's, Bootstrap's and Health's counts", async () => {
   await brain("review");
   const counts = B().counts;
   await expect(C().locator("h1.aos-brain-h1")).toHaveText("Brain");
@@ -148,9 +170,11 @@ test("the header: Brain, the store in one line, and the five modes as a tablist 
   expect(await strip.locator('[role="tab"]').evaluateAll((els) => els.map((e) => e.getAttribute("aria-selected")))).toEqual(["true", "false", "false", "false", "false"]);
   // One Tab stop: the selected mode.
   expect(await strip.locator('[role="tab"]').evaluateAll((els) => els.map((e) => e.getAttribute("tabindex")))).toEqual(["0", "-1", "-1", "-1", "-1"]);
-  // Review: what waits (amber); Library: the live store; Bootstrap: BRAIN.md against its budget; Map and Health none.
+  // Review: what waits (amber); Library: the live store; Bootstrap: BRAIN.md against its budget (under 100%, so plain);
+  // Health: what its fixes and the duplicates queue can act on (amber); Map none.
   const src = sources();
   const pct = Math.round((src.tokens / src.budget) * 100);
+  expect(pct).toBeLessThan(100);
   expect(B().unreviewed.length).toBeGreaterThan(0);
   await expect(modeTab("review").locator(".aos-brain-modebadge")).toHaveText(String(B().unreviewed.length));
   await expect(modeTab("review").locator(".aos-brain-modebadge")).toHaveClass(/is-warn/);
@@ -158,10 +182,12 @@ test("the header: Brain, the store in one line, and the five modes as a tablist 
   await expect(modeTab("library").locator(".aos-brain-modebadge")).toHaveText(String(live().length));
   await expect(modeTab("library").locator(".aos-brain-modebadge")).not.toHaveClass(/is-warn/);
   await expect(modeTab("bootstrap").locator(".aos-brain-modebadge")).toHaveText(`${pct}%`);
-  for (const m of ["map", "health"]) {
-    await expect(modeTab(m).locator(".aos-brain-modebadge")).toHaveClass(/is-empty/);
-    await expect(modeTab(m)).toHaveAttribute("aria-label", m === "map" ? "Map" : "Health");
-  }
+  await expect(modeTab("bootstrap").locator(".aos-brain-modebadge")).not.toHaveClass(/is-warn/);
+  await expect(modeTab("health").locator(".aos-brain-modebadge")).toHaveText(String(healthFindings()));
+  await expect(modeTab("health").locator(".aos-brain-modebadge")).toHaveClass(/is-warn/);
+  await expect(modeTab("health")).toHaveAttribute("aria-label", `Health, ${healthFindings()}`);
+  await expect(modeTab("map").locator(".aos-brain-modebadge")).toHaveClass(/is-empty/);
+  await expect(modeTab("map")).toHaveAttribute("aria-label", "Map");
   await expect(search()).toHaveAttribute("placeholder", "Search titles and bodies…");
   await expect(C().locator("button.aos-brain-capture")).toHaveAttribute("aria-label", "Quick Capture");
 });
@@ -332,7 +358,9 @@ test.describe("Review", () => {
     await expect(boxes.nth(1).locator(".aos-brain-rv-boxlabel")).toHaveText(`LOOKS LIKE · OLDER${score} similar`);
     await expect(boxes.nth(1).locator(".aos-brain-rv-boxtitle")).toHaveText("Prefer small diffs");
     await expect(boxes.nth(1).locator(".aos-brain-rv-boxtext")).toHaveText(indexDesc(dupB));
-    await expect(boxes.nth(1).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback · ${shortDay(writtenAt(dupB), new Date())}`);
+    // The older one was recalled this week (the usage log, D8): the box says so; the new one has no use yet.
+    expect(weekUses(dupB)).toBe(1);
+    await expect(boxes.nth(1).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback · ${shortDay(writtenAt(dupB), new Date())} · used 1× this week`);
     await expect(card(dupA).locator(".aos-brain-rv-cmpacts button")).toHaveText(["Keep the older one", "Keep both", "Open both"]);
     await expect(card(dupA).locator('.aos-brain-rv-cmpacts button[data-act="keepolder"]')).toHaveAttribute("title", "Keeps “Prefer small diffs”; this one is marked superseded by it");
     await win.keyboard.press("m");
@@ -386,9 +414,14 @@ test.describe("Review", () => {
     expect(B().older).toEqual(["brain/memory/reference/chart-datum.md"]);
 
     await showQueue("drafts");
+    // Today's draft, and the one approved three days ago and left behind (Health's drafts fix removes it), by name.
     const slug = B().drafts[0];
+    expect(B().drafts).toEqual(["name-layers-after-their-data", B().leftover]);
     const draftRel = `brain/memory/feedback/_drafts/${slug}.md`;
-    await expect(C().locator('.aos-brain-rv-list [role="listbox"][aria-label="Feedback drafts"] [role="option"]')).toHaveText(`Name layers after their data${shortDay(fmKey(draftRel, "created"), now)}`);
+    const leftRel = `brain/memory/feedback/_drafts/${B().leftover}.md`;
+    await expect(C().locator('.aos-brain-rv-list [role="listbox"][aria-label="Feedback drafts"] [role="option"]')).toHaveText([
+      `Name layers after their data${shortDay(fmKey(draftRel, "created"), now)}`, `Show units on every axis${shortDay(fmKey(leftRel, "created"), now)}`,
+    ]);
     await expect(main().locator("h2")).toHaveText("Feedback drafts");
     const d = main().locator(`article.aos-brain-rv-draft[data-slug="${slug}"]`);
     await expect(d).toHaveAttribute("aria-current", "true");
@@ -417,8 +450,9 @@ test.describe("Review", () => {
     expect(await paths(boxes)).toEqual([older, newer]);
     await expect(boxes.locator(".aos-brain-label")).toHaveText(["OLDER", "NEWER"]);
     await expect(boxes.locator(".aos-brain-rv-boxtitle")).toHaveText(["Prefer small diffs", "Prefer small diffs in reviews"]);
-    await expect(boxes.nth(0).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback/prefer-small-diffs.md · created ${shortDay(fmKey(older, "created"), now)} · reviewed`);
-    await expect(boxes.nth(1).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback/prefer-small-diffs-in-reviews.md · created ${shortDay(fmKey(newer, "created"), now)} · to review`);
+    await expect(boxes.nth(0).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback/prefer-small-diffs.md · created ${shortDay(fmKey(older, "created"), now)} · reviewed · used ${weekUses(older)}× this week`);
+    expect(weekUses(newer)).toBe(0);
+    await expect(boxes.nth(1).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback/prefer-small-diffs-in-reviews.md · created ${shortDay(fmKey(newer, "created"), now)} · to review · not used this week`);
     await expect(main().locator(".aos-brain-rv-cmpacts button")).toHaveText(["Keep the older one", "Keep the newer one", "Not duplicates", "Open both"]);
 
     await showQueue("older");
@@ -505,20 +539,32 @@ test.describe("Review", () => {
 test.describe("Library", () => {
   test.beforeEach(async () => { await brain("library"); await libraryShow("memories"); });
 
-  test("the kinds with their counts, every live memory newest first, and the facets: Status › archived shows the archived memory, Type and Source narrow", async () => {
+  test("the kinds with their counts, every live memory sorted by use with its count, and the facets: Status › archived shows the archived memory, Type, Source and Use narrow", async () => {
     const counts = B().counts;
     await expect(C().locator(".aos-lib-kinds")).toHaveAttribute("role", "group");
     await expect(C().locator(".aos-lib-kinds button span:first-child")).toHaveText(["Memories", "Drafts", "Patterns", "Reflections"]);
     await expect(C().locator(".aos-lib-kinds .aos-brain-chipn")).toHaveText([live().length, B().drafts.length, counts.patterns, counts.reflections].map(String));
     await expect(kind("memories")).toHaveAttribute("aria-label", `Memories, ${live().length}`);
     await expect(C().locator(".aos-lib-count")).toHaveText(`${live().length} MATCHES`);
-    // No usage log yet (telemetry is on, but no session ran since): newest first, and the Use facet hidden (D8).
-    await expect(C().locator(".aos-lib-sort")).toHaveText("newest first");
-    await expect(C().locator('.aos-lib-facet[data-facet="use"]')).toBeHidden();
+    // Sessions on both hosts logged their use (D8): sorted by use, each row with its 30 days' count or "unused", and the
+    // Use facet shown (with no log it is hidden: variants › before any session logs a memory use).
+    await expect(C().locator(".aos-lib-sort")).toHaveText("sorted by use");
     await expect(C().locator(".aos-lib-list")).toHaveAttribute("role", "listbox");
     expect((await paths(libRows())).sort()).toEqual([...live()].sort());
-    for (const [key, text] of [["type", "Type: any"], ["status", "Status: live"], ["source", "Source: any"]]) await expect(facetText(key)).toHaveText(text);
-    await expect(libRows().first()).toHaveAttribute("aria-selected", "true");
+    const d30 = readVaultJson<{ usage: { paths: Record<string, { d30: number }> } }>("brain/_index/brain-hub.json").usage.paths;
+    const uses = await libRows().evaluateAll((els) => els.map((e) => [e.getAttribute("data-path")!, e.querySelector(".aos-lib-use")?.textContent ?? ""]));
+    expect(uses.map(([, l]) => l)).toEqual(uses.map(([p]) => (B().usage.never.includes(p) ? "unused" : `${d30[p].d30}×`)));
+    const byUse = uses.map(([p]) => d30[p]?.d30 ?? 0);
+    expect(byUse).toEqual([...byUse].sort((a, b) => b - a));
+    for (const [key, text] of [["type", "Type: any"], ["status", "Status: live"], ["source", "Source: any"], ["use", "Use: any"]]) await expect(facetText(key)).toHaveText(text);
+    // One row is selected: the memory Library showed last (an earlier test's), wherever use sorts it.
+    await expect(C().locator('.aos-lib-list button.aos-lib-row[aria-selected="true"]')).toHaveCount(1);
+    // Use › unused: exactly the memories no session injected, recalled or read in 30 days.
+    await facet("Use").selectOption("unused");
+    await expect(facetText("use")).toHaveText("Use: unused");
+    expect((await paths(libRows())).sort()).toEqual([...B().usage.never].sort());
+    await facet("Use").selectOption("any");
+    await expect(libRows()).toHaveCount(live().length);
 
     // Status › archived: the archived memory, tagged, and the reader offers Restore instead of Pin, Keep and Archive.
     expect(B().archived).toEqual(["brain/memory/projects/survey-boat-booking.md"]);
@@ -617,14 +663,18 @@ test.describe("Library", () => {
     expect(read(rel)).toBe(pristine(rel));
   });
 
-  test("the context: LINKED FROM with MEMORY.md as an index, NEARBY the near-duplicate with its score (by words), HISTORY the trail's written and kept with the path", async () => {
+  test("the context: USE from the log, LINKED FROM with MEMORY.md as an index, NEARBY the near-duplicate with its score (by words), HISTORY the trail's written and kept with the path", async () => {
     const now = new Date();
     const [newer, older] = B().duplicate;
     await libRow(older).click();
     await expect(reader().locator("h2")).toHaveText("Prefer small diffs");
-    // No usage log yet: the Use section says when it starts.
+    // A Claude Code session's recall hit two days ago (D8): its counts, how it was reached, the host and the last use.
+    const u = readVaultJson<{ usage: { since: string; paths: Record<string, { d7: number; d30: number; recalled: number; claude: number; codex: number; last: string }> } }>("brain/_index/brain-hub.json").usage;
+    expect(u.paths[older]).toMatchObject({ d7: 1, d30: 1, recalled: 1, claude: 1, codex: 0 });
     await expect(csec("use").locator(".aos-lib-chead")).toHaveText("USE · LAST 30 DAYS");
-    await expect(csec("use").locator(".aos-lib-cnote")).toHaveText("No usage yet: the log starts with the next session.");
+    await expect(csec("use").locator(".aos-lib-stat")).toHaveText(["1uses in 30 days", "1this week"]);
+    await expect(csec("use").locator(".aos-lib-cline")).toHaveText([`recalled 1 since ${shortDay(u.since, now)}`, "claude 1", `Last used ${shortDay(u.paths[older].last, now)}`]);
+    await expect(csec("use").locator(".aos-lib-cnote")).toHaveCount(0);
     const links = csec("links");
     await expect(links.locator(".aos-lib-chead > span").first()).toHaveText("LINKED FROM");
     const index = links.locator('button.aos-lib-clink[data-path="MEMORY.md"]');
@@ -688,89 +738,653 @@ test.describe("Library", () => {
   });
 });
 
-// ── Map, Bootstrap, Health ───────────────────────────────────────────
+// ── Bootstrap (D17, D18) ─────────────────────────────────────────────
 
-test("Map › Every node: the four kind chips, the counts, today's and yesterday's daily notes as session nodes; a chip hides its kind, a memory node opens in Library", async () => {
-  const { win } = app();
-  await brain("map");
-  const map = C().locator("section.aos-brain-map");
-  await expect(map).toHaveAttribute("aria-label", "Every node");
-  await expect(map.locator("h2")).toHaveText("Every node");
-  const chips = map.locator(".aos-cortex-chips button.aos-cortex-chip");
-  await expect(chips).toHaveText(["memory", "pattern", "session", "agent"]);
-  for (const c of await chips.all()) await expect(c).toHaveAttribute("aria-pressed", "true");
-  // The graph on screen, read through the tab (MapMode.graph is public for this).
-  const nodes = () => win.evaluate(() => {
-    const w = window as unknown as { aosHost: { app: { workspace: { getLeavesOfType(t: string): Array<{ view: { getTab(id: string): { modes: { map?: { graph: { nodes: Array<{ kind: string; path: string }>; edges: unknown[] } | null } } } } }> } } } };
-    const g = w.aosHost.app.workspace.getLeavesOfType("agentic-os-workbench")[0].view.getTab("memory").modes.map?.graph;
-    return g ? { nodes: g.nodes.map((n) => `${n.kind}:${n.path}`), edges: g.edges.length } : null;
+const bs = () => C().locator(".aos-brain-bootstrap");
+const budget = (k: string) => bs().locator(`[data-budget="${k}"]`);
+const bsSec = (k: string) => bs().locator(`section[data-section="${k}"]`);
+const bsRows = (k: string) => bsSec(k).locator(".aos-brain-bs-row");
+const SESSION = "brain/_index/SESSION.md";
+const WAKE = "brain/_index/recall-wake.md";
+const DAY = 24 * 3600 * 1000;
+/** The index card's "about N tokens" (brainBootstrap.ts tokensAbout). */
+const tokensAbout = (t: number): string => (t < 1000 ? `about ${pl(t, "token")}` : t < 10_000 ? `about ${(t / 1000).toFixed(1)}k tokens` : `about ${Math.round(t / 1000)}k tokens`);
+/** What the recall preview may never write (D9, D18): recall's index and wake file, the usage log and its rollup. */
+const RECALL_FILES = ["brain/_index/recall-index.json", WAKE, "brain/_index/memory-usage.jsonl", "brain/_index/memory-usage-rollup.json", "brain/_index/embed-index.json"];
+const snapshot = (rels: readonly string[]): Record<string, string | null> => Object.fromEntries(rels.map((r) => [r, fs.existsSync(FX.v(r)) ? read(r) : null]));
+
+test.describe("Bootstrap", () => {
+  test.beforeEach(async () => { await brain("bootstrap"); });
+
+  test("the budgets as progressbars: BRAIN.md full with two projects left out (amber, said in words), SESSION.md against its 400 tokens, recall-wake.md's three hits", async () => {
+    const src = B().sources;
+    const left = src.sections.active.omitted.length;
+    // The fixture fills BRAIN.md (a long profile, more quick links), so the two oldest active projects give way.
+    expect(left).toBe(2);
+    expect(src.tokens).toBeLessThanOrEqual(src.budget);
+    await expect(bs()).toHaveAttribute("aria-label", "Bootstrap");
+    await expect(bs().locator("section.aos-brain-bs-main")).toHaveAttribute("aria-label", "BRAIN.md");
+    await expect(bs().locator("aside.aos-brain-bs-side")).toHaveAttribute("aria-label", "Steer");
+    await expect(bs().locator("h2.aos-brain-h2")).toHaveText("What every new session starts with");
+    await expect(bs().locator(".aos-brain-bs-sub")).toHaveText("Injected on the first prompt in Claude Code and Codex");
+    await expect(bs().locator('[role="list"][aria-label="Budgets"] [role="listitem"][data-budget]')).toHaveCount(3);
+    const session = read(SESSION);
+    const wake = read(WAKE);
+    const hits = (wake.match(/^- `[^`\n]+` \([^)\n]*\)/gm) ?? []).length;
+    expect(hits).toBe(3);
+    const want = [
+      { key: "brain", name: "BRAIN.md", value: `${src.tokens} / ${src.budget} tokens`, now: src.tokens, max: src.budget, note: `Full: ${left} older active projects left out`, warn: true },
+      { key: "session", name: "SESSION.md", value: `${tokensOf(session)} / 400 tokens`, now: tokensOf(session), max: 400, note: "Working memory, reset at each wrap", warn: false },
+      { key: "wake", name: "recall-wake.md", value: `${hits} of 3 hits · ${tokensOf(wake)} tokens`, now: hits, max: 3, note: "Recalled at session end; the next first prompt carries it", warn: false },
+    ];
+    for (const w of want) {
+      const card = budget(w.key);
+      await expect(card.locator(".aos-brain-bs-bname")).toHaveText(w.name);
+      await expect(card.locator(".aos-brain-bs-bval")).toHaveText(w.value);
+      await expect(card.locator(".aos-brain-bs-bnote")).toHaveText(w.note);
+      const bar = card.getByRole("progressbar");
+      await expect(bar).toHaveAttribute("aria-label", `${w.name} against its budget`);
+      await expect(bar).toHaveAttribute("aria-valuemin", "0");
+      await expect(bar).toHaveAttribute("aria-valuemax", String(w.max));
+      await expect(bar).toHaveAttribute("aria-valuenow", String(w.now));
+      await expect(bar).toHaveAttribute("aria-valuetext", `${w.value}. ${w.note}`);
+      if (w.warn) await expect(card).toHaveClass(/is-warn/);
+      else await expect(card).not.toHaveClass(/is-warn/);
+    }
   });
-  await expect.poll(async () => (await nodes()) !== null).toBe(true);
-  const g = (await nodes())!;
-  await expect(map.locator(".aos-cortex-stats")).toHaveText(`${g.nodes.length} nodes · ${g.edges} edges`);
-  const sessions = g.nodes.filter((k) => k.startsWith("session:"));
-  expect(sessions).toHaveLength(2);   // today's and yesterday's daily notes
-  expect(sessions.some((k) => k.endsWith(`/${expected().today}.md`))).toBe(true);
-  // Every memory file is a node (the archived one too: the force view draws what is on disk).
-  for (const p of B().memories) expect(g.nodes).toContain(`memory:${p}`);
-  const drawn = map.locator("svg.aos-cortex-svg g.aos-cortex-node");
-  await expect.poll(() => drawn.count()).toBe(g.nodes.length);
-  const session = chips.filter({ hasText: "session" });
-  await session.click();
-  await expect(session).toHaveAttribute("aria-pressed", "false");
-  await expect.poll(() => drawn.count()).toBe(g.nodes.length - sessions.length);
-  await expect(map.locator('g.aos-cortex-node[data-kind="session"]')).toHaveCount(0);
-  await session.click();
-  await expect.poll(() => drawn.count()).toBe(g.nodes.length);
-  // A click on a memory node shows it in Library (the sim keeps moving, so the click goes to the node itself).
-  const tide = "brain/memory/reference/tide-api-notes.md";
-  await map.locator(`g.aos-cortex-node[data-id="${tide}"]`).dispatchEvent("click");
-  await expect(modeTab("library")).toHaveAttribute("aria-selected", "true");
-  await expect(libRow(tide)).toHaveAttribute("aria-selected", "true");
-  await expect(reader().locator("h2")).toHaveText("Tide API notes");
+
+  test("BRAIN.md by section with each one's tokens: Who you are (Open), Critical rules (Unpin), Active context (Mark complete; released is flagged, merged is not), Quick links and Last Session; + Pin a memory… opens Library", async () => {
+    const s = B().sources.sections;
+    const names: Array<[string, string]> = [["who", "Who you are"], ["rules", "Critical rules"], ["active", "Active context"], ["links", "Quick links"], ["lastSession", "Last Session"]];
+    expect(await bs().locator("section[data-section]").evaluateAll((els) => els.map((e) => [e.getAttribute("data-section"), e.getAttribute("aria-label")]))).toEqual(names);
+    await expect(bs().locator("section[data-section] h3")).toHaveText(names.map(([, n]) => n));
+    const tok = (k: string) => bsSec(k).locator(".aos-brain-bs-tok");
+    await expect(tok("who")).toHaveText(pl(s.who.tokens, "token"));
+    await expect(tok("rules")).toHaveText(pl(s.rules.tokens, "token"));
+    await expect(tok("active")).toHaveText(`${pl(s.active.tokens, "token")} · ${s.active.paths.length} shown · ${s.active.omitted.length} left out`);
+    await expect(tok("links")).toHaveText(pl(s.links.tokens, "token"));
+    await expect(tok("lastSession")).toHaveText(pl(s.lastSession.tokens, "token"));
+    // Who you are: profile.md's first paragraph, cut for the row; Open shows it in Library.
+    const profile = s.who.paths[0];
+    const para = /\n# Profile\n\n([^\n]+)\n/.exec(read(profile))![1];
+    await expect(bsRows("who")).toHaveCount(1);
+    await expect(bsRows("who")).toHaveAttribute("data-path", profile);
+    await expect(bsRows("who").locator(".aos-brain-bs-rtitle")).toHaveText("Profile");
+    await expect(bsRows("who").locator(".aos-brain-bs-rdesc")).toHaveText(new RegExp(`^ — ${para.slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    await expect(bsRows("who").locator("button")).toHaveAttribute("aria-label", "Open: Profile");
+    // Critical rules: the pinned memories as BRAIN.md lists them, each with Unpin.
+    expect(s.rules.paths).toContain(B().pinned);
+    expect(await paths(bsRows("rules"))).toEqual(s.rules.paths);
+    await expect(bsRows("rules").locator(".aos-brain-bs-rtext")).toHaveText(brainBullets("Critical rules").map((b) => b.text));
+    expect(await bsRows("rules").locator("button").evaluateAll((els) => els.map((e) => [e.getAttribute("data-act"), e.textContent, e.getAttribute("aria-label")])))
+      .toEqual(s.rules.paths.map((p) => ["unpin", "Unpin", `Unpin: ${titleOf(p)}`]));
+    // Active context: the projects BRAIN.md shows, newest first, each with Mark complete. "released" in an index line looks
+    // shipped; a project whose line only says a PR merged does not (D17).
+    expect(await paths(bsRows("active"))).toEqual(s.active.paths);
+    await expect(bsRows("active").locator(".aos-brain-bs-rtext")).toHaveText(brainBullets("Active context").map((b) => b.text));
+    expect(await bsRows("active").locator("button").evaluateAll((els) => els.map((e) => [e.getAttribute("data-act"), e.getAttribute("aria-label")])))
+      .toEqual(s.active.paths.map((p) => ["complete", `Mark complete: ${titleOf(p)}`]));
+    const flagged = bsSec("active").locator('.aos-brain-bs-row[data-shipped="true"]');
+    expect(await paths(flagged)).toEqual([B().shipped.released]);
+    await expect(flagged.locator(".aos-brain-bs-flag")).toHaveText("looks shipped · released");
+    expect(s.active.paths).toContain(B().merged);
+    expect(indexDesc(B().merged)).toMatch(/\bmerged\b/);
+    await expect(bsSec("active").locator(`.aos-brain-bs-row[data-path="${B().merged}"] .aos-brain-bs-flag`)).toHaveCount(0);
+    await expect(bsSec("lastSession").locator(".aos-brain-bs-more")).toHaveText("Written every few turns by the session hooks; the hub does not edit it.");
+    // + Pin a memory… opens Library, to pin from the reader.
+    await expect(bsSec("rules").locator('button[data-act="pin-more"]')).toHaveText("+ Pin a memory…");
+    await bsSec("rules").locator('button[data-act="pin-more"]').click();
+    await expect(modeTab("library")).toHaveAttribute("aria-selected", "true");
+  });
+
+  test("looks shipped (D17): the lede counts 2 of the 7 active projects and the tokens marking them complete frees; Review the 2… shows only those, the left-out one too; Mark the 2 complete… asks first, and Cancel changes nothing", async () => {
+    const s = B().sources.sections.active;
+    const all = s.paths.length + s.omitted.length;
+    const shipped = [B().shipped.released, B().shipped.version];
+    // The runtime's suggestion (brain-hub.json) and the page's agree: a full version in the title, "released" in a line.
+    expect(B().looksShipped).toEqual([{ path: B().shipped.version, why: "1.2.0" }, { path: B().shipped.released, why: "released" }]);
+    expect(s.paths).toContain(B().shipped.released);
+    expect(s.omitted).toContain(B().shipped.version);
+    // What marking them complete frees: the line BRAIN.md shows now (the left-out one takes no room), its characters / 4.
+    const line = brainBullets("Active context").find((b) => b.text.startsWith(`${titleOf(B().shipped.released)} — `))!.line;
+    const lede = bs().locator('[data-bs="lede"]');
+    await expect(lede.locator(".aos-brain-bs-ledetext")).toHaveText(`2 of the ${all} active projects look shipped. Marking them complete frees about ${Math.ceil((line.length + 1) / 4)} tokens of BRAIN.md for work that is live.`);
+    const review = lede.locator('button[data-act="review-shipped"]');
+    await expect(review).toHaveText("Review the 2…");
+    const chip = (f: string) => bsSec("active").locator(`button[data-filter="${f}"]`);
+    await expect(bsSec("active").locator('[role="group"][aria-label="Show in Active context"] button')).toHaveText([`All${all}`, "Looks shipped2"]);
+    await expect(chip("all")).toHaveAttribute("aria-pressed", "true");
+    await review.click();
+    await expect(chip("shipped")).toHaveAttribute("aria-pressed", "true");
+    await expect(chip("shipped")).toBeFocused();
+    await expect(chip("all")).toHaveAttribute("aria-pressed", "false");
+    // BRAIN.md's first, then the one its budget left out, each flagged with what made it look shipped.
+    const rows = bsSec("active").locator('[aria-label="Active projects that look shipped"] .aos-brain-bs-row');
+    expect(await paths(rows)).toEqual(shipped);
+    await expect(rows.locator(".aos-brain-bs-flag")).toHaveText(["looks shipped · released", "looks shipped · 1.2.0"]);
+    await expect(rows.nth(0).locator(".aos-brain-bs-rnote")).toHaveCount(0);
+    await expect(rows.nth(1).locator(".aos-brain-bs-rnote")).toHaveText("left out");
+    await expect(rows.locator("button")).toHaveText(["Mark complete", "Mark complete"]);
+    await expect(bsSec("active").locator(".aos-brain-bs-more")).toHaveText("Suggestions only: each names a version, “shipped”, “released” or “superseded”. Check before you mark one complete.");
+    // Mark the 2 complete… asks first (spec §6); Cancel marks nothing and runs nothing.
+    const tree = memoryTree(FX.vault);
+    await clearGuard();
+    const bulk = bsSec("active").locator('button[data-act="complete-shipped"]');
+    await expect(bulk).toHaveText("Mark the 2 complete…");
+    await bulk.click();
+    const modal = app().win.locator(".modal", { hasText: "Mark 2 projects complete?" });
+    await expect(modal.locator("h3")).toHaveText("Mark 2 projects complete?");
+    await expect(modal.locator("p")).toHaveText(`Sets status/complete on “${titleOf(shipped[0])}” and “${titleOf(shipped[1])}”. They leave Active context and BRAIN.md is rebuilt. Nothing is archived or deleted, and Library's Status sets one back.`);
+    await expect(modal.locator("button")).toHaveText(["Cancel", "Mark 2 complete"]);
+    await modal.locator("button", { hasText: "Cancel" }).click();
+    await expect(modal).toHaveCount(0);
+    expect(memoryTree(FX.vault)).toEqual(tree);
+    expect((await app().guard()).filter((e) => e.kind === "spawn")).toEqual([]);
+    await chip("all").click();
+    await expect(bsRows("active")).toHaveCount(s.paths.length);
+  });
+
+  test("the projects BRAIN.md's budget left out: …and 2 older active projects that no longer fit; Show them lists each, left out and with Mark complete; Hide them", async () => {
+    const s = B().sources.sections.active;
+    for (const p of s.omitted) expect(read("brain/_index/BRAIN.md")).not.toContain(`- **${titleOf(p)}** —`);
+    const toggle = bsSec("active").locator('button[data-act="left-out"]');
+    await expect(bsSec("active").locator(".aos-brain-bs-more")).toHaveText(`…and ${s.omitted.length} older active projects that no longer fit.Show them`);
+    await expect(toggle).toHaveText("Show them");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const list = bsSec("active").locator('[role="list"][aria-label="Left out of BRAIN.md"]');
+    await expect(list).toHaveCount(0);
+    await toggle.click();
+    await expect(toggle).toHaveText("Hide them");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const rows = list.locator(".aos-brain-bs-row");
+    expect(await paths(rows)).toEqual(s.omitted);
+    await expect(rows.locator(".aos-brain-bs-rtitle")).toHaveText(s.omitted.map(titleOf));
+    await expect(rows.locator(".aos-brain-bs-rnote")).toHaveText(s.omitted.map(() => "left out"));
+    await expect(rows.locator(".aos-brain-bs-flag")).toHaveText(["looks shipped · 1.2.0"]);
+    await expect(rows.locator("button")).toHaveText(s.omitted.map(() => "Mark complete"));
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(list).toHaveCount(0);
+  });
+
+  test("SESSION.md's card: the lines to remember, the #promote one tagged, and the runtime's not-wrapped line read as Not wrapped yet · /wrap promotes the tagged lines; Open opens SESSION.md", async () => {
+    const { win } = app();
+    // As auto-wrap.js writeWrapStatus leaves it when no provider wrapped the session.
+    expect(read(SESSION)).toMatch(/^## Wrap Status\n+- Session [0-9a-f-]+ not wrapped \(provider: none\) — run \/wrap\.$/m);
+    const card = bs().locator('[data-bs="session"]');
+    await expect(card).toHaveAttribute("aria-label", "SESSION.md, working memory");
+    await expect(card.locator("h3")).toHaveText("SESSION.MD · WORKING MEMORY");
+    const lines = card.locator("li.aos-brain-bs-line");
+    const remember = /^## Things to Remember\n\n((?:- .*\n)+)/m.exec(read(SESSION))![1].trim().split("\n").map((l) => l.replace(/^- /, "").replace(/\s*#promote\b/, "").trim());
+    await expect(lines.locator(".aos-brain-bs-ltext")).toHaveText(remember);
+    expect(await lines.evaluateAll((els) => els.map((e) => e.getAttribute("data-promote")))).toEqual(["true", "false"]);
+    await expect(lines.locator(".aos-brain-bs-ptag")).toHaveText(["#promote"]);
+    const wrap = card.locator(".aos-brain-bs-wrap");
+    await expect(wrap).toHaveText("Not wrapped yet · /wrap promotes the tagged lines");
+    await expect(wrap).toHaveAttribute("data-wrapped", "false");
+    await expect(wrap).toHaveClass(/is-warn/);
+    await card.locator('button[data-act="open-session"]').click();
+    await expect(notePath(win)).toHaveText(SESSION);
+    await closeNotes(win);
+    expect(read(SESSION)).toBe(pristine(SESSION));
+  });
+
+  test("MEMORY.md's card: its size, about N tokens and its lines, the index's findings in words; Fix in Health → lands on Hygiene with its heading focused", async () => {
+    const raw = read("MEMORY.md");
+    const card = bs().locator('[data-bs="index"]');
+    await expect(card).toHaveAttribute("aria-label", "MEMORY.md, the index");
+    await expect(card.locator("h3")).toHaveText("MEMORY.MD · THE INDEX");
+    await expect(card.locator(".aos-brain-bs-size")).toHaveText(`${(Buffer.byteLength(raw) / 1024).toFixed(1)} KB · ${tokensAbout(tokensOf(raw))} · ${pl(lineCount(raw), "line")}`);
+    const h = B().hygiene;
+    expect([h.misfiled, h.unindexed, h.brokenIndex]).toEqual([[B().misfiled], [B().unindexed], [B().broken]]);
+    await expect(card.locator(".aos-brain-bs-note")).toHaveText("Agents read it through tools, never at start-up. 1 line sits under the wrong heading. 1 memory has no line in it. 1 line points at a missing file.");
+    await expect(card.locator(".aos-brain-bs-finding")).toHaveText(["1 line sits under the wrong heading.", "1 memory has no line in it.", "1 line points at a missing file."]);
+    const fix = card.locator('button[data-act="fix-in-health"]');
+    await expect(fix).toHaveText("Fix in Health →");
+    await fix.click();
+    await expect(modeTab("health")).toHaveAttribute("aria-selected", "true");
+    await expect(C().locator("h2#aos-brain-hl-hygiene")).toBeFocused();
+    await expect(C().locator('section[data-anchor="hygiene"]')).toBeInViewport();
+  });
+
+  test("the recall preview, read only: an empty prompt asks for one and runs nothing; with the brain surface off a preview says why, and recall's index, recall-wake.md and the usage log stay as they were", async () => {
+    const h = app();
+    const card = bs().locator('[data-bs="recall"]');
+    await expect(card).toHaveAttribute("aria-label", "Recall preview");
+    await expect(card.locator("h3")).toHaveText("RECALL PREVIEW");
+    const input = card.getByRole("textbox", { name: "Prompt to preview" });
+    const go = card.locator('button[data-act="recall"]');
+    await expect(go).toHaveAttribute("aria-label", "Preview recall");
+    const out = card.locator(".aos-brain-bs-hits");
+    await expect(out).toHaveAttribute("data-state", "idle");
+    await expect(out).toHaveText("Type a prompt, then ⏎ or Preview.");
+    const before = snapshot(RECALL_FILES);
+    await clearGuard();
+    await input.fill("   ");
+    await input.press("Enter");
+    await expect(out).toHaveText("Type a prompt first.");
+    await expect(out).toHaveAttribute("data-state", "idle");
+    await expect(input).toBeFocused();
+    expect((await h.guard()).filter((e) => e.kind === "spawn")).toEqual([]);
+    await input.fill(B().recall.hit);
+    await go.click();
+    await expect(out).toHaveAttribute("data-state", "error");
+    await expect(out).toHaveText("Recall did not run: Brain's write surface is off in this app: run aos recall in a terminal instead");
+    // Main refused exactly the preview's argv: the typed text as one query, --limit and --json (never --warm).
+    const refused = (await h.guard()).filter((e) => e.kind === "spawn").map((e) => e.what);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatch(new RegExp(`sdk/recall-cli\\.js ${B().recall.hit} --limit 8 --json$`));
+    expect(snapshot(RECALL_FILES)).toEqual(before);
+    await input.press("Escape");
+    await expect(input).toHaveValue("");
+    await expect(out).toHaveText("Type a prompt, then ⏎ or Preview.");
+    await clearGuard();
+  });
 });
 
-test("Bootstrap (until PR 3): BRAIN.md's tokens against its budget as a progressbar, its sections with their memories and tokens, and nothing that looks shipped", async () => {
-  await brain("bootstrap");
-  const src = sources();
-  const pct = Math.round((src.tokens / src.budget) * 100);
-  const page = C().locator(".aos-brain-standin");
-  await expect(page).toHaveAttribute("aria-label", "Bootstrap");
-  await expect(page.locator("h2.aos-brain-h2")).toHaveText("What every session starts with");
-  await expect(page.locator(".aos-brain-budgetval")).toHaveText(`${src.tokens} / ${src.budget} tokens`);
-  const bar = page.locator('[role="progressbar"]');
-  await expect(bar).toHaveAttribute("aria-label", "BRAIN.md against its budget");
-  await expect(bar).toHaveAttribute("aria-valuemin", "0");
-  await expect(bar).toHaveAttribute("aria-valuemax", String(src.budget));
-  await expect(bar).toHaveAttribute("aria-valuenow", String(src.tokens));
-  await expect(bar).toHaveAttribute("aria-valuetext", `${pct}% of the budget`);
-  await expect(bar).not.toHaveClass(/is-warn/);
-  const rows = page.locator(".aos-brain-sisec").first().locator(".aos-brain-sirow");
-  await expect(rows.locator(".aos-brain-sititle")).toHaveText(["Who you are", "Critical rules", "Active context"]);
-  await expect(rows.locator("span:nth-child(2)")).toHaveText((["who", "rules", "active"] as const).map((k) => pl(src.sections[k].paths.length, "memory", "memories")));
-  await expect(rows.locator("span:nth-child(3)")).toHaveText((["who", "rules", "active"] as const).map((k) => `${src.sections[k].tokens} tokens`));
-  expect(readVaultJson<{ shipped: unknown[] }>("brain/_index/brain-hub.json").shipped).toEqual([]);
-  await expect(page.locator(".aos-brain-sisec").nth(1)).toContainText("LOOKS SHIPPED");
-  await expect(page.locator(".aos-brain-sisec").nth(1).locator(".aos-brain-empty")).toHaveText("No active project looks shipped.");
+// ── Map (D19) ────────────────────────────────────────────────────────
+
+const mapEl = () => C().locator("section.aos-brain-map");
+const mapView = (v: string) => mapEl().locator(`button.aos-brain-mapview[data-map-view="${v}"]`);
+const bubble = (id: string) => mapEl().locator(`button.aos-brain-bubble[data-community="${id}"]`);
+const mapRows = () => mapEl().locator(".aos-brain-maplist button.aos-brain-maprow");
+const mapCard = () => mapEl().locator("aside.aos-brain-mapcard");
+/** A community as the page counts it: its members (live in the fixture), those waiting for review, those used this week. */
+const community = (id: string) => {
+  const c = B().map.communities.find((x) => x.id === id)!;
+  return { ...c, n: c.paths.length, unreviewed: c.paths.filter((p) => B().unreviewed.includes(p)).length, week: c.paths.filter((p) => B().usage.used.includes(p)).length };
+};
+async function showMap(v: string): Promise<void> {
+  await mapView(v).click();
+  await expect(mapEl()).toHaveAttribute("data-view", v);
+  await expect(mapView(v)).toHaveAttribute("aria-selected", "true");
+}
+
+test.describe("Map", () => {
+  test.beforeEach(async () => { await brain("map"); });
+
+  test("Communities: graphify's communities of 3 or more memories as bubbles sized by their memories, named by their most-linked memory, the unreviewed share in words; the list with counts; the footer's graph, hubs, smaller groups and unlinked", async () => {
+    const M = B().map;
+    // The scan kept the graph although graphify is not installed here (graph-build reports "graphify missing").
+    expect(fs.existsSync(FX.v("brain/graphify-out/graph.json"))).toBe(true);
+    expect(M.state).toBe("ok");
+    expect(M.communities.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
+    expect(M.smaller).toEqual({ communities: 2, memories: 4 });
+    await showMap("communities");
+    await expect(mapEl()).toHaveAttribute("aria-label", "Map");
+    await expect(mapEl().locator('[role="tablist"][aria-label="Map views"] [role="tab"]')).toHaveText(["Communities", "Around a memory", "Every node"]);
+    expect(await mapEl().locator('[role="tab"]').evaluateAll((els) => els.map((e) => e.getAttribute("tabindex")))).toEqual(["0", "-1", "-1"]);
+    await expect(mapEl().locator("h2.aos-brain-maph2")).toHaveText("Communities");
+    await expect(mapEl().locator(".aos-brain-mapmeta")).toHaveText(/^from graphify · [23]h ago$/);
+    const views = M.communities.map((c) => community(c.id));
+    // Each bubble names its community in words: its memories and how many wait for review (the ring's word, D23).
+    expect(await mapEl().locator("button.aos-brain-bubble").evaluateAll((els) => els.map((e) => [e.getAttribute("data-community"), e.getAttribute("aria-label")])))
+      .toEqual(views.map((c) => [c.id, `${c.name}, ${pl(c.n, "memory", "memories")}, ${c.unreviewed} unreviewed`]));
+    await expect(mapEl().locator(".aos-brain-bubblename")).toHaveText(views.map((c) => c.name));
+    await expect(mapEl().locator(".aos-brain-bubblecap")).toHaveText(views.map((c) => (c.unreviewed ? `${c.n} · ${c.unreviewed} unreviewed` : String(c.n))));
+    const discs = await mapEl().locator(".aos-brain-bubbledisc").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().width));
+    expect(discs[0]).toBeGreaterThan(discs[2]);   // 7 memories against 4
+    await expect(bubble("c1")).toHaveAttribute("aria-current", "true");
+    await expect(mapEl().locator(".aos-brain-maplegend")).toHaveText("Size = memories · ring = unreviewed share");
+    // The list beside them, largest first, with their counts; the selected one first.
+    await expect(mapEl().locator(".aos-brain-maplist")).toHaveAttribute("aria-label", "Communities");
+    expect(await mapRows().evaluateAll((els) => els.map((e) => e.getAttribute("data-community")))).toEqual(views.map((c) => c.id));
+    await expect(mapRows().locator(".aos-brain-maprowname")).toHaveText(views.map((c) => c.name));
+    await expect(mapRows().locator(".aos-brain-maprown")).toHaveText(views.map((c) => String(c.n)));
+    await expect(mapRows().first()).toHaveAttribute("aria-selected", "true");
+    await expect(mapEl().locator(".aos-brain-mapfoot p")).toHaveText([
+      `${M.graph.communities} communities · ${M.graph.nodes} nodes · ${M.graph.edges} links in graphify's graph.`,
+      "Index hubs left out: MEMORY.md.",
+      `${M.smaller.communities} smaller groups (under ${M.mapMin} memories) hold ${M.smaller.memories} memories.`,
+      `${pl(M.unlinked, "memory links", "memories link")} to no other.`,
+      "Names come from each community's most-linked memory.",
+    ]);
+    // ↓ moves the selection through the list, the bubble with it.
+    await mapRows().first().focus();
+    await app().win.keyboard.press("ArrowDown");
+    await expect(mapRows().nth(1)).toHaveAttribute("aria-selected", "true");
+    await expect(mapRows().nth(1)).toBeFocused();
+    await expect(bubble(views[1].id)).toHaveAttribute("aria-current", "true");
+    await bubble(views[0].id).click();
+    await expect(mapRows().first()).toHaveAttribute("aria-selected", "true");
+  });
+
+  test("a community's card: N memories · N unreviewed · N used this week; MEMBERS most linked first, each unreviewed or used; LINKED COMMUNITIES with their links, one of which shows it; a member opens in Library", async () => {
+    const now = new Date();
+    const d7 = readVaultJson<{ usage: { paths: Record<string, { d7: number }> } }>("brain/_index/brain-hub.json").usage.paths;
+    const c = community("c1");
+    await bubble("c1").click();
+    await expect(mapCard()).toHaveAttribute("aria-label", c.name);
+    await expect(mapCard().locator("h2.aos-brain-mapcardtitle")).toHaveText(c.name);
+    await expect(mapCard().locator(".aos-brain-mapcardline")).toHaveText(`${pl(c.n, "memory", "memories")} · ${c.unreviewed} unreviewed · ${c.week} used this week`);
+    await expect(mapCard().locator("h3.aos-brain-label")).toHaveText(["Members", "Linked communities"]);
+    const members = mapCard().locator("button.aos-brain-mapmember");
+    expect(await paths(members)).toEqual(c.paths);
+    await expect(members.locator(".aos-brain-mapmembername")).toHaveText(c.paths.map(titleOf));
+    for (const p of c.paths) {
+      const row = mapCard().locator(`button.aos-brain-mapmember[data-path="${p}"]`);
+      const used = d7[p]?.d7 ?? 0;
+      await expect(row.locator(".aos-brain-mapmemberun")).toHaveCount(B().unreviewed.includes(p) ? 1 : 0);
+      await expect(row.locator(".aos-brain-mapmembernote")).toHaveText(used > 0 ? `${used}× used` : shortDay(writtenAt(p), now));
+      if (used > 0) await expect(row.locator(".aos-brain-mapmembernote")).toHaveClass(/is-used/);
+    }
+    // Linked: the kept communities its members link to, the most links first.
+    const linked = B().map.links.filter((l) => l.a === c.id || l.b === c.id).map((l) => ({ id: l.a === c.id ? l.b : l.a, n: l.n })).sort((x, y) => y.n - x.n);
+    expect(linked.length).toBe(2);
+    const chips = mapCard().locator("button.aos-brain-maplink");
+    expect(await chips.evaluateAll((els) => els.map((e) => [e.getAttribute("data-community"), e.getAttribute("aria-label")])))
+      .toEqual(linked.map((l) => [l.id, `${community(l.id).name}, ${pl(l.n, "link")}`]));
+    await expect(chips).toHaveText(linked.map((l) => `${community(l.id).name}${l.n}`));
+    await chips.first().click();
+    await expect(bubble(linked[0].id)).toHaveAttribute("aria-current", "true");
+    await expect(mapCard().locator("h2.aos-brain-mapcardtitle")).toHaveText(community(linked[0].id).name);
+    await expect(mapEl().locator(`.aos-brain-maprow[data-community="${linked[0].id}"]`)).toBeFocused();
+    const member = community(linked[0].id).paths[0];
+    await mapCard().locator(`button.aos-brain-mapmember[data-path="${member}"]`).click();
+    await expect(modeTab("library")).toHaveAttribute("aria-selected", "true");
+    await expect(libRow(member)).toHaveAttribute("aria-selected", "true");
+    await expect(reader().locator("h2")).toHaveText(titleOf(member));
+  });
+
+  test("Around a memory: the picker lists the map's memories most linked first and finds one; its neighbours, as the map lists them, round it and open Library; the card names its community", async () => {
+    const M = B().map;
+    await showMap("around");
+    await expect(mapEl().locator("h2.aos-brain-maph2")).toHaveText("Memories");
+    const inMap = Object.keys(M.memories);
+    await expect(mapEl().locator(".aos-brain-mapmeta")).toHaveText(`${inMap.length} in the map`);
+    const picks = inMap.map((p) => ({ p, d: M.memories[p].degree, t: titleOf(p) })).sort((a, b) => b.d - a.d || a.t.localeCompare(b.t) || (a.p < b.p ? -1 : 1));
+    expect(await paths(mapRows())).toEqual(picks.map((x) => x.p));
+    await expect(mapRows().locator(".aos-brain-maprown")).toHaveText(picks.map((x) => String(x.d)));
+    const top = picks[0].p;
+    await mapRows().first().click();
+    await expect(mapEl().locator("button.aos-brain-arcentre")).toHaveAttribute("data-path", top);
+    await expect(mapEl().locator("button.aos-brain-arcentre")).toHaveAttribute("aria-label", `${titleOf(top)}: open in Library`);
+    const nb = M.memories[top].neighbours;
+    const nodes = mapEl().locator("button.aos-brain-arnode");
+    expect(await paths(nodes)).toEqual(nb.map((x) => x.path));
+    expect(await nodes.evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(nb.map((x) => `${titleOf(x.path)}, ${pl(x.n, "link")}: open in Library`));
+    await expect(mapEl().locator(".aos-brain-maplegend")).toHaveText("Line weight = links between the two");
+    // The card: its type and links, its community, its neighbours with theirs (none for a smaller group's).
+    const names = new Map(M.communities.map((c) => [c.id, c.name]));
+    await expect(mapCard().locator("h2.aos-brain-mapcardtitle")).toHaveText(titleOf(top));
+    await expect(mapCard().locator(".aos-brain-mapcardline")).toHaveText(`projects · linked to ${M.memories[top].degree}`);
+    await expect(mapCard().locator("button.aos-brain-mapincomm")).toHaveText(`In ${names.get(M.memories[top].community!)}`);
+    const rows = mapCard().locator("button.aos-brain-mapmember");
+    expect(await paths(rows)).toEqual(nb.map((x) => x.path));
+    await expect(rows.locator(".aos-brain-mapmembername")).toHaveText(nb.map((x) => {
+      const c = M.memories[x.path]?.community;
+      return `${titleOf(x.path)}${c && names.has(c) ? ` · ${names.get(c)}` : ""}`;
+    }));
+    await expect(rows.locator(".aos-brain-mapmembernote")).toHaveText(nb.map((x) => pl(x.n, "link")));
+    // Find narrows the picker; a row centres that memory. A memory in a smaller group has no community to show.
+    const find = mapEl().getByRole("searchbox", { name: "Find a memory in the map" });
+    const datum = "brain/memory/reference/chart-datum.md";
+    await find.fill("datum");
+    expect(await paths(mapRows())).toEqual([datum]);
+    await mapRows().first().click();
+    await expect(mapEl().locator("button.aos-brain-arcentre")).toHaveAttribute("data-path", datum);
+    expect(await paths(nodes)).toEqual(M.memories[datum].neighbours.map((x) => x.path));
+    expect(M.memories[datum].community).toBeNull();
+    await expect(mapCard().locator("button.aos-brain-mapincomm")).toHaveCount(0);
+    await find.press("Escape");
+    await expect(find).toHaveValue("");
+    await expect(mapRows()).toHaveCount(inMap.length);
+    const n0 = M.memories[datum].neighbours[0].path;
+    await mapEl().locator(`button.aos-brain-arnode[data-path="${n0}"]`).click();
+    await expect(modeTab("library")).toHaveAttribute("aria-selected", "true");
+    await expect(libRow(n0)).toHaveAttribute("aria-selected", "true");
+    await brain("map");
+    await showMap("communities");
+  });
+
+  test("Every node: memory nodes only, the map's live memories, linked by their neighbours (MapMode.graph); its counts; the unreviewed ones marked and named in the legend; a node opens in Library", async () => {
+    const { win } = app();
+    const M = B().map;
+    await showMap("every");
+    await expect(mapEl().locator("aside.aos-brain-mapleft")).toBeHidden();
+    await expect(mapCard()).toBeHidden();
+    // The graph on screen, read through the tab (MapMode.graph is public for this).
+    const graph = () => win.evaluate(() => {
+      const w = window as unknown as { aosHost: { app: { workspace: { getLeavesOfType(t: string): Array<{ view: { getTab(id: string): { modes: { map?: { graph: { nodes: Array<{ id: string; kind: string; path: string }>; edges: Array<{ from: string; to: string }> } | null } } } } }> } } } };
+      const g = w.aosHost.app.workspace.getLeavesOfType("agentic-os-workbench")[0].view.getTab("memory").modes.map?.graph;
+      return g ? { nodes: g.nodes.map((n) => ({ id: n.id, kind: n.kind, path: n.path })), edges: g.edges.map((e) => [e.from, e.to].join("\n")) } : null;
+    });
+    await expect.poll(async () => (await graph()) !== null).toBe(true);
+    const g = (await graph())!;
+    const want = Object.keys(M.memories).filter((p) => live().includes(p)).sort();
+    expect(g.nodes.map((n) => n.id)).toEqual(want);
+    expect(g.nodes.every((n) => n.kind === "memory" && n.path === n.id)).toBe(true);
+    const pairs = new Set<string>();
+    for (const p of want) for (const nb of M.memories[p].neighbours) if (nb.path !== p && want.includes(nb.path)) pairs.add([p, nb.path].sort().join("\n"));
+    expect([...g.edges].sort()).toEqual([...pairs].sort());
+    const stats = `${want.length} memories · ${pairs.size} links`;
+    await expect(mapEl().locator(".aos-brain-mapstats")).toHaveText(stats);
+    await expect(mapEl().locator("svg.aos-brain-mapsvg")).toHaveAttribute("aria-label", `Every node: ${stats}`);
+    const drawn = mapEl().locator("svg.aos-brain-mapsvg g.aos-brain-mapnode");
+    await expect(drawn).toHaveCount(want.length);
+    expect(await drawn.evaluateAll((els) => els.filter((e) => e.classList.contains("is-unreviewed")).map((e) => e.getAttribute("data-id")).sort()))
+      .toEqual(want.filter((p) => B().unreviewed.includes(p)).sort());
+    await expect(mapEl().locator(".aos-brain-maplegend")).toHaveText("unreviewed");
+    await expect(mapEl().locator(".aos-brain-maphint")).toHaveText("Click a memory to open it in Library · drag to pin · ⌘-click to unpin");
+    await expect(mapEl().locator("button.aos-brain-mapresettle")).toHaveText("Resettle");
+    // A click on a node shows it in Library (the sim keeps moving, so the click goes to the node itself).
+    const tide = "brain/memory/reference/tide-api-notes.md";
+    await mapEl().locator(`g.aos-brain-mapnode[data-id="${tide}"]`).dispatchEvent("click");
+    await expect(modeTab("library")).toHaveAttribute("aria-selected", "true");
+    await expect(libRow(tide)).toHaveAttribute("aria-selected", "true");
+    await expect(reader().locator("h2")).toHaveText("Tide API notes");
+    await brain("map");
+    await showMap("communities");
+  });
+
+  test("the empty states: graph off in agenticos.json (or a map the scan wrote off) names aos graph on; no brain-map.json says the next scan writes it; the map back, it draws again, and the page never rebuilds it read only", async () => {
+    const { win } = app();
+    const cfgFile = path.join(FX.claude, "agenticos.json");
+    const cfgWas = fs.readFileSync(cfgFile, "utf8");
+    const MAP = "brain/_index/brain-map.json";
+    const mapWas = read(MAP);
+    const none = mapEl().locator(".aos-brain-mapnone");
+    const offText = "The graph is off. aos graph on builds it, and the next scan draws the map from it.";
+    await clearGuard();
+    try {
+      // graph.enabled false wins over the map an earlier scan left: the tab reads the config each time it is shown.
+      const cfg = JSON.parse(cfgWas) as { graph: Record<string, unknown> };
+      cfg.graph = { ...cfg.graph, enabled: false };
+      fs.writeFileSync(cfgFile, `${JSON.stringify(cfg, null, 2)}\n`);
+      await openTab(win, "pulse");
+      await brain("map");
+      await expect(none).toHaveAttribute("data-state", "off");
+      await expect(none).toHaveAttribute("role", "status");
+      await expect(none.locator(".aos-brain-mapnonetext")).toHaveText(offText);
+      await expect(none.locator("code")).toHaveText("aos graph on");
+      await expect(mapEl()).toHaveClass(/is-empty/);
+      await expect(mapEl().locator('[role="tablist"]')).toHaveCount(0);
+      fs.writeFileSync(cfgFile, cfgWas);
+      await openTab(win, "pulse");
+      await brain("map");
+      await expect(mapEl().locator("button.aos-brain-bubble")).toHaveCount(B().map.communities.length);
+      // The map the scan writes with the graph off (lib/brain-map.js emptyMap), read within seconds of its write.
+      const { emptyMap } = createRequire(__filename)(FX.v("brain/scripts/lib/brain-map.js")) as { emptyMap(state: string, o: { mapMin: number }): unknown };
+      fs.writeFileSync(FX.v(MAP), `${JSON.stringify(emptyMap("off", { mapMin: B().map.mapMin }))}\n`);
+      await expect(none).toHaveAttribute("data-state", "off", { timeout: 10_000 });
+      await expect(none.locator(".aos-brain-mapnonetext")).toHaveText(offText);
+      // No brain-map.json at all (before the first scan that writes one).
+      fs.rmSync(FX.v(MAP));
+      await expect(none).toHaveAttribute("data-state", "missing", { timeout: 10_000 });
+      await expect(none.locator(".aos-brain-mapnonetext")).toHaveText("No map yet: the next scan writes it.");
+      await expect(none.locator("code")).toHaveCount(0);
+      fs.writeFileSync(FX.v(MAP), mapWas);
+      await expect(mapEl().locator("button.aos-brain-bubble")).toHaveCount(B().map.communities.length, { timeout: 10_000 });
+      await expect(mapEl()).not.toHaveClass(/is-empty/);
+    } finally {
+      fs.writeFileSync(cfgFile, cfgWas);
+      if (!fs.existsSync(FX.v(MAP)) || read(MAP) !== mapWas) fs.writeFileSync(FX.v(MAP), mapWas);
+    }
+    expect((await app().guard()).filter((e) => e.kind === "spawn")).toEqual([]);
+  });
 });
 
-test("Health (until PR 3): the store's tiles, the hygiene counts, and duplicate pairs → opens Review on the Duplicates queue", async () => {
-  await brain("health");
-  const page = C().locator(".aos-brain-standin");
-  await expect(page).toHaveAttribute("aria-label", "Health");
-  const tiles = page.locator(".aos-brain-tiles .aos-brain-tile");
-  const hub = readVaultJson<{ clusters: unknown[] }>("brain/_index/brain-hub.json");
-  await expect(tiles.locator(".aos-brain-tilen")).toHaveText([live().length, B().unreviewed.length, B().drafts.length, B().dups.length, hub.clusters.length, B().archived.length].map(String));
-  await expect(tiles.locator(".aos-brain-dim")).toHaveText(["live memories →", "to review →", "feedback drafts →", "duplicate pairs →", "clusters", "archived or superseded"]);
-  // The four with an arrow are buttons; the other two are plain tiles.
-  expect(await tiles.evaluateAll((els) => els.map((e) => e.tagName))).toEqual(["BUTTON", "BUTTON", "BUTTON", "BUTTON", "DIV", "DIV"]);
-  await expect(page.locator(".aos-brain-sihead", { hasText: "HYGIENE" })).toContainText("as of the last scan");
-  await expect(page.locator(".aos-brain-silist .aos-brain-sirow")).toHaveCount(6);
-  await tiles.filter({ hasText: "duplicate pairs →" }).click();
-  await expect(modeTab("review")).toHaveAttribute("aria-selected", "true");
-  await expect(queue("duplicates")).toHaveAttribute("aria-pressed", "true");
-  await expect(main().locator("h2")).toHaveText("Duplicates");
-  await showQueue("session");
+// ── Health (D20) ─────────────────────────────────────────────────────
+
+const hl = () => C().locator(".aos-brain-health");
+const tile = (k: string) => hl().locator(`[data-tile="${k}"]`);
+const fixBtn = (k: string) => hl().locator(`[data-hl-key="fix:${k}"]`);
+
+test.describe("Health", () => {
+  test.beforeEach(async () => { await brain("health"); });
+
+  test("six tiles, each value with its state in words (D23): duplicate pairs, unreviewed with its share, never used in 30 days, BRAIN.md against its budget, MEMORY.md's tokens and lines, broken links with the unindexed and misfiled", async () => {
+    const src = B().sources;
+    const raw = read("MEMORY.md");
+    const h = B().hygiene;
+    expect(tokensOf(raw)).toBeLessThan(1000);
+    const want: Array<[string, string, string, string, string, string]> = [
+      ["duplicates", String(B().dups.length), "Duplicate pairs", "to compare", B().clusters.length ? pl(B().clusters.length, "cluster") : "no clusters", "warn"],
+      ["unreviewed", String(B().unreviewed.length), "Unreviewed", "to review", `${Math.round((B().unreviewed.length / live().length) * 100)}% of all memories`, "warn"],
+      ["unused", String(B().usage.never.length), "Never used", "", "in 30 days", "plain"],
+      ["brainmd", `${Math.round((src.tokens / src.budget) * 100)}%`, "BRAIN.md", "within budget", `${src.tokens} of ${src.budget} tokens`, "ok"],
+      ["memorymd", String(tokensOf(raw)), "MEMORY.md", "", `tokens · ${lineCount(raw)} lines`, "plain"],
+      ["broken", String(h.brokenIndex.length), "Broken links", "to fix", `${h.unindexed.length} unindexed · ${h.misfiled.length} misfiled`, "warn"],
+    ];
+    await expect(hl()).toHaveAttribute("aria-label", "Health");
+    await expect(hl().locator('[role="list"][aria-label="Health at a glance"] [role="listitem"]')).toHaveCount(6);
+    expect(await hl().locator("[data-tile]").evaluateAll((els) => els.map((e) => e.getAttribute("data-tile")))).toEqual(want.map((w) => w[0]));
+    for (const [k, value, label, word, note, tone] of want) {
+      await expect(tile(k).locator(".aos-brain-hl-tv")).toHaveText(value);
+      await expect(tile(k).locator(".aos-brain-hl-tk > span").first()).toHaveText(label);
+      if (word) await expect(tile(k).locator(".aos-brain-hl-tw")).toHaveText(word);
+      else await expect(tile(k).locator(".aos-brain-hl-tw")).toHaveCount(0);
+      await expect(tile(k).locator(".aos-brain-hl-tn")).toHaveText(note);
+      await expect(tile(k)).toHaveAttribute("data-tone", tone);
+    }
+  });
+
+  test("Duplicates and clusters: the pair with its score and type, Compare landing on Review's Duplicates queue; the approved draft left behind offers the drafts fix; Rescan", async () => {
+    const hub = readVaultJson<{ builtAt: string }>("brain/_index/brain-hub.json");
+    const card = hl().locator('section[data-anchor="duplicates"]');
+    await expect(card.locator("h2")).toHaveText("Duplicates and clusters");
+    await expect(card.locator(".aos-brain-hl-csub")).toHaveText(`title and text similarity, no model · scanned ${batchWhen(hub.builtAt, new Date())}`);
+    await expect(card.locator('[data-hl-key="rescan"]')).toHaveText("Rescan");
+    const [newer, older] = B().duplicate;
+    const d = B().dups[0];
+    const pair = card.locator(".aos-brain-hl-pair");
+    await expect(pair).toHaveCount(B().dups.length);
+    await expect(pair).toHaveAttribute("data-pair", [d.a, d.b].sort().join("|"));
+    await expect(pair.locator(".aos-brain-hl-score")).toHaveText(d.score.toFixed(2));
+    await expect(pair.locator(".aos-brain-hl-t1")).toHaveText(titleOf(d.a));
+    await expect(pair.locator(".aos-brain-hl-t2")).toHaveText(`${titleOf(d.b)} · feedback`);
+    expect(await pair.locator("button").evaluateAll((els) => els.map((e) => [e.textContent, e.getAttribute("aria-label")]))).toEqual([
+      ["Compare", `Compare “${titleOf(d.a)}” and “${titleOf(d.b)}” in Review`], ["Not duplicates", `Not duplicates: “${titleOf(d.a)}” and “${titleOf(d.b)}”`],
+    ]);
+    // The approved rule's draft, still in _drafts (its memory is live and pinned): the drafts fix removes it.
+    expect(fmKey(B().pinned, "source")).toBe("feedback-autoloop");
+    const draft = card.locator(".aos-brain-hl-draft");
+    await expect(draft).toHaveAttribute("data-draft", B().leftover);
+    await expect(draft).toHaveAttribute("data-path", `brain/memory/feedback/_drafts/${B().leftover}.md`);
+    await expect(draft.locator(".aos-brain-hl-leftover")).toHaveText("draft");
+    await expect(draft.locator(".aos-brain-hl-t1")).toHaveText(titleOf(B().pinned));
+    await expect(draft.locator(".aos-brain-hl-t2")).toHaveText("The same slug, still in feedback/_drafts after it was approved");
+    await expect(draft.locator('button[data-act="fix"][data-fix="drafts"]')).toHaveText("Remove the draft…");
+    await expect(card.locator(".aos-brain-hl-cluster")).toHaveCount(B().clusters.length);
+    // Compare lands on Review's Duplicates queue, the pair there as an older and a newer box.
+    await pair.locator('button[data-act="compare"]').click();
+    await expect(modeTab("review")).toHaveAttribute("aria-selected", "true");
+    await expect(queue("duplicates")).toHaveAttribute("aria-pressed", "true");
+    await expect(main().locator("h2")).toHaveText("Duplicates");
+    expect(await paths(main().locator(".aos-brain-rv-pair .aos-brain-rv-box"))).toEqual([older, newer]);
+    await showQueue("session");
+  });
+
+  test("Hygiene: a row per fix, each with its finding in words, its count and a button that previews first", async () => {
+    const h = B().hygiene;
+    expect([h.sources.session, h.sources["in-session"], h.oldType, h.leftoverDrafts]).toEqual([1, 1, [B().oldType], [B().leftover]]);
+    const card = hl().locator('section[data-anchor="hygiene"]');
+    await expect(card.locator("h2")).toHaveText("Hygiene");
+    await expect(card.locator(".aos-brain-hl-csub")).toHaveText("one click, no model, with a preview first");
+    const n = h.noDescription.length;
+    const want: Array<[string, number, string, string]> = [
+      ["sources", 2, "2 memories carry an old source label (session, in-session) where /wrap writes manual-wrap", "Normalise 2…"],
+      ["types", 1, "1 memory uses an old type: shape", "Fix 1…"],
+      ["descriptions", n, `${n} memories have no description: the list shows only titles`, "Copy from MEMORY.md…"],
+      ["index", 3, "1 memory is not in MEMORY.md; 1 line sits under the wrong heading; 1 line points at a missing file", "Fix 3…"],
+      ["drafts", 1, "1 approved draft is still in feedback/_drafts", "Remove the draft…"],
+    ];
+    const rows = card.locator(".aos-brain-hl-hyg");
+    expect(await rows.evaluateAll((els) => els.map((e) => [e.getAttribute("data-fix"), Number(e.getAttribute("data-count"))]))).toEqual(want.map((w) => [w[0], w[1]]));
+    await expect(rows.locator(".aos-brain-hl-hygtext")).toHaveText(want.map((w) => w[2]));
+    await expect(rows.locator("button")).toHaveText(want.map((w) => w[3]));
+    expect(await rows.locator("button").evaluateAll((els) => els.map((e) => [e.getAttribute("data-act"), e.getAttribute("data-fix"), e.getAttribute("aria-disabled")]))).toEqual(want.map((w) => ["fix", w[0], null]));
+    await expect(card.locator(".aos-brain-hl-hyg.is-clean")).toHaveCount(0);
+  });
+
+  test("Dead weight: used, quiet and never in 30 days as a bar named in words; Archive the 1 shipped… asks first and Cancel archives nothing; Review the 12 opens Library on exactly those", async () => {
+    const u = B().usage;
+    const card = hl().locator('section[data-anchor="deadweight"]');
+    await expect(card.locator("h2")).toHaveText("Dead weight");
+    await expect(card.locator(".aos-brain-hl-csub")).toHaveText("never injected, recalled or read in 30 days");
+    await expect(card.locator(".aos-brain-hl-cbody")).toHaveAttribute("data-state", "ready");
+    // The log began 44 days ago, longer than memory.neverUsedDays: the counts show.
+    expect(Date.now() - Date.parse(u.since)).toBeGreaterThan(30 * DAY);
+    const bar = card.locator(".aos-brain-hl-bar");
+    await expect(bar).toHaveAttribute("role", "img");
+    await expect(bar).toHaveAttribute("aria-label", `used ${u.used.length}, quiet ${u.quiet.length}, never ${u.never.length}`);
+    await expect(card.locator("[data-bucket]")).toHaveText([`used ${u.used.length}`, `quiet ${u.quiet.length}`, `never ${u.never.length}`]);
+    await expect(card.locator(".aos-brain-hl-help")).toHaveText("Used: in the last 7 days. Quiet: not since, but in the last 30. Never: not in 30 days.");
+    // Never used and looks shipped: the project BRAIN.md left out, so no session was given it.
+    expect(u.never.filter((p) => B().looksShipped.some((s) => s.path === p))).toEqual([B().shipped.version]);
+    await expect(card.locator(".aos-brain-hl-dwtext")).toHaveText(`${u.never.length} memories nobody used in the last 30 days. 1 of them is a project note for shipped work.`);
+    const tree = memoryTree(FX.vault);
+    await clearGuard();
+    const archive = card.locator('[data-hl-key="dw:archive"]');
+    await expect(archive).toHaveText("Archive the 1 shipped…");
+    await archive.click();
+    const modal = app().win.locator(".modal", { hasText: "Archive 1 shipped project?" });
+    await expect(modal.locator("h3")).toHaveText("Archive 1 shipped project?");
+    await expect(modal.locator("p")).toHaveText("Archives the project note nobody used in the last 30 days that is complete or looks shipped. They leave recall, the MOCs and BRAIN.md. Nothing is deleted: Restore in Library puts each one back.");
+    await expect(modal.locator("button")).toHaveText(["Cancel", "Archive 1"]);
+    await modal.locator("button", { hasText: "Cancel" }).click();
+    await expect(modal).toHaveCount(0);
+    expect(memoryTree(FX.vault)).toEqual(tree);
+    expect((await app().guard()).filter((e) => e.kind === "spawn")).toEqual([]);
+    await expect(archive).toBeFocused();
+    // Review the 12: Library on the unused, exactly those, the first selected with the keyboard.
+    const review = card.locator('[data-hl-key="dw:review"]');
+    await expect(review).toHaveText(`Review the ${u.never.length}`);
+    await expect(review).toHaveAttribute("aria-label", `Review the ${u.never.length} in Library`);
+    await review.click();
+    await expect(modeTab("library")).toHaveAttribute("aria-selected", "true");
+    await expect(facet("Use")).toHaveValue("unused");
+    await expect(facetText("use")).toHaveText("Use: unused");
+    await expect(C().locator('.aos-lib-facet[data-facet="use"]')).toHaveClass(/is-set/);
+    for (const [key, text] of [["type", "Type: any"], ["status", "Status: live"], ["source", "Source: any"]]) await expect(facetText(key)).toHaveText(text);
+    await expect(C().locator(".aos-lib-count")).toHaveText(`${u.never.length} MATCHES`);
+    expect((await paths(libRows())).sort()).toEqual([...u.never].sort());
+    await expect(libRows().locator(".aos-lib-use")).toHaveText(u.never.map(() => "unused"));
+    await expect(libRows().first()).toHaveAttribute("aria-selected", "true");
+    await expect(libRows().first()).toBeFocused();
+    await facet("Use").selectOption("any");
+    await expect(libRows()).toHaveCount(live().length);
+  });
+
+  test("with the brain surface off, a fix is refused at its preview: the Notice says why, no dialog opens, the button is back, and nothing changes", async () => {
+    const h = app();
+    const tree = memoryTree(FX.vault);
+    const index = read("MEMORY.md");
+    await clearGuard();
+    const n = h.notices.length;
+    await fixBtn("sources").click();
+    await expect.poll(() => h.notices.slice(n)).toEqual([`Normalise source labels: ${BRAIN_OFF_TEXT}`]);
+    await expect(h.win.locator(".modal.mod-brain-fix")).toHaveCount(0);
+    // Main refused the dry run itself: nothing was listed, so nothing could be confirmed.
+    const refused = (await h.guard()).filter((e) => e.kind === "spawn").map((e) => e.what.replace(/^.*\/cli\/aos\.js /, ""));
+    expect(refused).toEqual(["memory fix sources --dry-run --json"]);
+    await expect(fixBtn("sources")).toHaveText("Normalise 2…");
+    await expect(fixBtn("sources")).not.toHaveAttribute("aria-disabled", "true");
+    expect(memoryTree(FX.vault)).toEqual(tree);
+    expect(read("MEMORY.md")).toBe(index);
+    expect(read(TRAIL)).toBe(pristine(TRAIL));
+    await clearGuard();
+  });
 });
 
 // ── the rail badge and links ─────────────────────────────────────────

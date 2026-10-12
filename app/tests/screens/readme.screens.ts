@@ -32,6 +32,13 @@ function demoVault(): void {
       if (!text.startsWith("---") || /^actions: \[\{"kind":"run"/m.test(text)) fs.rmSync(file);
     }
   }
+  // MEMORY.md's line to a deleted file (Health's index fix acts on it in the e2e suite) is the health scan's error and
+  // would lead Pulse's briefing.
+  const index = FX.v("MEMORY.md");
+  fs.writeFileSync(index, fs.readFileSync(index, "utf8").split("\n").filter((l) => {
+    const m = /^- \[[^\]]*\]\((brain\/[^)]+\.md)\)/.exec(l);
+    return !m || fs.existsSync(FX.v(m[1]));
+  }).join("\n"));
   for (const script of ["scan-vault.js", "build-brain-md.js"]) {
     execFileSync(process.execPath, [FX.v(`brain/scripts/${script}`)], { cwd: FX.vault, env: appEnv(), stdio: "ignore" });
   }

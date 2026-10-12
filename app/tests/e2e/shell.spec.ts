@@ -162,7 +162,10 @@ test("status bar: READ-ONLY, the live marker and the runtime's status-line segme
   await expect(bar.locator(".aos-sbar-link", { hasText: "1 breaking" })).toHaveClass(/aos-text-rose/);
   await expect(bar.locator(".aos-sbar-link", { hasText: "1 alert" })).toHaveClass(/aos-text-amber/);
   await expect(bar.locator(".aos-sbar-link", { hasText: "1 flag" })).toBeVisible();
-  await expect(bar).toContainText("1err");
+  // The health scan's errors (snapshot.json): the fixture's missing CLAUDE.md line and its MEMORY.md line to a deleted file.
+  const errors = readVaultJson<{ health: { issues: Array<{ severity: string }> } }>("brain/_index/snapshot.json").health.issues.filter((i) => i.severity === "error").length;
+  expect(errors).toBe(2);
+  await expect(bar).toContainText(`${errors}err`);
 });
 
 test("status bar: a gate opens Agent Teams, an alert Notifications, a flag persona/STATE.md", async () => {

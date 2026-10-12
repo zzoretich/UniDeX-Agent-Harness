@@ -86,8 +86,11 @@ test.describe("⌘K omnisearch", () => {
     await win.keyboard.press("Meta+K");
     const input = win.locator(".modal.prompt .prompt-input");
     const kinds = () => win.locator(".modal.prompt .suggestion-item .aos-omni-kind").allTextContents();
-    // Workspace-map files, memories, runs, staff agents and Fix Queue / deck actions.
-    await expect.poll(async () => [...new Set(await kinds())].sort()).toEqual(["action", "agent", "file", "memory", "run"]);
+    // Workspace-map files, memories, runs, staff agents and Fix Queue / deck actions, in that order; an empty query shows
+    // the first 50 (the suggestion limit, as Obsidian's), which the fixture's memories fill before the actions, so the
+    // queries below reach those.
+    await expect.poll(async () => [...new Set(await kinds())]).toEqual(["file", "memory", "run", "agent"]);
+    expect(await kinds()).toHaveLength(50);
     await input.fill("tide api");
     await expect(win.locator(".suggestion-item").first().locator(".aos-omni-label")).toHaveText("Tide API notes");
     await expect(win.locator(".suggestion-item").first().locator(".aos-omni-hint")).toHaveText("reference · tide-api-notes");
@@ -125,8 +128,11 @@ test.describe("note view", () => {
     await expect(notePath(win)).toHaveText("MEMORY.md");
     await expect(noteBody(win).locator("h1")).toHaveText("Memory Index");
     await expect(noteBody(win).locator("h2")).toHaveText(["User", "Feedback (how to work)", "Project", "Reference", "Patterns"]);
-    // One link per indexed memory (the archived one has no line, brain-hub D5) and the pattern.
-    await expect(noteBody(win).locator("a.internal-link")).toHaveCount(15);
+    // One link per MEMORY.md line: each indexed memory (the archived one has none, brain-hub D5; one points at a file that
+    // is gone, Health's broken link) and the pattern.
+    const lines = fs.readFileSync(FX.v("MEMORY.md"), "utf8").split("\n").filter((l) => /^- \[[^\]]+\]\(brain\/(memory|patterns)\/[^)]+\.md\)/.test(l)).length;
+    expect(lines).toBe(23);
+    await expect(noteBody(win).locator("a.internal-link")).toHaveCount(lines);
     await expect(noteBody(win).locator("[contenteditable], textarea")).toHaveCount(0);
     // With the Notes surface off, Edit is there but disabled, and says why.
     const editBtn = noteBar(win).locator("button.aos-note-edit");

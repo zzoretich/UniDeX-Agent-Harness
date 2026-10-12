@@ -1,6 +1,8 @@
 // Variants of the fixture, each its own app: a vault with no persona, to-dos, notifications or teams (empty states);
-// session costing off; a provider on record (the Chat tab); and a Codex-only machine (every "run in a session" button
-// names Codex). Each variant edits the restored copy before launch, the way the runtime or the user would leave it.
+// session costing off; a provider on record (the Chat tab); a Codex-only machine (every "run in a session" button
+// names Codex, and Brain's modes need no host); telemetry off; and a vault before any session logged a memory use (Brain's
+// Library, Health and Map without a usage log). Each variant edits the restored copy before launch, the way the runtime
+// or the user would leave it.
 
 import { expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
@@ -27,6 +29,10 @@ test.describe("an empty vault: no persona, to-dos, notifications or teams", () =
     prepare: () => {
       // The fixture's feedback draft (the Brain hub's, brain-hub D3) goes too: the status line counts drafts as a segment.
       for (const rel of ["persona", "TODO.md", "brain/notifications", "brain/_index/persona-heartbeat.json", "brain/memory/feedback/_drafts"]) fs.rmSync(FX.v(rel), { recursive: true, force: true });
+      // The last session was wrapped: its not-wrapped line goes from SESSION.md as auto-wrap.js clearWrapStatus removes it
+      // (the status line counts it as a segment).
+      const session = FX.v("brain/_index/SESSION.md");
+      fs.writeFileSync(session, fs.readFileSync(session, "utf8").replace(/## Wrap Status[\s\S]*?(?=\n## |$)/, "").replace(/\n{3,}/g, "\n\n"));
       // The runtime's own status-line refresh, so the model matches the emptied vault.
       const r = spawnSync(process.execPath, [FX.v("brain/scripts/statusline.js"), "refresh"], { env: appEnv(), encoding: "utf8" });
       if (r.status !== 0) throw new Error(`statusline refresh failed: ${r.stderr}`);
@@ -211,6 +217,9 @@ test.describe("a Codex-only machine", () => {
       editJson(FX.v("brain/_index/provider-state.json"), (j) => {
         j.name = "codex"; j.reason = "fixture"; j.codex = { ...(j.codex ?? {}), loggedIn: true, checkedAt: new Date().toISOString() };
       });
+      // The unwrapped session's line as auto-wrap.js writeWrapStatus writes it on this machine: Codex's own wrap skill.
+      const r = spawnSync(process.execPath, ["-e", `require(${JSON.stringify(FX.v("brain/scripts/auto-wrap.js"))}).writeWrapStatus("5e55a0a0-0000-4000-8000-00000000000a", "none")`], { env: appEnv({ AOS_HEADLESS: undefined }), encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`writeWrapStatus failed: ${r.stderr}`);
     },
   });
 
@@ -399,6 +408,61 @@ test.describe("a Codex-only machine", () => {
     await expect(C.locator("section.aos-lib-reader .aos-lib-md")).toContainText("Show depths in metres with one decimal place.");
     await modeTab("review").click();
   });
+
+  test("Brain › Bootstrap on Codex: BRAIN.md's budgets and sections, what Codex's first prompt starts with; Unpin, Mark complete, Mark the 2 complete… and the recall preview offered; SESSION.md's not-wrapped line names $agenticos:wrap", async () => {
+    const { win } = app();
+    const C = content(win);
+    const b = expected().brain;
+    await openTab(win, "memory");
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="bootstrap"]').click();
+    const bs = C.locator(".aos-brain-bootstrap");
+    await expect(bs.locator(".aos-brain-bs-sub")).toHaveText("Injected on the first prompt in Claude Code and Codex");
+    await expect(bs.locator('[data-budget="brain"] [role="progressbar"]')).toHaveAttribute("aria-valuenow", String(b.sources.tokens));
+    await expect(bs.locator('section[data-section="rules"] button[data-act="unpin"]')).toHaveCount(b.sources.sections.rules.paths.length);
+    await expect(bs.locator('section[data-section="active"] button[data-act="complete"]')).toHaveCount(b.sources.sections.active.paths.length);
+    await expect(bs.locator('button[data-act="complete-shipped"]')).toHaveText("Mark the 2 complete…");
+    for (const sel of ['button[data-act="unpin"]', 'button[data-act="complete"]', 'button[data-act="complete-shipped"]', 'button[data-act="recall"]']) await expect(bs.locator(sel).first()).toBeEnabled();
+    await expect(bs.locator('[data-bs="recall"]').getByRole("textbox", { name: "Prompt to preview" })).toBeEditable();
+    // The runtime wrote Codex's wrap command into SESSION.md on this machine; the card reads it from there.
+    expect(fs.readFileSync(FX.v("brain/_index/SESSION.md"), "utf8")).toMatch(/not wrapped \(provider: none\) — run \$agenticos:wrap\.$/m);
+    await expect(bs.locator(".aos-brain-bs-wrap")).toHaveText("Not wrapped yet · $agenticos:wrap promotes the tagged lines");
+  });
+
+  test("Brain › Map on Codex: graphify's communities, a community's card and Around a memory draw as on any machine, and nothing in them names a host", async () => {
+    const { win } = app();
+    const C = content(win);
+    const m = expected().brain.map;
+    await openTab(win, "memory");
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="map"]').click();
+    const map = C.locator("section.aos-brain-map");
+    await map.locator('button.aos-brain-mapview[data-map-view="communities"]').click();
+    expect(await map.locator("button.aos-brain-bubble").evaluateAll((els) => els.map((e) => e.getAttribute("data-community")))).toEqual(m.communities.map((c) => c.id));
+    await map.locator(`button.aos-brain-bubble[data-community="${m.communities[0].id}"]`).click();
+    await expect(map.locator("aside.aos-brain-mapcard h2")).toHaveText(m.communities[0].name);
+    await expect(map.locator("aside.aos-brain-mapcard button.aos-brain-mapmember")).toHaveCount(m.communities[0].paths.length);
+    await map.locator('button.aos-brain-mapview[data-map-view="around"]').click();
+    await expect(map.locator("button.aos-brain-arcentre")).toHaveCount(1);
+    await expect(map.locator("button").filter({ hasText: /❯_|Claude Code|Codex/ })).toHaveCount(0);
+    await map.locator('button.aos-brain-mapview[data-map-view="communities"]').click();
+  });
+
+  test("Brain › Health on Codex: the six tiles, the duplicate pair, each hygiene fix and Dead weight's two actions offered, none naming a host", async () => {
+    const { win } = app();
+    const C = content(win);
+    const b = expected().brain;
+    await openTab(win, "memory");
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="health"]').click();
+    const hl = C.locator(".aos-brain-health");
+    await expect(hl.locator("[data-tile]")).toHaveCount(6);
+    await expect(hl.locator('[data-tile="unused"] .aos-brain-hl-tv')).toHaveText(String(b.usage.never.length));
+    await expect(hl.locator(".aos-brain-hl-pair button")).toHaveText(["Compare", "Not duplicates"]);
+    expect(await hl.locator('.aos-brain-hl-hyg button[data-act="fix"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-fix")))).toEqual(["sources", "types", "descriptions", "index", "drafts"]);
+    for (const k of ["sources", "types", "descriptions", "index", "drafts"]) await expect(hl.locator(`[data-hl-key="fix:${k}"]`)).toBeEnabled();
+    await expect(hl.locator('[data-hl-key="dw:review"]')).toHaveText(`Review the ${b.usage.never.length}`);
+    await expect(hl.locator('[data-hl-key="dw:archive"]')).toHaveText("Archive the 1 shipped…");
+    await expect(hl.locator("button").filter({ hasText: /❯_|Claude Code|Codex/ })).toHaveCount(0);
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="review"]').click();
+  });
 });
 
 test.describe("a Codex-only machine, the Spaces surface on", () => {
@@ -562,6 +626,73 @@ test.describe("telemetry off", () => {
     expect(log.filter((e) => e.kind === "write" && e.what.includes("agent-runs/live"))).toEqual([]);
     // The reconcile spawn is the only script-only spawn on load (the guard shortens its path to "…").
     expect(log.filter((e) => e.kind === "spawn" && (/reconcile-sessions\.js/.test(e.what) || /…$/.test(e.what)))).toEqual([]);
+  });
+
+  test("Brain: Health's Never used tile reads off and Dead weight gives the reason instead of counts (D8, D20); Library's USE says telemetry is off", async () => {
+    const { win } = app();
+    const C = content(win);
+    await openTab(win, "memory");
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="health"]').click();
+    const t = C.locator('.aos-brain-health [data-tile="unused"]');
+    await expect(t.locator(".aos-brain-hl-tv")).toHaveText("–");
+    await expect(t.locator(".aos-brain-hl-tw")).toHaveText("off");
+    await expect(t.locator(".aos-brain-hl-tn")).toHaveText("telemetry is off");
+    await expect(t).toHaveAttribute("data-tone", "off");
+    const body = C.locator('.aos-brain-health section[data-anchor="deadweight"] .aos-brain-hl-cbody');
+    await expect(body).toHaveAttribute("data-state", "off");
+    await expect(body).toHaveText("telemetry.enabled is off, so nothing is logged. Turn it on (aos config set telemetry.enabled true) to see what sessions use.");
+    await expect(C.locator('.aos-brain-health [data-hl-key^="dw:"]')).toHaveCount(0);
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="library"]').click();
+    await C.locator(`.aos-lib-list button.aos-lib-row[data-path="${expected().brain.duplicate[1]}"]`).click();
+    await expect(C.locator('aside.aos-lib-context section[data-section="use"] .aos-lib-cnote')).toHaveText("Telemetry is off in this vault, so no use is logged (Settings, telemetry.enabled).");
+  });
+});
+
+test.describe("before any session logs a memory use", () => {
+  // The usage log is gone (as on a vault before its first session after `aos upgrade`), and the scan's cache rebuilt
+  // from it by the runtime's own brain-hub.js.
+  const app = useApp({
+    prepare: () => {
+      fs.rmSync(FX.v("brain/_index/memory-usage.jsonl"), { force: true });
+      const r = spawnSync(process.execPath, [FX.v("brain/scripts/brain-hub.js")], { env: appEnv({ AOS_HEADLESS: undefined }), encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`brain-hub.js failed: ${r.stderr}`);
+      if (JSON.parse(fs.readFileSync(FX.v("brain/_index/brain-hub.json"), "utf8")).usage.since !== null) throw new Error("brain-hub.json still counts use");
+    },
+  });
+
+  test("Brain › Library: newest first with no Use facet, and USE says the log starts with the next session (D8)", async () => {
+    const { win } = app();
+    const C = content(win);
+    const b = expected().brain;
+    await openTab(win, "memory");
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="library"]').click();
+    await expect(C.locator(".aos-lib-sort")).toHaveText("newest first");
+    await expect(C.locator('.aos-lib-facet[data-facet="use"]')).toBeHidden();
+    await expect(C.locator(".aos-lib-list .aos-lib-use")).toHaveCount(0);
+    await C.locator(`.aos-lib-list button.aos-lib-row[data-path="${b.duplicate[1]}"]`).click();
+    await expect(C.locator('aside.aos-lib-context section[data-section="use"] .aos-lib-cnote')).toHaveText("No usage yet: the log starts with the next session.");
+  });
+
+  test("Brain › Health and Map: Never used and Dead weight are collecting (no counts, nothing to review or archive), and a community's card leaves out its week's use", async () => {
+    const { win } = app();
+    const C = content(win);
+    const m = expected().brain.map;
+    await openTab(win, "memory");
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="health"]').click();
+    const t = C.locator('.aos-brain-health [data-tile="unused"]');
+    await expect(t.locator(".aos-brain-hl-tv")).toHaveText("–");
+    await expect(t.locator(".aos-brain-hl-tw")).toHaveText("collecting");
+    await expect(t.locator(".aos-brain-hl-tn")).toHaveText("nothing logged yet");
+    const body = C.locator('.aos-brain-health section[data-anchor="deadweight"] .aos-brain-hl-cbody');
+    await expect(body).toHaveAttribute("data-state", "collecting");
+    await expect(body).toHaveText("Collecting: nothing is logged yet. The counts show once the log holds 30 days.");
+    await expect(C.locator('.aos-brain-health [data-hl-key^="dw:"]')).toHaveCount(0);
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="map"]').click();
+    const c = m.communities[0];
+    const unreviewed = c.paths.filter((p) => expected().brain.unreviewed.includes(p)).length;
+    await C.locator(`section.aos-brain-map button.aos-brain-bubble[data-community="${c.id}"]`).click();
+    await expect(C.locator("section.aos-brain-map .aos-brain-mapcardline")).toHaveText(`${c.paths.length} memories · ${unreviewed} unreviewed`);
+    await expect(C.locator("section.aos-brain-map .aos-brain-mapmembernote.is-used")).toHaveCount(0);
   });
 });
 

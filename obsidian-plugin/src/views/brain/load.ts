@@ -129,6 +129,12 @@ export class BrainStore {
     for (const p of [...this.parsed.keys()]) if (!seen.has(p)) this.parsed.delete(p);
 
     const hub = parseBrainHub(hubRaw);
+    // A pair dismissed on this page waits for the rebuilt cache to drop it; once brain-hub.json no longer lists it, the
+    // page forgets it, so a pair the vault lists again later (its memory-notdup.json entry gone) shows again.
+    if (this.dismissed.size) {
+      const listed = new Set((hub?.dups ?? []).map((p) => pairKey(p.a, p.b)));
+      for (const k of this.dismissed) if (!listed.has(k)) this.dismissed.delete(k);
+    }
     const trail = readTrailRows(trailRaw);
     const written = writtenAtMap(trail);
     const byPath = new Map(memories.map((m) => [m.path, m]));
