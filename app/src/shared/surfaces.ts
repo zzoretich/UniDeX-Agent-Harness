@@ -138,6 +138,26 @@ const FIX_KIND = /sources|types|descriptions|index|drafts/;
 /** At most this many memories per keep, archive or restore (obsidian-plugin/src/data/brainModel.ts MAX_PATHS_PER_CALL). */
 export const MAX_MEMORY_PATHS = 50;
 const MEMORY_WHOLE = new RegExp(`^(?:${MEMORY.source})$`);
+/** A merge's memories (brain-ai A8): 2 to MERGE_MAX_PATHS (obsidian-plugin/src/data/brainModel.ts MERGE_MAX). */
+export const MERGE_MAX_PATHS = 6;
+// One memory's sha256 (memory-ops.js sha256): merge's --expect holds one per path, comma-joined, in path order (A9).
+const MEMORY_HASH = /[0-9a-f]{16,64}/;
+const MEMORY_HASH_WHOLE = new RegExp(`^(?:${MEMORY_HASH.source})$`);
+/** `memory <verb> <path>… [--estimate] --json`: `min`–`max` different memory paths, then an optional --estimate. */
+const memoryPathsEstimate = (verb: string, min: number, max: number) => (a: readonly string[]): boolean => {
+  if (a[0] !== "memory" || a[1] !== verb || a[a.length - 1] !== "--json") return false;
+  const paths = a.slice(2, a[a.length - 2] === "--estimate" ? -2 : -1);
+  return paths.length >= min && paths.length <= max && paths.every((p) => MEMORY_WHOLE.test(p)) && new Set(paths).size === paths.length;
+};
+/** `memory merge <path>… --into <json> --expect <hash>,… --json`: 2–MERGE_MAX_PATHS paths and exactly one hash per path. */
+const memoryMerge = (a: readonly string[]): boolean => {
+  const n = a.length - 7;
+  if (a[0] !== "memory" || a[1] !== "merge" || n < 2 || n > MERGE_MAX_PATHS) return false;
+  const paths = a.slice(2, 2 + n);
+  const [into, json, expect, hashes, last] = a.slice(2 + n);
+  return paths.every((p) => MEMORY_WHOLE.test(p)) && new Set(paths).size === n && into === "--into" && /^\{[\s\S]*\}$/.test(json) &&
+    expect === "--expect" && hashes.split(",").length === n && hashes.split(",").every((h) => MEMORY_HASH_WHOLE.test(h)) && last === "--json";
+};
 /** `memory <verb> <path>… --json` with 1 to MAX_MEMORY_PATHS memory paths. */
 const memoryPaths = (verb: string) => (a: readonly string[]): boolean => {
   const paths = a.slice(2, -1);
@@ -160,6 +180,15 @@ const MEMORY_VERBS: readonly SpawnRule[] = [
   { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--dry-run", "--json") },
   { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--json") },
   { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--expect", /[0-9a-f]{32}/, "--json") },
+  // Merge with AI (brain-hub D21; brain-ai A1–A9): the draft (one model call, or none with --estimate; nothing written),
+  // the save pinned to every source's hash, and its undo pinned to the merged memory's hash.
+  { script: "cli/aos.js", args: memoryPathsEstimate("merge-draft", 2, MERGE_MAX_PATHS) },
+  { script: "cli/aos.js", args: memoryMerge },
+  { script: "cli/aos.js", args: argv("memory", "unmerge", MEMORY, "--expect", MEMORY_HASH, "--json") },
+  // The consolidation sweep (D22; A3, A10, A11): the whole brain (no path) or a community's or a cluster's (≤ 50), with
+  // or without its estimate; a card dismissed by its id (12 hex).
+  { script: "cli/aos.js", args: memoryPathsEstimate("sweep", 0, MAX_MEMORY_PATHS) },
+  { script: "cli/aos.js", args: argv("memory", "sweep", "dismiss", /[0-9a-f]{12}/, "--json") },
 ];
 
 // Bootstrap's recall preview (brain-hub D18; PR 3): the typed text as one query, exactly as data/brainModel.ts recallArgs
@@ -280,10 +309,12 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "brain",
     label: "Brain",
-    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore; Bootstrap: unpin, mark complete, the recall preview; Health: each hygiene fix with its dry run, not duplicates, Rescan, archive), data/brainModel.ts (memoryArgs, recallArgs)",
+    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore; Bootstrap: unpin, mark complete, the recall preview; Health: each hygiene fix with its dry run, not duplicates, Rescan, archive; Merge with AI and its undo, the consolidation sweep and its cards: merge, archive, retitle, dismiss), data/brainModel.ts (memoryArgs, recallArgs)",
     // The verbs write through the runtime (cli/memory.js → lib/memory-ops.js), never the page: a memory's own frontmatter
-    // lines, MEMORY.md, the trail and brain/_index/**, and BRAIN.md through build-brain-md.js. Nothing is deleted but a
-    // draft that is approved or rejected (brain-hub D6).
+    // lines, MEMORY.md, the trail and brain/_index/**, and BRAIN.md through build-brain-md.js; a merge also rewrites the
+    // oldest memory's title, description and body (brain-ai A1). Nothing is deleted but a draft that is approved or
+    // rejected (brain-hub D6) and a merge record older than 30 days (A2). merge-draft and sweep make one model call each
+    // through the runtime's provider chain (provider.js, its caps and ledger): the page never spawns a model itself.
     writes: [],
     spawns: [
       ...MEMORY_VERBS,

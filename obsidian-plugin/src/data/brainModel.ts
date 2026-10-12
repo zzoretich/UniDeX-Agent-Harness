@@ -19,6 +19,8 @@ export const BRAIN_HUB_PATH = "brain/_index/brain-hub.json";
 export const BRAIN_SOURCES_PATH = "brain/_index/brain-sources.json";
 /** The Map's communities and neighbours, written beside brain-hub.json from graphify's graph (D19; PR 3). */
 export const BRAIN_MAP_PATH = "brain/_index/brain-map.json";
+/** The consolidation sweep's runs and suggestions (brain-hub D22; brain-ai A10), written by `aos memory sweep`. */
+export const MEMORY_SWEEP_PATH = "brain/_index/memory-sweep.json";
 /** Working memory and last session's recall, which Bootstrap measures against their budgets (D17). */
 export const SESSION_MD_PATH = "brain/_index/SESSION.md";
 export const RECALL_WAKE_PATH = "brain/_index/recall-wake.md";
@@ -45,7 +47,7 @@ export type SetStatus = (typeof SET_STATUSES)[number];
 /** Whether a vault event on `path` can change the hub (the memory store, its index, the trail or the caches). */
 export function touchesBrain(path: string): boolean {
   return path === MEMORY_INDEX_PATH || path === BRAIN_HUB_PATH || path === BRAIN_SOURCES_PATH || path === TRAIL_PATH_REL ||
-    path === BRAIN_MAP_PATH || path === SESSION_MD_PATH || path === RECALL_WAKE_PATH || path === BRAIN_CONFIG_PATH ||
+    path === BRAIN_MAP_PATH || path === MEMORY_SWEEP_PATH || path === SESSION_MD_PATH || path === RECALL_WAKE_PATH || path === BRAIN_CONFIG_PATH ||
     path === MEMORY_ROOT || path.startsWith(`${MEMORY_ROOT}/`) || path.startsWith(`${PATTERNS_DIR}/`) || path.startsWith(`${REFLECTIONS_DIR}/`);
 }
 const TRAIL_PATH_REL = "brain/_index/promote-log.jsonl";
@@ -907,12 +909,22 @@ export const MAX_PATHS_PER_CALL = 50;
 export type MemoryVerb =
   | { verb: "keep" | "archive" | "restore"; paths: readonly string[] }
   /** skipBrainMd: the caller rebuilds BRAIN.md once after several (Bootstrap's bulk Mark complete; ctx.brainMd). */
-  | { verb: "set"; path: string; fields: { pin?: boolean; status?: SetStatus; description?: string }; expect: string; skipBrainMd?: boolean }
+  /** title: a sweep's Retitle card (brain-ai A10): the H1 and the MEMORY.md line change, the slug stays. */
+  | { verb: "set"; path: string; fields: { pin?: boolean; status?: SetStatus; description?: string; title?: string }; expect: string; skipBrainMd?: boolean }
   | { verb: "supersede"; path: string; by: string }
   | { verb: "draft"; action: "approve" | "reject"; slug: string }
   | { verb: "notdup"; a: string; b: string }
   /** expect: the dry run's hash (FixResult.expect); the real run refuses unless it makes exactly the changes shown. */
-  | { verb: "fix"; kind: FixKind; dryRun: boolean; expect?: string | null };
+  | { verb: "fix"; kind: FixKind; dryRun: boolean; expect?: string | null }
+  /** brain-ai A4–A8: 2–6 memories drafted into one; estimate makes no model call (ctx.preview), else one call (ctx.run). */
+  | { verb: "merge-draft"; paths: readonly string[]; estimate: boolean }
+  /** brain-ai A9: the fields written over the oldest, the others superseded; expect is MergeEstimate.baseHashes. */
+  | { verb: "merge"; paths: readonly string[]; into: MergeFields; expect: readonly string[] }
+  /** brain-ai A2: the newest merge into `path` undone; expect is the merged memory's current hash. */
+  | { verb: "unmerge"; path: string; expect: string }
+  /** brain-ai A3, A10, A11: the sweep over every memory (no paths) or a community's or cluster's (lead first, ≤ 50). */
+  | { verb: "sweep"; paths: readonly string[]; estimate: boolean }
+  | { verb: "sweep-dismiss"; id: string };
 
 /**
  * `aos memory fix <kind>` (D20; PR 3), each acting on exactly what brain-hub.json's `hygiene` finds (lib/memory-hygiene.js):
@@ -981,6 +993,22 @@ export function memoryArgs(v: MemoryVerb): string[] {
       if (v.dryRun) return ["memory", "fix", v.kind, "--dry-run", "--json"];
       if (v.expect != null && !FIX_EXPECT_RE.test(v.expect)) throw new Error("a fix's expect is the hash its dry run printed");
       return ["memory", "fix", v.kind, ...(v.expect != null ? ["--expect", v.expect] : []), "--json"];
+    case "merge-draft":
+      return ["memory", "merge-draft", ...mergePaths(v.paths).map(path), ...(v.estimate ? ["--estimate"] : []), "--json"];
+    case "merge": {
+      const ps = mergePaths(v.paths).map(path);
+      if (v.expect.length !== ps.length || !v.expect.every((h) => MEMORY_HASH_RE.test(h))) throw new Error("merge needs each memory's hash, in order");
+      return ["memory", "merge", ...ps, "--into", JSON.stringify({ title: v.into.title, description: v.into.description, body: v.into.body }), "--expect", v.expect.join(","), "--json"];
+    }
+    case "unmerge":
+      if (!MEMORY_HASH_RE.test(v.expect)) throw new Error("unmerge needs the memory's hash");
+      return ["memory", "unmerge", path(v.path), "--expect", v.expect, "--json"];
+    case "sweep":
+      if (v.paths.length > SWEEP_MAX_PATHS || new Set(v.paths).size !== v.paths.length) throw new Error(`a sweep takes 0–${SWEEP_MAX_PATHS} different memories`);
+      return ["memory", "sweep", ...v.paths.map(path), ...(v.estimate ? ["--estimate"] : []), "--json"];
+    case "sweep-dismiss":
+      if (!SWEEP_ID_RE.test(v.id)) throw new Error(`not a suggestion id: ${v.id}`);
+      return ["memory", "sweep", "dismiss", v.id, "--json"];
   }
 }
 
@@ -1014,6 +1042,269 @@ export interface SetResult { path: string; fields: string[]; written: boolean; h
 export interface SupersedeResult { path: string; by: string; already?: boolean; brainMd: unknown }
 export interface DraftResult { approved?: string | null; rejected?: string; slug?: string }
 export interface NotdupResult { pair: [string, string]; added: boolean }
+
+// ── AI helpers (brain-hub D21, D22; spec 2026-10-12-brain-hub-ai A1–A14): merge drafts and the consolidation sweep ──
+
+/** A merge takes 2–6 memories (A8); a scoped sweep at most 50 (A3; app/src/shared/surfaces.ts admits the same). */
+export const MERGE_MIN = 2;
+export const MERGE_MAX = 6;
+export const SWEEP_MAX_PATHS = 50;
+/** A memory's sha256 as `merge --expect` and `unmerge --expect` take it (memory-ops.js sha256). */
+export const MEMORY_HASH_RE = /^[0-9a-f]{16,64}$/;
+/** A sweep card's id (lib/memory-sweep.js ID_RE): sha256(kind + sorted paths), 12 hex. */
+export const SWEEP_ID_RE = /^[0-9a-f]{12}$/;
+/** How long the page waits for one model call (A12): the runtime gives merge 90 s and the sweep 120 s. */
+export const AI_TIMEOUT_MS = 150_000;
+/** The merged fields' limits (A8): `merge --into` refuses longer ones. */
+export const MERGE_LIMITS = { title: 120, description: 200, body: 16_000 } as const;
+/** A merge can be undone while its record is kept (A2): brain-hub.js prunes records older than this. */
+export const UNDO_DAYS = 30;
+
+function mergePaths(paths: readonly string[]): readonly string[] {
+  if (paths.length < MERGE_MIN || paths.length > MERGE_MAX || new Set(paths).size !== paths.length) throw new Error(`a merge takes ${MERGE_MIN}–${MERGE_MAX} different memories`);
+  return paths;
+}
+
+export type AiProvider = "ollama" | "claude" | "codex" | "none";
+const AI_PROVIDERS: readonly AiProvider[] = ["ollama", "claude", "codex", "none"];
+/** The daily cap a call counts against (A5): its family, today's spend, and the per-call cap (null under Codex). */
+export interface AiCap { family: "hook" | "codex" | "reasoner" | "reasoner-codex" | null; perDayUsd: number; spentToday: number; perCallUsd: number | null }
+/** What one call would cost before it is made (A5), or why none can be. */
+export interface AiEstimate {
+  available: boolean;
+  /** null when available; else the provider's reason (forced, daily-cap, no-provider, claude-not-logged-in, ollama-only…). */
+  reason: string | null;
+  provider: AiProvider;
+  model: string | null;
+  tokensIn: number;
+  tokensOut: number;
+  usd: number;
+  cap: AiCap | null;
+}
+export interface MergeFields { title: string; description: string; body: string }
+export interface MergeSource { path: string; title: string; type: BrainMemoryType; created: string | null; hash: string; chars: number; truncated: boolean }
+interface MergeBase {
+  /** The oldest source: the merged text is written over it, so its path, links and pins carry over (A1). */
+  winner: string;
+  type: BrainMemoryType;
+  sources: MergeSource[];
+  /** Each source's hash in the order given: `merge --expect` (A9). */
+  baseHashes: string[];
+  /** A source's body was cut to fit the prompt (8,000 characters each, 24,000 in all). */
+  truncated: boolean;
+}
+/** `merge-draft --estimate`: no model call; the no-model draft to start from (A4) and what a call would cost (A5). */
+export interface MergeEstimate extends MergeBase { byHand: MergeFields; estimate: AiEstimate }
+/** `merge-draft`: the model's draft, or the no-model one with why (mode by-hand: none, a cap, no answer, a bad reply). */
+export interface MergeDraft extends MergeBase {
+  mode: "ai" | "by-hand";
+  reason: string | null;
+  provider: AiProvider;
+  model: string | null;
+  /** The call's cost: real under Claude, priced tokens under Codex (estimated), 0 for Ollama and by-hand. */
+  usd: number;
+  estimated: boolean;
+  /** The cap re-read after the call: "today $y of $z". */
+  cap: AiCap | null;
+  fields: MergeFields;
+  generatedAt: string;
+}
+export interface MergeResult { path: string; superseded: string[]; record: string; hash: string; brainMd: unknown }
+export interface UnmergeResult { path: string; restored: string[]; record: string; hash: string; brainMd: unknown }
+
+export const SWEEP_KINDS = ["merge", "archive", "retitle"] as const;
+export type SweepKind = (typeof SWEEP_KINDS)[number];
+export const SWEEP_KIND_LABEL: Record<SweepKind, string> = { merge: "Merge", archive: "Archive", retitle: "Retitle" };
+export interface SweepRun {
+  id: string;
+  at: string;
+  /** null: the whole brain; else the paths a community or cluster sent (lead first). */
+  scope: { paths: string[] } | null;
+  provider: AiProvider;
+  model: string | null;
+  usd: number;
+  estimated: boolean;
+  /** Memories sent, of those in scope (the prompt is capped, A11). */
+  considered: number;
+  of: number;
+  suggestions: number;
+}
+export interface SweepCard {
+  id: string;
+  run: string;
+  kind: SweepKind;
+  paths: string[];
+  /** Each path's hash when the sweep saw it: a different one now makes the card done or stale (brainSweep.ts). */
+  hashes: string[];
+  /** merge: the proposed title; retitle: the new title; "" when none. */
+  title: string;
+  /** retitle: the new description, "" when none. */
+  description: string;
+  why: string;
+  /** The run's scope key (null: the whole brain): 12 hex of sha256(sorted paths joined by "\n"). */
+  scope: string | null;
+  state: "open" | "dismissed";
+}
+export interface SweepFile { runs: SweepRun[]; suggestions: SweepCard[] }
+export interface SweepEstimate { scope: { paths: string[] } | null; considered: number; of: number; estimate: AiEstimate }
+export interface SweepResult { run: SweepRun; suggestions: SweepCard[] }
+export interface SweepDismissResult { dismissed: string; already: boolean }
+
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+const aiProvider = (v: unknown): AiProvider => (AI_PROVIDERS.includes(v as AiProvider) ? (v as AiProvider) : "none");
+const memType = (v: unknown, p: string): BrainMemoryType => ((MEMORY_TYPES as readonly string[]).includes(v as string) ? (v as BrainMemoryType) : ((MEMORY_PATH_RE.exec(p)?.[1] ?? "projects") as BrainMemoryType));
+
+export function parseAiCap(v: unknown): AiCap | null {
+  if (!v || typeof v !== "object") return null;
+  const r = rec(v);
+  const fam = r.family;
+  return {
+    family: fam === "hook" || fam === "codex" || fam === "reasoner" || fam === "reasoner-codex" ? fam : null,
+    perDayUsd: num(r.perDayUsd), spentToday: num(r.spentToday), perCallUsd: typeof r.perCallUsd === "number" && Number.isFinite(r.perCallUsd) ? r.perCallUsd : null,
+  };
+}
+export function parseAiEstimate(v: unknown): AiEstimate {
+  const r = rec(v);
+  const provider = aiProvider(r.provider);
+  const available = r.available === true && provider !== "none";
+  return {
+    available, reason: available ? null : strOrNull(r.reason) ?? "no-provider", provider, model: strOrNull(r.model),
+    tokensIn: num(r.tokensIn), tokensOut: num(r.tokensOut), usd: num(r.usd), cap: parseAiCap(r.cap),
+  };
+}
+function parseMergeFields(v: unknown): MergeFields { const r = rec(v); return { title: str(r.title), description: str(r.description), body: str(r.body) }; }
+function parseMergeBase(r: Record<string, unknown>): MergeBase | null {
+  const winner = str(r.winner);
+  if (!MEMORY_PATH_RE.test(winner)) return null;
+  const sources = arr<unknown>(r.sources).map(rec).filter((s) => MEMORY_PATH_RE.test(str(s.path))).map((s): MergeSource => ({
+    path: str(s.path), title: str(s.title) || str(s.path), type: memType(s.type, str(s.path)), created: strOrNull(s.created),
+    hash: str(s.hash), chars: num(s.chars), truncated: s.truncated === true,
+  }));
+  const baseHashes = strs(r.baseHashes).filter((h) => MEMORY_HASH_RE.test(h));
+  if (sources.length < MERGE_MIN || baseHashes.length !== sources.length) return null;
+  return { winner, type: memType(r.type, winner), sources, baseHashes, truncated: r.truncated === true };
+}
+/** `merge-draft --estimate`'s body, or null when it is not one (an older runtime, a wrong shape). */
+export function parseMergeEstimate(body: unknown): MergeEstimate | null {
+  const r = rec(body);
+  const base = parseMergeBase(r);
+  if (!base || !r.byHand || !r.estimate) return null;
+  return { ...base, byHand: parseMergeFields(r.byHand), estimate: parseAiEstimate(r.estimate) };
+}
+/** `merge-draft`'s body, or null. */
+export function parseMergeDraft(body: unknown): MergeDraft | null {
+  const r = rec(body);
+  const base = parseMergeBase(r);
+  if (!base || !r.fields) return null;
+  return {
+    ...base, mode: r.mode === "ai" ? "ai" : "by-hand", reason: strOrNull(r.reason), provider: aiProvider(r.provider), model: strOrNull(r.model),
+    usd: num(r.usd), estimated: r.estimated === true, cap: parseAiCap(r.cap), fields: parseMergeFields(r.fields), generatedAt: str(r.generatedAt),
+  };
+}
+function parseSweepRun(v: unknown): SweepRun | null {
+  const r = rec(v);
+  if (!str(r.id)) return null;
+  const sc = r.scope && typeof r.scope === "object" ? rec(r.scope) : null;
+  return {
+    id: str(r.id), at: str(r.at), scope: sc ? { paths: strs(sc.paths).filter((p) => MEMORY_PATH_RE.test(p)) } : null,
+    provider: aiProvider(r.provider), model: strOrNull(r.model), usd: num(r.usd), estimated: r.estimated === true,
+    considered: num(r.considered), of: num(r.of), suggestions: num(r.suggestions),
+  };
+}
+function parseSweepCard(v: unknown): SweepCard | null {
+  const r = rec(v);
+  const id = str(r.id);
+  const kind = r.kind as SweepKind;
+  const paths = strs(r.paths).filter((p) => MEMORY_PATH_RE.test(p));
+  if (!SWEEP_ID_RE.test(id) || !SWEEP_KINDS.includes(kind) || !paths.length) return null;
+  const hashes = strs(r.hashes);
+  return {
+    id, run: str(r.run), kind, paths, hashes: hashes.length === paths.length ? hashes : paths.map(() => ""),
+    title: str(r.title), description: str(r.description), why: str(r.why),
+    scope: typeof r.scope === "string" && /^[0-9a-f]{12}$/.test(r.scope) ? r.scope : null, state: r.state === "dismissed" ? "dismissed" : "open",
+  };
+}
+/** brain/_index/memory-sweep.json (schema 1), or null when absent or not one. */
+export function parseSweepFile(raw: string | null): SweepFile | null {
+  if (!raw) return null;
+  let j: unknown;
+  try { j = JSON.parse(raw); } catch { return null; }
+  const r = rec(j);
+  if (r.schema !== 1) return null;
+  return {
+    runs: arr<unknown>(r.runs).map(parseSweepRun).filter((x): x is SweepRun => !!x),
+    suggestions: arr<unknown>(r.suggestions).map(parseSweepCard).filter((x): x is SweepCard => !!x),
+  };
+}
+export function parseSweepEstimate(body: unknown): SweepEstimate | null {
+  const r = rec(body);
+  if (!r.estimate) return null;
+  const sc = r.scope && typeof r.scope === "object" ? rec(r.scope) : null;
+  return { scope: sc ? { paths: strs(sc.paths) } : null, considered: num(r.considered), of: num(r.of), estimate: parseAiEstimate(r.estimate) };
+}
+export function parseSweepResult(body: unknown): SweepResult | null {
+  const r = rec(body);
+  const run = parseSweepRun(r.run);
+  if (!run) return null;
+  return { run, suggestions: arr<unknown>(r.suggestions).map(parseSweepCard).filter((x): x is SweepCard => !!x) };
+}
+/** A sweep's scope key as lib/memory-sweep.js writes it: null for the whole brain. */
+export function sweepScopeKey(paths: readonly string[]): string | null {
+  return paths.length ? sha256Hex([...paths].sort().join("\n")).slice(0, 12) : null;
+}
+
+/** "Claude", "Codex", "Ollama", or "no provider". */
+export function providerName(p: AiProvider): string {
+  return p === "claude" ? "Claude" : p === "codex" ? "Codex" : p === "ollama" ? "Ollama" : "no provider";
+}
+/** "$0.004", "$0.06", "$1.20" (four places under a cent). */
+export function usdText(n: number): string {
+  const v = Number.isFinite(n) && n > 0 ? n : 0;
+  return `$${v < 0.01 && v > 0 ? v.toFixed(4).replace(/0+$/, "") : v.toFixed(2)}`;
+}
+/** Why no call can be made, as a sentence (A4, A7): the provider's reason, or the sweep's Ollama-only. */
+export function aiReasonText(reason: string | null, cap: AiCap | null = null): string {
+  const r = reason ?? "";
+  if (r === "forced" || r === "none" || r === "no-provider") return "No model provider is set up.";
+  if (/daily-cap$/.test(r)) return cap ? `Today's model cap is reached (${usdText(cap.perDayUsd)}).` : "Today's model cap is reached.";
+  if (r === "claude-not-logged-in") return "Claude Code is not signed in.";
+  if (r === "codex-not-logged-in") return "Codex is not signed in.";
+  if (r === "no-codex" || r === "codex-not-configured") return "Codex is not set up.";
+  if (r === "ollama-only") return "The sweep needs Claude or Codex; a local model cannot hold the whole brain.";
+  return r ? `No model call possible (${r}).` : "No model call possible.";
+}
+/** "about $0.004 · haiku · Claude", or the reason it is off (A5). */
+export function estimateText(e: AiEstimate): string {
+  if (!e.available) return aiReasonText(e.reason, e.cap);
+  return `about ${usdText(e.usd)} · ${e.model ?? providerName(e.provider)} · ${providerName(e.provider)}`;
+}
+/** "today $0.12 of $0.50" for a cap, "" without one. */
+export function capText(cap: AiCap | null): string {
+  return cap && cap.perDayUsd > 0 ? `today ${usdText(cap.spentToday)} of ${usdText(cap.perDayUsd)}` : "";
+}
+/** "drafted by haiku · Claude · $0.004 · today $0.12 of $0.50", with "(estimated)" under Codex (A5). */
+export function spendText(d: Pick<MergeDraft, "provider" | "model" | "usd" | "estimated" | "cap">, verb = "drafted by"): string {
+  const cost = `${usdText(d.usd)}${d.estimated ? " (estimated)" : ""}`;
+  return [`${verb} ${d.model ?? providerName(d.provider)}`, providerName(d.provider), cost, capText(d.cap)].filter(Boolean).join(" · ");
+}
+
+export interface MergeOfferRow { at: string; record: string; hash: string; from: string[] }
+/**
+ * The merge a memory can still undo (A2): its newest `merged` trail row, younger than UNDO_DAYS, with no `unmerged` row
+ * after it, and only while the memory still reads as the merge left it (the row's hash is its current one). null otherwise.
+ */
+export function undoableMerge(trail: readonly TrailEntry[], m: Pick<BrainMemory, "type" | "slug" | "hash">, now: Date): MergeOfferRow | null {
+  let last: MergeOfferRow | null = null;
+  for (const t of trail) {
+    if (t.type !== m.type || t.slug !== m.slug) continue;
+    const row = t as unknown as Record<string, unknown>;
+    if (t.action === "merged") last = { at: t.ts, record: str(row.record), hash: str(row.hash), from: strs(row.from) };
+    else if ((t.action as string) === "unmerged") last = null;
+  }
+  if (!last || !last.record || last.hash !== m.hash) return null;
+  const age = now.getTime() - timeOf(last.at);
+  return Number.isFinite(age) && age < UNDO_DAYS * 86_400_000 ? last : null;
+}
 
 export const BRAIN_OFF_TEXT = "Brain's write surface is off in this app: run the aos memory command in a terminal instead";
 export const BRAIN_UPGRADE_TEXT = "This vault's runtime predates the Brain hub: run aos upgrade";

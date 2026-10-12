@@ -113,7 +113,7 @@ function data(o: Partial<BrainData> = {}): BrainData {
   };
   const memories = Object.entries(files).map(([p, t]) => parseMemory(p, t, index)).filter((m): m is BrainMemory => !!m);
   return {
-    now: new Date(2026, 9, 11, 12), memories, byPath: new Map(memories.map((m) => [m.path, m])), drafts: [], patterns: [], reflections: [],
+    now: new Date(2026, 9, 11, 12), memories, byPath: new Map(memories.map((m) => [m.path, m])), drafts: [], patterns: [], reflections: [], sweep: null,
     hub: parseBrainHub(JSON.stringify({ schema: 1, hygiene: { misfiled: [P("user", "profile")] } })),
     sources: parseBrainSources(JSON.stringify({
       schema: 1, budget: 850, tokens: 840,

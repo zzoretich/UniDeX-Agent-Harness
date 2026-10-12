@@ -21,9 +21,10 @@ import { LibraryMode } from "./brain/LibraryMode";
 import { MapMode } from "./brain/MapMode";
 import { BootstrapMode } from "./brain/BootstrapMode";
 import { HealthMode } from "./brain/HealthMode";
+import { openMerge } from "./brain/MergeModal";
 import { brainSettings } from "./brain/load";
 import { readAgenticosJson } from "../data/aosConfig";
-import type { BrainCtx, BrainData, BrainModeView, RecallPreview } from "./brain/types";
+import type { BrainCtx, BrainData, BrainModeView, BrainRunOptions, RecallPreview } from "./brain/types";
 import * as path from "path";
 
 export class BrainTab {
@@ -56,8 +57,9 @@ export class BrainTab {
       plugin, view,
       data: () => this.data!,
       query: () => this.header?.query() ?? "",
-      run: (v, label) => this.run(v, label),
-      preview: (v, label) => this.preview(v, label),
+      run: (v, label, opts) => this.run(v, label, opts),
+      preview: (v, label, opts) => this.preview(v, label, opts),
+      merge: (paths) => openMerge(this.ctx, paths),
       recall: (text) => this.recall(text),
       rescan: () => this.rebuildHub(),
       brainMd: () => this.brainMd(),
@@ -211,14 +213,14 @@ export class BrainTab {
 
   // ── actions ──
 
-  private async run<T>(v: MemoryVerb, label: string): Promise<BrainVerbResult<T>> {
+  private async run<T>(v: MemoryVerb, label: string, opts: BrainRunOptions = {}): Promise<BrainVerbResult<T>> {
     let args: string[];
     try { args = memoryArgs(v); } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       new Notice(`${label}: ${reason}`);
       return { ok: false, reason, refused: false, outdated: false, stale: false };
     }
-    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args));
+    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args, opts.timeoutMs));
     if (!r.ok) new Notice(`${label}: ${r.reason}`);
     for (const p of touched(v)) this.store.touch(p);
     if (r.ok) this.rebuildHub();
@@ -227,16 +229,16 @@ export class BrainTab {
     return r;
   }
 
-  /** A verb that writes nothing (`fix … --dry-run`): its answer, a Notice when it fails, no reload, no rebuild. */
-  private async preview<T>(v: MemoryVerb, label: string): Promise<BrainVerbResult<T>> {
+  /** A verb that writes nothing (`fix … --dry-run`, an `--estimate`): its answer, a Notice when it fails, no reload, no rebuild. */
+  private async preview<T>(v: MemoryVerb, label: string, opts: BrainRunOptions = {}): Promise<BrainVerbResult<T>> {
     let args: string[];
     try { args = memoryArgs(v); } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       new Notice(`${label}: ${reason}`);
       return { ok: false, reason, refused: false, outdated: false, stale: false };
     }
-    if (!args.includes("--dry-run")) throw new Error("preview runs only a --dry-run");
-    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args));
+    if (!args.includes("--dry-run") && !args.includes("--estimate")) throw new Error("preview runs only a --dry-run or an --estimate");
+    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args, opts.timeoutMs));
     if (!r.ok) new Notice(`${label}: ${r.reason}`);
     return r;
   }
@@ -326,7 +328,10 @@ function touched(v: MemoryVerb): string[] {
     case "set": return [...always, v.path];
     case "supersede": return [...always, v.path, v.by];
     case "draft": return [...always, `brain/memory/feedback/_drafts/${v.slug}.md`, `brain/memory/feedback/${v.slug}.md`];
-    case "notdup": case "fix": return [];
+    case "merge": return [...always, ...v.paths];
+    case "unmerge": return [...always, v.path];
+    // A draft, an estimate and a sweep write no memory; memory-sweep.json is read whole on every load.
+    case "notdup": case "fix": case "merge-draft": case "sweep": case "sweep-dismiss": return [];
   }
 }
 

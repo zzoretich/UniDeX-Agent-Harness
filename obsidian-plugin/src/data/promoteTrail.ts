@@ -9,7 +9,7 @@ export const TRAIL_PATH = "brain/_index/promote-log.jsonl";
 /** auto-wrap (and an approved feedback draft) writes `written`; the verbs `kept`, `set`, `archived`, `superseded` and
  *  `restored`; `aos memory fix` writes `fixed` (a MEMORY.md line it removed has no slug); the old Pulse trail wrote
  *  `edited` and `reverted`, which stay in older trails. */
-export type TrailAction = "written" | "reverted" | "edited" | "kept" | "set" | "archived" | "superseded" | "restored" | "fixed";
+export type TrailAction = "written" | "reverted" | "edited" | "kept" | "set" | "archived" | "superseded" | "restored" | "fixed" | "merged" | "unmerged";
 
 export interface TrailEntry {
   ts: string;

@@ -22,6 +22,22 @@
  *                                     prints the same changes and writes nothing (the page shows it before it asks), and
  *                                     their hash (`expect`): with --expect the real run refuses unless it would make
  *                                     exactly those changes
+ *   merge-draft <path>… [--estimate] [--json]
+ *                                     2–6 memories drafted into one by the model provider (brain-ai A1, A4–A8;
+ *                                     lib/memory-merge.js): one call, nothing written; --estimate makes no call and
+ *                                     prints what one would cost, the target and the no-model draft (byHand). With no
+ *                                     provider or a cap reached it answers mode "by-hand" with the reason
+ *   merge <path>… --into <json> --expect <hash>,<hash>… [--json]
+ *                                     writes the merged title, description and body over the oldest (it keeps its path),
+ *                                     supersedes the others by it and collapses their MEMORY.md lines (D7, A9); one
+ *                                     --expect hash per path, in order; the old text is kept for unmerge (A2)
+ *   unmerge <path> --expect <hash> [--json]
+ *                                     the newest merge into <path> undone: its text back, the others restored (A2)
+ *   sweep [<path>…] [--estimate] [--json]
+ *                                     the consolidation sweep (D22, A6, A10, A11; lib/memory-sweep.js): Merge, Archive
+ *                                     and Retitle suggestions over the whole brain or the paths given (≤ 50), kept in
+ *                                     brain/_index/memory-sweep.json; Claude or Codex only
+ *   sweep dismiss <id> [--json]       a suggestion hidden for good
  *
  * Safety (spec §6) lives in brain/scripts/lib/memory-ops.js: a path is brain/memory/<type>/<slug>.md for one of the four
  * types, read and written only as a regular file inside plain vault folders, and nothing is deleted except a draft that
@@ -33,17 +49,22 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const VERBS = ['list', 'keep', 'set', 'archive', 'restore', 'supersede', 'draft', 'notdup', 'fix'];
+const VERBS = ['list', 'keep', 'set', 'archive', 'restore', 'supersede', 'draft', 'notdup', 'fix', 'merge-draft', 'merge', 'unmerge', 'sweep'];
 const REPO = path.join(__dirname, '..');
-const VALUE_FLAGS = new Map([['set', 'set'], ['expect', 'expect'], ['by', 'by']]);
-const BOOL_FLAGS = new Map([['json', 'json'], ['dry-run', 'dryRun'], ['skip-brain-md', 'skipBrainMd']]);
+const VALUE_FLAGS = new Map([['set', 'set'], ['expect', 'expect'], ['by', 'by'], ['into', 'into']]);
+const BOOL_FLAGS = new Map([['json', 'json'], ['dry-run', 'dryRun'], ['skip-brain-md', 'skipBrainMd'], ['estimate', 'estimate']]);
 const VERB_FLAGS = {
   list: ['json'], keep: ['json'], set: ['json', 'set', 'expect', 'dryRun', 'skipBrainMd'], archive: ['json'], restore: ['json'],
   supersede: ['json', 'by'], draft: ['json'], notdup: ['json'], fix: ['json', 'dryRun', 'expect'],
+  'merge-draft': ['json', 'estimate'], merge: ['json', 'into', 'expect'], unmerge: ['json', 'expect'], sweep: ['json', 'estimate'],
 };
+// brain-ai A8, A3: a merge takes 2–6 memories; a scoped sweep at most 50 (a Map community, a Health cluster).
+const MERGE_MAX = 6;
+const SWEEP_MAX = 50;
 const VERB_ARGS = {
   list: [0, 0], keep: [1, Infinity], set: [1, 1], archive: [1, Infinity], restore: [1, Infinity], supersede: [1, 1],
   draft: [2, 2], notdup: [2, 2], fix: [1, 1],
+  'merge-draft': [2, MERGE_MAX], merge: [2, MERGE_MAX], unmerge: [1, 1], sweep: [0, SWEEP_MAX],
 };
 const USAGE = {
   list: 'aos memory list [--json]',
@@ -55,6 +76,10 @@ const USAGE = {
   draft: 'aos memory draft approve|reject <slug> [--json]',
   notdup: 'aos memory notdup <path> <path> [--json]',
   fix: 'aos memory fix sources|types|descriptions|index|drafts [--dry-run] [--expect <hash>] [--json]',
+  'merge-draft': 'aos memory merge-draft <path> <path>… [--estimate] [--json]',
+  merge: 'aos memory merge <path> <path>… --into <json> --expect <hash>,<hash>… [--json]',
+  unmerge: 'aos memory unmerge <path> --expect <hash> [--json]',
+  sweep: 'aos memory sweep [<path>…] [--estimate] [--json] | aos memory sweep dismiss <id> [--json]',
 };
 
 class UsageError extends Error {}
@@ -65,6 +90,9 @@ function resolveScript(rel) {
 }
 function resolveModule(rel) { return require(resolveScript(rel)); }
 const opsLib = () => resolveModule('lib/memory-ops.js');
+const mergeLib = () => resolveModule('lib/memory-merge.js');
+const sweepLib = () => resolveModule('lib/memory-sweep.js');
+const money = (n) => `$${(Number(n) || 0).toFixed((Number(n) || 0) < 0.01 ? 4 : 2)}`;
 
 function emit(io, json, obj, lines) {
   if (json) io.log(JSON.stringify(obj, null, 2));
@@ -215,6 +243,72 @@ function fixVerb(ctx, kind, o) {
   return 0;
 }
 
+/** The model's answer to "what would this cost" (brain-ai A5): one line for a terminal. */
+function estimateLine(e) {
+  if (!e || !e.available) return `no model call possible: ${(e && e.reason) || 'no provider'}`;
+  return `about ${money(e.usd)} · ${e.model || e.provider} · ${e.provider}${e.cap ? ` · today ${money(e.cap.spentToday)} of ${money(e.cap.perDayUsd)}` : ''}`;
+}
+
+/** 2–6 memories into one draft (D21, A4–A8): one model call, or none with --estimate; nothing is written either way. */
+async function mergeDraftVerb(ctx, paths, o) {
+  const r = await mergeLib().mergeDraft(ctx.vault, paths, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env });
+  emit(o.io, o.json, r, o.estimate
+    ? [`merge into ${r.winner} (${r.type})`, `  ${estimateLine(r.estimate)}`]
+    : [
+      r.mode === 'ai' ? `drafted by ${r.model || r.provider} · ${r.provider} · ${money(r.usd)}${r.estimated ? ' (estimated)' : ''}` : `combine by hand: ${r.reason}`,
+      `into ${r.winner}:`, `# ${r.fields.title}`, r.fields.description, '', r.fields.body,
+    ]);
+  return 0;
+}
+
+/** The hashes `merge` checks, one per path in order (A9). */
+function expectList(raw, n, usage) {
+  const list = String(raw || '').split(',');
+  if (list.length !== n || list.some((h) => !/^[0-9a-f]{16,64}$/.test(h))) {
+    throw new UsageError(`${usage}: --expect takes one hash per path, comma-joined, as \`aos memory merge-draft --json\` prints them (baseHashes)`);
+  }
+  return list;
+}
+
+function mergeVerb(ctx, paths, o) {
+  if (o.into === undefined || o.expect === undefined) throw new UsageError(USAGE.merge);
+  let into;
+  try { into = JSON.parse(o.into); } catch { throw new UsageError('aos memory merge: --into takes a JSON object {"title", "description", "body"}'); }
+  const r = mergeLib().merge(ctx.vault, paths, into, expectList(o.expect, paths.length, 'aos memory merge'));
+  const brainMd = runBrainMd(ctx, o);
+  emit(o.io, o.json, { ...r, brainMd }, [`merged ${r.superseded.length + 1} into ${r.path}`, ...r.superseded.map((p) => `  superseded ${p}`), `undo: aos memory unmerge ${r.path} --expect ${r.hash}`]);
+  return 0;
+}
+
+function unmergeVerb(ctx, rel, o) {
+  if (o.expect === undefined) throw new UsageError(USAGE.unmerge);
+  if (!/^[0-9a-f]{16,64}$/.test(o.expect)) throw new UsageError('aos memory unmerge: --expect takes the merged memory\'s hash as `aos memory list --json` prints it');
+  const r = mergeLib().unmerge(ctx.vault, rel, o.expect);
+  const brainMd = runBrainMd(ctx, o);
+  emit(o.io, o.json, { ...r, brainMd }, [`${r.path}: merge undone`, ...r.restored.map((p) => `  restored ${p}`)]);
+  return 0;
+}
+
+/** The consolidation sweep (D22, A10, A11), or `sweep dismiss <id>`. */
+async function sweepVerb(ctx, args, o) {
+  const lib = sweepLib();
+  if (args[0] === 'dismiss') {
+    if (o.estimate) throw new UsageError(`${USAGE.sweep}: --estimate is not a flag of sweep dismiss`);
+    if (args.length !== 2 || !lib.ID_RE.test(args[1])) throw new UsageError('aos memory sweep dismiss <id>: the id a sweep printed (12 hex characters)');
+    const r = lib.dismiss(ctx.vault, args[1]);
+    emit(o.io, o.json, r, [r.already ? `${r.dismissed} was already dismissed` : `${r.dismissed} dismissed: it is never suggested again`]);
+    return 0;
+  }
+  const r = await lib.sweep(ctx.vault, args, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env });
+  emit(o.io, o.json, r, o.estimate
+    ? [`sweep ${r.considered} of ${r.of} memories`, `  ${estimateLine(r.estimate)}`]
+    : [
+      `${r.run.suggestions} suggestion${r.run.suggestions === 1 ? '' : 's'} from ${r.run.model || r.run.provider} · ${r.run.provider} · ${money(r.run.usd)}${r.run.estimated ? ' (estimated)' : ''} (${r.run.considered} of ${r.run.of} memories)`,
+      ...r.suggestions.map((c) => `  ${c.id}  ${c.kind}  ${c.paths.join(' ')}${c.title ? ` → ${c.title}` : ''}  (${c.why})`),
+    ]);
+  return 0;
+}
+
 // ── main ──
 
 function parseMemoryArgs(argv) {
@@ -258,6 +352,7 @@ async function main(argv, opts = {}) {
   const [min, max] = VERB_ARGS[verb];
   if (args.length < min) throw new UsageError(USAGE[verb]);
   if (args.length > max) throw new UsageError(`${USAGE[verb]}: too many arguments`);
+  if ((verb === 'merge-draft' || verb === 'merge') && new Set(args).size !== args.length) throw new UsageError(`aos memory ${verb}: each memory once`);
   if (verb === 'fix') {
     const kinds = resolveModule('lib/memory-fix.js').KINDS;
     if (!kinds.includes(args[0])) throw new UsageError(`aos memory fix: unknown kind "${args[0]}" (${kinds.join(' | ')})`);
@@ -277,9 +372,13 @@ async function main(argv, opts = {}) {
       case 'draft': return draftVerb(ctx, args[0], args[1], o);
       case 'notdup': return notdupVerb(ctx, args[0], args[1], o);
       case 'fix': return fixVerb(ctx, args[0], o);
+      case 'merge-draft': return mergeDraftVerb(ctx, args, o);
+      case 'merge': return mergeVerb(ctx, args, o);
+      case 'unmerge': return unmergeVerb(ctx, args[0], o);
+      case 'sweep': return sweepVerb(ctx, args, o);
       default: return 2;
     }
   });
 }
 
-module.exports = { VERBS, USAGE, UsageError, main, parseMemoryArgs };
+module.exports = { VERBS, USAGE, UsageError, MERGE_MAX, SWEEP_MAX, main, parseMemoryArgs };

@@ -100,7 +100,7 @@ function data(): BrainData {
     .map(([p, t, c]) => parseMemory(p, mem(t, c))).filter((m): m is BrainMemory => !!m);
   const pairs: HubDup[] = [{ a: A, b: B, score: 0.92, title: 0.8, text: 0.8, meaning: null }, { a: C, b: D, score: 0.88, title: 0.7, text: 0.8, meaning: null }];
   return {
-    now: new Date(2026, 9, 11, 12), memories, byPath: new Map(memories.map((m) => [m.path, m])), drafts: [], patterns: [], reflections: [],
+    now: new Date(2026, 9, 11, 12), memories, byPath: new Map(memories.map((m) => [m.path, m])), drafts: [], patterns: [], reflections: [], sweep: null,
     hub: parseBrainHub(JSON.stringify({ schema: 1, builtAt: "2026-10-11T10:00:00.000Z", dups: pairs })),
     sources: null, trail: [], written: new Map(), index: new Map(), pairs, flags: new Map(), batches: [], map: null,
     session: null, wake: null, indexRaw: null, settings: { telemetry: true, graph: true, neverUsedDays: 30, mapMin: 8, wrapHint: "/wrap" },

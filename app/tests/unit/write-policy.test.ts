@@ -308,6 +308,15 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     ...["sources", "types", "descriptions", "index", "drafts"].flatMap((k) => [mem("fix", k, "--dry-run", "--json"), mem("fix", k, "--json"), mem("fix", k, "--expect", "0123456789abcdef0123456789abcdef", "--json")]),
     // Bootstrap's bulk Mark complete: each set skips its BRAIN.md rebuild, then build-brain-md runs once.
     mem("set", A, "--set", '{"status":"complete"}', "--expect", "a".repeat(64), "--skip-brain-md", "--json"),
+    // PR 4 (brain-ai A13): Merge with AI, its save and undo; the sweep, scoped or whole, and a card's dismissal; Retitle.
+    mem("merge-draft", A, B, "--estimate", "--json"), mem("merge-draft", A, B, "--json"),
+    mem("merge-draft", ...Array.from({ length: 6 }, (_, i) => `brain/memory/projects/p${i}.md`), "--json"),
+    mem("merge", A, B, "--into", '{"title":"t","description":"d","body":"b"}', "--expect", `${"a".repeat(64)},${"b".repeat(64)}`, "--json"),
+    mem("unmerge", A, "--expect", "c".repeat(64), "--json"),
+    mem("sweep", "--json"), mem("sweep", "--estimate", "--json"), mem("sweep", A, B, "--json"), mem("sweep", A, B, "--estimate", "--json"),
+    mem("sweep", ...Array.from({ length: 50 }, (_, i) => `brain/memory/reference/r${i}.md`), "--json"),
+    mem("sweep", "dismiss", "0123456789ab", "--json"),
+    mem("set", A, "--set", '{"title":"New title"}', "--expect", "a".repeat(64), "--json"),
   ];
   for (const a of ok) {
     assert.equal(brain.canSpawn(NODE, a), true, a.join(" "));
@@ -316,6 +325,13 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
   // The page's own builder (brainModel memoryArgs) for the fix it confirms and the bulk set: the surface admits both.
   assert.equal(brain.canSpawn(NODE, [`${S}/cli/aos.js`, ...memoryArgs({ verb: "fix", kind: "index", dryRun: false, expect: "f".repeat(32) })]), true);
   assert.equal(brain.canSpawn(NODE, [`${S}/cli/aos.js`, ...memoryArgs({ verb: "set", path: A, fields: { status: "complete" }, expect: "a".repeat(64), skipBrainMd: true })]), true);
+  const into = { title: "Small diffs", description: "Keep diffs small", body: "Why: review.\n\n- one\n" };
+  for (const v of [
+    { verb: "merge-draft", paths: [A, B], estimate: true }, { verb: "merge-draft", paths: [A, B], estimate: false },
+    { verb: "merge", paths: [A, B], into, expect: ["a".repeat(64), "b".repeat(64)] }, { verb: "unmerge", path: A, expect: "c".repeat(64) },
+    { verb: "sweep", paths: [], estimate: true }, { verb: "sweep", paths: [B, A], estimate: false }, { verb: "sweep-dismiss", id: "0123456789ab" },
+    { verb: "set", path: A, fields: { title: "New title" }, expect: "a".repeat(64) },
+  ] as const) assert.equal(brain.canSpawn(NODE, [`${S}/cli/aos.js`, ...memoryArgs(v)]), true, v.verb);
   assert.equal(brain.canSpawn(NODE, [`${S}/brain-hub.js`]), true);
   assert.equal(brain.canSpawn(NODE, [`${S}/build-brain-md.js`]), true);
   assert.equal(brain.canSpawn(NODE, [`${S}/build-brain-md.js`, "--json"]), false);
@@ -341,6 +357,23 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     mem("fix", "index", "--json", "--expect", "0".repeat(32)),
     // --skip-brain-md: set's only, after its --expect.
     mem("keep", A, "--skip-brain-md", "--json"), mem("set", A, "--skip-brain-md", "--set", '{"pin":true}', "--expect", "none", "--json"),
+    // PR 4: a merge of one or seven, the same memory twice, --estimate anywhere but before --json, a hash count that does
+    // not match the paths, `none` or a short hash, --into that is not an object, a flag-looking path; the sweep over 51,
+    // a dismissal id of the wrong length; unmerge without its hash.
+    mem("merge-draft", A, "--json"), mem("merge-draft", A, A, "--json"), mem("merge-draft", "--estimate", A, B, "--json"),
+    mem("merge-draft", A, B, "--json", "--estimate"), mem("merge-draft", ...Array.from({ length: 7 }, (_, i) => `brain/memory/projects/p${i}.md`), "--json"),
+    mem("merge-draft", A, "--into", "--json"),
+    mem("merge", A, B, "--into", '{"title":"t"}', "--expect", "a".repeat(64), "--json"),
+    mem("merge", A, B, "--into", '{"title":"t"}', "--expect", `${"a".repeat(64)},none`, "--json"),
+    mem("merge", A, B, "--into", '{"title":"t"}', "--expect", `${"a".repeat(64)},${"b".repeat(8)}`, "--json"),
+    mem("merge", A, B, "--into", "title", "--expect", `${"a".repeat(64)},${"b".repeat(64)}`, "--json"),
+    mem("merge", A, A, "--into", '{"title":"t"}', "--expect", `${"a".repeat(64)},${"b".repeat(64)}`, "--json"),
+    mem("merge", A, B, "--expect", `${"a".repeat(64)},${"b".repeat(64)}`, "--into", '{"title":"t"}', "--json"),
+    mem("merge", A, B, "--into", '{"title":"t"}', "--expect", `${"a".repeat(64)},${"b".repeat(64)}`),
+    mem("unmerge", A, "--json"), mem("unmerge", A, "--expect", "none", "--json"), mem("unmerge", A, B, "--expect", "c".repeat(64), "--json"),
+    mem("sweep"), mem("sweep", ...Array.from({ length: 51 }, (_, i) => `brain/memory/reference/r${i}.md`), "--json"),
+    mem("sweep", "--json", "--estimate"), mem("sweep", "dismiss", "0123", "--json"), mem("sweep", "dismiss", "0123456789ab"),
+    mem("sweep", "brain/patterns/debugging.md", "--json"), mem("sweep", "dismiss", "0123456789ab", "--estimate", "--json"),
   ];
   for (const a of no) assert.equal(all.canSpawn(NODE, a), false, `never: ${a.join(" ")}`);
   assert.equal(all.canSpawn(NODE, [`${S}/brain-hub.js`, "--dry-run"]), false);
