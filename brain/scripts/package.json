@@ -1,7 +1,7 @@
 {
   "name": "agenticos-brain",
   "private": true,
-  "version": "1.8.0",
+  "version": "1.9.0",
   "type": "commonjs",
   "description": "AgenticOS brain runtime: Claude Code hooks, vault scanner, BRAIN.md compiler, recall, and the agenticos MCP server.",
   "engines": {

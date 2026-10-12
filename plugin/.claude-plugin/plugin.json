@@ -1,6 +1,6 @@
 {
   "name": "agenticos",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "UniDeX plugin: injects brain context on every prompt, captures sessions into memory, streams telemetry, and exposes the vault through the agenticos MCP server. Requires `aos init` (see docs/install.md).",
   "author": {
     "name": "AgenticOS Workbench contributors"

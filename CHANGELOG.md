@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-10-12
+
 ### Upgrading
 - **Map, Health's fixes, Merge with AI and the sweep need this release's runtime** (`brain-map.json`, `aos memory fix`, `merge-draft`, `merge`, `unmerge`, `sweep`): accept the runtime upgrade the app offers, or run `aos upgrade`. Map shows its communities from the next scan on. Nothing to re-trust: no hook command changed on either host.
 
@@ -558,7 +560,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.9.0
 [1.8.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.8.0
 [1.7.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.7.0
 [1.6.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.6.0
