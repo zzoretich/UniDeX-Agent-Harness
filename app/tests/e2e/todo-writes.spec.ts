@@ -29,6 +29,41 @@ function ticked(text: string, block: string): string {
   return text.replace(block, "").replace("## Done\n", `## Done\n${done}`);
 }
 
+/**
+ * How long a write made outside the app may take to reach the tab: FSEvents batches it, the watcher adds 40 ms and the
+ * tab's debounce 250 ms, but a busy CI runner can hold the event for seconds (main's ci, 2026-10-12: still unseen after
+ * the 3 s this file allowed). The Brain specs wait as long for the same watcher.
+ */
+const WATCHED = 10_000;
+/** How late the reproduction delivers an outside write's event: well past the 3 s an earlier budget allowed. */
+const LATE_EVENT_MS = 5000;
+
+/** Hold back the vault's events (the watcher's feed into the page), as a slow file watcher does. */
+async function holdVaultEvents(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    const v = (window as unknown as { aosHost: { app: { vault: Record<string, unknown> } } }).aosHost.app.vault;
+    v.__trigger = v.trigger;
+    v.trigger = () => undefined;
+  });
+}
+
+/**
+ * Let events through again `ms` from now (in the page, so the wait overlaps the test's own) and deliver the held change
+ * to `rel`, late; `rel` null lets them through at once with nothing delivered (a test's cleanup).
+ */
+async function releaseVaultEventsAfter(win: Page, rel: string | null, ms: number): Promise<void> {
+  await win.evaluate(([p, wait]) => {
+    const v = (window as unknown as { aosHost: { app: { vault: Record<string, unknown> & { getAbstractFileByPath(p: string): unknown } } } }).aosHost.app.vault;
+    const release = (): void => {
+      if (!v.__trigger) return;
+      v.trigger = v.__trigger;
+      delete v.__trigger;
+      if (p) (v.trigger as (name: string, f: unknown) => void).call(v, "modify", v.getAbstractFileByPath(p));
+    };
+    if (wait > 0) window.setTimeout(release, wait); else release();
+  }, [rel, ms] as const);
+}
+
 test.beforeEach(async () => {
   const { win } = app();
   const e = expected().todo;
@@ -180,7 +215,7 @@ test("a tick made in the other HUD shows here while the tab is open, and the nex
   // What the Obsidian HUD (or /todo) writes when it ticks the item.
   const theirs = ticked(pristine(), REVIEW);
   fs.writeFileSync(FILE, theirs);
-  await expect(count(win)).toHaveText(`${e.open - 1} open · ${e.overdue} overdue · ${e.today - 1} today`, { timeout: 3000 });
+  await expect(count(win)).toHaveText(`${e.open - 1} open · ${e.overdue} overdue · ${e.today - 1} today`, { timeout: WATCHED });
   await expect(badge(win, "todo")).toHaveText(String(e.badge - 1));
   const call = `- [ ] Call the chart vendor 📅 ${T} #harbor\n`;
   await row(win, "Call the chart vendor").locator(".aos-td-check").click();
@@ -194,10 +229,17 @@ test("an edit survives TODO.md changing underneath with its line intact: the typ
   const edit = td(win).locator("input.aos-td-edit");
   await edit.selectText();
   await win.keyboard.insertText("Draft the release notes for 0.22");
-  // Another HUD ticks a different item while this one is being edited: the tab redraws from the new file.
+  // Another HUD ticks a different item while this one is being edited: the tab redraws from the new file. Its event
+  // reaches the tab late, as a busy runner's FSEvents can deliver it (main's ci, 2026-10-12: still unseen after 3 s).
   const theirs = ticked(pristine(), REVIEW);
-  fs.writeFileSync(FILE, theirs);
-  await expect(count(win)).toHaveText(`${e.open - 1} open · ${e.overdue} overdue · ${e.today - 1} today`, { timeout: 3000 });
+  await holdVaultEvents(win);
+  try {
+    fs.writeFileSync(FILE, theirs);
+    await releaseVaultEventsAfter(win, "TODO.md", LATE_EVENT_MS);
+    await expect(count(win)).toHaveText(`${e.open - 1} open · ${e.overdue} overdue · ${e.today - 1} today`, { timeout: WATCHED });
+  } finally {
+    await releaseVaultEventsAfter(win, null, 0);
+  }
   await expect(edit).toHaveValue("Draft the release notes for 0.22");
   await expect(edit).toBeFocused();
   expect(onDisk()).toBe(theirs);   // nothing saved halfway through the typing
@@ -249,7 +291,7 @@ test("stale guard: a line changed underneath is reported, nothing is written, an
 test("without TODO.md, open TODO.md creates it from the template, and a quick-add creates it too (T1)", async () => {
   const { win } = app();
   fs.rmSync(FILE);
-  await expect(td(win).locator(".aos-rt-table .aos-inv-row.aos-dim")).toContainText("Nothing open — add one above", { timeout: 3000 });
+  await expect(td(win).locator(".aos-rt-table .aos-inv-row.aos-dim")).toContainText("Nothing open — add one above", { timeout: WATCHED });
   await td(win).locator("button", { hasText: "open TODO.md" }).click();
   await expect(win.locator(".aos-host-tab.is-active .aos-host-tab-title")).toHaveText("TODO");
   expect(onDisk()).toBe(TODO_TEMPLATE);
@@ -257,7 +299,7 @@ test("without TODO.md, open TODO.md creates it from the template, and a quick-ad
 
   fs.rmSync(FILE);
   await openTab(win, "todo");
-  await expect(td(win).locator(".aos-rt-count")).toHaveText("0 open · 0 overdue · 0 today", { timeout: 3000 });
+  await expect(td(win).locator(".aos-rt-count")).toHaveText("0 open · 0 overdue · 0 today", { timeout: WATCHED });
   await td(win).locator("input.aos-td-input").fill("First thing");
   await td(win).locator("input.aos-td-input").press("Enter");
   // An empty ## Open takes the item right under its heading.
