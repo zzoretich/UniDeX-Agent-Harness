@@ -9,9 +9,11 @@ import {
   touchesBrain, isBrainMode, isReviewQueue, sessionLabel, pairKey, DEFAULT_LIBRARY_FILTER, BRAIN_OFF_TEXT, BRAIN_UPGRADE_TEXT,
   MAX_PATHS_PER_CALL, shortDay, historyLine, bodyWithoutTitle, linkTargets, linksTo, linkSourceKind, nearbyBasis, filterShowing,
   librarySelection, batchWhen, batchMeta, knownLabel, batchLede, olderFirst, olderByMonth, reviewSelection, weekUse,
-  pendingReview, compareAges, brainMdLine,
+  pendingReview, compareAges, brainMdLine, parseBrainMap, recallArgs, recallQuery, parseRecallHits, parseFixResult, healthCount,
+  estimateTokens, isFixKind, isBrainAnchor, FIX_KINDS, BRAIN_MAP_PATH, SESSION_MD_PATH, RECALL_WAKE_PATH, BRAIN_CONFIG_PATH,
   type BrainMemory, type BrainHub,
 } from "./brainModel";
+import { brainSettings } from "../views/brain/load";
 
 const mem = (type: string, slug: string, o: { title?: string; tags?: string; reviewed?: boolean; session?: string; created?: string; updated?: string; source?: string; pin?: boolean; description?: string; extra?: string; body?: string } = {}): string =>
   ["---", "type: memory", `tags: [memory/${type}${o.tags ? `, ${o.tags}` : ""}]`, `created: ${o.created ?? "2026-10-01"}`, `updated: ${o.updated ?? o.created ?? "2026-10-01"}`,
@@ -523,4 +525,108 @@ test("weekUse: the 7-day count, not used, nothing with no usage log", () => {
 test("sessionLabel: a host session by its first 8 characters, anything else whole", () => {
   assert.equal(sessionLabel("2f25a8d9-301b-4619-a341-db99b2c4d8e7"), "session 2f25a8d9");
   assert.equal(sessionLabel("in-session"), "session in-session");
+});
+
+// ── PR 3: the shell contract's additions (Bootstrap, Map, Health) ──
+
+test("parseBrainSources: the Quick links and Last Session tokens", () => {
+  const src = parseBrainSources(JSON.stringify({ schema: 1, budget: 850, tokens: 848, sections: { who: { paths: [], tokens: 79 }, rules: { paths: [], tokens: 42 }, active: { paths: [], omitted: [], tokens: 558 }, links: { tokens: 53 }, lastSession: { tokens: 35, clampedChars: 0 } } }))!;
+  assert.equal(src.links, 53);
+  assert.equal(src.lastSession, 35);
+  assert.equal(parseBrainSources(JSON.stringify({ schema: 1, budget: 850, tokens: 1, sections: {} }))!.links, 0);
+});
+
+test("parseBrainMap: coerces every field, drops bad rows, caps neighbours at 12, and keeps the off and missing states", () => {
+  const a = P("projects", "unidex-1-5-0");
+  const b = P("projects", "unidex-1-4-1");
+  const raw = {
+    schema: 1, builtAt: "2026-10-11T20:00:00Z", state: "ok", graph: { builtAt: "2026-10-11T19:00:00Z", mode: "semantic", nodes: 5331, edges: 5444, communities: 666 },
+    mapMin: 8, hubs: ["MEMORY.md", 3],
+    communities: [{ id: "c16", name: "UniDeX 1.5.0", lead: a, paths: [a, b, "../x.md"], edges: 4 }, { name: "no id" }],
+    links: [{ a: "c16", b: "c21", n: 3 }, { a: "c16" }],
+    memories: {
+      [a]: { community: "c16", degree: 14, neighbours: Array.from({ length: 15 }, (_, i) => ({ path: P("projects", `n${i}`), n: 15 - i })) },
+      [b]: { community: null, degree: 0, neighbours: [{ path: "not/a/memory.md", n: 1 }] },
+      "MEMORY.md": { community: "c0", degree: 99, neighbours: [] },
+    },
+    smaller: { communities: 9, memories: 56 }, unlinked: 55,
+  };
+  const m = parseBrainMap(JSON.stringify(raw))!;
+  assert.equal(m.state, "ok");
+  assert.deepEqual(m.graph, { builtAt: "2026-10-11T19:00:00Z", mode: "semantic", nodes: 5331, edges: 5444, communities: 666 });
+  assert.deepEqual(m.hubs, ["MEMORY.md"]);
+  assert.deepEqual(m.communities, [{ id: "c16", name: "UniDeX 1.5.0", lead: a, paths: [a, b], edges: 4 }]);
+  assert.deepEqual(m.links, [{ a: "c16", b: "c21", n: 3 }]);
+  assert.equal(m.memories[a].neighbours.length, 12);
+  assert.deepEqual(m.memories[b], { community: null, degree: 0, neighbours: [] });
+  assert.equal(m.memories["MEMORY.md"], undefined);
+  assert.deepEqual(m.smaller, { communities: 9, memories: 56 });
+  assert.equal(m.unlinked, 55);
+  const off = parseBrainMap(JSON.stringify({ schema: 1, state: "off", graph: { nodes: 3 } }))!;
+  assert.equal(off.state, "off");
+  assert.equal(off.graph, null);
+  assert.equal(parseBrainMap(JSON.stringify({ schema: 1, state: "weird" }))!.state, "missing");
+  assert.equal(parseBrainMap(JSON.stringify({ schema: 2 })), null);
+  assert.equal(parseBrainMap("{"), null);
+  assert.equal(parseBrainMap(null), null);
+});
+
+test("recallArgs: one query argument (never a flag), --limit, --json; an empty query throws", () => {
+  assert.deepEqual(recallArgs("release procedure"), ["release procedure", "--limit", "8", "--json"]);
+  assert.deepEqual(recallArgs("  --warm  now ", 3), ["warm now", "--limit", "3", "--json"]);
+  assert.deepEqual(recallArgs("a\u0000b\nc\u2028d", 500), ["a b c d", "--limit", "99", "--json"]);
+  assert.equal(recallQuery("x".repeat(300)).length, 200);
+  assert.throws(() => recallArgs("  --  "));
+  assert.throws(() => recallArgs(""));
+});
+
+test("parseRecallHits: recall-cli's hits, coerced; a row without a path is dropped", () => {
+  assert.deepEqual(parseRecallHits([{ path: "brain/memory/projects/a.md", score: 0.91, flag: "3d", snippet: "the release…" }, { score: 1 }, "x"]),
+    [{ path: "brain/memory/projects/a.md", score: 0.91, flag: "3d", snippet: "the release…" }]);
+  assert.deepEqual(parseRecallHits({ not: "an array" }), []);
+});
+
+test("memoryArgs fix: the kind, --dry-run before --json; an unknown kind throws", () => {
+  for (const kind of FIX_KINDS) {
+    assert.deepEqual(memoryArgs({ verb: "fix", kind, dryRun: true }), ["memory", "fix", kind, "--dry-run", "--json"]);
+    assert.deepEqual(memoryArgs({ verb: "fix", kind, dryRun: false }), ["memory", "fix", kind, "--json"]);
+  }
+  assert.throws(() => memoryArgs({ verb: "fix", kind: "everything" as never, dryRun: true }));
+  assert.ok(isFixKind("index") && !isFixKind("all"));
+});
+
+test("parseFixResult: the changes and the BRAIN.md rebuild, coerced; a body without a known kind is null", () => {
+  const r = parseFixResult({
+    kind: "sources", dryRun: true, files: 2, brainMd: null,
+    changes: [{ path: P("projects", "a"), action: "source", before: "session", after: "manual-wrap" }, { path: "x", action: "explode" }, { path: "MEMORY.md", action: "index-remove", before: "- [x](brain/memory/projects/gone.md) — x" }],
+  })!;
+  assert.equal(r.dryRun, true);
+  assert.equal(r.files, 2);
+  assert.deepEqual(r.changes, [
+    { path: P("projects", "a"), action: "source", before: "session", after: "manual-wrap" },
+    { path: "MEMORY.md", action: "index-remove", before: "- [x](brain/memory/projects/gone.md) — x", after: null },
+  ]);
+  assert.deepEqual(parseFixResult({ kind: "index", changes: [], files: 0, brainMd: { ok: false, error: "exit 1" } })!.brainMd, { ok: false, error: "exit 1" });
+  assert.equal(parseFixResult({ kind: "all" }), null);
+});
+
+test("healthCount and modeBadges: duplicate pairs plus every finding a fix acts on; no badge when all is well", () => {
+  const hub = parseBrainHub(JSON.stringify({ schema: 1, counts: {}, hygiene: { sources: { "auto-wrap": 239, "manual-wrap": 25, session: 5, "in-session": 2, wrap: 1, "(none)": 70 }, oldType: ["a", "b"], noDescription: ["c"], unindexed: [], misfiled: ["d", "e"], brokenIndex: ["f"], leftoverDrafts: ["g"] } }));
+  assert.equal(healthCount(8, hub), 8 + 8 + 2 + 1 + 0 + 2 + 1 + 1);
+  assert.equal(healthCount(0, null), 0);
+  assert.deepEqual(modeBadges({ toReview: 0, live: 3, brainPct: null, health: 4 }).health, { text: "4", tone: "warn" });
+  assert.equal(modeBadges({ toReview: 0, live: 3, brainPct: null, health: 0 }).health, undefined);
+});
+
+test("touchesBrain: the map, SESSION.md, recall-wake.md and the vault's config reload the hub", () => {
+  for (const p of [BRAIN_MAP_PATH, SESSION_MD_PATH, RECALL_WAKE_PATH, BRAIN_CONFIG_PATH]) assert.ok(touchesBrain(p), p);
+  assert.ok(!touchesBrain("brain/_index/snapshot.json"));
+  assert.ok(isBrainAnchor("hygiene") && !isBrainAnchor("everything"));
+  assert.equal(estimateTokens("12345"), 2);
+  assert.equal(estimateTokens(null), 0);
+});
+
+test("brainSettings: telemetry, graph, neverUsedDays and mapMin from the resolved config, defaults for anything missing or bad", () => {
+  assert.deepEqual(brainSettings(null), { telemetry: true, graph: true, neverUsedDays: 30, mapMin: 8 });
+  assert.deepEqual(brainSettings({ telemetry: { enabled: false } as never, graph: { enabled: false } as never, memory: { neverUsedDays: 14, mapMin: 0 } as never }), { telemetry: false, graph: false, neverUsedDays: 14, mapMin: 8 });
 });

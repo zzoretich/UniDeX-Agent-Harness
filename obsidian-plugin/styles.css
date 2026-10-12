@@ -3785,34 +3785,15 @@ button.aos-brain-chip[aria-pressed="true"]:not(.clickable-icon) { border-color: 
 .aos-brain-dot.is-reference { background: var(--udx-off-dot); }
 .aos-brain-dot.is-user { background: var(--udx-ok-dot); }
 
-/* Bootstrap and Health until PR 3 (views/brain/StandIn.ts). */
-.aos-brain-standin { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; max-width: 760px; padding: 20px 24px 28px; }
+/* A mode's heading and lede (Bootstrap, Health). */
 .aos-brain-h2 { margin: 0; font-size: 17px; font-weight: 650; }
 .aos-brain-lede { margin: -12px 0 0; max-width: 70ch; color: var(--udx-text-2); font-size: 12.5px; line-height: 1.5; }
-.aos-brain-sisec { display: flex; flex-direction: column; gap: 8px; }
-.aos-brain-sihead { display: flex; align-items: baseline; gap: 10px; }
-.aos-brain-sihead .aos-brain-dim { font-size: 11px; }
-.aos-brain-budget { display: flex; align-items: center; gap: 12px; }
-.aos-brain-budgetval { font-size: 12px; }
-.aos-brain-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--udx-raised-2); overflow: hidden; }
-.aos-brain-barfill { display: block; height: 100%; border-radius: 3px; background: var(--udx-info-dot); }
-.aos-brain-bar.is-warn .aos-brain-barfill { background: var(--udx-warn-dot); }
-.aos-brain-silist { display: flex; flex-direction: column; border: 1px solid var(--udx-line); border-radius: 10px; }
-.aos-brain-sirow { display: flex; align-items: baseline; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--udx-line); font-size: 12.5px; }
-.aos-brain-sirow:first-child { border-top: none; }
-.aos-brain-sirow .aos-brain-sititle { flex: 1; min-width: 0; }
-button.aos-brain-silink:not(.clickable-icon) {
-  display: flex; align-items: baseline; gap: 12px; width: 100%; height: auto; padding: 7px 10px; border: 1px solid var(--udx-line);
-  border-radius: 8px; background: var(--udx-bg); text-align: left; font-size: 12.5px; font-weight: 500;
-}
-button.aos-brain-silink .aos-brain-sititle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aos-brain-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.aos-brain-tile, button.aos-brain-tile:not(.clickable-icon) {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; height: auto; padding: 10px 12px; border: 1px solid var(--udx-line);
-  border-radius: 8px; background: var(--udx-bg); text-align: left; font-size: 11.5px; font-weight: 400; white-space: normal;
-}
-.aos-brain-tilen { color: var(--udx-text); font-size: 18px; font-weight: 500; }
-.aos-brain-sinote { padding: 10px 12px; border: 1px dashed var(--udx-line-2); border-radius: 10px; color: var(--udx-text-2); font-size: 12px; line-height: 1.5; }
+
+/* ── Brain hub: Bootstrap (views/brain/BootstrapMode.ts; D17, D18, canvas Bootstrap). ── */
+/* ── end Brain hub: Bootstrap ── */
+
+/* ── Brain hub: Health (views/brain/HealthMode.ts, FixModal.ts; D20, canvas Health). ── */
+/* ── end Brain hub: Health ── */
 
 /* ── Brain hub: Review (views/brain/ReviewMode.ts). ── */
 /* Review (D3, D4; canvas Main): the queues and session batches on the left, the batch's cards in the main pane. */

@@ -5,15 +5,31 @@
 // hashed) again only when its text or its MEMORY.md line changed.
 import type { App } from "obsidian";
 import {
-  BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, DRAFTS_DIR, MEMORY_INDEX_PATH, MEMORY_ROOT, MEMORY_TYPES, PATTERNS_DIR, REFLECTIONS_DIR,
-  dupFlags, livePairs, pairKey, parseBrainHub, parseBrainSources, parseDraft, parseIndexLines, parseMemory, parseNote,
-  readTrailRows, reviewBatches, writtenAtMap, type BrainDraft, type BrainMemory, type BrainNote,
+  BRAIN_HUB_PATH, BRAIN_MAP_PATH, BRAIN_SOURCES_PATH, DRAFTS_DIR, MEMORY_INDEX_PATH, MEMORY_ROOT, MEMORY_TYPES,
+  PATTERNS_DIR, RECALL_WAKE_PATH, REFLECTIONS_DIR, SESSION_MD_PATH,
+  dupFlags, livePairs, pairKey, parseBrainHub, parseBrainMap, parseBrainSources, parseDraft, parseIndexLines, parseMemory,
+  parseNote, readTrailRows, reviewBatches, writtenAtMap, type BrainDraft, type BrainMemory, type BrainNote,
 } from "../../data/brainModel";
 import { TRAIL_PATH } from "../../data/promoteTrail";
-import type { BrainData } from "./types";
+import { VAULT_CONFIG_DEFAULTS, type VaultConfig } from "../../data/aosConfig";
+import type { BrainData, BrainSettings } from "./types";
 
 /** The single files every load reads whole: small, and their changes are what the hub follows. */
-const SINGLES = [BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, MEMORY_INDEX_PATH, TRAIL_PATH];
+const SINGLES = [BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, MEMORY_INDEX_PATH, TRAIL_PATH, BRAIN_MAP_PATH, SESSION_MD_PATH, RECALL_WAKE_PATH];
+
+/**
+ * The four settings the modes read, from the config the runtime itself resolves (aosConfig.ts readVaultConfig:
+ * brain/config.json, then the user's agenticos.json, over the defaults). A missing or bad value is the default.
+ */
+export function brainSettings(c: Partial<VaultConfig> | null): BrainSettings {
+  const pos = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : d);
+  return {
+    telemetry: c?.telemetry?.enabled !== false,
+    graph: c?.graph?.enabled !== false,
+    neverUsedDays: pos(c?.memory?.neverUsedDays, VAULT_CONFIG_DEFAULTS.memory.neverUsedDays),
+    mapMin: pos(c?.memory?.mapMin, VAULT_CONFIG_DEFAULTS.memory.mapMin),
+  };
+}
 
 export class BrainStore {
   private texts = new Map<string, string>();
@@ -24,7 +40,8 @@ export class BrainStore {
   private loading: Promise<BrainData> | null = null;
   private again = false;
 
-  constructor(private app: App) {}
+  /** `settings` reads the resolved config on each load (BrainTab: readVaultConfig over the vault and the config dir). */
+  constructor(private app: App, private settings: () => BrainSettings = () => brainSettings(null)) {}
 
   /** A vault event touched `path` (create, modify, delete, either end of a rename). */
   touch(path: string): void { this.dirty.add(path); }
@@ -76,7 +93,7 @@ export class BrainStore {
 
   private async read(): Promise<BrainData> {
     const now = new Date();
-    const [hubRaw, srcRaw, indexRaw, trailRaw] = await Promise.all(SINGLES.map((p) => this.text(p, true)));
+    const [hubRaw, srcRaw, indexRaw, trailRaw, mapRaw, sessionRaw, wakeRaw] = await Promise.all(SINGLES.map((p) => this.text(p, true)));
     const index = parseIndexLines(indexRaw);
     const memories: BrainMemory[] = [];
     const seen = new Set<string>();
@@ -120,6 +137,7 @@ export class BrainStore {
     return {
       now, memories, byPath, drafts, patterns, reflections, hub, sources: parseBrainSources(srcRaw), trail, written, index,
       pairs, flags, batches: reviewBatches(memories, hub, written, flags),
+      map: parseBrainMap(mapRaw), session: sessionRaw, wake: wakeRaw, indexRaw, settings: this.settings(),
     };
   }
 }

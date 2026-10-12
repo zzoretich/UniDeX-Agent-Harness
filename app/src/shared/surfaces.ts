@@ -152,7 +152,16 @@ const MEMORY_VERBS: readonly SpawnRule[] = [
   { script: "cli/aos.js", args: argv("memory", "supersede", MEMORY, "--by", MEMORY, "--json") },
   { script: "cli/aos.js", args: argv("memory", "draft", /approve|reject/, DRAFT, "--json") },
   { script: "cli/aos.js", args: argv("memory", "notdup", MEMORY, MEMORY, "--json") },
+  // Health's hygiene fixes (brain-hub D20; PR 3): a dry run first, shown before the confirm, then the real run.
+  ...inOrder(["--dry-run"]).map((flags): SpawnRule => ({ script: "cli/aos.js", args: argv("memory", "fix", /sources|types|descriptions|index|drafts/, ...flags, "--json") })),
 ];
+
+// Bootstrap's recall preview (brain-hub D18; PR 3): the typed text as one query, exactly as data/brainModel.ts recallArgs
+// builds it. Never a flag (no leading "-", so never --warm), no control characters or line separators, at most 200
+// characters; then --limit with one or two digits and --json. recall-cli.js writes nothing but a missing recall index
+// (rebuilt as `aos recall --warm` would) and logs no usage (D9).
+const RECALL_QUERY = /[^\s\-\0-\x1f\x7f\u2028\u2029][^\0-\x1f\x7f\u2028\u2029]{0,199}/;
+const RECALL_PREVIEW: SpawnRule = { script: "sdk/recall-cli.js", args: argv(RECALL_QUERY, "--limit", /\d{1,2}/, "--json") };
 
 // What the Files tab and the note editor never touch: the runtime's caches and vendored scripts, dependency folders, and
 // every dot-path. The Files tree and the vault index never show a dot-path; refusing them also keeps a compromised page
@@ -263,14 +272,16 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "brain",
     label: "Brain",
-    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore), data/brainModel.ts (memoryArgs)",
+    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore; Bootstrap: pin, unpin, mark complete, the recall preview; Health: each hygiene fix with its dry run, not duplicates, Rescan, archive), data/brainModel.ts (memoryArgs, recallArgs)",
     // The verbs write through the runtime (cli/memory.js → lib/memory-ops.js), never the page: a memory's own frontmatter
     // lines, MEMORY.md, the trail and brain/_index/**, and BRAIN.md through build-brain-md.js. Nothing is deleted but a
     // draft that is approved or rejected (brain-hub D6).
     writes: [],
     spawns: [
       ...MEMORY_VERBS,
-      // After a verb the hub's cache follows the files at once (else the next scan rebuilds it): brain/_index/brain-hub.json.
+      RECALL_PREVIEW,
+      // After a verb the hub's caches follow the files at once (else the next scan rebuilds them): brain/_index/brain-hub.json
+      // and brain-map.json (PR 3). Health's Rescan runs the same.
       { script: "brain-hub.js", args: /^$/ },
     ],
     // Live check (brain-hub D14), 2026-10-11, on a copy of a real vault's brain with memories from both hosts' sessions:

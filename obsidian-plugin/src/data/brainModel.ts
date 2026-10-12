@@ -17,6 +17,13 @@ import { sha256Hex } from "./sha256";
 
 export const BRAIN_HUB_PATH = "brain/_index/brain-hub.json";
 export const BRAIN_SOURCES_PATH = "brain/_index/brain-sources.json";
+/** The Map's communities and neighbours, written beside brain-hub.json from graphify's graph (D19; PR 3). */
+export const BRAIN_MAP_PATH = "brain/_index/brain-map.json";
+/** Working memory and last session's recall, which Bootstrap measures against their budgets (D17). */
+export const SESSION_MD_PATH = "brain/_index/SESSION.md";
+export const RECALL_WAKE_PATH = "brain/_index/recall-wake.md";
+/** The vault's settings (brain/config.json): telemetry, graph and memory.* decide what Map and Health can say. */
+export const BRAIN_CONFIG_PATH = "brain/config.json";
 export const MEMORY_INDEX_PATH = "MEMORY.md";
 export const MEMORY_ROOT = "brain/memory";
 export const DRAFTS_DIR = "brain/memory/feedback/_drafts";
@@ -38,6 +45,7 @@ export type SetStatus = (typeof SET_STATUSES)[number];
 /** Whether a vault event on `path` can change the hub (the memory store, its index, the trail or the caches). */
 export function touchesBrain(path: string): boolean {
   return path === MEMORY_INDEX_PATH || path === BRAIN_HUB_PATH || path === BRAIN_SOURCES_PATH || path === TRAIL_PATH_REL ||
+    path === BRAIN_MAP_PATH || path === SESSION_MD_PATH || path === RECALL_WAKE_PATH || path === BRAIN_CONFIG_PATH ||
     path === MEMORY_ROOT || path.startsWith(`${MEMORY_ROOT}/`) || path.startsWith(`${PATTERNS_DIR}/`) || path.startsWith(`${REFLECTIONS_DIR}/`);
 }
 const TRAIL_PATH_REL = "brain/_index/promote-log.jsonl";
@@ -58,8 +66,16 @@ export const LIBRARY_KINDS = ["memories", "drafts", "patterns", "reflections"] a
 export type LibraryKind = (typeof LIBRARY_KINDS)[number];
 export const LIBRARY_KIND_LABEL: Record<LibraryKind, string> = { memories: "Memories", drafts: "Drafts", patterns: "Patterns", reflections: "Reflections" };
 
-/** Where a link into the hub lands (D15): a mode, Review's queue, a memory to show in Library. Select only. */
-export interface BrainTarget { mode?: BrainMode | null; queue?: ReviewQueue | null; memory?: string | null }
+/**
+ * Where a link into the hub lands (D15): a mode, Review's queue, a memory to show in Library. Select only. PR 3: `use`
+ * opens Library with that use facet (Health's "Review the N" never-used memories), and `anchor` scrolls a mode to one
+ * of its cards (BRAIN_ANCHORS: MEMORY.md's "Fix in Health →" lands on Hygiene).
+ */
+export interface BrainTarget { mode?: BrainMode | null; queue?: ReviewQueue | null; memory?: string | null; use?: UseFacet | null; anchor?: BrainAnchor | null }
+/** The cards a link can land on: Bootstrap's looks-shipped list and recall preview, Health's four cards. */
+export const BRAIN_ANCHORS = ["shipped", "recall", "duplicates", "hygiene", "deadweight"] as const;
+export type BrainAnchor = (typeof BRAIN_ANCHORS)[number];
+export function isBrainAnchor(x: unknown): x is BrainAnchor { return typeof x === "string" && (BRAIN_ANCHORS as readonly string[]).includes(x); }
 
 // ── frontmatter (memory-ops.js splitFm, getKey, getStatus, titleOf) ──
 
@@ -308,6 +324,9 @@ export interface BrainSources {
   tokens: number;
   sections: Record<BrainSection, { paths: string[]; tokens: number }>;
   omitted: string[];
+  /** The Quick links block's and the hand-editable Last Session block's tokens (Bootstrap's other two sections). */
+  links: number;
+  lastSession: number;
 }
 
 /** brain-sources.json (D10), or null. */
@@ -322,7 +341,126 @@ export function parseBrainSources(raw: string | null): BrainSources | null {
     builtAt: strOrNull(doc.builtAt), budget: num(doc.budget), tokens: num(doc.tokens),
     sections: { who: sec("who"), rules: sec("rules"), active: sec("active") },
     omitted: arr<unknown>(rec(s.active).omitted).filter((p): p is string => typeof p === "string"),
+    links: num(rec(s.links).tokens), lastSession: num(rec(s.lastSession).tokens),
   };
+}
+
+// ── the Map (D19; PR 3): brain/_index/brain-map.json, written by brain-hub.js from graphify's graph ──
+
+/** One community of memories: graphify's, with the index hubs taken out, named by its most-linked memory. */
+export interface MapCommunity {
+  /** "c<graphify community id>": stable while the graph's communities are. */
+  id: string;
+  /** The title of `lead`, its most-linked memory. */
+  name: string;
+  lead: string;
+  /** Its live memories, most linked first. */
+  paths: string[];
+  /** Links between its own memories. */
+  edges: number;
+}
+export interface MapLink { a: string; b: string; n: number }
+export interface MapNeighbour { path: string; n: number }
+export interface MapMemory {
+  /** The community it belongs to, or null (a group under mapMin, or no link once the hubs are out). */
+  community: string | null;
+  /** How many other memories it links to. */
+  degree: number;
+  /** At most 12, the strongest first. */
+  neighbours: MapNeighbour[];
+}
+export type MapState = "ok" | "off" | "missing";
+export interface BrainMap {
+  schema: 1;
+  builtAt: string | null;
+  /** "off": graph.enabled is false (`aos graph on`); "missing": no graph.json yet (the next scan builds one). */
+  state: MapState;
+  /** The whole graph as graphify built it (the footer's "N communities · N nodes"), null unless state is "ok". */
+  graph: { builtAt: string | null; mode: string | null; nodes: number; edges: number; communities: number } | null;
+  mapMin: number;
+  /** The index hubs left out, as vault paths (MEMORY.md, brain/_index/MOC-*.md, brain/_index/BRAIN.md) found in the graph. */
+  hubs: string[];
+  /** Communities holding at least mapMin live memories, largest first. */
+  communities: MapCommunity[];
+  /** Links between those communities: a memory of `a` linked to one of `b`, counted. */
+  links: MapLink[];
+  /** Every live memory the graph holds, by path. */
+  memories: Record<string, MapMemory>;
+  /** What fell under mapMin: that many communities holding that many memories. */
+  smaller: { communities: number; memories: number };
+  /** Live memories the graph holds that link to no other memory once the hubs are out. */
+  unlinked: number;
+}
+
+const MAP_STATES: readonly MapState[] = ["ok", "off", "missing"];
+const strs = (v: unknown): string[] => arr<unknown>(v).filter((p): p is string => typeof p === "string");
+
+/** brain-map.json, or null when missing, unparseable or not schema 1. Every field is coerced: a bad row is dropped. */
+export function parseBrainMap(raw: string | null): BrainMap | null {
+  if (!raw) return null;
+  let doc: Record<string, unknown>;
+  try { doc = rec(JSON.parse(raw)); } catch { return null; }
+  if (doc.schema !== 1) return null;
+  const state = MAP_STATES.includes(doc.state as MapState) ? (doc.state as MapState) : "missing";
+  const g = doc.graph && typeof doc.graph === "object" ? rec(doc.graph) : null;
+  const memories: Record<string, MapMemory> = {};
+  for (const [p, v] of Object.entries(rec(doc.memories))) {
+    if (!MEMORY_PATH_RE.test(p)) continue;
+    const m = rec(v);
+    memories[p] = {
+      community: strOrNull(m.community), degree: num(m.degree),
+      neighbours: arr<Record<string, unknown>>(m.neighbours).map(rec).filter((n) => typeof n.path === "string" && MEMORY_PATH_RE.test(n.path as string)).slice(0, 12).map((n) => ({ path: n.path as string, n: num(n.n) })),
+    };
+  }
+  const sm = rec(doc.smaller);
+  return {
+    schema: 1, builtAt: strOrNull(doc.builtAt), state,
+    graph: state === "ok" && g ? { builtAt: strOrNull(g.builtAt), mode: strOrNull(g.mode), nodes: num(g.nodes), edges: num(g.edges), communities: num(g.communities) } : null,
+    mapMin: num(doc.mapMin), hubs: strs(doc.hubs),
+    communities: arr<Record<string, unknown>>(doc.communities).map(rec).filter((c) => typeof c.id === "string").map((c) => ({
+      id: c.id as string, name: strOrNull(c.name) ?? String(c.id), lead: strOrNull(c.lead) ?? "",
+      paths: strs(c.paths).filter((p) => MEMORY_PATH_RE.test(p)), edges: num(c.edges),
+    })),
+    links: arr<Record<string, unknown>>(doc.links).map(rec).filter((l) => typeof l.a === "string" && typeof l.b === "string").map((l) => ({ a: l.a as string, b: l.b as string, n: num(l.n) })),
+    memories, smaller: { communities: num(sm.communities), memories: num(sm.memories) }, unlinked: num(doc.unlinked),
+  };
+}
+
+// ── Bootstrap's budgets (D17) ──
+
+/** The vault's token estimate (brain/scripts/lib/text-budget.js estimateTokens): characters / 4, rounded up. */
+export function estimateTokens(s: string | null | undefined): number { return Math.ceil(String(s ?? "").length / 4); }
+/** SESSION.md's budget: auto-wrap fits its sections into this many tokens (auto-wrap.js fitToBudget). */
+export const SESSION_BUDGET = 400;
+/** recall-wake.md holds at most this many snippets (sdk/lib/recall.js WAKE_MAX_SNIPPETS). */
+export const WAKE_MAX = 3;
+
+// ── the recall preview (D18; PR 3): sdk/recall-cli.js on the typed text, the path agents' recall takes ──
+
+/** The runtime script, relative to the vault (the brain surface admits it with exactly recallArgs' argv). */
+export const RECALL_CLI = "brain/scripts/sdk/recall-cli.js";
+export const RECALL_LIMIT = 8;
+/** One hit as recall-cli.js --json prints it (sdk/lib/recall.js queryRecallHybrid): `flag` is the age ("3d", "stale: 40d"). */
+export interface RecallHit { path: string; score: number; flag: string; snippet: string }
+
+/** The preview's query as one argument: control characters out, spaces folded, leading dashes dropped (never a flag). */
+export function recallQuery(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim().replace(/^-+\s*/, "").slice(0, 200);
+}
+
+/** The argv after recall-cli.js: one query, `--limit N`, `--json`; throws on an empty query. Never `--warm`. */
+export function recallArgs(text: string, limit = RECALL_LIMIT): string[] {
+  const q = recallQuery(text);
+  if (!q) throw new Error("type something to preview");
+  const n = Math.max(1, Math.min(99, Math.floor(limit)));
+  return [q, "--limit", String(n), "--json"];
+}
+
+/** recall-cli.js's --json body: an array of hits, each coerced; a row without a path is dropped. */
+export function parseRecallHits(body: unknown): RecallHit[] {
+  return arr<Record<string, unknown>>(body).map(rec).filter((h) => typeof h.path === "string" && h.path).map((h) => ({
+    path: h.path as string, score: num(h.score), flag: strOrNull(h.flag) ?? "", snippet: typeof h.snippet === "string" ? h.snippet : "",
+  }));
 }
 
 /** BRAIN.md against its budget, as a whole percent (Bootstrap's tab badge, the Pulse tile); null with no sources yet. */
@@ -595,13 +733,26 @@ export function headerStats(memories: readonly BrainMemory[], patterns: number, 
 export interface ModeBadge { text: string; tone: "warn" | "plain" }
 
 /** Each mode's count in the tab strip: Review what waits, Library the live store, Bootstrap BRAIN.md's fill. */
-export function modeBadges(o: { toReview: number; live: number; brainPct: number | null }): Partial<Record<BrainMode, ModeBadge>> {
+export function modeBadges(o: { toReview: number; live: number; brainPct: number | null; health?: number }): Partial<Record<BrainMode, ModeBadge>> {
   const out: Partial<Record<BrainMode, ModeBadge>> = {};
   if (o.toReview > 0) out.review = { text: String(o.toReview), tone: "warn" };
   out.library = { text: String(o.live), tone: "plain" };
   if (o.brainPct !== null) out.bootstrap = { text: `${o.brainPct}%`, tone: o.brainPct >= 100 ? "warn" : "plain" };
+  // Health: what it can act on now (duplicate pairs plus hygiene findings with a fix); nothing when all is well (PR 3).
+  if (o.health) out.health = { text: String(o.health), tone: "warn" };
   return out;
 }
+
+/** Health's badge: the live duplicate pairs plus every hygiene finding a fix acts on (healthCount; PR 3). */
+export function healthCount(pairs: number, hub: BrainHub | null): number {
+  const hy = hub?.hygiene ?? {};
+  const n = (k: string): number => (Array.isArray(hy[k]) ? (hy[k] as unknown[]).length : 0);
+  const sources = hy.sources && typeof hy.sources === "object" ? rec(hy.sources) : {};
+  const legacy = LEGACY_SOURCES.reduce((s, k) => s + num(sources[k]), 0);
+  return pairs + legacy + n("oldType") + n("noDescription") + n("unindexed") + n("misfiled") + n("brokenIndex") + n("leftoverDrafts");
+}
+/** The source labels `fix sources` rewrites to manual-wrap (lib/memory-hygiene.js LEGACY_SOURCES). */
+export const LEGACY_SOURCES: readonly string[] = ["session", "in-session", "wrap"];
 
 // ── Library (D1, D2) ──
 
@@ -715,7 +866,42 @@ export type MemoryVerb =
   | { verb: "set"; path: string; fields: { pin?: boolean; status?: SetStatus; description?: string }; expect: string }
   | { verb: "supersede"; path: string; by: string }
   | { verb: "draft"; action: "approve" | "reject"; slug: string }
-  | { verb: "notdup"; a: string; b: string };
+  | { verb: "notdup"; a: string; b: string }
+  | { verb: "fix"; kind: FixKind; dryRun: boolean };
+
+/**
+ * `aos memory fix <kind>` (D20; PR 3), each acting on exactly what brain-hub.json's `hygiene` finds (lib/memory-hygiene.js):
+ *   sources       the old source labels (session, in-session, wrap) → manual-wrap, the label /wrap writes today
+ *   types         the old `type:` shape (a host's auto-memory: type: user, or none) → type: memory and the tags it needs
+ *   descriptions  a memory with no description of its own gets its MEMORY.md line's (as archive keeps one)
+ *   index         a live memory missing from MEMORY.md gets its line; a line under another type's heading moves under its
+ *                 own; a line to a missing file goes
+ *   drafts        a feedback draft whose memory was approved and is live is removed (the one delete spec §6 allows)
+ * `--dry-run` writes nothing and prints the same changes; a real run writes them, logs a `fixed` trail row per file with
+ * the field's before and after, and rebuilds BRAIN.md when MEMORY.md or a status changed.
+ */
+export const FIX_KINDS = ["sources", "types", "descriptions", "index", "drafts"] as const;
+export type FixKind = (typeof FIX_KINDS)[number];
+export function isFixKind(x: unknown): x is FixKind { return typeof x === "string" && (FIX_KINDS as readonly string[]).includes(x); }
+/** One change: a memory's frontmatter field, a MEMORY.md line, or a draft file. `before`/`after` are null when absent. */
+export interface FixChange {
+  /** brain/memory/<type>/<slug>.md, MEMORY.md (a broken line), or brain/memory/feedback/_drafts/<slug>.md. */
+  path: string;
+  /** source, type, tags, description: a frontmatter line · index-add, index-move, index-remove: MEMORY.md · draft-remove. */
+  action: "source" | "type" | "tags" | "description" | "index-add" | "index-move" | "index-remove" | "draft-remove";
+  before: string | null;
+  after: string | null;
+}
+export interface FixResult {
+  kind: FixKind;
+  dryRun: boolean;
+  /** Every change, in the order it was (or would be) made. */
+  changes: FixChange[];
+  /** How many files changed (a memory with two field changes counts once; MEMORY.md counts once). */
+  files: number;
+  /** build-brain-md's run after a real run that touched MEMORY.md or a status; null when it did not run. */
+  brainMd: { ok: boolean; error?: string } | null;
+}
 
 /** The argv after `cli/aos.js` for a verb, `--json` last; throws on a path or slug the runtime would refuse anyway. */
 export function memoryArgs(v: MemoryVerb): string[] {
@@ -734,7 +920,22 @@ export function memoryArgs(v: MemoryVerb): string[] {
       return ["memory", "draft", v.action, v.slug, "--json"];
     case "notdup":
       return ["memory", "notdup", path(v.a), path(v.b), "--json"];
+    case "fix":
+      if (!isFixKind(v.kind)) throw new Error(`not a fix: ${String(v.kind)}`);
+      return ["memory", "fix", v.kind, ...(v.dryRun ? ["--dry-run"] : []), "--json"];
   }
+}
+
+/** A fix result's body, coerced (the page shows a dry run's changes before asking, then the real run's count). */
+export function parseFixResult(body: unknown): FixResult | null {
+  const r = rec(body);
+  if (!isFixKind(r.kind)) return null;
+  const actions: readonly FixChange["action"][] = ["source", "type", "tags", "description", "index-add", "index-move", "index-remove", "draft-remove"];
+  const changes = arr<Record<string, unknown>>(r.changes).map(rec)
+    .filter((c) => typeof c.path === "string" && actions.includes(c.action as FixChange["action"]))
+    .map((c) => ({ path: c.path as string, action: c.action as FixChange["action"], before: typeof c.before === "string" ? c.before : null, after: typeof c.after === "string" ? c.after : null }));
+  const b = r.brainMd && typeof r.brainMd === "object" ? rec(r.brainMd) : null;
+  return { kind: r.kind, dryRun: r.dryRun === true, changes, files: num(r.files), brainMd: b ? { ok: b.ok === true, ...(typeof b.error === "string" ? { error: b.error } : {}) } : null };
 }
 
 /** `paths` in calls of at most MAX_PATHS_PER_CALL. */

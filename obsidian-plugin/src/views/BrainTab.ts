@@ -1,14 +1,15 @@
 // The Brain tab (spec 2026-10-11-brain-hub; rail id "memory", D16): one hub for what agents wrote. Five modes as tabs
-// across the top (D2): Review (session batches, D3–D7), Library (find and read, three panes), and Bootstrap, Map and
-// Health (stand-ins until PR 3; Map keeps the old force graph as "Every node", D19). The tab owns the data and the
+// across the top (D2): Review (session batches, D3–D7), Library (find and read, three panes), Bootstrap (what every
+// session starts with, D17, D18), Map (graphify's communities, D19) and Health (D20). The tab owns the data and the
 // header; each mode (views/brain/*) owns its panes. Actions are `aos memory` verbs through plugin.aosJson and the brain
 // surface (D13, D14): the page writes no memory file itself, and no memory is deleted (D6).
 import { Notice, TAbstractFile } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import type { RevealTarget, WorkbenchView } from "./WorkbenchView";
 import {
-  MEMORY_PATH_RE, brainMdPercent, brainVerbResult, chunks, headerStats, isBrainMode, isReviewQueue, memoryArgs,
-  modeBadges, touchesBrain, type BrainMode, type BrainTarget, type BrainVerbResult, type MemoryVerb,
+  MEMORY_PATH_RE, RECALL_CLI, brainMdPercent, brainVerbResult, chunks, headerStats, healthCount, isBrainMode,
+  isReviewQueue, memoryArgs, modeBadges, parseRecallHits, recallArgs, recallQuery, touchesBrain, type BrainMode, type BrainTarget,
+  type BrainVerbResult, type MemoryVerb,
 } from "../data/brainModel";
 import { CaptureModal } from "../ui/CaptureModal";
 import { ConfirmModal } from "../ui/ConfirmModal";
@@ -18,8 +19,10 @@ import { BrainStore } from "./brain/load";
 import { ReviewMode } from "./brain/ReviewMode";
 import { LibraryMode } from "./brain/LibraryMode";
 import { MapMode } from "./brain/MapMode";
-import { StandInMode } from "./brain/StandIn";
-import type { BrainCtx, BrainData, BrainModeView } from "./brain/types";
+import { BootstrapMode } from "./brain/BootstrapMode";
+import { HealthMode } from "./brain/HealthMode";
+import { brainSettings } from "./brain/load";
+import type { BrainCtx, BrainData, BrainModeView, RecallPreview } from "./brain/types";
 import * as path from "path";
 
 export class BrainTab {
@@ -35,6 +38,8 @@ export class BrainTab {
   private pending: BrainTarget | null = null;
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
+  /** The next scheduled load reads every file again (after a fix, which can touch any of them). */
+  private scheduleFull = false;
   private hubRunning = false;
   private hubAgain = false;
   /** The unchecked memories the last rebuild on showing was for (checkHub): one rebuild per set of them. */
@@ -45,12 +50,15 @@ export class BrainTab {
   private ctx: BrainCtx;
 
   constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {
-    this.store = new BrainStore(plugin.app);
+    this.store = new BrainStore(plugin.app, () => brainSettings(plugin.systemConfig()));
     this.ctx = {
       plugin, view,
       data: () => this.data!,
       query: () => this.header?.query() ?? "",
       run: (v, label) => this.run(v, label),
+      preview: (v, label) => this.preview(v, label),
+      recall: (text) => this.recall(text),
+      rescan: () => this.rebuildHub(),
       runAll: (verb, paths, label) => this.runAll(verb, paths, label),
       refresh: () => this.schedule(0),
       show: (t) => this.show(t),
@@ -105,11 +113,14 @@ export class BrainTab {
   }
 
   /** A vault event or an action: re-read what changed, after `ms`. */
-  private schedule(ms = 250): void {
+  private schedule(ms = 250, full = false): void {
     if (this.refreshDebounce !== null) window.clearTimeout(this.refreshDebounce);
+    this.scheduleFull ||= full;
     this.refreshDebounce = window.setTimeout(() => {
       this.refreshDebounce = null;
-      void this.store.load().then((d) => { this.data = d; this.render(); this.checkHub(); });
+      const all = this.scheduleFull;
+      this.scheduleFull = false;
+      void this.store.load(all).then((d) => { this.data = d; this.render(); this.checkHub(); });
     }, ms);
   }
 
@@ -126,7 +137,7 @@ export class BrainTab {
     const m = t.mode ?? this.mode;
     if (m !== "review") this.leaveReview();
     this.mode = m;
-    this.pending = t.queue || t.memory ? t : null;
+    this.pending = t.queue || t.memory || t.use || t.anchor ? t : null;
     this.render();
   }
 
@@ -165,7 +176,8 @@ export class BrainTab {
     return (this.modes[m] ??= m === "review" ? new ReviewMode(this.ctx)
       : m === "library" ? new LibraryMode(this.ctx)
       : m === "map" ? new MapMode(this.ctx)
-      : new StandInMode(this.ctx, m));
+      : m === "bootstrap" ? new BootstrapMode(this.ctx)
+      : new HealthMode(this.ctx));
   }
 
   private render(): void {
@@ -175,7 +187,7 @@ export class BrainTab {
     this.header.update({
       stats: headerStats(d.memories, d.patterns.length, d.reflections.length, d.written, d.now),
       mode: this.mode,
-      badges: modeBadges({ toReview, live: d.memories.filter((x) => x.live).length, brainPct: brainMdPercent(d.sources) }),
+      badges: modeBadges({ toReview, live: d.memories.filter((x) => x.live).length, brainPct: brainMdPercent(d.sources), health: healthCount(d.pairs.length, d.hub) }),
     });
     this.body.setAttr("data-mode", this.mode);
     this.body.setAttr("aria-labelledby", brainTabId(this.mode));
@@ -208,8 +220,38 @@ export class BrainTab {
     if (!r.ok) new Notice(`${label}: ${r.reason}`);
     for (const p of touched(v)) this.store.touch(p);
     if (r.ok) this.rebuildHub();
-    this.schedule(0);
+    // A fix can touch any memory, MEMORY.md and a draft: read everything again rather than guess which.
+    this.schedule(0, v.verb === "fix");
     return r;
+  }
+
+  /** A verb that writes nothing (`fix … --dry-run`): its answer, a Notice when it fails, no reload, no rebuild. */
+  private async preview<T>(v: MemoryVerb, label: string): Promise<BrainVerbResult<T>> {
+    let args: string[];
+    try { args = memoryArgs(v); } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      new Notice(`${label}: ${reason}`);
+      return { ok: false, reason, refused: false, outdated: false, stale: false };
+    }
+    if (!args.includes("--dry-run")) throw new Error("preview runs only a --dry-run");
+    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args));
+    if (!r.ok) new Notice(`${label}: ${r.reason}`);
+    return r;
+  }
+
+  /** The recall preview (D18): sdk/recall-cli.js on the typed text, through the brain surface; no usage is logged (D9). */
+  private async recall(text: string): Promise<RecallPreview> {
+    let args: string[];
+    try { args = recallArgs(text); } catch (e) { return { ok: false, reason: e instanceof Error ? e.message : String(e) }; }
+    const r = await this.plugin.scriptJson<unknown>(RECALL_CLI, args);
+    if (r.error && /\brefused\b/.test(r.error)) return { ok: false, reason: "Brain's write surface is off in this app: run aos recall in a terminal instead" };
+    if (r.timedOut) return { ok: false, reason: "recall did not answer in time" };
+    if (r.error) return { ok: false, reason: `could not run recall: ${r.error}` };
+    if (r.code !== 0 || !Array.isArray(r.json)) {
+      const line = String(r.stderr ?? "").split("\n").map((l) => l.trim()).find(Boolean);
+      return { ok: false, reason: (line ?? `recall exited ${r.code}`).replace(/^recall: /, "") };
+    }
+    return { ok: true, query: recallQuery(text), hits: parseRecallHits(r.json) };
   }
 
   private async runAll(verb: "keep" | "archive" | "restore", paths: readonly string[], label: string): Promise<{ done: number; failed: string | null }> {
@@ -271,7 +313,7 @@ function touched(v: MemoryVerb): string[] {
     case "set": return [...always, v.path];
     case "supersede": return [...always, v.path, v.by];
     case "draft": return [...always, `brain/memory/feedback/_drafts/${v.slug}.md`, `brain/memory/feedback/${v.slug}.md`];
-    case "notdup": return [];
+    case "notdup": case "fix": return [];
   }
 }
 

@@ -157,9 +157,21 @@ const COMMANDS: Record<string, { ok: Array<[string, string[]]>; no: Array<[strin
     ok: [[NODE, [`${S}/cli/aos.js`, "memory", "keep", "brain/memory/reference/release-checklist.md", "--json"]],
       [NODE, [`${S}/cli/aos.js`, "memory", "archive", "brain/memory/feedback/a.md", "brain/memory/projects/v1.5.0-shipped.md", "--json"]],
       [NODE, [`${S}/cli/aos.js`, "memory", "set", "brain/memory/feedback/a.md", "--set", '{"pin":true}', "--expect", "a".repeat(64), "--json"]],
-      [NODE, [`${S}/cli/aos.js`, "memory", "draft", "reject", "ack-failures", "--json"]], [NODE, [`${S}/brain-hub.js`]]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "draft", "reject", "ack-failures", "--json"]], [NODE, [`${S}/brain-hub.js`]],
+      // PR 3: each hygiene fix, dry run and real; the recall preview (brain-hub D18, D20).
+      [NODE, [`${S}/cli/aos.js`, "memory", "fix", "sources", "--dry-run", "--json"]], [NODE, [`${S}/cli/aos.js`, "memory", "fix", "index", "--json"]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "fix", "drafts", "--dry-run", "--json"]],
+      [NODE, [`${S}/sdk/recall-cli.js`, "release procedure", "--limit", "8", "--json"]], [NODE, [`${S}/sdk/recall-cli.js`, "what - is due?", "--limit", "12", "--json"]]],
     no: [[NODE, [`${S}/cli/aos.js`, "memory", "keep", "brain/memory/feedback/../../../TODO.md", "--json"]], [NODE, [`${S}/cli/aos.js`, "memory", "list", "--json"]],
-      [NODE, [`${S}/cli/aos.js`, "memory", "set", "brain/memory/feedback/a.md", "--set", '{"pin":true}', "--json"]], [NODE, [`${S}/brain-hub.js`, "--json"]]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "set", "brain/memory/feedback/a.md", "--set", '{"pin":true}', "--json"]], [NODE, [`${S}/brain-hub.js`, "--json"]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "fix", "everything", "--json"]], [NODE, [`${S}/cli/aos.js`, "memory", "fix", "sources"]],
+      [NODE, [`${S}/cli/aos.js`, "memory", "fix", "sources", "--json", "--dry-run"]], [NODE, [`${S}/cli/aos.js`, "memory", "fix", "--dry-run", "--json"]],
+      [NODE, [`${S}/sdk/recall-cli.js`, "--warm"]], [NODE, [`${S}/sdk/recall-cli.js`, "--warm", "--limit", "8", "--json"]],
+      [NODE, [`${S}/sdk/recall-cli.js`, "-x", "--limit", "8", "--json"]], [NODE, [`${S}/sdk/recall-cli.js`, " lead", "--limit", "8", "--json"]],
+      [NODE, [`${S}/sdk/recall-cli.js`, "two" + String.fromCharCode(10) + "lines", "--limit", "8", "--json"]],
+      [NODE, [`${S}/sdk/recall-cli.js`, "sep" + String.fromCharCode(0x2028) + "x", "--limit", "8", "--json"]],
+      [NODE, [`${S}/sdk/recall-cli.js`, "x".repeat(201), "--limit", "8", "--json"]], [NODE, [`${S}/sdk/recall-cli.js`, "q", "--limit", "100", "--json"]],
+      [NODE, [`${S}/sdk/recall-cli.js`, "q", "--json"]], [NODE, [`${S}/sdk/recall-cli.js`, "q", "--limit", "8"]], [NODE, [`${S}/sdk/recall-cli.js`, "a", "b", "--limit", "8", "--json"]]],
   },
   spaces: {
     ok: [[NODE, [`${S}/map-workspace.js`, "harbor"]], [NODE, [`${S}/map-workspace.js`, "harbor", "--file", "src/tide.ts"]], [NODE, [`${S}/regen-workspace-insight.js`, "harbor"]],
@@ -254,6 +266,25 @@ test("map and regen take a workspace name (WS) and a file inside it (REL), never
   assert.equal(pulse.canSpawn(NODE, map("harbor", "--file", "src/tide.ts")), false, "Pulse maps whole workspaces only");
 });
 
+test("Brain's recall preview: one query that is never a flag, --limit with one or two digits, --json; only Brain (brain-hub D18)", () => {
+  const brain = new WritePolicy(VAULT, ["brain"]);
+  const others = new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "brain"));
+  const all = new WritePolicy(VAULT, [...SURFACE_IDS]);
+  const rc = (...a: string[]): string[] => [`${S}/sdk/recall-cli.js`, ...a];
+  for (const a of [rc("release procedure", "--limit", "8", "--json"), rc("what - is due?", "--limit", "1", "--json"), rc("x".repeat(200), "--limit", "99", "--json")]) {
+    assert.equal(brain.canSpawn(NODE, a), true, a.join(" "));
+    assert.equal(others.canSpawn(NODE, a), false, `only Brain: ${a.join(" ")}`);
+  }
+  const no = [
+    rc("--warm"), rc("--warm", "--limit", "8", "--json"), rc("-x", "--limit", "8", "--json"), rc(" lead", "--limit", "8", "--json"),
+    rc("two" + String.fromCharCode(10) + "lines", "--limit", "8", "--json"), rc("sep" + String.fromCharCode(0x2028) + "x", "--limit", "8", "--json"),
+    rc("nul" + String.fromCharCode(0) + "x", "--limit", "8", "--json"), rc("x".repeat(201), "--limit", "8", "--json"),
+    rc("q", "--limit", "100", "--json"), rc("q", "--limit", "-1", "--json"), rc("q", "--json"), rc("q", "--limit", "8"),
+    rc("a", "b", "--limit", "8", "--json"), rc("q", "--json", "--limit", "8"),
+  ];
+  for (const a of no) assert.equal(all.canSpawn(NODE, a), false, `never: ${JSON.stringify(a.slice(1))}`);
+});
+
 test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per call, set compare-and-set, --json last (brain-hub D13, D14)", () => {
   const brain = new WritePolicy(VAULT, ["brain"]);
   const others = new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "brain"));
@@ -267,6 +298,8 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     mem("set", A, "--set", '{"status":"complete"}', "--expect", "0123456789abcdef", "--json"),
     mem("set", A, "--set", '{"pin":false}', "--expect", "a".repeat(64), "--dry-run", "--json"),
     mem("supersede", A, "--by", B, "--json"), mem("draft", "approve", "ack-failures.v2", "--json"), mem("notdup", A, B, "--json"),
+    // PR 3: Health's fixes, each kind with and without its dry run (D20).
+    ...["sources", "types", "descriptions", "index", "drafts"].flatMap((k) => [mem("fix", k, "--dry-run", "--json"), mem("fix", k, "--json")]),
   ];
   for (const a of ok) {
     assert.equal(brain.canSpawn(NODE, a), true, a.join(" "));
@@ -285,7 +318,10 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     mem("set", A, "--set", '{"pin":true}', "--expect", "XYZ", "--json"), mem("set", A, "--set", '{"pin":true}', "--dry-run", "--expect", "none", "--json"),
     mem("supersede", A, "--json"), mem("supersede", A, "--by", "brain/memory/x.md", "--json"),
     mem("draft", "delete", "x", "--json"), mem("draft", "approve", "../x", "--json"), mem("draft", "approve", "-x", "--json"),
-    mem("notdup", A, "--json"), mem("list", "--json"), mem("list"), mem("fix", "index", "--json"),
+    mem("notdup", A, "--json"), mem("list", "--json"), mem("list"),
+    // A fix: only the five kinds, --dry-run before --json, nothing after it, no second kind.
+    mem("fix", "index"), mem("fix", "all", "--json"), mem("fix", "--json"), mem("fix", "index", "--json", "--dry-run"),
+    mem("fix", "index", "sources", "--json"), mem("fix", "Index", "--json"), mem("fix", "index", "--dry-run"),
   ];
   for (const a of no) assert.equal(all.canSpawn(NODE, a), false, `never: ${a.join(" ")}`);
   assert.equal(all.canSpawn(NODE, [`${S}/brain-hub.js`, "--dry-run"]), false);
