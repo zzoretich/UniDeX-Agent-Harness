@@ -194,3 +194,18 @@ test('BRAIN.md leaves an archived pin out until it is restored', () => {
   assert.doesNotMatch(read(v, 'brain/_index/BRAIN.md'), /Graphify first/);
   assert.deepEqual(JSON.parse(read(v, 'brain/_index/brain-sources.json')).sections.rules.paths, []);
 });
+
+test('yamlValue quotes a description only when YAML would read it otherwise, and every reader gets the text back', () => {
+  const cases = [
+    ['plain words, no quotes', 'plain words, no quotes'], ['1.8.0 shipped', '1.8.0 shipped'],
+    ['Rule: ask first', '"Rule: ask first"'], ['ends with:', '"ends with:"'], ['a #tag inside', '"a #tag inside"'],
+    ['- a dash first', '"- a dash first"'], ['true', '"true"'], ['42', '"42"'], ['[bracketed]', '"[bracketed]"'],
+    ['said "hi": then left', "'said \"hi\": then left'"],
+  ];
+  for (const [text, want] of cases) {
+    assert.equal(ops.yamlValue(text), want, text);
+    assert.equal(ops.getKey([`description: ${ops.yamlValue(text)}\n`], 'description'), text, `reads back: ${text}`);
+  }
+  // Both quote kinds and something YAML needs quoted: plain, as before (no reader here unescapes).
+  assert.equal(ops.yamlValue(`it's "x": y`), `it's "x": y`);
+});

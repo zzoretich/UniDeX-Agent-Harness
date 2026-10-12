@@ -353,11 +353,30 @@ function draftExplicitCorrections(corrections, sessionId, reasons) {
 }
 
 /**
+ * brain/_index/brain-hub.json (and the map beside it) again after a wrap wrote memories, so the Brain tab's Review and
+ * counts show them before the next scan (brain-hub plan, PR 2 follow-ups). `build` is injectable for tests. Never wrap
+ * trouble: a failure leaves the old file for the next scan to replace, and nothing reaches stdout.
+ */
+function rebuildBrainHub(report, build) {
+  try {
+    const run = build || require('./brain-hub.js').buildBrainHub;
+    run({ vault: PATHS.VAULT, cfg: require('./lib/config.js').loadConfig() });
+    if (report) report.wrote.push('brain/_index/brain-hub.json');
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * The write half — shared by runAutoWrap (model extraction) and the MCP wrap_session
  * tool (Claude-in-session extraction): gate → writeMemory → appendTrail →
- * writeSessionSections → explicit corrections → drafts. Clears any "## Wrap Status".
+ * writeSessionSections → explicit corrections → drafts → the Brain hub's cache when a
+ * memory was written. Clears any "## Wrap Status". `deps.buildBrainHub` replaces the
+ * rebuild; `deps.deferHub` leaves it to the caller (runAutoWrap rebuilds once, after
+ * its corrections stage).
  */
-async function applyExtraction({ extraction, sessionId, corrections, report }) {
+async function applyExtraction({ extraction, sessionId, corrections, report, deps = {} }) {
   const reasons = [];
   let written = 0, skipped = 0;
   clearWrapStatus();
@@ -396,14 +415,15 @@ async function applyExtraction({ extraction, sessionId, corrections, report }) {
     report.counts.skipped = skipped;
     if (drafts) report.counts.drafted = drafts;
   }
+  if (written && !deps.deferHub) rebuildBrainHub(report, deps.buildBrainHub);
   return { written, skipped, reasons, drafts };
 }
 
 /** Core extraction engine — independently testable with an injected chatFn. */
-async function runAutoWrap({ transcriptText, sessionId, chatFn, report, corrections, structured }) {
+async function runAutoWrap({ transcriptText, sessionId, chatFn, report, corrections, structured, deps = {} }) {
   const tail = String(transcriptText ?? '').slice(-50_000); // last ~50KB is the session's tail
   const extraction = await extractSessionKnowledge(frameTranscript(tail), chatFn, { retryOnEmpty: !structured });
-  const out = await applyExtraction({ extraction, sessionId, report });
+  const out = await applyExtraction({ extraction, sessionId, report, deps: { ...deps, deferHub: true } });
 
   // correction detection (opt-in; fail-soft — must never break the wrap)
   if (corrections && corrections.enabled) {
@@ -415,6 +435,8 @@ async function runAutoWrap({ transcriptText, sessionId, chatFn, report, correcti
       writePendingDraftsSection(listDrafts().length);
     } catch (_) { /* detector trouble is not wrap trouble */ }
   }
+  // Once, after everything this wrap wrote (its drafts counted too).
+  if (out.written) rebuildBrainHub(report, deps.buildBrainHub);
   return out;
 }
 

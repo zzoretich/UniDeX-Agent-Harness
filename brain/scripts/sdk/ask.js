@@ -52,9 +52,11 @@ function readQuestion(argv) {
   });
 }
 
+/** The keyword fallback when recall has nothing. An archived or superseded note never reaches the answer, as it never
+ *  reaches recall (brain-hub D5, D7). */
 function buildContextLegacy(question, charBudget = 14000) {
   const words = String(question).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3);
-  const items = [...brain.listMemories(), ...brain.listPatterns()];
+  const items = [...brain.listMemories(), ...brain.listPatterns()].filter((m) => !recall.isRetired(m.frontmatter));
   const scored = items.map((m) => {
     const content = brain.readIfExists(m.absPath) || '';
     const lc = content.toLowerCase();
@@ -169,4 +171,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildAskPrompt, buildContext, ASK_FORMAT, askOptions };
+module.exports = { buildAskPrompt, buildContext, buildContextLegacy, ASK_FORMAT, askOptions };

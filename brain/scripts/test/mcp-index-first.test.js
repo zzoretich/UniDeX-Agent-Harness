@@ -106,3 +106,36 @@ test('feedback_rules leaves out a rule archived or superseded in the Brain tab (
     assert.deepEqual(out.rules.map((r) => r.path), ['brain/memory/feedback/live-rule.md']);
   } finally { await client.close(); }
 });
+
+test('memory_list, memory_search and feedback_rules leave out archived and superseded notes, inline or block-list tags (brain-hub D5, D7)', async () => {
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'mif-retired-list-'));
+  const write = (rel, text) => { fs.mkdirSync(path.dirname(path.join(vault, rel)), { recursive: true }); fs.writeFileSync(path.join(vault, rel), text); };
+  const blockList = (type, status, h1, body) => `---\ntype: memory\ntags:\n  - memory/${type}\n  - ${status}\ncreated: 2026-09-01\nupdated: 2026-10-01\n---\n\n# ${h1}\n\n${body}\n`;
+  write('brain/config.json', JSON.stringify({ provider: 'none' }));
+  write('brain/memory/projects/kestrel-live.md', memory('2026-10-05', 'Kestrel rollout', 'The kestrel rollout is under way.').replace('memory/feedback', 'memory/projects'));
+  write('brain/memory/projects/kestrel-archived.md', memory('2026-10-06', 'Kestrel pilot', 'The kestrel pilot ended.').replace('memory/feedback', 'memory/projects').replace('status/active', 'status/archived'));
+  write('brain/memory/reference/kestrel-old.md', blockList('reference', 'status/superseded', 'Kestrel notes', 'Old kestrel notes, folded into the rollout.'));
+  write('brain/memory/feedback/kestrel-rule.md', blockList('feedback', 'status/archived', 'A kestrel rule', 'Retired kestrel rule.'));
+  write('brain/memory/feedback/live-rule.md', memory('2026-10-02', 'A live rule', 'Still applies to the kestrel work.'));
+  write('brain/patterns/kestrel-pattern.md', blockList('pattern', 'status/archived', 'Kestrel pattern', 'A retired kestrel pattern.'));
+  write('brain/patterns/kestrel-live-pattern.md', '---\ntype: pattern\n---\n\n# Kestrel live pattern\n\nA kestrel pattern in use.\n');
+  write('MEMORY.md', '# Memory Index\n\n## Project\n- [Kestrel rollout](brain/memory/projects/kestrel-live.md) — under way\n');
+  const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER], env: { ...process.env, AOS_VAULT: vault, AOS_CONFIG: path.join(vault, 'none.json') } });
+  const client = new Client({ name: 'mcp-index-first-test', version: '0.0.0' });
+  await client.connect(transport);
+  const tool = async (name, args = {}) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
+  try {
+    const list = await tool('memory_list');
+    assert.equal(list.total, 2);
+    assert.deepEqual(Object.values(list.byType).flat().map((c) => c.path).sort(),
+      ['brain/memory/feedback/live-rule.md', 'brain/memory/projects/kestrel-live.md']);
+    assert.equal((await tool('memory_list', { type: 'reference' })).total, 0, 'a superseded block-list memory is not listed');
+    const search = await tool('memory_search', { query: 'kestrel' });
+    assert.deepEqual(search.hits.map((h) => h.path).sort(),
+      ['brain/memory/feedback/live-rule.md', 'brain/memory/projects/kestrel-live.md', 'brain/patterns/kestrel-live-pattern.md']);
+    const rules = await tool('feedback_rules');
+    assert.deepEqual(rules.rules.map((r) => r.path), ['brain/memory/feedback/live-rule.md']);
+    const read = (await client.callTool({ name: 'memory_read', arguments: { path: 'brain/memory/projects/kestrel-archived.md' } })).content[0].text;
+    assert.match(read, /The kestrel pilot ended\./, 'memory_read still reads a retired memory by its path');
+  } finally { await client.close(); }
+});

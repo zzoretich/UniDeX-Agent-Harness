@@ -68,7 +68,7 @@ const USAGE = `usage:
                 | set <workspace> --set <json> [--expect <hash>] [--dry-run] [--json]]
   aos memory [list [--json] | keep <path>… [--json] | set <path> --set <json> [--expect <hash>] [--dry-run] [--json]
              | archive|restore <path>… [--json] | supersede <path> --by <path> [--json] | draft approve|reject <slug> [--json]
-             | notdup <path> <path> [--json]]
+             | notdup <path> <path> [--json] | fix sources|types|descriptions|index|drafts [--dry-run] [--json]]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1449,7 +1449,7 @@ function parseArgs(argv) {
 async function main(argv) {
   const { cmd, sub, flags } = parseArgs(argv);
   // --dry-run is an init-only preview (contract §4.3); on a mutating command it must be a loud error, never a silent no-op.
-  if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set` and `aos memory set`');
+  if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set`, `aos memory set` and `aos memory fix`');
   switch (cmd) {
     case 'init': return init(flags);
     case 'upgrade': return upgrade(flags);

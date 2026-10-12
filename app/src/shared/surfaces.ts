@@ -272,7 +272,7 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "brain",
     label: "Brain",
-    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore; Bootstrap: pin, unpin, mark complete, the recall preview; Health: each hygiene fix with its dry run, not duplicates, Rescan, archive), data/brainModel.ts (memoryArgs, recallArgs)",
+    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore; Bootstrap: unpin, mark complete, the recall preview; Health: each hygiene fix with its dry run, not duplicates, Rescan, archive), data/brainModel.ts (memoryArgs, recallArgs)",
     // The verbs write through the runtime (cli/memory.js → lib/memory-ops.js), never the page: a memory's own frontmatter
     // lines, MEMORY.md, the trail and brain/_index/**, and BRAIN.md through build-brain-md.js. Nothing is deleted but a
     // draft that is approved or rejected (brain-hub D6).

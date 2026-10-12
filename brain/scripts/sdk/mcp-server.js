@@ -6,9 +6,9 @@
  * for manual use: `claude mcp add agenticos --scope user -- node <vault>/brain/scripts/sdk/mcp-server.js`
  *
  * Tools provided:
- *   - memory_search   — fuzzy search across brain/memory/** + brain/patterns/**
+ *   - memory_search   — fuzzy search across brain/memory/** + brain/patterns/** (archived and superseded left out)
  *   - memory_read     — read a specific memory or pattern file
- *   - memory_list     — an index of the memories (title, description, updated) grouped by type
+ *   - memory_list     — an index of the live memories (title, description, updated) grouped by type
  *   - pattern_list    — list all patterns with their front-matter tags
  *   - session_list    — recent daily-note dates
  *   - session_recall  — read a daily note by date (YYYY-MM-DD), capped at maxChars
@@ -71,7 +71,7 @@ server.registerTool(
   {
     title: 'Search brain memory',
     annotations: READ_ONLY,
-    description: 'Fuzzy search across brain/memory/** and brain/patterns/** for a keyword. Returns matching files with snippets.',
+    description: 'Fuzzy search across brain/memory/** and brain/patterns/** for a keyword (archived and superseded notes left out). Returns matching files with snippets.',
     inputSchema: { query: z.string().describe('Keyword or phrase to search for') },
   },
   async ({ query }) => {
@@ -102,7 +102,7 @@ server.registerTool(
   {
     title: 'List all memories grouped by type',
     annotations: READ_ONLY,
-    description: 'An index of the memories under brain/memory/** (feedback drafts left out), newest first, grouped by type: path, title, one-line description, updated. Read one with memory_read.',
+    description: 'An index of the memories under brain/memory/** (feedback drafts and archived or superseded memories left out), newest first, grouped by type: path, title, one-line description, updated. Read one with memory_read.',
     inputSchema: {
       type: z.enum(['user', 'feedback', 'projects', 'reference']).optional().describe('Only this memory type'),
       limit: z.number().int().positive().optional().describe('Only the N most recently updated memories'),

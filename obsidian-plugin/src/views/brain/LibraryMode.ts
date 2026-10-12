@@ -2,7 +2,8 @@
 // the results on the left (Memories · Drafts · Patterns · Reflections, the facets Type, Status, Source and Use, the
 // header's search), the reader in the middle (Reader.ts) and its context on the right (ContextPane.ts), which folds
 // under the reader below 1100 px; everything stacks below 760 px. A link into the hub (D15) lands on a memory and widens
-// only the facets that would hide it. Selecting a row redraws the reader and its context, never the list.
+// only the facets that would hide it, or names a use (Health's "Review the N", D20) and lands on those memories.
+// Selecting a row redraws the reader and its context, never the list.
 import { setIcon } from "obsidian";
 import {
   DEFAULT_LIBRARY_FILTER, GONE_STATUSES, LIBRARY_KINDS, LIBRARY_KIND_LABEL, MEMORY_TYPES, STATUS_FACETS, filterShowing, hasUsage,
@@ -25,6 +26,15 @@ const ONE: Record<LibraryKind, string> = { memories: "memory", drafts: "draft", 
 const NONE_YET: Record<LibraryKind, string> = {
   memories: "No memories yet.", drafts: "No feedback drafts wait for approval.", patterns: "No patterns yet.", reflections: "No reflections yet.",
 };
+
+/**
+ * The facets a link that names a use lands on (BrainTarget.use; brain-hub D20: Health's "Review the N" opens the
+ * never-used memories): the Memories kind, live, that use, the Type and Source facets cleared. The query is the
+ * header's and stays.
+ */
+export function filterForUse(f: LibraryFilter, use: UseFacet): LibraryFilter {
+  return { ...f, kind: "memories", status: "live", type: null, source: null, use };
+}
 
 export class LibraryMode implements BrainModeView {
   private root: HTMLElement | null = null;
@@ -103,12 +113,24 @@ export class LibraryMode implements BrainModeView {
     }
   }
 
-  /** A link into the hub (D15): show that memory, widening only the facets that hide it. */
+  /**
+   * A link into the hub (D15): show that memory, widening only the facets that hide it. A link that names a use (D20)
+   * sets the facets first (filterForUse) and lands on the first row; a row picked before stays selected only while it
+   * is among the new rows.
+   */
   reveal(t: BrainTarget): void {
-    if (!t.memory) return;
-    // The focus goes to its row only when it is nowhere (⏎ in Review removed the card it was on); never from a field.
+    if (!t.memory && !t.use) return;
+    // The focus goes to its row only when it is nowhere (⏎ in Review removed the card it was on, Health's button went
+    // with Health); never from a field.
     const a = this.root?.ownerDocument.activeElement;
-    this.showMemory(t.memory, !a || a === this.root?.ownerDocument.body);
+    const focus = !a || a === this.root?.ownerDocument.body;
+    if (t.use) {
+      this.filter = filterForUse({ ...this.filter, query: this.ctx.query() }, t.use);
+      this.sel.memories = { sel: this.sel.memories.sel, chosen: false };
+    }
+    if (t.memory) { this.showMemory(t.memory, focus); return; }
+    this.update();
+    this.land(focus);
   }
 
   unmount(): void {
@@ -202,13 +224,13 @@ export class LibraryMode implements BrainModeView {
     if (!list || !scroller) return;
     const d = this.ctx.data();
     const kind = this.filter.kind;
-    const rows = libraryRows(d, this.filter, d.hub);
+    const rows = libraryRows(d, this.filter, d.hub, d.settings.neverUsedDays);
     this.rows = rows;
     this.sel[kind] = librarySelection(rows, this.sel[kind].sel, this.sel[kind].chosen, (p) => this.exists(kind, p, d));
     const sel = this.sel[kind].sel;
     this.filtered = !!this.filter.query.trim() || (kind === "memories" && (this.filter.type !== null || this.filter.source !== null || this.filter.use !== "any" || this.filter.status !== "live"));
     const shown = rows.slice(0, LIBRARY_ROW_CAP);
-    const sig = JSON.stringify([kind, this.filtered, rows.length, shown.map((r) => [r.path, r.title, r.summary, r.type, r.status, r.pin, r.useLabel])]);
+    const sig = JSON.stringify([kind, this.filtered, rows.length, d.settings.neverUsedDays, shown.map((r) => [r.path, r.title, r.summary, r.type, r.status, r.pin, r.useLabel])]);
     if (sig === this.listSig) { this.paintRows(sel); return; }
     this.listSig = sig;
 
@@ -250,9 +272,10 @@ export class LibraryMode implements BrainModeView {
     }
     if (r.useLabel) {
       const unused = r.useLabel === "unused";
+      const days = this.ctx.data().settings.neverUsedDays;
       top.createSpan({
         cls: `aos-brain-mono aos-lib-use${unused ? " is-unused" : ""}`, text: r.useLabel,
-        attr: { title: unused ? "Not used in 30 days" : `${r.use} uses in 30 days` },
+        attr: { title: unused ? `Not used in ${days} days` : r.use ? `${r.use} ${r.use === 1 ? "use" : "uses"} in 30 days` : `Used in the last ${days} days` },
       });
     }
     if (r.summary) b.createSpan({ cls: "aos-lib-rowsum", text: r.summary });
@@ -342,7 +365,7 @@ export class LibraryMode implements BrainModeView {
   private showMemory(path: string, focus: boolean): void {
     const d = this.ctx.data();
     const m = d.byPath.get(path);
-    if (m) this.filter = filterShowing({ ...this.filter, query: this.ctx.query() }, m, d.hub);
+    if (m) this.filter = filterShowing({ ...this.filter, query: this.ctx.query() }, m, d.hub, d.settings.neverUsedDays);
     else this.filter.kind = "memories";
     this.sel.memories = { sel: path, chosen: true };
     this.update();

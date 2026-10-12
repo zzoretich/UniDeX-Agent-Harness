@@ -43,3 +43,45 @@ test('wrap-session.js source carries no updateBrainActive and no sessions/ path'
   assert.ok(!src.includes('sessions/'));
   assert.ok(!src.includes('Session Log Index'));
 });
+
+// The Brain hub's cache after /wrap promotes something (brain-hub plan, PR 2 follow-ups).
+const HUB = path.join(TMP, 'brain', '_index', 'brain-hub.json');
+const INDEX = '# Memory Index\n\n## User\n\n## Feedback (how to work)\n\n## Project\n\n## Reference\n\n## Patterns\n';
+
+test('a wrap that promotes a memory leaves a fresh brain-hub.json; one that promotes nothing leaves none', () => {
+  fs.rmSync(HUB, { recursive: true, force: true });
+  fs.writeFileSync(path.join(TMP, 'MEMORY.md'), INDEX);
+  fs.writeFileSync(SESSION_MD, '# Current Session Working Memory\n\n## Things to Remember\n- nothing durable this time\n');
+  assert.equal(runWrap().status, 0);
+  assert.ok(!fs.existsSync(HUB), 'nothing promoted, no rebuild');
+
+  fs.writeFileSync(SESSION_MD, '# Current Session Working Memory\n\n## Things to Remember\n- reference: The staging bucket keeps uploads for seven days #promote\n');
+  const before = Date.now();
+  const r = runWrap();
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^Wrap complete\. Promoted 1 item\(s\)\./);
+  assert.equal(r.stderr, '');
+  const hub = JSON.parse(fs.readFileSync(HUB, 'utf8'));
+  assert.ok(Date.parse(hub.builtAt) >= before);
+  const promoted = /→ (brain\/memory\/reference\/\S+\.md)/.exec(r.stdout)[1];
+  assert.ok(hub.batches.some((b) => b.paths.includes(promoted)), 'the promoted memory waits in a Review batch');
+});
+
+test('a failing rebuild never fails the wrap: it is logged to stderr and the promotion stands', () => {
+  fs.writeFileSync(path.join(TMP, 'MEMORY.md'), INDEX);
+  fs.rmSync(HUB, { recursive: true, force: true });
+  fs.mkdirSync(path.join(HUB, 'in-the-way'), { recursive: true });
+  fs.writeFileSync(SESSION_MD, '# Current Session Working Memory\n\n## Things to Remember\n- reference: The nightly export lands in the archive folder #promote\n');
+  try {
+    const r = runWrap();
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^Wrap complete\. Promoted 1 item\(s\)\./);
+    assert.match(r.stderr, /^brain-hub rebuild failed: /m);
+    assert.ok(fs.existsSync(path.join(TMP, /→ (brain\/memory\/reference\/\S+\.md)/.exec(r.stdout)[1])));
+  } finally { fs.rmSync(HUB, { recursive: true, force: true }); }
+  const { rebuildBrainHub } = require('../wrap-session.js');
+  const seen = [];
+  assert.equal(rebuildBrainHub((args) => seen.push(args)), true);
+  assert.equal(seen[0].vault, require('../lib/paths.js').PATHS.VAULT);
+  assert.equal(typeof seen[0].cfg, 'object');
+});

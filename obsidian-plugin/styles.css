@@ -3674,7 +3674,7 @@ button.aos-spc-addobj:not(.clickable-icon) { align-self: flex-start; height: 28p
 }
 
 /* ── Brain hub (spec 2026-10-11-brain-hub D2, D23): the shell. Typographic, the --udx tokens in both themes, colour only
-   for state and type; every .aos-brain-* class is the hub's own. ── */
+   for state; every .aos-brain-* class is the hub's own. ── */
 /* Full bleed like Spaces and Pulse: the panes meet the rail, and each pane scrolls on its own. */
 .aos-wb-content:has(> .aos-brain) { display: flex; padding: 0; overflow: hidden; }
 /* The hub is a size container: its folds (D2) follow the hub's own width, so Open in split (the Workbench at half the
@@ -3765,34 +3765,270 @@ button.aos-brain-chip:not(.clickable-icon):hover:not(:disabled) { background: va
 button.aos-brain-chip[aria-pressed="true"]:not(.clickable-icon) { border-color: var(--udx-line-2); background: var(--udx-bg); }
 .aos-brain-chipn { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 10.5px; font-weight: 400; }
 
-/* Pills for state; type tags (feedback violet, projects blue, reference grey, user green) and their dots. */
+/* Pills for state, each with its word. A type tag is its word in a neutral outline, every type alike: type is not
+   state (D23). A dot is plain, or a session's host (claude, codex), which the row names in words beside it. */
 .aos-brain-pill { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; white-space: nowrap; }
 .aos-brain-pill.is-warn { background: var(--udx-warn-bg); color: var(--udx-warn); }
 .aos-brain-pill.is-info { background: var(--udx-info-bg); color: var(--udx-info); }
 .aos-brain-pill.is-gate { background: var(--udx-gate-bg); color: var(--udx-gate); }
 .aos-brain-pill.is-ok { background: var(--udx-ok-bg); color: var(--udx-ok); }
 .aos-brain-pill.is-off { background: var(--udx-off-bg); color: var(--udx-off); }
-.aos-brain-type { flex: none; padding: 2px 7px; border-radius: 5px; font-size: 10.5px; font-weight: 500; }
-.aos-brain-type.is-feedback { background: var(--udx-gate-bg); color: var(--udx-gate); }
-.aos-brain-type.is-projects { background: var(--udx-info-bg); color: var(--udx-info); }
-.aos-brain-type.is-reference { background: var(--udx-off-bg); color: var(--udx-off); }
-.aos-brain-type.is-user { background: var(--udx-ok-bg); color: var(--udx-ok); }
+.aos-brain-type {
+  flex: none; padding: 2px 7px; border-radius: 5px; background: transparent; box-shadow: inset 0 0 0 1px var(--udx-line-2);
+  color: var(--udx-text-2); font-size: 10.5px; font-weight: 500;
+}
 .aos-brain-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--udx-off-dot); }
 .aos-brain-dot.is-claude { background: var(--udx-info-dot); }
 .aos-brain-dot.is-codex { background: var(--udx-gate-dot); }
-.aos-brain-dot.is-feedback { background: var(--udx-gate-dot); }
-.aos-brain-dot.is-projects { background: var(--udx-info-dot); }
-.aos-brain-dot.is-reference { background: var(--udx-off-dot); }
-.aos-brain-dot.is-user { background: var(--udx-ok-dot); }
 
 /* A mode's heading and lede (Bootstrap, Health). */
 .aos-brain-h2 { margin: 0; font-size: 17px; font-weight: 650; }
 .aos-brain-lede { margin: -12px 0 0; max-width: 70ch; color: var(--udx-text-2); font-size: 12.5px; line-height: 1.5; }
 
 /* ── Brain hub: Bootstrap (views/brain/BootstrapMode.ts; D17, D18, canvas Bootstrap). ── */
+/* Two panes (canvas Bootstrap): BRAIN.md by section in the main pane; the recall preview, SESSION.md and MEMORY.md in a
+   360 px side pane on the surface. Each scrolls on its own; under 760 px (the hub's 704 px) they stack and the mode
+   scrolls as one. Colour only for state, each coloured state with its words (D23). */
+.aos-brain-bootstrap { flex: 1; min-height: 0; display: flex; }
+.aos-brain-bs-main {
+  flex: 1 1 560px; min-width: 0; min-height: 0; overflow-y: auto; box-sizing: border-box; display: flex; flex-direction: column;
+  gap: 14px; padding: 16px 24px 20px;
+}
+.aos-brain-bs-side {
+  flex: 0 0 360px; max-width: 360px; min-height: 0; overflow-y: auto; box-sizing: border-box; display: flex; flex-direction: column;
+  gap: 20px; padding: 16px 18px; border-left: 1px solid var(--udx-line); background: var(--udx-surface);
+}
+.aos-brain-bs-cards { display: flex; flex-direction: column; gap: 20px; }
+.aos-brain-bs-head { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.aos-brain-bs-head .aos-brain-h2 { font-size: 16px; }
+.aos-brain-bs-head .aos-brain-h2:focus { outline: none; }
+.aos-brain-bs-sub { color: var(--udx-text-3); font-size: 12px; }
+.aos-brain-bs-empty { padding: 4px 0; }
+.aos-brain-bootstrap button:disabled { opacity: 0.5; cursor: default; }
+
+/* Budget bars: a card each, a neutral meter; amber only when the value and its note say over budget or full. */
+.aos-brain-bs-budgets { flex: none; display: flex; flex-wrap: wrap; gap: 10px; }
+.aos-brain-bs-budget {
+  flex: 1 1 180px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px;
+  border: 1px solid var(--udx-line); border-radius: 9px; background: var(--udx-bg);
+}
+.aos-brain-bs-budget.is-warn { border-color: var(--udx-line-2); }
+.aos-brain-bs-btop { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.aos-brain-bs-bname { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; }
+.aos-brain-bs-bval { color: var(--udx-text-2); font-size: 11.5px; white-space: nowrap; }
+.aos-brain-bs-bar { height: 5px; border-radius: 3px; background: var(--udx-raised-2); overflow: hidden; }
+.aos-brain-bs-fill { height: 100%; border-radius: 3px; background: var(--udx-off-dot); }
+.aos-brain-bs-bnote { color: var(--udx-text-3); font-size: 11.5px; }
+.aos-brain-bs-budget.is-warn .aos-brain-bs-bval, .aos-brain-bs-budget.is-warn .aos-brain-bs-bnote { color: var(--udx-warn); }
+.aos-brain-bs-budget.is-warn .aos-brain-bs-fill { background: var(--udx-warn-dot); }
+
+/* The looks-shipped lede (D17): amber, its words say why; its one button lands on the list. */
+.aos-brain-bs-lede {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px;
+  background: var(--udx-warn-bg); color: var(--udx-warn);
+}
+.aos-brain-bs-ledetext { flex: 1 1 300px; font-size: 12.5px; line-height: 1.45; }
+
+/* BRAIN.md by section: a card each, its heading, where it comes from and its tokens; a row per line of BRAIN.md. */
+.aos-brain-bs-sec { flex: none; border: 1px solid var(--udx-line); border-radius: 10px; overflow: hidden; }
+.aos-brain-bs-shead { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; padding: 9px 12px; background: var(--udx-surface); }
+.aos-brain-bs-h3 { margin: 0; font-size: 12.5px; font-weight: 600; }
+.aos-brain-bs-h3:focus { outline: none; }
+.aos-brain-bs-h3:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; border-radius: 3px; }
+.aos-brain-bs-src { color: var(--udx-text-3); font-size: 11.5px; }
+.aos-brain-bs-tok { color: var(--udx-text-3); font-size: 11px; white-space: nowrap; }
+.aos-brain-bs-left { color: var(--udx-warn); }
+.aos-brain-bs-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 12px; border-top: 1px solid var(--udx-line); font-size: 12.5px; }
+.aos-brain-bs-rtext { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-brain-bs-rtitle { font-weight: 600; }
+.aos-brain-bs-rdesc { color: var(--udx-text-2); }
+.aos-brain-bs-rnote { flex: none; color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-bs-flag { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+.aos-brain-bs-row button.aos-brain-btn.is-small:not(.clickable-icon) { flex: none; height: 24px; padding: 0 9px; border-radius: 6px; font-size: 11.5px; white-space: nowrap; }
+.aos-brain-bs-rows.is-leftout .aos-brain-bs-rtitle { font-weight: 500; }
+.aos-brain-bs-more {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 7px 12px; border-top: 1px solid var(--udx-line);
+  color: var(--udx-text-3); font-size: 12px;
+}
+.aos-brain-bs-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 12px; border-top: 1px solid var(--udx-line); }
+.aos-brain-bs-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* A link-like button (Show them, + Pin a memory…, Open, Fix in Health →): text, underlined, still a real button. */
+button.aos-brain-bs-link:not(.clickable-icon) {
+  display: inline; width: auto; height: auto; padding: 0; border: none; border-radius: 3px; background: none; box-shadow: none;
+  color: var(--udx-text-2); font-size: 12px; font-weight: 400; text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+button.aos-brain-bs-link:not(.clickable-icon):hover:not(:disabled) { background: none; color: var(--udx-text); }
+.aos-brain-bs-card > button.aos-brain-bs-link { align-self: flex-start; }
+
+/* The side pane's cards. */
+.aos-brain-bs-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.aos-brain-bs-chead { display: flex; align-items: center; gap: 8px; }
+.aos-brain-bs-hint { color: var(--udx-text-2); font-size: 12px; }
+.aos-brain-bs-ask { display: flex; gap: 6px; }
+.aos-brain-bs-field {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; box-sizing: border-box;
+  border: 1px solid var(--udx-line-2); border-radius: 7px; background: var(--udx-field);
+}
+.aos-brain-bs-field:focus-within { box-shadow: 0 0 0 2px var(--udx-focus); }
+.aos-root input.aos-brain-bs-input {
+  flex: 1; min-width: 0; height: auto; padding: 0; border: none; outline: none; background: transparent; box-shadow: none;
+  color: var(--udx-text); font: inherit; font-size: 12.5px;
+}
+.aos-brain-bs-input::placeholder { color: var(--udx-text-3); }
+.aos-brain-bs-ask button.aos-brain-btn.is-small:not(.clickable-icon) { flex: none; height: 32px; }
+.aos-brain-bs-hits { display: flex; flex-direction: column; min-width: 0; }
+.aos-brain-bs-state { padding: 4px 0; color: var(--udx-text-3); font-size: 12px; overflow-wrap: anywhere; }
+.aos-brain-bs-state.is-warn { color: var(--udx-warn); }
+.aos-brain-bs-hitlist { margin: 0; padding: 0; list-style: none; }
+.aos-brain-bs-hitlist > li { margin: 0; padding: 0; }
+.aos-brain-bs-hit, button.aos-brain-bs-hit:not(.clickable-icon) {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: auto; min-height: 30px; padding: 6px 4px; box-sizing: border-box;
+  border: none; border-bottom: 1px solid var(--udx-line); border-radius: 0; background: none; box-shadow: none;
+  color: var(--udx-text); font-size: 12.5px; font-weight: 400; text-align: left;
+}
+button.aos-brain-bs-hit:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
+.aos-brain-bs-hit.is-inert { color: var(--udx-text-3); }
+.aos-brain-bs-score { flex: none; width: 46px; color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-bs-htitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-brain-bs-hkind, .aos-brain-bs-age { flex: none; color: var(--udx-text-3); font-size: 11px; white-space: nowrap; }
+.aos-brain-bs-foot { color: var(--udx-text-3); font-size: 11.5px; line-height: 1.45; }
+.aos-brain-bs-lines { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.aos-brain-bs-line { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; line-height: 1.45; }
+.aos-brain-bs-line::before { content: ""; flex: none; width: 5px; height: 5px; margin-top: 7px; border-radius: 50%; background: var(--udx-text-3); }
+.aos-brain-bs-ltext { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.aos-brain-pill.aos-brain-bs-ptag { flex: none; border-radius: 5px; }
+.aos-brain-bs-wrap { color: var(--udx-text-3); font-size: 11.5px; }
+.aos-brain-bs-wrap.is-warn { color: var(--udx-warn); }
+.aos-brain-bs-size { font-size: 12.5px; }
+.aos-brain-bs-note { color: var(--udx-text-3); font-size: 11.5px; line-height: 1.45; }
+.aos-brain-bs-finding { color: var(--udx-warn); }
+
+@container aos-brain (max-width: 1044px) {
+  .aos-brain-bs-side { flex-basis: 300px; max-width: 300px; }
+}
+@container aos-brain (max-width: 704px) {
+  .aos-brain-bootstrap { flex-direction: column; overflow-y: auto; }
+  .aos-brain-bs-main { flex: none; overflow: visible; padding: 14px 16px 18px; }
+  .aos-brain-bs-side { flex: none; max-width: none; overflow: visible; padding: 16px; border-left: none; border-top: 1px solid var(--udx-line); }
+  .aos-brain-bs-row { flex-wrap: wrap; }
+  .aos-brain-bs-rtext { flex-basis: 100%; white-space: normal; }
+  .aos-brain-bs-flag { max-width: 100%; }
+}
 /* ── end Brain hub: Bootstrap ── */
 
 /* ── Brain hub: Health (views/brain/HealthMode.ts, FixModal.ts; D20, canvas Health). ── */
+/* Health (D20; canvas Health): six tiles, then Duplicates on the left and Hygiene with Dead weight on the right. Colour
+   only for state, each with its word (D23): amber what asks for you, green what is clean, grey what cannot be counted. */
+.aos-brain-health { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding: 16px 24px 20px; box-sizing: border-box; }
+.aos-brain-hl-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--udx-line);
+  border-radius: 9px; background: var(--udx-surface); color: var(--udx-text-2); font-size: 12.5px;
+}
+.aos-brain-hl-banner > span { flex: 1 1 260px; }
+.aos-brain-hl-tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.aos-brain-hl-tile { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 9px; }
+.aos-brain-hl-tv { color: var(--udx-text); font-size: 20px; font-weight: 500; line-height: 1.25; }
+.aos-brain-hl-tk { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; font-size: 12px; font-weight: 500; }
+.aos-brain-hl-tw { font-size: 11px; font-weight: 500; }
+.aos-brain-hl-tn { overflow: hidden; color: var(--udx-text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.aos-brain-hl-tile.is-warn .aos-brain-hl-tv, .aos-brain-hl-tile.is-warn .aos-brain-hl-tw { color: var(--udx-warn); }
+.aos-brain-hl-tile.is-ok .aos-brain-hl-tv, .aos-brain-hl-tile.is-ok .aos-brain-hl-tw { color: var(--udx-ok); }
+.aos-brain-hl-tile.is-off .aos-brain-hl-tv { color: var(--udx-text-3); }
+.aos-brain-hl-tile.is-off .aos-brain-hl-tw { color: var(--udx-off); }
+
+.aos-brain-hl-cols { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
+.aos-brain-hl-col { flex: 2 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.aos-brain-hl-col.is-wide { flex: 3 1 520px; }
+.aos-brain-hl-card { overflow: hidden; border: 1px solid var(--udx-line); border-radius: 10px; }
+.aos-brain-hl-chead {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 10px 14px; border-bottom: 1px solid var(--udx-line);
+  background: var(--udx-surface);
+}
+.aos-brain-hl-ctitle { margin: 0; font-size: 13px; font-weight: 650; }
+.aos-brain-hl-ctitle:focus { outline: none; }
+.aos-brain-hl-ctitle:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; border-radius: 3px; }
+.aos-brain-hl-csub { color: var(--udx-text-3); font-size: 11.5px; }
+.aos-brain-hl-status { color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-hl-status:empty { display: none; }
+button.aos-brain-btn.aos-brain-hl-btn:not(.clickable-icon) { height: 26px; padding: 0 10px; font-size: 11.5px; white-space: nowrap; }
+button.aos-brain-btn.aos-brain-hl-btn.is-busy:not(.clickable-icon) { opacity: 0.6; cursor: default; }
+.aos-brain-hl-empty { padding: 12px 14px; }
+
+/* Rows: a score, two lines of text, the actions. */
+.aos-brain-hl-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 14px; }
+.aos-brain-hl-row + .aos-brain-hl-row { border-top: 1px solid var(--udx-line); }
+.aos-brain-hl-score { flex: none; width: 38px; color: var(--udx-text-2); font-size: 11px; }
+.aos-brain-hl-score.aos-brain-hl-leftover {
+  width: auto; min-width: 38px; box-sizing: border-box; padding: 1px 6px; border-radius: 999px; background: var(--udx-warn-bg);
+  color: var(--udx-warn); font-size: 10.5px; text-align: center;
+}
+.aos-brain-hl-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.aos-brain-hl-t1, .aos-brain-hl-t2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-brain-hl-t1 { font-size: 12.5px; font-weight: 500; }
+.aos-brain-hl-t2 { color: var(--udx-text-2); font-size: 12px; }
+.aos-brain-hl-acts { flex: none; display: flex; align-items: center; gap: 6px; }
+.aos-brain-hl-more { justify-content: flex-start; }
+.aos-brain-hl-hyg { padding: 8px 14px; }
+.aos-brain-hl-hygtext { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.4; }
+.aos-brain-hl-hyg.is-clean .aos-brain-hl-hygtext { color: var(--udx-text-2); }
+.aos-brain-hl-clean { flex: none; color: var(--udx-ok); font-size: 11px; font-weight: 500; }
+
+/* Dead weight: used, quiet and never as one bar, each named beside its colour. */
+.aos-brain-hl-card [data-state] { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; }
+.aos-brain-hl-dwtext { margin: 0; color: var(--udx-text-2); font-size: 12px; line-height: 1.5; }
+.aos-brain-hl-dwtext.is-off { color: var(--udx-off); }
+.aos-brain-hl-bar { display: flex; height: 8px; overflow: hidden; border-radius: 4px; background: var(--udx-raised); }
+.aos-brain-hl-seg { display: block; height: 100%; }
+.aos-brain-hl-seg.is-used { background: var(--udx-info-dot); }
+.aos-brain-hl-seg.is-quiet { background: var(--udx-off-dot); }
+.aos-brain-hl-seg.is-never { background: var(--udx-warn-dot); }
+.aos-brain-hl-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--udx-text-2); font-size: 11px; }
+.aos-brain-hl-key { display: inline-flex; align-items: center; gap: 5px; }
+.aos-brain-hl-key.is-never { color: var(--udx-warn); }
+.aos-brain-hl-swatch { width: 8px; height: 8px; border-radius: 2px; background: var(--udx-off-dot); }
+.aos-brain-hl-key.is-used .aos-brain-hl-swatch { background: var(--udx-info-dot); }
+.aos-brain-hl-key.is-never .aos-brain-hl-swatch { background: var(--udx-warn-dot); }
+.aos-brain-hl-help { margin: 0; color: var(--udx-text-3); font-size: 11px; line-height: 1.45; }
+.aos-brain-hl-dwacts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+@container aos-brain (max-width: 1044px) {
+  .aos-brain-hl-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container aos-brain (max-width: 704px) {
+  .aos-brain-health { padding: 12px 16px 16px; }
+  .aos-brain-hl-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .aos-brain-hl-row { flex-wrap: wrap; }
+  .aos-brain-hl-acts { width: 100%; justify-content: flex-end; }
+}
+
+/* FixModal: a fix's dry run, grouped by file, before → after; it scrolls on its own and the buttons stay in view. */
+.modal.mod-brain-fix { width: min(680px, calc(100vw - 48px)); }
+.aos-brain-fixmodal h3 { margin-top: 0; }
+.aos-brain-fixmodal p.aos-brain-fixlede { margin: 0 0 6px; color: var(--udx-text-2); font-size: 12.5px; line-height: 1.5; }
+.aos-brain-fixmodal p.aos-brain-fixcount { margin: 0 0 8px; color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-fixlist {
+  max-height: min(46vh, 420px); overflow-y: auto; border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-surface);
+}
+.aos-brain-fixlist:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
+.aos-brain-fixfile { padding: 8px 12px; }
+.aos-brain-fixfile + .aos-brain-fixfile { border-top: 1px solid var(--udx-line); }
+.aos-brain-fixfilehead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-bottom: 4px; }
+.aos-brain-fixpath { color: var(--udx-text-2); font-size: 11px; word-break: break-all; }
+.aos-brain-fixftitle { color: var(--udx-text); font-size: 12px; font-weight: 600; }
+.aos-brain-fixrows { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.aos-brain-fixrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; color: var(--udx-text); font-size: 12px; }
+.aos-brain-fixlabel { flex: none; min-width: 84px; color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-fixsubj { font-weight: 500; }
+.aos-brain-fixvals { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; }
+.aos-brain-fixbefore { color: var(--udx-text-2); text-decoration: line-through; overflow-wrap: anywhere; }
+.aos-brain-fixafter { color: var(--udx-text); overflow-wrap: anywhere; }
+.aos-brain-fixbefore.is-none, .aos-brain-fixafter.is-none { color: var(--udx-text-3); text-decoration: none; }
+.aos-brain-fixarrow, .aos-brain-fixgone { color: var(--udx-text-3); }
+.aos-brain-fixgone { font-size: 11px; }
+.aos-brain-fixsr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.aos-brain-fixmodal p.aos-brain-fixmore { margin: 0; padding: 8px 12px; border-top: 1px solid var(--udx-line); color: var(--udx-text-3); font-size: 11.5px; }
+.aos-brain-fixmodal p.aos-brain-fixnote { margin: 10px 0 0; color: var(--udx-text-2); font-size: 12px; }
 /* ── end Brain hub: Health ── */
 
 /* ── Brain hub: Review (views/brain/ReviewMode.ts). ── */
@@ -3831,10 +4067,8 @@ button.aos-brain-rv-row[aria-selected="true"]:not(.clickable-icon):hover:not(:di
 .aos-brain-rv-rmeta .aos-brain-mono { font-size: 11px; }
 .aos-brain-rv-lead { padding-left: 16px; overflow: hidden; color: var(--udx-text-3); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .aos-brain-rv-pips { display: flex; flex-wrap: wrap; gap: 3px; padding-left: 16px; }
+/* One neutral pip per memory: the row's label names the types in words (D23: type is not state). */
 .aos-brain-rv-pip { width: 14px; height: 4px; border-radius: 2px; background: var(--udx-off-dot); }
-.aos-brain-rv-pip.is-feedback { background: var(--udx-gate); }
-.aos-brain-rv-pip.is-projects { background: var(--udx-info); }
-.aos-brain-rv-pip.is-user { background: var(--udx-ok-dot); }
 .aos-brain-rv-foot {
   flex: none; display: flex; flex-direction: column; gap: 6px; padding: 10px 14px 12px; border-top: 1px solid var(--udx-line);
   color: var(--udx-text-3); font-size: 11.5px;
@@ -3954,10 +4188,8 @@ button.aos-lib-row:not(.clickable-icon):hover:not(:disabled) { background: var(-
 button.aos-lib-row.is-selected:not(.clickable-icon), button.aos-lib-row.is-selected:not(.clickable-icon):hover:not(:disabled) { border-color: var(--udx-line-2); background: var(--udx-bg); }
 .aos-lib-rowtop { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .aos-lib-dot { flex: none; width: 7px; height: 7px; border-radius: 2px; background: var(--udx-off-dot); }
-.aos-lib-dot.is-feedback { background: var(--udx-gate-dot); }
-.aos-lib-dot.is-projects { background: var(--udx-info-dot); }
-.aos-lib-dot.is-user { background: var(--udx-ok-dot); }
-.aos-lib-dot.is-drafts { background: transparent; box-shadow: inset 0 0 0 1.5px var(--udx-gate-dot); }
+/* Every type alike (D23: colour only for state); a draft is a ring, named in words by its row's label and the Drafts list. */
+.aos-lib-dot.is-drafts { background: transparent; box-shadow: inset 0 0 0 1.5px var(--udx-off-dot); }
 .aos-lib-rowtitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
 .aos-lib-rowtag { flex: none; color: var(--udx-text-3); font-size: 10px; }
 .aos-lib-pin { flex: none; display: inline-flex; color: var(--udx-text-2); }
@@ -3978,10 +4210,6 @@ button.aos-lib-row.is-selected:not(.clickable-icon), button.aos-lib-row.is-selec
 .aos-lib-pinpill { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 999px; background: var(--udx-raised); font-size: 11.5px; font-weight: 500; }
 .aos-lib-pinpill svg { width: 11px; height: 11px; }
 .aos-lib-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--udx-text-3); font-size: 11px; }
-.aos-lib-metatype.is-feedback { color: var(--udx-gate); }
-.aos-lib-metatype.is-projects { color: var(--udx-info); }
-.aos-lib-metatype.is-reference { color: var(--udx-off); }
-.aos-lib-metatype.is-user { color: var(--udx-ok); }
 .aos-lib-ok { color: var(--udx-ok); }
 .aos-lib-warn { color: var(--udx-warn); }
 button.aos-lib-superby:not(.clickable-icon) {
@@ -4050,37 +4278,160 @@ button.aos-lib-clink:hover .aos-lib-clinkt { text-decoration: underline; text-de
   .aos-lib-split > .aos-brain-right { padding: 16px; }
 }
 
-/* ── Brain hub: Map (views/brain/MapMode.ts). ── */
-/* Map until PR 3 (brain-hub D19): the Memory tab's force view as "Every node", filling the mode's height. The
-   .aos-cortex-* rules above still draw it; these fit it to the hub (canvas Map.dc.html: a rounded surface, 12 px). */
-.aos-brain-map { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.aos-brain-maphead { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 16px 24px 0; }
-.aos-brain-mapnote { margin: 0; max-width: 80ch; font-size: 12.5px; line-height: 1.5; }
-.aos-brain-map .aos-cortex-header { flex: none; flex-wrap: wrap; justify-content: flex-start; gap: 8px 12px; padding: 12px 24px; border-bottom: none; }
-.aos-brain-map .aos-cortex-chips { flex-wrap: wrap; gap: 4px; }
-.aos-brain-map button.aos-cortex-chip:not(.clickable-icon) {
-  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--udx-line-2);
-  border-radius: 999px; background: var(--udx-bg); color: var(--udx-text); font-family: var(--udx-sans); font-size: 11.5px;
-  font-weight: 500; letter-spacing: 0; text-transform: none;
+/* ── Brain hub: Map (views/brain/MapMode.ts, data/brainMapView.ts; D19, D23, canvas Map). ── */
+/* Map (D19): three panes as the canvas draws them: the communities or the memories on the left (260 px, surface), the
+   view's canvas in the middle (a rounded surface, 12 px), the selected community's or memory's card on the right (300 px);
+   Every node takes the whole width. Colour only for state (D23): the ring and the dot are the unreviewed share, each with
+   its word beside it; a member used this week reads "N× used" in the info colour. No colour for type. */
+.aos-brain-map { flex: 1; min-height: 0; display: flex; }
+.aos-brain-map [hidden] { display: none !important; }
+.aos-brain-map.is-empty { flex-direction: column; }
+
+/* Empty: the graph is off (it names `aos graph on`), or no map yet. */
+.aos-brain-mapnone { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 32px 24px; text-align: center; }
+.aos-brain-mapnonetext { margin: 0; max-width: 60ch; color: var(--udx-text); font-size: 13px; line-height: 1.5; }
+.aos-brain-mapnonetext code { padding: 1px 6px; border-radius: 5px; background: var(--udx-raised); color: var(--udx-text); font-size: 12px; }
+.aos-brain-mapnonesub { margin: 0; max-width: 60ch; font-size: 12px; line-height: 1.5; }
+
+/* The left pane: a title with where it comes from, the picker's search (Around a memory), the list, the footer. */
+.aos-brain-mapleft { flex-basis: 260px; max-width: 260px; }
+.aos-brain-maplhead { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 8px; }
+.aos-brain-maptitle { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.aos-brain-maph2 { flex: none; margin: 0; font-size: 13px; font-weight: 650; }
+.aos-brain-mapmeta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.aos-root input.aos-brain-mapfind {
+  width: 100%; height: 28px; padding: 0 10px; border: 1px solid var(--udx-line); border-radius: 7px; background: var(--udx-field);
+  box-shadow: none; color: var(--udx-text); font-size: 12px;
 }
-.aos-brain-map button.aos-cortex-chip:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
-.aos-brain-map button.aos-cortex-chip.aos-cortex-chip-off:not(.clickable-icon) { border-color: transparent; background: transparent; color: var(--udx-text-3); opacity: 1; }
-.aos-brain-mapdot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.aos-brain-map .aos-cortex-chip-off .aos-brain-mapdot { opacity: 0.35; }
-.aos-brain-map .aos-cortex-stats { margin: 0; font-size: 11px; }
-.aos-brain-maphint { font-size: 11.5px; }
-.aos-brain-map .aos-cortex-canvas {
-  flex: 1; min-height: 0; margin: 0 24px 20px; border: 1px solid var(--udx-line); border-radius: 12px; background: var(--udx-surface);
+.aos-root input.aos-brain-mapfind:focus { border-color: var(--udx-line-2); box-shadow: 0 0 0 2px var(--udx-focus); }
+.aos-brain-mapfind::placeholder { color: var(--udx-text-3); }
+.aos-brain-maplist { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 0 8px 8px; }
+button.aos-brain-maprow:not(.clickable-icon) {
+  flex: none; display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; height: auto; padding: 6px 8px;
+  border: 1px solid transparent; border-radius: 7px; background: transparent; box-shadow: none; color: var(--udx-text); font-size: 12.5px;
+  font-weight: 400; text-align: left;
 }
-.aos-brain-map .aos-cortex-svg text { font-family: var(--udx-sans); }
-.aos-brain-mapempty { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; padding: 24px; text-align: center; pointer-events: none; }
-.aos-brain-mapempty.is-shown { display: flex; }
+button.aos-brain-maprow:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
+button.aos-brain-maprow.is-selected:not(.clickable-icon) { border-color: var(--udx-line-2); background: var(--udx-bg); font-weight: 600; }
+.aos-brain-maprowname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-brain-maprown { flex: none; color: var(--udx-text-3); font-size: 10.5px; font-weight: 400; }
+.aos-brain-maplempty { padding: 8px 6px; }
+.aos-brain-mapfoot {
+  flex: none; display: flex; flex-direction: column; gap: 3px; padding: 10px 14px 12px; border-top: 1px solid var(--udx-line);
+  color: var(--udx-text-3); font-size: 11.5px; line-height: 1.45;
+}
+.aos-brain-mapfoot p { margin: 0; }
+
+/* The middle: the views as a segmented tablist, the legend (and Every node's counts, hint, Resettle), the canvas. */
+.aos-brain-mapmain { flex: 999 1 440px; overflow: hidden; }
+.aos-brain-mapbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 18px; }
+.aos-brain-mapviews { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--udx-raised); }
+button.aos-brain-mapview:not(.clickable-icon) {
+  height: 26px; padding: 0 10px; border: none; border-radius: 6px; background: transparent; box-shadow: none; color: var(--udx-text-2);
+  font-size: 12px; font-weight: 500;
+}
+button.aos-brain-mapview:not(.clickable-icon):hover:not(:disabled) { background: transparent; color: var(--udx-text); }
+button.aos-brain-mapview.is-on:not(.clickable-icon) { background: var(--udx-bg); color: var(--udx-text); }
+.aos-brain-maplegend { display: inline-flex; align-items: center; gap: 6px; color: var(--udx-text-3); font-size: 11.5px; }
+.aos-brain-mapswatch { flex: none; width: 10px; height: 10px; box-sizing: border-box; border-radius: 50%; }
+.aos-brain-mapswatch.is-ring { border: 2px solid var(--udx-warn-dot); background: var(--udx-raised); }
+.aos-brain-mapswatch.is-dot { background: var(--udx-warn-dot); }
+.aos-brain-mapstats { font-size: 11px; }
+.aos-brain-maphint { color: var(--udx-text-3); font-size: 11.5px; }
+.aos-brain-mapcanvas {
+  position: relative; flex: 1; min-height: 320px; margin: 0 18px 18px; overflow: hidden; border: 1px solid var(--udx-line);
+  border-radius: 12px; background: var(--udx-surface);
+}
+.aos-brain-mapcanvas.is-every { cursor: grab; }
+.aos-brain-mapcanvas.is-every:active { cursor: grabbing; }
+.aos-brain-mapempty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; color: var(--udx-text-3);
+  font-size: 12.5px; text-align: center; pointer-events: none;
+}
+.aos-brain-mapempty.is-below { align-items: flex-end; }
+.aos-brain-maplines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.aos-brain-maplines line { stroke: var(--udx-line-2); stroke-linecap: round; }
+
+/* Communities: a bubble is a button, its disc over a two-line caption; the disc's ring is the unreviewed share (warn) and
+   the caption says "N unreviewed" in the same colour. The selected one is outlined in the text colour. */
+button.aos-brain-bubble:not(.clickable-icon) {
+  position: absolute; display: flex; flex-direction: column; align-items: center; gap: 4px; height: auto; padding: 0; border: none;
+  border-radius: 8px; background: transparent; box-shadow: none; color: var(--udx-text); white-space: nowrap; transform: translateX(-50%);
+}
+button.aos-brain-bubble:not(.clickable-icon):hover:not(:disabled) { background: transparent; }
+.aos-brain-bubbledisc {
+  flex: none; position: relative; box-sizing: border-box; border-radius: 50%;
+  background: conic-gradient(var(--udx-warn-dot) 0deg var(--aos-brain-ring, 0deg), var(--udx-line-2) var(--aos-brain-ring, 0deg) 360deg);
+}
+.aos-brain-bubblefill { position: absolute; inset: 3px; border-radius: 50%; background: var(--udx-raised); transition: background 120ms; }
+button.aos-brain-bubble:hover .aos-brain-bubblefill { background: var(--udx-raised-2); }
+button.aos-brain-bubble[aria-current="true"] .aos-brain-bubbledisc { box-shadow: 0 0 0 2px var(--udx-surface), 0 0 0 4px var(--udx-text); }
+.aos-brain-bubblename { max-width: 176px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 500; line-height: 15px; }
+button.aos-brain-bubble[aria-current="true"] .aos-brain-bubblename { font-weight: 650; }
+.aos-brain-bubblecap { margin-top: -4px; color: var(--udx-text-3); font-size: 10.5px; line-height: 13px; }
+.aos-brain-bubbleun { color: var(--udx-warn); }
+
+/* Around a memory: the memory in the middle, its neighbours round it; each is a button whose dot sits on its point and
+   whose caption reads outward (4 px padding + half a 12 px dot = 10 px to the dot's centre). */
+button.aos-brain-arcentre:not(.clickable-icon), button.aos-brain-arnode:not(.clickable-icon) {
+  position: absolute; display: flex; align-items: center; gap: 6px; height: auto; padding: 4px; border: none; border-radius: 7px;
+  background: transparent; box-shadow: none; color: var(--udx-text); font-size: 12px; font-weight: 500; white-space: nowrap;
+}
+button.aos-brain-arcentre:not(.clickable-icon):hover:not(:disabled), button.aos-brain-arnode:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
+button.aos-brain-arcentre:not(.clickable-icon) { flex-direction: column; gap: 4px; font-weight: 650; transform: translate(-50%, -18px); }
+.aos-brain-ardot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--udx-text-3); }
+.aos-brain-arcentre .aos-brain-ardot { width: 28px; height: 28px; background: var(--udx-text); }
+.aos-brain-arname { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+button.aos-brain-arnode.is-right:not(.clickable-icon) { transform: translate(-10px, -50%); }
+button.aos-brain-arnode.is-left:not(.clickable-icon) { flex-direction: row-reverse; transform: translate(calc(-100% + 10px), -50%); }
+button.aos-brain-arnode.is-top:not(.clickable-icon) { flex-direction: column-reverse; gap: 2px; transform: translate(-50%, calc(-100% + 10px)); }
+button.aos-brain-arnode.is-bottom:not(.clickable-icon) { flex-direction: column; gap: 2px; transform: translate(-50%, -10px); }
+
+/* The card: a community's counts, MEMBERS and LINKED COMMUNITIES, or a memory's NEIGHBOURS. */
+.aos-brain-mapcard { flex-basis: 300px; max-width: 300px; gap: 16px; }
+.aos-brain-mapcardhead { display: flex; flex-direction: column; gap: 6px; }
+.aos-brain-mapcardtitle { margin: 0; font-size: 15px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.aos-brain-mapcardline { color: var(--udx-text-3); font-size: 11px; }
+.aos-brain-mapcardacts { display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-brain-mapsec { display: flex; flex-direction: column; gap: 2px; }
+.aos-brain-mapsec > .aos-brain-label { margin-bottom: 4px; }
+button.aos-brain-mapmember:not(.clickable-icon) {
+  display: flex; align-items: baseline; justify-content: flex-start; gap: 8px; width: calc(100% + 8px); height: auto; margin: 0 -4px;
+  padding: 3px 4px; border: none; border-radius: 5px; background: transparent; box-shadow: none; color: var(--udx-text); font-size: 12.5px;
+  font-weight: 400; text-align: left;
+}
+button.aos-brain-mapmember:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
+.aos-brain-mapmembername { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-brain-mapmemberun { flex: none; align-self: center; }
+.aos-brain-mapmembernote { flex: none; color: var(--udx-text-3); font-size: 10.5px; }
+.aos-brain-mapmembernote.is-used { color: var(--udx-info); }
+.aos-brain-maplinked { display: flex; flex-wrap: wrap; gap: 4px; }
+button.aos-brain-maplink:not(.clickable-icon) { max-width: 100%; border-color: var(--udx-line-2); }
+.aos-brain-maplink > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* Every node (the force view): neutral nodes, the unreviewed in the warn dot (the legend names it); node and label sizes
+   hold on screen at any zoom (MapMode sets them), links keep a hairline. */
+.aos-brain-mapsvg { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.aos-brain-mapnode { cursor: pointer; transition: opacity 120ms; }
+.aos-brain-mapnode circle { fill: var(--udx-text-3); stroke: var(--udx-surface); }
+.aos-brain-mapnode.is-unreviewed circle { fill: var(--udx-warn-dot); }
+.aos-brain-maplabel, .aos-brain-maphover { fill: var(--udx-text); font-family: var(--udx-sans); }
+.aos-brain-maphover { font-weight: 600; }
+
+/* At a 1100 px window the side panes narrow; under 760 px every pane stacks (the shell's rule below) and the canvas keeps
+   a height of its own. */
+@container aos-brain (max-width: 1044px) {
+  .aos-brain-mapleft { flex-basis: 220px; max-width: 220px; }
+  .aos-brain-mapcard { flex-basis: 260px; max-width: 260px; }
+}
 @container aos-brain (max-width: 704px) {
-  .aos-brain-maphead { padding: 14px 16px 0; }
-  .aos-brain-map .aos-cortex-header { padding: 10px 16px; }
-  .aos-brain-map .aos-cortex-canvas { margin: 0 16px 16px; }
+  .aos-brain-mapleft { flex-basis: auto; max-width: none; }
+  .aos-brain-mapcard { flex: none; max-width: none; border-left: none; border-top: 1px solid var(--udx-line); }
+  .aos-brain-mapbar { padding: 10px 16px; }
+  .aos-brain-mapcanvas { flex: none; height: min(70vh, 520px); margin: 0 16px 16px; }
   .aos-brain-maphint { display: none; }
 }
+/* ── end Brain hub: Map ── */
 
 /* Narrower (D2): Library's right pane folds under the reader at a 1100 px window (its own rule, in the Library block);
    every pane stacks under 760 px. Measured on the hub (.aos-brain is the container), less the rail. */

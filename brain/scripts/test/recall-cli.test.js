@@ -76,3 +76,43 @@ test('a null recallRoots in brain/config.json is treated as an empty list', () =
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /recall: indexed 0 docs/);
 });
+
+// The Brain tab's recall preview (brain-hub D18) runs exactly brainModel recallArgs' argv: one query argument, then
+// --limit N --json. It logs no usage row (D9: only an agent's MCP recall and memory_read count as use) and, on a vault
+// without an index, writes the two files --warm writes and nothing else (SECURITY.md's row for the preview).
+const PREVIEW = ['zebra release branch', '--limit', '3', '--json'];
+const vaultFiles = (v) => fs.readdirSync(v, { recursive: true }).map((f) => f.split(path.sep).join('/')).filter((f) => fs.statSync(path.join(v, f)).isFile()).sort();
+
+test('the recall preview logs no memory-usage row, with telemetry on, on either host', () => {
+  const v = vault();
+  fs.writeFileSync(path.join(v, 'brain', 'config.json'), JSON.stringify({ provider: 'none', telemetry: { enabled: true } }));
+  assert.equal(run(v, ['--warm']).status, 0);
+  for (const host of ['claude', 'codex']) {
+    const r = spawnSync(process.execPath, [CLI, ...PREVIEW], {
+      encoding: 'utf8',
+      env: { ...process.env, AOS_VAULT: v, AOS_HOST: host, AOS_CONFIG: path.join(os.tmpdir(), 'no-such-agenticos.json') },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const hits = JSON.parse(r.stdout);
+    assert.equal(hits[0].path, 'brain/memory/reference/zebra-deploy.md', 'a memory hit: the row would have qualified');
+    assert.ok(hits.length <= 3);
+  }
+  assert.ok(!fs.existsSync(path.join(v, 'brain', '_index', 'memory-usage.jsonl')));
+});
+
+test('the recall preview on a vault without an index builds recall-index.json and recall-wake.md, and writes nothing else', () => {
+  const v = vault();
+  fs.writeFileSync(path.join(v, 'brain', 'config.json'), JSON.stringify({ provider: 'none', telemetry: { enabled: true } }));
+  const before = vaultFiles(v);
+  assert.ok(!before.includes('brain/_index/recall-index.json'));
+  const r = run(v, PREVIEW);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout)[0].path, 'brain/memory/reference/zebra-deploy.md');
+  assert.deepEqual(vaultFiles(v), [...before, 'brain/_index/recall-index.json', 'brain/_index/recall-wake.md'].sort());
+  assert.equal(JSON.parse(fs.readFileSync(path.join(v, 'brain', '_index', 'recall-index.json'), 'utf8')).docCount, 1);
+  // A second preview reads that index and writes nothing at all.
+  const mtime = fs.statSync(path.join(v, 'brain', '_index', 'recall-index.json')).mtimeMs;
+  assert.equal(run(v, PREVIEW).status, 0);
+  assert.deepEqual(vaultFiles(v), [...before, 'brain/_index/recall-index.json', 'brain/_index/recall-wake.md'].sort());
+  assert.equal(fs.statSync(path.join(v, 'brain', '_index', 'recall-index.json')).mtimeMs, mtime);
+});

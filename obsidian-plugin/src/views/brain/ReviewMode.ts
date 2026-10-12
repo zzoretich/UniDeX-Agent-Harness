@@ -349,7 +349,7 @@ export class ReviewMode implements BrainModeView {
       if (b.unchecked.length) l2.createSpan({ cls: "aos-brain-pill is-off aos-brain-rv-unchecked", text: `${b.unchecked.length} not checked`, attr: { title: "Written since the duplicate check last ran; it runs again now" } });
       // Many sessions share one custom title: the first memory's title tells them apart.
       if (b.lead && b.lead !== b.title) r.createSpan({ cls: "aos-brain-rv-lead", text: b.lead, attr: { title: b.lead } });
-      // One bar per memory, coloured by type; the colours are named in words (§4: every coloured mark has a label).
+      // One bar per memory; their types are named in words (§4). Colour is for state only (brain-hub D23).
       const types = b.paths.map((p) => d.byPath.get(p)?.type ?? "none");
       const words = [...new Set(types)].map((t) => `${types.filter((x) => x === t).length} ${t}`).join(" · ");
       const pips = r.createSpan({ cls: "aos-brain-rv-pips", attr: { role: "img", "aria-label": words, title: words } });
@@ -614,7 +614,7 @@ export class ReviewMode implements BrainModeView {
     keepOlder.setAttr("title", `Keeps ${age.mine === "OLDER" ? "this one" : `“${o.title}”`}; ${age.mine === "OLDER" ? `“${o.title}”` : "this one"} is marked superseded by it`);
     this.textBtn(acts, "Keep both", "", `cmp:${m.path}:keepboth`, "keepboth", () => void this.keepBoth(m, o));
     this.textBtn(acts, "Open both", "", `cmp:${m.path}:openboth`, "openboth", () => { void this.ctx.edit(m.path); void this.ctx.edit(o.path); });
-    acts.createSpan({ cls: "aos-brain-rv-hint", text: "Keep the older one marks the newer superseded by it; Restore undoes it. Merging two into one comes with the next update." });
+    acts.createSpan({ cls: "aos-brain-rv-hint", text: "Keep the older one marks the newer superseded by it; Restore undoes it. Merging two into one comes in a later update." });
   }
 
   private keysFooter(M: HTMLElement, batch: boolean): void {

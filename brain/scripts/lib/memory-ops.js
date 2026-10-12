@@ -112,6 +112,24 @@ function joinFm(fm) { return fm.head + fm.lines.join('') + fm.tail; }
 function keyRe(key) { return new RegExp(`^${key}:[ \\t]*(.*?)[ \\t]*\\r?\\n?$`); }
 function unquote(v) { return v.replace(/^(["'])(.*)\1$/, '$2'); }
 
+// What YAML would not read back as the same plain string: a leading indicator or space, `: ` or ` #` inside, a trailing
+// colon or space, a boolean or null word, a bare number.
+const YAML_PLAIN_UNSAFE = /^[-?:,[\]{}#&*!|>'"%@`\s]|\s$|:$|: | #|^(?:true|false|yes|no|on|off|null|~)$|^[-+]?[\d.]+$/i;
+
+/**
+ * A one-line value as a frontmatter scalar that every reader here gets back unchanged (getKey, the HUD's brainModel
+ * fmKey and sdk/lib/brain.js strip the surrounding quotes and unescape nothing) and that strict YAML (Obsidian's
+ * Properties) parses as the same string: plain when it can be, else double-quoted when it holds no `"` or `\`, else
+ * single-quoted when it holds no `'`; plain as the last resort. A description like "Rule: ask first" needs the quotes.
+ */
+function yamlValue(v) {
+  const s = String(v);
+  if (!YAML_PLAIN_UNSAFE.test(s)) return s;
+  if (!/["\\]/.test(s)) return `"${s}"`;
+  if (!s.includes("'")) return `'${s}'`;
+  return s;
+}
+
 /** A top-level key's value (quotes stripped), or null. */
 function getKey(lines, key) {
   const re = keyRe(key);
@@ -242,10 +260,15 @@ function editIndex(vault, fn) {
 function indexLine(title, rel, description) { return `- [${oneLine(title)}](${rel}) — ${oneLine(description)}`; }
 
 function appendTrail(vault, m, action, extra = {}) {
+  const d = describe(m);
+  appendTrailRow(vault, { session: d.session || null, action, slug: m.slug, type: m.type, title: d.title, path: m.rel, ...extra });
+}
+
+/** One trail row as given, stamped first with its time (`fix` logs rows for a draft or a MEMORY.md line this way). */
+function appendTrailRow(vault, fields) {
   const dir = plainDir(vault, 'brain/_index');
   if (!dir) return;
-  const d = describe(m);
-  const row = { ts: new Date().toISOString(), session: d.session || null, action, slug: m.slug, type: m.type, title: d.title, path: m.rel, ...extra };
+  const row = { ts: new Date().toISOString(), ...fields };
   try { fsx.appendLineSync(path.join(dir, 'promote-log.jsonl'), JSON.stringify(row), { lock: true }); } catch { /* the trail is a record, never a gate */ }
 }
 
@@ -325,7 +348,7 @@ function setFields(vault, rel, fields, { expect = null, dryRun = false } = {}) {
   if (GONE.includes(status)) throw new OpsError('GONE', `${m.rel} is ${status}: restore it first`);
   if ('pin' in f) setKey(fm, 'pin', f.pin ? 'true' : null);
   if ('status' in f) setStatus(fm, m.type, f.status);
-  if ('description' in f) setKey(fm, 'description', f.description);
+  if ('description' in f) setKey(fm, 'description', yamlValue(f.description));
   const text = joinFm(fm);
   const out = { path: m.rel, fields: Object.keys(f), written: text !== m.text, hash: sha256(text) };
   if (dryRun) return { ...out, written: false, wouldWrite: text !== m.text, text, beforeText: m.text };
@@ -344,7 +367,7 @@ function keepDescription(fm, m, raw) {
   if (getKey(fm.lines, 'description')) return;
   const e = indexEntry(raw, m.rel);
   const d = oneLine((e && e.description) || deriveDescription(firstParagraph(m.text) || titleOf(m.text, m.slug)));
-  if (d) setKey(fm, 'description', d.replace(CONTROL, ' ').slice(0, MAX_DESC));
+  if (d) setKey(fm, 'description', yamlValue(d.replace(CONTROL, ' ').slice(0, MAX_DESC).trim()));
 }
 
 /** Take memories out (D5, D7): the status recorded, the description kept, the MEMORY.md lines removed together. */
@@ -450,4 +473,6 @@ module.exports = {
   TYPES, PATH_RE, SLUG_RE, HASH_RE, TYPE_HEADING, STATUSES, GONE, OpsError,
   checkPath, plainDir, readRegular, readMemory, splitFm, joinFm, getKey, getStatus, titleOf, firstParagraph, describe,
   indexEntry, keep, setFields, archive, restore, supersede, listMemories, listDrafts, sha256,
+  // lib/memory-fix.js's building blocks (brain-hub plan PR 3): the same line edits, writes, index lock and trail.
+  MAX_DESC, CONTROL, STATUS_TAG, setKey, yamlValue, oneLine, indexLine, readIndex, editIndex, write, appendTrail, appendTrailRow,
 };

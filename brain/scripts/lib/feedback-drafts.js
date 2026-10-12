@@ -88,6 +88,11 @@ function applyDraft(slug) {
     type: 'feedback', slug: d.slug, title: d.title, description: d.description,
     body: d.body, source: 'feedback-autoloop', session: d.session,
   });
+  // The `written` row auto-wrap logs for its memories (brain-hub D3): the hub's batches and the memory's history take
+  // its time, so an approved rule sorts by when it was approved, not by its draft's day. A record, never a gate.
+  try {
+    appendTrail({ session: d.session, action: 'written', slug: res.slug, type: 'feedback', title: d.title, path: res.memoryPath });
+  } catch { /* the approval stands without its row */ }
   fs.unlinkSync(d.path);
   logEvent({ event: 'applied', session: d.session, title: d.title, slug: d.slug });
   return res;

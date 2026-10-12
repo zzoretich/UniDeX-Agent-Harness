@@ -359,6 +359,19 @@ test("historyLine: oldest first, written by the source, set names its fields, cr
   assert.equal(line.split(" · ").length, 8);
 });
 
+test("historyLine: a fixed row names its kind (aos memory fix), and only a kind the runtime has", () => {
+  const now = new Date(2026, 9, 11, 12);
+  const at = (mo: number, d: number): string => new Date(2026, mo, d, 12).toISOString();
+  const row = (action: string, ts: string, extra: Record<string, unknown> = {}) => ({ ts, session: "", action, slug: "a", type: "feedback", title: "A", ...extra }) as never;
+  const changes = [{ field: "source", before: "session", after: "manual-wrap" }];
+  assert.equal(historyLine([row("written", at(8, 30)), row("fixed", at(9, 11), { kind: "sources", changes })], { source: "auto-wrap", created: null }, now),
+    "Written by auto-wrap Sep 30 · fixed (sources) Oct 11");
+  assert.equal(historyLine([row("fixed", at(9, 2), { kind: "index" }), row("fixed", at(9, 3), { kind: "types" })], { source: null, created: null }, now),
+    "Fixed (index) Oct 2 · fixed (types) Oct 3");
+  assert.equal(historyLine([row("fixed", at(9, 2), { kind: "<b>" })], { source: null, created: null }, now), "Fixed Oct 2");
+  assert.equal(historyLine([row("fixed", at(9, 2))], { source: null, created: null }, now), "Fixed Oct 2");
+});
+
 test("bodyWithoutTitle drops the leading H1 only when it is the title", () => {
   assert.equal(bodyWithoutTitle("\n# Graphify first\n\nAsk the graph.\n", "Graphify first"), "Ask the graph.\n");
   assert.equal(bodyWithoutTitle("# Other\n\nText", "Graphify first"), "# Other\n\nText");

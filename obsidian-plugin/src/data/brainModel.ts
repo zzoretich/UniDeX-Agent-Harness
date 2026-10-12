@@ -430,6 +430,10 @@ export function parseBrainMap(raw: string | null): BrainMap | null {
 
 /** The vault's token estimate (brain/scripts/lib/text-budget.js estimateTokens): characters / 4, rounded up. */
 export function estimateTokens(s: string | null | undefined): number { return Math.ceil(String(s ?? "").length / 4); }
+/** MEMORY.md's lines as Bootstrap's index card and Health's tile both count them: the non-blank ones. */
+export function indexLineCount(raw: string | null): number {
+  return String(raw ?? "").split(/\r?\n/).filter((l) => l.trim()).length;
+}
 /** SESSION.md's budget: auto-wrap fits its sections into this many tokens (auto-wrap.js fitToBudget). */
 export const SESSION_BUDGET = 400;
 /** recall-wake.md holds at most this many snippets (sdk/lib/recall.js WAKE_MAX_SNIPPETS). */
@@ -806,30 +810,53 @@ function statusMatches(m: BrainMemory, f: StatusFacet): boolean {
 /** The usage log has rows (telemetry on and some session ran since the hub shipped). */
 export function hasUsage(hub: BrainHub | null): boolean { return !!hub?.usage.since; }
 
-/** Library's results (D2): the kind, the query over title, summary, body and path, the facets; by use, then newest. */
-export function libraryRows(data: LibraryData, f: LibraryFilter, hub: BrainHub | null): LibraryRow[] {
+/** The window "unused" is measured over by default: memory.neverUsedDays' default, and the hub's own d30. */
+export const UNUSED_DAYS = 30;
+
+/**
+ * Whether a session injected, recalled or read `path` in the `days` before the hub counted (builtAt), or null without a
+ * usage log. "Unused" means one thing across the hub (memory.neverUsedDays, the setting "Memory unused after"): Library's
+ * Use facet and Health's Dead weight both read it. At 30 days it is the hub's d30 > 0; another window reads `last`
+ * against builtAt, as Dead weight does (brainHealth.ts deadWeight).
+ */
+export function usedWithin(hub: BrainHub | null, path: string, days = UNUSED_DAYS): boolean | null {
+  if (!hasUsage(hub)) return null;
+  const n = Math.max(1, Math.floor(days));
+  const u = hub!.usage.paths[path];
+  const built = timeOf(hub!.builtAt ?? "");
+  if (n === UNUSED_DAYS || !Number.isFinite(built)) return (u?.d30 ?? 0) > 0;
+  const last = timeOf(u?.last ?? "");
+  return Number.isFinite(last) && built - last <= n * DAY_MS;
+}
+
+/**
+ * Library's results (D2): the kind, the query over title, summary, body and path, the facets; by use, then newest.
+ * `days` is the window "unused" is measured over (memory.neverUsedDays): a row's label is its uses in 30 days, "used"
+ * when it has none that recent but was used within `days`, or "unused".
+ */
+export function libraryRows(data: LibraryData, f: LibraryFilter, hub: BrainHub | null, days = UNUSED_DAYS): LibraryRow[] {
   const usage = hasUsage(hub) ? hub!.usage.paths : null;
   const useOf = (p: string): number | null => (usage ? usage[p]?.d30 ?? 0 : null);
-  const label = (n: number | null): string => (n === null ? "" : n > 0 ? `${n}×` : "unused");
-  let rows: Array<LibraryRow & { at: string; titleHit: boolean }>;
+  const label = (n: number | null, used: boolean | null): string => (n === null || used === null ? "" : !used ? "unused" : n > 0 ? `${n}×` : "used");
+  let rows: Array<LibraryRow & { at: string; titleHit: boolean; used: boolean | null }>;
   const q = f.query.trim();
   if (f.kind === "memories") {
     rows = data.memories
       .filter((m) => (f.type === null || m.type === f.type) && statusMatches(m, f.status) && (f.source === null || (m.source ?? "(none)") === f.source))
       .filter((m) => matchesQuery(q, m.title, m.summary, m.body, m.path))
-      .map((m) => { const use = useOf(m.path); return { path: m.path, kind: f.kind, title: m.title, summary: m.summary, type: m.type, status: m.status, pin: m.pin, use, useLabel: label(use), at: m.updated ?? m.created ?? "", titleHit: matchesQuery(q, m.title) }; })
-      .filter((r) => f.use === "any" || r.use === null || (f.use === "used" ? r.use > 0 : r.use === 0));
+      .map((m) => { const use = useOf(m.path); const used = usedWithin(hub, m.path, days); return { path: m.path, kind: f.kind, title: m.title, summary: m.summary, type: m.type, status: m.status, pin: m.pin, use, useLabel: label(use, used), at: m.updated ?? m.created ?? "", titleHit: matchesQuery(q, m.title), used }; })
+      .filter((r) => f.use === "any" || r.used === null || (f.use === "used") === r.used);
   } else if (f.kind === "drafts") {
     rows = data.drafts.filter((d) => matchesQuery(q, d.title, d.summary, d.body, d.path))
-      .map((d) => ({ path: d.path, kind: f.kind, title: d.title, summary: d.summary, type: "feedback" as BrainMemoryType, status: "draft", pin: false, use: null, useLabel: "", at: d.created ?? "", titleHit: matchesQuery(q, d.title) }));
+      .map((d) => ({ path: d.path, kind: f.kind, title: d.title, summary: d.summary, type: "feedback" as BrainMemoryType, status: "draft", pin: false, use: null, useLabel: "", at: d.created ?? "", titleHit: matchesQuery(q, d.title), used: null }));
   } else {
     const notes = f.kind === "patterns" ? data.patterns : data.reflections;
     rows = notes.filter((n) => matchesQuery(q, n.title, n.summary, n.body, n.path))
-      .map((n) => { const use = f.kind === "patterns" ? useOf(n.path) : null; return { path: n.path, kind: f.kind, title: n.title, summary: n.summary, type: null, status: null, pin: false, use, useLabel: label(use), at: n.updated ?? n.created ?? n.path, titleHit: matchesQuery(q, n.title) }; });
+      .map((n) => { const use = f.kind === "patterns" ? useOf(n.path) : null; const used = f.kind === "patterns" ? usedWithin(hub, n.path, days) : null; return { path: n.path, kind: f.kind, title: n.title, summary: n.summary, type: null, status: null, pin: false, use, useLabel: label(use, used), at: n.updated ?? n.created ?? n.path, titleHit: matchesQuery(q, n.title), used }; });
   }
   return rows
     .sort((a, b) => Number(b.titleHit && !!q) - Number(a.titleHit && !!q) || (b.use ?? -1) - (a.use ?? -1) || b.at.localeCompare(a.at) || a.title.localeCompare(b.title))
-    .map(({ at: _at, titleHit: _hit, ...r }) => r);
+    .map(({ at: _at, titleHit: _hit, used: _used, ...r }) => r);
 }
 
 /** The `source:` values among the memories, "(none)" for those without, most common first (the Source facet). */
@@ -1001,8 +1028,8 @@ export function shortDay(s: string | null | undefined, now: Date): string {
 /**
  * Library's History in one line, oldest first: "Written by auto-wrap Sep 30 · kept Oct 2 · archived Oct 5". `rows` are
  * the memory's trail rows (historyFor, any order); with no `written` row the line starts at its `created:` day. A `set`
- * row names its fields (memory-ops.js appendTrail). One action twice on one day reads once; a long trail keeps its first
- * event and its last six.
+ * row names its fields (memory-ops.js appendTrail), a `fixed` row its kind ("fixed (sources)", lib/memory-fix.js). One
+ * action twice on one day reads once; a long trail keeps its first event and its last six.
  */
 export function historyLine(rows: readonly TrailEntry[], m: Pick<BrainMemory, "source" | "created">, now: Date): string {
   // Rows in one millisecond keep no order of their own (historyFor hands them newest first): a memory is written first.
@@ -1012,8 +1039,10 @@ export function historyLine(rows: readonly TrailEntry[], m: Pick<BrainMemory, "s
   for (const r of asc) {
     const action = String(r.action);
     const fields = arr<unknown>((r as { fields?: unknown }).fields).filter((f): f is string => typeof f === "string" && /^[a-z_]{1,30}$/.test(f));
+    const kind = (r as { kind?: unknown }).kind;
     const what = action === "written" ? `written by ${m.source || "auto-wrap"}`
       : action === "set" ? (fields.length ? `set ${fields.join(", ")}` : "changed")
+      : action === "fixed" ? (isFixKind(kind) ? `fixed (${kind})` : "fixed")
       : /^[a-z-]{1,20}$/.test(action) ? action : "changed";
     const day = shortDay(r.ts, now);
     const part = day ? `${what} ${day}` : what;
@@ -1083,8 +1112,8 @@ export function nearbyBasis(pairs: readonly HubDup[], path: string): "meaning" |
  * or use facet that hides it cleared, and the Status facet widened to "live", or to "any" when it is archived or
  * superseded. The query is the header's and stays.
  */
-export function filterShowing(f: LibraryFilter, m: BrainMemory, hub: BrainHub | null): LibraryFilter {
-  const used = hasUsage(hub) ? (hub!.usage.paths[m.path]?.d30 ?? 0) > 0 : null;
+export function filterShowing(f: LibraryFilter, m: BrainMemory, hub: BrainHub | null, days = UNUSED_DAYS): LibraryFilter {
+  const used = usedWithin(hub, m.path, days);
   return {
     ...f, kind: "memories",
     type: f.type !== null && f.type !== m.type ? null : f.type,
