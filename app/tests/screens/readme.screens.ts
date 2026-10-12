@@ -112,6 +112,25 @@ test.describe("the Workbench", () => {
     await shot(h.win, "brain");
   });
 
+  // Brain's other modes, each as it first draws (spec 2026-10-11-brain-hub D17-D20): the fixture's full BRAIN.md, its
+  // looks-shipped projects and recall-wake; its three communities, the largest selected; its hygiene and usage log.
+  for (const [mode, name] of [["bootstrap", "brain-bootstrap"], ["health", "brain-health"]] as const) {
+    test(name, async () => {
+      await openTab(h.win, "memory");
+      await content(h.win).locator(`.aos-brain-modes [role="tab"][data-mode="${mode}"]`).click();
+      await h.win.waitForTimeout(1200);
+      await shot(h.win, name);
+    });
+  }
+
+  test("brain-map, on its largest community", async () => {
+    await openTab(h.win, "memory");
+    await content(h.win).locator('.aos-brain-modes [role="tab"][data-mode="map"]').click();
+    await content(h.win).locator("button.aos-brain-bubble[data-community]").first().click();
+    await h.win.waitForTimeout(1200);
+    await shot(h.win, "brain-map");
+  });
+
   test("files, with a workspace open", async () => {
     await openTab(h.win, "files");
     for (const p of ["workspaces", "workspaces/harbor-map"]) await content(h.win).locator(`.aos-fl-row[data-path="${p}"]`).click();

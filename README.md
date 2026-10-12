@@ -245,6 +245,24 @@ UniDeX on a demo vault, in its light theme with one picture in dark. Everything 
   <br /><sub><b>Brain, Review.</b> Memories by the session that wrote them, with the one a new memory looks like beside it.</sub>
 </p>
 
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/screens/brain-bootstrap.png" width="100%" alt="Brain, Bootstrap: BRAIN.md, SESSION.md and recall-wake against their budgets, BRAIN.md section by section, and the recall preview" />
+      <br /><sub><b>Brain, Bootstrap.</b> What every new session starts with, against its budgets: Unpin, Mark complete, the projects that look shipped, and a recall preview.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/screens/brain-health.png" width="100%" alt="Brain, Health: six tiles, duplicates, the hygiene fixes and the memories nothing uses" />
+      <br /><sub><b>Brain, Health.</b> Duplicates, one-click hygiene fixes with a dry run first, and the memories nothing has used.</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/assets/screens/brain-map.png" width="960" alt="Brain, Map: the memories' communities in the knowledge graph, one selected with its members and linked communities" />
+  <br /><sub><b>Brain, Map.</b> Your memories' communities in the knowledge graph, each named by its most-linked memory.</sub>
+</p>
+
 <p align="center"><img src="docs/assets/divider.svg" width="960" alt="" /></p>
 
 <a name="your-first-session"></a>
