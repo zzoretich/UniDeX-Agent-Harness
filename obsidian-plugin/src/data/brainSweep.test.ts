@@ -5,7 +5,7 @@ import {
   type BrainMap, type BrainMemory, type SweepCard, type SweepEstimate, type SweepFile, type SweepRun,
 } from "./brainModel";
 import {
-  archiveAsk, consolidateAsk, groupScopes, retitleAsk, runDay, scopeName, scopePaths, scopeSummary, sweepCardView,
+  archiveAsk, consolidateAsk, currentCards, groupScopes, retitleAsk, runDay, scopeName, scopePaths, scopeSummary, sweepCardView,
   sweepDoneText, sweepEstimateLine, sweepGroups, sweepLine, sweepOffText, sweepState, sweepSummary, sweepViews, type SweepInput,
 } from "./brainSweep";
 
@@ -129,6 +129,28 @@ test("groupScopes: the key of the paths sent now, and earlier runs on the same l
   assert.deepEqual([...groupScopes(null, [C, D])], [sweepScopeKey([C, D])]);
 });
 
+test("a group re-run after its members changed replaces the earlier run's open cards on the same lead (A10)", () => {
+  // Swept on [C, D, E] (lead C): "archive E". D was merged away since, so the group now sends [C, E] (another key); the
+  // runtime keeps the first run's card under its own key, and the newer run on the same lead suggests nothing.
+  const k1 = sweepScopeKey([C, D, E])!, k2 = sweepScopeKey([C, E])!;
+  const first = run({ id: "r1", at: "2026-10-12T09:00:00Z", scope: { paths: [C, D, E] }, suggestions: 1 });
+  const stale = card({ id: "0000000000c1", kind: "archive", paths: [E], scope: k1, run: "r1" });
+  const whole = card({ id: "0000000000c2", kind: "merge", paths: [A, B], run: "r0" });
+  const other = card({ id: "0000000000c3", kind: "archive", paths: [F], scope: sweepScopeKey([E, F]), run: "r9" });
+  const before: SweepFile = { runs: [first, run({ id: "r0", at: "2026-10-12T08:00:00Z" })], suggestions: [stale, whole] };
+  assert.deepEqual(currentCards(before).map((c) => c.id), ["0000000000c1", "0000000000c2"], "the newest run on C: its card is listed");
+  assert.deepEqual(scopeSummary(input(before), groupScopes(before, [C, E])).views.map((v) => v.id), ["0000000000c1"], "the group's panel shows the earlier run's card");
+
+  const again = run({ id: "r2", at: "2026-10-12T10:00:00Z", scope: { paths: [C, E] }, suggestions: 0 });
+  const after: SweepFile = { runs: [again, ...before.runs], suggestions: [stale, whole, other, { ...stale, id: "0000000000c4", state: "dismissed" }] };
+  assert.deepEqual(currentCards(after).map((c) => c.id), ["0000000000c2", "0000000000c3", "0000000000c4"], "replaced by r2; the whole brain's, a run the file no longer lists and a dismissed one stay");
+  const t = scopeSummary(input(after), groupScopes(after, [C, E]));
+  assert.deepEqual([t.line, t.views.length], ["last run today · 0 suggestions · 0 open", 0], "the re-run's line, and no stale card under it");
+  assert.equal(sweepSummary(input(after)).views.some((v) => v.id === "0000000000c1"), false, "nor in Health's sweep card");
+  assert.equal(sweepGroups(input(after)).flatMap((g) => g.cards).some((v) => v.id === "0000000000c1"), false);
+  assert.deepEqual(currentCards(null), []);
+});
+
 function input(file: SweepFile): SweepInput {
   return { now: NOW, byPath, hub: HUB, map: MAP, sweep: file };
 }
@@ -172,7 +194,11 @@ test("the estimate line, and the sweep off with its reason and what still works 
   const off = sweepEstimateLine(est({ available: false, reason: "claude-not-logged-in", provider: "none", cap: null }));
   assert.deepEqual(off, { off: true, text: "Claude Code is not signed in. Merge with AI still works by hand." });
   assert.equal(sweepOffText({ reason: "ollama-only", cap: null }), "The sweep needs Claude or Codex; a local model cannot hold the whole brain. Merge with AI still works, on Ollama.");
-  assert.equal(sweepOffText({ reason: "reasoner-daily-cap", cap: { family: "reasoner", perDayUsd: 5, spentToday: 5, perCallUsd: 0.5 } }), "Today's model cap is reached ($5.00, reasoner.perDayUsd). Merge with AI still works by hand.");
+  // The reasoner's cap stops the sweep, not Merge: it drafts on the hook chain, under the hook's own cap (A7).
+  assert.equal(sweepOffText({ reason: "reasoner-daily-cap", cap: { family: "reasoner", perDayUsd: 5, spentToday: 5, perCallUsd: 0.5 } }), "Today's model cap is reached ($5.00, reasoner.perDayUsd). Merge with AI still works.");
+  // The hook's own cap, no provider: the merge's chain is down too, so it is finished by hand (A4).
+  assert.equal(sweepOffText({ reason: "daily-cap", cap: { family: "hook", perDayUsd: 0.5, spentToday: 0.5, perCallUsd: 0.05 } }), "Today's model cap is reached ($0.50, claude.perDayUsd). Merge with AI still works by hand.");
+  assert.equal(sweepOffText({ reason: "no-provider", cap: null }), "No model provider is set up. Merge with AI still works by hand.");
 });
 
 test("Consolidate with AI…'s question names the group, the cost and the members left out", () => {

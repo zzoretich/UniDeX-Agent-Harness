@@ -120,6 +120,55 @@ test('set title inserts an H1 after the frontmatter when there is none, and adds
   assert.match(read(v, 'MEMORY.md'), /- \[CRLF kept\]\(brain\/memory\/reference\/blank-line\.md\) — Body only\.$/m, 'no description anywhere: its opening');
 });
 
+test('set refuses a bracket in a title and `](` in a description: MEMORY.md\'s line would link another memory too', () => {
+  const v = fixture();
+  const before = read(v, 'MEMORY.md');
+  for (const f of [{ title: `Merged](${PR}) — x [y` }, { title: '[WIP] graph' }, { title: 'arr]' }, { description: `see [it](${PR})` }]) {
+    assert.throws(() => ops.setFields(v, FB, f), { code: 'BAD_FIELD', message: /\[ or \]|`\]\(`/ }, JSON.stringify(f));
+  }
+  assert.equal(read(v, FB), RULE);
+  assert.equal(read(v, 'MEMORY.md'), before, 'nothing written');
+  // Parentheses, and a lone bracket in a description, are fine: neither links anything.
+  ops.setFields(v, FB, { title: 'Graph (tools) first', description: 'ask the graph [first] (always)' });
+  assert.ok(read(v, 'MEMORY.md').includes(`- [Graph (tools) first](${FB}) — ask the graph [first] (always)\n`));
+  assert.ok(ops.TITLE_UNSAFE.test('a]b') && ops.DESC_UNSAFE.test('a](b') && !ops.DESC_UNSAFE.test('a] (b'));
+});
+
+test('set title never rewrites a `# ` line inside a code fence: it inserts the heading after the frontmatter instead', () => {
+  const v = fixture();
+  const REF = 'brain/memory/reference/build-steps.md';
+  const body = 'How to build:\n\n```bash\n# install deps first\nnpm ci\n```\n\n~~~\n# not a heading either\n~~~\n';
+  put(v, REF, `---\ntype: memory\ntags: [memory/reference, status/active]\ndescription: the build\n---\n\n${body}`);
+  assert.equal(ops.describe(ops.readMemory(v, REF)).title, 'install deps first', 'titleOf (fence-blind, as every reader is) reads the comment');
+  ops.setFields(v, REF, { title: 'Build the app' });
+  assert.equal(read(v, REF), `---\ntype: memory\ntags: [memory/reference, status/active]\ndescription: the build\n---\n\n# Build the app\n\n${body}`, 'the fence untouched');
+  assert.equal(ops.describe(ops.readMemory(v, REF)).title, 'Build the app');
+  assert.match(read(v, 'MEMORY.md'), /^- \[Build the app\]\(brain\/memory\/reference\/build-steps\.md\) — the build$/m);
+  // Retitled again, the real heading (now first, outside any fence) is the line rewritten.
+  ops.setFields(v, REF, { title: 'Build it' });
+  assert.equal(read(v, REF), `---\ntype: memory\ntags: [memory/reference, status/active]\ndescription: the build\n---\n\n# Build it\n\n${body}`);
+  // A heading after a closed fence is a heading.
+  const AFTER = 'brain/memory/reference/after-fence.md';
+  put(v, AFTER, '---\ntags: [memory/reference, status/active]\n---\n\n````\n```\n# inside\n```\n````\n\n# Real\n');
+  ops.setFields(v, AFTER, { title: 'Renamed' });
+  assert.equal(read(v, AFTER), '---\ntags: [memory/reference, status/active]\n---\n\n# Renamed\n\n````\n```\n# inside\n```\n````\n\n# Real\n', 'the first # line was in the fence: a heading on top');
+});
+
+test('a CRLF MEMORY.md: its lines read without the \\r, and a rewritten or added line keeps the file\'s line end', () => {
+  const v = fixture();
+  const crlf = INDEX.replace(/\n/g, '\r\n');
+  put(v, 'MEMORY.md', crlf);
+  assert.deepEqual(ops.indexEntry(crlf, FB), { title: 'Graphify first', description: 'ask the graph first' });
+  ops.setFields(v, FB, { title: 'Graph tools first' });
+  assert.equal(read(v, 'MEMORY.md'), crlf.replace('[Graphify first]', '[Graph tools first]'), 'the description kept, the \\r kept');
+  // Archive keeps the index-only description; restore adds the line back with a \r.
+  ops.archive(v, [PR]);
+  assert.match(read(v, PR), /^description: shipped the cockpit$/m);
+  ops.restore(v, [PR]);
+  assert.ok(read(v, 'MEMORY.md').includes(`- [Pulse 1.5.0](${PR}) — shipped the cockpit\r\n`));
+  assert.doesNotMatch(read(v, 'MEMORY.md'), /[^\r]\n/, 'every line still ends CRLF');
+});
+
 test('archive keeps the description, records the status before, removes the index line; restore puts both back', () => {
   const v = fixture();
   ops.setFields(v, PR, { status: 'complete' });

@@ -64,6 +64,9 @@ test("parseMemory: the summary is the description, else MEMORY.md's line, else t
   const index = parseIndexLines("# Memory\n\n## Feedback (how to work)\n\n- [Prefer small diffs](brain/memory/feedback/prefer-small-diffs.md) — one reviewable change at a time\n- [No dash](brain/memory/feedback/no-dash.md)\n");
   assert.equal(index.get(P("feedback", "prefer-small-diffs")), "one reviewable change at a time");
   assert.equal(index.get(P("feedback", "no-dash")), "");
+  // A CRLF MEMORY.md reads the same: the `\r` is not part of the description, and a line still matches.
+  const crlf = parseIndexLines("# Memory\r\n\r\n## Feedback (how to work)\r\n- [Prefer small diffs](brain/memory/feedback/prefer-small-diffs.md) — one reviewable change at a time\r\n- [No dash](brain/memory/feedback/no-dash.md)\r\n");
+  assert.deepEqual([...crlf], [[P("feedback", "prefer-small-diffs"), "one reviewable change at a time"], [P("feedback", "no-dash"), ""]]);
   assert.equal(parseMemory(P("feedback", "prefer-small-diffs"), mem("feedback", "prefer-small-diffs"), index)!.summary, "one reviewable change at a time");
   assert.equal(parseMemory(P("feedback", "prefer-small-diffs"), mem("feedback", "prefer-small-diffs", { description: "own words" }), index)!.summary, "own words");
   assert.equal(parseMemory(P("feedback", "no-dash"), mem("feedback", "no-dash", { body: "First para\nwraps.\n\nSecond." }), index)!.summary, "First para wraps.");

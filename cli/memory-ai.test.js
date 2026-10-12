@@ -176,7 +176,10 @@ const untouched = () => {
 
 test('merge-draft --estimate on Claude: the Mechanics\' shape, the oldest as winner, haiku priced under the hook cap; no call, nothing written', async () => {
   const calls = [];
-  const e = await json(['merge-draft', B, A, '--estimate'], claudeDeps(calls, MERGED));
+  // An estimate never pays for Claude's login probe (a real `claude -p` call), and records no provider state.
+  try { fs.unlinkSync(P.STATE_PATH); } catch { /* none */ }
+  const e = await json(['merge-draft', B, A, '--estimate'], claudeDeps(calls, MERGED, { loginProbe: never('claude login') }));
+  assert.equal(fs.existsSync(P.STATE_PATH), false, 'no provider-state.json');
   assert.deepEqual(keys(e), ['baseHashes', 'byHand', 'estimate', 'sources', 'truncated', 'type', 'winner']);
   assert.deepEqual([e.winner, e.type, e.truncated], [A, 'feedback', false]);
   assert.deepEqual(e.sources.map((s) => keys(s)), [0, 1].map(() => ['chars', 'created', 'hash', 'path', 'title', 'truncated', 'type']));
@@ -231,7 +234,10 @@ test('merge-draft on Claude, then merge with its fields and hashes, then unmerge
   assert.ok(idx.includes(`- [${MERGED.title}](${A}) — ${MERGED.description}\n`), idx);
   assert.ok(!idx.includes(B), 'the loser\'s line is gone');
   const rec = JSON.parse(read(`brain/_index/memory-merges/${m.record}.json`));
-  assert.deepEqual([rec.winner, rec.before.text, rec.after.hash, rec.sources, rec.undoneAt], [A, TEXT[A], m.hash, [{ path: A, hash: sha(TEXT[A]) }, { path: B, hash: sha(TEXT[B]) }], null]);
+  assert.deepEqual([rec.winner, rec.before.text, rec.after.hash, rec.sources, rec.undoneAt], [A, TEXT[A], m.hash, [
+    { path: A, hash: sha(TEXT[A]) }, { path: B, hash: sha(TEXT[B]), before: { text: TEXT[B], hash: sha(TEXT[B]) }, after: { hash: sha(read(B)) } },
+  ], null]);
+  assert.deepEqual(rec.index, { before: { text: INDEX, hash: sha(INDEX) }, after: { hash: sha(read('MEMORY.md')) } });
   const rows = trail();
   assert.deepEqual(rows.map((r) => [r.action, r.path]), [['merged', A], ['superseded', B]]);
   assert.deepEqual([rows[0].from, rows[0].record, rows[0].hash], [[B], m.record, m.hash]);
@@ -240,10 +246,10 @@ test('merge-draft on Claude, then merge with its fields and hashes, then unmerge
 
   // Undo: pinned to the merged memory's hash; everything back byte for byte.
   const u = await json(['unmerge', A, '--expect', m.hash]);
-  assert.deepEqual(keys(u), ['brainMd', 'hash', 'path', 'record', 'restored']);
-  assert.deepEqual([u.path, u.restored, u.record, u.hash, u.brainMd], [A, [B], m.record, sha(TEXT[A]), { ok: true }]);
+  assert.deepEqual(keys(u), ['brainMd', 'hash', 'indexExactly', 'path', 'record', 'restored', 'restoredExactly']);
+  assert.deepEqual([u.path, u.restored, u.restoredExactly, u.indexExactly, u.record, u.hash, u.brainMd], [A, [B], [B], true, m.record, sha(TEXT[A]), { ok: true }]);
   assert.equal(read(A), TEXT[A]);
-  assert.doesNotMatch(read(B), /superseded/);
+  assert.equal(read(B), TEXT[B], 'the other one byte for byte too');
   assert.equal(read('MEMORY.md'), INDEX, 'MEMORY.md as it was');
   assert.ok(JSON.parse(read(`brain/_index/memory-merges/${m.record}.json`)).undoneAt);
   assert.deepEqual(trail().slice(2).map((r) => [r.action, r.path]), [['unmerged', A], ['restored', B]]);
@@ -314,6 +320,10 @@ test('merge-draft with provider none: the estimate is off (forced) and the draft
   setConfig({ provider: 'none' });
   const e = await json(['merge-draft', A, B, '--estimate'], nobody);
   assert.deepEqual(e.estimate, { available: false, reason: 'forced', provider: 'none', model: null, tokensIn: e.estimate.tokensIn, tokensOut: e.estimate.tokensOut, usd: 0, cap: null });
+  // In a terminal (no --json) it says why in the page's words.
+  const start = io.lines.length;
+  assert.equal(await M.main(['merge-draft', A, B, '--estimate'], opts(nobody)), 0);
+  assert.deepEqual(io.lines.slice(start), [`merge into ${A} (feedback)`, '  no model call possible: No model provider is set up.']);
   const d = await json(['merge-draft', A, B], nobody);
   assert.deepEqual(keys(d), DRAFT_KEYS);
   assert.deepEqual([d.mode, d.reason, d.provider, d.model, d.usd, d.estimated, d.cap], ['by-hand', 'No model provider is set up.', 'none', null, 0, false, null]);
@@ -365,7 +375,7 @@ const cardIds = (r) => r.suggestions.map((c) => [c.kind, c.paths]);
 
 test('sweep --estimate and a real run on Claude: claude.model with no --effort under the reasoner cap; the cards stored; dismiss is for good', async () => {
   const calls = [];
-  const e = await json(['sweep', '--estimate'], claudeDeps(calls, SWEPT));
+  const e = await json(['sweep', '--estimate'], claudeDeps(calls, SWEPT, { loginProbe: never('claude login') }));
   assert.deepEqual(keys(e), ['considered', 'estimate', 'of', 'scope']);
   assert.deepEqual([e.scope, e.considered, e.of], [null, 4, 4]);
   assert.deepEqual(keys(e.estimate), ESTIMATE_KEYS);
@@ -446,6 +456,8 @@ test('the sweep off: Ollama only, provider none and the reasoner cap; --estimate
     try { fs.unlinkSync(P.STATE_PATH); } catch { /* none */ }
     const e = await json(['sweep', '--estimate'], deps);
     assert.deepEqual([e.estimate.available, e.estimate.reason, e.estimate.provider, e.estimate.usd], [false, reason, 'none', 0], reason);
+    assert.equal(await M.main(['sweep', '--estimate'], opts(deps)), 0);
+    assert.equal(io.lines[io.lines.length - 1], `  no model call possible: ${sentence}`, `${reason}: the terminal says why`);
     await refusal(['sweep', '--json'], deps, new RegExp(`^the sweep needs Claude or Codex \\(${sentence.replace(/[.$()]/g, '\\$&')}\\)$`));
     assert.ok(!exists(sweepLib.SWEEP_PATH), `${reason}: nothing written`);
     return e;

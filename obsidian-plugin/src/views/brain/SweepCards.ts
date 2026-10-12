@@ -7,11 +7,14 @@
 // community's panel; the words come from data/brainSweep.ts.
 //
 // A card stays, its buttons busy (aria-disabled, so the keyboard stays on them), until its verb answers; once it went
-// through, the card is hidden until the files agree (the next load reads it done or dismissed). After a dialog the
-// keyboard goes back to the card's button, or to the card now in its place.
+// through, that card (its id and its run) is hidden until the files agree (a load reads it done or dismissed, or holds
+// another run's card under that id). The modes call sync() on every load, whether or not a card is listed then, so a
+// card applied, undone and suggested again by a later run (the same id: its kind and paths) shows again. After a dialog
+// the keyboard goes back to the card's button, or to the card now in its place.
 import { Notice } from "obsidian";
 import { pl } from "../../data/brainHealth";
-import { archiveAsk, retitleAsk, sweepState, type SweepCardView } from "../../data/brainSweep";
+import type { SweepCard } from "../../data/brainModel";
+import { archiveAsk, currentCards, retitleAsk, sweepState, type SweepCardView } from "../../data/brainSweep";
 import { guardClicks } from "./guardClicks";
 import type { BrainCtx } from "./types";
 
@@ -34,8 +37,8 @@ type Busy = { act: "review" | "dismiss"; text: string };
 
 export class SweepCards {
   private busy = new Map<string, Busy>();
-  /** Cards whose action went through, hidden until the files agree. */
-  private gone = new Set<string>();
+  /** Cards whose action went through, hidden until the files agree: id → the run that card came from. */
+  private gone = new Map<string, string>();
   /** After a dialog: the button to give the keyboard back to on the next draw, when nothing has it. */
   private want: { key: string; list: string; index: number } | null = null;
   /** Each listed card's place in its list at the last draw (where the keyboard goes when the card has left). */
@@ -45,8 +48,8 @@ export class SweepCards {
 
   /** The listed cards into `parent` (a role="list"), or the empty text; null when nothing was drawn. */
   render(parent: HTMLElement, views: readonly SweepCardView[], o: SweepListOptions): HTMLElement | null {
-    this.prune();
-    const shown = views.filter((v) => !this.gone.has(v.id));
+    this.sync();
+    const shown = views.filter((v) => !this.hidden(v.card));
     if (!shown.length) {
       if (o.empty) parent.createDiv({ cls: "aos-brain-empty aos-brain-sw-empty", text: o.empty });
       this.focusWanted(parent, o.label, []);
@@ -90,14 +93,27 @@ export class SweepCards {
     return b;
   }
 
-  /** A hidden card the files now read done or dismissed (or that left the file) is no longer ours to hide. */
-  private prune(): void {
+  /** Whether a card is one whose action went through (the same id from the same run). */
+  private hidden(c: Pick<SweepCard, "id" | "run">): boolean {
+    return this.gone.get(c.id) === c.run;
+  }
+
+  private hide(c: Pick<SweepCard, "id" | "run">): void {
+    this.gone.set(c.id, c.run);
+  }
+
+  /**
+   * After each load (Health calls it from update(), Map from its draw, and render() does): a hidden card the files now
+   * read done or dismissed, that left the file (or a newer run on its group replaced), or whose id now belongs to another
+   * run's card, is no longer ours to hide.
+   */
+  sync(): void {
     if (!this.gone.size) return;
     const d = this.ctx.data();
-    const cards = new Map((d.sweep?.suggestions ?? []).map((c) => [c.id, c]));
-    for (const id of this.gone) {
+    const cards = new Map(currentCards(d.sweep).map((c) => [c.id, c]));
+    for (const [id, run] of this.gone) {
       const c = cards.get(id);
-      const s = c ? sweepState(c, d.byPath) : "done";
+      const s = c && c.run === run ? sweepState(c, d.byPath) : "done";
       if (s !== "open" && s !== "stale") this.gone.delete(id);
     }
   }
@@ -132,7 +148,7 @@ export class SweepCards {
     try {
       if (v.kind === "merge") {
         this.set(v, { act: "review", text: "Merging…" }, listLabel, "review");
-        if (await this.ctx.merge(v.card.paths)) this.gone.add(v.id);
+        if (await this.ctx.merge(v.card.paths)) this.hide(v.card);
       } else if (v.kind === "archive") {
         this.set(v, { act: "review", text: "Review…" }, listLabel, "review");
         const q = archiveAsk(v);
@@ -141,7 +157,7 @@ export class SweepCards {
         const paths = v.card.paths;
         const r = await this.ctx.runAll("archive", paths, "Archive");
         if (r.done) new Notice(`Archived ${pl(r.done, "memory", "memories")}${r.failed ? ` of ${paths.length}` : ""}. Restore in Library puts ${r.done === 1 ? "it" : "each one"} back.`);
-        if (r.done === paths.length) this.gone.add(v.id);
+        if (r.done === paths.length) this.hide(v.card);
       } else {
         const path = v.card.paths[0];
         const before = this.ctx.data().byPath.get(path);
@@ -155,7 +171,7 @@ export class SweepCards {
         this.set(v, { act: "review", text: "Retitling…" }, listLabel, "review");
         const fields = { title: v.card.title, ...(v.card.description ? { description: v.card.description } : {}) };
         const r = await this.ctx.run({ verb: "set", path, fields, expect: m.hash }, "Retitle");
-        if (r.ok) this.gone.add(v.id);
+        if (r.ok) this.hide(v.card);
       }
     } catch (e) {
       new Notice(`${label}: ${e instanceof Error ? e.message : String(e)}`);
@@ -170,7 +186,7 @@ export class SweepCards {
     this.set(v, { act: "dismiss", text: "Dismissing…" }, listLabel, "dismiss");
     try {
       const r = await this.ctx.run({ verb: "sweep-dismiss", id: v.id }, "Dismiss suggestion");
-      if (r.ok) this.gone.add(v.id);
+      if (r.ok) this.hide(v.card);
     } catch (e) {
       new Notice(`Dismiss suggestion: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

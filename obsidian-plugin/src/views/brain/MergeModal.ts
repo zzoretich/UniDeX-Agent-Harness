@@ -8,17 +8,18 @@
 // (made with createEl and capped at MERGE_LIMITS; model text is only ever a value, never markup), the target line (the
 // oldest keeps its path and its links, A1), Draft with AI beside what one call would cost or why none can be made (A5),
 // the spend line after a draft, and what Save merged will do. Draft with AI runs `merge-draft` (ctx.run, AI_TIMEOUT_MS,
-// A12) and asks before its fields replace ones the person edited; a by-hand answer (no provider, a cap, no answer, a bad
-// reply) shows its reason and leaves the draft to finish. Cancel while a draft runs drops its answer (a seq counter, as
-// DraftModal) and says the call may still be billed; the dialog stays, to finish by hand. Save merged runs
-// `merge … --expect <every source's hash>` once; while it runs nothing else does and the dialog cannot be closed, so its
-// answer is shown. A memory changed since the dialog read it is refused by the runtime (CHANGED, A9): nothing is
-// written, and the dialog says to open the merge again. The pure parts are exported for MergeModal.test.ts.
+// A12), keeping the keyboard while it waits (aria-disabled, never disabled), and asks before its fields replace ones the
+// person edited; a by-hand answer (no provider, a cap, no answer, a bad reply) shows its reason, and for a reply that
+// could not be read who answered and what it cost, and leaves the draft to finish. Cancel while a draft runs drops its
+// answer (a seq counter, as DraftModal) and says the call may still be billed; the dialog stays, to finish by hand.
+// Save merged runs `merge … --expect <every source's hash>` once; while it runs nothing else does and the dialog cannot
+// be closed, so its answer is shown. A memory changed since the dialog read it is refused by the runtime (CHANGED, A9):
+// nothing is written, and the dialog says to open the merge again. The pure parts are exported for MergeModal.test.ts.
 import { Modal, Notice } from "obsidian";
 import type { App } from "obsidian";
 import {
   AI_TIMEOUT_MS, MERGE_LIMITS, UNDO_DAYS, bodyWithoutTitle, estimateText, parseMergeDraft, parseMergeEstimate, providerName,
-  shortDay, spendText, type BrainMemory, type MergeEstimate, type MergeFields, type MergeResult, type MergeSource,
+  shortDay, spendText, type BrainMemory, type MergeDraft, type MergeEstimate, type MergeFields, type MergeResult, type MergeSource,
 } from "../../data/brainModel";
 import { dialogId } from "../../ui/spaces/SpaceDialogs";
 import type { BrainCtx } from "./types";
@@ -37,14 +38,17 @@ export function mergeInto(f: MergeFields): MergeFields {
 
 const count = (n: number): string => n.toLocaleString("en-US");
 
-/** Why Save merged is off for these fields (A8's limits; `merge --into` takes 1–120, 1–200 and 1–16,000 characters),
+/** Why Save merged is off for these fields (A8's limits; `merge --into` takes 1–120, 1–200 and 1–16,000 characters,
+ *  and, as MEMORY.md links the memory as [title](path), no `[` or `]` in the title and no `](` in the description),
  *  or null when they can be saved. */
 export function mergeProblem(f: MergeFields): string | null {
   const c = mergeInto(f);
   if (!c.title) return "The merged memory needs a title.";
   if (c.title.length > MERGE_LIMITS.title) return `The title is over ${count(MERGE_LIMITS.title)} characters.`;
+  if (/[[\]]/.test(c.title)) return "The title cannot hold [ or ]: MEMORY.md links it as [title](path).";
   if (!c.description) return "The merged memory needs a description.";
   if (c.description.length > MERGE_LIMITS.description) return `The description is over ${count(MERGE_LIMITS.description)} characters.`;
+  if (/\]\(/.test(c.description)) return "The description cannot hold “](”: MEMORY.md would read it as a link.";
   if (!c.body) return "The merged memory needs a body.";
   if (c.body.length > MERGE_LIMITS.body) return `The body is over ${count(MERGE_LIMITS.body)} characters.`;
   return null;
@@ -73,6 +77,17 @@ export function savingWill(winner: string, others: number, pinned: boolean): str
  *  gives them. */
 export function sourceOrder(sources: readonly MergeSource[], winner: string): MergeSource[] {
   return [...sources.filter((s) => s.path === winner), ...sources.filter((s) => s.path !== winner)];
+}
+
+/**
+ * The line after a by-hand answer (A4, A5): its reason, then, when a model did answer (a reply that could not be read:
+ * the runtime keeps its provider, model and cost, as the call was made and may be billed), who answered and what it cost.
+ * A call that failed or never ran came back with no model and nothing spent, so nothing more is said.
+ */
+export function byHandText(d: Pick<MergeDraft, "reason" | "provider" | "model" | "usd" | "estimated" | "cap">): string {
+  const head = `${d.reason ?? "No model answered."} Finish the draft by hand.`;
+  const answered = d.provider !== "none" && (!!d.model || d.usd > 0);
+  return answered ? `${head} · ${spendText(d, "answered by")}` : head;
 }
 
 /** What a stale save says: nothing was written, and the dialog's hashes are old, so only a fresh open can save. */
@@ -225,14 +240,16 @@ export class MergeModal extends Modal {
       this.say("");
       this.error(r.ok ? "aos memory merge-draft answered in an unexpected shape: run aos upgrade" : r.reason);
       this.paint();
+      this.keepKeyboard();
       return;
     }
     this.base = d;
     if (d.mode === "by-hand") {
       // No model answered (none, a cap, no answer, a bad reply): its reason, and the by-hand draft stays to finish.
-      this.say(`${d.reason ?? "No model answered."} Finish the draft by hand.`, "by-hand");
+      this.say(byHandText(d), "by-hand");
       if (!this.edited) this.fill(d.fields);
       this.paint();
+      this.keepKeyboard();
       return;
     }
     this.drafted = true;
@@ -247,6 +264,18 @@ export class MergeModal extends Modal {
     if (use) this.fill(d.fields);
     this.say(use ? spendText(d) : `${spendText(d)} · not used: your edits are kept`, "ai");
     this.paint();
+    this.keepKeyboard();
+  }
+
+  /** After a draft's answer or a stop: when the keyboard is nowhere in the dialog, Draft with AI takes it back. */
+  private keepKeyboard(): void {
+    const ai = this.form?.ai;
+    if (!ai || this.closed) return;
+    const doc = this.modalEl.ownerDocument;
+    const a = doc.activeElement as HTMLElement | null;
+    // In the dialog already, or in another dialog on top (it gives the keyboard back itself when it closes).
+    if (a && a !== doc.body && (this.modalEl.contains(a) || a.closest?.(".modal"))) return;
+    (ai.disabled ? this.form?.title : ai)?.focus();
   }
 
   /** Cancel while a draft runs: its answer is dropped (seq); the call itself is not stopped (A12). */
@@ -255,6 +284,7 @@ export class MergeModal extends Modal {
     this.busy = null;
     this.say(MERGE_CANCEL_TEXT, "cancelled");
     this.paint();
+    this.keepKeyboard();
   }
 
   /** Save merged: `merge … --into … --expect <every source's hash>` once (A9). */
@@ -312,14 +342,16 @@ export class MergeModal extends Modal {
 
     const title = this.input(right, "TITLE", "title", MERGE_LIMITS.title);
     const description = this.input(right, "DESCRIPTION", "description", MERGE_LIMITS.description);
-    const bf = right.createEl("label", { cls: "aos-brain-mg-field" });
+    // The count sits beside the label, not in it: the field is named "BODY" alone, and the count is its description.
+    const bw = right.createDiv({ cls: "aos-brain-mg-field" });
+    const bf = bw.createEl("label", { cls: "aos-brain-mg-field" });
     bf.createSpan({ cls: "aos-brain-mg-flabel", text: "BODY" });
     const countId = dialogId("merge-count");
     const body = bf.createEl("textarea", {
       cls: "aos-brain-mg-input",
       attr: { rows: "12", maxlength: String(MERGE_LIMITS.body), "data-field": "body", "aria-describedby": countId },
     });
-    const bodyCount = bf.createSpan({ cls: "aos-brain-mg-count aos-brain-mono", attr: { id: countId } });
+    const bodyCount = bw.createSpan({ cls: "aos-brain-mg-count aos-brain-mono", attr: { id: countId } });
     body.addEventListener("input", () => { this.fields.body = body.value; this.edited = true; this.paint(); });
 
     right.createEl("p", { cls: "aos-brain-mg-target aos-brain-mono", text: targetLine(e.winner, e.sources.length) });
@@ -415,7 +447,14 @@ export class MergeModal extends Modal {
     const f = this.form;
     if (!f) return;
     const e = this.est?.estimate ?? null;
-    f.ai.disabled = this.busy !== null || this.stale || !e?.available;
+    // Off (no estimate, no model, stale) is `disabled`; busy is aria-disabled, which keeps the keyboard on the button
+    // while a draft runs (a disabled button would drop it to the page), and its clicks do nothing (draftWithAi).
+    f.ai.disabled = this.stale || !e?.available;
+    const waiting = this.busy !== null && !f.ai.disabled;
+    f.ai.setAttr("aria-disabled", waiting ? "true" : null);
+    f.ai.toggleClass("is-busy", waiting);
+    if (this.busy === "drafting") f.ai.setAttr("aria-busy", "true");
+    else f.ai.removeAttribute("aria-busy");
     f.ai.setText(this.busy === "drafting" ? "Drafting…" : this.drafted ? "Redraft" : "Draft with AI");
     f.est.setText(!e ? "" : e.available ? estimateText(e) : `${estimateText(e)} Combine them by hand below.`);
     f.est.toggleClass("is-off", !!e && !e.available);

@@ -87,6 +87,8 @@ export class HealthMode implements BrainModeView {
     if (!this.root) return;
     const d = this.ctx.data();
     for (const [k, s] of this.dismissing) if (s === "done" && !d.pairs.some((p) => pk(p.a, p.b) === k)) this.dismissing.delete(k);
+    // On every load, even one that lists no card: an applied card the files now read done stops being hidden.
+    this.cards.sync();
     const place = this.savePlace();
     this.root.empty();
     this.draw(d);
@@ -424,7 +426,8 @@ export class HealthMode implements BrainModeView {
 
   /**
    * What a whole-brain sweep would cost (brain-ai A5): `sweep --estimate` writes nothing and calls no model. Asked once
-   * each time Health is shown and after a run (today's spend moved); an answer from an earlier show is dropped.
+   * each time Health is shown and after a run, the whole brain's or a cluster's (today's spend moved); an answer from
+   * an earlier show is dropped.
    */
   private async fetchEstimate(): Promise<void> {
     const seq = ++this.estSeq;
@@ -476,6 +479,7 @@ export class HealthMode implements BrainModeView {
     const sent = scopePaths(c.paths[0] ?? null, c.paths);
     this.sweeping = { scope: c.key, stage: "check" };
     this.update();
+    let ran = false;
     try {
       const pre = await this.ctx.preview<unknown>({ verb: "sweep", paths: sent.paths, estimate: true }, label);
       if (!pre.ok) return;
@@ -490,6 +494,7 @@ export class HealthMode implements BrainModeView {
       if (!(await this.ctx.confirm(q.title, q.message, q.confirm))) return;
       this.sweeping = { scope: c.key, stage: "run" };
       this.update();
+      ran = true;
       const r = await this.ctx.run<unknown>({ verb: "sweep", paths: sent.paths, estimate: false }, label, { timeoutMs: AI_TIMEOUT_MS });
       if (r.ok) new Notice(sweepDoneText(parseSweepResult(r.json), c.label));
     } catch (e) {
@@ -497,6 +502,9 @@ export class HealthMode implements BrainModeView {
     } finally {
       this.sweeping = null;
       this.focusKey = key;
+      // A scoped run spends against the same reasoner cap as the whole brain's: the sweep card's "today $y of $z" (and
+      // whether Run a sweep is still on) is asked again, as after Run a sweep.
+      if (ran && this.root) { this.estimate = { state: "loading" }; void this.fetchEstimate(); }
       this.update();
     }
   }

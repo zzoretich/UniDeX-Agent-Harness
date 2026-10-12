@@ -32,7 +32,9 @@
  *                                     supersedes the others by it and collapses their MEMORY.md lines (D7, A9); one
  *                                     --expect hash per path, in order; the old text is kept for unmerge (A2)
  *   unmerge <path> --expect <hash> [--json]
- *                                     the newest merge into <path> undone: its text back, the others restored (A2)
+ *                                     the newest merge into <path> undone: its text back, the others restored (byte for
+ *                                     byte while the merge left them as they are: restoredExactly), MEMORY.md back
+ *                                     whole when it is as the merge left it (indexExactly), else its lines (A2)
  *   sweep [<path>…] [--estimate] [--json]
  *                                     the consolidation sweep (D22, A6, A10, A11; lib/memory-sweep.js): Merge, Archive
  *                                     and Retitle suggestions over the whole brain or the paths given (≤ 50), kept in
@@ -243,9 +245,19 @@ function fixVerb(ctx, kind, o) {
   return 0;
 }
 
-/** The model's answer to "what would this cost" (brain-ai A5): one line for a terminal. */
-function estimateLine(e) {
-  if (!e || !e.available) return `no model call possible: ${(e && e.reason) || 'no provider'}`;
+/**
+ * The model's answer to "what would this cost" (brain-ai A5): one line for a terminal. Off, it says why in the page's
+ * words (lib/memory-ai.js reasonSentence, or the seam's own in tests), else the reason code.
+ */
+function estimateLine(e, ai) {
+  if (!e || !e.available) {
+    let why = '';
+    try {
+      const seam = ai || resolveModule('lib/memory-ai.js');
+      if (typeof seam.reasonSentence === 'function') why = String(seam.reasonSentence(e) || '').trim();
+    } catch { /* the code below */ }
+    return `no model call possible: ${why || (e && e.reason) || 'no provider'}`;
+  }
   return `about ${money(e.usd)} · ${e.model || e.provider} · ${e.provider}${e.cap ? ` · today ${money(e.cap.spentToday)} of ${money(e.cap.perDayUsd)}` : ''}`;
 }
 
@@ -256,7 +268,7 @@ async function mergeDraftVerb(ctx, paths, o) {
   process.env.AOS_VAULT = ctx.vault;
   const r = await mergeLib().mergeDraft(ctx.vault, paths, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env });
   emit(o.io, o.json, r, o.estimate
-    ? [`merge into ${r.winner} (${r.type})`, `  ${estimateLine(r.estimate)}`]
+    ? [`merge into ${r.winner} (${r.type})`, `  ${estimateLine(r.estimate, o.ai)}`]
     : [
       r.mode === 'ai' ? `drafted by ${r.model || r.provider} · ${r.provider} · ${money(r.usd)}${r.estimated ? ' (estimated)' : ''}` : `combine by hand: ${r.reason}`,
       `into ${r.winner}:`, `# ${r.fields.title}`, r.fields.description, '', r.fields.body,
@@ -288,7 +300,12 @@ function unmergeVerb(ctx, rel, o) {
   if (!/^[0-9a-f]{16,64}$/.test(o.expect)) throw new UsageError('aos memory unmerge: --expect takes the merged memory\'s hash as `aos memory list --json` prints it');
   const r = mergeLib().unmerge(ctx.vault, rel, o.expect);
   const brainMd = runBrainMd(ctx, o);
-  emit(o.io, o.json, { ...r, brainMd }, [`${r.path}: merge undone`, ...r.restored.map((p) => `  restored ${p}`)]);
+  const exact = new Set(r.restoredExactly || []);
+  emit(o.io, o.json, { ...r, brainMd }, [
+    `${r.path}: merge undone`,
+    ...r.restored.map((p) => `  restored ${p}${exact.has(p) ? '' : ' (changed since the merge: its status and line put back)'}`),
+    `  MEMORY.md ${r.indexExactly ? 'as it was' : 'lines put back'}`,
+  ]);
   return 0;
 }
 
@@ -305,7 +322,7 @@ async function sweepVerb(ctx, args, o) {
   process.env.AOS_VAULT = ctx.vault; // as mergeDraftVerb: before lib/memory-ai.js loads provider.js
   const r = await lib.sweep(ctx.vault, args, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env });
   emit(o.io, o.json, r, o.estimate
-    ? [`sweep ${r.considered} of ${r.of} memories`, `  ${estimateLine(r.estimate)}`]
+    ? [`sweep ${r.considered} of ${r.of} memories`, `  ${estimateLine(r.estimate, o.ai)}`]
     : [
       `${r.run.suggestions} suggestion${r.run.suggestions === 1 ? '' : 's'} from ${r.run.model || r.run.provider} · ${r.run.provider} · ${money(r.run.usd)}${r.run.estimated ? ' (estimated)' : ''} (${r.run.considered} of ${r.run.of} memories)`,
       ...r.suggestions.map((c) => `  ${c.id}  ${c.kind}  ${c.paths.join(' ')}${c.title ? ` → ${c.title}` : ''}  (${c.why})`),

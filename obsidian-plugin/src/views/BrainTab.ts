@@ -8,7 +8,7 @@ import type AgenticOSPlugin from "../../main";
 import type { RevealTarget, WorkbenchView } from "./WorkbenchView";
 import {
   BRAIN_OFF_TEXT, BUILD_BRAIN_MD, MEMORY_PATH_RE, RECALL_CLI, brainMdPercent, brainVerbResult, chunks, headerStats, healthCount, isBrainMode,
-  isReviewQueue, memoryArgs, modeBadges, parseRecallHits, recallArgs, recallQuery, touchesBrain, type BrainMode, type BrainTarget,
+  isReviewQueue, memoryArgs, modeBadges, parseRecallHits, recallArgs, recallQuery, touchesBrain, verbTouches, type BrainMode, type BrainTarget,
   type BrainVerbResult, type MemoryVerb,
 } from "../data/brainModel";
 import { CaptureModal } from "../ui/CaptureModal";
@@ -222,7 +222,7 @@ export class BrainTab {
     }
     const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args, opts.timeoutMs));
     if (!r.ok && !opts.quiet) new Notice(`${label}: ${r.reason}`);
-    for (const p of touched(v)) this.store.touch(p);
+    for (const p of verbTouches(v, r.ok ? r.json : null)) this.store.touch(p);
     if (r.ok) this.rebuildHub();
     // A fix can touch any memory, MEMORY.md and a draft: read everything again rather than guess which.
     this.schedule(0, v.verb === "fix");
@@ -319,19 +319,3 @@ export class BrainTab {
     this.body = null;
   }
 }
-
-/** The files a verb changes besides MEMORY.md and the trail, so the next load re-reads them without waiting for events. */
-function touched(v: MemoryVerb): string[] {
-  const always = ["MEMORY.md", "brain/_index/promote-log.jsonl"];
-  switch (v.verb) {
-    case "keep": case "archive": case "restore": return [...always, ...v.paths];
-    case "set": return [...always, v.path];
-    case "supersede": return [...always, v.path, v.by];
-    case "draft": return [...always, `brain/memory/feedback/_drafts/${v.slug}.md`, `brain/memory/feedback/${v.slug}.md`];
-    case "merge": return [...always, ...v.paths];
-    case "unmerge": return [...always, v.path];
-    // A draft, an estimate and a sweep write no memory; memory-sweep.json is read whole on every load.
-    case "notdup": case "fix": case "merge-draft": case "sweep": case "sweep-dismiss": return [];
-  }
-}
-

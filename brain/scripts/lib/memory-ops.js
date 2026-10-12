@@ -10,7 +10,9 @@
  * written through) and MEMORY.md through fsx.updateSync, refused when it is a link. A frontmatter edit touches only its
  * own keys and the status/ entry of `tags:`, keeping every other byte; `updated:` is not bumped (BRAIN.md orders Active
  * context by it, and a status change is not new content). `set`'s title (brain-ai A10) rewrites the body's first H1 line
- * and nothing else in the body; the slug never changes. Nothing is deleted (D6).
+ * (never a `# ` line inside a code fence) and nothing else in the body; the slug never changes. A title holding a
+ * bracket, or a description holding `](`, is refused: MEMORY.md's line would link another memory's path too. A MEMORY.md
+ * line written keeps the file's line ends. Nothing is deleted (D6).
  */
 const crypto = require('crypto');
 const fs = require('fs');
@@ -32,6 +34,11 @@ const MAX_DESC = 200;
 // A title is one line of 1\u2013120 characters (brain-ai A8, A10): the H1 and the MEMORY.md line carry it.
 const MAX_TITLE = 120;
 const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/;
+// MEMORY.md writes a memory's line as `- [<title>](<path>) — <description>`, and a line belongs to every path it links
+// as `](<path>)` (indexEntry here, memory-index.js linksTo). A bracket in a title, or `](` in a description, could make
+// one memory's line also read as another's, so `set` and `merge` refuse them (brain-ai A8–A10).
+const TITLE_UNSAFE = /[[\]]/;
+const DESC_UNSAFE = /\]\(/;
 
 class OpsError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -69,12 +76,15 @@ function plainDir(vault, rel) {
   return real;
 }
 
-/** A regular file's text, opened O_NOFOLLOW; null when missing; OpsError UNSAFE for a link or a folder. */
-function readRegular(abs, label) {
+/**
+ * A regular file's text, opened O_NOFOLLOW; null when missing; OpsError UNSAFE for a link or a folder, TOO_BIG past
+ * `max` bytes (MAX_FILE unless given: lib/memory-merge.js reads its records with their own limit).
+ */
+function readRegular(abs, label, max = MAX_FILE) {
   const st = lstatOrNull(abs);
   if (!st) return null;
   if (!st.isFile()) throw new OpsError('UNSAFE', `${label} is not a regular file (a link or a folder): refusing to touch it`);
-  if (st.size > MAX_FILE) throw new OpsError('TOO_BIG', `${label} is over ${MAX_FILE} bytes`);
+  if (st.size > max) throw new OpsError('TOO_BIG', `${label} is over ${max} bytes`);
   let fd = null;
   try {
     fd = fs.openSync(abs, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
@@ -225,16 +235,33 @@ function firstParagraph(text) {
   return p ? p.replace(/\s+/g, ' ') : '';
 }
 
+/** Whether the line at `at` in `text` sits inside a ``` or ~~~ code fence opened above it (CommonMark's rule, roughly). */
+function inFence(text, at) {
+  let fence = null;
+  for (const l of text.slice(0, at).split('\n')) {
+    const m = /^ {0,3}(`{3,}|~{3,})/.exec(l);
+    if (!m) continue;
+    if (!fence) fence = m[1];
+    else if (m[1][0] === fence[0] && m[1].length >= fence.length && !l.slice(m[0].length).trim()) fence = null;
+  }
+  return fence !== null;
+}
+
 /**
  * The title in the body (brain-ai A10): the first H1 rewritten, the line titleOf reads, keeping its line end; else a
  * `# <title>` line inserted after the frontmatter with a blank line on each side. fm.tail starts at the closing `---`.
+ * A `# ` line inside a code fence is code, not a heading: when the line titleOf reads is one, nothing in the fence is
+ * touched and the new heading is inserted after the frontmatter instead (where titleOf then reads it).
  */
 function setTitleLine(fm, title) {
   const close = /^---[ \t]*(?:\r?\n|$)/.exec(fm.tail)[0];
   const rest = fm.tail.slice(close.length);
-  const h1 = /^#[ \t]+.+$/m;
-  // A function, so a `$&` or `$1` in the title is text, never a replacement pattern.
-  if (h1.test(rest)) { fm.tail = close + rest.replace(h1, () => `# ${title}`); return; }
+  // `.` stops before a CRLF line's `\r`, which stays.
+  const h1 = /^#[ \t]+.+$/m.exec(rest);
+  if (h1 && !inFence(rest, h1.index)) {
+    fm.tail = close + rest.slice(0, h1.index) + `# ${title}` + rest.slice(h1.index + h1[0].length);
+    return;
+  }
   const lead = /\n$/.test(close) ? close : close + fm.eol;
   fm.tail = `${lead}${fm.eol}# ${title}${fm.eol}${rest === '' || /^\r?\n/.test(rest) ? '' : fm.eol}${rest}`;
 }
@@ -260,9 +287,9 @@ function oneLine(text) { return String(text).replace(/\s+/g, ' ').trim(); }
 
 function indexFile(vault) { return path.join(vault, 'MEMORY.md'); }
 
-/** MEMORY.md's line for a memory: { title, description } or null. */
+/** MEMORY.md's line for a memory: { title, description } or null. A CRLF file's `\r` is not part of the line. */
 function indexEntry(raw, rel) {
-  for (const l of String(raw || '').split('\n')) {
+  for (const l of String(raw || '').split('\n').map((x) => x.replace(/\r$/, ''))) {
     if (!/^\s*-\s/.test(l) || !l.includes(`](${rel})`)) continue;
     const m = /^\s*-\s*\[([^\]]*)\]\([^)]*\)\s*(?:—\s*(.*))?$/.exec(l);
     return m ? { title: m[1].trim(), description: (m[2] || '').trim() } : { title: '', description: '' };
@@ -276,13 +303,26 @@ function readIndex(vault) {
   return st ? fs.readFileSync(indexFile(vault), 'utf8') : null;
 }
 
-/** Locked read-change-write of MEMORY.md (never through a link: the check above, then an atomic rename over it). */
+/**
+ * Locked read-change-write of MEMORY.md (never through a link: the check above, then an atomic rename over it).
+ * fn(text, raw): text is MEMORY.md, or `# Index\n` when there is none (raw null). → what fn returned.
+ */
 function editIndex(vault, fn) {
   readIndex(vault);
-  fsx.updateSync(indexFile(vault), (raw) => fn(raw == null ? '# Index\n' : raw), { timeoutMs: 5000 });
+  return fsx.updateSync(indexFile(vault), (raw) => fn(raw == null ? '# Index\n' : raw, raw), { timeoutMs: 5000 });
 }
 
 function indexLine(title, rel, description) { return `- [${oneLine(title)}](${rel}) — ${oneLine(description)}`; }
+
+/**
+ * MEMORY.md with `rel`'s line upserted under its type's heading (memory-index.js upsertIndexLine), keeping the file's
+ * line ends: the new line takes the `\r` of the line it replaces, or, when it is new, of a CRLF file's lines.
+ */
+function upsertLine(raw, type, rel, entry) {
+  const own = raw.split('\n').find((l) => /^\s*-\s/.test(l) && l.includes(`](${rel})`));
+  const cr = own !== undefined ? /\r$/.test(own) : /\r\n/.test(raw);
+  return upsertIndexLine(raw, `## ${TYPE_HEADING[type]}`, cr ? `${entry}\r` : entry, rel);
+}
 
 function appendTrail(vault, m, action, extra = {}) {
   const d = describe(m);
@@ -352,11 +392,13 @@ function checkFields(fields) {
       if (typeof v !== 'string' || CONTROL.test(v)) throw new OpsError('BAD_FIELD', 'description takes one line of text');
       const d = v.trim();
       if (!d || d.length > MAX_DESC) throw new OpsError('BAD_FIELD', `description takes 1–${MAX_DESC} characters`);
+      if (DESC_UNSAFE.test(d)) throw new OpsError('BAD_FIELD', 'description cannot hold `](` (MEMORY.md would read it as a link)');
       out.description = d;
     } else if (k === 'title') {
       if (typeof v !== 'string' || CONTROL.test(v)) throw new OpsError('BAD_FIELD', 'title takes one line of text');
       const t = v.trim();
       if (!t || t.length > MAX_TITLE) throw new OpsError('BAD_FIELD', `title takes 1–${MAX_TITLE} characters`);
+      if (TITLE_UNSAFE.test(t)) throw new OpsError('BAD_FIELD', 'title cannot hold [ or ] (MEMORY.md links it as [title](path))');
       out.title = t;
     } else {
       throw new OpsError('BAD_FIELD', `--set cannot change ${k} (pin, status, description, title)`);
@@ -396,7 +438,7 @@ function setFields(vault, rel, fields, { expect = null, dryRun = false } = {}) {
       const e = 'description' in f ? null : indexEntry(raw, m.rel);
       const desc = 'description' in f ? f.description
         : (e && e.description) || getKey(fm.lines, 'description') || deriveDescription(firstParagraph(text) || title);
-      return upsertIndexLine(raw, `## ${TYPE_HEADING[m.type]}`, indexLine(title, m.rel, desc), m.rel);
+      return upsertLine(raw, m.type, m.rel, indexLine(title, m.rel, desc));
     });
   }
   appendTrail(vault, after, 'set', { fields: Object.keys(f) });
@@ -469,7 +511,7 @@ function restoreFm(fm, type) {
 function upsertOwnLine(raw, m) {
   const d = describe(m);
   const desc = d.description || deriveDescription(firstParagraph(m.text) || d.title);
-  return upsertIndexLine(raw, `## ${TYPE_HEADING[m.type]}`, indexLine(d.title, m.rel, desc), m.rel);
+  return upsertLine(raw, m.type, m.rel, indexLine(d.title, m.rel, desc));
 }
 
 /** Put archived or superseded memories back: their status before, their MEMORY.md line again. → { restored, already } */
@@ -532,5 +574,5 @@ module.exports = {
   // lib/memory-fix.js's building blocks (brain-hub plan PR 3): the same line edits, writes, index lock and trail.
   MAX_DESC, CONTROL, STATUS_TAG, BLOCK_ITEM, setKey, yamlValue, oneLine, indexLine, readIndex, editIndex, write, appendTrail, appendTrailRow,
   // lib/memory-merge.js's (brain-ai A1, A2, A9): retire and restore one file at a time, under the merge's one index edit.
-  MAX_TITLE, retireFm, restoreFm, upsertOwnLine, setTitleLine,
+  MAX_TITLE, MAX_FILE, TITLE_UNSAFE, DESC_UNSAFE, retireFm, restoreFm, upsertOwnLine, upsertLine, setTitleLine,
 };

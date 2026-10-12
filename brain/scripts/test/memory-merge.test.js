@@ -270,10 +270,19 @@ test('merge writes the record, the winner, the superseded losers, one MEMORY.md 
     .replace('description: reviewers want small diffs\n', `description: reviewers want small diffs\nstatus_before: active\nsuperseded_by: ${A}\n`));
   assert.equal(read(v, C), textC.replace('status/active', 'status/superseded')
     .replace('reviewed: false\n', `reviewed: false\ndescription: the review rules\nstatus_before: active\nsuperseded_by: ${A}\n`));
-  assert.equal(read(v, 'MEMORY.md'), `# Index\n\n## Feedback\n- [Small diffs, always](${A}) — Keep diffs small; split reviews over 400 lines\n\n## Projects\n`);
+  const merged = `# Index\n\n## Feedback\n- [Small diffs, always](${A}) — Keep diffs small; split reviews over 400 lines\n\n## Projects\n`;
+  assert.equal(read(v, 'MEMORY.md'), merged);
+  // The record: the winner's text and line before, and the hash it wrote; every other source's text before and the hash
+  // the merge wrote; MEMORY.md's text before and its hash after.
   assert.deepEqual(JSON.parse(read(v, `${mm.RECORD_DIR}/${id}.json`)), {
     schema: 1, id, at: NOW.toISOString(), winner: A, before: { text: TEXT_A, hash: hA, line: `- [Small diffs](${A}) — keep diffs small` }, after: { hash: sha(winner) },
-    sources: [{ path: A, hash: hA }, { path: B, hash: hB }, { path: C, hash: hC }], undoneAt: null,
+    sources: [
+      { path: A, hash: hA },
+      { path: B, hash: hB, before: { text: TEXT_B, hash: hB }, after: { hash: sha(read(v, B)) } },
+      { path: C, hash: hC, before: { text: textC, hash: hC }, after: { hash: sha(read(v, C)) } },
+    ],
+    index: { before: { text: INDEX, hash: sha(INDEX) }, after: { hash: sha(merged) } },
+    undoneAt: null,
   });
   assert.ok(fs.lstatSync(path.join(v, mm.RECORD_DIR)).isDirectory());
   const rows = trail(v).map(({ ts, ...row }) => { assert.ok(ts); return row; });
@@ -342,7 +351,7 @@ test('unmerge puts every file back byte for byte, marks the record undone and lo
   assert.equal(r.path, A);
   assert.notDeepEqual(snapshot(v, isIndex), before);
   const u = mm.unmerge(v, A, r.hash, { now: LATER });
-  assert.deepEqual(u, { path: A, restored: [B, C], record: r.record, hash: sha(TEXT_A) });
+  assert.deepEqual(u, { path: A, restored: [B, C], restoredExactly: [B, C], indexExactly: true, record: r.record, hash: sha(TEXT_A) });
   assert.deepEqual(snapshot(v, isIndex), before, 'the memories and MEMORY.md as they were');
   const rec = JSON.parse(read(v, `${mm.RECORD_DIR}/${r.record}.json`));
   assert.equal(rec.undoneAt, LATER.toISOString());
@@ -373,9 +382,150 @@ test('unmerge puts the winner\'s own MEMORY.md line back, even when its title or
   const r2 = mm.merge(v2, [A, B], { title: 'Merged', description: 'all of it', body: 'Everything.' }, hashes(v2, [A, B]), { now: NOW });
   const file = path.join(v2, mm.RECORD_DIR, `${r2.record}.json`);
   const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
-  fs.writeFileSync(file, JSON.stringify({ ...rec, before: { ...rec.before, line: `- [Other](${C}) — not this one` } }));
-  mm.unmerge(v2, A, r2.hash, { now: LATER });
+  // (An older record: no MEMORY.md text, so the lines are upserted.)
+  fs.writeFileSync(file, JSON.stringify({ ...rec, index: undefined, before: { ...rec.before, line: `- [Other](${C}) — not this one` } }));
+  const u2 = mm.unmerge(v2, A, r2.hash, { now: LATER });
+  assert.equal(u2.indexExactly, false);
+  // A's line rebuilt in place from its old title and description key; B's (last in its section) back at the section's end.
   assert.equal(read(v2, 'MEMORY.md'), INDEX, 'rebuilt from the old title and description key');
+  assert.equal(read(v2, A), TEXT_A);
+});
+
+// ── Undo merge, exact for every file (A2) ──
+
+const X = 'brain/memory/feedback/one-pr-one-idea.md';
+const TEXT_X = '---\ntype: memory\ntags: [memory/feedback, status/active]\ncreated: 2026-09-10\n---\n\n# One PR, one idea\n\nOne idea per pull request.\n';
+/** auto-wrap's usual shape: B and C keep their description only in MEMORY.md; B's line sits mid-section, before X's. */
+function indexOnly(prefix = 'mmerge-exact-') {
+  const v = fixture(prefix);
+  put(v, B, TEXT_B.replace('description: reviewers want small diffs\n', ''));
+  put(v, C, TEXT_C.replace('description: the review rules\n', ''));
+  put(v, X, TEXT_X);
+  put(v, 'MEMORY.md', INDEX.replace(`- [Small diffs in review](${B}) — reviewers want small diffs\n`,
+    `- [Small diffs in review](${B}) — reviewers want small diffs\n- [One PR, one idea](${X}) — one idea per PR\n`));
+  return v;
+}
+const isIndexDir = (r) => r.startsWith('brain/_index');
+const INTO = { title: 'Merged', description: 'all of it', body: 'Everything.' };
+
+test('an undo right after a merge puts the winner, every other source and MEMORY.md back byte for byte (index-only descriptions, a line mid-section)', () => {
+  const v = indexOnly();
+  const before = snapshot(v, isIndexDir);
+  const r = mm.merge(v, [B, C, A], INTO, hashes(v, [B, C, A]), { now: NOW });
+  // The merge kept B's and C's index-only descriptions in their own frontmatter while they are out (as supersede does).
+  assert.match(read(v, B), /^description: reviewers want small diffs$/m);
+  assert.match(read(v, C), /^description: the review rules$/m);
+  assert.ok(!read(v, 'MEMORY.md').includes(B) && !read(v, 'MEMORY.md').includes(C));
+  const u = mm.unmerge(v, A, r.hash, { now: LATER });
+  assert.deepEqual([u.restored, u.restoredExactly, u.indexExactly], [[B, C], [B, C], true]);
+  assert.deepEqual(snapshot(v, isIndexDir), before, 'every memory and MEMORY.md as they were: no description key added, B\'s line back mid-section');
+});
+
+test('an undo after MEMORY.md changed elsewhere puts the lines back and keeps the other change; each source still exact', () => {
+  const v = indexOnly();
+  const r = mm.merge(v, [A, B, C], INTO, hashes(v, [A, B, C]), { now: NOW });
+  // Meanwhile a new memory's line lands in MEMORY.md (memory-writer, a session, a hand edit).
+  const NEW = 'brain/memory/reference/new-one.md';
+  put(v, NEW, '---\ntags: [memory/reference, status/active]\n---\n\n# New one\n');
+  fs.appendFileSync(path.join(v, 'MEMORY.md'), `\n## Reference\n- [New one](${NEW}) — added after the merge\n`);
+  const u = mm.unmerge(v, A, r.hash, { now: LATER });
+  assert.deepEqual([u.restored, u.restoredExactly, u.indexExactly], [[B, C], [B, C], false]);
+  assert.equal(read(v, A), TEXT_A);
+  assert.equal(read(v, B), TEXT_B.replace('description: reviewers want small diffs\n', ''), 'B byte for byte: no description key');
+  assert.equal(read(v, C), TEXT_C.replace('description: the review rules\n', ''));
+  const idx = read(v, 'MEMORY.md');
+  assert.ok(idx.includes(`- [New one](${NEW}) — added after the merge\n`), 'the other change stays');
+  // Each line as it was before the merge (B's description from the recorded MEMORY.md, not its opening); a line that
+  // was mid-section comes back at its section's end.
+  assert.ok(idx.includes(`- [Small diffs](${A}) — keep diffs small\n- [One PR, one idea](${X}) — one idea per PR\n- [Small diffs in review](${B}) — reviewers want small diffs\n`), idx);
+  assert.ok(idx.includes(`- [Review rules](${C}) — the review rules\n`), idx);
+  for (const p of [A, B, C, X, NEW]) assert.equal(idx.split(p).length - 1, 1, `one line for ${p}`);
+});
+
+test('a source edited since the merge falls back to restore\'s rules for that source only; the rest are exact', () => {
+  const v = indexOnly();
+  const before = snapshot(v, isIndexDir);
+  const r = mm.merge(v, [A, B, C], INTO, hashes(v, [A, B, C]), { now: NOW });
+  fs.appendFileSync(path.join(v, C), '\nEdited while superseded.\n');
+  const u = mm.unmerge(v, A, r.hash, { now: LATER });
+  assert.deepEqual([u.restored, u.restoredExactly, u.indexExactly], [[B, C], [B], true]);
+  const now = snapshot(v, isIndexDir);
+  for (const p of [A, B, X, 'MEMORY.md']) assert.equal(now[p], before[p], `${p} byte for byte`);
+  // C: its status back and the merge's keys gone, its edit and the description the merge kept for it stay.
+  // (TEXT_C is C with that description key, which indexOnly() took out.)
+  assert.equal(read(v, C), TEXT_C + '\nEdited while superseded.\n');
+  assert.deepEqual(trail(v).slice(-3).map((t) => [t.action, t.path]), [['unmerged', A], ['restored', B], ['restored', C]]);
+});
+
+test('an undo in a CRLF vault: the description that lives only in MEMORY.md survives the merge and comes back, with every \\r', async () => {
+  const v = indexOnly('mmerge-crlf-');
+  put(v, A, TEXT_A.replace('description: keep diffs small\n', ''));
+  const crlf = read(v, 'MEMORY.md').replace(/\n/g, '\r\n');
+  put(v, 'MEMORY.md', crlf);
+  const d = await mm.mergeDraft(v, [A, B], { estimate: true, ai: fakeAi() });
+  assert.equal(d.byHand.description, 'keep diffs small', 'the index line\'s, not the opening');
+  const r = mm.merge(v, [A, B], d.byHand, d.baseHashes, { now: NOW });
+  assert.match(read(v, B), /^description: reviewers want small diffs$/m, 'the loser keeps its index description');
+  assert.ok(read(v, 'MEMORY.md').includes(`- [Small diffs](${A}) — keep diffs small\r\n`), 'the winner\'s new line ends CRLF too');
+  assert.doesNotMatch(read(v, 'MEMORY.md'), /[^\r]\n/);
+  const rec = JSON.parse(read(v, `${mm.RECORD_DIR}/${r.record}.json`));
+  assert.equal(rec.before.line, `- [Small diffs](${A}) — keep diffs small\r`);
+  // MEMORY.md changed elsewhere, so the lines are upserted: still every \r, and B's old description.
+  fs.appendFileSync(path.join(v, 'MEMORY.md'), '- [Loose](brain/memory/reference/loose.md) — x\r\n');
+  const u = mm.unmerge(v, A, r.hash, { now: LATER });
+  assert.deepEqual([u.restoredExactly, u.indexExactly], [[B], false]);
+  const idx = read(v, 'MEMORY.md');
+  assert.ok(idx.includes(`- [Small diffs](${A}) — keep diffs small\r\n`));
+  assert.ok(idx.includes(`- [Small diffs in review](${B}) — reviewers want small diffs\r\n`));
+  assert.doesNotMatch(idx, /[^\r]\n/, 'every line still ends CRLF');
+});
+
+test('a title or description that would link another memory in MEMORY.md: --into refuses it, a reply and the no-model draft are cleaned', async () => {
+  const v = fixture();
+  const OTHER = 'brain/memory/user/other.md';
+  const before = snapshot(v);
+  for (const into of [{ ...INTO, title: `Merged](${OTHER}) — x [y` }, { ...INTO, title: '[WIP] merged' }, { ...INTO, description: `see [x](${OTHER})` }]) {
+    assert.throws(() => mm.merge(v, [A, B], into, hashes(v, [A, B]), { now: NOW }), { code: 'BAD_FIELD' }, JSON.stringify(into));
+  }
+  assert.deepEqual(snapshot(v), before, 'nothing written');
+  // A model's reply is cleaned so Save can write it: brackets as parentheses, `](` split.
+  const reply = JSON.stringify({ title: `Merged](${OTHER}) — x [y`, description: `d [z](${OTHER})`, body: 'B.' });
+  const r = await mm.mergeDraft(v, [A, B], { ai: fakeAi({ reply }) });
+  assert.deepEqual([r.mode, r.fields.title, r.fields.description], ['ai', `Merged)(${OTHER}) — x (y`, `d [z] (${OTHER})`]);
+  mm.merge(v, [A, B], r.fields, r.baseHashes, { now: NOW });
+  const idx = read(v, 'MEMORY.md');
+  assert.equal(ops.indexEntry(idx, OTHER), null, 'no line reads as other.md\'s');
+  assert.equal(idx.split(`](${A})`).length - 1, 1);
+  // The no-model draft takes the winner's heading and index description the same way.
+  const v2 = fixture();
+  put(v2, A, TEXT_A.replace('# Small diffs', '# [Old] small diffs').replace('description: keep diffs small\n', ''));
+  put(v2, 'MEMORY.md', INDEX.replace('— keep diffs small', `— see [it](${OTHER})`));
+  const e = await mm.mergeDraft(v2, [A, B], { estimate: true, ai: fakeAi() });
+  assert.deepEqual([e.byHand.title, e.byHand.description], ['(Old) small diffs', `see [it] (${OTHER})`]);
+  assert.doesNotThrow(() => mm.checkInto(e.byHand));
+});
+
+test('a record past the 1 MiB file limit is still read back: Undo merge and the prune work; one past the record limit refuses the merge', () => {
+  const v = fixture();
+  // About 0.98 MB of lines that JSON escapes ("\" and newlines): a record well over 1 MiB.
+  const big = TEXT_A.replace('Keep each diff small.', 'He said "x"\n'.repeat(80_000));
+  put(v, A, big);
+  const r = mm.merge(v, [A, B], INTO, hashes(v, [A, B]), { now: NOW });
+  assert.ok(fs.statSync(path.join(v, mm.RECORD_DIR, `${r.record}.json`)).size > 1024 * 1024);
+  const u = mm.unmerge(v, A, r.hash, { now: LATER });
+  assert.equal(read(v, A), big);
+  assert.equal(u.indexExactly, true);
+  assert.deepEqual(mm.pruneRecords(v, { now: new Date(NOW.getTime() + 31 * 86_400_000) }).pruned, [r.record], 'pruned after its 30 days');
+
+  // Three memories near the 1 MiB limit, all control characters (6 bytes each in JSON): no record could hold them.
+  const v2 = fixture();
+  const ctl = (t) => t.replace(/\n\n# [^\n]*\n\n[\s\S]*$/, `\n\n# Big\n\n${'\u0001'.repeat(1_000_000)}\n`);
+  put(v2, A, ctl(TEXT_A));
+  put(v2, B, ctl(TEXT_B));
+  put(v2, C, ctl(TEXT_C));
+  const before = snapshot(v2);
+  assert.throws(() => mm.merge(v2, [A, B, C], INTO, hashes(v2, [A, B, C]), { now: NOW }), { code: 'TOO_BIG', message: /merge them by hand/ });
+  assert.deepEqual(snapshot(v2), before, 'nothing written, no record folder');
 });
 
 test('unmerge refuses after an edit and without a merge; a loser restored since is left alone', () => {

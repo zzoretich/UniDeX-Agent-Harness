@@ -10,7 +10,7 @@
  *                  fields, generatedAt }: one call. No provider, a cap, no answer or an unreadable reply give mode
  *                  "by-hand" with the reason sentence and fields = byHand (A4), never an error
  *   merge(vault, rels, into, expectHashes, { now })   → { path, superseded, record, hash }
- *   unmerge(vault, rel, expect, { now })              → { path, restored, record, hash }
+ *   unmerge(vault, rel, expect, { now })              → { path, restored, restoredExactly, indexExactly, record, hash }
  *   pruneRecords(vault, { days, now })                → { pruned, kept }: brain-hub.js, each build
  *
  * The winner (A1) is the oldest source by `created:` (a date or an ISO time; missing sorts last), ties by path: it keeps
@@ -23,27 +23,42 @@
  * body (no frontmatter, no leading H1). Each body is cut at 8,000 characters and all blocks together at 24,000, newest
  * source first, with `\n[… cut]` where a body was cut; `chars` is what a source sent of its body. The reply is held to
  * a strict schema (title, description, body; nothing else) and cleaned: a one-line title ≤ 120 (a leading `#` marker
- * dropped) and description ≤ 200, the body without a leading frontmatter block, lone `---` line or H1, ≤ 16,000. A reply
+ * dropped, brackets as parentheses) and description ≤ 200 (a `](` split), the body without a leading frontmatter block, lone `---` line or H1, ≤ 16,000. A reply
  * that is not JSON, has an empty title or body, or has another key is unreadable. The model is reached only through
  * lib/memory-ai.js (opts.ai in tests): the provider chain, its caps, its ledger and the reason sentences live there.
  *
  * merge (A9) takes one --expect hash per path, in order, and refuses (CHANGED, naming the file) when any source changed;
- * `into` is held to the reply's rules, refusing (BAD_FIELD) where a reply would be cut. Everything is read and checked
- * before the first write. The record brain/_index/memory-merges/<id>.json (A2: the winner's old text, every source's
- * hash) is written first; then the winner (atomic: its frontmatter lines kept; description, reviewed and updated set,
- * and pin when any source was pinned; the body `# <title>` and the merged body), each loser superseded by it as
- * `supersede` retires one, and MEMORY.md under ONE lock (the losers' lines out, the winner's upserted). Trail: `merged`
- * on the winner (from, record, hash), `superseded` per loser (by, record). unmerge writes the winner's old text back only
- * while the memory is exactly as the merge left it, restores the losers that still name it in superseded_by (their
- * status and lines back, as `restore`), upserts the winner's line from its old title and description, marks the record
- * undone and logs `unmerged` (and `restored` per loser). The record also keeps the winner's MEMORY.md line as it was
- * (`before.line`), which unmerge puts back as it was. Nothing is deleted but a record past its 30 days.
+ * `into` is held to the reply's rules, refusing (BAD_FIELD) where a reply would be cut, and a title holding `[` or `]`
+ * or a description holding `](` (MEMORY.md's line would link another memory's path too; a reply's are cleaned to fit).
+ * Everything is read and checked before the first write, and the writes run under MEMORY.md's ONE lock: the record
+ * brain/_index/memory-merges/<id>.json first (A2), then the winner (atomic: its frontmatter lines kept; description,
+ * reviewed and updated set, and pin when any source was pinned; the body `# <title>` and the merged body), each loser
+ * superseded by it as `supersede` retires one, then MEMORY.md (the losers' lines out, the winner's upserted). Trail:
+ * `merged` on the winner (from, record, hash), `superseded` per loser (by, record).
+ *
+ * The record: { schema: 1, id, at, winner, before: { text, hash, line }, after: { hash }, sources: [{ path, hash }, and
+ * for each source but the winner before: { text, hash } and after: { hash }], index: { before: { text, hash } | null,
+ * after: { hash } }, undoneAt }: the winner's text and MEMORY.md line before the merge and the hash it wrote, every other
+ * source's text before and the hash the merge wrote, and MEMORY.md's text before (as read under the lock; null when
+ * there was none) and the hash after. It holds at most MERGE_MAX texts of ops.MAX_FILE each and MEMORY.md, and is read
+ * with its own limit (RECORD_MAX); one that would not fit drops MEMORY.md's text, and still too large refuses the
+ * merge (TOO_BIG) before anything is written, so every record written can be undone and pruned.
+ *
+ * unmerge writes the winner's old text back only while the memory is exactly as the merge left it (CHANGED otherwise).
+ * Each other source exactly as the merge left it (its hash the record's after) gets its old text back byte for byte
+ * (`restoredExactly`); one changed since that still names the winner in superseded_by is restored by `restore`'s rules
+ * (its status back, a description the merge kept for it stays); any other is left alone. MEMORY.md, under its lock, goes
+ * back byte for byte when its hash is still the record's after and every other source came back (`indexExactly`); else
+ * each line is upserted (a change made since elsewhere in MEMORY.md stays): the winner's from `before.line`, a source
+ * put back exactly its line from the recorded MEMORY.md, any other one rebuilt from its title and description. The
+ * record is marked undone, and `unmerged` (and `restored` per source) is logged. Nothing is deleted but a record past
+ * its 30 days.
  */
 const fs = require('fs');
 const path = require('path');
 const fsx = require('./fsx.js');
 const ops = require('./memory-ops.js');
-const { deriveDescription, removeIndexLine, upsertIndexLine } = require('./memory-index.js');
+const { deriveDescription, removeIndexLine } = require('./memory-index.js');
 const { parseAgentJson } = require('../sdk/lib/json-extract.js');
 
 const { OpsError } = ops;
@@ -62,6 +77,11 @@ const NUM_PREDICT = 2000;
 const RECORD_DIR = 'brain/_index/memory-merges';
 const UNDO_DAYS = 30;
 const RECORD_FILE_RE = /^(\d{8}-\d{6}-[0-9a-f]{8})\.json$/;
+// A record holds up to MERGE_MAX memories' text (each at most ops.MAX_FILE) and MEMORY.md's, so it is read back with
+// its own limit; a merge whose record would not fit refuses before writing anything (TOO_BIG), leaving RECORD_SLACK
+// for the undo's `undoneAt`, so every record a merge writes can be read back, undone and pruned.
+const RECORD_MAX = 16 * 1024 * 1024;
+const RECORD_SLACK = 4096;
 const HASH_ONLY = /^[0-9a-f]{16,64}$/;
 const FIELDS = Object.freeze(['title', 'description', 'body']);
 const PROVIDERS = ['ollama', 'claude', 'codex', 'none'];
@@ -109,6 +129,10 @@ function ownsLine(l, rel) { return /^\s*-\s/.test(l) && l.includes(`](${rel})`);
 function cut(s, n) { return s.length <= n ? s : s.slice(0, Math.max(0, n)).replace(/[\uD800-\uDBFF]$/, ''); }
 /** One line: control characters out, whitespace collapsed, trimmed, then cut at max. */
 function line(s, max) { return cut(String(s).replace(CONTROL_ALL, ' ').replace(/\s+/g, ' ').trim(), max).trim(); }
+/** A title MEMORY.md can link (memory-ops TITLE_UNSAFE): its brackets as parentheses. */
+function linkTitle(s) { return String(s).replace(/\[/g, '(').replace(/\]/g, ')'); }
+/** A description MEMORY.md reads as text (memory-ops DESC_UNSAFE): `](` split. */
+function linkDesc(s) { return String(s).replace(/\]\(/g, '] ('); }
 function num(v) { return Number.isFinite(Number(v)) ? Number(v) : 0; }
 function providerOf(v) { return PROVIDERS.includes(v) ? v : 'none'; }
 function ageOf(created) {
@@ -197,9 +221,9 @@ function buildPrompt(byAge) {
  */
 function byHandDraft(byAge) {
   const w = byAge[0];
-  const description = line(w.description || deriveDescription(ops.firstParagraph(w.m.text) || w.title), LIMITS.description);
+  const description = line(linkDesc(w.description || deriveDescription(ops.firstParagraph(w.m.text) || w.title)), LIMITS.description);
   const parts = [w.body, ...byAge.slice(1).map((s) => `## From ${line(s.title, LIMITS.title)}${s.body ? `\n\n${s.body}` : ''}`)];
-  return { title: line(w.title, LIMITS.title), description, body: cut(parts.filter(Boolean).join('\n\n'), LIMITS.body).trim() };
+  return { title: line(linkTitle(w.title), LIMITS.title), description, body: cut(parts.filter(Boolean).join('\n\n'), LIMITS.body).trim() };
 }
 
 // ── the reply ──
@@ -207,9 +231,10 @@ function byHandDraft(byAge) {
 /** The reply's fields cleaned (A8): what Save can write as it is, or empty where nothing was usable. */
 function cleanFields(o) {
   return {
-    // A leading heading marker goes ("# Title", or a bare "#"); "#1 priority" stays.
-    title: line(String(o.title).replace(CONTROL_ALL, ' ').trim().replace(/^#+(?:[ \t]+|$)/, ''), LIMITS.title),
-    description: line(o.description, LIMITS.description),
+    // A leading heading marker goes ("# Title", or a bare "#"); "#1 priority" stays. Brackets become parentheses and a
+    // `](` is split, so the MEMORY.md line links only this memory (checkInto refuses them).
+    title: line(linkTitle(String(o.title).replace(CONTROL_ALL, ' ').trim().replace(/^#+(?:[ \t]+|$)/, '')), LIMITS.title),
+    description: line(linkDesc(o.description), LIMITS.description),
     body: cut(normalBody(o.body), LIMITS.body).trimEnd(),
   };
 }
@@ -323,6 +348,8 @@ function checkInto(into) {
   };
   const title = one('title');
   const description = one('description');
+  if (ops.TITLE_UNSAFE.test(title)) throw new OpsError('BAD_FIELD', 'title cannot hold [ or ] (MEMORY.md links it as [title](path))');
+  if (ops.DESC_UNSAFE.test(description)) throw new OpsError('BAD_FIELD', 'description cannot hold `](` (MEMORY.md would read it as a link)');
   const body = normalBody(into.body);
   if (!body) throw new OpsError('BAD_FIELD', 'body is empty');
   if (body.length > LIMITS.body) throw new OpsError('BAD_FIELD', `body takes at most ${LIMITS.body} characters`);
@@ -376,11 +403,33 @@ function readRecords(vault) {
     const id = RECORD_FILE_RE.exec(f);
     if (!id) continue;
     let rec = null;
-    try { rec = JSON.parse(ops.readRegular(path.join(dir, f), `${RECORD_DIR}/${f}`)); } catch { continue; }
+    try { rec = JSON.parse(ops.readRegular(path.join(dir, f), `${RECORD_DIR}/${f}`, RECORD_MAX)); } catch { continue; }
     if (!rec || typeof rec !== 'object' || rec.schema !== 1 || rec.id !== id[1]) continue;
     out.push({ rec, file: path.join(dir, f) });
   }
   return out;
+}
+
+/** A record as written: two-space JSON and a final newline. */
+function recordJson(rec) { return JSON.stringify(rec, null, 2) + '\n'; }
+
+/**
+ * The record's JSON when it fits (RECORD_MAX less RECORD_SLACK). Past it, MEMORY.md's text is dropped first (its
+ * `index.before` null: Undo then upserts the lines); still past it, null.
+ */
+function fitRecord(rec) {
+  const fits = (j) => Buffer.byteLength(j, 'utf8') <= RECORD_MAX - RECORD_SLACK;
+  let json = recordJson(rec);
+  if (!fits(json) && rec.index && rec.index.before) {
+    rec.index = { before: null, after: rec.index.after };
+    json = recordJson(rec);
+  }
+  return fits(json) ? json : null;
+}
+
+/** The record's `index`: MEMORY.md as the merge read it under its lock (null when there was none), and the hash it wrote. */
+function indexRecord(raw, after) {
+  return { before: raw == null ? null : { text: raw, hash: ops.sha256(raw) }, after: { hash: ops.sha256(after) } };
 }
 
 /**
@@ -401,37 +450,62 @@ function merge(vault, rels, into, expectHashes, opts = {}) {
   const [w, ...losers] = oldestFirst(srcs);
   const text = mergedText(w, fields, srcs.some((s) => s.d.pin), now);
   const hash = ops.sha256(text);
-  const raw = ops.readIndex(vault) || '';
-  // The winner's MEMORY.md line as it is now, kept in the record so Undo puts that exact line back (A2): rebuilt from the
-  // old text alone, a winner without a description key would get its opening as its description instead.
-  const lineBefore = raw.split('\n').find((l) => ownsLine(l, w.m.rel));
-  const retired = losers.map((s) => {
-    const fm = ops.splitFm(s.m.text);
-    ops.retireFm(fm, s.m, raw, 'superseded', { superseded_by: w.m.rel });
-    return { m: s.m, text: ops.joinFm(fm) };
-  });
-
-  // The record first (A2): the winner's old text survives whatever happens after.
   const order = srcs.map((s) => s.m.rel);
   const id = recordId(now, order);
-  const rec = {
-    schema: 1, id, at: now.toISOString(), winner: w.m.rel, before: { text: w.m.text, hash: w.m.hash, line: lineBefore === undefined ? null : lineBefore }, after: { hash },
-    sources: srcs.map((s) => ({ path: s.m.rel, hash: s.m.hash })), undoneAt: null,
-  };
-  fsx.writeAtomic(path.join(recordDir(vault, true), `${id}.json`), JSON.stringify(rec, null, 2) + '\n');
+  const entry = ops.indexLine(fields.title, w.m.rel, fields.description);
 
-  const won = ops.write(w.m, text);
-  const lost = retired.map((x) => ops.write(x.m, x.text));
-  ops.editIndex(vault, (t) => upsertIndexLine(lost.reduce((x, m) => removeIndexLine(x, m.rel), t),
-    `## ${ops.TYPE_HEADING[won.type]}`, ops.indexLine(fields.title, won.rel, fields.description), won.rel));
+  // Everything under MEMORY.md's one lock (a linked MEMORY.md refuses before any write): MEMORY.md as it is now, the
+  // record first (A2: every source's old text survives whatever happens after), the winner, the losers, then the index.
+  let won = null;
+  let lost = [];
+  ops.editIndex(vault, (t, raw) => {
+    // The winner's MEMORY.md line as it is now, kept in the record so Undo can put that exact line back even when
+    // MEMORY.md changed meanwhile (A2): rebuilt from the old text alone, a winner without a description key would get
+    // its opening as its description instead.
+    const lineBefore = t.split('\n').find((l) => ownsLine(l, w.m.rel));
+    const retired = losers.map((s) => {
+      const fm = ops.splitFm(s.m.text);
+      ops.retireFm(fm, s.m, raw || '', 'superseded', { superseded_by: w.m.rel });
+      return { m: s.m, text: ops.joinFm(fm) };
+    });
+    const after = ops.upsertLine(retired.reduce((x, r) => removeIndexLine(x, r.m.rel), t), w.m.type, w.m.rel, entry);
+    const byRel = new Map(retired.map((r) => [r.m.rel, r]));
+    // Each other source's text before and the hash the merge writes, and MEMORY.md's: Undo puts each back byte for byte
+    // while it is still exactly as the merge left it.
+    const rec = {
+      schema: 1, id, at: now.toISOString(), winner: w.m.rel,
+      before: { text: w.m.text, hash: w.m.hash, line: lineBefore === undefined ? null : lineBefore }, after: { hash },
+      sources: srcs.map((s) => {
+        const r = byRel.get(s.m.rel);
+        return r ? { path: s.m.rel, hash: s.m.hash, before: { text: s.m.text, hash: s.m.hash }, after: { hash: ops.sha256(r.text) } } : { path: s.m.rel, hash: s.m.hash };
+      }),
+      index: indexRecord(raw, after),
+      undoneAt: null,
+    };
+    const json = fitRecord(rec);
+    if (json === null) throw new OpsError('TOO_BIG', `these memories are too large to keep for Undo merge (a record over ${RECORD_MAX} bytes): merge them by hand`);
+    fsx.writeAtomic(path.join(recordDir(vault, true), `${id}.json`), json);
+    won = ops.write(w.m, text);
+    lost = retired.map((x) => ops.write(x.m, x.text));
+    return after;
+  });
   ops.appendTrail(vault, won, 'merged', { from: lost.map((m) => m.rel), record: id, hash });
   for (const m of lost) ops.appendTrail(vault, m, 'superseded', { by: won.rel, record: id });
   return { path: won.rel, superseded: lost.map((m) => m.rel), record: id, hash };
 }
 
+/** A source's own record (`before` text whose hash checks, and the `after` hash), or null for an older record's. */
+function exactOf(s) {
+  const b = s && s.before;
+  const a = s && s.after;
+  return b && typeof b.text === 'string' && ops.sha256(b.text) === b.hash && a && typeof a.hash === 'string' ? { text: b.text, after: a.hash } : null;
+}
+
 /**
  * Undo the newest merge into `rel` (A2): refused (NOT_FOUND) without one, and (CHANGED) unless the memory's hash is
- * `expect` and the record's after-hash. → { path, restored, record, hash } (hash: the memory's text now).
+ * `expect` and the record's after-hash. → { path, restored, restoredExactly, indexExactly, record, hash } (hash: the
+ * memory's text now; restored: every other source put back, restoredExactly: those put back byte for byte;
+ * indexExactly: MEMORY.md put back byte for byte).
  */
 function unmerge(vault, rel, expect, opts = {}) {
   const now = nowOf(opts.now);
@@ -447,31 +521,51 @@ function unmerge(vault, rel, expect, opts = {}) {
   if (typeof rec.before.text !== 'string' || ops.sha256(rec.before.text) !== rec.before.hash) {
     throw new OpsError('BAD_RECORD', `the record of that merge (${rec.id}) is damaged: undo it by hand`);
   }
-  // The losers that still say superseded_by: <rel>, each read before anything is written; a vanished one is skipped.
+  // Each other source, read before anything is written: exactly as the merge left it, its old text back byte for byte;
+  // else, while it still says superseded_by: <rel>, restored by restore's rules (its status and line back, a
+  // description the merge added stays); else left alone (a vanished one included).
   const back = [];
+  let left = 0;
   for (const s of rec.sources) {
     if (!s || s.path === p.rel) continue;
     let lm;
-    try { lm = ops.readMemory(vault, s.path); } catch (e) { if (e.code === 'NOT_FOUND' || e.code === 'BAD_PATH') continue; throw e; }
+    try { lm = ops.readMemory(vault, s.path); } catch (e) { if (e.code === 'NOT_FOUND' || e.code === 'BAD_PATH') { left++; continue; } throw e; }
+    const ex = exactOf(s);
+    if (ex && lm.hash === ex.after) { back.push({ m: lm, text: ex.text, exact: true }); continue; }
     const fm = ops.splitFm(lm.text);
-    if (!fm || ops.getStatus(fm.lines) !== 'superseded' || ops.getKey(fm.lines, 'superseded_by') !== p.rel) continue;
+    if (!fm || ops.getStatus(fm.lines) !== 'superseded' || ops.getKey(fm.lines, 'superseded_by') !== p.rel) { left++; continue; }
     ops.restoreFm(fm, lm.type);
-    back.push({ m: lm, text: ops.joinFm(fm) });
+    back.push({ m: lm, text: ops.joinFm(fm), exact: false });
   }
+  // MEMORY.md's text from before the merge, when the record kept it whole.
+  const ix = rec.index && rec.index.before && typeof rec.index.before.text === 'string' && ops.sha256(rec.index.before.text) === rec.index.before.hash &&
+    rec.index.after && typeof rec.index.after.hash === 'string' ? { text: rec.index.before.text, after: rec.index.after.hash } : null;
+  // When MEMORY.md cannot go back whole, each memory's line is upserted: the line it had before the merge when the
+  // record kept it (the winner's `before.line`; a source put back byte for byte, its line in the recorded MEMORY.md),
+  // else one rebuilt from its title and description, as restore writes it. A line is kept only when it is one index
+  // line for that memory.
+  const oldLine = (l, rel) => (typeof l === 'string' && ownsLine(l, rel) && !ops.CONTROL.test(l.replace(/\r$/, '')) ? l.replace(/\r$/, '') : null);
+  const lineOf = (t, x, l) => (l ? ops.upsertLine(t, x.type, x.rel, l) : ops.upsertOwnLine(t, x));
+  const ixLine = (rel) => (ix ? oldLine(ix.text.split('\n').find((l) => ownsLine(l, rel)), rel) : null);
 
-  const won = ops.write(m, rec.before.text);
-  const restored = back.map((x) => ops.write(x.m, x.text));
-  // The winner's own line from before the merge when the record kept one (and it is one index line for this memory),
-  // else one rebuilt from its old title and description, as restore writes it.
-  const line = rec.before.line;
-  const own = typeof line === 'string' && ownsLine(line, p.rel) && !ops.CONTROL.test(line.replace(/\r$/, ''))
-    ? (t) => upsertIndexLine(t, `## ${ops.TYPE_HEADING[won.type]}`, line, won.rel)
-    : (t) => ops.upsertOwnLine(t, won);
-  ops.editIndex(vault, (t) => restored.reduce(ops.upsertOwnLine, own(t)));
-  fsx.writeAtomic(file, JSON.stringify({ ...rec, undoneAt: now.toISOString() }, null, 2) + '\n');
+  let won = null;
+  let restored = [];
+  let indexExactly = false;
+  ops.editIndex(vault, (t, raw) => {
+    won = ops.write(m, rec.before.text);
+    restored = back.map((x) => ({ ...ops.write(x.m, x.text), exact: x.exact }));
+    // MEMORY.md byte for byte when it is exactly as the merge left it and every other source came back; else the lines
+    // (a change made since, elsewhere in it, stays).
+    if (ix && !left && raw !== null && ops.sha256(raw) === ix.after) { indexExactly = true; return ix.text; }
+    return restored.reduce((x, r) => lineOf(x, r, r.exact ? ixLine(r.rel) : null), lineOf(t, won, oldLine(rec.before.line, p.rel)));
+  });
+  fsx.writeAtomic(file, recordJson({ ...rec, undoneAt: now.toISOString() }));
   ops.appendTrail(vault, won, 'unmerged', { record: rec.id, restored: restored.map((x) => x.rel) });
   for (const x of restored) ops.appendTrail(vault, x, 'restored', { record: rec.id });
-  return { path: won.rel, restored: restored.map((x) => x.rel), record: rec.id, hash: won.hash };
+  return {
+    path: won.rel, restored: restored.map((x) => x.rel), restoredExactly: restored.filter((x) => x.exact).map((x) => x.rel),
+    indexExactly, record: rec.id, hash: won.hash,
+  };
 }
 
 /**
@@ -491,7 +585,7 @@ function pruneRecords(vault, { days = UNDO_DAYS, now } = {}) {
 }
 
 module.exports = {
-  MERGE_MIN, MERGE_MAX, MAX_SOURCE_CHARS, MAX_PROMPT_CHARS, LIMITS, CUT_MARK, TIMEOUT_MS, NUM_PREDICT, RECORD_DIR, UNDO_DAYS,
+  MERGE_MIN, MERGE_MAX, MAX_SOURCE_CHARS, MAX_PROMPT_CHARS, LIMITS, CUT_MARK, TIMEOUT_MS, NUM_PREDICT, RECORD_DIR, UNDO_DAYS, RECORD_MAX,
   MERGE_SCHEMA, SYSTEM, BAD_REPLY,
   mergeDraft, merge, unmerge, pruneRecords,
   // the pieces, for the tests

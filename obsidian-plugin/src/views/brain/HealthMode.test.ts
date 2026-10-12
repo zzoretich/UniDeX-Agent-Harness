@@ -401,6 +401,39 @@ test("Dismiss: the card stays, busy, until the verb answers, then goes; a refusa
   assert.ok(card(no, "00000000000b"), "refused: still listed");
 });
 
+test("a card applied, then undone, shows again; one suggested again by a later run shows even before the files caught up", async () => {
+  // One whole-brain card, so the load after the merge lists none (Health draws no card list then).
+  const d = sweepData();
+  d.sweep = { runs: [d.sweep!.runs[1]], suggestions: [sweepCard(d, { id: "00000000000a", kind: "merge", paths: [A, B], title: "Small diffs" })] };
+  const h = harness(d);
+  await tick();
+  act(h, "00000000000a", "review").click();
+  await tick();
+  assert.deepEqual(h.calls.merges, [[A, B]]);
+  assert.equal(card(h, "00000000000a"), undefined, "applied: hidden until the files say so");
+  h.mode.update();
+  assert.equal(card(h, "00000000000a"), undefined, "a load from before the merge still reads it open: still hidden");
+  // The merge's load: B superseded, so the card is done and nothing is listed.
+  const live = d.byPath.get(B)!;
+  d.byPath.set(B, parseMemory(B, mem("feedback", "small-diffs-in-review", "Prefer small diffs in review").replace("status/active", "status/superseded"))!);
+  h.mode.update();
+  assert.equal(h.q("[data-sweep-id]").length, 0);
+  // Undo merge: both live again, and the files read the card open again.
+  d.byPath.set(B, live);
+  h.mode.update();
+  assert.ok(card(h, "00000000000a"), "the files win: open again, so listed again");
+  // Applied again; before any load, a later run suggests the same merge (same id: its kind and paths, another run).
+  act(h, "00000000000a", "review").click();
+  await tick();
+  assert.equal(card(h, "00000000000a"), undefined);
+  const r9 = { ...d.sweep!.runs[0], id: "r9", at: "2026-10-11T11:00:00.000Z" };
+  d.sweep = { runs: [r9, ...d.sweep!.runs], suggestions: [sweepCard(d, { id: "00000000000a", kind: "merge", paths: [A, B], title: "Small diffs", run: "r9" })] };
+  h.mode.update();
+  const again = card(h, "00000000000a");
+  assert.ok(again, "the new run's card is not the one applied");
+  assert.match(section(h, "sweep").textContent, /Whole brain · 1/);
+});
+
 test("Merge with AI… on a duplicate row opens the Merge dialog on that pair", async () => {
   const done = deferred<boolean>();
   const h = harness(data(), { merge: () => done.promise });
@@ -435,6 +468,19 @@ test("a cluster's Consolidate with AI…: the scoped estimate, a question with t
   assert.deepEqual(h.calls.runOpts, [{ timeoutMs: AI_TIMEOUT_MS }]);
   assert.equal(notices.pop(), "Sweep of “tide api”: 1 suggestion · swept by gpt-5-codex · Codex · $0.002 (estimated)");
   assert.equal(h.q('[data-act="consolidate"]')[0].textContent, "Consolidate with AI…");
+  // It spent against the reasoner's cap, as the whole brain's sweep does: the sweep card's estimate is asked again.
+  await tick();
+  assert.deepEqual(h.calls.previews.slice(2), [{ verb: "sweep", paths: [], estimate: true }]);
+});
+
+test("a cluster's Consolidate answered No runs nothing, and the sweep card's estimate is not asked again", async () => {
+  const h = harness(sweepData(), { confirm: false });
+  await tick();
+  h.q('[data-act="consolidate"]')[0].click();
+  await tick(); await tick();
+  assert.equal(h.calls.confirms.length, 1);
+  assert.deepEqual(h.calls.runs, []);
+  assert.equal(h.calls.previews.length, 2, "the one on show and the cluster's");
 });
 
 test("a cluster's Consolidate with the sweep off: a Notice with the reason, no question, no run", async () => {

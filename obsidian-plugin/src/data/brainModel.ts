@@ -174,10 +174,13 @@ export interface BrainMemory {
   hash: string;
 }
 
-/** MEMORY.md's description per memory path (`- [Title](brain/memory/…md) — description`, brain-hub.js readIndexLines). */
+/**
+ * MEMORY.md's description per memory path (`- [Title](brain/memory/…md) — description`, brain-hub.js readIndexLines). A
+ * CRLF file's `\r` is not part of a line (memory-hygiene.js entryOf, memory-ops.js indexEntry).
+ */
 export function parseIndexLines(raw: string | null): Map<string, string> {
   const out = new Map<string, string>();
-  for (const l of String(raw ?? "").split("\n")) {
+  for (const l of String(raw ?? "").split("\n").map((x) => x.replace(/\r$/, ""))) {
     const b = /^\s*-\s*\[([^\]]*)\]\((brain\/memory\/[^)]+\.md)\)\s*(?:—\s*(.*))?$/.exec(l);
     if (b && !out.has(b[2])) out.set(b[2], (b[3] ?? "").trim());
   }
@@ -1012,6 +1015,24 @@ export function memoryArgs(v: MemoryVerb): string[] {
   }
 }
 
+/**
+ * The files a verb changed besides what vault events report in time: the load after it re-reads them at once instead of
+ * waiting for those events. `json` is the verb's answer: unmerge's names the memories it restored (`restored`), whose
+ * files it rewrote too. A draft, an estimate and a sweep write no memory; memory-sweep.json is read whole on every load.
+ */
+export function verbTouches(v: MemoryVerb, json: unknown = null): string[] {
+  const always = [MEMORY_INDEX_PATH, TRAIL_PATH_REL];
+  switch (v.verb) {
+    case "keep": case "archive": case "restore": return [...always, ...v.paths];
+    case "set": return [...always, v.path];
+    case "supersede": return [...always, v.path, v.by];
+    case "draft": return [...always, `${MEMORY_ROOT}/feedback/_drafts/${v.slug}.md`, `${MEMORY_ROOT}/feedback/${v.slug}.md`];
+    case "merge": return [...always, ...v.paths];
+    case "unmerge": return [...always, v.path, ...strs(rec(json).restored).filter((p) => MEMORY_PATH_RE.test(p) && p !== v.path)];
+    case "notdup": case "fix": case "merge-draft": case "sweep": case "sweep-dismiss": return [];
+  }
+}
+
 /** A fix result's body, coerced (the page shows a dry run's changes before asking, then the real run's count). */
 export function parseFixResult(body: unknown): FixResult | null {
   const r = rec(body);
@@ -1110,7 +1131,17 @@ export interface MergeDraft extends MergeBase {
   generatedAt: string;
 }
 export interface MergeResult { path: string; superseded: string[]; record: string; hash: string; brainMd: unknown }
-export interface UnmergeResult { path: string; restored: string[]; record: string; hash: string; brainMd: unknown }
+export interface UnmergeResult {
+  path: string;
+  /** Every other memory put back; `restoredExactly` those put back byte for byte (the rest changed since the merge). */
+  restored: string[];
+  restoredExactly: string[];
+  /** MEMORY.md put back byte for byte (else its lines were upserted, keeping a change made since). */
+  indexExactly: boolean;
+  record: string;
+  hash: string;
+  brainMd: unknown;
+}
 
 export const SWEEP_KINDS = ["merge", "archive", "retitle"] as const;
 export type SweepKind = (typeof SWEEP_KINDS)[number];

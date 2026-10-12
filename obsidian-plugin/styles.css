@@ -4505,6 +4505,8 @@ button.aos-brain-btn.aos-brain-sw-consolidate.is-busy:not(.clickable-icon) { opa
 .aos-brain-merge { flex: 1; min-height: 0; display: flex; flex-direction: column; color: var(--udx-text); font-family: var(--udx-sans); font-size: 13px; line-height: 1.45; }
 .aos-brain-merge :focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
 .aos-brain-merge button.aos-brain-btn:not(.clickable-icon):disabled { opacity: 0.5; cursor: default; }
+/* Draft with AI while a draft or the save runs: aria-disabled (it keeps the keyboard), drawn as waiting. */
+.aos-brain-merge button.aos-brain-btn.aos-brain-mg-ai.is-busy:not(.clickable-icon) { opacity: 0.6; cursor: default; }
 .aos-brain-mg-head { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 16px 44px 12px 18px; border-bottom: 1px solid var(--udx-line); }
 .aos-brain-mg-title { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 .aos-brain-mg-sub { margin: 0; color: var(--udx-text-2); font-size: 12.5px; }

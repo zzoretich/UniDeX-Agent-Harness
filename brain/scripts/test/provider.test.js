@@ -452,12 +452,19 @@ test('hostOpts on Codex: its model and level, fixed; the reasoner\'s codexModel 
 test('hostOpts: a Claude alias never reaches Codex, and a host\'s entry wins over model and effort', async () => {
   bothHosts({ provider: 'codex' });
   const calls = [];
-  // The caller's model is a Claude alias; Codex has its own entry with no model: Codex keeps the role's model.
+  // The caller's model is a Claude alias; Codex has its own entry with model null: no -m at all (the user's own Codex
+  // default), never sonnet, haiku or the reasoner's reasoner.codexModel (brain-ai A6: the sweep's background model).
   let p = await resolveProviderForRole({ role: 'reasoner', model: 'sonnet', effort: 'high', hostOpts: { claude: { model: 'haiku', effort: null }, codex: { model: null, effort: 'minimal' } }, deps: { resolveClaudeBin: never, loginProbe: never, ...codexLoggedIn, codexCall: replyCall(calls) } });
   assert.equal(p.name, 'codex');
-  assert.equal(p.model, 'gpt-5', 'reasoner.codexModel, never sonnet or haiku');
+  assert.equal(p.model, null, 'no model: never gpt-5 (reasoner.codexModel), sonnet or haiku');
   await p.chat({ prompt: 'x' });
-  assert.deepEqual([calls[0].model, calls[0].effort], ['gpt-5', 'minimal']);
+  assert.deepEqual([calls[0].model, calls[0].effort], [null, 'minimal']);
+  // An entry that names no model at all (no `model` key) keeps the role's, as before.
+  try { fs.unlinkSync(STATE_PATH); } catch {}
+  const kept = [];
+  p = await resolveProviderForRole({ role: 'reasoner', hostOpts: { codex: { effort: 'minimal' } }, deps: { resolveClaudeBin: never, loginProbe: never, ...codexLoggedIn, codexCall: replyCall(kept) } });
+  await p.chat({ prompt: 'x' });
+  assert.deepEqual([p.model, kept[0].model], ['gpt-5', 'gpt-5']);
 
   bothHosts();
   try { fs.unlinkSync(STATE_PATH); } catch {}
@@ -493,4 +500,43 @@ test('hostOpts changes nothing for a role served by Ollama, and provider none st
   fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'ollama' }));
   const w = await resolveProviderForRole({ role: 'workhorse', hostOpts: sweepOpts, deps: { ping: never, resolveClaudeBin: never, loginProbe: never } });
   assert.deepEqual([w.name, w.reason], ['ollama', 'forced']);
+});
+
+// ---- deps.unbilled (brain-ai A5: an estimate makes no billed call) ----
+test('unbilled: Claude\'s login probe (a billed claude -p) never runs and nothing is written; a stale cache reads as signed in when claude is installed', async () => {
+  const stale = { claude: { loggedIn: false, checkedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(), bin: '/x/claude' } };
+  fs.writeFileSync(STATE_PATH, JSON.stringify(stale));
+  const deps = { unbilled: true, ping: async () => false, resolveClaudeBin: () => '/x/claude', loginProbe: never };
+  let p = await resolveProvider({ mode: 'auto', deps });
+  assert.deepEqual([p.name, p.reason], ['claude', 'claude-logged-in']);
+  p = await resolveProviderForRole({ role: 'reasoner', deps });
+  assert.equal(p.name, 'claude');
+  assert.deepEqual(JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')), stale, 'the cache is left for the next real resolve to probe');
+  assert.equal(fs.existsSync(SPEND_PATH), false, 'no login-probe row');
+  fs.unlinkSync(STATE_PATH);
+  p = await resolveProvider({ mode: 'auto', deps: { ...deps, resolveClaudeBin: () => null } });
+  assert.deepEqual([p.name, p.reason], ['none', 'no-provider'], 'no binary: no provider');
+  assert.equal(fs.existsSync(STATE_PATH), false, 'nothing written');
+
+  // A fresh cache is used as it is; a real resolve still probes and records.
+  await resolveProvider({ mode: 'auto', deps: { ping: async () => false, resolveClaudeBin: () => '/x/claude', loginProbe: async () => false } });
+  p = await resolveProvider({ mode: 'auto', deps });
+  assert.deepEqual([p.name, p.reason], ['none', 'claude-not-logged-in']);
+});
+
+test('a daily cap\'s none names the host whose cap it is', async () => {
+  spent();
+  let p = await resolveProvider({ mode: 'auto', deps: { ping: async () => false, ...loggedIn } });
+  assert.deepEqual([p.name, p.reason, p.host], ['none', 'daily-cap', 'claude']);
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'codex' }));
+  p = await resolveProvider({ deps: { ...codexLoggedIn, spendToday: () => 9 } });
+  assert.deepEqual([p.name, p.reason, p.host], ['none', 'daily-cap', 'codex']);
+  fs.writeFileSync(CONFIG, JSON.stringify({ hosts: { claude: { enabled: true }, codex: { enabled: true } } }));
+  p = await resolveProviderForRole({ role: 'reasoner', deps: { ...loggedIn, reasonSpendToday: () => 99 } });
+  assert.deepEqual([p.reason, p.host], ['reasoner-daily-cap', 'claude']);
+  try { fs.unlinkSync(STATE_PATH); } catch {}
+  p = await resolveProviderForRole({ role: 'reasoner', prefer: 'codex', deps: { ...codexLoggedIn, reasonSpendToday: () => 99 } });
+  assert.deepEqual([p.reason, p.host], ['reasoner-daily-cap', 'codex']);
+  p = await resolveProvider({ mode: 'none' });
+  assert.equal(p.host, null, 'any other none names no host');
 });

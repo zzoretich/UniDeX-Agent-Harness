@@ -230,7 +230,7 @@ test('the sweep on Codex: codex.model at codex.effort, never reasoner.codexModel
   assert.equal(spendToday(), 0);
 });
 
-test('the sweep with no codex.model runs Codex\'s own default model (its config.toml), never reasoner.codexModel', async () => {
+test('the sweep with no codex.model runs Codex\'s own default model (its config.toml, else no -m), never reasoner.codexModel', async () => {
   setConfig({ reasoner: { codexModel: 'gpt-5' } }, CODEX_ONLY);
   fs.writeFileSync(CODEX_TOML, 'model = "gpt-5-codex"\n\n[profiles.x]\nmodel = "o3"\n');
   const spawns = [];
@@ -240,9 +240,18 @@ test('the sweep with no codex.model runs Codex\'s own default model (its config.
   assert.equal(r.model, 'gpt-5-codex');
   fs.unlinkSync(CODEX_TOML);
   dropState();
+  // Nothing names a background model, and the reasoner's is an expensive one: no -m (Codex's own default), never it.
+  setConfig({ reasoner: { codexModel: 'gpt-5-pro' } }, CODEX_ONLY);
   const bare = [];
   const est = await AI.estimate('sweep', { chars: 400, deps: codexDeps(bare) });
-  assert.equal(est.model, 'gpt-5', 'nothing names a background model: provider.js keeps the reasoner\'s');
+  assert.equal(est.model, null, 'no model named, so none priced as the reasoner\'s');
+  assert.equal(est.provider, 'codex');
+  const r2 = await AI.call('sweep', { prompt: 'P', schema: SCHEMA, deps: codexDeps(bare) });
+  assert.equal(bare.length, 1);
+  assert.equal(bare[0].args.includes('-m'), false, 'no -m: the user\'s own Codex default');
+  assert.ok(!bare[0].args.includes('gpt-5-pro'));
+  assert.ok(bare[0].args.includes('model_reasoning_effort="low"'), 'codex.effort, never reasoner.effort');
+  assert.equal(r2.model, null);
 });
 
 test('the sweep with only Ollama is off (ollama-only) and never calls it; the merge still runs on Ollama', async () => {
@@ -258,9 +267,23 @@ test('the sweep with only Ollama is off (ollama-only) and never calls it; the me
   const down = await AI.estimate('sweep', { deps: { ...deps, ping: async () => false } });
   assert.deepEqual([down.reason, AI.reasonSentence(down)], ['no-provider', 'No model provider is set up.']);
 
+  // Claude signed out (a real resolve probed it; an estimate never does): its reason, with Ollama down or up.
   dropState();
-  const out = await AI.estimate('sweep', { deps: { ...nobody, ping: async () => false, resolveClaudeBin: () => '/fake/bin/claude', loginProbe: async () => false } });
-  assert.deepEqual([out.reason, AI.reasonSentence(out)], ['claude-not-logged-in', 'Claude Code is not signed in.']);
+  const outDeps = { ...nobody, ping: async () => false, resolveClaudeBin: () => '/fake/bin/claude', loginProbe: async () => false };
+  assert.equal((await AI.resolve('sweep', { deps: outDeps })).reason, 'claude-not-logged-in');
+  for (const ping of [async () => false, async () => true]) {
+    const out = await AI.estimate('sweep', { deps: { ...outDeps, loginProbe: never('claude login'), ping } });
+    assert.deepEqual([out.reason, AI.reasonSentence(out)], ['claude-not-logged-in', 'Claude Code is not signed in.'], 'never ollama-only: the user has Claude and only needs to sign in');
+  }
+
+  // Codex-only with Codex signed out, Ollama up: Codex's own reason too (the merge still runs on Ollama).
+  dropState();
+  setConfig({}, CODEX_ONLY);
+  const cxOut = { ...nobody, ping: async () => true, resolveClaudeBin: () => null, resolveCodexBin: () => '/fake/bin/codex', codexLoginProbe: async () => false };
+  const cx = await AI.estimate('sweep', { deps: cxOut });
+  assert.deepEqual([cx.reason, AI.reasonSentence(cx)], ['codex-not-logged-in', 'Codex is not signed in.']);
+  assert.equal((await AI.estimate('merge', { deps: cxOut })).provider, 'ollama');
+  setConfig();
 
   dropState();
   setConfig({ provider: 'ollama' });
@@ -277,12 +300,13 @@ test('a cap at resolve: off with the cap that stopped it, named in the sentence;
   });
   const sentence = "Today's model cap is reached ($0.50, claude.perDayUsd).";
   assert.equal(AI.reasonSentence(est), sentence);
-  assert.equal(AI.reasonSentence('daily-cap'), sentence, 'the reason alone: provider.js\'s cached login says which host');
   await assert.rejects(() => AI.call('merge', { prompt: 'x', deps: claudeDeps([], { claudeCall: never('claude'), spendToday: () => 0.5 }) }), (e) => {
     assert.deepEqual([e.code, e.reason], ['PROVIDER_NONE', 'daily-cap']);
+    assert.deepEqual(e.cap, { family: 'hook', perDayUsd: 0.5, spentToday: 0.5, perCallUsd: 0.05 }, 'the cap that stopped it rides on the error');
     assert.equal(AI.reasonSentence(e), sentence);
     return true;
   });
+  assert.equal(AI.reasonSentence('daily-cap'), sentence, 'the reason alone: provider.js\'s cached login (the call\'s resolve) says which host');
 
   // merge on Codex: codex.perDayUsd.
   dropState();
@@ -379,6 +403,31 @@ test('an estimate per host: the tokens with the host\'s overhead, the price, and
   setConfig();
   e = await AI.estimate('merge', { chars: 4000, outTokens: 800, deps: { ...nobody, ping: async () => true } });
   assert.deepEqual(e, { available: true, reason: null, provider: 'ollama', model: role('workhorse').tag, tokensIn: 1000, tokensOut: 800, usd: 0, cap: null });
+  assert.deepEqual(spendRows(), []);
+});
+
+test('an estimate makes no billed call: Claude\'s login probe never runs, no provider state is written, nothing is ledgered', async () => {
+  const deps = { ...nobody, ping: async () => false, resolveClaudeBin: () => '/fake/bin/claude', loginProbe: never('claude login'), claudeCall: never('claude') };
+  for (const kind of ['merge', 'sweep']) {
+    const e = await AI.estimate(kind, { chars: 400, deps });
+    assert.deepEqual([e.available, e.provider, e.model], [true, 'claude', 'haiku'], `${kind}: no login cache, and claude installed reads as signed in`);
+  }
+  assert.equal(fs.existsSync(P.STATE_PATH), false, 'no provider state written');
+  assert.deepEqual(spendRows(), [], 'no login-probe row');
+
+  // A cache over a day old is not trusted, and is left as it was for the next real resolve.
+  const stale = { claude: { loggedIn: false, checkedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(), bin: '/fake/bin/claude' } };
+  fs.writeFileSync(P.STATE_PATH, JSON.stringify(stale));
+  assert.equal((await AI.estimate('merge', { deps })).provider, 'claude');
+  assert.deepEqual(JSON.parse(fs.readFileSync(P.STATE_PATH, 'utf8')), stale, 'left as it was');
+
+  // The real call probes, and says so when Claude is signed out; then the estimate reads that fresh answer.
+  let probes = 0;
+  await assert.rejects(() => AI.call('merge', { prompt: 'x', deps: { ...deps, loginProbe: async () => { probes++; return false; } } }),
+    (e) => e.code === 'PROVIDER_NONE' && e.reason === 'claude-not-logged-in');
+  assert.equal(probes, 1);
+  const after = await AI.estimate('merge', { deps });
+  assert.deepEqual([after.available, after.reason, AI.reasonSentence(after)], [false, 'claude-not-logged-in', 'Claude Code is not signed in.']);
   assert.deepEqual(spendRows(), []);
 });
 

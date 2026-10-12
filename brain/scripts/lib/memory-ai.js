@@ -3,28 +3,34 @@
  * memory-ai.js — the Brain hub's one seam to a model (brain-hub D21, D22; brain-ai A5–A7, A12): who would answer a
  * merge draft or a consolidation sweep, what one call would cost before it is made, and the call itself with what it
  * cost after. lib/memory-merge.js (mergeDraft) and lib/memory-sweep.js (sweep) both go through it, and their tests
- * replace it whole (`opts.ai`). It writes nothing of its own: provider.js may refresh provider-state.json (as any
- * resolve does) and a real call appends its spend-ledger row.
+ * replace it whole (`opts.ai`). It writes nothing of its own: a call's resolve may refresh provider-state.json (as any
+ * resolve does; an estimate's never does) and a real call appends its spend-ledger row.
  *
- *   resolve(kind, { deps })   → { available, reason, provider, model, p, meter }; no model call.
+ *   resolve(kind, { deps })   → { available, reason, provider, model, p, meter } (off: capHost, the host whose cap
+ *            stopped it, when a cap did); no model call but the provider's login probe (estimate skips even that).
  *     merge  the hook chain (A7, feature `memory-merge`): Ollama, else a logged-in `claude` on claude.model under the
  *            hook caps (--max-budget-usd claude.perCallUsd, claude.perDayUsd), else Codex when it is a configured host
  *            (codex.model at codex.effort, codex.perDayUsd); `aos provider` pins one.
  *     sweep  the reasoner role (A6, feature `reason:memory-sweep`: the reasoner's caps and ledger family, D22) on the
  *            background models through provider.js `hostOpts`: claude.model with no --effort, else codex.model (else
- *            the model in Codex's own config.toml) at codex.effort. Never Ollama (the 9B local model cannot hold the
- *            whole brain): a sweep whose only answer would be Ollama is off with reason `ollama-only`; one resolving to
- *            none is off with the provider's reason.
+ *            the model in Codex's own config.toml, else no -m: Codex's own default) at codex.effort. Never Ollama (the
+ *            9B local model cannot hold the whole brain): a sweep that nobody could answer while Ollama is up is off
+ *            with reason `ollama-only`; one resolving to none for another reason (a host signed out, a cap, `none`) is
+ *            off with that reason, so a signed-out host still says to sign in.
  *   estimate(kind, { chars, outTokens, deps }) → Estimate { available, reason, provider, model, tokensIn, tokensOut,
  *            usd, cap } (A5): tokensIn = ceil(chars / 4) + OVERHEAD[provider], Codex's 20,000 counted as cached input;
  *            tokensOut = outTokens (default NUM_PREDICT[kind], the most a call may write); priced by model-pricing.js.
- *            Off: usd 0, provider none, and the cap that stopped it when a cap did. No call, nothing billed.
+ *            Off: usd 0, provider none, and the cap that stopped it when a cap did. No call, nothing billed: it resolves
+ *            with provider.js `deps.unbilled`, so Claude's login probe (a real `claude -p` call) never runs and no
+ *            provider state is written; a login cache older than a day reads as signed in when `claude` is installed,
+ *            and the real call that follows checks it (and says so when it is not).
  *   call(kind, { system, prompt, schema, timeoutMs, numPredict, deps }) → { text, provider, model, usd, estimated, cap }:
  *            one call (TIMEOUT_MS and NUM_PREDICT per kind unless given; the schema also goes as Ollama's `format`).
  *            usd is Claude's own total_cost_usd, else Codex's priced tokens (estimated: true), else 0 (Ollama); cap is
  *            re-read after the call, for "today $y of $z". It throws provider.js's ProviderUnavailable unchanged
  *            (PROVIDER_NONE · PROVIDER_CAP · PROVIDER_UNREACHABLE); the PROVIDER_NONE it raises itself for a provider
- *            that cannot answer carries `reason`, and any other failure is tagged with the `provider` that failed.
+ *            that cannot answer carries `reason` (and, for a cap, the `cap` that stopped it), and any other failure is
+ *            tagged with the `provider` that failed.
  *   capFor(kind, provider, { deps }) → the cap a call there counts against: { family, perDayUsd, spentToday,
  *            perCallUsd } (perCallUsd null under Codex, which has no per-call flag), null for Ollama and none.
  *   who(p) → { provider, model }: the label "drafted by <model> · <Provider>" (Ollama's model is the workhorse tag).
@@ -57,7 +63,8 @@ const NUM_PREDICT = Object.freeze({ merge: 2_000, sweep: 3_000 });
 const CAP_REASONS = new Set(['daily-cap', 'reasoner-daily-cap']);
 const CAP_KEYS = Object.freeze({ hook: 'claude.perDayUsd', codex: 'codex.perDayUsd', reasoner: 'reasoner.perDayUsd', 'reasoner-codex': 'reasoner.perDayUsd' });
 // A reasoner resolution that only says nobody could answer: with Ollama up, the sweep's honest reason is ollama-only.
-const NOBODY = new Set(['no-provider', 'claude-not-logged-in', 'codex-not-logged-in']);
+// A signed-out host keeps its own reason (its sentence says to sign in), Ollama or not.
+const NOBODY = new Set(['no-provider']);
 const OLLAMA_TTL_MS = 60_000; // provider.js's cache of the Ollama ping
 const NAMES = Object.freeze({ claude: 'Claude', codex: 'Codex', ollama: 'Ollama' });
 const SENTENCE = Object.freeze({
@@ -92,8 +99,8 @@ function codexEffort(cfg) {
 function sweepHostOpts(cfg) {
   const { role } = require('../sdk/lib/models.js');
   const c = cfg.claude && typeof cfg.claude.model === 'string' && cfg.claude.model.trim() ? cfg.claude.model.trim() : role('claude', cfg).tag;
-  // codex.model, else the model Codex's own config names (what `codex exec` with no -m runs): never the reasoner's
-  // reasoner.codexModel, which provider.js would take when the entry names no model.
+  // codex.model, else the model Codex's own config names, else null: provider.js then passes no -m (what `codex exec`
+  // runs by default). Never the reasoner's reasoner.codexModel.
   const x = role('codex', cfg).tag || require('../sdk/lib/codex-cli.js').defaultModelFromConfig() || null;
   return { claude: { model: c, effort: null }, codex: { model: x, effort: codexEffort(cfg) } };
 }
@@ -196,18 +203,21 @@ async function resolve(kind, { deps } = {}) {
   if (name === 'claude' || name === 'codex' || (name === 'ollama' && kind === 'merge')) return { available: true, reason: null, ...who(p), p, meter };
   let reason = name === 'ollama' ? 'ollama-only' : (p && p.reason) || 'no-provider';
   if (kind === 'sweep' && NOBODY.has(reason) && await ollamaUp(cfg, deps || {})) reason = 'ollama-only';
-  return { available: false, reason, provider: 'none', model: null, p, meter };
+  // A cap's none names its host (provider.js makeNone); cappedHost's guess from the cached logins is the fallback.
+  const capHost = p && (p.host === 'claude' || p.host === 'codex') ? p.host : null;
+  return { available: false, reason, provider: 'none', model: null, capHost, p, meter };
 }
 
 /** What one call would cost (A5), or why none can be made; no call. */
 async function estimate(kind, { chars = 0, outTokens, deps } = {}) {
   checkKind(kind);
-  const r = await resolve(kind, { deps });
+  // Unbilled (provider.js): no login probe, which is a billed call, and no state written.
+  const r = await resolve(kind, { deps: { ...(deps || {}), unbilled: true } });
   const cfg = loadConfig();
   const base = Math.ceil(Math.max(0, Number(chars) || 0) / 4);
   const tokensOut = outTokens == null ? NUM_PREDICT[kind] : Math.ceil(Math.max(0, Number(outTokens) || 0));
   if (!r.available) {
-    const cap = CAP_REASONS.has(r.reason) ? capOf(kind, cappedHost(kind, cfg), cfg, deps || {}) : null;
+    const cap = CAP_REASONS.has(r.reason) ? capOf(kind, r.capHost || cappedHost(kind, cfg), cfg, deps || {}) : null;
     return { available: false, reason: r.reason, provider: 'none', model: null, tokensIn: base, tokensOut, usd: 0, cap };
   }
   const tokensIn = base + OVERHEAD[r.provider];
@@ -216,11 +226,15 @@ async function estimate(kind, { chars = 0, outTokens, deps } = {}) {
   return { available: true, reason: null, provider: r.provider, model: r.model, tokensIn, tokensOut, usd, cap: capOf(kind, r.provider, cfg, deps || {}) };
 }
 
-/** The PROVIDER_NONE a none provider's chat throws (provider.js makeNone), with the reason kept as a field. */
-function unavailable(reason) {
+/**
+ * The PROVIDER_NONE a none provider's chat throws (provider.js makeNone), with the reason kept as a field, and for a
+ * cap the cap that stopped it (`cap`), so its sentence and "today $y of $z" name the right one.
+ */
+function unavailable(reason, cap) {
   const { ProviderUnavailable } = require('../sdk/lib/spend-ledger.js');
   const e = new ProviderUnavailable('PROVIDER_NONE', `no model provider (${reason})`, 'none');
   e.reason = reason;
+  if (cap) e.cap = cap;
   return e;
 }
 
@@ -228,7 +242,7 @@ function unavailable(reason) {
 async function call(kind, { system = '', prompt = '', schema, timeoutMs, numPredict, deps } = {}) {
   checkKind(kind);
   const r = await resolve(kind, { deps });
-  if (!r.available) throw unavailable(r.reason);
+  if (!r.available) throw unavailable(r.reason, r.capHost ? capOf(kind, r.capHost, loadConfig(), deps || {}) : null);
   let text;
   try {
     text = await r.p.chat({
@@ -281,7 +295,7 @@ function sentenceFor(reason, cap, cfg) {
 
 /** A thrown error → its sentence: a reason it carries, a cap's own message, a sign-in, else "<Provider> did not answer." */
 function errorSentence(e, cfg) {
-  if (typeof e.reason === 'string' && e.reason) return sentenceFor(e.reason, null, cfg);
+  if (typeof e.reason === 'string' && e.reason) return sentenceFor(e.reason, e.cap || null, cfg);
   const msg = String(e.message || '');
   const name = NAMES[e.provider] || 'The model';
   if (e.code === 'PROVIDER_CAP') {

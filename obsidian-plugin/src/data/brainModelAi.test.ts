@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   memoryArgs, parseMergeEstimate, parseMergeDraft, parseSweepFile, parseSweepEstimate, parseSweepResult, parseAiEstimate,
-  sweepScopeKey, usdText, estimateText, spendText, capText, aiReasonText, providerName, undoableMerge, touchesBrain,
+  sweepScopeKey, usdText, estimateText, spendText, capText, aiReasonText, providerName, undoableMerge, touchesBrain, verbTouches,
   MEMORY_SWEEP_PATH, MERGE_MAX, SWEEP_MAX_PATHS, UNDO_DAYS,
 } from "./brainModel";
 import type { TrailEntry } from "./promoteTrail";
@@ -126,4 +126,17 @@ test("undoableMerge: the newest merge, unchanged since, within UNDO_DAYS, not un
 
 test("the sweep file is followed by vault events", () => {
   assert.equal(touchesBrain(MEMORY_SWEEP_PATH), true);
+});
+
+test("the files a verb changed: merge its paths, unmerge the merged memory and every one it restored", () => {
+  const always = ["MEMORY.md", "brain/_index/promote-log.jsonl"];
+  const into = { title: "Small diffs", description: "Keep diffs small", body: "Why." };
+  assert.deepEqual(verbTouches({ verb: "merge", paths: [A, B], into, expect: [H("a"), H("b")] }), [...always, A, B]);
+  const undo = { verb: "unmerge" as const, path: A, expect: H("e") };
+  // The runtime rewrote the losers' files too: the load right after re-reads them, without waiting for vault events.
+  assert.deepEqual(verbTouches(undo, { path: A, restored: [B, C], record: "r", hash: H("a"), brainMd: null }), [...always, A, B, C]);
+  assert.deepEqual(verbTouches(undo, { restored: [B, "../../etc/passwd", 7, A] }), [...always, A, B], "only memory paths, once");
+  assert.deepEqual(verbTouches(undo), [...always, A], "refused: nothing was restored");
+  assert.deepEqual(verbTouches({ verb: "sweep", paths: [], estimate: false }), [], "a sweep writes no memory");
+  assert.deepEqual(verbTouches({ verb: "sweep-dismiss", id: "0123456789ab" }), []);
 });

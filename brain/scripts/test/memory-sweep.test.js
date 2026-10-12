@@ -312,6 +312,21 @@ test('keepCards counts a title and a description as `set` does (UTF-16 units): n
   assert.ok(t.length <= ops.MAX_TITLE && !loneHigh.test(t), `${t.length} units`);
 });
 
+test('keepCards drops a retitle `set` would refuse for MEMORY.md\'s sake: a bracket in the title, `](` in the description', () => {
+  const p = 'brain/memory/reference/n-0.md';
+  const other = 'brain/memory/user/other.md';
+  const byPath = new Map([[p, { path: p, live: true, hash: 'h'.repeat(64), title: 'Old' }]]);
+  const keep = (c) => sw.keepCards([c], { sent: new Set([p]), byPath, dismissed: new Set(), max: 20, run: 'r', scope: null });
+  assert.deepEqual(keep(card('retitle', [p], `New](${other}) — x [y`)), [], 'a title that would link other.md');
+  assert.deepEqual(keep(card('retitle', [p], '[WIP] new')), []);
+  assert.deepEqual(keep(card('retitle', [p], 'New', `see [it](${other})`)), [], 'a description that would');
+  const ok = keep(card('retitle', [p], 'New (v2)', 'a [note] (kept)'));
+  assert.deepEqual([ok[0].title, ok[0].description], ['New (v2)', 'a [note] (kept)']);
+  // Every kept retitle is one `set` takes as it is.
+  const v = fixture();
+  assert.doesNotThrow(() => ops.setFields(v, A, { title: ok[0].title, description: ok[0].description }));
+});
+
 // ── the store ──
 
 test('a run replaces the open cards of its own scope; other scopes and every dismissed card stay; ids stay unique', async () => {
@@ -342,6 +357,24 @@ test('a run replaces the open cards of its own scope; other scopes and every dis
   assert.equal(store(v).schema, 1);
   assert.equal(store(v).runs.length, 4);
   assert.equal(store(v).runs[0].id, again.run.id, 'newest first');
+});
+
+test('a scoped run also replaces the open cards of earlier runs on its lead: a group re-run after a member left it', async () => {
+  const v = fixture();
+  await run(v, [], fakeAi({ reply: { suggestions: [card('retitle', [E], 'Ports in use')] } }));
+  await run(v, [D, E], fakeAi({ reply: { suggestions: [card('archive', [E])] } }));
+  const first = await run(v, [A, B, C], fakeAi({ reply: { suggestions: [card('archive', [C]), card('merge', [A, B], 'Releases')] } }));
+  sw.dismiss(v, first.suggestions[1].id);
+  // B is merged away: the group (its lead still A) now sends [A, C], which is another scope key.
+  put(v, B, mem({ type: 'projects', status: 'superseded', created: '2026-09-10', description: 'Shipped 1.1', title: 'Release 1.1' }));
+  assert.notEqual(sw.scopeKey([A, C]), sw.scopeKey([A, B, C]));
+  const again = await run(v, [A, C], fakeAi({ reply: { suggestions: [] } }));
+  assert.equal(again.run.suggestions, 0);
+  assert.deepEqual(store(v).suggestions.map((c) => [c.kind, c.paths.join(','), c.scope, c.state]).sort(), [
+    ['archive', E, sw.scopeKey([D, E]), 'open'],
+    ['merge', `${A},${B}`, sw.scopeKey([A, B, C]), 'dismissed'],
+    ['retitle', E, null, 'open'],
+  ].sort(), 'the earlier run\'s open card on lead A is gone; another lead\'s, the whole brain\'s and the dismissed one stay');
 });
 
 test('runs keep the newest 20', async () => {

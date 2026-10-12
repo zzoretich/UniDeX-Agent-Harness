@@ -216,6 +216,8 @@ export class MapMode implements BrainModeView {
     const d = this.ctx.data();
     if (!force && d === this.lastData) return;
     this.lastData = d;
+    // On every load, even with no community open: an applied sweep card the files now read done stops being hidden.
+    this.cards.sync();
     const empty = mapEmpty(d.map, d.settings.graph);
     const kind = empty ? `empty:${empty.state}` : "map";
     if (kind !== this.built) {

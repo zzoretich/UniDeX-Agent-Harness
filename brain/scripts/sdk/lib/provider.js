@@ -199,14 +199,15 @@ async function resolveCodex(state, now, iso, cfg, deps, okReason, fallbackReason
   const { loggedIn, bin } = await resolveCodexLogin(state, now, iso, deps);
   if (!loggedIn) return makeNone(bin ? 'codex-not-logged-in' : fallbackReason);
   const budget = codexBudget(cfg, deps);
-  if (budget.spent() >= budget.perDayUsd) return makeNone('daily-cap');
+  if (budget.spent() >= budget.perDayUsd) return makeNone('daily-cap', 'codex');
   return makeCodex(okReason, budget, deps);
 }
 
-function makeNone(reason) {
+/** No provider. A daily cap's none names the host whose cap it is (`host`), which its reason does not say. */
+function makeNone(reason, host = null) {
   const refuse = () => Promise.reject(new ProviderUnavailable('PROVIDER_NONE', `no model provider (${reason})`, 'none'));
   return {
-    name: 'none', reason,
+    name: 'none', reason, host,
     capabilities: { chat: false, embed: false, structured: false },
     chat: refuse, embed: refuse, ping: async () => false,
   };
@@ -217,6 +218,10 @@ function makeNone(reason) {
  * inside hooks (SessionEnd included), so it is capped well below loginProbe's own 60 s default:
  * a login that has not answered in 10 s is a "no" for this run, and the cache means the wait is
  * paid at most once a day. Mutates `state.claude`; the caller writes the state file.
+ *
+ * `deps.unbilled` (lib/memory-ai.js estimate, brain-ai A5: "no call, nothing billed") never runs the probe, which is a
+ * real `claude -p` call billed to the ledger: a cache older than a day reads as signed in when the binary resolves,
+ * and is left as it is (the caller writes no state either), so the next real resolve probes and says otherwise.
  */
 async function resolveClaudeLogin(state, now, iso, deps) {
   const resolveBin = deps.resolveClaudeBin || claudeCli.resolveClaudeBin;
@@ -225,6 +230,7 @@ async function resolveClaudeLogin(state, now, iso, deps) {
     return { loggedIn: !!state.claude.loggedIn, bin: state.claude.bin || null };
   }
   const bin = resolveBin();
+  if (deps.unbilled) return { loggedIn: !!bin, bin };
   const loggedIn = bin ? await probe({ bin, timeoutMs: deps.probeTimeoutMs || 10_000 }) : false;
   state.claude = { loggedIn, checkedAt: iso, bin };
   return { loggedIn, bin };
@@ -257,7 +263,7 @@ async function resolveProvider({ mode, feature = 'unknown', deps = {} } = {}) {
       const { loggedIn, bin } = await resolveClaudeLogin(state, now, iso, deps);
       const claudeReason = bin ? 'claude-not-logged-in' : 'no-provider';
       if (loggedIn) {
-        chosen = budget.spent() >= budget.perDayUsd ? makeNone('daily-cap') : makeClaude(m === 'claude' ? 'forced' : 'claude-logged-in', budget, deps);
+        chosen = budget.spent() >= budget.perDayUsd ? makeNone('daily-cap', 'claude') : makeClaude(m === 'claude' ? 'forced' : 'claude-logged-in', budget, deps);
       } else if (m === 'auto' && codexConfigured(cfg)) {
         chosen = await resolveCodex(state, now, iso, cfg, deps, 'codex-logged-in', claudeReason);
       } else {
@@ -269,7 +275,8 @@ async function resolveProvider({ mode, feature = 'unknown', deps = {} } = {}) {
   state.name = chosen.name;
   state.reason = chosen.reason;
   state.feature = feature;
-  writeState(state);
+  // An unbilled resolve (an estimate) may rest on a login it did not check: it records nothing.
+  if (!deps.unbilled) writeState(state);
   return chosen;
 }
 
@@ -288,7 +295,8 @@ async function resolveProvider({ mode, feature = 'unknown', deps = {} } = {}) {
  * `hostOpts` ({ claude: { model, effort }, codex: { model, effort } }) names them per host instead (brain-ai A6: the
  * memory sweep runs under the reasoner's caps on the background models, claude.model with no --effort, or codex.model
  * at codex.effort). A host's entry wins over `model` and `effort` for that host, so a Claude alias never reaches Codex:
- * its `model` (a non-empty string) replaces the role's model, else the role's model stays; its `effort` is a level that
+ * its `model` (a non-empty string) replaces the role's model, null on Codex's entry passes no -m (the user's own Codex
+ * default, never reasoner.codexModel), else the role's model stays; its `effort` is a level that
  * host's CLI takes, fixed for every call, or null, which for Claude means no --effort at all (and so no thinking,
  * claude-cli.js) and for Codex keeps the role's level (Codex with none would run at the user's own, maybe costly,
  * default). A host without an entry takes `model` and `effort` as before.
@@ -302,12 +310,16 @@ async function resolveProviderForRole({ role: roleName, feature = 'unknown', dep
   const iso = new Date(now).toISOString();
   const state = readState();
   const reasoner = roleName === 'reasoner';
+  // An unbilled resolve (an estimate) records nothing: resolveClaudeLogin's comment.
+  const save = () => { if (!deps.unbilled) writeState(state); };
   const chosen = reasoner && (prefer === 'claude' || prefer === 'codex') ? prefer : null;
   const pin = (budget, host) => {
     const own = hostOpts && typeof hostOpts === 'object' && hostOpts[host] && typeof hostOpts[host] === 'object' ? hostOpts[host] : null;
     const m = own ? own.model : model;
     const e = own ? own.effort : effort;
     if (typeof m === 'string' && m.trim()) budget.model = m.trim();
+    // A Codex entry's `model: null` is no -m at all (the user's own Codex default), never the role's reasoner.codexModel.
+    else if (own && host === 'codex' && own.model === null) budget.model = null;
     const levels = host === 'codex' ? codexCli.EFFORTS : claudeCli.EFFORTS;
     if (levels.includes(e)) { budget.effort = e; budget.fixedEffort = true; }
     else if (own && e === null && host === 'claude') { budget.effort = undefined; budget.fixedEffort = true; }
@@ -322,19 +334,19 @@ async function resolveProviderForRole({ role: roleName, feature = 'unknown', dep
       const budget = reasoner ? pin(reasonerBudget(cfg, deps), 'claude') : hookBudget(cfg, deps);
       const { loggedIn, bin } = await resolveClaudeLogin(state, now, iso, deps);
       if (!loggedIn) { why.push(bin ? 'claude-not-logged-in' : 'no-provider'); continue; }
-      writeState(state);
-      if (budget.spent() >= budget.perDayUsd) return makeNone(`${roleName}-daily-cap`);
+      save();
+      if (budget.spent() >= budget.perDayUsd) return makeNone(`${roleName}-daily-cap`, 'claude');
       return makeClaude(`role:${roleName}`, budget, deps);
     }
     if (!reasoner || !codexConfigured(cfg)) { if (chosen) why.push('codex-not-configured'); continue; }
     const { loggedIn, bin } = await resolveCodexLogin(state, now, iso, deps);
     if (!loggedIn) { why.push(bin ? 'codex-not-logged-in' : 'no-codex'); continue; }
-    writeState(state);
+    save();
     const budget = pin(reasonerCodexBudget(cfg, deps), 'codex');
-    if (budget.spent() >= budget.perDayUsd) return makeNone(`${roleName}-daily-cap`);
+    if (budget.spent() >= budget.perDayUsd) return makeNone(`${roleName}-daily-cap`, 'codex');
     return makeCodex(`role:${roleName}`, budget, deps);
   }
-  writeState(state);
+  save();
   if (chosen && why.length) return makeNone(why[0]);
   return makeNone(why.includes('claude-not-logged-in') ? 'claude-not-logged-in' : why.includes('codex-not-logged-in') ? 'codex-not-logged-in' : 'no-provider');
 }

@@ -24,14 +24,16 @@
  * and the cards are checked here.
  *
  * Cards (A10) are kept only when every path was sent and is still live, the kind's path count fits, a retitle's title is
- * new, and the card's id was neither seen earlier in the reply nor dismissed before. The id is sha256(kind + "\n" +
- * sorted paths joined by "\n"), 12 hex: a dismissed suggestion is never shown again, whichever run makes it. A card
- * records each path's hash as the files are when it is stored; the page calls it done or stale once they differ.
+ * new and one `set` takes (no `[` or `]` in the title, no `](` in its description), and the card's id was neither seen
+ * earlier in the reply nor dismissed before. The id is sha256(kind + "\n" + sorted paths joined by "\n"), 12 hex: a
+ * dismissed suggestion is never shown again, whichever run makes it. A card records each path's hash as the files are
+ * when it is stored; the page calls it done or stale once they differ.
  *
  * Store: `{ schema: 1, runs: [run…] (newest first, ≤ MAX_RUNS), suggestions: [card…] }`, written through fsx.updateSync
- * (lock, atomic) in a plain brain/_index. A run replaces the open cards of its own scope (its scope key) and any open card
- * it makes again; other scopes' cards and every dismissed card stay. An unreadable file starts over (as
- * memory-notdup.json does); a link there is refused.
+ * (lock, atomic) in a plain brain/_index. A run replaces the open cards of its own scope (its scope key; a scoped run
+ * also those of earlier runs on the same lead, its first path: a group's key changes as its members are merged or
+ * archived, its lead does not) and any open card it makes again; other scopes' cards and every dismissed card stay. An
+ * unreadable file starts over (as memory-notdup.json does); a link there is refused.
  *
  * Takes the vault; nothing is resolved at load. The model only through lib/memory-ai.js (`opts.ai` in tests), which
  * loads provider.js (it resolves the vault when required) only when a real sweep or an estimate runs.
@@ -310,9 +312,11 @@ function keepCards(raw, { sent, byPath, dismissed, max, run, scope }) {
     if (s.kind === 'merge') title = cut(s.title, MAX_TITLE);
     if (s.kind === 'retitle') {
       title = line(s.title);
-      // `set` counts a title in UTF-16 units: a card it would refuse is never kept.
-      if (!title || title.length > MAX_TITLE || title === byPath.get(paths[0]).title) continue;
+      // `set` counts a title in UTF-16 units: a card it would refuse is never kept, and `set` refuses a bracket in a
+      // title or a `](` in a description (memory-ops TITLE_UNSAFE, DESC_UNSAFE: MEMORY.md's line would link another path).
+      if (!title || title.length > MAX_TITLE || title === byPath.get(paths[0]).title || ops.TITLE_UNSAFE.test(title)) continue;
       description = cut(s.description, MAX_DESC);
+      if (ops.DESC_UNSAFE.test(description)) continue;
     }
     const id = cardId(s.kind, paths);
     if (seen.has(id) || dismissed.has(id)) continue;
@@ -444,7 +448,14 @@ async function sweep(vault, rels = [], opts = {}) {
     cards = keepCards(raw, { sent: new Set(input.paths), byPath, dismissed, max: maxCards, run: run.id, scope: key });
     run.suggestions = cards.length;
     const fresh = new Set(cards.map((c) => c.id));
-    const kept = doc.suggestions.filter((c) => c.state === 'dismissed' || ((typeof c.scope === 'string' ? c.scope : null) !== key && !fresh.has(c.id)));
+    // A group is its lead (the first path a scoped run sends): merging or archiving its members changes its scope key,
+    // never its lead, so a scoped run also replaces the open cards of earlier runs on the same lead (the HUD's
+    // brainSweep currentCards reads the file the same way).
+    const lead = scope ? scope.paths[0] : null;
+    const leadOf = new Map(doc.runs.map((r) => [r.id, r.scope && Array.isArray(r.scope.paths) ? r.scope.paths[0] : null]));
+    const cardScope = (c) => (typeof c.scope === 'string' ? c.scope : null);
+    const replaced = (c) => cardScope(c) === key || (lead !== null && cardScope(c) !== null && leadOf.get(c.run) === lead);
+    const kept = doc.suggestions.filter((c) => c.state === 'dismissed' || (!replaced(c) && !fresh.has(c.id)));
     return serialize({ schema: 1, runs: [run, ...doc.runs].slice(0, MAX_RUNS), suggestions: [...cards, ...kept] });
   }, { timeoutMs: 5000 });
   return { run, suggestions: cards };

@@ -9,8 +9,10 @@
 // with its word.
 //
 // A scoped sweep (Consolidate with AI…, A3) is keyed by sweepScopeKey(paths) (the runtime's key: the sorted paths). A
-// group's members change as its memories are merged or archived, which changes that key, so a group also shows the
-// cards of an earlier run on the same lead (the first path it sent).
+// group's members change as its memories are merged or archived, which changes that key but never its lead (the first
+// path it sent), so a group is its lead: its panel shows the cards of an earlier run on the same lead, and a newer run on
+// that lead replaces the earlier runs' open cards (A10: a new run replaces the open cards of its scope), whatever keys
+// they were stored under (currentCards).
 import {
   SWEEP_KIND_LABEL, SWEEP_MAX_PATHS, aiReasonText, capText, estimateText, shortDay, spendText, sweepScopeKey,
   type AiEstimate, type BrainHub, type BrainMap, type BrainMemory, type SweepCard, type SweepEstimate, type SweepFile,
@@ -100,6 +102,31 @@ export function runScope(run: Pick<SweepRun, "scope">): string | null {
 }
 
 /**
+ * The file's cards less the open ones a newer scoped run on the same lead replaced (A10, a group being its lead): a
+ * group re-run after a merge or an archive among its members sends other paths, so it is stored under another key; the
+ * runtime drops the earlier runs' open cards on that lead when it stores the run (memory-sweep.js), and the page reads
+ * the file the same way, so a file an earlier runtime wrote lists only the newest run's too. Whole-brain cards,
+ * dismissed ones, and cards whose run the file no longer lists are kept as they are. `runs` is newest first, as the
+ * runtime writes it.
+ */
+export function currentCards(f: Pick<SweepFile, "runs" | "suggestions"> | null): SweepCard[] {
+  if (!f) return [];
+  const leadOf = new Map<string, string>();
+  const newest = new Map<string, string>();
+  for (const r of f.runs) {
+    const lead = r.scope?.paths[0];
+    if (!lead) continue;
+    leadOf.set(r.id, lead);
+    if (!newest.has(lead)) newest.set(lead, r.id);
+  }
+  return f.suggestions.filter((c) => {
+    if (c.scope === null || c.state === "dismissed") return true;
+    const lead = leadOf.get(c.run);
+    return !lead || newest.get(lead) === c.run;
+  });
+}
+
+/**
  * The paths a scoped sweep sends for a group (A3): the lead first, then the rest most linked first (`degree`, ties in the
  * order given), at most SWEEP_MAX_PATHS. `of` is the group's size and `cut` how many were left out (the page says so).
  */
@@ -113,7 +140,8 @@ export function scopePaths(lead: string | null, paths: readonly string[], degree
 
 /**
  * The scope keys a group's panel shows: the key of the paths it would send now, and that of every run whose scope had
- * the same lead (its first path): merging or archiving members since changes the key, never the lead.
+ * the same lead (its first path): merging or archiving members since changes the key, never the lead. Only the newest
+ * of those runs still has cards listed (currentCards).
  */
 export function groupScopes(file: SweepFile | null, paths: readonly string[]): Set<string> {
   const out = new Set<string>();
@@ -186,7 +214,7 @@ export function sweepGroups(d: SweepInput, claimed: ReadonlySet<string> = new Se
   const f = d.sweep;
   if (!f) return [];
   const by = new Map<string | null, SweepCardView[]>();
-  for (const v of sweepViews(f.suggestions, d.byPath)) {
+  for (const v of sweepViews(currentCards(f), d.byPath)) {
     if (v.card.scope && claimed.has(v.card.scope)) continue;
     const list = by.get(v.card.scope) ?? [];
     list.push(v);
@@ -205,7 +233,7 @@ export function sweepGroups(d: SweepInput, claimed: ReadonlySet<string> = new Se
 /** Every listed card, and the sweep line over them (Health's card: the newest run of any scope, named when scoped). */
 export function sweepSummary(d: SweepInput): { line: string; run: SweepRun | null; views: SweepCardView[] } {
   const f = d.sweep;
-  const views = f ? sweepViews(f.suggestions, d.byPath) : [];
+  const views = sweepViews(currentCards(f), d.byPath);
   const run = f?.runs[0] ?? null;
   const on = run?.scope?.paths.length ? scopeName(run.scope.paths, d) : null;
   return { line: sweepLine(run, views, d.now, on), run, views };
@@ -215,16 +243,23 @@ export function sweepSummary(d: SweepInput): { line: string; run: SweepRun | nul
 export function scopeSummary(d: SweepInput, scopes: ReadonlySet<string>): { line: string; run: SweepRun | null; views: SweepCardView[] } {
   const f = d.sweep;
   if (!f || !scopes.size) return { line: sweepLine(null, [], d.now), run: null, views: [] };
-  const views = sweepViews(f.suggestions.filter((c) => c.scope !== null && scopes.has(c.scope)), d.byPath);
+  const views = sweepViews(currentCards(f).filter((c) => c.scope !== null && scopes.has(c.scope)), d.byPath);
   const run = f.runs.find((r) => { const k = runScope(r); return k !== null && scopes.has(k); }) ?? null;
   return { line: sweepLine(run, views, d.now), run, views };
 }
 
 // ── the estimate, the questions, the answers ──
 
-/** Why the sweep is off, and what still works: Merge drafts on Ollama when only Ollama answers (A7), else by hand (A4). */
+/**
+ * Why the sweep is off, and what still works: Merge drafts on Ollama when only Ollama answers (A7); with only the
+ * reasoner's daily cap reached it still drafts, as it runs on the hook chain and the hook's cap (A7); else (no provider,
+ * a sign-in, the hook's cap: the merge's chain is down too) it is finished by hand (A4).
+ */
 export function sweepOffText(e: Pick<AiEstimate, "reason" | "cap">): string {
-  return `${aiReasonText(e.reason, e.cap)} ${e.reason === "ollama-only" ? "Merge with AI still works, on Ollama." : "Merge with AI still works by hand."}`;
+  const still = e.reason === "ollama-only" ? "Merge with AI still works, on Ollama."
+    : e.reason === "reasoner-daily-cap" ? "Merge with AI still works."
+    : "Merge with AI still works by hand.";
+  return `${aiReasonText(e.reason, e.cap)} ${still}`;
 }
 
 /**

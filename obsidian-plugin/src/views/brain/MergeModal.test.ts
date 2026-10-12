@@ -55,6 +55,7 @@ class FakeEl {
   get elements(): FakeEl[] { return this.children.filter((c): c is FakeEl => typeof c !== "string"); }
   get textContent(): string { return this.children.map((c) => (typeof c === "string" ? c : c.textContent)).join(""); }
   contains(x: FakeEl | null): boolean { for (let e: FakeEl | null = x; e; e = e.parent) if (e === this) return true; return false; }
+  closest(sel: string): FakeEl | null { for (let e: FakeEl | null = this; e; e = e.parent) if (e.matches(sel)) return e; return null; }
   matches(sel: string): boolean {
     const m = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(sel.trim());
     if (m) return this.attrs.has(m[1]) && (m[2] === undefined || this.attrs.get(m[1]) === m[2]);
@@ -97,7 +98,7 @@ require.cache[STUB] = {
   exports: { setIcon: () => {}, Modal: FakeModal, FuzzySuggestModal: Stub, Notice: class { constructor(m: string) { notices.push(m); } } },
 } as unknown as NodeJS.Module;
 
-const { openMerge, mergeInto, mergeProblem, savingWill, targetLine, sourceOrder, MERGE_CANCEL_TEXT, MERGE_STALE_TEXT } = require("./MergeModal") as typeof Merge;
+const { openMerge, mergeInto, mergeProblem, savingWill, targetLine, sourceOrder, byHandText, MERGE_CANCEL_TEXT, MERGE_STALE_TEXT } = require("./MergeModal") as typeof Merge;
 
 // ── two memories, the runtime's answers ──
 
@@ -178,6 +179,10 @@ test("mergeInto tidies what Save sends as the runtime's Clean does; mergeProblem
   assert.equal(mergeProblem({ title: "T", description: "d".repeat(201), body: "B" }), "The description is over 200 characters.");
   assert.equal(mergeProblem({ title: "T", description: "D", body: "b".repeat(16_001) }), "The body is over 16,000 characters.");
   assert.equal(mergeProblem({ title: "T", description: "D", body: `${"b".repeat(16_000)}\n\n` }), null, "trailing space is not counted");
+  // MEMORY.md links the memory as [title](path): the runtime refuses what would break or redirect that link.
+  assert.equal(mergeProblem({ title: "[WIP] small diffs", description: "D", body: "B" }), "The title cannot hold [ or ]: MEMORY.md links it as [title](path).");
+  assert.equal(mergeProblem({ title: "T", description: "see [x](other.md)", body: "B" }), "The description cannot hold “](”: MEMORY.md would read it as a link.");
+  assert.equal(mergeProblem({ title: "T (draft)", description: "a [note] here", body: "[link](x.md) in the body is fine" }), null);
 });
 
 test("the target line, what saving will do and the sources' order (A1, A2, A9)", () => {
@@ -273,6 +278,72 @@ test("a by-hand answer (a cap, no provider, a bad reply) shows its reason and le
   assert.equal(h.q('[data-field="description"]').value, "Edited", "an edit is never overwritten by the by-hand draft");
   assert.equal(h.confirms.length, 0);
   assert.equal(h.q('[data-act="draft"]').textContent, "Draft with AI", "no model draft came back");
+});
+
+test("a reply that could not be read was still a call: the by-hand line says who answered and what it cost (A5)", async () => {
+  const BAD = "The model's reply could not be read.";
+  const codex = { ...DRAFT, mode: "by-hand", reason: BAD, provider: "codex", model: "gpt-5-codex", usd: 0.012, estimated: true, cap: { family: "codex", perDayUsd: 1, spentToday: 0.2, perCallUsd: null }, fields: BY_HAND };
+  const h = await harness({ run: async () => ({ ok: true, json: codex }) });
+  h.q('[data-act="draft"]').click();
+  await flush();
+  assert.equal(h.q(".aos-brain-mg-spend").textContent, `${BAD} Finish the draft by hand. · answered by gpt-5-codex · Codex · $0.01 (estimated) · today $0.20 of $1.00`);
+  assert.equal(h.q(".aos-brain-mg-spend").getAttribute("data-tone"), "by-hand");
+  // No call came back (no provider, a cap, a call that failed): no model and nothing spent, so only the reason.
+  const none = { reason: "No model provider is set up.", provider: "none" as const, model: null, usd: 0, estimated: false, cap: null };
+  assert.equal(byHandText(none), "No model provider is set up. Finish the draft by hand.");
+  assert.equal(byHandText({ ...none, reason: "Claude did not answer.", provider: "claude" }), "Claude did not answer. Finish the draft by hand.", "a failed call: who failed is in the reason, no cost came back");
+  assert.equal(byHandText({ ...none, reason: BAD, provider: "ollama", model: "qwen3:8b" }), `${BAD} Finish the draft by hand. · answered by qwen3:8b · Ollama · $0.00`);
+});
+
+test("Draft with AI keeps the keyboard while it runs (aria-disabled, not disabled), and the dialog takes it back after a stop", async () => {
+  const late = deferred<Answer>();
+  const h = await harness({ run: () => late.promise });
+  const ai = h.q('[data-act="draft"]');
+  ai.focus();
+  ai.click();
+  await flush();
+  const busy = h.q('[data-act="draft"]');
+  assert.equal(busy, ai, "the same button: the dialog does not redraw it");
+  assert.deepEqual([busy.disabled, busy.getAttribute("aria-disabled"), busy.getAttribute("aria-busy")], [false, "true", "true"]);
+  assert.equal(doc.activeElement, ai, "a disabled button would drop the focus to the page");
+  busy.click();
+  await flush();
+  assert.equal(h.runs.length, 1, "a busy click does nothing");
+  // Escape with the keyboard nowhere (it was on a control the page dropped): the stop gives it to Draft with AI.
+  doc.activeElement = doc.body;
+  h.q('[data-act="cancel"]').click();
+  assert.equal(h.q(".aos-brain-mg-spend").textContent, MERGE_CANCEL_TEXT);
+  assert.deepEqual([ai.getAttribute("aria-disabled"), ai.getAttribute("aria-busy")], [null, null]);
+  assert.equal(doc.activeElement, ai);
+  // A control the person moved to keeps the keyboard when the answer lands.
+  const next = deferred<Answer>();
+  const g = await harness({ run: () => next.promise });
+  g.q('[data-act="draft"]').click();
+  const desc = g.q('[data-field="description"]');
+  desc.focus();
+  next.resolve({ ok: true, json: DRAFT });
+  await flush();
+  assert.equal(doc.activeElement, desc);
+  // The keyboard nowhere when it lands: Draft with AI (now Redraft) takes it.
+  const third = deferred<Answer>();
+  const k = await harness({ run: () => third.promise });
+  k.q('[data-act="draft"]').click();
+  doc.activeElement = doc.body;
+  third.resolve({ ok: true, json: DRAFT });
+  await flush();
+  assert.equal(doc.activeElement, k.q('[data-act="draft"]'));
+  assert.equal(k.q('[data-act="draft"]').textContent, "Redraft");
+});
+
+test("the body's count is beside its label, not in it: the field is named BODY and described by the count", async () => {
+  const h = await harness();
+  const body = h.q('[data-field="body"]');
+  const label = body.closest("label")!;
+  assert.equal(label.textContent, "BODY", "the label names the field and nothing else");
+  const count = h.q(".aos-brain-mg-count");
+  assert.equal(label.contains(count), false);
+  assert.equal(body.getAttribute("aria-describedby"), count.getAttribute("id"));
+  assert.equal(count.parent, label.parent, "under the field, in the same block");
 });
 
 test("Cancel while a draft runs drops its answer and says the call may still be billed; the dialog stays to finish by hand", async () => {
