@@ -299,6 +299,12 @@ export const SURFACES: readonly Surface[] = [
     // a Claude Code session and one from a Codex session, pin, a stale hash refused, unpin (the file back byte for byte),
     // archive, restore and keep; notdup, supersede and restore on a real duplicate pair; a draft approved and one
     // rejected; then brain-hub.js. Each was admitted with the surface on and refused with it off.
+    // PR 3's rules, 2026-10-11, on a fresh copy of the same vault with this runtime vendored into it: every fix kind's
+    // dry run left the copy byte for byte, its real run changed exactly the files the dry run listed with one `fixed`
+    // trail row each, and a second dry run found nothing (descriptions touched memories from Claude Code and Codex
+    // sessions alike; every frontmatter still parses as strict YAML); set pin, a stale hash refused and unpin back to the
+    // same bytes on a Claude Code session's memory and a Codex session's; Mark complete and back; the recall preview
+    // answered and wrote nothing (no usage row); brain-hub.js wrote a brain-map.json the page parses. 62 checks.
     verified: true,
   },
   {
