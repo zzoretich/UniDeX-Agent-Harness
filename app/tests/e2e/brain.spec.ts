@@ -331,7 +331,7 @@ test.describe("Review", () => {
     await expect(main().locator("footer.aos-brain-rv-keys > span")).toHaveText(["↑↓ move", "K keep", "E edit", "M merge", "A archive", "P pin", "⇧K keep the batch", "⏎ open in Library"]);
   });
 
-  test("M opens the comparison, by key and by button: this one beside the one it looks like, with Keep the older one, Keep both and Open both; ↑↓ move the selection, ⏎ opens it in Library", async () => {
+  test("M opens the comparison, by key and by button: this one beside the one it looks like, with Merge into one…, Keep the older one, Keep both and Open both; ↑↓ move the selection, ⏎ opens it in Library", async () => {
     const { win } = app();
     const b = byKey(B().sessions.claude);
     const [dupA, dupB] = B().duplicate;
@@ -362,7 +362,9 @@ test.describe("Review", () => {
     // The older one was recalled this week (the usage log, D8): the box says so; the new one has no use yet.
     expect(weekUses(dupB)).toBe(1);
     await expect(boxes.nth(1).locator(".aos-brain-rv-boxmeta")).toHaveText(`feedback · ${shortDay(writtenAt(dupB), new Date())} · used 1× this week`);
-    await expect(card(dupA).locator(".aos-brain-rv-cmpacts button")).toHaveText(["Keep the older one", "Keep both", "Open both"]);
+    // Merge into one… first (brain-ai A1: the Merge dialog, which writes nothing until its draft is approved).
+    await expect(card(dupA).locator(".aos-brain-rv-cmpacts button")).toHaveText(["Merge into one…", "Keep the older one", "Keep both", "Open both"]);
+    await expect(card(dupA).locator('.aos-brain-rv-cmpacts button[data-act="mergeone"]')).toHaveAttribute("title", "Draft one memory from the two; nothing is written until you approve it");
     await expect(card(dupA).locator('.aos-brain-rv-cmpacts button[data-act="keepolder"]')).toHaveAttribute("title", "Keeps “Prefer small diffs”; this one is marked superseded by it");
     await win.keyboard.press("m");
     await expect(cmp).toHaveCount(0);
@@ -1278,7 +1280,8 @@ test.describe("Health", () => {
     await expect(pair.locator(".aos-brain-hl-t1")).toHaveText(titleOf(d.a));
     await expect(pair.locator(".aos-brain-hl-t2")).toHaveText(`${titleOf(d.b)} · feedback`);
     expect(await pair.locator("button").evaluateAll((els) => els.map((e) => [e.textContent, e.getAttribute("aria-label")]))).toEqual([
-      ["Compare", `Compare “${titleOf(d.a)}” and “${titleOf(d.b)}” in Review`], ["Not duplicates", `Not duplicates: “${titleOf(d.a)}” and “${titleOf(d.b)}”`],
+      ["Compare", `Compare “${titleOf(d.a)}” and “${titleOf(d.b)}” in Review`], ["Merge with AI…", `Merge with AI: “${titleOf(d.a)}” and “${titleOf(d.b)}”`],
+      ["Not duplicates", `Not duplicates: “${titleOf(d.a)}” and “${titleOf(d.b)}”`],
     ]);
     // The approved rule's draft, still in _drafts (its memory is live and pinned): the drafts fix removes it.
     expect(fmKey(B().pinned, "source")).toBe("feedback-autoloop");

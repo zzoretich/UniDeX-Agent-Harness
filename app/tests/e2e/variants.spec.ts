@@ -1,14 +1,14 @@
 // Variants of the fixture, each its own app: a vault with no persona, to-dos, notifications or teams (empty states);
 // session costing off; a provider on record (the Chat tab); a Codex-only machine (every "run in a session" button
-// names Codex, and Brain's modes need no host); telemetry off; and a vault before any session logged a memory use (Brain's
-// Library, Health and Map without a usage log). Each variant edits the restored copy before launch, the way the runtime
-// or the user would leave it.
+// names Codex, Brain's modes need no host, and with Codex not signed in Merge with AI is by hand and the sweep off);
+// telemetry off; and a vault before any session logged a memory use (Brain's Library, Health and Map without a usage
+// log). Each variant edits the restored copy before launch, the way the runtime or the user would leave it.
 
 import { expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, RAIL_SECTIONS, appEnv, badge, claudeCalls, codexCalls, command, content, drawer, expected, guardWrites, installChatStubs, openTab, rail, terminalText, useApp, closePulse, pulseArea } from "./harness";
+import { CODEX_STUB, FX, RAIL_SECTIONS, appEnv, badge, claudeCalls, codexCalls, command, content, drawer, expected, guardWrites, installChatStubs, openTab, rail, terminalText, useApp, closePulse, pulseArea } from "./harness";
 import { SURFACES } from "../../src/shared/surfaces";
 
 const editJson = (file: string, fn: (j: Record<string, any>) => void) => {
@@ -455,7 +455,7 @@ test.describe("a Codex-only machine", () => {
     const hl = C.locator(".aos-brain-health");
     await expect(hl.locator("[data-tile]")).toHaveCount(6);
     await expect(hl.locator('[data-tile="unused"] .aos-brain-hl-tv')).toHaveText(String(b.usage.never.length));
-    await expect(hl.locator(".aos-brain-hl-pair button")).toHaveText(["Compare", "Not duplicates"]);
+    await expect(hl.locator(".aos-brain-hl-pair button")).toHaveText(["Compare", "Merge with AI…", "Not duplicates"]);
     expect(await hl.locator('.aos-brain-hl-hyg button[data-act="fix"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-fix")))).toEqual(["sources", "types", "descriptions", "index", "drafts"]);
     for (const k of ["sources", "types", "descriptions", "index", "drafts"]) await expect(hl.locator(`[data-hl-key="fix:${k}"]`)).toBeEnabled();
     await expect(hl.locator('[data-hl-key="dw:review"]')).toHaveText(`Review the ${b.usage.never.length}`);
@@ -466,6 +466,71 @@ test.describe("a Codex-only machine", () => {
     await expect(sources).toContainText("where $agenticos:wrap writes manual-wrap");
     await expect(sources).not.toContainText("/wrap");
     await C.locator('.aos-brain-modes [role="tab"][data-mode="review"]').click();
+  });
+});
+
+test.describe("a Codex-only machine, the Brain surface on", () => {
+  // Codex is this machine's one host and the provider is pinned to it (`provider: codex`), but it is not signed in (the
+  // provider probe's cache): no model can answer, so Merge with AI is by hand and the sweep is off, each saying why in
+  // Codex's words (spec 2026-10-12-brain-hub-ai A4, A7, §5). The stand-in CLIs are on the recorded paths, so a call
+  // would be seen.
+  const app = useApp({
+    env: { AOS_APP_WRITE: "brain" },
+    prepare: () => {
+      installChatStubs();
+      editJson(agenticos, (j) => { j.hosts.claude.enabled = false; j.hosts.codex.enabled = true; j.provider = "codex"; });
+      editJson(FX.v("brain/_index/provider-state.json"), (j) => {
+        j.name = "none"; j.reason = "codex-not-logged-in"; j.codex = { loggedIn: false, checkedAt: new Date().toISOString(), bin: CODEX_STUB };
+      });
+    },
+  });
+
+  test("Brain on Codex: Merge with AI… opens by hand with Codex's reason and saves through merge; the Consolidation sweep is off naming Codex; from a terminal, merge-draft answers by hand and sweep refuses the same way", async () => {
+    const h = app();
+    const { win } = h;
+    const C = content(win);
+    const [newer, older] = expected().brain.duplicate;
+    // From a terminal or a Codex session first: the draft by hand with the reason, the sweep refused.
+    const draft = JSON.parse(aos("memory", "merge-draft", newer, older, "--json")) as { mode: string; reason: string; provider: string; winner: string; baseHashes: string[]; fields: { title: string; description: string; body: string } };
+    expect(draft).toMatchObject({ mode: "by-hand", reason: "Codex is not signed in.", provider: "none", winner: older });
+    const sweep = spawnSync("/bin/sh", [FX.v("brain/scripts/bin/aos"), "memory", "sweep", "--json"], { env: appEnv({ AOS_HEADLESS: undefined }), encoding: "utf8" });
+    expect(sweep.status).toBe(1);
+    expect(sweep.stderr).toContain("aos: the sweep needs Claude or Codex (Codex is not signed in.)");
+    expect(fs.existsSync(FX.v("brain/_index/memory-sweep.json"))).toBe(false);
+
+    await openTab(win, "memory");
+    await C.locator('.aos-brain-modes [role="tab"][data-mode="health"]').click();
+    const hl = C.locator(".aos-brain-health");
+    // The sweep is off, with Codex's reason and what still works; Run a sweep stays off.
+    const card = hl.locator('section[data-anchor="sweep"]');
+    const est = card.locator(".aos-brain-sw-est");
+    await expect(est).toHaveAttribute("data-est", "off");
+    await expect(est.locator(".aos-brain-sw-off")).toHaveText("off");
+    await expect(est.locator("span").nth(1)).toHaveText("Codex is not signed in. Merge with AI still works by hand.");
+    const run = card.locator('[data-hl-key="sweep:run"]');
+    await expect(run).toHaveAttribute("aria-disabled", "true");
+    await expect(run).toHaveAttribute("aria-label", "Run a sweep: off. Codex is not signed in. Merge with AI still works by hand.");
+    // Merge with AI… on the pair: by hand, with why.
+    await hl.locator('.aos-brain-hl-pair button[data-act="merge"]').click();
+    const d = win.locator(".modal.mod-brain-merge");
+    await expect(d.locator(".aos-brain-mg-est")).toHaveText("Codex is not signed in. Combine them by hand below.");
+    await expect(d.locator('button[data-act="draft"]')).toBeDisabled();
+    await expect(d.locator('input[data-field="title"]')).toHaveValue(draft.fields.title);
+    await expect(d.locator('textarea[data-field="body"]')).toHaveValue(draft.fields.body);
+    await expect(d.locator(".aos-brain-mg-target")).toHaveText("feedback/prefer-small-diffs.md · keeps the older slug's links");
+    await d.locator('button[data-act="save"]').click();
+    await expect(d).toHaveCount(0, { timeout: 30_000 });
+    // Written as on any machine: the oldest holds the by-hand draft, the other is superseded by it, one MEMORY.md line.
+    const read = (rel: string) => fs.readFileSync(FX.v(rel), "utf8");
+    await expect.poll(() => read(older)).toContain(`reviewed: true\n---\n\n# ${draft.fields.title}\n\n${draft.fields.body}\n`);
+    expect(read(newer)).toMatch(new RegExp(`^superseded_by: ${older.replace(/[.]/g, "\\.")}$`, "m"));
+    expect(read("MEMORY.md")).not.toContain(`](${newer})`);
+    expect(read("MEMORY.md")).toContain(`- [${draft.fields.title}](${older}) — ${draft.fields.description}\n`);
+    // No model was asked on either host, and the page wrote nothing itself.
+    expect(codexCalls()).toEqual([]);
+    expect(claudeCalls()).toEqual([]);
+    expect(await guardWrites(h)).toEqual([]);
+    expect((await h.guard()).filter((e) => e.kind === "spawn")).toEqual([]);
   });
 });
 
