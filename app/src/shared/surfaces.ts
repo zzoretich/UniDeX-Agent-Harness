@@ -133,6 +133,8 @@ const WORKSPACE_VERBS: readonly SpawnRule[] = [
 const MEMORY = /brain\/memory\/(?:user|feedback|projects|reference)\/[a-z0-9][a-z0-9.-]{0,120}\.md/;
 // A feedback draft's name (memory-ops.js SLUG_RE).
 const DRAFT = /[a-z0-9][a-z0-9.-]{0,120}/;
+// A hygiene fix's kind (lib/memory-fix.js KINDS).
+const FIX_KIND = /sources|types|descriptions|index|drafts/;
 /** At most this many memories per keep, archive or restore (obsidian-plugin/src/data/brainModel.ts MAX_PATHS_PER_CALL). */
 export const MAX_MEMORY_PATHS = 50;
 const MEMORY_WHOLE = new RegExp(`^(?:${MEMORY.source})$`);
@@ -148,18 +150,24 @@ const memoryPaths = (verb: string) => (a: readonly string[]): boolean => {
  */
 const MEMORY_VERBS: readonly SpawnRule[] = [
   ...["keep", "archive", "restore"].map((verb): SpawnRule => ({ script: "cli/aos.js", args: memoryPaths(verb) })),
-  ...inOrder(["--dry-run"]).map((flags): SpawnRule => ({ script: "cli/aos.js", args: argv("memory", "set", MEMORY, "--set", JSON_OBJ, "--expect", HASH, ...flags, "--json") })),
+  // --skip-brain-md: Bootstrap's bulk Mark complete leaves each set's BRAIN.md rebuild out and runs build-brain-md once.
+  ...inOrder(["--dry-run", "--skip-brain-md"]).map((flags): SpawnRule => ({ script: "cli/aos.js", args: argv("memory", "set", MEMORY, "--set", JSON_OBJ, "--expect", HASH, ...flags, "--json") })),
   { script: "cli/aos.js", args: argv("memory", "supersede", MEMORY, "--by", MEMORY, "--json") },
   { script: "cli/aos.js", args: argv("memory", "draft", /approve|reject/, DRAFT, "--json") },
   { script: "cli/aos.js", args: argv("memory", "notdup", MEMORY, MEMORY, "--json") },
-  // Health's hygiene fixes (brain-hub D20; PR 3): a dry run first, shown before the confirm, then the real run.
-  ...inOrder(["--dry-run"]).map((flags): SpawnRule => ({ script: "cli/aos.js", args: argv("memory", "fix", /sources|types|descriptions|index|drafts/, ...flags, "--json") })),
+  // Health's hygiene fixes (brain-hub D20; PR 3): a dry run first, shown before the confirm, then the real run pinned to
+  // it (--expect: the dry run's hash; the runtime refuses, writing nothing, when the files no longer give those changes).
+  { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--dry-run", "--json") },
+  { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--json") },
+  { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--expect", /[0-9a-f]{32}/, "--json") },
 ];
 
 // Bootstrap's recall preview (brain-hub D18; PR 3): the typed text as one query, exactly as data/brainModel.ts recallArgs
 // builds it. Never a flag (no leading "-", so never --warm), no control characters or line separators, at most 200
 // characters; then --limit with one or two digits and --json. recall-cli.js writes nothing but a missing recall index
-// (rebuilt as `aos recall --warm` would) and logs no usage (D9).
+// (rebuilt as `aos recall --warm` would), logs no usage (D9) and calls no model but the local Ollama, asked directly to
+// embed the query when an embed index exists: it never resolves the provider, so no provider-state.json write and no
+// headless login probe.
 const RECALL_QUERY = /[^\s\-\0-\x1f\x7f\u2028\u2029][^\0-\x1f\x7f\u2028\u2029]{0,199}/;
 const RECALL_PREVIEW: SpawnRule = { script: "sdk/recall-cli.js", args: argv(RECALL_QUERY, "--limit", /\d{1,2}/, "--json") };
 
@@ -283,6 +291,8 @@ export const SURFACES: readonly Surface[] = [
       // After a verb the hub's caches follow the files at once (else the next scan rebuilds them): brain/_index/brain-hub.json
       // and brain-map.json (PR 3). Health's Rescan runs the same.
       { script: "brain-hub.js", args: /^$/ },
+      // BRAIN.md once after Bootstrap's bulk Mark complete, whose sets skip their own rebuild (Pulse runs the same).
+      { script: "build-brain-md.js", args: /^$/ },
     ],
     // Live check (brain-hub D14), 2026-10-11, on a copy of a real vault's brain with memories from both hosts' sessions:
     // the page's argv (brainModel memoryArgs) through this policy, run by the vault's vendored runtime: for a memory from

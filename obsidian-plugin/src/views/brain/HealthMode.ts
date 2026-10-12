@@ -1,13 +1,16 @@
 // Health (spec 2026-10-11-brain-hub D20, D23, §6; plan PR 3; canvas Health): the brain's shape at a glance and the
-// one-click fixes. Six tiles; Duplicates and clusters (Compare lands on Review's Duplicates queue, Not duplicates is
-// remembered through `aos memory notdup`, Rescan rebuilds brain-hub.json); Hygiene, one row per `aos memory fix <kind>`;
-// Dead weight from the usage log (D8). The words and numbers come from data/brainHealth.ts.
+// one-click fixes. Six tiles; Duplicates and clusters (Compare lands on that pair in Review's Duplicates queue, Not
+// duplicates is remembered through `aos memory notdup`, Rescan rebuilds brain-hub.json); Hygiene, one row per
+// `aos memory fix <kind>`; Dead weight from the usage log (D8). The words and numbers come from data/brainHealth.ts.
 //
 // A fix never writes before it asks (spec §6): its dry run (ctx.preview) lists the changes in FixModal, and only a
-// confirm runs it (ctx.run). Fixes are not undoable, so nothing here says they are. A dry run that finds nothing means
-// brain-hub.json was behind the files: the page says so and rescans. Every action is a button; a redraw keeps the scroll
-// and the keyboard where they were (a control that left hands it to the one now in its place, else its card's heading).
-// The consolidation sweep is PR 4.
+// confirm runs it (ctx.run), pinned to that preview (its `expect`: the runtime refuses, writing nothing, when the files
+// no longer give those changes, and the page rescans). Fixes are not undoable, so nothing here says they are. A dry run
+// that finds nothing means brain-hub.json was behind the files: the page says so and rescans. Every action is a button
+// that ignores the second click of a double-click and a held key's repeats; a row stays, its button busy, until its
+// verb answers, so a fast second click never lands on the next row. A redraw keeps the scroll and the keyboard where
+// they were (a control that left hands it to the one now in its place, else its card's heading). The consolidation
+// sweep is PR 4.
 import { Notice } from "obsidian";
 import { BRAIN_MODE_LABEL, batchWhen, parseFixResult, type BrainAnchor, type BrainTarget, type FixKind } from "../../data/brainModel";
 import {
@@ -15,6 +18,7 @@ import {
   duplicatesBasis, fixBehindText, fixDoneText, healthTiles, hygieneRows, pl, type DeadWeight,
 } from "../../data/brainHealth";
 import { FixModal } from "./FixModal";
+import { guardClicks } from "./guardClicks";
 import type { BrainCtx, BrainData, BrainModeView } from "./types";
 
 /** Pairs shown before "Show all N". */
@@ -157,7 +161,7 @@ export class HealthMode implements BrainModeView {
       cls: `aos-brain-btn is-small aos-brain-hl-btn${o.primary ? " is-primary" : ""}${o.busy ? " is-busy" : ""}`, text,
       attr: { type: "button", "data-hl-key": key, "data-act": act, ...(o.label ? { "aria-label": o.label } : {}), ...(o.busy ? { "aria-disabled": "true" } : {}) },
     });
-    b.addEventListener("click", () => { if (b.getAttribute("aria-disabled") !== "true") run(); });
+    guardClicks(b, () => { if (b.getAttribute("aria-disabled") !== "true") run(); });
     return b;
   }
 
@@ -169,7 +173,8 @@ export class HealthMode implements BrainModeView {
     head.createSpan({ cls: "aos-brain-hl-status", text: busy ? "Rescanning…" : "", attr: { role: "status" } });
     this.button(head, busy ? "Rescanning…" : "Rescan", "rescan", "rescan", () => this.doRescan(), { busy });
     if (!d.hub) { body.createDiv({ cls: "aos-brain-empty aos-brain-hl-empty", text: "The next scan writes brain-hub.json; nothing to compare yet." }); return; }
-    const pairs = rows.pairs.filter((p) => !this.dismissing.has(pk(p.a, p.b)));
+    // A pair whose Not duplicates runs stays in place, its button busy, until the verb answers (then it goes).
+    const pairs = rows.pairs.filter((p) => this.dismissing.get(pk(p.a, p.b)) !== "done");
     if (!pairs.length && !rows.drafts.length && !rows.clusters.length) { body.createDiv({ cls: "aos-brain-empty aos-brain-hl-empty", text: "No duplicates found." }); return; }
     const list = body.createDiv({ cls: "aos-brain-hl-rows", attr: { role: "list", "aria-label": "Duplicate pairs, leftover drafts and clusters" } });
     for (const p of this.allPairs ? pairs : pairs.slice(0, PAIRS_SHOWN)) {
@@ -182,8 +187,9 @@ export class HealthMode implements BrainModeView {
       t.createSpan({ cls: "aos-brain-hl-t2", text: l2, attr: { title: l2 } });
       const acts = r.createDiv({ cls: "aos-brain-hl-acts" });
       const names = `“${p.aTitle}” and “${p.bTitle}”`;
-      this.button(acts, "Compare", `pair:${k}:compare`, "compare", () => this.ctx.show({ mode: "review", queue: "duplicates" }), { label: `Compare ${names} in Review` });
-      this.button(acts, "Not duplicates", `pair:${k}:notdup`, "notdup", () => void this.notDup(p.a, p.b), { label: `Not duplicates: ${names}` });
+      this.button(acts, "Compare", `pair:${k}:compare`, "compare", () => this.ctx.show({ mode: "review", queue: "duplicates", pair: { a: p.a, b: p.b } }), { label: `Compare ${names} in Review` });
+      const busy = this.dismissing.get(k) === "busy";
+      this.button(acts, busy ? "Marking…" : "Not duplicates", `pair:${k}:notdup`, "notdup", () => void this.notDup(p.a, p.b), { label: `Not duplicates: ${names}`, busy });
     }
     if (pairs.length > PAIRS_SHOWN) {
       const more = list.createDiv({ cls: "aos-brain-hl-row aos-brain-hl-more", attr: { role: "listitem" } });
@@ -196,7 +202,7 @@ export class HealthMode implements BrainModeView {
       r.createSpan({ cls: "aos-brain-hl-score aos-brain-hl-leftover", text: "draft" });
       const t = r.createDiv({ cls: "aos-brain-hl-text" });
       t.createSpan({ cls: "aos-brain-hl-t1", text: x.title, attr: { title: x.title } });
-      t.createSpan({ cls: "aos-brain-hl-t2", text: "The same slug, still in feedback/_drafts after it was approved" });
+      t.createSpan({ cls: "aos-brain-hl-t2", text: "The same rule (slug and title), still in feedback/_drafts after it was approved" });
       const acts = r.createDiv({ cls: "aos-brain-hl-acts" });
       // The drafts fix removes every leftover draft, so the button says how many; its preview lists them.
       this.fixButton(acts, "drafts", n === 1 ? "Remove the draft…" : `Remove the ${n} drafts…`, `draft:${x.slug}:fix`);
@@ -214,7 +220,7 @@ export class HealthMode implements BrainModeView {
     const { body } = this.card(parent, "hygiene", "Hygiene", HYGIENE_SUBTITLE);
     if (!d.hub) { body.createDiv({ cls: "aos-brain-empty aos-brain-hl-empty", text: "The next scan writes brain-hub.json; nothing to fix yet." }); return; }
     const list = body.createDiv({ cls: "aos-brain-hl-rows", attr: { role: "list", "aria-label": "Hygiene findings" } });
-    for (const h of hygieneRows(d.hub)) {
+    for (const h of hygieneRows(d.hub, { wrapHint: d.settings.wrapHint, byPath: d.byPath })) {
       const r = list.createDiv({ cls: `aos-brain-hl-row aos-brain-hl-hyg${h.button ? "" : " is-clean"}`, attr: { role: "listitem", "data-fix": h.kind, "data-count": String(h.count) } });
       r.createSpan({ cls: "aos-brain-hl-hygtext", text: h.text });
       if (h.button) this.fixButton(r, h.kind, h.button, `fix:${h.kind}`);
@@ -286,8 +292,11 @@ export class HealthMode implements BrainModeView {
 
   /**
    * A fix (D20, spec §6): its dry run first (ctx.preview writes nothing); nothing to change means the cache was behind,
-   * so say so and rescan; else FixModal lists the changes, and only a confirm runs `aos memory fix <kind>` (ctx.run, which
-   * reloads every file and rebuilds the cache). The Notice names the files changed and a BRAIN.md rebuild that failed.
+   * so say so and rescan; else FixModal lists the changes, and only a confirm runs `aos memory fix <kind> --expect <the
+   * dry run's hash>` (ctx.run, which reloads every file and rebuilds the cache). The runtime refuses, writing nothing,
+   * when the files changed while the dialog was open (ctx.run's Notice says so) and the page rescans. A confirm runs the
+   * fix even when the person moved to another mode meanwhile. The Notice names the files changed and a BRAIN.md rebuild
+   * that failed.
    */
   private async fix(kind: FixKind, key: string): Promise<void> {
     if (this.fixing || !this.root) return;
@@ -300,14 +309,17 @@ export class HealthMode implements BrainModeView {
       const r = parseFixResult(pre.json);
       if (!r) { new Notice(`${label}: aos answered in an unexpected shape`); return; }
       if (!r.changes.length) { new Notice(fixBehindText(kind)); this.startRescan(); return; }
+      // Left for another mode while the dry run ran: no dialog over a page the person moved to.
+      if (!this.root) return;
       this.fixing = { kind, stage: "ask" };
       this.update();
       const ok = await FixModal.ask(this.ctx.plugin.app, { kind, result: r, titleOf: (p) => this.ctx.data().byPath.get(p)?.title ?? null });
-      if (!ok || !this.root) return;
+      if (!ok) return;
       this.fixing = { kind, stage: "run" };
       this.update();
-      const run = await this.ctx.run<unknown>({ verb: "fix", kind, dryRun: false }, label);
+      const run = await this.ctx.run<unknown>({ verb: "fix", kind, dryRun: false, expect: r.expect }, label);
       if (run.ok) new Notice(fixDoneText(kind, parseFixResult(run.json)));
+      else if (run.stale) this.startRescan();
     } catch (e) {
       new Notice(`${label}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -317,7 +329,10 @@ export class HealthMode implements BrainModeView {
     }
   }
 
-  /** Not duplicates (D11): remembered for the scan (notdup), and this page stops showing the pair at once. */
+  /**
+   * Not duplicates (D11): remembered for the scan (notdup). The row stays, its button busy, while the verb runs, so the
+   * second click of a double-click lands on this busy button and never on the next pair's; it goes once the verb answers.
+   */
   private async notDup(a: string, b: string): Promise<void> {
     const k = pk(a, b);
     if (this.dismissing.has(k)) return;
@@ -325,7 +340,7 @@ export class HealthMode implements BrainModeView {
     this.update();
     let ok = false;
     try { ok = (await this.ctx.run({ verb: "notdup", a, b }, "Not duplicates")).ok; } catch (e) { new Notice(`Not duplicates: ${e instanceof Error ? e.message : String(e)}`); }
-    if (ok) { this.dismissing.set(k, "done"); this.ctx.dismissPair(a, b); }
+    if (ok) { this.dismissing.set(k, "done"); this.update(); this.ctx.dismissPair(a, b); }
     else { this.dismissing.delete(k); this.update(); }
   }
 

@@ -178,25 +178,62 @@ export function captionWidth(name: string, caption: string): number {
   return Math.min(BUBBLE.labelMax, Math.max(clip(name, 26).length * BUBBLE.charW, caption.length * BUBBLE.monoW) + 8);
 }
 
-interface Foot { x: number; y: number; r: number; w: number }
+/** A bubble's footprint: its circle, the caption box under it (rx0…ry1) and the box round both (bx0…by1), each once. */
+interface Foot { x: number; y: number; r: number; w: number; rx0: number; ry0: number; rx1: number; ry1: number; bx0: number; by0: number; bx1: number; by1: number }
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
 const SPIRAL_STEPS = 24000;
+/** The packing's grid cell (px at scale 1): a candidate is checked only against the footprints in the cells it touches. */
+const CELL = 64;
 
-/** Whether two footprints (a circle and the caption box under it) come closer than `gap`. */
+function foot(x: number, y: number, r: number, w: number): Foot {
+  const ry0 = y + r + BUBBLE.captionGap;
+  const ry1 = ry0 + BUBBLE.captionH;
+  return { x, y, r, w, rx0: x - w / 2, ry0, rx1: x + w / 2, ry1, bx0: x - Math.max(r, w / 2), by0: y - r, bx1: x + Math.max(r, w / 2), by1: Math.max(y + r, ry1) };
+}
+
+/** Whether a circle comes closer than `gap` to a caption box. */
+function circleRect(c: Foot, r: Foot, gap: number): boolean {
+  const dx = c.x - Math.max(r.rx0, Math.min(c.x, r.rx1));
+  const dy = c.y - Math.max(r.ry0, Math.min(c.y, r.ry1));
+  return dx * dx + dy * dy < (c.r + gap) * (c.r + gap);
+}
+
+/**
+ * Whether two footprints (a circle and the caption box under it) come closer than `gap`. Boxes further apart than `gap`
+ * on either axis cannot clash (each shape lies inside its box), so most pairs end at the first test.
+ */
 function clash(a: Foot, b: Foot, gap: number): boolean {
-  const rect = (f: Foot): [number, number, number, number] => [f.x - f.w / 2, f.y + f.r + BUBBLE.captionGap, f.x + f.w / 2, f.y + f.r + BUBBLE.captionGap + BUBBLE.captionH];
-  const circleRect = (c: Foot, r: [number, number, number, number]): boolean => {
-    const dx = c.x - Math.max(r[0], Math.min(c.x, r[2]));
-    const dy = c.y - Math.max(r[1], Math.min(c.y, r[3]));
-    return dx * dx + dy * dy < (c.r + gap) * (c.r + gap);
-  };
+  if (a.bx0 >= b.bx1 + gap || b.bx0 >= a.bx1 + gap || a.by0 >= b.by1 + gap || b.by0 >= a.by1 + gap) return false;
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   if (dx * dx + dy * dy < (a.r + b.r + gap) * (a.r + b.r + gap)) return true;
-  const ra = rect(a);
-  const rb = rect(b);
-  if (ra[0] < rb[2] + gap && rb[0] < ra[2] + gap && ra[1] < rb[3] + gap && rb[1] < ra[3] + gap) return true;
-  return circleRect(a, rb) || circleRect(b, ra);
+  if (a.rx0 < b.rx1 + gap && b.rx0 < a.rx1 + gap && a.ry0 < b.ry1 + gap && b.ry0 < a.ry1 + gap) return true;
+  return circleRect(a, b, gap) || circleRect(b, a, gap);
+}
+
+/** The footprints placed so far, by grid cell: each is filed under every cell its box, grown by `gap`, touches. */
+class FootGrid {
+  private cells = new Map<string, Foot[]>();
+  constructor(private gap: number) {}
+  private span(f: Foot, grow: number): [number, number, number, number] {
+    return [Math.floor((f.bx0 - grow) / CELL), Math.floor((f.by0 - grow) / CELL), Math.floor((f.bx1 + grow) / CELL), Math.floor((f.by1 + grow) / CELL)];
+  }
+  add(f: Foot): void {
+    const [x0, y0, x1, y1] = this.span(f, this.gap);
+    for (let i = x0; i <= x1; i++) for (let j = y0; j <= y1; j++) {
+      const k = `${i},${j}`;
+      const c = this.cells.get(k);
+      if (c) c.push(f); else this.cells.set(k, [f]);
+    }
+  }
+  /** Whether `f` clashes with any footprint placed (the same answer as checking every one). */
+  clashes(f: Foot): boolean {
+    const [x0, y0, x1, y1] = this.span(f, 0);
+    for (let i = x0; i <= x1; i++) for (let j = y0; j <= y1; j++) {
+      for (const p of this.cells.get(`${i},${j}`) ?? []) if (clash(p, f, this.gap)) return true;
+    }
+    return false;
+  }
 }
 
 /**
@@ -209,6 +246,7 @@ export function packBubbles(items: readonly BubbleIn[], links: ReadonlyArray<{ a
   const order = [...items].sort((a, b) => b.n - a.n || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const sx = Math.sqrt(Math.min(2.2, Math.max(0.5, Number.isFinite(aspect) && aspect > 0 ? aspect : 1)));
   const placed: Foot[] = [];
+  const grid = new FootGrid(BUBBLE.gap);
   const at = new Map<string, Foot>();
   const out: BubbleAt[] = [];
   for (const it of order) {
@@ -221,17 +259,18 @@ export function packBubbles(items: readonly BubbleIn[], links: ReadonlyArray<{ a
       tx += f.x * l.n; ty += f.y * l.n; wsum += l.n;
     }
     if (wsum > 0) { tx /= wsum; ty /= wsum; }
-    let foot: Foot | null = null;
-    for (let i = 0; i < SPIRAL_STEPS && !foot; i++) {
+    let f: Foot | null = null;
+    for (let i = 0; i < SPIRAL_STEPS && !f; i++) {
       const rho = 3 * Math.sqrt(i);
-      const c: Foot = { x: tx + rho * Math.cos(i * GOLDEN) * sx, y: ty + rho * Math.sin(i * GOLDEN) / sx, r, w: it.labelW };
-      if (!placed.some((p) => clash(p, c, BUBBLE.gap))) foot = c;
+      const c = foot(tx + rho * Math.cos(i * GOLDEN) * sx, ty + rho * Math.sin(i * GOLDEN) / sx, r, it.labelW);
+      if (!grid.clashes(c)) f = c;
     }
     // Never reached for the few dozen communities a map holds; to the right of everything, which is always free.
-    if (!foot) foot = { x: Math.max(...placed.map((p) => p.x + Math.max(p.r, p.w / 2))) + BUBBLE.gap + Math.max(r, it.labelW / 2), y: 0, r, w: it.labelW };
-    placed.push(foot);
-    at.set(it.id, foot);
-    out.push({ id: it.id, x: foot.x, y: foot.y, r });
+    if (!f) f = foot(Math.max(...placed.map((p) => p.x + Math.max(p.r, p.w / 2))) + BUBBLE.gap + Math.max(r, it.labelW / 2), 0, r, it.labelW);
+    placed.push(f);
+    grid.add(f);
+    at.set(it.id, f);
+    out.push({ id: it.id, x: f.x, y: f.y, r });
   }
   return out;
 }
@@ -327,7 +366,9 @@ export function pickAround(map: BrainMap, byPath: ReadonlyMap<string, BrainMemor
 
 /** Where a neighbour's caption goes: beside it, away from the centre (above or below at the top and the bottom). */
 export type AroundSide = "left" | "right" | "top" | "bottom";
-export interface AroundAt { x: number; y: number; side: AroundSide }
+/** `room`: how wide its name may run before the canvas edge (px; MapMode caps it at the name's own 180 and floors it at
+ *  40), so a long title ends in an ellipsis rather than being cut at the edge on a narrow canvas. */
+export interface AroundAt { x: number; y: number; side: AroundSide; room: number }
 
 /**
  * The neighbours on an ellipse round the centre of a w × h canvas, the first at the top, then clockwise; captions sit
@@ -346,7 +387,11 @@ export function aroundLayout(count: number, w: number, h: number): AroundAt[] {
     const c = Math.cos(a);
     const s = Math.sin(a);
     const side: AroundSide = c > 0.3 ? "right" : c < -0.3 ? "left" : s < 0 ? "top" : "bottom";
-    out.push({ x: cx + rx * (Math.abs(c) < 1e-9 ? 0 : c), y: cy + ry * (Math.abs(s) < 1e-9 ? 0 : s), side });
+    const x = cx + rx * (Math.abs(c) < 1e-9 ? 0 : c);
+    // The node's button: 10 px from the dot's centre to its edge, then 4 padding, the 12 px dot, a 6 px gap and 4
+    // padding round the name; 4 px clear of the canvas edge. Above and below, the name is centred on the dot.
+    const room = side === "right" ? w - x - 20 : side === "left" ? x - 20 : 2 * Math.min(x, w - x) - 8;
+    out.push({ x, y: cy + ry * (Math.abs(s) < 1e-9 ? 0 : s), side, room });
   }
   return out;
 }

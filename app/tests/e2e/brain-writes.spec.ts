@@ -164,11 +164,11 @@ test.afterEach(async () => {
   await expect(modeTab("library").locator(".aos-brain-modebadge")).toHaveText(String(B().memories.length - B().archived.length));
 });
 
-test("Brain is the one surface on: the status bar names it and its commands, the verbs, the recall preview and the hub's rebuild", async () => {
+test("Brain is the one surface on: the status bar names it and its commands, the verbs, the recall preview, the hub's rebuild and BRAIN.md's", async () => {
   const { win } = app();
   const mode = win.locator(".aos-host-status .aos-host-mode");
   await expect(mode).toHaveText("WRITES: Brain");
-  await expect(mode).toHaveAttribute("title", /^Brain: cli\/aos\.js, sdk\/recall-cli\.js, brain-hub\.js\n/);
+  await expect(mode).toHaveAttribute("title", /^Brain: cli\/aos\.js, sdk\/recall-cli\.js, brain-hub\.js, build-brain-md\.js\n/);
 });
 
 test("K keeps one memory: reviewed: true and nothing else in the file, a kept row in the trail, MEMORY.md as it was; the card leaves, the next is selected, and brain-hub.json follows", async () => {
@@ -621,13 +621,17 @@ const LABEL: Record<FixKind, string> = { sources: "Normalise source labels", typ
 const ROW_LABEL: Record<string, string> = {
   source: "source", type: "type", tags: "tags", description: "description", "index-add": "add line", "index-move": "move line", "index-remove": "remove line", "draft-remove": "remove draft",
 };
+/** A change's label in FixModal: an index line out says why (brainHealth.ts REMOVE_WHY). */
+const REMOVE_WHY: Record<string, string> = { missing: "missing file", retired: "archived or superseded", duplicate: "second copy" };
+const rowLabel = (c: ExpectedFixChange): string => (c.action === "index-remove" && c.reason ? `${ROW_LABEL[c.action]} · ${REMOVE_WHY[c.reason]}` : ROW_LABEL[c.action]);
 /** "projects/alpha.md", "_drafts/beta.md", "MEMORY.md": a file as the Notice names it (brainHealth.ts shortFile). */
 const shortFile = (p: string): string => p.replace(/^brain\/memory\/feedback\/_drafts\//, "_drafts/").replace(/^brain\/memory\//, "");
-/** Health's badge as the rebuilt brain-hub.json gives it: the duplicate pairs and every hygiene finding a fix takes. */
+/** Health's badge as the rebuilt brain-hub.json gives it: the duplicate pairs and every hygiene finding a fix takes, but
+ *  descriptions only MEMORY.md has (listed in Hygiene, never badged: every new memory starts that way). */
 const healthCount = (): number => {
   const hb = readVaultJson<{ dups: unknown[]; hygiene: ExpectedBrain["hygiene"] }>(HUB);
   const y = hb.hygiene;
-  return hb.dups.length + (y.sources.session ?? 0) + (y.sources["in-session"] ?? 0) + (y.sources.wrap ?? 0) + y.oldType.length + y.noDescription.length
+  return hb.dups.length + (y.sources.session ?? 0) + (y.sources["in-session"] ?? 0) + (y.sources.wrap ?? 0) + y.oldType.length
     + y.unindexed.length + y.misfiled.length + y.brokenIndex.length + y.leftoverDrafts.length;
 };
 /** Lines removed from and added to a file since the fixture (a multiset difference: a line that only moved is in neither). */
@@ -650,9 +654,10 @@ const fixDryRun = (kind: FixKind): ExpectedFix => {
 /**
  * One fix through Health, as a person runs it: the button's dry run (it writes nothing) listed in FixModal, then its
  * confirm. Checks the dialog against the runtime's own dry run, the files against exactly those changes (every other
- * memory, draft and MEMORY.md byte for byte), one `fixed` trail row per file with each field's before and after, the
- * Notice, the row and the tab's badge after the rebuild, and a second dry run that finds nothing. `cancelFirst` opens the
- * dialog once and cancels it first, which must write nothing.
+ * memory, draft and MEMORY.md byte for byte), one `fixed` trail row per changed memory or draft (and one MEMORY.md row per
+ * memory whose lines go) with each field's before and after, the Notice, the row and the tab's badge after the rebuild,
+ * and a second dry run that finds nothing. `cancelFirst` opens the dialog once and cancels it first, which must write
+ * nothing.
  */
 async function runFix(kind: FixKind, button: string, confirm: string, check: (dry: ExpectedFix) => void, { cancelFirst = false } = {}): Promise<void> {
   const { win } = app();
@@ -675,7 +680,7 @@ async function runFix(kind: FixKind, button: string, confirm: string, check: (dr
     expect(await modal.locator(".aos-brain-fixfile").evaluateAll((els) => els.map((e) => e.getAttribute("data-file")))).toEqual(files);
     const rows = modal.locator(".aos-brain-fixrow");
     expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute("data-action")))).toEqual(dry.changes.map((c) => c.action));
-    await expect(rows.locator(".aos-brain-fixlabel")).toHaveText(dry.changes.map((c) => ROW_LABEL[c.action]));
+    await expect(rows.locator(".aos-brain-fixlabel")).toHaveText(dry.changes.map(rowLabel));
     for (const [i, c] of dry.changes.entries()) {
       if (c.before !== null) await expect(rows.nth(i).locator(".aos-brain-fixbefore")).toHaveText(c.before);
       if (c.after !== null) await expect(rows.nth(i).locator(".aos-brain-fixafter")).toHaveText(c.after);
@@ -711,7 +716,7 @@ async function runFix(kind: FixKind, button: string, confirm: string, check: (dr
   await expect.poll(() => trailAdded().length).toBe(byPath.size);
   const rows = trailAdded().map((r) => ({ action: r.action, kind: r.kind, path: r.path, changes: r.changes }));
   expect(rows.sort((a, b) => String(a.path).localeCompare(String(b.path)))).toEqual([...byPath].sort(([a], [b]) => a.localeCompare(b)).map(([p, cs]) => ({
-    action: "fixed", kind, path: p, changes: cs.map((c) => ({ field: c.action, before: c.before, after: c.after })),
+    action: "fixed", kind, path: p, changes: cs.map((c) => ({ field: c.action, before: c.before, after: c.after, ...(c.reason ? { reason: c.reason } : {}) })),
   })));
   // The Notice names the files; the cache is rebuilt from them, so the row reads clean and the badge drops.
   const names = files.slice(0, 3).map(shortFile);
@@ -723,7 +728,9 @@ async function runFix(kind: FixKind, button: string, confirm: string, check: (dr
   await expect(hygRow(kind).locator(".aos-brain-hl-clean")).toHaveText("clean");
   await expect(fixBtn(kind)).toHaveCount(0);
   await expect(modeTab("health").locator(".aos-brain-modebadge")).toHaveText(String(healthCount()));
-  expect(healthCount()).toBeLessThan(badgeWas);
+  // Descriptions only MEMORY.md has are listed, never badged (healthCount): that fix leaves the badge as it was.
+  if (kind === "descriptions") expect(healthCount()).toBe(badgeWas);
+  else expect(healthCount()).toBeLessThan(badgeWas);
   // Run again, from a terminal or a session on either host: nothing left to do.
   expect(fixDryRun(kind).changes).toEqual([]);
   await idle();
@@ -768,7 +775,7 @@ test("fix index: one MEMORY.md write removes the line to a missing file, moves t
     const broken = pristine("MEMORY.md").split("\n").find((l) => l.includes(`](${B().broken})`))!;
     const added = dry.changes.find((c) => c.action === "index-add")!;
     expect(dry.changes).toEqual([
-      { path: "MEMORY.md", action: "index-remove", before: broken, after: null },
+      { path: "MEMORY.md", action: "index-remove", before: broken, after: null, reason: "missing" },
       { path: B().misfiled, action: "index-move", before: "Reference", after: "Feedback (how to work)" },
       { path: B().unindexed, action: "index-add", before: null, after: added.after },
     ]);
@@ -798,6 +805,34 @@ test("fix drafts: the approved draft left in feedback/_drafts goes (spec §6's o
   expect(trailAdded()[0]).toMatchObject({ slug: B().leftover, type: "feedback", kind: "drafts" });
 });
 
+test("a fix whose files change while its dialog is open (another session's write) changes nothing: the runtime refuses the preview's hash, the Notice says so, Health rescans", async () => {
+  const { win } = app();
+  const late = "brain/memory/feedback/written-meanwhile.md";
+  await brain("health");
+  await expect(fixBtn("sources")).toHaveText("Normalise 2…");
+  await fixBtn("sources").click();
+  const modal = fixModal(win);
+  await expect(modal.locator(".aos-brain-fixok")).toHaveText("Normalise 2");
+  // FixModal is announced as a dialog named by its title and described by what it changes and the no-undo note.
+  const frame = win.locator(".modal.mod-brain-fix");
+  await expect(frame).toHaveAttribute("role", "alertdialog");
+  await expect(frame).toHaveAttribute("aria-modal", "true");
+  const titleId = await frame.getAttribute("aria-labelledby");
+  await expect(frame.locator(`[id="${titleId}"]`)).toHaveText("Normalise source labels?");
+  const [ledeId, noteId] = (await frame.getAttribute("aria-describedby"))!.split(" ");
+  await expect(frame.locator(`[id="${ledeId}"]`)).toHaveClass(/aos-brain-fixlede/);
+  await expect(frame.locator(`[id="${noteId}"]`)).toHaveClass(/aos-brain-fixnote/);
+  // While the dialog is open, a session writes one more memory under an old label.
+  fs.writeFileSync(FX.v(late), "---\ntype: memory\ntags: [memory/feedback, status/active]\ncreated: 2026-10-11\nsource: session\nreviewed: true\n---\n\n# Written meanwhile\n\nA rule a session wrote while the dialog was open.\n");
+  const tree = memoryTree();
+  await modal.locator(".aos-brain-fixok").click();
+  await expect(notices(win)).toContainText("Normalise source labels: the files changed since it was read");
+  // Nothing was fixed: not the two the dialog listed, not the one written meanwhile; no trail row.
+  expect(memoryTree()).toEqual(tree);
+  expect(trailAdded()).toEqual([]);
+  await idle();
+});
+
 test("a fix whose dry run finds nothing (brain-hub.json behind the files): no dialog, the Notice says so, and the rescan it starts brings the row to clean", async () => {
   const h = app();
   const { win } = h;
@@ -820,7 +855,7 @@ test("a fix whose dry run finds nothing (brain-hub.json behind the files): no di
 
 // ── Health: Not duplicates, Archive the N shipped… ──────────────────
 
-test("Health's Not duplicates records the pair in memory-notdup.json (D11): the row leaves at once, and after the rebuild the tile reads none found and Review's Duplicates queue is empty", async () => {
+test("Health's Not duplicates records the pair in memory-notdup.json (D11): the row leaves once that is saved, and after the rebuild the tile reads none found and Review's Duplicates queue is empty", async () => {
   const [newer, older] = B().duplicate;
   const builtAt = hub().builtAt;
   await brain("health");

@@ -8,7 +8,8 @@
 // When the cache lags the files, the dry run finds nothing and the page says so and rescans (HealthMode).
 import {
   DRAFTS_DIR, DRAFT_SLUG_RE, FIX_KINDS, LEGACY_SOURCES, MEMORY_PATH_RE, brainMdPercent, clip, estimateTokens, indexLineCount, shortDay,
-  type BrainDraft, type BrainHub, type BrainMemory, type BrainSources, type FixChange, type FixKind, type FixResult, type HubDup,
+  type BrainDraft, type BrainHub, type BrainMemory, type BrainSources, type FixChange, type FixKind, type FixRemoveReason, type FixResult,
+  type HubDup,
 } from "./brainModel";
 
 /** What Health reads from one load (BrainData has every field). */
@@ -62,7 +63,7 @@ export interface HygieneCounts {
   drafts: number;
 }
 
-/** brain-hub.json's hygiene, counted the way healthCount counts it; all zero with no hub. */
+/** brain-hub.json's hygiene, per fix kind (healthCount adds all but descriptions); all zero with no hub. */
 export function hygieneCounts(hub: BrainHub | null): HygieneCounts {
   const hy = hub?.hygiene ?? {};
   const src = hy.sources && typeof hy.sources === "object" && !Array.isArray(hy.sources) ? (hy.sources as Record<string, unknown>) : {};
@@ -91,21 +92,28 @@ export interface HygieneRow {
   button: string | null;
 }
 
+/** What a Hygiene row's words depend on beyond the hub: how this machine's hosts invoke /wrap (aosConfig invocationHint,
+ *  "$agenticos:wrap" on a Codex-only vault), and the memories as loaded (a misfiled line of a retired memory goes rather
+ *  than moving). */
+export interface HygieneContext { wrapHint: string; byPath?: ReadonlyMap<string, BrainMemory> }
+
 /** Hygiene's rows, one per fix kind in FIX_KINDS order; none before the first scan writes brain-hub.json. */
-export function hygieneRows(hub: BrainHub | null): HygieneRow[] {
+export function hygieneRows(hub: BrainHub | null, cx: HygieneContext): HygieneRow[] {
   if (!hub) return [];
   const c = hygieneCounts(hub);
+  // "Move" only when every misfiled line moves: one of an archived or superseded memory is removed instead.
+  const retiredMisfiled = list(hub.hygiene ?? {}, "misfiled").some((p) => cx.byPath?.get(p)?.live === false);
   const mem = (n: number): string => pl(n, "memory", "memories");
   const row = (kind: FixKind): HygieneRow => {
     switch (kind) {
       case "sources": return c.sources
-        ? { kind, count: c.sources, text: `${mem(c.sources)} ${c.sources === 1 ? "carries" : "carry"} an old source label (${c.labels.map((x) => x.label).join(", ")}) where /wrap writes manual-wrap`, button: `Normalise ${c.sources}…` }
+        ? { kind, count: c.sources, text: `${mem(c.sources)} ${c.sources === 1 ? "carries" : "carry"} an old source label (${c.labels.map((x) => x.label).join(", ")}) where ${cx.wrapHint} writes manual-wrap`, button: `Normalise ${c.sources}…` }
         : { kind, count: 0, text: "Every source label is current", button: null };
       case "types": return c.types
         ? { kind, count: c.types, text: `${mem(c.types)} ${c.types === 1 ? "uses" : "use"} an old type: shape`, button: `Fix ${c.types}…` }
         : { kind, count: 0, text: "Every memory uses type: memory", button: null };
       case "descriptions": return c.descriptions
-        ? { kind, count: c.descriptions, text: `${mem(c.descriptions)} ${c.descriptions === 1 ? "has" : "have"} no description: the list shows only titles`, button: "Copy from MEMORY.md…" }
+        ? { kind, count: c.descriptions, text: `${mem(c.descriptions)} ${c.descriptions === 1 ? "keeps its" : "keep their"} description only in MEMORY.md, none in ${c.descriptions === 1 ? "its" : "their"} own frontmatter`, button: "Copy from MEMORY.md…" }
         : { kind, count: 0, text: "No memory lacks a description MEMORY.md has", button: null };
       case "index": {
         if (!c.index) return { kind, count: 0, text: "MEMORY.md lists every memory under its own heading", button: null };
@@ -115,7 +123,7 @@ export function hygieneRows(hub: BrainHub | null): HygieneRow[] {
           c.broken ? `${pl(c.broken, "line")} ${c.broken === 1 ? "points" : "point"} at a missing file` : "",
         ].filter(Boolean);
         const only = [c.unindexed, c.misfiled, c.broken].filter((n) => n > 0).length === 1;
-        const verb = !only ? "Fix" : c.unindexed ? "Index" : c.misfiled ? "Move" : "Remove";
+        const verb = !only ? "Fix" : c.unindexed ? "Index" : c.misfiled ? (retiredMisfiled ? "Fix" : "Move") : "Remove";
         return { kind, count: c.index, text: parts.join("; "), button: `${verb} ${c.index}…` };
       }
       case "drafts": return c.drafts
@@ -183,7 +191,14 @@ export function healthTiles(d: HealthInput): HealthTile[] {
 
   const pct = brainMdPercent(d.sources);
   if (pct === null || !d.sources) tiles.push(off("brainmd", "BRAIN.md", "build-brain-md has not run yet", "not built"));
-  else tiles.push({ key: "brainmd", value: `${pct}%`, label: "BRAIN.md", note: `${d.sources.tokens} of ${d.sources.budget} tokens`, tone: pct >= 100 ? "warn" : "ok", word: pct >= 100 ? "over budget" : "within budget" });
+  else {
+    // From the raw numbers, as Bootstrap's bar decides (a rounded 100% at 847 of 850 is not over): over its budget, or
+    // full (at most its budget, with active projects left out), or within it.
+    const s = d.sources;
+    const over = s.tokens > s.budget;
+    const full = !over && s.omitted.length > 0;
+    tiles.push({ key: "brainmd", value: `${pct}%`, label: "BRAIN.md", note: `${s.tokens} of ${s.budget} tokens`, tone: over || full ? "warn" : "ok", word: over ? "over budget" : full ? "full" : "within budget" });
+  }
 
   if (d.indexRaw === null) tiles.push(off("memorymd", "MEMORY.md", "no MEMORY.md in the vault", "missing"));
   else tiles.push({ key: "memorymd", value: compact(estimateTokens(d.indexRaw)), label: "MEMORY.md", note: `tokens · ${pl(indexLineCount(d.indexRaw), "line")}`, tone: "plain", word: "" });
@@ -370,7 +385,8 @@ export function changedFiles(changes: readonly FixChange[]): string[] {
 
 export interface FixLine {
   action: FixChange["action"];
-  /** "source", "type", "tags", "description", "add line", "move line", "remove line", "remove draft". */
+  /** "source", "type", "tags", "description", "add line", "move line", "remove line" (with its reason: "remove line ·
+   *  missing file"), "remove draft". */
   label: string;
   /** The memory an index change is about (its title), null otherwise. */
   subject: string | null;
@@ -386,6 +402,8 @@ const LINE_LABEL: Record<FixChange["action"], string> = {
   source: "source", type: "type", tags: "tags", description: "description",
   "index-add": "add line", "index-move": "move line", "index-remove": "remove line", "draft-remove": "remove draft",
 };
+/** Why an index line goes, beside its label (FixChange.reason; none from an older runtime). */
+const REMOVE_WHY: Record<FixRemoveReason, string> = { missing: "missing file", retired: "archived or superseded", duplicate: "second copy" };
 /** FixModal shows this many changes, then "and N more". */
 export const FIX_SHOW = 40;
 const VALUE_MAX = 200;
@@ -401,7 +419,8 @@ export function fixChangeList(changes: readonly FixChange[], titleOf: (path: str
     const f = changeFile(c);
     const index = c.action.startsWith("index-") && c.action !== "index-remove";
     const v = (s: string | null): string | null => (s === null ? null : clip(s.replace(/\s+/g, " ").trim(), VALUE_MAX));
-    const line: FixLine = { action: c.action, label: LINE_LABEL[c.action], subject: index ? titleOf(c.path) ?? shortFile(c.path) : null, before: v(c.before), after: v(c.after) };
+    const label = c.action === "index-remove" && c.reason ? `${LINE_LABEL[c.action]} · ${REMOVE_WHY[c.reason]}` : LINE_LABEL[c.action];
+    const line: FixLine = { action: c.action, label, subject: index ? titleOf(c.path) ?? shortFile(c.path) : null, before: v(c.before), after: v(c.after) };
     const g = all.get(f);
     if (g) g.push(line);
     else all.set(f, [line]);
@@ -448,10 +467,18 @@ export function fixDialog(kind: FixKind, r: Pick<FixResult, "changes" | "files">
     case "index": {
       const add = by("index-add");
       const move = by("index-move");
-      const rm = by("index-remove");
-      const parts = [add ? `adds ${pl(add, "missing line")}` : "", move ? `moves ${pl(move, "line")} under ${move === 1 ? "its" : "their"} own heading` : "", rm ? `removes ${pl(rm, "line")} to a missing file` : ""].filter(Boolean);
+      // Each removal by its reason (FixChange.reason); a row from an older runtime names none, and the lede claims none.
+      const rm = (why: FixRemoveReason | null): number => r.changes.filter((c) => c.action === "index-remove" && (c.reason ?? null) === why).length;
+      const parts = [
+        add ? `adds ${pl(add, "missing line")}` : "",
+        move ? `moves ${pl(move, "line")} under ${move === 1 ? "its" : "their"} own heading` : "",
+        rm("missing") ? `removes ${pl(rm("missing"), "line")} to a missing file` : "",
+        rm("retired") ? `removes ${pl(rm("retired"), "line")} of archived or superseded memories` : "",
+        rm("duplicate") ? `removes ${pl(rm("duplicate"), "second copy", "second copies")} of a memory's line` : "",
+        rm(null) ? `removes ${pl(rm(null), "line")}` : "",
+      ].filter(Boolean);
       const said = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0] ?? "changes nothing";
-      lede = `In MEMORY.md, ${said}. The text of each line stays.`;
+      lede = `In MEMORY.md, ${said}.${move ? ` A moved line keeps its text.` : ""}`;
       confirm = "Fix MEMORY.md";
       break;
     }

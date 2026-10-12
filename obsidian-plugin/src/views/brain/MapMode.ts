@@ -13,7 +13,7 @@ import {
   MAP_VIEWS, MAP_VIEW_LABEL, aroundLayout, aroundPicks, aroundRows, bubbleCaption, bubbleLabel, builtAgo, captionWidth,
   communityLine, communityViews, degrees, drawnRadius, everyNodeGraph, fitView, labelFont, layoutBubbles, linkWidth,
   linkedCommunities, mapEmpty, mapEmptyText, mapFooter, memberRows, pickAround, pickCommunity, pickLabels,
-  unreviewedShare, type CommunityView, type LabelCand, type MapEmpty, type MapView,
+  unreviewedShare, type BubbleAt, type CommunityView, type LabelCand, type MapEmpty, type MapView,
 } from "../../data/brainMapView";
 import type { Graph, GraphNode } from "../../data/graph";
 import { settle, tick, type SimParams } from "../../data/forceSim";
@@ -93,6 +93,8 @@ export class MapMode implements BrainModeView {
   private resize: ResizeObserver | null = null;
   private frame: number | null = null;
   private size = { w: 0, h: 0 };
+  /** The last Communities layout and what it was laid out from (bubbleLayout). */
+  private bubbles: { key: string; at: BubbleAt[] } | null = null;
 
   // Every node
   private svg: SVGSVGElement | null = null;
@@ -464,6 +466,16 @@ export class MapMode implements BrainModeView {
     return { w: this.size.w || 640, h: this.size.h || 480 };
   }
 
+  /**
+   * layoutBubbles, kept while its inputs hold: the bubbles, the links between them and the canvas size. Selecting a
+   * community, an arrow key in the list or a reload that leaves the communities as they were only moves aria-current.
+   */
+  private bubbleLayout(items: ReadonlyArray<{ id: string; n: number; labelW: number }>, links: ReadonlyArray<{ a: string; b: string; n: number }>, w: number, h: number): BubbleAt[] {
+    const key = JSON.stringify([w, h, items.map((i) => [i.id, i.n, i.labelW]), links.map((l) => [l.a, l.b, l.n])]);
+    if (this.bubbles?.key !== key) this.bubbles = { key, at: layoutBubbles(items, links, w, h) };
+    return this.bubbles.at;
+  }
+
   private drawBubbles(canvas: HTMLElement, legend: HTMLElement): void {
     legend.createSpan({ text: "Size = memories · " });
     legend.createSpan({ cls: "aos-brain-mapswatch is-ring", attr: { "aria-hidden": "true" } });
@@ -479,7 +491,7 @@ export class MapMode implements BrainModeView {
     const items = shown.map((c) => ({ id: c.id, n: c.memories, labelW: captionWidth(c.name, bubbleCaption(c)) }));
     const ids = new Set(shown.map((c) => c.id));
     const links = map.links.filter((l) => ids.has(l.a) && ids.has(l.b));
-    const at = new Map(layoutBubbles(items, links, w, h).map((b) => [b.id, b]));
+    const at = new Map(this.bubbleLayout(items, links, w, h).map((b) => [b.id, b]));
     const lines = document.createElementNS(SVG_NS, "svg");
     lines.classList.add("aos-brain-maplines");
     lines.setAttribute("aria-hidden", "true");
@@ -566,7 +578,9 @@ export class MapMode implements BrainModeView {
       b.style.left = `${at[i].x}px`;
       b.style.top = `${at[i].y}px`;
       b.createSpan({ cls: "aos-brain-ardot", attr: { "aria-hidden": "true" } });
-      b.createSpan({ cls: "aos-brain-arname", text: clip(r.title, 28), attr: { "aria-hidden": "true" } });
+      const name = b.createSpan({ cls: "aos-brain-arname", text: clip(r.title, 28), attr: { "aria-hidden": "true" } });
+      // As wide as its side of the canvas allows, so a long name ends in an ellipsis, never cut at the edge.
+      name.style.maxWidth = `${Math.max(40, Math.min(180, Math.floor(at[i].room)))}px`;
       b.addEventListener("click", () => this.openMemory(r.path));
     });
     if (!rows.length) canvas.createDiv({ cls: "aos-brain-mapempty is-below", text: "It links to no other memory in the map." });

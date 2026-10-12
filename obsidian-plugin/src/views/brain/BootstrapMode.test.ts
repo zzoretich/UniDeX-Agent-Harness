@@ -126,17 +126,17 @@ function data(o: Partial<BrainData> = {}): BrainData {
     trail: [], written: new Map(), index, pairs: [], flags: new Map(), batches: [], map: null,
     session: "# SESSION\n\n## Things to Remember\n\n- keep the folder flag #promote\n\n## Wrap Status\n\n- Session s1 not wrapped (provider: none) — run /wrap.\n",
     wake: "## Recall (auto)\n- `brain/memory/projects/widget.md` (3d) — out to everyone\n",
-    indexRaw: INDEX, settings: { telemetry: true, graph: true, neverUsedDays: 30, mapMin: 8 },
+    indexRaw: INDEX, settings: { telemetry: true, graph: true, neverUsedDays: 30, mapMin: 8, wrapHint: "/wrap" },
     ...o,
   };
 }
 
-interface Calls { runs: MemoryVerb[]; shows: unknown[]; edits: string[]; confirms: string[] }
-function harness(d: BrainData, o: { run?: (v: MemoryVerb) => { ok: boolean; reason?: string }; confirm?: boolean; recall?: (t: string) => Promise<RecallPreview> } = {}) {
+interface Calls { runs: MemoryVerb[]; shows: unknown[]; edits: string[]; confirms: string[]; brainMd: number }
+function harness(d: BrainData, o: { run?: (v: MemoryVerb) => { ok: boolean; reason?: string }; confirm?: boolean | (() => Promise<boolean>); recall?: (t: string) => Promise<RecallPreview> } = {}) {
   const doc: FakeDoc = { activeElement: null, body: null };
   doc.body = new FakeEl("BODY", doc);
   const host = doc.body.createDiv();
-  const calls: Calls = { runs: [], shows: [], edits: [], confirms: [] };
+  const calls: Calls = { runs: [], shows: [], edits: [], confirms: [], brainMd: 0 };
   let n = 0;
   const ctx = {
     data: () => d,
@@ -145,7 +145,8 @@ function harness(d: BrainData, o: { run?: (v: MemoryVerb) => { ok: boolean; reas
       const r = o.run?.(v) ?? { ok: true };
       return r.ok ? { ok: true, json: { hash: `${"ab".repeat(15)}${String(++n).padStart(2, "0")}`, brainMd: { ok: true } } } : { ok: false, reason: r.reason ?? "no", refused: false, outdated: false, stale: false };
     },
-    confirm: async (title: string) => { calls.confirms.push(title); return o.confirm ?? true; },
+    confirm: async (title: string) => { calls.confirms.push(title); return typeof o.confirm === "function" ? o.confirm() : o.confirm ?? true; },
+    brainMd: async () => { calls.brainMd++; return { ok: true }; },
     recall: o.recall ?? (async () => ({ ok: true, query: "q", hits: [] })),
     show: (t: unknown) => { calls.shows.push(t); },
     edit: async (p: string) => { calls.edits.push(p); },
@@ -175,7 +176,7 @@ test("Bootstrap draws the three budgets as progressbars, BRAIN.md by section, th
   assert.deepEqual(h.calls.shows.pop(), { mode: "health", anchor: "hygiene" });
 });
 
-test("Unpin runs `set` with the hash the page read; the row leaves at once and comes back if the verb fails", async () => {
+test("Unpin runs `set` with the hash the page read; the row stays, busy, until the verb answers; refused, it stays", async () => {
   const d = data();
   const h = harness(d, { run: () => ({ ok: false, reason: "changed since it was read" }) });
   const hash = d.byPath.get(P("feedback", "graph-first"))!.hash;
@@ -183,10 +184,28 @@ test("Unpin runs `set` with the hash the page read; the row leaves at once and c
   b.focus();
   b.click();
   assert.deepEqual(h.calls.runs[0], { verb: "set", path: P("feedback", "graph-first"), fields: { pin: false }, expect: hash });
-  assert.equal(h.q('[data-act="unpin"]').length, 0, "hidden while the verb runs");
-  assert.ok(h.doc.activeElement && h.host.contains(h.doc.activeElement), "the keyboard stays in the card it was in");
+  const busy = h.one('[data-act="unpin"]');
+  assert.deepEqual([busy.getAttribute("aria-disabled"), busy.textContent], ["true", "Unpinning…"], "kept in place, busy, while the verb runs");
+  assert.equal(h.doc.activeElement, busy, "the keyboard stays on it");
+  busy.click();
+  assert.equal(h.calls.runs.length, 1, "a click on the busy button does nothing");
   await tick();
-  assert.equal(h.q('[data-act="unpin"]').length, 1, "refused: it comes back");
+  assert.deepEqual([h.one('[data-act="unpin"]').getAttribute("aria-disabled"), h.one('[data-act="unpin"]').textContent], [null, "Unpin"], "refused: it stays, ready again");
+});
+
+test("A double-click marks one project complete, never the row that slides under the second click", async () => {
+  const h = harness(data());
+  const rows = h.one('[data-section="active"]').querySelectorAll('[data-act="complete"]');
+  assert.ok(rows.length >= 2);
+  rows[0].fire("click", { detail: 1 });
+  // The second click of the double-click: on the same busy button (the row stays), or on whatever sits there now.
+  for (const b of h.one('[data-section="active"]').querySelectorAll('[data-act="complete"]')) b.fire("click", { detail: 2 });
+  await tick();
+  assert.equal(h.calls.runs.length, 1, "one set");
+  // A held Enter's repeats are not new presses.
+  let prevented = 0;
+  h.one('[data-section="active"]').querySelectorAll('[data-act="complete"]')[0].fire("keydown", { key: "Enter", repeat: true, preventDefault: () => { prevented++; } });
+  assert.equal(prevented, 1);
 });
 
 test("Mark the N complete… asks first, runs each set in turn with each hash as read, and stops at the first failure", async () => {
@@ -196,15 +215,49 @@ test("Mark the N complete… asks first, runs each set in turn with each hash as
   h.one('[data-act="complete-shipped"]').click();
   await tick(); await tick(); await tick();
   assert.deepEqual(h.calls.confirms, ["Mark 2 projects complete?"]);
-  assert.deepEqual(h.calls.runs.map((v) => v.verb === "set" ? [v.path, v.fields, v.expect] : null), [
-    [P("projects", "widget"), { status: "complete" }, d.byPath.get(P("projects", "widget"))!.hash],
-    [P("projects", "old"), { status: "complete" }, d.byPath.get(P("projects", "old"))!.hash],
+  assert.deepEqual(h.calls.runs.map((v) => v.verb === "set" ? [v.path, v.fields, v.expect, v.skipBrainMd] : null), [
+    [P("projects", "widget"), { status: "complete" }, d.byPath.get(P("projects", "widget"))!.hash, true],
+    [P("projects", "old"), { status: "complete" }, d.byPath.get(P("projects", "old"))!.hash, true],
   ]);
+  // Each set skips the BRAIN.md rebuild; one runs after the last that went through, the stop included.
+  assert.equal(h.calls.brainMd, 1);
   assert.equal(notices.pop(), "Marked 1 of 2 projects complete; stopped at “Old proposal (superseded)”.");
   const no = harness(data(), { confirm: false });
   no.one('[data-act="complete-shipped"]').click();
   await tick();
   assert.deepEqual(no.calls.runs, [], "nothing runs when the dialog is cancelled");
+  assert.equal(no.calls.brainMd, 0);
+  const none = harness(data(), { run: () => ({ ok: false, reason: "surface off" }) });
+  none.one('[data-act="complete-shipped"]').click();
+  await tick(); await tick(); await tick();
+  assert.equal(none.calls.brainMd, 0, "nothing went through: no rebuild");
+});
+
+test("Unpin, then Mark the N complete… while the reload lands under its dialog: the set sends the hash Unpin answered", async () => {
+  const W = P("projects", "widget");
+  const d = data();
+  // Widget is pinned as well as active and looking shipped: it shows in Critical rules and in Active context.
+  const w0 = { ...d.byPath.get(W)!, pin: true };
+  const swap = (m: BrainMemory): void => { d.memories = d.memories.map((x) => (x.path === m.path ? m : x)); d.byPath = new Map(d.memories.map((x) => [x.path, x])); };
+  swap(w0);
+  d.sources!.sections.rules.paths.push(W);
+  let release: (v: boolean) => void = () => {};
+  const h = harness(d, { confirm: () => new Promise<boolean>((r) => { release = r; }) });
+  const unpin = h.one('[data-section="rules"]').querySelectorAll('[data-act="unpin"]').find((b) => b.getAttribute("data-bs-key")!.endsWith(W))!;
+  unpin.click();
+  await tick();
+  const answered = h.calls.runs.length === 1 ? `${"ab".repeat(15)}01` : "";
+  assert.equal(answered.length, 32);
+  // Mark the N complete… before the reload, then the reload lands while its dialog is open (the file now holds `answered`).
+  h.one('[data-act="complete-shipped"]').click();
+  await tick();
+  swap({ ...w0, pin: false, hash: answered });
+  h.mode.update();
+  release(true);
+  await tick(); await tick(); await tick();
+  const sent = h.calls.runs.find((v) => v.verb === "set" && v.path === W && v.fields.status === "complete");
+  assert.ok(sent && sent.verb === "set");
+  assert.equal(sent.expect, answered, "the newest hash the page knows, not the one read before Unpin");
 });
 
 test("Review the N… lands on the looks-shipped list; Show them opens the left-out projects", () => {

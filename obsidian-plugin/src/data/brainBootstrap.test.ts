@@ -111,6 +111,10 @@ test("SHIPPED: a full x.y.z, shipped, released or superseded; never merged, a ba
   assert.equal(shippedWhy("Tooling", "it shipped on Friday"), "shipped");
   assert.equal(shippedWhy("Unshipped ideas", "unreleased"), null);
   assert.ok(SHIPPED.test("SHIPPED"));
+  // An address is not a version (brain-hub.js SHIPPED is the twin); a version that ends a sentence still is.
+  assert.equal(shippedWhy("Local model", "Ollama at 127.0.0.1:11434"), null);
+  assert.equal(shippedWhy("Survey box", "server 192.168.1.20"), null);
+  assert.equal(shippedWhy("Tagged v1.2.0.", null), "v1.2.0");
 });
 
 // ── BRAIN.md by section ──
@@ -177,6 +181,8 @@ test("shippedSummary and the lede: N of the M active projects, what their BRAIN.
   assert.equal(completeAllLabel(3), "Mark the 3 complete…");
   assert.equal(shippedLede({ rows: [], of: 4, inBrain: 0, tokens: 0 }), null);
   assert.equal(shippedLede({ rows: [s.active.leftOut[0]], of: 1, inBrain: 0, tokens: 0 }), "1 of the 1 active project looks shipped. It does not fit in BRAIN.md now; marking it complete takes it off the active list.");
+  // Several, none of them in BRAIN.md: no double negative.
+  assert.equal(shippedLede({ rows: [s.active.leftOut[0], s.active.leftOut[0]], of: 5, inBrain: 0, tokens: 0 }), "2 of the 5 active projects look shipped. None of them fits in BRAIN.md now; marking them complete takes them off the active list.");
   assert.equal(shippedLede({ rows: [s.active.shown[0]], of: 2, inBrain: 1, tokens: 1 }), "1 of the 2 active projects looks shipped. Marking it complete frees about 1 token of BRAIN.md for work that is live.");
   assert.equal(reviewShippedLabel(1), "Review it…");
   assert.equal(completeAllLabel(1), "Mark it complete…");
@@ -294,11 +300,11 @@ test("sessionCard: Things to Remember, Promote to Memory on Close and #promote l
   ]);
   assert.equal(c.tokens, estimateTokens(SESSION));
   assert.equal(c.notWrapped, false);
-  assert.deepEqual(wrapNote(c), { text: "The next wrap promotes the tagged lines", warn: false });
+  assert.deepEqual(wrapNote(c, "/wrap"), { text: "The next wrap promotes the tagged lines", warn: false });
   assert.equal(sessionCard(null), null);
   const empty = sessionCard("# SESSION\n\n## Key Context This Session\n\n## Things to Remember\n")!;
   assert.deepEqual(empty.lines, []);
-  assert.equal(wrapNote(empty), null);
+  assert.equal(wrapNote(empty, "/wrap"), null);
 });
 
 test("sessionCard: the not-wrapped line auto-wrap.js writeWrapStatus writes, and how it says to wrap on each host", () => {
@@ -308,12 +314,18 @@ test("sessionCard: the not-wrapped line auto-wrap.js writeWrapStatus writes, and
   assert.equal(claude.notWrapped, true);
   assert.equal(claude.wrapHint, "/wrap");
   assert.ok(!claude.lines.some((l) => /not wrapped/.test(l.text)), "the status line is not a line to remember");
-  assert.deepEqual(wrapNote(claude), { text: "Not wrapped yet · /wrap promotes the tagged lines", warn: true });
+  assert.deepEqual(wrapNote(claude, "$agenticos:wrap"), { text: "Not wrapped yet · /wrap promotes the tagged lines", warn: true }, "the line's own command wins");
   assert.equal(sessionCard(withStatus("$agenticos:wrap"))!.wrapHint, "$agenticos:wrap");
   const both = sessionCard(withStatus("/wrap (Claude Code) or $agenticos:wrap (Codex)"))!;
   assert.equal(both.wrapHint, "/wrap (Claude Code) or $agenticos:wrap (Codex)");
   const bare = sessionCard("# SESSION\n\n## Wrap Status\n\n- Session s1 not wrapped (provider: none) — run $wrap.\n\n## Things to Remember\n")!;
-  assert.deepEqual(wrapNote(bare), { text: "Not wrapped yet · run $wrap", warn: true });
+  assert.deepEqual(wrapNote(bare, "/wrap"), { text: "Not wrapped yet · run $wrap", warn: true });
+  // A not-wrapped line that names no command (written by hand): /wrap as this machine's hosts invoke it, never /wrap
+  // on a Codex-only vault.
+  const none = sessionCard("# SESSION\n\n## Wrap Status\n\n- Session s1 not wrapped\n\n## Things to Remember\n\n- keep this #promote\n")!;
+  assert.equal(none.wrapHint, null);
+  assert.deepEqual(wrapNote(none, "$agenticos:wrap"), { text: "Not wrapped yet · $agenticos:wrap promotes the tagged lines", warn: true });
+  assert.deepEqual(wrapNote(none, "/wrap"), { text: "Not wrapped yet · /wrap promotes the tagged lines", warn: true });
   // "not wrapped" outside the Wrap Status section is prose, not the status.
   assert.equal(sessionCard("# S\n\n## Things to Remember\n\n- lines are not wrapped at 80 columns\n")!.notWrapped, false);
 });

@@ -71,7 +71,8 @@ export const LIBRARY_KIND_LABEL: Record<LibraryKind, string> = { memories: "Memo
  * opens Library with that use facet (Health's "Review the N" never-used memories), and `anchor` scrolls a mode to one
  * of its cards (BRAIN_ANCHORS: MEMORY.md's "Fix in Health →" lands on Hygiene).
  */
-export interface BrainTarget { mode?: BrainMode | null; queue?: ReviewQueue | null; memory?: string | null; use?: UseFacet | null; anchor?: BrainAnchor | null }
+/** `pair`: the duplicate pair Review's Duplicates queue lands on (Health's Compare names the one on its row). */
+export interface BrainTarget { mode?: BrainMode | null; queue?: ReviewQueue | null; memory?: string | null; use?: UseFacet | null; anchor?: BrainAnchor | null; pair?: { a: string; b: string } | null }
 /** The cards a link can land on: Bootstrap's looks-shipped list and recall preview, Health's four cards. */
 export const BRAIN_ANCHORS = ["shipped", "recall", "duplicates", "hygiene", "deadweight"] as const;
 export type BrainAnchor = (typeof BRAIN_ANCHORS)[number];
@@ -92,7 +93,12 @@ export function splitFrontmatter(text: string): Front {
   return { lines: block ? block.replace(/\r?\n$/, "").split(/\r?\n/) : [], body: text.slice(close + m[0].length - m[1].length), has: true };
 }
 
-const unquote = (v: string): string => v.replace(/^(["'])(.*)\1$/, "$2");
+/** A scalar's text: surrounding quotes stripped, and a single-quoted `''` read as `'` (memory-ops unquote's twin). */
+const unquote = (v: string): string => {
+  const q = /^(["'])(.*)\1$/.exec(v);
+  if (!q) return v;
+  return q[1] === "'" ? q[2].replace(/''/g, "'") : q[2];
+};
 
 /** A top-level key's value, quotes stripped; null when absent. */
 export function fmKey(lines: readonly string[], key: string): string | null {
@@ -113,8 +119,9 @@ export function fmStatus(lines: readonly string[]): string | null {
       return null;
     }
     if (/^tags:[ \t]*$/.test(lines[i])) {
-      for (let j = i + 1; j < lines.length && /^[ \t]+-/.test(lines[j]); j++) {
-        const m = STATUS_TAG.exec(unquote(lines[j].replace(/^[ \t]+-[ \t]*/, "").trim()));
+      // A block item at any indent, zero included (`tags:\n- a`): memory-ops getStatus's rule.
+      for (let j = i + 1; j < lines.length && /^[ \t]*-(?:[ \t]|$)/.test(lines[j]); j++) {
+        const m = STATUS_TAG.exec(unquote(lines[j].replace(/^[ \t]*-[ \t]*/, "").trim()));
         if (m) return m[1];
       }
       return null;
@@ -443,13 +450,17 @@ export const WAKE_MAX = 3;
 
 /** The runtime script, relative to the vault (the brain surface admits it with exactly recallArgs' argv). */
 export const RECALL_CLI = "brain/scripts/sdk/recall-cli.js";
+/** BRAIN.md's builder, relative to the vault: the brain surface runs it with no arguments (Bootstrap's bulk Mark complete,
+ *  whose sets skip their own rebuild, rebuilds once). */
+export const BUILD_BRAIN_MD = "brain/scripts/build-brain-md.js";
 export const RECALL_LIMIT = 8;
 /** One hit as recall-cli.js --json prints it (sdk/lib/recall.js queryRecallHybrid): `flag` is the age ("3d", "stale: 40d"). */
 export interface RecallHit { path: string; score: number; flag: string; snippet: string }
 
-/** The preview's query as one argument: control characters out, spaces folded, leading dashes dropped (never a flag). */
+/** The preview's query as one argument: control characters out, spaces folded, every leading dash and space dropped
+ *  ("- - item", "-- --warm": never a flag, so the brain surface's rule always admits it). */
 export function recallQuery(text: string): string {
-  return text.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim().replace(/^-+\s*/, "").slice(0, 200);
+  return text.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ").replace(/\s+/g, " ").replace(/^[-\s]+/, "").trim().slice(0, 200);
 }
 
 /** The argv after recall-cli.js: one query, `--limit N`, `--json`; throws on an empty query. Never `--warm`. */
@@ -747,13 +758,18 @@ export function modeBadges(o: { toReview: number; live: number; brainPct: number
   return out;
 }
 
-/** Health's badge: the live duplicate pairs plus every hygiene finding a fix acts on (healthCount; PR 3). */
+/**
+ * Health's badge: the live duplicate pairs plus every hygiene finding a fix acts on (healthCount; PR 3), except a
+ * description only MEMORY.md has: every writer (auto-wrap, /wrap, an approved draft, /feedback) leaves a new memory's
+ * description to its MEMORY.md line, and every list reads it from there, so that count would climb back after each
+ * session. Health still lists it, with its fix, on demand.
+ */
 export function healthCount(pairs: number, hub: BrainHub | null): number {
   const hy = hub?.hygiene ?? {};
   const n = (k: string): number => (Array.isArray(hy[k]) ? (hy[k] as unknown[]).length : 0);
   const sources = hy.sources && typeof hy.sources === "object" ? rec(hy.sources) : {};
   const legacy = LEGACY_SOURCES.reduce((s, k) => s + num(sources[k]), 0);
-  return pairs + legacy + n("oldType") + n("noDescription") + n("unindexed") + n("misfiled") + n("brokenIndex") + n("leftoverDrafts");
+  return pairs + legacy + n("oldType") + n("unindexed") + n("misfiled") + n("brokenIndex") + n("leftoverDrafts");
 }
 /** The source labels `fix sources` rewrites to manual-wrap (lib/memory-hygiene.js LEGACY_SOURCES). */
 export const LEGACY_SOURCES: readonly string[] = ["session", "in-session", "wrap"];
@@ -890,11 +906,13 @@ export const MAX_PATHS_PER_CALL = 50;
 
 export type MemoryVerb =
   | { verb: "keep" | "archive" | "restore"; paths: readonly string[] }
-  | { verb: "set"; path: string; fields: { pin?: boolean; status?: SetStatus; description?: string }; expect: string }
+  /** skipBrainMd: the caller rebuilds BRAIN.md once after several (Bootstrap's bulk Mark complete; ctx.brainMd). */
+  | { verb: "set"; path: string; fields: { pin?: boolean; status?: SetStatus; description?: string }; expect: string; skipBrainMd?: boolean }
   | { verb: "supersede"; path: string; by: string }
   | { verb: "draft"; action: "approve" | "reject"; slug: string }
   | { verb: "notdup"; a: string; b: string }
-  | { verb: "fix"; kind: FixKind; dryRun: boolean };
+  /** expect: the dry run's hash (FixResult.expect); the real run refuses unless it makes exactly the changes shown. */
+  | { verb: "fix"; kind: FixKind; dryRun: boolean; expect?: string | null };
 
 /**
  * `aos memory fix <kind>` (D20; PR 3), each acting on exactly what brain-hub.json's `hygiene` finds (lib/memory-hygiene.js):
@@ -902,14 +920,19 @@ export type MemoryVerb =
  *   types         the old `type:` shape (a host's auto-memory: type: user, or none) → type: memory and the tags it needs
  *   descriptions  a memory with no description of its own gets its MEMORY.md line's (as archive keeps one)
  *   index         a live memory missing from MEMORY.md gets its line; a line under another type's heading moves under its
- *                 own; a line to a missing file goes
+ *                 own; a line goes when nothing is at its path, when its memory is archived or superseded, or when it is
+ *                 a second copy (FixChange.reason)
  *   drafts        a feedback draft whose memory was approved and is live is removed (the one delete spec §6 allows)
- * `--dry-run` writes nothing and prints the same changes; a real run writes them, logs a `fixed` trail row per file with
- * the field's before and after, and rebuilds BRAIN.md when MEMORY.md or a status changed.
+ * `--dry-run` writes nothing and prints the same changes and their hash (`expect`); a real run given that hash refuses
+ * unless it would make exactly those changes, writes them, logs a `fixed` trail row per changed memory or draft (and per
+ * memory whose MEMORY.md lines go) with each field's before and after, and rebuilds BRAIN.md after a real types or index
+ * run that changed files (index rewrites MEMORY.md, which BRAIN.md's bullets come from; types changes nothing it reads).
  */
 export const FIX_KINDS = ["sources", "types", "descriptions", "index", "drafts"] as const;
 export type FixKind = (typeof FIX_KINDS)[number];
 export function isFixKind(x: unknown): x is FixKind { return typeof x === "string" && (FIX_KINDS as readonly string[]).includes(x); }
+/** A fix's `expect` (lib/memory-fix.js EXPECT_RE): 32 hex characters. */
+export const FIX_EXPECT_RE = /^[0-9a-f]{32}$/;
 /** One change: a memory's frontmatter field, a MEMORY.md line, or a draft file. `before`/`after` are null when absent. */
 export interface FixChange {
   /** brain/memory/<type>/<slug>.md, MEMORY.md (a broken line), or brain/memory/feedback/_drafts/<slug>.md. */
@@ -918,7 +941,11 @@ export interface FixChange {
   action: "source" | "type" | "tags" | "description" | "index-add" | "index-move" | "index-remove" | "draft-remove";
   before: string | null;
   after: string | null;
+  /** An index-remove's why: nothing at its path (missing), its memory archived or superseded (retired), or a second copy
+   *  of a line its memory keeps (duplicate). */
+  reason?: FixRemoveReason;
 }
+export type FixRemoveReason = "missing" | "retired" | "duplicate";
 export interface FixResult {
   kind: FixKind;
   dryRun: boolean;
@@ -926,8 +953,10 @@ export interface FixResult {
   changes: FixChange[];
   /** How many files changed (a memory with two field changes counts once; MEMORY.md counts once). */
   files: number;
-  /** build-brain-md's run after a real run that touched MEMORY.md or a status; null when it did not run. */
+  /** build-brain-md's run after a real types or index run with files > 0; null when it did not run. */
   brainMd: { ok: boolean; error?: string } | null;
+  /** The changes' hash: a dry run's goes back with the real run (MemoryVerb fix.expect); null from an older runtime. */
+  expect: string | null;
 }
 
 /** The argv after `cli/aos.js` for a verb, `--json` last; throws on a path or slug the runtime would refuse anyway. */
@@ -939,7 +968,7 @@ export function memoryArgs(v: MemoryVerb): string[] {
       return ["memory", v.verb, ...v.paths.map(path), "--json"];
     case "set":
       if (!/^(?:none|[0-9a-f]{16,64})$/.test(v.expect)) throw new Error("set needs the memory's hash");
-      return ["memory", "set", path(v.path), "--set", JSON.stringify(v.fields), "--expect", v.expect, "--json"];
+      return ["memory", "set", path(v.path), "--set", JSON.stringify(v.fields), "--expect", v.expect, ...(v.skipBrainMd ? ["--skip-brain-md"] : []), "--json"];
     case "supersede":
       return ["memory", "supersede", path(v.path), "--by", path(v.by), "--json"];
     case "draft":
@@ -949,7 +978,9 @@ export function memoryArgs(v: MemoryVerb): string[] {
       return ["memory", "notdup", path(v.a), path(v.b), "--json"];
     case "fix":
       if (!isFixKind(v.kind)) throw new Error(`not a fix: ${String(v.kind)}`);
-      return ["memory", "fix", v.kind, ...(v.dryRun ? ["--dry-run"] : []), "--json"];
+      if (v.dryRun) return ["memory", "fix", v.kind, "--dry-run", "--json"];
+      if (v.expect != null && !FIX_EXPECT_RE.test(v.expect)) throw new Error("a fix's expect is the hash its dry run printed");
+      return ["memory", "fix", v.kind, ...(v.expect != null ? ["--expect", v.expect] : []), "--json"];
   }
 }
 
@@ -960,9 +991,13 @@ export function parseFixResult(body: unknown): FixResult | null {
   const actions: readonly FixChange["action"][] = ["source", "type", "tags", "description", "index-add", "index-move", "index-remove", "draft-remove"];
   const changes = arr<Record<string, unknown>>(r.changes).map(rec)
     .filter((c) => typeof c.path === "string" && actions.includes(c.action as FixChange["action"]))
-    .map((c) => ({ path: c.path as string, action: c.action as FixChange["action"], before: typeof c.before === "string" ? c.before : null, after: typeof c.after === "string" ? c.after : null }));
+    .map((c): FixChange => ({
+      path: c.path as string, action: c.action as FixChange["action"], before: typeof c.before === "string" ? c.before : null, after: typeof c.after === "string" ? c.after : null,
+      ...(c.action === "index-remove" && (c.reason === "missing" || c.reason === "retired" || c.reason === "duplicate") ? { reason: c.reason } : {}),
+    }));
   const b = r.brainMd && typeof r.brainMd === "object" ? rec(r.brainMd) : null;
-  return { kind: r.kind, dryRun: r.dryRun === true, changes, files: num(r.files), brainMd: b ? { ok: b.ok === true, ...(typeof b.error === "string" ? { error: b.error } : {}) } : null };
+  const expect = typeof r.expect === "string" && FIX_EXPECT_RE.test(r.expect) ? r.expect : null;
+  return { kind: r.kind, dryRun: r.dryRun === true, changes, files: num(r.files), brainMd: b ? { ok: b.ok === true, ...(typeof b.error === "string" ? { error: b.error } : {}) } : null, expect };
 }
 
 /** `paths` in calls of at most MAX_PATHS_PER_CALL. */

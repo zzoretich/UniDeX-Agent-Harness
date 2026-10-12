@@ -11,23 +11,25 @@ import {
   parseNote, readTrailRows, reviewBatches, writtenAtMap, type BrainDraft, type BrainMemory, type BrainNote,
 } from "../../data/brainModel";
 import { TRAIL_PATH } from "../../data/promoteTrail";
-import { VAULT_CONFIG_DEFAULTS, type VaultConfig } from "../../data/aosConfig";
+import { VAULT_CONFIG_DEFAULTS, invocationHint, type AgenticosJson, type VaultConfig } from "../../data/aosConfig";
 import type { BrainData, BrainSettings } from "./types";
 
 /** The single files every load reads whole: small, and their changes are what the hub follows. */
 const SINGLES = [BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, MEMORY_INDEX_PATH, TRAIL_PATH, BRAIN_MAP_PATH, SESSION_MD_PATH, RECALL_WAKE_PATH];
 
 /**
- * The four settings the modes read, from the config the runtime itself resolves (aosConfig.ts readVaultConfig:
- * brain/config.json, then the user's agenticos.json, over the defaults). A missing or bad value is the default.
+ * The settings the modes read, from the config the runtime itself resolves (aosConfig.ts readVaultConfig:
+ * brain/config.json, then the user's agenticos.json, over the defaults); a missing or bad value is the default. `hosts`
+ * is agenticos.json (readAgenticosJson): which hosts run sessions, so the page names /wrap as they invoke it.
  */
-export function brainSettings(c: Partial<VaultConfig> | null): BrainSettings {
+export function brainSettings(c: Partial<VaultConfig> | null, hosts: AgenticosJson | null = null): BrainSettings {
   const pos = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : d);
   return {
     telemetry: c?.telemetry?.enabled !== false,
     graph: c?.graph?.enabled !== false,
     neverUsedDays: pos(c?.memory?.neverUsedDays, VAULT_CONFIG_DEFAULTS.memory.neverUsedDays),
     mapMin: pos(c?.memory?.mapMin, VAULT_CONFIG_DEFAULTS.memory.mapMin),
+    wrapHint: invocationHint("wrap", hosts),
   };
 }
 

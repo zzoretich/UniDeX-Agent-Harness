@@ -62,10 +62,11 @@ function memoryTree(root: string): Record<string, string> {
 }
 const live = () => B().memories.filter((p) => !B().archived.includes(p));
 const pl = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-/** What Health's fixes and the duplicates queue act on (its tab badge): the pairs and every hygiene finding a fix takes. */
+/** What Health's fixes and the duplicates queue act on (its tab badge): the pairs and every hygiene finding a fix takes,
+ *  but descriptions only MEMORY.md has (every new memory starts that way: listed in Hygiene, never badged). */
 const healthFindings = (): number => {
   const h = B().hygiene;
-  return B().dups.length + (h.sources.session ?? 0) + (h.sources["in-session"] ?? 0) + (h.sources.wrap ?? 0) + h.oldType.length + h.noDescription.length
+  return B().dups.length + (h.sources.session ?? 0) + (h.sources["in-session"] ?? 0) + (h.sources.wrap ?? 0) + h.oldType.length
     + h.unindexed.length + h.misfiled.length + h.brokenIndex.length + h.leftoverDrafts.length;
 };
 /** How many times sessions used a memory in the last 7 days (brain-hub.json usage d7, from the fixture's usage log). */
@@ -1238,11 +1239,14 @@ test.describe("Health", () => {
     const raw = read("MEMORY.md");
     const h = B().hygiene;
     expect(tokensOf(raw)).toBeLessThan(1000);
+    const over = src.tokens > src.budget;
+    const full = !over && src.sections.active.omitted.length > 0;
     const want: Array<[string, string, string, string, string, string]> = [
       ["duplicates", String(B().dups.length), "Duplicate pairs", "to compare", B().clusters.length ? pl(B().clusters.length, "cluster") : "no clusters", "warn"],
       ["unreviewed", String(B().unreviewed.length), "Unreviewed", "to review", `${Math.round((B().unreviewed.length / live().length) * 100)}% of all memories`, "warn"],
       ["unused", String(B().usage.never.length), "Never used", "", "in 30 days", "plain"],
-      ["brainmd", `${Math.round((src.tokens / src.budget) * 100)}%`, "BRAIN.md", "within budget", `${src.tokens} of ${src.budget} tokens`, "ok"],
+      // From the raw numbers, as Bootstrap's bar: over its budget, else full when projects were left out, else within it.
+      ["brainmd", `${Math.round((src.tokens / src.budget) * 100)}%`, "BRAIN.md", over ? "over budget" : full ? "full" : "within budget", `${src.tokens} of ${src.budget} tokens`, over || full ? "warn" : "ok"],
       ["memorymd", String(tokensOf(raw)), "MEMORY.md", "", `tokens · ${lineCount(raw)} lines`, "plain"],
       ["broken", String(h.brokenIndex.length), "Broken links", "to fix", `${h.unindexed.length} unindexed · ${h.misfiled.length} misfiled`, "warn"],
     ];
@@ -1283,14 +1287,17 @@ test.describe("Health", () => {
     await expect(draft).toHaveAttribute("data-path", `brain/memory/feedback/_drafts/${B().leftover}.md`);
     await expect(draft.locator(".aos-brain-hl-leftover")).toHaveText("draft");
     await expect(draft.locator(".aos-brain-hl-t1")).toHaveText(titleOf(B().pinned));
-    await expect(draft.locator(".aos-brain-hl-t2")).toHaveText("The same slug, still in feedback/_drafts after it was approved");
+    await expect(draft.locator(".aos-brain-hl-t2")).toHaveText("The same rule (slug and title), still in feedback/_drafts after it was approved");
     await expect(draft.locator('button[data-act="fix"][data-fix="drafts"]')).toHaveText("Remove the draft…");
     await expect(card.locator(".aos-brain-hl-cluster")).toHaveCount(B().clusters.length);
-    // Compare lands on Review's Duplicates queue, the pair there as an older and a newer box.
+    // Compare lands on Review's Duplicates queue on that very pair (ReviewMode.test.ts picks the second of two), as an
+    // older and a newer box.
     await pair.locator('button[data-act="compare"]').click();
     await expect(modeTab("review")).toHaveAttribute("aria-selected", "true");
     await expect(queue("duplicates")).toHaveAttribute("aria-pressed", "true");
     await expect(main().locator("h2")).toHaveText("Duplicates");
+    await expect(main().locator(".aos-brain-rv-pair")).toHaveAttribute("data-a", d.a);
+    await expect(main().locator(".aos-brain-rv-pair")).toHaveAttribute("data-b", d.b);
     expect(await paths(main().locator(".aos-brain-rv-pair .aos-brain-rv-box"))).toEqual([older, newer]);
     await showQueue("session");
   });
@@ -1305,7 +1312,7 @@ test.describe("Health", () => {
     const want: Array<[string, number, string, string]> = [
       ["sources", 2, "2 memories carry an old source label (session, in-session) where /wrap writes manual-wrap", "Normalise 2…"],
       ["types", 1, "1 memory uses an old type: shape", "Fix 1…"],
-      ["descriptions", n, `${n} memories have no description: the list shows only titles`, "Copy from MEMORY.md…"],
+      ["descriptions", n, `${n} memories keep their description only in MEMORY.md, none in their own frontmatter`, "Copy from MEMORY.md…"],
       ["index", 3, "1 memory is not in MEMORY.md; 1 line sits under the wrong heading; 1 line points at a missing file", "Fix 3…"],
       ["drafts", 1, "1 approved draft is still in feedback/_drafts", "Remove the draft…"],
     ];

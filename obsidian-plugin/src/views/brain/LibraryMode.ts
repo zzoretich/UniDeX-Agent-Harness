@@ -36,6 +36,10 @@ export function filterForUse(f: LibraryFilter, use: UseFacet): LibraryFilter {
   return { ...f, kind: "memories", status: "live", type: null, source: null, use };
 }
 
+/** The hub as Library's use labels and Use facet read it: none while telemetry is off, whatever an older log still says
+ *  (brain-hub.json summarises any log there is), so Library agrees with Health's and Map's "telemetry is off". */
+function useHub(d: BrainData): BrainData["hub"] { return d.settings.telemetry ? d.hub : null; }
+
 export class LibraryMode implements BrainModeView {
   private root: HTMLElement | null = null;
   private kindBtns = new Map<LibraryKind, { btn: HTMLButtonElement; n: HTMLElement }>();
@@ -185,8 +189,9 @@ export class LibraryMode implements BrainModeView {
       btn.setAttr("aria-label", `${LIBRARY_KIND_LABEL[k]}, ${count[k]}`);
     }
     if (this.facetRow) this.facetRow.hidden = this.filter.kind !== "memories";
-    // The Use facet needs the usage log (D8); without one it is hidden and reads "any".
-    const usage = hasUsage(d.hub);
+    // The Use facet needs the usage log (D8) and telemetry on (spec §5.6: off, the use columns are hidden, as Health and
+    // Map hide theirs); without them it is hidden and reads "any".
+    const usage = hasUsage(useHub(d));
     if (!usage) this.filter.use = "any";
     const sources = sourceOptions(d.memories);
     if (this.filter.source !== null && !sources.includes(this.filter.source)) sources.push(this.filter.source);
@@ -224,7 +229,7 @@ export class LibraryMode implements BrainModeView {
     if (!list || !scroller) return;
     const d = this.ctx.data();
     const kind = this.filter.kind;
-    const rows = libraryRows(d, this.filter, d.hub, d.settings.neverUsedDays);
+    const rows = libraryRows(d, this.filter, useHub(d), d.settings.neverUsedDays);
     this.rows = rows;
     this.sel[kind] = librarySelection(rows, this.sel[kind].sel, this.sel[kind].chosen, (p) => this.exists(kind, p, d));
     const sel = this.sel[kind].sel;
@@ -365,7 +370,7 @@ export class LibraryMode implements BrainModeView {
   private showMemory(path: string, focus: boolean): void {
     const d = this.ctx.data();
     const m = d.byPath.get(path);
-    if (m) this.filter = filterShowing({ ...this.filter, query: this.ctx.query() }, m, d.hub, d.settings.neverUsedDays);
+    if (m) this.filter = filterShowing({ ...this.filter, query: this.ctx.query() }, m, useHub(d), d.settings.neverUsedDays);
     else this.filter.kind = "memories";
     this.sel.memories = { sel: path, chosen: true };
     this.update();

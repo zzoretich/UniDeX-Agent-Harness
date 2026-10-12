@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { fix, KINDS } = require('../lib/memory-fix.js');
+const { fix, KINDS, changesHash } = require('../lib/memory-fix.js');
 const ops = require('../lib/memory-ops.js');
 const { buildBrainHub } = require('../brain-hub.js');
 
@@ -50,7 +50,9 @@ const FILES = {
   [P('reference', 'gone')]: '---\ntype: reference\ntags: [memory/reference, status/archived]\nsource: session\n---\n\n# Gone\n\nBody.\n',
   [P('feedback', 'replaced')]: mem({ type: 'feedback', title: 'Replaced', source: 'wrap', status: 'superseded', description: '', extra: `superseded_by: ${P('feedback', 'legacy-label')}` }),
   // drafts: one left behind by an approved memory, one whose memory is superseded, one with no memory
-  'brain/memory/feedback/_drafts/legacy-label.md': '---\ntags: [memory/feedback, status/draft]\nsession: s9\n---\n\n# Legacy label draft\n\nbody\n',
+  // (approved: the same title as the live rule; a draft that only shares a slug is a new rule nobody reviewed yet)
+  'brain/memory/feedback/_drafts/legacy-label.md': '---\ntags: [memory/feedback, status/draft]\nsession: s9\n---\n\n# Legacy label\n\nbody\n',
+  'brain/memory/feedback/_drafts/in-session-label.md': '---\ntags: [memory/feedback, status/draft]\n---\n\n# In-session label, and when the branch is frozen\n\nbody\n',
   'brain/memory/feedback/_drafts/replaced.md': '---\ntags: [memory/feedback, status/draft]\n---\n\n# Replaced draft\n\nbody\n',
   'brain/memory/feedback/_drafts/brand-new.md': '---\ntags: [memory/feedback, status/draft]\n---\n\n# Brand new\n\nbody\n',
   'MEMORY.md': [
@@ -115,13 +117,14 @@ function roundTrip(kind, prefix) {
   const real = fix(v, kind);
   assert.equal(real.dryRun, false);
   assert.deepEqual(real.changes, dry.changes, `${kind}: the real run makes the dry run's changes`);
+  assert.equal(real.expect, dry.expect, `${kind}: the same changes, the same hash`);
   assert.equal(real.files, dry.files);
   const files = kind === 'index' ? (dry.changes.length ? ['MEMORY.md'] : []) : [...new Set(dry.changes.map((c) => c.path))].sort();
   assert.deepEqual(diff(before, snapshot(v)), files, `${kind}: only the files it named changed`);
   assert.equal(real.files, files.length);
   const again = snapshot(v);
   assert.deepEqual(fix(v, kind).changes, [], `${kind}: a second run has nothing to do`);
-  assert.deepEqual(fix(v, kind, { dryRun: true }), { kind, dryRun: true, changes: [], files: 0 });
+  assert.deepEqual(fix(v, kind, { dryRun: true }), { kind, dryRun: true, changes: [], files: 0, expect: changesHash([]) });
   assert.deepEqual(diff(again, snapshot(v)), []);
   // Archived and superseded memories never change, whatever they carry.
   assert.equal(read(v, P('reference', 'gone')), FILES[P('reference', 'gone')]);
@@ -200,11 +203,12 @@ test('descriptions: the MEMORY.md line\'s, one line and at most 200 characters',
 test('index: a broken line out, a misfiled one moved with its text, missing ones added under their headings', () => {
   const { v, dry } = roundTrip('index', 'mfix-index-');
   const notIndexed = `- [Not indexed](${P('projects', 'not-indexed')}) — about Not indexed`;
-  const bracket = `- [Use x wisely](${P('reference', 'bracket-title')}) — The body of Use [x] wisely.`;
+  // The title as /wrap writes it: brackets read back (memory-hygiene entryOf), so they stay.
+  const bracket = `- [Use [x] wisely](${P('reference', 'bracket-title')}) — The body of Use [x] wisely.`;
   const broken = `- [Gone line](${P('reference', 'no-such-file')}) — a broken line`;
   const tide = `- [Tide tables](${P('reference', 'tide-tables')}) — under the wrong heading`;
   assert.deepEqual(dry.changes, [
-    { path: 'MEMORY.md', action: 'index-remove', before: broken, after: null },
+    { path: 'MEMORY.md', action: 'index-remove', before: broken, after: null, reason: 'missing' },
     { path: P('reference', 'tide-tables'), action: 'index-move', before: 'Patterns', after: 'Reference' },
     { path: P('projects', 'not-indexed'), action: 'index-add', before: null, after: notIndexed },
     { path: P('reference', 'bracket-title'), action: 'index-add', before: null, after: bracket },
@@ -223,19 +227,23 @@ test('index: a broken line out, a misfiled one moved with its text, missing ones
     ['MEMORY.md', undefined, 'index'],
   ]);
   assert.deepEqual(rows[0].changes, [{ field: 'index-move', before: 'Patterns', after: 'Reference' }]);
-  assert.deepEqual(rows[3].changes, [{ field: 'index-remove', before: broken, after: null }]);
+  assert.deepEqual(rows[3].changes, [{ field: 'index-remove', before: broken, after: null, reason: 'missing' }]);
   assert.equal(rows[3].type, 'reference');
   assert.equal(rows[3].title, 'Gone line');
   const h = buildBrainHub({ vault: v, cfg: {}, write: false }).hygiene;
   assert.deepEqual([h.unindexed, h.misfiled, h.brokenIndex], [[], [], []], 'the hub finds nothing left');
 });
 
-test('index: a misfiled copy beside one under its own heading just goes; a missing MEMORY.md is created', () => {
+test('index: a misfiled copy beside one under its own heading goes, shown as removed; a missing MEMORY.md is created', () => {
   const v = fixture('mfix-index-dup-');
   const own = `- [Legacy label](${P('feedback', 'legacy-label')}) — a legacy label`;
-  put(v, 'MEMORY.md', `${read(v, 'MEMORY.md')}\n## Projects again\n- [Legacy label copy](${P('feedback', 'legacy-label')}) — the copy\n`);
-  const r = fix(v, 'index');
-  assert.ok(r.changes.some((c) => c.path === P('feedback', 'legacy-label') && c.action === 'index-move' && c.before === 'Projects again' && c.after === 'Feedback'));
+  const copy = `- [Legacy label copy](${P('feedback', 'legacy-label')}) — the copy`;
+  put(v, 'MEMORY.md', `${read(v, 'MEMORY.md')}\n## Projects again\n${copy}\n`);
+  const dryDup = fix(v, 'index', { dryRun: true });
+  const r = fix(v, 'index', { expect: dryDup.expect });
+  // The preview names the line that goes, with its text: nothing is deleted unseen (fixes are not undoable).
+  assert.ok(r.changes.some((c) => c.path === 'MEMORY.md' && c.action === 'index-remove' && c.before === copy && c.reason === 'duplicate'));
+  assert.ok(!r.changes.some((c) => c.path === P('feedback', 'legacy-label') && c.action === 'index-move'));
   const idx = read(v, 'MEMORY.md');
   assert.equal(idx.split('\n').filter((l) => l.includes(`(${P('feedback', 'legacy-label')})`)).join('\n'), own, 'one line left, the one under its heading');
 
@@ -245,11 +253,11 @@ test('index: a misfiled copy beside one under its own heading just goes; a missi
   const goneLine = `- [Gone](${P('reference', 'gone')}) — archived, left behind`;
   put(retired, 'MEMORY.md', `${read(retired, 'MEMORY.md')}${goneLine}\n`);
   const rr = fix(retired, 'index');
-  assert.ok(rr.changes.some((c) => c.path === 'MEMORY.md' && c.action === 'index-remove' && c.before === goneLine));
+  assert.ok(rr.changes.some((c) => c.path === 'MEMORY.md' && c.action === 'index-remove' && c.before === goneLine && c.reason === 'retired'));
   assert.ok(!read(retired, 'MEMORY.md').includes(P('reference', 'gone')));
   assert.equal(read(retired, P('reference', 'gone')), FILES[P('reference', 'gone')]);
   const goneRow = fixed(retired).find((r) => r.path === 'MEMORY.md' && r.title === 'Gone');
-  assert.deepEqual([goneRow.slug, goneRow.type, goneRow.changes], [undefined, 'reference', [{ field: 'index-remove', before: goneLine, after: null }]]);
+  assert.deepEqual([goneRow.slug, goneRow.type, goneRow.changes], [undefined, 'reference', [{ field: 'index-remove', before: goneLine, after: null, reason: 'retired' }]]);
   assert.deepEqual(buildBrainHub({ vault: retired, cfg: {}, write: false }).hygiene.misfiled, []);
   assert.deepEqual(fix(retired, 'index').changes, []);
 
@@ -263,17 +271,18 @@ test('index: a misfiled copy beside one under its own heading just goes; a missi
   assert.deepEqual(fix(bare, 'index').changes, []);
 });
 
-test('drafts: a draft whose memory is live is removed; one whose memory is superseded, or has none, is kept', () => {
+test('drafts: a draft whose rule is live is removed; one whose memory is superseded, has none, or only shares a slug, is kept', () => {
   const { v, dry } = roundTrip('drafts', 'mfix-drafts-');
-  assert.deepEqual(dry.changes, [{ path: 'brain/memory/feedback/_drafts/legacy-label.md', action: 'draft-remove', before: 'Legacy label draft', after: null }]);
+  assert.deepEqual(dry.changes, [{ path: 'brain/memory/feedback/_drafts/legacy-label.md', action: 'draft-remove', before: 'Legacy label', after: null }]);
+  assert.ok(fs.existsSync(path.join(v, 'brain/memory/feedback/_drafts/in-session-label.md')), 'a new rule whose slug collides is never removed');
   assert.equal(fs.existsSync(path.join(v, 'brain/memory/feedback/_drafts/legacy-label.md')), false);
   assert.ok(fs.existsSync(path.join(v, 'brain/memory/feedback/_drafts/replaced.md')));
   assert.ok(fs.existsSync(path.join(v, 'brain/memory/feedback/_drafts/brand-new.md')));
   assert.equal(read(v, P('feedback', 'legacy-label')), FILES[P('feedback', 'legacy-label')], 'the memory itself stays');
   const [row] = fixed(v);
   assert.deepEqual({ ...row, ts: 'T' }, {
-    ts: 'T', session: 's9', action: 'fixed', kind: 'drafts', slug: 'legacy-label', type: 'feedback', title: 'Legacy label draft',
-    path: 'brain/memory/feedback/_drafts/legacy-label.md', changes: [{ field: 'draft-remove', before: 'Legacy label draft', after: null }],
+    ts: 'T', session: 's9', action: 'fixed', kind: 'drafts', slug: 'legacy-label', type: 'feedback', title: 'Legacy label',
+    path: 'brain/memory/feedback/_drafts/legacy-label.md', changes: [{ field: 'draft-remove', before: 'Legacy label', after: null }],
   });
 });
 
@@ -309,4 +318,167 @@ test('no brain/_index refuses every kind, dry run included', () => {
   const v = fixture('mfix-noidx-');
   fs.rmSync(path.join(v, 'brain/_index'), { recursive: true });
   for (const kind of KINDS) assert.throws(() => fix(v, kind, { dryRun: true }), { code: 'NO_INDEX' }, kind);
+});
+
+// A strict YAML reader (Obsidian's Properties) where one is installed: js-yaml comes with the lint tooling.
+let strictYaml = null;
+try { strictYaml = require('js-yaml'); } catch { /* the exact-text checks below stand alone */ }
+const fmOf = (text) => /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)[1];
+const hubOf = (v) => buildBrainHub({ vault: v, cfg: {}, write: false }).hygiene;
+
+test('index: a memory whose title has brackets (a [[wiki-link]] /wrap kept) reads as indexed; nothing is added twice', () => {
+  const v = fixture('mfix-bracket-');
+  const rel = P('feedback', 'link-agenticos-workbench-decisions');
+  put(v, rel, mem({ type: 'feedback', title: 'link [[agenticos-workbench]] decisions in daily notes', description: '' }));
+  // memory-writer.js writes the raw title into MEMORY.md, brackets and all.
+  const line = `- [link [[agenticos-workbench]] decisions in daily notes](${rel}) — link decisions in daily notes`;
+  put(v, 'MEMORY.md', read(v, 'MEMORY.md').replace('## Reference', `${line}\n\n## Reference`));
+  assert.ok(!hubOf(v).unindexed.includes(rel));
+  const before = read(v, 'MEMORY.md');
+  const r = fix(v, 'index');
+  assert.ok(!r.changes.some((c) => c.path === rel), 'no index-add for a memory that has its line');
+  assert.equal(read(v, 'MEMORY.md').split('\n').filter((l) => l.includes(`](${rel})`)).length, 1);
+  assert.ok(read(v, 'MEMORY.md').includes(line));
+  assert.notEqual(before, '');
+  // A hand-typed ` - ` for the dash, and a bullet that links the memory after some text, are its line too.
+  const w = fixture('mfix-loose-');
+  put(w, 'MEMORY.md', read(w, 'MEMORY.md')
+    .replace('## Projects', `- see also [Not indexed](${P('projects', 'not-indexed')})\n\n## Projects`)
+    .replace('## User', `- [Use [x] wisely](${P('reference', 'bracket-title')}) - typed by hand\n\n## User`));
+  const h = hubOf(w);
+  assert.ok(!h.unindexed.includes(P('projects', 'not-indexed')) && !h.unindexed.includes(P('reference', 'bracket-title')));
+  assert.ok(!fix(w, 'index', { dryRun: true }).changes.some((c) => c.action === 'index-add'));
+});
+
+test('index: a CRLF MEMORY.md reads as indexed, a fix with nothing to do leaves it byte for byte, and lines keep CRLF', () => {
+  const v = fixture('mfix-crlf-');
+  const lf = read(v, 'MEMORY.md');
+  // Only the findings the LF fixture has: two missing lines, one misfiled, one broken.
+  put(v, 'MEMORY.md', lf.replace(/\n/g, '\r\n'));
+  const h = hubOf(v);
+  assert.deepEqual(h.unindexed.sort(), [P('projects', 'not-indexed'), P('reference', 'bracket-title')], 'the described lines read');
+  assert.deepEqual(h.noDescription.sort(), [P('feedback', 'long-desc'), P('feedback', 'no-desc')]);
+  const dry = fix(v, 'index', { dryRun: true });
+  const lfDry = fix(fixture('mfix-crlf-lf-'), 'index', { dryRun: true });
+  assert.deepEqual(dry.changes, lfDry.changes, 'the same changes as the LF file');
+  fix(v, 'index', { expect: dry.expect });
+  const after = read(v, 'MEMORY.md');
+  assert.doesNotMatch(after, /(^|[^\r])\n/, 'every line still ends CRLF, the added and moved ones too');
+  assert.equal(after.split('\r\n').filter((l) => l.includes(`](${P('reference', 'auto-label')})`)).length, 1, 'nothing duplicated');
+  // Nothing left to do: a second run leaves the file byte for byte.
+  assert.deepEqual(fix(v, 'index').changes, []);
+  assert.equal(read(v, 'MEMORY.md'), after);
+  const clean = hubOf(v);
+  assert.deepEqual([clean.unindexed, clean.misfiled, clean.brokenIndex], [[], [], []]);
+});
+
+test('index: two misfiled lines of one memory: one moves, the other is listed as removed in the dry run and the trail', () => {
+  const v = fixture('mfix-two-misfiled-');
+  const rel = P('feedback', 'legacy-label');
+  const first = `- [Legacy label](${rel}) — first wording`;
+  const second = `- [Legacy label](${rel}) — a second, different line`;
+  put(v, 'MEMORY.md', read(v, 'MEMORY.md')
+    .replace(`- [Legacy label](${rel}) — a legacy label\n`, '')
+    .replace('## Projects\n', `## Projects\n${first}\n`)
+    .replace('## Reference\n', `## Reference\n${second}\n`));
+  const dry = fix(v, 'index', { dryRun: true });
+  // The first in file order (under Reference) moves; the other (under Projects) goes, listed with its text.
+  const mine = dry.changes.filter((c) => c.path === rel || (c.before || '').includes(`](${rel})`));
+  assert.deepEqual(mine.sort((a, b) => a.action.localeCompare(b.action)), [
+    { path: rel, action: 'index-move', before: 'Reference', after: 'Feedback' },
+    { path: 'MEMORY.md', action: 'index-remove', before: first, after: null, reason: 'duplicate' },
+  ]);
+  fix(v, 'index', { expect: dry.expect });
+  const rows = fixed(v);
+  assert.ok(rows.some((r) => r.path === 'MEMORY.md' && r.changes.some((c) => c.field === 'index-remove' && c.before === first && c.reason === 'duplicate')));
+  const idx = read(v, 'MEMORY.md');
+  assert.ok(idx.includes(second) && !idx.includes(first), 'the moved line kept its text; the other is gone');
+  assert.ok(idx.indexOf(second) > idx.indexOf('## Feedback') && idx.indexOf(second) < idx.indexOf('## Reference'), 'under its own heading');
+  assert.equal(read(v, 'MEMORY.md').split('\n').filter((l) => l.includes(`](${rel})`)).length, 1);
+});
+
+test('the hub lists only what a fix acts on: a memory with no frontmatter, a link and a file too big to read', () => {
+  const v = fixture('mfix-agree-');
+  // No frontmatter, and a BOM before ---: the descriptions fix has no block to write into.
+  put(v, P('reference', 'plain-note'), '# Plain note\n\nNo frontmatter here.\n');
+  put(v, P('reference', 'bom-note'), `\uFEFF${mem({ type: 'reference', title: 'Bom note', description: '' })}`);
+  // A link, and a file over memory-ops' 1 MB: listMemories reads neither, and the index fix removes neither line.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mfix-agree-out-'));
+  fs.writeFileSync(path.join(outside, 't.md'), mem({ type: 'reference', title: 'Linked' }));
+  fs.symlinkSync(path.join(outside, 't.md'), path.join(v, P('reference', 'linked-note')));
+  put(v, P('reference', 'big-note'), `${mem({ type: 'reference', title: 'Big' })}${'x'.repeat(1024 * 1024)}\n`);
+  put(v, 'MEMORY.md', read(v, 'MEMORY.md').replace('## Projects', [
+    `- [Plain note](${P('reference', 'plain-note')}) — a described line`,
+    `- [Bom note](${P('reference', 'bom-note')}) — a described line`,
+    `- [Linked](${P('reference', 'linked-note')}) — a link`,
+    `- [Big](${P('reference', 'big-note')}) — too big to read`,
+    '', '## Projects'].join('\n')));
+  const h = hubOf(v);
+  for (const slug of ['plain-note', 'bom-note']) assert.ok(!h.noDescription.includes(P('reference', slug)), slug);
+  for (const slug of ['linked-note', 'big-note']) assert.ok(!h.brokenIndex.includes(P('reference', slug)), slug);
+  // Every path the hub lists for a kind is in that kind's dry run.
+  const dryPaths = (kind) => new Set(fix(v, kind, { dryRun: true }).changes.flatMap((c) => [c.path, ...((c.before || '').match(/brain\/memory\/[^)]+\.md/g) || [])]));
+  const desc = dryPaths('descriptions');
+  for (const p of h.noDescription) assert.ok(desc.has(p), p);
+  const idx = dryPaths('index');
+  for (const p of [...h.unindexed, ...h.misfiled, ...h.brokenIndex]) assert.ok(idx.has(p), p);
+});
+
+test('types: a zero-indent block list gains its tag at that indent; a flow list split over lines is left alone', () => {
+  const v = fixture('mfix-zero-');
+  put(v, P('projects', 'zero-indent'), '---\ntype: project\ntags:\n- reference/tooling\n- status/active\ndescription: zero indent\n---\n\n# Zero indent\n\nBody.\n');
+  put(v, P('projects', 'zero-has'), '---\ntype: project\ntags:\n- memory/projects\n- status/active\n---\n\n# Zero has\n\nBody.\n');
+  put(v, P('reference', 'split-flow'), '---\ntype: reference\ntags: [a,\n  b]\n---\n\n# Split flow\n\nBody.\n');
+  const dry = fix(v, 'types', { dryRun: true });
+  const of = (rel) => dry.changes.filter((c) => c.path === rel);
+  assert.deepEqual(of(P('projects', 'zero-indent')), [
+    { path: P('projects', 'zero-indent'), action: 'type', before: 'project', after: 'memory' },
+    { path: P('projects', 'zero-indent'), action: 'tags', before: '[reference/tooling, status/active]', after: '[reference/tooling, status/active, memory/projects]' },
+  ]);
+  assert.deepEqual(of(P('projects', 'zero-has')), [{ path: P('projects', 'zero-has'), action: 'type', before: 'project', after: 'memory' }]);
+  assert.deepEqual(of(P('reference', 'split-flow')), [{ path: P('reference', 'split-flow'), action: 'type', before: 'reference', after: 'memory' }]);
+  fix(v, 'types', { expect: dry.expect });
+  assert.equal(read(v, P('projects', 'zero-indent')), '---\ntype: memory\ntags:\n- reference/tooling\n- status/active\n- memory/projects\ndescription: zero indent\n---\n\n# Zero indent\n\nBody.\n');
+  assert.equal(read(v, P('projects', 'zero-has')), '---\ntype: memory\ntags:\n- memory/projects\n- status/active\n---\n\n# Zero has\n\nBody.\n');
+  assert.equal(read(v, P('reference', 'split-flow')), '---\ntype: memory\ntags: [a,\n  b]\n---\n\n# Split flow\n\nBody.\n');
+  // A zero-indent status reads as the status (memory-ops getStatus): still active, so still live.
+  assert.equal(ops.describe(ops.readMemory(v, P('projects', 'zero-indent'))).status, 'active');
+  if (strictYaml) {
+    for (const slug of ['projects/zero-indent', 'projects/zero-has', 'reference/split-flow']) {
+      const doc = strictYaml.load(fmOf(read(v, `brain/memory/${slug}.md`)));
+      assert.equal(doc.type, 'memory', slug);
+      assert.equal(new Set(doc.tags).size, doc.tags.length, `${slug}: no tag twice`);
+    }
+  }
+});
+
+test('descriptions: a description with both quote kinds is single-quoted with \'\' doubled, and reads back as written', () => {
+  const v = fixture('mfix-quotes-');
+  const text = 'Don\'t write "x": ask first';
+  put(v, 'MEMORY.md', read(v, 'MEMORY.md').replace('— ask the graph first: always', `— ${text}`));
+  fix(v, 'descriptions');
+  const raw = read(v, P('feedback', 'no-desc'));
+  assert.match(raw, /^description: 'Don''t write "x": ask first'$/m);
+  assert.equal(ops.describe(ops.readMemory(v, P('feedback', 'no-desc'))).description, text);
+  if (strictYaml) assert.equal(strictYaml.load(fmOf(raw)).description, text);
+});
+
+test('--expect: the real run refuses, writing nothing, when the files no longer give the changes the preview showed', () => {
+  for (const kind of KINDS) {
+    const v = fixture(`mfix-expect-${kind}-`);
+    const dry = fix(v, kind, { dryRun: true });
+    assert.match(dry.expect, /^[0-9a-f]{32}$/);
+    // Another session writes while the dialog is open: one more finding of each kind.
+    put(v, P('feedback', 'late-one'), mem({ type: 'feedback', title: 'Late one', source: 'session', description: '', extra: '' }).replace('type: memory', 'type: feedback'));
+    put(v, 'MEMORY.md', `${read(v, 'MEMORY.md')}- [Late one](${P('feedback', 'late-one')}) — written meanwhile\n`);
+    put(v, 'brain/memory/feedback/_drafts/late-one.md', '---\ntags: [memory/feedback, status/draft]\n---\n\n# Late one\n\nbody\n');
+    const before = snapshot(v);
+    assert.throws(() => fix(v, kind, { expect: dry.expect }), { code: 'CHANGED' }, kind);
+    assert.deepEqual(diff(before, snapshot(v)), [], `${kind}: nothing written`);
+    assert.deepEqual(fixed(v), [], `${kind}: no trail row`);
+    // A fresh preview's hash goes through.
+    const again = fix(v, kind, { dryRun: true });
+    assert.ok(fix(v, kind, { expect: again.expect }).changes.length >= 1, kind);
+  }
+  assert.throws(() => fix(fixture(), 'sources', { expect: 'none' }), { code: 'BAD_HASH' });
 });

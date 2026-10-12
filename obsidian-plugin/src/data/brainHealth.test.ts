@@ -35,7 +35,7 @@ function input(o: Partial<HealthInput> = {}): HealthInput {
 
 // ── hygiene ──
 
-test("hygieneCounts: sources sums only the old labels, index sums its three findings, and both agree with healthCount", () => {
+test("hygieneCounts: sources sums only the old labels, index sums its three findings; healthCount adds all but descriptions", () => {
   const h = hub({
     hygiene: {
       sources: { session: 4, "in-session": 2, wrap: 1, "manual-wrap": 20, "auto-wrap": 90, "(none)": 3 },
@@ -52,7 +52,9 @@ test("hygieneCounts: sources sums only the old labels, index sums its three find
   assert.equal(c.index, 4);
   assert.deepEqual([c.unindexed, c.misfiled, c.broken], [1, 2, 1]);
   assert.equal(c.drafts, 1);
-  assert.equal(healthCount(0, h), c.sources + c.types + c.descriptions + c.index + c.drafts, "the rows add up to the Health badge");
+  // Every writer leaves a new memory's description to MEMORY.md, so that row would climb back after each session: the
+  // badge counts every other row (Health lists descriptions, with its fix, on demand).
+  assert.equal(healthCount(0, h), c.sources + c.types + c.index + c.drafts, "the rows but descriptions add up to the Health badge");
   assert.deepEqual(hygieneCounts(null), { sources: 0, labels: [], types: 0, descriptions: 0, index: 0, unindexed: 0, misfiled: 0, broken: 0, drafts: 0 });
 });
 
@@ -63,16 +65,17 @@ test("hygieneRows: one row per fix kind, in FIX_KINDS order, with its count, its
       noDescription: [P("projects", "x"), P("projects", "y")], unindexed: [P("reference", "r")], misfiled: [P("feedback", "m")],
       brokenIndex: [], leftoverDrafts: ["only-one"],
     },
-  }));
+  }), { wrapHint: "/wrap" });
   assert.deepEqual(rows.map((r) => r.kind), [...FIX_KINDS]);
   const by = Object.fromEntries(rows.map((r) => [r.kind, r]));
   assert.equal(by.sources.count, 33);
   assert.equal(by.sources.button, "Normalise 33…");
-  assert.match(by.sources.text, /^33 memories carry an old source label \(session, wrap\)/);
+  assert.equal(by.sources.text, "33 memories carry an old source label (session, wrap) where /wrap writes manual-wrap");
   assert.equal(by.types.button, "Fix 22…");
   assert.equal(by.types.text, "22 memories use an old type: shape");
   assert.equal(by.descriptions.button, "Copy from MEMORY.md…");
-  assert.equal(by.descriptions.text, "2 memories have no description: the list shows only titles");
+  // True of what the lists show: Library and memory_list read the MEMORY.md line's description when a memory has none.
+  assert.equal(by.descriptions.text, "2 memories keep their description only in MEMORY.md, none in their own frontmatter");
   assert.equal(by.index.count, 2);
   assert.equal(by.index.button, "Fix 2…", "a mix of findings: Fix");
   assert.equal(by.index.text, "1 memory is not in MEMORY.md; 1 line sits under the wrong heading");
@@ -82,17 +85,32 @@ test("hygieneRows: one row per fix kind, in FIX_KINDS order, with its count, its
 });
 
 test("hygieneRows: the index button names the one finding there is; zero rows have no button; no hub, no rows", () => {
-  const only = (h: Record<string, unknown>) => hygieneRows(hub({ hygiene: h })).find((r) => r.kind === "index")!;
+  const only = (h: Record<string, unknown>) => hygieneRows(hub({ hygiene: h }), { wrapHint: "/wrap" }).find((r) => r.kind === "index")!;
   assert.equal(only({ unindexed: [P("user", "a"), P("user", "b"), P("user", "c")] }).button, "Index 3…");
   assert.equal(only({ misfiled: [P("user", "a"), P("user", "b")] }).button, "Move 2…");
   assert.equal(only({ misfiled: [P("user", "a"), P("user", "b")] }).text, "2 lines sit under the wrong heading");
   assert.equal(only({ brokenIndex: [P("user", "gone")] }).button, "Remove 1…");
   assert.equal(only({ brokenIndex: [P("user", "gone")] }).text, "1 line points at a missing file");
-  assert.equal(hygieneRows(hub({ hygiene: { leftoverDrafts: ["a", "b"] } })).find((r) => r.kind === "drafts")!.button, "Remove 2…");
-  const clean = hygieneRows(hub({ hygiene: { sources: { "manual-wrap": 9, "auto-wrap": 4 } } }));
+  assert.equal(hygieneRows(hub({ hygiene: { leftoverDrafts: ["a", "b"] } }), { wrapHint: "/wrap" }).find((r) => r.kind === "drafts")!.button, "Remove 2…");
+  // A misfiled line of an archived memory is removed, not moved: the button says Fix, never Move.
+  const ms = memories([["user", "a", {}], ["projects", "old", { status: "archived" }]]);
+  const byPath = new Map(ms.map((m) => [m.path, m]));
+  const mixed = hygieneRows(hub({ hygiene: { misfiled: [P("user", "a"), P("projects", "old")] } }), { wrapHint: "/wrap", byPath }).find((r) => r.kind === "index")!;
+  assert.deepEqual([mixed.text, mixed.button], ["2 lines sit under the wrong heading", "Fix 2…"]);
+  const live = hygieneRows(hub({ hygiene: { misfiled: [P("user", "a")] } }), { wrapHint: "/wrap", byPath }).find((r) => r.kind === "index")!;
+  assert.equal(live.button, "Move 1…");
+  const clean = hygieneRows(hub({ hygiene: { sources: { "manual-wrap": 9, "auto-wrap": 4 } } }), { wrapHint: "/wrap" });
   assert.equal(clean.length, 5);
   for (const r of clean) { assert.equal(r.count, 0); assert.equal(r.button, null); assert.ok(r.text); }
-  assert.deepEqual(hygieneRows(null), []);
+  assert.deepEqual(hygieneRows(null, { wrapHint: "/wrap" }), []);
+});
+
+test("hygieneRows: the sources row names /wrap as this machine's hosts invoke it (aosConfig invocationHint)", () => {
+  const h = hub({ hygiene: { sources: { session: 1 } } });
+  const text = (wrapHint: string): string => hygieneRows(h, { wrapHint }).find((r) => r.kind === "sources")!.text;
+  assert.equal(text("$agenticos:wrap"), "1 memory carries an old source label (session) where $agenticos:wrap writes manual-wrap");
+  assert.doesNotMatch(text("$agenticos:wrap"), /\/wrap/, "a Codex-only vault never reads /wrap");
+  assert.equal(text("/wrap (Claude Code) or $agenticos:wrap (Codex)"), "1 memory carries an old source label (session) where /wrap (Claude Code) or $agenticos:wrap (Codex) writes manual-wrap");
 });
 
 test("the Hygiene card's subtitle promises a preview, never an undo (fixes are not undoable)", () => {
@@ -130,6 +148,13 @@ test("healthTiles: all clear reads ok with its words; no hub or no sources reads
   assert.deepEqual([clear.duplicates.tone, clear.duplicates.word, clear.duplicates.note], ["ok", "none found", "no clusters"]);
   assert.deepEqual([clear.unreviewed.tone, clear.unreviewed.word], ["ok", "all reviewed"]);
   assert.deepEqual([clear.brainmd.value, clear.brainmd.tone, clear.brainmd.word], ["47%", "ok", "within budget"]);
+  // From the raw numbers, as Bootstrap's bar: 847 of 850 rounds to 100% but is not over; with projects left out it is full.
+  const src = (tokens: number, omitted: string[]) => ({ builtAt: null, budget: 850, tokens, sections: { who: { paths: [], tokens: 0 }, rules: { paths: [], tokens: 0 }, active: { paths: [], tokens: 0 } }, omitted, links: 0, lastSession: 0 });
+  const tile = (tokens: number, omitted: string[] = []) => healthTiles(input({ memories: ms, sources: src(tokens, omitted) })).find((x) => x.key === "brainmd")!;
+  assert.deepEqual([tile(847, [P("projects", "a"), P("projects", "b")]).value, tile(847, [P("projects", "a"), P("projects", "b")]).tone, tile(847, [P("projects", "a"), P("projects", "b")]).word], ["100%", "warn", "full"]);
+  assert.deepEqual([tile(850).value, tile(850).tone, tile(850).word], ["100%", "ok", "within budget"]);
+  assert.deepEqual([tile(849).tone, tile(849).word], ["ok", "within budget"]);
+  assert.deepEqual([tile(851).tone, tile(851).word], ["warn", "over budget"]);
   assert.deepEqual([clear.broken.value, clear.broken.tone, clear.broken.word], ["0", "ok", "none broken"]);
   const none = Object.fromEntries(healthTiles(input({ memories: ms })).map((x) => [x.key, x]));
   for (const k of ["duplicates", "unused", "brainmd", "memorymd", "broken"]) {
@@ -328,7 +353,7 @@ test("fixChangeList caps what it shows and counts the rest: changes, and files n
   assert.ok(long.groups[0].lines[0].after!.endsWith("…"));
 });
 
-const R = (kind: FixResult["kind"], changes: FixChange[], o: Partial<FixResult> = {}): FixResult => ({ kind, dryRun: true, changes, files: changedFiles(changes).length, brainMd: null, ...o });
+const R = (kind: FixResult["kind"], changes: FixChange[], o: Partial<FixResult> = {}): FixResult => ({ kind, dryRun: true, changes, files: changedFiles(changes).length, brainMd: null, expect: null, ...o });
 
 test("fixDialog: the question, what it changes, its button, and that there is no undo", () => {
   const src = fixDialog("sources", R("sources", [CH(P("user", "a"), "source", "session", "manual-wrap"), CH(P("user", "b"), "source", "wrap", "manual-wrap")]));
@@ -340,10 +365,17 @@ test("fixDialog: the question, what it changes, its button, and that there is no
   assert.deepEqual([ty.confirm, ty.lede], ["Fix 1", "Sets type: memory, and the tags it needs, on 1 memory. Their name, description and body stay."]);
   assert.match(ty.note, /BRAIN\.md is rebuilt after\.$/);
   assert.equal(fixDialog("descriptions", R("descriptions", [CH(P("user", "a"), "description", null, "x")])).lede, "Gives 1 memory the description its MEMORY.md line already has.");
-  const ix = fixDialog("index", R("index", [CH(P("user", "a"), "index-add", null, "l"), CH(P("user", "b"), "index-add", null, "l"), CH(P("user", "c"), "index-move", "## A", "## B"), CH("MEMORY.md", "index-remove", "l", null)]));
-  assert.equal(ix.lede, "In MEMORY.md, adds 2 missing lines, moves 1 line under its own heading and removes 1 line to a missing file. The text of each line stays.");
+  const gone = (reason: FixChange["reason"]): FixChange => ({ ...CH("MEMORY.md", "index-remove", "l", null), ...(reason ? { reason } : {}) });
+  const ix = fixDialog("index", R("index", [CH(P("user", "a"), "index-add", null, "l"), CH(P("user", "b"), "index-add", null, "l"), CH(P("user", "c"), "index-move", "## A", "## B"), gone("missing")]));
+  assert.equal(ix.lede, "In MEMORY.md, adds 2 missing lines, moves 1 line under its own heading and removes 1 line to a missing file. A moved line keeps its text.");
   assert.equal(ix.confirm, "Fix MEMORY.md");
-  assert.equal(fixDialog("index", R("index", [CH(P("user", "a"), "index-add", null, "l")])).lede, "In MEMORY.md, adds 1 missing line. The text of each line stays.");
+  assert.equal(fixDialog("index", R("index", [CH(P("user", "a"), "index-add", null, "l")])).lede, "In MEMORY.md, adds 1 missing line.");
+  // Each removal by its reason: an archived memory's line is not "to a missing file", and a second copy says so.
+  const retired = fixDialog("index", R("index", [CH(P("user", "c"), "index-move", "Patterns", "Feedback"), gone("retired")]));
+  assert.equal(retired.lede, "In MEMORY.md, moves 1 line under its own heading and removes 1 line of archived or superseded memories. A moved line keeps its text.");
+  assert.doesNotMatch(retired.lede, /missing file/);
+  assert.equal(fixDialog("index", R("index", [gone("duplicate"), gone("duplicate")])).lede, "In MEMORY.md, removes 2 second copies of a memory's line.");
+  assert.equal(fixDialog("index", R("index", [gone(undefined)])).lede, "In MEMORY.md, removes 1 line.", "an older runtime's row names no reason: the lede claims none");
   const dr = fixDialog("drafts", R("drafts", [CH("brain/memory/feedback/_drafts/a.md", "draft-remove", "A", null)]));
   assert.deepEqual([dr.title, dr.confirm, dr.lede], ["Remove the leftover drafts?", "Remove 1", "Removes 1 draft file whose rule is already a live feedback memory."]);
   for (const k of FIX_KINDS) assert.doesNotMatch(fixDialog(k, R(k, [])).note, /undoable|can be undone/i);
@@ -362,6 +394,16 @@ test("fixDoneText names the files changed (three, then and N more) and a BRAIN.m
   assert.equal(fixBehindText("descriptions"), "Copy descriptions: nothing to fix. brain-hub.json was behind the files; rescanning in the background.");
   assert.equal(shortFile("MEMORY.md"), "MEMORY.md");
   assert.equal(Object.keys(FIX_LABEL).length, FIX_KINDS.length);
+});
+
+test("an index removal shows its reason beside its label in the change list", () => {
+  const l = fixChangeList([
+    { path: "MEMORY.md", action: "index-remove", before: "- [Old](brain/memory/projects/old.md) — x", after: null, reason: "retired" },
+    { path: "MEMORY.md", action: "index-remove", before: "- [Gone](brain/memory/user/gone.md) — y", after: null, reason: "missing" },
+    { path: "MEMORY.md", action: "index-remove", before: "- [A](brain/memory/user/a.md) — z", after: null, reason: "duplicate" },
+    { path: "MEMORY.md", action: "index-remove", before: "- [B](brain/memory/user/b.md) — w", after: null },
+  ], () => null);
+  assert.deepEqual(l.groups[0].lines.map((x) => x.label), ["remove line · archived or superseded", "remove line · missing file", "remove line · second copy", "remove line"]);
 });
 
 test("a fix result parsed by parseFixResult flows into the change list and the Notice", () => {

@@ -66,9 +66,10 @@ export function brainBullet(path: string, entries: ReadonlyMap<string, IndexEntr
 
 /**
  * brain-hub.js SHIPPED (brain-hub D17): a full x.y.z version, "shipped", "released" (not "release") or "superseded" in an
- * active project's title or index line; never "merged" (a merged PR is a step, not the end of a project).
+ * active project's title or index line; never "merged" (a merged PR is a step, not the end of a project). A version
+ * stands alone (no digit or dot before it, no `.digit` after it): an address such as 127.0.0.1 is not one.
  */
-export const SHIPPED = /\bv?\d+\.\d+\.\d+\b|\bshipped\b|\breleased\b|\bsuperseded\b/i;
+export const SHIPPED = /(?<![\d.])\bv?\d+\.\d+\.\d+\b(?!\.\d)|\bshipped\b|\breleased\b|\bsuperseded\b/i;
 
 /** What made a project look shipped (the version or the word, as written), or null. `description` is the memory's own,
  *  else its MEMORY.md line's (brain-hub.js). */
@@ -175,7 +176,7 @@ export function shippedLede(x: ShippedSummary): string | null {
   if (!n) return null;
   const head = `${n} of the ${pl(x.of, "active project")} ${n === 1 ? "looks" : "look"} shipped.`;
   if (x.inBrain) return `${head} Marking ${n === 1 ? "it" : "them"} complete frees about ${pl(x.tokens, "token")} of BRAIN.md for work that is live.`;
-  return `${head} ${n === 1 ? "It does" : "None of them does"} not fit in BRAIN.md now; marking ${n === 1 ? "it" : "them"} complete takes ${n === 1 ? "it" : "them"} off the active list.`;
+  return `${head} ${n === 1 ? "It does not fit" : "None of them fits"} in BRAIN.md now; marking ${n === 1 ? "it" : "them"} complete takes ${n === 1 ? "it" : "them"} off the active list.`;
 }
 
 /** The lede's button: it lands on the list (BrainTarget.anchor "shipped"). */
@@ -332,10 +333,13 @@ export function sessionCard(text: string | null): SessionCard | null {
   return { lines, tokens: estimateTokens(text), notWrapped, wrapHint };
 }
 
-/** The line under SESSION.md's lines: "Not wrapped yet · /wrap promotes the tagged lines" (canvas Bootstrap), or null. */
-export function wrapNote(c: SessionCard): { text: string; warn: boolean } | null {
+/**
+ * The line under SESSION.md's lines: "Not wrapped yet · /wrap promotes the tagged lines" (canvas Bootstrap), or null. It
+ * names the command the not-wrapped line names, else `wrapHint` (/wrap as this machine's hosts invoke it, BrainSettings).
+ */
+export function wrapNote(c: SessionCard, wrapHint: string): { text: string; warn: boolean } | null {
   const tagged = c.lines.some((l) => l.promote);
-  const how = c.wrapHint ?? "/wrap";
+  const how = c.wrapHint ?? wrapHint;
   if (c.notWrapped) return { text: tagged ? `Not wrapped yet · ${how} promotes the tagged lines` : `Not wrapped yet · run ${how}`, warn: true };
   return tagged ? { text: "The next wrap promotes the tagged lines", warn: false } : null;
 }

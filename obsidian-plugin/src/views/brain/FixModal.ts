@@ -1,8 +1,11 @@
 // A hygiene fix's preview (spec 2026-10-11-brain-hub D20, §6; plan PR 3): the dry run's changes grouped by the file they
 // write, each readable as before → after, at most FIX_SHOW of them and "and N more", then Cancel / the fix. It changes
 // nothing itself: it resolves to true on confirm, and Health then runs the real `aos memory fix <kind>`. Fixes are not
-// undoable, so it says so and Cancel takes the keyboard first. Styled like ConfirmModal (h3, p, .aos-capture-actions).
+// undoable, so it says so and Cancel takes the keyboard first. Styled like ConfirmModal (h3, p, .aos-capture-actions);
+// announced as an alertdialog named by its title and described by what it changes and the no-undo note (the Spaces
+// dialogs' pattern, SpaceDialogs.ts), so a screen reader hears them before the Cancel it lands on.
 import { Modal, type App } from "obsidian";
+import { dialogId } from "../../ui/spaces/SpaceDialogs";
 import { fixChangeList, fixDialog, fixMoreText, type FixLine } from "../../data/brainHealth";
 import type { FixKind, FixResult } from "../../data/brainModel";
 
@@ -38,8 +41,13 @@ export class FixModal extends Modal {
     contentEl.setAttr("data-fix", this.o.kind);
     const words = fixDialog(this.o.kind, this.o.result);
     const list = fixChangeList(this.o.result.changes, (p) => this.o.titleOf(p));
-    contentEl.createEl("h3", { text: words.title });
-    contentEl.createEl("p", { cls: "aos-brain-fixlede", text: words.lede });
+    const ids = { title: dialogId("fix-title"), lede: dialogId("fix-lede"), note: dialogId("fix-note") };
+    this.modalEl.setAttr("role", "alertdialog");
+    this.modalEl.setAttr("aria-modal", "true");
+    this.modalEl.setAttr("aria-labelledby", ids.title);
+    this.modalEl.setAttr("aria-describedby", `${ids.lede} ${ids.note}`);
+    contentEl.createEl("h3", { text: words.title, attr: { id: ids.title } });
+    contentEl.createEl("p", { cls: "aos-brain-fixlede", text: words.lede, attr: { id: ids.lede } });
     const count = `${list.changes} ${list.changes === 1 ? "change" : "changes"} in ${list.files} ${list.files === 1 ? "file" : "files"}`;
     contentEl.createEl("p", { cls: "aos-brain-fixcount aos-brain-mono", text: count });
     // Scrolls on its own; reachable by Tab so the keyboard can scroll a long list.
@@ -54,7 +62,7 @@ export class FixModal extends Modal {
     }
     const more = fixMoreText(list);
     if (more) box.createEl("p", { cls: "aos-brain-fixmore", text: more });
-    contentEl.createEl("p", { cls: "aos-brain-fixnote", text: words.note });
+    contentEl.createEl("p", { cls: "aos-brain-fixnote", text: words.note, attr: { id: ids.note } });
     const actions = contentEl.createDiv({ cls: "aos-capture-actions" });
     const cancel = actions.createEl("button", { cls: "aos-brain-fixcancel", text: "Cancel", attr: { type: "button" } });
     cancel.addEventListener("click", () => this.close());

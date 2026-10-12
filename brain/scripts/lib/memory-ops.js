@@ -110,7 +110,12 @@ function splitFm(text) {
 function joinFm(fm) { return fm.head + fm.lines.join('') + fm.tail; }
 
 function keyRe(key) { return new RegExp(`^${key}:[ \\t]*(.*?)[ \\t]*\\r?\\n?$`); }
-function unquote(v) { return v.replace(/^(["'])(.*)\1$/, '$2'); }
+/** A scalar's text: surrounding quotes stripped, and a single-quoted one's `''` read back as `'` (YAML's own escape). */
+function unquote(v) {
+  const q = /^(["'])(.*)\1$/.exec(v);
+  if (!q) return v;
+  return q[1] === "'" ? q[2].replace(/''/g, "'") : q[2];
+}
 
 // What YAML would not read back as the same plain string: a leading indicator or space, `: ` or ` #` inside, a trailing
 // colon or space, a boolean or null word, a bare number.
@@ -118,16 +123,15 @@ const YAML_PLAIN_UNSAFE = /^[-?:,[\]{}#&*!|>'"%@`\s]|\s$|:$|: | #|^(?:true|false
 
 /**
  * A one-line value as a frontmatter scalar that every reader here gets back unchanged (getKey, the HUD's brainModel
- * fmKey and sdk/lib/brain.js strip the surrounding quotes and unescape nothing) and that strict YAML (Obsidian's
- * Properties) parses as the same string: plain when it can be, else double-quoted when it holds no `"` or `\`, else
- * single-quoted when it holds no `'`; plain as the last resort. A description like "Rule: ask first" needs the quotes.
+ * fmKey and sdk/lib/brain.js strip the surrounding quotes and read a single-quoted `''` as `'`, nothing more) and that
+ * strict YAML (Obsidian's Properties) parses as the same string: plain when it can be, else double-quoted when it holds
+ * no `"` or `\`, else single-quoted with each `'` doubled. A description like "Rule: ask first" needs the quotes.
  */
 function yamlValue(v) {
   const s = String(v);
   if (!YAML_PLAIN_UNSAFE.test(s)) return s;
   if (!/["\\]/.test(s)) return `"${s}"`;
-  if (!s.includes("'")) return `'${s}'`;
-  return s;
+  return `'${s.replace(/'/g, "''")}'`;
 }
 
 /** A top-level key's value (quotes stripped), or null. */
@@ -154,6 +158,9 @@ function setKey(fm, key, value) {
 
 const TAGS_INLINE = /^tags:[ \t]*\[(.*)\][ \t]*(\r?\n)?$/;
 const STATUS_TAG = /^status\/([A-Za-z0-9_-]+)$/;
+// A block list's item: a dash at any indent, zero included (YAML allows `tags:\n- a`), then a space or the line's end.
+const BLOCK_ITEM = /^[ \t]*-(?:[ \t]|\r?\n?$)/;
+const BLOCK_ITEM_INDENT = /^([ \t]*)-(?:[ \t]|\r?\n?$)/;
 
 /** The `status/<x>` tag's x, inline `tags: [...]` or a block list; null when there is none. */
 function getStatus(lines) {
@@ -164,8 +171,8 @@ function getStatus(lines) {
       return null;
     }
     if (/^tags:[ \t]*\r?\n?$/.test(lines[i])) {
-      for (let j = i + 1; j < lines.length && /^[ \t]+-/.test(lines[j]); j++) {
-        const m = STATUS_TAG.exec(unquote(lines[j].replace(/^[ \t]+-[ \t]*/, '').trim()));
+      for (let j = i + 1; j < lines.length && BLOCK_ITEM.test(lines[j]); j++) {
+        const m = STATUS_TAG.exec(unquote(lines[j].replace(/^[ \t]*-[ \t]*/, '').trim()));
         if (m) return m[1];
       }
       return null;
@@ -188,14 +195,15 @@ function setStatus(fm, type, status) {
     }
     if (/^tags:[ \t]*\r?\n?$/.test(fm.lines[i])) {
       let j = i + 1;
-      for (; j < fm.lines.length && /^[ \t]+-/.test(fm.lines[j]); j++) {
-        if (STATUS_TAG.test(unquote(fm.lines[j].replace(/^[ \t]+-[ \t]*/, '').trim()))) {
-          fm.lines[j] = fm.lines[j].replace(/^([ \t]+-[ \t]*).*?(\r?\n)?$/, (_, lead, eol) => `${lead}${tag}${eol || ''}`);
+      for (; j < fm.lines.length && BLOCK_ITEM.test(fm.lines[j]); j++) {
+        if (STATUS_TAG.test(unquote(fm.lines[j].replace(/^[ \t]*-[ \t]*/, '').trim()))) {
+          fm.lines[j] = fm.lines[j].replace(/^([ \t]*-[ \t]*).*?(\r?\n)?$/, (_, lead, eol) => `${lead}${tag}${eol || ''}`);
           return;
         }
       }
-      const indent = (/^([ \t]+)-/.exec(fm.lines[i + 1] || '') || [])[1] || '  ';
-      fm.lines.splice(j, 0, `${indent}- ${tag}${fm.eol}`);
+      // The list's own indent, none included (`tags:\n- a`, as PyYAML writes it); two spaces for an empty list.
+      const first = BLOCK_ITEM_INDENT.exec(fm.lines[i + 1] || '');
+      fm.lines.splice(j, 0, `${first ? first[1] : '  '}- ${tag}${fm.eol}`);
       return;
     }
   }
@@ -474,5 +482,5 @@ module.exports = {
   checkPath, plainDir, readRegular, readMemory, splitFm, joinFm, getKey, getStatus, titleOf, firstParagraph, describe,
   indexEntry, keep, setFields, archive, restore, supersede, listMemories, listDrafts, sha256,
   // lib/memory-fix.js's building blocks (brain-hub plan PR 3): the same line edits, writes, index lock and trail.
-  MAX_DESC, CONTROL, STATUS_TAG, setKey, yamlValue, oneLine, indexLine, readIndex, editIndex, write, appendTrail, appendTrailRow,
+  MAX_DESC, CONTROL, STATUS_TAG, BLOCK_ITEM, setKey, yamlValue, oneLine, indexLine, readIndex, editIndex, write, appendTrail, appendTrailRow,
 };

@@ -201,6 +201,18 @@ test("packBubbles: deterministic, independent of input order, larger communities
   assert.ok(Math.hypot(c6.x, c6.y) <= Math.hypot(c7.x, c7.y) + 1e-6, "c6 (linked to c1) is no further from c1 than c7 (unlinked, placed after it)");
 });
 
+test("layoutBubbles stays quick with many communities (mapMin lowered): 35 with full-width captions in well under a frame budget", () => {
+  const many: BubbleIn[] = Array.from({ length: 35 }, (_, i) => ({ id: `c${i}`, n: 3 + ((i * 7) % 20), labelW: BUBBLE.labelMax }));
+  const links = many.slice(1).map((c, i) => ({ a: many[i].id, b: c.id, n: 1 + (i % 4) }));
+  layoutBubbles(many, links, 640, 480);
+  const t = performance.now();
+  const at = layoutBubbles(many, links, 640, 480);
+  const ms = performance.now() - t;
+  assert.equal(at.length, 35);
+  // The checks against every placed bubble used to take most of a second here; boxes and a grid make it tens of ms.
+  assert.ok(ms < 250, `layoutBubbles took ${ms.toFixed(0)} ms for 35 communities`);
+});
+
 test("layoutBubbles: fits a roomy and a tight canvas, centred, circles apart; the same input gives the same picture", () => {
   const roomy = layoutBubbles(ITEMS, [], 900, 600);
   assert.deepEqual(roomy, layoutBubbles(ITEMS, [], 900, 600));
@@ -250,6 +262,15 @@ test("aroundLayout: the first at the top, then clockwise; captions sit outward; 
   assert.ok(four[0].y < 200 && four[2].y > 200 && four[1].x > 300 && four[3].x < 300);
   for (const a of aroundLayout(12, 600, 400)) assert.ok(a.x >= 0 && a.x <= 600 && a.y >= 0 && a.y <= 400);
   assert.deepEqual(aroundLayout(12, 600, 400), aroundLayout(12, 600, 400));
+  // A narrow canvas (the Map's middle pane in a 960 px window): each name's room, as MapMode caps it (40 to 180), keeps
+  // its button inside the canvas, so a long title ends in an ellipsis rather than being cut at the edge.
+  for (const w of [386, 466, 512, 900]) {
+    for (const a of aroundLayout(12, w, 480)) {
+      const name = Math.max(40, Math.min(180, Math.floor(a.room)));
+      const [x0, x1] = a.side === "right" ? [a.x - 10, a.x + 16 + name] : a.side === "left" ? [a.x - 16 - name, a.x + 10] : [a.x - (name + 8) / 2, a.x + (name + 8) / 2];
+      assert.ok(x0 >= 0 && x1 <= w, `w ${w}: a ${a.side} node spans ${x0.toFixed(1)}…${x1.toFixed(1)}`);
+    }
+  }
   assert.equal(linkWidth(1), 1);
   assert.equal(linkWidth(2), 2);
   assert.equal(linkWidth(1000), 5);

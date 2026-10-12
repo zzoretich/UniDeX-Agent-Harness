@@ -41,6 +41,14 @@ function readJsonIfExists(p) {
 /** Flat `key: value` frontmatter. A `[a, b]` value and a block list (`tags:` then `  - a` lines, as YAML tools write
  *  it) both become arrays, so isRetired sees a `status/archived` in either shape (brain-hub D5, D7); a key with no value
  *  and no items stays ''. */
+/** A scalar's text: one pair of surrounding quotes stripped, and a single-quoted `''` read as `'` (YAML's own escape,
+ *  which memory-ops yamlValue writes); a stray quote at either end goes, as it always has. */
+function unquoteScalar(v) {
+  const q = /^(["'])(.*)\1$/.exec(v);
+  if (q) return q[1] === "'" ? q[2].replace(/''/g, "'") : q[2];
+  return v.replace(/^["']|["']$/g, '');
+}
+
 function parseFrontmatter(content) {
   if (!content || !content.startsWith('---')) return { frontmatter: {}, body: content || '' };
   const end = content.indexOf('\n---', 4);
@@ -52,7 +60,7 @@ function parseFrontmatter(content) {
     if (!line.trim()) continue;
     const item = listKey && line.match(/^\s*-\s+(.*)$/);
     if (item) {
-      const v = item[1].trim().replace(/^["']|["']$/g, '');
+      const v = unquoteScalar(item[1].trim());
       if (!Array.isArray(fm[listKey])) fm[listKey] = [];
       if (v) fm[listKey].push(v);
       continue;
@@ -63,9 +71,9 @@ function parseFrontmatter(content) {
     let val = m[2].trim();
     if (!val) listKey = m[1];
     if (val.startsWith('[') && val.endsWith(']')) {
-      val = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+      val = val.slice(1, -1).split(',').map(s => unquoteScalar(s.trim())).filter(Boolean);
     } else {
-      val = val.replace(/^["']|["']$/g, '');
+      val = unquoteScalar(val);
     }
     fm[m[1]] = val;
   }

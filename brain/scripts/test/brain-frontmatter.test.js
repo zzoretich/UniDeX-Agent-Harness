@@ -33,3 +33,8 @@ test('isRetired sees a block-list archived or superseded status, and not a live 
   assert.equal(isRetired(fm('status/active')), false);
   assert.equal(isRetired(parseFrontmatter('---\ntags:\n---\n').frontmatter), false);
 });
+
+test('a single-quoted value reads its doubled \'\' back as one \' (memory-ops yamlValue writes it); a stray quote goes as before', () => {
+  const { frontmatter } = parseFrontmatter(`---\ndescription: 'it''s "x": y'\ntags: ['a''b', "c"]\nlist:\n  - 'd''e'\nodd: "half\n---\n`);
+  assert.deepEqual(frontmatter, { description: 'it\'s "x": y', tags: ["a'b", 'c'], list: ["d'e"], odd: 'half' });
+});

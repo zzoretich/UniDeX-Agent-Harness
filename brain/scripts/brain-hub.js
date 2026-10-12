@@ -20,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const ops = require('./lib/memory-ops.js');
-const { readIndexLines, findHygiene } = require('./lib/memory-hygiene.js');
+const { readIndexLines, linkedPaths, findHygiene } = require('./lib/memory-hygiene.js');
 const usage = require('./lib/memory-usage.js');
 const fsx = require('./lib/fsx.js');
 const brainMap = require('./lib/brain-map.js');
@@ -35,8 +35,10 @@ const MAX_DUPS = 200;
 const STOP = new Set(('a an and are as at be but by for from has have i in is it its of on or that the this to was were will with ' +
   'you your we our not no so if then than when what which who how all any can do does did also more after before into via').split(' '));
 // "Looks shipped" (D17): a full x.y.z version, "shipped", "released" (not "release") or "superseded"; never "merged",
-// which every project in flight says of its PRs.
-const SHIPPED = /\bv?\d+\.\d+\.\d+\b|\bshipped\b|\breleased\b|\bsuperseded\b/i;
+// which every project in flight says of its PRs. A version stands alone: no digit or dot before it, no `.digit` after
+// it, so an address (127.0.0.1) is not one, while "Tagged v1.2.0." at a sentence's end is. brainBootstrap.ts's SHIPPED
+// is its twin.
+const SHIPPED = /(?<![\d.])\bv?\d+\.\d+\.\d+\b(?!\.\d)|\bshipped\b|\breleased\b|\bsuperseded\b/i;
 
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 function readText(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } }
@@ -303,8 +305,10 @@ function buildBrainHub({ vault, cfg = {}, now = Date.now(), write = true, buildM
   });
   const clusters = findClusters(near, byPath, c.clusterMin);
 
-  // Computed by lib/memory-hygiene.js, as `aos memory fix` finds them, so the hub and the fix agree (brain-hub D20).
-  const hygiene = findHygiene({ live, byPath, indexLines, drafts });
+  // Computed by lib/memory-hygiene.js, as `aos memory fix` finds them, so the hub and the fix agree (brain-hub D20): a
+  // bullet that links a memory some other way is its line, and a line to a link or a file too big to read is not broken.
+  const exists = (rel) => { try { fs.lstatSync(path.join(vault, rel)); return true; } catch { return false; } };
+  const hygiene = findHygiene({ live, byPath, indexLines, drafts, linked: linkedPaths(indexRaw), exists });
 
   const shipped = [];
   for (const m of live) {

@@ -7,7 +7,7 @@ import { Notice, TAbstractFile } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import type { RevealTarget, WorkbenchView } from "./WorkbenchView";
 import {
-  MEMORY_PATH_RE, RECALL_CLI, brainMdPercent, brainVerbResult, chunks, headerStats, healthCount, isBrainMode,
+  BRAIN_OFF_TEXT, BUILD_BRAIN_MD, MEMORY_PATH_RE, RECALL_CLI, brainMdPercent, brainVerbResult, chunks, headerStats, healthCount, isBrainMode,
   isReviewQueue, memoryArgs, modeBadges, parseRecallHits, recallArgs, recallQuery, touchesBrain, type BrainMode, type BrainTarget,
   type BrainVerbResult, type MemoryVerb,
 } from "../data/brainModel";
@@ -22,6 +22,7 @@ import { MapMode } from "./brain/MapMode";
 import { BootstrapMode } from "./brain/BootstrapMode";
 import { HealthMode } from "./brain/HealthMode";
 import { brainSettings } from "./brain/load";
+import { readAgenticosJson } from "../data/aosConfig";
 import type { BrainCtx, BrainData, BrainModeView, RecallPreview } from "./brain/types";
 import * as path from "path";
 
@@ -50,7 +51,7 @@ export class BrainTab {
   private ctx: BrainCtx;
 
   constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {
-    this.store = new BrainStore(plugin.app, () => brainSettings(plugin.systemConfig()));
+    this.store = new BrainStore(plugin.app, () => brainSettings(plugin.systemConfig(), readAgenticosJson(plugin.claudeConfigDir())));
     this.ctx = {
       plugin, view,
       data: () => this.data!,
@@ -59,6 +60,7 @@ export class BrainTab {
       preview: (v, label) => this.preview(v, label),
       recall: (text) => this.recall(text),
       rescan: () => this.rebuildHub(),
+      brainMd: () => this.brainMd(),
       runAll: (verb, paths, label) => this.runAll(verb, paths, label),
       refresh: () => this.schedule(0),
       show: (t) => this.show(t),
@@ -137,7 +139,7 @@ export class BrainTab {
     const m = t.mode ?? this.mode;
     if (m !== "review") this.leaveReview();
     this.mode = m;
-    this.pending = t.queue || t.memory || t.use || t.anchor ? t : null;
+    this.pending = t.queue || t.memory || t.use || t.anchor || t.pair ? t : null;
     this.render();
   }
 
@@ -252,6 +254,17 @@ export class BrainTab {
       return { ok: false, reason: (line ?? `recall exited ${r.code}`).replace(/^recall: /, "") };
     }
     return { ok: true, query: recallQuery(text), hits: parseRecallHits(r.json) };
+  }
+
+  /** build-brain-md.js through the brain surface, waited for (Bootstrap's bulk Mark complete rebuilds BRAIN.md once). */
+  private async brainMd(): Promise<{ ok: boolean; error?: string }> {
+    const r = await this.plugin.scriptJson<unknown>(BUILD_BRAIN_MD, []);
+    this.schedule(0);
+    if (r.error && /\brefused\b/.test(r.error)) return { ok: false, error: BRAIN_OFF_TEXT };
+    if (r.timedOut) return { ok: false, error: "build-brain-md did not answer in time" };
+    if (r.error) return { ok: false, error: r.error };
+    if (r.code !== 0) return { ok: false, error: String(r.stderr ?? "").split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? `exit ${r.code}` };
+    return { ok: true };
   }
 
   private async runAll(verb: "keep" | "archive" | "restore", paths: readonly string[], label: string): Promise<{ done: number; failed: string | null }> {

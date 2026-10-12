@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { SURFACES, SURFACE_IDS, WritePolicy, globToRegExp, parseSurfaces } from "../../src/main/policy/write-policy";
 import { workspaceArgs } from "../../../obsidian-plugin/src/data/spacesModel";
+import { memoryArgs, recallArgs } from "../../../obsidian-plugin/src/data/brainModel";
 
 const VAULT = "/vaults/demo";
 const v = (rel: string) => `${VAULT}/${rel}`;
@@ -283,6 +284,11 @@ test("Brain's recall preview: one query that is never a flag, --limit with one o
     rc("a", "b", "--limit", "8", "--json"), rc("q", "--json", "--limit", "8"),
   ];
   for (const a of no) assert.equal(all.canSpawn(NODE, a), false, `never: ${JSON.stringify(a.slice(1))}`);
+  // Whatever is typed, the HUD's builder hands the rule an argv it admits: a leading run of dashes and spaces, however
+  // mixed, never reaches it (so the page never blames the surface for a pasted bullet).
+  for (const typed of ["- - release notes", "-- --warm", "- -x", "-\t-x", "  --warm  now ", "- what is due?", "a - b"]) {
+    assert.equal(brain.canSpawn(NODE, rc(...recallArgs(typed))), true, JSON.stringify(typed));
+  }
 });
 
 test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per call, set compare-and-set, --json last (brain-hub D13, D14)", () => {
@@ -298,14 +304,21 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     mem("set", A, "--set", '{"status":"complete"}', "--expect", "0123456789abcdef", "--json"),
     mem("set", A, "--set", '{"pin":false}', "--expect", "a".repeat(64), "--dry-run", "--json"),
     mem("supersede", A, "--by", B, "--json"), mem("draft", "approve", "ack-failures.v2", "--json"), mem("notdup", A, B, "--json"),
-    // PR 3: Health's fixes, each kind with and without its dry run (D20).
-    ...["sources", "types", "descriptions", "index", "drafts"].flatMap((k) => [mem("fix", k, "--dry-run", "--json"), mem("fix", k, "--json")]),
+    // PR 3: Health's fixes, each kind with and without its dry run (D20), and the real run pinned to the dry run's hash.
+    ...["sources", "types", "descriptions", "index", "drafts"].flatMap((k) => [mem("fix", k, "--dry-run", "--json"), mem("fix", k, "--json"), mem("fix", k, "--expect", "0123456789abcdef0123456789abcdef", "--json")]),
+    // Bootstrap's bulk Mark complete: each set skips its BRAIN.md rebuild, then build-brain-md runs once.
+    mem("set", A, "--set", '{"status":"complete"}', "--expect", "a".repeat(64), "--skip-brain-md", "--json"),
   ];
   for (const a of ok) {
     assert.equal(brain.canSpawn(NODE, a), true, a.join(" "));
     assert.equal(others.canSpawn(NODE, a), false, `only Brain: ${a.join(" ")}`);
   }
+  // The page's own builder (brainModel memoryArgs) for the fix it confirms and the bulk set: the surface admits both.
+  assert.equal(brain.canSpawn(NODE, [`${S}/cli/aos.js`, ...memoryArgs({ verb: "fix", kind: "index", dryRun: false, expect: "f".repeat(32) })]), true);
+  assert.equal(brain.canSpawn(NODE, [`${S}/cli/aos.js`, ...memoryArgs({ verb: "set", path: A, fields: { status: "complete" }, expect: "a".repeat(64), skipBrainMd: true })]), true);
   assert.equal(brain.canSpawn(NODE, [`${S}/brain-hub.js`]), true);
+  assert.equal(brain.canSpawn(NODE, [`${S}/build-brain-md.js`]), true);
+  assert.equal(brain.canSpawn(NODE, [`${S}/build-brain-md.js`, "--json"]), false);
   const no = [
     mem("keep", "--json"), mem("keep", A), mem("keep", A, "--json", B), mem("keep", "--json", A),
     mem("keep", ...Array.from({ length: 51 }, (_, i) => `brain/memory/reference/r${i}.md`), "--json"),
@@ -322,6 +335,12 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     // A fix: only the five kinds, --dry-run before --json, nothing after it, no second kind.
     mem("fix", "index"), mem("fix", "all", "--json"), mem("fix", "--json"), mem("fix", "index", "--json", "--dry-run"),
     mem("fix", "index", "sources", "--json"), mem("fix", "Index", "--json"), mem("fix", "index", "--dry-run"),
+    // --expect: only a dry run's 32 hex characters, never beside --dry-run, before --json.
+    mem("fix", "index", "--expect", "none", "--json"), mem("fix", "index", "--expect", "abc", "--json"), mem("fix", "index", "--expect", "A".repeat(32), "--json"),
+    mem("fix", "index", "--dry-run", "--expect", "0".repeat(32), "--json"), mem("fix", "index", "--expect", "0".repeat(32)),
+    mem("fix", "index", "--json", "--expect", "0".repeat(32)),
+    // --skip-brain-md: set's only, after its --expect.
+    mem("keep", A, "--skip-brain-md", "--json"), mem("set", A, "--skip-brain-md", "--set", '{"pin":true}', "--expect", "none", "--json"),
   ];
   for (const a of no) assert.equal(all.canSpawn(NODE, a), false, `never: ${a.join(" ")}`);
   assert.equal(all.canSpawn(NODE, [`${S}/brain-hub.js`, "--dry-run"]), false);

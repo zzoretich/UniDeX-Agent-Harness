@@ -115,9 +115,10 @@ export class LibraryContext {
     const d = this.ctx.data();
     const s = this.section("USE · LAST 30 DAYS", "use");
     const on = this.telemetryOn();
-    if (!on) s.createEl("p", { cls: "aos-lib-cnote", text: "Telemetry is off in this vault, so no use is logged (Settings, telemetry.enabled)." });
+    // Off: the reason, and no counts from a log written before it was turned off (spec §5.6, as Health and Map).
+    if (!on) { s.createEl("p", { cls: "aos-lib-cnote", text: "Telemetry is off in this vault, so no use is logged (Settings, telemetry.enabled)." }); return; }
     if (!hasUsage(d.hub)) {
-      if (on) s.createEl("p", { cls: "aos-lib-cnote", text: "No usage yet: the log starts with the next session." });
+      s.createEl("p", { cls: "aos-lib-cnote", text: "No usage yet: the log starts with the next session." });
       return;
     }
     const u: HubUsageRow = d.hub!.usage.paths[path] ?? { d7: 0, d30: 0, last: null, injected: 0, recalled: 0, read: 0, claude: 0, codex: 0 };

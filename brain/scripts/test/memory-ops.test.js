@@ -128,6 +128,19 @@ test('CRLF files, block-list tags and unknown keys keep every other byte', () =>
   assert.ok(t.endsWith('# Old style\r\n\r\nBody.\r\n'));
 });
 
+test('a zero-indent block list (tags:\\n- a, as PyYAML writes it) reads its status and is edited at its own indent', () => {
+  const v = fixture();
+  const REF = 'brain/memory/reference/flush.md';
+  put(v, REF, '---\ntype: memory\ntags:\n- memory/reference\n- status/active\nreviewed: false\n---\n\n# Flush\n\nBody.\n');
+  assert.equal(ops.describe(ops.readMemory(v, REF)).status, 'active');
+  ops.archive(v, [REF]);
+  assert.match(read(v, REF), /^tags:\n- memory\/reference\n- status\/archived\nreviewed: false\n/m);
+  assert.equal(ops.describe(ops.readMemory(v, REF)).live, false);
+  const GONE = 'brain/memory/reference/flush-archived.md';
+  put(v, GONE, '---\ntype: memory\ntags:\n- memory/reference\n- status/archived\n---\n\n# Flush archived\n\nBody.\n');
+  assert.equal(ops.describe(ops.readMemory(v, GONE)).live, false, 'an archived zero-indent memory is not live');
+});
+
 test('a symlinked memory, a symlinked type folder and a linked MEMORY.md are refused, never written through', () => {
   const v = fixture();
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mops-out-'));
@@ -206,6 +219,17 @@ test('yamlValue quotes a description only when YAML would read it otherwise, and
     assert.equal(ops.yamlValue(text), want, text);
     assert.equal(ops.getKey([`description: ${ops.yamlValue(text)}\n`], 'description'), text, `reads back: ${text}`);
   }
-  // Both quote kinds and something YAML needs quoted: plain, as before (no reader here unescapes).
-  assert.equal(ops.yamlValue(`it's "x": y`), `it's "x": y`);
+  // Both quote kinds and something YAML needs quoted: single-quoted with `'` doubled, YAML's own escape, which every
+  // reader here reads back (memory-ops unquote, the HUD's fmKey, sdk/lib/brain.js) and strict YAML parses as the text.
+  const both = [`it's "x": y`, 'Don\'t say "done": verify first', 'Use "x" not \'y\' # always', `[a, 'b', "c"]`];
+  for (const text of both) {
+    const v = ops.yamlValue(text);
+    assert.equal(v, `'${text.replace(/'/g, "''")}'`, text);
+    assert.equal(ops.getKey([`description: ${v}\n`], 'description'), text, `reads back: ${text}`);
+    assert.equal(require('../sdk/lib/brain.js').parseFrontmatter(`---\ndescription: ${v}\n---\n`).frontmatter.description, text, `sdk reads back: ${text}`);
+    let strict = null;
+    try { strict = require('js-yaml'); } catch { /* the lint tooling brings it; the checks above stand alone */ }
+    if (strict) assert.equal(strict.load(`description: ${v}`).description, text, `strict YAML: ${text}`);
+  }
+  assert.equal(ops.yamlValue(`it's "x": y`), `'it''s "x": y'`);
 });

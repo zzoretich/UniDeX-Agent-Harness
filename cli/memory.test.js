@@ -75,6 +75,17 @@ test('keep, set with --expect, archive, restore and supersede, each with its JSO
   assert.deepEqual(sb.scripts.map((s) => s[0]), ['build-brain-md.js', 'build-brain-md.js', 'build-brain-md.js', 'build-brain-md.js'], 'every status or pin change rebuilds BRAIN.md; keep does not');
 });
 
+test('set --skip-brain-md writes the file and leaves the BRAIN.md rebuild to the caller (Bootstrap\'s bulk Mark complete)', async () => {
+  const sb = sandbox();
+  const hash = (await json(sb, ['list'])).memories.find((m) => m.path === PR).hash;
+  const out = await json(sb, ['set', PR, '--set', '{"status":"complete"}', '--expect', hash, '--skip-brain-md']);
+  assert.equal(out.written, true);
+  assert.equal(out.brainMd, null);
+  assert.match(read(sb, PR), /status\/complete/);
+  assert.deepEqual(sb.scripts, [], 'no rebuild');
+  await assert.rejects(M.main(['keep', PR, '--skip-brain-md'], sb.opts), /--skip-brain-md is not one of its flags/);
+});
+
 test('set --dry-run prints the text it would write and writes nothing', async () => {
   const sb = sandbox();
   const out = await json(sb, ['set', PR, '--set', '{"status":"complete"}', '--dry-run']);
@@ -155,9 +166,12 @@ test('fix: a dry run prints the changes and writes nothing; the real run makes t
   sb.put(LEGACY, LEGACY_TEXT);
   sb.put('brain/memory/user/old-shape.md', '---\nname: old-shape\ndescription: a host auto-memory\n---\n\n# Old shape\n\nBody.\n');
   const change = { path: LEGACY, action: 'source', before: 'session', after: 'manual-wrap' };
-  assert.deepEqual(await json(sb, ['fix', 'sources', '--dry-run']), { kind: 'sources', dryRun: true, changes: [change], files: 1, brainMd: null });
+  const { changesHash } = require('../brain/scripts/lib/memory-fix.js');
+  const expect = changesHash([change]);
+  assert.deepEqual(await json(sb, ['fix', 'sources', '--dry-run']), { kind: 'sources', dryRun: true, changes: [change], files: 1, expect, brainMd: null });
   assert.equal(read(sb, LEGACY), LEGACY_TEXT);
-  assert.deepEqual(await json(sb, ['fix', 'sources']), { kind: 'sources', dryRun: false, changes: [change], files: 1, brainMd: null });
+  // The page passes the dry run's hash back: the real run makes exactly those changes.
+  assert.deepEqual(await json(sb, ['fix', 'sources', '--expect', expect]), { kind: 'sources', dryRun: false, changes: [change], files: 1, expect, brainMd: null });
   assert.match(read(sb, LEGACY), /^source: manual-wrap$/m);
   assert.deepEqual(sb.scripts, [], 'a sources fix leaves BRAIN.md alone');
 
@@ -167,7 +181,7 @@ test('fix: a dry run prints the changes and writes nothing; the real run makes t
   assert.equal(types.files, 1);
   assert.deepEqual(types.brainMd, { ok: true });
   assert.deepEqual(sb.scripts, [['build-brain-md.js']]);
-  assert.deepEqual(await json(sb, ['fix', 'types']), { kind: 'types', dryRun: false, changes: [], files: 0, brainMd: null }, 'nothing left: no rebuild');
+  assert.deepEqual(await json(sb, ['fix', 'types']), { kind: 'types', dryRun: false, changes: [], files: 0, expect: changesHash([]), brainMd: null }, 'nothing left: no rebuild');
 
   const index = await json(sb, ['fix', 'index']);
   assert.deepEqual(index.changes.map((c) => [c.path, c.action]), [['brain/memory/user/old-shape.md', 'index-add'], [LEGACY, 'index-add']]);
@@ -194,6 +208,8 @@ test('fix: argument rules (one kind of five, its flags only); --dry-run elsewher
   await assert.rejects(M.main(['fix', 'sources', 'types'], sb.opts), /too many arguments/);
   await assert.rejects(M.main(['fix', 'sources', '--by', PR], sb.opts), M.UsageError);
   await assert.rejects(M.main(['fix', 'sources', '--expect', 'none'], sb.opts), M.UsageError);
+  await assert.rejects(M.main(['fix', 'sources', '--expect', 'abc'], sb.opts), /--expect takes the hash a dry run prints/);
+  await assert.rejects(M.main(['fix', 'sources', '--skip-brain-md'], sb.opts), M.UsageError);
   await assert.rejects(M.main(['keep', FB, '--dry-run'], sb.opts), /--dry-run is only supported by `aos memory set` and `aos memory fix`/);
 });
 
@@ -204,8 +220,16 @@ test('the aos command routes `memory fix` with --dry-run: exit 0 with JSON, 2 fo
   const run = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'cli', 'aos.js'), 'memory', ...a], { env, encoding: 'utf8' });
   const dry = run('fix', 'sources', '--dry-run', '--json');
   assert.equal(dry.status, 0, dry.stderr);
-  assert.deepEqual(Object.keys(JSON.parse(dry.stdout)), ['kind', 'dryRun', 'changes', 'files', 'brainMd']);
+  assert.deepEqual(Object.keys(JSON.parse(dry.stdout)), ['kind', 'dryRun', 'changes', 'files', 'expect', 'brainMd']);
   assert.equal(read(sb, LEGACY), LEGACY_TEXT);
+  // A stale --expect (the files changed since the preview) refuses, exit 1, and writes nothing.
+  const stale = run('fix', 'sources', '--expect', '0'.repeat(32), '--json');
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /^aos: the files changed since it was read/);
+  assert.equal(read(sb, LEGACY), LEGACY_TEXT);
+  const pinned = run('fix', 'sources', '--expect', JSON.parse(dry.stdout).expect, '--json');
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.match(read(sb, LEGACY), /^source: manual-wrap$/m);
   const bad = run('fix', 'everything', '--json');
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /unknown kind/);

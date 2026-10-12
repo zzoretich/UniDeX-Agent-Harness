@@ -116,3 +116,50 @@ test('the recall preview on a vault without an index builds recall-index.json an
   assert.deepEqual(vaultFiles(v), [...before, 'brain/_index/recall-index.json', 'brain/_index/recall-wake.md'].sort());
   assert.equal(fs.statSync(path.join(v, 'brain', '_index', 'recall-index.json')).mtimeMs, mtime);
 });
+
+// With an embed index the preview embeds the query, and only through the local Ollama (ollamaEmbedder): it never resolves
+// the provider, so it writes no provider-state.json and never runs a headless login probe (no provider-spend.jsonl), and
+// when Ollama does not answer the hits are BM25's (SECURITY.md's row for the preview).
+test('the recall preview with an embed index and Ollama down writes nothing and probes no provider', () => {
+  const v = vault();
+  fs.writeFileSync(path.join(v, 'brain', 'config.json'), JSON.stringify({ provider: 'auto', ollama: { host: '127.0.0.1', port: 1 } }));
+  assert.equal(run(v, ['--warm']).status, 0);
+  fs.writeFileSync(path.join(v, 'brain', '_index', 'embed-index.json'),
+    JSON.stringify({ dims: 2, chunks: [{ path: 'brain/memory/reference/zebra-deploy.md', vec: [1, 0] }] }));
+  const before = vaultFiles(v);
+  // No claude or codex binary reachable either way: a regression would fail on the state file, never spend.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-cli-home-'));
+  const r = spawnSync(process.execPath, [CLI, ...PREVIEW], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home, PATH: path.dirname(process.execPath), AOS_VAULT: v, AOS_CONFIG: path.join(os.tmpdir(), 'no-such-agenticos.json') },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout)[0].path, 'brain/memory/reference/zebra-deploy.md', 'BM25 hits');
+  assert.deepEqual(vaultFiles(v), before, 'no provider-state.json, no provider-spend.jsonl, nothing else');
+});
+
+test('ollamaEmbedder: Ollama\'s /api/embed only under auto or ollama; every other provider mode refuses (BM25)', async () => {
+  const http = require('http');
+  const { ollamaEmbedder } = require('../sdk/recall-cli.js');
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => { seen.push([req.url, JSON.parse(body).input]); res.end(JSON.stringify({ embeddings: [[3, 4]] })); });
+  });
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+  const { port } = server.address();
+  try {
+    for (const provider of ['auto', 'ollama', undefined]) {
+      const vec = await ollamaEmbedder({ provider, ollama: { host: '127.0.0.1', port } })(['zebra'], { timeoutMs: 2000 });
+      assert.deepEqual(vec, [[0.6, 0.8]], String(provider));
+    }
+    assert.deepEqual(seen, [['/api/embed', ['zebra']], ['/api/embed', ['zebra']], ['/api/embed', ['zebra']]]);
+    for (const provider of ['claude', 'codex', 'none']) {
+      await assert.rejects(ollamaEmbedder({ provider, ollama: { host: '127.0.0.1', port } })(['zebra']), /has no embeddings/, provider);
+    }
+    assert.equal(seen.length, 3, 'a refused mode never calls Ollama');
+  } finally {
+    server.close();
+  }
+});

@@ -123,6 +123,11 @@ export class ReviewMode implements BrainModeView {
 
   reveal(t: BrainTarget): void {
     if (t.queue) this.setQueue(t.queue);
+    // Health's Compare names its pair: that one is selected (resolve keeps it while it is still listed, else the first).
+    if (t.pair) {
+      this.setQueue("duplicates");
+      this.sel.duplicates = { key: pk(t.pair.a, t.pair.b), index: 0 };
+    }
     if (t.memory) {
       const v = this.view(this.ctx.data());
       const b = v.batches.find((x) => x.paths.includes(t.memory!));

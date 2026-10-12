@@ -4,9 +4,10 @@
 // looks-shipped flag, the projects the budget left out behind "Show them"), Quick links and Last Session (its tokens only:
 // the Stop hook writes it). The side pane previews recall on typed text (D18), lists SESSION.md's lines to remember and
 // sizes MEMORY.md. Every change is `aos memory set --expect <the hash this page read>` through ctx.run (D13, D14), which
-// rebuilds BRAIN.md. "Looks shipped" is a suggestion only (D17): nothing is marked complete without a click, and the bulk
-// one asks first (spec §6) and stops at the first refusal. A row leaves as soon as its verb starts and comes back if the
-// verb fails.
+// rebuilds BRAIN.md (the bulk one rebuilds it once, after its last set: ctx.brainMd). "Looks shipped" is a suggestion
+// only (D17): nothing is marked complete without a click, and the bulk one asks first (spec §6) and stops at the first
+// refusal. A row stays, its button busy, until its verb answers, then leaves (or stays, when the verb failed); a row
+// button ignores the second click of a double-click and a held key's repeats, so no click lands on the row below.
 import { Notice, setIcon } from "obsidian";
 import {
   activeHeader, bootstrapSections, budgetBars, completeAllLabel, completeConfirm, eachUntilFailure, indexCard, recallRows,
@@ -16,6 +17,7 @@ import {
 import {
   BRAIN_MODE_LABEL, SESSION_MD_PATH, clip, recallQuery, type BrainMemory, type BrainTarget, type RecallHit, type SetResult,
 } from "../../data/brainModel";
+import { guardClicks } from "./guardClicks";
 import type { BrainCtx, BrainData, BrainModeView, RecallPreview } from "./types";
 
 const pl = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
@@ -44,7 +46,7 @@ export class BootstrapMode implements BrainModeView {
   private filter: "all" | "shipped" = "all";
   /** "Show them": the projects BRAIN.md's budget left out. */
   private leftOutOpen = false;
-  /** `<section>:<path>` whose verb runs (hidden at once), and those whose verb went through (until the files say so). */
+  /** `<section>:<path>` whose verb runs (shown busy), and those whose verb went through (hidden until the files say so). */
   private busy = new Set<string>();
   private gone = new Map<string, number>();
   /** The hash `set` answered while the load still holds the one before it (a pinned project unpinned, then completed). */
@@ -104,7 +106,7 @@ export class BootstrapMode implements BrainModeView {
 
   // ── state ──
 
-  private hidden(key: string): boolean { return this.busy.has(key) || this.gone.has(key); }
+  private hidden(key: string): boolean { return this.gone.has(key); }
 
   private sections(d: BrainData): BootstrapSections | null {
     return bootstrapSections(d, (p, sec) => !this.hidden(`${sec}:${p}`));
@@ -119,7 +121,9 @@ export class BootstrapMode implements BrainModeView {
       const still = !!m && m.live && (k.slice(0, cut) === "rules" ? m.pin : m.type === "projects" && m.status === "active");
       if (!still || now - at > GONE_MS) this.gone.delete(k);
     }
-    for (const [p, h] of this.hashes) if (d.byPath.get(p)?.hash !== h.was) this.hashes.delete(p);
+    // Kept while the load still holds the hash before `set` or the one it answered: a hash read before the change (the
+    // bulk's, saved when its button was pressed) still maps to the newest. Anything else is a change made elsewhere.
+    for (const [p, h] of this.hashes) { const cur = d.byPath.get(p)?.hash; if (cur !== h.was && cur !== h.now) this.hashes.delete(p); }
   }
 
   /** A row the files still list after GONE_MS (a verb that went through but whose reload never came) shows again then. */
@@ -247,12 +251,15 @@ export class BootstrapMode implements BrainModeView {
     // Colour for the state, with its words (D23): the flag says what made it look shipped.
     if (r.shipped) el.createSpan({ cls: "aos-brain-pill is-warn aos-brain-bs-flag", text: `looks shipped · ${r.shipped.toLowerCase()}`, attr: { title: `Its title or index line says “${r.shipped}”. A suggestion only.` } });
     if (!act) return;
+    // Its verb runs: the row stays and its button reads busy (aria-disabled keeps the keyboard on it; clicks do nothing).
+    const busy = this.busy.has(`${section}:${r.path}`);
+    const text = busy ? (act.act === "unpin" ? "Unpinning…" : act.act === "complete" ? "Marking…" : act.label) : act.label;
     const b = el.createEl("button", {
-      cls: "aos-brain-btn is-small aos-brain-bs-act", text: act.label,
-      attr: { type: "button", "data-act": act.act, "data-bs-key": `${section}:${act.act}:${r.path}`, "aria-label": `${act.label}: ${r.title}` },
+      cls: `aos-brain-btn is-small aos-brain-bs-act${busy ? " is-busy" : ""}`, text,
+      attr: { type: "button", "data-act": act.act, "data-bs-key": `${section}:${act.act}:${r.path}`, "aria-label": `${act.label}: ${r.title}`, ...(busy ? { "aria-disabled": "true", "aria-busy": "true" } : {}) },
     });
     b.disabled = this.bulk;
-    b.addEventListener("click", act.run);
+    guardClicks(b, () => { if (b.getAttribute("aria-disabled") !== "true") act.run(); });
   }
 
   private whoSection(M: HTMLElement, s: BootstrapSections): void {
@@ -333,11 +340,12 @@ export class BootstrapMode implements BrainModeView {
 
   // ── actions ──
 
-  /** `set` with the newest hash this page knows (D17); says so when BRAIN.md was not rebuilt after it. */
-  private async set(m: BrainMemory, fields: { pin?: boolean; status?: "complete" }, label: string): Promise<{ ok: boolean; reason?: string }> {
+  /** `set` with the newest hash this page knows (D17); says so when BRAIN.md was not rebuilt after it. `skipBrainMd`: the
+   *  caller rebuilds it once after several (the bulk). */
+  private async set(m: BrainMemory, fields: { pin?: boolean; status?: "complete" }, label: string, skipBrainMd = false): Promise<{ ok: boolean; reason?: string }> {
     const h = this.hashes.get(m.path);
     const expect = h && h.was === m.hash ? h.now : m.hash;
-    const r = await this.ctx.run<SetResult>({ verb: "set", path: m.path, fields, expect }, label);
+    const r = await this.ctx.run<SetResult>({ verb: "set", path: m.path, fields, expect, ...(skipBrainMd ? { skipBrainMd } : {}) }, label);
     if (!r.ok) return { ok: false, reason: r.reason };
     if (typeof r.json.hash === "string") this.hashes.set(m.path, { was: m.hash, now: r.json.hash });
     const b = r.json.brainMd;
@@ -348,7 +356,8 @@ export class BootstrapMode implements BrainModeView {
     return { ok: true };
   }
 
-  /** Unpin or Mark complete one row: it leaves at once, and comes back if the verb fails (ctx.run says why). */
+  /** Unpin or Mark complete one row: it stays, busy, while the verb runs, and leaves once it went through (ctx.run says
+   *  why when it did not). */
   private async setOne(r: BootstrapRow, section: Section, fields: { pin?: boolean; status?: "complete" }, label: string): Promise<void> {
     const key = `${section}:${r.path}`;
     if (this.bulk || this.busy.has(key)) return;
@@ -364,7 +373,9 @@ export class BootstrapMode implements BrainModeView {
 
   /**
    * "Mark the N complete…" (D17: suggestions only; spec §6: asks first): each `set` in turn with the hash read when the
-   * button was pressed, stopping at the first one refused (a memory changed elsewhere since, a surface off).
+   * button was pressed, stopping at the first one refused (a memory changed elsewhere since, a surface off). Each set
+   * skips the BRAIN.md rebuild; one runs after the last that went through (ctx.brainMd), so BRAIN.md matches every row
+   * completed, a stop included.
    */
   private async completeShipped(sum: ShippedSummary): Promise<void> {
     if (this.bulk || !sum.rows.length) return;
@@ -374,20 +385,27 @@ export class BootstrapMode implements BrainModeView {
     this.bulk = true;
     this.update();
     let res: { done: number; failed: string | null; at: (typeof items)[number] | null } = { done: 0, failed: null, at: null };
+    let wentThrough = 0;
     try {
       res = await eachUntilFailure(items, async (x) => {
         const key = `active:${x.path}`;
         this.busy.add(key);
         this.update();
         try {
-          const r = await this.set(x.memory, { status: "complete" }, "Mark complete");
-          if (r.ok) this.gone.set(key, Date.now());
+          const r = await this.set(x.memory, { status: "complete" }, "Mark complete", true);
+          if (r.ok) { this.gone.set(key, Date.now()); wentThrough++; }
           return r;
         } finally { this.busy.delete(key); }
       });
     } finally {
+      // BRAIN.md once, for every row that went through (a stop included), before the page lets go of the rows.
+      let built: { ok: boolean; error?: string } = { ok: true };
+      if (wentThrough > 0) {
+        try { built = await this.ctx.brainMd(); } catch (e) { built = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+      }
       this.bulk = false;
       this.update();
+      if (!built.ok) new Notice(`Mark complete: done, but BRAIN.md was not rebuilt${built.error ? `: ${built.error}` : ""}: run aos build-brain-md`);
     }
     if (!res.failed) new Notice(`Marked ${pl(res.done, "project")} complete.`);
     else new Notice(`Marked ${res.done} of ${pl(items.length, "project")} complete; stopped at “${res.at?.title ?? ""}”.`);
@@ -519,7 +537,7 @@ export class BootstrapMode implements BrainModeView {
         if (l.promote) li.createSpan({ cls: "aos-brain-mono aos-brain-pill is-info aos-brain-bs-ptag", text: "#promote", attr: { title: "The next wrap files it as a memory" } });
       }
     }
-    const note = wrapNote(c);
+    const note = wrapNote(c, d.settings.wrapHint);
     if (note) sec.createDiv({ cls: `aos-brain-bs-wrap${note.warn ? " is-warn" : ""}`, text: note.text, attr: { "data-wrapped": String(!c.notWrapped) } });
   }
 

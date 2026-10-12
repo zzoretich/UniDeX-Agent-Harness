@@ -135,8 +135,8 @@ export interface ExpectedMap {
   memories: Record<string, { community: string | null; degree: number; neighbours: Array<{ path: string; n: number }> }>;
   smaller: { communities: number; memories: number };
 }
-export interface ExpectedFixChange { path: string; action: string; before: string | null; after: string | null }
-export interface ExpectedFix { kind: string; dryRun: boolean; changes: ExpectedFixChange[]; files: number; brainMd: unknown }
+export interface ExpectedFixChange { path: string; action: string; before: string | null; after: string | null; reason?: "missing" | "retired" | "duplicate" }
+export interface ExpectedFix { kind: string; dryRun: boolean; changes: ExpectedFixChange[]; files: number; expect: string; brainMd: unknown }
 
 let cachedExpected: Expected | null = null;
 export function expected(): Expected {

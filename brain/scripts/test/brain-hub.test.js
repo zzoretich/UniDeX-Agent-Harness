@@ -210,6 +210,9 @@ test('"looks shipped" is narrow (D17): a full x.y.z, shipped, released or supers
   for (const s of ['Brain hub redesign', 'PR #121 merged', 'Release checklist', 'Plan for 1.5', 'Node 22.12 upgrade', 'Unreleased changes']) {
     assert.ok(!SHIPPED.test(s), s);
   }
+  // An address is not a version; a version that ends a sentence still is.
+  for (const s of ['Local Ollama at 127.0.0.1:11434', 'server 192.168.1.20', 'host 1.2.3.4']) assert.equal(SHIPPED.exec(s), null, s);
+  assert.equal(SHIPPED.exec('Tagged v1.2.0.')[0], 'v1.2.0');
 });
 
 test('shipped suggestions read the title and the index description of active projects only', () => {

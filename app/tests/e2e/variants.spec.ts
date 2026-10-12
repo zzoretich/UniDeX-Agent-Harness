@@ -446,7 +446,7 @@ test.describe("a Codex-only machine", () => {
     await map.locator('button.aos-brain-mapview[data-map-view="communities"]').click();
   });
 
-  test("Brain › Health on Codex: the six tiles, the duplicate pair, each hygiene fix and Dead weight's two actions offered, none naming a host", async () => {
+  test("Brain › Health on Codex: the six tiles, the duplicate pair, each hygiene fix and Dead weight's two actions offered, none naming a host; the sources row names $agenticos:wrap", async () => {
     const { win } = app();
     const C = content(win);
     const b = expected().brain;
@@ -461,6 +461,10 @@ test.describe("a Codex-only machine", () => {
     await expect(hl.locator('[data-hl-key="dw:review"]')).toHaveText(`Review the ${b.usage.never.length}`);
     await expect(hl.locator('[data-hl-key="dw:archive"]')).toHaveText("Archive the 1 shipped…");
     await expect(hl.locator("button").filter({ hasText: /❯_|Claude Code|Codex/ })).toHaveCount(0);
+    // /wrap as this machine's only host invokes it (aosConfig invocationHint), never Claude Code's form.
+    const sources = hl.locator('.aos-brain-hl-hyg[data-fix="sources"] .aos-brain-hl-hygtext');
+    await expect(sources).toContainText("where $agenticos:wrap writes manual-wrap");
+    await expect(sources).not.toContainText("/wrap");
     await C.locator('.aos-brain-modes [role="tab"][data-mode="review"]').click();
   });
 });
@@ -643,8 +647,15 @@ test.describe("telemetry off", () => {
     await expect(body).toHaveText("telemetry.enabled is off, so nothing is logged. Turn it on (aos config set telemetry.enabled true) to see what sessions use.");
     await expect(C.locator('.aos-brain-health [data-hl-key^="dw:"]')).toHaveCount(0);
     await C.locator('.aos-brain-modes [role="tab"][data-mode="library"]').click();
+    // Library follows the same switch (spec §5.6), whatever the log written before it was turned off still says: no use
+    // label on a row, no Use facet, newest first, and the context names the reason with no counts under it.
+    await expect(C.locator(".aos-lib-list button.aos-lib-row")).not.toHaveCount(0);
+    await expect(C.locator(".aos-lib-list .aos-lib-use")).toHaveCount(0);
+    await expect(C.locator('.aos-lib-facet[data-facet="use"]')).toBeHidden();
+    await expect(C.locator(".aos-lib-sort")).toHaveText("newest first");
     await C.locator(`.aos-lib-list button.aos-lib-row[data-path="${expected().brain.duplicate[1]}"]`).click();
     await expect(C.locator('aside.aos-lib-context section[data-section="use"] .aos-lib-cnote')).toHaveText("Telemetry is off in this vault, so no use is logged (Settings, telemetry.enabled).");
+    await expect(C.locator('aside.aos-lib-context section[data-section="use"] .aos-lib-stat')).toHaveCount(0);
   });
 });
 

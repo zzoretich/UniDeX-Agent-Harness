@@ -19,6 +19,8 @@ export interface BrainSettings {
   neverUsedDays: number;
   /** memory.mapMin: the smallest community the Map shows (D19). */
   mapMin: number;
+  /** /wrap as this machine's hosts invoke it (aosConfig invocationHint): "/wrap", "$agenticos:wrap", or both forms. */
+  wrapHint: string;
 }
 
 /** The recall preview's answer (D18): the hits, or why there are none to show. */
@@ -80,6 +82,8 @@ export interface BrainCtx {
   recall(text: string): Promise<RecallPreview>;
   /** Rebuild brain-hub.json and brain-map.json now (Health's Rescan); the files' events reload the tab when it is done. */
   rescan(): void;
+  /** build-brain-md.js now, waited for (Bootstrap's bulk Mark complete, whose sets skip it): ok, or why not. */
+  brainMd(): Promise<{ ok: boolean; error?: string }>;
   /** keep, archive or restore over any number of paths, in calls of at most MAX_PATHS_PER_CALL; stops at the first failure. */
   runAll(verb: "keep" | "archive" | "restore", paths: readonly string[], label: string): Promise<{ done: number; failed: string | null }>;
   /** Reload the files now (a mode calls it after an action that changed nothing through ctx.run, e.g. dismissing a pair). */

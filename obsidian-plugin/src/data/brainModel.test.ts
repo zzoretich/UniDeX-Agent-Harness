@@ -587,6 +587,14 @@ test("parseBrainMap: coerces every field, drops bad rows, caps neighbours at 12,
 test("recallArgs: one query argument (never a flag), --limit, --json; an empty query throws", () => {
   assert.deepEqual(recallArgs("release procedure"), ["release procedure", "--limit", "8", "--json"]);
   assert.deepEqual(recallArgs("  --warm  now ", 3), ["warm now", "--limit", "3", "--json"]);
+  // Every leading dash and space goes, however they mix: never a flag, so the surface's rule admits every query.
+  assert.deepEqual(recallArgs("- -x"), ["x", "--limit", "8", "--json"]);
+  assert.deepEqual(recallArgs("-- --warm"), ["warm", "--limit", "8", "--json"]);
+  assert.deepEqual(recallArgs("- - item"), ["item", "--limit", "8", "--json"]);
+  assert.deepEqual(recallArgs("-\t-x"), ["x", "--limit", "8", "--json"]);
+  assert.deepEqual(recallArgs("- - release notes"), ["release notes", "--limit", "8", "--json"]);
+  assert.deepEqual(recallArgs("a - b"), ["a - b", "--limit", "8", "--json"], "a dash inside stays");
+  assert.throws(() => recallArgs("- - -"));
   assert.deepEqual(recallArgs("a\u0000b\nc\u2028d", 500), ["a b c d", "--limit", "99", "--json"]);
   assert.equal(recallQuery("x".repeat(300)).length, 200);
   assert.throws(() => recallArgs("  --  "));
@@ -603,29 +611,44 @@ test("memoryArgs fix: the kind, --dry-run before --json; an unknown kind throws"
   for (const kind of FIX_KINDS) {
     assert.deepEqual(memoryArgs({ verb: "fix", kind, dryRun: true }), ["memory", "fix", kind, "--dry-run", "--json"]);
     assert.deepEqual(memoryArgs({ verb: "fix", kind, dryRun: false }), ["memory", "fix", kind, "--json"]);
+    // The confirm passes the dry run's hash: the real run makes exactly the changes shown, or refuses.
+    assert.deepEqual(memoryArgs({ verb: "fix", kind, dryRun: false, expect: "0123456789abcdef0123456789abcdef" }), ["memory", "fix", kind, "--expect", "0123456789abcdef0123456789abcdef", "--json"]);
   }
+  assert.throws(() => memoryArgs({ verb: "fix", kind: "index", dryRun: false, expect: "none" }));
   assert.throws(() => memoryArgs({ verb: "fix", kind: "everything" as never, dryRun: true }));
+  const a = "brain/memory/projects/a.md";
+  assert.deepEqual(memoryArgs({ verb: "set", path: a, fields: { status: "complete" }, expect: "a".repeat(64), skipBrainMd: true }),
+    ["memory", "set", a, "--set", '{"status":"complete"}', "--expect", "a".repeat(64), "--skip-brain-md", "--json"]);
   assert.ok(isFixKind("index") && !isFixKind("all"));
 });
 
 test("parseFixResult: the changes and the BRAIN.md rebuild, coerced; a body without a known kind is null", () => {
   const r = parseFixResult({
     kind: "sources", dryRun: true, files: 2, brainMd: null,
-    changes: [{ path: P("projects", "a"), action: "source", before: "session", after: "manual-wrap" }, { path: "x", action: "explode" }, { path: "MEMORY.md", action: "index-remove", before: "- [x](brain/memory/projects/gone.md) — x" }],
+    changes: [{ path: P("projects", "a"), action: "source", before: "session", after: "manual-wrap" }, { path: "x", action: "explode" }, { path: "MEMORY.md", action: "index-remove", before: "- [x](brain/memory/projects/gone.md) — x" },
+      { path: "MEMORY.md", action: "index-remove", before: "- [y](brain/memory/projects/old.md) — y", after: null, reason: "retired" }, { path: "MEMORY.md", action: "index-remove", before: "z", reason: "bogus" }],
+    expect: "0123456789abcdef0123456789abcdef",
   })!;
   assert.equal(r.dryRun, true);
   assert.equal(r.files, 2);
+  assert.equal(r.expect, "0123456789abcdef0123456789abcdef");
   assert.deepEqual(r.changes, [
     { path: P("projects", "a"), action: "source", before: "session", after: "manual-wrap" },
     { path: "MEMORY.md", action: "index-remove", before: "- [x](brain/memory/projects/gone.md) — x", after: null },
+    { path: "MEMORY.md", action: "index-remove", before: "- [y](brain/memory/projects/old.md) — y", after: null, reason: "retired" },
+    { path: "MEMORY.md", action: "index-remove", before: "z", after: null },
   ]);
+  assert.equal(parseFixResult({ kind: "index", changes: [], expect: "not-a-hash" })!.expect, null, "an older runtime, or a bad hash: none");
   assert.deepEqual(parseFixResult({ kind: "index", changes: [], files: 0, brainMd: { ok: false, error: "exit 1" } })!.brainMd, { ok: false, error: "exit 1" });
   assert.equal(parseFixResult({ kind: "all" }), null);
 });
 
-test("healthCount and modeBadges: duplicate pairs plus every finding a fix acts on; no badge when all is well", () => {
+test("healthCount and modeBadges: duplicate pairs plus every finding a fix acts on but descriptions; no badge when all is well", () => {
   const hub = parseBrainHub(JSON.stringify({ schema: 1, counts: {}, hygiene: { sources: { "auto-wrap": 239, "manual-wrap": 25, session: 5, "in-session": 2, wrap: 1, "(none)": 70 }, oldType: ["a", "b"], noDescription: ["c"], unindexed: [], misfiled: ["d", "e"], brokenIndex: ["f"], leftoverDrafts: ["g"] } }));
-  assert.equal(healthCount(8, hub), 8 + 8 + 2 + 1 + 0 + 2 + 1 + 1);
+  // A description only MEMORY.md has is no badge: every writer leaves one so, and the count would climb after each wrap.
+  assert.equal(healthCount(8, hub), 8 + 8 + 2 + 0 + 2 + 1 + 1);
+  const onlyDescriptions = parseBrainHub(JSON.stringify({ schema: 1, counts: {}, hygiene: { noDescription: ["a", "b", "c"] } }));
+  assert.equal(healthCount(0, onlyDescriptions), 0);
   assert.equal(healthCount(0, null), 0);
   assert.deepEqual(modeBadges({ toReview: 0, live: 3, brainPct: null, health: 4 }).health, { text: "4", tone: "warn" });
   assert.equal(modeBadges({ toReview: 0, live: 3, brainPct: null, health: 0 }).health, undefined);
@@ -640,6 +663,10 @@ test("touchesBrain: the map, SESSION.md, recall-wake.md and the vault's config r
 });
 
 test("brainSettings: telemetry, graph, neverUsedDays and mapMin from the resolved config, defaults for anything missing or bad", () => {
-  assert.deepEqual(brainSettings(null), { telemetry: true, graph: true, neverUsedDays: 30, mapMin: 8 });
-  assert.deepEqual(brainSettings({ telemetry: { enabled: false } as never, graph: { enabled: false } as never, memory: { neverUsedDays: 14, mapMin: 0 } as never }), { telemetry: false, graph: false, neverUsedDays: 14, mapMin: 8 });
+  assert.deepEqual(brainSettings(null), { telemetry: true, graph: true, neverUsedDays: 30, mapMin: 8, wrapHint: "/wrap" });
+  assert.deepEqual(brainSettings({ telemetry: { enabled: false } as never, graph: { enabled: false } as never, memory: { neverUsedDays: 14, mapMin: 0 } as never }), { telemetry: false, graph: false, neverUsedDays: 14, mapMin: 8, wrapHint: "/wrap" });
+  // /wrap as the hosts invoke it (aosConfig invocationHint): Codex only, direct wiring, both.
+  assert.equal(brainSettings(null, { hosts: { claude: { enabled: false }, codex: { enabled: true } } }).wrapHint, "$agenticos:wrap");
+  assert.equal(brainSettings(null, { hosts: { claude: { enabled: false }, codex: { enabled: true, install: "direct" } } }).wrapHint, "$wrap");
+  assert.equal(brainSettings(null, { hosts: { claude: { enabled: true }, codex: { enabled: true } } }).wrapHint, "/wrap (Claude Code) or $agenticos:wrap (Codex)");
 });
