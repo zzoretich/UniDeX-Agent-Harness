@@ -6,7 +6,7 @@ import type { WorkbenchView } from "../WorkbenchView";
 import type { TrailEntry } from "../../data/promoteTrail";
 import type {
   BrainDraft, BrainHub, BrainMap, BrainMemory, BrainMode, BrainNote, BrainSources, BrainTarget, BrainVerbResult, DupFlag,
-  HubDup, MemoryVerb, RecallHit, ReviewBatch,
+  HubDup, MemoryVerb, RecallHit, ReviewBatch, SweepFile,
 } from "../../data/brainModel";
 
 /** The settings that change what Map and Health can say (brain/config.json over VAULT_CONFIG_DEFAULTS; PR 3). */
@@ -57,8 +57,17 @@ export interface BrainData {
   wake: string | null;
   /** MEMORY.md as text, null when absent (Bootstrap's index card: size, lines). */
   indexRaw: string | null;
+  /** brain/_index/memory-sweep.json (brain-ai A10), null before the first sweep. */
+  sweep: SweepFile | null;
   settings: BrainSettings;
 }
+
+/**
+ * How a verb runs: a model call (merge-draft, sweep) waits up to AI_TIMEOUT_MS instead of aosRun's 60 s (brain-ai A12).
+ * `quiet` drops the failure Notice for a call the page makes by itself and answers inline (Health's sweep estimate on
+ * every show), so a surface that is off or a runtime from before the verb does not pop a Notice on each visit.
+ */
+export interface BrainRunOptions { timeoutMs?: number; quiet?: boolean }
 
 /** What a mode acts through. */
 export interface BrainCtx {
@@ -72,12 +81,18 @@ export interface BrainCtx {
    * Runs one `aos memory` verb through plugin.aosJson (the brain surface), says why in a Notice when it fails, and on
    * success reloads the files and rebuilds brain-hub.json in the background. `label` names the action in a Notice.
    */
-  run<T>(verb: MemoryVerb, label: string): Promise<BrainVerbResult<T>>;
+  run<T>(verb: MemoryVerb, label: string, opts?: BrainRunOptions): Promise<BrainVerbResult<T>>;
   /**
-   * Runs a verb that writes nothing (`fix … --dry-run`): says why in a Notice when it fails, and neither reloads nor
-   * rebuilds the cache. Health shows its changes before asking (spec §6).
+   * Runs a verb that writes nothing (`fix … --dry-run`, `merge-draft`/`sweep … --estimate`): says why in a Notice when it
+   * fails, and neither reloads nor rebuilds the cache. Health shows its changes before asking (spec §6); Merge and the
+   * sweep show what a model call would cost before it is made (brain-ai A5).
    */
-  preview<T>(verb: MemoryVerb, label: string): Promise<BrainVerbResult<T>>;
+  preview<T>(verb: MemoryVerb, label: string, opts?: BrainRunOptions): Promise<BrainVerbResult<T>>;
+  /**
+   * The Merge dialog on 2–6 memories (brain-hub D21; brain-ai A1, A4): the no-model draft first, Draft with AI on a click,
+   * Save merged through `merge --expect`. Resolves true when it saved.
+   */
+  merge(paths: readonly string[]): Promise<boolean>;
   /** sdk/recall-cli.js on the typed text (D18): writes nothing but a missing recall index, and logs no usage (D9). */
   recall(text: string): Promise<RecallPreview>;
   /** Rebuild brain-hub.json and brain-map.json now (Health's Rescan); the files' events reload the tab when it is done. */

@@ -8,7 +8,7 @@ import type AgenticOSPlugin from "../../main";
 import type { RevealTarget, WorkbenchView } from "./WorkbenchView";
 import {
   BRAIN_OFF_TEXT, BUILD_BRAIN_MD, MEMORY_PATH_RE, RECALL_CLI, brainMdPercent, brainVerbResult, chunks, headerStats, healthCount, isBrainMode,
-  isReviewQueue, memoryArgs, modeBadges, parseRecallHits, recallArgs, recallQuery, touchesBrain, type BrainMode, type BrainTarget,
+  isReviewQueue, memoryArgs, modeBadges, parseRecallHits, recallArgs, recallQuery, touchesBrain, verbTouches, type BrainMode, type BrainTarget,
   type BrainVerbResult, type MemoryVerb,
 } from "../data/brainModel";
 import { CaptureModal } from "../ui/CaptureModal";
@@ -21,9 +21,10 @@ import { LibraryMode } from "./brain/LibraryMode";
 import { MapMode } from "./brain/MapMode";
 import { BootstrapMode } from "./brain/BootstrapMode";
 import { HealthMode } from "./brain/HealthMode";
+import { openMerge } from "./brain/MergeModal";
 import { brainSettings } from "./brain/load";
 import { readAgenticosJson } from "../data/aosConfig";
-import type { BrainCtx, BrainData, BrainModeView, RecallPreview } from "./brain/types";
+import type { BrainCtx, BrainData, BrainModeView, BrainRunOptions, RecallPreview } from "./brain/types";
 import * as path from "path";
 
 export class BrainTab {
@@ -56,8 +57,9 @@ export class BrainTab {
       plugin, view,
       data: () => this.data!,
       query: () => this.header?.query() ?? "",
-      run: (v, label) => this.run(v, label),
-      preview: (v, label) => this.preview(v, label),
+      run: (v, label, opts) => this.run(v, label, opts),
+      preview: (v, label, opts) => this.preview(v, label, opts),
+      merge: (paths) => openMerge(this.ctx, paths),
       recall: (text) => this.recall(text),
       rescan: () => this.rebuildHub(),
       brainMd: () => this.brainMd(),
@@ -211,33 +213,33 @@ export class BrainTab {
 
   // ── actions ──
 
-  private async run<T>(v: MemoryVerb, label: string): Promise<BrainVerbResult<T>> {
+  private async run<T>(v: MemoryVerb, label: string, opts: BrainRunOptions = {}): Promise<BrainVerbResult<T>> {
     let args: string[];
     try { args = memoryArgs(v); } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      new Notice(`${label}: ${reason}`);
+      if (!opts.quiet) new Notice(`${label}: ${reason}`);
       return { ok: false, reason, refused: false, outdated: false, stale: false };
     }
-    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args));
-    if (!r.ok) new Notice(`${label}: ${r.reason}`);
-    for (const p of touched(v)) this.store.touch(p);
+    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args, opts.timeoutMs));
+    if (!r.ok && !opts.quiet) new Notice(`${label}: ${r.reason}`);
+    for (const p of verbTouches(v, r.ok ? r.json : null)) this.store.touch(p);
     if (r.ok) this.rebuildHub();
     // A fix can touch any memory, MEMORY.md and a draft: read everything again rather than guess which.
     this.schedule(0, v.verb === "fix");
     return r;
   }
 
-  /** A verb that writes nothing (`fix … --dry-run`): its answer, a Notice when it fails, no reload, no rebuild. */
-  private async preview<T>(v: MemoryVerb, label: string): Promise<BrainVerbResult<T>> {
+  /** A verb that writes nothing (`fix … --dry-run`, an `--estimate`): its answer, a Notice when it fails, no reload, no rebuild. */
+  private async preview<T>(v: MemoryVerb, label: string, opts: BrainRunOptions = {}): Promise<BrainVerbResult<T>> {
     let args: string[];
     try { args = memoryArgs(v); } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      new Notice(`${label}: ${reason}`);
+      if (!opts.quiet) new Notice(`${label}: ${reason}`);
       return { ok: false, reason, refused: false, outdated: false, stale: false };
     }
-    if (!args.includes("--dry-run")) throw new Error("preview runs only a --dry-run");
-    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args));
-    if (!r.ok) new Notice(`${label}: ${r.reason}`);
+    if (!args.includes("--dry-run") && !args.includes("--estimate")) throw new Error("preview runs only a --dry-run or an --estimate");
+    const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args, opts.timeoutMs));
+    if (!r.ok && !opts.quiet) new Notice(`${label}: ${r.reason}`);
     return r;
   }
 
@@ -317,16 +319,3 @@ export class BrainTab {
     this.body = null;
   }
 }
-
-/** The files a verb changes besides MEMORY.md and the trail, so the next load re-reads them without waiting for events. */
-function touched(v: MemoryVerb): string[] {
-  const always = ["MEMORY.md", "brain/_index/promote-log.jsonl"];
-  switch (v.verb) {
-    case "keep": case "archive": case "restore": return [...always, ...v.paths];
-    case "set": return [...always, v.path];
-    case "supersede": return [...always, v.path, v.by];
-    case "draft": return [...always, `brain/memory/feedback/_drafts/${v.slug}.md`, `brain/memory/feedback/${v.slug}.md`];
-    case "notdup": case "fix": return [];
-  }
-}
-

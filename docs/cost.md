@@ -47,6 +47,11 @@ for the anchored ledger; the default comes from `cost.monthlyBudget`.
 Verify the rates before trusting dollar figures; unknown model ids fall back to
 `default_model` and are flagged in the report.
 
+The Brain hub's estimates before Merge with AI or a sweep ("about $0.004 · haiku · Claude") price Claude
+from a copy of these rates in `brain/scripts/sdk/lib/model-pricing.js` (the runtime never reads this file).
+`brain/scripts/test/model-pricing.test.js` pins that copy to the repo's `extras/cost/pricing.json`, so a rate
+changed here fails the test until both agree. Codex keeps `brain/scripts/sdk/lib/codex-pricing.js`.
+
 ## Privacy
 
 Transcripts are read locally. The analyzer has one optional `count_tokens` API call (to split

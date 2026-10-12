@@ -5,17 +5,17 @@
 // hashed) again only when its text or its MEMORY.md line changed.
 import type { App } from "obsidian";
 import {
-  BRAIN_HUB_PATH, BRAIN_MAP_PATH, BRAIN_SOURCES_PATH, DRAFTS_DIR, MEMORY_INDEX_PATH, MEMORY_ROOT, MEMORY_TYPES,
+  BRAIN_HUB_PATH, BRAIN_MAP_PATH, BRAIN_SOURCES_PATH, DRAFTS_DIR, MEMORY_INDEX_PATH, MEMORY_ROOT, MEMORY_SWEEP_PATH, MEMORY_TYPES,
   PATTERNS_DIR, RECALL_WAKE_PATH, REFLECTIONS_DIR, SESSION_MD_PATH,
   dupFlags, livePairs, pairKey, parseBrainHub, parseBrainMap, parseBrainSources, parseDraft, parseIndexLines, parseMemory,
-  parseNote, readTrailRows, reviewBatches, writtenAtMap, type BrainDraft, type BrainMemory, type BrainNote,
+  parseNote, parseSweepFile, readTrailRows, reviewBatches, writtenAtMap, type BrainDraft, type BrainMemory, type BrainNote,
 } from "../../data/brainModel";
 import { TRAIL_PATH } from "../../data/promoteTrail";
 import { VAULT_CONFIG_DEFAULTS, invocationHint, type AgenticosJson, type VaultConfig } from "../../data/aosConfig";
 import type { BrainData, BrainSettings } from "./types";
 
 /** The single files every load reads whole: small, and their changes are what the hub follows. */
-const SINGLES = [BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, MEMORY_INDEX_PATH, TRAIL_PATH, BRAIN_MAP_PATH, SESSION_MD_PATH, RECALL_WAKE_PATH];
+const SINGLES = [BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, MEMORY_INDEX_PATH, TRAIL_PATH, BRAIN_MAP_PATH, SESSION_MD_PATH, RECALL_WAKE_PATH, MEMORY_SWEEP_PATH];
 
 /**
  * The settings the modes read, from the config the runtime itself resolves (aosConfig.ts readVaultConfig:
@@ -95,7 +95,7 @@ export class BrainStore {
 
   private async read(): Promise<BrainData> {
     const now = new Date();
-    const [hubRaw, srcRaw, indexRaw, trailRaw, mapRaw, sessionRaw, wakeRaw] = await Promise.all(SINGLES.map((p) => this.text(p, true)));
+    const [hubRaw, srcRaw, indexRaw, trailRaw, mapRaw, sessionRaw, wakeRaw, sweepRaw] = await Promise.all(SINGLES.map((p) => this.text(p, true)));
     const index = parseIndexLines(indexRaw);
     const memories: BrainMemory[] = [];
     const seen = new Set<string>();
@@ -145,7 +145,7 @@ export class BrainStore {
     return {
       now, memories, byPath, drafts, patterns, reflections, hub, sources: parseBrainSources(srcRaw), trail, written, index,
       pairs, flags, batches: reviewBatches(memories, hub, written, flags),
-      map: parseBrainMap(mapRaw), session: sessionRaw, wake: wakeRaw, indexRaw, settings: this.settings(),
+      map: parseBrainMap(mapRaw), session: sessionRaw, wake: wakeRaw, indexRaw, sweep: parseSweepFile(sweepRaw), settings: this.settings(),
     };
   }
 }

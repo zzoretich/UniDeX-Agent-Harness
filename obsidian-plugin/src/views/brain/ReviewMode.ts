@@ -4,8 +4,9 @@
 // `aos memory` verb through ctx.run (the brain surface, D13, D14). A card leaves as soon as its verb starts and comes back
 // if the verb fails; the card after it is then the selected one, and an emptied batch hands over to the next. No memory
 // is deleted (D6): Archive tags in place (D5), and "Keep the older one" marks the newer memory superseded by the older
-// (D7); only a feedback draft goes, when it is approved (into the store) or rejected.
-// AI merge is PR 4: Merge here compares the two side by side.
+// (D7); only a feedback draft goes, when it is approved (into the store) or rejected. M compares a flagged card with the
+// one it looks like, side by side; "Merge into one…" there opens the Merge dialog on the two (brain-hub D21; brain-ai A1,
+// MergeModal.ts), which writes nothing until its draft is approved.
 import { Notice, setIcon } from "obsidian";
 import {
   REVIEW_QUEUES, REVIEW_QUEUE_LABEL, batchLede, batchMeta, batchWhen, compareAges, defaultMarkBefore, knownLabel, olderByMonth,
@@ -69,6 +70,8 @@ export class ReviewMode implements BrainModeView {
   };
   /** The card whose comparison is open (M). */
   private compareOpen: string | null = null;
+  /** The Merge dialog is open from a comparison: one at a time. */
+  private merging = false;
   /** EARLIER folded or unfolded by hand; null: folded unless THIS WEEK is empty. */
   private earlier: boolean | null = null;
   /** The batch whose "More batch actions" menu is open. */
@@ -612,6 +615,8 @@ export class ReviewMode implements BrainModeView {
     theirs.createSpan({ cls: "aos-brain-rv-boxtext", text: o.summary || o.title });
     theirs.createSpan({ cls: "aos-brain-rv-boxmeta aos-brain-mono", text: [o.type, day(o), weekUse(d.hub, o.path)].filter(Boolean).join(" · ") });
     const acts = c.createDiv({ cls: "aos-brain-rv-cmpacts" });
+    const merge = this.textBtn(acts, "Merge into one…", "", `cmp:${m.path}:merge`, "mergeone", () => void this.mergeInto(m, o));
+    merge.setAttr("title", "Draft one memory from the two; nothing is written until you approve it");
     const keepOlder = this.textBtn(acts, "Keep the older one", "is-primary", `cmp:${m.path}:keepolder`, "keepolder", () => {
       const now = compareAges(m, o, this.ctx.data().written);
       void this.keepOver(now.older, now.newer, "Keep the older one");
@@ -619,7 +624,7 @@ export class ReviewMode implements BrainModeView {
     keepOlder.setAttr("title", `Keeps ${age.mine === "OLDER" ? "this one" : `“${o.title}”`}; ${age.mine === "OLDER" ? `“${o.title}”` : "this one"} is marked superseded by it`);
     this.textBtn(acts, "Keep both", "", `cmp:${m.path}:keepboth`, "keepboth", () => void this.keepBoth(m, o));
     this.textBtn(acts, "Open both", "", `cmp:${m.path}:openboth`, "openboth", () => { void this.ctx.edit(m.path); void this.ctx.edit(o.path); });
-    acts.createSpan({ cls: "aos-brain-rv-hint", text: "Keep the older one marks the newer superseded by it; Restore undoes it. Merging two into one comes in a later update." });
+    acts.createSpan({ cls: "aos-brain-rv-hint", text: "Merge drafts one memory from the two; you approve it before anything is written. Keep the older one marks the newer superseded by it; Restore undoes it." });
   }
 
   private keysFooter(M: HTMLElement, batch: boolean): void {
@@ -918,6 +923,31 @@ export class ReviewMode implements BrainModeView {
       if (!keepWinner) return keys;
       return (await this.ctx.run({ verb: "keep", paths: [winner.path] }, label)).ok ? keys : [loser.path, pair];
     });
+  }
+
+  /**
+   * "Merge into one…" (brain-hub D21): the Merge dialog on this card and its partner. Nothing leaves while it is open;
+   * once it saved, both cards and their pair stay hidden until the files say so (the merged one is reviewed, the other
+   * superseded), as a verb that went through.
+   */
+  private async mergeInto(m: BrainMemory, o: BrainMemory): Promise<void> {
+    if (this.merging) return;
+    this.merging = true;
+    let saved = false;
+    try { saved = await this.ctx.merge([m.path, o.path]); } finally { this.merging = false; }
+    if (!this.root) return;
+    // The dialog gives the keyboard back to the button that opened it; a redraw while it was open may have replaced it.
+    const a = this.root.ownerDocument.activeElement;
+    const lost = !a || a === this.root.ownerDocument.body;
+    if (!saved) {
+      if (lost && this.main) findBy(this.main, "data-rv-key", `cmp:${m.path}:merge`)?.focus({ preventScroll: true });
+      return;
+    }
+    const at = Date.now();
+    for (const k of [m.path, o.path, `pair:${pk(m.path, o.path)}`]) this.gone.set(k, at);
+    this.compareOpen = null;
+    if (lost) this.focusSel = true;
+    this.update();
   }
 
   /** "Keep both": not duplicates (remembered for the scan, D11), then both kept where they wait for review. */

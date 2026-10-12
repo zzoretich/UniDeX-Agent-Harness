@@ -100,7 +100,7 @@ function data(): BrainData {
     .map(([p, t, c]) => parseMemory(p, mem(t, c))).filter((m): m is BrainMemory => !!m);
   const pairs: HubDup[] = [{ a: A, b: B, score: 0.92, title: 0.8, text: 0.8, meaning: null }, { a: C, b: D, score: 0.88, title: 0.7, text: 0.8, meaning: null }];
   return {
-    now: new Date(2026, 9, 11, 12), memories, byPath: new Map(memories.map((m) => [m.path, m])), drafts: [], patterns: [], reflections: [],
+    now: new Date(2026, 9, 11, 12), memories, byPath: new Map(memories.map((m) => [m.path, m])), drafts: [], patterns: [], reflections: [], sweep: null,
     hub: parseBrainHub(JSON.stringify({ schema: 1, builtAt: "2026-10-11T10:00:00.000Z", dups: pairs })),
     sources: null, trail: [], written: new Map(), index: new Map(), pairs, flags: new Map(), batches: [], map: null,
     session: null, wake: null, indexRaw: null, settings: { telemetry: true, graph: true, neverUsedDays: 30, mapMin: 8, wrapHint: "/wrap" },
@@ -122,4 +122,44 @@ test("reveal with a pair (Health's Compare) selects that pair in the Duplicates 
   // A pair no longer listed (dismissed since): the queue's first.
   mode.reveal({ mode: "review", queue: "duplicates", pair: { a: C, b: P("feedback", "gone") } });
   assert.deepEqual(shown(), [A, B]);
+});
+
+test("M's comparison offers Merge into one…, which opens the Merge dialog on the card and its partner; once saved both leave", async () => {
+  const doc: FakeDoc = { activeElement: null, body: null };
+  doc.body = new FakeEl("BODY", doc);
+  const host = doc.body.createDiv();
+  const d = data();
+  // A and B wait for review in one session, and each looks like the other.
+  for (const p of [A, B]) d.byPath.set(p, { ...d.byPath.get(p)!, reviewed: false });
+  d.memories = [...d.byPath.values()];
+  d.flags = new Map([[A, { other: B, score: 0.92 }], [B, { other: A, score: 0.92 }]]);
+  d.batches = [{ key: "s1", title: "Session s1", lead: null, host: "claude", session: null, at: "2026-10-11T10:00:00.000Z", paths: [A, B], fresh: [], known: [A, B], unchecked: [] }];
+  const asked: string[][] = [];
+  let answer: (saved: boolean) => void = () => {};
+  const mode = new ReviewMode({
+    data: () => d, run: async () => ({ ok: true, json: {} }), show: () => {}, markReviewSeen: () => {},
+    merge: (paths: readonly string[]) => { asked.push([...paths]); return new Promise<boolean>((r) => { answer = r; }); },
+  } as unknown as BrainCtx);
+  mode.mount(host as unknown as HTMLElement);
+  const cards = (): Array<string | null> => host.querySelectorAll(".aos-brain-rv-card").map((c) => c.getAttribute("data-path"));
+  const flush = async (): Promise<void> => { for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r)); };
+  assert.deepEqual(cards(), [A, B]);
+  host.querySelector(`[data-rv-key="act:${A}:merge"]`)!.click();
+  const acts = host.querySelector(".aos-brain-rv-cmpacts")!;
+  assert.deepEqual(acts.querySelectorAll("button").map((b) => b.textContent), ["Merge into one…", "Keep the older one", "Keep both", "Open both"]);
+  assert.equal(acts.querySelector(".aos-brain-rv-hint")!.textContent,
+    "Merge drafts one memory from the two; you approve it before anything is written. Keep the older one marks the newer superseded by it; Restore undoes it.");
+  // Cancelled: nothing changes, the comparison stays open.
+  host.querySelector('[data-act="mergeone"]')!.click();
+  assert.deepEqual(asked, [[A, B]], "this card's path, then its partner's");
+  answer(false);
+  await flush();
+  assert.deepEqual(cards(), [A, B]);
+  assert.ok(host.querySelector(".aos-brain-rv-compare"));
+  // Saved: both cards leave at once, as a verb that went through (until the files say the one is reviewed, the other superseded).
+  host.querySelector('[data-act="mergeone"]')!.click();
+  assert.equal(asked.length, 2);
+  answer(true);
+  await flush();
+  assert.deepEqual(cards(), []);
 });

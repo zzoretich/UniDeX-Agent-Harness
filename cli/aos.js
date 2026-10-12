@@ -69,7 +69,9 @@ const USAGE = `usage:
   aos memory [list [--json] | keep <path>… [--json]
              | set <path> --set <json> [--expect <hash>] [--dry-run] [--skip-brain-md] [--json]
              | archive|restore <path>… [--json] | supersede <path> --by <path> [--json] | draft approve|reject <slug> [--json]
-             | notdup <path> <path> [--json] | fix sources|types|descriptions|index|drafts [--dry-run] [--expect <hash>] [--json]]
+             | notdup <path> <path> [--json] | fix sources|types|descriptions|index|drafts [--dry-run] [--expect <hash>] [--json]
+             | merge-draft <path> <path>… [--estimate] [--json] | merge <path> <path>… --into <json> --expect <hash>,… [--json]
+             | unmerge <path> --expect <hash> [--json] | sweep [<path>…] [--estimate] [--json] | sweep dismiss <id> [--json]]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1393,8 +1395,8 @@ async function memory(sub, flags) {
   const bool = (flag, v) => (v ? [`--${flag}`] : []);
   try {
     return await M.main([
-      ...sub, ...value('set', flags.set), ...value('expect', flags.expect), ...value('by', flags.by),
-      ...bool('dry-run', flags.dryRun), ...bool('skip-brain-md', flags.skipBrainMd), ...bool('json', flags.json),
+      ...sub, ...value('set', flags.set), ...value('expect', flags.expect), ...value('by', flags.by), ...value('into', flags.into),
+      ...bool('dry-run', flags.dryRun), ...bool('skip-brain-md', flags.skipBrainMd), ...bool('estimate', flags.estimate), ...bool('json', flags.json),
     ], { io: console });
   } catch (e) {
     if (e instanceof M.UsageError) throw new UsageError(e.message);
@@ -1408,9 +1410,10 @@ function updateNotice() {
 
 // ── args and main ─────────────────────────────────────────────────────────────
 // `aos workspace`'s own (spaces-redesign D28): --into, --cwd, --set, --expect take a value; --git, --pin, --empty do not.
-// `aos memory`'s (brain-hub D13): --by takes a value (supersede's winner); set's --skip-brain-md does not.
+// `aos memory`'s (brain-hub D13): --by takes a value (supersede's winner), --into merge's fields (brain-ai A9); set's
+// --skip-brain-md and merge-draft's and sweep's --estimate (A5) do not.
 const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by']);
-const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md']);
+const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate']);
 // --no-obsidian is parsed and ignored: Obsidian is no longer installed, and a script written for an older release keeps working.
 const NEGATABLE_FLAGS = new Set(['obsidian']);
 function camel(s) { return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }

@@ -15,7 +15,8 @@
  *   shipped   active projects that name a full version, "shipped", "released" or "superseded": "looks shipped" (D17)
  *
  * The Map's brain-map.json is written beside it from the same memories (D19; lib/brain-map.js). Takes the vault;
- * `write: false` builds both without writing (a dry run on a real vault).
+ * `write: false` builds both without writing (a dry run on a real vault). A writing build also prunes the merge records
+ * older than 30 days (brain-ai A2; lib/memory-merge.js pruneRecords), swallowing any failure.
  */
 const fs = require('fs');
 const path = require('path');
@@ -339,6 +340,11 @@ function buildBrainHub({ vault, cfg = {}, now = Date.now(), write = true, buildM
   if (write) {
     fsx.writeAtomic(path.join(idx, 'brain-hub.json'), JSON.stringify(hub) + '\n');
     try { fsx.writeAtomic(path.join(idx, 'brain-map.json'), JSON.stringify(map) + '\n'); } catch (e) { console.error('[brain-hub] brain-map.json:', e.message); }
+    // Merge records past their 30 days of Undo merge go (brain-ai A2); a failure never costs the hub.
+    try {
+      const merges = require('./lib/memory-merge.js');
+      merges.pruneRecords(vault, { days: merges.UNDO_DAYS, now });
+    } catch (e) { console.error('[brain-hub] merge records:', e.message); }
   }
   return hub;
 }

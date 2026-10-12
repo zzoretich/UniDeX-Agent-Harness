@@ -7,8 +7,14 @@
 // moves; drag pins a node, ⌘/Ctrl-click unpins it, the wheel zooms; nodes and labels keep a readable size on screen at
 // any zoom. A memory opens in Library. Graph off or no map yet: an empty state that says what to do. The logic is in
 // data/brainMapView.ts.
-import { setIcon } from "obsidian";
-import { clip, hasUsage, type BrainTarget, type HubUsage } from "../../data/brainModel";
+//
+// A community's card has Consolidate with AI… (spec 2026-10-12-brain-hub-ai A3): what a sweep scoped to its memories
+// would cost (`sweep --estimate`, the lead first, at most SWEEP_MAX_PATHS, the most linked, and the card says when it cut
+// some), a question, then the sweep (one model call, waited for up to AI_TIMEOUT_MS). That scope's cards show in the card
+// with Review and Dismiss (views/brain/SweepCards.ts; data/brainSweep.ts). One sweep runs at a time on this page.
+import { Notice, setIcon } from "obsidian";
+import { AI_TIMEOUT_MS, clip, hasUsage, parseSweepEstimate, parseSweepResult, type BrainTarget, type HubUsage } from "../../data/brainModel";
+import { consolidateAsk, groupScopes, scopePaths, scopeSummary, sweepDoneText, sweepOffText } from "../../data/brainSweep";
 import {
   MAP_VIEWS, MAP_VIEW_LABEL, aroundLayout, aroundPicks, aroundRows, bubbleCaption, bubbleLabel, builtAgo, captionWidth,
   communityLine, communityViews, degrees, drawnRadius, everyNodeGraph, fitView, labelFont, layoutBubbles, linkWidth,
@@ -17,6 +23,8 @@ import {
 } from "../../data/brainMapView";
 import type { Graph, GraphNode } from "../../data/graph";
 import { settle, tick, type SimParams } from "../../data/forceSim";
+import { guardClicks } from "./guardClicks";
+import { SweepCards } from "./SweepCards";
 import type { BrainCtx, BrainData, BrainModeView } from "./types";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -131,7 +139,18 @@ export class MapMode implements BrainModeView {
   private resting = false;
   private bound = false;
 
-  constructor(private ctx: BrainCtx) {}
+  // Consolidate with AI… (brain-ai A3)
+  /** The community whose scoped sweep is under way, and its stage; one at a time. */
+  private consolidating: { id: string; stage: "check" | "ask" | "run" } | null = null;
+  /** Why the last Consolidate could not run (the sweep is off), shown in that community's card until the next try. */
+  private offNote: { id: string; text: string } | null = null;
+  /** The control to give the keyboard after a dialog, when nothing has it (the one that opened it was redrawn). */
+  private focusAfter: string | null = null;
+  private cards: SweepCards;
+
+  constructor(private ctx: BrainCtx) {
+    this.cards = new SweepCards(ctx, { keyAttr: "data-map-key", redraw: () => this.redrawRight() });
+  }
 
   mount(host: HTMLElement): void {
     this.bind();
@@ -197,6 +216,8 @@ export class MapMode implements BrainModeView {
     const d = this.ctx.data();
     if (!force && d === this.lastData) return;
     this.lastData = d;
+    // On every load, even with no community open: an applied sweep card the files now read done stops being hidden.
+    this.cards.sync();
     const empty = mapEmpty(d.map, d.settings.graph);
     const kind = empty ? `empty:${empty.state}` : "map";
     if (kind !== this.built) {
@@ -602,6 +623,7 @@ export class MapMode implements BrainModeView {
       const head = right.createDiv({ cls: "aos-brain-mapcardhead" });
       head.createEl("h2", { cls: "aos-brain-mapcardtitle", text: c.name });
       head.createSpan({ cls: "aos-brain-mono aos-brain-mapcardline", text: communityLine(c) });
+      this.drawConsolidate(right, d, c);
       const mem = right.createEl("section", { cls: "aos-brain-mapsec", attr: { "aria-label": "Members" } });
       mem.createEl("h3", { cls: "aos-brain-label", text: "Members" });
       for (const r of memberRows(c, d.byPath, this.usage(d), d.written, d.now)) {
@@ -667,6 +689,104 @@ export class MapMode implements BrainModeView {
       b.createSpan({ cls: "aos-brain-mono aos-brain-mapmembernote", text: `${r.n} ${r.n === 1 ? "link" : "links"}` });
       b.addEventListener("click", () => this.openMemory(r.path));
     }
+  }
+
+  // ── Consolidate with AI… (brain-ai A3): a sweep scoped to the community, and that scope's cards ──
+
+  /** The paths a community's sweep sends: the lead first, then the most linked, at most SWEEP_MAX_PATHS. */
+  private sweepPaths(d: BrainData, c: CommunityView): { paths: string[]; of: number; cut: number } {
+    return scopePaths(c.lead, c.paths, (p) => d.map?.memories[p]?.degree ?? 0);
+  }
+
+  /** The button, what it says while it runs or why it is off, the cut it makes, then the community's suggestions. */
+  private drawConsolidate(right: HTMLElement, d: BrainData, c: CommunityView): void {
+    const sent = this.sweepPaths(d, c);
+    const acts = right.createDiv({ cls: "aos-brain-mapcardacts aos-brain-sw-mapacts" });
+    const mine = this.consolidating?.id === c.id ? this.consolidating.stage : null;
+    const text = mine === "run" ? "Consolidating…" : mine ? "Checking…" : "Consolidate with AI…";
+    const busy = !!this.consolidating;
+    const b = acts.createEl("button", {
+      cls: `aos-brain-btn is-small aos-brain-sw-consolidate${busy ? " is-busy" : ""}`, text,
+      attr: {
+        type: "button", "data-map-key": "consolidate", "data-act": "consolidate", "data-community": c.id,
+        "aria-label": mine ? `Consolidate “${c.name}”: ${text}` : `Consolidate “${c.name}” with AI`, ...(busy ? { "aria-disabled": "true" } : {}), ...(mine ? { "aria-busy": "true" } : {}),
+      },
+    });
+    guardClicks(b, () => { if (b.getAttribute("aria-disabled") !== "true") void this.consolidate(c); });
+    const status = right.createEl("p", { cls: "aos-brain-sw-status", attr: { role: "status" } });
+    if (mine === "run") status.createSpan({ text: "A model reads these memories' titles, descriptions and first lines; this can take up to two minutes." });
+    else if (this.offNote?.id === c.id) {
+      status.addClass("is-off");
+      status.createSpan({ cls: "aos-brain-pill is-off aos-brain-sw-off", text: "off" });
+      status.createSpan({ text: this.offNote.text });
+    }
+    if (sent.cut) right.createEl("p", { cls: "aos-brain-sw-cut aos-brain-dim", text: `A sweep looks at the ${sent.paths.length} most linked of its ${sent.of} memories.` });
+    const scopes = groupScopes(d.sweep, sent.paths);
+    const sum = scopeSummary(d, scopes);
+    if (!sum.run && !sum.views.length) return;
+    const sec = right.createEl("section", { cls: "aos-brain-mapsec aos-brain-sw-mapsec", attr: { "aria-label": "Suggestions" } });
+    sec.createEl("h3", { cls: "aos-brain-label", text: "Suggestions" });
+    sec.createEl("p", { cls: "aos-brain-sw-line", text: sum.line });
+    this.cards.render(sec, sum.views, { label: `Suggestions for ${c.name}`, empty: "Nothing open: every suggestion was applied or dismissed." });
+  }
+
+  /**
+   * Consolidate with AI… (brain-ai A3, A5): the scoped estimate (no model call), a question naming the cost and any
+   * members left out, then the scoped sweep; its cards show in the card once the files reload. Off: the reason, in a
+   * Notice and in the card. A confirm runs the sweep even when the person moved to another mode meanwhile.
+   */
+  private async consolidate(c: CommunityView): Promise<void> {
+    if (this.consolidating || !this.root) return;
+    const label = "Consolidate with AI";
+    const sent = this.sweepPaths(this.ctx.data(), c);
+    if (!sent.paths.length) return;
+    this.offNote = null;
+    this.consolidating = { id: c.id, stage: "check" };
+    this.redrawRight();
+    try {
+      const pre = await this.ctx.preview<unknown>({ verb: "sweep", paths: sent.paths, estimate: true }, label);
+      if (!pre.ok) return;
+      const e = parseSweepEstimate(pre.json);
+      if (!e) { new Notice(`${label}: aos answered in an unexpected shape`); return; }
+      if (!e.estimate.available) {
+        const why = sweepOffText(e.estimate);
+        this.offNote = { id: c.id, text: why };
+        new Notice(`${label}: ${why}`);
+        return;
+      }
+      // Left the Map while the estimate ran: no question over a page the person moved to.
+      if (!this.root) return;
+      this.consolidating = { id: c.id, stage: "ask" };
+      this.redrawRight();
+      const q = consolidateAsk(c.name, e, sent);
+      if (!(await this.ctx.confirm(q.title, q.message, q.confirm))) return;
+      this.consolidating = { id: c.id, stage: "run" };
+      this.redrawRight();
+      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: sent.paths, estimate: false }, label, { timeoutMs: AI_TIMEOUT_MS });
+      if (r.ok) new Notice(sweepDoneText(parseSweepResult(r.json), c.name));
+    } catch (err) {
+      new Notice(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.consolidating = null;
+      this.focusAfter = "consolidate";
+      this.redrawRight();
+    }
+  }
+
+  /** The right pane again (a busy state changed), keeping its scroll and the keyboard where they were. */
+  private redrawRight(): void {
+    const root = this.root;
+    const right = this.right;
+    if (!root || !right || this.view === "every" || this.built !== "map") return;
+    const key = focusedKey(root);
+    const top = right.scrollTop;
+    this.drawRight();
+    right.scrollTop = top;
+    refocus(root, key);
+    const want = this.focusAfter;
+    this.focusAfter = null;
+    const a = root.ownerDocument.activeElement;
+    if (want && (!a || a === root.ownerDocument.body)) refocus(root, want);
   }
 
   // ── Every node: the graph, built from the map; kept, with its places and pins, while the map holds the same memories ──

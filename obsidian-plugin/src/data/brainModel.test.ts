@@ -64,6 +64,9 @@ test("parseMemory: the summary is the description, else MEMORY.md's line, else t
   const index = parseIndexLines("# Memory\n\n## Feedback (how to work)\n\n- [Prefer small diffs](brain/memory/feedback/prefer-small-diffs.md) — one reviewable change at a time\n- [No dash](brain/memory/feedback/no-dash.md)\n");
   assert.equal(index.get(P("feedback", "prefer-small-diffs")), "one reviewable change at a time");
   assert.equal(index.get(P("feedback", "no-dash")), "");
+  // A CRLF MEMORY.md reads the same: the `\r` is not part of the description, and a line still matches.
+  const crlf = parseIndexLines("# Memory\r\n\r\n## Feedback (how to work)\r\n- [Prefer small diffs](brain/memory/feedback/prefer-small-diffs.md) — one reviewable change at a time\r\n- [No dash](brain/memory/feedback/no-dash.md)\r\n");
+  assert.deepEqual([...crlf], [[P("feedback", "prefer-small-diffs"), "one reviewable change at a time"], [P("feedback", "no-dash"), ""]]);
   assert.equal(parseMemory(P("feedback", "prefer-small-diffs"), mem("feedback", "prefer-small-diffs"), index)!.summary, "one reviewable change at a time");
   assert.equal(parseMemory(P("feedback", "prefer-small-diffs"), mem("feedback", "prefer-small-diffs", { description: "own words" }), index)!.summary, "own words");
   assert.equal(parseMemory(P("feedback", "no-dash"), mem("feedback", "no-dash", { body: "First para\nwraps.\n\nSecond." }), index)!.summary, "First para wraps.");
@@ -370,6 +373,21 @@ test("historyLine: a fixed row names its kind (aos memory fix), and only a kind 
     "Fixed (index) Oct 2 · fixed (types) Oct 3");
   assert.equal(historyLine([row("fixed", at(9, 2), { kind: "<b>" })], { source: null, created: null }, now), "Fixed Oct 2");
   assert.equal(historyLine([row("fixed", at(9, 2))], { source: null, created: null }, now), "Fixed Oct 2");
+});
+
+test("historyLine: a merged row counts the memories merged into this one (brain-ai A9), an unmerged row reads merge undone (A2)", () => {
+  const now = new Date(2026, 9, 12, 12);
+  const at = (mo: number, d: number): string => new Date(2026, mo, d, 12).toISOString();
+  const row = (action: string, ts: string, extra: Record<string, unknown> = {}) => ({ ts, session: "", action, slug: "a", type: "feedback", title: "A", ...extra }) as never;
+  const from = ["brain/memory/feedback/b.md", "brain/memory/projects/c.md"];
+  const merged = row("merged", at(9, 11), { from, record: "20261011-120000-abcd1234", hash: "e".repeat(64) });
+  assert.equal(historyLine([row("written", at(8, 30)), merged], { source: "auto-wrap", created: null }, now), "Written by auto-wrap Sep 30 · merged 2 into this Oct 11");
+  assert.equal(historyLine([merged, row("unmerged", at(9, 12), { record: "20261011-120000-abcd1234", restored: from })], { source: null, created: null }, now),
+    "Merged 2 into this Oct 11 · merge undone Oct 12");
+  assert.equal(historyLine([row("merged", at(9, 11), { from: [from[0]] })], { source: null, created: null }, now), "Merged 1 into this Oct 11");
+  // Only memory paths count: a row from an older runtime, or a malformed one, still reads as a merge.
+  assert.equal(historyLine([row("merged", at(9, 11), { from: ["../x.md", 3] })], { source: null, created: null }, now), "Merged Oct 11");
+  assert.equal(historyLine([row("merged", at(9, 11))], { source: null, created: null }, now), "Merged Oct 11");
 });
 
 test("bodyWithoutTitle drops the leading H1 only when it is the title", () => {

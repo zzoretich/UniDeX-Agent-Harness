@@ -1,6 +1,6 @@
 'use strict';
 // lib/memory-ops.js (brain-hub D5–D7, D13, spec §6): byte-for-byte frontmatter edits, the MEMORY.md line kept in step,
-// the trail, and every refusal (bad path, link, outside, changed file, gone memory).
+// the trail, and every refusal (bad path, link, outside, changed file, gone memory); set's title (brain-ai A10).
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -74,11 +74,99 @@ test('set changes pin, status and description; --expect refuses a changed file; 
 
 test('set refuses unknown keys, bad values and archived memories', () => {
   const v = fixture();
-  for (const f of [{}, { title: 'x' }, { pin: 'yes' }, { status: 'archived' }, { description: 'two\nlines' }, { description: 'x'.repeat(201) }, []]) {
+  for (const f of [{}, { slug: 'x' }, { pin: 'yes' }, { status: 'archived' }, { description: 'two\nlines' }, { description: 'x'.repeat(201) }, [],
+    { title: 'two\nlines' }, { title: 'x'.repeat(121) }, { title: '   ' }, { title: 'a\ttab' }, { title: 7 }]) {
     assert.throws(() => ops.setFields(v, FB, f), { code: 'BAD_FIELD' }, JSON.stringify(f));
   }
+  assert.equal(read(v, FB), RULE, 'nothing written');
   ops.archive(v, [PR]);
   assert.throws(() => ops.setFields(v, PR, { pin: true }), { code: 'GONE' });
+  assert.throws(() => ops.setFields(v, PR, { title: 'Back' }), { code: 'GONE' });
+});
+
+test('set title rewrites the first H1 and the MEMORY.md line (keeping its description); the slug and the rest stay', () => {
+  const v = fixture();
+  const h = ops.readMemory(v, FB).hash;
+  const dry = ops.setFields(v, FB, { title: 'Graph tools first' }, { expect: h, dryRun: true });
+  assert.equal(dry.text, RULE.replace('# Graphify first', '# Graph tools first'));
+  assert.equal(read(v, FB), RULE, 'a dry run writes nothing');
+  const r = ops.setFields(v, FB, { title: '  Graph tools first ' }, { expect: h });
+  assert.deepEqual([r.written, r.fields], [true, ['title']]);
+  assert.equal(read(v, FB), RULE.replace('# Graphify first', '# Graph tools first'), 'only the H1 line changed');
+  assert.equal(r.hash, ops.readMemory(v, FB).hash);
+  assert.equal(read(v, 'MEMORY.md'), INDEX.replace('[Graphify first]', '[Graph tools first]'), 'the line in place, its description kept');
+  assert.deepEqual(trail(v).map((t) => [t.action, t.fields, t.title]), [['set', ['title'], 'Graph tools first']]);
+  assert.equal(ops.setFields(v, FB, { title: 'Graph tools first' }).written, false, 'the same title writes nothing');
+  assert.throws(() => ops.setFields(v, FB, { title: 'Again' }, { expect: h }), { code: 'CHANGED' });
+
+  // With a description too, the line takes the new one; a title holding `$&` and `: # "` is written as it is.
+  ops.setFields(v, PR, { title: 'Pulse: 1.5 # "cockpit" $& $1', description: 'the cockpit shipped' });
+  assert.match(read(v, PR), /\n---\n\n# Pulse: 1\.5 # "cockpit" \$& \$1\n\nShipped the cockpit\.\n$/);
+  assert.equal(ops.describe(ops.readMemory(v, PR)).title, 'Pulse: 1.5 # "cockpit" $& $1');
+  assert.match(read(v, 'MEMORY.md'), /^- \[Pulse: 1\.5 # "cockpit" \$& \$1\]\(brain\/memory\/projects\/pulse-1-5-0\.md\) — the cockpit shipped$/m);
+});
+
+test('set title inserts an H1 after the frontmatter when there is none, and adds a missing MEMORY.md line', () => {
+  const v = fixture();
+  const REF = 'brain/memory/reference/no-heading.md';
+  put(v, REF, '---\ntype: memory\ntags: [memory/reference, status/active]\ndescription: "Notes: kept"\n---\nFirst paragraph.\n');
+  ops.setFields(v, REF, { title: 'A heading now' });
+  assert.equal(read(v, REF), '---\ntype: memory\ntags: [memory/reference, status/active]\ndescription: "Notes: kept"\n---\n\n# A heading now\n\nFirst paragraph.\n');
+  assert.match(read(v, 'MEMORY.md'), /\n## Reference\n- \[A heading now\]\(brain\/memory\/reference\/no-heading\.md\) — Notes: kept$/);
+  const BLANK = 'brain/memory/reference/blank-line.md';
+  put(v, BLANK, '---\r\ntype: memory\r\ntags: [memory/reference, status/active]\r\n---\r\n\r\nBody only.\r\n');
+  ops.setFields(v, BLANK, { title: 'CRLF kept' });
+  assert.equal(read(v, BLANK), '---\r\ntype: memory\r\ntags: [memory/reference, status/active]\r\n---\r\n\r\n# CRLF kept\r\n\r\nBody only.\r\n');
+  assert.match(read(v, 'MEMORY.md'), /- \[CRLF kept\]\(brain\/memory\/reference\/blank-line\.md\) — Body only\.$/m, 'no description anywhere: its opening');
+});
+
+test('set refuses a bracket in a title and `](` in a description: MEMORY.md\'s line would link another memory too', () => {
+  const v = fixture();
+  const before = read(v, 'MEMORY.md');
+  for (const f of [{ title: `Merged](${PR}) — x [y` }, { title: '[WIP] graph' }, { title: 'arr]' }, { description: `see [it](${PR})` }]) {
+    assert.throws(() => ops.setFields(v, FB, f), { code: 'BAD_FIELD', message: /\[ or \]|`\]\(`/ }, JSON.stringify(f));
+  }
+  assert.equal(read(v, FB), RULE);
+  assert.equal(read(v, 'MEMORY.md'), before, 'nothing written');
+  // Parentheses, and a lone bracket in a description, are fine: neither links anything.
+  ops.setFields(v, FB, { title: 'Graph (tools) first', description: 'ask the graph [first] (always)' });
+  assert.ok(read(v, 'MEMORY.md').includes(`- [Graph (tools) first](${FB}) — ask the graph [first] (always)\n`));
+  assert.ok(ops.TITLE_UNSAFE.test('a]b') && ops.DESC_UNSAFE.test('a](b') && !ops.DESC_UNSAFE.test('a] (b'));
+});
+
+test('set title never rewrites a `# ` line inside a code fence: it inserts the heading after the frontmatter instead', () => {
+  const v = fixture();
+  const REF = 'brain/memory/reference/build-steps.md';
+  const body = 'How to build:\n\n```bash\n# install deps first\nnpm ci\n```\n\n~~~\n# not a heading either\n~~~\n';
+  put(v, REF, `---\ntype: memory\ntags: [memory/reference, status/active]\ndescription: the build\n---\n\n${body}`);
+  assert.equal(ops.describe(ops.readMemory(v, REF)).title, 'install deps first', 'titleOf (fence-blind, as every reader is) reads the comment');
+  ops.setFields(v, REF, { title: 'Build the app' });
+  assert.equal(read(v, REF), `---\ntype: memory\ntags: [memory/reference, status/active]\ndescription: the build\n---\n\n# Build the app\n\n${body}`, 'the fence untouched');
+  assert.equal(ops.describe(ops.readMemory(v, REF)).title, 'Build the app');
+  assert.match(read(v, 'MEMORY.md'), /^- \[Build the app\]\(brain\/memory\/reference\/build-steps\.md\) — the build$/m);
+  // Retitled again, the real heading (now first, outside any fence) is the line rewritten.
+  ops.setFields(v, REF, { title: 'Build it' });
+  assert.equal(read(v, REF), `---\ntype: memory\ntags: [memory/reference, status/active]\ndescription: the build\n---\n\n# Build it\n\n${body}`);
+  // A heading after a closed fence is a heading.
+  const AFTER = 'brain/memory/reference/after-fence.md';
+  put(v, AFTER, '---\ntags: [memory/reference, status/active]\n---\n\n````\n```\n# inside\n```\n````\n\n# Real\n');
+  ops.setFields(v, AFTER, { title: 'Renamed' });
+  assert.equal(read(v, AFTER), '---\ntags: [memory/reference, status/active]\n---\n\n# Renamed\n\n````\n```\n# inside\n```\n````\n\n# Real\n', 'the first # line was in the fence: a heading on top');
+});
+
+test('a CRLF MEMORY.md: its lines read without the \\r, and a rewritten or added line keeps the file\'s line end', () => {
+  const v = fixture();
+  const crlf = INDEX.replace(/\n/g, '\r\n');
+  put(v, 'MEMORY.md', crlf);
+  assert.deepEqual(ops.indexEntry(crlf, FB), { title: 'Graphify first', description: 'ask the graph first' });
+  ops.setFields(v, FB, { title: 'Graph tools first' });
+  assert.equal(read(v, 'MEMORY.md'), crlf.replace('[Graphify first]', '[Graph tools first]'), 'the description kept, the \\r kept');
+  // Archive keeps the index-only description; restore adds the line back with a \r.
+  ops.archive(v, [PR]);
+  assert.match(read(v, PR), /^description: shipped the cockpit$/m);
+  ops.restore(v, [PR]);
+  assert.ok(read(v, 'MEMORY.md').includes(`- [Pulse 1.5.0](${PR}) — shipped the cockpit\r\n`));
+  assert.doesNotMatch(read(v, 'MEMORY.md'), /[^\r]\n/, 'every line still ends CRLF');
 });
 
 test('archive keeps the description, records the status before, removes the index line; restore puts both back', () => {

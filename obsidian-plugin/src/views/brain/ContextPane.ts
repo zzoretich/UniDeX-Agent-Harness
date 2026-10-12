@@ -1,9 +1,13 @@
 // Library's context, the right pane (spec 2026-10-11-brain-hub D2, D8, D11; canvas Library.dc.html): for the open file,
 // its use over 30 days from the usage log (paths and counts only, D8), what links to it (found after the pane is drawn,
 // a vault pass kept per file), the memories that score close to it (D11: by meaning with embeddings, else by words)
-// and its history from the trail in one line with its path. Under 1100 px the pane folds under the reader.
+// and its history from the trail in one line with its path. A memory a merge wrote into shows Undo merge under its
+// history while the merge can be undone (brain-ai A2: its record is kept, nothing changed it since, not undone yet),
+// which confirms and runs `aos memory unmerge --expect <its hash>`. Under 1100 px the pane folds under the reader.
+import { Notice } from "obsidian";
 import {
-  hasUsage, historyFor, historyLine, hostSplit, linkSourceKind, nearby, nearbyBasis, shortDay, type HubUsageRow, sessionLabel,
+  UNDO_DAYS, hasUsage, historyFor, historyLine, hostSplit, linkSourceKind, nearby, nearbyBasis, shortDay, undoableMerge,
+  type BrainMemory, type HubUsageRow, type UnmergeResult, sessionLabel,
 } from "../../data/brainModel";
 import { readerPath, focusedKey, refocus, type ReaderItem } from "./Reader";
 import { MAX_BACKLINKS, type LibraryLinks } from "./LibraryLinks";
@@ -11,6 +15,12 @@ import type { BrainCtx } from "./types";
 
 /** At or above this score a nearby memory reads amber: it may be the same memory twice (D11's flag is 0.8 by default). */
 const CLOSE = 0.85;
+
+/** Whole days left to undo a merge made at `at` (A2: its record is pruned UNDO_DAYS after it), at least 1. */
+export function undoDaysLeft(at: string, now: Date): number {
+  const age = Math.floor((now.getTime() - Date.parse(at)) / 86_400_000);
+  return Math.max(1, UNDO_DAYS - (Number.isFinite(age) ? Math.max(0, age) : 0));
+}
 
 export interface ContextHandlers {
   /** Show a file Library holds (a memory, a draft, a pattern, a reflection); anything else opens in the editor. */
@@ -26,6 +36,8 @@ export class LibraryContext {
   private last: { path: string; list: string[] } | null = null;
   private ask = 0;
   private tele: { load: object; on: boolean } | null = null;
+  /** An unmerge is running: its button reads as off until it answers. */
+  private undoing = false;
 
   constructor(parent: HTMLElement, private ctx: BrainCtx, private links: LibraryLinks, private on: ContextHandlers) {
     this.el = parent.createEl("aside", { cls: "aos-brain-right aos-lib-context", attr: { "aria-label": "Context" } });
@@ -57,7 +69,10 @@ export class LibraryContext {
     const u = d.hub?.usage.paths[path] ?? null;
     const base: unknown[] = [it.kind, path, hasUsage(d.hub), d.hub?.usage.since ?? null, u, this.telemetryOn()];
     if (it.kind !== "memories") return [...base, it.kind === "drafts" ? [it.d.created, it.d.session] : [it.n.created, it.n.updated]];
-    return [...base, nearbyBasis(d.pairs, path), nearby(d.pairs, path, d.byPath), historyLine(historyFor(d.trail, it.m), it.m, d.now)];
+    return [
+      ...base, nearbyBasis(d.pairs, path), nearby(d.pairs, path, d.byPath), historyLine(historyFor(d.trail, it.m), it.m, d.now),
+      undoOffer(d.trail, it.m, d.now),
+    ];
   }
 
   /** telemetry.enabled, read once per load (it reads the config files, and show() runs on every keystroke). */
@@ -107,7 +122,55 @@ export class LibraryContext {
         it.kind === "drafts" && it.d.session ? sessionLabel(it.d.session) : ""].filter(Boolean).join(" · ");
     }
     h.createEl("p", { cls: "aos-lib-cline", text: line || "Nothing in the trail for it yet." });
+    if (it.kind === "memories") this.undoMerge(h, it.m);
     h.createEl("p", { cls: "aos-brain-mono aos-lib-cpath", text: path });
+  }
+
+  /**
+   * Undo merge (brain-ai A2): the merged memory's text before the merge back, and the memories merged into it restored
+   * with their MEMORY.md lines. Offered while undoableMerge says it can be (the newest merge, younger than UNDO_DAYS, not
+   * undone, the file as the merge left it); the runtime refuses it too when the file changed since (`--expect`).
+   */
+  private undoMerge(h: HTMLElement, m: BrainMemory): void {
+    const d = this.ctx.data();
+    const u = undoableMerge(d.trail, m, d.now);
+    if (!u) return;
+    const n = u.from.length;
+    const left = undoDaysLeft(u.at, d.now);
+    const row = h.createDiv({ cls: "aos-brain-undomerge" });
+    const b = row.createEl("button", {
+      cls: "aos-brain-btn is-small", text: "Undo merge",
+      attr: { type: "button", "data-action": "unmerge", "data-lib-key": "act:unmerge", "aria-disabled": String(this.undoing) },
+    });
+    row.createSpan({ cls: "aos-lib-cnote", text: `${left} ${left === 1 ? "day" : "days"} left to undo it` });
+    b.addEventListener("click", () => void this.unmerge(m, n));
+  }
+
+  private async unmerge(m: BrainMemory, n: number): Promise<void> {
+    if (this.undoing) return;
+    const others = n === 1 ? "the memory merged into it" : n ? `the ${n} memories merged into it` : "the memories merged into it";
+    const ok = await this.ctx.confirm(
+      `Undo the merge into “${m.title}”?`,
+      `Puts back the text this memory had before the merge and restores ${others}, with their MEMORY.md lines. Refused if this memory changed since the merge.`,
+      "Undo merge",
+    );
+    if (!ok || this.undoing) return;
+    this.undoing = true;
+    this.paintUndo();
+    try {
+      const r = await this.ctx.run<UnmergeResult>({ verb: "unmerge", path: m.path, expect: m.hash }, "Undo merge");
+      if (r.ok) {
+        const k = Array.isArray(r.json.restored) ? r.json.restored.length : 0;
+        new Notice(k ? `Merge undone: ${k} ${k === 1 ? "memory" : "memories"} restored.` : "Merge undone.");
+      }
+    } finally {
+      this.undoing = false;
+      this.paintUndo();
+    }
+  }
+
+  private paintUndo(): void {
+    this.el.querySelector<HTMLElement>('[data-action="unmerge"]')?.setAttribute("aria-disabled", String(this.undoing));
   }
 
   /** USE · LAST 30 DAYS (D8): the 30-day and 7-day counts, how it was reached, by which host; or why there is none. */
@@ -187,4 +250,10 @@ export class LibraryContext {
     this.linksEl = null;
     this.linksDrawn = "";
   }
+}
+
+/** What the history's Undo merge shows from, for the pane's signature: the merge's record and its days left, or null. */
+function undoOffer(trail: Parameters<typeof undoableMerge>[0], m: BrainMemory, now: Date): [string, number] | null {
+  const u = undoableMerge(trail, m, now);
+  return u ? [u.record, undoDaysLeft(u.at, now)] : null;
 }
