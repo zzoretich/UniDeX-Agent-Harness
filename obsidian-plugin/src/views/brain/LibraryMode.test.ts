@@ -6,6 +6,8 @@ import type { TrailEntry } from "../../data/promoteTrail";
 import type * as Library from "./LibraryMode";
 import type * as Context from "./ContextPane";
 import type { BrainCtx, BrainData } from "./types";
+/** A local-time instant: day math here is local, so a fixture in UTC would move days in UTC−11 and UTC+14 (CI tz-env). */
+const L = (mo: number, d: number, h: number, mi = 0): string => new Date(2026, mo - 1, d, h, mi).toISOString();
 
 // LibraryMode.ts and the reader it builds draw with Obsidian's setIcon and MarkdownRenderer, and the obsidian package
 // ships types only: under node:test "obsidian" resolves to a stub, so the mode's pure part loads without a DOM, and the
@@ -116,8 +118,8 @@ function contextHarness(o: { trail?: (m: BrainMemory) => TrailEntry[]; confirm?:
   const m = parseMemory(SMALL, mem("feedback", "small-diffs", "Prefer small diffs"))!;
   const row = (action: string, ts: string, extra: Record<string, unknown> = {}): TrailEntry =>
     ({ ts, session: "", action, slug: "small-diffs", type: "feedback", title: "Prefer small diffs", ...extra }) as unknown as TrailEntry;
-  const trail = o.trail ? o.trail(m) : [row("merged", "2026-10-10T12:00:00.000Z", { from: [REVIEW], record: "20261010-120000-abcd1234", hash: m.hash })];
-  const d = { now: new Date("2026-10-12T12:00:00.000Z"), memories: [m], byPath: new Map([[m.path, m]]), drafts: [], patterns: [], reflections: [], pairs: [], trail, hub: null } as unknown as BrainData;
+  const trail = o.trail ? o.trail(m) : [row("merged", L(10, 10, 12), { from: [REVIEW], record: "20261010-120000-abcd1234", hash: m.hash })];
+  const d = { now: new Date(2026, 9, 12, 12), memories: [m], byPath: new Map([[m.path, m]]), drafts: [], patterns: [], reflections: [], pairs: [], trail, hub: null } as unknown as BrainData;
   const runs: MemoryVerb[] = [];
   const confirms: Array<[string, string]> = [];
   const ctx = {
@@ -162,16 +164,16 @@ test("a memory a merge wrote into shows Undo merge under its history; it confirm
 });
 
 test("Undo merge is not offered once the memory changed, the merge was undone, or its record is past UNDO_DAYS", () => {
-  const changed = contextHarness({ trail: () => [({ ts: "2026-10-10T12:00:00.000Z", session: "", action: "merged", slug: "small-diffs", type: "feedback", title: "t", from: [REVIEW], record: "r1", hash: "0".repeat(64) }) as unknown as TrailEntry] });
+  const changed = contextHarness({ trail: () => [({ ts: L(10, 10, 12), session: "", action: "merged", slug: "small-diffs", type: "feedback", title: "t", from: [REVIEW], record: "r1", hash: "0".repeat(64) }) as unknown as TrailEntry] });
   assert.equal(changed.button(), null, "edited since the merge");
   const undone = contextHarness({
     trail: (m) => [
-      ({ ts: "2026-10-10T12:00:00.000Z", session: "", action: "merged", slug: "small-diffs", type: "feedback", title: "t", from: [REVIEW], record: "r1", hash: m.hash }) as unknown as TrailEntry,
-      ({ ts: "2026-10-11T12:00:00.000Z", session: "", action: "unmerged", slug: "small-diffs", type: "feedback", title: "t", record: "r1", restored: [REVIEW] }) as unknown as TrailEntry,
+      ({ ts: L(10, 10, 12), session: "", action: "merged", slug: "small-diffs", type: "feedback", title: "t", from: [REVIEW], record: "r1", hash: m.hash }) as unknown as TrailEntry,
+      ({ ts: L(10, 11, 12), session: "", action: "unmerged", slug: "small-diffs", type: "feedback", title: "t", record: "r1", restored: [REVIEW] }) as unknown as TrailEntry,
     ],
   });
   assert.equal(undone.button(), null, "already undone");
   assert.match(undone.history.textContent, /merge undone Oct 11/);
-  const old = contextHarness({ trail: (m) => [({ ts: "2026-09-01T12:00:00.000Z", session: "", action: "merged", slug: "small-diffs", type: "feedback", title: "t", from: [REVIEW], record: "r1", hash: m.hash }) as unknown as TrailEntry] });
+  const old = contextHarness({ trail: (m) => [({ ts: L(9, 1, 12), session: "", action: "merged", slug: "small-diffs", type: "feedback", title: "t", from: [REVIEW], record: "r1", hash: m.hash }) as unknown as TrailEntry] });
   assert.equal(old.button(), null, "its record is pruned after 30 days");
 });

@@ -8,6 +8,8 @@ import {
   archiveAsk, consolidateAsk, currentCards, groupScopes, retitleAsk, runDay, scopeName, scopePaths, scopeSummary, sweepCardView,
   sweepDoneText, sweepEstimateLine, sweepGroups, sweepLine, sweepOffText, sweepState, sweepSummary, sweepViews, type SweepInput,
 } from "./brainSweep";
+/** A local-time instant: day math here is local, so a fixture in UTC would move days in UTC−11 and UTC+14 (CI tz-env). */
+const L = (mo: number, d: number, h: number, mi = 0): string => new Date(2026, mo - 1, d, h, mi).toISOString();
 
 const P = (t: string, s: string): string => `brain/memory/${t}/${s}.md`;
 const A = P("feedback", "small-diffs"), B = P("feedback", "small-diffs-in-review"), C = P("projects", "tide-api"), D = P("projects", "tide-api-notes");
@@ -85,7 +87,7 @@ test("the sweep's line: last run, suggestions, open; stale, capped and scoped ru
   assert.equal(sweepLine(null, [], NOW), "No sweep yet");
   const r = run({ id: "r1", at: new Date(2026, 9, 12, 9).toISOString(), suggestions: 6 });
   assert.equal(sweepLine(r, [{ state: "open" }, { state: "open" }, { state: "open" }], NOW), "last run today · 6 suggestions · 3 open");
-  const older = run({ id: "r0", at: "2026-10-09T10:00:00Z", suggestions: 1, considered: 340, of: 350 });
+  const older = run({ id: "r0", at: L(10, 9, 10), suggestions: 1, considered: 340, of: 350 });
   assert.equal(sweepLine(older, [{ state: "stale" }], NOW, "Tide API"), "last run Oct 9 on “Tide API” · 1 suggestion · 0 open · 1 changed since · 340 of 350 memories looked at");
   assert.equal(runDay("nope", NOW), "");
 });
@@ -121,7 +123,7 @@ test("a scope's name: its cluster, else the community it leads, else the lead an
 
 test("groupScopes: the key of the paths sent now, and earlier runs on the same lead", () => {
   const file: SweepFile = {
-    runs: [run({ id: "r2", at: "2026-10-12T10:00:00Z", scope: { paths: [E, F, A] } }), run({ id: "r1", at: "2026-10-11T10:00:00Z", scope: { paths: [C, D] } }), run({ id: "r0", at: "2026-10-10T10:00:00Z" })],
+    runs: [run({ id: "r2", at: L(10, 12, 10), scope: { paths: [E, F, A] } }), run({ id: "r1", at: L(10, 11, 10), scope: { paths: [C, D] } }), run({ id: "r0", at: L(10, 10, 10) })],
     suggestions: [],
   };
   const keys = groupScopes(file, [E, F]);
@@ -133,15 +135,15 @@ test("a group re-run after its members changed replaces the earlier run's open c
   // Swept on [C, D, E] (lead C): "archive E". D was merged away since, so the group now sends [C, E] (another key); the
   // runtime keeps the first run's card under its own key, and the newer run on the same lead suggests nothing.
   const k1 = sweepScopeKey([C, D, E])!, k2 = sweepScopeKey([C, E])!;
-  const first = run({ id: "r1", at: "2026-10-12T09:00:00Z", scope: { paths: [C, D, E] }, suggestions: 1 });
+  const first = run({ id: "r1", at: L(10, 12, 9), scope: { paths: [C, D, E] }, suggestions: 1 });
   const stale = card({ id: "0000000000c1", kind: "archive", paths: [E], scope: k1, run: "r1" });
   const whole = card({ id: "0000000000c2", kind: "merge", paths: [A, B], run: "r0" });
   const other = card({ id: "0000000000c3", kind: "archive", paths: [F], scope: sweepScopeKey([E, F]), run: "r9" });
-  const before: SweepFile = { runs: [first, run({ id: "r0", at: "2026-10-12T08:00:00Z" })], suggestions: [stale, whole] };
+  const before: SweepFile = { runs: [first, run({ id: "r0", at: L(10, 12, 8) })], suggestions: [stale, whole] };
   assert.deepEqual(currentCards(before).map((c) => c.id), ["0000000000c1", "0000000000c2"], "the newest run on C: its card is listed");
   assert.deepEqual(scopeSummary(input(before), groupScopes(before, [C, E])).views.map((v) => v.id), ["0000000000c1"], "the group's panel shows the earlier run's card");
 
-  const again = run({ id: "r2", at: "2026-10-12T10:00:00Z", scope: { paths: [C, E] }, suggestions: 0 });
+  const again = run({ id: "r2", at: L(10, 12, 10), scope: { paths: [C, E] }, suggestions: 0 });
   const after: SweepFile = { runs: [again, ...before.runs], suggestions: [stale, whole, other, { ...stale, id: "0000000000c4", state: "dismissed" }] };
   assert.deepEqual(currentCards(after).map((c) => c.id), ["0000000000c2", "0000000000c3", "0000000000c4"], "replaced by r2; the whole brain's, a run the file no longer lists and a dismissed one stay");
   const t = scopeSummary(input(after), groupScopes(after, [C, E]));
@@ -158,7 +160,7 @@ function input(file: SweepFile): SweepInput {
 test("Health's groups: the whole brain first, then each scope named, newest run first; claimed scopes left out", () => {
   const kTide = sweepScopeKey([C, D])!, kRel = sweepScopeKey([E, F])!;
   const file: SweepFile = {
-    runs: [run({ id: "r3", at: "2026-10-12T11:00:00Z", scope: { paths: [E, F] } }), run({ id: "r2", at: "2026-10-12T10:00:00Z", scope: { paths: [C, D] } }), run({ id: "r1", at: "2026-10-12T09:00:00Z" })],
+    runs: [run({ id: "r3", at: L(10, 12, 11), scope: { paths: [E, F] } }), run({ id: "r2", at: L(10, 12, 10), scope: { paths: [C, D] } }), run({ id: "r1", at: L(10, 12, 9) })],
     suggestions: [
       card({ id: "0000000000a1", kind: "retitle", paths: [C], title: "Tide API client", scope: kTide, run: "r2" }),
       card({ id: "0000000000a2", kind: "merge", paths: [A, B], title: "Small diffs", run: "r1" }),

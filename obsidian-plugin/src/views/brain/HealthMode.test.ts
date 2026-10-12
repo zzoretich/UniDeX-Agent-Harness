@@ -6,6 +6,8 @@ import {
 } from "../../data/brainModel";
 import type * as Health from "./HealthMode";
 import type { BrainCtx, BrainData } from "./types";
+/** A local-time instant: day math here is local, so a fixture in UTC would move days in UTC−11 and UTC+14 (CI tz-env). */
+const L = (mo: number, d: number, h: number, mi = 0): string => new Date(2026, mo - 1, d, h, mi).toISOString();
 
 // HealthMode draws with Obsidian's DOM helpers and Notice, and asks through FixModal: under node:test "obsidian"
 // resolves to a stub, FixModal to a stand-in whose answer each test sets, and the page is a small fake DOM with just
@@ -261,8 +263,8 @@ function sweepData(): BrainData {
   const tide = sweepScopeKey([C, D])!;
   const file: SweepFile = {
     runs: [
-      { id: "r2", at: "2026-10-11T09:00:00.000Z", scope: { paths: [C, D] }, provider: "claude", model: "haiku", usd: 0.01, estimated: false, considered: 2, of: 2, suggestions: 1 },
-      { id: "r1", at: "2026-10-11T08:00:00.000Z", scope: null, provider: "claude", model: "haiku", usd: 0.05, estimated: false, considered: 5, of: 5, suggestions: 5 },
+      { id: "r2", at: L(10, 11, 9), scope: { paths: [C, D] }, provider: "claude", model: "haiku", usd: 0.01, estimated: false, considered: 2, of: 2, suggestions: 1 },
+      { id: "r1", at: L(10, 11, 8), scope: null, provider: "claude", model: "haiku", usd: 0.05, estimated: false, considered: 5, of: 5, suggestions: 5 },
     ],
     suggestions: [
       sweepCard(d, { id: "00000000000a", kind: "merge", paths: [A, B], title: "Small diffs", why: "the same rule twice" }),
@@ -305,7 +307,7 @@ test("the Consolidation sweep card: its line, the estimate fetched once per show
   h.q('[data-act="consolidate"]')[0].click();
   assert.equal(h.calls.runs.length, 1, "one sweep at a time");
   assert.equal(h.calls.previews.length, 1, "no cluster's estimate while the sweep runs");
-  gate.resolve({ ok: true, json: { run: { id: "r3", at: "2026-10-11T11:00:00Z", scope: null, provider: "claude", model: "haiku", usd: 0.05, estimated: false, considered: 5, of: 5, suggestions: 2 }, suggestions: [] } });
+  gate.resolve({ ok: true, json: { run: { id: "r3", at: L(10, 11, 11), scope: null, provider: "claude", model: "haiku", usd: 0.05, estimated: false, considered: 5, of: 5, suggestions: 2 }, suggestions: [] } });
   await tick();
   assert.equal(notices.pop(), "Sweep: nothing to suggest · swept by haiku · Claude · $0.05");
   assert.equal(h.calls.previews.length, 2, "after a run, the estimate again (today's spend moved)");
@@ -426,7 +428,7 @@ test("a card applied, then undone, shows again; one suggested again by a later r
   act(h, "00000000000a", "review").click();
   await tick();
   assert.equal(card(h, "00000000000a"), undefined);
-  const r9 = { ...d.sweep!.runs[0], id: "r9", at: "2026-10-11T11:00:00.000Z" };
+  const r9 = { ...d.sweep!.runs[0], id: "r9", at: L(10, 11, 11) };
   d.sweep = { runs: [r9, ...d.sweep!.runs], suggestions: [sweepCard(d, { id: "00000000000a", kind: "merge", paths: [A, B], title: "Small diffs", run: "r9" })] };
   h.mode.update();
   const again = card(h, "00000000000a");
