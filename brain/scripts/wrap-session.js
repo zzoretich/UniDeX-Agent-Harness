@@ -217,12 +217,29 @@ updated: ${todayStr()}
   try { fsx.updateSync(SESSION_WM, () => template, { timeoutMs: 5000 }); } catch (_) {}
 }
 
+/**
+ * brain/_index/brain-hub.json (and the map beside it) again after a wrap promoted something, so the Brain tab shows it
+ * before the next scan (brain-hub plan, PR 2 follow-ups). `build` is injectable for tests. A failure is logged and never
+ * fails the wrap: the next scan rebuilds it.
+ */
+function rebuildBrainHub(build) {
+  try {
+    const run = build || require('./brain-hub.js').buildBrainHub;
+    run({ vault: VAULT, cfg: require('./lib/config.js').loadConfig() });
+    return true;
+  } catch (e) {
+    console.error('brain-hub rebuild failed:', e.message);
+    return false;
+  }
+}
+
 function main() {
   const session = readFile(SESSION_WM);
   if (!session.trim()) { resetSessionWM(); return; }
   const { promoted, skipped } = promoteToMemory(session);
   appendSessionWrap(promoted, skipped);
   resetSessionWM();
+  if (promoted.length) rebuildBrainHub();
   const skipSuffix = skipped.length
     ? `, skipped ${skipped.length} (reasons: ${skipped.map(s => `${s.title}: ${s.reason}`).join('; ')})`
     : '';
@@ -237,4 +254,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { promoteToMemory, slug, appendToMemoryFile, ensureIndexEntry };
+module.exports = { promoteToMemory, slug, appendToMemoryFile, ensureIndexEntry, rebuildBrainHub };

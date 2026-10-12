@@ -5,9 +5,10 @@
  *   list [--json]                     every memory (path, title, status, pin, reviewed, source, session, hash), the
  *                                     feedback drafts and the counts
  *   keep <path>… [--json]             reviewed: true (D4)
- *   set <path> --set <json> [--expect <hash>] [--dry-run] [--json]
+ *   set <path> --set <json> [--expect <hash>] [--dry-run] [--skip-brain-md] [--json]
  *                                     pin (true/false), status (active, complete, paused) or description, refused when the
- *                                     file's hash is not --expect (D17)
+ *                                     file's hash is not --expect (D17); --skip-brain-md leaves the BRAIN.md rebuild to the
+ *                                     caller (Bootstrap's bulk Mark complete rebuilds it once, after the last one)
  *   archive <path>… [--json]          status/archived, out of MEMORY.md, recall and BRAIN.md; nothing deleted (D5, D6)
  *   restore <path>… [--json]          an archived or superseded memory back, with its MEMORY.md line (D5, D7)
  *   supersede <path> --by <path> [--json]
@@ -15,38 +16,45 @@
  *   draft approve|reject <slug> [--json]
  *                                     a feedback draft into the store, or rejected for good (feedback-apply.js's writes)
  *   notdup <path> <path> [--json]     the hub stops flagging the pair as duplicates (D11)
+ *   fix <kind> [--dry-run] [--expect <hash>] [--json]
+ *                                     a hygiene fix, no model (D20; lib/memory-fix.js): sources, types, descriptions,
+ *                                     index or drafts, each acting on what brain-hub.json's hygiene lists; --dry-run
+ *                                     prints the same changes and writes nothing (the page shows it before it asks), and
+ *                                     their hash (`expect`): with --expect the real run refuses unless it would make
+ *                                     exactly those changes
  *
  * Safety (spec §6) lives in brain/scripts/lib/memory-ops.js: a path is brain/memory/<type>/<slug>.md for one of the four
  * types, read and written only as a regular file inside plain vault folders, and nothing is deleted except a draft that
- * is approved or rejected. set, archive, restore and supersede rebuild BRAIN.md in its own process (paths.js fixes the
- * vault per process). No argument starts with `-`. Runs from the checkout and from the vendored copy; zero dependencies;
- * every external effect is injectable (opts).
+ * is approved or rejected, or one `fix drafts` finds left behind. set, archive, restore, supersede and a real `fix types`
+ * or `fix index` rebuild BRAIN.md in its own process (paths.js fixes the vault per process). No argument starts with
+ * `-`. Runs from the checkout and from the vendored copy; zero dependencies; every external effect is injectable (opts).
  */
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const VERBS = ['list', 'keep', 'set', 'archive', 'restore', 'supersede', 'draft', 'notdup'];
+const VERBS = ['list', 'keep', 'set', 'archive', 'restore', 'supersede', 'draft', 'notdup', 'fix'];
 const REPO = path.join(__dirname, '..');
 const VALUE_FLAGS = new Map([['set', 'set'], ['expect', 'expect'], ['by', 'by']]);
-const BOOL_FLAGS = new Map([['json', 'json'], ['dry-run', 'dryRun']]);
+const BOOL_FLAGS = new Map([['json', 'json'], ['dry-run', 'dryRun'], ['skip-brain-md', 'skipBrainMd']]);
 const VERB_FLAGS = {
-  list: ['json'], keep: ['json'], set: ['json', 'set', 'expect', 'dryRun'], archive: ['json'], restore: ['json'],
-  supersede: ['json', 'by'], draft: ['json'], notdup: ['json'],
+  list: ['json'], keep: ['json'], set: ['json', 'set', 'expect', 'dryRun', 'skipBrainMd'], archive: ['json'], restore: ['json'],
+  supersede: ['json', 'by'], draft: ['json'], notdup: ['json'], fix: ['json', 'dryRun', 'expect'],
 };
 const VERB_ARGS = {
   list: [0, 0], keep: [1, Infinity], set: [1, 1], archive: [1, Infinity], restore: [1, Infinity], supersede: [1, 1],
-  draft: [2, 2], notdup: [2, 2],
+  draft: [2, 2], notdup: [2, 2], fix: [1, 1],
 };
 const USAGE = {
   list: 'aos memory list [--json]',
   keep: 'aos memory keep <path>… [--json]',
-  set: 'aos memory set <path> --set <json> [--expect <hash>] [--dry-run] [--json]',
+  set: 'aos memory set <path> --set <json> [--expect <hash>] [--dry-run] [--skip-brain-md] [--json]',
   archive: 'aos memory archive <path>… [--json]',
   restore: 'aos memory restore <path>… [--json]',
   supersede: 'aos memory supersede <path> --by <path> [--json]',
   draft: 'aos memory draft approve|reject <slug> [--json]',
   notdup: 'aos memory notdup <path> <path> [--json]',
+  fix: 'aos memory fix sources|types|descriptions|index|drafts [--dry-run] [--expect <hash>] [--json]',
 };
 
 class UsageError extends Error {}
@@ -120,7 +128,7 @@ function setVerb(ctx, rel, o) {
   const ops = opsLib();
   if (o.expect !== undefined && !ops.HASH_RE.test(o.expect)) throw new UsageError('aos memory set: --expect takes a hash as `aos memory list --json` prints it');
   const r = ops.setFields(ctx.vault, rel, fields, { expect: o.expect === undefined ? null : o.expect, dryRun: !!o.dryRun });
-  const brainMd = r.written ? runBrainMd(ctx, o) : null;
+  const brainMd = r.written && !o.skipBrainMd ? runBrainMd(ctx, o) : null;
   emit(o.io, o.json, { ...r, brainMd }, o.dryRun
     ? [`${r.path} would read:`, r.text]
     : [r.written ? `${r.path}: ${r.fields.join(', ')} set` : `${r.path} already says that`]);
@@ -190,6 +198,23 @@ function notdupVerb(ctx, a, b, o) {
   return 0;
 }
 
+/** One hygiene fix (D20): the changes it made, or with --dry-run would make; BRAIN.md follows a real types or index fix. */
+function fixVerb(ctx, kind, o) {
+  const lib = resolveModule('lib/memory-fix.js');
+  if (o.expect !== undefined && !lib.EXPECT_RE.test(o.expect)) throw new UsageError('aos memory fix: --expect takes the hash a dry run prints (`expect`)');
+  const r = lib.fix(ctx.vault, kind, { dryRun: !!o.dryRun, expect: o.expect === undefined ? null : o.expect });
+  // index rewrites MEMORY.md, which BRAIN.md's bullets come from. A types run rebuilds too (plan PR 3), though it only sets
+  // type: memory and adds memory/<type>, never a status, so nothing BRAIN.md reads changes.
+  const brainMd = !r.dryRun && (kind === 'types' || kind === 'index') && r.files > 0 ? runBrainMd(ctx, o) : null;
+  const show = (v) => (v === null || v === undefined ? '(none)' : v);
+  emit(o.io, o.json, { ...r, brainMd }, [
+    !r.changes.length ? `${kind}: nothing to fix` : `${r.dryRun ? 'would change' : 'changed'} ${r.files} file${r.files === 1 ? '' : 's'}`,
+    ...r.changes.map((c) => `  ${c.path}  ${c.action}: ${show(c.before)} → ${show(c.after)}`),
+    ...(brainMd && !brainMd.ok ? [`BRAIN.md was not rebuilt: ${brainMd.error}`] : []),
+  ]);
+  return 0;
+}
+
 // ── main ──
 
 function parseMemoryArgs(argv) {
@@ -226,13 +251,17 @@ async function main(argv, opts = {}) {
   for (const k of Object.keys(flags)) {
     if (VERB_FLAGS[verb].includes(k)) continue;
     throw new UsageError(k === 'dryRun'
-      ? 'aos memory: --dry-run is only supported by `aos memory set`'
-      : `aos memory ${verb}: --${k} is not one of its flags (${USAGE[verb]})`);
+      ? 'aos memory: --dry-run is only supported by `aos memory set` and `aos memory fix`'
+      : `aos memory ${verb}: --${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)} is not one of its flags (${USAGE[verb]})`);
   }
   const args = words.slice(1);
   const [min, max] = VERB_ARGS[verb];
   if (args.length < min) throw new UsageError(USAGE[verb]);
   if (args.length > max) throw new UsageError(`${USAGE[verb]}: too many arguments`);
+  if (verb === 'fix') {
+    const kinds = resolveModule('lib/memory-fix.js').KINDS;
+    if (!kinds.includes(args[0])) throw new UsageError(`aos memory fix: unknown kind "${args[0]}" (${kinds.join(' | ')})`);
+  }
   // The vault as `aos workspace` resolves it (AOS_VAULT, else agenticos.json): workspace.js sits beside this file in the
   // checkout's cli/ and in the vault's vendored brain/scripts/cli/.
   const ctx = require('./workspace.js').resolveCtx(opts);
@@ -247,6 +276,7 @@ async function main(argv, opts = {}) {
       case 'supersede': return supersedeVerb(ctx, args[0], o);
       case 'draft': return draftVerb(ctx, args[0], args[1], o);
       case 'notdup': return notdupVerb(ctx, args[0], args[1], o);
+      case 'fix': return fixVerb(ctx, args[0], o);
       default: return 2;
     }
   });

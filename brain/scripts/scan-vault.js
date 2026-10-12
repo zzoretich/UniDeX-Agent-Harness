@@ -520,8 +520,14 @@ async function main(report) {
       r.counts.unreviewed = hub.counts.unreviewed;
       r.counts.duplicates = hub.dups.length;
       r.counts.usageFolded = folded.folded;
-      r.wrote.push('brain/_index/brain-hub.json');
-      if (report) report.wrote.push(`brain/_index/brain-hub.json (${hub.counts.memories} memories, ${hub.dups.length} likely duplicates)`);
+      // brain-map.json beside it (D19): graphify's communities of memories, or why there are none.
+      const map = hub.map;
+      r.counts.communities = map.communities.length;
+      r.wrote.push('brain/_index/brain-hub.json', 'brain/_index/brain-map.json');
+      if (report) {
+        report.wrote.push(`brain/_index/brain-hub.json (${hub.counts.memories} memories, ${hub.dups.length} likely duplicates)`);
+        report.wrote.push(`brain/_index/brain-map.json (${map.state === 'ok' ? `${map.communities.length} communities` : map.state === 'off' ? 'graph off' : 'no graph yet'})`);
+      }
     });
   } catch (e) {
     console.error('[scan-vault] brain-hub failed (loud in ledger):', e.message);

@@ -32,6 +32,13 @@ function demoVault(): void {
       if (!text.startsWith("---") || /^actions: \[\{"kind":"run"/m.test(text)) fs.rmSync(file);
     }
   }
+  // MEMORY.md's line to a deleted file (Health's index fix acts on it in the e2e suite) is the health scan's error and
+  // would lead Pulse's briefing.
+  const index = FX.v("MEMORY.md");
+  fs.writeFileSync(index, fs.readFileSync(index, "utf8").split("\n").filter((l) => {
+    const m = /^- \[[^\]]*\]\((brain\/[^)]+\.md)\)/.exec(l);
+    return !m || fs.existsSync(FX.v(m[1]));
+  }).join("\n"));
   for (const script of ["scan-vault.js", "build-brain-md.js"]) {
     execFileSync(process.execPath, [FX.v(`brain/scripts/${script}`)], { cwd: FX.vault, env: appEnv(), stdio: "ignore" });
   }
@@ -103,6 +110,25 @@ test.describe("the Workbench", () => {
     await expect(card.locator(".aos-brain-rv-compare")).toBeVisible();
     await h.win.waitForTimeout(800);
     await shot(h.win, "brain");
+  });
+
+  // Brain's other modes, each as it first draws (spec 2026-10-11-brain-hub D17-D20): the fixture's full BRAIN.md, its
+  // looks-shipped projects and recall-wake; its three communities, the largest selected; its hygiene and usage log.
+  for (const [mode, name] of [["bootstrap", "brain-bootstrap"], ["health", "brain-health"]] as const) {
+    test(name, async () => {
+      await openTab(h.win, "memory");
+      await content(h.win).locator(`.aos-brain-modes [role="tab"][data-mode="${mode}"]`).click();
+      await h.win.waitForTimeout(1200);
+      await shot(h.win, name);
+    });
+  }
+
+  test("brain-map, on its largest community", async () => {
+    await openTab(h.win, "memory");
+    await content(h.win).locator('.aos-brain-modes [role="tab"][data-mode="map"]').click();
+    await content(h.win).locator("button.aos-brain-bubble[data-community]").first().click();
+    await h.win.waitForTimeout(1200);
+    await shot(h.win, "brain-map");
   });
 
   test("files, with a workspace open", async () => {

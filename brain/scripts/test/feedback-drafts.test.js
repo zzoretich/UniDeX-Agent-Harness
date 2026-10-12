@@ -62,6 +62,37 @@ test('applyDraft promotes through memory-writer and deletes the draft', () => {
   assert.equal(readEvents({ sinceDays: 1 }).filter((r) => r.event === 'applied').length, 1);
 });
 
+test('applyDraft logs a written trail row with its time, so the hub sorts the rule by its approval; nothing else changes', () => {
+  const { DRAFTS_DIR, parseDraft } = require('../lib/feedback-drafts.js');
+  const { writeMemory } = require('../lib/memory-writer.js');
+  const slug = 'ask-before-force-pushing-any-branch';
+  writeDraft(DRAFT);
+  const draft = parseDraft(path.join(DRAFTS_DIR, `${slug}.md`));
+  const before = Date.now();
+  const res = applyDraft(slug);
+  const after = Date.now();
+  assert.deepEqual(res, { memoryPath: `brain/memory/feedback/${slug}.md`, slug, indexUpdated: true });
+
+  const rows = fs.readFileSync(path.join(TMP, 'brain', '_index', 'promote-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  const { ts, ...rest } = rows[0];
+  assert.deepEqual(rest, { session: 'sess-d1', action: 'written', slug, type: 'feedback', title: DRAFT.title, path: res.memoryPath });
+  assert.match(ts, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.ok(Date.parse(ts) >= before && Date.parse(ts) <= after, 'the row carries the approval time');
+
+  // brain-hub.js reads the row: the rule's batch is dated by the approval, not by the draft's created day.
+  const { buildBrainHub } = require('../brain-hub.js');
+  const batch = buildBrainHub({ vault: TMP, write: false }).batches.find((b) => b.paths.includes(res.memoryPath));
+  assert.deepEqual(batch.paths, [res.memoryPath]);
+  assert.equal(batch.at, ts);
+
+  // The rule is byte for byte what memory-writer writes for the same fields, its MEMORY.md line and its event as before.
+  const twin = writeMemory({ type: 'feedback', slug: 'twin-rule', title: draft.title, description: draft.description, body: draft.body, source: 'feedback-autoloop', session: draft.session });
+  assert.equal(fs.readFileSync(path.join(TMP, res.memoryPath), 'utf8'), fs.readFileSync(path.join(TMP, twin.memoryPath), 'utf8'));
+  assert.ok(fs.readFileSync(path.join(TMP, 'MEMORY.md'), 'utf8').includes(`- [${DRAFT.title}](${res.memoryPath}) — ${DRAFT.description}`));
+  assert.deepEqual(readEvents({ sinceDays: 1 }).map((r) => [r.event, r.slug, r.session, r.title]), [['applied', slug, 'sess-d1', DRAFT.title]]);
+});
+
 test('rejectDraft deletes, trail-logs reverted, and logs a rejected event', () => {
   writeDraft(DRAFT);
   rejectDraft('ask-before-force-pushing-any-branch');

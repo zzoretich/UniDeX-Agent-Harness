@@ -6,12 +6,30 @@
  *   node sdk/recall-cli.js --warm                      # (re)build brain/_index/recall-index.json + recall-wake.md
  *   node sdk/recall-cli.js <query…> [--limit N] [--json]   # ranked hits (self-heals a missing index)
  *
- * Reached as `aos recall …`. Zero model calls unless an embed index exists and the
- * provider offers embeddings (queryRecallHybrid falls back to BM25 on its own).
+ * Reached as `aos recall …` and by the Brain hub's recall preview (brain-hub D18). Zero model calls unless an embed
+ * index exists: then the local Ollama embeds the query, asked directly (ollamaEmbedder), so a query never resolves the
+ * provider (no provider-state.json write, no headless login probe). Only Ollama has embeddings, so the ranking is what
+ * the provider chain would give: BM25 when the provider is claude, codex or none, or when Ollama does not answer
+ * (queryRecallHybrid falls back on its own).
  * Exit: 0 ok · 2 usage.
  */
 const { PATHS } = require('../lib/paths.js');
 const recall = require('./lib/recall.js');
+
+/** The query's embedder: Ollama's /api/embed at the configured address, or a refusal (→ BM25) for any provider mode but
+ *  auto and ollama. Never sdk/lib/provider.js. */
+function ollamaEmbedder(cfg) {
+  const mode = (cfg && cfg.provider) || 'auto';
+  return async (texts, o = {}) => {
+    if (mode !== 'auto' && mode !== 'ollama') throw new Error(`the ${mode} provider has no embeddings`);
+    const embedMod = require('./lib/embed.js');
+    return embedMod.embed(texts, { ...((cfg && cfg.ollama) || {}), ...o, postFn: embedMod.postEmbed });
+  };
+}
+
+function readConfig() {
+  try { return require('../lib/config.js').loadConfig(); } catch { return {}; }
+}
 
 function parse(argv) {
   const o = { warm: false, json: false, limit: 5, terms: [] };
@@ -46,7 +64,8 @@ async function main(argv) {
   }
   let index = recall.loadIndex(vault);
   if (!index) index = warm(vault).index;
-  const { hybrid, hits } = await recall.queryRecallHybrid(index, o.terms.join(' '), { vault, limit: o.limit });
+  const embedFn = ollamaEmbedder(readConfig());
+  const { hybrid, hits } = await recall.queryRecallHybrid(index, o.terms.join(' '), { vault, limit: o.limit, embedFn });
   if (o.json) { process.stdout.write(JSON.stringify(hits, null, 2) + '\n'); return 0; }
   if (!hits.length) { process.stdout.write(`no recall hits for "${o.terms.join(' ')}"\n`); return 0; }
   process.stdout.write(`${hybrid ? 'hybrid' : 'bm25'} recall for "${o.terms.join(' ')}"\n`);
@@ -57,4 +76,4 @@ async function main(argv) {
 if (require.main === module) {
   main(process.argv.slice(2)).then((c) => process.exit(c), (e) => { process.stderr.write(`recall: ${e.message}\n`); process.exit(1); });
 }
-module.exports = { main, parse };
+module.exports = { main, parse, ollamaEmbedder };

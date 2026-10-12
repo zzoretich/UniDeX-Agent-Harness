@@ -1,13 +1,14 @@
 'use strict';
 // brain/_index/brain-hub.json (brain-hub D11, D12): counts, session batches, duplicates and clusters (with and without
-// an embed index), hygiene findings and "looks shipped", built from a temp vault.
+// an embed index), hygiene findings and "looks shipped" (D17), built from a temp vault; and brain-map.json (D19) written
+// beside it (lib/brain-map.js has its own suite).
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { buildBrainHub, findDuplicates, findClusters, jaccard } = require('../brain-hub.js');
+const { buildBrainHub, findDuplicates, findClusters, jaccard, SHIPPED } = require('../brain-hub.js');
 const { buildRecallIndex, saveIndex } = require('../sdk/lib/recall.js');
 const usage = require('../lib/memory-usage.js');
 
@@ -200,4 +201,104 @@ test('batch titles follow the Sessions rule per host: own title, else Codex thre
   assert.deepEqual(t.get(CL), { title: 'Fix the tide parser', host: 'claude' });
   // No Codex index at all: the first prompt still names the batch.
   assert.equal(sessionTitles(v, { cfg: {}, env: { CODEX_HOME: path.join(v, 'none') } }).get(CX).title, 'Sketch the depth contours layer');
+});
+
+test('"looks shipped" is narrow (D17): a full x.y.z, shipped, released or superseded; never merged or a bare release', () => {
+  for (const s of ['UniDeX 1.5.0 release', 'Workbench proposal (superseded)', 'Chart importer v2.0.1', 'Shipped the tide parser', 'Released to the store']) {
+    assert.ok(SHIPPED.test(s), s);
+  }
+  for (const s of ['Brain hub redesign', 'PR #121 merged', 'Release checklist', 'Plan for 1.5', 'Node 22.12 upgrade', 'Unreleased changes']) {
+    assert.ok(!SHIPPED.test(s), s);
+  }
+  // An address is not a version; a version that ends a sentence still is.
+  for (const s of ['Local Ollama at 127.0.0.1:11434', 'server 192.168.1.20', 'host 1.2.3.4']) assert.equal(SHIPPED.exec(s), null, s);
+  assert.equal(SHIPPED.exec('Tagged v1.2.0.')[0], 'v1.2.0');
+});
+
+test('shipped suggestions read the title and the index description of active projects only', () => {
+  const v = fs.mkdtempSync(path.join(os.tmpdir(), 'bh-shipped2-'));
+  const proj = (slug, title, { status = 'active', extra = '' } = {}) => put(v, `brain/memory/projects/${slug}.md`, mem({ type: 'projects', title, body: 'Work notes.', status, extra }));
+  proj('brain-hub-redesign', 'Brain hub redesign');
+  proj('chart-app', 'Chart app', { extra: 'description: Released to the store last week\n' });
+  proj('sync-engine', 'Sync engine', { status: 'complete', extra: 'description: v3.1.0 is out\n' });
+  proj('unidex-1-5-0', 'UniDeX 1.5.0 release');
+  proj('workbench-proposal', 'Workbench proposal (superseded)');
+  put(v, 'MEMORY.md', '# Memory Index\n\n## Project\n- [Brain hub redesign](brain/memory/projects/brain-hub-redesign.md) — PR #121 merged\n');
+  assert.deepEqual(buildBrainHub({ vault: v, cfg: {}, write: false }).shipped, [
+    { path: 'brain/memory/projects/chart-app.md', why: 'Released' },
+    { path: 'brain/memory/projects/unidex-1-5-0.md', why: '1.5.0' },
+    { path: 'brain/memory/projects/workbench-proposal.md', why: 'superseded' },
+  ]);
+});
+
+/** A node-link graph.json over the fixture: the two picker notes and two more feedback notes in community 1, MEMORY.md in 9. */
+function putGraph(v) {
+  const F = (slug) => `brain/memory/feedback/${slug}.md`;
+  const notes = ['present-decisions-as-option-pickers', 'present-decisions-as-an-option-picker', 'codex-resume-folder', 'close-waits-for-scans'].map(F);
+  const nodes = [...notes.map((p) => ({ id: p, label: p, source_file: p, community: 1 })), { id: 'idx', label: 'Memory Index', source_file: 'MEMORY.md', community: 9 },
+    { id: 'old', label: 'An archived note', source_file: 'brain/memory/reference/old-note.md', community: 1 }];
+  const links = [[0, 1], [0, 2], [0, 3], [1, 3]].map(([a, b]) => ({ source: notes[a], target: notes[b], relation: 'references' }))
+    .concat(notes.map((p) => ({ source: 'idx', target: p, relation: 'references' })), [{ source: 'old', target: notes[0], relation: 'references' }]);
+  put(v, 'brain/graphify-out/graph.json', JSON.stringify({ directed: false, multigraph: false, graph: {}, nodes, links, hyperedges: [] }));
+  return notes;
+}
+
+test('buildBrainHub writes brain-map.json beside brain-hub.json from the same memories; the hub file stays the hub alone', () => {
+  const v = fixture('bh-map-');
+  const notes = putGraph(v);
+  const hub = buildBrainHub({ vault: v, cfg: { memory: { mapMin: 3 } }, now: Date.parse('2026-10-11T12:00:00Z') });
+  const map = JSON.parse(fs.readFileSync(path.join(v, 'brain/_index/brain-map.json'), 'utf8'));
+  assert.deepEqual(map, JSON.parse(JSON.stringify(hub.map)), 'hub.map is what was written');
+  assert.equal(map.state, 'ok');
+  assert.equal(map.builtAt, '2026-10-11T12:00:00.000Z');
+  assert.deepEqual(map.hubs, ['MEMORY.md']);
+  assert.deepEqual(map.communities.map((c) => [c.id, c.paths.length, c.lead]), [['c1', 4, notes[0]]]);
+  assert.ok(!('brain/memory/reference/old-note.md' in map.memories), 'archived');
+  assert.ok(!('map' in JSON.parse(fs.readFileSync(path.join(v, 'brain/_index/brain-hub.json'), 'utf8'))));
+});
+
+test('write: false builds the map and writes neither file; without a graph the map says missing, graph off says off', () => {
+  const v = fixture('bh-map-dry-');
+  putGraph(v);
+  const hub = buildBrainHub({ vault: v, cfg: { memory: { mapMin: 3 } }, write: false });
+  assert.equal(hub.map.state, 'ok');
+  for (const f of ['brain-hub.json', 'brain-map.json']) assert.equal(fs.existsSync(path.join(v, 'brain/_index', f)), false, f);
+  assert.equal(buildBrainHub({ vault: v, cfg: { graph: { enabled: false } }, write: false }).map.state, 'off');
+  const bare = fixture('bh-map-none-');
+  buildBrainHub({ vault: bare, cfg: {} });
+  const map = JSON.parse(fs.readFileSync(path.join(bare, 'brain/_index/brain-map.json'), 'utf8'));
+  assert.equal(map.state, 'missing');
+  assert.equal(map.mapMin, 8);
+});
+
+test('a map that fails to build is written as missing and never costs brain-hub.json', (t) => {
+  const v = fixture('bh-map-fail-');
+  const said = [];
+  t.mock.method(console, 'error', (...a) => { said.push(a.join(' ')); });
+  const hub = buildBrainHub({ vault: v, cfg: { memory: { mapMin: 5 } }, buildMap: () => { throw new Error('torn graph'); } });
+  assert.equal(hub.counts.memories, 8);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(v, 'brain/_index/brain-hub.json'), 'utf8')).counts.memories, 8);
+  const map = JSON.parse(fs.readFileSync(path.join(v, 'brain/_index/brain-map.json'), 'utf8'));
+  assert.equal(map.state, 'missing');
+  assert.equal(map.mapMin, 5);
+  assert.deepEqual(map.memories, {});
+  assert.ok(said.some((l) => l.includes('torn graph')), said.join('\n'));
+});
+
+test('the script: --dry-run writes neither file and --json prints the hub alone; a plain run writes both', () => {
+  const { spawnSync } = require('child_process');
+  const v = fixture('bh-map-cli-');
+  putGraph(v);
+  const run = (...args) => spawnSync(process.execPath, [path.join(__dirname, '..', 'brain-hub.js'), ...args], { env: { ...process.env, AOS_VAULT: v }, encoding: 'utf8' });
+  const dry = run('--dry-run', '--json');
+  assert.equal(dry.status, 0, dry.stderr);
+  const printed = JSON.parse(dry.stdout);
+  assert.equal(printed.schema, 1);
+  assert.ok(!('map' in printed));
+  for (const f of ['brain-hub.json', 'brain-map.json']) assert.equal(fs.existsSync(path.join(v, 'brain/_index', f)), false, f);
+  const real = run();
+  assert.equal(real.status, 0, real.stderr);
+  assert.equal(real.stdout, '');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(v, 'brain/_index/brain-map.json'), 'utf8')).state, 'ok');
+  assert.ok(fs.existsSync(path.join(v, 'brain/_index/brain-hub.json')));
 });

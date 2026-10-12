@@ -38,20 +38,42 @@ function readJsonIfExists(p) {
   try { return JSON.parse(raw); } catch { return null; }
 }
 
+/** Flat `key: value` frontmatter. A `[a, b]` value and a block list (`tags:` then `  - a` lines, as YAML tools write
+ *  it) both become arrays, so isRetired sees a `status/archived` in either shape (brain-hub D5, D7); a key with no value
+ *  and no items stays ''. */
+/** A scalar's text: one pair of surrounding quotes stripped, and a single-quoted `''` read as `'` (YAML's own escape,
+ *  which memory-ops yamlValue writes); a stray quote at either end goes, as it always has. */
+function unquoteScalar(v) {
+  const q = /^(["'])(.*)\1$/.exec(v);
+  if (q) return q[1] === "'" ? q[2].replace(/''/g, "'") : q[2];
+  return v.replace(/^["']|["']$/g, '');
+}
+
 function parseFrontmatter(content) {
   if (!content || !content.startsWith('---')) return { frontmatter: {}, body: content || '' };
   const end = content.indexOf('\n---', 4);
   if (end < 0) return { frontmatter: {}, body: content };
   const block = content.slice(4, end).trim();
   const fm = {};
+  let listKey = null;
   for (const line of block.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const item = listKey && line.match(/^\s*-\s+(.*)$/);
+    if (item) {
+      const v = unquoteScalar(item[1].trim());
+      if (!Array.isArray(fm[listKey])) fm[listKey] = [];
+      if (v) fm[listKey].push(v);
+      continue;
+    }
+    listKey = null;
     const m = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
     if (!m) continue;
     let val = m[2].trim();
+    if (!val) listKey = m[1];
     if (val.startsWith('[') && val.endsWith(']')) {
-      val = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+      val = val.slice(1, -1).split(',').map(s => unquoteScalar(s.trim())).filter(Boolean);
     } else {
-      val = val.replace(/^["']|["']$/g, '');
+      val = unquoteScalar(val);
     }
     fm[m[1]] = val;
   }
@@ -162,12 +184,15 @@ function clip(s, n) {
 }
 
 /** Index-first cards, newest first: path, title (the file's H1), a one-line description (its MEMORY.md line, else its
- *  first body line), updated; the full text only with `full` (spec 2026-09-24-mcp-index-first D1). */
+ *  first body line), updated; the full text only with `full` (spec 2026-09-24-mcp-index-first D1). An archived or
+ *  superseded memory gets no card (brain-hub D5, D7): memory_list leaves it out as recall and BRAIN.md do. */
 function memoryCards(mems, { full = false } = {}) {
+  const { isRetired } = require('./recall.js');
   const index = memoryIndexEntries();
   return mems.map(m => {
     const content = readIfExists(m.absPath) || '';
     const { frontmatter, body } = parseFrontmatter(content);
+    if (isRetired(frontmatter)) return null;
     const h1 = /^#\s+(.+)$/m.exec(body);
     const entry = index.get(m.path);
     const card = {
@@ -178,7 +203,7 @@ function memoryCards(mems, { full = false } = {}) {
     };
     if (full) card.content = content;
     return card;
-  }).sort((a, b) => b.updated.localeCompare(a.updated) || a.path.localeCompare(b.path));
+  }).filter(Boolean).sort((a, b) => b.updated.localeCompare(a.updated) || a.path.localeCompare(b.path));
 }
 
 function loadSnapshot() {
@@ -199,11 +224,15 @@ function readBrief() {
   return null;
 }
 
+/** memory_search: memories and patterns whose text or name holds the needle. An archived or superseded note is left
+ *  out, as recall leaves it out (brain-hub D5, D7); memory_read still reads it by path. */
 function grepMemories(needle) {
   const q = String(needle || '').toLowerCase().trim();
   if (!q) return [];
+  const { isRetired } = require('./recall.js');
   const hits = [];
   for (const m of listMemories()) {
+    if (isRetired(m.frontmatter)) continue;
     const content = readIfExists(m.absPath) || '';
     if (content.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)) {
       const snippet = extractSnippet(content, q);
@@ -211,6 +240,7 @@ function grepMemories(needle) {
     }
   }
   for (const p of listPatterns()) {
+    if (isRetired(p.frontmatter)) continue;
     const content = readIfExists(p.absPath) || '';
     if (content.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)) {
       hits.push({ path: p.path, name: p.name, type: 'pattern', snippet: extractSnippet(content, q) });

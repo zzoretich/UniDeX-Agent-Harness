@@ -2,7 +2,9 @@
 // Builds a synthetic AgenticOS install for the end-to-end suite: a vault made the way `aos init` makes one, a fake
 // HOME with its own ~/.claude, and a shim bin folder. Every name, path and note in it is made up here. The real
 // runtime from this repo (brain/scripts, cli, plugin) produces the caches (snapshot, pipelines, skills, agents, routines, status line,
-// proposal pages…); only content a user or an agent would write by hand is written by this script.
+// proposal pages, brain-hub.json and brain-map.json…); only content a user or an agent would write by hand is written by
+// this script, plus two things a tool writes that CI cannot run: graphify's graph.json (no graphify is installed) and the
+// memory usage rows a session's hooks log (written through the runtime's own logUsage, on a synthetic clock).
 //
 //   node scripts/make-fixture-vault.mjs [--out tests/.fixture] [--cache tests/.cache] [--quiet]
 //
@@ -338,6 +340,9 @@ stage("aos config set (user choices)", () => {
     ["persona.watchdog.notify", "false"],
     ["routines.externalLabels", '["com.sample.nightly-backup"]'],
     ["cost.monthlyBudget", "175"],        // outside the presets: the picker shows "(custom)"
+    // A small vault: the Map shows graphify's communities from 3 memories up (the default 8 suits a vault of hundreds),
+    // so the fixture's graph keeps three communities and leaves two smaller ones out (brain-hub D19).
+    ["memory.mapMin", "3"],
   ];
   const done = [];
   for (const [k, val] of sets) { aos(["config", "set", k, val], { env: USER_ENV() }); done.push(k); }
@@ -382,8 +387,12 @@ stage("memories, patterns, MEMORY.md", () => {
 stage("SESSION.md and daily notes", () => {
   const s = fs.readFileSync(v("brain/_index/SESSION.md"), "utf8")
     .replace("## Active Task\n", "## Active Task\n\n- Wire the tide parser into the chart view\n")
-    .replace("## Things to Remember\n", "## Things to Remember\n\n- The sample tide service times are UTC #promote\n");
+    .replace("## Things to Remember\n", "## Things to Remember\n\n- The sample tide service times are UTC #promote\n- The chart vendor calls back on Thursday\n");
   write(v("brain/_index/SESSION.md"), s);
+  // A session that ended without a provider to wrap it: auto-wrap.js writeWrapStatus leaves its "not wrapped" line
+  // under ## Wrap Status (Bootstrap's SESSION.md card and the status line read it), naming this host's /wrap.
+  run(NODE, ["-e", `require(${JSON.stringify(path.join(SCRIPTS, "auto-wrap.js"))}).writeWrapStatus("5e55a0a0-0000-4000-8000-00000000000a", "none")`], { env: USER_ENV() });
+  if (!/^## Wrap Status\n+- Session 5e55a0a0-\S+ not wrapped \(provider: none\) — run \/wrap\.$/m.test(fs.readFileSync(v("brain/_index/SESSION.md"), "utf8"))) throw new Error("writeWrapStatus left no not-wrapped line");
   const note = (offset, body) => {
     const d = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() + offset);
     const date = day(offset);
@@ -606,9 +615,14 @@ stage("host sessions (Codex rollouts and Claude Code transcripts)", () => {
   // digit turned into "-" (so the folder cannot be read back from it: the runtime reads the cwd inside the transcript).
   // Two transcripts under an encoded cwd outside every workspace, as the workspace hub had them:
   const slugDir = path.join(CLAUDE, "projects", "-opt-sample-scratchpad");
-  for (const [sid, ms] of [["5e55a0a0-0000-4000-8000-00000000000a", 26 * HOUR], ["5e55a0a0-0000-4000-8000-00000000000b", 4 * HOUR]]) {
+  // Each titled by its first prompt, as Sessions titles a conversation with no title of its own; the second wrote the
+  // release checklist, so Brain's Review shows its batch under this prompt.
+  for (const [sid, ms, prompt] of [
+    ["5e55a0a0-0000-4000-8000-00000000000a", 26 * HOUR, "Compare the chart vendor's invoice with last month's order"],
+    ["5e55a0a0-0000-4000-8000-00000000000b", 4 * HOUR, "Write down the release steps for the chart viewer"],
+  ]) {
     const file = path.join(slugDir, `${sid}.jsonl`);
-    write(file, `${JSON.stringify({ type: "user", sessionId: sid, cwd: "/opt/sample/scratchpad", timestamp: ago(ms).toISOString(), message: { role: "user", content: "sample prompt" } })}\n`);
+    write(file, `${JSON.stringify({ type: "user", sessionId: sid, cwd: "/opt/sample/scratchpad", timestamp: ago(ms).toISOString(), message: { role: "user", content: prompt } })}\n`);
     fs.utimesSync(file, ago(ms), ago(ms));
   }
   // and one per workspace session under the folder's real slug (its real path, as Claude Code records it).
@@ -730,6 +744,40 @@ const BRAIN_FIXTURE = {
   archived: "brain/memory/projects/survey-boat-booking.md",
 };
 
+// What Bootstrap, Map and Health read (spec 2026-10-11-brain-hub D17–D20; plan PR 3), named once so the stages below and
+// expected.json agree. Memories a person and earlier sessions left, each reviewed (none joins Review's batches or Pulse's
+// "today"): active projects, two of which look shipped ("1.2.0" in a title, "released" in an index line) and one that
+// only says "merged" (which never does, D17); a feedback rule approved from a draft three days ago, pinned, whose draft
+// was left behind; and one memory per hygiene finding: an old source label each for `session` and `in-session`, a host's
+// auto-memory shape (`type: reference`, no tags), a memory with no MEMORY.md line, a line under another type's heading
+// and a line to a file that is gone. The same rules as BRAIN_FIXTURE: no title or slug says "tide", "api", "datum",
+// "missing" or "cost", and none names a workspace.
+const HUB_FIXTURE = {
+  pinned: "brain/memory/feedback/show-units-on-every-axis.md",
+  leftover: "show-units-on-every-axis",
+  shipped: { version: "brain/memory/projects/chart-viewer-1.2.0.md", released: "brain/memory/projects/sounding-import.md" },
+  merged: "brain/memory/projects/tile-cache-rework.md",
+  legacy: { session: "brain/memory/feedback/date-stamp-exports.md", "in-session": "brain/memory/reference/survey-grid-spacing.md" },
+  oldType: "brain/memory/reference/nav-light-colours.md",
+  unindexed: "brain/memory/reference/survey-grid-spacing.md",
+  misfiled: "brain/memory/feedback/date-stamp-exports.md",
+  broken: "brain/memory/reference/mooring-buoy-inventory.md",
+  // The session the approved rule came from (an earlier Claude Code session, 3 days ago: "telemetry: earlier runs").
+  ruleSession: "0c0ffee0-0000-4000-8000-000000000001",
+  // The recall preview's queries (D18): one the store answers, one it does not.
+  recall: { hit: "chart viewer release notes", none: "quokka marmalade" },
+};
+/** The approved rule's trail, as feedback-drafts.js applyDraft, then `aos memory keep` and `aos memory set` left it. */
+const ruleTrail = (() => {
+  const at = (ms) => ago(3 * DAY - ms).toISOString();
+  const base = { session: HUB_FIXTURE.ruleSession, slug: HUB_FIXTURE.leftover, type: "feedback", title: "Show units on every axis" };
+  return [
+    { ts: at(0), ...base, action: "written" },
+    { ts: at(4 * MIN), ...base, action: "kept", path: HUB_FIXTURE.pinned },
+    { ts: at(5 * MIN), ...base, action: "set", path: HUB_FIXTURE.pinned, fields: ["pin"] },
+  ];
+})();
+
 stage("brain hub review: auto-wrap memories, a draft, an archived memory (memory-writer.js shapes, appendTrail)", () => {
   const req = createRequire(import.meta.url);
   const { insertIndexLine } = req(path.join(SCRIPTS, "lib", "memory-index.js"));
@@ -783,7 +831,9 @@ stage("brain hub review: auto-wrap memories, a draft, an archived memory (memory
   write(v(`brain/memory/feedback/_drafts/${BRAIN_FIXTURE.draft}.md`), `---\ntype: memory\ntags: [memory/feedback, status/draft]\ncreated: ${TODAY}\nupdated: ${TODAY}\nsource: feedback-autoloop\nsession: ${BRAIN_FIXTURE.sessions.claude}\ndescription: Name a chart layer after the data it draws, never after its file\n---\n\n# Name layers after their data\n\nCall a chart layer by what it draws (contours, soundings, the water-level overlay), not by the file that holds it.\n\n**Why:** a review comment about "layer2" took three replies to place.\n\n**How to apply:** name the toggle, the class and the file after the data.\n`);
 
   // The trail rows through the runtime's appendTrail, oldest first (an explicit ts wins over its own stamp), before the
-  // stage below adds today's: the file stays in time order, which the trail's readers assume.
+  // stage below adds today's: the file stays in time order, which the trail's readers assume. The approved rule's rows
+  // (the next stage writes its file) go in among them.
+  rows.push(...ruleTrail);
   const env = { ...process.env };
   process.env.AOS_VAULT = VAULT; process.env.AOS_CONFIG = AOS_CONFIG; process.env.CLAUDE_CONFIG_DIR = CLAUDE; process.env.HOME = HOME;
   try {
@@ -793,6 +843,154 @@ stage("brain hub review: auto-wrap memories, a draft, an archived memory (memory
     for (const k of ["AOS_VAULT", "AOS_CONFIG", "CLAUDE_CONFIG_DIR", "HOME"]) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k]; }
   }
   return `${rows.length} trail rows · draft ${BRAIN_FIXTURE.draft} · archived ${path.basename(BRAIN_FIXTURE.archived)}`;
+});
+
+stage("brain hub bootstrap and health: projects, a pinned rule and its leftover draft, a finding per hygiene fix", () => {
+  const req = createRequire(import.meta.url);
+  const { insertIndexLine } = req(path.join(SCRIPTS, "lib", "memory-index.js"));
+  const fm = (lines) => `---\n${lines.filter(Boolean).join("\n")}\n---\n\n`;
+  const mem = (rel, head, title, body) => write(v(rel), `${fm(head)}# ${title}\n\n${body}\n`);
+  const plain = (type, created, updated, extra = []) => [`type: memory`, `tags: [memory/${type}, status/active]`, `created: ${created}`, `updated: ${updated}`, ...extra];
+
+  // A full BRAIN.md (D17): the operator replaced the template's profile paragraph with a fuller one and added quick links
+  // (brain/config.json quickLinks), so Who you are and Quick links take most of the 850 tokens and the two oldest active
+  // projects are left out of Active context (build-brain-md.js gives way oldest first). Lengths are tuned: Active context
+  // shows the newest five of seven.
+  const cfgFile = v("brain/config.json");
+  const vaultCfg = readJson(cfgFile);
+  vaultCfg.quickLinks = [
+    ...vaultCfg.quickLinks,
+    "- Field crew: tablet setup and sync troubles go to the survey channel; the crew is offline once the boat is out",
+    "- Vendor: chart tiles, licences and invoices through the vendor portal; calls on Thursdays",
+    "- Releases: tag, build, smoke-test on a tablet, publish the notes (the release checklist has the steps)",
+    "- Field days: Fridays; nothing ships on a Thursday afternoon",
+  ];
+  writeJson(cfgFile, vaultCfg);
+  const profile = v("brain/memory/user/profile.md");
+  const who = "Survey lead for a small harbour office: I keep the offline chart viewer, the sounding imports and the tablets the field crew carry, and I review every change before it reaches them. Mornings are for deep work on the viewer, afternoons for reviews and calls with the chart vendor; Fridays are for the field. I read diffs on a laptop between boat trips, so small, self-contained changes with a one-line summary and a test I can run work best, and a long thread with no conclusion does not. Explain a trade-off in two sentences and pick one; ask before anything that deletes, renames or publishes; otherwise act and tell me afterwards. Depths are in metres and times in UTC everywhere, including logs, file names and commit messages. When a choice touches the field crew (what the tablet shows, how a sync behaves offline) say so first, since they cannot ask back once the boat is out. I care more about a viewer that never loses a sounding than about new layers, and more about a clear release note than a clever one. The office is two people and a boat, so anything that needs a server, an account or a weekly chore has to earn its place; a plain file in the vault usually wins. When you are unsure which of two notes is current, the one with the later date is, and the tablets lag the vault by a release. Keep me out of the loop on formatting and lint fixes: run them, commit them on their own, and say nothing unless they fail. Anything about money, the vendor contract or a crew member's hours waits for me, however small. A sounding or a tide reading is never edited by hand; a wrong one is flagged in the log beside it. Commit messages are in the present tense, under seventy characters, with the area first. Say plainly when something is broken, then fix it.";
+  const text = fs.readFileSync(profile, "utf8");
+  const para = /\n# Profile\n\n([^\n]+)\n/.exec(text);
+  if (!para) throw new Error("the template's profile.md has no first paragraph under # Profile");
+  write(profile, text.replace(para[1], who));
+
+  // Active projects: two that look shipped (one left out of BRAIN.md by its budget), one that only merged a PR, one parked.
+  mem(HUB_FIXTURE.shipped.version, plain("projects", day(-80), day(-75)), "Chart viewer 1.2.0",
+    "Version 1.2.0 went out to the survey tablets: offline tiles, the depth legend and a night palette. The release notes sit with the build in the shared drive.");
+  mem(HUB_FIXTURE.shipped.released, plain("projects", day(-120), day(-40)), "Sounding import",
+    "Imports the echo sounder's CSV logs into the chart view's depth layer. The importer is done; this note keeps the column order (time, depth, quality) for the next format change.");
+  mem(HUB_FIXTURE.merged, plain("projects", day(-20), day(-3)), "Tile cache rework",
+    "The chart tiles move to one cache file per zoom level. PR #42 merged the reader; eviction for offline mode is next.");
+  mem("brain/memory/projects/wind-overlay-spike.md", plain("projects", day(-70), day(-62)), "Wind overlay spike",
+    "An hourly wind layer drawn as arrows over the chart. Parked until the tile cache rework lands; the sample feed's format is noted in the spike branch.");
+
+  // A feedback rule approved from a draft three days ago (feedback-drafts.js applyDraft's shape), kept, then pinned; its
+  // draft is still in _drafts, as writeDraft wrote it (Health's leftover draft).
+  const rule = "Label every chart axis with its unit: depth in metres, time in UTC.\n\n**Why:** a depth profile without units was read as feet in the last review.\n\n**How to apply:** put the unit in the axis title, never only in the legend.";
+  mem(HUB_FIXTURE.pinned, [...plain("feedback", day(-3), day(-3), [`source: feedback-autoloop`, `session: ${HUB_FIXTURE.ruleSession}`, "reviewed: true", "pin: true"])], "Show units on every axis", rule);
+  write(v(`brain/memory/feedback/_drafts/${HUB_FIXTURE.leftover}.md`), `${fm(["type: memory", "tags: [memory/feedback, status/draft]", `created: ${day(-3)}`, `updated: ${day(-3)}`, "source: feedback-autoloop", `session: ${HUB_FIXTURE.ruleSession}`, "description: depth in metres, time in UTC, on every axis"])}# Show units on every axis\n\n${rule}\n`);
+
+  // Hygiene: an in-session write under each old label (one also misfiled in MEMORY.md, one with no line at all), a host's
+  // auto-memory shape, and a line to a file that is gone.
+  mem(HUB_FIXTURE.legacy.session, plain("feedback", day(-21), day(-21), ["source: session"]), "Date-stamp exported files",
+    "Put the date first in every exported file name, so a folder of exports sorts by day.\n\n**Why:** two exports with the same name overwrote each other on a tablet.\n\n**How to apply:** YYYY-MM-DD, a dash, then what the file holds.");
+  mem(HUB_FIXTURE.legacy["in-session"], plain("reference", day(-33), day(-33), ["source: in-session"]), "Survey grid spacing",
+    "Survey lines run 25 m apart inside the breakwater and 50 m outside it; closer only where the bottom changes fast.");
+  write(v(HUB_FIXTURE.oldType), `${fm(["name: Navigation light colours", "description: red to port, green to starboard, white masthead", "type: reference"])}# Navigation light colours\n\nPort lights are red and starboard lights green; the masthead light is white and shows forward over 225 degrees.\n`);
+
+  const HEADING = { feedback: "## Feedback", projects: "## Project", reference: "## Reference" };
+  let index = fs.readFileSync(v("MEMORY.md"), "utf8");
+  const line = (heading, rel, title, desc) => { index = insertIndexLine(index, heading, `- [${title}](${rel}) — ${desc}`); };
+  line(HEADING.projects, HUB_FIXTURE.shipped.version, "Chart viewer 1.2.0", "released to the survey tablets; notes in the shared drive");
+  line(HEADING.projects, HUB_FIXTURE.shipped.released, "Sounding import", "CSV importer, released in the spring; column notes only");
+  line(HEADING.projects, HUB_FIXTURE.merged, "Tile cache rework", "PR #42 merged; offline eviction next");
+  line(HEADING.projects, "brain/memory/projects/wind-overlay-spike.md", "Wind overlay spike", "hourly wind arrows; parked until the tile cache lands");
+  line(HEADING.feedback, HUB_FIXTURE.pinned, "Show units on every axis", "depth in metres, time in UTC, on every axis");
+  line(HEADING.reference, HUB_FIXTURE.oldType, "Navigation light colours", "red to port, green to starboard");
+  // A feedback memory's line under Reference (misfiled), and a line whose file was deleted by hand (broken).
+  line(HEADING.reference, HUB_FIXTURE.misfiled, "Date-stamp exported files", "the date first in every export's file name");
+  line(HEADING.reference, HUB_FIXTURE.broken, "Mooring buoy inventory", "moved to the chandlery's spreadsheet");
+  write(v("MEMORY.md"), index);
+  return `${Object.keys(HUB_FIXTURE.legacy).length} old labels · ${HUB_FIXTURE.oldType.split("/").pop()} · leftover ${HUB_FIXTURE.leftover}`;
+});
+
+// What the Map draws (D19): graphify's node-link graph, invented here because CI installs no graphify (the scan's
+// graph-build stage then reports "graphify missing" and leaves graph.json as it is), with the marker graph-build writes.
+// One file node per memory (two for harbor-map), a few concept nodes from the daily notes and MEMORY.md as a hub linking
+// every memory. Communities as graphify's Leiden would leave them: three of 4–7 memories (kept at memory.mapMin 3), two of
+// 2 (the smaller groups), the hub's own (0), and profile.md filed only beside MEMORY.md (its links re-home it). The
+// archived memory is in the graph and drops out. nav-light-colours was written after the graph was built: not in it.
+const GRAPH = (() => {
+  const P = (type, slug) => `brain/memory/${type}/${slug}.md`;
+  const mems = {
+    harbor: [P("projects", "harbor-map"), 1], overlay: [P("projects", "chart-overlay-refresh"), 1], contours: [P("projects", "depth-contours-layer"), 1],
+    tiles: [P("projects", "tile-cache-rework"), 1], wind: [P("projects", "wind-overlay-spike"), 1], tideapi: [P("reference", "tide-api-notes"), 1],
+    station: [P("reference", "station-id-format"), 1],
+    diffs: [P("feedback", "prefer-small-diffs"), 2], reviews: [P("feedback", "prefer-small-diffs-in-reviews"), 2], confirm: [P("feedback", "confirm-before-deleting"), 2],
+    units: [P("feedback", "show-units-on-every-axis"), 2], hours: [P("user", "working-hours"), 2], profile: [P("user", "profile"), 0],
+    checklist: [P("reference", "release-checklist"), 3], viewer: [P("projects", "chart-viewer-1.2.0"), 3], sounding: [P("projects", "sounding-import"), 3],
+    dates: [P("feedback", "date-stamp-exports"), 3],
+    fieldnotes: [P("projects", "field-notes-app"), 4], grid: [P("reference", "survey-grid-spacing"), 4], boat: [P("projects", "survey-boat-booking"), 4],
+    datum: [P("reference", "chart-datum"), 5], metres: [P("user", "depths-in-metres"), 5],
+  };
+  const nodes = [{ id: "memory_index", label: "Memory Index", file_type: "document", source_file: "MEMORY.md", community: 0 }];
+  for (const [id, [file, community]] of Object.entries(mems)) nodes.push({ id, label: path.basename(file, ".md"), file_type: "document", source_file: file, community });
+  nodes.push({ id: "harbor_status", label: "Status", file_type: "document", source_file: mems.harbor[0], community: 1 });
+  const daily = (offset) => `${day(offset).slice(0, 4)}/${day(offset).slice(0, 7)}-${MONTHS[Number(day(offset).slice(5, 7)) - 1]}/${day(offset)}.md`;
+  nodes.push({ id: "concept_chart_viewer", label: "chart viewer", file_type: "concept", source_file: daily(-1), community: 1 });
+  nodes.push({ id: "concept_review", label: "review", file_type: "concept", source_file: daily(0), community: 2 });
+  const links = [];
+  const link = (a, b, relation = "references") => links.push({ source: a, target: b, relation, confidence: "EXTRACTED", weight: 1, source_file: (mems[a] ?? mems[b] ?? [daily(0)])[0] });
+  for (const id of Object.keys(mems)) link("memory_index", id, "indexes");
+  link("harbor", "harbor_status", "contains");
+  for (const [a, b] of [
+    ["harbor", "tideapi"], ["harbor_status", "overlay"], ["harbor", "contours"], ["harbor", "tiles"], ["overlay", "contours"], ["tideapi", "station"],
+    ["tiles", "overlay"], ["wind", "tiles"],
+    ["diffs", "reviews"], ["diffs", "confirm"], ["confirm", "units"], ["hours", "profile"], ["profile", "diffs"],
+    ["checklist", "viewer"], ["checklist", "sounding"], ["viewer", "sounding"], ["dates", "checklist"],
+    ["harbor", "diffs"], ["viewer", "tiles"],
+    ["fieldnotes", "grid"], ["fieldnotes", "harbor"], ["boat", "fieldnotes"], ["datum", "tideapi"],
+  ]) link(a, b);
+  // Concepts two or more memories share: each links them once more (lib/brain-map.js counts a shared node once per pair).
+  for (const id of ["harbor", "viewer"]) link("concept_chart_viewer", id, "mentions");
+  for (const id of ["reviews", "units", "diffs"]) link("concept_review", id, "mentions");
+  return { directed: false, multigraph: false, graph: {}, nodes, links, hyperedges: [] };
+})();
+
+stage("graphify's graph (brain/graphify-out/graph.json and .aos-graph.json, invented: no graphify in CI)", () => {
+  const out = v("brain/graphify-out");
+  writeJson(path.join(out, "graph.json"), GRAPH);
+  const communities = new Set(GRAPH.nodes.map((n) => n.community)).size;
+  const builtAt = ago(2 * HOUR).toISOString();
+  writeJson(path.join(out, ".aos-graph.json"), { schema: 1, mode: "structural", builtAt, lastStructural: builtAt, lastSemantic: null, nodes: GRAPH.nodes.length, edges: GRAPH.links.length, communities, ms: 1400 });
+  return `${GRAPH.nodes.length} nodes · ${GRAPH.links.length} links · ${communities} communities`;
+});
+
+// The usage log (brain-hub D8, D9) as inject-context.js and the MCP server leave it, through the runtime's own writer:
+// BRAIN.md's who, rules and shown projects injected at each session's start on either host, recall hits and a
+// memory_read. The first row is 44 days old, so Dead weight's counts show (memory.neverUsedDays 30): used in the last
+// week, quiet (8 to 30 days), never (no row in 30 days, chart-datum's only one older).
+const USAGE = (() => {
+  const P = (type, slug) => `brain/memory/${type}/${slug}.md`;
+  const injected = [P("user", "profile"), HUB_FIXTURE.pinned, P("projects", "harbor-map"), HUB_FIXTURE.merged, HUB_FIXTURE.shipped.released];
+  return [
+    { ms: 44 * DAY, host: "codex", how: "recalled", paths: [P("reference", "chart-datum")] },
+    { ms: 15 * DAY, host: "claude", how: "injected", paths: [P("user", "profile"), P("projects", "harbor-map")] },
+    { ms: 15 * DAY - 20 * MIN, host: "claude", how: "read", paths: [P("feedback", "confirm-before-deleting")] },
+    { ms: 12 * DAY, host: "codex", how: "recalled", paths: [P("projects", "field-notes-app")] },
+    { ms: 2 * DAY, host: "claude", how: "injected", paths: injected },
+    { ms: 2 * DAY - 15 * MIN, host: "claude", how: "recalled", paths: [P("reference", "tide-api-notes"), P("feedback", "prefer-small-diffs")] },
+    { ms: 1 * DAY, host: "codex", how: "injected", paths: injected },
+    { ms: 1 * DAY - 30 * MIN, host: "codex", how: "read", paths: [P("user", "working-hours")] },
+    { ms: 1 * DAY - 40 * MIN, host: "codex", how: "recalled", paths: ["brain/patterns/debugging.md"] },
+  ];
+})();
+
+stage("memory usage log (lib/memory-usage.js logUsage, synthetic clock)", () => {
+  const U = createRequire(import.meta.url)(path.join(SCRIPTS, "lib", "memory-usage.js"));
+  let n = 0;
+  for (const r of USAGE) n += U.logUsage({ vault: VAULT, how: r.how, paths: r.paths, host: r.host, cfg: { telemetry: { enabled: true } }, now: ago(r.ms) });
+  if (n !== USAGE.reduce((s, r) => s + r.paths.length, 0)) throw new Error(`logUsage wrote ${n} rows`);
+  return `${n} rows`;
 });
 
 stage("promote trail (lib/promote-log.js appendTrail)", () => {
@@ -920,6 +1118,28 @@ stage("expected values", () => {
     memories: list.memories.map((m) => m.path),
     unreviewed: open.map((m) => m.path),
   };
+  // Bootstrap, Map and Health (brain-hub D17–D20): the caches the scan and build-brain-md wrote, each fix's dry run and the
+  // recall preview's answers as the runtime gives them (`aos memory fix <kind> --dry-run --json` and recall-cli.js write
+  // nothing), and the usage buckets from the rows this script logged (USAGE), counted from now as the hub counts them.
+  const live = list.memories.filter((m) => m.live).map((m) => m.path);
+  const last = new Map();
+  for (const r of USAGE) for (const p of r.paths) last.set(p, Math.min(last.get(p) ?? Infinity, r.ms));
+  const bucket = (p) => { const a = last.get(p) ?? Infinity; return a <= 7 * DAY ? "used" : a <= 30 * DAY ? "quiet" : "never"; };
+  const recall = (q) => parse(brainScript("sdk/recall-cli.js", [q, "--limit", "8", "--json"]));
+  Object.assign(expected.brain, {
+    ...HUB_FIXTURE,
+    sources: readJson(v("brain/_index/brain-sources.json")),
+    map: readJson(v("brain/_index/brain-map.json")),
+    looksShipped: hub.shipped,
+    hygiene: hub.hygiene,
+    clusters: hub.clusters,
+    usage: {
+      since: hub.usage.since,
+      used: live.filter((p) => bucket(p) === "used"), quiet: live.filter((p) => bucket(p) === "quiet"), never: live.filter((p) => bucket(p) === "never"),
+    },
+    fixes: Object.fromEntries(["sources", "types", "descriptions", "index", "drafts"].map((k) => [k, parse(aos(["memory", "fix", k, "--dry-run", "--json"]))])),
+    recallHits: { [HUB_FIXTURE.recall.hit]: recall(HUB_FIXTURE.recall.hit), [HUB_FIXTURE.recall.none]: recall(HUB_FIXTURE.recall.none) },
+  });
 });
 
 writeJson(path.join(OUT, "expected.json"), expected);

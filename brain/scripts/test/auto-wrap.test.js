@@ -429,3 +429,80 @@ test('a second wrap of one session reads only what came after the first, and ski
   assert.ok(later.some((s) => s.includes('second ask about offsets')));
   assert.ok(!later.some((s) => s.includes('first ask about the ledger')), 'the wrapped part is not sent again');
 });
+
+// ---- the Brain hub's cache after a wrap (brain-hub plan, PR 2 follow-ups) ----
+const HUB_PATH = path.join(TMP, 'brain', '_index', 'brain-hub.json');
+const MAP_PATH = path.join(TMP, 'brain', '_index', 'brain-map.json');
+const STALE_HUB = `${JSON.stringify({ schema: 1, builtAt: '2020-01-01T00:00:00.000Z', counts: { memories: 0 }, batches: [] })}\n`;
+const WRITTEN = 'brain/memory/feedback/commit-immediately-after-green-tests.md';
+
+test('a wrap that wrote a memory leaves a fresh brain-hub.json; one that wrote none leaves it alone', async () => {
+  fs.writeFileSync(HUB_PATH, STALE_HUB);
+  fs.rmSync(MAP_PATH, { force: true });
+  const report = { wrote: [], counts: {} };
+  const before = Date.now();
+  const out = await runAutoWrap({ transcriptText: 'x'.repeat(200), sessionId: 'sess-hub1', chatFn: goodChat, report });
+  assert.equal(out.written, 1);
+  const hub = JSON.parse(fs.readFileSync(HUB_PATH, 'utf8'));
+  assert.ok(Date.parse(hub.builtAt) >= before, 'rebuilt by this wrap');
+  assert.ok(hub.counts.memories >= 1);
+  assert.ok(hub.batches.some((b) => b.paths.includes(WRITTEN)), 'the new memory waits in a Review batch');
+  assert.ok(fs.existsSync(MAP_PATH), 'the map beside it (D19), from the same call');
+  assert.deepEqual(report.wrote.filter((p) => p === 'brain/_index/brain-hub.json'), ['brain/_index/brain-hub.json']);
+  assert.ok(report.wrote.indexOf('brain/_index/brain-hub.json') > report.wrote.indexOf(WRITTEN));
+
+  fs.writeFileSync(HUB_PATH, STALE_HUB);
+  const none = await runAutoWrap({ transcriptText: 'hi', sessionId: 'sess-hub2', chatFn: junkChat, report: { wrote: [], counts: {} } });
+  assert.equal(none.written, 0);
+  assert.equal(fs.readFileSync(HUB_PATH, 'utf8'), STALE_HUB, 'no memory, no rebuild');
+});
+
+test('runAutoWrap rebuilds once, after its corrections stage, with the vault and its config', async () => {
+  const correctionChat = () => JSON.stringify({ corrections: [{ title: 'Ask before force-pushing any branch',
+    description: 'user reverted an unrequested force push this session',
+    body: 'Never force-push unasked.\n\n**Why:** revert cost.\n\n**How to apply:** plain push; ask first.\n\n**Evidence:** "I did not ask you to force push"' }] });
+  const calls = [];
+  const buildBrainHub = (args) => {
+    calls.push({ args, drafts: fs.readdirSync(path.join(TMP, 'brain', 'memory', 'feedback', '_drafts')).length });
+  };
+  await runAutoWrap({ transcriptText: 'x'.repeat(200), sessionId: 'sess-hub3', chatFn: goodChat, report: { wrote: [], counts: {} },
+    corrections: { enabled: true, chatFn: correctionChat }, deps: { buildBrainHub } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.vault, TMP);
+  assert.equal(calls[0].args.cfg.provider, 'none', 'the vault config, as scan-vault passes it');
+  assert.equal(calls[0].drafts, 1, 'the corrections stage had written its draft');
+});
+
+test('a throwing rebuild never fails the wrap: injected into runAutoWrap and applyExtraction, or a real write error', async () => {
+  const boom = () => { throw new Error('hub exploded'); };
+  const viaRun = await runAutoWrap({ transcriptText: 'x'.repeat(200), sessionId: 'sess-hub4', chatFn: goodChat, report: { wrote: [], counts: {} }, deps: { buildBrainHub: boom } });
+  assert.equal(viaRun.written, 1);
+  const reset = () => {
+    fs.rmSync(path.join(TMP, WRITTEN), { force: true });
+    fs.writeFileSync(path.join(TMP, 'MEMORY.md'), '# Index\n');
+    try { fs.unlinkSync(path.join(TMP, 'brain', '_index', 'promote-log.jsonl')); } catch {}
+  };
+  reset();
+  const report = { wrote: [], counts: {} };
+  const viaApply = await applyExtraction({ extraction: GOOD_EXTRACTION, sessionId: 'sess-hub5', report, deps: { buildBrainHub: boom } });
+  assert.equal(viaApply.written, 1);
+  assert.ok(report.wrote.includes(WRITTEN));
+  assert.ok(!report.wrote.includes('brain/_index/brain-hub.json'), 'a failed rebuild is not reported as written');
+
+  // The real builder failing, in a child so its stdout is seen whole (the MCP server's stdout is its protocol):
+  // brain-hub.json is a folder, so the atomic rename throws; the wrap still writes and prints nothing.
+  reset();
+  fs.rmSync(HUB_PATH, { recursive: true, force: true });
+  fs.mkdirSync(path.join(HUB_PATH, 'in-the-way'), { recursive: true });
+  try {
+    const { spawnSync } = require('child_process');
+    const script = `require(${JSON.stringify(path.join(__dirname, '..', 'auto-wrap.js'))}).applyExtraction({ extraction: ${JSON.stringify(GOOD_EXTRACTION)}, sessionId: 'sess-hub6', report: { wrote: [], counts: {} } })` +
+      `.then((o) => process.stderr.write('\\nRESULT ' + JSON.stringify(o) + '\\n'))`;
+    const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: { ...process.env, BRAIN_VAULT: TMP, AOS_CONFIG: path.join(TMP, 'none.json') } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.equal(JSON.parse(/^RESULT (.*)$/m.exec(r.stderr)[1]).written, 1);
+    assert.ok(fs.existsSync(path.join(TMP, WRITTEN)));
+    assert.ok(fs.statSync(HUB_PATH).isDirectory(), 'nothing replaced the folder');
+  } finally { fs.rmSync(HUB_PATH, { recursive: true, force: true }); }
+});

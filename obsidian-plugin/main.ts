@@ -264,6 +264,12 @@ export default class AgenticOSPlugin extends Plugin {
   aosJson<T>(args: string[], timeoutMs?: number): Promise<AosJsonResult<T>> {
     return runAosJson<T>(args, { node: this.nodeBin(), vault: this.vaultRoot(), configDir: this.claudeConfigDir(), timeoutMs });
   }
+  /** A runtime script under the vault (e.g. brain/scripts/sdk/recall-cli.js), run and waited for like aosJson: its own
+   *  surface rule admits it (app/src/shared/surfaces.ts), with the same AOS_VAULT/AOS_CONFIG pins. */
+  scriptJson<T>(relScript: string, args: string[], timeoutMs?: number): Promise<AosJsonResult<T>> {
+    const vault = this.vaultRoot();
+    return runAosJson<T>(args, { node: this.nodeBin(), vault, configDir: this.claudeConfigDir(), timeoutMs, cli: path.join(vault, relScript) });
+  }
 
   /** Node binary for spawns; a login-shell probe result lands in settings and is persisted here. */
   nodeBin(): string {

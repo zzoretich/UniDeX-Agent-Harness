@@ -133,6 +133,8 @@ const WORKSPACE_VERBS: readonly SpawnRule[] = [
 const MEMORY = /brain\/memory\/(?:user|feedback|projects|reference)\/[a-z0-9][a-z0-9.-]{0,120}\.md/;
 // A feedback draft's name (memory-ops.js SLUG_RE).
 const DRAFT = /[a-z0-9][a-z0-9.-]{0,120}/;
+// A hygiene fix's kind (lib/memory-fix.js KINDS).
+const FIX_KIND = /sources|types|descriptions|index|drafts/;
 /** At most this many memories per keep, archive or restore (obsidian-plugin/src/data/brainModel.ts MAX_PATHS_PER_CALL). */
 export const MAX_MEMORY_PATHS = 50;
 const MEMORY_WHOLE = new RegExp(`^(?:${MEMORY.source})$`);
@@ -148,11 +150,26 @@ const memoryPaths = (verb: string) => (a: readonly string[]): boolean => {
  */
 const MEMORY_VERBS: readonly SpawnRule[] = [
   ...["keep", "archive", "restore"].map((verb): SpawnRule => ({ script: "cli/aos.js", args: memoryPaths(verb) })),
-  ...inOrder(["--dry-run"]).map((flags): SpawnRule => ({ script: "cli/aos.js", args: argv("memory", "set", MEMORY, "--set", JSON_OBJ, "--expect", HASH, ...flags, "--json") })),
+  // --skip-brain-md: Bootstrap's bulk Mark complete leaves each set's BRAIN.md rebuild out and runs build-brain-md once.
+  ...inOrder(["--dry-run", "--skip-brain-md"]).map((flags): SpawnRule => ({ script: "cli/aos.js", args: argv("memory", "set", MEMORY, "--set", JSON_OBJ, "--expect", HASH, ...flags, "--json") })),
   { script: "cli/aos.js", args: argv("memory", "supersede", MEMORY, "--by", MEMORY, "--json") },
   { script: "cli/aos.js", args: argv("memory", "draft", /approve|reject/, DRAFT, "--json") },
   { script: "cli/aos.js", args: argv("memory", "notdup", MEMORY, MEMORY, "--json") },
+  // Health's hygiene fixes (brain-hub D20; PR 3): a dry run first, shown before the confirm, then the real run pinned to
+  // it (--expect: the dry run's hash; the runtime refuses, writing nothing, when the files no longer give those changes).
+  { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--dry-run", "--json") },
+  { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--json") },
+  { script: "cli/aos.js", args: argv("memory", "fix", FIX_KIND, "--expect", /[0-9a-f]{32}/, "--json") },
 ];
+
+// Bootstrap's recall preview (brain-hub D18; PR 3): the typed text as one query, exactly as data/brainModel.ts recallArgs
+// builds it. Never a flag (no leading "-", so never --warm), no control characters or line separators, at most 200
+// characters; then --limit with one or two digits and --json. recall-cli.js writes nothing but a missing recall index
+// (rebuilt as `aos recall --warm` would), logs no usage (D9) and calls no model but the local Ollama, asked directly to
+// embed the query when an embed index exists: it never resolves the provider, so no provider-state.json write and no
+// headless login probe.
+const RECALL_QUERY = /[^\s\-\0-\x1f\x7f\u2028\u2029][^\0-\x1f\x7f\u2028\u2029]{0,199}/;
+const RECALL_PREVIEW: SpawnRule = { script: "sdk/recall-cli.js", args: argv(RECALL_QUERY, "--limit", /\d{1,2}/, "--json") };
 
 // What the Files tab and the note editor never touch: the runtime's caches and vendored scripts, dependency folders, and
 // every dot-path. The Files tree and the vault index never show a dot-path; refusing them also keeps a compromised page
@@ -263,21 +280,31 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "brain",
     label: "Brain",
-    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore), data/brainModel.ts (memoryArgs)",
+    source: "views/BrainTab.ts and views/brain/* (Review: keep, keep the batch, archive, keep the older one, not duplicates, a draft's approve or reject, Mark everything before; Library: pin, status, archive, restore; Bootstrap: unpin, mark complete, the recall preview; Health: each hygiene fix with its dry run, not duplicates, Rescan, archive), data/brainModel.ts (memoryArgs, recallArgs)",
     // The verbs write through the runtime (cli/memory.js → lib/memory-ops.js), never the page: a memory's own frontmatter
     // lines, MEMORY.md, the trail and brain/_index/**, and BRAIN.md through build-brain-md.js. Nothing is deleted but a
     // draft that is approved or rejected (brain-hub D6).
     writes: [],
     spawns: [
       ...MEMORY_VERBS,
-      // After a verb the hub's cache follows the files at once (else the next scan rebuilds it): brain/_index/brain-hub.json.
+      RECALL_PREVIEW,
+      // After a verb the hub's caches follow the files at once (else the next scan rebuilds them): brain/_index/brain-hub.json
+      // and brain-map.json (PR 3). Health's Rescan runs the same.
       { script: "brain-hub.js", args: /^$/ },
+      // BRAIN.md once after Bootstrap's bulk Mark complete, whose sets skip their own rebuild (Pulse runs the same).
+      { script: "build-brain-md.js", args: /^$/ },
     ],
     // Live check (brain-hub D14), 2026-10-11, on a copy of a real vault's brain with memories from both hosts' sessions:
     // the page's argv (brainModel memoryArgs) through this policy, run by the vault's vendored runtime: for a memory from
     // a Claude Code session and one from a Codex session, pin, a stale hash refused, unpin (the file back byte for byte),
     // archive, restore and keep; notdup, supersede and restore on a real duplicate pair; a draft approved and one
     // rejected; then brain-hub.js. Each was admitted with the surface on and refused with it off.
+    // PR 3's rules, 2026-10-11, on a fresh copy of the same vault with this runtime vendored into it: every fix kind's
+    // dry run left the copy byte for byte, its real run changed exactly the files the dry run listed with one `fixed`
+    // trail row each, and a second dry run found nothing (descriptions touched memories from Claude Code and Codex
+    // sessions alike; every frontmatter still parses as strict YAML); set pin, a stale hash refused and unpin back to the
+    // same bytes on a Claude Code session's memory and a Codex session's; Mark complete and back; the recall preview
+    // answered and wrote nothing (no usage row); brain-hub.js wrote a brain-map.json the page parses. 62 checks.
     verified: true,
   },
   {

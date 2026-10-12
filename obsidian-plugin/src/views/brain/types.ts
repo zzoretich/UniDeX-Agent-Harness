@@ -5,9 +5,26 @@ import type AgenticOSPlugin from "../../../main";
 import type { WorkbenchView } from "../WorkbenchView";
 import type { TrailEntry } from "../../data/promoteTrail";
 import type {
-  BrainDraft, BrainHub, BrainMemory, BrainMode, BrainNote, BrainSources, BrainTarget, BrainVerbResult, DupFlag, HubDup,
-  MemoryVerb, ReviewBatch,
+  BrainDraft, BrainHub, BrainMap, BrainMemory, BrainMode, BrainNote, BrainSources, BrainTarget, BrainVerbResult, DupFlag,
+  HubDup, MemoryVerb, RecallHit, ReviewBatch,
 } from "../../data/brainModel";
+
+/** The settings that change what Map and Health can say (brain/config.json over VAULT_CONFIG_DEFAULTS; PR 3). */
+export interface BrainSettings {
+  /** telemetry.enabled: off, nothing is logged, so Health's Never used and Dead weight name the reason instead (D8). */
+  telemetry: boolean;
+  /** graph.enabled: off, Map shows its empty state naming `aos graph on` (D19). */
+  graph: boolean;
+  /** memory.neverUsedDays: Dead weight waits for this many days of usage log (D20). */
+  neverUsedDays: number;
+  /** memory.mapMin: the smallest community the Map shows (D19). */
+  mapMin: number;
+  /** /wrap as this machine's hosts invoke it (aosConfig invocationHint): "/wrap", "$agenticos:wrap", or both forms. */
+  wrapHint: string;
+}
+
+/** The recall preview's answer (D18): the hits, or why there are none to show. */
+export type RecallPreview = { ok: true; query: string; hits: RecallHit[] } | { ok: false; reason: string };
 
 /** One load of the hub's data: the files win, the caches fill in (brainModel.ts). */
 export interface BrainData {
@@ -33,6 +50,14 @@ export interface BrainData {
   flags: Map<string, DupFlag>;
   /** Review's batches (the hub's, overlaid with the files). */
   batches: ReviewBatch[];
+  /** brain/_index/brain-map.json (D19), null before the first scan that writes it. */
+  map: BrainMap | null;
+  /** brain/_index/SESSION.md and recall-wake.md as text, null when absent (Bootstrap's budgets, D17). */
+  session: string | null;
+  wake: string | null;
+  /** MEMORY.md as text, null when absent (Bootstrap's index card: size, lines). */
+  indexRaw: string | null;
+  settings: BrainSettings;
 }
 
 /** What a mode acts through. */
@@ -48,6 +73,17 @@ export interface BrainCtx {
    * success reloads the files and rebuilds brain-hub.json in the background. `label` names the action in a Notice.
    */
   run<T>(verb: MemoryVerb, label: string): Promise<BrainVerbResult<T>>;
+  /**
+   * Runs a verb that writes nothing (`fix … --dry-run`): says why in a Notice when it fails, and neither reloads nor
+   * rebuilds the cache. Health shows its changes before asking (spec §6).
+   */
+  preview<T>(verb: MemoryVerb, label: string): Promise<BrainVerbResult<T>>;
+  /** sdk/recall-cli.js on the typed text (D18): writes nothing but a missing recall index, and logs no usage (D9). */
+  recall(text: string): Promise<RecallPreview>;
+  /** Rebuild brain-hub.json and brain-map.json now (Health's Rescan); the files' events reload the tab when it is done. */
+  rescan(): void;
+  /** build-brain-md.js now, waited for (Bootstrap's bulk Mark complete, whose sets skip it): ok, or why not. */
+  brainMd(): Promise<{ ok: boolean; error?: string }>;
   /** keep, archive or restore over any number of paths, in calls of at most MAX_PATHS_PER_CALL; stops at the first failure. */
   runAll(verb: "keep" | "archive" | "restore", paths: readonly string[], label: string): Promise<{ done: number; failed: string | null }>;
   /** Reload the files now (a mode calls it after an action that changed nothing through ctx.run, e.g. dismissing a pair). */

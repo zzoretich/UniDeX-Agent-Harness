@@ -11,16 +11,19 @@
  *   clusters  groups of three or more linked by near-duplicate pairs (one memory per release step, say)
  *   usage     per path, from memory-usage.jsonl and its rollup (D8)
  *   hygiene   source labels, the old `type:` shape, descriptions only MEMORY.md has, index lines missing, misfiled or
- *             broken, approved drafts left behind (PR 3's `aos memory fix` acts on these)
- *   shipped   active projects that name a release: Bootstrap's "looks shipped" suggestions (D17)
+ *             broken, approved drafts left behind (lib/memory-hygiene.js, which `aos memory fix` acts on too)
+ *   shipped   active projects that name a full version, "shipped", "released" or "superseded": "looks shipped" (D17)
  *
- * Takes the vault; `write: false` builds without writing (a dry run on a real vault).
+ * The Map's brain-map.json is written beside it from the same memories (D19; lib/brain-map.js). Takes the vault;
+ * `write: false` builds both without writing (a dry run on a real vault).
  */
 const fs = require('fs');
 const path = require('path');
 const ops = require('./lib/memory-ops.js');
+const { readIndexLines, linkedPaths, findHygiene } = require('./lib/memory-hygiene.js');
 const usage = require('./lib/memory-usage.js');
 const fsx = require('./lib/fsx.js');
+const brainMap = require('./lib/brain-map.js');
 const { hostDirs } = require('./lib/host.js');
 const { readSessionIndex } = require('./lib/transcript.js');
 
@@ -31,7 +34,11 @@ const MAX_CLUSTER = 12;
 const MAX_DUPS = 200;
 const STOP = new Set(('a an and are as at be but by for from has have i in is it its of on or that the this to was were will with ' +
   'you your we our not no so if then than when what which who how all any can do does did also more after before into via').split(' '));
-const SHIPPED = /\bv?\d+\.\d+(?:\.\d+)?\b|\bshipped\b|\breleased?\b|\bmerged\b/i;
+// "Looks shipped" (D17): a full x.y.z version, "shipped", "released" (not "release") or "superseded"; never "merged",
+// which every project in flight says of its PRs. A version stands alone: no digit or dot before it, no `.digit` after
+// it, so an address (127.0.0.1) is not one, while "Tagged v1.2.0." at a sentence's end is. brainBootstrap.ts's SHIPPED
+// is its twin.
+const SHIPPED = /(?<![\d.])\bv?\d+\.\d+\.\d+\b(?!\.\d)|\bshipped\b|\breleased\b|\bsuperseded\b/i;
 
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 function readText(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } }
@@ -194,20 +201,6 @@ function findClusters(near, byPath, clusterMin) {
   return out.sort((a, b) => b.paths.length - a.paths.length || (a.paths[0] < b.paths[0] ? -1 : 1));
 }
 
-/** MEMORY.md's bullets by heading: { path → [{ heading, description }] } and the broken ones. */
-function readIndexLines(raw) {
-  const lines = new Map();
-  let heading = '';
-  for (const l of String(raw || '').split('\n')) {
-    const h = /^##\s+(.+?)\s*$/.exec(l);
-    if (h) { heading = h[1]; continue; }
-    const b = /^\s*-\s*\[([^\]]*)\]\((brain\/memory\/[^)]+\.md)\)\s*(?:—\s*(.*))?$/.exec(l);
-    if (!b) continue;
-    (lines.get(b[2]) || lines.set(b[2], []).get(b[2])).push({ heading, description: (b[3] || '').trim() });
-  }
-  return lines;
-}
-
 /**
  * session id → { title, host } from session-index.json (written by the runtime from both hosts' sessions), titled the way
  * collectors/hostSessions.js titles a session for Spaces and Sessions: its own title, else Codex's thread name
@@ -281,7 +274,8 @@ function buildBatches(live, vault, cfg) {
   return out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
 }
 
-function buildBrainHub({ vault, cfg = {}, now = Date.now(), write = true } = {}) {
+/** brain-hub.json's doc and, through `buildMap` (lib/brain-map.js; injectable), brain-map.json's; `write` writes both. */
+function buildBrainHub({ vault, cfg = {}, now = Date.now(), write = true, buildMap = brainMap.buildBrainMap } = {}) {
   const c = { ...DEFAULTS, ...(cfg.memory || {}) };
   const idx = path.join(vault, 'brain', '_index');
   const memories = ops.listMemories(vault);
@@ -311,18 +305,10 @@ function buildBrainHub({ vault, cfg = {}, now = Date.now(), write = true } = {})
   });
   const clusters = findClusters(near, byPath, c.clusterMin);
 
-  const sources = {};
-  for (const m of live) { const s = m.source || '(none)'; sources[s] = (sources[s] || 0) + 1; }
-  const liveSlugs = new Set(live.filter((m) => m.type === 'feedback').map((m) => m.slug));
-  const hygiene = {
-    sources,
-    oldType: live.filter((m) => m.hasFrontmatter && m.kind !== 'memory').map((m) => m.path),
-    noDescription: live.filter((m) => !m.description && (indexLines.get(m.path) || []).some((e) => e.description)).map((m) => m.path),
-    unindexed: live.filter((m) => !indexLines.has(m.path)).map((m) => m.path),
-    misfiled: [...indexLines.entries()].filter(([p, es]) => byPath.has(p) && es.some((e) => !e.heading.startsWith(ops.TYPE_HEADING[byPath.get(p).type]))).map(([p]) => p),
-    brokenIndex: [...indexLines.keys()].filter((p) => !byPath.has(p) && ops.PATH_RE.test(p)),
-    leftoverDrafts: drafts.filter((d) => liveSlugs.has(d.slug)).map((d) => d.slug),
-  };
+  // Computed by lib/memory-hygiene.js, as `aos memory fix` finds them, so the hub and the fix agree (brain-hub D20): a
+  // bullet that links a memory some other way is its line, and a line to a link or a file too big to read is not broken.
+  const exists = (rel) => { try { fs.lstatSync(path.join(vault, rel)); return true; } catch { return false; } };
+  const hygiene = findHygiene({ live, byPath, indexLines, drafts, linked: linkedPaths(indexRaw), exists });
 
   const shipped = [];
   for (const m of live) {
@@ -339,7 +325,21 @@ function buildBrainHub({ vault, cfg = {}, now = Date.now(), write = true } = {})
     usage: usage.summarize(vault, { now }),
     hygiene, shipped,
   };
-  if (write) fsx.writeAtomic(path.join(idx, 'brain-hub.json'), JSON.stringify(hub) + '\n');
+  // The Map (D19): graphify's communities of these same memories, written beside the hub. A map that fails to build is
+  // written as "missing" and never costs the hub. It rides on the returned hub unenumerated (`hub.map`, for the scan's
+  // report), so brain-hub.json and --json stay the hub alone.
+  let map;
+  try {
+    map = buildMap({ vault, cfg: { ...cfg, memory: c }, memories, now });
+  } catch (e) {
+    console.error('[brain-hub] map:', e.message);
+    map = brainMap.emptyMap('missing', { now, mapMin: brainMap.mapMinOf({ memory: c }) });
+  }
+  Object.defineProperty(hub, 'map', { value: map });
+  if (write) {
+    fsx.writeAtomic(path.join(idx, 'brain-hub.json'), JSON.stringify(hub) + '\n');
+    try { fsx.writeAtomic(path.join(idx, 'brain-map.json'), JSON.stringify(map) + '\n'); } catch (e) { console.error('[brain-hub] brain-map.json:', e.message); }
+  }
   return hub;
 }
 
@@ -355,4 +355,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildBrainHub, findDuplicates, findClusters, jaccard, sessionTitles, DEFAULTS };
+module.exports = { buildBrainHub, findDuplicates, findClusters, jaccard, sessionTitles, DEFAULTS, SHIPPED };

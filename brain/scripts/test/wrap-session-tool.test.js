@@ -65,6 +65,11 @@ test('wrap_session writes a memory, a MEMORY.md line, SESSION.md sections, a dra
   assert.equal(ledger.pipelines['auto-wrap'].lastRun.status, 'ok');
   assert.equal(ledger.pipelines['auto-wrap'].lastRun.provider, 'in-session');
   assert.equal(ledger.pipelines['auto-wrap'].lastRun.counts.written, 1);
+  // The Brain hub's cache follows the wrap (brain-hub plan, PR 2 follow-ups): Review shows the memory before a scan.
+  const hub = JSON.parse(fs.readFileSync(path.join(TMP, 'brain', '_index', 'brain-hub.json'), 'utf8'));
+  assert.ok(hub.batches.some((b) => b.paths.includes('brain/memory/feedback/prefer-skipped-over-ok-for-empty.md')));
+  assert.equal(hub.counts.drafts, 1, 'built after the draft was written');
+  assert.ok(ledger.pipelines['auto-wrap'].lastRun.wrote.includes('brain/_index/brain-hub.json'));
 });
 
 test('wrap_session rejects a malformed candidate type', async () => {
