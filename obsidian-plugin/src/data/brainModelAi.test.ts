@@ -100,6 +100,10 @@ test("cost labels (brain-ai A5)", () => {
   assert.equal(usdText(0), "$0.00");
   assert.equal(estimateText(parseAiEstimate(estimate)), "about $0.0042 · haiku · Claude");
   assert.equal(estimateText(parseAiEstimate({ available: false, reason: "daily-cap", provider: "none", cap: { perDayUsd: 0.5 } })), "Today's model cap is reached ($0.50).");
+  // With the cap's family the sentence names its key, word for word as the runtime's (lib/memory-ai.js reasonSentence).
+  assert.equal(estimateText(parseAiEstimate({ available: false, reason: "daily-cap", provider: "none", cap: { family: "hook", perDayUsd: 0.5 } })), "Today's model cap is reached ($0.50, claude.perDayUsd).");
+  assert.equal(estimateText(parseAiEstimate({ available: false, reason: "daily-cap", provider: "none", cap: { family: "codex", perDayUsd: 0.2 } })), "Today's model cap is reached ($0.20, codex.perDayUsd).");
+  assert.equal(estimateText(parseAiEstimate({ available: false, reason: "reasoner-daily-cap", provider: "none", cap: { family: "reasoner-codex", perDayUsd: 5 } })), "Today's model cap is reached ($5.00, reasoner.perDayUsd).");
   assert.equal(capText({ family: "hook", perDayUsd: 0.5, spentToday: 0.12, perCallUsd: 0.05 }), "today $0.12 of $0.50");
   assert.equal(spendText({ provider: "codex", model: null, usd: 0.011, estimated: true, cap: null }), "drafted by Codex · Codex · $0.01 (estimated)");
   assert.equal(aiReasonText("forced"), "No model provider is set up.");

@@ -251,6 +251,9 @@ function estimateLine(e) {
 
 /** 2–6 memories into one draft (D21, A4–A8): one model call, or none with --estimate; nothing is written either way. */
 async function mergeDraftVerb(ctx, paths, o) {
+  // provider.js, config.js, the spend ledger and the CLIs fix the vault when first required (lib/paths.js): point them at
+  // the vault this verb acts on before lib/memory-ai.js loads them (cli/workspace.js draftVerb's precedent).
+  process.env.AOS_VAULT = ctx.vault;
   const r = await mergeLib().mergeDraft(ctx.vault, paths, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env });
   emit(o.io, o.json, r, o.estimate
     ? [`merge into ${r.winner} (${r.type})`, `  ${estimateLine(r.estimate)}`]
@@ -299,6 +302,7 @@ async function sweepVerb(ctx, args, o) {
     emit(o.io, o.json, r, [r.already ? `${r.dismissed} was already dismissed` : `${r.dismissed} dismissed: it is never suggested again`]);
     return 0;
   }
+  process.env.AOS_VAULT = ctx.vault; // as mergeDraftVerb: before lib/memory-ai.js loads provider.js
   const r = await lib.sweep(ctx.vault, args, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env });
   emit(o.io, o.json, r, o.estimate
     ? [`sweep ${r.considered} of ${r.of} memories`, `  ${estimateLine(r.estimate)}`]

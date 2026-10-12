@@ -4443,3 +4443,126 @@ button.aos-brain-maplink:not(.clickable-icon) { max-width: 100%; border-color: v
   .aos-brain-main { flex: none; overflow: visible; }
   .aos-brain-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* ── Brain hub: Sweep (views/brain/SweepCards.ts, HealthMode.ts, MapMode.ts; brain-hub D22, D23; brain-ai A3, A5, A10). ── */
+/* A sweep card: its kind as a word in a neutral outline (kind is not state), what it does, its memories' titles, why, and
+   Review / Dismiss. Colour only for state, each with its word: a stale card's amber pill says "changed since the sweep",
+   the sweep off is a grey pill that says "off" before the reason. */
+.aos-brain-sw-list { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.aos-brain-sw-card {
+  display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 9px 11px; border: 1px solid var(--udx-line);
+  border-radius: 8px; background: var(--udx-bg);
+}
+.aos-brain-sw-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.aos-brain-sw-kind {
+  flex: none; padding: 1px 6px; border-radius: 5px; box-shadow: inset 0 0 0 1px var(--udx-line-2); color: var(--udx-text-2);
+  font-size: 10.5px; font-weight: 600;
+}
+.aos-brain-sw-what { flex: 1 1 140px; min-width: 0; color: var(--udx-text); font-size: 12.5px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.aos-brain-sw-state { flex: none; }
+.aos-brain-sw-titles { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.aos-brain-sw-title { overflow: hidden; color: var(--udx-text-2); font-size: 12px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.aos-brain-sw-why { margin: 0; color: var(--udx-text-3); font-size: 11.5px; line-height: 1.45; }
+.aos-brain-sw-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+button.aos-brain-btn.aos-brain-sw-btn:not(.clickable-icon) { height: 26px; padding: 0 10px; font-size: 11.5px; white-space: nowrap; }
+button.aos-brain-btn.aos-brain-sw-btn.is-busy:not(.clickable-icon),
+button.aos-brain-btn.aos-brain-sw-consolidate.is-busy:not(.clickable-icon) { opacity: 0.6; cursor: default; }
+.aos-brain-sw-line { margin: 0; color: var(--udx-text-3); font-size: 11px; line-height: 1.45; }
+
+/* Health: the Consolidation sweep card (the estimate line, then the cards by scope) and a cluster's cards under its row. */
+.aos-brain-sw-est {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; padding: 10px 14px; color: var(--udx-text-2);
+  font-size: 12px; line-height: 1.45;
+}
+.aos-brain-sw-est.is-off { color: var(--udx-off); }
+.aos-brain-sw-off { flex: none; }
+.aos-brain-hl-card .aos-brain-sw-empty { padding: 0 14px 12px; }
+.aos-brain-sw-group { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--udx-line); }
+.aos-brain-hl-row.aos-brain-sw-under { flex-direction: column; align-items: stretch; gap: 8px; padding: 0 14px 12px 62px; border-top: none; }
+@container aos-brain (max-width: 704px) {
+  .aos-brain-hl-row.aos-brain-sw-under { padding-left: 14px; }
+}
+
+/* Map: a community's Consolidate with AI…, what it says while it runs or why it is off, the cut, and its suggestions. */
+.aos-brain-sw-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; color: var(--udx-text-2); font-size: 11.5px; line-height: 1.45; }
+.aos-brain-sw-status:empty { display: none; }
+.aos-brain-sw-status.is-off { color: var(--udx-off); }
+.aos-brain-sw-cut { margin: 0; font-size: 11px; line-height: 1.45; }
+.aos-brain-sw-mapsec { gap: 6px; }
+.aos-brain-sw-mapsec > .aos-brain-label { margin-bottom: 0; }
+/* ── end Brain hub: Sweep ── */
+
+/* ── Brain hub: Merge (views/brain/MergeModal.ts; Review's Merge into one…, Library's Undo merge; brain-ai A1–A12, canvas Merge). ── */
+/* The dialog (canvas Merge): a header, the sources on the left on the surface and the draft on the right, a footer with
+   Cancel and Save merged. Tokens only, so both themes follow; colour only for state, each with its word. */
+.modal.mod-brain-merge {
+  width: min(1040px, calc(100vw - 48px)); max-height: 88vh; padding: 0; display: flex; flex-direction: column; overflow: hidden;
+  border-color: var(--udx-line-2);
+}
+.modal-container:has(> .modal.mod-brain-merge) { align-items: center; padding-top: 0; }
+.modal.mod-brain-merge .modal-title { display: none; }
+.modal.mod-brain-merge .modal-close-button { top: 16px; right: 16px; }
+.modal.mod-brain-merge .modal-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.aos-brain-merge { flex: 1; min-height: 0; display: flex; flex-direction: column; color: var(--udx-text); font-family: var(--udx-sans); font-size: 13px; line-height: 1.45; }
+.aos-brain-merge :focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
+.aos-brain-merge button.aos-brain-btn:not(.clickable-icon):disabled { opacity: 0.5; cursor: default; }
+.aos-brain-mg-head { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 16px 44px 12px 18px; border-bottom: 1px solid var(--udx-line); }
+.aos-brain-mg-title { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.aos-brain-mg-sub { margin: 0; color: var(--udx-text-2); font-size: 12.5px; }
+/* The body keeps about the form's height while it reads, so the dialog does not jump when the draft arrives. */
+.aos-brain-mg-body { flex: 1; min-height: min(520px, 60vh); overflow-y: auto; display: flex; flex-direction: column; }
+.aos-brain-mg-wait, .aos-brain-mg-body > .aos-brain-empty { margin: 0; padding: 24px 18px; color: var(--udx-text-2); }
+.aos-brain-mg-grid { flex: 1 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); }
+
+/* The sources: a card each, the oldest (written over) first; the body as plain text, scrolling on its own. */
+.aos-brain-mg-sources { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 16px 18px; border-right: 1px solid var(--udx-line); background: var(--udx-surface); }
+.aos-brain-mg-src { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-bg); }
+.aos-brain-mg-src.is-winner { border-color: var(--udx-line-2); }
+.aos-brain-mg-srchead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.aos-brain-mg-srctitle { flex: 1 1 160px; min-width: 0; font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.aos-brain-mg-srcmeta { color: var(--udx-text-3); font-size: 11px; overflow-wrap: anywhere; }
+.aos-brain-mg-srcbody { max-height: 220px; overflow-y: auto; color: var(--udx-text-2); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.aos-brain-mg-srcbody.is-empty { color: var(--udx-text-3); }
+.aos-brain-merge .aos-brain-mg-srcbody:focus-visible { outline-offset: 2px; border-radius: 4px; }
+
+/* The draft: Draft with AI beside its estimate (or why it is off), the spend line, the fields, the target, what saving
+   will do. A by-hand reason and a cancelled draft read amber, each in words. */
+.aos-brain-mg-draft { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px 18px; }
+.aos-brain-mg-airow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.aos-brain-mg-est { min-width: 0; color: var(--udx-text-2); font-size: 12px; }
+.aos-brain-mg-est.is-off { color: var(--udx-text-3); }
+.aos-brain-mg-spend { margin: -4px 0 0; color: var(--udx-text-2); font-size: 12px; overflow-wrap: anywhere; }
+.aos-brain-mg-spend:empty { display: none; }
+.aos-brain-mg-spend[data-tone="by-hand"], .aos-brain-mg-spend[data-tone="cancelled"] { color: var(--udx-warn); }
+.aos-brain-mg-field { display: flex; flex-direction: column; gap: 6px; }
+.aos-brain-mg-flabel { color: var(--udx-text-3); font-size: 11px; font-weight: 600; letter-spacing: 0.07em; }
+.aos-brain-merge input.aos-brain-mg-input, .aos-brain-merge textarea.aos-brain-mg-input {
+  width: 100%; min-width: 0; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--udx-line-2); border-radius: 8px;
+  background-color: var(--udx-field); color: var(--udx-text); font-size: 13px;
+}
+.aos-brain-merge input.aos-brain-mg-input { height: 34px; }
+.aos-brain-merge textarea.aos-brain-mg-input { min-height: 200px; padding: 8px 10px; line-height: 1.5; resize: vertical; }
+.aos-brain-merge .aos-brain-mg-input:focus { border-color: var(--udx-focus); }
+.aos-brain-merge .aos-brain-mg-input[readonly] { color: var(--udx-text-2); }
+.aos-brain-mg-count { align-self: flex-end; color: var(--udx-text-3); font-size: 10.5px; }
+.aos-brain-mg-count.is-over { color: var(--udx-danger); }
+.aos-brain-mg-target { margin: 0; color: var(--udx-text-2); font-size: 11.5px; overflow-wrap: anywhere; }
+.aos-brain-mg-note { margin: 0; color: var(--udx-text-3); font-size: 12px; line-height: 1.45; }
+.aos-brain-mg-will { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 8px; background: var(--udx-raised); }
+.aos-brain-mg-willlist { display: flex; flex-direction: column; gap: 3px; margin: 0; padding-left: 18px; color: var(--udx-text-2); font-size: 12.5px; line-height: 1.45; }
+
+/* The footer: a refusal over the whole width, what keeps Save off, then Cancel and Save merged kept together at the right. */
+.aos-brain-mg-foot { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px 18px 16px; border-top: 1px solid var(--udx-line); }
+.aos-brain-mg-err { display: none; flex-basis: 100%; color: var(--udx-danger); font-size: 12px; }
+.aos-brain-mg-err.is-shown { display: block; }
+.aos-brain-mg-err.is-stale { font-weight: 600; }
+.aos-brain-mg-problem { flex: 1 1 200px; min-width: 0; color: var(--udx-warn); font-size: 12px; }
+.aos-brain-mg-acts { flex: none; display: flex; align-items: center; gap: 8px; margin-left: auto; }
+@media (max-width: 760px) {
+  .aos-brain-mg-grid { grid-template-columns: minmax(0, 1fr); }
+  .aos-brain-mg-sources { border-right: none; border-bottom: 1px solid var(--udx-line); }
+}
+
+/* Library's Undo merge (ContextPane.ts, A2): under the history line, with how long it stays possible. */
+.aos-brain-undomerge { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.aos-brain-undomerge button[aria-disabled="true"]:not(.clickable-icon) { opacity: 0.45; cursor: default; }
+/* ── end Brain hub: Merge ── */

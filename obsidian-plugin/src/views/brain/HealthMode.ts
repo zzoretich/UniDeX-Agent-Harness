@@ -1,7 +1,9 @@
-// Health (spec 2026-10-11-brain-hub D20, D23, §6; plan PR 3; canvas Health): the brain's shape at a glance and the
-// one-click fixes. Six tiles; Duplicates and clusters (Compare lands on that pair in Review's Duplicates queue, Not
-// duplicates is remembered through `aos memory notdup`, Rescan rebuilds brain-hub.json); Hygiene, one row per
-// `aos memory fix <kind>`; Dead weight from the usage log (D8). The words and numbers come from data/brainHealth.ts.
+// Health (spec 2026-10-11-brain-hub D20, D22, D23, §6; spec 2026-10-12-brain-hub-ai A3, A5, A10; plans PR 3, PR 4;
+// canvas Health): the brain's shape at a glance and the one-click fixes. Six tiles; Duplicates and clusters (Compare
+// lands on that pair in Review's Duplicates queue, Merge with AI… opens the Merge dialog on it, Not duplicates is
+// remembered through `aos memory notdup`, Rescan rebuilds brain-hub.json; a cluster's Consolidate with AI… runs a sweep
+// scoped to it, and its cards show under the row); the Consolidation sweep; Hygiene, one row per `aos memory fix <kind>`;
+// Dead weight from the usage log (D8). The words and numbers come from data/brainHealth.ts and data/brainSweep.ts.
 //
 // A fix never writes before it asks (spec §6): its dry run (ctx.preview) lists the changes in FixModal, and only a
 // confirm runs it (ctx.run), pinned to that preview (its `expect`: the runtime refuses, writing nothing, when the files
@@ -9,16 +11,27 @@
 // that finds nothing means brain-hub.json was behind the files: the page says so and rescans. Every action is a button
 // that ignores the second click of a double-click and a held key's repeats; a row stays, its button busy, until its
 // verb answers, so a fast second click never lands on the next row. A redraw keeps the scroll and the keyboard where
-// they were (a control that left hands it to the one now in its place, else its card's heading). The consolidation
-// sweep is PR 4.
+// they were (a control that left hands it to the one now in its place, else its card's heading).
+//
+// The Consolidation sweep (brain-ai A5, A10): its line ("last run … · N suggestions · N open"), what a sweep would cost
+// (`sweep --estimate`, fetched once each time Health is shown; off, the reason and what still works), Run a sweep (one
+// model call, waited for up to AI_TIMEOUT_MS), and the open cards by scope (views/brain/SweepCards.ts). A cluster's
+// Consolidate with AI… asks first with that scope's estimate (A3). One sweep runs at a time on this page.
 import { Notice } from "obsidian";
-import { BRAIN_MODE_LABEL, batchWhen, parseFixResult, type BrainAnchor, type BrainTarget, type FixKind } from "../../data/brainModel";
+import {
+  AI_TIMEOUT_MS, BRAIN_MODE_LABEL, batchWhen, parseFixResult, parseSweepEstimate, parseSweepResult, type BrainAnchor, type BrainTarget,
+  type FixKind, type SweepEstimate,
+} from "../../data/brainModel";
 import {
   FIX_LABEL, HYGIENE_SUBTITLE, archiveShippedAsk, deadWeight, deadWeightButtons, deadWeightLegend, deadWeightSubtitle, duplicateRows,
-  duplicatesBasis, fixBehindText, fixDoneText, healthTiles, hygieneRows, pl, type DeadWeight,
+  duplicatesBasis, fixBehindText, fixDoneText, healthTiles, hygieneRows, pl, type ClusterRow, type DeadWeight,
 } from "../../data/brainHealth";
+import {
+  consolidateAsk, groupScopes, scopePaths, scopeSummary, sweepDoneText, sweepEstimateLine, sweepGroups, sweepOffText, sweepSummary,
+} from "../../data/brainSweep";
 import { FixModal } from "./FixModal";
 import { guardClicks } from "./guardClicks";
+import { SweepCards } from "./SweepCards";
 import type { BrainCtx, BrainData, BrainModeView } from "./types";
 
 /** Pairs shown before "Show all N". */
@@ -31,6 +44,10 @@ const pk = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`)
 
 type FixStage = "check" | "ask" | "run";
 interface Place { key: string | null; sec: string | null; index: number; scroll: number }
+/** The whole brain's sweep estimate (A5): asked for, answered, or why not. */
+type SweepEst = { state: "loading" } | { state: "ok"; e: SweepEstimate } | { state: "failed"; reason: string };
+/** The sweep's scope while it runs: the whole brain, or a cluster's row key. */
+const ALL = "all";
 
 export class HealthMode implements BrainModeView {
   private root: HTMLElement | null = null;
@@ -45,13 +62,25 @@ export class HealthMode implements BrainModeView {
   private rescanTimer: number | null = null;
   /** The control to give the keyboard on the next draw (after a dialog, when the one that opened it was redrawn). */
   private focusKey: string | null = null;
+  /** The whole brain's sweep estimate, fetched once each time Health is shown (A5); `estSeq` drops a late answer. */
+  private estimate: SweepEst | null = null;
+  private estSeq = 0;
+  /** The sweep under way (the whole brain, or a cluster's): its stage; one at a time. */
+  private sweeping: { scope: string; stage: FixStage } | null = null;
+  /** The pair whose Merge dialog is open (its button busy until the dialog closes). */
+  private merging: string | null = null;
+  private cards: SweepCards;
 
-  constructor(private ctx: BrainCtx) {}
+  constructor(private ctx: BrainCtx) {
+    this.cards = new SweepCards(ctx, { keyAttr: "data-hl-key", redraw: () => this.update() });
+  }
 
   mount(host: HTMLElement): void {
     this.focusKey = null;
     this.root = host.createDiv({ cls: "aos-brain-health", attr: { "aria-label": BRAIN_MODE_LABEL.health } });
+    this.estimate = { state: "loading" };
     this.update();
+    void this.fetchEstimate();
   }
 
   update(): void {
@@ -136,7 +165,9 @@ export class HealthMode implements BrainModeView {
       el.createSpan({ cls: "aos-brain-hl-tn", text: t.note, attr: { title: t.note } });
     }
     const cols = R.createDiv({ cls: "aos-brain-hl-cols" });
-    this.duplicates(cols.createDiv({ cls: "aos-brain-hl-col is-wide" }), d);
+    const wide = cols.createDiv({ cls: "aos-brain-hl-col is-wide" });
+    const claimed = this.duplicates(wide, d);
+    this.sweepCard(wide, d, claimed);
     const side = cols.createDiv({ cls: "aos-brain-hl-col" });
     this.hygiene(side, d);
     this.deadWeightCard(side, d);
@@ -165,17 +196,19 @@ export class HealthMode implements BrainModeView {
     return b;
   }
 
-  private duplicates(parent: HTMLElement, d: BrainData): void {
+  /** The Duplicates and clusters card; returns the sweep scopes whose cards it drew under a cluster row. */
+  private duplicates(parent: HTMLElement, d: BrainData): Set<string> {
+    const claimed = new Set<string>();
     const rows = duplicateRows(d);
     const scanned = d.hub?.builtAt ? batchWhen(d.hub.builtAt, d.now) : "";
     const { head, body } = this.card(parent, "duplicates", "Duplicates and clusters", `${duplicatesBasis(rows.meaning)}${scanned ? ` · scanned ${scanned}` : ""}`);
     const busy = this.rescanning(d);
     head.createSpan({ cls: "aos-brain-hl-status", text: busy ? "Rescanning…" : "", attr: { role: "status" } });
     this.button(head, busy ? "Rescanning…" : "Rescan", "rescan", "rescan", () => this.doRescan(), { busy });
-    if (!d.hub) { body.createDiv({ cls: "aos-brain-empty aos-brain-hl-empty", text: "The next scan writes brain-hub.json; nothing to compare yet." }); return; }
+    if (!d.hub) { body.createDiv({ cls: "aos-brain-empty aos-brain-hl-empty", text: "The next scan writes brain-hub.json; nothing to compare yet." }); return claimed; }
     // A pair whose Not duplicates runs stays in place, its button busy, until the verb answers (then it goes).
     const pairs = rows.pairs.filter((p) => this.dismissing.get(pk(p.a, p.b)) !== "done");
-    if (!pairs.length && !rows.drafts.length && !rows.clusters.length) { body.createDiv({ cls: "aos-brain-empty aos-brain-hl-empty", text: "No duplicates found." }); return; }
+    if (!pairs.length && !rows.drafts.length && !rows.clusters.length) { body.createDiv({ cls: "aos-brain-empty aos-brain-hl-empty", text: "No duplicates found." }); return claimed; }
     const list = body.createDiv({ cls: "aos-brain-hl-rows", attr: { role: "list", "aria-label": "Duplicate pairs, leftover drafts and clusters" } });
     for (const p of this.allPairs ? pairs : pairs.slice(0, PAIRS_SHOWN)) {
       const k = pk(p.a, p.b);
@@ -188,6 +221,9 @@ export class HealthMode implements BrainModeView {
       const acts = r.createDiv({ cls: "aos-brain-hl-acts" });
       const names = `“${p.aTitle}” and “${p.bTitle}”`;
       this.button(acts, "Compare", `pair:${k}:compare`, "compare", () => this.ctx.show({ mode: "review", queue: "duplicates", pair: { a: p.a, b: p.b } }), { label: `Compare ${names} in Review` });
+      // brain-hub D21, brain-ai A1/A4: the Merge dialog on the pair (the model's draft on a click, else by hand).
+      const merging = this.merging === k;
+      this.button(acts, merging ? "Merging…" : "Merge with AI…", `pair:${k}:merge`, "merge", () => void this.mergePair(p.a, p.b, k), { label: `Merge with AI: ${names}`, busy: merging });
       const busy = this.dismissing.get(k) === "busy";
       this.button(acts, busy ? "Marking…" : "Not duplicates", `pair:${k}:notdup`, "notdup", () => void this.notDup(p.a, p.b), { label: `Not duplicates: ${names}`, busy });
     }
@@ -213,6 +249,63 @@ export class HealthMode implements BrainModeView {
       const t = r.createDiv({ cls: "aos-brain-hl-text" });
       t.createSpan({ cls: "aos-brain-hl-t1", text: c.label, attr: { title: c.label } });
       t.createSpan({ cls: "aos-brain-hl-t2", text: c.titles, attr: { title: c.titles } });
+      // brain-ai A3: a sweep scoped to the cluster (its first path leads); its cards show under the row, not again in
+      // the Consolidation sweep card.
+      const acts = r.createDiv({ cls: "aos-brain-hl-acts" });
+      const mine = this.sweeping?.scope === c.key ? this.sweeping.stage : null;
+      const text = mine === "run" ? "Consolidating…" : mine ? "Checking…" : "Consolidate with AI…";
+      const b = this.button(acts, text, `cluster:${c.key}:sweep`, "consolidate", () => void this.consolidate(c), { busy: !!this.sweeping, label: mine ? `Consolidate “${c.label}”: ${text}` : `Consolidate “${c.label}” with AI` });
+      if (mine) b.setAttr("aria-busy", "true");
+      const scopes = groupScopes(d.sweep, scopePaths(c.paths[0] ?? null, c.paths).paths);
+      for (const s of scopes) claimed.add(s);
+      const sum = scopeSummary(d, scopes);
+      if (!sum.views.length) continue;
+      const under = list.createDiv({ cls: "aos-brain-hl-row aos-brain-sw-under", attr: { role: "listitem", "data-cluster-cards": c.key, "aria-label": `Suggestions for ${c.label}` } });
+      under.createEl("p", { cls: "aos-brain-sw-line", text: sum.line });
+      this.cards.render(under, sum.views, { label: `Suggestions for ${c.label}` });
+    }
+    return claimed;
+  }
+
+  /**
+   * The Consolidation sweep (brain-hub D22; brain-ai A5, A10): the line, what a sweep would cost (or why it is off, and
+   * what still works), Run a sweep, then the open cards by scope: the whole brain first, then each community's or
+   * cluster's under its name (a cluster's own cards show under its row instead: `claimed`).
+   */
+  private sweepCard(parent: HTMLElement, d: BrainData, claimed: ReadonlySet<string>): void {
+    const sum = sweepSummary(d);
+    const { head, body } = this.card(parent, "sweep", "Consolidation sweep", sum.line);
+    const mine = this.sweeping?.scope === ALL;
+    const est = this.estimate;
+    const line = est?.state === "ok" ? sweepEstimateLine(est.e) : null;
+    const off = !!line?.off;
+    head.createSpan({ cls: "aos-brain-hl-status", text: mine ? "Sweeping…" : "", attr: { role: "status" } });
+    const run = this.button(head, mine ? "Sweeping…" : "Run a sweep", "sweep:run", "sweep", () => void this.runSweep(), {
+      busy: !!this.sweeping || off, primary: !off, label: off ? `Run a sweep: off. ${line!.text}` : undefined,
+    });
+    if (mine) run.setAttr("aria-busy", "true");
+    const p = body.createEl("p", { cls: `aos-brain-sw-est${off ? " is-off" : ""}`, attr: { "data-est": mine ? "running" : est?.state === "ok" ? (off ? "off" : "ready") : est?.state ?? "loading" } });
+    if (mine) p.createSpan({ text: "A model reads each memory's title, description and first lines; this can take up to two minutes." });
+    else if (!est || est.state === "loading") p.createSpan({ text: "Checking what a sweep would cost…" });
+    else if (est.state === "failed") p.createSpan({ text: `Could not check what a sweep would cost: ${est.reason}` });
+    else {
+      // Off is a state: its colour and its word, then the reason.
+      if (off) p.createSpan({ cls: "aos-brain-pill is-off aos-brain-sw-off", text: "off" });
+      p.createSpan({ text: line!.text });
+    }
+    const groups = sweepGroups(d, claimed);
+    if (!groups.length) {
+      body.createDiv({
+        cls: "aos-brain-empty aos-brain-sw-empty",
+        text: !sum.run ? "A sweep reads each memory's title, description and first lines, and suggests merges, archives and retitles. Nothing changes until you apply one."
+          : sum.views.length ? "The open suggestions for a cluster show under its row." : "Nothing open: every suggestion was applied or dismissed.",
+      });
+      return;
+    }
+    for (const g of groups) {
+      const sec = body.createEl("section", { cls: "aos-brain-sw-group", attr: { "data-scope": g.scope ?? "all", "aria-label": g.name } });
+      sec.createEl("h3", { cls: "aos-brain-label aos-brain-sw-gname", text: `${g.name} · ${g.cards.length}` });
+      this.cards.render(sec, g.cards, { label: `Suggestions: ${g.name}` });
     }
   }
 
@@ -325,6 +418,101 @@ export class HealthMode implements BrainModeView {
     } finally {
       this.fixing = null;
       this.focusKey = key;
+      this.update();
+    }
+  }
+
+  /**
+   * What a whole-brain sweep would cost (brain-ai A5): `sweep --estimate` writes nothing and calls no model. Asked once
+   * each time Health is shown and after a run (today's spend moved); an answer from an earlier show is dropped.
+   */
+  private async fetchEstimate(): Promise<void> {
+    const seq = ++this.estSeq;
+    let next: SweepEst;
+    try {
+      // Quiet: the card says why inline ("Could not check what a sweep would cost: …"), on every show.
+      const r = await this.ctx.preview<unknown>({ verb: "sweep", paths: [], estimate: true }, "Sweep estimate", { quiet: true });
+      const e = r.ok ? parseSweepEstimate(r.json) : null;
+      next = !r.ok ? { state: "failed", reason: r.reason } : e ? { state: "ok", e } : { state: "failed", reason: "aos answered in an unexpected shape" };
+    } catch (err) {
+      next = { state: "failed", reason: err instanceof Error ? err.message : String(err) };
+    }
+    if (seq !== this.estSeq) return;
+    this.estimate = next;
+    this.update();
+  }
+
+  /**
+   * Run a sweep (brain-hub D22; brain-ai A6, A10, A12): one model call over the whole brain, waited for up to
+   * AI_TIMEOUT_MS; its cards replace the whole brain's open ones (the runtime does) and the reload shows them. The runtime
+   * refuses when no Claude or Codex can answer (ctx.run's Notice gives its reason).
+   */
+  private async runSweep(): Promise<void> {
+    if (this.sweeping) return;
+    this.sweeping = { scope: ALL, stage: "run" };
+    this.update();
+    try {
+      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: [], estimate: false }, "Run a sweep", { timeoutMs: AI_TIMEOUT_MS });
+      if (r.ok) new Notice(sweepDoneText(parseSweepResult(r.json)));
+    } catch (e) {
+      new Notice(`Run a sweep: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.sweeping = null;
+      this.focusKey = "sweep:run";
+      if (this.root) { this.estimate = { state: "loading" }; void this.fetchEstimate(); }
+      this.update();
+    }
+  }
+
+  /**
+   * A cluster's Consolidate with AI… (brain-ai A3): the scoped estimate first (its first path leads), a question naming
+   * the cost, then a sweep over those memories; its cards show under the row. Off, a Notice says why and nothing runs.
+   * A confirm runs the sweep even when the person moved to another mode meanwhile.
+   */
+  private async consolidate(c: ClusterRow): Promise<void> {
+    if (this.sweeping || !this.root) return;
+    const key = `cluster:${c.key}:sweep`;
+    const label = "Consolidate with AI";
+    const sent = scopePaths(c.paths[0] ?? null, c.paths);
+    this.sweeping = { scope: c.key, stage: "check" };
+    this.update();
+    try {
+      const pre = await this.ctx.preview<unknown>({ verb: "sweep", paths: sent.paths, estimate: true }, label);
+      if (!pre.ok) return;
+      const e = parseSweepEstimate(pre.json);
+      if (!e) { new Notice(`${label}: aos answered in an unexpected shape`); return; }
+      if (!e.estimate.available) { new Notice(`${label}: ${sweepOffText(e.estimate)}`); return; }
+      // Left for another mode while the estimate ran: no question over a page the person moved to.
+      if (!this.root) return;
+      this.sweeping = { scope: c.key, stage: "ask" };
+      this.update();
+      const q = consolidateAsk(c.label, e, sent);
+      if (!(await this.ctx.confirm(q.title, q.message, q.confirm))) return;
+      this.sweeping = { scope: c.key, stage: "run" };
+      this.update();
+      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: sent.paths, estimate: false }, label, { timeoutMs: AI_TIMEOUT_MS });
+      if (r.ok) new Notice(sweepDoneText(parseSweepResult(r.json), c.label));
+    } catch (e) {
+      new Notice(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.sweeping = null;
+      this.focusKey = key;
+      this.update();
+    }
+  }
+
+  /** Merge with AI… on a pair (brain-hub D21): the Merge dialog; the pair goes once the merge is saved and reloaded. */
+  private async mergePair(a: string, b: string, k: string): Promise<void> {
+    if (this.merging) return;
+    this.merging = k;
+    this.update();
+    try {
+      await this.ctx.merge([a, b]);
+    } catch (e) {
+      new Notice(`Merge with AI: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.merging = null;
+      this.focusKey = `pair:${k}:merge`;
       this.update();
     }
   }

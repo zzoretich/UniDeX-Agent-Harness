@@ -9,7 +9,8 @@
  * regular file opened O_NOFOLLOW; it is rewritten through fsx.writeAtomic (a link that appears there is replaced, never
  * written through) and MEMORY.md through fsx.updateSync, refused when it is a link. A frontmatter edit touches only its
  * own keys and the status/ entry of `tags:`, keeping every other byte; `updated:` is not bumped (BRAIN.md orders Active
- * context by it, and a status change is not new content). Nothing is deleted (D6).
+ * context by it, and a status change is not new content). `set`'s title (brain-ai A10) rewrites the body's first H1 line
+ * and nothing else in the body; the slug never changes. Nothing is deleted (D6).
  */
 const crypto = require('crypto');
 const fs = require('fs');
@@ -28,6 +29,8 @@ const STATUSES = ['active', 'complete', 'paused'];
 const GONE = ['archived', 'superseded'];
 const MAX_FILE = 1024 * 1024;
 const MAX_DESC = 200;
+// A title is one line of 1\u2013120 characters (brain-ai A8, A10): the H1 and the MEMORY.md line carry it.
+const MAX_TITLE = 120;
 const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/;
 
 class OpsError extends Error {
@@ -222,6 +225,20 @@ function firstParagraph(text) {
   return p ? p.replace(/\s+/g, ' ') : '';
 }
 
+/**
+ * The title in the body (brain-ai A10): the first H1 rewritten, the line titleOf reads, keeping its line end; else a
+ * `# <title>` line inserted after the frontmatter with a blank line on each side. fm.tail starts at the closing `---`.
+ */
+function setTitleLine(fm, title) {
+  const close = /^---[ \t]*(?:\r?\n|$)/.exec(fm.tail)[0];
+  const rest = fm.tail.slice(close.length);
+  const h1 = /^#[ \t]+.+$/m;
+  // A function, so a `$&` or `$1` in the title is text, never a replacement pattern.
+  if (h1.test(rest)) { fm.tail = close + rest.replace(h1, () => `# ${title}`); return; }
+  const lead = /\n$/.test(close) ? close : close + fm.eol;
+  fm.tail = `${lead}${fm.eol}# ${title}${fm.eol}${rest === '' || /^\r?\n/.test(rest) ? '' : fm.eol}${rest}`;
+}
+
 /** What a memory says about itself: the keys the hub reads, its status, title and live/gone state. */
 function describe(m) {
   const fm = splitFm(m.text);
@@ -314,11 +331,14 @@ function keep(vault, rels) {
   return { kept, already };
 }
 
-/** Validate `set`'s object: only pin (boolean), status (STATUSES) and description (one line, ≤ MAX_DESC). */
+/**
+ * Validate `set`'s object: only pin (boolean), status (STATUSES), description (one line, ≤ MAX_DESC) and title (one
+ * line, ≤ MAX_TITLE; brain-ai A10: a sweep's Retitle card).
+ */
 function checkFields(fields) {
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new OpsError('BAD_FIELD', '--set takes a JSON object');
   const keys = Object.keys(fields);
-  if (!keys.length) throw new OpsError('BAD_FIELD', '--set names no key (pin, status, description)');
+  if (!keys.length) throw new OpsError('BAD_FIELD', '--set names no key (pin, status, description, title)');
   const out = {};
   for (const k of keys) {
     const v = fields[k];
@@ -333,16 +353,23 @@ function checkFields(fields) {
       const d = v.trim();
       if (!d || d.length > MAX_DESC) throw new OpsError('BAD_FIELD', `description takes 1–${MAX_DESC} characters`);
       out.description = d;
+    } else if (k === 'title') {
+      if (typeof v !== 'string' || CONTROL.test(v)) throw new OpsError('BAD_FIELD', 'title takes one line of text');
+      const t = v.trim();
+      if (!t || t.length > MAX_TITLE) throw new OpsError('BAD_FIELD', `title takes 1–${MAX_TITLE} characters`);
+      out.title = t;
     } else {
-      throw new OpsError('BAD_FIELD', `--set cannot change ${k} (pin, status, description)`);
+      throw new OpsError('BAD_FIELD', `--set cannot change ${k} (pin, status, description, title)`);
     }
   }
   return out;
 }
 
 /**
- * Change pin, status or description (D17), refused when the file's hash is not `expect` or the memory is archived or
- * superseded (restore it first). dryRun returns the text it would write. → { path, fields, written, hash, … }
+ * Change pin, status, description (D17) or title (brain-ai A10), refused when the file's hash is not `expect` or the
+ * memory is archived or superseded (restore it first). A title rewrites the body's first H1 (or adds one) and never the
+ * slug; a description or a title upserts the MEMORY.md line, a title keeping the line's description (else the memory's
+ * own, else its opening). dryRun returns the text it would write. → { path, fields, written, hash, … }
  */
 function setFields(vault, rel, fields, { expect = null, dryRun = false } = {}) {
   const f = checkFields(fields);
@@ -357,14 +384,20 @@ function setFields(vault, rel, fields, { expect = null, dryRun = false } = {}) {
   if ('pin' in f) setKey(fm, 'pin', f.pin ? 'true' : null);
   if ('status' in f) setStatus(fm, m.type, f.status);
   if ('description' in f) setKey(fm, 'description', yamlValue(f.description));
+  if ('title' in f) setTitleLine(fm, f.title);
   const text = joinFm(fm);
   const out = { path: m.rel, fields: Object.keys(f), written: text !== m.text, hash: sha256(text) };
   if (dryRun) return { ...out, written: false, wouldWrite: text !== m.text, text, beforeText: m.text };
   if (!out.written) return out;
   const after = write(m, text);
-  if ('description' in f) {
+  if ('description' in f || 'title' in f) {
     const title = titleOf(text, m.slug);
-    editIndex(vault, (raw) => upsertIndexLine(raw, `## ${TYPE_HEADING[m.type]}`, indexLine(title, m.rel, f.description), m.rel));
+    editIndex(vault, (raw) => {
+      const e = 'description' in f ? null : indexEntry(raw, m.rel);
+      const desc = 'description' in f ? f.description
+        : (e && e.description) || getKey(fm.lines, 'description') || deriveDescription(firstParagraph(text) || title);
+      return upsertIndexLine(raw, `## ${TYPE_HEADING[m.type]}`, indexLine(title, m.rel, desc), m.rel);
+    });
   }
   appendTrail(vault, after, 'set', { fields: Object.keys(f) });
   return out;
@@ -378,6 +411,19 @@ function keepDescription(fm, m, raw) {
   if (d) setKey(fm, 'description', yamlValue(d.replace(CONTROL, ' ').slice(0, MAX_DESC).trim()));
 }
 
+/**
+ * One live memory's frontmatter taken out (D5, D7): the description kept (`raw` is MEMORY.md as read), the status before
+ * recorded, the `extra` keys set (archived:, superseded_by:), then the status tag. lib/memory-merge.js retires a merge's
+ * losers with it, under its own single MEMORY.md edit.
+ */
+function retireFm(fm, m, raw, status, extra) {
+  const before = getStatus(fm.lines);
+  keepDescription(fm, m, raw);
+  setKey(fm, 'status_before', before || 'active');
+  for (const [k, v] of Object.entries(extra)) setKey(fm, k, v);
+  setStatus(fm, m.type, status);
+}
+
 /** Take memories out (D5, D7): the status recorded, the description kept, the MEMORY.md lines removed together. */
 function retire(vault, rels, status, extra) {
   const ms = readAll(vault, rels);
@@ -386,12 +432,8 @@ function retire(vault, rels, status, extra) {
   const already = [];
   for (const m of ms) {
     const fm = needFm(m);
-    const before = getStatus(fm.lines);
-    if (GONE.includes(before)) { already.push(m.rel); continue; }
-    keepDescription(fm, m, raw);
-    setKey(fm, 'status_before', before || 'active');
-    for (const [k, v] of Object.entries(extra)) setKey(fm, k, v);
-    setStatus(fm, m.type, status);
+    if (GONE.includes(getStatus(fm.lines))) { already.push(m.rel); continue; }
+    retireFm(fm, m, raw, status, extra);
     done.push(write(m, joinFm(fm)));
   }
   if (done.length) editIndex(vault, (text) => done.reduce((t, m) => removeIndexLine(t, m.rel), text));
@@ -416,6 +458,20 @@ function supersede(vault, rel, byRel) {
   return { path: m.rel, by: by.rel, already: r.already.length > 0 };
 }
 
+/** One retired memory's frontmatter put back: its status before (else active), the retire keys removed. */
+function restoreFm(fm, type) {
+  const before = getKey(fm.lines, 'status_before');
+  for (const k of ['status_before', 'archived', 'superseded_by']) setKey(fm, k, null);
+  setStatus(fm, type, STATUSES.includes(before) ? before : 'active');
+}
+
+/** MEMORY.md with a memory's line upserted from its H1 and `description:` (else its opening), as restore writes it. */
+function upsertOwnLine(raw, m) {
+  const d = describe(m);
+  const desc = d.description || deriveDescription(firstParagraph(m.text) || d.title);
+  return upsertIndexLine(raw, `## ${TYPE_HEADING[m.type]}`, indexLine(d.title, m.rel, desc), m.rel);
+}
+
 /** Put archived or superseded memories back: their status before, their MEMORY.md line again. → { restored, already } */
 function restore(vault, rels) {
   const done = [];
@@ -423,18 +479,10 @@ function restore(vault, rels) {
   for (const m of readAll(vault, rels)) {
     const fm = needFm(m);
     if (!GONE.includes(getStatus(fm.lines))) { already.push(m.rel); continue; }
-    const before = getKey(fm.lines, 'status_before');
-    for (const k of ['status_before', 'archived', 'superseded_by']) setKey(fm, k, null);
-    setStatus(fm, m.type, STATUSES.includes(before) ? before : 'active');
+    restoreFm(fm, m.type);
     done.push(write(m, joinFm(fm)));
   }
-  if (done.length) {
-    editIndex(vault, (raw) => done.reduce((t, m) => {
-      const d = describe(m);
-      const desc = d.description || deriveDescription(firstParagraph(m.text) || d.title);
-      return upsertIndexLine(t, `## ${TYPE_HEADING[m.type]}`, indexLine(d.title, m.rel, desc), m.rel);
-    }, raw));
-  }
+  if (done.length) editIndex(vault, (raw) => done.reduce(upsertOwnLine, raw));
   for (const m of done) appendTrail(vault, m, 'restored');
   return { restored: done.map((m) => m.rel), already };
 }
@@ -483,4 +531,6 @@ module.exports = {
   indexEntry, keep, setFields, archive, restore, supersede, listMemories, listDrafts, sha256,
   // lib/memory-fix.js's building blocks (brain-hub plan PR 3): the same line edits, writes, index lock and trail.
   MAX_DESC, CONTROL, STATUS_TAG, BLOCK_ITEM, setKey, yamlValue, oneLine, indexLine, readIndex, editIndex, write, appendTrail, appendTrailRow,
+  // lib/memory-merge.js's (brain-ai A1, A2, A9): retire and restore one file at a time, under the merge's one index edit.
+  MAX_TITLE, retireFm, restoreFm, upsertOwnLine, setTitleLine,
 };

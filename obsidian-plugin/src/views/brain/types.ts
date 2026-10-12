@@ -62,8 +62,12 @@ export interface BrainData {
   settings: BrainSettings;
 }
 
-/** How a verb runs: a model call (merge-draft, sweep) waits up to AI_TIMEOUT_MS instead of aosRun's 60 s (brain-ai A12). */
-export interface BrainRunOptions { timeoutMs?: number }
+/**
+ * How a verb runs: a model call (merge-draft, sweep) waits up to AI_TIMEOUT_MS instead of aosRun's 60 s (brain-ai A12).
+ * `quiet` drops the failure Notice for a call the page makes by itself and answers inline (Health's sweep estimate on
+ * every show), so a surface that is off or a runtime from before the verb does not pop a Notice on each visit.
+ */
+export interface BrainRunOptions { timeoutMs?: number; quiet?: boolean }
 
 /** What a mode acts through. */
 export interface BrainCtx {

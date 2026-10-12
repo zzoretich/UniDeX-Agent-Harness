@@ -416,3 +416,81 @@ test('reasoner with a chosen host, model and effort (Vault chat, sessions-ux U9)
   await p.chat({ prompt: 'x' });
   assert.notEqual(ignored[0].effort, 'ultra', 'a level the wrapper does not take is not forced through');
 });
+
+// ---- hostOpts: a model and an effort per host (brain-ai A6, the memory sweep: the reasoner's caps on the background models) ----
+const sweepOpts = { claude: { model: 'haiku', effort: null }, codex: { model: 'gpt-5-mini', effort: 'low' } };
+const bothHosts = (extra = {}) => fs.writeFileSync(CONFIG, JSON.stringify({
+  hosts: { claude: { enabled: true }, codex: { enabled: true } }, reasoner: { model: 'claude-opus-5', codexModel: 'gpt-5', effort: 'high', perCallUsd: 0.6, perDayUsd: 4 }, ...extra,
+}));
+
+test('hostOpts on Claude: its model replaces the reasoner\'s, effort null sends no --effort whatever think says, the reasoner caps stay', async () => {
+  bothHosts();
+  const calls = [];
+  const p = await resolveProviderForRole({ role: 'reasoner', feature: 'reason:memory-sweep', hostOpts: sweepOpts, deps: { ...loggedIn, resolveCodexBin: never, codexLoginProbe: never, claudeCall: replyCall(calls) } });
+  assert.deepEqual([p.name, p.reason, p.model], ['claude', 'role:reasoner', 'haiku']);
+  await p.chat({ prompt: 'x', feature: 'reason:memory-sweep' });
+  await p.chat({ prompt: 'x', think: 'high' });
+  assert.equal(calls[0].model, 'haiku');
+  assert.equal(calls[0].effort, undefined, 'no --effort: reasoner.effort (high) is not used');
+  assert.equal(calls[1].effort, undefined, 'a caller\'s think never adds one');
+  assert.equal(calls[0].maxBudgetUsd, 0.6, 'reasoner.perCallUsd, not claude.perCallUsd');
+  assert.equal(calls[0].feature, 'reason:memory-sweep');
+  recordSpend({ feature: 'reason:memory-sweep', provider: 'claude', model: 'haiku', usd: 4, inputTokens: 1, outputTokens: 1, ms: 1 });
+  await assert.rejects(() => p.chat({ prompt: 'x' }), (e) => e.code === 'PROVIDER_CAP' && /reasoner\.perDayUsd/.test(e.message), 'the reasoner day cap');
+  assert.equal(spendToday(), 0, 'a reason:* row never counts against the hook cap');
+});
+
+test('hostOpts on Codex: its model and level, fixed; the reasoner\'s codexModel and effort are not used', async () => {
+  bothHosts();
+  const calls = [];
+  const p = await resolveProviderForRole({ role: 'reasoner', hostOpts: sweepOpts, deps: { resolveClaudeBin: () => '/x/claude', loginProbe: async () => false, ...codexLoggedIn, codexCall: replyCall(calls) } });
+  assert.deepEqual([p.name, p.model], ['codex', 'gpt-5-mini']);
+  await p.chat({ prompt: 'x', think: 'xhigh' });
+  assert.deepEqual([calls[0].model, calls[0].effort], ['gpt-5-mini', 'low']);
+});
+
+test('hostOpts: a Claude alias never reaches Codex, and a host\'s entry wins over model and effort', async () => {
+  bothHosts({ provider: 'codex' });
+  const calls = [];
+  // The caller's model is a Claude alias; Codex has its own entry with no model: Codex keeps the role's model.
+  let p = await resolveProviderForRole({ role: 'reasoner', model: 'sonnet', effort: 'high', hostOpts: { claude: { model: 'haiku', effort: null }, codex: { model: null, effort: 'minimal' } }, deps: { resolveClaudeBin: never, loginProbe: never, ...codexLoggedIn, codexCall: replyCall(calls) } });
+  assert.equal(p.name, 'codex');
+  assert.equal(p.model, 'gpt-5', 'reasoner.codexModel, never sonnet or haiku');
+  await p.chat({ prompt: 'x' });
+  assert.deepEqual([calls[0].model, calls[0].effort], ['gpt-5', 'minimal']);
+
+  bothHosts();
+  try { fs.unlinkSync(STATE_PATH); } catch {}
+  const claudeCalls = [];
+  p = await resolveProviderForRole({ role: 'reasoner', model: 'sonnet', effort: 'high', hostOpts: { claude: { model: 'haiku', effort: 'low' } }, deps: { ...loggedIn, claudeCall: replyCall(claudeCalls) } });
+  await p.chat({ prompt: 'x', think: 'medium' });
+  assert.deepEqual([p.model, claudeCalls[0].model, claudeCalls[0].effort], ['haiku', 'haiku', 'low'], 'the entry wins over model and effort');
+});
+
+test('hostOpts: a host without an entry takes model and effort as before; a level the host does not take, or an empty model, keeps the role\'s', async () => {
+  bothHosts();
+  const calls = [];
+  let p = await resolveProviderForRole({ role: 'reasoner', prefer: 'claude', model: 'sonnet', effort: 'high', hostOpts: { codex: { model: 'gpt-5-mini', effort: 'low' } }, deps: { ...loggedIn, claudeCall: replyCall(calls) } });
+  await p.chat({ prompt: 'x', think: 'low' });
+  assert.deepEqual([p.model, calls[0].effort], ['sonnet', 'high']);
+
+  const odd = [];
+  p = await resolveProviderForRole({ role: 'reasoner', prefer: 'claude', hostOpts: { claude: { model: '  ', effort: 'xhigh' } }, deps: { ...loggedIn, claudeCall: replyCall(odd) } });
+  await p.chat({ prompt: 'x' });
+  assert.deepEqual([p.model, odd[0].effort], ['claude-opus-5', 'high'], 'xhigh is not a claude level: reasoner.effort, and the role\'s model');
+
+  try { fs.unlinkSync(STATE_PATH); } catch {}
+  const cx = [];
+  p = await resolveProviderForRole({ role: 'reasoner', prefer: 'codex', hostOpts: { codex: { model: 'gpt-5-mini', effort: null } }, deps: { ...codexLoggedIn, codexCall: replyCall(cx) } });
+  await p.chat({ prompt: 'x' });
+  assert.deepEqual([p.model, cx[0].effort], ['gpt-5-mini', 'high'], 'Codex with effort null keeps the role\'s level, never the user\'s own default');
+});
+
+test('hostOpts changes nothing for a role served by Ollama, and provider none still wins', async () => {
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'none' }));
+  const p = await resolveProviderForRole({ role: 'reasoner', hostOpts: sweepOpts, deps: { resolveClaudeBin: never, loginProbe: never, resolveCodexBin: never, codexLoginProbe: never } });
+  assert.deepEqual([p.name, p.reason], ['none', 'forced']);
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'ollama' }));
+  const w = await resolveProviderForRole({ role: 'workhorse', hostOpts: sweepOpts, deps: { ping: never, resolveClaudeBin: never, loginProbe: never } });
+  assert.deepEqual([w.name, w.reason], ['ollama', 'forced']);
+});

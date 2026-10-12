@@ -1262,11 +1262,14 @@ export function usdText(n: number): string {
   const v = Number.isFinite(n) && n > 0 ? n : 0;
   return `$${v < 0.01 && v > 0 ? v.toFixed(4).replace(/0+$/, "") : v.toFixed(2)}`;
 }
+/** The config key each cap family's daily limit is (lib/memory-ai.js CAP_KEYS). */
+const CAP_KEY: Record<NonNullable<AiCap["family"]>, string> = { hook: "claude.perDayUsd", codex: "codex.perDayUsd", reasoner: "reasoner.perDayUsd", "reasoner-codex": "reasoner.perDayUsd" };
 /** Why no call can be made, as a sentence (A4, A7): the provider's reason, or the sweep's Ollama-only. */
 export function aiReasonText(reason: string | null, cap: AiCap | null = null): string {
   const r = reason ?? "";
   if (r === "forced" || r === "none" || r === "no-provider") return "No model provider is set up.";
-  if (/daily-cap$/.test(r)) return cap ? `Today's model cap is reached (${usdText(cap.perDayUsd)}).` : "Today's model cap is reached.";
+  // The runtime's sentence (lib/memory-ai.js reasonSentence): the amount and, when the cap's family says it, its key.
+  if (/daily-cap$/.test(r)) return cap ? `Today's model cap is reached (${usdText(cap.perDayUsd)}${cap.family ? `, ${CAP_KEY[cap.family]}` : ""}).` : "Today's model cap is reached.";
   if (r === "claude-not-logged-in") return "Claude Code is not signed in.";
   if (r === "codex-not-logged-in") return "Codex is not signed in.";
   if (r === "no-codex" || r === "codex-not-configured") return "Codex is not set up.";
@@ -1354,8 +1357,10 @@ export function shortDay(s: string | null | undefined, now: Date): string {
 /**
  * Library's History in one line, oldest first: "Written by auto-wrap Sep 30 · kept Oct 2 · archived Oct 5". `rows` are
  * the memory's trail rows (historyFor, any order); with no `written` row the line starts at its `created:` day. A `set`
- * row names its fields (memory-ops.js appendTrail), a `fixed` row its kind ("fixed (sources)", lib/memory-fix.js). One
- * action twice on one day reads once; a long trail keeps its first event and its last six.
+ * row names its fields (memory-ops.js appendTrail), a `fixed` row its kind ("fixed (sources)", lib/memory-fix.js), a
+ * `merged` row how many memories went into this one ("merged 2 into this", its `from`; brain-ai A9) and an `unmerged`
+ * row reads "merge undone" (A2). One action twice on one day reads once; a long trail keeps its first event and its
+ * last six.
  */
 export function historyLine(rows: readonly TrailEntry[], m: Pick<BrainMemory, "source" | "created">, now: Date): string {
   // Rows in one millisecond keep no order of their own (historyFor hands them newest first): a memory is written first.
@@ -1366,9 +1371,12 @@ export function historyLine(rows: readonly TrailEntry[], m: Pick<BrainMemory, "s
     const action = String(r.action);
     const fields = arr<unknown>((r as { fields?: unknown }).fields).filter((f): f is string => typeof f === "string" && /^[a-z_]{1,30}$/.test(f));
     const kind = (r as { kind?: unknown }).kind;
+    const from = arr<unknown>((r as { from?: unknown }).from).filter((p) => typeof p === "string" && MEMORY_PATH_RE.test(p)).length;
     const what = action === "written" ? `written by ${m.source || "auto-wrap"}`
       : action === "set" ? (fields.length ? `set ${fields.join(", ")}` : "changed")
       : action === "fixed" ? (isFixKind(kind) ? `fixed (${kind})` : "fixed")
+      : action === "merged" ? (from ? `merged ${from} into this` : "merged")
+      : action === "unmerged" ? "merge undone"
       : /^[a-z-]{1,20}$/.test(action) ? action : "changed";
     const day = shortDay(r.ts, now);
     const part = day ? `${what} ${day}` : what;

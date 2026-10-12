@@ -217,11 +217,11 @@ export class BrainTab {
     let args: string[];
     try { args = memoryArgs(v); } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      new Notice(`${label}: ${reason}`);
+      if (!opts.quiet) new Notice(`${label}: ${reason}`);
       return { ok: false, reason, refused: false, outdated: false, stale: false };
     }
     const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args, opts.timeoutMs));
-    if (!r.ok) new Notice(`${label}: ${r.reason}`);
+    if (!r.ok && !opts.quiet) new Notice(`${label}: ${r.reason}`);
     for (const p of touched(v)) this.store.touch(p);
     if (r.ok) this.rebuildHub();
     // A fix can touch any memory, MEMORY.md and a draft: read everything again rather than guess which.
@@ -234,12 +234,12 @@ export class BrainTab {
     let args: string[];
     try { args = memoryArgs(v); } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      new Notice(`${label}: ${reason}`);
+      if (!opts.quiet) new Notice(`${label}: ${reason}`);
       return { ok: false, reason, refused: false, outdated: false, stale: false };
     }
     if (!args.includes("--dry-run") && !args.includes("--estimate")) throw new Error("preview runs only a --dry-run or an --estimate");
     const r = brainVerbResult<T>(await this.plugin.aosJson<T>(args, opts.timeoutMs));
-    if (!r.ok) new Notice(`${label}: ${r.reason}`);
+    if (!r.ok && !opts.quiet) new Notice(`${label}: ${r.reason}`);
     return r;
   }
 

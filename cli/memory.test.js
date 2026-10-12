@@ -136,7 +136,7 @@ test('argument rules: unknown verbs and flags, flags a verb does not take, count
     ['set', FB, '--set', '{"pin":true}', '--expect', 'nothex']]) {
     await assert.rejects(M.main(argv, sb.opts), M.UsageError, argv.join(' '));
   }
-  await assert.rejects(M.main(['set', FB, '--set', '{"title":"x"}'], sb.opts), /cannot change title/);
+  await assert.rejects(M.main(['set', FB, '--set', '{"slug":"x"}'], sb.opts), /cannot change slug/);
   await assert.rejects(M.main(['keep', 'brain/memory/feedback/missing.md'], sb.opts), /no such memory/);
 });
 

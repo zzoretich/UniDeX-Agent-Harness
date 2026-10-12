@@ -284,8 +284,16 @@ async function resolveProvider({ mode, feature = 'unknown', deps = {} } = {}) {
  * The provider for a role. For the reasoner the caller may name the host, model and effort (Vault chat's menu, spec
  * 2026-10-07-sessions-ux U9): `prefer` is the only host tried (no silent move to the other), `model` replaces the
  * role's model, and `effort` (a level that host's CLI takes) is fixed for every call, whatever `think` a caller passes.
+ *
+ * `hostOpts` ({ claude: { model, effort }, codex: { model, effort } }) names them per host instead (brain-ai A6: the
+ * memory sweep runs under the reasoner's caps on the background models, claude.model with no --effort, or codex.model
+ * at codex.effort). A host's entry wins over `model` and `effort` for that host, so a Claude alias never reaches Codex:
+ * its `model` (a non-empty string) replaces the role's model, else the role's model stays; its `effort` is a level that
+ * host's CLI takes, fixed for every call, or null, which for Claude means no --effort at all (and so no thinking,
+ * claude-cli.js) and for Codex keeps the role's level (Codex with none would run at the user's own, maybe costly,
+ * default). A host without an entry takes `model` and `effort` as before.
  */
-async function resolveProviderForRole({ role: roleName, feature = 'unknown', deps = {}, prefer = null, model = null, effort = null } = {}) {
+async function resolveProviderForRole({ role: roleName, feature = 'unknown', deps = {}, prefer = null, model = null, effort = null, hostOpts = null } = {}) {
   if (providerFor(roleName) !== 'claude') return resolveProvider({ feature, deps });
   const cfg = loadConfig();
   const mode = cfg.provider || 'auto';
@@ -296,9 +304,13 @@ async function resolveProviderForRole({ role: roleName, feature = 'unknown', dep
   const reasoner = roleName === 'reasoner';
   const chosen = reasoner && (prefer === 'claude' || prefer === 'codex') ? prefer : null;
   const pin = (budget, host) => {
-    if (typeof model === 'string' && model.trim()) budget.model = model.trim();
+    const own = hostOpts && typeof hostOpts === 'object' && hostOpts[host] && typeof hostOpts[host] === 'object' ? hostOpts[host] : null;
+    const m = own ? own.model : model;
+    const e = own ? own.effort : effort;
+    if (typeof m === 'string' && m.trim()) budget.model = m.trim();
     const levels = host === 'codex' ? codexCli.EFFORTS : claudeCli.EFFORTS;
-    if (levels.includes(effort)) { budget.effort = effort; budget.fixedEffort = true; }
+    if (levels.includes(e)) { budget.effort = e; budget.fixedEffort = true; }
+    else if (own && e === null && host === 'claude') { budget.effort = undefined; budget.fixedEffort = true; }
     return budget;
   };
   // Claude first unless the user chose Codex for background calls; Codex only for the reasoner, and only when configured.
