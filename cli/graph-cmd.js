@@ -86,7 +86,7 @@ function semanticState(g) {
   const v = g.semantic.enabled;
   if (v === true) return { on: true, why: null, auto: false };
   if (v === false) return { on: false, why: 'off (aos graph semantic on)', auto: false };
-  if (g.provider === 'none' || g.provider === 'ollama') return { on: false, why: `off under provider ${g.provider} (aos graph semantic on overrides)`, auto: true };
+  if (g.provider === 'none' || g.provider === 'ollama' || g.provider === 'local') return { on: false, why: `off under provider ${g.provider} (aos graph semantic on overrides)`, auto: true };
   return { on: true, why: null, auto: true };
 }
 /** The semantic pass holding the graph lock right now ({ startedAt, … }), or null — the same rule as graph-build.js

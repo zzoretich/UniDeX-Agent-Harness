@@ -24,6 +24,9 @@ function scrub(env = process.env) {
     removed.push(k);
   }
   env[MARKER] = '1';
+  // local-first A12 picks the local model by the Mac's memory: every suite sees a 32 GB Mac (the large tier, a resident
+  // workhorse) whatever machine runs it — CI's macOS runners have 7 GB. A test of the tiers pins its own value.
+  env.AOS_TOTALMEM = String(32 * 1024 ** 3);
   return removed;
 }
 
