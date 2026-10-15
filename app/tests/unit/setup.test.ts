@@ -235,6 +235,17 @@ test("inspection F5: a uv that does not answer --version with a version fails it
   assert.equal(mute?.fix, "ollama");
 });
 
+test("H3: an Ollama.app that does not say its version is a warning with no download (nothing would open it unverified)", async () => {
+  const { ollama: _o, ...rest } = ALL;
+  const deps = machine(rest, { exists: (p) => p === "/Applications/Ollama.app" });
+  const run = deps.run;
+  deps.run = async (file, args, t) => (file === "/usr/bin/plutil" ? v("", 1) : run(file, args, t));
+  const row = (await runPreflight(deps)).report.checks.find((c) => c.id === "ollama");
+  assert.equal(row?.state, "warn");
+  assert.equal(row?.fix, null);
+  assert.equal(row?.detail, "/Applications/Ollama.app does not say its version: reinstall Ollama from ollama.com");
+});
+
 test("Python and the Command Line Tools are never asked about (graphify's Python comes with uv)", async () => {
   const ran: string[] = [];
   const deps = machine(ALL);

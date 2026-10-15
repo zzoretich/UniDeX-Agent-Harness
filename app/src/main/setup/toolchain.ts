@@ -344,35 +344,71 @@ function onlyDir(dir: string): string {
 
 const isFile = (p: string): boolean => { try { return fs.statSync(p).isFile(); } catch { return false; } };
 
-/** Points `link` at `target` in one step (a new link renamed over the old); a real folder there is refused. */
-function swapLink(link: string, target: string): void {
-  let st: fs.Stats | null = null;
-  try { st = fs.lstatSync(link); } catch { /* absent */ }
-  if (st && st.isDirectory()) throw new ToolchainError(`${link} is a folder, not a link: move it away, then Retry`);
-  fs.mkdirSync(path.dirname(link), { recursive: true });
-  const tmp = `${link}.${process.pid}.tmp`;
-  fs.rmSync(tmp, { force: true });
-  fs.symlinkSync(target, tmp);
-  fs.renameSync(tmp, link);
-}
-
 const within = (root: string, p: string): boolean => { const rel = path.relative(root, p); return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel)); };
 
+const present = (p: string): fs.Stats | null => { try { return fs.lstatSync(p); } catch { return null; } };
+
 /**
- * Makes room at `dest` for a link this installer owns (inspection F3): nothing there, or a link into one of `own` (a tree
- * this installer lays out), is replaced; anything else (a file, a folder, a link elsewhere: another installer's uv, an
- * npm codex) is moved aside to `<dest>.unidex-backup-<time>` and the move is logged. Nothing is replaced unseen.
+ * Moves what is at `dest` (a file, a folder, a link) to a fresh `<dest>.unidex-backup-<time>[-n]` beside it and logs it
+ * (inspection F3, H2). The one way this installer replaces anything: nothing of the user's is ever deleted.
+ */
+function moveAside(dest: string, why: string, d: ToolchainDeps, ctx: TaskContext): void {
+  if (!present(dest)) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  let backup = `${dest}.unidex-backup-${stamp}`;
+  for (let n = 2; present(backup); n++) backup = `${dest}.unidex-backup-${stamp}-${n}`;
+  fs.renameSync(dest, backup);
+  ctx.log(`Moved the existing ${tilde(dest, d.home)} aside to ${tilde(backup, d.home)} (${why}).`);
+}
+
+/**
+ * Makes room at `dest` for a link this installer owns: nothing there, or a link into one of `own` (a tree this installer
+ * lays out), is replaced; anything else (a file, a folder, a link elsewhere: another installer's uv, an npm codex, a
+ * `current` someone else pointed) is moved aside first. Nothing is replaced unseen.
  */
 function makeRoom(dest: string, own: string[], d: ToolchainDeps, ctx: TaskContext): void {
-  let st: fs.Stats;
-  try { st = fs.lstatSync(dest); } catch { return; }
-  if (st.isSymbolicLink()) {
-    const target = path.resolve(path.dirname(dest), fs.readlinkSync(dest));
-    if (own.some((root) => within(root, target))) return;
+  const st = present(dest);
+  if (!st) return;
+  if (st.isSymbolicLink() && own.some((root) => within(root, path.resolve(path.dirname(dest), fs.readlinkSync(dest))))) return;
+  moveAside(dest, "not this installer's", d, ctx);
+}
+
+/** Points `link` at `target` in one step (a new link renamed over the old), after making room for it (H2). */
+function swapLink(link: string, target: string, own: string[], d: ToolchainDeps, ctx: TaskContext): void {
+  makeRoom(link, own, d, ctx);
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  const tmp = fs.mkdtempSync(path.join(path.dirname(link), `.${path.basename(link)}.link-`));
+  try {
+    fs.symlinkSync(target, path.join(tmp, "l"));
+    fs.renameSync(path.join(tmp, "l"), link);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+}
+
+/** Every one of `exes` (relative to `dir`) carries the pinned team's signature; false, never a throw, for one that does not. */
+async function allSigned(dir: string, exes: string[], teamId: string | null, d: ToolchainDeps, ctx: TaskContext, o: { deep?: boolean; gatekeeper?: boolean } = {}): Promise<boolean> {
+  for (const rel of exes) {
+    try { await checkSigned(path.join(dir, rel), path.basename(rel), teamId, d, ctx, o); } catch (err) {
+      if (ctx.signal.aborted) throw err;
+      ctx.log(err instanceof Error ? err.message : String(err));
+      return false;
+    }
   }
-  const backup = `${dest}.unidex-backup-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  fs.renameSync(dest, backup);
-  ctx.log(`Moved the existing ${tilde(dest, d.home)} aside to ${tilde(backup, d.home)}.`);
+  return true;
+}
+
+/**
+ * Whether a release folder already there can be used as it is (inspection H1): a real folder holding every one of `exes`,
+ * each signed by the pinned team, checked before anything in it runs; only then does `main` run, and it must report the
+ * pinned version. Anything else is moved aside (H2), never deleted, and the caller installs the checked download.
+ */
+async function keepExisting(dir: string, exes: string[], main: string, version: string, teamId: string | null, d: ToolchainDeps, ctx: TaskContext): Promise<boolean> {
+  const st = present(dir);
+  if (!st) return false;
+  const ok = st.isDirectory() && !st.isSymbolicLink() && exes.every((rel) => isFile(path.join(dir, rel)))
+    && await allSigned(dir, exes, teamId, d, ctx) && await reports(path.join(dir, main), version, d, ctx);
+  if (ok) return true;
+  moveAside(dir, "incomplete, not signed by its maker, or another version", d, ctx);
+  return false;
 }
 
 /** Moves a file or folder into place, copying with ditto when it crosses volumes. */
@@ -399,7 +435,7 @@ async function installNode(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   const pin = d.manifest.tools.node;
   const name = `v${pin.version}`;
   const dir = path.join(d.paths.nodeRoot, name);
-  if (await reports(path.join(dir, "bin", "node"), pin.version, d, ctx)) ctx.log(`Node.js ${pin.version} is already in ${tilde(dir, d.home)}.`);
+  if (await keepExisting(dir, ["bin/node"], "bin/node", pin.version, pin.teamId, d, ctx)) ctx.log(`Node.js ${pin.version} is already in ${tilde(dir, d.home)}.`);
   else {
     const file = await fetchVerified(pin.assets[d.arch], downloadPath(d, `node-${name}-darwin-${d.arch}.tar.gz`), `Node.js ${pin.version}`, d, ctx);
     fs.mkdirSync(d.paths.nodeRoot, { recursive: true });
@@ -408,14 +444,14 @@ async function installNode(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
       await unpack(file, stage, d, ctx);
       const top = onlyDir(stage);
       await checkSigned(path.join(top, "bin", "node"), "node", pin.teamId, d, ctx);
-      fs.rmSync(dir, { recursive: true, force: true });
+      moveAside(dir, "in the way of the checked download", d, ctx);
       fs.renameSync(top, dir);
     } finally {
       fs.rmSync(stage, { recursive: true, force: true });
       fs.rmSync(file, { force: true });
     }
   }
-  swapLink(path.join(d.paths.nodeRoot, "current"), name);
+  swapLink(path.join(d.paths.nodeRoot, "current"), name, [d.paths.nodeRoot], d, ctx);
   if (!(await reports(d.paths.node, pin.version, d, ctx))) throw new ToolchainError(`${d.paths.node} does not run`);
   ctx.log(`Node.js ${pin.version} is in ${tilde(dir, d.home)}; ${tilde(path.join(d.paths.nodeRoot, "current"), d.home)} points at it.`);
 }
@@ -429,7 +465,7 @@ async function installUv(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   const root = path.join(d.paths.unidex, "uv");
   const dir = path.join(root, pin.version);
   const bins = ["uv", "uvx"];
-  if (bins.every((b) => isFile(path.join(dir, b))) && await reports(path.join(dir, "uv"), pin.version, d, ctx)) ctx.log(`uv ${pin.version} is already in ${tilde(dir, d.home)}.`);
+  if (await keepExisting(dir, bins, "uv", pin.version, pin.teamId, d, ctx)) ctx.log(`uv ${pin.version} is already in ${tilde(dir, d.home)}.`);
   else {
     const file = await fetchVerified(pin.assets[d.arch], downloadPath(d, `uv-${pin.version}-${d.arch}.tar.gz`), `uv ${pin.version}`, d, ctx);
     fs.mkdirSync(root, { recursive: true });
@@ -442,7 +478,7 @@ async function installUv(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
         fs.chmodSync(path.join(top, b), 0o755);
         await checkSigned(path.join(top, b), b, pin.teamId, d, ctx);
       }
-      fs.rmSync(dir, { recursive: true, force: true });
+      moveAside(dir, "in the way of the checked download", d, ctx);
       fs.renameSync(top, dir);
     } finally {
       fs.rmSync(stage, { recursive: true, force: true });
@@ -450,10 +486,7 @@ async function installUv(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
     }
   }
   fs.mkdirSync(d.paths.localBin, { recursive: true });
-  for (const b of bins) {
-    makeRoom(path.join(d.paths.localBin, b), [d.paths.unidex], d, ctx);
-    swapLink(path.join(d.paths.localBin, b), path.join(dir, b));
-  }
+  for (const b of bins) swapLink(path.join(d.paths.localBin, b), path.join(dir, b), [d.paths.unidex], d, ctx);
   const uv = path.join(d.paths.localBin, "uv");
   if (!(await reports(uv, pin.version, d, ctx))) throw new ToolchainError(`${uv} does not run`);
   ctx.log(`uv ${pin.version} is in ${tilde(dir, d.home)}, linked from ${tilde(d.paths.localBin, d.home)}.`);
@@ -463,6 +496,27 @@ async function installUv(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
 async function ollamaTags(d: ToolchainDeps, ctx: TaskContext): Promise<string[] | null> {
   if (!d.curl) return null;
   return parseTags(await step(d, ctx, d.curl, [...OLLAMA_CURL, "-m", "3", `${OLLAMA_URL}/api/tags`], { timeoutMs: 10_000, env: d.env }));
+}
+
+/** The app's own version (its Info.plist, read with plutil: nothing in it runs); null when it cannot be read. */
+async function appVersion(app: string, d: ToolchainDeps, ctx: TaskContext): Promise<string | null> {
+  const r = await step(d, ctx, "/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path.join(app, "Contents", "Info.plist")], { timeoutMs: 10_000 });
+  return r.code === 0 ? versionIn(r.out) : null;
+}
+
+/**
+ * An Ollama app the wizard did not just install is opened only once it is verified (inspection H3): codesign --deep, the
+ * pinned team, Gatekeeper, and a version at the floor. Otherwise it is left unopened and the job says how to repair it.
+ */
+async function verifyExistingOllama(app: string, d: ToolchainDeps, ctx: TaskContext): Promise<void> {
+  const pin = d.manifest.tools.ollama;
+  const where = tilde(app, d.home);
+  if (!(await allSigned(path.dirname(app), [path.basename(app)], pin.teamId, d, ctx, { deep: true, gatekeeper: true }))) {
+    throw new ToolchainError(`${where} could not be verified as Ollama's own, so it was not opened: move it to the Trash and Retry to install a checked copy, or reinstall it from ollama.com`);
+  }
+  const version = await appVersion(app, d, ctx);
+  if (!version) throw new ToolchainError(`${where} does not say its version, so it was not opened: reinstall it from ollama.com, then Retry`);
+  if (!meetsFloor(version, pin.floor)) throw new ToolchainError(`${where} is Ollama ${version}, older than ${pin.floor}, so it was not opened: update it from its menu (or reinstall it from ollama.com), then Retry`);
 }
 
 /** Opens the Ollama app in the background and waits until it answers (curl asks once a second). */
@@ -481,8 +535,11 @@ async function installOllama(d: ToolchainDeps, ctx: TaskContext): Promise<void> 
   const pin = d.manifest.tools.ollama;
   if (pin.minMacOS && !macOSAtLeast(d.macOS, pin.minMacOS)) throw new ToolchainError(`Ollama ${pin.version} needs macOS ${pin.minMacOS} or newer; this Mac runs ${d.macOS}`);
   let app = d.ollamaApp();
-  if (app) ctx.log(`Ollama is already in ${tilde(app, d.home)}.`);
-  else {
+  if (app) {
+    ctx.log(`Ollama is already in ${tilde(app, d.home)}.`);
+    if (await ollamaTags(d, ctx)) { ctx.log("Ollama is answering."); return; }
+    await verifyExistingOllama(app, d, ctx);
+  } else {
     const file = await fetchVerified(pin.assets[d.arch], downloadPath(d, `Ollama-darwin-${pin.version}.zip`), `Ollama ${pin.version}`, d, ctx);
     const stage = fs.mkdtempSync(path.join(d.paths.downloads, ".staging-ollama-"));
     try {
@@ -540,13 +597,12 @@ async function installCodex(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   const dir = path.join(releases, release);
   const exes = ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"];
   const complete = (at: string) => [...exes, "codex-package.json"].every((rel) => isFile(path.join(at, rel)));
-  if (complete(dir) && await reports(path.join(dir, "bin", "codex"), pin.version, d, ctx)) ctx.log(`Codex ${pin.version} is already in ${tilde(dir, d.home)}.`);
+  if (complete(dir) && await keepExisting(dir, exes, "bin/codex", pin.version, pin.teamId, d, ctx)) ctx.log(`Codex ${pin.version} is already in ${tilde(dir, d.home)}.`);
   else {
     const file = await fetchVerified(pin.assets[d.arch], downloadPath(d, `codex-package-${release}.tar.gz`), `Codex ${pin.version}`, d, ctx);
     fs.mkdirSync(releases, { recursive: true });
-    const stage = path.join(releases, `.staging.${release}.${process.pid}`);
-    fs.rmSync(stage, { recursive: true, force: true });
-    fs.mkdirSync(stage);
+    // A staging folder of this job's own (a fresh name), the only thing this job ever deletes.
+    const stage = fs.mkdtempSync(path.join(releases, `.staging.${release}.`));
     try {
       await unpack(file, stage, d, ctx);
       if (!complete(stage)) throw new ToolchainError(`not a Codex package: ${[...exes, "codex-package.json"].filter((rel) => !isFile(path.join(stage, rel))).join(", ")} missing`);
@@ -556,7 +612,7 @@ async function installCodex(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
       }
       fs.rmSync(path.join(stage, "codex"), { force: true });
       fs.symlinkSync("bin/codex", path.join(stage, "codex"));
-      makeRoom(dir, [], d, ctx);
+      moveAside(dir, "incomplete, or in the way of the checked download", d, ctx);
       fs.renameSync(stage, dir);
     } finally {
       fs.rmSync(stage, { recursive: true, force: true });
@@ -564,13 +620,8 @@ async function installCodex(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
     }
   }
   const current = path.join(root, "current");
-  makeRoom(current, [releases], d, ctx);
-  swapLink(current, dir);
-  for (const name of ["codex", "codex-code-mode-host"]) {
-    const link = path.join(d.paths.localBin, name);
-    makeRoom(link, [root], d, ctx);
-    swapLink(link, path.join(current, "bin", name));
-  }
+  swapLink(current, dir, [releases], d, ctx);
+  for (const name of ["codex", "codex-code-mode-host"]) swapLink(path.join(d.paths.localBin, name), path.join(current, "bin", name), [root], d, ctx);
   const marker = path.join(root, "auto-update-version");
   fs.writeFileSync(`${marker}.${process.pid}.tmp`, release);
   fs.renameSync(`${marker}.${process.pid}.tmp`, marker);
@@ -618,6 +669,7 @@ async function pullModels(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   if (!have) {
     const app = d.ollamaApp();
     if (!app) throw new ToolchainError(`Ollama is not answering at ${OLLAMA_URL}: start it, then Retry`);
+    await verifyExistingOllama(app, d, ctx);
     if (!(await startOllama(app, d, ctx)) || !(have = await ollamaTags(d, ctx))) throw new ToolchainError(`Ollama did not answer at ${OLLAMA_URL}: open it, then Retry`);
   }
   for (const m of want) {

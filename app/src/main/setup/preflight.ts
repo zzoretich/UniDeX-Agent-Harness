@@ -126,7 +126,9 @@ export async function runPreflight(d: PreflightDeps): Promise<{ report: Prefligh
   found.ollama = !ollama
     ? { ok: false, warn: true, detail: "not installed: background work waits for it", ...(oldMac ? { blocked: `needs macOS ${pin.minMacOS} or newer` } : {}) }
     : meetsFloor(ollamaVersion, pin.floor) ? { ok: true, detail: `${ollamaVersion} · ${ollama}` }
-    // No version to read (inspection F5): not trusted; its download installs the app, or opens the one that is there.
+    // No version to read (inspection F5): not trusted. An app that cannot say its version is left alone, unopened, with
+    // the way to repair it (H3); a lone CLI gets the download, which installs a checked app beside it.
+    : !ollamaVersion && ollama === ollamaApp ? { ok: false, warn: true, noFix: true, detail: `${ollama} does not say its version: reinstall Ollama from ollama.com` }
     : !ollamaVersion ? { ok: false, warn: true, detail: `${ollama} did not report its version`, ...(oldMac ? { blocked: `needs macOS ${pin.minMacOS} or newer` } : {}) }
     // Ollama updates itself (its menu); the wizard never replaces an Ollama it did not put there.
     : { ok: false, warn: true, noFix: true, detail: `${ollamaVersion} at ${ollama} is older than ${pin.floor}, which ${models[0]} needs: update Ollama from its menu` };

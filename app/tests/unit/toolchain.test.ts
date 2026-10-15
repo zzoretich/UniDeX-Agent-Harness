@@ -183,10 +183,14 @@ interface Machine {
   urls: string[];
   state: {
     team: string; signed: boolean; gatekeeper: boolean; tags: string[] | null; opened: string[]; pulls: string[]; pullError: string | null;
-    /** A team for one file by its name (another team's helper in an archive); else `team`. */
+    /** A team for one file by its full path or its name (another team's helper in an archive); else `team`. */
     teamFor: Record<string, string>;
+    /** Full paths codesign --verify rejects (a modified binary). */
+    broken: Set<string>;
     /** Runs when `open` is asked to open something (a Stop pressed meanwhile). */
     onOpen: (() => void) | null;
+    /** What an app's Info.plist says its version is (plutil); null: it says none. */
+    appVersion: string | null;
   };
 }
 
@@ -198,15 +202,17 @@ function machine(files: Record<string, Buffer>, manifest: Manifest, o: Partial<T
   const home = fs.mkdtempSync(path.join(ROOT, "home-"));
   const calls: string[][] = [];
   const urls: string[] = [];
-  const state: Machine["state"] = { team: "", signed: true, gatekeeper: true, tags: null, opened: [], pulls: [], pullError: null, teamFor: {}, onOpen: null };
+  const state: Machine["state"] = { team: "", signed: true, gatekeeper: true, tags: null, opened: [], pulls: [], pullError: null, teamFor: {}, broken: new Set(), onOpen: null, appVersion: MANIFEST.tools.ollama.version };
   const CURL = "/fake/curl";
   const run: Run = async (file, args, ro) => {
     calls.push([file, ...args]);
     if (file === "/usr/bin/codesign") {
-      if (args[0] === "-dv") return { code: 0, out: `Executable=${args.at(-1)}\nIdentifier=stand-in\nTeamIdentifier=${state.teamFor[path.basename(args.at(-1) as string)] ?? state.team}\n` };
-      return state.signed ? { code: 0, out: "" } : { code: 1, out: `${args.at(-1)}: invalid signature (code or signature have been modified)` };
+      const f = args.at(-1) as string;
+      if (args[0] === "-dv") return { code: 0, out: `Executable=${f}\nIdentifier=stand-in\nTeamIdentifier=${state.teamFor[f] ?? state.teamFor[path.basename(f)] ?? state.team}\n` };
+      return state.signed && !state.broken.has(f) ? { code: 0, out: "" } : { code: 1, out: `${f}: invalid signature (code or signature have been modified)` };
     }
     if (file === "/usr/sbin/spctl") return state.gatekeeper ? { code: 0, out: "accepted\nsource=Notarized Developer ID" } : { code: 3, out: "rejected" };
+    if (file === "/usr/bin/plutil") return state.appVersion ? { code: 0, out: `${state.appVersion}\n` } : { code: 1, out: "No value at that key path" };
     if (file === "/usr/bin/open") {
       state.opened.push(args.at(-1) as string);
       if (state.onOpen) { state.onOpen(); return { code: 0, out: "" }; }
@@ -490,6 +496,122 @@ test("Ollama: checked deep, by its team and by Gatekeeper, moved into the first 
   assert.deepEqual(fs.readdirSync(m2.deps.paths.downloads), []);
 });
 
+// ── inspection round 2: what is already on the Mac (H1–H3) ──────────
+
+/** The program calls on files under `dir`: what ran there, in order. */
+const ranIn = (m: Machine, dir: string): string[][] => m.calls.filter((c) => c.some((a) => a.startsWith(dir)));
+
+test("H1: an existing uv folder whose uvx is not signed by uv's pinned team is never run or linked: moved aside, the checked download installed", async () => {
+  const v = MANIFEST.tools.uv.version;
+  const { files, manifest } = pinned({ uv: uvArchive() });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.uv.teamId as string;
+  const dir = path.join(m.home, ".local", "share", "unidex", "uv", v);
+  const marker = path.join(ROOT, "planted-uv-ran");
+  sh(path.join(dir, "uv"), `echo "uv ${v} (planted)"; touch "${marker}"`);
+  sh(path.join(dir, "uvx"), "echo planted uvx");
+  m.state.teamFor = { [path.join(dir, "uvx")]: "ZZZZZZZZZZ" };
+  await runToolchainJob("uv", m.deps, context());
+  assert.equal(fs.existsSync(marker), false, "nothing in the unverified folder ran");
+  assert.ok(ranIn(m, dir).some((c) => c[0] === "/usr/bin/codesign" && c.at(-1) === path.join(dir, "uvx")), "its uvx was checked first");
+  assert.equal(fs.readFileSync(path.join(dir, "uvx"), "utf8"), "#!/bin/sh\necho uvx\n", "the downloaded uvx is the one in place");
+  const backups = fs.readdirSync(path.dirname(dir)).filter((n) => n.startsWith(`${v}.unidex-backup-`));
+  assert.equal(backups.length, 1);
+  assert.equal(fs.readFileSync(path.join(path.dirname(dir), backups[0], "uvx"), "utf8"), "#!/bin/sh\necho planted uvx\n", "moved aside, not deleted");
+  assert.equal(fs.readlinkSync(path.join(m.home, ".local", "bin", "uvx")), path.join(dir, "uvx"));
+});
+
+test("H1: an existing Node whose node fails codesign is never run; the folder is moved aside and the checked download installed", async () => {
+  const v = MANIFEST.tools.node.version;
+  const src = path.join(ROOT, "src-node-h1");
+  sh(path.join(src, `node-v${v}-darwin-arm64`, "bin", "node"), `echo v${v}`);
+  const { files, manifest } = pinned({ node: tarOf(src) });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.node.teamId as string;
+  const dir = path.join(m.home, ".local", "share", "unidex", "node", `v${v}`);
+  sh(path.join(dir, "bin", "node"), `echo v${v}; touch "${path.join(ROOT, "planted-node-ran")}"`);
+  m.state.broken.add(path.join(dir, "bin", "node"));
+  await runToolchainJob("node", m.deps, context());
+  assert.equal(fs.existsSync(path.join(ROOT, "planted-node-ran")), false, "the unsigned node never ran");
+  assert.equal(fs.readdirSync(path.dirname(dir)).filter((n) => n.startsWith(`v${v}.unidex-backup-`)).length, 1);
+  assert.equal(fs.readlinkSync(path.join(path.dirname(dir), "current")), `v${v}`);
+});
+
+test("H1: a complete Codex release whose rg is not OpenAI's is moved aside, not reused", async () => {
+  const v = MANIFEST.tools.codex.version;
+  const { files, manifest } = pinned({ codex: codexArchive() });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.codex.teamId as string;
+  const dir = path.join(m.home, ".codex", "packages", "standalone", "releases", `${v}-aarch64-apple-darwin`);
+  sh(path.join(dir, "bin", "codex"), `echo "codex-cli ${v}"`);
+  sh(path.join(dir, "bin", "codex-code-mode-host"), "exit 0");
+  sh(path.join(dir, "codex-path", "rg"), "echo planted rg");
+  fs.writeFileSync(path.join(dir, "codex-package.json"), "{}");
+  m.state.teamFor = { [path.join(dir, "codex-path", "rg")]: "ZZZZZZZZZZ" };
+  await runToolchainJob("codex", m.deps, context());
+  assert.ok(m.urls.length > 0, "the checked download was fetched");
+  assert.equal(fs.readFileSync(path.join(dir, "codex-path", "rg"), "utf8"), "#!/bin/sh\nexit 0\n");
+  assert.equal(fs.readdirSync(path.dirname(dir)).filter((n) => n.includes(".unidex-backup-")).length, 1);
+});
+
+test("H2: a Node folder in the way, with a file of the user's in it, is moved aside whole, never deleted; so is a foreign current", async () => {
+  const v = MANIFEST.tools.node.version;
+  const src = path.join(ROOT, "src-node-h2");
+  sh(path.join(src, `node-v${v}-darwin-arm64`, "bin", "node"), `echo v${v}`);
+  const { files, manifest } = pinned({ node: tarOf(src) });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.node.teamId as string;
+  const root = path.join(m.home, ".local", "share", "unidex", "node");
+  const dir = path.join(root, `v${v}`);
+  sh(path.join(dir, "bin", "node"), "echo v1.0.0");
+  fs.writeFileSync(path.join(dir, "my-notes.txt"), "keep me");
+  fs.writeFileSync(path.join(root, "current"), "not a link");
+  const ctx = context();
+  await runToolchainJob("node", m.deps, ctx);
+  const aside = fs.readdirSync(root).filter((n) => n.startsWith(`v${v}.unidex-backup-`));
+  assert.equal(aside.length, 1);
+  assert.equal(fs.readFileSync(path.join(root, aside[0], "my-notes.txt"), "utf8"), "keep me");
+  const cur = fs.readdirSync(root).filter((n) => n.startsWith("current.unidex-backup-"));
+  assert.equal(cur.length, 1, "the foreign current is kept aside");
+  assert.equal(fs.readFileSync(path.join(root, cur[0]), "utf8"), "not a link");
+  assert.equal(fs.readlinkSync(path.join(root, "current")), `v${v}`);
+  assert.ok(ctx.seen.lines.some((l) => l.includes(`Moved the existing ~/.local/share/unidex/node/v${v} aside`)));
+  // A current pointing somewhere else is not this installer's either.
+  const elsewhere = path.join(ROOT, "someone-elses-node");
+  fs.mkdirSync(elsewhere, { recursive: true });
+  fs.rmSync(path.join(root, "current"));
+  fs.symlinkSync(elsewhere, path.join(root, "current"));
+  await runToolchainJob("node", m.deps, context());
+  assert.equal(fs.readdirSync(root).filter((n) => n.startsWith("current.unidex-backup-")).length, 2);
+  assert.ok(fs.existsSync(elsewhere), "and what it pointed at is untouched");
+});
+
+test("H3: an Ollama app already there is opened only when its signature, team, Gatekeeper and version all pass", async () => {
+  const app = "/Applications/Ollama.app";
+  const cases: Array<[string, (m: Machine) => void, RegExp]> = [
+    ["another team", (m) => { m.state.team = "ZZZZZZZZZZ"; }, /could not be verified as Ollama's own, so it was not opened/],
+    ["modified", (m) => { m.state.signed = false; }, /could not be verified as Ollama's own, so it was not opened/],
+    ["Gatekeeper refuses", (m) => { m.state.gatekeeper = false; }, /could not be verified as Ollama's own, so it was not opened/],
+    ["no version", (m) => { m.state.appVersion = null; }, /does not say its version, so it was not opened: reinstall it from ollama\.com/],
+    ["too old", (m) => { m.state.appVersion = "0.12.0"; }, /is Ollama 0\.12\.0, older than 0\.17\.3, so it was not opened: update it from its menu/],
+  ];
+  for (const [what, set, re] of cases) {
+    for (const job of ["ollama", "models"] as const) {
+      const m = machine({}, MANIFEST, { ollamaApp: () => app });
+      m.state.team = MANIFEST.tools.ollama.teamId as string;
+      set(m);
+      await assert.rejects(runToolchainJob(job, m.deps, context()), re, `${what}, ${job}`);
+      assert.deepEqual(m.state.opened, [], `${what}, ${job}: never opened`);
+      assert.deepEqual(m.state.pulls, []);
+    }
+  }
+  const ok = machine({}, MANIFEST, { ollamaApp: () => app });
+  ok.state.team = MANIFEST.tools.ollama.teamId as string;
+  await runToolchainJob("ollama", ok.deps, context());
+  assert.deepEqual(ok.state.opened, [app]);
+  assert.ok(ok.calls.findIndex((c) => c[0] === "/usr/bin/codesign" && c.includes("--deep")) < ok.calls.findIndex((c) => c[0] === "/usr/bin/open"), "checked before it was opened");
+});
+
 test("Ollama on a macOS older than it needs: refused before anything is downloaded", async () => {
   const m = machine({}, MANIFEST, { macOS: "13.6" });
   await assert.rejects(runToolchainJob("ollama", m.deps, context()), /Ollama \d+\.\d+\.\d+ needs macOS 14\.0 or newer; this Mac runs 13\.6/);
@@ -499,12 +621,14 @@ test("Ollama on a macOS older than it needs: refused before anything is download
 test("inspection F6: Stop while Ollama is being opened ends the job as stopped, not as installed", async () => {
   const ac = new AbortController();
   const m = machine({}, MANIFEST, { ollamaApp: () => "/Applications/Ollama.app" });
+  m.state.team = MANIFEST.tools.ollama.teamId as string;
   m.state.tags = null;
   m.state.onOpen = () => ac.abort();
   await assert.rejects(runToolchainJob("ollama", m.deps, context(ac.signal)), /^Error: stopped$|stopped/);
   assert.deepEqual(m.state.opened, ["/Applications/Ollama.app"]);
   assert.ok(!m.calls.some((c) => c[0] === "/fake/curl" && c.includes("--retry")), "nothing runs after the Stop");
   const models = machine({}, MANIFEST, { ollamaApp: () => "/Applications/Ollama.app" });
+  models.state.team = MANIFEST.tools.ollama.teamId as string;
   const ac2 = new AbortController();
   models.state.onOpen = () => ac2.abort();
   await assert.rejects(runToolchainJob("models", models.deps, context(ac2.signal)), /stopped/);
@@ -514,6 +638,7 @@ test("inspection F6: Stop while Ollama is being opened ends the job as stopped, 
 test("the models follow the Mac's memory, open Ollama when it is not answering, pull only what is missing, with progress", async () => {
   const app = "/Applications/Ollama.app";
   const m = machine({}, MANIFEST, { totalmem: 8 * GB, ollamaApp: () => app });
+  m.state.team = MANIFEST.tools.ollama.teamId as string;
   m.state.tags = null;
   const ctx = context();
   await runToolchainJob("models", m.deps, ctx);
