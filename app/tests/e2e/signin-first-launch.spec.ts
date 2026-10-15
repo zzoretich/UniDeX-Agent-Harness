@@ -28,6 +28,11 @@ const app = useApp({
     delete state.codex;
     Object.assign(state, { name: "none", reason: "local-down", localReason: "local-down", checkedAt: new Date().toISOString() });
     fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`);
+    // A Mac with no past session either: with one, Sessions would be on the rail from the start for its History
+    // (install-import B11), and this would test nothing.
+    fs.rmSync(path.join(FX.claude, "projects"), { recursive: true, force: true });
+    fs.rmSync(path.join(FX.home, ".codex", "sessions"), { recursive: true, force: true });
+    fs.rmSync(FX.v("brain/_index/session-index.json"), { force: true });
     const stamp = FX.v("brain/_index/agent-runs/.reconcile");
     fs.mkdirSync(path.dirname(stamp), { recursive: true });
     fs.writeFileSync(stamp, `${new Date().toISOString()}\n`);

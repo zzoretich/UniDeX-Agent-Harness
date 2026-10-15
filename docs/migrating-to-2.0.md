@@ -84,7 +84,8 @@ brings it (`aos migrate import --apply` does the same and settles the migration;
 last import with **Import** and **Import older history** (while the app's `import` write surface is off, run
 `aos import` in the Code tab). What it brings, and the digest that works through your past sessions on the local model,
 is in [install.md](install.md#bring-in-your-history). Imported memories wait in Brain ▸ Review, `reviewed: false`, one
-batch per host.
+batch per host. Sessions ▸ History lists your past Claude Code and Codex sessions, imported or not, with the digest's
+one-line summary as it reaches each, and resumes one in a Code terminal on a host that is on and signed in.
 
 ## The Chief of Staff
 
@@ -107,7 +108,9 @@ hosts apply either way ([chief-of-staff.md](chief-of-staff.md#host-model-and-fai
   migration edits one, except the shipped `tick.md` when you go local.
 - **Your history**, until you import it.
 - **Your hosts' own config.** No hook to re-trust; the import lists MCP servers in `brain/_index/mcp-servers.json` and
-  never writes a host's config.
+  never writes a host's config. Skills ▸ MCP servers' **Make available on …** (or `aos mcp copy`) adds one server to the
+  other host only when you confirm the command it shows, after backing that host's config up in
+  `~/.local/share/unidex/backups/mcp/`.
 
 ## Undo
 

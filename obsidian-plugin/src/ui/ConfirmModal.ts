@@ -10,12 +10,14 @@ import { dialogId } from "./spaces/SpaceDialogs";
  */
 export class ConfirmModal extends Modal {
   private resolved = false;
-  constructor(app: App, private title: string, private message: string, private confirmLabel = "Confirm", private resolve: (ok: boolean) => void = () => {}) {
+  /** `detail`, when given, is shown as written under the message in a monospace block: the exact command a confirm runs
+   *  (Skills ▸ MCP servers' Make available on …). */
+  constructor(app: App, private title: string, private message: string, private confirmLabel = "Confirm", private resolve: (ok: boolean) => void = () => {}, private detail: string | null = null) {
     super(app);
   }
 
-  static ask(app: App, title: string, message: string, confirmLabel = "Confirm"): Promise<boolean> {
-    return new Promise((resolve) => new ConfirmModal(app, title, message, confirmLabel, resolve).open());
+  static ask(app: App, title: string, message: string, confirmLabel = "Confirm", detail: string | null = null): Promise<boolean> {
+    return new Promise((resolve) => new ConfirmModal(app, title, message, confirmLabel, resolve, detail).open());
   }
 
   onOpen(): void {
@@ -29,6 +31,7 @@ export class ConfirmModal extends Modal {
     this.modalEl.setAttr("aria-describedby", ids.message);
     contentEl.createEl("h3", { text: this.title, attr: { id: ids.title } });
     contentEl.createEl("p", { text: this.message, attr: { id: ids.message } });
+    if (this.detail) contentEl.createEl("pre", { cls: "aos-confirm-detail", text: this.detail });
     const actions = contentEl.createDiv({ cls: "aos-capture-actions" });
     const cancel = actions.createEl("button", { text: "Cancel", attr: { type: "button" } });
     cancel.addEventListener("click", () => this.close());

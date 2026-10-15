@@ -82,7 +82,8 @@ export interface WorkbenchTarget {
   tab: string;
   /** A workspace name: Spaces selects it; Sessions and Code scope their lists to it. */
   workspace?: string | null;
-  /** Spaces only: the pane to show for the workspace (statusline.ts SPACES_PANES). */
+  /** Spaces: the pane to show for the workspace (statusline.ts SPACES_PANES); Sessions: "history" shows its History
+   *  (install-import B11; the tour routes there). */
   pane?: SpacesPane | null;
   /** A thread id: Sessions opens that thread; Spaces shows it in the workspace's history. */
   thread?: string | null;
@@ -224,17 +225,19 @@ export class WorkbenchView extends ItemView {
     void this.refreshBadges();
   }
 
-  /** The rail's tab buttons, in their sections; Sessions only while an enabled host is signed in (local-first A17). */
+  /** The rail's tab buttons, in their sections; Sessions only while an enabled host is signed in (local-first A17) or
+   *  History has a past session to show (install-import B11): plugin.sessionsShown(). */
   private renderRailTabs(): void {
     const tabsEl = this.railTabsEl;
     if (!tabsEl) return;
     tabsEl.empty();
-    this.railChat = this.plugin.chatAvailable();
+    this.railChat = this.plugin.sessionsShown();
     RAIL_SECTIONS.forEach((section, i) => {
       // The line between sections (D5) scrolls with the buttons.
       if (i > 0) tabsEl.createDiv({ cls: "aos-wb-railsep", attr: { role: "separator", "aria-orientation": "horizontal" } });
       for (const tab of section) {
-        if (tab.id === "chat" && !this.railChat) continue; // no host signed in → no Sessions tab (local-first A17)
+        // No host signed in and no past session to show → no Sessions tab (local-first A17, install-import B11).
+        if (tab.id === "chat" && !this.railChat) continue;
         this.railButton(tabsEl, tab);
       }
     });
@@ -243,11 +246,12 @@ export class WorkbenchView extends ItemView {
 
   /**
    * The hosts' sign-in changed in provider-state.json: Sessions joins the rail once a host's sign-in is recorded (a fresh
-   * install's first launch, when the runtime's check answers after the rail was drawn). It never leaves the rail under the
-   * user: a host signed out takes it away at the next launch.
+   * install's first launch, when the runtime's check answers after the rail was drawn), unless it is there already for
+   * its History (install-import B11). It never leaves the rail under the user: a host signed out takes it away at the
+   * next launch.
    */
   refreshRailHosts(): void {
-    if (this.railChat || !this.railTabsEl || !this.plugin.chatAvailable()) return;
+    if (this.railChat || !this.railTabsEl || !this.plugin.sessionsShown()) return;
     this.renderRailTabs();
     void this.refreshBadges();
   }
@@ -495,12 +499,13 @@ export class WorkbenchView extends ItemView {
    * is already shown), then hands the rest to that tab's reveal(): Spaces selects the workspace, its pane and thread;
    * Sessions scopes its list to the workspace and opens the thread; Code scopes its list to the workspace's group.
    * Select only: it never resumes, opens a terminal, drafts or runs a verb. False when the tab cannot be shown: not a
-   * tab id, or Sessions with no host signed in (its rail button is hidden, D32; local-first A17).
+   * tab id, or Sessions with no host signed in and no past session (its rail button is hidden, D32; local-first A17;
+   * install-import B11).
    */
   open(target: WorkbenchTarget): boolean {
     const { tab } = target;
     if (!WORKBENCH_TAB_IDS.includes(tab)) return false;
-    if (tab === "chat" && !this.plugin.chatAvailable()) return false;
+    if (tab === "chat" && !this.plugin.sessionsShown()) return false;
     if (this.activeTab !== tab || !this.tabs[tab]) this.setTab(tab);
     const reveal: RevealTarget = {};
     if (target.workspace) reveal.workspace = target.workspace;
