@@ -1266,4 +1266,6 @@ async function main(argv, opts = {}) {
 module.exports = {
   VERBS, RESERVED, SCRATCH, KEBAB_RE, HASH_RE, UsageError, main, resolveCtx, slugify, stubs, completeStubs, newWorkspace,
   adoptWorkspace, listWorkspaces, whichWorkspace, flipProjectNotes, runningTurns, linkedWorktrees, ago,
+  // The importer (install-import B9) creates several workspaces with rescan: false, then refreshes the snapshot once.
+  refreshSnapshot,
 };
