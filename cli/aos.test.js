@@ -442,7 +442,20 @@ test('doctor passes on an initialized vault when the plugin is installed (MCP pr
   assert.doesNotMatch(r.stdout, /^(?:ok|FAIL|warn|info)\s+obsidian/m);
   // cross-review spec D6: a Claude-only machine gets a warn row naming the same-provider fallback, never a failure.
   assert.match(r.stdout, /warn\s+cross-review\s+same-provider only: codex CLI not found — the skill offers a labelled same-provider review$/m);
+  // local-first A4: the persona row names the Chief of Staff's host and model, and the failover host (none on Claude only).
+  assert.match(r.stdout, /ok\s+persona runner\s+claude · claude-opus-5-5 \(medium\) \(.+\); failover: none$/m);
   assert.match(r.stdout, /all checks passed/);
+});
+
+test('chiefRow: the CoS host, model, effort and failover host; a moved duty says why; no host says how to fix it', () => {
+  const { chiefRow } = require('./aos.js');
+  const cx = (h) => (h === 'codex' ? ' (estimated)' : '');
+  assert.equal(chiefRow({ host: 'claude', bin: '/b/claude', model: 'claude-opus-5-5', effort: 'medium', reason: 'auto', failover: [{ host: 'codex', model: 'gpt-6-sol' }] }, cx),
+    'claude · claude-opus-5-5 (medium) (/b/claude); failover: codex · gpt-6-sol');
+  assert.equal(chiefRow({ host: 'codex', bin: '/b/codex', model: null, effort: 'low', reason: 'failover: claude signed out', failover: [] }, cx),
+    'codex · your Codex default (low) (/b/codex) (estimated) (failover: claude signed out); failover: none');
+  assert.match(chiefRow({ host: null, reason: 'waiting-for-host', skipped: [{ host: 'claude', why: 'signed out' }] }),
+    /^none \(waiting-for-host: claude: signed out\); duties are skipped until a host can start them/);
 });
 
 // workbench-app D11: the app records itself in brain/_index/hud-host.json; doctor names it, or says to open it once.

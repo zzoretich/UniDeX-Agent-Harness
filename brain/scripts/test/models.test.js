@@ -111,3 +111,27 @@ test('codex role: null tag by default (no -m), AOS_CODEX_MODEL and codex.model o
   delete process.env.AOS_CODEX_MODEL;
   assert.equal(thinkFor('codex', 'high', NO_CFG), false);
 });
+
+test('chief (local-first A4/A11): claude-opus-5-5 / gpt-6-sol, the same pair config.default.json gives a new install', () => {
+  const { CHIEF, chiefModel } = require('../sdk/lib/models.js');
+  const defaults = require('../config.default.json');
+  assert.deepEqual({ ...CHIEF }, { claude: 'claude-opus-5-5', codex: 'gpt-6-sol' });
+  assert.equal(defaults.persona.model, CHIEF.claude, 'bump both together');
+  assert.equal(defaults.persona.codexModel, CHIEF.codex, 'bump both together');
+  assert.equal(defaults.persona.failover, true);
+  const env = {};
+  assert.deepEqual(chiefModel('claude', defaults, { env }), { host: 'claude', tag: 'claude-opus-5-5', source: 'config' });
+  assert.deepEqual(chiefModel('codex', defaults, { env }), { host: 'codex', tag: 'gpt-6-sol', source: 'config' });
+  // A pre-2.0 vault (explicit nulls) keeps the chain it ran on.
+  const old = { persona: { model: null, codexModel: null }, claude: { model: 'haiku' }, codex: { model: 'gpt-5-mini' } };
+  assert.deepEqual(chiefModel('claude', old, { env }), { host: 'claude', tag: 'haiku', source: 'legacy' });
+  assert.deepEqual(chiefModel('claude', old, { env, answers: { dutyModel: 'sonnet' } }), { host: 'claude', tag: 'sonnet', source: 'answers' });
+  assert.deepEqual(chiefModel('codex', old, { env }), { host: 'codex', tag: 'gpt-5-mini', source: 'legacy' });
+  assert.deepEqual(chiefModel('codex', { persona: {} }, { env }), { host: 'codex', tag: null, source: 'default' }, 'null: the user\'s own Codex default');
+  assert.deepEqual(chiefModel('claude', {}, { env }), { host: 'claude', tag: 'claude-opus-5-5', source: 'default' });
+  assert.equal(chiefModel('claude', old, { env: { PERSONA_MODEL: 'opus' } }).tag, 'opus', 'a duty routine\'s own model');
+  assert.equal(chiefModel('codex', defaults, { env: { PERSONA_MODEL: 'opus' } }).tag, 'gpt-6-sol', 'a Claude model never reaches Codex');
+  assert.equal(role('chief', NO_CFG).provider, 'claude');
+  assert.equal(thinkFor('chief', undefined, { persona: { effort: 'low' } }), 'low');
+  assert.throws(() => chiefModel('other', {}), /unknown chief host/);
+});

@@ -94,7 +94,7 @@ const SETTINGS = [
   perCall('reasoner.perCallUsd', 'spend', 'Reasoner call cap', 'Most one reasoner call may spend, in USD.'),
   perDay('reasoner.perDayUsd', 'spend', 'Reasoner daily cap', 'Most reasoner calls may spend per day, in USD.', { spend: 'reasoner' }),
   perCall('persona.perDutyUsd', 'spend', 'Duty cap', 'Most one Chief of Staff duty may spend, in USD.'),
-  perDay('persona.perDayUsd', 'spend', 'Chief of Staff daily cap', 'Most the Chief of Staff duties may spend per day, in USD.', { spend: 'duties' }),
+  perDay('persona.perDayUsd', 'spend', 'Chief of Staff daily cap', 'Most the Chief of Staff duties may spend per day on each host, in USD (a day capped on one host fails over to the other when Duty failover is on).', { spend: 'duties' }),
   perCall('routines.perRunUsd', 'spend', 'Routine run cap', 'Most one prompt routine run may spend, in USD, unless the routine names its own budget.'),
   perDay('routines.perDayUsd', 'spend', 'Routines daily cap', 'Most prompt routines may spend per day, in USD.', { spend: 'routines' }),
   perCall('graph.semantic.perCallUsd', 'spend', 'Semantic graph call cap', 'Most one semantic graph pass may spend, in USD.'),
@@ -164,13 +164,16 @@ const SETTINGS = [
   { key: 'persona.enabled', section: 'persona', label: 'Chief of Staff', type: 'bool', risk: 'autonomy', applies: 'next-session',
     help: 'The whole Chief of Staff: its context in sessions, the watchdog and the scheduled duties (persona/DISABLED follows it).' },
   { key: 'persona.runner', section: 'persona', label: 'Duty runner', type: 'enum', values: RUNNERS, applies: 'next-duty',
-    help: 'Which host runs the duties: auto, claude or codex.' },
+    help: 'Which host runs the duties: auto (Claude Code when it is on and signed in, else Codex), claude or codex.' },
+  // local-first A4/A11: the Chief of Staff runs on a hosted model per host (sdk/lib/models.js CHIEF), with failover.
   { key: 'persona.model', section: 'persona', label: 'Duty model on Claude', type: 'model', host: 'claude', nullable: true, applies: 'next-duty', followUp: ROUTINES_SYNC,
-    help: 'Claude model for duties; null uses the interview answer, then claude.model. A duty routine\'s own model: wins.' },
+    help: 'Claude model for duties (default claude-opus-5-5); null keeps the pre-2.0 chain: the interview answer, then claude.model. A duty routine\'s own model: wins.' },
   { key: 'persona.effort', section: 'persona', label: 'Duty effort', type: 'enum', values: REASONER_EFFORTS, nullable: true, applies: 'next-duty', followUp: ROUTINES_SYNC,
     help: 'Effort for duties on either host; null uses the interview answer, then medium. A duty routine\'s own effort: wins.' },
   { key: 'persona.codexModel', section: 'persona', label: 'Duty model on Codex', type: 'model', host: 'codex', nullable: true, applies: 'next-duty',
-    help: 'Codex model for duties; null uses codex.model, then your Codex default.' },
+    help: 'Codex model for duties (default gpt-6-sol); null uses codex.model, then your Codex default.' },
+  { key: 'persona.failover', section: 'persona', label: 'Duty failover', type: 'bool', applies: 'next-duty',
+    help: 'With both hosts on, a duty that cannot start on its host (CLI missing, signed out, or that host\'s day at the daily cap) runs on the other host\'s duty model instead. Off: it is skipped.' },
   { key: 'persona.watchdog.graceMinutes', section: 'persona', label: 'Watchdog grace', type: 'number', int: true, min: 1, applies: 'next-session',
     help: 'Minutes past its schedule before a missed duty is flagged.' },
   { key: 'persona.watchdog.notify', section: 'persona', label: 'Watchdog notifications', type: 'bool', applies: 'next-session',
@@ -305,6 +308,10 @@ const SETTINGS = [
 // is never offered. A value outside these still works through `aos config set`.
 const CLAUDE_MODELS = ['haiku', 'sonnet', 'opus', 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5', 'claude-opus-5-5', 'claude-fable-5-1'];
 const CODEX_MODELS = Object.keys(require('../sdk/lib/codex-pricing.js').MODELS);
+// The Chief of Staff's Codex model (local-first A4) leads its own picker, priced at the default rate until the pricing
+// table lists it (spend under Codex is an estimate either way).
+const CHIEF_CODEX = require('../sdk/lib/models.js').CHIEF.codex;
+const CHIEF_CODEX_MODELS = [CHIEF_CODEX, ...CODEX_MODELS.filter((m) => m !== CHIEF_CODEX)];
 // local-first A12: the tiers' models and the next size up; LOCAL_EMBEDDERS the recall embedder. Any pulled tag still works.
 const LOCAL_MODELS = ['qwen3.5:4b', 'qwen3.5:9b', 'qwen3.5:27b'];
 const LOCAL_EMBEDDERS = ['qwen3-embedding:0.6b'];
@@ -314,7 +321,7 @@ const USD_DAY = [0, 0.25, 0.5, 1, 2, 3, 5, 6, 10, 15, 20, 30, 50];
 const usd = (choices) => ({ choices, unit: 'usd' });
 const PICKS = {
   'claude.model': { choices: CLAUDE_MODELS }, 'reasoner.model': { choices: CLAUDE_MODELS }, 'crossReview.claudeModel': { choices: CLAUDE_MODELS }, 'persona.model': { choices: CLAUDE_MODELS },
-  'codex.model': { choices: CODEX_MODELS }, 'reasoner.codexModel': { choices: CODEX_MODELS }, 'persona.codexModel': { choices: CODEX_MODELS },
+  'codex.model': { choices: CODEX_MODELS }, 'reasoner.codexModel': { choices: CODEX_MODELS }, 'persona.codexModel': { choices: CHIEF_CODEX_MODELS },
   'routines.codexModel': { choices: CODEX_MODELS }, 'crossReview.codexModel': { choices: CODEX_MODELS },
   'ollama.host': { choices: ['127.0.0.1', 'localhost'] }, 'ollama.port': { choices: [11434] },
   'local.url': { choices: ['http://127.0.0.1:11434', 'http://127.0.0.1:1234/v1'] },

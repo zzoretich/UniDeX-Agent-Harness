@@ -75,7 +75,9 @@ test('--resolve prints host, bin, model and the recorded codex home (tab-separat
   const env = { ...process.env, AOS_VAULT: vault, AOS_CONFIG: cfg, PATH: '/usr/bin:/bin' };
   const ok = spawnSync(process.execPath, [path.join(__dirname, '..', 'lib', 'headless.js'), '--resolve', '--kind', 'persona'], { encoding: 'utf8', env });
   assert.equal(ok.status, 0, ok.stderr);
-  assert.equal(ok.stdout, `codex\t${CODEX}\tgpt-5-mini\t/c/home\n`);
+  assert.equal(ok.stdout, `codex\t${CODEX}\tgpt-6-sol\t/c/home\n`, 'persona.codexModel: the Chief of Staff default (local-first A4) from config.default.json');
+  const routines = spawnSync(process.execPath, [path.join(__dirname, '..', 'lib', 'headless.js'), '--resolve', '--kind', 'routines'], { encoding: 'utf8', env });
+  assert.equal(routines.stdout, `codex\t${CODEX}\tgpt-5-mini\t/c/home\n`, 'routines.codexModel null → codex.model');
   const no = spawnSync(process.execPath, [path.join(__dirname, '..', 'lib', 'headless.js'), '--resolve'], { encoding: 'utf8', env: { ...env, AOS_NO_CODEX: '1' } });
   assert.equal(no.status, 3);
   assert.match(no.stderr, /no runner for routines/);
@@ -209,4 +211,97 @@ test('sessionArgs: a codex turn runs exec --json in the workspace-write sandbox 
   assert.deepEqual(next.argv.slice(-3), ['0199-thread', '--', 'and the tests'], 'the thread id, then the prompt after --');
   assert.ok(!next.argv.includes('-s') && !next.argv.includes('-C'), 'exec resume takes neither -s nor -C');
   assert.throws(() => H.sessionArgs('nohost', { prompt: 'x' }), /no such host/);
+});
+
+// ── resolveChief (local-first A4): the Chief of Staff's host, model, effort and failover per host configuration ──
+const CHIEF_CFG = (o = {}) => ({
+  hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: true, bin: CODEX, home: '/c/home' } },
+  persona: { runner: 'auto', model: 'claude-opus-5-5', codexModel: 'gpt-6-sol', effort: null, failover: true, perDayUsd: 6 },
+  ...o,
+});
+const claudeOnly = (o) => CHIEF_CFG({ hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: false } }, ...o });
+const codexOnly = (o) => CHIEF_CFG({ hosts: { claude: { enabled: false }, codex: { enabled: true, bin: CODEX, home: '/c/home' } }, ...o });
+/** deps: every binary from the config, sign-in and spend per host from the maps, a record of which hosts were probed. */
+function chiefDeps({ signedOut = [], spent = {}, env = ENV, answers = null } = {}) {
+  const probed = [];
+  return {
+    probed,
+    env, lookup: none, candidates: false, answers,
+    loggedIn: async (h, bin) => { probed.push(`${h}:${bin}`); return !signedOut.includes(h); },
+    spentToday: (h) => spent[h] || 0,
+  };
+}
+const pick = (r) => ({ host: r.host, model: r.model, effort: r.effort, reason: r.reason, failover: r.failover.map((f) => `${f.host}·${f.model}`), skipped: r.skipped.map((s) => `${s.host}: ${s.why}`) });
+
+test('resolveChief: Claude only — claude-opus-5-5 at medium, no failover; signed out or capped it waits', async () => {
+  assert.deepEqual(pick(await H.resolveChief(claudeOnly(), chiefDeps())),
+    { host: 'claude', model: 'claude-opus-5-5', effort: 'medium', reason: 'auto', failover: [], skipped: [] });
+  const out = await H.resolveChief(claudeOnly(), chiefDeps({ signedOut: ['claude'] }));
+  assert.deepEqual(pick(out), { host: null, model: null, effort: null, reason: 'waiting-for-host', failover: [], skipped: ['claude: signed out'] });
+  assert.deepEqual(pick(await H.resolveChief(claudeOnly(), chiefDeps({ spent: { claude: 6 } }))).reason, 'daily-cap');
+  const gone = await H.resolveChief(claudeOnly({ hosts: { claude: { enabled: true, bin: '/nowhere/claude' }, codex: { enabled: false } } }), chiefDeps());
+  assert.deepEqual(pick(gone).skipped, ['claude: CLI not found']);
+  assert.equal(gone.reason, 'waiting-for-host');
+});
+
+test('resolveChief: Codex only — gpt-6-sol with the recorded Codex home; a Claude model never reaches it', async () => {
+  const r = await H.resolveChief(codexOnly(), chiefDeps({ env: { ...ENV, PERSONA_MODEL: 'sonnet', PERSONA_EFFORT: 'high' } }));
+  assert.deepEqual(pick(r), { host: 'codex', model: 'gpt-6-sol', effort: 'high', reason: 'auto', failover: [], skipped: [] });
+  assert.equal(r.bin, CODEX);
+  assert.equal(r.home, '/c/home');
+  assert.deepEqual(pick(await H.resolveChief(codexOnly(), chiefDeps({ signedOut: ['codex'] }))).skipped, ['codex: signed out']);
+  assert.equal((await H.resolveChief(codexOnly(), chiefDeps({ spent: { codex: 7 } }))).reason, 'daily-cap');
+  // A pre-2.0 vault: null persona.codexModel keeps codex.model, then the user's own Codex default (no -m).
+  const legacy = codexOnly({ persona: { codexModel: null }, codex: { model: 'gpt-5-mini' } });
+  assert.equal((await H.resolveChief(legacy, chiefDeps())).model, 'gpt-5-mini');
+  assert.equal((await H.resolveChief(codexOnly({ persona: { codexModel: null } }), chiefDeps())).model, null);
+});
+
+test('resolveChief: both hosts — Claude first with Codex as its failover; signed out, capped or missing moves the duty', async () => {
+  const deps = chiefDeps();
+  const r = await H.resolveChief(CHIEF_CFG(), deps);
+  assert.deepEqual(pick(r), { host: 'claude', model: 'claude-opus-5-5', effort: 'medium', reason: 'auto', failover: ['codex·gpt-6-sol'], skipped: [] });
+  assert.deepEqual(deps.probed, [`claude:${CLAUDE}`], 'the failover host is named, not probed, while the primary runs');
+  // auto: a signed-out Claude makes Codex the primary.
+  const auto = await H.resolveChief(CHIEF_CFG(), chiefDeps({ signedOut: ['claude'] }));
+  assert.deepEqual(pick(auto), { host: 'codex', model: 'gpt-6-sol', effort: 'medium', reason: 'auto', failover: [], skipped: ['claude: signed out'] });
+  // auto: Claude signed in but its day capped → failover to Codex.
+  const capped = await H.resolveChief(CHIEF_CFG(), chiefDeps({ spent: { claude: 6 } }));
+  assert.deepEqual(pick(capped), { host: 'codex', model: 'gpt-6-sol', effort: 'medium', reason: 'failover: claude daily cap', failover: [], skipped: ['claude: daily cap'] });
+  // persona.runner codex: Codex first, Claude its failover; Codex's CLI missing → Claude.
+  const pinned = CHIEF_CFG({ persona: { ...CHIEF_CFG().persona, runner: 'codex' } });
+  assert.deepEqual(pick(await H.resolveChief(pinned, chiefDeps())).failover, ['claude·claude-opus-5-5']);
+  const noCodex = await H.resolveChief(pinned, chiefDeps({ env: { ...ENV, AOS_NO_CODEX: '1' } }));
+  assert.deepEqual(pick(noCodex), { host: 'claude', model: 'claude-opus-5-5', effort: 'medium', reason: 'failover: codex CLI not found', failover: [], skipped: ['codex: CLI not found'] });
+  // AOS_RUNNER beats persona.runner.
+  assert.equal((await H.resolveChief(pinned, chiefDeps({ env: { ...ENV, AOS_RUNNER: 'claude' } }))).host, 'claude');
+  // Both capped → daily-cap; one signed out and the other capped → waiting-for-host (signing in would help).
+  assert.equal((await H.resolveChief(CHIEF_CFG(), chiefDeps({ spent: { claude: 6, codex: 6 } }))).reason, 'daily-cap');
+  const stuck = await H.resolveChief(CHIEF_CFG(), chiefDeps({ signedOut: ['claude'], spent: { codex: 9 } }));
+  assert.deepEqual(pick(stuck), { host: null, model: null, effort: null, reason: 'waiting-for-host', failover: [], skipped: ['claude: signed out', 'codex: daily cap'] });
+  // persona.failover false: no move, no failover named.
+  const noFail = CHIEF_CFG({ persona: { ...CHIEF_CFG().persona, failover: false } });
+  assert.deepEqual(pick(await H.resolveChief(noFail, chiefDeps())).failover, []);
+  assert.equal((await H.resolveChief(noFail, chiefDeps({ spent: { claude: 6 } }))).reason, 'daily-cap');
+});
+
+test('resolveChief: no host — waiting-for-host, nothing probed', async () => {
+  const deps = chiefDeps();
+  const r = await H.resolveChief({ hosts: { claude: { enabled: false }, codex: { enabled: false } }, persona: {} }, deps);
+  assert.deepEqual(pick(r), { host: null, model: null, effort: null, reason: 'waiting-for-host', failover: [], skipped: ['null: no host enabled'] });
+  assert.deepEqual(deps.probed, []);
+});
+
+test('resolveChief: models — PERSONA_MODEL, persona.model, the interview answer, claude.model, then the chief default; effort per host', async () => {
+  const m = async (cfg, o) => (await H.resolveChief(cfg, chiefDeps(o))).model;
+  assert.equal(await m(claudeOnly({ persona: {} })), 'claude-opus-5-5', 'nothing set: models.js CHIEF');
+  assert.equal(await m(claudeOnly({ persona: {}, claude: { model: 'haiku' } })), 'haiku', 'a pre-2.0 vault keeps claude.model');
+  assert.equal(await m(claudeOnly({ persona: {}, claude: { model: 'haiku' } }), { answers: { dutyModel: 'sonnet' } }), 'sonnet');
+  assert.equal(await m(claudeOnly({ persona: { model: 'opus' }, claude: { model: 'haiku' } }), { answers: { dutyModel: 'sonnet' } }), 'opus');
+  assert.equal(await m(claudeOnly(), { env: { ...ENV, PERSONA_MODEL: 'claude-sonnet-5' } }), 'claude-sonnet-5', 'a duty routine\'s own model');
+  const e = async (cfg, env) => (await H.resolveChief(cfg, chiefDeps({ env: { ...ENV, ...env } }))).effort;
+  assert.equal(await e(claudeOnly({ persona: { effort: 'low' } })), 'low');
+  assert.equal(await e(claudeOnly({ persona: { effort: 'low' } }), { PERSONA_EFFORT: 'high' }), 'high');
+  assert.equal(await e(claudeOnly(), { PERSONA_EFFORT: 'xhigh' }), 'medium', 'claude -p takes low|medium|high here');
+  assert.equal(await e(codexOnly(), { PERSONA_EFFORT: 'xhigh' }), 'xhigh');
 });

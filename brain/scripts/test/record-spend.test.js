@@ -50,6 +50,18 @@ test('dutySpendFrom sums only today\'s duty:* rows and skips bad lines', () => {
   assert.equal(dutySpendFrom(''), 0);
 });
 
+test('dutySpendFrom per host (local-first A4): each provider\'s duty rows; a row without one is a Claude row', () => {
+  const now = new Date().toISOString();
+  const text = [
+    JSON.stringify({ ts: now, feature: 'duty:monitor', provider: 'claude', usd: 0.5 }),
+    JSON.stringify({ ts: now, feature: 'duty:tick', provider: 'codex', usd: 1.25 }),
+    JSON.stringify({ ts: now, feature: 'duty:sitrep', usd: 0.25 }),
+  ].join('\n');
+  assert.equal(dutySpendFrom(text, new Date(), 'claude'), 0.75);
+  assert.equal(dutySpendFrom(text, new Date(), 'codex'), 1.25);
+  assert.equal(dutySpendFrom(text), 2);
+});
+
 // final review F6/spec-8: an explicit persona.perDayUsd/perDutyUsd of 0 used to fall through the `||`
 // defaults (0 || 6 → 6) instead of being honoured — the user asking for "$0/day" silently got $6/day.
 test('record-spend.js --check honours an explicit zero cap: exit 3 for perDayUsd:0, and for perDutyUsd:0', () => {

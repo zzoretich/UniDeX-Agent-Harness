@@ -121,10 +121,15 @@ test('no text boxes (spec 2026-09-24-settings-pickers D6): every settable non-bo
 
 test('model pickers: Claude rows list Claude models, Codex rows the pricing table\'s models, local rows the local tiers', () => {
   assert.deepEqual(S.CODEX_MODELS, Object.keys(require('../sdk/lib/codex-pricing.js').MODELS));
-  const LOCAL = { 'local.model': S.LOCAL_MODELS, 'local.embedder': S.LOCAL_EMBEDDERS };
+  // The Chief of Staff's Codex model (local-first A4) leads its own picker ahead of the priced ones.
+  const { CHIEF } = require('../sdk/lib/models.js');
+  const LOCAL = { 'local.model': S.LOCAL_MODELS, 'local.embedder': S.LOCAL_EMBEDDERS, 'persona.codexModel': [CHIEF.codex, ...S.CODEX_MODELS] };
   for (const e of S.SETTINGS.filter((x) => x.type === 'model')) {
     assert.deepEqual(e.choices, LOCAL[e.key] || (e.host === 'codex' ? S.CODEX_MODELS : S.CLAUDE_MODELS), e.key);
   }
+  assert.ok(S.CLAUDE_MODELS.includes(CHIEF.claude), 'the Claude duty picker lists the CoS model');
+  assert.equal(S.DEFAULTS.persona.model, CHIEF.claude);
+  assert.equal(S.DEFAULTS.persona.codexModel, CHIEF.codex);
   // Every tier's model is offered, and the shipped embedder is.
   for (const t of require('../sdk/lib/models.js').LOCAL_TIERS) assert.ok(S.LOCAL_MODELS.includes(t.tag), t.tag);
   assert.ok(S.LOCAL_EMBEDDERS.includes(S.DEFAULTS.local.embedder));
