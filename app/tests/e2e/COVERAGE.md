@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 123 |
-| covered in part | 58 |
+| covered | 126 |
+| covered in part | 61 |
 | N/A in the app | 47 |
 | not covered | 6 |
-| **total** | **234** |
+| **total** | **240** |
 
-Of the 187 items about the app (234 minus the 47 N/A), 181 are asserted (123 fully, 58 in part); the other 6 are not
+Of the 193 items about the app (240 minus the 47 N/A), 187 are asserted (126 fully, 61 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -405,6 +405,17 @@ again (`brain-ai`).
 | TM9 | After a visit to Code (and Agent Teams), every tab keeps its layout | covered | `tab-layout › after Code and Agent Teams, the content area carries none of their classes`, `› after a visit to Code, the tabs keep their layout…` (Notifications, Proposals, Files, To-Do, Agent Teams by position); the rest by eye. |
 | TM10 | Code never scrolls the page, at full size and at 960×600: the composer's send and the list's foot inside the window, a wheel scrolls the terminal only; the composer twice its 1.5.0 height with 15px text | covered | `term-deck › Code fits its pane…` (no element from the content area up overflows or scrolls at 1480×920 and 960×600; the composer's box ≥ 192px at 15px; the terminal keeps > 200px; a wheel moves xterm's viewport and nothing else). The text scrolling past six lines and the 320px drag limit are read by eye. |
 | TM5 | A Finder-launched app finds npm-installed CLIs | not covered | The login-shell PATH is unit-tested (`main-services › terminals start with the login shell's PATH`); e2e stands in for it with `$AOS_SETUP_PATH`. |
+
+## Guided tour
+
+| # | Item | Status | Covered by / reason |
+|---|---|---|---|
+| GT1 | A new install starts the welcome tour after the wizard, not the "What changed" note; its stops, the clicks it waits for, Getting started at the end; an existing vault still gets the note | covered | `setup › Open the Workbench… the welcome tour starts…` (attach.json's `installedAt` and `notedAt`), `tour › the welcome tour by real clicks…` (nine stops without a provider, each rail click shows its tab, a click under the shade does nothing, Getting started opens with the tour ticked), `tour › a Codex-only machine › the welcome tour names Codex…` (ten stops), `attach › the What changed note…` (an existing vault). |
+| GT2 | The spotlight: clicks only through the cutout; → ← Esc; focus to the popover, a live region; steps aside for a modal; Reduce motion | covered in part | `tour › the welcome tour…`, `› keys…`, `› a step whose control never appears…` (skipped and logged; Quick Capture hides it and Esc closes the modal first), `› prefers-reduced-motion…`. VoiceOver reading the popover: manual. |
+| GT3 | Help's five items; the same as commands in ⌘P and in the app's Help menu, not under Commands; Documentation opens the README | covered | `tour › Getting started and Help sit at the rail's foot…`, `› What's new says when it has nothing yet; Documentation…`, `› the app's Help menu lists the tour's commands…` (a Help menu item runs the tour; ⌘P finds it), `› keys… Tour this tab picks… Brain mode's chapter`. |
+| GT4 | Getting started n/m: tours and first steps ticked from the caches; Start / Show me; Hide checklist and Help ▸ Getting started | covered in part | `tour › Getting started…` (the fixture's Chief of Staff ticked, Sessions' tour absent without a provider, Start runs a chapter, Hide and Help); the session, review and routine ticks are unit-tested (`checklist.test.ts`); after real use: manual. |
+| GT5 | A tab's first visit shows its chip once; never again, never during a tour | covered | `tour › a tab's first visit offers its chapter once…` (Pulse at launch, To-Do, none on a second visit, its button runs Files' chapter). |
+| GT6 | Every tab's tour, per host: each control spotlit, none skipped; Codex-only text and gating; no-provider gating; both themes | covered in part | `tour › every chapter's anchors resolve on this machine…` and `› a Codex-only machine › every chapter's anchors resolve on Codex alone…` (the engine routes each of the 176 steps and finds its control, or the step is gated, and the gated ones are the host's and the provider's); the look in light and dark: by eye. |
 
 ## Telemetry switch
 

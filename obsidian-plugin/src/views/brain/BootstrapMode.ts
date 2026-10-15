@@ -178,7 +178,7 @@ export class BootstrapMode implements BrainModeView {
   private drawMain(d: BrainData): void {
     const M = this.main!;
     M.empty();
-    const head = M.createDiv({ cls: "aos-brain-bs-head" });
+    const head = M.createDiv({ cls: "aos-brain-bs-head", attr: { "data-tour": "brain-bootstrap-head" } });
     head.createEl("h2", { cls: "aos-brain-h2", text: "What every new session starts with", attr: { tabindex: "-1", "data-bs-key": "head" } });
     head.createSpan({ cls: "aos-brain-bs-sub", text: "Injected on the first prompt in Claude Code and Codex" });
     this.drawBudgets(M, d);
@@ -208,7 +208,7 @@ export class BootstrapMode implements BrainModeView {
   }
 
   private drawBudgets(M: HTMLElement, d: BrainData): void {
-    const wrap = M.createDiv({ cls: "aos-brain-bs-budgets", attr: { role: "list", "aria-label": "Budgets" } });
+    const wrap = M.createDiv({ cls: "aos-brain-bs-budgets", attr: { role: "list", "aria-label": "Budgets", "data-tour": "brain-bootstrap-budgets" } });
     for (const b of budgetBars(d)) {
       const card = wrap.createDiv({ cls: `aos-brain-bs-budget${b.warn ? " is-warn" : ""}`, attr: { role: "listitem", "data-budget": b.key } });
       const top = card.createDiv({ cls: "aos-brain-bs-btop" });

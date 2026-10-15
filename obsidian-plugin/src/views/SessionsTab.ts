@@ -722,7 +722,7 @@ export class SessionsTab {
       vault.createSpan({ cls: "aos-ss-title", text: "Vault" });
       this.clickable(vault, () => this.select(VAULT));
 
-      const threads = list.createDiv({ cls: "aos-ss-threads" });
+      const threads = list.createDiv({ cls: "aos-ss-threads", attr: { "data-tour": "sessions-threads" } });
       const note = (text: string) => threads.createDiv({ cls: "aos-ss-note", text });
       // A thread open in another workspace ends the scope, so the open thread is never missing from the list.
       if (this.scope && this.thread && this.isThread(this.selected) && this.thread.workspace !== this.scope) this.scope = null;

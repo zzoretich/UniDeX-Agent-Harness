@@ -2,8 +2,8 @@
 // shows the wizard; it checks what `aos init` needs on the PATH main resolves ($AOS_SETUP_PATH here), runs a fix-it's
 // fixed command in its terminal (Ollama's models are a warning with their own fix), asks for hosts, folder and the
 // Chief of Staff, runs the payload's `aos init` with those answers, shows the CLAUDE.md line as a diff and adds it only
-// when asked, then attaches the vault and draws the Workbench without a relaunch, where the one-time "What changed" note
-// follows.
+// when asked, then attaches the vault and draws the Workbench without a relaunch, where the welcome tour starts (a new
+// install never sees the "What changed" note, whose copy is about moving off Obsidian: tour C10).
 
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs";
@@ -137,7 +137,7 @@ test("the CLAUDE.md line is shown as a diff and added only when asked", async ()
   expect(fs.readFileSync(CLAUDE_MD, "utf8")).toBe(`# My Claude notes\n\nPrefer small diffs.\n${LINE}\n`);
 });
 
-test("Open the Workbench attaches the vault without a relaunch, and the one-time note follows", async () => {
+test("Open the Workbench attaches the vault without a relaunch, and the welcome tour starts instead of the note", async () => {
   const { app: electronApp, win, errors } = app();
   const pid = await electronApp.evaluate(() => process.pid);
   await win.locator(".aos-setup-open").click();
@@ -146,11 +146,14 @@ test("Open the Workbench attaches the vault without a relaunch, and the one-time
   expect(await electronApp.evaluate(() => (globalThis as unknown as { __aosMain: { vaultRoot(): string | null } }).__aosMain.vaultRoot())).toBe(FX.vault);
   // D11: the app recorded itself in the vault it attached.
   expect(JSON.parse(fs.readFileSync(FX.v("brain/_index/hud-host.json"), "utf8"))).toMatchObject({ host: "app", version: VERSION });
-  const note = win.locator(".aos-attach-modal");
-  await expect(note.locator(".modal-title")).toHaveText("UniDeX is an app now");
-  await note.locator(".aos-attach-ok").click();
-  await expect(note).toHaveCount(0);
-  const rec = JSON.parse(fs.readFileSync(path.join(USER_DATA, "attach.json"), "utf8")) as { vaults: Record<string, { notedAt?: string }> };
-  expect(rec.vaults[FX.vault]?.notedAt).toBeTruthy();
+  // The wizard installed this vault, so the first-launch UI is the welcome tour (attach.ts firstLaunch), on its first
+  // step, and the vault is recorded as noted at once: the next launch shows neither.
+  await expect(win.locator(".aos-tour-pop")).toHaveAttribute("data-step", "core.rail");
+  await expect(win.locator(".aos-attach-modal")).toHaveCount(0);
+  const rec = () => JSON.parse(fs.readFileSync(path.join(USER_DATA, "attach.json"), "utf8")) as { vaults: Record<string, { notedAt?: string; installedAt?: string }> };
+  await expect.poll(() => rec().vaults[FX.vault]?.notedAt).toBeTruthy();
+  expect(rec().vaults[FX.vault]?.installedAt).toBeTruthy();
+  await win.keyboard.press("Escape");
+  await expect(win.locator(".aos-tour")).toHaveCount(0);
   expect(errors).toEqual([]);
 });

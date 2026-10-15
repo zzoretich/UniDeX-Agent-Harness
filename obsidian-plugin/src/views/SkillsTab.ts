@@ -102,7 +102,7 @@ export class SkillsTab {
     head.createSpan({ cls: "aos-rt-title", text: "Skills" });
     head.createSpan({ cls: "aos-dim aos-rt-count", text: `${n.both} on both · ${n.claude} Claude Code only · ${n.codex} Codex only · ${listed.length} from plugins` });
     const actions = head.createDiv({ cls: "aos-rt-actions" });
-    const syncBtn = actions.createEl("button", { cls: "aos-ws-action", text: "sync now" });
+    const syncBtn = actions.createEl("button", { cls: "aos-ws-action", text: "sync now", attr: { "data-tour": "skills-sync" } });
     syncBtn.setAttr("title", "aos skills sync: share each host's skills with the other and refresh this list");
     syncBtn.addEventListener("click", () => this.sync());
 

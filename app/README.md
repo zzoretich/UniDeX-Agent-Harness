@@ -17,7 +17,8 @@ A packaged app carries the runtime in `Contents/Resources/payload`: a release tr
 runtime's dependencies, from which the app runs `aos init` and `aos upgrade` with your own Node. With no install it
 opens a setup wizard: it checks what `aos init` needs, offers a fix for each missing piece (run in a terminal inside the
 wizard), asks for the hosts, the vault folder and the Chief of Staff, runs `aos init`, offers the `CLAUDE.md` line as a
-diff, and opens the Workbench. With an install it opens the Workbench (attach mode), says once what changed, and offers
+diff, and opens the Workbench, where the welcome tour starts. With an install it opens the Workbench (attach mode), says
+once what changed (once per vault the app did not install itself), and offers
 `aos upgrade` when it carries a newer runtime than the vault has. Plan:
 `docs/superpowers/plans/2026-10-05-install-and-update.md`.
 

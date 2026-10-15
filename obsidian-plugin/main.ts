@@ -36,6 +36,7 @@ import { loadInventory } from "./src/data/inventory";
 import type { FixAction } from "./src/data/fixQueue";
 import { buildOmniItems } from "./src/data/omni";
 import { OmniModal } from "./src/ui/OmniModal";
+import { TourController } from "./src/tour/controller";
 import * as path from "path";
 import { env, fs, spawn } from "./src/host";
 
@@ -62,6 +63,8 @@ export default class AgenticOSPlugin extends Plugin {
   bus: Events = new Events();    // intra-plugin event bus for live-run fan-out
   terminalPool!: TerminalPool;
   termLauncher!: TerminalLauncher;
+  /** The guided tour, Help and Getting started (spec 2026-10-14-guided-tour-design). */
+  tour!: TourController;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -84,6 +87,7 @@ export default class AgenticOSPlugin extends Plugin {
       get cwd() { return settings().terminalCwd || vaultPath; },
     });
     this.termLauncher = new TerminalLauncher(this);
+    this.tour = new TourController(this);
 
     // views
     this.registerView(VIEW_TYPE_SIDEBAR_HUD, (leaf) => new SidebarHUDView(leaf, this));
@@ -147,6 +151,9 @@ export default class AgenticOSPlugin extends Plugin {
     this.addCommand({ id: "open-file", name: "Open file…", callback: () => { new QuickOpenModal(this.app).open(); } });
     this.addCommand({ id: "search-vault", name: "Search vault…",
       callback: () => { void this.openWorkbenchTab("files").then(() => this.currentFilesTab()?.focusSearch()); } });
+    // Help (tour C12): Take the tour, Tour this tab, What's new, Getting started, Documentation. The app's Help menu
+    // lists these by id.
+    this.tour.registerCommands();
 
     this.addSettingTab(new AgenticOSSettingTab(this.app, this));
 
@@ -397,8 +404,8 @@ export default class AgenticOSPlugin extends Plugin {
     const issues = snap?.health?.issues ?? [];
     const errs = issues.filter(i => i.severity === "error").length;
     const warns = issues.filter(i => i.severity === "warn").length;
-    if (errs > 0) wrap.createSpan({ text: ` · ${errs}err`, cls: "aos-text-rose" });
-    else if (warns > 0) wrap.createSpan({ text: ` · ${warns}warn`, cls: "aos-text-amber" });
+    if (errs > 0) wrap.createSpan({ text: ` · ${errs}err`, cls: "aos-text-rose", attr: { "data-tour": "status-bar-health" } });
+    else if (warns > 0) wrap.createSpan({ text: ` · ${warns}warn`, cls: "aos-text-amber", attr: { "data-tour": "status-bar-health" } });
     if (statuslineStale(model) && !this.statuslineRefreshing) {
       // D3: a stale or missing model is rebuilt by the runtime in the background, once at a time; the file's modify
       // event repaints the bar. A runtime without statusline.js leaves the flag set, so it is tried once per load.

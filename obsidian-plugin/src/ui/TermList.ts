@@ -40,7 +40,7 @@ export class TermList {
     this.filterEl = parent.createEl("input", { cls: "aos-tl-filter", attr: { type: "text", placeholder: "Filter terminals", "aria-label": "Filter terminals", spellcheck: "false" } });
     this.filterEl.addEventListener("input", () => { this.filter = this.filterEl.value; this.onFilter(this.filter); });
     this.scopeEl = parent.createDiv({ cls: "aos-tl-scope" });
-    this.groupsEl = parent.createDiv({ cls: "aos-tl-groups", attr: { role: "listbox", "aria-label": "Terminals" } });
+    this.groupsEl = parent.createDiv({ cls: "aos-tl-groups", attr: { role: "listbox", "aria-label": "Terminals", "data-tour": "code-list" } });
     this.footEl = parent.createDiv({ cls: "aos-tl-foot" });
   }
 

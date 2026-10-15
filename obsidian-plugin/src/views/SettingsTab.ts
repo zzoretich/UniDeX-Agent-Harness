@@ -139,7 +139,7 @@ export class SettingsTab {
     void this.pluginRows?.commit();
     host.empty();
 
-    const head = host.createDiv({ cls: "aos-rt-head" });
+    const head = host.createDiv({ cls: "aos-rt-head", attr: { "data-tour": "settings-head" } });
     head.createSpan({ cls: "aos-rt-title", text: "Settings" });
     head.createSpan({ cls: "aos-dim aos-rt-count", text: this.list ? `${changedCount(this.list)} changed from the defaults` : this.loading || !this.failure ? "loading…" : "" });
     const actions = head.createDiv({ cls: "aos-rt-actions" });
@@ -148,7 +148,7 @@ export class SettingsTab {
     reload.addEventListener("click", () => void this.refresh());
 
     if (this.list) {
-      const files = host.createDiv({ cls: "aos-rt-note aos-dim" });
+      const files = host.createDiv({ cls: "aos-rt-note aos-dim", attr: { "data-tour": "settings-sources" } });
       files.appendText("Values come from ");
       files.createSpan({ cls: "aos-pill aos-pill-amber", text: "this machine", attr: { title: this.list.files.machine } });
       files.appendText(" (agenticos.json), ");

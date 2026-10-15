@@ -309,7 +309,7 @@ export class ReviewMode implements BrainModeView {
     // A listbox is reached by Tab on its selected row; with none selected, on its first.
     if (!list.querySelector("[role=option][tabindex='0']")) list.querySelector("[role=option]")?.setAttribute("tabindex", "0");
 
-    const foot = L.createDiv({ cls: "aos-brain-rv-foot" });
+    const foot = L.createDiv({ cls: "aos-brain-rv-foot", attr: { "data-tour": "brain-review-foot" } });
     const day = defaultMarkBefore(v.d.now);
     if (this.markable(day).length) {
       const mb = foot.createEl("button", { cls: "aos-brain-rv-markbtn", text: `Mark everything before ${shortDay(day, v.d.now)} reviewed…`, attr: { type: "button", "data-rv-key": "markbefore" } });

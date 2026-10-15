@@ -17,7 +17,7 @@ import { cmpVersion, findPayload, readPayload } from "../../src/main/setup/paylo
 import { parseTags, parseVersion, runPreflight, type PreflightDeps, type ProbeResult } from "../../src/main/setup/preflight";
 import { FIXES, FIX_IDS, OLLAMA_MODELS, fixBlocked, fixCommandLine, installArgs, personaJson, resolveVaultPath, stepRefusal, type SetupState } from "../../src/main/policy/setup";
 import { applyClaudeMd, claudeMdLine, claudeMdPath, previewClaudeMd } from "../../src/main/setup/claude-md";
-import { attachInfo, hostsOf, markNoted } from "../../src/main/setup/attach";
+import { attachInfo, hostsOf, markInstalled, markNoted } from "../../src/main/setup/attach";
 import { JobRunner } from "../../src/main/setup/jobs";
 import { SetupController, type AgenticosJson } from "../../src/main/setup/controller";
 import type { PtyLib, PtyProcess } from "../../src/main/services/pty";
@@ -432,7 +432,7 @@ test("attach: the note is due until noted, per vault; behind when the runtime is
   const vault = path.join(ROOT, "v1");
   const cfg = { version: "0.21.0", hosts: { claude: { enabled: true }, codex: { enabled: true } } };
   const first = attachInfo(ud, vault, cfg, "1.0.0");
-  assert.deepEqual(first, { firstTime: true, runtimeVersion: "0.21.0", payloadVersion: "1.0.0", behind: true, hosts: { claude: true, codex: true } });
+  assert.deepEqual(first, { firstTime: true, installed: false, runtimeVersion: "0.21.0", payloadVersion: "1.0.0", behind: true, hosts: { claude: true, codex: true } });
   assert.equal(attachInfo(ud, vault, cfg, "1.0.0").firstTime, true);
   markNoted(ud, vault);
   assert.equal(attachInfo(ud, vault, cfg, "1.0.0").firstTime, false);
@@ -440,6 +440,17 @@ test("attach: the note is due until noted, per vault; behind when the runtime is
   assert.equal(attachInfo(ud, vault, { version: "1.0.0" }, "1.0.0").behind, false);
   assert.equal(attachInfo(ud, vault, null, null).behind, false);
   assert.deepEqual(hostsOf(null), { claude: true, codex: false });
+});
+
+test("attach: a vault the wizard installed is a new install (the tour, not the What changed note), until noted", () => {
+  const ud = path.join(ROOT, "userData-installed");
+  const vault = path.join(ROOT, "v-new");
+  markInstalled(ud, vault);
+  assert.deepEqual([attachInfo(ud, vault, null, null).firstTime, attachInfo(ud, vault, null, null).installed], [true, true]);
+  markNoted(ud, vault);
+  assert.deepEqual([attachInfo(ud, vault, null, null).firstTime, attachInfo(ud, vault, null, null).installed], [false, true]);
+  // A vault the app opened but did not install stays an existing one.
+  assert.equal(attachInfo(ud, path.join(ROOT, "v-old"), null, null).installed, false);
 });
 
 // ── jobs ─────────────────────────────────────────────────────────────

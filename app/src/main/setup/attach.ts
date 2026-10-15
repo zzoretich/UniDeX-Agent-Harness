@@ -1,13 +1,14 @@
 // Attach mode (phase 5, I5): what the app remembers about the vaults it has opened, in its own data folder
-// (<userData>/attach.json, nothing in the vault), so the "What changed" note shows once per vault; and whether the vault's
-// runtime is behind the one the app carries.
+// (<userData>/attach.json, nothing in the vault), so the first-launch UI shows once per vault; which vaults its own
+// wizard installed (they get the tour, not the "What changed" note: tour C10); and whether the vault's runtime is behind
+// the one the app carries.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AttachInfo } from "../../shared/ipc";
 import { cmpVersion } from "./payload";
 
-interface AttachRecord { vaults: Record<string, { firstAt: string; notedAt?: string }> }
+interface AttachRecord { vaults: Record<string, { firstAt: string; notedAt?: string; installedAt?: string }> }
 
 const file = (userData: string): string => path.join(userData, "attach.json");
 
@@ -48,11 +49,20 @@ export function attachInfo(userData: string, vault: string, cfg: AgenticosFacts 
   const runtimeVersion = typeof cfg?.version === "string" ? cfg.version : null;
   return {
     firstTime: !rec.vaults[key].notedAt,
+    installed: !!rec.vaults[key].installedAt,
     runtimeVersion,
     payloadVersion,
     behind: cmpVersion(runtimeVersion, payloadVersion) === -1,
     hosts: hostsOf(cfg),
   };
+}
+
+/** The wizard's `aos init` finished in `vault`: a brand-new install. */
+export function markInstalled(userData: string, vault: string, now: Date = new Date()): void {
+  const rec = read(userData);
+  const key = path.resolve(vault);
+  rec.vaults[key] = { ...(rec.vaults[key] ?? { firstAt: now.toISOString() }), installedAt: now.toISOString() };
+  write(userData, rec);
 }
 
 export function markNoted(userData: string, vault: string, now: Date = new Date()): void {

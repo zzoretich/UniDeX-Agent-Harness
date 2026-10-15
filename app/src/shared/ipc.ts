@@ -156,8 +156,11 @@ export interface SetupBoot {
 }
 
 export interface AttachInfo {
-  /** The first time this app opens this vault: the "What changed" note is due. */
+  /** The first time this app opens this vault: the first-launch UI is due (the "What changed" note, or the tour). */
   firstTime: boolean;
+  /** This app's setup wizard installed the vault (a brand-new install), so the tour starts instead of the "What changed"
+   *  note, whose copy is about moving off Obsidian (tour C10). */
+  installed: boolean;
   /** agenticos.json's `version`: the runtime the vault has. */
   runtimeVersion: string | null;
   payloadVersion: string | null;
@@ -254,6 +257,18 @@ export interface VaultChanges { paths: string[] }
 export interface ProtocolRequest { action: string; params: Record<string, string> }
 
 /** Commands the host itself answers, alongside the plugin's own. */
+/**
+ * The HUD's Help commands (obsidian-plugin/src/tour/controller.ts TOUR_COMMANDS, under the plugin's id): the app's Help
+ * menu lists them, and a new install's first launch runs `start`.
+ */
+export const TOUR_COMMANDS = {
+  start: "agentic-os:tour-start",
+  tab: "agentic-os:tour-tab",
+  whatsNew: "agentic-os:whats-new",
+  gettingStarted: "agentic-os:getting-started",
+  docs: "agentic-os:docs",
+} as const;
+
 export const HOST_COMMANDS = {
   palette: "host:palette",
   closeTab: "host:close-tab",
