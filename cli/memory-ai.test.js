@@ -166,7 +166,7 @@ function assertCodexCwd(s) {
   assert.equal(fs.existsSync(s.cwd), false);
 }
 
-const ESTIMATE_KEYS = ['available', 'cap', 'model', 'provider', 'reason', 'tokensIn', 'tokensOut', 'usd'];
+const ESTIMATE_KEYS = ['available', 'cap', 'model', 'once', 'provider', 'reason', 'tokensIn', 'tokensOut', 'usd'];
 const DRAFT_KEYS = ['baseHashes', 'cap', 'estimated', 'fields', 'generatedAt', 'mode', 'model', 'provider', 'reason', 'sources', 'truncated', 'type', 'usd', 'winner'];
 const keys = (o) => Object.keys(o).sort();
 const untouched = () => {
@@ -321,7 +321,7 @@ test('merge-draft on Ollama: the workhorse model, the schema as its format, $0 a
 test('merge-draft with provider none: the estimate is off (forced) and the draft is by hand with the reason; no probe, no call', async () => {
   setConfig({ provider: 'none' });
   const e = await json(['merge-draft', A, B, '--estimate'], nobody);
-  assert.deepEqual(e.estimate, { available: false, reason: 'forced', provider: 'none', model: null, tokensIn: e.estimate.tokensIn, tokensOut: e.estimate.tokensOut, usd: 0, cap: null });
+  assert.deepEqual(e.estimate, { available: false, reason: 'forced', provider: 'none', model: null, tokensIn: e.estimate.tokensIn, tokensOut: e.estimate.tokensOut, usd: 0, cap: null, once: [] });
   // In a terminal (no --json) it says why in the page's words.
   const start = io.lines.length;
   assert.equal(await M.main(['merge-draft', A, B, '--estimate'], opts(nobody)), 0);
@@ -452,7 +452,7 @@ test('the sweep on Codex: codex.model at codex.effort under the reasoner cap, in
   assert.deepEqual(spendRows().map((x) => [x.feature, x.provider]), [['reason:memory-sweep', 'codex']]);
 });
 
-test('the sweep off: Ollama only, provider none and the reasoner cap; --estimate says why, a real run refuses (exit 1) and writes nothing', async () => {
+test('the sweep off: provider none and the reasoner cap; --estimate says why, a real run refuses (exit 1) and writes nothing', async () => {
   const off = async (deps, reason, sentence) => {
     P.resetProviderCache();
     try { fs.unlinkSync(P.STATE_PATH); } catch { /* none */ }
@@ -460,11 +460,10 @@ test('the sweep off: Ollama only, provider none and the reasoner cap; --estimate
     assert.deepEqual([e.estimate.available, e.estimate.reason, e.estimate.provider, e.estimate.usd], [false, reason, 'none', 0], reason);
     assert.equal(await M.main(['sweep', '--estimate'], opts(deps)), 0);
     assert.equal(io.lines[io.lines.length - 1], `  no model call possible: ${sentence}`, `${reason}: the terminal says why`);
-    await refusal(['sweep', '--json'], deps, new RegExp(`^the sweep needs Claude or Codex \\(${sentence.replace(/[.$()]/g, '\\$&')}\\)$`));
+    await refusal(['sweep', '--json'], deps, new RegExp(`^the sweep cannot run \\(${sentence.replace(/[.$()]/g, '\\$&')}\\)$`));
     assert.ok(!exists(sweepLib.SWEEP_PATH), `${reason}: nothing written`);
     return e;
   };
-  await off(ollamaDeps, 'ollama-only', 'Only Ollama is available, and a local model cannot hold the whole brain.');
   const capped = await off(claudeDeps([], SWEPT, { claudeCall: never('claude'), reasonSpendToday: () => 5 }), 'reasoner-daily-cap', "Today's model cap is reached ($5.00, reasoner.perDayUsd).");
   assert.deepEqual(capped.estimate.cap, { family: 'reasoner', perDayUsd: 5, spentToday: 5, perCallUsd: 0.5 });
   setConfig({ provider: 'none' });
@@ -476,6 +475,40 @@ test('the sweep off: Ollama only, provider none and the reasoner cap; --estimate
   assert.equal((await json(['merge-draft', A, B], ollamaDeps)).mode, 'ai');
   assert.deepEqual(spendRows(), []);
   untouched();
+});
+
+// ── provider local (local-first A3, A15) ──
+
+test('provider local with the engine down: --estimate says why and which host could run it once; --host claude runs it once there', async () => {
+  setConfig({ provider: 'local' });
+  P.resetProviderCache();
+  try { fs.unlinkSync(P.STATE_PATH); } catch { /* none */ }
+  const calls = [];
+  const deps = claudeDeps(calls, SWEPT, { localModels: async () => null });
+  const e = await json(['sweep', '--estimate'], deps);
+  assert.deepEqual([e.estimate.available, e.estimate.reason, e.estimate.once.map((x) => x.provider)], [false, 'local-down', ['claude']]);
+  assert.equal(await M.main(['sweep', '--estimate'], opts(deps)), 0);
+  assert.match(io.lines[io.lines.length - 1], /^ {2}no model call possible: The local model is not answering \(start Ollama, or your local engine\)\.; run once on a host: --host claude \(about \$[\d.]+\)$/);
+  await refusal(['sweep', '--json'], deps, /^the sweep cannot run \(The local model is not answering/);
+  assert.equal(calls.length, 0, 'nothing reached Claude unasked');
+  const r = await json(['sweep', '--host', 'claude'], deps);
+  assert.deepEqual([r.run.provider, calls.length], ['claude', 1]);
+  const d = await json(['merge-draft', A, B, '--host', 'claude'], claudeDeps([], MERGED, { localModels: async () => null }));
+  assert.deepEqual([d.mode, d.provider], ['ai', 'claude']);
+  setConfig();
+});
+
+test('provider local with the engine up: the sweep runs on the local model in chunks, free; the terminal says so', async () => {
+  setConfig({ provider: 'local' });
+  P.resetProviderCache();
+  try { fs.unlinkSync(P.STATE_PATH); } catch { /* none */ }
+  const asked = [];
+  const deps = { ...nobody, localModels: async () => ['qwen3.5:9b'], ollamaChat: async (o) => { asked.push(o); return JSON.stringify({ suggestions: [] }); }, recordLocalCall: () => {} };
+  assert.equal(await M.main(['sweep', '--estimate'], opts(deps)), 0);
+  assert.match(io.lines[io.lines.length - 2], /^sweep \d+ of \d+ memories \(brain hub's duplicates and clusters, \d+ chunks? on the local model\)$/);
+  assert.equal(io.lines[io.lines.length - 1], '  free · qwen3.5:9b · on this Mac');
+  assert.deepEqual(spendRows(), []);
+  setConfig();
 });
 
 // ── the argument rules (exit 2) ──
@@ -500,6 +533,9 @@ test('argument errors are usage errors (exit 2), refused before anything is read
   await usage(['sweep', 'dismiss', 'xyz', '--json'], /the id a sweep printed/);
   await usage(['sweep', 'dismiss', '0123456789AB', '--json'], /the id a sweep printed/);
   await usage(['sweep', 'dismiss', '0123456789ab', '--estimate', '--json'], /--estimate is not a flag of sweep dismiss/);
+  await usage(['sweep', 'dismiss', '0123456789ab', '--host', 'claude', '--json'], /--host is not a flag of sweep dismiss/);
+  await usage(['sweep', '--host', 'ollama', '--json'], /--host takes claude or codex/);
+  await usage(['merge', A, B, '--into', into, '--expect', `${h},${h}`, '--host', 'claude', '--json'], /--host is not one of its flags/);
   await usage(['sweep', ...Array.from({ length: 51 }, (_, i) => `brain/memory/reference/n-${i}.md`), '--json'], /too many arguments/);
   await usage(['merge-draft', A, 'brain/memory/feedback/README.md', '--json'], /./);
   untouched();
@@ -519,7 +555,7 @@ test('through cli/aos.js: --into and --estimate are forwarded; a refusal is `aos
   assert.equal(JSON.parse(d.stdout).mode, 'by-hand');
   const sw = aos('sweep', '--json');
   assert.equal(sw.status, 1);
-  assert.match(sw.stderr, /^aos: the sweep needs Claude or Codex \(No model provider is set up\.\)$/m);
+  assert.match(sw.stderr, /^aos: the sweep cannot run \(No model provider is set up\.\)$/m);
   const one = aos('merge-draft', A, '--json');
   assert.equal(one.status, 2, one.stderr);
   const m = aos('merge', A, B, '--into', JSON.stringify(e.byHand), '--expect', e.baseHashes.join(','), '--json');

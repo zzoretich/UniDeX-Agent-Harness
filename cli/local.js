@@ -2,7 +2,8 @@
 /**
  * local.js — `aos local` (spec 2026-10-14-local-first A8, A12, A13, A18): the local engine background work runs on.
  *   (none) | status [--json]  the engine and its address, whether it answers, the models pulled, this Mac's tier, the
- *                             model background work runs on now (or why none), and today's local calls
+ *                             model background work runs on now (or why none), today's local calls, and the session
+ *                             wraps waiting for it (local-first A3)
  *   pull [model…]             download this Mac's workhorse and embedder (or the models named) through Ollama
  *   use <model>               local.model = <model>, through `aos config set`; warns when it is not pulled
  * Runs from the checkout (node cli/aos.js) and from the vendored <vault>/brain/scripts/cli/ (the aos launcher): lib/ is
@@ -42,7 +43,7 @@ const skipped = (env) => env.AOS_SKIP_OLLAMA_PROBE === '1';
 /** Everything `status` shows, as one object (the --json shape). */
 async function report(opts = {}) {
   const env = opts.env || process.env;
-  const { cfg, P, M, O, U } = runtime(opts);
+  const { ctx, cfg, P, M, O, U } = runtime(opts);
   const lc = P.localCfg(cfg);
   const memGb = Math.round((M.totalMemBytes() / GB) * 10) / 10;
   const probed = !skipped(env);
@@ -67,7 +68,14 @@ async function report(opts = {}) {
     models: pulled,
     why,
     today: U.localUsageToday(),
+    // local-first A3: sessions that ended while the engine was down, waiting in auto-wrap's spool.
+    wrapsQueued: wrapsQueued(ctx.vault),
   };
+}
+
+function wrapsQueued(vault) {
+  if (!vault) return 0;
+  try { return fs.readFileSync(path.join(vault, 'brain', '_index', 'auto-wrap-pending.jsonl'), 'utf8').split('\n').filter((l) => l.trim()).length; } catch { return 0; }
 }
 
 function statusLines(r) {
@@ -81,6 +89,7 @@ function statusLines(r) {
     `running on ${r.workhorse.running || `nothing: ${r.why}`}`,
     `today      ${r.today.calls} local call${r.today.calls === 1 ? '' : 's'}${r.today.calls ? ` · ${Math.round(r.today.ms / 1000)} s` : ''}`,
   ];
+  if (r.wrapsQueued) lines.push(`waiting    ${r.wrapsQueued} session wrap${r.wrapsQueued === 1 ? '' : 's'} queued until the model answers`);
   if (r.models.length) lines.push(`pulled     ${r.models.join(', ')}`);
   return lines;
 }

@@ -2,9 +2,11 @@
 # Stand-in for the pinned `graphify` binary (fake-uv.sh installs it). `--version` reports what fake-uv recorded;
 # `update <dir>` writes a small fixed graph into $GRAPHIFY_OUT the way graphify 0.9.66 does. No network, no model.
 # Knobs: FAKE_GRAPHIFY_LOG (args + a few env probes per call), FAKE_GRAPHIFY_EXIT + FAKE_GRAPHIFY_STDERR (fail),
-# FAKE_GRAPHIFY_SLEEP (seconds, to prove the timeout).
+# FAKE_GRAPHIFY_SLEEP (seconds, to prove the timeout), FAKE_GRAPHIFY_LOCAL_FAIL (a local backend's chunk fails).
 here=$(dirname "$0")
-[ -n "${FAKE_GRAPHIFY_LOG:-}" ] && echo "$* | out=${GRAPHIFY_OUT:-} nobackup=${GRAPHIFY_NO_BACKUP:-} apikey=${ANTHROPIC_API_KEY:+set}${OPENAI_API_KEY:+set}" >> "$FAKE_GRAPHIFY_LOG"
+local_env=""
+[ -n "${OLLAMA_BASE_URL:-}${OPENAI_BASE_URL:-}" ] && local_env=" local=${OLLAMA_BASE_URL:-}${OPENAI_BASE_URL:-} model=${OLLAMA_MODEL:-}${OPENAI_MODEL:-} key=${OLLAMA_API_KEY:-}${OPENAI_API_KEY:-}"
+[ -n "${FAKE_GRAPHIFY_LOG:-}" ] && echo "$* | out=${GRAPHIFY_OUT:-} nobackup=${GRAPHIFY_NO_BACKUP:-} apikey=${ANTHROPIC_API_KEY:+set}${OPENAI_API_KEY:+set}$local_env" >> "$FAKE_GRAPHIFY_LOG"
 case "$1" in
   --version) echo "graphify $(cat "$here/.fake-graphify-version" 2>/dev/null || echo 0.0.0)" ;;
   update)
@@ -43,7 +45,20 @@ JSON
     out="${GRAPHIFY_OUT:-$2/graphify-out}"
     mkdir -p "$out"
     concept=''
-    if printf 'Extract a knowledge graph from these notes.\n' | claude -p --output-format json --no-session-persistence ${GRAPHIFY_CLAUDE_CLI_MODEL:+--model "$GRAPHIFY_CLAUDE_CLI_MODEL"} --json-schema '{"type":"object"}' > "$out/.fake-envelope.json"; then
+    case " $* " in
+      *" --backend ollama "*|*" --backend openai "*) local_backend=1 ;;
+      *) local_backend='' ;;
+    esac
+    if [ -n "$local_backend" ]; then
+      # graphify's local backends answer over HTTP from the server named by env; the stand-in just reads the knob.
+      if [ -z "${FAKE_GRAPHIFY_LOCAL_FAIL:-}" ]; then
+        concept=', {"id": "concept_memory", "label": "long-term memory", "file_type": "concept", "community": 0, "community_name": "Memory"}'
+        edge=', {"source": "memory_index", "target": "concept_memory", "relation": "describes", "confidence": "INFERRED", "weight": 0.8}'
+      else
+        echo "warning: semantic extraction is incomplete: 1 chunk(s) failed" >&2
+        edge=''
+      fi
+    elif printf 'Extract a knowledge graph from these notes.\n' | claude -p --output-format json --no-session-persistence ${GRAPHIFY_CLAUDE_CLI_MODEL:+--model "$GRAPHIFY_CLAUDE_CLI_MODEL"} --json-schema '{"type":"object"}' > "$out/.fake-envelope.json"; then
       concept=', {"id": "concept_memory", "label": "long-term memory", "file_type": "concept", "community": 0, "community_name": "Memory"}'
       edge=', {"source": "memory_index", "target": "concept_memory", "relation": "describes", "confidence": "INFERRED", "weight": 0.8}'
     else

@@ -143,10 +143,20 @@ export const MERGE_MAX_PATHS = 6;
 // One memory's sha256 (memory-ops.js sha256): merge's --expect holds one per path, comma-joined, in path order (A9).
 const MEMORY_HASH = /[0-9a-f]{16,64}/;
 const MEMORY_HASH_WHOLE = new RegExp(`^(?:${MEMORY_HASH.source})$`);
-/** `memory <verb> <path>… [--estimate] --json`: `min`–`max` different memory paths, then an optional --estimate. */
+/**
+ * `memory <verb> <path>… [--host claude|codex] [--estimate] --json`: `min`–`max` different memory paths, then "Run once
+ * on Claude/Codex" while the local engine is down (local-first A3: that host only, under its caps), then an optional
+ * --estimate.
+ */
 const memoryPathsEstimate = (verb: string, min: number, max: number) => (a: readonly string[]): boolean => {
   if (a[0] !== "memory" || a[1] !== verb || a[a.length - 1] !== "--json") return false;
-  const paths = a.slice(2, a[a.length - 2] === "--estimate" ? -2 : -1);
+  let end = a.length - 1;
+  if (a[end - 1] === "--estimate") end--;
+  if (a[end - 2] === "--host") {
+    if (a[end - 1] !== "claude" && a[end - 1] !== "codex") return false;
+    end -= 2;
+  }
+  const paths = a.slice(2, end);
   return paths.length >= min && paths.length <= max && paths.every((p) => MEMORY_WHOLE.test(p)) && new Set(paths).size === paths.length;
 };
 /** `memory merge <path>… --into <json> --expect <hash>,… --json`: 2–MERGE_MAX_PATHS paths and exactly one hash per path. */
@@ -186,7 +196,8 @@ const MEMORY_VERBS: readonly SpawnRule[] = [
   { script: "cli/aos.js", args: memoryMerge },
   { script: "cli/aos.js", args: argv("memory", "unmerge", MEMORY, "--expect", MEMORY_HASH, "--json") },
   // The consolidation sweep (D22; A3, A10, A11): the whole brain (no path) or a community's or a cluster's (≤ 50), with
-  // or without its estimate; a card dismissed by its id (12 hex).
+  // or without its estimate; a card dismissed by its id (12 hex). Both AI verbs take `--host claude|codex`, the "Run once"
+  // the page offers while the local engine is down (local-first A3; added in 2.0, e2e local.spec.ts drives it).
   { script: "cli/aos.js", args: memoryPathsEstimate("sweep", 0, MAX_MEMORY_PATHS) },
   { script: "cli/aos.js", args: argv("memory", "sweep", "dismiss", /[0-9a-f]{12}/, "--json") },
 ];
@@ -388,6 +399,18 @@ export const SURFACES: readonly Surface[] = [
     verified: true,
   },
   {
+    id: "local",
+    label: "Local engine",
+    source: "views/SettingsTab.ts (Settings ▸ Local engine: Pull the model), data/localEngine.ts (local-first A8, A13, A18)",
+    // `aos local pull` downloads this Mac's model and the embedder through Ollama (its /api/pull): it writes nothing in
+    // the vault; the models land in Ollama's own store.
+    writes: [],
+    spawns: [{ script: "cli/aos.js", args: /^local pull$/ }],
+    // Added in 2.0; off by default until a live check on a real vault pulls through it (the Code tab's ❯_ aos local
+    // pull works meanwhile).
+    verified: false,
+  },
+  {
     id: "chat",
     label: "Chat",
     source: "views/ChatTab.ts (the chat log), data/claudeAsk.ts (recall, claude -p, the spend ledger), data/askSpawner.ts (local ask)",
@@ -395,6 +418,9 @@ export const SURFACES: readonly Surface[] = [
     spawns: [
       { script: "sdk/recall-cli.js", args: argv(QUESTION) },
       { script: "sdk/ask.js", args: argv("--local", QUESTION) },
+      // A Vault question under provider local (local-first A2): ask.js runs it where ai.chat says, the local engine by
+      // default. Added in 2.0 beside the verified rules above; e2e (local.spec.ts) drives it through this policy.
+      { script: "sdk/ask.js", args: argv("--local", "--chat", QUESTION) },
       { script: "sdk/ask.js", args: argv("--local", ASK_HOST, QUESTION) },
       { script: "sdk/ask.js", args: argv("--local", ASK_HOST, ASK_MODEL, QUESTION) },
       { script: "sdk/ask.js", args: argv("--local", ASK_HOST, ASK_EFFORT, QUESTION) },

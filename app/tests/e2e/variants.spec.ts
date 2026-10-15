@@ -125,15 +125,16 @@ test.describe("session costing off", () => {
   });
 });
 
-test.describe("a provider on record", () => {
-  // What the scripts publish in provider-state.json once a provider resolves; the HUD only reads it.
+test.describe("a provider on record, Claude Code signed in", () => {
+  // What the scripts publish in provider-state.json once a provider resolves; the HUD only reads it. Sessions follows the
+  // hosts' logins in it (local-first A17), not the provider's name: `state(name, loggedIn)` sets Claude's.
   const state = (name: string, loggedIn: boolean) => () => editJson(FX.v("brain/_index/provider-state.json"), (j) => {
     j.name = name; j.reason = "fixture"; j.claude = { loggedIn };
   });
   // The chat stubs only prove that no CLI runs: Chat's surface is off here.
   const app = useApp({ prepare: () => { installChatStubs(); state("claude", true)(); } });
 
-  test("Pulse is Home with a provider too; Sessions closes the first section, after Code; the mark returns to Pulse", async () => {
+  test("Pulse is Home with a host signed in too; Sessions closes the first section, after Code; the mark returns to Pulse", async () => {
     const { win } = app();
     const ids = await win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
     expect(ids.slice(0, 4)).toEqual(["notifications", "pulse", "term", "chat"]);
@@ -495,7 +496,7 @@ test.describe("a Codex-only machine, the Brain surface on", () => {
     expect(draft).toMatchObject({ mode: "by-hand", reason: "Codex is not signed in.", provider: "none", winner: older });
     const sweep = spawnSync("/bin/sh", [FX.v("brain/scripts/bin/aos"), "memory", "sweep", "--json"], { env: appEnv({ AOS_HEADLESS: undefined }), encoding: "utf8" });
     expect(sweep.status).toBe(1);
-    expect(sweep.stderr).toContain("aos: the sweep needs Claude or Codex (Codex is not signed in.)");
+    expect(sweep.stderr).toContain("aos: the sweep cannot run (Codex is not signed in.)");
     expect(fs.existsSync(FX.v("brain/_index/memory-sweep.json"))).toBe(false);
 
     await openTab(win, "memory");

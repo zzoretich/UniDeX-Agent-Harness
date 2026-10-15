@@ -422,14 +422,14 @@ test('dismiss hides a card for good, says when it already was, and refuses an id
 
 // ── off, failures and the estimate ──
 
-test('off without Claude or Codex: none, Ollama only, a cap; the estimate says why, a real run refuses and writes nothing', async () => {
+test('off with no model: none, an older runtime\'s Ollama only, a cap; the estimate says why, a real run refuses and writes nothing', async () => {
   for (const reason of ['forced', 'ollama-only', 'reasoner-daily-cap']) {
     const v = fixture();
     const ai = fakeAi({ available: false, reason });
     const est = await run(v, [], ai, { estimate: true });
     assert.equal(est.estimate.available, false);
     assert.equal(est.estimate.reason, reason);
-    await assert.rejects(run(v, [], ai), { code: 'NO_MODEL', message: `the sweep needs Claude or Codex (${SENTENCES[reason]})` });
+    await assert.rejects(run(v, [], ai), { code: 'NO_MODEL', message: `the sweep cannot run (${SENTENCES[reason]})` });
     assert.equal(ai.calls.call.length, 0);
     assert.equal(exists(v, sw.SWEEP_PATH), false);
   }
@@ -446,14 +446,14 @@ test('the refusal reads the seam\'s own sentences: the cap that stopped it, Olla
   for (const [reason, said] of cases) {
     const v = fixture();
     const ai = { ...fakeAi({ available: false, reason }), reasonSentence };
-    await assert.rejects(run(v, [], ai), { code: 'NO_MODEL', message: `the sweep needs Claude or Codex (${said})` }, reason);
+    await assert.rejects(run(v, [], ai), { code: 'NO_MODEL', message: `the sweep cannot run (${said})` }, reason);
   }
 });
 
 test('a cap or none during the call refuses as off; a failed call and an unreadable reply refuse; nothing is written', async () => {
   const err = (code) => Object.assign(new Error(code), { code });
   const v = fixture();
-  await assert.rejects(run(v, [], fakeAi({ callError: err('PROVIDER_CAP') })), { code: 'NO_MODEL', message: 'the sweep needs Claude or Codex ((PROVIDER_CAP))' });
+  await assert.rejects(run(v, [], fakeAi({ callError: err('PROVIDER_CAP') })), { code: 'NO_MODEL', message: 'the sweep cannot run ((PROVIDER_CAP))' });
   await assert.rejects(run(v, [], fakeAi({ callError: err('PROVIDER_NONE') })), { code: 'NO_MODEL' });
   await assert.rejects(run(v, [], fakeAi({ callError: err('PROVIDER_UNREACHABLE') })), { code: 'MODEL_FAILED', message: 'the sweep did not run (Claude did not answer.)' });
   for (const reply of ['not json', '{"cards": []}', '[1, 2]', '{"suggestions": "none"}']) {
@@ -513,5 +513,101 @@ test('aos memory sweep runs this module: --estimate, a scoped run, dismiss, and 
   await main(['sweep', 'dismiss', r.suggestions[0].id, '--json'], { vault: v, ai, io });
   assert.deepEqual(JSON.parse(out.pop()), { dismissed: r.suggestions[0].id, already: false });
   await assert.rejects(main(['sweep', '--json'], { vault: v, ai: fakeAi({ available: false, reason: 'forced' }), io }),
-    { message: 'the sweep needs Claude or Codex (No model provider is set up.)' });
+    { message: 'the sweep cannot run (No model provider is set up.)' });
+});
+
+// ── the local engine (local-first A15): brain-hub's groups in chunks within the model's context ──
+
+const localAi = (o = {}) => fakeAi({ provider: 'ollama', model: 'qwen3.5:9b', ...o });
+
+test('hubGroups: pairs and clusters joined where they share a memory, among the live memories only', () => {
+  const v = fixture();
+  const memories = ops.listMemories(v).filter((m) => m.live);
+  const hub = JSON.parse(read(v, 'brain/_index/brain-hub.json'));
+  // A–B and B–G (G archived) and the clusters [A, B, C] and [D, G] (G out): one group, A, B and C.
+  assert.deepEqual(sw.hubGroups(memories, hub).map((g) => g.map((m) => m.path).sort()), [[A, B, C].sort()]);
+  const two = { ...hub, dups: [...hub.dups, { a: E, b: F, score: 0.8 }] };
+  assert.deepEqual(sw.hubGroups(memories, two).map((g) => g.length), [3, 2], 'biggest first');
+  assert.deepEqual(sw.hubGroups(memories, null), []);
+});
+
+test('localChunks: groups packed into prompts within maxChars; a group too big goes on in the next chunk; at most maxChunks', () => {
+  const v = fixture();
+  const memories = ops.listMemories(v).filter((m) => m.live).map((m) => ({ ...m, text: read(v, m.path) }));
+  const hub = { ...HUB, dups: [...HUB.dups, { a: E, b: F, score: 0.8 }] };
+  const one = sw.localChunks(memories, hub, { now: NOW });
+  assert.equal(one.length, 1, 'two small groups share one chunk');
+  assert.deepEqual(one[0].paths.sort(), [A, B, C, E, F].sort());
+  assert.match(one[0].prompt, /^MEMORIES \(5 of 5\)/);
+  const tight = sw.localChunks(memories, hub, { now: NOW, maxChars: 900 });
+  assert.ok(tight.length > 1, 'split');
+  for (const c of tight) assert.ok(c.prompt.length <= 900, `${c.prompt.length}`);
+  assert.deepEqual(tight.flatMap((c) => c.paths).sort(), [A, B, C, E, F].sort(), 'every grouped memory once');
+  assert.equal(sw.localChunks(memories, hub, { now: NOW, maxChars: 900, maxChunks: 1 }).length, 1);
+  assert.deepEqual(sw.localChunks([memories[0]], null, { scoped: true, now: NOW })[0].paths, [memories[0].path], 'a scope is its own group');
+});
+
+test('a local sweep: one call per chunk, cards only on that chunk\'s memories, merged once, free', async () => {
+  const v = fixture();
+  put(v, 'brain/_index/brain-hub.json', JSON.stringify({ ...HUB, dups: [...HUB.dups, { a: E, b: F, score: 0.8 }] }));
+  let n = 0;
+  const ai = localAi({
+    reply: (o) => {
+      n++;
+      // Each chunk proposes the release merge, and one card naming a memory it was not sent (D is in no group).
+      return { suggestions: [card('merge', [A, B], 'Releases'), card('archive', [D]), card('retitle', [E], 'Ports in use now')] };
+    },
+  });
+  const est = await run(v, [], ai, { estimate: true });
+  assert.deepEqual([est.considered, est.of, est.chunks], [5, 6, 1]);
+  const r = await sw.sweep(v, [], { ai, now: NOW, cfg: {} });
+  assert.equal(n, 1);
+  assert.deepEqual(r.suggestions.map((c) => c.kind).sort(), ['merge', 'retitle']);
+  assert.deepEqual([r.run.provider, r.run.model, r.run.usd, r.run.considered, r.run.of, r.run.chunks, r.run.failedChunks], ['ollama', 'qwen3.5:9b', 0.0123, 5, 6, 1, 0]);
+  assert.match(ai.calls.call[0].system, /At most 10 cards/, 'a chunk asks for at most a scope\'s cards');
+});
+
+test('a local sweep over several chunks: a card stands only in the chunk that sent its memories, once; a failed chunk is left out; all failing refuses', async () => {
+  const v = fixture();
+  put(v, 'brain/_index/brain-hub.json', JSON.stringify({ ...HUB, dups: [...HUB.dups, { a: E, b: F, score: 0.8 }] }));
+  const sent = [];
+  // Every chunk proposes both merges: each is kept from the one chunk that sent both of its memories.
+  const ai = localAi({ reply: (o) => { sent.push(o.prompt); return { suggestions: [card('merge', [A, B], 'Releases'), card('merge', [E, F], 'Ports')] }; } });
+  const est = await sw.sweep(v, [], { ai, now: NOW, estimate: true, chunkChars: 900 });
+  assert.ok(est.chunks >= 2, `${est.chunks} chunks`);
+  const r = await sw.sweep(v, [], { ai, now: NOW, chunkChars: 900 });
+  assert.equal(sent.length, est.chunks);
+  assert.deepEqual(r.suggestions.map((c) => c.paths.slice().sort().join(' ')).sort(), [[A, B].sort().join(' '), [E, F].sort().join(' ')].sort());
+  assert.deepEqual([r.run.chunks, r.run.failedChunks, r.run.considered], [est.chunks, 0, 5]);
+
+  // The first chunk fails (the engine went away mid-run): the rest still stand.
+  let k = 0;
+  const flaky = localAi({ reply: () => ({ suggestions: [card('merge', [E, F], 'Ports')] }), onCall: () => { if (k++ === 0) throw Object.assign(new Error('socket hang up'), { code: 'PROVIDER_UNREACHABLE' }); } });
+  const part = await sw.sweep(v, [], { ai: flaky, now: NOW, chunkChars: 900 });
+  assert.equal(part.run.failedChunks, 1);
+  // Every chunk failing refuses as one call would, and writes nothing new.
+  const before = read(v, sw.SWEEP_PATH);
+  const down = localAi({ callError: Object.assign(new Error('x'), { code: 'PROVIDER_NONE' }) });
+  await assert.rejects(sw.sweep(v, [], { ai: down, now: NOW, chunkChars: 900 }), { code: 'NO_MODEL' });
+  assert.equal(read(v, sw.SWEEP_PATH), before);
+});
+
+test('a local whole-brain sweep with no duplicates or clusters has nothing to send: EMPTY, saying why', async () => {
+  const v = fixture({ hub: null });
+  const ai = localAi();
+  const est = await run(v, [], ai, { estimate: true });
+  assert.deepEqual([est.considered, est.of, est.chunks], [0, 6, 0]);
+  await assert.rejects(run(v, [], ai), { code: 'EMPTY', message: /no duplicates or clusters to sweep yet/ });
+  assert.equal(ai.calls.call.length, 0);
+  // A scoped run sends its scope, linked or not.
+  const scoped = await run(v, [E, F], localAi({ reply: { suggestions: [card('retitle', [F], 'My role')] } }));
+  assert.deepEqual([scoped.run.considered, scoped.run.chunks, scoped.suggestions.length], [2, 1, 1]);
+});
+
+test('host: "Run once on Claude/Codex" reaches the seam on the estimate and the call', async () => {
+  const v = fixture();
+  const ai = fakeAi({ reply: { suggestions: [] } });
+  await sw.sweep(v, [A, B], { ai, now: NOW, host: 'claude' });
+  assert.equal(ai.calls.estimate[0].host, 'claude');
+  assert.equal(ai.calls.call[0].host, 'claude');
 });

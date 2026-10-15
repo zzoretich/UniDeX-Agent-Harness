@@ -533,7 +533,7 @@ export function useApp(opts: LaunchOptions = {}): () => AppHandle {
 
 // ── helpers the specs share ──────────────────────────────────────────
 
-/** The rail's three sections (spec 2026-10-09-rail-sections-code D1), a line between each; "chat" (Sessions) only with a provider. */
+/** The rail's three sections (spec 2026-10-09-rail-sections-code D1), a line between each; "chat" (Sessions) only with a host signed in (local-first A17). */
 export const RAIL_SECTIONS = [
   ["notifications", "pulse", "term", "chat"],
   ["todo", "spaces", "files", "routines", "proposals"],

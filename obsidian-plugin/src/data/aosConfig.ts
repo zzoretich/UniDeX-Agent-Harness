@@ -11,6 +11,8 @@ import { env, fs } from "../host";
 
 export type ProviderName = "ollama" | "claude" | "codex" | "none";
 export type ProviderMode = ProviderName | "auto" | "local";
+/** Where an AI feature runs under provider local (local-first A2). */
+export type AiEngine = "local" | "host";
 
 export interface AgenticosJson {
   version?: string;
@@ -27,6 +29,7 @@ export interface AgenticosJson {
   reasoner?: { model?: string; perCallUsd?: number; perDayUsd?: number; effort?: string };
   ollama?: { host?: string; port?: number };
   local?: { engine?: "ollama" | "openai"; url?: string | null; model?: string | null; embedder?: string; keepAlive?: string | number | null; hostedFallback?: boolean; onBattery?: "defer" | "run" };
+  ai?: { chat?: AiEngine; ask?: AiEngine; reflectWeek?: AiEngine; consolidate?: AiEngine };
   telemetry?: { enabled?: boolean; redact?: boolean; retentionDays?: number; staleAfterMinutes?: number };
   updates?: { check?: boolean; intervalHours?: number };
   cost?: { enabled?: boolean; monthlyBudget?: number | null };
@@ -52,6 +55,8 @@ export interface VaultConfig {
   ollama: { host: string; port: number };
   // local-first A11: the local engine every background call runs on. model null = the Mac's RAM tier; keepAlive null = tiered.
   local: { engine: "ollama" | "openai"; url: string | null; model: string | null; embedder: string; keepAlive: string | number | null; hostedFallback: boolean; onBattery: "defer" | "run" };
+  // local-first A2: where each reasoner feature runs under provider local (local engine or a host).
+  ai: { chat: AiEngine; ask: AiEngine; reflectWeek: AiEngine; consolidate: AiEngine };
   telemetry: { enabled: boolean; redact: boolean; retentionDays: number; staleAfterMinutes: number };
   updates: { check: boolean; intervalHours: number };
   cost: { enabled: boolean; monthlyBudget: number | null };
@@ -80,6 +85,12 @@ export interface ProviderState {
   name: ProviderName;
   reason: string;
   ollama?: { reachable: boolean; checkedAt: string };
+  // Under provider local (local-first A13, A18): the engine that answers, the model it runs, why it last could not, and
+  // its 60 s cache of what it serves.
+  engine?: "ollama" | "openai";
+  model?: string;
+  localReason?: string;
+  local?: { engine?: string; url?: string; reachable?: boolean; models?: string[]; checkedAt?: string };
   // bin is `null` in the file whenever provider.js probed and found no CLI (contract §3), so the
   // type must admit null as well as absence; every reader guards with a truthiness check.
   claude?: { loggedIn: boolean; checkedAt: string; bin?: string | null };
@@ -103,6 +114,7 @@ export const VAULT_CONFIG_DEFAULTS: VaultConfig = {
   reasoner: { model: "claude-opus-5", codexModel: null, perCallUsd: 0.5, perDayUsd: 5.0, effort: "medium" },
   ollama: { host: "127.0.0.1", port: 11434 },
   local: { engine: "ollama", url: null, model: null, embedder: "qwen3-embedding:0.6b", keepAlive: null, hostedFallback: false, onBattery: "defer" },
+  ai: { chat: "local", ask: "local", reflectWeek: "local", consolidate: "local" },
   telemetry: { enabled: true, redact: true, retentionDays: 30, staleAfterMinutes: 30 },
   updates: { check: true, intervalHours: 24 },
   cost: { enabled: false, monthlyBudget: null },
@@ -132,6 +144,14 @@ export function sessionHosts(cfg: AgenticosJson | null): SessionHost[] {
   const h = cfg && cfg.hosts;
   if (!h) return ["claude"];
   return (["claude", "codex"] as SessionHost[]).filter((k) => !!h[k] && h[k]!.enabled !== false);
+}
+
+/**
+ * The enabled hosts that are signed in, by the login caches the runtime keeps in provider-state.json (local-first A17:
+ * Sessions follows these, whatever the background provider). A login never checked is not signed in.
+ */
+export function signedInHosts(cfg: AgenticosJson | null, state: ProviderState | null): SessionHost[] {
+  return sessionHosts(cfg).filter((h) => state?.[h]?.loggedIn === true);
 }
 
 /** How the user invokes a plugin command on `host`: Claude Code `/name`; Codex `$agenticos:name`, or `$name` when wired directly. */

@@ -36,6 +36,11 @@ test('a user cancel under ollama reports "cancelled", never "cancelled (timeout)
 
 const ASK = "brain/scripts/sdk/ask.js";
 
+test("buildAskArgs: --chat (a Vault question under provider local) comes after --local, and only with no host", () => {
+  assert.deepEqual(buildAskArgs({ question: "q", chat: true }), [ASK, "--local", "--chat", "q"]);
+  assert.deepEqual(buildAskArgs({ question: "q", chat: true, host: "codex" }), [ASK, "--local", "--host=codex", "q"], "a named host answers whatever ai.chat says");
+});
+
 test("buildAskArgs: the old call shape is ask.js --local <question>; model and effort need a host", () => {
   assert.deepEqual(buildAskArgs({ question: "q" }), [ASK, "--local", "q"]);
   assert.deepEqual(buildAskArgs({ question: "q", model: "gpt-5", effort: "low" }), [ASK, "--local", "q"], "the surface has no model rule without a host");

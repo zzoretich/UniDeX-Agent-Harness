@@ -920,13 +920,13 @@ export type MemoryVerb =
   /** expect: the dry run's hash (FixResult.expect); the real run refuses unless it makes exactly the changes shown. */
   | { verb: "fix"; kind: FixKind; dryRun: boolean; expect?: string | null }
   /** brain-ai A4–A8: 2–6 memories drafted into one; estimate makes no model call (ctx.preview), else one call (ctx.run). */
-  | { verb: "merge-draft"; paths: readonly string[]; estimate: boolean }
+  | { verb: "merge-draft"; paths: readonly string[]; estimate: boolean; host?: OnceHost }
   /** brain-ai A9: the fields written over the oldest, the others superseded; expect is MergeEstimate.baseHashes. */
   | { verb: "merge"; paths: readonly string[]; into: MergeFields; expect: readonly string[] }
   /** brain-ai A2: the newest merge into `path` undone; expect is the merged memory's current hash. */
   | { verb: "unmerge"; path: string; expect: string }
   /** brain-ai A3, A10, A11: the sweep over every memory (no paths) or a community's or cluster's (lead first, ≤ 50). */
-  | { verb: "sweep"; paths: readonly string[]; estimate: boolean }
+  | { verb: "sweep"; paths: readonly string[]; estimate: boolean; host?: OnceHost }
   | { verb: "sweep-dismiss"; id: string };
 
 /**
@@ -997,7 +997,7 @@ export function memoryArgs(v: MemoryVerb): string[] {
       if (v.expect != null && !FIX_EXPECT_RE.test(v.expect)) throw new Error("a fix's expect is the hash its dry run printed");
       return ["memory", "fix", v.kind, ...(v.expect != null ? ["--expect", v.expect] : []), "--json"];
     case "merge-draft":
-      return ["memory", "merge-draft", ...mergePaths(v.paths).map(path), ...(v.estimate ? ["--estimate"] : []), "--json"];
+      return ["memory", "merge-draft", ...mergePaths(v.paths).map(path), ...onceArgs(v.host), ...(v.estimate ? ["--estimate"] : []), "--json"];
     case "merge": {
       const ps = mergePaths(v.paths).map(path);
       if (v.expect.length !== ps.length || !v.expect.every((h) => MEMORY_HASH_RE.test(h))) throw new Error("merge needs each memory's hash, in order");
@@ -1008,7 +1008,7 @@ export function memoryArgs(v: MemoryVerb): string[] {
       return ["memory", "unmerge", path(v.path), "--expect", v.expect, "--json"];
     case "sweep":
       if (v.paths.length > SWEEP_MAX_PATHS || new Set(v.paths).size !== v.paths.length) throw new Error(`a sweep takes 0–${SWEEP_MAX_PATHS} different memories`);
-      return ["memory", "sweep", ...v.paths.map(path), ...(v.estimate ? ["--estimate"] : []), "--json"];
+      return ["memory", "sweep", ...v.paths.map(path), ...onceArgs(v.host), ...(v.estimate ? ["--estimate"] : []), "--json"];
     case "sweep-dismiss":
       if (!SWEEP_ID_RE.test(v.id)) throw new Error(`not a suggestion id: ${v.id}`);
       return ["memory", "sweep", "dismiss", v.id, "--json"];
@@ -1087,6 +1087,13 @@ function mergePaths(paths: readonly string[]): readonly string[] {
 }
 
 export type AiProvider = "ollama" | "claude" | "codex" | "none";
+/** "Run once on Claude/Codex" while the local engine is down (local-first A3): `--host <h>` on merge-draft and sweep. */
+export type OnceHost = "claude" | "codex";
+function onceArgs(h: OnceHost | undefined): string[] {
+  if (h === undefined) return [];
+  if (h !== "claude" && h !== "codex") throw new Error("a run once is on claude or codex");
+  return ["--host", h];
+}
 const AI_PROVIDERS: readonly AiProvider[] = ["ollama", "claude", "codex", "none"];
 /** The daily cap a call counts against (A5): its family, today's spend, and the per-call cap (null under Codex). */
 export interface AiCap { family: "hook" | "codex" | "reasoner" | "reasoner-codex" | null; perDayUsd: number; spentToday: number; perCallUsd: number | null }
@@ -1101,6 +1108,8 @@ export interface AiEstimate {
   tokensOut: number;
   usd: number;
   cap: AiCap | null;
+  /** Off for a local reason (local-down, local-model-missing): the signed-in hosts that could run it once, each priced. */
+  once: AiEstimate[];
 }
 export interface MergeFields { title: string; description: string; body: string }
 export interface MergeSource { path: string; title: string; type: BrainMemoryType; created: string | null; hash: string; chars: number; truncated: boolean }
@@ -1159,6 +1168,9 @@ export interface SweepRun {
   considered: number;
   of: number;
   suggestions: number;
+  /** On the local engine (A15): the chunks it sent, and how many failed; null on a host. */
+  chunks: number | null;
+  failedChunks: number;
 }
 export interface SweepCard {
   id: string;
@@ -1177,7 +1189,8 @@ export interface SweepCard {
   state: "open" | "dismissed";
 }
 export interface SweepFile { runs: SweepRun[]; suggestions: SweepCard[] }
-export interface SweepEstimate { scope: { paths: string[] } | null; considered: number; of: number; estimate: AiEstimate }
+/** chunks: on the local engine, how many calls brain-hub's groups take (local-first A15); null on a host. */
+export interface SweepEstimate { scope: { paths: string[] } | null; considered: number; of: number; estimate: AiEstimate; chunks: number | null }
 export interface SweepResult { run: SweepRun; suggestions: SweepCard[] }
 export interface SweepDismissResult { dismissed: string; already: boolean }
 
@@ -1194,13 +1207,15 @@ export function parseAiCap(v: unknown): AiCap | null {
     perDayUsd: num(r.perDayUsd), spentToday: num(r.spentToday), perCallUsd: typeof r.perCallUsd === "number" && Number.isFinite(r.perCallUsd) ? r.perCallUsd : null,
   };
 }
-export function parseAiEstimate(v: unknown): AiEstimate {
+export function parseAiEstimate(v: unknown, nested = false): AiEstimate {
   const r = rec(v);
   const provider = aiProvider(r.provider);
   const available = r.available === true && provider !== "none";
+  // A run once is on a host and available; one level deep (an older runtime sends none).
+  const once = nested ? [] : arr<unknown>(r.once).map((x) => parseAiEstimate(x, true)).filter((x) => x.available && (x.provider === "claude" || x.provider === "codex"));
   return {
     available, reason: available ? null : strOrNull(r.reason) ?? "no-provider", provider, model: strOrNull(r.model),
-    tokensIn: num(r.tokensIn), tokensOut: num(r.tokensOut), usd: num(r.usd), cap: parseAiCap(r.cap),
+    tokensIn: num(r.tokensIn), tokensOut: num(r.tokensOut), usd: num(r.usd), cap: parseAiCap(r.cap), once,
   };
 }
 function parseMergeFields(v: unknown): MergeFields { const r = rec(v); return { title: str(r.title), description: str(r.description), body: str(r.body) }; }
@@ -1240,6 +1255,7 @@ function parseSweepRun(v: unknown): SweepRun | null {
     id: str(r.id), at: str(r.at), scope: sc ? { paths: strs(sc.paths).filter((p) => MEMORY_PATH_RE.test(p)) } : null,
     provider: aiProvider(r.provider), model: strOrNull(r.model), usd: num(r.usd), estimated: r.estimated === true,
     considered: num(r.considered), of: num(r.of), suggestions: num(r.suggestions),
+    chunks: typeof r.chunks === "number" ? num(r.chunks) : null, failedChunks: num(r.failedChunks),
   };
 }
 function parseSweepCard(v: unknown): SweepCard | null {
@@ -1271,7 +1287,7 @@ export function parseSweepEstimate(body: unknown): SweepEstimate | null {
   const r = rec(body);
   if (!r.estimate) return null;
   const sc = r.scope && typeof r.scope === "object" ? rec(r.scope) : null;
-  return { scope: sc ? { paths: strs(sc.paths) } : null, considered: num(r.considered), of: num(r.of), estimate: parseAiEstimate(r.estimate) };
+  return { scope: sc ? { paths: strs(sc.paths) } : null, considered: num(r.considered), of: num(r.of), estimate: parseAiEstimate(r.estimate), chunks: typeof r.chunks === "number" ? num(r.chunks) : null };
 }
 export function parseSweepResult(body: unknown): SweepResult | null {
   const r = rec(body);
@@ -1305,12 +1321,24 @@ export function aiReasonText(reason: string | null, cap: AiCap | null = null): s
   if (r === "codex-not-logged-in") return "Codex is not signed in.";
   if (r === "no-codex" || r === "codex-not-configured") return "Codex is not set up.";
   if (r === "ollama-only") return "The sweep needs Claude or Codex; a local model cannot hold the whole brain.";
+  // The local engine (lib/memory-ai.js SENTENCE, local-first A3).
+  if (r === "local-down") return "The local model is not answering (start Ollama, or your local engine).";
+  if (r === "local-model-missing") return "The local model is not downloaded yet (Settings ▸ Local engine ▸ Pull the model).";
   return r ? `No model call possible (${r}).` : "No model call possible.";
 }
-/** "about $0.004 · haiku · Claude", or the reason it is off (A5). */
+/** "about $0.004 · haiku · Claude", "free · qwen3.5:9b · on this Mac", or the reason it is off (A5). */
 export function estimateText(e: AiEstimate): string {
   if (!e.available) return aiReasonText(e.reason, e.cap);
+  if (e.provider === "ollama") return `free · ${e.model ?? "the local model"} · on this Mac`;
   return `about ${usdText(e.usd)} · ${e.model ?? providerName(e.provider)} · ${providerName(e.provider)}`;
+}
+/** "Run once on Claude" — a run once's button (local-first A3). */
+export function onceLabel(e: Pick<AiEstimate, "provider">): string {
+  return `Run once on ${providerName(e.provider)}`;
+}
+/** "about $0.05 · haiku · today $0.12 of $5": what a run once would cost and the cap it counts against. */
+export function onceCostText(e: AiEstimate): string {
+  return [`about ${usdText(e.usd)}`, e.model ?? "", capText(e.cap)].filter(Boolean).join(" · ");
 }
 /** "today $0.12 of $0.50" for a cap, "" without one. */
 export function capText(cap: AiCap | null): string {
@@ -1318,6 +1346,8 @@ export function capText(cap: AiCap | null): string {
 }
 /** "drafted by haiku · Claude · $0.004 · today $0.12 of $0.50", with "(estimated)" under Codex (A5). */
 export function spendText(d: Pick<MergeDraft, "provider" | "model" | "usd" | "estimated" | "cap">, verb = "drafted by"): string {
+  // The local engine (local-first A15): nothing spent, nothing capped.
+  if (d.provider === "ollama") return `${verb} ${d.model ?? "the local model"} · on this Mac · free`;
   const cost = `${usdText(d.usd)}${d.estimated ? " (estimated)" : ""}`;
   return [`${verb} ${d.model ?? providerName(d.provider)}`, providerName(d.provider), cost, capText(d.cap)].filter(Boolean).join(" · ");
 }

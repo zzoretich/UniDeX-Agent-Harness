@@ -204,7 +204,9 @@ const COMMANDS: Record<string, { ok: Array<[string, string[]]>; no: Array<[strin
       [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "what is due?"]],
       [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--model=gpt-6-luna", "what is due?"]],
       [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--model=gpt-6-luna", "--effort=xhigh", "what is due?"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--effort=low", "- what is due?"]]],
+      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--effort=low", "- what is due?"]],
+      // A Vault question under provider local (local-first A2): --chat, then the question.
+      [NODE, [`${S}/sdk/ask.js`, "--local", "--chat", "what is due?"]]],
     no: [["claude", ["-p", "hi"]], ["claude", ["-p", "QUESTION: hi", "--model", "sonnet", "--tools", "Bash", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "x", "--max-budget-usd", "0.25", "--output-format", "json"]],
       ["claude", ["-p", "QUESTION: hi", "--model", "sonnet", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "x", "--max-budget-usd", "0.25", "--output-format", "json", "--dangerously-skip-permissions"]],
       [NODE, [`${S}/sdk/ask.js`, "hi"]], [NODE, [`${S}/sdk/recall-cli.js`, "--dump"]],
@@ -215,7 +217,10 @@ const COMMANDS: Record<string, { ok: Array<[string, string[]]>; no: Array<[strin
       ["claude", ["-p", "QUESTION: hi", "--model", "opus", "--effort", "ultra", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "x", "--max-budget-usd", "0.25", "--output-format", "json"]],
       [NODE, [`${S}/sdk/ask.js`, "--local", "--host=ollama", "hi"]], [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--model=-x", "hi"]],
       [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--effort=ultra", "hi"]], [NODE, [`${S}/sdk/ask.js`, "--local", "--model=gpt-6-luna", "hi"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--effort=low", "--model=gpt-6-luna", "hi"]]],
+      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--effort=low", "--model=gpt-6-luna", "hi"]],
+      // --chat only with no host, and only in its place.
+      [NODE, [`${S}/sdk/ask.js`, "--local", "--chat", "--host=codex", "hi"]], [NODE, [`${S}/sdk/ask.js`, "--chat", "--local", "hi"]],
+      [NODE, [`${S}/sdk/ask.js`, "--local", "--chat", "--write=/etc/hosts"]]],
   },
 };
 
@@ -317,6 +322,9 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     mem("sweep", ...Array.from({ length: 50 }, (_, i) => `brain/memory/reference/r${i}.md`), "--json"),
     mem("sweep", "dismiss", "0123456789ab", "--json"),
     mem("set", A, "--set", '{"title":"New title"}', "--expect", "a".repeat(64), "--json"),
+    // 2.0 (local-first A3): "Run once on Claude/Codex" while the local engine is down, with or without its estimate.
+    mem("merge-draft", A, B, "--host", "claude", "--json"), mem("merge-draft", A, B, "--host", "codex", "--estimate", "--json"),
+    mem("sweep", "--host", "claude", "--json"), mem("sweep", A, B, "--host", "codex", "--json"), mem("sweep", "--host", "claude", "--estimate", "--json"),
   ];
   for (const a of ok) {
     assert.equal(brain.canSpawn(NODE, a), true, a.join(" "));
@@ -331,6 +339,7 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     { verb: "merge", paths: [A, B], into, expect: ["a".repeat(64), "b".repeat(64)] }, { verb: "unmerge", path: A, expect: "c".repeat(64) },
     { verb: "sweep", paths: [], estimate: true }, { verb: "sweep", paths: [B, A], estimate: false }, { verb: "sweep-dismiss", id: "0123456789ab" },
     { verb: "set", path: A, fields: { title: "New title" }, expect: "a".repeat(64) },
+    { verb: "merge-draft", paths: [A, B], estimate: false, host: "codex" }, { verb: "sweep", paths: [], estimate: false, host: "claude" },
   ] as const) assert.equal(brain.canSpawn(NODE, [`${S}/cli/aos.js`, ...memoryArgs(v)]), true, v.verb);
   assert.equal(brain.canSpawn(NODE, [`${S}/brain-hub.js`]), true);
   assert.equal(brain.canSpawn(NODE, [`${S}/build-brain-md.js`]), true);
@@ -374,6 +383,10 @@ test("Brain runs exactly the page's memory verbs: memory paths only, 1–50 per 
     mem("sweep"), mem("sweep", ...Array.from({ length: 51 }, (_, i) => `brain/memory/reference/r${i}.md`), "--json"),
     mem("sweep", "--json", "--estimate"), mem("sweep", "dismiss", "0123", "--json"), mem("sweep", "dismiss", "0123456789ab"),
     mem("sweep", "brain/patterns/debugging.md", "--json"), mem("sweep", "dismiss", "0123456789ab", "--estimate", "--json"),
+    // --host: claude or codex only, in its place (before --estimate), on the two AI verbs only.
+    mem("sweep", "--host", "ollama", "--json"), mem("sweep", "--host", "--json"), mem("sweep", "--estimate", "--host", "claude", "--json"),
+    mem("sweep", "--host", "claude", A, "--json"), mem("merge-draft", A, B, "--host", "claude", "--host", "codex", "--json"),
+    mem("sweep", "dismiss", "0123456789ab", "--host", "claude", "--json"), mem("keep", A, "--host", "claude", "--json"),
   ];
   for (const a of no) assert.equal(all.canSpawn(NODE, a), false, `never: ${a.join(" ")}`);
   assert.equal(all.canSpawn(NODE, [`${S}/brain-hub.js`, "--dry-run"]), false);
@@ -479,6 +492,16 @@ test("every argv the page builds for a workspace verb (spacesModel workspaceArgs
   assert.throws(() => workspaceArgs.set("harbor", { pinned: true }, "-x"));
   assert.throws(() => workspaceArgs.adopt("relative/x", "harbor"));
   assert.throws(() => workspaceArgs.draft("_archive/harbor"));
+});
+
+test("the Local engine surface runs `aos local pull` and nothing else; it writes nothing (local-first A13)", () => {
+  const p = new WritePolicy(VAULT, ["local"]);
+  assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, "local", "pull"]), true);
+  for (const a of [["local"], ["local", "status"], ["local", "pull", "llama3"], ["local", "use", "x"], ["local", "pull", "--json"]]) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]), false, a.join(" "));
+  }
+  assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "local")).canSpawn(NODE, [`${S}/cli/aos.js`, "local", "pull"]), false, "only Local engine");
+  assert.equal(p.canWrite(`${VAULT}/brain/config.json`), false);
 });
 
 test("a relative script runs only against the vault it resolves into", () => {

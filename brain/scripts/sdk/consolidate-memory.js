@@ -7,7 +7,8 @@
  * at brain/_index/memory-consolidation.md.
  *   --context (default)  print the assembled prompt for Claude-in-session
  *   --write <file>       store the file's contents as the draft
- *   --local              generate through the provider
+ *   --local              generate through the provider: under provider local where ai.consolidate says (local-first A2)
+ *     --host=claude|codex  with --local: that host once, never another
  *
  * Usage: node brain/scripts/sdk/consolidate-memory.js [--context|--local|--write <file>] [--print]
  */
@@ -16,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const brain = require('./lib/brain.js');
 const { reason } = require('./lib/qwen.js');
-const { parseMode, printContext, readWriteFile, localProvider } = require('./lib/interactive.js');
+const { parseMode, hostFlag, printContext, readWriteFile, localProvider } = require('./lib/interactive.js');
 
 const log = (...a) => console.error(...a);
 
@@ -68,7 +69,10 @@ function writeConsolidation(text, { now }) {
 }
 
 async function main() {
-  const { mode, writeFile, rest } = parseMode(process.argv.slice(2));
+  let host;
+  let argv;
+  try { ({ host, rest: argv } = hostFlag(process.argv.slice(2))); } catch (e) { log(`[consolidate] ${e.message}`); process.exit(2); }
+  const { mode, writeFile, rest } = parseMode(argv);
   const print = rest.includes('--print');
   if (mode === 'write') {
     const outPath = writeConsolidation(readWriteFile(writeFile), { now: new Date().toISOString() });
@@ -79,10 +83,10 @@ async function main() {
   if (!spec) { log('[consolidate] not enough memory files.'); return; }
   if (mode === 'context') { printContext({ feature: 'consolidate-memory', system: spec.system, context: spec.prompt, format: CONSOLIDATION_FORMAT }); return; }
 
-  const p = await localProvider('reason:consolidate-memory', { role: 'reasoner' });
+  const p = await localProvider('reason:consolidate-memory', { role: 'reasoner', prefer: host || undefined });
   log(`[consolidate] reviewing ${spec.count} files via ${p.name}${p.degraded ? ` (reasoner unavailable: ${p.degraded}; workhorse)` : ''}…`);
   let text;
-  try { text = await reason(spec.prompt, { system: spec.system, effort: 'medium', numPredict: 3072, feature: 'reason:consolidate-memory', chatFn: (o) => p.chat({ ...o, feature: 'reason:consolidate-memory' }), providerName: p.name }); }
+  try { text = await reason(spec.prompt, { system: spec.system, effort: 'medium', numPredict: 3072, feature: 'reason:consolidate-memory', noFallback: !!host, chatFn: (o) => p.chat({ ...o, feature: 'reason:consolidate-memory' }), providerName: p.name }); }
   catch (e) { log('[consolidate] model error:', e.message); process.exit(1); }
   if (!text) { log('[consolidate] empty response; aborting.'); process.exit(1); }
   const outPath = writeConsolidation(text, spec);

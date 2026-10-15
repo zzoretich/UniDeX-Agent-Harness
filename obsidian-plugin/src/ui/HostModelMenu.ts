@@ -17,8 +17,18 @@ import { sanitizeSessionChoice } from "../settingsDefaults";
 /** new: a session about to start (any ready host); thread: its next turn (the host is fixed); vault: a Vault question. */
 export type HostModelMode = "new" | "thread" | "vault";
 
-/** What the menu shows and the owner sends. A null model is the host's own default (Claude's `default`). */
+/** What the menu shows and the owner sends. A null model is the host's own default (Claude's `default`). In Vault mode
+ *  with a `local` option, a null host is the local engine (local-first A2). */
 export interface HostModelValue { host: SessionHost | null; model: string | null; effort: string | null }
+
+/** Vault chat's local engine as a choice beside the hosts (local-first A2: ai.chat local under provider local). */
+export interface LocalChoice {
+  /** The model it runs (provider-state's, else local.model); null: the local model, unnamed. */
+  model: string | null;
+  /** Why it cannot answer now (the local engine down, its model not pulled), or null. A question still goes there and
+   *  comes back with the reason and a "Run once on …" offer. */
+  down: string | null;
+}
 
 export interface HostModelMenuOptions {
   mode: HostModelMode;
@@ -40,13 +50,15 @@ export interface HostModelMenuOptions {
   /** Thread mode: the model the thread ran on so far (null: the host's default), tagged "used so far" while another is
    *  picked. Left out, no row is tagged. */
   usedModel?: string | null;
+  /** Vault mode: the local engine as the first choice, which a null host means (local-first A2). */
+  local?: LocalChoice | null;
   now?: () => Date;
 }
 
 /** What update() may change: everything but the callbacks. */
-export type HostModelMenuState = Partial<Pick<HostModelMenuOptions, "mode" | "catalog" | "choices" | "value" | "remembered" | "refreshing" | "disabled" | "usedModel">>;
+export type HostModelMenuState = Partial<Pick<HostModelMenuOptions, "mode" | "catalog" | "choices" | "value" | "remembered" | "refreshing" | "disabled" | "usedModel" | "local">>;
 
-type ValueInputs = Pick<HostModelMenuOptions, "mode" | "catalog" | "choices" | "value" | "remembered">;
+type ValueInputs = Pick<HostModelMenuOptions, "mode" | "catalog" | "choices" | "value" | "remembered" | "local">;
 
 /** The host the menu shows: a thread's own; else the chosen one while it is ready, else the first ready one. */
 export function menuHost(mode: HostModelMode, host: SessionHost | null, choices: HostChoice[]): SessionHost | null {
@@ -61,6 +73,8 @@ export function menuHost(mode: HostModelMode, host: SessionHost | null, choices:
  * given ones when they fit, else the remembered ones for a host it moved to, else the host's defaults.
  */
 export function menuValue(o: ValueInputs): HostModelValue {
+  // Vault with the local engine on offer: a null host is that choice, not "no host ready".
+  if (o.mode === "vault" && o.local && o.value.host === null) return { host: null, model: null, effort: null };
   const host = menuHost(o.mode, o.value.host, o.choices);
   if (!host) return { host: null, model: null, effort: null };
   if (o.mode === "thread") return { host, model: o.value.model, effort: o.value.effort };
@@ -166,6 +180,9 @@ export function customModelError(text: string): string | null {
   if (sanitizeSessionChoice({ models: { claude: id } }).models.claude !== id) return "A model id is one word of letters, digits and . _ : / [ ] -, up to 80 characters.";
   return null;
 }
+
+/** The local engine's name in the chip and the host switch. */
+export const LOCAL_LABEL = "This Mac";
 
 let menus = 0;
 
@@ -285,7 +302,13 @@ export class HostModelMenu {
       t.createSpan({ cls: `aos-hm-dot${v.host ? ` is-${v.host}` : ""}` });
       t.setAttr("title", "Host and model");
     }
-    if (!v.host) t.createSpan({ cls: "aos-hm-chiphost", text: "No host ready" });
+    if (!v.host && this.opts.local) {
+      // The dot drawn above has no host class; the local engine's own.
+      t.querySelector(".aos-hm-dot")?.addClass("is-local");
+      t.setAttr("data-host", "local");
+      t.createSpan({ cls: "aos-hm-chiphost", text: LOCAL_LABEL });
+      t.createSpan({ cls: "aos-hm-chiprest", text: `· ${this.opts.local.model ?? "local model"}${this.opts.local.down ? " · down" : ""}` });
+    } else if (!v.host) t.createSpan({ cls: "aos-hm-chiphost", text: "No host ready" });
     else {
       t.createSpan({ cls: "aos-hm-chiphost", text: HOST_LABEL[v.host] });
       t.createSpan({ cls: "aos-hm-chiprest", text: `· ${choiceText(v.host, this.entry(v.host), v.model, v.effort, this.vault())}` });
@@ -315,6 +338,9 @@ export class HostModelMenu {
     }
     if (host && this.opts.mode === "thread") pop.createDiv({ cls: "aos-hm-caption", text: "Applies from your next message. Earlier turns keep the model they ran on." });
     else if (host && this.vault()) pop.createDiv({ cls: "aos-hm-caption", text: "Each question can use any host" });
+    else if (!host && this.opts.local) {
+      pop.createDiv({ cls: "aos-hm-caption", text: this.opts.local.down ?? `Answers on ${this.opts.local.model ?? "the local model"} on this Mac; nothing is spent.` });
+    }
     if (!key) return;
     const el = Array.from(pop.querySelectorAll<HTMLElement>("[data-hm-key]")).find((x) => x.getAttribute("data-hm-key") === key);
     if (el && !(el as HTMLButtonElement).disabled) el.focus();
@@ -341,6 +367,24 @@ export class HostModelMenu {
   /** New and Vault: the host switch, a line for each host that is off, or what to do when none is ready. */
   private renderHosts(pop: HTMLElement, host: SessionHost | null): void {
     const group = pop.createDiv({ cls: "aos-hm-hosts", attr: { role: "group", "aria-label": "Host" } });
+    const local = this.vault() ? this.opts.local : null;
+    if (local) {
+      // The local engine first (local-first A2): a question goes there unless a host is picked for it.
+      const on = host === null;
+      const b = group.createEl("button", {
+        cls: `aos-hm-host${on ? " is-active" : ""}`,
+        attr: { type: "button", "data-host": "local", "aria-pressed": String(on), "data-hm-key": "host:local", title: local.down ?? "Ask the local model on this Mac" },
+      });
+      b.createSpan({ cls: "aos-hm-dot is-local" });
+      b.appendText(LOCAL_LABEL);
+      b.addEventListener("click", () => {
+        if (on) return;
+        this.query = "";
+        this.older = false;
+        this.custom = null;
+        this.emit({ host: null, model: null, effort: null }, "host:local");
+      });
+    }
     for (const c of this.opts.choices) {
       const on = c.host === host;
       const b = group.createEl("button", {
@@ -361,7 +405,7 @@ export class HostModelMenu {
         this.emit(switchHost(c.host, this.opts.catalog, this.opts.remembered, this.vault()), `host:${c.host}`);
       });
     }
-    if (!host) {
+    if (!host && !local) {
       pop.createDiv({ cls: "aos-hm-nohost", text: noHostLine(this.opts.choices) });
       // With every host off the line above says it all; else each host says why it is not ready.
       if (!this.opts.choices.some(hostOn)) return;

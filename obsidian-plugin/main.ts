@@ -11,7 +11,7 @@ import { QuickOpenModal } from "./src/ui/QuickOpenModal";
 import { TerminalPool } from "./src/data/terminalPool";
 import { TerminalLauncher } from "./src/data/terminalLauncher";
 import type { TermTab } from "./src/views/TermTab";
-import { sessionHosts } from "./src/data/aosConfig";
+import { sessionHosts, signedInHosts } from "./src/data/aosConfig";
 import type { TermHost } from "./src/data/terminalLaunch";
 import { AgenticOSSettings, AgenticOSSettingTab, DEFAULT_SETTINGS } from "./src/settings";
 import { loadSnapshot, SNAPSHOT_PATH, visibleWorkspaces } from "./src/data/snapshot";
@@ -286,9 +286,10 @@ export default class AgenticOSPlugin extends Plugin {
     return bin;
   }
 
-  /** Chat needs a provider; the scripts publish theirs in brain/_index/provider-state.json. */
+  /** Sessions follows the hosts (local-first A17): an enabled host is signed in, by the login caches the runtime keeps in
+   *  brain/_index/provider-state.json, whatever the background provider (the local engine may be down). */
   chatAvailable(): boolean {
-    return (readProviderState(this.vaultRoot())?.name ?? "none") !== "none";
+    return signedInHosts(readAgenticosJson(this.claudeConfigDir()), readProviderState(this.vaultRoot())).length > 0;
   }
 
   /**

@@ -3,12 +3,14 @@
  * graph-cmd.js — `aos graph` and the graphify install step (spec 2026-09-23-graphify D1–D3, D8).
  *   (none) | status   the pinned and installed graphify, the last build, the semantic pass, counts, hubs, communities
  *   build             a structural rebuild now (<vault>/brain/scripts/graph-build.js, inline)
- *   build --semantic  the model pass now (D5/D6): says what it costs today, asks y/N (--yes skips), refuses when an
- *                     explicit `ollama`/`none` provider opts out and `graph.semantic.enabled` is still "auto"
+ *   build --semantic  the model pass now (D5/D6): says who reads the notes and what it costs today (nothing on the local
+ *                     engine, local-first A14), asks y/N (--yes skips), refuses when an explicit `none` provider opts out
+ *                     and `graph.semantic.enabled` is still "auto"
  *   on | off          graph.enabled in agenticos.json (off stops the scan-vault stage; the binary stays)
  *   semantic on|off|auto  graph.semantic.enabled: the daily background model pass (D11)
- * install() is `aos init` step 5c and an `aos upgrade` step: `uv tool install graphifyy==<PIN>` into a tool dir
- * AgenticOS owns (never the user's own uv tools or PATH), then graph.bin in agenticos.json, the vault's
+ * install() is `aos init` step 5c and an `aos upgrade` step: `uv tool install graphifyy[ollama]==<PIN>` into a tool dir
+ * AgenticOS owns (never the user's own uv tools or PATH; the `ollama` extra brings the OpenAI client graphify's local
+ * backends need, local-first A14, and an install at PIN without it is installed again), then graph.bin in agenticos.json, the vault's
  * .graphifyignore when absent, and a one-time move of a graphify-out/ that no aos build wrote (it came from another
  * root, and graphify would keep its stale nodes). doctorRows() gives `aos doctor` its graphify rows.
  * The pin is a constant, not a config key: `aos upgrade` copies every default into brain/config.json, where a user
@@ -22,6 +24,9 @@ const { spawnSync } = require('child_process');
 
 const PIN = '0.9.66';
 const PACKAGE = 'graphifyy';
+// The extra graphify's local backends (ollama, openai) import from (local-first A14): the OpenAI client.
+const EXTRA = 'ollama';
+const SPEC = `${PACKAGE}[${EXTRA}]==${PIN}`;
 const PYTHON = '>=3.10';
 const MARKER = '.aos-graph.json';
 const USAGE = 'usage: aos graph [status | build [--semantic [--yes]] | on | off | semantic on|off|auto]';
@@ -59,6 +64,14 @@ function uvBin() {
   return c.find((p) => p && fs.existsSync(p)) || null;
 }
 
+/** Does the tool's venv hold the OpenAI client (the `ollama` extra)? uv keeps it at tools/<package>/lib/python3.X/site-packages. */
+function hasLocalBackend(d) {
+  const lib = path.join(d.tools, PACKAGE, 'lib');
+  let pys = [];
+  try { pys = fs.readdirSync(lib).filter((n) => /^python3/.test(n)); } catch { return false; }
+  return pys.some((py) => fs.existsSync(path.join(lib, py, 'site-packages', 'openai', '__init__.py')));
+}
+
 /** ${XDG_DATA_HOME:-~/.local/share}/agenticos/graphify — ours alone; uninstall removes it. */
 function toolHome() { return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'agenticos', 'graphify'); }
 function toolDirs(home = toolHome()) { return { home, tools: path.join(home, 'tools'), bin: path.join(home, 'bin'), graphify: path.join(home, 'bin', 'graphify') }; }
@@ -79,14 +92,18 @@ function graphConfig({ vault, userCfg } = {}) {
   const g = Object.assign({ enabled: true, out: 'brain/graphify-out', staleDays: 7 }, ...layers);
   g.semantic = Object.assign({ enabled: 'auto', everyHours: 24, perDayUsd: 1 }, ...layers.map((x) => x.semantic || {}));
   g.provider = (userCfg && userCfg.provider) || vaultCfg.provider || defaults.provider || 'auto';
+  // The local engine's settings, by the same precedence: the pass runs there under provider local and ollama (A14).
+  g.local = Object.assign({}, defaults.local, vaultCfg.local, userCfg && userCfg.local);
+  g.ollama = Object.assign({}, defaults.ollama, vaultCfg.ollama, userCfg && userCfg.ollama);
   return g;
 }
-/** D11, the same rule as graph-build.js semanticState: "auto" is off under an explicit ollama or none provider. */
+/** D11, the same rule as graph-build.js semanticState: "auto" is off under an explicit none provider (under local and
+ *  ollama it runs on the local engine, local-first A14). */
 function semanticState(g) {
   const v = g.semantic.enabled;
   if (v === true) return { on: true, why: null, auto: false };
   if (v === false) return { on: false, why: 'off (aos graph semantic on)', auto: false };
-  if (g.provider === 'none' || g.provider === 'ollama' || g.provider === 'local') return { on: false, why: `off under provider ${g.provider} (aos graph semantic on overrides)`, auto: true };
+  if (g.provider === 'none') return { on: false, why: `off under provider ${g.provider} (aos graph semantic on overrides)`, auto: true };
   return { on: true, why: null, auto: true };
 }
 /** The semantic pass holding the graph lock right now ({ startedAt, … }), or null — the same rule as graph-build.js
@@ -155,17 +172,19 @@ function install({ vault, configDir = claudeConfigDir(), uv = uvBin(), template,
   const d = toolDirs(home);
   const before = installedVersion(d.graphify, exec);
   let action = `kept ${PIN}`;
-  if (before !== PIN) {
-    if (!uv) throw new Error(`uv not found — install it (docs.astral.sh/uv), then run aos upgrade (graphify ${before ? `${before} is not the pinned ${PIN}` : `${PIN} is not installed`})`);
-    const args = ['tool', 'install', '--python', PYTHON, ...(fs.existsSync(d.tools) ? ['--reinstall'] : []), `${PACKAGE}==${PIN}`];
+  // The pinned version without the local backends' client (an install from before 2.0) is installed again with it.
+  const noLocal = before === PIN && !hasLocalBackend(d);
+  if (before !== PIN || noLocal) {
+    if (!uv) throw new Error(`uv not found — install it (docs.astral.sh/uv), then run aos upgrade (graphify ${noLocal ? `${PIN} has no local-model backend` : before ? `${before} is not the pinned ${PIN}` : `${PIN} is not installed`})`);
+    const args = ['tool', 'install', '--python', PYTHON, ...(fs.existsSync(d.tools) ? ['--reinstall'] : []), SPEC];
     const r = exec(uv, args, {
       encoding: 'utf8', timeout: 10 * 60_000, stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, UV_TOOL_DIR: d.tools, UV_TOOL_BIN_DIR: d.bin },
     });
-    if (r.error || r.status !== 0) throw new Error(`uv tool install ${PACKAGE}==${PIN} failed: ${lastLine(r.stderr) || (r.error && r.error.message) || `exit ${r.status}`}`);
+    if (r.error || r.status !== 0) throw new Error(`uv tool install ${SPEC} failed: ${lastLine(r.stderr) || (r.error && r.error.message) || `exit ${r.status}`}`);
     const after = installedVersion(d.graphify, exec);
     if (after !== PIN) throw new Error(`${d.graphify} reports ${after || 'no version'} after the install, expected ${PIN}`);
-    action = before ? `updated ${before} → ${PIN}` : `installed ${PIN}`;
+    action = noLocal ? `added the local-model backend to ${PIN}` : before ? `updated ${before} → ${PIN}` : `installed ${PIN}`;
   }
   const file = agenticosPath(configDir);
   const cfg = readJson(file);
@@ -187,19 +206,27 @@ function removeTools(home = toolHome()) {
 
 /** The graph lib that matches the vault's runtime: the vendored copy, else this checkout's. */
 /**
- * The CLI that answers the semantic pass — lib/headless.js graphRunner from the vault's copy when installed: a pinned
- * graph.semantic.runner, an explicit provider claude/codex, else Claude when it is a host, else Codex. null when
- * neither CLI resolves (spec 2026-09-23-codex-parity-gaps D3).
+ * Who answers the semantic pass — lib/headless.js graphRunner from the vault's copy when installed: a pinned
+ * graph.semantic.runner, the local engine under provider local or ollama (local-first A14), an explicit provider
+ * claude/codex, else Claude when it is a host, else Codex. null when neither CLI resolves (spec
+ * 2026-09-23-codex-parity-gaps D3).
  */
 function semanticRunner(vault, cfg, g) {
   const vendored = path.join(vault, 'brain', 'scripts', 'lib', 'headless.js');
   const H = require(fs.existsSync(vendored) ? vendored : path.join(__dirname, '..', 'brain', 'scripts', 'lib', 'headless.js'));
-  return H.graphRunner({ ...(cfg || {}), provider: g.provider, graph: { ...((cfg && cfg.graph) || {}), semantic: g.semantic } });
+  return H.graphRunner({ ...(cfg || {}), provider: g.provider, local: g.local, ollama: g.ollama, graph: { ...((cfg && cfg.graph) || {}), semantic: g.semantic } });
 }
-/** "Claude (haiku, on your login)" / "Codex (gpt-5-mini, on your login)": who reads the notes. */
+/** "Claude (haiku, on your login)" / "Codex (gpt-5-mini, on your login)" / "the local model (qwen3.5:9b, on this Mac)":
+ *  who reads the notes. */
 function runnerLabel(runner, cfg) {
+  if (runner && runner.host === 'local') return `the local model (${runner.model}, on this Mac)`;
   if (runner && runner.host === 'codex') return `Codex (${(cfg.codex && cfg.codex.model) || 'your Codex default model'}, on your login)`;
   return `Claude (${(cfg.claude && cfg.claude.model) || 'haiku'}, on your login)`;
+}
+/** "local engine qwen3.5:9b, no spend" / "today $0.12 of $1 · via codex": the semantic pass's engine and spend line. */
+function spendLine(runner, g, vault, now, places = 2) {
+  if (runner && runner.host === 'local') return `local engine ${runner.model}, no spend`;
+  return `today $${graphSpendToday(vault, new Date(now)).toFixed(places)} of $${g.semantic.perDayUsd}${runner && runner.host === 'codex' ? ' · via codex' : ''}`;
 }
 
 function graphLib(vault) {
@@ -216,6 +243,11 @@ function doctorRows({ cfg, vault, exec = spawnSync, now = Date.now(), runner } =
   else rows.push({ name: `graphify ${PIN}`, ok: v === PIN, detail: v === PIN ? bin : `installed ${v}, pinned ${PIN} — run aos upgrade`, level: 'warn' });
   if (!vault) return rows;
   const g = graphConfig({ vault, userCfg: cfg });
+  // local-first A14: the local engine's pass needs graphify's local backend (the `ollama` extra); aos upgrade adds it.
+  const sr = runner === undefined ? semanticRunner(vault, cfg, g) : runner;
+  if (v === PIN && sr && sr.host === 'local' && !hasLocalBackend(toolDirs(path.dirname(path.dirname(bin))))) {
+    rows.push({ name: 'graphify local backend', ok: false, detail: 'missing (the semantic pass on the local engine needs it) — run aos upgrade', level: 'warn' });
+  }
   if (g.enabled === false) { rows.push({ name: 'graph fresh', ok: false, detail: 'graph off (aos graph on)', level: 'info' }); return rows; }
   const m = readJson(path.join(outDir(vault, g), MARKER));
   const at = m && Date.parse(m.lastStructural || m.builtAt);
@@ -223,14 +255,14 @@ function doctorRows({ cfg, vault, exec = spawnSync, now = Date.now(), runner } =
   const age = now - at;
   const fresh = age <= (Number(g.staleDays) || 7) * 86_400_000;
   rows.push({ name: 'graph fresh', ok: fresh, detail: `built ${ago(age)} ago · ${m.nodes} nodes · ${m.edges} edges${fresh ? '' : ` — older than ${g.staleDays} days, run aos graph build`}`, level: 'warn' });
-  rows.push(semanticRow({ g, m, vault, now, runner: runner === undefined ? semanticRunner(vault, cfg, g) : runner }));
+  rows.push(semanticRow({ g, m, vault, now, runner: sr }));
   return rows;
 }
 
 /** The `graph semantic` row: info while off or not yet run, warn on a failed last run, else ok with today's spend. */
 function semanticRow({ g, m, vault, now, runner }) {
   const st = semanticState(g);
-  const spend = `today $${graphSpendToday(vault, new Date(now)).toFixed(2)} of $${g.semantic.perDayUsd}${runner && runner.host === 'codex' ? ' · via codex' : ''}`;
+  const spend = spendLine(runner, g, vault, now);
   if (!st.on) return { name: 'graph semantic', ok: false, detail: st.why, level: 'info' };
   // A pass holding the lock is running whatever this process can resolve; only then does a missing CLI matter.
   const running = semanticRunning(vault, now);
@@ -267,7 +299,9 @@ function status({ cfg, io, exec = spawnSync, now = Date.now() }) {
   const st = semanticState(g);
   const semLast = m && Date.parse(m.lastSemantic || '');
   const running = semanticRunning(vault, now);
-  io.log(`semantic   ${st.on ? `on (every ${g.semantic.everyHours} h${st.auto ? ', auto' : ''})` : st.why} · ${running ? `running since ${hhmm(running.startedAt)} · ` : ''}${semLast ? `last run ${ago(now - semLast)} ago${m.semanticIncomplete ? ' (partial)' : ''} · ${m.concepts ?? 0} concepts` : 'never run'}${m && m.lastSemanticError ? ` · last error: ${m.lastSemanticError}` : ''} · today $${graphSpendToday(vault, new Date(now)).toFixed(4)} of $${g.semantic.perDayUsd}`);
+  const runner = st.on ? semanticRunner(vault, cfg, g) : null;
+  const engine = runner ? ` · ${runnerLabel(runner, cfg)}` : '';
+  io.log(`semantic   ${st.on ? `on (every ${g.semantic.everyHours} h${st.auto ? ', auto' : ''})` : st.why}${engine} · ${running ? `running since ${hhmm(running.startedAt)} · ` : ''}${semLast ? `last run ${ago(now - semLast)} ago${m.semanticIncomplete ? ' (partial)' : ''} · ${m.concepts ?? 0} concepts${m.semanticEngine === 'local' && m.semanticModel ? ` (by ${m.semanticModel})` : ''}` : 'never run'}${m && m.lastSemanticError ? ` · last error: ${m.lastSemanticError}` : ''} · ${runner && runner.host === 'local' ? 'no spend' : `today $${graphSpendToday(vault, new Date(now)).toFixed(4)} of $${g.semantic.perDayUsd}`}`);
   const G = graphLib(vault);
   const block = G.pulse(G.loadGraph(path.join(dir, 'graph.json')));
   if (block) io.log(`\n${block}`);
@@ -284,7 +318,7 @@ async function buildSemantic({ cfg, configDir, io, yes, ask = askYesNo, isTTY = 
   const g = graphConfig({ vault: cfg.vault, userCfg: cfg });
   const st = semanticState(g);
   if (!st.on && st.auto) {
-    io.error(`graph: the semantic pass sends note text to a hosted model (Claude or Codex) on your login, and provider is ${g.provider} — \`aos graph semantic on\` allows it anyway`);
+    io.error(`graph: provider is ${g.provider}, so no model reads the notes — \`aos graph semantic on\` allows the semantic pass anyway`);
     return 1;
   }
   const r = runner === undefined ? semanticRunner(cfg.vault, cfg, g) : runner;
@@ -292,8 +326,12 @@ async function buildSemantic({ cfg, configDir, io, yes, ask = askYesNo, isTTY = 
   const G = graphLib(cfg.vault);
   const graph = G.loadGraph(path.join(outDir(cfg.vault, g), 'graph.json'));
   const notes = graph ? new Set(graph.nodes.filter((n) => n.file_type === 'document' && n.source_file).map((n) => n.source_file)).size : null;
-  io.log(`graph: the semantic pass sends ${notes == null ? 'the vault\'s' : notes} notes' text to ${runnerLabel(r, cfg)}; only new or changed notes reach the model.`);
-  io.log(`graph: today $${graphSpendToday(cfg.vault).toFixed(4)} of the $${g.semantic.perDayUsd} graph budget; calls stop at the cap and the rest follows on later runs.`);
+  if (r.host === 'local') {
+    io.log(`graph: the semantic pass reads ${notes == null ? 'the vault\'s' : notes} notes with ${runnerLabel(r, cfg)}; only new or changed notes reach the model, nothing leaves this Mac and nothing is spent. It can take a while.`);
+  } else {
+    io.log(`graph: the semantic pass sends ${notes == null ? 'the vault\'s' : notes} notes' text to ${runnerLabel(r, cfg)}; only new or changed notes reach the model.`);
+    io.log(`graph: today $${graphSpendToday(cfg.vault).toFixed(4)} of the $${g.semantic.perDayUsd} graph budget; calls stop at the cap and the rest follows on later runs.`);
+  }
   if (!yes) {
     if (!isTTY) { io.error('graph: not a terminal — pass --yes to run the semantic pass without the prompt'); return 1; }
     if (!(await ask('Run it now? [y/N] '))) { io.log('graph: not run'); return 0; }
@@ -317,7 +355,7 @@ function setSemantic({ file, cfg, value, io }) {
   writeJson(file, cfg);
   io.log(value === true ? 'graph: semantic pass on (daily, on its own graph budget)'
     : value === false ? 'graph: semantic pass off (the structural graph stays current)'
-      : 'graph: semantic pass auto (on unless the provider is ollama or none)');
+      : 'graph: semantic pass auto (on unless the provider is none; on the local engine under local and ollama)');
 }
 
 function setEnabled({ file, cfg, on, io }) {
@@ -348,6 +386,6 @@ async function run(args, opts = {}) {
 }
 
 module.exports = {
-  PIN, PACKAGE, PYTHON, MARKER, USAGE, uvBin, toolHome, toolDirs, installedVersion, graphConfig, outDir, seedIgnore, ensureGitignore, moveAside,
+  PIN, PACKAGE, EXTRA, SPEC, PYTHON, MARKER, USAGE, uvBin, toolHome, toolDirs, installedVersion, hasLocalBackend, graphConfig, outDir, seedIgnore, ensureGitignore, moveAside,
   install, removeTools, doctorRows, semanticState, semanticRunning, graphSpendToday, status, build, buildSemantic, setEnabled, setSemantic, run,
 };

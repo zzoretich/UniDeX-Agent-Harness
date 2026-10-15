@@ -292,7 +292,8 @@ test("a reply that could not be read was still a call: the by-hand line says who
   const none = { reason: "No model provider is set up.", provider: "none" as const, model: null, usd: 0, estimated: false, cap: null };
   assert.equal(byHandText(none), "No model provider is set up. Finish the draft by hand.");
   assert.equal(byHandText({ ...none, reason: "Claude did not answer.", provider: "claude" }), "Claude did not answer. Finish the draft by hand.", "a failed call: who failed is in the reason, no cost came back");
-  assert.equal(byHandText({ ...none, reason: BAD, provider: "ollama", model: "qwen3:8b" }), `${BAD} Finish the draft by hand. · answered by qwen3:8b · Ollama · $0.00`);
+  // A local model answers for free (local-first A15).
+  assert.equal(byHandText({ ...none, reason: BAD, provider: "ollama", model: "qwen3:8b" }), `${BAD} Finish the draft by hand. · answered by qwen3:8b · on this Mac · free`);
 });
 
 test("Draft with AI keeps the keyboard while it runs (aria-disabled, not disabled), and the dialog takes it back after a stop", async () => {

@@ -7,7 +7,8 @@
  *     macOS  `pmset -g batt` names its source: "Now drawing from 'Battery Power'" (or 'AC Power')
  *     Linux  /sys/class/power_supply: a mains supply that is online means AC; else a battery that is Discharging
  *     other, or anything unreadable → false (never defer work on a guess)
- *   deferOnBattery(cfg, opts) → true when cfg.local.onBattery is `defer` (the default) and onBattery() says so.
+ *   deferOnBattery(cfg, opts) → true when cfg.local.onBattery is `defer` (the default) and onBattery() says so (or
+ *     opts.onBattery(), a caller's own answer: the graph's semantic pass, local-first A14).
  *
  * Every input is injectable (platform, exec, sysDir), so tests never ask the real machine.
  */
@@ -41,6 +42,8 @@ function onBattery({ platform = process.platform, exec = spawnSync, sysDir = '/s
 function deferOnBattery(cfg, opts = {}) {
   const mode = cfg && cfg.local && cfg.local.onBattery;
   if (mode === 'run') return false;
+  // A caller's own answer (graph-build.js semanticSkip's `power` seam) stands in for asking the machine.
+  if (typeof opts.onBattery === 'function') return !!opts.onBattery();
   return onBattery(opts);
 }
 

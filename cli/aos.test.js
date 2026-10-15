@@ -428,7 +428,7 @@ test('init into a temp vault: seed set, vendored runtime, agenticos.json, plugin
   // graphify spec D2: the pinned graphify in a tool dir of our own, recorded; the seed ignore file; step 9's scan built the graph.
   const graphBin = path.join(sb.home, '.local', 'share', 'agenticos', 'graphify', 'bin', 'graphify');
   assert.deepEqual(cfg.graph, { enabled: true, bin: graphBin });
-  assert.match(sb.log('FAKE_UV_LOG'), new RegExp(`^tool install --python >=3\\.10 graphifyy==${reEsc(GRAPHIFY_PIN)}$`, 'm'));
+  assert.match(sb.log('FAKE_UV_LOG'), new RegExp(`^tool install --python >=3\\.10 graphifyy\\[ollama\\]==${reEsc(GRAPHIFY_PIN)}$`, 'm'));
   assert.ok(fs.existsSync(path.join(v, '.graphifyignore')), '.graphifyignore seeded');
   assert.equal(readJson(path.join(v, 'brain', 'graphify-out', 'graph.json')).nodes.length, 5, 'the first scan built the graph');
   assert.equal(readJson(path.join(v, 'brain', 'graphify-out', '.aos-graph.json')).mode, 'structural');
@@ -763,7 +763,7 @@ test('upgrade reinstalls graphify only on a version drift and moves a hand-built
   fs.writeFileSync(sb.env.FAKE_UV_LOG, '');
   const r = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
   assert.equal(r.status, 0, r.stderr + r.stdout);
-  assert.match(sb.log('FAKE_UV_LOG'), new RegExp(`^tool install --python >=3\\.10 --reinstall graphifyy==${reEsc(GRAPHIFY_PIN)}$`, 'm'));
+  assert.match(sb.log('FAKE_UV_LOG'), new RegExp(`^tool install --python >=3\\.10 --reinstall graphifyy\\[ollama\\]==${reEsc(GRAPHIFY_PIN)}$`, 'm'));
   assert.match(r.stdout, new RegExp(`graph: graphify updated 0\\.9\\.1 → ${reEsc(GRAPHIFY_PIN)}.*seeded \\.graphifyignore.*moved a hand-built graph to brain/graphify-out\\.pre-aos`));
   assert.ok(fs.existsSync(path.join(sb.vault, '.graphifyignore')));
   assert.match(fs.readFileSync(gi, 'utf8'), /^brain\/graphify-out\/\nbrain\/graphify-out\.pre-aos\/$/m, 'the graph rules are back in .gitignore');
@@ -817,7 +817,7 @@ test('aos graph build --semantic: a provider opt-out refuses; switched on, it ru
   const sb = initialized();
   const refused = aos(sb, ['graph', 'build', '--semantic', '--yes']);
   assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /provider is none — `aos graph semantic on` allows it anyway/);
+  assert.match(refused.stderr, /provider is none, so no model reads the notes — `aos graph semantic on` allows the semantic pass anyway/);
   assert.match(aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') }).stdout, /info\s+graph semantic\s+off under provider none/);
   assert.equal(aos(sb, ['graph', 'semantic', 'on']).status, 0);
   const envLog = path.join(sb.dir, 'claude-env.log');
@@ -826,7 +826,7 @@ test('aos graph build --semantic: a provider opt-out refuses; switched on, it ru
   assert.match(r.stdout, /^graph: semantic pass done · 3 nodes · 1 concepts · 1 inferred edges · \$0\.0040 in \d+ s$/m);
   assert.equal(fs.readFileSync(envLog, 'utf8'), 'MAX_THINKING_TOKENS=0 AOS_HEADLESS=1 CLAUDECODE= ANTHROPIC_API_KEY=\n');
   assert.match(aos(sb, ['status']).stdout, /^spend      today \(graph\) \$0\.0040 \/ cap \$1$/m);
-  assert.match(aos(sb, ['graph']).stdout, /^semantic   on \(every 24 h\) · last run \d+s ago · 1 concepts · today \$0\.0040 of \$1$/m);
+  assert.match(aos(sb, ['graph']).stdout, /^semantic   on \(every 24 h\) · Claude \(haiku, on your login\) · last run \d+s ago · 1 concepts · today \$0\.0040 of \$1$/m);
   assert.match(aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') }).stdout, /ok\s+graph semantic\s+last run \d+s ago · 1 concepts · today \$0\.00 of \$1/);
   assert.equal(aos(sb, ['graph', 'status', '--semantic']).status, 2);
 });

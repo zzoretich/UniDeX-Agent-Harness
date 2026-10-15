@@ -263,8 +263,8 @@ function sweepData(): BrainData {
   const tide = sweepScopeKey([C, D])!;
   const file: SweepFile = {
     runs: [
-      { id: "r2", at: L(10, 11, 9), scope: { paths: [C, D] }, provider: "claude", model: "haiku", usd: 0.01, estimated: false, considered: 2, of: 2, suggestions: 1 },
-      { id: "r1", at: L(10, 11, 8), scope: null, provider: "claude", model: "haiku", usd: 0.05, estimated: false, considered: 5, of: 5, suggestions: 5 },
+      { id: "r2", at: L(10, 11, 9), scope: { paths: [C, D] }, provider: "claude", model: "haiku", usd: 0.01, estimated: false, considered: 2, of: 2, suggestions: 1, chunks: null, failedChunks: 0 },
+      { id: "r1", at: L(10, 11, 8), scope: null, provider: "claude", model: "haiku", usd: 0.05, estimated: false, considered: 5, of: 5, suggestions: 5, chunks: null, failedChunks: 0 },
     ],
     suggestions: [
       sweepCard(d, { id: "00000000000a", kind: "merge", paths: [A, B], title: "Small diffs", why: "the same rule twice" }),

@@ -1,14 +1,14 @@
 // What a step's `when` may name, and the words its text fills in (tour C5, C8). A step whose `when` fails is skipped,
 // so a Codex-only, a no-host or a Sessions-hidden install sees only what it has. The context is built by the plugin from
-// sessionHosts() (agenticos.json's hosts) and chatAvailable() (provider-state.json); this module only reads it. Pure,
-// so node:test can load it.
+// sessionHosts() (agenticos.json's hosts) and chatAvailable() (an enabled host signed in, by provider-state.json's login
+// caches); this module only reads it. Pure, so node:test can load it.
 
 export type TourHost = "claude" | "codex";
 
 export interface TourContext {
   /** The session hosts this Mac runs (sessionHosts()). */
   hosts: TourHost[];
-  /** A provider is on record, so Sessions is on the rail (chatAvailable()). */
+  /** An enabled host is signed in, so Sessions is on the rail (chatAvailable(), local-first A17). */
   chat: boolean;
   /** The Getting started item is on the rail (not put away, not finished). */
   checklist: boolean;

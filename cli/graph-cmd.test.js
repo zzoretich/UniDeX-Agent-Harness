@@ -59,7 +59,8 @@ test('install: a fresh machine gets the pin through uv into our own tool dirs, r
   const r = withEnv({ FAKE_UV_LOG: w.uvLog }, () => GC.install({ vault: w.vault, configDir: w.configDir, uv: FAKE_UV, template: TEMPLATE, io: quiet, home: w.home }));
   assert.equal(r.action, `installed ${GC.PIN}`);
   assert.equal(r.bin, path.join(w.home, 'bin', 'graphify'));
-  assert.equal(fs.readFileSync(w.uvLog, 'utf8'), `tool install --python >=3.10 graphifyy==${GC.PIN}\n`);
+  assert.equal(fs.readFileSync(w.uvLog, 'utf8'), `tool install --python >=3.10 graphifyy[ollama]==${GC.PIN}\n`);
+  assert.equal(GC.hasLocalBackend(GC.toolDirs(w.home)), true, 'the ollama extra brings the OpenAI client (local-first A14)');
   assert.deepEqual(cfgOf(w).graph, { enabled: true, bin: r.bin });
   assert.equal(GC.installedVersion(r.bin), GC.PIN);
   assert.ok(r.seeded && fs.existsSync(path.join(w.vault, '.graphifyignore')));
@@ -78,13 +79,24 @@ test('install: a drifted version is reinstalled with --reinstall', () => {
   fs.mkdirSync(path.join(w.home, 'tools'), { recursive: true });
   const r = withEnv({ FAKE_UV_LOG: w.uvLog }, () => GC.install({ vault: w.vault, configDir: w.configDir, uv: FAKE_UV, io: quiet, home: w.home }));
   assert.equal(r.action, `updated 0.9.1 → ${GC.PIN}`);
-  assert.equal(fs.readFileSync(w.uvLog, 'utf8'), `tool install --python >=3.10 --reinstall graphifyy==${GC.PIN}\n`);
+  assert.equal(fs.readFileSync(w.uvLog, 'utf8'), `tool install --python >=3.10 --reinstall graphifyy[ollama]==${GC.PIN}\n`);
+});
+
+test('install: the pinned version without the local backend (an install from before 2.0) gets it added', () => {
+  const w = world();
+  placeGraphify(w.home, GC.PIN);
+  fs.mkdirSync(path.join(w.home, 'tools'), { recursive: true });
+  assert.throws(() => GC.install({ vault: w.vault, configDir: w.configDir, uv: null, io: quiet, home: w.home }), /uv not found .* has no local-model backend/);
+  const r = withEnv({ FAKE_UV_LOG: w.uvLog }, () => GC.install({ vault: w.vault, configDir: w.configDir, uv: FAKE_UV, io: quiet, home: w.home }));
+  assert.equal(r.action, `added the local-model backend to ${GC.PIN}`);
+  assert.equal(fs.readFileSync(w.uvLog, 'utf8'), `tool install --python >=3.10 --reinstall graphifyy[ollama]==${GC.PIN}\n`);
+  assert.equal(GC.install({ vault: w.vault, configDir: w.configDir, uv: null, io: quiet, home: w.home }).action, `kept ${GC.PIN}`);
 });
 
 test('install refuses without uv, on a failed uv run, and when the result is not the pin — recording nothing', () => {
   const w = world();
   assert.throws(() => GC.install({ vault: w.vault, configDir: w.configDir, uv: null, io: quiet, home: w.home }), new RegExp(`uv not found .*graphify ${GC.PIN.replace(/\./g, '\\.')} is not installed`));
-  withEnv({ FAKE_UV_FAIL: '1' }, () => assert.throws(() => GC.install({ vault: w.vault, configDir: w.configDir, uv: FAKE_UV, io: quiet, home: w.home }), /uv tool install graphifyy==.* failed: error: fake uv install failure/));
+  withEnv({ FAKE_UV_FAIL: '1' }, () => assert.throws(() => GC.install({ vault: w.vault, configDir: w.configDir, uv: FAKE_UV, io: quiet, home: w.home }), /uv tool install graphifyy\[ollama\]==.* failed: error: fake uv install failure/));
   withEnv({ FAKE_UV_INSTALLS_VERSION: '0.0.1' }, () => assert.throws(() => GC.install({ vault: w.vault, configDir: w.configDir, uv: FAKE_UV, io: quiet, home: w.home }), /reports 0\.0\.1 after the install, expected/));
   assert.deepEqual(cfgOf(w).graph, { enabled: true }, 'graph.bin is never recorded for a failed install');
 });
@@ -122,6 +134,8 @@ test('moveAside: a graph without our marker is renamed once; a marked graph and 
 test('doctorRows: missing binary fails, drift warns, marker age decides freshness, off is info', () => {
   const w = world();
   const now = Date.parse('2026-09-23T12:00:00Z');
+  // provider auto: under 2.0's default local a pinned graphify without the local backend adds a row (the test below).
+  fs.writeFileSync(path.join(w.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'auto' }));
   let rows = GC.doctorRows({ cfg: { graph: {} }, vault: w.vault, now });
   assert.deepEqual(rows[0], { name: `graphify ${GC.PIN}`, ok: false, detail: 'not installed — run aos upgrade', level: 'fail' });
   assert.deepEqual(rows[1], { name: 'graph fresh', ok: false, detail: 'no graph yet — run aos graph build', level: 'warn' });
@@ -145,6 +159,31 @@ test('doctorRows: missing binary fails, drift warns, marker age decides freshnes
 
   rows = GC.doctorRows({ cfg: { graph: { bin, enabled: false } }, vault: w.vault, now });
   assert.deepEqual(rows[1], { name: 'graph fresh', ok: false, detail: 'graph off (aos graph on)', level: 'info' });
+});
+
+test('doctorRows under provider local: a pinned graphify without the local backend warns; the semantic row names the local engine, no spend', () => {
+  const w = world();
+  const now = Date.parse('2026-09-23T12:00:00Z');
+  fs.writeFileSync(path.join(w.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'local' }));
+  const bin = placeGraphify(w.home, GC.PIN);
+  const out = path.join(w.vault, 'brain', 'graphify-out');
+  fs.mkdirSync(out, { recursive: true });
+  fs.writeFileSync(path.join(out, GC.MARKER), JSON.stringify({ lastStructural: '2026-09-23T11:00:00Z', nodes: 5, edges: 4 }));
+  let rows = GC.doctorRows({ cfg: { graph: { bin } }, vault: w.vault, now });
+  assert.deepEqual(rows[1], { name: 'graphify local backend', ok: false, detail: 'missing (the semantic pass on the local engine needs it) — run aos upgrade', level: 'warn' });
+  assert.match(rows.find((r) => r.name === 'graph semantic').detail, /^not run yet — the next scan starts it \(every 24 h, local engine qwen3\.5:9b, no spend\)$/);
+  const site = path.join(w.home, 'tools', 'graphifyy', 'lib', 'python3.13', 'site-packages', 'openai');
+  fs.mkdirSync(site, { recursive: true });
+  fs.writeFileSync(path.join(site, '__init__.py'), '');
+  rows = GC.doctorRows({ cfg: { graph: { bin } }, vault: w.vault, now });
+  assert.equal(rows.some((r) => r.name === 'graphify local backend'), false);
+  fs.writeFileSync(path.join(out, GC.MARKER), JSON.stringify({ lastStructural: '2026-09-23T11:00:00Z', lastSemantic: '2026-09-23T10:00:00Z', lastSemanticRun: '2026-09-23T10:00:00Z', nodes: 5, edges: 4, concepts: 3, semanticEngine: 'local', semanticModel: 'qwen3.5:9b' }));
+  rows = GC.doctorRows({ cfg: { graph: { bin } }, vault: w.vault, now });
+  assert.equal(rows.find((r) => r.name === 'graph semantic').detail, 'last run 2h ago · 3 concepts · local engine qwen3.5:9b, no spend');
+  const logs = [];
+  fs.writeFileSync(path.join(w.configDir, 'agenticos.json'), JSON.stringify({ vault: w.vault, graph: { bin } }));
+  GC.status({ cfg: { vault: w.vault, graph: { bin } }, io: { log: (m) => logs.push(m) }, now });
+  assert.match(logs.join('\n'), /^semantic   on \(every 24 h, auto\) · the local model \(qwen3\.5:9b, on this Mac\) · last run 2h ago · 3 concepts \(by qwen3\.5:9b\) · no spend$/m);
 });
 
 test('removeTools removes only a …/agenticos/graphify dir', () => {
@@ -188,8 +227,9 @@ test('semanticState: auto follows the provider, true and false override it', () 
   assert.equal(st('auto', 'auto').on, true);
   assert.equal(st('auto', 'claude').on, true);
   assert.match(st('auto', 'none').why, /^off under provider none/);
-  assert.match(st('auto', 'local').why, /^off under provider local/);
-  assert.equal(st('auto', 'ollama').on, false);
+  // Under local and ollama the pass runs on the local engine (local-first A14).
+  assert.equal(st('auto', 'local').on, true);
+  assert.equal(st('auto', 'ollama').on, true);
   assert.equal(st(true, 'none').on, true);
   assert.equal(st(false, 'claude').on, false);
 });
@@ -244,7 +284,7 @@ test('build --semantic refuses a provider opt-out, needs --yes off a terminal, a
   const c = cfgOf(w);
   fs.writeFileSync(path.join(w.configDir, 'agenticos.json'), JSON.stringify({ ...c, provider: 'none' }));
   assert.equal(await GC.run(['build'], { configDir: w.configDir, io, semantic: true, yes: true }), 1);
-  assert.match(errs.pop(), /sends note text to a hosted model \(Claude or Codex\) on your login, and provider is none — `aos graph semantic on` allows it anyway/);
+  assert.match(errs.pop(), /provider is none, so no model reads the notes — `aos graph semantic on` allows the semantic pass anyway/);
   fs.writeFileSync(path.join(w.configDir, 'agenticos.json'), JSON.stringify({ ...c, provider: 'claude' }));
   const runner = { host: 'claude', bin: '/x/claude' };
   assert.equal(await GC.run(['build'], { configDir: w.configDir, io, semantic: true, isTTY: false, runner: null }), 1);
@@ -257,6 +297,11 @@ test('build --semantic refuses a provider opt-out, needs --yes off a terminal, a
   await GC.run(['build'], { configDir: w.configDir, io, semantic: true, isTTY: true, ask: async () => false, runner: { host: 'codex', bin: '/x/codex' } });
   assert.match(logs.join('\n'), /notes' text to Codex \(your Codex default model, on your login\)/);
   assert.match(logs.join('\n'), /today \$0\.0000 of the \$1 graph budget/);
+  // On the local engine (local-first A14): no cost line, nothing leaves this Mac.
+  logs.length = 0;
+  await GC.run(['build'], { configDir: w.configDir, io, semantic: true, isTTY: true, ask: async () => false, runner: { host: 'local', engine: 'ollama', url: 'http://127.0.0.1:11434', model: 'qwen3.5:9b' } });
+  assert.match(logs.join('\n'), /reads .* notes with the local model \(qwen3\.5:9b, on this Mac\); .*nothing leaves this Mac and nothing is spent/);
+  assert.doesNotMatch(logs.join('\n'), /graph budget/);
 });
 
 test('while a semantic pass holds the graph lock, doctor and status say it is running (not a finished run)', async () => {
@@ -275,7 +320,8 @@ test('while a semantic pass holds the graph lock, doctor and status say it is ru
   const logs = [];
   fs.writeFileSync(path.join(w.configDir, 'agenticos.json'), JSON.stringify({ vault: w.vault, provider: 'auto', graph: { bin } }));
   assert.equal(await GC.run(['status'], { configDir: w.configDir, io: { log: (m) => logs.push(m), error() {} } }), 0);
-  assert.match(logs.join('\n'), new RegExp(`^semantic   on \\(every 24 h, auto\\) · running since ${hm} · never run`, 'm'));
+  // Who reads the notes follows the on line when this machine has a host CLI ("Claude (haiku, on your login)").
+  assert.match(logs.join('\n'), new RegExp(`^semantic   on \\(every 24 h, auto\\)(?: · [^·]+)? · running since ${hm} · never run`, 'm'));
   fs.writeFileSync(lock, JSON.stringify({ schema: 1, mode: 'semantic', pid: process.pid, startedAt, until: new Date(Date.now() - 1000).toISOString() }));
   assert.equal(GC.semanticRunning(w.vault), null, 'past its deadline it is not running');
 });

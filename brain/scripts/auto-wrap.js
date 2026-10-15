@@ -11,9 +11,15 @@
  *               the provider, then
  *                 none   → "## Wrap Status" banner in SESSION.md + needs-review drafts
  *                          from the regex prefilter; ledger disabled / no-provider
+ *                 none, the local engine down or its model not pulled (provider local, local-first A3)
+ *                        → spool the session for when it is back; ledger skipped / local-down; the banner says
+ *                          so; no hosted call and no prefilter drafts (the real wrap will find the corrections)
  *                 ollama → wait for the server (spool the session if it never comes),
  *                          drain the spool, extract the current session last
  *                 claude → extract through headless claude -p with EXTRACTION_SCHEMA
+ *   (--drain)   AUTO_WRAP_DETACHED=1 with --drain, as reconcile-sessions.js runs it while the spool holds sessions:
+ *               drainQueue() resolves the provider and, when one answers, wraps the spooled sessions; else it leaves
+ *               them as they are (no attempt spent).
  *
  * Core logic: runAutoWrap() (extract + write) and applyExtraction() (the write half,
  * shared with the MCP wrap_session tool), both testable with an injected chatFn /
@@ -318,8 +324,10 @@ function writePendingDraftsSection(count) {
  * Upserted so repeated sessions do not stack; removed by applyExtraction and by
  * wrap-session.js's SESSION.md reset.
  */
-function writeWrapStatus(sessionId, providerName) {
-  const body = `- Session ${sessionId} not wrapped (provider: ${providerName}) — run ${host.invocationHint('wrap')}.`;
+function writeWrapStatus(sessionId, providerName, reason = null) {
+  const body = LOCAL_DOWN.has(reason)
+    ? `- Session ${sessionId} queued: the local model ${reason === 'local-down' ? 'is not answering' : 'is not downloaded yet (aos local pull)'}; it wraps when the model is back, or run ${host.invocationHint('wrap')}.`
+    : `- Session ${sessionId} not wrapped (provider: ${providerName}) — run ${host.invocationHint('wrap')}.`;
   updateSession((content) => upsertSection(content == null ? EMPTY_SESSION : content, '## Wrap Status', body));
 }
 
@@ -456,13 +464,16 @@ function loadTranscriptText(transcriptPath) {
 // Only the ollama provider waits; claude has nothing to wait for.
 const OLLAMA_READY_TIMEOUT_MS = 90_000;
 const OLLAMA_READY_POLL_MS = 5_000;
+// provider local's none reasons (provider.js resolveLocal): the session waits in the spool for the engine (A3).
+const LOCAL_DOWN = new Set(['local-down', 'local-model-missing']);
 
-async function waitForOllama() {
-  if (await ping()) return true;
+/** Waits for the provider's server: its own ping (the local engine's address and engine), else Ollama's default. */
+async function waitForOllama(pingFn = ping) {
+  if (await pingFn()) return true;
   const deadline = Date.now() + OLLAMA_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, OLLAMA_READY_POLL_MS));
-    if (await ping()) return true;
+    if (await pingFn()) return true;
   }
   return false;
 }
@@ -531,6 +542,21 @@ async function wrapCycle({ transcriptPath, sessionId, provider, deps = {} }) {
   try { await (deps.pruneQueue || pruneQueue)(); } catch (_) { /* spool trouble is not wrap trouble */ }
   const p = provider || await getProvider('auto-wrap');
 
+  if (p.name === 'none' && LOCAL_DOWN.has(p.reason)) {
+    // local-first A3: the local engine is down or its model not pulled. The session waits for it in the spool (the
+    // reconcile pass drains it once the engine answers); nothing hosted is asked.
+    let queued = false;
+    try { queued = (await (deps.enqueue || enqueue)({ sessionId, transcriptPath })) > 0; } catch (_) { /* best effort */ }
+    await withReport('auto-wrap', async (report) => {
+      report.provider = 'none';
+      report.skip(p.reason);
+      if (queued) report.counts.queued = 1;
+      writeWrapStatus(sessionId, 'none', p.reason);
+      report.wrote.push('brain/_index/SESSION.md');
+    });
+    return { status: queued ? 'spooled' : 'skipped', provider: 'none', reason: p.reason };
+  }
+
   if (p.name === 'none') {
     await withReport('auto-wrap', async (report) => {
       report.provider = 'none';
@@ -544,7 +570,7 @@ async function wrapCycle({ transcriptPath, sessionId, provider, deps = {} }) {
     return { status: 'disabled', provider: 'none' };
   }
 
-  if (p.name === 'ollama' && !(await (deps.waitForOllama || waitForOllama)())) {
+  if (p.name === 'ollama' && !(await (deps.waitForOllama || (() => waitForOllama(typeof p.ping === 'function' ? () => p.ping() : ping)))())) {
     await withReport('auto-wrap', async (report) => { report.provider = 'ollama'; report.skip('ollama-unreachable'); });
     try { await enqueue({ sessionId, transcriptPath }); } catch (_) { /* best effort */ }
     return { status: 'spooled', provider: 'ollama' };
@@ -573,7 +599,35 @@ async function wrapCycle({ transcriptPath, sessionId, provider, deps = {} }) {
   }
 }
 
+/**
+ * The reconcile pass's drain (local-first A3): the sessions spooled while no provider answered (the local engine down),
+ * wrapped now that one does, oldest first. With the provider still none it returns at once and spends no attempt; a
+ * session that fails keeps its spent attempt (wrap-queue's exhaustion guard).
+ */
+async function drainQueue({ provider, deps = {} } = {}) {
+  try { await (deps.pruneQueue || pruneQueue)(); } catch (_) { /* spool trouble is not wrap trouble */ }
+  if (!require('./lib/wrap-queue.js').peek().length) return { status: 'empty', wrapped: 0 };
+  const p = provider || await getProvider('auto-wrap');
+  if (p.name === 'none') return { status: 'waiting', reason: p.reason, wrapped: 0 };
+  let wrapped = 0;
+  let due = [];
+  try { due = await claim(); } catch (_) { return { status: 'error', wrapped: 0 }; }
+  for (const entry of due) {
+    try {
+      await extractOnce({ transcriptPath: entry.transcriptPath, sessionId: entry.sessionId, provider: p });
+      await resolveQueued(entry.sessionId);
+      wrapped++;
+    } catch (_) { /* stays spooled with its attempt spent; the ledger holds the error */ }
+  }
+  if (wrapped) clearWrapStatus();
+  return { status: 'ok', wrapped, provider: p.name };
+}
+
 async function runDetached() {
+  if (process.argv.includes('--drain')) {
+    try { await drainQueue(); } catch (_) { /* the ledger holds the error */ }
+    process.exit(0);
+  }
   try {
     await wrapCycle({
       transcriptPath: process.env.BRAIN_TRANSCRIPT || '',
@@ -620,6 +674,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  runAutoWrap, applyExtraction, writeWrapStatus, wrapCycle, writeSessionSections, writePendingDraftsSection,
+  runAutoWrap, applyExtraction, writeWrapStatus, wrapCycle, drainQueue, writeSessionSections, writePendingDraftsSection,
   EXTRACTION_INSTRUCTIONS, EXTRACTION_SCHEMA, EXTRACTION_SHAPE,
 };

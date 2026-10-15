@@ -163,3 +163,33 @@ test('ollamaEmbedder: Ollama\'s /api/embed only under auto or ollama; every othe
     server.close();
   }
 });
+
+// local-first A3: under provider local the local engine's embedder answers the query (Ollama's /api/embed, or an
+// OpenAI-compatible server's /embeddings), named by local.embedder; nothing answering is BM25 as before.
+test('ollamaEmbedder under provider local: the local engine\'s embedder, at local.url, on either engine', async () => {
+  const http = require('http');
+  const { ollamaEmbedder } = require('../sdk/recall-cli.js');
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const b = JSON.parse(body);
+      seen.push([req.url, b.model]);
+      res.end(JSON.stringify(req.url === '/api/embed' ? { embeddings: [[3, 4]] } : { data: [{ index: 0, embedding: [0, 2] }] }));
+    });
+  });
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+  const { port } = server.address();
+  try {
+    const ollama = await ollamaEmbedder({ provider: 'local', local: { url: `http://127.0.0.1:${port}`, embedder: 'emb:small' } })(['zebra'], { timeoutMs: 2000 });
+    assert.deepEqual(ollama, [[0.6, 0.8]]);
+    const openai = await ollamaEmbedder({ provider: 'local', local: { engine: 'openai', url: `http://127.0.0.1:${port}/v1`, embedder: 'emb:small' } })(['zebra'], { timeoutMs: 2000 });
+    assert.deepEqual(openai, [[0, 1]]);
+    assert.deepEqual(seen, [['/api/embed', 'emb:small'], ['/v1/embeddings', 'emb:small']]);
+  } finally {
+    server.close();
+  }
+  // Nothing answers: the embed rejects, and queryRecallHybrid falls back to BM25 on its own.
+  await assert.rejects(ollamaEmbedder({ provider: 'local', local: { url: `http://127.0.0.1:${port}` } })(['zebra'], { timeoutMs: 1000 }));
+});

@@ -79,6 +79,48 @@ export function chatRoute(state: ProviderState | null): "claude" | "local" | "no
   return "local";
 }
 
+/** What Vault chat runs on (local-first A2): `engine` is the local engine (ask.js --local --chat), the rest as chatRoute. */
+export type VaultRoute = "engine" | "claude" | "local" | "none";
+/** The config Vault chat's route reads: the background provider and ai.chat. */
+export interface VaultRouteCfg { provider: string; ai?: { chat?: string } }
+
+/** Where Vault chat runs: under provider local, ai.chat (local by default, the local engine) or a host; elsewhere a host. */
+export function vaultEngine(cfg: VaultRouteCfg): "local" | "host" {
+  return cfg.provider === "local" && cfg.ai?.chat !== "host" ? "local" : "host";
+}
+
+/**
+ * The route a Vault question takes. Under provider local with ai.chat local it is the local engine, even when Claude is
+ * signed in (local-first A2); with ai.chat host it follows the hosts' logins, never the background provider's state
+ * (the local engine may be down: none in provider-state, a host still signed in). Any other provider: chatRoute.
+ */
+export function vaultRoute(state: ProviderState | null, cfg: VaultRouteCfg): VaultRoute {
+  if (cfg.provider !== "local") return chatRoute(state);
+  if (vaultEngine(cfg) === "local") return "engine";
+  if (state?.claude?.loggedIn === true) return "claude";
+  if (state?.codex?.loggedIn === true) return "local";
+  return "none";
+}
+
+/** The local engine's reason in an answer that failed (ask.js: "the local model cannot answer (local-down): …"), or null. */
+export function localDownOf(error: string | null | undefined): "local-down" | "local-model-missing" | null {
+  const m = /local model cannot answer \((local-down|local-model-missing)\)/.exec(String(error ?? ""));
+  return m ? (m[1] as "local-down" | "local-model-missing") : null;
+}
+
+/** Why the local engine cannot answer, as the menu and the composer say it; null while it can. */
+export function localDownText(reason: string | null | undefined): string | null {
+  if (reason === "local-down") return "The local model is not answering: start Ollama (or your local engine).";
+  if (reason === "local-model-missing") return "The local model is not downloaded yet: Settings ▸ Local engine ▸ Pull the model.";
+  return null;
+}
+
+/** "Run once on Claude Code (reasoner cap: today $0.12 of $5)" — the one-question offer when the local engine is down (A3). */
+export function runOnceLabel(label: string, spent: number | null, cap: number): string {
+  const capText = cap > 0 ? `reasoner cap: ${spent === null ? "" : `today ${usdText(spent)} of `}${Number.isInteger(cap) ? `$${cap}` : usdText(cap)}` : "no reasoner spend allowed";
+  return `Run once on ${label} (${capText})`;
+}
+
 export function buildClaudeArgs(o: { prompt: string; model: string; maxBudgetUsd: number; effort?: string }): string[] {
   return [
     "-p", o.prompt,
@@ -236,9 +278,11 @@ export function runClaudeAsk(opts: ClaudeAskOptions, deps: ClaudeAskDeps = DEFAU
  * The hosts a Vault question may go to: the composer's (on in agenticos.json, login not known missing), except that
  * Claude also needs the login this path checks (chatRoute), since `claude -p` without one answers nothing.
  */
-export function vaultHostChoices(cfg: AgenticosJson | null, state: ProviderState | null): HostChoice[] {
+export function vaultHostChoices(cfg: AgenticosJson | null, state: ProviderState | null, opts: { local?: boolean } = {}): HostChoice[] {
+  // Under provider local the background provider may be none (the engine down) with Claude still signed in (A17).
+  const claudeIn = opts.local ? state?.claude?.loggedIn === true : chatRoute(state) === "claude";
   return hostChoices(cfg, state).map((c) =>
-    c.host === "claude" && c.ready && chatRoute(state) !== "claude" ? { ...c, ready: false, reason: `${c.label} is not logged in` } : c);
+    c.host === "claude" && c.ready && !claudeIn ? { ...c, ready: false, reason: `${c.label} is not logged in` } : c);
 }
 
 /** Why the menu shows only the aliases: the app's catalog was not there to ask. */
@@ -313,11 +357,13 @@ export function vaultAsked(value: VaultValue, chosen: boolean): VaultValue {
  * `default`, capped per call; on Codex through ask.js, under the reasoner's caps. With no host ready the route is
  * today's: headless Claude, or ask.js under whichever provider the scripts resolved.
  */
-export function vaultModeLine(host: SessionHost | null, modelLabel: string | null, o: { reasonerModel: string; route: "claude" | "local" | "none"; provider: string }): string {
+export function vaultModeLine(host: SessionHost | null, modelLabel: string | null, o: { reasonerModel: string; route: VaultRoute; provider: string; localModel?: string | null }): string {
   if (host === "claude") return ` · Claude Code (${modelLabel || o.reasonerModel}, capped)`;
   if (host === "codex") return ` · Codex via ask.js (${modelLabel || "Codex default"}, reasoner caps)`;
+  if (o.route === "engine") return ` · This Mac (${o.localModel || "the local model"}, no spend)`;
   if (o.route === "claude") return ` · claude (${o.reasonerModel}, capped)`;
-  return o.provider === "codex" ? " · codex via ask.js (reasoner caps)" : " · local ask.js";
+  // Under provider local the script route is ai.chat host on Codex (vaultRoute).
+  return o.provider === "codex" || o.provider === "local" ? " · codex via ask.js (reasoner caps)" : " · local ask.js";
 }
 
 const REASON_ROWS = /^reason:/;

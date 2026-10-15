@@ -125,3 +125,13 @@ test('provider ollama → chats with the workhorse tag and the feature label', a
   assert.equal(seen.feature, 'workspace-insights');
   assert.equal(res.insight.model, require('../sdk/lib/models.js').role('workhorse').tag);
 });
+
+// local-first A3: the local engine failing mid-scan gives the heuristic insight, never an empty one.
+test('generateInsight on the local engine that fails: the heuristic insight', async () => {
+  const entry = { name: 'demo', inputHash: 'h', status: 'active', commits: [], sessions: [], files: [], workspaceMd: null };
+  const local = { name: 'ollama', engine: 'ollama', model: 'qwen3.5:4b', chat: async () => { throw new Error('socket hang up'); } };
+  const res = await generateInsight(entry, { provider: local });
+  assert.equal(res.insight.model, 'heuristic');
+  const hosted = { name: 'ollama', chat: async () => { throw new Error('socket hang up'); } };
+  assert.equal((await generateInsight(entry, { provider: hosted })).insight.status, 'unavailable', 'auto\'s Ollama keeps today\'s behaviour');
+});

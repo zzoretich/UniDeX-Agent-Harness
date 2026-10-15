@@ -13,8 +13,8 @@
 // some), a question, then the sweep (one model call, waited for up to AI_TIMEOUT_MS). That scope's cards show in the card
 // with Review and Dismiss (views/brain/SweepCards.ts; data/brainSweep.ts). One sweep runs at a time on this page.
 import { Notice, setIcon } from "obsidian";
-import { AI_TIMEOUT_MS, clip, hasUsage, parseSweepEstimate, parseSweepResult, type BrainTarget, type HubUsage } from "../../data/brainModel";
-import { consolidateAsk, groupScopes, scopePaths, scopeSummary, sweepDoneText, sweepOffText } from "../../data/brainSweep";
+import { AI_TIMEOUT_MS, clip, hasUsage, parseSweepEstimate, parseSweepResult, type BrainTarget, type HubUsage, type OnceHost } from "../../data/brainModel";
+import { consolidateAsk, groupScopes, onceAsk, scopePaths, scopeSummary, sweepDoneText, sweepOffText, sweepTimeoutMs } from "../../data/brainSweep";
 import {
   MAP_VIEWS, MAP_VIEW_LABEL, aroundLayout, aroundPicks, aroundRows, bubbleCaption, bubbleLabel, builtAgo, captionWidth,
   communityLine, communityViews, degrees, drawnRadius, everyNodeGraph, fitView, labelFont, layoutBubbles, linkWidth,
@@ -748,7 +748,9 @@ export class MapMode implements BrainModeView {
       if (!pre.ok) return;
       const e = parseSweepEstimate(pre.json);
       if (!e) { new Notice(`${label}: aos answered in an unexpected shape`); return; }
-      if (!e.estimate.available) {
+      // The local engine down (local-first A3): a signed-in host may run it once, asked first; else why it is off.
+      const once = !e.estimate.available ? e.estimate.once[0] ?? null : null;
+      if (!e.estimate.available && !once) {
         const why = sweepOffText(e.estimate);
         this.offNote = { id: c.id, text: why };
         new Notice(`${label}: ${why}`);
@@ -758,11 +760,12 @@ export class MapMode implements BrainModeView {
       if (!this.root) return;
       this.consolidating = { id: c.id, stage: "ask" };
       this.redrawRight();
-      const q = consolidateAsk(c.name, e, sent);
+      const q = once ? onceAsk(label, once, e.estimate.reason) : consolidateAsk(c.name, e, sent);
       if (!(await this.ctx.confirm(q.title, q.message, q.confirm))) return;
       this.consolidating = { id: c.id, stage: "run" };
       this.redrawRight();
-      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: sent.paths, estimate: false }, label, { timeoutMs: AI_TIMEOUT_MS });
+      const host = once ? (once.provider as OnceHost) : undefined;
+      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: sent.paths, estimate: false, ...(host ? { host } : {}) }, label, { timeoutMs: host ? AI_TIMEOUT_MS : sweepTimeoutMs(e) });
       if (r.ok) new Notice(sweepDoneText(parseSweepResult(r.json), c.name));
     } catch (err) {
       new Notice(`${label}: ${err instanceof Error ? err.message : String(err)}`);

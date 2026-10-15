@@ -506,3 +506,100 @@ test('a throwing rebuild never fails the wrap: injected into runAutoWrap and app
     assert.ok(fs.statSync(HUB_PATH).isDirectory(), 'nothing replaced the folder');
   } finally { fs.rmSync(HUB_PATH, { recursive: true, force: true }); }
 });
+
+// ── provider local (local-first A1, A3): the extraction on the local engine; down, the session waits in the spool ──
+const P = require('../sdk/lib/provider.js');
+const { drainQueue } = require('../auto-wrap.js');
+const LOCAL_DOWN = { name: 'none', reason: 'local-down', capabilities: { chat: false, embed: false, structured: false }, chat: async () => { throw new Error('must not be called'); } };
+const sessionFile = (name, text) => {
+  const t = path.join(TMP, name);
+  fs.writeFileSync(t, [
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text } ] } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
+  ].join('\n') + '\n');
+  return t;
+};
+/** The local engine as provider.js builds it (resolveLocal → makeLocal), answering from `reply` with no server. */
+async function localEngine(reply, seen = []) {
+  P.resetProviderCache();
+  return P.resolveProvider({ mode: 'local', feature: 'auto-wrap', deps: {
+    localModels: async () => ['qwen3.5:9b'], recordLocalCall: () => {},
+    ollamaChat: async (o) => { seen.push(o); return typeof reply === 'function' ? reply(o) : reply; },
+  } });
+}
+
+test('the extraction JSON on the local engine: the schema as Ollama\'s format, the workhorse, a memory written', async () => {
+  fs.writeFileSync(SESSION_PATH, '---\ntype: session\n---\n\n# SESSION\n\n## Key Context This Session\n\n## Things to Remember\n');
+  const seen = [];
+  const local = await localEngine(goodChat(), seen);
+  assert.deepEqual([local.name, local.engine, local.model], ['ollama', 'ollama', 'qwen3.5:9b']);
+  const out = await wrapCycle({ transcriptPath: sessionFile('local-ok.jsonl', 'build the ledger'), sessionId: 'sess-local-ok', provider: local,
+    deps: { pruneQueue: async () => ({ dropped: 0 }), waitForOllama: async () => true } });
+  assert.equal(out.status, 'ok');
+  const extract = seen.find((o) => o.format === 'json' || o.schema);
+  assert.deepEqual(extract.schema, EXTRACTION_SCHEMA);
+  assert.equal(extract.model, 'qwen3.5:9b');
+  assert.equal(extract.feature, 'auto-wrap');
+  assert.ok(fs.existsSync(path.join(TMP, 'brain', 'memory', 'feedback', 'commit-immediately-after-green-tests.md')));
+  const last = readLedgerFile().pipelines['auto-wrap'].lastRun;
+  assert.deepEqual([last.status, last.provider], ['ok', 'ollama']);
+});
+
+test('the local engine down: the session is spooled (no hosted call, no prefilter drafts), the banner says it waits', async () => {
+  fs.writeFileSync(SESSION_PATH, '---\ntype: session\n---\n\n# SESSION\n\n## Key Context This Session\n\n## Things to Remember\n');
+  for (const r of q.peek()) await q.resolve(r.sessionId);
+  const out = await wrapCycle({ transcriptPath: sessionFile('local-down.jsonl', 'no, use the other binary for this'), sessionId: 'sess-local-down', provider: LOCAL_DOWN,
+    deps: { pruneQueue: async () => ({ dropped: 0 }), waitForOllama: async () => { throw new Error('no wait for a none provider'); } } });
+  assert.deepEqual(out, { status: 'spooled', provider: 'none', reason: 'local-down' });
+  assert.ok(q.peek().some((r) => r.sessionId === 'sess-local-down'));
+  const last = readLedgerFile().pipelines['auto-wrap'].lastRun;
+  assert.deepEqual([last.status, last.reason, last.counts.queued], ['skipped', 'local-down', 1]);
+  assert.match(fs.readFileSync(SESSION_PATH, 'utf8'), /Session sess-local-down queued: the local model is not answering; it wraps when the model is back/);
+  const draftsDir = path.join(TMP, 'brain', 'memory', 'feedback', '_drafts');
+  const drafts = fs.existsSync(draftsDir) ? fs.readdirSync(draftsDir).filter((n) => n.endsWith('.md')) : [];
+  assert.equal(drafts.length, 0, 'the real wrap will find the correction');
+  // local.model not pulled: the same, with its own words.
+  await wrapCycle({ transcriptPath: sessionFile('local-missing.jsonl', 'ship it'), sessionId: 'sess-local-missing', provider: { ...LOCAL_DOWN, reason: 'local-model-missing' },
+    deps: { pruneQueue: async () => ({ dropped: 0 }) } });
+  assert.match(fs.readFileSync(SESSION_PATH, 'utf8'), /queued: the local model is not downloaded yet \(aos local pull\)/);
+});
+
+test('the drain: still down, nothing is attempted; back, the spooled sessions wrap and leave the spool', async () => {
+  for (const r of q.peek()) await q.resolve(r.sessionId);
+  assert.deepEqual(await drainQueue({ provider: LOCAL_DOWN, deps: { pruneQueue: async () => ({ dropped: 0 }) } }), { status: 'empty', wrapped: 0 });
+  await q.enqueue({ sessionId: 'sess-wait-1', transcriptPath: sessionFile('wait-1.jsonl', 'build the ledger') });
+  const still = await drainQueue({ provider: LOCAL_DOWN, deps: { pruneQueue: async () => ({ dropped: 0 }) } });
+  assert.deepEqual(still, { status: 'waiting', reason: 'local-down', wrapped: 0 });
+  assert.equal(q.peek().find((r) => r.sessionId === 'sess-wait-1').attempts, 0, 'no attempt spent while it waits');
+  const back = await localEngine(goodChat());
+  const r = await drainQueue({ provider: back, deps: { pruneQueue: async () => ({ dropped: 0 }) } });
+  assert.deepEqual([r.status, r.wrapped, r.provider], ['ok', 1, 'ollama']);
+  assert.equal(q.peek().some((x) => x.sessionId === 'sess-wait-1'), false);
+});
+
+test('reconcile-sessions starts one drain worker while the spool holds sessions, and none when it is empty', () => {
+  const R = require('../reconcile-sessions.js');
+  const spawned = [];
+  const spawn = (bin, args, opts) => spawned.push({ args, env: opts.env });
+  assert.equal(R.drainSpool({ peek: () => [], spawn }), false);
+  assert.equal(R.drainSpool({ peek: () => [{ sessionId: 's' }], spawn }), true);
+  assert.equal(spawned.length, 1);
+  assert.match(spawned[0].args[0], /auto-wrap\.js$/);
+  assert.equal(spawned[0].args[1], '--drain');
+  assert.equal(spawned[0].env.AUTO_WRAP_DETACHED, '1');
+});
+
+test('local-down.js: the line Health and doctor show, from provider-state and the spool, only under provider local', () => {
+  const { localWaiting } = require('../lib/local-down.js');
+  const v = fs.mkdtempSync(path.join(os.tmpdir(), 'local-down-'));
+  fs.mkdirSync(path.join(v, 'brain', '_index'), { recursive: true });
+  const state = (localReason) => fs.writeFileSync(path.join(v, 'brain', '_index', 'provider-state.json'), JSON.stringify({ name: 'none', reason: localReason, localReason }));
+  state('local-down');
+  fs.writeFileSync(path.join(v, 'brain', '_index', 'auto-wrap-pending.jsonl'), '{"sessionId":"a","transcriptPath":"/x"}\n{"sessionId":"b","transcriptPath":"/y"}\n');
+  assert.deepEqual(localWaiting({ cfg: { provider: 'local' }, vault: v }), { reason: 'local-down', queued: 2, line: 'local model down: 2 wraps queued' });
+  assert.equal(localWaiting({ cfg: { provider: 'auto' }, vault: v }).line, null, 'other providers: not this signal');
+  state('local-model-missing');
+  assert.equal(localWaiting({ cfg: { provider: 'local' }, vault: v }).line, 'local model not downloaded: 2 wraps queued');
+  state('local-ready');
+  assert.deepEqual(localWaiting({ cfg: { provider: 'local' }, vault: v }), { reason: null, queued: 2, line: null });
+});

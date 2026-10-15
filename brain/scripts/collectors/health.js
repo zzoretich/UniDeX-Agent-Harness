@@ -107,6 +107,15 @@ function collectHealth(snapshot) {
     }
   }
 
+  // The local engine (local-first A3): down under provider local, background work waits and session wraps queue up.
+  try {
+    const lw = require('../lib/local-down.js').localWaiting({ cfg: require('../lib/config.js').loadConfig(), vault: PATHS.VAULT });
+    if (lw.reason) {
+      const fix = lw.reason === 'local-down' ? 'start Ollama (or your local engine)' : 'run aos local pull';
+      add(lw.queued ? 'error' : 'warn', 'local', `${lw.line[0].toUpperCase()}${lw.line.slice(1)} — ${fix}; they wrap when it is back`, lw.reason);
+    }
+  } catch { /* a health signal, never a scan failure */ }
+
   // GSD
   if (gsd?.installed && gsd?.manifest?.present && gsd.manifest.drift) {
     add('error', 'gsd', `GSD manifest drift: ${gsd.manifest.drift} files listed in manifest are missing on disk`, gsd.manifest.missing);

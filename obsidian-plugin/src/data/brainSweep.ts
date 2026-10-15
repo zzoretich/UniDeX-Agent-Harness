@@ -14,7 +14,7 @@
 // that lead replaces the earlier runs' open cards (A10: a new run replaces the open cards of its scope), whatever keys
 // they were stored under (currentCards).
 import {
-  SWEEP_KIND_LABEL, SWEEP_MAX_PATHS, aiReasonText, capText, estimateText, shortDay, spendText, sweepScopeKey,
+  AI_TIMEOUT_MS, SWEEP_KIND_LABEL, SWEEP_MAX_PATHS, aiReasonText, capText, estimateText, onceCostText, onceLabel, providerName, shortDay, spendText, sweepScopeKey,
   type AiEstimate, type BrainHub, type BrainMap, type BrainMemory, type SweepCard, type SweepEstimate, type SweepFile,
   type SweepKind, type SweepResult, type SweepRun,
 } from "./brainModel";
@@ -255,11 +255,23 @@ export function scopeSummary(d: SweepInput, scopes: ReadonlySet<string>): { line
  * reasoner's daily cap reached it still drafts, as it runs on the hook chain and the hook's cap (A7); else (no provider,
  * a sign-in, the hook's cap: the merge's chain is down too) it is finished by hand (A4).
  */
-export function sweepOffText(e: Pick<AiEstimate, "reason" | "cap">): string {
+export function sweepOffText(e: Pick<AiEstimate, "reason" | "cap"> & { once?: AiEstimate["once"] }): string {
   const still = e.reason === "ollama-only" ? "Merge with AI still works, on Ollama."
     : e.reason === "reasoner-daily-cap" ? "Merge with AI still works."
+    // The local engine down (local-first A3): a signed-in host may run it once, never unasked.
+    : e.once && e.once.length ? `Run it once on ${e.once.map((o) => providerName(o.provider)).join(" or ")} below, or merge by hand.`
     : "Merge with AI still works by hand.";
   return `${aiReasonText(e.reason, e.cap)} ${still}`;
+}
+
+/** The local engine reads brain hub's groups in chunks (local-first A15): "brain hub's duplicates and clusters, 2 calls". */
+function chunkText(e: Pick<SweepEstimate, "chunks">): string {
+  return e.chunks === null ? "" : `brain hub's duplicates and clusters, ${e.chunks === 1 ? "1 call" : `${e.chunks} calls`}`;
+}
+
+/** How long the page waits for a sweep: the runtime's own limit, one call's for a host, each chunk's on the local engine. */
+export function sweepTimeoutMs(e: Pick<SweepEstimate, "chunks"> | null): number {
+  return e && e.chunks ? Math.max(AI_TIMEOUT_MS, 30_000 + e.chunks * 130_000) : AI_TIMEOUT_MS;
 }
 
 /**
@@ -270,7 +282,7 @@ export function sweepEstimateLine(e: SweepEstimate): { off: boolean; text: strin
   if (!e.estimate.available) return { off: true, text: sweepOffText(e.estimate) };
   const cap = capText(e.estimate.cap);
   const part = e.of > 0 && e.considered < e.of ? `looks at ${e.considered} of ${e.of} memories` : "";
-  return { off: false, text: [estimateText(e.estimate), cap, part].filter(Boolean).join(" · ") };
+  return { off: false, text: [estimateText(e.estimate), cap, part, chunkText(e)].filter(Boolean).join(" · ") };
 }
 
 /** Consolidate with AI…'s question (A3): the group, what a model does, what it costs, and the members left out. */
@@ -279,10 +291,20 @@ export function consolidateAsk(name: string, e: SweepEstimate, sent: { paths: re
   const reads = e.of > 0 && e.considered < e.of ? `${e.considered} of these ${e.of} memories` : n === 1 ? "this memory" : `these ${n} memories`;
   const cut = sent.cut > 0 ? ` It looks at the ${n} most linked of the ${sent.of}.` : "";
   const cap = capText(e.estimate.cap);
+  const who = e.estimate.provider === "ollama" ? `The local model reads ${reads}${e.chunks && e.chunks > 1 ? ` in ${e.chunks} calls` : ""}` : `A model reads ${reads}`;
   return {
     title: `Consolidate “${name}” with AI?`,
-    message: `A model reads ${reads} and suggests merges, archives and retitles; nothing changes until you apply one.${cut} Cost: ${estimateText(e.estimate)}${cap ? `, ${cap}` : ""}.`,
+    message: `${who} and suggests merges, archives and retitles; nothing changes until you apply one.${cut} Cost: ${estimateText(e.estimate)}${cap ? `, ${cap}` : ""}.`,
     confirm: "Run the sweep",
+  };
+}
+
+/** "Run once on Claude?" — the question before a sweep or a draft on a host while the local engine is down (A3). */
+export function onceAsk(what: string, once: AiEstimate, reason: string | null): { title: string; message: string; confirm: string } {
+  return {
+    title: `${what}: run once on ${providerName(once.provider)}?`,
+    message: `${aiReasonText(reason, null)} ${providerName(once.provider)} can run it this once, on your login: ${onceCostText(once)}. The local model stays the default.`,
+    confirm: onceLabel(once),
   };
 }
 
@@ -291,7 +313,8 @@ export function sweepDoneText(r: SweepResult | null, name: string | null = null)
   const head = name ? `Sweep of “${name}”` : "Sweep";
   if (!r) return `${head}: done`;
   const n = r.suggestions.length;
-  const capped = r.run.of > 0 && r.run.considered < r.run.of ? ` · ${r.run.considered} of ${r.run.of} memories looked at` : "";
+  const capped = (r.run.of > 0 && r.run.considered < r.run.of ? ` · ${r.run.considered} of ${r.run.of} memories looked at` : "")
+    + (r.run.failedChunks ? ` · ${r.run.failedChunks} of ${r.run.chunks} calls failed` : "");
   return `${head}: ${n ? pl(n, "suggestion") : "nothing to suggest"} · ${spendText({ ...r.run, cap: null }, "swept by")}${capped}`;
 }
 

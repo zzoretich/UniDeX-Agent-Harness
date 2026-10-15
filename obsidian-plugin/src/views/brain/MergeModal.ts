@@ -18,8 +18,9 @@
 import { Modal, Notice } from "obsidian";
 import type { App } from "obsidian";
 import {
-  AI_TIMEOUT_MS, MERGE_LIMITS, UNDO_DAYS, bodyWithoutTitle, estimateText, parseMergeDraft, parseMergeEstimate, providerName,
-  shortDay, spendText, type BrainMemory, type MergeDraft, type MergeEstimate, type MergeFields, type MergeResult, type MergeSource,
+  AI_TIMEOUT_MS, MERGE_LIMITS, UNDO_DAYS, bodyWithoutTitle, estimateText, onceCostText, onceLabel, parseMergeDraft, parseMergeEstimate, providerName,
+  shortDay, spendText, type AiEstimate, type BrainMemory, type MergeDraft, type MergeEstimate, type MergeFields, type MergeResult, type MergeSource,
+  type OnceHost,
 } from "../../data/brainModel";
 import { dialogId } from "../../ui/spaces/SpaceDialogs";
 import type { BrainCtx } from "./types";
@@ -222,16 +223,26 @@ export class MergeModal extends Modal {
     if (!a || !this.modalEl.contains(a) || a === els.cancel) this.form?.title.focus();
   }
 
-  /** Draft with AI: one `merge-draft` call through the provider chain (A7), waited for up to AI_TIMEOUT_MS (A12). */
-  private async draftWithAi(): Promise<void> {
+  /** With the local engine down (local-first A3): the first signed-in host that could draft it once, else null. */
+  private once(): AiEstimate | null {
     const e = this.est?.estimate;
+    return e && !e.available ? e.once[0] ?? null : null;
+  }
+
+  /** Draft with AI: one `merge-draft` call through the provider chain (A7), waited for up to AI_TIMEOUT_MS (A12); or, with
+   *  the local engine down, once on a signed-in host (the button names it and its cost). */
+  private async draftWithAi(): Promise<void> {
+    const est = this.est?.estimate;
+    const once = this.once();
+    const e = once ?? est;
     if (!this.form || !e || !e.available || this.busy || this.stale) return;
     this.busy = "drafting";
     const seq = ++this.seq;
     this.error(null);
     this.say(`Drafting with ${e.model ?? providerName(e.provider)} · ${providerName(e.provider)}, up to two minutes. You can keep editing; Cancel stops waiting.`, "drafting");
     this.paint();
-    const r = await this.ctx.run<unknown>({ verb: "merge-draft", paths: this.paths, estimate: false }, "Draft with AI", { timeoutMs: AI_TIMEOUT_MS });
+    const host = once ? (once.provider as OnceHost) : undefined;
+    const r = await this.ctx.run<unknown>({ verb: "merge-draft", paths: this.paths, estimate: false, ...(host ? { host } : {}) }, host ? onceLabel(once!) : "Draft with AI", { timeoutMs: AI_TIMEOUT_MS });
     // Cancelled (or closed) while it ran: the answer is dropped.
     if (this.closed || seq !== this.seq) return;
     this.busy = null;
@@ -449,14 +460,16 @@ export class MergeModal extends Modal {
     const e = this.est?.estimate ?? null;
     // Off (no estimate, no model, stale) is `disabled`; busy is aria-disabled, which keeps the keyboard on the button
     // while a draft runs (a disabled button would drop it to the page), and its clicks do nothing (draftWithAi).
-    f.ai.disabled = this.stale || !e?.available;
+    const once = this.once();
+    f.ai.disabled = this.stale || (!e?.available && !once);
     const waiting = this.busy !== null && !f.ai.disabled;
     f.ai.setAttr("aria-disabled", waiting ? "true" : null);
     f.ai.toggleClass("is-busy", waiting);
     if (this.busy === "drafting") f.ai.setAttr("aria-busy", "true");
     else f.ai.removeAttribute("aria-busy");
-    f.ai.setText(this.busy === "drafting" ? "Drafting…" : this.drafted ? "Redraft" : "Draft with AI");
-    f.est.setText(!e ? "" : e.available ? estimateText(e) : `${estimateText(e)} Combine them by hand below.`);
+    f.ai.setText(this.busy === "drafting" ? "Drafting…" : once ? onceLabel(once) : this.drafted ? "Redraft" : "Draft with AI");
+    f.est.setText(!e ? "" : e.available ? estimateText(e)
+      : once ? `${estimateText(e)} ${onceLabel(once)}: ${onceCostText(once)}, or combine them by hand below.` : `${estimateText(e)} Combine them by hand below.`);
     f.est.toggleClass("is-off", !!e && !e.available);
     for (const el of [f.title, f.description, f.body]) el.readOnly = this.busy === "saving";
     const n = this.fields.body.replace(/\r\n?/g, "\n").trim().length;

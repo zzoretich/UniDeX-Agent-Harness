@@ -3,14 +3,15 @@ import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import { runAsk, isAskBusy, AskHandle, AskResult } from "../data/askSpawner";
 import {
-  runClaudeAsk, chatRoute, CHAT_FEATURE, aliasCatalog, readReasonSpendToday, vaultHostChoices, vaultModeLine, vaultRemembered, vaultSpendLine, vaultStart, vaultAsked,
+  runClaudeAsk, CHAT_FEATURE, aliasCatalog, readReasonSpendToday, vaultHostChoices, vaultModeLine, vaultRemembered, vaultSpendLine, vaultStart, vaultAsked,
+  vaultEngine, vaultRoute, localDownOf, localDownText, runOnceLabel, type VaultRoute,
 } from "../data/claudeAsk";
-import { readAgenticosJson, readProviderState, readVaultConfig, type ProviderName } from "../data/aosConfig";
+import { readAgenticosJson, readProviderState, readVaultConfig, type ProviderName, type SessionHost, type VaultConfig } from "../data/aosConfig";
 import { catalogHost, modelArg, modelName, type HostChoice } from "../data/agentSessions";
 import { sessionsHost, type HostCatalog } from "../host";
 import { rememberVaultChoice, sanitizeVaultChoice } from "../settingsDefaults";
 import { AccessMenu } from "../ui/AccessMenu";
-import { HostModelMenu, menuValue, type HostModelValue } from "../ui/HostModelMenu";
+import { HostModelMenu, menuValue, type HostModelValue, type LocalChoice } from "../ui/HostModelMenu";
 
 // PORT of the old Assistant view's module-level constants (~7-8) — verbatim.
 const CHAT_LOG_PATH = "brain/_index/agentic-os-chat.jsonl";
@@ -24,6 +25,9 @@ interface ChatEntry {
   elapsedMs?: number;
   error?: string;
   usd?: number;
+  // An answer the local engine could not give (local-first A3): its reason and the question, for "Run once on …".
+  localDown?: string;
+  question?: string;
 }
 
 interface TimelineRow {
@@ -161,15 +165,28 @@ export class ChatTab {
     return readProviderState(this.plugin.vaultRoot())?.name ?? "none";
   }
 
-  /** A question is a reasoner call: headless Claude when a login is known, else the script path (data/claudeAsk.ts chatRoute),
-   *  where the reasoner falls back to Codex on a machine without Claude (provider.js resolveProviderForRole). */
-  private route(): "claude" | "local" | "none" {
-    return chatRoute(readProviderState(this.plugin.vaultRoot()));
+  private cfg(): VaultConfig {
+    return readVaultConfig(this.plugin.vaultRoot(), this.plugin.claudeConfigDir());
+  }
+
+  /** A question is a reasoner call: under provider local with ai.chat local the local engine (local-first A2); else
+   *  headless Claude when a login is known, else the script path (data/claudeAsk.ts vaultRoute), where the reasoner falls
+   *  back to Codex on a machine without Claude (provider.js resolveProviderForRole). */
+  private route(): VaultRoute {
+    return vaultRoute(readProviderState(this.plugin.vaultRoot()), this.cfg());
+  }
+
+  /** The local engine as the menu's first choice while Vault chat runs there (ai.chat local, provider local), else null. */
+  private localChoice(): LocalChoice | null {
+    const cfg = this.cfg();
+    if (vaultEngine(cfg) !== "local") return null;
+    const st = readProviderState(this.plugin.vaultRoot());
+    return { model: st?.model ?? cfg.local.model ?? null, down: localDownText(st?.localReason) };
   }
 
   /** The hosts the menu offers: the ones on in agenticos.json, Claude only with the login claude -p needs. */
   private choices(): HostChoice[] {
-    return vaultHostChoices(readAgenticosJson(this.plugin.claudeConfigDir()), readProviderState(this.plugin.vaultRoot()));
+    return vaultHostChoices(readAgenticosJson(this.plugin.claudeConfigDir()), readProviderState(this.plugin.vaultRoot()), { local: this.cfg().provider === "local" });
   }
 
   /** Where each host's menu starts: the remembered Vault pick, else the reasoner's effort and Codex model. */
@@ -181,14 +198,18 @@ export class ChatTab {
   /** Where the menu starts (the pick made in it, else the stored one) and whether that is a host the user chose. */
   private start(): { value: HostModelValue; chosen: boolean; remembered: ReturnType<typeof vaultRemembered> } {
     const remembered = this.remembered();
-    return { ...vaultStart(this.pick, sanitizeVaultChoice(this.plugin.settings.vaultChoice), remembered), remembered };
+    const stored = sanitizeVaultChoice(this.plugin.settings.vaultChoice);
+    // On the local engine a question starts there, whatever host was picked before (local-first A2); a pick made in the
+    // menu this session still holds.
+    if (this.localChoice()) stored.host = null;
+    return { ...vaultStart(this.pick, stored, remembered), remembered };
   }
 
-  /** What the chip shows: the menu's value, resolved to a ready host and a level its model takes; a null host means no
-   *  host is ready for Vault. */
+  /** What the chip shows: the menu's value, resolved to a ready host and a level its model takes; a null host means the
+   *  local engine when it is on offer, else that no host is ready for Vault. */
   private choice(): HostModelValue {
     const s = this.start();
-    return menuValue({ mode: "vault", catalog: this.catalog, choices: this.choices(), value: s.value, remembered: s.remembered });
+    return menuValue({ mode: "vault", catalog: this.catalog, choices: this.choices(), value: s.value, remembered: s.remembered, local: this.localChoice() });
   }
 
   /** What the next question runs on (data/claudeAsk.ts vaultAsked): the chip's value when its host was chosen (it then
@@ -202,8 +223,8 @@ export class ChatTab {
     const v = this.asked();
     const label = v.host === "claude" ? (modelArg("claude", v.model) ? modelName("claude", catalogHost(this.catalog, "claude"), v.model) : null)
       : v.host === "codex" ? modelName("codex", catalogHost(this.catalog, "codex"), v.model) : null;
-    const reasonerModel = readVaultConfig(this.plugin.vaultRoot(), this.plugin.claudeConfigDir()).reasoner.model;
-    return vaultModeLine(v.host, label, { reasonerModel, route: this.route(), provider: this.providerName() });
+    const cfg = this.cfg();
+    return vaultModeLine(v.host, label, { reasonerModel: cfg.reasoner.model, route: this.route(), provider: cfg.provider === "local" ? "local" : this.providerName(), localModel: this.localChoice()?.model ?? null });
   }
 
   /** Asks the app for the hosts' models (it answers from its cache under 24 h); without the app, or when it cannot,
@@ -235,6 +256,7 @@ export class ChatTab {
   /** A pick in the menu: it becomes the next question's choice and Vault chat's remembered one (U12). */
   private onPick(v: HostModelValue): void {
     this.pick = v;
+    // The local engine (a null host) is never remembered as the host: it is where a question starts anyway.
     if (v.host) {
       this.plugin.settings.vaultChoice = rememberVaultChoice(this.plugin.settings.vaultChoice, { host: v.host, model: v.model, effort: v.effort });
       void this.plugin.saveSettings();
@@ -305,11 +327,12 @@ export class ChatTab {
     host.addClass("aos-assistant");
     if (!this.catalogAsked) void this.loadCatalog();
 
-    const provider = this.providerName();
-    if (provider === "none") {
+    if (this.route() === "none") {
       const hint = host.createDiv({ cls: "aos-asst-nohint aos-dim" });
       hint.createSpan({ cls: "aos-title", text: "Vault" });
-      hint.createDiv({ text: "no provider — run `aos provider` (Ollama reachable, or Claude Code or Codex logged in), then reopen the Workbench." });
+      hint.createDiv({ text: this.cfg().provider === "local"
+        ? "Vault chat runs on a host (ai.chat is host) and none is signed in: sign in to Claude Code or Codex, or set ai.chat to local in Settings, then reopen the Workbench."
+        : "no provider — run `aos provider` (Ollama reachable, or Claude Code or Codex logged in), then reopen the Workbench." });
       return;
     }
 
@@ -327,9 +350,8 @@ export class ChatTab {
     if (this.mdHost) { this.mdHost.unload(); this.mdHost = null; }
     this.mdHost = new Component();
     this.mdHost.load();
-    for (const e of this.history.slice(-20)) {
-      this.renderTurn(log, e);
-    }
+    const shown = this.history.slice(-20);
+    shown.forEach((e, i) => this.renderTurn(log, e, i === shown.length - 1));
 
     // in-flight live turn
     if (this.busy && this.liveTurn) {
@@ -358,6 +380,7 @@ export class ChatTab {
       remembered: this.remembered(),
       refreshing: this.catalogBusy,
       disabled: this.busy,
+      local: this.localChoice(),
       onChange: (v) => this.onPick(v),
       onRefresh: () => { void this.loadCatalog(true); },
     });
@@ -378,8 +401,11 @@ export class ChatTab {
 
     // Under the composer: any host per question, and today's reasoner spend when the ledger's tail holds all of today.
     const foot = host.createDiv({ cls: "aos-asst-foot" });
-    foot.createSpan({ text: "Each question can use any host" });
-    const cfg = readVaultConfig(this.plugin.vaultRoot(), this.plugin.claudeConfigDir());
+    const local = this.localChoice();
+    foot.createSpan({ text: local ? "Questions run on this Mac unless you pick a host" : "Each question can use any host" });
+    // The local engine down (A3): said before a question is sent; the answer then offers a host once.
+    if (local?.down) foot.createSpan({ cls: "aos-asst-localdown", text: local.down, attr: { "data-tour": "vault-local-down" } });
+    const cfg = this.cfg();
     const spend = vaultSpendLine(readReasonSpendToday(this.plugin.vaultRoot(), new Date()), cfg.reasoner.perDayUsd);
     if (spend) foot.createSpan({ cls: "aos-asst-spend", text: spend });
 
@@ -410,17 +436,33 @@ export class ChatTab {
   }
 
   // PORT of the old Assistant view's renderTurn (~149) — verbatim, no adaptation needed.
-  private renderTurn(log: HTMLElement, e: ChatEntry): void {
+  private renderTurn(log: HTMLElement, e: ChatEntry, last = false): void {
     const turn = log.createDiv({ cls: `aos-asst-turn aos-asst-turn-${e.role}` });
     turn.createDiv({ cls: "aos-asst-label aos-dim", text: e.role === "user" ? "you" : "brain" });
     const body = turn.createDiv({ cls: "aos-asst-body" });
     if (e.role === "assistant") {
       if (e.error) body.createDiv({ cls: "aos-text-rose", text: e.error });
+      // The local engine could not answer (local-first A3): the newest such answer offers each signed-in host once,
+      // naming its cap. Never sent there unasked.
+      if (e.error && e.localDown && e.question && last && !this.busy) this.renderRunOnce(turn, e.question);
       else if (this.mdHost) void MarkdownRenderer.renderMarkdown(e.text, body, CHAT_LOG_PATH, this.mdHost);
       const meta = [e.elapsedMs ? `${(e.elapsedMs / 1000).toFixed(1)}s` : "", typeof e.usd === "number" ? `$${e.usd.toFixed(4)}` : ""].filter(Boolean).join(" · ");
       if (meta) turn.createDiv({ cls: "aos-asst-meta aos-dim", text: meta });
     } else {
       body.textContent = e.text;
+    }
+  }
+
+  /** "Run once on Claude Code (reasoner cap: …)" and the same for Codex, for each host ready for Vault; a line when none is. */
+  private renderRunOnce(turn: HTMLElement, question: string): void {
+    const ready = this.choices().filter((c) => c.ready);
+    const row = turn.createDiv({ cls: "aos-asst-runonce", attr: { "data-tour": "vault-run-once" } });
+    if (!ready.length) { row.createSpan({ cls: "aos-dim", text: "No host is signed in to run it once." }); return; }
+    const spent = readReasonSpendToday(this.plugin.vaultRoot(), new Date());
+    const cap = this.cfg().reasoner.perDayUsd;
+    for (const c of ready) {
+      const b = row.createEl("button", { cls: "aos-ws-action", text: runOnceLabel(c.label, spent, cap), attr: { "data-host": c.host } });
+      b.addEventListener("click", () => { void this.send(question, c.host); });
     }
   }
 
@@ -483,7 +525,7 @@ export class ChatTab {
   // there's nothing to convert to this.view.registerEvent() here; its lifetime is already
   // bound to this specific ask, not to view/tab mount state, which is exactly what lets it
   // survive a tab switch away and back (see task report).
-  private async send(question: string): Promise<void> {
+  private async send(question: string, once: SessionHost | null = null): Promise<void> {
     const q = question.trim();
     if (!q) return;
     if (this.busy) return;
@@ -498,16 +540,18 @@ export class ChatTab {
 
     const vaultRoot = this.plugin.vaultRoot();
     const node = this.plugin.nodeBin();
-    const cfg = readVaultConfig(vaultRoot, this.plugin.claudeConfigDir());
+    const cfg = this.cfg();
     // The chosen host answers (U9): Claude through claude -p with the chosen model ("default" is the reasoner's) and
-    // effort; Codex through ask.js on that host only. With no host chosen, or none ready for Vault, today's route.
-    const v = this.asked();
+    // effort; Codex through ask.js on that host only. "Run once on …" (A3) names its host for this question alone. With
+    // no host chosen: the local engine under provider local with ai.chat local (ask.js --local --chat), else today's route.
+    const v: HostModelValue = once ? { host: once, model: null, effort: null } : this.asked();
+    const route = this.route();
     const claude = (model: string | undefined, effort: string | undefined): AskHandle =>
       runClaudeAsk({ vault: vaultRoot, node, question: q, claudeBin: this.plugin.claudeBin(), model: cfg.reasoner.model, chosenModel: model, maxBudgetUsd: cfg.reasoner.perCallUsd, effort, feature: CHAT_FEATURE });
-    const handle = v.host === "claude" ? claude(v.model ?? undefined, v.effort ?? undefined)
+    const handle = v.host === "claude" ? claude(v.model ?? undefined, v.effort ?? (once ? cfg.reasoner.effort : undefined))
       : v.host === "codex" ? runAsk({ vault: vaultRoot, node, question: q, host: "codex", model: modelArg("codex", v.model) ?? undefined, effort: v.effort ?? undefined })
-      : this.route() === "claude" ? claude(undefined, cfg.reasoner.effort)
-      : runAsk({ vault: vaultRoot, node, question: q });
+      : route === "claude" ? claude(undefined, cfg.reasoner.effort)
+      : runAsk({ vault: vaultRoot, node, question: q, chat: cfg.provider === "local" });
 
     this.liveTurn = {
       runId: null,
@@ -654,10 +698,12 @@ export class ChatTab {
     this.liveTurn = null;
     if (live?.busSub) this.plugin.bus.offref(live.busSub);
 
+    const error = result.error || result.stderr?.slice(0, 400) || "no answer";
+    const down = localDownOf(error);
     const entry: ChatEntry =
       result.ok && result.answer
         ? { ts: Date.now(), role: "assistant", text: result.answer, elapsedMs: result.elapsedMs, usd: result.usd }
-        : { ts: Date.now(), role: "assistant", text: "", error: result.error || result.stderr?.slice(0, 400) || "no answer" };
+        : { ts: Date.now(), role: "assistant", text: "", error, ...(down ? { localDown: down, question } : {}) };
     await this.appendHistory(entry);
 
     this.busy = false;

@@ -160,3 +160,66 @@ test('localProvider with role reasoner: provider none refuses and names the reas
   await assert.rejects(() => localProvider('reason:ask', { role: 'reasoner' }),
     (e) => e.code === 'PROVIDER_NONE' && /reasoner/.test(e.message) && /fallback/.test(e.message));
 });
+
+// ── local-first A2, A3: ai.<feature> and the local engine ──
+function localVault(local) {
+  const v = fs.mkdtempSync(path.join(os.tmpdir(), 'inter-local-'));
+  fs.mkdirSync(path.join(v, 'brain', '_index'), { recursive: true });
+  fs.mkdirSync(path.join(v, 'brain', 'memory', 'reference'), { recursive: true });
+  fs.writeFileSync(path.join(v, 'brain', 'config.json'), JSON.stringify({ provider: 'local', local }));
+  fs.writeFileSync(path.join(v, 'brain', 'memory', 'reference', 'routing.md'), '# Routing\n\nmodel routing goes to the cheapest tier\n');
+  return v;
+}
+const runIn = (v, script, args) => new Promise((resolve) => {
+  require('child_process').execFile(process.execPath, [path.join(SDK, script), ...args],
+    { encoding: 'utf8', env: { ...ENV, BRAIN_VAULT: v, AOS_VAULT: v } }, (err, stdout, stderr) => resolve({ status: err ? err.code : 0, stdout, stderr }));
+});
+
+test('ask --chat is a flag of its own, never part of the question', () => {
+  const { askOptions } = require('../sdk/ask.js');
+  assert.deepEqual(askOptions(['--local', '--chat', 'what is due?']), { opts: { chat: true }, rest: ['--local', 'what is due?'] });
+});
+
+test('ask --local --chat under provider local: the local engine answers (reason:chat, counted not ledgered); down, it says so and how to run once on a host', async () => {
+  const http = require('http');
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'qwen3.5:9b' }] }));
+      if (req.url === '/api/embed') { res.statusCode = 404; return res.end('{}'); }
+      seen.push(JSON.parse(body));
+      res.end(JSON.stringify({ message: { content: 'Routing goes to the cheapest tier (`brain/memory/reference/routing.md`).' }, done: true }));
+    });
+  });
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+  const up = localVault({ url: `http://127.0.0.1:${server.address().port}` });
+  try {
+    const r = await runIn(up, 'ask.js', ['--local', '--chat', 'how does routing work?']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /cheapest tier/);
+    assert.equal(seen[0].model, 'qwen3.5:9b', 'the workhorse, never the reasoner\'s Claude id');
+    const usage = JSON.parse(fs.readFileSync(path.join(up, 'brain', '_index', 'local-usage.json'), 'utf8'));
+    assert.ok(JSON.stringify(usage).includes('reason:chat'), 'a reason:chat local call');
+    assert.equal(fs.existsSync(path.join(up, 'brain', '_index', 'provider-spend.jsonl')), false, 'no spend row');
+  } finally {
+    server.close();
+  }
+  const down = localVault({ url: 'http://127.0.0.1:9' });
+  const r = await runIn(down, 'ask.js', ['--local', '--chat', 'anything']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /the local model cannot answer \(local-down\): start Ollama/);
+  assert.match(r.stderr, /--host=claude or --host=codex/);
+});
+
+test('reflect-week and consolidate-memory take --host=claude|codex (that host once, never another)', () => {
+  assert.equal(run('reflect-week.js', ['--local', '--host=nope']).status, 2);
+  const { hostFlag } = require('../sdk/lib/interactive.js');
+  assert.deepEqual(hostFlag(['--local', '--host=codex', '--print']), { host: 'codex', rest: ['--local', '--print'] });
+  assert.throws(() => hostFlag(['--host=ollama']), /--host takes claude or codex/);
+  const r = run('consolidate-memory.js', ['--local', '--host=codex']);
+  // Provider none here: the chosen host cannot answer, and nothing stands in for it.
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /codex cannot answer \(forced\)|not enough memory files/);
+});

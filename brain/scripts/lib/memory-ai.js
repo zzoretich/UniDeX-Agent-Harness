@@ -13,18 +13,26 @@
  *            (codex.model at codex.effort, codex.perDayUsd); `aos provider` pins one.
  *     sweep  the reasoner role (A6, feature `reason:memory-sweep`: the reasoner's caps and ledger family, D22) on the
  *            background models through provider.js `hostOpts`: claude.model with no --effort, else codex.model (else
- *            the model in Codex's own config.toml, else no -m: Codex's own default) at codex.effort. Never Ollama (the
- *            9B local model cannot hold the whole brain): a sweep that nobody could answer while Ollama is up is off
- *            with reason `ollama-only`; one resolving to none for another reason (a host signed out, a cap, `none`) is
- *            off with that reason, so a signed-out host still says to sign in.
- *   estimate(kind, { chars, outTokens, deps }) → Estimate { available, reason, provider, model, tokensIn, tokensOut,
- *            usd, cap } (A5): tokensIn = ceil(chars / 4) + OVERHEAD[provider], all priced as fresh input;
+ *            the model in Codex's own config.toml, else no -m: Codex's own default) at codex.effort. Under provider
+ *            local it runs on the local engine alone (local-first A15; provider.js resolveLocalOnly), which
+ *            lib/memory-sweep.js sends brain-hub's duplicates and clusters in chunks within the model's context; off
+ *            with `local-down` or `local-model-missing` when it cannot answer. Elsewhere, a sweep nobody hosted could
+ *            answer while Ollama is up runs on Ollama the same way (the old `ollama-only` refusal is gone); one
+ *            resolving to none for another reason (a host signed out, a cap, `none`) is off with that reason, so a
+ *            signed-out host still says to sign in.
+ *   `host` ('claude' | 'codex', on resolve, estimate and call): "Run once on Claude/Codex" (local-first A3): that host
+ *            only, under the caps it always has (merge: the hook chain's, provider.js mode claude/codex; sweep: the
+ *            reasoner's), whatever the provider says. A button offers it only when the local engine is down and the
+ *            estimate's `once` lists the host.
+ *   estimate(kind, { chars, outTokens, deps, host }) → Estimate { available, reason, provider, model, tokensIn,
+ *            tokensOut, usd, cap, once } (A5): tokensIn = ceil(chars / 4) + OVERHEAD[provider], all priced as fresh input;
+ *            `once` (off for a local reason only, else []) lists the hosts that could run it once, each as an Estimate;
  *            tokensOut = outTokens (default NUM_PREDICT[kind], the most a call may write); priced by model-pricing.js.
  *            Off: usd 0, provider none, and the cap that stopped it when a cap did. No call, nothing billed: it resolves
  *            with provider.js `deps.unbilled`, so Claude's login probe (a real `claude -p` call) never runs and no
  *            provider state is written; a login cache older than a day reads as signed in when `claude` is installed,
  *            and the real call that follows checks it (and says so when it is not).
- *   call(kind, { system, prompt, schema, timeoutMs, numPredict, deps }) → { text, provider, model, usd, estimated, cap }:
+ *   call(kind, { system, prompt, schema, timeoutMs, numPredict, deps, host }) → { text, provider, model, usd, estimated, cap }:
  *            one call (TIMEOUT_MS and NUM_PREDICT per kind unless given; the schema also goes as Ollama's `format`).
  *            usd is Claude's own total_cost_usd, else Codex's priced tokens (estimated: true), else 0 (Ollama); cap is
  *            re-read after the call, for "today $y of $z". It throws provider.js's ProviderUnavailable unchanged
@@ -37,7 +45,8 @@
  *   reasonSentence(reason | error | estimate, cfg) → the sentence the page shows (the plan's Shapes): "No model
  *            provider is set up.", "Today's model cap is reached ($0.50, claude.perDayUsd).", "Claude Code is not
  *            signed in.", "Codex is not signed in.", "<Provider> did not answer.", "The model's reply could not be
- *            read." (reason `bad-reply`), and for the sweep with only Ollama, `ollama-only`'s own.
+ *            read." (reason `bad-reply`), the local engine's two ("The local model is not answering…", "…not
+ *            downloaded yet…"), and `ollama-only`'s own (an older runtime's sweep refusal; this one never gives it).
  *
  * The usage is caught by wrapping deps.claudeCall / deps.codexCall around the provider (the lib/workspace-draft.js
  * precedent), never by diffing the ledger, which races with hooks (A5). A Codex call runs with a fresh, empty temp
@@ -63,8 +72,8 @@ const NUM_PREDICT = Object.freeze({ merge: 2_000, sweep: 3_000 });
 // The daily-cap reasons, and the config key each cap family's message names.
 const CAP_REASONS = new Set(['daily-cap', 'reasoner-daily-cap']);
 const CAP_KEYS = Object.freeze({ hook: 'claude.perDayUsd', codex: 'codex.perDayUsd', reasoner: 'reasoner.perDayUsd', 'reasoner-codex': 'reasoner.perDayUsd' });
-// A reasoner resolution that only says nobody could answer: with Ollama up, the sweep's honest reason is ollama-only.
-// A signed-out host keeps its own reason (its sentence says to sign in), Ollama or not.
+// A reasoner resolution that only says nobody could answer: with Ollama up, the sweep runs there (A15). A signed-out host
+// keeps its own reason (its sentence says to sign in), Ollama or not.
 const NOBODY = new Set(['no-provider']);
 const OLLAMA_TTL_MS = 60_000; // provider.js's cache of the Ollama ping
 const NAMES = Object.freeze({ claude: 'Claude', codex: 'Codex', ollama: 'Ollama' });
@@ -73,6 +82,8 @@ const SENTENCE = Object.freeze({
   claude: 'Claude Code is not signed in.',
   codex: 'Codex is not signed in.',
   ollama: 'Only Ollama is available, and a local model cannot hold the whole brain.',
+  'local-down': 'The local model is not answering (start Ollama, or your local engine).',
+  'local-model-missing': 'The local model is not downloaded yet (aos local pull).',
   bad: "The model's reply could not be read.",
 });
 
@@ -129,7 +140,7 @@ function metered(deps, meter) {
   return d;
 }
 
-/** Is Ollama what this machine has (the sweep's `ollama-only`)? Forced ollama says so; auto asks provider.js's cache, else pings. */
+/** Is Ollama what this machine has (the sweep then runs there)? Forced ollama says so; auto asks provider.js's cache, else pings. */
 async function ollamaUp(cfg, deps = {}) {
   const mode = cfg.provider || 'auto';
   if (mode === 'ollama') return true;
@@ -141,11 +152,11 @@ async function ollamaUp(cfg, deps = {}) {
   try { return !!(await ping(2000, cfg.ollama)); } catch { return false; }
 }
 
-/** { provider, model } for a resolved provider (the label; Ollama's model is the workhorse tag). */
+/** { provider, model } for a resolved provider (the label; Ollama's model is the one that resolved, else the workhorse tag). */
 function who(p) {
   const name = p && Object.prototype.hasOwnProperty.call(NAMES, p.name) ? p.name : 'none';
   if (name === 'none') return { provider: 'none', model: null };
-  if (name === 'ollama') return { provider: 'ollama', model: require('../sdk/lib/models.js').role('workhorse').tag };
+  if (name === 'ollama') return { provider: 'ollama', model: (typeof p.model === 'string' && p.model) || require('../sdk/lib/models.js').role('workhorse').tag };
   if (typeof p.model === 'string' && p.model) return { provider: name, model: p.model };
   if (name === 'codex') return { provider: 'codex', model: require('../sdk/lib/codex-cli.js').defaultModelFromConfig() || null };
   return { provider: name, model: null };
@@ -190,41 +201,73 @@ function cappedHost(kind, cfg) {
   return claudeHost && claudeIn ? 'claude' : 'codex';
 }
 
+/** The none reasons of the local engine (provider.js resolveLocal): a button may then offer a host once (local-first A3). */
+const LOCAL_REASONS = new Set(['local-down', 'local-model-missing']);
+
+/** 'claude' | 'codex' for "Run once on …", else null. */
+function onceHost(host) { return host === 'claude' || host === 'codex' ? host : null; }
+
 /** Who would answer `kind` (the module comment); `p` is provider.js's provider, `meter` catches the cost of its call. */
-async function resolve(kind, { deps } = {}) {
+async function resolve(kind, { deps, host } = {}) {
   checkKind(kind);
   const P = require('../sdk/lib/provider.js');
   const meter = { last: null };
   const d = metered(deps, meter);
   const cfg = loadConfig();
-  const p = kind === 'merge'
-    ? await P.resolveProvider({ feature: FEATURES.merge, deps: d })
-    : await P.resolveProviderForRole({ role: 'reasoner', feature: FEATURES.sweep, deps: d, hostOpts: sweepHostOpts(cfg) });
+  const once = onceHost(host);
+  let p;
+  if (kind === 'merge') p = await P.resolveProvider({ mode: once || undefined, feature: FEATURES.merge, deps: d });
+  else if (once) p = await P.resolveProviderForRole({ role: 'reasoner', feature: FEATURES.sweep, deps: d, prefer: once, hostOpts: sweepHostOpts(cfg) });
+  else if ((cfg.provider || 'auto') === 'local') p = await P.resolveLocalOnly(FEATURES.sweep, d);
+  else {
+    p = await P.resolveProviderForRole({ role: 'reasoner', feature: FEATURES.sweep, deps: d, hostOpts: sweepHostOpts(cfg) });
+    // Nobody hosted while Ollama is up: the sweep runs there in chunks (A15) instead of refusing (the old ollama-only).
+    if (p && p.name === 'none' && NOBODY.has(p.reason) && await ollamaUp(cfg, deps || {})) {
+      const g = await P.resolveProvider({ feature: FEATURES.sweep, deps: d });
+      if (g && g.name === 'ollama') p = g;
+    }
+  }
   const name = p && p.name;
-  if (name === 'claude' || name === 'codex' || (name === 'ollama' && kind === 'merge')) return { available: true, reason: null, ...who(p), p, meter };
-  let reason = name === 'ollama' ? 'ollama-only' : (p && p.reason) || 'no-provider';
-  if (kind === 'sweep' && NOBODY.has(reason) && await ollamaUp(cfg, deps || {})) reason = 'ollama-only';
+  if (name === 'claude' || name === 'codex' || name === 'ollama') return { available: true, reason: null, ...who(p), p, meter };
+  const reason = (p && p.reason) || 'no-provider';
   // A cap's none names its host (provider.js makeNone); cappedHost's guess from the cached logins is the fallback.
   const capHost = p && (p.host === 'claude' || p.host === 'codex') ? p.host : null;
   return { available: false, reason, provider: 'none', model: null, capHost, p, meter };
 }
 
 /** What one call would cost (A5), or why none can be made; no call. */
-async function estimate(kind, { chars = 0, outTokens, deps } = {}) {
+async function estimate(kind, { chars = 0, outTokens, deps, host } = {}) {
   checkKind(kind);
   // Unbilled (provider.js): no login probe, which is a billed call, and no state written.
-  const r = await resolve(kind, { deps: { ...(deps || {}), unbilled: true } });
+  const quiet = { ...(deps || {}), unbilled: true };
+  const r = await resolve(kind, { deps: quiet, host });
   const cfg = loadConfig();
   const base = Math.ceil(Math.max(0, Number(chars) || 0) / 4);
   const tokensOut = outTokens == null ? NUM_PREDICT[kind] : Math.ceil(Math.max(0, Number(outTokens) || 0));
   if (!r.available) {
     const cap = CAP_REASONS.has(r.reason) ? capOf(kind, r.capHost || cappedHost(kind, cfg), cfg, deps || {}) : null;
-    return { available: false, reason: r.reason, provider: 'none', model: null, tokensIn: base, tokensOut, usd: 0, cap };
+    // The local engine is down: what each enabled, signed-in host would cost to run it once (local-first A3).
+    const once = [];
+    if (!onceHost(host) && LOCAL_REASONS.has(r.reason)) {
+      for (const h of ['claude', 'codex']) {
+        if (!hostOn(cfg, h)) continue;
+        const e = await estimate(kind, { chars, outTokens, deps, host: h });
+        if (e.available) once.push(e);
+      }
+    }
+    return { available: false, reason: r.reason, provider: 'none', model: null, tokensIn: base, tokensOut, usd: 0, cap, once };
   }
   const tokensIn = base + OVERHEAD[r.provider];
   const usage = { inputTokens: tokensIn, cachedInputTokens: 0, outputTokens: tokensOut };
   const usd = require('../sdk/lib/model-pricing.js').priceUsd(r.provider, r.model, usage);
-  return { available: true, reason: null, provider: r.provider, model: r.model, tokensIn, tokensOut, usd, cap: capOf(kind, r.provider, cfg, deps || {}) };
+  return { available: true, reason: null, provider: r.provider, model: r.model, tokensIn, tokensOut, usd, cap: capOf(kind, r.provider, cfg, deps || {}), once: [] };
+}
+
+/** Is `host` an enabled host (`hosts.<h>.enabled`; a config without `hosts` predates Codex: Claude only)? */
+function hostOn(cfg, host) {
+  const h = cfg.hosts && cfg.hosts[host];
+  if (!cfg.hosts) return host === 'claude';
+  return !!(h && h.enabled !== false && (host === 'claude' || h.enabled));
 }
 
 /**
@@ -240,9 +283,9 @@ function unavailable(reason, cap) {
 }
 
 /** One model call (the module comment). */
-async function call(kind, { system = '', prompt = '', schema, timeoutMs, numPredict, deps } = {}) {
+async function call(kind, { system = '', prompt = '', schema, timeoutMs, numPredict, deps, host } = {}) {
   checkKind(kind);
-  const r = await resolve(kind, { deps });
+  const r = await resolve(kind, { deps, host });
   if (!r.available) throw unavailable(r.reason, r.capHost ? capOf(kind, r.capHost, loadConfig(), deps || {}) : null);
   let text;
   try {
@@ -290,6 +333,7 @@ function sentenceFor(reason, cap, cfg) {
   if (r === 'claude-not-logged-in') return SENTENCE.claude;
   if (r === 'codex-not-logged-in') return SENTENCE.codex;
   if (r === 'ollama-only') return SENTENCE.ollama;
+  if (LOCAL_REASONS.has(r)) return SENTENCE[r];
   if (r === 'bad-reply') return SENTENCE.bad;
   return `No model call possible (${r}).`;
 }
