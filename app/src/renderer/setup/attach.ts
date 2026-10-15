@@ -63,7 +63,7 @@ class RuntimeModal extends Modal {
       status.setText("Running aos upgrade…");
     });
     this.off = this.aos.setup.onEvent((ev) => {
-      if (ev.job !== "upgrade") return;
+      if (ev.job !== "upgrade" || ev.type === "progress") return;
       if (ev.type === "data") { this.term?.write(ev.data); return; }
       later.disabled = false;
       if (ev.code === 0) {

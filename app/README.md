@@ -14,13 +14,21 @@ and building it from a checkout.
 ## Install and update (phase 5)
 
 A packaged app carries the runtime in `Contents/Resources/payload`: a release tree (`scripts/make-payload.mjs`) with the
-runtime's dependencies, from which the app runs `aos init` and `aos upgrade` with your own Node. With no install it
-opens a setup wizard: it checks what `aos init` needs, offers a fix for each missing piece (run in a terminal inside the
-wizard), asks for the hosts, the vault folder and the Chief of Staff, runs `aos init`, offers the `CLAUDE.md` line as a
-diff, and opens the Workbench, where the welcome tour starts. With an install it opens the Workbench (attach mode), says
-once what changed (once per vault the app did not install itself), and offers
-`aos upgrade` when it carries a newer runtime than the vault has. Plan:
-`docs/superpowers/plans/2026-10-05-install-and-update.md`.
+runtime's dependencies, from which the app runs `aos init` and `aos upgrade` with a Node 20 or newer (yours, or the one
+the wizard installs). With no install it opens a setup wizard: it checks what `aos init` needs and installs what is
+missing itself, with no Homebrew and no terminal (`src/main/setup/toolchain.ts`, install-import B1): Node, uv, the
+Ollama app and the models for this Mac's memory, Claude Code and Codex, each downloaded from a pin in
+`src/main/setup/toolchain-manifest.json`, checked against its SHA-256 and its maker's signature, then put where its own
+installer puts it; the two logins run in a terminal inside the wizard. It asks for the hosts (or none yet: B2), the
+vault folder and the Chief of Staff, runs `aos init`, then lists what is left step by step (the `CLAUDE.md` line as a
+diff, Codex's `/hooks`, a host to add later, the line that puts `aos` on the PATH) and opens the Workbench, where the
+welcome tour starts. With an install it opens the Workbench (attach mode), says once what changed (once per vault the
+app did not install itself), and offers `aos upgrade` when it carries a newer runtime than the vault has. Plans: `docs/superpowers/plans/2026-10-05-install-and-update.md`,
+`docs/superpowers/specs/2026-10-14-install-and-import-design.md`.
+
+The pins are refreshed by hand before a release: each tool's `from` says where its version and SHA-256 come from (the
+maker's checksum file), and `teamId` is what `codesign -dv` reports on the download. `tests/unit/toolchain.test.ts`
+checks the shape.
 
 The app updates itself from this repo's GitHub Releases (electron-updater; a packaged release build only, and off when
 `updates.check` is false or `AOS_APP_NO_UPDATES=1`). `npm run release:app` puts a release's app there.
@@ -68,7 +76,7 @@ compat/          the `obsidian` module as the app provides it (the HUD imports i
 src/main/        Electron main: window, menubar item, app menu, agenticos:// links, app://hud, vault watcher
 src/main/ipc/    the bridge's handlers: sender check, zod schemas, a Result for every call
 src/main/policy/ what the page may read, write, run and open (read scope, write policy, programs, shell, debug switches, setup)
-src/main/setup/  the wizard and attach mode: login PATH, preflight, fix-its, aos init/upgrade from the payload, CLAUDE.md
+src/main/setup/  the wizard and attach mode: login PATH, preflight, the toolchain's pinned downloads, aos init/upgrade from the payload, CLAUDE.md, the PATH line
 src/main/updater.ts the app's own updates (electron-updater)
 src/main/services/ the page's files, processes and terminals (node-pty), as main runs them
 src/preload/     window.aos: the contextBridge of named functions, the page's only way into main

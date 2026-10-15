@@ -280,20 +280,21 @@ test('ollama: the schema goes as format, the label names the workhorse model, no
   assert.deepEqual(spendRows(), []);
 });
 
-test('a Codex-enabled vault with a logged-in claude CLI is answered by Claude and labelled so (the auto chain)', async () => {
+test('a Codex-only vault with a logged-in claude CLI is answered by Codex: a host the user did not enable never spends (install-import F1)', async () => {
   setConfig({}, { hosts: { claude: { enabled: false }, codex: { enabled: true } } });
   const { name } = fixture();
-  const calls = [];
+  const spawns = [];
   const d = await D.draftWorkspace(name, {
     vault: VAULT,
     providerDeps: {
-      ping: async () => false, resolveClaudeBin: () => '/fake/bin/claude', loginProbe: async () => true, claudeCall: fakeClaude(calls),
-      resolveCodexBin: never('codex bin'), codexLoginProbe: never('codex login'), codexCall: never('codex'),
+      ping: async () => false, resolveClaudeBin: never('claude bin'), loginProbe: never('claude login'), claudeCall: never('claude'),
+      resolveCodexBin: () => '/fake/bin/codex', codexLoginProbe: async () => true,
+      codexCall: (o) => codexCli.codexCall({ ...o, bin: '/fake/bin/codex', spawnFn: fakeCodexSpawn(spawns) }),
     },
   });
-  assert.equal(calls.length, 1);
-  assert.equal(d.provider, 'claude');
-  assert.equal(d.reason, 'claude-logged-in');
+  assert.equal(spawns.length, 1);
+  assert.equal(d.provider, 'codex');
+  assert.equal(d.reason, 'codex-logged-in');
 });
 
 test('the cap: an exhausted hook budget, or a cap hit during the call, falls back to the heuristic with the reason', async () => {

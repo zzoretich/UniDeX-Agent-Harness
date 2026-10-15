@@ -1,62 +1,30 @@
-// What the wizard and attach mode may run (phase 5, I4, I5). The page names a fix-it by id and a step by name; the
-// commands, the program, the arguments and the files are main's. A fix-it is a fixed command line the user sees typed
-// in the wizard's terminal before it runs: the installers macOS users already know (Homebrew's, `brew install`,
-// `npm install -g` for the two CLIs), the two logins and `ollama pull` for Ollama's models. `aos init` and `aos upgrade`
-// are the payload's own CLI run with the node preflight found, never through a shell.
+// What the wizard and attach mode may run (phase 5, I4, I5; install-import B1, B2, B14). The page names a fix by id and a
+// step by name; the commands, the program, the arguments, the downloads and the files are main's. A fix is either a
+// toolchain job (setup/toolchain.ts: a pinned download, checked, then put in place; or Ollama's models through its API)
+// or, for the two logins, a fixed command line the user sees typed in the wizard's terminal before it runs. No fix needs
+// Homebrew, npm or a terminal of the user's own. `aos init` and `aos upgrade` are the payload's own CLI run with the
+// node preflight found, never through a shell.
 
 import * as os from "node:os";
 import * as path from "node:path";
 import type { InstallRequest, PersonaAnswers, SetupCheckId, SetupFixId } from "../../shared/ipc";
+import type { ToolchainJob } from "../setup/toolchain";
 
-export interface Fix {
-  label: string;
+export type Fix =
   /** Run by /bin/sh -c in the wizard's terminal, with the login PATH (setup/env.ts). */
-  command: string;
-  /** The checks that must pass first (the fix needs brew, or npm, or the CLI it logs in to). */
-  needs: SetupCheckId[];
-}
-
-/**
- * The models AgenticOS runs on Ollama: brain/scripts/sdk/lib/models.js's defaults for the workhorse and the embedder
- * (a unit test holds them equal). `auto` uses Ollama as soon as it answers, so the wizard leaves both downloaded.
- */
-export const OLLAMA_MODELS = ["qwen3.5:9b", "qwen3-embedding:0.6b"] as const;
-
-/** Where provider.js looks for Ollama before a vault has any config. */
-export const OLLAMA_URL = "http://127.0.0.1:11434";
-
-/**
- * curl asking Ollama as provider.js's node http does: -q (first) skips ~/.curlrc, and --noproxy keeps 127.0.0.1 off any
- * http_proxy or ALL_PROXY in main's environment, which node ignores.
- */
-export const OLLAMA_CURL = ["-q", "--noproxy", "127.0.0.1", "-fs"] as const;
-
-// The models' share of the Ollama fix-its. A service just started takes a few seconds to answer: curl asks once a
-// second, for 30 s at most. The wait only ever follows `brew services start`, so its advice is Homebrew's. A model
-// `ollama show` finds is already there; only a missing one is pulled, with Ollama's own progress. Brew's service is
-// started for the formula; Ollama.app runs its own server once it is open, and carries the CLI it links onto the PATH
-// at its first launch, so a PATH without `ollama` uses the app's copy.
-const CURL = `curl ${OLLAMA_CURL.join(" ")}`;
-const OLLAMA_WAIT = `{ echo "Waiting for Ollama to answer (up to 30 s)..."; ${CURL} --retry 30 --retry-delay 1 --retry-connrefused --retry-max-time 30 -m 2 -o /dev/null ${OLLAMA_URL}/api/tags || { echo "Ollama did not answer at ${OLLAMA_URL} within 30 s: run brew services restart ollama (brew services info ollama shows why), then Check again."; exit 1; }; }`;
-const OLLAMA_START = `if ! ${CURL} -m 2 -o /dev/null ${OLLAMA_URL}/api/tags; then if brew list --formula ollama >/dev/null 2>&1; then brew services start ollama && ${OLLAMA_WAIT}; else echo "Ollama is not running: open Ollama, then try again."; exit 1; fi; fi`;
-const OLLAMA_CLI = `O=$(command -v ollama) || for O in "$HOME/Applications/Ollama.app/Contents/Resources/ollama" /Applications/Ollama.app/Contents/Resources/ollama; do [ -x "$O" ] && break; done; [ -x "$O" ] || { echo "Ollama's command line tool was not found: open Ollama, then try again."; exit 1; }`;
-const OLLAMA_PULL = `{ ${OLLAMA_CLI}; ${OLLAMA_MODELS.map((m) => `if "$O" show ${m} >/dev/null 2>&1; then echo "${m} is already downloaded."; else echo "Downloading ${m}..." && "$O" pull ${m}; fi`).join(" && ")}; }`;
+  | { kind: "terminal"; label: string; command: string; needs: SetupCheckId[] }
+  /** A toolchain job main runs itself, its output and progress in the wizard. */
+  | { kind: "download"; label: string; job: ToolchainJob; needs: SetupCheckId[] };
 
 export const FIXES: Record<SetupFixId, Fix> = {
-  homebrew: {
-    label: "Install Homebrew",
-    command: '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
-    needs: [],
-  },
-  node: { label: "Install Node.js", command: "brew install node", needs: ["homebrew"] },
-  python: { label: "Install Python", command: "brew install python", needs: ["homebrew"] },
-  uv: { label: "Install uv", command: "brew install uv", needs: ["homebrew"] },
-  ollama: { label: "Install Ollama and its models", command: `brew install ollama && brew services start ollama && ${OLLAMA_WAIT} && ${OLLAMA_PULL}`, needs: ["homebrew"] },
-  "ollama-models": { label: "Download the models", command: `${OLLAMA_START} && ${OLLAMA_PULL}`, needs: ["ollama"] },
-  claude: { label: "Install Claude Code", command: "npm install -g @anthropic-ai/claude-code", needs: ["node"] },
-  codex: { label: "Install the Codex CLI", command: "npm install -g @openai/codex", needs: ["node"] },
-  "claude-login": { label: "Log in", command: "claude auth login", needs: ["claude"] },
-  "codex-login": { label: "Log in", command: "codex login", needs: ["codex"] },
+  node: { kind: "download", label: "Install Node.js", job: "node", needs: [] },
+  uv: { kind: "download", label: "Install uv", job: "uv", needs: [] },
+  ollama: { kind: "download", label: "Install Ollama", job: "ollama", needs: [] },
+  "ollama-models": { kind: "download", label: "Download the models", job: "models", needs: ["ollama"] },
+  claude: { kind: "download", label: "Install Claude Code", job: "claude", needs: [] },
+  codex: { kind: "download", label: "Install Codex", job: "codex", needs: [] },
+  "claude-login": { kind: "terminal", label: "Log in", command: "claude auth login", needs: ["claude"] },
+  "codex-login": { kind: "terminal", label: "Log in", command: "codex login", needs: ["codex"] },
 };
 
 export const FIX_IDS = Object.keys(FIXES) as SetupFixId[];
@@ -65,13 +33,15 @@ export const FIX_IDS = Object.keys(FIXES) as SetupFixId[];
 export function fixBlocked(id: SetupFixId, ok: ReadonlySet<SetupCheckId>): string | null {
   const missing = FIXES[id].needs.filter((n) => !ok.has(n));
   if (!missing.length) return null;
-  const names: Partial<Record<SetupCheckId, string>> = { homebrew: "Homebrew", node: "Node.js", claude: "Claude Code", codex: "the Codex CLI", ollama: "Ollama" };
+  const names: Partial<Record<SetupCheckId, string>> = { node: "Node.js", claude: "Claude Code", codex: "the Codex CLI", ollama: "Ollama" };
   return `needs ${missing.map((n) => names[n] ?? n).join(" and ")} first`;
 }
 
-/** The program and arguments of a fix-it's terminal. */
+/** The program and arguments of a terminal fix. */
 export function fixCommandLine(id: SetupFixId): { file: string; args: string[] } {
-  return { file: "/bin/sh", args: ["-c", FIXES[id].command] };
+  const fix = FIXES[id];
+  if (fix.kind !== "terminal") throw new Error(`${id} is not a terminal fix`);
+  return { file: "/bin/sh", args: ["-c", fix.command] };
 }
 
 /** A vault folder as the user typed or picked it: absolute, or ~/…; null when it is neither, or is home or a root. */
@@ -98,12 +68,26 @@ export function personaJson(a: PersonaAnswers, hosts: { claude: boolean; codex: 
   };
 }
 
-/** `aos init`'s arguments: unattended (--yes), the user's host and folder, the persona answers when given. */
+/** `aos init`'s arguments: unattended (--yes), the user's host (or none) and folder, the persona answers when given. */
 export function installArgs(cli: string, req: InstallRequest, vault: string, personaFile: string | null): string[] {
   return [cli, "init", "--yes", "--vault", vault, "--host", req.host, ...(personaFile ? ["--persona-json", personaFile] : [])];
 }
 
-export type SetupStep = "preflight" | "fix" | "install" | "upgrade" | "finish" | "claude-md";
+/** The hosts an install request turns on. */
+export function requestHosts(host: InstallRequest["host"]): { claude: boolean; codex: boolean } {
+  return { claude: host === "claude" || host === "both", codex: host === "codex" || host === "both" };
+}
+
+/** install-import B14: the one line Finish offers to append, so `aos` and the hosts' CLIs in ~/.local/bin run from a terminal. */
+export const PATH_LINE = 'export PATH="$HOME/.local/bin:$PATH"';
+
+/** The login profile zsh (macOS's shell) reads: $ZDOTDIR/.zprofile when ZDOTDIR is set, else ~/.zprofile. */
+export function zprofilePath(home: string, env: NodeJS.ProcessEnv): string {
+  const dir = env.ZDOTDIR && path.isAbsolute(env.ZDOTDIR) ? env.ZDOTDIR : home;
+  return path.join(dir, ".zprofile");
+}
+
+export type SetupStep = "preflight" | "fix" | "install" | "upgrade" | "finish" | "claude-md" | "path";
 
 export interface SetupState {
   /** A vault is attached (the Workbench is showing). */
@@ -130,5 +114,7 @@ export function stepRefusal(step: SetupStep, s: SetupState): string | null {
     // `aos init`, or a vault folder that is back (an external disk).
     case "finish": return s.attached ? "a vault is already attached" : null;
     case "claude-md": return s.attached || s.installed ? null : "no vault yet";
+    // Finish's PATH line: the wizard's, once `aos init` has put the launcher in ~/.local/bin.
+    case "path": return s.attached ? "a vault is already attached" : s.installed ? null : "no vault yet";
   }
 }

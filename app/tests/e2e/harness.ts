@@ -11,7 +11,9 @@
 
 import { _electron as electron, expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import { execFile, spawnSync } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
@@ -665,55 +667,117 @@ export const notePath = (win: Page) => activeLeaf(win).locator(".aos-note-path")
 export const noteBody = (win: Page) => activeLeaf(win).locator(".aos-note-body");
 export const noteBar = (win: Page) => activeLeaf(win).locator(".aos-note-bar");
 
-// ── setup's stand-ins (phase 5): the tools the wizard checks for, and the runtime the app carries ──
+// ── setup's stand-ins (phase 5; install-import B1): the tools the wizard checks for, its downloads, and the runtime the app carries ──
 
 export const SETUP = {
   root: path.join(ROOT, "setup"),
-  /** The wizard's whole PATH ($AOS_SETUP_PATH): stand-ins for brew, node, claude, codex, ollama, curl, python3; uv appears when brew installs it. */
+  /** The wizard's whole PATH ($AOS_SETUP_PATH): stand-ins for node, claude, codex, ollama and curl. uv is missing until the wizard downloads it. */
   bin: path.join(ROOT, "setup", "bin"),
-  /** The models the ollama stand-in has pulled, one per line; curl's /api/tags answers with them. */
+  /** The models the curl stand-in has pulled through /api/pull, one per line; its /api/tags answers with them. */
   models: path.join(ROOT, "setup", "ollama-models.txt"),
   /** A release tree whose cli/aos.js records its calls and writes agenticos.json as `aos init` would. */
   payload: path.join(ROOT, "setup", "payload"),
   calls: path.join(ROOT, "setup", "aos-calls.jsonl"),
+  /** What the toolchain server serves (uv's stand-in archive) and the development manifest that pins it ($AOS_TOOLCHAIN_MANIFEST). */
+  archives: path.join(ROOT, "setup", "archives"),
+  manifest: path.join(ROOT, "setup", "toolchain-manifest.json"),
 };
 
-export interface AosCall { argv: string[]; persona: Record<string, unknown> | null }
+/** 16 GB: the e2e Mac's memory, so the wizard's models (local-first A12) are qwen3.5:9b and the embedder on any runner. */
+export const SETUP_TOTALMEM = String(16 * 1024 ** 3);
+
+export interface AosCall { argv: string[]; persona: Record<string, unknown> | null; uvBin: string | null }
 export const aosCalls = (): AosCall[] => jsonl<AosCall>(SETUP.calls);
+
+/** The toolchain's stand-in downloads, served from 127.0.0.1 as a development manifest may name them. */
+export interface ToolchainServer {
+  port: number;
+  /** Every path asked for, in order. */
+  served: string[];
+  /** Names whose next download is corrupted (same size, other bytes), once each. */
+  corruptNext: Set<string>;
+  close(): Promise<void>;
+}
+
+/** Serves SETUP.archives/<name> at /<name>; anything else is a 404, so a pin the suite did not stand in for never installs. */
+export async function toolchainServer(): Promise<ToolchainServer> {
+  const served: string[] = [];
+  const corruptNext = new Set<string>();
+  const server = http.createServer((req, res) => {
+    const name = (req.url ?? "/").slice(1);
+    served.push(name);
+    const file = path.join(SETUP.archives, path.basename(name));
+    if (!name || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404).end(); return; }
+    const bytes = fs.readFileSync(file);
+    if (corruptNext.delete(name)) bytes[0] ^= 0xff;
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": bytes.length }).end(bytes);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  return { port, served, corruptNext, close: () => new Promise((resolve) => { server.close(() => resolve()); }) };
+}
+
+/**
+ * The development manifest (src/main/setup/toolchain.ts loadManifest): every tool served by `port`, unsigned. uv's
+ * archive is a stand-in built here (uv answers `uv <pinned version>`); the others point at nothing, with the shipped
+ * pins' hashes, so a click on them fails rather than installs.
+ */
+export function writeToolchainManifest(port: number): { uv: { size: number; sha256: string } } {
+  const shipped = JSON.parse(fs.readFileSync(path.join(REPO, "src", "main", "setup", "toolchain-manifest.json"), "utf8")) as {
+    schema: 1; tools: Record<string, { version: string; teamId: string | null; assets: Record<string, { url: string; sha256: string; size: number }> }>;
+  };
+  const src = path.join(SETUP.archives, "uv-src", "uv-aarch64-apple-darwin");
+  fs.mkdirSync(src, { recursive: true });
+  for (const [name, out] of [["uv", `uv ${shipped.tools.uv.version} (e2e stand-in)`], ["uvx", "uvx (e2e stand-in)"]]) {
+    fs.writeFileSync(path.join(src, name), `#!/bin/sh\necho "${out}"\n`, { mode: 0o755 });
+  }
+  const archive = path.join(SETUP.archives, "uv");
+  const r = spawnSync("/usr/bin/tar", ["-czf", archive, "-C", path.dirname(src), "uv-aarch64-apple-darwin"], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`tar: ${r.stderr}`);
+  const bytes = fs.readFileSync(archive);
+  const uv = { size: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
+  for (const [id, t] of Object.entries(shipped.tools)) {
+    t.teamId = null;
+    for (const arch of Object.keys(t.assets)) t.assets[arch] = { ...(id === "uv" ? uv : t.assets[arch]), url: `http://127.0.0.1:${port}/${id}` };
+  }
+  fs.writeFileSync(SETUP.manifest, `${JSON.stringify(shipped, null, 2)}\n`);
+  return { uv };
+}
 
 /**
  * Writes the stand-ins. The payload's `aos init` copies the pristine fixture's agenticos.json to $AOS_CONFIG with the
  * vault it was given, so the Workbench the wizard ends in is the fixture's; `aos upgrade` moves its version to the
- * payload's. `codex` is installed but not logged in; uv is missing until the brew stand-in installs it. Ollama answers
- * (curl) with no models until the ollama stand-in pulls them.
+ * payload's. `codex` is installed but not logged in (`hosts: false` leaves both CLIs out); uv is missing until the wizard
+ * downloads it. Ollama (0.40.4) answers (curl) with no models until /api/pull pulls them.
  */
-export function installSetupStubs(version: string): void {
+export function installSetupStubs(version: string, o: { hosts?: boolean } = {}): void {
   fs.rmSync(SETUP.root, { recursive: true, force: true });
   fs.mkdirSync(SETUP.bin, { recursive: true });
+  fs.mkdirSync(SETUP.archives, { recursive: true });
   fs.mkdirSync(path.join(SETUP.payload, "cli"), { recursive: true });
   const sh = (name: string, body: string) => fs.writeFileSync(path.join(SETUP.bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   fs.symlinkSync(fs.realpathSync(path.join(ROOT, "bin", "node")), path.join(SETUP.bin, "node"));
-  sh("brew", `if [ "$1" = install ] && [ "$2" = uv ]; then
-  echo "==> Pouring uv--0.9.0.arm64_sequoia.bottle.tar.gz"
-  printf '#!/bin/sh\\necho "uv 0.9.0"\\n' > "${SETUP.bin}/uv"
-  /bin/chmod 755 "${SETUP.bin}/uv"
-  echo "==> uv 0.9.0 installed"
-  exit 0
-fi
-echo "brew stand-in: $*" >&2; exit 1`);
-  sh("claude", `case "$1" in --version) echo "2.1.0 (Claude Code)";; auth) echo '{"loggedIn": true, "authMethod": "claude.ai"}';; *) exit 1;; esac`);
-  sh("codex", `case "$1" in --version) echo "codex-cli 0.150.0";; login) echo "Not logged in"; exit 1;; *) exit 1;; esac`);
-  sh("ollama", `case "$1" in
-  show) [ -f "${SETUP.models}" ] && while read -r m; do [ "$m" = "$2" ] && exit 0; done < "${SETUP.models}"; exit 1;;
-  pull) echo "pulling manifest"; echo "pulling $2: 100%"; echo "$2" >> "${SETUP.models}"; echo "success";;
-  *) echo "ollama version is 0.12.0";;
-esac`);
-  // Only Ollama's /api/tags is asked for; a probe that throws its answer away (-o /dev/null) only learns it answers.
+  if (o.hosts !== false) {
+    sh("claude", `case "$1" in --version) echo "2.1.0 (Claude Code)";; auth) echo '{"loggedIn": true, "authMethod": "claude.ai"}';; *) exit 1;; esac`);
+    sh("codex", `case "$1" in --version) echo "codex-cli 0.150.0";; login) echo "Not logged in"; exit 1;; *) exit 1;; esac`);
+  }
+  sh("ollama", `case "$1" in --version) echo "ollama version is 0.40.4";; *) exit 1;; esac`);
+  // Ollama's API as the wizard asks it: /api/tags lists what was pulled; a probe that throws its answer away (-o /dev/null)
+  // only learns it answers; /api/pull streams Ollama's progress lines for the model in its JSON body and records it.
   sh("curl", `case " $* " in *" -o /dev/null "*) exit 0;; esac
+case " $* " in *"/api/pull "*)
+  m=; prev=
+  for a in "$@"; do [ "$prev" = "--data-binary" ] && m=$(printf '%s' "$a" | /usr/bin/sed -n 's/.*"model":"\\([^"]*\\)".*/\\1/p'); prev=$a; done
+  echo '{"status":"pulling manifest"}'
+  echo '{"status":"pulling 0123456789abcdef0123","digest":"sha256:0123","total":2000,"completed":1000}'
+  echo '{"status":"pulling 0123456789abcdef0123","digest":"sha256:0123","total":2000,"completed":2000}'
+  echo "$m" >> "${SETUP.models}"
+  echo '{"status":"success"}'
+  exit 0;;
+esac
 printf '{"models":['; sep=
 [ -f "${SETUP.models}" ] && while read -r m; do printf '%s{"name":"%s"}' "$sep" "$m"; sep=,; done < "${SETUP.models}"
 printf ']}\\n'`);
-  sh("python3", `echo "Python 3.12.1"`);
   fs.writeFileSync(path.join(SETUP.payload, "payload.json"), `${JSON.stringify({ schema: 1, version, commit: null, builtAt: new Date().toISOString(), runtimeDeps: false })}\n`);
   fs.writeFileSync(path.join(SETUP.payload, "package.json"), `${JSON.stringify({ name: "agenticos-workbench", version })}\n`);
   fs.writeFileSync(path.join(SETUP.payload, "cli", "aos.js"), `// e2e stand-in for the payload's cli/aos.js: records the call, then does what init or upgrade would to agenticos.json.
@@ -721,7 +785,7 @@ const fs = require("fs");
 const argv = process.argv.slice(2);
 const at = (f) => argv[argv.indexOf(f) + 1];
 const persona = argv.includes("--persona-json") ? JSON.parse(fs.readFileSync(at("--persona-json"), "utf8")) : null;
-fs.appendFileSync(${JSON.stringify(SETUP.calls)}, JSON.stringify({ argv, persona }) + "\\n");
+fs.appendFileSync(${JSON.stringify(SETUP.calls)}, JSON.stringify({ argv, persona, uvBin: process.env.AOS_UV_BIN ?? null }) + "\\n");
 const file = process.env.AOS_CONFIG;
 if (argv[0] === "init") {
   console.log("preflight: node " + process.version + " (stand-in)");

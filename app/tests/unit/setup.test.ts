@@ -1,6 +1,7 @@
-// Phase 5's main-side setup: the login PATH, the payload, the preflight checks, the setup policy (fix-its, vault paths,
-// persona answers, which step runs when), the CLAUDE.md diff, attach state, the job runner and the controller that ties
-// them together. Probes, terminals and child processes are fakes; files go to a temp folder.
+// Phase 5's main-side setup: the login PATH, the payload, the preflight checks, the setup policy (fixes, vault paths,
+// persona answers, which step runs when), the CLAUDE.md diff, the PATH line, attach state, the job runner and the
+// controller that ties them together (install-import B1, B2, B14). Probes, terminals, child processes and the network
+// are fakes; files go to a temp folder. The toolchain's own jobs are tests/unit/toolchain.test.ts.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,15 +11,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { spawnSync } from "node:child_process";
 import type { SetupEvent } from "../../src/shared/ipc";
 import { CHIEF_MODELS } from "../../src/shared/ipc";
 import { chiefSummary } from "../../src/renderer/setup/chief";
-import { PATH_MARKER, findOnPath, installDirs, loginPath, mergePath, parseLoginPath } from "../../src/main/setup/env";
+import { PATH_MARKER, findOnPath, installDirs, loginPath, mergePath, parseLoginPath, shellPath } from "../../src/main/setup/env";
 import { cmpVersion, findPayload, readPayload } from "../../src/main/setup/payload";
 import { parseTags, parseVersion, runPreflight, type PreflightDeps, type ProbeResult } from "../../src/main/setup/preflight";
-import { FIXES, FIX_IDS, OLLAMA_MODELS, fixBlocked, fixCommandLine, installArgs, personaJson, resolveVaultPath, stepRefusal, type SetupState } from "../../src/main/policy/setup";
+import { FIXES, FIX_IDS, PATH_LINE, fixBlocked, fixCommandLine, installArgs, personaJson, requestHosts, resolveVaultPath, stepRefusal, zprofilePath, type SetupState } from "../../src/main/policy/setup";
 import { applyClaudeMd, claudeMdLine, claudeMdPath, previewClaudeMd } from "../../src/main/setup/claude-md";
+import { applyPathLine, previewPathLine } from "../../src/main/setup/path-line";
+import { writeAtomic } from "../../src/main/setup/atomic";
+import { MANIFEST, RAM_TIERS, ollamaModels, privateNodeBinDir, type Fetch } from "../../src/main/setup/toolchain";
 import { attachInfo, hostsOf, markInstalled, markNoted } from "../../src/main/setup/attach";
 import { JobRunner } from "../../src/main/setup/jobs";
 import { SetupController, type AgenticosJson } from "../../src/main/setup/controller";
@@ -28,6 +31,9 @@ const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aos-setup-")
 process.on("exit", () => fs.rmSync(ROOT, { recursive: true, force: true }));
 const HOME = path.join(ROOT, "home");
 fs.mkdirSync(HOME, { recursive: true });
+const GB = 1024 ** 3;
+/** The models a 16 GB Mac downloads (local-first A12): the 9b workhorse and the embedder. */
+const MODELS = ollamaModels(16 * GB);
 
 // ── env ──────────────────────────────────────────────────────────────
 
@@ -50,10 +56,17 @@ test("loginPath: $AOS_SETUP_PATH replaces the lookup; else the shell's PATH, the
   assert.deepEqual(seen[0].slice(1, 2), ["-lic"]);
   assert.deepEqual(got.split(":").slice(0, 2), ["/opt/homebrew/bin", "/custom"]);
   for (const d of [...installDirs(HOME), "/usr/bin", "/bin"]) assert.ok(got.split(":").includes(d), d);
+  // The wizard's own Node (install-import B1) is on it, so a Node it installed is found without a new shell.
+  assert.ok(installDirs(HOME).includes(privateNodeBinDir(HOME)));
   // A shell that fails: main's own PATH, then the same folders.
   const fallback = loginPath({ shell: "/bin/zsh", home: HOME, env: { PATH: "/only" }, exec: () => { throw new Error("no shell"); } });
   assert.equal(fallback.split(":")[0], "/only");
   assert.ok(fallback.includes(path.join(HOME, ".local", "bin")));
+  // The shell's own PATH, without the folders main adds (Finish's PATH line asks whether ~/.local/bin is really on it).
+  assert.equal(shellPath({ shell: "/bin/zsh", home: HOME, env: {}, exec: () => `${PATH_MARKER}/usr/bin:/bin\n` }), "/usr/bin:/bin");
+  assert.equal(shellPath({ shell: "/bin/zsh", home: HOME, env: {}, exec: () => { throw new Error("no shell"); } }), null);
+  // Asked once: loginPath takes the answer it was given.
+  assert.equal(loginPath({ shell: "/bin/zsh", home: HOME, env: {}, exec: () => { throw new Error("must not run"); } }, "/given").split(":")[0], "/given");
 });
 
 test("findOnPath: the first executable of that name", () => {
@@ -106,11 +119,11 @@ test("cmpVersion orders releases and prereleases", () => {
 
 // ── preflight ────────────────────────────────────────────────────────
 
-/** A machine of fake programs: name → what `--version` (and the login probes) answer. */
+/** A machine of fake programs: name → what `--version` (and the login probes) answer. A 16 GB Mac on macOS 15. */
 function machine(tools: Record<string, Partial<Record<string, ProbeResult>>>, extra: Partial<PreflightDeps> = {}): PreflightDeps {
   const dir = "/fake/bin";
   return {
-    PATH: dir, home: HOME,
+    PATH: dir, home: HOME, totalmem: 16 * GB, macOS: "15.3",
     isExec: (p) => path.dirname(p) === dir && path.basename(p) in tools,
     exists: () => false,
     run: async (file, args) => {
@@ -124,14 +137,12 @@ const v = (out: string, code = 0): ProbeResult => ({ code, out });
 const TAGS = "-q --noproxy 127.0.0.1 -fs -m 3 http://127.0.0.1:11434/api/tags";
 const tags = (...names: string[]): ProbeResult => v(JSON.stringify({ models: names.map((name) => ({ name, model: name, size: 1 })) }));
 const ALL = {
-  brew: {},
   node: { "--version": v("v22.12.0") },
   claude: { "--version": v("2.1.0 (Claude Code)"), "auth status --json": v('{"loggedIn":true}') },
   codex: { "--version": v("codex-cli 0.150.0"), "login status": v("Logged in using ChatGPT") },
-  ollama: {},
-  python3: { "--version": v("Python 3.12.1") },
-  uv: {},
-  curl: { [TAGS]: tags("llama3.2:latest", ...OLLAMA_MODELS) },
+  ollama: { "--version": v("ollama version is 0.40.4") },
+  uv: { "--version": v("uv 0.13.1 (stand-in)") },
+  curl: { [TAGS]: tags("llama3.2:latest", ...MODELS) },
 };
 
 test("parseVersion reads the first x.y of a version line", () => {
@@ -140,94 +151,143 @@ test("parseVersion reads the first x.y of a version line", () => {
   assert.equal(parseVersion("none"), null);
 });
 
-test("everything there: ready, both hosts, and main learns the node to run", async () => {
+test("everything there: ready, both hosts, and main learns the node to run; nothing asks about Homebrew or Python", async () => {
   const { report, node } = await runPreflight(machine(ALL));
   assert.equal(report.ready, true);
   assert.deepEqual(report.hosts, { claude: true, codex: true });
   assert.equal(node, "/fake/bin/node");
   assert.ok(report.checks.every((c) => c.state === "ok" && c.fix === null));
-  assert.deepEqual(report.checks.map((c) => c.id), ["homebrew", "node", "claude", "claude-login", "codex", "codex-login", "ollama", "ollama-models", "python", "uv"]);
+  assert.deepEqual(report.checks.map((c) => c.id), ["node", "uv", "ollama", "ollama-models", "claude", "claude-login", "codex", "codex-login"]);
+  assert.deepEqual(report.models, MODELS);
+  assert.deepEqual(report.checks.filter((c) => c.required).map((c) => c.id), ["node", "uv"]);
 });
 
-test("one host is enough; a missing login offers its fix; codex's 'Not logged in' does not count", async () => {
+test("one host is enough; a missing login offers its terminal fix; codex's 'Not logged in' does not count", async () => {
   const { report } = await runPreflight(machine({ ...ALL, codex: { "--version": v("codex-cli 0.150.0"), "login status": v("Not logged in", 1) } }));
   assert.equal(report.ready, true);
   assert.deepEqual(report.hosts, { claude: true, codex: false });
   const login = report.checks.find((c) => c.id === "codex-login");
   assert.equal(login?.state, "missing");
   assert.equal(login?.fix, "codex-login");
+  assert.equal(login?.fixKind, "terminal");
   assert.equal(login?.fixCommand, "codex login");
   assert.equal(login?.fixBlocked, null);
 });
 
-test("no host at all, an old node, no uv: not ready, each with its fix", async () => {
-  const { claude: _c, codex: _x, uv: _u, ...rest } = ALL;
+test("install-import B2: no host at all is still ready, and each host's install is a download that needs nothing first", async () => {
+  const { claude: _c, codex: _x, ...rest } = ALL;
+  const { report } = await runPreflight(machine(rest));
+  assert.equal(report.ready, true);
+  assert.deepEqual(report.hosts, { claude: false, codex: false });
+  const by = Object.fromEntries(report.checks.map((c) => [c.id, c]));
+  assert.equal(by.claude.state, "missing");
+  assert.equal(by.claude.required, false);
+  assert.equal(by.claude.fixKind, "download");
+  assert.equal(by.claude.fixBlocked, null, "the native installer needs no Node");
+  assert.match(by.claude.fixCommand ?? "", /from downloads\.claude\.ai .*claude install/);
+  assert.equal(by["claude-login"].fixBlocked, "needs Claude Code first");
+  assert.match(by.codex.fixCommand ?? "", /from github\.com\/openai\/codex/);
+});
+
+test("an old node, no uv: not ready, each with its download; the wizard's own Node is used when the PATH's is too old", async () => {
+  const { uv: _u, ...rest } = ALL;
   const { report, node } = await runPreflight(machine({ ...rest, node: { "--version": v("v18.19.0") } }));
   assert.equal(report.ready, false);
   assert.equal(node, null);
   const by = Object.fromEntries(report.checks.map((c) => [c.id, c]));
-  assert.match(by.node.detail, /needs 20 or newer/);
+  assert.match(by.node.detail, /v18\.19\.0 at \/fake\/bin\/node: UniDeX needs 20\.0\.0 or newer/);
   assert.equal(by.node.fix, "node");
-  assert.equal(by.claude.fix, "claude");
-  // Installing a CLI needs npm, which needs a node that runs: the fix waits for Node.
-  assert.equal(by.claude.fixBlocked, "needs Node.js first");
-  assert.equal(by["claude-login"].fixBlocked, "needs Claude Code first");
+  assert.equal(by.node.fixKind, "download");
+  assert.match(by.node.fixCommand ?? "", new RegExp(`Downloads Node\\.js ${MANIFEST.tools.node.version.replace(/\./g, "\\.")} from nodejs\\.org`));
   assert.equal(by.uv.fix, "uv");
   assert.equal(by.uv.fixBlocked, null);
-});
-
-test("without Homebrew its fixes wait for it, and Homebrew's own installer is offered", async () => {
-  const { brew: _b, uv: _u, ...rest } = ALL;
-  const { report } = await runPreflight(machine(rest));
-  const by = Object.fromEntries(report.checks.map((c) => [c.id, c]));
-  assert.equal(by.homebrew.state, "missing");
-  assert.equal(by.homebrew.required, false);
-  assert.equal(by.homebrew.fix, "homebrew");
-  assert.equal(by.uv.fixBlocked, "needs Homebrew first");
-});
-
-test("macOS's python3 stub is not run when the Command Line Tools are missing (it would open their installer)", async () => {
-  const ran: string[] = [];
-  const deps = machine({ ...ALL, python3: {} }, {
-    isExec: (p) => p === "/usr/bin/python3" || (path.dirname(p) === "/fake/bin" && path.basename(p) in ALL && path.basename(p) !== "python3"),
-  });
+  // The Node the wizard installed, in ~/.local/share/unidex/node/current: found even though the PATH's is older.
+  const ours = path.join(privateNodeBinDir(HOME), "node");
+  const deps = machine({ ...rest, node: { "--version": v("v18.19.0") } });
+  const isExec = deps.isExec!;
+  deps.isExec = (p) => p === ours || isExec(p);
   const run = deps.run;
-  deps.PATH = "/fake/bin:/usr/bin";
-  deps.run = async (file, args, t) => { ran.push(file); return file === "/usr/bin/xcode-select" ? v("", 2) : run(file, args, t); };
-  const { report } = await runPreflight(deps);
-  assert.equal(report.checks.find((c) => c.id === "python")?.state, "missing");
-  assert.ok(!ran.includes("/usr/bin/python3"));
+  deps.run = async (file, args, t) => file === ours ? v(`v${MANIFEST.tools.node.version}`) : run(file, args, t);
+  const fixed = await runPreflight(deps);
+  assert.equal(fixed.node, ours);
+  assert.equal(fixed.report.checks.find((c) => c.id === "node")?.state, "ok");
 });
 
-test("Ollama.app counts as Ollama, and uv in ~/.local/bin counts as uv", async () => {
+test("inspection F5: a uv that does not answer --version with a version fails its check, unless another uv on the Mac does", async () => {
+  const broken = { ...ALL, uv: { "--version": v("dyld: Library not loaded", 134) } };
+  const { report } = await runPreflight(machine(broken));
+  const uvRow = report.checks.find((c) => c.id === "uv");
+  assert.equal(uvRow?.state, "missing");
+  assert.equal(uvRow?.detail, "/fake/bin/uv did not answer uv --version with a version");
+  assert.equal(uvRow?.fix, "uv");
+  assert.equal(report.ready, false, "Continue waits for a uv that runs");
+  // A working uv in ~/.local/bin is found and used, though the PATH's comes first.
+  const local = path.join(HOME, ".local", "bin", "uv");
+  const deps = machine(broken);
+  const isExec = deps.isExec!;
+  deps.isExec = (p) => p === local || isExec(p);
+  const run = deps.run;
+  deps.run = async (file, args, t) => (file === local ? v("uv 0.13.1 (Homebrew)") : run(file, args, t));
+  const ok = (await runPreflight(deps)).report.checks.find((c) => c.id === "uv");
+  assert.equal(ok?.state, "ok");
+  assert.equal(ok?.detail, `uv 0.13.1 · ${local}`);
+  // An Ollama that reports no version is not trusted either: a warning whose download installs (or opens) the app.
+  const mute = (await runPreflight(machine({ ...ALL, ollama: { "--version": v("", 1) } }))).report.checks.find((c) => c.id === "ollama");
+  assert.equal(mute?.state, "warn");
+  assert.equal(mute?.detail, "/fake/bin/ollama did not report its version");
+  assert.equal(mute?.fix, "ollama");
+});
+
+test("H3: an Ollama.app that does not say its version is a warning with no download (nothing would open it unverified)", async () => {
+  const { ollama: _o, ...rest } = ALL;
+  const deps = machine(rest, { exists: (p) => p === "/Applications/Ollama.app" });
+  const run = deps.run;
+  deps.run = async (file, args, t) => (file === "/usr/bin/plutil" ? v("", 1) : run(file, args, t));
+  const row = (await runPreflight(deps)).report.checks.find((c) => c.id === "ollama");
+  assert.equal(row?.state, "warn");
+  assert.equal(row?.fix, null);
+  assert.equal(row?.detail, "/Applications/Ollama.app does not say its version: reinstall Ollama from ollama.com");
+});
+
+test("Python and the Command Line Tools are never asked about (graphify's Python comes with uv)", async () => {
+  const ran: string[] = [];
+  const deps = machine(ALL);
+  const run = deps.run;
+  deps.run = async (file, args, t) => { ran.push(file); return run(file, args, t); };
+  await runPreflight(deps);
+  assert.ok(!ran.some((f) => /python|xcode-select|brew/.test(f)), ran.join(" "));
+});
+
+test("Ollama.app counts as Ollama (its version read from Info.plist, nothing opened), and uv in ~/.local/bin counts as uv", async () => {
   const { ollama: _o, uv: _u, ...rest } = ALL;
   const uv = path.join(HOME, ".local", "bin", "uv");
   const deps = machine(rest, { exists: (p) => p === "/Applications/Ollama.app" });
   const isExec = deps.isExec!;
   deps.isExec = (p) => p === uv || isExec(p);
-  const { report } = await runPreflight(deps);
+  const ran: string[][] = [];
+  const run = deps.run;
+  deps.run = async (file, args, t) => { ran.push([file, ...args]); return file === uv ? v("uv 0.11.32 (Homebrew)") : file === "/usr/bin/plutil" ? v("0.34.3") : run(file, args, t); };
+  const { report, ollamaApp } = await runPreflight(deps);
   const by = Object.fromEntries(report.checks.map((c) => [c.id, c]));
-  assert.equal(by.ollama.detail, "/Applications/Ollama.app");
-  assert.equal(by.uv.detail, uv);
+  assert.equal(by.ollama.detail, "0.34.3 · /Applications/Ollama.app");
+  assert.equal(ollamaApp, "/Applications/Ollama.app");
+  assert.deepEqual(ran.find((c) => c[0] === "/usr/bin/plutil")?.slice(1), ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", "/Applications/Ollama.app/Contents/Info.plist"]);
+  assert.equal(by.uv.detail, `uv 0.11.32 · ${uv}`);
   assert.equal(report.ready, true);
 });
 
-test("Ollama's models: asked over HTTP; one missing is a warning with its fix, and Continue does not wait for it", async () => {
-  const { report } = await runPreflight(machine({ ...ALL, curl: { [TAGS]: tags("qwen3-embedding:0.6b") } }));
-  const models = report.checks.find((c) => c.id === "ollama-models");
-  assert.equal(models?.state, "warn");
-  assert.equal(models?.required, false);
-  assert.equal(models?.detail, "not downloaded: qwen3.5:9b");
-  assert.equal(models?.fix, "ollama-models");
-  assert.equal(models?.fixBlocked, null);
-  assert.equal(report.ready, true);
+test("Ollama older than its floor is a warning with no download (it updates itself); a uv older than its floor is missing", async () => {
+  const { report } = await runPreflight(machine({ ...ALL, ollama: { "--version": v("ollama version is 0.12.3") }, uv: { "--version": v("uv 0.2.9") } }));
+  const by = Object.fromEntries(report.checks.map((c) => [c.id, c]));
+  assert.equal(by.ollama.state, "warn");
+  assert.equal(by.ollama.fix, null);
+  assert.match(by.ollama.detail, new RegExp(`0\\.12\\.3 at /fake/bin/ollama is older than ${MANIFEST.tools.ollama.floor?.replace(/\./g, "\\.")}, which qwen3\\.5:9b needs: update Ollama from its menu`));
+  assert.equal(by.uv.state, "missing");
+  assert.equal(by.uv.fix, "uv");
+  assert.equal(report.ready, false);
 });
 
-test("Ollama's models: not answering, they cannot be checked; no Ollama, its own fix downloads them", async () => {
-  const down = (await runPreflight(machine({ ...ALL, curl: { [TAGS]: v("", 7) } }))).report.checks.find((c) => c.id === "ollama-models");
-  assert.equal(down?.state, "warn");
-  assert.match(down?.detail ?? "", /not running/);
-  assert.equal(down?.fix, "ollama-models");
+test("no Ollama: a warning (not required) whose download waits for nothing, except on a macOS older than it needs", async () => {
   const { ollama: _o, ...rest } = ALL;
   const ran: string[] = [];
   const deps = machine(rest);
@@ -236,10 +296,34 @@ test("Ollama's models: not answering, they cannot be checked; no Ollama, its own
   const { report } = await runPreflight(deps);
   const by = Object.fromEntries(report.checks.map((c) => [c.id, c]));
   assert.ok(!ran.includes("curl"), "nothing to ask without Ollama");
-  assert.equal(by.ollama.state, "missing");
+  assert.equal(by.ollama.state, "warn");
+  assert.equal(by.ollama.required, false);
+  assert.equal(by.ollama.fix, "ollama");
+  assert.equal(by.ollama.fixBlocked, null);
   assert.equal(by["ollama-models"].state, "warn");
   assert.equal(by["ollama-models"].fixBlocked, "needs Ollama first");
-  assert.match(by.ollama.fixCommand ?? "", /"\$O" pull qwen3\.5:9b.*"\$O" pull qwen3-embedding:0\.6b/);
+  assert.equal(report.ready, true, "Continue never waits for Ollama");
+  const old = (await runPreflight(machine(rest, { macOS: "13.6.1" }))).report.checks.find((c) => c.id === "ollama");
+  assert.equal(old?.fixBlocked, "needs macOS 14.0 or newer");
+});
+
+test("Ollama's models: the Mac's tier, asked over HTTP; one missing is a warning with its download, and Continue does not wait for it", async () => {
+  const { report } = await runPreflight(machine({ ...ALL, curl: { [TAGS]: tags("qwen3-embedding:0.6b") } }));
+  const models = report.checks.find((c) => c.id === "ollama-models");
+  assert.equal(models?.state, "warn");
+  assert.equal(models?.required, false);
+  assert.equal(models?.detail, "not downloaded: qwen3.5:9b");
+  assert.equal(models?.fix, "ollama-models");
+  assert.equal(models?.fixKind, "download");
+  assert.equal(models?.fixBlocked, null);
+  assert.equal(report.ready, true);
+  // An 8 GB Mac wants the 4b.
+  const small = await runPreflight(machine({ ...ALL, curl: { [TAGS]: tags(...MODELS) } }, { totalmem: 8 * GB }));
+  assert.deepEqual(small.report.models, ["qwen3.5:4b", "qwen3-embedding:0.6b"]);
+  assert.equal(small.report.checks.find((c) => c.id === "ollama-models")?.detail, "not downloaded: qwen3.5:4b");
+  const down = (await runPreflight(machine({ ...ALL, curl: { [TAGS]: v("", 7) } }))).report.checks.find((c) => c.id === "ollama-models");
+  assert.equal(down?.state, "warn");
+  assert.match(down?.detail ?? "", /not running/);
 });
 
 test("parseTags reads the names in Ollama's answer, and nothing from a failed or garbled one", () => {
@@ -249,17 +333,23 @@ test("parseTags reads the names in Ollama's answer, and nothing from a failed or
   assert.equal(parseTags(null), null);
 });
 
-test("the app's Ollama models are models.js's workhorse and embedder", () => {
+test("the app's Ollama models are models.js's workhorse and embedder, tier by tier (local-first A12)", () => {
   // The runtime's roles, loaded at run time from the repo (the tests run bundled from app/out-test/), without the env
   // overrides a developer's shell may set.
-  const models = createRequire(__filename)(path.resolve(__dirname, "../../brain/scripts/sdk/lib/models.js")) as { role(name: string, cfg: object): { tag: string; provider: string } };
+  const models = createRequire(__filename)(path.resolve(__dirname, "../../brain/scripts/sdk/lib/models.js")) as {
+    role(name: string, cfg: object): { tag: string; provider: string };
+    LOCAL_TIERS?: Array<{ belowGb: number; tag: string }>;
+  };
   const saved = { BRAIN_MODEL: process.env.BRAIN_MODEL, BRAIN_EMBEDDER: process.env.BRAIN_EMBEDDER };
   delete process.env.BRAIN_MODEL;
   delete process.env.BRAIN_EMBEDDER;
   try {
     const roles = [models.role("workhorse", {}), models.role("embedder", {})];
-    assert.deepEqual([...OLLAMA_MODELS], roles.map((r) => r.tag));
+    // A Mac at or above the last tier's floor pulls what the runtime runs by default.
+    assert.deepEqual(ollamaModels(64 * GB), roles.map((r) => r.tag));
     assert.ok(roles.every((r) => r.provider === "ollama"));
+    // Once the runtime carries the tiers (local-first PR 1), the two tables are one.
+    if (models.LOCAL_TIERS) assert.deepEqual(RAM_TIERS, models.LOCAL_TIERS);
   } finally {
     for (const [k, val] of Object.entries(saved)) if (val !== undefined) process.env[k] = val;
   }
@@ -267,89 +357,16 @@ test("the app's Ollama models are models.js's workhorse and embedder", () => {
 
 // ── policy ───────────────────────────────────────────────────────────
 
-test("every fix is a fixed command run by /bin/sh -c; the page cannot add one", () => {
-  assert.deepEqual(FIX_IDS.sort(), ["claude", "claude-login", "codex", "codex-login", "homebrew", "node", "ollama", "ollama-models", "python", "uv"]);
-  assert.deepEqual(fixCommandLine("uv"), { file: "/bin/sh", args: ["-c", "brew install uv"] });
-  assert.equal(FIXES["claude-login"].command, "claude auth login");
-  assert.equal(fixBlocked("uv", new Set(["homebrew"])), null);
+test("every fix is a toolchain download or, for a login, a fixed command run by /bin/sh -c; the page cannot add one", () => {
+  assert.deepEqual([...FIX_IDS].sort(), ["claude", "claude-login", "codex", "codex-login", "node", "ollama", "ollama-models", "uv"]);
+  assert.deepEqual(FIX_IDS.filter((id) => FIXES[id].kind === "terminal").sort(), ["claude-login", "codex-login"]);
+  assert.deepEqual(fixCommandLine("claude-login"), { file: "/bin/sh", args: ["-c", "claude auth login"] });
+  assert.throws(() => fixCommandLine("uv"), /not a terminal fix/);
+  assert.equal(JSON.stringify(FIXES).includes("brew"), false, "no fix needs Homebrew (install-import B1)");
+  assert.equal(JSON.stringify(FIXES).includes("npm"), false);
+  assert.equal(fixBlocked("uv", new Set()), null);
+  assert.equal(fixBlocked("ollama-models", new Set()), "needs Ollama first");
   assert.equal(fixBlocked("codex-login", new Set()), "needs the Codex CLI first");
-});
-
-/**
- * Runs a fix-it's command with /bin/sh on stand-ins: curl answers once `up` exists, brew's service start creates it
- * (unless `startFails`), brew lists the formula once `formula` exists, ollama knows what it pulled. With `appCli`,
- * ollama is not on the PATH but inside ~/Applications/Ollama.app, as before Ollama.app first links it. Every call is
- * logged.
- */
-function runFix(id: "ollama" | "ollama-models", state: { up?: boolean; formula?: boolean; startFails?: boolean; appCli?: boolean; pulled?: string[] }): { code: number | null; out: string; calls: string[] } {
-  const dir = fs.mkdtempSync(path.join(ROOT, "fix-"));
-  const bin = path.join(dir, "bin");
-  const appBin = path.join(dir, "Applications", "Ollama.app", "Contents", "Resources");
-  fs.mkdirSync(bin);
-  fs.mkdirSync(appBin, { recursive: true });
-  const at = (f: string) => JSON.stringify(path.join(dir, f));
-  if (state.up) fs.writeFileSync(path.join(dir, "up"), "");
-  if (state.formula) fs.writeFileSync(path.join(dir, "formula"), "");
-  fs.writeFileSync(path.join(dir, "pulled"), (state.pulled ?? []).map((m) => `${m}\n`).join(""));
-  const sh = (name: string, body: string, where = bin) => fs.writeFileSync(path.join(where, name), `#!/bin/sh\necho "${name} $*" >> ${at("calls")}\n${body}\n`, { mode: 0o755 });
-  sh("curl", `[ -f ${at("up")} ]`);
-  sh("brew", `case "$1 $2" in
-  "install ollama") : > ${at("formula")};;
-  "services start") ${state.startFails ? ":" : `: > ${at("up")}`};;
-  "list --formula") [ -f ${at("formula")} ];;
-  *) exit 1;;
-esac`);
-  sh("ollama", `case "$1" in
-  show) grep -qx "$2" ${at("pulled")};;
-  pull) echo "pulling $2"; echo "$2" >> ${at("pulled")};;
-  *) exit 1;;
-esac`, state.appCli ? appBin : bin);
-  const r = spawnSync(fixCommandLine(id).file, fixCommandLine(id).args, { encoding: "utf8", env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir } });
-  const calls = fs.existsSync(path.join(dir, "calls")) ? fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n") : [];
-  return { code: r.status, out: r.stdout + r.stderr, calls };
-}
-
-test("Install Ollama and its models starts its service, waits until it answers, then pulls both models", () => {
-  const r = runFix("ollama", {});
-  assert.equal(r.code, 0, r.out);
-  assert.deepEqual(r.calls.filter((c) => !c.startsWith("ollama show")), [
-    "brew install ollama", "brew services start ollama",
-    "curl -q --noproxy 127.0.0.1 -fs --retry 30 --retry-delay 1 --retry-connrefused --retry-max-time 30 -m 2 -o /dev/null http://127.0.0.1:11434/api/tags",
-    "ollama pull qwen3.5:9b", "ollama pull qwen3-embedding:0.6b",
-  ]);
-  assert.match(r.out, /Waiting for Ollama to answer \(up to 30 s\)[\s\S]*Downloading qwen3\.5:9b[\s\S]*Downloading qwen3-embedding:0\.6b/);
-});
-
-test("Download the models pulls only the missing ones, starting brew's service only when Ollama is not answering", () => {
-  const answering = runFix("ollama-models", { up: true, pulled: ["qwen3.5:9b"] });
-  assert.equal(answering.code, 0, answering.out);
-  assert.ok(!answering.calls.some((c) => c.startsWith("brew")), "nothing to start");
-  assert.deepEqual(answering.calls.filter((c) => c.startsWith("ollama pull")), ["ollama pull qwen3-embedding:0.6b"]);
-  assert.match(answering.out, /qwen3\.5:9b is already downloaded/);
-
-  const brewed = runFix("ollama-models", { formula: true });
-  assert.equal(brewed.code, 0, brewed.out);
-  assert.ok(brewed.calls.includes("brew services start ollama"));
-  assert.deepEqual(brewed.calls.filter((c) => c.startsWith("ollama pull")), ["ollama pull qwen3.5:9b", "ollama pull qwen3-embedding:0.6b"]);
-
-  // Ollama.app, closed: it starts its own server once opened, so the fix says so and pulls nothing.
-  const app = runFix("ollama-models", {});
-  assert.equal(app.code, 1);
-  assert.match(app.out, /Ollama is not running: open Ollama/);
-  assert.ok(!app.calls.some((c) => c.startsWith("ollama")));
-
-  // Ollama.app, open, before it links its CLI onto the PATH: the app's own copy pulls.
-  const unlinked = runFix("ollama-models", { up: true, appCli: true });
-  assert.equal(unlinked.code, 0, unlinked.out);
-  assert.deepEqual(unlinked.calls.filter((c) => c.startsWith("ollama pull")), ["ollama pull qwen3.5:9b", "ollama pull qwen3-embedding:0.6b"]);
-});
-
-test("a service that never answers stops the fix with Homebrew's advice, before any pull", () => {
-  const r = runFix("ollama-models", { formula: true, startFails: true });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /did not answer at http:\/\/127\.0\.0\.1:11434 within 30 s: run brew services restart ollama/);
-  assert.ok(r.calls.includes("brew services start ollama"));
-  assert.ok(!r.calls.some((c) => c.startsWith("ollama pull")));
 });
 
 test("a vault folder is absolute or ~/…, never home itself or a root", () => {
@@ -383,6 +400,10 @@ test("persona answers: trimmed, and each host's model only where that host is on
   assert.deepEqual(Object.keys(personaJson(a, { claude: false, codex: true })), ["name", "addressAs", "voice", "priorities", "dutyCodexModel", "dutyEffort", "schedule"]);
   assert.deepEqual(installArgs("/p/cli/aos.js", { host: "both", vault: "x", persona: null }, "/v", null), ["/p/cli/aos.js", "init", "--yes", "--vault", "/v", "--host", "both"]);
   assert.deepEqual(installArgs("/p/cli/aos.js", { host: "codex", vault: "x", persona: null }, "/v", "/a.json").slice(-2), ["--persona-json", "/a.json"]);
+  assert.deepEqual(installArgs("/p/cli/aos.js", { host: "none", vault: "x", persona: null }, "/v", null).slice(-2), ["--host", "none"]);
+  assert.deepEqual(requestHosts("none"), { claude: false, codex: false });
+  assert.deepEqual(requestHosts("both"), { claude: true, codex: true });
+  assert.deepEqual(requestHosts("codex"), { claude: false, codex: true });
 });
 
 test("each step runs only in its state", () => {
@@ -403,6 +424,38 @@ test("each step runs only in its state", () => {
   assert.equal(stepRefusal("preflight", s({ busy: true })), null, "the checks may re-run while a fix runs");
   assert.equal(stepRefusal("preflight", s({ attached: true })), "a vault is already attached");
   assert.equal(stepRefusal("claude-md", s({ installed: true, busy: true })), null);
+  // Finish's PATH line: the wizard's, after the install and before the Workbench opens.
+  assert.equal(stepRefusal("path", s({})), "no vault yet");
+  assert.equal(stepRefusal("path", s({ installed: true })), null);
+  assert.equal(stepRefusal("path", s({ installed: true, attached: true })), "a vault is already attached");
+});
+
+// ── the PATH line (install-import B14) ──────────────────────────────
+
+test("the PATH line: ~/.zprofile ($ZDOTDIR's when set), shown before it is written, appended once, a symlink written through", () => {
+  assert.equal(PATH_LINE, 'export PATH="$HOME/.local/bin:$PATH"');
+  assert.equal(zprofilePath(HOME, {}), path.join(HOME, ".zprofile"));
+  assert.equal(zprofilePath(HOME, { ZDOTDIR: "/z" }), "/z/.zprofile");
+  assert.equal(zprofilePath(HOME, { ZDOTDIR: "relative" }), path.join(HOME, ".zprofile"));
+  const home = path.join(ROOT, "pathline");
+  const file = path.join(home, ".zprofile");
+  fs.mkdirSync(home, { recursive: true });
+  assert.deepEqual(previewPathLine(file, home, "/usr/bin:/bin"), { file, line: PATH_LINE, present: false, onPath: false });
+  assert.equal(previewPathLine(file, home, `/usr/bin:${path.join(home, ".local", "bin")}`).onPath, true);
+  assert.equal(fs.existsSync(file), false, "a preview writes nothing");
+  fs.writeFileSync(file, "eval \"$(/opt/homebrew/bin/brew shellenv)\"");
+  assert.equal(applyPathLine(file, home, null).present, true);
+  applyPathLine(file, home, null);
+  assert.equal(fs.readFileSync(file, "utf8"), `eval "$(/opt/homebrew/bin/brew shellenv)"\n${PATH_LINE}\n`);
+  // A dotfiles symlink stays a symlink.
+  const real = path.join(ROOT, "dotfiles-zprofile");
+  fs.writeFileSync(real, "# mine\n");
+  const link = path.join(ROOT, "pathline2", ".zprofile");
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(real, link);
+  applyPathLine(link, path.dirname(link), null);
+  assert.ok(fs.lstatSync(link).isSymbolicLink());
+  assert.equal(fs.readFileSync(real, "utf8"), `# mine\n${PATH_LINE}\n`);
 });
 
 // ── CLAUDE.md ────────────────────────────────────────────────────────
@@ -441,6 +494,87 @@ test("CLAUDE.md: a ~/ import of the same file counts, and a symlinked file is wr
   assert.equal(fs.readFileSync(real, "utf8"), `# mine\n@${vault}/AGENTICOS.md\n`);
   fs.writeFileSync(real, "@~/AgenticOS/AGENTICOS.md\n");
   assert.equal(previewClaudeMd(link, vault, HOME).present, true);
+});
+
+test("inspection F2: a profile or CLAUDE.md that exists but cannot be read is refused with the reason, and kept as it was", () => {
+  const home = path.join(ROOT, "unreadable");
+  fs.mkdirSync(home, { recursive: true });
+  const profile = path.join(home, ".zprofile");
+  fs.writeFileSync(profile, "export SECRET_SETUP=1\n");
+  fs.chmodSync(profile, 0o000);
+  const md = path.join(home, "CLAUDE.md");
+  fs.writeFileSync(md, "# rules I wrote\n");
+  fs.chmodSync(md, 0o000);
+  try {
+    assert.throws(() => previewPathLine(profile, home, null), /\.zprofile could not be read \(EACCES\), so nothing was written/);
+    assert.throws(() => applyPathLine(profile, home, null), /could not be read \(EACCES\)/);
+    assert.throws(() => applyClaudeMd(md, path.join(home, "Vault"), home), /CLAUDE\.md could not be read \(EACCES\)/);
+    // A folder where the profile should be is not "absent" either.
+    const dirHome = path.join(ROOT, "dirprofile");
+    fs.mkdirSync(path.join(dirHome, ".zprofile"), { recursive: true });
+    assert.throws(() => applyPathLine(path.join(dirHome, ".zprofile"), dirHome, null), /could not be read \(EISDIR\)/);
+  } finally {
+    fs.chmodSync(profile, 0o644);
+    fs.chmodSync(md, 0o644);
+  }
+  assert.equal(fs.readFileSync(profile, "utf8"), "export SECRET_SETUP=1\n", "the profile's contents survive");
+  assert.equal(fs.readFileSync(md, "utf8"), "# rules I wrote\n");
+  assert.deepEqual(fs.readdirSync(home).sort(), [".zprofile", "CLAUDE.md"], "no temp file left behind");
+});
+
+test("inspection M3: a profile or CLAUDE.md that is a link to a file not there yet stays a link; its target is created, or nothing is written", () => {
+  const home = path.join(ROOT, "dangling");
+  const dots = path.join(home, "dotfiles");
+  fs.mkdirSync(dots, { recursive: true });
+  const profile = path.join(home, ".zprofile");
+  fs.symlinkSync(path.join("dotfiles", "zprofile"), profile);
+  assert.deepEqual(previewPathLine(profile, home, null), { file: profile, line: PATH_LINE, present: false, onPath: false });
+  applyPathLine(profile, home, null);
+  assert.ok(fs.lstatSync(profile).isSymbolicLink(), "the link is kept");
+  assert.equal(fs.readlinkSync(profile), path.join("dotfiles", "zprofile"));
+  assert.equal(fs.readFileSync(path.join(dots, "zprofile"), "utf8"), `${PATH_LINE}\n`, "its target holds the line");
+  const md = path.join(home, "claude", "CLAUDE.md");
+  fs.mkdirSync(path.dirname(md), { recursive: true });
+  fs.symlinkSync(path.join(dots, "CLAUDE.md"), md);
+  applyClaudeMd(md, path.join(home, "Vault"), home);
+  assert.ok(fs.lstatSync(md).isSymbolicLink());
+  assert.equal(fs.readFileSync(path.join(dots, "CLAUDE.md"), "utf8"), `@${path.join(home, "Vault")}/AGENTICOS.md\n`);
+  // A link whose target's folder is not there: refused, the link left exactly as it was.
+  const lost = path.join(ROOT, "dangling2");
+  fs.mkdirSync(lost, { recursive: true });
+  const p2 = path.join(lost, ".zprofile");
+  fs.symlinkSync("/nonexistent-dotfiles/zprofile", p2);
+  assert.throws(() => applyPathLine(p2, lost, null), /links to \/nonexistent-dotfiles\/zprofile, whose folder does not exist, so nothing was written/);
+  assert.equal(fs.readlinkSync(p2), "/nonexistent-dotfiles/zprofile");
+  const md2 = path.join(lost, "CLAUDE.md");
+  fs.symlinkSync("/nonexistent-dotfiles/CLAUDE.md", md2);
+  assert.throws(() => applyClaudeMd(md2, path.join(lost, "Vault"), lost), /whose folder does not exist/);
+  assert.ok(fs.lstatSync(md2).isSymbolicLink());
+  // A loop of links is refused too.
+  const loop = path.join(lost, "loop");
+  fs.symlinkSync(loop, loop);
+  assert.throws(() => applyPathLine(loop, lost, null), /loop of links|ELOOP/);
+});
+
+test("inspection round 3 F2: a link planted at the old predictable temp name is never followed, and is left alone", () => {
+  const home = path.join(ROOT, "planted-tmp");
+  fs.mkdirSync(home, { recursive: true });
+  const victim = path.join(ROOT, "planted-victim.txt");
+  fs.writeFileSync(victim, "precious\n");
+  const profile = path.join(home, ".zprofile");
+  const planted = `${profile}.${process.pid}.tmp`;
+  fs.symlinkSync(victim, planted);
+  applyPathLine(profile, home, null);
+  assert.equal(fs.readFileSync(victim, "utf8"), "precious\n", "the planted link's target is untouched");
+  assert.ok(fs.lstatSync(profile).isFile() && !fs.lstatSync(profile).isSymbolicLink());
+  assert.equal(fs.readFileSync(profile, "utf8"), `${PATH_LINE}\n`);
+  assert.ok(fs.lstatSync(planted).isSymbolicLink(), "a temp this write did not create is not removed either");
+  assert.deepEqual(fs.readdirSync(home).filter((n) => n.endsWith(".tmp") && n !== path.basename(planted)), [], "its own temp is gone");
+  // The destination is checked again just before the rename: one that changed is left as it is.
+  const target = path.join(home, "file.txt");
+  assert.throws(() => writeAtomic(target, "x", 0o644, () => false), /changed while it was being written/);
+  assert.equal(fs.existsSync(target), false);
+  assert.deepEqual(fs.readdirSync(home).filter((n) => n.startsWith(".file.txt.")), []);
 });
 
 // ── attach ───────────────────────────────────────────────────────────
@@ -515,7 +649,7 @@ test("jobs: one at a time; a terminal's output and exit stream as events, after 
   const pty = new FakePty();
   const lib: PtyLib = { spawn: () => pty };
   const jobs = new JobRunner({ emit: (e) => events.push(e), pty: () => lib, onExit: (j, c) => exits.push([j, c]) });
-  assert.deepEqual(jobs.startPty("fix", "/bin/sh", ["-c", "brew install uv"], { cwd: HOME, env: {}, cols: 80, rows: 24, echo: "brew install uv" }), { ok: true, data: null });
+  assert.deepEqual(jobs.startPty("fix", "/bin/sh", ["-c", "claude auth login"], { cwd: HOME, env: {}, cols: 80, rows: 24, echo: "claude auth login" }), { ok: true, data: null });
   assert.equal(jobs.running, "fix");
   assert.equal(jobs.startProc("install", "/x", [], { cwd: HOME, env: {}, echo: "x" }).ok, false);
   jobs.input("secret\r");
@@ -523,9 +657,32 @@ test("jobs: one at a time; a terminal's output and exit stream as events, after 
   pty.emit("data", "==> done");
   pty.emit("exit", { exitCode: 0 });
   assert.equal(jobs.running, null);
-  assert.match((events[0] as { data: string }).data, /\$ brew install uv/);
+  assert.match((events[0] as { data: string }).data, /\$ claude auth login/);
   assert.deepEqual(events.slice(1), [{ job: "fix", type: "data", data: "==> done" }, { job: "fix", type: "exit", code: 0, signal: null }]);
   assert.deepEqual(exits, [["fix", 0]]);
+});
+
+test("inspection F6: a task stopped while it runs ends as stopped, even when it then resolves normally", async () => {
+  const events: SetupEvent[] = [];
+  const jobs = new JobRunner({ emit: (e) => events.push(e), pty: () => { throw new Error("no pty"); } });
+  let release!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  assert.equal(jobs.startTask("fix", async (ctx) => { ctx.log("working"); await held; /* ignores its signal */ }, { echo: "Install x" }).ok, true);
+  await new Promise((r) => setImmediate(r));
+  jobs.cancel();
+  release();
+  await exitOf(events, "fix");
+  assert.deepEqual(events.at(-1), { job: "fix", type: "exit", code: null, signal: "SIGTERM" });
+  // Not stopped: exit 0; failed: exit 1 after its message.
+  events.length = 0;
+  jobs.startTask("fix", async () => undefined, { echo: "ok" });
+  await exitOf(events, "fix");
+  assert.deepEqual(events.at(-1), { job: "fix", type: "exit", code: 0, signal: null });
+  events.length = 0;
+  jobs.startTask("fix", async () => { throw new Error("bad hash"); }, { echo: "x" });
+  await exitOf(events, "fix");
+  assert.match((events.at(-2) as { data: string }).data, /bad hash/);
+  assert.deepEqual(events.at(-1), { job: "fix", type: "exit", code: 1, signal: null });
 });
 
 test("jobs: a child process gets no stdin, and its line ends are made terminal-ready", async () => {
@@ -547,6 +704,95 @@ test("jobs: a child process gets no stdin, and its line ends are made terminal-r
 });
 
 // ── the controller ───────────────────────────────────────────────────
+
+/** The network a unit test has: none. */
+const noNetwork: Fetch = async () => { throw new Error("no network in tests"); };
+
+/** Polls until `events` holds an exit for `job` and returns it. */
+async function exitEvent(events: SetupEvent[], job: string): Promise<Extract<SetupEvent, { type: "exit" }>> {
+  await exitOf(events, job);
+  return events.find((e) => e.type === "exit" && e.job === job) as Extract<SetupEvent, { type: "exit" }>;
+}
+
+test("controller: a download fix runs as a toolchain job with progress, and a failed check ends it with exit 1 and the reason", async () => {
+  const events: SetupEvent[] = [];
+  const home = path.join(ROOT, "ctl-dl-home");
+  fs.mkdirSync(home, { recursive: true });
+  const { uv: _u, ...rest } = ALL;
+  const pin = MANIFEST.tools.uv.assets[process.arch === "x64" ? "x64" : "arm64"];
+  const served: string[] = [];
+  const ctl = new SetupController({
+    home, userData: path.join(ROOT, "ctl-dl-ud"), env: {}, payload: null,
+    emit: (e) => events.push(e), pty: () => { throw new Error("no terminal for a download"); },
+    attached: () => null, attachInfo: () => null, readAgenticos: () => null, attach: () => false, refreshAttach: () => undefined,
+    chooseFolder: async () => null, path: () => "/fake/bin", probe: machine(rest).run, isExec: machine(rest).isExec, exists: () => false,
+    totalmem: 16 * GB,
+    // The pinned URL answers with bytes that are not the pinned ones: the job must refuse them.
+    fetch: async (url) => {
+      served.push(url);
+      async function* body(): AsyncIterable<Uint8Array> { yield Buffer.alloc(pin.size, 1); }
+      return { ok: true, status: 200, body: body() };
+    },
+    toolRun: async () => ({ code: 1, out: "must not run" }),
+  });
+  assert.equal(ctl.fix("uv", 80, 24).ok, false, "before the checks");
+  assert.ok((await ctl.preflight()).ok);
+  const passing = ctl.fix("node", 80, 24);
+  assert.ok(!passing.ok && passing.error === "nothing to fix: Node.js 20 or newer passes", "a tool that passes is never downloaded over");
+  assert.equal(ctl.fix("uv", 80, 24).ok, true);
+  assert.equal(ctl.fix("ollama-models", 80, 24).ok, false, "one job at a time");
+  const exit = await exitEvent(events, "fix");
+  assert.equal(exit.code, 1);
+  assert.deepEqual(served, [pin.url]);
+  const text = events.filter((e) => e.type === "data").map((e) => (e as { data: string }).data).join("");
+  assert.match(text, /# Install uv: Downloads uv \d+\.\d+\.\d+ from github\.com\/astral-sh\/uv/);
+  assert.match(text, /did not match its pinned checksum/);
+  assert.ok(events.some((e) => e.type === "progress" && e.total === pin.size));
+  assert.deepEqual(fs.readdirSync(path.join(ROOT, "ctl-dl-ud", "setup", "downloads")), [], "the bad download is gone");
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "uv")), false);
+  // Stopping a download ends it with a signal, not an error.
+  events.length = 0;
+  ctl.fix("uv", 80, 24);
+  ctl.cancel();
+  assert.equal((await exitEvent(events, "fix")).signal, "SIGTERM");
+});
+
+test("controller: --host none installs with no host and no Chief of Staff; the PATH line waits for the install and is written once", async () => {
+  const userData = path.join(ROOT, "ctl-none-ud");
+  const home = path.join(ROOT, "ctl-none-home");
+  fs.mkdirSync(home, { recursive: true });
+  const events: SetupEvent[] = [];
+  const spawned: string[][] = [];
+  const children: Array<ReturnType<typeof fakeChild>> = [];
+  const { claude: _c, codex: _x, ...rest } = ALL;
+  const ctl = new SetupController({
+    home, userData, env: {}, payload: { root: "/payload", cli: "/payload/cli/aos.js", version: "2.0.0", runtimeDeps: true },
+    emit: (e) => events.push(e), pty: () => { throw new Error("no terminal"); },
+    attached: () => null, attachInfo: () => null, readAgenticos: () => null, attach: () => true, refreshAttach: () => undefined,
+    chooseFolder: async () => null, path: () => "/fake/bin", probe: machine(rest).run, isExec: machine(rest).isExec, exists: () => false,
+    fetch: noNetwork, totalmem: 16 * GB,
+    spawnImpl: ((file: string, args: string[]) => { spawned.push([file, ...args]); const c = fakeChild(); children.push(c); return c.child; }) as never,
+  });
+  assert.equal(ctl.pathLine().ok, false, "no vault yet");
+  const pre = await ctl.preflight();
+  assert.ok(pre.ok && pre.data.ready && !pre.data.hosts.claude && !pre.data.hosts.codex);
+  const persona = { name: "Atlas", addressAs: "", voice: "", priorities: [], dutyModel: "", dutyCodexModel: "", dutyEffort: "medium" as const, schedule: true };
+  assert.equal(ctl.install({ host: "claude", vault: "~/Vault", persona: null }).ok, false, "claude is not ready");
+  assert.equal(ctl.install({ host: "none", vault: "~/Vault", persona }).ok, true);
+  assert.deepEqual(spawned[0].slice(1), ["/payload/cli/aos.js", "init", "--yes", "--vault", path.join(home, "Vault"), "--host", "none"], "no --persona-json without a host");
+  assert.equal(fs.existsSync(path.join(userData, "setup", "persona.json")), false);
+  children[0].finish(0);
+  await exitOf(events, "install");
+  // A new install with no host is still the wizard's own: the Workbench it opens starts the welcome tour (tour C10).
+  assert.equal(attachInfo(userData, path.join(home, "Vault"), null, null).installed, true);
+  const pl = ctl.pathLine();
+  assert.ok(pl.ok && pl.data.file === path.join(home, ".zprofile") && !pl.data.present && !pl.data.onPath);
+  assert.equal(fs.existsSync(path.join(home, ".zprofile")), false);
+  const added = ctl.addToPath();
+  assert.ok(added.ok && added.data.present);
+  ctl.addToPath();
+  assert.equal(fs.readFileSync(path.join(home, ".zprofile"), "utf8"), `${PATH_LINE}\n`);
+});
 
 test("controller: checks first, then a fix, the install with the answers file, CLAUDE.md, and finish", async () => {
   const userData = path.join(ROOT, "ctl-ud");
@@ -570,11 +816,15 @@ test("controller: checks first, then a fix, the install with the answers file, C
     probe: machine(ALL).run,
     isExec: machine(ALL).isExec,
     exists: () => false,
+    fetch: noNetwork,
+    totalmem: 16 * GB,
     spawnImpl: ((file: string, args: string[], o: { env: NodeJS.ProcessEnv }) => {
       const i = args.indexOf("--persona-json");
       spawned.push({ file, args, personaSeen: i >= 0 ? JSON.parse(fs.readFileSync(args[i + 1], "utf8")) : null });
       assert.equal(o.env.CLAUDECODE, undefined);
       assert.equal(o.env.PATH, "/fake/bin");
+      // Inspection M1: graphify installs with the uv the checks validated.
+      assert.equal(o.env.AOS_UV_BIN, "/fake/bin/uv");
       const c = fakeChild(); children.push(c); return c.child;
     }) as never,
   });

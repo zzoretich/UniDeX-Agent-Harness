@@ -47,14 +47,42 @@ output. The design treats the page that shows them as untrusted (design D7,
     `https://github.com/<owner>/<repo>` URL or GitHub's SSH form of it, quoted).
   - *Appearance:* the page may set the theme to `system`, `light` or `dark` and nothing else; main saves the choice in
     the app's data (`app-settings.json`), never in the vault, and hands it to macOS's `nativeTheme`.
-  - *Setup (phase 5):* the wizard names a fix by id; main runs that fix's fixed command (`app/src/main/policy/setup.ts`:
-    Homebrew's installer, `brew install …`, `npm install -g` for the two CLIs, the two logins) with `/bin/sh -c` in a
-    terminal the wizard shows, and only once its own checks say what it needs is there. `aos init` and `aos upgrade`
-    are the bundled runtime's CLI, run with the `node` main found, never through a shell and with no stdin. The
+  - *Setup (phase 5; install-import B1, B2, B14):* the wizard names a fix by id; what it does is main's
+    (`app/src/main/policy/setup.ts`). A missing tool is a download (`app/src/main/setup/toolchain.ts`) from the pins the
+    app carries (`toolchain-manifest.json`: for Node, uv, Ollama, Claude Code and Codex, an https URL, a size and a
+    SHA-256 per Mac arch, and the Developer ID team that signs it). The download goes through Electron's `net` (the
+    system's proxy and certificates) into the app's data folder; it is hashed as it arrives, more bytes than pinned stop
+    it, and a size or hash that differs deletes it and fails the fix. Only a matching file is unpacked (`/usr/bin/tar`,
+    `/usr/bin/ditto`), into a staging folder; every executable it installs (Node's `node`; uv's `uv` and `uvx`;
+    Codex's `codex`, `codex-code-mode-host` and `rg`; Claude Code's binary) is checked again with
+    `codesign --verify --strict` and its team, and the Ollama app with `--deep` and Gatekeeper (`spctl -a`), before
+    anything is moved into place. It goes only where each tool's own installer puts it: Node into
+    `~/.local/share/unidex/node` (a version folder and a `current` link), uv into `~/.local/share/unidex/uv/<version>`
+    linked from `~/.local/bin`, the Ollama app into `/Applications` (else `~/Applications`), opened hidden, and never
+    over an Ollama that is there; Claude Code runs its own checked binary's `claude install`; Codex is laid out as its
+    own installer lays it out (`<codex home>/packages/standalone`, linked from `~/.local/bin`). Anything already at a
+    destination that is not a link into the installer's own tree (another uv, an npm codex, a half-installed release)
+    is moved aside to `<name>.unidex-backup-<time>` and logged, never replaced unseen; this job deletes only its own
+    staging. A release already there (Node, uv, Codex) is reused only when every executable in it passes the same
+    signature and team check, before anything in it runs; otherwise it is moved aside and the checked download installed.
+    An Ollama app already there is opened only after `codesign --deep`, its team, Gatekeeper and the version floor
+    pass; otherwise it is left unopened and the wizard says how to repair or update it. The uv the checks validated is
+    the one `aos init` installs graphify with (`AOS_UV_BIN`). A job that is stopped stops after
+    the program it was running, moves nothing more and ends as stopped. Ollama's models come through its own API on
+    127.0.0.1. Nothing needs Homebrew or npm, and nothing runs through a shell but the two
+    logins (`claude auth login`, `codex login`), fixed commands run by `/bin/sh -c` in a terminal the wizard shows. A
+    development run (never a packaged one) may read another manifest from `$AOS_TOOLCHAIN_MANIFEST`, which may name
+    127.0.0.1 and no team: the end-to-end suite's stand-ins. `aos init` and `aos upgrade` are the bundled runtime's CLI,
+    run with the `node` main found, never through a shell and with no stdin; `--host none` installs with no host, and a
+    `--host` that would turn off a wired host is refused. Background model calls go only to a host the user enabled
+    (or the one `provider` names). The
     persona answers are checked against the interview's rules, written to the app's data folder (mode 0600) and
-    removed when `aos init` ends. The `CLAUDE.md` line and file are main's to compute; the line is appended only when
-    the page asks, for a Claude Code install. Install runs only with no vault attached, upgrade only when the app's
-    runtime is newer than the vault's, and one job runs at a time.
+    removed when `aos init` ends. The `CLAUDE.md` line and file, and Finish's PATH line
+    (`export PATH="$HOME/.local/bin:$PATH"`, into `~/.zprofile`, `$ZDOTDIR`'s when set), are main's to compute; a file that
+    exists but cannot be read is refused with the reason, never replaced, and a link (even to a file not there yet)
+    stays a link, its target written; each line is appended once, only when the page asks (a Claude Code install; the PATH box ticked, after the install and before a
+    vault is attached). Install runs only with no vault attached, upgrade only when the app's runtime is newer than the
+    vault's, and one job runs at a time.
   - *The OS:* links open in the browser over https only. A document or a folder opens with its app; a file that would
     run when opened (a script, a `.terminal` or `.command` file, an app or other bundle), or a web page anywhere but the
     runtime's own proposal pages, is shown in Finder instead. A folder is never deleted for good: it goes to the
@@ -83,8 +111,9 @@ output. The design treats the page that shows them as untrusted (design D7,
 | The page can make one model call to draft a workspace's `workspace.md` | Spaces' Draft (spec 2026-10-09-spaces-redesign D13, D14) | One rule: `aos workspace draft <name> --json`, which writes no workspace file. It makes one `provider.js` call under the hook cap (`claude.perDayUsd` or `codex.perDayUsd`, and the per-call cap), on the workspace's own top-level files (no dot-files or credential names, never its code folder, each at most 16 KB; a Codex call runs read-only from an empty folder); with no provider or at the cap it is a labelled heuristic draft and no call. The model's text is shown as text, for review. Save (`aos workspace set … --expect`) writes only allow-listed frontmatter keys (summary, objectives, next, status, pinned, repo) that changed, keeps the body and every other key, and refuses a file that changed since the draft |
 | Links you made inside the vault are followed | Checks are on the vault's paths; a workspace linked to a code folder is read and written through the link, as you set it up | The page cannot create links |
 | An https link can carry data out | Notifications link to the web; the browser shows every link it opens | Opening is visible; the page has no network access of its own (`connect-src 'self'`) |
-| A fix-it runs an installer from the network (Homebrew's `install.sh`, npm packages) | That is how those tools install, and the wizard exists so a user need not type it | The commands are fixed in main and shown before they run, in a terminal the user watches and can stop; the page can only pick one, and only while setup shows |
-| A compromised page could start a fix-it, the install or an upgrade | They are the wizard's and attach mode's buttons | Each is fixed, allowed only in its state (no install over an attached vault), and visible as it runs |
+| The wizard downloads and installs third-party tools (Node, uv, the Ollama app, Claude Code, Codex) and runs two of them as part of installing (`claude install`; Ollama opened) | install-import B1: a Mac with nothing on it needs them, and the user should not need Homebrew or a terminal | Each URL, size and SHA-256 is pinned in the app and checked before anything is unpacked; what is unpacked must carry its maker's Developer ID team (codesign) before it is moved or run, and the Ollama app must also pass Gatekeeper; a mismatch deletes the download. Each button says what it downloads, from where, and where it goes, before it runs; the user can stop it. A tool already there at or above its floor is used as it is, and an Ollama the wizard did not install is never replaced. The pins are refreshed by hand before a release, from each maker's published checksums (each pin records where it came from) |
+| A login runs in a terminal (`claude auth login`, `codex login`) | Each prints a code to type | The commands are fixed in main and shown before they run, in a terminal the user watches and can stop; the page can only pick one, and only while setup shows |
+| A compromised page could start a download, a login, the install or an upgrade, or write the PATH line | They are the wizard's and attach mode's buttons | Each is fixed, allowed only in its state (no install over an attached vault, no PATH line once a vault is attached), and visible as it runs; the page names no URL, command or file |
 | An agent session edits a workspace repository and runs commands there (Claude at the **Edit and run commands** level; Codex always, inside its sandbox) | It is the feature: Sessions (spec 2026-10-07-unidex-sessions) | On by default since 1.2.0, after a live turn on each host; `AOS_APP_WRITE` narrows it like any surface (the `sessions` surface, scope `main`: the page never gets its writes). The page sends only a workspace name, a host, a prompt, a thread id, a file or a commit message, each zod-checked. Main asks the runtime (`lib/sessions.js`) for the program, its arguments and its environment, and runs it only as an installed program (`programRefusal`), in `<vault>/workspaces/<name>`, with the allowed variables (`spawnEnv`). The page names a turn's access level (read, edit or run, zod-checked): Claude runs in plan mode for read and in `acceptEdits` otherwise, with no one to answer prompts and Bash only at run; Codex runs in its read-only sandbox for read and its workspace-write sandbox otherwise, without network. The model must not read as a flag. The host catalog (`session:catalog`) runs only `lib/sessions.js catalog` from the runtime, which asks each host for its models without calling one and stores no account details. Each turn is capped (`sessions.perTurnUsd`, `sessions.perDayUsd`), stopped on request and recorded. git commits only on the Commit button with the message shown, and never pushes. Its reads (status, diffs) run no program the repository's own config names: no fsmonitor, signature check, filter driver, external diff, textconv or lazy fetch (spaces-redesign §6, `services/git.ts`). The commit itself runs the repository's hooks, filters and signing (`core.hooksPath`, `commit.gpgsign`), as a commit in a terminal does: that is accepted, since the user asked for it |
 
 ## Review: phase 4 (Electron hardening checklist)

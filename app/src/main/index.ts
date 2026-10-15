@@ -6,7 +6,7 @@
 // check it against the read scope, the write surfaces and the program rules (./policy). Main itself writes one file
 // outside its userData: the app's record in the vault's runtime cache (hud-host.ts). The app updates itself (./updater).
 
-import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, screen, type Rectangle } from "electron";
+import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, screen, type Rectangle } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -316,6 +316,15 @@ const setup = new SetupController({
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
     return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
   },
+  // The toolchain's downloads (install-import B1) go through Chromium's network stack: the system's proxy settings and
+  // certificate store, redirects followed (GitHub's release links), nothing cached.
+  fetch: async (url, init) => {
+    const r = await net.fetch(url, { signal: init.signal, cache: "no-store", redirect: "follow" });
+    return { ok: r.ok, status: r.status, body: r.body as unknown as AsyncIterable<Uint8Array> | null };
+  },
+  // Only a development run reads another toolchain manifest (the e2e suite's stand-ins); a packaged app keeps its pins.
+  allowManifestOverride: !app.isPackaged,
+  macOS: process.getSystemVersion(),
 });
 
 registerHostIpc(trust, {
