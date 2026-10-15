@@ -459,10 +459,10 @@ async function doctor() {
     add('codex CLI', !!cx.bin, cx.bin || 'not found on PATH or in the usual install locations');
     if (cx.bin) add('codex login', cx.loggedIn, 'codex login status');
     add('codex hooks', cx.hookEvents === cx.hookEventsTotal,
-      `${cx.hookEvents} of ${cx.hookEventsTotal} events in ${cx.hooksFile}${cx.hookEvents < cx.hookEventsTotal ? ' — run: aos init --host codex' : ' (trust them once under /hooks in codex)'}`);
+      `${cx.hookEvents} of ${cx.hookEventsTotal} events in ${cx.hooksFile}${cx.hookEvents < cx.hookEventsTotal ? ' — run: aos upgrade' : ' (trust them once under /hooks in codex)'}`);
     if (cx.bin) add('codex MCP declared', cx.mcp === 'ok', cx.mcp === 'ok' ? 'codex mcp get agenticos names the vault launcher with AOS_HOST=codex'
-      : cx.mcp === 'stale' ? 'registered without AOS_HOST=codex (a 0.5.0 registration) — run: aos upgrade' : 'run: aos init --host codex');
-    add('codex skills', cx.skills > 0, `${cx.skills} generated under ${cx.skillsDir}${cx.skills ? '' : ' — run: aos init --host codex'}`);
+      : cx.mcp === 'stale' ? 'registered without AOS_HOST=codex (a 0.5.0 registration) — run: aos upgrade' : 'run: aos upgrade');
+    add('codex skills', cx.skills > 0, `${cx.skills} generated under ${cx.skillsDir}${cx.skills ? '' : ' — run: aos upgrade'}`);
     if (cx.memories) add('codex memories', true, 'Codex\'s built-in memories are on (separate from the vault; aos never touches them)', 'info');
   }
   // Which CLI runs persona duties and prompt routines (codex-parity D4): claude when enabled and installed, else codex.

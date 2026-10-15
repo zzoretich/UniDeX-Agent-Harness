@@ -327,9 +327,9 @@ export const CLI_THREAD_TEXT = "Started in a terminal: resume it in Code";
 
 const off = (reason: string): ResumeTarget => ({ kind: "disabled", disabled: true, reason });
 
-/** "<Host> is off on this machine: run aos init --host <h>" (D31). */
+/** "<Host> is off on this machine: run aos hosts add <h>" (D31; install-import B2: it keeps the other host). */
 export function hostOffText(host: "claude" | "codex"): string {
-  return `${TERM_HOST_LABEL[host]} is off on this machine: run aos init --host ${host}`;
+  return `${TERM_HOST_LABEL[host]} is off on this machine: run aos hosts add ${host}`;
 }
 
 /** The entry by name in the current snapshot, hidden ones included (an archived workspace keeps its rows). */

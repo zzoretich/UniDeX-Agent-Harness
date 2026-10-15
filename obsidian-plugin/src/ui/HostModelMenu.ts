@@ -148,22 +148,20 @@ function hostOn(c: HostChoice): boolean {
 }
 
 /**
- * The line under the host switch for a host that is not ready: how to turn it on, or why it cannot run. `aos init
- * --host <h>` sets up that host alone and turns the other off, so while another host is on (in `choices`) the command
- * is `--host both`, as the settings say it.
+ * The line under the host switch for a host that is not ready: how to turn it on, or why it cannot run. `aos hosts add
+ * <h>` (install-import B2) wires that host and leaves the other as it was, as Settings ▸ Hosts' Add button does.
  */
-export function hostOffLine(c: HostChoice, choices: HostChoice[] = []): string | null {
+export function hostOffLine(c: HostChoice): string | null {
   if (c.ready) return null;
   if (hostOn(c)) return c.reason;
-  const both = choices.some((o) => o.host !== c.host && hostOn(o));
-  return `${c.label} is off on this Mac: aos init --host ${both ? "both" : c.host} turns it on`;
+  return `${c.label} is off on this Mac: aos hosts add ${c.host} turns it on`;
 }
 
 /** What the menu says when no host is ready: with every host off, how to turn one on; else the lines say why. */
 export function noHostLine(choices: HostChoice[]): string {
   return choices.some(hostOn)
     ? "No host is ready on this Mac."
-    : "No host is ready on this Mac. Run aos init --host claude or aos init --host codex, then reopen this menu.";
+    : "No host is ready on this Mac. Run aos hosts add claude or aos hosts add codex, then reopen this menu.";
 }
 
 /** The effort row's note: Codex's configured level, which a turn without one runs at. */
@@ -411,7 +409,7 @@ export class HostModelMenu {
       if (!this.opts.choices.some(hostOn)) return;
     }
     for (const c of this.opts.choices) {
-      const line = hostOffLine(c, this.opts.choices);
+      const line = hostOffLine(c);
       if (line) pop.createDiv({ cls: "aos-hm-offline", text: line, attr: { "data-host": c.host } });
     }
   }

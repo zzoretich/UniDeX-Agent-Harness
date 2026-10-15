@@ -164,19 +164,17 @@ test("modelRows: Codex's configured model is tagged your default; a thread's ear
   assert.equal(modelRows("claude", claudeCat, "opus", "", false).rows.some((r) => r.tag), false);
 });
 
-test("hostOffLine: how to turn an off host on without turning the other off; a host that is not logged in says so", () => {
+test("hostOffLine: aos hosts add turns an off host on and leaves the other as it is; a host that is not logged in says so", () => {
   assert.equal(hostOffLine(CLAUDE_ONLY[0]), null);
-  // The other host is on: --host codex alone would turn Claude Code off.
-  assert.equal(hostOffLine(CLAUDE_ONLY[1], CLAUDE_ONLY), "Codex is off on this Mac: aos init --host both turns it on");
+  assert.equal(hostOffLine(CLAUDE_ONLY[1]), "Codex is off on this Mac: aos hosts add codex turns it on");
   const codexOnly: HostChoice[] = [{ host: "claude", label: "Claude Code", ready: false, reason: "Claude Code is off on this machine" }, ready("codex")];
-  assert.equal(hostOffLine(codexOnly[0], codexOnly), "Claude Code is off on this Mac: aos init --host both turns it on");
-  // On but not logged in still counts as on.
-  assert.equal(hostOffLine(NONE[1], NONE), "Codex is off on this Mac: aos init --host both turns it on");
-  // No other host on (or none given): that host alone.
+  assert.equal(hostOffLine(codexOnly[0]), "Claude Code is off on this Mac: aos hosts add claude turns it on");
+  // The same whatever else is on: `aos hosts add` never turns the other host off (install-import B2).
   const allOff: HostChoice[] = [codexOnly[0], CLAUDE_ONLY[1]];
-  assert.equal(hostOffLine(allOff[1], allOff), "Codex is off on this Mac: aos init --host codex turns it on");
-  assert.equal(hostOffLine(CLAUDE_ONLY[1]), "Codex is off on this Mac: aos init --host codex turns it on");
-  assert.equal(hostOffLine(NONE[0], NONE), "Claude Code is not logged in");
+  assert.equal(hostOffLine(allOff[1]), "Codex is off on this Mac: aos hosts add codex turns it on");
+  assert.equal(hostOffLine(NONE[1]), "Codex is off on this Mac: aos hosts add codex turns it on");
+  // On but not logged in: why, not how to add it.
+  assert.equal(hostOffLine(NONE[0]), "Claude Code is not logged in");
 });
 
 test("noHostLine: the init commands only when every host is off", () => {
@@ -184,7 +182,7 @@ test("noHostLine: the init commands only when every host is off", () => {
     { host: "claude", label: "Claude Code", ready: false, reason: "Claude Code is off on this machine" },
     { host: "codex", label: "Codex", ready: false, reason: "Codex is off on this machine" },
   ];
-  assert.match(noHostLine(allOff), /aos init --host claude or aos init --host codex/);
+  assert.match(noHostLine(allOff), /aos hosts add claude or aos hosts add codex/);
   assert.equal(noHostLine(NONE), "No host is ready on this Mac.");
 });
 

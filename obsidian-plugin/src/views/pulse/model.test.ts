@@ -53,7 +53,7 @@ test("writtenRows: today's writes newest first, one per memory, each as its file
 });
 
 test("chiefWaiting: with no host, add one; otherwise only today's last duty run, worded from its skip, cleared once a host signs in or a run goes ahead", () => {
-  const skipped = (t: string, d: string, why: string) => `## ${t} — duty: ${d}\n- status: SKIPPED waiting-for-host\n- did: nothing — no host can start it (${why}); sign in to Claude Code or Codex, or turn one on with aos init --host\n`;
+  const skipped = (t: string, d: string, why: string) => `## ${t} — duty: ${d}\n- status: SKIPPED waiting-for-host\n- did: nothing — no host can start it (${why}); sign in to Claude Code or Codex, or add one with aos hosts add claude|codex\n`;
   assert.deepEqual(chiefWaiting(null, [], []), { kind: "no-host", text: "Add Claude Code or Codex to start your Chief of Staff." });
   const out = `# Journal\n\n${skipped("07:45", "sitrep", "claude: signed out; codex: CLI not found")}`;
   assert.deepEqual(chiefWaiting(out, ["claude", "codex"], []), { kind: "skipped", text: "Your Chief of Staff is waiting for a host: sign in to Claude Code; Codex's CLI was not found." });
