@@ -88,7 +88,7 @@ export class TerminalLauncher {
     return modelArg(host, sanitizeSessionChoice(this.plugin.settings.sessionChoice).models[host]) ?? (host === "claude" ? "Default model" : "Codex default");
   }
 
-  /** The hosts a launch may use, read fresh (a login or `aos init --host` while the app runs shows up at once). */
+  /** The hosts a launch may use, read fresh (a login or `aos hosts add` while the app runs shows up at once). */
   choices(): TermHostChoice[] {
     return termHostChoices(readAgenticosJson(this.plugin.claudeConfigDir()), readProviderState(this.vault()));
   }

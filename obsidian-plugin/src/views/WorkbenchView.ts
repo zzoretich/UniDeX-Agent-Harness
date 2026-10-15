@@ -472,7 +472,7 @@ export class WorkbenchView extends ItemView {
       h = q.host;
     } else h = host;
     const choice = launcher.choices().find((c) => c.host === h);
-    if (!choice || choice.hidden) throw new Error(`${TERM_HOST_LABEL[h]} is off on this Mac: run aos init --host ${h}`);
+    if (!choice || choice.hidden) throw new Error(`${TERM_HOST_LABEL[h]} is off on this Mac: run aos hosts add ${h}`);
     if (!choice.ready) { this.openTermMenu("menu", choice.reason); return; }
     await launcher.launch({ host: h, picked: o.picked ?? null, context, resume: o.resume ?? null, origin: o.origin ?? null });
     if (this.activeTab !== "term") this.setTab("term");

@@ -123,7 +123,8 @@ test('model pickers: Claude rows list Claude models, Codex rows the pricing tabl
   assert.deepEqual(S.CODEX_MODELS, Object.keys(require('../sdk/lib/codex-pricing.js').MODELS));
   // The Chief of Staff's Codex model (local-first A4) leads its own picker ahead of the priced ones.
   const { CHIEF } = require('../sdk/lib/models.js');
-  const LOCAL = { 'local.model': S.LOCAL_MODELS, 'local.embedder': S.LOCAL_EMBEDDERS, 'persona.codexModel': [CHIEF.codex, ...S.CODEX_MODELS] };
+  const LOCAL = { 'local.model': S.LOCAL_MODELS, 'local.embedder': S.LOCAL_EMBEDDERS, 'persona.codexModel': [CHIEF.codex, ...S.CODEX_MODELS.filter((m) => m !== CHIEF.codex)] };
+  assert.ok(S.CODEX_MODELS.includes(CHIEF.codex), 'the CoS Codex model is priced (codex-pricing.js), so its spend is not a gpt-5 guess');
   for (const e of S.SETTINGS.filter((x) => x.type === 'model')) {
     assert.deepEqual(e.choices, LOCAL[e.key] || (e.host === 'codex' ? S.CODEX_MODELS : S.CLAUDE_MODELS), e.key);
   }

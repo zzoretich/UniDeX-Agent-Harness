@@ -1,7 +1,8 @@
 # Chief of Staff layer
 
-Installed by default. Your vault gets a named agent — an identity that is injected into every
-Claude Code session, a small state file that bridges sessions, a playbook of your own commands,
+Installed by default whenever the install has a host (Claude Code, Codex or both; an install with `--host none` gets
+it when you add the first one with `aos hosts add`, with the default answers off a terminal, which `aos persona` changes). Your vault gets a named agent — an identity that is injected into every
+session on either host, a small state file that bridges sessions, a playbook of your own commands,
 skills and agents, five scheduled duties (monitor, reflect, reflect-daily, sitrep, tick) watched by
 a heartbeat, and a proposals protocol for changes that need your
 sign-off. The machinery ships; the content is generated for you and never leaves your machine.
@@ -15,13 +16,13 @@ The `aos init` Chief of Staff interview (the **Chief of Staff interview** step i
 3. Voice in one line.
 4. What it should watch most (comma-separated → `## Priorities` in STATE.md).
 5. Where Claude Code is a host: the Claude Code model for duties (default `claude-opus-5-5`, the Chief of Staff's model; on a 2.0 install the answer becomes `persona.model` unless you set that yourself).
-6. On a Codex host only (`hosts.codex.enabled`): the Codex model for duties (default `gpt-6-sol`; stored as `persona.codexModel` in `<vault>/brain/config.json`). With both hosts it is the failover; on a Codex-only machine it is the duties' model and question 5 is not asked.
-
-Duties run on that hosted model; the hourly check runs on this Mac's local model and wakes it only when something
-changed (see the tick, below). The setup wizard asks the same questions, with Claude Code · `claude-opus-5-5`
-preselected (Codex · `gpt-6-sol` when only Codex is ready).
+6. On a Codex host only (`hosts.codex.enabled`): the Codex model for duties (default `gpt-6-sol`; stored as `persona.codexModel` in `<vault>/brain/config.json`). With both hosts it is the other host's model, which a duty moves to when Claude Code cannot start it; on a Codex-only machine it is the duties' model and question 5 is not asked.
 7. Effort for background duties (`low|medium|high`, default `medium`).
 8. Schedule daily duties? (default yes → launchd on macOS, crontab on Linux).
+
+Duties run on that hosted model; the hourly check runs on this Mac's local model and wakes it only when something
+changed (see the tick, below). The setup wizard asks the same questions in a form, with each chosen host's model
+preselected (Claude Code · `claude-opus-5-5`, Codex · `gpt-6-sol`).
 
 Non-interactive: `aos init --persona-json answers.json` or `aos persona --yes` (reuses the last
 answers). The answers file shape is
@@ -86,9 +87,10 @@ does not — `agenticos.json` is merged last and `aos init` writes it there; see
 ```
 
 Raise `perDayUsd` if you schedule more duties or a bigger `perDutyUsd`; with the defaults three
-$2 runs fit in one day. `claude.perDayUsd` (0.5) is a separate cap for the background hook
-calls (session summary, wrap) and the Workbench's Chat tab (its rows carry feature `chat`), and never
-blocks a duty. A duty must append a `## HH:MM — duty: <name>` entry to the journal; otherwise the
+$2 runs fit in one day. The other daily caps are separate and never block a duty: `claude.perDayUsd` (0.5) for the
+background hook calls when a host answers them (session summary, wrap), `reasoner.perDayUsd` for Vault chat and the
+reasoner commands, `routines.perDayUsd` for prompt routines. Under provider `local` most of that work runs on this
+Mac's model and spends nothing ([cost.md](cost.md#what-background-work-spends)). A duty must append a `## HH:MM — duty: <name>` entry to the journal; otherwise the
 runner records FAILED and adds a flag to `STATE.md`. A duty that runs past `PERSONA_TIMEOUT`
 (default 1800 s) is killed and journaled FAILED too; `claude -p` prints its cost only at the end,
 so such a run ledgers $0 and only `--max-budget-usd` (`persona.perDutyUsd`) bounds what it
@@ -103,13 +105,14 @@ something to re-render; the runner takes the name from `IDENTITY.md` and never r
 
 The Chief of Staff runs on a hosted model per host (local-first A4; `sdk/lib/models.js` `CHIEF` is the one place to
 bump them): **Claude Code · `claude-opus-5-5`** (`persona.model`) or **Codex · `gpt-6-sol`** (`persona.codexModel`),
-at `persona.effort` (`medium` unless set). `persona.runner` picks the host: `auto` (default) takes Claude Code when it
-is an enabled host whose CLI is installed and signed in, else Codex; `claude` or `codex` pins one (`AOS_RUNNER`
-overrides it for one run). Before a duty starts, `persona/chief.js` checks its host can start it — the CLI is found,
-`claude auth status` / `codex login status` say signed in (both free), and today's duty spend on both hosts together is
-under `persona.perDayUsd` (a capped day is skipped on both — the cap is never a reason to move). With both hosts enabled
-and `persona.failover` on (the default), a duty whose host's CLI is missing or signed out runs on the other host's model
-instead, and the duty log says why (`(failover: claude signed out)`). When no
+at `persona.effort` (`medium` unless set). Before a duty starts, `persona/chief.js` checks today's duty spend on both
+hosts together against `persona.perDayUsd` (a capped day is skipped on both — the cap is never a reason to move), then
+which host can start it: the CLI is found, and `claude auth status` / `codex login status` say signed in (both free).
+`persona.runner` picks the host: `auto` (default) takes the first enabled host that can start it, Claude Code first, so
+with both hosts a duty goes to Codex by itself while Claude Code's CLI is missing or signed out; `claude` or `codex`
+pins one (`AOS_RUNNER` overrides it for one run). With a pinned host, both hosts enabled and `persona.failover` on (the
+default), a duty whose host cannot start it runs on the other host's model instead, and the duty log says why
+(`(failover: claude signed out)`); with `persona.failover: false` it waits for its own host. When no
 host can start it, the duty is **skipped, not failed**: one journal entry `- status: SKIPPED waiting-for-host` naming
 each host and why, one flag a day under `## Flags`, exit 0. `aos doctor`'s `persona runner` row names the host, its
 model and effort, and the failover host:
@@ -231,8 +234,9 @@ when the triage wakes it:
    `## 14:00 — tick triage: woke the Chief of Staff — the briefing started failing (local model qwen3.5:9b; changed:
    routine briefing: ok → failed)`.
 3. **The duty.** Waking runs `persona/duties/tick.md` through `run-duty.sh` exactly like a scheduled duty, on the
-   Chief of Staff's model with its failover, with the routine file's `budgetUsd` (0.50 — a working run costs about
-   0.06 USD on Haiku and Opus 5.5 bills about four times that) and `tools` (Read, Glob, Grep, `date`, `tick.js` and
+   Chief of Staff's model with its failover, with the routine file's `budgetUsd` (0.50, enforced on Claude Code; Codex
+   has no per-run budget flag, so there only `persona.perDayUsd` bounds it — a working run costs about 0.06 USD on Haiku
+   and Opus 5.5 bills about four times that) and `tools` (Read, Glob, Grep, `date`, `tick.js` and
    `ledger.js summary` — no git) as `PERSONA_MAX_USD` and `PERSONA_TOOLS`. The duty runs `tick.js signals`, which
    lists the candidates since the last beat with a source pointer each — `correction` (a feedback file or draft),
    `duty-failure` (a failed or missed beat), `repo-stall` (`.planning/STATE.md` idle past `stall_threshold_days`),

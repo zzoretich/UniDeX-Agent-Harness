@@ -299,7 +299,7 @@ async function dispatch(opts, ctx) {
   if (!item) refuse(`no board item ${opts.item} on ${t.id}`);
   const { m, provider, left, warnings } = preflight(t, opts.member, item, { provider: opts.provider });
   const repo = projectRepo(vault, item);
-  if (!H.hostEnabled(cfg, provider)) refuse(`${m.id} runs on ${provider}, and the ${provider} host is off on this machine (aos init --host both turns it on)`);
+  if (!H.hostEnabled(cfg, provider)) refuse(`${m.id} runs on ${provider}, and the ${provider} host is off on this machine (aos hosts add ${provider} turns it on)`);
   const bin = H.resolveBin(provider, { cfg, env });
   if (!bin) refuse(`${m.id} runs on ${provider}, and no ${provider} CLI was found on this machine`);
   const agent = m.agent || `${t.id}-${m.id}`;

@@ -459,10 +459,10 @@ async function doctor() {
     add('codex CLI', !!cx.bin, cx.bin || 'not found on PATH or in the usual install locations');
     if (cx.bin) add('codex login', cx.loggedIn, 'codex login status');
     add('codex hooks', cx.hookEvents === cx.hookEventsTotal,
-      `${cx.hookEvents} of ${cx.hookEventsTotal} events in ${cx.hooksFile}${cx.hookEvents < cx.hookEventsTotal ? ' — run: aos init --host codex' : ' (trust them once under /hooks in codex)'}`);
+      `${cx.hookEvents} of ${cx.hookEventsTotal} events in ${cx.hooksFile}${cx.hookEvents < cx.hookEventsTotal ? ' — run: aos upgrade' : ' (trust them once under /hooks in codex)'}`);
     if (cx.bin) add('codex MCP declared', cx.mcp === 'ok', cx.mcp === 'ok' ? 'codex mcp get agenticos names the vault launcher with AOS_HOST=codex'
-      : cx.mcp === 'stale' ? 'registered without AOS_HOST=codex (a 0.5.0 registration) — run: aos upgrade' : 'run: aos init --host codex');
-    add('codex skills', cx.skills > 0, `${cx.skills} generated under ${cx.skillsDir}${cx.skills ? '' : ' — run: aos init --host codex'}`);
+      : cx.mcp === 'stale' ? 'registered without AOS_HOST=codex (a 0.5.0 registration) — run: aos upgrade' : 'run: aos upgrade');
+    add('codex skills', cx.skills > 0, `${cx.skills} generated under ${cx.skillsDir}${cx.skills ? '' : ' — run: aos upgrade'}`);
     if (cx.memories) add('codex memories', true, 'Codex\'s built-in memories are on (separate from the vault; aos never touches them)', 'info');
   }
   // Which CLI runs persona duties and prompt routines (codex-parity D4): claude when enabled and installed, else codex.
@@ -1140,9 +1140,9 @@ async function init(flags) {
   // 7. The Workbench is the app, which brings its own terminal: --terminal has nothing left to install.
   if (flags.terminal) out.log(TERMINAL_NOTE);
 
-  // 8. persona — its duties need a host (install-import B2): with none, it waits, and `aos init --host <h>` asks it then.
+  // 8. persona — its duties need a host (install-import B2): with none, it waits; `aos persona` asks it once a host is added.
   if (hosts.claude || hosts.codex) await act('run the Chief of Staff interview', () => personaInterview(ctx));
-  else out.log('persona: no host yet, so no Chief of Staff; it is set up when you add Claude Code or Codex');
+  else out.log('persona: no host yet, so no Chief of Staff; adding Claude Code or Codex (aos hosts add claude|codex) sets it up');
 
   // 9. first scan
   await act('first scan, compile BRAIN.md, warm the recall index', () => {
