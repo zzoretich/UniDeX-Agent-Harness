@@ -4,6 +4,14 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- **The app installs what UniDeX needs, with nothing installed first: no Homebrew, no Node, no terminal.** The setup wizard's checks are Node, uv, Ollama and its models, Claude Code, Codex and their logins, and each missing tool's button downloads a version pinned in the app from its maker, with a progress bar: Node (into `~/.local/share/unidex/node/<version>` with a `current` link, which `agenticos.json` records), uv (into `~/.local/bin`), the Ollama app (into Applications, opened in the background), Claude Code (through its own installer) and Codex (laid out as its own installer lays it out). Before anything is installed, the download's SHA-256 is checked against the pin and the files against their maker's code signature (and Gatekeeper, for Ollama); a download that does not match is deleted and the button offers **Retry**. **Install what's missing** runs Node, uv, Ollama and its models one after another, and a tool you already have is used when it is new enough. Ollama's models follow your Mac's memory: under 12 GB `qwen3.5:4b`, otherwise `qwen3.5:9b`, plus `qwen3-embedding:0.6b`, pulled through Ollama's own API with its progress.
+- **Install without an agent CLI.** With neither Claude Code nor Codex installed and logged in, the wizard's **No agent CLI yet** sets up your vault, its memory and the background work on your Mac; Sessions and the Chief of Staff wait until you add Claude Code or Codex. From a terminal it is `aos init --host none`; `aos init --vault <the same vault> --host claude` (or `codex`) adds the host later and keeps your files.
+- **The wizard's Finish lists what is left, step by step**: the `CLAUDE.md` line for Claude Code, the `/hooks` trust for Codex, how to add a host when there is none, and **Add aos to my PATH**, which shows the one line it appends to `~/.zprofile` and writes it only while ticked.
+
+### Changed
+- **`aos init` no longer refuses without Ollama or python3**: a missing Ollama is a warning (background work waits for it), and python3 is checked only with `--cost`, the one thing that runs it (graphify gets its Python through uv). `aos doctor`'s Ollama row is a warning, its python3 row shows only while cost is on, and an install with no host gets an info row instead of failing.
+
 ## [1.9.0] — 2026-10-12
 
 ### Upgrading
