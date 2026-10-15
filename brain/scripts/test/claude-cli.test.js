@@ -158,20 +158,21 @@ test('stream error (stdout/stderr emit error) kills child and rejects, nothing l
   assert.ok(!fs.existsSync(SPEND_PATH));
 });
 
-test('loginProbe: true on a good reply, false on Not logged in, false with no binary', async () => {
-  assert.equal(await cli.loginProbe({ bin: '/x/claude', spawnFn: fakeSpawn({ stdout: OK_REPLY }, []) }), true);
+test('loginProbe: true when auth status says loggedIn; false when it does not, on junk, or with no binary', async () => {
+  assert.equal(await cli.loginProbe({ bin: '/x/claude', spawnFn: fakeSpawn({ stdout: '{"loggedIn":true,"authMethod":"x"}' }, []) }), true);
+  assert.equal(await cli.loginProbe({ bin: '/x/claude', spawnFn: fakeSpawn({ stdout: '{"loggedIn":false}', code: 1 }, []) }), false);
   assert.equal(await cli.loginProbe({ bin: '/x/claude', spawnFn: fakeSpawn({ stdout: 'Not logged in', code: 1 }, []) }), false);
   const calls = [];
   assert.equal(await cli.loginProbe({ bin: null, lookup: () => null, candidates: [], spawnFn: fakeSpawn({ stdout: OK_REPLY }, calls) }), false);
   assert.equal(calls.length, 0);
 });
 
-test('loginProbe uses the one-word prompt and the $0.01 cap', async () => {
+test('loginProbe asks `auth status`, makes no model call and writes no ledger row (local-first A16)', async () => {
   const calls = [];
-  await cli.loginProbe({ bin: '/x/claude', spawnFn: fakeSpawn({ stdout: OK_REPLY }, calls) });
-  const args = calls[0].args;
-  assert.equal(args[args.indexOf('-p') + 1], 'Reply with the word ok.');
-  assert.equal(args[args.indexOf('--max-budget-usd') + 1], '0.01');
+  await cli.loginProbe({ bin: '/x/claude', spawnFn: fakeSpawn({ stdout: '{"loggedIn":true}' }, calls) });
+  assert.deepEqual(calls[0].args, ['auth', 'status', '--json']);
+  assert.equal(calls[0].opts.env.CLAUDECODE, undefined);
+  assert.ok(!fs.existsSync(SPEND_PATH));
 });
 
 test('resolveClaudeBin: PATH lookup first, then candidates, else null', () => {

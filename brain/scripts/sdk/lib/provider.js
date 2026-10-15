@@ -8,8 +8,15 @@
  *   codex   → headless `codex exec` via codex-cli.js (chat only; capped + ledgered, spend estimated)
  *   none    → chat/embed throw ProviderUnavailable('PROVIDER_NONE'); callers fall back to heuristics
  *
- * `auto` (the default): Ollama ping (2 s, cached 60 s) → claude if the binary resolves and a
- * login probe succeeds (cached 24 h) → codex, but only when Codex is a configured host
+ * `local` (the default for new installs, local-first A1/A10): the local engine — Ollama, or an OpenAI-compatible server
+ * (`local.engine: openai`, e.g. LM Studio) — when it answers AND serves the workhorse (cached 60 s in state.local); the
+ * provider is still named `ollama`, with `engine` saying which server. Otherwise none with reason `local-down` (nothing
+ * answers) or `local-model-missing` (not pulled), which callers treat as "queue or go heuristic", never a failure. Only
+ * with `local.hostedFallback: true` does it then try the hosted legs below, under the same hook caps. Local calls cost
+ * nothing and are counted in brain/_index/local-usage.json, not the spend ledger (local-first A18).
+ *
+ * `auto`: Ollama ping (2 s, cached 60 s) → claude if the binary resolves and
+ * `claude auth status` says signed in (cached 24 h; no model call, local-first A16) → codex, but only when Codex is a configured host
  * (hosts.codex.enabled, or a recorded codex.bin) and `codex login status` says logged in (cached
  * 24 h) → none. Both CLIs share the hook cap: codex.perDayUsd governs codex.* spend the same way
  * claude.perDayUsd governs claude.* spend, against the same hook ledger sum. A provider whose day is over budget
@@ -37,9 +44,11 @@ const ollama = require('./ollama.js');
 const embedModule = require('./embed.js');
 const claudeCli = require('./claude-cli.js');
 const codexCli = require('./codex-cli.js');
-const { role, providerFor, thinkFor } = require('./models.js');
+const openaiCompat = require('./openai-compat.js');
+const { role, providerFor, thinkFor, LOCAL_TIERS } = require('./models.js');
 const { dayCap } = require('../../lib/settings-schema.js');
 const { ProviderUnavailable, recordSpend, spendToday, reasonSpendToday, routineSpendToday, SPEND_PATH } = require('./spend-ledger.js');
+const { recordLocalCall } = require('./local-usage.js');
 
 const STATE_PATH = path.join(PATHS.INDEX, 'provider-state.json');
 const OLLAMA_TTL_MS = 60_000;
@@ -219,9 +228,10 @@ function makeNone(reason, host = null) {
  * a login that has not answered in 10 s is a "no" for this run, and the cache means the wait is
  * paid at most once a day. Mutates `state.claude`; the caller writes the state file.
  *
- * `deps.unbilled` (lib/memory-ai.js estimate, brain-ai A5: "no call, nothing billed") never runs the probe, which is a
- * real `claude -p` call billed to the ledger: a cache older than a day reads as signed in when the binary resolves,
- * and is left as it is (the caller writes no state either), so the next real resolve probes and says otherwise.
+ * `deps.unbilled` (lib/memory-ai.js estimate, brain-ai A5: "no call, nothing billed") never runs the probe: a cache older
+ * than a day reads as signed in when the binary resolves, and is left as it is (the caller writes no state either), so
+ * the next real resolve probes and says otherwise. The probe is `claude auth status` now (local-first A16), no longer a
+ * billed call, but an estimate still spawns nothing.
  */
 async function resolveClaudeLogin(state, now, iso, deps) {
   const resolveBin = deps.resolveClaudeBin || claudeCli.resolveClaudeBin;
@@ -234,6 +244,105 @@ async function resolveClaudeLogin(state, now, iso, deps) {
   const loggedIn = bin ? await probe({ bin, timeoutMs: deps.probeTimeoutMs || 10_000 }) : false;
   state.claude = { loggedIn, checkedAt: iso, bin };
   return { loggedIn, bin };
+}
+
+/**
+ * The local engine's settings (local-first A8, A11): engine, where it answers, and the workhorse and embedder roles.
+ * Ollama's address is local.url when set, else ollama.host/port; an OpenAI-compatible server defaults to LM Studio's.
+ */
+function localCfg(cfg) {
+  const l = (cfg && cfg.local) || {};
+  const engine = l.engine === 'openai' ? 'openai' : 'ollama';
+  const o = (cfg && cfg.ollama) || {};
+  const set = typeof l.url === 'string' && l.url.trim() ? l.url.trim().replace(/\/+$/, '') : null;
+  const url = set || (engine === 'openai' ? 'http://127.0.0.1:1234/v1' : `http://${o.host || '127.0.0.1'}:${o.port || 11434}`);
+  let net = { host: o.host, port: o.port };
+  if (engine === 'ollama' && set) {
+    try { const u = new URL(set); net = { host: u.hostname, port: Number(u.port) || 11434 }; } catch { /* a bad URL reads as unreachable */ net = { host: '0.0.0.0', port: 9 }; }
+  }
+  return { engine, url, net, workhorse: role('workhorse', cfg), embedder: role('embedder', cfg), hostedFallback: l.hostedFallback === true };
+}
+
+/** The models the local engine serves, or null when it does not answer (one request either way). */
+function listLocalModels(lc) {
+  return lc.engine === 'openai' ? openaiCompat.models(lc.url, 2000) : ollama.tags(2000, lc.net);
+}
+
+/**
+ * The workhorse to run (local-first A13): the role's tag when it is pulled. A tag picked by the RAM tier may give way to
+ * another tier's model that is pulled (an 8 GB Mac that already has the 9b keeps using it); a tag the user named
+ * (local.model or BRAIN_MODEL) never silently does. null when nothing usable is pulled.
+ */
+function pickLocalModel(workhorse, models) {
+  if (models.some((m) => ollama.sameModel(m, workhorse.tag))) return workhorse.tag;
+  if (workhorse.source !== 'tier') return null;
+  const other = LOCAL_TIERS.map((t) => t.tag).reverse().find((t) => models.some((m) => ollama.sameModel(m, t)));
+  return other || null;
+}
+
+/** Is the local engine up with its model pulled? Cached 60 s in state.local (mutated). { ok, reason, lc, model, embedder } */
+async function resolveLocal(state, now, iso, cfg, deps) {
+  const lc = localCfg(cfg);
+  let st = state.local;
+  if (!(isFresh(st, OLLAMA_TTL_MS, now) && st.engine === lc.engine && st.url === lc.url)) {
+    const list = await (deps.localModels || listLocalModels)(lc);
+    st = { engine: lc.engine, url: lc.url, reachable: Array.isArray(list), models: Array.isArray(list) ? list.slice(0, 200) : [], checkedAt: iso };
+    state.local = st;
+  }
+  if (!st.reachable) return { ok: false, reason: 'local-down', lc };
+  const model = pickLocalModel(lc.workhorse, st.models);
+  if (!model) return { ok: false, reason: 'local-model-missing', lc };
+  const embedder = st.models.some((m) => ollama.sameModel(m, lc.embedder.tag)) ? lc.embedder.tag : null;
+  return { ok: true, reason: 'local-ready', lc, model, embedder };
+}
+
+/**
+ * The local engine as a provider. Its name is `ollama` whichever server answers (callers ask `name === 'ollama'` to mean
+ * "the local model, free"); `engine` says which. Every call runs on the resolved model unless the caller names a
+ * different one, keeps the role's residency, and counts toward local-usage.json (local-first A18).
+ */
+function makeLocal(r, deps = {}) {
+  const { lc, model, embedder } = r;
+  const count = deps.recordLocalCall || recordLocalCall;
+  const timed = async (feature, fn) => {
+    const t0 = Date.now();
+    const out = await fn();
+    count({ feature, ms: Date.now() - t0 });
+    return out;
+  };
+  // A caller passing the role's own tag (qwen.js does) gets the model that resolved, which may be another tier's.
+  const pick = (opts) => (opts.model && opts.model !== lc.workhorse.tag ? opts.model : model);
+  const noEmbed = () => Promise.reject(new ProviderUnavailable('PROVIDER_NONE', `the local embedder ${lc.embedder.tag} is not pulled`, 'ollama'));
+  const base = { name: 'ollama', engine: lc.engine, reason: r.reason, model, embedder, capabilities: { chat: true, embed: !!embedder, structured: true } };
+  if (lc.engine === 'openai') {
+    const call = deps.openaiChat || openaiCompat.chat;
+    return {
+      ...base,
+      chat: (opts = {}) => timed(opts.feature || 'unknown', () => call({ ...opts, url: lc.url, model: pick(opts) })),
+      embed: (texts, opts = {}) => (embedder ? timed('embed', () => openaiCompat.embed(texts, { ...opts, url: lc.url, model: embedder })) : noEmbed()),
+      ping: async () => Array.isArray(await openaiCompat.models(lc.url, 2000)),
+    };
+  }
+  const call = deps.ollamaChat || ollama.chat;
+  return {
+    ...base,
+    chat: (opts = {}) => timed(opts.feature || 'unknown', () => call({ ...lc.net, keepAlive: lc.workhorse.keepAlive, ...opts, model: pick(opts) })),
+    embed: (texts, opts = {}) => (embedder
+      ? timed('embed', () => embedModule.embed(texts, { ...lc.net, ...opts, model: embedder, postFn: opts.postFn || embedModule.postEmbed }))
+      : noEmbed()),
+    ping: () => ollama.ping(2000, lc.net),
+  };
+}
+
+/** The hosted legs of the chain: Claude when logged in and under its cap, else Codex in auto (or local's fallback). */
+async function resolveHosted(m, state, now, iso, cfg, deps, budget) {
+  const { loggedIn, bin } = await resolveClaudeLogin(state, now, iso, deps);
+  const claudeReason = bin ? 'claude-not-logged-in' : 'no-provider';
+  if (loggedIn) {
+    return budget.spent() >= budget.perDayUsd ? makeNone('daily-cap', 'claude') : makeClaude(m === 'claude' ? 'forced' : 'claude-logged-in', budget, deps);
+  }
+  if ((m === 'auto' || m === 'local') && codexConfigured(cfg)) return resolveCodex(state, now, iso, cfg, deps, 'codex-logged-in', claudeReason);
+  return makeNone(claudeReason);
 }
 
 async function resolveProvider({ mode, feature = 'unknown', deps = {} } = {}) {
@@ -249,7 +358,18 @@ async function resolveProvider({ mode, feature = 'unknown', deps = {} } = {}) {
   if (m === 'ollama') chosen = makeOllama('forced', cfg);
   else if (m === 'none') chosen = makeNone('forced');
   else if (m === 'codex') chosen = await resolveCodex(state, now, iso, cfg, deps, 'forced', 'no-provider');
-  else {
+  else if (m === 'local') {
+    // local-first A1/A3: the local engine, else nothing (the caller queues or goes heuristic) unless the user allowed
+    // the hosted legs; a hosted answer keeps the local reason in the state so the HUD can say why it spent.
+    const r = await resolveLocal(state, now, iso, cfg, deps);
+    if (r.ok) chosen = makeLocal(r, deps);
+    else if (r.lc.hostedFallback) {
+      chosen = await resolveHosted(m, state, now, iso, cfg, deps, budget);
+      // Nobody hosted either: the local reason is the one to fix, unless a hosted cap is what stopped it.
+      if (chosen.name === 'none' && chosen.reason !== 'daily-cap') chosen = makeNone(r.reason);
+    } else chosen = makeNone(r.reason);
+    state.localReason = r.reason;
+  } else {
     let ollamaOk = false;
     if (m === 'auto') {
       if (isFresh(state.ollama, OLLAMA_TTL_MS, now)) ollamaOk = !!state.ollama.reachable;
@@ -259,22 +379,15 @@ async function resolveProvider({ mode, feature = 'unknown', deps = {} } = {}) {
       }
     }
     if (ollamaOk) chosen = makeOllama('ollama-reachable', cfg);
-    else {
-      const { loggedIn, bin } = await resolveClaudeLogin(state, now, iso, deps);
-      const claudeReason = bin ? 'claude-not-logged-in' : 'no-provider';
-      if (loggedIn) {
-        chosen = budget.spent() >= budget.perDayUsd ? makeNone('daily-cap', 'claude') : makeClaude(m === 'claude' ? 'forced' : 'claude-logged-in', budget, deps);
-      } else if (m === 'auto' && codexConfigured(cfg)) {
-        chosen = await resolveCodex(state, now, iso, cfg, deps, 'codex-logged-in', claudeReason);
-      } else {
-        chosen = makeNone(claudeReason);
-      }
-    }
+    else chosen = await resolveHosted(m, state, now, iso, cfg, deps, budget);
   }
+  if (m !== 'local') delete state.localReason;
   state.checkedAt = iso;
   state.name = chosen.name;
   state.reason = chosen.reason;
   state.feature = feature;
+  if (chosen.engine) state.engine = chosen.engine; else delete state.engine;
+  if (chosen.name === 'ollama' && chosen.model) state.model = chosen.model; else delete state.model;
   // An unbilled resolve (an estimate) may rest on a login it did not check: it records nothing.
   if (!deps.unbilled) writeState(state);
   return chosen;
@@ -368,5 +481,6 @@ function resetProviderCache() { memo = null; roleMemo.clear(); }
 
 module.exports = {
   resolveProvider, getProvider, resolveProviderForRole, getProviderForRole, resetProviderCache, STATE_PATH,
+  localCfg, listLocalModels, pickLocalModel,
   ProviderUnavailable, recordSpend, spendToday, reasonSpendToday, routineSpendToday, SPEND_PATH,
 };

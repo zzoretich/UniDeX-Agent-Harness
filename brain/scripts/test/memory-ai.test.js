@@ -37,8 +37,10 @@ const SCHEMA = Object.freeze({
 });
 const CODEX_ONLY = { hosts: { claude: { enabled: false }, codex: { enabled: true } } };
 
+// These cases drive the auto chain with each host faked at its seam: a case that names no provider runs on auto, not
+// 2.0's shipped default `local` (local-first A10), which would ask whatever engine answers on this machine.
 function setConfig(vaultCfg = {}, userCfg = {}) {
-  fs.writeFileSync(CONFIG, JSON.stringify(vaultCfg));
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'auto', ...vaultCfg }));
   fs.writeFileSync(process.env.AOS_CONFIG, JSON.stringify(userCfg));
 }
 const spendRows = () => { try { return fs.readFileSync(SPEND_PATH, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };

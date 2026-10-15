@@ -188,6 +188,7 @@ test('semanticState: auto follows the provider, true and false override it', () 
   assert.equal(st('auto', 'auto').on, true);
   assert.equal(st('auto', 'claude').on, true);
   assert.match(st('auto', 'none').why, /^off under provider none/);
+  assert.match(st('auto', 'local').why, /^off under provider local/);
   assert.equal(st('auto', 'ollama').on, false);
   assert.equal(st(true, 'none').on, true);
   assert.equal(st(false, 'claude').on, false);
@@ -217,7 +218,8 @@ test('the graph semantic doctor row: off, not yet run, failed, and ok with conce
   const now = Date.parse('2026-09-23T12:00:00Z');
   const marker = (m) => fs.writeFileSync(path.join(out, GC.MARKER), JSON.stringify({ lastStructural: '2026-09-23T11:00:00Z', nodes: 5, edges: 4, ...m }));
   const CLAUDE = { host: 'claude', bin: '/x/claude' };
-  const row = (cfg, runner = CLAUDE) => GC.doctorRows({ cfg: { graph: { bin }, ...cfg }, vault: w.vault, now, runner }).find((r) => r.name === 'graph semantic');
+  // provider auto unless a case names one: 2.0's default `local` turns the pass off (local-first A1), and these cases are about it running.
+  const row = (cfg, runner = CLAUDE) => GC.doctorRows({ cfg: { graph: { bin }, provider: 'auto', ...cfg }, vault: w.vault, now, runner }).find((r) => r.name === 'graph semantic');
   marker({});
   assert.deepEqual(row({ provider: 'none' }), { name: 'graph semantic', ok: false, detail: 'off under provider none (aos graph semantic on overrides)', level: 'info' });
   assert.match(row({}).detail, /^not run yet — the next scan starts it \(every 24 h, today \$0\.00 of \$1\)$/);
@@ -268,10 +270,10 @@ test('while a semantic pass holds the graph lock, doctor and status say it is ru
   const startedAt = new Date(Date.now() - 8 * 60_000).toISOString();
   fs.writeFileSync(lock, JSON.stringify({ schema: 1, mode: 'semantic', pid: process.pid, startedAt, until: new Date(Date.now() + 60_000).toISOString() }));
   const hm = new Date(startedAt).toTimeString().slice(0, 5);
-  const row = GC.doctorRows({ cfg: { graph: { bin } }, vault: w.vault }).find((r) => r.name === 'graph semantic');
+  const row = GC.doctorRows({ cfg: { graph: { bin }, provider: 'auto' }, vault: w.vault }).find((r) => r.name === 'graph semantic');
   assert.deepEqual(row, { name: 'graph semantic', ok: true, detail: `running since ${hm} · today $0.00 of $1`, level: 'warn' });
   const logs = [];
-  fs.writeFileSync(path.join(w.configDir, 'agenticos.json'), JSON.stringify({ vault: w.vault, graph: { bin } }));
+  fs.writeFileSync(path.join(w.configDir, 'agenticos.json'), JSON.stringify({ vault: w.vault, provider: 'auto', graph: { bin } }));
   assert.equal(await GC.run(['status'], { configDir: w.configDir, io: { log: (m) => logs.push(m), error() {} } }), 0);
   assert.match(logs.join('\n'), new RegExp(`^semantic   on \\(every 24 h, auto\\) · running since ${hm} · never run`, 'm'));
   fs.writeFileSync(lock, JSON.stringify({ schema: 1, mode: 'semantic', pid: process.pid, startedAt, until: new Date(Date.now() - 1000).toISOString() }));

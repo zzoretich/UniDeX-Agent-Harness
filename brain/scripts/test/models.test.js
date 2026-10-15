@@ -3,7 +3,7 @@
 // Moved out of test/live/: nothing here needs Ollama.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { role, thinkFor, providerFor, EFFORTS } = require('../sdk/lib/models.js');
+const { role, thinkFor, providerFor, EFFORTS, LOCAL_TIERS, workhorseForMemory } = require('../sdk/lib/models.js');
 
 const ENV = ['BRAIN_MODEL', 'BRAIN_REASONER', 'BRAIN_EMBEDDER', 'AOS_CLAUDE_MODEL'];
 function clearEnv() { for (const k of ENV) delete process.env[k]; }
@@ -20,6 +20,46 @@ test('defaults: 9b workhorse, Opus 5 reasoner on claude, 0.6b embedder', () => {
   assert.equal(role('embedder', NO_CFG).tag, 'qwen3-embedding:0.6b');
   assert.equal(role('embedder', NO_CFG).keepAlive, -1);
   assert.equal(role('claude', NO_CFG).tag, 'haiku');
+});
+
+test('RAM tiers (local-first A12): 4b under 12 GB, 9b from 12 GB; the workhorse stays loaded from 24 GB', (t) => {
+  clearEnv();
+  const saved = process.env.AOS_TOTALMEM;
+  t.after(() => { process.env.AOS_TOTALMEM = saved; });
+  const GB = 1024 ** 3;
+  const LOCAL = { provider: 'local' };
+  for (const [gb, tag, keep] of [[8, 'qwen3.5:4b', '5m'], [11.9, 'qwen3.5:4b', '5m'], [12, 'qwen3.5:9b', '5m'], [16, 'qwen3.5:9b', '5m'], [24, 'qwen3.5:9b', -1], [64, 'qwen3.5:9b', -1]]) {
+    process.env.AOS_TOTALMEM = String(gb * GB);
+    assert.equal(role('workhorse', LOCAL).tag, tag, `${gb} GB`);
+    assert.equal(role('workhorse', LOCAL).source, 'tier');
+    assert.equal(role('workhorse', LOCAL).keepAlive, keep, `${gb} GB`);
+    assert.equal(workhorseForMemory(gb * GB), tag);
+    assert.equal(role('embedder', LOCAL).keepAlive, -1, 'the embedder stays loaded on every tier');
+    // Outside provider local nothing moves: the 9b, always loaded, whatever the memory.
+    assert.equal(role('workhorse', { provider: 'auto' }).tag, 'qwen3.5:9b');
+    assert.equal(role('workhorse', NO_CFG).keepAlive, -1);
+    assert.equal(role('workhorse', NO_CFG).source, 'default');
+  }
+  process.env.AOS_TOTALMEM = 'junk';
+  assert.ok(['qwen3.5:4b', 'qwen3.5:9b'].includes(role('workhorse', LOCAL).tag), 'junk falls back to os.totalmem()');
+  assert.deepEqual(LOCAL_TIERS.map((x) => x.tag), ['qwen3.5:4b', 'qwen3.5:9b']);
+});
+
+test('local.model, local.embedder and local.keepAlive override the tier; env still wins (local-first A11)', () => {
+  clearEnv();
+  const cfg = { provider: 'local', local: { model: 'qwen3.5:27b', embedder: 'nomic-embed-text', keepAlive: '30m' } };
+  assert.equal(role('workhorse', cfg).source, 'config');
+  assert.equal(role('workhorse', cfg).tag, 'qwen3.5:27b');
+  assert.equal(role('workhorse', cfg).keepAlive, '30m');
+  assert.equal(role('workhorse', { local: { keepAlive: 0 } }).keepAlive, 0, 'a numeric 0 unloads at once');
+  assert.equal(role('workhorse', { local: { keepAlive: '-1' } }).keepAlive, -1, 'the settings picker\'s "-1" reaches Ollama as a number');
+  assert.equal(role('embedder', cfg).tag, 'nomic-embed-text');
+  assert.equal(role('workhorse', { local: { model: '  ', keepAlive: null } }).tag, 'qwen3.5:9b', 'blank falls to the tier');
+  process.env.BRAIN_MODEL = 'llama3.2';
+  process.env.BRAIN_EMBEDDER = 'mxbai-embed-large';
+  assert.equal(role('workhorse', cfg).tag, 'llama3.2');
+  assert.equal(role('embedder', cfg).tag, 'mxbai-embed-large');
+  clearEnv();
 });
 
 test('providerFor: the reasoner and the hook fallback are claude, the rest ollama', () => {
