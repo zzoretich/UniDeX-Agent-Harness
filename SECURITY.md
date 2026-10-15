@@ -30,8 +30,10 @@ output. The design treats the page that shows them as untrusted (design D7,
     keys), wherever it is, and never a backup of a host's config or the runtime's keys
     (`~/.local/share/unidex/backups/` and `…/keys/`, and `brain/_index/backups/` in the vault). Each of these denies is
     checked case-folded and in one Unicode form (APFS's own comparison), on the path as asked and as the disk resolves
-    it at that moment, so no link, in whatever case it names its target, and no folder made after launch gets past it. Whether a program exists may be asked by its well-known
-    name (`node`, `claude`, a shell) anywhere, for the pickers that look for them.
+    it at that moment, and a denied folder also by its identity (device and inode), so no link, in whatever case or
+    under whatever other name for the folder it names its target, and no folder made after launch gets past it.
+    Whether a program exists may be asked by its well-known name (`node`, `claude`, a shell) anywhere, for the pickers
+    that look for them.
   - *Writes:* only what a Workbench surface writes (`app/src/shared/surfaces.ts`): To-Do writes `TODO.md`, Capture writes
     memories, and so on. Files and the note editor write anywhere in the vault except the runtime's folders
     (`brain/_index`, `brain/scripts`), dependency folders and every dot-path, so no page can plant a host's project

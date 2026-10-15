@@ -22,13 +22,14 @@ export function sameOnDisk(a: string, b: string): boolean {
 
 /**
  * The absolute path `p` relative to the first of `roots` that is `p` itself or one of its folders, `/`-separated (`""`
- * for a root itself), or null when none is. The part of `p` that is not there yet is kept as it is spelled.
+ * for a root itself), or null when none is. The part of `p` that is not there yet is kept as it is spelled. `idOf`
+ * tells what is at a path (folderId; tests supply one to stand for a second name the test machine lacks).
  */
-export function relUnder(roots: readonly FolderId[], p: string): string | null {
+export function relUnder(roots: readonly FolderId[], p: string, idOf: (p: string) => FolderId | null = folderId): string | null {
   if (!roots.length || !path.isAbsolute(p)) return null;
   const below: string[] = [];
   for (let at = path.resolve(p); ; at = path.dirname(at)) {
-    const id = folderId(at);
+    const id = idOf(at);
     if (id && roots.some((r) => r.dev === id.dev && r.ino === id.ino)) return below.reverse().join("/");
     if (path.dirname(at) === at) return null;
     below.push(path.basename(at));

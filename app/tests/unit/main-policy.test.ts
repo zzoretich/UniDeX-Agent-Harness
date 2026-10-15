@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { debugSwitches } from "../../src/main/policy/debug";
 import { cwdRefusal, parseShells, programRefusal, ptyEnv, shellRefusal, spawnEnv, type ProgramContext } from "../../src/main/policy/programs";
+import { folderId, relUnder } from "../../src/main/policy/identity";
 import { ReadScope, claudeDirs, codexHomes } from "../../src/main/policy/read-scope";
 import { externalAllowed, openPathAction } from "../../src/main/policy/shell";
 import { PathArgs, PtySpawnRequestSchema, SpawnRequestSchema, WriteArgs } from "../../src/main/ipc/schemas";
@@ -170,6 +171,66 @@ test("a check resolves the path asked once, and each denied folder once, whichev
   calls = 0;
   assert.equal(s.canProbe(`${vault}/brain/_index/backups/x.bak`), false);
   assert.ok(calls <= 4, `a denied probe stops early (${calls})`);
+});
+
+test("relUnder finds a path under a folder by the folder's identity, whatever the path calls it", () => {
+  const dir = path.join(ROOT, "ident", "box");
+  fs.mkdirSync(path.join(dir, "sub"), { recursive: true });
+  const id = folderId(dir);
+  assert.ok(id);
+  assert.equal(relUnder([id!], path.join(dir, "sub", "not-yet.txt")), "sub/not-yet.txt");
+  assert.equal(relUnder([id!], dir), "");
+  assert.equal(relUnder([id!], path.join(ROOT, "ident", "other")), null);
+  // Another name for the same folder (a link, here; a firmlink or a second spelling on a Mac) is still under it.
+  fs.symlinkSync(dir, path.join(ROOT, "ident", "alias"));
+  assert.equal(relUnder([id!], path.join(ROOT, "ident", "alias", "sub", "x")), "sub/x");
+  // And by an identity a test supplies, so the rule is checked where no second name exists.
+  const fake = (p: string) => (p.startsWith("/elsewhere/box") ? folderId(p.replace("/elsewhere/box", dir)) : folderId(p));
+  assert.equal(relUnder([id!], "/elsewhere/box/sub/y", fake), "sub/y");
+});
+
+test("a deny holds under any name for the denied folder: by device and inode, not only by spelling", () => {
+  const home = path.join(ROOT, "home-d");
+  const vault = path.join(ROOT, "vault-d");
+  const backups = path.join(home, ".local", "share", "unidex", "backups");
+  fs.mkdirSync(path.join(backups, "mcp"), { recursive: true });
+  fs.writeFileSync(path.join(backups, "mcp", "x.bak"), "secret = 1\n");
+  fs.mkdirSync(path.join(vault, "notes"), { recursive: true });
+  fs.writeFileSync(path.join(vault, "notes", "a.md"), "x");
+  fs.symlinkSync(backups, path.join(vault, "notes", "b"));
+  // The disk names what the link reaches by a second name for the backups folder (as /System/Volumes/Data/… is on a Mac):
+  // realpath leaves that name as it is, so no spelling compare sees the backups in it; its identity is the backups'.
+  const ALIAS = "/second-name-d";
+  const realpath = (p: string): string => {
+    const r = fs.realpathSync.native(p);
+    return p.startsWith(path.join(vault, "notes", "b")) ? r.replace(home, `${ALIAS}/home`) : r;
+  };
+  const identity = (p: string) => folderId(p.startsWith(ALIAS) ? p.replace(`${ALIAS}/home`, home) : p);
+  const s = new ReadScope({ ...ctx({ vaultRoot: vault, home }), realpath, identity });
+  for (const p of [`${vault}/notes/b/mcp/x.bak`, `${vault}/notes/b/mcp`, `${vault}/notes/b`]) {
+    assert.equal(s.canRead(p), false, p);
+    assert.equal(s.canList(p), false, p);
+    assert.equal(s.canProbe(p), false, p);
+  }
+  assert.equal(s.canRead(`${vault}/notes/a.md`), true, "the rest of the vault stays readable");
+});
+
+test("a link in the vault spelled through /System/Volumes/Data never reaches the backups (on a Mac with a data volume)", () => {
+  const home = path.join(ROOT, "home-e");
+  const vault = path.join(ROOT, "vault-e");
+  const backups = path.join(home, ".local", "share", "unidex", "backups");
+  fs.mkdirSync(path.join(backups, "mcp"), { recursive: true });
+  fs.writeFileSync(path.join(backups, "mcp", "x.bak"), "secret = 1\n");
+  fs.mkdirSync(vault, { recursive: true });
+  const alias = `/System/Volumes/Data${backups}`;
+  let same = false;
+  try { const a = fs.statSync(backups); const b = fs.statSync(alias); same = a.dev === b.dev && a.ino === b.ino; } catch { /* no data volume */ }
+  if (!same) return;
+  fs.symlinkSync(alias, path.join(vault, "fl"));
+  const s = new ReadScope(ctx({ vaultRoot: vault, home }));
+  assert.equal(s.canRead(`${vault}/fl/mcp/x.bak`), false);
+  assert.equal(s.canList(`${vault}/fl/mcp`), false);
+  assert.equal(s.canProbe(`${vault}/fl/mcp/x.bak`), false);
 });
 
 test("the Claude and Codex folders come from main's environment and agenticos.json, never from the page", () => {
