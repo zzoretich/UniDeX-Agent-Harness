@@ -134,6 +134,13 @@ export class PulseTab {
       s.createSpan({ text: `Since you last looked at ${clock(m.since.at)}: ` });
       s.createSpan({ cls: "aos-pulse-since-parts", text: m.since.parts.join(" · ") });
     }
+    if (m.waitingForHost) {
+      // local-first §5: no host to run the Chief of Staff (none enabled, or every duty today skipped waiting for one).
+      const w = main.createDiv({ cls: "aos-pulse-waiting", attr: { role: "status" } });
+      w.createSpan({ text: "Add Claude Code or Codex to start your Chief of Staff." });
+      const add = w.createEl("button", { cls: "aos-pulse-waiting-go", text: "Add a host", attr: { title: "Settings ▸ Hosts: install Claude Code or Codex, then sign in" } });
+      add.addEventListener("click", () => { this.view.open({ tab: "settings" }); });
+    }
     this.renderCommandDeck(main);
 
     const side = band.createDiv({ cls: "aos-pulse-band-side" });

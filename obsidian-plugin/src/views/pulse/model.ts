@@ -18,7 +18,7 @@ import { buildRows, listRoutines, readRoutinesState, type RoutineRow } from "../
 import { parseTodos, localDay, type Todo } from "../../data/todos";
 import { proposalTitle } from "../../data/pulseFacts";
 import { ageDays } from "../../data/proposals";
-import { readAgenticosJson, readVaultConfig } from "../../data/aosConfig";
+import { readAgenticosJson, readVaultConfig, sessionHosts } from "../../data/aosConfig";
 import { TERM_HOST_LABEL, placeOf, type PlaceWorld } from "../../data/terminalLaunch";
 import { liveByWorkspace, type LiveState, type LiveTerminalInput } from "../../data/spacesModel";
 import { diskAdapter, memberStatus, pendingGates, readTeams } from "../../data/teams";
@@ -105,6 +105,28 @@ export interface PulseModel {
   spendFamilies: SpendFamily[];
   teams: TeamRow[];
   decisions: DecisionRow[];
+  /**
+   * The Chief of Staff waits for a host (local-first §5, no-host row): no host enabled, or every duty that ran today was
+   * skipped `waiting-for-host` (run-duty.sh's journal entries). Pulse then says how to add one.
+   */
+  waitingForHost: boolean;
+}
+
+/**
+ * Whether every duty in today's journal last ended skipped `waiting-for-host` (persona/run-duty.sh writes
+ * `## HH:MM — duty: <slug>` then `- status: SKIPPED waiting-for-host`). False with no duty entry at all.
+ */
+export function dutiesWaitingForHost(journal: string | null): boolean {
+  const last = new Map<string, string>();
+  let duty: string | null = null;
+  for (const line of (journal ?? "").split("\n")) {
+    const head = /^## \d{1,2}:\d{2} — duty: ([a-z0-9-]+)\s*$/.exec(line);
+    if (head) { duty = head[1]; continue; }
+    if (/^## /.test(line)) { duty = null; continue; }
+    const st = /^- status: (.+)$/.exec(line);
+    if (duty && st) { last.set(duty, st[1].trim()); duty = null; }
+  }
+  return last.size > 0 && [...last.values()].every((s) => /^SKIPPED waiting-for-host\b/.test(s));
 }
 
 /** USD per local day for the last `days` days, oldest first, from provider-spend.jsonl text. */
@@ -302,6 +324,8 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
   if (inputs.drafts) decisions.push({ kind: "drafts", title: `${inputs.drafts} feedback rule draft${inputs.drafts === 1 ? "" : "s"}`, sub: "brain/memory/feedback/_drafts · Brain › Review › Drafts", ref: "feedback-drafts", days: null });
 
   const live = await liveRows(plugin);
+  const noHost = sessionHosts(readAgenticosJson(plugin.claudeConfigDir())).length === 0;
+  const waitingForHost = !personaOff && (noHost || dutiesWaitingForHost(await read(`persona/journal/${localDay(now)}.md`)));
   return {
     now, inputs, facts, briefing,
     paragraph: chooseParagraph(briefing, facts, now, staleHours),
@@ -320,5 +344,6 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
     spendFamilies: spendFamilies(ledger, now),
     teams,
     decisions,
+    waitingForHost,
   };
 }

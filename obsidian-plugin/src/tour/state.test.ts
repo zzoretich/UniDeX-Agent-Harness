@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DEFAULT_TOUR_STATE, markCompleted, markDismissed, markDone, markOffered, markSeen, sanitizeTourState, setChecklistDismissed,
+  DEFAULT_TOUR_STATE, markCompleted, markDismissed, markDone, markLaunched, markOffered, markSeen, sanitizeTourState, setChecklistDismissed,
 } from "./state";
 import { DEFAULT_SETTINGS } from "../settingsDefaults";
 
 test("the HUD settings carry the tour key, defaulting to nothing seen (tour C4)", () => {
   assert.deepEqual(DEFAULT_SETTINGS.tour, DEFAULT_TOUR_STATE);
-  assert.deepEqual(DEFAULT_TOUR_STATE, { lastSeenVersion: null, completed: [], dismissed: [], checklist: { dismissed: false, done: {} }, offered: [] });
+  assert.deepEqual(DEFAULT_TOUR_STATE, { lastSeenVersion: null, completed: [], dismissed: [], checklist: { dismissed: false, done: {} }, offered: [], launched: [] });
 });
 
 test("a stored value of any shape reads as the default, never throws", () => {
@@ -23,6 +23,7 @@ test("good parts are kept, bad ones dropped", () => {
     dismissed: ["spaces"],
     checklist: { dismissed: true, done: { "first-session": "2026-10-14T10:00:00.000Z", "x y": "2026-10-14T10:00:00.000Z", routine: "not a date" } },
     offered: ["pulse", "memory"],
+    launched: ["go-local", "whats-new@2.0.0", "whats-new@two", "Go Local", "go-local"],
     extra: 1,
   });
   assert.deepEqual(s, {
@@ -31,6 +32,7 @@ test("good parts are kept, bad ones dropped", () => {
     dismissed: ["spaces"],
     checklist: { dismissed: true, done: { "first-session": "2026-10-14T10:00:00.000Z" } },
     offered: ["pulse", "memory"],
+    launched: ["go-local", "whats-new@2.0.0"],
   });
   assert.equal(sanitizeTourState({ lastSeenVersion: "two" }).lastSeenVersion, null);
 });
@@ -41,12 +43,13 @@ test("every change returns a new object and leaves the default alone", () => {
   const b = markOffered(a, "pulse");
   const c = markDone(b, ["first-session"], new Date("2026-10-14T10:00:00Z"));
   const d = setChecklistDismissed(c, true);
-  const e = markSeen(d, "2.0.0");
+  const e = markLaunched(markLaunched(markSeen(d, "2.0.0"), "whats-new@2.0.0"), "go-local");
   assert.equal(JSON.stringify(DEFAULT_TOUR_STATE), before);
   assert.deepEqual(e, {
-    lastSeenVersion: "2.0.0", completed: ["core"], dismissed: [], offered: ["pulse"],
+    lastSeenVersion: "2.0.0", completed: ["core"], dismissed: [], offered: ["pulse"], launched: ["whats-new@2.0.0", "go-local"],
     checklist: { dismissed: true, done: { "first-session": "2026-10-14T10:00:00.000Z" } },
   });
+  assert.deepEqual(markLaunched(e, "whats-new@latest").launched, e.launched, "a bad id is not recorded");
 });
 
 test("completing a chapter clears its skip; skipping a completed one keeps it completed", () => {

@@ -20,6 +20,11 @@ export interface TourState {
   checklist: ChecklistState;
   /** Tabs whose chapter has been offered once on a first visit (the chip), by tab id. */
   offered: string[];
+  /**
+   * The launch sequence's dialogs this Mac has shown (tour C11, ui/launchSequence.ts): "go-local", "import", and
+   * "whats-new@<version>" for the What's new card of a release. The e2e harness pre-marks them.
+   */
+  launched: string[];
 }
 
 export const DEFAULT_TOUR_STATE: TourState = {
@@ -28,6 +33,7 @@ export const DEFAULT_TOUR_STATE: TourState = {
   dismissed: [],
   checklist: { dismissed: false, done: {} },
   offered: [],
+  launched: [],
 };
 
 /** A version this file keeps: x.y.z with an optional pre-release or build tail. */
@@ -35,12 +41,14 @@ const VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 /** A chapter, tab or task id: lower-case words joined by hyphens or colons. */
 const ID = /^[a-z0-9][a-z0-9:-]{0,63}$/;
 const MAX_IDS = 200;
+/** A launch-sequence id: an ID, or "whats-new@x.y.z". */
+const LAUNCH_ID = /^(?:[a-z0-9][a-z0-9:-]{0,63}|whats-new@\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-function ids(v: unknown): string[] {
+function ids(v: unknown, re: RegExp = ID): string[] {
   if (!Array.isArray(v)) return [];
-  return [...new Set(v.filter((x): x is string => typeof x === "string" && ID.test(x)))].slice(0, MAX_IDS);
+  return [...new Set(v.filter((x): x is string => typeof x === "string" && re.test(x)))].slice(0, MAX_IDS);
 }
 
 /** A clean copy of a stored tour state; anything missing or malformed reads as its default. Never throws. */
@@ -59,6 +67,7 @@ export function sanitizeTourState(raw: unknown): TourState {
     dismissed: ids(r.dismissed),
     checklist: { dismissed: c.dismissed === true, done },
     offered: ids(r.offered),
+    launched: ids(r.launched, LAUNCH_ID),
   };
 }
 
@@ -100,4 +109,10 @@ export function setChecklistDismissed(s: TourState, dismissed: boolean): TourSta
 export function markSeen(s: TourState, version: string): TourState {
   const c = sanitizeTourState(s);
   return VERSION.test(version) ? { ...c, lastSeenVersion: version } : c;
+}
+
+/** A launch-sequence dialog was shown (tour C11): it never opens on its own again. */
+export function markLaunched(s: TourState, id: string): TourState {
+  const c = sanitizeTourState(s);
+  return LAUNCH_ID.test(id) ? { ...c, launched: add(c.launched, id) } : c;
 }

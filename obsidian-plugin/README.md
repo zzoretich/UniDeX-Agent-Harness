@@ -26,6 +26,10 @@ for every surface, each step an anchor (a `data-tab`, `data-area`, `data-mode`, 
 its text and how it advances; `whatsnew.json` the What's new entries per release. The engine routes with
 `WorkbenchView.open()` and keeps its state in the HUD's settings (`tour`). A control a step spotlights keeps its anchor:
 renaming or removing one breaks `app/tests/e2e/tour.spec.ts`, which resolves every step on two machines.
+`src/ui/launchSequence.ts` (tour C11) owns every dialog the app opens on its own at launch, one at a time, each once:
+the app's runtime update, the Go-local card (`src/ui/GoLocalCard.ts`, local-first A9, through the `migrate` surface),
+the Import sheet (PR 9's second stage), the welcome tour or What's new, then Getting started; `src/tour/launch.ts` says
+what is due, and `tour.launched` remembers what was shown.
 
 ## Data contracts
 

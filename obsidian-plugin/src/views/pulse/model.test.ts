@@ -1,7 +1,7 @@
 // The Pulse model's pure parts (views/pulse/model.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mapPendingRows, writtenRows } from "./model";
+import { dutiesWaitingForHost, mapPendingRows, writtenRows } from "./model";
 import type { WorkspaceEntry } from "../../data/snapshot";
 import type { WorkspaceMap } from "../../data/workspaceMaps";
 
@@ -50,4 +50,14 @@ test("writtenRows: today's writes newest first, one per memory, each as its file
   // Only `written` rows count; a file never read reads as gone.
   assert.deepEqual(writtenRows([{ ...row("2026-10-08T08:00:00", "user", "a"), action: "kept" }], new Map()), []);
   assert.deepEqual(writtenRows([row("2026-10-08T08:00:00", "user", "a")], new Map()).map((w) => w.state), ["gone"]);
+});
+
+test("dutiesWaitingForHost: every duty today last skipped waiting-for-host; any other status, or none, is not waiting", () => {
+  const skipped = (t: string, d: string) => `## ${t} — duty: ${d}\n- status: SKIPPED waiting-for-host\n- did: nothing — no host can start it (claude: signed out)\n`;
+  assert.equal(dutiesWaitingForHost(`# Journal\n\n${skipped("07:45", "sitrep")}\n${skipped("09:00", "tick")}`), true);
+  assert.equal(dutiesWaitingForHost(`${skipped("07:45", "sitrep")}\n## 09:00 — duty: sitrep\n- status: ok\n`), false, "it ran since");
+  assert.equal(dutiesWaitingForHost(`${skipped("07:45", "sitrep")}\n## 08:00 — duty: monitor\n- status: SKIPPED daily-cap\n`), false);
+  assert.equal(dutiesWaitingForHost("## 10:00 — a note\n- status: SKIPPED waiting-for-host\n"), false, "not a duty entry");
+  assert.equal(dutiesWaitingForHost(null), false);
+  assert.equal(dutiesWaitingForHost(""), false);
 });

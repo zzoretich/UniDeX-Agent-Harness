@@ -13,6 +13,8 @@ import {
 } from "../data/settingsModel";
 import type { ConfigList, ConfigRow, FollowUp, SetResult } from "../data/settingsModel";
 import { ConfirmModal } from "../ui/ConfirmModal";
+import { GoLocalCard } from "../ui/GoLocalCard";
+import { migrateArgs, migrateCommand, readMigrations } from "../data/goLocal";
 import { renderPluginSettings } from "../ui/pluginSettingRows";
 import type { PluginRowsHandle } from "../ui/pluginSettingRows";
 import { shell } from "../host";
@@ -213,6 +215,41 @@ export class SettingsTab {
     const term = acts.createEl("button", { cls: "aos-ws-action", text: "❯_ aos local", attr: { "data-act": "local-status" } });
     term.setAttr("title", "Ask the engine now and show what it serves, in the Code tab");
     term.addEventListener("click", () => this.view.runInTerm("aos local", { origin: "Settings" }));
+    this.renderGoLocal(box, cfg.provider, vault);
+  }
+
+  /**
+   * Go local, or undo it (local-first A9): the Go-local card while background work is not local (whether the upgrade's
+   * card was declined, closed or never shown), Undo once `aos migrate local-first` moved it (its backup puts the earlier
+   * settings back). Both run through the `migrate` surface.
+   */
+  private renderGoLocal(box: HTMLElement, provider: string, vault: string): void {
+    const mig = readMigrations(vault)["local-first"];
+    const row = box.createDiv({ cls: "aos-st-golocal", attr: { "data-tour": "settings-golocal" } });
+    if (provider !== "local") {
+      row.createSpan({ text: `Background work runs on ${provider === "none" ? "heuristics only" : provider === "auto" ? "Ollama, then Claude Code or Codex" : provider}${mig?.state === "declined" ? " (you kept your settings)" : ""}.` });
+      const go = row.createEl("button", { cls: "aos-ws-action", text: "Go local…", attr: { "data-act": "go-local" } });
+      go.setAttr("title", "Move background work to the model on this Mac; your settings are backed up first");
+      go.addEventListener("click", () => {
+        void GoLocalCard.ask(this.plugin, { runInTerm: (cmd) => this.view.runInTerm(cmd, { origin: "Settings" }) }).then((r) => { if (r === "applied") void this.refresh(); else this.render(); });
+      });
+    } else if (mig?.state === "applied") {
+      row.createSpan({ text: `You moved background work to this Mac${mig.at ? ` on ${mig.at.slice(0, 10)}` : ""}; your earlier settings are backed up.` });
+      const undo = row.createEl("button", { cls: "aos-ws-action", text: "Undo", attr: { "data-act": "go-local-undo" } });
+      undo.setAttr("title", "Put back the provider, the AI switches and the Chief of Staff's models you had (aos migrate local-first --undo)");
+      undo.addEventListener("click", () => void this.undoGoLocal());
+    } else row.createSpan({ text: "Background work runs on this Mac." });
+  }
+
+  /** `aos migrate local-first --undo`, after a confirm. */
+  private async undoGoLocal(): Promise<void> {
+    const ok = await ConfirmModal.ask(this.plugin.app, "Undo going local?",
+      "Your provider, the AI switches and the Chief of Staff's models go back to what they were before, from the backup taken when you went local, and the schedules are re-rendered.", "Undo");
+    if (!ok) return;
+    const r = await this.plugin.aos(migrateArgs("undo"), 120_000);
+    if (r.code === 0) new Notice("Your earlier settings are back. Go local… moves background work to this Mac again.", 8000);
+    else new Notice(`Undo: ${failureText(r)} — or run ${migrateCommand("undo")} in the Code tab`, 10000);
+    await this.refresh();
   }
 
   /** `aos local pull`: this Mac's model and the embedder, through Ollama. Long: a download of several GB. */

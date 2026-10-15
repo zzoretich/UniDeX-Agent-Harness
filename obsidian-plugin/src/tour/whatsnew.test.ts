@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { WHATS_NEW, cmpVersion, selectWhatsNew, validateWhatsNew, whatsNewHistory, type WhatsNewRelease } from "./whatsnew";
+import { WHATS_NEW, cmpVersion, launchWhatsNew, selectWhatsNew, validateWhatsNew, whatsNewHistory, type WhatsNewRelease } from "./whatsnew";
 import { BOOK, allRefs } from "./steps";
 
 const rel = (version: string, n = 1): WhatsNewRelease => ({
@@ -34,10 +34,23 @@ test("Help ▸ What's new keeps the history up to the running release", () => {
   assert.deepEqual(versions(whatsNewHistory(LIST, "2.1.0")), ["2.1.0", "2.0.1", "2.0.0", "1.9.0"]);
 });
 
-test("the shipped whatsnew.json has its schema and a valid list (PR 9 writes the 2.0 entries)", () => {
+test("the shipped whatsnew.json is valid and has 2.0.0's entries, each with a Show me (tour C2)", () => {
   assert.deepEqual(validateWhatsNew(WHATS_NEW, allRefs(BOOK)), []);
   assert.equal(WHATS_NEW.schema, 1);
-  assert.ok(Array.isArray(WHATS_NEW.releases));
+  const two = WHATS_NEW.releases.find((r) => r.version === "2.0.0");
+  assert.deepEqual(two?.entries.map((e) => e.id), ["local-background", "chief-models", "imported-history", "guided-tour"]);
+  for (const e of two!.entries) assert.ok(e.steps.length > 0, e.id);
+});
+
+test("the launch card: an install from before the tour always gets it, with the full tour; later, only what is new (C10)", () => {
+  const shipped = WHATS_NEW.releases;
+  const first = launchWhatsNew(shipped, null, "2.0.0");
+  assert.deepEqual([first?.line, first?.firstTime, versions(first?.releases ?? [])], ["2.0", true, ["2.0.0"]]);
+  assert.equal(launchWhatsNew(shipped, "2.0.0", "2.0.0"), null, "seen: no card");
+  assert.deepEqual(versions(launchWhatsNew(LIST, "2.0.0", "2.1.0")?.releases ?? []), ["2.1.0", "2.0.1"]);
+  assert.equal(launchWhatsNew(LIST, "2.0.1", "2.0.2"), null, "a release with no entries: no card");
+  // A running release whose line has no entries (an unreleased build) still offers the tour to an install that never saw it.
+  assert.deepEqual(launchWhatsNew(shipped, null, "1.9.0"), { line: "1.9", releases: [], firstTime: true });
 });
 
 test("a bad whatsnew.json is caught: version, duplicate, missing text, unknown step", () => {

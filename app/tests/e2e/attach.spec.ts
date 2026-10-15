@@ -1,11 +1,12 @@
-// Phase 5, attach mode: an existing install opens straight into the Workbench. The "What changed" note shows once per
-// vault; a vault whose runtime is older than the one the app carries gets a status bar item and a dialog that runs
-// `aos upgrade` from the payload, on request only; the app's own update shows as Restart to update once downloaded.
+// Phase 5, attach mode: an existing install opens straight into the Workbench. A vault opened for the first time is
+// recorded at once (the "What changed" note gave way to the launch sequence, tour C11: launch.spec.ts); a vault whose
+// runtime is older than the one the app carries gets a status bar item and a dialog that runs `aos upgrade` from the
+// payload, on request only; the app's own update shows as Restart to update once downloaded.
 
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, SETUP, aosCalls, installSetupStubs, launchApp, restoreFixture, type AppHandle } from "./harness";
+import { FX, SETUP, USER_DATA, aosCalls, installSetupStubs, launchApp, restoreFixture, type AppHandle } from "./harness";
 
 const VERSION = (JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")) as { version: string }).version;
 const AGENTICOS = path.join(FX.claude, "agenticos.json");
@@ -15,23 +16,16 @@ test.describe.configure({ mode: "serial" });
 let h: AppHandle | null = null;
 test.afterEach(async () => { await h?.close(); h = null; });
 
-test("the What changed note shows the first time a vault is opened, and not again", async () => {
+test("a vault opened for the first time is noted at once, with no note about moving off Obsidian", async () => {
   restoreFixture();
   h = await launchApp({ noted: false });
-  const note = h.win.locator(".aos-attach-modal");
-  await expect(note.locator(".modal-title")).toHaveText("UniDeX is an app now");
-  await expect(note.locator(".aos-attach-list li")).toHaveCount(4);
-  await note.locator(".aos-attach-ok").click();
-  await expect(note).toHaveCount(0);
+  const rec = () => JSON.parse(fs.readFileSync(path.join(USER_DATA, "attach.json"), "utf8")) as { vaults: Record<string, { notedAt?: string }> };
+  await expect.poll(() => rec().vaults[path.resolve(FX.vault)]?.notedAt).toBeTruthy();
+  await h.win.waitForTimeout(500);
+  await expect(h.win.locator(".modal-container")).toHaveCount(0);
   // No payload in a dev run: nothing to upgrade from.
   await expect(h.win.locator(".aos-host-runtime")).toHaveCount(0);
   expect(h.errors).toEqual([]);
-  await h.close();
-
-  // Same data folder (launchApp only forgets the note when asked): no note.
-  h = await launchApp({ noted: true });
-  await h.win.waitForTimeout(500);
-  await expect(h.win.locator(".aos-attach-modal")).toHaveCount(0);
 });
 
 test("a runtime older than the app's offers aos upgrade, and runs it only when asked", async () => {
