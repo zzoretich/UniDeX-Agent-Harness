@@ -3,7 +3,7 @@
 //   1. the runtime upgrade, when the vault's runtime is behind the app's (the app's own dialog, attach.ts RuntimeModal;
 //      offered at every launch while it is behind, as before)
 //   2. Go local (local-first A9): the Go-local card, while `aos upgrade` left local-first pending
-//   3. Import (install-import B12): the Import sheet — PR 9's second stage plugs it in at IMPORT below
+//   3. Import (install-import B12): the Import sheet (ui/ImportSheet.ts), while the upgrade left `import` pending
 //   4. the welcome: the core tour on a new install (the wizard installed it, first launch), else What's new (C2, C10)
 //   5. Getting started, the checklist (the core tour opens it itself at its end)
 // The app's renderer hands off to it from attach.ts with what main knows (firstTime, installed, behind) and the runtime
@@ -14,10 +14,11 @@
 import { Modal } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import { readMigrations } from "../data/goLocal";
-import { goLocalDue, goLocalId, importDue, welcomeStep, whatsNewId, type LaunchInfo, type LaunchStep, type Welcome } from "../tour/launch";
+import { goLocalDue, goLocalId, importDue, importId, welcomeStep, whatsNewId, type LaunchInfo, type LaunchStep, type Welcome } from "../tour/launch";
 import { boldRuns, fillText, type TourContext } from "../tour/predicates";
 import { VIEW_TYPE_WORKBENCH, WorkbenchView } from "../views/WorkbenchView";
 import { GoLocalCard } from "./GoLocalCard";
+import { ImportSheet } from "./ImportSheet";
 import { dialogId } from "./spaces/SpaceDialogs";
 
 export type { LaunchInfo, LaunchStep } from "../tour/launch";
@@ -56,8 +57,12 @@ export async function runLaunchSequence(d: LaunchDeps): Promise<LaunchStep[]> {
     tour.rememberLaunch(goLocalId(vault));
   }
 
-  // 3. IMPORT (PR 9b): the Import sheet goes here, between Go local and the welcome, remembered as importId(vault).
-  if (importDue(migrations, tour.state(), vault)) show("import");
+  // 3. Import (install-import B12): the Import sheet, remembered for this vault once acted on or dismissed.
+  if (importDue(migrations, tour.state(), vault)) {
+    show("import");
+    await ImportSheet.ask(plugin, { runInTerm: (cmd) => workbench(plugin)?.runInTerm(cmd, { origin: "Import" }) });
+    tour.rememberLaunch(importId(vault));
+  }
 
   // 4. The welcome, then 5. Getting started.
   const welcome = welcomeStep(info, tour.state(), plugin.manifest.version);

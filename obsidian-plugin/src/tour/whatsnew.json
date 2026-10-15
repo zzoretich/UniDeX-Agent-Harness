@@ -17,10 +17,16 @@
           "steps": ["core.chief-of-staff"]
         },
         {
+          "id": "routine-engines",
+          "title": "Routines run where you choose",
+          "body": "A prompt routine names its engine: the model on this Mac (free, with a built-in agent that writes only where the routine says), Claude Code or Codex, each with its own model. A routine without one runs as before.",
+          "steps": ["routines.engine"]
+        },
+        {
           "id": "imported-history",
           "title": "Your Claude Code and Codex history",
-          "body": "`aos import` brings your CLAUDE.md and AGENTS.md rules, Claude Code's memories, both hosts' MCP servers and your past sessions into the vault, on the local model. Imported memories wait in Brain ▸ Review, one batch per host, until you keep them.",
-          "steps": ["brain-review.sessions"]
+          "body": "Your CLAUDE.md and AGENTS.md rules, Claude Code's memories, both hosts' MCP servers and your past sessions come into the vault, on the local model: an install from before 2.0 is asked once, and Settings ▸ Import (or `aos import`) brings them in any time. Imported memories wait in Brain ▸ Review, one batch per host, until you keep them.",
+          "steps": ["settings.import", "brain-review.sessions"]
         },
         {
           "id": "guided-tour",

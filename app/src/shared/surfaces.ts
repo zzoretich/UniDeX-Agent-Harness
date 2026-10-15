@@ -247,6 +247,15 @@ const importArgv = (a: readonly string[]): boolean => {
   return i === a.length && !(dry && accepted);
 };
 
+/**
+ * The launch sequence's Import sheet on the `migrate` surface (install-import B12), as obsidian-plugin/src/data/importModel.ts
+ * migrateImportArgs builds it: `migrate import --apply`, alone or with `--accept` and a JSON list of 1 to
+ * MAX_IMPORT_ACCEPT proposal ids (the import surface's own check). cli/migrations.js runs the import and records it.
+ */
+const migrateImportApply = (a: readonly string[]): boolean =>
+  a[0] === "migrate" && a[1] === "import" && a[2] === "--apply"
+  && (a.length === 3 || (a.length === 5 && a[3] === "--accept" && acceptList(a[4])));
+
 // What the Files tab and the note editor never touch: the runtime's caches and vendored scripts, dependency folders, and
 // every dot-path. The Files tree and the vault index never show a dot-path; refusing them also keeps a compromised page
 // from planting a host's project config in the vault (.claude/settings.json hooks, .mcp.json, .codex/, .git/hooks).
@@ -449,13 +458,20 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "migrate",
     label: "Go local",
-    source: "ui/GoLocalCard.ts (the launch sequence's Go local card, ui/launchSequence.ts) and views/SettingsTab.ts (Settings ▸ Local engine: Go local…, Undo) (local-first A9, tour C11)",
+    source: "ui/GoLocalCard.ts (the launch sequence's Go local card, ui/launchSequence.ts) and views/SettingsTab.ts (Settings ▸ Local engine: Go local…, Undo) (local-first A9, tour C11); ui/ImportSheet.ts with data/importer.ts (the launch sequence's Import sheet: its dry run, Import, Not now; install-import B12)",
     // `aos migrate local-first` (cli/migrations.js) writes through the runtime, never the page: provider and ai.* in
     // agenticos.json and brain/config.json (persona.model and persona.codexModel too with --chief), brain/routines/tick.md
     // only while it is a file a release shipped, its backup under brain/_index/migrations/, brain/_index/migrations.json,
-    // a notification when tick.md was kept, and the installed schedules re-rendered.
+    // a notification when tick.md was kept, and the installed schedules re-rendered. `aos migrate import --apply` runs
+    // the import as the `import` surface's `aos import` does (the same writes, the proposals in --accept created) and
+    // records it; `--decline` records the choice; the sheet's dry run writes nothing.
     writes: [],
-    spawns: [{ script: "cli/aos.js", args: /^migrate local-first (--apply( --chief)?|--decline|--undo) --json$/ }],
+    spawns: [
+      { script: "cli/aos.js", args: /^migrate local-first (--apply( --chief)?|--decline|--undo) --json$/ },
+      { script: "cli/aos.js", args: migrateImportApply },
+      { script: "cli/aos.js", args: /^migrate import --decline --json$/ },
+      { script: "cli/aos.js", args: /^import --from all --dry-run --json$/ },
+    ],
     // Added in 2.0; off by default until a live check on a 1.9 vault goes local and undoes it through this rule (the
     // card then names `aos migrate local-first --apply --chief` for the Code tab).
     verified: false,
@@ -463,7 +479,7 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "import",
     label: "Import",
-    source: "data/importer.ts (views/settings/ImportPanel.ts: Settings ▸ Import's Import again and Import older history; the dry run and Import of PR 9's Import sheet), data/importModel.ts importArgs (install-import B4, B7, B9)",
+    source: "data/importer.ts (views/settings/ImportPanel.ts: Settings ▸ Import's Import again and Import older history; the launch sequence's Import sheet runs through the migrate surface instead), data/importModel.ts importArgs (install-import B4, B7, B9)",
     // The runtime writes, never the page (cli/import.js → brain/scripts/lib/import/): memories with `reviewed: false` and
     // their MEMORY.md lines, brain/_index/import-state.json and mcp-servers.json, the workspaces named in --accept, and the
     // import-digest routine turned on and scheduled. It reads the hosts' own folders and never writes a host's config;

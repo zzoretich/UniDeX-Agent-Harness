@@ -2,8 +2,8 @@
 // tour steps "Show me" runs. The HUD selects the releases newer than the version this Mac last saw, up to the one it
 // runs (manifest.version, kept equal to the app's by bump-version, which refuses a version with no release here). The
 // launch sequence (ui/launchSequence.ts) shows them as a card after an update; Help ▸ What's new keeps the history.
-// 2.0.0's entries: background work on your Mac, the Chief of Staff's models, your imported history, the tour. Still to
-// write with PR 9's second stage: Sessions ▸ History (PR 7b) and routine engines (PR 4), once those are on main.
+// 2.0.0's entries: background work on your Mac, the Chief of Staff's models, routine engines, your imported history,
+// the tour; Sessions ▸ History arrives with its own PR (7b).
 // Pure, so node:test (and tools/, which reads the JSON) can load it.
 import raw from "./whatsnew.json";
 

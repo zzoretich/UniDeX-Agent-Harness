@@ -188,6 +188,23 @@ export function importArgs(req: ImportRequest, o: { dryRun?: boolean; json?: boo
   return args;
 }
 
+/**
+ * The launch sequence's Import sheet (install-import B12) settles the upgrade's `import` migration in one call through
+ * the `migrate` surface: `aos migrate import --apply [--accept <json list>]` runs the import (every kind, both hosts,
+ * 90 days; its progress lines are `aos import`'s) and records it applied, or `aos migrate import --decline --json`
+ * records the choice. The accepted proposals are checked as importArgs checks them; throws before anything runs.
+ */
+export function migrateImportArgs(action: "apply" | "decline", accept: readonly string[] = []): string[] {
+  if (action === "decline") return ["migrate", "import", "--decline", "--json"];
+  const ids = [...new Set(accept)];
+  if (ids.length > MAX_ACCEPT) throw new Error(`import: at most ${MAX_ACCEPT} workspaces at once`);
+  if (ids.some((id) => !ACCEPT_ID.test(id))) throw new Error("import: a workspace proposal is named by its folder");
+  return ["migrate", "import", "--apply", ...(ids.length ? ["--accept", JSON.stringify(ids)] : [])];
+}
+
+/** The sheet's request as `aos import` would run it: what its progress counts against (importSteps). */
+export const MIGRATE_IMPORT_REQUEST: Pick<ImportRequest, "from" | "only"> = { from: [...IMPORT_HOSTS], only: [...IMPORT_KINDS] };
+
 // ── progress (the lines a run prints, `- <phase> …`) ──
 
 /** How many progress lines a run prints: instructions and memories per host, then projects, mcp and sessions once. */
