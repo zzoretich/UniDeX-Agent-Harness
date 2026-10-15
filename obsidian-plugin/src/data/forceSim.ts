@@ -8,6 +8,13 @@ export interface SimParams {
   damping: number;
 }
 
+/**
+ * Softens repulsion at close range (px²): two nodes a pixel apart push with repulsion / (d² + SOFTEN) rather than
+ * repulsion / d², so a near-collision can no longer fling a node thousands of pixels away and leave it outside the fitted
+ * view (a 405- or a 420-memory map did, every time). Beyond about 15 px it changes the force by under a tenth.
+ */
+export const SOFTEN = 25;
+
 export const DEFAULT_PARAMS: SimParams = {
   repulsion: 1600,
   spring: 0.045,
@@ -15,6 +22,18 @@ export const DEFAULT_PARAMS: SimParams = {
   centerGravity: 0.0015,
   damping: 0.84,
 };
+
+/**
+ * The push between two overlapping nodes `i` and `j` (node indices): a direction of length about 1 fixed by the pair,
+ * pointing opposite ways for i and for j, so the two separate instead of being kicked the same way.
+ */
+export function overlapDirection(i: number, j: number): [number, number] {
+  const lo = Math.min(i, j);
+  const hi = Math.max(i, j);
+  const angle = (((lo * 0.6180339887 + hi * 0.4142135624) % 1) + 1) % 1 * 2 * Math.PI;
+  const sign = i < j ? 1 : -1;
+  return [sign * Math.cos(angle), sign * Math.sin(angle)];
+}
 
 export function tick(graph: Graph, p: SimParams = DEFAULT_PARAMS): void {
   const { nodes, edges } = graph;
@@ -30,12 +49,12 @@ export function tick(graph: Graph, p: SimParams = DEFAULT_PARAMS): void {
       let dy = a.y - b.y;
       let d2 = dx * dx + dy * dy;
       if (d2 < 1) {
-        // jitter when nodes overlap
-        dx = (Math.random() - 0.5) * 2;
-        dy = (Math.random() - 0.5) * 2;
+        // Nodes on top of each other: push them apart along a direction fixed by the pair, opposite for each node, so the
+        // layout is the same on every run (Math.random made the Map, and its test, differ from run to run).
+        [dx, dy] = overlapDirection(i, j);
         d2 = dx * dx + dy * dy + 1;
       }
-      const f = p.repulsion / d2;
+      const f = p.repulsion / (d2 + SOFTEN);
       const inv = 1 / Math.sqrt(d2);
       a.vx += dx * inv * f;
       a.vy += dy * inv * f;
