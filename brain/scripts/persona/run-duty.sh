@@ -171,7 +171,7 @@ if [ -n "$SKIP" ]; then
     echo ""
     echo "## $(date +%H:%M) — duty: $DUTY"
     echo "- status: SKIPPED waiting-for-host"
-    echo "- did: nothing — no host can start it ($SKIP_DETAIL); sign in to Claude Code or Codex, or turn one on with aos init --host"
+    echo "- did: nothing — no host can start it ($SKIP_DETAIL); sign in to Claude Code or Codex, or add one with aos hosts add claude|codex"
   } >> "$JOURNAL"
   flag_once "- [ ] $TODAY Chief of Staff waiting for a host — duties skipped ($SKIP_DETAIL)"
   exit 0

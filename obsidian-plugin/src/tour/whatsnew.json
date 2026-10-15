@@ -37,7 +37,7 @@
         {
           "id": "guided-tour",
           "title": "A guided tour, Getting started and Help",
-          "body": "Help (the ? at the rail's foot, ⌘P or the app's Help menu) has the welcome tour, a tour of the tab you are on and this list. Each tab offers its own tour on your first visit, and Getting started ticks first steps as you do them.",
+          "body": "Help (the ? at the rail's foot, or the app's Help menu; ⌘P lists the same) has the welcome tour, a tour of the tab you are on and this list. Each tab offers its own tour on your first visit, and Getting started ticks first steps as you do them.",
           "steps": ["help.menu"]
         }
       ]

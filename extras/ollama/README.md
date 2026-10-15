@@ -1,6 +1,6 @@
 # extras/ollama
 
-Optional supervisors and helpers for the local Ollama that `aos init` requires to be installed.
+Optional supervisors and helpers for the local Ollama (recommended, not required: `aos init` warns when it is missing, and background work waits for it). The Ollama app keeps its own server running; these are for a bare `ollama` CLI.
 Nothing here is installed by `aos init`; the product's hooks and MCP server never call these files.
 
 | File | What it is |
@@ -15,10 +15,12 @@ Nothing here is installed by `aos init`; the product's hooks and MCP server neve
 vault the same way every script does (`AOS_VAULT`, then `agenticos.json`). It talks to
 Ollama directly and does not consult the provider setting.
 
-Models the defaults expect on Ollama: `qwen3.5:9b` (workhorse) and `qwen3-embedding:0.6b`
-(embedder). Override with `BRAIN_MODEL` and `BRAIN_EMBEDDER`. Pull both with
-`sh extras/ollama/model-pull.sh`. The reasoner role (`/ask-brain --local`, `/reflect-week`,
-`/consolidate-memory`, the Workbench's Chat tab) is a hosted model, not one of these Ollama tags.
+Models: under provider `local` (a new install's default) the workhorse follows the Mac's memory, `qwen3.5:4b` under
+12 GB, else `qwen3.5:9b` (`local.model` names another), with `qwen3-embedding:0.6b` as the embedder; `aos local pull`
+downloads them. `model-pull.sh` pulls the two default tags, `qwen3.5:9b` and `qwen3-embedding:0.6b` (override with
+`BRAIN_MODEL` and `BRAIN_EMBEDDER`). The reasoner role (`/ask-brain --local`, `/reflect-week`, `/consolidate-memory`,
+Vault chat) is a hosted model, not one of these tags, except under provider `local`, where each follows its `ai.*`
+switch and runs on the local model by default.
 It runs on Claude (`reasoner.model`, default `claude-opus-5`) through your Claude Code login, or
 on Codex (`reasoner.codexModel`) when Codex is a host and logged in; Claude comes first unless
 `provider` is `codex`. Only when neither host is available, or the reasoner's daily cap is

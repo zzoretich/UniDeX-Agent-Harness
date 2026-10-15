@@ -66,7 +66,7 @@ function targetHosts(userCfg, host = null) {
   const on = H.enabledHosts(userCfg);
   if (on.length) return on;
   // SL-R08: only a config that predates the hosts block means Claude Code; one that enables no host means none.
-  if (userCfg && isPlainObject(userCfg.hosts)) throw new Refusal('agenticos.json enables no host; enable one first (aos init --host claude|codex|both)');
+  if (userCfg && isPlainObject(userCfg.hosts)) throw new Refusal('agenticos.json enables no host; add one first (aos hosts add claude|codex)');
   return ['claude'];
 }
 

@@ -302,8 +302,8 @@ test("resumeTarget shows each resumable:false reason the scan recorded", () => {
 test("resumeTarget: host off is disabled with the aos init fix, also when the choices have no row for it; not logged in with its reason (D31)", () => {
   const s = snap([row(ID1), row(ID2, { host: "codex", format: "codex" })]);
   assert.deepEqual(resumeTarget({ workspace: "site", id: ID1 }, s, choices({ claude: "off" }), CTX),
-    { kind: "disabled", disabled: true, reason: "Claude Code is off on this machine: run aos init --host claude" });
-  assert.equal(hostOffText("codex"), "Codex is off on this machine: run aos init --host codex");
+    { kind: "disabled", disabled: true, reason: "Claude Code is off on this machine: run aos hosts add claude" });
+  assert.equal(hostOffText("codex"), "Codex is off on this machine: run aos hosts add codex");
   assert.deepEqual(resumeTarget({ workspace: "site", id: ID2 }, s, choices().filter((c) => c.host !== "codex"), CTX),
     { kind: "disabled", disabled: true, reason: hostOffText("codex") });
   assert.deepEqual(resumeTarget({ workspace: "site", id: ID2 }, s, choices({ codex: "out" }), CTX), { kind: "disabled", disabled: true, reason: "Codex is not logged in" });
