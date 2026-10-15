@@ -46,6 +46,32 @@ test('resolveRunner: <kind>.runner and AOS_RUNNER pin a host; AOS_NO_*, AOS_CODE
   assert.equal(H.resolveRunner({ cfg: both, kind: 'routines', env: { ...ENV, PERSONA_CLAUDE_BIN: '/nowhere/claude' }, lookup: none, candidates: false }).host, 'claude', 'PERSONA_CLAUDE_BIN is a persona knob only');
 });
 
+// local-first A6: a routine's own `engine` pins the host; per host mode: Claude only, Codex only, both, no host.
+test('resolveRunner: host pins the routine\'s engine — that host or none, whatever routines.runner or AOS_RUNNER say', () => {
+  const r = (cfg, host, env = ENV) => H.resolveRunner({ cfg, kind: 'routines', env, lookup: none, candidates: false, host });
+  const claudeOnly = { hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: false, bin: CODEX } }, routines: { codexModel: 'gpt-6-sol' } };
+  const codexOnly = { hosts: { claude: { enabled: false, bin: CLAUDE }, codex: { enabled: true, bin: CODEX, home: '/codex-home' } }, routines: { codexModel: 'gpt-6-sol' } };
+  const noHost = { hosts: { claude: { enabled: false }, codex: { enabled: false } } };
+  // both: each engine gets its own host, even against routines.runner and AOS_RUNNER
+  const pinnedOther = { ...both, routines: { runner: 'claude' } };
+  assert.deepEqual(r(pinnedOther, 'codex', { ...ENV, AOS_RUNNER: 'claude' }), { host: 'codex', bin: CODEX, model: 'gpt-5-mini', home: null, reason: 'engine=codex' });
+  assert.deepEqual(r({ ...both, routines: { runner: 'codex' } }, 'claude'), { host: 'claude', bin: CLAUDE, model: null, home: null, reason: 'engine=claude' });
+  // Claude only: engine codex is refused, never moved to Claude
+  assert.deepEqual(r(claudeOnly, 'claude'), { host: 'claude', bin: CLAUDE, model: null, home: null, reason: 'engine=claude' });
+  assert.deepEqual(r(claudeOnly, 'codex'), { host: null, bin: null, model: null, home: null, reason: 'codex is not an enabled host' });
+  // Codex only: the routine's Codex model default and the recorded home; engine claude is refused
+  assert.deepEqual(r(codexOnly, 'codex'), { host: 'codex', bin: CODEX, model: 'gpt-6-sol', home: '/codex-home', reason: 'engine=codex' });
+  assert.equal(r(codexOnly, 'claude').reason, 'claude is not an enabled host');
+  // no host: both refused
+  assert.equal(r(noHost, 'claude').host, null);
+  assert.equal(r(noHost, 'codex').reason, 'codex is not an enabled host');
+  // enabled but its CLI is gone: that host's reason, not the other host
+  const gone = { hosts: { claude: { enabled: true, bin: '/nowhere/claude' }, codex: { enabled: true, bin: CODEX } } };
+  assert.deepEqual(r(gone, 'claude'), { host: null, bin: null, model: null, home: null, reason: 'claude CLI not found' });
+  assert.equal(r(both, 'claude', { ...ENV, AOS_NO_CLAUDE: '1' }).reason, 'claude CLI not found');
+  assert.equal(r(both, 'local').reason, 'no such host local');
+});
+
 test('runnerArgs: the claude recipe is unchanged; codex takes the prompt on stdin with the sandbox and hooks off', () => {
   const spec = { prompt: 'do it', system: 'SYS', model: 'haiku', effort: 'high', tools: 'Read,Glob', budget: 1.5, outFile: '/tmp/x.txt' };
   const c = H.runnerArgs('claude', spec);

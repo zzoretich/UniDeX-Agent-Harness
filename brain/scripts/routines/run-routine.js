@@ -12,7 +12,16 @@
  *   prompt   the headless runner (lib/headless.js, codex-parity D4): `claude -p <body> --model … --effort … --allowedTools
  *            <routines.tools> --max-budget-usd …`, or `codex exec -` with the body on stdin when routines.runner says so
  *            or no claude is installed (spend then estimated from the usage block); gated by routines.perDayUsd over
- *            today's routine:* ledger rows; the run is ledgered as routine:<slug>
+ *            today's routine:* ledger rows; the run is ledgered as routine:<slug>. That is a routine with no `engine`, and
+ *            it stays exactly so. A routine that names its engine (local-first A6) runs there:
+ *              engine: claude | codex  that host's CLI, the same recipe, `model` a model of that host; a host that is not
+ *                                      enabled, or whose CLI is missing, is a failed run with the reason — never the
+ *                                      other host
+ *              engine: local           the built-in local agent (lib/local-agent.js, A7) on the local engine, in this
+ *                                      process: no cap (it spends nothing), one ledger row per run (provider ollama,
+ *                                      usd 0; local-first §4) and one local-usage count per model turn (A18). The engine
+ *                                      down or the model not pulled is a skip with reason `local-down` (nothing spent;
+ *                                      the next fire retries). The tool calls and the final message go to the log.
  *   command  argv[0] argv.slice(1) — spawned directly (no shell), cwd = vault; `{{NODE}}` in an argv entry expands to
  *            this process.execPath and `{{VAULT}}` to the vault, so a template routine needs no per-machine rendering
  * Always: one entry in brain/_index/routines.json (lastRunAt, lastExit, lastCostUsd, lastDurationMs, failStreak,
@@ -50,7 +59,9 @@ function defaultDeps() {
     spawn: (cmd, args, opts) => spawnSync(cmd, args, opts),
     recordSpend: ledger.recordSpend,
     routineSpendToday: ledger.routineSpendToday,
-    runner: (cfg) => resolveRunner({ cfg, kind: 'routines' }),
+    runner: (cfg, host) => resolveRunner({ cfg, kind: 'routines', host }),
+    resolveLocal: (cfg, model) => require('../lib/local-agent.js').resolveLocal({ cfg, model }),
+    localAgent: (opts) => require('../lib/local-agent.js').runLocalAgent(opts),
     parseClaudeJson, rowFrom, rowFromCodex, parseCodexEvents,
     now: () => new Date(),
     env: process.env,
@@ -79,12 +90,14 @@ function promptArgs(routine, cfg) {
   return runnerArgs('claude', promptSpec(routine, cfg)).argv;
 }
 
-/** Older injected deps name a claudeBin; the runner seam (codex-parity D4) supersedes it. */
-function runnerOf(deps, cfg) {
-  if (typeof deps.runner === 'function') return deps.runner(cfg);
-  const bin = typeof deps.claudeBin === 'function' ? deps.claudeBin() : null;
-  return bin ? { host: 'claude', bin, model: null, reason: 'claudeBin' } : { host: null, bin: null, model: null, reason: 'claude CLI not found' };
+/** Older injected deps name a claudeBin; the runner seam (codex-parity D4) supersedes it. `host` pins the routine's engine. */
+function runnerOf(deps, cfg, host = null) {
+  if (typeof deps.runner === 'function') return deps.runner(cfg, host);
+  const bin = host !== 'codex' && typeof deps.claudeBin === 'function' ? deps.claudeBin() : null;
+  return bin ? { host: 'claude', bin, model: null, reason: 'claudeBin' } : { host: null, bin: null, model: null, reason: `${host || 'claude'} CLI not found` };
 }
+
+const HOST_NAMES = { claude: 'Claude Code', codex: 'Codex' };
 
 /** `{{NODE}}` → the running node, `{{VAULT}}` → the vault. Only these two; anything else is literal. */
 function expandArgv(a, deps) {
@@ -112,17 +125,26 @@ function plan(routine, cfg, deps) {
     return { cmd: 'sh', args: [path.join(deps.vault, 'brain', 'scripts', 'persona', 'run-duty.sh'), routine.slug], env, feature: `duty:${routine.slug}` };
   }
   if (routine.kind === 'prompt') {
+    const feature = `routine:${routine.slug}`;
+    // local-first A6/A7: the local agent, in this process; it spends nothing, so no daily cap.
+    if (routine.engine === 'local') return { local: true, feature, runner: 'ollama' };
     const perDay = n(rc.perDayUsd, 6);
     const spent = deps.routineSpendToday();
     if (spent >= perDay) return { skip: `daily cap reached (${spent.toFixed(2)} of ${perDay} USD)` };
-    const r = runnerOf(deps, cfg);
+    const pinned = routine.engine === 'claude' || routine.engine === 'codex' ? routine.engine : null;
+    const r = runnerOf(deps, cfg, pinned);
+    if (!r.host && pinned) {
+      const fix = /enabled/.test(r.reason) ? `add it (aos hosts add ${pinned}) or pick another engine` : `install ${HOST_NAMES[pinned]} or pick another engine`;
+      return { fail: `engine ${pinned}: ${r.reason} — ${fix}`, feature, runner: pinned };
+    }
     if (!r.host) return { error: `no runner for prompt routines (${r.reason}) — install claude or codex, or set routines.runner` };
     const spec = promptSpec(routine, cfg);
     // A routine's `model` is a Claude alias by contract; the codex runner takes codex.model (null = the Codex default).
-    const model = r.host === 'codex' ? r.model : spec.model;
+    // A routine that names engine codex names a Codex model (local-first A6).
+    const model = r.host === 'codex' ? (pinned === 'codex' && routine.model ? routine.model : r.model) : spec.model;
     const outFile = r.host === 'codex' ? path.join(require('os').tmpdir(), `aos-routine-${routine.slug}-${process.pid}.txt`) : null;
     const { argv, stdin } = runnerArgs(r.host, { ...spec, model, outFile });
-    return { cmd: r.bin, args: argv, stdin, env: headlessEnv(deps.env, { codexHome: r.home }), feature: `routine:${routine.slug}`, runner: r.host, model, outFile };
+    return { cmd: r.bin, args: argv, stdin, env: headlessEnv(deps.env, { codexHome: r.home }), feature, runner: r.host, model, outFile };
   }
   const argv = routine.argv.map(a => expandArgv(a, deps));
   return { cmd: argv[0], args: argv.slice(1), env: { ...deps.env }, feature: null };
@@ -137,6 +159,20 @@ async function runRoutine(slug, { trigger = 'scheduled', dryRun = false, deps = 
   const cfg = deps.config();
   const p = plan(routine, cfg, deps);
   if (p.error) { deps.stderr(`run-routine: ${p.error}\n`); return 1; }
+  if (dryRun && p.local) {
+    const { localCfg } = require('../sdk/lib/local-config.js');
+    const lc = localCfg(cfg);
+    deps.stdout(['local-agent', `engine=${lc.engine}`, `url=${lc.url}`, `model=${routine.model || lc.workhorse.tag}`, `maxTurns=${routine.maxTurns || 24}`, `writes=${(routine.writes || []).join(',')}`, `<${slug} body>`].join('\n') + '\n');
+    return 0;
+  }
+  if (dryRun && p.fail) { deps.stdout(`run-routine: ${slug} cannot run — ${p.fail}\n`); return 1; }
+  let local = null;
+  if (p.local) {
+    // Is the local engine up with the model pulled? Down → a skip, nothing spent; the next fire retries (local-first A3).
+    const r = await deps.resolveLocal(cfg, routine.model || null);
+    if (r.ok) local = r;
+    else p.skip = `${r.reason}: ${r.detail}`;
+  }
   if (p.skip) {
     deps.stdout(`run-routine: ${slug} skipped — ${p.skip}\n`);
     deps.store.patchState(slug, (cur) => ({ ...cur, lastSkippedAt: deps.now().toISOString(), lastSkipReason: p.skip }));
@@ -156,8 +192,33 @@ async function runRoutine(slug, { trigger = 'scheduled', dryRun = false, deps = 
   const timeoutMs = n(routine.timeoutSec, DEFAULT_TIMEOUT_SEC) * 1000;
 
   let exit = 1, costUsd = null, lastError = null;
+  const head = () => `[${startedIso}] routine=${slug} kind=${routine.kind}${routine.engine ? ` engine=${routine.engine}` : ''} trigger=${trigger} exit=${exit}${costUsd != null ? ` usd=${costUsd}` : ''}`;
   const run = async (report) => {
     report.provider = routine.kind === 'prompt' ? (p.runner || 'claude') : routine.kind === 'duty' ? 'persona' : 'local';
+    if (p.fail) {
+      // A routine whose engine cannot run here: a failed run with the reason, so the tab and the tick see it.
+      exit = 1;
+      lastError = p.fail;
+      fs.appendFileSync(logFile, `${head()}\n${p.fail}\n`);
+      report.counts.exit = exit;
+      report.status = 'error'; report.reason = lastError;
+      return;
+    }
+    if (p.local) {
+      const res = await deps.localAgent({ routine, cfg, vault: deps.vault, lc: local.lc, model: local.model, timeoutMs });
+      exit = res.status === 'ok' ? 0 : res.status === 'timeout' ? 124 : 1;
+      if (exit !== 0) lastError = res.error;
+      // One ledger row per run, never per call (local-first §4 with A18): provider ollama, nothing spent, the tokens.
+      deps.recordSpend({ feature: p.feature, provider: 'ollama', model: res.model, usd: 0, inputTokens: res.usage.inputTokens, outputTokens: res.usage.outputTokens, ms: res.ms });
+      costUsd = 0;
+      const body = [`engine=${res.engine} model=${res.model} turns=${res.turns} tools=${res.toolCalls}${res.wrote.length ? ` wrote=${res.wrote.join(',')}` : ''}`, ...res.journal];
+      if (res.final) body.push('--- final ---', res.final.replace(/\s+$/, ''));
+      if (exit !== 0) body.push(`--- error ---`, String(lastError));
+      fs.appendFileSync(logFile, `${head()}\n${body.join('\n')}\n`);
+      Object.assign(report.counts, { exit, usd: 0, turns: res.turns, tools: res.toolCalls, refused: res.refused.length });
+      if (exit !== 0) { report.status = 'error'; report.reason = lastError; }
+      return;
+    }
     let res;
     try {
       // The codex runner takes the prompt on stdin (then closed: an open non-TTY stdin blocks `codex exec`).
@@ -185,8 +246,7 @@ async function runRoutine(slug, { trigger = 'scheduled', dryRun = false, deps = 
       costUsd = row.usd;
       if (json && json.is_error) { exit = exit || 1; lastError = lastError || tail(json.result); }
     }
-    const stamp = `[${startedIso}] routine=${slug} kind=${routine.kind} trigger=${trigger} exit=${exit}${costUsd != null ? ` usd=${costUsd}` : ''}`;
-    fs.appendFileSync(logFile, `${stamp}\n${stdout}${stdout && !stdout.endsWith('\n') ? '\n' : ''}${stderr ? `--- stderr ---\n${stderr}${stderr.endsWith('\n') ? '' : '\n'}` : ''}`);
+    fs.appendFileSync(logFile, `${head()}\n${stdout}${stdout && !stdout.endsWith('\n') ? '\n' : ''}${stderr ? `--- stderr ---\n${stderr}${stderr.endsWith('\n') ? '' : '\n'}` : ''}`);
     report.counts.exit = exit;
     if (costUsd != null) report.counts.usd = costUsd;
     if (exit !== 0) { report.status = 'error'; report.reason = lastError; }
