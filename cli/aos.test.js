@@ -934,6 +934,32 @@ test('upgrade from before 2.0.0 adds the import-digest routine (install-import B
   assert.ok(!fs.existsSync(path.join(dir, 'import-digest.md')));
 });
 
+test('upgrade from before 2.0.0 records local-first and import pending and, with no TTY, prints the commands (local-first A9, B12)', () => {
+  const sb = initialized();
+  const cfgFile = path.join(sb.cfg, 'agenticos.json');
+  const recorded = (version) => fs.writeFileSync(cfgFile, JSON.stringify({ ...readJson(cfgFile), version }, null, 2));
+  const migrations = path.join(sb.vault, 'brain', '_index', 'migrations.json');
+  recorded('1.9.0');
+  const r = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /^- record what this release asks you once \(aos migrate\)\n {3}pending: local-first, import$/m);
+  assert.deepEqual(readJson(migrations).migrations.map((m) => [m.id, m.state, m.from]), [['local-first', 'pending', '1.9.0'], ['import', 'pending', '1.9.0']]);
+  assert.match(r.stdout, /aos migrate local-first --apply --chief {3}go local/);
+  assert.match(r.stdout, /^ {2}aos import {2,}/m);
+  assert.equal(readJson(cfgFile).provider, 'none', 'nothing applied without an answer');
+  // The next upgrade records nothing new and still says what is waiting; from 2.0.0 nothing is recorded at all.
+  const again = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.match(again.stdout, /^ {3}nothing new$/m);
+  assert.match(again.stdout, /aos migrate local-first --decline/);
+  fs.rmSync(migrations);
+  recorded('2.0.0');
+  const fresh = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(fresh.status, 0, fresh.stderr + fresh.stdout);
+  assert.ok(!fs.existsSync(migrations));
+  assert.match(fresh.stdout, /^ {3}nothing new$/m);
+  assert.doesNotMatch(fresh.stdout, /aos migrate local-first|aos import/);
+});
+
 // A marketplace added from a local checkout (`aos init --from-local`) has no clone under plugins/marketplaces/: plain
 // `aos upgrade` vendors from the directory the claude CLI reports and refreshes the plugin from it.
 test('plain aos upgrade through the vendored CLI follows a directory marketplace, and refreshes the plugin from it', () => {
