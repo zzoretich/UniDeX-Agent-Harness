@@ -380,17 +380,14 @@ test('on battery the local pass waits (local.onBattery defer); run, --force and 
   assert.equal(sk(lcfg(), { power: () => false }), null, 'the graph budget is spend; a local pass spends nothing');
 });
 
-test('power.js: pmset on macOS, mains supplies on Linux, and false whenever it cannot tell', () => {
+test('power.js as the graph pass uses it: deferOnBattery takes a caller\'s own answer; run never defers', () => {
   const { onBattery, deferOnBattery } = require('../lib/power.js');
   const pm = (stdout, status = 0) => () => ({ status, stdout });
   assert.equal(onBattery({ platform: 'darwin', exec: pm("Now drawing from 'Battery Power'\n -InternalBattery-0 80%") }), true);
   assert.equal(onBattery({ platform: 'darwin', exec: pm("Now drawing from 'AC Power'\n") }), false);
-  assert.equal(onBattery({ platform: 'darwin', exec: () => ({ error: new Error('ENOENT') }) }), false);
-  const sys = (files) => ({ platform: 'linux', readdir: () => Object.keys(files), readFile: (p) => { const [n, f] = p.split('/').slice(-2); if (!files[n] || files[n][f] === undefined) throw new Error('ENOENT'); return files[n][f]; } });
-  assert.equal(onBattery(sys({ AC: { type: 'Mains\n', online: '0\n' }, BAT0: { type: 'Battery\n' } })), true);
-  assert.equal(onBattery(sys({ AC: { type: 'Mains\n', online: '1\n' } })), false);
-  assert.equal(onBattery(sys({ BAT0: { type: 'Battery\n' } })), false, 'no mains supply to read: cannot tell');
   assert.equal(onBattery({ platform: 'win32' }), false);
   assert.equal(deferOnBattery({ local: { onBattery: 'run' } }, { onBattery: () => true }), false);
   assert.equal(deferOnBattery({}, { onBattery: () => true }), true, 'defer is the default');
+  assert.equal(deferOnBattery({}, { onBattery: () => false }), false);
 });
+

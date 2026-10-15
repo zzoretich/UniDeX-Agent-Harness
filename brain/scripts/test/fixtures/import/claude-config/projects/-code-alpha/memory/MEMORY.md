@@ -1,0 +1,2 @@
+- [Prefers small pull requests](prefers-small-prs.md) — one change per pull request
+- [Staging deploy](staging-deploy.md) — how staging is deployed

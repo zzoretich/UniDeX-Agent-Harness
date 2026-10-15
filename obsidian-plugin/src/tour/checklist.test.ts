@@ -60,7 +60,7 @@ test("detectors read caches only: a session row, a review verb, a routine of you
   assert.equal(hasSession('{"id":"sess-abc-s2"}'), true);
   assert.equal(hasReview('{"action":"written","slug":"a"}'), false);
   assert.equal(hasReview('{"action":"written"}\n{"action":"kept","slug":"a"}'), true);
-  assert.equal(hasOwnRoutine(["brain/routines/README.md", "brain/routines/briefing.md", "brain/routines/sitrep.md"]), false);
+  assert.equal(hasOwnRoutine(["brain/routines/README.md", "brain/routines/briefing.md", "brain/routines/import-digest.md", "brain/routines/sitrep.md"]), false);
   assert.equal(hasOwnRoutine(["brain/routines/monitor.md", "brain/routines/standup-notes.md"]), true);
 });
 

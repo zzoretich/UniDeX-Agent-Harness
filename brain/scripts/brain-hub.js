@@ -243,7 +243,11 @@ function writtenAt(vault) {
   return out;
 }
 
-/** Unreviewed live memories grouped by the session that wrote them, newest first (D3). */
+// What the history import writes (install-import B5): one Review batch per host, whatever session or day each came from.
+const IMPORT_SOURCE = /^import:(claude|codex)$/;
+const IMPORT_TITLE = { claude: 'Imported from Claude Code', codex: 'Imported from Codex' };
+
+/** Unreviewed live memories grouped by the session that wrote them, newest first (D3); imported ones by host (B5). */
 function buildBatches(live, vault, cfg) {
   const titles = sessionTitles(vault, { cfg });
   const lead = new Map(live.map((m) => [m.path, m.title]));
@@ -252,8 +256,18 @@ function buildBatches(live, vault, cfg) {
   for (const m of live) {
     if (m.reviewed !== 'false') continue;
     const w = trail.get(`${m.type}/${m.slug}`);
-    const session = m.session || (w && w.session) || null;
     const at = (w && w.ts) || m.created || '';
+    const imported = IMPORT_SOURCE.exec(m.source || '');
+    if (imported) {
+      const key = m.source;
+      const g = groups.get(key) || { key, session: null, host: imported[1], title: IMPORT_TITLE[imported[1]], at: '', paths: [], when: [], imported: true };
+      g.paths.push(m.path);
+      g.when.push(at);
+      if (at > g.at) g.at = at;
+      groups.set(key, g);
+      continue;
+    }
+    const session = m.session || (w && w.session) || null;
     const real = session && /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(session);
     const key = real ? session : `${session || 'none'}:${String(at).slice(0, 10)}`;
     const g = groups.get(key) || { key, session: real ? session : null, host: null, title: null, at: '', paths: [], when: [] };
@@ -265,9 +279,9 @@ function buildBatches(live, vault, cfg) {
   const out = [];
   for (const g of groups.values()) {
     const info = g.session ? titles.get(g.session) : null;
-    g.host = info ? info.host : null;
+    if (!g.imported) g.host = info ? info.host : null;
     const day = String(g.at).slice(0, 10) || 'undated';
-    g.title = (info && info.title) || (g.session ? `Session ${g.session.slice(0, 8)} · ${day}` : g.key.startsWith('in-session') ? `In-session wrap · ${day}` : `Wrap · ${day}`);
+    g.title = g.imported ? g.title : (info && info.title) || (g.session ? `Session ${g.session.slice(0, 8)} · ${day}` : g.key.startsWith('in-session') ? `In-session wrap · ${day}` : `Wrap · ${day}`);
     const order = g.paths.map((p, i) => [p, g.when[i]]).sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] < b[0] ? -1 : 1));
     // `lead`: the first memory's title, so sessions that share one custom name still read apart in Review.
     out.push({ key: g.key, session: g.session, host: g.host, title: g.title, lead: lead.get(order[0][0]) || null, at: g.at, paths: order.map(([p]) => p) });

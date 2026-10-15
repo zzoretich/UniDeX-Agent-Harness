@@ -6,7 +6,9 @@
  * ported verbatim (JS-ified); the two writers must stay behaviorally identical.
  *
  * P4 additions on top of the port: `source`, `session`, `reviewed: false`
- * frontmatter keys, emitted only when `source` is provided.
+ * frontmatter keys, emitted only when `source` is provided. The importer adds
+ * `origin` (install-import B8: the host file a memory came from, as `~/…`),
+ * emitted only when given; without it the output is the plugin writer's.
  */
 const fs = require('fs');
 const path = require('path');
@@ -43,7 +45,13 @@ function deriveTitle(text, maxChars = 60) {
   return single.slice(0, maxChars).trimEnd();
 }
 
-function writeMemory({ type, slug, title, description, body, source, session }) {
+/** A frontmatter value quoted when YAML would read it as something else (memory-ops yamlValue's rule). */
+function yamlScalar(v) {
+  const s = String(v).replace(/[\r\n]+/g, ' ').trim();
+  return /^[-?:,[\]{}#&*!|>'"%@`~\s]|\s$|:$|: | #|^(?:true|false|yes|no|on|off|null)$|^[-+]?[\d.]+$/i.test(s) ? JSON.stringify(s) : s;
+}
+
+function writeMemory({ type, slug, title, description, body, source, session, origin }) {
   const resolvedTitle = title || deriveTitle(description);
   const s = slug || slugify(title || description || 'memory');
   const rel = `brain/memory/${type}/${s}.md`;
@@ -52,7 +60,7 @@ function writeMemory({ type, slug, title, description, body, source, session }) 
   if (fs.existsSync(abs)) throw new Error(`memory already exists: ${rel}`);
 
   const today = new Date().toISOString().slice(0, 10);
-  const autoKeys = source ? `source: ${source}\nsession: ${session ?? 'unknown'}\nreviewed: false\n` : '';
+  const autoKeys = source ? `source: ${source}\nsession: ${session ?? 'unknown'}\nreviewed: false\n${origin ? `origin: ${yamlScalar(origin)}\n` : ''}` : '';
   const doc = `---\ntype: memory\ntags: [memory/${type}, status/active]\ncreated: ${today}\nupdated: ${today}\n${autoKeys}---\n\n# ${resolvedTitle}\n\n${body.trim()}\n`;
 
   fs.mkdirSync(path.dirname(abs), { recursive: true });

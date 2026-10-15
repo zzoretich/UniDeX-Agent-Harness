@@ -11,6 +11,7 @@
  *   aos doctor · aos status · aos provider [local|auto|ollama|claude|codex|none] · aos local [status | pull | use <model>] · aos graph [status | build [--semantic] | on | off | semantic on|off|auto]
  *   aos upgrade [--from-local <repo-dir>] · aos uninstall [--host claude|codex] [--keep-vault] [--yes]
  *   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes] · aos cost [enable [--budget <usd>] [--yes] | disable]
+ *   aos import [--from claude|codex|all] [--since 90d|all] [--only …] [--accept <json>] [--dry-run] [--json] · aos hosts add <claude|codex>
  *
  * Exit codes: 0 ok · 1 a check failed · 2 usage.
  * Runs from the repo checkout (`node cli/aos.js …`, `npm run setup`), from a release tree (the AgenticOS Workbench app's
@@ -73,6 +74,8 @@ const USAGE = `usage:
              | notdup <path> <path> [--json] | fix sources|types|descriptions|index|drafts [--dry-run] [--expect <hash>] [--json]
              | merge-draft <path> <path>… [--estimate] [--json] | merge <path> <path>… --into <json> --expect <hash>,… [--json]
              | unmerge <path> --expect <hash> [--json] | sweep [<path>…] [--estimate] [--json] | sweep dismiss <id> [--json]]
+  aos import [--from claude|codex|all] [--since 90d|all] [--only instructions,memories,projects,mcp,sessions] [--accept <json list>] [--dry-run] [--json]
+  aos hosts add <claude|codex> [--from-local <repo-dir>]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1114,7 +1117,9 @@ async function init(flags) {
 
 // ── upgrade / uninstall / terminal / persona / cost ───────────────────────────
 /** Routines a release added to the vault template after brain/routines/ existed, with that release. */
-const NEW_ROUTINES = [{ slug: 'briefing', since: '1.5.0' }];
+// import-digest (install-import B10): on from the start, it turns itself off at its first run when no import queued
+// anything, and `aos import` turns it on again; it never imports on its own (B12).
+const NEW_ROUTINES = [{ slug: 'briefing', since: '1.5.0' }, { slug: 'import-digest', since: '2.0.0' }];
 
 /** Upgrade: the three duties become routine files the first time brain/routines/ is absent (spec D10), and any
  *  installed schedule — legacy per-duty plists included — is re-rendered from the routine files so the old
@@ -1454,6 +1459,38 @@ async function memory(sub, flags) {
   }
 }
 
+/** `aos import` (install-import B7): cli/import.js, which runs the runtime's importer (brain/scripts/lib/import/). */
+async function importCmd(sub, flags) {
+  const I = require('./import.js');
+  const value = (flag, v) => (v !== undefined ? [`--${flag}`, v] : []);
+  try {
+    return await I.main([
+      ...sub, ...value('from', flags.from), ...value('since', flags.since), ...value('only', flags.only), ...value('accept', flags.accept),
+      ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.json ? ['--json'] : []),
+    ], { io: console });
+  } catch (e) {
+    if (e instanceof I.UsageError) throw new UsageError(e.message);
+    throw e;
+  }
+}
+
+/** `aos hosts add <host>` (install-import B2): cli/hosts.js, wiring one more host into this install. */
+async function hostsCmd(sub, flags) {
+  const H = require('./hosts.js');
+  try {
+    // The steps init itself takes, handed over by name: this file's exports are not assigned yet while main() runs.
+    const aos = {
+      readJson, writeJson, configPath, configDir, claudeBin, claudeLoggedIn, codexBin, hostsOf, buildUserConfig, repoRoot,
+      installPlugin, wireCodex, run, out, PLUGIN_ID, MARKETPLACE,
+    };
+    return await H.main(sub, { fromLocal: flags.fromLocal }, { io: console, aos });
+  } catch (e) {
+    if (e instanceof H.UsageError) throw new UsageError(e.message);
+    if (e instanceof H.Refused) throw new CheckFailed(e.message);
+    throw e;
+  }
+}
+
 /** `aos local` (local-first A8, A12, A13): cli/local.js, beside this file in the checkout and the vendored runtime. */
 async function local(sub, flags) {
   const L = require('./local.js');
@@ -1473,7 +1510,8 @@ function updateNotice() {
 // `aos workspace`'s own (spaces-redesign D28): --into, --cwd, --set, --expect take a value; --git, --pin, --empty do not.
 // `aos memory`'s (brain-hub D13): --by takes a value (supersede's winner), --into merge's fields (brain-ai A9); set's
 // --skip-brain-md and merge-draft's and sweep's --estimate (A5) do not.
-const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by']);
+// `aos import`'s (install-import B7): --from, --since, --only and --accept take a value.
+const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by', 'from', 'since', 'only', 'accept']);
 const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate']);
 // --no-obsidian is parsed and ignored: Obsidian is no longer installed, and a script written for an older release keeps working.
 const NEGATABLE_FLAGS = new Set(['obsidian']);
@@ -1514,7 +1552,7 @@ function parseArgs(argv) {
 async function main(argv) {
   const { cmd, sub, flags } = parseArgs(argv);
   // --dry-run is an init-only preview (contract §4.3); on a mutating command it must be a loud error, never a silent no-op.
-  if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set`, `aos memory set` and `aos memory fix`');
+  if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory', 'import'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set`, `aos memory set`, `aos memory fix` and `aos import`');
   switch (cmd) {
     case 'init': return init(flags);
     case 'upgrade': return upgrade(flags);
@@ -1533,6 +1571,8 @@ async function main(argv) {
     case 'status': return status();
     case 'provider': return provider(sub[0]);
     case 'local': return local(sub, flags);
+    case 'import': return importCmd(sub, flags);
+    case 'hosts': return hostsCmd(sub, flags);
     case 'update-check': return updateCheck(flags);
     case 'update-status': return updateStatus(flags);
     case 'update-notice': return updateNotice();
@@ -1564,7 +1604,7 @@ module.exports = {
   runScript, scriptPath, mcpProbe, spendRowsToday, spendToday, spendByFamily, isDutyFeature, isHookFeature, loadConfigOrThrow,
   doctor, chiefRow, status, provider, main,
   init, repoRoot, productVersion, upgradeReexecTarget, copyTree, assertVaultOk, buildUserConfig, linkLauncher, vendorRuntime, releaseTreeDeps, swapNodeModules,
-  installPlugin, personaInterview, checklist, hudHost,
+  installPlugin, wireCodex, personaInterview, checklist, hudHost,
   upgrade, uninstall, removeSchedules, terminal, persona, cost, graph, routines, workspace, config, updateCheck, updateStatus, updateNotice,
   PROVIDERS, HOST_CHOICES, PLUGIN_ID, MARKETPLACE, REPO_SLUG, APP_DOWNLOAD, OBSIDIAN_PLUGIN_ID, DEFAULT_VAULT, RUNTIME_SCRIPTS, USAGE,
   VALUE_FLAGS, BOOL_FLAGS, NEGATABLE_FLAGS,
