@@ -110,6 +110,16 @@ test("a program inside the vault is refused however the vault's path is spelled"
   else assert.match(programRefusal(upper, c) ?? "", /no such program/);
 });
 
+test("a program inside the vault or the app's data is refused under any name for their folders (the /System/Volumes/Data firmlink)", () => {
+  const c = ctx();
+  for (const prog of [exe(path.join(VAULT, "tools", "claude")), exe(path.join(USER_DATA, "bin", "node"))]) {
+    const alias = `/System/Volumes/Data${prog}`;
+    let same = false;
+    try { const a = fs.statSync(prog); const b = fs.statSync(alias); same = a.dev === b.dev && a.ino === b.ino; } catch { /* no data volume here */ }
+    if (same) assert.match(programRefusal(alias, c) ?? "", /inside the vault or the app's data/, alias);
+  }
+});
+
 test("a spawn's folder is inside the vault", () => {
   assert.equal(cwdRefusal(VAULT, ctx()), null);
   assert.equal(cwdRefusal(`${VAULT}/workspaces/app`, ctx()), null);

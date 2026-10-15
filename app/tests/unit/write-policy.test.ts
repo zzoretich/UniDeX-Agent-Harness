@@ -836,3 +836,53 @@ test("the Files tab's own check refuses the same spellings main does (display on
   }
   for (const rel of ["brain/scripts-notes.md", "notes/Brain.md", "brain/memory/user/a.md"]) assert.equal(isProtected(rel), false, rel);
 });
+
+/** `p` through macOS's firmlink to the data volume (/System/Volumes/Data/…), when that names the same folder here. */
+function viaFirmlink(p: string): string | null {
+  const alias = `/System/Volumes/Data${p}`;
+  try {
+    const a = fs.statSync(p);
+    const b = fs.statSync(alias);
+    return a.dev === b.dev && a.ino === b.ino ? alias : null;
+  } catch { return null; }
+}
+
+test("the vault under another name for its folder (the /System/Volumes/Data firmlink) is still the vault", () => {
+  const d = diskVault();
+  const at = (rel: string) => path.join(d.vault, rel);
+  try {
+    const alias = viaFirmlink(d.vault);
+    if (!alias) return; // not a Mac with a data volume: no such name
+    fs.symlinkSync(path.join(alias, "brain"), at("notes/fl"));
+    fs.symlinkSync(path.join(alias, "brain/memory"), at("notes/mem"));
+    const p = new WritePolicy(d.vault, ["files", "notes"]);
+    for (const rel of ["notes/fl/scripts/x.js", "notes/fl/scripts/lib/hooks.js", "notes/fl/_index/BRAIN.md", "notes/fl/_index/new.md"]) {
+      assert.equal(p.canWrite(at(rel)), false, `write ${rel}`);
+      assert.equal(p.canSave(at(rel)), false, `save ${rel}`);
+    }
+    assert.equal(p.canMakeFolder(at("notes/fl/scripts/sub")), false);
+    assert.equal(p.canMoveTree(at("notes/fl")), false, "a link to brain, under any name for it");
+    // Through the same name into a normal folder, as the user linked it.
+    assert.equal(p.canWrite(at("notes/mem/user/a.md")), true);
+  } finally { d.done(); }
+});
+
+test("a dangling link's target is resolved the way the disk resolves it, a `..` after a link included", () => {
+  const d = diskVault();
+  const at = (rel: string) => path.join(d.vault, rel);
+  try {
+    fs.symlinkSync("../brain/memory", at("notes/sx"));
+    fs.symlinkSync("sx/../_index/new.md", at("notes/d.md"));        // brain/memory/.. is brain: brain/_index/new.md
+    fs.symlinkSync("sx/../scripts/new.js", at("notes/d.js"));
+    fs.symlinkSync("sx/user/new.md", at("notes/ok.md"));            // brain/memory/user/new.md: a normal folder
+    fs.symlinkSync(path.join(d.outside, "new.md"), at("notes/out.md")); // out of the vault, as the user linked it
+    const p = new WritePolicy(d.vault, ["files", "notes"]);
+    for (const rel of ["notes/d.md", "notes/d.js"]) {
+      assert.equal(p.canWrite(at(rel)), false, `write ${rel}`);
+      assert.equal(p.canSave(at(rel)), false, `save ${rel}`);
+    }
+    assert.equal(p.canWrite(at("notes/ok.md")), true);
+    assert.equal(p.canSave(at("notes/ok.md")), true);
+    assert.equal(p.canWrite(at("notes/out.md")), true);
+  } finally { d.done(); }
+});

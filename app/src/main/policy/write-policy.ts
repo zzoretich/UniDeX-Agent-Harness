@@ -8,12 +8,14 @@
 // pass. A link inside the vault is the user's (the bridge never creates one, so the page cannot add one) and is
 // followed as they set it up, into a normal folder or out of the vault, but never into a protected folder. A path the
 // disk reads differently from its lexical form (a `..` after a link) is refused. Names compare the way macOS's disk
-// compares them (foldPath: any case, any Unicode form).
+// compares them (foldPath: any case, any Unicode form), and the vault is known where the disk resolves a path by its
+// folder's identity, under any name for it (identity.ts).
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SURFACES, SurfaceRules, type Surface } from "../../shared/surfaces";
+import { folderId, relUnder, type FolderId } from "./identity";
 
 export { BACKGROUND, SURFACES, SURFACE_IDS, argv, foldPath, globToRegExp, parseSurfaces, type Surface, type SpawnRule } from "../../shared/surfaces";
 
@@ -49,7 +51,8 @@ export function resolveOnDisk(p: string, budget = { links: MAX_LINKS }): string 
   const at = path.join(base, name);
   let target: string;
   try { target = fs.readlinkSync(at); } catch { return at; } // not a link, or not there: the name as asked
-  return budget.links-- > 0 ? resolveOnDisk(path.resolve(base, target), budget) : null;
+  // The link's text as the disk reads it: a `..` in it is taken after any link before it, never lexically.
+  return budget.links-- > 0 ? resolveOnDisk(path.isAbsolute(target) ? target : `${base}/${target}`, budget) : null;
 }
 
 const hasDots = (p: string): boolean => p.split("/").some((s) => s === "." || s === "..");
@@ -57,11 +60,14 @@ const hasDots = (p: string): boolean => p.split("/").some((s) => s === "." || s 
 export class WritePolicy {
   readonly rules: SurfaceRules;
   private readonly roots: string[];
+  private readonly root: string | null;
+  private rootId: FolderId | null = null;
 
   constructor(vaultRoot: string | null, enabled: readonly string[] = [], table: readonly Surface[] = SURFACES) {
     this.rules = new SurfaceRules(enabled, table);
     // The vault as configured and as the disk spells it (a symlinked home, /tmp → /private/tmp, another case).
     const roots = new Set<string>();
+    this.root = vaultRoot && path.isAbsolute(vaultRoot) ? path.resolve(vaultRoot) : null;
     if (vaultRoot && path.isAbsolute(vaultRoot)) {
       roots.add(path.resolve(vaultRoot));
       try { roots.add(fs.realpathSync(vaultRoot)); } catch { /* not there yet */ }
@@ -82,14 +88,20 @@ export class WritePolicy {
     return rel ? rel : null;
   }
 
-  /** An absolute, resolved path relative to the vault (`""` for the vault itself), or null outside it. */
-  private relIn(abs: string): string | null {
+  /**
+   * An absolute, resolved path relative to the vault (`""` for the vault itself), or null outside it. By its spelling;
+   * with `anyName`, also by the vault folder's identity, for a place the disk resolved: the vault under another name for
+   * its folder (macOS's /System/Volumes/Data firmlink, or any other) is still the vault.
+   */
+  private relIn(abs: string, anyName = false): string | null {
     for (const root of this.roots) {
       const rel = path.relative(root, abs);
       if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
       return rel.split(path.sep).join("/");
     }
-    return null;
+    if (!anyName || !this.root) return null;
+    this.rootId ??= folderId(this.root);
+    return this.rootId ? relUnder([this.rootId], abs) : null;
   }
 
   /**
@@ -110,7 +122,7 @@ export class WritePolicy {
     if (hasDots(raw) && resolveOnDisk(raw) !== full) return null;
     const real: string[] = [];
     for (const place of [full, path.join(folder, path.basename(abs))]) {
-      const r = this.relIn(place);
+      const r = this.relIn(place, true);
       if (r === "") return null;
       if (r !== null && !real.includes(r)) real.push(r);
     }

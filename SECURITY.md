@@ -34,13 +34,16 @@ output. The design treats the page that shows them as untrusted (design D7,
     (`brain/_index`, `brain/scripts`), dependency folders and every dot-path, so no page can plant a host's project
     configuration (`.claude/settings.json` hooks, `.mcp.json`, `.codex/`, `.git/hooks`). Paths are compared the way the
     disk compares them (any case, any Unicode form) and checked both as written and where the disk resolves them, so no
-    spelling and no link reaches those folders. The page cannot create links or change a file's permissions. Spaces and Brain write no file themselves; their verbs write as their rows under
-    *What the design accepts* say.
+    spelling, no link and no other name for the vault's folder reaches those folders. The page cannot create links or
+    change a file's permissions, and nothing it writes or copies becomes executable: a new file never is, and a file
+    that was there keeps its own mode (a script of yours stays as you set it). A move to the Trash is checked and done
+    with no other change of the page's in between. Spaces and Brain write no file themselves; their verbs write as
+    their rows under *What the design accepts* say.
   - *Processes:* only the runtime's own commands, each with an argument rule (a background refresh, or a command of a
     surface that is on), never through a shell. The program is a bare name main finds on its own `PATH`, or an
-    executable outside the vault and the app's data, which the page cannot create. The child's environment is main's,
-    plus a few named variables with fixed or trusted values: never `NODE_OPTIONS`, `PATH` or `DYLD_*`, and a Claude
-    or Codex folder only when it is one main trusts.
+    executable outside the vault and the app's data (under any name for those folders), which the page cannot create.
+    The child's environment is main's, plus a few named variables with fixed or trusted values: never `NODE_OPTIONS`,
+    `PATH` or `DYLD_*`, and a Claude or Codex folder only when it is one main trusts.
   - *Terminals:* a shell listed in `/etc/shells` (or your `$SHELL`), with no arguments. Main starts it with its own
     environment, `PATH` replaced by your login shell's (asked once, as the setup wizard does) and `CLAUDECODE` removed;
     the page still cannot set `PATH`. The Code tab starts an agent by typing its command into that shell. Spaces types

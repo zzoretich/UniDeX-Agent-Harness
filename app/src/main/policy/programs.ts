@@ -7,6 +7,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { folderId, relUnder, type FolderId } from "./identity";
 import { agenticosFiles, claudeDirs, codexHomes, type ScopeOptions } from "./read-scope";
 
 export interface ProgramContext extends ScopeOptions {
@@ -28,13 +29,18 @@ function writable(ctx: ProgramContext): string[] {
   return [...(ctx.vaultRoot ? [ctx.vaultRoot] : []), ctx.userData].flatMap((p) => [path.resolve(p), realOrSelf(p)]);
 }
 
+/** The same folders by identity, so no other name for them (/System/Volumes/Data/…, a firmlink) hides a program there. */
+function writableIds(ctx: ProgramContext): FolderId[] {
+  return [...(ctx.vaultRoot ? [ctx.vaultRoot] : []), ctx.userData].map(folderId).filter((id): id is FolderId => id !== null);
+}
+
 /** Why `cmd` may not be started, or null when it may. */
 export function programRefusal(cmd: string, ctx: ProgramContext): string | null {
   if (!cmd || cmd.includes("\0")) return "no program";
   if (!cmd.includes("/")) return /^[A-Za-z0-9._+-]+$/.test(cmd) ? null : "an odd program name";
   if (!path.isAbsolute(cmd)) return "a relative program path";
   const real = realOrSelf(cmd);
-  if (writable(ctx).some((root) => inside(root, real))) return "a program inside the vault or the app's data";
+  if (writable(ctx).some((root) => inside(root, real)) || relUnder(writableIds(ctx), real) !== null) return "a program inside the vault or the app's data";
   try {
     const st = fs.statSync(real);
     if (!st.isFile()) return "not a file";

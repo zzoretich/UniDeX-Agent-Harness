@@ -26,6 +26,19 @@ export function failure(err: unknown): Result<never> {
 
 const ok = <T>(data: T): Result<T> => ({ ok: true, data });
 
+/**
+ * Answers a change the page asked for once no move to the Trash is in flight (`pending`), so a trash's check and the
+ * move itself are one step for the page: nothing it asks for runs in between. With none in flight, at once.
+ */
+export function afterTrash<T>(pending: () => Promise<unknown> | null, run: () => T, reply: (value: T) => void): void {
+  const go = (): void => {
+    const wait = pending();
+    if (wait) void wait.then(go, go);
+    else reply(run());
+  };
+  go();
+}
+
 function stats(s: fs.Stats, link = false): StatInfo {
   return { size: s.size, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, file: s.isFile(), dir: s.isDirectory(), link };
 }
@@ -38,6 +51,10 @@ export interface FsServiceOptions {
 }
 
 export class FsService {
+  /** The moves to the Trash, one after another; `trashing` counts those not done. */
+  private trashQueue: Promise<unknown> = Promise.resolve();
+  private trashing = 0;
+
   constructor(private readonly o: FsServiceOptions) {}
 
   exists(p: string): Result<boolean> {
@@ -153,14 +170,45 @@ export class FsService {
     try { fs.renameSync(from, to); return ok(null); } catch (err) { return failure(err); }
   }
 
+  /**
+   * A copy never makes a file executable: a new file gets the source's read and write bits only, and a file that was
+   * there keeps its own mode (the copy would take the source's), so a user's own script stays as they set it.
+   */
   copy(from: string, to: string): Result<null> {
     if (!this.o.scope().canRead(from)) return refused("outside what the app reads");
     if (!this.o.policy().canWrite(to)) return refused("no write surface allows it");
-    try { fs.copyFileSync(from, to); return ok(null); } catch (err) { return failure(err); }
+    let before: number | null = null;
+    try { before = fs.statSync(to).mode & 0o7777; } catch { /* a new file */ }
+    try {
+      fs.copyFileSync(from, to);
+      fs.chmodSync(to, before ?? (fs.statSync(to).mode & 0o666));
+      return ok(null);
+    } catch (err) { return failure(err); }
   }
 
-  /** Whether `p` may go to the Trash with everything in it (the IPC layer hands it to Electron's shell.trashItem). */
+  /** Whether `p` may go to the Trash with everything in it. */
   canTrash(p: string): boolean { return this.o.policy().canMoveTree(p); }
+
+  /**
+   * Sends `p` to the Trash with `trashItem` (Electron's shell.trashItem), after every earlier one, checked when its turn
+   * comes. Until it is done, pending() names it, and the bridge holds the page's other changes (afterTrash).
+   */
+  trash(p: string, trashItem: (p: string) => Promise<void>): Promise<Result<null>> {
+    this.trashing++;
+    const run = async (): Promise<Result<null>> => {
+      try {
+        if (!this.canTrash(p)) return refused("no write surface allows it");
+        await trashItem(p);
+        return ok(null);
+      } catch (err) { return failure(err); } finally { this.trashing--; }
+    };
+    const done = this.trashQueue.then(run, run);
+    this.trashQueue = done;
+    return done;
+  }
+
+  /** While a move to the Trash is in flight: a promise that settles when every one asked for so far is done. */
+  pending(): Promise<unknown> | null { return this.trashing > 0 ? this.trashQueue : null; }
 
   /**
    * A plugin's settings: the app's own copy, else what Obsidian kept in the vault (read, never written). Obsidian's is
