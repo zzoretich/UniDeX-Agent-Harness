@@ -62,7 +62,12 @@ output. The design treats the page that shows them as untrusted (design D7,
     over an Ollama that is there; Claude Code runs its own checked binary's `claude install`; Codex is laid out as its
     own installer lays it out (`<codex home>/packages/standalone`, linked from `~/.local/bin`). Anything already at a
     destination that is not a link into the installer's own tree (another uv, an npm codex, a half-installed release)
-    is moved aside to `<name>.unidex-backup-<time>` and logged, never replaced unseen. A job that is stopped stops after
+    is moved aside to `<name>.unidex-backup-<time>` and logged, never replaced unseen; this job deletes only its own
+    staging. A release already there (Node, uv, Codex) is reused only when every executable in it passes the same
+    signature and team check, before anything in it runs; otherwise it is moved aside and the checked download installed.
+    An Ollama app already there is opened only after `codesign --deep`, its team, Gatekeeper and the version floor
+    pass; otherwise it is left unopened and the wizard says how to repair or update it. The uv the checks validated is
+    the one `aos init` installs graphify with (`AOS_UV_BIN`). A job that is stopped stops after
     the program it was running, moves nothing more and ends as stopped. Ollama's models come through its own API on
     127.0.0.1. Nothing needs Homebrew or npm, and nothing runs through a shell but the two
     logins (`claude auth login`, `codex login`), fixed commands run by `/bin/sh -c` in a terminal the wizard shows. A
@@ -74,7 +79,8 @@ output. The design treats the page that shows them as untrusted (design D7,
     persona answers are checked against the interview's rules, written to the app's data folder (mode 0600) and
     removed when `aos init` ends. The `CLAUDE.md` line and file, and Finish's PATH line
     (`export PATH="$HOME/.local/bin:$PATH"`, into `~/.zprofile`, `$ZDOTDIR`'s when set), are main's to compute; a file that
-    exists but cannot be read is refused with the reason, never replaced; each line is appended once, only when the page asks (a Claude Code install; the PATH box ticked, after the install and before a
+    exists but cannot be read is refused with the reason, never replaced, and a link (even to a file not there yet)
+    stays a link, its target written; each line is appended once, only when the page asks (a Claude Code install; the PATH box ticked, after the install and before a
     vault is attached). Install runs only with no vault attached, upgrade only when the app's runtime is newer than the
     vault's, and one job runs at a time.
   - *The OS:* links open in the browser over https only. A document or a folder opens with its app; a file that would
