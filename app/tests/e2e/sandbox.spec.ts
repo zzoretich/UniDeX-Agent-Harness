@@ -90,13 +90,15 @@ test("setup names a fix by id only, and refuses each step outside its state", as
   // Neither runs once a vault is attached, and each takes only hosts, kinds and proposal ids.
   expect(await call((aos) => aos.setup.importScan())).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
   expect(await call((aos) => aos.setup.importHistory({ from: ["claude"], only: ["mcp"], accept: [] }))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
-  expect(await call((aos) => aos.setup.unwire("codex"))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
-  type Setup = { importHistory(r: unknown): unknown; unwire(h: unknown): unknown };
+  expect(await call((aos) => aos.setup.unwire("codex", "claude"))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
+  type Setup = { importHistory(r: unknown): unknown; unwire(h: unknown, c?: unknown): unknown };
   for (const bad of [{ from: ["cursor"], only: ["mcp"], accept: [] }, { from: ["claude"], only: ["secrets"], accept: [] }, { from: ["claude", "claude"], only: ["mcp"], accept: [] },
     { from: ["claude"], only: ["mcp"], accept: [], argv: ["--yes"] }, { from: [], only: ["mcp"], accept: [] }, { from: ["claude"], only: ["mcp"] }]) {
     expect(await call((aos, b) => (aos.setup as unknown as Setup).importHistory(JSON.parse(b)), JSON.stringify(bad))).toMatchObject({ ok: false, code: "EINVAL" });
   }
-  expect(await call((aos) => (aos.setup as unknown as Setup).unwire("all"))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.setup as unknown as Setup).unwire("all", "claude"))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.setup as unknown as Setup).unwire("codex"))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.setup as unknown as Setup).unwire("codex", "everything"))).toMatchObject({ ok: false, code: "EINVAL" });
   // The CLAUDE.md preview names the attached vault's line; the page sends no path.
   const md = await call((aos) => aos.setup.claudeMd());
   expect(md).toMatchObject({ ok: true, data: { line: `@${FX.v("AGENTICOS.md")}` } });

@@ -116,8 +116,8 @@ export const ImportRunSchema: z.ZodType<ImportRunRequest> = z.object({
   only: z.array(z.enum(["instructions", "memories", "projects", "mcp", "sessions"])).min(1).max(5).refine((a) => new Set(a).size === a.length, "each kind once"),
   accept: z.array(Text(1024)).max(100),
 }).strict();
-/** The host whose wiring an earlier install left on (inspection F7). */
-export const UnwireArgs = z.object({ host: z.enum(["claude", "codex"]) }).strict();
+/** The host whose wiring an earlier install left on (inspection F7), and the choice it would be dropped by. */
+export const UnwireArgs = z.object({ host: z.enum(["claude", "codex"]), choice: z.enum(["claude", "codex", "both", "none"]) }).strict();
 
 // Sessions (spec 2026-10-07-unidex-sessions S3): the page names a workspace, a thread, a host, a prompt or a file; main
 // and the runtime decide everything else.

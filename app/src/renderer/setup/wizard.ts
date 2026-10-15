@@ -247,7 +247,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
   function nextUnwire(): void {
     const host = s.unwireQueue.shift();
     if (!host) { render(); return; }
-    const r = aos.setup.unwire(host);
+    const r = aos.setup.unwire(host, s.host);
     if (!r.ok) { s.error = `${HOST_NAME[host]}: ${r.error}`; s.unwireQueue = []; render(); return; }
     s.job = { kind: "unwire" };
     render();

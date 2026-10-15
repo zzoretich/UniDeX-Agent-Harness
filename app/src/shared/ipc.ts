@@ -560,8 +560,11 @@ export interface AosBridge {
     importScan(): Promise<Result<unknown>>;
     /** The import as a setup job (output on onEvent, job "import"): the fast phase, and the sessions queued for the digest. */
     importHistory(req: ImportRunRequest): Result<null>;
-    /** Before the install: `aos uninstall --host <host>` for a host an earlier install left on (job "unwire"). */
-    unwire(host: HostId): Result<null>;
+    /**
+     * Before the install: `aos uninstall --host <host>` for a host an earlier install left on (job "unwire"). Main runs it
+     * only when that install's vault is gone and `choice` (the host choice the page will install with) drops the host.
+     */
+    unwire(host: HostId, choice: InstallRequest["host"]): Result<null>;
     onEvent(cb: (ev: SetupEvent) => void): () => void;
   };
   update: {

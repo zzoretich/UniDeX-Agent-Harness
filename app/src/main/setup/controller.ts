@@ -117,6 +117,8 @@ export class SetupController {
   private personaFile: string | null = null;
   /** The proposal ids the last import scan listed: the only ones an import may create (install-import B9). */
   private scanned: Set<string> | null = null;
+  /** The import scan in flight, at most one: a second ask gets the same answer, and it counts as the running job. */
+  private scanning: { promise: Promise<Result<unknown>>; child: childProcess.ChildProcess | null } | null = null;
 
   constructor(private readonly o: SetupControllerOptions) {
     this.jobs = new JobRunner({ emit: o.emit, pty: o.pty, spawnImpl: o.spawnImpl, onExit: (job, code) => this.exited(job, code) });
@@ -165,7 +167,7 @@ export class SetupController {
   private refusal(step: SetupStep): string | null {
     const info = this.o.attachInfo();
     return stepRefusal(step, {
-      attached: !!this.o.attached(), installed: this.installed, payload: !!this.o.payload, behind: !!info?.behind, busy: !!this.jobs.running,
+      attached: !!this.o.attached(), installed: this.installed, payload: !!this.o.payload, behind: !!info?.behind, busy: !!this.jobs.running || !!this.scanning,
     });
   }
 
@@ -214,7 +216,11 @@ export class SetupController {
 
   input(data: string): void { if (this.jobs.running === "fix") this.jobs.input(data); }
   resize(cols: number, rows: number): void { this.jobs.resize(cols, rows); }
-  cancel(): void { this.jobs.cancel(); }
+  /** Stops the running job, and the import scan (the page's Stop, the page going away, quit). */
+  cancel(): void {
+    this.jobs.cancel();
+    try { this.scanning?.child?.kill("SIGTERM"); } catch { /* gone */ }
+  }
 
   async chooseVault(): Promise<Result<string | null>> {
     if (this.o.attached()) return refused("a vault is already attached");
@@ -302,7 +308,7 @@ export class SetupController {
   }
 
   /** A program's output, captured (the import scan): stdout apart from stderr, never a shell, stopped after `timeoutMs`. */
-  private capture(file: string, args: string[], timeoutMs: number): Promise<{ code: number | null; out: string; err: string }> {
+  private capture(file: string, args: string[], timeoutMs: number, onChild: (c: childProcess.ChildProcess) => void = () => undefined): Promise<{ code: number | null; out: string; err: string }> {
     return new Promise((resolve) => {
       let out = "";
       let err = "";
@@ -312,6 +318,7 @@ export class SetupController {
       try {
         child = (this.o.spawnImpl ?? childProcess.spawn)(file, args, { cwd: this.o.home, env: this.childEnv(), shell: false, stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs, killSignal: "SIGTERM" });
       } catch (e) { err = e instanceof Error ? e.message : String(e); finish(null); return; }
+      onChild(child);
       const so = new StringDecoder("utf8");
       const se = new StringDecoder("utf8");
       child.stdout?.on("data", (b: Buffer) => { if (out.length < 16 * 1024 * 1024) out += so.write(b); });
@@ -323,14 +330,24 @@ export class SetupController {
 
   /**
    * "Bring in your history" (install-import B13): what the runtime the app carries finds on this Mac, `aos import
-   * --dry-run --json`, after the install and before the Workbench. Nothing is written. The page reads the report.
+   * --dry-run --json`, after the install and before the Workbench. Nothing is written. The page reads the report. One
+   * scan at a time: while it runs a second ask gets the same answer, no other setup step starts, and Stop, the page
+   * going away or quitting kill it.
    */
-  async importScan(): Promise<Result<unknown>> {
+  importScan(): Promise<Result<unknown>> {
+    if (this.scanning) return this.scanning.promise;
     const why = this.refusal("import");
-    if (why) return refused(why);
-    if (!this.node) return refused("run the checks first");
+    if (why) return Promise.resolve(refused(why));
+    if (!this.node) return Promise.resolve(refused("run the checks first"));
+    const entry: { promise: Promise<Result<unknown>>; child: childProcess.ChildProcess | null } = { promise: Promise.resolve(refused("")), child: null };
+    entry.promise = this.runScan(this.node, (c) => { entry.child = c; }).finally(() => { if (this.scanning === entry) this.scanning = null; });
+    this.scanning = entry;
+    return entry.promise;
+  }
+
+  private async runScan(node: string, onChild: (c: childProcess.ChildProcess) => void): Promise<Result<unknown>> {
     const payload = this.o.payload as NonNullable<SetupControllerOptions["payload"]>;
-    const r = await this.capture(this.node, importScanArgs(payload.cli), 180_000);
+    const r = await this.capture(node, importScanArgs(payload.cli), 180_000, onChild);
     if (r.code !== 0) {
       const line = r.err.trim().split("\n").filter(Boolean).pop() ?? "";
       return { ok: false, error: line.replace(/^aos( import)?: /, "") || `aos import exited ${r.code ?? "without a code"}`, code: "EIO" };
@@ -357,17 +374,20 @@ export class SetupController {
   }
 
   /**
-   * Inspection F7, made a choice: `aos uninstall --host <host>` from the payload, for a host an earlier install's
-   * agenticos.json has on, before this install (aos init refuses to drop it). Its plugin, hooks and MCP server go; the
-   * host's CLI, its sessions and settings, and the vault stay. Refused for a host that file does not have on.
+   * Inspection F7, made a choice: `aos uninstall --host <host>` from the payload, before this install, only for what F7
+   * is about: an earlier install's agenticos.json that has `host` on, whose vault is not there (else it is a working
+   * install, on a disk not connected or set up meanwhile), and which the user's pending choice drops (aos init refuses
+   * that). Its plugin, hooks and MCP server go; the host's CLI, its sessions and settings stay.
    */
-  unwire(host: HostId): Result<null> {
+  unwire(host: HostId, choice: InstallRequest["host"]): Result<null> {
     const why = this.refusal("unwire");
     if (why) return refused(why);
     if (!this.node) return refused("run the checks first");
+    if (requestHosts(choice)[host]) return refused(`your choice keeps ${host}: nothing to take out`);
     const cfg = this.o.readAgenticos();
     if (!cfg || !hostsOf(cfg)[host]) return refused(`agenticos.json does not have ${host} on`);
     if (typeof cfg.vault !== "string" || !cfg.vault) return refused("agenticos.json names no vault, so aos uninstall cannot unwire its hosts");
+    if ((this.o.exists ?? fs.existsSync)(cfg.vault)) return refused(`agenticos.json's vault ${cfg.vault} is there: that install is in use, not left over`);
     const payload = this.o.payload as NonNullable<SetupControllerOptions["payload"]>;
     return this.jobs.startProc("unwire", this.node, unwireArgs(payload.cli, host), { cwd: this.o.home, env: this.childEnv(), echo: `aos uninstall --host ${host}` });
   }

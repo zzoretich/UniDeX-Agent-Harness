@@ -82,7 +82,7 @@ const api: AosBridge = {
     addToPath: () => sync(CH.setupAddToPath, {}),
     importScan: () => invoke(CH.setupImportScan, {}),
     importHistory: (req) => sync(CH.setupImport, req),
-    unwire: (host) => sync(CH.setupUnwire, { host }),
+    unwire: (host, choice) => sync(CH.setupUnwire, { host, choice }),
     onEvent: (cb) => listen<SetupEvent>(CH.setupEvent, cb),
   },
   update: {

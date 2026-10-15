@@ -903,18 +903,20 @@ test("controller: the import scan after the install, the import as a job with th
   const spawned: string[][] = [];
   const children: Array<ReturnType<typeof fakeChild>> = [];
   let cfg: AgenticosJson | null = { vault: path.join(home, "Gone"), hosts: { claude: { enabled: true }, codex: { enabled: true } } };
+  const present = new Set<string>();
+  let holdScan = false;
   const scan = { schema: 1, dryRun: true, from: ["claude", "codex"], hosts: { claude: { present: true, configDir: "~/.claude", sessions: 4 } }, projects: { proposals: [{ id: "~/code/alpha", action: "new", slug: "alpha" }] } };
   const ctl = new SetupController({
     home, userData, env: {}, payload: { root: "/payload", cli: "/payload/cli/aos.js", version: "2.0.0", runtimeDeps: true },
     emit: (e) => events.push(e), pty: () => { throw new Error("no terminal"); },
     attached: () => null, attachInfo: () => null, readAgenticos: () => cfg, attach: () => true, refreshAttach: () => undefined,
-    chooseFolder: async () => null, path: () => "/fake/bin", probe: machine(ALL).run, isExec: machine(ALL).isExec, exists: () => false,
+    chooseFolder: async () => null, path: () => "/fake/bin", probe: machine(ALL).run, isExec: machine(ALL).isExec, exists: (p: string) => present.has(p),
     fetch: noNetwork, totalmem: 16 * GB,
     spawnImpl: ((file: string, args: string[]) => {
       spawned.push([file, ...args]);
       const c = fakeChild();
       children.push(c);
-      if (args.includes("--dry-run")) setImmediate(() => { c.child.stdout.write(JSON.stringify(scan)); c.finish(0); });
+      if (args.includes("--dry-run") && !holdScan) setImmediate(() => { c.child.stdout.write(JSON.stringify(scan)); c.finish(0); });
       return c.child;
     }) as never,
   });
@@ -926,21 +928,40 @@ test("controller: the import scan after the install, the import as a job with th
 
   // F7: the earlier install's Codex taken out before this install; a host it does not have on is refused.
   cfg = { vault: path.join(home, "Gone"), hosts: { claude: { enabled: true }, codex: { enabled: false } } };
-  assert.equal(ctl.unwire("codex").ok, false, "Codex is not on in it");
+  assert.equal(ctl.unwire("codex", "claude").ok, false, "Codex is not on in it");
   cfg = { vault: path.join(home, "Gone"), hosts: { claude: { enabled: true }, codex: { enabled: true } } };
-  assert.equal(ctl.unwire("codex").ok, true);
+  // Only what F7 is about: a choice that keeps the host needs no unwire, and a vault that is there is an install in use
+  // (a disk connected again, an aos init meanwhile), whose host is never taken out from here.
+  assert.match(String((ctl.unwire("codex", "both") as { error?: string }).error), /your choice keeps codex/);
+  assert.match(String((ctl.unwire("codex", "codex") as { error?: string }).error), /your choice keeps codex/);
+  present.add(path.join(home, "Gone"));
+  assert.match(String((ctl.unwire("codex", "claude") as { error?: string }).error), /is there: that install is in use/);
+  present.clear();
+  assert.equal(spawned.length, 0, "nothing ran for any refusal");
+  assert.equal(ctl.unwire("codex", "claude").ok, true);
   assert.deepEqual(spawned.at(-1), ["/fake/bin/node", "/payload/cli/aos.js", "uninstall", "--host", "codex"]);
   children.at(-1)!.finish(0);
   await exitOf(events, "unwire");
   cfg = { hosts: { codex: { enabled: true } } };
-  assert.match(String((ctl.unwire("codex") as { error?: string }).error), /names no vault/);
+  assert.match(String((ctl.unwire("codex", "none") as { error?: string }).error), /names no vault/);
 
   assert.equal(ctl.install({ host: "claude", vault: "~/Vault", persona: null }).ok, true);
   children.at(-1)!.finish(0);
   await exitOf(events, "install");
-  assert.equal(ctl.unwire("codex").ok, false, "never after the install");
+  assert.equal(ctl.unwire("codex", "claude").ok, false, "never after the install");
   assert.equal(ctl.importHistory({ from: ["claude"], only: ["mcp"], accept: [] }).ok, false, "the scan comes first");
-  const r = await ctl.importScan();
+  // One scan at a time: a second ask while it runs gets the same answer, and no import starts meanwhile.
+  holdScan = true;
+  const first = ctl.importScan();
+  const second = ctl.importScan();
+  assert.equal(first, second, "the same scan");
+  assert.equal(spawned.filter((a) => a.includes("--dry-run")).length, 1);
+  const during = ctl.importHistory({ from: ["claude"], only: ["mcp"], accept: [] });
+  assert.ok(!during.ok && during.error === "another setup step is running");
+  children.at(-1)!.child.stdout.write(JSON.stringify(scan));
+  children.at(-1)!.finish(0);
+  const r = await first;
+  holdScan = false;
   assert.ok(r.ok);
   assert.deepEqual(spawned.at(-1), ["/fake/bin/node", "/payload/cli/aos.js", "import", "--from", "all", "--dry-run", "--json"]);
   assert.deepEqual(r.ok && r.data, scan);
@@ -984,4 +1005,39 @@ test("controller: a scan that fails or answers in another shape says so, and lis
   answer = { code: 0, out: JSON.stringify({ dryRun: false, hosts: {} }), err: "" };
   assert.deepEqual(await ctl.importScan(), { ok: false, error: "aos import answered in an unexpected shape", code: "EIO" });
   assert.equal(ctl.importHistory({ from: ["claude"], only: ["mcp"], accept: [] }).ok, false, "no scan that parsed: nothing to import yet");
+});
+
+test("controller: Stop, the page going away or quitting kill a running import scan (cancel)", async () => {
+  const home = path.join(ROOT, "ctl-scan-kill-home");
+  fs.mkdirSync(home, { recursive: true });
+  const events: SetupEvent[] = [];
+  const children: Array<ReturnType<typeof fakeChild> & { killed: string[] }> = [];
+  const ctl = new SetupController({
+    home, userData: path.join(ROOT, "ctl-scan-kill-ud"), env: {}, payload: { root: "/payload", cli: "/payload/cli/aos.js", version: "2.0.0", runtimeDeps: true },
+    emit: (e) => events.push(e), pty: () => { throw new Error("no terminal"); },
+    attached: () => null, attachInfo: () => null, readAgenticos: () => null, attach: () => true, refreshAttach: () => undefined,
+    chooseFolder: async () => null, path: () => "/fake/bin", probe: machine(ALL).run, isExec: machine(ALL).isExec, exists: () => false,
+    fetch: noNetwork, totalmem: 16 * GB,
+    spawnImpl: (() => {
+      const c = Object.assign(fakeChild(), { killed: [] as string[] });
+      c.child.kill = ((sig: string) => { c.killed.push(sig); setImmediate(() => c.finish(143)); }) as never;
+      children.push(c);
+      return c.child;
+    }) as never,
+  });
+  assert.ok((await ctl.preflight()).ok);
+  assert.equal(ctl.install({ host: "claude", vault: "~/Vault", persona: null }).ok, true);
+  children.at(-1)!.finish(0);
+  await exitOf(events, "install");
+  const scan = ctl.importScan();
+  ctl.cancel();
+  assert.deepEqual(children.at(-1)!.killed, ["SIGTERM"]);
+  const r = await scan;
+  assert.equal(r.ok, false);
+  // The scan is over: the next ask starts a new one.
+  const again = ctl.importScan();
+  assert.notEqual(again, scan);
+  assert.equal(children.length, 3);
+  ctl.cancel();
+  await again;
 });

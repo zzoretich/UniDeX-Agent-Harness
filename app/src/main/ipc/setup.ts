@@ -24,7 +24,7 @@ export interface SetupIpc {
   addToPath(): Result<PathLinePreview>;
   importScan(): Promise<Result<unknown>>;
   importHistory(req: ImportRunRequest): Result<null>;
-  unwire(host: HostId): Result<null>;
+  unwire(host: HostId, choice: InstallRequest["host"]): Result<null>;
 }
 
 export function registerSetupIpc(trust: Trust, s: SetupIpc): void {
@@ -44,7 +44,7 @@ export function registerSetupIpc(trust: Trust, s: SetupIpc): void {
   onSync(CH.setupAddToPath, trust, NoArgs, () => s.addToPath());
   onInvoke(CH.setupImportScan, trust, NoArgs, () => s.importScan());
   onSync(CH.setupImport, trust, ImportRunSchema, (req) => s.importHistory(req));
-  onSync(CH.setupUnwire, trust, UnwireArgs, ({ host }) => s.unwire(host));
+  onSync(CH.setupUnwire, trust, UnwireArgs, ({ host, choice }) => s.unwire(host, choice));
 }
 
 export interface UpdateIpc {
