@@ -49,14 +49,15 @@
  *   codexMcpServers(home)  →  the names of the [mcp_servers.<name>] tables in <home>/config.toml ([] when unreadable).
  *   resolveChief(cfg, deps)  →  where the Chief of Staff's next duty runs (local-first A4), async:
  *     { host, bin, model, effort, home, reason, primary, failover: [{ host, bin, model, effort, home }], skipped: [{ host, why }] }
- *     The primary is persona.runner (AOS_RUNNER overrides it): auto → Claude when it is an enabled host whose CLI resolves and
- *     is signed in, else Codex. A host starts when its CLI resolves, it is signed in (deps.loggedIn: `claude auth status`,
- *     `codex login status`, both free) and its duty spend today is under persona.perDayUsd (deps.spentToday(host): the
- *     duty:* ledger rows of that provider). With both hosts enabled and persona.failover (default true), a primary that
- *     cannot start moves the duty to the other host's CoS model; `failover` lists that host while the primary runs. Models
- *     per host come from sdk/lib/models.js chiefModel (PERSONA_MODEL, a Claude model by contract, never reaches Codex);
- *     effort from PERSONA_EFFORT → persona.effort → medium. Nobody can start → host null with reason `daily-cap` when every
- *     enabled host is capped, else `waiting-for-host`; persona/chief.js turns that into a skipped duty.
+ *     First the day: persona.perDayUsd is one cap over both hosts (deps.spentToday(): every duty:* ledger row of today,
+ *     whichever provider), and a capped day is `daily-cap` on every host — never a reason to move. Then the host: the primary
+ *     is persona.runner (AOS_RUNNER overrides it): auto → Claude when it is an enabled host whose CLI resolves and is signed
+ *     in, else Codex. A host starts when its CLI resolves and it is signed in (deps.loggedIn: `claude auth status`,
+ *     `codex login status`, both free). With both hosts enabled and persona.failover (default true), a primary whose CLI is
+ *     missing or signed out moves the duty to the other host's CoS model; `failover` lists that host while the primary
+ *     runs. Models per host come from sdk/lib/models.js chiefModel (PERSONA_MODEL, a Claude model by contract, never
+ *     reaches Codex); effort from PERSONA_EFFORT → persona.effort → medium. Nobody can start → host null with reason
+ *     `waiting-for-host`; persona/chief.js turns either reason into a skipped duty.
  *   CLI: node lib/headless.js --resolve [--kind persona|routines]  prints `host<TAB>bin<TAB>model<TAB>codex home`,
  *        exit 3 (reason on stderr) when no runner resolves. Prompt routines and older run-duty.sh copies read it.
  */
@@ -166,9 +167,9 @@ async function chiefLoggedIn(host, bin) {
     return !!(await cli.loginProbe({ bin, timeoutMs: 15_000 }));
   } catch { return false; }
 }
-/** Today's duty spend on one host's provider (record-spend.js); 0 when the ledger cannot be read. */
-function chiefSpentToday(host) {
-  try { return require('../persona/record-spend.js').dutySpendToday(host); } catch { return 0; }
+/** Today's duty spend over both hosts (record-spend.js); 0 when the ledger cannot be read. */
+function chiefSpentToday() {
+  try { return require('../persona/record-spend.js').dutySpendToday(); } catch { return 0; }
 }
 function readAnswers(vault) {
   if (!vault) return null;
@@ -176,8 +177,8 @@ function readAnswers(vault) {
 }
 
 /**
- * See the module comment. deps: { env, lookup, candidates, loggedIn(host, bin), spentToday(host), answers, vault }. Every
- * host is checked at most once; the failover entry is resolved (its binary) but not probed.
+ * See the module comment. deps: { env, lookup, candidates, loggedIn(host, bin), spentToday(), answers, vault }. Every host
+ * is checked at most once; the failover entry is resolved (its binary) but not probed; a capped day probes nothing.
  */
 async function resolveChief(cfg, deps = {}) {
   const c = cfg === undefined ? defaultConfig() : (cfg || {});
@@ -194,6 +195,10 @@ async function resolveChief(cfg, deps = {}) {
   const binOf = (h) => resolveBin(h, { cfg: c, env, kind: 'persona', lookup: deps.lookup, candidates: deps.candidates });
   const entry = (h, bin) => ({ host: h, bin, model: chiefModel(h, c, { env, answers }).tag, effort: chiefEffort(h, c, env), home: h === 'codex' ? codexHomeOf(c) : null });
 
+  const none = (reason, skipped, primary = null) => ({ host: null, bin: null, model: null, effort: null, home: null, reason, primary, failover: [], skipped });
+  // One cap over both hosts (the owner's call on local-first A4): a capped day is skipped everywhere, never moved.
+  const spent = Number(spentToday()) || 0;
+  if (spent >= perDay) return none('daily-cap', [{ host: null, why: `today's duty spend ${spent.toFixed(2)} of ${perDay} USD (persona.perDayUsd)` }]);
   const seen = {};
   /** { bin, why }: why is null when `h` can start a duty now. */
   const check = async (h) => {
@@ -202,7 +207,6 @@ async function resolveChief(cfg, deps = {}) {
     let why = null;
     if (!bin) why = 'CLI not found';
     else if (!(await loggedIn(h, bin))) why = 'signed out';
-    else if (Number(spentToday(h)) >= perDay) why = 'daily cap';
     seen[h] = { bin, why };
     return seen[h];
   };
@@ -214,14 +218,11 @@ async function resolveChief(cfg, deps = {}) {
     for (const h of HOSTS) {
       if (!hostEnabled(c, h)) continue;
       const st = await check(h);
-      // auto takes the first enabled host that is installed and signed in; its daily cap is a reason to fail over.
-      if (!st.why || st.why === 'daily cap') { primary = h; break; }
+      // auto takes the first enabled host that is installed and signed in.
+      if (!st.why) { primary = h; break; }
       skipped.push({ host: h, why: st.why });
     }
-    if (!primary) {
-      const reason = 'waiting-for-host';
-      return { host: null, bin: null, model: null, effort: null, home: null, reason, primary: null, failover: [], skipped: skipped.length ? skipped : [{ host: null, why: 'no host enabled' }] };
-    }
+    if (!primary) return none('waiting-for-host', skipped.length ? skipped : [{ host: null, why: 'no host enabled' }]);
   }
   const other = HOSTS.find((h) => h !== primary);
   const canFail = failoverOn && both;
@@ -236,8 +237,7 @@ async function resolveChief(cfg, deps = {}) {
     if (!alt.why) return { ...entry(other, alt.bin), reason: `failover: ${primary} ${first.why}`, primary, failover: [], skipped };
     skipped.push({ host: other, why: alt.why });
   }
-  const reason = skipped.every((x) => x.why === 'daily cap') ? 'daily-cap' : 'waiting-for-host';
-  return { host: null, bin: null, model: null, effort: null, home: null, reason, primary, failover: [], skipped };
+  return none('waiting-for-host', skipped, primary);
 }
 
 /**

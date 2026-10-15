@@ -50,15 +50,13 @@ test('dutySpendFrom sums only today\'s duty:* rows and skips bad lines', () => {
   assert.equal(dutySpendFrom(''), 0);
 });
 
-test('dutySpendFrom per host (local-first A4): each provider\'s duty rows; a row without one is a Claude row', () => {
+test('dutySpendFrom: one cap over both hosts (local-first A4) — every provider\'s duty rows count', () => {
   const now = new Date().toISOString();
   const text = [
     JSON.stringify({ ts: now, feature: 'duty:monitor', provider: 'claude', usd: 0.5 }),
     JSON.stringify({ ts: now, feature: 'duty:tick', provider: 'codex', usd: 1.25 }),
     JSON.stringify({ ts: now, feature: 'duty:sitrep', usd: 0.25 }),
   ].join('\n');
-  assert.equal(dutySpendFrom(text, new Date(), 'claude'), 0.75);
-  assert.equal(dutySpendFrom(text, new Date(), 'codex'), 1.25);
   assert.equal(dutySpendFrom(text), 2);
 });
 

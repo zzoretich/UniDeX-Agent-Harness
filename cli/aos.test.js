@@ -456,6 +456,8 @@ test('chiefRow: the CoS host, model, effort and failover host; a moved duty says
     'codex · your Codex default (low) (/b/codex) (estimated) (failover: claude signed out); failover: none');
   assert.match(chiefRow({ host: null, reason: 'waiting-for-host', skipped: [{ host: 'claude', why: 'signed out' }] }),
     /^none \(waiting-for-host: claude: signed out\); duties are skipped until a host can start them/);
+  assert.equal(chiefRow({ host: null, reason: 'daily-cap', skipped: [{ host: null, why: 'today\'s duty spend 6.00 of 6 USD (persona.perDayUsd)' }] }),
+    'none today (daily-cap: today\'s duty spend 6.00 of 6 USD (persona.perDayUsd)); duties are skipped on both hosts until tomorrow');
 });
 
 // workbench-app D11: the app records itself in brain/_index/hud-host.json; doctor names it, or says to open it once.

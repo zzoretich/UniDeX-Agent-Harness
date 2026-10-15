@@ -19,9 +19,9 @@
 #        PERSONA_TIMEOUT   seconds, default 1800
 # Host and model (local-first A4): persona/chief.js (lib/headless.js resolveChief) picks the host — persona.runner, auto →
 # Claude when it is on and signed in, else Codex — and that host's CoS model (claude-opus-5-5 / gpt-6-sol on a 2.0 install),
-# and moves the duty to the other host when the primary cannot start (CLI missing, signed out, its day at
-# persona.perDayUsd) while persona.failover is on. When no host can start, the duty is skipped, never failed: one journal
-# entry (SKIPPED waiting-for-host, or SKIPPED daily-cap) and, for a missing host, one flag a day under ## Flags.
+# and moves the duty to the other host when the primary cannot start (CLI missing, signed out) while persona.failover is
+# on. persona.perDayUsd is one cap over both hosts: a capped day is skipped everywhere, never moved. A skipped duty is not
+# a failed one: one journal entry (SKIPPED daily-cap, or SKIPPED waiting-for-host plus one flag a day under ## Flags).
 # Helper: two duties have a runner-side helper — tick.js for `tick`, reflect.js for `reflect-daily`: `precheck` exit 3 →
 # the model call is skipped ("skipped:" in the log, no journal entry, exit 0); `beat` runs once the duty met its
 # contract (the tick records its beat and may start an early reflect; the daily reflect drains the queue).
@@ -157,12 +157,12 @@ if [ -n "$SKIP" ]; then
   fi
   mkdir -p "$PERSONA_LOG_DIR" "$PERSONA/journal"
   if [ "$SKIP" = "daily-cap" ]; then
-    echo "[$(date)] duty=$DUTY skipped: daily spend cap reached on every host ($SKIP_DETAIL)" >> "$LOG"
+    echo "[$(date)] duty=$DUTY skipped: daily spend cap reached ($SKIP_DETAIL)" >> "$LOG"
     {
       echo ""
       echo "## $(date +%H:%M) — duty: $DUTY"
       echo "- status: SKIPPED daily-cap"
-      echo "- did: nothing — today's duty spend is at persona.perDayUsd on every host ($SKIP_DETAIL)"
+      echo "- did: nothing — $SKIP_DETAIL, on both hosts"
     } >> "$JOURNAL"
     exit 0
   fi
@@ -240,12 +240,12 @@ fi
 
 mkdir -p "$PERSONA_LOG_DIR" "$PERSONA/journal"
 
-# Daily duty cap from the provider spend ledger (exit 3 = capped; any other failure → proceed), counted on the host this
-# run starts on (chief.js already moved a capped primary to the other host; this is the last word, and the budget).
+# Daily duty cap from the provider spend ledger (exit 3 = capped; any other failure → proceed): one cap over both hosts,
+# which chief.js checked already; this is the last word before the start, and the per-run budget.
 # --check prints {"allowed":…,"spentToday":…,"perDayUsd":…,"perDutyUsd":…}; perDutyUsd is the
 # per-run budget unless PERSONA_MAX_USD was set.
 if [ -n "$NODE" ] && [ -x "$NODE" ] && [ -f "$RECORD" ]; then
-  CAPS="$(AOS_VAULT="$VAULT" AOS_CONFIG="$CONFIG" "$NODE" "$RECORD" --check --host "$RUNNER" 2>>"$ERR")"
+  CAPS="$(AOS_VAULT="$VAULT" AOS_CONFIG="$CONFIG" "$NODE" "$RECORD" --check 2>>"$ERR")"
   RC=$?
   if [ "$RC" -eq 3 ]; then
     echo "[$(date)] duty=$DUTY skipped: daily spend cap reached $CAPS" >> "$LOG"

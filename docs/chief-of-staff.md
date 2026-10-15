@@ -76,9 +76,9 @@ and the effort; see **Host, model and failover** below — then runs
 `AOS_HEADLESS=1` (your hooks do not fire), a scoped tool allowlist, `--max-budget-usd`
 (`PERSONA_MAX_USD`, else `persona.perDutyUsd` from config, default 2.0), and
 `--output-format json`. The cost of every run is appended to `brain/_index/provider-spend.jsonl`
-as `feature: "duty:<name>"`. A host's day is over once today's `duty:*` rows of that provider add up to
-`persona.perDayUsd` (default 6.0): the duty moves to the other host when failover can, else it is skipped — journal
-entry `- status: SKIPPED daily-cap`, exit 0. Both caps live in `<vault>/brain/config.json` (the `enabled` switch
+as `feature: "duty:<name>"`. A duty is skipped for the rest of the day — journal entry
+`- status: SKIPPED daily-cap`, exit 0 — once today's `duty:*` rows add up to `persona.perDayUsd` (default 6.0). It is
+one cap over both hosts: every duty row counts whichever host ran it, and a capped day is never moved to the other. Both caps live in `<vault>/brain/config.json` (the `enabled` switch
 does not — `agenticos.json` is merged last and `aos init` writes it there; see above):
 
 ```json
@@ -106,9 +106,10 @@ bump them): **Claude Code · `claude-opus-5-5`** (`persona.model`) or **Codex ·
 at `persona.effort` (`medium` unless set). `persona.runner` picks the host: `auto` (default) takes Claude Code when it
 is an enabled host whose CLI is installed and signed in, else Codex; `claude` or `codex` pins one (`AOS_RUNNER`
 overrides it for one run). Before a duty starts, `persona/chief.js` checks its host can start it — the CLI is found,
-`claude auth status` / `codex login status` say signed in (both free), and that host's duty spend today is under
-`persona.perDayUsd`. With both hosts enabled and `persona.failover` on (the default), a duty that cannot start on its
-host runs on the other host's model instead, and the duty log says why (`(failover: claude signed out)`). When no
+`claude auth status` / `codex login status` say signed in (both free), and today's duty spend on both hosts together is
+under `persona.perDayUsd` (a capped day is skipped on both — the cap is never a reason to move). With both hosts enabled
+and `persona.failover` on (the default), a duty whose host's CLI is missing or signed out runs on the other host's model
+instead, and the duty log says why (`(failover: claude signed out)`). When no
 host can start it, the duty is **skipped, not failed**: one journal entry `- status: SKIPPED waiting-for-host` naming
 each host and why, one flag a day under `## Flags`, exit 0. `aos doctor`'s `persona runner` row names the host, its
 model and effort, and the failover host:

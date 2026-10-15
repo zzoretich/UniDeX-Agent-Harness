@@ -221,14 +221,14 @@ const CHIEF_CFG = (o = {}) => ({
 });
 const claudeOnly = (o) => CHIEF_CFG({ hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: false } }, ...o });
 const codexOnly = (o) => CHIEF_CFG({ hosts: { claude: { enabled: false }, codex: { enabled: true, bin: CODEX, home: '/c/home' } }, ...o });
-/** deps: every binary from the config, sign-in and spend per host from the maps, a record of which hosts were probed. */
-function chiefDeps({ signedOut = [], spent = {}, env = ENV, answers = null } = {}) {
+/** deps: every binary from the config, sign-in per host, today's duty spend over both hosts, a record of the probes. */
+function chiefDeps({ signedOut = [], spent = 0, env = ENV, answers = null } = {}) {
   const probed = [];
   return {
     probed,
     env, lookup: none, candidates: false, answers,
     loggedIn: async (h, bin) => { probed.push(`${h}:${bin}`); return !signedOut.includes(h); },
-    spentToday: (h) => spent[h] || 0,
+    spentToday: () => spent,
   };
 }
 const pick = (r) => ({ host: r.host, model: r.model, effort: r.effort, reason: r.reason, failover: r.failover.map((f) => `${f.host}·${f.model}`), skipped: r.skipped.map((s) => `${s.host}: ${s.why}`) });
@@ -238,7 +238,7 @@ test('resolveChief: Claude only — claude-opus-5-5 at medium, no failover; sign
     { host: 'claude', model: 'claude-opus-5-5', effort: 'medium', reason: 'auto', failover: [], skipped: [] });
   const out = await H.resolveChief(claudeOnly(), chiefDeps({ signedOut: ['claude'] }));
   assert.deepEqual(pick(out), { host: null, model: null, effort: null, reason: 'waiting-for-host', failover: [], skipped: ['claude: signed out'] });
-  assert.deepEqual(pick(await H.resolveChief(claudeOnly(), chiefDeps({ spent: { claude: 6 } }))).reason, 'daily-cap');
+  assert.deepEqual(pick(await H.resolveChief(claudeOnly(), chiefDeps({ spent: 6 }))).reason, 'daily-cap');
   const gone = await H.resolveChief(claudeOnly({ hosts: { claude: { enabled: true, bin: '/nowhere/claude' }, codex: { enabled: false } } }), chiefDeps());
   assert.deepEqual(pick(gone).skipped, ['claude: CLI not found']);
   assert.equal(gone.reason, 'waiting-for-host');
@@ -250,14 +250,14 @@ test('resolveChief: Codex only — gpt-6-sol with the recorded Codex home; a Cla
   assert.equal(r.bin, CODEX);
   assert.equal(r.home, '/c/home');
   assert.deepEqual(pick(await H.resolveChief(codexOnly(), chiefDeps({ signedOut: ['codex'] }))).skipped, ['codex: signed out']);
-  assert.equal((await H.resolveChief(codexOnly(), chiefDeps({ spent: { codex: 7 } }))).reason, 'daily-cap');
+  assert.equal((await H.resolveChief(codexOnly(), chiefDeps({ spent: 7 }))).reason, 'daily-cap');
   // A pre-2.0 vault: null persona.codexModel keeps codex.model, then the user's own Codex default (no -m).
   const legacy = codexOnly({ persona: { codexModel: null }, codex: { model: 'gpt-5-mini' } });
   assert.equal((await H.resolveChief(legacy, chiefDeps())).model, 'gpt-5-mini');
   assert.equal((await H.resolveChief(codexOnly({ persona: { codexModel: null } }), chiefDeps())).model, null);
 });
 
-test('resolveChief: both hosts — Claude first with Codex as its failover; signed out, capped or missing moves the duty', async () => {
+test('resolveChief: both hosts — Claude first with Codex as its failover; signed out or missing moves the duty, a cap never does', async () => {
   const deps = chiefDeps();
   const r = await H.resolveChief(CHIEF_CFG(), deps);
   assert.deepEqual(pick(r), { host: 'claude', model: 'claude-opus-5-5', effort: 'medium', reason: 'auto', failover: ['codex·gpt-6-sol'], skipped: [] });
@@ -265,9 +265,13 @@ test('resolveChief: both hosts — Claude first with Codex as its failover; sign
   // auto: a signed-out Claude makes Codex the primary.
   const auto = await H.resolveChief(CHIEF_CFG(), chiefDeps({ signedOut: ['claude'] }));
   assert.deepEqual(pick(auto), { host: 'codex', model: 'gpt-6-sol', effort: 'medium', reason: 'auto', failover: [], skipped: ['claude: signed out'] });
-  // auto: Claude signed in but its day capped → failover to Codex.
-  const capped = await H.resolveChief(CHIEF_CFG(), chiefDeps({ spent: { claude: 6 } }));
-  assert.deepEqual(pick(capped), { host: 'codex', model: 'gpt-6-sol', effort: 'medium', reason: 'failover: claude daily cap', failover: [], skipped: ['claude: daily cap'] });
+  // One cap over both hosts (the owner's call): a capped day is skipped on every host, never moved — and probes nothing.
+  const capDeps = chiefDeps({ spent: 6 });
+  const capped = await H.resolveChief(CHIEF_CFG(), capDeps);
+  assert.deepEqual(pick(capped), { host: null, model: null, effort: null, reason: 'daily-cap', failover: [], skipped: ['null: today\'s duty spend 6.00 of 6 USD (persona.perDayUsd)'] });
+  assert.deepEqual(capDeps.probed, []);
+  assert.equal((await H.resolveChief(CHIEF_CFG({ persona: { ...CHIEF_CFG().persona, perDayUsd: 0 } }), chiefDeps())).reason, 'daily-cap', 'a $0 day runs nothing');
+  assert.equal((await H.resolveChief(CHIEF_CFG(), chiefDeps({ spent: 5.99 }))).host, 'claude');
   // persona.runner codex: Codex first, Claude its failover; Codex's CLI missing → Claude.
   const pinned = CHIEF_CFG({ persona: { ...CHIEF_CFG().persona, runner: 'codex' } });
   assert.deepEqual(pick(await H.resolveChief(pinned, chiefDeps())).failover, ['claude·claude-opus-5-5']);
@@ -275,14 +279,15 @@ test('resolveChief: both hosts — Claude first with Codex as its failover; sign
   assert.deepEqual(pick(noCodex), { host: 'claude', model: 'claude-opus-5-5', effort: 'medium', reason: 'failover: codex CLI not found', failover: [], skipped: ['codex: CLI not found'] });
   // AOS_RUNNER beats persona.runner.
   assert.equal((await H.resolveChief(pinned, chiefDeps({ env: { ...ENV, AOS_RUNNER: 'claude' } }))).host, 'claude');
-  // Both capped → daily-cap; one signed out and the other capped → waiting-for-host (signing in would help).
-  assert.equal((await H.resolveChief(CHIEF_CFG(), chiefDeps({ spent: { claude: 6, codex: 6 } }))).reason, 'daily-cap');
-  const stuck = await H.resolveChief(CHIEF_CFG(), chiefDeps({ signedOut: ['claude'], spent: { codex: 9 } }));
-  assert.deepEqual(pick(stuck), { host: null, model: null, effort: null, reason: 'waiting-for-host', failover: [], skipped: ['claude: signed out', 'codex: daily cap'] });
+  // Both signed out → waiting-for-host; signed out and capped → daily-cap (the cap is the day's, whoever is signed in).
+  const stuck = await H.resolveChief(CHIEF_CFG(), chiefDeps({ signedOut: ['claude', 'codex'] }));
+  assert.deepEqual(pick(stuck), { host: null, model: null, effort: null, reason: 'waiting-for-host', failover: [], skipped: ['claude: signed out', 'codex: signed out'] });
+  assert.equal((await H.resolveChief(CHIEF_CFG(), chiefDeps({ signedOut: ['claude'], spent: 9 }))).reason, 'daily-cap');
   // persona.failover false: no move, no failover named.
   const noFail = CHIEF_CFG({ persona: { ...CHIEF_CFG().persona, failover: false } });
   assert.deepEqual(pick(await H.resolveChief(noFail, chiefDeps())).failover, []);
-  assert.equal((await H.resolveChief(noFail, chiefDeps({ spent: { claude: 6 } }))).reason, 'daily-cap');
+  const pinnedOff = CHIEF_CFG({ persona: { ...CHIEF_CFG().persona, runner: 'claude', failover: false } });
+  assert.deepEqual(pick(await H.resolveChief(pinnedOff, chiefDeps({ signedOut: ['claude'] }))).skipped, ['claude: signed out']);
 });
 
 test('resolveChief: no host — waiting-for-host, nothing probed', async () => {

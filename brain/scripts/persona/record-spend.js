@@ -6,10 +6,9 @@
  * summing only ledger rows whose feature starts with "duty:"; persona.perDutyUsd is one
  * run's --max-budget-usd; claude.perDayUsd belongs to background hook calls, not duties.
  *
- *   node persona/record-spend.js --check [--host claude|codex]
- *       prints {allowed, spentToday, perDayUsd, perDutyUsd}; exit 0 when allowed, 3 when capped. With --host the day counts
- *       only that provider's duty:* rows (local-first A4: persona.perDayUsd caps each host, so a capped host can fail over;
- *       a row without a provider is a Claude row, from before Codex ran duties)
+ *   node persona/record-spend.js --check
+ *       prints {allowed, spentToday, perDayUsd, perDutyUsd}; exit 0 when allowed, 3 when capped. One cap over both hosts:
+ *       every duty:* row counts, whichever provider (local-first A4: a capped day is skipped on every host, never moved)
  *   node persona/record-spend.js --file <output> --feature duty:<name> --model <model>
  *       parses `claude -p --output-format json` output — or, when the file holds a `codex exec --json`
  *       event stream (codex runner, codex-parity D5), prices its usage block — and appends one ledger row
@@ -94,9 +93,8 @@ function check({ spendToday, perDayUsd }) {
   return { allowed: spentToday < perDayUsd, spentToday, perDayUsd };
 }
 
-/** USD sum of ledger rows whose feature starts with "duty:" and whose ts is on `day` (local calendar day); `host` keeps one
- *  provider's rows (a row without one counts as claude). */
-function dutySpendFrom(text, day = new Date(), host = null) {
+/** USD sum of ledger rows whose feature starts with "duty:" and whose ts is on `day` (local calendar day), any provider. */
+function dutySpendFrom(text, day = new Date()) {
   const key = day.toDateString();
   let sum = 0;
   for (const line of String(text || '').split('\n')) {
@@ -104,7 +102,6 @@ function dutySpendFrom(text, day = new Date(), host = null) {
     let r;
     try { r = JSON.parse(line); } catch { continue; }
     if (!r || typeof r.feature !== 'string' || !r.feature.startsWith('duty:')) continue;
-    if (host && (r.provider || 'claude') !== host) continue;
     if (new Date(r.ts).toDateString() !== key) continue;
     sum += Number(r.usd) || 0;
   }
@@ -129,8 +126,8 @@ function recordSpend(row) {
   fs.appendFileSync(file, JSON.stringify(row) + '\n');
   return row;
 }
-function dutySpendToday(host = null) {
-  try { return dutySpendFrom(fs.readFileSync(ledgerPath(), 'utf8'), new Date(), host); } catch { return 0; }   // no ledger yet
+function dutySpendToday() {
+  try { return dutySpendFrom(fs.readFileSync(ledgerPath(), 'utf8')); } catch { return 0; }   // no ledger yet
 }
 /** Null-ish numeric guard: an explicit finite, non-negative number (including 0) is honoured; anything
  *  else (missing, NaN, negative, non-number) falls back to the default. Final review F6/spec-8: the old
@@ -146,15 +143,13 @@ function main(argv) {
   const arg = (f) => { const i = argv.indexOf(f); return i !== -1 ? argv[i + 1] : null; };
   if (argv.includes('--check')) {
     const { perDayUsd, perDutyUsd } = caps();
-    const host = ['claude', 'codex'].includes(arg('--host')) ? arg('--host') : null;
-    const r = { ...check({ spendToday: () => dutySpendToday(host), perDayUsd }), perDutyUsd };
-    if (host) r.host = host;
+    const r = { ...check({ spendToday: dutySpendToday, perDayUsd }), perDutyUsd };
     r.allowed = r.allowed && perDutyUsd > 0;   // a $0 per-duty budget refuses to start (F6): undefined --max-budget-usd 0 semantics otherwise
     process.stdout.write(JSON.stringify(r) + '\n');
     return r.allowed ? 0 : 3;
   }
   const file = arg('--file');
-  if (!file) { process.stderr.write('usage: record-spend.js --check [--host claude|codex] | --file <json> --feature duty:<name> --model <model>\n'); return 2; }
+  if (!file) { process.stderr.write('usage: record-spend.js --check | --file <json> --feature duty:<name> --model <model>\n'); return 2; }
   const text = fs.readFileSync(file, 'utf8');
   const feature = arg('--feature') || 'duty:unknown';
   // A codex runner writes its `--json` event stream to the same file; the row is then an estimate (D5).

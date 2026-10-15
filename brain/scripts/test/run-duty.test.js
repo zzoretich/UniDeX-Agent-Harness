@@ -607,20 +607,22 @@ test('chief: with both hosts the duty runs on Claude · claude-opus-5-5; signed 
   assert.equal(off.stdout.trim(), 'skipped: waiting-for-host (claude: signed out)');
 });
 
-test('chief: a host whose day is at persona.perDayUsd fails over to the other host; both capped is SKIPPED daily-cap', () => {
+test('chief: persona.perDayUsd is one cap over both hosts — a capped day is SKIPPED daily-cap, never moved to the other host', () => {
   const s = sandbox();
-  const { fakeCodex, env } = bothHosts(s);
+  const { env } = bothHosts(s);
   const today = new Date().toISOString();
   const row = (provider, usd) => JSON.stringify({ ts: today, feature: 'duty:other', provider, model: 'm', usd, inputTokens: 1, outputTokens: 1, ms: 1 });
   const ledger = path.join(s.vault, 'brain', '_index', 'provider-spend.jsonl');
-  fs.writeFileSync(ledger, row('claude', 6) + '\n');
-  const moved = run(['testduty', '--dry-run'], env);
-  assert.equal(moved.stdout.split('\n')[0], fakeCodex, 'Claude\'s day is capped; Codex\'s is not');
-  assert.match(moved.stdout, /^\(failover: claude daily cap\)$/m);
-  fs.appendFileSync(ledger, row('codex', 6) + '\n');
+  fs.writeFileSync(ledger, row('claude', 3) + '\n');
+  assert.equal(run(['testduty', '--dry-run'], env).stdout.split('\n')[0], s.env.PERSONA_CLAUDE_BIN, 'under the cap: the primary runs');
+  // Codex's rows count toward the same day: 3 + 3 reaches the default 6.
+  fs.appendFileSync(ledger, row('codex', 3) + '\n');
+  assert.equal(run(['testduty', '--dry-run'], env).stdout.trim(), 'skipped: daily-cap (today\'s duty spend 6.00 of 6 USD (persona.perDayUsd))', 'Codex signed in is no way round the cap');
   const r = run(['testduty'], { ...env, FAKE_JOURNAL: s.journal });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(fs.readFileSync(s.journal, 'utf8'), /— duty: testduty\n- status: SKIPPED daily-cap\n- did: nothing — today's duty spend is at persona\.perDayUsd on every host \(claude: daily cap; codex: daily cap\)/);
+  assert.match(fs.readFileSync(s.journal, 'utf8'), /— duty: testduty\n- status: SKIPPED daily-cap\n- did: nothing — today's duty spend 6\.00 of 6 USD \(persona\.perDayUsd\), on both hosts/);
+  assert.ok(!fs.readFileSync(s.journal, 'utf8').includes('status: OK'), 'nothing ran on either host');
+  assert.match(fs.readFileSync(path.join(s.logDir, 'duty-testduty.log'), 'utf8'), /skipped: daily spend cap reached/);
   assert.ok(!fs.readFileSync(path.join(s.vault, 'persona', 'STATE.md'), 'utf8').includes('waiting for a host'), 'a capped day is no flag');
 });
 

@@ -329,11 +329,11 @@ editing the file and running `aos routines sync`.
 
 Duties run headless with `AOS_HEADLESS=1`, so your own hooks never fire inside one — through
 `claude -p --model claude-opus-5-5`, or `codex exec -m gpt-6-sol` on a Codex-only machine. With both
-hosts, a duty that cannot start on its host (CLI missing, signed out, that host's day at the cap)
-runs on the other host's model instead (`persona.failover`); with no host able to start it, it is
-skipped and flagged once a day, never failed. Every run is ledgered to
-`brain/_index/provider-spend.jsonl`; once a host's duty rows for today reach `persona.perDayUsd`
-(6.00) its day is over: the rest moves to the other host, or is skipped, journalled and exit 0. **A duty never runs `git commit`** — anything it
+hosts, a duty that cannot start on its host (CLI missing or signed out) runs on the other host's
+model instead (`persona.failover`); with no host able to start it, it is skipped and flagged once a
+day, never failed. Every run is ledgered to `brain/_index/provider-spend.jsonl`; once today's duty
+rows on both hosts together reach `persona.perDayUsd` (6.00) the rest of the day is skipped on both,
+journalled and exit 0. **A duty never runs `git commit`** — anything it
 edits beyond its own state stays in the working tree for you to read.
 
 ### Why the heartbeat exists

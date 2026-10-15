@@ -130,6 +130,7 @@ function deepMerge(base, over) {
 function chiefRow(c, codexNote = () => '') {
   const name = (m) => m || 'your Codex default';
   const why = (c.skipped || []).map((s) => (s.host ? `${s.host}: ${s.why}` : s.why)).join('; ');
+  if (!c.host && c.reason === 'daily-cap') return `none today (daily-cap: ${why}); duties are skipped on both hosts until tomorrow`;
   if (!c.host) return `none (${c.reason}${why ? `: ${why}` : ''}); duties are skipped until a host can start them — sign in to Claude Code or Codex, or set persona.runner`;
   const moved = String(c.reason || '').startsWith('failover') ? ` (${c.reason})` : '';
   const fo = (c.failover || []).map((f) => `${f.host} · ${name(f.model)}`).join(', ');
