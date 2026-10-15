@@ -195,6 +195,19 @@ test("files the runtime writes stay read-only, and so does anything that is not 
   await expect(editBtn(win)).toHaveCount(0);
 });
 
+test("a note with other names on disk (a hard link) is read-only, and says why: an edit would change them too", async () => {
+  const { win } = app();
+  const twin = FX.v("brain/memory/projects/harbor-map-twin.md");
+  fs.linkSync(FILE, twin);
+  try {
+    await open(win, NOTE);
+    await expect(editBtn(win)).toBeDisabled();
+    await expect(editBtn(win)).toHaveAttribute("title", /^Read-only: this note has other names on disk \(hard links\), so an edit here would change them too\.$/);
+    await expect(noteBody(win).locator(".cm-editor")).toHaveCount(0);
+  } finally { fs.rmSync(twin, { force: true }); }
+  expect(onDisk()).toBe(pristine());
+});
+
 test("the terminal cannot take the editor's keys: focus it takes on its own goes back to the note", async () => {
   const { win } = app();
   await openTab(win, "term");

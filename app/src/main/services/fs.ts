@@ -52,7 +52,22 @@ export function afterTrash<T>(pending: () => Promise<unknown> | null, run: () =>
 }
 
 function stats(s: fs.Stats, link = false): StatInfo {
-  return { size: s.size, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, file: s.isFile(), dir: s.isDirectory(), link };
+  return { size: s.size, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, file: s.isFile(), dir: s.isDirectory(), link, nlink: s.nlink };
+}
+
+/** Why a hard link is not the page's to change. */
+export const HARD_LINKED = "it has other names on disk (hard links): a change here would change them too";
+
+/**
+ * A refusal when `p` is, or a link at `p` reaches, a regular file with other names on disk (a hard link): changing or
+ * removing it here would reach those names too, and they can be anywhere, a protected folder included, where no path
+ * check sees them. Null otherwise (not there, one name, or not a file).
+ */
+function hardLinked(p: string): Result<never> | null {
+  for (const st of [() => fs.lstatSync(p), () => fs.statSync(p)]) {
+    try { const s = st(); if (s.isFile() && s.nlink > 1) return { ok: false, error: HARD_LINKED, code: "EMLINK" }; } catch { /* not there */ }
+  }
+  return null;
 }
 
 export interface FsServiceOptions {
@@ -147,6 +162,8 @@ export class FsService {
     const policy = this.o.policy();
     if (!(via === "editor" ? policy.canSave(p) : policy.canWrite(p))) return refused("no write surface allows it");
     if (Buffer.byteLength(data) > MAX_TEXT_BYTES) return { ok: false, error: "too large", code: "EFBIG" };
+    const linked = hardLinked(p);
+    if (linked) return linked;
     const parents = this.makeParents(p);
     if (parents) return parents;
     try { fs.writeFileSync(p, data, "utf8"); return ok(null); } catch (err) { return failure(err); }
@@ -155,6 +172,8 @@ export class FsService {
   appendText(p: string, data: string): Result<null> {
     if (!this.o.policy().canWrite(p)) return refused("no write surface allows it");
     if (Buffer.byteLength(data) > MAX_TEXT_BYTES) return { ok: false, error: "too large", code: "EFBIG" };
+    const linked = hardLinked(p);
+    if (linked) return linked;
     try { fs.appendFileSync(p, data, "utf8"); return ok(null); } catch (err) { return failure(err); }
   }
 
@@ -173,6 +192,8 @@ export class FsService {
   remove(p: string, recursive: boolean): Result<null> {
     if (recursive) return refused("a folder goes to the Trash, not away for good");
     if (!this.o.policy().canWrite(p)) return refused("no write surface allows it");
+    const linked = hardLinked(p);
+    if (linked) return linked;
     try { fs.rmSync(p, { force: true }); return ok(null); } catch (err) { return failure(err); }
   }
 
@@ -189,6 +210,8 @@ export class FsService {
   copy(from: string, to: string): Result<null> {
     if (!this.o.scope().canRead(from)) return refused("outside what the app reads");
     if (!this.o.policy().canWrite(to)) return refused("no write surface allows it");
+    const linked = hardLinked(to);
+    if (linked) return linked;
     let before: number | null = null;
     try { before = fs.statSync(to).mode & 0o7777; } catch { /* a new file */ }
     try {

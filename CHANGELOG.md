@@ -64,7 +64,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **Opus 5, 4.8 and 4.7 cost a third of what the cost module said.** Session costs and the Brain hub's estimates priced them at $15 / $75 per million tokens, the retired Opus 4.1's rate; they use Anthropic's published $5 / $25 now (`pricing.json`, checked 2026-10-15). <!-- no-tour: price table; nothing new on screen -->
 
 ### Security
-- **The Workbench page can no longer write into the runtime's protected folders by spelling a path with other capital letters or Unicode forms, or through a link.** Main compares each path the way macOS's disk compares names and checks where the disk would put it as well as how it is written, under any name for the vault's folder (and the folders it never reads, under any name for them); a file the page copies never becomes executable, and a move to the Trash is checked and done as one step. <!-- no-tour: security fix -->
+- **The Workbench page can no longer write into the runtime's protected folders by spelling a path with other capital letters or Unicode forms, or through a link.** Main compares each path the way macOS's disk compares names and checks where the disk would put it as well as how it is written, under any name for the vault's folder (and the folders it never reads, under any name for them); a file the page copies never becomes executable, a file with other names on disk (a hard link) is never changed or removed by the page, and a move to the Trash is checked and done as one step. <!-- no-tour: security fix -->
 
 ## [1.9.0] — 2026-10-12
 
