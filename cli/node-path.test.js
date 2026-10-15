@@ -1,6 +1,6 @@
 'use strict';
 // cli/node-path.js (spec 2026-10-05-workbench-app-design D12): a Homebrew Cellar node is recorded as its stable opt link,
-// only when that link resolves to the same binary.
+// and the app wizard's own Node (install-import B1) as its `current` link, only when that link resolves to the same binary.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -34,6 +34,25 @@ test('stableNode: keeps execPath when the opt link is missing or points at anoth
   const noOpt = brew();
   fs.unlinkSync(path.join(noOpt.prefix, 'opt', 'node'));
   assert.equal(stableNode(noOpt.cellar), noOpt.cellar);
+});
+
+/** The app wizard's Node: <home>/.local/share/unidex/node/v<version>/bin/node, and current → v<current>. */
+function unidex({ version = 'v24.22.0', current = version } = {}) {
+  const root = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aos-unidex-'))), '.local', 'share', 'unidex', 'node');
+  for (const v of new Set([version, current])) {
+    fs.mkdirSync(path.join(root, v, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(root, v, 'bin', 'node'), '#!/bin/sh\n', { mode: 0o755 });
+  }
+  fs.symlinkSync(current, path.join(root, 'current'));
+  return { versioned: path.join(root, version, 'bin', 'node'), current: path.join(root, 'current', 'bin', 'node') };
+}
+
+test('stableNode: the app wizard\'s Node is recorded as its current link, which the app moves to a newer one', () => {
+  const u = unidex();
+  assert.equal(stableNode(u.versioned), u.current);
+  assert.equal(stableNode(u.current), u.current, 'already the link');
+  const moved = unidex({ version: 'v24.21.0', current: 'v24.22.0' });
+  assert.equal(stableNode(moved.versioned), moved.versioned, 'current is another version: recording it would change the Node');
 });
 
 test('stableNode: any other path is returned unchanged, and a failing fs never throws', () => {

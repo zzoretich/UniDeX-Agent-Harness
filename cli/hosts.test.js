@@ -83,6 +83,22 @@ test('a Codex install adds Claude Code: the plugin installed, both hosts on', ()
   assert.match(r.stdout, /Add this line to your CLAUDE\.md .* if it is not there yet:\n\s+@.*AGENTICOS\.md/);
 });
 
+test('an install made with --host none adds Claude Code: the plugin installed, Claude on, Codex left off (the F7 guard never applies)', () => {
+  const sb = sandbox();
+  const init = sb.aos(['init', '--host', 'none', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes']);
+  assert.equal(init.status, 0, init.stderr + init.stdout);
+  assert.match(init.stdout, /aos hosts add claude \(or aos hosts add codex\)/, 'the checklist names the command');
+  const r = sb.aos(['hosts', 'add', 'claude', '--from-local', ROOT]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(sb.log('FAKE_CLAUDE_LOG'), /^plugin install agenticos@agenticos-workbench$/m);
+  const cfg = readJson(sb.cfgFile);
+  assert.deepEqual([cfg.hosts.claude.enabled, cfg.hosts.codex.enabled], [true, false]);
+  // Adding the second host keeps the first: hosts add never narrows, so init's drop guard has nothing to refuse.
+  const both = sb.aos(['hosts', 'add', 'codex']);
+  assert.equal(both.status, 0, both.stderr + both.stdout);
+  assert.deepEqual([readJson(sb.cfgFile).hosts.claude.enabled, readJson(sb.cfgFile).hosts.codex.enabled], [true, true]);
+});
+
 test('refused, writing nothing: no vault, a missing CLI, a signed-out CLI, a bad verb', () => {
   const sb = sandbox();
   const none = sb.aos(['hosts', 'add', 'codex']);

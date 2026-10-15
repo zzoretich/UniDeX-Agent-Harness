@@ -3,9 +3,10 @@
 /**
  * aos.js — AgenticOS Workbench installer and maintenance CLI. Zero dependencies (node: builtins only).
  *
- *   aos init [--vault <dir>] [--host auto|claude|codex|both] [--provider local|auto|ollama|claude|codex|none]
+ *   aos init [--vault <dir>] [--host auto|claude|codex|both|none] [--provider local|auto|ollama|claude|codex|none]
  *            [--cost] [--budget <usd>] [--persona-json <file>] [--from-local <repo-dir>] [--dry-run] [--yes]
- *   (Ollama, python3 >= 3.9 and uv are hard prerequisites of init. The Workbench is the AgenticOS Workbench app, which
+ *   (Node >= 20 and uv are hard prerequisites of init; Ollama is a warning, and python3 >= 3.9 is needed only with --cost
+ *   (install-import B1). --host none installs with no host (B2). The Workbench is the AgenticOS Workbench app, which
  *   installs nothing into the vault, so Obsidian is no longer one: --no-obsidian, --terminal and `aos terminal install`
  *   are still accepted, and do nothing, so scripts written for an older release keep working.)
  *   aos doctor · aos status · aos provider [local|auto|ollama|claude|codex|none] · aos local [status | pull | use <model>] · aos graph [status | build [--semantic] | on | off | semantic on|off|auto]
@@ -46,12 +47,12 @@ const OBSIDIAN_PLUGIN_ID = 'agentic-os';
 const DEFAULT_VAULT = path.join(os.homedir(), 'AgenticOS');
 const PROVIDERS = ['local', 'auto', 'ollama', 'claude', 'codex', 'none'];
 const RUNTIME_SCRIPTS = { 'scan-vault': 'scan-vault.js', 'build-brain-md': 'build-brain-md.js', recall: 'sdk/recall-cli.js', 'skills-sync': 'skills-sync.js' };
-const HOST_CHOICES = ['auto', 'claude', 'codex', 'both'];
+const HOST_CHOICES = ['auto', 'claude', 'codex', 'both', 'none'];
 const CH = require('./codex-host.js');
 const { stableNode, isCellarPath } = require('./node-path.js');
 
 const USAGE = `usage:
-  aos init [--vault <dir>] [--host auto|claude|codex|both] [--provider local|auto|ollama|claude|codex|none]
+  aos init [--vault <dir>] [--host auto|claude|codex|both|none] [--provider local|auto|ollama|claude|codex|none]
            [--cost] [--budget <usd>] [--persona-json <file>] [--from-local <repo-dir>] [--dry-run] [--yes]
   aos doctor | status | provider [local|auto|ollama|claude|codex|none]
   aos local [status [--json] | pull [model…] | use <model>]
@@ -224,17 +225,34 @@ function hostsOf(cfg) {
   if (!h || typeof h !== 'object') return { claude: true, codex: false };
   return { claude: !!(h.claude && h.claude.enabled), codex: !!(h.codex && h.codex.enabled) };
 }
-/** --host claude|codex|both is explicit; auto keeps an existing selection, else takes whatever CLI is installed and logged in
- *  (both when both are), else falls back to the Claude-only path so its own preflight message explains what is missing. */
+/** --host claude|codex|both|none is explicit (none: no host yet, install-import B2); auto keeps an existing selection, else
+ *  takes whatever CLI is installed and logged in (both when both are), else falls back to the Claude-only path so its own
+ *  preflight message explains what is missing (and names --host none). */
 function resolveHosts(flags, cfg, { claudeAvail, codexAvail }) {
   const want = flags.host || 'auto';
   if (!HOST_CHOICES.includes(want)) throw new UsageError(`--host must be one of ${HOST_CHOICES.join('|')}`);
+  if (want === 'none') return { claude: false, codex: false };
   if (want === 'claude') return { claude: true, codex: false };
   if (want === 'codex') return { claude: false, codex: true };
   if (want === 'both') return { claude: true, codex: true };
   if (cfg && cfg.hosts && typeof cfg.hosts === 'object') return hostsOf(cfg);
   if (claudeAvail || codexAvail) return { claude: !!claudeAvail, codex: !!codexAvail };
   return { claude: true, codex: false };
+}
+/**
+ * Inspection F7: an explicit --host names the whole set, and init only wires hosts, never unwires them. A set that drops
+ * a host this install has on would leave its plugin, hooks and MCP server in place while agenticos.json says it is off,
+ * so it is refused before anything is written, naming how to keep it and how to remove it properly.
+ */
+function assertKeepsHosts(flags, cfg, hosts) {
+  if (!cfg || !flags.host || flags.host === 'auto') return;
+  const was = hostsOf(cfg);
+  const dropped = ['claude', 'codex'].filter((h) => was[h] && !hosts[h]);
+  if (!dropped.length) return;
+  const keep = { claude: hosts.claude || was.claude, codex: hosts.codex || was.codex };
+  const keepFlag = keep.claude && keep.codex ? 'both' : keep.claude ? 'claude' : 'codex';
+  throw new CheckFailed(`--host ${flags.host} would turn off ${dropped.join(' and ')}, which this install has wired, and init never unwires a host: `
+    + `keep it with --host ${keepFlag}, or remove it first with ${dropped.map((h) => `aos uninstall --host ${h}`).join(' and ')}`);
 }
 /** The commands/ and skills/ the Codex skills are generated from: the vendored copy, else the checkout's plugin/. */
 function pluginSourceDir(vault, repo) {
@@ -364,16 +382,23 @@ async function doctor() {
   const checks = [];
   const add = (name, ok, detail, level = 'fail') => checks.push({ name, ok, detail, level });
   add('node >= 20', nodeMajor() >= 20, `v${process.versions.node}`);
-  // mandatory-prereqs D5: the install prerequisites are fail rows; the Workbench app and Ollama liveness stay warn.
+  // mandatory-prereqs D5, install-import B1: Node and uv (graphify's) are fail rows; Ollama is a warn, since background
+  // work waits for it rather than failing, and the UniDeX app's wizard installs it.
   const ollBin = ollamaBin();
-  add('ollama installed', !!ollBin, ollBin || 'not found on PATH — install Ollama from ollama.com');
-  const py = python3Version();
-  add('python3 >= 3.9', python3Ok(py), py ? `${py.major}.${py.minor}` : 'python3 not found on PATH');
+  add('ollama installed', !!ollBin, ollBin || `not found — background work waits for it; install Ollama from ollama.com (the ${APP_NAME} app's setup installs it)`, 'warn');
   const graphCmd = require('./graph-cmd.js');
   const uv = graphCmd.uvBin();
   add('uv installed', !!uv, uv || 'not found — install uv (docs.astral.sh/uv)');
   const cfg = readJson(configPath());
+  // Only the opt-in cost module runs python3 (install-import B1): not asked otherwise, so a Mac without the Command Line
+  // Tools never sees their install dialog from a check.
+  if (cfg && cfg.cost && cfg.cost.enabled) {
+    const py = python3Version();
+    add('python3 >= 3.9', python3Ok(py), py ? `${py.major}.${py.minor} (the cost module)` : 'python3 not found on PATH — the cost module needs it (aos cost disable turns it off)');
+  }
   const hosts = hostsOf(cfg);
+  // install-import B2: an install with no host is complete; what needs one says so instead of failing.
+  if (cfg && !hosts.claude && !hosts.codex) add('hosts', false, 'none yet — Sessions and the Chief of Staff wait for one: aos hosts add claude (or codex)', 'info');
   const bin = hosts.claude ? claudeBin(cfg) : null;
   if (hosts.claude) {
     add('claude CLI', !!bin, bin || 'not found on PATH or in ~/.local/bin');
@@ -955,6 +980,8 @@ function checklist(ctx) {
     ? `Open the ${APP_NAME} app; it finds this vault through agenticos.json.`
     : `Open the ${APP_NAME} app (macOS, Apple silicon; download it from ${APP_DOWNLOAD}); it finds this vault through agenticos.json.`);
   steps.push(`Put ${path.join(os.homedir(), '.local', 'bin')} on your PATH, then run: aos doctor`);
+  // install-import B2: no host yet. Re-running init with one adds it and keeps every file (`--host both` keeps both).
+  if (!hosts.claude && !hosts.codex) steps.push('Add a host when you have one: install and log in to Claude Code or Codex, then run aos hosts add claude (or aos hosts add codex). It keeps every file. Sessions and the Chief of Staff wait until then.');
   if (hosts.claude) steps.push('Start a new `claude` session; the first prompt receives <brain-context>. Use /wrap at the end.');
   if (hosts.codex) steps.push(codexPlugin
     ? 'Start a new `codex` session; every SessionStart receives the conventions and the first prompt <brain-context>. The skills come with the agenticos plugin — use $agenticos:wrap at the end.'
@@ -986,10 +1013,11 @@ async function init(flags) {
   const cxBin = codexBin(cfg0);
   const codexOk = !!cxBin && CH.codexLoggedIn(cxBin, run);
   const hosts = resolveHosts(flags, cfg0, { claudeAvail: claudeOk, codexAvail: codexOk });
+  assertKeepsHosts(flags, cfg0, hosts);
   ctx.hosts = hosts;
   if (hosts.claude) {
     if (!bin) {
-      if (provider !== 'none') throw new CheckFailed('claude CLI not found — install Claude Code, pass --host codex, or pass --provider none to skip the plugin steps');
+      if (provider !== 'none') throw new CheckFailed('claude CLI not found — install Claude Code, pass --host codex, or pass --host none to install with no host yet');
       out.warn('claude CLI not found; the plugin will not be installed (re-run init after installing Claude Code)');
     } else if (!claudeOk) {
       if (provider !== 'none') throw new CheckFailed('claude is not logged in — run `claude auth login` first');
@@ -1003,22 +1031,26 @@ async function init(flags) {
       out.warn('codex is not logged in; the MCP registration may fail');
     }
   }
-  const hostLabel = [hosts.claude && 'claude', hosts.codex && 'codex'].filter(Boolean).join('+');
+  const hostLabel = [hosts.claude && 'claude', hosts.codex && 'codex'].filter(Boolean).join('+') || 'none (Sessions and the Chief of Staff wait for one)';
   // codex-plugin D4: the agenticos plugin where this Codex CLI installs plugins, else the direct wiring.
   const cxMode = hosts.codex ? CH.codexInstallMode(cxBin, run) : null;
   ctx.codexInstall = cxMode;
   out.log(`preflight: hosts ${hostLabel} · claude ${bin ? bin : 'absent'} · codex ${cxBin ? cxBin : 'absent'}${cxMode ? ` (${cxMode === 'plugin' ? 'plugin' : 'direct wiring'})` : ''}`);
-  // mandatory-prereqs D2: Ollama and python3 >= 3.9 are hard gates, checked before anything is written and not waived by
-  // --provider none (that flag is about model calls, not tools). Obsidian no longer is: the Workbench is the AgenticOS
-  // Workbench app (workbench-app D1), and --no-obsidian is accepted as a no-op so older scripts keep working.
+  // install-import B1: Ollama is a warning, not a gate (background work waits for it; CLI users install it themselves, the
+  // app's wizard installs it), and python3 is checked only with --cost, the one thing that runs it. graphify's Python
+  // comes with uv. Obsidian is no prerequisite either: the Workbench is the AgenticOS Workbench app (workbench-app D1),
+  // and --no-obsidian is accepted as a no-op so older scripts keep working.
   const ollBin = ollamaBin();
-  if (!ollBin) throw new CheckFailed('ollama not found — install it from ollama.com, then re-run aos init');
-  const py = python3Version();
-  if (!python3Ok(py)) throw new CheckFailed(`python3 >= 3.9 is required — ${py ? `found ${py.major}.${py.minor}` : 'python3 not found on PATH'}`);
-  // graphify spec D1: uv installs the pinned graphify (step 5c) with a Python of its own, so it is a hard gate too.
+  if (!ollBin) out.warn(`ollama not found — background work waits for it; install it from ollama.com (the ${APP_NAME} app's setup installs it), then run aos doctor`);
+  let py = null;
+  if (flags.cost) {
+    py = python3Version();
+    if (!python3Ok(py)) throw new CheckFailed(`--cost: python3 >= 3.9 is required — ${py ? `found ${py.major}.${py.minor}` : 'python3 not found on PATH'}`);
+  }
+  // graphify spec D1: uv installs the pinned graphify (step 5c) with a Python of its own, so it is a hard gate.
   const uv = require('./graph-cmd.js').uvBin();
   if (!uv) throw new CheckFailed('uv not found — install it (docs.astral.sh/uv), then re-run aos init');
-  out.log(`preflight: ollama ${ollBin} · python3 ${py.major}.${py.minor} · uv ${uv}`);
+  out.log(`preflight: ollama ${ollBin || 'absent'}${py ? ` · python3 ${py.major}.${py.minor}` : ''} · uv ${uv}`);
   // execution amendment 2026-09-15 (A37): the analyzer ships from Plan 5 Task 1 on. --cost installs the module through
   // cost-cmd.js right after agenticos.json is written (step 5b); its python3 gate is now the unconditional one above (D7).
   if (flags.cost) {
@@ -1028,7 +1060,7 @@ async function init(flags) {
     if (!exists(path.join(costSrc, 'analyze_transcript.py'))) throw new CheckFailed(`--cost: cost module sources not found at ${costSrc} (pass --from-local <repo-dir> carrying extras/cost, or run without --cost and \`aos cost enable\` later)`);
   }
   const oll = ollamaEndpoint(readJson(configPath()));
-  out.log(`preflight: ollama ${oll.host}:${oll.port} ${ollamaProbeSkipped() ? 'not probed (AOS_SKIP_OLLAMA_PROBE=1)' : (await httpProbe(`http://${oll.host}:${oll.port}/api/tags`)) ? 'reachable' : 'not reachable — run `ollama serve` (auto falls back to claude, then codex, then none until it answers)'}`);
+  if (ollBin) out.log(`preflight: ollama ${oll.host}:${oll.port} ${ollamaProbeSkipped() ? 'not probed (AOS_SKIP_OLLAMA_PROBE=1)' : (await httpProbe(`http://${oll.host}:${oll.port}/api/tags`)) ? 'reachable' : 'not reachable — run `ollama serve` (auto falls back to claude, then codex, then none until it answers)'}`);
 
   // 2. vault path
   let vault = flags.vault ? path.resolve(flags.vault) : DEFAULT_VAULT;
@@ -1090,8 +1122,9 @@ async function init(flags) {
   // 7. The Workbench is the app, which brings its own terminal: --terminal has nothing left to install.
   if (flags.terminal) out.log(TERMINAL_NOTE);
 
-  // 8. persona
-  await act('run the Chief of Staff interview', () => personaInterview(ctx));
+  // 8. persona — its duties need a host (install-import B2): with none, it waits, and `aos init --host <h>` asks it then.
+  if (hosts.claude || hosts.codex) await act('run the Chief of Staff interview', () => personaInterview(ctx));
+  else out.log('persona: no host yet, so no Chief of Staff; it is set up when you add Claude Code or Codex');
 
   // 9. first scan
   await act('first scan, compile BRAIN.md, warm the recall index', () => {

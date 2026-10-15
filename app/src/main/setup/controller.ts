@@ -1,20 +1,25 @@
-// The wizard's and attach mode's calls, as main answers them (phase 5, I3–I5). It keeps what the page must not choose:
-// the PATH and the node preflight found, the vault `aos init` was asked for, whether the install finished. Every step is
-// checked against policy/setup.ts first; the commands are the fix table's and the payload's CLI.
+// The wizard's and attach mode's calls, as main answers them (phase 5, I3–I5; install-import B1, B2, B14). It keeps what
+// the page must not choose: the PATH and the node preflight found, the Ollama app, the vault `aos init` was asked for,
+// whether the install finished. Every step is checked against policy/setup.ts first; what runs is the fix table's (a
+// toolchain job or a login), the payload's CLI, and main's own two edits (the CLAUDE.md line and the PATH line).
 
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
-import type { AttachInfo, ClaudeMdPreview, InstallRequest, PreflightReport, Result, SetupCheckId, SetupEvent, SetupFixId, SetupJob } from "../../shared/ipc";
-import { FIXES, fixBlocked, fixCommandLine, installArgs, personaJson, resolveVaultPath, stepRefusal, type SetupStep } from "../policy/setup";
+import { StringDecoder } from "node:string_decoder";
+import type { AttachInfo, ClaudeMdPreview, InstallRequest, PathLinePreview, PreflightReport, Result, SetupCheckId, SetupEvent, SetupFixId, SetupJob } from "../../shared/ipc";
+import { FIXES, fixBlocked, fixCommandLine, installArgs, personaJson, requestHosts, resolveVaultPath, stepRefusal, zprofilePath, type SetupStep } from "../policy/setup";
 import { refused } from "../services/fs";
 import type { PtyLib } from "../services/pty";
 import { applyClaudeMd, claudeMdPath, previewClaudeMd } from "./claude-md";
-import { findOnPath, isExecutable, loginPath, defaultLoginPathDeps } from "./env";
+import { findOnPath, isExecutable, loginPath, defaultLoginPathDeps, shellPath } from "./env";
 import { hostsOf, markInstalled, markNoted, type AgenticosFacts } from "./attach";
 import { JobRunner } from "./jobs";
+import { applyPathLine, previewPathLine } from "./path-line";
 import type { Payload } from "./payload";
-import { runPreflight, type PreflightDeps, type ProbeResult } from "./preflight";
+import { ollamaApps, runPreflight, type PreflightDeps, type ProbeResult } from "./preflight";
+import { archOf, describeJob, loadManifest, runToolchainJob, toolchainPaths, totalMemBytes, type Fetch, type Run, type ToolchainDeps } from "./toolchain";
 
 export interface AgenticosJson extends AgenticosFacts {
   vault?: unknown;
@@ -40,12 +45,23 @@ export interface SetupControllerOptions {
   /** After an upgrade: agenticos.json's version moved. */
   refreshAttach: () => void;
   chooseFolder: () => Promise<string | null>;
-  /** Tests: the PATH, the probes and the child processes. */
+  /** The downloads' https GET: Electron's net.fetch, which follows the system's proxy settings (index.ts). */
+  fetch: Fetch;
+  /** A development run may swap the toolchain manifest ($AOS_TOOLCHAIN_MANIFEST); a packaged app never does. */
+  allowManifestOverride?: boolean;
+  /** The macOS version (process.getSystemVersion()); "" when unknown. */
+  macOS?: string;
+  /** Tests: the PATH, the probes, the child processes, the toolchain's programs and folders, the Mac's memory. */
   path?: () => string;
   probe?: PreflightDeps["run"];
   isExec?: (p: string) => boolean;
   exists?: (p: string) => boolean;
   spawnImpl?: typeof childProcess.spawn;
+  toolRun?: Run;
+  totalmem?: number;
+  canWrite?: (dir: string) => boolean;
+  applications?: string[];
+  ollamaWaitSec?: number;
 }
 
 /** A probe: the program's stdout and stderr together, its exit code, never a shell, never longer than `timeoutMs`. */
@@ -58,10 +74,42 @@ function probe(env: NodeJS.ProcessEnv): PreflightDeps["run"] {
   });
 }
 
+/** Most of a tool's output a toolchain job keeps (its last bytes); everything streams to the terminal anyway. */
+const KEEP = 64 * 1024;
+
+/** A toolchain job's program: stdout and stderr together, streamed to `onData`, never a shell, stopped by the job's signal. */
+function toolRunner(env: () => NodeJS.ProcessEnv, spawnImpl: typeof childProcess.spawn = childProcess.spawn): Run {
+  return (file, args, o = {}) => new Promise((resolve) => {
+    let out = "";
+    let done = false;
+    const finish = (code: number | null, extra = ""): void => { if (!done) { done = true; resolve({ code, out: out + extra }); } };
+    let child: childProcess.ChildProcess;
+    try {
+      child = spawnImpl(file, args, { env: o.env ?? env(), shell: false, stdio: ["ignore", "pipe", "pipe"], signal: o.signal, timeout: o.timeoutMs, killSignal: "SIGTERM" });
+    } catch (err) { finish(null, err instanceof Error ? err.message : String(err)); return; }
+    for (const stream of [child.stdout, child.stderr]) {
+      const decoder = new StringDecoder("utf8");
+      stream?.on("data", (b: Buffer) => {
+        const text = decoder.write(b);
+        out = (out + text).slice(-KEEP);
+        o.onData?.(text);
+      });
+    }
+    child.on("error", (err) => finish(null, `\n${(err as NodeJS.ErrnoException).code ?? err.message}`));
+    child.on("close", (code) => finish(code));
+  });
+}
+
+const canWriteDir = (dir: string): boolean => { try { fs.accessSync(dir, fs.constants.W_OK); return true; } catch { return false; } };
+
 export class SetupController {
   readonly jobs: JobRunner;
   private PATH: string | null = null;
+  private shellPATH: string | null = null;
   private node: string | null = null;
+  private ollamaApp: string | null = null;
+  /** The uv the checks validated: `aos init` installs graphify with this one, never another found first on the PATH (M1). */
+  private uv: string | null = null;
   private last: PreflightReport | null = null;
   private installed = false;
   private installedVault: string | null = null;
@@ -72,8 +120,36 @@ export class SetupController {
   }
 
   private loginPath(): string {
-    this.PATH = this.o.path ? this.o.path() : loginPath(defaultLoginPathDeps(this.o.env, this.o.home));
+    if (this.o.path) {
+      this.PATH = this.o.path();
+      this.shellPATH = this.PATH;
+    } else {
+      const deps = defaultLoginPathDeps(this.o.env, this.o.home);
+      this.shellPATH = shellPath(deps);
+      this.PATH = loginPath(deps, this.shellPATH);
+    }
     return this.PATH;
+  }
+
+  private totalmem(): number { return totalMemBytes(this.o.env, this.o.totalmem ?? os.totalmem()); }
+
+  /** What a toolchain job runs with: the pins, this Mac, the folders, the network and the programs. */
+  private toolchain(): ToolchainDeps {
+    const arch = archOf(process.arch) ?? "arm64";
+    const paths = toolchainPaths(this.o.home, this.o.env, this.o.userData);
+    if (this.o.applications) paths.applications = this.o.applications;
+    return {
+      manifest: loadManifest(this.o.env, !!this.o.allowManifestOverride),
+      arch, home: this.o.home, paths, env: this.childEnv(),
+      fetch: this.o.fetch,
+      run: this.o.toolRun ?? toolRunner(() => this.childEnv(), this.o.spawnImpl),
+      curl: findOnPath("curl", this.PATH ?? this.loginPath(), this.o.isExec ?? isExecutable),
+      macOS: this.o.macOS ?? "",
+      totalmem: this.totalmem(),
+      canWrite: this.o.canWrite ?? canWriteDir,
+      ollamaApp: () => this.ollamaApp ?? ollamaApps(this.o.home).find((p) => (this.o.exists ?? fs.existsSync)(p)) ?? null,
+      ollamaWaitSec: this.o.ollamaWaitSec,
+    };
   }
 
   /** A child's environment: main's, on the login PATH, and never inside a Claude Code session's (CLAUDECODE). */
@@ -94,10 +170,14 @@ export class SetupController {
     const why = this.refusal("preflight");
     if (why) return refused(why);
     const PATH = this.loginPath();
-    const { report, node } = await runPreflight({
+    const { report, node, uv, ollamaApp } = await runPreflight({
       PATH, home: this.o.home, run: this.o.probe ?? probe(this.childEnv()), isExec: this.o.isExec, exists: this.o.exists ?? fs.existsSync,
+      manifest: loadManifest(this.o.env, !!this.o.allowManifestOverride), arch: archOf(process.arch) ?? "arm64", macOS: this.o.macOS ?? "",
+      totalmem: this.totalmem(), env: this.o.env,
     });
     this.node = node;
+    this.ollamaApp = ollamaApp;
+    this.uv = uv;
     this.last = report;
     return { ok: true, data: report };
   }
@@ -107,12 +187,22 @@ export class SetupController {
     if (why) return refused(why);
     if (!this.last) return refused("run the checks first");
     const ok = new Set<SetupCheckId>(this.last.checks.filter((c) => c.state === "ok").map((c) => c.id));
-    const blocked = fixBlocked(id, ok);
+    // Only a fix its check offers: nothing is downloaded over a tool that passes, or over an Ollama the wizard did not install.
+    const row = this.last.checks.find((c) => c.id === id);
+    if (!row || row.fix !== id) return refused(`nothing to fix: ${row?.label ?? id} passes`);
+    const blocked = row.fixBlocked ?? fixBlocked(id, ok);
     if (blocked) return refused(blocked);
+    const fix = FIXES[id];
+    if (fix.kind === "download") {
+      const deps = this.toolchain();
+      return this.jobs.startTask("fix", (ctx) => runToolchainJob(fix.job, deps, ctx), {
+        echo: `${fix.label}: ${describeJob(fix.job, deps.manifest, deps.arch, this.o.home, this.o.env, deps.totalmem)}`,
+      });
+    }
     const { file, args } = fixCommandLine(id);
     return this.jobs.startPty("fix", file, args, {
-      cwd: this.o.home, cols, rows, echo: FIXES[id].command,
-      env: this.childEnv({ TERM: "xterm-256color", COLORTERM: "truecolor", HOMEBREW_NO_ENV_HINTS: "1" }),
+      cwd: this.o.home, cols, rows, echo: fix.command,
+      env: this.childEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" }),
     });
   }
 
@@ -130,19 +220,21 @@ export class SetupController {
     if (why) return refused(why);
     if (!this.last || !this.node) return refused("run the checks first");
     if (!this.last.ready) return refused("a prerequisite is missing");
-    const hosts = { claude: req.host !== "codex", codex: req.host !== "claude" };
+    const hosts = requestHosts(req.host);
     if ((hosts.claude && !this.last.hosts.claude) || (hosts.codex && !this.last.hosts.codex)) return refused(`${req.host} is not installed and logged in`);
     const vault = resolveVaultPath(req.vault, this.o.home);
     if (!vault) return { ok: false, error: "the vault must be a folder under your home folder, like ~/AgenticOS", code: "EINVAL" };
     const payload = this.o.payload as NonNullable<SetupControllerOptions["payload"]>;
     let personaFile: string | null = null;
-    if (req.persona) {
+    // No host, no Chief of Staff yet: its duties need one (install-import B2), so the answers wait for that.
+    if (req.persona && req.host !== "none") {
       personaFile = path.join(this.o.userData, "setup", "persona.json");
       fs.mkdirSync(path.dirname(personaFile), { recursive: true });
       fs.writeFileSync(personaFile, `${JSON.stringify(personaJson(req.persona, hosts), null, 2)}\n`, { mode: 0o600 });
     }
     const r = this.jobs.startProc("install", this.node, installArgs(payload.cli, req, vault, personaFile), {
-      cwd: this.o.home, env: this.childEnv(), echo: `aos init --yes --vault ${vault} --host ${req.host}${personaFile ? " --persona-json …" : ""}`,
+      // AOS_UV_BIN: graph-cmd.js uvBin takes it before the PATH, so graphify installs with the uv the checks validated.
+      cwd: this.o.home, env: this.childEnv(this.uv ? { AOS_UV_BIN: this.uv } : {}), echo: `aos init --yes --vault ${vault} --host ${req.host}${personaFile ? " --persona-json …" : ""}`,
     });
     if (r.ok) { this.installedVault = vault; this.personaFile = personaFile; }
     else if (personaFile) fs.rmSync(personaFile, { force: true });
@@ -171,7 +263,8 @@ export class SetupController {
     const why = this.refusal("claude-md");
     const vault = this.claudeMdVault();
     if (why || !vault) return refused(why ?? "no vault yet");
-    return { ok: true, data: previewClaudeMd(this.claudeMdFile(this.o.readAgenticos()), vault, this.o.home) };
+    try { return { ok: true, data: previewClaudeMd(this.claudeMdFile(this.o.readAgenticos()), vault, this.o.home) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err), code: "EIO" }; }
   }
 
   applyClaudeMd(): Result<ClaudeMdPreview> {
@@ -180,7 +273,8 @@ export class SetupController {
     if (why || !vault) return refused(why ?? "no vault yet");
     const cfg = this.o.readAgenticos();
     if (!hostsOf(cfg).claude) return refused("Claude Code is not a host of this install");
-    return { ok: true, data: applyClaudeMd(this.claudeMdFile(cfg), vault, this.o.home) };
+    try { return { ok: true, data: applyClaudeMd(this.claudeMdFile(cfg), vault, this.o.home) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err), code: "EIO" }; }
   }
 
   finish(): Result<null> {
@@ -204,5 +298,20 @@ export class SetupController {
   noted(): void {
     const vault = this.o.attached();
     if (vault) { try { markNoted(this.o.userData, vault); } catch { /* shows again next time */ } }
+  }
+
+  /** Finish's PATH line (install-import B14): the profile, the line, and whether either already does the job. */
+  pathLine(): Result<PathLinePreview> {
+    const why = this.refusal("path");
+    if (why) return refused(why);
+    try { return { ok: true, data: previewPathLine(zprofilePath(this.o.home, this.o.env), this.o.home, this.shellPATH) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err), code: "EIO" }; }
+  }
+
+  addToPath(): Result<PathLinePreview> {
+    const why = this.refusal("path");
+    if (why) return refused(why);
+    try { return { ok: true, data: applyPathLine(zprofilePath(this.o.home, this.o.env), this.o.home, this.shellPATH) }; }
+    catch (err) { return { ok: false, error: `the PATH line: ${err instanceof Error ? err.message : String(err)}`, code: "EIO" }; }
   }
 }

@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ClaudeMdPreview } from "../../shared/ipc";
+import { writeKeepingLinks } from "./dotfile";
 
 /** How many of the file's last lines the diff shows above the added one. */
 const CONTEXT = 3;
@@ -30,10 +31,18 @@ function imports(text: string, vault: string, home: string): boolean {
   });
 }
 
+/** The file's text: "" only when there is none; any other read failure throws, so the file is never replaced blind. */
+function readExisting(file: string): string {
+  try { return fs.readFileSync(file, "utf8"); } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return "";
+    throw new Error(`${file} could not be read (${code ?? (err instanceof Error ? err.message : String(err))}), so nothing was written`);
+  }
+}
+
 export function previewClaudeMd(file: string, vault: string, home: string = os.homedir()): ClaudeMdPreview {
   const line = claudeMdLine(vault);
-  let text = "";
-  try { text = fs.readFileSync(file, "utf8"); } catch { /* a new file */ }
+  const text = readExisting(file);
   const present = imports(text, vault, home);
   const lines = text.replace(/\n$/, "").split("\n");
   const context = text ? lines.slice(-CONTEXT) : [];
@@ -47,19 +56,9 @@ export function previewClaudeMd(file: string, vault: string, home: string = os.h
 export function applyClaudeMd(file: string, vault: string, home: string = os.homedir()): ClaudeMdPreview {
   const before = previewClaudeMd(file, vault, home);
   if (before.present) return before;
-  let text = "";
-  try { text = fs.readFileSync(file, "utf8"); } catch { /* a new file */ }
-  const next = `${text}${text && !text.endsWith("\n") ? "\n" : ""}${before.line}\n`;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  // A symlinked CLAUDE.md (dotfiles repos do this) is written through, not replaced by a plain file.
-  const target = fs.existsSync(file) ? fs.realpathSync(file) : file;
-  const tmp = `${target}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(tmp, next, { mode: fs.existsSync(target) ? fs.statSync(target).mode & 0o777 : 0o644 });
-    fs.renameSync(tmp, target);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* never written */ }
-    throw err;
-  }
+  const text = readExisting(file);
+  // A linked CLAUDE.md (dotfiles repos do this), even one whose file is not there yet, is written through, never replaced
+  // by a plain file (inspection round 2, M3).
+  writeKeepingLinks(file, `${text}${text && !text.endsWith("\n") ? "\n" : ""}${before.line}\n`);
   return previewClaudeMd(file, vault, home);
 }

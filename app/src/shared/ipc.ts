@@ -66,6 +66,9 @@ export const CH = {
   setupFinish: "setup:finish",
   setupUpgrade: "setup:upgrade",
   setupNoted: "setup:noted",
+  /** The PATH line Finish offers (install-import B14): what it is and where; then append it, on the page's ask. */
+  setupPathLine: "setup:path-line",
+  setupAddToPath: "setup:add-to-path",
   /** main → page: a setup job's output and exit. */
   setupEvent: "setup:event",
 
@@ -169,23 +172,28 @@ export interface AttachInfo {
   hosts: { claude: boolean; codex: boolean };
 }
 
-export type SetupCheckId = "homebrew" | "node" | "claude" | "claude-login" | "codex" | "codex-login" | "ollama" | "ollama-models" | "python" | "uv";
-export type SetupFixId = "homebrew" | "node" | "python" | "uv" | "ollama" | "ollama-models" | "claude" | "codex" | "claude-login" | "codex-login";
+export type SetupCheckId = "node" | "uv" | "ollama" | "ollama-models" | "claude" | "claude-login" | "codex" | "codex-login";
+export type SetupFixId = "node" | "uv" | "ollama" | "ollama-models" | "claude" | "codex" | "claude-login" | "codex-login";
 
 export interface SetupCheck {
   id: SetupCheckId;
   label: string;
-  /** warn: something to fix that `aos init` does not need (Ollama's models), so it never holds up Continue. */
+  /** warn: something to fix that `aos init` does not need (Ollama, its models), so it never holds up Continue. */
   state: "ok" | "warn" | "missing";
   /** A version, a path, or what is wrong. */
   detail: string;
   /** Whether `aos init` needs it (the host rows count through `hosts`). */
   required: boolean;
   fix: SetupFixId | null;
-  /** The fix's label and the command it runs, as the user will see it typed. */
+  /**
+   * terminal: a fixed command run in the wizard's terminal (the logins); download: a toolchain job main runs itself
+   * (install-import B1), with its progress.
+   */
+  fixKind: "terminal" | "download" | null;
+  /** The fix's label, and the command it runs as the user will see it typed, or what the download does. */
   fixLabel: string | null;
   fixCommand: string | null;
-  /** Why the fix cannot run yet (it needs Homebrew, or Node), else null. */
+  /** Why the fix cannot run yet (it needs Ollama, or the CLI it logs in to, or a newer macOS), else null. */
   fixBlocked: string | null;
 }
 
@@ -193,8 +201,10 @@ export interface PreflightReport {
   checks: SetupCheck[];
   /** The hosts that are installed and logged in. */
   hosts: { claude: boolean; codex: boolean };
-  /** Every required check passes and at least one host is ready. */
+  /** Every required check passes (Node and uv). A host is optional (install-import B2). */
   ready: boolean;
+  /** The models the wizard downloads on this Mac: its memory's tier, then the embedder (local-first A12). */
+  models: string[];
 }
 
 /** The Chief of Staff's hosted models (local-first A4): brain/scripts/sdk/lib/models.js CHIEF, which tests/unit/setup.test.ts
@@ -214,7 +224,8 @@ export interface PersonaAnswers {
 }
 
 export interface InstallRequest {
-  host: "claude" | "codex" | "both";
+  /** none: no agent CLI yet (install-import B2); Sessions and the Chief of Staff wait until one is added. */
+  host: "claude" | "codex" | "both" | "none";
   /** Absolute, or starting with ~/. */
   vault: string;
   /** null: no interview now (`aos persona` later). */
@@ -225,7 +236,21 @@ export type SetupJob = "fix" | "install" | "upgrade";
 
 export type SetupEvent =
   | { job: SetupJob; type: "data"; data: string }
+  /** A download's or a model pull's progress: bytes so far of `total` (null: unknown). */
+  | { job: SetupJob; type: "progress"; label: string; received: number; total: number | null }
   | { job: SetupJob; type: "exit"; code: number | null; signal: string | null };
+
+/** The line Finish offers to add to the login shell's profile, so `aos` and the hosts' CLIs run from a terminal. */
+export interface PathLinePreview {
+  /** ~/.zprofile ($ZDOTDIR/.zprofile when set). */
+  file: string;
+  /** export PATH="$HOME/.local/bin:$PATH" */
+  line: string;
+  /** The file already has the line. */
+  present: boolean;
+  /** The login shell's PATH already has ~/.local/bin. */
+  onPath: boolean;
+}
 
 /** The line `aos init` asks Claude Code users to add, as a diff against their CLAUDE.md. */
 export interface ClaudeMdPreview {
@@ -480,7 +505,7 @@ export interface AosBridge {
   /** The first-run wizard and attach mode. One job (a fix, the install, an upgrade) runs at a time. */
   setup: {
     preflight(): Promise<Result<PreflightReport>>;
-    /** Runs a fix-it in a terminal main opens (output on onEvent, job "fix"). */
+    /** Runs a fix: a login in a terminal main opens, or a download main runs (output and progress on onEvent, job "fix"). */
     fix(id: SetupFixId, cols: number, rows: number): Result<null>;
     /** Keys typed into the running fix's terminal (a password, a prompt's answer). */
     input(data: string): void;
@@ -497,6 +522,10 @@ export interface AosBridge {
     upgrade(): Result<null>;
     /** The "What changed" note was read. */
     noted(): void;
+    /** The PATH line Finish shows, and whether it is needed (after the install, before the Workbench opens). */
+    pathLine(): Result<PathLinePreview>;
+    /** Appends that line to the file it names, once. */
+    addToPath(): Result<PathLinePreview>;
     onEvent(cb: (ev: SetupEvent) => void): () => void;
   };
   update: {

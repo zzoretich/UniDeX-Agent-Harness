@@ -250,10 +250,13 @@ if (!LIVE) {
   const p2 = b2 ? await until(() => b2.contexts()[0]?.pages().find((p) => p.url() === "app://hud/index.html"), 20_000) : null;
   const wizard = p2 ? await until(() => p2.evaluate(() => {
     const sub = document.querySelector(".aos-setup-sub")?.textContent ?? "";
-    const rows = document.querySelectorAll(".aos-setup-check").length;
-    return rows >= 9 ? { sub, rows } : null;
+    const ids = [...document.querySelectorAll(".aos-setup-check")].map((r) => r.getAttribute("data-check"));
+    return ids.length ? { sub, ids } : null;
   }), 30_000) : null;
-  check("with no install it opens the wizard on the bundle's runtime, and the checks run", wizard && wizard.sub.includes(`runtime ${VERSION}`), wizard ? `${wizard.rows} checks · ${wizard.sub}` : "no wizard");
+  // install-import B1: the checks are the toolchain's (no Homebrew, no Python), so main parsed the pins it carries.
+  const IDS = ["node", "uv", "ollama", "ollama-models", "claude", "claude-login", "codex", "codex-login"];
+  check("with no install it opens the wizard on the bundle's runtime, and the checks run", wizard && wizard.sub.includes(`runtime ${VERSION}`) && wizard.ids.join() === IDS.join(),
+    wizard ? `${wizard.ids.join(", ")} · ${wizard.sub}` : "no wizard");
   child.kill("SIGTERM");
   check("the wizard's app quits", await until(() => child.exitCode !== null || child.signalCode !== null, 20_000));
   await b2?.close().catch(() => {});

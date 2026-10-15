@@ -1,7 +1,8 @@
 // setup:* and update:* — the first-run wizard, attach mode and the app's own updates (phase 5). The page names a check,
-// a fix-it or a step; what each runs is main's (policy/setup.ts, setup/controller.ts). Output comes back as events.
+// a fix or a step; what each runs or downloads is main's (policy/setup.ts, setup/controller.ts, setup/toolchain.ts).
+// Output and download progress come back as events.
 
-import { CH, type ClaudeMdPreview, type InstallRequest, type PreflightReport, type Result, type SetupFixId, type UpdateState } from "../../shared/ipc";
+import { CH, type ClaudeMdPreview, type InstallRequest, type PathLinePreview, type PreflightReport, type Result, type SetupFixId, type UpdateState } from "../../shared/ipc";
 import { FixArgs, InstallRequestSchema, NoArgs, SetupInputArgs, SetupResizeArgs } from "./schemas";
 import { onInvoke, onSend, onSync, type Trust } from "./trust";
 
@@ -18,6 +19,8 @@ export interface SetupIpc {
   finish(): Result<null>;
   upgrade(): Result<null>;
   noted(): void;
+  pathLine(): Result<PathLinePreview>;
+  addToPath(): Result<PathLinePreview>;
 }
 
 export function registerSetupIpc(trust: Trust, s: SetupIpc): void {
@@ -33,6 +36,8 @@ export function registerSetupIpc(trust: Trust, s: SetupIpc): void {
   onSync(CH.setupFinish, trust, NoArgs, () => s.finish());
   onSync(CH.setupUpgrade, trust, NoArgs, () => s.upgrade());
   onSend(CH.setupNoted, trust, NoArgs, () => s.noted());
+  onSync(CH.setupPathLine, trust, NoArgs, () => s.pathLine());
+  onSync(CH.setupAddToPath, trust, NoArgs, () => s.addToPath());
 }
 
 export interface UpdateIpc {

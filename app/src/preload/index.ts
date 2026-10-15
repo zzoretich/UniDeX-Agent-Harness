@@ -78,6 +78,8 @@ const api: AosBridge = {
     finish: () => sync(CH.setupFinish, {}),
     upgrade: () => sync(CH.setupUpgrade, {}),
     noted: () => ipcRenderer.send(CH.setupNoted, {}),
+    pathLine: () => sync(CH.setupPathLine, {}),
+    addToPath: () => sync(CH.setupAddToPath, {}),
     onEvent: (cb) => listen<SetupEvent>(CH.setupEvent, cb),
   },
   update: {
