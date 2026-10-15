@@ -72,7 +72,8 @@ test("a question with the local model down comes back down, offers Run once on C
   const once = content(win).locator('.aos-asst-runonce button[data-host="claude"]');
   await expect(once).toHaveText(/^Run once on Claude Code \(reasoner cap: (today \$[\d.]+ of )?\$5\)$/);
   await once.click();
-  await expect(content(win).locator(".aos-asst-turn-assistant:not(.aos-asst-live) .aos-asst-body").last()).toContainText(CLAUDE_ANSWER.text.slice(0, 20), { timeout: 30_000 });
+  // The stub's answer, as Markdown renders it (the bold marks gone).
+  await expect(content(win).locator(".aos-asst-turn-assistant:not(.aos-asst-live) .aos-asst-body").last()).toContainText(CLAUDE_ANSWER.text.replace(/\*\*/g, "").slice(0, 20), { timeout: 30_000 });
   const calls = claudeCalls().slice(before);
   expect(calls.length).toBe(1);
   expect(calls[0].argv[0]).toBe("-p");

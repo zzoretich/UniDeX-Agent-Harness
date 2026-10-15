@@ -202,7 +202,7 @@ export class SettingsTab {
     line("Embedder", `${v.embedder}${v.embedderPulled === false ? " · not downloaded (recall uses keyword search)" : v.embedderPulled ? " · downloaded" : ""}`, "embedder");
     line("Today", todayText(v.today), "today");
     if (v.queued) line("Waiting", `${v.queued} session wrap${v.queued === 1 ? "" : "s"} queued until the model answers`, "queued");
-    const acts = box.createDiv({ cls: "aos-st-actions" });
+    const acts = box.createDiv({ cls: "aos-st-localacts" });
     if (v.canPull) {
       const pulling = this.busy.has("local:pull");
       const pull = acts.createEl("button", { cls: "aos-ws-action", text: pulling ? "Pulling…" : "Pull the model", attr: { "data-act": "local-pull" } });

@@ -2779,6 +2779,7 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-st-localstate.is-answering { color: var(--udx-ok); }
 .aos-st-localrow { display: flex; gap: 10px; font-size: 12.5px; }
 .aos-st-locallabel { flex: none; width: 76px; }
+.aos-st-localacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .aos-st-localvalue { min-width: 0; overflow-wrap: anywhere; color: var(--udx-text); font-family: var(--udx-mono); font-size: 12px; }
 
 /* ══ Term: starting terminals (spec 2026-10-08-term-agent-deck T2–T6) ══════════════════════════════════════════════════

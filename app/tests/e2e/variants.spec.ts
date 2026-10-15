@@ -496,7 +496,7 @@ test.describe("a Codex-only machine, the Brain surface on", () => {
     expect(draft).toMatchObject({ mode: "by-hand", reason: "Codex is not signed in.", provider: "none", winner: older });
     const sweep = spawnSync("/bin/sh", [FX.v("brain/scripts/bin/aos"), "memory", "sweep", "--json"], { env: appEnv({ AOS_HEADLESS: undefined }), encoding: "utf8" });
     expect(sweep.status).toBe(1);
-    expect(sweep.stderr).toContain("aos: the sweep needs Claude or Codex (Codex is not signed in.)");
+    expect(sweep.stderr).toContain("aos: the sweep cannot run (Codex is not signed in.)");
     expect(fs.existsSync(FX.v("brain/_index/memory-sweep.json"))).toBe(false);
 
     await openTab(win, "memory");
