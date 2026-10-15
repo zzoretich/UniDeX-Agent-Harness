@@ -283,13 +283,17 @@ function hostsOn(user) {
   return { claude: !!(h.claude && h.claude.enabled), codex: !!(h.codex && h.codex.enabled) };
 }
 
-/** The environment the target CLI runs with: its own folder named only where it is not the CLI's default. */
+/**
+ * The environment the target CLI runs with, so it writes the file that was backed up: Codex its home; Claude Code its
+ * config folder only when the file is inside it (with CLAUDE_CONFIG_DIR set, Claude Code keeps .claude.json there), and
+ * none when the file sits beside the default folder.
+ */
 function cliEnv(to, ctx) {
   const env = { ...ctx.env };
   const dir = hostDirsOf(to, ctx).configDir;
   if (to === 'codex') env.CODEX_HOME = dir;
-  else if (path.resolve(dir) === path.join(ctx.home, '.claude')) delete env.CLAUDE_CONFIG_DIR;
-  else env.CLAUDE_CONFIG_DIR = dir;
+  else if (path.dirname(configFileOf('claude', ctx)) === path.resolve(dir)) env.CLAUDE_CONFIG_DIR = dir;
+  else delete env.CLAUDE_CONFIG_DIR;
   return env;
 }
 

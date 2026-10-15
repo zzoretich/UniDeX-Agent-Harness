@@ -24,7 +24,8 @@ function fakeCli(dir, host) {
   const body = host === 'claude'
     ? `const [, , mcp, verb, scopeFlag, scope, name, json] = process.argv;
 if (process.env.FAKE_FAIL) { process.stderr.write('could not add: ' + json + '\\n'); process.exit(3); }
-const cfg = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME, '.claude'), '.claude.json');
+// Claude Code's own rule: .claude.json inside CLAUDE_CONFIG_DIR when it is set, else beside the default folder, in home.
+const cfg = process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json') : path.join(process.env.HOME, '.claude.json');
 const j = fs.existsSync(cfg) ? JSON.parse(fs.readFileSync(cfg, 'utf8')) : {};
 j.mcpServers = { ...(j.mcpServers || {}), [name]: JSON.parse(json) };
 fs.writeFileSync(cfg, JSON.stringify(j, null, 2));`
@@ -168,13 +169,27 @@ test('Codex → Claude Code: the .env sub-table and inline env carried, add-json
   const [first, second] = calls();
   assert.deepEqual(first.argv, ['mcp', 'add-json', '--scope', 'user', 'issue-tracker', JSON.stringify({ type: 'stdio', command: '/opt/tools/issue-mcp', args: ['--stdio'], env: { LOG_LEVEL: 'warn' } })]);
   assert.deepEqual(JSON.parse(second.argv[5]), { type: 'stdio', command: 'notes-mcp', args: ['--token', SECRET.arg, '--db', 'notes.sqlite'], env: { DB_PASSWORD: SECRET.env } });
-  // The default ~/.claude is never named to Claude Code: with CLAUDE_CONFIG_DIR set it would keep .claude.json inside.
-  assert.equal(second.CLAUDE_CONFIG_DIR, null);
+  // The file read and backed up is inside the folder, so the folder is named and Claude Code writes that same file.
+  assert.equal(second.CLAUDE_CONFIG_DIR, w.claudeDir);
   assert.ok(JSON.parse(fs.readFileSync(cj, 'utf8')).mcpServers['notes-db']);
   const backups = fs.readdirSync(path.join(w.vault, 'brain', '_index', 'backups', 'mcp'));
   assert.ok(backups.length >= 1 && backups.every((n) => /^claude-claude\.json-\d{8}T\d{6}Z\.bak$/.test(n)), backups.join(', '));
   const listed = JSON.parse(fs.readFileSync(path.join(w.vault, 'brain', '_index', 'mcp-servers.json'), 'utf8')).servers;
   assert.deepEqual(listed.filter((s) => s.name === 'notes-db').map((s) => s.host), ['claude', 'codex']);
+});
+
+test('with .claude.json beside the default ~/.claude, Claude Code runs without CLAUDE_CONFIG_DIR and writes that file', () => {
+  const { w, aos, calls } = setup();
+  const beside = path.join(w.home, '.claude.json');
+  fs.writeFileSync(beside, JSON.stringify({ numStartups: 1, mcpServers: {} }));
+  const dry = aos(['copy', 'issue-tracker', '--to', 'claude', '--dry-run', '--json']);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(JSON.parse(dry.stdout).file, '~/.claude.json');
+  const r = aos(['copy', 'issue-tracker', '--to', 'claude', '--json']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(calls()[0].CLAUDE_CONFIG_DIR, null);
+  assert.ok(JSON.parse(fs.readFileSync(beside, 'utf8')).mcpServers['issue-tracker']);
+  assert.match(JSON.parse(r.stdout).backup, /^brain\/_index\/backups\/mcp\/claude-claude\.json-\d{8}T\d{6}Z\.bak$/);
 });
 
 test('a remote server goes to Claude Code with its headers hidden in the dry run; to Codex it is refused with what to do', () => {

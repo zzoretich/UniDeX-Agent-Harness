@@ -175,7 +175,7 @@ function installMcpStubs(): void {
   fs.rmSync(STUBS, { recursive: true, force: true });
   fs.mkdirSync(STUBS, { recursive: true });
   const head = (cli: string) => `#!${process.execPath}\nconst fs = require("fs"); const path = require("path");\nconst a = process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(STUB_LOG)}, JSON.stringify({ cli: ${JSON.stringify(cli)}, argv: a }) + "\\n");\n`;
-  fs.writeFileSync(path.join(STUBS, "claude"), `${head("claude")}const file = path.join(process.env.HOME, ".claude.json");\nconst j = JSON.parse(fs.readFileSync(file, "utf8"));\nj.mcpServers = { ...(j.mcpServers || {}), [a[4]]: JSON.parse(a[5]) };\nfs.writeFileSync(file, JSON.stringify(j, null, 2));\n`);
+  fs.writeFileSync(path.join(STUBS, "claude"), `${head("claude")}const file = process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, ".claude.json") : path.join(process.env.HOME, ".claude.json");\nconst j = JSON.parse(fs.readFileSync(file, "utf8"));\nj.mcpServers = { ...(j.mcpServers || {}), [a[4]]: JSON.parse(a[5]) };\nfs.writeFileSync(file, JSON.stringify(j, null, 2));\n`);
   fs.writeFileSync(path.join(STUBS, "codex"), `${head("codex")}const cut = a.indexOf("--");\nconst env = [];\nfor (let i = 3; i < cut; i += 2) env.push(a[i + 1]);\nlet t = "\\n[mcp_servers." + a[2] + "]\\ncommand = " + JSON.stringify(a[cut + 1]) + "\\nargs = " + JSON.stringify(a.slice(cut + 2)) + "\\n";\nif (env.length) t += "\\n[mcp_servers." + a[2] + ".env]\\n" + env.map((kv) => kv.split("=")[0] + " = " + JSON.stringify(kv.slice(kv.indexOf("=") + 1))).join("\\n") + "\\n";\nfs.appendFileSync(path.join(process.env.CODEX_HOME, "config.toml"), t);\n`);
   for (const cli of ["claude", "codex"]) fs.chmodSync(path.join(STUBS, cli), 0o755);
 }
