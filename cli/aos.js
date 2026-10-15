@@ -77,7 +77,7 @@ const USAGE = `usage:
              | unmerge <path> --expect <hash> [--json] | sweep [<path>…] [--estimate] [--json] | sweep dismiss <id> [--json]]
   aos import [--from claude|codex|all] [--since 90d|all] [--only instructions,memories,projects,mcp,sessions] [--accept <json list>] [--dry-run] [--json]
   aos hosts add <claude|codex> [--from-local <repo-dir>]
-  aos mcp copy <name> --to claude|codex [--dry-run] [--json]
+  aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1530,7 +1530,8 @@ function mcpCmd(sub, flags) {
   const M = require('./mcp.js');
   try {
     return M.main([
-      ...sub, ...(flags.to !== undefined ? ['--to', flags.to] : []), ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.json ? ['--json'] : []),
+      ...sub, ...(flags.to !== undefined ? ['--to', flags.to] : []), ...(flags.expect !== undefined ? ['--expect', flags.expect] : []),
+      ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.json ? ['--json'] : []),
     ], { io: console, claudeBin, codexBin });
   } catch (e) {
     if (e instanceof M.UsageError) throw new UsageError(e.message);

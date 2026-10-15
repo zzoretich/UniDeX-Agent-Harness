@@ -114,6 +114,39 @@ test('MCP: both hosts listed without arguments, env, headers, credentials, query
   assert.deepEqual(X.listServers('codex', { dirs: { configDir: path.join(TMP, 'no-codex') }, home }).servers, []);
 });
 
+test('MCP: a URL lists with its credentials, query and fragment out and a token-like path segment hidden (security review 2)', () => {
+  assert.equal(X.cleanUrl('https://u:pw@mcp.example.com/sk-fixture0099/sse?key=q#f'), 'https://mcp.example.com/<redacted>/sse');
+  assert.equal(X.cleanUrl('https://mcp.example.com/v1/0123456789abcdefABCDEF0123/events'), 'https://mcp.example.com/v1/<redacted>/events');
+  assert.equal(X.cleanUrl('https://mcp.example.com/token/abc123def/x'), 'https://mcp.example.com/token/<redacted>/x');
+  assert.equal(X.cleanUrl('https://mcp.example.com/v1/sse'), 'https://mcp.example.com/v1/sse');
+  assert.equal(X.cleanUrl('postgresql://user:pw@db.example.com:5432/app'), 'postgresql://db.example.com:5432/app');
+  const m = X.maskUrl('https://u:pw-fixture-x@h.example.com/sk-fixture0098/v1?token=tok-fixture-y&mode=ro', { query: 'mask' });
+  assert.equal(m.shown, 'https://<redacted>@h.example.com/<redacted>/v1?token=<redacted>&mode=<redacted>');
+  for (const s of ['pw-fixture-x', 'sk-fixture0098', 'tok-fixture-y']) assert.ok(m.secrets.includes(s), s);
+  assert.deepEqual(X.maskUrl('Authorization: Bearer x'), { shown: null, secrets: [] }, 'a header is not a URL');
+});
+
+test('MCP: Codex servers in every form config.toml allows are listed: a table, an inline table under [mcp_servers] or at the top, dotted keys (security review 5)', () => {
+  const home = path.join(TMP, 'forms-home');
+  const codexDir = path.join(home, '.codex');
+  fs.mkdirSync(codexDir, { recursive: true });
+  fs.writeFileSync(path.join(codexDir, 'config.toml'), [
+    'mcp_servers.top-dotted.command = "td"',
+    '[mcp_servers.tabled]', 'command = "tabled-mcp"', 'env.API_KEY = "x"', '',
+    '[mcp_servers]', 'inline-one = { command = "inline-mcp" }', 'dotted-one.command = "dotted-mcp"', '',
+    '[profiles.fast.mcp_servers.skip]', 'command = "x"', '',
+  ].join('\n'));
+  const x = X.listServers('codex', { dirs: { configDir: codexDir }, home });
+  assert.deepEqual(x.servers.map((s) => [s.name, s.command]).sort(), [['dotted-one', null], ['inline-one', 'inline-mcp'], ['tabled', 'tabled-mcp'], ['top-dotted', null]]);
+  const map = X.codexServerMap(fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8'));
+  assert.deepEqual([...map.get('tabled').forms], ['table']);
+  assert.deepEqual(map.get('tabled').dotted, ['env.API_KEY']);
+  assert.deepEqual([...map.get('inline-one').forms], ['inline']);
+  assert.deepEqual([...map.get('dotted-one').forms], ['dotted']);
+  assert.deepEqual([...map.get('top-dotted').forms], ['dotted']);
+  assert.ok(!map.has('skip'), 'a profile\'s servers are not the user\'s');
+});
+
 test('writeServers keeps the other host\'s rows and writes schema 1', () => {
   X.writeServers(VAULT, ['claude', 'codex'], { claude: [{ name: 'a', host: 'claude' }], codex: [{ name: 'b', host: 'codex' }] });
   X.writeServers(VAULT, ['codex'], { codex: [{ name: 'c', host: 'codex' }] });
