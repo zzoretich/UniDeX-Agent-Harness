@@ -41,7 +41,8 @@ if [ -z "$NODE" ]; then
       if [ -n "$candidate" ] && [ -x "$candidate" ]; then NODE="$candidate"; break; fi
     done
   else
-    for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node \
+    # The UniDeX app's own Node first (its setup installs one when the Mac has none), then the usual installs.
+    for candidate in "$HOME/.local/share/unidex/node/current/bin/node" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node \
         "$HOME"/.nvm/versions/node/*/bin/node "$HOME/.volta/bin/node" "$HOME/.local/share/fnm/aliases/default/bin/node"; do
       if [ -x "$candidate" ]; then NODE="$candidate"; break; fi
     done

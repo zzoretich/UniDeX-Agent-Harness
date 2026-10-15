@@ -72,15 +72,15 @@ test('doctor without agenticos.json fails that check and exits 1', () => {
   assert.match(r.stdout, /info\s+ollama reachable\s+127\.0\.0\.1:1 not probed \(AOS_SKIP_OLLAMA_PROBE=1\)/);
   assert.doesNotMatch(r.stdout, /^(?:ok|FAIL|warn|info)\s+obsidian/m, 'Obsidian is no longer a doctor row');
   assert.match(r.stdout, new RegExp(`ok\\s+ollama installed\\s+${reEsc(FAKE_OLLAMA)}`));
-  assert.match(r.stdout, /ok\s+python3 >= 3\.9\s+3\.\d+/);
+  // install-import B1: only the cost module runs python3, so doctor does not ask about it while cost is off.
+  assert.doesNotMatch(r.stdout, /python3/);
   assert.match(r.stdout, new RegExp(`ok\\s+uv installed\\s+${reEsc(FAKE_UV)}`));
 });
 
 // mandatory-prereqs D2/D3/D5: each prerequisite has one env seam; '' means absent. init refuses before writing anything
-// (and --provider none does not waive it), doctor turns the row into a FAIL and exits 1.
+// (and --provider none does not waive it), doctor turns the row into a FAIL and exits 1. Since install-import B1 that is
+// uv alone (with Node): Ollama is a warning and python3 only --cost's (below).
 const PREREQ_CASES = [
-  { env: { AOS_OLLAMA_BIN: '' }, initMsg: /ollama not found — install it from ollama\.com/, row: /FAIL\s+ollama installed\s+not found/ },
-  { env: { AOS_PYTHON_BIN: '' }, initMsg: /python3 >= 3\.9 is required — python3 not found on PATH/, row: /FAIL\s+python3 >= 3\.9\s+python3 not found/ },
   { env: { AOS_UV_BIN: '' }, initMsg: /uv not found — install it \(docs\.astral\.sh\/uv\)/, row: /FAIL\s+uv installed\s+not found/ },
 ];
 for (const c of PREREQ_CASES) {
@@ -102,13 +102,68 @@ for (const c of PREREQ_CASES) {
   });
 }
 
-test('init rejects a python3 older than 3.9 and names the version it found', () => {
+test('install-import B1: without Ollama, init warns and installs; doctor\'s ollama row is a warn', () => {
   const sb = sandbox();
-  const oldPy = path.join(sb.dir, 'old-python3');
+  const r = aos(sb, ['init', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes'], { AOS_OLLAMA_BIN: '' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stderr, /ollama not found — background work waits for it; install it from ollama\.com \(the UniDeX app's setup installs it\), then run aos doctor/);
+  assert.match(r.stdout, /preflight: ollama absent · uv /);
+  assert.doesNotMatch(r.stdout, /preflight: ollama 127\.0\.0\.1/, 'no reachability line without an Ollama');
+  assert.ok(fs.existsSync(path.join(sb.cfg, 'agenticos.json')));
+  const d = aos(sb, ['doctor'], { AOS_OLLAMA_BIN: '' });
+  assert.match(d.stdout, /warn\s+ollama installed\s+not found — background work waits for it/);
+  assert.doesNotMatch(d.stdout, /FAIL\s+ollama/);
+});
+
+test('install-import B1: init never asks for python3 unless --cost, which still needs 3.9 and names what it found', () => {
+  const sb = sandbox();
+  const noPy = aos(sb, ['init', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes'], { AOS_PYTHON_BIN: '' });
+  assert.equal(noPy.status, 0, noPy.stdout + noPy.stderr);
+  assert.doesNotMatch(noPy.stdout + noPy.stderr, /python3/);
+  const sb2 = sandbox();
+  const oldPy = path.join(sb2.dir, 'old-python3');
   fs.writeFileSync(oldPy, '#!/bin/sh\necho "Python 3.8.2"\n', { mode: 0o755 });
-  const r = aos(sb, ['init', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes'], { AOS_PYTHON_BIN: oldPy });
+  const r = aos(sb2, ['init', '--vault', sb2.vault, '--no-obsidian', '--provider', 'none', '--cost', '--yes'], { AOS_PYTHON_BIN: oldPy });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /python3 >= 3\.9 is required — found 3\.8/);
+  assert.match(r.stderr, /--cost: python3 >= 3\.9 is required — found 3\.8/);
+  assert.ok(!fs.existsSync(sb2.vault), 'nothing was written');
+  // With cost on, doctor asks for python3 again.
+  const cfg = path.join(sb.cfg, 'agenticos.json');
+  fs.writeFileSync(cfg, JSON.stringify({ ...readJson(cfg), cost: { enabled: true } }, null, 2));
+  assert.match(aos(sb, ['doctor'], { AOS_PYTHON_BIN: '' }).stdout, /FAIL\s+python3 >= 3\.9\s+python3 not found on PATH — the cost module needs it/);
+});
+
+test('install-import B2: init --host none installs the vault and runtime with no host, no plugin and no Chief of Staff', () => {
+  const sb = sandbox();
+  const r = aos(sb, ['init', '--host', 'none', '--vault', sb.vault, '--no-obsidian', '--yes'], { AOS_NO_CLAUDE: '1' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /preflight: hosts none \(Sessions and the Chief of Staff wait for one\)/);
+  assert.match(r.stdout, /persona: no host yet, so no Chief of Staff/);
+  assert.doesNotMatch(r.stdout, /run the Chief of Staff interview|install agenticos@/);
+  assert.match(r.stdout, new RegExp(`Add a host when you have one: .*aos init --vault ${reEsc(sb.vault)} --host claude \\(or --host codex\\)`));
+  assert.doesNotMatch(r.stdout, /CLAUDE\.md|\/hooks/, 'no host steps');
+  assert.equal(sb.log('FAKE_CLAUDE_LOG'), '', 'claude was never run');
+  const cfg = readJson(path.join(sb.cfg, 'agenticos.json'));
+  assert.deepEqual([cfg.hosts.claude.enabled, cfg.hosts.codex.enabled], [false, false]);
+  assert.ok(fs.existsSync(path.join(sb.vault, 'brain', 'scripts', 'bin', 'aos')));
+  assert.ok(!fs.existsSync(path.join(sb.vault, 'persona', 'IDENTITY.md')));
+  // doctor on it: no host rows, an info row saying what waits, and no failure.
+  const d = aos(sb, ['doctor'], { AOS_NO_CLAUDE: '1' });
+  assert.equal(d.status, 0, d.stdout + d.stderr);
+  assert.match(d.stdout, /info\s+hosts\s+none yet — Sessions and the Chief of Staff wait for one/);
+  assert.doesNotMatch(d.stdout, /^(?:ok|FAIL|warn)\s+(?:claude|codex|plugin installed|MCP declared)/m);
+  // A host added later: init again with it keeps the files and turns it on.
+  const add = aos(sb, ['init', '--host', 'claude', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes']);
+  assert.equal(add.status, 0, add.stdout + add.stderr);
+  assert.equal(readJson(path.join(sb.cfg, 'agenticos.json')).hosts.claude.enabled, true);
+  assert.match(sb.log('FAKE_CLAUDE_LOG'), /plugin install agenticos@agenticos-workbench/);
+});
+
+test('init with no host available names --host none', () => {
+  const sb = sandbox();
+  const r = aos(sb, ['init', '--vault', sb.vault, '--no-obsidian', '--yes'], { AOS_NO_CLAUDE: '1' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /claude CLI not found — install Claude Code, pass --host codex, or pass --host none/);
 });
 
 test('a non-empty seam that points at a missing path counts as absent (D3)', () => {
@@ -133,7 +188,7 @@ test('init needs no Obsidian, installs no HUD into the vault, and accepts --no-o
   const sb = sandbox();
   const r = aos(sb, ['init', '--vault', sb.vault, '--no-obsidian', '--terminal', '--provider', 'none', '--yes']);
   assert.equal(r.status, 0, r.stderr + r.stdout);
-  assert.match(r.stdout, /^preflight: ollama .* · python3 \d+\.\d+ · uv /m);
+  assert.match(r.stdout, /^preflight: ollama \S+fake-ollama\.sh · uv /m, 'python3 is --cost\'s alone (install-import B1)');
   assert.doesNotMatch(r.stdout, /preflight: obsidian|Obsidian plugin bundle|Community plugins/);
   assert.match(r.stdout, /terminal: nothing to install — the UniDeX app brings its own terminal/);
   assert.match(r.stdout, /Open the UniDeX app \(macOS, Apple silicon; download it from https:\/\/github\.com\/zzoretich\/UniDeX-Agent-Harness\/releases\/latest\)/);
