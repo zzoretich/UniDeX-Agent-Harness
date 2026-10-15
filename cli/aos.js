@@ -507,6 +507,10 @@ async function doctor() {
             ? `${r.workhorse.running} (${r.workhorse.source === 'tier' ? `the ${r.memoryGb} GB tier` : r.workhorse.source})${r.embedder.pulled ? ` · embedder ${r.embedder.tag}` : ` · embedder ${r.embedder.tag} not pulled (recall uses keyword search)`}`
             : `${r.workhorse.tag} not pulled — aos local pull`, 'warn');
         }
+        // local-first A3: the sessions that ended while the engine was down wait in auto-wrap's spool.
+        const queued = wrapsQueued(vault);
+        if (queued && (!r.reachable || !r.workhorse.running)) add('wraps queued', false, `local model ${r.reachable ? 'not downloaded' : 'down'}: ${queued} wrap${queued === 1 ? '' : 's'} queued — they run when the model is back`, 'warn');
+        else if (queued) add('wraps queued', true, `${queued} wrap${queued === 1 ? '' : 's'} queued — the next session start or Workbench load runs them`, 'info');
       }
     } catch (e) { add('local engine', false, e.message, 'warn'); }
   } else {
@@ -581,6 +585,11 @@ function spendByFamily(vault) {
     sessions: r6(sumUsd(rows, isSessionFeature)), teams: r6(sumUsd(rows, isTeamFeature)),
   };
 }
+/** Sessions auto-wrap spooled for later (brain/_index/auto-wrap-pending.jsonl, one row each; local-first A3). */
+function wrapsQueued(vault) {
+  try { return fs.readFileSync(path.join(vault, 'brain', '_index', 'auto-wrap-pending.jsonl'), 'utf8').split('\n').filter((l) => l.trim()).length; } catch { return 0; }
+}
+
 function status() {
   const cfg = loadConfigOrThrow();
   const idx = path.join(cfg.vault, 'brain', '_index');
@@ -609,7 +618,8 @@ function status() {
   if (cfg.provider === 'local' || (state && state.engine)) {
     // local-first A18: what the local engine did today (brain/_index/local-usage.json; no probe here, `aos local` asks it).
     const today = ((readJson(path.join(idx, 'local-usage.json')) || {}).days || {})[localDay(new Date())] || { calls: 0 };
-    out.log(`local      model=${(state && state.model) || 'unresolved'} engine=${(state && state.engine) || 'ollama'} calls today=${today.calls}${state && state.localReason && state.localReason !== 'local-ready' ? ` (${state.localReason})` : ''}`);
+    const queued = wrapsQueued(cfg.vault);
+    out.log(`local      model=${(state && state.model) || 'unresolved'} engine=${(state && state.engine) || 'ollama'} calls today=${today.calls}${state && state.localReason && state.localReason !== 'local-ready' ? ` (${state.localReason})` : ''}${queued ? ` · ${queued} wrap${queued === 1 ? '' : 's'} queued` : ''}`);
   }
   const claudeState = (state && state.claude) || {};
   const hosts = hostsOf(cfg);

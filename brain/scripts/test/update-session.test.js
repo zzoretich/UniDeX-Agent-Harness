@@ -235,3 +235,23 @@ test('a junk model summary is skipped / junk-summary', async () => {
   assert.equal(report.reason, 'junk-summary');
   assert.equal(report.counts.skipped, 1);
 });
+
+// local-first A3: under provider local the Stop summary never reaches a host; the engine down (at resolve or mid-call)
+// is the heuristic Key Context.
+test('the local engine down at resolve, or failing mid-call: the heuristic summary, never an error', async () => {
+  const text = jsonl(U('please fix the scanner'), A('fixed'));
+  fs.writeFileSync(PATHS.SESSION_MD, TEMPLATE);
+  let report = fakeReport();
+  let out = await summaryCycle({ transcript: [], transcriptText: text, provider: { ...NONE, reason: 'local-down' }, report });
+  assert.deepEqual([out.status, report.provider, report.counts.localDown], ['ok', 'none', 1]);
+  assert.match(fs.readFileSync(PATHS.SESSION_MD, 'utf8'), /- Asked: please fix the scanner/);
+
+  fs.writeFileSync(PATHS.SESSION_MD, TEMPLATE);
+  report = fakeReport();
+  const gone = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:11434'), { code: 'ECONNREFUSED' });
+  const LOCAL = { name: 'ollama', engine: 'ollama', reason: 'local-ready', capabilities: { chat: true }, chat: async () => { throw gone; } };
+  const transcript = [U('please fix the scanner'), A('fixed')];
+  out = await summaryCycle({ transcript, transcriptText: jsonl(...transcript), provider: LOCAL, report });
+  assert.deepEqual([out.status, report.provider, report.counts.localDown], ['ok', 'none', 1]);
+  assert.match(fs.readFileSync(PATHS.SESSION_MD, 'utf8'), /- Asked: please fix the scanner/);
+});

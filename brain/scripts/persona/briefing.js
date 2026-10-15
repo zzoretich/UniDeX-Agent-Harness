@@ -9,10 +9,12 @@
  *
  * Steps: nothing at all while the persona is off (persona.enabled false or persona/DISABLED) or persona.briefing.enabled
  * is false. Otherwise the facts (lib/pulse-facts.js); unchanged facts since the last good paragraph end the run without a
- * model call unless --force. Then the duty cap (persona.perDayUsd over today's duty:* ledger rows, as run-duty.sh checks
- * before a duty: a command routine is not gated by the runner), then one provider.js chat with a JSON schema. The call is
- * ledgered as `duty:briefing`, so it spends from the Chief of Staff's budget, not the hook cap; the background models
- * are claude.model / codex.model (spec A1); Ollama, when it answers, is free and first.
+ * model call unless --force. Then the provider; for a hosted one the duty cap (persona.perDayUsd over today's duty:*
+ * ledger rows, as run-duty.sh checks before a duty: a command routine is not gated by the runner), then one provider.js
+ * chat with a JSON schema. A hosted call is ledgered as `duty:briefing`, so it spends from the Chief of Staff's budget,
+ * not the hook cap; the background models are claude.model / codex.model (spec A1); Ollama, when it answers, is free and
+ * first. Under provider local the local engine writes it, free and counted in local-usage.json, never held to the duty
+ * cap; with the engine down the run is skipped with `local-down` and Pulse shows the facts alone (local-first A1, A3).
  *
  * Output: <vault>/brain/_index/briefing.json (schema 1), written atomically:
  *   { schema, status: ok|skipped|failed, reason, text, mentions[{phrase, area}], persona, provider, model, generatedAt,
@@ -228,11 +230,15 @@ async function run({ deps = defaultDeps(), force = false } = {}) {
       return { status, reason, wrote: true };
     };
 
-    const caps = deps.caps();
-    if (!(caps.perDayUsd > 0) || deps.dutySpend() >= caps.perDayUsd) return end('skipped', 'daily-cap');
     let p;
     try { p = await deps.provider(); } catch (e) { return end('skipped', `provider: ${e.message}`); }
+    // The local engine spends nothing (local-first A1, A18): only a hosted answer is held to the duty cap. With no
+    // provider (under provider local: the engine down, `local-down`) Pulse composes the paragraph from the facts (A3).
     if (!p || p.name === 'none') return end('skipped', (p && p.reason) || 'no-provider');
+    if (!p.engine) {
+      const caps = deps.caps();
+      if (!(caps.perDayUsd > 0) || deps.dutySpend() >= caps.perDayUsd) return end('skipped', 'daily-cap');
+    }
 
     let reply;
     try {
@@ -267,4 +273,4 @@ async function main(argv) {
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code), () => process.exit(1));
 
-module.exports = { SCHEMA, AREAS, REPLY_SCHEMA, outPath, readOut, systemPrompt, userPrompt, sayOf, briefItems, fineOf, mentionsFor, parseReply, run, lock };
+module.exports = { SCHEMA, AREAS, REPLY_SCHEMA, defaultDeps, outPath, readOut, systemPrompt, userPrompt, sayOf, briefItems, fineOf, mentionsFor, parseReply, run, lock };

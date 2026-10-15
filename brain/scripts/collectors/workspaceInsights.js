@@ -44,9 +44,12 @@ function heuristicInsight(entry) {
 // own next step: entry.next names its source or stays empty (spaces-redesign D23).
 // chatFn injected → used as-is (tests). Otherwise the provider decides:
 //   ollama → chat; claude → chat only when scan.insightsUnderClaude; codex → only when scan.insightsUnderCodex; none → heuristic.
+// Under provider local, none is also the local engine down (local-first A3), and the local engine failing mid-call
+// falls back to the heuristic too.
 async function generateInsight(entry, opts = {}) {
   let chatFn = opts.chatFn;
   let model = opts.model;
+  let localEngine = false;
   if (!chatFn) {
     const p = opts.provider || await require('../sdk/lib/provider.js').getProvider('workspace-insights');
     const cfg = require('../lib/config.js').loadConfig();
@@ -54,7 +57,8 @@ async function generateInsight(entry, opts = {}) {
       || (p.name === 'codex' && cfg.scan.insightsUnderCodex === true);
     if (!useModel) return heuristicInsight(entry);
     chatFn = (o) => p.chat({ ...o, feature: 'workspace-insights' });
-    model = model || (p.name === 'claude' ? cfg.claude.model : p.name === 'codex' ? (p.model || 'codex-default') : require('../sdk/lib/models.js').role('workhorse').tag);
+    localEngine = !!p.engine;
+    model = model || (p.name === 'claude' ? cfg.claude.model : p.name === 'codex' ? (p.model || 'codex-default') : p.model || require('../sdk/lib/models.js').role('workhorse').tag);
   }
   model = model || require('../sdk/lib/models.js').role('workhorse').tag;
   try {
@@ -69,6 +73,7 @@ async function generateInsight(entry, opts = {}) {
     };
     return { insight };
   } catch {
+    if (localEngine) return heuristicInsight(entry);
     return { insight: { text: null, status: 'unavailable', model, generatedAt: nowIso(), inputHash: entry.inputHash, next: null } };
   }
 }

@@ -114,3 +114,16 @@ test('usage: an unknown verb, extra words, and use without a model', async () =>
   await assert.rejects(() => L.main(['status', 'x'], { io: io() }), L.UsageError);
   await assert.rejects(() => L.main(['use'], { io: io() }), L.UsageError);
 });
+
+test('status counts the session wraps waiting for the model (local-first A3)', async () => {
+  const pending = path.join(VAULT, 'brain', '_index', 'auto-wrap-pending.jsonl');
+  fs.writeFileSync(pending, '{"sessionId":"a","transcriptPath":"/x"}\n{"sessionId":"b","transcriptPath":"/y"}\n');
+  try {
+    const out = io();
+    assert.equal(await L.main(['status'], { io: out, deps: engine() }), 0);
+    assert.ok(out.lines.includes('waiting    2 session wraps queued until the model answers'), out.lines.join('\n'));
+    const j = io();
+    await L.main(['status', '--json'], { io: j, deps: engine() });
+    assert.equal(JSON.parse(j.lines.join('\n')).wrapsQueued, 2);
+  } finally { fs.rmSync(pending, { force: true }); }
+});

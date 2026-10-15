@@ -175,3 +175,60 @@ test('every area a mention may open is a Pulse area, and the reply schema asks f
   assert.deepEqual(B.AREAS, require('../lib/pulse-facts.js').AREAS);
   assert.deepEqual(Object.keys(B.REPLY_SCHEMA.properties), ['text']);
 });
+
+// ── provider local (local-first A1, A3, A18) ──
+test('on the local engine: free, so never held to the duty cap; the paragraph names the local model', async () => {
+  const calls = [];
+  const local = { name: 'ollama', engine: 'ollama', model: 'qwen3.5:9b', chat: async (o) => { calls.push(o); return JSON.stringify(REPLY); } };
+  const d = deps({ provider: local, dutySpend: () => 99, caps: () => ({ perDayUsd: 6, perDutyUsd: 2 }) });
+  const r = await B.run({ deps: d.deps });
+  assert.deepEqual(r, { status: 'ok', reason: null, wrote: true });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].format, B.REPLY_SCHEMA, 'the schema as Ollama\'s format');
+  assert.deepEqual([out().provider, out().model], ['ollama', 'qwen3.5:9b']);
+  // A cap of 0 (no duty spend at all) does not stop a free paragraph either.
+  const zero = deps({ provider: local, caps: () => ({ perDayUsd: 0, perDutyUsd: 2 }) });
+  assert.equal((await B.run({ deps: zero.deps, force: true })).status, 'ok');
+});
+
+test('the local engine down: skipped with local-down, no call; Pulse then shows the facts alone and the last good text is kept', async () => {
+  const d = deps();
+  await B.run({ deps: d.deps });
+  const down = deps({ provider: { name: 'none', reason: 'local-down', chat: async () => { throw new Error('must not be called'); } } });
+  const r = await B.run({ deps: down.deps, force: true });
+  assert.deepEqual(r, { status: 'skipped', reason: 'local-down', wrote: true });
+  const o = out();
+  assert.deepEqual([o.status, o.reason, o.text], ['skipped', 'local-down', REPLY.text]);
+});
+
+test('a real local engine answers through provider.js: the briefing JSON from a loopback "Ollama", counted, not ledgered', async () => {
+  const http = require('http');
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'qwen3.5:9b' }] }));
+      seen.push(JSON.parse(body));
+      res.end(JSON.stringify({ message: { content: JSON.stringify(REPLY) }, done: true }));
+    });
+  });
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+  try {
+    fs.writeFileSync(path.join(vault, 'brain', 'config.json'), JSON.stringify({ provider: 'local', local: { url: `http://127.0.0.1:${server.address().port}` } }));
+    // provider.js fixes the vault when first required: the real path runs in its own process, asynchronously so this
+    // one can answer it.
+    const script = `const B = require(${JSON.stringify(path.join(__dirname, '..', 'persona', 'briefing.js'))});
+      B.run({ deps: { ...B.defaultDeps(), facts: () => (${JSON.stringify(FACTS)}) } }).then((r) => process.stdout.write(JSON.stringify(r)));`;
+    const r = await new Promise((resolve) => require('child_process').execFile(process.execPath, ['-e', script],
+      { env: { ...process.env, AOS_VAULT: vault, BRAIN_VAULT: vault, AOS_CONFIG: path.join(vault, 'none.json'), NODE_OPTIONS: '' } }, (err, stdout, stderr) => resolve({ err, stdout, stderr })));
+    assert.equal(r.err, null, r.stderr);
+    assert.equal(JSON.parse(r.stdout).status, 'ok');
+    assert.equal(seen[0].model, 'qwen3.5:9b');
+    assert.equal(out().text, REPLY.text);
+    assert.equal(fs.existsSync(path.join(vault, 'brain', '_index', 'provider-spend.jsonl')), false);
+    assert.match(fs.readFileSync(path.join(vault, 'brain', '_index', 'local-usage.json'), 'utf8'), /duty:briefing/);
+  } finally {
+    server.close();
+  }
+});

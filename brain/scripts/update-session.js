@@ -88,16 +88,18 @@ async function runDetachedSummary() {
 
 /**
  * One summary cycle against an explicit provider (tests) or the resolved one.
- *   none          → heuristic Key Context; ok when it wrote, skipped/no-signal otherwise
+ *   none          → heuristic Key Context; ok when it wrote, skipped/no-signal otherwise (under provider local this is
+ *                   also the local engine down or its model not pulled: local-first A3, never a hosted call)
  *   ollama/claude → summarizeSession through provider.chat; skipped/no-summary or
- *                   skipped/junk-summary when there is nothing worth writing
+ *                   skipped/junk-summary when there is nothing worth writing. The local engine failing mid-call
+ *                   (a connection-class error) goes heuristic too.
  */
 async function summaryCycle({ transcript, transcriptText = '', provider, chatFn, report, date = today,
   now = new Date().toLocaleString('en-US', { hour12: false }) }) {
   const p = provider || await getProvider('session-summary');
   report.provider = p.name;
 
-  if (p.name === 'none') {
+  const heuristic = () => {
     const { keyContext } = workingMemoryFromTranscript(transcriptText);
     if (!keyContext.length) { report.skip('no-signal'); return { status: 'skipped' }; }
     const summary = keyContext.map((l) => `- ${l}`).join('\n');
@@ -105,6 +107,10 @@ async function summaryCycle({ transcript, transcriptText = '', provider, chatFn,
     report.counts.written = 1;
     report.wrote.push('brain/_index/SESSION.md');
     return { status: 'ok', summary };
+  };
+  if (p.name === 'none') {
+    if (p.reason === 'local-down' || p.reason === 'local-model-missing') report.counts.localDown = 1;
+    return heuristic();
   }
 
   // summarizeSession swallows every throw and returns null, so the provider's own failure is
@@ -121,6 +127,12 @@ async function summaryCycle({ transcript, transcriptText = '', provider, chatFn,
       report.counts.skipped = 1;
       report.skip('daily-cap');
       return { status: 'skipped' };
+    }
+    // The local engine went away mid-call (A3): the heuristic summary, as when it was down at resolve.
+    if (p.engine && require('./lib/wrap-queue.js').isRetryable(providerErr)) {
+      report.provider = 'none';
+      report.counts.localDown = 1;
+      return heuristic();
     }
     throw providerErr;
   }
