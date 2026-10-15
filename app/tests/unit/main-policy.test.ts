@@ -63,6 +63,32 @@ test("credential files are never read, even inside a root", () => {
   assert.equal(s.canRead(`${HOME}/.codex/skills/x/SKILL.md`), true);
 });
 
+test("MCP config backups are never read: their folder is outside every root, brain/_index/backups is refused too, and no link reaches either (install-import B6)", () => {
+  const s = new ReadScope(ctx());
+  // Where `aos mcp copy` writes them (cli/mcp.js backupDir): each holds a whole host config, secrets included.
+  const dir = `${HOME}/.local/share/unidex/backups/mcp`;
+  const bak = `${dir}/codex-config.toml-20261015T142233123Z.bak`;
+  for (const p of [bak, dir, `${HOME}/.local/share/unidex/backups`, `${VAULT}/brain/_index/backups/mcp/claude-claude.json-x.bak`, `${VAULT}/brain/_index/backups`]) {
+    assert.equal(s.canRead(p), false, p);
+    assert.equal(s.canList(p), false, p);
+    assert.equal(s.canProbe(p), false, p);
+  }
+  // A vault that is the home folder itself still never reaches them; the rest of it stays readable.
+  const atHome = new ReadScope(ctx({ vaultRoot: HOME }));
+  assert.equal(atHome.canRead(bak), false);
+  assert.equal(atHome.canRead(`${HOME}/notes.md`), true);
+  // A link in the vault to the backups folder reads as the backups.
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(bak, "secret = 1\n");
+  fs.symlinkSync(dir, `${VAULT}/peek`);
+  try {
+    assert.equal(s.canRead(`${VAULT}/peek/${path.basename(bak)}`), false);
+    assert.equal(s.canList(`${VAULT}/peek`), false);
+  } finally { fs.rmSync(`${VAULT}/peek`); }
+  // brain/_index's other caches stay readable.
+  assert.equal(s.canRead(`${VAULT}/brain/_index/mcp-servers.json`), true);
+});
+
 test("the Claude and Codex folders come from main's environment and agenticos.json, never from the page", () => {
   const o = { home: HOME, env: { CLAUDE_CONFIG_DIR: "/cfg/claude", CODEX_HOME: "relative/ignored" }, agenticos: { claudeConfigDir: "/cfg/other", hosts: { codex: { home: "/cfg/codex" } } } };
   assert.deepEqual(claudeDirs(o), ["/cfg/claude", `${HOME}/.claude`, "/cfg/other"]);

@@ -7,7 +7,8 @@
 //
 // Two narrower allowances: whether a program exists, by its well-known name anywhere (the node, claude and shell
 // pickers probe candidates such as /opt/homebrew/bin/node), and the names in nvm's version folder. Credential files
-// are never read, even inside a root: a page that went wrong could otherwise hand a token to a link it opens.
+// are never read, even inside a root: a page that went wrong could otherwise hand a token to a link it opens. Nor are
+// the backups of a host's config (deniedDirs), which hold its MCP servers' secrets.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -69,10 +70,20 @@ const CLAUDE_LIST = ["projects"];
 const CODEX_READ = ["agents", "skills", "prompts"];
 const CODEX_LIST = ["sessions", "archived_sessions"];
 
+/**
+ * Folders never read, inside a root or not: backups of a host's config, which hold every MCP server's secrets. `aos mcp
+ * copy` writes them under ~/.local/share/unidex/backups (outside every root); brain/_index/backups is refused too, so a
+ * runtime that put one in the vault would still not hand it to the page (install-import B6).
+ */
+export function deniedDirs(o: Pick<ScopeOptions, "vaultRoot" | "home">): string[] {
+  return [path.join(o.home, ".local", "share", "unidex", "backups"), ...(o.vaultRoot ? [path.join(o.vaultRoot, "brain", "_index", "backups")] : [])];
+}
+
 export class ReadScope {
   private readonly roots: string[];
   private readonly files: Set<string>;
   private readonly listOnly: string[];
+  private readonly denied: string[];
 
   constructor(o: ScopeOptions) {
     const under = (dirs: string[], names: string[]) => dirs.flatMap((d) => names.map((n) => path.join(d, n)));
@@ -91,6 +102,15 @@ export class ReadScope {
       ...under(claudeDirs(o), CLAUDE_LIST),
       ...under(codexHomes(o), CODEX_LIST),
     ].flatMap(spellings);
+    this.denied = deniedDirs(o).flatMap(spellings);
+  }
+
+  /** Inside a denied folder, as written or once its links are followed (a link in the vault to the backups). */
+  private isDenied(p: string): boolean {
+    if (this.denied.some((d) => inside(d, p))) return true;
+    let real: string | null = null;
+    try { real = fs.realpathSync(p); } catch { real = null; }
+    return !!real && real !== p && this.denied.some((d) => inside(d, real as string));
   }
 
   private static clean(p: unknown): string | null {
@@ -101,19 +121,19 @@ export class ReadScope {
   /** Whether the page may read this file, list this folder, or stat it. */
   canRead(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    if (!p || CREDENTIALS.test(path.basename(p))) return false;
+    if (!p || CREDENTIALS.test(path.basename(p)) || this.isDenied(p)) return false;
     return this.files.has(p) || this.roots.some((r) => inside(r, p));
   }
 
   /** Whether the page may list this folder's names (canRead, nvm's version folder, or the hosts' session folders). */
   canList(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    return !!p && (this.canRead(p) || this.listOnly.some((r) => inside(r, p)));
+    return !!p && !this.isDenied(p) && (this.canRead(p) || this.listOnly.some((r) => inside(r, p)));
   }
 
   /** Whether the page may ask if this path exists, or stat it (canRead, or a program by its well-known name). */
   canProbe(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    return !!p && (this.canRead(p) || this.canList(p) || PROGRAM_NAMES.has(path.basename(p)));
+    return !!p && !this.isDenied(p) && (this.canRead(p) || this.canList(p) || PROGRAM_NAMES.has(path.basename(p)));
   }
 }
