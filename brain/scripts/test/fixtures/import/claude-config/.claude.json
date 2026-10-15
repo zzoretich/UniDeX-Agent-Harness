@@ -1,0 +1,9 @@
+{
+  "numStartups": 12,
+  "mcpServers": {
+    "docs-search": { "type": "stdio", "command": "npx", "args": ["-y", "docs-search-mcp"], "env": { "LOG_LEVEL": "warn" } },
+    "tracker": { "type": "http", "url": "https://localhost:8443/mcp" },
+    "agenticos": { "type": "stdio", "command": "sh", "args": ["bin/aos", "mcp-server"] }
+  },
+  "projects": { "/somewhere": { "mcpServers": { "project-only": { "command": "node" } } } }
+}

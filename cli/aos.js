@@ -1088,7 +1088,9 @@ async function init(flags) {
 
 // ── upgrade / uninstall / terminal / persona / cost ───────────────────────────
 /** Routines a release added to the vault template after brain/routines/ existed, with that release. */
-const NEW_ROUTINES = [{ slug: 'briefing', since: '1.5.0' }];
+// import-digest (install-import B10): on from the start, it turns itself off at its first run when no import queued
+// anything, and `aos import` turns it on again; it never imports on its own (B12).
+const NEW_ROUTINES = [{ slug: 'briefing', since: '1.5.0' }, { slug: 'import-digest', since: '2.0.0' }];
 
 /** Upgrade: the three duties become routine files the first time brain/routines/ is absent (spec D10), and any
  *  installed schedule — legacy per-duty plists included — is re-rendered from the routine files so the old
