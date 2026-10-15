@@ -290,9 +290,10 @@ record its name.
 
 `aos init`, and `aos persona` at any time, ask seven questions: its **name**, how it should
 **address you**, its **voice** in one line, **what to watch** most, and the **model**, **effort**
-and **schedule** for background duties. With Codex enabled as a host there is an eighth: the
-**Codex model** the duties run on (blank keeps your Codex default; stored as
-`persona.codexModel`). The answers are kept in `<vault>/persona/answers.json`, so `aos persona`
+and **schedule** for its duties. The duties run on a hosted model, `claude-opus-5-5` on Claude Code
+by default; with Codex enabled as a host there is an eighth question, the **Codex model**
+(`gpt-6-sol` by default, stored as `persona.codexModel`), and a Codex-only machine is asked only
+that one. The hourly check runs on this Mac's local model (below). The answers are kept in `<vault>/persona/answers.json`, so `aos persona`
 re-runs prefilled and `aos persona rename <name>` re-renders every template. Where stdin is not a
 terminal: `aos init --persona-json answers.json` or `aos persona --persona-json answers.json`.
 `aos persona --yes` only re-applies the answers already in `persona/answers.json`; with none
@@ -311,14 +312,15 @@ what it flagged at 22:00 last night.
 ### Its duties
 
 Each duty is a file: `brain/routines/<slug>.md`, with its cron line in frontmatter. The tick and
-the daily reflect also set their own budget cap (`budgetUsd`) and tool allowlist (`tools`) there.
+the daily reflect also set their own budget cap (`budgetUsd`) and tool allowlist (`tools`) there
+(for the tick, those of the duty its local triage wakes).
 Monitor, sitrep and reflect use `persona.perDutyUsd` (2.00 by default) and the runner's default
 allowlist; add `budgetUsd` or `tools` to any duty file to override them. Change a cadence by
 editing the file and running `aos routines sync`.
 
 | Duty | Cadence | Cap (USD) | What it does |
 |---|---|---|---|
-| **tick** | hourly | 0.10 | The cheap beat, read-only. Queues what changed — a correction you made, a duty that failed, a repo whose planning idled, an approved fix that regressed, a flag left open a week — into `persona/queue.jsonl`. Skipped without a model call when a signature of the vault's inputs is unchanged, so a quiet hour costs nothing. |
+| **tick** | hourly | 0.50 | Local triage, then the hosted beat, read-only. `tick.js --triage` compares a signature of what can matter — a routine that failed or went missing (never run times), new commits in tracked repos, corrections, proposals, open flags, inbox alerts — with the last one; unchanged, it stops with no model call at all. A real change goes to the local model, which decides whether it merits a run and journals why (with the local model down, any real change does). The run queues what changed into `persona/queue.jsonl`. |
 | **reflect-daily** | daily 22:00 | 0.50 | Drains that queue. Reads one evidence pack — the queue by type, the outcome ledger summary, each duty's fail streak, spend, the week's feedback and sessions — and files **at most two** proposals. Skipped when the queue is empty and today already drained; brought forward by the tick when the queue fills up. |
 | **monitor** | daily 13:00 | 2.00 | Duty health, vault drift, unfinished work, pending review counts; prepares one safe fix. |
 | **sitrep** | weekdays 07:45 | 2.00 | One page of where your work stands, leading with exactly **one** recommended action → `brain/_index/sitrep.md` and today's daily note. |
@@ -326,9 +328,12 @@ editing the file and running `aos routines sync`.
 | **heartbeat** | every 30 min | — | Not a duty and never calls a model: `watchdog.js` projects every schedule forward and flags a duty that missed its window. |
 
 Duties run headless with `AOS_HEADLESS=1`, so your own hooks never fire inside one — through
-`claude -p`, or `codex exec` on a Codex-only machine. Every run is ledgered to
-`brain/_index/provider-spend.jsonl`; once today's duty rows reach `persona.perDayUsd` (6.00) the
-rest of the day is skipped, journalled and exit 0. **A duty never runs `git commit`** — anything it
+`claude -p --model claude-opus-5-5`, or `codex exec -m gpt-6-sol` on a Codex-only machine. With both
+hosts, a duty that cannot start on its host (CLI missing, signed out, that host's day at the cap)
+runs on the other host's model instead (`persona.failover`); with no host able to start it, it is
+skipped and flagged once a day, never failed. Every run is ledgered to
+`brain/_index/provider-spend.jsonl`; once a host's duty rows for today reach `persona.perDayUsd`
+(6.00) its day is over: the rest moves to the other host, or is skipped, journalled and exit 0. **A duty never runs `git commit`** — anything it
 edits beyond its own state stays in the working tree for you to read.
 
 ### Why the heartbeat exists

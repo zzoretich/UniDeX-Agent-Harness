@@ -14,8 +14,12 @@ The `aos init` Chief of Staff interview (the **Chief of Staff interview** step i
 2. How the agent addresses you (a name or a title).
 3. Voice in one line.
 4. What it should watch most (comma-separated → `## Priorities` in STATE.md).
-5. Model for background duties (default: your configured Claude model).
-6. On a Codex host only (`hosts.codex.enabled`): Codex model for background duties (blank: your Codex default; stored as `persona.codexModel` in `<vault>/brain/config.json`).
+5. Where Claude Code is a host: the Claude Code model for duties (default `claude-opus-5-5`, the Chief of Staff's model; on a 2.0 install the answer becomes `persona.model` unless you set that yourself).
+6. On a Codex host only (`hosts.codex.enabled`): the Codex model for duties (default `gpt-6-sol`; stored as `persona.codexModel` in `<vault>/brain/config.json`). With both hosts it is the failover; on a Codex-only machine it is the duties' model and question 5 is not asked.
+
+Duties run on that hosted model; the hourly check runs on this Mac's local model and wakes it only when something
+changed (see the tick, below). The setup wizard asks the same questions, with Claude Code · `claude-opus-5-5`
+preselected (Codex · `gpt-6-sol` when only Codex is ready).
 7. Effort for background duties (`low|medium|high`, default `medium`).
 8. Schedule daily duties? (default yes → launchd on macOS, crontab on Linux).
 
@@ -63,16 +67,18 @@ there, not in `brain/config.json`. To turn the agent off without editing config,
 | reflect | Sunday 18:00 | curates the playbook from `scan-arsenal.js`, promotes repeated corrections to feedback memories, files proposals, writes a weekly reflection |
 | reflect-daily | daily 22:00 (or early, started by the tick) | the short nightly pass (0.50 USD cap): reads `reflect.js inputs` — the queue, the ledger summary, duty health, spend, this week's feedback and sessions — files at most two proposals, and the runner drains `persona/queue.jsonl`; skipped when the queue is empty and today already drained |
 | sitrep | weekdays 07:45 | `sitrep-state.js diff` → one page with ONE recommended action → `brain/_index/sitrep.md` + daily note |
-| tick | hourly | the cheap beat (0.10 USD cap, about 0.06 per working run, read-only): `tick.js signals` → queues new corrections, duty failures, stalled repos, regressions and aged flags into `persona/queue.jsonl` for reflect; skipped by the runner when nothing changed |
+| tick | hourly | local triage first (`tick.js --triage`, no hosted call): an unchanged signature stops there, a real change asks the local model whether it merits a run; the woken duty (0.50 USD cap, read-only) runs `tick.js signals` → queues new corrections, duty failures, stalled repos, regressions and aged flags into `persona/queue.jsonl` for reflect |
 
-Runner: `sh <vault>/brain/scripts/persona/run-duty.sh <duty> [--dry-run]`. It runs
-`claude -p` with the duty prompt, appends `IDENTITY.md` + `STATE.md` as system prompt,
+Runner: `sh <vault>/brain/scripts/persona/run-duty.sh <duty> [--dry-run]`. It asks
+`persona/chief.js` (`lib/headless.js` `resolveChief`) where the duty runs — the host, that host's Chief of Staff model
+and the effort; see **Host, model and failover** below — then runs
+`claude -p` with the duty prompt (or `codex exec`), appends `IDENTITY.md` + `STATE.md` as system prompt,
 `AOS_HEADLESS=1` (your hooks do not fire), a scoped tool allowlist, `--max-budget-usd`
 (`PERSONA_MAX_USD`, else `persona.perDutyUsd` from config, default 2.0), and
 `--output-format json`. The cost of every run is appended to `brain/_index/provider-spend.jsonl`
-as `feature: "duty:<name>"`. A duty is skipped for the rest of the day — journal entry
-`- status: SKIPPED daily-cap`, exit 0 — once today's `duty:*` rows add up to
-`persona.perDayUsd` (default 6.0). Both caps live in `<vault>/brain/config.json` (the `enabled` switch
+as `feature: "duty:<name>"`. A host's day is over once today's `duty:*` rows of that provider add up to
+`persona.perDayUsd` (default 6.0): the duty moves to the other host when failover can, else it is skipped — journal
+entry `- status: SKIPPED daily-cap`, exit 0. Both caps live in `<vault>/brain/config.json` (the `enabled` switch
 does not — `agenticos.json` is merged last and `aos init` writes it there; see above):
 
 ```json
@@ -93,11 +99,34 @@ scope, below) stays in the working tree for you to review. Env: `PERSONA_MODEL`,
 `PERSONA_NAME` is set by the schedules (plists and cron lines) so that `aos persona rename` has
 something to re-render; the runner takes the name from `IDENTITY.md` and never reads it.
 
+### Host, model and failover
+
+The Chief of Staff runs on a hosted model per host (local-first A4; `sdk/lib/models.js` `CHIEF` is the one place to
+bump them): **Claude Code · `claude-opus-5-5`** (`persona.model`) or **Codex · `gpt-6-sol`** (`persona.codexModel`),
+at `persona.effort` (`medium` unless set). `persona.runner` picks the host: `auto` (default) takes Claude Code when it
+is an enabled host whose CLI is installed and signed in, else Codex; `claude` or `codex` pins one (`AOS_RUNNER`
+overrides it for one run). Before a duty starts, `persona/chief.js` checks its host can start it — the CLI is found,
+`claude auth status` / `codex login status` say signed in (both free), and that host's duty spend today is under
+`persona.perDayUsd`. With both hosts enabled and `persona.failover` on (the default), a duty that cannot start on its
+host runs on the other host's model instead, and the duty log says why (`(failover: claude signed out)`). When no
+host can start it, the duty is **skipped, not failed**: one journal entry `- status: SKIPPED waiting-for-host` naming
+each host and why, one flag a day under `## Flags`, exit 0. `aos doctor`'s `persona runner` row names the host, its
+model and effort, and the failover host:
+
+```
+ok    persona runner   claude · claude-opus-5-5 (medium) (~/.local/bin/claude); failover: codex · gpt-6-sol
+```
+
+An install from before 2.0 keeps `persona.model` / `persona.codexModel` at `null`, which keeps the chain it ran on —
+the interview's answer, then `claude.model`; `codex.model`, then your Codex default — until you set them (or accept
+the 2.0 update's offer to move the Chief of Staff).
+
 ### Model and effort
 
 Every duty schedule carries one model and one effort (`PERSONA_MODEL`, `PERSONA_EFFORT`), resolved when the schedules
-are rendered: `persona.model` → the interview's `dutyModel` → `claude.model` → `haiku`, and `persona.effort` →
-`dutyEffort` → `medium`. Change them without re-running the interview:
+are rendered: `persona.model` → the interview's `dutyModel` → `claude.model` → `claude-opus-5-5`, and `persona.effort` →
+`dutyEffort` → `medium`. `PERSONA_MODEL` is a Claude model: a duty that runs on Codex takes `persona.codexModel`
+whatever the schedule carries. Change them without re-running the interview:
 
 ```sh
 aos config set persona.model sonnet
@@ -106,8 +135,8 @@ aos routines sync            # re-renders the schedules with the new values
 ```
 
 One duty can differ from the rest: `model:` and `effort:` in its routine file (`brain/routines/<duty>.md`) win for
-that duty's runs, with no sync needed — for example the hourly tick on `haiku` while the weekly reflect runs on a
-bigger model. `model` is a Claude model: under the Codex runner a duty runs on `persona.codexModel` (else
+that duty's runs, with no sync needed — for example a smaller model for the woken tick while the weekly reflect runs
+on the Chief of Staff's. `model` is a Claude model: under the Codex runner a duty runs on `persona.codexModel` (else
 `codex.model`, else your Codex default) and `persona.model` has no effect; `effort` applies on both. A bigger model
 costs more per run, so raise that duty's `budgetUsd` with it: a run that reaches its cap stops mid-duty and is
 journaled FAILED.
@@ -181,26 +210,44 @@ close by hand stays closed until a new miss. Once a day it also runs `ledger.js 
 Proposals). `aos routines run heartbeat` checks now; `aos routines disable heartbeat` turns the schedule
 off without deleting the file.
 
-The second layer is the **tick**, `brain/routines/tick.md` (`kind: duty`, hourly, seeded by `aos persona`
-next to the heartbeat; `aos persona --yes` adds it to an existing vault). It is the only duty with a
-runner-side helper, `brain/scripts/persona/tick.js`: before the model runs, `tick.js precheck` compares a
-signature of the vault's inputs — the journal, feedback memories and drafts, `STATE.md`, proposals, the
-ledger, each repo in `persona/repos.json` (its `.git/HEAD`, index, reflog and `.planning/STATE.md`) and
-the watchdog's beats — with the one recorded at the last beat, and `run-duty.sh` skips the model call when
-nothing changed (one `skipped: unchanged` line in `duty-tick.log`, no journal entry, exit 0, so the
-watchdog still counts the hour as a run). When something did change, the duty runs `tick.js signals`,
-which lists the candidates since the last beat with a source pointer each — `correction` (a feedback
-file or draft), `duty-failure` (a failed or missed beat), `repo-stall` (`.planning/STATE.md` idle past
-`stall_threshold_days`), `regressed` (a ledger event) and `flag-aged` (a `- [ ] <date>` flag older than
-`persona.tick.flagAgeDays`, default 7) — and queues the ones worth reflect's time with `tick.js queue
-<type> --source <pointer> --note <why>`, which validates the type and never queues the same (type, source)
-twice. The queue is `persona/queue.jsonl`, one JSON line per signal, drained by the nightly reflect (see
-Self-improvement). The tick's budget and allowlist live in the routine file (`budgetUsd: 0.1` — a working haiku run costs about 0.06 USD, most of it the cached system prompt across its tool turns, so 0.05 cut every run off mid-flight —
-`tools:` Read, Glob, Grep, Write, Edit, `date`, `tick.js` and `ledger.js summary` — no git), and the
-routine runner passes them to `run-duty.sh` as `PERSONA_MAX_USD` and `PERSONA_TOOLS`; `tick.js beat`
-records the beat after the contract check passes. The tick touches `STATE.md` in two places only: its
-`tick:` line under `## Last Duty Runs`, and the `## Sitrep` block when it queued something. `tick.js
-status` prints its state (`brain/_index/persona-tick.json`: last beat, skips, the pending signature).
+The second layer is the **tick**, `brain/routines/tick.md` (hourly, seeded by `aos persona` next to the heartbeat;
+`aos persona --yes` adds it to an existing vault). Since 2.0 it is a `kind: command` routine that runs
+`brain/scripts/persona/tick.js --triage` on this Mac (local-first A5), and the Chief of Staff's hosted model runs only
+when the triage wakes it:
+
+1. **Rules.** `tick.js` builds a signature of what can make a run worth paying for, never a clock: each routine's
+   status (`ok`, `failed`, `missed`, `off`, `invalid` — a failure or a miss is a change, a run time never is, so the
+   heartbeat, the briefing and the tick's own runs are not news), each repo in `persona/repos.json` by its HEAD
+   (branch and commit, read from the files, no git process) — except the vault's own repo, whose commits are the
+   backups: it counts by its memory files instead — the feedback memories and drafts, `persona/proposals/`, the open
+   `- [ ]` flags under `## Flags`, and unread inbox alerts (notifications at `breaking` or `alert`). Unchanged since
+   the last triage, or back to what the Chief of Staff last saw: the hour ends there, with no model call of any kind
+   and no journal line.
+2. **Local model.** A real change goes to the local model through `provider.js` — only when the background provider
+   is the local engine — as a small JSON decision `{ "wake": true|false, "reason": "…" }`, with the changes and the
+   candidates `tick.js signals` would list. When the local model is down (or the background provider is hosted, or
+   it answers nonsense), any real change wakes the Chief of Staff. Either way one line goes into today's journal:
+   `## 14:00 — tick triage: woke the Chief of Staff — the briefing started failing (local model qwen3.5:9b; changed:
+   routine briefing: ok → failed)`.
+3. **The duty.** Waking runs `persona/duties/tick.md` through `run-duty.sh` exactly like a scheduled duty, on the
+   Chief of Staff's model with its failover, with the routine file's `budgetUsd` (0.50 — a working run costs about
+   0.06 USD on Haiku and Opus 5.5 bills about four times that) and `tools` (Read, Glob, Grep, `date`, `tick.js` and
+   `ledger.js summary` — no git) as `PERSONA_MAX_USD` and `PERSONA_TOOLS`. The duty runs `tick.js signals`, which
+   lists the candidates since the last beat with a source pointer each — `correction` (a feedback file or draft),
+   `duty-failure` (a failed or missed beat), `repo-stall` (`.planning/STATE.md` idle past `stall_threshold_days`),
+   `regressed` (a ledger event) and `flag-aged` (a `- [ ] <date>` flag older than `persona.tick.flagAgeDays`,
+   default 7) — and queues the ones worth reflect's time with `tick.js queue <type> --source <pointer> --note <why>`,
+   which validates the type and never queues the same (type, source) twice. The queue is `persona/queue.jsonl`, one
+   JSON line per signal, drained by the nightly reflect (see Self-improvement). `tick.js beat` records the beat after
+   the contract check passes. `--triage` refuses to run inside a duty (`AOS_HEADLESS=1`), so a duty never starts
+   another.
+
+The tick touches `STATE.md` in two places only: its `tick:` line under `## Last Duty Runs`, and the `## Sitrep` block
+when it queued something — neither is in the signature, so a run never wakes the next one. `tick.js status` prints
+its state (`brain/_index/persona-tick.json`: last beat, skips, the last triage and its decision, triages, wakes, local
+calls). A vault whose `tick.md` is still the pre-2.0 `kind: duty` file runs the duty every hour as before, and
+`run-duty.sh` still skips it through `tick.js precheck` when the same signature is unchanged; the 2.0 update offers
+to move it.
 
 In the Workbench the sidebar shows a heartbeat pill next to the update pill, read from
 `persona-heartbeat.json`: green while the last check is under an hour old and no duty is missed or
@@ -268,7 +315,7 @@ path, so a duty that runs just after midnight no longer journals into yesterday'
 
 The pieces above form one loop, and each step is deterministic except the two model runs that judge:
 
-1. **Notice.** Every hour the tick (`tick.js signals`, then a 0.10 USD haiku triage) queues what changed
+1. **Notice.** Every hour the tick (a local triage, then — only on a change worth it — `tick.js signals` and a hosted run) queues what changed
    into `persona/queue.jsonl`: a correction you made (a feedback memory or draft), a duty that failed or
    was missed, a repo whose planning idled, an approved fix that regressed, a flag left open for a week.
    The same `(type, source)` is never queued twice while it is pending.
