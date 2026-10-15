@@ -12,7 +12,7 @@
  *   aos doctor · aos status · aos provider [local|auto|ollama|claude|codex|none] · aos local [status | pull | use <model>] · aos graph [status | build [--semantic] | on | off | semantic on|off|auto]
  *   aos upgrade [--from-local <repo-dir>] · aos uninstall [--host claude|codex] [--keep-vault] [--yes]
  *   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes] · aos cost [enable [--budget <usd>] [--yes] | disable]
- *   aos import [--from claude|codex|all] [--since 90d|all] [--only …] [--accept <json>] [--dry-run] [--json] · aos hosts add <claude|codex>
+ *   aos import [--from claude|codex|all] [--since 90d|all] [--only …] [--accept <json>] [--dry-run] [--json] · aos hosts add <claude|codex> | status [--json]
  *
  * Exit codes: 0 ok · 1 a check failed · 2 usage.
  * Runs from the repo checkout (`node cli/aos.js …`, `npm run setup`), from a release tree (the AgenticOS Workbench app's
@@ -61,7 +61,7 @@ const USAGE = `usage:
   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes]
   aos cost [enable [--budget <usd>] [--yes] | disable]
   aos graph [status | build [--semantic [--yes]] | on | off | semantic on|off|auto]
-  aos routines [list [--json] | sync | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
+  aos routines [list [--json] | sync [--if-installed] | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
   aos skills [list [--all] [--json] | sync [--dry-run] [--json] | exclude <name> | include <name> | reset <name>]
   aos agents [list [--all] [--json] | sync [--dry-run] [--json] | exclude <name> | include <name> | reset <name>]
   aos config [list [--json] | get <key> [--json] | set <key> <value> [--dry-run] [--json] | unset <key> [--dry-run]]
@@ -76,7 +76,7 @@ const USAGE = `usage:
              | merge-draft <path> <path>… [--estimate] [--json] | merge <path> <path>… --into <json> --expect <hash>,… [--json]
              | unmerge <path> --expect <hash> [--json] | sweep [<path>…] [--estimate] [--json] | sweep dismiss <id> [--json]]
   aos import [--from claude|codex|all] [--since 90d|all] [--only instructions,memories,projects,mcp,sessions] [--accept <json list>] [--dry-run] [--json]
-  aos hosts add <claude|codex> [--from-local <repo-dir>]
+  aos hosts add <claude|codex> [--from-local <repo-dir>] | aos hosts status [--json]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1208,7 +1208,7 @@ async function workspace(sub, flags) {
 async function routines(sub, flags) {
   const R = require('./routines.js');
   try {
-    return await R.main([...sub, ...(flags.json ? ['--json'] : []), ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.refresh ? ['--refresh'] : [])], { io: console });
+    return await R.main([...sub, ...(flags.json ? ['--json'] : []), ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.refresh ? ['--refresh'] : []), ...(flags.ifInstalled ? ['--if-installed'] : [])], { io: console });
   } catch (e) {
     if (e instanceof R.UsageError) throw new UsageError(e.message);
     throw e;
@@ -1507,7 +1507,7 @@ async function importCmd(sub, flags) {
   }
 }
 
-/** `aos hosts add <host>` (install-import B2): cli/hosts.js, wiring one more host into this install. */
+/** `aos hosts add <host>` and `aos hosts status` (install-import B2): cli/hosts.js, wiring one more host into this install. */
 async function hostsCmd(sub, flags) {
   const H = require('./hosts.js');
   try {
@@ -1516,7 +1516,7 @@ async function hostsCmd(sub, flags) {
       readJson, writeJson, configPath, configDir, claudeBin, claudeLoggedIn, codexBin, hostsOf, buildUserConfig, repoRoot,
       installPlugin, wireCodex, run, out, PLUGIN_ID, MARKETPLACE,
     };
-    return await H.main(sub, { fromLocal: flags.fromLocal }, { io: console, aos });
+    return await H.main(sub, { fromLocal: flags.fromLocal, json: !!flags.json }, { io: console, aos });
   } catch (e) {
     if (e instanceof H.UsageError) throw new UsageError(e.message);
     if (e instanceof H.Refused) throw new CheckFailed(e.message);
@@ -1545,7 +1545,7 @@ function updateNotice() {
 // --skip-brain-md and merge-draft's and sweep's --estimate (A5) do not.
 // `aos import`'s (install-import B7): --from, --since, --only and --accept take a value.
 const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by', 'from', 'since', 'only', 'accept']);
-const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate']);
+const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate', 'if-installed']);
 // --no-obsidian is parsed and ignored: Obsidian is no longer installed, and a script written for an older release keeps working.
 const NEGATABLE_FLAGS = new Set(['obsidian']);
 function camel(s) { return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }

@@ -2,7 +2,9 @@
 /**
  * routines.js — `aos routines <verb>` over <vault>/brain/routines/*.md (spec D11).
  *   list [--json]        every routine: kind, cadence, enabled, next fire, last run, health
- *   sync                 render + (re)load one OS schedule per enabled routine (cli/schedule.js)
+ *   sync [--if-installed]    render + (re)load one OS schedule per enabled routine (cli/schedule.js); with
+ *                        --if-installed only where schedules are installed already (run-routine.js uses it after a
+ *                        routine turned itself off), so it never installs them on a Mac that runs routines by hand
  *   run <slug> [--dry-run]   run one routine now through run-routine.js (trigger "manual")
  *   enable|disable <slug>    flip `enabled:` in the file, then sync
  *   next [<slug>]        the next three fire times
@@ -133,7 +135,11 @@ function importCloud(ctx, file, { io, now = new Date(), stdin = () => fs.readFil
   return hosts(ctx, { io, now });
 }
 
-function sync(ctx, { io, installSchedules = schedule.installSchedules }) {
+function sync(ctx, { io, installSchedules = schedule.installSchedules, ifInstalled = false, isInstalled = schedule.isInstalled }) {
+  if (ifInstalled && !isInstalled({ platform: ctx.platform, vault: ctx.vault })) {
+    io.log('routines: no schedules installed here; nothing re-rendered (aos routines sync installs them)');
+    return 0;
+  }
   const vars = scheduleVarsFor(ctx);
   const r = installSchedules({ vars, platform: ctx.platform, warn: (m) => io.error(`warning: ${m}`) });
   if (r.unsupported) { io.log(`routines: scheduling is not supported on ${r.platform}; run them by hand: aos routines run <slug>`); return 0; }
@@ -187,10 +193,10 @@ async function main(argv, opts = {}) {
   const verb = words[0] || 'list';
   if (!VERBS.includes(verb)) throw new UsageError(`aos routines: unknown verb "${verb}" (${VERBS.join(' | ')})`);
   const ctx = resolveCtx(opts);
-  const o = { io, installSchedules: opts.installSchedules, spawn: opts.spawn, now: opts.now, exec: opts.exec, sqlite3: opts.sqlite3, stdin: opts.stdin };
+  const o = { io, installSchedules: opts.installSchedules, isInstalled: opts.isInstalled, spawn: opts.spawn, now: opts.now, exec: opts.exec, sqlite3: opts.sqlite3, stdin: opts.stdin };
   switch (verb) {
     case 'list': return list(ctx, { ...o, json: flags.has('--json') });
-    case 'sync': return sync(ctx, o);
+    case 'sync': return sync(ctx, { ...o, ifInstalled: flags.has('--if-installed') });
     case 'run': return run(ctx, words[1], { ...o, dryRun: flags.has('--dry-run') });
     case 'enable': return setEnabled(ctx, words[1], true, o);
     case 'disable': return setEnabled(ctx, words[1], false, o);

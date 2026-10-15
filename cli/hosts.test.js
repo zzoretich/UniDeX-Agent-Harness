@@ -127,3 +127,38 @@ test('refused, writing nothing: no vault, a missing CLI, a signed-out CLI, a bad
     assert.match(r.stderr, /aos hosts add <claude\|codex>/);
   }
 });
+
+test('status: each host as add would find it (on, CLI, signed in) and the next step; it writes nothing', () => {
+  const sb = sandbox();
+  const none = sb.aos(['hosts', 'status', '--json'], { AOS_NO_CODEX: '1' });
+  assert.equal(none.status, 0, none.stderr);
+  const n = JSON.parse(none.stdout);
+  assert.deepEqual([n.config, n.vault], [null, null], 'no install yet');
+  assert.deepEqual(n.hosts.claude, { enabled: false, installed: true, bin: F('fake-claude.sh'), signedIn: true });
+  assert.deepEqual(n.hosts.codex, { enabled: false, installed: false, bin: null, signedIn: null });
+  const init = sb.aos(['init', '--host', 'claude', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes']);
+  assert.equal(init.status, 0, init.stderr + init.stdout);
+  const cfgBefore = fs.readFileSync(sb.cfgFile, 'utf8');
+  const codexLog = sb.log('FAKE_CODEX_LOG');
+  const r = sb.aos(['hosts', 'status', '--json'], { FAKE_CODEX_LOGGED_OUT: '1' });
+  assert.equal(r.status, 0, r.stderr);
+  const s = JSON.parse(r.stdout);
+  assert.equal(s.schema, 1);
+  assert.equal(s.vault, sb.vault);
+  assert.equal(s.config, sb.cfgFile);
+  assert.deepEqual(s.hosts.claude, { enabled: true, installed: true, bin: F('fake-claude.sh'), signedIn: true });
+  assert.deepEqual(s.hosts.codex, { enabled: false, installed: true, bin: F('fake-codex.sh'), signedIn: false });
+  const text = sb.aos(['hosts', 'status'], { FAKE_CLAUDE_LOGGED_OUT: '1' });
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /^Claude Code on · .*fake-claude\.sh · signed out {2}→ sign in \(claude auth login\)$/m);
+  assert.match(text.stdout, /^Codex {7}off · .*fake-codex\.sh · signed in {2}→ aos hosts add codex$/m);
+  const gone = sb.aos(['hosts', 'status'], { AOS_NO_CODEX: '1' });
+  assert.match(gone.stdout, /^Codex {7}off · CLI not found {2}→ install it, then aos hosts add codex$/m);
+  assert.equal(fs.readFileSync(sb.cfgFile, 'utf8'), cfgBefore, 'agenticos.json untouched');
+  assert.doesNotMatch(sb.log('FAKE_CODEX_LOG').slice(codexLog.length), /plugin|mcp add/, 'nothing wired');
+  for (const args of [['hosts', 'status', 'codex'], ['hosts', 'stat']]) {
+    const bad = sb.aos(args);
+    assert.equal(bad.status, 2, args.join(' '));
+    assert.match(bad.stderr, /aos hosts status \[--json\]/);
+  }
+});

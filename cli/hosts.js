@@ -2,6 +2,8 @@
 /**
  * hosts.js — `aos hosts add <claude|codex> [--from-local <repo-dir>]`: wire one more session host into an existing
  * install (install-import B2; the app's Settings ▸ Hosts runs it after installing and signing in that CLI).
+ * `aos hosts status [--json]`: each host as `add` would find it — on in agenticos.json, its CLI (the same lookup chain),
+ * signed in (`claude auth status`, `codex login status`: free, no model call) — which Settings ▸ Hosts shows. Read-only.
  *
  *   1. agenticos.json must name a vault (`cfg.vault`, never the default path); the host's CLI must resolve (the same
  *      chain `aos init` uses: claude through cli/aos.js claudeBin, codex through cli/codex-host.js codexBin) and be
@@ -20,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 
 const HOSTS = ['claude', 'codex'];
-const USAGE = 'aos hosts add <claude|codex> [--from-local <repo-dir>]';
+const USAGE = 'aos hosts add <claude|codex> [--from-local <repo-dir>] · aos hosts status [--json]';
 const FAST = ['instructions', 'memories', 'projects', 'mcp'];
 
 class UsageError extends Error {}
@@ -109,11 +111,48 @@ async function add(host, flags = {}, opts = {}) {
   return 0;
 }
 
+/**
+ * Each host's state, as `add` would check it, with nothing written. → { schema, config, vault, hosts: { <host>: { enabled,
+ * installed, bin, signedIn (null when the CLI is not found), install? (Codex: plugin | direct, when on) } } }
+ */
+function readStatus(opts = {}) {
+  const A = opts.aos || require('./aos.js');
+  const CH = require('./codex-host.js');
+  const cfg = A.readJson(A.configPath());
+  const on = cfg ? A.hostsOf(cfg) : { claude: false, codex: false };
+  const out = { schema: 1, config: cfg ? A.configPath() : null, vault: cfg && typeof cfg.vault === 'string' && cfg.vault ? cfg.vault : null, hosts: {} };
+  for (const h of HOSTS) {
+    const bin = (h === 'claude' ? A.claudeBin(cfg) : A.codexBin(cfg)) || null;
+    let signedIn = null;
+    if (bin) { try { signedIn = h === 'claude' ? !!A.claudeLoggedIn(bin) : !!CH.codexLoggedIn(bin, A.run); } catch { signedIn = false; } }
+    const row = { enabled: !!on[h], installed: !!bin, bin, signedIn };
+    if (h === 'codex' && on.codex) row.install = (cfg.hosts && cfg.hosts.codex && cfg.hosts.codex.install) || 'direct';
+    out.hosts[h] = row;
+  }
+  return out;
+}
+
+/** `aos hosts status [--json]`. → exit code */
+function status(flags = {}, opts = {}) {
+  const io = opts.io || console;
+  const s = readStatus(opts);
+  if (flags.json) { io.log(JSON.stringify(s, null, 2)); return 0; }
+  const name = { claude: 'Claude Code', codex: 'Codex' };
+  for (const h of HOSTS) {
+    const x = s.hosts[h];
+    const parts = [x.enabled ? 'on' : 'off', x.installed ? x.bin : 'CLI not found', x.installed ? (x.signedIn ? 'signed in' : 'signed out') : null].filter(Boolean);
+    const next = !x.installed ? `install it, then aos hosts add ${h}` : !x.signedIn ? `sign in (${h === 'claude' ? 'claude auth login' : 'codex login'})${x.enabled ? '' : `, then aos hosts add ${h}`}` : x.enabled ? null : `aos hosts add ${h}`;
+    io.log(`${name[h].padEnd(11)} ${parts.join(' · ')}${next ? `  → ${next}` : ''}`);
+  }
+  return 0;
+}
+
 /** `argv` = the words after `aos hosts`. → exit code */
 async function main(argv, flags = {}, opts = {}) {
   const [verb, host, ...rest] = argv;
+  if (verb === 'status' && !host) return status(flags, opts);
   if (verb !== 'add' || !host || rest.length) throw new UsageError(USAGE);
   return add(host, flags, opts);
 }
 
-module.exports = { main, add, rerenderSchedules, UsageError, Refused, USAGE, FAST };
+module.exports = { main, add, status, readStatus, rerenderSchedules, UsageError, Refused, USAGE, FAST };

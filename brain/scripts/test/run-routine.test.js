@@ -315,3 +315,54 @@ test('codex runner: the body goes on stdin, the spend is estimated from the even
   assert.equal(bad.ledger[0].usd, 0);
   assert.equal(bad.ledger[0].model, 'codex-default');
 });
+
+test('a routine that turns itself off takes its schedule out: aos routines sync --if-installed, last (install-import B10)', async () => {
+  put('import-digest', { kind: 'command', argv: ['{{NODE}}', 'digest.js'] });
+  const resyncs = [];
+  const d = deps({
+    // The digest's last run: its queue empty, it writes `enabled: false` into its own routine file.
+    spawn: (cmd, args) => { d.calls.push({ cmd, args }); const r = store.read('import-digest', { dir: ROUTINES }); store.write({ ...r, enabled: false }, { dir: ROUTINES }); return { status: 0, stdout: 'import-digest: done, and the routine is off\n', stderr: '' }; },
+    resync: (o) => { resyncs.push({ ...o, recorded: !!state().routines['import-digest'] }); return true; },
+  });
+  d.calls = [];
+  assert.equal(await runRoutine('import-digest', { deps: d }), 0);
+  assert.equal(resyncs.length, 1);
+  assert.equal(resyncs[0].slug, 'import-digest');
+  assert.equal(resyncs[0].vault, VAULT);
+  assert.equal(resyncs[0].logFile, path.join(LOGS, 'routine-import-digest.log'));
+  assert.equal(resyncs[0].recorded, true, 'after the run is recorded: unloading its own schedule may stop this process');
+  assert.match(d.out, /import-digest turned itself off; taking its schedule out \(aos routines sync --if-installed\)/);
+  // A routine that stays on, or one that was already off (a skip), re-renders nothing.
+  put('alpha', { kind: 'command', argv: ['true'] });
+  const on = deps({ resync: (o) => { resyncs.push(o); return true; } });
+  assert.equal(await runRoutine('alpha', { deps: on }), 0);
+  assert.equal(await runRoutine('import-digest', { deps: on }), 0);
+  assert.equal(resyncs.length, 1);
+  // A resync that could not start says what to run instead.
+  put('import-digest', { kind: 'command', argv: ['true'] });
+  const failing = deps({
+    spawn: () => { const r = store.read('import-digest', { dir: ROUTINES }); store.write({ ...r, enabled: false }, { dir: ROUTINES }); return { status: 0, stdout: '', stderr: '' }; },
+    resync: () => { throw new Error('no cli'); },
+  });
+  assert.equal(await runRoutine('import-digest', { deps: failing }), 0);
+  assert.match(failing.out, /turned itself off; run aos routines sync to take its schedule out/);
+});
+
+test('resyncSchedules starts `aos routines sync --if-installed` detached, its output in the routine log', () => {
+  const { resyncSchedules, cliPath } = require('../routines/run-routine.js');
+  assert.equal(cliPath(), path.resolve(__dirname, '..', '..', '..', 'cli', 'aos.js'), 'the checkout\'s CLI (the vault has its vendored copy beside routines/)');
+  fs.mkdirSync(LOGS, { recursive: true });
+  const logFile = path.join(LOGS, 'routine-x.log');
+  const seen = [];
+  const child = { on() { return child; }, unref() { seen.push('unref'); } };
+  const ok = resyncSchedules({ vault: VAULT, env: { PATH: '/usr/bin', HOME: VAULT }, logFile }, (cmd, args, opts) => { seen.push({ cmd, args, opts }); return child; });
+  assert.equal(ok, true);
+  assert.equal(seen[0].cmd, process.execPath);
+  assert.deepEqual(seen[0].args, [cliPath(), 'routines', 'sync', '--if-installed']);
+  assert.equal(seen[0].opts.detached, true);
+  assert.equal(seen[0].opts.cwd, VAULT);
+  assert.equal(seen[0].opts.env.AOS_VAULT, VAULT);
+  assert.equal(typeof seen[0].opts.stdio[1], 'number', 'stdout to the routine log');
+  assert.equal(seen[1], 'unref');
+  assert.ok(fs.existsSync(logFile));
+});
