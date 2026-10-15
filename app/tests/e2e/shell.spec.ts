@@ -66,10 +66,11 @@ test("rail: three sections in order with a line between them, no Sessions withou
   await expect(rail(win, "agents").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "bot");
   await expect(rail(win, "agent-teams").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "users");
   await expect(rail(win, "settings").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "settings");
-  // The head: search and capture; the foot: light and dark, App settings, then Settings.
+  // The head: search and capture; the foot: Help, light and dark, App settings, then Settings. Getting started is put
+  // away here (the harness marks the tour as behind this Mac); tour.spec.ts covers it.
   const acts = (where: string) => win.locator(`.aos-wb-rail${where} .aos-wb-railact`).evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.action));
   expect(await acts("head")).toEqual(["search", "capture"]);
-  expect(await acts("foot")).toEqual(["theme", "app-settings"]);
+  expect(await acts("foot")).toEqual(["help", "theme", "app-settings"]);
 });
 
 test("rail: Pulse is navy in light and neon blue in dark, the other theme's on its selected chip; one line colour (D5, D6)", async () => {
