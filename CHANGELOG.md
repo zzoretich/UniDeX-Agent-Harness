@@ -53,6 +53,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **Duties no longer take their model from the first `model` key in `agenticos.json`.** The duty runner asks the Chief of Staff's resolver for the host and the model, so a Claude model never reaches Codex.
 - **The Brain Map lays out the same way every time, with every memory in view.** Two memories that landed on top of each other were parted in a random direction and could be flung far off the fitted view; they now part along a fixed direction, and the push at close range is softened.
 
+### Security
+- **The Workbench page can no longer write into the runtime's protected folders by spelling a path with other capital letters or Unicode forms, or through a link.** Main compares each path the way macOS's disk compares names, and checks where the disk would put it as well as how it is written. <!-- no-tour: security fix -->
+
 ## [1.9.0] — 2026-10-12
 
 ### Upgrading

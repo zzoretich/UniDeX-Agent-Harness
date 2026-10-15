@@ -100,6 +100,16 @@ test("a program is a bare name, or an executable file outside the vault and the 
   assert.match(programRefusal(link, c) ?? "", /inside the vault/);
 });
 
+test("a program inside the vault is refused however the vault's path is spelled", () => {
+  const c = ctx();
+  const prog = exe(path.join(VAULT, "tools", "sh"));
+  const upper = path.join(ROOT, "VAULT", "tools", "sh");
+  assert.match(programRefusal(prog, c) ?? "", /inside the vault/);
+  // On a case-insensitive disk VAULT is the vault; on a case-sensitive one it is not there at all.
+  if (fs.existsSync(upper)) assert.match(programRefusal(upper, c) ?? "", /inside the vault/);
+  else assert.match(programRefusal(upper, c) ?? "", /no such program/);
+});
+
 test("a spawn's folder is inside the vault", () => {
   assert.equal(cwdRefusal(VAULT, ctx()), null);
   assert.equal(cwdRefusal(`${VAULT}/workspaces/app`, ctx()), null);

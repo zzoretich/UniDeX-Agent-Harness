@@ -19,7 +19,9 @@ function inside(root: string, p: string): boolean {
   return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
 }
 
-function realOrSelf(p: string): string { try { return fs.realpathSync(p); } catch { return path.resolve(p); } }
+/** The path as the disk spells it (links followed, each name in the disk's own case), so a folder spelled in another case
+ *  is still recognised as the vault; the path itself when it is not there. */
+function realOrSelf(p: string): string { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } }
 
 /** Folders the page can write into (through the bridge): no program may live there. */
 function writable(ctx: ProgramContext): string[] {

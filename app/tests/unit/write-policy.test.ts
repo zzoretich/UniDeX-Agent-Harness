@@ -4,7 +4,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import { SURFACES, SURFACE_IDS, WritePolicy, globToRegExp, parseSurfaces } from "../../src/main/policy/write-policy";
+import { SURFACES, SURFACE_IDS, WritePolicy, foldPath, globToRegExp, parseSurfaces } from "../../src/main/policy/write-policy";
+import { foldPath as hudFoldPath, isProtected } from "../../../obsidian-plugin/src/data/vaultFiles";
 import { workspaceArgs } from "../../../obsidian-plugin/src/data/spacesModel";
 import { memoryArgs, recallArgs } from "../../../obsidian-plugin/src/data/brainModel";
 import { importArgs, IMPORT_KINDS, migrateImportArgs } from "../../../obsidian-plugin/src/data/importModel";
@@ -655,4 +656,183 @@ test("a surface's except globs win over its writes, for the HUD's writes too", (
   assert.equal(p.canWrite(v("brain/memory/a.md")), true);
   assert.equal(p.canWrite(v("brain/_index/BRAIN.md")), false);
   assert.equal(p.canSave(v("brain/memory/a.md")), false, "a HUD surface");
+});
+
+// ── spellings: the disk's, not the string's ──────────────────────────
+// macOS's default disk (APFS) is case-insensitive and normalization-insensitive: `Brain/Scripts`, `brain/ſcripts`
+// (U+017F LONG S) and an NFD spelling all name brain/scripts. The policy compares paths the way the disk does.
+
+const LONG_S = "ſ";
+const KELVIN = "K";
+
+test("foldPath folds case and Unicode the way the disk compares names, and the HUD's twin agrees", () => {
+  const same: Array<[string, string]> = [
+    ["Brain/Scripts", "brain/scripts"], ["BRAIN/_INDEX", "brain/_index"], [`brain/${LONG_S}cripts`, "brain/scripts"], [`node_module${LONG_S}`, "node_modules"],
+    [`${KELVIN}it`, "kit"], ["café", "café"], ["CAFÉ", "café"], ["straße", "strasse"], ["STRAẞE", "strasse"], ["ﬁle", "file"],
+    ["Ångström", "Ångström"], ["ΣΑΣ", "σας"],
+  ];
+  for (const [a, b] of same) assert.equal(foldPath(a), foldPath(b), `${JSON.stringify(a)} ~ ${JSON.stringify(b)}`);
+  // İ is not i on the disk (its fold keeps the dot); dotless ı folds to i here though the disk keeps them apart: coarser, so
+  // brain/_ındex is refused too, which only ever refuses more.
+  assert.equal(foldPath("İ"), "i̇");
+  assert.equal(foldPath("ı"), "i");
+  for (const s of ["", "a/b.md", ".Claude/x", "workspaces/Café/İ/K/ß/ﬁ/x\n.md"]) assert.equal(hudFoldPath(s), foldPath(s), JSON.stringify(s));
+});
+
+test("foldPath is at least as coarse as Unicode's simple case folding: every pair a /iu RegExp equates folds alike", () => {
+  // Every code point with a case mapping; a pair the RegExp engine (simple case folding) equates must fold the same.
+  const cased: string[] = [];
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const c = String.fromCodePoint(cp);
+    if (c.toLowerCase() !== c || c.toUpperCase() !== c) cased.push(c);
+  }
+  const byFold = new Map<string, string[]>();
+  for (const c of cased) byFold.set(foldPath(c), [...(byFold.get(foldPath(c)) ?? []), c]);
+  for (const c of cased) {
+    const re = new RegExp(`^${c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "iu");
+    const f = foldPath(c);
+    for (const d of cased) if (re.test(d)) assert.equal(foldPath(d), f, `U+${c.codePointAt(0)!.toString(16)} ~ U+${d.codePointAt(0)!.toString(16)}`);
+  }
+});
+
+test("the protected folders refuse every spelling the disk treats as the same folder (Files, Notes)", () => {
+  const p = new WritePolicy(VAULT, ["files", "notes"]);
+  for (const rel of [
+    "Brain/Scripts/lib/x.js", "brain/Scripts/statusline.js", "BRAIN/SCRIPTS/x.js", `brain/${LONG_S}cripts/x.js`, `Brain/${LONG_S}CRIPTS/x.js`,
+    "brain/_Index/BRAIN.md", "Brain/_index/x", "BRAIN/_INDEX/x",
+    "a/Node_Modules/x.js", "NODE_MODULES/pkg/index.js", `workspaces/app/node_module${LONG_S}/x.js`,
+    // Dots are not cased, but a cased segment never hides a dot-path.
+    ".Claude/settings.json", "workspaces/App/.MCP.json", "A/.Git/hooks/pre-commit", ".CODEX/config.toml",
+  ]) {
+    assert.equal(p.canWrite(v(rel)), false, `write ${rel}`);
+    assert.equal(p.canSave(v(rel)), false, `save ${rel}`);
+  }
+  for (const rel of ["Brain/Scripts", "BRAIN/_INDEX/sub", `brain/${LONG_S}cripts/lib`, "x/Node_Modules", ".Claude"]) assert.equal(p.canMakeFolder(v(rel)), false, `folder ${rel}`);
+  // Never moved or trashed, nor any folder above them, however spelled.
+  for (const rel of ["Brain", "BRAIN", "brain/Scripts", "Brain/_Index", `brain/${LONG_S}cripts`]) assert.equal(p.canMoveTree(v(rel)), false, `move ${rel}`);
+  // Names that only look alike are the user's.
+  for (const rel of ["brain/scripts-notes.md", "brain/indexer.md", "Brain.md", "notes/Brain/Scripts.md", "brain/_index.md", "Node_Modules.md"]) {
+    assert.equal(p.canWrite(v(rel)), true, rel);
+  }
+  assert.equal(p.canMoveTree(v("notes/Brain")), true);
+});
+
+test("an exception matches whatever the path holds: a line break in a name never slips past it", () => {
+  const p = new WritePolicy(VAULT, ["files", "notes"]);
+  for (const rel of ["brain/_index/a\nb", "brain/scripts/x\r.js", "brain/scripts/x .js", "brain/_index/ ", "a/node_modules/x\ny", "x\n/.claude/settings.json"]) {
+    assert.equal(p.canWrite(v(rel)), false, JSON.stringify(rel));
+    assert.equal(p.canMakeFolder(v(rel)), false, JSON.stringify(rel));
+  }
+});
+
+test("a surface's own exceptions fold too: NFD and NFC, the Kelvin sign, ß and the fi ligature", () => {
+  const table = [{ id: "demo", label: "Demo", source: "test", writes: ["**/*"], folders: ["**"], except: ["café/**", "kit/**", "strasse/**", "file/**"], spawns: [], verified: true }];
+  const p = new WritePolicy(VAULT, ["demo"], table);
+  for (const rel of ["café/x.md", "CAFÉ/x.md", `${KELVIN}it/x.md`, "KIT/x.md", "straße/x.md", "STRAẞE/x.md", "ﬁle/x.md"]) {
+    assert.equal(p.canWrite(v(rel)), false, JSON.stringify(rel));
+  }
+  assert.equal(p.canWrite(v("cafes/x.md")), true);
+  // An allowance stays exact: To-Do writes TODO.md, never a spelling that is another file on a case-sensitive disk.
+  assert.equal(new WritePolicy(VAULT, ["todo"]).canWrite(v("todo.md")), false);
+});
+
+/** A real vault on this disk with the runtime's folders, a note folder and an outside folder. */
+function diskVault(): { root: string; vault: string; outside: string; done: () => void } {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aos-spell-")));
+  const vault = path.join(root, "vault");
+  const outside = path.join(root, "outside", "deep");
+  for (const d of ["brain/scripts/lib", "brain/_index", "brain/memory/user", ".claude", "notes", "workspaces"]) fs.mkdirSync(path.join(vault, d), { recursive: true });
+  fs.mkdirSync(outside, { recursive: true });
+  fs.writeFileSync(path.join(vault, "brain/scripts/lib/hooks.js"), "// runtime\n");
+  fs.writeFileSync(path.join(vault, "brain/_index/BRAIN.md"), "# Brain\n");
+  return { root, vault, outside, done: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test("on this disk, every spelling that opens a protected folder folds to it", () => {
+  const d = diskVault();
+  try {
+    for (const [name, spellings] of [
+      ["brain/scripts", ["Brain/Scripts", "BRAIN/SCRIPTS", `brain/${LONG_S}cripts`, `brain/scrİpts`, `brain/scrıpts`, "brain/scripts".normalize("NFD")]],
+      ["brain/_index", ["brain/_Index", "BRAIN/_INDEX", "brain/_İndex", "brain/_ındex"]],
+    ] as const) {
+      for (const s of spellings) if (fs.existsSync(path.join(d.vault, s))) assert.equal(foldPath(s), foldPath(name), `${s} opens ${name}`);
+    }
+  } finally { d.done(); }
+});
+
+test("links: a write lands where the disk puts it, and never in a protected folder however the link is named", () => {
+  const d = diskVault();
+  const at = (rel: string) => path.join(d.vault, rel);
+  try {
+    fs.symlinkSync("../brain/scripts", at("notes/Scripts"));          // a link named in another case
+    fs.symlinkSync(at("brain/_index"), at("notes/IDX"));               // an absolute one
+    fs.symlinkSync("../.claude", at("notes/config"));                  // into a dot-folder
+    fs.symlinkSync("../brain/scripts/new.js", at("notes/planted.js")); // dangling: writing it would create its target
+    fs.symlinkSync("..", at("notes/vault"));                           // the vault itself
+    fs.symlinkSync("../brain/memory", at("notes/mem"));                // a normal folder: the user's own link
+    fs.symlinkSync(d.outside, at("workspaces/elsewhere"));             // outside the vault: the user's own link
+    const p = new WritePolicy(d.vault, ["files", "notes", "capture"]);
+    for (const rel of ["notes/Scripts/lib/hooks.js", "notes/Scripts/new.js", "notes/IDX/BRAIN.md", "notes/IDX/x.md", "notes/config/settings.json",
+      "notes/planted.js", "notes/vault/brain/scripts/lib/hooks.js", "notes/vault/brain/_index/BRAIN.md", "notes/vault/.claude/x.md"]) {
+      assert.equal(p.canWrite(at(rel)), false, `write ${rel}`);
+      assert.equal(p.canSave(at(rel)), false, `save ${rel}`);
+    }
+    for (const rel of ["notes/Scripts/sub", "notes/IDX/sub", "notes/vault/brain/scripts/sub"]) assert.equal(p.canMakeFolder(at(rel)), false, `folder ${rel}`);
+    // A link to a runtime folder or the vault is not moved or trashed either: fail closed.
+    for (const rel of ["notes/Scripts", "notes/IDX", "notes/vault", "notes/vault/brain"]) assert.equal(p.canMoveTree(at(rel)), false, `move ${rel}`);
+    // Capture may write brain/memory/** and has no exceptions; a link inside it into the runtime's folders is refused all the same.
+    fs.symlinkSync("../../scripts", at("brain/memory/user/sx"));
+    const capture = new WritePolicy(d.vault, ["capture"]);
+    assert.equal(capture.canWrite(at("brain/memory/user/sx/x.md")), false);
+    assert.equal(capture.canWrite(at("brain/memory/user/b.md")), true);
+    assert.equal(capture.canWrite(at("brain/_index/SESSION.md")), true, "its own file in the runtime's folder, spelled as it is");
+    // The user's own links into normal folders and out of the vault still work.
+    for (const rel of ["notes/mem/user/a.md", "workspaces/elsewhere/PLAN.md", "notes/a.md", "brain/memory/user/b.md"]) assert.equal(p.canWrite(at(rel)), true, rel);
+    assert.equal(p.canMoveTree(at("notes/mem")), true);
+  } finally { d.done(); }
+});
+
+test("a `..` after a link is read the way the disk reads it: refused when it lands elsewhere than the lexical path", () => {
+  const d = diskVault();
+  const at = (rel: string) => path.join(d.vault, rel);
+  try {
+    fs.symlinkSync("../brain/scripts", at("notes/sx"));
+    fs.symlinkSync(d.outside, at("workspaces/elsewhere"));
+    const p = new WritePolicy(d.vault, ["files"]);
+    // Lexically brain/_index/x.md is refused anyway; lexically notes/x.md is allowed, but the disk puts it in brain/.
+    for (const raw of [`${at("notes/sx")}/../_index/BRAIN.md`, `${at("notes/sx")}/../x.md`, `${at("notes/sx")}/../memory/user/x.md`,
+      // Out of the vault altogether: lexically <vault>/evil.md, on the disk <root>/evil.md.
+      `${at("workspaces/elsewhere")}/../../evil.md`, `${at("workspaces/elsewhere")}/../x.md`]) {
+      assert.equal(p.canWrite(raw), false, raw);
+      assert.equal(p.canMakeFolder(raw), false, raw);
+      assert.equal(p.canMoveTree(raw), false, raw);
+    }
+    // A `..` with no link before it means what it says; one that comes back to the same place, too.
+    assert.equal(p.canWrite(`${at("notes")}/../notes/a.md`), true);
+    assert.equal(p.canWrite(`${at("notes/sx")}/../../notes/a.md`), true);
+    assert.equal(p.canWrite(`${at("workspaces/elsewhere")}/sub/../PLAN.md`), true);
+  } finally { d.done(); }
+});
+
+test("a vault configured in another case than the disk spells it is checked as the disk spells it", () => {
+  const d = diskVault();
+  const upper = path.join(d.root, "VAULT");
+  try {
+    if (!fs.existsSync(upper)) return; // a case-sensitive disk: VAULT is another folder, nothing to fold
+    fs.symlinkSync("../brain/scripts", path.join(d.vault, "notes/sx"));
+    const p = new WritePolicy(upper, ["files"]);
+    assert.equal(p.canWrite(path.join(upper, "notes/a.md")), true);
+    assert.equal(p.canWrite(path.join(upper, "notes/sx/lib/hooks.js")), false);
+    assert.equal(p.canWrite(path.join(upper, "Brain/Scripts/lib/hooks.js")), false);
+  } finally { d.done(); }
+});
+
+test("the Files tab's own check refuses the same spellings main does (display only: main enforces)", () => {
+  const files = new WritePolicy(VAULT, ["files"]);
+  for (const rel of ["Brain/Scripts/x.js", "BRAIN/_INDEX/x.md", `brain/${LONG_S}cripts/x.js`, "brain/_index", "a/Node_Modules/x.md", "node_modules/x.md"]) {
+    assert.equal(isProtected(rel), true, rel);
+    assert.equal(files.canWrite(v(rel)), false, rel);
+  }
+  for (const rel of ["brain/scripts-notes.md", "notes/Brain.md", "brain/memory/user/a.md"]) assert.equal(isProtected(rel), false, rel);
 });

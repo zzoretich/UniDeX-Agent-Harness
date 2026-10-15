@@ -259,6 +259,8 @@ const migrateImportApply = (a: readonly string[]): boolean =>
 // What the Files tab and the note editor never touch: the runtime's caches and vendored scripts, dependency folders, and
 // every dot-path. The Files tree and the vault index never show a dot-path; refusing them also keeps a compromised page
 // from planting a host's project config in the vault (.claude/settings.json hooks, .mcp.json, .codex/, .git/hooks).
+// Like every exception, matched in any spelling the disk opens as the same path (foldPath); and no link (the user's: the
+// page cannot make one) leads a write of any surface into them.
 const PROTECTED = ["brain/_index/**", "brain/scripts/**", "**/node_modules/**", "**/.*", "**/.*/**"];
 
 /** The runtime's own folders (its caches and vendored scripts): never moved, trashed or removed, nor any folder above them. */
@@ -553,6 +555,16 @@ export function parseSurfaces(spec: string | readonly string[] | null | undefine
   return { ids, unknown };
 }
 
+/**
+ * A path as macOS's default disk (APFS: case-insensitive, normalization-insensitive) compares names: decomposed, case
+ * folded (lower, upper, lower, so U+017F LONG S, the Kelvin sign, ß and the ﬁ ligature fold as they do there), then
+ * recomposed. Where it differs from the disk it is coarser (dotless ı folds to i), so a check that refuses a folded path
+ * refuses every spelling the disk opens as that path. obsidian-plugin/src/data/vaultFiles.ts foldPath is its twin.
+ */
+export function foldPath(p: string): string {
+  return p.normalize("NFD").toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
+}
+
 /** Compiles a vault-relative glob to an anchored, case-sensitive RegExp over `/`-separated paths. */
 export function globToRegExp(glob: string): RegExp {
   let re = "";
@@ -579,21 +591,50 @@ function folderPatterns(glob: string): RegExp[] {
   return out;
 }
 
+/**
+ * An exception, matched against folded paths (foldPath) and across any character but `/`, line breaks included: it fails
+ * closed, refusing every spelling of the paths it names. An allowance stays exact (globToRegExp): the page names files
+ * as the disk spells them, and on a case-sensitive disk another spelling is another file.
+ */
+function exceptRegExp(glob: string): RegExp {
+  return new RegExp(globToRegExp(foldPath(glob)).source, "s");
+}
+
+const PROTECTED_RE = PROTECTED.map(exceptRegExp);
+const RUNTIME_FOLDED = RUNTIME_FOLDERS.map(foldPath);
+
 /** A surface's rules, compiled: what it may write, the folders it may create, less what it never touches. */
 interface Compiled { files: RegExp[]; folders: RegExp[]; except: RegExp[] }
 const compile = (s: Surface): Compiled => ({
   files: s.writes.map(globToRegExp),
   folders: [...s.writes.flatMap(folderPatterns), ...(s.folders ?? []).map(globToRegExp)],
-  except: (s.except ?? []).map(globToRegExp),
+  except: (s.except ?? []).map(exceptRegExp),
 });
-const excepted = (r: Compiled, rel: string): boolean => r.except.some((re) => re.test(rel));
-const writesFile = (rules: readonly Compiled[], rel: string): boolean => rules.some((r) => r.files.some((re) => re.test(rel)) && !excepted(r, rel));
+
+/**
+ * Whether a write `r` admits at `rel` stays clear of what `r` never touches, at `rel` and at every other place the disk
+ * puts it (`real`: where main resolves it, links followed). A place other than `rel` itself is also kept out of the
+ * protected folders whatever `r` allows: a link may lead into a normal folder, never into those.
+ */
+function clear(r: Compiled, rel: string, real: readonly string[]): boolean {
+  const f = foldPath(rel);
+  if (r.except.some((re) => re.test(f))) return false;
+  return real.map(foldPath).every((g) => !r.except.some((re) => re.test(g)) && (g === f || !PROTECTED_RE.some((re) => re.test(g))));
+}
+const writesFile = (rules: readonly Compiled[], rel: string, real: readonly string[]): boolean =>
+  rules.some((r) => r.files.some((re) => re.test(rel)) && clear(r, rel, real));
+/** Whether a vault path is, or holds, a runtime folder, in any spelling. */
+const holdsRuntime = (rel: string): boolean => { const f = foldPath(rel); return RUNTIME_FOLDED.some((r) => r === f || r.startsWith(`${f}/`)); };
 
 function matches(rule: ArgRule, list: readonly string[]): boolean {
   return typeof rule === "function" ? rule(list) : rule.test(list.join(" "));
 }
 
-/** The enabled surfaces' rules over vault-relative, `/`-separated paths (no leading `/`, no `..`). */
+/**
+ * The enabled surfaces' rules over vault-relative, `/`-separated paths (no leading `/`, no `..`). Each check takes the
+ * path as asked for and, from main, `real`: the vault paths the disk resolves it to (empty where nothing can be resolved,
+ * as in the page).
+ */
 export class SurfaceRules {
   /** The enabled surfaces, in table order. */
   readonly surfaces: readonly Surface[];
@@ -612,22 +653,23 @@ export class SurfaceRules {
   get ids(): string[] { return this.surfaces.map((s) => s.id); }
 
   /** Whether an enabled HUD surface may create, change or remove this vault path. */
-  canWrite(rel: string): boolean { return writesFile(this.hud, rel); }
+  canWrite(rel: string, real: readonly string[] = []): boolean { return writesFile(this.hud, rel, real); }
 
   /** Whether this folder may be created: a HUD surface may write it, or a file it may write could live in it. */
-  canMakeFolder(rel: string): boolean {
-    return this.canWrite(rel) || this.hud.some((r) => r.folders.some((re) => re.test(rel)) && !excepted(r, rel));
+  canMakeFolder(rel: string, real: readonly string[] = []): boolean {
+    return this.canWrite(rel, real) || this.hud.some((r) => r.folders.some((re) => re.test(rel)) && clear(r, rel, real));
   }
 
   /** Whether the app's note editor may save this vault path (an enabled editor surface, Notes). */
-  canSave(rel: string): boolean { return writesFile(this.editor, rel); }
+  canSave(rel: string, real: readonly string[] = []): boolean { return writesFile(this.editor, rel, real); }
 
   /**
    * Whether this path may be moved or sent to the Trash with everything under it: a HUD surface may write it, and it
-   * is not, and holds no, runtime folder (moving `brain` would take brain/scripts with it).
+   * is not, and holds no, runtime folder (moving `brain` would take brain/scripts with it), however it is spelled or
+   * wherever the disk resolves it.
    */
-  canMoveTree(rel: string): boolean {
-    return this.canWrite(rel) && !RUNTIME_FOLDERS.some((r) => r === rel || r.startsWith(`${rel}/`));
+  canMoveTree(rel: string, real: readonly string[] = []): boolean {
+    return this.canWrite(rel, real) && ![rel, ...real].some(holdsRuntime);
   }
 
   /** Whether `node <vault>/brain/scripts/<script> args…` is a background refresh or an enabled surface's command. */

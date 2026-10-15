@@ -127,6 +127,33 @@ test("Files writes anywhere in the vault but the runtime's folders and every dot
   refusedResult(svc.rename(v("TODO.md"), v(".mcp.json")));
 });
 
+test("Files never reaches the runtime's folders by another spelling or through a link; the disk is left as it was", () => {
+  reset(["files", "notes"]);
+  fs.mkdirSync(v("brain/_index"), { recursive: true });
+  fs.mkdirSync(v("notes"), { recursive: true });
+  fs.symlinkSync("../brain/scripts", v("notes/Scripts"));
+  fs.symlinkSync("../brain/scripts/planted.js", v("notes/planted.js"));
+  const before = fs.readdirSync(S).sort();
+  for (const target of [v("Brain/Scripts/scan-vault.js"), v("BRAIN/SCRIPTS/new.js"), v("brain/\u017Fcripts/new.js"), v("brain/_Index/BRAIN.md"),
+    v("notes/Scripts/new.js"), v("notes/planted.js"), `${v("notes/Scripts")}/../_index/BRAIN.md`]) {
+    refusedResult(svc.writeText(target, "x", "hud"));
+    refusedResult(svc.writeText(target, "x", "editor"));
+    refusedResult(svc.appendText(target, "x"));
+    refusedResult(svc.copy(v("TODO.md"), target));
+  }
+  refusedResult(svc.mkdir(v("Brain/Scripts/lib"), true));
+  refusedResult(svc.rename(v("TODO.md"), v("Brain/Scripts/TODO.md")));
+  refusedResult(svc.rename(v("Brain/Scripts"), v("scripts")));
+  refusedResult(svc.rename(v("Brain"), v("brain-moved")));
+  assert.equal(svc.canTrash(v("BRAIN")), false);
+  assert.equal(svc.canTrash(v("brain/Scripts")), false);
+  assert.deepEqual(fs.readdirSync(S).sort(), before);
+  assert.equal(fs.existsSync(v("brain/_index/BRAIN.md")), false);
+  assert.equal(fs.existsSync(path.join(S, "planted.js")), false);
+  // The same tab still writes the user's notes.
+  assert.equal(svc.writeText(v("notes/a.md"), "x", "hud").ok, true);
+});
+
 test("reads stay inside the read scope; credential files never come back", () => {
   reset([]);
   assert.deepEqual(svc.readText(v("TODO.md")), { ok: true, data: "# To-Do\n" });
