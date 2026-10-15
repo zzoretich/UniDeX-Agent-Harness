@@ -10,7 +10,7 @@ import type { ProcEvent, PtyEvent, Result } from "../../src/shared/ipc";
 import { SURFACE_IDS, WritePolicy } from "../../src/main/policy/write-policy";
 import { ReadScope } from "../../src/main/policy/read-scope";
 import type { ProgramContext } from "../../src/main/policy/programs";
-import { FsService } from "../../src/main/services/fs";
+import { FsService, afterTrash } from "../../src/main/services/fs";
 import { ProcService } from "../../src/main/services/proc";
 import { PtyService, terminalBaseEnv, type PtyLib, type PtyProcess } from "../../src/main/services/pty";
 
@@ -125,6 +125,120 @@ test("Files writes anywhere in the vault but the runtime's folders and every dot
   for (const rel of [".claude/settings.json", ".mcp.json", "workspaces/app/.claude/settings.local.json", ".codex/config.toml", ".git/hooks/pre-commit", "x/.envrc",
     "brain/scripts/scan-vault.js", "brain/_index/snapshot.json", "workspaces/app/node_modules/a.js"]) refusedResult(svc.writeText(v(rel), "x", "hud"));
   refusedResult(svc.rename(v("TODO.md"), v(".mcp.json")));
+});
+
+test("Files never reaches the runtime's folders by another spelling or through a link; the disk is left as it was", () => {
+  reset(["files", "notes"]);
+  fs.mkdirSync(v("brain/_index"), { recursive: true });
+  fs.mkdirSync(v("notes"), { recursive: true });
+  fs.symlinkSync("../brain/scripts", v("notes/Scripts"));
+  fs.symlinkSync("../brain/scripts/planted.js", v("notes/planted.js"));
+  const before = fs.readdirSync(S).sort();
+  for (const target of [v("Brain/Scripts/scan-vault.js"), v("BRAIN/SCRIPTS/new.js"), v("brain/\u017Fcripts/new.js"), v("brain/_Index/BRAIN.md"),
+    v("notes/Scripts/new.js"), v("notes/planted.js"), `${v("notes/Scripts")}/../_index/BRAIN.md`]) {
+    refusedResult(svc.writeText(target, "x", "hud"));
+    refusedResult(svc.writeText(target, "x", "editor"));
+    refusedResult(svc.appendText(target, "x"));
+    refusedResult(svc.copy(v("TODO.md"), target));
+  }
+  refusedResult(svc.mkdir(v("Brain/Scripts/lib"), true));
+  refusedResult(svc.rename(v("TODO.md"), v("Brain/Scripts/TODO.md")));
+  refusedResult(svc.rename(v("Brain/Scripts"), v("scripts")));
+  refusedResult(svc.rename(v("Brain"), v("brain-moved")));
+  assert.equal(svc.canTrash(v("BRAIN")), false);
+  assert.equal(svc.canTrash(v("brain/Scripts")), false);
+  assert.deepEqual(fs.readdirSync(S).sort(), before);
+  assert.equal(fs.existsSync(v("brain/_index/BRAIN.md")), false);
+  assert.equal(fs.existsSync(path.join(S, "planted.js")), false);
+  // The same tab still writes the user's notes.
+  assert.equal(svc.writeText(v("notes/a.md"), "x", "hud").ok, true);
+});
+
+test("a copy never makes a file executable: a new one drops the execute bits, one that was there keeps its own mode", () => {
+  reset(["files"]);
+  fs.mkdirSync(v("notes"));
+  const mode = (rel: string) => fs.statSync(v(rel)).mode & 0o7777;
+  fs.writeFileSync(v("notes/run.sh"), "#!/bin/sh\n");
+  fs.chmodSync(v("notes/run.sh"), 0o755);
+  assert.equal(svc.copy(v("notes/run.sh"), v("notes/copy.sh")).ok, true);
+  assert.equal(mode("notes/copy.sh") & 0o111, 0, "a new copy of a program is not one");
+  fs.writeFileSync(v("notes/plain.md"), "x");
+  fs.chmodSync(v("notes/plain.md"), 0o640);
+  assert.equal(svc.copy(v("notes/run.sh"), v("notes/plain.md")).ok, true);
+  assert.equal(mode("notes/plain.md"), 0o640, "the file copied over keeps its mode");
+  fs.writeFileSync(v("notes/mine.sh"), "#!/bin/sh\n");
+  fs.chmodSync(v("notes/mine.sh"), 0o750);
+  assert.equal(svc.copy(v("notes/copy.sh"), v("notes/mine.sh")).ok, true);
+  assert.equal(mode("notes/mine.sh"), 0o750, "the user's own script stays theirs");
+  assert.equal(svc.writeText(v("notes/new.sh"), "#!/bin/sh\n", "hud").ok, true);
+  assert.equal(mode("notes/new.sh") & 0o111, 0, "a new file is never executable");
+});
+
+test("a move to the Trash is checked and done with no other change of the page's in between; each waits its turn", async () => {
+  reset(["files"]);
+  fs.mkdirSync(v("notes/a"), { recursive: true });
+  fs.mkdirSync(v("notes/b"), { recursive: true });
+  const asked: string[] = [];
+  const release: Array<() => void> = [];
+  const trashItem = (p: string): Promise<void> => new Promise((done) => { asked.push(p); release.push(() => { fs.rmSync(p, { recursive: true }); done(); }); });
+  assert.equal(svc.pending(), null, "nothing in flight");
+  const first = svc.trash(v("notes/a"), trashItem);
+  const second = svc.trash(v("notes/b"), trashItem);
+  const pending = svc.pending();
+  assert.ok(pending, "a trash in flight is named, so the bridge holds the page's other changes until it is done");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(asked, [v("notes/a")], "the second waits for the first");
+  release[0]();
+  assert.deepEqual(await first, { ok: true, data: null });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(asked, [v("notes/a"), v("notes/b")]);
+  release[1]();
+  assert.deepEqual(await second, { ok: true, data: null });
+  await pending;
+  assert.equal(svc.pending(), null);
+  // Each is checked when its turn comes: a trash queued behind one is refused if, by then, the policy says no.
+  fs.mkdirSync(v("notes/c"), { recursive: true });
+  const third = svc.trash(v("notes/c"), trashItem);
+  const fourth = svc.trash(v("brain"), trashItem);
+  await new Promise((r) => setImmediate(r));
+  release[2]();
+  assert.deepEqual(await third, { ok: true, data: null });
+  const r = await fourth;
+  assert.equal(r.ok, false);
+  assert.equal(!r.ok && r.code, "EROFS");
+  assert.deepEqual(asked, [v("notes/a"), v("notes/b"), v("notes/c")]);
+  // The bridge's hold: a change asked for while a trash is in flight is answered after it, as one step.
+  const order: string[] = [];
+  fs.mkdirSync(v("notes/d"), { recursive: true });
+  const fifth = svc.trash(v("notes/d"), trashItem);
+  afterTrash(() => svc.pending(), () => { order.push("write"); return svc.writeText(v("notes/d.md"), "x", "hud"); }, (res) => order.push(`answered ${res.ok}`));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(order.length, 0, "held while the trash is in flight");
+  release[3]();
+  await fifth;
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(order, ["write", "answered true"]);
+  afterTrash(() => svc.pending(), () => "now", (res) => order.push(res));
+  assert.equal(order[order.length - 1], "now", "nothing in flight: answered at once, in the same turn");
+});
+
+test("a change held behind a trash that never ends is answered busy, not left blocking the page", async () => {
+  const stuck = new Promise<void>(() => undefined);
+  const got: string[] = [];
+  let ran = false;
+  afterTrash(() => stuck, () => { ran = true; return "made"; }, (v) => got.push(v), { ms: 20, value: "busy" });
+  assert.deepEqual(got, []);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.deepEqual(got, ["busy"]);
+  assert.equal(ran, false, "the change itself is not made");
+  // A trash that ends in time: the change runs once, and the timer answers nothing more.
+  let release: () => void = () => undefined;
+  let inFlight: Promise<void> | null = new Promise<void>((r) => { release = () => { inFlight = null; r(); }; });
+  const later: string[] = [];
+  afterTrash(() => inFlight, () => "made", (v) => later.push(v), { ms: 40, value: "busy" });
+  release();
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(later, ["made"]);
 });
 
 test("reads stay inside the read scope; credential files never come back", () => {

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { App } from "obsidian";
 import {
-  childEntries, cleanPath, isListed, isProtected, matchLines, movePath, newNotePath, quickOpenFiles, renamePath, searchVault, sortEntries,
+  childEntries, cleanPath, foldPath, isListed, isProtected, matchLines, movePath, newNotePath, quickOpenFiles, renamePath, searchVault, sortEntries,
   SEARCH_MAX_MATCHES,
 } from "./vaultFiles";
 
@@ -29,6 +29,14 @@ test("isListed skips graphify-out at any depth; isProtected covers the runtime's
   assert.equal(isListed("workspaces/app/graphify-out/graph.json"), false);
   for (const p of ["brain/_index/BRAIN.md", "brain/scripts/statusline.js", ".obsidian/app.json", ".git/HEAD", "brain/_index"]) assert.equal(isProtected(p), true, p);
   for (const p of ["brain/memory/user/a.md", "brain/indexer.md", "TODO.md", "brain/scripts-notes.md"]) assert.equal(isProtected(p), false, p);
+});
+
+test("isProtected compares the way macOS's disk does: any case, U+017F, NFD; and refuses node_modules at any depth, as main does", () => {
+  for (const p of ["Brain/Scripts/x.js", "BRAIN/_INDEX/BRAIN.md", "brain/\u017Fcripts/x.js", "brain/_Index", ".OBSIDIAN/app.json", ".Git/HEAD",
+    "node_modules/x.md", "workspaces/app/Node_Modules/x.md", "a/node_module\u017F/x"]) assert.equal(isProtected(p), true, p);
+  for (const p of ["Brain.md", "notes/Brain/Scripts.md", "node_modules.md", "brain/_index.md"]) assert.equal(isProtected(p), false, p);
+  assert.equal(foldPath("cafe\u0301"), foldPath("CAF\u00C9"));
+  assert.equal(foldPath("\u212Ait"), "kit");
 });
 
 test("sortEntries: folders first, then files, by name with numbers in order and case folded", () => {
@@ -114,5 +122,8 @@ test("renamePath keeps the folder and the extension; movePath keeps the name", (
   assert.deepEqual(movePath("notes/a.md", "", none), { ok: true, path: "a.md" });
   assert.deepEqual(movePath("notes/a.md", "notes/", none), { ok: false, error: "it is in that folder already" });
   assert.deepEqual(movePath("notes/a.md", "brain/scripts", none), { ok: false, error: "brain/scripts/ is written by the runtime itself" });
+  assert.deepEqual(movePath("notes/a.md", "Brain/Scripts", none), { ok: false, error: "brain/scripts/ is written by the runtime itself" });
+  assert.deepEqual(movePath("notes/a.md", "app/node_modules", none), { ok: false, error: "node_modules/ belongs to a package manager" });
+  assert.equal((newNotePath("BRAIN/_INDEX", "x", none) as { error: string }).error, "brain/_index/ is written by the runtime itself");
   assert.deepEqual(movePath("notes/a.md", "x", (p) => p === "x/a.md"), { ok: false, error: "x/a.md already exists" });
 });

@@ -7,8 +7,13 @@ import type { App, TAbstractFile, TFile } from "obsidian";
 /** Folders quick open and search skip on top of the index's own rules (dot-folders, dependency folders). */
 export const SKIPPED_SEGMENTS: readonly string[] = ["graphify-out"];
 
-/** Folders the tab never writes into: the runtime's caches and vendored scripts, and the host's own folders. */
+/**
+ * Folders the tab never writes into: the runtime's caches and vendored scripts, and the host's own folders; and, at any
+ * depth, dependency folders. Display only, the twin of the write policy's protected folders (app/src/shared/surfaces.ts
+ * PROTECTED), which main enforces: the tab offers nothing main refuses.
+ */
 export const PROTECTED_PREFIXES: readonly string[] = ["brain/_index/", "brain/scripts/", ".obsidian/", ".git/"];
+const PROTECTED_SEGMENTS: readonly string[] = ["node_modules"];
 
 /** File types search reads when "all text files" is on; otherwise only Markdown. */
 export const TEXT_EXTENSIONS: readonly string[] = ["md", "txt", "json", "jsonl", "yml", "yaml", "toml", "csv", "js", "cjs", "mjs", "ts", "css", "html", "sh", "py"];
@@ -26,9 +31,28 @@ export function isListed(path: string): boolean {
   return !path.split("/").some((seg) => SKIPPED_SEGMENTS.includes(seg));
 }
 
+/** A path as macOS's disk compares names: any case, any Unicode form (app/src/shared/surfaces.ts foldPath, its twin). */
+export function foldPath(p: string): string {
+  return p.normalize("NFD").toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
+}
+
+/** The protected folder `path` is in, named as the tab names it, or null. Compared folded, as the disk compares. */
+function protectedBy(path: string): string | null {
+  const p = foldPath(path.replace(/^\/+/, ""));
+  const pre = PROTECTED_PREFIXES.find((x) => p === x.slice(0, -1) || p.startsWith(x));
+  if (pre) return pre;
+  const seg = p.split("/").find((s) => PROTECTED_SEGMENTS.includes(s));
+  return seg ? `${seg}/` : null;
+}
+
 export function isProtected(path: string): boolean {
-  const p = path.replace(/^\/+/, "");
-  return PROTECTED_PREFIXES.some((pre) => p === pre.slice(0, -1) || p.startsWith(pre));
+  return protectedBy(path) !== null;
+}
+
+/** Why the tab does not write there. */
+function protectedError(path: string): string {
+  const by = protectedBy(path) ?? path;
+  return PROTECTED_SEGMENTS.some((s) => by === `${s}/`) ? `${by} belongs to a package manager` : `${by} is written by the runtime itself`;
 }
 
 /** Folders first, then files; each by name, numbers in natural order, case folded. */
@@ -127,7 +151,7 @@ function checkTarget(path: string, exists: (p: string) => boolean): PathCheck {
   if (!path) return { ok: false, error: "a name is required" };
   const shape = shapeError(path);
   if (shape) return { ok: false, error: shape };
-  if (isProtected(path)) return { ok: false, error: `${PROTECTED_PREFIXES.find((p) => path.startsWith(p)) ?? path} is written by the runtime itself` };
+  if (isProtected(path)) return { ok: false, error: protectedError(path) };
   if (exists(path)) return { ok: false, error: `${path} already exists` };
   return { ok: true, path };
 }

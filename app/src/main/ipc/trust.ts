@@ -34,6 +34,15 @@ export function onSync<S extends z.ZodType, T>(channel: string, trust: Trust, sc
   ipcMain.on(channel, (e, raw) => { e.returnValue = answer(channel, trust, schema, fn, e, raw); });
 }
 
+/**
+ * A synchronous call answered when `hold` says so: `hold(answer, reply)` runs the answer now or later (the page stays
+ * blocked meanwhile, as for any synchronous call). The fs bridge holds the page's changes while a trash is in flight.
+ */
+export function onSyncHeld<S extends z.ZodType, T>(channel: string, trust: Trust, schema: S, fn: (args: z.infer<S>) => Result<T>,
+  hold: (run: () => Result<T>, reply: (r: Result<T>) => void) => void): void {
+  ipcMain.on(channel, (e, raw) => { hold(() => answer(channel, trust, schema, fn, e, raw), (r) => { e.returnValue = r; }); });
+}
+
 /** An asynchronous call (ipcRenderer.invoke). */
 export function onInvoke<S extends z.ZodType, T>(channel: string, trust: Trust, schema: S, fn: (args: z.infer<S>) => Promise<Result<T>>): void {
   ipcMain.handle(channel, async (e, raw) => {
