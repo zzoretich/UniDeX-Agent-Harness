@@ -77,6 +77,27 @@ test('validate: engine, maxTurns, writes and output on prompt routines', () => {
   assert.deepEqual(store.validate({ ...base, kind: 'duty', writes: ['notes/inbox/'] }), []);
 });
 
+// The files that feed hosted sessions are off limits to a local routine (the owner's call on the PR 4 review): memories,
+// the bootstrap and index files, host instructions and the persona — as writes entries and as output targets. Case and
+// Unicode variants too. A duty's writes are not this rule's business.
+test('localDenied: a local routine never writes what feeds hosted sessions', () => {
+  const base = { slug: 'ok-slug', schema: 1, name: 'x', kind: 'prompt', schedule: '0 9 * * *', enabled: true, body: 'hi', engine: 'local' };
+  for (const w of ['persona/', 'persona/journal/', 'Persona/', 'brain/memory/feedback/', 'brain/memory/', 'brain/_index/', 'brain/_index/brief.md', 'brain/', 'brain/**/*.md',
+    'MEMORY.md', 'memory.md', 'AGENTICOS.md', 'CLAUDE.md', 'notes/CLAUDE.md', 'notes/AGENTS.md', 'Brain/Memory/x.md', 'per\u017fona/journal/', 'notes/sub/MEMORY.md']) {
+    assert.ok(store.localDenied(w), `${w} must be denied`);
+    assert.match(store.validate({ ...base, writes: [w] }).join(), /off limits to a local routine/, w);
+  }
+  for (const ok of ['notes/', 'notes/digests/*.md', 'brain/reflections/', 'TODO.md', 'notes/agenticos.md']) {
+    assert.equal(store.localDenied(ok), null, ok);
+    assert.deepEqual(store.validate({ ...base, writes: [ok] }), [], ok);
+  }
+  assert.equal(store.validate({ ...base, writes: ['notes/', 'brain/memory/'] }).join(), "writes: brain/memory/ is off limits to a local routine (brain/memory/: memories feed every session)");
+  assert.equal(store.validate({ ...base, output: 'MEMORY.md' }).join(), 'output: MEMORY.md is off limits to a local routine (MEMORY.md: it feeds every session)');
+  assert.equal(store.validate({ ...base, output: 'brain/_index/out.md' }).join(), 'output: brain/_index/out.md is off limits to a local routine (brain/_index/: the session bootstrap and the runtime\'s caches)');
+  assert.deepEqual(store.validate({ ...base, output: 'notes/out.md' }), []);
+  assert.deepEqual(store.validate({ ...base, kind: 'duty', engine: undefined, writes: ['brain/memory/feedback/'] }), [], 'a duty keeps its own rule');
+});
+
 test('KEY_ORDER: engine sits before model, maxTurns after budgetUsd, output after writes', () => {
   const text = store.toFile({ slug: 'k', schema: 1, name: 'K', kind: 'prompt', schedule: '0 9 * * *', enabled: true, output: 'notify', writes: ['notes/'], maxTurns: 8, model: 'qwen3.5:4b', engine: 'local', body: 'go' });
   assert.equal(text, '---\nschema: 1\nname: K\nkind: prompt\nschedule: "0 9 * * *"\nenabled: true\nengine: local\nmodel: "qwen3.5:4b"\nmaxTurns: 8\nwrites: [notes/]\noutput: notify\n---\n\ngo\n');

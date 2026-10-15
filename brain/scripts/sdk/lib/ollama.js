@@ -92,15 +92,33 @@ function normalizeToolCalls(list) {
   });
 }
 
-/** POST /api/chat; resolves the parsed reply. */
-function postChat(opts) {
-  const { timeoutMs = 180000 } = opts;
+/** A chat reply larger than this is cut off and rejected: no answer the callers use comes near it. */
+const CHAT_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * POST /api/chat; resolves the parsed reply. `timeoutMs` is an idle timeout (no byte for that long), and with
+ * `wallClock` also the most the whole request may take; `opts.signal` (an AbortSignal) destroys it. A reply over
+ * CHAT_MAX_BYTES is rejected.
+ */
+function postChat(opts, { wallClock = false } = {}) {
+  const { timeoutMs = 180000, signal } = opts;
   const { host, port } = endpoint(opts);
 
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(buildChatBody(opts));
+    let settled = false;
+    let timer = null;
+    let req = null;
+    const onAbort = () => { if (req) req.destroy(); finish(reject, new Error('ollama request aborted')); };
+    const finish = (fn, v) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      fn(v);
+    };
 
-    const req = http.request({
+    req = http.request({
       hostname: host,
       port,
       path: '/api/chat',
@@ -110,22 +128,31 @@ function postChat(opts) {
         'Content-Length': Buffer.byteLength(body),
       },
     }, (res) => {
-      let data = '';
-      res.on('data', (c) => (data += c));
+      const chunks = [];
+      let size = 0;
+      res.on('data', (c) => {
+        size += c.length;
+        if (size > CHAT_MAX_BYTES) { req.destroy(); return finish(reject, new Error(`ollama reply over ${CHAT_MAX_BYTES} bytes`)); }
+        chunks.push(c);
+      });
+      res.on('error', (e) => finish(reject, e));
       res.on('end', () => {
+        const data = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode && res.statusCode >= 400) {
-          return reject(new Error(`ollama HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+          return finish(reject, new Error(`ollama HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
         }
         try {
-          resolve(JSON.parse(data));
+          finish(resolve, JSON.parse(data));
         } catch (e) {
-          reject(new Error('ollama parse error: ' + e.message));
+          finish(reject, new Error('ollama parse error: ' + e.message));
         }
       });
     });
 
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('ollama timeout')); });
+    req.on('error', (e) => finish(reject, e));
+    req.setTimeout(timeoutMs, () => { req.destroy(); finish(reject, new Error('ollama timeout')); });
+    if (wallClock) timer = setTimeout(() => { req.destroy(); finish(reject, new Error('ollama timeout')); }, timeoutMs);
+    if (signal) { if (signal.aborted) return onAbort(); signal.addEventListener('abort', onAbort, { once: true }); }
     req.write(body);
     req.end();
   });
@@ -140,12 +167,13 @@ async function chat(opts = {}) {
 }
 
 /**
- * chatMessage({ messages, tools, model, numPredict, numCtx, timeoutMs, ... }) -> Promise<{ content, toolCalls, message,
- * usage: { inputTokens, outputTokens }, doneReason }>: one assistant turn. `message` is the reply as Ollama sent it,
- * to append to the history as is; a tool result goes back as toolMessage(call, text).
+ * chatMessage({ messages, tools, model, numPredict, numCtx, timeoutMs, signal, ... }) -> Promise<{ content, toolCalls,
+ * message, usage: { inputTokens, outputTokens }, doneReason }>: one assistant turn, within `timeoutMs` of wall clock.
+ * `message` is the reply as Ollama sent it, to append to the history as is; a tool result goes back as
+ * toolMessage(call, text).
  */
 async function chatMessage(opts = {}) {
-  const parsed = await postChat(opts);
+  const parsed = await postChat(opts, { wallClock: true });
   const message = (parsed && parsed.message) || { role: 'assistant', content: '' };
   return {
     content: stripThink(message.content),
@@ -257,4 +285,4 @@ function pull(model, opts = {}) {
   });
 }
 
-module.exports = { chat, chatMessage, toolMessage, normalizeToolCalls, ping, tags, pull, sameModel, endpoint, stripThink, sizeContextWindow, buildChatBody, MODEL, HOST, PORT };
+module.exports = { chat, chatMessage, toolMessage, normalizeToolCalls, CHAT_MAX_BYTES, ping, tags, pull, sameModel, endpoint, stripThink, sizeContextWindow, buildChatBody, MODEL, HOST, PORT };

@@ -113,6 +113,37 @@ function serializeFrontmatter(fm) {
 
 // ---------- routines ----------
 
+/**
+ * What a local routine may never write, as a writes entry or an output target (the PR 4 security review): the files
+ * that feed hosted sessions. A folder holds everything under it; a name is any file of that name; AGENTICOS.md only at
+ * the vault root. On top of persona/duty-guard.js's refusal(), and only for local routines: duties keep their own rule.
+ */
+const LOCAL_DENY = [
+  { label: 'persona/', dir: true, why: "the Chief of Staff's files" },
+  { label: 'brain/memory/', dir: true, why: 'memories feed every session' },
+  { label: 'brain/_index/', dir: true, why: "the session bootstrap and the runtime's caches" },
+  { label: 'AGENTICOS.md', root: true, why: 'it feeds every session' },
+  { label: 'MEMORY.md', why: 'it feeds every session' },
+  { label: 'CLAUDE.md', why: 'host instructions feed every session' },
+  { label: 'AGENTS.md', why: 'host instructions feed every session' },
+];
+
+/** Why a local routine may not write `p` (a vault-relative path, or a writes entry with * ** ?), or null. Compared
+ *  folded (duty-guard's fold: case and Unicode variants are the same file on macOS); a glob by its folder part. */
+function localDenied(p) {
+  const { fold } = require('../persona/duty-guard.js');
+  const s = fold(String(p || '').trim().replace(/\\/g, '/')).replace(/^(\.\/)+/, '').replace(/\/+$/, '');
+  const segs = s.split('/');
+  const g = segs.findIndex(x => /[*?]/.test(x));
+  const fixed = (g === -1 ? segs : segs.slice(0, g)).join('/');
+  const name = g === -1 ? segs[segs.length - 1] : null;
+  for (const d of LOCAL_DENY) {
+    const f = fold(d.label).replace(/\/$/, '');
+    if (d.dir ? (fixed === f || fixed.startsWith(`${f}/`) || f.startsWith(`${fixed}/`) || !fixed) : d.root ? (g === -1 && s === f) : name === f) return `${d.label}: ${d.why}`;
+  }
+  return null;
+}
+
 function isStringArray(v) { return Array.isArray(v) && v.every(s => typeof s === 'string' && s.length > 0); }
 function isMoney(v) { return typeof v === 'number' && Number.isFinite(v) && v >= 0; }
 /** A vault-relative path (or glob): not absolute, no `..` segment, no backslash. */
@@ -149,6 +180,8 @@ function validate(routine) {
     if (r.maxTurns !== undefined && !(Number.isInteger(r.maxTurns) && r.maxTurns > 0 && r.maxTurns <= MAX_TURNS_LIMIT)) errors.push(`maxTurns must be a whole number from 1 to ${MAX_TURNS_LIMIT}`);
     if (r.writes !== undefined && (!isStringArray(r.writes) || r.writes.some(w => !isVaultRel(w) || w.includes(',')))) errors.push('writes must be an array of vault-relative paths or globs (no commas)');
     if (r.output !== undefined && !(r.output === 'log' || r.output === 'notify' || (typeof r.output === 'string' && /\.md$/.test(r.output) && isVaultRel(r.output)))) errors.push('output must be log, notify or a vault-relative .md file');
+    for (const w of isStringArray(r.writes) ? r.writes : []) { const why = localDenied(w); if (why) errors.push(`writes: ${w} is off limits to a local routine (${why})`); }
+    if (typeof r.output === 'string' && r.output !== 'log' && r.output !== 'notify') { const why = localDenied(r.output); if (why) errors.push(`output: ${r.output} is off limits to a local routine (${why})`); }
   }
   if (r.kind === 'duty') {
     if (r.budgetUsd !== undefined && !isMoney(r.budgetUsd)) errors.push('budgetUsd must be a non-negative number');
@@ -337,7 +370,7 @@ function overview({ dir = defaultDir(), file = defaultStateFile(), logDir, now =
 module.exports = {
   SLUG_RE, KINDS, EFFORTS, ENGINES, MAX_TURNS_LIMIT, KEY_ORDER, STATE_SCHEMA,
   parseFrontmatter, serializeFrontmatter, parseFlowArray,
-  validate, fromFile, toFile, list, read, write, fingerprint,
+  validate, fromFile, toFile, list, read, write, fingerprint, localDenied, LOCAL_DENY,
   readState, writeState, updateState, patchState, health, overview,
   dutyLogLast, mergeDutyLog,
 };

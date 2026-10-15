@@ -14,22 +14,30 @@
  *     The system prompt is a short preamble (the vault, the tools, the write scope, "end with a final message") and the
  *     routine's body; the loop runs until the model answers without a tool call, for at most `maxTurns` model turns
  *     (default 24) and the routine's wall clock. Each turn's tool calls run in order (MAX_CALLS_PER_TURN; arguments
- *     validated, a bad call answered with its error so the model can correct it); each result is cut to RESULT_CHARS
- *     and the history kept within CONTEXT_CHARS by eliding the oldest results first. Every call, refusal and failure is
- *     a journal line (run-routine.js writes them to the routine log). Each model turn counts one local call in
- *     local-usage.json (A18). The final message goes where `output` says: the log (always), `notify` (an info item in
- *     the Notifications tab), or a vault-relative .md file it is appended to.
+ *     validated, a bad call answered with its error so the model can correct it). One timer bounds the whole run: at
+ *     the deadline the request in flight is aborted and the run ends as a timeout, whatever it is waiting on. A turn's
+ *     results share TURN_RESULT_CHARS (each at most RESULT_CHARS), so the current turn always fits; the history is kept
+ *     within CONTEXT_CHARS by eliding earlier turns' results, then long arguments of calls already made. Every call,
+ *     refusal and failure is a journal line (run-routine.js writes them to the routine log). Each model turn counts one
+ *     local call in local-usage.json (A18). The final message goes where `output` says: the log (always), `notify` (an
+ *     info item in the Notifications tab), or a vault-relative .md file it is appended to.
  *
- * Tools (vault-scoped: paths are vault-relative; absolute paths, `..`, dot-folders and symlinks that resolve outside
- * the vault — or, for a write, into a refused area — are refused):
+ * Tools (vault-scoped: paths are vault-relative; absolute paths, `..`, dot-folders, anything but a regular file or a
+ * folder, and symlinks that resolve outside the vault — or, for a write, into a refused area or out of the routine's
+ * writes — are refused; real paths come from realpath.native, so a case or Unicode variant is checked as the file it
+ * opens):
  *   read_file  { path, offset?, limit? }   a window of a text file's lines (READ_LINES by default), files ≤ READ_MAX_BYTES
  *   list_files { path?, recursive? }       entries under a folder, folders with a trailing /, at most LIST_MAX
- *   grep       { pattern, path?, ignore_case? }   a JavaScript regular expression over the text files under `path`;
- *                                          `file:line: text`, at most GREP_MAX_MATCHES, files ≤ GREP_FILE_MAX_BYTES
+ *   grep       { text, path?, ignore_case? }   plain text (not a regular expression: nothing to backtrack, and small
+ *                                          models write poor ones) in the text files under `path`; `file:line: text`, at
+ *                                          most GREP_MAX_MATCHES, files ≤ GREP_FILE_MAX_BYTES, GREP_MAX_MS a call
  *   write_file { path, content, append? }  only where the routine's `writes` entries allow (a folder entry with a trailing
- *                                          /, a file, or a glob with * ** ?) AND never in persona/duty-guard.js's guarded
- *                                          or executable areas — its refusal() rule, applied to every entry and every
- *                                          target, real path included; ≤ WRITE_MAX_BYTES
+ *                                          /, a file, or a glob with * ** ?), the real path too, AND never in
+ *                                          persona/duty-guard.js's guarded or executable areas (its refusal() rule) nor
+ *                                          what feeds hosted sessions (routines-store.js localDenied: persona/,
+ *                                          brain/memory/, brain/_index/, MEMORY.md, AGENTICOS.md, CLAUDE.md, AGENTS.md),
+ *                                          each applied to every entry and every target, real path included;
+ *                                          ≤ WRITE_MAX_BYTES
  *   notify     { title, body?, level? }    an info or alert item from the routine (lib/notifications.js, the store
  *                                          `aos notify` writes), at most NOTIFY_MAX a run
  */
@@ -45,6 +53,10 @@ const NUM_PREDICT = 2048;
 /** The history's size in characters (about three per token) and one tool result's share of it. */
 const CONTEXT_CHARS = 36_000;
 const RESULT_CHARS = 8_000;
+/** What one turn's results may take together, shared by its calls: the current turn always fits the history. */
+const TURN_RESULT_CHARS = 16_000;
+/** An argument of a call already made longer than this is elided when the history is over its budget. */
+const ARG_KEEP_CHARS = 200;
 const READ_MAX_BYTES = 2 * 1024 * 1024;
 const READ_LINES = 400;
 const LIST_MAX = 200;
@@ -52,9 +64,7 @@ const WALK_MAX_FILES = 5_000;
 const GREP_MAX_MATCHES = 100;
 const GREP_FILE_MAX_BYTES = 1024 * 1024;
 const GREP_LINE_CHARS = 200;
-const GREP_TEST_CHARS = 2000;
-const GREP_PATTERN_MAX = 200;
-const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d)/;
+const GREP_MAX_MS = 5_000;
 const WRITE_MAX_BYTES = 256 * 1024;
 const NOTIFY_MAX = 3;
 const ELIDED = '[elided: an earlier tool result, to stay within the context budget]';
@@ -64,8 +74,11 @@ const refuse = (why) => { throw new Refused(why); };
 
 // ── the vault and its paths ─────────────────────────────────────────────────────────────────────────────────────────
 
+/** realpath.native: the canonical name, case included (plain realpathSync keeps the case it was given). */
+function realpath(p) { return fs.realpathSync.native(p); }
+
 function realRoot(vault) {
-  try { return fs.realpathSync(path.resolve(vault)); } catch { return path.resolve(vault); }
+  try { return realpath(path.resolve(vault)); } catch { return path.resolve(vault); }
 }
 
 /** A path the model gave → { rel, abs } under `root` (the vault's real path), or Refused. `allowRoot` lets '' or '.'
@@ -92,7 +105,7 @@ function realRel(root, abs) {
   const rest = [];
   for (;;) {
     let real;
-    try { real = fs.realpathSync(p); } catch {
+    try { real = realpath(p); } catch {
       const up = path.dirname(p);
       if (up === p) return null;
       rest.unshift(path.basename(p));
@@ -137,10 +150,12 @@ function globRe(pattern) {
  * The routine's `writes` entries → { rules: [{ entry, test(rel) }], refused: [{ entry, why }] }. A folder (trailing /,
  * or an existing folder) allows everything under it, a file itself, a glob what it matches. Each entry is checked with
  * duty-guard's refusal() — on its folder part for a glob — so no entry can name, hold or sit in a guarded or executable
- * area, the vault itself, a dot-folder or a path out of the vault.
+ * area, the vault itself, a dot-folder or a path out of the vault; then with routines-store.js localDenied(), so none
+ * reaches what feeds hosted sessions. Both compare folded paths (case and Unicode variants).
  */
 function compileWrites(entries, root) {
   const { refusal } = require('../persona/duty-guard.js');
+  const { localDenied } = require('./routines-store.js');
   const rules = [], refused = [];
   for (const raw of Array.isArray(entries) ? entries : []) {
     const entry = String(raw);
@@ -150,13 +165,13 @@ function compileWrites(entries, root) {
     if (GLOB.test(body)) {
       const segs = body.split('/');
       const fixed = segs.slice(0, segs.findIndex((x) => GLOB.test(x))).join('/');
-      const why = refusal(fixed);
+      const why = refusal(fixed) || localDenied(s);
       if (why) { refused.push({ entry, why }); continue; }
       const re = globRe(dir ? `${body}/**` : body);
       rules.push({ entry, test: (rel) => re.test(rel) });
       continue;
     }
-    const why = refusal(body);
+    const why = refusal(body) || localDenied(s);
     if (why) { refused.push({ entry, why }); continue; }
     let isDir = dir;
     if (!isDir) { try { isDir = fs.statSync(path.join(root, ...body.split('/'))).isDirectory(); } catch { /* a file to come */ } }
@@ -165,22 +180,28 @@ function compileWrites(entries, root) {
   return { rules, refused };
 }
 
-/** For a write: `p` inside the vault, allowed by a rule (when `rules` is given), and neither it nor its real path in a
- *  refused area; the target is not a symlink and not a folder. */
+/** For a write: `p` inside the vault, allowed by a rule (when `rules` is given) on its path and its real path, neither
+ *  in a refused area (duty-guard's refusal, then localDenied); the target, when it exists, is a regular file. */
 function writable(root, p, rules) {
   const { refusal } = require('../persona/duty-guard.js');
+  const { localDenied } = require('./routines-store.js');
   const v = vaultPath(root, p);
-  const why = refusal(v.rel);
+  const why = refusal(v.rel) || localDenied(v.rel);
   if (why) refuse(why);
   if (rules && !rules.some((r) => r.test(v.rel))) refuse('outside this routine\'s writes');
   let st = null;
   try { st = fs.lstatSync(v.abs); } catch { /* new file */ }
   if (st && st.isSymbolicLink()) refuse('a symlink');
   if (st && st.isDirectory()) refuse('a folder');
+  if (st && !st.isFile()) refuse('not a regular file');
+  // The real path — symlinked folders resolved, case and Unicode canonical — must pass every rule as well.
   const real = realRel(root, v.abs);
   if (real === null) refuse('it resolves outside the vault');
-  const whyReal = real === v.rel ? null : refusal(real);
-  if (whyReal) refuse(`it resolves to ${real}: ${whyReal}`);
+  if (real !== v.rel) {
+    const whyReal = refusal(real) || localDenied(real);
+    if (whyReal) refuse(`it resolves to ${real}: ${whyReal}`);
+    if (rules && !rules.some((r) => r.test(real))) refuse(`it resolves to ${real}, outside this routine's writes`);
+  }
   return v;
 }
 
@@ -231,7 +252,7 @@ function checkArgs(args, spec) {
 const TOOL_SPECS = {
   read_file: { required: ['path'], types: { path: 'string', offset: 'integer', limit: 'integer' } },
   list_files: { required: [], types: { path: 'string', recursive: 'boolean' } },
-  grep: { required: ['pattern'], types: { pattern: 'string', path: 'string', ignore_case: 'boolean' } },
+  grep: { required: ['text'], types: { text: 'string', path: 'string', ignore_case: 'boolean' } },
   write_file: { required: ['path'], types: { path: 'string', content: 'string', append: 'boolean' } },
   notify: { required: ['title'], types: { title: 'string', body: 'string', level: 'string' } },
 };
@@ -245,8 +266,8 @@ function toolDefs({ canWrite }) {
       { path: str('Vault-relative path, e.g. notes/today.md'), offset: { type: 'integer', description: 'First line to return (1-based); default 1' }, limit: { type: 'integer', description: `How many lines; default ${READ_LINES}` } }, ['path']),
     fn('list_files', 'List the files and folders in a vault folder (folders end with /).',
       { path: str('Vault-relative folder; empty for the vault root'), recursive: { type: 'boolean', description: 'Include everything below it' } }, []),
-    fn('grep', 'Search the text files under a vault folder for a regular expression. Returns file:line: text.',
-      { pattern: str('A JavaScript regular expression'), path: str('Vault-relative folder or file; empty for the whole vault'), ignore_case: { type: 'boolean', description: 'Match regardless of case' } }, ['pattern']),
+    fn('grep', 'Search the text files under a vault folder for a piece of text (plain text, not a pattern). Returns file:line: text.',
+      { text: str('The text to find, as written'), path: str('Vault-relative folder or file; empty for the whole vault'), ignore_case: { type: 'boolean', description: 'Match regardless of case' } }, ['text']),
   ];
   if (canWrite) {
     defs.push(fn('write_file', 'Write a text file in the vault (only where this routine may write). Replaces the file unless append is true.',
@@ -265,6 +286,7 @@ function makeTools(ctx) {
       let st;
       try { st = fs.statSync(v.abs); } catch { refuse('no such file'); }
       if (st.isDirectory()) refuse('a folder: use list_files');
+      if (!st.isFile()) refuse('not a regular file');
       if (st.size > READ_MAX_BYTES) refuse(`too large (${st.size} bytes): grep it instead`);
       const buf = fs.readFileSync(v.abs);
       if (isBinary(buf)) refuse('a binary file');
@@ -293,26 +315,28 @@ function makeTools(ctx) {
       return { text: out.length ? `${out.join('\n')}${capped ? `\n[more than ${LIST_MAX} entries; list a subfolder]` : ''}` : `${where} is empty`, path: where };
     },
     grep(a) {
-      // The search runs in this process: a long pattern, or a quantified group that is itself quantified (catastrophic
-      // backtracking), is refused, and each line is matched on its first GREP_TEST_CHARS characters only.
-      if (a.pattern.length > GREP_PATTERN_MAX) refuse(`pattern longer than ${GREP_PATTERN_MAX} characters`);
-      if (NESTED_QUANTIFIER.test(a.pattern)) refuse('a quantified group inside a quantifier: simplify the pattern');
-      let re;
-      try { re = new RegExp(a.pattern, a.ignore_case ? 'i' : ''); } catch (e) { refuse(`not a valid regular expression: ${e.message}`); }
+      // Plain text, never a regular expression: no pattern can backtrack, and the search stops at GREP_MAX_MS (or the
+      // run's deadline), so a call is bounded however large the vault.
+      const ic = !!a.ignore_case;
+      const needle = ic ? a.text.toLowerCase() : a.text;
       const v = readable(root, a.path, { allowRoot: true });
       let st;
       try { st = fs.statSync(v.abs); } catch { refuse('no such file or folder'); }
+      if (!st.isDirectory() && !st.isFile()) refuse('not a regular file');
+      const stopAt = Math.min(Date.now() + GREP_MAX_MS, ctx.deadline);
       const hits = [];
+      let late = false;
       const scan = (r, abs) => {
+        if (Date.now() > stopAt) { late = true; return false; }
         let s;
         try { s = fs.statSync(abs); } catch { return true; }
-        if (s.size > GREP_FILE_MAX_BYTES) return true;
+        if (!s.isFile() || s.size > GREP_FILE_MAX_BYTES) return true;
         let buf;
         try { buf = fs.readFileSync(abs); } catch { return true; }
         if (isBinary(buf)) return true;
         const lines = buf.toString('utf8').split('\n');
         for (let i = 0; i < lines.length; i++) {
-          if (re.test(lines[i].slice(0, GREP_TEST_CHARS))) {
+          if ((ic ? lines[i].toLowerCase() : lines[i]).includes(needle)) {
             hits.push(`${r}:${i + 1}: ${lines[i].trim().slice(0, GREP_LINE_CHARS)}`);
             if (hits.length >= GREP_MAX_MATCHES) return false;
           }
@@ -322,7 +346,8 @@ function makeTools(ctx) {
       if (st.isDirectory()) walk(v.abs, v.rel, { recursive: true, max: WALK_MAX_FILES, onFile: scan });
       else scan(v.rel, v.abs);
       const where = v.rel || '.';
-      return { text: hits.length ? `${hits.join('\n')}${hits.length >= GREP_MAX_MATCHES ? `\n[stopped at ${GREP_MAX_MATCHES} matches; narrow the pattern or the path]` : ''}` : `no match under ${where}`, path: where };
+      const note = hits.length >= GREP_MAX_MATCHES ? `\n[stopped at ${GREP_MAX_MATCHES} matches; narrow the text or the path]` : late ? '\n[stopped: the search ran out of time; narrow the path]' : '';
+      return { text: hits.length ? `${hits.join('\n')}${note}` : `no match under ${where}${note}`, path: where };
     },
     write_file(a) {
       if (typeof a.content !== 'string') refuse('content is required');
@@ -410,21 +435,51 @@ function msgChars(m) {
   return String(m.content || '').length + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0);
 }
 
-/** Keeps the history within CONTEXT_CHARS: elides the oldest tool results first (the system and first user message stay). */
-function fitContext(messages) {
+/** A tool call with every string argument over ARG_KEEP_CHARS elided (Ollama sends arguments as an object, an
+ *  OpenAI-compatible server as a JSON string); null when nothing in it is that long. */
+function trimCall(c) {
+  const fn = (c && c.function) || {};
+  const asString = typeof fn.arguments === 'string';
+  let args = fn.arguments;
+  if (asString) { try { args = JSON.parse(args); } catch { return fn.arguments.length > ARG_KEEP_CHARS ? { ...c, function: { ...fn, arguments: '{}' } } : null; } }
+  if (!args || typeof args !== 'object') return null;
+  let changed = false;
+  const out = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (typeof v === 'string' && v.length > ARG_KEEP_CHARS) { out[k] = `[elided: ${v.length} characters]`; changed = true; } else out[k] = v;
+  }
+  return changed ? { ...c, function: { ...fn, arguments: asString ? JSON.stringify(out) : out } } : null;
+}
+
+/**
+ * Keeps the history within CONTEXT_CHARS, the system prompt and the first user message always kept, and the current
+ * turn's results (from `current`, the index of this turn's assistant message) never elided: first earlier turns' tool
+ * results, oldest first; then long arguments of calls already made (a write_file's content), oldest first. Every
+ * message counts, assistant calls included. Returns the total.
+ */
+function fitContext(messages, current = messages.length) {
   let total = messages.reduce((n, m) => n + msgChars(m), 0);
-  for (let i = 2; i < messages.length && total > CONTEXT_CHARS; i++) {
+  for (let i = 2; i < current && total > CONTEXT_CHARS; i++) {
     const m = messages[i];
     if (m.role !== 'tool' || m.content === ELIDED) continue;
     total -= msgChars(m) - ELIDED.length;
     messages[i] = { ...m, content: ELIDED };
+  }
+  for (let i = 2; i < messages.length && total > CONTEXT_CHARS; i++) {
+    const m = messages[i];
+    if (m.role !== 'assistant' || !Array.isArray(m.tool_calls)) continue;
+    const calls = m.tool_calls.map((c) => trimCall(c) || c);
+    if (calls.every((c, k) => c === m.tool_calls[k])) continue;
+    const next = { ...m, tool_calls: calls };
+    total -= msgChars(m) - msgChars(next);
+    messages[i] = next;
   }
   return total;
 }
 
 function argText(args) {
   if (!args) return '';
-  const p = typeof args.path === 'string' ? args.path : typeof args.pattern === 'string' ? `/${args.pattern}/` : typeof args.title === 'string' ? JSON.stringify(args.title.slice(0, 60)) : '';
+  const p = typeof args.text === 'string' ? JSON.stringify(args.text.slice(0, 60)) : typeof args.path === 'string' ? args.path : typeof args.title === 'string' ? JSON.stringify(args.title.slice(0, 60)) : '';
   return p ? ` ${p}` : '';
 }
 
@@ -445,7 +500,7 @@ async function runLocalAgent({ routine, cfg = {}, vault, lc, model, timeoutMs, d
   const post = deps.postNotification || ((p) => require('./notifications.js').post(p, {
     vault, cfg, notify: (t, m) => require('../persona/watchdog.js').osNotify(t, m),
   }));
-  const ctx = { root, rules, routine, wrote: [], notified: 0, post };
+  const ctx = { root, rules, routine, wrote: [], notified: 0, post, deadline: Date.now() + (deadline - t0) };
   const tools = makeTools(ctx);
   const defs = toolDefs({ canWrite: rules.length > 0 });
   const offered = new Set(defs.map((d) => d.function.name));
@@ -457,50 +512,69 @@ async function runLocalAgent({ routine, cfg = {}, vault, lc, model, timeoutMs, d
   const usage = { inputTokens: 0, outputTokens: 0 };
   const refused = [];
   let toolCalls = 0, turns = 0, final = null, status = 'ok', error = null;
+  const timedOut = () => `timed out after ${Math.round((deadline - t0) / 1000)}s`;
 
-  while (true) {
-    if (turns >= maxTurns) { status = 'error'; error = `stopped after ${maxTurns} turns without a final answer (maxTurns)`; break; }
-    const left = deadline - clock();
-    if (left <= 0) { status = 'timeout'; error = `timed out after ${Math.round((deadline - t0) / 1000)}s`; break; }
-    turns++;
-    let reply;
-    const c0 = clock();
-    try {
-      reply = await engine.turn({ model, messages, tools: defs, numPredict: NUM_PREDICT, timeoutMs: left, feature });
-    } catch (e) {
-      if (clock() >= deadline) { status = 'timeout'; error = `timed out after ${Math.round((deadline - t0) / 1000)}s`; }
-      else { status = 'error'; error = `${engine.name}: ${e.message}`; }
-      note(`turn ${turns}: the engine failed: ${e.message}`);
-      break;
-    } finally {
-      count({ feature, ms: clock() - c0 });
-    }
-    usage.inputTokens += reply.usage ? reply.usage.inputTokens : 0;
-    usage.outputTokens += reply.usage ? reply.usage.outputTokens : 0;
-    messages.push(reply.message);
-    if (!reply.toolCalls.length) { final = reply.content; break; }
-    reply.toolCalls.forEach((call, i) => {
-      toolCalls++;
-      let result;
-      const label = `turn ${turns}: ${call.name || '(no name)'}${argText(call.args)}`;
+  // One timer for the whole run: at the deadline the request in flight is aborted and the run stops, whatever it waits on.
+  const abort = new AbortController();
+  let expired = false;
+  let timer = null;
+  const expiry = new Promise((resolve) => {
+    timer = setTimeout(() => { expired = true; abort.abort(); resolve(); }, Math.max(0, deadline - clock()));
+  });
+  const EXPIRED = Symbol('expired');
+
+  try {
+    while (true) {
+      if (turns >= maxTurns) { status = 'error'; error = `stopped after ${maxTurns} turns without a final answer (maxTurns)`; break; }
+      const left = deadline - clock();
+      if (expired || left <= 0) { status = 'timeout'; error = timedOut(); break; }
+      turns++;
+      let reply;
+      const c0 = clock();
       try {
-        if (i >= MAX_CALLS_PER_TURN) refuse(`too many tool calls in one turn (at most ${MAX_CALLS_PER_TURN})`);
-        if (!offered.has(call.name)) refuse(`unknown tool "${call.name}"; the tools are ${[...offered].join(', ')}`);
-        if (call.argError) refuse(call.argError);
-        const bad = checkArgs(call.args, TOOL_SPECS[call.name]);
-        if (bad) refuse(bad);
-        const out = tools[call.name](call.args);
-        result = out.text;
-        note(`${label} → ok (${String(out.text).length} chars)`);
+        reply = await Promise.race([engine.turn({ model, messages, tools: defs, numPredict: NUM_PREDICT, timeoutMs: left, feature, signal: abort.signal }), expiry.then(() => EXPIRED)]);
       } catch (e) {
-        const why = e instanceof Refused ? e.message : `failed: ${e.message}`;
-        result = `error: ${why}`;
-        if (e instanceof Refused && call.name === 'write_file') refused.push({ tool: call.name, path: call.args && call.args.path, why });
-        note(`${label} → ${e instanceof Refused ? 'REFUSED' : 'ERROR'}: ${why}`);
+        if (expired || clock() >= deadline) { status = 'timeout'; error = timedOut(); note(`turn ${turns}: the engine did not answer before the deadline`); }
+        else { status = 'error'; error = `${engine.name}: ${e.message}`; note(`turn ${turns}: the engine failed: ${e.message}`); }
+        break;
+      } finally {
+        count({ feature, ms: clock() - c0 });
       }
-      messages.push(engine.toolMessage(call, clip(result, RESULT_CHARS)));
-    });
-    fitContext(messages);
+      if (reply === EXPIRED) { status = 'timeout'; error = timedOut(); note(`turn ${turns}: the engine did not answer before the deadline`); break; }
+      usage.inputTokens += reply.usage ? reply.usage.inputTokens : 0;
+      usage.outputTokens += reply.usage ? reply.usage.outputTokens : 0;
+      const current = messages.length;
+      messages.push(reply.message);
+      if (!reply.toolCalls.length) { final = reply.content; break; }
+      // The turn's results share TURN_RESULT_CHARS, so the current turn always fits the history.
+      const share = Math.max(500, Math.min(RESULT_CHARS, Math.floor(TURN_RESULT_CHARS / reply.toolCalls.length)));
+      for (let i = 0; i < reply.toolCalls.length; i++) {
+        const call = reply.toolCalls[i];
+        toolCalls++;
+        let result;
+        const label = `turn ${turns}: ${call.name || '(no name)'}${argText(call.args)}`;
+        try {
+          if (expired) refuse('the routine ran out of time');
+          if (i >= MAX_CALLS_PER_TURN) refuse(`too many tool calls in one turn (at most ${MAX_CALLS_PER_TURN})`);
+          if (!offered.has(call.name)) refuse(`unknown tool "${call.name}"; the tools are ${[...offered].join(', ')}`);
+          if (call.argError) refuse(call.argError);
+          const bad = checkArgs(call.args, TOOL_SPECS[call.name]);
+          if (bad) refuse(bad);
+          const out = tools[call.name](call.args);
+          result = out.text;
+          note(`${label} → ok (${String(out.text).length} chars)`);
+        } catch (e) {
+          const why = e instanceof Refused ? e.message : `failed: ${e.message}`;
+          result = `error: ${why}`;
+          if (e instanceof Refused && call.name === 'write_file') refused.push({ tool: call.name, path: call.args && call.args.path, why });
+          note(`${label} → ${e instanceof Refused ? 'REFUSED' : 'ERROR'}: ${why}`);
+        }
+        messages.push(engine.toolMessage(call, clip(result, share)));
+      }
+      fitContext(messages, current);
+    }
+  } finally {
+    clearTimeout(timer);
   }
 
   const out = { status, final, error, turns, toolCalls, wrote: ctx.wrote, refused, journal, engine: engine.name, model, usage, ms: clock() - t0 };
@@ -532,6 +606,6 @@ function deliver(out, { routine, root, post, note }) {
 }
 
 module.exports = {
-  resolveLocal, runLocalAgent, compileWrites, globRe, vaultPath, realRel, readable, writable, toolDefs, systemPrompt, fitContext, checkArgs,
-  DEFAULT_MAX_TURNS, MAX_CALLS_PER_TURN, NUM_CTX, CONTEXT_CHARS, RESULT_CHARS, READ_MAX_BYTES, LIST_MAX, GREP_MAX_MATCHES, WRITE_MAX_BYTES, NOTIFY_MAX, ELIDED,
+  resolveLocal, runLocalAgent, compileWrites, globRe, vaultPath, realRel, readable, writable, toolDefs, systemPrompt, fitContext, trimCall, checkArgs,
+  DEFAULT_MAX_TURNS, MAX_CALLS_PER_TURN, NUM_CTX, CONTEXT_CHARS, RESULT_CHARS, TURN_RESULT_CHARS, READ_MAX_BYTES, LIST_MAX, GREP_MAX_MATCHES, WRITE_MAX_BYTES, NOTIFY_MAX, ELIDED,
 };

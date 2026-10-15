@@ -33,6 +33,7 @@ before(async () => {
       if (req.url === '/v1/models') return json(200, { data: tags.map((id) => ({ id })) });
       if (req.url === '/api/chat' || req.url === '/v1/chat/completions') {
         const next = script.shift();
+        if (next && next.raw) return next.raw(res);
         const send = () => (typeof next === 'function' ? json(200, next(parsed)) : next ? json(next.status || 200, next.body) : json(500, { error: 'script ran out' }));
         if (delayMs) setTimeout(send, delayMs); else send();
         return;
@@ -43,7 +44,7 @@ before(async () => {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   port = server.address().port;
 });
-after(() => server.close());
+after(() => { server.closeAllConnections(); server.close(); });
 
 /** Ollama replies: a tool turn, a final answer. */
 const call = (name, args) => ({ function: { name, arguments: args } });
@@ -193,9 +194,9 @@ test('ollama.chatMessage / openai-compat.chatMessage: tools in the body, tool ca
   assert.deepEqual(seen.at(-1).body.tools.map((t) => t.function.name), ['read_file', 'list_files', 'grep', 'write_file', 'notify']);
   assert.deepEqual(ollama.toolMessage({ name: 'read_file', id: null }, 'x'), { role: 'tool', content: 'x', tool_name: 'read_file' });
   assert.equal(ollama.buildChatBody({ prompt: 'p' }).tools, undefined, 'no tools, no key: every other caller is unchanged');
-  script = [oaTools({ type: 'function', function: { name: 'grep', arguments: '{"pattern":"TODO"}' } }, { type: 'function', function: { name: 'grep', arguments: '{oops' } })];
+  script = [oaTools({ type: 'function', function: { name: 'grep', arguments: '{"text":"TODO"}' } }, { type: 'function', function: { name: 'grep', arguments: '{oops' } })];
   const a = await openai.chatMessage({ url: `http://127.0.0.1:${port}/v1`, model: 'm', messages: [{ role: 'user', content: 'go' }], tools: defs });
-  assert.deepEqual(a.toolCalls.map((c) => [c.id, c.name, c.args, c.argError]), [['call_0', 'grep', { pattern: 'TODO' }, null], ['call_1', 'grep', null, 'arguments are not valid JSON']]);
+  assert.deepEqual(a.toolCalls.map((c) => [c.id, c.name, c.args, c.argError]), [['call_0', 'grep', { text: 'TODO' }, null], ['call_1', 'grep', null, 'arguments are not valid JSON']]);
   assert.deepEqual(a.message.tool_calls.map((c) => c.id), ['call_0', 'call_1'], 'the generated ids go back in the history too');
   assert.equal(seen.at(-1).body.tool_choice, 'auto');
   assert.deepEqual(openai.toolMessage({ id: 'call_0' }, 'r'), { role: 'tool', tool_call_id: 'call_0', content: 'r' });
@@ -207,7 +208,7 @@ test('ollama.chatMessage / openai-compat.chatMessage: tools in the body, tool ca
 test('a routine end to end on Ollama: reads, a write inside writes, a refused write, grep, notify, then the final message', async () => {
   script = [
     tools(call('list_files', { path: 'notes', recursive: true }), call('read_file', { path: 'notes/a.md' })),
-    tools(call('write_file', { path: 'notes/digests/today.md', content: '# Digest\n- a\n' }), call('write_file', { path: 'persona/IDENTITY.md', content: 'pwned' }), call('grep', { pattern: 'todo', ignore_case: true })),
+    tools(call('write_file', { path: 'notes/digests/today.md', content: '# Digest\n- a\n' }), call('write_file', { path: 'persona/IDENTITY.md', content: 'pwned' }), call('grep', { text: 'todo', ignore_case: true })),
     tools(call('notify', { title: 'Digest\nready', body: 'see notes/digests/today.md' })),
     answer('<think>done?</think>Wrote the digest; one write was refused.'),
   ];
@@ -225,7 +226,7 @@ test('a routine end to end on Ollama: reads, a write inside writes, a refused wr
     'turn 1: read_file notes/a.md → ok (61 chars)',
     'turn 2: write_file notes/digests/today.md → ok (40 chars)',
     'turn 2: write_file persona/IDENTITY.md → REFUSED: guarded (persona/IDENTITY.md)',
-    'turn 2: grep /todo/ → ok (70 chars)',
+    'turn 2: grep "todo" → ok (70 chars)',
     'turn 3: notify "Digest\\nready" → ok (25 chars)',
     'final message posted to Notifications',
   ]);
@@ -273,7 +274,7 @@ test('a writes entry in a guarded area is refused and journalled before the firs
 
 test('arguments are validated; a bad call gets its error back and the run goes on', async () => {
   script = [
-    tools(call('read_file', {}), call('read_file', { path: 7 }), call('grep', { pattern: '(a+)+' }), call('grep', { pattern: '[' }), call('list_files', { path: '../' }), call('nope', {}), call('read_file', { path: 'notes/missing.md' }), call('read_file', { path: 'notes/sub' }), call('read_file', { path: 'notes/a.md' })),
+    tools(call('read_file', {}), call('read_file', { path: 7 }), call('grep', {}), call('grep', { text: 7 }), call('list_files', { path: '../' }), call('nope', {}), call('read_file', { path: 'notes/missing.md' }), call('read_file', { path: 'notes/sub' }), call('read_file', { path: 'notes/a.md' })),
     answer('fixed'),
   ];
   const { out } = await run(routine());
@@ -282,15 +283,14 @@ test('arguments are validated; a bad call gets its error back and the run goes o
   assert.deepEqual(results, [
     'error: path is required',
     'error: path must be a string',
-    'error: a quantified group inside a quantifier: simplify the pattern',
-    results[3],
+    'error: text is required',
+    'error: text must be a string',
     'error: a path leaving the vault',
     'error: unknown tool "nope"; the tools are read_file, list_files, grep, notify',
     'error: no such file',
     'error: a folder: use list_files',
     `error: too many tool calls in one turn (at most ${A.MAX_CALLS_PER_TURN})`,
   ]);
-  assert.match(results[3], /^error: not a valid regular expression: /);
   assert.equal(out.journal.filter((l) => / → (REFUSED|ERROR): /.test(l)).length, 9);
 });
 
@@ -333,7 +333,7 @@ test('the wall clock: a turn that outlives timeoutSec ends the run as a timeout'
   const { out } = await run(routine({ timeoutSec: 1 }));
   assert.equal(out.status, 'timeout');
   assert.equal(out.error, 'timed out after 1s');
-  assert.match(out.journal.at(-1), /^turn 1: the engine failed: ollama timeout$/);
+  assert.equal(out.journal.at(-1), 'turn 1: the engine did not answer before the deadline');
 });
 
 test('an engine error ends the run with it; nothing is delivered', async () => {
@@ -391,4 +391,116 @@ test('notify through the real store: an item from the routine lands in brain/not
   const N = require('../lib/notifications.js');
   const { items } = N.list(VAULT);
   assert.deepEqual(items.map((i) => [i.from, i.level, i.title]), [['digest', 'info', 'Hello from a routine']]);
+});
+
+// ── the PR 4 security review ──
+
+const { execFileSync } = require('child_process');
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+test('review 1: grep is a plain-text search — regex syntax is literal, so no pattern can backtrack', async () => {
+  W('notes/redos.md', `${'a'.repeat(4000)}\nliteral a*a*a*a*a*a*! here\nend (a+)+$\n`);
+  W('notes/dots.md', 'axb\na.b\n');
+  script = [tools(call('grep', { text: 'a*a*a*a*a*a*!', path: 'notes' }), call('grep', { text: '(A+)+$', path: 'notes', ignore_case: true }), call('grep', { text: 'a.b', path: 'notes/dots.md' })), answer('ok')];
+  const t0 = Date.now();
+  const { out } = await run(routine());
+  assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
+  assert.equal(out.status, 'ok');
+  const r = chats()[1].body.messages.filter((m) => m.role === 'tool').map((m) => m.content);
+  assert.deepEqual(r, ['notes/redos.md:2: literal a*a*a*a*a*a*! here', 'notes/redos.md:3: end (a+)+$', 'notes/dots.md:2: a.b']);
+});
+
+test('review 1: the wall clock bounds the whole run — an engine call that never settles ends it as a timeout', { timeout: 10_000 }, async () => {
+  const res = await A.resolveLocal({ cfg: ollamaCfg() });
+  let aborted = false;
+  const t0 = Date.now();
+  const out = await A.runLocalAgent({
+    routine: routine({ timeoutSec: 1 }), cfg: ollamaCfg(), vault: VAULT, lc: res.lc, model: res.model,
+    deps: { recordLocalCall: () => {}, ollamaChatMessage: (o) => new Promise(() => { if (o.signal) o.signal.addEventListener('abort', () => { aborted = true; }); }) },
+  });
+  assert.equal(out.status, 'timeout');
+  assert.equal(out.error, 'timed out after 1s');
+  assert.ok(Date.now() - t0 < 3000);
+  assert.equal(aborted, true, 'the request in flight is aborted');
+});
+
+test('review 2: a case or Unicode variant of a refused path is refused (macOS folds both)', async () => {
+  const root = fs.realpathSync(VAULT);
+  assert.equal(A.compileWrites(['Persona/', 'Brain/Scripts/', 'brain/ſcripts/'], root).rules.length, 0);
+  const { rules } = A.compileWrites(['notes/'], root);
+  assert.throws(() => A.writable(root, 'Persona/IDENTITY.md', null), /guarded \(persona\/IDENTITY\.md\)/);
+  assert.throws(() => A.writable(root, 'brain/ſcripts/run.js', null), /guarded \(brain\/scripts\/\)/);
+  // A path that exists in another case resolves to its canonical name (realpath.native) and is checked as that.
+  fs.symlinkSync(path.join(VAULT, 'persona'), path.join(VAULT, 'notes', 'p'));
+  assert.throws(() => A.writable(root, 'notes/p/IDENTITY.md', rules), /persona\/IDENTITY\.md/);
+  script = [answer('done')];
+  const { out } = await run(routine({ output: 'Persona/IDENTITY.md' }));
+  assert.match(out.journal.at(-1), /^final message not delivered to Persona\/IDENTITY\.md: /);
+  assert.equal(R('persona/IDENTITY.md'), '# Agent\n');
+});
+
+test('review 3: a folder symlink inside a writes folder cannot carry a write outside the routine\'s writes', () => {
+  const root = fs.realpathSync(VAULT);
+  W('other/keep.md', 'keep\n');
+  fs.symlinkSync(path.join(VAULT, 'other'), path.join(VAULT, 'notes', 'link'));
+  const { rules } = A.compileWrites(['notes/'], root);
+  assert.throws(() => A.writable(root, 'notes/link/x.md', rules), /resolves to other\/x\.md, outside this routine's writes/);
+  assert.equal(A.writable(root, 'notes/new.md', rules).rel, 'notes/new.md');
+});
+
+test('review 4: a reply that trickles past the time left, or one too large, is cut off', { timeout: 10_000 }, async () => {
+  script = [{ raw: (res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.write('{"message":'); const t = setInterval(() => { if (res.destroyed) return clearInterval(t); res.write(' '); }, 50); res.on('close', () => clearInterval(t)); } }];
+  const t0 = Date.now();
+  await assert.rejects(() => ollama.chatMessage({ host: '127.0.0.1', port, model: 'm', messages: [{ role: 'user', content: 'x' }], timeoutMs: 400 }), /ollama timeout/);
+  assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
+  script = [{ raw: (res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); const t = setInterval(() => { if (res.destroyed) return clearInterval(t); res.write(' '); }, 50); res.on('close', () => clearInterval(t)); } }];
+  await assert.rejects(() => openai.chatMessage({ url: `http://127.0.0.1:${port}/v1`, model: 'm', messages: [{ role: 'user', content: 'x' }], timeoutMs: 400 }), /local engine timeout/);
+  const huge = JSON.stringify({ message: { role: 'assistant', content: 'x'.repeat(ollama.CHAT_MAX_BYTES + 10) } });
+  script = [{ body: JSON.parse(huge) }];
+  await assert.rejects(() => ollama.chat({ host: '127.0.0.1', port, model: 'm', prompt: 'x' }), /reply over \d+ bytes/);
+  script = [{ body: { choices: [{ message: { content: 'y'.repeat(openai.CHAT_MAX_BYTES + 10) } }] } }];
+  await assert.rejects(() => openai.chat({ url: `http://127.0.0.1:${port}/v1`, model: 'm', prompt: 'x' }), /reply over \d+ bytes/);
+  await tick();
+});
+
+test('review 5: a FIFO or any other non-file is refused, never opened', async () => {
+  execFileSync('mkfifo', [path.join(VAULT, 'notes', 'pipe.md')]);
+  script = [tools(call('read_file', { path: 'notes/pipe.md' }), call('grep', { text: 'x', path: 'notes/pipe.md' }), call('grep', { text: 'TODO', path: 'notes' }), call('list_files', { path: 'notes' })), answer('ok')];
+  const { out } = await run(routine({ writes: ['notes/'] }));
+  assert.equal(out.status, 'ok');
+  const r = chats()[1].body.messages.filter((m) => m.role === 'tool').map((m) => m.content);
+  assert.deepEqual(r.slice(0, 3), ['error: not a regular file', 'error: not a regular file', 'notes/a.md:3: TODO: water the plants']);
+  assert.ok(!r[3].includes('pipe.md'), 'the walk skips it');
+  const root = fs.realpathSync(VAULT);
+  assert.throws(() => A.writable(root, 'notes/pipe.md', A.compileWrites(['notes/'], root).rules), /not a regular file/);
+});
+
+test('review 6: the current turn\'s results always reach the model; earlier ones and long arguments are elided first', async () => {
+  for (let i = 0; i < 8; i++) W(`notes/big${i}.md`, `${'z'.repeat(9000)}\n`);
+  const reads = Array.from({ length: 8 }, (_, i) => call('read_file', { path: `notes/big${i}.md` }));
+  script = [tools(call('write_file', { path: 'notes/w.md', content: 'w'.repeat(30_000) })), tools(...reads), tools(...reads), answer('ok')];
+  const { out } = await run(routine({ writes: ['notes/'] }));
+  assert.equal(out.status, 'ok');
+  for (const n of [2, 3]) {
+    const m = chats()[n].body.messages;
+    const total = m.reduce((t, x) => t + String(x.content || '').length + (x.tool_calls ? JSON.stringify(x.tool_calls).length : 0), 0);
+    assert.ok(total <= A.CONTEXT_CHARS, `request ${n}: ${total} chars`);
+    const current = m.slice(-8);
+    assert.ok(current.every((x) => x.role === 'tool' && x.content !== A.ELIDED && /^notes\/big\d\.md\n/.test(x.content)), `request ${n}: this turn's results are all there`);
+  }
+  const w = chats()[3].body.messages[2].tool_calls[0].function.arguments;
+  assert.match(w.content, /^\[elided: 30000 characters\]$/, 'the long argument of an earlier call is elided');
+});
+
+test('review 7: a local routine never writes what feeds hosted sessions, whatever writes says', async () => {
+  const root = fs.realpathSync(VAULT);
+  const { rules, refused } = A.compileWrites(['persona/journal/', 'brain/memory/feedback/', 'brain/_index/', 'notes/'], root);
+  assert.deepEqual(rules.map((r) => r.entry), ['notes/']);
+  assert.deepEqual(refused.map((r) => r.why), ["persona/: the Chief of Staff's files", 'brain/memory/: memories feed every session', "brain/_index/: the session bootstrap and the runtime's caches"]);
+  for (const t of ['notes/CLAUDE.md', 'notes/Agents.md', 'notes/sub/MEMORY.md']) assert.throws(() => A.writable(root, t, rules), /feeds? every session/, t);
+  assert.throws(() => A.writable(root, 'AGENTICOS.md', null), /AGENTICOS\.md: it feeds every session/);
+  assert.throws(() => A.writable(root, 'brain/memory/user/x.md', null), /brain\/memory\//);
+  script = [answer('done')];
+  const { out } = await run(routine({ output: 'MEMORY.md' }));
+  assert.equal(out.journal.at(-1), 'final message not delivered to MEMORY.md: MEMORY.md: it feeds every session');
 });
