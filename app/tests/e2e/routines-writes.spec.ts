@@ -50,6 +50,9 @@ const STUB_LOG = (JSON.parse(fs.readFileSync(path.join(FX.root, "env.json"), "ut
 const logSize = () => (fs.existsSync(STUB_LOG) ? fs.statSync(STUB_LOG).size : 0);
 const launchctlSince = (from: number): string[] =>
   (fs.existsSync(STUB_LOG) ? fs.readFileSync(STUB_LOG).subarray(from).toString("utf8") : "").split("\n").filter((l) => l.startsWith("launchctl "));
+// The jobs the stub has loaded, one label per line: load adds, unload removes, `launchctl list <label>` asks.
+const LAUNCHD = (JSON.parse(fs.readFileSync(path.join(FX.root, "env.json"), "utf8")) as Record<string, string>).AOS_FIXTURE_LAUNCHD;
+const loadedJobs = (): string[] => (fs.existsSync(LAUNCHD) ? fs.readFileSync(LAUNCHD, "utf8").split("\n").filter(Boolean) : []);
 
 const ROUTINES = () => fs.readdirSync(FX.v("brain/routines")).filter((f) => f.endsWith(".md") && f !== "README.md").sort();
 
@@ -314,6 +317,12 @@ test("a schedule changed underneath shows the banner; apply now and apply schedu
 
   fs.writeFileSync(file("nightly-scan"), pristine("nightly-scan"));
   await expect(banner).toHaveText("schedules out of date (nightly-scan) — apply now");
+  // In the runtime's file-name order (reflect-daily.md before reflect.md).
+  const enabled = Object.keys(pristineState().synced).sort((a, b) => (`${a}.md` < `${b}.md` ? -1 : 1));
+  // One other job is not loaded (unloaded by hand, or not loaded since a login), its plist unchanged.
+  const idle = enabled.find((x) => x !== "nightly-scan") as string;
+  expect(loadedJobs()).toContain(`com.agenticos.${idle}`);
+  fs.writeFileSync(LAUNCHD, `${loadedJobs().filter((l) => l !== `com.agenticos.${idle}`).join("\n")}\n`);
   before = state().syncedAt;
   const from = logSize();
   await C(win).locator(".aos-rt-actions button", { hasText: "apply schedules" }).click();
@@ -321,9 +330,13 @@ test("a schedule changed underneath shows the banner; apply now and apply schedu
   await expect(banner).toHaveCount(0);
   expect(plistText("nightly-scan")).toBe(original);
   expect(plists()).toEqual(pristinePlists());
-  // One unload and load per enabled routine, in the runtime's file-name order (reflect-daily.md before reflect.md).
-  const enabled = Object.keys(pristineState().synced).sort((a, b) => (`${a}.md` < `${b}.md` ? -1 : 1));
-  expect(launchctlSince(from)).toEqual(enabled.flatMap((s) => [`launchctl unload ${plist(s)}`, `launchctl load ${plist(s)}`]));
+  // The plist that changed, and the job that was not loaded, are unloaded and loaded again; every other enabled routine,
+  // unchanged and loaded, is only asked about and left alone: a sync never stops a routine that is running.
+  const calls = launchctlSince(from);
+  const redone = enabled.filter((x) => x === "nightly-scan" || x === idle);
+  expect(calls.filter((l) => /^launchctl (un)?load /.test(l))).toEqual(redone.flatMap((x) => [`launchctl unload ${plist(x)}`, `launchctl load ${plist(x)}`]));
+  for (const x of enabled.filter((y) => !redone.includes(y))) expect(calls).toContain(`launchctl list com.agenticos.${x}`);
+  expect(loadedJobs()).toEqual(expect.arrayContaining(enabled.map((x) => `com.agenticos.${x}`)));
 });
 
 test("▶ runs a command routine now: run-routine.js records a manual run and the row shows it (RT5)", async () => {
