@@ -80,17 +80,23 @@ function norm(entry) {
   return { rel, dir };
 }
 
-/** Why a write-scope entry is refused, or null. `rel` is posix, normalized, without a trailing slash. */
+/** A path as a case-insensitive, normalization-insensitive file system (APFS) sees it: NFC, case-folded (upper then
+ *  lower, so U+017F LONG S and the Kelvin sign fold to s and k as they do there). */
+function fold(p) { return String(p).normalize('NFC').toUpperCase().toLowerCase().normalize('NFC'); }
+
+/** Why a write-scope entry is refused, or null. `rel` is posix, normalized, without a trailing slash. The guarded and
+ *  executable areas are compared folded (fold), so `Persona/IDENTITY.md` is refused like `persona/IDENTITY.md`. */
 function refusal(rel) {
   if (!rel || rel === '.' || rel === '/') return 'the vault itself';
   if (path.posix.isAbsolute(rel)) return 'an absolute path';
   const segs = rel.split('/');
   if (segs.includes('..')) return 'a path leaving the vault';
   if (segs.some((s) => s.startsWith('.'))) return 'a dot-folder or dot-file';
+  const f = fold(rel);
   for (const g of [...GUARDED, LEDGER, ...EXECUTABLE]) {
-    const gr = g.replace(/\/$/, '');
-    if (rel === gr || rel.startsWith(`${gr}/`)) return `guarded (${g})`;
-    if (gr.startsWith(`${rel}/`)) return `it holds a guarded path (${g})`;
+    const gr = fold(g.replace(/\/$/, ''));
+    if (f === gr || f.startsWith(`${gr}/`)) return `guarded (${g})`;
+    if (gr.startsWith(`${f}/`)) return `it holds a guarded path (${g})`;
   }
   return null;
 }
@@ -428,6 +434,6 @@ function main(argv, { stdout = (s) => process.stdout.write(s), stderr = (s) => p
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 module.exports = {
   SCHEMA, EXIT_RESTORED, EXIT_NO_SNAPSHOT, DEFAULT_WRITES, FEEDBACK_DIR, DUTY_WRITES, GUARDED, LEDGER, EXECUTABLE, GIT_WRITE_OUT,
-  splitTools, refusal, dailyNoteDir, dutyWrites, writeScope, vaultForms, claudeTools, codexDirs, configHome, guardDir, listGuarded, snapshot,
+  splitTools, fold, refusal, dailyNoteDir, dutyWrites, writeScope, vaultForms, claudeTools, codexDirs, configHome, guardDir, listGuarded, snapshot,
   memoryLabel, indexFeedback, check, flagState, main,
 };
