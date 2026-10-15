@@ -507,7 +507,8 @@ test("the Local engine surface runs `aos local pull` and nothing else; it writes
 
 test("the MCP servers surface runs `aos mcp copy` as the page builds it, dry run or real, and nothing else; it writes nothing (install-import B6)", () => {
   const p = new WritePolicy(VAULT, ["mcp"]);
-  for (const a of [copyArgs("docs-search", "codex", true), copyArgs("docs-search", "codex", false), copyArgs("issue_tracker-2", "claude", true), copyArgs("x", "claude", false)]) {
+  const H = "0f".repeat(32);
+  for (const a of [copyArgs("docs-search", "codex", true), copyArgs("docs-search", "codex", false, H), copyArgs("issue_tracker-2", "claude", true), copyArgs("x", "claude", false, H)]) {
     assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]), true, a.join(" "));
   }
   for (const a of [
@@ -515,6 +516,9 @@ test("the MCP servers surface runs `aos mcp copy` as the page builds it, dry run
     ["mcp", "copy", "web fetch", "--to", "codex", "--json"], ["mcp", "copy", "a/b", "--to", "codex", "--json"], ["mcp", "copy", "docs-search", "--json", "--to", "codex"],
     ["mcp", "list", "--json"], ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run"], ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run", "--json", "--force"],
     ["mcp", "copy", "a".repeat(65), "--to", "codex", "--json"],
+    // The real run only with the dry run's hash (security review 3): not without it, nor with a short or upper-case one.
+    ["mcp", "copy", "docs-search", "--to", "codex", "--json"], ["mcp", "copy", "docs-search", "--to", "codex", "--expect", "abc", "--json"],
+    ["mcp", "copy", "docs-search", "--to", "codex", "--expect", "0F".repeat(32), "--json"], ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run", "--expect", H, "--json"],
   ]) {
     assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]), false, a.join(" "));
   }

@@ -31,8 +31,9 @@ const SHAREABLE = new Set(["universal", "pending", "excluded"]);
  *
  * A third section, MCP SERVERS (install-import B6), lists both hosts' user-scope MCP servers from
  * brain/_index/mcp-servers.json, with "Make available on <other host>" per server for an enabled host that lacks it: a
- * dry run of `aos mcp copy` shows the exact command (secrets hidden) and the file it writes, and only a confirm runs it
- * (the `mcp` surface). Skills and agents keep their automatic mirror; MCP servers move one at a time, on a click.
+ * dry run of `aos mcp copy` shows the command (the secrets it recognises hidden) and the file it writes, and only a confirm
+ * runs it, naming the dry run's hash (the `mcp` surface). Skills and agents keep their automatic mirror; MCP servers move
+ * one at a time, on a click, one copy per target host at a time.
  */
 export class SkillsTab {
   private host: HTMLElement | null = null;
@@ -44,8 +45,8 @@ export class SkillsTab {
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
   private mcp: McpCache = { listed: false, updatedAt: null, servers: [] };
-  /** "<name>><host>" while its dry run or copy runs. */
-  private mcpBusy = new Set<string>();
+  /** The target hosts a dry run or copy is running for: one at a time per host, as the runtime's lock has it. */
+  private mcpBusy = new Set<McpHost>();
 
   constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {}
 
@@ -106,10 +107,9 @@ export class SkillsTab {
    * refused and the notice names the same command for a Code terminal.
    */
   private async makeAvailable(name: string, to: McpHost): Promise<void> {
-    const key = `${name}>${to}`;
-    if (this.mcpBusy.has(key)) return;
+    if (this.mcpBusy.has(to)) return;
     const by = `aos mcp copy ${name} --to ${to}`;
-    this.mcpBusy.add(key);
+    this.mcpBusy.add(to);
     this.renderList();
     try {
       const dry = await this.plugin.aosJson<unknown>(copyArgs(name, to, true));
@@ -117,12 +117,13 @@ export class SkillsTab {
       if (!plan) { new Notice(`Make available on ${MCP_HOST_LABEL[to]}: ${dry.code === 0 ? "aos mcp copy answered in an unexpected shape" : failureText(dry)} — or run ${by} in the Code tab`, 12000); return; }
       const c = planConfirm(plan);
       if (!(await ConfirmModal.ask(this.plugin.app, c.title, c.message, c.confirm, c.detail))) return;
-      const r = await this.plugin.aosJson<unknown>(copyArgs(name, to, false), 90_000);
+      // The dry run's hash: the copy runs only what the confirm showed, and is refused when the config changed since.
+      const r = await this.plugin.aosJson<unknown>(copyArgs(name, to, false, plan.expect), 90_000);
       const done = r.code === 0 ? parsePlan(r.json) : null;
       if (done) new Notice(`${name} is on ${MCP_HOST_LABEL[to]} now${done.backup ? ` (backup: ${done.backup})` : ""}.`, 8000);
       else new Notice(`Make available on ${MCP_HOST_LABEL[to]}: ${r.code === 0 ? "aos mcp copy answered in an unexpected shape" : failureText(r)}`, 12000);
     } finally {
-      this.mcpBusy.delete(key);
+      this.mcpBusy.delete(to);
       this.mcp = this.readMcp();
       this.renderList();
     }
@@ -223,7 +224,7 @@ export class SkillsTab {
     el.createSpan({ cls: "aos-pill aos-pill-dim aos-sk-source", text: it.transport });
     const acts = el.createDiv({ cls: "aos-rt-rowactions aos-sk-mcpactions" });
     for (const o of it.offers) {
-      const busy = this.mcpBusy.has(`${it.name}>${o.to}`);
+      const busy = this.mcpBusy.has(o.to);
       const b = acts.createEl("button", {
         cls: "aos-ws-action aos-sk-mcpcopy", text: busy ? "Working…" : o.label,
         attr: { type: "button", "data-to": o.to, title: o.reason ?? `Shows the exact ${MCP_HOST_LABEL[o.to]} command and the file it writes before anything changes` },

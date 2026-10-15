@@ -417,13 +417,15 @@ export const SURFACES: readonly Surface[] = [
     label: "MCP servers",
     source: "views/SkillsTab.ts (MCP SERVERS: Make available on <host>), data/mcpServers.ts (copyArgs)",
     // `aos mcp copy` (cli/mcp.js, install-import B6): the dry run writes nothing and the page shows its command before the
-    // confirm; the copy reads the server's config from the source host's own file, backs the target host's config file up
-    // under brain/_index/backups/mcp/, writes it only through that host's CLI (`claude mcp add-json --scope user`,
-    // `codex mcp add`), and lists both hosts again into brain/_index/mcp-servers.json. The page writes nothing itself.
+    // confirm; the copy names the dry run's hash, reads the server's config from the source host's own file, backs the
+    // target host's config file up outside the vault (~/.local/share/unidex/backups/mcp/, which the page never reads),
+    // writes it only through that host's CLI (`claude mcp add-json --scope user`, `codex mcp add`), and lists both hosts
+    // again into brain/_index/mcp-servers.json. The page writes nothing itself.
     writes: [],
     spawns: [
       { script: "cli/aos.js", args: argv("mcp", "copy", MCP_NAME, "--to", /claude|codex/, "--dry-run", "--json") },
-      { script: "cli/aos.js", args: argv("mcp", "copy", MCP_NAME, "--to", /claude|codex/, "--json") },
+      // The copy itself only with the dry run's hash (cli/mcp.js planHash), so it runs what the confirm showed.
+      { script: "cli/aos.js", args: argv("mcp", "copy", MCP_NAME, "--to", /claude|codex/, "--expect", /[0-9a-f]{64}/, "--json") },
     ],
     // Added in 2.0; off by default until a live check copies a server each way on a real install with both hosts
     // (`aos mcp copy` from a Code terminal works meanwhile).

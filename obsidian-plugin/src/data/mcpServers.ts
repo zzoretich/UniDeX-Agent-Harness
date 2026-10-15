@@ -2,9 +2,9 @@
 // brain/_index/mcp-servers.json (the importer's listing, lib/import/mcp.js: the program or URL alone, never arguments,
 // environment or headers), one row per name with the hosts that have it, and per row "Make available on <other host>"
 // for an enabled host that lacks it. The page never sees a server's config: the click runs `aos mcp copy <name> --to
-// <host> --dry-run --json` (cli/mcp.js), shows that exact command (every secret hidden) and the file it writes, and on
-// confirm runs it for real, which backs the file up first and goes through the host's own CLI. Pure, so node:test can
-// load it.
+// <host> --dry-run --json` (cli/mcp.js), shows that command (the secrets it recognises hidden) and the file it writes,
+// and on confirm runs it for real with `--expect <the dry run's hash>`, so it runs only what was shown; the real run
+// backs the file up outside the vault first and goes through the host's own CLI. Pure, so node:test can load it.
 
 export const MCP_SERVERS_PATH = "brain/_index/mcp-servers.json";
 export type McpHost = "claude" | "codex";
@@ -12,6 +12,8 @@ export const MCP_HOSTS: readonly McpHost[] = ["claude", "codex"];
 export const MCP_HOST_LABEL: Record<McpHost, string> = { claude: "Claude Code", codex: "Codex" };
 /** What both CLIs take as a server name (cli/mcp.js NAME_RE, and the mcp surface's rule). */
 export const MCP_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
+/** A dry run's hash (cli/mcp.js planHash): sha256, lowercase hex. */
+export const MCP_HASH_RE = /^[0-9a-f]{64}$/;
 
 export interface McpServerRow {
   name: string;
@@ -88,6 +90,7 @@ export function mcpItems(cache: McpCache, enabled: readonly McpHost[]): McpItem[
       if (!s) continue;
       let reason: string | null = null;
       if (!MCP_NAME_RE.test(it.name)) reason = `${MCP_HOST_LABEL[to]}'s CLI does not take the name ${JSON.stringify(it.name)}: letters, digits, - and _ only`;
+      else if (!s.enabled) reason = `Turned off on ${MCP_HOST_LABEL[from]}: turn it on there first, or add it to ${MCP_HOST_LABEL[to]} yourself`;
       else if (to === "codex" && s.transport !== "stdio") reason = `A remote (${s.transport}) server: \`codex mcp add\` takes a command to run, so add it in Codex's config.toml yourself`;
       it.offers.push({ to, label: `Make available on ${MCP_HOST_LABEL[to]}`, disabled: reason !== null, reason });
     }
@@ -102,11 +105,14 @@ export function filterMcp(items: readonly McpItem[], query: string): McpItem[] {
   return items.filter((i) => `${i.name}\n${i.what}`.toLowerCase().includes(q));
 }
 
-/** `aos mcp copy` as the page runs it, `--json` last; throws on a name the surface would refuse anyway. */
-export function copyArgs(name: string, to: McpHost, dryRun: boolean): string[] {
+/** `aos mcp copy` as the page runs it, `--json` last: the dry run, or the real run naming the dry run's hash. Throws on
+ *  what the surface would refuse anyway. */
+export function copyArgs(name: string, to: McpHost, dryRun: boolean, expect?: string | null): string[] {
   if (!MCP_NAME_RE.test(name)) throw new Error(`not a server name: ${name}`);
   if (to !== "claude" && to !== "codex") throw new Error(`not a host: ${String(to)}`);
-  return ["mcp", "copy", name, "--to", to, ...(dryRun ? ["--dry-run"] : []), "--json"];
+  if (dryRun) return ["mcp", "copy", name, "--to", to, "--dry-run", "--json"];
+  if (typeof expect !== "string" || !MCP_HASH_RE.test(expect)) throw new Error("a real copy needs the dry run's hash");
+  return ["mcp", "copy", name, "--to", to, "--expect", expect, "--json"];
 }
 
 /** What `aos mcp copy --json` answers (cli/mcp.js copy()). */
@@ -123,12 +129,14 @@ export interface McpPlan {
   file: string;
   backup: string | null;
   dropped: string[];
-  disabled: boolean;
+  /** The dry run's hash, which the real run names (--expect). */
+  expect: string;
   listed?: boolean;
 }
 
 export function parsePlan(j: unknown): McpPlan | null {
   if (!isObj(j) || j.ok !== true || typeof j.command !== "string" || typeof j.file !== "string") return null;
+  if (typeof j.expect !== "string" || !MCP_HASH_RE.test(j.expect)) return null;
   const host = (v: unknown): McpHost | null => (v === "claude" || v === "codex" ? v : null);
   const from = host(j.from);
   const to = host(j.to);
@@ -136,7 +144,7 @@ export function parsePlan(j: unknown): McpPlan | null {
   return {
     ok: true, dryRun: j.dryRun === true, name: j.name, from, to, transport: String(j.transport ?? "stdio"), command: j.command,
     source: String(j.source ?? ""), file: j.file, backup: typeof j.backup === "string" ? j.backup : null,
-    dropped: Array.isArray(j.dropped) ? j.dropped.map(String) : [], disabled: j.disabled === true,
+    dropped: Array.isArray(j.dropped) ? j.dropped.map(String) : [], expect: j.expect,
     ...(typeof j.listed === "boolean" ? { listed: j.listed } : {}),
   };
 }
@@ -151,9 +159,8 @@ export function planConfirm(p: McpPlan): { title: string; message: string; detai
   ];
   const notes = [
     `Copies ${p.name} from ${MCP_HOST_LABEL[p.from]} (${p.source}) through ${MCP_HOST_LABEL[p.to]}'s own CLI.`,
-    "Environment and header values, URL queries and token-like arguments are hidden here; the command takes them from the source.",
+    "Environment and header values, URL credentials and queries, and arguments named or shaped like secrets are hidden here; one it does not recognise shows as written. The command takes the real values from the source.",
   ];
   if (p.dropped.length) notes.push(`Not carried over: ${p.dropped.join(", ")}.`);
-  if (p.disabled) notes.push(`It is turned off on ${MCP_HOST_LABEL[p.from]}; the copy is on.`);
   return { title: `Make ${p.name} available on ${MCP_HOST_LABEL[p.to]}?`, message: notes.join(" "), detail: lines.join("\n"), confirm: `Add to ${MCP_HOST_LABEL[p.to]}` };
 }

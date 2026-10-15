@@ -218,7 +218,8 @@ test.describe("both hosts, the MCP servers surface on", () => {
     await expect(modal.locator("h3")).toHaveText("Make docs-search available on Codex?");
     const detail = modal.locator("pre.aos-confirm-detail");
     await expect(detail).toContainText("Writes ~/.codex/config.toml");
-    await expect(detail).toContainText(/Backs it up first to brain\/_index\/backups\/mcp\/codex-config\.toml-\d{8}T\d{6}Z\.bak/);
+    // Outside the vault, in a folder the page never reads (security review 1).
+    await expect(detail).toContainText(/Backs it up first to ~\/\.local\/share\/unidex\/backups\/mcp\/codex-config\.toml-\d{8}T\d{9}Z\.bak/);
     await expect(detail).toContainText("codex mcp add docs-search --env 'LOG_LEVEL=<redacted>' -- npx -y docs-search-mcp");
     await expect(modal.locator("p")).toContainText("Copies docs-search from Claude Code (~/.claude.json) through Codex's own CLI.");
     await modal.locator("button", { hasText: "Cancel" }).click();
@@ -228,12 +229,17 @@ test.describe("both hosts, the MCP servers surface on", () => {
 
     await copy.click();
     await win.locator(".aos-confirm-modal button.mod-cta", { hasText: "Add to Codex" }).click();
-    await expect(win.locator(".notice-container")).toContainText(/docs-search is on Codex now \(backup: brain\/_index\/backups\/mcp\/codex-config\.toml-\d{8}T\d{6}Z\.bak\)/);
+    await expect(win.locator(".notice-container")).toContainText(/docs-search is on Codex now \(backup: ~\/\.local\/share\/unidex\/backups\/mcp\/codex-config\.toml-\d{8}T\d{9}Z\.bak\)/);
     expect(stubCalls()).toEqual([{ cli: "codex", argv: ["mcp", "add", "docs-search", "--env", "LOG_LEVEL=warn", "--", "npx", "-y", "docs-search-mcp"] }]);
-    const backups = fs.readdirSync(FX.v("brain/_index/backups/mcp"));
+    const dir = path.join(FX.home, ".local", "share", "unidex", "backups", "mcp");
+    const backups = fs.readdirSync(dir).filter((n) => n.endsWith(".bak"));
     expect(backups).toHaveLength(1);
-    expect(fs.readFileSync(FX.v(`brain/_index/backups/mcp/${backups[0]}`), "utf8")).toBe(before);
-    expect((fs.statSync(FX.v(`brain/_index/backups/mcp/${backups[0]}`)).mode & 0o777).toString(8)).toBe("600");
+    expect(fs.readFileSync(path.join(dir, backups[0]), "utf8")).toBe(before);
+    expect((fs.statSync(path.join(dir, backups[0])).mode & 0o777).toString(8)).toBe("600");
+    expect(fs.existsSync(FX.v("brain/_index/backups"))).toBe(false);
+    // The page cannot read it: main refuses a backup's path whatever asks (read-scope deniedDirs).
+    const read = await win.evaluate((p) => (window as unknown as { aos: { fs: { readText(p: string): Promise<{ ok: boolean; error?: string }> } } }).aos.fs.readText(p), path.join(dir, backups[0]));
+    expect(read).toMatchObject({ ok: false });
     // Listed again: the row has both pills now and nothing to offer.
     await expect(mcpRow(win, "docs-search").locator(".aos-pill.is-absent")).toHaveCount(0);
     await expect(mcpRow(win, "docs-search").locator("button.aos-sk-mcpcopy")).toHaveCount(0);
