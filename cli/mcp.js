@@ -18,23 +18,27 @@
  *      `dropped`.
  *   3. `--dry-run` writes nothing in the vault or a host's config (it makes this install's key once, below). It prints
  *      that command with these hidden: every environment and header value; in a URL, its credentials, every query value
- *      and a token-like path segment (lib/import/mcp.js maskUrl); the value of a flag or `KEY=` whose name has a secret
- *      word (lib/import/mcp.js secretName: token, secret, pass, password, key, auth, credential, cookie, session, … as
- *      whole words of the name; `--name`, `-name` and `--name=`), and of `-p`, `-k`, `-t`; a `-H`/`--header` value
- *      (`--header=` too) and an `Authorization:`-style argument; inside a JSON argument, every secret-named key's value
- *      and every token-like string; each word of an argument with spaces (`sh -c "…"`), by these same rules; and any
- *      value, or `:`/`=`-separated part of one, that looks like a token (tokenLike: a known prefix, 32+ hex digits or
- *      lowercase letters and digits, or 20+ characters of mixed-case base64). That is recognition by name and shape: a
- *      secret that has neither (a short lowercase password after a flag named otherwise) is shown as written. The dry
- *      run also prints `expect`, an HMAC-SHA256 under this install's own key (~/.local/share/unidex/keys/mcp-plan.key,
- *      0600) of the source entry and the exact target command; the Workbench shows the dry run, and its confirm runs the
- *      copy with `--expect <hash>`, which is refused when either changed since.
+ *      and a token-like path segment (lib/import/mcp.js maskUrl); the argument after a flag whose name has a secret word
+ *      (lib/import/mcp.js secretName: token, secret, pass, password, key, auth, credential, cookie, session, … as whole
+ *      words of the name; `--name` or `-name`), or after `-p`, `-k`, `-t`, whatever that argument starts with; the value
+ *      of such a `--name=` or `KEY=`; a `-H`/`--header` value (`--header=` too) and an `Authorization:`-style argument;
+ *      inside a JSON argument, every secret-named key's value, every token-like string, and a list of strings read as
+ *      arguments by these rules; an argument with blanks or quotes (`sh -c "…"`, a command such as `env KEY=… node`)
+ *      split into words as a shell would and each word read by these rules, or hidden whole when its quotes do not
+ *      close; and any value, or `:`/`=`-separated part of one, that looks like a token (tokenLike: a known prefix, 32+
+ *      hex digits or lowercase letters and digits, or 20+ characters of mixed-case base64). The command is read the
+ *      same way. That is recognition by name and shape: a secret that has neither (a short lowercase password after a
+ *      flag named otherwise) is shown as written. The dry run also prints `expect`, an HMAC-SHA256 under this install's
+ *      own key (~/.local/share/unidex/keys/mcp-plan.key, 0600) of the source entry and the exact target command; the
+ *      Workbench shows the dry run, and its confirm runs the copy with `--expect <hash>`, which is refused when either
+ *      changed since.
  *   4. A real run holds a lock per target host (two copies never rewrite one config at once), checks again, backs the
  *      target's config file up OUTSIDE the vault (~/.local/share/unidex/backups/mcp/: each component a real folder this
  *      user owns, never a link; the folder 0700, files 0600, created exclusively with a millisecond stamp, the newest 10
  *      per host kept: each holds every server's secrets, and the Workbench's page never reads that folder), runs the
  *      command, checks the target lists the server, and lists both hosts again into mcp-servers.json. A failing CLI's
- *      own output is shown with every value hidden above replaced.
+ *      own output is shown with every value hidden above replaced, as written and JSON-escaped (one or two characters
+ *      long: only as a whole word).
  *   Refused, writing nothing: a name either CLI would reject (letters, digits, `-` and `_` only), the vault's own
  *   `agenticos` server, a server the source does not declare (or declares in a form not read) or the target already
  *   has, one turned off, a target host that is off in agenticos.json (`aos hosts add <host>`), a target CLI that is not
@@ -191,6 +195,12 @@ function hiddenHeader(h) { return { shown: `${h[1]}: ${HIDDEN}`, secrets: [h[0],
 
 /** A JSON value with every secret-named key's value and every token-like or URL string hidden. */
 function redactJson(v, secrets, key = null) {
+  // A list of strings is an argument list (`["--token", "<t>"]`): read it as one, flag by value.
+  if (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string') && !(key !== null && lib().secretName(key))) {
+    const r = redactArgs(v);
+    secrets.push(...r.secrets);
+    return r.shown;
+  }
   if (Array.isArray(v)) return v.map((x) => redactJson(x, secrets, key));
   if (isPlainObject(v)) {
     const out = {};
@@ -203,6 +213,42 @@ function redactJson(v, secrets, key = null) {
   secrets.push(...r.secrets);
   return r.shown;
 }
+
+/**
+ * A shell string's words, POSIX-style: blanks split; '…' is literal; "…" keeps its text, with \ escaping " \ $ ` and a
+ * newline; a bare \ escapes the next character. → string[], or null when a quote or an escape does not close.
+ */
+function shellWords(text) {
+  const words = [];
+  let cur = '';
+  let open = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (/\s/.test(c)) { if (open) { words.push(cur); cur = ''; open = false; } continue; }
+    open = true;
+    if (c === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end === -1) return null;
+      cur += text.slice(i + 1, end);
+      i = end;
+    } else if (c === '"') {
+      let j = i + 1;
+      for (; j < text.length && text[j] !== '"'; j++) {
+        if (text[j] === '\\' && j + 1 < text.length && '"\\$`\n'.includes(text[j + 1])) { cur += text[j + 1]; j++; } else cur += text[j];
+      }
+      if (j >= text.length) return null;
+      i = j;
+    } else if (c === '\\') {
+      if (i + 1 >= text.length) return null;
+      cur += text[++i];
+    } else cur += c;
+  }
+  if (open) words.push(cur);
+  return words;
+}
+
+/** A word as a shell string shows it: single-quoted when it holds a blank, a quote or a backslash. */
+function showWord(w) { return /[\s'"\\]/.test(w) || w === '' ? `'${w.replace(/'/g, "'\\''")}'` : w; }
 
 /**
  * A value on its own (a bare argument, the part after `=`): JSON with its secrets hidden; words of a shell string each
@@ -220,14 +266,16 @@ function redactValue(a) {
       return { shown, secrets: secrets.length ? [a, ...secrets] : [] };
     }
   }
-  if (/\s/.test(a.trim())) {
-    // A shell string (`sh -c "… --token <t>"`): its words, as arguments, separators kept.
-    const parts = a.split(/(\s+)/);
-    const words = parts.filter((x, i) => i % 2 === 0);
-    const r = redactArgs(words);
-    let w = 0;
-    const shown = parts.map((x, i) => (i % 2 === 0 ? r.shown[w++] : x)).join('');
-    return { shown, secrets: shown === a ? [] : [a, ...r.secrets] };
+  if (/[\s'"\\]/.test(a.trim())) {
+    // A shell string (`sh -c "curl -H 'Authorization: …' …"`): its words as a shell splits them, each read as an
+    // argument; shown again as words, quoted where they need it. One whose quotes do not close is hidden whole.
+    const words = shellWords(a);
+    if (words === null) return { shown: HIDDEN, secrets: [a] };
+    if (words.length > 1 || words[0] !== a) {
+      const r = redactArgs(words);
+      if (!r.secrets.length) return { shown: a, secrets: [] };
+      return { shown: r.shown.map(showWord).join(' '), secrets: [a, ...r.secrets] };
+    }
   }
   const u = L.maskUrl(a, { query: 'mask' });
   if (u.shown !== null) return { shown: u.shown, secrets: u.shown === a ? [] : [a, ...u.secrets] };
@@ -250,7 +298,8 @@ function redactArg(a, prev) {
     return h ? hiddenHeader(h) : { shown: HIDDEN, secrets: [a] };
   }
   // The value of a secret-named flag: --token, -token, --api-key, --pass, and the short -p, -k, -t.
-  if (flag && !a.startsWith('-') && (SECRET_SHORT.has(prev) || (flag[1].length > 1 && L.secretName(flag[1])))) return { shown: HIDDEN, secrets: [a] };
+  // Whatever it looks like, even `-abc`: a secret may start with a dash.
+  if (flag && (SECRET_SHORT.has(prev) || (flag[1].length > 1 && L.secretName(flag[1])))) return { shown: HIDDEN, secrets: [a] };
   const kv = KV.exec(a);
   if (kv) {
     if (HEADER_FLAGS.has(kv[1])) {
@@ -294,6 +343,9 @@ function shq(w) { return /^[A-Za-z0-9_@%+=:,./-]+$/.test(w) ? w : `'${String(w).
  */
 function targetCommand(to, name, s) {
   const secrets = [...Object.values(s.env), ...Object.values(s.headers).flatMap(secretParts)].filter(Boolean);
+  // The command too: `env API_KEY=<v> node` is a command line some configs carry.
+  const cmdShown = s.command ? redactValue(s.command) : { shown: s.command, secrets: [] };
+  secrets.push(...cmdShown.secrets);
   if (to === 'claude') {
     let json;
     let shownJson;
@@ -302,7 +354,7 @@ function targetCommand(to, name, s) {
       const r = redactArgs(s.args);
       secrets.push(...r.secrets);
       json = { type: 'stdio', command: s.command, ...(s.args.length ? { args: s.args } : {}), ...(Object.keys(s.env).length ? { env: s.env } : {}) };
-      shownJson = { ...json, ...(s.args.length ? { args: r.shown } : {}), ...(Object.keys(s.env).length ? { env: hideValues(s.env) } : {}) };
+      shownJson = { ...json, command: cmdShown.shown, ...(s.args.length ? { args: r.shown } : {}), ...(Object.keys(s.env).length ? { env: hideValues(s.env) } : {}) };
     } else {
       if (!s.url) throw new Refused(`${name} is a remote server with no URL`);
       const u = lib().maskUrl(s.url, { query: 'mask' });
@@ -325,15 +377,28 @@ function targetCommand(to, name, s) {
   const envShown = Object.keys(s.env).flatMap((k) => ['--env', `${k}=${HIDDEN}`]);
   return {
     argv: ['mcp', 'add', name, ...envArgs, '--', s.command, ...s.args],
-    shown: ['mcp', 'add', name, ...envShown, '--', s.command, ...r.shown],
+    shown: ['mcp', 'add', name, ...envShown, '--', cmdShown.shown, ...r.shown],
     secrets,
   };
 }
 
-/** `text` with every secret replaced: a failing CLI's own output is shown only through this. */
+/**
+ * `text` with every secret replaced, as written and JSON-escaped (add-json echoes its JSON): a failing CLI's own output
+ * is shown only through this. A secret of one or two characters is replaced only as a whole word, so it never cuts
+ * into another.
+ */
 function scrub(text, secrets) {
   let out = String(text || '');
-  for (const s of [...new Set(secrets)].filter((x) => x && x.length >= 3).sort((a, b) => b.length - a.length)) out = out.split(s).join(HIDDEN);
+  const forms = new Set();
+  for (const x of secrets) {
+    if (!x) continue;
+    forms.add(String(x));
+    forms.add(JSON.stringify(String(x)).slice(1, -1));
+  }
+  for (const x of [...forms].filter(Boolean).sort((a, b) => b.length - a.length)) {
+    if (x.length >= 3) out = out.split(x).join(HIDDEN);
+    else out = out.replace(new RegExp(`(?<![A-Za-z0-9_-])${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`, 'g'), HIDDEN);
+  }
   return out;
 }
 
@@ -374,17 +439,21 @@ function keyDir(home) { return path.join(home, '.local', 'share', 'unidex', 'key
 
 /**
  * This install's key for planHash: 32 random bytes in ~/.local/share/unidex/keys/mcp-plan.key, made on first use (0600,
- * created exclusively) and read without following a link; one that is a link, not a regular file of this user's, open to
- * others, or not 32 bytes is refused rather than used.
+ * written to a file of its own and linked into place, so parallel first runs agree) and read without following a link;
+ * one that is a link, not a regular file of this user's, open to others, or not 32 bytes is refused rather than used.
  */
 function planKey(home) {
   const dir = ownDir(home, ['.local', 'share', 'unidex', 'keys'], 'key');
   fs.chmodSync(dir, 0o700);
   const file = path.join(dir, 'mcp-plan.key');
-  try {
-    const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o600);
-    try { fs.writeSync(fd, crypto.randomBytes(32)); } finally { fs.closeSync(fd); }
-  } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  if (!fs.existsSync(file)) {
+    // Written whole under a name of its own, then linked into place: a first run beside this one either wins the link or
+    // reads the key the winner wrote, never a file half written.
+    const tmp = path.join(dir, `.mcp-plan.key.${process.pid}.${crypto.randomBytes(6).toString('hex')}`);
+    const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o600);
+    try { fs.writeSync(fd, crypto.randomBytes(32)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    try { fs.linkSync(tmp, file); } catch (e) { if (e.code !== 'EEXIST') throw e; } finally { fs.unlinkSync(tmp); }
+  }
   const refuse = (why) => new Refused(`${tilde(file, path.resolve(home))} is not a key file of your own (${why}): remove it, and the next dry run makes a new one`);
   let fd;
   try { fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)); } catch (e) { if (e.code === 'ELOOP') throw refuse('a link'); throw e; }

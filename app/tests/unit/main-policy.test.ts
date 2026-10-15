@@ -152,6 +152,26 @@ test("a deny reaches a folder made after the scope was built: ~/.local turned in
   assert.equal(s.canRead(`${vault}/k.md`), false);
 });
 
+test("a check resolves the path asked once, and each denied folder once, whichever of read, list or probe asks (third review 6)", () => {
+  const home = path.join(ROOT, "home-c");
+  const vault = path.join(ROOT, "vault-c");
+  for (const d of [path.join(home, ".local", "share", "unidex", "backups"), path.join(home, ".local", "share", "unidex", "keys"), path.join(vault, "brain", "_index", "backups")]) fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(vault, "notes.md"), "x");
+  let calls = 0;
+  const realpath = (p: string): string => { calls++; return fs.realpathSync.native(p); };
+  const s = new ReadScope({ ...ctx({ vaultRoot: vault, home }), realpath });
+  // Three denied folders, all there: one resolution each, plus the path itself.
+  for (const ask of [(p: string) => s.canRead(p), (p: string) => s.canList(p), (p: string) => s.canProbe(p)]) {
+    calls = 0;
+    assert.equal(ask(`${vault}/notes.md`), true);
+    assert.equal(calls, 4, "one walk for the path, one per denied folder");
+  }
+  fs.writeFileSync(path.join(vault, "brain", "_index", "backups", "x.bak"), "x");
+  calls = 0;
+  assert.equal(s.canProbe(`${vault}/brain/_index/backups/x.bak`), false);
+  assert.ok(calls <= 4, `a denied probe stops early (${calls})`);
+});
+
 test("the Claude and Codex folders come from main's environment and agenticos.json, never from the page", () => {
   const o = { home: HOME, env: { CLAUDE_CONFIG_DIR: "/cfg/claude", CODEX_HOME: "relative/ignored" }, agenticos: { claudeConfigDir: "/cfg/other", hosts: { codex: { home: "/cfg/codex" } } } };
   assert.deepEqual(claudeDirs(o), ["/cfg/claude", `${HOME}/.claude`, "/cfg/other"]);

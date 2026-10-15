@@ -27,6 +27,8 @@ export interface ScopeOptions {
   env: Record<string, string | undefined>;
   /** agenticos.json as `aos init` wrote it, or null. */
   agenticos: AgenticosPaths | null;
+  /** How a path is resolved on disk (default fs.realpathSync.native); tests count the calls. */
+  realpath?: (p: string) => string;
 }
 
 /** Program names whose existence may be probed anywhere (nodeResolver, claudeAsk, the shell picker). */
@@ -89,11 +91,11 @@ const fold = (p: string): string => p.normalize("NFC").toLowerCase();
  * case and form the disk keeps), the part that does not exist yet appended as written. Asked at each check, so a link,
  * a folder or a `~/.local` made after launch counts.
  */
-function onDisk(p: string): string {
+function onDisk(p: string, realpath: (p: string) => string = fs.realpathSync.native): string {
   let head = path.resolve(p);
   const tail: string[] = [];
   for (;;) {
-    try { return path.join(fs.realpathSync.native(head), ...tail); } catch { /* not there (yet), or a dangling link */ }
+    try { return path.join(realpath(head), ...tail); } catch { /* not there (yet), or a dangling link */ }
     const up = path.dirname(head);
     if (up === head) return path.join(head, ...tail);
     tail.unshift(path.basename(head));
@@ -107,6 +109,7 @@ export class ReadScope {
   private readonly listOnly: string[];
   /** The denied folders as configured; each check resolves them again (onDisk). */
   private readonly denied: string[];
+  private readonly realpath: (p: string) => string;
 
   constructor(o: ScopeOptions) {
     const under = (dirs: string[], names: string[]) => dirs.flatMap((d) => names.map((n) => path.join(d, n)));
@@ -126,21 +129,28 @@ export class ReadScope {
       ...under(codexHomes(o), CODEX_LIST),
     ].flatMap(spellings);
     this.denied = deniedDirs(o).map((d) => path.resolve(d));
+    this.realpath = o.realpath ?? fs.realpathSync.native;
   }
 
   /**
    * Whether a deny covers this path: a credential's name, or a place inside a denied folder, each compared case-folded
    * in one Unicode form, as written and as the disk resolves it now (a link in the vault to the backups or to a
-   * credential file, in whatever case its target is spelled).
+   * credential file, in whatever case its target is spelled). One check resolves the path once and each denied folder
+   * once, and stops at the first deny that holds.
    */
   private isDenied(p: string): boolean {
-    const real = onDisk(p);
+    const real = onDisk(p, this.realpath);
     for (const q of [p, real]) if (CREDENTIALS.test(path.basename(q).normalize("NFC"))) return true;
     const asked = [fold(p), fold(real)];
     return this.denied.some((d) => {
-      const dirs = [fold(d), fold(onDisk(d))];
+      const dirs = [fold(d), fold(onDisk(d, this.realpath))];
       return dirs.some((dir) => asked.some((q) => inside(dir, q)));
     });
+  }
+
+  /** Inside a root, or one of the files: what the page reads when no deny holds. */
+  private readable(p: string): boolean {
+    return this.files.has(p) || this.roots.some((r) => inside(r, p));
   }
 
   private static clean(p: unknown): string | null {
@@ -151,19 +161,19 @@ export class ReadScope {
   /** Whether the page may read this file, list this folder, or stat it. */
   canRead(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    if (!p || this.isDenied(p)) return false;
-    return this.files.has(p) || this.roots.some((r) => inside(r, p));
+    return !!p && !this.isDenied(p) && this.readable(p);
   }
 
   /** Whether the page may list this folder's names (canRead, nvm's version folder, or the hosts' session folders). */
   canList(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    return !!p && !this.isDenied(p) && (this.canRead(p) || this.listOnly.some((r) => inside(r, p)));
+    return !!p && !this.isDenied(p) && (this.readable(p) || this.listOnly.some((r) => inside(r, p)));
   }
 
-  /** Whether the page may ask if this path exists, or stat it (canRead, or a program by its well-known name). */
+  /** Whether the page may ask if this path exists, or stat it (canRead, or a program by its well-known name). Each of
+   *  the three runs its deny check once. */
   canProbe(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    return !!p && !this.isDenied(p) && (this.canRead(p) || this.canList(p) || PROGRAM_NAMES.has(path.basename(p)));
+    return !!p && !this.isDenied(p) && (this.readable(p) || this.listOnly.some((r) => inside(r, p)) || PROGRAM_NAMES.has(path.basename(p)));
   }
 }

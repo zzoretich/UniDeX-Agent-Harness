@@ -12,7 +12,7 @@ export const MCP_HOSTS: readonly McpHost[] = ["claude", "codex"];
 export const MCP_HOST_LABEL: Record<McpHost, string> = { claude: "Claude Code", codex: "Codex" };
 /** What both CLIs take as a server name (cli/mcp.js NAME_RE, and the mcp surface's rule). */
 export const MCP_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
-/** A dry run's hash (cli/mcp.js planHash): sha256, lowercase hex. */
+/** A dry run's hash (cli/mcp.js planHash): an HMAC-SHA256 under the install's own key, 64 lowercase hex digits. */
 export const MCP_HASH_RE = /^[0-9a-f]{64}$/;
 
 export interface McpServerRow {

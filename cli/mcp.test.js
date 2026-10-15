@@ -328,7 +328,8 @@ test('secrets in arguments: secret-named flags and KEY=value, header values, URL
   ];
   const r = M.redactArgs(args);
   assert.deepEqual(r.shown, [
-    '--stdio', '--token', '<redacted>', '--password=<redacted>', 'API_KEY=<redacted>', 'LOG_LEVEL=warn', '<redacted>', '--db', 'notes.sqlite', '--auth', '--verbose',
+    // `--auth` is secret-named, so what follows it is hidden, whatever it starts with (third review 4).
+    '--stdio', '--token', '<redacted>', '--password=<redacted>', 'API_KEY=<redacted>', 'LOG_LEVEL=warn', '<redacted>', '--db', 'notes.sqlite', '--auth', '<redacted>',
     'postgresql://<redacted>@example.com:5432/app', '-H', 'Authorization: <redacted>', '--header', 'X-Api-Key: <redacted>',
     'https://api.example.com/v1?token=<redacted>&mode=<redacted>', '--key', '<redacted>', '-p', '<redacted>', 'Authorization: <redacted>',
     'https://mcp.example.com/<redacted>/sse', '--endpoint=https://<redacted>@example.com/x', 'plain.txt',
@@ -442,4 +443,50 @@ test('re-review D: the dry run\'s hash is an HMAC under a per-install key (0600,
   fs.writeFileSync(keyFile, Buffer.alloc(32, 3), { mode: 0o644 });
   fs.chmodSync(keyFile, 0o644);
   assert.match(aos(['copy', 'vault', '--to', 'codex', '--dry-run']).stderr, /mcp-plan\.key is not a key file of your own/);
+});
+
+test('third review 1–4: quoted shell strings, the command itself, flag pairs in a JSON array, a dash-led secret, short secrets in the scrub', () => {
+  const v = (tag) => ['fx', tag, 'value'].join('-');
+  const header = (name, value) => [name, value].join(': ');
+  // 1. A shell string with a quoted header: tokenized as a shell would, the header's value hidden, re-quoted for showing.
+  const sh = `curl -H '${header('Authorization', `Bearer ${v('s1')}`)}' --header "${header('X-Api-Key', v('s2'))}" https://x.example.com`;
+  const r1 = M.redactArgs(['sh', '-c', sh]);
+  assert.equal(r1.shown[2], "curl -H 'Authorization: <redacted>' --header 'X-Api-Key: <redacted>' https://x.example.com/");
+  // A string whose quotes do not close is hidden whole.
+  assert.deepEqual(M.redactArgs(['sh', '-c', `echo 'unclosed ${v('s3')}`]).shown, ['sh', '-c', '<redacted>']);
+  // 2. The command itself: `env KEY=<v> node`.
+  const s = M.normalize('claude', { type: 'stdio', command: `env API_KEY=${v('c1')} node`, args: ['server.js'] });
+  const tc = M.targetCommand('codex', 'cmd', s);
+  assert.equal(tc.shown[4], 'env API_KEY=<redacted> node');
+  const tj = M.targetCommand('claude', 'cmd', s);
+  assert.equal(JSON.parse(tj.shown[5]).command, 'env API_KEY=<redacted> node');
+  // 3. Flag pairs inside a JSON array.
+  assert.equal(M.redactArgs(['--args', `["--token","${v('j1')}","--db","notes.sqlite"]`]).shown[1], '["--token","<redacted>","--db","notes.sqlite"]');
+  // 4. After a secret-named flag the next argument is hidden whatever it starts with.
+  assert.deepEqual(M.redactArgs(['--token', '-ab', '--auth', '--verbose']).shown, ['--token', '<redacted>', '--auth', '<redacted>']);
+  // Everything hidden reaches the scrub, in its JSON-escaped form too (add-json's own echo), and a short one as a whole word.
+  const all = M.redactArgs(['sh', '-c', sh, '--token', 'ab', '--args', `["--token","${v('j1')}"]`]);
+  const echoed = `failed: ${JSON.stringify({ args: ['sh', '-c', sh] })} --token ab and "about" ${v('j1')}`;
+  const out = M.scrub(`${echoed} ${tc.secrets.length ? `env API_KEY=${v('c1')}` : ''}`, [...all.secrets, ...tc.secrets]);
+  for (const x of [v('s1'), v('s2'), v('j1'), v('c1')]) assert.ok(!out.includes(x), `the scrub left ${x}`);
+  assert.match(out, / <redacted> and "about"/, 'a two-letter secret goes as a whole word, not inside another');
+});
+
+test('third review 5: parallel first dry runs share one key and agree on the hash', async () => {
+  const { spawn } = require('child_process');
+  for (let trial = 0; trial < 6; trial++) {
+    const { w, env } = setup();
+    const runs = await Promise.all([0, 1, 2, 3].map(() => new Promise((resolve) => {
+      const c = spawn(process.execPath, [AOS, 'mcp', 'copy', 'vault', '--to', 'codex', '--dry-run', '--json'], { env });
+      let out = '';
+      let err = '';
+      c.stdout.on('data', (d) => { out += d; });
+      c.stderr.on('data', (d) => { err += d; });
+      c.on('close', (code) => resolve({ code, out, err }));
+    })));
+    for (const r of runs) assert.equal(r.code, 0, `trial ${trial}: ${r.err}`);
+    assert.equal(new Set(runs.map((r) => JSON.parse(r.out).expect)).size, 1, `trial ${trial}: one key, one hash`);
+    const dir = path.join(w.home, '.local', 'share', 'unidex', 'keys');
+    assert.deepEqual(fs.readdirSync(dir), ['mcp-plan.key'], 'no temp file left behind');
+  }
 });
