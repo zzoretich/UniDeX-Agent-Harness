@@ -138,13 +138,20 @@ function resolveRunner({ cfg, kind = 'routines', env = process.env, lookup, cand
 }
 
 /**
- * Which CLI answers the vault graph's semantic pass (spec 2026-09-23-codex-parity-gaps D3). graph.semantic.runner pins
- * one (claude | codex); otherwise an explicit provider claude or codex names it; otherwise Claude when it is an enabled
- * host with a binary, else Codex on the same test. → { host, bin } or null. `bins` replaces the lookups (tests).
+ * Who answers the vault graph's semantic pass (spec 2026-09-23-codex-parity-gaps D3; local-first A14).
+ * graph.semantic.runner pins a host (claude | codex); otherwise provider local or ollama names the local engine,
+ * → { host: 'local', engine, url, model }: graphify's own `ollama` backend (or `openai` for an OpenAI-compatible
+ * server) at that address, on the workhorse, with no spend (graph-build.js checks the model is pulled before it runs);
+ * otherwise an explicit provider claude or codex names it; otherwise Claude when it is an enabled host with a binary,
+ * else Codex on the same test. → { host, bin } or null. `bins` replaces the lookups (tests).
  */
 function graphRunner(cfg, { env = process.env, lookup, candidates, bins } = {}) {
   const c = cfg || {};
   const sem = (c.graph && c.graph.semantic) || {};
+  if (!HOSTS.includes(sem.runner) && (c.provider === 'local' || c.provider === 'ollama')) {
+    const lc = require('../sdk/lib/local-config.js').localCfg(c);
+    return { host: 'local', engine: lc.engine, url: lc.url, model: lc.workhorse.tag };
+  }
   const pinned = HOSTS.includes(sem.runner) ? sem.runner : HOSTS.includes(c.provider) ? c.provider : null;
   for (const h of pinned ? [pinned] : HOSTS) {
     if (!pinned && !hostEnabled(c, h)) continue;

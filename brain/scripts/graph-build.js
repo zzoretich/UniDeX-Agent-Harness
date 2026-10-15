@@ -12,6 +12,10 @@
  * Always the vault root, passed explicitly: another root re-keys every node path (spike, spec §4.7).
  * Semantic pass (D5, D6, D10, D11; `--semantic`): `graphify extract <vault> --backend claude-cli` with the claude shim
  * (bin/graph-shim/claude → graph-claude.js) first on PATH, one call per chunk, --allow-partial, under the same lock.
+ * Under provider local or ollama it runs on the local engine instead (local-first A14): graphify's own `ollama` backend
+ * (OLLAMA_BASE_URL=<url>/v1, OLLAMA_MODEL=<the pulled workhorse>), or `openai` for an OpenAI-compatible server, one
+ * chunk at a time, no shim, no spend and no graph budget; it waits while the engine is down or the model is not pulled
+ * (the next scan asks again), and on battery while local.onBattery is `defer` (A18).
  * scan-vault spawns it detached at most every graph.semantic.everyHours; `aos graph build --semantic` runs it with
  * --force (not waiting for it to be due, and running even when the background pass is switched off).
  * Flags: --quiet (no stdout summary) · --semantic [--force].
@@ -157,15 +161,34 @@ async function buildStructural({ report, cfg = loadConfig(), vault = PATHS.VAULT
 }
 
 // ── semantic pass ─────────────────────────────────────────────────────────────
-/** D11: "auto" follows the provider (an explicit local, ollama or none means no background calls to a hosted model, Claude or Codex;
- *  local-first A1 — the pass moves onto the local engine with A14); true/false override. */
+/** D11: "auto" follows the provider (an explicit none means no background model calls; under local and ollama the pass
+ *  runs on the local engine, local-first A14, so it never reaches a hosted model); true/false override. */
 function semanticState(cfg) {
   const v = cfg && cfg.graph && cfg.graph.semantic ? cfg.graph.semantic.enabled : 'auto';
   if (v === true) return { on: true, why: null };
   if (v === false) return { on: false, why: 'semantic off' };
   const p = (cfg && cfg.provider) || 'auto';
-  if (p === 'none' || p === 'ollama' || p === 'local') return { on: false, why: `provider ${p}` };
+  if (p === 'none') return { on: false, why: `provider ${p}` };
   return { on: true, why: null };
+}
+
+/** Graphify's token budget per chunk on the local engine: graphify sizes Ollama's context from it, so a chunk past this
+ *  would ask a small local model for a context its Mac cannot hold (models.js numCtxCap is 32k). */
+const LOCAL_TOKEN_BUDGET = 8000;
+
+/**
+ * The local engine's target for one pass (local-first A14): is it up, and which pulled model runs it (provider.js's
+ * pickLocalModel: a tier model may give way to another pulled tier model, a named one never does).
+ * → { ok: true, engine, url, model } | { ok: false, reason: 'local-down' | 'local-model-missing' }
+ */
+async function localTarget(cfg, deps = {}) {
+  const P = require('./sdk/lib/provider.js');
+  const lc = P.localCfg(cfg);
+  const list = await (deps.localModels || P.listLocalModels)(lc);
+  if (!Array.isArray(list)) return { ok: false, reason: 'local-down' };
+  const model = P.pickLocalModel(lc.workhorse, list);
+  if (!model) return { ok: false, reason: 'local-model-missing' };
+  return { ok: true, engine: lc.engine, url: lc.url, base: require('./sdk/lib/local-config.js').openaiBase(lc), model, keepAlive: lc.workhorse.keepAlive };
 }
 
 /**
@@ -175,7 +198,7 @@ function semanticState(cfg) {
 /** The CLI behind the graph shim: lib/headless.js graphRunner (a pin, an explicit provider, else Claude, else Codex). */
 function semanticRunner(cfg) { return require('./lib/headless.js').graphRunner(cfg); }
 
-function semanticSkip(cfg, { vault = PATHS.VAULT, now = new Date(), force = false, runner } = {}) {
+function semanticSkip(cfg, { vault = PATHS.VAULT, now = new Date(), force = false, runner, power } = {}) {
   const why = skipReason(cfg);
   if (why) return { status: 'disabled', reason: why };
   const st = semanticState(cfg);
@@ -184,13 +207,34 @@ function semanticSkip(cfg, { vault = PATHS.VAULT, now = new Date(), force = fals
   const m = G.readMarker(G.outDir(vault, cfg.graph)) || {};
   const last = Date.parse(m.lastSemanticRun || '');
   if (!force && last && now - last < (Number(sem.everyHours) || 24) * 3_600_000) return { status: 'skipped', reason: 'not due' };
-  if (graphSpendToday(now) >= dayCap(sem.perDayUsd, 1)) return { status: 'skipped', reason: 'graph budget reached' };
   const r = runner === undefined ? semanticRunner(cfg) : runner;
+  if (r && r.host === 'local') {
+    // The local engine spends nothing (no graph budget), but a pass is heavy: on battery it waits for the charger (A18);
+    // the foreground command (--force) runs anyway.
+    if (!force && require('./lib/power.js').deferOnBattery(cfg, power ? { onBattery: power } : {})) return { status: 'skipped', reason: 'on battery' };
+    return null;
+  }
+  if (graphSpendToday(now) >= dayCap(sem.perDayUsd, 1)) return { status: 'skipped', reason: 'graph budget reached' };
   if (!r) return { status: 'disabled', reason: 'no claude or codex CLI' };
   return null;
 }
 
-function semantic({ report, cfg, g, vault, out, timeoutMs, runner, spawn, now }) {
+/**
+ * graphify's argv and environment for the local engine (A14): the `ollama` backend at Ollama's OpenAI-compatible /v1
+ * (or `openai` at an OpenAI-compatible server's url), the pulled model by env, a placeholder key (both backends refuse
+ * to start without one; the server ignores it), one chunk at a time, and the workhorse's residency on Macs under 24 GB.
+ */
+function localExtract(target, sem, vault, base) {
+  const budget = Math.min(Number(sem.tokenBudget) || 20000, LOCAL_TOKEN_BUDGET);
+  const env = target.engine === 'openai'
+    ? { ...base, OPENAI_BASE_URL: target.base, OPENAI_MODEL: target.model, OPENAI_API_KEY: 'local' }
+    : { ...base, OLLAMA_BASE_URL: target.base, OLLAMA_MODEL: target.model, OLLAMA_API_KEY: 'local',
+      ...(typeof target.keepAlive === 'string' ? { GRAPHIFY_OLLAMA_KEEP_ALIVE: target.keepAlive } : {}) };
+  const args = ['extract', vault, '--backend', target.engine === 'openai' ? 'openai' : 'ollama', '--token-budget', String(budget), '--allow-partial', '--max-concurrency', '1'];
+  return { args, env };
+}
+
+function semantic({ report, cfg, g, vault, out, timeoutMs, runner, spawn, now, target, recordLocal }) {
   const sem = g.semantic || {};
   fs.mkdirSync(out, { recursive: true });
   const graphFile = path.join(out, 'graph.json');
@@ -198,26 +242,35 @@ function semantic({ report, cfg, g, vault, out, timeoutMs, runner, spawn, now })
   const startedAt = now().toISOString();
   // Stamped before the run: a crash or a kill still waits everyHours instead of retrying at every scan.
   G.writeMarker(out, { ...(G.readMarker(out) || {}), lastSemanticRun: startedAt });
-  try { fs.chmodSync(path.join(SHIM_DIR, 'claude'), 0o755); } catch { /* read-only install: the mode it shipped with */ }
-  const model = (cfg.claude && cfg.claude.model) || 'haiku';
-  const env = {
-    ...childEnv(process.env, out),
-    PATH: `${SHIM_DIR}${path.delimiter}${process.env.PATH || ''}`,
-    GRAPHIFY_CLAUDE_CLI_MODEL: model,            // graphify's own default is Opus; the shim forces this model anyway
-    GRAPHIFY_MAX_RETRY_DEPTH: '0',               // one call per chunk: calls ≤ chunks
-    // The shim answers through the runner's CLI (graph-claude.js): the real `claude`, or `codex exec` behind the same envelope.
-    AOS_GRAPH_RUNNER: runner.host,
-    ...(runner.host === 'codex' ? { AOS_GRAPH_CODEX_BIN: runner.bin } : { AOS_GRAPH_CLAUDE_BIN: runner.bin }),
-    AOS_NODE: process.execPath,
-    AOS_VAULT: vault,
-    ...(process.env.ANTHROPIC_API_KEY ? { AOS_GRAPH_ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
-  };
+  const local = runner.host === 'local';
+  let args;
+  let env;
+  if (local) ({ args, env } = localExtract(target, sem, vault, childEnv(process.env, out)));
+  else {
+    try { fs.chmodSync(path.join(SHIM_DIR, 'claude'), 0o755); } catch { /* read-only install: the mode it shipped with */ }
+    const model = (cfg.claude && cfg.claude.model) || 'haiku';
+    env = {
+      ...childEnv(process.env, out),
+      PATH: `${SHIM_DIR}${path.delimiter}${process.env.PATH || ''}`,
+      GRAPHIFY_CLAUDE_CLI_MODEL: model,            // graphify's own default is Opus; the shim forces this model anyway
+      GRAPHIFY_MAX_RETRY_DEPTH: '0',               // one call per chunk: calls ≤ chunks
+      // The shim answers through the runner's CLI (graph-claude.js): the real `claude`, or `codex exec` behind the same envelope.
+      AOS_GRAPH_RUNNER: runner.host,
+      ...(runner.host === 'codex' ? { AOS_GRAPH_CODEX_BIN: runner.bin } : { AOS_GRAPH_CLAUDE_BIN: runner.bin }),
+      AOS_NODE: process.execPath,
+      AOS_VAULT: vault,
+      ...(process.env.ANTHROPIC_API_KEY ? { AOS_GRAPH_ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
+    };
+    args = ['extract', vault, '--backend', 'claude-cli', '--token-budget', String(Number(sem.tokenBudget) || 20000), '--allow-partial'];
+  }
   const before = graphSpendToday();
   const t0 = Date.now();
-  const r = spawn(g.bin, ['extract', vault, '--backend', 'claude-cli', '--token-budget', String(Number(sem.tokenBudget) || 20000), '--allow-partial'], {
+  const r = spawn(g.bin, args, {
     cwd: vault, env, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const usd = Math.round((graphSpendToday() - before) * 1e6) / 1e6;
+  // A local pass spends nothing; it counts as one local call (local-usage.json, A18), whatever graphify asked.
+  if (local) { try { (recordLocal || require('./sdk/lib/local-usage.js').recordLocalCall)({ feature: 'graph:semantic', ms: Date.now() - t0 }); } catch { /* a counter */ } }
+  const usd = local ? 0 : Math.round((graphSpendToday() - before) * 1e6) / 1e6;
   const fail = (msg) => {
     G.writeMarker(out, { ...(G.readMarker(out) || {}), lastSemanticRun: startedAt, lastSemanticError: msg });
     throw new Error(msg);
@@ -237,24 +290,32 @@ function semantic({ report, cfg, g, vault, out, timeoutMs, runner, spawn, now })
   const marker = {
     ...(G.readMarker(out) || {}), mode: 'semantic', builtAt: at, lastSemantic: at, lastSemanticRun: startedAt, lastSemanticError: null,
     semanticIncomplete: incomplete, semanticPartialWhy: partialWhy, semanticUsd: usd, nodes: o.nodes, edges: o.edges, communities: o.communities, concepts, inferred,
+    // Who read the notes: doctor and `aos graph status` name it (local-first A14).
+    semanticEngine: local ? 'local' : runner.host, semanticModel: local ? target.model : null,
     ms: Date.now() - t0,
   };
   G.writeMarker(out, marker);
-  report.provider = runner.host;
+  report.provider = local ? 'ollama' : runner.host;
   Object.assign(report.counts, { nodes: o.nodes, edges: o.edges, concepts, inferred, usd, incomplete: incomplete ? 1 : 0 });
   report.wrote.push(path.relative(vault, graphFile));
   return { status: 'ok', out, ...marker };
 }
 
 /** The `graph-semantic` report body: fn(report) for withReport. */
-async function buildSemantic({ report, cfg = loadConfig(), vault = PATHS.VAULT, force = false, spawn = spawnSync, now = () => new Date(), runner } = {}) {
+async function buildSemantic({ report, cfg = loadConfig(), vault = PATHS.VAULT, force = false, spawn = spawnSync, now = () => new Date(), runner, power, deps = {} } = {}) {
   const r0 = runner === undefined ? semanticRunner(cfg) : runner;
-  const sk = semanticSkip(cfg, { vault, now: now(), force, runner: r0 });
+  const sk = semanticSkip(cfg, { vault, now: now(), force, runner: r0, power });
   if (sk) { if (sk.status === 'disabled') report.disable(sk.reason); else report.skip(sk.reason); return sk; }
+  // The local engine down or its model not pulled: nothing is stamped, so the next scan asks again (A3).
+  let target = null;
+  if (r0.host === 'local') {
+    target = await localTarget(cfg, deps);
+    if (!target.ok) { report.skip(target.reason); return { status: 'skipped', reason: target.reason }; }
+  }
   const g = cfg.graph;
   const out = G.outDir(vault, g);
   const timeoutMs = Math.max(1, Number((g.semantic || {}).timeoutSec) || 1800) * 1000;
-  const r = await withGraphLock('semantic', timeoutMs, () => semantic({ report, cfg, g, vault, out, timeoutMs, runner: r0, spawn, now }));
+  const r = await withGraphLock('semantic', timeoutMs, () => semantic({ report, cfg, g, vault, out, timeoutMs, runner: r0, spawn, now, target, recordLocal: deps.recordLocalCall }));
   if (r.busy) { const why = busyReason(r.busy); report.skip(why); return { status: 'skipped', reason: why }; }
   return r.value;
 }
@@ -278,10 +339,10 @@ if (require.main === module) {
     .then((r) => {
       if (quiet) return;
       if (r.status !== 'ok') console.log(`graph: ${semanticRun ? 'semantic pass ' : ''}${r.status} (${r.reason})`);
-      else if (semanticRun) console.log(`graph: semantic pass ${r.semanticIncomplete ? 'incomplete (the rest follows on the next runs)' : 'done'} · ${r.nodes} nodes · ${r.concepts} concepts · ${r.inferred} inferred edges · $${r.semanticUsd.toFixed(4)} in ${Math.round(r.ms / 1000)} s`);
+      else if (semanticRun) console.log(`graph: semantic pass ${r.semanticIncomplete ? 'incomplete (the rest follows on the next runs)' : 'done'} · ${r.nodes} nodes · ${r.concepts} concepts · ${r.inferred} inferred edges · ${r.semanticEngine === 'local' ? `local ${r.semanticModel}, no spend` : `$${r.semanticUsd.toFixed(4)}`} in ${Math.round(r.ms / 1000)} s`);
       else console.log(`graph: ${r.nodes} nodes · ${r.edges} edges · ${r.communities} communities in ${r.ms} ms → ${path.relative(PATHS.VAULT, r.out)}`);
     })
     .catch((e) => { console.error('[graph-build]', e.message); process.exit(1); });
 }
 
-module.exports = { buildStructural, buildSemantic, semanticSkip, semanticState, semanticRunner, spawnSemantic, skipReason, childEnv, withGraphLock, lockOwner, busyReason, LOCK, SHIM_DIR };
+module.exports = { buildStructural, buildSemantic, semanticSkip, semanticState, semanticRunner, spawnSemantic, skipReason, childEnv, withGraphLock, lockOwner, busyReason, localTarget, localExtract, LOCK, SHIM_DIR, LOCAL_TOKEN_BUDGET };

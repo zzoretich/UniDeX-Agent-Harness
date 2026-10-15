@@ -53,6 +53,8 @@ const { role, providerFor, thinkFor, LOCAL_TIERS } = require('./models.js');
 const { dayCap } = require('../../lib/settings-schema.js');
 const { ProviderUnavailable, recordSpend, spendToday, reasonSpendToday, routineSpendToday, SPEND_PATH } = require('./spend-ledger.js');
 const { recordLocalCall } = require('./local-usage.js');
+// The local engine's settings (local-first A8, A11): engine, address, workhorse and embedder roles (local-config.js).
+const { localCfg } = require('./local-config.js');
 
 const STATE_PATH = path.join(PATHS.INDEX, 'provider-state.json');
 const OLLAMA_TTL_MS = 60_000;
@@ -248,23 +250,6 @@ async function resolveClaudeLogin(state, now, iso, deps) {
   const loggedIn = bin ? await probe({ bin, timeoutMs: deps.probeTimeoutMs || 10_000 }) : false;
   state.claude = { loggedIn, checkedAt: iso, bin };
   return { loggedIn, bin };
-}
-
-/**
- * The local engine's settings (local-first A8, A11): engine, where it answers, and the workhorse and embedder roles.
- * Ollama's address is local.url when set, else ollama.host/port; an OpenAI-compatible server defaults to LM Studio's.
- */
-function localCfg(cfg) {
-  const l = (cfg && cfg.local) || {};
-  const engine = l.engine === 'openai' ? 'openai' : 'ollama';
-  const o = (cfg && cfg.ollama) || {};
-  const set = typeof l.url === 'string' && l.url.trim() ? l.url.trim().replace(/\/+$/, '') : null;
-  const url = set || (engine === 'openai' ? 'http://127.0.0.1:1234/v1' : `http://${o.host || '127.0.0.1'}:${o.port || 11434}`);
-  let net = { host: o.host, port: o.port };
-  if (engine === 'ollama' && set) {
-    try { const u = new URL(set); net = { host: u.hostname, port: Number(u.port) || 11434 }; } catch { /* a bad URL reads as unreachable */ net = { host: '0.0.0.0', port: 9 }; }
-  }
-  return { engine, url, net, workhorse: role('workhorse', cfg), embedder: role('embedder', cfg), hostedFallback: l.hostedFallback === true };
 }
 
 /** The models the local engine serves, or null when it does not answer (one request either way). */

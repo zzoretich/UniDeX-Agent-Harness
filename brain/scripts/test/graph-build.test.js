@@ -189,8 +189,9 @@ test.after(() => { if (savedNodeOptions !== undefined) process.env.NODE_OPTIONS 
 
 test('semantic gates: provider opt-out, off switch, force, a runner CLI, due time, budget', () => {
   assert.deepEqual(skip(scfg({}, { provider: 'none' })), { status: 'disabled', reason: 'provider none' });
-  assert.deepEqual(skip(scfg({}, { provider: 'ollama' })), { status: 'disabled', reason: 'provider ollama' });
-  assert.deepEqual(skip(scfg({}, { provider: 'local' })), { status: 'disabled', reason: 'provider local' }, 'local never spends in the background (local-first A1)');
+  // Under local and ollama the pass runs on the local engine (local-first A14), so it stays on.
+  assert.equal(GB.semanticState(scfg({}, { provider: 'ollama' })).on, true);
+  assert.equal(GB.semanticState(scfg({}, { provider: 'local' })).on, true);
   assert.equal(skip(scfg({ enabled: true }, { provider: 'none' })), null, 'an explicit on overrides the provider');
   assert.deepEqual(skip(scfg({}, { provider: 'none' }), { force: true }), { status: 'disabled', reason: 'provider none' }, 'force never overrides a provider opt-out');
   assert.deepEqual(skip(scfg({ enabled: false })), { status: 'disabled', reason: 'semantic off' });
@@ -309,4 +310,87 @@ test('a semantic daily cap of 0 means no spend (spec 2026-09-24-aos-config D10),
   fs.rmSync(SPEND_PATH, { force: true });
   assert.deepEqual(skip(scfg({ perDayUsd: 0 }), { force: true }), { status: 'skipped', reason: 'graph budget reached' });
   assert.equal(skip(scfg({ perDayUsd: 'x' }), { force: true }), null, 'a non-numeric cap takes the $1 default');
+});
+
+// ── the semantic pass on the local engine (local-first A14, A18): graphify's own ollama/openai backend, no shim, no spend ──
+const LOCAL_RUNNER = { host: 'local', engine: 'ollama', url: 'http://127.0.0.1:11434', model: 'qwen3.5:9b' };
+const lcfg = (sem = {}, local = {}) => scfg(sem, { provider: 'local', local });
+const pulledModels = (...m) => ({ localModels: async () => m });
+
+test('graphRunner names the local engine under provider local and ollama; a pinned host or another provider keeps its CLI', () => {
+  const H = require('../lib/headless.js');
+  assert.deepEqual(H.graphRunner({ provider: 'local' }), { host: 'local', engine: 'ollama', url: 'http://127.0.0.1:11434', model: 'qwen3.5:9b' });
+  assert.deepEqual(H.graphRunner({ provider: 'ollama', ollama: { host: '127.0.0.1', port: 11500 } }).url, 'http://127.0.0.1:11500');
+  assert.deepEqual(H.graphRunner({ provider: 'local', local: { engine: 'openai', model: 'qwen-local' } }), { host: 'local', engine: 'openai', url: 'http://127.0.0.1:1234/v1', model: 'qwen-local' });
+  assert.deepEqual(H.graphRunner({ provider: 'local', graph: { semantic: { runner: 'claude' } } }, { bins: { claude: '/x/claude' } }), { host: 'claude', bin: '/x/claude' });
+  assert.deepEqual(H.graphRunner({ provider: 'auto' }, { bins: { claude: '/x/claude', codex: null } }), { host: 'claude', bin: '/x/claude' });
+});
+
+test('a local pass: graphify\'s ollama backend at <url>/v1 on the pulled model, one chunk at a time, no spend, counted, a local marker', async () => {
+  const counted = [];
+  const report = rep();
+  const r = await GB.buildSemantic({ report, cfg: lcfg(), vault: VAULT, runner: LOCAL_RUNNER, power: () => false, deps: { ...pulledModels('qwen3.5:9b'), recordLocalCall: (x) => counted.push(x) } });
+  assert.equal(r.status, 'ok');
+  assert.equal(r.concepts, 1);
+  assert.equal(fs.readFileSync(LOG, 'utf8'), `extract ${VAULT} --backend ollama --token-budget ${GB.LOCAL_TOKEN_BUDGET} --allow-partial --max-concurrency 1 | out=${OUT} nobackup=1 apikey= local=http://127.0.0.1:11434/v1 model=qwen3.5:9b key=local\n`);
+  assert.equal(fs.existsSync(CLAUDE_LOG), false, 'no shim, no claude');
+  assert.equal(fs.existsSync(SPEND_PATH), false, 'no spend row');
+  assert.deepEqual(counted.map((c) => c.feature), ['graph:semantic']);
+  assert.equal(report.provider, 'ollama');
+  const m = JSON.parse(fs.readFileSync(path.join(OUT, '.aos-graph.json'), 'utf8'));
+  assert.deepEqual([m.semanticEngine, m.semanticModel, m.semanticUsd], ['local', 'qwen3.5:9b', 0]);
+});
+
+test('a local pass takes the pulled tier model, and a smaller token budget the user set', async () => {
+  const saved = process.env.AOS_TOTALMEM;
+  process.env.AOS_TOTALMEM = String(8 * 1024 ** 3);
+  try {
+    const r = await GB.buildSemantic({ report: rep(), cfg: lcfg({ tokenBudget: 4000 }), vault: VAULT, runner: LOCAL_RUNNER, power: () => false, deps: { ...pulledModels('qwen3.5:9b'), recordLocalCall: () => {} } });
+    assert.equal(r.status, 'ok');
+    assert.match(fs.readFileSync(LOG, 'utf8'), / --token-budget 4000 .* model=qwen3\.5:9b key=local$/m, 'an 8 GB Mac that has the 9b uses it');
+  } finally { process.env.AOS_TOTALMEM = saved; }
+});
+
+test('a local pass on an OpenAI-compatible server: graphify\'s openai backend at its url, a placeholder key', async () => {
+  const r = await GB.buildSemantic({ report: rep(), cfg: lcfg({}, { engine: 'openai', model: 'qwen-local' }), vault: VAULT, runner: { ...LOCAL_RUNNER, engine: 'openai' }, power: () => false, deps: { ...pulledModels('qwen-local'), recordLocalCall: () => {} } });
+  assert.equal(r.status, 'ok');
+  assert.match(fs.readFileSync(LOG, 'utf8'), /--backend openai .* local=http:\/\/127\.0\.0\.1:1234\/v1 model=qwen-local key=local$/m);
+});
+
+test('the local engine down or its model not pulled: skipped, nothing stamped, so the next scan asks again (local-first A3)', async () => {
+  let report = rep();
+  let r = await GB.buildSemantic({ report, cfg: lcfg(), vault: VAULT, runner: LOCAL_RUNNER, power: () => false, deps: { localModels: async () => null } });
+  assert.deepEqual(r, { status: 'skipped', reason: 'local-down' });
+  assert.equal(report.reason, 'local-down');
+  report = rep();
+  r = await GB.buildSemantic({ report, cfg: lcfg(), vault: VAULT, runner: LOCAL_RUNNER, power: () => false, deps: pulledModels('llama3.2') });
+  assert.deepEqual(r, { status: 'skipped', reason: 'local-model-missing' });
+  assert.equal(fs.existsSync(LOG), false, 'graphify never ran');
+  assert.equal(fs.existsSync(path.join(OUT, '.aos-graph.json')), false, 'no lastSemanticRun stamp');
+});
+
+test('on battery the local pass waits (local.onBattery defer); run, --force and a hosted runner do not; no graph budget locally', () => {
+  const sk = (c, opts) => GB.semanticSkip(c, { vault: VAULT, runner: LOCAL_RUNNER, ...opts });
+  assert.deepEqual(sk(lcfg(), { power: () => true }), { status: 'skipped', reason: 'on battery' });
+  assert.equal(sk(lcfg(), { power: () => false }), null);
+  assert.equal(sk(lcfg({}, { onBattery: 'run' }), { power: () => true }), null);
+  assert.equal(sk(lcfg(), { power: () => true, force: true }), null, 'the foreground command runs on battery');
+  assert.equal(GB.semanticSkip(scfg(), { vault: VAULT, runner: CLAUDE_RUNNER, power: () => true }), null, 'a hosted pass is not held back');
+  fs.writeFileSync(SPEND_PATH, JSON.stringify({ ts: new Date().toISOString(), feature: 'graph:semantic', usd: 5 }) + '\n');
+  assert.equal(sk(lcfg(), { power: () => false }), null, 'the graph budget is spend; a local pass spends nothing');
+});
+
+test('power.js: pmset on macOS, mains supplies on Linux, and false whenever it cannot tell', () => {
+  const { onBattery, deferOnBattery } = require('../lib/power.js');
+  const pm = (stdout, status = 0) => () => ({ status, stdout });
+  assert.equal(onBattery({ platform: 'darwin', exec: pm("Now drawing from 'Battery Power'\n -InternalBattery-0 80%") }), true);
+  assert.equal(onBattery({ platform: 'darwin', exec: pm("Now drawing from 'AC Power'\n") }), false);
+  assert.equal(onBattery({ platform: 'darwin', exec: () => ({ error: new Error('ENOENT') }) }), false);
+  const sys = (files) => ({ platform: 'linux', readdir: () => Object.keys(files), readFile: (p) => { const [n, f] = p.split('/').slice(-2); if (!files[n] || files[n][f] === undefined) throw new Error('ENOENT'); return files[n][f]; } });
+  assert.equal(onBattery(sys({ AC: { type: 'Mains\n', online: '0\n' }, BAT0: { type: 'Battery\n' } })), true);
+  assert.equal(onBattery(sys({ AC: { type: 'Mains\n', online: '1\n' } })), false);
+  assert.equal(onBattery(sys({ BAT0: { type: 'Battery\n' } })), false, 'no mains supply to read: cannot tell');
+  assert.equal(onBattery({ platform: 'win32' }), false);
+  assert.equal(deferOnBattery({ local: { onBattery: 'run' } }, { onBattery: () => true }), false);
+  assert.equal(deferOnBattery({}, { onBattery: () => true }), true, 'defer is the default');
 });
