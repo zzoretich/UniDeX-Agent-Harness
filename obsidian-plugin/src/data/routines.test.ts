@@ -5,7 +5,7 @@ import * as path from "path";
 import { createRequire } from "module";
 import {
   routineFromFile, routineToFile, validateRoutine, parseRoutineFrontmatter, fingerprint, parseState, health, buildRows,
-  schedulesOutOfDate, emptyState, Routine, ENGINES, KEY_ORDER, MAX_TURNS_LIMIT, lastSkip,
+  schedulesOutOfDate, emptyState, Routine, ENGINES, KEY_ORDER, MAX_TURNS_LIMIT, lastSkip, localDenied,
 } from "./routines";
 
 // The runtime's fixtures: both parsers must agree on every one of them.
@@ -172,7 +172,7 @@ test("readDutyLogLast: reads the vault log's tail and mtime; absent, empty or an
 test("engine, maxTurns, writes and output: the runtime's constants and verdicts", () => {
   const REPO = path.resolve(__dirname, "../../..");
   const store = createRequire(__filename)(path.join(REPO, "brain/scripts/lib/routines-store.js")) as {
-    ENGINES: string[]; KEY_ORDER: string[]; MAX_TURNS_LIMIT: number; validate(r: unknown): string[];
+    ENGINES: string[]; KEY_ORDER: string[]; MAX_TURNS_LIMIT: number; validate(r: unknown): string[]; localDenied(p: string): string | null;
   };
   assert.deepEqual([...ENGINES], store.ENGINES);
   assert.deepEqual(KEY_ORDER, store.KEY_ORDER);
@@ -185,6 +185,11 @@ test("engine, maxTurns, writes and output: the runtime's constants and verdicts"
     { writes: ["notes/", "notes/**/*.md"] }, { writes: ["/abs/"] }, { writes: ["../x/"] }, { writes: ["a,b"] }, { writes: ["~/x"] },
     { output: "log" }, { output: "notify" }, { output: "notes/out.md" }, { output: "daily" }, { output: "../x.md" }, { output: "notes/x.txt" },
     { kind: "duty", writes: ["notes/inbox/"] },
+    // What feeds hosted sessions is off limits to a local routine, case and Unicode variants too; a duty keeps its own rule.
+    { engine: "local", writes: ["persona/journal/"] }, { writes: ["brain/memory/feedback/"] }, { writes: ["Brain/_Index/"] }, { writes: ["brain/**/*.md"] },
+    { writes: ["notes/CLAUDE.md"] }, { writes: ["notes/agents.md"] }, { writes: ["MEMORY.md"] }, { writes: ["AGENTICOS.md"] }, { writes: ["notes/agenticos.md"] },
+    { writes: ["per\u017fona/x/"] }, { output: "MEMORY.md" }, { output: "brain/_index/brief.md" }, { output: "notes/CLAUDE.md" },
+    { kind: "duty", writes: ["brain/memory/feedback/"] },
   ];
   for (const c of cases) assert.deepEqual(validateRoutine({ ...base, ...c }), store.validate({ ...base, ...c }), JSON.stringify(c));
   const text = routineToFile({ slug: "k", schema: 1, name: "K", kind: "prompt", schedule: "0 9 * * *", enabled: true, output: "notify", writes: ["notes/"], maxTurns: 8, model: "qwen3.5:4b", engine: "local", body: "go" });
@@ -199,4 +204,13 @@ test("lastSkip: a skip newer than the last run, with its short reason; a run sin
   assert.equal(lastSkip(e({ lastRunAt: "2026-10-15T10:00:00.000Z", lastSkippedAt: "2026-10-15T09:00:00.000Z", lastSkipReason: down })), null);
   assert.equal(lastSkip(e({})), null);
   assert.equal(lastSkip(null), null);
+});
+
+test("localDenied: the runtime's verdict for every path, folded the same way", () => {
+  const REPO = path.resolve(__dirname, "../../..");
+  const store = createRequire(__filename)(path.join(REPO, "brain/scripts/lib/routines-store.js")) as { localDenied(p: string): string | null };
+  for (const p of ["persona/", "Persona/journal/", "brain/memory/", "brain/_index/x.md", "brain/", "brain/**/*.md", "brain/reflections/*.md", "notes/",
+    "MEMORY.md", "notes/sub/Memory.md", "AGENTICOS.md", "notes/AGENTICOS.md", "CLAUDE.md", "x/AGENTS.md", "per\u017fona/x", "*.md", "TODO.md"]) {
+    assert.equal(localDenied(p), store.localDenied(p), p);
+  }
 });

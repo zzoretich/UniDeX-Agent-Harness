@@ -1828,7 +1828,7 @@ body {
 .aos-rt-preview.is-error { color: var(--aos-rose); }
 .aos-rt-guard { color: var(--aos-amber); font-size: 11px; margin-bottom: 8px; }
 .aos-rt-note { font-size: 11px; margin-bottom: 8px; }
-.aos-rt-enginenote { font-size: 11px; margin: -4px 0 8px; }
+.aos-rt-enginenote, .aos-rt-writesnote { font-size: 11px; margin: -4px 0 8px; }
 .aos-rt-errors { color: var(--aos-rose); font-size: 11px; min-height: 14px; margin-bottom: 4px; }
 .aos-confirm-modal p { color: var(--aos-text); }
 

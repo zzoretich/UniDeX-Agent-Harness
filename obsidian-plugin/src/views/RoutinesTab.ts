@@ -11,7 +11,7 @@ import {
   listRoutines, readRoutinesState, buildRows, schedulesOutOfDate, emptyState, readDutyLogLast, lastSkip,
 } from "../data/routines";
 import {
-  SMALL_MODEL_NOTE, defaultEngine, dropPromptOnly, engineChoices, enginePill, modelChoices, parseWrites, writesText,
+  SMALL_MODEL_NOTE, WRITES_NOTE, defaultEngine, dropPromptOnly, engineChoices, enginePill, modelChoices, parseWrites, writesText,
 } from "../data/routineEngines";
 import { aliasCatalog } from "../data/claudeAsk";
 import { sessionsHost, type HostCatalog } from "../host";
@@ -383,6 +383,7 @@ export class RoutinesTab {
         wa.value = writesText(draft.writes);
         wa.setAttribute("placeholder", "notes/digests/\nbrain/reflections/*.md");
         wa.addEventListener("input", () => { draft.writes = parseWrites(wa.value); });
+        engHost.createDiv({ cls: "aos-dim aos-rt-writesnote", text: WRITES_NOTE });
         const oi = field("final message to (log, notify, or a .md file; blank = the log)").createEl("input", { cls: "aos-rt-input aos-rt-output", attr: { type: "text", value: draft.output ?? "", placeholder: "notify" } });
         oi.addEventListener("input", () => { draft.output = oi.value.trim() || undefined; });
       } else {

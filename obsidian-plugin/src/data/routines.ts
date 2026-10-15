@@ -145,6 +145,34 @@ export function serializeRoutineFrontmatter(fm: Frontmatter): string {
 
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === "string" && s.length > 0);
 const isMoney = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+/** A path as macOS's file system sees it: NFC, case-folded (persona/duty-guard.js fold). */
+export function foldPath(p: string): string { return String(p).normalize("NFC").toUpperCase().toLowerCase().normalize("NFC"); }
+
+/** routines-store.js LOCAL_DENY: what a local routine may never write — the files that feed hosted sessions. */
+export const LOCAL_DENY: { label: string; dir?: boolean; root?: boolean; why: string }[] = [
+  { label: "persona/", dir: true, why: "the Chief of Staff's files" },
+  { label: "brain/memory/", dir: true, why: "memories feed every session" },
+  { label: "brain/_index/", dir: true, why: "the session bootstrap and the runtime's caches" },
+  { label: "AGENTICOS.md", root: true, why: "it feeds every session" },
+  { label: "MEMORY.md", why: "it feeds every session" },
+  { label: "CLAUDE.md", why: "host instructions feed every session" },
+  { label: "AGENTS.md", why: "host instructions feed every session" },
+];
+
+/** Why a local routine may not write `p` (a path or a writes entry with * ** ?), or null; routines-store.js localDenied. */
+export function localDenied(p: string): string | null {
+  const s = foldPath(String(p ?? "").trim().replace(/\\/g, "/")).replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  const segs = s.split("/");
+  const g = segs.findIndex((x) => /[*?]/.test(x));
+  const fixed = (g === -1 ? segs : segs.slice(0, g)).join("/");
+  const name = g === -1 ? segs[segs.length - 1] : null;
+  for (const d of LOCAL_DENY) {
+    const f = foldPath(d.label).replace(/\/$/, "");
+    if (d.dir ? (fixed === f || fixed.startsWith(`${f}/`) || f.startsWith(`${fixed}/`) || !fixed) : d.root ? (g === -1 && s === f) : name === f) return `${d.label}: ${d.why}`;
+  }
+  return null;
+}
+
 /** A vault-relative path (or glob): not absolute, no `..` segment, no backslash. */
 export function isVaultRel(p: unknown): boolean {
   const s = String(p ?? "").trim();
@@ -178,6 +206,8 @@ export function validateRoutine(r: Partial<Routine>): string[] {
     if (r.maxTurns !== undefined && !(Number.isInteger(r.maxTurns) && (r.maxTurns as number) > 0 && (r.maxTurns as number) <= MAX_TURNS_LIMIT)) errors.push(`maxTurns must be a whole number from 1 to ${MAX_TURNS_LIMIT}`);
     if (r.writes !== undefined && (!isStringArray(r.writes) || r.writes.some((w) => !isVaultRel(w) || w.includes(",")))) errors.push("writes must be an array of vault-relative paths or globs (no commas)");
     if (r.output !== undefined && !(r.output === "log" || r.output === "notify" || (typeof r.output === "string" && /\.md$/.test(r.output) && isVaultRel(r.output)))) errors.push("output must be log, notify or a vault-relative .md file");
+    for (const w of isStringArray(r.writes) ? r.writes : []) { const why = localDenied(w); if (why) errors.push(`writes: ${w} is off limits to a local routine (${why})`); }
+    if (typeof r.output === "string" && r.output !== "log" && r.output !== "notify") { const why = localDenied(r.output); if (why) errors.push(`output: ${r.output} is off limits to a local routine (${why})`); }
   }
   if (r.kind === "duty") {
     if (r.budgetUsd !== undefined && !isMoney(r.budgetUsd)) errors.push("budgetUsd must be a non-negative number");

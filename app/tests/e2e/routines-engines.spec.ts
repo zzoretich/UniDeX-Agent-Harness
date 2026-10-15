@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { FX, appEnv, content, drawer, expectNoErrors, guardWrites, openTab, readVaultJson, useApp } from "./harness";
 import { routineToFile } from "../../../obsidian-plugin/src/data/routines";
-import { CLAUDE_MODELS, SMALL_MODEL_NOTE } from "../../../obsidian-plugin/src/data/routineEngines";
+import { CLAUDE_MODELS, SMALL_MODEL_NOTE, WRITES_NOTE } from "../../../obsidian-plugin/src/data/routineEngines";
 
 const C = (win: Page) => content(win);
 const field = (win: Page, label: RegExp) => drawer(win).locator(".aos-rt-field", { hasText: label });
@@ -154,9 +154,15 @@ test.describe("the local engine set up, both hosts, the Routines surface on", ()
     await field(win, /^schedule \(cron/).locator("input").fill("0 18 * * 1-5");
     await modelSel(win).selectOption("qwen3.5:9b");
     await drawer(win).locator("input.aos-rt-maxturns").fill("8");
-    await drawer(win).locator("textarea.aos-rt-writes").fill("notes/digests/\nbrain/reflections/*.md\n");
     await drawer(win).locator("input.aos-rt-output").fill("notify");
     await drawer(win).locator("textarea.aos-rt-body").fill("Digest the harbor notes into notes/digests/.");
+    // What feeds hosted sessions is off limits to a local routine: the note says so, and create refuses it.
+    await expect(drawer(win).locator(".aos-rt-writesnote")).toHaveText(WRITES_NOTE);
+    await drawer(win).locator("textarea.aos-rt-writes").fill("notes/digests/\nbrain/memory/\n");
+    await drawer(win).locator(".aos-capture-actions button", { hasText: "create" }).click();
+    await expect(drawer(win).locator(".aos-rt-errors")).toHaveText("invalid routine: writes: brain/memory/ is off limits to a local routine (brain/memory/: memories feed every session)");
+    expect(fs.existsSync(FX.v("brain/routines/harbor-digest.md"))).toBe(false);
+    await drawer(win).locator("textarea.aos-rt-writes").fill("notes/digests/\nbrain/reflections/*.md\n");
     await drawer(win).locator(".aos-capture-actions button", { hasText: "create" }).click();
     const want = routineToFile({
       slug: "harbor-digest", schema: 1, name: "Harbor digest", kind: "prompt", schedule: "0 18 * * 1-5", enabled: true,
