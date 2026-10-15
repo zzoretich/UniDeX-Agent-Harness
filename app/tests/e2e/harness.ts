@@ -686,7 +686,7 @@ export const SETUP = {
 /** 16 GB: the e2e Mac's memory, so the wizard's models (local-first A12) are qwen3.5:9b and the embedder on any runner. */
 export const SETUP_TOTALMEM = String(16 * 1024 ** 3);
 
-export interface AosCall { argv: string[]; persona: Record<string, unknown> | null }
+export interface AosCall { argv: string[]; persona: Record<string, unknown> | null; uvBin: string | null }
 export const aosCalls = (): AosCall[] => jsonl<AosCall>(SETUP.calls);
 
 /** The toolchain's stand-in downloads, served from 127.0.0.1 as a development manifest may name them. */
@@ -785,7 +785,7 @@ const fs = require("fs");
 const argv = process.argv.slice(2);
 const at = (f) => argv[argv.indexOf(f) + 1];
 const persona = argv.includes("--persona-json") ? JSON.parse(fs.readFileSync(at("--persona-json"), "utf8")) : null;
-fs.appendFileSync(${JSON.stringify(SETUP.calls)}, JSON.stringify({ argv, persona }) + "\\n");
+fs.appendFileSync(${JSON.stringify(SETUP.calls)}, JSON.stringify({ argv, persona, uvBin: process.env.AOS_UV_BIN ?? null }) + "\\n");
 const file = process.env.AOS_CONFIG;
 if (argv[0] === "init") {
   console.log("preflight: node " + process.version + " (stand-in)");

@@ -166,6 +166,8 @@ test("Install runs the payload's aos init with the user's answers, unattended", 
   expect(init.argv.slice(0, 6)).toEqual(["init", "--yes", "--vault", FX.vault, "--host", "claude"]);
   expect(init.argv[6]).toBe("--persona-json");
   expect(init.persona).toEqual({ name: "Halyard", addressAs: "Captain", voice: "", priorities: ["tide tables", "harbour chart"], dutyEffort: "medium", schedule: false });
+  // Inspection M1: aos init installs graphify with the uv the checks validated (the one the wizard installed here).
+  expect(init.uvBin).toBe(path.join(FX.home, ".local", "bin", "uv"));
   // The answers file lived only while aos init ran.
   expect(fs.existsSync(init.argv[7])).toBe(false);
   expect(path.dirname(init.argv[7])).toBe(path.join(USER_DATA, "setup"));

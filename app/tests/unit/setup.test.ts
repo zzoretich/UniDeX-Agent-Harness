@@ -749,6 +749,8 @@ test("controller: checks first, then a fix, the install with the answers file, C
       spawned.push({ file, args, personaSeen: i >= 0 ? JSON.parse(fs.readFileSync(args[i + 1], "utf8")) : null });
       assert.equal(o.env.CLAUDECODE, undefined);
       assert.equal(o.env.PATH, "/fake/bin");
+      // Inspection M1: graphify installs with the uv the checks validated.
+      assert.equal(o.env.AOS_UV_BIN, "/fake/bin/uv");
       const c = fakeChild(); children.push(c); return c.child;
     }) as never,
   });

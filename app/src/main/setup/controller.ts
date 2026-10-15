@@ -108,6 +108,8 @@ export class SetupController {
   private shellPATH: string | null = null;
   private node: string | null = null;
   private ollamaApp: string | null = null;
+  /** The uv the checks validated: `aos init` installs graphify with this one, never another found first on the PATH (M1). */
+  private uv: string | null = null;
   private last: PreflightReport | null = null;
   private installed = false;
   private installedVault: string | null = null;
@@ -168,13 +170,14 @@ export class SetupController {
     const why = this.refusal("preflight");
     if (why) return refused(why);
     const PATH = this.loginPath();
-    const { report, node, ollamaApp } = await runPreflight({
+    const { report, node, uv, ollamaApp } = await runPreflight({
       PATH, home: this.o.home, run: this.o.probe ?? probe(this.childEnv()), isExec: this.o.isExec, exists: this.o.exists ?? fs.existsSync,
       manifest: loadManifest(this.o.env, !!this.o.allowManifestOverride), arch: archOf(process.arch) ?? "arm64", macOS: this.o.macOS ?? "",
       totalmem: this.totalmem(), env: this.o.env,
     });
     this.node = node;
     this.ollamaApp = ollamaApp;
+    this.uv = uv;
     this.last = report;
     return { ok: true, data: report };
   }
@@ -230,7 +233,8 @@ export class SetupController {
       fs.writeFileSync(personaFile, `${JSON.stringify(personaJson(req.persona, hosts), null, 2)}\n`, { mode: 0o600 });
     }
     const r = this.jobs.startProc("install", this.node, installArgs(payload.cli, req, vault, personaFile), {
-      cwd: this.o.home, env: this.childEnv(), echo: `aos init --yes --vault ${vault} --host ${req.host}${personaFile ? " --persona-json …" : ""}`,
+      // AOS_UV_BIN: graph-cmd.js uvBin takes it before the PATH, so graphify installs with the uv the checks validated.
+      cwd: this.o.home, env: this.childEnv(this.uv ? { AOS_UV_BIN: this.uv } : {}), echo: `aos init --yes --vault ${vault} --host ${req.host}${personaFile ? " --persona-json …" : ""}`,
     });
     if (r.ok) { this.installedVault = vault; this.personaFile = personaFile; }
     else if (personaFile) fs.rmSync(personaFile, { force: true });

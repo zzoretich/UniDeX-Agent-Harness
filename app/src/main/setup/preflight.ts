@@ -61,8 +61,11 @@ const REQUIRED: SetupCheckId[] = ["node", "uv"];
 /** The Ollama apps a Mac may have, where the wizard and Ollama's own download put them. */
 export function ollamaApps(home: string): string[] { return ["/Applications/Ollama.app", path.join(home, "Applications", "Ollama.app")]; }
 
-/** The report the page shows, the node `aos init` will run with, and the Ollama app found (main keeps both; the page never names a program). */
-export async function runPreflight(d: PreflightDeps): Promise<{ report: PreflightReport; node: string | null; ollamaApp: string | null }> {
+/**
+ * The report the page shows, the node `aos init` will run with, the uv it will install graphify with (the one these checks
+ * validated, inspection M1), and the Ollama app found. Main keeps them; the page never names a program.
+ */
+export async function runPreflight(d: PreflightDeps): Promise<{ report: PreflightReport; node: string | null; uv: string | null; ollamaApp: string | null }> {
   const isExec = d.isExec ?? isExecutable;
   const m = d.manifest ?? MANIFEST;
   const arch: Arch = d.arch ?? "arm64";
@@ -153,5 +156,5 @@ export async function runPreflight(d: PreflightDeps): Promise<{ report: Prefligh
     };
   });
   const ready = REQUIRED.every((id) => okIds.has(id));
-  return { report: { checks, hosts, ready, models }, node, ollamaApp };
+  return { report: { checks, hosts, ready, models }, node, uv: uvAt >= 0 ? uvs[uvAt] : null, ollamaApp };
 }
