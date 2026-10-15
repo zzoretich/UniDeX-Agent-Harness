@@ -42,7 +42,7 @@ Start a timer. Do not open Terminal until the box says so.
   `@…/AgenticOS/AGENTICOS.md` line carrying the **absolute** vault path (do not paste it anywhere). With Codex, the
   `/hooks` step is shown.
 - [ ] **Open the Workbench**: it opens on Home (Chat once a provider is set up, else Pulse), Pulse has no LED red, and
-  the one-time note **UniDeX is an app now** shows once. Gray "disabled" for auto-cost and embeddings is correct, and amber `stale` is expected for any
+  the welcome tour starts on the rail (a new install never sees the note **UniDeX is an app now**); Esc leaves it. Gray "disabled" for auto-cost and embeddings is correct, and amber `stale` is expected for any
   stage whose last run has aged out — `scan-vault`, `build-brain-md` and the heartbeat go stale 45 minutes after they
   ran. Only red is a failure.
 - [ ] Timer under 10:00 → record the time: ______
@@ -55,7 +55,7 @@ Start a timer. Do not open Terminal until the box says so.
 - [ ] `cd ~ && claude`, first prompt `what do you know about me?` → the reply shows it received `<persona>` (mentions Atlas) and `<brain-context>`.
 - [ ] `/wrap` in that session → `~/AgenticOS/brain/memory/` gains at least one file and `MEMORY.md` one line.
 - [ ] In a new session: `use the agenticos recall tool to search for "Atlas"` → the `recall` tool of the `agenticos` MCP server — exposed to Claude Code as `mcp__plugin_agenticos_agenticos__recall` (contract §0) — answers (hits or an empty result, no error).
-- [ ] ⌘Q the app and open it again: it goes straight to the Workbench (no wizard, no second "UniDeX is an app now" note).
+- [ ] ⌘Q the app and open it again: it goes straight to the Workbench (no wizard, no welcome tour, no "UniDeX is an app now" note).
 
 ## 2. Ollama auto-switch (criterion 2)
 `aos status` only reads the cached `brain/_index/provider-state.json` and never probes; `aos scan-vault --quiet` resolves the provider and rewrites that file, so run it before every status check below.

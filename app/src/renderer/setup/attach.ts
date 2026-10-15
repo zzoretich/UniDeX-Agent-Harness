@@ -1,10 +1,11 @@
-// Attach mode (phase 5, I5): an existing install opens straight into the Workbench. Once per vault the app says what
-// changed; when the vault's runtime is older than the one the app carries, a status bar item and a dialog offer
-// `aos upgrade` from it, with its output shown. Never on their own: an upgrade re-renders the routine schedules and
-// refreshes both plugins, so the user picks the moment. The app's own update sits beside them (Restart to Update).
+// Attach mode (phase 5, I5): an existing install opens straight into the Workbench. Once per vault the app shows its
+// first-launch UI: the welcome tour for a vault its wizard just installed, the "What changed" note for one that existed
+// before (tour C10); when the vault's runtime is older than the one the app carries, a status bar item and a dialog
+// offer `aos upgrade` from it, with its output shown. Never on their own: an upgrade re-renders the routine schedules
+// and refreshes both plugins, so the user picks the moment. The app's own update sits beside them (Restart to Update).
 
 import { Modal, type App } from "obsidian";
-import type { AosBridge, AttachInfo, UpdateState } from "../../shared/ipc";
+import { TOUR_COMMANDS, type AosBridge, type AttachInfo, type UpdateState } from "../../shared/ipc";
 import { BRAND } from "../../shared/brand";
 import { JobTerminal } from "./jobTerminal";
 
@@ -36,7 +37,7 @@ class RuntimeModal extends Modal {
   private term: JobTerminal | null = null;
   private off: (() => void) | null = null;
 
-  constructor(app: App, private readonly aos: AosBridge, private readonly info: AttachInfo, private readonly updated: () => void) { super(app); }
+  constructor(app: App, private readonly aos: AosBridge, private readonly info: AttachInfo, private readonly updated: () => void, private readonly closed?: () => void) { super(app); }
 
   onOpen(): void {
     this.modalEl.addClass("aos-attach-modal", "aos-runtime-modal");
@@ -77,7 +78,7 @@ class RuntimeModal extends Modal {
     });
   }
 
-  onClose(): void { this.off?.(); this.term?.dispose(); }
+  onClose(): void { this.off?.(); this.term?.dispose(); this.closed?.(); }
 }
 
 /** The status bar's update item: hidden, downloading, or Restart to Update. */
@@ -94,17 +95,35 @@ function updateItem(statusBarEl: HTMLElement, aos: AosBridge): void {
   render(aos.update.state());
 }
 
-export function attachUi(app: App, aos: AosBridge, info: AttachInfo | null, statusBarEl: HTMLElement): void {
-  updateItem(statusBarEl, aos);
-  if (!info) return;
-  let runtimeEl: HTMLElement | null = null;
-  const openRuntime = (): void => new RuntimeModal(app, aos, info, () => runtimeEl?.addClass("is-hidden")).open();
-  if (info.behind) {
-    runtimeEl = statusBarEl.createDiv({ cls: "status-bar-item aos-host-runtime", text: `⬆ Runtime ${info.runtimeVersion ?? "?"} → ${info.payloadVersion}` });
-    runtimeEl.setAttr("title", "The runtime in your vault is older than this app's: update it");
-    runtimeEl.addEventListener("click", openRuntime);
+/**
+ * What the app opens on its own at launch, one at a time. THE SEAM for the launch sequence (tour C11): PR 9 replaces
+ * this one function (and WhatChangedModal with it) by `launchSequence`, which owns every first-launch dialog in order.
+ * Until then: a vault this app's wizard installed starts the welcome tour (after the runtime update when there is one;
+ * it ends on Getting started), and is recorded as noted at once; an existing vault opened for the first time gets the
+ * "What changed" note, then the runtime update; any later launch only the runtime update, when the vault's is behind.
+ */
+export function firstLaunch(app: App, aos: AosBridge, info: AttachInfo, openRuntime: (then?: () => void) => void): void {
+  const tour = (): void => { app.commands.executeCommandById(TOUR_COMMANDS.start); };
+  if (info.firstTime && info.installed) {
+    aos.setup.noted();
+    if (info.behind) openRuntime(tour);
+    else tour();
+    return;
   }
   // The note first, once per vault; the runtime dialog after it (once per launch).
   if (info.firstTime) new WhatChangedModal(app, () => { aos.setup.noted(); if (info.behind) openRuntime(); }).open();
   else if (info.behind) openRuntime();
+}
+
+export function attachUi(app: App, aos: AosBridge, info: AttachInfo | null, statusBarEl: HTMLElement): void {
+  updateItem(statusBarEl, aos);
+  if (!info) return;
+  let runtimeEl: HTMLElement | null = null;
+  const openRuntime = (then?: () => void): void => new RuntimeModal(app, aos, info, () => runtimeEl?.addClass("is-hidden"), then).open();
+  if (info.behind) {
+    runtimeEl = statusBarEl.createDiv({ cls: "status-bar-item aos-host-runtime", text: `⬆ Runtime ${info.runtimeVersion ?? "?"} → ${info.payloadVersion}` });
+    runtimeEl.setAttr("title", "The runtime in your vault is older than this app's: update it");
+    runtimeEl.addEventListener("click", () => openRuntime());
+  }
+  firstLaunch(app, aos, info, openRuntime);
 }
