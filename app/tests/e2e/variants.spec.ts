@@ -295,8 +295,8 @@ test.describe("a Codex-only machine", () => {
     const claude = menu.locator('.aos-hm-pop .aos-hm-host[data-host="claude"]');
     await expect(claude).toBeDisabled();
     await expect(claude).toHaveAttribute("title", "Claude Code is off on this machine");
-    // `--host claude` would turn Codex off, so with Codex on the line names `--host both`.
-    await expect(menu.locator('.aos-hm-offline[data-host="claude"]')).toHaveText("Claude Code is off on this Mac: aos init --host both turns it on");
+    // `aos hosts add claude` keeps Codex on (install-import B2), so the line names it whatever else is on.
+    await expect(menu.locator('.aos-hm-offline[data-host="claude"]')).toHaveText("Claude Code is off on this Mac: aos hosts add claude turns it on");
     await expect(menu.locator('.aos-hm-host[data-host="codex"]')).toHaveAttribute("aria-pressed", "true");
     await menu.locator(".aos-hm-search").press("Escape");
     await expect(menu.locator(".aos-hm-pop")).toHaveCount(0);
@@ -311,7 +311,7 @@ test.describe("a Codex-only machine", () => {
     await C.locator('.aos-spc-row[data-workspace="harbor-map"]').click();
     await expect(C.locator(".aos-spc-h1")).toHaveText("harbor-map");
     const head = C.locator(".aos-spc-head");
-    const off = "Claude Code is off on this machine: run aos init --host claude";
+    const off = "Claude Code is off on this machine: run aos hosts add claude";
     // The last thread is Claude Code's: Resume in Code is off and says how to turn the host on (never the other host,
     // which cannot read the transcript).
     const go = head.locator(".aos-spc-split button.aos-spc-primary").first();

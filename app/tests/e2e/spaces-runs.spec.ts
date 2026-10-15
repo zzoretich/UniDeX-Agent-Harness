@@ -671,9 +671,9 @@ test.describe("Spaces", () => {
     await expect(resume.nth(0)).toHaveAttribute("aria-label", "Resume “Tide parser in the chart view” in Code");
     for (const i of [1, 2, 3]) await expect(resume.nth(i)).toBeDisabled();
     // The reason shows once, under the first row it turns off; each button keeps it in its title.
-    await expect(hist.locator(".aos-spc-why")).toHaveText(["Codex is off on this machine: run aos init --host codex"]);
-    await expect(rows.nth(1).locator(".aos-spc-why .aos-spc-mono")).toHaveText("aos init --host codex");
-    for (const i of [1, 2, 3]) await expect(resume.nth(i)).toHaveAttribute("title", "Codex is off on this machine: run aos init --host codex");
+    await expect(hist.locator(".aos-spc-why")).toHaveText(["Codex is off on this machine: run aos hosts add codex"]);
+    await expect(rows.nth(1).locator(".aos-spc-why .aos-spc-mono")).toHaveText("aos hosts add codex");
+    for (const i of [1, 2, 3]) await expect(resume.nth(i)).toHaveAttribute("title", "Codex is off on this machine: run aos hosts add codex");
     await seg.nth(2).click();
     await expect(seg.nth(2)).toHaveAttribute("aria-pressed", "true");
     await expect(rows).toHaveCount(0);

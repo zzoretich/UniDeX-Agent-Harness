@@ -305,7 +305,7 @@ export function primaryAction(ctx: Pick<SpacesCtx, "snapshot" | "choices" | "wor
   const rows = newSessionRows(ctx.choices);
   const ready = rows.find((r) => !r.disabled && r.host === ctx.quick) ?? rows.find((r) => !r.disabled);
   if (ready) return { label: "Start in Code", title: `No session yet: start ${ready.label.replace(/^New /, "a new ")} in a Code terminal`, disabled: false, reason: null, run: () => ctx.act.newSession(ready.host) };
-  const reason = rows[0]?.reason ?? "No agent host is on: run aos init --host claude or aos init --host codex";
+  const reason = rows[0]?.reason ?? "No agent host is on: run aos hosts add claude or aos hosts add codex";
   return { label: "Start in Code", title: reason, disabled: true, reason, run: null };
 }
 
@@ -450,11 +450,11 @@ export const HIDDEN_MAP_TEXT = "Archived and _ folders are not mapped";
 
 // ── render helpers ──
 
-/** A reason line (`.aos-spc-why`, D31): the `aos init --host <h>` it names is set in mono, so `--host` reads as typed. */
+/** A reason line (`.aos-spc-why`, D31): the `aos hosts add <h>` it names is set in mono, so it reads as typed. */
 export function whyLine(parent: HTMLElement, text: string, o: { div?: boolean; cls?: string } = {}): HTMLElement {
   const cls = `aos-spc-why${o.cls ? ` ${o.cls}` : ""}`;
   const el = o.div ? parent.createDiv({ cls }) : parent.createSpan({ cls });
-  const re = /\baos init --host [a-z]+/g;
+  const re = /\baos hosts add [a-z]+/g;
   let at = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     if (m.index > at) el.appendText(text.slice(at, m.index));
