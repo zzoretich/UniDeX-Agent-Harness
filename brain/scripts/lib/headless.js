@@ -47,8 +47,19 @@
  *     run in the sandbox, without network: it cannot edit read-only with no one to approve), our hooks off, never
  *     asking for approval. Efforts: SESSION_EFFORTS per host; any other level is left off.
  *   codexMcpServers(home)  →  the names of the [mcp_servers.<name>] tables in <home>/config.toml ([] when unreadable).
+ *   resolveChief(cfg, deps)  →  where the Chief of Staff's next duty runs (local-first A4), async:
+ *     { host, bin, model, effort, home, reason, primary, failover: [{ host, bin, model, effort, home }], skipped: [{ host, why }] }
+ *     First the day: persona.perDayUsd is one cap over both hosts (deps.spentToday(): every duty:* ledger row of today,
+ *     whichever provider), and a capped day is `daily-cap` on every host — never a reason to move. Then the host: the primary
+ *     is persona.runner (AOS_RUNNER overrides it): auto → Claude when it is an enabled host whose CLI resolves and is signed
+ *     in, else Codex. A host starts when its CLI resolves and it is signed in (deps.loggedIn: `claude auth status`,
+ *     `codex login status`, both free). With both hosts enabled and persona.failover (default true), a primary whose CLI is
+ *     missing or signed out moves the duty to the other host's CoS model; `failover` lists that host while the primary
+ *     runs. Models per host come from sdk/lib/models.js chiefModel (PERSONA_MODEL, a Claude model by contract, never
+ *     reaches Codex); effort from PERSONA_EFFORT → persona.effort → medium. Nobody can start → host null with reason
+ *     `waiting-for-host`; persona/chief.js turns either reason into a skipped duty.
  *   CLI: node lib/headless.js --resolve [--kind persona|routines]  prints `host<TAB>bin<TAB>model<TAB>codex home`,
- *        exit 3 (reason on stderr) when no runner resolves. run-duty.sh reads it.
+ *        exit 3 (reason on stderr) when no runner resolves. Prompt routines and older run-duty.sh copies read it.
  */
 const fs = require('fs');
 const os = require('os');
@@ -135,6 +146,98 @@ function resolveRunner({ cfg, kind = 'routines', env = process.env, lookup, cand
     return { host: h, bin, model, home, reason: pref === 'auto' ? 'auto' : `${kind}.runner=${pref}` };
   }
   return { host: null, bin: null, model: null, home: null, reason: why.join('; ') || 'no host enabled' };
+}
+
+/** n(v, d): an explicit finite, non-negative number (0 included) is honoured, anything else is the default (record-spend.js). */
+function money(v, d) { return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : d; }
+const DEFAULT_DUTY_DAY_USD = 6;
+
+/** The CoS's effort on `host`: PERSONA_EFFORT → persona.effort → medium, each only when that host's CLI takes it. */
+function chiefEffort(host, cfg, env = process.env) {
+  const levels = host === 'codex' ? CODEX_EFFORTS : CLAUDE_EFFORTS;
+  const persona = (cfg && cfg.persona) || {};
+  for (const v of [env.PERSONA_EFFORT, persona.effort]) if (levels.includes(v)) return v;
+  return 'medium';
+}
+
+/** The default sign-in check: free on both CLIs (local-first A16), capped at 15 s so a hung CLI reads as signed out. */
+async function chiefLoggedIn(host, bin) {
+  try {
+    const cli = require(host === 'codex' ? '../sdk/lib/codex-cli.js' : '../sdk/lib/claude-cli.js');
+    return !!(await cli.loginProbe({ bin, timeoutMs: 15_000 }));
+  } catch { return false; }
+}
+/** Today's duty spend over both hosts (record-spend.js); 0 when the ledger cannot be read. */
+function chiefSpentToday() {
+  try { return require('../persona/record-spend.js').dutySpendToday(); } catch { return 0; }
+}
+function readAnswers(vault) {
+  if (!vault) return null;
+  try { return JSON.parse(fs.readFileSync(path.join(vault, 'persona', 'answers.json'), 'utf8')); } catch { return null; }
+}
+
+/**
+ * See the module comment. deps: { env, lookup, candidates, loggedIn(host, bin), spentToday(), answers, vault }. Every host
+ * is checked at most once; the failover entry is resolved (its binary) but not probed; a capped day probes nothing.
+ */
+async function resolveChief(cfg, deps = {}) {
+  const c = cfg === undefined ? defaultConfig() : (cfg || {});
+  const env = deps.env || process.env;
+  const persona = c.persona && typeof c.persona === 'object' ? c.persona : {};
+  const { chiefModel } = require('../sdk/lib/models.js');
+  const answers = deps.answers !== undefined ? deps.answers : readAnswers(deps.vault || env.AOS_VAULT || c.vault);
+  const pref = HOSTS.includes(env.AOS_RUNNER) ? env.AOS_RUNNER : HOSTS.includes(persona.runner) ? persona.runner : 'auto';
+  const failoverOn = persona.failover !== false;
+  const both = HOSTS.every((h) => hostEnabled(c, h));
+  const perDay = money(persona.perDayUsd, DEFAULT_DUTY_DAY_USD);
+  const loggedIn = deps.loggedIn || chiefLoggedIn;
+  const spentToday = deps.spentToday || chiefSpentToday;
+  const binOf = (h) => resolveBin(h, { cfg: c, env, kind: 'persona', lookup: deps.lookup, candidates: deps.candidates });
+  const entry = (h, bin) => ({ host: h, bin, model: chiefModel(h, c, { env, answers }).tag, effort: chiefEffort(h, c, env), home: h === 'codex' ? codexHomeOf(c) : null });
+
+  const none = (reason, skipped, primary = null) => ({ host: null, bin: null, model: null, effort: null, home: null, reason, primary, failover: [], skipped });
+  // One cap over both hosts (the owner's call on local-first A4): a capped day is skipped everywhere, never moved.
+  const spent = Number(spentToday()) || 0;
+  if (spent >= perDay) return none('daily-cap', [{ host: null, why: `today's duty spend ${spent.toFixed(2)} of ${perDay} USD (persona.perDayUsd)` }]);
+  const seen = {};
+  /** { bin, why }: why is null when `h` can start a duty now. */
+  const check = async (h) => {
+    if (seen[h]) return seen[h];
+    const bin = binOf(h);
+    let why = null;
+    if (!bin) why = 'CLI not found';
+    else if (!(await loggedIn(h, bin))) why = 'signed out';
+    seen[h] = { bin, why };
+    return seen[h];
+  };
+
+  const skipped = [];
+  let primary = pref;
+  if (pref === 'auto') {
+    primary = null;
+    for (const h of HOSTS) {
+      if (!hostEnabled(c, h)) continue;
+      const st = await check(h);
+      // auto takes the first enabled host that is installed and signed in.
+      if (!st.why) { primary = h; break; }
+      skipped.push({ host: h, why: st.why });
+    }
+    if (!primary) return none('waiting-for-host', skipped.length ? skipped : [{ host: null, why: 'no host enabled' }]);
+  }
+  const other = HOSTS.find((h) => h !== primary);
+  const canFail = failoverOn && both;
+  const first = await check(primary);
+  if (!first.why) {
+    const fo = canFail && !skipped.some((x) => x.host === other) ? [entry(other, binOf(other))] : [];
+    return { ...entry(primary, first.bin), reason: pref === 'auto' ? 'auto' : `persona.runner=${pref}`, primary, failover: fo, skipped };
+  }
+  skipped.push({ host: primary, why: first.why });
+  if (canFail && !skipped.some((x) => x.host === other)) {
+    const alt = await check(other);
+    if (!alt.why) return { ...entry(other, alt.bin), reason: `failover: ${primary} ${first.why}`, primary, failover: [], skipped };
+    skipped.push({ host: other, why: alt.why });
+  }
+  return none('waiting-for-host', skipped, primary);
 }
 
 /**
@@ -300,4 +403,4 @@ function main(argv) {
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { resolveRunner, graphRunner, resolveBin, runnerArgs, crossArgs, seatArgs, sessionArgs, codexMcpServers, headlessEnv, hostEnabled, codexHomeOf, HEADLESS_UNSET, HOSTS, CODEX_EFFORTS, CLAUDE_EFFORTS, CROSS_CLAUDE_EFFORTS, CROSS_MODES, CODEX_OFF, SEAT_CODEX_TAIL, SESSION_EFFORTS, SESSION_ACCESS };
+module.exports = { resolveRunner, resolveChief, chiefEffort, graphRunner, resolveBin, runnerArgs, crossArgs, seatArgs, sessionArgs, codexMcpServers, headlessEnv, hostEnabled, codexHomeOf, HEADLESS_UNSET, HOSTS, CODEX_EFFORTS, CLAUDE_EFFORTS, CROSS_CLAUDE_EFFORTS, CROSS_MODES, CODEX_OFF, SEAT_CODEX_TAIL, SESSION_EFFORTS, SESSION_ACCESS };

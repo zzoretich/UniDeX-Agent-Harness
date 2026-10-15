@@ -7,6 +7,9 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const RUNNER = path.join(__dirname, '..', 'persona', 'run-duty.sh');
+// local-first A4: run-duty.sh asks persona/chief.js, which checks the claude CLI is signed in (`claude auth status --json`,
+// free) before a duty starts. Every fake claude answers it first; FAKE_SIGNED_OUT=1 makes it report no login.
+const FAKE_AUTH = '[ "$1" = auth ] && { [ -n "${FAKE_SIGNED_OUT:-}" ] && echo \'{"loggedIn":false}\' || echo \'{"loggedIn":true}\'; exit 0; }';
 
 /** A vault with one duty, a STATE.md and a fake `claude` that prints a result JSON and
  *  journals only when FAKE_JOURNAL is set. Never touches the real claude binary. */
@@ -20,6 +23,7 @@ function sandbox() {
   const fake = path.join(vault, 'fake-claude');
   fs.writeFileSync(fake, [
     '#!/bin/sh',
+    FAKE_AUTH,
     '[ -n "${FAKE_ARGS:-}" ] && printf "%s\\n" "$@" > "$FAKE_ARGS"',
     '[ -n "${FAKE_JOURNAL:-}" ] && { mkdir -p "$(dirname "$FAKE_JOURNAL")"; printf "\\n## 09:00 — duty: testduty\\n- status: OK\\n" >> "$FAKE_JOURNAL"; }',
     '[ -n "${FAKE_TAMPER:-}" ] && { mkdir -p "$(dirname "$FAKE_TAMPER")"; echo tampered >> "$FAKE_TAMPER"; }',
@@ -51,7 +55,7 @@ test('dry-run prints the invocation (binary, model, effort, tools, budget, json 
   const s = sandbox();
   const r = run(['testduty', '--dry-run'], s.env);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /^--model\nhaiku$/m);
+  assert.match(r.stdout, /^--model\nclaude-opus-5-5$/m, 'local-first A4: the Chief of Staff model by default');
   assert.match(r.stdout, /^--effort\nmedium$/m);
   assert.match(r.stdout, /^--allowedTools$/m);
   assert.match(r.stdout, /^--max-budget-usd\n2$/m, 'perDutyUsd default without a --check run');
@@ -72,6 +76,12 @@ test('dry-run prints the invocation (binary, model, effort, tools, budget, json 
   // ever regressed, this sub-run could not resolve the developer's real `claude` and make a live billed call.
   const viaCfg = { ...s.env, AOS_CONFIG: cfg, PATH: '/usr/bin:/bin', HOME: s.vault }; delete viaCfg.PERSONA_CLAUDE_BIN;
   assert.equal(run(['testduty', '--dry-run'], viaCfg).stdout.split('\n')[0], s.env.PERSONA_CLAUDE_BIN, 'claude.bin from agenticos.json is honored before the PATH lookup');
+  // A pre-2.0 vault's persona.model is an explicit null: it keeps the model it ran on (claude.model), never a flat scan of
+  // agenticos.json for the first "model" key.
+  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ persona: { model: null }, reasoner: { model: 'claude-opus-5' } }));
+  assert.match(run(['testduty', '--dry-run'], viaCfg).stdout, /^--model\nhaiku$/m, 'null persona.model → claude.model');
+  fs.writeFileSync(path.join(s.vault, 'persona', 'answers.json'), JSON.stringify({ name: 'Atlas', dutyModel: 'sonnet' }));
+  assert.match(run(['testduty', '--dry-run'], viaCfg).stdout, /^--model\nsonnet$/m, 'the interview answer comes before claude.model');
 });
 
 test('PERSONA_MODEL, PERSONA_EFFORT and PERSONA_MAX_USD override the defaults', () => {
@@ -224,6 +234,7 @@ test('watchdog kills the claude process itself on PERSONA_TIMEOUT; a non-executa
   const sleeper = path.join(s.vault, 'fake-claude-sleep');
   fs.writeFileSync(sleeper, [
     '#!/bin/sh',
+    FAKE_AUTH,
     `echo $$ > "${pidFile}"`,
     'exec sleep 30',
     '',
@@ -276,6 +287,7 @@ test('tick helper: precheck skips an unchanged vault silently, beat runs after a
   const fake = path.join(s.vault, 'fake-tick-claude');
   fs.writeFileSync(fake, [
     '#!/bin/sh',
+    FAKE_AUTH,
     '[ -n "${FAKE_JOURNAL:-}" ] && { mkdir -p "$(dirname "$FAKE_JOURNAL")"; printf "\\n## 09:00 — duty: tick\\n- status: OK\\n" >> "$FAKE_JOURNAL"; }',
     'echo "{\\"type\\":\\"result\\",\\"result\\":\\"done\\",\\"total_cost_usd\\":0.01,\\"usage\\":{\\"input_tokens\\":1,\\"output_tokens\\":1},\\"duration_ms\\":10}"',
     '',
@@ -320,6 +332,7 @@ test('reflect-daily helper: precheck skips only when the queue is empty and toda
   const fake = path.join(s.vault, 'fake-reflect-claude');
   fs.writeFileSync(fake, [
     '#!/bin/sh',
+    FAKE_AUTH,
     '[ -n "${FAKE_JOURNAL:-}" ] && { mkdir -p "$(dirname "$FAKE_JOURNAL")"; printf "\\n## 22:00 — duty: reflect-daily\\n- status: OK\\n" >> "$FAKE_JOURNAL"; }',
     '[ -n "${FAKE_QUEUE_DURING_RUN:-}" ] && echo "$FAKE_QUEUE_DURING_RUN" >> "$AOS_VAULT/persona/queue.jsonl"',
     'echo "{\\"type\\":\\"result\\",\\"result\\":\\"done\\",\\"total_cost_usd\\":0.02,\\"usage\\":{\\"input_tokens\\":1,\\"output_tokens\\":1},\\"duration_ms\\":10}"',
@@ -433,9 +446,13 @@ test('codex runner: with no claude and a codex host, the duty runs through `code
   const fakeCodex = path.join(__dirname, '..', '..', '..', 'cli', 'fixtures', 'fake-codex.sh');
   const cfg = path.join(s.vault, 'agenticos.json');
   fs.writeFileSync(cfg, JSON.stringify({ vault: s.vault, claude: { model: 'haiku' }, hosts: { claude: { enabled: false }, codex: { enabled: true, bin: fakeCodex } } }, null, 2));
-  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none', codex: { model: 'gpt-5-mini' } }));
   const env = { ...s.env, AOS_CONFIG: cfg, AOS_NO_CLAUDE: '1', PATH: '/usr/bin:/bin', HOME: s.vault };
   delete env.PERSONA_CLAUDE_BIN;
+  // local-first A4: a 2.0 install's Codex duty model is the Chief of Staff's, gpt-6-sol (config.default.json).
+  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none' }));
+  assert.match(run(['testduty', '--dry-run'], env).stdout, /^-m\ngpt-6-sol$/m);
+  // A pre-2.0 vault's null persona.codexModel keeps the chain it had: codex.model, then the user's Codex default.
+  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none', persona: { codexModel: null }, codex: { model: 'gpt-5-mini' } }));
   const dry = run(['testduty', '--dry-run'], env);
   assert.equal(dry.status, 0, dry.stderr);
   const lines = dry.stdout.split('\n');
@@ -464,12 +481,13 @@ test('codex runner: with no claude and a codex host, the duty runs through `code
   assert.equal(ledger[0].feature, 'duty:testduty');
   assert.equal(ledger[0].inputTokens, 1200);
   assert.ok(ledger[0].usd > 0);
-  // persona.runner=claude pins claude even when codex is the only host: the claude path is taken (its default
-  // location, since nothing resolves), never the codex binary — the flat "bin" scan of 0.5.0 would have picked it.
+  // persona.runner=claude pins claude even when codex is the only host, and the codex binary is never taken for it (the
+  // flat "bin" scan of 0.5.0 would have picked it). With no claude CLI and only one host there is no failover: the duty
+  // waits for a host (exit 0, nothing invoked) — local-first A4.
   fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none', persona: { runner: 'claude' } }));
   const pinned = run(['testduty', '--dry-run'], env);
-  assert.equal(pinned.status, 0);
-  assert.match(pinned.stdout.split('\n')[0], /\/\.local\/bin\/claude$/);
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.equal(pinned.stdout.trim(), 'skipped: waiting-for-host (claude: CLI not found)');
 });
 
 test('codex: the workspace is persona/, the user config cannot add roots, and the scope\'s other folders arrive as --add-dir', () => {
@@ -506,6 +524,7 @@ test('reflect on claude: the scope names the feedback folder and MEMORY.md, and 
   const fake = path.join(s.vault, 'fake-reflect-claude');
   fs.writeFileSync(fake, [
     '#!/bin/sh',
+    FAKE_AUTH,
     '[ -n "${FAKE_JOURNAL:-}" ] && { mkdir -p "$(dirname "$FAKE_JOURNAL")"; printf "\\n## 18:00 — duty: reflect\\n- status: OK\\n" >> "$FAKE_JOURNAL"; }',
     '[ -n "${FAKE_MEMORY:-}" ] && { mkdir -p "$(dirname "$FAKE_MEMORY")"; printf "# Promote on repeat\\n\\nA correction seen twice becomes a feedback memory.\\n" > "$FAKE_MEMORY"; }',
     'echo "{\\"type\\":\\"result\\",\\"result\\":\\"done\\",\\"total_cost_usd\\":0.02,\\"usage\\":{\\"input_tokens\\":1,\\"output_tokens\\":1},\\"duration_ms\\":10}"',
@@ -544,4 +563,129 @@ test('reflect on codex: the feedback folder arrives as --add-dir, MEMORY.md is l
   const r = run(['reflect'], { ...env, FAKE_JOURNAL: s.journal, FAKE_DUTY: 'reflect', FAKE_TAMPER: memory });
   assert.equal(r.status, 0, r.stderr + fs.readFileSync(path.join(s.logDir, 'duty-reflect.log'), 'utf8'));
   assert.equal(fs.readFileSync(path.join(s.vault, 'MEMORY.md'), 'utf8'), '# Index\n\n## Feedback\n- [codex-rule](brain/memory/feedback/codex-rule.md) — tampered');
+});
+
+// local-first A4: the Chief of Staff runs on its hosted model per host, fails over to the other host when the primary
+// cannot start, and waits (skipped, not failed) when no host can.
+function bothHosts(s) {
+  const fakeCodex = path.join(__dirname, '..', '..', '..', 'cli', 'fixtures', 'fake-codex.sh');
+  const cfg = path.join(s.vault, 'agenticos.json');
+  fs.writeFileSync(cfg, JSON.stringify({ vault: s.vault, claude: { model: 'haiku', bin: s.env.PERSONA_CLAUDE_BIN }, hosts: { claude: { enabled: true, bin: s.env.PERSONA_CLAUDE_BIN }, codex: { enabled: true, bin: fakeCodex } } }, null, 2));
+  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none' }));
+  return { fakeCodex, env: { ...s.env, AOS_CONFIG: cfg, PATH: '/usr/bin:/bin', HOME: s.vault } };
+}
+
+test('chief: with both hosts the duty runs on Claude · claude-opus-5-5; signed out, it runs on Codex · gpt-6-sol', () => {
+  const s = sandbox();
+  const { fakeCodex, env } = bothHosts(s);
+  const dry = run(['testduty', '--dry-run'], env);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(dry.stdout.split('\n')[0], s.env.PERSONA_CLAUDE_BIN);
+  assert.match(dry.stdout, /^--model\nclaude-opus-5-5$/m);
+  // auto: Claude when it is on and signed in, else Codex — the primary itself, no failover needed.
+  const auto = run(['testduty', '--dry-run'], { ...env, FAKE_SIGNED_OUT: '1' });
+  assert.equal(auto.stdout.split('\n')[0], fakeCodex);
+  assert.match(auto.stdout, /^-m\ngpt-6-sol$/m);
+  assert.ok(!auto.stdout.includes('(failover'));
+  // persona.runner claude: a signed-out Claude fails over to the other host's CoS model.
+  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none', persona: { runner: 'claude' } }));
+  const moved = run(['testduty', '--dry-run'], { ...env, FAKE_SIGNED_OUT: '1' });
+  assert.equal(moved.status, 0, moved.stderr);
+  assert.equal(moved.stdout.split('\n')[0], fakeCodex);
+  assert.match(moved.stdout, /^-m\ngpt-6-sol$/m, 'the other host\'s CoS model, never the Claude one');
+  assert.ok(!moved.stdout.includes('claude-opus-5-5'));
+  assert.match(moved.stdout, /^\(failover: claude signed out\)$/m);
+  // A real run on the failover host journals, ledgers a codex row and logs why it moved.
+  const r = run(['testduty'], { ...env, FAKE_SIGNED_OUT: '1', FAKE_JOURNAL: s.journal });
+  assert.equal(r.status, 0, r.stderr);
+  const log = fs.readFileSync(path.join(s.logDir, 'duty-testduty.log'), 'utf8');
+  assert.match(log, /runner=codex model=gpt-6-sol effort=medium budget=2 \(failover: claude signed out\) start/);
+  assert.match(log, /"provider":"codex"/);
+  // persona.failover off: the signed-out primary is not replaced, the duty waits.
+  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none', persona: { runner: 'claude', failover: false } }));
+  const off = run(['testduty', '--dry-run'], { ...env, FAKE_SIGNED_OUT: '1' });
+  assert.equal(off.stdout.trim(), 'skipped: waiting-for-host (claude: signed out)');
+});
+
+test('chief: persona.perDayUsd is one cap over both hosts — a capped day is SKIPPED daily-cap, never moved to the other host', () => {
+  const s = sandbox();
+  const { env } = bothHosts(s);
+  const today = new Date().toISOString();
+  const row = (provider, usd) => JSON.stringify({ ts: today, feature: 'duty:other', provider, model: 'm', usd, inputTokens: 1, outputTokens: 1, ms: 1 });
+  const ledger = path.join(s.vault, 'brain', '_index', 'provider-spend.jsonl');
+  fs.writeFileSync(ledger, row('claude', 3) + '\n');
+  assert.equal(run(['testduty', '--dry-run'], env).stdout.split('\n')[0], s.env.PERSONA_CLAUDE_BIN, 'under the cap: the primary runs');
+  // Codex's rows count toward the same day: 3 + 3 reaches the default 6.
+  fs.appendFileSync(ledger, row('codex', 3) + '\n');
+  assert.equal(run(['testduty', '--dry-run'], env).stdout.trim(), 'skipped: daily-cap (today\'s duty spend 6.00 of 6 USD (persona.perDayUsd))', 'Codex signed in is no way round the cap');
+  const r = run(['testduty'], { ...env, FAKE_JOURNAL: s.journal });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(fs.readFileSync(s.journal, 'utf8'), /— duty: testduty\n- status: SKIPPED daily-cap\n- did: nothing — today's duty spend 6\.00 of 6 USD \(persona\.perDayUsd\), on both hosts/);
+  assert.ok(!fs.readFileSync(s.journal, 'utf8').includes('status: OK'), 'nothing ran on either host');
+  assert.match(fs.readFileSync(path.join(s.logDir, 'duty-testduty.log'), 'utf8'), /skipped: daily spend cap reached/);
+  assert.ok(!fs.readFileSync(path.join(s.vault, 'persona', 'STATE.md'), 'utf8').includes('waiting for a host'), 'a capped day is no flag');
+});
+
+test('chief: no host can start → SKIPPED waiting-for-host in the journal, one flag a day, exit 0 (skipped, not failed)', () => {
+  const s = sandbox();
+  const env = { ...s.env, FAKE_SIGNED_OUT: '1' };
+  const r1 = run(['testduty'], { ...env, FAKE_JOURNAL: s.journal });
+  assert.equal(r1.status, 0, r1.stderr);
+  const journal = fs.readFileSync(s.journal, 'utf8');
+  assert.match(journal, /## \d{2}:\d{2} — duty: testduty\n- status: SKIPPED waiting-for-host\n- did: nothing — no host can start it \(claude: signed out\)/);
+  assert.ok(!journal.includes('status: OK'), 'nothing ran');
+  assert.match(fs.readFileSync(path.join(s.logDir, 'duty-testduty.log'), 'utf8'), /skipped: waiting for a host \(claude: signed out\)/);
+  const run2 = run(['testduty'], env);
+  assert.equal(run2.status, 0);
+  const state = fs.readFileSync(path.join(s.vault, 'persona', 'STATE.md'), 'utf8');
+  assert.equal(state.match(/Chief of Staff waiting for a host/g).length, 1, 'flagged once, not once per run');
+  assert.match(state, /## Flags\n- \[ \] \d{4}-\d{2}-\d{2} Chief of Staff waiting for a host — duties skipped \(claude: signed out\)/);
+});
+
+// local-first A5, end to end: the hourly routine is tick.js --triage. Local model down (provider none here): a real change
+// wakes the hosted tick duty through this very runner, with the routine file's budget and allowlist; the next, unchanged
+// hour calls nothing at all.
+test('tick triage end to end: a real change wakes the tick duty through run-duty.sh; an unchanged hour makes no call', () => {
+  const s = sandbox();
+  const TICK = path.join(__dirname, '..', 'persona', 'tick.js');
+  fs.writeFileSync(path.join(s.vault, 'persona', 'duties', 'tick.md'), 'ascii fixture tick duty\n');
+  fs.mkdirSync(path.join(s.vault, 'brain', 'routines'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', '..', '..', 'vault-template', 'persona', 'routines', 'tick.md'), path.join(s.vault, 'brain', 'routines', 'tick.md'));
+  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none' }));
+  const fake = path.join(s.vault, 'fake-claude-tick');
+  fs.writeFileSync(fake, [
+    '#!/bin/sh',
+    FAKE_AUTH,
+    'printf "%s\\n" "$@" > "$FAKE_ARGS"',
+    'printf "\\n## 11:00 — duty: tick\\n- status: OK\\n" >> "$FAKE_JOURNAL"',
+    'echo "{\\"type\\":\\"result\\",\\"result\\":\\"done\\",\\"total_cost_usd\\":0.2,\\"usage\\":{\\"input_tokens\\":10,\\"output_tokens\\":5}}"',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const argsFile = path.join(s.vault, 'tick-args.txt');
+  const env = { ...s.env, PERSONA_CLAUDE_BIN: fake, FAKE_ARGS: argsFile, FAKE_JOURNAL: s.journal };
+  delete env.NODE_OPTIONS;   // the workspace's relative --require would not resolve from the vault, where the duty runs
+  const triage = () => spawnSync(process.execPath, [TICK, '--triage', '--root', s.vault], { env, encoding: 'utf8', timeout: 60000 });
+  const r = triage();
+  assert.equal(r.status, 0, r.stderr);
+  const line = JSON.parse(r.stdout.trim().split('\n').pop());
+  assert.equal(line.action, 'woke');
+  assert.equal(line.decision.by, 'rules');
+  const journal = fs.readFileSync(s.journal, 'utf8');
+  assert.match(journal, /— tick triage: woke the Chief of Staff — the local model is unavailable \(forced\): any real change wakes the Chief of Staff \(rules; changed: first triage\)\n/);
+  assert.match(journal, /duty: tick\n- status: OK/);
+  const args = fs.readFileSync(argsFile, 'utf8');
+  assert.match(args, /^--model\nclaude-opus-5-5$/m, 'the Chief of Staff\'s hosted model');
+  assert.match(args, /^--max-budget-usd\n0\.5$/m, 'the routine file\'s budgetUsd');
+  assert.ok(args.includes(`Bash(${process.execPath} ${s.vault}/brain/scripts/persona/tick.js:*)`), 'its allowlist, expanded');
+  assert.ok(!/git/.test(args.split('\n')[args.split('\n').indexOf('--allowedTools') + 1]), 'no git');
+  const st = JSON.parse(fs.readFileSync(path.join(s.vault, 'brain', '_index', 'persona-tick.json'), 'utf8'));
+  assert.equal(st.beats, 1, 'run-duty.sh recorded the beat after the contract');
+  assert.equal(st.wakes, 1);
+  // The next hour: nothing changed — no local call, no hosted call, no journal line.
+  fs.rmSync(argsFile);
+  const quiet = triage();
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert.equal(JSON.parse(quiet.stdout.trim()).action, 'unchanged');
+  assert.ok(!fs.existsSync(argsFile), 'the hosted model was not started');
+  assert.equal(fs.readFileSync(s.journal, 'utf8'), journal);
 });

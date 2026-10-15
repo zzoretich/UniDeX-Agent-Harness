@@ -12,6 +12,8 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import type { SetupEvent } from "../../src/shared/ipc";
+import { CHIEF_MODELS } from "../../src/shared/ipc";
+import { chiefSummary } from "../../src/renderer/setup/chief";
 import { PATH_MARKER, findOnPath, installDirs, loginPath, mergePath, parseLoginPath } from "../../src/main/setup/env";
 import { cmpVersion, findPayload, readPayload } from "../../src/main/setup/payload";
 import { parseTags, parseVersion, runPreflight, type PreflightDeps, type ProbeResult } from "../../src/main/setup/preflight";
@@ -357,6 +359,22 @@ test("a vault folder is absolute or ~/…, never home itself or a root", () => {
   assert.equal(resolveVaultPath(HOME, HOME), null);
   assert.equal(resolveVaultPath("/", HOME), null);
   assert.equal(resolveVaultPath("AgenticOS", HOME), null);
+});
+
+test("the Chief of Staff's models the wizard preselects are models.js's chief role (local-first A4)", () => {
+  const models = createRequire(__filename)(path.resolve(__dirname, "../../brain/scripts/sdk/lib/models.js")) as { CHIEF: { claude: string; codex: string } };
+  assert.deepEqual({ ...CHIEF_MODELS }, { ...models.CHIEF });
+  const defaults = createRequire(__filename)(path.resolve(__dirname, "../../brain/scripts/config.default.json")) as { persona: { model: string; codexModel: string } };
+  assert.deepEqual([defaults.persona.model, defaults.persona.codexModel], [CHIEF_MODELS.claude, CHIEF_MODELS.codex]);
+});
+
+test("the persona step says where duties run: the hosted model, the failover with both hosts, the hourly check on the local model", () => {
+  const p = { dutyModel: CHIEF_MODELS.claude, dutyCodexModel: CHIEF_MODELS.codex };
+  const local = "a hosted model. The hourly check runs on this Mac's local model and wakes it only when something changed.";
+  assert.equal(chiefSummary("claude", p), `Duties run on Claude Code · claude-opus-5-5, ${local}`);
+  assert.equal(chiefSummary("codex", p), `Duties run on Codex · gpt-6-sol, ${local}`);
+  assert.equal(chiefSummary("both", p), `Duties run on Claude Code · claude-opus-5-5, and on Codex · gpt-6-sol when Claude Code can't start one, ${local}`);
+  assert.equal(chiefSummary("both", { dutyModel: " sonnet ", dutyCodexModel: "" }), `Duties run on Claude Code · sonnet, and on Codex · your Codex default when Claude Code can't start one, ${local}`);
 });
 
 test("persona answers: trimmed, and each host's model only where that host is on", () => {

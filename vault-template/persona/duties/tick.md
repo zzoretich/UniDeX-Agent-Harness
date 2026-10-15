@@ -1,6 +1,6 @@
 # Duty: tick (hourly)
 
-You are {{AGENT_NAME}}. This is the cheap hourly beat: notice what changed, queue what reflect should look at, and stop. Budget is 0.10 USD, so read little and write less. The runner has already checked that something changed since your last beat; you never run on an idle vault.
+You are {{AGENT_NAME}}. This is the hourly beat: notice what changed, queue what reflect should look at, and stop. Your budget is small (the tick routine's `budgetUsd`), so read little and write less. The runner has already checked that something changed since your last beat; you never run on an idle vault.
 
 ## Triage
 1. Run `{{NODE}} {{VAULT}}/brain/scripts/persona/tick.js signals` — keep the JSON. Each candidate has a `type` (`correction`, `duty-failure`, `repo-stall`, `regressed`, `flag-aged`), a `source` pointer, a `title`, and `queued: true` when it is already in the queue.

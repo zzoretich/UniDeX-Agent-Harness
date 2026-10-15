@@ -7,16 +7,21 @@
 # env:   AOS_CONFIG        agenticos.json (default <configDir>/agenticos.json)
 #        AOS_VAULT         vault dir (default: "vault" in agenticos.json)
 #        AOS_NODE          node binary (default: "node" in agenticos.json, then the bin/aos probe list)
-#        PERSONA_MODEL     duty model (default: claude.model in agenticos.json — the "model" key under "claude",
-#                          the only "model" key there — else haiku)          # execution amendment 2026-09-15 (A27)
-#        PERSONA_EFFORT    low|medium|high (default medium)
+#        PERSONA_MODEL     duty model on Claude (default: persona/chief.js — persona.model → the interview's dutyModel →
+#                          claude.model → claude-opus-5-5; a Claude model by contract, never passed to Codex)
+#        PERSONA_EFFORT    low|medium|high (default: persona.effort, else medium)
 #        PERSONA_LOG_DIR   default <vault>/persona/journal/logs
 #        PERSONA_TOOLS     --allowedTools value (write tools and git read-outs are dropped: the write scope decides writes)
 #        PERSONA_WRITES    comma list of extra vault-relative paths the duty may write (a routine's `writes:`)
 #        PERSONA_MAX_USD   --max-budget-usd for this run (default persona.perDutyUsd from config, else 2)
-#        PERSONA_CLAUDE_BIN  claude binary (default: claude.bin from agenticos.json, then `command -v claude`,
-#                          then $HOME/.local/bin/claude — contract §2 addendum order)   # execution amendment 2026-09-15 (A24)
+#        PERSONA_CLAUDE_BIN  claude binary (default: hosts.claude.bin / claude.bin from agenticos.json, then
+#                          `command -v claude`, then the usual install locations — lib/headless.js resolveBin)   # (A24)
 #        PERSONA_TIMEOUT   seconds, default 1800
+# Host and model (local-first A4): persona/chief.js (lib/headless.js resolveChief) picks the host — persona.runner, auto →
+# Claude when it is on and signed in, else Codex — and that host's CoS model (claude-opus-5-5 / gpt-6-sol on a 2.0 install),
+# and moves the duty to the other host when the primary cannot start (CLI missing, signed out) while persona.failover is
+# on. persona.perDayUsd is one cap over both hosts: a capped day is skipped everywhere, never moved. A skipped duty is not
+# a failed one: one journal entry (SKIPPED daily-cap, or SKIPPED waiting-for-host plus one flag a day under ## Flags).
 # Helper: two duties have a runner-side helper — tick.js for `tick`, reflect.js for `reflect-daily`: `precheck` exit 3 →
 # the model call is skipped ("skipped:" in the log, no journal entry, exit 0); `beat` runs once the duty met its
 # contract (the tick records its beat and may start an early reflect; the daily reflect drains the queue).
@@ -35,16 +40,11 @@ unset CLAUDECODE
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CONFIG="${AOS_CONFIG:-$CONFIG_DIR/agenticos.json}"
-# json_value <key>: first "key": "value" string in agenticos.json (flat scan; no jq)
+# json_value <key>: first "key": "value" string in agenticos.json (flat scan; no jq) — only for vault and node, keys that
+# occur once; the duty model comes from persona/chief.js.
 json_value() {
   [ -f "$CONFIG" ] || return 0
   sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" "$CONFIG" | head -n 1
-}
-# claude_bin_from_config: the "bin" inside the top-level "claude" block only. Since 0.5.0 agenticos.json also carries
-# hosts.claude.bin and hosts.codex.bin, so a flat scan for "bin" could name the codex binary on a Codex-only machine.
-claude_bin_from_config() {
-  [ -f "$CONFIG" ] || return 0
-  awk '/"claude": *\{/ { f = 1 } f && /"bin": *"/ { sub(/.*"bin": *"/, ""); sub(/".*/, ""); print; exit } f && /\}/ { f = 0 }' "$CONFIG"
 }
 
 VAULT="${AOS_VAULT:-$(json_value vault)}"
@@ -70,8 +70,7 @@ DUTY_FILE="$PERSONA/duties/$DUTY.md"
 PERSONA_LOG_DIR="${PERSONA_LOG_DIR:-$PERSONA/journal/logs}"
 LOG="$PERSONA_LOG_DIR/duty-$DUTY.log"
 ERR="$PERSONA_LOG_DIR/duty-$DUTY-error.log"
-MODEL="${PERSONA_MODEL:-$(json_value model)}"; MODEL="${MODEL:-haiku}"   # json_value is a flat scan: the only "model" key is claude.model
-EFFORT="${PERSONA_EFFORT:-medium}"
+MODEL=""; EFFORT=""                # persona/chief.js below (PERSONA_MODEL / PERSONA_EFFORT reach it through the env)
 MAX_USD="${PERSONA_MAX_USD:-}"     # empty → persona.perDutyUsd from --check below → 2
 # Scoped allowlist (not bypassPermissions): node is pinned to the persona scripts; git is limited to status, so a duty
 # can neither commit nor push (final review F3/safety-5, departs from A26 — git add/commit were dropped:
@@ -98,6 +97,12 @@ flag_state() {
   TMP="$PERSONA/STATE.md.tmp.$$"
   awk -v line="$1" '{ print } /^## Flags[[:space:]]*$/ { print line }' "$PERSONA/STATE.md" > "$TMP" && mv "$TMP" "$PERSONA/STATE.md"
 }
+# flag_once <line>: flag_state unless STATE.md already holds exactly that line (a skipped duty flags once a day, not per run).
+flag_once() {
+  [ -f "$PERSONA/STATE.md" ] || return 0
+  grep -qxF -- "$1" "$PERSONA/STATE.md" 2>/dev/null && return 0
+  flag_state "$1"
+}
 
 if [ -f "$PERSONA/DISABLED" ]; then
   echo "persona DISABLED — skipping duty '$DUTY'"
@@ -105,38 +110,76 @@ if [ -f "$PERSONA/DISABLED" ]; then
 fi
 [ -f "$DUTY_FILE" ] || { echo "unknown duty '$DUTY' (no $DUTY_FILE)" >&2; exit 1; }
 
-# claude binary: PERSONA_CLAUDE_BIN → claude.bin recorded in agenticos.json by `aos init` (contract §2 addendum;
-# "bin" occurs exactly once there, under "claude") → PATH → ~/.local/bin/claude. execution amendment 2026-09-15 (A24)
+# claude binary: PERSONA_CLAUDE_BIN → hosts.claude.bin / claude.bin recorded by `aos init` (contract §2 addendum) → PATH →
+# the usual install locations, resolved by chief.js (lib/headless.js resolveBin). execution amendment 2026-09-15 (A24)
 # A SET PERSONA_CLAUDE_BIN that is not executable is a misconfiguration, not a cue to fall through to the
 # PATH lookup — fail loudly instead of silently launching whatever `claude` happens to resolve to. (A50)
 # Deliberately BELOW the kill switch and the unknown-duty check (final review safety-9 = spec-12): a disabled
 # persona must exit 0 and an unknown duty must exit 1 with its own message, whatever a stale override names.
-if [ -n "${PERSONA_CLAUDE_BIN:-}" ]; then
-  CLAUDE_BIN="$PERSONA_CLAUDE_BIN"
-  [ -x "$CLAUDE_BIN" ] || { echo "run-duty: PERSONA_CLAUDE_BIN is not executable: $CLAUDE_BIN" >&2; exit 1; }
-else
-  CLAUDE_BIN="$(claude_bin_from_config)"
-  [ -x "$CLAUDE_BIN" ] || CLAUDE_BIN="$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")"
+CLAUDE_BIN=""
+if [ -n "${PERSONA_CLAUDE_BIN:-}" ] && [ ! -x "$PERSONA_CLAUDE_BIN" ]; then
+  echo "run-duty: PERSONA_CLAUDE_BIN is not executable: $PERSONA_CLAUDE_BIN" >&2
+  exit 1
 fi
 
-# Runner (codex-parity D4): lib/headless.js picks claude when the Claude host is enabled and a binary resolves, else
-# codex (persona.runner / AOS_RUNNER override; PERSONA_CLAUDE_BIN still pins claude). Under codex there is no
-# --max-budget-usd: the daily cap below still gates the start and the spend is estimated from the usage block
-# afterwards (D5); the tools allowlist has no Codex form, the workspace-write sandbox is the guard. No node → claude.
-RUNNER="claude"; CODEX_BIN=""; CODEX_MODEL=""
-if [ -n "$NODE" ] && [ -x "$NODE" ] && [ -f "$SCRIPT_DIR/../lib/headless.js" ]; then
-  RES="$(AOS_VAULT="$VAULT" AOS_CONFIG="$CONFIG" "$NODE" "$SCRIPT_DIR/../lib/headless.js" --resolve --kind persona 2>/dev/null)" || RES=""
-  case "$RES" in
-    claude*) [ -n "${PERSONA_CLAUDE_BIN:-}" ] || CLAUDE_BIN="$(printf '%s' "$RES" | cut -f2)" ;;
-    codex*) RUNNER="codex"; CODEX_BIN="$(printf '%s' "$RES" | cut -f2)"; CODEX_MODEL="$(printf '%s' "$RES" | cut -f3)"
-            # The Codex home aos init recorded: a scheduled duty must use the same sessions and config (unless set already).
-            CODEX_HOME_CFG="$(printf '%s' "$RES" | cut -f4)"; [ -n "$CODEX_HOME_CFG" ] && [ -z "${CODEX_HOME:-}" ] && export CODEX_HOME="$CODEX_HOME_CFG" ;;
-  esac
+# Runner (codex-parity D4, local-first A4): persona/chief.js answers host, binary, model, effort and the Codex home
+# (PERSONA_CLAUDE_BIN still pins the claude binary). Under codex there is no --max-budget-usd: the daily cap below still
+# gates the start and the spend is estimated from the usage block afterwards (D5); the tools allowlist has no Codex form,
+# the workspace-write sandbox is the guard. No node or no chief.js → the duty does not run (it needs both further down).
+CHIEF="$SCRIPT_DIR/chief.js"
+if [ -z "$NODE" ] || [ ! -x "$NODE" ] || [ ! -f "$CHIEF" ]; then
+  echo "run-duty: node or chief.js missing — '$DUTY' does not run without its host" >&2
+  exit 1
+fi
+CHIEF_ERR="/dev/null"; [ "$DRY_RUN" = "--dry-run" ] || { mkdir -p "$PERSONA_LOG_DIR"; CHIEF_ERR="$ERR"; }
+RES="$(AOS_VAULT="$VAULT" AOS_CONFIG="$CONFIG" "$NODE" "$CHIEF" --resolve 2>>"$CHIEF_ERR")"; RC=$?
+RUNNER=""; CODEX_BIN=""; CODEX_MODEL=""; CHIEF_REASON=""; SKIP=""; SKIP_DETAIL=""
+case "$RC" in
+  0) RUNNER="$(printf '%s' "$RES" | cut -f1)"
+     MODEL="$(printf '%s' "$RES" | cut -f3)"; EFFORT="$(printf '%s' "$RES" | cut -f4)"; CHIEF_REASON="$(printf '%s' "$RES" | cut -f6)"
+     if [ "$RUNNER" = "codex" ]; then
+       CODEX_BIN="$(printf '%s' "$RES" | cut -f2)"; CODEX_MODEL="$MODEL"
+       # The Codex home aos init recorded: a scheduled duty must use the same sessions and config (unless set already).
+       CODEX_HOME_CFG="$(printf '%s' "$RES" | cut -f5)"; [ -n "$CODEX_HOME_CFG" ] && [ -z "${CODEX_HOME:-}" ] && export CODEX_HOME="$CODEX_HOME_CFG"
+     else
+       CLAUDE_BIN="$(printf '%s' "$RES" | cut -f2)"
+     fi ;;
+  3) SKIP="$(printf '%s' "$RES" | cut -f1)"; SKIP_DETAIL="$(printf '%s' "$RES" | cut -f2)" ;;
+  *) echo "run-duty: chief.js failed (exit $RC) — '$DUTY' does not run" >&2; exit 1 ;;
+esac
+EFFORT="${EFFORT:-medium}"
+
+# Nobody can start this duty (local-first A4): skipped, not failed — exit 0 so the routine counts the hour as a run.
+if [ -n "$SKIP" ]; then
+  if [ "$DRY_RUN" = "--dry-run" ]; then
+    echo "skipped: $SKIP ($SKIP_DETAIL)"
+    exit 0
+  fi
+  mkdir -p "$PERSONA_LOG_DIR" "$PERSONA/journal"
+  if [ "$SKIP" = "daily-cap" ]; then
+    echo "[$(date)] duty=$DUTY skipped: daily spend cap reached ($SKIP_DETAIL)" >> "$LOG"
+    {
+      echo ""
+      echo "## $(date +%H:%M) — duty: $DUTY"
+      echo "- status: SKIPPED daily-cap"
+      echo "- did: nothing — $SKIP_DETAIL, on both hosts"
+    } >> "$JOURNAL"
+    exit 0
+  fi
+  echo "[$(date)] duty=$DUTY skipped: waiting for a host ($SKIP_DETAIL)" >> "$LOG"
+  {
+    echo ""
+    echo "## $(date +%H:%M) — duty: $DUTY"
+    echo "- status: SKIPPED waiting-for-host"
+    echo "- did: nothing — no host can start it ($SKIP_DETAIL); sign in to Claude Code or Codex, or turn one on with aos init --host"
+  } >> "$JOURNAL"
+  flag_once "- [ ] $TODAY Chief of Staff waiting for a host — duties skipped ($SKIP_DETAIL)"
+  exit 0
 fi
 
 # Write scope (duty-write-scope D1/D2/D4/D5). No node or no duty-guard.js → no scope → the duty does not run.
 GUARD="$SCRIPT_DIR/duty-guard.js"
-if [ -z "$NODE" ] || [ ! -x "$NODE" ] || [ ! -f "$GUARD" ]; then
+if [ ! -f "$GUARD" ]; then
   echo "run-duty: node or duty-guard.js missing — '$DUTY' does not run without its write scope" >&2
   exit 1
 fi
@@ -184,18 +227,21 @@ if [ "$DRY_RUN" = "--dry-run" ]; then
       "-C" "$PERSONA" "-c" "sandbox_workspace_write.writable_roots=[]" "$@" "-c" "features.hooks=false" \
       "--json" "-o" "<last message file>" ${CODEX_MODEL:+-m "$CODEX_MODEL"} "-c" "model_reasoning_effort=\"$EFFORT\"" \
       "<duty $DUTY on stdin, after persona IDENTITY.md + STATE.md>"
+    [ "$CHIEF_REASON" = "${CHIEF_REASON#failover}" ] || echo "($CHIEF_REASON)"
     exit 0
   fi
   printf '%s\n' "$CLAUDE_BIN" "-p" "<duty $DUTY>" "--model" "$MODEL" "--effort" "$EFFORT" "--permission-mode" "dontAsk" \
     "--allowedTools" "$ALLOWED" "--disallowedTools" "$DENIED" "--max-budget-usd" "${MAX_USD:-2}" "--output-format" "json" \
     "--strict-mcp-config" "--no-session-persistence" \
     "--append-system-prompt" "<persona IDENTITY.md + STATE.md>"
+  [ "$CHIEF_REASON" = "${CHIEF_REASON#failover}" ] || echo "($CHIEF_REASON)"
   exit 0
 fi
 
 mkdir -p "$PERSONA_LOG_DIR" "$PERSONA/journal"
 
-# Daily duty cap from the provider spend ledger (exit 3 = capped; any other failure → proceed).
+# Daily duty cap from the provider spend ledger (exit 3 = capped; any other failure → proceed): one cap over both hosts,
+# which chief.js checked already; this is the last word before the start, and the per-run budget.
 # --check prints {"allowed":…,"spentToday":…,"perDayUsd":…,"perDutyUsd":…}; perDutyUsd is the
 # per-run budget unless PERSONA_MAX_USD was set.
 if [ -n "$NODE" ] && [ -x "$NODE" ] && [ -f "$RECORD" ]; then
@@ -246,7 +292,7 @@ if ! AOS_VAULT="$VAULT" AOS_CONFIG="$CONFIG" "$NODE" "$GUARD" snapshot "$DUTY" >
 fi
 
 LOG_MODEL="$MODEL"; [ "$RUNNER" = "codex" ] && LOG_MODEL="${CODEX_MODEL:-codex-default}"
-echo "[$(date)] duty=$DUTY runner=$RUNNER model=$LOG_MODEL effort=$EFFORT budget=$MAX_USD start" >> "$LOG"
+echo "[$(date)] duty=$DUTY runner=$RUNNER model=$LOG_MODEL effort=$EFFORT budget=$MAX_USD ($CHIEF_REASON) start" >> "$LOG"
 BEFORE_COUNT=$(duty_entries "$JOURNAL")
 UTC_BEFORE=0; [ -n "$UTC_JOURNAL" ] && UTC_BEFORE=$(duty_entries "$UTC_JOURNAL")
 OUT="$(mktemp "${TMPDIR:-/tmp}/duty-$DUTY.XXXXXX")"
