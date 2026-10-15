@@ -31,7 +31,8 @@ export class TodoTab {
   private draftDue = "";
   private editing: string | null = null;     // raw line of the item being edited inline
   private editBox: { input: HTMLInputElement; raw: string } | null = null;   // its box, while it is in the tab
-  private editCarry: { raw: string; value: string; start: number | null; end: number | null; focused: boolean } | null = null;
+  /** The edit box on its way through a redraw: the element itself, moved into the new row (render, renderRow). */
+  private editKept: { input: HTMLInputElement; raw: string; start: number | null; end: number | null; dir: "forward" | "backward" | "none" | null; focused: boolean } | null = null;
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
   private tick: number | null = null;
@@ -73,7 +74,12 @@ export class TodoTab {
   private load(text: string | null): void {
     this.text = text;
     this.items = text ? parseTodos(text) : [];
-    if (this.editing && !this.items.some((t) => t.raw === this.editing)) this.editing = null;
+    if (this.editing && !this.items.some((t) => t.raw === this.editing)) {
+      // The line being edited changed or went in TODO.md meanwhile: the edit cannot land on it, and is said, not lost quietly.
+      const typed = this.editBox && this.editBox.raw === this.editing ? this.editBox.input.value.trim() : "";
+      this.editing = null;
+      new Notice(`That todo changed in TODO.md while you were editing it, so your edit was not saved${typed ? `: "${typed}"` : ""}.`, 10_000);
+    }
     this.view.setBadge("todo", todoBadgeCount(text, localDay(new Date())));
     this.render();
   }
@@ -97,12 +103,14 @@ export class TodoTab {
     const host = this.host;
     if (!host) return;
     const hadFocus = host.contains(document.activeElement) && (document.activeElement as HTMLElement).hasClass("aos-td-input");
-    // A redraw during an edit (TODO.md changed on disk with that line intact, the day rolled over) keeps what was typed,
-    // the caret and the focus. The old box leaves without saving: removing a focused input fires blur.
+    // A redraw during an edit (any TODO.md event: another writer, a hook, a late event for this tab's own write; the day
+    // rolling over) goes on around the editor: its box is the same element, moved into the new row, so what was typed,
+    // the selection, the focus and a keystroke on its way all stay. It is not the edit box while it moves, so the blur
+    // its removal may fire never saves.
     const was = this.editBox;
     this.editBox = null;
-    this.editCarry = was && this.editing === was.raw
-      ? { raw: was.raw, value: was.input.value, start: was.input.selectionStart, end: was.input.selectionEnd, focused: document.activeElement === was.input }
+    this.editKept = was && this.editing === was.raw
+      ? { input: was.input, raw: was.raw, start: was.input.selectionStart, end: was.input.selectionEnd, dir: was.input.selectionDirection, focused: document.activeElement === was.input }
       : null;
     host.empty();
     const today = localDay(new Date());
@@ -199,11 +207,19 @@ export class TodoTab {
     box.addEventListener("change", () => void this.apply((x) => toggleTodo(x ?? "", t.raw, localDay(new Date()))));
 
     if (this.editing === t.raw) {
+      const kept = this.editKept?.raw === t.raw ? this.editKept : null;
+      this.editKept = null;
+      if (kept) {
+        row.appendChild(kept.input);
+        this.editBox = { input: kept.input, raw: t.raw };
+        if (kept.focused) kept.input.focus();
+        const end = kept.input.value.length;
+        kept.input.setSelectionRange(kept.start ?? end, kept.end ?? end, kept.dir ?? undefined);
+        return;
+      }
       const input = row.createEl("input", { cls: "aos-rt-input aos-td-edit", attr: { type: "text", "aria-label": "Edit todo" } });
-      const carry = this.editCarry?.raw === t.raw ? this.editCarry : null;
-      this.editCarry = null;
       this.editBox = { input, raw: t.raw };
-      input.value = carry ? carry.value : t.body;
+      input.value = t.body;
       const save = async () => {
         const body = input.value.trim();
         if (!body || body === t.body) { this.editing = null; this.render(); return; }
@@ -214,12 +230,11 @@ export class TodoTab {
         if (e.key === "Enter") { e.preventDefault(); void save(); }
         else if (e.key === "Escape") { e.preventDefault(); this.editing = null; this.render(); }
       });
-      input.addEventListener("blur", () => { if (this.editBox?.input === input && this.editing === t.raw) void save(); });
+      // A blur saves, unless the box has the focus again by then (a redraw moved it and gave it back).
+      input.addEventListener("blur", () => { if (this.editBox?.input === input && this.editing === t.raw && document.activeElement !== input) void save(); });
       // The row is already in the tab, so focus now: a deferred caret move can land between a select-all and the typing.
-      if (carry) {
-        if (carry.focused) input.focus();
-        input.setSelectionRange(carry.start ?? input.value.length, carry.end ?? input.value.length);
-      } else { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
       return;
     }
 

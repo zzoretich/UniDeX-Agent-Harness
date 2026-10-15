@@ -64,12 +64,30 @@ async function releaseVaultEventsAfter(win: Page, rel: string | null, ms: number
   }, [rel, ms] as const);
 }
 
+/** How long the tab must go without a redraw to count as settled: past the watcher's batch and the tab's debounce. */
+const QUIET_MS = 750;
+
+/**
+ * Waits until the To-Do tab has gone QUIET_MS without a redraw, so a TODO.md event still on its way (the restore below, or
+ * an earlier test's write seen late) lands before a test starts rather than in the middle of it. A redraw no longer
+ * replaces an open editor, but a test should still start from a tab that has stopped moving.
+ */
+async function settled(win: Page): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    await win.evaluate(() => document.querySelector(".aos-wb-content .aos-rt-head")?.setAttribute("data-quiet", ""));
+    await win.waitForTimeout(QUIET_MS);
+    if (await td(win).locator(".aos-rt-head[data-quiet]").count()) return;
+  }
+  throw new Error("the To-Do tab kept redrawing");
+}
+
 test.beforeEach(async () => {
   const { win } = app();
   const e = expected().todo;
   if (onDisk() !== pristine()) fs.writeFileSync(FILE, pristine());
   await openTab(win, "todo");
   await expect(count(win)).toHaveText(`${e.open} open · ${e.overdue} overdue · ${e.today} today`);
+  await settled(win);
 });
 
 test.afterEach(async () => {
@@ -207,6 +225,56 @@ test("the inline editor defers nothing: typing over a select-all replaces the te
   await td(win).locator("input.aos-td-edit").press("Escape");
   await expect(td(win).locator("input.aos-td-edit")).toHaveCount(0);
   expect(onDisk()).toBe(pristine());
+});
+
+// Any TODO.md event (an agent, a hook, `aos todo`, a sync, or this tab's own write seen late) redraws the tab. While a todo
+// is being edited the redraw goes on around the editor: the box is the same element, with its text, selection and focus,
+// so nothing typed or about to be typed into it is lost (the race behind the inline editor's select-all failing as
+// "not attached to the DOM"). The redraw is forced here, through the watcher's own path, twice.
+test("a redraw while a todo is being edited keeps the editor itself: same box, text, selection and focus", async () => {
+  const { win } = app();
+  await row(win, "Draft the release notes").locator(".aos-td-text").dblclick();
+  const edit = td(win).locator("input.aos-td-edit");
+  await expect(edit).toBeFocused();
+  await edit.selectText();
+  await win.keyboard.insertText("Draft the release notes for 0.22");
+  const box = await edit.elementHandle();
+  await box!.evaluate((el: HTMLInputElement) => el.setSelectionRange(6, 17));
+  for (let i = 0; i < 2; i++) {
+    // The vault's own modify event for TODO.md, as the watcher delivers it; the head is marked so its redraw shows.
+    await win.evaluate(() => {
+      const host = (window as unknown as { aosHost: { app: { vault: { trigger(n: string, f: unknown): void; getAbstractFileByPath(p: string): unknown } } } }).aosHost;
+      document.querySelector(".aos-wb-content .aos-rt-head")?.setAttribute("data-before-redraw", "");
+      host.app.vault.trigger("modify", host.app.vault.getAbstractFileByPath("TODO.md"));
+    });
+    await expect(td(win).locator(".aos-rt-head[data-before-redraw]")).toHaveCount(0);
+    expect(await box!.evaluate((el: HTMLInputElement) => ({ attached: el.isConnected, value: el.value, start: el.selectionStart, end: el.selectionEnd, focused: document.activeElement === el })))
+      .toEqual({ attached: true, value: "Draft the release notes for 0.22", start: 6, end: 17, focused: true });
+  }
+  await expect(edit).toHaveCount(1);
+  // Typing goes on in the same box: the selection is replaced.
+  await win.keyboard.insertText("NOTES");
+  await expect(edit).toHaveValue("Draft NOTES notes for 0.22");
+  await edit.press("Escape");
+  await expect(edit).toHaveCount(0);
+  expect(onDisk()).toBe(pristine());
+});
+
+test("the todo being edited changes in TODO.md underneath: nothing overwrites it, and the tab says the edit was not saved", async () => {
+  const h = app();
+  const { win } = h;
+  await row(win, "Draft the release notes").locator(".aos-td-text").dblclick();
+  const edit = td(win).locator("input.aos-td-edit");
+  await edit.selectText();
+  await win.keyboard.insertText("Draft the release notes for 0.22");
+  // Another writer changes that very line (its due date) while this one is typing.
+  const theirs = pristine().replace(`- [ ] Draft the release notes 📅 ${day(1)} #harbor`, `- [ ] Draft the release notes 📅 ${day(2)} #harbor`);
+  const n = h.notices.length;
+  fs.writeFileSync(FILE, theirs);
+  await expect(edit).toHaveCount(0, { timeout: WATCHED });
+  await expect.poll(() => h.notices.slice(n)).toEqual(['That todo changed in TODO.md while you were editing it, so your edit was not saved: "Draft the release notes for 0.22".']);
+  await expect(row(win, "Draft the release notes")).toBeVisible();
+  expect(onDisk()).toBe(theirs);
 });
 
 test("a tick made in the other HUD shows here while the tab is open, and the next edit applies to the new text", async () => {
