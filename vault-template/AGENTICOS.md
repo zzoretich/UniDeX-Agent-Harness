@@ -49,7 +49,7 @@ Under Codex CLI every `/name` below is the plugin skill `$agenticos:name` (`$age
 
 ## Providers
 
-`provider` in `agenticos.json` (`aos provider <mode>`): `local` (default) runs background work on this Mac's model (Ollama or an OpenAI-compatible server; `aos local` shows and pulls it), never spending unless `local.hostedFallback` is on; while it can't answer, work waits or goes heuristic. `auto` picks Ollama when it answers, else `claude` when it is a host (headless `claude -p`, capped per call and per day, ledgered in `brain/_index/provider-spend.jsonl`), else `codex` when wired (spend estimated from tokens). Under `none`, summaries are heuristic and `/wrap` extracts in-session. `aos status` shows the provider, today's spend and local calls.
+`provider` in `agenticos.json` (`aos provider <mode>`): `local` (default) runs background work on this Mac's model (Ollama or an OpenAI-compatible server; `aos local` shows and pulls it), never spending unless `local.hostedFallback` is on; while it can't answer, work waits or goes heuristic. `auto` picks Ollama when it answers, else `claude` if a host (headless `claude -p`, capped per call and per day, ledgered in `brain/_index/provider-spend.jsonl`), else `codex` when wired (spend estimated from tokens). Under `none`, summaries are heuristic and `/wrap` extracts in-session. `aos status` shows the provider, today's spend and local calls.
 
 ## Routines
 
