@@ -77,7 +77,7 @@ const USAGE = `usage:
              | merge-draft <path> <path>… [--estimate] [--json] | merge <path> <path>… --into <json> --expect <hash>,… [--json]
              | unmerge <path> --expect <hash> [--json] | sweep [<path>…] [--estimate] [--json] | sweep dismiss <id> [--json]]
   aos import [--from claude|codex|all] [--since 90d|all] [--only instructions,memories,projects,mcp,sessions] [--accept <json list>] [--dry-run] [--json]
-  aos hosts add <claude|codex> [--from-local <repo-dir>] | aos hosts status [--json]
+  aos hosts add <claude|codex> [--from-local <repo-dir>] [--persona-json <file>] [--yes] | aos hosts status [--json]
   aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--accept <json list>] [--json]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
@@ -957,7 +957,10 @@ function unwireCodex(cfg) {
   out.log(`codex host removed: hooks ${r.hooksFileState} (${r.hooksRemoved} entries) · MCP ${r.mcp} · ${r.skills.length} skills deleted`);
 }
 
-/** Init step 8 (spec §10). Delegates to cli/persona-cmd.js; `act` already skipped us under --dry-run. */
+/**
+ * Init step 8 (spec §10). Delegates to cli/persona-cmd.js; `act` already skipped us under --dry-run. `aos hosts add` runs
+ * it too, for the first host (install-import B2), with `ctx.personaDefaults`: the answers to take when nobody answers.
+ */
 function personaInterview(ctx) {
   const cfg = readJson(configPath()) || {};
   if (cfg.persona && cfg.persona.enabled === false) { out.log('   persona disabled in config; skipping the interview'); return; }
@@ -965,7 +968,7 @@ function personaInterview(ctx) {
     configDir: configDir(), vault: ctx.vault, node: stableNode(process.execPath),
     answersFile: ctx.flags.personaJson ? path.resolve(ctx.flags.personaJson) : undefined,
     // dryRun is unreachable from init (act() skips this body under --dry-run — Open issue 6); kept so the function stays callable directly.
-    yes: ctx.yes, dryRun: ctx.dry, exampleName: 'Proton', io: console,
+    yes: ctx.yes, dryRun: ctx.dry, exampleName: 'Proton', io: console, defaults: ctx.personaDefaults,
   }).catch((e) => out.warn(`persona interview failed: ${e.message}; run \`aos persona\` later`));   // execution amendment 2026-09-15 (A11): Plan 3's allowFail — init stays exit 0
 }
 
@@ -1530,9 +1533,9 @@ async function hostsCmd(sub, flags) {
     // The steps init itself takes, handed over by name: this file's exports are not assigned yet while main() runs.
     const aos = {
       readJson, writeJson, configPath, configDir, claudeBin, claudeLoggedIn, codexBin, hostsOf, buildUserConfig, repoRoot,
-      installPlugin, wireCodex, run, out, PLUGIN_ID, MARKETPLACE,
+      installPlugin, wireCodex, personaInterview, run, out, PLUGIN_ID, MARKETPLACE,
     };
-    return await H.main(sub, { fromLocal: flags.fromLocal, json: !!flags.json }, { io: console, aos });
+    return await H.main(sub, { fromLocal: flags.fromLocal, json: !!flags.json, yes: !!flags.yes, personaJson: flags.personaJson }, { io: console, aos });
   } catch (e) {
     if (e instanceof H.UsageError) throw new UsageError(e.message);
     if (e instanceof H.Refused) throw new CheckFailed(e.message);

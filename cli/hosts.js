@@ -1,7 +1,8 @@
 'use strict';
 /**
- * hosts.js — `aos hosts add <claude|codex> [--from-local <repo-dir>]`: wire one more session host into an existing
- * install (install-import B2; the app's Settings ▸ Hosts runs it after installing and signing in that CLI).
+ * hosts.js — `aos hosts add <claude|codex> [--from-local <repo-dir>] [--persona-json <file>] [--yes]`: wire one more
+ * session host into an existing install (install-import B2; the app's Settings ▸ Hosts runs it after installing and
+ * signing in that CLI).
  * `aos hosts status [--json]`: each host as `add` would find it — on in agenticos.json, its CLI (the same lookup chain),
  * signed in (`claude auth status`, `codex login status`: free, no model call) — which Settings ▸ Hosts shows. Read-only.
  *
@@ -14,9 +15,15 @@
  *   4. that host's fast import phases (`aos import --from <host> --only instructions,memories,projects,mcp`): its
  *      instructions and memories into Review, its MCP servers listed, its project folders proposed (none created).
  *      Its session history is left for `aos import --from <host>`, which queues the digest.
- *   5. the installed schedules re-rendered (the Chief of Staff's duties pick the new host up); none installed, none made.
- * Every step is an existing function of cli/aos.js, cli/codex-host.js or cli/import.js; nothing here is host-specific
- * beyond picking which.
+ *   5. the Chief of Staff, when this is the first host and there is none yet: init's step 8 (personaInterview), which waited
+ *      for a host. On a terminal it is the interview, its default answers offered in brackets; off one (the app's Settings
+ *      ▸ Hosts, a script) and with --yes, the default answers (persona-cmd.js defaultAnswers: the chief role's model for
+ *      this host, or the one the owner set), and the next steps say how to change them. The persona files come from the
+ *      vault template and the duties are scheduled, as init does it. An existing Chief of Staff, `persona.enabled: false`,
+ *      or a host that was on already (init asked then) is left alone; --persona-json <file> answers as for init.
+ *   6. the installed schedules re-rendered (the Chief of Staff's duties pick the new host up); none installed, none made.
+ * Every step is an existing function of cli/aos.js, cli/codex-host.js, cli/persona-cmd.js or cli/import.js; nothing here is
+ * host-specific beyond picking which.
  */
 const fs = require('fs');
 const path = require('path');
@@ -24,7 +31,7 @@ const path = require('path');
 const HOSTS = ['claude', 'codex'];
 /** How long a sign-in check may take (sdk/lib/provider.js's login probe cap); AOS_HOSTS_PROBE_MS for the tests. */
 function probeMs(env = process.env) { const n = Number(env.AOS_HOSTS_PROBE_MS); return Number.isFinite(n) && n > 0 ? n : 10_000; }
-const USAGE = 'aos hosts add <claude|codex> [--from-local <repo-dir>] · aos hosts status [--json]';
+const USAGE = 'aos hosts add <claude|codex> [--from-local <repo-dir>] [--persona-json <file>] [--yes] · aos hosts status [--json]';
 const FAST = ['instructions', 'memories', 'projects', 'mcp'];
 
 class UsageError extends Error {}
@@ -98,8 +105,21 @@ async function add(host, flags = {}, opts = {}) {
   const I = require('./import.js');
   const { report } = await I.runWith({ from: [host], since: '90d', only: FAST, accept: null, dryRun: false, json: false }, { ...opts, io });
 
-  // 5. schedules
-  io.log(`- ${rerenderSchedules(A, vault, opts)}`);
+  // 5. the Chief of Staff: the first host is what init's step 8 waited for
+  const P = require('./persona-cmd.js');
+  const personaOff = !!(cfg.persona && cfg.persona.enabled === false);
+  let chief = null;
+  if (!before.claude && !before.codex && !personaOff && !P.hasPersona(vault)) {
+    io.log('- set up the Chief of Staff (it waited for a host)');
+    chief = (await A.personaInterview({
+      vault, flags: { personaJson: flags.personaJson }, yes: !!flags.yes, dry: false,
+      personaDefaults: P.defaultAnswers({ vault, configDir: A.configDir() }),
+    })) || null;
+    if (chief && chief.skipped) chief = null;
+  }
+
+  // 6. schedules (the ones the Chief of Staff's setup just installed are current)
+  if (!(chief && chief.schedule)) io.log(`- ${rerenderSchedules(A, vault, opts)}`);
 
   io.log('');
   io.log('Next steps:');
@@ -109,6 +129,10 @@ async function add(host, flags = {}, opts = {}) {
     ? `Open \`codex\`, run /hooks, and trust the ${CH.PLUGIN_ID} entries once.`
     : `Open \`codex\`, run /hooks, and trust the AgenticOS entries once (${CH.hooksFile(A.readJson(A.configPath()))}).`);
   steps.push(`Bring in its session history: aos import --from ${host}${report.hosts[host] && report.hosts[host].present ? '' : ' (nothing on disk yet)'}`);
+  if (chief && chief.defaulted) {
+    const a = chief.answers;
+    steps.push(`Your Chief of Staff is ${a.name}, set up with the default answers: its duties run on ${host === 'claude' ? a.dutyModel : a.dutyCodexModel || 'your Codex default model'}. Change them with aos persona (its name: aos persona rename <name>).`);
+  } else if (!chief && !personaOff && !P.hasPersona(vault)) steps.push('No Chief of Staff on this vault yet: run aos persona to set one up.');
   steps.forEach((s, i) => io.log(`  ${i + 1}. ${s}`));
   return 0;
 }
