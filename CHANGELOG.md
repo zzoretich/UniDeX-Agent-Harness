@@ -64,6 +64,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **The Chief of Staff's models are priced as themselves.** Codex spend on `gpt-6-sol` is estimated at its published $2 / $10 per million tokens (it was estimated at the gpt-5 default, and that guess counted against `persona.perDayUsd`), and the cost module and the Brain hub's estimates price `claude-opus-5-5` at $4 / $20 instead of falling back to another model's rate. <!-- no-tour: price table; nothing new on screen -->
 - **Opus 5, 4.8 and 4.7 cost a third of what the cost module said.** Session costs and the Brain hub's estimates priced them at $15 / $75 per million tokens, the retired Opus 4.1's rate; they use Anthropic's published $5 / $25 now (`pricing.json`, checked 2026-10-15). <!-- no-tour: price table; nothing new on screen -->
 
+### Security
+- **The Workbench page can no longer write into the runtime's protected folders by spelling a path with other capital letters or Unicode forms, or through a link.** Main compares each path the way macOS's disk compares names and checks where the disk would put it as well as how it is written, under any name for the vault's folder (and the folders it never reads, under any name for them); a file the page copies never becomes executable, and a move to the Trash is checked and done as one step. <!-- no-tour: security fix -->
+
 ## [1.9.0] — 2026-10-12
 
 ### Upgrading

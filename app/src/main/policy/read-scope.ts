@@ -9,10 +9,12 @@
 // pickers probe candidates such as /opt/homebrew/bin/node), and the names in nvm's version folder. Credential files
 // are never read, even inside a root: a page that went wrong could otherwise hand a token to a link it opens. Nor are
 // the backups of a host's config and the runtime's keys (deniedDirs). Every deny is checked case-folded and in one
-// Unicode form, as written and as the disk resolves the path at that moment (a link, in any case, to what it denies).
+// Unicode form, as written and as the disk resolves the path at that moment (a link, in any case, to what it denies),
+// and a denied folder also by its identity (device and inode), so no other name for it gets past (identity.ts).
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { folderId, relUnder, type FolderId } from "./identity";
 
 export interface AgenticosPaths {
   claudeConfigDir?: string;
@@ -29,6 +31,8 @@ export interface ScopeOptions {
   agenticos: AgenticosPaths | null;
   /** How a path is resolved on disk (default fs.realpathSync.native); tests count the calls. */
   realpath?: (p: string) => string;
+  /** What is at a path, by device and inode (default identity.ts folderId); tests stand in a second name with it. */
+  identity?: (p: string) => FolderId | null;
 }
 
 /** Program names whose existence may be probed anywhere (nodeResolver, claudeAsk, the shell picker). */
@@ -110,6 +114,7 @@ export class ReadScope {
   /** The denied folders as configured; each check resolves them again (onDisk). */
   private readonly denied: string[];
   private readonly realpath: (p: string) => string;
+  private readonly identity: (p: string) => FolderId | null;
 
   constructor(o: ScopeOptions) {
     const under = (dirs: string[], names: string[]) => dirs.flatMap((d) => names.map((n) => path.join(d, n)));
@@ -130,22 +135,27 @@ export class ReadScope {
     ].flatMap(spellings);
     this.denied = deniedDirs(o).map((d) => path.resolve(d));
     this.realpath = o.realpath ?? fs.realpathSync.native;
+    this.identity = o.identity ?? folderId;
   }
 
   /**
    * Whether a deny covers this path: a credential's name, or a place inside a denied folder, each compared case-folded
    * in one Unicode form, as written and as the disk resolves it now (a link in the vault to the backups or to a
-   * credential file, in whatever case its target is spelled). One check resolves the path once and each denied folder
-   * once, and stops at the first deny that holds.
+   * credential file, in whatever case its target is spelled), and then inside a denied folder that is there by its
+   * identity, under whatever name the disk gives the path (macOS's /System/Volumes/Data firmlink, which realpath keeps).
+   * One check resolves the path once and each denied folder once, and stops at the first deny that holds.
    */
   private isDenied(p: string): boolean {
     const real = onDisk(p, this.realpath);
     for (const q of [p, real]) if (CREDENTIALS.test(path.basename(q).normalize("NFC"))) return true;
     const asked = [fold(p), fold(real)];
-    return this.denied.some((d) => {
+    const spelled = this.denied.some((d) => {
       const dirs = [fold(d), fold(onDisk(d, this.realpath))];
       return dirs.some((dir) => asked.some((q) => inside(dir, q)));
     });
+    if (spelled) return true;
+    const ids = this.denied.map(this.identity).filter((id): id is FolderId => id !== null);
+    return ids.length > 0 && relUnder(ids, real, this.identity) !== null;
   }
 
   /** Inside a root, or one of the files: what the page reads when no deny holds. */

@@ -8,6 +8,8 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { HostId, ImportRunRequest, InstallRequest, PersonaAnswers, SetupCheckId, SetupFixId } from "../../shared/ipc";
+import { foldPath } from "../../shared/surfaces";
+import { sameOnDisk } from "./identity";
 import type { ToolchainJob } from "../setup/toolchain";
 import { importArgs } from "../../../../obsidian-plugin/src/data/importModel";
 
@@ -45,13 +47,17 @@ export function fixCommandLine(id: SetupFixId): { file: string; args: string[] }
   return { file: "/bin/sh", args: ["-c", fix.command] };
 }
 
-/** A vault folder as the user typed or picked it: absolute, or ~/…; null when it is neither, or is home or a root. */
+/**
+ * A vault folder as the user typed or picked it: absolute, or ~/…; null when it is neither, or is home (in any spelling
+ * the disk opens as home: foldPath, or any other name for its folder, such as the /System/Volumes/Data firmlink) or a
+ * root.
+ */
 export function resolveVaultPath(input: string, home: string = os.homedir()): string | null {
   const raw = input.trim();
   const p = raw === "~" ? home : raw.startsWith("~/") ? path.join(home, raw.slice(2)) : raw;
   if (!path.isAbsolute(p) || p.includes("\0")) return null;
   const abs = path.resolve(p);
-  if (abs === path.resolve(home) || path.parse(abs).root === abs) return null;
+  if (foldPath(abs) === foldPath(path.resolve(home)) || sameOnDisk(abs, home) || path.parse(abs).root === abs) return null;
   return abs;
 }
 

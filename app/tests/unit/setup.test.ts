@@ -374,6 +374,11 @@ test("a vault folder is absolute or ~/…, never home itself or a root", () => {
   assert.equal(resolveVaultPath(" /Volumes/Data/Vault/ ", HOME), "/Volumes/Data/Vault");
   assert.equal(resolveVaultPath("~", HOME), null);
   assert.equal(resolveVaultPath(HOME, HOME), null);
+  // Home in another case is home on macOS's disk.
+  assert.equal(resolveVaultPath(HOME.toUpperCase(), HOME), null);
+  assert.equal(resolveVaultPath(`${path.dirname(HOME)}/${path.basename(HOME).toUpperCase()}/`, HOME), null);
+  // And home under the firmlink to the data volume, where this Mac has one.
+  if (fs.existsSync(`/System/Volumes/Data${HOME}`)) assert.equal(resolveVaultPath(`/System/Volumes/Data${HOME}`, HOME), null);
   assert.equal(resolveVaultPath("/", HOME), null);
   assert.equal(resolveVaultPath("AgenticOS", HOME), null);
 });
