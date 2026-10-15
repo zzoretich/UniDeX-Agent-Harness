@@ -74,7 +74,7 @@ test("with no install, the wizard checks what aos init needs, on the login PATH,
   // uv is required: Continue waits for it. Its button says what it downloads and from where, before anything runs.
   await expect(win.locator(".aos-setup-next")).toBeDisabled();
   await expect(row("uv").locator(".aos-setup-fix")).toHaveText("Install uv");
-  await expect(row("uv").locator(".aos-setup-fix")).toHaveAttribute("title", new RegExp(`^Downloads uv ${PINNED.tools.uv.version.replace(/\./g, "\\.")} from 127\\.0\\.0\\.1:\\d+ \\(1 MB\\) and checks its SHA-256 and its signature, then puts uv and uvx in ~/\\.local/bin$`));
+  await expect(row("uv").locator(".aos-setup-fix")).toHaveAttribute("title", new RegExp(`^Downloads uv ${PINNED.tools.uv.version.replace(/\./g, "\\.")} from 127\\.0\\.0\\.1:\\d+ \\(1 MB\\) and checks its SHA-256 and its signature, then unpacks it into ~/\\.local/share/unidex/uv/${PINNED.tools.uv.version.replace(/\./g, "\\.")} and links uv and uvx from ~/\\.local/bin$`));
   await expect(win.locator(".aos-setup-install-missing")).toHaveText("Install what's missing");
   expect(server.served).toEqual([]);
   await win.screenshot({ path: test.info().outputPath("wizard-check.png") });
@@ -105,13 +105,14 @@ test("Install what's missing downloads uv, checks it and installs it, then pulls
   const text = await log();
   expect(text).toMatch(/Checked: SHA-256 [0-9a-f]{64} is the pinned one\./);
   expect(text).toContain("uv: no signature to check (a development manifest).");
-  expect(text).toContain(`uv ${PINNED.tools.uv.version} is in ~/.local/bin.`);
+  expect(text).toContain(`uv ${PINNED.tools.uv.version} is in ~/.local/share/unidex/uv/${PINNED.tools.uv.version}, linked from ~/.local/bin.`);
   expect(text).toContain("Downloading qwen3.5:9b…");
   expect(text).toContain("  pulling manifest");
   expect(text).toContain("Ollama has qwen3.5:9b and qwen3-embedding:0.6b.");
   expect(fs.readFileSync(SETUP.models, "utf8")).toBe("qwen3.5:9b\nqwen3-embedding:0.6b\n");
   expect(fs.readdirSync(path.join(FX.home, ".local", "bin"))).toEqual(expect.arrayContaining(["uv", "uvx"]));
-  expect(fs.readdirSync(path.join(FX.home, ".local", "share", "unidex")).filter((n) => n.startsWith(".staging"))).toEqual([]);
+  expect(fs.readdirSync(path.join(FX.home, ".local", "share", "unidex", "uv"))).toEqual([PINNED.tools.uv.version]);
+  expect(fs.lstatSync(path.join(FX.home, ".local", "bin", "uv")).isSymbolicLink()).toBe(true);
   expect(fs.readdirSync(DOWNLOADS)).toEqual([]);
   const seen = await progress();
   const uvSize = fs.statSync(path.join(SETUP.archives, "uv")).size;

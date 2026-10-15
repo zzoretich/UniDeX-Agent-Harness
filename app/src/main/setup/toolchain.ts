@@ -645,7 +645,7 @@ export function describeJob(job: ToolchainJob, m: Manifest, arch: Arch, home: st
   const p = toolchainPaths(home, env, "");
   switch (job) {
     case "node": return `${pinned("node", "Node.js")}, then unpacks it into ${tilde(path.join(p.nodeRoot, `v${m.tools.node.version}`), home)} (${tilde(p.node, home)} is the Node ${BRAND.name} runs)`;
-    case "uv": return `${pinned("uv", "uv")}, then puts uv and uvx in ${tilde(p.localBin, home)}`;
+    case "uv": return `${pinned("uv", "uv")}, then unpacks it into ${tilde(path.join(p.unidex, "uv", m.tools.uv.version), home)} and links uv and uvx from ${tilde(p.localBin, home)}`;
     case "ollama": return `${pinned("ollama", "Ollama")} (Gatekeeper too), then moves Ollama.app into Applications and opens it in the background`;
     case "claude": return `${pinned("claude", "Claude Code")}, then runs its installer (claude install), which puts claude in ${tilde(p.localBin, home)}`;
     case "codex": return `${pinned("codex", "Codex")}, then installs it as Codex's own installer does (${tilde(path.join(p.codexHome, "packages", "standalone"), home)}, codex in ${tilde(p.localBin, home)})`;

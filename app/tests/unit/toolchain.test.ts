@@ -540,7 +540,7 @@ test("each job says what it will do, naming the pinned version and where it come
   const node = describeJob("node", MANIFEST, "arm64", home, {}, 16 * GB);
   assert.match(node, new RegExp(`Downloads Node\\.js ${MANIFEST.tools.node.version.replace(/\./g, "\\.")} from nodejs\\.org \\(\\d+ MB\\) and checks its SHA-256 and its signature`));
   assert.match(node, /~\/\.local\/share\/unidex\/node\/current\/bin\/node/);
-  assert.match(describeJob("uv", MANIFEST, "arm64", home, {}, 0), /from github\.com\/astral-sh\/uv .*uv and uvx in ~\/\.local\/bin/);
+  assert.match(describeJob("uv", MANIFEST, "arm64", home, {}, 0), /from github\.com\/astral-sh\/uv .*into ~\/\.local\/share\/unidex\/uv\/\d+\.\d+\.\d+ and links uv and uvx from ~\/\.local\/bin/);
   assert.match(describeJob("ollama", MANIFEST, "arm64", home, {}, 0), /from github\.com\/ollama\/ollama .*Gatekeeper too.*opens it in the background/);
   assert.match(describeJob("claude", MANIFEST, "x64", home, {}, 0), /from downloads\.claude\.ai .*claude install/);
   assert.match(describeJob("codex", MANIFEST, "arm64", home, {}, 0), /from github\.com\/openai\/codex .*~\/\.codex\/packages\/standalone/);

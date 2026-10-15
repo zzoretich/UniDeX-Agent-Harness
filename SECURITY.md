@@ -53,21 +53,28 @@ output. The design treats the page that shows them as untrusted (design D7,
     SHA-256 per Mac arch, and the Developer ID team that signs it). The download goes through Electron's `net` (the
     system's proxy and certificates) into the app's data folder; it is hashed as it arrives, more bytes than pinned stop
     it, and a size or hash that differs deletes it and fails the fix. Only a matching file is unpacked (`/usr/bin/tar`,
-    `/usr/bin/ditto`), into a staging folder; what it holds is checked again with `codesign --verify --strict` (and
-    `--deep` for the Ollama app) and its team, and the Ollama app also with Gatekeeper (`spctl -a`), before anything is
-    moved into place. It goes only where each tool's own installer puts it: Node into `~/.local/share/unidex/node`
-    (a version folder and a `current` link), uv into `~/.local/bin`, the Ollama app into `/Applications` (else
-    `~/Applications`), opened hidden; Claude Code runs its own checked binary's `claude install`; Codex is laid out as
-    its own installer lays it out (`<codex home>/packages/standalone`, linked from `~/.local/bin`). Ollama's models
-    come through its own API on 127.0.0.1. Nothing needs Homebrew or npm, and nothing runs through a shell but the two
+    `/usr/bin/ditto`), into a staging folder; every executable it installs (Node's `node`; uv's `uv` and `uvx`;
+    Codex's `codex`, `codex-code-mode-host` and `rg`; Claude Code's binary) is checked again with
+    `codesign --verify --strict` and its team, and the Ollama app with `--deep` and Gatekeeper (`spctl -a`), before
+    anything is moved into place. It goes only where each tool's own installer puts it: Node into
+    `~/.local/share/unidex/node` (a version folder and a `current` link), uv into `~/.local/share/unidex/uv/<version>`
+    linked from `~/.local/bin`, the Ollama app into `/Applications` (else `~/Applications`), opened hidden, and never
+    over an Ollama that is there; Claude Code runs its own checked binary's `claude install`; Codex is laid out as its
+    own installer lays it out (`<codex home>/packages/standalone`, linked from `~/.local/bin`). Anything already at a
+    destination that is not a link into the installer's own tree (another uv, an npm codex, a half-installed release)
+    is moved aside to `<name>.unidex-backup-<time>` and logged, never replaced unseen. A job that is stopped stops after
+    the program it was running, moves nothing more and ends as stopped. Ollama's models come through its own API on
+    127.0.0.1. Nothing needs Homebrew or npm, and nothing runs through a shell but the two
     logins (`claude auth login`, `codex login`), fixed commands run by `/bin/sh -c` in a terminal the wizard shows. A
     development run (never a packaged one) may read another manifest from `$AOS_TOOLCHAIN_MANIFEST`, which may name
     127.0.0.1 and no team: the end-to-end suite's stand-ins. `aos init` and `aos upgrade` are the bundled runtime's CLI,
-    run with the `node` main found, never through a shell and with no stdin; `--host none` installs with no host. The
+    run with the `node` main found, never through a shell and with no stdin; `--host none` installs with no host, and a
+    `--host` that would turn off a wired host is refused. Background model calls go only to a host the user enabled
+    (or the one `provider` names). The
     persona answers are checked against the interview's rules, written to the app's data folder (mode 0600) and
     removed when `aos init` ends. The `CLAUDE.md` line and file, and Finish's PATH line
-    (`export PATH="$HOME/.local/bin:$PATH"`, into `~/.zprofile`, `$ZDOTDIR`'s when set), are main's to compute; each is
-    appended once, only when the page asks (a Claude Code install; the PATH box ticked, after the install and before a
+    (`export PATH="$HOME/.local/bin:$PATH"`, into `~/.zprofile`, `$ZDOTDIR`'s when set), are main's to compute; a file that
+    exists but cannot be read is refused with the reason, never replaced; each line is appended once, only when the page asks (a Claude Code install; the PATH box ticked, after the install and before a
     vault is attached). Install runs only with no vault attached, upgrade only when the app's runtime is newer than the
     vault's, and one job runs at a time.
   - *The OS:* links open in the browser over https only. A document or a folder opens with its app; a file that would
