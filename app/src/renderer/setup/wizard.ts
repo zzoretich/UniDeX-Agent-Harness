@@ -155,10 +155,13 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     return false;
   }
 
-  /** The essentials that are missing and can run now (Ollama's models wait for Ollama, which the queue installs first). */
+  /** The essentials that are missing and can run (Ollama's models wait only for an Ollama the queue installs first). */
   const missingEssentials = (): SetupFixId[] => ESSENTIALS.filter((id) => {
     const c = checkOf(id);
-    return !!c && c.state !== "ok" && !!c.fix && (!c.fixBlocked || (id === "ollama-models" && checkOf("ollama")?.state !== "ok" && !checkOf("ollama")?.fixBlocked));
+    if (!c || c.state === "ok" || !c.fix) return false;
+    if (!c.fixBlocked) return true;
+    const ollama = s.report?.checks.find((x) => x.id === "ollama");
+    return id === "ollama-models" && ollama?.fix === "ollama" && !ollama.fixBlocked;
   });
 
   function installMissing(): void {
