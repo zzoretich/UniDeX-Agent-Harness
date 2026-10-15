@@ -1,6 +1,7 @@
 // install-import B2, B13, B14: the wizard on a Mac with neither Claude Code nor Codex. Nothing about a host holds up the
 // checks; Choose offers "No agent CLI yet" (and only that), skips the Chief of Staff, and installs with `--host none`;
-// Finish says, step by step, how to add a host later, and an unticked PATH box writes nothing. Stand-ins as in
+// with no host history on this Mac "Bring in your history" is skipped and Finish says so; Finish says, step by step,
+// how to add a host later, and an unticked PATH box writes nothing. Stand-ins as in
 // setup.spec.ts, without the two CLIs; uv and Ollama's models are already there, so nothing is downloaded.
 
 import { expect, test } from "@playwright/test";
@@ -85,21 +86,28 @@ test("Choose offers No agent CLI yet, says what waits for a host, and installs w
   await win.locator(".aos-setup-install").click();
   await expect(win.locator('.aos-setup-body[data-step="finish"]')).toBeVisible({ timeout: 20_000 });
   const calls = aosCalls();
-  expect(calls).toHaveLength(1);
+  // aos init, then the import's dry run, which found nothing: the history step is skipped (install-import B13).
+  expect(calls).toHaveLength(2);
   expect(calls[0].argv).toEqual(["init", "--yes", "--vault", FX.vault, "--host", "none"]);
   expect(calls[0].persona).toBeNull();
+  expect(calls[1].argv).toEqual(["import", "--from", "all", "--dry-run", "--json"]);
+  await expect(win.locator('.aos-setup-step[data-step="history"]')).toHaveClass(/is-done/);
 });
 
 test("Finish says how to add a host, step by step, and has no CLAUDE.md or Codex steps", async () => {
   const { win } = app();
   await expect(win.locator('[data-section="claude-md"]')).toHaveCount(0);
   await expect(win.locator('[data-section="codex-hooks"]')).toHaveCount(0);
+  const history = win.locator('[data-section="history"]');
+  await expect(history.locator("h3")).toHaveText("Nothing to import yet");
+  await expect(history.locator(".aos-setup-hint")).toHaveText("Claude Code and Codex have left no history on this Mac. Once you use one, Settings ▸ Import in the Workbench brings it in.");
   const sec = win.locator('[data-section="no-host"]');
   await expect(sec.locator("h3")).toHaveText("Add Claude Code or Codex");
   const steps = sec.locator("li");
   await expect(steps).toHaveCount(3);
   await expect(steps.nth(0)).toHaveText("Open Terminal (in Applications ▸ Utilities).");
-  await expect(steps.nth(2)).toHaveText("Type ~/.local/bin/aos hosts add claude (or ~/.local/bin/aos hosts add codex) and press Return. It wires the host into this vault and keeps your files.");
+  await expect(steps.nth(1)).toHaveText("Install one and sign in: Claude Code with curl -fsSL https://claude.ai/install.sh | bash, then claude auth login; or Codex with curl -fsSL https://chatgpt.com/codex/install.sh | sh, then codex login.");
+  await expect(steps.nth(2)).toHaveText("Type ~/.local/bin/aos hosts add claude (or ~/.local/bin/aos hosts add codex) and press Return, or Add it under Settings ▸ Hosts in the Workbench. It wires the host into this vault and keeps your files.");
   await win.screenshot({ path: test.info().outputPath("wizard-finish-nohost.png") });
 });
 

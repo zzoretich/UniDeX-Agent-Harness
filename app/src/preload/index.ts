@@ -80,6 +80,9 @@ const api: AosBridge = {
     noted: () => ipcRenderer.send(CH.setupNoted, {}),
     pathLine: () => sync(CH.setupPathLine, {}),
     addToPath: () => sync(CH.setupAddToPath, {}),
+    importScan: () => invoke(CH.setupImportScan, {}),
+    importHistory: (req) => sync(CH.setupImport, req),
+    unwire: (host) => sync(CH.setupUnwire, { host }),
     onEvent: (cb) => listen<SetupEvent>(CH.setupEvent, cb),
   },
   update: {

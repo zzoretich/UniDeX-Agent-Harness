@@ -1,22 +1,37 @@
-// The first-run wizard (phase 5, I4; install-import B1, B2, B13, B14): what the page shows when no vault is attached. It
-// checks what `aos init` needs and installs what is missing itself (main downloads each pinned tool, checks it and puts
-// it in place, with its progress here; the logins run in a terminal shown here), asks which hosts (or none yet) and
-// which folder, asks the Chief of Staff questions, runs `aos init` from the runtime the app carries, then lists what is
-// left, step by step: the CLAUDE.md line as a diff, Codex's /hooks, a host to add later, and the PATH line. It ends in
-// the Workbench. Every step is a call main checks (src/main/ipc/setup.ts); the page names a fix by id and never sends a
-// command, a URL, a CLAUDE.md path or a profile path.
+// The first-run wizard (phase 5, I4; install-import B1, B2, B9, B13, B14): what the page shows when no vault is attached.
+// It checks what `aos init` needs and installs what is missing itself (main downloads each pinned tool, checks it and
+// puts it in place, with its progress here; the logins run in a terminal shown here), asks which hosts (or none yet) and
+// which folder (an earlier install's host that choice would drop is a choice too: keep it, or take its wiring out
+// first, inspection F7), asks the Chief of Staff questions, runs `aos init` from the runtime the app carries, then brings
+// in the history Claude Code and Codex left on this Mac (counts per host and kind from `aos import --dry-run`, all
+// ticked; the proposed workspaces ticked; Import runs the fast phase with its progress and queues the digest; nothing
+// there, and the step is skipped), then lists what is left, step by step: the CLAUDE.md line as a diff, Codex's
+// /hooks, the history's digest, a host to add later, and the PATH line. It ends in the Workbench. Every step is a call
+// main checks (src/main/ipc/setup.ts); the page names a fix by id, hosts, kinds and the scan's proposals, and never sends
+// a command, a URL, a CLAUDE.md path or a profile path.
 
 import type { AosBridge, BootInfo, ClaudeMdPreview, InstallRequest, PathLinePreview, PersonaAnswers, PreflightReport, SetupCheck, SetupEvent, SetupFixId } from "../../shared/ipc";
 import { CHIEF_MODELS } from "../../shared/ipc";
 import { chiefSummary } from "./chief";
 import { BRAND } from "../../shared/brand";
-import { addHostCommand, defaultHost, hostOffered, reconcileHost } from "./choices";
+import { addHostCommand, defaultHost, droppedHosts, hostOffered, keepingChoice, reconcileHost } from "./choices";
 import { JobTerminal } from "./jobTerminal";
+import {
+  IMPORT_HOST_LABEL, IMPORT_KIND_LABEL, ProgressFollower, engineLine, importSteps, parseScan, scanCell, scanEmpty, scanHosts, scanKinds,
+  type ImportHost, type ImportKind, type ImportProgress, type ImportScan,
+} from "../../../../obsidian-plugin/src/data/importModel";
+import { INSTALL_COMMAND, LOGIN_COMMAND } from "../../../../obsidian-plugin/src/data/hostsState";
 
-type Step = "check" | "choose" | "persona" | "install" | "finish";
+type Step = "check" | "choose" | "persona" | "install" | "history" | "finish";
 type Host = InstallRequest["host"];
 
-const STEPS: Array<[Step, string]> = [["check", "Check"], ["choose", "Choose"], ["persona", "Your agent"], ["install", "Install"], ["finish", "Finish"]];
+const STEPS: Array<[Step, string]> = [["check", "Check"], ["choose", "Choose"], ["persona", "Your agent"], ["install", "Install"], ["history", "Your history"], ["finish", "Finish"]];
+const HOST_NAME: Record<"claude" | "codex", string> = { claude: "Claude Code", codex: "Codex" };
+/** The kinds the table shows per host; projects are the proposals listed under it. */
+const TABLE_KINDS: ImportKind[] = ["instructions", "memories", "mcp", "sessions"];
+
+/** What came of "Bring in your history": not reached yet, nothing on this Mac, skipped (a stopped import too), or imported. */
+export type HistoryOutcome = "pending" | "nothing" | "skipped" | "imported";
 
 /** What "Install what's missing" runs, in order: what `aos init` needs, then Ollama and its models. The hosts are the user's choice. */
 export const ESSENTIALS: readonly SetupFixId[] = ["node", "uv", "ollama", "ollama-models"];
@@ -60,6 +75,19 @@ interface State {
   pathLineError: string | null;
   /** Finish's "Add aos to my PATH" box. */
   addPath: boolean;
+  /** An earlier install's hosts being unwired, one after another (inspection F7), and whether the last one failed. */
+  unwireQueue: Array<"claude" | "codex">;
+  unwireFailed: boolean;
+  /** Bring in your history (install-import B13): the scan, what is ticked, the run's progress and how it ended. */
+  scan: ImportScan | null;
+  scanning: boolean;
+  scanError: string | null;
+  importHosts: Set<ImportHost>;
+  importKinds: Set<ImportKind>;
+  accept: Set<string>;
+  importProgress: ImportProgress | null;
+  importExit: number | null | undefined;
+  history: HistoryOutcome;
   error: string | null;
 }
 
@@ -71,8 +99,12 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     vault: setup?.configuredVault ?? setup?.defaultVault ?? "~/AgenticOS",
     // local-first A4: the Chief of Staff's hosted models, preselected; each is sent only where its host is on.
     persona: { name: "", addressAs: "", voice: "", priorities: [], dutyModel: CHIEF_MODELS.claude, dutyCodexModel: CHIEF_MODELS.codex, dutyEffort: "medium", schedule: true },
-    personaSkipped: false, installExit: undefined, claudeMd: null, pathLine: null, pathLineError: null, addPath: true, error: null,
+    personaSkipped: false, installExit: undefined, claudeMd: null, pathLine: null, pathLineError: null, addPath: true,
+    unwireQueue: [], unwireFailed: false, scan: null, scanning: false, scanError: null, importHosts: new Set(), importKinds: new Set(), accept: new Set(),
+    importProgress: null, importExit: undefined, history: "pending", error: null,
   };
+  /** Follows a running import's output for its progress (importModel.ts). */
+  let follower: ProgressFollower | null = null;
 
   const shell = root.createDiv({ cls: "aos-setup" });
   const head = shell.createDiv({ cls: "aos-setup-head" });
@@ -100,7 +132,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
   (window as unknown as { aosSetup: unknown }).aosSetup = { state: s, log: () => term?.plain ?? "" };
 
   aos.setup.onEvent((ev) => {
-    if (ev.type === "data") { term?.write(ev.data); return; }
+    if (ev.type === "data") { term?.write(ev.data); if (ev.job === "import") follower?.push(ev.data); return; }
     if (ev.type === "progress") { s.progress = { label: ev.label, received: ev.received, total: ev.total }; paintProgress(); return; }
     const job = s.job;
     s.job = null;
@@ -114,7 +146,18 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       void check().then(() => { if (code === 0) next(); });
     } else if (job?.kind === "install") {
       s.installExit = code;
-      if (code === 0) { s.step = "finish"; loadFinish(); }
+      if (code === 0) { s.step = "history"; void loadHistory(); }
+      render();
+    } else if (job?.kind === "unwire") {
+      s.unwireFailed = code !== 0;
+      if (code !== 0) { s.unwireQueue = []; s.error = "Taking the earlier install's host out stopped: the output below says why."; }
+      // The next host, or the checks again: agenticos.json changed, and Choose follows what it says now.
+      void check().then(() => { if (code === 0) nextUnwire(); });
+    } else if (job?.kind === "import") {
+      follower?.end();
+      follower = null;
+      s.importExit = code;
+      if (code === 0) { s.history = "imported"; s.step = "finish"; loadFinish(); }
       render();
     }
   });
@@ -179,6 +222,8 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
   function install(): void {
     // Never an install for a choice Choose does not show (M2): a host that logged out, or "none" once one is ready.
     if (!s.report || !hostOffered(s.host, s.report.hosts)) { s.host = reconcileHost(s.host, s.report?.hosts ?? { claude: false, codex: false }, s.hostPicked); s.step = "choose"; s.error = "Choose a host again: what is ready changed."; render(); return; }
+    // Inspection F7: aos init refuses a choice that drops a host an earlier install has on; Choose resolves it first.
+    if (droppedHosts(s.host, s.report.wired).length) { s.step = "choose"; s.error = null; render(); return; }
     const req: InstallRequest = { host: s.host, vault: s.vault, persona: s.personaSkipped || s.host === "none" ? null : { ...s.persona } };
     terminal(false);
     const r = aos.setup.install(req);
@@ -187,6 +232,78 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     s.installExit = undefined;
     s.error = null;
     s.step = "install";
+    render();
+  }
+
+  /** Inspection F7's "take it out first": `aos uninstall --host <host>` for each wired host the choice drops, in turn. */
+  function unwire(hosts: Array<"claude" | "codex">): void {
+    s.unwireQueue = [...hosts];
+    s.unwireFailed = false;
+    s.error = null;
+    terminal(false);
+    nextUnwire();
+  }
+
+  function nextUnwire(): void {
+    const host = s.unwireQueue.shift();
+    if (!host) { render(); return; }
+    const r = aos.setup.unwire(host);
+    if (!r.ok) { s.error = `${HOST_NAME[host]}: ${r.error}`; s.unwireQueue = []; render(); return; }
+    s.job = { kind: "unwire" };
+    render();
+  }
+
+  /** Bring in your history (B13): what there is, all of it ticked; nothing there, and the step is skipped. */
+  async function loadHistory(): Promise<void> {
+    s.scanning = true;
+    s.scanError = null;
+    render();
+    const r = await aos.setup.importScan();
+    s.scanning = false;
+    const scan = r.ok ? parseScan(r.data) : null;
+    if (!r.ok || !scan) {
+      s.scanError = r.ok ? "aos import answered in an unexpected shape" : r.error;
+      render();
+      return;
+    }
+    s.scan = scan;
+    if (scanEmpty(scan)) {
+      s.history = "nothing";
+      s.step = "finish";
+      loadFinish();
+      render();
+      return;
+    }
+    s.importHosts = new Set(scanHosts(scan));
+    s.importKinds = new Set(scanKinds(scan).filter((k) => k !== "projects"));
+    s.accept = new Set(scan.proposals.map((p) => p.id));
+    render();
+  }
+
+  /** The kinds the run brings: the ticked ones, and projects when a proposal is ticked. */
+  function importKindsChosen(): ImportKind[] {
+    return [...s.importKinds, ...(s.accept.size ? ["projects" as ImportKind] : [])];
+  }
+
+  function runImport(): void {
+    const from = [...s.importHosts];
+    const only = importKindsChosen();
+    if (!from.length || !only.length) return;
+    terminal(false);
+    follower = new ProgressFollower(importSteps({ from, only }), (p) => { s.importProgress = p; paintImportProgress(); });
+    const r = aos.setup.importHistory({ from, only, accept: [...s.accept] });
+    if (!r.ok) { follower = null; s.error = r.error; render(); return; }
+    s.job = { kind: "import" };
+    s.importProgress = null;
+    s.importExit = undefined;
+    s.error = null;
+    render();
+  }
+
+  function skipHistory(): void {
+    s.history = "skipped";
+    s.step = "finish";
+    loadFinish();
     render();
   }
 
@@ -308,6 +425,8 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       lab.appendText(` ${label}`);
     }
     if (s.host === "none") el.createEl("p", { cls: "aos-setup-hint", attr: { "data-hint": "no-host" }, text: "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Finish says how." });
+    const dropped = droppedHosts(s.host, s.report?.wired);
+    if (dropped.length) renderWired(el, dropped, ready);
     el.createEl("h3", { text: "Vault folder" });
     el.createEl("p", { cls: "aos-setup-hint", text: "Your notes, memory and the runtime live here, as plain Markdown. Files already there are kept." });
     const row = el.createDiv({ cls: "aos-setup-vault" });
@@ -318,9 +437,33 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     const foot = el.createDiv({ cls: "aos-setup-foot" });
     button(foot, "Back", () => { s.step = "check"; render(); });
     foot.createDiv({ cls: "aos-setup-spacer" });
-    // No host, no Chief of Staff yet: straight to the install.
-    if (s.host === "none") button(foot, "Install", () => install(), { cta: true, cls: "aos-setup-install", disabled: !s.vault.trim() });
-    else button(foot, "Continue", () => { s.step = "persona"; render(); }, { cta: true, cls: "aos-setup-next", disabled: !s.vault.trim() });
+    // No host, no Chief of Staff yet: straight to the install. Either waits while an earlier install's host is in the way.
+    const blocked = !s.vault.trim() || dropped.length > 0 || !!s.job;
+    if (s.host === "none") button(foot, "Install", () => install(), { cta: true, cls: "aos-setup-install", disabled: blocked });
+    else button(foot, "Continue", () => { s.step = "persona"; render(); }, { cta: true, cls: "aos-setup-next", disabled: blocked });
+  }
+
+  /**
+   * Inspection F7, as a choice: an earlier install's agenticos.json has a host on that this choice drops. aos init never
+   * unwires a host, so it would refuse; here the user keeps it (when it is ready) or takes its wiring out first.
+   */
+  function renderWired(el: HTMLElement, dropped: Array<"claude" | "codex">, ready: { claude: boolean; codex: boolean }): void {
+    const names = dropped.map((h) => HOST_NAME[h]).join(" and ");
+    const box = el.createDiv({ cls: "aos-setup-callout is-warn", attr: { "data-callout": "wired" } });
+    box.createEl("p", {
+      text: `An earlier install on this Mac left ${names} on (${setup?.agenticosFile ?? "agenticos.json"}), so ${dropped.length === 1 ? "its" : "their"} ${BRAND.name} plugin, hooks and MCP server may still be wired. `
+        + `Installing without ${names} would leave ${dropped.length === 1 ? "that wiring" : "it"} in place while the install says ${dropped.length === 1 ? "it is" : "they are"} off, so it needs your choice first:`,
+    });
+    const row = box.createDiv({ cls: "aos-setup-foot" });
+    const keep = keepingChoice(s.host, s.report?.wired, ready);
+    if (keep) {
+      button(row, `Keep ${names} too`, () => { s.host = keep; s.hostPicked = true; s.error = null; render(); }, { cls: "aos-setup-keep-wired", disabled: !!s.job, title: `Install for ${keep === "both" ? "Claude Code and Codex" : HOST_NAME[keep as "claude" | "codex"]}` });
+    }
+    button(row, `Remove ${names}'s wiring first`, () => unwire(dropped), {
+      cls: "aos-setup-unwire", disabled: !!s.job,
+      title: `Runs aos uninstall --host ${dropped.join(" and aos uninstall --host ")}: the ${BRAND.name} plugin, hooks and MCP server come out of ${names}; ${names} itself, its sessions and settings stay`,
+    });
+    if (!keep) box.createEl("p", { cls: "aos-setup-hint", text: `To keep ${names} instead, install and log in to ${dropped.length === 1 ? "it" : "them"} on Check, then choose ${dropped.length === 1 && s.host !== "none" ? "Both" : "it"} here.` });
   }
 
   function renderPersona(el: HTMLElement): void {
@@ -390,6 +533,115 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     }
   }
 
+  /** Redraws only the import's bar (each finished step moves it). */
+  function paintImportProgress(): void {
+    const wrap = body.querySelector<HTMLElement>(".aos-setup-progress");
+    if (!wrap) return;
+    const p = s.importProgress;
+    const label = wrap.querySelector<HTMLElement>(".aos-setup-progress-label");
+    const bar = wrap.querySelector<HTMLElement>(".aos-setup-progress-bar");
+    const fill = wrap.querySelector<HTMLElement>(".aos-setup-progress-fill");
+    wrap.toggleClass("is-idle", !p);
+    if (label) label.textContent = p ? `${p.done} of ${p.steps} · ${p.label}` : "Starting…";
+    const pct = p?.steps ? Math.min(100, Math.round((p.done / p.steps) * 100)) : 0;
+    if (bar) { bar.setAttribute("aria-valuemax", "100"); bar.setAttribute("aria-valuenow", String(pct)); bar.setAttribute("aria-label", label?.textContent ?? ""); }
+    if (fill) fill.style.width = `${pct}%`;
+  }
+
+  function renderHistory(el: HTMLElement): void {
+    el.createEl("h2", { text: "Bring in your history" });
+    const scan = s.scan;
+    if (s.scanning || (!scan && !s.scanError)) { el.createEl("p", { cls: "aos-setup-hint", attr: { "data-hint": "scanning" }, text: "Looking at what Claude Code and Codex left on this Mac… Nothing is written." }); return; }
+    if (!scan) {
+      el.createDiv({ cls: "aos-setup-callout is-warn", attr: { "data-callout": "scan-failed" }, text: `Could not look at your history: ${s.scanError}. You can import it later from the Workbench (Settings ▸ Import).` });
+      const foot = el.createDiv({ cls: "aos-setup-foot" });
+      button(foot, "Try again", () => void loadHistory(), { cls: "aos-setup-retry" });
+      foot.createDiv({ cls: "aos-setup-spacer" });
+      button(foot, "Skip", () => skipHistory(), { cta: true, cls: "aos-setup-skip-import" });
+      return;
+    }
+    const running = s.job?.kind === "import";
+    el.createEl("p", { cls: "aos-setup-hint", text: `What Claude Code and Codex left on this Mac, from ${scan.windowDays ? `the last ${scan.windowDays} days` : "all your history"}. Everything is ticked: untick what you would rather leave out. Memories go to Brain ▸ Review for you to keep; nothing leaves this Mac.` });
+    el.createEl("p", { cls: "aos-setup-hint", attr: { "data-hint": "engine" }, text: engineLine(scan) });
+    const hosts = scanHosts(scan);
+    const kinds = TABLE_KINDS.filter((k) => hosts.some((h) => scanCell(scan.hosts[h]!, k)));
+    const table = el.createEl("table", { cls: "aos-setup-import" });
+    const head = table.createEl("tr");
+    head.createEl("th", { text: "" });
+    for (const k of kinds) {
+      const th = head.createEl("th");
+      const lab = th.createEl("label", { cls: "aos-setup-check-field" });
+      const cb = lab.createEl("input", { attr: { type: "checkbox", "data-kind": k } });
+      cb.checked = s.importKinds.has(k);
+      cb.disabled = running;
+      cb.addEventListener("change", () => { if (cb.checked) s.importKinds.add(k); else s.importKinds.delete(k); render(); });
+      lab.appendText(` ${IMPORT_KIND_LABEL[k]}`);
+    }
+    for (const h of hosts) {
+      const x = scan.hosts[h]!;
+      const tr = table.createEl("tr", { attr: { "data-host": h } });
+      const th = tr.createEl("th");
+      const lab = th.createEl("label", { cls: "aos-setup-check-field" });
+      const cb = lab.createEl("input", { attr: { type: "checkbox", "data-host": h } });
+      cb.checked = s.importHosts.has(h);
+      cb.disabled = running;
+      cb.addEventListener("change", () => { if (cb.checked) s.importHosts.add(h); else s.importHosts.delete(h); render(); });
+      lab.appendText(` ${IMPORT_HOST_LABEL[h]}`);
+      th.createDiv({ cls: "aos-setup-detail", text: x.configDir });
+      for (const k of kinds) tr.createEl("td", { attr: { "data-kind": k }, text: scanCell(x, k)?.text ?? "—" });
+    }
+    if (scan.proposals.length) {
+      const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": "proposals" } });
+      sec.createEl("h3", { text: "Projects to make into workspaces" });
+      sec.createEl("p", { cls: "aos-setup-hint", text: "Folders your sessions ran in, by git repository: each ticked one becomes a workspace (or links to the one it matches), with its repository recorded. Nothing in the folder moves." });
+      for (const p of scan.proposals) {
+        const lab = sec.createEl("label", { cls: "aos-setup-check-field aos-setup-proposal" });
+        const cb = lab.createEl("input", { attr: { type: "checkbox", "data-proposal": p.id } });
+        cb.checked = s.accept.has(p.id);
+        cb.disabled = running;
+        cb.addEventListener("change", () => { if (cb.checked) s.accept.add(p.id); else s.accept.delete(p.id); render(); });
+        lab.appendText(` ${p.action === "new" ? `workspaces/${p.slug}` : `link to ${p.into ?? p.slug}`} · ${p.id} · ${p.reason}`);
+      }
+    }
+    if (running) progressBarIn(el);
+    else if (s.importExit !== undefined && s.importExit !== 0) {
+      el.createDiv({ cls: "aos-setup-status is-warn", text: `aos import stopped (exit ${s.importExit ?? "?"}). The output below says why; what it already brought in stays, and a second run brings only the rest.` });
+    }
+    const foot = el.createDiv({ cls: "aos-setup-foot" });
+    if (running) button(foot, "Stop", () => aos.setup.cancel(), { cls: "aos-setup-stop", title: "Stops aos import; what it already brought in stays, and a later import brings only the rest" });
+    else button(foot, "Skip", () => skipHistory(), { cls: "aos-setup-skip-import", title: "Import it later from the Workbench: Settings ▸ Import" });
+    foot.createDiv({ cls: "aos-setup-spacer" });
+    const none = !s.importHosts.size || !importKindsChosen().length;
+    if (!running) button(foot, s.importExit !== undefined && s.importExit !== 0 ? "Try again" : "Import", () => runImport(), { cta: true, cls: "aos-setup-import-run", disabled: none, title: none ? "Tick a host and something to bring" : "" });
+  }
+
+  /** The import's bar, under the table. */
+  function progressBarIn(parent: HTMLElement): void {
+    const wrap = parent.createDiv({ cls: "aos-setup-progress", attr: { "data-progress": "import" } });
+    wrap.createDiv({ cls: "aos-setup-progress-label" });
+    const bar = wrap.createDiv({ cls: "aos-setup-progress-bar", attr: { role: "progressbar", "aria-valuemin": "0" } });
+    bar.createDiv({ cls: "aos-setup-progress-fill" });
+    paintImportProgress();
+  }
+
+  /** Finish's history item (B13): what the import queued, or how to bring it in later. */
+  function historyItem(el: HTMLElement): void {
+    if (s.history === "pending") return;
+    if (s.history === "nothing") {
+      leftItem(el, "history", "Nothing to import yet", "Claude Code and Codex have left no history on this Mac. Once you use one, Settings ▸ Import in the Workbench brings it in.", []);
+      return;
+    }
+    if (s.history !== "imported") {
+      leftItem(el, "history", "Bring in your history later", "Settings ▸ Import in the Workbench imports what Claude Code and Codex left on this Mac whenever you like.", []);
+      return;
+    }
+    const sessions = [...s.importHosts].reduce((n, h) => n + (s.importKinds.has("sessions") ? s.scan?.hosts[h]?.sessions ?? 0 : 0), 0);
+    const models = checkOf("ollama-models") ?? s.report?.checks.find((x) => x.id === "ollama-models");
+    const waits = !s.scan?.engine.ready && (!models || models.state !== "ok");
+    leftItem(el, "history", "Your history is coming in",
+      `Its instructions and memories wait in Brain ▸ Review for you to keep.${sessions ? ` ${sessions} session${sessions === 1 ? "" : "s"} are queued: the import-digest routine summarises them on the local model every 30 minutes${waits ? ", once Ollama's models are downloaded" : ""}, and Pulse shows how far it got.` : ""}`, []);
+  }
+
   /** One item of Finish's list: a heading, why, and the steps, in order. */
   function leftItem(el: HTMLElement, key: string, title: string, why: string, steps: string[]): HTMLElement {
     const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": key } });
@@ -439,12 +691,13 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       leftItem(el, "no-host", "Add Claude Code or Codex",
         "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Your vault, its memory and the background work on this Mac run without one.",
         [TERMINAL,
-          "Install one and sign in: Claude Code with curl -fsSL https://claude.ai/install.sh | bash, then claude auth login; or Codex with curl -fsSL https://chatgpt.com/codex/install.sh | sh, then codex login.",
-          `Type ${addHostCommand(aosCmd)} (or ${addHostCommand(aosCmd, "codex")}) and press Return. It wires the host into this vault and keeps your files.`]);
+          `Install one and sign in: Claude Code with ${INSTALL_COMMAND.claude}, then ${LOGIN_COMMAND.claude}; or Codex with ${INSTALL_COMMAND.codex}, then ${LOGIN_COMMAND.codex}.`,
+          `Type ${addHostCommand(aosCmd)} (or ${addHostCommand(aosCmd, "codex")}) and press Return, or Add it under Settings ▸ Hosts in the Workbench. It wires the host into this vault and keeps your files.`]);
     } else if (s.personaSkipped) {
       leftItem(el, "persona", "Set up your Chief of Staff", "You skipped its questions; it starts once you answer them.",
         [TERMINAL, `Type ${aosCmd} persona and press Return, then answer its questions.`]);
     }
+    historyItem(el);
     for (const id of ["ollama", "ollama-models"] as const) {
       const c = checkOf(id) ?? s.report?.checks.find((x) => x.id === id);
       if (!c || c.state === "ok") continue;
@@ -493,10 +746,13 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     renderNav();
     body.empty();
     body.setAttr("data-step", s.step);
-    ({ check: renderCheck, choose: renderChoose, persona: renderPersona, install: renderInstall, finish: renderFinish })[s.step](body);
+    ({ check: renderCheck, choose: renderChoose, persona: renderPersona, install: renderInstall, history: renderHistory, finish: renderFinish })[s.step](body);
     if (s.error) body.createDiv({ cls: "aos-setup-error is-shown", text: s.error });
-    // The terminal shows while it has something to show: on the checks, the install, and a job Finish started.
-    termHost.toggleClass("is-hidden", !term || (s.step !== "check" && s.step !== "install" && !(s.step === "finish" && s.job)));
+    // The terminal shows while it has something to show: on the checks, the install, an unwire on Choose, the import
+    // (and its output once it stopped), and a job Finish started.
+    const shows = s.step === "check" || s.step === "install" || (s.step === "history" && (!!s.job || (s.importExit !== undefined && s.importExit !== 0)))
+      || ((s.step === "choose" || s.step === "finish") && !!s.job) || (s.step === "choose" && s.unwireFailed);
+    termHost.toggleClass("is-hidden", !term || !shows);
     term?.refit();
   }
 

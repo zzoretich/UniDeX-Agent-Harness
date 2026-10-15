@@ -3,7 +3,7 @@
 // HUD sends and small enough that one call cannot exhaust main.
 
 import { z } from "zod";
-import type { ExecRequest, InstallRequest, PersonaAnswers, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
+import type { ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
 
 const MB = 1024 * 1024;
 
@@ -109,6 +109,15 @@ export const InstallRequestSchema: z.ZodType<InstallRequest> = z.object({
   vault: Text(4096).refine((s) => s.trim().length > 0, "a folder"),
   persona: PersonaSchema.nullable(),
 });
+
+/** "Bring in your history" (install-import B9, B13): ticked hosts and kinds, each once, and up to 100 proposal ids. */
+export const ImportRunSchema: z.ZodType<ImportRunRequest> = z.object({
+  from: z.array(z.enum(["claude", "codex"])).min(1).max(2).refine((a) => new Set(a).size === a.length, "each host once"),
+  only: z.array(z.enum(["instructions", "memories", "projects", "mcp", "sessions"])).min(1).max(5).refine((a) => new Set(a).size === a.length, "each kind once"),
+  accept: z.array(Text(1024)).max(100),
+}).strict();
+/** The host whose wiring an earlier install left on (inspection F7). */
+export const UnwireArgs = z.object({ host: z.enum(["claude", "codex"]) }).strict();
 
 // Sessions (spec 2026-10-07-unidex-sessions S3): the page names a workspace, a thread, a host, a prompt or a file; main
 // and the runtime decide everything else.

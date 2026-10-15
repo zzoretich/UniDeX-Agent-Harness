@@ -678,6 +678,8 @@ export const SETUP = {
   /** A release tree whose cli/aos.js records its calls and writes agenticos.json as `aos init` would. */
   payload: path.join(ROOT, "setup", "payload"),
   calls: path.join(ROOT, "setup", "aos-calls.jsonl"),
+  /** What the stand-in's `aos import --dry-run --json` prints (install-import B13); with no file, nothing on this Mac. */
+  importScan: path.join(ROOT, "setup", "import-scan.json"),
   /** What the toolchain server serves (uv's stand-in archive) and the development manifest that pins it ($AOS_TOOLCHAIN_MANIFEST). */
   archives: path.join(ROOT, "setup", "archives"),
   manifest: path.join(ROOT, "setup", "toolchain-manifest.json"),
@@ -747,7 +749,9 @@ export function writeToolchainManifest(port: number): { uv: { size: number; sha2
 /**
  * Writes the stand-ins. The payload's `aos init` copies the pristine fixture's agenticos.json to $AOS_CONFIG with the
  * vault it was given, so the Workbench the wizard ends in is the fixture's; `aos upgrade` moves its version to the
- * payload's. `codex` is installed but not logged in (`hosts: false` leaves both CLIs out); uv is missing until the wizard
+ * payload's; `aos uninstall --host <h>` turns that host off in agenticos.json; `aos import --dry-run --json` prints
+ * SETUP.importScan (nothing on this Mac without one) and `aos import` prints its steps and queues the sessions in the
+ * vault's import-state.json. `codex` is installed but not logged in (`hosts: false` leaves both CLIs out); uv is missing until the wizard
  * downloads it. Ollama (0.40.4) answers (curl) with no models until /api/pull pulls them.
  */
 export function installSetupStubs(version: string, o: { hosts?: boolean } = {}): void {
@@ -799,6 +803,38 @@ if (argv[0] === "init") {
   cfg.version = ${JSON.stringify(version)};
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\\n");
   console.log("upgraded to v" + cfg.version);
+} else if (argv[0] === "uninstall" && argv[1] === "--host") {
+  // An earlier install's host taken out (inspection F7): agenticos.json says it is off.
+  const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+  cfg.hosts[at("--host")].enabled = false;
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\\n");
+  console.log("hosts now: " + ["claude", "codex"].filter((h) => cfg.hosts[h] && cfg.hosts[h].enabled).join(", "));
+} else if (argv[0] === "import") {
+  let scan;
+  try { scan = JSON.parse(fs.readFileSync(${JSON.stringify(SETUP.importScan)}, "utf8")); } catch {
+    scan = { schema: 1, dryRun: true, since: "90d", windowDays: 90, from: ["claude", "codex"], engine: { ready: false, provider: "none", model: null, reason: "forced" },
+      hosts: { claude: { present: false, configDir: "~/.claude" }, codex: { present: false, configDir: "~/.codex" } }, projects: { proposals: [] } };
+  }
+  if (argv.includes("--dry-run")) { process.stdout.write(JSON.stringify(scan)); process.exit(0); }
+  // The fast phase, printed as cli/import.js prints it, then the sessions queued in the vault's import-state.json.
+  const from = !argv.includes("--from") || at("--from") === "all" ? ["claude", "codex"] : [at("--from")];
+  const only = argv.includes("--only") ? at("--only").split(",") : ["instructions", "memories", "projects", "mcp", "sessions"];
+  const label = { claude: "Claude Code", codex: "Codex" };
+  console.log("import: the last 90 days of " + from.map((h) => label[h]).join(" and "));
+  if (only.includes("instructions")) for (const h of from) console.log("- instructions (" + label[h] + "): " + ((scan.hosts[h] || {}).instructions || { rules: 0 }).rules + " written, 0 already in the vault");
+  if (only.includes("memories")) for (const h of from) console.log("- memories (" + label[h] + "): " + ((scan.hosts[h] || {}).memories || { files: 0 }).files + " written, 0 already in the vault");
+  const accept = argv.includes("--accept") ? JSON.parse(at("--accept")) : [];
+  if (only.includes("projects")) console.log("- projects: " + scan.projects.proposals.length + " proposed, " + accept.length + " created, 0 linked");
+  if (only.includes("mcp")) console.log("- mcp: " + from.map((h) => ((scan.hosts[h] || {}).mcp || { servers: 0 }).servers + " on " + label[h]).join(", ") + " listed");
+  const sessions = only.includes("sessions") ? from.reduce((n, h) => n + ((scan.hosts[h] || {}).sessions || 0), 0) : 0;
+  if (only.includes("sessions")) console.log("- sessions: " + sessions + " queued for the digest (" + sessions + " waiting in all)");
+  const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+  const at0 = new Date().toISOString();
+  const state = { schema: 1, phases: from.map((h) => ({ phase: "mcp", host: h, done: true, cursor: null, counts: { servers: ((scan.hosts[h] || {}).mcp || { servers: 0 }).servers }, at: at0 })), hashes: {}, files: {},
+    digest: sessions ? { since: "90d", processed: 0, total: sessions, done: false, finishedAt: null, lastRun: null, queue: Array.from({ length: sessions }, (_, i) => ({ key: "s" + i })) } : null,
+    runs: [{ at: at0, from, only, since: "90d", written: 0 }] };
+  fs.mkdirSync(require("path").join(cfg.vault, "brain", "_index"), { recursive: true });
+  fs.writeFileSync(require("path").join(cfg.vault, "brain", "_index", "import-state.json"), JSON.stringify(state, null, 2) + "\\n");
 } else process.exit(2);
 `);
 }

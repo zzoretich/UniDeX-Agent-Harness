@@ -6,7 +6,9 @@
 // hosts, folder and the Chief of Staff, the payload's `aos init` with those answers, the CLAUDE.md line as a diff added
 // only when asked, the PATH line shown and appended when its box is ticked, and the Workbench without a relaunch, where
 // the welcome tour starts (a new install never sees the "What changed" note, whose copy is about moving off Obsidian:
-// tour C10).
+// tour C10). Between the install and Finish, "Bring in your history" (install-import B9, B13) shows what Claude Code
+// left on this Mac per kind, all ticked, with the proposed workspace ticked; Import runs `aos import` with the choices
+// and progress, Finish says the digest is queued, and Pulse follows it in the Workbench.
 
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs";
@@ -20,6 +22,16 @@ const CLAUDE_MD = path.join(FX.claude, "CLAUDE.md");
 const ZPROFILE = path.join(FX.home, ".zprofile");
 const LINE = `@${path.join(FX.vault, "AGENTICOS.md")}`;
 const DOWNLOADS = path.join(USER_DATA, "setup", "downloads");
+
+const SCAN = {
+  schema: 1, dryRun: true, since: "90d", windowDays: 90, from: ["claude", "codex"], only: ["instructions", "memories", "projects", "mcp", "sessions"],
+  engine: { ready: false, provider: "none", model: null, reason: "local-model-missing" },
+  hosts: {
+    claude: { present: true, configDir: "~/.claude", instructions: { files: 1, rules: 5, new: 5 }, memories: { files: 3, new: 3 }, mcp: { servers: 2 }, sessions: 4 },
+    codex: { present: false, configDir: "~/.codex" },
+  },
+  projects: { proposals: [{ id: "~/code/harbor-map", repo: "~/code/harbor-map", action: "new", slug: "harbor-map", name: "harbor-map", claude: 4, codex: 0, sessions: 4, reason: "4 sessions in the window" }] },
+};
 
 // The toolchain server starts before the app (this beforeAll is registered before useApp's), so the manifest the app
 // reads names its port.
@@ -38,6 +50,8 @@ const app = useApp({
     fs.rmSync(CLAUDE_MD, { force: true });
     fs.rmSync(ZPROFILE, { force: true });
     fs.writeFileSync(CLAUDE_MD, "# My Claude notes\n\nPrefer small diffs.");
+    // What `aos import --dry-run --json` finds: Claude Code's history, Codex's folder absent, one proposed workspace.
+    fs.writeFileSync(SETUP.importScan, JSON.stringify(SCAN));
   },
   env: { AOS_APP_VAULT: undefined, AOS_APP_PAYLOAD: SETUP.payload, AOS_SETUP_PATH: SETUP.bin, AOS_TOOLCHAIN_MANIFEST: SETUP.manifest, AOS_TOTALMEM: SETUP_TOTALMEM },
 });
@@ -162,9 +176,11 @@ test("the persona form checks the name the way the interview does", async () => 
 test("Install runs the payload's aos init with the user's answers, unattended", async () => {
   const { win } = app();
   await win.locator(".aos-setup-install").click();
-  await expect(win.locator('.aos-setup-body[data-step="finish"]')).toBeVisible({ timeout: 20_000 });
+  await expect(win.locator('.aos-setup-body[data-step="history"] table.aos-setup-import')).toBeVisible({ timeout: 20_000 });
   const calls = aosCalls();
-  expect(calls).toHaveLength(1);
+  // aos init, then the import's dry run (install-import B13), which writes nothing.
+  expect(calls.map((c) => c.argv.slice(0, 2))).toEqual([["init", "--yes"], ["import", "--from"]]);
+  expect(calls[1].argv).toEqual(["import", "--from", "all", "--dry-run", "--json"]);
   const [init] = calls;
   expect(init.argv.slice(0, 6)).toEqual(["init", "--yes", "--vault", FX.vault, "--host", "claude"]);
   expect(init.argv[6]).toBe("--persona-json");
@@ -175,6 +191,34 @@ test("Install runs the payload's aos init with the user's answers, unattended", 
   expect(fs.existsSync(init.argv[7])).toBe(false);
   expect(path.dirname(init.argv[7])).toBe(path.join(USER_DATA, "setup"));
   expect(await log()).toContain("aos init --yes --vault");
+});
+
+test("Bring in your history: Claude Code's counts per kind, all ticked, the proposed workspace ticked; Import runs with the choices", async () => {
+  const { win } = app();
+  const body = win.locator('.aos-setup-body[data-step="history"]');
+  await expect(win.locator('.aos-setup-step[data-step="history"]')).toHaveText("5 Your history");
+  await expect(body.locator('[data-hint="engine"]')).toHaveText("The local model is not ready yet: each instruction file comes in as one note, and the sessions wait for it. Nothing leaves this Mac.");
+  // Codex left nothing here: Claude Code's row only, a column per kind it has.
+  await expect(body.locator("tr[data-host]")).toHaveCount(1);
+  const row = body.locator('tr[data-host="claude"]');
+  await expect(row.locator("th")).toContainText("Claude Code");
+  await expect(row.locator("td")).toHaveText(["5 rules", "3 memories", "2 servers", "4 sessions"]);
+  for (const sel of ['input[data-host="claude"]', 'input[data-kind="instructions"]', 'input[data-kind="memories"]', 'input[data-kind="mcp"]', 'input[data-kind="sessions"]', 'input[data-proposal="~/code/harbor-map"]']) {
+    await expect(body.locator(sel)).toBeChecked();
+  }
+  await expect(body.locator(".aos-setup-proposal")).toHaveText("workspaces/harbor-map · ~/code/harbor-map · 4 sessions in the window");
+  await win.screenshot({ path: test.info().outputPath("wizard-history.png") });
+  // Leave the memories out; the rest comes in, the workspace created.
+  await body.locator('input[data-kind="memories"]').uncheck();
+  await body.locator(".aos-setup-import-run").click();
+  await expect(win.locator('.aos-setup-body[data-step="finish"]')).toBeVisible({ timeout: 20_000 });
+  expect(aosCalls().at(-1)?.argv).toEqual(["import", "--from", "claude", "--only", "instructions,projects,mcp,sessions", "--accept", '["~/code/harbor-map"]']);
+  const text = await log();
+  expect(text).toContain("- instructions (Claude Code): 5 written, 0 already in the vault");
+  expect(text).toContain("- sessions: 4 queued for the digest");
+  const sec = win.locator('[data-section="history"]');
+  await expect(sec.locator("h3")).toHaveText("Your history is coming in");
+  await expect(sec.locator(".aos-setup-hint")).toHaveText("Its instructions and memories wait in Brain ▸ Review for you to keep. 4 sessions are queued: the import-digest routine summarises them on the local model every 30 minutes, and Pulse shows how far it got.");
 });
 
 test("Finish lists what is left: the CLAUDE.md line as a diff, added only when asked, and no Codex or no-host steps", async () => {
@@ -214,6 +258,8 @@ test("Open the Workbench appends the PATH line, attaches the vault without a rel
   // step, and the vault is recorded as noted at once: the next launch shows neither.
   await expect(win.locator(".aos-tour-pop")).toHaveAttribute("data-step", "core.rail");
   await expect(win.locator(".aos-attach-modal")).toHaveCount(0);
+  // The history the wizard queued: Pulse follows the digest until it is done (install-import B10).
+  await expect(win.locator('.aos-pulse-import[data-row="import-digest"]')).toHaveText("Digesting history: 0 of 4 sessions");
   const rec = () => JSON.parse(fs.readFileSync(path.join(USER_DATA, "attach.json"), "utf8")) as { vaults: Record<string, { notedAt?: string; installedAt?: string }> };
   await expect.poll(() => rec().vaults[FX.vault]?.notedAt).toBeTruthy();
   expect(rec().vaults[FX.vault]?.installedAt).toBeTruthy();

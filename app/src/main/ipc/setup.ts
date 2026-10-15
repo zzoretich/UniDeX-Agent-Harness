@@ -1,9 +1,10 @@
 // setup:* and update:* — the first-run wizard, attach mode and the app's own updates (phase 5). The page names a check,
-// a fix or a step; what each runs or downloads is main's (policy/setup.ts, setup/controller.ts, setup/toolchain.ts).
+// a fix or a step; what each runs or downloads is main's (policy/setup.ts, setup/controller.ts, setup/toolchain.ts). The
+// import step (install-import B13) names hosts, kinds and proposals from main's own last scan; the unwire, a host.
 // Output and download progress come back as events.
 
-import { CH, type ClaudeMdPreview, type InstallRequest, type PathLinePreview, type PreflightReport, type Result, type SetupFixId, type UpdateState } from "../../shared/ipc";
-import { FixArgs, InstallRequestSchema, NoArgs, SetupInputArgs, SetupResizeArgs } from "./schemas";
+import { CH, type ClaudeMdPreview, type HostId, type ImportRunRequest, type InstallRequest, type PathLinePreview, type PreflightReport, type Result, type SetupFixId, type UpdateState } from "../../shared/ipc";
+import { FixArgs, ImportRunSchema, InstallRequestSchema, NoArgs, SetupInputArgs, SetupResizeArgs, UnwireArgs } from "./schemas";
 import { onInvoke, onSend, onSync, type Trust } from "./trust";
 
 export interface SetupIpc {
@@ -21,6 +22,9 @@ export interface SetupIpc {
   noted(): void;
   pathLine(): Result<PathLinePreview>;
   addToPath(): Result<PathLinePreview>;
+  importScan(): Promise<Result<unknown>>;
+  importHistory(req: ImportRunRequest): Result<null>;
+  unwire(host: HostId): Result<null>;
 }
 
 export function registerSetupIpc(trust: Trust, s: SetupIpc): void {
@@ -38,6 +42,9 @@ export function registerSetupIpc(trust: Trust, s: SetupIpc): void {
   onSend(CH.setupNoted, trust, NoArgs, () => s.noted());
   onSync(CH.setupPathLine, trust, NoArgs, () => s.pathLine());
   onSync(CH.setupAddToPath, trust, NoArgs, () => s.addToPath());
+  onInvoke(CH.setupImportScan, trust, NoArgs, () => s.importScan());
+  onSync(CH.setupImport, trust, ImportRunSchema, (req) => s.importHistory(req));
+  onSync(CH.setupUnwire, trust, UnwireArgs, ({ host }) => s.unwire(host));
 }
 
 export interface UpdateIpc {

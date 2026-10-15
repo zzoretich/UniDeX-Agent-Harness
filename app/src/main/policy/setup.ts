@@ -1,4 +1,4 @@
-// What the wizard and attach mode may run (phase 5, I4, I5; install-import B1, B2, B14). The page names a fix by id and a
+// What the wizard and attach mode may run (phase 5, I4, I5; install-import B1, B2, B13, B14). The page names a fix by id and a
 // step by name; the commands, the program, the arguments, the downloads and the files are main's. A fix is either a
 // toolchain job (setup/toolchain.ts: a pinned download, checked, then put in place; or Ollama's models through its API)
 // or, for the two logins, a fixed command line the user sees typed in the wizard's terminal before it runs. No fix needs
@@ -7,8 +7,9 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import type { InstallRequest, PersonaAnswers, SetupCheckId, SetupFixId } from "../../shared/ipc";
+import type { HostId, ImportRunRequest, InstallRequest, PersonaAnswers, SetupCheckId, SetupFixId } from "../../shared/ipc";
 import type { ToolchainJob } from "../setup/toolchain";
+import { importArgs } from "../../../../obsidian-plugin/src/data/importModel";
 
 export type Fix =
   /** Run by /bin/sh -c in the wizard's terminal, with the login PATH (setup/env.ts). */
@@ -87,7 +88,26 @@ export function zprofilePath(home: string, env: NodeJS.ProcessEnv): string {
   return path.join(dir, ".zprofile");
 }
 
-export type SetupStep = "preflight" | "fix" | "install" | "upgrade" | "finish" | "claude-md" | "path";
+/**
+ * "Bring in your history" (install-import B13): `aos import`'s arguments from the payload's CLI, as the HUD builds them
+ * (obsidian-plugin/src/data/importModel.ts importArgs, the one argv the import surface admits too), with only the
+ * proposals main's own last scan listed. Throws on a request the runtime would refuse.
+ */
+export function importJobArgs(cli: string, req: ImportRunRequest, scanned: ReadonlySet<string>): string[] {
+  return [cli, ...importArgs({ from: req.from, only: req.only, accept: req.accept.filter((id) => scanned.has(id)) })];
+}
+
+/** The scan before it: `aos import --dry-run --json` over every kind, both hosts. */
+export function importScanArgs(cli: string): string[] {
+  return [cli, ...importArgs({ from: ["claude", "codex"], only: ["instructions", "memories", "projects", "mcp", "sessions"] }, { dryRun: true, json: true })];
+}
+
+/** `aos uninstall --host <host>` from the payload's CLI: that host's plugin, hooks and MCP server out; the vault and the rest kept. */
+export function unwireArgs(cli: string, host: HostId): string[] {
+  return [cli, "uninstall", "--host", host];
+}
+
+export type SetupStep = "preflight" | "fix" | "install" | "upgrade" | "finish" | "claude-md" | "path" | "import" | "unwire";
 
 export interface SetupState {
   /** A vault is attached (the Workbench is showing). */
@@ -116,5 +136,9 @@ export function stepRefusal(step: SetupStep, s: SetupState): string | null {
     case "claude-md": return s.attached || s.installed ? null : "no vault yet";
     // Finish's PATH line: the wizard's, once `aos init` has put the launcher in ~/.local/bin.
     case "path": return s.attached ? "a vault is already attached" : s.installed ? null : "no vault yet";
+    // Bring in your history: the wizard's, between the install and the Workbench (Settings ▸ Import has it after).
+    case "import": return s.attached ? "a vault is already attached" : !s.payload ? "this build carries no runtime" : s.installed ? null : "no vault yet";
+    // An earlier install's host taken out: before this install, never after it or once a vault is attached.
+    case "unwire": return s.attached ? "a vault is already attached" : !s.payload ? "this build carries no runtime" : s.installed ? "the install already finished" : null;
   }
 }
