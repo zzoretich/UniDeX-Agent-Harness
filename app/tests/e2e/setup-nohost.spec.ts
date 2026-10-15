@@ -13,6 +13,8 @@ const ZPROFILE = path.join(FX.home, ".zprofile");
 
 const app = useApp({
   ready: ".aos-setup",
+  // A Mac this app has never opened the fixture vault on: the install it makes is a first launch (the welcome tour).
+  noted: false,
   prepare: () => {
     installSetupStubs(VERSION, { hosts: false });
     fs.writeFileSync(path.join(SETUP.bin, "uv"), "#!/bin/sh\necho \"uv 0.13.1 (e2e stand-in)\"\n", { mode: 0o755 });
