@@ -97,7 +97,7 @@ function plan(routine, cfg, deps) {
   if (rc.enabled === false) return { skip: 'routines disabled in config' };
   if (!routine.enabled) return { skip: 'routine disabled' };
   if (routine.kind === 'duty') {
-    // A duty's own budget and allowlist (tick.md: 0.10 USD, read-only tools) reach run-duty.sh as the env overrides it
+    // A duty's own budget and allowlist (reflect-daily.md: 0.50 USD, read-only tools) reach run-duty.sh as the env overrides it
     // already honours; `{{NODE}}`/`{{VAULT}}` in tools expand like argv so the template file works on every machine.
     const env = { ...deps.env };
     if (routine.budgetUsd !== undefined) env.PERSONA_MAX_USD = String(routine.budgetUsd);
@@ -105,7 +105,8 @@ function plan(routine, cfg, deps) {
     // Extra write scope on top of the default one (spec 2026-09-23-duty-write-scope-design D5); duty-guard.js checks it.
     if (Array.isArray(routine.writes) && routine.writes.length) env.PERSONA_WRITES = routine.writes.join(',');
     // A duty's own model and effort win over the schedule's (spec 2026-09-24-duty-model-settings-design D1). The model is
-    // a Claude model by contract, as for prompt routines: run-duty.sh gives the Codex runner persona.codexModel (D4).
+    // a Claude model by contract, as for prompt routines: run-duty.sh (persona/chief.js) gives the Codex runner
+    // persona.codexModel (D4). tick.js --triage builds the woken tick duty through this same plan (local-first A5).
     if (routine.model) env.PERSONA_MODEL = routine.model;
     if (routine.effort) env.PERSONA_EFFORT = routine.effort;
     return { cmd: 'sh', args: [path.join(deps.vault, 'brain', 'scripts', 'persona', 'run-duty.sh'), routine.slug], env, feature: `duty:${routine.slug}` };

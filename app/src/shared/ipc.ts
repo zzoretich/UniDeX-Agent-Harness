@@ -207,6 +207,10 @@ export interface PreflightReport {
   models: string[];
 }
 
+/** The Chief of Staff's hosted models (local-first A4): brain/scripts/sdk/lib/models.js CHIEF, which tests/unit/setup.test.ts
+ *  pins this to. The wizard preselects them; the hourly check runs on the local model. */
+export const CHIEF_MODELS = { claude: "claude-opus-5-5", codex: "gpt-6-sol" } as const;
+
 /** The Chief of Staff interview (brain/scripts/persona/interview.js), as a form. */
 export interface PersonaAnswers {
   name: string;

@@ -127,6 +127,16 @@ function deepMerge(base, over) {
   for (const [k, v] of Object.entries(over || {})) o[k] = isPlainObject(v) && isPlainObject(base[k]) ? deepMerge(base[k], v) : v;
   return o;
 }
+/** Doctor's persona runner row (local-first A4): `claude · claude-opus-5-5 (medium) (<bin>); failover: codex · gpt-6-sol`. */
+function chiefRow(c, codexNote = () => '') {
+  const name = (m) => m || 'your Codex default';
+  const why = (c.skipped || []).map((s) => (s.host ? `${s.host}: ${s.why}` : s.why)).join('; ');
+  if (!c.host && c.reason === 'daily-cap') return `none today (daily-cap: ${why}); duties are skipped on both hosts until tomorrow`;
+  if (!c.host) return `none (${c.reason}${why ? `: ${why}` : ''}); duties are skipped until a host can start them — sign in to Claude Code or Codex, or set persona.runner`;
+  const moved = String(c.reason || '').startsWith('failover') ? ` (${c.reason})` : '';
+  const fo = (c.failover || []).map((f) => `${f.host} · ${name(f.model)}`).join(', ');
+  return `${c.host} · ${name(c.model)} (${c.effort}) (${c.bin})${codexNote(c.host)}${moved}; failover: ${fo || 'none'}`;
+}
 function loadConfigOrThrow() {
   const c = readJson(configPath());
   if (!c || typeof c.vault !== 'string') throw new CheckFailed(`no ${configPath()} — run \`aos init\` (npm run setup) first`);
@@ -448,14 +458,20 @@ async function doctor() {
     if (cx.memories) add('codex memories', true, 'Codex\'s built-in memories are on (separate from the vault; aos never touches them)', 'info');
   }
   // Which CLI runs persona duties and prompt routines (codex-parity D4): claude when enabled and installed, else codex.
+  // The persona row is the Chief of Staff's (local-first A4): its host, its model there, and the host a duty fails over to.
   if (vault && exists(scriptPath(vault, 'lib/headless.js'))) {
     try {
       const H = require(scriptPath(vault, 'lib/headless.js'));
       const vaultCfg = readJson(path.join(vault, 'brain', 'config.json'), {}) || {};
       const merged = { ...vaultCfg, ...(cfg || {}), persona: { ...(vaultCfg.persona || {}), ...((cfg && cfg.persona) || {}) }, routines: { ...(vaultCfg.routines || {}), ...((cfg && cfg.routines) || {}) } };
-      for (const kind of ['persona', 'routines']) {
+      const codexNote = (h) => (h === 'codex' ? ' (spend estimated from usage, no per-run cap)' : '');
+      if (typeof H.resolveChief === 'function') {
+        const c = await H.resolveChief(merged, { vault });
+        add('persona runner', !!c.host, chiefRow(c, codexNote), 'warn');
+      }
+      for (const kind of typeof H.resolveChief === 'function' ? ['routines'] : ['persona', 'routines']) {
         const r = H.resolveRunner({ cfg: merged, kind });
-        add(`${kind} runner`, !!r.host, r.host ? `${r.host} (${r.bin})${r.host === 'codex' ? ' (spend estimated from usage, no per-run cap)' : ''}` : `none (${r.reason}); install claude or codex, or set ${kind}.runner`, 'warn');
+        add(`${kind} runner`, !!r.host, r.host ? `${r.host} (${r.bin})${codexNote(r.host)}` : `none (${r.reason}); install claude or codex, or set ${kind}.runner`, 'warn');
       }
     } catch (e) { add('runner', false, e.message, 'warn'); }
   }
@@ -1569,7 +1585,7 @@ module.exports = {
   parseArgs, deepMerge, configDir, configPath, readJson, readJsonStrict, writeJson, exists, isDir, insideDir, localDay,
   run, which, claudeBin, codexBin, hostsOf, resolveHosts, pluginSourceDir, npmBin, claudeLoggedIn, installedPlugin, python3Version, python3Ok, pythonBin, ollamaBin, httpProbe, ollamaEndpoint, ollamaProbeSkipped, ask,
   runScript, scriptPath, mcpProbe, spendRowsToday, spendToday, spendByFamily, isDutyFeature, isHookFeature, loadConfigOrThrow,
-  doctor, status, provider, main,
+  doctor, chiefRow, status, provider, main,
   init, repoRoot, productVersion, upgradeReexecTarget, copyTree, assertVaultOk, buildUserConfig, linkLauncher, vendorRuntime, releaseTreeDeps, swapNodeModules,
   installPlugin, personaInterview, checklist, hudHost,
   upgrade, uninstall, removeSchedules, terminal, persona, cost, graph, routines, workspace, config, updateCheck, updateStatus, updateNotice,

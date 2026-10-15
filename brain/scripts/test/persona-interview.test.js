@@ -32,6 +32,14 @@ test('normalizeAnswers validates and coerces', () => {
   assert.equal(I.normalizeAnswers({ name: 'Ab' }, {}).dutyCodexModel, null, 'blank → the user\'s Codex default');
   assert.equal(I.normalizeAnswers({ name: 'Ab', dutyCodexModel: ' gpt-5 ' }, {}).dutyCodexModel, 'gpt-5');
   assert.equal(I.QUESTIONS.find((q) => q.key === 'dutyCodexModel').when({ codex: false }), false, 'asked only where Codex is a host');
+  // local-first A4: the Chief of Staff's models are the defaults; a stored pre-2.0 answer of null keeps the Codex default.
+  assert.equal(I.normalizeAnswers({ name: 'Ab' }, {}).dutyModel, 'claude-opus-5-5');
+  assert.equal(I.normalizeAnswers({ name: 'Ab' }, { defaultCodexModel: 'gpt-6-sol' }).dutyCodexModel, 'gpt-6-sol');
+  assert.equal(I.normalizeAnswers({ name: 'Ab', dutyCodexModel: null }, { defaultCodexModel: 'gpt-6-sol' }).dutyCodexModel, null, 'an explicit null is kept (aos init --yes reruns a stored answer)');
+  assert.equal(I.QUESTIONS.find((q) => q.key === 'dutyModel').when({ claude: false, codex: true }), false, 'a Codex-only machine is not asked for a Claude model');
+  assert.equal(I.QUESTIONS.find((q) => q.key === 'dutyModel').def({}), 'claude-opus-5-5');
+  assert.equal(I.QUESTIONS.find((q) => q.key === 'dutyCodexModel').def({ defaultCodexModel: 'gpt-6-sol' }), 'gpt-6-sol');
+  assert.match(I.QUESTIONS.find((q) => q.key === 'dutyModel').prompt({}), /hosted model; the hourly check runs on the local model/);
   assert.equal(I.normalizeAnswers({ name: 'Ab' }, {}).schedule, true);
   assert.throws(() => I.normalizeAnswers({}, {}), /name is required/);
   assert.throws(() => I.normalizeAnswers({ name: 'Ab', dutyEffort: 'max' }, {}), /dutyEffort/);

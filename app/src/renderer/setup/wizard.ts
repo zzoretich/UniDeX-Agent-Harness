@@ -7,6 +7,8 @@
 // command, a URL, a CLAUDE.md path or a profile path.
 
 import type { AosBridge, BootInfo, ClaudeMdPreview, InstallRequest, PathLinePreview, PersonaAnswers, PreflightReport, SetupCheck, SetupEvent, SetupFixId } from "../../shared/ipc";
+import { CHIEF_MODELS } from "../../shared/ipc";
+import { chiefSummary } from "./chief";
 import { BRAND } from "../../shared/brand";
 import { addHostCommand, defaultHost, hostOffered, reconcileHost } from "./choices";
 import { JobTerminal } from "./jobTerminal";
@@ -67,7 +69,8 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     step: "check", report: null, checking: false, job: null, progress: null, failed: null, queue: [],
     host: "claude", hostPicked: false,
     vault: setup?.configuredVault ?? setup?.defaultVault ?? "~/AgenticOS",
-    persona: { name: "", addressAs: "", voice: "", priorities: [], dutyModel: "", dutyCodexModel: "", dutyEffort: "medium", schedule: true },
+    // local-first A4: the Chief of Staff's hosted models, preselected; each is sent only where its host is on.
+    persona: { name: "", addressAs: "", voice: "", priorities: [], dutyModel: CHIEF_MODELS.claude, dutyCodexModel: CHIEF_MODELS.codex, dutyEffort: "medium", schedule: true },
     personaSkipped: false, installExit: undefined, claudeMd: null, pathLine: null, pathLineError: null, addPath: true, error: null,
   };
 
@@ -330,7 +333,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       f.createEl("label", { text: label });
       const input = f.createEl("input", { attr: { type: "text", placeholder, "data-field": key, spellcheck: "false" } });
       input.value = p[key];
-      input.addEventListener("input", () => { p[key] = input.value; nameError(); });
+      input.addEventListener("input", () => { p[key] = input.value; nameError(); chief.setText(chiefSummary(s.host, p)); });
       return input;
     };
     field("Name", "name", "Atlas");
@@ -347,8 +350,10 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     const pri = pf.createEl("textarea", { attr: { rows: "2", "data-field": "priorities" } });
     pri.value = p.priorities.join(", ");
     pri.addEventListener("input", () => { p.priorities = splitList(pri.value); });
-    if (s.host === "claude" || s.host === "both") field("Model for background duties (Claude Code)", "dutyModel", "haiku");
-    if (s.host === "codex" || s.host === "both") field("Model for background duties (Codex)", "dutyCodexModel", "your Codex default");
+    if (s.host === "claude" || s.host === "both") field("Duty model on Claude Code", "dutyModel", CHIEF_MODELS.claude);
+    if (s.host === "codex" || s.host === "both") field("Duty model on Codex", "dutyCodexModel", CHIEF_MODELS.codex);
+    const chief = form.createDiv({ cls: "aos-setup-hint", attr: { "data-field": "chief" } });
+    chief.setText(chiefSummary(s.host, p));
     const ef = form.createDiv({ cls: "aos-setup-field" });
     ef.createEl("label", { text: "Effort for background duties" });
     const sel = ef.createEl("select", { attr: { "data-field": "dutyEffort" } });

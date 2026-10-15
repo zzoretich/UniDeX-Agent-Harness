@@ -7,7 +7,8 @@
  * run's --max-budget-usd; claude.perDayUsd belongs to background hook calls, not duties.
  *
  *   node persona/record-spend.js --check
- *       prints {allowed, spentToday, perDayUsd, perDutyUsd}; exit 0 when allowed, 3 when capped
+ *       prints {allowed, spentToday, perDayUsd, perDutyUsd}; exit 0 when allowed, 3 when capped. One cap over both hosts:
+ *       every duty:* row counts, whichever provider (local-first A4: a capped day is skipped on every host, never moved)
  *   node persona/record-spend.js --file <output> --feature duty:<name> --model <model>
  *       parses `claude -p --output-format json` output — or, when the file holds a `codex exec --json`
  *       event stream (codex runner, codex-parity D5), prices its usage block — and appends one ledger row
@@ -92,7 +93,7 @@ function check({ spendToday, perDayUsd }) {
   return { allowed: spentToday < perDayUsd, spentToday, perDayUsd };
 }
 
-/** USD sum of ledger rows whose feature starts with "duty:" and whose ts is on `day` (local calendar day). */
+/** USD sum of ledger rows whose feature starts with "duty:" and whose ts is on `day` (local calendar day), any provider. */
 function dutySpendFrom(text, day = new Date()) {
   const key = day.toDateString();
   let sum = 0;

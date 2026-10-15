@@ -27,7 +27,10 @@ function world() {
 test('resolveCtx reads vault, node and default model from agenticos.json', () => {
   const w = world();
   const ctx = P.resolveCtx({ configDir: w.configDir });
-  assert.equal(ctx.vault, w.vault); assert.equal(ctx.node, '/usr/bin/node'); assert.equal(ctx.defaultModel, 'haiku');
+  assert.equal(ctx.vault, w.vault); assert.equal(ctx.node, '/usr/bin/node');
+  // local-first A4: the interview offers the Chief of Staff's models, not claude.model.
+  assert.equal(ctx.defaultModel, 'claude-opus-5-5'); assert.equal(ctx.defaultCodexModel, 'gpt-6-sol');
+  assert.equal(ctx.claude, true, 'a config without hosts is Claude only'); assert.equal(ctx.codex, false);
   assert.throws(() => P.resolveCtx({ configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'nocfg-')) }), /aos init/);
 });
 
@@ -118,4 +121,39 @@ test('on a Codex host the interview asks for the Codex duty model and stores it 
   const w2 = world();   // no Codex host: brain/config.json is left alone
   await P.runInterview({ configDir: w2.configDir, answersFile: w2.answersFile, io: w2.io, schedule: false });
   assert.ok(!fs.existsSync(path.join(w2.vault, 'brain', 'config.json')));
+});
+
+test('a 2.0 install: the interview\'s Claude duty model replaces the shipped default persona.model, never one the owner set (local-first A4)', async () => {
+  const w = world(); const calls = [];
+  const defaults = require('../brain/scripts/config.default.json');
+  fs.writeFileSync(path.join(w.vault, 'brain', 'config.json'), JSON.stringify({ persona: { ...defaults.persona } }));
+  fs.writeFileSync(w.answersFile, JSON.stringify({ ...ANSWERS, dutyModel: 'sonnet' }));
+  await P.runInterview({ configDir: w.configDir, answersFile: w.answersFile, io: w.io, platform: 'darwin',
+    installSchedules: (o) => { calls.push(o); return { platform: 'darwin', written: [], labels: [], warnings: [] }; } });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(w.vault, 'brain', 'config.json'), 'utf8')).persona.model, 'sonnet');
+  assert.equal(calls[0].vars.MODEL, 'sonnet', 'the schedules carry the answer');
+  assert.ok(!w.logs.some(l => /not the interview's/.test(l)));
+  // The wizard's preselected answer equals the default: nothing to write.
+  const w2 = world();
+  fs.writeFileSync(path.join(w2.vault, 'brain', 'config.json'), JSON.stringify({ persona: { ...defaults.persona } }));
+  fs.writeFileSync(w2.answersFile, JSON.stringify({ ...ANSWERS, dutyModel: 'claude-opus-5-5' }));
+  const before = fs.readFileSync(path.join(w2.vault, 'brain', 'config.json'), 'utf8');
+  await P.runInterview({ configDir: w2.configDir, answersFile: w2.answersFile, io: w2.io, schedule: false });
+  assert.equal(fs.readFileSync(path.join(w2.vault, 'brain', 'config.json'), 'utf8'), before);
+  // A pre-2.0 vault (null) keeps its null: the answer is the next link of its chain anyway.
+  const w3 = world();
+  fs.writeFileSync(path.join(w3.vault, 'brain', 'config.json'), JSON.stringify({ persona: { model: null } }));
+  await P.runInterview({ configDir: w3.configDir, answersFile: w3.answersFile, io: w3.io, schedule: false });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(w3.vault, 'brain', 'config.json'), 'utf8')).persona.model, null);
+});
+
+test('a Codex-only machine: no Claude question, and a missing Codex answer is the Chief of Staff\'s gpt-6-sol', async () => {
+  const w = world();
+  const cfgFile = path.join(w.configDir, 'agenticos.json');
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfgFile, 'utf8')), hosts: { claude: { enabled: false }, codex: { enabled: true } } }));
+  fs.writeFileSync(path.join(w.vault, 'brain', 'config.json'), JSON.stringify({ persona: { model: 'claude-opus-5-5' } }));
+  const { dutyModel, ...noClaude } = ANSWERS; // eslint-disable-line no-unused-vars
+  fs.writeFileSync(w.answersFile, JSON.stringify(noClaude));
+  await P.runInterview({ configDir: w.configDir, answersFile: w.answersFile, io: w.io, schedule: false });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(w.vault, 'brain', 'config.json'), 'utf8')).persona, { model: 'claude-opus-5-5', codexModel: 'gpt-6-sol' });
 });

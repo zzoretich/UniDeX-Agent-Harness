@@ -22,9 +22,21 @@ function vault() {
   put('persona/ledger.jsonl', JSON.stringify({ schema: 1, ts: '2026-09-15T00:00:00.000Z', event: 'approved', slug: 'old-fix', kind: 'self' }) + '\n');
   const repo = path.join(v, 'repo');
   put('repo/.git/HEAD', 'ref: refs/heads/main\n');
+  put('repo/.git/refs/heads/main', `${'a'.repeat(40)}\n`);
+  put('repo/.git/index', 'idx');
   put('repo/.planning/STATE.md', 'phase: 2 of 5\n');
   put('persona/repos.json', JSON.stringify({ stall_threshold_days: 4, repos: [{ name: 'app', path: repo }] }));
   put('brain/_index/persona-heartbeat.json', JSON.stringify({ schema: 1, checkedAt: at(-HOUR).toISOString(), beats: { sitrep: { status: 'ok', lastRunAt: '2026-09-22T07:45:00.000Z' } } }));
+  // The routines the signature reads (their status, never their run times): a duty, two half-hourly commands, the tick.
+  put('brain/routines/sitrep.md', '---\nschema: 1\nname: Sitrep\nkind: duty\nschedule: "45 7 * * 1-5"\nenabled: true\n---\nx\n');
+  put('brain/routines/heartbeat.md', '---\nschema: 1\nname: Heartbeat\nkind: command\nschedule: "*/30 * * * *"\nenabled: true\nargv: ["true"]\n---\n');
+  put('brain/routines/briefing.md', '---\nschema: 1\nname: Briefing\nkind: command\nschedule: "*/30 7-22 * * *"\nenabled: true\nargv: ["true"]\n---\n');
+  put('brain/routines/tick.md', '---\nschema: 1\nname: Tick\nkind: command\nschedule: "0 * * * *"\nenabled: true\nargv: ["true"]\nbudgetUsd: 0.5\ntools: "Read,Bash({{NODE}} {{VAULT}}/brain/scripts/persona/tick.js:*)"\ntimeoutSec: 900\n---\n');
+  put('brain/_index/routines.json', JSON.stringify({ schema: 1, routines: {
+    sitrep: { lastRunAt: '2026-09-22T07:45:00.000Z', lastExit: 0, failStreak: 0 },
+    heartbeat: { lastRunAt: at(-HOUR).toISOString(), lastExit: 0, failStreak: 0 },
+    briefing: { lastRunAt: at(-HOUR).toISOString(), lastExit: 0, failStreak: 0 },
+  }, synced: {}, syncedAt: null }));
   const old = at(-HOUR);
   const stamp = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const f = path.join(dir, e.name); if (e.isDirectory()) stamp(f); fs.utimesSync(f, old, old); } fs.utimesSync(dir, old, old); };
   stamp(v);
@@ -51,29 +63,103 @@ test('precheck: the first run is a change; after a beat an untouched vault is un
   assert.equal(T.main(['precheck', '--root', v]), T.EXIT_UNCHANGED, 'the CLI exit the runner keys on');
 });
 
-test('precheck: a new draft, a repo commit, a new miss and a proposal each wake the tick, named in changes', () => {
-  const v = vault(); const d = deps(v);
-  T.precheck({ deps: d }); T.beat({ deps: d });
-  const later = at(30 * 60e3);
-  const draft = path.join(v, 'brain', 'memory', 'feedback', '_drafts', 'r-1.md');
-  fs.writeFileSync(draft, '# Rule\n'); touch(draft, later);
-  assert.deepEqual(T.precheck({ deps: d, now: at(HOUR) }).changes, ['drafts']);
-  T.beat({ deps: d, now: at(HOUR) });
-  touch(path.join(v, 'repo', '.git', 'HEAD'), at(2 * HOUR));
-  assert.deepEqual(T.precheck({ deps: d, now: at(2 * HOUR) }).changes, ['repos.app']);
-  T.beat({ deps: d, now: at(2 * HOUR) });
-  // The watchdog file is rewritten every 30 min: a fresh checkedAt alone is not a change, a status change is.
+/** routines.json as the half-hourly runs leave it: every routine's run time bumped, exits as given. */
+function bumpRuns(v, when, exits = {}) {
+  const f = path.join(v, 'brain', '_index', 'routines.json');
+  const st = JSON.parse(fs.readFileSync(f, 'utf8'));
+  for (const slug of ['heartbeat', 'briefing', 'tick']) st.routines[slug] = { ...(st.routines[slug] || {}), lastRunAt: when.toISOString(), lastExit: 0 };
+  for (const [slug, exit] of Object.entries(exits)) st.routines[slug] = { ...(st.routines[slug] || {}), lastRunAt: when.toISOString(), lastExit: exit, failStreak: exit ? 1 : 0 };
+  fs.writeFileSync(f, JSON.stringify(st));
   const hb = path.join(v, 'brain', '_index', 'persona-heartbeat.json');
   const cur = JSON.parse(fs.readFileSync(hb, 'utf8'));
-  fs.writeFileSync(hb, JSON.stringify({ ...cur, checkedAt: at(3 * HOUR).toISOString() }));
-  assert.equal(T.precheck({ deps: d, now: at(3 * HOUR) }).changed, false, 'checkedAt alone is not news');
-  cur.beats.sitrep.status = 'missed';
+  for (const b of Object.values(cur.beats)) b.lastRunAt = when.toISOString();
+  fs.writeFileSync(hb, JSON.stringify({ ...cur, checkedAt: when.toISOString() }));
+}
+const setHeartbeat = (v, slug, status) => {
+  const hb = path.join(v, 'brain', '_index', 'persona-heartbeat.json');
+  const cur = JSON.parse(fs.readFileSync(hb, 'utf8'));
+  cur.beats[slug] = { ...(cur.beats[slug] || {}), status };
   fs.writeFileSync(hb, JSON.stringify(cur));
-  assert.deepEqual(T.precheck({ deps: d, now: at(3 * HOUR) }).changes, ['beats']);
-  T.beat({ deps: d, now: at(3 * HOUR) });
-  const prop = path.join(v, 'persona', 'proposals', '2026-09-22-x.md');
-  fs.writeFileSync(prop, '---\nslug: x\n---\n'); touch(prop, at(4 * HOUR));
-  assert.deepEqual(T.precheck({ deps: d, now: at(4 * HOUR) }).changes, ['proposals']);
+};
+
+test('signature (local-first A5): run times never count — the heartbeat, briefing and tick bumping theirs is a quiet hour', () => {
+  const v = vault(); const d = deps(v);
+  T.precheck({ deps: d }); T.beat({ deps: d });
+  for (let h = 1; h <= 3; h++) {
+    bumpRuns(v, at(h * HOUR));
+    // The tick's own writes and a `git status` (which rewrites .git/index) are no news either.
+    fs.appendFileSync(path.join(v, 'persona', 'journal', '2026-09-22.md'), `\n## 1${h}:00 — duty: tick\n- status: OK\n`);
+    touch(path.join(v, 'repo', '.git', 'index'), at(h * HOUR));
+    assert.deepEqual(T.precheck({ deps: d, now: at(h * HOUR) }).changes, [], `hour ${h}`);
+  }
+  assert.equal(state(v).skipped, 3);
+  assert.equal(T.signature(d).v, T.SIG_VERSION);
+  assert.equal(Object.prototype.hasOwnProperty.call(T.signature(d).routines, 'tick'), false, 'the tick is not its own signal');
+});
+
+test('signature: a failure, a miss, a correction, a commit, a proposal, a flag and an alert each wake, named in changes', () => {
+  const v = vault(); const d = deps(v);
+  T.precheck({ deps: d }); T.beat({ deps: d });
+  const step = (h, expect, why) => { assert.deepEqual(T.precheck({ deps: d, now: at(h * HOUR) }).changes, expect, why); T.beat({ deps: d, now: at(h * HOUR) }); };
+  bumpRuns(v, at(HOUR), { briefing: 1 });
+  step(1, ['routines.briefing'], 'a command routine that started failing');
+  bumpRuns(v, at(2 * HOUR), { briefing: 1 });
+  step(2, [], 'still failing is no news');
+  setHeartbeat(v, 'sitrep', 'missed');
+  step(3, ['routines.sitrep'], 'the watchdog marked a duty missed');
+  const draft = path.join(v, 'brain', 'memory', 'feedback', '_drafts', 'r-1.md');
+  fs.writeFileSync(draft, '# Rule\n'); touch(draft, at(4 * HOUR));
+  step(4, ['corrections']);
+  fs.writeFileSync(path.join(v, 'repo', '.git', 'refs', 'heads', 'main'), `${'b'.repeat(40)}\n`);
+  step(5, ['repos.app'], 'a new commit on a tracked repo');
+  fs.writeFileSync(path.join(v, 'persona', 'proposals', '2026-09-22-x.md'), '---\nslug: x\n---\n');
+  step(6, ['proposals']);
+  const st = path.join(v, 'persona', 'STATE.md');
+  fs.writeFileSync(st, fs.readFileSync(st, 'utf8').replace('## Flags\n', '## Flags\n- [ ] 2026-09-22 a new flag\n'));
+  step(7, ['flags']);
+  fs.writeFileSync(st, fs.readFileSync(st, 'utf8').replace('- fine', '- tick queued 1'));
+  step(8, [], 'the Sitrep block the tick rewrites is not a flag');
+  const N = require('../lib/notifications.js');
+  N.post({ from: 'ron', level: 'info', title: 'Evening news', body: 'x' }, { vault: v, now: at(9 * HOUR) });
+  step(9, [], 'an info post is not an inbox alert');
+  N.post({ from: 'pepper', level: 'alert', title: 'Bill due', body: 'x' }, { vault: v, now: at(10 * HOUR) });
+  step(10, ['inbox']);
+});
+
+test('signature: the vault\'s own repo counts by its memory files, never its backup commits', () => {
+  const v = vault(); const d = deps(v);
+  const put = (rel, text) => { const f = path.join(v, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); return f; };
+  put('.git/HEAD', 'ref: refs/heads/main\n');
+  put('.git/refs/heads/main', `${'c'.repeat(40)}\n`);
+  put('brain/memory/projects/app.md', '# App\n');
+  fs.writeFileSync(path.join(v, 'persona', 'repos.json'), JSON.stringify({ repos: [{ name: 'app', path: path.join(v, 'repo') }, { name: 'vault', path: v }] }));
+  const sig = T.signature(d);
+  assert.deepEqual(Object.keys(sig.repos), ['app'], 'the vault is no HEAD');
+  assert.equal(sig.memory.n, 2, 'its memory files instead (the fixture\'s rule and the project)');
+  T.precheck({ deps: d }); T.beat({ deps: d });
+  fs.writeFileSync(path.join(v, '.git', 'refs', 'heads', 'main'), `${'d'.repeat(40)}\n`);
+  assert.deepEqual(T.precheck({ deps: d, now: at(HOUR) }).changes, [], 'a vault backup commit is no news');
+  const mem = put('brain/memory/projects/new.md', '# New\n'); touch(mem, at(HOUR));
+  assert.deepEqual(T.precheck({ deps: d, now: at(2 * HOUR) }).changes, ['memory']);
+  assert.equal(T.signature(deps(fs.mkdtempSync(path.join(os.tmpdir(), 'tick-bare-')))).memory, null, 'an untracked vault has no memory key');
+});
+
+test('repoHead: branch and commit from the files (loose ref, packed ref, detached, worktree), null for a non-repo', () => {
+  const r = fs.mkdtempSync(path.join(os.tmpdir(), 'tick-repo-'));
+  const put = (rel, text) => { const f = path.join(r, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); };
+  assert.equal(T.repoHead(r), null);
+  put('.git/HEAD', 'ref: refs/heads/dev\n');
+  put('.git/packed-refs', `# pack-refs\n${'e'.repeat(40)} refs/heads/dev\n`);
+  assert.equal(T.repoHead(r), `refs/heads/dev@${'e'.repeat(40)}`);
+  put('.git/refs/heads/dev', `${'f'.repeat(40)}\n`);
+  assert.equal(T.repoHead(r), `refs/heads/dev@${'f'.repeat(40)}`, 'a loose ref beats the packed one');
+  put('.git/HEAD', `${'1'.repeat(40)}\n`);
+  assert.equal(T.repoHead(r), '1'.repeat(40));
+  const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'tick-wt-'));
+  put('.git/worktrees/wt/HEAD', 'ref: refs/heads/dev\n');
+  put('.git/worktrees/wt/commondir', '../..\n');
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(r, '.git', 'worktrees', 'wt')}\n`);
+  assert.equal(T.repoHead(wt), `refs/heads/dev@${'f'.repeat(40)}`);
 });
 
 test('beat: the tick\'s own journal and STATE.md writes do not wake the next tick, a change during the run still does', () => {
@@ -87,7 +173,15 @@ test('beat: the tick\'s own journal and STATE.md writes do not wake the next tic
   const rule = path.join(v, 'brain', 'memory', 'feedback', 'existing-rule.md');
   fs.appendFileSync(rule, 'more\n'); touch(rule, at(60e3));
   T.beat({ deps: d, now: at(2 * 60e3) });
-  assert.deepEqual(T.precheck({ deps: d, now: at(HOUR) }).changes, ['feedback'], 'only the external edit is news');
+  assert.deepEqual(T.precheck({ deps: d, now: at(HOUR) }).changes, ['corrections'], 'only the external edit is news');
+});
+
+test('a pre-2.0 signature (no version) reads as a first run, once', () => {
+  const v = vault(); const d = deps(v);
+  fs.writeFileSync(path.join(v, 'brain', '_index', 'persona-tick.json'), JSON.stringify({ schema: 1, lastBeatAt: at(-HOUR).toISOString(), lastSignature: { journal: 1, beats: 'sitrep:ok:x' }, beats: 40, skipped: 0 }));
+  assert.deepEqual(T.precheck({ deps: d }).changes, ['first-run']);
+  T.beat({ deps: d });
+  assert.deepEqual(T.precheck({ deps: d, now: at(HOUR) }).changes, []);
 });
 
 test('signals: one candidate per type with a source pointer, nothing older than the last beat, queued ones marked', () => {
@@ -242,4 +336,130 @@ test('precheck records the confirmations through recheck.js once per day and sur
   assert.deepEqual(r.confirmations, { recorded: false, error: 'boom' });
   assert.equal(typeof r.changed, 'boolean', 'the precheck still answers');
   assert.match(errs[0], /confirmations not recorded: boom/);
+});
+
+// ── triage (local-first A5): rules first, the local model on a real change, the hosted tick duty only when it wakes ──
+const localModel = (reply, calls = []) => ({ name: 'ollama', model: 'qwen3.5:9b', calls, chat: async (o) => { calls.push(o); return typeof reply === 'function' ? reply(o) : reply; } });
+function triageDeps(v, provider, { cfg = {}, spawned = [], exit = 0 } = {}) {
+  return { ...deps(v, cfg), node: '/n/node', env: { PATH: '/usr/bin:/bin' }, provider: async () => provider, spawnDuty: (o) => { spawned.push(o); return exit; } };
+}
+const journalOf = (v) => { try { return fs.readFileSync(path.join(v, 'persona', 'journal', '2026-09-22.md'), 'utf8'); } catch { return ''; } };
+const triageLines = (v) => journalOf(v).split('\n').filter((l) => l.includes('— tick triage:'));
+
+test('triage: a quiet hour makes no hosted call, and no local call when the signature is unchanged', async () => {
+  const v = vault(); const spawned = [];
+  const local = localModel('{"wake": false, "reason": "nothing to act on"}');
+  const d = triageDeps(v, local, { spawned });
+  const first = await T.triage({ deps: d });
+  assert.equal(first.action, 'stay');
+  assert.equal(local.calls.length, 1, 'the first look asks the local model once');
+  assert.deepEqual(triageLines(v), ['## 10:00 — tick triage: no run — nothing to act on (local model qwen3.5:9b; changed: first triage)']);
+  for (let h = 1; h <= 3; h++) {
+    bumpRuns(v, at(h * HOUR));
+    const r = await T.triage({ deps: d, now: at(h * HOUR) });
+    assert.equal(r.action, 'unchanged', `hour ${h}`);
+  }
+  assert.equal(local.calls.length, 1, 'no local call while the signature is unchanged');
+  assert.equal(spawned.length, 0, 'no hosted call: the duty never started');
+  assert.equal(triageLines(v).length, 1, 'a quiet hour writes no journal line');
+  const s = state(v);
+  assert.equal(s.skipped, 3); assert.equal(s.triages, 1); assert.equal(s.localCalls, 1); assert.equal(s.wakes || 0, 0);
+});
+
+test('triage: a failure wakes — the local model decides, one journal line, and the hosted tick duty starts through run-duty.sh', async () => {
+  const v = vault(); const spawned = [];
+  const local = localModel((o) => (o.prompt.includes('routine briefing: ok → failed') ? '{"wake": true, "reason": "the briefing started failing"}' : '{"wake": false, "reason": "quiet"}'));
+  const d = triageDeps(v, local, { spawned, exit: 0 });
+  await T.triage({ deps: d });
+  bumpRuns(v, at(HOUR), { briefing: 1 });
+  const r = await T.triage({ deps: d, now: at(HOUR) });
+  assert.equal(r.action, 'woke');
+  assert.deepEqual(r.changes, ['routine briefing: ok → failed']);
+  const call = local.calls[1];
+  assert.deepEqual(call.format, T.DECISION_SCHEMA, 'a small JSON decision');
+  assert.equal(call.feature, 'tick-triage');
+  assert.equal(call.think, false);
+  assert.deepEqual(JSON.parse(call.prompt).changed, ['routine briefing: ok → failed']);
+  assert.equal(spawned.length, 1);
+  const p = spawned[0];
+  assert.equal(p.cmd, 'sh');
+  assert.deepEqual(p.args, [path.join(__dirname, '..', 'persona', 'run-duty.sh'), 'tick'], 'the same runner a scheduled duty uses');
+  assert.equal(p.env.PERSONA_MAX_USD, '0.5', 'the tick routine file\'s budgetUsd');
+  assert.equal(p.env.PERSONA_TOOLS, `Read,Bash(/n/node ${v}/brain/scripts/persona/tick.js:*)`, 'its tools, {{NODE}}/{{VAULT}} expanded');
+  assert.equal(p.env.PERSONA_TIMEOUT, '780', 'inside the routine\'s 900 s');
+  assert.equal(p.env.AOS_VAULT, v);
+  assert.equal(p.cwd, v);
+  assert.deepEqual(triageLines(v).slice(-1), ['## 11:00 — tick triage: woke the Chief of Staff — the briefing started failing (local model qwen3.5:9b; changed: routine briefing: ok → failed)']);
+  assert.equal(state(v).wakes, 1);
+  assert.equal(state(v).lastTriage.by, 'local');
+  // The duty's exit is the routine's: a failed woken duty shows on the tick routine.
+  setHeartbeat(v, 'sitrep', 'missed');
+  const failed = await T.triage({ deps: { ...d, provider: async () => localModel('{"wake": true, "reason": "sitrep missed"}'), spawnDuty: () => 1 }, now: at(2 * HOUR) });
+  assert.equal(failed.action, 'woke');
+  assert.equal(failed.exit, 1);
+});
+
+test('triage: local down, a hosted background provider, an error or a non-decision → any real change wakes, by the rules', async () => {
+  for (const [label, provider, why] of [
+    ['none', { name: 'none', reason: 'local-down' }, /local model is unavailable \(local-down\)/],
+    ['hosted', { name: 'claude', chat: async () => { throw new Error('a hosted call must never happen'); } }, /background provider claude/],
+    ['error', { name: 'ollama', chat: async () => { throw new Error('ECONNRESET'); } }, /did not answer \(ECONNRESET\)/],
+    ['garbage', { name: 'ollama', chat: async () => 'I think maybe' }, /answer was not a decision/],
+  ]) {
+    const v = vault(); const spawned = [];
+    const r = await T.triage({ deps: triageDeps(v, provider, { spawned }) });
+    assert.equal(r.action, 'woke', label);
+    assert.equal(r.decision.by, 'rules', label);
+    assert.match(r.decision.reason, why, label);
+    assert.match(r.decision.reason, /any real change wakes the Chief of Staff$/, label);
+    assert.equal(spawned.length, 1, label);
+    assert.match(triageLines(v)[0], / \(rules; changed: first triage\)$/, label);
+  }
+  const v = vault();
+  const r = await T.triage({ deps: { ...triageDeps(v, null), provider: async () => { throw new Error('no vault'); } } });
+  assert.equal(r.decision.by, 'rules');
+});
+
+test('triage decision parsing: JSON, JSON in prose, string booleans; anything else is no decision', () => {
+  assert.deepEqual(T.parseDecision('{"wake": true, "reason": "a duty failed"}'), { wake: true, reason: 'a duty failed' });
+  assert.deepEqual(T.parseDecision('Sure.\n```json\n{"wake": false, "reason": "only churn"}\n```'), { wake: false, reason: 'only churn' });
+  assert.deepEqual(T.parseDecision('{"wake": "yes", "reason": "x"}'), { wake: true, reason: 'x' });
+  assert.deepEqual(T.parseDecision('{"wake": "FALSE"}'), { wake: false, reason: 'the local model says it can wait' });
+  assert.deepEqual(T.parseDecision('{"wake": true, "reason": "line one\\n## heading `code`"}'), { wake: true, reason: 'line one heading code' }, 'one journal line, no markup');
+  assert.equal(T.parseDecision('{"wake": true, "reason": "' + 'x'.repeat(300) + '"}').reason.length, 160);
+  for (const bad of ['', 'no', '[]', '{"reason": "x"}', '{"wake": "maybe"}', '{"wake": 1}', null, '{ broken']) assert.equal(T.parseDecision(bad), null, String(bad));
+});
+
+test('triage: back to the last run\'s state is quiet; persona off and a headless caller are refused without a call', async () => {
+  const v = vault();
+  const local = localModel('{"wake": false, "reason": "wait"}');
+  const d = triageDeps(v, local);
+  T.precheck({ deps: d }); T.beat({ deps: d });
+  const st = path.join(v, 'persona', 'STATE.md');
+  const before = fs.readFileSync(st, 'utf8');
+  fs.writeFileSync(st, before.replace('## Flags\n', '## Flags\n- [ ] 2026-09-22 transient\n'));
+  assert.equal((await T.triage({ deps: d, now: at(HOUR) })).action, 'stay');
+  fs.writeFileSync(st, before);
+  assert.equal((await T.triage({ deps: d, now: at(2 * HOUR) })).action, 'unchanged', 'the flag closed again: what the last run saw');
+  assert.equal(local.calls.length, 1);
+  fs.writeFileSync(path.join(v, 'persona', 'DISABLED'), 'x');
+  assert.equal((await T.triage({ deps: d, now: at(3 * HOUR) })).action, 'off');
+  fs.rmSync(path.join(v, 'persona', 'DISABLED'));
+  assert.equal((await T.triage({ deps: triageDeps(v, local, { cfg: { persona: { enabled: false } } }), now: at(3 * HOUR) })).action, 'off');
+  const errs = []; const orig = process.stderr.write; process.stderr.write = (m) => { errs.push(String(m)); return true; };
+  try { assert.equal(await T.mainTriage(['--triage', '--root', v], { env: { AOS_HEADLESS: '1' } }), 2); } finally { process.stderr.write = orig; }
+  assert.match(errs.join(''), /never inside a duty/);
+  assert.equal(local.calls.length, 1, 'none of these asked the model');
+});
+
+test('mainTriage prints one JSON line and returns the woken duty\'s exit', async () => {
+  const v = vault();
+  const out = []; const orig = process.stdout.write; process.stdout.write = (m) => { out.push(String(m)); return true; };
+  let code;
+  try { code = await T.mainTriage(['--triage'], { env: {}, deps: triageDeps(v, { name: 'none', reason: 'local-down' }, { exit: 1 }) }); } finally { process.stdout.write = orig; }
+  assert.equal(code, 1);
+  const line = JSON.parse(out.join(''));
+  assert.equal(line.action, 'woke');
+  assert.deepEqual(line.changes, ['first triage']);
+  assert.equal(line.decision.by, 'rules');
 });

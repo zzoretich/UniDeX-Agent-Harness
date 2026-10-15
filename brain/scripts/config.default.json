@@ -19,7 +19,7 @@
   "updates": { "check": true, "intervalHours": 24 },
   "cost": { "enabled": false, "monthlyBudget": null },
   "graph": { "enabled": true, "out": "brain/graphify-out", "timeoutSec": 120, "staleDays": 7, "semantic": { "enabled": "auto", "runner": "auto", "everyHours": 24, "perCallUsd": 0.25, "perDayUsd": 1.0, "tokenBudget": 20000, "timeoutSec": 1800 } },
-  "persona": { "enabled": true, "runner": "auto", "model": null, "effort": null, "codexModel": null, "perDutyUsd": 2.0, "perDayUsd": 6.0, "watchdog": { "graceMinutes": 45, "notify": true }, "tick": { "flagAgeDays": 7, "earlyReflect": { "corrections": 3, "dutyFailures": 2 } }, "autoapply": { "minVerified": 3 }, "briefing": { "enabled": true, "staleHours": 3 } },
+  "persona": { "enabled": true, "runner": "auto", "model": "claude-opus-5-5", "effort": null, "codexModel": "gpt-6-sol", "failover": true, "perDutyUsd": 2.0, "perDayUsd": 6.0, "watchdog": { "graceMinutes": 45, "notify": true }, "tick": { "flagAgeDays": 7, "earlyReflect": { "corrections": 3, "dutyFailures": 2 } }, "autoapply": { "minVerified": 3 }, "briefing": { "enabled": true, "staleHours": 3 } },
   "notifications": { "osAlert": true, "retentionDays": 30, "maxPerSenderPerHour": 6 },
   "routines": { "enabled": true, "runner": "auto", "codexModel": null, "perRunUsd": 2.0, "perDayUsd": 6.0, "tools": "Read,Glob,Grep", "externalLabels": [] },
   "sessions": { "perTurnUsd": 1.0, "perDayUsd": 10.0 },

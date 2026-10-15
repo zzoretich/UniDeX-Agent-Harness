@@ -151,8 +151,10 @@ test("the persona form checks the name the way the interview does", async () => 
   await expect(install).toBeEnabled();
   await win.locator('[data-field="addressAs"]').fill("Captain");
   await win.locator('[data-field="priorities"]').fill("tide tables, harbour chart");
-  // Claude Code only: the Codex model is not asked.
+  // Claude Code only: the Codex model is not asked; the Chief of Staff's hosted model is preselected (local-first A4).
   await expect(win.locator('[data-field="dutyCodexModel"]')).toHaveCount(0);
+  await expect(win.locator('[data-field="dutyModel"]')).toHaveValue("claude-opus-5-5");
+  await expect(win.locator('[data-field="chief"]')).toHaveText("Duties run on Claude Code · claude-opus-5-5, a hosted model. The hourly check runs on this Mac's local model and wakes it only when something changed.");
   await win.locator('[data-field="schedule"]').uncheck();
   await win.screenshot({ path: test.info().outputPath("wizard-persona.png") });
 });
@@ -166,7 +168,7 @@ test("Install runs the payload's aos init with the user's answers, unattended", 
   const [init] = calls;
   expect(init.argv.slice(0, 6)).toEqual(["init", "--yes", "--vault", FX.vault, "--host", "claude"]);
   expect(init.argv[6]).toBe("--persona-json");
-  expect(init.persona).toEqual({ name: "Halyard", addressAs: "Captain", voice: "", priorities: ["tide tables", "harbour chart"], dutyEffort: "medium", schedule: false });
+  expect(init.persona).toEqual({ name: "Halyard", addressAs: "Captain", voice: "", priorities: ["tide tables", "harbour chart"], dutyModel: "claude-opus-5-5", dutyEffort: "medium", schedule: false });
   // Inspection M1: aos init installs graphify with the uv the checks validated (the one the wizard installed here).
   expect(init.uvBin).toBe(path.join(FX.home, ".local", "bin", "uv"));
   // The answers file lived only while aos init ran.
