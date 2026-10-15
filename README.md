@@ -105,7 +105,8 @@ Download `AgenticOS-Workbench-<version>-arm64.dmg` from the [latest release](htt
 2. **Choose** — which of Claude Code and Codex to wire (both, when both are ready) and the vault folder (default `~/AgenticOS`; files already there are kept).
 3. **Your agent** — the Chief of Staff's questions, as a form (or skip it and run `aos persona` later).
 4. **Install** — `aos init` from the runtime the app carries, with its output shown: the same nine steps as the terminal install below.
-5. **Finish** — for Claude Code, the `CLAUDE.md` line shown as a diff and added only if you say so; for Codex, the one step only you can take, trusting the hook entries under `/hooks`. Then the Workbench opens.
+5. **Your history** — what Claude Code and Codex left on this Mac, counted per host and kind (instructions, memories, MCP servers, sessions) and the project folders it would make into workspaces, all ticked; **Import** brings in what stays ticked, with its progress, and queues the sessions for the digest. With nothing on this Mac, the step is skipped.
+6. **Finish** — for Claude Code, the `CLAUDE.md` line shown as a diff and added only if you say so; for Codex, the one step only you can take, trusting the hook entries under `/hooks`. Then the Workbench opens.
 
 Afterwards the app keeps itself current from GitHub Releases (UniDeX ▸ Check for Updates…), and when it carries a newer runtime than your vault has, it offers to run `aos upgrade` from it. Put `aos` on your PATH as in [step 3](#3-put-aos-on-your-path-and-check-the-install) below to use the commands in a terminal.
 
