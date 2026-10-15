@@ -4,7 +4,8 @@
  * rules"): 2–6 live memories drafted into one, written over the oldest, the others superseded by it, and undone from a
  * record kept 30 days. `aos memory merge-draft | merge | unmerge` (cli/memory.js) and the hub's Merge dialog run these.
  *
- *   mergeDraft(vault, rels, { estimate, deps, ai, now, cfg })   async; writes nothing (the provider ledgers its call)
+ *   mergeDraft(vault, rels, { estimate, deps, ai, now, cfg, host })   async; writes nothing (the provider ledgers its call);
+ *     host ('claude' | 'codex'): "Run once on Claude/Codex" while the local engine is down (local-first A3)
  *     estimate → { winner, type, sources, baseHashes, byHand, truncated, estimate }: no model call (A5)
  *     else     → { winner, type, sources, baseHashes, truncated, mode, reason, provider, model, usd, estimated, cap,
  *                  fields, generatedAt }: one call. No provider, a cap, no answer or an unreadable reply give mode
@@ -279,9 +280,9 @@ function capAfter(ai, e, deps) {
 }
 
 /** What one call would cost (A5); a seam that fails says no call is possible rather than failing the dialog. */
-async function estimateOf(ai, chars, outTokens, deps) {
+async function estimateOf(ai, chars, outTokens, deps, host) {
   try {
-    return await ai.estimate('merge', { chars, outTokens, deps });
+    return await ai.estimate('merge', { chars, outTokens, deps, ...(host ? { host } : {}) });
   } catch (e) {
     return {
       available: false, reason: e && e.code === 'PROVIDER_CAP' ? 'daily-cap' : 'no-provider', provider: 'none', model: null,
@@ -310,7 +311,7 @@ async function mergeDraft(vault, rels, opts = {}) {
   if (opts.estimate) {
     // The answer is about as long as what it merges, up to the call's token cap.
     const outTokens = Math.min(NUM_PREDICT, Math.ceil(srcs.reduce((n, s) => n + s.sent.length, 0) / 4) + 100);
-    const estimate = await estimateOf(ai, SYSTEM.length + prompt.length, outTokens, opts.deps);
+    const estimate = await estimateOf(ai, SYSTEM.length + prompt.length, outTokens, opts.deps, opts.host);
     return { ...base, byHand, truncated, estimate };
   }
   const draft = (mode, reason, who, fields) => ({
@@ -319,7 +320,7 @@ async function mergeDraft(vault, rels, opts = {}) {
   });
   let res;
   try {
-    res = await ai.call('merge', { system: SYSTEM, prompt, schema: MERGE_SCHEMA, timeoutMs: TIMEOUT_MS, numPredict: NUM_PREDICT, deps: opts.deps });
+    res = await ai.call('merge', { system: SYSTEM, prompt, schema: MERGE_SCHEMA, timeoutMs: TIMEOUT_MS, numPredict: NUM_PREDICT, deps: opts.deps, ...(opts.host ? { host: opts.host } : {}) });
   } catch (e) {
     // No provider, a cap, no answer: the dialog finishes by hand (A4). No cost came back, so usd is 0 (a timed-out
     // call may still be billed, which the dialog says, A12).

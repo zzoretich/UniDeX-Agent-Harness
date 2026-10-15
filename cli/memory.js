@@ -22,11 +22,12 @@
  *                                     prints the same changes and writes nothing (the page shows it before it asks), and
  *                                     their hash (`expect`): with --expect the real run refuses unless it would make
  *                                     exactly those changes
- *   merge-draft <path>… [--estimate] [--json]
+ *   merge-draft <path>… [--host claude|codex] [--estimate] [--json]
  *                                     2–6 memories drafted into one by the model provider (brain-ai A1, A4–A8;
  *                                     lib/memory-merge.js): one call, nothing written; --estimate makes no call and
  *                                     prints what one would cost, the target and the no-model draft (byHand). With no
- *                                     provider or a cap reached it answers mode "by-hand" with the reason
+ *                                     provider or a cap reached it answers mode "by-hand" with the reason; --host runs
+ *                                     it once on that host under its caps (local-first A3: the local engine is down)
  *   merge <path>… --into <json> --expect <hash>,<hash>… [--json]
  *                                     writes the merged title, description and body over the oldest (it keeps its path),
  *                                     supersedes the others by it and collapses their MEMORY.md lines (D7, A9); one
@@ -35,10 +36,11 @@
  *                                     the newest merge into <path> undone: its text back, the others restored (byte for
  *                                     byte while the merge left them as they are: restoredExactly), MEMORY.md back
  *                                     whole when it is as the merge left it (indexExactly), else its lines (A2)
- *   sweep [<path>…] [--estimate] [--json]
+ *   sweep [<path>…] [--host claude|codex] [--estimate] [--json]
  *                                     the consolidation sweep (D22, A6, A10, A11; lib/memory-sweep.js): Merge, Archive
  *                                     and Retitle suggestions over the whole brain or the paths given (≤ 50), kept in
- *                                     brain/_index/memory-sweep.json; Claude or Codex only
+ *                                     brain/_index/memory-sweep.json; on Claude or Codex, or on the local model in chunks
+ *                                     of brain-hub's duplicates and clusters (local-first A15); --host as merge-draft
  *   sweep dismiss <id> [--json]       a suggestion hidden for good
  *
  * Safety (spec §6) lives in brain/scripts/lib/memory-ops.js: a path is brain/memory/<type>/<slug>.md for one of the four
@@ -53,12 +55,12 @@ const { spawnSync } = require('child_process');
 
 const VERBS = ['list', 'keep', 'set', 'archive', 'restore', 'supersede', 'draft', 'notdup', 'fix', 'merge-draft', 'merge', 'unmerge', 'sweep'];
 const REPO = path.join(__dirname, '..');
-const VALUE_FLAGS = new Map([['set', 'set'], ['expect', 'expect'], ['by', 'by'], ['into', 'into']]);
+const VALUE_FLAGS = new Map([['set', 'set'], ['expect', 'expect'], ['by', 'by'], ['into', 'into'], ['host', 'host']]);
 const BOOL_FLAGS = new Map([['json', 'json'], ['dry-run', 'dryRun'], ['skip-brain-md', 'skipBrainMd'], ['estimate', 'estimate']]);
 const VERB_FLAGS = {
   list: ['json'], keep: ['json'], set: ['json', 'set', 'expect', 'dryRun', 'skipBrainMd'], archive: ['json'], restore: ['json'],
   supersede: ['json', 'by'], draft: ['json'], notdup: ['json'], fix: ['json', 'dryRun', 'expect'],
-  'merge-draft': ['json', 'estimate'], merge: ['json', 'into', 'expect'], unmerge: ['json', 'expect'], sweep: ['json', 'estimate'],
+  'merge-draft': ['json', 'estimate', 'host'], merge: ['json', 'into', 'expect'], unmerge: ['json', 'expect'], sweep: ['json', 'estimate', 'host'],
 };
 // brain-ai A8, A3: a merge takes 2–6 memories; a scoped sweep at most 50 (a Map community, a Health cluster).
 const MERGE_MAX = 6;
@@ -78,10 +80,10 @@ const USAGE = {
   draft: 'aos memory draft approve|reject <slug> [--json]',
   notdup: 'aos memory notdup <path> <path> [--json]',
   fix: 'aos memory fix sources|types|descriptions|index|drafts [--dry-run] [--expect <hash>] [--json]',
-  'merge-draft': 'aos memory merge-draft <path> <path>… [--estimate] [--json]',
+  'merge-draft': 'aos memory merge-draft <path> <path>… [--host claude|codex] [--estimate] [--json]',
   merge: 'aos memory merge <path> <path>… --into <json> --expect <hash>,<hash>… [--json]',
   unmerge: 'aos memory unmerge <path> --expect <hash> [--json]',
-  sweep: 'aos memory sweep [<path>…] [--estimate] [--json] | aos memory sweep dismiss <id> [--json]',
+  sweep: 'aos memory sweep [<path>…] [--host claude|codex] [--estimate] [--json] | aos memory sweep dismiss <id> [--json]',
 };
 
 class UsageError extends Error {}
@@ -256,9 +258,18 @@ function estimateLine(e, ai) {
       const seam = ai || resolveModule('lib/memory-ai.js');
       if (typeof seam.reasonSentence === 'function') why = String(seam.reasonSentence(e) || '').trim();
     } catch { /* the code below */ }
-    return `no model call possible: ${why || (e && e.reason) || 'no provider'}`;
+    const once = e && Array.isArray(e.once) && e.once.length ? `; run once on a host: ${e.once.map((x) => `--host ${x.provider} (about ${money(x.usd)})`).join(' or ')}` : '';
+    return `no model call possible: ${why || (e && e.reason) || 'no provider'}${once}`;
   }
+  if (e.provider === 'ollama') return `free · ${e.model || 'the local model'} · on this Mac`;
   return `about ${money(e.usd)} · ${e.model || e.provider} · ${e.provider}${e.cap ? ` · today ${money(e.cap.spentToday)} of ${money(e.cap.perDayUsd)}` : ''}`;
+}
+
+/** --host: claude or codex ("Run once on …", local-first A3), else none; anything else is a usage error. */
+function hostOf(o) {
+  if (o.host === undefined) return undefined;
+  if (o.host !== 'claude' && o.host !== 'codex') throw new UsageError('aos memory: --host takes claude or codex');
+  return o.host;
 }
 
 /** 2–6 memories into one draft (D21, A4–A8): one model call, or none with --estimate; nothing is written either way. */
@@ -266,7 +277,7 @@ async function mergeDraftVerb(ctx, paths, o) {
   // provider.js, config.js, the spend ledger and the CLIs fix the vault when first required (lib/paths.js): point them at
   // the vault this verb acts on before lib/memory-ai.js loads them (cli/workspace.js draftVerb's precedent).
   process.env.AOS_VAULT = ctx.vault;
-  const r = await mergeLib().mergeDraft(ctx.vault, paths, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env });
+  const r = await mergeLib().mergeDraft(ctx.vault, paths, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env, host: hostOf(o) });
   emit(o.io, o.json, r, o.estimate
     ? [`merge into ${r.winner} (${r.type})`, `  ${estimateLine(r.estimate, o.ai)}`]
     : [
@@ -313,18 +324,18 @@ function unmergeVerb(ctx, rel, o) {
 async function sweepVerb(ctx, args, o) {
   const lib = sweepLib();
   if (args[0] === 'dismiss') {
-    if (o.estimate) throw new UsageError(`${USAGE.sweep}: --estimate is not a flag of sweep dismiss`);
+    if (o.estimate || o.host) throw new UsageError(`${USAGE.sweep}: --${o.estimate ? 'estimate' : 'host'} is not a flag of sweep dismiss`);
     if (args.length !== 2 || !lib.ID_RE.test(args[1])) throw new UsageError('aos memory sweep dismiss <id>: the id a sweep printed (12 hex characters)');
     const r = lib.dismiss(ctx.vault, args[1]);
     emit(o.io, o.json, r, [r.already ? `${r.dismissed} was already dismissed` : `${r.dismissed} dismissed: it is never suggested again`]);
     return 0;
   }
   process.env.AOS_VAULT = ctx.vault; // as mergeDraftVerb: before lib/memory-ai.js loads provider.js
-  const r = await lib.sweep(ctx.vault, args, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env });
+  const r = await lib.sweep(ctx.vault, args, { estimate: !!o.estimate, deps: o.providerDeps, ai: o.ai, env: o.env, host: hostOf(o) });
   emit(o.io, o.json, r, o.estimate
-    ? [`sweep ${r.considered} of ${r.of} memories`, `  ${estimateLine(r.estimate, o.ai)}`]
+    ? [`sweep ${r.considered} of ${r.of} memories${r.chunks !== undefined ? ` (brain hub's duplicates and clusters, ${r.chunks} chunk${r.chunks === 1 ? '' : 's'} on the local model)` : ''}`, `  ${estimateLine(r.estimate, o.ai)}`]
     : [
-      `${r.run.suggestions} suggestion${r.run.suggestions === 1 ? '' : 's'} from ${r.run.model || r.run.provider} · ${r.run.provider} · ${money(r.run.usd)}${r.run.estimated ? ' (estimated)' : ''} (${r.run.considered} of ${r.run.of} memories)`,
+      `${r.run.suggestions} suggestion${r.run.suggestions === 1 ? '' : 's'} from ${r.run.model || r.run.provider} · ${r.run.provider} · ${money(r.run.usd)}${r.run.estimated ? ' (estimated)' : ''} (${r.run.considered} of ${r.run.of} memories${r.run.chunks ? ` in ${r.run.chunks} chunk${r.run.chunks === 1 ? '' : 's'}${r.run.failedChunks ? `, ${r.run.failedChunks} failed` : ''}` : ''})`,
       ...r.suggestions.map((c) => `  ${c.id}  ${c.kind}  ${c.paths.join(' ')}${c.title ? ` → ${c.title}` : ''}  (${c.why})`),
     ]);
   return 0;

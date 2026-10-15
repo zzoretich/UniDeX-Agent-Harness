@@ -89,6 +89,10 @@ const codexDeps = (spawns, spawnOpts = {}, extra = {}) => ({
   codexCall: (o) => codexCli.codexCall({ ...o, bin: '/fake/bin/codex', spawnFn: fakeCodexSpawn(spawns, spawnOpts) }),
   ...extra,
 });
+/** Claude signed in (an estimate trusts the binary), Ollama's ping down. */
+const loggedInClaude = () => ({ ping: async () => false, resolveClaudeBin: () => '/fake/bin/claude', loginProbe: async () => true });
+/** Codex signed in. */
+const codexIn = () => ({ resolveCodexBin: () => '/fake/bin/codex', codexLoginProbe: async () => true });
 const nobody = {
   ping: never('ping'), resolveClaudeBin: never('claude bin'), loginProbe: never('claude login'), claudeCall: never('claude'),
   resolveCodexBin: never('codex bin'), codexLoginProbe: never('codex login'), codexCall: never('codex'),
@@ -127,7 +131,7 @@ test('provider none: merge and sweep are off with reason forced; no probe, no ca
   setConfig({ provider: 'none' });
   for (const kind of ['merge', 'sweep']) {
     const est = await AI.estimate(kind, { chars: 4000, outTokens: 500, deps: nobody });
-    assert.deepEqual(est, { available: false, reason: 'forced', provider: 'none', model: null, tokensIn: 1000, tokensOut: 500, usd: 0, cap: null }, kind);
+    assert.deepEqual(est, { available: false, reason: 'forced', provider: 'none', model: null, tokensIn: 1000, tokensOut: 500, usd: 0, cap: null, once: [] }, kind);
     assert.equal(AI.reasonSentence(est), 'No model provider is set up.');
     const r = await AI.resolve(kind, { deps: nobody });
     assert.deepEqual([r.available, r.reason, r.provider, r.model], [false, 'forced', 'none', null]);
@@ -256,12 +260,15 @@ test('the sweep with no codex.model runs Codex\'s own default model (its config.
   assert.equal(r2.model, null);
 });
 
-test('the sweep with only Ollama is off (ollama-only) and never calls it; the merge still runs on Ollama', async () => {
+test('the sweep with only Ollama runs on Ollama (local-first A15: the ollama-only refusal is gone); so does the merge', async () => {
+  const calls = [];
   const deps = { ...nobody, ping: async () => true, resolveClaudeBin: () => null };
   const est = await AI.estimate('sweep', { chars: 1000, outTokens: 10, deps });
-  assert.deepEqual(est, { available: false, reason: 'ollama-only', provider: 'none', model: null, tokensIn: 250, tokensOut: 10, usd: 0, cap: null });
-  assert.equal(AI.reasonSentence(est), 'Only Ollama is available, and a local model cannot hold the whole brain.');
-  await assert.rejects(() => AI.call('sweep', { prompt: 'x', deps }), (e) => e.code === 'PROVIDER_NONE' && e.reason === 'ollama-only');
+  assert.deepEqual(est, { available: true, reason: null, provider: 'ollama', model: role('workhorse').tag, tokensIn: 250, tokensOut: 10, usd: 0, cap: null, once: [] });
+  ollama.chat = async (o) => { calls.push(o); return JSON.stringify(REPLY); };
+  const r = await AI.call('sweep', { prompt: 'x', schema: SCHEMA, deps });
+  assert.deepEqual([r.provider, r.usd, r.cap], ['ollama', 0, null]);
+  assert.deepEqual([calls.length, calls[0].feature], [1, 'reason:memory-sweep']);
   const merge = await AI.estimate('merge', { chars: 1000, deps });
   assert.deepEqual([merge.available, merge.provider, merge.model, merge.usd, merge.cap], [true, 'ollama', role('workhorse').tag, 0, null]);
 
@@ -275,7 +282,7 @@ test('the sweep with only Ollama is off (ollama-only) and never calls it; the me
   assert.equal((await AI.resolve('sweep', { deps: outDeps })).reason, 'claude-not-logged-in');
   for (const ping of [async () => false, async () => true]) {
     const out = await AI.estimate('sweep', { deps: { ...outDeps, loginProbe: never('claude login'), ping } });
-    assert.deepEqual([out.reason, AI.reasonSentence(out)], ['claude-not-logged-in', 'Claude Code is not signed in.'], 'never ollama-only: the user has Claude and only needs to sign in');
+    assert.deepEqual([out.reason, AI.reasonSentence(out)], ['claude-not-logged-in', 'Claude Code is not signed in.'], 'the user has Claude and only needs to sign in');
   }
 
   // Codex-only with Codex signed out, Ollama up: Codex's own reason too (the merge still runs on Ollama).
@@ -290,7 +297,56 @@ test('the sweep with only Ollama is off (ollama-only) and never calls it; the me
   dropState();
   setConfig({ provider: 'ollama' });
   const forced = await AI.estimate('sweep', { deps: { ...nobody, resolveClaudeBin: () => null } });
-  assert.equal(forced.reason, 'ollama-only', 'provider ollama: no ping needed');
+  assert.deepEqual([forced.available, forced.provider], [true, 'ollama'], 'provider ollama: no ping needed');
+  assert.equal(AI.reasonSentence('ollama-only'), 'Only Ollama is available, and a local model cannot hold the whole brain.', 'an older runtime\'s reason still reads');
+});
+
+// ── provider local (local-first A15, A3) ──
+test('under provider local the sweep runs on the local engine alone: free, counted, never a host even signed in', async () => {
+  setConfig({ provider: 'local' });
+  const chats = [];
+  const deps = { ...loggedInClaude(), claudeCall: never('claude'), localModels: async () => ['qwen3.5:9b'], ollamaChat: async (o) => { chats.push(o); return JSON.stringify(REPLY); }, recordLocalCall: () => {} };
+  const est = await AI.estimate('sweep', { chars: 4000, deps });
+  assert.deepEqual([est.available, est.provider, est.model, est.usd, est.cap], [true, 'ollama', 'qwen3.5:9b', 0, null]);
+  const r = await AI.call('sweep', { system: 'S', prompt: 'P', schema: SCHEMA, deps });
+  assert.deepEqual([r.provider, r.model, r.usd, r.estimated, r.cap], ['ollama', 'qwen3.5:9b', 0, false, null]);
+  assert.equal(chats[0].feature, 'reason:memory-sweep');
+  assert.deepEqual(chats[0].format, SCHEMA, 'the reply schema as Ollama\'s format');
+  assert.equal(spendRows().length, 0);
+});
+
+test('the local engine down: the sweep and the merge are off with its reason, and `once` names each signed-in host with its cost and cap', async () => {
+  setConfig({ provider: 'local', hosts: { claude: { enabled: true }, codex: { enabled: true } } });
+  const deps = { ...loggedInClaude(), ...codexIn(), claudeCall: never('claude'), localModels: async () => null };
+  const est = await AI.estimate('sweep', { chars: 4000, deps });
+  assert.deepEqual([est.available, est.reason], [false, 'local-down']);
+  assert.equal(AI.reasonSentence(est), 'The local model is not answering (start Ollama, or your local engine).');
+  assert.deepEqual(est.once.map((e) => [e.provider, e.cap && e.cap.family]), [['claude', 'reasoner'], ['codex', 'reasoner-codex']]);
+  assert.ok(est.once[0].usd > 0, 'priced');
+  const merge = await AI.estimate('merge', { chars: 4000, deps });
+  assert.deepEqual([merge.reason, merge.once.map((e) => [e.provider, e.cap && e.cap.family])], ['local-down', [['claude', 'hook'], ['codex', 'codex']]]);
+  // A real call refuses with the local reason: nothing reaches a host unasked.
+  await assert.rejects(() => AI.call('sweep', { prompt: 'x', deps }), (e) => e.code === 'PROVIDER_NONE' && e.reason === 'local-down');
+  // Not pulled: its own sentence.
+  dropState();
+  const missing = await AI.estimate('sweep', { deps: { ...deps, localModels: async () => ['llama3.2'] } });
+  assert.deepEqual([missing.reason, AI.reasonSentence(missing)], ['local-model-missing', 'The local model is not downloaded yet (aos local pull).']);
+  // A host that is off is never offered.
+  dropState();
+  setConfig({ provider: 'local', hosts: { claude: { enabled: true }, codex: { enabled: false } } });
+  const one = await AI.estimate('sweep', { deps });
+  assert.deepEqual(one.once.map((e) => e.provider), ['claude']);
+});
+
+test('host: "Run once on Claude/Codex" runs on that host under its usual caps, whatever the provider says', async () => {
+  setConfig({ provider: 'local', claude: { model: 'haiku' }, reasoner: { perCallUsd: 0.4, perDayUsd: 3 } });
+  const calls = [];
+  const r = await AI.call('sweep', { system: 'S', prompt: 'P', schema: SCHEMA, host: 'claude', deps: { ...claudeDeps(calls), localModels: never('local') } });
+  assert.deepEqual([r.provider, r.model, r.cap.family], ['claude', 'haiku', 'reasoner']);
+  assert.equal(calls[0].maxBudgetUsd, 0.4, 'the reasoner\'s per-call cap');
+  const merged = [];
+  const m = await AI.call('merge', { system: 'S', prompt: 'P', schema: SCHEMA, host: 'claude', deps: { ...claudeDeps(merged), localModels: never('local') } });
+  assert.deepEqual([m.provider, m.cap.family], ['claude', 'hook']);
 });
 
 test('a cap at resolve: off with the cap that stopped it, named in the sentence; no call', async () => {
@@ -298,7 +354,7 @@ test('a cap at resolve: off with the cap that stopped it, named in the sentence;
   let est = await AI.estimate('merge', { chars: 4000, deps: claudeDeps([], { claudeCall: never('claude'), spendToday: () => 0.5 }) });
   assert.deepEqual(est, {
     available: false, reason: 'daily-cap', provider: 'none', model: null, tokensIn: 1000, tokensOut: 2000, usd: 0,
-    cap: { family: 'hook', perDayUsd: 0.5, spentToday: 0.5, perCallUsd: 0.05 },
+    cap: { family: 'hook', perDayUsd: 0.5, spentToday: 0.5, perCallUsd: 0.05 }, once: [],
   });
   const sentence = "Today's model cap is reached ($0.50, claude.perDayUsd).";
   assert.equal(AI.reasonSentence(est), sentence);
@@ -382,7 +438,7 @@ test('an estimate per host: the tokens with the host\'s overhead, the price, and
   let e = await AI.estimate('merge', { chars: 4000, outTokens: 800, deps: claudeDeps([], { claudeCall: never('claude') }) });
   assert.deepEqual(e, {
     available: true, reason: null, provider: 'claude', model: 'haiku', tokensIn: 1600, tokensOut: 800, usd: 0.0056,
-    cap: { family: 'hook', perDayUsd: 0.5, spentToday: 0, perCallUsd: 0.05 },
+    cap: { family: 'hook', perDayUsd: 0.5, spentToday: 0, perCallUsd: 0.05 }, once: [],
   });
   e = await AI.estimate('merge', { chars: 4001, deps: claudeDeps([], { claudeCall: never('claude') }) });
   assert.deepEqual([e.tokensIn, e.tokensOut], [1601, 2000], 'chars round up; no outTokens → the most a merge may write');
@@ -395,7 +451,7 @@ test('an estimate per host: the tokens with the host\'s overhead, the price, and
   e = await AI.estimate('merge', { chars: 4000, outTokens: 800, deps: codexDeps([], {}, { codexCall: never('codex') }) });
   assert.deepEqual(e, {
     available: true, reason: null, provider: 'codex', model: 'gpt-5-mini', tokensIn: 26_000, tokensOut: 800, usd: 0.0081,
-    cap: { family: 'codex', perDayUsd: 0.5, spentToday: 0, perCallUsd: null },
+    cap: { family: 'codex', perDayUsd: 0.5, spentToday: 0, perCallUsd: null }, once: [],
   });
   e = await AI.estimate('sweep', { chars: 4000, outTokens: 800, deps: codexDeps([], {}, { codexCall: never('codex') }) });
   assert.deepEqual([e.provider, e.model, e.usd, e.cap], ['codex', 'gpt-5-mini', 0.0081, { family: 'reasoner-codex', perDayUsd: 5, spentToday: 0, perCallUsd: null }]);
@@ -404,7 +460,7 @@ test('an estimate per host: the tokens with the host\'s overhead, the price, and
   dropState();
   setConfig();
   e = await AI.estimate('merge', { chars: 4000, outTokens: 800, deps: { ...nobody, ping: async () => true } });
-  assert.deepEqual(e, { available: true, reason: null, provider: 'ollama', model: role('workhorse').tag, tokensIn: 1000, tokensOut: 800, usd: 0, cap: null });
+  assert.deepEqual(e, { available: true, reason: null, provider: 'ollama', model: role('workhorse').tag, tokensIn: 1000, tokensOut: 800, usd: 0, cap: null, once: [] });
   assert.deepEqual(spendRows(), []);
 });
 

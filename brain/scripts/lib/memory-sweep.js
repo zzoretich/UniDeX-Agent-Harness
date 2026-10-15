@@ -17,11 +17,21 @@
  * pair or a cluster, then unreviewed, then newest), and `considered` counts the lines sent, `of` the scope.
  *
  * Model (A6, A7): lib/memory-ai.js `sweep`, the reasoner role on the background model (`claude.model` on Claude,
- * `codex.model` at `codex.effort` on Codex; feature reason:memory-sweep, the reasoner cap). With no Claude or Codex for
- * it (none, a cap, Ollama only) --estimate answers available: false with the reason, and a real run refuses: "the sweep
- * needs Claude or Codex (<reason sentence>)". The reply schema is strict (every key required, nothing else) and holds no
- * count or length keyword (maxItems, maxLength), which Claude's structured outputs refuse: the prompt states the limits
- * and the cards are checked here.
+ * `codex.model` at `codex.effort` on Codex; feature reason:memory-sweep, the reasoner cap). With no model for it (none,
+ * a cap, the local engine down) --estimate answers available: false with the reason (and `once`, the hosts that could
+ * run it once), and a real run refuses: "the sweep cannot run (<reason sentence>)". `host` (opts) runs it once on that
+ * host. The reply schema is strict (every key required, nothing else) and holds no count or length keyword (maxItems,
+ * maxLength), which Claude's structured outputs refuse: the prompt states the limits and the cards are checked here.
+ *
+ * On the local engine (local-first A15: provider local, or Ollama when nobody hosted answers) a small model cannot hold
+ * the whole brain, so the sweep sends what brain-hub found instead: its duplicate pairs and clusters, joined into groups
+ * (a pair's two memories, a cluster, and any group they share a memory with), packed into chunks of at most
+ * LOCAL_MAX_CHARS each, at most LOCAL_MAX_CHUNKS of them (a scoped sweep sends its scope the same way). One call per
+ * chunk, each asking for at most MAX_CARDS_SCOPED cards; a chunk's cards must name only that chunk's memories; the
+ * cards of every chunk are merged (an id once) up to the run's limit. A chunk that fails is left out (`failedChunks`);
+ * only when every chunk fails does the run fail as a single call would. `considered` counts the memories sent, `of` the
+ * scope as before; nothing is spent (usd 0) and no cap applies. With no group at all a whole-brain run has nothing to
+ * send: EMPTY, saying so.
  *
  * Cards (A10) are kept only when every path was sent and is still live, the kind's path count fits, a retitle's title is
  * new and one `set` takes (no `[` or `]` in the title, no `](` in its description), and the card's id was neither seen
@@ -58,6 +68,10 @@ const EXCERPT = 200;
 const MAX_CARDS = 20;
 const MAX_CARDS_SCOPED = 10;
 const MAX_RUNS = 20;
+// The local engine (A15): a chunk's prompt (about 6k tokens, well inside the workhorse's sized context), and how many
+// chunks one run sends (each a call of up to TIMEOUT_MS).
+const LOCAL_MAX_CHARS = 24_000;
+const LOCAL_MAX_CHUNKS = 6;
 // The limits `set` and `merge --into` check (memory-ops.js), counted as they count them: in UTF-16 units (`.length`).
 const MAX_TITLE = ops.MAX_TITLE;
 const MAX_WHY = 200;
@@ -225,6 +239,68 @@ function buildInput(memories, hub, { now = Date.now(), maxChars = MAX_CHARS, ind
   return { prompt: render(lo), considered: lo, of, paths: order.slice(0, lo).map((m) => m.path) };
 }
 
+// ── the local engine's chunks (A15) ──
+
+/**
+ * brain-hub's groups among `memories` (describe() rows): pairs and clusters joined wherever they share a memory, each a
+ * list of memories in the input order, biggest group first (then by its first path).
+ */
+function hubGroups(memories, hub) {
+  const byPath = new Map(memories.map((m) => [m.path, m]));
+  const scope = new Set(byPath.keys());
+  const parent = new Map();
+  const find = (x) => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+  const join = (a, b) => {
+    for (const x of [a, b]) if (!parent.has(x)) parent.set(x, x);
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra < rb ? rb : ra, ra < rb ? ra : rb);
+  };
+  for (const p of hubPairs(hub, scope)) join(p.a, p.b);
+  for (const c of hubClusters(hub, scope)) for (let i = 1; i < c.length; i++) join(c[0], c[i]);
+  const groups = new Map();
+  for (const m of memories) {
+    if (!parent.has(m.path)) continue;
+    const r = find(m.path);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(m);
+  }
+  return [...groups.values()].sort((x, y) => (y.length - x.length) || (x[0].path < y[0].path ? -1 : x[0].path > y[0].path ? 1 : 0));
+}
+
+/**
+ * The chunks a local run sends: the scope's memories as one group, or brain-hub's groups for the whole brain, packed in
+ * order into prompts of at most `maxChars` (buildInput's own cut decides what fits; a group too big for one chunk goes
+ * on in the next), at most `maxChunks` of them. → [{ prompt, paths }] (paths: the memories that chunk sends).
+ */
+function localChunks(memories, hub, { scoped = false, now = Date.now(), index = null, maxChars = LOCAL_MAX_CHARS, maxChunks = LOCAL_MAX_CHUNKS } = {}) {
+  const groups = scoped ? (memories.length ? [memories] : []) : hubGroups(memories, hub);
+  const chunks = [];
+  let cur = [];
+  const fits = (list) => buildInput(list, hub, { now, index, maxChars }).considered === list.length;
+  const flush = () => { if (cur.length) { chunks.push(cur); cur = []; } };
+  for (const g of groups) {
+    if (chunks.length >= maxChunks) break;
+    if (cur.length && fits([...cur, ...g])) { cur = [...cur, ...g]; continue; }
+    flush();
+    let rest = g;
+    while (rest.length && chunks.length < maxChunks) {
+      if (fits(rest)) { cur = rest; break; }
+      // buildInput keeps its own order (grouped, unreviewed, newest): take the prefix it sends, the rest goes on.
+      const cut = buildInput(rest, hub, { now, index, maxChars });
+      if (!cut.considered) { rest = rest.slice(1); continue; }
+      const sent = new Set(cut.paths);
+      chunks.push(rest.filter((m) => sent.has(m.path)));
+      rest = rest.filter((m) => !sent.has(m.path));
+    }
+  }
+  flush();
+  return chunks.slice(0, maxChunks).map((list) => {
+    const input = buildInput(list, hub, { now, index, maxChars });
+    return { prompt: input.prompt, paths: input.paths };
+  });
+}
+
 // ── reading the vault ──
 
 /** brain-hub.json, or null (missing, a link, too big, unreadable): its pairs, clusters and usage are only hints. */
@@ -390,10 +466,24 @@ function sentence(ai, why, cfg) {
   return w ? `no model call possible (${w})` : 'no model call possible';
 }
 
-/** The refusal of a run that cannot reach Claude or Codex (A7): none, a cap, Ollama only. `why`: the off estimate, or
- *  the error the call threw. */
+/** The refusal of a run no model can answer (A7): none, a cap, the local engine down. `why`: the off estimate, or the
+ *  error the call threw. */
 function offError(ai, why, cfg) {
-  return new OpsError('NO_MODEL', `the sweep needs Claude or Codex (${sentence(ai, why, cfg)})`);
+  return new OpsError('NO_MODEL', `the sweep cannot run (${sentence(ai, why, cfg)})`);
+}
+
+/** One call's reply → its raw suggestions; throws the run's refusal (offError, MODEL_FAILED, BAD_REPLY) as one call would. */
+async function askOnce(ai, args, opts) {
+  let answer;
+  try {
+    answer = await ai.call('sweep', args);
+  } catch (e) {
+    if (e && (e.code === 'PROVIDER_NONE' || e.code === 'PROVIDER_CAP')) throw offError(ai, e, opts.cfg);
+    throw new OpsError('MODEL_FAILED', `the sweep did not run (${sentence(ai, e, opts.cfg)})`);
+  }
+  const raw = parseReply(answer && answer.text);
+  if (!raw) throw new OpsError('BAD_REPLY', `the sweep did not finish (${BAD_REPLY}) Nothing was saved.`);
+  return { answer, raw };
 }
 
 /**
@@ -402,40 +492,63 @@ function offError(ai, why, cfg) {
  * → { run, suggestions } (the run and its new cards). Refusals: a bad scope (BAD_PATH, NOT_FOUND, GONE, UNSAFE), no
  * live memory (EMPTY), no Claude or Codex (NO_MODEL), a failed call (MODEL_FAILED), an unreadable reply (BAD_REPLY);
  * nothing is written by any of them but what the provider ledgers.
- * opts: { estimate, deps (provider deps), ai (the seam; tests), env, cfg (for the reason sentence), now }.
+ * opts: { estimate, deps (provider deps), ai (the seam; tests), env, cfg (for the reason sentence), now, host (run once
+ * on claude | codex, local-first A3), chunkChars (a local chunk's budget; tests) }.
  */
 async function sweep(vault, rels = [], opts = {}) {
   const t = nowOf(opts.now);
   const { scope, memories } = scopeMemories(vault, rels);
   const ai = aiOf(vault, opts);
-  const input = buildInput(memories, readHub(vault), { now: t, index: readIndexText(vault) });
+  const hub = readHub(vault);
+  const index = readIndexText(vault);
+  const input = buildInput(memories, hub, { now: t, index });
   const maxCards = scope ? MAX_CARDS_SCOPED : MAX_CARDS;
   const system = systemPrompt(maxCards);
-  const seam = { deps: opts.deps, env: opts.env };
+  const seam = { deps: opts.deps, env: opts.env, ...(opts.host ? { host: opts.host } : {}) };
   const estimate = await ai.estimate('sweep', { chars: system.length + input.prompt.length, outTokens: OUT_TOKENS_PER_CARD * maxCards, ...seam });
-  if (opts.estimate) return { scope, considered: input.considered, of: input.of, estimate };
+  // The local engine (A15): brain-hub's groups in chunks, each within the model's context.
+  const local = !!(estimate && estimate.available && estimate.provider === 'ollama');
+  const chunks = local ? localChunks(memories, hub, { scoped: !!scope, now: t, index, maxChars: opts.chunkChars || LOCAL_MAX_CHARS }) : null;
+  const considered = local ? chunks.reduce((n, c) => n + c.paths.length, 0) : input.considered;
+  if (opts.estimate) return { scope, considered, of: input.of, estimate, ...(local ? { chunks: chunks.length } : {}) };
 
   if (!input.considered) throw new OpsError('EMPTY', scope ? 'none of those memories can be sent' : 'there is no live memory to sweep');
   if (!estimate || !estimate.available) throw offError(ai, estimate && estimate.reason ? estimate : 'no-provider', opts.cfg);
+  if (local && !considered) throw new OpsError('EMPTY', 'brain hub has found no duplicates or clusters to sweep yet: the local model looks at those, not the whole brain');
   const file = storeFile(vault);
   if (!file) throw new OpsError('NOT_FOUND', 'brain/_index is missing: run `aos init` or `aos upgrade`');
 
-  let answer;
-  try {
-    answer = await ai.call('sweep', { system, prompt: input.prompt, schema: SCHEMA, timeoutMs: TIMEOUT_MS, numPredict: NUM_PREDICT, ...seam });
-  } catch (e) {
-    if (e && (e.code === 'PROVIDER_NONE' || e.code === 'PROVIDER_CAP')) throw offError(ai, e, opts.cfg);
-    throw new OpsError('MODEL_FAILED', `the sweep did not run (${sentence(ai, e, opts.cfg)})`);
+  // Each reply with the paths its prompt sent: a card may name only those.
+  const replies = [];
+  let answer = null;
+  let failedChunks = 0;
+  if (!local) {
+    const one = await askOnce(ai, { system, prompt: input.prompt, schema: SCHEMA, timeoutMs: TIMEOUT_MS, numPredict: NUM_PREDICT, ...seam }, opts);
+    answer = one.answer;
+    replies.push({ raw: one.raw, sent: new Set(input.paths) });
+  } else {
+    const chunkSystem = systemPrompt(Math.min(maxCards, MAX_CARDS_SCOPED));
+    let lastError = null;
+    for (const c of chunks) {
+      try {
+        const one = await askOnce(ai, { system: chunkSystem, prompt: c.prompt, schema: SCHEMA, timeoutMs: TIMEOUT_MS, numPredict: NUM_PREDICT, ...seam }, opts);
+        answer = answer || one.answer;
+        replies.push({ raw: one.raw, sent: new Set(c.paths) });
+      } catch (e) {
+        failedChunks++;
+        lastError = e;
+      }
+    }
+    if (!replies.length) throw lastError;
   }
-  const raw = parseReply(answer && answer.text);
-  if (!raw) throw new OpsError('BAD_REPLY', `the sweep did not finish (${BAD_REPLY}) Nothing was saved.`);
 
   const key = scopeKey(scope ? scope.paths : []);
   const run = {
     id: runId(t), at: new Date(t).toISOString(), scope,
     provider: answer.provider || estimate.provider, model: answer.model || estimate.model || null,
     usd: Number.isFinite(Number(answer.usd)) ? Number(answer.usd) : 0, estimated: answer.estimated === true,
-    considered: input.considered, of: input.of, suggestions: 0,
+    considered, of: input.of, suggestions: 0,
+    ...(local ? { chunks: chunks.length, failedChunks } : {}),
   };
   let cards = [];
   fsx.updateSync(file, (before) => {
@@ -445,7 +558,13 @@ async function sweep(vault, rels = [], opts = {}) {
     const dismissed = new Set(doc.suggestions.filter((c) => c.state === 'dismissed').map((c) => c.id));
     // The files as they are now, after the call: a memory archived meanwhile is no card's path, and the hashes are fresh.
     const byPath = new Map(ops.listMemories(vault).map((m) => [m.path, m]));
-    cards = keepCards(raw, { sent: new Set(input.paths), byPath, dismissed, max: maxCards, run: run.id, scope: key });
+    cards = [];
+    for (const r of replies) {
+      const ids = new Set(cards.map((c) => c.id));
+      const more = keepCards(r.raw, { sent: r.sent, byPath, dismissed, max: maxCards - cards.length, run: run.id, scope: key });
+      cards.push(...more.filter((c) => !ids.has(c.id)));
+      if (cards.length >= maxCards) break;
+    }
     run.suggestions = cards.length;
     const fresh = new Set(cards.map((c) => c.id));
     // A group is its lead (the first path a scoped run sends): merging or archiving its members changes its scope key,
@@ -481,5 +600,6 @@ function dismiss(vault, id) {
 
 module.exports = {
   SWEEP_PATH, ID_RE, KINDS, PATHS_PER, SCHEMA, MAX_SCOPE, MAX_CHARS, MAX_CARDS, MAX_CARDS_SCOPED, MAX_RUNS, TIMEOUT_MS, NUM_PREDICT,
-  sweep, dismiss, cardId, scopeKey, buildInput, systemPrompt, parseReply, keepCards, parseStore,
+  LOCAL_MAX_CHARS, LOCAL_MAX_CHUNKS,
+  sweep, dismiss, cardId, scopeKey, buildInput, systemPrompt, parseReply, keepCards, parseStore, hubGroups, localChunks,
 };
