@@ -592,6 +592,8 @@ node tools/brand-assets.js                 # regenerate the brand assets under d
 
 The suites never see your shell's `AOS_*`, `BRAIN_*`, `CLAUDE*` or `CODEX_*` variables (`tools/test-env.js` clears them once per run), and CI runs them again in UTC+14 and UTC−11 with those variables exported, so a test that leans on your time zone or your setup fails there. `brain/scripts/test/live/` needs a running Ollama and is excluded from `npm test`. The Workbench's manual checklist is `docs/app-smoke.md`; the per-release acceptance runbook is `docs/acceptance.md`.
 
+A user-visible change gets a line under `## [Unreleased]` in `CHANGELOG.md`, and each **Added** and **Changed** line ends with the guided-tour step that shows it, `<!-- tour: <chapter>[.<step>] -->` (ids from `obsidian-plugin/src/tour/steps.json`; several comma-separated), or says why none does, `<!-- no-tour: <reason> -->`. `node tools/changelog.js check current` (CI's lint job) fails a line with neither, an unknown id or an empty reason; GitHub hides the markers and the release notes drop them. A release also needs its What's new entry in `obsidian-plugin/src/tour/whatsnew.json` before `npm run version:bump`, or the bump refuses (`docs/app-smoke.md`, Release procedure).
+
 <a name="uninstall"></a>
 ## <img src="docs/assets/icon-uninstall.svg" width="36" align="top" alt="" /> Uninstall
 
