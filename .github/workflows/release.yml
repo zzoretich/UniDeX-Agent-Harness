@@ -25,14 +25,14 @@ jobs:
       # Only the HUD's workspace is installed (its typecheck and tests). tools/ (gate, bump-version, changelog) and cli/
       # are zero-dependency, and nothing here needs an install script.
       - run: npm ci --ignore-scripts -w obsidian-plugin
-      - name: Every version surface must equal the tag (enforced, not performed — see Plan 4 Global Constraints)
+      - name: Every version surface must equal the tag, and whatsnew.json must list it (enforced, not performed — see Plan 4 Global Constraints)
         run: node tools/bump-version.js "${GITHUB_REF_NAME#v}" --check
       - name: CHANGELOG.md has this version's section (the release notes)
         run: node tools/changelog.js check "${GITHUB_REF_NAME#v}"
       - run: npm run gate
       - run: npm run typecheck -w obsidian-plugin
       - run: npm test -w obsidian-plugin
-      - name: Release notes from CHANGELOG.md
+      - name: Release notes from CHANGELOG.md (tour markers stripped)
         run: node tools/changelog.js notes "${GITHUB_REF_NAME#v}" > release-notes.md
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

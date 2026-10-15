@@ -18,9 +18,17 @@
  * The Obsidian plugin's manifest.json and versions.json are gone with its packaging (1.0): the app owns the HUD's id.
  * A bump also rolls CHANGELOG.md's [Unreleased] into `## [x.y.z] — <today>` (tools/changelog.js roll; a no-op when that
  * section exists), and fails when [Unreleased] is empty: a release says what changed.
+ * What's new (tour C13): a bump to x.y.z first needs a `releases` entry for it in obsidian-plugin/src/tour/whatsnew.json
+ * (the card the app shows on its first launch after the update), or it fails and writes nothing. So the entry is
+ * written with the CHANGELOG, before `npm run version:bump` (docs/app-smoke.md, Release procedure). Every release needs
+ * one, patches included: `"entries": []` says nothing in it needs a card (the HUD shows no card for an empty release),
+ * which keeps that a decision rather than an omission. The version is matched on x.y.z, as the HUD compares versions,
+ * so 2.0.0's entry also covers 2.0.0-rc.1. --check asks the same, so release.yml refuses a tag without one.
  * Usage: node tools/bump-version.js <x.y.z> [--check]
- *   --check: exit 1 if any surface differs from <x.y.z> (release.yml runs this against the tag).
- * Exit: 0 ok · 1 mismatch (--check), or nothing in [Unreleased] to release · 2 usage
+ *   --check: exit 1 if any surface differs from <x.y.z>, or whatsnew.json has no release for it (release.yml runs this
+ *   against the tag).
+ * Exit: 0 ok · 1 mismatch or no What's new release (--check), no What's new release or nothing in [Unreleased] to
+ * release (bump) · 2 usage
  */
 const fs = require('fs');
 const path = require('path');
@@ -35,6 +43,8 @@ const FILES = [
   'codex-plugin/.codex-plugin/plugin.json',
   'app/package.json',
 ];
+
+const WHATSNEW = 'obsidian-plugin/src/tour/whatsnew.json';
 
 function readJson(p) { return JSON.parse(fs.readFileSync(p, 'utf8')); }
 function writeJson(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2) + '\n'); }
@@ -102,23 +112,38 @@ function checkFiles(root, version) {
   return bad;
 }
 
-function main(argv) {
-  const args = argv.slice(2);
-  const version = args.find((a) => !a.startsWith('--'));
-  if (!version || !SEMVER.test(version)) { console.error('usage: node tools/bump-version.js <x.y.z> [--check]'); process.exit(2); }
-  const root = path.resolve(__dirname, '..');
-  if (args.includes('--check')) {
-    const bad = checkFiles(root, version);
-    for (const b of bad) console.error(`version mismatch: ${b}`);
-    console.log(bad.length ? `bump-version: ${bad.length} mismatch(es) — run: npm run version:bump -- ${version}` : `bump-version: all surfaces at ${version}`);
-    process.exit(bad.length ? 1 : 0);
-  }
-  const out = bumpFiles(root, version);
-  for (const f of out.updated) console.log(`bumped ${f}`);
-  for (const f of out.skipped) console.log(`skipped ${f} (missing)`);
-  console.log('next: npm install --package-lock-only --ignore-scripts, and the same in app/');
-  if (require('./changelog.js').main(['roll', version], { root }) !== 0) process.exitCode = 1;
+const xyz = (v) => (/^(\d+\.\d+\.\d+)/.exec(v) || [])[1];
+
+/** Null when whatsnew.json lists a release for `version` (by x.y.z, with an entries list), else what is wrong (tour C13). */
+function whatsNewProblem(root, version) {
+  let file;
+  try { file = readJson(path.join(root, WHATSNEW)); } catch (e) { return `${WHATSNEW}: cannot read it (${e.code || e.message})`; }
+  if (!file || !Array.isArray(file.releases)) return `${WHATSNEW}: no releases list`;
+  const want = xyz(version);
+  if (file.releases.some((r) => r && typeof r.version === 'string' && xyz(r.version) === want && Array.isArray(r.entries))) return null;
+  return `${WHATSNEW} has no release ${version}: add {"version": "${version}", "entries": []} to its releases, `
+    + 'with an entry per change worth a card ("entries": [] when none is)';
 }
 
-if (require.main === module) main(process.argv);
-module.exports = { bumpFiles, checkFiles, FILES };
+function main(args = process.argv.slice(2), { root = path.resolve(__dirname, '..'), log = console.log, err = console.error } = {}) {
+  const version = args.find((a) => !a.startsWith('--'));
+  if (!version || !SEMVER.test(version)) { err('usage: node tools/bump-version.js <x.y.z> [--check]'); return 2; }
+  const whatsNew = whatsNewProblem(root, version);
+  if (args.includes('--check')) {
+    const bad = checkFiles(root, version);
+    for (const b of bad) err(`version mismatch: ${b}`);
+    log(bad.length ? `bump-version: ${bad.length} mismatch(es) — run: npm run version:bump -- ${version}` : `bump-version: all surfaces at ${version}`);
+    if (whatsNew) err(`bump-version: ${whatsNew} (tour C13)`);
+    return bad.length || whatsNew ? 1 : 0;
+  }
+  // What's new first, so a bump that cannot finish writes nothing (tour C13).
+  if (whatsNew) { err(`bump-version: ${whatsNew} (tour C13); nothing was changed`); return 1; }
+  const out = bumpFiles(root, version);
+  for (const f of out.updated) log(`bumped ${f}`);
+  for (const f of out.skipped) log(`skipped ${f} (missing)`);
+  log('next: npm install --package-lock-only --ignore-scripts, and the same in app/');
+  return require('./changelog.js').main(['roll', version], { root, log, err }) === 0 ? 0 : 1;
+}
+
+if (require.main === module) process.exit(main());
+module.exports = { bumpFiles, checkFiles, whatsNewProblem, main, FILES };
