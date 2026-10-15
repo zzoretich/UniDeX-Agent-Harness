@@ -24,7 +24,11 @@ test.describe("Skills and Agents", () => {
     const listed = cache.skills.filter((r) => !yours(r));
     await expect(C().locator(".aos-rt-count")).toHaveText(`0 on both · ${mine.length} Claude Code only · 0 Codex only · ${listed.length} from plugins`);
     await expect(C().locator(".aos-rt-note")).toHaveText("sharing off — sharing needs both hosts enabled");
-    await expect(C().locator(".aos-sk-list .aos-rt-subhead")).toHaveText([`YOUR SKILLS (${mine.length})`, `PLUGINS & BUILT-INS (${listed.length}) — listed, not copied: they need their plugin's tools`]);
+    // MCP SERVERS (install-import B6) closes the list; history-mcp.spec.ts covers it.
+    await expect(C().locator(".aos-sk-list .aos-rt-subhead")).toHaveText([
+      `YOUR SKILLS (${mine.length})`, `PLUGINS & BUILT-INS (${listed.length}) — listed, not copied: they need their plugin's tools`,
+      /^MCP SERVERS \(4\) — each host's own; Make available on … copies one through that host's CLI, when you confirm · listed /,
+    ]);
     const first = C().locator(".aos-sk-table").first();
     await expect(first.locator(".aos-sk-name > div:first-child")).toHaveText(mine.map((r) => r.name));
   });
@@ -46,17 +50,22 @@ test.describe("Skills and Agents", () => {
     await expect(plugin.locator(".aos-sk-actions a").first()).toHaveAttribute("title", "run in a new Claude Code session: claude '/logbook:log-entry'");
   });
 
-  test("Skills: the filter narrows both sections by name, description or plugin, keeping focus", async () => {
+  test("Skills: the filter narrows every section by name, description, plugin or program, keeping focus", async () => {
     const { win } = app();
     await openTab(win, "skills");
     const filter = C().locator("input.aos-sk-filter");
+    const skills = C().locator(".aos-sk-row:not(.aos-sk-mcprow) .aos-sk-name > div:first-child");
+    const servers = C().locator(".aos-sk-mcprow .aos-sk-name > div:first-child");
     await filter.click();
     await win.keyboard.type("chart");
-    await expect(C().locator(".aos-sk-row .aos-sk-name > div:first-child")).toHaveText(["chart-check"]);
+    await expect(skills).toHaveText(["chart-check"]);
+    // MCP SERVERS (install-import B6): a server's name or its program or URL.
+    await expect(servers).toHaveText(["chart-api"]);
     await expect(filter).toBeFocused();
     await filter.fill("logbook");
-    await expect(C().locator(".aos-sk-row .aos-sk-name > div:first-child")).toHaveText(["log-entry"]);
+    await expect(skills).toHaveText(["log-entry"]);
     await expect(C().locator(".aos-sk-table").first()).toContainText("no match");
+    await expect(C().locator(".aos-sk-mcp")).toHaveText("no match");
     await filter.fill("");
   });
 
