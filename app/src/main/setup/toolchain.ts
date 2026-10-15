@@ -144,10 +144,14 @@ export function versionIn(out: string): string | null {
   return m ? `${Number(m[1])}.${Number(m[2])}.${Number(m[3])}` : null;
 }
 
-/** Whether `version` is at or above the pin's floor (no floor, or an unreadable version: yes). */
+/**
+ * Whether `version` is at or above the pin's floor. No floor: yes. With a floor, a version that could not be read is a
+ * no (inspection F5): a tool that does not answer `--version` is not trusted to run `aos init`.
+ */
 export function meetsFloor(version: string | null, floor: string | null): boolean {
-  if (!floor || !version) return true;
-  return (cmpVersion(version, floor) ?? 0) >= 0;
+  if (!floor) return true;
+  if (!version) return false;
+  return (cmpVersion(version, floor) ?? -1) >= 0;
 }
 
 /** "14.0" ≤ "15.3.1"? Missing parts count as 0; an empty or unreadable version counts as new enough. */

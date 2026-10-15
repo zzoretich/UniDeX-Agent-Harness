@@ -83,7 +83,9 @@ export async function runPreflight(d: PreflightDeps): Promise<{ report: Prefligh
 
   const claude = find("claude", [path.join(d.home, ".local", "bin", "claude")]);
   const codex = find("codex", [path.join(d.home, ".local", "bin", "codex")]);
-  const uv = find("uv", [path.join(d.home, ".local", "bin", "uv"), path.join(d.home, ".cargo", "bin", "uv")]);
+  // Every uv a Mac may have, the PATH's first (inspection F5): the first that answers with a version at the floor is used.
+  const uvs = [findOnPath("uv", d.PATH, isExec), path.join(d.home, ".local", "bin", "uv"), path.join(d.home, ".cargo", "bin", "uv")]
+    .filter((p, i, a): p is string => !!p && isExec(p) && a.indexOf(p) === i);
   const ollamaCli = find("ollama");
   const ollamaApp = ollamaApps(d.home).find((p) => d.exists(p)) ?? null;
   const ollama = ollamaCli ?? ollamaApp;
@@ -91,7 +93,7 @@ export async function runPreflight(d: PreflightDeps): Promise<{ report: Prefligh
   const curl = ollama ? find("curl") : null;
 
   const [uvV, claudeV, claudeAuth, codexV, codexAuth, ollamaV, tags] = await Promise.all([
-    uv ? d.run(uv, ["--version"], 5000) : null,
+    Promise.all(uvs.map((p) => d.run(p, ["--version"], 5000))),
     claude ? d.run(claude, ["--version"], 10_000) : null,
     claude ? d.run(claude, ["auth", "status", "--json"], 10_000) : null,
     codex ? d.run(codex, ["--version"], 10_000) : null,
@@ -102,10 +104,11 @@ export async function runPreflight(d: PreflightDeps): Promise<{ report: Prefligh
     curl ? d.run(curl, [...OLLAMA_CURL, "-m", "3", `${OLLAMA_URL}/api/tags`], 5000) : null,
   ]);
 
-  const uvVersion = uvV?.code === 0 ? versionIn(uvV.out) : null;
-  found.uv = !uv ? { ok: false, detail: "not installed" }
-    : meetsFloor(uvVersion, m.tools.uv.floor) ? { ok: true, detail: `${uvVersion ? `uv ${uvVersion} · ` : ""}${uv}` }
-    : { ok: false, detail: `uv ${uvVersion} at ${uv} is older than ${m.tools.uv.floor}` };
+  const uvVersions = uvV.map((r) => (r.code === 0 ? versionIn(r.out) : null));
+  const uvAt = uvs.findIndex((_, i) => meetsFloor(uvVersions[i], m.tools.uv.floor));
+  found.uv = uvAt >= 0 ? { ok: true, detail: `uv ${uvVersions[uvAt]} · ${uvs[uvAt]}` }
+    : !uvs.length ? { ok: false, detail: "not installed" }
+    : { ok: false, detail: uvVersions[0] ? `uv ${uvVersions[0]} at ${uvs[0]} is older than ${m.tools.uv.floor}` : `${uvs[0]} did not answer uv --version with a version` };
 
   found.claude = claude ? { ok: true, detail: `${firstLine(claudeV?.out ?? "") || "installed"} · ${claude}` } : { ok: false, detail: "not installed" };
   let claudeIn = false;
@@ -122,7 +125,9 @@ export async function runPreflight(d: PreflightDeps): Promise<{ report: Prefligh
   const oldMac = !!pin.minMacOS && !macOSAtLeast(d.macOS ?? "", pin.minMacOS);
   found.ollama = !ollama
     ? { ok: false, warn: true, detail: "not installed: background work waits for it", ...(oldMac ? { blocked: `needs macOS ${pin.minMacOS} or newer` } : {}) }
-    : meetsFloor(ollamaVersion, pin.floor) ? { ok: true, detail: `${ollamaVersion ? `${ollamaVersion} · ` : ""}${ollama}` }
+    : meetsFloor(ollamaVersion, pin.floor) ? { ok: true, detail: `${ollamaVersion} · ${ollama}` }
+    // No version to read (inspection F5): not trusted; its download installs the app, or opens the one that is there.
+    : !ollamaVersion ? { ok: false, warn: true, detail: `${ollama} did not report its version`, ...(oldMac ? { blocked: `needs macOS ${pin.minMacOS} or newer` } : {}) }
     // Ollama updates itself (its menu); the wizard never replaces an Ollama it did not put there.
     : { ok: false, warn: true, noFix: true, detail: `${ollamaVersion} at ${ollama} is older than ${pin.floor}, which ${models[0]} needs: update Ollama from its menu` };
   const have = parseTags(tags);

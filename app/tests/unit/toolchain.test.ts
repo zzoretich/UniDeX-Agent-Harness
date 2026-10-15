@@ -99,7 +99,8 @@ test("versions: the first x.y.z of a program's answer, floors, and macOS", () =>
   assert.equal(meetsFloor("18.19.0", "20.0.0"), false);
   assert.equal(meetsFloor("20.0.0", "20.0.0"), true);
   assert.equal(meetsFloor("0.12.10", "0.17.3"), false);
-  assert.equal(meetsFloor(null, "1.0.0"), true, "an unreadable version is not held against a tool");
+  assert.equal(meetsFloor(null, "1.0.0"), false, "inspection F5: with a floor, a version that could not be read is not trusted");
+  assert.equal(meetsFloor(null, null), true, "no floor, no version needed");
   assert.equal(meetsFloor("0.1.0", null), true);
   assert.equal(macOSAtLeast("13.6.1", "14.0"), false);
   assert.equal(macOSAtLeast("14", "14.0"), true);

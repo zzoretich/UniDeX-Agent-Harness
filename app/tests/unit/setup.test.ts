@@ -210,6 +210,31 @@ test("an old node, no uv: not ready, each with its download; the wizard's own No
   assert.equal(fixed.report.checks.find((c) => c.id === "node")?.state, "ok");
 });
 
+test("inspection F5: a uv that does not answer --version with a version fails its check, unless another uv on the Mac does", async () => {
+  const broken = { ...ALL, uv: { "--version": v("dyld: Library not loaded", 134) } };
+  const { report } = await runPreflight(machine(broken));
+  const uvRow = report.checks.find((c) => c.id === "uv");
+  assert.equal(uvRow?.state, "missing");
+  assert.equal(uvRow?.detail, "/fake/bin/uv did not answer uv --version with a version");
+  assert.equal(uvRow?.fix, "uv");
+  assert.equal(report.ready, false, "Continue waits for a uv that runs");
+  // A working uv in ~/.local/bin is found and used, though the PATH's comes first.
+  const local = path.join(HOME, ".local", "bin", "uv");
+  const deps = machine(broken);
+  const isExec = deps.isExec!;
+  deps.isExec = (p) => p === local || isExec(p);
+  const run = deps.run;
+  deps.run = async (file, args, t) => (file === local ? v("uv 0.13.1 (Homebrew)") : run(file, args, t));
+  const ok = (await runPreflight(deps)).report.checks.find((c) => c.id === "uv");
+  assert.equal(ok?.state, "ok");
+  assert.equal(ok?.detail, `uv 0.13.1 · ${local}`);
+  // An Ollama that reports no version is not trusted either: a warning whose download installs (or opens) the app.
+  const mute = (await runPreflight(machine({ ...ALL, ollama: { "--version": v("", 1) } }))).report.checks.find((c) => c.id === "ollama");
+  assert.equal(mute?.state, "warn");
+  assert.equal(mute?.detail, "/fake/bin/ollama did not report its version");
+  assert.equal(mute?.fix, "ollama");
+});
+
 test("Python and the Command Line Tools are never asked about (graphify's Python comes with uv)", async () => {
   const ran: string[] = [];
   const deps = machine(ALL);
