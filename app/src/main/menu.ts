@@ -3,12 +3,15 @@
 
 import { Menu, shell, type MenuItemConstructorOptions } from "electron";
 import { BRAND } from "../shared/brand";
-import { HOST_COMMANDS, type CommandInfo, type ThemeSource, type UpdateState } from "../shared/ipc";
+import { HOST_COMMANDS, TOUR_COMMANDS, type CommandInfo, type ThemeSource, type UpdateState } from "../shared/ipc";
 
 const WORKBENCH = "agentic-os:open-workbench";
 /** ⌘1 opens the Workbench; ⌘2–⌘9 these eight tabs, a fixed set: a learned key keeps its tab when the rail's order
  *  changes (spec 2026-10-09-rail-sections-code). */
 const NUMBERED_TABS = ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills"];
+
+/** The HUD's Help commands (tour C12): they live in the Help menu, not under Commands. */
+const HELP_IDS: readonly string[] = Object.values(TOUR_COMMANDS);
 
 /** Obsidian hotkey → Electron accelerator ("Mod" is ⌘ on macOS). */
 export function accelerator(cmd: CommandInfo): string | undefined {
@@ -52,7 +55,7 @@ export function buildAppMenu(commands: CommandInfo[], run: (id: string) => void,
   };
   const tabs = commands.filter((c) => c.id === WORKBENCH || c.id.startsWith(`${WORKBENCH}-`))
     .map((c) => item(c.id, c.id === WORKBENCH ? "Workbench" : c.name.replace(/^Open Workbench:\s*/, ""), tabAccelerator(c.id)));
-  const others = commands.filter((c) => !c.id.startsWith(WORKBENCH))
+  const others = commands.filter((c) => !c.id.startsWith(WORKBENCH) && !HELP_IDS.includes(c.id))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((c) => item(c.id));
 
@@ -110,7 +113,16 @@ export function buildAppMenu(commands: CommandInfo[], run: (id: string) => void,
     { role: "windowMenu" },
     {
       role: "help",
-      submenu: [{ label: `${BRAND.name} on GitHub`, click: () => void shell.openExternal("https://github.com/zzoretich/UniDeX-Agent-Harness") }],
+      // The tour's commands (tour C12): the menu cannot be spotlit, so each opens the in-app tour, checklist or drawer.
+      submenu: [
+        item(TOUR_COMMANDS.start, "Take the Tour"),
+        item(TOUR_COMMANDS.tab, "Tour This Tab"),
+        item(TOUR_COMMANDS.whatsNew, "What's New"),
+        item(TOUR_COMMANDS.gettingStarted, "Getting Started"),
+        { type: "separator" },
+        item(TOUR_COMMANDS.docs, `${BRAND.name} Documentation`),
+        { label: `${BRAND.name} on GitHub`, click: () => void shell.openExternal("https://github.com/zzoretich/UniDeX-Agent-Harness") },
+      ],
     },
   ];
   return Menu.buildFromTemplate(template);

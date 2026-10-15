@@ -313,7 +313,7 @@ export class MapMode implements BrainModeView {
     setIcon(ric, "rotate-ccw");
     re.createSpan({ text: "Resettle" });
     re.addEventListener("click", () => this.resettle());
-    this.canvas = main.createDiv({ cls: "aos-brain-mapcanvas", attr: { id: CANVAS_ID, role: "tabpanel" } });
+    this.canvas = main.createDiv({ cls: "aos-brain-mapcanvas", attr: { id: CANVAS_ID, role: "tabpanel", "data-tour": "brain-map-canvas" } });
     this.right = root.createEl("aside", { cls: "aos-brain-right aos-brain-mapcard" });
 
     // Communities and Around lay out to the canvas's size: a resize lays them out again (once a frame).

@@ -106,7 +106,7 @@ export class AgentsTab {
     head.createSpan({ cls: "aos-rt-title", text: "Agents" });
     head.createSpan({ cls: "aos-dim aos-rt-count", text: `${n.both} on both · ${n.claude} Claude Code only · ${n.codex} Codex only · ${listed.length} from plugins and config.toml` });
     const actions = head.createDiv({ cls: "aos-rt-actions" });
-    const syncBtn = actions.createEl("button", { cls: "aos-ws-action", text: "sync now" });
+    const syncBtn = actions.createEl("button", { cls: "aos-ws-action", text: "sync now", attr: { "data-tour": "agents-sync" } });
     syncBtn.setAttr("title", "aos agents sync: share each host's agents with the other and refresh this list");
     syncBtn.addEventListener("click", () => this.sync());
 
@@ -114,11 +114,11 @@ export class AgentsTab {
     const state = this.cache.sync.on
       ? `sharing on — each host's agents are copied into the other at the end of every session${at ? ` · as of ${formatAgo(at)}` : ""}`
       : this.cache.scannedAt ? `sharing off — ${this.cache.sync.reason ?? "see aos agents"}` : "not scanned yet — sync now builds the list";
-    host.createDiv({ cls: "aos-rt-note aos-dim", text: state });
+    host.createDiv({ cls: "aos-rt-note aos-dim", text: state, attr: { "data-tour": "agents-sharing" } });
     if (!this.cache.codexAgents.on && this.hosts.includes("codex")) {
       host.createDiv({ cls: "aos-rt-note aos-ag-warn", text: `${this.cache.codexAgents.reason ?? "Codex subagents are off"} — Codex will not spawn these agents until it is on` });
     }
-    host.createDiv({ cls: "aos-rt-note aos-dim", text: "Claude Code: ask for an agent by name or mention @agent-<name>. Codex: ask for it by name and Codex spawns it." });
+    host.createDiv({ cls: "aos-rt-note aos-dim", text: "Claude Code: ask for an agent by name or mention @agent-<name>. Codex: ask for it by name and Codex spawns it.", attr: { "data-tour": "agents-reach" } });
 
     const search = host.createEl("input", { cls: "aos-sk-filter", attr: { type: "search", placeholder: "filter agents…", "aria-label": "Filter agents" } });
     search.value = this.query;

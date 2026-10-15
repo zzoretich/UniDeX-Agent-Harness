@@ -209,6 +209,12 @@ export interface LaunchOptions {
   ready?: string;
   /** Whether the app has already shown the fixture vault its one-time "What changed" note (default: yes). */
   noted?: boolean;
+  /**
+   * Whether the guided tour is already behind this Mac (default: yes): its HUD settings say every tab's chapter was
+   * offered, this version's What's new was seen and Getting started was put away, so no other spec meets a chip or the
+   * checklist. false leaves the HUD's settings as they are (a fresh fixture has none: tour.spec.ts starts from there).
+   */
+  tour?: boolean;
 }
 
 /** The app's data folder in the fixture (appEnv's AOS_APP_USER_DATA). */
@@ -221,6 +227,22 @@ export function markNoted(vault: string | null): void {
   fs.mkdirSync(USER_DATA, { recursive: true });
   const at = new Date().toISOString();
   fs.writeFileSync(file, `${JSON.stringify({ vaults: { [path.resolve(vault)]: { firstAt: at, notedAt: at } } }, null, 2)}\n`);
+}
+
+/** The tour's chapters, as the HUD ships them (obsidian-plugin/src/tour/steps.json). */
+export interface TourBookFile { core: string; chapters: Array<{ id: string; title: string; tab?: string; mode?: string; when?: string; steps: Array<{ id: string; anchor: string; advance: string; when?: string; tab?: string }> }> }
+export const TOUR_BOOK = JSON.parse(fs.readFileSync(path.join(REPO, "..", "obsidian-plugin", "src", "tour", "steps.json"), "utf8")) as TourBookFile;
+/** The HUD's settings file in the app's data folder (src/main/services/fs.ts loadPluginData). */
+export const HUD_SETTINGS = path.join(USER_DATA, "plugins", "agentic-os.json");
+
+/** Marks the tour as behind this Mac in the HUD's settings, keeping whatever else they hold. */
+export function markTour(): void {
+  let cur: Record<string, unknown> = {};
+  try { cur = JSON.parse(fs.readFileSync(HUD_SETTINGS, "utf8")) as Record<string, unknown>; } catch { /* none yet */ }
+  const tabs = [...new Set(TOUR_BOOK.chapters.map((c) => c.tab).filter((t): t is string => !!t))];
+  cur.tour = { lastSeenVersion: HUD_VERSION, completed: [], dismissed: [], checklist: { dismissed: true, done: {} }, offered: tabs };
+  fs.mkdirSync(path.dirname(HUD_SETTINGS), { recursive: true });
+  fs.writeFileSync(HUD_SETTINGS, `${JSON.stringify(cur, null, 2)}\n`);
 }
 
 /** The environment the generator ran the runtime with, pointed at the fixture, plus the app's own vault and data dirs. */
@@ -423,6 +445,7 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<AppHandle> {
   const main = path.join(REPO, "out", "main", "index.js");
   if (!fs.existsSync(main)) throw new Error("out/ is missing: run `npm run build` (npm run test:e2e builds first)");
   markNoted(opts.noted === false ? null : FX.vault);
+  if (opts.tour !== false) markTour();
   opts.prepare?.();
   const app = await electron.launch({ args: [REPO], cwd: REPO, env: appEnv(opts.env), timeout: 60_000 });
   // AOS_E2E_STRAGGLER=1: a scan the app starts holds its writes for the next restoreFixture (straggler.cjs). Playwright

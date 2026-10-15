@@ -6,7 +6,7 @@
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, SETUP, SETUP_TOTALMEM, aosCalls, installSetupStubs, useApp } from "./harness";
+import { FX, SETUP, SETUP_TOTALMEM, USER_DATA, aosCalls, installSetupStubs, useApp } from "./harness";
 
 const VERSION = (JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")) as { version: string }).version;
 const ZPROFILE = path.join(FX.home, ".zprofile");
@@ -72,11 +72,18 @@ test("Finish says how to add a host, step by step, and has no CLAUDE.md or Codex
   await win.screenshot({ path: test.info().outputPath("wizard-finish-nohost.png") });
 });
 
-test("an unticked PATH box writes nothing, and the Workbench opens", async () => {
+test("an unticked PATH box writes nothing, and the Workbench opens on the welcome tour, a new install with no host too", async () => {
   const { win, errors } = app();
   await win.locator(".aos-setup-add-path").uncheck();
   await win.locator(".aos-setup-open").click();
   await win.waitForSelector(".aos-wb-railbtn", { timeout: 30_000 });
   expect(fs.existsSync(ZPROFILE)).toBe(false);
+  // The wizard installed it (--host none included), so its first launch is the tour (tour C10), recorded with the vault.
+  await expect(win.locator(".aos-tour-pop")).toHaveAttribute("data-step", "core.rail");
+  await expect(win.locator(".aos-attach-modal")).toHaveCount(0);
+  const rec = JSON.parse(fs.readFileSync(path.join(USER_DATA, "attach.json"), "utf8")) as { vaults: Record<string, { installedAt?: string }> };
+  expect(rec.vaults[FX.vault]?.installedAt).toBeTruthy();
+  await win.keyboard.press("Escape");
+  await expect(win.locator(".aos-tour")).toHaveCount(0);
   expect(errors).toEqual([]);
 });

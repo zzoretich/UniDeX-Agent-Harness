@@ -19,7 +19,7 @@ import { FIXES, FIX_IDS, PATH_LINE, fixBlocked, fixCommandLine, installArgs, per
 import { applyClaudeMd, claudeMdLine, claudeMdPath, previewClaudeMd } from "../../src/main/setup/claude-md";
 import { applyPathLine, previewPathLine } from "../../src/main/setup/path-line";
 import { MANIFEST, RAM_TIERS, ollamaModels, privateNodeBinDir, type Fetch } from "../../src/main/setup/toolchain";
-import { attachInfo, hostsOf, markNoted } from "../../src/main/setup/attach";
+import { attachInfo, hostsOf, markInstalled, markNoted } from "../../src/main/setup/attach";
 import { JobRunner } from "../../src/main/setup/jobs";
 import { SetupController, type AgenticosJson } from "../../src/main/setup/controller";
 import type { PtyLib, PtyProcess } from "../../src/main/services/pty";
@@ -499,7 +499,7 @@ test("attach: the note is due until noted, per vault; behind when the runtime is
   const vault = path.join(ROOT, "v1");
   const cfg = { version: "0.21.0", hosts: { claude: { enabled: true }, codex: { enabled: true } } };
   const first = attachInfo(ud, vault, cfg, "1.0.0");
-  assert.deepEqual(first, { firstTime: true, runtimeVersion: "0.21.0", payloadVersion: "1.0.0", behind: true, hosts: { claude: true, codex: true } });
+  assert.deepEqual(first, { firstTime: true, installed: false, runtimeVersion: "0.21.0", payloadVersion: "1.0.0", behind: true, hosts: { claude: true, codex: true } });
   assert.equal(attachInfo(ud, vault, cfg, "1.0.0").firstTime, true);
   markNoted(ud, vault);
   assert.equal(attachInfo(ud, vault, cfg, "1.0.0").firstTime, false);
@@ -507,6 +507,17 @@ test("attach: the note is due until noted, per vault; behind when the runtime is
   assert.equal(attachInfo(ud, vault, { version: "1.0.0" }, "1.0.0").behind, false);
   assert.equal(attachInfo(ud, vault, null, null).behind, false);
   assert.deepEqual(hostsOf(null), { claude: true, codex: false });
+});
+
+test("attach: a vault the wizard installed is a new install (the tour, not the What changed note), until noted", () => {
+  const ud = path.join(ROOT, "userData-installed");
+  const vault = path.join(ROOT, "v-new");
+  markInstalled(ud, vault);
+  assert.deepEqual([attachInfo(ud, vault, null, null).firstTime, attachInfo(ud, vault, null, null).installed], [true, true]);
+  markNoted(ud, vault);
+  assert.deepEqual([attachInfo(ud, vault, null, null).firstTime, attachInfo(ud, vault, null, null).installed], [false, true]);
+  // A vault the app opened but did not install stays an existing one.
+  assert.equal(attachInfo(ud, path.join(ROOT, "v-old"), null, null).installed, false);
 });
 
 // ── jobs ─────────────────────────────────────────────────────────────
@@ -687,6 +698,8 @@ test("controller: --host none installs with no host and no Chief of Staff; the P
   assert.equal(fs.existsSync(path.join(userData, "setup", "persona.json")), false);
   children[0].finish(0);
   await exitOf(events, "install");
+  // A new install with no host is still the wizard's own: the Workbench it opens starts the welcome tour (tour C10).
+  assert.equal(attachInfo(userData, path.join(home, "Vault"), null, null).installed, true);
   const pl = ctl.pathLine();
   assert.ok(pl.ok && pl.data.file === path.join(home, ".zprofile") && !pl.data.present && !pl.data.onPath);
   assert.equal(fs.existsSync(path.join(home, ".zprofile")), false);

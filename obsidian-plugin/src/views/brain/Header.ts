@@ -26,7 +26,7 @@ export class BrainHeader {
     bar.createEl("h1", { cls: "aos-brain-h1", text: "Brain" });
     this.stats = bar.createSpan({ cls: "aos-brain-stats aos-brain-mono" });
     bar.createSpan({ cls: "aos-brain-sp" });
-    const search = bar.createEl("label", { cls: "aos-brain-search" });
+    const search = bar.createEl("label", { cls: "aos-brain-search", attr: { "data-tour": "brain-search" } });
     const sic = search.createSpan({ cls: "aos-brain-searchic", attr: { "aria-hidden": "true" } });
     setIcon(sic, "search");
     this.input = search.createEl("input", { cls: "aos-brain-searchinput", attr: { type: "search", "aria-label": "Search the brain", placeholder: "Search titles and bodies…", spellcheck: "false" } });

@@ -111,9 +111,9 @@ export class TerminalPanel {
         openWorkspace: this.opts.openWorkspace ? (name) => this.opts.openWorkspace?.(name) : undefined,
         clearScope: () => { this.scope = null; this.renderTabs(); },
       }, () => this.renderTabs());
-      frame = host.createDiv({ cls: "aos-term-main" });
+      frame = host.createDiv({ cls: "aos-term-main", attr: { "data-tour": "code-main" } });
     }
-    this.headerEl = frame.createDiv({ cls: "aos-term-header" });
+    this.headerEl = frame.createDiv({ cls: "aos-term-header", attr: { "data-tour": "code-header" } });
     const left = this.headerEl.createDiv({ cls: "aos-term-header-left" });
     if (this.opts.deck) this.headMainEl = left.createDiv({ cls: "aos-term-head" });
     else left.createSpan({ cls: "aos-term-title", text: "Terminal" });

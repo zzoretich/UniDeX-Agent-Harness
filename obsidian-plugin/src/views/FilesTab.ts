@@ -79,9 +79,9 @@ export class FilesTab {
     head.createSpan({ cls: "aos-rt-title", text: "Files" });
     head.createSpan({ cls: "aos-dim aos-rt-count", text: `${files.length} files` });
     const actions = head.createDiv({ cls: "aos-rt-actions" });
-    const add = actions.createEl("button", { cls: "aos-ws-action", text: "+ note" });
+    const add = actions.createEl("button", { cls: "aos-ws-action", text: "+ note", attr: { "data-tour": "files-new-note" } });
     add.addEventListener("click", () => this.newNote(""));
-    const open = actions.createEl("button", { cls: "aos-ws-action", text: "open…", attr: { title: "Open file… (⌘O)" } });
+    const open = actions.createEl("button", { cls: "aos-ws-action", text: "open…", attr: { title: "Open file… (⌘O)", "data-tour": "files-open" } });
     open.addEventListener("click", () => new QuickOpenModal(this.plugin.app).open());
 
     const bar = host.createDiv({ cls: "aos-fl-search" });
@@ -97,8 +97,8 @@ export class FilesTab {
     box.addEventListener("change", () => { this.allText = box.checked; this.onQuery(this.query, 0); });
     if (hadFocus) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
 
-    if (this.query.trim()) this.renderResults(host.createDiv({ cls: "aos-fl-results" }));
-    else this.renderFolder(host.createDiv({ cls: "aos-fl-tree" }), "", 0);
+    if (this.query.trim()) this.renderResults(host.createDiv({ cls: "aos-fl-results", attr: { "data-tour": "files-list" } }));
+    else this.renderFolder(host.createDiv({ cls: "aos-fl-tree", attr: { "data-tour": "files-list" } }), "", 0);
   }
 
   private renderFolder(host: HTMLElement, folder: string, depth: number): void {

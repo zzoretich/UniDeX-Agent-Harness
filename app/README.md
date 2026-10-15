@@ -21,9 +21,9 @@ Ollama app and the models for this Mac's memory, Claude Code and Codex, each dow
 `src/main/setup/toolchain-manifest.json`, checked against its SHA-256 and its maker's signature, then put where its own
 installer puts it; the two logins run in a terminal inside the wizard. It asks for the hosts (or none yet: B2), the
 vault folder and the Chief of Staff, runs `aos init`, then lists what is left step by step (the `CLAUDE.md` line as a
-diff, Codex's `/hooks`, a host to add later, the line that puts `aos` on the PATH) and opens the Workbench. With an
-install it opens the Workbench (attach mode), says once what changed, and offers `aos upgrade` when it carries a newer
-runtime than the vault has. Plans: `docs/superpowers/plans/2026-10-05-install-and-update.md`,
+diff, Codex's `/hooks`, a host to add later, the line that puts `aos` on the PATH) and opens the Workbench, where the
+welcome tour starts. With an install it opens the Workbench (attach mode), says once what changed (once per vault the
+app did not install itself), and offers `aos upgrade` when it carries a newer runtime than the vault has. Plans: `docs/superpowers/plans/2026-10-05-install-and-update.md`,
 `docs/superpowers/specs/2026-10-14-install-and-import-design.md`.
 
 The pins are refreshed by hand before a release: each tool's `from` says where its version and SHA-256 come from (the

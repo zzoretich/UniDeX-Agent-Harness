@@ -223,7 +223,7 @@ export class AgentTeamsTab {
     host.addClass("aos-at");
 
     const cards = gateCards(this.teams);
-    const head = host.createDiv({ cls: "aos-rt-head" });
+    const head = host.createDiv({ cls: "aos-rt-head", attr: { "data-tour": "agent-teams-head" } });
     head.createSpan({ cls: "aos-rt-title", text: "Agent teams" });
     if (this.teams.length) head.createSpan({ cls: "aos-dim aos-rt-count", text: `${cards.length} gate${cards.length === 1 ? "" : "s"} waiting · ${this.teams.length} team${this.teams.length === 1 ? "" : "s"}` });
     if (this.runtimeNote) host.createDiv({ cls: "aos-rt-banner", text: this.runtimeNote });
@@ -327,7 +327,7 @@ export class AgentTeamsTab {
     const count: Partial<Record<TeamsView, string>> = { board: open ? String(open) : "", roster: String(t.members.length) };
     for (const v of VIEWS) {
       const on = this.ui.view === v.id;
-      const b = tabs.createEl("button", { cls: `aos-at-view${on ? " is-active" : ""}`, attr: { role: "tab", "aria-selected": String(on), tabindex: on ? "0" : "-1" } });
+      const b = tabs.createEl("button", { cls: `aos-at-view${on ? " is-active" : ""}`, attr: { role: "tab", "aria-selected": String(on), tabindex: on ? "0" : "-1", "data-tour": `agent-teams-view-${v.id}` } });
       b.createSpan({ text: v.label });
       if (count[v.id]) b.createSpan({ cls: "aos-dim aos-at-viewcount", text: count[v.id] });
       b.addEventListener("click", () => { this.ui.view = v.id; this.render(); });

@@ -113,10 +113,10 @@ export class RunsTab {
     host.empty();
 
     const head = host.createDiv({ cls: "aos-runs-head" });
-    const runsChip = head.createSpan({ cls: "aos-runs-chip", text: "≣ runs" });
+    const runsChip = head.createSpan({ cls: "aos-runs-chip", text: "≣ runs", attr: { "data-tour": "runs-list" } });
     runsChip.toggleClass("is-active", this.sub === "runs");
     runsChip.addEventListener("click", () => { this.sub = "runs"; this.render(); });
-    const agentsChip = head.createSpan({ cls: "aos-runs-chip", text: "⌬ agents" });
+    const agentsChip = head.createSpan({ cls: "aos-runs-chip", text: "⌬ agents", attr: { "data-tour": "runs-agents" } });
     agentsChip.toggleClass("is-active", this.sub === "agents");
     agentsChip.addEventListener("click", () => { this.sub = "agents"; this.render(); });
 

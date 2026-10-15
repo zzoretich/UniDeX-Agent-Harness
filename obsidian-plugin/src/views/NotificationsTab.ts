@@ -113,7 +113,7 @@ export class NotificationsTab {
     const shown = filterRows(this.rows, { view: this.view, level: this.level, from: this.from });
     // The inbox and its reading pane (UniDeX D4): the list on the left, the selected notification on the right.
     const split = host.createDiv({ cls: "aos-split" });
-    const table = split.createDiv({ cls: "aos-inv-table aos-rt-table aos-split-list" });
+    const table = split.createDiv({ cls: "aos-inv-table aos-rt-table aos-split-list", attr: { "data-tour": "notifications-list" } });
     if (!this.rows.length) {
       table.createDiv({
         cls: "aos-inv-row aos-dim",
@@ -135,7 +135,7 @@ export class NotificationsTab {
   private renderFilters(host: HTMLElement): void {
     const bar = host.createDiv({ cls: "aos-nt-filters" });
     for (const v of ["unread", "all", "archived"] as View[]) {
-      const b = bar.createEl("button", { cls: `aos-nt-chip${this.view === v ? " is-active" : ""}`, text: v[0].toUpperCase() + v.slice(1) });
+      const b = bar.createEl("button", { cls: `aos-nt-chip${this.view === v ? " is-active" : ""}`, text: v[0].toUpperCase() + v.slice(1), attr: { "data-tour": `notifications-view-${v}` } });
       b.addEventListener("click", () => { this.view = v; this.render(); });
     }
     bar.createSpan({ cls: "aos-nt-sep" });

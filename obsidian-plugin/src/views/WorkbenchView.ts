@@ -115,6 +115,8 @@ export class WorkbenchView extends ItemView {
   private plugin: AgenticOSPlugin;
   private contentHost!: HTMLElement;
   private drawerHost!: HTMLElement;
+  /** Where the tour's first-visit chip shows (tour C6): over the content's foot, outside what a tab redraws. */
+  private chipHost!: HTMLElement;
   private railEl!: HTMLElement;
   private badgeEls: Record<string, HTMLElement> = {};
   private badgeTimer: number | null = null;
@@ -136,6 +138,9 @@ export class WorkbenchView extends ItemView {
   getContentHost(): HTMLElement { return this.contentHost; }
   getDrawerHost(): HTMLElement { return this.drawerHost; }
   isTabActive(id: string): boolean { return this.activeTab === id; }
+  /** The tab in front (Help ▸ Tour this tab). */
+  activeTabId(): string { return this.activeTab; }
+  getChipHost(): HTMLElement { return this.chipHost; }
   getTab(id: string) { return this.tabs[id] ?? null; }
 
   openDrawer(title: string, build: (host: HTMLElement) => void, popOut?: () => void): void {
@@ -177,6 +182,11 @@ export class WorkbenchView extends ItemView {
       }
     });
     const foot = this.railEl.createDiv({ cls: "aos-wb-railfoot" });
+    // Getting started n/m (tour C9) comes and goes in its slot; Help (C12) opens the tour's menu beside the rail.
+    const checklistSlot = foot.createDiv({ cls: "aos-wb-railslot" });
+    const help = this.railAction(foot, { action: "help", icon: "circle-help", label: "Help" }, () => { this.plugin.tour.toggleMenu(help); });
+    help.setAttr("aria-haspopup", "menu");
+    help.setAttr("aria-expanded", "false");
     const theme = this.railAction(foot, { action: "theme", icon: "moon", label: "Switch to dark" }, () => { runHostCommand(this.app, HOST_TOGGLE_THEME); });
     const showTheme = (): void => {
       const dark = currentTheme(theme.ownerDocument) === "dark";
@@ -191,6 +201,8 @@ export class WorkbenchView extends ItemView {
     this.railButton(foot, SETTINGS_TAB);
     this.contentHost = body.createDiv({ cls: "aos-wb-content" });
     this.drawerHost = body.createDiv({ cls: "aos-wb-drawer" });
+    this.chipHost = body.createDiv({ cls: "aos-tour-chiphost" });
+    this.plugin.tour.mountRail(checklistSlot);
 
     this.setTab(this.homeTab());
 
@@ -513,9 +525,11 @@ export class WorkbenchView extends ItemView {
     this.contentHost.className = "aos-wb-content";
     tab.mount(this.contentHost);
     void tab.refresh();
+    this.plugin.tour.tabShown(id);
   }
 
   async onClose(): Promise<void> {
+    this.plugin.tour.unmountRail();
     this.unwatchTheme?.();
     this.unwatchTheme = null;
     if (this.badgeTimer !== null) window.clearTimeout(this.badgeTimer);

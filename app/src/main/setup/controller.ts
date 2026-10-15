@@ -14,7 +14,7 @@ import { refused } from "../services/fs";
 import type { PtyLib } from "../services/pty";
 import { applyClaudeMd, claudeMdPath, previewClaudeMd } from "./claude-md";
 import { findOnPath, isExecutable, loginPath, defaultLoginPathDeps, shellPath } from "./env";
-import { hostsOf, markNoted, type AgenticosFacts } from "./attach";
+import { hostsOf, markInstalled, markNoted, type AgenticosFacts } from "./attach";
 import { JobRunner } from "./jobs";
 import { applyPathLine, previewPathLine } from "./path-line";
 import type { Payload } from "./payload";
@@ -241,6 +241,8 @@ export class SetupController {
     if (job === "install") {
       if (this.personaFile) { fs.rmSync(this.personaFile, { force: true }); this.personaFile = null; }
       this.installed = code === 0;
+      // Remembered with the vault, so the Workbench this install opens starts the tour, not the "What changed" note.
+      if (this.installed && this.installedVault) { try { markInstalled(this.o.userData, this.installedVault); } catch { /* the note shows instead */ } }
     }
     if (job === "upgrade") this.o.refreshAttach();
   }

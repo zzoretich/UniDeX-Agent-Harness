@@ -157,7 +157,7 @@ export class HealthMode implements BrainModeView {
       b.createSpan({ text: "No brain-hub.json yet: the next scan writes it, and until then there is nothing to fix." });
       this.button(b, busy ? "Scanning…" : "Scan now", "rescan:banner", "rescan", () => this.doRescan(), { busy });
     }
-    const grid = R.createDiv({ cls: "aos-brain-hl-tiles", attr: { role: "list", "aria-label": "Health at a glance" } });
+    const grid = R.createDiv({ cls: "aos-brain-hl-tiles", attr: { role: "list", "aria-label": "Health at a glance", "data-tour": "brain-health-tiles" } });
     for (const t of healthTiles(d)) {
       const el = grid.createDiv({ cls: `aos-brain-hl-tile is-${t.tone}`, attr: { role: "listitem", "data-tile": t.key, "data-tone": t.tone } });
       el.createSpan({ cls: "aos-brain-hl-tv aos-brain-mono", text: t.value });
