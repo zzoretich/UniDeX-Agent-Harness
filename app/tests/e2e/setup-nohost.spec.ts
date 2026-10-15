@@ -45,6 +45,27 @@ test("no host: the checks are ready without one, and each host's install waits f
   await expect(win.locator(".aos-setup-next")).toBeEnabled();
 });
 
+test("inspection M2: a host logged in after the first check replaces No agent CLI yet, with its radio checked", async () => {
+  const { win } = app();
+  await win.locator(".aos-setup-next").click();
+  await expect(win.locator('input[name="aos-host"][value="none"]')).toBeChecked();
+  await win.getByRole("button", { name: "Back" }).click();
+  // Claude Code installed and logged in meanwhile: the next check offers it, and it is the one chosen.
+  const claude = path.join(SETUP.bin, "claude");
+  fs.writeFileSync(claude, `#!/bin/sh\ncase "$1" in --version) echo "2.1.0 (Claude Code)";; auth) echo '{"loggedIn": true}';; *) exit 1;; esac\n`, { mode: 0o755 });
+  await win.locator(".aos-setup-recheck").click();
+  await expect(row("claude-login")).toHaveClass(/is-ok/);
+  await win.locator(".aos-setup-next").click();
+  await expect(win.locator('input[name="aos-host"][value="none"]')).toHaveCount(0);
+  await expect(win.locator('input[name="aos-host"][value="claude"]')).toBeChecked();
+  await expect(win.locator(".aos-setup-next")).toBeEnabled();
+  // Gone again: back to No agent CLI yet, checked, for the rest of this file.
+  fs.rmSync(claude);
+  await win.getByRole("button", { name: "Back" }).click();
+  await win.locator(".aos-setup-recheck").click();
+  await expect(row("claude")).toHaveClass(/is-missing/);
+});
+
 test("Choose offers No agent CLI yet, says what waits for a host, and installs with --host none and no Chief of Staff", async () => {
   const { win } = app();
   await win.locator(".aos-setup-next").click();

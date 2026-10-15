@@ -8,6 +8,7 @@
 
 import type { AosBridge, BootInfo, ClaudeMdPreview, InstallRequest, PathLinePreview, PersonaAnswers, PreflightReport, SetupCheck, SetupEvent, SetupFixId } from "../../shared/ipc";
 import { BRAND } from "../../shared/brand";
+import { addHostCommand, defaultHost, hostOffered, reconcileHost } from "./choices";
 import { JobTerminal } from "./jobTerminal";
 
 type Step = "check" | "choose" | "persona" | "install" | "finish";
@@ -24,10 +25,7 @@ export const NAME_RE = /^[A-Za-z][A-Za-z0-9 _-]{1,39}$/;
 /** "a, b\nc" → ["a", "b", "c"] (the interview's toList). */
 export function splitList(s: string): string[] { return s.split(/[,\n]/).map((x) => x.trim()).filter(Boolean); }
 
-/** The host to offer first: both when both are ready, else the one that is, else none yet (install-import B2). */
-export function defaultHost(ready: { claude: boolean; codex: boolean }): Host {
-  return ready.claude && ready.codex ? "both" : ready.codex ? "codex" : ready.claude ? "claude" : "none";
-}
+export { defaultHost };
 
 /** "12.3 of 50.6 MB" (or "12.3 MB" when the total is unknown). */
 export function progressText(received: number, total: number | null): string {
@@ -124,7 +122,8 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     if (r.ok) {
       const first = !s.report;
       s.report = r.data;
-      if (first) s.host = defaultHost(r.data.hosts);
+      // Inspection M2: after every check, not only the first, so a host logged in since replaces a "none" no longer offered.
+      s.host = first ? defaultHost(r.data.hosts) : reconcileHost(s.host, r.data.hosts);
       s.error = null;
     } else s.error = r.error;
     render();
@@ -173,6 +172,8 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
   }
 
   function install(): void {
+    // Never an install for a choice Choose does not show (M2): a host that logged out, or "none" once one is ready.
+    if (!s.report || !hostOffered(s.host, s.report.hosts)) { s.host = reconcileHost(s.host, s.report?.hosts ?? { claude: false, codex: false }); s.step = "choose"; s.error = "Choose a host again: what is ready changed."; render(); return; }
     const req: InstallRequest = { host: s.host, vault: s.vault, persona: s.personaSkipped || s.host === "none" ? null : { ...s.persona } };
     terminal(false);
     const r = aos.setup.install(req);
@@ -431,7 +432,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
         "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Your vault, its memory and the background work on this Mac run without one.",
         [TERMINAL,
           "Install one and sign in: Claude Code with curl -fsSL https://claude.ai/install.sh | bash, then claude auth login; or Codex with curl -fsSL https://chatgpt.com/codex/install.sh | sh, then codex login.",
-          `Type ${aosCmd} init --vault ${s.vault} --host claude (or --host codex) and press Return. It keeps your files and adds the host.`]);
+          `Type ${addHostCommand(aosCmd, s.vault, info.home)} (or --host codex) and press Return. It keeps your files and adds the host.`]);
     } else if (s.personaSkipped) {
       leftItem(el, "persona", "Set up your Chief of Staff", "You skipped its questions; it starts once you answer them.",
         [TERMINAL, `Type ${aosCmd} persona and press Return, then answer its questions.`]);
