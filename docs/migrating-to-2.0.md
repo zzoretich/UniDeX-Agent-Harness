@@ -49,9 +49,16 @@ answer or dismiss it; quitting the app with one open asks again next time.
    - While the app's `migrate` write surface is off (it stays off until it has been checked on a live vault), the
      card shows those two commands instead of the buttons, each with **❯_ Run in Code**, which runs it in a Code tab
      terminal; the model download is the same with `aos local pull`.
-3. **What's new in 2.0**: each change with **Show me**, which runs its tour steps; **Take the full tour** when this
+3. **Import** ("Bring in your Claude Code and Codex history"), while `import` is pending. The sheet runs
+   `aos import --dry-run` and shows what each host left on this Mac (the rules in your global instructions, Claude
+   Code's memories, the MCP servers, the sessions of the last 90 days) and the project folders it would make into
+   workspaces, all ticked. **Import** runs `aos migrate import --apply` (with `--accept` for the ticked folders), with its
+   progress: it imports on the local model, queues the sessions for the digest and settles the migration; **Not now**
+   runs `aos migrate import --decline` and imports nothing. With nothing on this Mac to bring it says so, and **OK**
+   settles it. While the `migrate` write surface is off, it shows those commands with **❯_ Run in Code** instead.
+4. **What's new in 2.0**: each change with **Show me**, which runs its tour steps; **Take the full tour** when this
    Mac has never seen the tour; **Got it**. Help ▸ What's new keeps the list.
-4. **Getting started**, the checklist at the rail's foot.
+5. **Getting started**, the checklist at the rail's foot.
 
 The note about moving off Obsidian is gone. From a terminal, `aos upgrade` asks the Go-local question once when it
 runs in one (Enter goes local and moves the Chief of Staff; `n` keeps your settings; `l` asks later); without a
@@ -70,8 +77,9 @@ aos import                                # bring in your history (aos import --
 
 ## Your history
 
-Nothing from Claude Code or Codex is imported until you ask. `aos import --dry-run` shows what it would bring, per
-host and kind; `aos import` brings it (`aos migrate import --apply` does the same and settles the migration;
+Nothing from Claude Code or Codex is imported until you ask: the Import sheet above asks once, and imports only on
+**Import**. Later, or from a terminal, `aos import --dry-run` shows what it would bring, per host and kind; `aos import`
+brings it (`aos migrate import --apply` does the same and settles the migration;
 `aos migrate import --decline` records that you don't want it). Settings ▸ Import in the Workbench shows each host's
 last import with **Import** and **Import older history** (while the app's `import` write surface is off, run
 `aos import` in the Code tab). What it brings, and the digest that works through your past sessions on the local model,

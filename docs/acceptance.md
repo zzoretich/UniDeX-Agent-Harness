@@ -157,11 +157,13 @@ The installed app is the previous release's (or a signed local build of it with 
   `aos config get persona.model` is `claude-opus-5-5`; `brain/routines/tick.md` is `kind: command` running
   `tick.js --triage` (or, if you had edited it, it is kept and a notification says why); `aos doctor`'s `local engine`
   and `local model` rows are ok and its `persona runner` row names `claude-opus-5-5`.
-- [ ] Next, **What's new in 2.0**: four entries, each with **Show me** (one of them runs its steps), and **Got it**; then
-  Getting started. ⌘Q and open the app again: none of the three opens again, and Help ▸ What's new still lists them.
-- [ ] The import: `aos import --dry-run` lists what this Mac has, per host and kind; `aos import` (in a Code terminal)
-  brings it in, `aos migrate --status` lists `import` applied, Brain ▸ Review shows an "Imported from Claude Code" (and
-  "Imported from Codex") batch, and Pulse says "Digesting history: n of m sessions" while the digest runs.
+- [ ] Next, the **Import** sheet ("Bring in your Claude Code and Codex history"): what this Mac's hosts left, per host
+  and kind, and the proposed workspaces, all ticked (or, with the `migrate` surface off, `aos migrate import --apply`
+  and `--decline` with **❯_ Run in Code**). Import (or run the apply command): `aos migrate --status` lists `import`
+  applied, Brain ▸ Review shows an "Imported from Claude Code" (and "Imported from Codex") batch, and Pulse says
+  "Digesting history: n of m sessions" while the digest runs.
+- [ ] Next, **What's new in 2.0**: five entries, each with **Show me** (one of them runs its steps), and **Got it**; then
+  Getting started. ⌘Q and open the app again: none of the four opens again, and Help ▸ What's new still lists them.
 - [ ] Undo, then redo: Settings ▸ Local engine ▸ **Undo** (or `aos migrate local-first --undo`) puts `provider` and
   `persona.model` back to what you noted; `aos migrate local-first --apply --chief` goes local again.
 
