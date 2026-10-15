@@ -157,3 +157,37 @@ test('a Codex-only machine: no Claude question, and a missing Codex answer is th
   await P.runInterview({ configDir: w.configDir, answersFile: w.answersFile, io: w.io, schedule: false });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(w.vault, 'brain', 'config.json'), 'utf8')).persona, { model: 'claude-opus-5-5', codexModel: 'gpt-6-sol' });
 });
+
+// install-import B2: `aos hosts add` sets the Chief of Staff up for the first host. Its default answers carry the duty models
+// the settings name (the chief role's on a 2.0 vault, or the owner's), and stand in for a missing answers.json: offered in
+// brackets on a terminal, taken as they are off one.
+test('defaultAnswers and runInterview({ defaults }): offered on a terminal, the answers off one; a stored answers.json still wins', async () => {
+  const { PassThrough } = require('stream');
+  const w = world();
+  const defaults = require('../brain/scripts/config.default.json');
+  const cfgFile = path.join(w.configDir, 'agenticos.json');
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfgFile, 'utf8')), hosts: { claude: { enabled: true }, codex: { enabled: true } } }));
+  fs.writeFileSync(path.join(w.vault, 'brain', 'config.json'), JSON.stringify({ persona: { ...defaults.persona } }));
+  assert.equal(P.hasPersona(w.vault), false);
+  assert.deepEqual(P.defaultAnswers({ vault: w.vault, configDir: w.configDir }), { name: 'Atlas', dutyModel: 'claude-opus-5-5', dutyCodexModel: 'gpt-6-sol', schedule: true });
+  // A terminal: every question answered with Return takes the bracketed default.
+  const input = new PassThrough(); const output = new PassThrough(); let shown = '';
+  output.on('data', (d) => { shown += d; });
+  input.end('\n'.repeat(12));
+  const r = await P.runInterview({ configDir: w.configDir, io: w.io, schedule: false, streams: { input, output }, defaults: P.defaultAnswers({ vault: w.vault, configDir: w.configDir }) });
+  assert.match(shown, /Agent name \(required; e\.g\. Atlas\) \[Atlas\]: /);
+  assert.match(shown, /Codex model for duties \(when Claude Code cannot start one\) \[gpt-6-sol\]: /);
+  assert.deepEqual([r.answers.name, r.answers.dutyModel, r.answers.dutyCodexModel, r.defaulted], ['Atlas', 'claude-opus-5-5', 'gpt-6-sol', false]);
+  assert.equal(P.hasPersona(w.vault), true);
+  // No terminal: the defaults are the answers. A model the owner set is the one they carry.
+  const w2 = world();
+  fs.writeFileSync(path.join(w2.vault, 'brain', 'config.json'), JSON.stringify({ persona: { ...defaults.persona, model: 'sonnet', codexModel: null } }));
+  const d2 = P.defaultAnswers({ vault: w2.vault, configDir: w2.configDir });
+  assert.deepEqual([d2.dutyModel, d2.dutyCodexModel], ['sonnet', null]);
+  const r2 = await P.runInterview({ configDir: w2.configDir, io: w2.io, schedule: false, defaults: d2 });
+  assert.deepEqual([r2.defaulted, r2.answers.name, r2.answers.dutyModel], [true, 'Atlas', 'sonnet']);
+  assert.ok(!w2.logs.some((l) => /skipping the interview/.test(l)));
+  // A stored answers.json is reused before any default.
+  const r3 = await P.runInterview({ configDir: w.configDir, io: w.io, schedule: false, yes: true, defaults: { name: 'Other', schedule: true } });
+  assert.deepEqual([r3.answers.name, r3.defaulted], ['Atlas', false]);
+});

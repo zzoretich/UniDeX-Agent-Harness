@@ -45,11 +45,10 @@ const FEEDBACK_DIR = 'brain/memory/feedback/';
 /** Per-duty built-in writes on top of DEFAULT_WRITES (spec 2026-09-28-reflect-memory-writes-design D1/D2): in the
  *  runtime, not the routine files, because brain/routines/ is seeded once and an upgrade never rewrites it. */
 const DUTY_WRITES = { reflect: [FEEDBACK_DIR, 'MEMORY.md'], 'reflect-daily': [FEEDBACK_DIR, 'MEMORY.md'] };
-/** D6: what decides what runs and what is trusted. The ledger is guarded separately (append-only, `filed` only). */
-const GUARDED = ['persona/IDENTITY.md', 'persona/duties/', 'persona/routines/', 'persona/autoapply.json', 'persona/flag-closer/', 'persona/repos.json'];
-const LEDGER = 'persona/ledger.jsonl';
-/** Never writable by a duty, on top of GUARDED: code, schedules, other projects, tool and host config. */
-const EXECUTABLE = ['brain/scripts/', 'brain/routines/', 'workspaces/'];
+/** D6: what decides what runs and what is trusted (GUARDED; the ledger, LEDGER, is guarded separately: append-only,
+ *  `filed` only), and what no duty writes on top of it (EXECUTABLE: code, schedules, other projects). They and the
+ *  refusal rule live in lib/write-areas.js, which the routine editors check a duty's `writes` against before it runs. */
+const { GUARDED, LEDGER, EXECUTABLE, fold, refusal, normEntry: norm, dutyWritesRefusal } = require('../lib/write-areas.js');
 /** The vault's own dot-folders (git, Obsidian, each host's project settings) — never the user's config dir. */
 const DENY_DOT_DIRS = ['.git/', '.obsidian/', '.claude/', '.codex/', '.agents/'];
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -74,32 +73,6 @@ function splitTools(list) {
 
 function toolName(rule) { const i = rule.indexOf('('); return i === -1 ? rule : rule.slice(0, i); }
 
-function norm(entry) {
-  const dir = entry.endsWith('/');
-  const rel = path.posix.normalize(entry.replace(/\\/g, '/').replace(/\/+$/, ''));
-  return { rel, dir };
-}
-
-/** A path as a case-insensitive, normalization-insensitive file system (APFS) sees it: NFC, case-folded (upper then
- *  lower, so U+017F LONG S and the Kelvin sign fold to s and k as they do there). */
-function fold(p) { return String(p).normalize('NFC').toUpperCase().toLowerCase().normalize('NFC'); }
-
-/** Why a write-scope entry is refused, or null. `rel` is posix, normalized, without a trailing slash. The guarded and
- *  executable areas are compared folded (fold), so `Persona/IDENTITY.md` is refused like `persona/IDENTITY.md`. */
-function refusal(rel) {
-  if (!rel || rel === '.' || rel === '/') return 'the vault itself';
-  if (path.posix.isAbsolute(rel)) return 'an absolute path';
-  const segs = rel.split('/');
-  if (segs.includes('..')) return 'a path leaving the vault';
-  if (segs.some((s) => s.startsWith('.'))) return 'a dot-folder or dot-file';
-  const f = fold(rel);
-  for (const g of [...GUARDED, LEDGER, ...EXECUTABLE]) {
-    const gr = fold(g.replace(/\/$/, ''));
-    if (f === gr || f.startsWith(`${gr}/`)) return `guarded (${g})`;
-    if (gr.startsWith(`${f}/`)) return `it holds a guarded path (${g})`;
-  }
-  return null;
-}
 
 /** The daily-note folder for `now`, vault-relative, or null when the layout puts notes at the vault root. */
 function dailyNoteDir(vault, now = new Date()) {
@@ -126,7 +99,7 @@ function writeScope({ vault, writes = '', duty = '', now = new Date() } = {}) {
   const entries = [], refused = [], seen = new Set();
   raw.forEach((r, i) => {
     const e = { ...norm(r), builtIn: i < builtIns };
-    const why = refusal(e.rel);
+    const why = dutyWritesRefusal(r);
     if (why) { refused.push({ entry: r, why }); return; }
     const key = `${e.rel}${e.dir ? '/' : ''}`;
     if (!seen.has(key)) { seen.add(key); entries.push(e); }

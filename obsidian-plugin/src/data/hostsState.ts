@@ -109,11 +109,15 @@ export function hostView(host: SessionHost, s: HostStatus): HostView {
   return { ...base, state: "unknown", text: `Not added to this vault${where} · ${unknown}`, add: { shown: true, enabled: false, why: s.timedOut ? "Its sign-in check did not answer: ⟳ Check again" : "Checking whether it is installed and signed in…" } };
 }
 
-/** What Add does, said before it runs (the confirm). */
-export function addHostText(host: SessionHost): string {
+/**
+ * What Add does, said before it runs (the confirm). `first`: no host is on yet, so `aos hosts add` also sets up the Chief of
+ * Staff, which waited for one (install-import B2), with the default answers when the vault has none.
+ */
+export function addHostText(host: SessionHost, first = false): string {
   const label = HOST_LABEL[host];
   return `This turns ${label} on for this vault (the other host stays as it is), installs ${host === "claude" ? "the Claude Code plugin" : "the Codex plugin (or the direct wiring on an older Codex CLI)"}, `
     + `imports ${label}'s instructions, memories and MCP server list into Brain ▸ Review, proposes its project folders, and re-renders the installed schedules. `
+    + (first ? `As your first host, it also sets up your Chief of Staff, which waited for one: with the default answers and its daily duties scheduled, unless you already have one (aos persona changes them). ` : "")
     + `It runs aos hosts add ${host}. Its session history waits for Import under Import.`;
 }
 

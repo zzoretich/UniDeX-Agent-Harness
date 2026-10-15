@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   VAULT_CONFIG_DEFAULTS, readAgenticosJson, readVaultConfig, dailyNoteLayout, readProviderState, deepMerge, personaName,
-  sessionHosts, invocation, invocationHint, reviewCommand,
+  sessionHosts, invocation, invocationHint, reviewCommand, signedInHosts, loginsUnknown,
 } from "./aosConfig";
 
 let vault: string;
@@ -130,6 +130,20 @@ test("sessionHosts and invocations follow the enabled hosts and the Codex instal
   assert.equal(invocationHint("todo", null), "/todo");
   assert.equal(invocationHint("todo", codexOnly), "$agenticos:todo");
   assert.equal(invocationHint("todo", both), "/todo (Claude Code) or $agenticos:todo (Codex)");
+});
+
+test("loginsUnknown: an enabled host with no login recorded yet (a fresh install under provider local); a recorded no is known", () => {
+  const claude = { hosts: { claude: { enabled: true }, codex: { enabled: false } } };
+  const both = { hosts: { claude: { enabled: true }, codex: { enabled: true } } };
+  const at = "2026-10-15T09:00:00.000Z";
+  const base = { checkedAt: at, name: "none" as const, reason: "local-down" };
+  assert.equal(loginsUnknown(claude, null), true, "no provider-state.json yet");
+  assert.equal(loginsUnknown(claude, base), true);
+  assert.equal(loginsUnknown(claude, { ...base, claude: { loggedIn: false, checkedAt: at } }), false, "signed out is known");
+  assert.equal(loginsUnknown(both, { ...base, claude: { loggedIn: true, checkedAt: at } }), true, "Codex is not recorded");
+  assert.equal(loginsUnknown(both, { ...base, claude: { loggedIn: true, checkedAt: at }, codex: { loggedIn: false, checkedAt: at } }), false);
+  assert.equal(loginsUnknown({ hosts: { claude: { enabled: false }, codex: { enabled: false } } }, null), false, "no host: nothing to ask");
+  assert.deepEqual(signedInHosts(both, { ...base, claude: { loggedIn: true, checkedAt: at } }), ["claude"]);
 });
 
 test("reviewCommand opens the flag-closer in the user's first host, quoted so the shell keeps $agenticos", () => {

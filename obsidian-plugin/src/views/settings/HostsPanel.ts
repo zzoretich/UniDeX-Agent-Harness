@@ -104,7 +104,9 @@ export class HostsPanel {
   private async add(h: SessionHost): Promise<void> {
     if (this.busy) return;
     const label = HOST_LABEL[h];
-    if (!(await ConfirmModal.ask(this.plugin.app, `Add ${label}?`, addHostText(h), `Add ${label}`))) return;
+    const st = this.status ?? cachedHostsStatus(readAgenticosJson(this.plugin.claudeConfigDir()), readProviderState(this.plugin.vaultRoot()));
+    const first = !HOSTS.some((x) => st.hosts[x].enabled);
+    if (!(await ConfirmModal.ask(this.plugin.app, `Add ${label}?`, addHostText(h, first), `Add ${label}`))) return;
     this.busy = h;
     this.result = null;
     this.rerender();
