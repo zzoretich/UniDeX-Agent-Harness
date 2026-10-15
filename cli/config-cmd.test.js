@@ -195,7 +195,7 @@ test('unset removes the key from both files and prunes; the default applies; not
 
 test('refusals: a read-only key (D6) and a headless run (D9) throw Refused; reads still work headless', async () => {
   const w = world();
-  await assert.rejects(() => w.run('set', 'hosts.codex.enabled', 'true'), (e) => e instanceof C.Refused && /aos init --host codex\|both/.test(e.message));
+  await assert.rejects(() => w.run('set', 'hosts.codex.enabled', 'true'), (e) => e instanceof C.Refused && /aos hosts add codex/.test(e.message));
   await assert.rejects(() => w.run('unset', 'vault'), C.Refused);
   w.opts.env = { AOS_HEADLESS: '1' };
   await assert.rejects(() => w.run('set', 'telemetry.redact', 'false'), (e) => e instanceof C.Refused && /headless run/.test(e.message));

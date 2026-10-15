@@ -1157,8 +1157,8 @@ test.describe("a Codex-only machine", () => {
     const codex = p.locator('.aos-hm-host[data-host="codex"]');
     await expect(claude).toBeDisabled();
     await expect(claude).toHaveAttribute("title", "Claude Code is off on this machine");
-    // `--host claude` would turn Codex off, so with Codex on the line names `--host both`.
-    await expect(p.locator('.aos-hm-offline[data-host="claude"]')).toHaveText("Claude Code is off on this Mac: aos init --host both turns it on");
+    // `aos hosts add claude` keeps Codex on (install-import B2), so the line names it whatever else is on.
+    await expect(p.locator('.aos-hm-offline[data-host="claude"]')).toHaveText("Claude Code is off on this Mac: aos hosts add claude turns it on");
     await expect(codex).toBeEnabled();
     await expect(codex).toHaveClass(/is-active/);
     await expect(p.locator(".aos-hm-source")).toHaveText(/^From Codex 0\.158\.0 · /, { timeout: 30_000 });

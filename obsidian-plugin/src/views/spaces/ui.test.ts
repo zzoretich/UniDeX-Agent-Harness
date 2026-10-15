@@ -128,7 +128,7 @@ test("primaryAction resumes the last thread in Code; a Codex-only vault's Claude
 
   const codexOnly = primaryAction(ctx(e, { claude: "off" }).c, e);
   assert.equal(codexOnly.disabled, true);
-  assert.equal(codexOnly.reason, "Claude Code is off on this machine: run aos init --host claude");
+  assert.equal(codexOnly.reason, "Claude Code is off on this machine: run aos hosts add claude");
   const notLogged = primaryAction(ctx(e, { claude: "out" }).c, e);
   assert.equal(notLogged.reason, "Claude Code is not logged in: run its login");
 });
