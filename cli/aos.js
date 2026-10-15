@@ -79,6 +79,7 @@ const USAGE = `usage:
   aos import [--from claude|codex|all] [--since 90d|all] [--only instructions,memories,projects,mcp,sessions] [--accept <json list>] [--dry-run] [--json]
   aos hosts add <claude|codex> [--from-local <repo-dir>] [--persona-json <file>] [--yes] | aos hosts status [--json]
   aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--accept <json list>] [--json]
+  aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1543,6 +1544,21 @@ async function hostsCmd(sub, flags) {
   }
 }
 
+/** `aos mcp copy <name> --to <host>` (install-import B6): cli/mcp.js, one MCP server made available on the other host. */
+function mcpCmd(sub, flags) {
+  const M = require('./mcp.js');
+  try {
+    return M.main([
+      ...sub, ...(flags.to !== undefined ? ['--to', flags.to] : []), ...(flags.expect !== undefined ? ['--expect', flags.expect] : []),
+      ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.json ? ['--json'] : []),
+    ], { io: console, claudeBin, codexBin });
+  } catch (e) {
+    if (e instanceof M.UsageError) throw new UsageError(e.message);
+    if (e instanceof M.Refused) throw new CheckFailed(`mcp copy: ${e.message}`);
+    throw e;
+  }
+}
+
 /** `aos migrate` (local-first A9, install-import B12): cli/migrations.js, the choices an upgrade asks once. */
 async function migrateCmd(sub, flags) {
   const M = require('./migrations.js');
@@ -1576,8 +1592,8 @@ function updateNotice() {
 // `aos workspace`'s own (spaces-redesign D28): --into, --cwd, --set, --expect take a value; --git, --pin, --empty do not.
 // `aos memory`'s (brain-hub D13): --by takes a value (supersede's winner), --into merge's fields (brain-ai A9); set's
 // --skip-brain-md and merge-draft's and sweep's --estimate (A5) do not.
-// `aos import`'s (install-import B7): --from, --since, --only and --accept take a value.
-const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by', 'from', 'since', 'only', 'accept']);
+// `aos import`'s (install-import B7): --from, --since, --only and --accept take a value; `aos mcp copy`'s (B6) --to.
+const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by', 'from', 'since', 'only', 'accept', 'to']);
 // `aos migrate`'s (local-first A9): --status, --apply, --chief, --decline and --undo take none, and main() refuses them on
 // any other verb.
 const MIGRATE_FLAGS = ['status', 'apply', 'chief', 'decline', 'undo'];
@@ -1624,7 +1640,7 @@ async function main(argv) {
   // --dry-run is an init-only preview (contract §4.3); on a mutating command it must be a loud error, never a silent no-op.
   const misplaced = cmd === 'migrate' ? undefined : MIGRATE_FLAGS.find((f) => flags[f] !== undefined);
   if (misplaced) throw new UsageError(`--${misplaced} is only for \`aos migrate\``);
-  if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory', 'import'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set`, `aos memory set`, `aos memory fix` and `aos import`');
+  if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory', 'import', 'mcp'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set`, `aos memory set`, `aos memory fix`, `aos import` and `aos mcp copy`');
   switch (cmd) {
     case 'init': return init(flags);
     case 'upgrade': return upgrade(flags);
@@ -1646,6 +1662,7 @@ async function main(argv) {
     case 'import': return importCmd(sub, flags);
     case 'hosts': return hostsCmd(sub, flags);
     case 'migrate': return migrateCmd(sub, flags);
+    case 'mcp': return mcpCmd(sub, flags);
     case 'update-check': return updateCheck(flags);
     case 'update-status': return updateStatus(flags);
     case 'update-notice': return updateNotice();

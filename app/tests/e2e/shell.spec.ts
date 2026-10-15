@@ -43,14 +43,15 @@ test("the app records itself in the vault for doctor and the update check (brain
   expect(fs.readdirSync(FX.v("brain/_index")).filter((n) => n.startsWith("hud-host.json."))).toEqual([]);
 });
 
-test("rail: three sections in order with a line between them, no Sessions with no host signed in (local-first A17), ⚙ Settings at the foot", async () => {
+test("rail: three sections in order with a line between them, Sessions with no host signed in for its History alone (local-first A17, install-import B11), ⚙ Settings at the foot", async () => {
   const { win } = app();
   const ids = await win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
-  expect(ids).toEqual(RAIL_ORDER.filter((id) => id !== "chat"));
+  // No host is signed in on the fixture, but its hosts left past sessions on disk: Sessions is on the rail for History.
+  expect(ids).toEqual(RAIL_ORDER);
   // The sections and their lines (spec 2026-10-09-rail-sections-code D1, D5): a separator between sections, none at
   // either end, so the list reads ① | ② | ③.
   const seq = await win.locator(".aos-wb-railtabs > *").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab ?? (e.classList.contains("aos-wb-railsep") ? "|" : "?")));
-  expect(seq).toEqual(RAIL_SECTIONS.map((s) => s.filter((id) => id !== "chat").join(",")).join(",|,").split(","));
+  expect(seq).toEqual(RAIL_SECTIONS.map((s) => s.join(",")).join(",|,").split(","));
   await expect(win.locator(".aos-wb-railsep[role='separator']")).toHaveCount(2);
   // Notifications heads the rail, then Pulse and Code; Files sits right after Spaces; Runs closes the list.
   expect(ids[0]).toBe("notifications");
