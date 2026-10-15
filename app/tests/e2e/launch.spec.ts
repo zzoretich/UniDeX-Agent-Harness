@@ -38,6 +38,9 @@ const noHistory = () => {
   fs.rmSync(path.join(FX.claude, "projects"), { recursive: true, force: true });
   fs.rmSync(path.join(FX.home, ".codex", "sessions"), { recursive: true, force: true });
   fs.rmSync(path.join(FX.home, ".codex", "session_index.jsonl"), { force: true });
+  // The MCP servers the fixture gives each host (Skills ▸ MCP servers): an import lists them, so nothing means none.
+  fs.rmSync(path.join(FX.home, ".claude.json"), { force: true });
+  fs.rmSync(path.join(FX.home, ".codex", "config.toml"), { force: true });
 };
 const whatsNew = (win: Page) => win.locator(".modal.aos-whatsnew-modal");
 /** The running release's What's new entries an install new to the tour sees (tour/whatsnew.ts selectWhatsNew, lastSeen null). */

@@ -37,6 +37,7 @@ import type { FixAction } from "./src/data/fixQueue";
 import { buildOmniItems } from "./src/data/omni";
 import { OmniModal } from "./src/ui/OmniModal";
 import { TourController } from "./src/tour/controller";
+import { SESSION_INDEX_PATH, hasHistory } from "./src/data/sessionHistory";
 import { runLaunchSequence, type LaunchDeps, type LaunchStep } from "./src/ui/launchSequence";
 import * as path from "path";
 import { env, fs, spawn } from "./src/host";
@@ -300,6 +301,29 @@ export default class AgenticOSPlugin extends Plugin {
    *  brain/_index/provider-state.json, whatever the background provider (the local engine may be down). */
   chatAvailable(): boolean {
     return signedInHosts(readAgenticosJson(this.claudeConfigDir()), readProviderState(this.vaultRoot())).length > 0;
+  }
+
+  /** session-index.json's size and time when it was last read, and whether it named a session History lists. */
+  private historyCache: { mtime: number; size: number; has: boolean } | null = null;
+
+  /** Whether Sessions ▸ History has a past session to list (install-import B11): the index the scan keeps names one.
+   *  Read again only when the file changed. */
+  historyOnDisk(): boolean {
+    try {
+      const file = path.join(this.vaultRoot(), SESSION_INDEX_PATH);
+      const st = fs.statSync(file);
+      const c = this.historyCache;
+      if (c && c.mtime === st.mtimeMs && c.size === st.size) return c.has;
+      const has = hasHistory(fs.readFileSync(file, "utf8"));
+      this.historyCache = { mtime: st.mtimeMs, size: st.size, has };
+      return has;
+    } catch { return false; }
+  }
+
+  /** Sessions is on the rail when an enabled host is signed in (local-first A17), or when History has a past session to
+   *  show, which needs no host (install-import B11, §5.6): a Mac with no host, or one signed out, still sees its history. */
+  sessionsShown(): boolean {
+    return this.chatAvailable() || this.historyOnDisk();
   }
 
   /**

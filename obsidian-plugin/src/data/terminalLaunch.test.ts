@@ -300,6 +300,26 @@ test("launchArgs refuses a free value that starts with '-': a model, an id or a 
   assert.deepEqual(launchArgs({ ...base, host: "claude", model: "claude-opus-5", resume: { id: "3f2c-1" } }), ["--model", "claude-opus-5", "--resume", "3f2c-1"]);
 });
 
+test("launchArgs refuses a free value holding a control character: a scanned folder named with ^U never reaches the shell", () => {
+  const base = { bin: null, access: "host" as const };
+  const id = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
+  const bad: Array<Parameters<typeof launchArgs>[0]> = [
+    // ^U kills the typed line in a shell, so a folder carrying it could type its own command after it.
+    { ...base, host: "codex", model: null, resume: { id }, cwd: "/tmp/x\u0015rm -rf ~\u0015" },
+    { ...base, host: "codex", model: null, resume: { id }, cwd: "/tmp/new\nline" },
+    { ...base, host: "codex", model: null, resume: { id }, cwd: "/tmp/del\u007f" },
+    { ...base, host: "claude", model: "opus\u0003", resume: null },
+    { ...base, host: "claude", model: null, resume: { id: `${id}\r` } },
+    { ...base, host: "claude", model: null, sessionId: "u1\u001b[2J" },
+  ];
+  for (const s of bad) {
+    assert.throws(() => launchArgs(s), /control character/, JSON.stringify(s));
+    assert.throws(() => launchLine(s), /control character/, JSON.stringify(s));
+  }
+  // A space, a quote or a non-ASCII letter in a folder is fine: launchLine quotes it.
+  assert.deepEqual(launchArgs({ ...base, host: "codex", model: null, resume: { id }, cwd: "/tmp/My Ré'sumé" }), ["resume", "-C", "/tmp/My Ré'sumé", id]);
+});
+
 test("launchLine: leading space, the not-found guard, exec, quoting of the binary and of glob-like ids", () => {
   const line = launchLine({ host: "claude", bin: "/opt/my apps/claude", model: "claude-opus-5[1m]", access: "host", sessionId: "3f2c-1" });
   assert.equal(line, " command -v '/opt/my apps/claude' >/dev/null 2>&1 && exec '/opt/my apps/claude' --model 'claude-opus-5[1m]' --session-id 3f2c-1 || echo 'Claude Code was not found: run aos doctor'");

@@ -63,6 +63,115 @@ test("credential files are never read, even inside a root", () => {
   assert.equal(s.canRead(`${HOME}/.codex/skills/x/SKILL.md`), true);
 });
 
+test("MCP config backups are never read: their folder is outside every root, brain/_index/backups is refused too, and no link reaches either (install-import B6)", () => {
+  const s = new ReadScope(ctx());
+  // Where `aos mcp copy` writes them (cli/mcp.js backupDir): each holds a whole host config, secrets included.
+  const dir = `${HOME}/.local/share/unidex/backups/mcp`;
+  const bak = `${dir}/codex-config.toml-20261015T142233123Z.bak`;
+  for (const p of [bak, dir, `${HOME}/.local/share/unidex/backups`, `${VAULT}/brain/_index/backups/mcp/claude-claude.json-x.bak`, `${VAULT}/brain/_index/backups`]) {
+    assert.equal(s.canRead(p), false, p);
+    assert.equal(s.canList(p), false, p);
+    assert.equal(s.canProbe(p), false, p);
+  }
+  // A vault that is the home folder itself still never reaches them; the rest of it stays readable.
+  const atHome = new ReadScope(ctx({ vaultRoot: HOME }));
+  assert.equal(atHome.canRead(bak), false);
+  assert.equal(atHome.canRead(`${HOME}/notes.md`), true);
+  // A link in the vault to the backups folder reads as the backups.
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(bak, "secret = 1\n");
+  fs.symlinkSync(dir, `${VAULT}/peek`);
+  try {
+    assert.equal(s.canRead(`${VAULT}/peek/${path.basename(bak)}`), false);
+    assert.equal(s.canList(`${VAULT}/peek`), false);
+  } finally { fs.rmSync(`${VAULT}/peek`); }
+  // brain/_index's other caches stay readable.
+  assert.equal(s.canRead(`${VAULT}/brain/_index/mcp-servers.json`), true);
+});
+
+/** Whether this machine's temp folder ignores case, as APFS does by default (the app's own target). */
+function caseInsensitiveFs(): boolean {
+  const probe = path.join(ROOT, "CaseProbe");
+  fs.writeFileSync(probe, "");
+  try { return fs.existsSync(path.join(ROOT, "caseprobe")); } finally { fs.rmSync(probe, { force: true }); }
+}
+
+test("every deny compares as the file system names things: any case, any Unicode form, links resolved when asked (security re-review A)", () => {
+  const home = path.join(ROOT, "home-a");
+  const vault = path.join(ROOT, "vault-a");
+  fs.mkdirSync(path.join(home, ".local", "share", "unidex", "backups", "mcp"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(vault, "brain", "_index", "backups", "mcp"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".local", "share", "unidex", "backups", "mcp", "x.bak"), "secret = 1\n");
+  fs.writeFileSync(path.join(home, ".codex", "auth.json"), "{}");
+  const s = new ReadScope(ctx({ vaultRoot: vault, home }));
+  // brain/_index/backups in another case: the same folder on APFS.
+  for (const p of [`${vault}/Brain/_Index/Backups/mcp/x.bak`, `${vault}/BRAIN/_INDEX/BACKUPS`, `${vault}/brain/_index/backups/MCP/y.bak`]) {
+    assert.equal(s.canRead(p), false, p);
+    assert.equal(s.canList(p), false, p);
+  }
+  // A credential's name in any case, and a link in the vault to one.
+  for (const p of [`${vault}/AUTH.JSON`, `${vault}/x/.ENV`, `${vault}/certs/Server.PEM`]) assert.equal(s.canRead(p), false, p);
+  fs.symlinkSync(path.join(home, ".codex", "auth.json"), path.join(vault, "notes.md"));
+  assert.equal(s.canRead(`${vault}/notes.md`), false, "a link to a credential file reads as it");
+  // A link whose target names the backups folder in another case (a repo's relative link, ../../.local/share/UniDeX/Backups).
+  if (caseInsensitiveFs()) {
+    fs.mkdirSync(path.join(vault, "workspaces", "app"), { recursive: true });
+    fs.symlinkSync(path.join("..", "..", "..", "home-a", ".local", "share", "UniDeX", "Backups"), path.join(vault, "workspaces", "app", "rel"));
+    assert.equal(s.canRead(`${vault}/workspaces/app/rel/mcp/x.bak`), false, "an upper-case link to the backups");
+    assert.equal(s.canList(`${vault}/workspaces/app/rel`), false);
+  }
+  // A vault whose name has an accent, asked for in the other Unicode form (NFD): the same folder.
+  const accented = path.join(ROOT, "caf\u00e9-vault");
+  fs.mkdirSync(path.join(accented, "brain", "_index", "backups"), { recursive: true });
+  const sa = new ReadScope(ctx({ vaultRoot: accented, home }));
+  assert.equal(sa.canRead(`${accented.normalize("NFD")}/brain/_index/backups/mcp/x.bak`), false, "NFD spelling");
+  assert.equal(sa.canRead(`${accented}/notes.md`), true);
+  assert.equal(s.canRead(`${vault}/brain/_index/mcp-servers.json`), true, "the other caches stay readable");
+});
+
+test("a deny reaches a folder made after the scope was built: ~/.local turned into a link, the backups made later (security re-review A)", () => {
+  const home = path.join(ROOT, "home-b");
+  const vault = path.join(ROOT, "vault-b");
+  const elsewhere = path.join(ROOT, "elsewhere-b");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(vault, { recursive: true });
+  const s = new ReadScope(ctx({ vaultRoot: vault, home }));
+  // After launch: ~/.local becomes a link to another disk, and the first copy makes the backups there.
+  fs.mkdirSync(path.join(elsewhere, "share", "unidex", "backups", "mcp"), { recursive: true });
+  fs.writeFileSync(path.join(elsewhere, "share", "unidex", "backups", "mcp", "x.bak"), "secret = 1\n");
+  fs.symlinkSync(elsewhere, path.join(home, ".local"));
+  fs.symlinkSync(path.join(elsewhere, "share", "unidex", "backups"), path.join(vault, "late"));
+  assert.equal(s.canRead(`${vault}/late/mcp/x.bak`), false, "a link in the vault to where ~/.local now points");
+  assert.equal(s.canList(`${vault}/late/mcp`), false);
+  assert.equal(s.canProbe(`${vault}/late/mcp/x.bak`), false);
+  // The per-install key of `aos mcp copy` is never read either.
+  fs.mkdirSync(path.join(elsewhere, "share", "unidex", "keys"), { recursive: true });
+  fs.writeFileSync(path.join(elsewhere, "share", "unidex", "keys", "mcp-plan.key"), "k");
+  fs.symlinkSync(path.join(elsewhere, "share", "unidex", "keys", "mcp-plan.key"), path.join(vault, "k.md"));
+  assert.equal(s.canRead(`${vault}/k.md`), false);
+});
+
+test("a check resolves the path asked once, and each denied folder once, whichever of read, list or probe asks (third review 6)", () => {
+  const home = path.join(ROOT, "home-c");
+  const vault = path.join(ROOT, "vault-c");
+  for (const d of [path.join(home, ".local", "share", "unidex", "backups"), path.join(home, ".local", "share", "unidex", "keys"), path.join(vault, "brain", "_index", "backups")]) fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(vault, "notes.md"), "x");
+  let calls = 0;
+  const realpath = (p: string): string => { calls++; return fs.realpathSync.native(p); };
+  const s = new ReadScope({ ...ctx({ vaultRoot: vault, home }), realpath });
+  // Three denied folders, all there: one resolution each, plus the path itself.
+  for (const ask of [(p: string) => s.canRead(p), (p: string) => s.canList(p), (p: string) => s.canProbe(p)]) {
+    calls = 0;
+    assert.equal(ask(`${vault}/notes.md`), true);
+    assert.equal(calls, 4, "one walk for the path, one per denied folder");
+  }
+  fs.writeFileSync(path.join(vault, "brain", "_index", "backups", "x.bak"), "x");
+  calls = 0;
+  assert.equal(s.canProbe(`${vault}/brain/_index/backups/x.bak`), false);
+  assert.ok(calls <= 4, `a denied probe stops early (${calls})`);
+});
+
 test("the Claude and Codex folders come from main's environment and agenticos.json, never from the page", () => {
   const o = { home: HOME, env: { CLAUDE_CONFIG_DIR: "/cfg/claude", CODEX_HOME: "relative/ignored" }, agenticos: { claudeConfigDir: "/cfg/other", hosts: { codex: { home: "/cfg/codex" } } } };
   assert.deepEqual(claudeDirs(o), ["/cfg/claude", `${HOME}/.claude`, "/cfg/other"]);

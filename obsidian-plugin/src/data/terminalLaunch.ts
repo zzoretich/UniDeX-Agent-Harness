@@ -399,14 +399,22 @@ export function launchIds(host: TermHost, resume: LaunchSpec["resume"], newId: (
   return { fresh, known: fresh };
 }
 
+/** A C0 control character or DEL: typed into a shell, ^U, ^C, a newline or an escape act on the line itself. */
+const CONTROL_RE = /[\u0000-\u001f\u007f]/;
+
 /**
- * A free value on the agent's line (a model, an id, a folder): one that starts with `-` would read as a flag, so the
- * line is refused rather than typed (spaces-redesign D7, spec §6).
+ * A free value on the agent's line (a model, an id, a folder): one that starts with `-` would read as a flag, and one
+ * that holds a control character would act on the shell's line (a folder the scan found named with ^U could erase the
+ * line and type another), so the line is refused rather than typed (spaces-redesign D7, spec §6; install-import B11).
  */
 function free(what: string, v: string): string {
   if (v.startsWith("-")) throw new Error(`Refused a ${what} that starts with "-": ${JSON.stringify(v.slice(0, 40))}`);
+  if (CONTROL_RE.test(v)) throw new Error(`Refused a ${what} that holds a control character: ${JSON.stringify(v.slice(0, 40))}`);
   return v;
 }
+
+/** Whether a value holds a C0 control character or DEL, which a launch line refuses (free). */
+export function hasControl(v: string): boolean { return CONTROL_RE.test(v); }
 
 /** The agent's words after its binary, unquoted (the model, the ids and the folder are the only free values). Throws
  *  when a free value starts with `-`. */

@@ -96,7 +96,7 @@ case "$NAME" in
   team) SCRIPT=team.js ;;
   statusline) SCRIPT=statusline.js ;;
   skills-sync) SCRIPT=skills-sync.js ;;
-  doctor|status|upgrade|uninstall|persona|cost|graph|routines|skills|agents|config|workspace|memory|terminal|provider|local|import|hosts|migrate|update-check|update-status|update-notice) SCRIPT=cli/aos.js; set -- "$NAME" "$@" ;;
+  doctor|status|upgrade|uninstall|persona|cost|graph|routines|skills|agents|config|workspace|memory|terminal|provider|local|import|hosts|migrate|mcp|update-check|update-status|update-notice) SCRIPT=cli/aos.js; set -- "$NAME" "$@" ;;
   "") echo "usage: aos <name> [args...]" >&2; exit 64 ;;
   *) echo "aos: unknown script $NAME" >&2; exit 64 ;;
 esac
