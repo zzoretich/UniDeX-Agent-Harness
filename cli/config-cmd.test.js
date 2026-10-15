@@ -69,7 +69,7 @@ test('list --json: schema 1, the files, the sections and one row per setting wit
   assert.deepEqual(
     { value: row.value, source: row.source, default: row.default, min: row.min, risk: row.risk, changed: row.changed, readonly: row.readonly },
     { value: 0.5, source: 'machine', default: 0.5, min: 0, risk: 'spend', changed: false, readonly: false });
-  assert.equal(j.settings.length, 124);
+  assert.equal(j.settings.length, 125);
 });
 
 test('get: the value alone (JSON for non-strings), --json the row; an unknown key or a group is a BadValue with a hint', async () => {

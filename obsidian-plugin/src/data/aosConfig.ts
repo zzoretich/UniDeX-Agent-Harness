@@ -57,7 +57,7 @@ export interface VaultConfig {
   cost: { enabled: boolean; monthlyBudget: number | null };
   graph: { enabled: boolean; out: string; timeoutSec: number; staleDays: number; semantic: { enabled: boolean | "auto"; runner: "auto" | "claude" | "codex"; everyHours: number; perCallUsd: number; perDayUsd: number; tokenBudget: number; timeoutSec: number } };
   notifications: { osAlert: boolean; retentionDays: number; maxPerSenderPerHour: number };
-  persona: { enabled: boolean; runner: "auto" | "claude" | "codex"; model: string | null; effort: "low" | "medium" | "high" | null; codexModel: string | null; perDutyUsd: number; perDayUsd: number; watchdog: { graceMinutes: number; notify: boolean }; tick: { flagAgeDays: number; earlyReflect: { corrections: number; dutyFailures: number } }; autoapply: { minVerified: number }; briefing: { enabled: boolean; staleHours: number } };
+  persona: { enabled: boolean; runner: "auto" | "claude" | "codex"; model: string | null; effort: "low" | "medium" | "high" | null; codexModel: string | null; failover: boolean; perDutyUsd: number; perDayUsd: number; watchdog: { graceMinutes: number; notify: boolean }; tick: { flagAgeDays: number; earlyReflect: { corrections: number; dutyFailures: number } }; autoapply: { minVerified: number }; briefing: { enabled: boolean; staleHours: number } };
   // Routines (brain/routines/*.md): caps for the prompt kind and the launchd labels the Routines tab lists read-only.
   routines: { enabled: boolean; runner: "auto" | "claude" | "codex"; codexModel: string | null; perRunUsd: number; perDayUsd: number; tools: string; externalLabels: string[] };
   // Cross-review and handoff (spec 2026-09-23-cross-review D8): the HUD does not read these yet; mirrored so the defaults stay whole.
@@ -108,7 +108,7 @@ export const VAULT_CONFIG_DEFAULTS: VaultConfig = {
   cost: { enabled: false, monthlyBudget: null },
   graph: { enabled: true, out: "brain/graphify-out", timeoutSec: 120, staleDays: 7, semantic: { enabled: "auto", runner: "auto", everyHours: 24, perCallUsd: 0.25, perDayUsd: 1.0, tokenBudget: 20000, timeoutSec: 1800 } },
   notifications: { osAlert: true, retentionDays: 30, maxPerSenderPerHour: 6 },
-  persona: { enabled: true, runner: "auto", model: null, effort: null, codexModel: null, perDutyUsd: 2.0, perDayUsd: 6.0, watchdog: { graceMinutes: 45, notify: true }, tick: { flagAgeDays: 7, earlyReflect: { corrections: 3, dutyFailures: 2 } }, autoapply: { minVerified: 3 }, briefing: { enabled: true, staleHours: 3 } },
+  persona: { enabled: true, runner: "auto", model: "claude-opus-5-5", effort: null, codexModel: "gpt-6-sol", failover: true, perDutyUsd: 2.0, perDayUsd: 6.0, watchdog: { graceMinutes: 45, notify: true }, tick: { flagAgeDays: 7, earlyReflect: { corrections: 3, dutyFailures: 2 } }, autoapply: { minVerified: 3 }, briefing: { enabled: true, staleHours: 3 } },
   routines: { enabled: true, runner: "auto", codexModel: null, perRunUsd: 2.0, perDayUsd: 6.0, tools: "Read,Glob,Grep", externalLabels: [] },
   crossReview: { enabled: true, claudeModel: null, codexModel: null, effort: null, perCallUsd: 3.0, perDayUsd: 10.0, timeoutSec: 600, rounds: 5 },
   sessions: { perTurnUsd: 1.0, perDayUsd: 10.0 },

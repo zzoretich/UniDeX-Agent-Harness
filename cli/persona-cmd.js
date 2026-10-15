@@ -43,11 +43,17 @@ function resolveCtx(opts = {}) {
   const cfg = readAgenticos(configDir) || {};
   const vault = opts.vault || process.env.AOS_VAULT || cfg.vault;
   if (!vault) throw new Error('no vault configured (run `aos init` first)');
+  // local-first A4: the interview offers the Chief of Staff's models (claude-opus-5-5 / gpt-6-sol) for the hosts this
+  // machine runs; a config written before `hosts` existed is Claude only.
+  const chief = schedule.chiefModels();
+  const hosts = cfg.hosts && typeof cfg.hosts === 'object' ? cfg.hosts : null;
   return {
     configDir, vault,
     node: opts.node || cfg.node || 'node',
-    defaultModel: opts.defaultModel || (cfg.claude && cfg.claude.model) || 'haiku',
-    codex: !!(cfg.hosts && cfg.hosts.codex && cfg.hosts.codex.enabled),
+    defaultModel: opts.defaultModel || chief.claude,
+    defaultCodexModel: chief.codex,
+    claude: !hosts || !!(hosts.claude && hosts.claude.enabled !== false),
+    codex: !!(hosts && hosts.codex && hosts.codex.enabled),
   };
 }
 
@@ -63,24 +69,42 @@ function dutyScheduleVars({ vault, configDir, node, answers, io }) {
   return schedule.scheduleVars({ vault, configDir, node, model: run.model, effort: run.effort, agentName: answers.name });
 }
 
-/** The Codex duty model lives where lib/headless.js reads it: persona.codexModel in <vault>/brain/config.json. */
-function writeCodexModel(vault, model) {
+function readVaultCfg(vault) {
   const file = path.join(vault, 'brain', 'config.json');
-  let cfg = {};
-  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-  cfg.persona = { ...(cfg.persona || {}), codexModel: model || null };
+  try { return { file, cfg: JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch (e) { if (e.code !== 'ENOENT') throw e; return { file, cfg: null }; }
+}
+function writeVaultCfg(file, cfg) {
   const tmp = `${file}.${process.pid}.tmp`; // tmp + rename (spec 2026-09-24-aos-config D5)
   fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
   fs.renameSync(tmp, file);
+}
+/** The Codex duty model lives where lib/headless.js reads it: persona.codexModel in <vault>/brain/config.json. */
+function writeCodexModel(vault, model) {
+  const { file, cfg } = readVaultCfg(vault);
+  const next = cfg || {};
+  next.persona = { ...(next.persona || {}), codexModel: model || null };
+  writeVaultCfg(file, next);
+}
+/**
+ * The Claude duty model the interview chose becomes persona.model, but only over the shipped default (a 2.0 install's
+ * brain/config.json carries claude-opus-5-5 there, local-first A4): a model the owner set in Settings still wins over the
+ * answers (duty-model-settings D3), and a pre-2.0 null keeps its chain (the answer is the next link anyway).
+ */
+function adoptDutyModel(vault, model, chiefDefault) {
+  const { file, cfg } = readVaultCfg(vault);
+  if (!cfg || !model || !cfg.persona || cfg.persona.model !== chiefDefault || model === chiefDefault) return false;
+  cfg.persona = { ...cfg.persona, model };
+  writeVaultCfg(file, cfg);
+  return true;
 }
 
 const SKIP_MSG = 'persona: no --persona-json and no terminal interview (--yes, or stdin is not a TTY) and no stored persona/answers.json; skipping the interview (run `aos persona` later)';
 
 async function runInterview(opts = {}) {
   const io = opts.io || console;
-  const { configDir, vault, node, defaultModel, codex } = resolveCtx(opts);
+  const { configDir, vault, node, defaultModel, defaultCodexModel, claude, codex } = resolveCtx(opts);
   const interview = interviewModule(vault);
-  const ctx = { defaultModel, codex, exampleName: opts.exampleName || 'Atlas' };
+  const ctx = { defaultModel, defaultCodexModel, claude, codex, exampleName: opts.exampleName || 'Atlas' };
   let raw;
   if (opts.answersFile) raw = JSON.parse(fs.readFileSync(opts.answersFile, 'utf8'));
   else {
@@ -98,6 +122,7 @@ async function runInterview(opts = {}) {
   const r = interview.writePersona({ vault, configDir, templatesDir: opts.templatesDir || templatesDir(), answers, node });
   io.log(`persona: wrote ${r.written.join(', ')}${r.kept.length ? ` (kept ${r.kept.join(', ')})` : ''}`);
   if (codex) writeCodexModel(vault, answers.dutyCodexModel);
+  if (claude && adoptDutyModel(vault, answers.dutyModel, schedule.chiefModels().claude)) io.log(`persona: duties on Claude Code run on ${answers.dutyModel} (persona.model)`);
   let sched = null;
   if (answers.schedule && opts.schedule !== false) {
     const vars = dutyScheduleVars({ vault, configDir, node, answers, io });

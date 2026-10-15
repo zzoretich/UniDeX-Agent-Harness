@@ -14,6 +14,8 @@
  *        (contract §4.3: the positional form; `aos interview rename <name>` through the launcher,
  *         which exports AOS_VAULT — no templates, no questions, prints the renameAgent result)
  * Answers file: { name, addressAs, voice, priorities, dutyModel, dutyCodexModel, dutyEffort, schedule }
+ * The duty models default to the Chief of Staff's (local-first A4, sdk/lib/models.js CHIEF): claude-opus-5-5 on Claude
+ * Code, gpt-6-sol on Codex. Duties run on that hosted model; the hourly check (tick.js --triage) runs on the local one.
  * Templates default to ./templates next to this file (the copy `aos init` vendors into
  * <vault>/brain/scripts/persona/templates) and otherwise to <repo>/vault-template/persona.
  */
@@ -22,6 +24,7 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { buildPlaybook } = require('./build-playbook.js');
+const { CHIEF } = require('../sdk/lib/models.js');
 
 const DUTIES = ['monitor', 'reflect', 'reflect-daily', 'sitrep', 'tick'];
 const EFFORTS = ['low', 'medium', 'high'];
@@ -51,9 +54,12 @@ const QUESTIONS = [
   { key: 'addressAs', prompt: () => 'How should the agent address you? (name or title)', def: () => 'the user' },
   { key: 'voice', prompt: () => 'Voice, in one line', def: () => 'concise, direct, dry' },
   { key: 'priorities', prompt: () => 'What should it watch most? (comma-separated)', def: () => '' },
-  { key: 'dutyModel', prompt: () => 'Model for background duties', def: (c) => c.defaultModel || 'haiku' },
-  // Asked only where Codex is a host: duties run through codex exec there, on this model (persona.codexModel).
-  { key: 'dutyCodexModel', prompt: () => 'Codex model for background duties (blank: your Codex default)', def: () => '', when: (c) => !!c.codex },
+  // local-first A4: duties run on a hosted model (the Chief of Staff's by default); the hourly check runs locally. Asked
+  // where Claude Code is a host (every pre-0.5.0 config is), as before.
+  { key: 'dutyModel', prompt: () => 'Claude Code model for duties (they run on this hosted model; the hourly check runs on the local model)', def: (c) => c.defaultModel || CHIEF.claude, when: (c) => c.claude !== false },
+  // Asked only where Codex is a host: duties run through codex exec there, on this model (persona.codexModel) — the
+  // primary on a Codex-only machine, the failover host when Claude Code cannot start a duty.
+  { key: 'dutyCodexModel', prompt: (c) => `Codex model for duties${c.claude !== false ? ' (when Claude Code cannot start one)' : ' (they run on this hosted model; the hourly check runs on the local model)'}`, def: (c) => c.defaultCodexModel || '', when: (c) => !!c.codex },
   { key: 'dutyEffort', prompt: () => 'Effort for background duties (low|medium|high)', def: () => 'medium' },
   { key: 'schedule', prompt: () => 'Schedule daily duties? (yes/no)', def: () => 'yes' },
 ];
@@ -82,8 +88,9 @@ function normalizeAnswers(raw, ctx = {}) {
     addressAs: String(a.addressAs || '').trim() || 'the user',
     voice: String(a.voice || '').trim() || 'concise, direct, dry',
     priorities: toList(a.priorities),
-    dutyModel: String(a.dutyModel || '').trim() || ctx.defaultModel || 'haiku',
-    dutyCodexModel: String(a.dutyCodexModel || '').trim() || null,
+    dutyModel: String(a.dutyModel || '').trim() || ctx.defaultModel || CHIEF.claude,
+    // Absent → the default Codex duty model; an explicit null or blank (a stored pre-2.0 answer) → the user's Codex default.
+    dutyCodexModel: a.dutyCodexModel === undefined ? (ctx.defaultCodexModel || null) : (String(a.dutyCodexModel || '').trim() || null),
     dutyEffort,
     schedule: toBool(a.schedule, true),
   };
@@ -303,7 +310,7 @@ async function main(argv) {
   const configDir = arg('--config-dir') || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const templatesDir = arg('--templates') || defaultTemplatesDir();
   if (!templatesDir) { console.error(`interview: no persona templates found (looked in ${TEMPLATE_DIRS.join(', ')}); pass --templates <dir>`); return 2; }
-  const ctx = { defaultModel: arg('--default-model') || 'haiku', exampleName: arg('--example-name') || 'Atlas' };
+  const ctx = { defaultModel: arg('--default-model') || CHIEF.claude, exampleName: arg('--example-name') || 'Atlas' };
   const answersFile = arg('--answers');
   let raw;
   if (answersFile) raw = JSON.parse(fs.readFileSync(answersFile, 'utf8'));

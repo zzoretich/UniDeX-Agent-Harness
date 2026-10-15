@@ -33,6 +33,14 @@ function loadStore() {
   }
   throw new Error('routines-store.js not found beside cli/schedule.js');
 }
+/** sdk/lib/models.js beside this file (vendored) or in the checkout: the Chief of Staff's models (local-first A4). */
+function chiefModels() {
+  for (const p of [path.join(__dirname, '..', 'sdk', 'lib', 'models.js'), path.join(__dirname, '..', 'brain', 'scripts', 'sdk', 'lib', 'models.js')]) {
+    if (fs.existsSync(p)) return require(p).CHIEF;
+  }
+  return { claude: 'claude-opus-5-5', codex: 'gpt-6-sol' };
+}
+function chiefDefault() { return chiefModels().claude; }
 function loadCron() {
   for (const p of [path.join(__dirname, '..', 'lib', 'cron.js'), path.join(__dirname, '..', 'brain', 'scripts', 'lib', 'cron.js')]) {
     if (fs.existsSync(p)) return require(p);
@@ -67,7 +75,7 @@ function scheduleVars({ vault, configDir, node, logDir, model, effort, agentName
     AOS_CONFIG: path.join(configDir, 'agenticos.json'),
     NODE: node || 'node',
     LOG_DIR: logDir || path.join(vault, 'persona', 'journal', 'logs'),
-    MODEL: model || 'haiku',
+    MODEL: model || chiefDefault(),
     EFFORT: effort || 'medium',
     AGENT_NAME: agentName || 'persona',
     HOME: home,
@@ -84,10 +92,14 @@ function readVaultConfig(vault) {
 }
 
 /**
- * The model and effort every duty schedule carries (spec 2026-09-24-duty-model-settings-design D3). Model:
- * persona.model → the interview's dutyModel → claude.model → haiku. Effort: persona.effort → dutyEffort → medium.
+ * The model and effort every duty schedule carries (spec 2026-09-24-duty-model-settings-design D3), as PERSONA_MODEL and
+ * PERSONA_EFFORT. Model (the Claude one; persona/chief.js gives Codex persona.codexModel at run time, and moves a duty to
+ * the other host when this one cannot start): persona.model → the interview's dutyModel → claude.model → the Chief of
+ * Staff's default, claude-opus-5-5 (sdk/lib/models.js chiefModel, local-first A4 — a 2.0 install carries it in
+ * persona.model, a pre-2.0 one keeps its null and the chain it ran on). Effort: persona.effort → dutyEffort → medium.
  * userCfg is agenticos.json and wins over vaultCfg (<vault>/brain/config.json), as in lib/config.js loadConfig().
- * A duty routine's own model:/effort: still win for its runs (routines/run-routine.js plan()).
+ * A duty routine's own model:/effort: still win for its runs (routines/run-routine.js plan()). `aos routines sync`
+ * re-renders every schedule with these.
  */
 function dutyRunDefaults({ userCfg = {}, vaultCfg = {}, answers = {} } = {}) {
   const files = [userCfg || {}, vaultCfg || {}];
@@ -95,7 +107,7 @@ function dutyRunDefaults({ userCfg = {}, vaultCfg = {}, answers = {} } = {}) {
   const a = answers || {};
   const effortOk = (v) => DUTY_EFFORTS.includes(v);
   return {
-    model: first(c => c.persona && c.persona.model) || nonEmpty(a.dutyModel) || first(c => c.claude && c.claude.model) || 'haiku',
+    model: first(c => c.persona && c.persona.model) || nonEmpty(a.dutyModel) || first(c => c.claude && c.claude.model) || chiefDefault(),
     effort: first(c => c.persona && c.persona.effort, effortOk) || (effortOk(nonEmpty(a.dutyEffort)) ? nonEmpty(a.dutyEffort) : null) || 'medium',
   };
 }
@@ -314,7 +326,7 @@ function isInstalled({ platform = process.platform, vault, launchAgentsDir = def
 }
 
 module.exports = {
-  CRON_TAG, TEMPLATES_DIR, LEGACY_DUTIES, RUNNER_REL, launchdLabel, renderTemplate, xmlEscape, scheduleVars, dutyRunDefaults, readVaultConfig,
+  CRON_TAG, TEMPLATES_DIR, LEGACY_DUTIES, RUNNER_REL, launchdLabel, renderTemplate, xmlEscape, scheduleVars, dutyRunDefaults, readVaultConfig, chiefModels,
   listRoutines, installable, calendarXml, renderLaunchd, renderCron, cronLine, stripAgenticosCron, knownSlugs,
   installSchedules, removeSchedules, isInstalled,
 };

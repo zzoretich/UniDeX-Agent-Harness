@@ -14,7 +14,15 @@
  *   embedder   BRAIN_EMBEDDER   →  local.embedder  (default qwen3-embedding:0.6b)
  *   claude     AOS_CLAUDE_MODEL →  claude.model    (default haiku)
  *   codex      AOS_CODEX_MODEL  →  codex.model     (default null = the user's Codex default)
+ *   chief      PERSONA_MODEL    →  persona.model   (default claude-opus-5-5; on Codex persona.codexModel, default gpt-6-sol)
  * Env is read lazily on every call. The Mac's memory is os.totalmem(), or AOS_TOTALMEM (bytes) where a test pins it.
+ *
+ * The chief (local-first A4/A11) is the Chief of Staff's hosted model, one per host: CHIEF below is the one place to bump
+ * them. chiefModel(host, cfg, { env, answers }) is the model a duty runs on there, and a pre-2.0 install whose
+ * persona.model / persona.codexModel is still null keeps the chain it ran on until its owner moves it (A9):
+ *   claude  PERSONA_MODEL → persona.model → the interview's dutyModel → claude.model → CHIEF.claude
+ *   codex   persona.codexModel → codex.model → null (the user's Codex default)
+ * New installs get CHIEF's two models from config.default.json, so the chain stops at persona.*.
  */
 const os = require('os');
 
@@ -58,6 +66,11 @@ const DEFAULTS = {
   codex:     { tag: null, env: 'AOS_CODEX_MODEL', cfgKey: 'codex', keepAlive: null, effort: false, numCtxCap: null, provider: 'codex' },
 };
 
+/** local-first A4/A11: the Chief of Staff's model per host — the one place to bump them (config.default.json carries the same
+ *  two for new installs; test/models.test.js pins that they agree). */
+const CHIEF = Object.freeze({ claude: 'claude-opus-5-5', codex: 'gpt-6-sol' });
+DEFAULTS.chief = { tag: CHIEF.claude, env: 'PERSONA_MODEL', cfgKey: 'persona', keepAlive: null, effort: true, numCtxCap: null, provider: 'claude' };
+
 const EFFORTS = ['low', 'medium', 'high'];
 
 /** Merged config, or {} when no vault resolves (plain-node tests, extras run outside a vault). */
@@ -73,13 +86,46 @@ function providerFor(name) {
   return d.provider;
 }
 
+const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+/**
+ * chiefModel(host, cfg?, { env, answers }) → { host, tag, source }: the model a Chief of Staff duty runs on `host` (the
+ * module comment's chain). `answers` is persona/answers.json (or null); `env` defaults to process.env, and {} leaves the
+ * PERSONA_MODEL override out (a schedule render must not bake a value from the shell it ran in). Sources: env | config |
+ * answers | legacy | default. A codex tag of null means "pass no -m".
+ */
+function chiefModel(host, cfg, { env = process.env, answers = null } = {}) {
+  const c = readConfig(cfg);
+  const persona = (c && c.persona) || {};
+  if (host === 'codex') {
+    const own = str(persona.codexModel);
+    if (own) return { host, tag: own, source: 'config' };
+    const legacy = str(c.codex && c.codex.model);
+    return { host, tag: legacy, source: legacy ? 'legacy' : 'default' };
+  }
+  if (host !== 'claude') throw new Error('unknown chief host: ' + host);
+  const fromEnv = str(env && env.PERSONA_MODEL);
+  if (fromEnv) return { host, tag: fromEnv, source: 'env' };
+  const own = str(persona.model);
+  if (own) return { host, tag: own, source: 'config' };
+  const answered = str(answers && answers.dutyModel);
+  if (answered) return { host, tag: answered, source: 'answers' };
+  const legacy = str(c.claude && c.claude.model);
+  if (legacy) return { host, tag: legacy, source: 'legacy' };
+  return { host, tag: CHIEF.claude, source: 'default' };
+}
+
 /**
  * role(name, cfg?) — { role, tag, keepAlive, effort, numCtxCap, provider }. `cfg` is the merged
- * config (loaded when omitted); only roles with a cfgKey consult it.
+ * config (loaded when omitted); only roles with a cfgKey consult it. The chief's tag is chiefModel('claude', cfg).
  */
 function role(name, cfg) {
   const d = DEFAULTS[name];
   if (!d) throw new Error('unknown model role: ' + name);
+  if (name === 'chief') {
+    const m = chiefModel('claude', cfg);
+    return { role: name, tag: m.tag, source: m.source, keepAlive: null, effort: d.effort, numCtxCap: null, provider: d.provider };
+  }
   let tag = process.env[d.env];
   let source = tag ? 'env' : null;
   let keepAlive = d.keepAlive;
@@ -101,15 +147,15 @@ function role(name, cfg) {
 
 // Effort for a call: the workhorse is hard-false (a hybrid thinking model burns its budget
 // otherwise — standing feedback rule); the reasoner takes 'low'|'medium'|'high', defaulting
-// to reasoner.effort in config, then 'medium'; everything else false.
+// to reasoner.effort in config, then 'medium' (the chief: persona.effort, then 'medium'); everything else false.
 function thinkFor(name, effort, cfg) {
   if (name === 'workhorse') return false;
   const r = role(name, cfg);
   if (!r.effort) return false;
   if (EFFORTS.includes(effort)) return effort;
-  const block = readConfig(cfg).reasoner;
+  const block = readConfig(cfg)[name === 'chief' ? 'persona' : 'reasoner'];
   const fromCfg = block && String(block.effort || '').toLowerCase();
   return EFFORTS.includes(fromCfg) ? fromCfg : 'medium';
 }
 
-module.exports = { role, thinkFor, providerFor, EFFORTS, LOCAL_TIERS, RESIDENT_GB, totalMemBytes, workhorseForMemory, workhorseKeepAlive };
+module.exports = { role, chiefModel, CHIEF, thinkFor, providerFor, EFFORTS, LOCAL_TIERS, RESIDENT_GB, totalMemBytes, workhorseForMemory, workhorseKeepAlive };

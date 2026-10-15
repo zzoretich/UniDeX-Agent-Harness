@@ -35,17 +35,19 @@ test('scheduleVars derives the config path and log dir', () => {
   assert.equal(VARS.AGENT_NAME, 'Atlas');
 });
 
-// Spec 2026-09-24-duty-model-settings-design D3: settings → interview answers → claude.model → haiku; machine file wins.
+// Spec 2026-09-24-duty-model-settings-design D3: settings → interview answers → claude.model → the Chief of Staff's model
+// (local-first A4: claude-opus-5-5, from sdk/lib/models.js); machine file wins.
 test('dutyRunDefaults: persona.model/effort, then the interview answers, then claude.model and medium', () => {
   const answers = { dutyModel: 'haiku', dutyEffort: 'medium' };
-  assert.deepEqual(S.dutyRunDefaults(), { model: 'haiku', effort: 'medium' });
+  assert.deepEqual(S.dutyRunDefaults(), { model: 'claude-opus-5-5', effort: 'medium' });
+  assert.deepEqual(S.dutyRunDefaults({ vaultCfg: require('../brain/scripts/config.default.json') }), { model: 'claude-opus-5-5', effort: 'medium' }, 'a 2.0 install bakes the CoS model');
   assert.deepEqual(S.dutyRunDefaults({ userCfg: { claude: { model: 'opus' } } }), { model: 'opus', effort: 'medium' }, 'no answers → claude.model');
   assert.deepEqual(S.dutyRunDefaults({ userCfg: { claude: { model: 'opus' } }, answers }), { model: 'haiku', effort: 'medium' }, 'the answers beat claude.model');
   assert.deepEqual(S.dutyRunDefaults({ vaultCfg: { persona: { model: 'sonnet', effort: 'high' } }, answers }), { model: 'sonnet', effort: 'high' }, 'the settings beat the answers');
   assert.deepEqual(S.dutyRunDefaults({ userCfg: { persona: { model: 'opus' } }, vaultCfg: { persona: { model: 'sonnet', effort: 'low' } }, answers }),
     { model: 'opus', effort: 'low' }, 'agenticos.json wins over brain/config.json, key by key');
   assert.deepEqual(S.dutyRunDefaults({ vaultCfg: { persona: { model: null, effort: 'max' } }, answers: { dutyModel: ' ', dutyEffort: 'bogus' } }),
-    { model: 'haiku', effort: 'medium' }, 'null, blank and unknown values fall through');
+    { model: 'claude-opus-5-5', effort: 'medium' }, 'null, blank and unknown values fall through');
 });
 
 test('readVaultConfig: brain/config.json, or {} when missing or unparseable', () => {
