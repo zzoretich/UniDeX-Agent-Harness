@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ClaudeMdPreview } from "../../shared/ipc";
+import { writeKeepingLinks } from "./dotfile";
 
 /** How many of the file's last lines the diff shows above the added one. */
 const CONTEXT = 3;
@@ -56,17 +57,8 @@ export function applyClaudeMd(file: string, vault: string, home: string = os.hom
   const before = previewClaudeMd(file, vault, home);
   if (before.present) return before;
   const text = readExisting(file);
-  const next = `${text}${text && !text.endsWith("\n") ? "\n" : ""}${before.line}\n`;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  // A symlinked CLAUDE.md (dotfiles repos do this) is written through, not replaced by a plain file.
-  const target = fs.existsSync(file) ? fs.realpathSync(file) : file;
-  const tmp = `${target}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(tmp, next, { mode: fs.existsSync(target) ? fs.statSync(target).mode & 0o777 : 0o644 });
-    fs.renameSync(tmp, target);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* never written */ }
-    throw err;
-  }
+  // A linked CLAUDE.md (dotfiles repos do this), even one whose file is not there yet, is written through, never replaced
+  // by a plain file (inspection round 2, M3).
+  writeKeepingLinks(file, `${text}${text && !text.endsWith("\n") ? "\n" : ""}${before.line}\n`);
   return previewClaudeMd(file, vault, home);
 }

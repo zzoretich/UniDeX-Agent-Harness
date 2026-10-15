@@ -503,6 +503,40 @@ test("inspection F2: a profile or CLAUDE.md that exists but cannot be read is re
   assert.deepEqual(fs.readdirSync(home).sort(), [".zprofile", "CLAUDE.md"], "no temp file left behind");
 });
 
+test("inspection M3: a profile or CLAUDE.md that is a link to a file not there yet stays a link; its target is created, or nothing is written", () => {
+  const home = path.join(ROOT, "dangling");
+  const dots = path.join(home, "dotfiles");
+  fs.mkdirSync(dots, { recursive: true });
+  const profile = path.join(home, ".zprofile");
+  fs.symlinkSync(path.join("dotfiles", "zprofile"), profile);
+  assert.deepEqual(previewPathLine(profile, home, null), { file: profile, line: PATH_LINE, present: false, onPath: false });
+  applyPathLine(profile, home, null);
+  assert.ok(fs.lstatSync(profile).isSymbolicLink(), "the link is kept");
+  assert.equal(fs.readlinkSync(profile), path.join("dotfiles", "zprofile"));
+  assert.equal(fs.readFileSync(path.join(dots, "zprofile"), "utf8"), `${PATH_LINE}\n`, "its target holds the line");
+  const md = path.join(home, "claude", "CLAUDE.md");
+  fs.mkdirSync(path.dirname(md), { recursive: true });
+  fs.symlinkSync(path.join(dots, "CLAUDE.md"), md);
+  applyClaudeMd(md, path.join(home, "Vault"), home);
+  assert.ok(fs.lstatSync(md).isSymbolicLink());
+  assert.equal(fs.readFileSync(path.join(dots, "CLAUDE.md"), "utf8"), `@${path.join(home, "Vault")}/AGENTICOS.md\n`);
+  // A link whose target's folder is not there: refused, the link left exactly as it was.
+  const lost = path.join(ROOT, "dangling2");
+  fs.mkdirSync(lost, { recursive: true });
+  const p2 = path.join(lost, ".zprofile");
+  fs.symlinkSync("/nonexistent-dotfiles/zprofile", p2);
+  assert.throws(() => applyPathLine(p2, lost, null), /links to \/nonexistent-dotfiles\/zprofile, whose folder does not exist, so nothing was written/);
+  assert.equal(fs.readlinkSync(p2), "/nonexistent-dotfiles/zprofile");
+  const md2 = path.join(lost, "CLAUDE.md");
+  fs.symlinkSync("/nonexistent-dotfiles/CLAUDE.md", md2);
+  assert.throws(() => applyClaudeMd(md2, path.join(lost, "Vault"), lost), /whose folder does not exist/);
+  assert.ok(fs.lstatSync(md2).isSymbolicLink());
+  // A loop of links is refused too.
+  const loop = path.join(lost, "loop");
+  fs.symlinkSync(loop, loop);
+  assert.throws(() => applyPathLine(loop, lost, null), /loop of links|ELOOP/);
+});
+
 // ── attach ───────────────────────────────────────────────────────────
 
 test("attach: the note is due until noted, per vault; behind when the runtime is older than the payload", () => {

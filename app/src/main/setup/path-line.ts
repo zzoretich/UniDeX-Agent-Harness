@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { PathLinePreview } from "../../shared/ipc";
 import { PATH_LINE } from "../policy/setup";
+import { writeKeepingLinks } from "./dotfile";
 
 /** Whether the profile already has the line (ignoring surrounding space), so it is never added twice. */
 function hasLine(text: string): boolean {
@@ -33,21 +34,11 @@ export function previewPathLine(file: string, home: string, shellPath: string | 
   return { file, line: PATH_LINE, present: hasLine(text), onPath };
 }
 
-/** Appends the line on a line of its own unless it is there; a symlinked profile is written through. Atomic. */
+/** Appends the line on a line of its own unless it is there; a linked profile is written through, the link kept (M3). Atomic. */
 export function applyPathLine(file: string, home: string, shellPath: string | null): PathLinePreview {
   const before = previewPathLine(file, home, shellPath);
   if (before.present) return before;
   const text = readProfile(file);
-  const next = `${text}${text && !text.endsWith("\n") ? "\n" : ""}${PATH_LINE}\n`;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const target = fs.existsSync(file) ? fs.realpathSync(file) : file;
-  const tmp = `${target}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(tmp, next, { mode: fs.existsSync(target) ? fs.statSync(target).mode & 0o777 : 0o644 });
-    fs.renameSync(tmp, target);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* never written */ }
-    throw err;
-  }
+  writeKeepingLinks(file, `${text}${text && !text.endsWith("\n") ? "\n" : ""}${PATH_LINE}\n`);
   return previewPathLine(file, home, shellPath);
 }
