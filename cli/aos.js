@@ -226,6 +226,21 @@ function resolveHosts(flags, cfg, { claudeAvail, codexAvail }) {
   if (claudeAvail || codexAvail) return { claude: !!claudeAvail, codex: !!codexAvail };
   return { claude: true, codex: false };
 }
+/**
+ * Inspection F7: an explicit --host names the whole set, and init only wires hosts, never unwires them. A set that drops
+ * a host this install has on would leave its plugin, hooks and MCP server in place while agenticos.json says it is off,
+ * so it is refused before anything is written, naming how to keep it and how to remove it properly.
+ */
+function assertKeepsHosts(flags, cfg, hosts) {
+  if (!cfg || !flags.host || flags.host === 'auto') return;
+  const was = hostsOf(cfg);
+  const dropped = ['claude', 'codex'].filter((h) => was[h] && !hosts[h]);
+  if (!dropped.length) return;
+  const keep = { claude: hosts.claude || was.claude, codex: hosts.codex || was.codex };
+  const keepFlag = keep.claude && keep.codex ? 'both' : keep.claude ? 'claude' : 'codex';
+  throw new CheckFailed(`--host ${flags.host} would turn off ${dropped.join(' and ')}, which this install has wired, and init never unwires a host: `
+    + `keep it with --host ${keepFlag}, or remove it first with ${dropped.map((h) => `aos uninstall --host ${h}`).join(' and ')}`);
+}
 /** The commands/ and skills/ the Codex skills are generated from: the vendored copy, else the checkout's plugin/. */
 function pluginSourceDir(vault, repo) {
   const vendored = scriptPath(vault, 'plugin');
@@ -979,6 +994,7 @@ async function init(flags) {
   const cxBin = codexBin(cfg0);
   const codexOk = !!cxBin && CH.codexLoggedIn(cxBin, run);
   const hosts = resolveHosts(flags, cfg0, { claudeAvail: claudeOk, codexAvail: codexOk });
+  assertKeepsHosts(flags, cfg0, hosts);
   ctx.hosts = hosts;
   if (hosts.claude) {
     if (!bin) {

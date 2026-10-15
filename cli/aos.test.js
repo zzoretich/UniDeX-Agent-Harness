@@ -159,6 +159,25 @@ test('install-import B2: init --host none installs the vault and runtime with no
   assert.match(sb.log('FAKE_CLAUDE_LOG'), /plugin install agenticos@agenticos-workbench/);
 });
 
+test('inspection F7: init refuses a --host that drops a host the install has wired, and writes nothing', () => {
+  const sb = sandbox();
+  assert.equal(aos(sb, ['init', '--host', 'claude', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes']).status, 0);
+  const cfgFile = path.join(sb.cfg, 'agenticos.json');
+  const before = fs.readFileSync(cfgFile, 'utf8');
+  fs.writeFileSync(sb.env.FAKE_CLAUDE_LOG, '');
+  const none = aos(sb, ['init', '--host', 'none', '--vault', sb.vault, '--no-obsidian', '--yes']);
+  assert.equal(none.status, 1, none.stdout + none.stderr);
+  assert.match(none.stderr, /--host none would turn off claude, which this install has wired, and init never unwires a host: keep it with --host claude, or remove it first with aos uninstall --host claude/);
+  assert.equal(fs.readFileSync(cfgFile, 'utf8'), before, 'agenticos.json is untouched');
+  const swap = aos(sb, ['init', '--host', 'codex', '--vault', sb.vault, '--no-obsidian', '--yes']);
+  assert.equal(swap.status, 1);
+  assert.match(swap.stderr, /--host codex would turn off claude, .*keep it with --host both, or remove it first with aos uninstall --host claude/);
+  assert.equal(fs.readFileSync(cfgFile, 'utf8'), before);
+  assert.doesNotMatch(sb.log('FAKE_CLAUDE_LOG'), /plugin (install|uninstall)/, 'nothing was wired or unwired');
+  // Keeping every host it has (auto, or the same set) still runs.
+  assert.equal(aos(sb, ['init', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes']).status, 0);
+});
+
 test('init with no host available names --host none', () => {
   const sb = sandbox();
   const r = aos(sb, ['init', '--vault', sb.vault, '--no-obsidian', '--yes'], { AOS_NO_CLAUDE: '1' });
