@@ -3,7 +3,8 @@
 // outside the vault and the hosts' folders, a credential file, a write outside the surfaces, a shell, a planted program
 // or variable, a terminal running something other than a shell, a link that is not https, a file that would run when
 // opened, and anyone but the app's own page. Phase 5 adds setup and updates: a fix (a download or a login) is named by
-// id only, and each setup step, the PATH line included, is refused outside the state it belongs to.
+// id only, and each setup step, the PATH line, the import and the unwire included, is refused outside the state it
+// belongs to.
 
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs";
@@ -53,7 +54,7 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.pty).toEqual(["available", "kill", "onEvent", "resize", "spawn", "write"]);
   expect(shape.shell).toEqual(["openExternal", "openPath", "showItemInFolder"]);
   expect(shape.plugin).toEqual(["loadData", "saveData"]);
-  expect(shape.setup).toEqual(["addToPath", "applyClaudeMd", "cancel", "chooseVault", "claudeMd", "finish", "fix", "input", "install", "noted", "onEvent", "pathLine", "preflight", "resize", "upgrade"]);
+  expect(shape.setup).toEqual(["addToPath", "applyClaudeMd", "cancel", "chooseVault", "claudeMd", "finish", "fix", "importHistory", "importScan", "input", "install", "noted", "onEvent", "pathLine", "preflight", "resize", "unwire", "upgrade"]);
   expect(shape.update).toEqual(["check", "install", "onState", "state"]);
   expect(shape.theme).toEqual(["onChange", "set", "state"]);
   expect(shape.sessions).toEqual(["catalog", "list", "onEvent", "read", "send", "start", "stop"]);
@@ -85,6 +86,19 @@ test("setup names a fix by id only, and refuses each step outside its state", as
   expect(await call((aos) => aos.setup.pathLine())).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
   expect(await call((aos) => aos.setup.addToPath())).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
   expect(fs.existsSync(path.join(FX.home, ".zprofile"))).toBe(false);
+  // Bring in your history (install-import B13) is the wizard's, after its install; the unwire (inspection F7), before it.
+  // Neither runs once a vault is attached, and each takes only hosts, kinds and proposal ids.
+  expect(await call((aos) => aos.setup.importScan())).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
+  expect(await call((aos) => aos.setup.importHistory({ from: ["claude"], only: ["mcp"], accept: [] }))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
+  expect(await call((aos) => aos.setup.unwire("codex", "claude"))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
+  type Setup = { importHistory(r: unknown): unknown; unwire(h: unknown, c?: unknown): unknown };
+  for (const bad of [{ from: ["cursor"], only: ["mcp"], accept: [] }, { from: ["claude"], only: ["secrets"], accept: [] }, { from: ["claude", "claude"], only: ["mcp"], accept: [] },
+    { from: ["claude"], only: ["mcp"], accept: [], argv: ["--yes"] }, { from: [], only: ["mcp"], accept: [] }, { from: ["claude"], only: ["mcp"] }]) {
+    expect(await call((aos, b) => (aos.setup as unknown as Setup).importHistory(JSON.parse(b)), JSON.stringify(bad))).toMatchObject({ ok: false, code: "EINVAL" });
+  }
+  expect(await call((aos) => (aos.setup as unknown as Setup).unwire("all", "claude"))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.setup as unknown as Setup).unwire("codex"))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.setup as unknown as Setup).unwire("codex", "everything"))).toMatchObject({ ok: false, code: "EINVAL" });
   // The CLAUDE.md preview names the attached vault's line; the page sends no path.
   const md = await call((aos) => aos.setup.claudeMd());
   expect(md).toMatchObject({ ok: true, data: { line: `@${FX.v("AGENTICOS.md")}` } });

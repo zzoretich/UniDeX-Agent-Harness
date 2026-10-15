@@ -2,7 +2,10 @@
 /**
  * routines.js — `aos routines <verb>` over <vault>/brain/routines/*.md (spec D11).
  *   list [--json]        every routine: kind, cadence, enabled, next fire, last run, health
- *   sync                 render + (re)load one OS schedule per enabled routine (cli/schedule.js)
+ *   sync                 render + (re)load one OS schedule per enabled routine (cli/schedule.js); a job that is
+ *                        unchanged and loaded is left alone, so a running routine is never cut short
+ *   unschedule <slug>    take one routine's schedule out, nothing else, once it is off (run-routine.js runs it after
+ *                        a routine turned itself off: install-import B10); refused while the routine is on
  *   run <slug> [--dry-run]   run one routine now through run-routine.js (trigger "manual")
  *   enable|disable <slug>    flip `enabled:` in the file, then sync
  *   next [<slug>]        the next three fire times
@@ -20,7 +23,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const schedule = require('./schedule.js');
 
-const VERBS = ['list', 'sync', 'run', 'enable', 'disable', 'next', 'hosts', 'import-cloud'];
+const VERBS = ['list', 'sync', 'run', 'enable', 'disable', 'next', 'hosts', 'import-cloud', 'unschedule'];
 const REPO = path.join(__dirname, '..');
 
 function resolveModule(rel) {
@@ -141,6 +144,19 @@ function sync(ctx, { io, installSchedules = schedule.installSchedules }) {
   return r.warnings.length ? 1 : 0;
 }
 
+/**
+ * One routine's schedule out, and no other job touched (install-import B10). Refused while its file says it is on: a
+ * routine that is on is scheduled by `sync`. A Mac with no schedule for it has nothing to do.
+ */
+function unschedule(ctx, slug, { io, removeSchedule = schedule.removeSchedule }) {
+  if (!slug) throw new UsageError('usage: aos routines unschedule <slug>');
+  const r = store().read(slug, { dir: routinesDir(ctx.vault) });
+  if (r && !r.errors.length && r.enabled) { io.error(`${slug} is on: aos routines sync schedules it, and aos routines disable ${slug} turns it off`); return 2; }
+  const res = removeSchedule({ slug, platform: ctx.platform, vault: ctx.vault, warn: (m) => io.error(`warning: ${m}`) });
+  io.log(res.removed.length ? `routines: took ${slug}'s schedule out (${res.removed.map((x) => path.basename(x)).join(', ')}); nothing else touched` : `routines: nothing scheduled for ${slug}`);
+  return res.warnings.length ? 1 : 0;
+}
+
 function runnerPath(vault) {
   const vendored = path.join(vault, 'brain', 'scripts', 'routines', 'run-routine.js');
   return fs.existsSync(vendored) ? vendored : path.join(REPO, 'brain', 'scripts', 'routines', 'run-routine.js');
@@ -187,10 +203,11 @@ async function main(argv, opts = {}) {
   const verb = words[0] || 'list';
   if (!VERBS.includes(verb)) throw new UsageError(`aos routines: unknown verb "${verb}" (${VERBS.join(' | ')})`);
   const ctx = resolveCtx(opts);
-  const o = { io, installSchedules: opts.installSchedules, spawn: opts.spawn, now: opts.now, exec: opts.exec, sqlite3: opts.sqlite3, stdin: opts.stdin };
+  const o = { io, installSchedules: opts.installSchedules, removeSchedule: opts.removeSchedule, spawn: opts.spawn, now: opts.now, exec: opts.exec, sqlite3: opts.sqlite3, stdin: opts.stdin };
   switch (verb) {
     case 'list': return list(ctx, { ...o, json: flags.has('--json') });
     case 'sync': return sync(ctx, o);
+    case 'unschedule': return unschedule(ctx, words[1], o);
     case 'run': return run(ctx, words[1], { ...o, dryRun: flags.has('--dry-run') });
     case 'enable': return setEnabled(ctx, words[1], true, o);
     case 'disable': return setEnabled(ctx, words[1], false, o);

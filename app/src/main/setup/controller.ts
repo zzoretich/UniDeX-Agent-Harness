@@ -1,15 +1,16 @@
-// The wizard's and attach mode's calls, as main answers them (phase 5, I3–I5; install-import B1, B2, B14). It keeps what
-// the page must not choose: the PATH and the node preflight found, the Ollama app, the vault `aos init` was asked for,
-// whether the install finished. Every step is checked against policy/setup.ts first; what runs is the fix table's (a
-// toolchain job or a login), the payload's CLI, and main's own two edits (the CLAUDE.md line and the PATH line).
+// The wizard's and attach mode's calls, as main answers them (phase 5, I3–I5; install-import B1, B2, B13, B14). It keeps
+// what the page must not choose: the PATH and the node preflight found, the Ollama app, the vault `aos init` was asked
+// for, whether the install finished, the proposals the last import scan listed. Every step is checked against
+// policy/setup.ts first; what runs is the fix table's (a toolchain job or a login), the payload's CLI (init, import, an
+// earlier install's host unwired, upgrade), and main's own two edits (the CLAUDE.md line and the PATH line).
 
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import type { AttachInfo, ClaudeMdPreview, InstallRequest, PathLinePreview, PreflightReport, Result, SetupCheckId, SetupEvent, SetupFixId, SetupJob } from "../../shared/ipc";
-import { FIXES, fixBlocked, fixCommandLine, installArgs, personaJson, requestHosts, resolveVaultPath, stepRefusal, zprofilePath, type SetupStep } from "../policy/setup";
+import type { AttachInfo, ClaudeMdPreview, HostId, ImportRunRequest, InstallRequest, PathLinePreview, PreflightReport, Result, SetupCheckId, SetupEvent, SetupFixId, SetupJob } from "../../shared/ipc";
+import { FIXES, fixBlocked, fixCommandLine, importJobArgs, importScanArgs, installArgs, personaJson, requestHosts, resolveVaultPath, stepRefusal, unwireArgs, zprofilePath, type SetupStep } from "../policy/setup";
 import { refused } from "../services/fs";
 import type { PtyLib } from "../services/pty";
 import { applyClaudeMd, claudeMdPath, previewClaudeMd } from "./claude-md";
@@ -114,6 +115,10 @@ export class SetupController {
   private installed = false;
   private installedVault: string | null = null;
   private personaFile: string | null = null;
+  /** The proposal ids the last import scan listed: the only ones an import may create (install-import B9). */
+  private scanned: Set<string> | null = null;
+  /** The import scan in flight, at most one: a second ask gets the same answer, and it counts as the running job. */
+  private scanning: { promise: Promise<Result<unknown>>; child: childProcess.ChildProcess | null } | null = null;
 
   constructor(private readonly o: SetupControllerOptions) {
     this.jobs = new JobRunner({ emit: o.emit, pty: o.pty, spawnImpl: o.spawnImpl, onExit: (job, code) => this.exited(job, code) });
@@ -162,7 +167,7 @@ export class SetupController {
   private refusal(step: SetupStep): string | null {
     const info = this.o.attachInfo();
     return stepRefusal(step, {
-      attached: !!this.o.attached(), installed: this.installed, payload: !!this.o.payload, behind: !!info?.behind, busy: !!this.jobs.running,
+      attached: !!this.o.attached(), installed: this.installed, payload: !!this.o.payload, behind: !!info?.behind, busy: !!this.jobs.running || !!this.scanning,
     });
   }
 
@@ -178,6 +183,9 @@ export class SetupController {
     this.node = node;
     this.ollamaApp = ollamaApp;
     this.uv = uv;
+    // An earlier install's hosts (inspection F7): what aos init would refuse to drop, for Choose to explain.
+    const cfg = this.o.readAgenticos();
+    report.wired = cfg ? hostsOf(cfg) : null;
     this.last = report;
     return { ok: true, data: report };
   }
@@ -208,7 +216,11 @@ export class SetupController {
 
   input(data: string): void { if (this.jobs.running === "fix") this.jobs.input(data); }
   resize(cols: number, rows: number): void { this.jobs.resize(cols, rows); }
-  cancel(): void { this.jobs.cancel(); }
+  /** Stops the running job, and the import scan (the page's Stop, the page going away, quit). */
+  cancel(): void {
+    this.jobs.cancel();
+    try { this.scanning?.child?.kill("SIGTERM"); } catch { /* gone */ }
+  }
 
   async chooseVault(): Promise<Result<string | null>> {
     if (this.o.attached()) return refused("a vault is already attached");
@@ -293,6 +305,91 @@ export class SetupController {
     const node = typeof recorded === "string" && isExecutable(recorded) ? recorded : findOnPath("node", PATH);
     if (!node) return refused("no node on your PATH");
     return this.jobs.startProc("upgrade", node, [payload.cli, "upgrade"], { cwd: this.o.home, env: this.childEnv(), echo: "aos upgrade" });
+  }
+
+  /** A program's output, captured (the import scan): stdout apart from stderr, never a shell, stopped after `timeoutMs`. */
+  private capture(file: string, args: string[], timeoutMs: number, onChild: (c: childProcess.ChildProcess) => void = () => undefined): Promise<{ code: number | null; out: string; err: string }> {
+    return new Promise((resolve) => {
+      let out = "";
+      let err = "";
+      let done = false;
+      const finish = (code: number | null): void => { if (!done) { done = true; resolve({ code, out, err }); } };
+      let child: childProcess.ChildProcess;
+      try {
+        child = (this.o.spawnImpl ?? childProcess.spawn)(file, args, { cwd: this.o.home, env: this.childEnv(), shell: false, stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs, killSignal: "SIGTERM" });
+      } catch (e) { err = e instanceof Error ? e.message : String(e); finish(null); return; }
+      onChild(child);
+      const so = new StringDecoder("utf8");
+      const se = new StringDecoder("utf8");
+      child.stdout?.on("data", (b: Buffer) => { if (out.length < 16 * 1024 * 1024) out += so.write(b); });
+      child.stderr?.on("data", (b: Buffer) => { err = (err + se.write(b)).slice(-64 * 1024); });
+      child.on("error", (e) => { err += `\n${(e as NodeJS.ErrnoException).code ?? e.message}`; finish(null); });
+      child.on("close", (code) => finish(code));
+    });
+  }
+
+  /**
+   * "Bring in your history" (install-import B13): what the runtime the app carries finds on this Mac, `aos import
+   * --dry-run --json`, after the install and before the Workbench. Nothing is written. The page reads the report. One
+   * scan at a time: while it runs a second ask gets the same answer, no other setup step starts, and Stop, the page
+   * going away or quitting kill it.
+   */
+  importScan(): Promise<Result<unknown>> {
+    if (this.scanning) return this.scanning.promise;
+    const why = this.refusal("import");
+    if (why) return Promise.resolve(refused(why));
+    if (!this.node) return Promise.resolve(refused("run the checks first"));
+    const entry: { promise: Promise<Result<unknown>>; child: childProcess.ChildProcess | null } = { promise: Promise.resolve(refused("")), child: null };
+    entry.promise = this.runScan(this.node, (c) => { entry.child = c; }).finally(() => { if (this.scanning === entry) this.scanning = null; });
+    this.scanning = entry;
+    return entry.promise;
+  }
+
+  private async runScan(node: string, onChild: (c: childProcess.ChildProcess) => void): Promise<Result<unknown>> {
+    const payload = this.o.payload as NonNullable<SetupControllerOptions["payload"]>;
+    const r = await this.capture(node, importScanArgs(payload.cli), 180_000, onChild);
+    if (r.code !== 0) {
+      const line = r.err.trim().split("\n").filter(Boolean).pop() ?? "";
+      return { ok: false, error: line.replace(/^aos( import)?: /, "") || `aos import exited ${r.code ?? "without a code"}`, code: "EIO" };
+    }
+    let report: unknown;
+    try { report = JSON.parse(r.out); } catch { return { ok: false, error: "aos import sent output that does not parse", code: "EIO" }; }
+    const j = report as { dryRun?: unknown; hosts?: unknown; projects?: { proposals?: Array<{ id?: unknown }> } };
+    if (!j || typeof j !== "object" || j.dryRun !== true || !j.hosts || typeof j.hosts !== "object") return { ok: false, error: "aos import answered in an unexpected shape", code: "EIO" };
+    this.scanned = new Set((Array.isArray(j.projects?.proposals) ? j.projects!.proposals! : []).map((p) => p?.id).filter((id): id is string => typeof id === "string"));
+    return { ok: true, data: report };
+  }
+
+  /** The import (B9, B13): the hosts and kinds the page ticked, and only the scan's proposals it picked, as a setup job. */
+  importHistory(req: ImportRunRequest): Result<null> {
+    const why = this.refusal("import");
+    if (why) return refused(why);
+    if (!this.node || !this.scanned) return refused("look at what there is to import first");
+    const payload = this.o.payload as NonNullable<SetupControllerOptions["payload"]>;
+    let args: string[];
+    try { args = importJobArgs(payload.cli, req, this.scanned); } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e), code: "EINVAL" }; }
+    return this.jobs.startProc("import", this.node, args, {
+      cwd: this.o.home, env: this.childEnv(), echo: `aos ${args.slice(1).map((a) => (/^[\w.,:/~-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`)).join(" ")}`,
+    });
+  }
+
+  /**
+   * Inspection F7, made a choice: `aos uninstall --host <host>` from the payload, before this install, only for what F7
+   * is about: an earlier install's agenticos.json that has `host` on, whose vault is not there (else it is a working
+   * install, on a disk not connected or set up meanwhile), and which the user's pending choice drops (aos init refuses
+   * that). Its plugin, hooks and MCP server go; the host's CLI, its sessions and settings stay.
+   */
+  unwire(host: HostId, choice: InstallRequest["host"]): Result<null> {
+    const why = this.refusal("unwire");
+    if (why) return refused(why);
+    if (!this.node) return refused("run the checks first");
+    if (requestHosts(choice)[host]) return refused(`your choice keeps ${host}: nothing to take out`);
+    const cfg = this.o.readAgenticos();
+    if (!cfg || !hostsOf(cfg)[host]) return refused(`agenticos.json does not have ${host} on`);
+    if (typeof cfg.vault !== "string" || !cfg.vault) return refused("agenticos.json names no vault, so aos uninstall cannot unwire its hosts");
+    if ((this.o.exists ?? fs.existsSync)(cfg.vault)) return refused(`agenticos.json's vault ${cfg.vault} is there: that install is in use, not left over`);
+    const payload = this.o.payload as NonNullable<SetupControllerOptions["payload"]>;
+    return this.jobs.startProc("unwire", this.node, unwireArgs(payload.cli, host), { cwd: this.o.home, env: this.childEnv(), echo: `aos uninstall --host ${host}` });
   }
 
   noted(): void {

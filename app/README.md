@@ -20,11 +20,13 @@ missing itself, with no Homebrew and no terminal (`src/main/setup/toolchain.ts`,
 Ollama app and the models for this Mac's memory, Claude Code and Codex, each downloaded from a pin in
 `src/main/setup/toolchain-manifest.json`, checked against its SHA-256 and its maker's signature, then put where its own
 installer puts it; the two logins run in a terminal inside the wizard. It asks for the hosts (or none yet: B2), the
-vault folder and the Chief of Staff, runs `aos init`, then lists what is left step by step (the `CLAUDE.md` line as a
-diff, Codex's `/hooks`, a host to add later, the line that puts `aos` on the PATH) and opens the Workbench, where the
-welcome tour starts. With an install it opens the Workbench (attach mode) and hands over to the HUD's launch sequence
-(tour C11): `aos upgrade` offered when it carries a newer runtime than the vault has, then the Go-local card and What's
-new, one at a time, each once. Plans: `docs/superpowers/plans/2026-10-05-install-and-update.md`,
+vault folder and the Chief of Staff (an earlier install's host that the choice would drop is kept, or unwired first with
+`aos uninstall --host`), runs `aos init`, brings in the history Claude Code and Codex left on the Mac (`aos import`,
+B13), then lists what is left step by step (the `CLAUDE.md` line as a diff, Codex's `/hooks`, the history's digest, a
+host to add later, the line that puts `aos` on the PATH) and opens the Workbench, where the welcome tour starts. With an
+install it opens the Workbench (attach mode) and hands over to the HUD's launch sequence (tour C11): `aos upgrade`
+offered when it carries a newer runtime than the vault has, then the Go-local card and What's new, one at a time, each
+once. Plans: `docs/superpowers/plans/2026-10-05-install-and-update.md`,
 `docs/superpowers/specs/2026-10-14-install-and-import-design.md`.
 
 The pins are refreshed by hand before a release: each tool's `from` says where its version and SHA-256 come from (the

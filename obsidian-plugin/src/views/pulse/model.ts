@@ -22,6 +22,7 @@ import { readAgenticosJson, readProviderState, readVaultConfig, sessionHosts, si
 import { TERM_HOST_LABEL, placeOf, type PlaceWorld } from "../../data/terminalLaunch";
 import { liveByWorkspace, type LiveState, type LiveTerminalInput } from "../../data/spacesModel";
 import { diskAdapter, memberStatus, pendingGates, readTeams } from "../../data/teams";
+import { IMPORT_STATE_PATH, digestPending, parseImportState, type DigestState } from "../../data/importModel";
 import { env, fs, sessionsHost } from "../../host";
 
 export const BRIEFING_ROUTINE_PATH = "brain/routines/briefing.md";
@@ -105,6 +106,8 @@ export interface PulseModel {
   spendFamilies: SpendFamily[];
   teams: TeamRow[];
   decisions: DecisionRow[];
+  /** The history digest while sessions wait for it (install-import B10): "Digesting history: 140 of 412 sessions". */
+  importDigest: DigestState | null;
   /**
    * The Chief of Staff waits for a host (local-first §5): none enabled ("Add Claude Code or Codex…"), or today's last duty
    * run was skipped `waiting-for-host` for a reason that still holds (a host signed out, a CLI not found). Pulse says so.
@@ -356,6 +359,7 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
   if (inputs.drafts) decisions.push({ kind: "drafts", title: `${inputs.drafts} feedback rule draft${inputs.drafts === 1 ? "" : "s"}`, sub: "brain/memory/feedback/_drafts · Brain › Review › Drafts", ref: "feedback-drafts", days: null });
 
   const live = await liveRows(plugin);
+  const importDigest = digestPending(parseImportState(await read(IMPORT_STATE_PATH)));
   const hostCfg = readAgenticosJson(plugin.claudeConfigDir());
   const waiting = personaOff ? null
     : chiefWaiting(await read(`persona/journal/${localDay(now)}.md`), sessionHosts(hostCfg), signedInHosts(hostCfg, readProviderState(root)));
@@ -377,6 +381,7 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
     spendFamilies: spendFamilies(ledger, now),
     teams,
     decisions,
+    importDigest,
     chiefWaiting: waiting,
   };
 }

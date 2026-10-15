@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 130 |
-| covered in part | 65 |
+| covered | 133 |
+| covered in part | 67 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| **total** | **250** |
+| **total** | **255** |
 
-Of the 201 items about the app (250 minus the 49 N/A), 195 are asserted (130 fully, 65 in part); the other 6 are not
+Of the 206 items about the app (255 minus the 49 N/A), 200 are asserted (133 fully, 67 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -103,6 +103,8 @@ again (`brain-ai`).
 | APP8 | Both themes read well: no unreadable text, status colours keep their meaning, Inter and JetBrains Mono | covered in part | `obsidian-plugin/src/ui/tokens.test.ts` holds every text, status and terminal colour to 4.5:1 in both themes; `theme › the ribbon's toggle switches…` checks the tokens reach the page. Looking at each tab is by eye. |
 | APP9 | The name and the mark: Dock, app menu, About, window title, menubar tooltip; the icon; the menubar mark follows the menu bar | covered in part | `shell › the app records itself in the vault…` (the running name is `productName`), `shell › tray popover…` (the menubar item carries the mark, from `out/main`), `app/tests/unit/brand.test.ts` (one name in both trees); `verify-dist.mjs` checks the packaged `UniDeX.app` and its tray images. The Dock, About and the template image's tint are the OS's. |
 | APP10 | No host: ready without one; Choose's No agent CLI yet, the install with `--host none` and no Chief of Staff; Finish's steps to add a host; an unticked PATH box writes nothing; doctor passes | covered | `setup-nohost › no host: the checks are ready without one…`, `› Choose offers No agent CLI yet…`, `› Finish says how to add a host, step by step…`, `› an unticked PATH box writes nothing, and the Workbench opens on the welcome tour…`. The doctor half is the runtime's: `cli/aos.test.js › install-import B2: init --host none…`. |
+| APP11 | Bring in your history per host: counts per host and kind from the dry run, all ticked, the proposals ticked, the engine line; Import with the choices and its progress; Finish's history item; Pulse's digest line in the Workbench; Skip; nothing on this Mac skips the step | covered in part | `setup › Install runs the payload's aos init…` (the dry run after init), `› Bring in your history: Claude Code's counts per kind…` (the table, every box ticked, the argv with a kind unticked and the proposal accepted, the terminal's step lines, Finish's item), `› Open the Workbench…` (Pulse's "Digesting history: 0 of 4 sessions"); `setup-codex › Bring in your history on Codex alone…` (Codex's row and kinds, Import without the sessions); `setup-nohost › Choose offers No agent CLI yet…` and `› Finish says how to add a host…` (the step skipped, "Nothing to import yet"); `importModel.test.ts`, `setup.test.ts › controller: the import scan…`. The stand-in payload answers the import; the real one against a home with history, and Brain ▸ Review's batch: manual. |
+| APP12 | An earlier install's host (F7): Choose names it and waits; Keep only when ready; Remove … first runs `aos uninstall --host`, the checks run again and the install goes through | covered | `setup-codex › F7 as a choice…`, `› Remove Claude Code's wiring first runs aos uninstall --host claude…`; `wizard-choices.test.ts` (`droppedHosts`, `keepingChoice`), `setup.test.ts › controller: the import scan…, and F7's unwire`. |
 
 ## Files
 
@@ -134,6 +136,8 @@ again (`brain-ai`).
 | S12 | Vault root picker: a missing vault shows a Notice; a different vault the 10 s explanation | not covered | Picking saves only the plugin's own settings (userData, which no write surface gates); reaching either Notice needs a second vault in the picker's list, which the fixture does not have. |
 | S13 | The rail in three sections with a light line between them (and under the head, over the foot); Pulse navy in light, neon blue in dark, the other theme's on its selected chip; Code's tooltip and palette name, `tab=term` still opens it | covered | `shell › rail: three sections…` (the order, two separators at the section ends, Code's label and icon), `shell › rail: Pulse is navy in light…` (both themes: at rest, hovered, selected; one line colour), `shell › commands…` (Open Workbench: Code under the id `term`); the `term` id is unchanged, so `WORKBENCH_TAB_IDS` resolves `tab=term` as before. Brain's label and icon under the id `memory`: `brain › the rail button reads Brain with its id still memory…` (BR1). |
 | ST-LOCAL | Settings ▸ Local engine (2.0): the engine, its state, the model and the embedder, today's calls, queued wraps; ❯_ aos local; Pull the model through the `local` surface (off by default) | covered | `local › Settings ▸ Local engine…` (the rows from provider-state and the files, the buttons); `localEngine.test.ts`; `write-policy.test.ts` (the `local` surface admits `aos local pull` alone). The pull itself (a download of several GB): manual. |
+| ST-HOSTS | Settings ▸ Hosts per host: the state from `aos hosts status`, sign in in Code, a missing CLI's steps, Add asks first then runs `aos hosts add` (the surface off: refused, ❯_ instead), the next steps, ⟳ Check again | covered | `import › Claude Code, with Codex installed… › Settings ▸ Hosts…`, `› Add Codex asks first, runs aos hosts add codex…` (the vault's own runtime against the repository's fake Codex CLI), `import › a Codex-only machine… › Hosts: … Add Claude Code is refused…`, `import › no host… › Hosts: each not installed…`; `hostsState.test.ts`, `write-policy.test.ts` (the `hosts` surface; `hosts status --json` a background read), `cli/hosts.test.js › status…`. |
+| ST-IMPORT | Settings ▸ Import: each host's last import, Import (again) and Import older history with progress and the result, refused with the surface off, the digest line | covered | `import › … › Settings ▸ Import: Import for Claude Code runs the vault's aos import…` (the vault's own runtime, provider none), `› Pulse follows the digest…` (the panel's digest line), `import › a Codex-only machine… › Import: both hosts listed…, refused…`; `importer.test.ts`, `importModel.test.ts`, `write-policy.test.ts` (the `import` surface's argv). |
 
 ## Config (both hosts)
 
@@ -165,6 +169,7 @@ again (`brain-ai`).
 | P8 | Deck `/pattern` asks area, title and pattern; writes the pattern file and MEMORY.md | covered | Same Pulse test (the form opens; Cancel writes nothing), `capture-writes › /pattern appends to an existing area's file, and a new area gets its file and a MEMORY.md line` |
 | P9 | Listener leak: switching tabs five times leaves one `session-add` listener | covered | `pulse › listener leak…` Compat keeps listeners in `_handlers` (Obsidian's internal `_` does not exist); the test asserts the count does not grow per visit. |
 | P10 | Heartbeat pill: absent before the watchdog runs; ♥ with per-duty tooltip; amber at 2 h; rose with a missed duty | covered | `sidebar-omni-notes › sidebar HUD › … heartbeat pill…` (the fixture ran `aos routines run heartbeat`), `variants › an empty vault › sidebar: no heartbeat pill…` |
+| P17 | History digest: "Digesting history: N of M sessions" while sessions are queued (with why its last run waited), gone once done; the routine off with no apply-schedules prompt | covered in part | `import › … › Pulse follows the digest while sessions wait, and the line goes once it is done`, `setup › Open the Workbench…`; `importModel.test.ts` (`digestText`, waiting and deferred). The schedule re-render after the routine turns itself off is the runtime's: `run-routine.test.js › a routine that turns itself off…`, `cli/routines.test.js › unschedule…`, `cli/schedule.test.js › removeSchedule takes one routine out…` and `› installSchedules on darwin leaves an unchanged, loaded job alone…`. |
 
 ## To-Do
 

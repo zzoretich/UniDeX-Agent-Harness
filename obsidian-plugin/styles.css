@@ -2786,6 +2786,25 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-st-locallabel { flex: none; width: 76px; }
 .aos-st-localacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .aos-st-localvalue { min-width: 0; overflow-wrap: anywhere; color: var(--udx-text); font-family: var(--udx-mono); font-size: 12px; }
+/* Settings ▸ Hosts and Import (install-import B2, B4): a row per host with its state and next step, the install steps,
+   a run's progress and its result; the digest line. */
+.aos-st-hosts, .aos-st-import { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.aos-st-hostintro { font-size: 12px; }
+.aos-st-hostrow { display: flex; flex-direction: column; gap: 6px; padding: 6px 0; border-top: 1px solid var(--udx-line); }
+.aos-st-hosthead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12.5px; }
+.aos-st-hostname { flex: none; width: 96px; color: var(--udx-text); font-weight: 600; }
+.aos-st-hoststate { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; color: var(--udx-text-2); }
+.aos-st-hostrow.is-ready .aos-st-hoststate { color: var(--udx-ok); }
+.aos-st-hostrow.is-signed-out .aos-st-hoststate, .aos-st-hostrow.is-missing .aos-st-hoststate { color: var(--udx-warn); }
+.aos-st-hostacts { display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-st-hostinstall, .aos-st-hostresult { margin-left: 108px; font-size: 12px; color: var(--udx-text-2); }
+.aos-st-hoststeps { margin: 4px 0 0; padding-left: 18px; }
+.aos-st-hostresult { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.aos-st-hostresult.is-ok { color: var(--udx-ok); }
+.aos-st-hostresult.is-err { color: var(--udx-warn); }
+.aos-st-hostfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; border-top: 1px solid var(--udx-line); font-size: 12px; }
+.aos-st-importdigest { font-size: 12.5px; color: var(--udx-text); font-weight: 560; }
+.aos-st-importdigest.is-done { color: var(--udx-ok); font-weight: 400; }
 
 /* ══ Term: starting terminals (spec 2026-10-08-term-agent-deck T2–T6) ══════════════════════════════════════════════════
    The New split button (ui/NewTerminalMenu.ts) and the menu that drops under it; host dots and places on the tabs; the
@@ -3010,6 +3029,9 @@ button.aos-tf-btn:not(.clickable-icon):focus-visible { outline: 2px solid var(--
 .aos-pulse-since { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--udx-text-3); }
 .aos-pulse-since .aos-pulse-ic svg { width: 13px; height: 13px; }
 .aos-pulse-since-parts { color: var(--udx-text-2); font-weight: 560; }
+/* The history digest's progress (install-import B10, spec §4 HUD), until it is done. */
+.aos-pulse-import { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--udx-text-2); }
+.aos-pulse-import .aos-pulse-ic svg { width: 13px; height: 13px; }
 .aos-pulse-band .aos-pulse-deck { margin: 2px 0 0; padding: 0; border: 0; background: none; gap: 8px; }
 .aos-pulse-band .aos-deck-list { flex-wrap: nowrap; overflow: hidden; }
 .aos-pulse-band .aos-deck-btn { padding: 2px 8px; font-size: 11.5px; }

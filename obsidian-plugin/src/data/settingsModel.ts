@@ -230,10 +230,11 @@ export function spendLine(row: ConfigRow): string | null {
 }
 
 const HOST_NAME: Record<SessionHost, string> = { claude: "Claude Code", codex: "Codex" };
-/** D8: a host-specific row on a machine where that host is off — still editable, dimmed, with the way to turn it on. */
+/** D8: a host-specific row on a machine where that host is off — still editable, dimmed, with the way to turn it on
+ *  (install-import B2: Settings ▸ Hosts' Add, or `aos hosts add`). */
 export function hostNote(row: ConfigRow, hosts: SessionHost[]): string | null {
   if (!row.host || hosts.includes(row.host)) return null;
-  return `${HOST_NAME[row.host]} is off on this machine; \`aos init --host both\` turns it on`;
+  return `${HOST_NAME[row.host]} is off on this machine; Add ${HOST_NAME[row.host]} under Hosts (\`aos hosts add ${row.host}\`) turns it on`;
 }
 
 /** The Notice after a write: the change, then what it did. */

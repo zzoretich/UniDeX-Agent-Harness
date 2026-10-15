@@ -12,7 +12,7 @@
  *   aos doctor · aos status · aos provider [local|auto|ollama|claude|codex|none] · aos local [status | pull | use <model>] · aos graph [status | build [--semantic] | on | off | semantic on|off|auto]
  *   aos upgrade [--from-local <repo-dir>] · aos uninstall [--host claude|codex] [--keep-vault] [--yes]
  *   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes] · aos cost [enable [--budget <usd>] [--yes] | disable]
- *   aos import [--from claude|codex|all] [--since 90d|all] [--only …] [--accept <json>] [--dry-run] [--json] · aos hosts add <claude|codex>
+ *   aos import [--from claude|codex|all] [--since 90d|all] [--only …] [--accept <json>] [--dry-run] [--json] · aos hosts add <claude|codex> | status [--json]
  *   aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--json]   (local-first A9, install-import B12)
  *
  * Exit codes: 0 ok · 1 a check failed · 2 usage.
@@ -62,7 +62,7 @@ const USAGE = `usage:
   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes]
   aos cost [enable [--budget <usd>] [--yes] | disable]
   aos graph [status | build [--semantic [--yes]] | on | off | semantic on|off|auto]
-  aos routines [list [--json] | sync | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
+  aos routines [list [--json] | sync | unschedule <slug> | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
   aos skills [list [--all] [--json] | sync [--dry-run] [--json] | exclude <name> | include <name> | reset <name>]
   aos agents [list [--all] [--json] | sync [--dry-run] [--json] | exclude <name> | include <name> | reset <name>]
   aos config [list [--json] | get <key> [--json] | set <key> <value> [--dry-run] [--json] | unset <key> [--dry-run]]
@@ -77,7 +77,7 @@ const USAGE = `usage:
              | merge-draft <path> <path>… [--estimate] [--json] | merge <path> <path>… --into <json> --expect <hash>,… [--json]
              | unmerge <path> --expect <hash> [--json] | sweep [<path>…] [--estimate] [--json] | sweep dismiss <id> [--json]]
   aos import [--from claude|codex|all] [--since 90d|all] [--only instructions,memories,projects,mcp,sessions] [--accept <json list>] [--dry-run] [--json]
-  aos hosts add <claude|codex> [--from-local <repo-dir>]
+  aos hosts add <claude|codex> [--from-local <repo-dir>] | aos hosts status [--json]
   aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--accept <json list>] [--json]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
@@ -177,12 +177,15 @@ function removeStatusline(vault, cfg, host = null) {
 }
 
 // ── processes ─────────────────────────────────────────────────────────────────
-function run(cmd, args, { cwd, env, capture = false, allowFail = false, input } = {}) {
+/** `timeout` (ms) stops the child with SIGKILL; with allowFail a timed-out run is { status: 124, timedOut: true }. */
+function run(cmd, args, { cwd, env, capture = false, allowFail = false, input, timeout } = {}) {
   const r = spawnSync(cmd, args, {
     cwd, input, encoding: 'utf8',
     env: { ...process.env, ...(env || {}) },
     stdio: capture ? ['pipe', 'pipe', 'pipe'] : (input !== undefined ? ['pipe', 'inherit', 'inherit'] : 'inherit'),
+    ...(timeout ? { timeout, killSignal: 'SIGKILL' } : {}),
   });
+  if (r.error && r.error.code === 'ETIMEDOUT' && allowFail) return { status: 124, stdout: r.stdout || '', stderr: r.stderr || '', timedOut: true };
   if (r.error) {
     if (allowFail) return { status: 127, stdout: '', stderr: String(r.error.message) };
     throw new CheckFailed(`${cmd}: ${r.error.message}`);
@@ -1520,7 +1523,7 @@ async function importCmd(sub, flags) {
   }
 }
 
-/** `aos hosts add <host>` (install-import B2): cli/hosts.js, wiring one more host into this install. */
+/** `aos hosts add <host>` and `aos hosts status` (install-import B2): cli/hosts.js, wiring one more host into this install. */
 async function hostsCmd(sub, flags) {
   const H = require('./hosts.js');
   try {
@@ -1529,7 +1532,7 @@ async function hostsCmd(sub, flags) {
       readJson, writeJson, configPath, configDir, claudeBin, claudeLoggedIn, codexBin, hostsOf, buildUserConfig, repoRoot,
       installPlugin, wireCodex, run, out, PLUGIN_ID, MARKETPLACE,
     };
-    return await H.main(sub, { fromLocal: flags.fromLocal }, { io: console, aos });
+    return await H.main(sub, { fromLocal: flags.fromLocal, json: !!flags.json }, { io: console, aos });
   } catch (e) {
     if (e instanceof H.UsageError) throw new UsageError(e.message);
     if (e instanceof H.Refused) throw new CheckFailed(e.message);

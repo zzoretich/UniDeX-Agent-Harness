@@ -107,7 +107,7 @@ test("spendLine (D7): today against the cap; 0 means no spend; other rows none",
 });
 
 test("hostNote (D8): only a host-specific row on a machine without that host", () => {
-  assert.match(hostNote(row({ host: "codex" }), ["claude"])!, /^Codex is off on this machine; `aos init --host both`/);
+  assert.equal(hostNote(row({ host: "codex" }), ["claude"]), "Codex is off on this machine; Add Codex under Hosts (`aos hosts add codex`) turns it on");
   assert.match(hostNote(row({ host: "claude" }), ["codex"])!, /^Claude Code is off/);
   assert.equal(hostNote(row({ host: "codex" }), ["claude", "codex"]), null);
   assert.equal(hostNote(row({ host: null }), ["claude"]), null);

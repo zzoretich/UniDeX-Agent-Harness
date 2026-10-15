@@ -28,3 +28,19 @@ test("Finish's add-a-host command is aos hosts add, with no path in it to quote 
   assert.equal(addHostCommand("~/.local/bin/aos"), "~/.local/bin/aos hosts add claude");
   assert.equal(addHostCommand("aos", "codex"), "aos hosts add codex");
 });
+
+test("F7 as a choice: the wired hosts a choice drops, and the choice that keeps them when Choose offers it", async () => {
+  const { droppedHosts, keepingChoice } = await import("../../src/renderer/setup/choices");
+  // An earlier install with both hosts on, its vault gone.
+  assert.deepEqual(droppedHosts("claude", both), ["codex"]);
+  assert.deepEqual(droppedHosts("none", both), ["claude", "codex"]);
+  assert.deepEqual(droppedHosts("both", both), []);
+  assert.deepEqual(droppedHosts("codex", claude), ["claude"]);
+  assert.deepEqual(droppedHosts("claude", null), [], "no agenticos.json: nothing to drop");
+  assert.deepEqual(droppedHosts("none", none), []);
+  assert.equal(keepingChoice("claude", both, both), "both", "both ready: keep Codex too");
+  assert.equal(keepingChoice("claude", both, claude), null, "Codex not ready: keeping it is not offered");
+  assert.equal(keepingChoice("none", { claude: false, codex: true }, both), "codex");
+  assert.equal(keepingChoice("none", both, none), null);
+  assert.equal(keepingChoice("claude", null, both), null);
+});

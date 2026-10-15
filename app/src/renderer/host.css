@@ -128,6 +128,16 @@ body.aos-popover { background: var(--compat-bg); }
 .aos-setup-diff-line.is-context { color: var(--compat-dim); }
 .aos-setup-diff-line.is-add { color: var(--udx-ok); background: var(--udx-ok-bg); }
 .aos-setup-ok { color: var(--udx-ok); font-size: 12px; }
+/* Choose's earlier-install callout (inspection F7) and Bring in your history (install-import B13): the counts per host and
+   kind, each row and column ticked, the proposed workspaces, the import's bar. */
+.aos-setup-callout[data-callout="wired"] { flex-direction: column; align-items: stretch; gap: 8px; }
+.aos-setup-callout[data-callout="wired"] p { margin: 0; }
+.aos-setup-import { border-collapse: collapse; font-size: 12px; }
+.aos-setup-import th, .aos-setup-import td { padding: 6px 12px 6px 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--compat-border); }
+.aos-setup-import th { font-weight: 560; white-space: nowrap; }
+.aos-setup-import td { font: 12px var(--compat-mono); }
+.aos-setup-import .aos-setup-detail { font-weight: 400; color: var(--compat-dim); }
+.aos-setup-proposal { display: block; overflow-wrap: anywhere; }
 .aos-setup-termhost.is-hidden { display: none; }
 .aos-setup-term { height: 260px; padding: 6px; border: 1px solid var(--compat-border); border-radius: 8px; background: var(--udx-term-background); }
 

@@ -16,6 +16,7 @@ export interface AosRunOptions {
   timeoutMs?: number;       // default 60 s; the child is killed after it
   cli?: string;             // the CLI path, when not the vendored one (tests)
   env?: Record<string, string>;  // variables set on top of the host's environment (AgentTeamsTab: CLAUDE_CONFIG_DIR)
+  onStdout?: (chunk: string) => void;  // each chunk of stdout as it arrives (the importer's progress, data/importer.ts)
 }
 
 export interface AosResult { code: number; stdout: string; stderr: string; timedOut: boolean; error?: string }
@@ -50,7 +51,7 @@ export function runAos(args: string[], o: AosRunOptions, spawnFn: SpawnFn = host
       return;
     }
     timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, o.timeoutMs ?? 60_000);
-    child.stdout?.on("data", (d) => { stdout += String(d); });
+    child.stdout?.on("data", (d) => { const s = String(d); stdout += s; o.onStdout?.(s); });
     child.stderr?.on("data", (d) => { stderr += String(d); });
     child.on("error", (e) => finish({ code: -1, stdout, stderr, timedOut, error: e.message }));
     child.on("close", (code) => finish({ code: timedOut ? -1 : (code ?? -1), stdout, stderr, timedOut }));

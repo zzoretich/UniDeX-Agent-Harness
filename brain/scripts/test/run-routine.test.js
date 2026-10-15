@@ -316,6 +316,69 @@ test('codex runner: the body goes on stdin, the spend is estimated from the even
   assert.equal(bad.ledger[0].model, 'codex-default');
 });
 
+test('a routine that turns itself off takes its own schedule out: aos routines unschedule <slug>, last (install-import B10)', async () => {
+  put('import-digest', { kind: 'command', argv: ['{{NODE}}', 'digest.js'] });
+  const taken = [];
+  const d = deps({
+    // The digest's last run: its queue empty, it writes `enabled: false` into its own routine file.
+    spawn: (cmd, args) => { d.calls.push({ cmd, args }); const r = store.read('import-digest', { dir: ROUTINES }); store.write({ ...r, enabled: false }, { dir: ROUTINES }); return { status: 0, stdout: 'import-digest: done, and the routine is off\n', stderr: '' }; },
+    unschedule: (o) => { taken.push({ ...o, recorded: !!state().routines['import-digest'] }); return true; },
+  });
+  d.calls = [];
+  assert.equal(await runRoutine('import-digest', { deps: d }), 0);
+  assert.equal(taken.length, 1);
+  assert.equal(taken[0].slug, 'import-digest');
+  assert.equal(taken[0].vault, VAULT);
+  assert.equal(taken[0].logFile, path.join(LOGS, 'routine-import-digest.log'));
+  assert.equal(taken[0].recorded, true, 'after the run is recorded: unloading its own schedule may stop this process');
+  assert.match(d.out, /import-digest turned itself off; taking its schedule out \(aos routines unschedule import-digest\)/);
+  // A routine that stays on, or one that was already off (a skip), takes nothing out.
+  put('alpha', { kind: 'command', argv: ['true'] });
+  const on = deps({ unschedule: (o) => { taken.push(o); return true; } });
+  assert.equal(await runRoutine('alpha', { deps: on }), 0);
+  assert.equal(await runRoutine('import-digest', { deps: on }), 0);
+  assert.equal(taken.length, 1);
+  // An unschedule that could not start says what to run instead.
+  put('import-digest', { kind: 'command', argv: ['true'] });
+  const failing = deps({
+    spawn: () => { const r = store.read('import-digest', { dir: ROUTINES }); store.write({ ...r, enabled: false }, { dir: ROUTINES }); return { status: 0, stdout: '', stderr: '' }; },
+    unschedule: () => { throw new Error('no cli'); },
+  });
+  assert.equal(await runRoutine('import-digest', { deps: failing }), 0);
+  assert.match(failing.out, /turned itself off; run aos routines unschedule import-digest to take its schedule out/);
+});
+
+test('unscheduleRoutine starts `aos routines unschedule <slug>` detached from the vendored CLI only, its output in the routine log', () => {
+  const { unscheduleRoutine, cliPath } = require('../routines/run-routine.js');
+  // In a checkout there is no brain/scripts/cli: no fallback above brain/scripts (that would be inside a vault).
+  assert.equal(cliPath(), null);
+  assert.equal(unscheduleRoutine({ slug: 'x', vault: VAULT, env: {}, logFile: path.join(LOGS, 'r.log') }, () => { throw new Error('never spawned'); }), false);
+  const scripts = path.join(VAULT, 'brain', 'scripts');
+  fs.mkdirSync(path.join(scripts, 'cli'), { recursive: true });
+  fs.mkdirSync(path.join(scripts, 'routines'), { recursive: true });
+  fs.writeFileSync(path.join(scripts, 'cli', 'aos.js'), '');
+  fs.mkdirSync(path.join(VAULT, 'cli'), { recursive: true });
+  fs.writeFileSync(path.join(VAULT, 'cli', 'aos.js'), '// a file the page could write: never run');
+  const vendored = cliPath(path.join(scripts, 'routines'));
+  assert.equal(vendored, path.join(scripts, 'cli', 'aos.js'));
+  fs.mkdirSync(LOGS, { recursive: true });
+  const logFile = path.join(LOGS, 'routine-x.log');
+  const seen = [];
+  const child = { on() { return child; }, unref() { seen.push('unref'); } };
+  const ok = unscheduleRoutine({ slug: 'import-digest', vault: VAULT, env: { PATH: '/usr/bin', HOME: VAULT }, logFile, cli: vendored }, (cmd, args, opts) => { seen.push({ cmd, args, opts }); return child; });
+  assert.equal(ok, true);
+  assert.equal(seen[0].cmd, process.execPath);
+  assert.deepEqual(seen[0].args, [vendored, 'routines', 'unschedule', 'import-digest']);
+  assert.equal(seen[0].opts.detached, true);
+  assert.equal(seen[0].opts.cwd, VAULT);
+  assert.equal(seen[0].opts.env.AOS_VAULT, VAULT);
+  assert.equal(typeof seen[0].opts.stdio[1], 'number', 'stdout to the routine log');
+  assert.equal(seen[1], 'unref');
+  assert.ok(fs.existsSync(logFile));
+  fs.rmSync(path.join(VAULT, 'cli'), { recursive: true, force: true });
+  fs.rmSync(scripts, { recursive: true, force: true });
+});
+
 // ── local-first A6/A7: a prompt routine that names its engine ──
 
 const { resolveRunner } = require('../lib/headless.js');
@@ -493,4 +556,28 @@ test('engine local end to end: run-routine → local-agent → a fake Ollama on 
     srv.close();
     fs.rmSync(path.join(VAULT, 'notes'), { recursive: true, force: true });
   }
+});
+
+test('engine local: a local-agent run that turns its routine off takes its schedule out too; a local-down skip never does (B10 with A6)', async () => {
+  put('wind-down', { kind: 'prompt', engine: 'local', writes: ['notes/'], maxTurns: 4, timeoutSec: 60 }, 'Finish the queue, then turn yourself off.');
+  const taken = [];
+  const d = hostDeps('none', { deps: {
+    resolveLocal: async () => localOk,
+    // The agent's last turn: the queue is empty, so the routine turns itself off.
+    localAgent: async () => { const r = store.read('wind-down', { dir: ROUTINES }); store.write({ ...r, enabled: false }, { dir: ROUTINES }); return agentResult(); },
+    unschedule: (o) => { taken.push({ ...o, recorded: state().routines['wind-down'] && state().routines['wind-down'].lastExit }); return true; },
+  } });
+  assert.equal(await runRoutine('wind-down', { deps: d }), 0);
+  assert.equal(d.calls.length, 0, 'nothing spawned: the agent ran in process');
+  assert.deepEqual(taken.map((t) => [t.slug, t.vault, t.recorded]), [['wind-down', VAULT, 0]], 'after the run is recorded');
+  assert.match(d.out, /wind-down turned itself off; taking its schedule out \(aos routines unschedule wind-down\)/);
+  // The engine down: a skip, nothing run, the routine still on, nothing taken out.
+  put('wind-down', { kind: 'prompt', engine: 'local', writes: ['notes/'], maxTurns: 4, timeoutSec: 60 }, 'Finish the queue, then turn yourself off.');
+  const down = hostDeps('none', { deps: {
+    resolveLocal: async () => ({ ok: false, reason: 'local-down', lc: localOk.lc, model: null }),
+    localAgent: async () => { throw new Error('never run'); },
+    unschedule: (o) => { taken.push(o); return true; },
+  } });
+  assert.equal(await runRoutine('wind-down', { deps: down }), 0);
+  assert.equal(taken.length, 1);
 });

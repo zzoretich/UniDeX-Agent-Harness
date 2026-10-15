@@ -98,10 +98,10 @@ test("normalizePath matches Obsidian's", () => {
 test("write surfaces: every verified surface by default; AOS_APP_WRITE narrows or widens a run", () => {
   const verified = SURFACES.filter((s) => s.verified).map((s) => s.id);
   assert.deepEqual(loadWriteSettings({}), { surfaces: verified, source: "default" });
-  // Every surface but the Local engine's and Go local's (2.0: verified after a live pull, and a live go-local and undo
-  // on a 1.9 vault) is verified today.
-  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["local", "migrate"]);
-  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 2);
+  // Every surface but 2.0's new ones is verified today: the Local engine's (after a live pull), Go local's (a live
+  // go-local and undo on a 1.9 vault), Import and Hosts (a live import and a host added through them, install-import B2, B7).
+  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["local", "migrate", "import", "hosts"]);
+  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 4);
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo,chat" }), { surfaces: ["todo", "chat"], source: "AOS_APP_WRITE" });
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "" }), { surfaces: [], source: "AOS_APP_WRITE" });
   // A surface not verified yet (a new one starts this way) stays off by default; AOS_APP_WRITE can still turn it on
