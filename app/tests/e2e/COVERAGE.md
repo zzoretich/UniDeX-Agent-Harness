@@ -16,11 +16,11 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 126 |
+| covered | 128 |
 | covered in part | 61 |
 | N/A in the app | 47 |
 | not covered | 6 |
-| **total** | **240** |
+| **total** | **242** |
 
 Of the 193 items about the app (240 minus the 47 N/A), 187 are asserted (126 fully, 61 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
@@ -132,6 +132,7 @@ again (`brain-ai`).
 | S11 | WORKBENCH section and the settings window's Runtime tab show the same rows; a change in one shows in the other | covered | `settings › WORKBENCH section…` (same rows, same renderer), `settings-window › the plugin's tab…` (the rows in the window), `settings-window › a change in the window shows in the WORKBENCH section…` (both ways; the plugin's settings live in the app's data folder). |
 | S12 | Vault root picker: a missing vault shows a Notice; a different vault the 10 s explanation | not covered | Picking saves only the plugin's own settings (userData, which no write surface gates); reaching either Notice needs a second vault in the picker's list, which the fixture does not have. |
 | S13 | The rail in three sections with a light line between them (and under the head, over the foot); Pulse navy in light, neon blue in dark, the other theme's on its selected chip; Code's tooltip and palette name, `tab=term` still opens it | covered | `shell › rail: three sections…` (the order, two separators at the section ends, Code's label and icon), `shell › rail: Pulse is navy in light…` (both themes: at rest, hovered, selected; one line colour), `shell › commands…` (Open Workbench: Code under the id `term`); the `term` id is unchanged, so `WORKBENCH_TAB_IDS` resolves `tab=term` as before. Brain's label and icon under the id `memory`: `brain › the rail button reads Brain with its id still memory…` (BR1). |
+| ST-LOCAL | Settings ▸ Local engine (2.0): the engine, its state, the model and the embedder, today's calls, queued wraps; ❯_ aos local; Pull the model through the `local` surface (off by default) | covered | `local › Settings ▸ Local engine…` (the rows from provider-state and the files, the buttons); `localEngine.test.ts`; `write-policy.test.ts` (the `local` surface admits `aos local pull` alone). The pull itself (a download of several GB): manual. |
 
 ## Config (both hosts)
 
@@ -371,6 +372,7 @@ again (`brain-ai`).
 | CH1 | `codex` (a Codex-only vault): header `· codex via ask.js (reasoner caps)` until Codex is picked, then `· Codex via ask.js (Codex default, reasoner caps)`, the menu's pick in place of `Codex default`; an answer; the spend row | covered | `variants › a Codex-only machine › Sessions: the host and model menu offers Codex alone…` (Codex the one ready host, not picked: the chip reads Codex, the header today's route), `chat-writes › SE13 Vault chat's picker…` (the header with a picked model, an answer through `ask.js --host=codex` and its `reason:ask` row), `chat-writes › codex (CH1)…` and `variants › a provider on record › Vault chat…` (no host ready: `· codex via ask.js (reasoner caps)`, the answer through a stub `codex exec` and the runtime's `reason:ask` row). |
 | CH2 | `none`: no Sessions rail button; Open Workbench: Sessions shows the hint | covered | `sidebar-omni-notes › Sessions and Code › no provider…`, `shell › rail…` |
 | CH3 | `ollama` without a Claude login and no host ready: header `· local ask.js`; an answer | covered | `variants › a provider on record › Vault chat…` (the header), `chat-writes › ollama without a Claude login (CH3)…`: the answer comes from a stub Ollama server; nothing is billed. |
+| CH5 | `local` with `ai.chat: local` (2.0): Sessions on the rail with the engine down and a host signed in; the chip **This Mac**, its header and the down line; a question back down with **Run once on Claude Code** naming the reasoner cap, run only on the click | covered | `local › Sessions stays on the rail…`, `› Vault chat starts on This Mac…`, `› a question with the local model down…` (the real `ask.js --local --chat` in the fixture vault against an engine that refuses, then the stub `claude`); `claudeAsk.test.ts` (`vaultRoute`, `vaultHostChoices` under local, `localDownOf`, `runOnceLabel`), `HostModelMenu.test.ts` (`menuValue` with the local choice). The answer from a running Ollama: manual. |
 | CH4 | `claude`: header `· Claude Code (claude-opus-5, capped)` (the reasoner while the menu reads Default); an answer with its cost | covered | `variants › a provider on record › Pulse is Home with a provider too…` (Sessions closes the first section), `› Vault chat under claude…` (the header, the fixed Read only chip and the host and model menu on Claude Code), `chat-writes › claude (CH4)…`: a stub `claude` answers, the turn shows its time and cost, and the chat log and the spend ledger gain their lines. |
 
 ## Sessions (per host; each turn spends)
