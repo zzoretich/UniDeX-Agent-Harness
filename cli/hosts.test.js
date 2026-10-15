@@ -162,3 +162,19 @@ test('status: each host as add would find it (on, CLI, signed in) and the next s
     assert.match(bad.stderr, /aos hosts status \[--json\]/);
   }
 });
+
+test('status: a sign-in check that hangs is stopped and reported as unknown, never left running', () => {
+  const sb = sandbox();
+  const hang = path.join(sb.dir, 'hang-claude.sh');
+  // `claude auth status` that never answers (and ignores SIGTERM): the probe is killed after AOS_HOSTS_PROBE_MS.
+  fs.writeFileSync(hang, '#!/bin/sh\ntrap "" TERM\nsleep 30\n', { mode: 0o755 });
+  const t0 = Date.now();
+  const r = sb.aos(['hosts', 'status', '--json'], { AOS_CLAUDE_BIN: hang, AOS_HOSTS_PROBE_MS: '300' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(Date.now() - t0 < 10_000, 'it did not wait for the hung CLI');
+  const s = JSON.parse(r.stdout);
+  assert.deepEqual(s.hosts.claude, { enabled: false, installed: true, bin: hang, signedIn: null, probe: 'timed out' });
+  assert.equal(s.hosts.codex.signedIn, true, 'the other host is checked as usual');
+  const text = sb.aos(['hosts', 'status'], { AOS_CLAUDE_BIN: hang, AOS_HOSTS_PROBE_MS: '300' });
+  assert.match(text.stdout, /^Claude Code off · .*hang-claude\.sh · sign-in unknown \(timed out\) {2}→ check again: aos hosts status$/m);
+});

@@ -182,10 +182,17 @@ function knownSlugs({ routines = [], state = null } = {}) {
 }
 function readStateSafe(store, file) { try { return store.readState({ file }); } catch { return { schema: 1, routines: {}, synced: {}, syncedAt: null }; } }
 
+/** Whether launchd has this job loaded (`launchctl list <label>` exits 0 only then). */
+function launchdLoaded(exec, label) {
+  try { exec('launchctl', ['list', label], { stdio: 'ignore' }); return true; } catch { return false; }
+}
+
 /**
  * Renders and (re)loads one schedule per installable routine, removes the schedules of routines that are now
  * disabled, invalid or gone, and records { synced: { slug: fingerprint }, syncedAt } in routines.json.
  * `routines` may be injected (tests); by default they are read from vars.VAULT.
+ * On macOS a routine whose plist is already byte for byte what it renders, and loaded, is left alone: unloading a job
+ * stops it if it is running (launchd sends its process group SIGTERM), so a sync never cuts an unchanged routine short.
  */
 function installSchedules({ platform = process.platform, vars, routines, store = loadStore(), templatesDir = TEMPLATES_DIR,
   launchAgentsDir = defaultLaunchAgentsDir(), stateFile, exec = defaultExec, readCrontab, writeCrontab, warn = defaultWarn, now = () => new Date() } = {}) {
@@ -210,9 +217,14 @@ function installSchedules({ platform = process.platform, vars, routines, store =
   if (platform === 'darwin') {
     fs.mkdirSync(launchAgentsDir, { recursive: true });
     const written = []; const removed = []; const warnings = [];
+    const unchanged = [];
     for (const r of active) {
       const plist = path.join(launchAgentsDir, `${launchdLabel(r.slug)}.plist`);
-      fs.writeFileSync(plist, renderLaunchd(r, vars, templatesDir));
+      const text = renderLaunchd(r, vars, templatesDir);
+      let before = null;
+      try { before = fs.readFileSync(plist, 'utf8'); } catch { before = null; }
+      if (before === text && launchdLoaded(exec, launchdLabel(r.slug))) { written.push(plist); unchanged.push(plist); continue; }
+      fs.writeFileSync(plist, text);
       try { exec('launchctl', ['unload', plist], { stdio: 'ignore' }); } catch { /* not loaded yet */ }
       // execution amendment 2026-09-15 (A30): a failing load is reported, never thrown — it must not abort `aos init` step 8.
       try { exec('launchctl', ['load', plist], { stdio: 'ignore' }); }
@@ -227,7 +239,7 @@ function installSchedules({ platform = process.platform, vars, routines, store =
       removed.push(plist);
     }
     record();
-    return { platform, written, removed, labels: active.map(r => launchdLabel(r.slug)), warnings };
+    return { platform, written, unchanged, removed, labels: active.map(r => launchdLabel(r.slug)), warnings };
   }
   if (platform === 'linux') {
     const warnings = [];
@@ -261,6 +273,47 @@ function installSchedules({ platform = process.platform, vars, routines, store =
     return { platform, written: ['crontab'], removed: stale.filter(s => tagRe([s]).test(current)).map(s => `${CRON_TAG}${s}`), labels: active.map(r => `${CRON_TAG}${r.slug}`), warnings };
   }
   return { platform, written: [], removed: [], labels: [], unsupported: true, warnings: [] };
+}
+
+/**
+ * Takes ONE routine's schedule out and touches nothing else (install-import B10: a routine that turned itself off, the
+ * import-digest routine once its queue is empty): its plist unloaded and deleted (macOS) or its crontab line dropped
+ * (Linux), and its entry dropped from the sync record, so the Routines tab does not ask to apply schedules. Every other
+ * job stays loaded: unloading one that is running would stop it. → { platform, removed, warnings }
+ */
+function removeSchedule({ slug, platform = process.platform, vault, store = null, launchAgentsDir = defaultLaunchAgentsDir(), stateFile,
+  exec = defaultExec, readCrontab, writeCrontab, warn = defaultWarn } = {}) {
+  const removed = []; const warnings = [];
+  const plist = path.join(launchAgentsDir, `${launchdLabel(slug)}.plist`);
+  if (platform === 'darwin' && fs.existsSync(plist)) {
+    try { exec('launchctl', ['unload', plist], { stdio: 'ignore' }); } catch { /* not loaded */ }
+    fs.unlinkSync(plist);
+    removed.push(plist);
+  }
+  if (platform === 'linux') {
+    let current = null;
+    if (readCrontab) current = readCrontab();
+    else {
+      const r = readCrontabResult(exec);
+      if (r.unreadable) {
+        const m = `crontab -l failed (${r.message}) — crontab left untouched`;
+        warnings.push(m); warn(m);
+      } else current = r.text;
+    }
+    if (current !== null && tagRe([slug]).test(current)) {
+      const kept = stripAgenticosCron(current, [slug]);
+      try { (writeCrontab || ((t) => writeCrontabWith(exec, t)))(kept ? `${kept}\n` : ''); removed.push(`${CRON_TAG}${slug}`); }
+      catch (e) { const m = `crontab - failed (${e && e.message ? e.message : e})`; warnings.push(m); warn(m); }
+    }
+  }
+  if (vault) {
+    try {
+      const st = store || loadStore();
+      const file = stateFile || stateFileFor(vault);
+      st.updateState((s) => { if (s.synced && Object.prototype.hasOwnProperty.call(s.synced, slug)) delete s.synced[slug]; }, { file });
+    } catch (e) { const m = `could not update the sync record: ${e.message}`; warnings.push(m); warn(m); }
+  }
+  return { platform, removed, warnings };
 }
 
 /** Removes every schedule this scheduler owns (files, last sync, legacy duties) and clears the sync record. */
@@ -328,5 +381,5 @@ function isInstalled({ platform = process.platform, vault, launchAgentsDir = def
 module.exports = {
   CRON_TAG, TEMPLATES_DIR, LEGACY_DUTIES, RUNNER_REL, launchdLabel, renderTemplate, xmlEscape, scheduleVars, dutyRunDefaults, readVaultConfig, chiefModels,
   listRoutines, installable, calendarXml, renderLaunchd, renderCron, cronLine, stripAgenticosCron, knownSlugs,
-  installSchedules, removeSchedules, isInstalled,
+  installSchedules, removeSchedules, removeSchedule, isInstalled,
 };

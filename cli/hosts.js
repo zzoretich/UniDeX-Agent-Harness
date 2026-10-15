@@ -22,6 +22,8 @@ const fs = require('fs');
 const path = require('path');
 
 const HOSTS = ['claude', 'codex'];
+/** How long a sign-in check may take (sdk/lib/provider.js's login probe cap); AOS_HOSTS_PROBE_MS for the tests. */
+function probeMs(env = process.env) { const n = Number(env.AOS_HOSTS_PROBE_MS); return Number.isFinite(n) && n > 0 ? n : 10_000; }
 const USAGE = 'aos hosts add <claude|codex> [--from-local <repo-dir>] · aos hosts status [--json]';
 const FAST = ['instructions', 'memories', 'projects', 'mcp'];
 
@@ -113,19 +115,28 @@ async function add(host, flags = {}, opts = {}) {
 
 /**
  * Each host's state, as `add` would check it, with nothing written. → { schema, config, vault, hosts: { <host>: { enabled,
- * installed, bin, signedIn (null when the CLI is not found), install? (Codex: plugin | direct, when on) } } }
+ * installed, bin, signedIn (null when the CLI is not found or its check timed out), probe? ('timed out'), install? (Codex:
+ * plugin | direct, when on) } } }
  */
 function readStatus(opts = {}) {
   const A = opts.aos || require('./aos.js');
-  const CH = require('./codex-host.js');
   const cfg = A.readJson(A.configPath());
   const on = cfg ? A.hostsOf(cfg) : { claude: false, codex: false };
   const out = { schema: 1, config: cfg ? A.configPath() : null, vault: cfg && typeof cfg.vault === 'string' && cfg.vault ? cfg.vault : null, hosts: {} };
   for (const h of HOSTS) {
     const bin = (h === 'claude' ? A.claudeBin(cfg) : A.codexBin(cfg)) || null;
+    // The same checks `add` makes (claudeLoggedIn, codexLoggedIn), each stopped after probeMs: one that hangs is reported
+    // as not known, never left running behind Settings ▸ Hosts.
     let signedIn = null;
-    if (bin) { try { signedIn = h === 'claude' ? !!A.claudeLoggedIn(bin) : !!CH.codexLoggedIn(bin, A.run); } catch { signedIn = false; } }
+    let timedOut = false;
+    if (bin) {
+      const r = A.run(bin, h === 'claude' ? ['auth', 'status', '--json'] : ['login', 'status'], { capture: true, allowFail: true, timeout: probeMs() });
+      if (r.timedOut) timedOut = true;
+      else if (h === 'claude') { let j = null; try { j = JSON.parse(r.stdout); } catch { j = null; } signedIn = !!(j && j.loggedIn); }
+      else { const out = `${r.stdout}\n${r.stderr}`; signedIn = r.status === 0 && /logged in/i.test(out) && !/not logged in/i.test(out); }
+    }
     const row = { enabled: !!on[h], installed: !!bin, bin, signedIn };
+    if (timedOut) row.probe = 'timed out';
     if (h === 'codex' && on.codex) row.install = (cfg.hosts && cfg.hosts.codex && cfg.hosts.codex.install) || 'direct';
     out.hosts[h] = row;
   }
@@ -140,8 +151,9 @@ function status(flags = {}, opts = {}) {
   const name = { claude: 'Claude Code', codex: 'Codex' };
   for (const h of HOSTS) {
     const x = s.hosts[h];
-    const parts = [x.enabled ? 'on' : 'off', x.installed ? x.bin : 'CLI not found', x.installed ? (x.signedIn ? 'signed in' : 'signed out') : null].filter(Boolean);
-    const next = !x.installed ? `install it, then aos hosts add ${h}` : !x.signedIn ? `sign in (${h === 'claude' ? 'claude auth login' : 'codex login'})${x.enabled ? '' : `, then aos hosts add ${h}`}` : x.enabled ? null : `aos hosts add ${h}`;
+    const login = x.probe ? `sign-in unknown (${x.probe})` : x.signedIn ? 'signed in' : 'signed out';
+    const parts = [x.enabled ? 'on' : 'off', x.installed ? x.bin : 'CLI not found', x.installed ? login : null].filter(Boolean);
+    const next = !x.installed ? `install it, then aos hosts add ${h}` : x.probe ? `check again: aos hosts status` : !x.signedIn ? `sign in (${h === 'claude' ? 'claude auth login' : 'codex login'})${x.enabled ? '' : `, then aos hosts add ${h}`}` : x.enabled ? null : `aos hosts add ${h}`;
     io.log(`${name[h].padEnd(11)} ${parts.join(' · ')}${next ? `  → ${next}` : ''}`);
   }
   return 0;

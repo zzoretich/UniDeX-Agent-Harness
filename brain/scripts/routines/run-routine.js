@@ -19,9 +19,10 @@
  * lastTrigger, lastError), one pipelines.json row named routine:<slug>, and stdout/stderr appended to
  * <log dir>/routine-<slug>.log. The exit code mirrors the child's. A disabled routine (or routines.enabled=false)
  * exits 0 without running and records a skip. A routine that turned itself off during its run (the import-digest
- * routine once its queue is empty, install-import B10) takes its schedule out at once: `aos routines sync
- * --if-installed`, started detached (launchd's unload of this very job cannot cut it short) with its output in the
- * routine's log, and only where schedules are installed, so a Mac that runs routines by hand never gets them. This is not a hook: it runs under launchd/cron, so no hook-entry
+ * routine once its queue is empty, install-import B10) takes its own schedule out at once, and nothing else: `aos
+ * routines unschedule <slug>` (only that routine's plist or crontab line, never another job: unloading a running one
+ * would stop it), started detached (launchd's unload of this very job cannot cut it short) with its output in the
+ * routine's log; a Mac with no schedule for it has nothing to take out. This is not a hook: it runs under launchd/cron, so no hook-entry
  * prologue — but the prompt child gets AOS_HEADLESS=1 exactly like every other `claude -p` the brain spawns.
  * Every external call is injectable for tests (deps).
  */
@@ -37,25 +38,28 @@ const TAIL_CHARS = 400;
 function tail(text, n = TAIL_CHARS) { const s = String(text || '').trim(); return s.length > n ? s.slice(-n) : s; }
 function n(v, d) { return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : d; }
 
-/** The CLI `aos routines sync` runs from: the vendored <vault>/brain/scripts/cli/aos.js, else the checkout's cli/aos.js. */
-function cliPath() {
-  return [path.join(__dirname, '..', 'cli', 'aos.js'), path.join(__dirname, '..', '..', '..', 'cli', 'aos.js')].find((p) => fs.existsSync(p)) || null;
+/**
+ * The CLI the unschedule runs: the vendored <vault>/brain/scripts/cli/aos.js beside this runner, and nothing else. (A
+ * path above brain/scripts would be inside the vault, where the app's Files surface can write.) Null in a checkout.
+ */
+function cliPath(dir = __dirname) {
+  const p = path.join(dir, '..', 'cli', 'aos.js');
+  return fs.existsSync(p) ? p : null;
 }
 
 /**
- * Re-render the schedules after a routine turned itself off: `node <cli> routines sync --if-installed`, detached (its
- * own process group) with stdout and stderr appended to the routine's log. → whether it started.
+ * Take the schedule of a routine that turned itself off out: `node <cli> routines unschedule <slug>`, detached (its own
+ * process group) with stdout and stderr appended to the routine's log. → whether it started.
  */
-function resyncSchedules({ vault, env, logFile }, spawnFn = spawnAsync) {
-  const cli = cliPath();
+function unscheduleRoutine({ slug, vault, env, logFile, cli = cliPath() }, spawnFn = spawnAsync) {
   if (!cli) return false;
   let fd = 'ignore';
   try { fd = fs.openSync(logFile, 'a'); } catch { fd = 'ignore'; }
   try {
-    const child = spawnFn(process.execPath, [cli, 'routines', 'sync', '--if-installed'], {
+    const child = spawnFn(process.execPath, [cli, 'routines', 'unschedule', slug], {
       cwd: vault, env: { ...env, AOS_VAULT: vault }, detached: true, stdio: ['ignore', fd, fd],
     });
-    child.on('error', () => { /* the next sync from the Routines tab or a terminal does it */ });
+    child.on('error', () => { /* the Routines tab's apply, or a terminal's aos routines sync, does it */ });
     child.unref();
     return true;
   } finally {
@@ -83,7 +87,7 @@ function defaultDeps() {
     parseClaudeJson, rowFrom, rowFromCodex, parseCodexEvents,
     now: () => new Date(),
     env: process.env,
-    resync: (o) => resyncSchedules(o),
+    unschedule: (o) => unscheduleRoutine(o),
     logDir: process.env.AOS_ROUTINE_LOG_DIR || process.env.PERSONA_LOG_DIR || path.join(PATHS.VAULT, 'persona', 'journal', 'logs'),
     stdout: (s) => process.stdout.write(s),
     stderr: (s) => process.stderr.write(s),
@@ -237,12 +241,12 @@ async function runRoutine(slug, { trigger = 'scheduled', dryRun = false, deps = 
   if (exit !== 0) deps.stderr(`run-routine: ${slug} failed (exit ${exit})${lastError ? `: ${lastError}` : ''}\n`);
   // It turned itself off (module comment): its schedule goes too, without the Routines tab asking. Last, after every
   // record is written, since unloading this job's own schedule may stop this process.
-  if (typeof deps.resync === 'function') {
+  if (typeof deps.unschedule === 'function') {
     const after = deps.store.read(slug);
     if (after && !after.errors.length && after.enabled === false) {
       let started = false;
-      try { started = deps.resync({ slug, vault: deps.vault, env: deps.env, logFile }); } catch { started = false; }
-      deps.stdout(`run-routine: ${slug} turned itself off; ${started ? 'taking its schedule out (aos routines sync --if-installed)' : 'run aos routines sync to take its schedule out'}\n`);
+      try { started = deps.unschedule({ slug, vault: deps.vault, env: deps.env, logFile }); } catch { started = false; }
+      deps.stdout(`run-routine: ${slug} turned itself off; ${started ? `taking its schedule out (aos routines unschedule ${slug})` : `run aos routines unschedule ${slug} to take its schedule out`}\n`);
     }
   }
   return exit;
@@ -256,4 +260,4 @@ function main(argv) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code), (e) => { process.stderr.write(`run-routine: ${e.message}\n`); process.exit(1); });
-module.exports = { runRoutine, plan, promptArgs, promptSpec, expandArgv, main, resyncSchedules, cliPath, TRIGGERS };
+module.exports = { runRoutine, plan, promptArgs, promptSpec, expandArgv, main, unscheduleRoutine, cliPath, TRIGGERS };

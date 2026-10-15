@@ -36,7 +36,13 @@ test("hostView: ready, signed out, missing; off with Add only when installed and
   assert.equal(offMissing.install![1], "Type curl -fsSL https://claude.ai/install.sh | bash and press Return.");
   assert.equal(offMissing.install![3], "Then ⟳ Check again here, and Add Claude Code.");
   const unknown = hostView("codex", S({ installed: null, bin: null, signedIn: null }));
-  assert.deepEqual([unknown.state, unknown.add.enabled], ["unknown", false]);
+  assert.deepEqual([unknown.state, unknown.add.enabled, unknown.text], ["unknown", false, "Not added to this vault · not checked yet"]);
+  // A sign-in check that hung (aos hosts status stops it after 10 s): not known, never "signed out".
+  const hung = parseHostsStatus({ hosts: { claude: { enabled: true, installed: true, bin: "/opt/bin/claude", signedIn: null, probe: "timed out" }, codex: { enabled: false, installed: true, bin: "/opt/bin/codex", signedIn: null, probe: "timed out" } } })!;
+  assert.equal(hung.hosts.claude.timedOut, true);
+  assert.equal(hostView("claude", hung.hosts.claude).text, "On · /opt/bin/claude · its sign-in check did not answer in time; ⟳ Check again");
+  const hungOff = hostView("codex", hung.hosts.codex);
+  assert.deepEqual([hungOff.state, hungOff.add.enabled, hungOff.add.why], ["unknown", false, "Its sign-in check did not answer: ⟳ Check again"]);
 });
 
 test("what Add does is said first; the steps hosts add prints after it are read back", () => {

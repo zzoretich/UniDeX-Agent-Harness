@@ -61,7 +61,7 @@ const USAGE = `usage:
   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes]
   aos cost [enable [--budget <usd>] [--yes] | disable]
   aos graph [status | build [--semantic [--yes]] | on | off | semantic on|off|auto]
-  aos routines [list [--json] | sync [--if-installed] | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
+  aos routines [list [--json] | sync | unschedule <slug> | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
   aos skills [list [--all] [--json] | sync [--dry-run] [--json] | exclude <name> | include <name> | reset <name>]
   aos agents [list [--all] [--json] | sync [--dry-run] [--json] | exclude <name> | include <name> | reset <name>]
   aos config [list [--json] | get <key> [--json] | set <key> <value> [--dry-run] [--json] | unset <key> [--dry-run]]
@@ -175,12 +175,15 @@ function removeStatusline(vault, cfg, host = null) {
 }
 
 // ── processes ─────────────────────────────────────────────────────────────────
-function run(cmd, args, { cwd, env, capture = false, allowFail = false, input } = {}) {
+/** `timeout` (ms) stops the child with SIGKILL; with allowFail a timed-out run is { status: 124, timedOut: true }. */
+function run(cmd, args, { cwd, env, capture = false, allowFail = false, input, timeout } = {}) {
   const r = spawnSync(cmd, args, {
     cwd, input, encoding: 'utf8',
     env: { ...process.env, ...(env || {}) },
     stdio: capture ? ['pipe', 'pipe', 'pipe'] : (input !== undefined ? ['pipe', 'inherit', 'inherit'] : 'inherit'),
+    ...(timeout ? { timeout, killSignal: 'SIGKILL' } : {}),
   });
+  if (r.error && r.error.code === 'ETIMEDOUT' && allowFail) return { status: 124, stdout: r.stdout || '', stderr: r.stderr || '', timedOut: true };
   if (r.error) {
     if (allowFail) return { status: 127, stdout: '', stderr: String(r.error.message) };
     throw new CheckFailed(`${cmd}: ${r.error.message}`);
@@ -1208,7 +1211,7 @@ async function workspace(sub, flags) {
 async function routines(sub, flags) {
   const R = require('./routines.js');
   try {
-    return await R.main([...sub, ...(flags.json ? ['--json'] : []), ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.refresh ? ['--refresh'] : []), ...(flags.ifInstalled ? ['--if-installed'] : [])], { io: console });
+    return await R.main([...sub, ...(flags.json ? ['--json'] : []), ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.refresh ? ['--refresh'] : [])], { io: console });
   } catch (e) {
     if (e instanceof R.UsageError) throw new UsageError(e.message);
     throw e;
@@ -1545,7 +1548,7 @@ function updateNotice() {
 // --skip-brain-md and merge-draft's and sweep's --estimate (A5) do not.
 // `aos import`'s (install-import B7): --from, --since, --only and --accept take a value.
 const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by', 'from', 'since', 'only', 'accept']);
-const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate', 'if-installed']);
+const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate']);
 // --no-obsidian is parsed and ignored: Obsidian is no longer installed, and a script written for an older release keeps working.
 const NEGATABLE_FLAGS = new Set(['obsidian']);
 function camel(s) { return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }

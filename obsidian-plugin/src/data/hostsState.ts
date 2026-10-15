@@ -24,6 +24,8 @@ export interface HostStatus {
   installed: boolean | null;
   bin: string | null;
   signedIn: boolean | null;
+  /** Its sign-in check did not answer in time (`aos hosts status` stops it after 10 s). */
+  timedOut?: boolean;
 }
 export interface HostsStatus {
   /** Where it came from: the runtime's own check, or the caches until it answers. */
@@ -43,6 +45,7 @@ export function parseHostsStatus(j: unknown): HostsStatus | null {
     hosts[h] = {
       enabled: x.enabled === true, installed: x.installed === true, bin: typeof x.bin === "string" ? x.bin : null,
       signedIn: typeof x.signedIn === "boolean" ? x.signedIn : null,
+      ...(x.probe === "timed out" ? { timedOut: true } : {}),
     };
   }
   return { source: "runtime", hosts };
@@ -80,6 +83,7 @@ export interface HostView {
 export function hostView(host: SessionHost, s: HostStatus): HostView {
   const label = HOST_LABEL[host];
   const where = s.bin ? ` · ${s.bin}` : "";
+  const unknown = s.timedOut ? "its sign-in check did not answer in time; ⟳ Check again" : "not checked yet";
   const installSteps = [
     "Open Terminal (in Applications ▸ Utilities).",
     `Type ${INSTALL_COMMAND[host]} and press Return.`,
@@ -91,7 +95,7 @@ export function hostView(host: SessionHost, s: HostStatus): HostView {
     if (s.installed === false) return { ...base, state: "missing", text: `On, but its CLI is not found: sessions and duties on ${label} wait until it is installed.`, add: { shown: false, enabled: false, why: null }, install: installSteps };
     if (s.signedIn === false) return { ...base, state: "signed-out", text: `On, but signed out${where}: sessions and duties on ${label} wait until you sign in.`, add: { shown: false, enabled: false, why: null }, signIn: LOGIN_COMMAND[host] };
     if (s.signedIn === true) return { ...base, state: "ready", text: `On · signed in${where}`, add: { shown: false, enabled: false, why: null } };
-    return { ...base, state: "unknown", text: `On${where} · not checked yet`, add: { shown: false, enabled: false, why: null } };
+    return { ...base, state: "unknown", text: `On${where} · ${unknown}`, add: { shown: false, enabled: false, why: null } };
   }
   if (s.installed === false) {
     return { ...base, state: "off-missing", text: `Not installed on this Mac.`, add: { shown: true, enabled: false, why: `Install ${label} and sign in first` }, install: installSteps };
@@ -102,7 +106,7 @@ export function hostView(host: SessionHost, s: HostStatus): HostView {
   if (s.signedIn === true) {
     return { ...base, state: "off", text: `Installed and signed in${where}; not added to this vault yet.`, add: { shown: true, enabled: true, why: null } };
   }
-  return { ...base, state: "unknown", text: "Not added to this vault · not checked yet", add: { shown: true, enabled: false, why: "Checking whether it is installed and signed in…" } };
+  return { ...base, state: "unknown", text: `Not added to this vault${where} · ${unknown}`, add: { shown: true, enabled: false, why: s.timedOut ? "Its sign-in check did not answer: ⟳ Check again" : "Checking whether it is installed and signed in…" } };
 }
 
 /** What Add does, said before it runs (the confirm). */
