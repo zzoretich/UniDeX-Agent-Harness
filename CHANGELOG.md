@@ -51,6 +51,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **Duties no longer take their model from the first `model` key in `agenticos.json`.** The duty runner asks the Chief of Staff's resolver for the host and the model, so a Claude model never reaches Codex.
 - **The Brain Map lays out the same way every time, with every memory in view.** Two memories that landed on top of each other were parted in a random direction and could be flung far off the fitted view; they now part along a fixed direction, and the push at close range is softened.
 - **The Chief of Staff's models are priced as themselves.** Codex spend on `gpt-6-sol` is estimated at its published $2 / $10 per million tokens (it was estimated at the gpt-5 default, and that guess counted against `persona.perDayUsd`), and the cost module and the Brain hub's estimates price `claude-opus-5-5` at $4 / $20 instead of falling back to another model's rate. <!-- no-tour: price table; nothing new on screen -->
+- **Opus 5, 4.8 and 4.7 cost a third of what the cost module said.** Session costs and the Brain hub's estimates priced them at $15 / $75 per million tokens, the retired Opus 4.1's rate; they use Anthropic's published $5 / $25 now (`pricing.json`, checked 2026-10-15). <!-- no-tour: price table; nothing new on screen -->
 
 ## [1.9.0] — 2026-10-12
 

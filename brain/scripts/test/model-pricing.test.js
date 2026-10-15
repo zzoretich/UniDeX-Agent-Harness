@@ -32,7 +32,7 @@ test('the Claude table is extras/cost/pricing.json: every model, the default, th
 test('aliases name their current model: haiku, sonnet, opus (any case, trimmed)', () => {
   assert.deepEqual(MP.claudeRate('haiku'), { model: 'claude-haiku-4-5', in: 1, out: 5, matched: 'alias' });
   assert.deepEqual(MP.claudeRate('sonnet'), { model: 'claude-sonnet-4-6', in: 3, out: 15, matched: 'alias' });
-  assert.deepEqual(MP.claudeRate(' Opus '), { model: 'claude-opus-5', in: 15, out: 75, matched: 'alias' });
+  assert.deepEqual(MP.claudeRate(' Opus '), { model: 'claude-opus-5', in: 5, out: 25, matched: 'alias' });
   assert.equal(MP.claudeRate('Claude-Haiku-4-5').matched, 'exact');
 });
 
@@ -50,7 +50,7 @@ test('an unlisted id takes its longest known prefix; anything else the default (
 
 test('priceUsd on Claude: input, cached input at a tenth, output; 6 places', () => {
   assert.equal(MP.priceUsd('claude', 'haiku', { inputTokens: 1e6, outputTokens: 1e6 }), 6);
-  assert.equal(MP.priceUsd('claude', 'claude-opus-5', { inputTokens: 1000, outputTokens: 100 }), 0.0225);
+  assert.equal(MP.priceUsd('claude', 'claude-opus-5', { inputTokens: 1000, outputTokens: 100 }), 0.0075);
   // The Chief of Staff's Claude model at its own published rate ($4 in, $20 out), not Opus 5's by prefix.
   assert.equal(MP.claudeRate('claude-opus-5-5').matched, 'exact');
   assert.equal(MP.priceUsd('claude', 'claude-opus-5-5', { inputTokens: 1000, outputTokens: 100 }), 0.006);

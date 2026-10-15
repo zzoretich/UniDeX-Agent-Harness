@@ -23,14 +23,14 @@
  */
 const codexPricing = require('./codex-pricing.js');
 
-const RATES_AS_OF = '2026-05-29';
+const RATES_AS_OF = '2026-10-15';
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const CACHED_MULT = 0.1;
 const MODELS = Object.freeze({
   'claude-opus-5-5': Object.freeze({ in: 4.0, out: 20.0 }),
-  'claude-opus-5': Object.freeze({ in: 15.0, out: 75.0 }),
-  'claude-opus-4-8': Object.freeze({ in: 15.0, out: 75.0 }),
-  'claude-opus-4-7': Object.freeze({ in: 15.0, out: 75.0 }),
+  'claude-opus-5': Object.freeze({ in: 5.0, out: 25.0 }),
+  'claude-opus-4-8': Object.freeze({ in: 5.0, out: 25.0 }),
+  'claude-opus-4-7': Object.freeze({ in: 5.0, out: 25.0 }),
   'claude-sonnet-4-6': Object.freeze({ in: 3.0, out: 15.0 }),
   'claude-haiku-4-5': Object.freeze({ in: 1.0, out: 5.0 }),
 });
