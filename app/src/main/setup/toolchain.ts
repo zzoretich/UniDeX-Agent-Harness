@@ -166,8 +166,10 @@ export function macOSAtLeast(have: string, need: string): boolean {
 export function privateNodeBinDir(home: string): string { return path.join(home, ".local", "share", "unidex", "node", "current", "bin"); }
 
 export interface ToolchainPaths {
-  /** ~/.local/bin: uv, and the links the hosts' installers keep there (claude, codex, aos). */
+  /** ~/.local/bin: the links to uv and to the hosts' CLIs (claude, codex), and aos's. */
   localBin: string;
+  /** ~/.local/share/unidex: the private Node and uv, each a folder per version. */
+  unidex: string;
   /** ~/.local/share/unidex/node: one folder per version and the `current` link. */
   nodeRoot: string;
   /** ~/.local/share/unidex/node/current/bin/node, the path agenticos.json records. */
@@ -181,9 +183,11 @@ export interface ToolchainPaths {
 }
 
 export function toolchainPaths(home: string, env: NodeJS.ProcessEnv, userData: string): ToolchainPaths {
-  const nodeRoot = path.join(home, ".local", "share", "unidex", "node");
+  const unidex = path.join(home, ".local", "share", "unidex");
+  const nodeRoot = path.join(unidex, "node");
   return {
     localBin: path.join(home, ".local", "bin"),
+    unidex,
     nodeRoot,
     node: path.join(privateNodeBinDir(home), "node"),
     codexHome: env.CODEX_HOME && path.isAbsolute(env.CODEX_HOME) ? env.CODEX_HOME : path.join(home, ".codex"),
@@ -341,6 +345,25 @@ function swapLink(link: string, target: string): void {
   fs.renameSync(tmp, link);
 }
 
+const within = (root: string, p: string): boolean => { const rel = path.relative(root, p); return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel)); };
+
+/**
+ * Makes room at `dest` for a link this installer owns (inspection F3): nothing there, or a link into one of `own` (a tree
+ * this installer lays out), is replaced; anything else (a file, a folder, a link elsewhere: another installer's uv, an
+ * npm codex) is moved aside to `<dest>.unidex-backup-<time>` and the move is logged. Nothing is replaced unseen.
+ */
+function makeRoom(dest: string, own: string[], d: ToolchainDeps, ctx: TaskContext): void {
+  let st: fs.Stats;
+  try { st = fs.lstatSync(dest); } catch { return; }
+  if (st.isSymbolicLink()) {
+    const target = path.resolve(path.dirname(dest), fs.readlinkSync(dest));
+    if (own.some((root) => within(root, target))) return;
+  }
+  const backup = `${dest}.unidex-backup-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  fs.renameSync(dest, backup);
+  ctx.log(`Moved the existing ${tilde(dest, d.home)} aside to ${tilde(backup, d.home)}.`);
+}
+
 /** Moves a file or folder into place, copying with ditto when it crosses volumes. */
 async function moveInto(src: string, dest: string, d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   try { fs.renameSync(src, dest); return; } catch (err) { if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err; }
@@ -386,30 +409,43 @@ async function installNode(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   ctx.log(`Node.js ${pin.version} is in ${tilde(dir, d.home)}; ${tilde(path.join(d.paths.nodeRoot, "current"), d.home)} points at it.`);
 }
 
-/** uv: uv and uvx into ~/.local/bin, as Astral's own installer puts them. */
+/**
+ * uv: the archive's uv and uvx, each checked (inspection F4), into ~/.local/share/unidex/uv/<version> in one rename, then
+ * linked from ~/.local/bin (F3): what is already there and is not one of these links is moved aside first.
+ */
 async function installUv(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   const pin = d.manifest.tools.uv;
-  const file = await fetchVerified(pin.assets[d.arch], downloadPath(d, `uv-${pin.version}-${d.arch}.tar.gz`), `uv ${pin.version}`, d, ctx);
-  fs.mkdirSync(d.paths.localBin, { recursive: true });
-  // Unpacked beside the private Node (~/.local/share/unidex), not in ~/.local/bin, so nothing half-done is ever on the PATH.
-  fs.mkdirSync(path.dirname(d.paths.nodeRoot), { recursive: true });
-  const stage = fs.mkdtempSync(path.join(path.dirname(d.paths.nodeRoot), ".staging-uv-"));
-  try {
-    await unpack(file, stage, d, ctx);
-    const top = onlyDir(stage);
-    for (const b of ["uv", "uvx"]) if (!isFile(path.join(top, b))) throw new ToolchainError(`the uv archive has no ${b}`);
-    await checkSigned(path.join(top, "uv"), "uv", pin.teamId, d, ctx);
-    for (const b of ["uv", "uvx"]) {
-      fs.chmodSync(path.join(top, b), 0o755);
-      await moveInto(path.join(top, b), path.join(d.paths.localBin, b), d, ctx);
+  const root = path.join(d.paths.unidex, "uv");
+  const dir = path.join(root, pin.version);
+  const bins = ["uv", "uvx"];
+  if (bins.every((b) => isFile(path.join(dir, b))) && await reports(path.join(dir, "uv"), pin.version, d, ctx)) ctx.log(`uv ${pin.version} is already in ${tilde(dir, d.home)}.`);
+  else {
+    const file = await fetchVerified(pin.assets[d.arch], downloadPath(d, `uv-${pin.version}-${d.arch}.tar.gz`), `uv ${pin.version}`, d, ctx);
+    fs.mkdirSync(root, { recursive: true });
+    const stage = fs.mkdtempSync(path.join(root, ".staging-"));
+    try {
+      await unpack(file, stage, d, ctx);
+      const top = onlyDir(stage);
+      for (const b of bins) if (!isFile(path.join(top, b))) throw new ToolchainError(`the uv archive has no ${b}`);
+      for (const b of bins) {
+        fs.chmodSync(path.join(top, b), 0o755);
+        await checkSigned(path.join(top, b), b, pin.teamId, d, ctx);
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.renameSync(top, dir);
+    } finally {
+      fs.rmSync(stage, { recursive: true, force: true });
+      fs.rmSync(file, { force: true });
     }
-  } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
-    fs.rmSync(file, { force: true });
+  }
+  fs.mkdirSync(d.paths.localBin, { recursive: true });
+  for (const b of bins) {
+    makeRoom(path.join(d.paths.localBin, b), [d.paths.unidex], d, ctx);
+    swapLink(path.join(d.paths.localBin, b), path.join(dir, b));
   }
   const uv = path.join(d.paths.localBin, "uv");
   if (!(await reports(uv, pin.version, d, ctx))) throw new ToolchainError(`${uv} does not run`);
-  ctx.log(`uv ${pin.version} is in ${tilde(d.paths.localBin, d.home)}.`);
+  ctx.log(`uv ${pin.version} is in ${tilde(dir, d.home)}, linked from ${tilde(d.paths.localBin, d.home)}.`);
 }
 
 /** Ollama answers on /api/tags (one ask), with the names it has. */
@@ -482,7 +518,9 @@ const TRIPLE: Record<Arch, string> = { arm64: "aarch64-apple-darwin", x64: "x86_
 /**
  * Codex: the standalone package laid out as Codex's own installer (scripts/install/install.sh) lays it out, so Codex
  * keeps it up to date the same way: <codex home>/packages/standalone/releases/<version>-<target>, `current` pointed at
- * it, `auto-update-version` naming it, and codex and codex-code-mode-host linked from ~/.local/bin.
+ * it, `auto-update-version` naming it, and codex and codex-code-mode-host linked from ~/.local/bin. Every executable in
+ * it is checked before anything moves (inspection F4); a release already complete is kept, an incomplete one and
+ * anything at the links that is not this layout's are moved aside (F3).
  */
 async function installCodex(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   const pin = d.manifest.tools.codex;
@@ -490,30 +528,39 @@ async function installCodex(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   const root = path.join(d.paths.codexHome, "packages", "standalone");
   const releases = path.join(root, "releases");
   const dir = path.join(releases, release);
-  const file = await fetchVerified(pin.assets[d.arch], downloadPath(d, `codex-package-${release}.tar.gz`), `Codex ${pin.version}`, d, ctx);
-  fs.mkdirSync(releases, { recursive: true });
-  const stage = path.join(releases, `.staging.${release}.${process.pid}`);
-  fs.rmSync(stage, { recursive: true, force: true });
-  fs.mkdirSync(stage);
-  try {
-    await unpack(file, stage, d, ctx);
-    for (const rel of ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg", "codex-package.json"]) {
-      if (!isFile(path.join(stage, rel))) throw new ToolchainError(`not a Codex package: ${rel} is missing`);
-    }
-    for (const rel of ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"]) fs.chmodSync(path.join(stage, rel), 0o755);
-    await checkSigned(path.join(stage, "bin", "codex"), "codex", pin.teamId, d, ctx);
-    fs.rmSync(path.join(stage, "codex"), { force: true });
-    fs.symlinkSync("bin/codex", path.join(stage, "codex"));
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.renameSync(stage, dir);
-  } finally {
+  const exes = ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"];
+  const complete = (at: string) => [...exes, "codex-package.json"].every((rel) => isFile(path.join(at, rel)));
+  if (complete(dir) && await reports(path.join(dir, "bin", "codex"), pin.version, d, ctx)) ctx.log(`Codex ${pin.version} is already in ${tilde(dir, d.home)}.`);
+  else {
+    const file = await fetchVerified(pin.assets[d.arch], downloadPath(d, `codex-package-${release}.tar.gz`), `Codex ${pin.version}`, d, ctx);
+    fs.mkdirSync(releases, { recursive: true });
+    const stage = path.join(releases, `.staging.${release}.${process.pid}`);
     fs.rmSync(stage, { recursive: true, force: true });
-    fs.rmSync(file, { force: true });
+    fs.mkdirSync(stage);
+    try {
+      await unpack(file, stage, d, ctx);
+      if (!complete(stage)) throw new ToolchainError(`not a Codex package: ${[...exes, "codex-package.json"].filter((rel) => !isFile(path.join(stage, rel))).join(", ")} missing`);
+      for (const rel of exes) {
+        fs.chmodSync(path.join(stage, rel), 0o755);
+        await checkSigned(path.join(stage, rel), path.basename(rel), pin.teamId, d, ctx);
+      }
+      fs.rmSync(path.join(stage, "codex"), { force: true });
+      fs.symlinkSync("bin/codex", path.join(stage, "codex"));
+      makeRoom(dir, [], d, ctx);
+      fs.renameSync(stage, dir);
+    } finally {
+      fs.rmSync(stage, { recursive: true, force: true });
+      fs.rmSync(file, { force: true });
+    }
   }
   const current = path.join(root, "current");
+  makeRoom(current, [releases], d, ctx);
   swapLink(current, dir);
-  swapLink(path.join(d.paths.localBin, "codex"), path.join(current, "bin", "codex"));
-  swapLink(path.join(d.paths.localBin, "codex-code-mode-host"), path.join(current, "bin", "codex-code-mode-host"));
+  for (const name of ["codex", "codex-code-mode-host"]) {
+    const link = path.join(d.paths.localBin, name);
+    makeRoom(link, [root], d, ctx);
+    swapLink(link, path.join(current, "bin", name));
+  }
   const marker = path.join(root, "auto-update-version");
   fs.writeFileSync(`${marker}.${process.pid}.tmp`, release);
   fs.renameSync(`${marker}.${process.pid}.tmp`, marker);

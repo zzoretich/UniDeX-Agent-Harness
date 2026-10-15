@@ -181,7 +181,13 @@ interface Machine {
   deps: ToolchainDeps;
   calls: string[][];
   urls: string[];
-  state: { team: string; signed: boolean; gatekeeper: boolean; tags: string[] | null; opened: string[]; pulls: string[]; pullError: string | null };
+  state: {
+    team: string; signed: boolean; gatekeeper: boolean; tags: string[] | null; opened: string[]; pulls: string[]; pullError: string | null;
+    /** A team for one file by its name (another team's helper in an archive); else `team`. */
+    teamFor: Record<string, string>;
+    /** Runs when `open` is asked to open something (a Stop pressed meanwhile). */
+    onOpen: (() => void) | null;
+  };
 }
 
 /**
@@ -192,16 +198,21 @@ function machine(files: Record<string, Buffer>, manifest: Manifest, o: Partial<T
   const home = fs.mkdtempSync(path.join(ROOT, "home-"));
   const calls: string[][] = [];
   const urls: string[] = [];
-  const state: Machine["state"] = { team: "", signed: true, gatekeeper: true, tags: null, opened: [], pulls: [], pullError: null };
+  const state: Machine["state"] = { team: "", signed: true, gatekeeper: true, tags: null, opened: [], pulls: [], pullError: null, teamFor: {}, onOpen: null };
   const CURL = "/fake/curl";
   const run: Run = async (file, args, ro) => {
     calls.push([file, ...args]);
     if (file === "/usr/bin/codesign") {
-      if (args[0] === "-dv") return { code: 0, out: `Executable=${args.at(-1)}\nIdentifier=stand-in\nTeamIdentifier=${state.team}\n` };
+      if (args[0] === "-dv") return { code: 0, out: `Executable=${args.at(-1)}\nIdentifier=stand-in\nTeamIdentifier=${state.teamFor[path.basename(args.at(-1) as string)] ?? state.team}\n` };
       return state.signed ? { code: 0, out: "" } : { code: 1, out: `${args.at(-1)}: invalid signature (code or signature have been modified)` };
     }
     if (file === "/usr/sbin/spctl") return state.gatekeeper ? { code: 0, out: "accepted\nsource=Notarized Developer ID" } : { code: 3, out: "rejected" };
-    if (file === "/usr/bin/open") { state.opened.push(args.at(-1) as string); if (!state.tags) state.tags = []; return { code: 0, out: "" }; }
+    if (file === "/usr/bin/open") {
+      state.opened.push(args.at(-1) as string);
+      if (state.onOpen) { state.onOpen(); return { code: 0, out: "" }; }
+      if (!state.tags) state.tags = [];
+      return { code: 0, out: "" };
+    }
     if (file === CURL) {
       const url = args.at(-1) as string;
       if (url.endsWith("/api/tags")) {
@@ -299,8 +310,53 @@ test("uv: uv and uvx land in ~/.local/bin", async () => {
   m.state.team = MANIFEST.tools.uv.teamId as string;
   await runToolchainJob("uv", m.deps, context());
   const bin = path.join(m.home, ".local", "bin");
+  const dir = path.join(m.home, ".local", "share", "unidex", "uv", v);
   assert.deepEqual(fs.readdirSync(bin).sort(), ["uv", "uvx"]);
+  assert.equal(fs.readlinkSync(path.join(bin, "uv")), path.join(dir, "uv"), "a link into uv's own version folder");
+  assert.equal(fs.readlinkSync(path.join(bin, "uvx")), path.join(dir, "uvx"));
+  assert.deepEqual(fs.readdirSync(path.dirname(dir)), [v], "no staging folder is left");
   assert.equal(spawnSync(path.join(bin, "uv"), [], { encoding: "utf8" }).stdout.trim(), `uv ${v} (stand-in)`);
+  // inspection F4: both binaries were checked, before anything moved.
+  const checked = m.calls.filter((c) => c[0] === "/usr/bin/codesign" && c[1] === "--verify").map((c) => path.basename(c.at(-1) as string));
+  assert.deepEqual(checked, ["uv", "uvx"]);
+});
+
+/** uv's stand-in archive (uv answers its version, uvx is a stub). */
+function uvArchive(): Buffer {
+  const src = path.join(ROOT, "src-uv2");
+  fs.rmSync(src, { recursive: true, force: true });
+  sh(path.join(src, "uv-aarch64-apple-darwin", "uv"), `echo "uv ${MANIFEST.tools.uv.version} (stand-in)"`);
+  sh(path.join(src, "uv-aarch64-apple-darwin", "uvx"), "echo uvx");
+  return tarOf(src);
+}
+
+test("inspection F3: a uvx (or uv) that is not this installer's is moved aside, logged, never replaced unseen; a re-run keeps its own links", async () => {
+  const { files, manifest } = pinned({ uv: uvArchive() });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.uv.teamId as string;
+  const bin = path.join(m.home, ".local", "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "uvx"), "#!/bin/sh\necho someone else's uvx\n", { mode: 0o755 });
+  const ctx = context();
+  await runToolchainJob("uv", m.deps, ctx);
+  const backups = fs.readdirSync(bin).filter((n) => n.startsWith("uvx.unidex-backup-"));
+  assert.equal(backups.length, 1);
+  assert.equal(fs.readFileSync(path.join(bin, backups[0]), "utf8"), "#!/bin/sh\necho someone else's uvx\n", "the other uvx is kept, whole");
+  assert.ok(fs.lstatSync(path.join(bin, "uvx")).isSymbolicLink());
+  assert.ok(ctx.seen.lines.some((l) => l.startsWith("Moved the existing ~/.local/bin/uvx aside to ~/.local/bin/uvx.unidex-backup-")), ctx.seen.lines.join("\n"));
+  // Run again: the links are this installer's own, so nothing more is moved aside.
+  await runToolchainJob("uv", m.deps, context());
+  assert.equal(fs.readdirSync(bin).filter((n) => n.includes(".unidex-backup-")).length, 1);
+});
+
+test("inspection F4: an archive whose uvx is signed by another team installs nothing, uv included", async () => {
+  const { files, manifest } = pinned({ uv: uvArchive() });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.uv.teamId as string;
+  m.state.teamFor = { uvx: "ZZZZZZZZZZ" };
+  await assert.rejects(runToolchainJob("uv", m.deps, context()), new RegExp(`uvx is signed by team ZZZZZZZZZZ, not ${MANIFEST.tools.uv.teamId}`));
+  assert.equal(fs.existsSync(path.join(m.home, ".local", "bin", "uv")), false);
+  assert.deepEqual(fs.readdirSync(path.join(m.home, ".local", "share", "unidex", "uv")), [], "no version folder, no staging");
 });
 
 test("Codex: laid out as its own installer lays it out, and linked from ~/.local/bin", async () => {
@@ -322,8 +378,60 @@ test("Codex: laid out as its own installer lays it out, and linked from ~/.local
   assert.equal(fs.readlinkSync(path.join(m.home, ".local", "bin", "codex")), path.join(root, "current", "bin", "codex"));
   assert.equal(fs.readlinkSync(path.join(m.home, ".local", "bin", "codex-code-mode-host")), path.join(root, "current", "bin", "codex-code-mode-host"));
   assert.deepEqual(fs.readdirSync(path.join(root, "releases")), [release], "no staging folder is left");
+  // inspection F4: every executable it installs was checked.
+  const checked = m.calls.filter((c) => c[0] === "/usr/bin/codesign" && c[1] === "--verify").map((c) => path.basename(c.at(-1) as string));
+  assert.deepEqual(checked, ["codex", "codex-code-mode-host", "rg"]);
   // $CODEX_HOME moves it, as Codex's installer honours it.
   assert.equal(toolchainPaths(m.home, { CODEX_HOME: "/elsewhere/codex" }, "/ud").codexHome, "/elsewhere/codex");
+});
+
+/** Codex's stand-in package. */
+function codexArchive(): Buffer {
+  const v = MANIFEST.tools.codex.version;
+  const src = path.join(ROOT, "src-codex2");
+  fs.rmSync(src, { recursive: true, force: true });
+  sh(path.join(src, "bin", "codex"), `echo "codex-cli ${v}"`);
+  sh(path.join(src, "bin", "codex-code-mode-host"), "exit 0");
+  sh(path.join(src, "codex-path", "rg"), "exit 0");
+  fs.writeFileSync(path.join(src, "codex-package.json"), JSON.stringify({ layoutVersion: 1, version: v }));
+  return tarOf(src);
+}
+
+test("inspection F3: Codex moves aside a codex-code-mode-host and a release folder that are not its own layout's; its own links are replaced", async () => {
+  const v = MANIFEST.tools.codex.version;
+  const { files, manifest } = pinned({ codex: codexArchive() });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.codex.teamId as string;
+  const bin = path.join(m.home, ".local", "bin");
+  const root = path.join(m.home, ".codex", "packages", "standalone");
+  const release = path.join(root, "releases", `${v}-aarch64-apple-darwin`);
+  fs.mkdirSync(path.join(release, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(release, "bin", "codex"), "half an install");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "codex-code-mode-host"), "someone else's helper", { mode: 0o755 });
+  fs.symlinkSync(path.join(root, "current", "bin", "codex"), path.join(bin, "codex"));
+  const ctx = context();
+  await runToolchainJob("codex", m.deps, ctx);
+  assert.equal(fs.readdirSync(bin).filter((n) => n.startsWith("codex-code-mode-host.unidex-backup-")).length, 1);
+  assert.equal(fs.readdirSync(bin).filter((n) => n.startsWith("codex.unidex-backup-")).length, 0, "its own link is not backed up");
+  const old = fs.readdirSync(path.dirname(release)).filter((n) => n.includes(".unidex-backup-"));
+  assert.equal(old.length, 1, "the incomplete release is kept aside, not deleted");
+  assert.equal(fs.readFileSync(path.join(path.dirname(release), old[0], "bin", "codex"), "utf8"), "half an install");
+  assert.ok(ctx.seen.lines.some((l) => /^Moved the existing ~\/\.local\/bin\/codex-code-mode-host aside/.test(l)));
+  // A complete release is kept as it is: nothing is downloaded again.
+  const before = m.urls.length;
+  await runToolchainJob("codex", m.deps, context());
+  assert.equal(m.urls.length, before);
+});
+
+test("inspection F4: a Codex package whose rg is signed by another team installs nothing", async () => {
+  const { files, manifest } = pinned({ codex: codexArchive() });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.codex.teamId as string;
+  m.state.teamFor = { rg: "ZZZZZZZZZZ" };
+  await assert.rejects(runToolchainJob("codex", m.deps, context()), /rg is signed by team ZZZZZZZZZZ/);
+  assert.equal(fs.existsSync(path.join(m.home, ".local", "bin", "codex")), false);
+  assert.deepEqual(fs.readdirSync(path.join(m.home, ".codex", "packages", "standalone", "releases")), []);
 });
 
 test("Claude Code: the pinned build is checked, then its own `claude install` runs; the download is removed either way", async () => {
