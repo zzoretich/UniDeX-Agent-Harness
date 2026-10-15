@@ -159,10 +159,12 @@ async function main() {
     return;
   }
   try {
-    if (!dryRun && !force && process.env.AOS_DETACHED !== '1' && throttled(false)) { process.exit(0); }
-    // Sessions follows the hosts' sign-in (A17), with telemetry on or off; a dry run probes nothing.
+    // Sessions follows the hosts' sign-in (A17), with telemetry on or off, and before the sweep's throttle: the Workbench
+    // runs this at launch, and a fresh install has no login recorded until something asks (a fresh cache costs one read,
+    // a missing one the free checks). A dry run probes nothing; with telemetry off nothing else is written.
     if (!dryRun) await refreshLogins();
     if (!telemetryEnabled()) { process.exit(0); }
+    if (!dryRun && !force && process.env.AOS_DETACHED !== '1' && throttled(false)) { process.exit(0); }
     const done = reconcile({ dryRun });
     if (dryRun || process.env.AOS_DETACHED !== '1') {
       for (const s of done) process.stdout.write(`[reconcile] ${dryRun ? 'would reconcile' : 'reconciled'} ${s.host} session ${s.sessionId}${s.why === 'exited' ? ' (process exited)' : ''}${s.transcript ? '' : ' (no transcript)'}\n`);

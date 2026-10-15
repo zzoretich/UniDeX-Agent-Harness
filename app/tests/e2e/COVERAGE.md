@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 133 |
+| covered | 134 |
 | covered in part | 68 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| **total** | **256** |
+| **total** | **257** |
 
-Of the 207 items about the app (256 minus the 49 N/A), 201 are asserted (133 fully, 68 in part); the other 6 are not
+Of the 208 items about the app (257 minus the 49 N/A), 202 are asserted (134 fully, 68 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -380,6 +380,7 @@ again (`brain-ai`).
 | CH1 | `codex` (a Codex-only vault): header `· codex via ask.js (reasoner caps)` until Codex is picked, then `· Codex via ask.js (Codex default, reasoner caps)`, the menu's pick in place of `Codex default`; an answer; the spend row | covered | `variants › a Codex-only machine › Sessions: the host and model menu offers Codex alone…` (Codex the one ready host, not picked: the chip reads Codex, the header today's route), `chat-writes › SE13 Vault chat's picker…` (the header with a picked model, an answer through `ask.js --host=codex` and its `reason:ask` row), `chat-writes › codex (CH1)…` and `variants › a provider on record › Vault chat…` (no host ready: `· codex via ask.js (reasoner caps)`, the answer through a stub `codex exec` and the runtime's `reason:ask` row). |
 | CH2 | `none`: no Sessions rail button; Open Workbench: Sessions shows the hint | covered | `sidebar-omni-notes › Sessions and Code › no provider…`, `shell › rail…` |
 | CH3 | `ollama` without a Claude login and no host ready: header `· local ask.js`; an answer | covered | `variants › a provider on record › Vault chat…` (the header), `chat-writes › ollama without a Claude login (CH3)…`: the answer comes from a stub Ollama server; nothing is billed. |
+| CH6 | `local`, a fresh install's first launch: no sign-in recorded, the host signed in → Sessions joins the rail once the check answers, no relaunch, telemetry on or off | covered | `signin-first-launch › a fresh local install: Sessions joins the rail…` (the check a second late, the rail drawn first, the throttle stamped); `reconcile-sessions.test.js › inline: the hosts' sign-in is refreshed before the throttle and the telemetry switch…`; `aosConfig.test.ts › loginsUnknown…`. |
 | CH5 | `local` with `ai.chat: local` (2.0): Sessions on the rail with the engine down and a host signed in; the chip **This Mac**, its header and the down line; a question back down with **Run once on Claude Code** naming the reasoner cap, run only on the click | covered | `local › Sessions stays on the rail…`, `› Vault chat starts on This Mac…`, `› a question with the local model down…` (the real `ask.js --local --chat` in the fixture vault against an engine that refuses, then the stub `claude`); `claudeAsk.test.ts` (`vaultRoute`, `vaultHostChoices` under local, `localDownOf`, `runOnceLabel`), `HostModelMenu.test.ts` (`menuValue` with the local choice). The answer from a running Ollama: manual. |
 | CH4 | `claude`: header `· Claude Code (claude-opus-5, capped)` (the reasoner while the menu reads Default); an answer with its cost | covered | `variants › a provider on record › Pulse is Home with a provider too…` (Sessions closes the first section), `› Vault chat under claude…` (the header, the fixed Read only chip and the host and model menu on Claude Code), `chat-writes › claude (CH4)…`: a stub `claude` answers, the turn shows its time and cost, and the chat log and the spend ledger gain their lines. |
 
