@@ -350,11 +350,11 @@ registerUpdateIpc(trust, {
 registerThemeIpc(trust, { state: () => themeState(), set: (source) => setTheme(source) });
 
 /** The page went (closed, crashed, reloaded, or quitting): its terminals go with it, and the children it was waiting on.
- *  A setup job (a fix-it's terminal, `aos init`, `aos upgrade`) is the page's too. */
+ *  A setup job (a fix-it's terminal, `aos init`, `aos upgrade`, the import and its scan) is the page's too. */
 function endPageWork(): void {
   ptyService.killAll();
   procService.killAttached();
-  setup.jobs.cancel();
+  setup.cancel();
 }
 
 function createWindow(): void {

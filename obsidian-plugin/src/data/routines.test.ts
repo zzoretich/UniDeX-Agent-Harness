@@ -2,9 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "fs";
 import * as path from "path";
+import { createRequire } from "module";
 import {
   routineFromFile, routineToFile, validateRoutine, parseRoutineFrontmatter, fingerprint, parseState, health, buildRows,
-  schedulesOutOfDate, emptyState, Routine,
+  schedulesOutOfDate, emptyState, Routine, ENGINES, KEY_ORDER, MAX_TURNS_LIMIT, lastSkip, localDenied,
 } from "./routines";
 
 // The runtime's fixtures: both parsers must agree on every one of them.
@@ -18,6 +19,11 @@ test("every runtime fixture parses to the same verdict as routines-store.js", ()
   assert.match(fixture("bad-cron").errors[0], /^schedule: hour/);
   assert.match(fixture("bad-kind").errors[0], /^kind must be one of/);
   assert.match(fixture("missing-argv").errors[0], /argv/);
+  assert.deepEqual(fixture("local-digest").errors, []);
+  assert.deepEqual(fixture("bad-engine").errors, ["engine is for prompt routines only"]);
+  const l = fixture("local-digest");
+  assert.deepEqual([l.engine, l.model, l.maxTurns, l.output], ["local", "qwen3.5:9b", 12, "notify"]);
+  assert.deepEqual(l.writes, ["notes/digests/", "brain/reflections/*.md"]);
   const b = fixture("morning-brief");
   assert.equal(b.kind, "prompt");
   assert.equal(b.budgetUsd, 0.5);
@@ -29,7 +35,7 @@ test("every runtime fixture parses to the same verdict as routines-store.js", ()
 });
 
 test("routineToFile round-trips every valid fixture and is a fixed point", () => {
-  for (const slug of ["monitor", "morning-brief", "scan-refresh"]) {
+  for (const slug of ["monitor", "morning-brief", "scan-refresh", "local-digest"]) {
     const r = fixture(slug);
     const { errors, ...rest } = r;
     void errors;
@@ -160,4 +166,51 @@ test("readDutyLogLast: reads the vault log's tail and mtime; absent, empty or an
   fs.writeFileSync(f, "");
   assert.equal(readDutyLogLast(vault, "monitor"), null);
   assert.equal(readDutyLogLast(vault, "../monitor"), null);
+});
+
+// local-first A6/A7: the engine fields mirror routines-store.js rule for rule (its ENGINES, KEY_ORDER and messages).
+test("engine, maxTurns, writes and output: the runtime's constants and verdicts", () => {
+  const REPO = path.resolve(__dirname, "../../..");
+  const store = createRequire(__filename)(path.join(REPO, "brain/scripts/lib/routines-store.js")) as {
+    ENGINES: string[]; KEY_ORDER: string[]; MAX_TURNS_LIMIT: number; validate(r: unknown): string[]; localDenied(p: string): string | null;
+  };
+  assert.deepEqual([...ENGINES], store.ENGINES);
+  assert.deepEqual(KEY_ORDER, store.KEY_ORDER);
+  assert.equal(MAX_TURNS_LIMIT, store.MAX_TURNS_LIMIT);
+  const base = { slug: "ok-slug", schema: 1, name: "x", kind: "prompt", schedule: "0 9 * * *", enabled: true, body: "hi" } as Partial<Routine>;
+  const cases: Partial<Routine>[] = [
+    { engine: "local" }, { engine: "claude", model: "sonnet" }, { engine: "codex", model: "gpt-6-sol" }, { engine: "ollama" },
+    { kind: "duty", engine: "local" }, { kind: "command", argv: ["ls"], engine: "codex" },
+    { maxTurns: 24 }, { maxTurns: 0 }, { maxTurns: 1.5 }, { maxTurns: 201 },
+    { writes: ["notes/", "notes/**/*.md"] }, { writes: ["/abs/"] }, { writes: ["../x/"] }, { writes: ["a,b"] }, { writes: ["~/x"] },
+    { output: "log" }, { output: "notify" }, { output: "notes/out.md" }, { output: "daily" }, { output: "../x.md" }, { output: "notes/x.txt" },
+    { kind: "duty", writes: ["notes/inbox/"] },
+    // What feeds hosted sessions is off limits to a local routine, case and Unicode variants too; a duty keeps its own rule.
+    { engine: "local", writes: ["persona/journal/"] }, { writes: ["brain/memory/feedback/"] }, { writes: ["Brain/_Index/"] }, { writes: ["brain/**/*.md"] },
+    { writes: ["notes/CLAUDE.md"] }, { writes: ["notes/agents.md"] }, { writes: ["MEMORY.md"] }, { writes: ["AGENTICOS.md"] }, { writes: ["notes/agenticos.md"] },
+    { writes: ["per\u017fona/x/"] }, { output: "MEMORY.md" }, { output: "brain/_index/brief.md" }, { output: "notes/CLAUDE.md" },
+    { kind: "duty", writes: ["brain/memory/feedback/"] },
+  ];
+  for (const c of cases) assert.deepEqual(validateRoutine({ ...base, ...c }), store.validate({ ...base, ...c }), JSON.stringify(c));
+  const text = routineToFile({ slug: "k", schema: 1, name: "K", kind: "prompt", schedule: "0 9 * * *", enabled: true, output: "notify", writes: ["notes/"], maxTurns: 8, model: "qwen3.5:4b", engine: "local", body: "go" });
+  assert.equal(text, '---\nschema: 1\nname: K\nkind: prompt\nschedule: "0 9 * * *"\nenabled: true\nengine: local\nmodel: "qwen3.5:4b"\nmaxTurns: 8\nwrites: [notes/]\noutput: notify\n---\n\ngo\n');
+});
+
+test("lastSkip: a skip newer than the last run, with its short reason; a run since hides it", () => {
+  const e = (over: Partial<RoutineStateEntry>): RoutineStateEntry => ({ lastRunAt: null, lastExit: null, lastCostUsd: null, lastDurationMs: null, failStreak: 0, lastTrigger: null, lastError: null, ...over });
+  const down = "local-down: Ollama at http://127.0.0.1:11434 is not answering";
+  assert.deepEqual(lastSkip(e({ lastSkippedAt: "2026-10-15T09:00:00.000Z", lastSkipReason: down })), { at: "2026-10-15T09:00:00.000Z", reason: down, short: "local-down" });
+  assert.equal(lastSkip(e({ lastSkippedAt: "2026-10-15T09:00:00.000Z", lastSkipReason: "daily cap reached (6.00 of 6 USD)" }))!.short, "daily cap reached");
+  assert.equal(lastSkip(e({ lastRunAt: "2026-10-15T10:00:00.000Z", lastSkippedAt: "2026-10-15T09:00:00.000Z", lastSkipReason: down })), null);
+  assert.equal(lastSkip(e({})), null);
+  assert.equal(lastSkip(null), null);
+});
+
+test("localDenied: the runtime's verdict for every path, folded the same way", () => {
+  const REPO = path.resolve(__dirname, "../../..");
+  const store = createRequire(__filename)(path.join(REPO, "brain/scripts/lib/routines-store.js")) as { localDenied(p: string): string | null };
+  for (const p of ["persona/", "Persona/journal/", "brain/memory/", "brain/_index/x.md", "brain/", "brain/**/*.md", "brain/reflections/*.md", "notes/",
+    "MEMORY.md", "notes/sub/Memory.md", "AGENTICOS.md", "notes/AGENTICOS.md", "CLAUDE.md", "x/AGENTS.md", "per\u017fona/x", "*.md", "TODO.md"]) {
+    assert.equal(localDenied(p), store.localDenied(p), p);
+  }
 });

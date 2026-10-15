@@ -275,7 +275,7 @@ test.describe("a Codex-only machine", () => {
     await openTab(win, "settings");
     const row = (key: string) => content(win).locator(".aos-st-row", { has: win.locator(".aos-st-key", { hasText: new RegExp(`^${key.replace(/\./g, "\\.")}$`) }) });
     await expect(row("claude.model")).toHaveClass(/is-dim/);
-    await expect(row("claude.model").locator(".aos-st-hostnote")).toHaveText("Claude Code is off on this machine; `aos init --host both` turns it on");
+    await expect(row("claude.model").locator(".aos-st-hostnote")).toHaveText("Claude Code is off on this machine; Add Claude Code under Hosts (`aos hosts add claude`) turns it on");
     await expect(row("codex.model")).not.toHaveClass(/is-dim/);
   });
 

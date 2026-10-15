@@ -12,7 +12,8 @@
  *   aos doctor · aos status · aos provider [local|auto|ollama|claude|codex|none] · aos local [status | pull | use <model>] · aos graph [status | build [--semantic] | on | off | semantic on|off|auto]
  *   aos upgrade [--from-local <repo-dir>] · aos uninstall [--host claude|codex] [--keep-vault] [--yes]
  *   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes] · aos cost [enable [--budget <usd>] [--yes] | disable]
- *   aos import [--from claude|codex|all] [--since 90d|all] [--only …] [--accept <json>] [--dry-run] [--json] · aos hosts add <claude|codex>
+ *   aos import [--from claude|codex|all] [--since 90d|all] [--only …] [--accept <json>] [--dry-run] [--json] · aos hosts add <claude|codex> | status [--json]
+ *   aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--json]   (local-first A9, install-import B12)
  *
  * Exit codes: 0 ok · 1 a check failed · 2 usage.
  * Runs from the repo checkout (`node cli/aos.js …`, `npm run setup`), from a release tree (the AgenticOS Workbench app's
@@ -61,7 +62,7 @@ const USAGE = `usage:
   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes]
   aos cost [enable [--budget <usd>] [--yes] | disable]
   aos graph [status | build [--semantic [--yes]] | on | off | semantic on|off|auto]
-  aos routines [list [--json] | sync | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
+  aos routines [list [--json] | sync | unschedule <slug> | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
   aos skills [list [--all] [--json] | sync [--dry-run] [--json] | exclude <name> | include <name> | reset <name>]
   aos agents [list [--all] [--json] | sync [--dry-run] [--json] | exclude <name> | include <name> | reset <name>]
   aos config [list [--json] | get <key> [--json] | set <key> <value> [--dry-run] [--json] | unset <key> [--dry-run]]
@@ -76,7 +77,8 @@ const USAGE = `usage:
              | merge-draft <path> <path>… [--estimate] [--json] | merge <path> <path>… --into <json> --expect <hash>,… [--json]
              | unmerge <path> --expect <hash> [--json] | sweep [<path>…] [--estimate] [--json] | sweep dismiss <id> [--json]]
   aos import [--from claude|codex|all] [--since 90d|all] [--only instructions,memories,projects,mcp,sessions] [--accept <json list>] [--dry-run] [--json]
-  aos hosts add <claude|codex> [--from-local <repo-dir>]
+  aos hosts add <claude|codex> [--from-local <repo-dir>] | aos hosts status [--json]
+  aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--accept <json list>] [--json]
   aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
@@ -176,12 +178,15 @@ function removeStatusline(vault, cfg, host = null) {
 }
 
 // ── processes ─────────────────────────────────────────────────────────────────
-function run(cmd, args, { cwd, env, capture = false, allowFail = false, input } = {}) {
+/** `timeout` (ms) stops the child with SIGKILL; with allowFail a timed-out run is { status: 124, timedOut: true }. */
+function run(cmd, args, { cwd, env, capture = false, allowFail = false, input, timeout } = {}) {
   const r = spawnSync(cmd, args, {
     cwd, input, encoding: 'utf8',
     env: { ...process.env, ...(env || {}) },
     stdio: capture ? ['pipe', 'pipe', 'pipe'] : (input !== undefined ? ['pipe', 'inherit', 'inherit'] : 'inherit'),
+    ...(timeout ? { timeout, killSignal: 'SIGKILL' } : {}),
   });
+  if (r.error && r.error.code === 'ETIMEDOUT' && allowFail) return { status: 124, stdout: r.stdout || '', stderr: r.stderr || '', timedOut: true };
   if (r.error) {
     if (allowFail) return { status: 127, stdout: '', stderr: String(r.error.message) };
     throw new CheckFailed(`${cmd}: ${r.error.message}`);
@@ -1300,6 +1305,14 @@ async function upgrade(flags) {
   // `from`: the version this vault was last installed or upgraded at, before this upgrade records the new one.
   const ctx = { flags, repo, vault, written, act, dry: false, yes: true, version, from: cfg.version };
   out.log(`upgrading ${vault} from ${repo} (v${version})`);
+  // local-first A9, install-import B12: what a release asks once (cli/migrations.js MIGRATIONS, gated on `from` like
+  // NEW_ROUTINES), recorded pending first: before any step writes the new version, so an upgrade that stops part way
+  // still asks at its re-run. Asked about at the end on a TTY; shown by the app's launch sequence.
+  let migrationsAdded = [];
+  await act('record what this release asks you once (aos migrate)', () => {
+    migrationsAdded = require('./migrations.js').recordPending({ vault, from: ctx.from });
+    out.log(`   ${migrationsAdded.length ? `pending: ${migrationsAdded.join(', ')}` : 'nothing new'}`);
+  });
   await act('re-vendor brain/scripts (force) and reinstall its dependencies', () => vendorRuntime(ctx, { force: true }));
   await act('seed brain/routines/ and re-render the installed schedules', () => migrateRoutines(ctx));
   const hosts = hostsOf(cfg);
@@ -1368,6 +1381,9 @@ async function upgrade(flags) {
     out.log(`The Workbench is now the ${APP_NAME} app for macOS (${APP_DOWNLOAD}); once you use the app, you can remove the old Obsidian plugin folder ${path.join(vault, '.obsidian', 'plugins', OBSIDIAN_PLUGIN_ID)}.`);
   }
   out.log(`upgraded to v${version}. Memory, notes and persona were not touched.`);
+  try {
+    await require('./migrations.js').offer(migrationsAdded, { io: { log: out.log }, vault, configDir: configDir() });
+  } catch (e) { out.warn(`aos migrate: ${e.message}`); }
   return 0;
 }
 
@@ -1508,7 +1524,7 @@ async function importCmd(sub, flags) {
   }
 }
 
-/** `aos hosts add <host>` (install-import B2): cli/hosts.js, wiring one more host into this install. */
+/** `aos hosts add <host>` and `aos hosts status` (install-import B2): cli/hosts.js, wiring one more host into this install. */
 async function hostsCmd(sub, flags) {
   const H = require('./hosts.js');
   try {
@@ -1517,7 +1533,7 @@ async function hostsCmd(sub, flags) {
       readJson, writeJson, configPath, configDir, claudeBin, claudeLoggedIn, codexBin, hostsOf, buildUserConfig, repoRoot,
       installPlugin, wireCodex, run, out, PLUGIN_ID, MARKETPLACE,
     };
-    return await H.main(sub, { fromLocal: flags.fromLocal }, { io: console, aos });
+    return await H.main(sub, { fromLocal: flags.fromLocal, json: !!flags.json }, { io: console, aos });
   } catch (e) {
     if (e instanceof H.UsageError) throw new UsageError(e.message);
     if (e instanceof H.Refused) throw new CheckFailed(e.message);
@@ -1536,6 +1552,20 @@ function mcpCmd(sub, flags) {
   } catch (e) {
     if (e instanceof M.UsageError) throw new UsageError(e.message);
     if (e instanceof M.Refused) throw new CheckFailed(`mcp copy: ${e.message}`);
+    throw e;
+  }
+}
+
+/** `aos migrate` (local-first A9, install-import B12): cli/migrations.js, the choices an upgrade asks once. */
+async function migrateCmd(sub, flags) {
+  const M = require('./migrations.js');
+  const argv = [...sub, ...['status', 'apply', 'chief', 'decline', 'undo', 'json'].filter((f) => flags[f]).map((f) => `--${f}`)];
+  if (flags.accept !== undefined) argv.push('--accept', flags.accept);
+  try {
+    return await M.main(argv, { io: console });
+  } catch (e) {
+    if (e instanceof M.UsageError) throw new UsageError(e.message);
+    if (e instanceof M.Refused) throw new CheckFailed(e.message);
     throw e;
   }
 }
@@ -1561,7 +1591,11 @@ function updateNotice() {
 // --skip-brain-md and merge-draft's and sweep's --estimate (A5) do not.
 // `aos import`'s (install-import B7): --from, --since, --only and --accept take a value; `aos mcp copy`'s (B6) --to.
 const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by', 'from', 'since', 'only', 'accept', 'to']);
-const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate']);
+// `aos migrate`'s (local-first A9): --status, --apply, --chief, --decline and --undo take none, and main() refuses them on
+// any other verb.
+const MIGRATE_FLAGS = ['status', 'apply', 'chief', 'decline', 'undo'];
+const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate',
+  ...MIGRATE_FLAGS]);
 // --no-obsidian is parsed and ignored: Obsidian is no longer installed, and a script written for an older release keeps working.
 const NEGATABLE_FLAGS = new Set(['obsidian']);
 function camel(s) { return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }
@@ -1601,6 +1635,8 @@ function parseArgs(argv) {
 async function main(argv) {
   const { cmd, sub, flags } = parseArgs(argv);
   // --dry-run is an init-only preview (contract §4.3); on a mutating command it must be a loud error, never a silent no-op.
+  const misplaced = cmd === 'migrate' ? undefined : MIGRATE_FLAGS.find((f) => flags[f] !== undefined);
+  if (misplaced) throw new UsageError(`--${misplaced} is only for \`aos migrate\``);
   if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory', 'import', 'mcp'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set`, `aos memory set`, `aos memory fix`, `aos import` and `aos mcp copy`');
   switch (cmd) {
     case 'init': return init(flags);
@@ -1622,6 +1658,7 @@ async function main(argv) {
     case 'local': return local(sub, flags);
     case 'import': return importCmd(sub, flags);
     case 'hosts': return hostsCmd(sub, flags);
+    case 'migrate': return migrateCmd(sub, flags);
     case 'mcp': return mcpCmd(sub, flags);
     case 'update-check': return updateCheck(flags);
     case 'update-status': return updateStatus(flags);

@@ -52,7 +52,7 @@ test("every row: key, a source pill with the file on hover, when it applies; a c
 test("Codex rows are dimmed on a Claude-Code-only machine, and still editable", async () => {
   const codex = row("codex.model");
   await expect(codex).toHaveClass(/is-dim/);
-  await expect(codex.locator(".aos-st-hostnote")).toHaveText("Codex is off on this machine; `aos init --host both` turns it on");
+  await expect(codex.locator(".aos-st-hostnote")).toHaveText("Codex is off on this machine; Add Codex under Hosts (`aos hosts add codex`) turns it on");
   await expect(codex.locator("select.dropdown")).toBeEnabled();
   await expect(row("claude.model")).not.toHaveClass(/is-dim/);
 });

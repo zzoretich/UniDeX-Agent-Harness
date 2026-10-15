@@ -8,6 +8,8 @@ import { SURFACES, SURFACE_IDS, WritePolicy, globToRegExp, parseSurfaces } from 
 import { workspaceArgs } from "../../../obsidian-plugin/src/data/spacesModel";
 import { memoryArgs, recallArgs } from "../../../obsidian-plugin/src/data/brainModel";
 import { copyArgs } from "../../../obsidian-plugin/src/data/mcpServers";
+import { importArgs, IMPORT_KINDS } from "../../../obsidian-plugin/src/data/importModel";
+import { migrateArgs } from "../../../obsidian-plugin/src/data/goLocal";
 
 const VAULT = "/vaults/demo";
 const v = (rel: string) => `${VAULT}/${rel}`;
@@ -525,6 +527,73 @@ test("the MCP servers surface runs `aos mcp copy` as the page builds it, dry run
   assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "mcp")).canSpawn(NODE, [`${S}/cli/aos.js`, ...copyArgs("docs-search", "codex", true)]), false, "only MCP servers");
   for (const rel of ["brain/_index/mcp-servers.json", "brain/_index/backups/mcp/codex-config.toml-x.bak"]) assert.equal(p.canWrite(v(rel)), false, rel);
   assert.equal(SURFACES.find((s) => s.id === "mcp")?.verified, false, "off by default until its live check");
+});
+
+test("Import runs `aos import` exactly as importArgs builds it, flags in one order; nothing else (install-import B7)", () => {
+  const imp = new WritePolicy(VAULT, ["import"]);
+  const others = new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "import"));
+  const all = new WritePolicy(VAULT, [...SURFACE_IDS]);
+  const cli = (...a: string[]): string[] => [`${S}/cli/aos.js`, ...a];
+  const every = [...IMPORT_KINDS];
+  const sent = [
+    importArgs({ from: ["claude", "codex"], only: every }, { dryRun: true, json: true }),
+    importArgs({ from: ["codex"], only: every, since: "all" }, { dryRun: true, json: true }),
+    importArgs({ from: ["claude", "codex"], only: every, accept: ["~/code/alpha", "/Volumes/work/notes app"] }),
+    importArgs({ from: ["claude"], only: ["instructions", "memories", "mcp", "sessions"] }),
+    importArgs({ from: ["codex"], only: every, since: "all" }),
+    importArgs({ from: ["claude"], only: ["projects"], accept: Array.from({ length: 100 }, (_, i) => `~/code/r${i}`) }, { json: true }),
+    ["import"], ["import", "--json"], ["import", "--from", "claude", "--since", "30d"],
+  ];
+  for (const a of sent) {
+    assert.equal(imp.canSpawn(NODE, cli(...a)), true, `import on: ${JSON.stringify(a)}`);
+    assert.equal(others.canSpawn(NODE, cli(...a)), false, `import off: ${JSON.stringify(a)}`);
+  }
+  const accept = (v: unknown) => JSON.stringify(v);
+  const no = [
+    ["import", "--from", "cursor"], ["import", "--from"], ["import", "--since", "forever"], ["import", "--since", "-90d"],
+    ["import", "--only", "instructions,secrets"], ["import", "--only", ""], ["import", "--only", "mcp,mcp,mcp,mcp,mcp,mcp"],
+    ["import", "--json", "--dry-run"], ["import", "--since", "all", "--from", "claude"], ["import", "--from", "claude", "--from", "codex"],
+    ["import", "--accept", accept(["~/code/a"]), "--dry-run"], ["import", "--accept", accept([])], ["import", "--accept", "~/code/a"],
+    ["import", "--accept", accept(["relative/x"])], ["import", "--accept", accept(["--dry-run"])], ["import", "--accept", accept([7])],
+    ["import", "--accept", accept(["~/a" + String.fromCharCode(10) + "b"])], ["import", "--accept", accept(["~/a" + String.fromCharCode(0x2028)])],
+    ["import", "--accept", accept(Array.from({ length: 101 }, (_, i) => `~/r${i}`))], ["import", "--accept", accept({ id: "~/a" })],
+    ["import", "extra"], ["import", "--json", "x"], ["import", "--yes"], ["import", "--from=claude"], ["imports"],
+  ];
+  for (const a of no) assert.equal(all.canSpawn(NODE, cli(...a)), false, `never: ${JSON.stringify(a)}`);
+  assert.equal(imp.canWrite(v("brain/_index/import-state.json")), false, "the runtime writes, never the page");
+});
+
+test("Hosts runs `aos hosts add claude|codex` alone; `aos hosts status --json` is a background read (install-import B2)", () => {
+  const hosts = new WritePolicy(VAULT, ["hosts"]);
+  const none = new WritePolicy(VAULT, []);
+  const all = new WritePolicy(VAULT, [...SURFACE_IDS]);
+  const cli = (...a: string[]): string[] => [`${S}/cli/aos.js`, ...a];
+  for (const h of ["claude", "codex"]) {
+    assert.equal(hosts.canSpawn(NODE, cli("hosts", "add", h)), true, h);
+    assert.equal(none.canSpawn(NODE, cli("hosts", "add", h)), false, `${h}: only with Hosts on`);
+  }
+  assert.equal(none.canSpawn(NODE, cli("hosts", "status", "--json")), true, "a read that writes nothing, whatever is on");
+  for (const a of [["hosts", "add", "cursor"], ["hosts", "add", "claude", "--from-local", "/tmp/x"], ["hosts", "add"], ["hosts", "status"], ["hosts", "remove", "codex"], ["uninstall", "--host", "codex"]]) {
+    assert.equal(all.canSpawn(NODE, cli(...a)), false, a.join(" "));
+  }
+});
+
+test("the Go local surface runs `aos migrate local-first` apply, decline and undo, and nothing else; it writes nothing (local-first A9)", () => {
+  const p = new WritePolicy(VAULT, ["migrate"]);
+  for (const a of [["--apply"], ["--apply", "--chief"], ["--decline"], ["--undo"]]) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, "migrate", "local-first", ...a, "--json"]), true, a.join(" "));
+  }
+  // What the Go-local card and Settings build (obsidian-plugin/src/data/goLocal.ts) is exactly what the rule admits.
+  for (const [action, chief] of [["apply", true], ["apply", false], ["decline", false], ["undo", false]] as const) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...migrateArgs(action, chief)]), true, `${action} ${chief}`);
+  }
+  for (const a of [["migrate"], ["migrate", "local-first"], ["migrate", "local-first", "--apply"], ["migrate", "local-first", "--chief", "--apply", "--json"],
+    ["migrate", "local-first", "--status", "--json"], ["migrate", "import", "--apply", "--json"], ["migrate", "local-first", "--apply", "--json", "--undo"],
+    ["migrate", "local-first", "--apply", "--chief", "--json", "x"], ["provider", "local"], ["config", "set", "provider", "local", "--json"]]) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]), false, a.join(" "));
+  }
+  assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "migrate")).canSpawn(NODE, [`${S}/cli/aos.js`, "migrate", "local-first", "--apply", "--json"]), false, "only Go local");
+  for (const rel of ["brain/config.json", "brain/routines/tick.md", "brain/_index/migrations.json"]) assert.equal(p.canWrite(v(rel)), false, rel);
 });
 
 test("a relative script runs only against the vault it resolves into", () => {

@@ -54,6 +54,8 @@ const CODEX = path.join(HOME, ".codex");
 const AOS_CONFIG = path.join(CLAUDE, "agenticos.json");
 const SCRIPTS = path.join(VAULT, "brain", "scripts");
 const STUB_LOG = path.join(OUT, "stub-calls.log");
+// The launchctl stub's loaded jobs, one label per line (in the fake HOME, so each spec file starts from the pristine set).
+const LAUNCHD_LOADED = path.join(HOME, ".fixture-launchd-loaded");
 const NODE = process.execPath;
 
 // ── time: everything is relative to now, so the dates always read "today", "3d late", "1d ago" ──
@@ -135,6 +137,7 @@ function baseEnv() {
     AOS_LAUNCHCTL_BIN: path.join(BIN, "launchctl"),
     AOS_CRONTAB_BIN: path.join(BIN, "crontab"),
     AOS_FIXTURE_STUB_LOG: STUB_LOG,
+    AOS_FIXTURE_LAUNCHD: LAUNCHD_LOADED,
     PATH: [BIN, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
     SHELL: "/bin/zsh",
     XDG_CONFIG_HOME: path.join(HOME, ".config"),
@@ -187,7 +190,19 @@ stage("shim bin", () => {
     write(path.join(BIN, name), `#!/bin/sh\n# fixture stub: never reaches the real ${name}\necho "${name} $*" >> "\${AOS_FIXTURE_STUB_LOG:-/dev/null}"\n${body}\n`);
     fs.chmodSync(path.join(BIN, name), 0o755);
   };
-  for (const s of ["launchctl", "osascript", "open", "terminal-notifier", "notify-send", "say"]) stub(s);
+  for (const s of ["osascript", "open", "terminal-notifier", "notify-send", "say"]) stub(s);
+  // launchctl keeps what is loaded, as launchd does: load adds the plist's label, unload removes it, and `list <label>`
+  // fails for one that is not loaded (cli/schedule.js leaves an unchanged, loaded job alone).
+  stub("launchctl", [
+    'S="${AOS_FIXTURE_LAUNCHD:-/dev/null}"',
+    'L=$(basename "${2:-}" .plist)',
+    'case "$1" in',
+    '  load) { [ -f "$S" ] && grep -qx "$L" "$S"; } || echo "$L" >> "$S" ;;',
+    '  unload) if [ -f "$S" ]; then grep -vx "$L" "$S" > "$S.tmp"; mv "$S.tmp" "$S"; fi ;;',
+    '  list) { [ -f "$S" ] && grep -qx "$2" "$S"; } || { echo "Could not find service $2 in domain for port" >&2; exit 113; } ;;',
+    'esac',
+    'exit 0',
+  ].join("\n"));
   stub("crontab", '[ "$1" = "-l" ] && exit 0\ncat >/dev/null\nexit 0');
   return `node → ${NODE}`;
 });
@@ -668,7 +683,7 @@ stage("session digests (lib/import/digest.js's output; the digest needs a local 
 });
 
 // Skills ▸ MCP servers (install-import B6): a server on each host only, and one on both, in each host's own user config
-// (Claude Code's ~/.claude.json beside the default ~/.claude, Codex's config.toml); `aos import --only mcp` lists them below.
+// (Claude Code's ~/.claude.json beside the default ~/.claude, Codex's config.toml); the importer's listing lists them below.
 const MCP_FIXTURE = { claude: "docs-search", codex: "issue-tracker", both: "tide-feed", remote: "chart-api" };
 stage("MCP servers in each host's config (Claude Code's .claude.json, Codex's config.toml)", () => {
   writeJson(path.join(HOME, ".claude.json"), {
@@ -1046,7 +1061,18 @@ stage("promote trail (lib/promote-log.js appendTrail)", () => {
 
 stage("aos skills sync", () => aos(["skills", "sync"]).trim().split("\n")[0]);
 stage("aos agents sync", () => aos(["agents", "sync"]).trim().split("\n")[0]);
-stage("aos import --only mcp (both hosts' MCP servers listed)", () => aos(["import", "--only", "mcp", "--from", "all"]).trim().split("\n").slice(-1)[0]);
+// The importer's MCP listing alone (lib/import/mcp.js, what `aos import --only mcp` writes), so import-state.json stays as a
+// vault that never ran `aos import` has it (Settings ▸ Import and Pulse read that).
+stage("MCP servers listed (lib/import/mcp.js listServers, writeServers)", () => {
+  const req = createRequire(import.meta.url);
+  const X = req(path.join(SCRIPTS, "lib", "import", "mcp.js"));
+  const byHost = {
+    claude: X.listServers("claude", { dirs: { configDir: CLAUDE }, home: HOME }).servers,
+    codex: X.listServers("codex", { dirs: { configDir: CODEX }, home: HOME }).servers,
+  };
+  const w = X.writeServers(VAULT, ["claude", "codex"], byHost, { now: NOW });
+  return `${w.servers.length} servers`;
+});
 stage("aos routines sync (launchctl stubbed)", () => aos(["routines", "sync"]).trim().split("\n").slice(0, 2).join(" / "));
 // launchd and the session hooks run these without AOS_HEADLESS (hook-entry scripts exit at once under it).
 stage("aos routines run nightly-scan", () => aos(["routines", "run", "nightly-scan"], { env: USER_ENV(), timeout: 180_000 }).trim().split("\n").pop(), { optional: true });

@@ -13,9 +13,13 @@ import {
 } from "../data/settingsModel";
 import type { ConfigList, ConfigRow, FollowUp, SetResult } from "../data/settingsModel";
 import { ConfirmModal } from "../ui/ConfirmModal";
+import { GoLocalCard } from "../ui/GoLocalCard";
+import { migrateArgs, migrateCommand, readMigrations } from "../data/goLocal";
 import { renderPluginSettings } from "../ui/pluginSettingRows";
 import type { PluginRowsHandle } from "../ui/pluginSettingRows";
 import { shell } from "../host";
+import { HostsPanel } from "./settings/HostsPanel";
+import { ImportPanel } from "./settings/ImportPanel";
 
 const SOURCE_PILL: Record<string, string> = { machine: "aos-pill-amber", vault: "aos-pill-cyan", default: "aos-pill-dim", unset: "aos-pill-dim" };
 
@@ -40,8 +44,14 @@ export class SettingsTab {
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
   private refreshAgain = false;
+  // Settings ▸ Hosts and Import (install-import B2, B4): panels of their own that keep their state across renders.
+  private readonly hostsPanel: HostsPanel;
+  private readonly importPanel: ImportPanel;
 
-  constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {}
+  constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {
+    this.hostsPanel = new HostsPanel(plugin, view, () => this.render());
+    this.importPanel = new ImportPanel(plugin, view, () => this.render());
+  }
 
   mount(host: HTMLElement): void {
     this.host = host;
@@ -52,6 +62,7 @@ export class SettingsTab {
       const watch = (f: TAbstractFile) => { if (f.path === VAULT_CONFIG_PATH && this.view.isTabActive("settings")) this.schedule(); };
       this.view.registerEvent(this.plugin.app.vault.on("modify", watch));
     }
+    this.hostsPanel.reopen();
     this.render();
   }
 
@@ -164,6 +175,11 @@ export class SettingsTab {
     if (this.list) {
       this.renderMaster(host, this.list);
       this.renderLocal(host);
+    }
+    // Neither needs the settings list: they read the runtime's own answers and files.
+    this.hostsPanel.render(host);
+    this.importPanel.render(host);
+    if (this.list) {
       for (const { section, rows } of groupBySection(this.list)) {
         if (section.id === "hosts") continue;
         host.createDiv({ cls: "aos-rt-subhead aos-dim", text: section.label.toUpperCase() });
@@ -213,6 +229,48 @@ export class SettingsTab {
     const term = acts.createEl("button", { cls: "aos-ws-action", text: "❯_ aos local", attr: { "data-act": "local-status" } });
     term.setAttr("title", "Ask the engine now and show what it serves, in the Code tab");
     term.addEventListener("click", () => this.view.runInTerm("aos local", { origin: "Settings" }));
+    this.renderGoLocal(box, cfg.provider, vault);
+  }
+
+  /**
+   * Go local, or undo it (local-first A9): Go local… whenever background work is not local (the upgrade's card declined,
+   * closed or never shown, or a provider changed by hand since going local, which Go local… sets back), and Undo
+   * whenever `aos migrate local-first` applied (or stopped half way: its backup is recorded), whatever the provider is
+   * now. Both run through the `migrate` surface; the card names the command for the Code tab while it is off.
+   */
+  private renderGoLocal(box: HTMLElement, provider: string, vault: string): void {
+    const mig = readMigrations(vault)["local-first"];
+    const moved = mig?.state === "applied" || mig?.state === "applying";
+    const row = box.createDiv({ cls: "aos-st-golocal", attr: { "data-tour": "settings-golocal" } });
+    const runsOn = provider === "local" ? "this Mac" : provider === "none" ? "heuristics only" : provider === "auto" ? "Ollama, then Claude Code or Codex" : provider;
+    const note = mig?.state === "declined" ? " (you kept your settings)"
+      : mig?.state === "applying" ? " Going local stopped part way; Go local… finishes it, Undo puts back what it changed."
+        : moved ? ` You went local${mig.at ? ` on ${mig.at.slice(0, 10)}` : ""}; your earlier settings are backed up.` : "";
+    row.createSpan({ text: `Background work runs on ${runsOn}.${note}` });
+    if (provider !== "local" || mig?.state === "applying") {
+      const go = row.createEl("button", { cls: "aos-ws-action", text: "Go local…", attr: { "data-act": "go-local" } });
+      go.setAttr("title", "Move background work to the model on this Mac; your settings are backed up first");
+      go.addEventListener("click", () => {
+        void GoLocalCard.ask(this.plugin, { runInTerm: (cmd) => this.view.runInTerm(cmd, { origin: "Settings" }) }).then((r) => { if (r === "applied") void this.refresh(); else this.render(); });
+      });
+    }
+    if (moved) {
+      const undo = row.createEl("button", { cls: "aos-ws-action", text: "Undo", attr: { "data-act": "go-local-undo" } });
+      undo.setAttr("title", "Put back the provider, the AI switches and the Chief of Staff's models you had (aos migrate local-first --undo); a setting you changed since is kept");
+      undo.addEventListener("click", () => void this.undoGoLocal());
+    }
+  }
+
+  /** `aos migrate local-first --undo`, after a confirm. */
+  private async undoGoLocal(): Promise<void> {
+    const ok = await ConfirmModal.ask(this.plugin.app, "Undo going local?",
+      "Your provider, the AI switches and the Chief of Staff's models go back to what they were before, from the backup taken when you went local, and the schedules are re-rendered.", "Undo");
+    if (!ok) return;
+    const r = await this.plugin.aosJson<{ kept?: string[] }>(migrateArgs("undo"), 120_000);
+    const kept = r.json?.kept ?? [];
+    if (r.code === 0) new Notice(`Your earlier settings are back${kept.length ? `, except what you changed since: ${kept.map((k) => k.replace(/ \(changed since going local\)$/, "")).join(", ")}` : ""}. Go local… moves background work to this Mac again.`, 10000);
+    else new Notice(`Undo: ${failureText(r)} — or run ${migrateCommand("undo")} in the Code tab`, 10000);
+    await this.refresh();
   }
 
   /** `aos local pull`: this Mac's model and the embedder, through Ollama. Long: a download of several GB. */
@@ -353,6 +411,7 @@ export class SettingsTab {
     const rows = list.settings.filter((r) => r.section === "hosts");
     if (!rows.length) return;
     host.createDiv({ cls: "aos-rt-subhead aos-dim", text: "HOSTS & INSTALL — CHANGED ONLY THROUGH THE INSTALLER" });
+    host.createDiv({ cls: "aos-rt-note aos-dim", text: "Add a host under Hosts above (aos hosts add); paths and binaries change with aos upgrade." });
     const acts = host.createDiv({ cls: "aos-st-actions" });
     const doctor = acts.createEl("button", { cls: "aos-ws-action", text: "❯_ aos doctor" });
     doctor.setAttr("title", "Check every install path, binary, host and hook in the Code tab");

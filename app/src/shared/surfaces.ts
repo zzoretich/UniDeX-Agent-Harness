@@ -93,9 +93,11 @@ const ASK_EFFORT = /--effort=(?:minimal|low|medium|high|xhigh|max)/;
 // An MCP server's name as both host CLIs take it (cli/mcp.js NAME_RE, obsidian-plugin/src/data/mcpServers.ts MCP_NAME_RE).
 const MCP_NAME = /[A-Za-z0-9_][A-Za-z0-9_-]{0,63}/;
 
-/** The refreshes the HUD starts by itself on load and on timers; they write only runtime-owned caches under the runtime's locks. */
+/** The refreshes the HUD starts by itself on load and on timers; they write only runtime-owned caches under the runtime's locks.
+ *  `aos hosts status --json` (Settings ▸ Hosts, install-import B2) writes nothing: it finds each host's CLI and asks it
+ *  whether it is signed in (`claude auth status`, `codex login status`), no model call. */
 export const BACKGROUND: readonly SpawnRule[] = [
-  { script: "cli/aos.js", args: /^(config (list|get)( .*)?|routines hosts --refresh|skills sync|agents sync)$/ },
+  { script: "cli/aos.js", args: /^(config (list|get)( .*)?|routines hosts --refresh|skills sync|agents sync|hosts status --json)$/ },
   { script: "reconcile-sessions.js", args: /^$/ },
   { script: "statusline.js", args: /^refresh$/ },
   { script: "scan-vault.js", args: /^(--quiet)?$/ },
@@ -212,6 +214,40 @@ const MEMORY_VERBS: readonly SpawnRule[] = [
 // headless login probe.
 const RECALL_QUERY = /[^\s\-\0-\x1f\x7f\u2028\u2029][^\0-\x1f\x7f\u2028\u2029]{0,199}/;
 const RECALL_PREVIEW: SpawnRule = { script: "sdk/recall-cli.js", args: argv(RECALL_QUERY, "--limit", /\d{1,2}/, "--json") };
+
+// `aos import` as obsidian-plugin/src/data/importModel.ts importArgs builds it (install-import B7): optional flags, each at
+// most once and in one order (--from, --since, --only, --accept, then --dry-run, then --json); --accept never with
+// --dry-run, and only a JSON list of 1 to MAX_IMPORT_ACCEPT proposal ids (the `~/…` or absolute folder the scan printed,
+// no NUL or line break). cli/import.js checks every value again and refuses anything else, writing nothing.
+/** At most this many workspace proposals per `--accept` (importModel.ts MAX_ACCEPT). */
+export const MAX_IMPORT_ACCEPT = 100;
+const IMPORT_FROM = /^(?:claude|codex|all)$/;
+const IMPORT_SINCE = /^(?:\d{1,5}d|all)$/;
+const IMPORT_KIND = "(?:instructions|memories|projects|mcp|sessions)";
+const IMPORT_ONLY = new RegExp(`^${IMPORT_KIND}(?:,${IMPORT_KIND}){0,4}$`);
+const IMPORT_ID = /^(?:~\/|\/)[^\0\n\r\u2028\u2029]{0,1023}$/;
+const acceptList = (v: string): boolean => {
+  if (v.length > 128 * 1024) return false;
+  let j: unknown;
+  try { j = JSON.parse(v); } catch { return false; }
+  return Array.isArray(j) && j.length >= 1 && j.length <= MAX_IMPORT_ACCEPT && j.every((x) => typeof x === "string" && IMPORT_ID.test(x));
+};
+const importArgv = (a: readonly string[]): boolean => {
+  if (a[0] !== "import") return false;
+  let i = 1;
+  let accepted = false;
+  for (const [flag, ok] of [["--from", (v: string) => IMPORT_FROM.test(v)], ["--since", (v: string) => IMPORT_SINCE.test(v)], ["--only", (v: string) => IMPORT_ONLY.test(v)], ["--accept", acceptList]] as const) {
+    if (a[i] !== flag) continue;
+    const v = a[i + 1];
+    if (v === undefined || !ok(v)) return false;
+    if (flag === "--accept") accepted = true;
+    i += 2;
+  }
+  let dry = false;
+  if (a[i] === "--dry-run") { dry = true; i++; }
+  if (a[i] === "--json") i++;
+  return i === a.length && !(dry && accepted);
+};
 
 // What the Files tab and the note editor never touch: the runtime's caches and vendored scripts, dependency folders, and
 // every dot-path. The Files tree and the vault index never show a dot-path; refusing them also keeps a compromised page
@@ -410,6 +446,46 @@ export const SURFACES: readonly Surface[] = [
     spawns: [{ script: "cli/aos.js", args: /^local pull$/ }],
     // Added in 2.0; off by default until a live check on a real vault pulls through it (the Code tab's ❯_ aos local
     // pull works meanwhile).
+    verified: false,
+  },
+  {
+    id: "migrate",
+    label: "Go local",
+    source: "ui/GoLocalCard.ts (the launch sequence's Go local card, ui/launchSequence.ts) and views/SettingsTab.ts (Settings ▸ Local engine: Go local…, Undo) (local-first A9, tour C11)",
+    // `aos migrate local-first` (cli/migrations.js) writes through the runtime, never the page: provider and ai.* in
+    // agenticos.json and brain/config.json (persona.model and persona.codexModel too with --chief), brain/routines/tick.md
+    // only while it is a file a release shipped, its backup under brain/_index/migrations/, brain/_index/migrations.json,
+    // a notification when tick.md was kept, and the installed schedules re-rendered.
+    writes: [],
+    spawns: [{ script: "cli/aos.js", args: /^migrate local-first (--apply( --chief)?|--decline|--undo) --json$/ }],
+    // Added in 2.0; off by default until a live check on a 1.9 vault goes local and undoes it through this rule (the
+    // card then names `aos migrate local-first --apply --chief` for the Code tab).
+    verified: false,
+  },
+  {
+    id: "import",
+    label: "Import",
+    source: "data/importer.ts (views/settings/ImportPanel.ts: Settings ▸ Import's Import again and Import older history; the dry run and Import of PR 9's Import sheet), data/importModel.ts importArgs (install-import B4, B7, B9)",
+    // The runtime writes, never the page (cli/import.js → brain/scripts/lib/import/): memories with `reviewed: false` and
+    // their MEMORY.md lines, brain/_index/import-state.json and mcp-servers.json, the workspaces named in --accept, and the
+    // import-digest routine turned on and scheduled. It reads the hosts' own folders and never writes a host's config;
+    // its model calls are the local engine's alone (B15).
+    writes: [],
+    spawns: [{ script: "cli/aos.js", args: importArgv }],
+    // Added in 2.0; off by default until a live check on a real vault imports through it (`aos import` in the Code tab
+    // works meanwhile, and the setup wizard's step runs main's own job, not this surface).
+    verified: false,
+  },
+  {
+    id: "hosts",
+    label: "Hosts",
+    source: "views/settings/HostsPanel.ts (Settings ▸ Hosts: Add Claude Code, Add Codex), data/hostsState.ts (install-import B2)",
+    // `aos hosts add <host>` (cli/hosts.js) writes through the runtime: agenticos.json's host on, that host's plugin (or
+    // Codex's direct wiring) through its own CLI, its fast import phases, the installed schedules re-rendered. It refuses,
+    // writing nothing, when the CLI is missing or signed out. The status check it follows is a background read (above).
+    writes: [],
+    spawns: [{ script: "cli/aos.js", args: argv("hosts", "add", /claude|codex/) }],
+    // Added in 2.0; off by default until a live check adds a host through it.
     verified: false,
   },
   {

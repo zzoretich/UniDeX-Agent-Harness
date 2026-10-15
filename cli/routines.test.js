@@ -101,6 +101,26 @@ test('sync: persona.model and persona.effort in brain/config.json win over the i
   assert.equal(seen.vars.AGENT_NAME, 'Atlas');
 });
 
+test('unschedule takes one routine\'s schedule out once it is off, touching nothing else; refused while it is on (install-import B10)', async () => {
+  const w = world();
+  w.put('alpha');
+  const seen = [];
+  const removeSchedule = (o) => { seen.push(o); return { platform: o.platform, removed: ['/tmp/la/com.agenticos.alpha.plist'], warnings: [] }; };
+  const opts = { configDir: w.configDir, io: w.io, removeSchedule, platform: 'darwin' };
+  assert.equal(await R.main(['unschedule', 'alpha'], opts), 2, 'on: sync owns it');
+  assert.match(w.errs.join('\n'), /alpha is on: aos routines sync schedules it/);
+  assert.equal(seen.length, 0);
+  await R.main(['disable', 'alpha'], { ...opts, installSchedules: () => ({ platform: 'darwin', written: [], removed: [], labels: [], warnings: [] }) });
+  w.logs.length = 0;
+  assert.equal(await R.main(['unschedule', 'alpha'], opts), 0);
+  assert.deepEqual([seen[0].slug, seen[0].platform, seen[0].vault], ['alpha', 'darwin', w.vault]);
+  assert.match(w.out(), /routines: took alpha's schedule out \(com\.agenticos\.alpha\.plist\); nothing else touched/);
+  w.logs.length = 0;
+  assert.equal(await R.main(['unschedule', 'gone'], { ...opts, removeSchedule: () => ({ removed: [], warnings: [] }) }), 0, 'a routine with no file can still be taken out');
+  assert.match(w.out(), /nothing scheduled for gone/);
+  await assert.rejects(() => R.main(['unschedule'], opts), /usage: aos routines unschedule <slug>/);
+});
+
 test('sync without persona answers falls back to claude.model and the default agent name', async () => {
   const w = world();
   let seen = null;

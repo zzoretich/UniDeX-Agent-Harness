@@ -245,3 +245,68 @@ test('removeSchedules without a vault still deletes the legacy duty plists (unin
   assert.ok(fs.existsSync(path.join(dir, 'com.agenticos.custom.plist')), 'an unknown label is not ours without a file or a sync record');
   assert.equal(calls.filter(c => c[0] === 'launchctl').length, 0, 'launchctl only runs on darwin');
 });
+
+/** A fake launchctl that keeps what is loaded: `list <label>` fails for a job that is not, as the real one does. */
+function fakeLaunchctl() {
+  const loaded = new Set();
+  const calls = [];
+  const label = (p) => path.basename(p, '.plist');
+  const exec = (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args[0] === 'load') loaded.add(label(args[1]));
+    else if (args[0] === 'unload') loaded.delete(label(args[1]));
+    else if (args[0] === 'list' && !loaded.has(args[1])) throw new Error(`Could not find service "${args[1]}" in domain for port`);
+  };
+  return { exec, calls, loaded };
+}
+
+test('installSchedules on darwin leaves an unchanged, loaded job alone: a sync never stops a routine that is running', () => {
+  const v = vault([R.monitor, R.sitrep, R.brief]);
+  const vars = { ...VARS, VAULT: v.dir, LOG_DIR: v.logDir };
+  const lc = fakeLaunchctl();
+  const opts = { platform: 'darwin', vars, launchAgentsDir: v.launchAgentsDir, stateFile: v.stateFile, exec: lc.exec, warn: () => {} };
+  S.installSchedules(opts);
+  assert.deepEqual([...lc.loaded].sort(), ['com.agenticos.brief', 'com.agenticos.monitor', 'com.agenticos.sitrep']);
+  // Nothing changed: no job is unloaded (unloading a running one SIGTERMs it) or loaded again.
+  lc.calls.length = 0;
+  const again = S.installSchedules(opts);
+  assert.deepEqual(lc.calls.filter((c) => c[1] === 'unload' || c[1] === 'load'), []);
+  assert.deepEqual(again.unchanged.map((p) => path.basename(p)).sort(), ['com.agenticos.brief.plist', 'com.agenticos.monitor.plist', 'com.agenticos.sitrep.plist']);
+  assert.equal(again.written.length, 3);
+  // One routine's schedule changes, another's job is not loaded (unloaded by hand): only those two are (re)loaded.
+  store.write({ ...R.brief, schedule: '0 10 1,15 * *' }, { dir: path.join(v.dir, 'brain', 'routines') });
+  lc.loaded.delete('com.agenticos.sitrep');
+  lc.calls.length = 0;
+  const third = S.installSchedules(opts);
+  assert.deepEqual(lc.calls.filter((c) => c[1] === 'unload' || c[1] === 'load').map((c) => `${c[1]} ${path.basename(c[2])}`).sort(),
+    ['load com.agenticos.brief.plist', 'load com.agenticos.sitrep.plist', 'unload com.agenticos.brief.plist', 'unload com.agenticos.sitrep.plist']);
+  assert.deepEqual(third.unchanged.map((p) => path.basename(p)), ['com.agenticos.monitor.plist']);
+  assert.match(fs.readFileSync(path.join(v.launchAgentsDir, 'com.agenticos.brief.plist'), 'utf8'), /<integer>10<\/integer>/);
+  assert.equal(store.readState({ file: v.stateFile }).synced.brief, 'prompt|0 10 1,15 * *|on');
+});
+
+test('removeSchedule takes one routine out and touches nothing else (install-import B10: a routine that turned itself off)', () => {
+  const v = vault([R.monitor, R.sitrep, R.brief]);
+  const vars = { ...VARS, VAULT: v.dir, LOG_DIR: v.logDir };
+  const lc = fakeLaunchctl();
+  S.installSchedules({ platform: 'darwin', vars, launchAgentsDir: v.launchAgentsDir, stateFile: v.stateFile, exec: lc.exec, warn: () => {} });
+  store.write({ ...R.brief, enabled: false }, { dir: path.join(v.dir, 'brain', 'routines') });
+  lc.calls.length = 0;
+  const r = S.removeSchedule({ slug: 'brief', platform: 'darwin', vault: v.dir, launchAgentsDir: v.launchAgentsDir, stateFile: v.stateFile, exec: lc.exec, warn: () => {} });
+  assert.deepEqual(r.removed.map((p) => path.basename(p)), ['com.agenticos.brief.plist']);
+  assert.deepEqual(lc.calls.map((c) => `${c[1]} ${path.basename(c[2])}`), ['unload com.agenticos.brief.plist'], 'no other job is unloaded');
+  assert.deepEqual([...lc.loaded].sort(), ['com.agenticos.monitor', 'com.agenticos.sitrep']);
+  assert.deepEqual(plists(v.launchAgentsDir), ['com.agenticos.monitor.plist', 'com.agenticos.sitrep.plist']);
+  assert.deepEqual(Object.keys(store.readState({ file: v.stateFile }).synced).sort(), ['monitor', 'sitrep'], 'the sync record no longer names it: no apply-schedules prompt');
+  // Nothing scheduled for it: nothing to do.
+  lc.calls.length = 0;
+  assert.deepEqual(S.removeSchedule({ slug: 'brief', platform: 'darwin', vault: v.dir, launchAgentsDir: v.launchAgentsDir, stateFile: v.stateFile, exec: lc.exec }).removed, []);
+  assert.deepEqual(lc.calls, []);
+  // Linux: only its crontab line goes.
+  let tab = `0 1 * * * echo keep-me\n0 9 1,15 * * run brief # com.agenticos.brief\n0 13 * * * run monitor # com.agenticos.monitor\n`;
+  const lin = S.removeSchedule({ slug: 'brief', platform: 'linux', vault: v.dir, stateFile: v.stateFile, readCrontab: () => tab, writeCrontab: (t) => { tab = t; } });
+  assert.deepEqual(lin.removed, ['# com.agenticos.brief']);
+  assert.equal(tab, '0 1 * * * echo keep-me\n0 13 * * * run monitor # com.agenticos.monitor\n');
+  const none = S.removeSchedule({ slug: 'brief', platform: 'linux', readCrontab: () => tab, writeCrontab: () => { throw new Error('nothing to write'); } });
+  assert.deepEqual(none.removed, []);
+});

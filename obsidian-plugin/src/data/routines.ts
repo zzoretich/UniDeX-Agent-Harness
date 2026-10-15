@@ -14,9 +14,13 @@ export const ROUTINES_STATE_PATH = "brain/_index/routines.json";
 export const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
 export const KINDS = ["duty", "prompt", "command"] as const;
 export const EFFORTS = ["low", "medium", "high"] as const;
+/** Where a prompt routine runs (local-first A6): the local agent runner, or one host's CLI. */
+export const ENGINES = ["local", "claude", "codex"] as const;
+export const MAX_TURNS_LIMIT = 200;
 export type RoutineKind = typeof KINDS[number];
 export type Effort = typeof EFFORTS[number];
-const KEY_ORDER = ["schema", "name", "kind", "schedule", "enabled", "guarded", "model", "effort", "budgetUsd", "tools", "writes", "argv", "timeoutSec", "tags"];
+export type RoutineEngine = typeof ENGINES[number];
+export const KEY_ORDER = ["schema", "name", "kind", "schedule", "enabled", "guarded", "engine", "model", "effort", "budgetUsd", "maxTurns", "tools", "writes", "output", "argv", "timeoutSec", "tags"];
 
 export type Scalar = string | number | boolean | null;
 export type Frontmatter = Record<string, Scalar | Scalar[]>;
@@ -29,14 +33,22 @@ export interface Routine {
   schedule?: string;
   enabled?: boolean;
   guarded?: boolean;
-  // prompt and duty: the Claude model and the effort for that routine's run; on a duty they override the schedule's.
+  // prompt only (local-first A6): local | claude | codex. Absent: routines.runner decides, as before.
+  engine?: RoutineEngine | string;
+  // prompt and duty: the model and the effort for that routine's run; on a duty they override the schedule's. The model
+  // is one of the routine's engine, and a Claude model when it names none.
   model?: string;
   effort?: string;
   budgetUsd?: number;
+  // prompt: the local agent's turn limit (default 24).
+  maxTurns?: number;
   // duty only: the PERSONA_TOOLS allowlist for that duty's run (the runner expands {{NODE}} and {{VAULT}} in it).
   tools?: string;
-  // duty only: vault-relative paths the duty may write on top of the default scope (brain/scripts/persona/duty-guard.js).
+  // duty: vault-relative paths the duty may write on top of the default scope (brain/scripts/persona/duty-guard.js).
+  // prompt: the paths or globs the local agent may write, and nothing else (brain/scripts/lib/local-agent.js).
   writes?: string[];
+  // prompt: where the local agent's final message goes — log, notify, or a vault-relative .md file.
+  output?: string;
   argv?: string[];
   timeoutSec?: number;
   tags?: string[];
@@ -133,6 +145,39 @@ export function serializeRoutineFrontmatter(fm: Frontmatter): string {
 
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === "string" && s.length > 0);
 const isMoney = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+/** A path as macOS's file system sees it: NFC, case-folded (persona/duty-guard.js fold). */
+export function foldPath(p: string): string { return String(p).normalize("NFC").toUpperCase().toLowerCase().normalize("NFC"); }
+
+/** routines-store.js LOCAL_DENY: what a local routine may never write — the files that feed hosted sessions. */
+export const LOCAL_DENY: { label: string; dir?: boolean; root?: boolean; why: string }[] = [
+  { label: "persona/", dir: true, why: "the Chief of Staff's files" },
+  { label: "brain/memory/", dir: true, why: "memories feed every session" },
+  { label: "brain/_index/", dir: true, why: "the session bootstrap and the runtime's caches" },
+  { label: "AGENTICOS.md", root: true, why: "it feeds every session" },
+  { label: "MEMORY.md", why: "it feeds every session" },
+  { label: "CLAUDE.md", why: "host instructions feed every session" },
+  { label: "AGENTS.md", why: "host instructions feed every session" },
+];
+
+/** Why a local routine may not write `p` (a path or a writes entry with * ** ?), or null; routines-store.js localDenied. */
+export function localDenied(p: string): string | null {
+  const s = foldPath(String(p ?? "").trim().replace(/\\/g, "/")).replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  const segs = s.split("/");
+  const g = segs.findIndex((x) => /[*?]/.test(x));
+  const fixed = (g === -1 ? segs : segs.slice(0, g)).join("/");
+  const name = g === -1 ? segs[segs.length - 1] : null;
+  for (const d of LOCAL_DENY) {
+    const f = foldPath(d.label).replace(/\/$/, "");
+    if (d.dir ? (fixed === f || fixed.startsWith(`${f}/`) || f.startsWith(`${fixed}/`) || !fixed) : d.root ? (g === -1 && s === f) : name === f) return `${d.label}: ${d.why}`;
+  }
+  return null;
+}
+
+/** A vault-relative path (or glob): not absolute, no `..` segment, no backslash. */
+export function isVaultRel(p: unknown): boolean {
+  const s = String(p ?? "").trim();
+  return !!s && !s.startsWith("/") && !s.startsWith("~") && !s.includes("\\") && !s.split("/").includes("..");
+}
 
 /** Human-readable problems; empty means valid. Mirrors routines-store.js validate() rule for rule. */
 export function validateRoutine(r: Partial<Routine>): string[] {
@@ -151,9 +196,18 @@ export function validateRoutine(r: Partial<Routine>): string[] {
     if (r.model !== undefined && (typeof r.model !== "string" || !r.model.trim())) errors.push("model must be a string");
     if (r.effort !== undefined && !(EFFORTS as readonly string[]).includes(String(r.effort))) errors.push(`effort must be one of ${EFFORTS.join(", ")}`);
   }
+  if (r.engine !== undefined) {
+    if (r.kind !== "prompt") errors.push("engine is for prompt routines only");
+    else if (!(ENGINES as readonly string[]).includes(String(r.engine)) || typeof r.engine !== "string") errors.push(`engine must be one of ${ENGINES.join(", ")}`);
+  }
   if (r.kind === "prompt") {
     if (typeof r.body !== "string" || !r.body.trim()) errors.push("a prompt routine needs a body");
     if (r.budgetUsd !== undefined && !isMoney(r.budgetUsd)) errors.push("budgetUsd must be a non-negative number");
+    if (r.maxTurns !== undefined && !(Number.isInteger(r.maxTurns) && (r.maxTurns as number) > 0 && (r.maxTurns as number) <= MAX_TURNS_LIMIT)) errors.push(`maxTurns must be a whole number from 1 to ${MAX_TURNS_LIMIT}`);
+    if (r.writes !== undefined && (!isStringArray(r.writes) || r.writes.some((w) => !isVaultRel(w) || w.includes(",")))) errors.push("writes must be an array of vault-relative paths or globs (no commas)");
+    if (r.output !== undefined && !(r.output === "log" || r.output === "notify" || (typeof r.output === "string" && /\.md$/.test(r.output) && isVaultRel(r.output)))) errors.push("output must be log, notify or a vault-relative .md file");
+    for (const w of isStringArray(r.writes) ? r.writes : []) { const why = localDenied(w); if (why) errors.push(`writes: ${w} is off limits to a local routine (${why})`); }
+    if (typeof r.output === "string" && r.output !== "log" && r.output !== "notify") { const why = localDenied(r.output); if (why) errors.push(`output: ${r.output} is off limits to a local routine (${why})`); }
   }
   if (r.kind === "duty") {
     if (r.budgetUsd !== undefined && !isMoney(r.budgetUsd)) errors.push("budgetUsd must be a non-negative number");
@@ -260,6 +314,16 @@ export function buildRows(routines: Routine[], state: RoutinesState, now = new D
       health: health(r, entry, now, { synced: state.synced[r.slug], syncedAt: state.syncedAt }),
     };
   });
+}
+
+/** A skip newer than the last run (the local engine down, a capped day: run-routine.js records lastSkippedAt and why),
+ *  for the row's last-run cell; null when the last thing that happened was a run, or nothing. */
+export function lastSkip(entry: RoutineStateEntry | null | undefined): { at: string; reason: string; short: string } | null {
+  if (!entry || !entry.lastSkippedAt || !entry.lastSkipReason) return null;
+  const skipped = Date.parse(entry.lastSkippedAt);
+  if (!Number.isFinite(skipped) || (entry.lastRunAt && Date.parse(entry.lastRunAt) >= skipped)) return null;
+  const reason = String(entry.lastSkipReason);
+  return { at: entry.lastSkippedAt, reason, short: reason.split(/[:(]/)[0].trim() || reason };
 }
 
 /** Enabled routines whose fingerprint differs from the last sync, plus synced slugs with no file: "apply schedules" is due. */

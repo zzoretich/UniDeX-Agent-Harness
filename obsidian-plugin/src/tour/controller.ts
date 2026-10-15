@@ -14,7 +14,7 @@ import { TourEngine, type ProbeResult, type TourEnd, type TourItem } from "./eng
 import { fillText, holds, type TourContext } from "./predicates";
 import { BOOK, chapterById, chapterForTab, resolveRefs, type TourChapter, type TourStep } from "./steps";
 import {
-  markCompleted, markDismissed, markDone, markOffered, markSeen, sanitizeTourState, setChecklistDismissed, type TourState,
+  markCompleted, markDismissed, markDone, markLaunched, markOffered, markSeen, sanitizeTourState, setChecklistDismissed, type TourState,
 } from "./state";
 import { buildChecklist, detectDone, type CacheReader } from "./checklist";
 import { WHATS_NEW, whatsNewHistory } from "./whatsnew";
@@ -127,12 +127,27 @@ export class TourController {
 
   /**
    * The welcome tour (Help ▸ Take the tour, and a new install's first launch): it ends by opening Getting started. The
-   * first run also records this release as seen, so What's new later starts from it.
+   * first run also records this release as seen, so What's new later starts from it. `after` runs once it ends.
    */
-  startCore(): void {
+  startCore(after?: (how: TourEnd) => void): void {
     const s = this.state();
     if (!s.lastSeenVersion) this.save(markSeen(s, this.plugin.manifest.version));
-    this.startChapter(BOOK.core, (how) => { if (how !== "stopped") this.openChecklist(); });
+    const started = this.startChapter(BOOK.core, (how) => { if (how !== "stopped") this.openChecklist(); after?.(how); });
+    if (!started) after?.("stopped");
+  }
+
+  // ── the launch sequence (tour C11, ui/launchSequence.ts) ──
+
+  /** A launch dialog was shown: it never opens on its own again. */
+  rememberLaunch(id: string): void { this.save(markLaunched(this.state(), id)); }
+
+  /** What's new for the running release was shown. */
+  markSeenNow(): void { this.save(markSeen(this.state(), this.plugin.manifest.version)); }
+
+  /** Getting started at the end of the launch sequence: only while it is shown (not put away, something left). */
+  openChecklistIfShown(): void {
+    this.ctxCache = null;
+    if (this.context().checklist) this.openChecklist();
   }
 
   /** Help ▸ Tour this tab: the chapter for the tab in front (and for Brain, its mode). */
@@ -144,12 +159,12 @@ export class TourController {
     if (!chapter || !this.startChapter(chapter.id)) new Notice("This tab has no tour yet.");
   }
 
-  /** Runs What's new entries' steps ("Show me"). */
-  showMe(refs: string[]): void {
+  /** Runs What's new entries' steps ("Show me"); `after` runs once they end. */
+  showMe(refs: string[], after?: (how: TourEnd) => void): void {
     const items = resolveRefs(BOOK, refs);
-    if (!items.length) return;
+    if (!items.length) { after?.("stopped"); return; }
     this.shownView()?.closeDrawer();
-    this.engine.run(items, { chapter: null });
+    this.engine.run(items, { chapter: null, onEnd: after });
   }
 
   /** e2e: routes each step of a chapter and says whether its control showed, was gated, or was missing. */

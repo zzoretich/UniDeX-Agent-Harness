@@ -1810,6 +1810,10 @@ body {
 .aos-rt-next { flex: 0 0 110px; font-family: var(--aos-mono); font-size: 10.5px; }
 .aos-rt-last { flex: 0 0 150px; font-size: 10.5px; }
 .aos-rt-rowactions { display: flex; gap: 8px; }
+/* A prompt routine's engine (local-first A6): local, claude, codex, or auto (routines.runner); a skip since the last run. */
+.aos-rt-engine { display: inline-block; padding: 1px 8px; border: 1px solid var(--aos-border); border-radius: 999px; color: var(--aos-dim); font-size: 10.5px; }
+.aos-rt-engine.is-local { color: var(--udx-ok); border-color: var(--udx-ok-bg); background: var(--udx-ok-bg); }
+.aos-rt-last.is-skipped { color: var(--aos-amber); }
 .aos-pulse-chip.is-off, .aos-pulse-chip.is-invalid, .aos-pulse-chip.is-missed { border: 1px solid; }
 .aos-pulse-chip.is-off { color: var(--aos-dim); border-color: var(--aos-border); }
 .aos-pulse-chip.is-missed { color: var(--aos-amber); border-color: var(--aos-amber); }
@@ -1824,6 +1828,7 @@ body {
 .aos-rt-preview.is-error { color: var(--aos-rose); }
 .aos-rt-guard { color: var(--aos-amber); font-size: 11px; margin-bottom: 8px; }
 .aos-rt-note { font-size: 11px; margin-bottom: 8px; }
+.aos-rt-enginenote, .aos-rt-writesnote { font-size: 11px; margin: -4px 0 8px; }
 .aos-rt-errors { color: var(--aos-rose); font-size: 11px; min-height: 14px; margin-bottom: 4px; }
 .aos-confirm-modal p { color: var(--aos-text); }
 .aos-confirm-modal pre.aos-confirm-detail {
@@ -2807,6 +2812,25 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-st-locallabel { flex: none; width: 76px; }
 .aos-st-localacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .aos-st-localvalue { min-width: 0; overflow-wrap: anywhere; color: var(--udx-text); font-family: var(--udx-mono); font-size: 12px; }
+/* Settings ▸ Hosts and Import (install-import B2, B4): a row per host with its state and next step, the install steps,
+   a run's progress and its result; the digest line. */
+.aos-st-hosts, .aos-st-import { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.aos-st-hostintro { font-size: 12px; }
+.aos-st-hostrow { display: flex; flex-direction: column; gap: 6px; padding: 6px 0; border-top: 1px solid var(--udx-line); }
+.aos-st-hosthead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12.5px; }
+.aos-st-hostname { flex: none; width: 96px; color: var(--udx-text); font-weight: 600; }
+.aos-st-hoststate { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; color: var(--udx-text-2); }
+.aos-st-hostrow.is-ready .aos-st-hoststate { color: var(--udx-ok); }
+.aos-st-hostrow.is-signed-out .aos-st-hoststate, .aos-st-hostrow.is-missing .aos-st-hoststate { color: var(--udx-warn); }
+.aos-st-hostacts { display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-st-hostinstall, .aos-st-hostresult { margin-left: 108px; font-size: 12px; color: var(--udx-text-2); }
+.aos-st-hoststeps { margin: 4px 0 0; padding-left: 18px; }
+.aos-st-hostresult { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.aos-st-hostresult.is-ok { color: var(--udx-ok); }
+.aos-st-hostresult.is-err { color: var(--udx-warn); }
+.aos-st-hostfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; border-top: 1px solid var(--udx-line); font-size: 12px; }
+.aos-st-importdigest { font-size: 12.5px; color: var(--udx-text); font-weight: 560; }
+.aos-st-importdigest.is-done { color: var(--udx-ok); font-weight: 400; }
 
 /* ══ Term: starting terminals (spec 2026-10-08-term-agent-deck T2–T6) ══════════════════════════════════════════════════
    The New split button (ui/NewTerminalMenu.ts) and the menu that drops under it; host dots and places on the tabs; the
@@ -3031,6 +3055,9 @@ button.aos-tf-btn:not(.clickable-icon):focus-visible { outline: 2px solid var(--
 .aos-pulse-since { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--udx-text-3); }
 .aos-pulse-since .aos-pulse-ic svg { width: 13px; height: 13px; }
 .aos-pulse-since-parts { color: var(--udx-text-2); font-weight: 560; }
+/* The history digest's progress (install-import B10, spec §4 HUD), until it is done. */
+.aos-pulse-import { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--udx-text-2); }
+.aos-pulse-import .aos-pulse-ic svg { width: 13px; height: 13px; }
 .aos-pulse-band .aos-pulse-deck { margin: 2px 0 0; padding: 0; border: 0; background: none; gap: 8px; }
 .aos-pulse-band .aos-deck-list { flex-wrap: nowrap; overflow: hidden; }
 .aos-pulse-band .aos-deck-btn { padding: 2px 8px; font-size: 11.5px; }
@@ -4705,4 +4732,47 @@ button.aos-tour-cl-hide:not(.clickable-icon):hover:not(:disabled) { background: 
 .aos-tour-wn-entry { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 10px; border: 1px solid var(--udx-line); border-radius: 8px; }
 .aos-tour-wn-title { color: var(--udx-text); font-size: 12.5px; font-weight: 600; }
 .aos-tour-wn-body { color: var(--udx-text-2); font-size: 12px; line-height: 1.45; }
+/* The launch sequence's cards (tour C11): Go local (local-first A9) and What's new (C2, C10). Tokens only. */
+.modal.aos-golocal-modal, .modal.aos-whatsnew-modal { width: min(640px, 92vw); font-family: var(--udx-sans); }
+.aos-golocal, .aos-whatsnew-card { display: flex; flex-direction: column; gap: 12px; }
+.aos-golocal-intro, .aos-whatsnew-intro { margin: 0; color: var(--udx-text-2); font-size: 13px; line-height: 1.5; }
+.aos-golocal-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.aos-golocal-col { padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 10px; }
+.aos-golocal-col[data-col="local"] { border-color: var(--udx-ok-dot); background: var(--udx-ok-bg); }
+.aos-golocal-head { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 10.5px; letter-spacing: 1px; }
+.aos-golocal-list { margin: 6px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; color: var(--udx-text); font-size: 12.5px; line-height: 1.4; }
+.aos-golocal-spend, .aos-golocal-model { color: var(--udx-text-2); font-size: 12.5px; line-height: 1.45; }
+.aos-golocal-label { color: var(--udx-text); font-weight: 600; }
+.aos-golocal-model { display: flex; align-items: center; gap: 10px; }
+.aos-golocal-model[data-state="missing"], .aos-golocal-model[data-state="down"] { color: var(--udx-warn); }
+.aos-golocal-chief { display: flex; align-items: center; gap: 8px; color: var(--udx-text); font-size: 13px; cursor: pointer; }
+.aos-golocal-status { min-height: 0; font-size: 12.5px; color: var(--udx-text-2); }
+.aos-golocal-status.is-warn { color: var(--udx-warn); }
+.aos-golocal-status:empty { display: none; }
+.aos-golocal-foot, .aos-whatsnew-foot { display: flex; align-items: center; gap: 8px; }
+/* With the Go local surface off: the commands for the Code tab instead of the buttons. */
+.aos-golocal-cmds { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 10px; background: var(--udx-raised); }
+.aos-golocal-cmdnote { color: var(--udx-text-2); font-size: 12.5px; line-height: 1.45; }
+.aos-golocal-cmd { display: flex; align-items: center; gap: 10px; }
+.aos-golocal-cmdlabel { flex: none; width: 120px; color: var(--udx-text); font-size: 12.5px; font-weight: 600; }
+.aos-golocal-cmdtext { flex: 1; min-width: 0; color: var(--udx-text); font-family: var(--udx-mono); font-size: 12px; overflow-wrap: anywhere; }
+button.aos-golocal-term:not(.clickable-icon) { flex: none; padding: 2px 10px; font-size: 12px; }
+.aos-golocal-spacer, .aos-whatsnew-spacer { flex: 1; }
+.aos-whatsnew-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; }
+.aos-whatsnew-version { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 10.5px; letter-spacing: 1px; }
+.aos-whatsnew-entry { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 10px; }
+.aos-whatsnew-text { flex: 1; min-width: 0; }
+.aos-whatsnew-title { color: var(--udx-text); font-size: 13px; font-weight: 600; }
+.aos-whatsnew-body { margin-top: 3px; color: var(--udx-text-2); font-size: 12.5px; line-height: 1.45; }
+.aos-whatsnew-body strong { color: var(--udx-text); font-weight: 600; }
+button.aos-whatsnew-show:not(.clickable-icon) { flex: none; padding: 3px 10px; font-size: 12px; }
+.aos-whatsnew-note { color: var(--udx-text-3); font-size: 11.5px; }
+@media (max-width: 560px) { .aos-golocal-cols { grid-template-columns: 1fr; } }
+
+/* Pulse with no host to run the Chief of Staff (local-first §5's no-host row). */
+.aos-pulse-waiting { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--udx-warn-bg); color: var(--udx-warn); font-size: 12.5px; }
+button.aos-pulse-waiting-go:not(.clickable-icon) { padding: 2px 10px; font-size: 12px; }
+
+/* Settings ▸ Local engine: go local, or undo it (local-first A9). */
+.aos-st-golocal { display: flex; align-items: center; gap: 10px; margin-top: 8px; color: var(--udx-text-2); font-size: 12.5px; }
 /* ── end the guided tour ── */

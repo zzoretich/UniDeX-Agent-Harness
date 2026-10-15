@@ -13,6 +13,9 @@
  *     legacy claude.bin) → `command -v` → the usual install locations; AOS_NO_CLAUDE / AOS_NO_CODEX hide one.
  *     model: the model to pass — routine/duty model for claude; for codex cfg.<kind>.codexModel, else cfg.codex.model
  *     (null = the user's Codex default), because a routine's `model` is a Claude alias by contract.
+ *     `host` (claude | codex) pins it: a prompt routine that names its engine (local-first A6) runs on that host or not at
+ *     all — neither AOS_RUNNER nor <kind>.runner moves it, and a host that is not enabled resolves to null with the
+ *     reason, never to the other host.
  *   runnerArgs(host, { prompt, system, model, effort, tools, budget, outFile })  →  { argv, stdin }
  *     claude: the `claude -p` recipe every duty and prompt routine used before (budget enforced by the CLI).
  *     codex:  `codex exec -` with the prompt (system text first) on stdin, workspace-write sandbox, our
@@ -129,9 +132,24 @@ function codexHomeOf(cfg) {
 }
 
 /** See the module comment. `cfg` undefined → loadConfig(). */
-function resolveRunner({ cfg, kind = 'routines', env = process.env, lookup, candidates } = {}) {
+function resolveRunner({ cfg, kind = 'routines', env = process.env, lookup, candidates, host } = {}) {
   const c = cfg === undefined ? defaultConfig() : (cfg || {});
   const section = c[kind] && typeof c[kind] === 'object' ? c[kind] : {};
+  const none = (reason) => ({ host: null, bin: null, model: null, home: null, reason });
+  const found = (h, bin, reason) => {
+    // A kind's own Codex model (persona.codexModel, routines.codexModel), else codex.model, else the user's Codex default.
+    const str = (v) => (typeof v === 'string' && v ? v : null);
+    const model = h === 'codex' ? (str(section.codexModel) || str(c.codex && c.codex.model)) : null;
+    const home = h === 'codex' ? codexHomeOf(c) : null;
+    return { host: h, bin, model, home, reason };
+  };
+  if (host !== undefined && host !== null) {
+    // local-first A6: the routine's own engine. That host or nothing: a disabled host is refused, never swapped.
+    if (!HOSTS.includes(host)) return none(`no such host ${host}`);
+    if (!hostEnabled(c, host)) return none(`${host} is not an enabled host`);
+    const bin = resolveBin(host, { cfg: c, env, kind, lookup, candidates });
+    return bin ? found(host, bin, `engine=${host}`) : none(`${host} CLI not found`);
+  }
   const pref = HOSTS.includes(env.AOS_RUNNER) ? env.AOS_RUNNER : HOSTS.includes(section.runner) ? section.runner : 'auto';
   const order = pref === 'auto' ? HOSTS : [pref];
   const why = [];
@@ -139,13 +157,9 @@ function resolveRunner({ cfg, kind = 'routines', env = process.env, lookup, cand
     if (pref === 'auto' && !hostEnabled(c, h)) { why.push(`${h} host disabled`); continue; }
     const bin = resolveBin(h, { cfg: c, env, kind, lookup, candidates });
     if (!bin) { why.push(`${h} CLI not found`); continue; }
-    // A kind's own Codex model (persona.codexModel, routines.codexModel), else codex.model, else the user's Codex default.
-    const str = (v) => (typeof v === 'string' && v ? v : null);
-    const model = h === 'codex' ? (str(section.codexModel) || str(c.codex && c.codex.model)) : null;
-    const home = h === 'codex' ? codexHomeOf(c) : null;
-    return { host: h, bin, model, home, reason: pref === 'auto' ? 'auto' : `${kind}.runner=${pref}` };
+    return found(h, bin, pref === 'auto' ? 'auto' : `${kind}.runner=${pref}`);
   }
-  return { host: null, bin: null, model: null, home: null, reason: why.join('; ') || 'no host enabled' };
+  return none(why.join('; ') || 'no host enabled');
 }
 
 /** n(v, d): an explicit finite, non-negative number (0 included) is honoured, anything else is the default (record-spend.js). */

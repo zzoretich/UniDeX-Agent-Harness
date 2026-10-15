@@ -69,6 +69,17 @@ export const CH = {
   /** The PATH line Finish offers (install-import B14): what it is and where; then append it, on the page's ask. */
   setupPathLine: "setup:path-line",
   setupAddToPath: "setup:add-to-path",
+  /**
+   * "Bring in your history" (install-import B13): what `aos import --dry-run --json` finds on this Mac, after the install;
+   * then the import itself, a setup job (job "import"), for the hosts, kinds and proposed workspaces the page picked.
+   */
+  setupImportScan: "setup:import-scan",
+  setupImport: "setup:import",
+  /**
+   * An earlier install's agenticos.json with a host on that the user's choice would drop (aos init refuses it: inspection
+   * F7): `aos uninstall --host <host>` takes that host's wiring out first, a setup job (job "unwire").
+   */
+  setupUnwire: "setup:unwire",
   /** main → page: a setup job's output and exit. */
   setupEvent: "setup:event",
 
@@ -205,6 +216,12 @@ export interface PreflightReport {
   ready: boolean;
   /** The models the wizard downloads on this Mac: its memory's tier, then the embedder (local-first A12). */
   models: string[];
+  /**
+   * The hosts an existing agenticos.json has on (an earlier install's, whose vault is gone), else null. `aos init` never
+   * unwires a host, so a choice that drops one is refused (inspection F7): Choose explains it and offers to keep it or
+   * to take its wiring out first (setup.unwire).
+   */
+  wired?: { claude: boolean; codex: boolean } | null;
 }
 
 /** The Chief of Staff's hosted models (local-first A4): brain/scripts/sdk/lib/models.js CHIEF, which tests/unit/setup.test.ts
@@ -232,7 +249,20 @@ export interface InstallRequest {
   persona: PersonaAnswers | null;
 }
 
-export type SetupJob = "fix" | "install" | "upgrade";
+export type SetupJob = "fix" | "install" | "upgrade" | "import" | "unwire";
+
+/** A session host, as the import and the unwire name it. */
+export type HostId = "claude" | "codex";
+/** What `aos import` brings (cli/import.js KINDS). */
+export type ImportKindId = "instructions" | "memories" | "projects" | "mcp" | "sessions";
+
+/** "Bring in your history"'s Import (install-import B9, B13): the hosts and kinds ticked, and the proposed workspaces to create. */
+export interface ImportRunRequest {
+  from: HostId[];
+  only: ImportKindId[];
+  /** Proposal ids from the scan main ran last (`~/…` folders); any other is dropped. */
+  accept: string[];
+}
 
 export type SetupEvent =
   | { job: SetupJob; type: "data"; data: string }
@@ -526,6 +556,15 @@ export interface AosBridge {
     pathLine(): Result<PathLinePreview>;
     /** Appends that line to the file it names, once. */
     addToPath(): Result<PathLinePreview>;
+    /** After the install: `aos import --dry-run --json` from the runtime the app carries (the report, for the page to read). */
+    importScan(): Promise<Result<unknown>>;
+    /** The import as a setup job (output on onEvent, job "import"): the fast phase, and the sessions queued for the digest. */
+    importHistory(req: ImportRunRequest): Result<null>;
+    /**
+     * Before the install: `aos uninstall --host <host>` for a host an earlier install left on (job "unwire"). Main runs it
+     * only when that install's vault is gone and `choice` (the host choice the page will install with) drops the host.
+     */
+    unwire(host: HostId, choice: InstallRequest["host"]): Result<null>;
     onEvent(cb: (ev: SetupEvent) => void): () => void;
   };
   update: {

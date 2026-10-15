@@ -127,3 +127,54 @@ test('refused, writing nothing: no vault, a missing CLI, a signed-out CLI, a bad
     assert.match(r.stderr, /aos hosts add <claude\|codex>/);
   }
 });
+
+test('status: each host as add would find it (on, CLI, signed in) and the next step; it writes nothing', () => {
+  const sb = sandbox();
+  const none = sb.aos(['hosts', 'status', '--json'], { AOS_NO_CODEX: '1' });
+  assert.equal(none.status, 0, none.stderr);
+  const n = JSON.parse(none.stdout);
+  assert.deepEqual([n.config, n.vault], [null, null], 'no install yet');
+  assert.deepEqual(n.hosts.claude, { enabled: false, installed: true, bin: F('fake-claude.sh'), signedIn: true });
+  assert.deepEqual(n.hosts.codex, { enabled: false, installed: false, bin: null, signedIn: null });
+  const init = sb.aos(['init', '--host', 'claude', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes']);
+  assert.equal(init.status, 0, init.stderr + init.stdout);
+  const cfgBefore = fs.readFileSync(sb.cfgFile, 'utf8');
+  const codexLog = sb.log('FAKE_CODEX_LOG');
+  const r = sb.aos(['hosts', 'status', '--json'], { FAKE_CODEX_LOGGED_OUT: '1' });
+  assert.equal(r.status, 0, r.stderr);
+  const s = JSON.parse(r.stdout);
+  assert.equal(s.schema, 1);
+  assert.equal(s.vault, sb.vault);
+  assert.equal(s.config, sb.cfgFile);
+  assert.deepEqual(s.hosts.claude, { enabled: true, installed: true, bin: F('fake-claude.sh'), signedIn: true });
+  assert.deepEqual(s.hosts.codex, { enabled: false, installed: true, bin: F('fake-codex.sh'), signedIn: false });
+  const text = sb.aos(['hosts', 'status'], { FAKE_CLAUDE_LOGGED_OUT: '1' });
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /^Claude Code on · .*fake-claude\.sh · signed out {2}→ sign in \(claude auth login\)$/m);
+  assert.match(text.stdout, /^Codex {7}off · .*fake-codex\.sh · signed in {2}→ aos hosts add codex$/m);
+  const gone = sb.aos(['hosts', 'status'], { AOS_NO_CODEX: '1' });
+  assert.match(gone.stdout, /^Codex {7}off · CLI not found {2}→ install it, then aos hosts add codex$/m);
+  assert.equal(fs.readFileSync(sb.cfgFile, 'utf8'), cfgBefore, 'agenticos.json untouched');
+  assert.doesNotMatch(sb.log('FAKE_CODEX_LOG').slice(codexLog.length), /plugin|mcp add/, 'nothing wired');
+  for (const args of [['hosts', 'status', 'codex'], ['hosts', 'stat']]) {
+    const bad = sb.aos(args);
+    assert.equal(bad.status, 2, args.join(' '));
+    assert.match(bad.stderr, /aos hosts status \[--json\]/);
+  }
+});
+
+test('status: a sign-in check that hangs is stopped and reported as unknown, never left running', () => {
+  const sb = sandbox();
+  const hang = path.join(sb.dir, 'hang-claude.sh');
+  // `claude auth status` that never answers (and ignores SIGTERM): the probe is killed after AOS_HOSTS_PROBE_MS.
+  fs.writeFileSync(hang, '#!/bin/sh\ntrap "" TERM\nsleep 30\n', { mode: 0o755 });
+  const t0 = Date.now();
+  const r = sb.aos(['hosts', 'status', '--json'], { AOS_CLAUDE_BIN: hang, AOS_HOSTS_PROBE_MS: '300' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(Date.now() - t0 < 10_000, 'it did not wait for the hung CLI');
+  const s = JSON.parse(r.stdout);
+  assert.deepEqual(s.hosts.claude, { enabled: false, installed: true, bin: hang, signedIn: null, probe: 'timed out' });
+  assert.equal(s.hosts.codex.signedIn, true, 'the other host is checked as usual');
+  const text = sb.aos(['hosts', 'status'], { AOS_CLAUDE_BIN: hang, AOS_HOSTS_PROBE_MS: '300' });
+  assert.match(text.stdout, /^Claude Code off · .*hang-claude\.sh · sign-in unknown \(timed out\) {2}→ check again: aos hosts status$/m);
+});

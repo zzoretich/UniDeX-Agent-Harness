@@ -1,5 +1,6 @@
 // The wizard's small rules, with no imports so the unit suite can hold them: which host is offered and chosen (inspection
-// round 2, M2; round 3, F5), and the command Finish tells a user with no host to type.
+// round 2, M2; round 3, F5), the command Finish tells a user with no host to type, and an earlier install's hosts that a
+// choice would drop (F7).
 
 export type HostChoice = "claude" | "codex" | "both" | "none";
 export interface ReadyHosts { claude: boolean; codex: boolean }
@@ -32,4 +33,24 @@ export function reconcileHost(current: HostChoice | null, ready: ReadyHosts, pic
  */
 export function addHostCommand(aos: string, host: "claude" | "codex" = "claude"): string {
   return `${aos} hosts add ${host}`;
+}
+
+/**
+ * Inspection F7, made a choice: the hosts an earlier install's agenticos.json has on that `choice` would drop. `aos init`
+ * refuses such an install (it never unwires a host, so the host's plugin, hooks and MCP server would stay while
+ * agenticos.json said it was off); Choose names each one and offers to keep it or to take its wiring out first.
+ */
+export function droppedHosts(choice: HostChoice, wired: ReadyHosts | null | undefined): Array<"claude" | "codex"> {
+  if (!wired) return [];
+  const want = { claude: choice === "claude" || choice === "both", codex: choice === "codex" || choice === "both" };
+  return (["claude", "codex"] as const).filter((h) => wired[h] && !want[h]);
+}
+
+/** The choice that keeps every wired host on as well (F7's "keep it"), when Choose offers it; null when it does not. */
+export function keepingChoice(choice: HostChoice, wired: ReadyHosts | null | undefined, ready: ReadyHosts): HostChoice | null {
+  if (!wired) return null;
+  const claude = wired.claude || choice === "claude" || choice === "both";
+  const codex = wired.codex || choice === "codex" || choice === "both";
+  const keep: HostChoice = claude && codex ? "both" : claude ? "claude" : codex ? "codex" : "none";
+  return hostOffered(keep, ready) ? keep : null;
 }

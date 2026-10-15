@@ -208,7 +208,13 @@ async function runWith(args, opts = {}) {
 /** `argv` = the words after `aos import`. → exit code */
 async function main(argv, opts = {}) {
   const args = parseImportArgs(argv);
-  return (await runWith(args, opts)).code;
+  const { code } = await (opts.runWith || runWith)(args, opts);
+  // install-import B12: the upgrade to 2.0 printed `aos import`; a real run from both hosts that finished settles that
+  // choice, so the app's launch sequence does not offer it again (cli/migrations.js). A failed one leaves it pending.
+  if (code === 0 && !args.dryRun && args.from.length === 2) {
+    try { require('./migrations.js').settle(resolveCtx(opts).vault, 'import', 'applied', opts.now || new Date()); } catch { /* no vault: nothing to settle */ }
+  }
+  return code;
 }
 
 module.exports = { main, runWith, parseImportArgs, resolveCtx, scheduleDigest, scanLines, resultLines, UsageError, KINDS, USAGE };
