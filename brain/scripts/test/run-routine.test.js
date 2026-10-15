@@ -378,3 +378,206 @@ test('unscheduleRoutine starts `aos routines unschedule <slug>` detached from th
   fs.rmSync(path.join(VAULT, 'cli'), { recursive: true, force: true });
   fs.rmSync(scripts, { recursive: true, force: true });
 });
+
+// ── local-first A6/A7: a prompt routine that names its engine ──
+
+const { resolveRunner } = require('../lib/headless.js');
+const BINS = fs.mkdtempSync(path.join(os.tmpdir(), 'rr-bins-'));
+const fakeBin = (name) => { const p = path.join(BINS, name); fs.writeFileSync(p, '#!/bin/sh\n', { mode: 0o755 }); return p; };
+const CLAUDE_BIN = fakeBin('claude');
+const CODEX_BIN = fakeBin('codex');
+const HOSTS = {
+  claude: { claude: { enabled: true, bin: CLAUDE_BIN }, codex: { enabled: false, bin: CODEX_BIN } },
+  codex: { claude: { enabled: false, bin: CLAUDE_BIN }, codex: { enabled: true, bin: CODEX_BIN } },
+  both: { claude: { enabled: true, bin: CLAUDE_BIN }, codex: { enabled: true, bin: CODEX_BIN } },
+  none: { claude: { enabled: false }, codex: { enabled: false } },
+};
+/** deps on a machine with these hosts, the real runner resolution over fake binaries. */
+function hostDeps(mode, over = {}) {
+  const cfg = { claude: { model: 'haiku' }, hosts: HOSTS[mode], routines: { enabled: true, perRunUsd: 2, perDayUsd: 6, tools: 'Read,Glob', ...(over.routines || {}) } };
+  const { rowFromCodex, parseCodexEvents } = require('../persona/record-spend.js');
+  return deps({
+    config: () => cfg,
+    runner: (c, host) => resolveRunner({ cfg: c, kind: 'routines', env: { PATH: '/usr/bin:/bin' }, lookup: () => null, candidates: false, host }),
+    rowFromCodex, parseCodexEvents,
+    ...over.deps,
+  });
+}
+const localOk = { ok: true, reason: 'local-ready', lc: { engine: 'ollama', url: 'http://127.0.0.1:11434' }, model: 'qwen3.5:9b' };
+const agentResult = (over = {}) => ({ status: 'ok', final: 'Wrote the digest.', error: null, turns: 3, toolCalls: 4, wrote: ['notes/d.md'], refused: [], journal: ['turn 1: list_files notes → ok (12 chars)'], engine: 'ollama', model: 'qwen3.5:9b', usage: { inputTokens: 900, outputTokens: 90 }, ms: 4200, ...over });
+
+test('engine local: the local agent runs in process — one $0 ollama ledger row, the journal and the final message in the log, no cap', async () => {
+  put('digest', { kind: 'prompt', engine: 'local', writes: ['notes/'], maxTurns: 6, timeoutSec: 60 }, 'Digest the notes.');
+  let got = null;
+  const d = hostDeps('none', { deps: {
+    routineSpendToday: () => 99,   // the prompt cap is for hosted spend: a local run is never capped
+    resolveLocal: async (cfg, model) => { assert.equal(model, null); return localOk; },
+    localAgent: async (opts) => { got = opts; return agentResult(); },
+  } });
+  assert.equal(await runRoutine('digest', { deps: d }), 0);
+  assert.equal(d.calls.length, 0, 'nothing spawned');
+  assert.equal(got.routine.slug, 'digest');
+  assert.equal(got.model, 'qwen3.5:9b');
+  assert.equal(got.timeoutMs, 60_000);
+  assert.equal(got.vault, VAULT);
+  assert.deepEqual(d.ledger, [{ feature: 'routine:digest', provider: 'ollama', model: 'qwen3.5:9b', usd: 0, inputTokens: 900, outputTokens: 90, ms: 4200 }]);
+  const e = state().routines.digest;
+  assert.deepEqual([e.lastExit, e.lastCostUsd, e.lastError, e.failStreak], [0, 0, null, 0]);
+  const led = readLedgerFile().pipelines['routine:digest'].lastRun;
+  assert.equal(led.provider, 'ollama');
+  assert.deepEqual([led.counts.turns, led.counts.tools, led.counts.usd], [3, 4, 0]);
+  const log = fs.readFileSync(path.join(LOGS, 'routine-digest.log'), 'utf8');
+  assert.match(log, /^\[[^\]]+\] routine=digest kind=prompt engine=local trigger=scheduled exit=0 usd=0\nengine=ollama model=qwen3\.5:9b turns=3 tools=4 wrote=notes\/d\.md\nturn 1: list_files notes → ok \(12 chars\)\n--- final ---\nWrote the digest\.\n$/);
+});
+
+test('engine local: the engine down or the model not pulled is a skip with reason local-down — nothing run, spent or ledgered', async () => {
+  put('digest', { kind: 'prompt', engine: 'local', model: 'qwen3.5:4b' }, 'x');
+  let asked = null;
+  const d = hostDeps('both', { deps: {
+    resolveLocal: async (cfg, model) => { asked = model; return { ok: false, reason: 'local-down', detail: 'qwen3.5:4b is not pulled on Ollama at http://127.0.0.1:11434 (aos local pull qwen3.5:4b)' }; },
+    localAgent: async () => { throw new Error('must not run'); },
+  } });
+  assert.equal(await runRoutine('digest', { deps: d }), 0);
+  assert.equal(asked, 'qwen3.5:4b');
+  assert.equal(d.calls.length, 0, 'never the hosts instead');
+  assert.deepEqual(d.ledger, []);
+  const e = state().routines.digest;
+  assert.equal(e.lastRunAt, null, 'not a run: the next fire retries');
+  assert.equal(e.lastSkipReason, 'local-down: qwen3.5:4b is not pulled on Ollama at http://127.0.0.1:11434 (aos local pull qwen3.5:4b)');
+  assert.match(d.out, /digest skipped — local-down: /);
+});
+
+test('engine local: a failed or timed-out agent run is a failed routine with its reason (exit 1 / 124)', async () => {
+  put('digest', { kind: 'prompt', engine: 'local' }, 'x');
+  const fail = hostDeps('claude', { deps: { resolveLocal: async () => localOk, localAgent: async () => agentResult({ status: 'error', final: null, error: 'stopped after 24 turns without a final answer (maxTurns)' }) } });
+  assert.equal(await runRoutine('digest', { deps: fail }), 1);
+  assert.equal(state().routines.digest.lastError, 'stopped after 24 turns without a final answer (maxTurns)');
+  assert.equal(state().routines.digest.failStreak, 1);
+  assert.equal(readLedgerFile().pipelines['routine:digest'].lastRun.status, 'error');
+  assert.equal(fail.ledger[0].usd, 0, 'still one $0 row: the run happened');
+  const slow = hostDeps('claude', { deps: { resolveLocal: async () => localOk, localAgent: async () => agentResult({ status: 'timeout', final: null, error: 'timed out after 60s' }) } });
+  assert.equal(await runRoutine('digest', { deps: slow }), 124);
+  assert.equal(state().routines.digest.lastError, 'timed out after 60s');
+  assert.match(fs.readFileSync(path.join(LOGS, 'routine-digest.log'), 'utf8'), /--- error ---\ntimed out after 60s\n$/);
+});
+
+test('engine local: --dry-run names the engine, the model and the limits without asking the engine', async () => {
+  put('digest', { kind: 'prompt', engine: 'local', model: 'qwen3.5:4b', writes: ['notes/', 'TODO.md'] }, 'secret body');
+  const d = hostDeps('none', { deps: { resolveLocal: async () => { throw new Error('no probe on a dry run'); } } });
+  assert.equal(await runRoutine('digest', { deps: d, dryRun: true }), 0);
+  assert.equal(d.out, 'local-agent\nengine=ollama\nurl=http://127.0.0.1:11434\nmodel=qwen3.5:4b\nmaxTurns=24\nwrites=notes/,TODO.md\n<digest body>\n');
+  assert.deepEqual(state().routines, {});
+});
+
+test('engine claude / codex: that host on every machine that has it; a routine without engine keeps routines.runner', async () => {
+  // both hosts, routines.runner codex: engine claude still runs claude, with its Claude model
+  put('cl', { kind: 'prompt', engine: 'claude', model: 'sonnet' }, 'x');
+  const a = hostDeps('both', { routines: { runner: 'codex' } });
+  assert.equal(await runRoutine('cl', { deps: a, dryRun: true }), 0);
+  assert.match(a.out, new RegExp(`^${CLAUDE_BIN}\\n-p\\n<cl body>\\n--model\\nsonnet\\n`));
+  // both hosts: engine codex runs codex with the routine's own Codex model
+  put('cx', { kind: 'prompt', engine: 'codex', model: 'gpt-6-sol', effort: 'low' }, 'x');
+  const b = hostDeps('both');
+  assert.equal(await runRoutine('cx', { deps: b, dryRun: true }), 0);
+  assert.match(b.out, new RegExp(`^${CODEX_BIN}\\nexec\\n-\\n[\\s\\S]*\\n-m\\ngpt-6-sol\\n-c\\nmodel_reasoning_effort="low"\\n<cx body on stdin>\\n$`));
+  // Codex only, no model in the file: routines.codexModel
+  const c = hostDeps('codex', { routines: { codexModel: 'gpt-6-luna' } });
+  put('cx2', { kind: 'prompt', engine: 'codex' }, 'x');
+  assert.equal(await runRoutine('cx2', { deps: c, dryRun: true }), 0);
+  assert.match(c.out, /\n-m\ngpt-6-luna\n/);
+  // Claude only, no engine: today's resolution, unchanged
+  put('plain', { kind: 'prompt' }, 'x');
+  const e = hostDeps('claude');
+  assert.equal(await runRoutine('plain', { deps: e, dryRun: true }), 0);
+  assert.match(e.out, new RegExp(`^${CLAUDE_BIN}\\n-p\\n<plain body>\\n--model\\nhaiku\\n`));
+  // Codex only, no engine: auto falls to codex as before, and the Claude alias never reaches it
+  put('plain2', { kind: 'prompt', model: 'opus' }, 'x');
+  const f = hostDeps('codex');
+  assert.equal(await runRoutine('plain2', { deps: f, dryRun: true }), 0);
+  assert.match(f.out, new RegExp(`^${CODEX_BIN}\\nexec\\n`));
+  assert.ok(!f.out.includes('opus'));
+});
+
+test('engine claude / codex on a machine without that host: a failed run naming it — never the other host', async () => {
+  put('cl', { kind: 'prompt', engine: 'claude' }, 'x');
+  const codexOnly = hostDeps('codex');
+  assert.equal(await runRoutine('cl', { deps: codexOnly }), 1);
+  assert.equal(codexOnly.calls.length, 0, 'codex was not used instead');
+  const e = state().routines.cl;
+  assert.equal(e.lastExit, 1);
+  assert.equal(e.lastError, 'engine claude: claude is not an enabled host — add it (aos hosts add claude) or pick another engine');
+  assert.equal(readLedgerFile().pipelines['routine:cl'].lastRun.provider, 'claude');
+  assert.equal(readLedgerFile().pipelines['routine:cl'].lastRun.status, 'error');
+  assert.match(fs.readFileSync(path.join(LOGS, 'routine-cl.log'), 'utf8'), /routine=cl kind=prompt engine=claude trigger=scheduled exit=1\nengine claude: claude is not an enabled host/);
+  put('cx', { kind: 'prompt', engine: 'codex' }, 'x');
+  const claudeOnly = hostDeps('claude');
+  assert.equal(await runRoutine('cx', { deps: claudeOnly }), 1);
+  assert.equal(claudeOnly.calls.length, 0);
+  assert.match(state().routines.cx.lastError, /^engine codex: codex is not an enabled host/);
+  const noHost = hostDeps('none');
+  assert.equal(await runRoutine('cx', { deps: noHost, dryRun: true }), 1);
+  assert.match(noHost.out, /cx cannot run — engine codex: codex is not an enabled host/);
+  // enabled, but the CLI is gone
+  const gone = hostDeps('both', { deps: { runner: (c, host) => resolveRunner({ cfg: { ...c, hosts: { ...HOSTS.both, codex: { enabled: true, bin: '/nowhere/codex' } } }, kind: 'routines', env: { PATH: '/usr/bin:/bin' }, lookup: () => null, candidates: false, host }) } });
+  assert.equal(await runRoutine('cx', { deps: gone }), 1);
+  assert.equal(gone.calls.length, 0);
+  assert.equal(state().routines.cx.lastError, 'engine codex: codex CLI not found — install Codex or pick another engine');
+});
+
+test('engine local end to end: run-routine → local-agent → a fake Ollama on the loopback interface', async () => {
+  const http = require('http');
+  const replies = [
+    { message: { role: 'assistant', content: '', tool_calls: [{ function: { name: 'write_file', arguments: { path: 'notes/out.md', content: 'hello\n' } } }] }, prompt_eval_count: 10, eval_count: 2 },
+    { message: { role: 'assistant', content: 'Wrote notes/out.md.' }, prompt_eval_count: 20, eval_count: 4 },
+  ];
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(req.url === '/api/tags' ? { models: [{ name: 'qwen3.5:9b' }] } : replies.shift()));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    put('e2e', { kind: 'prompt', engine: 'local', writes: ['notes/'] }, 'Write hello to notes/out.md.');
+    const counts = [];
+    const L = require('../lib/local-agent.js');
+    const d = hostDeps('none', { deps: {
+      config: () => ({ local: { engine: 'ollama', url: `http://127.0.0.1:${srv.address().port}` }, routines: { enabled: true } }),
+      resolveLocal: (cfg, model) => L.resolveLocal({ cfg, model }),
+      localAgent: (opts) => L.runLocalAgent({ ...opts, deps: { recordLocalCall: (c) => counts.push(c), postNotification: () => ({}) } }),
+    } });
+    assert.equal(await runRoutine('e2e', { deps: d }), 0);
+    assert.equal(fs.readFileSync(path.join(VAULT, 'notes', 'out.md'), 'utf8'), 'hello\n');
+    assert.deepEqual(d.ledger.map((r) => [r.provider, r.usd, r.inputTokens, r.outputTokens]), [['ollama', 0, 30, 6]]);
+    assert.equal(counts.length, 2);
+    assert.match(fs.readFileSync(path.join(LOGS, 'routine-e2e.log'), 'utf8'), /turn 1: write_file notes\/out\.md → ok \(29 chars\)\n--- final ---\nWrote notes\/out\.md\.\n$/);
+  } finally {
+    srv.close();
+    fs.rmSync(path.join(VAULT, 'notes'), { recursive: true, force: true });
+  }
+});
+
+test('engine local: a local-agent run that turns its routine off takes its schedule out too; a local-down skip never does (B10 with A6)', async () => {
+  put('wind-down', { kind: 'prompt', engine: 'local', writes: ['notes/'], maxTurns: 4, timeoutSec: 60 }, 'Finish the queue, then turn yourself off.');
+  const taken = [];
+  const d = hostDeps('none', { deps: {
+    resolveLocal: async () => localOk,
+    // The agent's last turn: the queue is empty, so the routine turns itself off.
+    localAgent: async () => { const r = store.read('wind-down', { dir: ROUTINES }); store.write({ ...r, enabled: false }, { dir: ROUTINES }); return agentResult(); },
+    unschedule: (o) => { taken.push({ ...o, recorded: state().routines['wind-down'] && state().routines['wind-down'].lastExit }); return true; },
+  } });
+  assert.equal(await runRoutine('wind-down', { deps: d }), 0);
+  assert.equal(d.calls.length, 0, 'nothing spawned: the agent ran in process');
+  assert.deepEqual(taken.map((t) => [t.slug, t.vault, t.recorded]), [['wind-down', VAULT, 0]], 'after the run is recorded');
+  assert.match(d.out, /wind-down turned itself off; taking its schedule out \(aos routines unschedule wind-down\)/);
+  // The engine down: a skip, nothing run, the routine still on, nothing taken out.
+  put('wind-down', { kind: 'prompt', engine: 'local', writes: ['notes/'], maxTurns: 4, timeoutSec: 60 }, 'Finish the queue, then turn yourself off.');
+  const down = hostDeps('none', { deps: {
+    resolveLocal: async () => ({ ok: false, reason: 'local-down', lc: localOk.lc, model: null }),
+    localAgent: async () => { throw new Error('never run'); },
+    unschedule: (o) => { taken.push(o); return true; },
+  } });
+  assert.equal(await runRoutine('wind-down', { deps: down }), 0);
+  assert.equal(taken.length, 1);
+});

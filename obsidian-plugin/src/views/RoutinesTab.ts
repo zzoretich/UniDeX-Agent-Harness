@@ -4,12 +4,17 @@ import * as path from "path";
 import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import { ConfirmModal } from "../ui/ConfirmModal";
-import { readAgenticosJson, readVaultConfig, sessionHosts } from "../data/aosConfig";
+import { readAgenticosJson, readProviderState, readVaultConfig, sessionHosts } from "../data/aosConfig";
 import { describe, next as nextFire, validateCron } from "../data/cron";
 import {
   Routine, RoutineRow, RoutinesState, RoutineKind, KINDS, EFFORTS, ROUTINES_DIR, ROUTINES_STATE_PATH, SLUG_RE, DUTY_LOG_DIR, DutyLogRun,
-  listRoutines, readRoutinesState, buildRows, schedulesOutOfDate, emptyState, readDutyLogLast,
+  listRoutines, readRoutinesState, buildRows, schedulesOutOfDate, emptyState, readDutyLogLast, lastSkip,
 } from "../data/routines";
+import {
+  SMALL_MODEL_NOTE, WRITES_NOTE, defaultEngine, dropPromptOnly, engineChoices, enginePill, modelChoices, parseWrites, writesText,
+} from "../data/routineEngines";
+import { aliasCatalog } from "../data/claudeAsk";
+import { sessionsHost, type HostCatalog } from "../host";
 import { adapterOf, writeRoutine, setRoutineEnabled, deleteRoutine, isGuardedChange, GuardedRoutineError, RoutineDraft } from "../data/routineWriter";
 import { readExternalSchedules, ExternalSchedule } from "../data/externalSchedules";
 import { readHostRoutines, hostRows, hostChip, codexRefreshDue, emptyHostRoutines, HostRoutinesCache, HOST_ROUTINES_PATH, HOST_NAMES } from "../data/hostRoutines";
@@ -49,6 +54,9 @@ export class RoutinesTab {
   private hosts: HostRoutinesCache = emptyHostRoutines();
   private dutyLogs: Record<string, DutyLogRun | null> = {};
   private hostRefreshAt = 0;
+  /** The hosts' models (the app's catalog, through sessions.catalog()), asked for once, when a Codex model list is shown. */
+  private catalog: HostCatalog | null = null;
+  private catalogRun: Promise<void> | null = null;
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
   private tick: number | null = null;
@@ -181,13 +189,18 @@ export class RoutinesTab {
     name.createDiv({ text: r.name ?? r.slug });
     name.createDiv({ cls: "aos-dim aos-rt-slug", text: r.slug + (r.guarded ? " · guarded" : "") });
     el.createSpan({ cls: "aos-pill aos-pill-dim", text: String(r.kind ?? "?") });
+    // local-first A6: where a prompt routine runs — local, claude, codex, or auto (routines.runner).
+    if (r.kind === "prompt") { const pill = enginePill(r); el.createSpan({ cls: `aos-rt-engine is-${pill.text}`, text: pill.text, attr: { title: pill.title } }); }
     el.createSpan({ cls: "aos-rt-cadence", text: row.cadence, attr: { title: r.schedule ?? "" } });
     el.createSpan({ cls: "aos-rt-next aos-dim", text: row.next[0] ? formatFire(row.next[0]) : "—", attr: { title: row.next.map(formatFire).join("\n") } });
     const last = row.last;
+    // A skip since the last run (the local engine down, a capped day) says so: the next fire tries again.
+    const skip = r.enabled ? lastSkip(this.state.routines[r.slug]) : null;
     el.createSpan({
-      cls: "aos-rt-last aos-dim",
-      text: last ? `${formatAgo(last.lastRunAt, now.getTime())} · exit ${last.lastExit}${last.lastCostUsd != null ? ` · $${Number(last.lastCostUsd).toFixed(2)}` : ""}` : "never",
-      attr: { title: last?.lastError ?? (last?.lastTrigger ? `trigger: ${last.lastTrigger}` : "") },
+      cls: `aos-rt-last aos-dim${skip ? " is-skipped" : ""}`,
+      text: skip ? `skipped ${formatAgo(skip.at, now.getTime())} · ${skip.short}`
+        : last ? `${formatAgo(last.lastRunAt, now.getTime())} · exit ${last.lastExit}${last.lastCostUsd != null ? ` · $${Number(last.lastCostUsd).toFixed(2)}` : ""}` : "never",
+      attr: { title: skip ? `${skip.reason} — the next fire tries again` : last?.lastError ?? (last?.lastTrigger ? `trigger: ${last.lastTrigger}` : "") },
     });
     const tip = r.errors.length ? r.errors.join("; ") : row.health === "stale" ? "changed since the schedules were applied" : row.health === "missed" ? "a fire time passed with no run recorded — is the schedule loaded?" : last?.lastError ?? "";
     el.createSpan({ cls: `aos-pulse-chip is-${row.health}`, text: row.health, attr: { title: tip } });
@@ -227,10 +240,35 @@ export class RoutinesTab {
 
   // ── editor drawer ──
 
+  /** What the engine and model selects are built from: files the runtime writes, never a probe of the engine. */
+  private engineEnv() {
+    const root = this.plugin.vaultRoot();
+    const configDir = this.plugin.claudeConfigDir();
+    return { cfg: readVaultConfig(root, configDir), state: readProviderState(root), hosts: sessionHosts(readAgenticosJson(configDir)) };
+  }
+
+  /** The app's host catalog (it answers from its cache under 24 h); the aliases when there is no app or it cannot. */
+  private loadCatalog(): Promise<void> {
+    if (this.catalog) return Promise.resolve();
+    if (!this.catalogRun) {
+      this.catalogRun = (async () => {
+        let cat: HostCatalog | null = null;
+        try { const sh = sessionsHost(); const r = sh ? await sh.sessions.catalog() : null; if (r && r.ok) cat = r.data; } catch { /* the aliases */ }
+        this.catalog = cat ?? aliasCatalog(new Date());
+      })();
+    }
+    return this.catalogRun;
+  }
+
   private openEditor(existing: Routine | null): void {
+    const fresh = (): RoutineDraft => {
+      const env = this.engineEnv();
+      const engine = defaultEngine(env.cfg, env.state);
+      return { slug: "", schema: 1, name: "", kind: "prompt", schedule: "0 9 * * 1-5", enabled: true, ...(engine ? { engine } : {}), body: "" };
+    };
     const draft: RoutineDraft = existing
       ? (() => { const { errors, ...rest } = existing; void errors; return { ...rest, body: existing.body } as RoutineDraft; })()
-      : { slug: "", schema: 1, name: "", kind: "prompt", schedule: "0 9 * * 1-5", enabled: true, body: "" };
+      : fresh();
     this.view.openDrawer(existing ? `Edit ${existing.slug}` : "New routine", (host) => this.renderEditor(host, draft, existing));
   }
 
@@ -276,19 +314,9 @@ export class RoutinesTab {
       kindHost.empty();
       const kind = kindSel.value as RoutineKind;
       draft.kind = kind;
+      dropPromptOnly(draft, kind);
       if (kind === "prompt") {
-        const m = kindHost.createDiv({ cls: "aos-rt-field" }); m.createEl("label", { text: "model (blank = claude.model)" });
-        const mi = m.createEl("input", { cls: "aos-rt-input", attr: { type: "text", value: draft.model ?? "" } });
-        mi.addEventListener("input", () => { draft.model = mi.value.trim() || undefined; });
-        const ef = kindHost.createDiv({ cls: "aos-rt-field" }); ef.createEl("label", { text: "effort" });
-        const es = ef.createEl("select", { cls: "aos-rt-input" });
-        es.createEl("option", { text: "(default)", value: "" });
-        for (const e of EFFORTS) es.createEl("option", { text: e, value: e });
-        es.value = draft.effort ?? "";
-        es.addEventListener("change", () => { draft.effort = es.value || undefined; });
-        const b = kindHost.createDiv({ cls: "aos-rt-field" }); b.createEl("label", { text: "budget USD per run (blank = routines.perRunUsd)" });
-        const bi = b.createEl("input", { cls: "aos-rt-input", attr: { type: "text", value: draft.budgetUsd != null ? String(draft.budgetUsd) : "" } });
-        bi.addEventListener("input", () => { const n = Number(bi.value); draft.budgetUsd = bi.value.trim() === "" ? undefined : n; });
+        this.renderEngineFields(kindHost, draft);
       } else if (kind === "command") {
         const a = kindHost.createDiv({ cls: "aos-rt-field" }); a.createEl("label", { text: "argv (one argument per line, no shell)" });
         const ta = a.createEl("textarea", { cls: "aos-rt-input aos-rt-argv" });
@@ -319,6 +347,64 @@ export class RoutinesTab {
     }
     const save = actions.createEl("button", { text: existing ? "save" : "create", cls: "mod-cta" });
     save.addEventListener("click", () => { void this.save(draft, existing, errorsEl); });
+  }
+
+  /**
+   * A prompt routine's engine (local-first A6) and what follows from it: the model select (the local engine's pulled
+   * models, Claude Code's models, or the Codex catalog), then for the local engine the note on small models, the turn
+   * limit, what it may write and where its final message goes (A7); for a host, the effort and the per-run budget.
+   */
+  private renderEngineFields(host: HTMLElement, draft: RoutineDraft): void {
+    const env = this.engineEnv();
+    const ef = host.createDiv({ cls: "aos-rt-field" }); ef.createEl("label", { text: "engine" });
+    const engSel = ef.createEl("select", { cls: "aos-rt-input aos-rt-engineselect", attr: { "data-tour": "routines-engine" } });
+    for (const c of engineChoices(env.cfg, env.state, env.hosts, draft.engine ?? null)) engSel.createEl("option", { text: c.label, value: c.value });
+    engSel.value = draft.engine ?? "";
+    const engHost = host.createDiv();
+    const field = (label: string): HTMLElement => { const f = engHost.createDiv({ cls: "aos-rt-field" }); f.createEl("label", { text: label }); return f; };
+    const renderEngine = () => {
+      engHost.empty();
+      const engine = engSel.value;
+      const ms = field("model").createEl("select", { cls: "aos-rt-input aos-rt-model" });
+      const fill = () => {
+        ms.empty();
+        for (const c of modelChoices(engine, env.cfg, env.state, this.catalog, draft.model ?? null)) ms.createEl("option", { text: c.label, value: c.value });
+        ms.value = draft.model ?? "";
+      };
+      fill();
+      ms.addEventListener("change", () => { draft.model = ms.value || undefined; });
+      if (engine === "codex" && !this.catalog) void this.loadCatalog().then(() => { if (engHost.contains(ms)) fill(); });
+      if (engine === "local") {
+        engHost.createDiv({ cls: "aos-dim aos-rt-enginenote", text: SMALL_MODEL_NOTE });
+        const ti = field("turn limit (blank = 24)").createEl("input", { cls: "aos-rt-input aos-rt-maxturns", attr: { type: "text", value: draft.maxTurns != null ? String(draft.maxTurns) : "", placeholder: "24" } });
+        ti.addEventListener("input", () => { draft.maxTurns = ti.value.trim() === "" ? undefined : Number(ti.value); });
+        const wa = field("may write (one vault path, folder/ or glob per line; blank = nothing)").createEl("textarea", { cls: "aos-rt-input aos-rt-writes" });
+        wa.rows = 3;
+        wa.value = writesText(draft.writes);
+        wa.setAttribute("placeholder", "notes/digests/\nbrain/reflections/*.md");
+        wa.addEventListener("input", () => { draft.writes = parseWrites(wa.value); });
+        engHost.createDiv({ cls: "aos-dim aos-rt-writesnote", text: WRITES_NOTE });
+        const oi = field("final message to (log, notify, or a .md file; blank = the log)").createEl("input", { cls: "aos-rt-input aos-rt-output", attr: { type: "text", value: draft.output ?? "", placeholder: "notify" } });
+        oi.addEventListener("input", () => { draft.output = oi.value.trim() || undefined; });
+      } else {
+        const es = field("effort").createEl("select", { cls: "aos-rt-input" });
+        es.createEl("option", { text: "(default)", value: "" });
+        for (const e of EFFORTS) es.createEl("option", { text: e, value: e });
+        es.value = draft.effort ?? "";
+        es.addEventListener("change", () => { draft.effort = es.value || undefined; });
+        const bi = field("budget USD per run (blank = routines.perRunUsd)").createEl("input", { cls: "aos-rt-input", attr: { type: "text", value: draft.budgetUsd != null ? String(draft.budgetUsd) : "" } });
+        bi.addEventListener("input", () => { const n = Number(bi.value); draft.budgetUsd = bi.value.trim() === "" ? undefined : n; });
+      }
+    };
+    engSel.addEventListener("change", () => {
+      // A model names a model of one engine; the local agent's fields mean nothing to a host, nor a host's to it.
+      draft.engine = engSel.value || undefined;
+      draft.model = undefined;
+      if (engSel.value === "local") { delete draft.effort; delete draft.budgetUsd; }
+      else { delete draft.maxTurns; delete draft.writes; delete draft.output; }
+      renderEngine();
+    });
+    renderEngine();
   }
 
   private async save(draft: RoutineDraft, existing: Routine | null, errorsEl: HTMLElement): Promise<void> {

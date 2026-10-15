@@ -11,12 +11,14 @@ const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'aos-routines-'));
 
 test('list: every fixture, sorted, invalid ones carry errors', () => {
   const all = store.list({ dir: FIXTURES });
-  assert.deepEqual(all.map(r => r.slug), ['bad-cron', 'bad-kind', 'missing-argv', 'monitor', 'morning-brief', 'scan-refresh']);
+  assert.deepEqual(all.map(r => r.slug), ['bad-cron', 'bad-engine', 'bad-kind', 'local-digest', 'missing-argv', 'monitor', 'morning-brief', 'scan-refresh']);
   const bySlug = Object.fromEntries(all.map(r => [r.slug, r]));
   assert.deepEqual(bySlug.monitor.errors, []);
   assert.deepEqual(bySlug['morning-brief'].errors, []);
   assert.deepEqual(bySlug['scan-refresh'].errors, []);
+  assert.deepEqual(bySlug['local-digest'].errors, []);
   assert.match(bySlug['bad-cron'].errors[0], /^schedule: hour/);
+  assert.deepEqual(bySlug['bad-engine'].errors, ['engine is for prompt routines only']);
   assert.match(bySlug['bad-kind'].errors[0], /^kind must be one of/);
   assert.match(bySlug['missing-argv'].errors[0], /argv/);
 });
@@ -43,6 +45,62 @@ test('read: frontmatter types, flow arrays with quoted items, body', () => {
   assert.equal(cmd.body, '');
   assert.equal(store.read('nope', { dir: FIXTURES }), null);
   assert.equal(store.read('../etc/passwd', { dir: FIXTURES }), null);
+  const local = store.read('local-digest', { dir: FIXTURES });
+  assert.equal(local.engine, 'local');
+  assert.equal(local.model, 'qwen3.5:9b');
+  assert.equal(local.maxTurns, 12);
+  assert.deepEqual(local.writes, ['notes/digests/', 'brain/reflections/*.md']);
+  assert.equal(local.output, 'notify');
+});
+
+// local-first A6/A7: engine and model for prompt routines; writes, maxTurns and output for the local agent. A routine
+// without engine is valid exactly as before (the runner keeps today's resolution).
+test('validate: engine, maxTurns, writes and output on prompt routines', () => {
+  const base = { slug: 'ok-slug', schema: 1, name: 'x', kind: 'prompt', schedule: '0 9 * * *', enabled: true, body: 'hi' };
+  for (const engine of store.ENGINES) assert.deepEqual(store.validate({ ...base, engine }), [], engine);
+  assert.deepEqual(store.ENGINES, ['local', 'claude', 'codex']);
+  assert.deepEqual(store.validate({ ...base, engine: 'codex', model: 'gpt-6-sol' }), []);
+  assert.deepEqual(store.validate({ ...base, engine: 'local', model: 'qwen3.5:4b', maxTurns: 24, writes: ['notes/', 'notes/**/*.md', 'TODO.md'], output: 'notes/out.md' }), []);
+  assert.deepEqual(store.validate({ ...base, output: 'log' }), []);
+  assert.deepEqual(store.validate({ ...base, output: 'notify' }), []);
+  assert.deepEqual(store.validate({ ...base, engine: 'ollama' }), ['engine must be one of local, claude, codex']);
+  assert.deepEqual(store.validate({ ...base, engine: null }), ['engine must be one of local, claude, codex']);
+  assert.deepEqual(store.validate({ ...base, kind: 'duty', engine: 'local' }), ['engine is for prompt routines only']);
+  assert.deepEqual(store.validate({ ...base, kind: 'command', argv: ['ls'], engine: 'claude' }), ['engine is for prompt routines only']);
+  for (const maxTurns of [0, -1, 1.5, 201, '5']) assert.match(store.validate({ ...base, maxTurns }).join(), /maxTurns/, String(maxTurns));
+  assert.deepEqual(store.validate({ ...base, maxTurns: 200 }), []);
+  for (const writes of ['notes/', ['/abs/notes/'], ['../out/'], ['notes/../../x'], ['a,b'], [''], ['~/x']]) {
+    assert.match(store.validate({ ...base, writes }).join(), /writes/, JSON.stringify(writes));
+  }
+  for (const output of ['daily', 'notes/out.txt', '/abs/out.md', '../out.md', 3]) assert.match(store.validate({ ...base, output }).join(), /output/, String(output));
+  // The duty's writes rule is unchanged: paths, no commas.
+  assert.deepEqual(store.validate({ ...base, kind: 'duty', writes: ['notes/inbox/'] }), []);
+});
+
+// The files that feed hosted sessions are off limits to a local routine (the owner's call on the PR 4 review): memories,
+// the bootstrap and index files, host instructions and the persona — as writes entries and as output targets. Case and
+// Unicode variants too. A duty's writes are not this rule's business.
+test('localDenied: a local routine never writes what feeds hosted sessions', () => {
+  const base = { slug: 'ok-slug', schema: 1, name: 'x', kind: 'prompt', schedule: '0 9 * * *', enabled: true, body: 'hi', engine: 'local' };
+  for (const w of ['persona/', 'persona/journal/', 'Persona/', 'brain/memory/feedback/', 'brain/memory/', 'brain/_index/', 'brain/_index/brief.md', 'brain/', 'brain/**/*.md',
+    'MEMORY.md', 'memory.md', 'AGENTICOS.md', 'CLAUDE.md', 'notes/CLAUDE.md', 'notes/AGENTS.md', 'Brain/Memory/x.md', 'per\u017fona/journal/', 'notes/sub/MEMORY.md']) {
+    assert.ok(store.localDenied(w), `${w} must be denied`);
+    assert.match(store.validate({ ...base, writes: [w] }).join(), /off limits to a local routine/, w);
+  }
+  for (const ok of ['notes/', 'notes/digests/*.md', 'brain/reflections/', 'TODO.md', 'notes/agenticos.md']) {
+    assert.equal(store.localDenied(ok), null, ok);
+    assert.deepEqual(store.validate({ ...base, writes: [ok] }), [], ok);
+  }
+  assert.equal(store.validate({ ...base, writes: ['notes/', 'brain/memory/'] }).join(), "writes: brain/memory/ is off limits to a local routine (brain/memory/: memories feed every session)");
+  assert.equal(store.validate({ ...base, output: 'MEMORY.md' }).join(), 'output: MEMORY.md is off limits to a local routine (MEMORY.md: it feeds every session)');
+  assert.equal(store.validate({ ...base, output: 'brain/_index/out.md' }).join(), 'output: brain/_index/out.md is off limits to a local routine (brain/_index/: the session bootstrap and the runtime\'s caches)');
+  assert.deepEqual(store.validate({ ...base, output: 'notes/out.md' }), []);
+  assert.deepEqual(store.validate({ ...base, kind: 'duty', engine: undefined, writes: ['brain/memory/feedback/'] }), [], 'a duty keeps its own rule');
+});
+
+test('KEY_ORDER: engine sits before model, maxTurns after budgetUsd, output after writes', () => {
+  const text = store.toFile({ slug: 'k', schema: 1, name: 'K', kind: 'prompt', schedule: '0 9 * * *', enabled: true, output: 'notify', writes: ['notes/'], maxTurns: 8, model: 'qwen3.5:4b', engine: 'local', body: 'go' });
+  assert.equal(text, '---\nschema: 1\nname: K\nkind: prompt\nschedule: "0 9 * * *"\nenabled: true\nengine: local\nmodel: "qwen3.5:4b"\nmaxTurns: 8\nwrites: [notes/]\noutput: notify\n---\n\ngo\n');
 });
 
 test('validate: kind-specific rules and the slug rule', () => {
@@ -77,7 +135,7 @@ test('validate: kind-specific rules and the slug rule', () => {
 
 test('write + read round-trips every valid fixture byte-for-byte after one normalisation', () => {
   const dir = tmpDir();
-  for (const slug of ['monitor', 'morning-brief', 'scan-refresh']) {
+  for (const slug of ['monitor', 'morning-brief', 'scan-refresh', 'local-digest']) {
     const r = store.read(slug, { dir: FIXTURES });
     store.write(r, { dir });
     const again = store.read(slug, { dir });

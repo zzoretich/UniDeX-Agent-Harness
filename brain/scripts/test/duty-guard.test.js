@@ -38,6 +38,16 @@ test('refusal: the vault, absolute, .., dot-segments, guarded and executable are
   }
 });
 
+// macOS's file system ignores case and folds Unicode (U+017F LONG S opens brain/scripts): the rule compares folded paths,
+// so it can only refuse more. The same allowed paths stay allowed.
+test('refusal: case and Unicode variants of a guarded or executable area are refused too', () => {
+  for (const bad of ['Persona/IDENTITY.md', 'PERSONA/duties/x.md', 'Brain', 'BRAIN/SCRIPTS/x.js', 'brain/\u017fcripts/run.js', 'Workspaces/p', 'persona/Ledger.JSONL', 'brain/Routines/x.md']) {
+    assert.ok(G.refusal(bad), `${bad} must be refused`);
+  }
+  assert.match(G.refusal('Persona/IDENTITY.md'), /^guarded \(persona\/IDENTITY\.md\)$/);
+  for (const ok of ['Brain/Reflections', 'notes/Inbox', 'TODO.md']) assert.equal(G.refusal(ok), null, `${ok} must be allowed`);
+});
+
 test('writeScope: the defaults, today\'s daily-note folder from the layout, and checked writes: entries', () => {
   const v = vault({ layout: 'brain/sessions/{yyyy}-{MM}-{dd}.md' });
   const s = G.writeScope({ vault: v, writes: 'notes/inbox/, TODO.md, persona/routines/, ../out', now: NOW });

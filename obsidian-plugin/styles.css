@@ -1810,6 +1810,10 @@ body {
 .aos-rt-next { flex: 0 0 110px; font-family: var(--aos-mono); font-size: 10.5px; }
 .aos-rt-last { flex: 0 0 150px; font-size: 10.5px; }
 .aos-rt-rowactions { display: flex; gap: 8px; }
+/* A prompt routine's engine (local-first A6): local, claude, codex, or auto (routines.runner); a skip since the last run. */
+.aos-rt-engine { display: inline-block; padding: 1px 8px; border: 1px solid var(--aos-border); border-radius: 999px; color: var(--aos-dim); font-size: 10.5px; }
+.aos-rt-engine.is-local { color: var(--udx-ok); border-color: var(--udx-ok-bg); background: var(--udx-ok-bg); }
+.aos-rt-last.is-skipped { color: var(--aos-amber); }
 .aos-pulse-chip.is-off, .aos-pulse-chip.is-invalid, .aos-pulse-chip.is-missed { border: 1px solid; }
 .aos-pulse-chip.is-off { color: var(--aos-dim); border-color: var(--aos-border); }
 .aos-pulse-chip.is-missed { color: var(--aos-amber); border-color: var(--aos-amber); }
@@ -1824,6 +1828,7 @@ body {
 .aos-rt-preview.is-error { color: var(--aos-rose); }
 .aos-rt-guard { color: var(--aos-amber); font-size: 11px; margin-bottom: 8px; }
 .aos-rt-note { font-size: 11px; margin-bottom: 8px; }
+.aos-rt-enginenote, .aos-rt-writesnote { font-size: 11px; margin: -4px 0 8px; }
 .aos-rt-errors { color: var(--aos-rose); font-size: 11px; min-height: 14px; margin-bottom: 4px; }
 .aos-confirm-modal p { color: var(--aos-text); }
 
