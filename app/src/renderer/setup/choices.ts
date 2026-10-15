@@ -9,17 +9,21 @@ export function defaultHost(ready: ReadyHosts): HostChoice {
   return ready.claude && ready.codex ? "both" : ready.codex ? "codex" : ready.claude ? "claude" : "none";
 }
 
-/** Whether Choose shows `host` as a choice: a host when it is ready, both when both are, none only when neither is. */
+/**
+ * Whether Choose offers `host`: a host when it is ready, both when both are, and "No agent CLI yet" always (inspection
+ * round 3, F5: a user with a host may still install without one).
+ */
 export function hostOffered(host: HostChoice, ready: ReadyHosts): boolean {
-  return host === "none" ? !ready.claude && !ready.codex : host === "both" ? ready.claude && ready.codex : ready[host];
+  return host === "none" ? true : host === "both" ? ready.claude && ready.codex : ready[host];
 }
 
 /**
- * The host after a check (M2): the user's choice while Choose still offers it, else the default. A check that finds a
- * host newly logged in never leaves "none" chosen with no radio for it, so Install never sends --host none unseen.
+ * The host after a check (M2, F5). A choice the user made (`picked`) stands while Choose still offers it, "No agent CLI
+ * yet" included; a choice the wizard made for them follows what is ready now, so a host logged in since becomes the
+ * choice. A choice no longer offered falls back to the default. Install never sends a choice whose radio is not checked.
  */
-export function reconcileHost(current: HostChoice | null, ready: ReadyHosts): HostChoice {
-  return current && hostOffered(current, ready) ? current : defaultHost(ready);
+export function reconcileHost(current: HostChoice | null, ready: ReadyHosts, picked = false): HostChoice {
+  return current && picked && hostOffered(current, ready) ? current : defaultHost(ready);
 }
 
 /** A word for a POSIX shell: as it is when it holds only safe characters, else single-quoted (a ' becomes '\''). */

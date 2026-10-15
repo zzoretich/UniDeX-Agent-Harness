@@ -124,14 +124,15 @@ test("Install what's missing downloads uv, checks it and installs it, then pulls
   await win.screenshot({ path: test.info().outputPath("wizard-fixed.png") });
 });
 
-test("hosts offer only what is ready, with no 'No agent CLI yet' while one is; the folder is typed or picked", async () => {
+test("hosts offer what is ready, and No agent CLI yet always; the ready host is the default; the folder is typed or picked", async () => {
   const { win } = app();
   await win.locator(".aos-setup-next").click();
   await expect(win.locator('.aos-setup-body[data-step="choose"]')).toBeVisible();
   await expect(win.locator('input[name="aos-host"][value="claude"]')).toBeChecked();
   await expect(win.locator('input[name="aos-host"][value="codex"]')).toBeDisabled();
   await expect(win.locator('input[name="aos-host"][value="both"]')).toBeDisabled();
-  await expect(win.locator('input[name="aos-host"][value="none"]')).toHaveCount(0);
+  await expect(win.locator('input[name="aos-host"][value="none"]')).toBeEnabled();
+  await expect(win.locator('input[name="aos-host"][value="none"]')).not.toBeChecked();
   const input = win.locator(".aos-setup-vault-input");
   await expect(input).toHaveValue(path.join(FX.home, "AgenticOS"));
   await input.fill(FX.vault);

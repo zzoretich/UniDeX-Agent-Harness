@@ -46,6 +46,8 @@ interface State {
   /** Install what's missing: the fixes still to run, in order. */
   queue: SetupFixId[];
   host: Host;
+  /** The user clicked a host radio: their choice stands across checks while it is offered (F5). */
+  hostPicked: boolean;
   vault: string;
   persona: PersonaAnswers;
   personaSkipped: boolean;
@@ -63,7 +65,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
   const setup = info.setup;
   const s: State = {
     step: "check", report: null, checking: false, job: null, progress: null, failed: null, queue: [],
-    host: "claude",
+    host: "claude", hostPicked: false,
     vault: setup?.configuredVault ?? setup?.defaultVault ?? "~/AgenticOS",
     persona: { name: "", addressAs: "", voice: "", priorities: [], dutyModel: "", dutyCodexModel: "", dutyEffort: "medium", schedule: true },
     personaSkipped: false, installExit: undefined, claudeMd: null, pathLine: null, pathLineError: null, addPath: true, error: null,
@@ -123,7 +125,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       const first = !s.report;
       s.report = r.data;
       // Inspection M2: after every check, not only the first, so a host logged in since replaces a "none" no longer offered.
-      s.host = first ? defaultHost(r.data.hosts) : reconcileHost(s.host, r.data.hosts);
+      s.host = first ? defaultHost(r.data.hosts) : reconcileHost(s.host, r.data.hosts, s.hostPicked);
       s.error = null;
     } else s.error = r.error;
     render();
@@ -173,7 +175,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
 
   function install(): void {
     // Never an install for a choice Choose does not show (M2): a host that logged out, or "none" once one is ready.
-    if (!s.report || !hostOffered(s.host, s.report.hosts)) { s.host = reconcileHost(s.host, s.report?.hosts ?? { claude: false, codex: false }); s.step = "choose"; s.error = "Choose a host again: what is ready changed."; render(); return; }
+    if (!s.report || !hostOffered(s.host, s.report.hosts)) { s.host = reconcileHost(s.host, s.report?.hosts ?? { claude: false, codex: false }, s.hostPicked); s.step = "choose"; s.error = "Choose a host again: what is ready changed."; render(); return; }
     const req: InstallRequest = { host: s.host, vault: s.vault, persona: s.personaSkipped || s.host === "none" ? null : { ...s.persona } };
     terminal(false);
     const r = aos.setup.install(req);
@@ -292,13 +294,14 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     });
     const hosts = el.createDiv({ cls: "aos-setup-hosts" });
     const options: Array<[Host, string, boolean]> = [["claude", "Claude Code", ready.claude], ["codex", "Codex", ready.codex], ["both", "Both", ready.claude && ready.codex]];
-    if (noHost) options.push(["none", "No agent CLI yet", true]);
+    // Always offered (F5): a Mac with a host may still install without one; the default is the host that is ready.
+    options.push(["none", "No agent CLI yet", true]);
     for (const [id, label, ok] of options) {
       const lab = hosts.createEl("label", { cls: `aos-setup-host${ok ? "" : " is-disabled"}` });
       const input = lab.createEl("input", { attr: { type: "radio", name: "aos-host", value: id } });
       input.checked = s.host === id;
       input.disabled = !ok;
-      input.addEventListener("change", () => { if (input.checked) { s.host = id; render(); } });
+      input.addEventListener("change", () => { if (input.checked) { s.host = id; s.hostPicked = true; render(); } });
       lab.appendText(` ${label}`);
     }
     if (s.host === "none") el.createEl("p", { cls: "aos-setup-hint", attr: { "data-hint": "no-host" }, text: "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Finish says how." });

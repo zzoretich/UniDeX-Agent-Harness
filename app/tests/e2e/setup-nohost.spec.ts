@@ -56,9 +56,17 @@ test("inspection M2: a host logged in after the first check replaces No agent CL
   await win.locator(".aos-setup-recheck").click();
   await expect(row("claude-login")).toHaveClass(/is-ok/);
   await win.locator(".aos-setup-next").click();
-  await expect(win.locator('input[name="aos-host"][value="none"]')).toHaveCount(0);
+  await expect(win.locator('input[name="aos-host"][value="none"]')).not.toBeChecked();
   await expect(win.locator('input[name="aos-host"][value="claude"]')).toBeChecked();
   await expect(win.locator(".aos-setup-next")).toBeEnabled();
+  // F5: No agent CLI yet stays on offer, and once picked it stands across a check that still finds Claude Code.
+  await win.locator('input[name="aos-host"][value="none"]').check();
+  await win.getByRole("button", { name: "Back" }).click();
+  await win.locator(".aos-setup-recheck").click();
+  await expect(row("claude-login")).toHaveClass(/is-ok/);
+  await win.locator(".aos-setup-next").click();
+  await expect(win.locator('input[name="aos-host"][value="none"]')).toBeChecked();
+  await expect(win.locator(".aos-setup-install")).toBeEnabled();
   // Gone again: back to No agent CLI yet, checked, for the rest of this file.
   fs.rmSync(claude);
   await win.getByRole("button", { name: "Back" }).click();
