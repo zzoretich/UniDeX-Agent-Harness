@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 129 |
-| covered in part | 64 |
+| covered | 130 |
+| covered in part | 65 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| **total** | **248** |
+| **total** | **250** |
 
-Of the 199 items about the app (248 minus the 49 N/A), 193 are asserted (129 fully, 64 in part); the other 6 are not
+Of the 201 items about the app (250 minus the 49 N/A), 195 are asserted (130 fully, 65 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -31,7 +31,7 @@ a live host session, Ollama's embeddings, the look in both themes). The writes, 
 - Notifications (N4, N5, N6) in `notifications-writes.spec.ts`;
 - Capture (P7, P8) in `capture-writes.spec.ts`;
 - Settings (S3, S6, S7, S8, I2) in `settings-writes.spec.ts`;
-- Routines (RT2, RT3, RT4, RT5) in `routines-writes.spec.ts`;
+- Routines (RT2, RT3, RT4, RT5) in `routines-writes.spec.ts`, and a local routine's create (RT10) in `routines-engines.spec.ts`;
 - Skills & Agents sharing (SK5, AG4, and SK1, SK2, AG2 on a machine with both hosts) in `sharing-writes.spec.ts`;
 - Pulse (P5, P6) in `pulse-writes.spec.ts`;
 - Brain (BR4–BR9, BR11's Status and Restore from Library, BR14's Unpin and Mark complete, the recall preview's hits (BR20), Health's Not duplicates and Archive the N shipped… (BR21) and every hygiene fix (BR22)) in `brain-writes.spec.ts`, with `AOS_APP_WRITE=brain`, which leaves every other surface off (the brain surface is on by default since its live check per host, brain-hub D14); its AI helpers (BR24–BR27: Merge with AI, Undo merge, the Consolidation sweep, Consolidate with AI…) in `brain-ai.spec.ts`, against a stand-in `claude` the vault's runtime calls through its provider chain, and on a Codex-only machine in `variants.spec.ts` (CX22);
@@ -317,6 +317,8 @@ again (`brain-ai`).
 | RT7 | Codex Automations with pills and chips; `codex as of`; refresh spawns the hosts refresh; without the app one dim line names why | covered in part | `variants › a Codex-only machine › Routines…` (no Codex database: the reason line and its age). Automation rows need Codex's database; refresh is a spawn. |
 | RT8 | Claude cloud routines after `/routines cloud`: claude pill, link, `(UTC)` or `once at`, `ran once` | covered | `routines › outside the runtime…`, `› a cloud routine's name links to claude.ai…` (imported with `aos routines import-cloud`). |
 | RT9 | A duty run outside the runtime shows in `last` with `trigger: duty-log` | not covered | Needs a real duty run (a model call). |
+| RT10 | A prompt routine's engine select (Default, Local when set up, the enabled hosts) and its model list; the local engine's fields; the engine on each prompt row | covered | `routines-engines › Claude Code only… › a prompt row names its engine; + new offers…`, `› an existing routine without an engine…`, `› a Codex-only machine › the engine select offers Codex and never Claude Code…`, `› a routine pinned to a host this machine lacks…`, `› the local engine set up… › + new starts on the local engine…` (create writes the file byte for byte), `› no agent CLI… › the editor offers the default runner and Local only…` |
+| RT11 | `engine: local` with Ollama: ▶ writes inside `writes`, the log lists the tool calls, `$0.00`; Ollama quit: `skipped … · local-down` | covered in part | `routines-engines › the local engine set up… › a local routine's row says it was skipped…` (the runtime's own skip with the engine down). A run needs a local model; the agent loop against a fake engine is in `brain/scripts/test/local-agent.test.js` and `run-routine.test.js`. |
 
 ## Skills (both hosts)
 
