@@ -4,6 +4,17 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Upgrading
+- **Nothing changes for an existing install yet.** Your `provider` setting is kept as it is (`auto` for most); the move to local background work is offered once, by the app, in a later 2.0 step. Nothing to re-trust: no hook command changed on either host.
+
+### Added
+- **Background work on the model on your Mac: provider `local`.** A new install runs its summaries, memory extraction, workspace insights and file maps, embeddings and the Pulse briefing on a local model and never spends: when the local model can't answer, the work waits or uses heuristics instead of falling back to Claude or Codex (turn on `local.hostedFallback` to allow that, under the same hook caps). "Ready" means the model is pulled, not just that Ollama answers. The local engine is Ollama, or any OpenAI-compatible server such as LM Studio or llama.cpp (`local.engine: openai`, `local.url`).
+- **The model fits the Mac.** Under provider `local`, a Mac with less than 12 GB of memory runs `qwen3.5:4b` (3.3 GB) and others `qwen3.5:9b` (6.6 GB); the model stays loaded between calls from 24 GB, and unloads after five minutes below that. A tier model gives way to another one you already pulled (an 8 GB Mac that has the 9b keeps using it); a model you name with `local.model` never does. `local.embedder` and `local.keepAlive` are settings too.
+- **`aos local`** shows the local engine: whether it answers, the models pulled, this Mac's tier, what background work runs on now (or why nothing does) and today's local calls; `aos local pull` downloads this Mac's model and the embedder through Ollama, and `aos local use <model>` picks another. Under provider `local`, `aos doctor` checks the engine and the model, and `aos status` counts today's local calls.
+
+### Changed
+- **Claude Code's daily sign-in check is free.** It asks `claude auth status` instead of making a one-word Haiku call that was billed to the hook ledger.
+
 ## [1.9.0] — 2026-10-12
 
 ### Upgrading

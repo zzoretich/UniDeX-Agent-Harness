@@ -53,10 +53,24 @@ const perDay = (key, section, label, help, extra) => ({ key, section, label, hel
 
 const SETTINGS = [
   // ── Provider & models ───────────────────────────────────────────────────────
-  { key: 'provider', section: 'provider', label: 'Background provider', type: 'enum', values: ['auto', 'ollama', 'claude', 'codex', 'none'], risk: 'spend', applies: 'next-call',
-    help: 'Who answers background work: auto picks Ollama when it answers, then Claude, then Codex; none turns background model calls off.' },
+  { key: 'provider', section: 'provider', label: 'Background provider', type: 'enum', values: ['local', 'auto', 'ollama', 'claude', 'codex', 'none'], risk: 'spend', applies: 'next-call',
+    help: 'Who answers background work: local runs it on the model on this Mac and never spends (with local.hostedFallback off); auto picks Ollama when it answers, then Claude, then Codex; none turns background model calls off.' },
+  { key: 'local.engine', section: 'provider', label: 'Local engine', type: 'enum', values: ['ollama', 'openai'], applies: 'next-call',
+    help: 'The local model server: ollama, or any OpenAI-compatible server (LM Studio, llama.cpp) at local.url.' },
+  { key: 'local.url', section: 'provider', label: 'Local engine URL', type: 'string', nullable: true, applies: 'next-call',
+    help: 'Where the local engine answers; null is Ollama at ollama.host:ollama.port, or LM Studio\'s http://127.0.0.1:1234/v1 for openai.' },
+  { key: 'local.model', section: 'provider', label: 'Local model', type: 'model', nullable: true, applies: 'next-call',
+    help: 'The local model for background work; null picks one for this Mac\'s memory (qwen3.5:4b under 12 GB, else qwen3.5:9b).' },
+  { key: 'local.embedder', section: 'provider', label: 'Local embedding model', type: 'model', applies: 'next-scan',
+    help: 'The local model that embeds notes for recall; changing it rebuilds the recall vectors at the next scan.' },
+  { key: 'local.keepAlive', section: 'provider', label: 'Keep the local model loaded', type: 'string', nullable: true, applies: 'next-call',
+    help: 'How long the local model stays in memory after a call (5m, 30m, -1 for always); null keeps it loaded on Macs with 24 GB or more, else 5m.' },
+  { key: 'local.hostedFallback', section: 'provider', label: 'Use Claude or Codex when local is down', type: 'bool', risk: 'spend', applies: 'next-call',
+    help: 'With provider local: when the local model cannot answer, send background work to Claude, then Codex, under their hook caps. Off: it waits or uses heuristics.' },
+  { key: 'local.onBattery', section: 'provider', label: 'Heavy local work on battery', type: 'enum', values: ['defer', 'run'], applies: 'next-scan',
+    help: 'defer holds the heavy local jobs (the semantic graph pass, the history digest) until the Mac is on power.' },
   { key: 'claude.model', section: 'provider', label: 'Claude model', type: 'model', host: 'claude', applies: 'next-call', followUp: ROUTINES_SYNC,
-    help: 'Claude model for background hook calls, and the duty model when the persona interview named none. An alias (haiku) or a full id.' },
+    help: 'Claude model for background calls when the provider is auto or claude (or local with hostedFallback on), and the duty model when the persona interview named none. An alias (haiku) or a full id.' },
   { key: 'codex.model', section: 'provider', label: 'Codex model', type: 'model', host: 'codex', nullable: true, applies: 'next-call',
     help: 'Codex model for background calls; null uses your own Codex default. Never a Claude alias.' },
   { key: 'codex.effort', section: 'provider', label: 'Codex effort', type: 'enum', host: 'codex', values: CODEX_EFFORTS, applies: 'next-call',
@@ -291,6 +305,9 @@ const SETTINGS = [
 // is never offered. A value outside these still works through `aos config set`.
 const CLAUDE_MODELS = ['haiku', 'sonnet', 'opus', 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5', 'claude-opus-5-5', 'claude-fable-5-1'];
 const CODEX_MODELS = Object.keys(require('../sdk/lib/codex-pricing.js').MODELS);
+// local-first A12: the tiers' models and the next size up; LOCAL_EMBEDDERS the recall embedder. Any pulled tag still works.
+const LOCAL_MODELS = ['qwen3.5:4b', 'qwen3.5:9b', 'qwen3.5:27b'];
+const LOCAL_EMBEDDERS = ['qwen3-embedding:0.6b'];
 const USD_CALL = [0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5];
 const USD_RUN = [0.25, 0.5, 1, 2, 3, 5, 10];
 const USD_DAY = [0, 0.25, 0.5, 1, 2, 3, 5, 6, 10, 15, 20, 30, 50];
@@ -300,6 +317,9 @@ const PICKS = {
   'codex.model': { choices: CODEX_MODELS }, 'reasoner.codexModel': { choices: CODEX_MODELS }, 'persona.codexModel': { choices: CODEX_MODELS },
   'routines.codexModel': { choices: CODEX_MODELS }, 'crossReview.codexModel': { choices: CODEX_MODELS },
   'ollama.host': { choices: ['127.0.0.1', 'localhost'] }, 'ollama.port': { choices: [11434] },
+  'local.url': { choices: ['http://127.0.0.1:11434', 'http://127.0.0.1:1234/v1'] },
+  'local.model': { choices: LOCAL_MODELS }, 'local.embedder': { choices: LOCAL_EMBEDDERS },
+  'local.keepAlive': { choices: ['5m', '30m', '-1'] },
   'claude.perCallUsd': usd(USD_CALL), 'codex.perCallUsd': usd(USD_CALL), 'reasoner.perCallUsd': usd(USD_CALL),
   'graph.semantic.perCallUsd': usd(USD_CALL), 'crossReview.perCallUsd': usd(USD_CALL),
   'persona.perDutyUsd': usd(USD_RUN), 'routines.perRunUsd': usd(USD_RUN), 'sessions.perTurnUsd': usd(USD_RUN),
@@ -435,4 +455,4 @@ function dayCap(v, d) {
   return Number.isFinite(n) && n >= 0 ? n : d;
 }
 
-module.exports = { SECTIONS, SETTINGS, SPEND_FAMILIES, PICKS, UNITS, CLAUDE_MODELS, CODEX_MODELS, DEFAULTS, entry, isPrefix, defaultOf, getPath, leafKeys, parseValue, validate, dayCap, isPlainObject };
+module.exports = { SECTIONS, SETTINGS, SPEND_FAMILIES, PICKS, UNITS, CLAUDE_MODELS, CODEX_MODELS, LOCAL_MODELS, LOCAL_EMBEDDERS, DEFAULTS, entry, isPrefix, defaultOf, getPath, leafKeys, parseValue, validate, dayCap, isPlainObject };

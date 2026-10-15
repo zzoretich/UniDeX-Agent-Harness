@@ -190,6 +190,7 @@ test.after(() => { if (savedNodeOptions !== undefined) process.env.NODE_OPTIONS 
 test('semantic gates: provider opt-out, off switch, force, a runner CLI, due time, budget', () => {
   assert.deepEqual(skip(scfg({}, { provider: 'none' })), { status: 'disabled', reason: 'provider none' });
   assert.deepEqual(skip(scfg({}, { provider: 'ollama' })), { status: 'disabled', reason: 'provider ollama' });
+  assert.deepEqual(skip(scfg({}, { provider: 'local' })), { status: 'disabled', reason: 'provider local' }, 'local never spends in the background (local-first A1)');
   assert.equal(skip(scfg({ enabled: true }, { provider: 'none' })), null, 'an explicit on overrides the provider');
   assert.deepEqual(skip(scfg({}, { provider: 'none' }), { force: true }), { status: 'disabled', reason: 'provider none' }, 'force never overrides a provider opt-out');
   assert.deepEqual(skip(scfg({ enabled: false })), { status: 'disabled', reason: 'semantic off' });

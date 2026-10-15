@@ -540,3 +540,118 @@ test('a daily cap\'s none names the host whose cap it is', async () => {
   p = await resolveProvider({ mode: 'none' });
   assert.equal(p.host, null, 'any other none names no host');
 });
+
+// ── provider local (local-first A1, A3, A8, A10, A13, A18) ─────────────────────────────────────────────────────────────
+const GB = 1024 ** 3;
+const pulled = (...models) => ({ localModels: async () => models });
+const localCfg = (local = {}) => fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'local', local }));
+
+test('local: engine up with the workhorse pulled → the local provider, on that model, counted not ledgered', async () => {
+  localCfg();
+  const calls = [];
+  const counted = [];
+  const p = await resolveProvider({ deps: { ...pulled('qwen3.5:9b', 'qwen3-embedding:0.6b'), ollamaChat: async (o) => { calls.push(o); return 'hi'; }, recordLocalCall: (r) => counted.push(r), resolveClaudeBin: never, loginProbe: never } });
+  assert.deepEqual([p.name, p.engine, p.reason, p.model, p.embedder], ['ollama', 'ollama', 'local-ready', 'qwen3.5:9b', 'qwen3-embedding:0.6b']);
+  assert.deepEqual(p.capabilities, { chat: true, embed: true, structured: true });
+  assert.equal(await p.chat({ prompt: 'x', feature: 'session-summary' }), 'hi');
+  assert.equal(calls[0].model, 'qwen3.5:9b');
+  assert.equal(calls[0].keepAlive, -1, 'the suite runs as a 32 GB Mac: resident');
+  assert.deepEqual([calls[0].host, calls[0].port], ['127.0.0.1', 11434], 'ollama.host/port from the defaults');
+  assert.deepEqual(counted.map((c) => c.feature), ['session-summary']);
+  assert.equal(fs.existsSync(SPEND_PATH), false, 'a local call writes no spend row');
+  const st = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+  assert.deepEqual([st.name, st.reason, st.engine, st.model, st.localReason], ['ollama', 'local-ready', 'ollama', 'qwen3.5:9b', 'local-ready']);
+  assert.deepEqual(st.local.models, ['qwen3.5:9b', 'qwen3-embedding:0.6b']);
+});
+
+test('local: nothing answers → none/local-down; not pulled → none/local-model-missing; no hosted call either way', async () => {
+  localCfg();
+  let p = await resolveProvider({ deps: { localModels: async () => null, resolveClaudeBin: never, loginProbe: never } });
+  assert.deepEqual([p.name, p.reason], ['none', 'local-down']);
+  await assert.rejects(() => p.chat({ prompt: 'x' }), (e) => e.code === 'PROVIDER_NONE');
+  fs.unlinkSync(STATE_PATH);
+  p = await resolveProvider({ deps: { ...pulled('llama3.2:latest'), resolveClaudeBin: never, loginProbe: never } });
+  assert.deepEqual([p.name, p.reason], ['none', 'local-model-missing']);
+});
+
+test('local: the engine list is cached 60 s, and a changed engine or address re-asks at once', async () => {
+  localCfg();
+  let asked = 0;
+  const deps = { localModels: async () => { asked++; return ['qwen3.5:9b']; } };
+  await resolveProvider({ deps });
+  await resolveProvider({ deps });
+  assert.equal(asked, 1);
+  localCfg({ url: 'http://127.0.0.1:11500' });
+  const p = await resolveProvider({ deps: { ...deps, ollamaChat: async (o) => o.port } });
+  assert.equal(asked, 2);
+  assert.equal(await p.chat({ prompt: 'x' }), 11500, 'local.url reaches ollama.js as host and port');
+});
+
+test('local: a tier model gives way to another pulled tier model; a model the user named never does (A13)', async (t) => {
+  const saved = process.env.AOS_TOTALMEM;
+  t.after(() => { process.env.AOS_TOTALMEM = saved; });
+  process.env.AOS_TOTALMEM = String(8 * GB);
+  localCfg();
+  const seen = [];
+  let p = await resolveProvider({ deps: { ...pulled('qwen3.5:9b'), ollamaChat: async (o) => { seen.push(o); return 'x'; } } });
+  assert.deepEqual([p.name, p.model], ['ollama', 'qwen3.5:9b'], 'an 8 GB Mac that already has the 9b keeps using it');
+  await p.chat({ prompt: 'x', model: 'qwen3.5:4b' });
+  assert.equal(seen[0].model, 'qwen3.5:9b', 'a caller passing the role\'s own tag gets the resolved model');
+  assert.equal(seen[0].keepAlive, '5m', 'under 24 GB the workhorse unloads after 5 minutes');
+  await p.chat({ prompt: 'x', model: 'llama3.2' });
+  assert.equal(seen[1].model, 'llama3.2', 'any other model a caller names is kept');
+  fs.unlinkSync(STATE_PATH);
+  localCfg({ model: 'qwen3.5:4b' });
+  p = await resolveProvider({ deps: pulled('qwen3.5:9b') });
+  assert.deepEqual([p.name, p.reason], ['none', 'local-model-missing'], 'local.model is what the user asked for');
+});
+
+test('local: the embedder not pulled → chat works, embed refuses (recall falls back to BM25)', async () => {
+  localCfg();
+  const p = await resolveProvider({ deps: pulled('qwen3.5:9b') });
+  assert.deepEqual([p.name, p.embedder, p.capabilities.embed], ['ollama', null, false]);
+  await assert.rejects(() => p.embed(['x']), (e) => e.code === 'PROVIDER_NONE' && /qwen3-embedding/.test(e.message));
+});
+
+test('local: hostedFallback off never reaches Claude; on, a local outage goes to Claude, then Codex, under the hook caps', async () => {
+  localCfg({ hostedFallback: false });
+  let p = await resolveProvider({ deps: { localModels: async () => null, resolveClaudeBin: never, loginProbe: never } });
+  assert.deepEqual([p.name, p.reason], ['none', 'local-down']);
+  fs.unlinkSync(STATE_PATH);
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'local', local: { hostedFallback: true } }));
+  p = await resolveProvider({ deps: { localModels: async () => null, ...loggedIn } });
+  assert.deepEqual([p.name, p.reason], ['claude', 'claude-logged-in']);
+  assert.equal(JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')).localReason, 'local-down', 'the state says why it spent');
+  fs.unlinkSync(STATE_PATH);
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'local', local: { hostedFallback: true }, hosts: { codex: { enabled: true } } }));
+  p = await resolveProvider({ deps: { localModels: async () => null, resolveClaudeBin: () => null, loginProbe: never, ...codexLoggedIn } });
+  assert.deepEqual([p.name, p.reason], ['codex', 'codex-logged-in']);
+  fs.unlinkSync(STATE_PATH);
+  spent();
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'local', local: { hostedFallback: true } }));
+  p = await resolveProvider({ deps: { localModels: async () => null, ...loggedIn } });
+  assert.deepEqual([p.name, p.reason, p.host], ['none', 'daily-cap', 'claude'], 'a hosted cap still says so');
+  fs.unlinkSync(STATE_PATH);
+  p = await resolveProvider({ deps: { localModels: async () => null, resolveClaudeBin: () => null, loginProbe: never } });
+  assert.deepEqual([p.name, p.reason], ['none', 'local-down'], 'nobody hosted either: the local reason is the one to fix');
+});
+
+test('local, engine openai: an OpenAI-compatible server answers as the local provider (A8)', async () => {
+  localCfg({ engine: 'openai', model: 'qwen3.5-9b-instruct' });
+  const calls = [];
+  const asked = [];
+  const p = await resolveProvider({ deps: { localModels: async (lc) => { asked.push(lc.url); return ['qwen3.5-9b-instruct']; }, openaiChat: async (o) => { calls.push(o); return '{"a":1}'; }, recordLocalCall: () => {} } });
+  assert.deepEqual([p.name, p.engine, p.model, p.capabilities.embed], ['ollama', 'openai', 'qwen3.5-9b-instruct', false]);
+  assert.deepEqual(asked, ['http://127.0.0.1:1234/v1'], 'LM Studio\'s address by default');
+  assert.equal(await p.chat({ prompt: 'x', format: 'json' }), '{"a":1}');
+  assert.deepEqual([calls[0].url, calls[0].model, calls[0].format], ['http://127.0.0.1:1234/v1', 'qwen3.5-9b-instruct', 'json']);
+});
+
+test('auto keeps its pre-2.0 behaviour: a reachable Ollama wins on the 9b with no pulled check', async () => {
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'auto' }));
+  const p = await resolveProvider({ deps: { ping: async () => true, localModels: never } });
+  assert.deepEqual([p.name, p.reason], ['ollama', 'ollama-reachable']);
+  const st = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+  assert.equal(st.localReason, undefined);
+  assert.equal(role('workhorse').tag, 'qwen3.5:9b');
+});

@@ -162,18 +162,20 @@ async function claudeCall({
   };
 }
 
-/** One cheap call; true iff it returns a result. Any failure (not logged in, no binary, timeout) → false. */
+/**
+ * Is the CLI signed in? `claude auth status --json` answers `{ loggedIn }` without a model call (local-first A16: the
+ * check was a billed `claude -p` on haiku). Any failure (no binary, timeout, unparsable reply) → false.
+ */
 async function loginProbe(opts = {}) {
   const bin = opts.bin === undefined ? resolveClaudeBin(opts) : opts.bin;
   if (!bin) return false;
   try {
-    await claudeCall({
-      system: 'You are a liveness probe. Reply with exactly one word.',
-      prompt: 'Reply with the word ok.',
-      model: opts.model || 'haiku', maxBudgetUsd: 0.01, timeoutMs: opts.timeoutMs || 60000,
-      feature: 'login-probe', bin, spawnFn: opts.spawnFn,
+    const r = await runClaude({
+      bin, args: ['auth', 'status', '--json'], timeoutMs: opts.timeoutMs || 60000,
+      spawnFn: opts.spawnFn || spawn, env: headlessEnv(),
     });
-    return true;
+    const obj = JSON.parse(r.stdout);
+    return !!(obj && obj.loggedIn === true);
   } catch { return false; }
 }
 

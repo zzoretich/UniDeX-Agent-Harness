@@ -30,8 +30,10 @@ const CONFIG = path.join(VAULT, 'brain', 'config.json');
 const never = (what) => async () => { throw new Error(`${what} must not be called`); };
 const REPLY = { summary: 'A drafted summary.', objectives: ['Ship the dialog', 'Write the docs'], next: 'Open the PR' };
 
+// These cases drive the auto chain with each host faked at its seam: a case that names no provider runs on auto, not
+// 2.0's shipped default `local` (local-first A10), which would ask whatever engine answers on this machine.
 function setConfig(vaultCfg = {}, userCfg = {}) {
-  fs.writeFileSync(CONFIG, JSON.stringify(vaultCfg));
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'auto', ...vaultCfg }));
   fs.writeFileSync(process.env.AOS_CONFIG, JSON.stringify(userCfg));
 }
 

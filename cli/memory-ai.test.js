@@ -66,9 +66,11 @@ const exists = (rel) => fs.existsSync(abs(rel));
 const trail = () => { try { return read('brain/_index/promote-log.jsonl').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
 const spendRows = () => { try { return fs.readFileSync(SPEND_PATH, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
 
-/** The vault's config (brain/config.json) and the user's (agenticos.json), as provider.js reads them. */
+/** The vault's config (brain/config.json) and the user's (agenticos.json), as provider.js reads them. These cases drive
+ *  the auto chain (each host faked at its seam), so a case that names no provider runs on auto, not 2.0's shipped
+ *  default `local` (local-first A10), which would ask whatever engine answers on this machine. */
 function setConfig(vaultCfg = {}, userCfg = {}) {
-  fs.writeFileSync(abs('brain/config.json'), JSON.stringify(vaultCfg));
+  fs.writeFileSync(abs('brain/config.json'), JSON.stringify({ provider: 'auto', ...vaultCfg }));
   fs.writeFileSync(USER_CFG, JSON.stringify({ vault: VAULT, ...userCfg }));
 }
 
