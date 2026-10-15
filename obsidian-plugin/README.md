@@ -19,6 +19,14 @@ plugin. Moving it off Obsidian's API names is later, optional work (spec 2026-10
 - `npm run check:compat` in `../app` fails when the HUD uses an Obsidian API, DOM helper or icon the compat package
   lacks: run it after a change here.
 
+## The guided tour
+
+`src/tour/` is the tour (spec `../docs/superpowers/specs/2026-10-14-guided-tour-design.md`): `steps.json` holds a chapter
+for every surface, each step an anchor (a `data-tab`, `data-area`, `data-mode`, `data-action` or `data-tour` selector),
+its text and how it advances; `whatsnew.json` the What's new entries per release. The engine routes with
+`WorkbenchView.open()` and keeps its state in the HUD's settings (`tour`). A control a step spotlights keeps its anchor:
+renaming or removing one breaks `app/tests/e2e/tour.spec.ts`, which resolves every step on two machines.
+
 ## Data contracts
 
 Every file under `brain/_index/` is read-only for the HUD; a script under `brain/scripts/` owns it. The specs under

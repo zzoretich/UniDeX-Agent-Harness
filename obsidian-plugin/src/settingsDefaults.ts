@@ -4,6 +4,7 @@
 // merged config by Plugin.costOn()/telemetryOn() and changed through `aos config` (spec 2026-09-24-settings-tab D10).
 
 import type { HostSessionAccess, HostSessionHost } from "./host";
+import { DEFAULT_TOUR_STATE, type TourState } from "./tour/state";
 
 /** One value per host the Sessions tab and Vault chat can run. */
 export interface PerHost<T> { claude: T; codex: T }
@@ -65,6 +66,9 @@ export interface AgenticOSSettings {
   // Brain (spec 2026-10-11-brain-hub D16): when Review was last open on this machine; the rail badge counts memories
   // written after it, so it reaches zero. Null until the first count, which sets it (the backlog is never the badge).
   brainReviewSeenAt: string | null;
+  // The guided tour (spec 2026-10-14-guided-tour-design C4): what ran, what was offered, Getting started, the version
+  // whose What's new was last shown. Read through tour/state.ts sanitizeTourState.
+  tour: TourState;
 }
 
 /** Keys data.json may still hold from earlier versions; loadSettings prunes them (the two HUD-only toggles, D10). */
@@ -91,6 +95,7 @@ export const DEFAULT_SETTINGS: AgenticOSSettings = {
   terminalSnippets: [],
   pulseSeenAt: null,
   brainReviewSeenAt: null,
+  tour: DEFAULT_TOUR_STATE,
 };
 
 // ── remembered choices (U12) ──

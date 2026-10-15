@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- **A guided tour, Getting started and Help in the Workbench.** A spotlight dims the app around one real control at a time, says what it does and why it matters, and where a step says click, waits for your click; → and ← move, Esc leaves, and it steps aside while a dialog is open. A new install starts the ten-stop welcome tour (rail, Pulse, Sessions, Code, Brain, Spaces, Routines, the Chief of Staff, ⌘K, Help) instead of the note about moving off Obsidian, and it ends on **Getting started n/m** at the rail's foot: a tour for every tab, Brain mode, the status bar, capture and search, and Help, plus first steps ticked from the runtime's caches (a session, a memory reviewed, a routine of your own, a Chief of Staff). Each tab's first visit offers its tour once as a small chip. **Help** (the rail's ?, ⌘P, and the app's Help menu) has Take the tour, Tour this tab, What's new, Getting started and Documentation. Steps name your host (Claude Code, Codex or both) and skip what your Mac does not have.
+
 ## [1.9.0] — 2026-10-12
 
 ### Upgrading

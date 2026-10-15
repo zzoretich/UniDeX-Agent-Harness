@@ -109,7 +109,7 @@ export class ProposalsTab {
     const actions = head.createDiv({ cls: "aos-rt-actions" });
     // The persona-flag-closer skill in the user's first host (Claude Code, else Codex): data/aosConfig.ts reviewCommand.
     const rc = reviewCommand(readAgenticosJson());
-    const review = actions.createEl("button", { cls: "aos-ws-action", text: rc.label });
+    const review = actions.createEl("button", { cls: "aos-ws-action", text: rc.label, attr: { "data-tour": "proposals-review" } });
     review.setAttr("title", `Opens a terminal in Code, in the vault, running: ${rc.command}`);
     review.addEventListener("click", () => this.view.runInTerm(rc.command, { host: rc.host, origin: "Proposals" }));
 
@@ -156,7 +156,7 @@ export class ProposalsTab {
   /** A collapsible group; returns its table, or null while collapsed. */
   private group(host: HTMLElement, id: Group, label: string): HTMLElement | null {
     const open = !this.collapsed.has(id);
-    const sub = host.createDiv({ cls: "aos-rt-subhead aos-dim aos-pr-grouphead" });
+    const sub = host.createDiv({ cls: "aos-rt-subhead aos-dim aos-pr-grouphead", attr: { "data-tour": `proposals-${id}` } });
     sub.createSpan({ text: `${open ? "▾" : "▸"} ${label}` });
     sub.addEventListener("click", () => { if (open) this.collapsed.add(id); else this.collapsed.delete(id); this.render(); });
     return open ? host.createDiv({ cls: "aos-inv-table aos-rt-table" }) : null;

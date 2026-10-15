@@ -109,7 +109,7 @@ export class NewTerminalMenu {
     this.el.prepend(split);
     const quick = this.launcher.quickHost();
     const host = quick.host;
-    const main = split.createEl("button", { cls: "aos-ntm-main", attr: { type: "button" } });
+    const main = split.createEl("button", { cls: "aos-ntm-main", attr: { type: "button", "data-tour": "code-new" } });
     const top = main.createSpan({ cls: "aos-ntm-top" });
     top.createSpan({ cls: `aos-ntm-dot is-${host ?? "shell"}` });
     top.createSpan({ cls: "aos-ntm-name", text: host ? `New ${host === "shell" ? "shell" : TERM_HOST_LABEL[host]}` : "New terminal" });

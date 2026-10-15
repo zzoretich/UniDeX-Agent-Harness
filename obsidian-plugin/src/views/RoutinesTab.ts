@@ -114,9 +114,9 @@ export class RoutinesTab {
     head.createSpan({ cls: "aos-rt-title", text: "Routines" });
     head.createSpan({ cls: "aos-dim aos-rt-count", text: `${this.rows.filter((r) => r.routine.enabled).length} on · ${this.rows.length} total` });
     const actions = head.createDiv({ cls: "aos-rt-actions" });
-    const newBtn = actions.createEl("button", { cls: "aos-ws-action", text: "+ new" });
+    const newBtn = actions.createEl("button", { cls: "aos-ws-action", text: "+ new", attr: { "data-tour": "routines-new" } });
     newBtn.addEventListener("click", () => this.openEditor(null));
-    const applyBtn = actions.createEl("button", { cls: "aos-ws-action", text: "apply schedules" });
+    const applyBtn = actions.createEl("button", { cls: "aos-ws-action", text: "apply schedules", attr: { "data-tour": "routines-apply" } });
     applyBtn.addEventListener("click", () => this.applySchedules());
 
     const outOfDate = schedulesOutOfDate(this.routines, this.state);
@@ -127,7 +127,7 @@ export class RoutinesTab {
       link.addEventListener("click", (e) => { e.preventDefault(); this.applySchedules(); });
     }
 
-    const table = host.createDiv({ cls: "aos-inv-table aos-rt-table" });
+    const table = host.createDiv({ cls: "aos-inv-table aos-rt-table", attr: { "data-tour": "routines-list" } });
     if (!this.rows.length) {
       table.createDiv({ cls: "aos-inv-row aos-dim", text: `no routines yet — "+ new" writes ${ROUTINES_DIR}/<slug>.md` });
     }
@@ -136,7 +136,7 @@ export class RoutinesTab {
     const hostList = hostRows(this.hosts);
     const sections = HOST_NAMES.filter((h) => this.hosts.hosts[h]);
     if (this.external.length || hostList.length || sections.length) {
-      const sub = host.createDiv({ cls: "aos-rt-subhead aos-dim" });
+      const sub = host.createDiv({ cls: "aos-rt-subhead aos-dim", attr: { "data-tour": "routines-outside" } });
       sub.createSpan({ text: "OUTSIDE THE RUNTIME" });
       // Snapshot ages per host and the refresh link (Codex re-reads live; the Claude section needs `/routines cloud`).
       const trail = sub.createSpan({ cls: "aos-rt-asof" });

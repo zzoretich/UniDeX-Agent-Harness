@@ -4568,3 +4568,100 @@ button.aos-brain-btn.aos-brain-sw-consolidate.is-busy:not(.clickable-icon) { opa
 .aos-brain-undomerge { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
 .aos-brain-undomerge button[aria-disabled="true"]:not(.clickable-icon) { opacity: 0.45; cursor: default; }
 /* ── end Brain hub: Merge ── */
+
+/* ══ The guided tour (spec 2026-10-14-guided-tour-design C1, C6, C7, C9, C12) ══════════════════════════════════════
+   tour/overlay.ts: four shades around the control (so only the cutout takes clicks), a ring on its edge and a popover;
+   it sits above the page and below modals (z 50), and steps aside while one is open. The rail's Help menu, Getting
+   started item and drawer, What's new, and the chip a tab's first visit shows. Tokens only, so light and dark both hold. */
+.aos-tour { position: fixed; inset: 0; z-index: 45; pointer-events: none; font-family: var(--udx-sans); }
+.aos-tour.is-hidden { display: none; }
+/* The shades never animate their geometry: mid-slide they would leave part of the page clickable. The ring and the
+   popover slide (and stop sliding under Reduce motion). */
+.aos-tour-shade { position: absolute; pointer-events: auto; background: var(--udx-scrim); }
+.aos-tour-ring {
+  position: absolute; pointer-events: none; box-sizing: border-box; border-radius: 10px;
+  border: 2px solid var(--udx-focus); box-shadow: 0 0 0 3px var(--udx-bg);
+  transition: left 0.18s ease, top 0.18s ease, width 0.18s ease, height 0.18s ease;
+}
+.aos-tour-ring.is-off { display: none; }
+.aos-tour-pop {
+  position: absolute; pointer-events: auto; box-sizing: border-box; width: 320px; max-width: calc(100vw - 24px);
+  padding: 14px 16px 12px; border: 1px solid var(--udx-line-2); border-radius: 12px;
+  background: var(--udx-bg); color: var(--udx-text); box-shadow: var(--udx-shadow); outline: none;
+  transition: left 0.18s ease, top 0.18s ease;
+}
+.aos-tour-pop:focus-visible { border-color: var(--udx-focus); }
+.aos-tour.is-waiting .aos-tour-pop { display: none; }
+.aos-tour-meta { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 10.5px; letter-spacing: 0.4px; }
+.aos-tour-title { margin-top: 6px; color: var(--udx-text); font-size: 14px; font-weight: 600; line-height: 1.35; }
+.aos-tour-body { margin-top: 6px; color: var(--udx-text-2); font-size: 13px; line-height: 1.5; }
+.aos-tour-body strong { color: var(--udx-text); font-weight: 600; }
+.aos-tour-hint { margin-top: 8px; color: var(--udx-info); font-size: 12px; }
+.aos-tour-foot { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
+.aos-tour-spacer { flex: 1; }
+button.aos-tour-skip:not(.clickable-icon) { padding: 4px 6px; border-color: transparent; background: transparent; color: var(--udx-text-3); }
+button.aos-tour-skip:not(.clickable-icon):hover:not(:disabled) { background: transparent; color: var(--udx-text); text-decoration: underline; }
+@media (prefers-reduced-motion: reduce) {
+  .aos-tour-ring, .aos-tour-pop { transition: none; }
+}
+
+/* The rail: Getting started comes and goes in its slot (display: contents keeps the foot's own gaps), its count under
+   the icon; Help opens a menu beside the rail. */
+.aos-wb-railslot { display: contents; }
+.aos-wb-railact.aos-tour-railchecklist { height: auto; min-height: 36px; padding: 4px 0 3px; box-sizing: border-box; flex-direction: column; gap: 1px; }
+.aos-tour-railcount { color: var(--udx-text-2); font-family: var(--udx-mono); font-size: 9px; font-weight: 700; line-height: 11px; }
+.aos-tour-menu {
+  position: fixed; z-index: 46; display: flex; flex-direction: column; gap: 1px; min-width: 250px; padding: 6px;
+  border: 1px solid var(--udx-line-2); border-radius: 10px; background: var(--udx-bg); box-shadow: var(--udx-shadow);
+  font-family: var(--udx-sans);
+}
+button.aos-tour-menuitem:not(.clickable-icon) {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 6px 10px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--udx-text); text-align: left; white-space: normal;
+}
+button.aos-tour-menuitem:not(.clickable-icon):hover:not(:disabled), button.aos-tour-menuitem:focus-visible { background: var(--udx-raised); outline: none; }
+.aos-tour-menulabel { font-size: 13px; font-weight: 500; }
+.aos-tour-menudetail { color: var(--udx-text-3); font-size: 11.5px; }
+
+/* A tab's first visit: one chip at the content's foot, never a modal (C6). */
+.aos-wb-body { position: relative; }
+.aos-tour-chiphost { position: absolute; right: 20px; bottom: 16px; z-index: 30; display: flex; pointer-events: none; }
+.aos-tour-chip {
+  display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 14px; pointer-events: auto;
+  border-radius: 999px; background: var(--udx-inv); color: var(--udx-inv-text); box-shadow: var(--udx-shadow); font-size: 12.5px;
+}
+button.aos-tour-chipgo:not(.clickable-icon) { padding: 3px 10px; border: 0; border-radius: 999px; background: var(--udx-inv-text); color: var(--udx-inv); font-weight: 600; }
+button.aos-tour-chipgo:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-inv-text); text-decoration: underline; }
+button.aos-tour-chipx:not(.clickable-icon) { padding: 2px 8px; border: 0; background: transparent; color: var(--udx-inv-text); opacity: 0.75; }
+button.aos-tour-chipx:not(.clickable-icon):hover:not(:disabled) { background: transparent; opacity: 1; }
+
+/* Getting started and What's new, in the drawer. */
+.aos-wb-drawer.is-open:has(.aos-tour-checklist), .aos-wb-drawer.is-open:has(.aos-tour-whatsnew) { width: 320px; }
+.aos-tour-checklist, .aos-tour-whatsnew { display: flex; flex-direction: column; gap: 8px; font-family: var(--udx-sans); }
+.aos-tour-cl-count { color: var(--udx-text); font-size: 13px; font-weight: 600; }
+.aos-tour-cl-bar { height: 6px; margin-top: 6px; border-radius: 999px; background: var(--udx-raised-2); overflow: hidden; }
+.aos-tour-cl-fill { height: 100%; border-radius: 999px; background: var(--udx-ok-dot); }
+.aos-tour-cl-section { margin-top: 8px; color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 10.5px; letter-spacing: 1px; }
+.aos-tour-cl-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.aos-tour-cl-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 4px; border-radius: 8px; }
+.aos-tour-cl-item:hover { background: var(--udx-raised); }
+.aos-tour-cl-mark {
+  flex: none; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-top: 1px;
+  box-sizing: border-box; border: 1.5px solid var(--udx-line-2); border-radius: 50%; font-size: 10px; line-height: 1;
+}
+.aos-tour-cl-item.is-done .aos-tour-cl-mark { border-color: var(--udx-ok-dot); background: var(--udx-ok-bg); color: var(--udx-ok); }
+.aos-tour-cl-what { flex: 1; min-width: 0; }
+.aos-tour-cl-title { color: var(--udx-text); font-size: 12.5px; font-weight: 500; }
+.aos-tour-cl-item.is-done .aos-tour-cl-title { color: var(--udx-text-2); }
+.aos-tour-cl-body { color: var(--udx-text-3); font-size: 11.5px; line-height: 1.4; }
+button.aos-tour-cl-go:not(.clickable-icon) { flex: none; padding: 2px 8px; font-size: 11.5px; }
+.aos-tour-cl-foot { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; }
+.aos-tour-cl-note { color: var(--udx-ok); font-size: 12px; }
+button.aos-tour-cl-hide:not(.clickable-icon) { padding: 3px 8px; border-color: transparent; background: transparent; color: var(--udx-text-3); }
+button.aos-tour-cl-hide:not(.clickable-icon):hover:not(:disabled) { background: transparent; color: var(--udx-text); text-decoration: underline; }
+.aos-tour-wn-empty { color: var(--udx-text-2); font-size: 12.5px; line-height: 1.5; }
+.aos-tour-wn-version { margin-top: 6px; color: var(--udx-text); font-size: 13px; font-weight: 600; }
+.aos-tour-wn-entry { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 10px; border: 1px solid var(--udx-line); border-radius: 8px; }
+.aos-tour-wn-title { color: var(--udx-text); font-size: 12.5px; font-weight: 600; }
+.aos-tour-wn-body { color: var(--udx-text-2); font-size: 12px; line-height: 1.45; }
+/* ── end the guided tour ── */

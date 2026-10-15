@@ -114,7 +114,7 @@ export class TodoTab {
     head.createSpan({ cls: "aos-rt-title", text: "To-do" });
     head.createSpan({ cls: "aos-dim aos-rt-count", text: `${open.length} open · ${groups.overdue.length} overdue · ${groups.today.length} today` });
     const actions = head.createDiv({ cls: "aos-rt-actions" });
-    const openFile = actions.createEl("button", { cls: "aos-ws-action", text: "open TODO.md" });
+    const openFile = actions.createEl("button", { cls: "aos-ws-action", text: "open TODO.md", attr: { "data-tour": "todo-open-file" } });
     openFile.addEventListener("click", () => void this.openFile());
 
     this.renderQuickAdd(host, hadFocus);
@@ -150,7 +150,7 @@ export class TodoTab {
     }
 
     const done = doneThisWeek(this.items, today).filter(keep);
-    const sub = host.createDiv({ cls: "aos-rt-subhead aos-dim aos-pr-grouphead" });
+    const sub = host.createDiv({ cls: "aos-rt-subhead aos-dim aos-pr-grouphead", attr: { "data-tour": "todo-done" } });
     sub.createSpan({ text: `${this.showDone ? "▾" : "▸"} DONE THIS WEEK (${done.length})` });
     sub.addEventListener("click", () => { this.showDone = !this.showDone; this.render(); });
     if (this.showDone && done.length) {
