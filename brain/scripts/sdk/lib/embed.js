@@ -63,7 +63,7 @@ async function embed(texts, opts = {}) {
   const out = [];
   for (let i = 0; i < arr.length; i += BATCH) {
     const embeddings = await postFn({
-      model: r.tag,
+      model: opts.model || r.tag, // provider.js names the embedder that resolved (local-first A11)
       input: arr.slice(i, i + BATCH),
       keep_alive: r.keepAlive,
       truncate: true,

@@ -3,13 +3,13 @@
 /**
  * aos.js — AgenticOS Workbench installer and maintenance CLI. Zero dependencies (node: builtins only).
  *
- *   aos init [--vault <dir>] [--host auto|claude|codex|both|none] [--provider auto|ollama|claude|codex|none]
+ *   aos init [--vault <dir>] [--host auto|claude|codex|both|none] [--provider local|auto|ollama|claude|codex|none]
  *            [--cost] [--budget <usd>] [--persona-json <file>] [--from-local <repo-dir>] [--dry-run] [--yes]
  *   (Node >= 20 and uv are hard prerequisites of init; Ollama is a warning, and python3 >= 3.9 is needed only with --cost
  *   (install-import B1). --host none installs with no host (B2). The Workbench is the AgenticOS Workbench app, which
  *   installs nothing into the vault, so Obsidian is no longer one: --no-obsidian, --terminal and `aos terminal install`
  *   are still accepted, and do nothing, so scripts written for an older release keep working.)
- *   aos doctor · aos status · aos provider [auto|ollama|claude|codex|none] · aos graph [status | build [--semantic] | on | off | semantic on|off|auto]
+ *   aos doctor · aos status · aos provider [local|auto|ollama|claude|codex|none] · aos local [status | pull | use <model>] · aos graph [status | build [--semantic] | on | off | semantic on|off|auto]
  *   aos upgrade [--from-local <repo-dir>] · aos uninstall [--host claude|codex] [--keep-vault] [--yes]
  *   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes] · aos cost [enable [--budget <usd>] [--yes] | disable]
  *
@@ -44,16 +44,17 @@ const APP_DOWNLOAD = `https://github.com/${REPO_SLUG}/releases/latest`;
 // The folder an Obsidian-era install put the HUD in (<vault>/.obsidian/plugins/agentic-os/): upgrade only looks for it.
 const OBSIDIAN_PLUGIN_ID = 'agentic-os';
 const DEFAULT_VAULT = path.join(os.homedir(), 'AgenticOS');
-const PROVIDERS = ['auto', 'ollama', 'claude', 'codex', 'none'];
+const PROVIDERS = ['local', 'auto', 'ollama', 'claude', 'codex', 'none'];
 const RUNTIME_SCRIPTS = { 'scan-vault': 'scan-vault.js', 'build-brain-md': 'build-brain-md.js', recall: 'sdk/recall-cli.js', 'skills-sync': 'skills-sync.js' };
 const HOST_CHOICES = ['auto', 'claude', 'codex', 'both', 'none'];
 const CH = require('./codex-host.js');
 const { stableNode, isCellarPath } = require('./node-path.js');
 
 const USAGE = `usage:
-  aos init [--vault <dir>] [--host auto|claude|codex|both|none] [--provider auto|ollama|claude|codex|none]
+  aos init [--vault <dir>] [--host auto|claude|codex|both|none] [--provider local|auto|ollama|claude|codex|none]
            [--cost] [--budget <usd>] [--persona-json <file>] [--from-local <repo-dir>] [--dry-run] [--yes]
-  aos doctor | status | provider [auto|ollama|claude|codex|none]
+  aos doctor | status | provider [local|auto|ollama|claude|codex|none]
+  aos local [status [--json] | pull [model…] | use <model>]
   aos upgrade [--from-local <repo-dir>]
   aos uninstall [--host claude|codex] [--keep-vault] [--yes]
   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes]
@@ -504,11 +505,27 @@ async function doctor() {
       if (st.codex.installed) add('codex footer', st.codex.present, st.codex.present ? 'built-in items (Codex runs no status line command; what needs you arrives at session start)' : `the status_line in ${st.codex.file} changed since install`, 'warn');
     } catch (e) { add('status line', false, e.message, 'warn'); }
   }
-  const { host, port } = ollamaEndpoint(cfg);
-  if (ollamaProbeSkipped()) add('ollama reachable', false, `${host}:${port} not probed (AOS_SKIP_OLLAMA_PROBE=1)`, 'info');
-  else {
-    const up = await httpProbe(`http://${host}:${port}/api/tags`);
-    add('ollama reachable', up, up ? `${host}:${port}` : `${host}:${port} not answering — run \`ollama serve\``, 'warn');
+  if (cfg && cfg.provider === 'local' && vault) {
+    // local-first A13: under provider local, ready means the engine answers AND serves the model (cli/local.js).
+    try {
+      const r = await require('./local.js').report({ env: process.env });
+      if (!r.probed) add('local engine', false, `${r.engine} at ${r.url} not probed (AOS_SKIP_OLLAMA_PROBE=1)`, 'info');
+      else {
+        add('local engine', r.reachable, r.reachable ? `${r.engine} at ${r.url}` : `${r.engine} at ${r.url} not answering — open Ollama (or run \`ollama serve\`); background work waits or uses heuristics meanwhile`, 'warn');
+        if (r.reachable) {
+          add('local model', !!r.workhorse.running, r.workhorse.running
+            ? `${r.workhorse.running} (${r.workhorse.source === 'tier' ? `the ${r.memoryGb} GB tier` : r.workhorse.source})${r.embedder.pulled ? ` · embedder ${r.embedder.tag}` : ` · embedder ${r.embedder.tag} not pulled (recall uses keyword search)`}`
+            : `${r.workhorse.tag} not pulled — aos local pull`, 'warn');
+        }
+      }
+    } catch (e) { add('local engine', false, e.message, 'warn'); }
+  } else {
+    const { host, port } = ollamaEndpoint(cfg);
+    if (ollamaProbeSkipped()) add('ollama reachable', false, `${host}:${port} not probed (AOS_SKIP_OLLAMA_PROBE=1)`, 'info');
+    else {
+      const up = await httpProbe(`http://${host}:${port}/api/tags`);
+      add('ollama reachable', up, up ? `${host}:${port}` : `${host}:${port} not answering — run \`ollama serve\``, 'warn');
+    }
   }
   if (cfg && cfg.cost && cfg.cost.enabled) {
     // execution amendment 2026-09-15 (A39): the opt-in analyzer is not in `need`; check it here, where cost is known to be on.
@@ -599,6 +616,11 @@ function status() {
   const spend = spendRowsToday(path.join(idx, 'provider-spend.jsonl')); // the ledger is read once, summed three times
   out.log(`vault      ${cfg.vault}`);
   out.log(`provider   mode=${cfg.provider || 'auto'} resolved=${state ? `${state.name} (${state.reason}, ${state.checkedAt})` : 'never resolved'}`);
+  if (cfg.provider === 'local' || (state && state.engine)) {
+    // local-first A18: what the local engine did today (brain/_index/local-usage.json; no probe here, `aos local` asks it).
+    const today = ((readJson(path.join(idx, 'local-usage.json')) || {}).days || {})[localDay(new Date())] || { calls: 0 };
+    out.log(`local      model=${(state && state.model) || 'unresolved'} engine=${(state && state.engine) || 'ollama'} calls today=${today.calls}${state && state.localReason && state.localReason !== 'local-ready' ? ` (${state.localReason})` : ''}`);
+  }
   const claudeState = (state && state.claude) || {};
   const hosts = hostsOf(cfg);
   out.log(`hosts      ${[hosts.claude && 'claude', hosts.codex && 'codex'].filter(Boolean).join(', ') || 'none'}`);
@@ -698,7 +720,9 @@ function assertVaultOk(vault) {
 
 function buildUserConfig(existing, { vault, provider, version, bin, hosts, codexBin: cxBin, codexHome: cxHome }) {
   const base = {
-    version, vault, node: stableNode(process.execPath), claudeConfigDir: configDir(), provider: 'auto',
+    // local-first A10: a new install runs background work on the local engine; a file written before 2.0 without the key
+    // was on auto, and moves to local only when its owner says so (A9: aos migrate local-first).
+    version, vault, node: stableNode(process.execPath), claudeConfigDir: configDir(), provider: existing ? 'auto' : 'local',
     claude: { model: 'haiku', perCallUsd: 0.05, perDayUsd: 0.5 },
     ollama: { host: '127.0.0.1', port: 11434 },
     telemetry: { enabled: true, redact: true, retentionDays: 30 },
@@ -939,7 +963,7 @@ async function init(flags) {
   const repo = repoRoot(flags);
   const version = productVersion(repo);
   // An explicit --provider wins; otherwise a re-run keeps the mode already in agenticos.json (e.g. after `aos provider ollama`).
-  const provider = flags.provider || ((readJson(configPath()) || {}).provider) || 'auto';
+  const provider = flags.provider || ((readJson(configPath()) || {}).provider) || 'local';
   if (!PROVIDERS.includes(provider)) throw new UsageError(`--provider must be one of ${PROVIDERS.join('|')}`);
   const written = [];
   let n = 0;
@@ -1421,6 +1445,17 @@ async function memory(sub, flags) {
   }
 }
 
+/** `aos local` (local-first A8, A12, A13): cli/local.js, beside this file in the checkout and the vendored runtime. */
+async function local(sub, flags) {
+  const L = require('./local.js');
+  try {
+    return await L.main([...sub, ...(flags.json ? ['--json'] : [])], { io: console });
+  } catch (e) {
+    if (e instanceof L.UsageError) throw new UsageError(e.message);
+    throw e;
+  }
+}
+
 function updateNotice() {
   return require('./update-check.js').cmdUpdateNotice({ vault: updateVault(), configDir: configDir(), io: console });
 }
@@ -1488,6 +1523,7 @@ async function main(argv) {
     case 'doctor': return doctor();
     case 'status': return status();
     case 'provider': return provider(sub[0]);
+    case 'local': return local(sub, flags);
     case 'update-check': return updateCheck(flags);
     case 'update-status': return updateStatus(flags);
     case 'update-notice': return updateNotice();

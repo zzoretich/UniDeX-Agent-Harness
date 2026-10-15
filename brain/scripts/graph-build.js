@@ -157,13 +157,14 @@ async function buildStructural({ report, cfg = loadConfig(), vault = PATHS.VAULT
 }
 
 // ── semantic pass ─────────────────────────────────────────────────────────────
-/** D11: "auto" follows the provider (an explicit ollama or none means no background calls to a hosted model, Claude or Codex); true/false override. */
+/** D11: "auto" follows the provider (an explicit local, ollama or none means no background calls to a hosted model, Claude or Codex;
+ *  local-first A1 — the pass moves onto the local engine with A14); true/false override. */
 function semanticState(cfg) {
   const v = cfg && cfg.graph && cfg.graph.semantic ? cfg.graph.semantic.enabled : 'auto';
   if (v === true) return { on: true, why: null };
   if (v === false) return { on: false, why: 'semantic off' };
   const p = (cfg && cfg.provider) || 'auto';
-  if (p === 'none' || p === 'ollama') return { on: false, why: `provider ${p}` };
+  if (p === 'none' || p === 'ollama' || p === 'local') return { on: false, why: `provider ${p}` };
   return { on: true, why: null };
 }
 

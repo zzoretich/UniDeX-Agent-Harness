@@ -132,4 +132,77 @@ function ping(timeoutMs = 2000, opts = {}) {
   });
 }
 
-module.exports = { chat, ping, endpoint, stripThink, sizeContextWindow, buildChatBody, MODEL, HOST, PORT };
+/**
+ * tags(timeoutMs, { host, port }) -> Promise<string[] | null>: the names of the pulled models (`qwen3.5:9b`), or null
+ * when nothing answers. The same request as ping(), read instead of drained (local-first A13: ready means pulled).
+ */
+function tags(timeoutMs = 2000, opts = {}) {
+  const { host, port } = endpoint(opts);
+  return new Promise((resolve) => {
+    const req = http.request({ hostname: host, port, path: '/api/tags', method: 'GET' }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => {
+        if (!res.statusCode || res.statusCode >= 400) return resolve(null);
+        try {
+          const list = JSON.parse(data).models;
+          resolve(Array.isArray(list) ? list.map((m) => m && (m.name || m.model)).filter((n) => typeof n === 'string') : []);
+        } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+/** `qwen3.5` and `qwen3.5:latest` name the same model; every other tag is compared as written. */
+function sameModel(a, b) {
+  const n = (s) => (String(s).includes(':') ? String(s) : `${s}:latest`);
+  return !!a && !!b && n(a) === n(b);
+}
+
+/**
+ * pull(model, { host, port, onProgress, timeoutMs }) -> Promise<void>: Ollama's /api/pull, streamed. onProgress gets
+ * each line ({ status, completed?, total? }); a line carrying `error` rejects. The timeout is per idle gap, not total.
+ */
+function pull(model, opts = {}) {
+  const { host, port } = endpoint(opts);
+  const idleMs = opts.timeoutMs || 120000;
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ model, stream: true });
+    const req = http.request({
+      hostname: host, port, path: '/api/pull', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => reject(new Error(`ollama pull HTTP ${res.statusCode}: ${data.slice(0, 200)}`)));
+        return;
+      }
+      let buf = '';
+      let failed = null;
+      res.on('data', (c) => {
+        buf += c;
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (!line) continue;
+          let msg;
+          try { msg = JSON.parse(line); } catch { continue; }
+          if (msg.error) failed = new Error(`ollama pull: ${msg.error}`);
+          else if (opts.onProgress) { try { opts.onProgress(msg); } catch { /* a progress printer never fails the pull */ } }
+        }
+      });
+      res.on('end', () => (failed ? reject(failed) : resolve()));
+    });
+    req.on('error', reject);
+    req.setTimeout(idleMs, () => { req.destroy(); reject(new Error('ollama pull: no progress for ' + Math.round(idleMs / 1000) + ' s')); });
+    req.write(body);
+    req.end();
+  });
+}
+
+module.exports = { chat, ping, tags, pull, sameModel, endpoint, stripThink, sizeContextWindow, buildChatBody, MODEL, HOST, PORT };

@@ -17,7 +17,13 @@ test('scrub removes every host and runtime variable, keeps the private gate term
   const removed = scrub(env);
   assert.deepEqual(removed.sort(), ['AOS_CONFIG', 'AOS_DEBUG', 'AOS_HOST', 'AOS_VAULT', 'AUTO_WRAP_DETACHED', 'BRAIN_AGENT_REDACT',
     'BRAIN_VAULT', 'CLAUDECODE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_PROJECT_DIR', 'CODEX_HOME']);
-  assert.deepEqual(env, { AOS_PRIVACY_TERMS: 'kept', LANG_KEEP_ME: 'yes', PATH: '/bin', [MARKER]: '1' });
+  assert.deepEqual(env, { AOS_PRIVACY_TERMS: 'kept', LANG_KEEP_ME: 'yes', PATH: '/bin', [MARKER]: '1', AOS_TOTALMEM: String(32 * 1024 ** 3) });
+});
+
+test('scrub pins a 32 GB Mac for the local model tiers, replacing the developer\'s own value (local-first A12)', () => {
+  const env = { AOS_TOTALMEM: '8' };
+  assert.deepEqual(scrub(env), ['AOS_TOTALMEM']);
+  assert.equal(env.AOS_TOTALMEM, String(32 * 1024 ** 3));
 });
 
 test('a marked environment is left alone, so a child keeps what its test set on purpose', () => {

@@ -10,7 +10,7 @@ import * as path from "path";
 import { env, fs } from "../host";
 
 export type ProviderName = "ollama" | "claude" | "codex" | "none";
-export type ProviderMode = ProviderName | "auto";
+export type ProviderMode = ProviderName | "auto" | "local";
 
 export interface AgenticosJson {
   version?: string;
@@ -26,6 +26,7 @@ export interface AgenticosJson {
   hosts?: { claude?: { enabled?: boolean; configDir?: string; bin?: string }; codex?: { enabled?: boolean; home?: string; bin?: string; install?: "plugin" | "direct" } };
   reasoner?: { model?: string; perCallUsd?: number; perDayUsd?: number; effort?: string };
   ollama?: { host?: string; port?: number };
+  local?: { engine?: "ollama" | "openai"; url?: string | null; model?: string | null; embedder?: string; keepAlive?: string | number | null; hostedFallback?: boolean; onBattery?: "defer" | "run" };
   telemetry?: { enabled?: boolean; redact?: boolean; retentionDays?: number; staleAfterMinutes?: number };
   updates?: { check?: boolean; intervalHours?: number };
   cost?: { enabled?: boolean; monthlyBudget?: number | null };
@@ -49,6 +50,8 @@ export interface VaultConfig {
   // The reasoner role: a Claude model with its own caps (reason:* ledger rows), used by the Chat tab; codexModel when Codex answers it.
   reasoner: { model: string; codexModel: string | null; perCallUsd: number; perDayUsd: number; effort: string };
   ollama: { host: string; port: number };
+  // local-first A11: the local engine every background call runs on. model null = the Mac's RAM tier; keepAlive null = tiered.
+  local: { engine: "ollama" | "openai"; url: string | null; model: string | null; embedder: string; keepAlive: string | number | null; hostedFallback: boolean; onBattery: "defer" | "run" };
   telemetry: { enabled: boolean; redact: boolean; retentionDays: number; staleAfterMinutes: number };
   updates: { check: boolean; intervalHours: number };
   cost: { enabled: boolean; monthlyBudget: number | null };
@@ -94,11 +97,12 @@ export const VAULT_CONFIG_DEFAULTS: VaultConfig = {
   roster: { orchestrators: {} },
   scan: { fileMapBudget: 40, embedBudget: 40, fileMapBudgetUnderClaude: 0, insightsUnderClaude: false, fileMapBudgetUnderCodex: 0, insightsUnderCodex: false, autoSweepOrphans: false },
   summary: { everyPrompts: 10, minMinutes: 15 },
-  provider: "auto",
+  provider: "local",
   claude: { model: "haiku", perCallUsd: 0.05, perDayUsd: 0.5 },
   codex: { model: null, effort: "low", perCallUsd: 0.05, perDayUsd: 0.5 },
   reasoner: { model: "claude-opus-5", codexModel: null, perCallUsd: 0.5, perDayUsd: 5.0, effort: "medium" },
   ollama: { host: "127.0.0.1", port: 11434 },
+  local: { engine: "ollama", url: null, model: null, embedder: "qwen3-embedding:0.6b", keepAlive: null, hostedFallback: false, onBattery: "defer" },
   telemetry: { enabled: true, redact: true, retentionDays: 30, staleAfterMinutes: 30 },
   updates: { check: true, intervalHours: 24 },
   cost: { enabled: false, monthlyBudget: null },

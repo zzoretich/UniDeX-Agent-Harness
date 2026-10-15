@@ -38,7 +38,8 @@ test('parseValue: each type from CLI text', () => {
   assert.equal(S.parseValue(S.entry('telemetry.enabled'), 'TRUE'), true);
   assert.throws(() => S.parseValue(S.entry('telemetry.enabled'), 'maybe'), /telemetry\.enabled takes true or false/);
   assert.equal(S.parseValue(S.entry('provider'), 'codex'), 'codex');
-  assert.throws(() => S.parseValue(S.entry('provider'), 'gpt'), /provider takes auto \| ollama \| claude \| codex \| none/);
+  assert.throws(() => S.parseValue(S.entry('provider'), 'gpt'), /provider takes local \| auto \| ollama \| claude \| codex \| none/);
+  assert.equal(S.parseValue(S.entry('provider'), 'local'), 'local');
   assert.equal(S.parseValue(S.entry('graph.semantic.enabled'), 'auto'), 'auto');
   assert.equal(S.parseValue(S.entry('graph.semantic.enabled'), 'on'), true, 'a mixed enum takes a boolean word');
   assert.equal(S.parseValue(S.entry('claude.perDayUsd'), '1.5'), 1.5);
@@ -118,10 +119,14 @@ test('no text boxes (spec 2026-09-24-settings-pickers D6): every settable non-bo
   for (const k of Object.keys(S.PICKS)) assert.ok(S.entry(k), `PICKS names an unknown key ${k}`);
 });
 
-test('model pickers: Claude rows list Claude models, Codex rows the pricing table\'s models', () => {
+test('model pickers: Claude rows list Claude models, Codex rows the pricing table\'s models, local rows the local tiers', () => {
   assert.deepEqual(S.CODEX_MODELS, Object.keys(require('../sdk/lib/codex-pricing.js').MODELS));
+  const LOCAL = { 'local.model': S.LOCAL_MODELS, 'local.embedder': S.LOCAL_EMBEDDERS };
   for (const e of S.SETTINGS.filter((x) => x.type === 'model')) {
-    assert.deepEqual(e.choices, e.host === 'codex' ? S.CODEX_MODELS : S.CLAUDE_MODELS, e.key);
+    assert.deepEqual(e.choices, LOCAL[e.key] || (e.host === 'codex' ? S.CODEX_MODELS : S.CLAUDE_MODELS), e.key);
   }
+  // Every tier's model is offered, and the shipped embedder is.
+  for (const t of require('../sdk/lib/models.js').LOCAL_TIERS) assert.ok(S.LOCAL_MODELS.includes(t.tag), t.tag);
+  assert.ok(S.LOCAL_EMBEDDERS.includes(S.DEFAULTS.local.embedder));
   assert.ok(S.CLAUDE_MODELS.includes(S.DEFAULTS.claude.model) && S.CLAUDE_MODELS.includes(S.DEFAULTS.reasoner.model));
 });

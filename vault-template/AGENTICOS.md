@@ -49,7 +49,7 @@ Under Codex CLI every `/name` below is the plugin skill `$agenticos:name` (`$age
 
 ## Providers
 
-`provider` in `agenticos.json` (`aos provider <mode>`): `auto` (default) picks `ollama` when `127.0.0.1:11434` answers, else `claude` (headless `claude -p --model haiku`, capped per call and per day, ledgered in `brain/_index/provider-spend.jsonl`), else `codex` when Codex is a wired host (headless `codex exec`, spend estimated from its token counts, same caps and ledger), else `none`. Under `none`, background summaries are heuristic, session-end extraction is skipped, and `/wrap` does the extraction in-session. The UniDeX app never calls a model itself. `aos status` shows the resolved provider, today's spend against each cap, and the pipeline ledger.
+`provider` in `agenticos.json` (`aos provider <mode>`): `local` (default) runs background work on this Mac's model (Ollama or an OpenAI-compatible server; `aos local` shows and pulls it), never spending unless `local.hostedFallback` is on; while it can't answer, work waits or goes heuristic. `auto` picks Ollama when it answers, else `claude` (headless `claude -p`, capped per call and per day, ledgered in `brain/_index/provider-spend.jsonl`), else `codex` when wired (spend estimated from tokens). Under `none`, summaries are heuristic and `/wrap` extracts in-session. `aos status` shows the provider, today's spend and local calls.
 
 ## Routines
 
