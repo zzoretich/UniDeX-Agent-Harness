@@ -412,6 +412,12 @@ export class ChatTab {
     requestAnimationFrame(() => {
       log.scrollTop = log.scrollHeight;
       if (!this.onScreen()) return;
+      // The question takes the focus from the Workbench itself (its rail, the Vault row, this tab's last draw) or from
+      // nowhere, never from what holds it outside: the tour's popover, a dialog or a menu would lose it at every redraw
+      // (the catalog answering, a history refresh, Sessions drawing again).
+      const doc = input.ownerDocument;
+      const held = doc.activeElement;
+      if (held && held !== doc.body && !this.view.containerEl.contains(held)) return;
       input.focus();
     });
   }

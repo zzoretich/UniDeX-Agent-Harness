@@ -154,3 +154,32 @@ test('as a hook: exits 0 fast, answers Stop with {} under Codex and nothing unde
   assert.equal(inline.status, 0, inline.stderr);
   assert.match(inline.stdout, /nothing stale/);
 });
+
+// A fresh install under provider local has no login recorded until something asks the hosts (local-first A17), and the
+// Workbench shows Sessions only for a signed-in host. The run the Workbench starts at launch asks them even when a sweep
+// ran a minute ago (the throttle) or telemetry is off (then it writes nothing under agent-runs/): the sign-in check is
+// free, and a fresh cache costs one read.
+test('inline: the hosts\' sign-in is refreshed before the throttle and the telemetry switch; telemetry off writes nothing else', () => {
+  for (const telemetry of [true, false]) {
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-rec-login-'));
+    const runs = path.join(vault, 'brain', '_index', 'agent-runs');
+    const claude = path.join(vault, 'fake-claude.sh');
+    fs.writeFileSync(claude, '#!/bin/sh\n[ "$1 $2" = "auth status" ] && echo \'{"loggedIn": true}\' && exit 0\nexit 1\n', { mode: 0o755 });
+    const cfgFile = path.join(vault, 'agenticos.json');
+    fs.writeFileSync(cfgFile, JSON.stringify({ vault, provider: 'local', claude: { bin: claude }, telemetry: { enabled: telemetry }, hosts: { claude: { enabled: true }, codex: { enabled: false } } }));
+    fs.mkdirSync(path.join(vault, 'brain', '_index'), { recursive: true });
+    fs.writeFileSync(path.join(vault, 'brain', '_index', 'provider-state.json'), JSON.stringify({ name: 'none', reason: 'local-down' }));
+    if (telemetry) {
+      fs.mkdirSync(runs, { recursive: true });
+      fs.writeFileSync(path.join(runs, '.reconcile'), 'just now\n');   // a sweep a moment ago: the sweep itself is throttled
+    }
+    const env = { ...process.env, AOS_VAULT: vault, AOS_CONFIG: cfgFile, AOS_HOST: '', CLAUDE_PROJECT_DIR: '' };
+    delete env.AOS_DETACHED;
+    const r = spawnSync(process.execPath, [SCRIPT], { input: '', encoding: 'utf8', env });
+    assert.equal(r.status, 0, r.stderr);
+    const st = JSON.parse(fs.readFileSync(path.join(vault, 'brain', '_index', 'provider-state.json'), 'utf8'));
+    assert.equal(st.claude && st.claude.loggedIn, true, `telemetry ${telemetry}: Claude Code's sign-in recorded`);
+    assert.equal(st.claude.bin, claude);
+    if (!telemetry) assert.ok(!fs.existsSync(runs), 'telemetry off: nothing under agent-runs/');
+  }
+});

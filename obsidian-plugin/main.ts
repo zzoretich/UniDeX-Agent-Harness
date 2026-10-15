@@ -11,7 +11,7 @@ import { QuickOpenModal } from "./src/ui/QuickOpenModal";
 import { TerminalPool } from "./src/data/terminalPool";
 import { TerminalLauncher } from "./src/data/terminalLauncher";
 import type { TermTab } from "./src/views/TermTab";
-import { sessionHosts, signedInHosts } from "./src/data/aosConfig";
+import { loginsUnknown, sessionHosts, signedInHosts } from "./src/data/aosConfig";
 import type { TermHost } from "./src/data/terminalLaunch";
 import { AgenticOSSettings, AgenticOSSettingTab, DEFAULT_SETTINGS } from "./src/settings";
 import { loadSnapshot, SNAPSHOT_PATH, visibleWorkspaces } from "./src/data/snapshot";
@@ -179,7 +179,10 @@ export default class AgenticOSPlugin extends Plugin {
       // for 5 minutes "crashed" (spec 2026-09-24-no-duplicate-sessions D1). The live watcher drops a run
       // when its file goes. Off when telemetry is disabled: the plugin then writes nothing under agent-runs.
       // AOS_HOST / CLAUDE_PROJECT_DIR blank: an Obsidian started from a session terminal must not look like a hook.
-      if (this.telemetryOn()) {
+      // It also refreshes the hosts' sign-in, which Sessions follows (local-first A17): so with telemetry off it still runs
+      // while provider local has no login recorded for an enabled host (a fresh install), and then writes nothing else.
+      // Sessions joins the rail when the answer lands in provider-state.json (WorkbenchView.refreshRailHosts).
+      if (this.telemetryOn() || (this.systemConfig().provider === "local" && loginsUnknown(readAgenticosJson(this.claudeConfigDir()), readProviderState(this.vaultRoot())))) {
         this.runBrainScript("brain/scripts/reconcile-sessions.js", [], undefined, { env: { AOS_HOST: "", CLAUDE_PROJECT_DIR: "" }, quiet: true });
       }
       this.startRunsTail();

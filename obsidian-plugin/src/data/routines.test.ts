@@ -190,8 +190,17 @@ test("engine, maxTurns, writes and output: the runtime's constants and verdicts"
     { writes: ["notes/CLAUDE.md"] }, { writes: ["notes/agents.md"] }, { writes: ["MEMORY.md"] }, { writes: ["AGENTICOS.md"] }, { writes: ["notes/agenticos.md"] },
     { writes: ["per\u017fona/x/"] }, { output: "MEMORY.md" }, { output: "brain/_index/brief.md" }, { output: "notes/CLAUDE.md" },
     { kind: "duty", writes: ["brain/memory/feedback/"] },
+    // Everything else the runners refuse when the routine runs is refused here first, with their reason: the runtime, the
+    // routine files, workspaces/, a dot-folder, the vault itself, the guarded persona files (lib/write-areas.js).
+    { writes: ["brain/scripts/"] }, { writes: ["brain/routines/*.md"] }, { writes: ["workspaces/app/"] }, { writes: ["Workspaces/App/notes.md"] },
+    { writes: [".obsidian/"] }, { writes: ["notes/.git/x"] }, { writes: ["."] }, { writes: ["*"] }, { writes: ["brain/"] },
+    { output: "workspaces/app/NOTES.md" }, { output: "brain/routines/log.md" }, { output: ".obsidian/x.md" }, { output: "notes/.hidden/x.md" },
+    { kind: "duty", writes: ["workspaces/"] }, { kind: "duty", writes: ["brain/scripts/x.js"] }, { kind: "duty", writes: [".git/"] },
+    { kind: "duty", writes: ["persona/IDENTITY.md"] }, { kind: "duty", writes: ["persona/journal/", "MEMORY.md"] },
   ];
   for (const c of cases) assert.deepEqual(validateRoutine({ ...base, ...c }), store.validate({ ...base, ...c }), JSON.stringify(c));
+  assert.deepEqual(validateRoutine({ ...base, writes: ["workspaces/app/"] }), ["writes: workspaces/app/ is off limits to a local routine (guarded (workspaces/))"]);
+  assert.deepEqual(validateRoutine({ ...base, kind: "duty", writes: ["brain/scripts/x.js"] }), ["writes: brain/scripts/x.js is off limits to a duty (guarded (brain/scripts/))"]);
   const text = routineToFile({ slug: "k", schema: 1, name: "K", kind: "prompt", schedule: "0 9 * * *", enabled: true, output: "notify", writes: ["notes/"], maxTurns: 8, model: "qwen3.5:4b", engine: "local", body: "go" });
   assert.equal(text, '---\nschema: 1\nname: K\nkind: prompt\nschedule: "0 9 * * *"\nenabled: true\nengine: local\nmodel: "qwen3.5:4b"\nmaxTurns: 8\nwrites: [notes/]\noutput: notify\n---\n\ngo\n');
 });
