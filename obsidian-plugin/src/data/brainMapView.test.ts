@@ -7,7 +7,7 @@ import {
   labelFont, layoutBubbles, linkWidth, linkedCommunities, mapEmpty, mapEmptyText, mapFooter, memberRows, nodeRadius,
   packBubbles, pickAround, pickCommunity, pickLabels, thousands, unreviewedShare, type BubbleAt, type BubbleIn,
 } from "./brainMapView";
-import { settle, type SimParams } from "./forceSim";
+import { SOFTEN, overlapDirection, settle, type SimParams } from "./forceSim";
 
 const P = (type: string, slug: string): string => `brain/memory/${type}/${slug}.md`;
 
@@ -338,34 +338,69 @@ test("Every node keeps nodes and labels readable: a minimum size on screen at an
   assert.equal(fitView([{ x: -1e6, y: 0 }, { x: 1e6, y: 0 }], 400, 200, 0, 0.05).scale, 0.05);
 });
 
-test("Every node on a vault-sized map (~350 memories): after the settle the fitted view keeps every node and label readable", () => {
-  // An invented map shaped like a real one: a few communities, most memories linked to one or two others, a third alone.
+/** An invented map shaped like a real one, `n` memories: a few communities, most linked to one or two others, a third alone. */
+function vaultSizedGraph(n: number) {
   const memories: Record<string, { community: string | null; degree: number; neighbours: Array<{ path: string; n: number }> }> = {};
   const spec: Record<string, { title: string }> = {};
-  const paths = Array.from({ length: 350 }, (_, i) => P("reference", `note-${String(i).padStart(3, "0")}`));
+  const paths = Array.from({ length: n }, (_, i) => P("reference", `note-${String(i).padStart(3, "0")}`));
   paths.forEach((p, i) => {
     spec[p] = { title: `Note ${i}` };
-    const nbs = i % 3 === 0 ? [] : [{ path: paths[(i * 7 + 3) % 350], n: 1 + (i % 4) }, ...(i % 5 === 0 ? [{ path: paths[(i + 1) % 350], n: 1 }] : [])];
+    const nbs = i % 3 === 0 ? [] : [{ path: paths[(i * 7 + 3) % n], n: 1 + (i % 4) }, ...(i % 5 === 0 ? [{ path: paths[(i + 1) % n], n: 1 }] : [])];
     memories[p] = { community: i < 60 ? `c${i % 5}` : null, degree: nbs.length, neighbours: nbs.filter((x) => x.path !== p) };
   });
   const big = mapOf({ communities: [0, 1, 2, 3, 4].map((k) => ({ id: `c${k}`, name: `Group ${k}`, lead: paths[k], paths: paths.filter((_, i) => i < 60 && i % 5 === k), edges: 4 })), memories });
-  const files350 = files(spec);
-  const g = everyNodeGraph(big, files350);
-  assert.equal(g.nodes.length, 350);
+  return everyNodeGraph(big, files(spec));
+}
+/** The Map's own settle (the live view runs the same two phases), then the fitted view and how many nodes fall off it. */
+function settleAndFit(g: ReturnType<typeof everyNodeGraph>, w = 900, h = 560) {
   const GENTLE: SimParams = { repulsion: 1600, spring: 0.045, restLength: 90, centerGravity: 0.0015, damping: 0.92 };
   settle(g, 180);
   settle(g, 120, GENTLE);
+  const v = fitView(g.nodes, w, h, 48, 0.05, 1.4);
+  const off = g.nodes.filter((n) => { const sx = v.x + n.x * v.scale; const sy = v.y + n.y * v.scale; return !(sx >= 0 && sx <= w && sy >= 0 && sy <= h); }).length;
+  return { v, off };
+}
+/** A seeded Math.random (mulberry32), for forcing the overlap jitter the layout used to draw from it. */
+function seeded(a: number): () => number {
+  return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+test("Every node on a vault-sized map (~350 memories): after the settle the fitted view keeps every node and label readable", () => {
+  const g = vaultSizedGraph(350);
+  assert.equal(g.nodes.length, 350);
   const w = 900;
   const h = 560;
-  const v = fitView(g.nodes, w, h, 48, 0.05, 1.4);
+  const { v, off } = settleAndFit(g, w, h);
   assert.ok(v.scale >= 0.05 && v.scale <= 1.4);
-  for (const n of g.nodes) {
-    const sx = v.x + n.x * v.scale;
-    const sy = v.y + n.y * v.scale;
-    assert.ok(sx >= 0 && sx <= w && sy >= 0 && sy <= h, "every node on the canvas");
-  }
+  assert.equal(off, 0, "every node on the canvas");
   const deg = degrees(g);
   assert.ok(g.nodes.every((n) => drawnRadius(deg.get(n.id) ?? 0, v.scale) * v.scale >= NODE_MIN_PX - 1e-9));
   const shown = pickLabels(g.nodes.map((n) => ({ id: n.id, x: v.x + n.x * v.scale, y: v.y + n.y * v.scale, r: drawnRadius(deg.get(n.id) ?? 0, v.scale) * v.scale, text: n.label, deg: deg.get(n.id) ?? 0 })), w, h);
   assert.ok(shown.size >= 12 && shown.size <= labelCap(w, h), `${shown.size} labels`);
+});
+
+test("The layout is the same on every run: overlapping nodes part along a fixed direction, never Math.random's", (t) => {
+  // Under Math.random the overlap jitter flung a node off the fitted view about once in 300 runs (seed 163 does it every
+  // time); main's CI failed on it. With the jitter fixed by the pair, no seed changes the layout.
+  const real = Math.random;
+  let calls = 0;
+  const rnd = seeded(163);
+  Math.random = () => { calls++; return rnd(); };
+  t.after(() => { Math.random = real; });
+  const a = settleAndFit(vaultSizedGraph(350));
+  Math.random = real;
+  assert.equal(calls, 0, "the simulation draws nothing from Math.random");
+  assert.equal(a.off, 0, "every node on the canvas, whatever Math.random returns");
+  const b = settleAndFit(vaultSizedGraph(350));
+  assert.deepEqual(b.v, a.v, "two runs fit the same view");
+  const [dx, dy] = overlapDirection(3, 8);
+  assert.deepEqual(overlapDirection(8, 3), [-dx, -dy], "the two nodes of a pair are pushed opposite ways");
+  assert.ok(Math.abs(Math.hypot(dx, dy) - 1) < 1e-9);
+});
+
+test("A near-collision cannot fling a node off the map: maps of 405 and 420 memories keep every node on the canvas", () => {
+  // Unsoftened, two nodes a pixel apart pushed each other with the full repulsion and one landed thousands of pixels out,
+  // so the fitted view hit its smallest scale: 2 nodes off the 405 map and 17 off the 420 one, on every run.
+  for (const n of [405, 420]) assert.equal(settleAndFit(vaultSizedGraph(n)).off, 0, `${n} memories`);
+  assert.equal(SOFTEN, 25);
 });

@@ -20,6 +20,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **Claude Code's daily sign-in check is free.** It asks `claude auth status` instead of making a one-word Haiku call that was billed to the hook ledger.
 - **`aos init` no longer refuses without Ollama or python3**: a missing Ollama is a warning (background work waits for it), and python3 is checked only with `--cost`, the one thing that runs it (graphify gets its Python through uv). `aos doctor`'s Ollama row is a warning, its python3 row shows only while cost is on, and an install with no host gets an info row instead of failing.
 
+### Fixed
+- **The Brain Map lays out the same way every time, with every memory in view.** Two memories that landed on top of each other were parted in a random direction and could be flung far off the fitted view; they now part along a fixed direction, and the push at close range is softened.
+
 ## [1.9.0] — 2026-10-12
 
 ### Upgrading
