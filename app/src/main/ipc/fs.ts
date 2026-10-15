@@ -2,7 +2,7 @@
 
 import { shell } from "electron";
 import { CH, type Result } from "../../shared/ipc";
-import { afterTrash, type FsService } from "../services/fs";
+import { TRASH_HOLD_MS, afterTrash, type FsService } from "../services/fs";
 import { AppendArgs, FolderArgs, NoArgs, PathArgs, RangeArgs, TwoPathArgs, WriteArgs } from "./schemas";
 import { onInvoke, onSync, onSyncHeld, type Trust } from "./trust";
 
@@ -21,8 +21,11 @@ export function registerFsIpc(trust: Trust, svc: () => FsService | null): void {
   onSync(CH.fsReadBytes, trust, RangeArgs, ({ p, position, length }) => with_(`read ${p}`, (s) => s.readBytes(p, position, length)));
   onSync(CH.fsReaddir, trust, PathArgs, ({ p }) => with_(`list ${p}`, (s) => s.readdir(p)));
   onSync(CH.fsWalk, trust, NoArgs, () => with_("walk", (s) => s.walk()));
-  // Changes wait while a move to the Trash is in flight, so its check and the move are one step (afterTrash).
-  const held = <T>(run: () => Result<T>, reply: (r: Result<T>) => void): void => afterTrash(() => svc()?.pending() ?? null, run, reply);
+  // Changes wait while a move to the Trash is in flight, so its check and the move are one step (afterTrash); one that
+  // takes too long is answered busy rather than left blocking the page.
+  const busy: Result<never> = { ok: false, error: "a move to the Trash is still running", code: "EBUSY" };
+  const held = <T>(run: () => Result<T>, reply: (r: Result<T>) => void): void =>
+    afterTrash(() => svc()?.pending() ?? null, run, reply, { ms: TRASH_HOLD_MS, value: busy });
   onSyncHeld(CH.fsWriteText, trust, WriteArgs, ({ p, data, via }) => with_(`write ${p}`, (s) => s.writeText(p, data, via)), held);
   onSyncHeld(CH.fsAppendText, trust, AppendArgs, ({ p, data }) => with_(`append ${p}`, (s) => s.appendText(p, data)), held);
   onSyncHeld(CH.fsMkdir, trust, FolderArgs, ({ p, recursive }) => with_(`mkdir ${p}`, (s) => s.mkdir(p, recursive)), held);

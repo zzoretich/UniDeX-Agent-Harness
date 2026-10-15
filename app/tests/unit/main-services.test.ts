@@ -219,7 +219,26 @@ test("a move to the Trash is checked and done with no other change of the page's
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(order, ["write", "answered true"]);
   afterTrash(() => svc.pending(), () => "now", (res) => order.push(res));
-  assert.equal(order[order.length - 1], "now", "nothing in flight: answered at once");
+  assert.equal(order[order.length - 1], "now", "nothing in flight: answered at once, in the same turn");
+});
+
+test("a change held behind a trash that never ends is answered busy, not left blocking the page", async () => {
+  const stuck = new Promise<void>(() => undefined);
+  const got: string[] = [];
+  let ran = false;
+  afterTrash(() => stuck, () => { ran = true; return "made"; }, (v) => got.push(v), { ms: 20, value: "busy" });
+  assert.deepEqual(got, []);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.deepEqual(got, ["busy"]);
+  assert.equal(ran, false, "the change itself is not made");
+  // A trash that ends in time: the change runs once, and the timer answers nothing more.
+  let release: () => void = () => undefined;
+  let inFlight: Promise<void> | null = new Promise<void>((r) => { release = () => { inFlight = null; r(); }; });
+  const later: string[] = [];
+  afterTrash(() => inFlight, () => "made", (v) => later.push(v), { ms: 40, value: "busy" });
+  release();
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(later, ["made"]);
 });
 
 test("reads stay inside the read scope; credential files never come back", () => {

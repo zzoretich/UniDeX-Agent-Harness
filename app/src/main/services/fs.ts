@@ -26,15 +26,27 @@ export function failure(err: unknown): Result<never> {
 
 const ok = <T>(data: T): Result<T> => ({ ok: true, data });
 
+/** How long a change waits for a move to the Trash before it is answered `giveUp` (the page is blocked meanwhile). */
+export const TRASH_HOLD_MS = 5000;
+
 /**
  * Answers a change the page asked for once no move to the Trash is in flight (`pending`), so a trash's check and the
- * move itself are one step for the page: nothing it asks for runs in between. With none in flight, at once.
+ * move itself are one step for the page: nothing it asks for runs in between. With none in flight, at once, in the same
+ * turn. A trash that takes longer than `giveUp.ms` never leaves the page blocked: the change is answered `giveUp.value`
+ * and not made.
  */
-export function afterTrash<T>(pending: () => Promise<unknown> | null, run: () => T, reply: (value: T) => void): void {
+export function afterTrash<T>(pending: () => Promise<unknown> | null, run: () => T, reply: (value: T) => void,
+  giveUp?: { ms: number; value: T }): void {
+  if (!pending()) { reply(run()); return; }
+  let settled = false;
+  const timer = giveUp ? setTimeout(() => { if (!settled) { settled = true; reply(giveUp.value); } }, giveUp.ms) : null;
   const go = (): void => {
+    if (settled) return;
     const wait = pending();
-    if (wait) void wait.then(go, go);
-    else reply(run());
+    if (wait) { void wait.then(go, go); return; }
+    settled = true;
+    if (timer) clearTimeout(timer);
+    reply(run());
   };
   go();
 }
