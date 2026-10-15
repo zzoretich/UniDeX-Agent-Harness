@@ -441,6 +441,32 @@ test("CLAUDE.md: a ~/ import of the same file counts, and a symlinked file is wr
   assert.equal(previewClaudeMd(link, vault, HOME).present, true);
 });
 
+test("inspection F2: a profile or CLAUDE.md that exists but cannot be read is refused with the reason, and kept as it was", () => {
+  const home = path.join(ROOT, "unreadable");
+  fs.mkdirSync(home, { recursive: true });
+  const profile = path.join(home, ".zprofile");
+  fs.writeFileSync(profile, "export SECRET_SETUP=1\n");
+  fs.chmodSync(profile, 0o000);
+  const md = path.join(home, "CLAUDE.md");
+  fs.writeFileSync(md, "# rules I wrote\n");
+  fs.chmodSync(md, 0o000);
+  try {
+    assert.throws(() => previewPathLine(profile, home, null), /\.zprofile could not be read \(EACCES\), so nothing was written/);
+    assert.throws(() => applyPathLine(profile, home, null), /could not be read \(EACCES\)/);
+    assert.throws(() => applyClaudeMd(md, path.join(home, "Vault"), home), /CLAUDE\.md could not be read \(EACCES\)/);
+    // A folder where the profile should be is not "absent" either.
+    const dirHome = path.join(ROOT, "dirprofile");
+    fs.mkdirSync(path.join(dirHome, ".zprofile"), { recursive: true });
+    assert.throws(() => applyPathLine(path.join(dirHome, ".zprofile"), dirHome, null), /could not be read \(EISDIR\)/);
+  } finally {
+    fs.chmodSync(profile, 0o644);
+    fs.chmodSync(md, 0o644);
+  }
+  assert.equal(fs.readFileSync(profile, "utf8"), "export SECRET_SETUP=1\n", "the profile's contents survive");
+  assert.equal(fs.readFileSync(md, "utf8"), "# rules I wrote\n");
+  assert.deepEqual(fs.readdirSync(home).sort(), [".zprofile", "CLAUDE.md"], "no temp file left behind");
+});
+
 // ── attach ───────────────────────────────────────────────────────────
 
 test("attach: the note is due until noted, per vault; behind when the runtime is older than the payload", () => {

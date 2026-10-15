@@ -257,7 +257,8 @@ export class SetupController {
     const why = this.refusal("claude-md");
     const vault = this.claudeMdVault();
     if (why || !vault) return refused(why ?? "no vault yet");
-    return { ok: true, data: previewClaudeMd(this.claudeMdFile(this.o.readAgenticos()), vault, this.o.home) };
+    try { return { ok: true, data: previewClaudeMd(this.claudeMdFile(this.o.readAgenticos()), vault, this.o.home) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err), code: "EIO" }; }
   }
 
   applyClaudeMd(): Result<ClaudeMdPreview> {
@@ -266,7 +267,8 @@ export class SetupController {
     if (why || !vault) return refused(why ?? "no vault yet");
     const cfg = this.o.readAgenticos();
     if (!hostsOf(cfg).claude) return refused("Claude Code is not a host of this install");
-    return { ok: true, data: applyClaudeMd(this.claudeMdFile(cfg), vault, this.o.home) };
+    try { return { ok: true, data: applyClaudeMd(this.claudeMdFile(cfg), vault, this.o.home) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err), code: "EIO" }; }
   }
 
   finish(): Result<null> {
@@ -296,13 +298,14 @@ export class SetupController {
   pathLine(): Result<PathLinePreview> {
     const why = this.refusal("path");
     if (why) return refused(why);
-    return { ok: true, data: previewPathLine(zprofilePath(this.o.home, this.o.env), this.o.home, this.shellPATH) };
+    try { return { ok: true, data: previewPathLine(zprofilePath(this.o.home, this.o.env), this.o.home, this.shellPATH) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err), code: "EIO" }; }
   }
 
   addToPath(): Result<PathLinePreview> {
     const why = this.refusal("path");
     if (why) return refused(why);
     try { return { ok: true, data: applyPathLine(zprofilePath(this.o.home, this.o.env), this.o.home, this.shellPATH) }; }
-    catch (err) { return { ok: false, error: `could not write the PATH line: ${err instanceof Error ? err.message : String(err)}`, code: "EIO" }; }
+    catch (err) { return { ok: false, error: `the PATH line: ${err instanceof Error ? err.message : String(err)}`, code: "EIO" }; }
   }
 }

@@ -54,6 +54,8 @@ interface State {
   installExit: number | null | undefined;
   claudeMd: ClaudeMdPreview | null;
   pathLine: PathLinePreview | null;
+  /** Why the PATH line cannot be offered (its profile could not be read), else null. */
+  pathLineError: string | null;
   /** Finish's "Add aos to my PATH" box. */
   addPath: boolean;
   error: string | null;
@@ -66,7 +68,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     host: "claude",
     vault: setup?.configuredVault ?? setup?.defaultVault ?? "~/AgenticOS",
     persona: { name: "", addressAs: "", voice: "", priorities: [], dutyModel: "", dutyCodexModel: "", dutyEffort: "medium", schedule: true },
-    personaSkipped: false, installExit: undefined, claudeMd: null, pathLine: null, addPath: true, error: null,
+    personaSkipped: false, installExit: undefined, claudeMd: null, pathLine: null, pathLineError: null, addPath: true, error: null,
   };
 
   const shell = root.createDiv({ cls: "aos-setup" });
@@ -186,6 +188,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     if (s.host === "claude" || s.host === "both") { const r = aos.setup.claudeMd(); s.claudeMd = r.ok ? r.data : null; } else s.claudeMd = null;
     const p = aos.setup.pathLine();
     s.pathLine = p.ok ? p.data : null;
+    s.pathLineError = p.ok ? null : p.error;
   }
 
   // ── steps ──────────────────────────────────────────────────────────
@@ -443,6 +446,11 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       fixButton(row, c);
     }
     const pl = s.pathLine;
+    if (!pl && s.pathLineError) {
+      const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": "path" } });
+      sec.createEl("h3", { text: "Run aos from a terminal" });
+      sec.createEl("p", { cls: "aos-setup-hint", text: `${s.pathLineError}. To run aos from a terminal, add export PATH="$HOME/.local/bin:$PATH" to your shell's profile yourself.` });
+    }
     if (pl) {
       const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": "path" } });
       sec.createEl("h3", { text: "Run aos from a terminal" });

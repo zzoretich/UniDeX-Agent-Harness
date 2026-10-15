@@ -13,10 +13,21 @@ function hasLine(text: string): boolean {
   return text.split("\n").some((l) => l.trim() === PATH_LINE);
 }
 
+/**
+ * The profile's text: "" only when there is no such file. Any other failure (no permission, a folder in its place)
+ * throws, so a profile that cannot be read is never replaced by one holding only the new line.
+ */
+export function readProfile(file: string): string {
+  try { return fs.readFileSync(file, "utf8"); } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return "";
+    throw new Error(`${file} could not be read (${code ?? (err instanceof Error ? err.message : String(err))}), so nothing was written`);
+  }
+}
+
 /** `file`'s state, and whether the login shell's PATH (`shellPath`, null when unknown) already has ~/.local/bin. */
 export function previewPathLine(file: string, home: string, shellPath: string | null): PathLinePreview {
-  let text = "";
-  try { text = fs.readFileSync(file, "utf8"); } catch { /* a new file */ }
+  const text = readProfile(file);
   const bin = path.join(home, ".local", "bin");
   const onPath = !!shellPath && shellPath.split(":").some((d) => d && path.resolve(d) === bin);
   return { file, line: PATH_LINE, present: hasLine(text), onPath };
@@ -26,8 +37,7 @@ export function previewPathLine(file: string, home: string, shellPath: string | 
 export function applyPathLine(file: string, home: string, shellPath: string | null): PathLinePreview {
   const before = previewPathLine(file, home, shellPath);
   if (before.present) return before;
-  let text = "";
-  try { text = fs.readFileSync(file, "utf8"); } catch { /* a new file */ }
+  const text = readProfile(file);
   const next = `${text}${text && !text.endsWith("\n") ? "\n" : ""}${PATH_LINE}\n`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const target = fs.existsSync(file) ? fs.realpathSync(file) : file;

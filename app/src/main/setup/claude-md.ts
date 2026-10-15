@@ -30,10 +30,18 @@ function imports(text: string, vault: string, home: string): boolean {
   });
 }
 
+/** The file's text: "" only when there is none; any other read failure throws, so the file is never replaced blind. */
+function readExisting(file: string): string {
+  try { return fs.readFileSync(file, "utf8"); } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return "";
+    throw new Error(`${file} could not be read (${code ?? (err instanceof Error ? err.message : String(err))}), so nothing was written`);
+  }
+}
+
 export function previewClaudeMd(file: string, vault: string, home: string = os.homedir()): ClaudeMdPreview {
   const line = claudeMdLine(vault);
-  let text = "";
-  try { text = fs.readFileSync(file, "utf8"); } catch { /* a new file */ }
+  const text = readExisting(file);
   const present = imports(text, vault, home);
   const lines = text.replace(/\n$/, "").split("\n");
   const context = text ? lines.slice(-CONTEXT) : [];
@@ -47,8 +55,7 @@ export function previewClaudeMd(file: string, vault: string, home: string = os.h
 export function applyClaudeMd(file: string, vault: string, home: string = os.homedir()): ClaudeMdPreview {
   const before = previewClaudeMd(file, vault, home);
   if (before.present) return before;
-  let text = "";
-  try { text = fs.readFileSync(file, "utf8"); } catch { /* a new file */ }
+  const text = readExisting(file);
   const next = `${text}${text && !text.endsWith("\n") ? "\n" : ""}${before.line}\n`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // A symlinked CLAUDE.md (dotfiles repos do this) is written through, not replaced by a plain file.
