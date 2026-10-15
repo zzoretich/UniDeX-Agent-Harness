@@ -10,19 +10,26 @@
  * index exists: then the local Ollama embeds the query, asked directly (ollamaEmbedder), so a query never resolves the
  * provider (no provider-state.json write, no headless login probe). Only Ollama has embeddings, so the ranking is what
  * the provider chain would give: BM25 when the provider is claude, codex or none, or when Ollama does not answer
- * (queryRecallHybrid falls back on its own).
+ * (queryRecallHybrid falls back on its own). Under provider local the local engine's embedder (local.embedder at
+ * local.url, Ollama or an OpenAI-compatible server) embeds it; local down or the embedder not pulled is BM25 the same
+ * way (local-first A3).
  * Exit: 0 ok · 2 usage.
  */
 const { PATHS } = require('../lib/paths.js');
 const recall = require('./lib/recall.js');
 
-/** The query's embedder: Ollama's /api/embed at the configured address, or a refusal (→ BM25) for any provider mode but
- *  auto and ollama. Never sdk/lib/provider.js. */
+/** The query's embedder: Ollama's /api/embed at the configured address, the local engine's embedder under provider
+ *  local, or a refusal (→ BM25) for any other provider mode. Never sdk/lib/provider.js's resolve (its localCfg is pure). */
 function ollamaEmbedder(cfg) {
   const mode = (cfg && cfg.provider) || 'auto';
   return async (texts, o = {}) => {
-    if (mode !== 'auto' && mode !== 'ollama') throw new Error(`the ${mode} provider has no embeddings`);
     const embedMod = require('./lib/embed.js');
+    if (mode === 'local') {
+      const lc = require('./lib/provider.js').localCfg(cfg);
+      if (lc.engine === 'openai') return require('./lib/openai-compat.js').embed(texts, { ...o, url: lc.url, model: lc.embedder.tag });
+      return embedMod.embed(texts, { ...lc.net, ...o, model: lc.embedder.tag, postFn: embedMod.postEmbed });
+    }
+    if (mode !== 'auto' && mode !== 'ollama') throw new Error(`the ${mode} provider has no embeddings`);
     return embedMod.embed(texts, { ...((cfg && cfg.ollama) || {}), ...o, postFn: embedMod.postEmbed });
   };
 }

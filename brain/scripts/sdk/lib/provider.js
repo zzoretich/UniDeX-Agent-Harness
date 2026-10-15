@@ -30,6 +30,10 @@
  * (reasoner.codexModel → codex.model → the user's Codex default) when Codex is configured and
  * logged in; an explicit `provider: codex` puts Codex first (spec 2026-09-23-codex-parity-gaps D1).
  * `provider: none` still wins: it means nothing calls a model. Every other role gets the global provider.
+ * Under `provider: local` the reasoner features (Vault chat, ask, reflect-week, consolidate-memory; AI_FEATURES) follow
+ * their own switch `ai.<feature>` (local-first A2): `local`, the default, answers on the local engine and never a host
+ * (down: none with the local reason, and the button that asked may offer a host once); `host` keeps the hosted
+ * reasoner above. A caller that names a host (`prefer`) always gets that host. Other providers ignore `ai.*`.
  * Codex calls that pass no effort use codex.effort (default low): the user's own Codex default may be
  * a slow, expensive one, and a background summary needs none of it.
  *
@@ -334,6 +338,35 @@ function makeLocal(r, deps = {}) {
   };
 }
 
+/**
+ * local-first A2: the reasoner features with a per-feature engine switch, by the feature label their ledger rows and
+ * local-usage rows carry, and the `ai.<key>` that switches each.
+ */
+const AI_FEATURES = Object.freeze({ 'reason:chat': 'chat', 'reason:ask': 'ask', 'reason:reflect-week': 'reflectWeek', 'reason:consolidate-memory': 'consolidate' });
+function aiKeyOf(feature) { return Object.prototype.hasOwnProperty.call(AI_FEATURES, feature) ? AI_FEATURES[feature] : null; }
+
+/** Where an AI feature runs: 'local' (the local engine) only under provider local with `ai.<key>` not `host`; else 'host'. */
+function aiEngine(cfg, feature) {
+  const key = aiKeyOf(feature);
+  if (!key || !cfg || cfg.provider !== 'local') return 'host';
+  return cfg.ai && cfg.ai[key] === 'host' ? 'host' : 'local';
+}
+
+/**
+ * The local engine alone, for work that runs there by choice (ai.<feature>, the sweep): never the hosted legs, whatever
+ * local.hostedFallback says (that switch is for unattended work; a button offers a host once instead). Only the local
+ * cache in the state file is refreshed: its name and reason keep describing the global provider.
+ */
+async function resolveLocalOnly(feature, deps = {}) {
+  const cfg = loadConfig();
+  const now = deps.now ? deps.now() : Date.now();
+  const iso = new Date(now).toISOString();
+  const state = readState();
+  const r = await resolveLocal(state, now, iso, cfg, deps);
+  if (!deps.unbilled) writeState(state);
+  return r.ok ? makeLocal(r, deps) : makeNone(r.reason);
+}
+
 /** The hosted legs of the chain: Claude when logged in and under its cap, else Codex in auto (or local's fallback). */
 async function resolveHosted(m, state, now, iso, cfg, deps, budget) {
   const { loggedIn, bin } = await resolveClaudeLogin(state, now, iso, deps);
@@ -426,6 +459,8 @@ async function resolveProviderForRole({ role: roleName, feature = 'unknown', dep
   // An unbilled resolve (an estimate) records nothing: resolveClaudeLogin's comment.
   const save = () => { if (!deps.unbilled) writeState(state); };
   const chosen = reasoner && (prefer === 'claude' || prefer === 'codex') ? prefer : null;
+  // local-first A2: an AI feature switched to the local engine answers there, with no host behind it; a named host wins.
+  if (reasoner && !chosen && aiEngine(cfg, feature) === 'local') return resolveLocalOnly(feature, deps);
   const pin = (budget, host) => {
     const own = hostOpts && typeof hostOpts === 'object' && hostOpts[host] && typeof hostOpts[host] === 'object' ? hostOpts[host] : null;
     const m = own ? own.model : model;
@@ -471,16 +506,18 @@ function getProvider(feature = 'unknown') {
   if (!memo) memo = resolveProvider({ feature });
   return memo;
 }
-/** Memoized per role and process. Ollama-served roles share getProvider()'s promise. */
+/** Memoized per role (and AI feature, whose engine switch may differ: local-first A2) and process. Ollama-served roles
+ *  share getProvider()'s promise. */
 function getProviderForRole(roleName, feature = 'unknown') {
   if (providerFor(roleName) !== 'claude') return getProvider(feature);
-  if (!roleMemo.has(roleName)) roleMemo.set(roleName, resolveProviderForRole({ role: roleName, feature }));
-  return roleMemo.get(roleName);
+  const key = `${roleName}|${aiKeyOf(feature) || ''}`;
+  if (!roleMemo.has(key)) roleMemo.set(key, resolveProviderForRole({ role: roleName, feature }));
+  return roleMemo.get(key);
 }
 function resetProviderCache() { memo = null; roleMemo.clear(); }
 
 module.exports = {
   resolveProvider, getProvider, resolveProviderForRole, getProviderForRole, resetProviderCache, STATE_PATH,
-  localCfg, listLocalModels, pickLocalModel,
+  localCfg, listLocalModels, pickLocalModel, resolveLocalOnly, aiEngine, AI_FEATURES,
   ProviderUnavailable, recordSpend, spendToday, reasonSpendToday, routineSpendToday, SPEND_PATH,
 };

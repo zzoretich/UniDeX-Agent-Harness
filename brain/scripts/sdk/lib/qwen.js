@@ -8,7 +8,6 @@
  * reasoner role's (getProviderForRole: headless Claude), with the workhorse as its fallback.
  */
 const chat = (opts) => require('./provider.js').getProvider(opts.feature).then((p) => p.chat(opts));
-const reasonerChat = (opts) => require('./provider.js').getProviderForRole('reasoner', opts.feature).then((p) => p.chat(opts));
 /** The workhorse as a fallback chat, or null when the global provider is not Ollama (nothing local to fall back to). */
 async function workhorseFallback(feature) {
   const g = await require('./provider.js').getProvider(feature);
@@ -151,7 +150,7 @@ async function classify(text, opts = {}) {
 
 /**
  * reason(prompt, opts) — deep Q&A / reflection via the reasoner role (a Claude model through
- * getProviderForRole). `think` carries the effort dial; the claude provider turns it into
+ * getProviderForRole, or the local engine for an AI feature switched to it, local-first A2). `think` carries the effort dial; the claude provider turns it into
  * `--effort`. Falls back to the workhorse on the global provider when the reasoner call fails
  * (not logged in, daily cap, timeout) and that provider is Ollama, so interactive commands
  * degrade instead of dying. Set opts.noFallback to propagate the error instead.
@@ -162,8 +161,15 @@ async function classify(text, opts = {}) {
  */
 async function reason(prompt, opts = {}) {
   const feature = opts.feature || 'reason:unknown';
-  const chatFn = opts.chatFn || reasonerChat;
-  const providerName = opts.chatFn ? (opts.providerName || 'claude') : null;
+  let chatFn = opts.chatFn;
+  let providerName = opts.chatFn ? (opts.providerName || 'claude') : null;
+  if (!chatFn) {
+    // The reasoner's provider, asked first: under provider local an AI feature may resolve to the local engine
+    // (local-first A2), which is sent the workhorse request, never a Claude model id.
+    const p = await require('./provider.js').getProviderForRole('reasoner', feature);
+    chatFn = (o) => p.chat(o);
+    providerName = p.name;
+  }
   const r = role('reasoner');
   const w = role('workhorse');
   const base = {

@@ -4,7 +4,8 @@
  * Writes brain/reflections/<YYYY-WW>.md.
  *   --context (default)  print the assembled prompt for Claude-in-session
  *   --write <file>       store the file's contents as this week's reflection
- *   --local              generate through the provider
+ *   --local              generate through the provider: under provider local where ai.reflectWeek says (local-first A2)
+ *     --host=claude|codex  with --local: that host once, never another
  *
  * Usage: node brain/scripts/sdk/reflect-week.js [--context|--local|--write <file>] [--weeks=N] [--print]
  */
@@ -14,7 +15,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const brain = require('./lib/brain.js');
 const { reason } = require('./lib/qwen.js');
-const { parseMode, printContext, readWriteFile, localProvider } = require('./lib/interactive.js');
+const { parseMode, hostFlag, printContext, readWriteFile, localProvider } = require('./lib/interactive.js');
 
 const log = (...a) => console.error(...a);
 
@@ -92,7 +93,10 @@ function writeReflection(text, { week, now }) {
 }
 
 async function main() {
-  const { mode, writeFile, rest } = parseMode(process.argv.slice(2));
+  let host;
+  let argv;
+  try { ({ host, rest: argv } = hostFlag(process.argv.slice(2))); } catch (e) { log(`[reflect] ${e.message}`); process.exit(2); }
+  const { mode, writeFile, rest } = parseMode(argv);
   const flags = parseFlags(rest);
   const weeks = parseInt(flags.get('weeks') || '1', 10);
   const print = !!flags.get('print');
@@ -106,10 +110,10 @@ async function main() {
   if (!spec) { log('[reflect] no daily notes in window; nothing to reflect on.'); return; }
   if (mode === 'context') { printContext({ feature: 'reflect-week', system: spec.system, context: spec.prompt, format: REFLECTION_FORMAT }); return; }
 
-  const p = await localProvider('reason:reflect-week', { role: 'reasoner' });
+  const p = await localProvider('reason:reflect-week', { role: 'reasoner', prefer: host || undefined });
   log(`[reflect] week=${spec.week} notes=${spec.notes} days=${weeks * 7} — calling ${p.name}${p.degraded ? ` (reasoner unavailable: ${p.degraded}; workhorse)` : ''}…`);
   let text;
-  try { text = await reason(spec.prompt, { system: spec.system, effort: 'medium', numPredict: 3072, feature: 'reason:reflect-week', chatFn: (o) => p.chat({ ...o, feature: 'reason:reflect-week' }), providerName: p.name }); }
+  try { text = await reason(spec.prompt, { system: spec.system, effort: 'medium', numPredict: 3072, feature: 'reason:reflect-week', noFallback: !!host, chatFn: (o) => p.chat({ ...o, feature: 'reason:reflect-week' }), providerName: p.name }); }
   catch (e) { log('[reflect] model error:', e.message); process.exit(1); }
   if (!text) { log('[reflect] empty response; aborting.'); process.exit(1); }
   const outPath = writeReflection(text, spec);

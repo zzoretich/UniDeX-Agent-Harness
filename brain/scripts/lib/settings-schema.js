@@ -40,6 +40,7 @@ const SECTIONS = [
 ];
 
 const RUNNERS = ['auto', 'claude', 'codex'];
+const AI_ENGINES = ['local', 'host'];
 const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 const REASONER_EFFORTS = ['low', 'medium', 'high'];
 const CROSS_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -69,6 +70,11 @@ const SETTINGS = [
     help: 'With provider local: when the local model cannot answer, send background work to Claude, then Codex, under their hook caps. Off: it waits or uses heuristics.' },
   { key: 'local.onBattery', section: 'provider', label: 'Heavy local work on battery', type: 'enum', values: ['defer', 'run'], applies: 'next-scan',
     help: 'defer holds the heavy local jobs (the semantic graph pass, the history digest) until the Mac is on power.' },
+  // local-first A2: where each reasoner feature runs under provider local (other providers keep the hosted reasoner).
+  ...[['ai.chat', 'Vault chat runs on', 'Vault chat'], ['ai.ask', 'Ask brain runs on', '/ask-brain --local and aos ask'],
+    ['ai.reflectWeek', 'Weekly reflection runs on', '/reflect-week --local'], ['ai.consolidate', 'Consolidate memory runs on', '/consolidate-memory --local']]
+    .map(([key, label, what]) => ({ key, section: 'provider', label, type: 'enum', values: AI_ENGINES, risk: 'spend', applies: 'next-call',
+      help: `With provider local: local answers ${what} on the model on this Mac and never spends; host sends it to Claude Code, else Codex (the reasoner, under its caps). Other providers always use the host.` })),
   { key: 'claude.model', section: 'provider', label: 'Claude model', type: 'model', host: 'claude', applies: 'next-call', followUp: ROUTINES_SYNC,
     help: 'Claude model for background calls when the provider is auto or claude (or local with hostedFallback on), and the duty model when the persona interview named none. An alias (haiku) or a full id.' },
   { key: 'codex.model', section: 'provider', label: 'Codex model', type: 'model', host: 'codex', nullable: true, applies: 'next-call',

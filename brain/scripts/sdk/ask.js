@@ -10,6 +10,8 @@
  *     --host=claude|codex  with --local: that host only, never another (Vault chat's menu, spec 2026-10-07-sessions-ux U9)
  *     --model=<id>         with --local: that model instead of the reasoner's
  *     --effort=<level>     with --local: that effort, when the host's CLI takes it
+ *     --chat               with --local: a Vault chat question (feature reason:chat): under provider local it runs where
+ *                          ai.chat says, not ai.ask (local-first A2)
  *
  * Usage:
  *   node brain/scripts/sdk/ask.js "what did I decide about model routing?"
@@ -26,13 +28,14 @@ const pathx = require('path');
 const { VAULT } = require('../lib/paths.js');
 const { parseMode, printContext, readWriteFile, localProvider } = require('./lib/interactive.js');
 
-/** --host=, --model= and --effort= (one argument each, so a question never swallows their values) and the rest. */
+/** --host=, --model= and --effort= (one argument each, so a question never swallows their values), --chat, and the rest. */
 function askOptions(argv) {
   const opts = {};
   const rest = [];
   for (const a of argv) {
     const m = /^--(host|model|effort)=(.*)$/.exec(a);
     if (m) opts[m[1]] = m[2];
+    else if (a === '--chat') opts.chat = true;
     else rest.push(a);
   }
   if (opts.host !== undefined && !['claude', 'codex'].includes(opts.host)) throw new Error('--host takes claude or codex');
@@ -136,9 +139,11 @@ async function main() {
   if (mode === 'context') { printContext({ feature: 'ask', system, context: question, format: ASK_FORMAT }); return; }
 
   const chosen = asked.opts.host || asked.opts.model || asked.opts.effort;
+  // Vault chat's questions are reason:chat rows and follow ai.chat; a question asked here is reason:ask (ai.ask).
+  const feature = asked.opts.chat ? 'reason:chat' : 'reason:ask';
   let p;
   try {
-    p = await localProvider('reason:ask', { role: 'reasoner', prefer: asked.opts.host, model: asked.opts.model, effort: asked.opts.effort });
+    p = await localProvider(feature, { role: 'reasoner', prefer: asked.opts.host, model: asked.opts.model, effort: asked.opts.effort });
   } catch (err) {
     if (!chosen) throw err;
     process.stderr.write(`[ask] ${err.message}\n`);
@@ -152,8 +157,8 @@ async function main() {
   }
   try {
     const answer = await reason(question, {
-      system, effort: 'medium', numPredict: 1024, feature: 'reason:ask', noFallback: !!chosen,
-      chatFn: (o) => p.chat({ ...o, feature: 'reason:ask' }), providerName: p.name,
+      system, effort: 'medium', numPredict: 1024, feature, noFallback: !!chosen,
+      chatFn: (o) => p.chat({ ...o, feature }), providerName: p.name,
     });
     try { await telemetry.endRun(run, { status: 'ok', reply: `len=${answer ? answer.length : 0}` }); } catch { /* fail-soft */ }
     process.stdout.write((answer || '(no answer)') + '\n');
