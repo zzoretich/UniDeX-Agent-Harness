@@ -1,6 +1,6 @@
 # The Workbench app — manual smoke checklist
 
-Run before tagging a release, in the UniDeX app on a vault created by `aos init` or the app's wizard (not the developer vault). Most rows are also automated: the app's end-to-end suite asserts them on a synthetic vault (`app/tests/e2e/COVERAGE.md` maps every row to its spec), and `npm run dist:test && npm run smoke:packaged` runs the packaged app on a fresh install. This list is the pass by hand, against real hosts. Repeat the provider rows for each provider you can reach (`aos provider none|ollama|claude`; the scripts rewrite `brain/_index/provider-state.json` on the next hook run — start one `claude` session and exit, or run `aos scan-vault --quiet`).
+Run before tagging a release, in the UniDeX app on a vault created by `aos init` or the app's wizard (not the developer vault). Most rows are also automated: the app's end-to-end suite asserts them on a synthetic vault (`app/tests/e2e/COVERAGE.md` maps every row to its spec), and `npm run dist:test && npm run smoke:packaged` runs the packaged app on a fresh install. This list is the pass by hand, against real hosts. Repeat the provider rows for each provider you can reach (`aos provider local|none|ollama|claude`; `local` is a new install's default; the scripts rewrite `brain/_index/provider-state.json` on the next hook run — start one `claude` session and exit, or run `aos scan-vault --quiet`).
 
 ## Release procedure
 
