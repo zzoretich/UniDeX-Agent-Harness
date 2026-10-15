@@ -334,12 +334,19 @@ function makeLocal(r, deps = {}) {
   };
 }
 
-/** The hosted legs of the chain: Claude when logged in and under its cap, else Codex in auto (or local's fallback). */
+/**
+ * The hosted legs of the chain: Claude when logged in and under its cap, else Codex in auto (or local's fallback). Claude
+ * is asked only when it is an enabled host, or when the provider names it (`provider: claude`): a signed-in `claude` on a
+ * Codex-only install, or one installed with `--host none`, never spends (install-import B2).
+ */
 async function resolveHosted(m, state, now, iso, cfg, deps, budget) {
-  const { loggedIn, bin } = await resolveClaudeLogin(state, now, iso, deps);
-  const claudeReason = bin ? 'claude-not-logged-in' : 'no-provider';
-  if (loggedIn) {
-    return budget.spent() >= budget.perDayUsd ? makeNone('daily-cap', 'claude') : makeClaude(m === 'claude' ? 'forced' : 'claude-logged-in', budget, deps);
+  let claudeReason = 'no-provider';
+  if (m === 'claude' || claudeHostEnabled(cfg)) {
+    const { loggedIn, bin } = await resolveClaudeLogin(state, now, iso, deps);
+    if (loggedIn) {
+      return budget.spent() >= budget.perDayUsd ? makeNone('daily-cap', 'claude') : makeClaude(m === 'claude' ? 'forced' : 'claude-logged-in', budget, deps);
+    }
+    claudeReason = bin ? 'claude-not-logged-in' : 'no-provider';
   }
   if ((m === 'auto' || m === 'local') && codexConfigured(cfg)) return resolveCodex(state, now, iso, cfg, deps, 'codex-logged-in', claudeReason);
   return makeNone(claudeReason);
@@ -443,7 +450,8 @@ async function resolveProviderForRole({ role: roleName, feature = 'unknown', dep
   const why = [];
   for (const host of order) {
     if (host === 'claude') {
-      if (!claudeHostEnabled(cfg) && reasoner) { why.push('claude host disabled'); continue; }
+      // A disabled Claude host never spends: the reasoner skips it always, a hook-budget role unless the provider is claude.
+      if (!claudeHostEnabled(cfg) && (reasoner || mode !== 'claude')) { why.push('claude host disabled'); continue; }
       const budget = reasoner ? pin(reasonerBudget(cfg, deps), 'claude') : hookBudget(cfg, deps);
       const { loggedIn, bin } = await resolveClaudeLogin(state, now, iso, deps);
       if (!loggedIn) { why.push(bin ? 'claude-not-logged-in' : 'no-provider'); continue; }

@@ -303,12 +303,48 @@ test('auto: claude present but not logged in, Codex configured but not logged in
 });
 
 test('auto: Codex configured but no codex binary → the claude reason survives; logged-in claude still wins over codex', async () => {
-  codexOn();
+  // Both hosts, as aos init writes them (a hosts block without a claude entry is a Claude host turned off).
+  fs.writeFileSync(CONFIG, JSON.stringify({ hosts: { claude: { enabled: true }, codex: { enabled: true } } }));
   const p = await resolveProvider({ mode: 'auto', deps: { ping: async () => false, resolveClaudeBin: () => '/x/claude', loginProbe: async () => false, resolveCodexBin: () => null, codexLoginProbe: never } });
   assert.equal(p.reason, 'claude-not-logged-in');
   try { fs.unlinkSync(STATE_PATH); } catch {} // drop the cached "not logged in" verdict from the call above
   const c = await resolveProvider({ mode: 'auto', deps: { ping: async () => false, resolveClaudeBin: () => '/x/claude', loginProbe: async () => true, resolveCodexBin: never, codexLoginProbe: never } });
   assert.equal(c.name, 'claude');
+});
+
+// install-import B2 (inspection F1): only a host the user enabled may spend. A signed-in claude on a Codex-only install, or
+// on one installed with --host none, is never asked, let alone called; `provider: claude` still names it explicitly.
+const noClaude = { resolveClaudeBin: never, loginProbe: never, claudeCall: never };
+
+test('auto on a Codex-only install: a signed-in claude is never probed or called; Codex answers, else none', async () => {
+  fs.writeFileSync(CONFIG, JSON.stringify({ hosts: { claude: { enabled: false }, codex: { enabled: true } } }));
+  const p = await resolveProvider({ mode: 'auto', deps: { ping: async () => false, ...noClaude, resolveCodexBin: () => '/x/codex', codexLoginProbe: async () => true } });
+  assert.deepEqual([p.name, p.reason], ['codex', 'codex-logged-in']);
+  fs.unlinkSync(STATE_PATH);
+  const out = await resolveProvider({ mode: 'auto', deps: { ping: async () => false, ...noClaude, resolveCodexBin: () => '/x/codex', codexLoginProbe: async () => false } });
+  assert.deepEqual([out.name, out.reason], ['none', 'codex-not-logged-in']);
+  assert.equal(JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')).claude, undefined, 'no Claude login was even looked up');
+});
+
+test('no host enabled (aos init --host none): auto, and local with its hosted fallback, call no hosted model', async () => {
+  const none = { hosts: { claude: { enabled: false }, codex: { enabled: false } } };
+  fs.writeFileSync(CONFIG, JSON.stringify(none));
+  const p = await resolveProvider({ mode: 'auto', deps: { ping: async () => false, ...noClaude, resolveCodexBin: never, codexLoginProbe: never } });
+  assert.deepEqual([p.name, p.reason], ['none', 'no-provider']);
+  fs.unlinkSync(STATE_PATH);
+  fs.writeFileSync(CONFIG, JSON.stringify({ ...none, provider: 'local', local: { hostedFallback: true } }));
+  const local = await resolveProvider({ deps: { localModels: async () => null, ...noClaude, resolveCodexBin: never, codexLoginProbe: never } });
+  assert.deepEqual([local.name, local.reason], ['none', 'local-down']);
+  // A hook-budget role through resolveProviderForRole skips the disabled host too.
+  fs.writeFileSync(CONFIG, JSON.stringify(none));
+  const r = await provider.resolveProviderForRole({ role: 'claude', deps: { ...noClaude, resolveCodexBin: never, codexLoginProbe: never } });
+  assert.deepEqual([r.name, r.reason], ['none', 'no-provider']);
+});
+
+test('provider claude names the host itself: it is still used when hosts.claude is off', async () => {
+  fs.writeFileSync(CONFIG, JSON.stringify({ hosts: { claude: { enabled: false }, codex: { enabled: false } } }));
+  const p = await resolveProvider({ mode: 'claude', deps: { ping: never, ...loggedIn } });
+  assert.deepEqual([p.name, p.reason], ['claude', 'forced']);
 });
 
 test('forced codex: skips Ollama and claude, honours the codex daily cap with its own cap key', async () => {
