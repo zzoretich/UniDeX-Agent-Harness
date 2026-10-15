@@ -162,6 +162,16 @@ test.describe("the local engine set up, both hosts, the Routines surface on", ()
     await drawer(win).locator(".aos-capture-actions button", { hasText: "create" }).click();
     await expect(drawer(win).locator(".aos-rt-errors")).toHaveText("invalid routine: writes: brain/memory/ is off limits to a local routine (brain/memory/: memories feed every session)");
     expect(fs.existsSync(FX.v("brain/routines/harbor-digest.md"))).toBe(false);
+    // So is what the runner refuses when the routine runs (lib/write-areas.js): refused here first, with its reason.
+    await drawer(win).locator("textarea.aos-rt-writes").fill("notes/digests/\nworkspaces/harbor/\n");
+    await drawer(win).locator(".aos-capture-actions button", { hasText: "create" }).click();
+    await expect(drawer(win).locator(".aos-rt-errors")).toHaveText("invalid routine: writes: workspaces/harbor/ is off limits to a local routine (guarded (workspaces/))");
+    await drawer(win).locator("textarea.aos-rt-writes").fill("notes/digests/\n");
+    await drawer(win).locator("input.aos-rt-output").fill("brain/routines/digest.md");
+    await drawer(win).locator(".aos-capture-actions button", { hasText: "create" }).click();
+    await expect(drawer(win).locator(".aos-rt-errors")).toHaveText("invalid routine: output: brain/routines/digest.md is off limits to a local routine (guarded (brain/routines/))");
+    expect(fs.existsSync(FX.v("brain/routines/harbor-digest.md"))).toBe(false);
+    await drawer(win).locator("input.aos-rt-output").fill("notify");
     await drawer(win).locator("textarea.aos-rt-writes").fill("notes/digests/\nbrain/reflections/*.md\n");
     await drawer(win).locator(".aos-capture-actions button", { hasText: "create" }).click();
     const want = routineToFile({

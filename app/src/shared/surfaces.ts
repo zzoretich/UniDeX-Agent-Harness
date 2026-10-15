@@ -497,7 +497,8 @@ export const SURFACES: readonly Surface[] = [
     label: "Hosts",
     source: "views/settings/HostsPanel.ts (Settings ▸ Hosts: Add Claude Code, Add Codex), data/hostsState.ts (install-import B2)",
     // `aos hosts add <host>` (cli/hosts.js) writes through the runtime: agenticos.json's host on, that host's plugin (or
-    // Codex's direct wiring) through its own CLI, its fast import phases, the installed schedules re-rendered. It refuses,
+    // Codex's direct wiring) through its own CLI, its fast import phases, for the first host the Chief of Staff (persona/
+    // and its routines, from the vault template) with its duties scheduled, the installed schedules re-rendered. It refuses,
     // writing nothing, when the CLI is missing or signed out. The status check it follows is a background read (above).
     writes: [],
     spawns: [{ script: "cli/aos.js", args: argv("hosts", "add", /claude|codex/) }],

@@ -24,6 +24,7 @@ import { TODO_PATH, localDay } from "../data/todos";
 import { readTeams, diskAdapter, gateBadge } from "../data/teams";
 import { TRAIL_PATH } from "../data/promoteTrail";
 import { pendingReview, readTrailRows, touchesBrain, trailSince, type BrainMode, type ReviewQueue } from "../data/brainModel";
+import { PROVIDER_STATE_PATH } from "../data/aosConfig";
 import { CaptureModal } from "../ui/CaptureModal";
 import { HOST_APP_SETTINGS, HOST_TOGGLE_THEME, runHostCommand } from "../ui/hostCommands";
 import { currentTheme, onThemeChange } from "../ui/theme";
@@ -119,6 +120,9 @@ export class WorkbenchView extends ItemView {
   /** Where the tour's first-visit chip shows (tour C6): over the content's foot, outside what a tab redraws. */
   private chipHost!: HTMLElement;
   private railEl!: HTMLElement;
+  private railTabsEl: HTMLElement | null = null;
+  /** Whether the rail has Sessions now (renderRailTabs). */
+  private railChat = false;
   private badgeEls: Record<string, HTMLElement> = {};
   private badgeTimer: number | null = null;
   private teamsReads = 0;
@@ -173,16 +177,8 @@ export class WorkbenchView extends ItemView {
     this.railAction(head, { action: "search", icon: "search", label: "Search (⌘K)" }, () => { void this.plugin.openOmni(); });
     this.railAction(head, { action: "capture", icon: "plus", label: "Quick Capture" }, () => { new CaptureModal(this.app).open(); });
     // The tab buttons scroll inside .aos-wb-railtabs so a short pane never pushes the ⚙ footer out of reach (D1).
-    const tabsEl = this.railEl.createDiv({ cls: "aos-wb-railtabs" });
-    RAIL_SECTIONS.forEach((section, i) => {
-      // The line between sections (D5) scrolls with the buttons.
-      if (i > 0) tabsEl.createDiv({ cls: "aos-wb-railsep", attr: { role: "separator", "aria-orientation": "horizontal" } });
-      for (const tab of section) {
-        // No host signed in and no past session to show → no Sessions tab (local-first A17, install-import B11).
-        if (tab.id === "chat" && !this.plugin.sessionsShown()) continue;
-        this.railButton(tabsEl, tab);
-      }
-    });
+    this.railTabsEl = this.railEl.createDiv({ cls: "aos-wb-railtabs" });
+    this.renderRailTabs();
     const foot = this.railEl.createDiv({ cls: "aos-wb-railfoot" });
     // Getting started n/m (tour C9) comes and goes in its slot; Help (C12) opens the tour's menu beside the rail.
     const checklistSlot = foot.createDiv({ cls: "aos-wb-railslot" });
@@ -218,6 +214,7 @@ export class WorkbenchView extends ItemView {
         this.brainEpoch++;
       }
       if (hit(f.path) || (oldPath !== undefined && hit(oldPath))) this.scheduleBadges();
+      if (f.path === PROVIDER_STATE_PATH) this.refreshRailHosts();
     };
     this.registerEvent(this.app.vault.on("create", (f) => onPath(f)));
     this.registerEvent(this.app.vault.on("modify", (f) => onPath(f)));
@@ -225,6 +222,37 @@ export class WorkbenchView extends ItemView {
     this.registerEvent(this.app.vault.on("rename", (f, oldPath) => onPath(f, oldPath)));
     // A vault root outside Obsidian sends no vault events, so the gate badge is also recounted once a minute.
     this.registerInterval(window.setInterval(() => void this.refreshTeamsBadge(), 60_000));
+    void this.refreshBadges();
+  }
+
+  /** The rail's tab buttons, in their sections; Sessions only while an enabled host is signed in (local-first A17) or
+   *  History has a past session to show (install-import B11): plugin.sessionsShown(). */
+  private renderRailTabs(): void {
+    const tabsEl = this.railTabsEl;
+    if (!tabsEl) return;
+    tabsEl.empty();
+    this.railChat = this.plugin.sessionsShown();
+    RAIL_SECTIONS.forEach((section, i) => {
+      // The line between sections (D5) scrolls with the buttons.
+      if (i > 0) tabsEl.createDiv({ cls: "aos-wb-railsep", attr: { role: "separator", "aria-orientation": "horizontal" } });
+      for (const tab of section) {
+        // No host signed in and no past session to show → no Sessions tab (local-first A17, install-import B11).
+        if (tab.id === "chat" && !this.railChat) continue;
+        this.railButton(tabsEl, tab);
+      }
+    });
+    tabsEl.querySelectorAll(".aos-wb-railbtn").forEach((el) => el.toggleClass("is-active", (el as HTMLElement).dataset.tab === this.activeTab));
+  }
+
+  /**
+   * The hosts' sign-in changed in provider-state.json: Sessions joins the rail once a host's sign-in is recorded (a fresh
+   * install's first launch, when the runtime's check answers after the rail was drawn), unless it is there already for
+   * its History (install-import B11). It never leaves the rail under the user: a host signed out takes it away at the
+   * next launch.
+   */
+  refreshRailHosts(): void {
+    if (this.railChat || !this.railTabsEl || !this.plugin.sessionsShown()) return;
+    this.renderRailTabs();
     void this.refreshBadges();
   }
 

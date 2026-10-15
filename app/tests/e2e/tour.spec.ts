@@ -294,4 +294,31 @@ test.describe("a Codex-only machine (variants.spec.ts's)", () => {
     expect(gated.filter((r) => r.startsWith("sessions.") || r === "core.sessions")).toEqual([]);
     expectNoErrors(h);
   });
+
+  // Known since PR 8: Vault chat, Sessions' first thread, took the focus at every redraw, so the popover over Sessions
+  // lost it (and with it the keys). The redraw is forced here: the tab drawn again while a step is up.
+  test("a step on Sessions keeps the focus in its popover when the tab redraws under it", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "chat");
+    await expect(content(win).locator("textarea.aos-asst-input")).toBeVisible();
+    await helpMenu(win, "tour-tab");
+    await expect(pop(win)).toHaveAttribute("data-step", "sessions.list");
+    await expect(pop(win)).toBeFocused();
+    for (let i = 0; i < 2; i++) {
+      await win.evaluate(() => {
+        const ws = (window as unknown as { aosHost: { plugin: { app: { workspace: { getLeavesOfType(t: string): Array<{ view: { setTab(id: string): void } }> } } } } }).aosHost.plugin.app.workspace;
+        ws.getLeavesOfType("agentic-os-workbench")[0].view.setTab("chat");
+      });
+      await expect(content(win).locator("textarea.aos-asst-input")).toBeVisible();
+      await win.waitForTimeout(500);
+      await expect(pop(win)).toBeFocused();
+    }
+    // The keys still reach the tour: → moves on.
+    await win.keyboard.press("ArrowRight");
+    await expect(pop(win)).toHaveAttribute("data-step", "sessions.new-session");
+    await win.keyboard.press("Escape");
+    await expect(overlay(win)).toHaveCount(0);
+    expectNoErrors(h);
+  });
 });

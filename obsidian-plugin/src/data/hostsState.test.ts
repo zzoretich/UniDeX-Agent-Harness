@@ -47,6 +47,9 @@ test("hostView: ready, signed out, missing; off with Add only when installed and
 
 test("what Add does is said first; the steps hosts add prints after it are read back", () => {
   assert.match(addHostText("codex"), /^This turns Codex on for this vault \(the other host stays as it is\), installs the Codex plugin .* It runs aos hosts add codex\./);
+  assert.doesNotMatch(addHostText("codex"), /Chief of Staff/);
+  // The first host also sets up the Chief of Staff, which waited for one (install-import B2).
+  assert.match(addHostText("claude", true), /schedules\. As your first host, it also sets up your Chief of Staff, which waited for one: with the default answers and its daily duties scheduled, unless you already have one \(aos persona changes them\)\. It runs aos hosts add claude\./);
   const stdout = "hosts add codex: /opt/bin/codex\n- import from Codex: …\n\nNext steps:\n  1. Open `codex`, run /hooks, and trust the agenticos@agenticos-workbench entries once.\n  2. Bring in its session history: aos import --from codex\n";
   assert.deepEqual(nextSteps(stdout), ["Open `codex`, run /hooks, and trust the agenticos@agenticos-workbench entries once.", "Bring in its session history: aos import --from codex"]);
   const claude = "Next steps:\n  1. Add this line to your CLAUDE.md (/c/CLAUDE.md) if it is not there yet:\n       @/v/AGENTICOS.md\n  2. Bring in its session history: aos import --from claude\n";

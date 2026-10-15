@@ -1,7 +1,7 @@
 # Chief of Staff layer
 
 Installed by default whenever the install has a host (Claude Code, Codex or both; an install with `--host none` gets
-it once you add one and run `aos persona`). Your vault gets a named agent — an identity that is injected into every
+it when you add the first one with `aos hosts add`, with the default answers off a terminal, which `aos persona` changes). Your vault gets a named agent — an identity that is injected into every
 session on either host, a small state file that bridges sessions, a playbook of your own commands,
 skills and agents, five scheduled duties (monitor, reflect, reflect-daily, sitrep, tick) watched by
 a heartbeat, and a proposals protocol for changes that need your

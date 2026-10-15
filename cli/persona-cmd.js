@@ -100,18 +100,53 @@ function adoptDutyModel(vault, model, chiefDefault) {
 
 const SKIP_MSG = 'persona: no --persona-json and no terminal interview (--yes, or stdin is not a TTY) and no stored persona/answers.json; skipping the interview (run `aos persona` later)';
 
+/** The name a Chief of Staff set up without its questions starts with (the interview's own example); `aos persona rename`. */
+const DEFAULT_NAME = 'Atlas';
+
+/** Whether the vault has a Chief of Staff already: its identity, or the answers it was made from. */
+function hasPersona(vault) {
+  return ['IDENTITY.md', 'answers.json'].some((f) => fs.existsSync(path.join(vault, 'persona', f)));
+}
+
+/**
+ * The answers a Chief of Staff starts from when nobody answers its questions (install-import B2: `aos hosts add`, off a
+ * terminal, for the first host): the interview's defaults, named DEFAULT_NAME, its duties scheduled, on the duty models
+ * the settings already name — persona.model (agenticos.json, then brain/config.json) and persona.codexModel — which are
+ * the chief role's on a 2.0 vault (local-first A4) and stay whatever the owner chose instead.
+ */
+function defaultAnswers({ vault, configDir = claudeConfigDir() }) {
+  const chief = schedule.chiefModels();
+  const user = (readAgenticos(configDir) || {}).persona || {};
+  const own = schedule.readVaultConfig(vault).persona || {};
+  const pick = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return {
+    name: DEFAULT_NAME,
+    dutyModel: pick(user.model) || pick(own.model) || chief.claude,
+    // null (a pre-2.0 vault, or the owner's "my Codex default") is kept: normalizeAnswers reads it as the Codex default.
+    dutyCodexModel: Object.prototype.hasOwnProperty.call(own, 'codexModel') ? own.codexModel : chief.codex,
+    schedule: true,
+  };
+}
+
+/**
+ * The interview, or its answers from a file or the last run. `opts.defaults` (raw answers, defaultAnswers()) stands in for
+ * a missing persona/answers.json: the terminal interview offers them in brackets, and with no terminal they are the
+ * answers (`defaulted: true`) instead of a skip.
+ */
 async function runInterview(opts = {}) {
   const io = opts.io || console;
   const { configDir, vault, node, defaultModel, defaultCodexModel, claude, codex } = resolveCtx(opts);
   const interview = interviewModule(vault);
   const ctx = { defaultModel, defaultCodexModel, claude, codex, exampleName: opts.exampleName || 'Atlas' };
   let raw;
+  let defaulted = false;
   if (opts.answersFile) raw = JSON.parse(fs.readFileSync(opts.answersFile, 'utf8'));
   else {
     const stored = interview.readAnswers(vault);
     const interactive = !!opts.streams || (!opts.yes && !!process.stdin.isTTY);
-    if (interactive) raw = await interview.ask(ctx, stored, opts.streams);
+    if (interactive) raw = await interview.ask(ctx, stored || opts.defaults || null, opts.streams);
     else if (stored) raw = stored;                       // --yes, or no terminal: reuse the last answers
+    else if (opts.defaults) { raw = opts.defaults; defaulted = true; }
     else { io.log(SKIP_MSG); return { skipped: true, reason: 'no-answers' }; }   // never block on readline
   }
   const answers = interview.normalizeAnswers(raw, ctx);
@@ -133,7 +168,7 @@ async function runInterview(opts = {}) {
       ? `persona: duty scheduling is not supported on ${sched.platform}; run duties by hand: sh ${vault}/brain/scripts/persona/run-duty.sh <duty>`
       : `persona: scheduled ${sched.labels.join(', ')}`);
   }
-  return { answers, written: r.written, kept: r.kept, schedule: sched };
+  return { answers, written: r.written, kept: r.kept, schedule: sched, defaulted };
 }
 
 async function rename(newName, opts = {}) {
@@ -187,4 +222,4 @@ async function run(args, opts = {}) {
   }
 }
 
-module.exports = { TEMPLATE_DIRS, SKIP_MSG, templatesDir, interviewModule, resolveCtx, runInterview, rename, setEnabled, run };
+module.exports = { TEMPLATE_DIRS, SKIP_MSG, DEFAULT_NAME, templatesDir, interviewModule, resolveCtx, hasPersona, defaultAnswers, runInterview, rename, setEnabled, run };

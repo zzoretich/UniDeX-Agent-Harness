@@ -33,16 +33,18 @@
  *                                          most GREP_MAX_MATCHES, files ≤ GREP_FILE_MAX_BYTES, GREP_MAX_MS a call
  *   write_file { path, content, append? }  only where the routine's `writes` entries allow (a folder entry with a trailing
  *                                          /, a file, or a glob with * ** ?), the real path too, AND never in
- *                                          persona/duty-guard.js's guarded or executable areas (its refusal() rule) nor
- *                                          what feeds hosted sessions (routines-store.js localDenied: persona/,
+ *                                          the guarded or executable areas (write-areas.js refusal(), duty-guard's rule)
+ *                                          nor what feeds hosted sessions (write-areas.js localDenied: persona/,
  *                                          brain/memory/, brain/_index/, MEMORY.md, AGENTICOS.md, CLAUDE.md, AGENTS.md),
- *                                          each applied to every entry and every target, real path included;
+ *                                          each applied to every entry and every target, real path included; the
+ *                                          Routines editor refuses the same entries before the routine is saved;
  *                                          ≤ WRITE_MAX_BYTES
  *   notify     { title, body?, level? }    an info or alert item from the routine (lib/notifications.js, the store
  *                                          `aos notify` writes), at most NOTIFY_MAX a run
  */
 const fs = require('fs');
 const path = require('path');
+const { vaultRel, writesEntry, localWritesRefusal, localPathRefusal } = require('./write-areas.js');
 
 const DEFAULT_MAX_TURNS = 24;
 const DEFAULT_TIMEOUT_SEC = 1800;
@@ -81,21 +83,13 @@ function realRoot(vault) {
   try { return realpath(path.resolve(vault)); } catch { return path.resolve(vault); }
 }
 
-/** A path the model gave → { rel, abs } under `root` (the vault's real path), or Refused. `allowRoot` lets '' or '.'
- *  name the vault itself (list_files, grep). */
-function vaultPath(root, p, { allowRoot = false } = {}) {
-  if (p === undefined || p === null) { if (allowRoot) return { rel: '', abs: root }; refuse('path is required'); }
-  if (typeof p !== 'string') refuse('path must be a string');
-  const s = p.trim().replace(/\\/g, '/');
-  if (s.includes('\0')) refuse('a NUL in the path');
-  if (s === '' || s === '.' || s === './') { if (allowRoot) return { rel: '', abs: root }; refuse('path is required'); }
-  if (s.startsWith('/') || s.startsWith('~') || /^[A-Za-z]:/.test(s)) refuse('an absolute path: paths are relative to the vault');
-  const rel = path.posix.normalize(s).replace(/^(\.\/)+/, '').replace(/\/+$/, '');
-  const segs = rel.split('/');
-  if (segs.includes('..')) refuse('a path leaving the vault');
-  if (rel === '.' || rel === '') { if (allowRoot) return { rel: '', abs: root }; refuse('path is required'); }
-  if (segs.some((x) => x.startsWith('.'))) refuse('a dot-folder or dot-file');
-  return { rel, abs: path.join(root, ...segs) };
+/** A path the model gave → { rel, abs } under `root` (the vault's real path), or Refused (write-areas.js vaultRel: the
+ *  same reading the Routines editor gives an `output` file). `allowRoot` lets '' or '.' name the vault itself
+ *  (list_files, grep). */
+function vaultPath(root, p, opts = {}) {
+  const v = vaultRel(p, opts);
+  if (v.why) refuse(v.why);
+  return { rel: v.rel, abs: v.rel ? path.join(root, ...v.rel.split('/')) : root };
 }
 
 /** The vault-relative real path of `abs` — its deepest existing ancestor resolved, the rest appended — or null when that
@@ -129,8 +123,6 @@ function readable(root, p, opts) {
 
 // ── the write scope ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-const GLOB = /[*?]/;
-
 /** A glob (`*` within a segment, `**` across segments, `?` one character) → a RegExp over vault-relative paths. */
 function globRe(pattern) {
   let re = '';
@@ -149,30 +141,23 @@ function globRe(pattern) {
 /**
  * The routine's `writes` entries → { rules: [{ entry, test(rel) }], refused: [{ entry, why }] }. A folder (trailing /,
  * or an existing folder) allows everything under it, a file itself, a glob what it matches. Each entry is checked with
- * duty-guard's refusal() — on its folder part for a glob — so no entry can name, hold or sit in a guarded or executable
- * area, the vault itself, a dot-folder or a path out of the vault; then with routines-store.js localDenied(), so none
- * reaches what feeds hosted sessions. Both compare folded paths (case and Unicode variants).
+ * write-areas.js localWritesRefusal(), the rule the Routines editor checks before saving: refusal() — on its folder
+ * part for a glob — so no entry can name, hold or sit in a guarded or executable area, the vault itself, a dot-folder or
+ * a path out of the vault; then localDenied(), so none reaches what feeds hosted sessions. Both compare folded paths
+ * (case and Unicode variants).
  */
 function compileWrites(entries, root) {
-  const { refusal } = require('../persona/duty-guard.js');
-  const { localDenied } = require('./routines-store.js');
   const rules = [], refused = [];
   for (const raw of Array.isArray(entries) ? entries : []) {
     const entry = String(raw);
-    const s = entry.trim().replace(/\\/g, '/');
-    const dir = s.endsWith('/');
-    const body = path.posix.normalize(s.replace(/\/+$/, '') || '.').replace(/^(\.\/)+/, '');
-    if (GLOB.test(body)) {
-      const segs = body.split('/');
-      const fixed = segs.slice(0, segs.findIndex((x) => GLOB.test(x))).join('/');
-      const why = refusal(fixed) || localDenied(s);
-      if (why) { refused.push({ entry, why }); continue; }
+    const why = localWritesRefusal(entry);
+    if (why) { refused.push({ entry, why }); continue; }
+    const { dir, body, glob } = writesEntry(entry);
+    if (glob) {
       const re = globRe(dir ? `${body}/**` : body);
       rules.push({ entry, test: (rel) => re.test(rel) });
       continue;
     }
-    const why = refusal(body) || localDenied(s);
-    if (why) { refused.push({ entry, why }); continue; }
     let isDir = dir;
     if (!isDir) { try { isDir = fs.statSync(path.join(root, ...body.split('/'))).isDirectory(); } catch { /* a file to come */ } }
     rules.push({ entry, test: isDir ? (rel) => rel.startsWith(`${body}/`) : (rel) => rel === body });
@@ -181,12 +166,11 @@ function compileWrites(entries, root) {
 }
 
 /** For a write: `p` inside the vault, allowed by a rule (when `rules` is given) on its path and its real path, neither
- *  in a refused area (duty-guard's refusal, then localDenied); the target, when it exists, is a regular file. */
+ *  in a refused area (write-areas.js localPathRefusal: refusal, then localDenied); the target, when it exists, is a
+ *  regular file. */
 function writable(root, p, rules) {
-  const { refusal } = require('../persona/duty-guard.js');
-  const { localDenied } = require('./routines-store.js');
   const v = vaultPath(root, p);
-  const why = refusal(v.rel) || localDenied(v.rel);
+  const why = localPathRefusal(v.rel);
   if (why) refuse(why);
   if (rules && !rules.some((r) => r.test(v.rel))) refuse('outside this routine\'s writes');
   let st = null;
@@ -198,7 +182,7 @@ function writable(root, p, rules) {
   const real = realRel(root, v.abs);
   if (real === null) refuse('it resolves outside the vault');
   if (real !== v.rel) {
-    const whyReal = refusal(real) || localDenied(real);
+    const whyReal = localPathRefusal(real);
     if (whyReal) refuse(`it resolves to ${real}: ${whyReal}`);
     if (rules && !rules.some((r) => r.test(real))) refuse(`it resolves to ${real}, outside this routine's writes`);
   }

@@ -154,6 +154,15 @@ export function signedInHosts(cfg: AgenticosJson | null, state: ProviderState | 
   return sessionHosts(cfg).filter((h) => state?.[h]?.loggedIn === true);
 }
 
+/**
+ * An enabled host whose sign-in nothing has recorded yet (no login of its own in provider-state.json): a fresh install
+ * under provider local, before the runtime's free sign-in check has run (local-first A17). The Workbench then runs that
+ * check at launch, and Sessions joins the rail when it answers.
+ */
+export function loginsUnknown(cfg: AgenticosJson | null, state: ProviderState | null): boolean {
+  return sessionHosts(cfg).some((h) => typeof state?.[h]?.loggedIn !== "boolean");
+}
+
 /** How the user invokes a plugin command on `host`: Claude Code `/name`; Codex `$agenticos:name`, or `$name` when wired directly. */
 export function invocation(name: string, host: SessionHost, cfg: AgenticosJson | null): string {
   if (host === "claude") return `/${name}`;
