@@ -51,7 +51,7 @@ jobs:
           npm run lint:sh
       - name: tsc (the HUD)
         run: npm run typecheck
-      - name: CHANGELOG.md has a section for package.json's version
+      - name: CHANGELOG.md has a section for package.json's version, and every [Unreleased] Added/Changed line a tour marker
         run: node tools/changelog.js check current
   tz-env:
     # The whole suite in the two extreme time zones, with a developer's host variables exported: no test may assume
