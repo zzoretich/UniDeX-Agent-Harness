@@ -115,13 +115,13 @@ test('MCP: both hosts listed without arguments, env, headers, credentials, query
 });
 
 test('MCP: a URL lists with its credentials, query and fragment out and a token-like path segment hidden (security review 2)', () => {
-  assert.equal(X.cleanUrl('https://u:pw@mcp.example.com/sk-fixture0099/sse?key=q#f'), 'https://mcp.example.com/<redacted>/sse');
+  assert.equal(X.cleanUrl('https://u:pw@example.com/sk-fixture0099/sse?key=q#f'), 'https://example.com/<redacted>/sse');
   assert.equal(X.cleanUrl('https://mcp.example.com/v1/0123456789abcdefABCDEF0123/events'), 'https://mcp.example.com/v1/<redacted>/events');
   assert.equal(X.cleanUrl('https://mcp.example.com/token/abc123def/x'), 'https://mcp.example.com/token/<redacted>/x');
   assert.equal(X.cleanUrl('https://mcp.example.com/v1/sse'), 'https://mcp.example.com/v1/sse');
-  assert.equal(X.cleanUrl('postgresql://user:pw@db.example.com:5432/app'), 'postgresql://db.example.com:5432/app');
-  const m = X.maskUrl('https://u:pw-fixture-x@h.example.com/sk-fixture0098/v1?token=tok-fixture-y&mode=ro', { query: 'mask' });
-  assert.equal(m.shown, 'https://<redacted>@h.example.com/<redacted>/v1?token=<redacted>&mode=<redacted>');
+  assert.equal(X.cleanUrl('postgresql://user:pw@example.com:5432/app'), 'postgresql://example.com:5432/app');
+  const m = X.maskUrl('https://u:pw-fixture-x@example.com/sk-fixture0098/v1?token=tok-fixture-y&mode=ro', { query: 'mask' });
+  assert.equal(m.shown, 'https://<redacted>@example.com/<redacted>/v1?token=<redacted>&mode=<redacted>');
   for (const s of ['pw-fixture-x', 'sk-fixture0098', 'tok-fixture-y']) assert.ok(m.secrets.includes(s), s);
   assert.deepEqual(X.maskUrl('Authorization: Bearer x'), { shown: null, secrets: [] }, 'a header is not a URL');
 });

@@ -274,9 +274,9 @@ test('a remote server goes to Claude Code with its headers and URL secrets hidde
   assert.equal(dry.status, 1);
   assert.match(dry.stderr, /remote \(http\) server, and `codex mcp add` takes a command to run: add it in Codex's config.toml/);
   // Codex's remote server, the other way: a URL is what Claude Code's JSON takes.
-  const back = M.targetCommand('claude', 'remote', M.normalize('claude', { type: 'http', url: 'https://u:pw-fixture-u1@mcp.example.com/sk-fixture0099/v1?key=q-fixture-1', headers: { Authorization: SECRET.header } }));
-  assert.equal(back.shown[5], '{"type":"http","url":"https://<redacted>@mcp.example.com/<redacted>/v1?key=<redacted>","headers":{"Authorization":"<redacted>"}}');
-  assert.equal(JSON.parse(back.argv[5]).url, 'https://u:pw-fixture-u1@mcp.example.com/sk-fixture0099/v1?key=q-fixture-1', 'the real command keeps the URL');
+  const back = M.targetCommand('claude', 'remote', M.normalize('claude', { type: 'http', url: 'https://u:pw-fixture-u1@example.com/sk-fixture0099/v1?key=q-fixture-1', headers: { Authorization: SECRET.header } }));
+  assert.equal(back.shown[5], '{"type":"http","url":"https://<redacted>@example.com/<redacted>/v1?key=<redacted>","headers":{"Authorization":"<redacted>"}}');
+  assert.equal(JSON.parse(back.argv[5]).url, 'https://u:pw-fixture-u1@example.com/sk-fixture0099/v1?key=q-fixture-1', 'the real command keeps the URL');
   for (const s of [SECRET.header, 'pw-fixture-u1', 'sk-fixture0099', 'q-fixture-1']) assert.ok(back.secrets.includes(s), s);
   assert.deepEqual(calls(), []);
 });
@@ -318,16 +318,16 @@ test('a failing CLI: its own words shown with the secrets scrubbed, the backup k
 test('secrets in arguments: secret-named flags and KEY=value, header values, URL credentials, queries and token-like path segments, token shapes; plain words stay', () => {
   const args = [
     '--stdio', '--token', 'abc123', '--password=hunter2', 'API_KEY=xyz', 'LOG_LEVEL=warn', 'sk-fixture0003', '--db', 'notes.sqlite', '--auth', '--verbose',
-    'postgresql://user:pw-fixture-d1@db.example.com:5432/app', '-H', 'Authorization: Bearer tok-fixture-h1', '--header', 'X-Api-Key: key-fixture-h2',
+    'postgresql://user:pw-fixture-d1@example.com:5432/app', '-H', 'Authorization: Bearer tok-fixture-h1', '--header', 'X-Api-Key: key-fixture-h2',
     'https://api.example.com/v1?token=tok-fixture-q1&mode=ro', '--key', 'key-fixture-k1', '-p', 'pw-fixture-p1', 'Authorization: Bearer tok-fixture-h3',
-    'https://mcp.example.com/sk-fixture0099/sse', '--endpoint=https://u:pw-fixture-e1@h.example.com/x', 'plain.txt',
+    'https://mcp.example.com/sk-fixture0099/sse', '--endpoint=https://u:pw-fixture-e1@example.com/x', 'plain.txt',
   ];
   const r = M.redactArgs(args);
   assert.deepEqual(r.shown, [
     '--stdio', '--token', '<redacted>', '--password=<redacted>', 'API_KEY=<redacted>', 'LOG_LEVEL=warn', '<redacted>', '--db', 'notes.sqlite', '--auth', '--verbose',
-    'postgresql://<redacted>@db.example.com:5432/app', '-H', 'Authorization: <redacted>', '--header', 'X-Api-Key: <redacted>',
+    'postgresql://<redacted>@example.com:5432/app', '-H', 'Authorization: <redacted>', '--header', 'X-Api-Key: <redacted>',
     'https://api.example.com/v1?token=<redacted>&mode=<redacted>', '--key', '<redacted>', '-p', '<redacted>', 'Authorization: <redacted>',
-    'https://mcp.example.com/<redacted>/sse', '--endpoint=https://<redacted>@h.example.com/x', 'plain.txt',
+    'https://mcp.example.com/<redacted>/sse', '--endpoint=https://<redacted>@example.com/x', 'plain.txt',
   ]);
   // Everything hidden also feeds the scrub of a failing CLI's own output.
   const echoed = `error: could not start ${args.join(' ')}`;
