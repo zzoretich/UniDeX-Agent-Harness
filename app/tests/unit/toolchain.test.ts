@@ -430,6 +430,21 @@ test("inspection F3: Codex moves aside a codex-code-mode-host and a release fold
   assert.equal(m.urls.length, before);
 });
 
+test("inspection round 3 F2: Codex's auto-update-version is written through a fresh exclusive temp, never a planted link", async () => {
+  const { files, manifest } = pinned({ codex: codexArchive() });
+  const m = machine(files, manifest);
+  m.state.team = MANIFEST.tools.codex.teamId as string;
+  const root = path.join(m.home, ".codex", "packages", "standalone");
+  fs.mkdirSync(root, { recursive: true });
+  const victim = path.join(ROOT, "codex-victim.txt");
+  fs.writeFileSync(victim, "precious\n");
+  fs.symlinkSync(victim, path.join(root, `auto-update-version.${process.pid}.tmp`));
+  await runToolchainJob("codex", m.deps, context());
+  assert.equal(fs.readFileSync(victim, "utf8"), "precious\n");
+  assert.equal(fs.readFileSync(path.join(root, "auto-update-version"), "utf8"), `${MANIFEST.tools.codex.version}-aarch64-apple-darwin`);
+  assert.ok(!fs.lstatSync(path.join(root, "auto-update-version")).isSymbolicLink());
+});
+
 test("inspection F4: a Codex package whose rg is signed by another team installs nothing", async () => {
   const { files, manifest } = pinned({ codex: codexArchive() });
   const m = machine(files, manifest);

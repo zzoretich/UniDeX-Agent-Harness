@@ -18,6 +18,7 @@ import { parseTags, parseVersion, runPreflight, type PreflightDeps, type ProbeRe
 import { FIXES, FIX_IDS, PATH_LINE, fixBlocked, fixCommandLine, installArgs, personaJson, requestHosts, resolveVaultPath, stepRefusal, zprofilePath, type SetupState } from "../../src/main/policy/setup";
 import { applyClaudeMd, claudeMdLine, claudeMdPath, previewClaudeMd } from "../../src/main/setup/claude-md";
 import { applyPathLine, previewPathLine } from "../../src/main/setup/path-line";
+import { writeAtomic } from "../../src/main/setup/atomic";
 import { MANIFEST, RAM_TIERS, ollamaModels, privateNodeBinDir, type Fetch } from "../../src/main/setup/toolchain";
 import { attachInfo, hostsOf, markInstalled, markNoted } from "../../src/main/setup/attach";
 import { JobRunner } from "../../src/main/setup/jobs";
@@ -535,6 +536,27 @@ test("inspection M3: a profile or CLAUDE.md that is a link to a file not there y
   const loop = path.join(lost, "loop");
   fs.symlinkSync(loop, loop);
   assert.throws(() => applyPathLine(loop, lost, null), /loop of links|ELOOP/);
+});
+
+test("inspection round 3 F2: a link planted at the old predictable temp name is never followed, and is left alone", () => {
+  const home = path.join(ROOT, "planted-tmp");
+  fs.mkdirSync(home, { recursive: true });
+  const victim = path.join(ROOT, "planted-victim.txt");
+  fs.writeFileSync(victim, "precious\n");
+  const profile = path.join(home, ".zprofile");
+  const planted = `${profile}.${process.pid}.tmp`;
+  fs.symlinkSync(victim, planted);
+  applyPathLine(profile, home, null);
+  assert.equal(fs.readFileSync(victim, "utf8"), "precious\n", "the planted link's target is untouched");
+  assert.ok(fs.lstatSync(profile).isFile() && !fs.lstatSync(profile).isSymbolicLink());
+  assert.equal(fs.readFileSync(profile, "utf8"), `${PATH_LINE}\n`);
+  assert.ok(fs.lstatSync(planted).isSymbolicLink(), "a temp this write did not create is not removed either");
+  assert.deepEqual(fs.readdirSync(home).filter((n) => n.endsWith(".tmp") && n !== path.basename(planted)), [], "its own temp is gone");
+  // The destination is checked again just before the rename: one that changed is left as it is.
+  const target = path.join(home, "file.txt");
+  assert.throws(() => writeAtomic(target, "x", 0o644, () => false), /changed while it was being written/);
+  assert.equal(fs.existsSync(target), false);
+  assert.deepEqual(fs.readdirSync(home).filter((n) => n.startsWith(".file.txt.")), []);
 });
 
 // ── attach ───────────────────────────────────────────────────────────

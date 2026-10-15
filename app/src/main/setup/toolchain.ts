@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { BRAND } from "../../shared/brand";
 import shipped from "./toolchain-manifest.json";
+import { exclusiveTemp, writeAtomic } from "./atomic";
 import { cmpVersion } from "./payload";
 
 export type ToolId = "node" | "uv" | "ollama" | "claude" | "codex";
@@ -275,13 +276,14 @@ async function step(d: ToolchainDeps, ctx: TaskContext, file: string, args: stri
  */
 export async function fetchVerified(asset: Asset, dest: string, label: string, d: Pick<ToolchainDeps, "fetch">, ctx: TaskContext): Promise<string> {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const part = `${dest}.part`;
-  fs.rmSync(part, { force: true });
   fs.rmSync(dest, { force: true });
   ctx.log(`Downloading ${label} from ${sourceOf(asset.url)} (${mb(asset.size)})…`);
   const hash = crypto.createHash("sha256");
   let received = 0;
-  const fh = await fs.promises.open(part, "w", 0o600);
+  // An exclusive, unpredictable part file (atomic.ts): nothing planted beside the download is ever followed.
+  const { path: part, fd } = exclusiveTemp(dest, 0o600, "part");
+  let open = true;
+  const close = (): void => { if (open) { open = false; fs.closeSync(fd); } };
   try {
     const res = await d.fetch(asset.url, { signal: ctx.signal });
     if (!res.ok || !res.body) throw new ToolchainError(`${new URL(asset.url).host} answered ${res.status}`);
@@ -291,20 +293,25 @@ export async function fetchVerified(asset: Asset, dest: string, label: string, d
       received += chunk.byteLength;
       if (received > asset.size) throw new ToolchainError(`${label}: more than the ${asset.size} bytes pinned`);
       hash.update(chunk);
-      await fh.write(chunk);
+      for (let off = 0; off < chunk.byteLength;) off += fs.writeSync(fd, chunk, off);
       ctx.progress({ label: `Downloading ${label}`, received, total: asset.size });
     }
     aborted(ctx.signal);
   } catch (err) {
-    await fh.close().catch(() => undefined);
+    try { close(); } catch { /* closed */ }
     fs.rmSync(part, { force: true });
     throw err instanceof ToolchainError || ctx.signal.aborted ? err : new ToolchainError(`could not download ${label}: ${err instanceof Error ? err.message : String(err)}`);
   }
-  await fh.close();
+  close();
   const got = hash.digest("hex");
   if (received !== asset.size || got !== asset.sha256) {
     fs.rmSync(part, { force: true });
     throw new ToolchainError(`${label} did not match its pinned checksum (SHA-256 ${got}, ${received} bytes; expected ${asset.sha256}, ${asset.size} bytes). The download was deleted: Retry fetches it again.`);
+  }
+  // Re-checked just before the rename: nothing was put at the destination meanwhile.
+  if (present(dest)) {
+    fs.rmSync(part, { force: true });
+    throw new ToolchainError(`${dest} appeared while ${label} was downloading, so the download was not used: Retry`);
   }
   fs.renameSync(part, dest);
   ctx.log(`Checked: SHA-256 ${got} is the pinned one.`);
@@ -622,9 +629,7 @@ async function installCodex(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   const current = path.join(root, "current");
   swapLink(current, dir, [releases], d, ctx);
   for (const name of ["codex", "codex-code-mode-host"]) swapLink(path.join(d.paths.localBin, name), path.join(current, "bin", name), [root], d, ctx);
-  const marker = path.join(root, "auto-update-version");
-  fs.writeFileSync(`${marker}.${process.pid}.tmp`, release);
-  fs.renameSync(`${marker}.${process.pid}.tmp`, marker);
+  writeAtomic(path.join(root, "auto-update-version"), release);
   const bin = path.join(d.paths.localBin, "codex");
   if (!(await reports(bin, pin.version, d, ctx))) throw new ToolchainError(`${tilde(bin, d.home)} does not run`);
   ctx.log(`Codex ${pin.version} is in ${tilde(dir, d.home)}, linked from ${tilde(bin, d.home)}. Next: Log in.`);

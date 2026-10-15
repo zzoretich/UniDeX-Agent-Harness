@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { writeAtomic } from "./atomic";
 
 /** Where writing `file` must land: the end of its chain of links (which may not exist yet), or `file` itself. */
 export function linkTarget(file: string): string {
@@ -22,8 +23,9 @@ export function linkTarget(file: string): string {
 const isDir = (p: string): boolean => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 
 /**
- * Writes `text` as `file`'s contents, atomically (a temp file beside the target, then a rename). A link stays a link: its
- * target is written, and created when missing, provided the target's folder exists; else nothing is written.
+ * Writes `text` as `file`'s contents, atomically (an exclusive, unpredictable temp file beside the target, then a rename:
+ * atomic.ts). A link stays a link: its target is written, and created when missing, provided the target's folder exists;
+ * else nothing is written. Just before the rename the chain of links must still end where it did.
  */
 export function writeKeepingLinks(file: string, text: string): void {
   const target = linkTarget(file);
@@ -31,12 +33,5 @@ export function writeKeepingLinks(file: string, text: string): void {
   else if (!isDir(path.dirname(target))) throw new Error(`${file} links to ${target}, whose folder does not exist, so nothing was written`);
   let mode = 0o644;
   try { mode = fs.statSync(target).mode & 0o777; } catch { /* a new file */ }
-  const tmp = `${target}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(tmp, text, { mode });
-    fs.renameSync(tmp, target);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* never written */ }
-    throw err;
-  }
+  writeAtomic(target, text, mode, () => linkTarget(file) === target);
 }
