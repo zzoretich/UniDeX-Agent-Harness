@@ -1,10 +1,10 @@
-import { Component, MarkdownRenderer, setIcon } from "obsidian";
+import { Component, MarkdownRenderer, Notice, setIcon } from "obsidian";
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import { ChatTab } from "./ChatTab";
 import {
-  fs, sessionsHost, type HostCatalog, type HostCatalogHost, type HostGitStatus, type HostResult, type HostSessionAccess,
+  env, fs, sessionsHost, type HostCatalog, type HostCatalogHost, type HostGitStatus, type HostResult, type HostSessionAccess,
   type HostSessionEvent, type HostSessionThread,
 } from "../host";
 import { readAgenticosJson, readProviderState, type SessionHost } from "../data/aosConfig";
@@ -17,6 +17,11 @@ import {
 import { SPEND_LEDGER_PATH } from "../data/claudeAsk";
 import { ago } from "../data/notifications";
 import { rememberSessionChoice, sanitizeSessionChoice } from "../settingsDefaults";
+import {
+  HISTORY_PAGE, SESSION_DIGESTS_PATH, SESSION_INDEX_PATH, dayLabel, filterHistory, groupByDay, historyCount, historyRows, parseDigests,
+  parseSessionIndex, type Digest, type HistoryRow, type IndexedSession,
+} from "../data/sessionHistory";
+import type { PlaceWorld, TermHostChoice } from "../data/terminalLaunch";
 import { AccessMenu } from "../ui/AccessMenu";
 import { HostModelMenu, type HostModelValue } from "../ui/HostModelMenu";
 import { SlashMenu } from "../ui/SlashMenu";
@@ -25,6 +30,8 @@ import { SlashMenu } from "../ui/SlashMenu";
 const VAULT = "vault";
 /** The reader while a new session is being written: the composer with its workspace, host and model menus. */
 const NEW = "new";
+/** The list's History row: every past host session on this Mac, from the runtime's caches (install-import B11). */
+const HISTORY = "history";
 /** After a turn ends, main records its spend and run before the thread reads as idle: the list looks again after these. */
 const LIST_RECHECK_MS = [400, 1500, 4000];
 /** A reply sent while main is still recording the last turn: tries again this often, this many times. */
@@ -149,9 +156,21 @@ export class SessionsTab {
   private hostDisabled = false;
   private el: { list: HTMLElement; reader: HTMLElement } | null = null;
   private r: ReaderEls | null = null;
+  /** Sessions ▸ History: its rows as last read, what the filter holds and how many rows are drawn (B11). */
+  private hist: { rows: HistoryRow[]; loaded: boolean; error: string | null; query: string; shown: number } = {
+    rows: [], loaded: false, error: null, query: "", shown: HISTORY_PAGE,
+  };
+  private histSeq = 0;
+  /** The two caches as parsed, and their size and time when read: parsed again only when either changed. */
+  private histData: { sessions: IndexedSession[]; digests: Map<string, Digest>; stamp: string } | null = null;
+  private histEl: { count: HTMLElement; list: HTMLElement } | null = null;
 
   constructor(private plugin: AgenticOSPlugin, private wb: WorkbenchView) {
     this.chat = new ChatTab(plugin, wb, () => this.selected === VAULT);
+    // With no host signed in the tab is on the rail for its History alone (install-import B11), so it opens there.
+    let chat = true;
+    try { chat = plugin.chatAvailable(); } catch { /* no provider state: as before */ }
+    if (!chat) this.selected = HISTORY;
   }
 
   mount(host: HTMLElement): void {
@@ -160,11 +179,13 @@ export class SessionsTab {
     if (sh && !this.unsubscribe) this.unsubscribe = sh.sessions.onEvent((ev) => this.onEvent(ev.thread, ev.event));
     this.render();
     if (this.isThread(this.selected)) void this.openThread(this.selected);
+    if (this.selected === HISTORY) void this.loadHistory();
     void this.loadList();
     if (!this.catalog && !this.catalogLoading) void this.loadCatalog(false);
   }
 
   async refresh(): Promise<void> {
+    if (this.selected === HISTORY) void this.loadHistory();
     await this.loadList();
   }
 
@@ -180,6 +201,7 @@ export class SessionsTab {
     this.md = null;
     this.el = null;
     this.r = null;
+    this.histEl = null;
     this.host?.empty();
     this.host = null;
   }
@@ -190,7 +212,13 @@ export class SessionsTab {
    * newest thread there opens unless one of its threads is already open; with none, New session with the workspace
    * picked. Select only: nothing is sent or started.
    */
-  reveal(target: { workspace?: string | null; thread?: string | null }): void {
+  reveal(target: { workspace?: string | null; thread?: string | null; pane?: string | null }): void {
+    // History (install-import B11): the tour routes there through open({ tab: "chat", pane: "history" }); it selects only.
+    if (target.pane === "history" && !target.thread) {
+      this.revealing = null;
+      if (this.selected !== HISTORY) this.select(HISTORY);
+      return;
+    }
     this.scope = target.workspace || null;
     this.revealing = { thread: target.thread || null };
     void this.loadList();
@@ -222,7 +250,7 @@ export class SessionsTab {
   }
 
   private active(): boolean { return this.wb.isTabActive("chat") && !!this.host; }
-  private isThread(id: string): boolean { return id !== VAULT && id !== NEW; }
+  private isThread(id: string): boolean { return id !== VAULT && id !== NEW && id !== HISTORY; }
 
   // ── data ──
 
@@ -261,6 +289,37 @@ export class SessionsTab {
       const raw = fs.existsSync(file) ? await fs.promises.readFile(file, "utf8") : "";
       this.spend = { spent: sessionSpendToday(raw, new Date()), cap };
     } catch { this.spend = null; }
+  }
+
+  /**
+   * Sessions ▸ History's rows (install-import B11): session-index.json and session-digests.json, the runtime's caches,
+   * parsed again only when one changed; each row's Resume from the hosts as they are now (a login while the app runs
+   * shows at once). Never a transcript.
+   */
+  private async loadHistory(): Promise<void> {
+    const vault = this.plugin.vaultRoot();
+    const seq = ++this.histSeq;
+    const files = [SESSION_INDEX_PATH, SESSION_DIGESTS_PATH].map((rel) => path.join(vault, rel));
+    const stampOf = (f: string): string => { try { const st = fs.statSync(f); return `${st.mtimeMs}:${st.size}`; } catch { return "-"; } };
+    const stamp = files.map(stampOf).join("|");
+    let error: string | null = null;
+    if (!this.histData || this.histData.stamp !== stamp) {
+      const read = async (f: string): Promise<string | null> => {
+        try { return fs.existsSync(f) ? await fs.promises.readFile(f, "utf8") : null; } catch (e) { error = e instanceof Error ? e.message : String(e); return null; }
+      };
+      const [index, digests] = await Promise.all(files.map(read));
+      if (seq !== this.histSeq) return;
+      // A read that failed is tried again next time.
+      this.histData = { sessions: parseSessionIndex(index), digests: parseDigests(digests), stamp: error ? "" : stamp };
+    }
+    const launcher = this.plugin.termLauncher;
+    let choices: TermHostChoice[] = [];
+    let world: PlaceWorld = { vault, home: env.homedir(), workspaces: [], links: {} };
+    try { choices = launcher.choices(); world = launcher.world(); } catch { /* no host config: rows without Resume */ }
+    this.hist.rows = historyRows(this.histData.sessions, this.histData.digests, choices, world);
+    this.hist.loaded = true;
+    this.hist.error = error;
+    if (this.active() && this.selected === HISTORY) this.renderHistoryList();
   }
 
   private scheduleList(ms: number): void {
@@ -500,6 +559,7 @@ export class SessionsTab {
     this.renderList();
     this.renderReader();
     if (this.isThread(id)) void this.openThread(id);
+    if (id === HISTORY) void this.loadHistory();
   }
 
   /** The thread menu's New session on <other host>: in the same workspace, and the draft moves over with it. */
@@ -721,6 +781,19 @@ export class SessionsTab {
       setIcon(book, "book-open");
       vault.createSpan({ cls: "aos-ss-title", text: "Vault" });
       this.clickable(vault, () => this.select(VAULT));
+      // History (install-import B11): every past host session on this Mac, whatever the hosts' state.
+      const hon = this.selected === HISTORY;
+      const hist = list.createDiv({
+        cls: `aos-ss-row aos-ss-historyrow${hon ? " is-selected" : ""}`,
+        attr: {
+          "data-thread": HISTORY, role: "button", tabindex: "0", title: "Past Claude Code and Codex sessions on this Mac", "data-focus": `row:${HISTORY}`,
+          ...(hon ? { "aria-current": "true" } : {}),
+        },
+      });
+      const clock = hist.createSpan({ cls: "aos-ss-rowicon" });
+      setIcon(clock, "history");
+      hist.createSpan({ cls: "aos-ss-title", text: "History" });
+      this.clickable(hist, () => this.select(HISTORY));
 
       const threads = list.createDiv({ cls: "aos-ss-threads", attr: { "data-tour": "sessions-threads" } });
       const note = (text: string) => threads.createDiv({ cls: "aos-ss-note", text });
@@ -807,6 +880,8 @@ export class SessionsTab {
       return;
     }
     reader.removeClass("is-vault");
+    this.histEl = null;
+    if (this.selected === HISTORY) { this.renderHistory(reader); return; }
     const top = reader.createDiv({ cls: "aos-ss-head aos-ss-top" });
     const body = reader.createDiv({ cls: "aos-ss-body" });
     const scroll = body.createDiv({ cls: "aos-ss-scroll" });
@@ -824,6 +899,89 @@ export class SessionsTab {
     this.renderTimeline(true);
     this.renderDrawer();
     this.syncComposer();
+  }
+
+  /**
+   * Sessions ▸ History (install-import B11): the bar with the count, a filter, then the past sessions by day, newest
+   * first, each with its host, time, workspace or folder and the digest's line, and Resume in Code for a host that is
+   * on (off with why when it is not signed in; none for a host that is off). HISTORY_PAGE rows at a time.
+   */
+  private renderHistory(reader: HTMLElement): void {
+    const top = reader.createDiv({ cls: "aos-ss-head aos-ss-top" });
+    top.createDiv({ cls: "aos-reader-title aos-ss-toptitle", text: "History" });
+    const count = top.createSpan({ cls: "aos-ss-hcount", attr: { "aria-live": "polite" } });
+    const body = reader.createDiv({ cls: "aos-ss-body" });
+    const scroll = body.createDiv({ cls: "aos-ss-scroll" });
+    const col = scroll.createDiv({ cls: "aos-ss-column aos-ss-history", attr: { "data-tour": "sessions-history" } });
+    const filter = col.createEl("input", {
+      cls: "aos-ss-hfilter",
+      attr: { type: "search", placeholder: "Filter by title, summary, workspace or host", "aria-label": "Filter past sessions", "data-focus": "history-filter" },
+    });
+    filter.value = this.hist.query;
+    filter.addEventListener("input", () => { this.hist.query = filter.value; this.hist.shown = HISTORY_PAGE; this.renderHistoryList(); });
+    let chat = true;
+    try { chat = this.plugin.chatAvailable(); } catch { /* as before */ }
+    if (!chat) col.createDiv({ cls: "aos-ss-note aos-ss-hnohost", text: "No host is signed in: Sessions shows the history on this Mac. Sign in to Claude Code or Codex to start a session." });
+    this.histEl = { count, list: col.createDiv({ cls: "aos-ss-hdays" }) };
+    this.renderHistoryList();
+  }
+
+  /** History's days and rows, redrawn on a filter, Show more, or a new read (the filter keeps its focus). */
+  private renderHistoryList(): void {
+    const el = this.histEl;
+    if (!el || !this.active()) return;
+    const all = this.hist.rows;
+    el.count.setText(this.hist.loaded ? historyCount(all) : "");
+    this.keepFocus(el.list, () => {
+      el.list.empty();
+      if (!this.hist.loaded) { el.list.createDiv({ cls: "aos-ss-note", text: "Reading the session index…" }); return; }
+      if (this.hist.error) el.list.createDiv({ cls: "aos-ss-error", text: `Could not read the session index: ${this.hist.error}` });
+      const rows = filterHistory(all, this.hist.query);
+      if (!all.length) {
+        el.list.createDiv({ cls: "aos-ss-note aos-ss-hempty", text: "No past sessions on this Mac yet. The scan lists Claude Code and Codex sessions as it finds them; `aos import` adds a one-line summary to each." });
+        return;
+      }
+      if (!rows.length) { el.list.createDiv({ cls: "aos-ss-note aos-ss-hempty", text: "No past session matches the filter." }); return; }
+      const now = new Date();
+      for (const g of groupByDay(rows.slice(0, this.hist.shown))) {
+        const day = el.list.createDiv({ cls: "aos-ss-hday", attr: { "data-day": g.day, role: "group", "aria-label": dayLabel(g.day, now) } });
+        day.createDiv({ cls: "aos-ss-hdayname", text: dayLabel(g.day, now) });
+        for (const r of g.rows) this.renderHistoryRow(day, r);
+      }
+      const left = rows.length - this.hist.shown;
+      if (left > 0) {
+        const more = el.list.createEl("button", { cls: "aos-ss-hmore", text: `Show ${Math.min(left, HISTORY_PAGE)} more (${left} left)`, attr: { type: "button", "data-focus": "history-more" } });
+        more.addEventListener("click", () => { this.hist.shown += HISTORY_PAGE; this.renderHistoryList(); });
+      }
+    }, ["history-filter"]);
+  }
+
+  private renderHistoryRow(parent: HTMLElement, r: HistoryRow): void {
+    const row = parent.createDiv({ cls: "aos-ss-hrow", attr: { "data-key": r.key, "data-host": r.host } });
+    row.createSpan({ cls: `aos-ss-hostdot is-${r.host}`, attr: { role: "img", title: r.hostLabel, "aria-label": r.hostLabel } });
+    const body = row.createDiv({ cls: "aos-ss-hbody" });
+    body.createDiv({ cls: "aos-ss-htitle", text: r.title, attr: { title: r.title } });
+    body.createDiv({ cls: "aos-ss-hmeta", text: [r.time, r.hostLabel, r.where].filter(Boolean).join(" · ") });
+    if (r.summary) body.createDiv({ cls: "aos-ss-hsummary", text: r.summary });
+    const res = r.resume;
+    if (res.state === "none") return;
+    const btn = row.createEl("button", {
+      cls: "aos-ss-hresume", text: "Resume",
+      attr: { type: "button", "data-focus": `resume:${r.key}`, title: res.state === "on" ? res.hint : res.reason, "aria-label": `Resume ${r.title} in Code` },
+    });
+    if (res.state === "off") { btn.disabled = true; body.createDiv({ cls: "aos-ss-hwhy", text: res.reason }); return; }
+    btn.addEventListener("click", () => void this.resumeHistory(r));
+  }
+
+  /** Resume in Code (B11; spaces-redesign D7): `claude --resume <id>` or `codex resume -C <folder> <id>` in a terminal at the
+   *  row's place, as Spaces' Resume types it; the terminal remembers the id for its end bar. */
+  private async resumeHistory(r: HistoryRow): Promise<void> {
+    if (r.resume.state !== "on") return;
+    try {
+      await this.wb.launchTerminal(r.host, { picked: r.resume.place, resume: { id: r.id }, origin: "Sessions" });
+    } catch (err) {
+      new Notice(`Resume unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** The bar above the conversation: `workspace / title`, the branch, Review changes with its +/−, Stop while a turn runs. */

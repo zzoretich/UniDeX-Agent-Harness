@@ -7,7 +7,9 @@
 //
 // Two narrower allowances: whether a program exists, by its well-known name anywhere (the node, claude and shell
 // pickers probe candidates such as /opt/homebrew/bin/node), and the names in nvm's version folder. Credential files
-// are never read, even inside a root: a page that went wrong could otherwise hand a token to a link it opens.
+// are never read, even inside a root: a page that went wrong could otherwise hand a token to a link it opens. Nor are
+// the backups of a host's config and the runtime's keys (deniedDirs). Every deny is checked case-folded and in one
+// Unicode form, as written and as the disk resolves the path at that moment (a link, in any case, to what it denies).
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -69,10 +71,42 @@ const CLAUDE_LIST = ["projects"];
 const CODEX_READ = ["agents", "skills", "prompts"];
 const CODEX_LIST = ["sessions", "archived_sessions"];
 
+/**
+ * Folders never read, inside a root or not: backups of a host's config, which hold every MCP server's secrets. `aos mcp
+ * copy` writes them under ~/.local/share/unidex/backups (outside every root); brain/_index/backups is refused too, so a
+ * runtime that put one in the vault would still not hand it to the page (install-import B6).
+ */
+export function deniedDirs(o: Pick<ScopeOptions, "vaultRoot" | "home">): string[] {
+  const unidex = path.join(o.home, ".local", "share", "unidex");
+  return [path.join(unidex, "backups"), path.join(unidex, "keys"), ...(o.vaultRoot ? [path.join(o.vaultRoot, "brain", "_index", "backups")] : [])];
+}
+
+/** A path compared the way APFS compares names by default: one Unicode form (NFC), case folded. */
+const fold = (p: string): string => p.normalize("NFC").toLowerCase();
+
+/**
+ * A path as the file system names it now: its existing part resolved with realpath's native form (links followed, the
+ * case and form the disk keeps), the part that does not exist yet appended as written. Asked at each check, so a link,
+ * a folder or a `~/.local` made after launch counts.
+ */
+function onDisk(p: string): string {
+  let head = path.resolve(p);
+  const tail: string[] = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(head), ...tail); } catch { /* not there (yet), or a dangling link */ }
+    const up = path.dirname(head);
+    if (up === head) return path.join(head, ...tail);
+    tail.unshift(path.basename(head));
+    head = up;
+  }
+}
+
 export class ReadScope {
   private readonly roots: string[];
   private readonly files: Set<string>;
   private readonly listOnly: string[];
+  /** The denied folders as configured; each check resolves them again (onDisk). */
+  private readonly denied: string[];
 
   constructor(o: ScopeOptions) {
     const under = (dirs: string[], names: string[]) => dirs.flatMap((d) => names.map((n) => path.join(d, n)));
@@ -91,6 +125,22 @@ export class ReadScope {
       ...under(claudeDirs(o), CLAUDE_LIST),
       ...under(codexHomes(o), CODEX_LIST),
     ].flatMap(spellings);
+    this.denied = deniedDirs(o).map((d) => path.resolve(d));
+  }
+
+  /**
+   * Whether a deny covers this path: a credential's name, or a place inside a denied folder, each compared case-folded
+   * in one Unicode form, as written and as the disk resolves it now (a link in the vault to the backups or to a
+   * credential file, in whatever case its target is spelled).
+   */
+  private isDenied(p: string): boolean {
+    const real = onDisk(p);
+    for (const q of [p, real]) if (CREDENTIALS.test(path.basename(q).normalize("NFC"))) return true;
+    const asked = [fold(p), fold(real)];
+    return this.denied.some((d) => {
+      const dirs = [fold(d), fold(onDisk(d))];
+      return dirs.some((dir) => asked.some((q) => inside(dir, q)));
+    });
   }
 
   private static clean(p: unknown): string | null {
@@ -101,19 +151,19 @@ export class ReadScope {
   /** Whether the page may read this file, list this folder, or stat it. */
   canRead(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    if (!p || CREDENTIALS.test(path.basename(p))) return false;
+    if (!p || this.isDenied(p)) return false;
     return this.files.has(p) || this.roots.some((r) => inside(r, p));
   }
 
   /** Whether the page may list this folder's names (canRead, nvm's version folder, or the hosts' session folders). */
   canList(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    return !!p && (this.canRead(p) || this.listOnly.some((r) => inside(r, p)));
+    return !!p && !this.isDenied(p) && (this.canRead(p) || this.listOnly.some((r) => inside(r, p)));
   }
 
   /** Whether the page may ask if this path exists, or stat it (canRead, or a program by its well-known name). */
   canProbe(target: unknown): boolean {
     const p = ReadScope.clean(target);
-    return !!p && (this.canRead(p) || this.canList(p) || PROGRAM_NAMES.has(path.basename(p)));
+    return !!p && !this.isDenied(p) && (this.canRead(p) || this.canList(p) || PROGRAM_NAMES.has(path.basename(p)));
   }
 }

@@ -29,6 +29,12 @@
           "steps": ["settings.import", "brain-review.sessions"]
         },
         {
+          "id": "sessions-history",
+          "title": "Sessions ▸ History",
+          "body": "Every Claude Code and Codex session on this Mac, by day and newest first, with its host, workspace and a one-line summary once the history import has digested it. Resume reopens one in a Code terminal on its own host.",
+          "steps": ["sessions-history"]
+        },
+        {
           "id": "guided-tour",
           "title": "A guided tour, Getting started and Help",
           "body": "Help (the ? at the rail's foot, ⌘P or the app's Help menu) has the welcome tour, a tour of the tab you are on and this list. Each tab offers its own tour on your first visit, and Getting started ticks first steps as you do them.",

@@ -164,10 +164,14 @@ test.describe("note view", () => {
 });
 
 test.describe("Sessions and Code", () => {
-  test("no provider: the Sessions rail button is absent and Open Workbench: Sessions shows the hint", async () => {
+  test("no provider: Sessions is on the rail for History alone, opens there, and Vault shows the hint", async () => {
     const { win } = app();
-    await expect(rail(win, "chat")).toHaveCount(0);
+    // No host is signed in, but past sessions are on disk (install-import B11): the button is there, and the tab opens on History.
+    await expect(rail(win, "chat")).toHaveCount(1);
     expect(await command(win, "agentic-os:open-workbench-chat")).toBe(true);
+    await expect(content(win).locator('.aos-ss-row[data-thread="history"]')).toHaveClass(/is-selected/);
+    await expect(content(win).locator(".aos-ss-hnohost")).toBeVisible();
+    await content(win).locator('.aos-ss-row[data-thread="vault"]').click();
     await expect(content(win).locator(".aos-asst-nohint")).toContainText("no provider — run `aos provider` (Ollama reachable, or Claude Code or Codex logged in), then reopen the Workbench.");
     await openTab(win, "pulse");
   });

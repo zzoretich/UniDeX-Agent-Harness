@@ -71,7 +71,9 @@ export class TourController {
     try { cfg = readAgenticosJson(this.plugin.claudeConfigDir()); } catch { /* unreadable: Claude Code only, as sessionHosts reads it */ }
     let chat = false;
     try { chat = this.plugin.chatAvailable(); } catch { /* no provider state */ }
-    const base: TourContext = { hosts: sessionHosts(cfg), chat, checklist: false, cmd: (name) => invocationHint(name, cfg) };
+    let sessions = chat;
+    try { sessions = this.plugin.sessionsShown(); } catch { /* as chat */ }
+    const base: TourContext = { hosts: sessionHosts(cfg), chat, sessions, checklist: false, cmd: (name) => invocationHint(name, cfg) };
     base.checklist = buildChecklist(BOOK, this.state(), base).shown;
     this.ctxCache = { at: now, ctx: base };
     return base;

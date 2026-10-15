@@ -81,7 +81,8 @@ export interface WorkbenchTarget {
   tab: string;
   /** A workspace name: Spaces selects it; Sessions and Code scope their lists to it. */
   workspace?: string | null;
-  /** Spaces only: the pane to show for the workspace (statusline.ts SPACES_PANES). */
+  /** Spaces: the pane to show for the workspace (statusline.ts SPACES_PANES); Sessions: "history" shows its History
+   *  (install-import B11; the tour routes there). */
   pane?: SpacesPane | null;
   /** A thread id: Sessions opens that thread; Spaces shows it in the workspace's history. */
   thread?: string | null;
@@ -177,7 +178,8 @@ export class WorkbenchView extends ItemView {
       // The line between sections (D5) scrolls with the buttons.
       if (i > 0) tabsEl.createDiv({ cls: "aos-wb-railsep", attr: { role: "separator", "aria-orientation": "horizontal" } });
       for (const tab of section) {
-        if (tab.id === "chat" && !this.plugin.chatAvailable()) continue; // no host signed in → no Sessions tab (local-first A17)
+        // No host signed in and no past session to show → no Sessions tab (local-first A17, install-import B11).
+        if (tab.id === "chat" && !this.plugin.sessionsShown()) continue;
         this.railButton(tabsEl, tab);
       }
     });
@@ -469,12 +471,13 @@ export class WorkbenchView extends ItemView {
    * is already shown), then hands the rest to that tab's reveal(): Spaces selects the workspace, its pane and thread;
    * Sessions scopes its list to the workspace and opens the thread; Code scopes its list to the workspace's group.
    * Select only: it never resumes, opens a terminal, drafts or runs a verb. False when the tab cannot be shown: not a
-   * tab id, or Sessions with no host signed in (its rail button is hidden, D32; local-first A17).
+   * tab id, or Sessions with no host signed in and no past session (its rail button is hidden, D32; local-first A17;
+   * install-import B11).
    */
   open(target: WorkbenchTarget): boolean {
     const { tab } = target;
     if (!WORKBENCH_TAB_IDS.includes(tab)) return false;
-    if (tab === "chat" && !this.plugin.chatAvailable()) return false;
+    if (tab === "chat" && !this.plugin.sessionsShown()) return false;
     if (this.activeTab !== tab || !this.tabs[tab]) this.setTab(tab);
     const reveal: RevealTarget = {};
     if (target.workspace) reveal.workspace = target.workspace;

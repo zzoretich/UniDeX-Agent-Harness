@@ -13,6 +13,9 @@ test("each predicate on each kind of install (tour C8)", () => {
     ["hasHost:claude", CLAUDE, true], ["hasHost:claude", CODEX, false], ["hasHost:claude", BOTH, true], ["hasHost:claude", NONE, false],
     ["hasHost:codex", CLAUDE, false], ["hasHost:codex", CODEX, true], ["hasHost:codex", BOTH, true],
     ["chatAvailable", CLAUDE, false], ["chatAvailable", CODEX, true],
+    // Sessions on the rail: a host signed in, or past sessions for History (install-import B11); unset, it follows chat.
+    ["sessionsShown", CLAUDE, false], ["sessionsShown", CODEX, true], ["sessionsShown", { ...NONE, sessions: true }, true],
+    ["sessionsShown", { ...CODEX, sessions: false }, false],
     ["codexOnly", CODEX, true], ["codexOnly", BOTH, false], ["codexOnly", NONE, false],
     ["noHost", NONE, true], ["noHost", CLAUDE, false],
     ["checklistShown", BOTH, true], ["checklistShown", CLAUDE, false],
