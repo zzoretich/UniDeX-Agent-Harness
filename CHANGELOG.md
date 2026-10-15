@@ -23,6 +23,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 ### Fixed
 - **The tick skips quiet hours again.** Its change signature counted every routine's last run time, and the heartbeat, the briefing and the tick itself run every half hour, so it never skipped; it now counts routine status changes and failures only, and a tracked repo by its HEAD (the vault's own repo by its memory files, not its backup commits).
 - **Duties no longer take their model from the first `model` key in `agenticos.json`.** The duty runner asks the Chief of Staff's resolver for the host and the model, so a Claude model never reaches Codex.
+- **The Brain Map lays out the same way every time, with every memory in view.** Two memories that landed on top of each other were parted in a random direction and could be flung far off the fitted view; they now part along a fixed direction, and the push at close range is softened.
 
 ## [1.9.0] — 2026-10-12
 
