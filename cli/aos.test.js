@@ -321,7 +321,7 @@ test('init into a temp vault: seed set, vendored runtime, agenticos.json, plugin
     'brain/memory/user/profile.md', 'brain/memory/feedback/README.md', 'brain/memory/projects/README.md', 'brain/memory/reference/README.md',
     'brain/patterns/README.md', 'templates/daily-note.md', 'templates/meeting-note.md', 'templates/decision-record.md', 'templates/project-note.md',
     'brain/routines/README.md', 'brain/routines/briefing.md', 'brain/routines/import-digest.md', 'brain/routines/monitor.md', 'brain/routines/reflect.md', 'brain/routines/sitrep.md',
-    'brain/scripts/lib/import/index.js', 'brain/scripts/lib/import/digest.js',
+    'brain/scripts/lib/import/index.js', 'brain/scripts/lib/import/digest.js', 'brain/scripts/cli/import.js', 'brain/scripts/cli/hosts.js',
     'brain/scripts/package.json', 'brain/scripts/config.default.json', 'brain/scripts/lib/paths.js', 'brain/scripts/sdk/mcp-server.js',
     'brain/scripts/cli/aos.js', 'brain/scripts/cli/routines.js', 'brain/scripts/routines/run-routine.js', 'brain/scripts/bin/aos', 'brain/scripts/node_modules']) {
     assert.ok(fs.existsSync(path.join(v, rel)), `missing ${rel}`);
