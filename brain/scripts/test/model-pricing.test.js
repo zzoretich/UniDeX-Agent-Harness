@@ -51,6 +51,9 @@ test('an unlisted id takes its longest known prefix; anything else the default (
 test('priceUsd on Claude: input, cached input at a tenth, output; 6 places', () => {
   assert.equal(MP.priceUsd('claude', 'haiku', { inputTokens: 1e6, outputTokens: 1e6 }), 6);
   assert.equal(MP.priceUsd('claude', 'claude-opus-5', { inputTokens: 1000, outputTokens: 100 }), 0.0225);
+  // The Chief of Staff's Claude model at its own published rate ($4 in, $20 out), not Opus 5's by prefix.
+  assert.equal(MP.claudeRate('claude-opus-5-5').matched, 'exact');
+  assert.equal(MP.priceUsd('claude', 'claude-opus-5-5', { inputTokens: 1000, outputTokens: 100 }), 0.006);
   // 1,000 input of which 400 cached: 600 at $1 + 400 at $0.10, per million.
   assert.equal(MP.priceUsd('claude', 'haiku', { inputTokens: 1000, cachedInputTokens: 400, outputTokens: 0 }), 0.00064);
   assert.equal(MP.priceUsd('claude', 'haiku', { inputTokens: 1, outputTokens: 0 }), 0.000001);

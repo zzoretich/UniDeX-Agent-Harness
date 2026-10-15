@@ -2,9 +2,10 @@
   "rates_as_of": "2026-05-29",
   "currency": "USD",
   "unit": "per_million_tokens",
-  "verify_note": "Confirm against current Anthropic pricing before trusting dollar figures. claude-opus-5 was added 2026-08-04 by assumption (matched to the existing claude-opus-4-7/4-8 rate already in this file) after a transcript surfaced that model id with no pricing entry, silently falling back to default_model (Sonnet) rates. Re-verify against Anthropic's published Opus 5 price before trusting dollar figures derived from it.",
+  "verify_note": "Confirm against current Anthropic pricing before trusting dollar figures. claude-opus-5 was added 2026-08-04 by assumption (matched to the existing claude-opus-4-7/4-8 rate already in this file) after a transcript surfaced that model id with no pricing entry, silently falling back to default_model (Sonnet) rates. Re-verify against Anthropic's published Opus 5 price before trusting dollar figures derived from it. claude-opus-5-5 (the Chief of Staff's Claude model) was checked on 2026-10-15 against https://platform.claude.com/docs/en/about-claude/pricing: $4 input, $20 output per million; its cache reads are billed at 0.05x input ($0.20), half the read_mult below, so cached reads on it are overestimated.",
   "default_model": "claude-sonnet-4-6",
   "models": {
+    "claude-opus-5-5":   {"in": 4.0,  "out": 20.0},
     "claude-opus-5":     {"in": 15.0, "out": 75.0},
     "claude-opus-4-8":   {"in": 15.0, "out": 75.0},
     "claude-opus-4-7":   {"in": 15.0, "out": 75.0},

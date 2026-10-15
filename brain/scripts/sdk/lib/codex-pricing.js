@@ -6,6 +6,12 @@
  * before trusting it. Unknown model ids fall back to the longest matching prefix (a dated or suffixed
  * id inherits its family's rate), then to DEFAULT_MODEL. Reasoning tokens are part of output_tokens
  * and are billed as output; cached input is billed at CACHED_MULT of the input rate.
+ *
+ * gpt-6-sol (the Chief of Staff's Codex model, local-first A4) was checked on 2026-10-15 against OpenAI's published
+ * price list, https://developers.openai.com/api/docs/pricing (Standard tier, short context ≤ 272K input tokens):
+ * $2.00 input, $0.20 cached input (a tenth, CACHED_MULT), $10.00 output per million. Above 272K input tokens it is
+ * billed at $4.00 / $15.00, which this table does not model. Without its row, a duty on gpt-6-sol was estimated at the
+ * gpt-5 default and counted that way against persona.perDayUsd.
  */
 const RATES_AS_OF = '2026-09-21';
 const DEFAULT_MODEL = 'gpt-5';
@@ -19,6 +25,7 @@ const MODELS = {
   'gpt-4.1-mini': { in: 0.40, out: 1.60 },
   'o3': { in: 2.0, out: 8.0 },
   'o4-mini': { in: 1.10, out: 4.40 },
+  'gpt-6-sol': { in: 2.0, out: 10.0 },
 };
 
 /** The rate entry for a model id: exact → longest prefix → default. Also says which entry answered. */

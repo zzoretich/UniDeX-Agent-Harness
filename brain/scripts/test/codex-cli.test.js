@@ -77,6 +77,10 @@ test('pricing: exact, longest-prefix and default rates; cached input at a tenth'
   assert.equal(rateFor('gpt-5.6-sol').model, 'gpt-5');
   assert.equal(rateFor('gpt-5-codex-mini').model, 'gpt-5-codex');
   assert.equal(rateFor('something-new').matched, 'default');
+  // The Chief of Staff's Codex model at its own published rate ($2 in, $10 out), not the gpt-5 default.
+  assert.deepEqual(rateFor('gpt-6-sol'), { model: 'gpt-6-sol', in: 2, out: 10, matched: 'exact' });
+  // (1000-400)*2 + 400*0.2 + 100*10 = 1200 + 80 + 1000 = 2280 µUSD
+  assert.equal(priceUsd('gpt-6-sol', { inputTokens: 1000, cachedInputTokens: 400, outputTokens: 100 }), 0.00228);
   // (1000-400)*0.25 + 400*0.025 + 50*2 = 150 + 10 + 100 = 260 µUSD
   assert.equal(priceUsd('gpt-5-mini', { inputTokens: 1000, cachedInputTokens: 400, outputTokens: 50 }), 0.00026);
   assert.equal(priceUsd('gpt-5-mini', {}), 0);
