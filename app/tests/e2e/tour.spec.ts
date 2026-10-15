@@ -301,6 +301,8 @@ test.describe("a Codex-only machine (variants.spec.ts's)", () => {
     const h = app();
     const { win } = h;
     await openTab(win, "chat");
+    // The chapter probe above routed Sessions to its History (sessions-history.list): back to Vault, whose chat redraws.
+    await content(win).locator('.aos-ss-row[data-thread="vault"]').click();
     await expect(content(win).locator("textarea.aos-asst-input")).toBeVisible();
     await helpMenu(win, "tour-tab");
     await expect(pop(win)).toHaveAttribute("data-step", "sessions.list");
