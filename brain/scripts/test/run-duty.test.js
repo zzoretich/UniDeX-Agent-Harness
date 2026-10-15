@@ -640,3 +640,50 @@ test('chief: no host can start → SKIPPED waiting-for-host in the journal, one 
   assert.match(state, /## Flags\n- \[ \] \d{4}-\d{2}-\d{2} Chief of Staff waiting for a host — duties skipped \(claude: signed out\)/);
 });
 
+// local-first A5, end to end: the hourly routine is tick.js --triage. Local model down (provider none here): a real change
+// wakes the hosted tick duty through this very runner, with the routine file's budget and allowlist; the next, unchanged
+// hour calls nothing at all.
+test('tick triage end to end: a real change wakes the tick duty through run-duty.sh; an unchanged hour makes no call', () => {
+  const s = sandbox();
+  const TICK = path.join(__dirname, '..', 'persona', 'tick.js');
+  fs.writeFileSync(path.join(s.vault, 'persona', 'duties', 'tick.md'), 'ascii fixture tick duty\n');
+  fs.mkdirSync(path.join(s.vault, 'brain', 'routines'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', '..', '..', 'vault-template', 'persona', 'routines', 'tick.md'), path.join(s.vault, 'brain', 'routines', 'tick.md'));
+  fs.writeFileSync(path.join(s.vault, 'brain', 'config.json'), JSON.stringify({ provider: 'none' }));
+  const fake = path.join(s.vault, 'fake-claude-tick');
+  fs.writeFileSync(fake, [
+    '#!/bin/sh',
+    FAKE_AUTH,
+    'printf "%s\\n" "$@" > "$FAKE_ARGS"',
+    'printf "\\n## 11:00 — duty: tick\\n- status: OK\\n" >> "$FAKE_JOURNAL"',
+    'echo "{\\"type\\":\\"result\\",\\"result\\":\\"done\\",\\"total_cost_usd\\":0.2,\\"usage\\":{\\"input_tokens\\":10,\\"output_tokens\\":5}}"',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const argsFile = path.join(s.vault, 'tick-args.txt');
+  const env = { ...s.env, PERSONA_CLAUDE_BIN: fake, FAKE_ARGS: argsFile, FAKE_JOURNAL: s.journal };
+  delete env.NODE_OPTIONS;   // the workspace's relative --require would not resolve from the vault, where the duty runs
+  const triage = () => spawnSync(process.execPath, [TICK, '--triage', '--root', s.vault], { env, encoding: 'utf8', timeout: 60000 });
+  const r = triage();
+  assert.equal(r.status, 0, r.stderr);
+  const line = JSON.parse(r.stdout.trim().split('\n').pop());
+  assert.equal(line.action, 'woke');
+  assert.equal(line.decision.by, 'rules');
+  const journal = fs.readFileSync(s.journal, 'utf8');
+  assert.match(journal, /— tick triage: woke the Chief of Staff — the local model is unavailable \(forced\): any real change wakes the Chief of Staff \(rules; changed: first triage\)\n/);
+  assert.match(journal, /duty: tick\n- status: OK/);
+  const args = fs.readFileSync(argsFile, 'utf8');
+  assert.match(args, /^--model\nclaude-opus-5-5$/m, 'the Chief of Staff\'s hosted model');
+  assert.match(args, /^--max-budget-usd\n0\.5$/m, 'the routine file\'s budgetUsd');
+  assert.ok(args.includes(`Bash(${process.execPath} ${s.vault}/brain/scripts/persona/tick.js:*)`), 'its allowlist, expanded');
+  assert.ok(!/git/.test(args.split('\n')[args.split('\n').indexOf('--allowedTools') + 1]), 'no git');
+  const st = JSON.parse(fs.readFileSync(path.join(s.vault, 'brain', '_index', 'persona-tick.json'), 'utf8'));
+  assert.equal(st.beats, 1, 'run-duty.sh recorded the beat after the contract');
+  assert.equal(st.wakes, 1);
+  // The next hour: nothing changed — no local call, no hosted call, no journal line.
+  fs.rmSync(argsFile);
+  const quiet = triage();
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert.equal(JSON.parse(quiet.stdout.trim()).action, 'unchanged');
+  assert.ok(!fs.existsSync(argsFile), 'the hosted model was not started');
+  assert.equal(fs.readFileSync(s.journal, 'utf8'), journal);
+});
