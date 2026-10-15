@@ -5,9 +5,14 @@
  *
  * A routine file is YAML-ish frontmatter plus a body:
  *   schema: 1 · name · kind (duty|prompt|command) · schedule (5-field cron, see lib/cron.js) · enabled
- *   guarded (bool) · model, effort (prompt, duty) · budgetUsd (prompt, duty) · tools (duty; the PERSONA_TOOLS allowlist,
- *   `{{NODE}}`/`{{VAULT}}` expanded by the runner) · writes (duty; flow array of vault-relative paths the duty may write on
- *   top of the default scope, persona/duty-guard.js) · argv (command; flow array of strings) · timeoutSec · tags (flow array)
+ *   guarded (bool) · engine (prompt; local|claude|codex, local-first A6: where it runs — without it, routines.runner
+ *   decides as before) · model, effort (prompt, duty; `model` names a model of the routine's engine, and a Claude model
+ *   when it has none) · budgetUsd (prompt, duty) · maxTurns (prompt; the local agent's turn limit, default 24) · tools
+ *   (duty; the PERSONA_TOOLS allowlist, `{{NODE}}`/`{{VAULT}}` expanded by the runner) · writes (duty: flow array of
+ *   vault-relative paths the duty may write on top of the default scope, persona/duty-guard.js; prompt: the paths or
+ *   globs the local agent's write_file may write, and nothing else, lib/local-agent.js) · output (prompt; where the
+ *   local agent's final message goes: log, notify, or a vault-relative .md file it is appended to) · argv (command;
+ *   flow array of strings) · timeoutSec · tags (flow array)
  * The frontmatter subset here is deliberately small — scalars (string, number, boolean, null),
  * quoted strings, and single-line flow arrays — and the writer only ever emits that subset, so a
  * file the HUD wrote is always a file the runtime can read (and vice versa; src/data/routines.ts
@@ -25,7 +30,10 @@ const fsx = require('./fsx.js');
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
 const KINDS = ['duty', 'prompt', 'command'];
 const EFFORTS = ['low', 'medium', 'high'];
-const KEY_ORDER = ['schema', 'name', 'kind', 'schedule', 'enabled', 'guarded', 'model', 'effort', 'budgetUsd', 'tools', 'writes', 'argv', 'timeoutSec', 'tags'];
+/** Where a prompt routine runs (local-first A6): the local agent runner, or one host's CLI. */
+const ENGINES = ['local', 'claude', 'codex'];
+const MAX_TURNS_LIMIT = 200;
+const KEY_ORDER = ['schema', 'name', 'kind', 'schedule', 'enabled', 'guarded', 'engine', 'model', 'effort', 'budgetUsd', 'maxTurns', 'tools', 'writes', 'output', 'argv', 'timeoutSec', 'tags'];
 const STATE_SCHEMA = 1;
 
 function defaultDir() { return require('./paths.js').PATHS.ROUTINES; }
@@ -105,8 +113,44 @@ function serializeFrontmatter(fm) {
 
 // ---------- routines ----------
 
+/**
+ * What a local routine may never write, as a writes entry or an output target (the PR 4 security review): the files
+ * that feed hosted sessions. A folder holds everything under it; a name is any file of that name; AGENTICOS.md only at
+ * the vault root. On top of persona/duty-guard.js's refusal(), and only for local routines: duties keep their own rule.
+ */
+const LOCAL_DENY = [
+  { label: 'persona/', dir: true, why: "the Chief of Staff's files" },
+  { label: 'brain/memory/', dir: true, why: 'memories feed every session' },
+  { label: 'brain/_index/', dir: true, why: "the session bootstrap and the runtime's caches" },
+  { label: 'AGENTICOS.md', root: true, why: 'it feeds every session' },
+  { label: 'MEMORY.md', why: 'it feeds every session' },
+  { label: 'CLAUDE.md', why: 'host instructions feed every session' },
+  { label: 'AGENTS.md', why: 'host instructions feed every session' },
+];
+
+/** Why a local routine may not write `p` (a vault-relative path, or a writes entry with * ** ?), or null. Compared
+ *  folded (duty-guard's fold: case and Unicode variants are the same file on macOS); a glob by its folder part. */
+function localDenied(p) {
+  const { fold } = require('../persona/duty-guard.js');
+  const s = fold(String(p || '').trim().replace(/\\/g, '/')).replace(/^(\.\/)+/, '').replace(/\/+$/, '');
+  const segs = s.split('/');
+  const g = segs.findIndex(x => /[*?]/.test(x));
+  const fixed = (g === -1 ? segs : segs.slice(0, g)).join('/');
+  const name = g === -1 ? segs[segs.length - 1] : null;
+  for (const d of LOCAL_DENY) {
+    const f = fold(d.label).replace(/\/$/, '');
+    if (d.dir ? (fixed === f || fixed.startsWith(`${f}/`) || f.startsWith(`${fixed}/`) || !fixed) : d.root ? (g === -1 && s === f) : name === f) return `${d.label}: ${d.why}`;
+  }
+  return null;
+}
+
 function isStringArray(v) { return Array.isArray(v) && v.every(s => typeof s === 'string' && s.length > 0); }
 function isMoney(v) { return typeof v === 'number' && Number.isFinite(v) && v >= 0; }
+/** A vault-relative path (or glob): not absolute, no `..` segment, no backslash. */
+function isVaultRel(p) {
+  const s = String(p || '').trim();
+  return !!s && !s.startsWith('/') && !s.startsWith('~') && !s.includes('\\') && !s.split('/').includes('..');
+}
 
 /** Returns an array of human-readable problems; empty means valid. */
 function validate(routine) {
@@ -126,9 +170,18 @@ function validate(routine) {
     if (r.model !== undefined && (typeof r.model !== 'string' || !r.model.trim())) errors.push('model must be a string');
     if (r.effort !== undefined && !EFFORTS.includes(r.effort)) errors.push(`effort must be one of ${EFFORTS.join(', ')}`);
   }
+  if (r.engine !== undefined) {
+    if (r.kind !== 'prompt') errors.push('engine is for prompt routines only');
+    else if (!ENGINES.includes(r.engine)) errors.push(`engine must be one of ${ENGINES.join(', ')}`);
+  }
   if (r.kind === 'prompt') {
     if (typeof r.body !== 'string' || !r.body.trim()) errors.push('a prompt routine needs a body');
     if (r.budgetUsd !== undefined && !isMoney(r.budgetUsd)) errors.push('budgetUsd must be a non-negative number');
+    if (r.maxTurns !== undefined && !(Number.isInteger(r.maxTurns) && r.maxTurns > 0 && r.maxTurns <= MAX_TURNS_LIMIT)) errors.push(`maxTurns must be a whole number from 1 to ${MAX_TURNS_LIMIT}`);
+    if (r.writes !== undefined && (!isStringArray(r.writes) || r.writes.some(w => !isVaultRel(w) || w.includes(',')))) errors.push('writes must be an array of vault-relative paths or globs (no commas)');
+    if (r.output !== undefined && !(r.output === 'log' || r.output === 'notify' || (typeof r.output === 'string' && /\.md$/.test(r.output) && isVaultRel(r.output)))) errors.push('output must be log, notify or a vault-relative .md file');
+    for (const w of isStringArray(r.writes) ? r.writes : []) { const why = localDenied(w); if (why) errors.push(`writes: ${w} is off limits to a local routine (${why})`); }
+    if (typeof r.output === 'string' && r.output !== 'log' && r.output !== 'notify') { const why = localDenied(r.output); if (why) errors.push(`output: ${r.output} is off limits to a local routine (${why})`); }
   }
   if (r.kind === 'duty') {
     if (r.budgetUsd !== undefined && !isMoney(r.budgetUsd)) errors.push('budgetUsd must be a non-negative number');
@@ -315,9 +368,9 @@ function overview({ dir = defaultDir(), file = defaultStateFile(), logDir, now =
 }
 
 module.exports = {
-  SLUG_RE, KINDS, EFFORTS, STATE_SCHEMA,
+  SLUG_RE, KINDS, EFFORTS, ENGINES, MAX_TURNS_LIMIT, KEY_ORDER, STATE_SCHEMA,
   parseFrontmatter, serializeFrontmatter, parseFlowArray,
-  validate, fromFile, toFile, list, read, write, fingerprint,
+  validate, fromFile, toFile, list, read, write, fingerprint, localDenied, LOCAL_DENY,
   readState, writeState, updateState, patchState, health, overview,
   dutyLogLast, mergeDutyLog,
 };
