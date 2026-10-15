@@ -740,3 +740,26 @@ test('reason() with no chatFn under ai local: the local engine gets the workhors
     server.close();
   }
 });
+
+// ── refreshHostLogins (local-first A17): Sessions follows the hosts' sign-in, which provider local never probes itself ──
+test('refreshHostLogins under provider local: each enabled host\'s login, cached a day; another provider is left alone', async () => {
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'local', hosts: { claude: { enabled: true }, codex: { enabled: true } } }));
+  let probes = 0;
+  const deps = { resolveClaudeBin: () => '/x/claude', loginProbe: async () => { probes++; return true; }, resolveCodexBin: () => '/x/codex', codexLoginProbe: async () => { probes++; return false; } };
+  const r = await provider.refreshHostLogins({ deps });
+  assert.deepEqual([r.claude.loggedIn, r.codex.loggedIn, probes], [true, false, 2]);
+  const st = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+  assert.deepEqual([st.claude.loggedIn, st.codex.loggedIn], [true, false]);
+  assert.equal(st.name, undefined, 'the global provider\'s name is not touched');
+  await provider.refreshHostLogins({ deps });
+  assert.equal(probes, 2, 'fresh for a day: no probe');
+  // A host that is off is never probed.
+  fs.unlinkSync(STATE_PATH);
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'local', hosts: { claude: { enabled: true }, codex: { enabled: false } } }));
+  await provider.refreshHostLogins({ deps: { ...deps, resolveCodexBin: never, codexLoginProbe: never } });
+  // Another provider: nothing (its own resolves keep the logins).
+  fs.unlinkSync(STATE_PATH);
+  fs.writeFileSync(CONFIG, JSON.stringify({ provider: 'none' }));
+  assert.equal((await provider.refreshHostLogins({ deps: { resolveClaudeBin: never, loginProbe: never } })).skipped, true);
+  assert.equal(fs.existsSync(STATE_PATH), false);
+});

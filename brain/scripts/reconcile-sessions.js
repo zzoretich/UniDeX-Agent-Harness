@@ -19,6 +19,8 @@
  * auto-cost costs the whole session each time it runs (spec 2026-09-24-no-duplicate-sessions D5).
  * Then, when auto-wrap's spool holds sessions (lib/wrap-queue.js: the local engine was down at their SessionEnd,
  * local-first A3), `auto-wrap.js --drain` once: it wraps them if a provider answers now, else leaves them waiting.
+ * Under provider local every sweep also refreshes the hosts' sign-in cache in provider-state.json when it is a day old
+ * (local-first A17: Sessions shows while an enabled host is signed in, and provider local never asks a host otherwise).
  * The Workbench runs this script on load instead of a sweep of its own. At most one sweep per 5 minutes
  * (an mtime stamp, brain/_index/agent-runs/.reconcile); --force ignores the stamp, --dry-run lists
  * what would be reconciled and changes nothing. Exits 0 with empty stdout on every failure path.
@@ -132,7 +134,12 @@ function throttled(force, stampFile = STAMP, now = Date.now()) {
   return false;
 }
 
-function main() {
+/** The hosts' sign-in cache (provider.js refreshHostLogins, local-first A17): at most a day old, free, never a failure. */
+async function refreshLogins() {
+  try { await require('./sdk/lib/provider.js').refreshHostLogins(); } catch { /* the HUD reads what is cached */ }
+}
+
+async function main() {
   const argv = process.argv.slice(2);
   const force = argv.includes('--force');
   const dryRun = argv.includes('--dry-run');
@@ -144,7 +151,7 @@ function main() {
     process.stdin.on('end', () => {
       let input = null;
       try { input = JSON.parse(raw || '{}'); } catch { input = null; }
-      try { if (telemetryEnabled() && !throttled(force)) require('./lib/detach.js').respawnDetached(argv); } catch { /* never fail a hook */ }
+      try { if (!throttled(force)) require('./lib/detach.js').respawnDetached(argv); } catch { /* never fail a hook */ }
       const ev = input && (input.hook_event_name || input.hookEventName);
       if (ev === 'Stop') require('./lib/hook-entry.js').finishStop(input);
       process.exit(0);
@@ -152,8 +159,10 @@ function main() {
     return;
   }
   try {
-    if (!telemetryEnabled()) { process.exit(0); }
     if (!dryRun && !force && process.env.AOS_DETACHED !== '1' && throttled(false)) { process.exit(0); }
+    // Sessions follows the hosts' sign-in (A17), with telemetry on or off; a dry run probes nothing.
+    if (!dryRun) await refreshLogins();
+    if (!telemetryEnabled()) { process.exit(0); }
     const done = reconcile({ dryRun });
     if (dryRun || process.env.AOS_DETACHED !== '1') {
       for (const s of done) process.stdout.write(`[reconcile] ${dryRun ? 'would reconcile' : 'reconciled'} ${s.host} session ${s.sessionId}${s.why === 'exited' ? ' (process exited)' : ''}${s.transcript ? '' : ' (no transcript)'}\n`);
@@ -165,6 +174,6 @@ function main() {
   process.exit(0);
 }
 
-if (require.main === module) main();
+if (require.main === module) main().catch(() => process.exit(0));
 
 module.exports = { findStale, reconcile, drainSpool, throttled, readHeader, SWEEP_EVERY_MS, DEFAULT_STALE_MIN };

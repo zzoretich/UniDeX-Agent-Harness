@@ -484,6 +484,25 @@ async function resolveProviderForRole({ role: roleName, feature = 'unknown', dep
   return makeNone(why.includes('claude-not-logged-in') ? 'claude-not-logged-in' : why.includes('codex-not-logged-in') ? 'codex-not-logged-in' : 'no-provider');
 }
 
+/**
+ * local-first A17: under provider local, the hosts' sign-in kept fresh (the HUD shows Sessions while an enabled host is
+ * signed in, and provider local never asks a host otherwise; the other providers' resolves keep it already). Each
+ * enabled host's cached login is refreshed when older than a day: `claude auth status` and `codex login status`, free
+ * (A16), no model call. → { claude, codex } as cached; nothing at all under another provider.
+ */
+async function refreshHostLogins({ deps = {} } = {}) {
+  const cfg = loadConfig();
+  if (cfg.provider !== 'local') return { claude: null, codex: null, skipped: true };
+  const now = deps.now ? deps.now() : Date.now();
+  const iso = new Date(now).toISOString();
+  const state = readState();
+  const before = JSON.stringify([state.claude, state.codex]);
+  if (claudeHostEnabled(cfg)) await resolveClaudeLogin(state, now, iso, deps);
+  if (codexConfigured(cfg)) await resolveCodexLogin(state, now, iso, deps);
+  if (JSON.stringify([state.claude, state.codex]) !== before) writeState(state);
+  return { claude: state.claude || null, codex: state.codex || null };
+}
+
 let memo = null;
 const roleMemo = new Map();
 /** Memoized per process: the first call resolves, later calls share the promise. */
@@ -503,6 +522,6 @@ function resetProviderCache() { memo = null; roleMemo.clear(); }
 
 module.exports = {
   resolveProvider, getProvider, resolveProviderForRole, getProviderForRole, resetProviderCache, STATE_PATH,
-  localCfg, listLocalModels, pickLocalModel, resolveLocalOnly, aiEngine, AI_FEATURES,
+  localCfg, listLocalModels, pickLocalModel, resolveLocalOnly, aiEngine, AI_FEATURES, refreshHostLogins,
   ProviderUnavailable, recordSpend, spendToday, reasonSpendToday, routineSpendToday, SPEND_PATH,
 };
