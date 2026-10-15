@@ -142,16 +142,16 @@ async function boot(): Promise<void> {
   };
   aos.ready(ready);
 
-  // Attach mode (phase 5): the one-time "What changed" note, the runtime update when this app carries a newer one, and
-  // the app's own update in the status bar.
-  attachUi(app, aos, info.attach, statusBarEl);
+  // Attach mode (phase 5): the app's own update in the status bar, then the launch sequence (tour C11): the runtime
+  // update when this app carries a newer one, Go local, What's new or the welcome tour, Getting started.
+  const launchLog = attachUi(app, plugin, aos, info.attach, statusBarEl);
 
   // The tray popover (hidden until the menubar icon is clicked): the plugin's SidebarHUD in a window of its own.
   void openPopover(app).then((child) => { if (child) theme.track(child.document); })
     .catch((err: unknown) => console.warn("[host] tray popover unavailable", err));
 
   // A handle for the Playwright suites and for poking at the host from DevTools.
-  (window as unknown as { aosHost: unknown }).aosHost = { app, plugin, info, guard: guardState(), runCommand, routeLink };
+  (window as unknown as { aosHost: unknown }).aosHost = { app, plugin, info, guard: guardState(), runCommand, routeLink, launchLog };
   console.info(`[host] AgenticOS HUD ${HUD.version} loaded on Electron ${info.electron}; writes ${policy.ids.join(",") || "none"} (${info.writeSource}); main watcher ${info.mainWatcher}`);
 }
 

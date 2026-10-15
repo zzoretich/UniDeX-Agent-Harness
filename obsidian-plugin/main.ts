@@ -37,6 +37,7 @@ import type { FixAction } from "./src/data/fixQueue";
 import { buildOmniItems } from "./src/data/omni";
 import { OmniModal } from "./src/ui/OmniModal";
 import { TourController } from "./src/tour/controller";
+import { runLaunchSequence, type LaunchDeps, type LaunchStep } from "./src/ui/launchSequence";
 import * as path from "path";
 import { env, fs, spawn } from "./src/host";
 
@@ -285,6 +286,12 @@ export default class AgenticOSPlugin extends Plugin {
     if (this.settings.nodePath !== before) void this.saveSettings();
     return bin;
   }
+
+  /**
+   * The launch sequence (tour C11): the app's renderer (app/src/renderer/setup/attach.ts) hands over what main knows and
+   * its runtime dialog; Go local, What's new or the welcome tour and Getting started follow, one at a time.
+   */
+  runLaunchSequence(d: Omit<LaunchDeps, "plugin">): Promise<LaunchStep[]> { return runLaunchSequence({ ...d, plugin: this }); }
 
   /** Sessions follows the hosts (local-first A17): an enabled host is signed in, by the login caches the runtime keeps in
    *  brain/_index/provider-state.json, whatever the background provider (the local engine may be down). */

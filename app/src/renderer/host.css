@@ -143,7 +143,6 @@ body.aos-popover { background: var(--compat-bg); }
 
 /* Attach mode (renderer/setup/attach.ts): the note, the runtime update, and the status bar items beside them. */
 .aos-attach-modal { width: min(640px, 90vw); }
-.aos-attach-list { margin: 0 0 12px; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .aos-runtime-modal .aos-setup-term { margin-top: 10px; height: 220px; }
 .aos-host-runtime, .aos-host-update.is-ready { color: var(--compat-accent); cursor: pointer; }
 .aos-host-update.is-hidden { display: none; }

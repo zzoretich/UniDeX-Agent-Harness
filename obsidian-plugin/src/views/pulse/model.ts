@@ -18,7 +18,7 @@ import { buildRows, listRoutines, readRoutinesState, type RoutineRow } from "../
 import { parseTodos, localDay, type Todo } from "../../data/todos";
 import { proposalTitle } from "../../data/pulseFacts";
 import { ageDays } from "../../data/proposals";
-import { readAgenticosJson, readVaultConfig } from "../../data/aosConfig";
+import { readAgenticosJson, readProviderState, readVaultConfig, sessionHosts, signedInHosts, type SessionHost } from "../../data/aosConfig";
 import { TERM_HOST_LABEL, placeOf, type PlaceWorld } from "../../data/terminalLaunch";
 import { liveByWorkspace, type LiveState, type LiveTerminalInput } from "../../data/spacesModel";
 import { diskAdapter, memberStatus, pendingGates, readTeams } from "../../data/teams";
@@ -108,6 +108,60 @@ export interface PulseModel {
   decisions: DecisionRow[];
   /** The history digest while sessions wait for it (install-import B10): "Digesting history: 140 of 412 sessions". */
   importDigest: DigestState | null;
+  /**
+   * The Chief of Staff waits for a host (local-first §5): none enabled ("Add Claude Code or Codex…"), or today's last duty
+   * run was skipped `waiting-for-host` for a reason that still holds (a host signed out, a CLI not found). Pulse says so.
+   */
+  chiefWaiting: ChiefWaiting;
+}
+
+export type ChiefWaiting = { kind: "no-host"; text: string } | { kind: "skipped"; text: string } | null;
+
+const HOST_NAME: Record<SessionHost, string> = { claude: "Claude Code", codex: "Codex" };
+
+/**
+ * The detail of today's last duty entry when it was skipped `waiting-for-host` (persona/run-duty.sh writes `## HH:MM —
+ * duty: <slug>`, `- status: SKIPPED waiting-for-host`, `- did: nothing — no host can start it (<detail>); …`), "" when
+ * it gives none, null when the last duty entry is anything else or there is none: a later run that went ahead clears it.
+ */
+export function lastWaitingSkip(journal: string | null): string | null {
+  let last: { status: string | null; did: string | null } | null = null;
+  let cur: { status: string | null; did: string | null } | null = null;
+  for (const line of (journal ?? "").split("\n")) {
+    if (/^## \d{1,2}:\d{2} — duty: [a-z0-9-]+\s*$/.test(line)) { cur = { status: null, did: null }; last = cur; continue; }
+    if (/^## /.test(line)) { cur = null; continue; }
+    if (!cur) continue;
+    const st = /^- status: (.+)$/.exec(line);
+    if (st && cur.status === null) cur.status = st[1].trim();
+    const did = /^- did: (.+)$/.exec(line);
+    if (did && cur.did === null) cur.did = did[1].trim();
+  }
+  if (!last || !last.status || !/^SKIPPED waiting-for-host\b/.test(last.status)) return null;
+  return /no host can start it \(([^)]*)\)/.exec(last.did ?? "")?.[1] ?? "";
+}
+
+/**
+ * What Pulse says when the Chief of Staff waits for a host: "Add Claude Code or Codex…" only with no host enabled;
+ * otherwise worded from the last skip's detail ("claude: signed out; codex: CLI not found"), and nothing once a host it
+ * named as signed out is signed in again (by the login caches in provider-state.json).
+ */
+export function chiefWaiting(journal: string | null, hosts: readonly SessionHost[], signedIn: readonly SessionHost[]): ChiefWaiting {
+  if (!hosts.length) return { kind: "no-host", text: "Add Claude Code or Codex to start your Chief of Staff." };
+  const detail = lastWaitingSkip(journal);
+  if (detail === null) return null;
+  const fixes: string[] = [];
+  for (const part of detail.split(/;\s*/)) {
+    const m = /^(claude|codex):\s*(.+)$/.exec(part.trim());
+    if (!m) continue;
+    const host = m[1] as SessionHost;
+    if (!hosts.includes(host)) continue;
+    if (/signed out/i.test(m[2])) {
+      if (signedIn.includes(host)) return null;
+      fixes.push(`sign in to ${HOST_NAME[host]}`);
+    } else if (/not found|missing/i.test(m[2])) fixes.push(`${HOST_NAME[host]}'s CLI was not found`);
+    else fixes.push(`${HOST_NAME[host]}: ${m[2].trim()}`);
+  }
+  return { kind: "skipped", text: `Your Chief of Staff is waiting for a host: ${fixes.length ? fixes.join("; ") : "today's duties were skipped"}.` };
 }
 
 /** USD per local day for the last `days` days, oldest first, from provider-spend.jsonl text. */
@@ -306,6 +360,9 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
 
   const live = await liveRows(plugin);
   const importDigest = digestPending(parseImportState(await read(IMPORT_STATE_PATH)));
+  const hostCfg = readAgenticosJson(plugin.claudeConfigDir());
+  const waiting = personaOff ? null
+    : chiefWaiting(await read(`persona/journal/${localDay(now)}.md`), sessionHosts(hostCfg), signedInHosts(hostCfg, readProviderState(root)));
   return {
     now, inputs, facts, briefing,
     paragraph: chooseParagraph(briefing, facts, now, staleHours),
@@ -325,5 +382,6 @@ export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | n
     teams,
     decisions,
     importDigest,
+    chiefWaiting: waiting,
   };
 }

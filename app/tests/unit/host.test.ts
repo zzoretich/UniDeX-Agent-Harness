@@ -12,7 +12,7 @@ import { isIgnored } from "../../compat/src/ignore";
 import { fuzzyScore } from "../../compat/src/modal";
 import { normalizePath } from "../../compat/src/files";
 import { opensOutside } from "../../compat/src/markdown";
-import { canSave, canWrite, setWriteGuard } from "../../compat/src/guard";
+import { canRun, canSave, canWrite, setWriteGuard } from "../../compat/src/guard";
 import { PagePolicy } from "../../src/renderer/pagePolicy";
 
 test("agenticos:// links parse into an action and safe params", () => {
@@ -98,10 +98,10 @@ test("normalizePath matches Obsidian's", () => {
 test("write surfaces: every verified surface by default; AOS_APP_WRITE narrows or widens a run", () => {
   const verified = SURFACES.filter((s) => s.verified).map((s) => s.id);
   assert.deepEqual(loadWriteSettings({}), { surfaces: verified, source: "default" });
-  // Every surface but 2.0's new ones is verified today: the Local engine's (after a live pull), Import and Hosts (after a
-  // live import and a host added through them, install-import B2, B7).
-  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["local", "import", "hosts"]);
-  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 3);
+  // Every surface but 2.0's new ones is verified today: the Local engine's (after a live pull), Go local's (a live
+  // go-local and undo on a 1.9 vault), Import and Hosts (a live import and a host added through them, install-import B2, B7).
+  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["local", "migrate", "import", "hosts"]);
+  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 4);
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo,chat" }), { surfaces: ["todo", "chat"], source: "AOS_APP_WRITE" });
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "" }), { surfaces: [], source: "AOS_APP_WRITE" });
   // A surface not verified yet (a new one starts this way) stays off by default; AOS_APP_WRITE can still turn it on
@@ -136,6 +136,16 @@ test("compat's write guard answers canWrite beside canSave, so the HUD can show 
     // No vault attached (the setup wizard): nothing.
     setWriteGuard(new PagePolicy(null, ["todo"]));
     assert.equal(canWrite(`${vault}/TODO.md`), false);
+    // canRun: whether a surface runs a runtime script with these arguments (the Go-local card, local-first A9).
+    const go = ["migrate", "local-first", "--apply", "--chief", "--json"];
+    setWriteGuard(new PagePolicy(vault, ["settings"]));
+    assert.equal(canRun("cli/aos.js", go), false, "Go local is off");
+    assert.equal(canRun("cli/aos.js", ["config", "list", "--json"]), true, "a background refresh runs whatever is on");
+    setWriteGuard(new PagePolicy(vault, ["migrate"]));
+    assert.equal(canRun("cli/aos.js", go), true);
+    assert.equal(canRun("cli/aos.js", ["migrate", "local-first", "--status", "--json"]), false);
+    setWriteGuard(new PagePolicy(null, ["migrate"]));
+    assert.equal(canRun("cli/aos.js", go), false);
   } finally {
     g.__aosGuard = saved;
   }

@@ -135,6 +135,23 @@ export class PulseTab {
       s.createSpan({ text: `Since you last looked at ${clock(m.since.at)}: ` });
       s.createSpan({ cls: "aos-pulse-since-parts", text: m.since.parts.join(" · ") });
     }
+    const wait = m.chiefWaiting;
+    if (wait) {
+      // local-first §5: no host enabled to run the Chief of Staff, or today's last duty skipped waiting for one.
+      const w = main.createDiv({ cls: "aos-pulse-waiting", attr: { role: "status", "data-kind": wait.kind } });
+      w.createSpan({ text: wait.text });
+      if (wait.kind === "no-host") {
+        const add = w.createEl("button", { cls: "aos-pulse-waiting-go", text: "Add a host", attr: { title: "Settings ▸ Hosts: install Claude Code or Codex, then sign in" } });
+        // Settings ▸ Hosts (install-import B2): Add Claude Code / Add Codex, with each host's state and install steps.
+        add.addEventListener("click", () => {
+          this.view.open({ tab: "settings" });
+          this.view.containerEl.querySelector<HTMLElement>('[data-tour="settings-host-list"]')?.scrollIntoView({ block: "start" });
+        });
+      } else {
+        const doc = w.createEl("button", { cls: "aos-pulse-waiting-go", text: "❯_ aos doctor", attr: { title: "Check each host's CLI and sign-in, in the Code tab" } });
+        doc.addEventListener("click", () => { this.view.runInTerm("aos doctor", { origin: "Pulse" }); });
+      }
+    }
     // The history digest working through imported sessions (install-import B10), until it is done; Settings ▸ Import
     // has the rest.
     if (m.importDigest) {

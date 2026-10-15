@@ -23,4 +23,6 @@ export class PagePolicy {
 
   canWrite(target: unknown): boolean { const rel = this.vaultPath(target); return rel !== null && this.rules.canWrite(rel); }
   canSave(target: unknown): boolean { const rel = this.vaultPath(target); return rel !== null && this.rules.canSave(rel); }
+  /** Whether an enabled HUD surface (or a background refresh) runs this runtime script with these arguments. */
+  canRun(script: string, args: readonly string[]): boolean { return !!this.vaultRoot && this.rules.canRunScript(script, args); }
 }

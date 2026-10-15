@@ -181,3 +181,41 @@ test('run: the SessionStart hook never runs recipes; the heartbeat routine still
   W.run({ deps: f.deps });
   assert.equal(f.calls.verify, 1, 'the routine verifies');
 });
+
+// local-first A5, PR 9 (the 2.0 launch): the tick routine became `kind: command` (`tick.js --triage`, which wakes the
+// duty itself only for a real change), so a quiet hour with no duty run is no longer a miss. Read through the real
+// routines store from the shipped files: the 1.9 tick (a duty) misses, the 2.0 one is unwatched, and the migration's
+// rewrite (aos migrate local-first) takes the old MISSED flag away at the next check.
+test('run: the 2.0 tick (a command) is never a missed duty; the 1.9 tick was, and its flag goes once the file is 2.0', () => {
+  const store = require('../lib/routines-store.js');
+  const repo = path.join(__dirname, '..', '..', '..');
+  const tick20 = fs.readFileSync(path.join(repo, 'vault-template', 'persona', 'routines', 'tick.md'), 'utf8');
+  const tick19 = fs.readFileSync(path.join(repo, 'cli', 'fixtures', 'tick-1.9.md'), 'utf8');
+  const f = fixture({ rows: [] });
+  const dir = path.join(f.root, 'brain', 'routines');
+  const file = path.join(f.root, 'brain', '_index', 'routines.json');
+  const logDir = path.join(f.personaDir, 'journal', 'logs');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(logDir, { recursive: true });
+  // The tick last ran at 03:00; by 09:00 five hourly fires have passed with no run recorded (the triage found nothing).
+  store.writeState({ ...store.readState({ file }), routines: { tick: { lastRunAt: iso(at(3, 0)), lastExit: 0, lastDurationMs: 800 } }, syncedAt: iso(at(12, 0, 21)) }, { file });
+  f.deps.store = { readState: () => store.readState({ file }), overview: ({ now }) => store.overview({ dir, file, logDir, now }) };
+
+  fs.writeFileSync(path.join(dir, 'tick.md'), tick19);
+  const before = W.run({ deps: f.deps });
+  assert.equal(before.state.beats.tick.kind, 'duty');
+  assert.equal(before.state.beats.tick.status, 'missed');
+  assert.match(fs.readFileSync(path.join(f.personaDir, 'STATE.md'), 'utf8'), /duty 'tick' MISSED/);
+
+  fs.writeFileSync(path.join(dir, 'tick.md'), tick20);
+  const after = W.run({ deps: f.deps });
+  assert.equal(after.state.beats.tick.kind, 'command');
+  assert.equal(after.state.beats.tick.status, 'unwatched');
+  assert.deepEqual(after.state.misses, []);
+  assert.deepEqual(after.state.flags.removed, ['tick']);
+  assert.doesNotMatch(fs.readFileSync(path.join(f.personaDir, 'STATE.md'), 'utf8'), /MISSED/);
+  // A woken run's duty log (run-duty.sh writes duty-tick.log) changes nothing: the routine is still a command.
+  fs.writeFileSync(path.join(logDir, 'duty-tick.log'), '[x] duty=tick start\n[x] duty=tick done (exit 1)\n');
+  assert.equal(W.run({ deps: f.deps }).state.beats.tick.status, 'unwatched');
+  assert.equal(f.calls.notify.length, 1, 'only the 1.9 tick was ever notified');
+});
