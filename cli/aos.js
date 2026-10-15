@@ -1137,9 +1137,9 @@ async function init(flags) {
   // 7. The Workbench is the app, which brings its own terminal: --terminal has nothing left to install.
   if (flags.terminal) out.log(TERMINAL_NOTE);
 
-  // 8. persona — its duties need a host (install-import B2): with none, it waits, and `aos init --host <h>` asks it then.
+  // 8. persona — its duties need a host (install-import B2): with none, it waits; `aos persona` asks it once a host is added.
   if (hosts.claude || hosts.codex) await act('run the Chief of Staff interview', () => personaInterview(ctx));
-  else out.log('persona: no host yet, so no Chief of Staff; it is set up when you add Claude Code or Codex');
+  else out.log('persona: no host yet, so no Chief of Staff; add Claude Code or Codex (aos hosts add), then run aos persona');
 
   // 9. first scan
   await act('first scan, compile BRAIN.md, warm the recall index', () => {
