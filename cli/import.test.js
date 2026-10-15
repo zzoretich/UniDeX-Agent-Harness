@@ -82,6 +82,18 @@ test('a real run prints what it did, turns the digest routine on and says how to
   assert.deepEqual(JSON.parse(again.stdout).mcp.servers.map((s) => s.host).sort(), ['claude', 'claude', 'codex', 'codex']);
 });
 
+test('a real run from both hosts settles the upgrade\'s pending import (B12); a dry run or one host does not', () => {
+  const { w, aos } = setup();
+  const file = path.join(w.vault, 'brain', '_index', 'migrations.json');
+  require('./migrations.js').recordPending({ vault: w.vault, from: '1.9.0' });
+  const state = () => JSON.parse(fs.readFileSync(file, 'utf8')).migrations.find((m) => m.id === 'import').state;
+  assert.equal(aos(['--dry-run']).status, 0);
+  assert.equal(aos(['--from', 'codex', '--only', 'mcp']).status, 0);
+  assert.equal(state(), 'pending');
+  assert.equal(aos(['--only', 'mcp']).status, 0);
+  assert.equal(state(), 'applied');
+});
+
 test('no vault: a plain error, exit 1', () => {
   const { env } = setup();
   const r = spawnSync(process.execPath, [AOS, 'import', '--dry-run'], { encoding: 'utf8', env: { ...env, AOS_CONFIG: path.join(env.HOME, 'missing.json') } });

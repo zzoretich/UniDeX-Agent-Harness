@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { SURFACES, SURFACE_IDS, WritePolicy, globToRegExp, parseSurfaces } from "../../src/main/policy/write-policy";
 import { workspaceArgs } from "../../../obsidian-plugin/src/data/spacesModel";
 import { memoryArgs, recallArgs } from "../../../obsidian-plugin/src/data/brainModel";
+import { migrateArgs } from "../../../obsidian-plugin/src/data/goLocal";
 
 const VAULT = "/vaults/demo";
 const v = (rel: string) => `${VAULT}/${rel}`;
@@ -502,6 +503,24 @@ test("the Local engine surface runs `aos local pull` and nothing else; it writes
   }
   assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "local")).canSpawn(NODE, [`${S}/cli/aos.js`, "local", "pull"]), false, "only Local engine");
   assert.equal(p.canWrite(`${VAULT}/brain/config.json`), false);
+});
+
+test("the Go local surface runs `aos migrate local-first` apply, decline and undo, and nothing else; it writes nothing (local-first A9)", () => {
+  const p = new WritePolicy(VAULT, ["migrate"]);
+  for (const a of [["--apply"], ["--apply", "--chief"], ["--decline"], ["--undo"]]) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, "migrate", "local-first", ...a, "--json"]), true, a.join(" "));
+  }
+  // What the Go-local card and Settings build (obsidian-plugin/src/data/goLocal.ts) is exactly what the rule admits.
+  for (const [action, chief] of [["apply", true], ["apply", false], ["decline", false], ["undo", false]] as const) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...migrateArgs(action, chief)]), true, `${action} ${chief}`);
+  }
+  for (const a of [["migrate"], ["migrate", "local-first"], ["migrate", "local-first", "--apply"], ["migrate", "local-first", "--chief", "--apply", "--json"],
+    ["migrate", "local-first", "--status", "--json"], ["migrate", "import", "--apply", "--json"], ["migrate", "local-first", "--apply", "--json", "--undo"],
+    ["migrate", "local-first", "--apply", "--chief", "--json", "x"], ["provider", "local"], ["config", "set", "provider", "local", "--json"]]) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]), false, a.join(" "));
+  }
+  assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "migrate")).canSpawn(NODE, [`${S}/cli/aos.js`, "migrate", "local-first", "--apply", "--json"]), false, "only Go local");
+  for (const rel of ["brain/config.json", "brain/routines/tick.md", "brain/_index/migrations.json"]) assert.equal(p.canWrite(v(rel)), false, rel);
 });
 
 test("a relative script runs only against the vault it resolves into", () => {

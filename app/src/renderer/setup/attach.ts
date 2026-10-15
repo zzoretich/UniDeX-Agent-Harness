@@ -1,37 +1,15 @@
-// Attach mode (phase 5, I5): an existing install opens straight into the Workbench. Once per vault the app shows its
-// first-launch UI: the welcome tour for a vault its wizard just installed, the "What changed" note for one that existed
-// before (tour C10); when the vault's runtime is older than the one the app carries, a status bar item and a dialog
-// offer `aos upgrade` from it, with its output shown. Never on their own: an upgrade re-renders the routine schedules
-// and refreshes both plugins, so the user picks the moment. The app's own update sits beside them (Restart to Update).
+// Attach mode (phase 5, I5): an existing install opens straight into the Workbench. What opens on its own at launch is
+// the HUD's launch sequence (tour C11, obsidian-plugin/src/ui/launchSequence.ts), one dialog at a time: this app's
+// runtime update when the vault's runtime is older than the one the app carries (the dialog below, which runs
+// `aos upgrade` from it with its output shown), then Go local and Import while that upgrade left them pending, then the
+// welcome tour (a vault the wizard just installed) or What's new, then Getting started. The runtime update is never run
+// on its own: an upgrade re-renders the routine schedules and refreshes both plugins, so the user picks the moment; the
+// status bar item offers it again. The app's own update sits beside it (Restart to Update).
 
 import { Modal, type App } from "obsidian";
-import { TOUR_COMMANDS, type AosBridge, type AttachInfo, type UpdateState } from "../../shared/ipc";
-import { BRAND } from "../../shared/brand";
+import type AgenticOSPlugin from "@workbench/hud";
+import type { AosBridge, AttachInfo, UpdateState } from "../../shared/ipc";
 import { JobTerminal } from "./jobTerminal";
-
-const CHANGES = [
-  "The Workbench is this app. Obsidian is no longer needed; your vault is still plain Markdown, so any editor opens it.",
-  "Notes open here: the Files tab (⌘O to open a file, ⌘⇧F to search) and the note editor.",
-  "Links from the status line and proposal pages open here (agenticos://).",
-  "The app updates itself from GitHub Releases, and offers to update the runtime in your vault when it carries a newer one.",
-];
-
-class WhatChangedModal extends Modal {
-  constructor(app: App, private readonly done: () => void) { super(app); }
-
-  onOpen(): void {
-    this.modalEl.addClass("aos-attach-modal");
-    this.titleEl.setText(`${BRAND.name} is an app now`);
-    const ul = this.contentEl.createEl("ul", { cls: "aos-attach-list" });
-    for (const c of CHANGES) ul.createEl("li", { text: c });
-    const foot = this.contentEl.createDiv({ cls: "aos-setup-foot" });
-    foot.createDiv({ cls: "aos-setup-spacer" });
-    const ok = foot.createEl("button", { text: "Got it", cls: "mod-cta aos-attach-ok" });
-    ok.addEventListener("click", () => this.close());
-  }
-
-  onClose(): void { this.done(); }
-}
 
 class RuntimeModal extends Modal {
   private term: JobTerminal | null = null;
@@ -96,28 +74,13 @@ function updateItem(statusBarEl: HTMLElement, aos: AosBridge): void {
 }
 
 /**
- * What the app opens on its own at launch, one at a time. THE SEAM for the launch sequence (tour C11): PR 9 replaces
- * this one function (and WhatChangedModal with it) by `launchSequence`, which owns every first-launch dialog in order.
- * Until then: a vault this app's wizard installed starts the welcome tour (after the runtime update when there is one;
- * it ends on Getting started), and is recorded as noted at once; an existing vault opened for the first time gets the
- * "What changed" note, then the runtime update; any later launch only the runtime update, when the vault's is behind.
+ * The status bar's update items, then the launch sequence (tour C11), which this hands what main knows and the runtime
+ * dialog. Returns the steps the sequence showed, in order, as they start (the e2e suite reads it on aosHost.launchLog).
  */
-export function firstLaunch(app: App, aos: AosBridge, info: AttachInfo, openRuntime: (then?: () => void) => void): void {
-  const tour = (): void => { app.commands.executeCommandById(TOUR_COMMANDS.start); };
-  if (info.firstTime && info.installed) {
-    aos.setup.noted();
-    if (info.behind) openRuntime(tour);
-    else tour();
-    return;
-  }
-  // The note first, once per vault; the runtime dialog after it (once per launch).
-  if (info.firstTime) new WhatChangedModal(app, () => { aos.setup.noted(); if (info.behind) openRuntime(); }).open();
-  else if (info.behind) openRuntime();
-}
-
-export function attachUi(app: App, aos: AosBridge, info: AttachInfo | null, statusBarEl: HTMLElement): void {
+export function attachUi(app: App, plugin: AgenticOSPlugin, aos: AosBridge, info: AttachInfo | null, statusBarEl: HTMLElement): string[] {
+  const log: string[] = [];
   updateItem(statusBarEl, aos);
-  if (!info) return;
+  if (!info) return log;
   let runtimeEl: HTMLElement | null = null;
   const openRuntime = (then?: () => void): void => new RuntimeModal(app, aos, info, () => runtimeEl?.addClass("is-hidden"), then).open();
   if (info.behind) {
@@ -125,5 +88,11 @@ export function attachUi(app: App, aos: AosBridge, info: AttachInfo | null, stat
     runtimeEl.setAttr("title", "The runtime in your vault is older than this app's: update it");
     runtimeEl.addEventListener("click", () => openRuntime());
   }
-  firstLaunch(app, aos, info, openRuntime);
+  void plugin.runLaunchSequence({
+    info,
+    runtime: (then) => openRuntime(then),
+    noted: () => aos.setup.noted(),
+    log: (s) => log.push(s),
+  }).catch((err: unknown) => console.warn("[host] launch sequence stopped", err));
+  return log;
 }

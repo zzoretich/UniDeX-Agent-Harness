@@ -1,4 +1,34 @@
 {
   "schema": 1,
-  "releases": []
+  "releases": [
+    {
+      "version": "2.0.0",
+      "entries": [
+        {
+          "id": "local-background",
+          "title": "Background work on your Mac",
+          "body": "Session summaries, memory, workspace insights and file maps, recall, the Pulse briefing and the AI buttons run on a model on this Mac and never spend. When it can't answer, the work waits or uses heuristics; nothing falls back to a paid model unless you allow it. An install from before 2.0 is asked once, and Settings ▸ Local engine can go local or undo it later.",
+          "steps": ["settings.local", "settings.go-local"]
+        },
+        {
+          "id": "chief-models",
+          "title": "Your Chief of Staff on Opus 5.5 or gpt-6-sol",
+          "body": "Its duties run on Claude Code · claude-opus-5-5 or Codex · gpt-6-sol, and with both hosts a duty that can't start on one moves to the other. The hourly check triages on this Mac first, so a quiet hour costs nothing. With no host yet, Pulse says how to add one.",
+          "steps": ["core.chief-of-staff"]
+        },
+        {
+          "id": "imported-history",
+          "title": "Your Claude Code and Codex history",
+          "body": "`aos import` brings your CLAUDE.md and AGENTS.md rules, Claude Code's memories, both hosts' MCP servers and your past sessions into the vault, on the local model. Imported memories wait in Brain ▸ Review, one batch per host, until you keep them.",
+          "steps": ["brain-review.sessions"]
+        },
+        {
+          "id": "guided-tour",
+          "title": "A guided tour, Getting started and Help",
+          "body": "Help (the ? at the rail's foot, ⌘P or the app's Help menu) has the welcome tour, a tour of the tab you are on and this list. Each tab offers its own tour on your first visit, and Getting started ticks first steps as you do them.",
+          "steps": ["help.menu"]
+        }
+      ]
+    }
+  ]
 }

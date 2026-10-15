@@ -4,8 +4,21 @@
 declare module "@workbench/hud" {
   import type { App, Plugin, PluginManifest } from "obsidian";
 
+  /** What the app hands the launch sequence (obsidian-plugin/src/ui/launchSequence.ts LaunchDeps, tour C11). */
+  export interface LaunchDeps {
+    info: { firstTime: boolean; installed: boolean; behind: boolean };
+    /** The runtime upgrade dialog; `then` runs once it closes. */
+    runtime?: (then: () => void) => void;
+    /** Records the vault as opened (attach.json). */
+    noted?: () => void;
+    /** Each step as it starts: runtime, go-local, import, core-tour, whats-new, checklist. */
+    log?: (step: string) => void;
+  }
+
   export default class AgenticOSPlugin extends Plugin {
     constructor(app: App, manifest: PluginManifest);
+    /** Every dialog the app opens on its own at launch, one at a time; resolves with the steps shown. */
+    runLaunchSequence(d: LaunchDeps): Promise<string[]>;
   }
 }
 

@@ -411,6 +411,20 @@ export const SURFACES: readonly Surface[] = [
     verified: false,
   },
   {
+    id: "migrate",
+    label: "Go local",
+    source: "ui/GoLocalCard.ts (the launch sequence's Go local card, ui/launchSequence.ts) and views/SettingsTab.ts (Settings ▸ Local engine: Go local…, Undo) (local-first A9, tour C11)",
+    // `aos migrate local-first` (cli/migrations.js) writes through the runtime, never the page: provider and ai.* in
+    // agenticos.json and brain/config.json (persona.model and persona.codexModel too with --chief), brain/routines/tick.md
+    // only while it is a file a release shipped, its backup under brain/_index/migrations/, brain/_index/migrations.json,
+    // a notification when tick.md was kept, and the installed schedules re-rendered.
+    writes: [],
+    spawns: [{ script: "cli/aos.js", args: /^migrate local-first (--apply( --chief)?|--decline|--undo) --json$/ }],
+    // Added in 2.0; off by default until a live check on a 1.9 vault goes local and undoes it through this rule (the
+    // card then names `aos migrate local-first --apply --chief` for the Code tab).
+    verified: false,
+  },
+  {
     id: "chat",
     label: "Chat",
     source: "views/ChatTab.ts (the chat log), data/claudeAsk.ts (recall, claude -p, the spend ledger), data/askSpawner.ts (local ask)",

@@ -210,7 +210,7 @@ test("Open the Workbench appends the PATH line, attaches the vault without a rel
   expect(await electronApp.evaluate(() => (globalThis as unknown as { __aosMain: { vaultRoot(): string | null } }).__aosMain.vaultRoot())).toBe(FX.vault);
   // D11: the app recorded itself in the vault it attached.
   expect(JSON.parse(fs.readFileSync(FX.v("brain/_index/hud-host.json"), "utf8"))).toMatchObject({ host: "app", version: VERSION });
-  // The wizard installed this vault, so the first-launch UI is the welcome tour (attach.ts firstLaunch), on its first
+  // The wizard installed this vault, so the first-launch UI is the welcome tour (ui/launchSequence.ts), on its first
   // step, and the vault is recorded as noted at once: the next launch shows neither.
   await expect(win.locator(".aos-tour-pop")).toHaveAttribute("data-step", "core.rail");
   await expect(win.locator(".aos-attach-modal")).toHaveCount(0);

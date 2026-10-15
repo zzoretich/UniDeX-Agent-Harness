@@ -10,4 +10,10 @@ declare module "obsidian" {
    * To-Do surface's writes" instead of failing (spaces-redesign D35).
    */
   export function canWrite(target: unknown): boolean;
+  /**
+   * Whether an enabled surface runs `node <vault>/brain/scripts/<script> args…` (the host's page policy). Display only:
+   * main checks every spawn. The Go-local card asks it, so with the `migrate` surface off it names the command for the
+   * Code tab instead of offering buttons that would be refused (local-first A9).
+   */
+  export function canRun(script: string, args: readonly string[]): boolean;
 }

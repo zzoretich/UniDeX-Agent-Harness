@@ -134,6 +134,19 @@ export class PulseTab {
       s.createSpan({ text: `Since you last looked at ${clock(m.since.at)}: ` });
       s.createSpan({ cls: "aos-pulse-since-parts", text: m.since.parts.join(" · ") });
     }
+    const wait = m.chiefWaiting;
+    if (wait) {
+      // local-first §5: no host enabled to run the Chief of Staff, or today's last duty skipped waiting for one.
+      const w = main.createDiv({ cls: "aos-pulse-waiting", attr: { role: "status", "data-kind": wait.kind } });
+      w.createSpan({ text: wait.text });
+      if (wait.kind === "no-host") {
+        const add = w.createEl("button", { cls: "aos-pulse-waiting-go", text: "Add a host", attr: { title: "Settings ▸ Hosts: install Claude Code or Codex, then sign in" } });
+        add.addEventListener("click", () => { this.view.open({ tab: "settings" }); });
+      } else {
+        const doc = w.createEl("button", { cls: "aos-pulse-waiting-go", text: "❯_ aos doctor", attr: { title: "Check each host's CLI and sign-in, in the Code tab" } });
+        doc.addEventListener("click", () => { this.view.runInTerm("aos doctor", { origin: "Pulse" }); });
+      }
+    }
     this.renderCommandDeck(main);
 
     const side = band.createDiv({ cls: "aos-pulse-band-side" });
