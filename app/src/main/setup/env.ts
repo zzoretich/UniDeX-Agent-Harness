@@ -1,18 +1,23 @@
 // The PATH a terminal would have (phase 5, I3). An app started from Finder gets launchd's PATH (/usr/bin:/bin:/usr/sbin:
-// /sbin), which finds none of what the wizard checks for: Homebrew, the user's node, claude, codex, ollama, uv. Main asks
-// the user's login shell for its PATH once per preflight (the HUD's nodeResolver asks it the same way, for node), then
-// adds the folders the installers it offers write to, so a tool installed by a fix-it is found without a new shell.
+// /sbin), which finds none of what the wizard checks for: the user's node, claude, codex, ollama, uv. Main asks the
+// user's login shell for its PATH once per preflight (the HUD's nodeResolver asks it the same way, for node), then adds
+// the folders the wizard's own installs and the usual installers write to, so a tool installed by a fix is found without
+// a new shell.
 
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { privateNodeBinDir } from "./toolchain";
 
 /** Printed before the PATH so the shell's own greeting (an interactive rc file may print one) cannot be mistaken for it. */
 export const PATH_MARKER = "__AOS_PATH__=";
 
-/** Where the installers the wizard offers put their programs: Homebrew (Apple silicon, Intel), uv and claude's own, cargo. */
+/**
+ * Where programs get installed: ~/.local/bin (uv, and the claude, codex and aos links), the wizard's private Node
+ * (install-import B1), cargo's, and Homebrew's (Apple silicon, Intel) for what a user installed with it.
+ */
 export function installDirs(home: string): string[] {
-  return ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", path.join(home, ".local", "bin"), path.join(home, ".cargo", "bin")];
+  return [path.join(home, ".local", "bin"), privateNodeBinDir(home), path.join(home, ".cargo", "bin"), "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"];
 }
 
 const SYSTEM = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
@@ -41,17 +46,25 @@ export interface LoginPathDeps {
 }
 
 /**
- * The PATH the wizard runs with. $AOS_SETUP_PATH replaces the whole lookup (the e2e suite's stand-in tools); otherwise
- * the login shell's PATH, then the installers' folders, then the system's. A shell that fails or hangs costs its 8 s
- * timeout and falls back to main's own PATH.
+ * The login shell's own PATH, as a new terminal would have it; null when the shell fails or hangs (its 8 s timeout).
+ * $AOS_SETUP_PATH replaces the lookup (the e2e suite's stand-in tools).
  */
-export function loginPath(d: LoginPathDeps): string {
+export function shellPath(d: LoginPathDeps): string | null {
   if (d.env.AOS_SETUP_PATH !== undefined) return mergePath(d.env.AOS_SETUP_PATH);
-  let fromShell: string | null = null;
   const shell = d.shell && path.isAbsolute(d.shell) ? d.shell : "/bin/zsh";
   try {
-    fromShell = parseLoginPath(d.exec(shell, ["-lic", `printf '\\n${PATH_MARKER}%s\\n' "$PATH"`], { encoding: "utf8", timeout: 8000, env: d.env }));
-  } catch { /* no login shell: main's own PATH */ }
+    return parseLoginPath(d.exec(shell, ["-lic", `printf '\\n${PATH_MARKER}%s\\n' "$PATH"`], { encoding: "utf8", timeout: 8000, env: d.env }));
+  } catch { return null; }
+}
+
+/**
+ * The PATH the wizard runs with. $AOS_SETUP_PATH replaces the whole lookup (the e2e suite's stand-in tools); otherwise
+ * the login shell's PATH (`shell`, when the caller already asked for it), then the install folders, then the system's.
+ * A shell that fails or hangs falls back to main's own PATH.
+ */
+export function loginPath(d: LoginPathDeps, shell?: string | null): string {
+  if (d.env.AOS_SETUP_PATH !== undefined) return mergePath(d.env.AOS_SETUP_PATH);
+  const fromShell = shell === undefined ? shellPath(d) : shell;
   return mergePath(fromShell ?? d.env.PATH, installDirs(d.home), SYSTEM);
 }
 

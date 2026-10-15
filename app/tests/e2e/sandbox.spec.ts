@@ -2,8 +2,8 @@
 // reaches main only through window.aos's named functions, and main refuses what the policy does not name: a read
 // outside the vault and the hosts' folders, a credential file, a write outside the surfaces, a shell, a planted program
 // or variable, a terminal running something other than a shell, a link that is not https, a file that would run when
-// opened, and anyone but the app's own page. Phase 5 adds setup and updates: a fix-it is named by id only, and each
-// setup step is refused outside the state it belongs to.
+// opened, and anyone but the app's own page. Phase 5 adds setup and updates: a fix (a download or a login) is named by
+// id only, and each setup step, the PATH line included, is refused outside the state it belongs to.
 
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs";
@@ -53,7 +53,7 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.pty).toEqual(["available", "kill", "onEvent", "resize", "spawn", "write"]);
   expect(shape.shell).toEqual(["openExternal", "openPath", "showItemInFolder"]);
   expect(shape.plugin).toEqual(["loadData", "saveData"]);
-  expect(shape.setup).toEqual(["applyClaudeMd", "cancel", "chooseVault", "claudeMd", "finish", "fix", "input", "install", "noted", "onEvent", "preflight", "resize", "upgrade"]);
+  expect(shape.setup).toEqual(["addToPath", "applyClaudeMd", "cancel", "chooseVault", "claudeMd", "finish", "fix", "input", "install", "noted", "onEvent", "pathLine", "preflight", "resize", "upgrade"]);
   expect(shape.update).toEqual(["check", "install", "onState", "state"]);
   expect(shape.theme).toEqual(["onChange", "set", "state"]);
   expect(shape.sessions).toEqual(["catalog", "list", "onEvent", "read", "send", "start", "stop"]);
@@ -61,8 +61,11 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
 });
 
 test("setup names a fix by id only, and refuses each step outside its state", async () => {
-  // A command, or a fix the table does not have, does not parse.
+  // A command, or a fix the table does not have (Homebrew's and Python's are gone, install-import B1), does not parse.
   expect(await call((aos) => (aos.setup.fix as (id: string, c: number, r: number) => unknown)("rm -rf ~", 80, 24))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.setup.fix as (id: string, c: number, r: number) => unknown)("homebrew", 80, 24))).toMatchObject({ ok: false, code: "EINVAL" });
+  // A download is named by its fix id too, and is the wizard's: with a vault attached, refused before anything is fetched.
+  expect(await call((aos) => aos.setup.fix("node", 80, 24))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
   // The checks and fix-its are the wizard's: with a vault attached, refused.
   expect(await call((aos) => aos.setup.fix("uv", 80, 24))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
   expect(await call((aos) => aos.setup.fix("ollama-models", 80, 24))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
@@ -76,6 +79,12 @@ test("setup names a fix by id only, and refuses each step outside its state", as
   const persona = { name: "x", addressAs: "", voice: "", priorities: [], dutyModel: "", dutyCodexModel: "", dutyEffort: "medium", schedule: false };
   expect(await call((aos, p) => aos.setup.install({ host: "claude", vault: "~/V", persona: JSON.parse(p) }), JSON.stringify(persona))).toMatchObject({ ok: false, code: "EINVAL" });
   expect(await call((aos) => aos.setup.install({ host: "all" as "both", vault: "~/V", persona: null }))).toMatchObject({ ok: false, code: "EINVAL" });
+  // No host is a choice (install-import B2) that parses, and is refused like any install once a vault is attached.
+  expect(await call((aos) => aos.setup.install({ host: "none", vault: "~/V", persona: null }))).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
+  // The PATH line is Finish's (B14): main names the file and the line, and neither is offered once a vault is attached.
+  expect(await call((aos) => aos.setup.pathLine())).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
+  expect(await call((aos) => aos.setup.addToPath())).toMatchObject({ ok: false, code: "EROFS", error: "a vault is already attached" });
+  expect(fs.existsSync(path.join(FX.home, ".zprofile"))).toBe(false);
   // The CLAUDE.md preview names the attached vault's line; the page sends no path.
   const md = await call((aos) => aos.setup.claudeMd());
   expect(md).toMatchObject({ ok: true, data: { line: `@${FX.v("AGENTICOS.md")}` } });

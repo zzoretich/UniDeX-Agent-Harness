@@ -79,7 +79,7 @@ export const ReadyInfoSchema: z.ZodType<ReadyInfo> = z.object({
 
 // ── setup (phase 5) ──────────────────────────────────────────────────
 
-const FIX_IDS = ["homebrew", "node", "python", "uv", "ollama", "ollama-models", "claude", "codex", "claude-login", "codex-login"] as const satisfies readonly SetupFixId[];
+const FIX_IDS = ["node", "uv", "ollama", "ollama-models", "claude", "codex", "claude-login", "codex-login"] as const satisfies readonly SetupFixId[];
 
 const Cols = z.number().int().min(1).max(2000);
 const Rows = z.number().int().min(1).max(1000);
@@ -104,7 +104,8 @@ export const PersonaSchema: z.ZodType<PersonaAnswers> = z.object({
 });
 
 export const InstallRequestSchema: z.ZodType<InstallRequest> = z.object({
-  host: z.enum(["claude", "codex", "both"]),
+  /** none: no agent CLI yet (install-import B2). */
+  host: z.enum(["claude", "codex", "both", "none"]),
   vault: Text(4096).refine((s) => s.trim().length > 0, "a folder"),
   persona: PersonaSchema.nullable(),
 });

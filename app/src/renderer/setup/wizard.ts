@@ -1,10 +1,12 @@
-// The first-run wizard (phase 5, I4): what the page shows when no vault is attached. It checks what `aos init` needs,
-// offers a fix-it for each missing piece (run by main in a terminal shown here), asks which hosts and which folder,
-// asks the Chief of Staff questions, runs `aos init` from the runtime the app carries, offers the CLAUDE.md line as a
-// diff, and ends in the Workbench. Every step is a call main checks (src/main/ipc/setup.ts); the page names a fix by id
-// and never sends a command or a CLAUDE.md path.
+// The first-run wizard (phase 5, I4; install-import B1, B2, B13, B14): what the page shows when no vault is attached. It
+// checks what `aos init` needs and installs what is missing itself (main downloads each pinned tool, checks it and puts
+// it in place, with its progress here; the logins run in a terminal shown here), asks which hosts (or none yet) and
+// which folder, asks the Chief of Staff questions, runs `aos init` from the runtime the app carries, then lists what is
+// left, step by step: the CLAUDE.md line as a diff, Codex's /hooks, a host to add later, and the PATH line. It ends in
+// the Workbench. Every step is a call main checks (src/main/ipc/setup.ts); the page names a fix by id and never sends a
+// command, a URL, a CLAUDE.md path or a profile path.
 
-import type { AosBridge, BootInfo, ClaudeMdPreview, InstallRequest, PersonaAnswers, PreflightReport, SetupCheck, SetupEvent, SetupFixId } from "../../shared/ipc";
+import type { AosBridge, BootInfo, ClaudeMdPreview, InstallRequest, PathLinePreview, PersonaAnswers, PreflightReport, SetupCheck, SetupEvent, SetupFixId } from "../../shared/ipc";
 import { BRAND } from "../../shared/brand";
 import { JobTerminal } from "./jobTerminal";
 
@@ -13,15 +15,24 @@ type Host = InstallRequest["host"];
 
 const STEPS: Array<[Step, string]> = [["check", "Check"], ["choose", "Choose"], ["persona", "Your agent"], ["install", "Install"], ["finish", "Finish"]];
 
+/** What "Install what's missing" runs, in order: what `aos init` needs, then Ollama and its models. The hosts are the user's choice. */
+export const ESSENTIALS: readonly SetupFixId[] = ["node", "uv", "ollama", "ollama-models"];
+
 /** brain/scripts/persona/interview.js's rule for a name (main checks it again). */
 export const NAME_RE = /^[A-Za-z][A-Za-z0-9 _-]{1,39}$/;
 
 /** "a, b\nc" → ["a", "b", "c"] (the interview's toList). */
 export function splitList(s: string): string[] { return s.split(/[,\n]/).map((x) => x.trim()).filter(Boolean); }
 
-/** The host to offer first: both when both are ready, else the one that is. */
+/** The host to offer first: both when both are ready, else the one that is, else none yet (install-import B2). */
 export function defaultHost(ready: { claude: boolean; codex: boolean }): Host {
-  return ready.claude && ready.codex ? "both" : ready.codex ? "codex" : "claude";
+  return ready.claude && ready.codex ? "both" : ready.codex ? "codex" : ready.claude ? "claude" : "none";
+}
+
+/** "12.3 of 50.6 MB" (or "12.3 MB" when the total is unknown). */
+export function progressText(received: number, total: number | null): string {
+  const mb = (n: number) => (n / 1e6).toFixed(n >= 1e8 ? 0 : 1);
+  return total ? `${mb(received)} of ${mb(total)} MB` : `${mb(received)} MB`;
 }
 
 interface State {
@@ -30,23 +41,32 @@ interface State {
   checking: boolean;
   /** The running job and, for a fix, which one. */
   job: { kind: SetupEvent["job"]; fix?: SetupFixId } | null;
+  /** The running download's progress. */
+  progress: { label: string; received: number; total: number | null } | null;
+  /** The fix that just failed: its button reads Retry. */
+  failed: SetupFixId | null;
+  /** Install what's missing: the fixes still to run, in order. */
+  queue: SetupFixId[];
   host: Host;
   vault: string;
   persona: PersonaAnswers;
   personaSkipped: boolean;
   installExit: number | null | undefined;
   claudeMd: ClaudeMdPreview | null;
+  pathLine: PathLinePreview | null;
+  /** Finish's "Add aos to my PATH" box. */
+  addPath: boolean;
   error: string | null;
 }
 
 export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): void {
   const setup = info.setup;
   const s: State = {
-    step: "check", report: null, checking: false, job: null,
+    step: "check", report: null, checking: false, job: null, progress: null, failed: null, queue: [],
     host: "claude",
     vault: setup?.configuredVault ?? setup?.defaultVault ?? "~/AgenticOS",
     persona: { name: "", addressAs: "", voice: "", priorities: [], dutyModel: "", dutyCodexModel: "", dutyEffort: "medium", schedule: true },
-    personaSkipped: false, installExit: undefined, claudeMd: null, error: null,
+    personaSkipped: false, installExit: undefined, claudeMd: null, pathLine: null, addPath: true, error: null,
   };
 
   const shell = root.createDiv({ cls: "aos-setup" });
@@ -54,16 +74,16 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
   head.createEl("h1", { text: `Set up ${BRAND.name}` });
   head.createEl("p", {
     cls: "aos-setup-sub",
-    text: `${BRAND.name} ${info.appVersion}${setup?.payload ? ` · runtime ${setup.payload.version}` : ""}. Nothing is written until you choose Install.`,
+    text: `${BRAND.name} ${info.appVersion}${setup?.payload ? ` · runtime ${setup.payload.version}` : ""}. Nothing is written until you choose Install or a download.`,
   });
   const nav = shell.createDiv({ cls: "aos-setup-steps" });
   const body = shell.createDiv({ cls: "aos-setup-body" });
   const termHost = shell.createDiv({ cls: "aos-setup-termhost" });
   let term: JobTerminal | null = null;
 
-  /** The one terminal, made when a job first needs it and kept for the next. */
-  function terminal(interactive: boolean): JobTerminal {
-    if (term && term.el.dataset.interactive === String(interactive)) { term.clear(); return term; }
+  /** The one terminal, made when a job first needs it and kept for the next; `keep` leaves its text (a queue's next fix). */
+  function terminal(interactive: boolean, keep = false): JobTerminal {
+    if (term && term.el.dataset.interactive === String(interactive)) { if (!keep) term.clear(); return term; }
     term?.dispose();
     termHost.empty();
     term = new JobTerminal(termHost, interactive ? { input: (d) => aos.setup.input(d), resize: (c, r) => aos.setup.resize(c, r) } : { rows: 16 });
@@ -76,14 +96,20 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
 
   aos.setup.onEvent((ev) => {
     if (ev.type === "data") { term?.write(ev.data); return; }
+    if (ev.type === "progress") { s.progress = { label: ev.label, received: ev.received, total: ev.total }; paintProgress(); return; }
     const job = s.job;
     s.job = null;
+    s.progress = null;
     const code = ev.code;
     term?.note(code === 0 ? "✓ done" : `stopped (exit ${code ?? ev.signal ?? "?"})`);
-    if (job?.kind === "fix") { render(); void check(); }
-    else if (job?.kind === "install") {
+    if (job?.kind === "fix") {
+      s.failed = code === 0 ? null : job.fix ?? null;
+      if (code !== 0) s.queue = [];
+      render();
+      void check().then(() => { if (code === 0) next(); });
+    } else if (job?.kind === "install") {
       s.installExit = code;
-      if (code === 0) { s.step = "finish"; loadClaudeMd(); }
+      if (code === 0) { s.step = "finish"; loadFinish(); }
       render();
     }
   });
@@ -102,20 +128,47 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     render();
   }
 
-  function runFix(c: SetupCheck): void {
+  const checkOf = (id: SetupFixId): SetupCheck | undefined => s.report?.checks.find((c) => c.fix === id);
+
+  function runFix(c: SetupCheck, keep = false): void {
     if (!c.fix || s.job) return;
-    const t = terminal(true);
+    const t = terminal(c.fixKind === "terminal", keep);
     const size = t.size;
     const r = aos.setup.fix(c.fix, size.cols, size.rows);
-    if (!r.ok) { s.error = `${c.fixLabel}: ${r.error}`; render(); return; }
+    if (!r.ok) { s.error = `${c.fixLabel}: ${r.error}`; s.queue = []; render(); return; }
     s.job = { kind: "fix", fix: c.fix };
+    s.progress = null;
     s.error = null;
     render();
-    t.focus();
+    if (c.fixKind === "terminal") t.focus();
+  }
+
+  /** The next fix of the queue whose check still fails and can run; false when there is none. */
+  function next(): boolean {
+    while (s.queue.length) {
+      const id = s.queue.shift() as SetupFixId;
+      const c = checkOf(id);
+      if (!c || c.state === "ok" || !c.fix || c.fixBlocked) continue;
+      runFix(c, true);
+      return true;
+    }
+    return false;
+  }
+
+  /** The essentials that are missing and can run now (Ollama's models wait for Ollama, which the queue installs first). */
+  const missingEssentials = (): SetupFixId[] => ESSENTIALS.filter((id) => {
+    const c = checkOf(id);
+    return !!c && c.state !== "ok" && !!c.fix && (!c.fixBlocked || (id === "ollama-models" && checkOf("ollama")?.state !== "ok" && !checkOf("ollama")?.fixBlocked));
+  });
+
+  function installMissing(): void {
+    s.queue = missingEssentials();
+    term?.clear();
+    next();
   }
 
   function install(): void {
-    const req: InstallRequest = { host: s.host, vault: s.vault, persona: s.personaSkipped ? null : { ...s.persona } };
+    const req: InstallRequest = { host: s.host, vault: s.vault, persona: s.personaSkipped || s.host === "none" ? null : { ...s.persona } };
     terminal(false);
     const r = aos.setup.install(req);
     if (!r.ok) { s.error = r.error; s.installExit = undefined; render(); return; }
@@ -126,10 +179,10 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     render();
   }
 
-  function loadClaudeMd(): void {
-    if (s.host === "codex") { s.claudeMd = null; return; }
-    const r = aos.setup.claudeMd();
-    s.claudeMd = r.ok ? r.data : null;
+  function loadFinish(): void {
+    if (s.host === "claude" || s.host === "both") { const r = aos.setup.claudeMd(); s.claudeMd = r.ok ? r.data : null; } else s.claudeMd = null;
+    const p = aos.setup.pathLine();
+    s.pathLine = p.ok ? p.data : null;
   }
 
   // ── steps ──────────────────────────────────────────────────────────
@@ -150,6 +203,40 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     return b;
   };
 
+  /** A download's bar, under the row whose fix is running. */
+  function progressBar(parent: HTMLElement): void {
+    const wrap = parent.createDiv({ cls: "aos-setup-progress" });
+    wrap.createDiv({ cls: "aos-setup-progress-label" });
+    const bar = wrap.createDiv({ cls: "aos-setup-progress-bar", attr: { role: "progressbar", "aria-valuemin": "0" } });
+    bar.createDiv({ cls: "aos-setup-progress-fill" });
+    paintProgress();
+  }
+
+  /** Redraws only the bar (a download reports many times a second). */
+  function paintProgress(): void {
+    const wrap = body.querySelector<HTMLElement>(".aos-setup-progress");
+    if (!wrap) return;
+    const p = s.progress;
+    const label = wrap.querySelector<HTMLElement>(".aos-setup-progress-label");
+    const bar = wrap.querySelector<HTMLElement>(".aos-setup-progress-bar");
+    const fill = wrap.querySelector<HTMLElement>(".aos-setup-progress-fill");
+    wrap.toggleClass("is-idle", !p);
+    if (label) label.textContent = p ? `${p.label} · ${progressText(p.received, p.total)}` : "Starting…";
+    const pct = p?.total ? Math.min(100, Math.round((p.received / p.total) * 100)) : 0;
+    if (bar) { bar.setAttribute("aria-valuemax", "100"); bar.setAttribute("aria-valuenow", String(pct)); bar.setAttribute("aria-label", label?.textContent ?? ""); }
+    if (fill) fill.style.width = `${pct}%`;
+  }
+
+  function fixButton(row: HTMLElement, c: SetupCheck): void {
+    if (!c.fix) return;
+    const running = s.job?.kind === "fix" && s.job.fix === c.fix;
+    const retry = s.failed === c.fix && !running;
+    button(row, running ? "Running…" : retry ? "Retry" : c.fixLabel ?? "Fix", () => runFix(c), {
+      cls: "aos-setup-fix", disabled: !!s.job || !!c.fixBlocked || s.checking,
+      title: c.fixBlocked ?? (c.fixKind === "terminal" ? `Runs: ${c.fixCommand}` : c.fixCommand ?? ""),
+    });
+  }
+
   function renderCheck(el: HTMLElement): void {
     el.createEl("h2", { text: `What ${BRAND.name} needs` });
     if (setup?.reason === "no-vault" && setup.configuredVault) {
@@ -160,7 +247,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     if (!setup?.payload) {
       el.createDiv({ cls: "aos-setup-callout is-warn", text: "This build of the app carries no runtime, so it cannot install. Install a release of the app, or run it with AOS_APP_PAYLOAD set to a release tree (`npm run payload` in app/)." });
     }
-    el.createEl("p", { cls: "aos-setup-hint", text: "Node, Ollama, Python and uv are required, and at least one of Claude Code or Codex, installed and logged in. Ollama's two models (about 7.2 GB) are not required, but background work runs on Ollama once it answers, so download them too. A fix runs in the terminal below; it may ask for your password." });
+    el.createEl("p", { cls: "aos-setup-hint", text: `Node.js and uv are required. Ollama and its models are recommended: background work runs on them, on this Mac. Claude Code and Codex are the agents your sessions run in; you can add them now or later. ${BRAND.name} downloads each tool from its maker, checks it against a pinned checksum and signature, and only then installs it; nothing needs Homebrew or a terminal. A login runs in the terminal below.` });
     const list = el.createDiv({ cls: "aos-setup-checks" });
     if (!s.report) list.createDiv({ cls: "aos-setup-hint", text: s.checking ? "Checking…" : "" });
     for (const c of s.report?.checks ?? []) {
@@ -169,35 +256,45 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       const what = row.createDiv({ cls: "aos-setup-what" });
       what.createDiv({ cls: "aos-setup-label", text: c.label });
       what.createDiv({ cls: "aos-setup-detail", text: c.detail });
-      if (c.fix) {
-        const running = s.job?.kind === "fix" && s.job.fix === c.fix;
-        button(row, running ? "Running…" : c.fixLabel ?? "Fix", () => runFix(c), {
-          cls: "aos-setup-fix", disabled: !!s.job || !!c.fixBlocked || s.checking,
-          title: c.fixBlocked ?? `Runs: ${c.fixCommand}`,
-        });
-      }
+      if (s.job?.kind === "fix" && s.job.fix === c.fix && c.fixKind === "download") progressBar(what);
+      fixButton(row, c);
     }
     const foot = el.createDiv({ cls: "aos-setup-foot" });
     button(foot, s.checking ? "Checking…" : "Check again", () => void check(), { disabled: s.checking || !!s.job, cls: "aos-setup-recheck" });
-    if (s.job?.kind === "fix") button(foot, "Stop", () => aos.setup.cancel(), { cls: "aos-setup-stop" });
+    if (s.job?.kind === "fix") button(foot, "Stop", () => { s.queue = []; aos.setup.cancel(); }, { cls: "aos-setup-stop" });
     foot.createDiv({ cls: "aos-setup-spacer" });
-    button(foot, "Continue", () => { s.step = "choose"; render(); }, { cta: true, cls: "aos-setup-next", disabled: !s.report?.ready || !setup?.payload || !!s.job });
+    const missing = s.report ? missingEssentials() : [];
+    if (missing.length && !s.job) {
+      button(foot, "Install what's missing", () => installMissing(), {
+        cls: "aos-setup-install-missing", disabled: s.checking,
+        title: `Runs, one after another: ${missing.map((id) => checkOf(id)?.fixLabel ?? id).join(", ")}`,
+      });
+    }
+    button(foot, "Continue", () => { s.step = "choose"; render(); }, { cta: !missing.length || !!s.report?.ready, cls: "aos-setup-next", disabled: !s.report?.ready || !setup?.payload || !!s.job });
   }
 
   function renderChoose(el: HTMLElement): void {
     const ready = s.report?.hosts ?? { claude: false, codex: false };
+    const noHost = !ready.claude && !ready.codex;
     el.createEl("h2", { text: "Hosts and folder" });
-    el.createEl("p", { cls: "aos-setup-hint", text: `${BRAND.name} works with Claude Code, Codex, or both. Only the ones that are installed and logged in can be chosen.` });
+    el.createEl("p", {
+      cls: "aos-setup-hint",
+      text: noHost
+        ? `Neither Claude Code nor Codex is installed and logged in. You can install without one: your vault, its memory and the background work on this Mac are set up now; Sessions and the Chief of Staff wait until Claude Code or Codex is added.`
+        : `${BRAND.name} works with Claude Code, Codex, or both. Only the ones that are installed and logged in can be chosen.`,
+    });
     const hosts = el.createDiv({ cls: "aos-setup-hosts" });
     const options: Array<[Host, string, boolean]> = [["claude", "Claude Code", ready.claude], ["codex", "Codex", ready.codex], ["both", "Both", ready.claude && ready.codex]];
+    if (noHost) options.push(["none", "No agent CLI yet", true]);
     for (const [id, label, ok] of options) {
       const lab = hosts.createEl("label", { cls: `aos-setup-host${ok ? "" : " is-disabled"}` });
       const input = lab.createEl("input", { attr: { type: "radio", name: "aos-host", value: id } });
       input.checked = s.host === id;
       input.disabled = !ok;
-      input.addEventListener("change", () => { if (input.checked) s.host = id; });
+      input.addEventListener("change", () => { if (input.checked) { s.host = id; render(); } });
       lab.appendText(` ${label}`);
     }
+    if (s.host === "none") el.createEl("p", { cls: "aos-setup-hint", attr: { "data-hint": "no-host" }, text: "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Finish says how." });
     el.createEl("h3", { text: "Vault folder" });
     el.createEl("p", { cls: "aos-setup-hint", text: "Your notes, memory and the runtime live here, as plain Markdown. Files already there are kept." });
     const row = el.createDiv({ cls: "aos-setup-vault" });
@@ -208,7 +305,9 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     const foot = el.createDiv({ cls: "aos-setup-foot" });
     button(foot, "Back", () => { s.step = "check"; render(); });
     foot.createDiv({ cls: "aos-setup-spacer" });
-    button(foot, "Continue", () => { s.step = "persona"; render(); }, { cta: true, cls: "aos-setup-next", disabled: !s.vault.trim() });
+    // No host, no Chief of Staff yet: straight to the install.
+    if (s.host === "none") button(foot, "Install", () => install(), { cta: true, cls: "aos-setup-install", disabled: !s.vault.trim() });
+    else button(foot, "Continue", () => { s.step = "persona"; render(); }, { cta: true, cls: "aos-setup-next", disabled: !s.vault.trim() });
   }
 
   function renderPersona(el: HTMLElement): void {
@@ -238,8 +337,8 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     const pri = pf.createEl("textarea", { attr: { rows: "2", "data-field": "priorities" } });
     pri.value = p.priorities.join(", ");
     pri.addEventListener("input", () => { p.priorities = splitList(pri.value); });
-    if (s.host !== "codex") field("Model for background duties (Claude Code)", "dutyModel", "haiku");
-    if (s.host !== "claude") field("Model for background duties (Codex)", "dutyCodexModel", "your Codex default");
+    if (s.host === "claude" || s.host === "both") field("Model for background duties (Claude Code)", "dutyModel", "haiku");
+    if (s.host === "codex" || s.host === "both") field("Model for background duties (Codex)", "dutyCodexModel", "your Codex default");
     const ef = form.createDiv({ cls: "aos-setup-field" });
     ef.createEl("label", { text: "Effort for background duties" });
     const sel = ef.createEl("select", { attr: { "data-field": "dutyEffort" } });
@@ -276,9 +375,25 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     }
   }
 
+  /** One item of Finish's list: a heading, why, and the steps, in order. */
+  function leftItem(el: HTMLElement, key: string, title: string, why: string, steps: string[]): HTMLElement {
+    const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": key } });
+    sec.createEl("h3", { text: title });
+    if (why) sec.createEl("p", { cls: "aos-setup-hint", text: why });
+    if (steps.length) {
+      const ol = sec.createEl("ol", { cls: "aos-setup-steps-list" });
+      for (const t of steps) ol.createEl("li", { text: t });
+    }
+    return sec;
+  }
+
+  const TERMINAL = "Open Terminal (in Applications ▸ Utilities).";
+
   function renderFinish(el: HTMLElement): void {
     el.createEl("h2", { text: "Almost there" });
-    if (s.host !== "codex") {
+    el.createEl("p", { cls: "aos-setup-hint", text: "What is left, step by step. None of it is needed to open the Workbench; each can be done later." });
+    const aosCmd = s.pathLine?.onPath || s.pathLine?.present ? "aos" : "~/.local/bin/aos";
+    if (s.host === "claude" || s.host === "both") {
       const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": "claude-md" } });
       sec.createEl("h3", { text: "Connect Claude Code" });
       sec.createEl("p", { cls: "aos-setup-hint", text: `Claude Code reads the vault's conventions (AGENTICOS.md) through one line in your CLAUDE.md. ${BRAND.name} adds it only if you say so.` });
@@ -300,17 +415,58 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
         }
       }
     }
-    if (s.host !== "claude") {
-      const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": "codex-hooks" } });
-      sec.createEl("h3", { text: "Trust the hooks in Codex" });
-      sec.createEl("p", { cls: "aos-setup-hint", text: "Codex runs AgenticOS's hooks only once you trust them: open codex in a terminal, run /hooks, and trust the agenticos entries. It asks once." });
+    if (s.host === "codex" || s.host === "both") {
+      leftItem(el, "codex-hooks", "Trust the hooks in Codex",
+        `Codex runs ${BRAND.name}'s hooks only once you trust them. It asks once, and they stay trusted across updates.`,
+        [TERMINAL, "Type codex and press Return.", "Type /hooks and press Return.", "Trust each agenticos entry. Until you do, they do not run."]);
+    }
+    if (s.host === "none") {
+      leftItem(el, "no-host", "Add Claude Code or Codex",
+        "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Your vault, its memory and the background work on this Mac run without one.",
+        [TERMINAL,
+          "Install one and sign in: Claude Code with curl -fsSL https://claude.ai/install.sh | bash, then claude auth login; or Codex with curl -fsSL https://chatgpt.com/codex/install.sh | sh, then codex login.",
+          `Type ${aosCmd} init --vault ${s.vault} --host claude (or --host codex) and press Return. It keeps your files and adds the host.`]);
+    } else if (s.personaSkipped) {
+      leftItem(el, "persona", "Set up your Chief of Staff", "You skipped its questions; it starts once you answer them.",
+        [TERMINAL, `Type ${aosCmd} persona and press Return, then answer its questions.`]);
+    }
+    for (const id of ["ollama", "ollama-models"] as const) {
+      const c = checkOf(id) ?? s.report?.checks.find((x) => x.id === id);
+      if (!c || c.state === "ok") continue;
+      const sec = leftItem(el, id, id === "ollama" ? "Install Ollama" : "Download Ollama's models",
+        `${c.detail}. Background work on this Mac waits for ${id === "ollama" ? "it" : `${s.report?.models.join(" and ") ?? "them"}`}.`, []);
+      if (s.job?.kind === "fix" && s.job.fix === c.fix) progressBar(sec);
+      const row = sec.createDiv({ cls: "aos-setup-foot" });
+      fixButton(row, c);
+    }
+    const pl = s.pathLine;
+    if (pl) {
+      const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": "path" } });
+      sec.createEl("h3", { text: "Run aos from a terminal" });
+      if (pl.onPath || pl.present) sec.createDiv({ cls: "aos-setup-ok", text: `✓ ~/.local/bin is on your PATH${pl.present ? ` (${pl.file})` : ""}: aos, claude and codex run from any terminal.` });
+      else {
+        sec.createEl("p", { cls: "aos-setup-hint", text: `aos, and the Claude Code and Codex that ${BRAND.name} installs, live in ~/.local/bin, which a new terminal does not look in yet. Ticked, Open the Workbench appends this one line to ${pl.file}; unticked, nothing is written and the app still runs aos by its full path.` });
+        const diff = sec.createDiv({ cls: "aos-setup-diff" });
+        diff.createDiv({ cls: "aos-setup-diff-path", text: pl.file });
+        diff.createDiv({ cls: "aos-setup-diff-line is-add", text: `+ ${pl.line}` });
+        const lab = sec.createEl("label", { cls: "aos-setup-check-field" });
+        const cb = lab.createEl("input", { cls: "aos-setup-add-path", attr: { type: "checkbox" } });
+        cb.checked = s.addPath;
+        cb.addEventListener("change", () => { s.addPath = cb.checked; });
+        lab.appendText(" Add aos to my PATH");
+      }
     }
     const foot = el.createDiv({ cls: "aos-setup-foot" });
     foot.createDiv({ cls: "aos-setup-spacer" });
     button(foot, "Open the Workbench", () => {
+      if (pl && !pl.onPath && !pl.present && s.addPath) {
+        const w = aos.setup.addToPath();
+        if (!w.ok) { s.error = w.error; render(); return; }
+        s.pathLine = w.data;
+      }
       const r = aos.setup.finish();
       if (!r.ok) { s.error = r.error; render(); }
-    }, { cta: true, cls: "aos-setup-open" });
+    }, { cta: true, cls: "aos-setup-open", disabled: !!s.job });
   }
 
   function render(): void {
@@ -319,8 +475,8 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     body.setAttr("data-step", s.step);
     ({ check: renderCheck, choose: renderChoose, persona: renderPersona, install: renderInstall, finish: renderFinish })[s.step](body);
     if (s.error) body.createDiv({ cls: "aos-setup-error is-shown", text: s.error });
-    // The terminal shows while it has something to show: on the checks and the install.
-    termHost.toggleClass("is-hidden", !term || (s.step !== "check" && s.step !== "install"));
+    // The terminal shows while it has something to show: on the checks, the install, and a job Finish started.
+    termHost.toggleClass("is-hidden", !term || (s.step !== "check" && s.step !== "install" && !(s.step === "finish" && s.job)));
     term?.refit();
   }
 
