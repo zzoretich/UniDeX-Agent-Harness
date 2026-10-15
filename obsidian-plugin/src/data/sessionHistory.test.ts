@@ -98,6 +98,12 @@ test("Resume is off for an id that is not the file's, and an outside folder resu
   assert.equal(resumeFor(base, "gone", BOTH, WORLD).state === "on", true);
 });
 
+test("Resume is off for a folder whose name holds a control character, which a launch line never types", () => {
+  const base: IndexedSession = { host: "codex", id: CX, fileMatches: true, archived: false, title: null, cwd: "/opt/sample/x\u0015rm -rf ~", startedAt: null, lastAt: null };
+  assert.deepEqual(resumeFor(base, null, BOTH, WORLD), { state: "off", reason: "Its folder's name holds a control character, so it is not typed into a terminal" });
+  assert.equal(resumeFor({ ...base, cwd: "/opt/sample/ok" }, null, BOTH, WORLD).state, "on");
+});
+
 test("the filter needs every word; days group in order; day headings", () => {
   const rows = historyRows(parseSessionIndex(INDEX), parseDigests(DIGESTS), BOTH, WORLD);
   assert.deepEqual(filterHistory(rows, "tile cache").map((r) => r.title), ["Tile cache sizes"]);

@@ -10,7 +10,7 @@
 // Pure, so node:test can load it.
 import * as path from "path";
 import { THREAD_ID_RE } from "./statusline";
-import { TERM_HOST_LABEL, placeOf, vaultPlace, workspacePlace } from "./terminalLaunch";
+import { TERM_HOST_LABEL, hasControl, placeOf, vaultPlace, workspacePlace } from "./terminalLaunch";
 import type { Place, PlaceWorld, TermHostChoice } from "./terminalLaunch";
 import { shortenCwd } from "./hostSessions";
 
@@ -167,6 +167,9 @@ export function resumeFor(s: Pick<IndexedSession, "host" | "id" | "fileMatches" 
     const place = workspacePlace(workspace, world);
     return { state: "on", place, hint: `Resumes in ${place.linked ? `${shortenCwd(place.dir, world.home)}, its code folder` : `workspaces/${workspace}`}` };
   }
+  // The folder is typed into the shell (`codex resume -C <folder>`) or is its working directory: one whose name holds a
+  // control character is never typed (terminalLaunch free refuses it too).
+  if (s.cwd && hasControl(s.cwd)) return { state: "off", reason: "Its folder's name holds a control character, so it is not typed into a terminal" };
   const place = s.cwd ? placeOf(s.cwd, world) : vaultPlace(world);
   const where = place.kind === "vault" ? "the vault" : shortenCwd(place.dir, world.home);
   return { state: "on", place, hint: `Resumes in ${where}${s.cwd ? ", where it started" : ""}` };
