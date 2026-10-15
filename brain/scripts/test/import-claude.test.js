@@ -102,6 +102,16 @@ test('a connection failure stops the run with the session still queued; a reply 
   assert.deepEqual([st.digest.processed, st.digest.failed, st.digest.queue.length, st.digest.done], [1, 1, 3, false]);
 });
 
+test('a session the model times out on twice gets its title, and the queue moves on', async () => {
+  const slow = fakeEngine({ fail: new Error('ollama timeout') });
+  const before = json('brain/_index/import-state.json').digest.queue.length;
+  let t = 0;
+  const r = await D.runDigest({ vault: w.vault, provider: slow.provider, deferOnBattery: () => false, config: () => ({}), home: w.home, now: () => (t += 6 * 60 * 1000) });
+  assert.deepEqual([r.processed, r.left], [1, before - 1]);
+  assert.equal(slow.calls.length, 2, 'once in full, once shorter');
+  assert.equal(json('brain/_index/session-digests.json').sessions.filter((s) => s.summarySource === 'title').length, 2);
+});
+
 test('a session an auto-wrap already read gets its line but no memories', async () => {
   const st = json('brain/_index/import-state.json');
   const next = st.digest.queue[0];
