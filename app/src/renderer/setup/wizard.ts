@@ -440,7 +440,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
         "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Your vault, its memory and the background work on this Mac run without one.",
         [TERMINAL,
           "Install one and sign in: Claude Code with curl -fsSL https://claude.ai/install.sh | bash, then claude auth login; or Codex with curl -fsSL https://chatgpt.com/codex/install.sh | sh, then codex login.",
-          `Type ${addHostCommand(aosCmd, s.vault, info.home)} (or --host codex) and press Return. It keeps your files and adds the host.`]);
+          `Type ${addHostCommand(aosCmd)} (or ${addHostCommand(aosCmd, "codex")}) and press Return. It wires the host into this vault and keeps your files.`]);
     } else if (s.personaSkipped) {
       leftItem(el, "persona", "Set up your Chief of Staff", "You skipped its questions; it starts once you answer them.",
         [TERMINAL, `Type ${aosCmd} persona and press Return, then answer its questions.`]);

@@ -1,5 +1,5 @@
 // The wizard's small rules, with no imports so the unit suite can hold them: which host is offered and chosen (inspection
-// round 2, M2), and how a command the user is told to type quotes the vault (M4).
+// round 2, M2; round 3, F5), and the command Finish tells a user with no host to type.
 
 export type HostChoice = "claude" | "codex" | "both" | "none";
 export interface ReadyHosts { claude: boolean; codex: boolean }
@@ -26,18 +26,10 @@ export function reconcileHost(current: HostChoice | null, ready: ReadyHosts, pic
   return current && picked && hostOffered(current, ready) ? current : defaultHost(ready);
 }
 
-/** A word for a POSIX shell: as it is when it holds only safe characters, else single-quoted (a ' becomes '\''). */
-export function shellQuote(word: string): string {
-  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
-}
-
-/** The vault as an absolute path (a typed ~/… resolved against home), so the command works from any folder and quotes cleanly. */
-export function absoluteVault(vault: string, home: string): string {
-  const v = vault.trim();
-  return v === "~" ? home : v.startsWith("~/") ? `${home.replace(/\/+$/, "")}/${v.slice(2)}` : v;
-}
-
-/** The command Finish shows for adding a host to a vault installed with none (M4: the vault quoted for the shell). */
-export function addHostCommand(aos: string, vault: string, home: string): string {
-  return `${aos} init --vault ${shellQuote(absoluteVault(vault, home))} --host claude`;
+/**
+ * The command Finish shows for adding a host to an install made with none: `aos hosts add` (install-import B2), which
+ * wires it into the vault agenticos.json names. It carries no path, so nothing in it needs quoting (inspection M4).
+ */
+export function addHostCommand(aos: string, host: "claude" | "codex" = "claude"): string {
+  return `${aos} hosts add ${host}`;
 }

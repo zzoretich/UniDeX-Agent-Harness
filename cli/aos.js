@@ -398,7 +398,7 @@ async function doctor() {
   }
   const hosts = hostsOf(cfg);
   // install-import B2: an install with no host is complete; what needs one says so instead of failing.
-  if (cfg && !hosts.claude && !hosts.codex) add('hosts', false, `none yet — Sessions and the Chief of Staff wait for one: aos init --vault ${cfg.vault || '<vault>'} --host claude (or codex)`, 'info');
+  if (cfg && !hosts.claude && !hosts.codex) add('hosts', false, 'none yet — Sessions and the Chief of Staff wait for one: aos hosts add claude (or codex)', 'info');
   const bin = hosts.claude ? claudeBin(cfg) : null;
   if (hosts.claude) {
     add('claude CLI', !!bin, bin || 'not found on PATH or in ~/.local/bin');
@@ -981,7 +981,7 @@ function checklist(ctx) {
     : `Open the ${APP_NAME} app (macOS, Apple silicon; download it from ${APP_DOWNLOAD}); it finds this vault through agenticos.json.`);
   steps.push(`Put ${path.join(os.homedir(), '.local', 'bin')} on your PATH, then run: aos doctor`);
   // install-import B2: no host yet. Re-running init with one adds it and keeps every file (`--host both` keeps both).
-  if (!hosts.claude && !hosts.codex) steps.push(`Add a host when you have one: install and log in to Claude Code or Codex, then run aos init --vault ${vault} --host claude (or --host codex). Sessions and the Chief of Staff wait until then.`);
+  if (!hosts.claude && !hosts.codex) steps.push('Add a host when you have one: install and log in to Claude Code or Codex, then run aos hosts add claude (or aos hosts add codex). It keeps every file. Sessions and the Chief of Staff wait until then.');
   if (hosts.claude) steps.push('Start a new `claude` session; the first prompt receives <brain-context>. Use /wrap at the end.');
   if (hosts.codex) steps.push(codexPlugin
     ? 'Start a new `codex` session; every SessionStart receives the conventions and the first prompt <brain-context>. The skills come with the agenticos plugin — use $agenticos:wrap at the end.'

@@ -1,9 +1,8 @@
-// The wizard's rules for the host choice and for the command Finish tells the user to type (inspection round 2, M2, M4).
+// The wizard's rules for the host choice and for the command Finish tells the user to type (inspection rounds 2 and 3).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { absoluteVault, addHostCommand, defaultHost, hostOffered, reconcileHost, shellQuote } from "../../src/renderer/setup/choices";
+import { addHostCommand, defaultHost, hostOffered, reconcileHost } from "../../src/renderer/setup/choices";
 
 const none = { claude: false, codex: false };
 const claude = { claude: true, codex: false };
@@ -25,16 +24,7 @@ test("M2, F5: after a later check the wizard's own choice follows what is ready;
   assert.equal(reconcileHost(null, both), "both");
 });
 
-test("M4: the vault in Finish's command is absolute and quoted for the shell, embedded quotes included", () => {
-  assert.equal(shellQuote("/srv/x/AgenticOS"), "/srv/x/AgenticOS");
-  assert.equal(shellQuote("/Volumes/My Disk/Vault"), "'/Volumes/My Disk/Vault'");
-  assert.equal(shellQuote("/tmp/it's; rm -rf ~"), "'/tmp/it'\\''s; rm -rf ~'");
-  assert.equal(absoluteVault("~/My Vault", "/h"), "/h/My Vault");
-  assert.equal(absoluteVault("~", "/h"), "/h");
-  assert.equal(addHostCommand("~/.local/bin/aos", "~/My 'Vault'", "/h"), "~/.local/bin/aos init --vault '/h/My '\\''Vault'\\''' --host claude");
-  // What a shell makes of it: exactly the one path, with nothing run.
-  for (const vault of ["/tmp/My Vault", "/tmp/it's here", "/tmp/$(touch x)`y`", "/tmp/a\"b"]) {
-    const r = spawnSync("/bin/sh", ["-c", `printf '%s' ${shellQuote(vault)}`], { encoding: "utf8" });
-    assert.equal(r.stdout, vault);
-  }
+test("Finish's add-a-host command is aos hosts add, with no path in it to quote (M4)", () => {
+  assert.equal(addHostCommand("~/.local/bin/aos"), "~/.local/bin/aos hosts add claude");
+  assert.equal(addHostCommand("aos", "codex"), "aos hosts add codex");
 });

@@ -99,7 +99,7 @@ test("Finish says how to add a host, step by step, and has no CLAUDE.md or Codex
   const steps = sec.locator("li");
   await expect(steps).toHaveCount(3);
   await expect(steps.nth(0)).toHaveText("Open Terminal (in Applications ▸ Utilities).");
-  await expect(steps.nth(2)).toHaveText(`Type ~/.local/bin/aos init --vault ${FX.vault} --host claude (or --host codex) and press Return. It keeps your files and adds the host.`);
+  await expect(steps.nth(2)).toHaveText("Type ~/.local/bin/aos hosts add claude (or ~/.local/bin/aos hosts add codex) and press Return. It wires the host into this vault and keeps your files.");
   await win.screenshot({ path: test.info().outputPath("wizard-finish-nohost.png") });
 });
 

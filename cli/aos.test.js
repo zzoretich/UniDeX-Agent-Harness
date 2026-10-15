@@ -140,7 +140,7 @@ test('install-import B2: init --host none installs the vault and runtime with no
   assert.match(r.stdout, /preflight: hosts none \(Sessions and the Chief of Staff wait for one\)/);
   assert.match(r.stdout, /persona: no host yet, so no Chief of Staff/);
   assert.doesNotMatch(r.stdout, /run the Chief of Staff interview|install agenticos@/);
-  assert.match(r.stdout, new RegExp(`Add a host when you have one: .*aos init --vault ${reEsc(sb.vault)} --host claude \\(or --host codex\\)`));
+  assert.match(r.stdout, /Add a host when you have one: .*aos hosts add claude \(or aos hosts add codex\)\. It keeps every file\./);
   assert.doesNotMatch(r.stdout, /CLAUDE\.md|\/hooks/, 'no host steps');
   assert.equal(sb.log('FAKE_CLAUDE_LOG'), '', 'claude was never run');
   const cfg = readJson(path.join(sb.cfg, 'agenticos.json'));
