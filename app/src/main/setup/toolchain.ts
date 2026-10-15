@@ -259,6 +259,17 @@ function aborted(signal: AbortSignal): void {
 }
 
 /**
+ * A program of the job's, stopped with it, and the job stops right after it when Stop came meanwhile (inspection F6): a
+ * stopped job never moves, links or reports anything after its Stop, even when the program itself ended normally.
+ */
+async function step(d: ToolchainDeps, ctx: TaskContext, file: string, args: string[], o: Omit<RunOptions, "signal"> = {}): Promise<RunResult> {
+  aborted(ctx.signal);
+  const r = await d.run(file, args, { ...o, signal: ctx.signal });
+  aborted(ctx.signal);
+  return r;
+}
+
+/**
  * Downloads `asset` to `dest`, hashing as it arrives. The file is kept only when it is exactly the pinned size and
  * SHA-256; anything else (an error, more bytes than pinned, another hash) deletes it and throws.
  */
@@ -303,7 +314,7 @@ export async function fetchVerified(asset: Asset, dest: string, label: string, d
 /** codesign accepts it and its Developer ID team is the pinned one; with `gatekeeper`, spctl accepts it too. */
 async function checkSigned(file: string, name: string, teamId: string | null, d: ToolchainDeps, ctx: TaskContext, o: { deep?: boolean; gatekeeper?: boolean } = {}): Promise<void> {
   if (!teamId) { ctx.log(`${name}: no signature to check (a development manifest).`); return; }
-  const run = (bin: string, args: string[]) => d.run(bin, args, { timeoutMs: 180_000, signal: ctx.signal });
+  const run = (bin: string, args: string[]) => step(d, ctx, bin, args, { timeoutMs: 180_000 });
   const verify = await run("/usr/bin/codesign", ["--verify", ...(o.deep ? ["--deep"] : []), "--strict", file]);
   if (verify.code !== 0) throw new ToolchainError(`${name} is not validly signed: ${firstLine(verify.out) || `codesign exit ${verify.code}`}`);
   const info = await run("/usr/bin/codesign", ["-dv", "--verbose=2", file]);
@@ -319,8 +330,8 @@ async function checkSigned(file: string, name: string, teamId: string | null, d:
 async function unpack(file: string, into: string, d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   const zip = file.endsWith(".zip");
   const r = zip
-    ? await d.run("/usr/bin/ditto", ["-x", "-k", file, into], { timeoutMs: 600_000, signal: ctx.signal })
-    : await d.run("/usr/bin/tar", ["-xzf", file, "-C", into], { timeoutMs: 600_000, signal: ctx.signal });
+    ? await step(d, ctx, "/usr/bin/ditto", ["-x", "-k", file, into], { timeoutMs: 600_000 })
+    : await step(d, ctx, "/usr/bin/tar", ["-xzf", file, "-C", into], { timeoutMs: 600_000 });
   if (r.code !== 0) throw new ToolchainError(`could not unpack ${path.basename(file)}: ${firstLine(r.out) || `exit ${r.code}`}`);
 }
 
@@ -367,7 +378,7 @@ function makeRoom(dest: string, own: string[], d: ToolchainDeps, ctx: TaskContex
 /** Moves a file or folder into place, copying with ditto when it crosses volumes. */
 async function moveInto(src: string, dest: string, d: ToolchainDeps, ctx: TaskContext): Promise<void> {
   try { fs.renameSync(src, dest); return; } catch (err) { if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err; }
-  const r = await d.run("/usr/bin/ditto", [src, dest], { timeoutMs: 600_000, signal: ctx.signal });
+  const r = await step(d, ctx, "/usr/bin/ditto", [src, dest], { timeoutMs: 600_000 });
   if (r.code !== 0) throw new ToolchainError(`could not copy into ${dest}: ${firstLine(r.out)}`);
   fs.rmSync(src, { recursive: true, force: true });
 }
@@ -375,7 +386,7 @@ async function moveInto(src: string, dest: string, d: ToolchainDeps, ctx: TaskCo
 /** The program runs and, when a version is given, says it. */
 async function reports(bin: string, version: string | null, d: ToolchainDeps, ctx: TaskContext): Promise<boolean> {
   if (!isFile(bin)) return false;
-  const r = await d.run(bin, ["--version"], { timeoutMs: 30_000, signal: ctx.signal, env: d.env });
+  const r = await step(d, ctx, bin, ["--version"], { timeoutMs: 30_000, env: d.env });
   return r.code === 0 && (!version || versionIn(r.out) === version);
 }
 
@@ -451,17 +462,17 @@ async function installUv(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
 /** Ollama answers on /api/tags (one ask), with the names it has. */
 async function ollamaTags(d: ToolchainDeps, ctx: TaskContext): Promise<string[] | null> {
   if (!d.curl) return null;
-  return parseTags(await d.run(d.curl, [...OLLAMA_CURL, "-m", "3", `${OLLAMA_URL}/api/tags`], { timeoutMs: 10_000, signal: ctx.signal, env: d.env }));
+  return parseTags(await step(d, ctx, d.curl, [...OLLAMA_CURL, "-m", "3", `${OLLAMA_URL}/api/tags`], { timeoutMs: 10_000, env: d.env }));
 }
 
 /** Opens the Ollama app in the background and waits until it answers (curl asks once a second). */
 async function startOllama(app: string, d: ToolchainDeps, ctx: TaskContext): Promise<boolean> {
   const secs = d.ollamaWaitSec ?? 60;
   ctx.log(`Opening ${tilde(app, d.home)} in the background, and waiting up to ${secs} s for it to answer…`);
-  await d.run("/usr/bin/open", ["-g", "-j", app], { timeoutMs: 30_000, signal: ctx.signal });
+  await step(d, ctx, "/usr/bin/open", ["-g", "-j", app], { timeoutMs: 30_000 });
   if (!d.curl) return false;
-  const r = await d.run(d.curl, [...OLLAMA_CURL, "--retry", String(secs), "--retry-delay", "1", "--retry-connrefused", "--retry-max-time", String(secs),
-    "-m", "2", "-o", "/dev/null", `${OLLAMA_URL}/api/tags`], { timeoutMs: (secs + 15) * 1000, signal: ctx.signal, env: d.env });
+  const r = await step(d, ctx, d.curl, [...OLLAMA_CURL, "--retry", String(secs), "--retry-delay", "1", "--retry-connrefused", "--retry-max-time", String(secs),
+    "-m", "2", "-o", "/dev/null", `${OLLAMA_URL}/api/tags`], { timeoutMs: (secs + 15) * 1000, env: d.env });
   return r.code === 0;
 }
 
@@ -502,8 +513,7 @@ async function installClaude(d: ToolchainDeps, ctx: TaskContext): Promise<void> 
     fs.chmodSync(file, 0o755);
     await checkSigned(file, "claude", pin.teamId, d, ctx);
     ctx.log("Running Claude Code's installer (claude install)…");
-    const r = await d.run(file, ["install"], { timeoutMs: 20 * 60_000, signal: ctx.signal, env: d.env, onData: (t) => ctx.write(t) });
-    aborted(ctx.signal);
+    const r = await step(d, ctx, file, ["install"], { timeoutMs: 20 * 60_000, env: d.env, onData: (t) => ctx.write(t) });
     if (r.code !== 0) throw new ToolchainError(`claude install stopped (exit ${r.code ?? "?"})`);
   } finally {
     fs.rmSync(file, { force: true });
@@ -592,10 +602,9 @@ async function pull(model: string, d: ToolchainDeps, ctx: TaskContext): Promise<
       if (status && status !== last) { last = status; ctx.log(`  ${status}`); }
     }
   };
-  const r = await d.run(d.curl as string, ["-q", "--noproxy", "127.0.0.1", "-sS", "-N", "-X", "POST", "-H", "Content-Type: application/json",
-    "--data-binary", JSON.stringify({ model, stream: true }), `${OLLAMA_URL}/api/pull`], { signal: ctx.signal, env: d.env, onData });
+  const r = await step(d, ctx, d.curl as string, ["-q", "--noproxy", "127.0.0.1", "-sS", "-N", "-X", "POST", "-H", "Content-Type: application/json",
+    "--data-binary", JSON.stringify({ model, stream: true }), `${OLLAMA_URL}/api/pull`], { env: d.env, onData });
   onData("\n");
-  aborted(ctx.signal);
   if (error) throw new ToolchainError(`Ollama could not download ${model}: ${error}`);
   if (r.code !== 0 || !ok) throw new ToolchainError(`Ollama did not finish ${model} (curl exit ${r.code ?? "?"}${firstLine(r.out) ? `: ${firstLine(r.out)}` : ""})`);
 }
@@ -620,14 +629,11 @@ async function pullModels(d: ToolchainDeps, ctx: TaskContext): Promise<void> {
 
 /** Runs one job to its end; a failure throws a ToolchainError whose message says what to do. */
 export async function runToolchainJob(job: ToolchainJob, d: ToolchainDeps, ctx: TaskContext): Promise<void> {
-  switch (job) {
-    case "node": return installNode(d, ctx);
-    case "uv": return installUv(d, ctx);
-    case "ollama": return installOllama(d, ctx);
-    case "claude": return installClaude(d, ctx);
-    case "codex": return installCodex(d, ctx);
-    case "models": return pullModels(d, ctx);
-  }
+  const jobs: Record<ToolchainJob, (d: ToolchainDeps, ctx: TaskContext) => Promise<void>> = {
+    node: installNode, uv: installUv, ollama: installOllama, claude: installClaude, codex: installCodex, models: pullModels,
+  };
+  await jobs[job](d, ctx);
+  aborted(ctx.signal);
 }
 
 /** What a job does, in one sentence: the wizard shows it before the job runs (the tooltip of its button, and its terminal). */

@@ -496,6 +496,21 @@ test("Ollama on a macOS older than it needs: refused before anything is download
   assert.deepEqual(m.urls, []);
 });
 
+test("inspection F6: Stop while Ollama is being opened ends the job as stopped, not as installed", async () => {
+  const ac = new AbortController();
+  const m = machine({}, MANIFEST, { ollamaApp: () => "/Applications/Ollama.app" });
+  m.state.tags = null;
+  m.state.onOpen = () => ac.abort();
+  await assert.rejects(runToolchainJob("ollama", m.deps, context(ac.signal)), /^Error: stopped$|stopped/);
+  assert.deepEqual(m.state.opened, ["/Applications/Ollama.app"]);
+  assert.ok(!m.calls.some((c) => c[0] === "/fake/curl" && c.includes("--retry")), "nothing runs after the Stop");
+  const models = machine({}, MANIFEST, { ollamaApp: () => "/Applications/Ollama.app" });
+  const ac2 = new AbortController();
+  models.state.onOpen = () => ac2.abort();
+  await assert.rejects(runToolchainJob("models", models.deps, context(ac2.signal)), /stopped/);
+  assert.deepEqual(models.state.pulls, []);
+});
+
 test("the models follow the Mac's memory, open Ollama when it is not answering, pull only what is missing, with progress", async () => {
   const app = "/Applications/Ollama.app";
   const m = machine({}, MANIFEST, { totalmem: 8 * GB, ollamaApp: () => app });

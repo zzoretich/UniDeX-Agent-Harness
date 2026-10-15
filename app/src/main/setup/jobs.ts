@@ -57,7 +57,7 @@ export class JobRunner {
 
   /**
    * Work main does itself (a toolchain job): its lines and raw output go to the terminal, its progress as progress
-   * events (throttled), and it ends with exit 0, or 1 after its error's message, or a signal when it was stopped.
+   * events (throttled), and it ends with exit 0, or 1 after its error's message, or SIGTERM whenever it was stopped.
    */
   startTask(job: SetupJob, task: (ctx: TaskContext) => Promise<void>, o: { echo: string }): Result<null> {
     if (this.current) return busy;
@@ -76,8 +76,10 @@ export class JobRunner {
         this.o.emit({ job, type: "progress", label: p.label, received: p.received, total: p.total });
       },
     };
+    // A Stop wins over however the task ended (inspection F6): a task that resolves after its signal was aborted is a
+    // stopped job, never a success.
     void Promise.resolve().then(() => task(ctx)).then(
-      () => this.exited(job, 0, null),
+      () => { if (abort.signal.aborted) this.exited(job, null, "SIGTERM"); else this.exited(job, 0, null); },
       (err: unknown) => {
         if (abort.signal.aborted) { this.exited(job, null, "SIGTERM"); return; }
         this.o.emit({ job, type: "data", data: `\x1b[31m${term(err instanceof Error ? err.message : String(err))}\x1b[0m\r\n` });

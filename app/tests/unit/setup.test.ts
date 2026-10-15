@@ -566,6 +566,29 @@ test("jobs: one at a time; a terminal's output and exit stream as events, after 
   assert.deepEqual(exits, [["fix", 0]]);
 });
 
+test("inspection F6: a task stopped while it runs ends as stopped, even when it then resolves normally", async () => {
+  const events: SetupEvent[] = [];
+  const jobs = new JobRunner({ emit: (e) => events.push(e), pty: () => { throw new Error("no pty"); } });
+  let release!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  assert.equal(jobs.startTask("fix", async (ctx) => { ctx.log("working"); await held; /* ignores its signal */ }, { echo: "Install x" }).ok, true);
+  await new Promise((r) => setImmediate(r));
+  jobs.cancel();
+  release();
+  await exitOf(events, "fix");
+  assert.deepEqual(events.at(-1), { job: "fix", type: "exit", code: null, signal: "SIGTERM" });
+  // Not stopped: exit 0; failed: exit 1 after its message.
+  events.length = 0;
+  jobs.startTask("fix", async () => undefined, { echo: "ok" });
+  await exitOf(events, "fix");
+  assert.deepEqual(events.at(-1), { job: "fix", type: "exit", code: 0, signal: null });
+  events.length = 0;
+  jobs.startTask("fix", async () => { throw new Error("bad hash"); }, { echo: "x" });
+  await exitOf(events, "fix");
+  assert.match((events.at(-2) as { data: string }).data, /bad hash/);
+  assert.deepEqual(events.at(-1), { job: "fix", type: "exit", code: 1, signal: null });
+});
+
 test("jobs: a child process gets no stdin, and its line ends are made terminal-ready", async () => {
   const events: SetupEvent[] = [];
   const { child, finish } = fakeChild();
