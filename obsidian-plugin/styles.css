@@ -1826,6 +1826,10 @@ body {
 .aos-rt-note { font-size: 11px; margin-bottom: 8px; }
 .aos-rt-errors { color: var(--aos-rose); font-size: 11px; min-height: 14px; margin-bottom: 4px; }
 .aos-confirm-modal p { color: var(--aos-text); }
+.aos-confirm-modal pre.aos-confirm-detail {
+  max-height: 220px; overflow: auto; margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--aos-border); border-radius: 6px;
+  background: var(--aos-bg); color: var(--aos-text); font-family: var(--aos-mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+}
 
 /* Routines tab — "Outside the runtime" host rows (host-routines D4): the snapshot ages and refresh link on the subhead. */
 .aos-rt-subhead { display: flex; align-items: baseline; gap: 10px; }
@@ -1892,6 +1896,10 @@ body {
 .aos-sk-pills .is-absent { opacity: 0.45; text-decoration: line-through; }
 .aos-sk-source { flex: 0 0 auto; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aos-sk-actions { flex: 0 0 auto; font-family: var(--aos-mono); font-size: 10.5px; white-space: nowrap; }
+/* MCP SERVERS (install-import B6): Make available on … per server. */
+.aos-sk-mcpactions { flex: 0 0 auto; display: flex; gap: 6px; white-space: nowrap; }
+.aos-sk-mcpactions button.aos-sk-mcpcopy { font-size: 11px; }
+.aos-sk-mcpempty a.aos-link { font-family: var(--aos-mono); }
 .aos-ag-ro { margin-left: 6px; font-size: 9.5px; vertical-align: 1px; }
 .aos-ag-warn { color: var(--aos-amber); }
 
@@ -2540,6 +2548,24 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-ss-spendfill { height: 100%; border-radius: 2px; background: var(--udx-ok-dot); }
 .aos-ss-spend.is-high .aos-ss-spendfill { background: var(--udx-warn-dot); }
 .aos-ss-spend.is-over .aos-ss-spendfill { background: var(--udx-danger-dot); }
+
+/* Sessions ▸ History (install-import B11): past host sessions by day, each with Resume in Code. */
+.aos-ss-hcount { flex: 1; min-width: 0; font-size: 12px; color: var(--udx-text-3); }
+.aos-ss-history { display: flex; flex-direction: column; gap: 10px; }
+.aos-ss-hfilter { width: 100%; box-sizing: border-box; font-size: 12.5px; }
+.aos-ss-hnohost { padding: 0; color: var(--udx-text-2); }
+.aos-ss-hdays { display: flex; flex-direction: column; gap: 14px; padding-bottom: 16px; }
+.aos-ss-hday { display: flex; flex-direction: column; }
+.aos-ss-hdayname { padding: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--udx-text-2); border-bottom: 1px solid var(--udx-line); }
+.aos-ss-hrow { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--udx-line); }
+.aos-ss-hrow > .aos-ss-hostdot { margin-top: 6px; }
+.aos-ss-hbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.aos-ss-htitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.4; }
+.aos-ss-hmeta { font-size: 11.5px; color: var(--udx-text-3); font-variant-numeric: tabular-nums; }
+.aos-ss-hsummary { font-size: 12.5px; line-height: 1.45; color: var(--udx-text-2); }
+.aos-ss-hwhy { font-size: 11.5px; color: var(--udx-text-3); }
+.aos-ss button.aos-ss-hresume { flex: none; align-self: center; height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12px; }
+.aos-ss button.aos-ss-hmore { align-self: flex-start; height: 28px; padding: 0 12px; border-radius: 6px; font-size: 12.5px; }
 
 /* The reader: the bar, the conversation (with the review drawer over it), the composer. Vault holds ChatTab. */
 .aos-ss-reader { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--udx-bg); overflow: hidden; }

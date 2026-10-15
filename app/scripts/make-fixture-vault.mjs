@@ -647,6 +647,41 @@ stage("host sessions (Codex rollouts and Claude Code transcripts)", () => {
   transcript(v(`workspaces/${WS_FIXTURE.stalled}`), WS_FIXTURE.claude["reef-survey"], 12 * DAY, { prompt: "Enter the north reef coral counts from the dive log", read: `HANDOFF-${WS_FIXTURE.stalled}.md`, reply: "North reef counts entered; the south reef is next." });
 });
 
+// Sessions ▸ History (install-import B11) reads the scan's session index and the import-digest routine's summaries. The
+// digest needs a local model, which CI cannot run, so its output is written here in the shape lib/import/digest.js writes:
+// one Claude Code session and one Codex session, each with its workspace and a one-line summary.
+const DIGEST_FIXTURE = {
+  claude: { id: WS_FIXTURE.claude["harbor-map"], at: () => ago(3 * HOUR), title: "Tide parser in the chart view", summary: "Fed the tide parser's rows into the chart view's overlay." },
+  codex: { id: WS_FIXTURE.codex.prompt, at: () => ago(1 * DAY + 2 * HOUR), title: "Sketch the depth contours layer for the chart view", summary: "Stubbed a depth contours layer with a toggle in the chart view." },
+};
+stage("session digests (lib/import/digest.js's output; the digest needs a local model)", () => {
+  const sessions = Object.entries(DIGEST_FIXTURE).map(([host, d]) => {
+    const t = d.at();
+    return {
+      key: `${host}:${d.id}`, id: d.id, host, workspace: "harbor-map", day: dayOf(t), time: `${pad(t.getHours())}:${pad(t.getMinutes())}`,
+      title: d.title, summary: d.summary, summarySource: "model", startedAt: t.toISOString(), lastAt: t.toISOString(),
+      resume: host === "codex" ? `codex resume ${d.id}` : `claude --resume ${d.id}`, memories: [],
+    };
+  }).sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+  writeJson(v("brain/_index/session-digests.json"), { schema: 1, updatedAt: NOW.toISOString(), sessions });
+  return `${sessions.length} digests`;
+});
+
+// Skills ▸ MCP servers (install-import B6): a server on each host only, and one on both, in each host's own user config
+// (Claude Code's ~/.claude.json beside the default ~/.claude, Codex's config.toml); `aos import --only mcp` lists them below.
+const MCP_FIXTURE = { claude: "docs-search", codex: "issue-tracker", both: "tide-feed", remote: "chart-api" };
+stage("MCP servers in each host's config (Claude Code's .claude.json, Codex's config.toml)", () => {
+  writeJson(path.join(HOME, ".claude.json"), {
+    numStartups: 3,
+    mcpServers: {
+      [MCP_FIXTURE.claude]: { type: "stdio", command: "npx", args: ["-y", "docs-search-mcp"], env: { LOG_LEVEL: "warn" } },
+      [MCP_FIXTURE.both]: { type: "stdio", command: "tide-feed-mcp", args: [] },
+      [MCP_FIXTURE.remote]: { type: "http", url: "https://charts.example.com/mcp" },
+    },
+  });
+  write(path.join(CODEX, "config.toml"), `[mcp_servers.${MCP_FIXTURE.codex}]\ncommand = "issue-mcp"\nargs = ["--stdio"]\n\n[mcp_servers.${MCP_FIXTURE.codex}.env]\nLOG_LEVEL = "warn"\n\n[mcp_servers.${MCP_FIXTURE.both}]\ncommand = "tide-feed-mcp"\n`);
+});
+
 const TEAM_ITEMS = [];
 stage("agent teams (aos team init / put / post)", () => {
   const team = (...a) => aos(["team", ...a]).trim();
@@ -1011,6 +1046,7 @@ stage("promote trail (lib/promote-log.js appendTrail)", () => {
 
 stage("aos skills sync", () => aos(["skills", "sync"]).trim().split("\n")[0]);
 stage("aos agents sync", () => aos(["agents", "sync"]).trim().split("\n")[0]);
+stage("aos import --only mcp (both hosts' MCP servers listed)", () => aos(["import", "--only", "mcp", "--from", "all"]).trim().split("\n").slice(-1)[0]);
 stage("aos routines sync (launchctl stubbed)", () => aos(["routines", "sync"]).trim().split("\n").slice(0, 2).join(" / "));
 // launchd and the session hooks run these without AOS_HEADLESS (hook-entry scripts exit at once under it).
 stage("aos routines run nightly-scan", () => aos(["routines", "run", "nightly-scan"], { env: USER_ENV(), timeout: 180_000 }).trim().split("\n").pop(), { optional: true });
@@ -1092,6 +1128,11 @@ stage("expected values", () => {
   const snap = parse(fs.readFileSync(v("brain/_index/snapshot.json"), "utf8"));
   expected.snapshot = snap.scannedAt;
   // The Spaces redesign's workspaces and sessions, with the status the runtime gave each entry (spaces-redesign D11, D22).
+  // Sessions ▸ History and Skills ▸ MCP servers (install-import B11, B6): the digests written above, the servers listed.
+  expected.history = { digests: Object.fromEntries(Object.entries(DIGEST_FIXTURE).map(([h, d]) => [h, { id: d.id, title: d.title, summary: d.summary }])) };
+  let listed = [];
+  try { listed = readJson(v("brain/_index/mcp-servers.json")).servers; } catch { /* the listing stage failed: specs say so */ }
+  expected.mcp = { ...MCP_FIXTURE, listed };
   expected.workspaces = { ...WS_FIXTURE, status: Object.fromEntries((snap.workspaces ?? []).map((w) => [w.name, w.status ?? null])) };
   // The Brain hub (brain-hub D3, D11, D12): the scan's brain-hub.json, `aos memory list --json` and the trail, so a spec
   // asserts what the runtime built. `older` is Review's "Older than 30d" queue as brainModel.ts olderQueue reads it:

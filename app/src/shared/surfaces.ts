@@ -90,6 +90,8 @@ const SLUG = /[a-z0-9][a-z0-9-]{1,40}/;     // RoutinesTab's routine slug
 const ASK_HOST = /--host=(?:claude|codex)/;
 const ASK_MODEL = new RegExp(`--model=${WORD.source}`);
 const ASK_EFFORT = /--effort=(?:minimal|low|medium|high|xhigh|max)/;
+// An MCP server's name as both host CLIs take it (cli/mcp.js NAME_RE, obsidian-plugin/src/data/mcpServers.ts MCP_NAME_RE).
+const MCP_NAME = /[A-Za-z0-9_][A-Za-z0-9_-]{0,63}/;
 
 /** The refreshes the HUD starts by itself on load and on timers; they write only runtime-owned caches under the runtime's locks. */
 export const BACKGROUND: readonly SpawnRule[] = [
@@ -408,6 +410,23 @@ export const SURFACES: readonly Surface[] = [
     spawns: [{ script: "cli/aos.js", args: /^local pull$/ }],
     // Added in 2.0; off by default until a live check on a real vault pulls through it (the Code tab's ❯_ aos local
     // pull works meanwhile).
+    verified: false,
+  },
+  {
+    id: "mcp",
+    label: "MCP servers",
+    source: "views/SkillsTab.ts (MCP SERVERS: Make available on <host>), data/mcpServers.ts (copyArgs)",
+    // `aos mcp copy` (cli/mcp.js, install-import B6): the dry run writes nothing and the page shows its command before the
+    // confirm; the copy reads the server's config from the source host's own file, backs the target host's config file up
+    // under brain/_index/backups/mcp/, writes it only through that host's CLI (`claude mcp add-json --scope user`,
+    // `codex mcp add`), and lists both hosts again into brain/_index/mcp-servers.json. The page writes nothing itself.
+    writes: [],
+    spawns: [
+      { script: "cli/aos.js", args: argv("mcp", "copy", MCP_NAME, "--to", /claude|codex/, "--dry-run", "--json") },
+      { script: "cli/aos.js", args: argv("mcp", "copy", MCP_NAME, "--to", /claude|codex/, "--json") },
+    ],
+    // Added in 2.0; off by default until a live check copies a server each way on a real install with both hosts
+    // (`aos mcp copy` from a Code terminal works meanwhile).
     verified: false,
   },
   {

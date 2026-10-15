@@ -63,6 +63,10 @@ export interface Expected {
    * drafts, the archived and the unreviewed live ones) and Review's "Older than 30d" queue.
    */
   brain: ExpectedBrain;
+  /** Sessions ▸ History (install-import B11): the digests the fixture writes for a Claude Code and a Codex session. */
+  history: { digests: Record<"claude" | "codex", { id: string; title: string; summary: string }> };
+  /** Skills ▸ MCP servers (install-import B6): the servers in each host's config, and the listing `aos import` wrote. */
+  mcp: { claude: string; codex: string; both: string; remote: string; listed: Array<{ name: string; host: string; transport: string; command?: string; url?: string }> };
 }
 
 export interface ExpectedBrainBatch { key: string; session: string | null; title: string; host: string | null; lead: string | null; at: string; paths: string[] }
@@ -533,7 +537,8 @@ export function useApp(opts: LaunchOptions = {}): () => AppHandle {
 
 // ── helpers the specs share ──────────────────────────────────────────
 
-/** The rail's three sections (spec 2026-10-09-rail-sections-code D1), a line between each; "chat" (Sessions) only with a host signed in (local-first A17). */
+/** The rail's three sections (spec 2026-10-09-rail-sections-code D1), a line between each; "chat" (Sessions) only with a host
+ *  signed in (local-first A17) or past sessions on disk for its History (install-import B11). */
 export const RAIL_SECTIONS = [
   ["notifications", "pulse", "term", "chat"],
   ["todo", "spaces", "files", "routines", "proposals"],

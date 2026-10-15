@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { SURFACES, SURFACE_IDS, WritePolicy, globToRegExp, parseSurfaces } from "../../src/main/policy/write-policy";
 import { workspaceArgs } from "../../../obsidian-plugin/src/data/spacesModel";
 import { memoryArgs, recallArgs } from "../../../obsidian-plugin/src/data/brainModel";
+import { copyArgs } from "../../../obsidian-plugin/src/data/mcpServers";
 
 const VAULT = "/vaults/demo";
 const v = (rel: string) => `${VAULT}/${rel}`;
@@ -502,6 +503,24 @@ test("the Local engine surface runs `aos local pull` and nothing else; it writes
   }
   assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "local")).canSpawn(NODE, [`${S}/cli/aos.js`, "local", "pull"]), false, "only Local engine");
   assert.equal(p.canWrite(`${VAULT}/brain/config.json`), false);
+});
+
+test("the MCP servers surface runs `aos mcp copy` as the page builds it, dry run or real, and nothing else; it writes nothing (install-import B6)", () => {
+  const p = new WritePolicy(VAULT, ["mcp"]);
+  for (const a of [copyArgs("docs-search", "codex", true), copyArgs("docs-search", "codex", false), copyArgs("issue_tracker-2", "claude", true), copyArgs("x", "claude", false)]) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]), true, a.join(" "));
+  }
+  for (const a of [
+    ["mcp", "copy", "docs-search", "--to", "codex"], ["mcp", "copy", "docs-search", "--to", "cursor", "--json"], ["mcp", "copy", "-x", "--to", "codex", "--json"],
+    ["mcp", "copy", "web fetch", "--to", "codex", "--json"], ["mcp", "copy", "a/b", "--to", "codex", "--json"], ["mcp", "copy", "docs-search", "--json", "--to", "codex"],
+    ["mcp", "list", "--json"], ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run"], ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run", "--json", "--force"],
+    ["mcp", "copy", "a".repeat(65), "--to", "codex", "--json"],
+  ]) {
+    assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]), false, a.join(" "));
+  }
+  assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "mcp")).canSpawn(NODE, [`${S}/cli/aos.js`, ...copyArgs("docs-search", "codex", true)]), false, "only MCP servers");
+  for (const rel of ["brain/_index/mcp-servers.json", "brain/_index/backups/mcp/codex-config.toml-x.bak"]) assert.equal(p.canWrite(v(rel)), false, rel);
+  assert.equal(SURFACES.find((s) => s.id === "mcp")?.verified, false, "off by default until its live check");
 });
 
 test("a relative script runs only against the vault it resolves into", () => {

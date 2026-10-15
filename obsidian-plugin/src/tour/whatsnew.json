@@ -1,4 +1,16 @@
 {
   "schema": 1,
-  "releases": []
+  "releases": [
+    {
+      "version": "2.0.0",
+      "entries": [
+        {
+          "id": "sessions-history",
+          "title": "Sessions ▸ History",
+          "body": "Every Claude Code and Codex session on this Mac, by day and newest first, with its host, workspace and a one-line summary once the history import has digested it. Resume reopens one in a Code terminal on its own host.",
+          "steps": ["sessions-history"]
+        }
+      ]
+    }
+  ]
 }
