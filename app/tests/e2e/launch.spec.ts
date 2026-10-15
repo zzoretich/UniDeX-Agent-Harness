@@ -1,9 +1,10 @@
-// The launch sequence (spec 2026-10-14-guided-tour-design C11; local-first A9): what the app opens on its own at launch,
-// one dialog at a time, each once. An install from before 2.0 updated by this app meets the runtime update, then the
-// Go-local card (its `aos migrate local-first` runs for real against the fixture, through the `migrate` surface), then
-// What's new with the full tour, then Getting started; a relaunch shows none of them, and Settings undoes going local.
-// A new install gets the welcome tour, then Getting started. Codex-only and no-host machines get the card worded for
-// them, and Pulse says how to add a host (app-smoke: Launch sequence).
+// The launch sequence (spec 2026-10-14-guided-tour-design C11; local-first A9; install-import B12): what the app opens on
+// its own at launch, one dialog at a time, each once. An install from before 2.0 updated by this app meets the runtime
+// update, then the Go-local card (its `aos migrate local-first` runs for real against the fixture, through the `migrate`
+// surface), then the Import sheet (the vault's own dry run, then `aos migrate import --apply`), then What's new with the
+// full tour, then Getting started; a relaunch shows none of them, and Settings undoes going local. A vault with nothing
+// to import is told so. A new install gets the welcome tour, then Getting started. Codex-only and no-host machines get
+// the cards worded for them, and Pulse says how to add a host (app-smoke: Launch sequence).
 
 import { expect, test, type Page } from "@playwright/test";
 import * as fs from "node:fs";
@@ -26,9 +27,18 @@ const editJson = (file: string, fn: (j: Record<string, any>) => void) => { const
 const launchLog = (win: Page): Promise<string[]> => win.evaluate(() => [...(window as unknown as { aosHost: { launchLog: string[] } }).aosHost.launchLog]);
 const migration = (id: string) => (readJson(MIGRATIONS).migrations as Array<{ id: string; state: string }>).find((m) => m.id === id)?.state;
 const tourState = () => (readJson(HUD_SETTINGS).tour ?? {}) as { lastSeenVersion?: string; launched?: string[] };
-/** What an `aos upgrade` from before 2.0.0 leaves for the app (cli/migrations.js recordPending). */
-const pending = () => fs.writeFileSync(MIGRATIONS, `${JSON.stringify({ schema: 1, migrations: ["local-first", "import"].map((id) => ({ id, state: "pending", since: "2.0.0", from: "1.9.0", at: new Date().toISOString() })) }, null, 2)}\n`);
+/** What an `aos upgrade` from before 2.0.0 leaves for the app (cli/migrations.js recordPending); `ids` narrows it. */
+const pending = (ids = ["local-first", "import"]) => fs.writeFileSync(MIGRATIONS, `${JSON.stringify({ schema: 1, migrations: ids.map((id) => ({ id, state: "pending", since: "2.0.0", from: "1.9.0", at: new Date().toISOString() })) }, null, 2)}\n`);
 const card = (win: Page) => win.locator(".modal.aos-golocal-modal");
+const sheet = (win: Page) => win.locator(".modal.aos-importsheet-modal");
+/** The fixture vault's Import mark in tour.launched (obsidian-plugin/src/tour/launch.ts importId). */
+const IMPORT = `import@${vaultKey(FX.vault)}`;
+/** A Mac with no host history: no Claude Code transcripts, no Codex sessions (the scan then finds nothing to bring). */
+const noHistory = () => {
+  fs.rmSync(path.join(FX.claude, "projects"), { recursive: true, force: true });
+  fs.rmSync(path.join(FX.home, ".codex", "sessions"), { recursive: true, force: true });
+  fs.rmSync(path.join(FX.home, ".codex", "session_index.jsonl"), { force: true });
+};
 const whatsNew = (win: Page) => win.locator(".modal.aos-whatsnew-modal");
 /** The running release's What's new entries an install new to the tour sees (tour/whatsnew.ts selectWhatsNew, lastSeen null). */
 const LINE = HUD_VERSION.split(".").slice(0, 2).join(".");
@@ -40,7 +50,7 @@ test.describe.configure({ mode: "serial" });
 let h: AppHandle | null = null;
 test.afterEach(async () => { await h?.close(); h = null; });
 
-test("an install from before 2.0: runtime update → Go local → What's new → Getting started, in order and once", async () => {
+test("an install from before 2.0: runtime update → Go local → Import → What's new → Getting started, in order and once", async () => {
   restoreFixture();
   // Go local and the Local engine's download on (each is off by default until its live check), Settings for Undo.
   const env = { AOS_APP_PAYLOAD: SETUP.payload, AOS_SETUP_PATH: SETUP.bin, AOS_APP_WRITE: "migrate,local,settings" };
@@ -88,18 +98,34 @@ test("an install from before 2.0: runtime update → Go local → What's new →
   expect([migration("local-first"), migration("import")]).toEqual(["applied", "pending"]);
   expect(fs.readdirSync(FX.v("brain/_index/migrations")).filter((f) => f.startsWith("local-first-"))).toHaveLength(1);
 
-  // 3. What's new, with the full tour on offer (an install that never kept a last-seen version).
+  // 3. Import: what the vault's own `aos import --dry-run` finds (the fixture's sessions on both hosts), then Import runs
+  // `aos migrate import --apply` through the migrate surface, which imports and settles the migration in one call.
+  await expect(sheet(win).locator(".modal-title")).toHaveText("Bring in your Claude Code and Codex history");
+  await expect(whatsNew(win)).toHaveCount(0);
+  expect(await launchLog(win)).toEqual(["runtime", "go-local", "import"]);
+  await expect(sheet(win).locator('.aos-importsheet-body[data-state="ready"]')).toBeVisible({ timeout: 60_000 });
+  await expect(sheet(win).locator(".aos-importsheet-table th[data-host]")).toHaveText(["Claude Code", "Codex"]);
+  await expect(sheet(win).locator('.aos-importsheet-table td[data-host="claude"][data-kind="sessions"]')).toHaveText(/^\d+ sessions?$/);
+  await expect(sheet(win).locator(".aos-importsheet-engine")).toContainText("Nothing leaves this Mac");
+  await win.screenshot({ path: test.info().outputPath("import-sheet.png") });
+  await sheet(win).locator(".aos-importsheet-import").click();
+  await expect(sheet(win)).toHaveCount(0, { timeout: 120_000 });
+  expect(migration("import")).toBe("applied");
+  const state = readJson(FX.v("brain/_index/import-state.json")) as { runs: Array<{ from: string[] }> };
+  expect(state.runs.at(-1)?.from).toEqual(["claude", "codex"]);
+
+  // 4. What's new, with the full tour on offer (an install that never kept a last-seen version).
   await expect(whatsNew(win).locator(".modal-title")).toHaveText(`What's new in ${LINE}`);
   await expect(whatsNew(win).locator(".aos-whatsnew-entry")).toHaveCount(ENTRIES);
   await expect(whatsNew(win).locator(".aos-whatsnew-tour")).toHaveText("Take the full tour");
   await whatsNew(win).locator(".aos-whatsnew-ok").click();
   await expect(whatsNew(win)).toHaveCount(0);
 
-  // 4. Getting started.
+  // 5. Getting started.
   await expect(drawer(win).locator(".aos-tour-checklist")).toBeVisible();
-  expect(await launchLog(win)).toEqual(["runtime", "go-local", "whats-new", "checklist"]);
+  expect(await launchLog(win)).toEqual(["runtime", "go-local", "import", "whats-new", "checklist"]);
   expect(tourState().lastSeenVersion).toBe(HUD_VERSION);
-  expect(tourState().launched).toEqual(expect.arrayContaining([GO_LOCAL, `whats-new@${HUD_VERSION}`]));
+  expect(tourState().launched).toEqual(expect.arrayContaining([GO_LOCAL, IMPORT, `whats-new@${HUD_VERSION}`]));
   expectNoErrors(h);
   await h.close();
 
@@ -144,6 +170,25 @@ test("a new install: the welcome tour, then Getting started; the vault is noted 
   expectNoErrors(h);
 });
 
+test("a vault with nothing to import: the sheet says so, and OK settles the import (declined, nothing written)", async () => {
+  restoreFixture();
+  h = await launchApp({
+    launch: false, env: { AOS_APP_WRITE: "migrate" },
+    prepare: () => { pending(["import"]); noHistory(); },
+  });
+  const { win } = h;
+  await expect(sheet(win).locator('.aos-importsheet-body[data-state="empty"]')).toBeVisible({ timeout: 60_000 });
+  await expect(sheet(win).locator(".aos-importsheet-empty")).toContainText("There is nothing from Claude Code or Codex on this Mac to bring in");
+  await expect(sheet(win).locator(".aos-importsheet-import")).toHaveCount(0);
+  await sheet(win).locator(".aos-importsheet-ok").click();
+  await expect(sheet(win)).toHaveCount(0, { timeout: 30_000 });
+  expect(migration("import")).toBe("declined");
+  expect(fs.existsSync(FX.v("brain/_index/import-state.json"))).toBe(false);
+  expect(await launchLog(win)).toEqual(["import"]);
+  await expect.poll(() => tourState().launched ?? []).toContain(IMPORT);
+  expectNoErrors(h);
+});
+
 test("Codex only: the card names gpt-6-sol and Codex; Keep my settings changes nothing, and Settings offers Go local later", async () => {
   restoreFixture();
   h = await launchApp({
@@ -162,7 +207,14 @@ test("Codex only: the card names gpt-6-sol and Codex; Keep my settings changes n
   await expect(card(win)).toHaveCount(0, { timeout: 30_000 });
   expect(migration("local-first")).toBe("declined");
   expect(fs.readFileSync(AGENTICOS, "utf8")).toBe(before);
-  expect(await launchLog(win)).toEqual(["go-local"]);
+  // The Import sheet next: a host's files come in whether or not it is on, so both are listed; Not now declines.
+  await expect(sheet(win).locator('.aos-importsheet-body[data-state="ready"]')).toBeVisible({ timeout: 60_000 });
+  await expect(sheet(win).locator(".aos-importsheet-table th[data-host]")).toHaveText(["Claude Code", "Codex"]);
+  await sheet(win).locator(".aos-importsheet-later").click();
+  await expect(sheet(win)).toHaveCount(0, { timeout: 30_000 });
+  expect(migration("import")).toBe("declined");
+  expect(fs.existsSync(FX.v("brain/_index/import-state.json"))).toBe(false);
+  expect(await launchLog(win)).toEqual(["go-local", "import"]);
   await openTab(win, "settings");
   const row = content(win).locator('[data-tour="settings-golocal"]');
   await expect(row).toContainText("(you kept your settings)");
@@ -196,6 +248,16 @@ test("no host, Go local surface off: the card shows the commands, not buttons; c
   await expect(card(win)).toHaveCount(0);
   expect(migration("local-first")).toBe("pending");
   await expect.poll(() => tourState().launched ?? []).toContain(GO_LOCAL);
+  // The Import sheet, with the same surface off: its commands, not a scan the app would refuse.
+  await expect(sheet(win).locator('.aos-importsheet-cmd[data-cmd="apply"] .aos-importsheet-cmdtext')).toHaveText("aos migrate import --apply");
+  await expect(sheet(win).locator('.aos-importsheet-cmd[data-cmd="decline"] .aos-importsheet-cmdtext')).toHaveText("aos migrate import --decline");
+  await expect(sheet(win).locator('.aos-importsheet-cmd[data-cmd="scan"] .aos-importsheet-cmdtext')).toHaveText("aos import --dry-run");
+  await expect(sheet(win).locator(".aos-importsheet-import, .aos-importsheet-table")).toHaveCount(0);
+  await win.keyboard.press("Escape");
+  await expect(sheet(win)).toHaveCount(0);
+  expect(migration("import")).toBe("pending");
+  await expect.poll(() => tourState().launched ?? []).toContain(IMPORT);
+  expect(await launchLog(win)).toEqual(["go-local", "import"]);
   await openTab(win, "pulse");
   const waiting = content(win).locator(".aos-pulse-waiting");
   await expect(waiting).toContainText("Add Claude Code or Codex to start your Chief of Staff.");

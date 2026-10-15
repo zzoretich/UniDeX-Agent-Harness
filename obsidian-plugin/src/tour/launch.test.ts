@@ -28,7 +28,16 @@ test("Go local is due while the upgrade left it pending in this vault and its ca
   assert.equal(goLocalDue(rows("pending"), seen, VAULT), false, "acted on or dismissed: Settings offers it after");
   assert.equal(goLocalDue(rows("pending"), seen, "/vaults/other"), true, "another vault on this Mac still asks");
   assert.equal(goLocalDue(rows("pending"), markLaunched(DEFAULT_TOUR_STATE, "go-local"), VAULT), true, "a mark with no vault is no vault's");
-  assert.equal(importDue(rows("pending"), DEFAULT_TOUR_STATE, VAULT), false, "the Import sheet is PR 9b");
+});
+
+test("Import is due while the upgrade left it pending in this vault and its sheet was not acted on there (install-import B12)", () => {
+  assert.equal(importDue(rows("pending"), DEFAULT_TOUR_STATE, VAULT), true);
+  for (const s of ["applying", "applied", "declined", "undone", null] as const) assert.equal(importDue(rows(s), DEFAULT_TOUR_STATE, VAULT), false, String(s));
+  const seen = markLaunched(DEFAULT_TOUR_STATE, importId(VAULT));
+  assert.deepEqual(seen.launched, ["import@f378054b"]);
+  assert.equal(importDue(rows("pending"), seen, VAULT), false, "acted on or dismissed: Settings ▸ Import has the rest");
+  assert.equal(importDue(rows("pending"), seen, "/vaults/other"), true, "another vault on this Mac still asks");
+  assert.equal(importDue(rows("pending"), markLaunched(DEFAULT_TOUR_STATE, goLocalId(VAULT)), VAULT), true, "Go local's mark is its own");
 });
 
 test("the welcome: a new install's core tour; an install from before the tour What's new with the tour; later only what is new (C10)", () => {

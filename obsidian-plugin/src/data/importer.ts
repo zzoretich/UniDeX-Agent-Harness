@@ -1,14 +1,15 @@
 // importer.ts — the HUD's import service (install-import B4, B7, B9, B12): what `aos import` would bring from this Mac
 // (its dry run: counts per host and kind, and the proposed workspaces), a run of the fast phase with its progress (the
-// sessions are queued for the import-digest routine), and what import-state.json says since. Settings ▸ Import uses it
-// now and PR 9's Import sheet (the launch sequence for an existing install) reuses it. Every run goes through the vendored
-// CLI (data/aosRun.ts), so the `import` write surface (app/src/shared/surfaces.ts) admits or refuses it; the runtime does
-// the work and the writes. The shapes and the argv are importModel.ts's.
+// sessions are queued for the import-digest routine), and what import-state.json says since. Settings ▸ Import uses it,
+// and so does the launch sequence's Import sheet (ui/ImportSheet.ts, B12), through `aos migrate import`. Every run goes
+// through the vendored CLI (data/aosRun.ts), so a write surface (app/src/shared/surfaces.ts: `import`, or `migrate` for
+// the sheet) admits or refuses it; the runtime does the work and the writes. The shapes and the argv are importModel.ts's.
 import * as path from "path";
 import { fs } from "../host";
 import { failureText, runAos, type AosResult } from "./aosRun";
 import {
-  IMPORT_KINDS, IMPORT_STATE_PATH, ProgressFollower, digestPending, importArgs, importSteps, parseImportState, parseScan,
+  IMPORT_KINDS, IMPORT_STATE_PATH, MIGRATE_IMPORT_REQUEST, ProgressFollower, digestPending, importArgs, importSteps, migrateImportArgs,
+  parseImportState, parseScan,
   type DigestState, type ImportHost, type ImportProgress, type ImportRequest, type ImportScan, type ImportSince, type ImportState,
 } from "./importModel";
 
@@ -61,10 +62,32 @@ export class Importer {
    * import from this app runs.
    */
   run(req: ImportRequest, onProgress?: (p: ImportProgress) => void): Promise<RunResult> {
-    if (running) return Promise.resolve({ ok: false, error: "an import is already running", lines: [], state: this.state() });
     let args: string[];
     try { args = importArgs(req); } catch (e) { return Promise.resolve({ ok: false, error: (e as Error).message, lines: [], state: this.state() }); }
-    const follow = new ProgressFollower(importSteps(req), onProgress);
+    return this.follow(args, importSteps(req), onProgress);
+  }
+
+  /**
+   * The Import sheet's Import (install-import B12): `aos migrate import --apply [--accept …]` through the `migrate`
+   * surface, which runs the import (every kind, both hosts) with the same progress lines and records the upgrade's
+   * `import` migration applied in the same call. Refused while another import from this app runs.
+   */
+  applyMigration(accept: readonly string[], onProgress?: (p: ImportProgress) => void): Promise<RunResult> {
+    let args: string[];
+    try { args = migrateImportArgs("apply", accept); } catch (e) { return Promise.resolve({ ok: false, error: (e as Error).message, lines: [], state: this.state() }); }
+    return this.follow(args, importSteps(MIGRATE_IMPORT_REQUEST), onProgress);
+  }
+
+  /** The Import sheet's Not now: `aos migrate import --decline --json`, which records the choice and imports nothing. */
+  async declineMigration(): Promise<{ ok: boolean; error: string | null }> {
+    const r = await this.d.run(migrateImportArgs("decline"), { timeoutMs: SCAN_MS });
+    return { ok: r.code === 0, error: r.code === 0 ? null : failureText(r) };
+  }
+
+  /** Runs one import argv, one at a time in this app, following its step lines. */
+  private follow(args: string[], steps: number, onProgress?: (p: ImportProgress) => void): Promise<RunResult> {
+    if (running) return Promise.resolve({ ok: false, error: "an import is already running", lines: [], state: this.state() });
+    const follow = new ProgressFollower(steps, onProgress);
     const p = this.d.run(args, { timeoutMs: RUN_MS, onStdout: (s) => follow.push(s) }).then((r) => {
       follow.end();
       return { ok: r.code === 0, error: r.code === 0 ? null : failureText(r), lines: follow.lines, state: this.state() };

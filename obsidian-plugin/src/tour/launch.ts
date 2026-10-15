@@ -34,7 +34,7 @@ export function vaultKey(vault: string): string {
 
 /** The id tour.launched keeps once this vault's Go-local card was acted on or dismissed. */
 export const goLocalId = (vault: string): string => `go-local@${vaultKey(vault)}`;
-/** The same for the Import sheet (PR 9b). */
+/** The same for the Import sheet (install-import B12). */
 export const importId = (vault: string): string => `import@${vaultKey(vault)}`;
 
 /** Go local is due while the upgrade left it pending in this vault and its card was not acted on or dismissed here. */
@@ -43,12 +43,11 @@ export function goLocalDue(migrations: Record<string, MigrationRow>, tour: TourS
 }
 
 /**
- * IMPORT — install-import B12, PR 9b: the Import sheet (ui/ImportSheet.ts) is due while the upgrade left `import`
- * pending in this vault and tour.launched lacks importId(vault) (the harness pre-marks it already). Off until the sheet
- * exists.
+ * The Import sheet (install-import B12) is due while the upgrade left `import` pending in this vault and its sheet was
+ * not acted on or dismissed here (the harness pre-marks importId for every other spec).
  */
-export function importDue(_migrations: Record<string, MigrationRow>, _tour: TourState, _vault: string): boolean {
-  return false;
+export function importDue(migrations: Record<string, MigrationRow>, tour: TourState, vault: string): boolean {
+  return migrations["import"]?.state === "pending" && !tour.launched.includes(importId(vault));
 }
 
 export type Welcome =

@@ -38,7 +38,7 @@ test("the shipped whatsnew.json is valid and has 2.0.0's entries, each with a Sh
   assert.deepEqual(validateWhatsNew(WHATS_NEW, allRefs(BOOK)), []);
   assert.equal(WHATS_NEW.schema, 1);
   const two = WHATS_NEW.releases.find((r) => r.version === "2.0.0");
-  assert.deepEqual(two?.entries.map((e) => e.id), ["local-background", "chief-models", "imported-history", "guided-tour"]);
+  assert.deepEqual(two?.entries.map((e) => e.id), ["local-background", "chief-models", "routine-engines", "imported-history", "guided-tour"]);
   for (const e of two!.entries) assert.ok(e.steps.length > 0, e.id);
 });
 
