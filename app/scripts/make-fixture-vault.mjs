@@ -199,7 +199,7 @@ stage("shim bin", () => {
     'case "$1" in',
     '  load) { [ -f "$S" ] && grep -qx "$L" "$S"; } || echo "$L" >> "$S" ;;',
     '  unload) if [ -f "$S" ]; then grep -vx "$L" "$S" > "$S.tmp"; mv "$S.tmp" "$S"; fi ;;',
-    '  list) { [ -f "$S" ] && grep -qx "$2" "$S"; } || { echo "Could not find service \"$2\" in domain for port" >&2; exit 113; } ;;',
+    '  list) { [ -f "$S" ] && grep -qx "$2" "$S"; } || { echo "Could not find service $2 in domain for port" >&2; exit 113; } ;;',
     'esac',
     'exit 0',
   ].join("\n"));
