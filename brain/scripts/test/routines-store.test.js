@@ -300,3 +300,37 @@ test('overview: a duty run seen only in its log shows as its last run and clears
   w.log('monitor', '[stamp] duty=monitor done (exit 2)', T('2026-09-21T17:01:00Z'));
   assert.equal(store.overview({ dir: w.rdir, file: w.file, logDir: w.logDir, now }).find(r => r.slug === 'monitor').health, 'failed');
 });
+
+// The editor refuses up front what the runners refuse when the routine runs, with their reason (the follow-ups to PR 4):
+// a prompt routine's `writes` entries and `output` file as the local agent takes them (lib/local-agent.js compileWrites,
+// and writable() for the output), a duty's `writes` as persona/duty-guard.js's write scope takes them — the runtime,
+// the routine files, workspaces/, a dot-folder, the vault itself, the guarded persona files — not only what feeds sessions.
+test('validate refuses every writes entry and output file the runners refuse, with the runners\' own reasons', () => {
+  const agent = require('../lib/local-agent.js');
+  const guard = require('../persona/duty-guard.js');
+  const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aos-rt-rule-')));
+  fs.mkdirSync(path.join(vault, 'notes'), { recursive: true });
+  const prompt = { slug: 'ok-slug', schema: 1, name: 'x', kind: 'prompt', schedule: '0 9 * * *', enabled: true, body: 'hi', engine: 'local' };
+  const entries = ['brain/scripts/', 'brain/scripts/x.js', 'brain/routines/', 'brain/routines/*.md', 'workspaces/', 'workspaces/app/notes.md', 'Workspaces/App/',
+    '.obsidian/', 'notes/.git/x', '.claude/settings.json', '.', './', '*', '**/*.md', 'brain/', 'brain/**/*.md', 'persona/IDENTITY.md', 'persona/duties/',
+    'persona/journal/', 'brain/memory/', 'notes/CLAUDE.md', 'notes/', 'notes/**/*.md', 'reports/today.md', 'brain/reflections/*.md'];
+  const refused = Object.fromEntries(agent.compileWrites(entries, vault).refused.map((r) => [r.entry, r.why]));
+  assert.ok(refused['brain/scripts/'] && refused['workspaces/'] && refused['.obsidian/'] && refused['.'], 'the runner refuses these');
+  for (const w of entries) {
+    const want = refused[w] ? [`writes: ${w} is off limits to a local routine (${refused[w]})`] : [];
+    assert.deepEqual(store.validate({ ...prompt, writes: [w] }), want, w);
+  }
+  for (const o of ['notes/out.md', 'brain/routines/log.md', 'brain/scripts/out.md', 'workspaces/app/NOTES.md', 'Workspaces/x.md', '.obsidian/x.md',
+    'notes/.hidden/x.md', 'persona/STATE.md', 'MEMORY.md', 'brain/_index/out.md', 'reports/today.md']) {
+    let why = null;
+    try { agent.writable(vault, o, null); } catch (e) { why = e.message; }
+    assert.deepEqual(store.validate({ ...prompt, output: o }), why ? [`output: ${o} is off limits to a local routine (${why})`] : [], o);
+  }
+  const duty = { slug: 'ok-slug', schema: 1, name: 'x', kind: 'duty', schedule: '0 9 * * *', enabled: true };
+  for (const w of ['brain/scripts/', 'brain/routines/x.md', 'workspaces/', '.git/', 'notes/.obsidian/x', '.', 'brain/', 'persona/IDENTITY.md', 'persona/duties/',
+    'persona/ledger.jsonl', 'brain/memory/feedback/', 'notes/inbox/', 'MEMORY.md']) {
+    const r = guard.writeScope({ vault, writes: w }).refused.find((x) => x.entry.replace(/\/$/, '') === w.replace(/\/$/, ''));
+    assert.deepEqual(store.validate({ ...duty, writes: [w] }), r ? [`writes: ${w} is off limits to a duty (${r.why})`] : [], w);
+  }
+  assert.ok(store.validate({ ...duty, writes: ['workspaces/'] }).length, 'a duty never writes workspaces/');
+});

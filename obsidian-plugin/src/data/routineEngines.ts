@@ -16,8 +16,9 @@ export const ENGINE_LABEL: Record<RoutineEngine, string> = { local: "Local · th
 /** The editor's note under the local engine (local-first A7, the plan's tool-calling risk). */
 export const SMALL_MODEL_NOTE = "Runs on this Mac's model, free. Small local models can lose the thread on long, many-step routines: keep the steps few, or pick Claude Code or Codex for those.";
 
-/** Under the local engine's may-write field: what it never may (routines.ts localDenied and duty-guard's refusal). */
-export const WRITES_NOTE = "Never your memories, persona/, brain/_index/, MEMORY.md, AGENTICOS.md, CLAUDE.md or AGENTS.md (they feed your sessions), nor the runtime, the routine files or a dot-folder.";
+/** Under the local engine's may-write field: what it never may (brain/scripts/lib/write-areas.js, which validateRoutine
+ *  checks before saving: localDenied, then the runners' refusal). */
+export const WRITES_NOTE = "Never your memories, persona/, brain/_index/, MEMORY.md, AGENTICOS.md, CLAUDE.md or AGENTS.md (they feed your sessions), nor the runtime, the routine files, workspaces/ or a dot-folder.";
 
 export interface Choice { value: string; label: string }
 
