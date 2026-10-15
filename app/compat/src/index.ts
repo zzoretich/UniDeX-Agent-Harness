@@ -15,7 +15,7 @@ export { Setting, ButtonComponent, ExtraButtonComponent, ToggleComponent, TextCo
 export { MarkdownRenderer, setMarkdownHost } from "./markdown";
 export { Notice, setIcon, getIconIds } from "./notice";
 export { App, Plugin, SettingTab, PluginSettingTab, Commands, type PluginManifest, type Command, type Hotkey } from "./plugin";
-export { guardState, setWriteGuard, canSave, canWrite, refuse, type GuardEntry, type GuardState, type WriteGuard } from "./guard";
+export { guardState, setWriteGuard, canSave, canWrite, canRun, refuse, type GuardEntry, type GuardState, type WriteGuard } from "./guard";
 export { setBridge } from "./bridge";
 
 // The app is macOS only (D2). The page has no `process`: the platform is what the browser reports.

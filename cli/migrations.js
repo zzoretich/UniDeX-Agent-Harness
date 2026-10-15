@@ -12,7 +12,10 @@
  * ({ schema: 1, migrations: [{ id, state, since, from, at, … }] }), never one already recorded, whatever its state. On a
  * TTY the upgrade asks about local-first once; otherwise it prints the commands (B12: and `aos import`). The app's
  * launch sequence (tour C11) shows the Go-local card for a pending local-first and runs this verb through the `migrate`
- * surface. States: pending → applied | declined; applied → undone (--undo); declined or undone → applied (Settings).
+ * surface. States: pending → applying → applied | declined; applied → undone (--undo); declined or undone → applied
+ * (Settings). `applying` is written, with the backup's path, before the first config write: an apply that stops half
+ * way (an error, Ctrl-C, the app's timeout) is resumed by the next --apply on that same backup, and --undo or --decline
+ * put back what it had changed.
  *
  * local-first --apply (A9): backs up every key it touches, and tick.md when it rewrites it, to
  *   brain/_index/migrations/local-first-<ts>.json, then sets `provider: local` and `ai.{chat,ask,reflectWeek,consolidate}:
@@ -21,8 +24,10 @@
  *   names them (that file wins). The tick routine (brain/routines/tick.md) becomes the shipped 2.0 one (`kind: command`,
  *   `tick.js --triage`) only while it is byte for byte a tick.md a release shipped before 2.0; an edited one is kept and a
  *   notification says why. The installed schedules are re-rendered (they bake the duty model). No other routine is
- *   touched. --decline records the choice and changes nothing. --undo puts every backed-up key back as it was (a key
- *   that was absent is removed again) and tick.md too while it is still the one apply wrote, then re-renders.
+ *   touched. Applied again (a key changed by hand since), it sets what no longer holds and keeps the first backup, so
+ *   undo still goes back to before the migration. --decline records the choice and changes nothing. --undo puts each
+ *   backed-up key back as it was (a key that was absent is removed again) while it still holds the value apply set; a
+ *   key changed since is kept and named, as tick.md is kept once changed since; then it re-renders.
  * import --apply: the import's fast phases and the digest queue, as `aos import` runs them (cli/import.js runWith), with
  *   no workspace created unless --accept names it; --decline records it. A plain `aos import` settles it too.
  *
@@ -41,7 +46,7 @@ const MIGRATIONS = Object.freeze([
   Object.freeze({ id: 'import', since: '2.0.0' }),        // install-import B12
 ]);
 const IDS = MIGRATIONS.map((m) => m.id);
-const STATES = ['pending', 'applied', 'declined', 'undone'];
+const STATES = ['pending', 'applying', 'applied', 'declined', 'undone'];
 const ACTIONS = ['status', 'apply', 'decline', 'undo'];
 const USAGE = 'aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--accept <json list>] [--json]';
 /** local-first A2: the AI features that follow `ai.<feature>` under provider local. */
@@ -244,29 +249,37 @@ function plannedKeys({ chief, user }) {
   return { user: mine, vault };
 }
 
+const FILE_NAME = { user: 'agenticos.json', vault: 'brain/config.json' };
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const backupOf = (ctx, rel) => {
+  const b = readJson(path.join(ctx.vault, rel));
+  if (!b || b.id !== 'local-first' || !isPlainObject(b.files)) throw new Refused(`the backup ${rel} is missing or unreadable; nothing was changed`);
+  return b;
+};
+
 function applyLocalFirst(ctx, { chief = false } = {}, opts = {}) {
-  const st = readState(ctx.vault);
-  const prev = entryOf(st, 'local-first');
-  if (prev && prev.state === 'applied') {
-    return { id: 'local-first', state: 'applied', already: true, changed: [], lines: ['local-first is already applied (aos migrate local-first --undo puts the settings back)'] };
-  }
-  const vaultFile = path.join(ctx.vault, 'brain', 'config.json');
-  const files = { user: ctx.configFile, vault: vaultFile };
-  const userHas = fs.existsSync(ctx.configFile);
-  const docs = { user: userHas ? readJsonStrict(ctx.configFile, {}) : null, vault: readJsonStrict(vaultFile, {}) || {} };
+  const prev = entryOf(readState(ctx.vault), 'local-first');
+  const files = { user: ctx.configFile, vault: path.join(ctx.vault, 'brain', 'config.json') };
+  const docs = { user: fs.existsSync(ctx.configFile) ? readJsonStrict(ctx.configFile, {}) : null, vault: readJsonStrict(files.vault, {}) || {} };
   const plan = plannedKeys({ chief, user: docs.user || {} });
   const tick = tickPlan(ctx.vault);
 
-  // The backup first: nothing changes unless it is on disk.
-  const backup = { schema: SCHEMA, id: 'local-first', at: ctx.now.toISOString(), chief: !!chief, files: {}, tick: null };
+  // The backup: one taken by an apply that stopped half way, or by the one that applied, is kept (it holds the values
+  // from before the migration); a key this run sets for the first time is added to it now, before it changes.
+  const resumed = !!(prev && (prev.state === 'applying' || prev.state === 'applied') && prev.backup);
+  const backupRel = resumed ? prev.backup : `brain/_index/migrations/local-first-${ctx.now.toISOString().replace(/[:.]/g, '-')}.json`;
+  const backup = resumed ? backupOf(ctx, backupRel) : { schema: SCHEMA, id: 'local-first', at: ctx.now.toISOString(), chief: false, files: {}, tick: null };
+  let grew = !resumed;
   for (const which of ['user', 'vault']) {
     if (!docs[which]) continue;
-    backup.files[which] = Object.fromEntries(Object.keys(plan[which]).map((k) => [k, getKey(docs[which], k)]));
+    const keys = backup.files[which] = isPlainObject(backup.files[which]) ? backup.files[which] : {};
+    for (const [k, v] of Object.entries(plan[which])) if (!keys[k]) { keys[k] = { ...getKey(docs[which], k), set: v }; grew = true; }
   }
-  if (tick.action === 'rewrite') backup.tick = { file: TICK_REL, before: tick.before, after: tick.after };
-  const stamp = ctx.now.toISOString().replace(/[:.]/g, '-');
-  const backupRel = `brain/_index/migrations/local-first-${stamp}.json`;
-  writeJson(path.join(ctx.vault, backupRel), backup);
+  if (tick.action === 'rewrite' && !backup.tick) { backup.tick = { file: TICK_REL, before: tick.before, after: tick.after }; grew = true; }
+  if (chief && !backup.chief) { backup.chief = true; grew = true; }
+  // Nothing changes unless the backup is on disk, and the state names it before the first write.
+  if (grew) writeJson(path.join(ctx.vault, backupRel), backup);
+  if (!prev || prev.state !== 'applied') record(ctx.vault, 'local-first', { state: 'applying', backup: backupRel }, ctx.now);
 
   const changed = [];
   for (const which of ['user', 'vault']) {
@@ -275,15 +288,15 @@ function applyLocalFirst(ctx, { chief = false } = {}, opts = {}) {
     let touched = false;
     for (const [k, v] of Object.entries(plan[which])) {
       const cur = getKey(doc, k);
-      if (cur.had && cur.value === v) continue;
+      if (cur.had && same(cur.value, v)) continue;
       setKey(doc, k, v);
       touched = true;
-      changed.push(`${which === 'user' ? 'agenticos.json' : 'brain/config.json'} ${k} = ${v}`);
+      changed.push(`${FILE_NAME[which]} ${k} = ${v}`);
     }
     if (touched) writeJson(files[which], doc);
   }
   // The provider's cached resolution was for the old provider (`aos provider` clears it the same way).
-  try { fs.unlinkSync(path.join(ctx.vault, 'brain', '_index', 'provider-state.json')); } catch { /* none yet */ }
+  if (changed.length) { try { fs.unlinkSync(path.join(ctx.vault, 'brain', '_index', 'provider-state.json')); } catch { /* none yet */ } }
 
   const lines = [];
   if (tick.action === 'rewrite') {
@@ -291,56 +304,75 @@ function applyLocalFirst(ctx, { chief = false } = {}, opts = {}) {
     lines.push(`${TICK_REL}: now the 2.0 tick (it triages on this Mac, tick.js --triage, and wakes the Chief of Staff only for a real change)`);
   } else if (tick.action === 'kept') {
     lines.push(`${TICK_REL}: kept as you edited it — see the notification`);
-    notify(ctx, {
-      title: 'Your tick routine was kept as it is',
-      body: [
-        `Going local updated your settings, but not \`${TICK_REL}\`: it is not the file an earlier release shipped, so it has your changes, and a migration never overwrites a routine you edited.`,
-        '',
-        'The 2.0 tick triages the hourly check on this Mac (`kind: command`, running `tick.js --triage`) and wakes the Chief of Staff only when something really changed, so a quiet hour costs nothing. Yours keeps running as before.',
-        '',
-        `To take the new one, compare yours with \`brain/scripts/persona/templates/routines/tick.md\` and copy what you want into \`${TICK_REL}\`, then run \`aos routines sync\`.`,
-      ].join('\n'),
-      tags: ['migration'],
-    }, opts);
+    if (!prev || prev.state !== 'applied') {
+      notify(ctx, {
+        title: 'Your tick routine was kept as it is',
+        body: [
+          `Going local updated your settings, but not \`${TICK_REL}\`: it is not the file an earlier release shipped, so it has your changes, and a migration never overwrites a routine you edited.`,
+          '',
+          'The 2.0 tick triages the hourly check on this Mac (`kind: command`, running `tick.js --triage`) and wakes the Chief of Staff only when something really changed, so a quiet hour costs nothing. Yours keeps running as before.',
+          '',
+          `To take the new one, compare yours with \`brain/scripts/persona/templates/routines/tick.md\` and copy what you want into \`${TICK_REL}\`, then run \`aos routines sync\`.`,
+        ].join('\n'),
+        tags: ['migration'],
+      }, opts);
+    }
   } else if (tick.action === 'current') lines.push(`${TICK_REL}: already the 2.0 tick`);
-  const schedules = rerender(ctx, opts);
+  const moved = changed.length > 0 || tick.action === 'rewrite';
+  const schedules = moved || !prev || prev.state !== 'applied' ? rerender(ctx, opts) : 'nothing changed, so the schedules were left as they are';
   lines.push(schedules);
-  const rec = record(ctx.vault, 'local-first', { state: 'applied', chief: !!chief, backup: backupRel, tick: tick.action }, ctx.now);
-  return { id: 'local-first', state: rec.state, chief: !!chief, changed, backup: backupRel, tick: tick.action, schedules, lines };
+  if (!moved && prev && prev.state === 'applied') lines.unshift('already applied: every setting still holds (aos migrate local-first --undo puts the earlier ones back)');
+  const rec = record(ctx.vault, 'local-first', { state: 'applied', chief: !!backup.chief, backup: backupRel, tick: tick.action }, ctx.now);
+  return { id: 'local-first', state: rec.state, chief: !!backup.chief, changed, backup: backupRel, tick: tick.action, schedules, lines };
 }
 
-function undoLocalFirst(ctx, opts = {}) {
-  const e = entryOf(readState(ctx.vault), 'local-first');
-  if (!e || e.state !== 'applied' || !e.backup) throw new Refused('nothing to undo: local-first is not applied (aos migrate local-first --status)');
-  const backup = readJson(path.join(ctx.vault, e.backup));
-  if (!backup || backup.id !== 'local-first' || !isPlainObject(backup.files)) throw new Refused(`the backup ${e.backup} is missing or unreadable; nothing was changed`);
+/**
+ * Puts back what the backup holds: a key only while it still holds the value apply set (one still at its value from
+ * before is left alone; one changed since is kept and named), tick.md only while it is the one apply wrote.
+ */
+function restoreBackup(ctx, backup) {
   const files = { user: ctx.configFile, vault: path.join(ctx.vault, 'brain', 'config.json') };
   const restored = [];
+  const kept = [];
   for (const which of ['user', 'vault']) {
     const keys = backup.files[which];
     if (!isPlainObject(keys)) continue;
     const doc = readJsonStrict(files[which], null);
     if (!doc) continue;
+    let touched = false;
     for (const [k, was] of Object.entries(keys)) {
-      if (was && was.had) setKey(doc, k, was.value);
+      if (!was) continue;
+      const cur = getKey(doc, k);
+      const before = was.had ? cur.had && same(cur.value, was.value) : !cur.had;
+      if (before) continue;
+      // A backup from before `set` was recorded restores as it always did.
+      if ('set' in was && !(cur.had && same(cur.value, was.set))) { kept.push(`${FILE_NAME[which]} ${k} (changed since going local)`); continue; }
+      if (was.had) setKey(doc, k, was.value);
       else deleteKey(doc, k);
-      restored.push(`${which === 'user' ? 'agenticos.json' : 'brain/config.json'} ${k} ${was && was.had ? `= ${JSON.stringify(was.value)}` : 'removed'}`);
+      touched = true;
+      restored.push(`${FILE_NAME[which]} ${k} ${was.had ? `= ${JSON.stringify(was.value)}` : 'removed'}`);
     }
-    writeJson(files[which], doc);
+    if (touched) writeJson(files[which], doc);
   }
-  try { fs.unlinkSync(path.join(ctx.vault, 'brain', '_index', 'provider-state.json')); } catch { /* none */ }
+  if (restored.length) { try { fs.unlinkSync(path.join(ctx.vault, 'brain', '_index', 'provider-state.json')); } catch { /* none */ } }
   const lines = [];
   if (backup.tick && typeof backup.tick.before === 'string') {
     const file = path.join(ctx.vault, TICK_REL);
     let now = null;
     try { now = fs.readFileSync(file, 'utf8'); } catch { /* gone */ }
     if (now === backup.tick.after) { writeAtomic(file, backup.tick.before); lines.push(`${TICK_REL}: the tick you had before`); }
-    else lines.push(`${TICK_REL}: changed since going local, so it was left as it is`);
+    else if (now !== backup.tick.before) lines.push(`${TICK_REL}: changed since going local, so it was left as it is`);
   }
+  return { restored, kept, lines };
+}
+
+function undoLocalFirst(ctx, opts = {}) {
+  const e = entryOf(readState(ctx.vault), 'local-first');
+  if (!e || !['applied', 'applying'].includes(e.state) || !e.backup) throw new Refused('nothing to undo: local-first is not applied (aos migrate local-first --status)');
+  const r = restoreBackup(ctx, backupOf(ctx, e.backup));
   const schedules = rerender(ctx, opts);
-  lines.push(schedules);
   const rec = record(ctx.vault, 'local-first', { state: 'undone' }, ctx.now);
-  return { id: 'local-first', state: rec.state, restored, backup: e.backup, schedules, lines };
+  return { id: 'local-first', state: rec.state, restored: r.restored, kept: r.kept, backup: e.backup, schedules, lines: [...r.kept.map((k) => `kept ${k}`), ...r.lines, schedules] };
 }
 
 // ── import ────────────────────────────────────────────────────────────────────
@@ -348,17 +380,27 @@ async function applyImport(ctx, { accept = null, json = false } = {}, opts = {})
   const I = opts.importer || require('./import.js');
   const args = { from: ['claude', 'codex'], since: '90d', only: I.KINDS, accept, dryRun: false, json: false };
   const quiet = { log: () => {} };
-  const { report } = await I.runWith(args, { ...opts, env: ctx.env, configDir: ctx.configDir, vault: ctx.vault, io: json ? quiet : (opts.io || console) });
+  const { code, report } = await I.runWith(args, { ...opts, env: ctx.env, configDir: ctx.configDir, vault: ctx.vault, io: json ? quiet : (opts.io || console) });
+  if (code !== 0) throw new Refused(`aos import stopped (exit ${code}); the import is still pending`);
   const rec = record(ctx.vault, 'import', { state: 'applied' }, ctx.now);
   return { id: 'import', state: rec.state, report: json ? report : undefined, lines: [] };
 }
 
 // ── the verb ──────────────────────────────────────────────────────────────────
-function decline(ctx, id) {
+function decline(ctx, id, opts = {}) {
   const e = entryOf(readState(ctx.vault), id);
   if (e && e.state === 'applied') throw new Refused(`${id} is applied${id === 'local-first' ? ': aos migrate local-first --undo puts your settings back' : ''}`);
+  const lines = [];
+  let restored = [];
+  // An apply that stopped half way: what it changed goes back first, so "keep my settings" keeps them.
+  if (e && e.state === 'applying' && e.backup) {
+    const r = restoreBackup(ctx, backupOf(ctx, e.backup));
+    restored = r.restored;
+    lines.push(...r.kept.map((k) => `kept ${k}`), ...r.lines, rerender(ctx, opts));
+  }
   const rec = record(ctx.vault, id, { state: 'declined' }, ctx.now);
-  return { id, state: rec.state, lines: [id === 'local-first' ? 'kept your settings; Settings ▸ Local engine can go local later' : 'no import; `aos import` brings your history in whenever you like'] };
+  lines.unshift(id === 'local-first' ? 'kept your settings; Settings ▸ Local engine can go local later' : 'no import; `aos import` brings your history in whenever you like');
+  return { id, state: rec.state, restored, lines };
 }
 
 function statusRows(vault) {
@@ -408,7 +450,7 @@ async function main(argv, opts = {}) {
     else for (const r of rows) io.log(`${r.id.padEnd(12)} ${r.state || 'not recorded'}${r.at ? `  ${r.at}` : ''}${r.state === 'applied' && r.backup ? `  (backup ${r.backup})` : ''}`);
     return 0;
   }
-  if (a.action === 'decline') out = decline(ctx, a.id);
+  if (a.action === 'decline') out = decline(ctx, a.id, opts);
   else if (a.id === 'local-first') out = a.action === 'apply' ? applyLocalFirst(ctx, { chief: a.chief }, opts) : undoLocalFirst(ctx, opts);
   else out = await applyImport(ctx, { accept: a.accept, json: a.json }, opts);
   if (a.json) { const { lines, ...rest } = out; io.log(JSON.stringify({ ...rest, notes: lines }, null, 2)); return 0; }
@@ -464,7 +506,7 @@ async function offer(added, opts = {}) {
       io.log(`local-first: applied (backup ${r.backup}; aos migrate local-first --undo puts it back)`);
       for (const l of r.lines) io.log(`  ${l}`);
     } else if (result.answer === 'no') {
-      decline(ctx, 'local-first');
+      decline(ctx, 'local-first', opts);
       result.ran = 'decline';
       io.log('local-first: kept your settings (Settings ▸ Local engine, or aos migrate local-first --apply, goes local later)');
     }

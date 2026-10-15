@@ -18,19 +18,36 @@ export interface LaunchInfo {
 /** The steps in order; "checklist" is Getting started at the end. */
 export type LaunchStep = "runtime" | "go-local" | "import" | "core-tour" | "whats-new" | "checklist";
 
-/** The id tour.launched keeps for a release's What's new card. */
+/** The id tour.launched keeps for a release's What's new card (per Mac: the release is the app's). */
 export const whatsNewId = (version: string): string => `whats-new@${version}`;
 
-/** Go local is due while the upgrade left it pending and the card has not been shown on this Mac. */
-export function goLocalDue(migrations: Record<string, MigrationRow>, tour: TourState): boolean {
-  return migrations["local-first"]?.state === "pending" && !tour.launched.includes("go-local");
+/**
+ * A short, stable key for a vault path (FNV-1a, 32 bits, as 8 hex digits): the HUD's settings are the app's, one per
+ * Mac, while a migration is pending in one vault, so the cards it asks are remembered per vault. The e2e harness
+ * computes the same key to pre-mark them.
+ */
+export function vaultKey(vault: string): string {
+  let h = 0x811c9dc5;
+  for (const ch of new TextEncoder().encode(vault)) { h ^= ch; h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+}
+
+/** The id tour.launched keeps once this vault's Go-local card was acted on or dismissed. */
+export const goLocalId = (vault: string): string => `go-local@${vaultKey(vault)}`;
+/** The same for the Import sheet (PR 9b). */
+export const importId = (vault: string): string => `import@${vaultKey(vault)}`;
+
+/** Go local is due while the upgrade left it pending in this vault and its card was not acted on or dismissed here. */
+export function goLocalDue(migrations: Record<string, MigrationRow>, tour: TourState, vault: string): boolean {
+  return migrations["local-first"]?.state === "pending" && !tour.launched.includes(goLocalId(vault));
 }
 
 /**
- * IMPORT — install-import B12, PR 9's second stage: the Import sheet (ui/ImportSheet.ts) is due while the upgrade left
- * `import` pending and tour.launched lacks "import" (the harness pre-marks it already). Off until the sheet exists.
+ * IMPORT — install-import B12, PR 9b: the Import sheet (ui/ImportSheet.ts) is due while the upgrade left `import`
+ * pending in this vault and tour.launched lacks importId(vault) (the harness pre-marks it already). Off until the sheet
+ * exists.
  */
-export function importDue(_migrations: Record<string, MigrationRow>, _tour: TourState): boolean {
+export function importDue(_migrations: Record<string, MigrationRow>, _tour: TourState, _vault: string): boolean {
   return false;
 }
 

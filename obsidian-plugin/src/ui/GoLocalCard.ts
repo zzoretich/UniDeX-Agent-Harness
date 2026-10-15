@@ -4,8 +4,10 @@
 // the model download when the model is missing (the `local` surface's `aos local pull`), and a checked "Move the Chief of
 // Staff to Opus 5.5 / gpt-6-sol" worded for this Mac's hosts. Go local runs `aos migrate local-first --apply [--chief]`
 // and Keep my settings `--decline`, both through the `migrate` surface; the runtime backs everything up first, and
-// Settings can undo it. While a surface is off, the card names the command for the Code tab instead.
-import { Modal, Notice } from "obsidian";
+// Settings can undo it. While that surface is off (its default until a live check), the card shows the exact commands
+// up front, each with a ❯_ that runs it in the Code tab, instead of buttons the app would refuse; the same for the
+// model download and the `local` surface.
+import { Modal, Notice, canRun } from "obsidian";
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
 import { fs } from "../host";
@@ -15,7 +17,13 @@ import { localEngineView, readLocalFiles } from "../data/localEngine";
 import { MOVES_LOCAL, SPEND_PATH, backgroundSpend, chiefChoice, migrateArgs, migrateCommand, spendText, staysHosted } from "../data/goLocal";
 import { dialogId } from "./spaces/SpaceDialogs";
 
-export type GoLocalResult = "applied" | "declined" | "later";
+/** applied or declined here; `terminal` when a command was handed to the Code tab; `later` when closed without acting. */
+export type GoLocalResult = "applied" | "declined" | "terminal" | "later";
+
+/** Whether an enabled surface runs this `aos` argv (compat's page policy; display only, main checks the spawn). */
+function surfaceRuns(args: string[]): boolean {
+  try { return canRun("cli/aos.js", args); } catch { return false; }
+}
 
 export interface GoLocalOptions {
   /** Runs a command in a Code terminal (WorkbenchView.runInTerm); the card's fallback while a surface is off. */
@@ -91,8 +99,10 @@ export class GoLocalCard extends Modal {
             : `Runs on ${name} through ${engine.engine === "openai" ? "your OpenAI-compatible server" : "Ollama"}.`,
     });
     if (engine.state === "missing" && engine.canPull) {
-      const pull = model.createEl("button", { cls: "aos-golocal-pull", text: "Download the model", attr: { type: "button", "data-act": "golocal-pull" } });
-      pull.addEventListener("click", () => void this.pull(pull));
+      if (surfaceRuns(["local", "pull"])) {
+        const pull = model.createEl("button", { cls: "aos-golocal-pull", text: "Download the model", attr: { type: "button", "data-act": "golocal-pull" } });
+        pull.addEventListener("click", () => void this.pull(pull));
+      } else this.termButton(model, "aos local pull", "aos-golocal-pull");
     }
 
     const chief = c.createEl("label", { cls: "aos-golocal-chief" });
@@ -102,6 +112,25 @@ export class GoLocalCard extends Modal {
 
     this.statusEl = c.createDiv({ cls: "aos-golocal-status", attr: { role: "status", "aria-live": "polite" } });
     const foot = c.createDiv({ cls: "aos-golocal-foot" });
+    if (!surfaceRuns(migrateArgs("apply", true))) {
+      // The `migrate` surface is off: the commands, not buttons the app would refuse.
+      const cmds = c.createDiv({ cls: "aos-golocal-cmds" });
+      cmds.createDiv({ cls: "aos-golocal-cmdnote", text: "Going local from here needs the Go local write surface, which stays off until it has been checked on a live vault. Run your choice in the Code tab instead:" });
+      const row = (key: "apply" | "decline", label: string, command: () => string): void => {
+        const r = cmds.createDiv({ cls: "aos-golocal-cmd", attr: { "data-cmd": key } });
+        r.createSpan({ cls: "aos-golocal-cmdlabel", text: label });
+        const code = r.createEl("code", { cls: "aos-golocal-cmdtext", text: command() });
+        if (key === "apply") box.addEventListener("change", () => code.setText(command()));
+        this.termButton(r, command, "aos-golocal-cmdgo");
+      };
+      row("apply", "Go local", () => migrateCommand("apply", box.checked));
+      row("decline", "Keep my settings", () => migrateCommand("decline"));
+      foot.createDiv({ cls: "aos-golocal-spacer" });
+      const later = foot.createEl("button", { cls: "aos-golocal-later", text: "Not now", attr: { type: "button" } });
+      later.addEventListener("click", () => this.close());
+      later.focus();
+      return;
+    }
     foot.createDiv({ cls: "aos-golocal-spacer" });
     const keep = foot.createEl("button", { cls: "aos-golocal-keep", text: "Keep my settings", attr: { type: "button" } });
     const go = foot.createEl("button", { cls: "mod-cta aos-golocal-go", text: "Go local", attr: { type: "button" } });
@@ -109,6 +138,14 @@ export class GoLocalCard extends Modal {
     keep.addEventListener("click", () => void this.run("decline", false));
     go.addEventListener("click", () => void this.run("apply", box.checked));
     go.focus();
+  }
+
+  /** A ❯_ button that runs `command` in a Code terminal and closes the card (or names it when there is no Code tab). */
+  private termButton(host: HTMLElement, command: string | (() => string), cls: string): void {
+    const text = (): string => (typeof command === "string" ? command : command());
+    if (!this.o.runInTerm) { host.createSpan({ cls, text: `Run ${text()} in a terminal.` }); return; }
+    const b = host.createEl("button", { cls: `aos-golocal-term ${cls}`, text: "❯_ Run in Code", attr: { type: "button", title: "Opens a Code terminal running this command" } });
+    b.addEventListener("click", () => { this.o.runInTerm?.(text()); this.result = "terminal"; this.close(); });
   }
 
   private setBusy(b: boolean): void {
@@ -121,11 +158,16 @@ export class GoLocalCard extends Modal {
     this.setBusy(true);
     this.statusEl?.removeClass("is-warn");
     this.statusEl?.setText(action === "apply" ? "Going local… (aos migrate local-first)" : "Keeping your settings…");
-    const r = await this.plugin.aos(migrateArgs(action, chief), 120_000);
+    const r = await this.plugin.aosJson<{ changed?: string[]; tick?: string }>(migrateArgs(action, chief), 120_000);
     this.setBusy(false);
     if (r.code === 0) {
       this.result = action === "apply" ? "applied" : "declined";
-      if (action === "apply") new Notice("Background work now runs on this Mac. Settings ▸ Local engine can undo it.", 8000);
+      if (action === "apply") {
+        // What actually changed (a re-apply sets only what no longer held, or nothing).
+        const moved = (r.json?.changed?.length ?? 0) > 0 || r.json?.tick === "rewrite";
+        new Notice(moved ? "Background work now runs on this Mac. Settings ▸ Local engine can undo it."
+          : "Nothing to change: background work already runs on this Mac with these settings.", 8000);
+      }
       this.close();
       return;
     }

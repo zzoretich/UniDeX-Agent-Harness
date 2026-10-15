@@ -12,7 +12,7 @@ import { isIgnored } from "../../compat/src/ignore";
 import { fuzzyScore } from "../../compat/src/modal";
 import { normalizePath } from "../../compat/src/files";
 import { opensOutside } from "../../compat/src/markdown";
-import { canSave, canWrite, setWriteGuard } from "../../compat/src/guard";
+import { canRun, canSave, canWrite, setWriteGuard } from "../../compat/src/guard";
 import { PagePolicy } from "../../src/renderer/pagePolicy";
 
 test("agenticos:// links parse into an action and safe params", () => {
@@ -136,6 +136,16 @@ test("compat's write guard answers canWrite beside canSave, so the HUD can show 
     // No vault attached (the setup wizard): nothing.
     setWriteGuard(new PagePolicy(null, ["todo"]));
     assert.equal(canWrite(`${vault}/TODO.md`), false);
+    // canRun: whether a surface runs a runtime script with these arguments (the Go-local card, local-first A9).
+    const go = ["migrate", "local-first", "--apply", "--chief", "--json"];
+    setWriteGuard(new PagePolicy(vault, ["settings"]));
+    assert.equal(canRun("cli/aos.js", go), false, "Go local is off");
+    assert.equal(canRun("cli/aos.js", ["config", "list", "--json"]), true, "a background refresh runs whatever is on");
+    setWriteGuard(new PagePolicy(vault, ["migrate"]));
+    assert.equal(canRun("cli/aos.js", go), true);
+    assert.equal(canRun("cli/aos.js", ["migrate", "local-first", "--status", "--json"]), false);
+    setWriteGuard(new PagePolicy(null, ["migrate"]));
+    assert.equal(canRun("cli/aos.js", go), false);
   } finally {
     g.__aosGuard = saved;
   }

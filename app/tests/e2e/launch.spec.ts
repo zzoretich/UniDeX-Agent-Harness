@@ -10,13 +10,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   FX, HUD_SETTINGS, HUD_VERSION, SETUP, USER_DATA, content, drawer, expectNoErrors, installSetupStubs, launchApp, openTab, rail, restoreFixture,
-  type AppHandle,
+  vaultKey, type AppHandle,
 } from "./harness";
 
 const VERSION = (JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")) as { version: string }).version;
 const AGENTICOS = path.join(FX.claude, "agenticos.json");
 const MIGRATIONS = FX.v("brain/_index/migrations.json");
 const LOCAL_URL = "http://127.0.0.1:9";
+/** The fixture vault's Go-local mark in tour.launched (per vault: obsidian-plugin/src/tour/launch.ts goLocalId). */
+const GO_LOCAL = `go-local@${vaultKey(FX.vault)}`;
 const WHATS_NEW = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "..", "obsidian-plugin", "src", "tour", "whatsnew.json"), "utf8")) as { releases: Array<{ version: string; entries: unknown[] }> };
 
 const readJson = (file: string) => JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
@@ -40,7 +42,8 @@ test.afterEach(async () => { await h?.close(); h = null; });
 
 test("an install from before 2.0: runtime update → Go local → What's new → Getting started, in order and once", async () => {
   restoreFixture();
-  const env = { AOS_APP_PAYLOAD: SETUP.payload, AOS_SETUP_PATH: SETUP.bin, AOS_APP_WRITE: "migrate,settings" };
+  // Go local and the Local engine's download on (each is off by default until its live check), Settings for Undo.
+  const env = { AOS_APP_PAYLOAD: SETUP.payload, AOS_SETUP_PATH: SETUP.bin, AOS_APP_WRITE: "migrate,local,settings" };
   h = await launchApp({
     // A 1.9 Mac: no tour state in the HUD's settings, nothing launched, a runtime older than the app's.
     tour: false, launch: false, env,
@@ -96,7 +99,7 @@ test("an install from before 2.0: runtime update → Go local → What's new →
   await expect(drawer(win).locator(".aos-tour-checklist")).toBeVisible();
   expect(await launchLog(win)).toEqual(["runtime", "go-local", "whats-new", "checklist"]);
   expect(tourState().lastSeenVersion).toBe(HUD_VERSION);
-  expect(tourState().launched).toEqual(expect.arrayContaining(["go-local", `whats-new@${HUD_VERSION}`]));
+  expect(tourState().launched).toEqual(expect.arrayContaining([GO_LOCAL, `whats-new@${HUD_VERSION}`]));
   expectNoErrors(h);
   await h.close();
 
@@ -107,7 +110,7 @@ test("an install from before 2.0: runtime update → Go local → What's new →
   expect(await launchLog(h.win)).toEqual([]);
   await openTab(h.win, "settings");
   const row = content(h.win).locator('[data-tour="settings-golocal"]');
-  await expect(row).toContainText("You moved background work to this Mac");
+  await expect(row).toContainText("You went local");
   await row.locator('[data-act="go-local-undo"]').click();
   await h.win.locator(".aos-confirm-modal button.mod-cta").click();
   // The state is recorded last, after the keys and the schedules.
@@ -167,7 +170,7 @@ test("Codex only: the card names gpt-6-sol and Codex; Keep my settings changes n
   expectNoErrors(h);
 });
 
-test("no host: the card says the Chief of Staff waits for one; closing it leaves the choice for Settings; Pulse says how to add a host", async () => {
+test("no host, Go local surface off: the card shows the commands, not buttons; closing it leaves the choice; Pulse says how to add a host", async () => {
   restoreFixture();
   h = await launchApp({
     launch: false,
@@ -179,10 +182,20 @@ test("no host: the card says the Chief of Staff waits for one; closing it leaves
   const { win } = h;
   await expect(card(win).locator(".aos-golocal-chief")).toHaveText(/Opus 5\.5 \/ gpt-6-sol when you add a host$/);
   await expect(card(win).locator('[data-col="hosted"]')).toContainText("Claude Code or Codex, once you add one");
+  // The `migrate` surface is off here (this run's writes are off): the exact commands, each with ❯_, and no buttons the
+  // app would refuse; the box changes the command.
+  await expect(card(win).locator(".aos-golocal-go, .aos-golocal-keep")).toHaveCount(0);
+  const apply = card(win).locator('.aos-golocal-cmd[data-cmd="apply"] .aos-golocal-cmdtext');
+  await expect(apply).toHaveText("aos migrate local-first --apply --chief");
+  await card(win).locator(".aos-golocal-chief input").uncheck();
+  await expect(apply).toHaveText("aos migrate local-first --apply");
+  await expect(card(win).locator('.aos-golocal-cmd[data-cmd="decline"] .aos-golocal-cmdtext')).toHaveText("aos migrate local-first --decline");
+  await expect(card(win).locator(".aos-golocal-cmdgo")).toHaveCount(2);
+  expect(tourState().launched ?? []).not.toContain(GO_LOCAL);
   await win.keyboard.press("Escape");
   await expect(card(win)).toHaveCount(0);
   expect(migration("local-first")).toBe("pending");
-  expect(tourState().launched).toContain("go-local");
+  await expect.poll(() => tourState().launched ?? []).toContain(GO_LOCAL);
   await openTab(win, "pulse");
   const waiting = content(win).locator(".aos-pulse-waiting");
   await expect(waiting).toContainText("Add Claude Code or Codex to start your Chief of Staff.");

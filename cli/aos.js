@@ -1301,6 +1301,14 @@ async function upgrade(flags) {
   // `from`: the version this vault was last installed or upgraded at, before this upgrade records the new one.
   const ctx = { flags, repo, vault, written, act, dry: false, yes: true, version, from: cfg.version };
   out.log(`upgrading ${vault} from ${repo} (v${version})`);
+  // local-first A9, install-import B12: what a release asks once (cli/migrations.js MIGRATIONS, gated on `from` like
+  // NEW_ROUTINES), recorded pending first: before any step writes the new version, so an upgrade that stops part way
+  // still asks at its re-run. Asked about at the end on a TTY; shown by the app's launch sequence.
+  let migrationsAdded = [];
+  await act('record what this release asks you once (aos migrate)', () => {
+    migrationsAdded = require('./migrations.js').recordPending({ vault, from: ctx.from });
+    out.log(`   ${migrationsAdded.length ? `pending: ${migrationsAdded.join(', ')}` : 'nothing new'}`);
+  });
   await act('re-vendor brain/scripts (force) and reinstall its dependencies', () => vendorRuntime(ctx, { force: true }));
   await act('seed brain/routines/ and re-render the installed schedules', () => migrateRoutines(ctx));
   const hosts = hostsOf(cfg);
@@ -1323,13 +1331,6 @@ async function upgrade(flags) {
     // final review F7: missing is fine (fresh vault → {}), but merging the defaults over a file we could
     // not parse would drop every key the user has set. Refuse and stop the upgrade instead.
     writeJson(p, deepMerge(defaults, readJsonStrict(p, {}) || {}));
-  });
-  // local-first A9, install-import B12: what a release asks once (cli/migrations.js MIGRATIONS, gated on `from` like
-  // NEW_ROUTINES): recorded pending here, asked about at the end on a TTY, shown by the app's launch sequence.
-  let migrationsAdded = [];
-  await act('record what this release asks you once (aos migrate)', () => {
-    migrationsAdded = require('./migrations.js').recordPending({ vault, from: ctx.from });
-    out.log(`   ${migrationsAdded.length ? `pending: ${migrationsAdded.join(', ')}` : 'nothing new'}`);
   });
   const SLI = statuslineLib(vault);
   if (SLI && exists(SLI.statePath(configPath()))) {
@@ -1571,9 +1572,11 @@ function updateNotice() {
 // --skip-brain-md and merge-draft's and sweep's --estimate (A5) do not.
 // `aos import`'s (install-import B7): --from, --since, --only and --accept take a value.
 const VALUE_FLAGS = new Set(['vault', 'provider', 'persona-json', 'from-local', 'budget', 'snooze', 'host', 'name', 'into', 'cwd', 'set', 'expect', 'by', 'from', 'since', 'only', 'accept']);
-// `aos migrate`'s (local-first A9): --status, --apply, --chief, --decline and --undo take none.
+// `aos migrate`'s (local-first A9): --status, --apply, --chief, --decline and --undo take none, and main() refuses them on
+// any other verb.
+const MIGRATE_FLAGS = ['status', 'apply', 'chief', 'decline', 'undo'];
 const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate',
-  'status', 'apply', 'chief', 'decline', 'undo']);
+  ...MIGRATE_FLAGS]);
 // --no-obsidian is parsed and ignored: Obsidian is no longer installed, and a script written for an older release keeps working.
 const NEGATABLE_FLAGS = new Set(['obsidian']);
 function camel(s) { return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }
@@ -1613,6 +1616,8 @@ function parseArgs(argv) {
 async function main(argv) {
   const { cmd, sub, flags } = parseArgs(argv);
   // --dry-run is an init-only preview (contract §4.3); on a mutating command it must be a loud error, never a silent no-op.
+  const misplaced = cmd === 'migrate' ? undefined : MIGRATE_FLAGS.find((f) => flags[f] !== undefined);
+  if (misplaced) throw new UsageError(`--${misplaced} is only for \`aos migrate\``);
   if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory', 'import'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set`, `aos memory set`, `aos memory fix` and `aos import`');
   switch (cmd) {
     case 'init': return init(flags);

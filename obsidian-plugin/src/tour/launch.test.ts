@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { goLocalDue, importDue, welcomeStep, whatsNewId } from "./launch";
+import { goLocalDue, goLocalId, importDue, importId, vaultKey, welcomeStep, whatsNewId } from "./launch";
 import { DEFAULT_TOUR_STATE, markCompleted, markLaunched, markSeen, type TourState } from "./state";
 import type { WhatsNewRelease } from "./whatsnew";
 import type { MigrationRow } from "../data/goLocal";
@@ -11,11 +11,24 @@ const REL: WhatsNewRelease[] = [{ version: "2.0.0", entries: [{ id: "a", title: 
 const existing = { firstTime: false, installed: false, behind: false };
 const fresh = { firstTime: true, installed: true, behind: false };
 
-test("Go local is due while the upgrade left it pending and the card was never shown (local-first A9)", () => {
-  assert.equal(goLocalDue(rows("pending"), DEFAULT_TOUR_STATE), true);
-  for (const s of ["applied", "declined", "undone", null] as const) assert.equal(goLocalDue(rows(s), DEFAULT_TOUR_STATE), false, String(s));
-  assert.equal(goLocalDue(rows("pending"), markLaunched(DEFAULT_TOUR_STATE, "go-local")), false, "shown once: Settings offers it after");
-  assert.equal(importDue(rows("pending"), DEFAULT_TOUR_STATE), false, "the Import sheet is PR 9's second stage");
+const VAULT = "/vaults/demo";
+
+test("a vault's key is FNV-1a's 32 bits in hex: stable, and the harness computes the same", () => {
+  assert.equal(vaultKey("a"), "e40c292c", "the published FNV-1a test vector");
+  assert.equal(vaultKey(""), "811c9dc5");
+  assert.equal(vaultKey(VAULT), "f378054b");
+  assert.deepEqual([goLocalId(VAULT), importId(VAULT)], ["go-local@f378054b", "import@f378054b"]);
+});
+
+test("Go local is due while the upgrade left it pending in this vault and its card was not acted on there (local-first A9)", () => {
+  assert.equal(goLocalDue(rows("pending"), DEFAULT_TOUR_STATE, VAULT), true);
+  for (const s of ["applying", "applied", "declined", "undone", null] as const) assert.equal(goLocalDue(rows(s), DEFAULT_TOUR_STATE, VAULT), false, String(s));
+  const seen = markLaunched(DEFAULT_TOUR_STATE, goLocalId(VAULT));
+  assert.deepEqual(seen.launched, ["go-local@f378054b"]);
+  assert.equal(goLocalDue(rows("pending"), seen, VAULT), false, "acted on or dismissed: Settings offers it after");
+  assert.equal(goLocalDue(rows("pending"), seen, "/vaults/other"), true, "another vault on this Mac still asks");
+  assert.equal(goLocalDue(rows("pending"), markLaunched(DEFAULT_TOUR_STATE, "go-local"), VAULT), true, "a mark with no vault is no vault's");
+  assert.equal(importDue(rows("pending"), DEFAULT_TOUR_STATE, VAULT), false, "the Import sheet is PR 9b");
 });
 
 test("the welcome: a new install's core tour; an install from before the tour What's new with the tour; later only what is new (C10)", () => {

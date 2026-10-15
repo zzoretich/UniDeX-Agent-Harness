@@ -8,12 +8,13 @@
 //   5. Getting started, the checklist (the core tour opens it itself at its end)
 // The app's renderer hands off to it from attach.ts with what main knows (firstTime, installed, behind) and the runtime
 // step; the rest is the HUD's: the migration state the runtime keeps (brain/_index/migrations.json) and the tour's
-// memory in the HUD settings (tour.launched, lastSeenVersion); tour/launch.ts decides what is due. The e2e harness
-// pre-marks tour.launched the way it pre-marks the "noted" vault, so other specs never meet a dialog.
+// memory in the HUD settings (tour.launched, lastSeenVersion); tour/launch.ts decides what is due. A vault's cards are
+// remembered per vault, and only once the user acted on one or dismissed it (closing the app with it open asks again).
+// The e2e harness pre-marks tour.launched the way it pre-marks the "noted" vault, so other specs never meet a dialog.
 import { Modal } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import { readMigrations } from "../data/goLocal";
-import { goLocalDue, importDue, welcomeStep, whatsNewId, type LaunchInfo, type LaunchStep, type Welcome } from "../tour/launch";
+import { goLocalDue, goLocalId, importDue, welcomeStep, whatsNewId, type LaunchInfo, type LaunchStep, type Welcome } from "../tour/launch";
 import { boldRuns, fillText, type TourContext } from "../tour/predicates";
 import { VIEW_TYPE_WORKBENCH, WorkbenchView } from "../views/WorkbenchView";
 import { GoLocalCard } from "./GoLocalCard";
@@ -46,16 +47,17 @@ export async function runLaunchSequence(d: LaunchDeps): Promise<LaunchStep[]> {
     await new Promise<void>((resolve) => d.runtime!(resolve));
   }
 
-  // 2. Go local.
-  const migrations = readMigrations(plugin.vaultRoot());
-  if (goLocalDue(migrations, tour.state())) {
+  // 2. Go local: remembered for this vault once acted on or dismissed.
+  const vault = plugin.vaultRoot();
+  const migrations = readMigrations(vault);
+  if (goLocalDue(migrations, tour.state(), vault)) {
     show("go-local");
-    tour.rememberLaunch("go-local");
     await GoLocalCard.ask(plugin, { runInTerm: (cmd) => workbench(plugin)?.runInTerm(cmd, { origin: "Go local" }) });
+    tour.rememberLaunch(goLocalId(vault));
   }
 
-  // 3. IMPORT (stage 2): the Import sheet goes here, between Go local and the welcome.
-  if (importDue(migrations, tour.state())) show("import");
+  // 3. IMPORT (PR 9b): the Import sheet goes here, between Go local and the welcome, remembered as importId(vault).
+  if (importDue(migrations, tour.state(), vault)) show("import");
 
   // 4. The welcome, then 5. Getting started.
   const welcome = welcomeStep(info, tour.state(), plugin.manifest.version);

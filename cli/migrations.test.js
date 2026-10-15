@@ -98,12 +98,16 @@ test('local-first --apply --chief: both files go local, the CoS models land, tic
   assert.deepEqual([e.state, e.chief, e.tick, e.backup], ['applied', true, 'rewrite', r.backup]);
   assert.match(r.backup, /^brain\/_index\/migrations\/local-first-2026-10-15T12-00-00-000Z\.json$/);
   const b = JSON.parse(w.read(r.backup));
-  assert.deepEqual(b.files.user, { provider: { had: true, value: 'auto' }, 'ai.chat': { had: false }, 'ai.ask': { had: false }, 'ai.reflectWeek': { had: false }, 'ai.consolidate': { had: false } });
-  assert.deepEqual(b.files.vault['persona.model'], { had: true, value: null });
+  assert.deepEqual(b.files.user, {
+    provider: { had: true, value: 'auto', set: 'local' }, 'ai.chat': { had: false, set: 'local' }, 'ai.ask': { had: false, set: 'local' },
+    'ai.reflectWeek': { had: false, set: 'local' }, 'ai.consolidate': { had: false, set: 'local' },
+  });
+  assert.deepEqual(b.files.vault['persona.model'], { had: true, value: null, set: CHIEF.claude });
   assert.deepEqual(b.tick, { file: M.TICK_REL, before: TICK_19, after: TICK_20 });
-  // Applied again: nothing more.
+  // Applied again: nothing more (no write, no re-render).
   const again = M.applyLocalFirst(M.resolveCtx(w.opts), { chief: true }, w.opts);
-  assert.equal(again.already, true);
+  assert.deepEqual([again.state, again.changed, again.backup], ['applied', [], r.backup]);
+  assert.match(again.lines[0], /^already applied/);
   assert.equal(w.calls.installs, 1);
 });
 
@@ -261,4 +265,85 @@ test('through cli/aos.js: aos migrate local-first --apply --chief --json, refusa
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /one or the other/);
   assert.equal(aos('--dry-run').status, 2, '--dry-run is not a migrate flag');
+});
+
+// ── review fixes (PR 9 #141) ──────────────────────────────────────────────────
+const entry = (w, id) => w.state().migrations.find((m) => m.id === id);
+const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+
+test('an apply stopped after its first write is resumed on the same backup; undo then puts back what was there before', { skip: asRoot && 'root ignores the read-only folder' }, () => {
+  const w = world();
+  M.recordPending({ vault: w.v, from: '1.9.0', now: NOW });
+  const userBefore = w.user();
+  const vaultBefore = w.vcfg();
+  const ctx = M.resolveCtx(w.opts);
+  const brain = path.join(w.v, 'brain');
+  fs.chmodSync(brain, 0o555);   // brain/config.json cannot be replaced; agenticos.json (written first) can
+  try { assert.throws(() => M.applyLocalFirst(ctx, { chief: true }, w.opts)); } finally { fs.chmodSync(brain, 0o755); }
+  const stopped = entry(w, 'local-first');
+  assert.equal(stopped.state, 'applying', 'recorded before the first write');
+  assert.ok(stopped.backup);
+  assert.equal(w.user().provider, 'local', 'half applied: the first file was written');
+  const r = M.applyLocalFirst(ctx, { chief: true }, w.opts);
+  assert.deepEqual([r.state, r.backup], ['applied', stopped.backup], 'a retry never takes a second snapshot');
+  assert.equal(JSON.parse(w.read(r.backup)).files.user.provider.value, 'auto', 'the backup holds the value from before the first try');
+  M.undoLocalFirst(ctx, w.opts);
+  assert.deepEqual([w.user(), w.vcfg()], [userBefore, vaultBefore]);
+});
+
+test('declining an apply that stopped half way puts the settings back first, then records declined', { skip: asRoot && 'root ignores the read-only folder' }, () => {
+  const w = world();
+  M.recordPending({ vault: w.v, from: '1.9.0', now: NOW });
+  const userBefore = w.user();
+  const ctx = M.resolveCtx(w.opts);
+  fs.chmodSync(path.join(w.v, 'brain'), 0o555);
+  try { assert.throws(() => M.applyLocalFirst(ctx, { chief: true }, w.opts)); } finally { fs.chmodSync(path.join(w.v, 'brain'), 0o755); }
+  const d = M.decline(ctx, 'local-first');
+  assert.equal(d.state, 'declined');
+  assert.deepEqual(w.user(), userBefore, 'nothing half-local is left behind a "keep my settings"');
+});
+
+test('applied, then the provider changed by hand: apply again puts back what no longer holds, on the first backup', () => {
+  const w = world();
+  const ctx = M.resolveCtx(w.opts);
+  const first = M.applyLocalFirst(ctx, { chief: true }, w.opts);
+  fs.writeFileSync(w.cfgFile, JSON.stringify({ ...w.user(), provider: 'ollama' }));
+  const again = M.applyLocalFirst(ctx, { chief: true }, w.opts);
+  assert.deepEqual([again.state, again.backup, again.changed], ['applied', first.backup, ['agenticos.json provider = local']]);
+  assert.equal(w.user().provider, 'local');
+  assert.deepEqual(M.applyLocalFirst(ctx, { chief: true }, w.opts).changed, [], 'nothing left to change');
+  M.undoLocalFirst(ctx, w.opts);
+  assert.equal(w.user().provider, 'auto', 'undo goes back to before the migration, not to the hand edit');
+});
+
+test('apply again with --chief after a plain apply adds the CoS keys to the backup, so undo restores them too', () => {
+  const w = world();
+  const ctx = M.resolveCtx(w.opts);
+  M.applyLocalFirst(ctx, { chief: false }, w.opts);
+  M.applyLocalFirst(ctx, { chief: true }, w.opts);
+  assert.equal(w.vcfg().persona.model, CHIEF.claude);
+  M.undoLocalFirst(ctx, w.opts);
+  assert.deepEqual([w.vcfg().persona.model, w.vcfg().persona.codexModel], [null, null]);
+});
+
+test('undo restores only what still holds the value apply set; a later change is kept and named', () => {
+  const w = world();
+  const ctx = M.resolveCtx(w.opts);
+  M.applyLocalFirst(ctx, { chief: true }, w.opts);
+  fs.writeFileSync(path.join(w.v, 'brain', 'config.json'), JSON.stringify({ ...w.vcfg(), ai: { ...w.vcfg().ai, chat: 'host' } }));
+  const u = M.undoLocalFirst(ctx, w.opts);
+  assert.equal(w.vcfg().ai.chat, 'host', 'the later choice stays');
+  assert.equal(w.vcfg().provider, 'auto');
+  assert.deepEqual(u.kept, ['brain/config.json ai.chat (changed since going local)']);
+});
+
+test('a failed import is not recorded as applied, through aos migrate or a plain aos import', async () => {
+  const w = world();
+  M.recordPending({ vault: w.v, from: '1.9.0', now: NOW });
+  const importer = { KINDS: ['instructions'], runWith: async () => ({ code: 1, report: {} }) };
+  await assert.rejects(M.main(['import', '--apply'], { ...w.opts, importer }), /import stopped/);
+  assert.equal(entry(w, 'import').state, 'pending');
+  const I = require('./import.js');
+  assert.equal(await I.main([], { env: { CLAUDE_CONFIG_DIR: w.cfgDir }, configDir: w.cfgDir, runWith: async () => ({ code: 1, report: {} }) }), 1);
+  assert.equal(entry(w, 'import').state, 'pending');
 });

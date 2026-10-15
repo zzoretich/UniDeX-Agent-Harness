@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 128 |
-| covered in part | 65 |
+| covered | 129 |
+| covered in part | 64 |
 | N/A in the app | 49 |
 | not covered | 6 |
 | **total** | **248** |
 
-Of the 199 items about the app (248 minus the 49 N/A), 193 are asserted (128 fully, 65 in part); the other 6 are not
+Of the 199 items about the app (248 minus the 49 N/A), 193 are asserted (129 fully, 64 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -414,9 +414,9 @@ again (`brain-ai`).
 | # | Item | Status | Covered by / reason |
 |---|---|---|---|
 | LS1 | From before 2.0: runtime → Go local (moves, stays, the week's spend, Download the model, the CoS box per host) → What's new with Show me and Take the full tour → Getting started; once | covered in part | `launch › an install from before 2.0…` (the order through `aosHost.launchLog`, each dialog alone, the card's lines on Claude Code, the real `aos migrate local-first --apply --chief` through the `migrate` surface, What's new's entries for the running release, the checklist, a relaunch showing nothing), `launch › Codex only…` (gpt-6-sol, Codex); `launch.test.ts`, `whatsnew.test.ts`, `goLocal.test.ts`. Both hosts' wording is unit-tested; Show me and the download itself: manual. |
-| LS2 | Go local's backup and switch; Keep my settings changes nothing; Settings' Go local… and Undo; the surface-off fallback | covered in part | `launch › an install from before 2.0…` (the backup file, provider and `ai.*` local, `persona.model`; after a relaunch Settings' Undo puts them back), `launch › Codex only… Keep my settings…` (agenticos.json byte for byte, Settings' Go local… with "(you kept your settings)"); `write-policy.test.ts` (the `migrate` surface admits exactly the card's argv); `cli/migrations.test.js`. The fallback while the surface is off (its ❯_ button): manual. |
+| LS2 | Go local's backup and switch; Keep my settings changes nothing; Settings' Go local… and Undo; the surface-off fallback | covered | `launch › an install from before 2.0…` (the backup file, provider and `ai.*` local, `persona.model`; after a relaunch Settings' Undo puts them back), `launch › Codex only… Keep my settings…` (agenticos.json byte for byte, Settings' Go local… with "(you kept your settings)"); `launch › no host, Go local surface off…` (the commands instead of the buttons, the box changing the command, remembered for this vault only once closed); `write-policy.test.ts` (the `migrate` surface admits exactly the card's argv); `host.test.ts` (compat's `canRun`); `cli/migrations.test.js` (a resumed apply, a re-apply, an undo that keeps later changes). |
 | LS3 | An edited tick.md is kept, with a notification; an untouched one becomes the 2.0 tick | N/A in the app | Runtime: `cli/migrations.test.js` (the shipped hashes, kept with its notification, rewritten and undone), `brain/scripts/test/watchdog.test.js` (the 2.0 tick is never a missed duty). |
-| LS4 | No host: Pulse's "Add Claude Code or Codex to start your Chief of Staff." with Add a host; also when every duty today waited for one; the card's box "when you add a host" | covered in part | `launch › no host…` (the line, Add a host opens Settings, the card's wording, Esc leaves the migration pending and the card remembered); the every-duty-waited case: `model.test.ts` (`dutiesWaitingForHost`). |
+| LS4 | No host: Pulse's "Add Claude Code or Codex to start your Chief of Staff." with Add a host; a lapsed sign-in worded from the skip, cleared by a sign-in or a run; the card's box "when you add a host" | covered in part | `launch › no host…` (the line, Add a host opens Settings, the card's wording, Esc leaves the migration pending and the card remembered); the skip's wording and when it clears: `model.test.ts` (`chiefWaiting`). |
 | LS5 | `aos upgrade` asks once on a terminal, prints the commands otherwise; `aos import` settles the import | N/A in the app | Runtime CLI: `cli/migrations.test.js` (the question with each answer, none without a TTY), `cli/aos.test.js › upgrade from before 2.0.0 records local-first and import pending…`, `cli/import.test.js › a real run from both hosts settles…`. |
 
 ## Guided tour

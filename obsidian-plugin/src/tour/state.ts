@@ -21,8 +21,9 @@ export interface TourState {
   /** Tabs whose chapter has been offered once on a first visit (the chip), by tab id. */
   offered: string[];
   /**
-   * The launch sequence's dialogs this Mac has shown (tour C11, ui/launchSequence.ts): "go-local", "import", and
-   * "whats-new@<version>" for the What's new card of a release. The e2e harness pre-marks them.
+   * The launch sequence's dialogs this Mac has shown (tour C11, ui/launchSequence.ts): "go-local@<vault key>" and
+   * "import@<vault key>" per vault (tour/launch.ts vaultKey), and "whats-new@<version>" for the What's new card of a
+   * release. The e2e harness pre-marks them.
    */
   launched: string[];
 }
@@ -41,8 +42,8 @@ const VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 /** A chapter, tab or task id: lower-case words joined by hyphens or colons. */
 const ID = /^[a-z0-9][a-z0-9:-]{0,63}$/;
 const MAX_IDS = 200;
-/** A launch-sequence id: an ID, or "whats-new@x.y.z". */
-const LAUNCH_ID = /^(?:[a-z0-9][a-z0-9:-]{0,63}|whats-new@\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/;
+/** A launch-sequence id: an ID, "go-local@<8 hex>" or "import@<8 hex>" (per vault), or "whats-new@x.y.z". */
+const LAUNCH_ID = /^(?:[a-z0-9][a-z0-9:-]{0,63}|(?:go-local|import)@[0-9a-f]{8}|whats-new@\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 

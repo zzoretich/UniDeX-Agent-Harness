@@ -960,6 +960,35 @@ test('upgrade from before 2.0.0 records local-first and import pending and, with
   assert.doesNotMatch(fresh.stdout, /aos migrate local-first|aos import/);
 });
 
+test('an upgrade that stops after writing the new version still leaves the 2.0 question pending, and the re-run keeps it', () => {
+  const sb = initialized();
+  const cfgFile = path.join(sb.cfg, 'agenticos.json');
+  const migrations = path.join(sb.vault, 'brain', '_index', 'migrations.json');
+  const vaultCfg = path.join(sb.vault, 'brain', 'config.json');
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...readJson(cfgFile), version: '1.9.0' }, null, 2));
+  const good = fs.readFileSync(vaultCfg, 'utf8');
+  fs.writeFileSync(vaultCfg, '{ not json');   // the defaults merge refuses it, after agenticos.json has the new version
+  const failed = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.notEqual(failed.status, 0, 'the upgrade stopped');
+  assert.match(failed.stderr, /refusing to touch unparseable/);
+  assert.deepEqual(readJson(migrations).migrations.map((m) => [m.id, m.state, m.from]), [['local-first', 'pending', '1.9.0'], ['import', 'pending', '1.9.0']],
+    'recorded before anything wrote the new version');
+  fs.writeFileSync(vaultCfg, good);
+  const again = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(again.status, 0, again.stderr + again.stdout);
+  assert.deepEqual(readJson(migrations).migrations.map((m) => m.state), ['pending', 'pending']);
+  assert.match(again.stdout, /aos migrate local-first --apply --chief/);
+});
+
+test('the migrate flags are refused outside aos migrate (usage, exit 2)', () => {
+  const sb = sandbox();
+  for (const args of [['doctor', '--undo'], ['upgrade', '--apply'], ['status', '--chief'], ['doctor', '--decline'], ['provider', '--status']]) {
+    const r = aos(sb, args);
+    assert.equal(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`${args[1]} is only for \`aos migrate\``));
+  }
+});
+
 // A marketplace added from a local checkout (`aos init --from-local`) has no clone under plugins/marketplaces/: plain
 // `aos upgrade` vendors from the directory the claude CLI reports and refreshes the plugin from it.
 test('plain aos upgrade through the vendored CLI follows a directory marketplace, and refreshes the plugin from it', () => {

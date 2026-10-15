@@ -224,8 +224,16 @@ export interface LaunchOptions {
   launch?: boolean;
 }
 
-/** The launch sequence's dialogs as tour.launched names them (obsidian-plugin/src/tour/launch.ts). */
-export const LAUNCHED = ["go-local", "import", `whats-new@${HUD_VERSION}`];
+/** A vault path's key in tour.launched: FNV-1a's 32 bits in hex, as obsidian-plugin/src/tour/launch.ts vaultKey has it. */
+export function vaultKey(vault: string): string {
+  let h = 0x811c9dc5;
+  for (const ch of Buffer.from(vault, "utf8")) { h ^= ch; h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+}
+
+/** The launch sequence's dialogs as tour.launched names them (obsidian-plugin/src/tour/launch.ts): the fixture vault's
+ *  Go-local card and Import sheet, and this version's What's new card. */
+export const LAUNCHED = [`go-local@${vaultKey(FX.vault)}`, `import@${vaultKey(FX.vault)}`, `whats-new@${HUD_VERSION}`];
 
 /** The app's data folder in the fixture (appEnv's AOS_APP_USER_DATA). */
 export const USER_DATA = path.join(FX.home, "Library", "Application Support", "AgenticOS Workbench (e2e)");

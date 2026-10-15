@@ -9,9 +9,10 @@ import { VAULT_CONFIG_DEFAULTS, type SessionHost } from "./aosConfig";
 export const MIGRATIONS_PATH = "brain/_index/migrations.json";
 export const SPEND_PATH = "brain/_index/provider-spend.jsonl";
 
-export type MigrationState = "pending" | "applied" | "declined" | "undone";
+/** `applying`: an apply that stopped half way (cli/migrations.js); its backup is recorded, so Undo works on it too. */
+export type MigrationState = "pending" | "applying" | "applied" | "declined" | "undone";
 export interface MigrationRow { id: string; state: MigrationState; at: string | null; backup: string | null }
-const STATES: readonly string[] = ["pending", "applied", "declined", "undone"];
+const STATES: readonly string[] = ["pending", "applying", "applied", "declined", "undone"];
 
 /** migrations.json's rows by id; anything that does not parse is no row (the runtime rewrites the file). */
 export function parseMigrations(text: string | null): Record<string, MigrationRow> {
