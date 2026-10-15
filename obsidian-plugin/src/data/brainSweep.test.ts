@@ -28,7 +28,7 @@ const card = (o: Partial<SweepCard> & Pick<SweepCard, "id" | "kind" | "paths">):
   run: "r1", hashes: o.paths.map(hashOf), title: "", description: "", why: "", scope: null, state: "open", ...o,
 });
 const run = (o: Partial<SweepRun> & Pick<SweepRun, "id" | "at">): SweepRun => ({
-  scope: null, provider: "claude", model: "haiku", usd: 0.04, estimated: false, considered: 6, of: 6, suggestions: 2, ...o,
+  scope: null, provider: "claude", model: "haiku", usd: 0.04, estimated: false, considered: 6, of: 6, suggestions: 2, chunks: null, failedChunks: 0, ...o,
 });
 
 test("a card's state: the files win (brain-ai A10)", () => {
@@ -185,9 +185,9 @@ test("Health's groups: the whole brain first, then each scope named, newest run 
   assert.equal(sweepSummary({ ...input(file), sweep: null }).line, "No sweep yet");
 });
 
-const est = (o: Partial<SweepEstimate["estimate"]> = {}, considered = 6, of = 6): SweepEstimate => ({
-  scope: null, considered, of,
-  estimate: { available: true, reason: null, provider: "claude", model: "haiku", tokensIn: 9000, tokensOut: 1500, usd: 0.06, cap: { family: "reasoner", perDayUsd: 5, spentToday: 0.12, perCallUsd: 0.5 }, ...o },
+const est = (o: Partial<SweepEstimate["estimate"]> = {}, considered = 6, of = 6, chunks: number | null = null): SweepEstimate => ({
+  scope: null, considered, of, chunks,
+  estimate: { available: true, reason: null, provider: "claude", model: "haiku", tokensIn: 9000, tokensOut: 1500, usd: 0.06, cap: { family: "reasoner", perDayUsd: 5, spentToday: 0.12, perCallUsd: 0.5 }, once: [], ...o },
 });
 
 test("the estimate line, and the sweep off with its reason and what still works (A4, A5, A7)", () => {

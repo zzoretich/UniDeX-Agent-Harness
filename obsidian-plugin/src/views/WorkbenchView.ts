@@ -177,7 +177,7 @@ export class WorkbenchView extends ItemView {
       // The line between sections (D5) scrolls with the buttons.
       if (i > 0) tabsEl.createDiv({ cls: "aos-wb-railsep", attr: { role: "separator", "aria-orientation": "horizontal" } });
       for (const tab of section) {
-        if (tab.id === "chat" && !this.plugin.chatAvailable()) continue; // no provider → no Sessions tab (hint lives in ChatTab.render)
+        if (tab.id === "chat" && !this.plugin.chatAvailable()) continue; // no host signed in → no Sessions tab (local-first A17)
         this.railButton(tabsEl, tab);
       }
     });
@@ -469,7 +469,7 @@ export class WorkbenchView extends ItemView {
    * is already shown), then hands the rest to that tab's reveal(): Spaces selects the workspace, its pane and thread;
    * Sessions scopes its list to the workspace and opens the thread; Code scopes its list to the workspace's group.
    * Select only: it never resumes, opens a terminal, drafts or runs a verb. False when the tab cannot be shown: not a
-   * tab id, or Sessions with no provider (its rail button is hidden, D32).
+   * tab id, or Sessions with no host signed in (its rail button is hidden, D32; local-first A17).
    */
   open(target: WorkbenchTarget): boolean {
     const { tab } = target;

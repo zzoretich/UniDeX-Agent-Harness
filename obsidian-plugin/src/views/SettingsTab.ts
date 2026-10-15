@@ -2,7 +2,8 @@ import { Notice, Setting } from "obsidian";
 import type { TAbstractFile } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
-import { readAgenticosJson, sessionHosts, VAULT_CONFIG_PATH } from "../data/aosConfig";
+import { readAgenticosJson, readProviderState, readVaultConfig, sessionHosts, VAULT_CONFIG_PATH } from "../data/aosConfig";
+import { localEngineView, readLocalFiles, todayText } from "../data/localEngine";
 import type { SessionHost } from "../data/aosConfig";
 import { failureText, listFailure } from "../data/aosRun";
 import {
@@ -162,6 +163,7 @@ export class SettingsTab {
     if (this.followUps.size) this.renderFollowUps(host);
     if (this.list) {
       this.renderMaster(host, this.list);
+      this.renderLocal(host);
       for (const { section, rows } of groupBySection(this.list)) {
         if (section.id === "hosts") continue;
         host.createDiv({ cls: "aos-rt-subhead aos-dim", text: section.label.toUpperCase() });
@@ -174,6 +176,56 @@ export class SettingsTab {
     this.pluginRows = renderPluginSettings(host.createDiv({ cls: "aos-st-section aos-st-plugin" }), this.plugin, () => this.render());
 
     if (this.list) this.renderHosts(host, this.list);
+  }
+
+  /**
+   * Settings ▸ Local engine (local-first A8, A13, A18, A3): the engine and its address, whether it answers, the model
+   * background work runs on and whether it is downloaded, the embedder, today's local calls and the session wraps waiting
+   * for it, from the files the runtime writes (data/localEngine.ts). Pull the model runs `aos local pull` through the
+   * `local` surface; ❯_ shows the same in a Code terminal, with its progress.
+   */
+  private renderLocal(host: HTMLElement): void {
+    const vault = this.plugin.vaultRoot();
+    const cfg = readVaultConfig(vault, this.plugin.claudeConfigDir());
+    const files = readLocalFiles(vault, new Date());
+    const v = localEngineView(cfg, readProviderState(vault), files.today, files.queued);
+    host.createDiv({ cls: "aos-rt-subhead aos-dim", text: "LOCAL ENGINE" });
+    const box = host.createDiv({ cls: "aos-st-section aos-st-local", attr: { "data-tour": "settings-local", "data-state": v.state, "data-active": String(v.active) } });
+    const line = (label: string, value: string, key: string) => {
+      const r = box.createDiv({ cls: "aos-st-localrow", attr: { "data-row": key } });
+      r.createSpan({ cls: "aos-st-locallabel aos-dim", text: label });
+      r.createSpan({ cls: "aos-st-localvalue", text: value });
+    };
+    box.createDiv({ cls: `aos-st-localstate is-${v.state}`, text: v.stateText });
+    line("Engine", `${v.engine === "openai" ? "OpenAI-compatible server" : "Ollama"} at ${v.url}`, "engine");
+    line("Model", `${v.model ?? "not chosen yet"} · ${v.modelNote}`, "model");
+    line("Embedder", `${v.embedder}${v.embedderPulled === false ? " · not downloaded (recall uses keyword search)" : v.embedderPulled ? " · downloaded" : ""}`, "embedder");
+    line("Today", todayText(v.today), "today");
+    if (v.queued) line("Waiting", `${v.queued} session wrap${v.queued === 1 ? "" : "s"} queued until the model answers`, "queued");
+    const acts = box.createDiv({ cls: "aos-st-actions" });
+    if (v.canPull) {
+      const pulling = this.busy.has("local:pull");
+      const pull = acts.createEl("button", { cls: "aos-ws-action", text: pulling ? "Pulling…" : "Pull the model", attr: { "data-act": "local-pull" } });
+      pull.disabled = pulling;
+      pull.setAttr("title", "Download this Mac's model and the embedder through Ollama (aos local pull); it can take a while");
+      pull.addEventListener("click", () => void this.pullModel());
+    }
+    const term = acts.createEl("button", { cls: "aos-ws-action", text: "❯_ aos local", attr: { "data-act": "local-status" } });
+    term.setAttr("title", "Ask the engine now and show what it serves, in the Code tab");
+    term.addEventListener("click", () => this.view.runInTerm("aos local", { origin: "Settings" }));
+  }
+
+  /** `aos local pull`: this Mac's model and the embedder, through Ollama. Long: a download of several GB. */
+  private async pullModel(): Promise<void> {
+    if (this.busy.has("local:pull")) return;
+    this.busy.add("local:pull");
+    this.render();
+    new Notice("Pulling the local model… (aos local pull)");
+    const r = await this.plugin.aos(["local", "pull"], 60 * 60_000);
+    this.busy.delete("local:pull");
+    if (r.code === 0) new Notice("Local model downloaded: background work runs on it at the next call.", 8000);
+    else new Notice(`Pull the model: ${failureText(r)} — or run aos local pull in the Code tab`, 10000);
+    this.render();
   }
 
   private renderFailure(host: HTMLElement): void {

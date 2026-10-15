@@ -61,16 +61,20 @@ export interface RunAskOptions {
   model?: string;
   /** Sent only with a model and only when the host's levels include it (ASK_EFFORTS). */
   effort?: string;
+  /** A Vault chat question under provider local (ask.js --chat): it runs where ai.chat says (local-first A2). Only
+   *  without a host: a named host answers whatever ai.chat says. */
+  chat?: boolean;
 }
 
 /**
- * ask.js's argv in the one order the chat surface admits (app/src/shared/surfaces.ts): --local, then --host=,
- * --model= and --effort= as single arguments, then the question. The surface admits a model only after a host and an
- * effort only after a model: without a host both are left off, and a model that is empty, "default", holds a space or
- * starts with "-" is left off with its effort.
+ * ask.js's argv in the one order the chat surface admits (app/src/shared/surfaces.ts): --local, then --chat (a Vault
+ * question under provider local, with no host) or --host=, --model= and --effort= as single arguments, then the
+ * question. The surface admits a model only after a host and an effort only after a model: without a host both are left
+ * off, and a model that is empty, "default", holds a space or starts with "-" is left off with its effort.
  */
-export function buildAskArgs(o: Pick<RunAskOptions, "question" | "host" | "model" | "effort">): string[] {
+export function buildAskArgs(o: Pick<RunAskOptions, "question" | "host" | "model" | "effort" | "chat">): string[] {
   const args = ["brain/scripts/sdk/ask.js", "--local"];
+  if (o.chat && !o.host) args.push("--chat");
   if (o.host) {
     args.push(`--host=${o.host}`);
     const model = o.model && o.model !== "default" && /^[^\s-]\S*$/.test(o.model) ? o.model : "";

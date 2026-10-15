@@ -81,6 +81,18 @@ test("menuValue: Vault keeps to the one-shot levels (Codex has no max or ultra t
   assert.deepEqual(menuValue({ mode: "new", catalog: CAT, choices: BOTH, value }), value);
 });
 
+test("menuValue: in Vault with the local engine on offer, a null host is the local engine, not \"no host ready\" (local-first A2)", () => {
+  const local = { model: "qwen3.5:9b", down: null };
+  const none = { host: null, model: null, effort: null };
+  assert.deepEqual(menuValue({ mode: "vault", catalog: CAT, choices: BOTH, value: none, local }), none);
+  // Without it a null host moves to the first ready host, as before.
+  assert.equal(menuValue({ mode: "vault", catalog: CAT, choices: BOTH, value: none }).host, "claude");
+  // A host picked over the local engine is that host.
+  assert.equal(menuValue({ mode: "vault", catalog: CAT, choices: BOTH, value: { host: "codex", model: null, effort: null }, local }).host, "codex");
+  // Never in a new session or a thread.
+  assert.equal(menuValue({ mode: "new", catalog: CAT, choices: BOTH, value: none, local }).host, "claude");
+});
+
 test("switchHost: the other host's remembered model and effort, else its defaults", () => {
   assert.deepEqual(switchHost("claude", CAT, null), { host: "claude", model: "default", effort: "medium" });
   assert.deepEqual(switchHost("codex", CAT, { codex: { model: "gpt-6-astra", effort: "ultra" } }), { host: "codex", model: "gpt-6-astra", effort: "ultra" });

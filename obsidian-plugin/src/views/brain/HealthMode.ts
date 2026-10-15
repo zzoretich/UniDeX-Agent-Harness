@@ -19,15 +19,16 @@
 // Consolidate with AI… asks first with that scope's estimate (A3). One sweep runs at a time on this page.
 import { Notice } from "obsidian";
 import {
-  AI_TIMEOUT_MS, BRAIN_MODE_LABEL, batchWhen, parseFixResult, parseSweepEstimate, parseSweepResult, type BrainAnchor, type BrainTarget,
-  type FixKind, type SweepEstimate,
+  AI_TIMEOUT_MS, BRAIN_MODE_LABEL, batchWhen, onceCostText, onceLabel, parseFixResult, parseSweepEstimate, parseSweepResult, type BrainAnchor, type BrainTarget,
+  type FixKind, type OnceHost, type SweepEstimate,
 } from "../../data/brainModel";
 import {
   FIX_LABEL, HYGIENE_SUBTITLE, archiveShippedAsk, deadWeight, deadWeightButtons, deadWeightLegend, deadWeightSubtitle, duplicateRows,
   duplicatesBasis, fixBehindText, fixDoneText, healthTiles, hygieneRows, pl, type ClusterRow, type DeadWeight,
 } from "../../data/brainHealth";
 import {
-  consolidateAsk, groupScopes, scopePaths, scopeSummary, sweepDoneText, sweepEstimateLine, sweepGroups, sweepOffText, sweepSummary,
+  consolidateAsk, groupScopes, onceAsk, scopePaths, scopeSummary, sweepDoneText, sweepEstimateLine, sweepGroups, sweepOffText, sweepSummary,
+  sweepTimeoutMs,
 } from "../../data/brainSweep";
 import { FixModal } from "./FixModal";
 import { guardClicks } from "./guardClicks";
@@ -287,13 +288,26 @@ export class HealthMode implements BrainModeView {
     });
     if (mine) run.setAttr("aria-busy", "true");
     const p = body.createEl("p", { cls: `aos-brain-sw-est${off ? " is-off" : ""}`, attr: { "data-est": mine ? "running" : est?.state === "ok" ? (off ? "off" : "ready") : est?.state ?? "loading" } });
-    if (mine) p.createSpan({ text: "A model reads each memory's title, description and first lines; this can take up to two minutes." });
+    const local = est?.state === "ok" && est.e.chunks !== null;
+    if (mine) p.createSpan({ text: local ? "The local model reads brain hub's duplicates and clusters, a few minutes at most." : "A model reads each memory's title, description and first lines; this can take up to two minutes." });
     else if (!est || est.state === "loading") p.createSpan({ text: "Checking what a sweep would cost…" });
     else if (est.state === "failed") p.createSpan({ text: `Could not check what a sweep would cost: ${est.reason}` });
     else {
       // Off is a state: its colour and its word, then the reason.
       if (off) p.createSpan({ cls: "aos-brain-pill is-off aos-brain-sw-off", text: "off" });
       p.createSpan({ text: line!.text });
+      // The local engine down (local-first A3): each signed-in host may run it once, its cost and cap named.
+      if (off && !mine) {
+        const once = est.e.estimate.once;
+        if (once.length) {
+          const row = body.createDiv({ cls: "aos-brain-sw-once", attr: { "data-tour": "brain-run-once" } });
+          for (const o of once) {
+            this.button(row, onceLabel(o), `sweep:once:${o.provider}`, "sweep-once", () => void this.runSweep(o.provider as OnceHost), {
+              busy: !!this.sweeping, label: `${onceLabel(o)}: ${onceCostText(o)}`,
+            }).setAttr("title", onceCostText(o));
+          }
+        }
+      }
     }
     const groups = sweepGroups(d, claimed);
     if (!groups.length) {
@@ -450,12 +464,13 @@ export class HealthMode implements BrainModeView {
    * AI_TIMEOUT_MS; its cards replace the whole brain's open ones (the runtime does) and the reload shows them. The runtime
    * refuses when no Claude or Codex can answer (ctx.run's Notice gives its reason).
    */
-  private async runSweep(): Promise<void> {
+  private async runSweep(host?: OnceHost): Promise<void> {
     if (this.sweeping) return;
+    const timeoutMs = host ? AI_TIMEOUT_MS : sweepTimeoutMs(this.estimate?.state === "ok" ? this.estimate.e : null);
     this.sweeping = { scope: ALL, stage: "run" };
     this.update();
     try {
-      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: [], estimate: false }, "Run a sweep", { timeoutMs: AI_TIMEOUT_MS });
+      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: [], estimate: false, ...(host ? { host } : {}) }, host ? `Run once on ${host === "claude" ? "Claude" : "Codex"}` : "Run a sweep", { timeoutMs });
       if (r.ok) new Notice(sweepDoneText(parseSweepResult(r.json)));
     } catch (e) {
       new Notice(`Run a sweep: ${e instanceof Error ? e.message : String(e)}`);
@@ -485,17 +500,20 @@ export class HealthMode implements BrainModeView {
       if (!pre.ok) return;
       const e = parseSweepEstimate(pre.json);
       if (!e) { new Notice(`${label}: aos answered in an unexpected shape`); return; }
-      if (!e.estimate.available) { new Notice(`${label}: ${sweepOffText(e.estimate)}`); return; }
+      // The local engine down (local-first A3): a signed-in host may run it once, asked first; else why it is off.
+      const once = !e.estimate.available ? e.estimate.once[0] ?? null : null;
+      if (!e.estimate.available && !once) { new Notice(`${label}: ${sweepOffText(e.estimate)}`); return; }
       // Left for another mode while the estimate ran: no question over a page the person moved to.
       if (!this.root) return;
       this.sweeping = { scope: c.key, stage: "ask" };
       this.update();
-      const q = consolidateAsk(c.label, e, sent);
+      const q = once ? onceAsk(label, once, e.estimate.reason) : consolidateAsk(c.label, e, sent);
       if (!(await this.ctx.confirm(q.title, q.message, q.confirm))) return;
       this.sweeping = { scope: c.key, stage: "run" };
       this.update();
       ran = true;
-      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: sent.paths, estimate: false }, label, { timeoutMs: AI_TIMEOUT_MS });
+      const host = once ? (once.provider as OnceHost) : undefined;
+      const r = await this.ctx.run<unknown>({ verb: "sweep", paths: sent.paths, estimate: false, ...(host ? { host } : {}) }, label, { timeoutMs: host ? AI_TIMEOUT_MS : sweepTimeoutMs(e) });
       if (r.ok) new Notice(sweepDoneText(parseSweepResult(r.json), c.label));
     } catch (e) {
       new Notice(`${label}: ${e instanceof Error ? e.message : String(e)}`);

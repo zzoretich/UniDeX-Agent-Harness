@@ -8,6 +8,7 @@ import type { HostChild, HostSpawnOptions } from "../host";
 import {
   runClaudeAsk, buildClaudeArgs, claudeChatModel, composePrompt, parseClaudeJson, headlessEnv, resolveClaudeBin, chatRoute, ClaudeAskDeps, CHAT_SYSTEM_PROMPT,
   ALIAS_REASON, aliasCatalog, readReasonSpendToday, reasonSpendToday, vaultAsked, vaultHostChoices, vaultModeLine, vaultRemembered, vaultSpendLine, vaultStart,
+  vaultEngine, vaultRoute, localDownOf, localDownText, runOnceLabel,
 } from "./claudeAsk";
 import { DEFAULT_SETTINGS } from "../settingsDefaults";
 
@@ -215,7 +216,7 @@ test('a user cancel under claude reports "cancelled", never "exit null"', async 
 // ── Vault chat's host and model menu (spec 2026-10-07-sessions-ux U9) ──
 
 const BOTH = { hosts: { claude: { enabled: true }, codex: { enabled: true } } };
-const ps = (name: "claude" | "codex" | "ollama", claude?: boolean, codex?: boolean) => ({
+const ps = (name: "claude" | "codex" | "ollama" | "none", claude?: boolean, codex?: boolean) => ({
   checkedAt: "", name, reason: "",
   ...(claude === undefined ? {} : { claude: { loggedIn: claude, checkedAt: "" } }),
   ...(codex === undefined ? {} : { codex: { loggedIn: codex, checkedAt: "" } }),
@@ -342,4 +343,49 @@ test("vaultSpendLine: today's spend against the reasoner cap, or nothing", () =>
   assert.equal(vaultSpendLine(0, 5), "Vault today $0.00 of $5 (reasoner cap)");
   assert.equal(vaultSpendLine(null, 5), null);
   assert.equal(vaultSpendLine(1, 0), null);
+});
+
+// ── local-first A2, A3, A17: Vault chat on the local engine ──
+
+test("vaultEngine and vaultRoute: provider local with ai.chat local is the local engine, even signed in; host follows the logins", () => {
+  const local = { provider: "local", ai: { chat: "local" } };
+  const host = { provider: "local", ai: { chat: "host" } };
+  assert.equal(vaultEngine(local), "local");
+  assert.equal(vaultEngine({ provider: "local" }), "local", "local is the default");
+  assert.equal(vaultEngine(host), "host");
+  assert.equal(vaultEngine({ provider: "auto", ai: { chat: "local" } }), "host", "other providers ignore ai.chat");
+  assert.equal(vaultRoute(ps("claude", true), local), "engine");
+  // The engine down: provider-state's name is none, the hosts' logins still say who is signed in.
+  const down = { ...ps("none", true, true), localReason: "local-down" };
+  assert.equal(vaultRoute(down, host), "claude");
+  assert.equal(vaultRoute({ ...ps("none", false, true), localReason: "local-down" }, host), "local", "Codex through ask.js --chat");
+  assert.equal(vaultRoute(ps("none", false, false), host), "none");
+  assert.equal(vaultRoute(ps("claude", true), { provider: "auto" }), chatRoute(ps("claude", true)), "elsewhere chatRoute decides");
+});
+
+test("vaultHostChoices under provider local: Claude ready by its login, whatever the background provider is", () => {
+  const ready = (c: ReturnType<typeof vaultHostChoices>) => c.map((x) => `${x.host}:${x.ready ? "ready" : x.reason}`);
+  const down = { ...ps("none", true, true), localReason: "local-down" };
+  assert.deepEqual(ready(vaultHostChoices(BOTH, down, { local: true })), ["claude:ready", "codex:ready"]);
+  assert.deepEqual(ready(vaultHostChoices(BOTH, down)), ["claude:Claude Code is not logged in", "codex:ready"], "elsewhere as before");
+});
+
+test("localDownOf, localDownText and runOnceLabel: the answer that failed, what to do, and the cap a host would count against", () => {
+  assert.equal(localDownOf("[ask] the local model cannot answer (local-down): start Ollama (or your local engine); or run once…"), "local-down");
+  assert.equal(localDownOf("the local model cannot answer (local-model-missing): pull the model"), "local-model-missing");
+  assert.equal(localDownOf("claude did not answer"), null);
+  assert.match(localDownText("local-down") ?? "", /not answering: start Ollama/);
+  assert.match(localDownText("local-model-missing") ?? "", /Pull the model/);
+  assert.equal(localDownText("local-ready"), null);
+  assert.equal(runOnceLabel("Claude Code", 0.12, 5), "Run once on Claude Code (reasoner cap: today $0.12 of $5)");
+  assert.equal(runOnceLabel("Codex", null, 2.5), "Run once on Codex (reasoner cap: $2.50)");
+  assert.equal(runOnceLabel("Codex", 0, 0), "Run once on Codex (no reasoner spend allowed)");
+});
+
+test("vaultModeLine on the local engine names the model and no spend; a host picked for the question names that host", () => {
+  const o = { reasonerModel: "claude-opus-5", route: "engine" as const, provider: "local", localModel: "qwen3.5:9b" };
+  assert.equal(vaultModeLine(null, null, o), " · This Mac (qwen3.5:9b, no spend)");
+  assert.equal(vaultModeLine(null, null, { ...o, localModel: null }), " · This Mac (the local model, no spend)");
+  assert.equal(vaultModeLine("claude", null, o), " · Claude Code (claude-opus-5, capped)");
+  assert.equal(vaultModeLine(null, null, { ...o, route: "local" }), " · codex via ask.js (reasoner caps)");
 });

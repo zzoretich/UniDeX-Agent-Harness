@@ -2332,6 +2332,7 @@ button.aos-hm-trigger.is-open:not(.clickable-icon) { border-color: var(--udx-foc
 .aos-hm-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--udx-line-2); }
 .aos-hm-dot.is-claude { background: var(--udx-info); }
 .aos-hm-dot.is-codex { background: var(--udx-gate); }
+.aos-hm-dot.is-local { background: var(--udx-ok); }
 .aos-hm-lockicon { color: var(--udx-text-2); }
 .aos-hm-lockicon.is-claude { color: var(--udx-info); }
 .aos-hm-lockicon.is-codex { color: var(--udx-gate); }
@@ -2766,6 +2767,19 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
   display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 6px 0;
   font-family: var(--udx-mono); font-size: 11.5px; color: var(--udx-text-3);
 }
+/* The local engine down (local-first A3): the line under the composer, and a failed answer's "Run once on …" buttons. */
+.aos-asst-localdown { color: var(--udx-warn); }
+.aos-asst-runonce { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* The Brain hub's sweep off with the local engine down: each signed-in host's "Run once on …" (local-first A3). */
+.aos-brain-sw-once { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* Settings ▸ Local engine (local-first A8, A13, A18): the state line, the rows, Pull the model. */
+.aos-st-local { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; }
+.aos-st-localstate { font-size: 12.5px; color: var(--udx-text-2); }
+.aos-st-localstate.is-down, .aos-st-localstate.is-missing { color: var(--udx-warn); }
+.aos-st-localstate.is-answering { color: var(--udx-ok); }
+.aos-st-localrow { display: flex; gap: 10px; font-size: 12.5px; }
+.aos-st-locallabel { flex: none; width: 76px; }
+.aos-st-localvalue { min-width: 0; overflow-wrap: anywhere; color: var(--udx-text); font-family: var(--udx-mono); font-size: 12px; }
 
 /* ══ Term: starting terminals (spec 2026-10-08-term-agent-deck T2–T6) ══════════════════════════════════════════════════
    The New split button (ui/NewTerminalMenu.ts) and the menu that drops under it; host dots and places on the tabs; the

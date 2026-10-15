@@ -85,6 +85,12 @@ export interface ProviderState {
   name: ProviderName;
   reason: string;
   ollama?: { reachable: boolean; checkedAt: string };
+  // Under provider local (local-first A13, A18): the engine that answers, the model it runs, why it last could not, and
+  // its 60 s cache of what it serves.
+  engine?: "ollama" | "openai";
+  model?: string;
+  localReason?: string;
+  local?: { engine?: string; url?: string; reachable?: boolean; models?: string[]; checkedAt?: string };
   // bin is `null` in the file whenever provider.js probed and found no CLI (contract §3), so the
   // type must admit null as well as absence; every reader guards with a truthiness check.
   claude?: { loggedIn: boolean; checkedAt: string; bin?: string | null };
@@ -138,6 +144,14 @@ export function sessionHosts(cfg: AgenticosJson | null): SessionHost[] {
   const h = cfg && cfg.hosts;
   if (!h) return ["claude"];
   return (["claude", "codex"] as SessionHost[]).filter((k) => !!h[k] && h[k]!.enabled !== false);
+}
+
+/**
+ * The enabled hosts that are signed in, by the login caches the runtime keeps in provider-state.json (local-first A17:
+ * Sessions follows these, whatever the background provider). A login never checked is not signed in.
+ */
+export function signedInHosts(cfg: AgenticosJson | null, state: ProviderState | null): SessionHost[] {
+  return sessionHosts(cfg).filter((h) => state?.[h]?.loggedIn === true);
 }
 
 /** How the user invokes a plugin command on `host`: Claude Code `/name`; Codex `$agenticos:name`, or `$name` when wired directly. */

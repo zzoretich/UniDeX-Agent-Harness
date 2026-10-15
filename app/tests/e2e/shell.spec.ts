@@ -43,7 +43,7 @@ test("the app records itself in the vault for doctor and the update check (brain
   expect(fs.readdirSync(FX.v("brain/_index")).filter((n) => n.startsWith("hud-host.json."))).toEqual([]);
 });
 
-test("rail: three sections in order with a line between them, no Sessions without a provider, ⚙ Settings at the foot", async () => {
+test("rail: three sections in order with a line between them, no Sessions with no host signed in (local-first A17), ⚙ Settings at the foot", async () => {
   const { win } = app();
   const ids = await win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
   expect(ids).toEqual(RAIL_ORDER.filter((id) => id !== "chat"));

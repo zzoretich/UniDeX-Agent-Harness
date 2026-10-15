@@ -44,7 +44,7 @@ test("the welcome tour: about ten steps, rail to Help, routing only by the user'
   const core = chapterById(BOOK, BOOK.core);
   assert.ok(core);
   assert.deepEqual(core.steps.map((s) => s.id), ["rail", "pulse", "sessions", "code", "brain", "spaces", "routines", "chief-of-staff", "search", "help"]);
-  assert.equal(core.steps.find((s) => s.id === "sessions")?.when, "chatAvailable", "Sessions is off the rail without a provider");
+  assert.equal(core.steps.find((s) => s.id === "sessions")?.when, "chatAvailable", "Sessions is off the rail with no host signed in");
   for (const s of core.steps) assert.equal(s.tab, undefined, `${s.id} routes by the click, not by open()`);
   for (const s of core.steps.filter((x) => x.advance === "click")) assert.match(s.anchor, /^\.aos-wb-railbtn\[data-tab="[a-z-]+"\]$/, s.id);
 });
