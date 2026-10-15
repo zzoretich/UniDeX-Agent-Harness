@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { SURFACES, SURFACE_IDS, WritePolicy, globToRegExp, parseSurfaces } from "../../src/main/policy/write-policy";
 import { workspaceArgs } from "../../../obsidian-plugin/src/data/spacesModel";
 import { memoryArgs, recallArgs } from "../../../obsidian-plugin/src/data/brainModel";
-import { importArgs, IMPORT_KINDS } from "../../../obsidian-plugin/src/data/importModel";
+import { importArgs, IMPORT_KINDS, migrateImportArgs } from "../../../obsidian-plugin/src/data/importModel";
 import { migrateArgs } from "../../../obsidian-plugin/src/data/goLocal";
 
 const VAULT = "/vaults/demo";
@@ -521,10 +521,13 @@ test("Import runs `aos import` exactly as importArgs builds it, flags in one ord
     importArgs({ from: ["claude"], only: ["projects"], accept: Array.from({ length: 100 }, (_, i) => `~/code/r${i}`) }, { json: true }),
     ["import"], ["import", "--json"], ["import", "--from", "claude", "--since", "30d"],
   ];
+  // The full dry run is also the launch sequence's Import sheet's scan, which the Go local surface runs (install-import B12).
+  const sheetScan = JSON.stringify(sent[0]);
   for (const a of sent) {
     assert.equal(imp.canSpawn(NODE, cli(...a)), true, `import on: ${JSON.stringify(a)}`);
-    assert.equal(others.canSpawn(NODE, cli(...a)), false, `import off: ${JSON.stringify(a)}`);
+    assert.equal(others.canSpawn(NODE, cli(...a)), JSON.stringify(a) === sheetScan, `import off: ${JSON.stringify(a)}`);
   }
+  assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "import" && id !== "migrate")).canSpawn(NODE, cli(...sent[0])), false, "neither on: refused");
   const accept = (v: unknown) => JSON.stringify(v);
   const no = [
     ["import", "--from", "cursor"], ["import", "--from"], ["import", "--since", "forever"], ["import", "--since", "-90d"],
@@ -571,6 +574,25 @@ test("the Go local surface runs `aos migrate local-first` apply, decline and und
   }
   assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "migrate")).canSpawn(NODE, [`${S}/cli/aos.js`, "migrate", "local-first", "--apply", "--json"]), false, "only Go local");
   for (const rel of ["brain/config.json", "brain/routines/tick.md", "brain/_index/migrations.json"]) assert.equal(p.canWrite(v(rel)), false, rel);
+});
+
+test("the Go local surface also runs the Import sheet: its dry run, migrate import --apply [--accept], --decline (install-import B12)", () => {
+  const p = new WritePolicy(VAULT, ["migrate"]);
+  const run = (...a: string[]) => p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]);
+  // What the sheet builds (obsidian-plugin/src/data/importModel.ts) is exactly what the rules admit.
+  for (const a of [migrateImportArgs("apply"), migrateImportArgs("apply", ["~/code/harbor", "/opt/work/reef"]), migrateImportArgs("decline"),
+    importArgs({ from: ["claude", "codex"], only: ["instructions", "memories", "projects", "mcp", "sessions"] }, { dryRun: true, json: true })]) {
+    assert.equal(run(...a), true, a.join(" "));
+  }
+  for (const a of [
+    ["migrate", "import"], ["migrate", "import", "--apply", "--json"], ["migrate", "import", "--apply", "--accept"], ["migrate", "import", "--apply", "--accept", "[]"],
+    ["migrate", "import", "--apply", "--accept", '["relative/x"]'], ["migrate", "import", "--apply", "--accept", '["~/a"]', "--json"],
+    ["migrate", "import", "--accept", '["~/a"]', "--apply"], ["migrate", "import", "--decline"], ["migrate", "import", "--undo", "--json"],
+    ["import", "--from", "all"], ["import", "--from", "all", "--dry-run"], ["import", "--from", "claude", "--dry-run", "--json"],
+    ["import", "--from", "all", "--since", "all", "--dry-run", "--json"],
+  ]) assert.equal(run(...a), false, a.join(" "));
+  assert.equal(run("migrate", "import", "--apply", "--accept", JSON.stringify(Array.from({ length: 101 }, (_, i) => `~/r${i}`))), false, "at most 100");
+  assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "migrate")).canSpawn(NODE, [`${S}/cli/aos.js`, ...migrateImportArgs("apply")]), false, "only Go local");
 });
 
 test("a relative script runs only against the vault it resolves into", () => {

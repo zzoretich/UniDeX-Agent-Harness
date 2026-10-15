@@ -68,3 +68,21 @@ test("state and digest: nothing before any import", () => {
   assert.deepEqual(w.imp.state(), { phases: [], digest: null, runs: [] });
   assert.equal(w.imp.digest(), null);
 });
+
+test("the Import sheet: aos migrate import --apply with the accepted proposals and its progress; Not now declines (B12)", async () => {
+  const w = world({ run: async (args, o) => { o.onStdout?.("- instructions (Claude Code): 3 written, 0 already in the vault\n- mcp: 1 on Claude Code listed\n"); return ok(args.includes("--decline") ? "{\"id\":\"import\",\"state\":\"declined\"}" : "import: applied\n"); } });
+  const seen: string[] = [];
+  const r = await w.imp.applyMigration(["~/code/harbor", "~/code/harbor"], (p) => seen.push(`${p.done}/${p.steps} ${p.label}`));
+  assert.equal(r.ok, true);
+  assert.deepEqual(w.calls[0], { args: ["migrate", "import", "--apply", "--accept", "[\"~/code/harbor\"]"], timeoutMs: RUN_MS });
+  assert.deepEqual(seen, ["1/7 Instructions from Claude Code: 3 written, 0 already in the vault", "2/7 MCP servers: 1 on Claude Code listed"]);
+  await w.imp.applyMigration([]);
+  assert.deepEqual(w.calls[1].args, ["migrate", "import", "--apply"], "no proposal taken: no --accept");
+  assert.deepEqual(await w.imp.declineMigration(), { ok: true, error: null });
+  assert.deepEqual(w.calls[2].args, ["migrate", "import", "--decline", "--json"]);
+  const bad = await w.imp.applyMigration(["--json"]);
+  assert.deepEqual([bad.ok, bad.error], [false, "import: a workspace proposal is named by its folder"]);
+  assert.equal(w.calls.length, 3, "refused before anything ran");
+  const refused = world({ run: async () => ({ code: 1, stdout: "", stderr: "aos: UniDeX: node refused; no write surface that allows it is on\n", timedOut: false }) });
+  assert.deepEqual(await refused.imp.declineMigration(), { ok: false, error: "UniDeX: node refused; no write surface that allows it is on" });
+});
