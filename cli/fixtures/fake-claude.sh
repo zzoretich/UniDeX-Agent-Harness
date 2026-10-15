@@ -1,8 +1,9 @@
 #!/bin/sh
 # Stand-in for the `claude` CLI in tests and the CI rehearsal. Records every call, answers the
 # read-only queries cli/aos.js makes, and exits 0 for everything else (install/uninstall/marketplace).
-# Test knob: FAKE_CLAUDE_FAIL_INSTALL=1 makes `plugin install` print to stderr and exit 1, to
-# exercise installPlugin()'s allowFail path without touching the network.
+# Test knobs: FAKE_CLAUDE_FAIL_INSTALL=1 makes `plugin install` print to stderr and exit 1, to
+# exercise installPlugin()'s allowFail path without touching the network; FAKE_CLAUDE_LOGGED_OUT=1 makes
+# `auth status` report no login (aos hosts add refuses a signed-out host).
 echo "$*" >> "${FAKE_CLAUDE_LOG:-/dev/null}"
 # `claude -p … --output-format json` (the graph shim's calls): read the prompt from stdin, answer one JSON envelope.
 # Knobs: FAKE_CLAUDE_ENV_LOG (the env the call saw), FAKE_CLAUDE_USD (its cost), FAKE_CLAUDE_P_EXIT (fail it).
@@ -24,7 +25,8 @@ if [ "$1 $2 $3" = "plugin marketplace list" ]; then
 fi
 case "$1 $2" in
   "--version ") echo "0.0.0-fake (Claude Code)" ;;
-  "auth status") echo '{"loggedIn":true,"authMethod":"fake"}' ;;
+  "auth status")
+    if [ "${FAKE_CLAUDE_LOGGED_OUT:-}" = "1" ]; then echo '{"loggedIn":false}'; else echo '{"loggedIn":true,"authMethod":"fake"}'; fi ;;
   "plugin list")
     if [ -n "${FAKE_PLUGIN_PATH:-}" ]; then
       printf '[{"id":"agenticos@agenticos-workbench","version":"0.1.0","scope":"user","enabled":true,"installPath":"%s"}]\n' "$FAKE_PLUGIN_PATH"

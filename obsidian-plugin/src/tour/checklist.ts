@@ -60,7 +60,7 @@ export const ROUTINES_FOLDER = "brain/routines";
 /** The persona's identity (data/aosConfig.ts PERSONA_IDENTITY_PATH): there once the Chief of Staff is set up. */
 export const PERSONA_IDENTITY = "persona/IDENTITY.md";
 /** The routines every vault starts with (vault-template/brain/routines): not the user's own. */
-export const SEEDED_ROUTINES = ["README", "briefing", "monitor", "reflect", "sitrep"];
+export const SEEDED_ROUTINES = ["README", "briefing", "import-digest", "monitor", "reflect", "sitrep"];
 /** Trail verbs that are a person deciding on a memory (Brain's Review and Library): kept, archived, superseded, merged. */
 const REVIEW_VERBS = new Set(["kept", "archived", "superseded", "merged"]);
 

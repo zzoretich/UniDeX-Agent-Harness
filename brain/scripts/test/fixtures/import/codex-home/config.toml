@@ -1,0 +1,19 @@
+model = "gpt-test"
+
+[mcp_servers.issue-tracker]
+command = "/opt/tools/issue-mcp"
+args = ["--stdio"]
+
+[mcp_servers.issue-tracker.env]
+LOG_LEVEL = "warn"
+
+[mcp_servers."web fetch"]
+url = "https://fetch.example.com/mcp"
+enabled = false
+
+[mcp_servers.agenticos]
+command = "sh"
+args = ["bin/aos", "mcp-server"]
+
+[profiles.fast.mcp_servers.skip]
+command = "x"

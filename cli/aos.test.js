@@ -394,7 +394,8 @@ test('init into a temp vault: seed set, vendored runtime, agenticos.json, plugin
     'brain/_index/MOC-reference.md', 'brain/_index/MOC-projects.md', 'brain/_index/MOC-patterns.md', 'brain/_index/scanner-config.json',
     'brain/memory/user/profile.md', 'brain/memory/feedback/README.md', 'brain/memory/projects/README.md', 'brain/memory/reference/README.md',
     'brain/patterns/README.md', 'templates/daily-note.md', 'templates/meeting-note.md', 'templates/decision-record.md', 'templates/project-note.md',
-    'brain/routines/README.md', 'brain/routines/briefing.md', 'brain/routines/monitor.md', 'brain/routines/reflect.md', 'brain/routines/sitrep.md',
+    'brain/routines/README.md', 'brain/routines/briefing.md', 'brain/routines/import-digest.md', 'brain/routines/monitor.md', 'brain/routines/reflect.md', 'brain/routines/sitrep.md',
+    'brain/scripts/lib/import/index.js', 'brain/scripts/lib/import/digest.js', 'brain/scripts/cli/import.js', 'brain/scripts/cli/hosts.js',
     'brain/scripts/package.json', 'brain/scripts/config.default.json', 'brain/scripts/lib/paths.js', 'brain/scripts/sdk/mcp-server.js',
     'brain/scripts/cli/aos.js', 'brain/scripts/cli/routines.js', 'brain/scripts/routines/run-routine.js', 'brain/scripts/bin/aos', 'brain/scripts/node_modules']) {
     assert.ok(fs.existsSync(path.join(v, rel)), `missing ${rel}`);
@@ -846,20 +847,20 @@ test('upgrade seeds brain/routines/ once and re-renders installed legacy duty pl
 
   const r = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT], env);
   assert.equal(r.status, 0, r.stderr + r.stdout);
-  assert.match(r.stdout, /seeded brain\/routines\/ \(briefing, monitor, reflect, sitrep\)/);
+  assert.match(r.stdout, /seeded brain\/routines\/ \(briefing, import-digest, monitor, reflect, sitrep\)/);
   const store = require('../brain/scripts/lib/routines-store.js');
   const dir = path.join(sb.vault, 'brain', 'routines');
-  assert.deepEqual(store.list({ dir }).map((x) => [x.slug, x.kind, x.guarded, x.errors.length]), [['briefing', 'command', false, 0], ['monitor', 'duty', true, 0], ['reflect', 'duty', true, 0], ['sitrep', 'duty', true, 0]]);
+  assert.deepEqual(store.list({ dir }).map((x) => [x.slug, x.kind, x.guarded, x.errors.length]), [['briefing', 'command', false, 0], ['import-digest', 'command', false, 0], ['monitor', 'duty', true, 0], ['reflect', 'duty', true, 0], ['sitrep', 'duty', true, 0]]);
   assert.ok(fs.existsSync(path.join(dir, 'README.md')));
   if (process.platform === 'darwin') {
-    assert.match(r.stdout, /schedules re-rendered: com\.agenticos\.briefing, com\.agenticos\.monitor, com\.agenticos\.reflect, com\.agenticos\.sitrep/);
-    for (const d of ['briefing', 'monitor', 'reflect', 'sitrep']) {
+    assert.match(r.stdout, /schedules re-rendered: com\.agenticos\.briefing, com\.agenticos\.import-digest, com\.agenticos\.monitor, com\.agenticos\.reflect, com\.agenticos\.sitrep/);
+    for (const d of ['briefing', 'import-digest', 'monitor', 'reflect', 'sitrep']) {
       assert.match(fs.readFileSync(path.join(agents, `com.agenticos.${d}.plist`), 'utf8'), /run-routine\.js/, `${d} plist rendered from the routine file`);
     }
     assert.equal(fs.readFileSync(path.join(agents, 'com.agenticos.ollama.plist'), 'utf8'), '<plist/>\n', 'the Ollama supervisor is untouched');
-    assert.equal(fs.readFileSync(launchLog, 'utf8').split('\n').filter((l) => l.startsWith('load ')).length, 4);
+    assert.equal(fs.readFileSync(launchLog, 'utf8').split('\n').filter((l) => l.startsWith('load ')).length, 5);
     const st = store.readState({ file: path.join(sb.vault, 'brain', '_index', 'routines.json') });
-    assert.deepEqual(Object.keys(st.synced).sort(), ['briefing', 'monitor', 'reflect', 'sitrep']);
+    assert.deepEqual(Object.keys(st.synced).sort(), ['briefing', 'import-digest', 'monitor', 'reflect', 'sitrep']);
   } else {
     assert.match(r.stdout, /no schedules installed/);
   }
@@ -872,7 +873,7 @@ test('upgrade seeds brain/routines/ once and re-renders installed legacy duty pl
   assert.ok(!/seeded brain\/routines/.test(again.stdout), 'seeded only once');
   assert.ok(!fs.existsSync(path.join(dir, 'reflect.md')), 'the owner\'s deletion sticks');
   if (process.platform === 'darwin') {
-    assert.match(again.stdout, /schedules re-rendered: com\.agenticos\.briefing, com\.agenticos\.monitor, com\.agenticos\.sitrep \(removed com\.agenticos\.reflect\.plist\)/);
+    assert.match(again.stdout, /schedules re-rendered: com\.agenticos\.briefing, com\.agenticos\.import-digest, com\.agenticos\.monitor, com\.agenticos\.sitrep \(removed com\.agenticos\.reflect\.plist\)/);
     assert.ok(!fs.existsSync(path.join(agents, 'com.agenticos.reflect.plist')));
   }
 });
@@ -914,6 +915,25 @@ test('upgrade from before 1.5.0 adds the briefing routine to an owned brain/rout
   assert.ok(!fs.existsSync(path.join(dir, 'briefing.md')), 'the owner\'s deletion sticks');
 });
 
+test('upgrade from before 2.0.0 adds the import-digest routine (install-import B10); from 2.0.0 on a deletion sticks', () => {
+  const sb = initialized();
+  const dir = path.join(sb.vault, 'brain', 'routines');
+  const cfgFile = path.join(sb.cfg, 'agenticos.json');
+  const recorded = (version) => fs.writeFileSync(cfgFile, JSON.stringify({ ...readJson(cfgFile), version }, null, 2));
+  fs.unlinkSync(path.join(dir, 'import-digest.md'));
+  recorded('1.9.0');
+  const r = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /added the import-digest routine \(new in 2\.0\.0\): brain\/routines\/import-digest\.md/);
+  assert.equal(fs.readFileSync(path.join(dir, 'import-digest.md'), 'utf8'), fs.readFileSync(path.join(ROOT, 'vault-template', 'brain', 'routines', 'import-digest.md'), 'utf8'));
+  fs.unlinkSync(path.join(dir, 'import-digest.md'));
+  recorded('2.0.0');
+  const again = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(again.status, 0, again.stderr + again.stdout);
+  assert.doesNotMatch(again.stdout, /added the import-digest routine/);
+  assert.ok(!fs.existsSync(path.join(dir, 'import-digest.md')));
+});
+
 // A marketplace added from a local checkout (`aos init --from-local`) has no clone under plugins/marketplaces/: plain
 // `aos upgrade` vendors from the directory the claude CLI reports and refreshes the plugin from it.
 test('plain aos upgrade through the vendored CLI follows a directory marketplace, and refreshes the plugin from it', () => {
@@ -953,7 +973,7 @@ test('aos upgrade run through the vendored CLI re-execs the checkout\'s cli/aos.
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.match(r.stdout, /upgrade: running the checkout's cli\/aos\.js/);
   assert.ok(!r.stdout.includes('STALE-VENDORED-UPGRADE'), 'the stale copy never reaches its own upgrade body');
-  assert.match(r.stdout, /seeded brain\/routines\/ \(briefing, monitor, reflect, sitrep\)/, 'the new step ran on the first upgrade');
+  assert.match(r.stdout, /seeded brain\/routines\/ \(briefing, import-digest, monitor, reflect, sitrep\)/, 'the new step ran on the first upgrade');
   assert.equal((r.stdout.match(/upgrading /g) || []).length, 1, 'exactly one upgrade runs (no loop)');
   assert.ok(!fs.readFileSync(vendored, 'utf8').includes('STALE-VENDORED-UPGRADE'), 're-vendored on the way');
   // Run directly from the checkout: no re-exec line.

@@ -111,10 +111,14 @@ test('.graphifyignore keeps code, caches, the graph itself and templates out of 
   assert.deepEqual(rules, ['workspaces/', 'brain/scripts/', 'brain/_index/', 'brain/graphify-out/', 'brain/graphify-out.pre-aos/', 'brain/archive/', 'templates/', '.obsidian/']);
 });
 
-test('brain/routines seeds the three duty routines (valid, guarded, enabled), the briefing command and a README', () => {
+test('brain/routines seeds the three duty routines (valid, guarded, enabled), the briefing and import-digest commands and a README', () => {
   const store = require('../brain/scripts/lib/routines-store.js');
-  const listed = store.list({ dir: path.join(T, 'brain', 'routines') });
-  assert.deepEqual(listed.map((r) => r.slug), ['briefing', 'monitor', 'reflect', 'sitrep']);
+  const listed = store.list({ dir: path.join(T, 'brain', 'routines') }).filter((r) => r.slug !== 'import-digest');
+  assert.deepEqual(store.list({ dir: path.join(T, 'brain', 'routines') }).map((r) => r.slug), ['briefing', 'import-digest', 'monitor', 'reflect', 'sitrep']);
+  // The history digest (install-import B10): a command on from the start, which turns itself off when nothing is queued.
+  const digest = store.read('import-digest', { dir: path.join(T, 'brain', 'routines') });
+  assert.deepEqual([digest.errors, digest.kind, digest.guarded, digest.enabled, digest.schedule], [[], 'command', false, true, '*/30 * * * *']);
+  assert.deepEqual(digest.argv, ['{{NODE}}', '{{VAULT}}/brain/scripts/lib/import/digest.js']);
   // Pulse's briefing writer (spec 2026-10-08-pulse-cockpit-design P6): a model-gated command, every 30 minutes in the day.
   const briefing = listed[0];
   assert.deepEqual(briefing.errors, []);
