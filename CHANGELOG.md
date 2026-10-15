@@ -6,6 +6,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ### Upgrading
 - **Nothing changes for an existing install yet.** Your `provider` setting is kept as it is (`auto` for most); the move to local background work is offered once, by the app, in a later 2.0 step. Nothing to re-trust: no hook command changed on either host.
+- **Your Chief of Staff keeps its model and its tick until you move it.** An existing install's `persona.model` and `persona.codexModel` stay `null` (the model it ran on: the interview's answer, then `claude.model`; `codex.model`, then your Codex default), and its hourly `tick.md` stays a duty — now skipped properly on a quiet hour. The 2.0 update offers to move both.
 
 ### Added
 - **Background work on the model on your Mac: provider `local`.** A new install runs its summaries, memory extraction, workspace insights and file maps, embeddings and the Pulse briefing on a local model and never spends: when the local model can't answer, the work waits or uses heuristics instead of falling back to Claude or Codex (turn on `local.hostedFallback` to allow that, under the same hook caps). "Ready" means the model is pulled, not just that Ollama answers. The local engine is Ollama, or any OpenAI-compatible server such as LM Studio or llama.cpp (`local.engine: openai`, `local.url`).
@@ -17,10 +18,18 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **Settings ▸ Local engine** shows the engine and its address, whether it answers, the model and whether it is downloaded, the embedder, today's local calls and any session wraps waiting, with **Pull the model** (off until enabled under the app's write surfaces; ❯_ `aos local pull` in the Code tab works meanwhile).
 - **When the local model is down, nothing spends unasked.** Session wraps wait in the queue and run when it is back; summaries, insights and file maps use their heuristics; the Pulse briefing shows the facts alone; recall uses keyword search. A button you press offers **Run once on Claude Code / Codex**, naming the cap it counts against. Pulse, `aos doctor` and `aos status` say "local model down: N wraps queued".
 
+- **Your Chief of Staff runs on Claude Opus 5.5 or gpt-6-sol, with failover.** A new install's duties run on Claude Code · `claude-opus-5-5` (`persona.model`) or Codex · `gpt-6-sol` (`persona.codexModel`), and the setup wizard and `aos persona` preselect them. With both hosts, a duty that cannot start on its host — the CLI missing or signed out — runs on the other host's model instead (`persona.failover`, on by default); with no host able to start it, it is skipped and journaled `SKIPPED waiting-for-host`, flagged once a day, never failed. `persona.perDayUsd` stays one cap over both hosts: a capped day is skipped on both, never moved. `aos doctor`'s `persona runner` row names the host, its model and the failover host.
+- **The hourly tick triages on your Mac first.** A new install's `tick` routine runs `tick.js --triage` locally: when nothing that matters changed — a routine failing or going missing, new commits in a tracked repo, a correction, a proposal, a flag, an inbox alert — the hour ends with no model call at all. A real change goes to the local model, which decides whether it merits a Chief of Staff run and writes the reason in the journal; when the local model is not running, any real change wakes it. The woken run may spend up to 0.50 USD (the routine's `budgetUsd`).
+
 ### Changed
 - **Sessions follows your hosts.** The Sessions tab is on the rail whenever Claude Code or Codex is enabled and signed in, whatever the background provider, so a local model that is down never hides it.
 - **graphify is installed with its local backend** (`graphifyy[ollama]`, the same pinned 0.9.66); `aos upgrade` adds it to an install that lacks it.
 - **Claude Code's daily sign-in check is free.** It asks `claude auth status` instead of making a one-word Haiku call that was billed to the hook ledger.
+
+### Fixed
+- **The tick skips quiet hours again.** Its change signature counted every routine's last run time, and the heartbeat, the briefing and the tick itself run every half hour, so it never skipped; it now counts routine status changes and failures only, and a tracked repo by its HEAD (the vault's own repo by its memory files, not its backup commits).
+- **Duties no longer take their model from the first `model` key in `agenticos.json`.** The duty runner asks the Chief of Staff's resolver for the host and the model, so a Claude model never reaches Codex.
+- **The Brain Map lays out the same way every time, with every memory in view.** Two memories that landed on top of each other were parted in a random direction and could be flung far off the fitted view; they now part along a fixed direction, and the push at close range is softened.
 
 ## [1.9.0] — 2026-10-12
 

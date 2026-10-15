@@ -136,10 +136,10 @@ test('brain/routines seeds the three duty routines (valid, guarded, enabled), th
   assert.match(read('brain/routines/README.md'), /^# /);
 });
 
-test('persona/routines seeds the watchdog heartbeat (command), the hourly tick (duty, 0.10 USD, read-only allowlist) and the nightly reflect (duty, 0.50 USD)', () => {
+test('persona/routines seeds the watchdog heartbeat (command), the hourly tick (local triage command waking a 0.50 USD read-only duty) and the nightly reflect (duty, 0.50 USD)', () => {
   const store = require('../brain/scripts/lib/routines-store.js');
   const all = store.list({ dir: path.join(T, 'persona', 'routines') });
-  assert.deepEqual(all.map((r) => [r.slug, r.kind, r.schedule, r.enabled]), [['heartbeat', 'command', '*/30 * * * *', true], ['reflect-daily', 'duty', '0 22 * * *', true], ['tick', 'duty', '0 * * * *', true]]);
+  assert.deepEqual(all.map((r) => [r.slug, r.kind, r.schedule, r.enabled]), [['heartbeat', 'command', '*/30 * * * *', true], ['reflect-daily', 'duty', '0 22 * * *', true], ['tick', 'command', '0 * * * *', true]]);
   for (const r of all) assert.deepEqual(r.errors, [], r.slug);
   const daily = all.find((r) => r.slug === 'reflect-daily');
   assert.equal(daily.guarded, true);
@@ -156,7 +156,12 @@ test('persona/routines seeds the watchdog heartbeat (command), the hourly tick (
   assert.match(read('persona/proposals/README.md'), /surface: <product proposals only/);
   const tick = all.find((r) => r.slug === 'tick');
   assert.equal(tick.guarded, true);
-  assert.equal(tick.budgetUsd, 0.1);
+  // local-first A5: the hourly routine is tick.js's local triage; it starts the hosted duty itself, with this budget and allowlist.
+  assert.deepEqual(tick.argv, ['{{NODE}}', '{{VAULT}}/brain/scripts/persona/tick.js', '--triage', '--root', '{{VAULT}}']);
+  assert.equal(tick.budgetUsd, 0.5);
+  assert.equal(tick.timeoutSec, 900);
+  assert.equal(tick.budgetUsd, require('../brain/scripts/persona/tick.js').TICK_DUTY.budgetUsd, 'tick.js falls back to the same budget');
+  assert.equal(tick.tools, require('../brain/scripts/persona/tick.js').TICK_DUTY.tools, 'and the same allowlist');
   assert.match(tick.tools, /^Read,Glob,Grep,Bash\(date:\*\),Bash\(\{\{NODE\}\} \{\{VAULT\}\}\/brain\/scripts\/persona\/tick\.js:\*\)/);
   assert.ok(!/git/.test(tick.tools), 'the tick never runs git');
   assert.match(tick.body, /persona\/duties\/tick\.md/);
