@@ -24,12 +24,12 @@ test("M2: after a later check, a choice no longer offered becomes a ready host; 
 });
 
 test("M4: the vault in Finish's command is absolute and quoted for the shell, embedded quotes included", () => {
-  assert.equal(shellQuote("/home/x/AgenticOS"), "/home/x/AgenticOS");
+  assert.equal(shellQuote("/srv/x/AgenticOS"), "/srv/x/AgenticOS");
   assert.equal(shellQuote("/Volumes/My Disk/Vault"), "'/Volumes/My Disk/Vault'");
   assert.equal(shellQuote("/tmp/it's; rm -rf ~"), "'/tmp/it'\\''s; rm -rf ~'");
-  assert.equal(absoluteVault("~/My Vault", "/home/u"), "/home/u/My Vault");
-  assert.equal(absoluteVault("~", "/home/u"), "/home/u");
-  assert.equal(addHostCommand("~/.local/bin/aos", "~/My 'Vault'", "/home/u"), "~/.local/bin/aos init --vault '/home/u/My '\\''Vault'\\''' --host claude");
+  assert.equal(absoluteVault("~/My Vault", "/h"), "/h/My Vault");
+  assert.equal(absoluteVault("~", "/h"), "/h");
+  assert.equal(addHostCommand("~/.local/bin/aos", "~/My 'Vault'", "/h"), "~/.local/bin/aos init --vault '/h/My '\\''Vault'\\''' --host claude");
   // What a shell makes of it: exactly the one path, with nothing run.
   for (const vault of ["/tmp/My Vault", "/tmp/it's here", "/tmp/$(touch x)`y`", "/tmp/a\"b"]) {
     const r = spawnSync("/bin/sh", ["-c", `printf '%s' ${shellQuote(vault)}`], { encoding: "utf8" });
