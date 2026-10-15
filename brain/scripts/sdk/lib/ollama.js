@@ -3,6 +3,8 @@
  * ollama.js — local LLM chat helper.
  * Talks to Ollama's /api/chat. Default model is the workhorse role (qwen3.5:9b; override via BRAIN_MODEL).
  * Strips qwen's <think>…</think> reasoning blocks from the returned content.
+ * chat() answers with the text; chatMessage() with the whole assistant turn, tool calls included (local-first A7: the
+ * local agent runner, lib/local-agent.js, sends `tools` and reads `message.tool_calls`).
  */
 const http = require('http');
 
@@ -47,10 +49,12 @@ function sizeContextWindow(promptChars, numPredict) {
  * buildChatBody(opts) -> the exact /api/chat request body. Pure — exported for
  * tests. think passes through unchanged (false for qwen think-off, or an
  * effort string 'low'|'medium'|'high' for a model with a think dial). keepAlive (when given)
- * becomes keep_alive so callers control residency per role.
+ * becomes keep_alive so callers control residency per role. `tools` (function definitions in the
+ * OpenAI shape Ollama takes: { type: 'function', function: { name, description, parameters } }) is
+ * sent only when non-empty.
  */
 function buildChatBody(opts = {}) {
-  const { system, prompt, messages, model = MODEL, numPredict = 2048, think = false, format, keepAlive } = opts;
+  const { system, prompt, messages, model = MODEL, numPredict = 2048, think = false, format, keepAlive, tools } = opts;
   const msgs = Array.isArray(messages) ? messages.slice() : [];
   if (system) msgs.unshift({ role: 'system', content: system });
   if (prompt) msgs.push({ role: 'user', content: prompt });
@@ -64,13 +68,32 @@ function buildChatBody(opts = {}) {
     options: { num_predict: numPredict, num_ctx: numCtx },
     ...(format ? { format } : {}),
     ...(keepAlive != null ? { keep_alive: keepAlive } : {}),
+    ...(Array.isArray(tools) && tools.length ? { tools } : {}),
   };
 }
 
 /**
- * chat({ system, prompt, messages, model, numPredict, timeoutMs }) -> Promise<string>
+ * The tool calls of an assistant message, normalized for both engines (openai-compat.js shares it):
+ * [{ id, name, args, argError }]. Ollama sends `arguments` as an object, an OpenAI-compatible server as a JSON string;
+ * a string that does not parse, or arguments that are not an object, leave args null with argError saying why.
  */
-function chat(opts = {}) {
+function normalizeToolCalls(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((c, i) => {
+    const fn = (c && c.function) || {};
+    let args = fn.arguments;
+    let argError = null;
+    if (typeof args === 'string') {
+      try { args = args.trim() ? JSON.parse(args) : {}; } catch { args = null; argError = 'arguments are not valid JSON'; }
+    }
+    if (args == null && !argError) args = {};
+    if (!argError && (typeof args !== 'object' || Array.isArray(args))) { args = null; argError = 'arguments must be an object'; }
+    return { id: c && typeof c.id === 'string' && c.id ? c.id : null, index: i, name: typeof fn.name === 'string' ? fn.name : '', args, argError };
+  });
+}
+
+/** POST /api/chat; resolves the parsed reply. */
+function postChat(opts) {
   const { timeoutMs = 180000 } = opts;
   const { host, port } = endpoint(opts);
 
@@ -94,8 +117,7 @@ function chat(opts = {}) {
           return reject(new Error(`ollama HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
         }
         try {
-          const parsed = JSON.parse(data);
-          resolve(stripThink(parsed.message && parsed.message.content));
+          resolve(JSON.parse(data));
         } catch (e) {
           reject(new Error('ollama parse error: ' + e.message));
         }
@@ -107,6 +129,36 @@ function chat(opts = {}) {
     req.write(body);
     req.end();
   });
+}
+
+/**
+ * chat({ system, prompt, messages, model, numPredict, timeoutMs }) -> Promise<string>
+ */
+async function chat(opts = {}) {
+  const parsed = await postChat(opts);
+  return stripThink(parsed && parsed.message && parsed.message.content);
+}
+
+/**
+ * chatMessage({ messages, tools, model, numPredict, numCtx, timeoutMs, ... }) -> Promise<{ content, toolCalls, message,
+ * usage: { inputTokens, outputTokens }, doneReason }>: one assistant turn. `message` is the reply as Ollama sent it,
+ * to append to the history as is; a tool result goes back as toolMessage(call, text).
+ */
+async function chatMessage(opts = {}) {
+  const parsed = await postChat(opts);
+  const message = (parsed && parsed.message) || { role: 'assistant', content: '' };
+  return {
+    content: stripThink(message.content),
+    toolCalls: normalizeToolCalls(message.tool_calls),
+    message: { role: 'assistant', content: String(message.content || ''), ...(Array.isArray(message.tool_calls) && message.tool_calls.length ? { tool_calls: message.tool_calls } : {}) },
+    usage: { inputTokens: Number(parsed && parsed.prompt_eval_count) || 0, outputTokens: Number(parsed && parsed.eval_count) || 0 },
+    doneReason: (parsed && parsed.done_reason) || null,
+  };
+}
+
+/** The history entry carrying one tool call's result back to Ollama. */
+function toolMessage(call, content) {
+  return { role: 'tool', content: String(content), tool_name: call.name, ...(call.id ? { tool_call_id: call.id } : {}) };
 }
 
 /**
@@ -205,4 +257,4 @@ function pull(model, opts = {}) {
   });
 }
 
-module.exports = { chat, ping, tags, pull, sameModel, endpoint, stripThink, sizeContextWindow, buildChatBody, MODEL, HOST, PORT };
+module.exports = { chat, chatMessage, toolMessage, normalizeToolCalls, ping, tags, pull, sameModel, endpoint, stripThink, sizeContextWindow, buildChatBody, MODEL, HOST, PORT };
