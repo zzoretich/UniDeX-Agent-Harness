@@ -16,6 +16,8 @@ import { ConfirmModal } from "../ui/ConfirmModal";
 import { renderPluginSettings } from "../ui/pluginSettingRows";
 import type { PluginRowsHandle } from "../ui/pluginSettingRows";
 import { shell } from "../host";
+import { HostsPanel } from "./settings/HostsPanel";
+import { ImportPanel } from "./settings/ImportPanel";
 
 const SOURCE_PILL: Record<string, string> = { machine: "aos-pill-amber", vault: "aos-pill-cyan", default: "aos-pill-dim", unset: "aos-pill-dim" };
 
@@ -40,8 +42,14 @@ export class SettingsTab {
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
   private refreshAgain = false;
+  // Settings ▸ Hosts and Import (install-import B2, B4): panels of their own that keep their state across renders.
+  private readonly hostsPanel: HostsPanel;
+  private readonly importPanel: ImportPanel;
 
-  constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {}
+  constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {
+    this.hostsPanel = new HostsPanel(plugin, view, () => this.render());
+    this.importPanel = new ImportPanel(plugin, view, () => this.render());
+  }
 
   mount(host: HTMLElement): void {
     this.host = host;
@@ -52,6 +60,7 @@ export class SettingsTab {
       const watch = (f: TAbstractFile) => { if (f.path === VAULT_CONFIG_PATH && this.view.isTabActive("settings")) this.schedule(); };
       this.view.registerEvent(this.plugin.app.vault.on("modify", watch));
     }
+    this.hostsPanel.reopen();
     this.render();
   }
 
@@ -164,6 +173,11 @@ export class SettingsTab {
     if (this.list) {
       this.renderMaster(host, this.list);
       this.renderLocal(host);
+    }
+    // Neither needs the settings list: they read the runtime's own answers and files.
+    this.hostsPanel.render(host);
+    this.importPanel.render(host);
+    if (this.list) {
       for (const { section, rows } of groupBySection(this.list)) {
         if (section.id === "hosts") continue;
         host.createDiv({ cls: "aos-rt-subhead aos-dim", text: section.label.toUpperCase() });
@@ -353,6 +367,7 @@ export class SettingsTab {
     const rows = list.settings.filter((r) => r.section === "hosts");
     if (!rows.length) return;
     host.createDiv({ cls: "aos-rt-subhead aos-dim", text: "HOSTS & INSTALL — CHANGED ONLY THROUGH THE INSTALLER" });
+    host.createDiv({ cls: "aos-rt-note aos-dim", text: "Add a host under Hosts above (aos hosts add); paths and binaries change with aos upgrade." });
     const acts = host.createDiv({ cls: "aos-st-actions" });
     const doctor = acts.createEl("button", { cls: "aos-ws-action", text: "❯_ aos doctor" });
     doctor.setAttr("title", "Check every install path, binary, host and hook in the Code tab");

@@ -32,8 +32,9 @@ export function bandLabels(top: Array<{ n: Pick<NeedItem, "kind" | "title" | "re
   return top.map(({ n, jump }, i) => `${labels[i].split(" ")[0]} “${clip(n.title, 24)}”${jump ? " →" : ""}`);
 }
 
-// The vault paths whose changes redraw Pulse: its facts, its caches (the Brain tile's two among them) and the briefing.
-const WATCH = [/^brain\/_index\/(snapshot|pipelines|routines|briefing|promote-log|provider-spend|brain-hub|brain-sources)\./, /^persona\/(proposals\/|STATE\.md|teams\/)/,
+// The vault paths whose changes redraw Pulse: its facts, its caches (the Brain tile's two among them, and the history
+// digest's progress in import-state.json) and the briefing.
+const WATCH = [/^brain\/_index\/(snapshot|pipelines|routines|briefing|promote-log|provider-spend|brain-hub|brain-sources|import-state)\./, /^persona\/(proposals\/|STATE\.md|teams\/)/,
   /^brain\/notifications\//, /^brain\/memory\//, /^TODO\.md$/, /^brain\/routines\//];
 export function touchesPulse(p: string): boolean { return WATCH.some((re) => re.test(p)); }
 

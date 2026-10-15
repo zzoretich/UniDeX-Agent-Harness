@@ -19,6 +19,7 @@ import { visibleWorkspaces } from "../data/snapshot";
 import { groupTodos, localDay } from "../data/todos";
 import { adapterOf as routineAdapter } from "../data/routineWriter";
 import { AOS_CLI } from "../data/aosRun";
+import { digestText } from "../data/importModel";
 
 const TONE_RANK: Tone[] = ["danger", "warn", "gate", "info", "ok", "off"];
 const pl = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
@@ -133,6 +134,14 @@ export class PulseTab {
       setIcon(ci, "clock");
       s.createSpan({ text: `Since you last looked at ${clock(m.since.at)}: ` });
       s.createSpan({ cls: "aos-pulse-since-parts", text: m.since.parts.join(" · ") });
+    }
+    // The history digest working through imported sessions (install-import B10), until it is done; Settings ▸ Import
+    // has the rest.
+    if (m.importDigest) {
+      const d = main.createDiv({ cls: "aos-pulse-import", attr: { "data-row": "import-digest", title: "The import-digest routine summarises your imported sessions on the local model, every 30 minutes; Settings ▸ Import has more" } });
+      const ic = d.createSpan({ cls: "aos-pulse-ic" });
+      setIcon(ic, "history");
+      d.createSpan({ text: digestText(m.importDigest) });
     }
     this.renderCommandDeck(main);
 
