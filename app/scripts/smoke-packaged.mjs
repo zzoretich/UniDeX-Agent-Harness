@@ -3,7 +3,10 @@
 // tab; the tray popover draws with its styles; and quitting leaves no process behind. The page comes from app://hud
 // (src/main/app-scheme.ts), which main reads out of app.asar, and runs sandboxed (phase 4). Phase 5: the bundle carries
 // the runtime (Resources/payload) at the app's version, updates stay off in the smoke build, and with no install the
-// app opens the first-run wizard on that payload.
+// app opens the first-run wizard on that payload. 2.0: the fixture is an install from before 2.0 (its agenticos.json
+// says 1.8.0), so its first attach meets the launch sequence (tour C11): the runtime update, which runs `aos upgrade`
+// from the bundle's own payload (the e2e suite's is a stand-in), then Go local, Import, What's new and Getting started,
+// each once; the smoke dismisses each without acting (launch.spec.ts drives their buttons).
 //
 //   node scripts/smoke-packaged.mjs [--app <path>] [--live] [--work <dir>] [--keep]
 //
@@ -84,6 +87,7 @@ const appArgs = [`--remote-debugging-port=${port}`];
 let mainPid = null;
 let stderr = "";
 let vault = null;
+let aosConfig = null;
 let t0 = Date.now();
 if (LIVE) {
   execFileSync("open", ["-n", "-a", APP, "--env", `AOS_APP_USER_DATA=${userData}`, "--args", ...appArgs]);
@@ -101,6 +105,12 @@ if (LIVE) {
   delete env.CFFIXED_USER_HOME;
   vault = path.join(fx, "vault");
   Object.assign(env, { AOS_APP_VAULT: vault, AOS_APP_USER_DATA: userData });
+  // An install from before 2.0 (launch.spec.ts's): the app's runtime update is due, and the upgrade then leaves Go local
+  // and Import pending for the launch sequence.
+  aosConfig = env.AOS_CONFIG;
+  const cfg = JSON.parse(fs.readFileSync(aosConfig, "utf8"));
+  fs.writeFileSync(aosConfig, `${JSON.stringify({ ...cfg, version: "1.8.0" }, null, 2)}\n`);
+  fs.rmSync(path.join(vault, "brain", "_index", "migrations.json"), { force: true });
   t0 = Date.now();
   const child = spawn(EXE, appArgs, { env, stdio: ["ignore", "ignore", "pipe"] });
   child.stderr.setEncoding("utf8");
@@ -146,11 +156,40 @@ check("the bundle carries the runtime at the app's version, with its dependencie
   && fs.existsSync(path.join(APP, "Contents", "Resources", "payload", "brain", "scripts", "node_modules", "@modelcontextprotocol", "sdk", "package.json")),
   payload ? `${payload.version}${payload.commit ? ` (${String(payload.commit).slice(0, 7)})` : ""}` : "no payload.json");
 check("updates are off in the smoke build", info.info?.update?.status === "off" && info.info?.update?.reason === "the smoke build", JSON.stringify(info.info?.update));
-check("attach mode knows the vault", !!info.info?.attach && (LIVE || info.info.attach.behind === false), JSON.stringify(info.info?.attach));
-// A fresh data folder: the one-time "What changed" note is up, over the Workbench, until it is read.
-const noted = await until(async () => (await page.locator(".aos-attach-modal .aos-attach-ok").count()) > 0, 10_000);
-check("the one-time What changed note shows on a first attach", noted);
-if (noted) await page.locator(".aos-attach-modal .aos-attach-ok").click();
+check("attach mode knows the vault", !!info.info?.attach && (LIVE || info.info.attach.behind === true), JSON.stringify(info.info?.attach));
+
+// ── the launch sequence (tour C11): a fresh data folder on an install from before 2.0 ──────
+
+const shown = (sel, ms = 20_000) => until(async () => (await page.locator(sel).count()) > 0, ms);
+const launchLog = () => page.evaluate(() => [...(window.aosHost.launchLog ?? [])]);
+if (LIVE) {
+  // The user's own vault: whatever it is due, closed untouched (Esc dismisses each; nothing is updated or applied).
+  for (let i = 0; i < 6 && (await shown(".modal-container", 3_000)); i++) { await page.keyboard.press("Escape"); await sleep(500); }
+} else {
+  const runtime = await shown(".aos-runtime-modal");
+  check("a first attach opens the launch sequence with the runtime update", runtime && JSON.stringify(await launchLog()) === '["runtime"]', JSON.stringify(await launchLog()));
+  if (runtime) {
+    await page.locator(".aos-runtime-modal .aos-runtime-go").click();
+    const status = () => page.locator(".aos-runtime-modal .aos-setup-status").textContent();
+    const updated = await until(async () => /^Updated to |stopped/.test((await status()) ?? "") && (await status()), 180_000, 500);
+    let version = null;
+    try { version = JSON.parse(fs.readFileSync(aosConfig, "utf8")).version; } catch { /* unread */ }
+    check("Update now runs aos upgrade from the bundle's payload", updated === `Updated to ${VERSION}.` && version === VERSION, `${updated ?? "no answer"} · agenticos.json ${version}`);
+    await page.locator(".aos-runtime-modal button", { hasText: "Close" }).click();
+  }
+  // Then each card once, in order, each dismissed (a dismissed card is remembered and never opens on its own again).
+  for (const [step, sel, close] of [["go-local", ".modal.aos-golocal-modal", null], ["import", ".modal.aos-importsheet-modal", null], ["whats-new", ".modal.aos-whatsnew-modal", ".aos-whatsnew-ok"]]) {
+    const up = await shown(sel, 30_000);
+    const log = await launchLog();
+    check(`then ${step}`, up && log[log.length - 1] === step, JSON.stringify(log));
+    if (!up) break;
+    if (close) await page.locator(`${sel} ${close}`).click(); else await page.keyboard.press("Escape");
+    await until(async () => (await page.locator(sel).count()) === 0, 10_000);
+  }
+  const ended = await until(async () => (await launchLog()).includes("checklist") && (await page.locator(".modal-container").count()) === 0, 10_000);
+  check("Getting started ends it, each step once, and no dialog is left over the Workbench", ended
+    && JSON.stringify(await launchLog()) === JSON.stringify(["runtime", "go-local", "import", "whats-new", "checklist"]), JSON.stringify(await launchLog()));
+}
 check("its three linked stylesheets load from app://hud", info.sheets.length === 3 && info.sheets.every((n) => n > 0), JSON.stringify(info.sheets));
 // The app is the Workbench (phase 1, D6): with no AOS_APP_WRITE every verified surface writes, and the status bar item
 // that names a narrowed run (READ-ONLY, or WRITES: …) is hidden.
