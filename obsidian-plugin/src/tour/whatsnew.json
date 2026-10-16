@@ -13,7 +13,7 @@
         {
           "id": "chief-models",
           "title": "Your Chief of Staff on Opus 5.5 or gpt-6-sol",
-          "body": "Its duties run on Claude Code · claude-opus-5-5 or Codex · gpt-6-sol, and with both hosts a duty that can't start on one moves to the other. The hourly check triages on this Mac first, so a quiet hour costs nothing. With no host yet, Pulse says how to add one.",
+          "body": "Its duties run on Claude Code · claude-opus-5-5 or Codex · gpt-6-sol, and with both hosts a duty that can't start on one moves to the other; an install from before 2.0 keeps its model until the Go-local card moves it. The hourly check triages on this Mac first, so a quiet hour costs nothing. With no host yet, Pulse says how to add one.",
           "steps": ["core.chief-of-staff"]
         },
         {

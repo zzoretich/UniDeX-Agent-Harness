@@ -256,7 +256,7 @@ export class SettingsTab {
     }
     if (moved) {
       const undo = row.createEl("button", { cls: "aos-ws-action", text: "Undo", attr: { "data-act": "go-local-undo" } });
-      undo.setAttr("title", "Put back the provider, the AI switches and the Chief of Staff's models you had (aos migrate local-first --undo); a setting you changed since is kept");
+      undo.setAttr("title", "Put back the provider, the AI switches and the Chief of Staff's models and failover you had (aos migrate local-first --undo); a setting you changed since is kept");
       undo.addEventListener("click", () => void this.undoGoLocal());
     }
   }
@@ -264,7 +264,7 @@ export class SettingsTab {
   /** `aos migrate local-first --undo`, after a confirm. */
   private async undoGoLocal(): Promise<void> {
     const ok = await ConfirmModal.ask(this.plugin.app, "Undo going local?",
-      "Your provider, the AI switches and the Chief of Staff's models go back to what they were before, from the backup taken when you went local, and the schedules are re-rendered.", "Undo");
+      "Your provider, the AI switches and the Chief of Staff's models and failover go back to what they were before, from the backup taken when you went local, and the schedules are re-rendered.", "Undo");
     if (!ok) return;
     const r = await this.plugin.aosJson<{ kept?: string[] }>(migrateArgs("undo"), 120_000);
     const kept = r.json?.kept ?? [];

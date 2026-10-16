@@ -64,10 +64,14 @@ export const CHIEF_MODELS: Record<SessionHost, { model: string; label: string; h
   codex: { model: VAULT_CONFIG_DEFAULTS.persona.codexModel ?? "gpt-6-sol", label: "gpt-6-sol", host: "Codex" },
 };
 
-/** The card's checkbox, worded for the hosts this Mac runs (both, or none, name both models). */
+/**
+ * The card's checkbox, worded for the hosts this Mac runs (both, or none, name both models). Until it is ticked the duties
+ * keep what the upgrade pinned (cli/migrations.js PRE_2_0: the model they ran on, no failover); `--chief` moves the models
+ * and turns the failover on, which with both hosts the box says.
+ */
 export function chiefChoice(hosts: readonly SessionHost[]): string {
   if (hosts.length === 1) return `Move the Chief of Staff to ${CHIEF_MODELS[hosts[0]].label}`;
-  if (hosts.length === 2) return `Move the Chief of Staff to ${CHIEF_MODELS.claude.label} on Claude Code and ${CHIEF_MODELS.codex.label} on Codex`;
+  if (hosts.length === 2) return `Move the Chief of Staff to ${CHIEF_MODELS.claude.label} on Claude Code and ${CHIEF_MODELS.codex.label} on Codex, each standing in when the other cannot start a duty`;
   return `Move the Chief of Staff to ${CHIEF_MODELS.claude.label} / ${CHIEF_MODELS.codex.label} when you add a host`;
 }
 
