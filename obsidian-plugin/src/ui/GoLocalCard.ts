@@ -4,7 +4,7 @@
 // the model download when the model is missing (the `local` surface's `aos local pull`), and a checked "Move the Chief of
 // Staff to Opus 5.5 / gpt-6-sol" worded for this Mac's hosts. Go local runs `aos migrate local-first --apply [--chief]`
 // and Keep my settings `--decline`, both through the `migrate` surface; the runtime backs everything up first, and
-// Settings can undo it. While that surface is off (its default until a live check), the card shows the exact commands
+// Settings can undo it. While that surface is off (a run whose AOS_APP_WRITE leaves it out), the card shows the commands
 // up front, each with a ❯_ that runs it in the Code tab, instead of buttons the app would refuse; the same for the
 // model download and the `local` surface.
 import { Modal, Notice, canRun } from "obsidian";

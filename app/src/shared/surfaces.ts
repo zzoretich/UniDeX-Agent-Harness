@@ -455,9 +455,9 @@ export const SURFACES: readonly Surface[] = [
     // the vault; the models land in Ollama's own store.
     writes: [],
     spawns: [{ script: "cli/aos.js", args: /^local pull$/ }],
-    // Added in 2.0; off by default until a live check on a real vault pulls through it (the Code tab's ❯_ aos local
-    // pull works meanwhile).
-    verified: false,
+    // Added in 2.0. Checked live on 2026-10-16: Settings ▸ Local engine ▸ Pull the model on a real 1.9 vault pulled the
+    // model and the embedder through this rule.
+    verified: true,
   },
   {
     id: "migrate",
@@ -476,9 +476,10 @@ export const SURFACES: readonly Surface[] = [
       { script: "cli/aos.js", args: /^migrate import --decline --json$/ },
       { script: "cli/aos.js", args: /^import --from all --dry-run --json$/ },
     ],
-    // Added in 2.0; off by default until a live check on a 1.9 vault goes local and undoes it through this rule (the
-    // card then names `aos migrate local-first --apply --chief` for the Code tab).
-    verified: false,
+    // Added in 2.0. Checked live on 2026-10-16 on a real 1.9 vault: the launch sequence's Go local (with the Chief of
+    // Staff) and Import sheet, then Settings ▸ Local engine ▸ Undo and Go local again, each backed up and recorded. With
+    // the surface off (an AOS_APP_WRITE run without it), the card names the commands for the Code tab.
+    verified: true,
   },
   {
     id: "import",
@@ -490,9 +491,9 @@ export const SURFACES: readonly Surface[] = [
     // its model calls are the local engine's alone (B15).
     writes: [],
     spawns: [{ script: "cli/aos.js", args: importArgv }],
-    // Added in 2.0; off by default until a live check on a real vault imports through it (`aos import` in the Code tab
-    // works meanwhile, and the setup wizard's step runs main's own job, not this surface).
-    verified: false,
+    // Added in 2.0. Checked live on 2026-10-16: Settings ▸ Import ▸ Import again on a real vault, per host, nothing
+    // written twice. (The setup wizard's step runs main's own job, not this surface.)
+    verified: true,
   },
   {
     id: "hosts",
@@ -522,9 +523,9 @@ export const SURFACES: readonly Surface[] = [
       // The copy itself only with the dry run's hash (cli/mcp.js planHash), so it runs what the confirm showed.
       { script: "cli/aos.js", args: argv("mcp", "copy", MCP_NAME, "--to", /claude|codex/, "--expect", /[0-9a-f]{64}/, "--json") },
     ],
-    // Added in 2.0; off by default until a live check copies a server each way on a real install with both hosts
-    // (`aos mcp copy` from a Code terminal works meanwhile).
-    verified: false,
+    // Added in 2.0. Checked live on 2026-10-16 on a real install with both hosts: a server copied each way (Claude Code
+    // to Codex, Codex to Claude Code), each target file backed up first and changed only by that one server.
+    verified: true,
   },
   {
     id: "chat",

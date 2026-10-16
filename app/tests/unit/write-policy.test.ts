@@ -527,7 +527,7 @@ test("the MCP servers surface runs `aos mcp copy` as the page builds it, dry run
   }
   assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "mcp")).canSpawn(NODE, [`${S}/cli/aos.js`, ...copyArgs("docs-search", "codex", true)]), false, "only MCP servers");
   for (const rel of ["brain/_index/mcp-servers.json", "brain/_index/backups/mcp/codex-config.toml-x.bak"]) assert.equal(p.canWrite(v(rel)), false, rel);
-  assert.equal(SURFACES.find((s) => s.id === "mcp")?.verified, false, "off by default until its live check");
+  assert.equal(SURFACES.find((s) => s.id === "mcp")?.verified, true, "on by default since its live check copied a server each way");
 });
 
 test("Import runs `aos import` exactly as importArgs builds it, flags in one order; nothing else (install-import B7)", () => {
