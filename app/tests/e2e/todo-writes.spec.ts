@@ -16,16 +16,17 @@ const onDisk = (): string => fs.readFileSync(FILE, "utf8");
 const td = (win: Page) => content(win);
 const row = (win: Page, text: string) => td(win).locator(".aos-td-row", { has: win.locator(".aos-td-text", { hasText: text }) });
 const count = (win: Page) => td(win).locator(".aos-rt-count");
-const T = day(0);
+/** The fixture's today, read when a test runs (restoreFixture may have built it again since this file loaded). */
+const T = (): string => day(0);
 
 /** The fixture's today item with its child line, as it sits in ## Open. */
-const REVIEW = `- [ ] Review the tide parser PR 🔼 📅 ${T} #harbor\n    - bring the three open review comments\n`;
+const REVIEW = (): string => `- [ ] Review the tide parser PR 🔼 📅 ${T()} #harbor\n    - bring the three open review comments\n`;
 const LAST_OPEN = "- [ ] Sort the old survey photos 🔽\n";
 
 /** What ticking `line` (an open item line plus any children) writes: out of ## Open, to the top of ## Done. */
 function ticked(text: string, block: string): string {
   const [first, ...children] = block.split("\n");
-  const done = [`${first.replace("- [ ] ", "- [x] ")} ✅ ${T}`, ...children].join("\n");
+  const done = [`${first.replace("- [ ] ", "- [x] ")} ✅ ${T()}`, ...children].join("\n");
   return text.replace(block, "").replace("## Done\n", `## Done\n${done}`);
 }
 
@@ -64,12 +65,30 @@ async function releaseVaultEventsAfter(win: Page, rel: string | null, ms: number
   }, [rel, ms] as const);
 }
 
+/** How long the tab must go without a redraw to count as settled: past the watcher's batch and the tab's debounce. */
+const QUIET_MS = 750;
+
+/**
+ * Waits until the To-Do tab has gone QUIET_MS without a redraw, so a TODO.md event still on its way (the restore below, or
+ * an earlier test's write seen late) lands before a test starts rather than in the middle of it. A redraw no longer
+ * replaces an open editor, but a test should still start from a tab that has stopped moving.
+ */
+async function settled(win: Page): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    await win.evaluate(() => document.querySelector(".aos-wb-content .aos-rt-head")?.setAttribute("data-quiet", ""));
+    await win.waitForTimeout(QUIET_MS);
+    if (await td(win).locator(".aos-rt-head[data-quiet]").count()) return;
+  }
+  throw new Error("the To-Do tab kept redrawing");
+}
+
 test.beforeEach(async () => {
   const { win } = app();
   const e = expected().todo;
   if (onDisk() !== pristine()) fs.writeFileSync(FILE, pristine());
   await openTab(win, "todo");
   await expect(count(win)).toHaveText(`${e.open} open · ${e.overdue} overdue · ${e.today} today`);
+  await settled(win);
 });
 
 test.afterEach(async () => {
@@ -93,10 +112,10 @@ test("quick-add appends to the end of ## Open with priority and date, and clears
   const input = td(win).locator("input.aos-td-input");
   await input.fill("Pay the mooring fee #harbor");
   await td(win).locator(".aos-td-add select.aos-td-prio").selectOption("high");
-  await td(win).locator(".aos-td-add input.aos-td-date").fill(T);
+  await td(win).locator(".aos-td-add input.aos-td-date").fill(T());
   await input.press("Enter");
   // Priority goes on the end; the date after it, since the tag is not the body's last token.
-  const first = `- [ ] Pay the mooring fee #harbor ⏫ 📅 ${T}\n`;
+  const first = `- [ ] Pay the mooring fee #harbor ⏫ 📅 ${T()}\n`;
   await expect.poll(onDisk).toBe(pristine().replace(LAST_OPEN, `${LAST_OPEN}${first}`));
   await expect(td(win).locator("input.aos-td-input")).toHaveValue("");
   await expect(td(win).locator(".aos-td-add select.aos-td-prio")).toHaveValue("");
@@ -116,7 +135,7 @@ test("ticking moves the item and its child line to the top of ## Done with today
   const { win } = app();
   const e = expected().todo;
   await row(win, "Review the tide parser PR").locator(".aos-td-check").click();
-  await expect.poll(onDisk).toBe(ticked(pristine(), REVIEW));
+  await expect.poll(onDisk).toBe(ticked(pristine(), REVIEW()));
   await expect(count(win)).toHaveText(`${e.open - 1} open · ${e.overdue} overdue · ${e.today - 1} today`);
   await expect(badge(win, "todo")).toHaveText(String(e.badge - 1));
 
@@ -125,10 +144,10 @@ test("ticking moves the item and its child line to the top of ## Done with today
   await head.click();
   const done = row(win, "Review the tide parser PR");
   await expect(done).toHaveClass(/is-done/);
-  await expect(done.locator(".aos-td-when")).toHaveText(`✅ ${T}`);
+  await expect(done.locator(".aos-td-when")).toHaveText(`✅ ${T()}`);
   await done.locator(".aos-td-check").click();
   // Unticked items go to the end of ## Open, without their ✅ date.
-  await expect.poll(onDisk).toBe(pristine().replace(REVIEW, "").replace(LAST_OPEN, `${LAST_OPEN}${REVIEW}`));
+  await expect.poll(onDisk).toBe(pristine().replace(REVIEW(), "").replace(LAST_OPEN, `${LAST_OPEN}${REVIEW()}`));
   await expect(count(win)).toHaveText(`${e.open} open · ${e.overdue} overdue · ${e.today} today`);
   await td(win).locator(".aos-rt-subhead", { hasText: "DONE THIS WEEK" }).click();
 });
@@ -209,15 +228,65 @@ test("the inline editor defers nothing: typing over a select-all replaces the te
   expect(onDisk()).toBe(pristine());
 });
 
+// Any TODO.md event (an agent, a hook, `aos todo`, a sync, or this tab's own write seen late) redraws the tab. While a todo
+// is being edited the redraw goes on around the editor: the box is the same element, with its text, selection and focus,
+// so nothing typed or about to be typed into it is lost (the race behind the inline editor's select-all failing as
+// "not attached to the DOM"). The redraw is forced here, through the watcher's own path, twice.
+test("a redraw while a todo is being edited keeps the editor itself: same box, text, selection and focus", async () => {
+  const { win } = app();
+  await row(win, "Draft the release notes").locator(".aos-td-text").dblclick();
+  const edit = td(win).locator("input.aos-td-edit");
+  await expect(edit).toBeFocused();
+  await edit.selectText();
+  await win.keyboard.insertText("Draft the release notes for 0.22");
+  const box = await edit.elementHandle();
+  await box!.evaluate((el: HTMLInputElement) => el.setSelectionRange(6, 17));
+  for (let i = 0; i < 2; i++) {
+    // The vault's own modify event for TODO.md, as the watcher delivers it; the head is marked so its redraw shows.
+    await win.evaluate(() => {
+      const host = (window as unknown as { aosHost: { app: { vault: { trigger(n: string, f: unknown): void; getAbstractFileByPath(p: string): unknown } } } }).aosHost;
+      document.querySelector(".aos-wb-content .aos-rt-head")?.setAttribute("data-before-redraw", "");
+      host.app.vault.trigger("modify", host.app.vault.getAbstractFileByPath("TODO.md"));
+    });
+    await expect(td(win).locator(".aos-rt-head[data-before-redraw]")).toHaveCount(0);
+    expect(await box!.evaluate((el: HTMLInputElement) => ({ attached: el.isConnected, value: el.value, start: el.selectionStart, end: el.selectionEnd, focused: document.activeElement === el })))
+      .toEqual({ attached: true, value: "Draft the release notes for 0.22", start: 6, end: 17, focused: true });
+  }
+  await expect(edit).toHaveCount(1);
+  // Typing goes on in the same box: the selection is replaced.
+  await win.keyboard.insertText("NOTES");
+  await expect(edit).toHaveValue("Draft NOTES notes for 0.22");
+  await edit.press("Escape");
+  await expect(edit).toHaveCount(0);
+  expect(onDisk()).toBe(pristine());
+});
+
+test("the todo being edited changes in TODO.md underneath: nothing overwrites it, and the tab says the edit was not saved", async () => {
+  const h = app();
+  const { win } = h;
+  await row(win, "Draft the release notes").locator(".aos-td-text").dblclick();
+  const edit = td(win).locator("input.aos-td-edit");
+  await edit.selectText();
+  await win.keyboard.insertText("Draft the release notes for 0.22");
+  // Another writer changes that very line (its due date) while this one is typing.
+  const theirs = pristine().replace(`- [ ] Draft the release notes 📅 ${day(1)} #harbor`, `- [ ] Draft the release notes 📅 ${day(2)} #harbor`);
+  const n = h.notices.length;
+  fs.writeFileSync(FILE, theirs);
+  await expect(edit).toHaveCount(0, { timeout: WATCHED });
+  await expect.poll(() => h.notices.slice(n)).toEqual(['That todo changed in TODO.md while you were editing it, so your edit was not saved: "Draft the release notes for 0.22".']);
+  await expect(row(win, "Draft the release notes")).toBeVisible();
+  expect(onDisk()).toBe(theirs);
+});
+
 test("a tick made in the other HUD shows here while the tab is open, and the next edit applies to the new text", async () => {
   const { win } = app();
   const e = expected().todo;
   // What the Obsidian HUD (or /todo) writes when it ticks the item.
-  const theirs = ticked(pristine(), REVIEW);
+  const theirs = ticked(pristine(), REVIEW());
   fs.writeFileSync(FILE, theirs);
   await expect(count(win)).toHaveText(`${e.open - 1} open · ${e.overdue} overdue · ${e.today - 1} today`, { timeout: WATCHED });
   await expect(badge(win, "todo")).toHaveText(String(e.badge - 1));
-  const call = `- [ ] Call the chart vendor 📅 ${T} #harbor\n`;
+  const call = `- [ ] Call the chart vendor 📅 ${T()} #harbor\n`;
   await row(win, "Call the chart vendor").locator(".aos-td-check").click();
   await expect.poll(onDisk).toBe(ticked(theirs, call));
 });
@@ -231,7 +300,7 @@ test("an edit survives TODO.md changing underneath with its line intact: the typ
   await win.keyboard.insertText("Draft the release notes for 0.22");
   // Another HUD ticks a different item while this one is being edited: the tab redraws from the new file. Its event
   // reaches the tab late, as a busy runner's FSEvents can deliver it (main's ci, 2026-10-12: still unseen after 3 s).
-  const theirs = ticked(pristine(), REVIEW);
+  const theirs = ticked(pristine(), REVIEW());
   await holdVaultEvents(win);
   try {
     fs.writeFileSync(FILE, theirs);
@@ -267,7 +336,7 @@ test("stale guard: a line changed underneath is reported, nothing is written, an
     if (tab && tab.refreshDebounce != null) window.clearTimeout(tab.refreshDebounce as number);
   });
   try {
-    const call = `- [ ] Call the chart vendor 📅 ${T} #harbor\n`;
+    const call = `- [ ] Call the chart vendor 📅 ${T()} #harbor\n`;
     const theirs = ticked(pristine(), call);
     fs.writeFileSync(FILE, theirs);
     // As a loaded runner can: any refresh still pending (250 ms debounce) would land before the click.

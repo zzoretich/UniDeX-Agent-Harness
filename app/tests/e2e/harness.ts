@@ -4,13 +4,14 @@
 //
 // Fixture lifecycle: globalSetup generates tests/.fixture once per run and keeps a pristine copy in
 // tests/.fixture/.pristine. Each spec file (useApp) restores vault/ and home/ from that copy before it launches, so a
-// runtime refresh or an edit in one file never leaks into the next. The copy is restored to the same paths the
+// runtime refresh or an edit in one file never leaks into the next. Its dates are relative to the day it was built, so
+// a run that crosses midnight builds it again before the next spec file (restoreFixture, fixtureForToday). The copy is restored to the same paths the
 // generator used, because the runtime's caches (snapshot.json, agenticos.json, routine plists) hold absolute paths.
 // close() returns only once nothing the app started is still running (the app's processes, below): a runtime refresh
 // the app left running would otherwise go on writing into the fixture while the next spec file restores it.
 
 import { _electron as electron, expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -156,6 +157,49 @@ export function readVaultJson<T = unknown>(rel: string): T { return JSON.parse(f
 
 const COPY = { recursive: true, mode: fs.constants.COPYFILE_FICLONE, verbatimSymlinks: true } as const;
 
+/**
+ * Runs the fixture generator (scripts/make-fixture-vault.mjs) into tests/.fixture and keeps the pristine copy. `env`: the
+ * generator's environment (global-setup.ts's AOS_E2E_FIXTURE_DAYS_AGO moves its clock).
+ */
+export function buildFixture(env: NodeJS.ProcessEnv = process.env): void {
+  const t0 = Date.now();
+  execFileSync(process.execPath, [path.join(REPO, "scripts", "make-fixture-vault.mjs"), "--out", ROOT, "--quiet"], { stdio: "inherit", env });
+  const stages = JSON.parse(fs.readFileSync(path.join(ROOT, "stages.json"), "utf8")) as Array<{ stage: string; ok: boolean; error?: string }>;
+  const failed = stages.filter((s) => !s.ok);
+  console.log(`fixture: ${stages.length - failed.length}/${stages.length} runtime stages ok in ${((Date.now() - t0) / 1000).toFixed(1)} s${failed.length ? `; tolerated: ${failed.map((s) => `${s.stage} (${s.error})`).join("; ")}` : ""}`);
+  snapshotPristine();
+  cachedExpected = null;
+}
+
+/** A Date's local YYYY-MM-DD, as the generator writes `today`. */
+const localYmd = (d: Date): string => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** How near local midnight a spec file may start: none runs this long, so none straddles midnight. */
+const MIDNIGHT_MARGIN_MS = 3 * 60_000;
+/** Gives the running test or hook `ms` more, when called from one (a spec file's beforeAll restores the fixture). */
+function moreTime(ms: number): void {
+  try { test.setTimeout(test.info().timeout + ms); } catch { /* outside a test or hook: no budget to extend */ }
+}
+
+/**
+ * The fixture's dates are relative to the day it was built ("today", "3d late", the to-do badge, Review's "today HH:MM"),
+ * and the app reads them against its own clock, so a spec file runs on a fixture built that same day. A run that crosses
+ * midnight (CI: built at 23:50, the specs after 00:00) regenerates it before the next spec file, and a spec file about to
+ * start in the last MIDNIGHT_MARGIN_MS of a day waits for the next one first, so none straddles midnight.
+ */
+function fixtureForToday(): void {
+  const now = new Date();
+  const left = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
+  if (left < MIDNIGHT_MARGIN_MS) {
+    moreTime(left + 5_000);
+    console.log(`fixture: ${Math.ceil(left / 1000)} s to midnight; the next spec file starts on the new day`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, left + 5_000);
+  }
+  if (expected().today === localYmd(new Date())) return;
+  moreTime(120_000);
+  console.log(`fixture: built on ${expected().today}, today is ${localYmd(new Date())}: building it again`);
+  buildFixture();
+}
+
 /** globalSetup: keep the freshly generated vault and home as the pristine copy every spec file restores from. */
 export function snapshotPristine(): void {
   fs.rmSync(FX.pristine, { recursive: true, force: true });
@@ -163,9 +207,13 @@ export function snapshotPristine(): void {
   for (const d of ["vault", "home"]) fs.cpSync(path.join(ROOT, d), path.join(FX.pristine, d), COPY);
 }
 
-/** Puts vault/ and home/ back to the pristine copy (the runtime's node_modules is kept: nothing writes to it). */
+/**
+ * Puts vault/ and home/ back to the pristine copy (the runtime's node_modules is kept: nothing writes to it), from a
+ * fixture built today (fixtureForToday).
+ */
 export function restoreFixture(): void {
   if (!fs.existsSync(path.join(FX.pristine, "vault"))) throw new Error(`no pristine fixture in ${FX.pristine}: run the suite through playwright (globalSetup builds it)`);
+  fixtureForToday();
   const keep = path.join(FX.vault, "brain", "scripts", "node_modules");
   const parked = path.join(ROOT, ".node_modules.parked");
   fs.rmSync(parked, { recursive: true, force: true });
@@ -645,11 +693,11 @@ export function expectNoErrors(h: AppHandle, from = 0): void {
   expect(h.errors.slice(from), `renderer/main errors:\n${h.errors.slice(from).join("\n")}`).toEqual([]);
 }
 
-/** Local YYYY-MM-DD, offset by `n` days. */
+/** The fixture's day (its `today`, local YYYY-MM-DD), offset by `n` days. */
 export function day(n = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  // The fixture's own day (restoreFixture keeps it today's), so what a spec expects of its dated lines matches them.
+  const [y, m, d] = expected().today.split("-").map(Number);
+  return localYmd(new Date(y, m - 1, d + n));
 }
 
 /** Text of every element matching `selector` under `scope`, trimmed. */
