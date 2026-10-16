@@ -7,6 +7,9 @@
  *      vault-template vault carries; a CLAUDE.md + brain/ checkout is NOT a vault)
  *   4. throw VaultNotFound — hook scripts catch it (lib/hook-entry.js) and exit 0
  * There is no personal fallback. Depth-independent: works from brain/scripts/* and brain/scripts/sdk/lib/*.
+ * Under the Node test runner it resolves nothing real (lib/test-guard.js): without the test environment it throws
+ * UnsafeTestEnv, and with it a test still names its vault or config (AOS_VAULT / BRAIN_VAULT, AOS_CONFIG or
+ * CLAUDE_CONFIG_DIR; test/setup.js does), never the owner's default agenticos.json.
  */
 const fs = require('fs');
 const os = require('os');
@@ -43,6 +46,15 @@ function detectVault() {
     dir = parent;
   }
   throw new VaultNotFound('no AgenticOS vault found: set AOS_VAULT, write agenticos.json, or run `aos init`');
+}
+
+const guard = require('./test-guard.js');
+if (guard.underTestRunner()) {
+  guard.guardTestEnv('the vault and agenticos.json');
+  const e = process.env;
+  if (!e.AOS_VAULT && !e.BRAIN_VAULT && !e.AOS_CONFIG && !e.CLAUDE_CONFIG_DIR) {
+    throw new guard.UnsafeTestEnv('refusing to resolve the vault through the default agenticos.json in a test: a test names its own (AOS_VAULT, or AOS_CONFIG / CLAUDE_CONFIG_DIR). brain/scripts tests get one from test/setup.js: run them with `npm test` or `npm run test:one -- <file>`.');
+  }
 }
 
 const USER_CONFIG = readUserConfig() || {};

@@ -1,4 +1,7 @@
 'use strict';
+// The suite's own environment even when a check runs this file on its own (parity-check: `node --test <file>`), so
+// lib/test-guard.js lets it resolve what it needs: a no-op under `npm test`, which preloads it already.
+require('./test-env.js');
 /**
  * build-codex-plugin.test.js — codex-plugin/ is generated and committed (design 2026-09-23-codex-plugin D2), so the
  * suite holds the committed tree to a fresh build, and the build to what a published plugin promises: nothing that

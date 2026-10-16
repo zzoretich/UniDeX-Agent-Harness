@@ -29,10 +29,12 @@ const HOSTS = ['claude', 'codex'];
 function isHost(h) { return HOSTS.includes(h); }
 
 function claudeConfigDir(env = process.env) {
+  require('./test-guard.js').guardTestEnv("Claude Code's config dir");
   return path.resolve(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'));
 }
 
 function codexHome(env = process.env, userConfig = null) {
+  require('./test-guard.js').guardTestEnv("Codex's home");
   const fromCfg = userConfig && userConfig.hosts && userConfig.hosts.codex && userConfig.hosts.codex.home;
   return path.resolve(fromCfg || env.CODEX_HOME || path.join(os.homedir(), '.codex'));
 }
