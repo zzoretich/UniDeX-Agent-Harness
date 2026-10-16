@@ -16,16 +16,17 @@ const onDisk = (): string => fs.readFileSync(FILE, "utf8");
 const td = (win: Page) => content(win);
 const row = (win: Page, text: string) => td(win).locator(".aos-td-row", { has: win.locator(".aos-td-text", { hasText: text }) });
 const count = (win: Page) => td(win).locator(".aos-rt-count");
-const T = day(0);
+/** The fixture's today, read when a test runs (restoreFixture may have built it again since this file loaded). */
+const T = (): string => day(0);
 
 /** The fixture's today item with its child line, as it sits in ## Open. */
-const REVIEW = `- [ ] Review the tide parser PR 🔼 📅 ${T} #harbor\n    - bring the three open review comments\n`;
+const REVIEW = (): string => `- [ ] Review the tide parser PR 🔼 📅 ${T()} #harbor\n    - bring the three open review comments\n`;
 const LAST_OPEN = "- [ ] Sort the old survey photos 🔽\n";
 
 /** What ticking `line` (an open item line plus any children) writes: out of ## Open, to the top of ## Done. */
 function ticked(text: string, block: string): string {
   const [first, ...children] = block.split("\n");
-  const done = [`${first.replace("- [ ] ", "- [x] ")} ✅ ${T}`, ...children].join("\n");
+  const done = [`${first.replace("- [ ] ", "- [x] ")} ✅ ${T()}`, ...children].join("\n");
   return text.replace(block, "").replace("## Done\n", `## Done\n${done}`);
 }
 
@@ -111,10 +112,10 @@ test("quick-add appends to the end of ## Open with priority and date, and clears
   const input = td(win).locator("input.aos-td-input");
   await input.fill("Pay the mooring fee #harbor");
   await td(win).locator(".aos-td-add select.aos-td-prio").selectOption("high");
-  await td(win).locator(".aos-td-add input.aos-td-date").fill(T);
+  await td(win).locator(".aos-td-add input.aos-td-date").fill(T());
   await input.press("Enter");
   // Priority goes on the end; the date after it, since the tag is not the body's last token.
-  const first = `- [ ] Pay the mooring fee #harbor ⏫ 📅 ${T}\n`;
+  const first = `- [ ] Pay the mooring fee #harbor ⏫ 📅 ${T()}\n`;
   await expect.poll(onDisk).toBe(pristine().replace(LAST_OPEN, `${LAST_OPEN}${first}`));
   await expect(td(win).locator("input.aos-td-input")).toHaveValue("");
   await expect(td(win).locator(".aos-td-add select.aos-td-prio")).toHaveValue("");
@@ -134,7 +135,7 @@ test("ticking moves the item and its child line to the top of ## Done with today
   const { win } = app();
   const e = expected().todo;
   await row(win, "Review the tide parser PR").locator(".aos-td-check").click();
-  await expect.poll(onDisk).toBe(ticked(pristine(), REVIEW));
+  await expect.poll(onDisk).toBe(ticked(pristine(), REVIEW()));
   await expect(count(win)).toHaveText(`${e.open - 1} open · ${e.overdue} overdue · ${e.today - 1} today`);
   await expect(badge(win, "todo")).toHaveText(String(e.badge - 1));
 
@@ -143,10 +144,10 @@ test("ticking moves the item and its child line to the top of ## Done with today
   await head.click();
   const done = row(win, "Review the tide parser PR");
   await expect(done).toHaveClass(/is-done/);
-  await expect(done.locator(".aos-td-when")).toHaveText(`✅ ${T}`);
+  await expect(done.locator(".aos-td-when")).toHaveText(`✅ ${T()}`);
   await done.locator(".aos-td-check").click();
   // Unticked items go to the end of ## Open, without their ✅ date.
-  await expect.poll(onDisk).toBe(pristine().replace(REVIEW, "").replace(LAST_OPEN, `${LAST_OPEN}${REVIEW}`));
+  await expect.poll(onDisk).toBe(pristine().replace(REVIEW(), "").replace(LAST_OPEN, `${LAST_OPEN}${REVIEW()}`));
   await expect(count(win)).toHaveText(`${e.open} open · ${e.overdue} overdue · ${e.today} today`);
   await td(win).locator(".aos-rt-subhead", { hasText: "DONE THIS WEEK" }).click();
 });
@@ -281,11 +282,11 @@ test("a tick made in the other HUD shows here while the tab is open, and the nex
   const { win } = app();
   const e = expected().todo;
   // What the Obsidian HUD (or /todo) writes when it ticks the item.
-  const theirs = ticked(pristine(), REVIEW);
+  const theirs = ticked(pristine(), REVIEW());
   fs.writeFileSync(FILE, theirs);
   await expect(count(win)).toHaveText(`${e.open - 1} open · ${e.overdue} overdue · ${e.today - 1} today`, { timeout: WATCHED });
   await expect(badge(win, "todo")).toHaveText(String(e.badge - 1));
-  const call = `- [ ] Call the chart vendor 📅 ${T} #harbor\n`;
+  const call = `- [ ] Call the chart vendor 📅 ${T()} #harbor\n`;
   await row(win, "Call the chart vendor").locator(".aos-td-check").click();
   await expect.poll(onDisk).toBe(ticked(theirs, call));
 });
@@ -299,7 +300,7 @@ test("an edit survives TODO.md changing underneath with its line intact: the typ
   await win.keyboard.insertText("Draft the release notes for 0.22");
   // Another HUD ticks a different item while this one is being edited: the tab redraws from the new file. Its event
   // reaches the tab late, as a busy runner's FSEvents can deliver it (main's ci, 2026-10-12: still unseen after 3 s).
-  const theirs = ticked(pristine(), REVIEW);
+  const theirs = ticked(pristine(), REVIEW());
   await holdVaultEvents(win);
   try {
     fs.writeFileSync(FILE, theirs);
@@ -335,7 +336,7 @@ test("stale guard: a line changed underneath is reported, nothing is written, an
     if (tab && tab.refreshDebounce != null) window.clearTimeout(tab.refreshDebounce as number);
   });
   try {
-    const call = `- [ ] Call the chart vendor 📅 ${T} #harbor\n`;
+    const call = `- [ ] Call the chart vendor 📅 ${T()} #harbor\n`;
     const theirs = ticked(pristine(), call);
     fs.writeFileSync(FILE, theirs);
     // As a loaded runner can: any refresh still pending (250 ms debounce) would land before the click.
