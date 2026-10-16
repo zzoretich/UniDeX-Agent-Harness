@@ -115,7 +115,7 @@ export class GoLocalCard extends Modal {
     if (!surfaceRuns(migrateArgs("apply", true))) {
       // The `migrate` surface is off: the commands, not buttons the app would refuse.
       const cmds = c.createDiv({ cls: "aos-golocal-cmds" });
-      cmds.createDiv({ cls: "aos-golocal-cmdnote", text: "Going local from here needs the Go local write surface, which stays off until it has been checked on a live vault. Run your choice in the Code tab instead:" });
+      cmds.createDiv({ cls: "aos-golocal-cmdnote", text: "Going local from here is off under the app's write surfaces (Go local). Run your choice in the Code tab instead:" });
       const row = (key: "apply" | "decline", label: string, command: () => string): void => {
         const r = cmds.createDiv({ cls: "aos-golocal-cmd", attr: { "data-cmd": key } });
         r.createSpan({ cls: "aos-golocal-cmdlabel", text: label });

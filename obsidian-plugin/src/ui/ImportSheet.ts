@@ -195,7 +195,7 @@ export class ImportSheet extends Modal {
   private renderCommands(intro = true): void {
     this.body.removeAttribute("data-state");
     const cmds = this.body.createDiv({ cls: "aos-importsheet-cmds", attr: { "data-state": "commands" } });
-    if (intro) cmds.createDiv({ cls: "aos-importsheet-cmdnote", text: "Importing from here needs the Go local write surface, which stays off until it has been checked on a live vault. Run your choice in the Code tab instead:" });
+    if (intro) cmds.createDiv({ cls: "aos-importsheet-cmdnote", text: "Importing from here is off under the app's write surfaces (Go local). Run your choice in the Code tab instead:" });
     const row = (key: string, label: string, args: string[]): void => {
       const r = cmds.createDiv({ cls: "aos-importsheet-cmd", attr: { "data-cmd": key } });
       r.createSpan({ cls: "aos-importsheet-cmdlabel", text: label });

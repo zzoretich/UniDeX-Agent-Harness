@@ -48,9 +48,9 @@ answer or dismiss it; quitting the app with one open asks again next time.
      is byte for byte one a release shipped (an edited one is kept, and a notification says why), and re-renders your
      schedules. No routine of yours is touched.
    - **Keep my settings** runs `aos migrate local-first --decline`: nothing changes, and `auto` stays `auto`.
-   - While the app's `migrate` write surface is off (it stays off until it has been checked on a live vault), the
-     card shows those two commands instead of the buttons, each with **❯_ Run in Code**, which runs it in a Code tab
-     terminal; the model download is the same with `aos local pull`.
+   - If the app's `migrate` write surface is off (a run whose `AOS_APP_WRITE` leaves it out), the card shows those
+     two commands instead of the buttons, each with **❯_ Run in Code**, which runs it in a Code tab terminal; the
+     model download is the same with `aos local pull`.
 3. **Import** ("Bring in your Claude Code and Codex history"), while `import` is pending. The sheet runs
    `aos import --dry-run` and shows what each host left on this Mac (the rules in your global instructions, Claude
    Code's memories, the MCP servers, the sessions of the last 90 days) and the project folders it would make into
