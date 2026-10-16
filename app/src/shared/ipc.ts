@@ -441,7 +441,8 @@ export interface GitStatus {
 
 export interface GitDiff { stat: string; text: string; truncated: boolean }
 
-export interface StatInfo { size: number; mtimeMs: number; ctimeMs: number; file: boolean; dir: boolean; link: boolean }
+/** `nlink`: how many names the file has on disk (more than one: a hard link, which the page may not change). */
+export interface StatInfo { size: number; mtimeMs: number; ctimeMs: number; file: boolean; dir: boolean; link: boolean; nlink: number }
 
 export interface DirEntryInfo { name: string; file: boolean; dir: boolean; link: boolean }
 

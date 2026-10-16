@@ -122,6 +122,15 @@ export class WorkspaceLeaf extends Component {
 
 /** Why a Markdown note cannot be edited here. */
 const READ_ONLY = "Read-only: Notes is off for this run (AOS_APP_WRITE). Files the runtime writes (brain/_index, brain/scripts) stay read-only.";
+/** Why a note with other names on disk cannot be edited here (main refuses its saves: services/fs.ts hardLinked). */
+const HARD_LINKED = "Read-only: this note has other names on disk (hard links), so an edit here would change them too.";
+
+/** Why this note cannot be edited here, or null when it can. */
+function editRefusal(abs: string): string | null {
+  if (!canSave(abs)) return READ_ONLY;
+  const st = bridge().fs.stat(abs);
+  return st.ok && st.data.file && st.data.nlink > 1 ? HARD_LINKED : null;
+}
 
 const STATE_TEXT: Record<SaveState, string> = {
   saved: "saved", unsaved: "unsaved", saving: "saving…", conflict: "changed on disk", deleted: "deleted on disk", refused: "not saved",
@@ -186,7 +195,8 @@ export class NoteView extends ItemView {
   async setMode(mode: "read" | "edit"): Promise<void> {
     if (mode === "edit") {
       if (this.editor || !this.bodyEl || this.file.extension !== "md") return;
-      if (!canSave(this.abs)) { new Notice(READ_ONLY); this.refreshEditButton(); return; }
+      const no = editRefusal(this.abs);
+      if (no) { new Notice(no); this.refreshEditButton(); return; }
       let text: string;
       try { text = await this.app.vault.adapter.read(this.file.path); }
       catch (err) { new Notice(`Cannot read ${this.file.path}: ${String(err)}`); return; }
@@ -214,10 +224,10 @@ export class NoteView extends ItemView {
     const btn = this.editBtn;
     if (!btn) return;
     if (this.editor) { btn.setText("Read"); btn.disabled = false; btn.title = "Back to the rendered note (saves first)"; return; }
-    const ok = canSave(this.abs);
+    const no = editRefusal(this.abs);
     btn.setText("Edit");
-    btn.disabled = !ok;
-    btn.title = ok ? "Edit this note; it saves as you type, and on ⌘S" : READ_ONLY;
+    btn.disabled = !!no;
+    btn.title = no ?? "Edit this note; it saves as you type, and on ⌘S";
   }
 
   private showState(st: SaveState | null): void {

@@ -241,6 +241,38 @@ test("a change held behind a trash that never ends is answered busy, not left bl
   assert.deepEqual(later, ["made"]);
 });
 
+test("a file with other names on disk (a hard link) is never changed or removed by the page: the change would reach them too", () => {
+  reset(["files", "notes"]);
+  fs.mkdirSync(v("notes"));
+  const hook = path.join(S, "hooked.js");
+  fs.writeFileSync(hook, "// runtime\n");
+  fs.linkSync(hook, v("notes/innocent.md"));
+  fs.symlinkSync("innocent.md", v("notes/soft.md"));
+  const refusedLinked = (r: Result<unknown>, what: string) => {
+    assert.equal(r.ok, false, what);
+    assert.equal(!r.ok && r.code, "EMLINK", what);
+    assert.match(!r.ok ? r.error : "", /other names on disk/, what);
+  };
+  for (const target of [v("notes/innocent.md"), v("notes/soft.md")]) {
+    refusedLinked(svc.writeText(target, "x", "hud"), `write ${target}`);
+    refusedLinked(svc.writeText(target, "x", "editor"), `save ${target}`);
+    refusedLinked(svc.appendText(target, "x"), `append ${target}`);
+    refusedLinked(svc.copy(v("TODO.md"), target), `copy over ${target}`);
+  }
+  refusedLinked(svc.remove(v("notes/innocent.md"), false), "remove");
+  assert.equal(fs.readFileSync(hook, "utf8"), "// runtime\n", "the other name is untouched");
+  assert.equal(fs.existsSync(v("notes/innocent.md")), true);
+  // stat says how many names a file has, so the page can say so before an edit.
+  const st = svc.stat(v("notes/innocent.md"));
+  assert.equal(st.ok && st.data.nlink, 2);
+  // Renaming or moving a name changes no file's contents: still allowed.
+  assert.equal(svc.rename(v("notes/innocent.md"), v("notes/moved.md")).ok, true);
+  // With one name again, the file is the user's to change.
+  fs.rmSync(hook);
+  assert.equal(svc.writeText(v("notes/moved.md"), "x", "hud").ok, true);
+  assert.equal(svc.remove(v("notes/moved.md"), false).ok, true);
+});
+
 test("reads stay inside the read scope; credential files never come back", () => {
   reset([]);
   assert.deepEqual(svc.readText(v("TODO.md")), { ok: true, data: "# To-Do\n" });
