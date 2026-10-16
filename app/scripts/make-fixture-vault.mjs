@@ -145,6 +145,9 @@ function baseEnv() {
     XDG_DATA_HOME: path.join(HOME, ".local", "share"),
     NO_COLOR: "1",
   });
+  // e2e only (AOS_E2E_FIXTURE_DAYS_AGO in tests/e2e/global-setup.ts): this generator runs on a moved clock
+  // (tests/e2e/clock-shift.cjs), and so does every runtime run it makes. env.json, which the app starts with, leaves it out.
+  if (process.env.AOS_E2E_CLOCK_SHIFT_MS) Object.assign(env, { AOS_E2E_CLOCK_SHIFT_MS: process.env.AOS_E2E_CLOCK_SHIFT_MS, NODE_OPTIONS: process.env.NODE_OPTIONS ?? "" });
   return env;
 }
 const ENV = () => baseEnv();
@@ -1210,7 +1213,10 @@ stage("expected values", () => {
 });
 
 writeJson(path.join(OUT, "expected.json"), expected);
-writeJson(path.join(OUT, "env.json"), ENV());
+const appEnv = ENV();
+delete appEnv.AOS_E2E_CLOCK_SHIFT_MS;   // the app runs on the real clock (baseEnv)
+delete appEnv.NODE_OPTIONS;
+writeJson(path.join(OUT, "env.json"), appEnv);
 writeJson(path.join(OUT, "stages.json"), stages);
 
 const failed = stages.filter((s) => !s.ok);
