@@ -39,7 +39,7 @@ test("the Chief of Staff's models are the chief role's (config.default.json), wo
   assert.deepEqual([CHIEF_MODELS.claude.model, CHIEF_MODELS.codex.model], [defaults.persona.model, defaults.persona.codexModel]);
   assert.equal(chiefChoice(["claude"]), "Move the Chief of Staff to Opus 5.5");
   assert.equal(chiefChoice(["codex"]), "Move the Chief of Staff to gpt-6-sol");
-  assert.equal(chiefChoice(["claude", "codex"]), "Move the Chief of Staff to Opus 5.5 on Claude Code and gpt-6-sol on Codex");
+  assert.equal(chiefChoice(["claude", "codex"]), "Move the Chief of Staff to Opus 5.5 on Claude Code and gpt-6-sol on Codex, each standing in when the other cannot start a duty");
   assert.match(chiefChoice([]), /Opus 5\.5 \/ gpt-6-sol when you add a host/);
   assert.deepEqual([hostedName(["codex"]), hostedName(["claude", "codex"])], ["Codex", "Claude Code and Codex"]);
   assert.match(staysHosted([])[0], /Claude Code or Codex, once you add one/);

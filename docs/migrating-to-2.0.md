@@ -14,11 +14,13 @@ The app updates itself as usual (UniDeX ▸ Check for Updates…, then **Restart
 offers **Update the runtime in your vault**; **Update now** runs `aos upgrade` from the runtime the app carries.
 From a terminal, `aos upgrade` does the same. The upgrade:
 
+- first keeps what your install runs on: for each setting whose 2.0 default would change it, it writes the value 1.x
+  ran on into `brain/config.json` where the file does not set it — `persona.model` and `persona.codexModel` `null`,
+  `persona.failover` `false`, `provider` `auto` — before anything else changes (see [The Chief of Staff](#the-chief-of-staff));
 - re-vendors the runtime and refreshes the Claude Code and Codex plugins. **Nothing to re-trust:** no hook command
   changed on either host, so Codex does not ask under `/hooks` again;
-- adds the new settings to `brain/config.json` with their defaults (`local.*`, `ai.*`, `persona.failover`, …); your
-  own values win, and none of the new ones changes what runs until you go local (the `ai.*` switches apply under
-  provider `local` only);
+- adds the new settings to `brain/config.json` with their defaults (`local.*`, `ai.*`, …); your own values win,
+  and none of the new ones changes what runs until you go local (the `ai.*` switches apply under provider `local` only);
 - installs graphify's local backend (`graphifyy[ollama]`, the same pinned 0.9.66) into the tool folder it already has;
 - adds one routine, `import-digest`. It does nothing until you import: its first run finds nothing queued, turns
   itself off and takes its own schedule out;
@@ -41,8 +43,8 @@ answer or dismiss it; quitting the app with one open asks again next time.
    - **Go local** runs `aos migrate local-first --apply` (with `--chief` while the box is ticked): it first backs up
      every setting it changes to `brain/_index/migrations/local-first-<time>.json`, then sets `provider: local` and
      `ai.chat`, `ai.ask`, `ai.reflectWeek` and `ai.consolidate` to `local` in both `agenticos.json` and
-     `brain/config.json`, moves the Chief of Staff's models when ticked (`persona.model: claude-opus-5-5`,
-     `persona.codexModel: gpt-6-sol`), updates the hourly `brain/routines/tick.md` to 2.0's local triage only while it
+     `brain/config.json`, moves the Chief of Staff when ticked (`persona.model: claude-opus-5-5`,
+     `persona.codexModel: gpt-6-sol`, `persona.failover: true`), updates the hourly `brain/routines/tick.md` to 2.0's local triage only while it
      is byte for byte one a release shipped (an edited one is kept, and a notification says why), and re-renders your
      schedules. No routine of yours is touched.
    - **Keep my settings** runs `aos migrate local-first --decline`: nothing changes, and `auto` stays `auto`.
@@ -91,11 +93,15 @@ one-line summary as it reaches each, and resumes one in a Code terminal on a hos
 
 An install upgraded from 1.x keeps `persona.model` and `persona.codexModel` at `null`, so its duties run on the model
 they ran on before: the interview's answer, then `claude.model` on Claude Code; `codex.model`, then your Codex default,
-on Codex. Its hourly `tick.md` stays a duty, now skipped properly on a quiet hour (`tick.js precheck`). Go local with the
-box ticked, or `aos migrate local-first --apply --chief`, moves both: the duties to `claude-opus-5-5` / `gpt-6-sol`, and
-the tick to the local triage that wakes the Chief of Staff only when something changed. To pick another model instead,
-`aos config set persona.model <model>` and `aos routines sync`. `persona.failover` and the one daily cap over both
-hosts apply either way ([chief-of-staff.md](chief-of-staff.md#host-model-and-failover)).
+on Codex, at the interview's effort. It keeps `persona.failover: false`, so a duty stays on the host it ran on: under
+`auto`, Claude Code when it is installed, else Codex, as before; a signed-out host's duty is skipped and flagged instead
+of moving to the other host. The one daily cap over both hosts (`persona.perDayUsd`) is the one 1.x had. Its hourly
+`tick.md` stays a duty, now skipped properly on a quiet hour (`tick.js precheck`). Go local with the box ticked, or
+`aos migrate local-first --apply --chief`, moves the Chief of Staff: its duties to `claude-opus-5-5` / `gpt-6-sol`, with
+failover between the hosts on ([chief-of-staff.md](chief-of-staff.md#host-model-and-failover)); going local also moves
+the tick to the local triage that wakes the Chief of Staff only when something changed. **Undo** puts the models and
+the failover back as the upgrade kept them. To pick another model instead, `aos config set persona.model <model>` and
+`aos routines sync`.
 
 ## What never changes without asking
 
@@ -103,7 +109,7 @@ hosts apply either way ([chief-of-staff.md](chief-of-staff.md#host-model-and-fai
   go local; local-first's own default applies to new installs only.
 - **What it spends.** Under `auto`, background work still falls back to Claude, then Codex, under the same caps. Under
   `local`, nothing spends unless you turn on `local.hostedFallback`.
-- **The Chief of Staff's models and its tick** (above).
+- **The Chief of Staff's models, effort, host and its tick** (above).
 - **Your routines.** A routine without `engine:` runs exactly as before (`routines.runner` decides); no upgrade or
   migration edits one, except the shipped `tick.md` when you go local.
 - **Your history**, until you import it.

@@ -472,7 +472,9 @@ async function doctor() {
     try {
       const H = require(scriptPath(vault, 'lib/headless.js'));
       const vaultCfg = readJson(path.join(vault, 'brain', 'config.json'), {}) || {};
-      const merged = { ...vaultCfg, ...(cfg || {}), persona: { ...(vaultCfg.persona || {}), ...((cfg && cfg.persona) || {}) }, routines: { ...(vaultCfg.routines || {}), ...((cfg && cfg.routines) || {}) } };
+      // What a duty resolves (lib/config.js loadConfig): the vendored defaults beneath brain/config.json, agenticos.json on top.
+      const defaults = readJson(scriptPath(vault, 'config.default.json'), {}) || {};
+      const merged = deepMerge(deepMerge(defaults, vaultCfg), cfg || {});
       const codexNote = (h) => (h === 'codex' ? ' (spend estimated from usage, no per-run cap)' : '');
       if (typeof H.resolveChief === 'function') {
         const c = await H.resolveChief(merged, { vault });
@@ -1096,6 +1098,14 @@ async function init(flags) {
     // ENOENT with a parse error, so a corrupt config took the "empty" branch and was replaced by the
     // defaults; refusing up front leaves the vault exactly as it was.
     const current = readJsonStrict(cfgJson);
+    // local-first A9: an init over an install from before 2.0 vendors the 2.0 runtime just as `aos upgrade` does, so it
+    // pins what that install runs on the same way first (cli/migrations.js pinPrevious), the version read from the
+    // agenticos.json that names this vault. A new vault, or one this machine has no record of, starts on 2.0's defaults.
+    if (current && Object.keys(current).length && cfg0 && typeof cfg0.vault === 'string' && path.resolve(cfg0.vault) === vault) {
+      const M = require('./migrations.js');
+      const kept = M.pinPrevious({ vault, from: cfg0.version });
+      if (kept.length) out.log(`   kept what this install runs on, in brain/config.json: ${kept.map((k) => `${k} = ${JSON.stringify(M.PRE_2_0[k])}`).join(', ')}`);
+    }
     // execution amendment 2026-09-15 (A8): vault-template/persona/ holds the raw {{…}} templates (Task 5); the interview renders
     // them into <vault>/persona/ itself (step 8), so the seed copy must not land identity.template.md / STATE.template.md there.
     copyTree(path.join(repo, 'vault-template'), vault, { exclude: /(^|\/)persona(\/|$)/, rename: { _gitignore: '.gitignore' }, written });
@@ -1310,11 +1320,17 @@ async function upgrade(flags) {
   out.log(`upgrading ${vault} from ${repo} (v${version})`);
   // local-first A9, install-import B12: what a release asks once (cli/migrations.js MIGRATIONS, gated on `from` like
   // NEW_ROUTINES), recorded pending first: before any step writes the new version, so an upgrade that stops part way
-  // still asks at its re-run. Asked about at the end on a TTY; shown by the app's launch sequence.
+  // still asks at its re-run. Asked about at the end on a TTY; shown by the app's launch sequence. Until it is answered
+  // nothing the install runs may change (A9), so the settings whose 2.0 default would change it are pinned at their 1.9
+  // value in brain/config.json now (migrations.js pinPrevious): before the runtime that layers config.default.json under
+  // that file is re-vendored, and before the new version is written (a re-run from 2.0.0 would not pin).
   let migrationsAdded = [];
   await act('record what this release asks you once (aos migrate)', () => {
-    migrationsAdded = require('./migrations.js').recordPending({ vault, from: ctx.from });
+    const M = require('./migrations.js');
+    migrationsAdded = M.recordPending({ vault, from: ctx.from });
     out.log(`   ${migrationsAdded.length ? `pending: ${migrationsAdded.join(', ')}` : 'nothing new'}`);
+    const kept = M.pinPrevious({ vault, from: ctx.from });
+    if (kept.length) out.log(`   kept until you answer, in brain/config.json: ${kept.map((k) => `${k} = ${JSON.stringify(M.PRE_2_0[k])}`).join(', ')}`);
   });
   await act('re-vendor brain/scripts (force) and reinstall its dependencies', () => vendorRuntime(ctx, { force: true }));
   await act('seed brain/routines/ and re-render the installed schedules', () => migrateRoutines(ctx));

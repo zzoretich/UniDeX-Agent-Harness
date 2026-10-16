@@ -17,11 +17,16 @@
  * way (an error, Ctrl-C, the app's timeout) is resumed by the next --apply on that same backup, and --undo or --decline
  * put back what it had changed.
  *
+ * Until the owner answers, nothing the install runs may change (A9): the same upgrade pins it first (pinPrevious, before
+ * the runtime is re-vendored or anything writes the new version). Each setting whose 2.0 default would change what runs
+ * (PRE_2_0) is written into brain/config.json with its 1.9 value where that file does not set it, so neither the new
+ * defaults the upgrade merges in nor the vendored config.default.json lib/config.js layers beneath the file move it.
+ *
  * local-first --apply (A9): backs up every key it touches, and tick.md when it rewrites it, to
  *   brain/_index/migrations/local-first-<ts>.json, then sets `provider: local` and `ai.{chat,ask,reflectWeek,consolidate}:
- *   local` in BOTH agenticos.json and brain/config.json. --chief sets the Chief of Staff's models from the chief role
- *   (sdk/lib/models.js CHIEF: persona.model, persona.codexModel) in brain/config.json, and in agenticos.json only where it
- *   names them (that file wins). The tick routine (brain/routines/tick.md) becomes the shipped 2.0 one (`kind: command`,
+ *   local` in BOTH agenticos.json and brain/config.json. --chief moves the Chief of Staff (A4): its models from the chief
+ *   role (sdk/lib/models.js CHIEF: persona.model, persona.codexModel) and `persona.failover: true`, in brain/config.json,
+ *   and in agenticos.json only where it names them (that file wins). The tick routine (brain/routines/tick.md) becomes the shipped 2.0 one (`kind: command`,
  *   `tick.js --triage`) only while it is byte for byte a tick.md a release shipped before 2.0; an edited one is kept and a
  *   notification says why. The installed schedules are re-rendered (they bake the duty model). No other routine is
  *   touched. Applied again (a key changed by hand since), it sets what no longer holds and keeps the first backup, so
@@ -58,6 +63,14 @@ const SHIPPED_TICKS = Object.freeze([
   '2f4c411ac864fbfceec14bd22a1c8f43142d03cf5a680840bfed816eb14665a4',
 ]);
 const TICK_REL = 'brain/routines/tick.md';
+/**
+ * What an install from before 2.0 runs on, for each setting whose 2.0 default would change it (local-first A9): 1.9's
+ * defaults for them. A null model keeps the chain a duty ran on (sdk/lib/models.js chiefModel: the interview's answer,
+ * then claude.model; codex.model, then the Codex default); failover off keeps a duty on its own host (lib/headless.js
+ * resolveChief: under auto the first enabled host installed, as before 2.0, and a signed-out one waits instead of moving).
+ * local-first --apply moves `provider`, --chief the three persona keys; --undo puts them back.
+ */
+const PRE_2_0 = Object.freeze({ provider: 'auto', 'persona.model': null, 'persona.codexModel': null, 'persona.failover': false });
 
 class UsageError extends Error {}
 class Refused extends Error {}
@@ -172,6 +185,26 @@ function recordPending({ vault, from, now = new Date() }) {
   return added;
 }
 
+/**
+ * `aos upgrade`, right after recordPending and before anything else: from a version before local-first's `since` (missing
+ * or unreadable counts as older), writes each PRE_2_0 key that brain/config.json does not set, with its 1.9 value. A key
+ * the file sets (the owner's, or 1.9's own materialized default) is never touched, and from 2.0.0 on nothing is. An
+ * unreadable or unparseable file is refused (Refused) before anything is written, as the defaults merge refuses it.
+ * → the keys pinned now.
+ */
+function pinPrevious({ vault, from }) {
+  const { cmpSemver } = require('./update-check.js');
+  const c = from ? cmpSemver(from, MIGRATIONS.find((m) => m.id === 'local-first').since) : null;
+  if (c !== null && c >= 0) return [];
+  const file = path.join(vault, 'brain', 'config.json');
+  const doc = readJsonStrict(file, {});
+  if (!isPlainObject(doc)) throw new Refused(`refusing to touch ${file}: it is not a JSON object`);
+  const pinned = Object.keys(PRE_2_0).filter((k) => !getKey(doc, k).had);
+  for (const k of pinned) setKey(doc, k, PRE_2_0[k]);
+  if (pinned.length) writeJson(file, doc);
+  return pinned;
+}
+
 /** A pending migration becomes applied (`aos import` without --migrate settles the import this way). → whether it did. */
 function settle(vault, id, state = 'applied', now = new Date()) {
   const e = entryOf(readState(vault), id);
@@ -239,12 +272,12 @@ function plannedKeys({ chief, user }) {
   const vault = { ...base };
   const mine = { ...base };
   if (chief) {
+    // A4: the Chief of Staff's move is its two models and the failover between the hosts (off since the upgrade, PRE_2_0).
     const C = chiefModels();
-    vault['persona.model'] = C.claude;
-    vault['persona.codexModel'] = C.codex;
-    // agenticos.json wins over brain/config.json: where it names a CoS model, it gets the new one too.
-    if (getKey(user, 'persona.model').had) mine['persona.model'] = C.claude;
-    if (getKey(user, 'persona.codexModel').had) mine['persona.codexModel'] = C.codex;
+    const moved = { 'persona.model': C.claude, 'persona.codexModel': C.codex, 'persona.failover': true };
+    Object.assign(vault, moved);
+    // agenticos.json wins over brain/config.json: where it names one of them, it gets the new value too.
+    for (const [k, v] of Object.entries(moved)) if (getKey(user, k).had) mine[k] = v;
   }
   return { user: mine, vault };
 }
@@ -523,7 +556,7 @@ function defaultAsk(question) {
 }
 
 module.exports = {
-  MIGRATIONS, IDS, STATES, SHIPPED_TICKS, AI_KEYS, TICK_REL, USAGE, UsageError, Refused,
-  main, parse, readState, recordPending, settle, offer, pendingLines, statusRows,
+  MIGRATIONS, IDS, STATES, SHIPPED_TICKS, AI_KEYS, TICK_REL, PRE_2_0, USAGE, UsageError, Refused,
+  main, parse, readState, recordPending, pinPrevious, settle, offer, pendingLines, statusRows,
   applyLocalFirst, undoLocalFirst, applyImport, decline, tickPlan, shippedTick, resolveCtx, getKey, setKey, deleteKey, sha256,
 };

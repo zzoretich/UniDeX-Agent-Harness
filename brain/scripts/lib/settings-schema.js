@@ -179,7 +179,7 @@ const SETTINGS = [
   { key: 'persona.codexModel', section: 'persona', label: 'Duty model on Codex', type: 'model', host: 'codex', nullable: true, applies: 'next-duty',
     help: 'Codex model for duties (default gpt-6-sol); null uses codex.model, then your Codex default.' },
   { key: 'persona.failover', section: 'persona', label: 'Duty failover', type: 'bool', applies: 'next-duty',
-    help: 'With both hosts on, a duty that cannot start on its host (CLI missing or signed out) runs on the other host\'s duty model instead. Off: it is skipped. The daily cap is never a reason to move.' },
+    help: 'With both hosts on, a duty that cannot start on its host (CLI missing or signed out) runs on the other host\'s duty model instead. Off (an install from before 2.0 until it moves its Chief of Staff): it waits for its own host, under auto the first one installed. The daily cap is never a reason to move.' },
   { key: 'persona.watchdog.graceMinutes', section: 'persona', label: 'Watchdog grace', type: 'number', int: true, min: 1, applies: 'next-session',
     help: 'Minutes past its schedule before a missed duty is flagged.' },
   { key: 'persona.watchdog.notify', section: 'persona', label: 'Watchdog notifications', type: 'bool', applies: 'next-session',

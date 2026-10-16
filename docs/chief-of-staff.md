@@ -122,8 +122,11 @@ ok    persona runner   claude · claude-opus-5-5 (medium) (~/.local/bin/claude);
 ```
 
 An install from before 2.0 keeps `persona.model` / `persona.codexModel` at `null`, which keeps the chain it ran on —
-the interview's answer, then `claude.model`; `codex.model`, then your Codex default — until you set them (or accept
-the 2.0 update's offer to move the Chief of Staff).
+the interview's answer, then `claude.model`; `codex.model`, then your Codex default — and `persona.failover: false`, so
+`auto` takes the first enabled host that is installed, as before 2.0, and a signed-out one waits instead of handing the
+duty to the other host. `aos upgrade` writes these into `brain/config.json` before anything else changes. They hold
+until you set them, or accept the 2.0 update's offer to move the Chief of Staff, which sets both models and turns the
+failover on (its Undo puts them back).
 
 ### Model and effort
 

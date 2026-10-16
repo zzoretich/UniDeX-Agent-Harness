@@ -831,7 +831,8 @@ export function writeToolchainManifest(port: number): { uv: { size: number; sha2
 /**
  * Writes the stand-ins. The payload's `aos init` copies the pristine fixture's agenticos.json to $AOS_CONFIG with the
  * vault it was given, so the Workbench the wizard ends in is the fixture's; `aos upgrade` moves its version to the
- * payload's; `aos uninstall --host <h>` turns that host off in agenticos.json; `aos import --dry-run --json` prints
+ * payload's and, from before 2.0.0, records the migrations and pins what the vault runs on (cli/migrations.js, the real
+ * code); `aos uninstall --host <h>` turns that host off in agenticos.json; `aos import --dry-run --json` prints
  * SETUP.importScan (nothing on this Mac without one) and `aos import` prints its steps and queues the sessions in the
  * vault's import-state.json. `codex` is installed but not logged in (`hosts: false` leaves both CLIs out); uv is missing until the wizard
  * downloads it. Ollama (0.40.4) answers (curl) with no models until /api/pull pulls them.
@@ -885,9 +886,13 @@ if (argv[0] === "init") {
   const from = cfg.version;
   cfg.version = ${JSON.stringify(version)};
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\\n");
-  // What the real upgrade records for an install from before 2.0.0 (local-first A9, B12), by the real code.
-  const added = require(${JSON.stringify(path.join(REPO, "..", "cli", "migrations.js"))}).recordPending({ vault: cfg.vault, from });
+  // What the real upgrade records for an install from before 2.0.0 (local-first A9, B12), and what it pins in
+  // brain/config.json until the owner answers (the model the Chief of Staff ran on, no failover), by the real code.
+  const M = require(${JSON.stringify(path.join(REPO, "..", "cli", "migrations.js"))});
+  const added = M.recordPending({ vault: cfg.vault, from });
   if (added.length) console.log("pending: " + added.join(", "));
+  const kept = M.pinPrevious({ vault: cfg.vault, from });
+  if (kept.length) console.log("kept until you answer: " + kept.join(", "));
   console.log("upgraded to v" + cfg.version);
 } else if (argv[0] === "uninstall" && argv[1] === "--host") {
   // An earlier install's host taken out (inspection F7): agenticos.json says it is off.

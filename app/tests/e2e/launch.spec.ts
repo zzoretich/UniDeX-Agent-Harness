@@ -63,6 +63,8 @@ test("an install from before 2.0: runtime update → Go local → Import → Wha
     prepare: () => {
       installSetupStubs(VERSION);
       editJson(AGENTICOS, (j) => { j.version = "1.8.0"; });
+      // A 1.x brain/config.json: no 2.0 Chief of Staff keys (the update pins the model it ran on and no failover).
+      editJson(FX.v("brain/config.json"), (j) => { for (const k of ["model", "codexModel", "failover"]) delete j.persona[k]; });
       // The local engine at an address nothing serves (once local, background work must never reach a real Ollama on
       // this Mac), last seen answering without this Mac's model; and background work spent a little this week.
       editJson(FX.v("brain/config.json"), (j) => { j.local = { ...(j.local ?? {}), url: LOCAL_URL }; });
@@ -80,6 +82,8 @@ test("an install from before 2.0: runtime update → Go local → Import → Wha
   await runtime.locator(".aos-runtime-go").click();
   await expect(runtime.locator(".aos-setup-status")).toHaveText(`Updated to ${VERSION}.`, { timeout: 20_000 });
   expect(migration("local-first")).toBe("pending");
+  const kept = () => { const p = readJson(FX.v("brain/config.json")).persona; return [p.model, p.codexModel, p.failover]; };
+  expect(kept()).toEqual([null, null, false]);
   await runtime.locator("button", { hasText: "Close" }).click();
 
   // 2. Go local: what moves, what stays, the week's spend, the missing model, the CoS checkbox for Claude Code.
@@ -97,7 +101,7 @@ test("an install from before 2.0: runtime update → Go local → Import → Wha
   await expect(card(win)).toHaveCount(0, { timeout: 60_000 });
   const user = readJson(AGENTICOS);
   expect([user.provider, user.ai?.chat]).toEqual(["local", "local"]);
-  expect(readJson(FX.v("brain/config.json")).persona.model).toBe("claude-opus-5-5");
+  expect(kept()).toEqual(["claude-opus-5-5", "gpt-6-sol", true]);
   expect([migration("local-first"), migration("import")]).toEqual(["applied", "pending"]);
   expect(fs.readdirSync(FX.v("brain/_index/migrations")).filter((f) => f.startsWith("local-first-"))).toHaveLength(1);
 
@@ -146,6 +150,7 @@ test("an install from before 2.0: runtime update → Go local → Import → Wha
   await expect.poll(() => migration("local-first"), { timeout: 30_000 }).toBe("undone");
   expect(readJson(AGENTICOS).provider).toBe("none");
   expect(readJson(AGENTICOS).ai).toBeUndefined();
+  expect(kept()).toEqual([null, null, false]);
   await expect(content(h.win).locator('[data-tour="settings-golocal"] [data-act="go-local"]')).toBeVisible();
   expectNoErrors(h);
 });
