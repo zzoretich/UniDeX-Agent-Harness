@@ -1,21 +1,21 @@
 // Loads the Brain hub's data through the vault adapter (spec 2026-10-11-brain-hub D12): the memory files, the drafts,
-// patterns and reflections, MEMORY.md, the trail and the runtime's two caches. A real vault holds hundreds of memories,
-// so file texts are kept between loads: a vault event marks its path dirty and the next load re-reads only what is new
-// or dirty (each folder is listed again, which is cheap); showing the tab reloads everything. Each memory is parsed (and
-// hashed) again only when its text or its MEMORY.md line changed.
+// patterns and reflections, MEMORY.md, the trail, memory-notdup.json and the runtime's two caches. A real vault holds
+// hundreds of memories, so file texts are kept between loads: a vault event marks its path dirty and the next load
+// re-reads only what is new or dirty (each folder is listed again, which is cheap); showing the tab reloads everything.
+// Each memory is parsed (and hashed) again only when its text or its MEMORY.md line changed.
 import type { App } from "obsidian";
 import {
-  BRAIN_HUB_PATH, BRAIN_MAP_PATH, BRAIN_SOURCES_PATH, DRAFTS_DIR, MEMORY_INDEX_PATH, MEMORY_ROOT, MEMORY_SWEEP_PATH, MEMORY_TYPES,
-  PATTERNS_DIR, RECALL_WAKE_PATH, REFLECTIONS_DIR, SESSION_MD_PATH,
+  BRAIN_HUB_PATH, BRAIN_MAP_PATH, BRAIN_SOURCES_PATH, DRAFTS_DIR, MEMORY_INDEX_PATH, MEMORY_NOTDUP_PATH, MEMORY_ROOT, MEMORY_SWEEP_PATH,
+  MEMORY_TYPES, PATTERNS_DIR, RECALL_WAKE_PATH, REFLECTIONS_DIR, SESSION_MD_PATH,
   dupFlags, livePairs, pairKey, parseBrainHub, parseBrainMap, parseBrainSources, parseDraft, parseIndexLines, parseMemory,
-  parseNote, parseSweepFile, readTrailRows, reviewBatches, writtenAtMap, type BrainDraft, type BrainMemory, type BrainNote,
+  parseNotDup, parseNote, parseSweepFile, readTrailRows, reviewBatches, writtenAtMap, type BrainDraft, type BrainMemory, type BrainNote,
 } from "../../data/brainModel";
 import { TRAIL_PATH } from "../../data/promoteTrail";
 import { VAULT_CONFIG_DEFAULTS, invocationHint, type AgenticosJson, type VaultConfig } from "../../data/aosConfig";
 import type { BrainData, BrainSettings } from "./types";
 
 /** The single files every load reads whole: small, and their changes are what the hub follows. */
-const SINGLES = [BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, MEMORY_INDEX_PATH, TRAIL_PATH, BRAIN_MAP_PATH, SESSION_MD_PATH, RECALL_WAKE_PATH, MEMORY_SWEEP_PATH];
+const SINGLES = [BRAIN_HUB_PATH, BRAIN_SOURCES_PATH, MEMORY_INDEX_PATH, TRAIL_PATH, BRAIN_MAP_PATH, SESSION_MD_PATH, RECALL_WAKE_PATH, MEMORY_SWEEP_PATH, MEMORY_NOTDUP_PATH];
 
 /**
  * The settings the modes read, from the config the runtime itself resolves (aosConfig.ts readVaultConfig:
@@ -38,7 +38,9 @@ export class BrainStore {
   /** Each memory as last parsed, with the text and MEMORY.md description it was parsed from. */
   private parsed = new Map<string, { raw: string; desc: string | undefined; m: BrainMemory | null }>();
   private dirty = new Set<string>();
-  private dismissed = new Set<string>();
+  /** Each pair dismissed on this page, with how many reads had begun when it was (read() forgets it after). */
+  private dismissed = new Map<string, number>();
+  private reads = 0;
   private loading: Promise<BrainData> | null = null;
   private again = false;
 
@@ -48,8 +50,8 @@ export class BrainStore {
   /** A vault event touched `path` (create, modify, delete, either end of a rename). */
   touch(path: string): void { this.dirty.add(path); }
 
-  /** "Keep both" on this page: the pair stops showing before the next scan drops it from brain-hub.json. */
-  dismiss(a: string, b: string): void { this.dismissed.add(pairKey(a, b)); }
+  /** "Keep both" or "Not duplicates" on this page, once `aos memory notdup` recorded the pair: it stops showing at once. */
+  dismiss(a: string, b: string): void { this.dismissed.set(pairKey(a, b), this.reads); }
 
   /**
    * The current data. `full` drops every kept text first. Loads never overlap: a call while one runs waits for it and
@@ -94,8 +96,9 @@ export class BrainStore {
   }
 
   private async read(): Promise<BrainData> {
+    const begun = ++this.reads;
     const now = new Date();
-    const [hubRaw, srcRaw, indexRaw, trailRaw, mapRaw, sessionRaw, wakeRaw, sweepRaw] = await Promise.all(SINGLES.map((p) => this.text(p, true)));
+    const [hubRaw, srcRaw, indexRaw, trailRaw, mapRaw, sessionRaw, wakeRaw, sweepRaw, notdupRaw] = await Promise.all(SINGLES.map((p) => this.text(p, true)));
     const index = parseIndexLines(indexRaw);
     const memories: BrainMemory[] = [];
     const seen = new Set<string>();
@@ -131,16 +134,16 @@ export class BrainStore {
     for (const p of [...this.parsed.keys()]) if (!seen.has(p)) this.parsed.delete(p);
 
     const hub = parseBrainHub(hubRaw);
-    // A pair dismissed on this page waits for the rebuilt cache to drop it; once brain-hub.json no longer lists it, the
-    // page forgets it, so a pair the vault lists again later (its memory-notdup.json entry gone) shows again.
-    if (this.dismissed.size) {
-      const listed = new Set((hub?.dups ?? []).map((p) => pairKey(p.a, p.b)));
-      for (const k of this.dismissed) if (!listed.has(k)) this.dismissed.delete(k);
-    }
+    // A pair is hidden as the files say: memory-notdup.json lists it (brain-hub.json may still, until the next scan). A
+    // dismissal only covers a read begun before the verb wrote that file; a read begun after reads the file itself, so
+    // it forgets the dismissal. A pair the vault lists again later (its memory-notdup.json entry gone) shows again,
+    // whether or not this page ever read a rebuilt cache without it.
+    for (const [k, at] of this.dismissed) if (at < begun) this.dismissed.delete(k);
+    const hidden = new Set([...parseNotDup(notdupRaw), ...this.dismissed.keys()]);
     const trail = readTrailRows(trailRaw);
     const written = writtenAtMap(trail);
     const byPath = new Map(memories.map((m) => [m.path, m]));
-    const pairs = livePairs(hub, byPath, this.dismissed);
+    const pairs = livePairs(hub, byPath, hidden);
     const flags = dupFlags(pairs);
     return {
       now, memories, byPath, drafts, patterns, reflections, hub, sources: parseBrainSources(srcRaw), trail, written, index,

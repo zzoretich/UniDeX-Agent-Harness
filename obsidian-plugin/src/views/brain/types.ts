@@ -44,7 +44,7 @@ export interface BrainData {
   written: Map<string, string>;
   /** MEMORY.md's description per memory path. */
   index: Map<string, string>;
-  /** The live duplicate pairs, best first, less those dismissed on this page. */
+  /** The live duplicate pairs, best first, less those memory-notdup.json lists or this page just dismissed. */
   pairs: HubDup[];
   /** Each memory's best duplicate partner. */
   flags: Map<string, DupFlag>;
