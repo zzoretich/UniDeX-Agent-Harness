@@ -48,6 +48,7 @@ export type SetStatus = (typeof SET_STATUSES)[number];
 export function touchesBrain(path: string): boolean {
   return path === MEMORY_INDEX_PATH || path === BRAIN_HUB_PATH || path === BRAIN_SOURCES_PATH || path === TRAIL_PATH_REL ||
     path === BRAIN_MAP_PATH || path === MEMORY_SWEEP_PATH || path === SESSION_MD_PATH || path === RECALL_WAKE_PATH || path === BRAIN_CONFIG_PATH ||
+    path === MEMORY_NOTDUP_PATH ||
     path === MEMORY_ROOT || path.startsWith(`${MEMORY_ROOT}/`) || path.startsWith(`${PATTERNS_DIR}/`) || path.startsWith(`${REFLECTIONS_DIR}/`);
 }
 const TRAIL_PATH_REL = "brain/_index/promote-log.jsonl";
@@ -543,10 +544,23 @@ export interface DupFlag { other: string; score: number }
 
 export const pairKey = (a: string, b: string): string => (a < b ? `${a}\n${b}` : `${b}\n${a}`);
 
-/** The duplicate pairs whose memories are both still live and that this page has not dismissed, best first. */
-export function livePairs(hub: BrainHub | null, byPath: ReadonlyMap<string, BrainMemory>, dismissed: ReadonlySet<string> = new Set()): HubDup[] {
+/** The pairs "Keep both" and "Not duplicates" recorded (`aos memory notdup`, D11), which brain-hub.js leaves out. */
+export const MEMORY_NOTDUP_PATH = "brain/_index/memory-notdup.json";
+
+/** memory-notdup.json's pairs (pairKey each) as brain-hub.js reads them: anything unreadable or malformed is none. */
+export function parseNotDup(raw: string | null): Set<string> {
+  let doc: unknown = null;
+  try { doc = raw === null ? null : JSON.parse(raw); } catch { /* none */ }
+  const pairs = rec(doc).pairs;
+  return new Set((Array.isArray(pairs) ? pairs : [])
+    .filter((p): p is [string, string] => Array.isArray(p) && p.length === 2 && typeof p[0] === "string" && typeof p[1] === "string")
+    .map(([a, b]) => pairKey(a, b)));
+}
+
+/** The duplicate pairs whose memories are both still live, less those `hidden` names (pairKey each), best first. */
+export function livePairs(hub: BrainHub | null, byPath: ReadonlyMap<string, BrainMemory>, hidden: ReadonlySet<string> = new Set()): HubDup[] {
   return (hub?.dups ?? [])
-    .filter((d) => byPath.get(d.a)?.live && byPath.get(d.b)?.live && !dismissed.has(pairKey(d.a, d.b)))
+    .filter((d) => byPath.get(d.a)?.live && byPath.get(d.b)?.live && !hidden.has(pairKey(d.a, d.b)))
     .sort((x, y) => y.score - x.score || x.a.localeCompare(y.a));
 }
 
