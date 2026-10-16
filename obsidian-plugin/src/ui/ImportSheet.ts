@@ -4,7 +4,7 @@
 // workspaces, all preselected), then **Import** runs `aos migrate import --apply [--accept …]` with its progress (the
 // fast phase; the sessions are queued for the import-digest routine) and **Not now** `aos migrate import --decline`:
 // one call each through the `migrate` surface, which runs the import and settles the migration together. With nothing
-// on this Mac to bring, it says so and OK settles it. While that surface is off (its default until a live check), the
+// on this Mac to bring, it says so and OK settles it. While that surface is off (an AOS_APP_WRITE that leaves it out), the
 // sheet shows the commands up front, each with a ❯_ for the Code tab, as the Go-local card does. Settings ▸ Import has
 // the same import whenever it is wanted later.
 import { Modal, Notice, canRun } from "obsidian";

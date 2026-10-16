@@ -55,7 +55,7 @@ test.afterEach(async () => { await h?.close(); h = null; });
 
 test("an install from before 2.0: runtime update → Go local → Import → What's new → Getting started, in order and once", async () => {
   restoreFixture();
-  // Go local and the Local engine's download on (each is off by default until its live check), Settings for Undo.
+  // Go local and the Local engine's download on (the harness runs read-only unless a spec names surfaces), Settings for Undo.
   const env = { AOS_APP_PAYLOAD: SETUP.payload, AOS_SETUP_PATH: SETUP.bin, AOS_APP_WRITE: "migrate,local,settings" };
   h = await launchApp({
     // A 1.9 Mac: no tour state in the HUD's settings, nothing launched, a runtime older than the app's.

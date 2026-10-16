@@ -98,11 +98,10 @@ test("normalizePath matches Obsidian's", () => {
 test("write surfaces: every verified surface by default; AOS_APP_WRITE narrows or widens a run", () => {
   const verified = SURFACES.filter((s) => s.verified).map((s) => s.id);
   assert.deepEqual(loadWriteSettings({}), { surfaces: verified, source: "default" });
-  // Every surface but 2.0's new ones is verified today: the Local engine's (after a live pull), Go local's (a live
-  // go-local and undo on a 1.9 vault), Import and Hosts (a live import and a host added through them, install-import B2, B7),
-  // and MCP servers' (a live copy each way, B6).
-  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["local", "migrate", "import", "hosts", "mcp"]);
-  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 5);
+  // Every surface but Hosts is verified today (2.0's Local engine, Go local, Import and MCP servers after their live
+  // checks on 2026-10-16); Hosts waits for a host added live through it (install-import B2).
+  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["hosts"]);
+  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 1);
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo,chat" }), { surfaces: ["todo", "chat"], source: "AOS_APP_WRITE" });
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "" }), { surfaces: [], source: "AOS_APP_WRITE" });
   // A surface not verified yet (a new one starts this way) stays off by default; AOS_APP_WRITE can still turn it on
