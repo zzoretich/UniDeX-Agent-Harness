@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-10-16
+
 ### Upgrading
 - **The update asks you once whether to run background work on your Mac; nothing moves until you say so.** After the runtime update, the app's **Go local** card shows what moves to this Mac and what stays on Claude Code or Codex, what background work spent in the last 7 days, the model download if it is missing, and a ticked **Move the Chief of Staff to Opus 5.5 / gpt-6-sol** (worded for your hosts). **Go local** first backs up every setting it changes (`brain/_index/migrations/`), then sets `provider: local` and the AI switches (`ai.*`) to local in `agenticos.json` and `brain/config.json`, moves the Chief of Staff when ticked, updates the hourly `tick.md` only if it is still the one a release shipped (an edited one is kept, and a notification says why), and re-renders your schedules; no routine of yours is touched. **Keep my settings** changes nothing (`auto` stays `auto`). Settings ▸ Local engine can go local later, or **Undo** it (a setting you changed since is kept). From a terminal, `aos upgrade` asks the same question once (without a terminal it prints the commands), `aos migrate local-first --apply [--chief] | --decline | --undo` does it, and `aos import` brings your history in. Nothing to re-trust: no hook command changed on either host. <!-- tour: settings.go-local -->
 - **Your Chief of Staff keeps its model, its effort, its host and its tick until you move it.** Before anything else, `aos upgrade` from 1.x writes into `brain/config.json` what the install runs on for each setting 2.0's defaults would change, where the file does not set it: `persona.model` and `persona.codexModel` stay `null` (the model it ran on: the interview's answer, then `claude.model`; `codex.model`, then your Codex default), `persona.failover` is `false` (a duty stays on its host: under `auto` Claude Code when it is installed, else Codex, as before; a signed-out one is skipped and flagged instead of moving to the other host), and `provider` stays `auto`. Duties keep the interview's effort, and the one daily cap over both hosts is the one 1.x had. Its hourly `tick.md` stays a duty — now skipped properly on a quiet hour. **Move the Chief of Staff** on the Go-local card (`aos migrate local-first --apply --chief`) moves the models to `claude-opus-5-5` / `gpt-6-sol` and turns the failover on; **Undo** puts back what the upgrade kept. <!-- tour: settings.go-local -->
@@ -624,7 +626,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.0.0
 [1.9.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.9.0
 [1.8.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.8.0
 [1.7.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.7.0
