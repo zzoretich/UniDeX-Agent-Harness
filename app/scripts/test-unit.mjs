@@ -32,5 +32,8 @@ await esbuild.build({
 });
 
 const files = readdirSync(out).filter((f) => f.endsWith(".cjs")).map((f) => path.join(out, f));
-const r = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
+// The repository's test environment, as every other suite runs with (tools/test-env.js): the host variables cleared,
+// and the runtime the tests spawn lets them resolve their temp vaults (brain/scripts/lib/test-guard.js refuses a test run
+// without it).
+const r = spawnSync(process.execPath, ["--require", path.join(root, "..", "tools", "test-env.js"), "--test", ...files], { stdio: "inherit" });
 process.exit(r.status ?? 1);
