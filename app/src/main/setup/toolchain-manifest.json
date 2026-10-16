@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "What the setup wizard downloads when a tool is missing (install-import B1). Each pin was read live on 2026-10-14; `from` says where its version and SHA-256 came from, and `teamId` is the Developer ID team that signs it (codesign -dv on the downloaded file). `floor` is the oldest version already on the Mac that the wizard reuses (null: any). Refresh the pins before a release; toolchain.test.ts checks the shape.",
+  "about": "What the setup wizard downloads when a tool is missing (install-import B1). Each pin was read live on 2026-10-16; `from` says where its version and SHA-256 came from, and `teamId` is the Developer ID team that signs it (codesign -dv on the downloaded file). `floor` is the oldest version already on the Mac that the wizard reuses (null: any). Refresh the pins before a release; toolchain.test.ts checks the shape.",
   "tools": {
     "node": {
       "version": "24.22.0",
@@ -23,34 +23,34 @@
       }
     },
     "ollama": {
-      "version": "0.40.4",
+      "version": "0.40.5",
       "floor": "0.17.3",
       "minMacOS": "14.0",
       "teamId": "3MU9H2V9Y9",
-      "from": "github.com/ollama/ollama/releases/tag/v0.40.4: sha256sum.txt (equal to GitHub's asset digest); one universal app for both arches, notarized (spctl: Notarized Developer ID), LSMinimumSystemVersion 14.0. Floor: the first release whose notes name Qwen 3.5.",
+      "from": "github.com/ollama/ollama/releases/tag/v0.40.5: sha256sum.txt (equal to GitHub's asset digest); one universal app for both arches, notarized (spctl: Notarized Developer ID), LSMinimumSystemVersion 14.0. Floor: the first release whose notes name Qwen 3.5.",
       "assets": {
-        "arm64": { "url": "https://github.com/ollama/ollama/releases/download/v0.40.4/Ollama-darwin.zip", "sha256": "a80be41441764333321db8ff41155b3ab5f53fcea0a4057408e602ba2b02a203", "size": 206664588 },
-        "x64": { "url": "https://github.com/ollama/ollama/releases/download/v0.40.4/Ollama-darwin.zip", "sha256": "a80be41441764333321db8ff41155b3ab5f53fcea0a4057408e602ba2b02a203", "size": 206664588 }
+        "arm64": { "url": "https://github.com/ollama/ollama/releases/download/v0.40.5/Ollama-darwin.zip", "sha256": "b07392350465d52b24cf23d6cfba61093fda312452b60d41867b4216ede6c8b2", "size": 213253158 },
+        "x64": { "url": "https://github.com/ollama/ollama/releases/download/v0.40.5/Ollama-darwin.zip", "sha256": "b07392350465d52b24cf23d6cfba61093fda312452b60d41867b4216ede6c8b2", "size": 213253158 }
       }
     },
     "claude": {
       "version": "2.1.292",
       "floor": null,
       "teamId": "Q6L2SF6YDW",
-      "from": "downloads.claude.ai/claude-code-releases/2.1.292/manifest.json (the stable channel on 2026-10-14), the manifest the native installer (claude.ai/install.sh) checks before it runs `claude install`. Floor: any; Claude Code updates itself and aos init checks what it supports.",
+      "from": "downloads.claude.ai/claude-code-releases/2.1.292/manifest.json (the stable channel on 2026-10-16), the manifest the native installer (claude.ai/install.sh) checks before it runs `claude install`. Floor: any; Claude Code updates itself and aos init checks what it supports.",
       "assets": {
         "arm64": { "url": "https://downloads.claude.ai/claude-code-releases/2.1.292/darwin-arm64/claude", "sha256": "97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f", "size": 235017328 },
         "x64": { "url": "https://downloads.claude.ai/claude-code-releases/2.1.292/darwin-x64/claude", "sha256": "a9739a215728ce72435885fedb19d1317ee1ccec61e246fbfb3acaf01689c473", "size": 243514624 }
       }
     },
     "codex": {
-      "version": "0.162.1",
+      "version": "0.163.0",
       "floor": null,
       "teamId": "2DC432GLL2",
-      "from": "github.com/openai/codex/releases/tag/rust-v0.162.1: codex-package_SHA256SUMS, the file the standalone installer (scripts/install/install.sh) checks. Floor: any; aos init picks plugin or direct wiring by what the CLI supports.",
+      "from": "github.com/openai/codex/releases/tag/rust-v0.163.0: codex-package_SHA256SUMS, the file the standalone installer (scripts/install/install.sh) checks. Floor: any; aos init picks plugin or direct wiring by what the CLI supports.",
       "assets": {
-        "arm64": { "url": "https://github.com/openai/codex/releases/download/rust-v0.162.1/codex-package-aarch64-apple-darwin.tar.gz", "sha256": "88e37ccddf5a0f4ea9dc1be13c66a2a94f9c2d1a04f3ace9053d71b3939e885d", "size": 132224844 },
-        "x64": { "url": "https://github.com/openai/codex/releases/download/rust-v0.162.1/codex-package-x86_64-apple-darwin.tar.gz", "sha256": "894ac20afe819d4fa2a4be8cd27c54fd606338b86036e8ed9b6c9978c2dc7aed", "size": 143687717 }
+        "arm64": { "url": "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-aarch64-apple-darwin.tar.gz", "sha256": "b0344fc2e41f15e0071147e5869008047b8ff4bf2c4a8897975d3bae3f103b34", "size": 133412281 },
+        "x64": { "url": "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-x86_64-apple-darwin.tar.gz", "sha256": "0c182d6194da7003943678dc87866b54b3dee719edaf8d092f304affbc6b57d1", "size": 144982749 }
       }
     }
   }
