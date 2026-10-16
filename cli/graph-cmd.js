@@ -31,7 +31,7 @@ const PYTHON = '>=3.10';
 const MARKER = '.aos-graph.json';
 const USAGE = 'usage: aos graph [status | build [--semantic [--yes]] | on | off | semantic on|off|auto]';
 
-function claudeConfigDir() { return path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')); }
+function claudeConfigDir() { return require('./host-dirs.js').claudeConfigDir(); }
 function agenticosPath(configDir) { return process.env.AOS_CONFIG || path.join(configDir, 'agenticos.json'); }
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 function writeJson(file, obj) {

@@ -50,6 +50,7 @@ const PROVIDERS = ['local', 'auto', 'ollama', 'claude', 'codex', 'none'];
 const RUNTIME_SCRIPTS = { 'scan-vault': 'scan-vault.js', 'build-brain-md': 'build-brain-md.js', recall: 'sdk/recall-cli.js', 'skills-sync': 'skills-sync.js' };
 const HOST_CHOICES = ['auto', 'claude', 'codex', 'both', 'none'];
 const CH = require('./codex-host.js');
+const HD = require('./host-dirs.js');
 const { stableNode, isCellarPath } = require('./node-path.js');
 
 const USAGE = `usage:
@@ -93,7 +94,8 @@ const out = {
 };
 
 // ── files and config ──────────────────────────────────────────────────────────
-function configDir() { return path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')); }
+// lib/host.js's lookup (cli/host-dirs.js), which a test run without the test environment cannot reach (lib/test-guard.js).
+function configDir() { return HD.claudeConfigDir(); }
 function configPath() { return path.resolve(process.env.AOS_CONFIG || path.join(configDir(), 'agenticos.json')); }
 function readJson(p, fallback = null) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fallback; } }
 /** tmp + rename (spec 2026-09-24-aos-config D5): a hook reading agenticos.json mid-write would otherwise get null, then

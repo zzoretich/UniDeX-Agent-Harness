@@ -1,4 +1,7 @@
 'use strict';
+// The suite's own environment even when a check runs this file on its own (parity-check: `node --test <file>`), so
+// lib/test-guard.js lets it resolve what it needs: a no-op under `npm test`, which preloads it already.
+require('../tools/test-env.js');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

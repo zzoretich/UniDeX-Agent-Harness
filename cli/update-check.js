@@ -12,7 +12,6 @@
  * Zero dependencies; the HTTP getter and the clock are injectable (the `getFn` seam).
  */
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const https = require('https');
 
@@ -196,7 +195,7 @@ function writeFragment(vault, state, now = new Date()) {
   return line;
 }
 
-function claudeConfigDir() { return path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')); }
+function claudeConfigDir() { return require('./host-dirs.js').claudeConfigDir(); }
 function agenticosPath(configDir) { return process.env.AOS_CONFIG || path.join(configDir, 'agenticos.json'); }
 function readJsonOrNull(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 

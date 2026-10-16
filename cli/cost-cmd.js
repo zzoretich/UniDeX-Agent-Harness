@@ -11,7 +11,6 @@
  * Zero dependencies; python probe and the budget prompt are injectable.
  */
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
@@ -21,7 +20,7 @@ const MARKETPLACE = 'agenticos-workbench';
 const FILES = ['analyze_transcript.py', 'pricing.json', 'report-template.html'];
 const MIN_PY = [3, 9];
 
-function claudeConfigDir() { return path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')); }
+function claudeConfigDir() { return require('./host-dirs.js').claudeConfigDir(); }
 function agenticosPath(configDir) { return process.env.AOS_CONFIG || path.join(configDir, 'agenticos.json'); }
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 function writeJson(file, obj) {

@@ -13,7 +13,6 @@
  * through the caller's io.error — execution amendment 2026-09-15 (A30).
  */
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const schedule = require('./schedule.js');
 
@@ -32,7 +31,7 @@ function interviewModule(vault) {
   return require(fs.existsSync(vendored) ? vendored : path.join(REPO, 'brain', 'scripts', 'persona', 'interview.js'));
 }
 
-function claudeConfigDir() { return path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')); }
+function claudeConfigDir() { return require('./host-dirs.js').claudeConfigDir(); }
 function readAgenticos(configDir) {
   const file = process.env.AOS_CONFIG || path.join(configDir, 'agenticos.json');
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
