@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SURFACES, SurfaceRules, type Surface } from "../../shared/surfaces";
-import { folderId, relUnder, type FolderId } from "./identity";
+import { folderId, relUnder } from "./identity";
 
 export { BACKGROUND, SURFACES, SURFACE_IDS, argv, foldPath, globToRegExp, parseSurfaces, type Surface, type SpawnRule } from "../../shared/surfaces";
 
@@ -61,7 +61,6 @@ export class WritePolicy {
   readonly rules: SurfaceRules;
   private readonly roots: string[];
   private readonly root: string | null;
-  private rootId: FolderId | null = null;
 
   constructor(vaultRoot: string | null, enabled: readonly string[] = [], table: readonly Surface[] = SURFACES) {
     this.rules = new SurfaceRules(enabled, table);
@@ -100,8 +99,9 @@ export class WritePolicy {
       return rel.split(path.sep).join("/");
     }
     if (!anyName || !this.root) return null;
-    this.rootId ??= folderId(this.root);
-    return this.rootId ? relUnder([this.rootId], abs) : null;
+    // Taken at each check, so a vault folder removed and made again (a restore, a re-clone) is known by its new identity.
+    const id = folderId(this.root);
+    return id ? relUnder([id], abs) : null;
   }
 
   /**

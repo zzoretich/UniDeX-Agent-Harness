@@ -909,3 +909,22 @@ test("a dangling link's target is resolved the way the disk resolves it, a `..` 
     assert.equal(p.canWrite(at("notes/out.md")), true);
   } finally { d.done(); }
 });
+
+test("the vault's identity is taken at each check: a vault folder removed and made again is still known under any name", () => {
+  const d = diskVault();
+  const at = (rel: string) => path.join(d.vault, rel);
+  try {
+    const alias = viaFirmlink(d.vault);
+    if (!alias) return; // not a Mac with a data volume: no second name to check by identity
+    fs.symlinkSync(path.join(alias, "brain"), at("notes/fl"));
+    const p = new WritePolicy(d.vault, ["files"]);
+    assert.equal(p.canWrite(at("notes/fl/scripts/x.js")), false, "before");
+    // The vault folder goes away and comes back (a restore, a re-clone): a new folder, the same path.
+    fs.rmSync(d.vault, { recursive: true, force: true });
+    for (const dir of ["brain/scripts/lib", "brain/_index", "notes"]) fs.mkdirSync(at(dir), { recursive: true });
+    fs.symlinkSync(path.join(alias, "brain"), at("notes/fl"));
+    assert.equal(p.canWrite(at("notes/fl/scripts/x.js")), false, "after: the new folder's identity");
+    assert.equal(p.canMoveTree(at("notes/fl")), false);
+    assert.equal(p.canWrite(at("notes/a.md")), true);
+  } finally { d.done(); }
+});
