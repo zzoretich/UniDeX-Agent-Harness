@@ -335,4 +335,39 @@ test('resolveChief: models — PERSONA_MODEL, persona.model, the interview answe
   assert.equal(await e(claudeOnly({ persona: { effort: 'low' } }), { PERSONA_EFFORT: 'high' }), 'high');
   assert.equal(await e(claudeOnly(), { PERSONA_EFFORT: 'xhigh' }), 'medium', 'claude -p takes low|medium|high here');
   assert.equal(await e(codexOnly(), { PERSONA_EFFORT: 'xhigh' }), 'xhigh');
+  // The interview's effort after persona.effort, as the schedules bake it (cli/schedule.js dutyRunDefaults): a duty run by
+  // hand and doctor say what a scheduled one runs at.
+  const ea = async (cfg, answers, env = {}) => (await H.resolveChief(cfg, chiefDeps({ answers, env: { ...ENV, ...env } }))).effort;
+  assert.equal(await ea(claudeOnly(), { dutyEffort: 'high' }), 'high');
+  assert.equal(await ea(codexOnly(), { dutyEffort: 'low' }), 'low');
+  assert.equal(await ea(claudeOnly({ persona: { effort: 'low' } }), { dutyEffort: 'high' }), 'low', 'persona.effort wins over the answer');
+  assert.equal(await ea(claudeOnly(), { dutyEffort: 'high' }, { PERSONA_EFFORT: 'low' }), 'low', 'and a duty routine\'s own effort over both');
+  assert.equal(await ea(claudeOnly(), { dutyEffort: 'extreme' }), 'medium');
+  assert.equal(H.chiefEffort('claude', {}, {}, { dutyEffort: 'high' }), 'high');
+});
+
+// local-first A9: an install from before 2.0 keeps persona.failover false until it moves its Chief of Staff, and its duties
+// keep the host 1.9 ran them on (resolveRunner at v1.9.0: the first enabled host whose CLI resolves). A signed-out one
+// waits — it never moves to the other host on its own.
+test('resolveChief: failover off — auto takes the first host installed, as before 2.0; a signed-out one waits, never moves', async () => {
+  const pre20 = (o = {}) => CHIEF_CFG({ persona: { runner: 'auto', model: null, codexModel: null, failover: false, perDayUsd: 6 }, claude: { model: 'claude-sonnet-5' }, codex: { model: 'gpt-5-mini' }, ...o });
+  const deps = chiefDeps();
+  assert.deepEqual(pick(await H.resolveChief(pre20(), deps)), { host: 'claude', model: 'claude-sonnet-5', effort: 'medium', reason: 'auto', failover: [], skipped: [] });
+  assert.deepEqual(deps.probed, [`claude:${CLAUDE}`]);
+  const out = await H.resolveChief(pre20(), chiefDeps({ signedOut: ['claude'] }));
+  assert.deepEqual(pick(out), { host: null, model: null, effort: null, reason: 'waiting-for-host', failover: [], skipped: ['claude: signed out'] });
+  assert.equal(out.primary, 'claude');
+  // Claude's CLI missing: Codex, on its own model chain — 1.9's auto did the same.
+  const noClaude = await H.resolveChief(pre20(), chiefDeps({ env: { ...ENV, AOS_NO_CLAUDE: '1' } }));
+  assert.deepEqual(pick(noClaude), { host: 'codex', model: 'gpt-5-mini', effort: 'medium', reason: 'auto', failover: [], skipped: ['claude: CLI not found'] });
+  // Both missing: waiting, nothing probed.
+  const none2 = chiefDeps({ env: { ...ENV, AOS_NO_CLAUDE: '1', AOS_NO_CODEX: '1' } });
+  assert.deepEqual(pick(await H.resolveChief(pre20(), none2)).skipped, ['claude: CLI not found', 'codex: CLI not found']);
+  assert.deepEqual(none2.probed, []);
+  // Codex only, signed out: waits too.
+  const cx = pre20({ hosts: { claude: { enabled: false }, codex: { enabled: true, bin: CODEX, home: '/c/home' } } });
+  assert.deepEqual(pick(await H.resolveChief(cx, chiefDeps({ signedOut: ['codex'] }))).skipped, ['codex: signed out']);
+  // Moved (--chief: the models and failover on): the 2.0 behaviour, a signed-out Claude hands the duty to Codex.
+  const moved = pre20({ persona: { runner: 'auto', model: 'claude-opus-5-5', codexModel: 'gpt-6-sol', failover: true, perDayUsd: 6 } });
+  assert.deepEqual(pick(await H.resolveChief(moved, chiefDeps({ signedOut: ['claude'] }))), { host: 'codex', model: 'gpt-6-sol', effort: 'medium', reason: 'auto', failover: [], skipped: ['claude: signed out'] });
 });

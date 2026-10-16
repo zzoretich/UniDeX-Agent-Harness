@@ -20,7 +20,8 @@ const TICK_19 = fs.readFileSync(path.join(__dirname, 'fixtures', 'tick-1.9.md'),
 const TICK_20 = fs.readFileSync(path.join(ROOT, 'vault-template', 'persona', 'routines', 'tick.md'), 'utf8');
 const NOW = new Date('2026-10-15T12:00:00Z');
 
-/** A 1.9 install: agenticos.json as buildUserConfig wrote it, brain/config.json with every 1.9 default materialized. */
+/** A 1.9 install as `aos upgrade` leaves it: agenticos.json as buildUserConfig wrote it, brain/config.json with the 1.9
+ *  defaults materialized and what the Chief of Staff ran on pinned (pinPrevious: persona.failover false). */
 function world({ tick = TICK_19, user = {}, vault = {} } = {}) {
   const T = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aos-migrate-')));
   const cfgDir = path.join(T, 'cfg');
@@ -28,7 +29,7 @@ function world({ tick = TICK_19, user = {}, vault = {} } = {}) {
   for (const d of [cfgDir, path.join(v, 'brain', '_index'), path.join(v, 'brain', 'routines')]) fs.mkdirSync(d, { recursive: true });
   const cfgFile = path.join(cfgDir, 'agenticos.json');
   fs.writeFileSync(cfgFile, JSON.stringify({ version: '1.9.0', vault: v, provider: 'auto', claude: { model: 'haiku', perCallUsd: 0.05, perDayUsd: 0.5 }, persona: { enabled: true }, ...user }, null, 2));
-  fs.writeFileSync(path.join(v, 'brain', 'config.json'), JSON.stringify({ provider: 'auto', persona: { enabled: true, runner: 'auto', model: null, codexModel: null, perDayUsd: 6 }, ...vault }, null, 2));
+  fs.writeFileSync(path.join(v, 'brain', 'config.json'), JSON.stringify({ provider: 'auto', persona: { enabled: true, runner: 'auto', model: null, codexModel: null, failover: false, perDayUsd: 6 }, ...vault }, null, 2));
   if (tick !== null) fs.writeFileSync(path.join(v, M.TICK_REL), tick);
   fs.writeFileSync(path.join(v, 'brain', '_index', 'provider-state.json'), '{"name":"claude"}\n');
   const calls = { installs: 0, notices: [] };
@@ -76,6 +77,37 @@ test('recordPending: an upgrade from before 2.0.0 records both once; from 2.0.0 
   assert.deepEqual(M.recordPending({ vault: w3.v, from: undefined, now: NOW }), ['local-first', 'import']);
 });
 
+test('pinPrevious: an upgrade from before 2.0.0 writes 1.9\'s value of each setting 2.0 would move, only where brain/config.json lacks it', () => {
+  const w = world();
+  const file = path.join(w.v, 'brain', 'config.json');
+  const put = (j) => fs.writeFileSync(file, JSON.stringify(j, null, 2));
+  assert.deepEqual(M.PRE_2_0, { provider: 'auto', 'persona.model': null, 'persona.codexModel': null, 'persona.failover': false });
+  // As one 1.9.0 vault was found: no persona block, no provider.
+  put({ claude: { model: 'haiku' }, persona: undefined });
+  assert.deepEqual(M.pinPrevious({ vault: w.v, from: '1.9.0' }), ['provider', 'persona.model', 'persona.codexModel', 'persona.failover']);
+  assert.deepEqual(w.vcfg(), { claude: { model: 'haiku' }, provider: 'auto', persona: { model: null, codexModel: null, failover: false } });
+  assert.deepEqual(M.pinPrevious({ vault: w.v, from: '1.9.0' }), [], 'once pinned, nothing more');
+  // 1.9's own materialized defaults and the owner's values are kept; only what the file lacks is written.
+  put({ provider: 'ollama', persona: { enabled: true, model: 'sonnet', codexModel: null, effort: 'low' } });
+  assert.deepEqual(M.pinPrevious({ vault: w.v, from: '1.8.2' }), ['persona.failover']);
+  assert.deepEqual(w.vcfg(), { provider: 'ollama', persona: { enabled: true, model: 'sonnet', codexModel: null, effort: 'low', failover: false } });
+  // From 2.0.0 on, nothing: a new install's defaults are its own.
+  put({ persona: {} });
+  for (const from of ['2.0.0', '2.1.0']) assert.deepEqual(M.pinPrevious({ vault: w.v, from }), []);
+  assert.deepEqual(w.vcfg(), { persona: {} });
+  // An unreadable version counts as older; a missing file is a 1.9 vault on its defaults.
+  assert.equal(M.pinPrevious({ vault: w.v, from: undefined }).length, 4);
+  fs.rmSync(file);
+  assert.equal(M.pinPrevious({ vault: w.v, from: 'garbage' }).length, 4);
+  assert.deepEqual(w.vcfg().persona, { model: null, codexModel: null, failover: false });
+  // A file it cannot read is refused and left as it is.
+  for (const bad of ['{ not json', '[1, 2]']) {
+    fs.writeFileSync(file, bad);
+    assert.throws(() => M.pinPrevious({ vault: w.v, from: '1.9.0' }), (e) => e instanceof M.Refused && /refusing to touch/.test(e.message));
+    assert.equal(fs.readFileSync(file, 'utf8'), bad);
+  }
+});
+
 test('local-first --apply --chief: both files go local, the CoS models land, tick.md becomes 2.0, the schedules re-render', () => {
   const w = world();
   M.recordPending({ vault: w.v, from: '1.9.0', now: NOW });
@@ -86,7 +118,7 @@ test('local-first --apply --chief: both files go local, the CoS models land, tic
   const vc = w.vcfg();
   assert.deepEqual([u.provider, u.ai], ['local', { chat: 'local', ask: 'local', reflectWeek: 'local', consolidate: 'local' }]);
   assert.deepEqual([vc.provider, vc.ai], ['local', { chat: 'local', ask: 'local', reflectWeek: 'local', consolidate: 'local' }]);
-  assert.deepEqual([vc.persona.model, vc.persona.codexModel], [CHIEF.claude, CHIEF.codex]);
+  assert.deepEqual([vc.persona.model, vc.persona.codexModel, vc.persona.failover], [CHIEF.claude, CHIEF.codex, true], 'A4: the models and the failover move together');
   assert.deepEqual([vc.persona.runner, vc.persona.perDayUsd], ['auto', 6], 'the rest of persona is kept');
   assert.equal(u.persona.model, undefined, 'agenticos.json named no CoS model, so brain/config.json carries it');
   assert.deepEqual([u.claude, u.version, u.vault], [userBefore.claude, '1.9.0', w.v], 'nothing else in agenticos.json moves');
@@ -103,6 +135,7 @@ test('local-first --apply --chief: both files go local, the CoS models land, tic
     'ai.reflectWeek': { had: false, set: 'local' }, 'ai.consolidate': { had: false, set: 'local' },
   });
   assert.deepEqual(b.files.vault['persona.model'], { had: true, value: null, set: CHIEF.claude });
+  assert.deepEqual(b.files.vault['persona.failover'], { had: true, value: false, set: true });
   assert.deepEqual(b.tick, { file: M.TICK_REL, before: TICK_19, after: TICK_20 });
   // Applied again: nothing more (no write, no re-render).
   const again = M.applyLocalFirst(M.resolveCtx(w.opts), { chief: true }, w.opts);
@@ -114,10 +147,11 @@ test('local-first --apply --chief: both files go local, the CoS models land, tic
 test('local-first --apply without --chief keeps the CoS models; agenticos.json gets them only where it names them', () => {
   const w = world();
   M.applyLocalFirst(M.resolveCtx(w.opts), { chief: false }, w.opts);
-  assert.deepEqual([w.vcfg().persona.model, w.vcfg().persona.codexModel], [null, null]);
-  const w2 = world({ user: { persona: { enabled: true, model: 'sonnet' } } });
+  assert.deepEqual([w.vcfg().persona.model, w.vcfg().persona.codexModel, w.vcfg().persona.failover], [null, null, false]);
+  const w2 = world({ user: { persona: { enabled: true, model: 'sonnet', failover: false } } });
   M.applyLocalFirst(M.resolveCtx(w2.opts), { chief: true }, w2.opts);
   assert.equal(w2.user().persona.model, CHIEF.claude, 'the file that wins moves too');
+  assert.equal(w2.user().persona.failover, true);
   assert.equal(w2.user().persona.codexModel, undefined);
 });
 

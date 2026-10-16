@@ -960,24 +960,125 @@ test('upgrade from before 2.0.0 records local-first and import pending and, with
   assert.doesNotMatch(fresh.stdout, /aos migrate local-first|aos import/);
 });
 
-test('an upgrade that stops after writing the new version still leaves the 2.0 question pending, and the re-run keeps it', () => {
+test('an upgrade that stops part way still leaves the 2.0 question pending, and the re-run keeps it', () => {
   const sb = initialized();
   const cfgFile = path.join(sb.cfg, 'agenticos.json');
   const migrations = path.join(sb.vault, 'brain', '_index', 'migrations.json');
   const vaultCfg = path.join(sb.vault, 'brain', 'config.json');
   fs.writeFileSync(cfgFile, JSON.stringify({ ...readJson(cfgFile), version: '1.9.0' }, null, 2));
   const good = fs.readFileSync(vaultCfg, 'utf8');
-  fs.writeFileSync(vaultCfg, '{ not json');   // the defaults merge refuses it, after agenticos.json has the new version
+  // Unparseable: the step that pins what a 1.9 install runs on refuses it (as the defaults merge would), right after the
+  // record and before the runtime is re-vendored or agenticos.json gets the new version.
+  fs.writeFileSync(vaultCfg, '{ not json');
   const failed = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
   assert.notEqual(failed.status, 0, 'the upgrade stopped');
   assert.match(failed.stderr, /refusing to touch unparseable/);
   assert.deepEqual(readJson(migrations).migrations.map((m) => [m.id, m.state, m.from]), [['local-first', 'pending', '1.9.0'], ['import', 'pending', '1.9.0']],
     'recorded before anything wrote the new version');
+  assert.equal(readJson(cfgFile).version, '1.9.0', 'nothing wrote the new version, so the re-run still pins');
+  assert.equal(fs.readFileSync(vaultCfg, 'utf8'), '{ not json', 'the file it could not read is left as it was');
   fs.writeFileSync(vaultCfg, good);
   const again = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
   assert.equal(again.status, 0, again.stderr + again.stdout);
   assert.deepEqual(readJson(migrations).migrations.map((m) => m.state), ['pending', 'pending']);
   assert.match(again.stdout, /aos migrate local-first --apply --chief/);
+});
+
+// local-first A9: an upgrade from 1.9 changes nothing the Chief of Staff runs until the Go-local card moves it. The vault is
+// shaped as a real 1.9.0 one was found: no persona block in brain/config.json, claude.model set by hand, the interview's
+// effort, the 1.9 tick a duty. The duty is resolved the way run-duty.sh resolves it (the vendored persona/chief.js), both
+// as the schedules bake it and as a run by hand or `aos doctor` sees it.
+test('upgrade from 1.9 keeps the Chief of Staff\'s model, effort and host (no failover) until --chief moves them; --undo returns them', () => {
+  const sb = initialized();
+  const cfgFile = path.join(sb.cfg, 'agenticos.json');
+  const vaultCfgFile = path.join(sb.vault, 'brain', 'config.json');
+  const user = readJson(cfgFile);
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...user, version: '1.9.0', claude: { ...user.claude, model: 'claude-sonnet-5' } }, null, 2));
+  const v19 = readJson(vaultCfgFile);
+  for (const k of ['persona', 'local', 'ai', 'provider']) delete v19[k];
+  fs.writeFileSync(vaultCfgFile, JSON.stringify(v19, null, 2));
+  fs.mkdirSync(path.join(sb.vault, 'persona'), { recursive: true });
+  fs.writeFileSync(path.join(sb.vault, 'persona', 'answers.json'), JSON.stringify({ name: 'Atlas', dutyEffort: 'high', schedule: true }));
+  fs.copyFileSync(path.join(ROOT, 'cli', 'fixtures', 'tick-1.9.md'), path.join(sb.vault, 'brain', 'routines', 'tick.md'));
+  // What 1.9.0 ran every duty on: its schedules baked PERSONA_MODEL = persona.model → the interview's dutyModel →
+  // claude.model, PERSONA_EFFORT = persona.effort → dutyEffort → medium (cli/schedule.js dutyRunDefaults at v1.9.0), on the
+  // first enabled host whose CLI resolved (lib/headless.js resolveRunner at v1.9.0), and never anywhere else.
+  const RAN_19 = { host: 'claude', model: 'claude-sonnet-5', effort: 'high' };
+  const fakeCodex = path.join(ROOT, 'cli', 'fixtures', 'fake-codex.sh');
+  const env = (extra = {}) => ({ ...sb.env, AOS_VAULT: sb.vault, AOS_CONFIG: cfgFile, ...extra });
+  const chief = (extra) => {
+    const r = spawnSync(process.execPath, [path.join(sb.vault, 'brain', 'scripts', 'persona', 'chief.js'), '--resolve', '--json'], { encoding: 'utf8', env: env(extra), cwd: sb.vault });
+    const j = JSON.parse(r.stdout);
+    return { host: j.host, model: j.model, effort: j.effort, reason: j.reason, primary: j.primary, failover: j.failover.map((f) => `${f.host} · ${f.model}`) };
+  };
+  /** What the next `aos routines sync` bakes into a duty's schedule (cli/routines.js scheduleVarsFor), as run-duty.sh gets it. */
+  const baked = () => {
+    const vars = require('./routines.js').scheduleVarsFor({ vault: sb.vault, configDir: sb.cfg, node: process.execPath, cfg: readJson(cfgFile) });
+    return { PERSONA_MODEL: vars.MODEL, PERSONA_EFFORT: vars.EFFORT };
+  };
+  const ran = (extra) => { const c = chief(extra); return { host: c.host, model: c.model, effort: c.effort }; };
+
+  const up = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(up.status, 0, up.stderr + up.stdout);
+  assert.deepEqual(ran(), RAN_19, 'a duty run by hand');
+  assert.deepEqual(ran(baked()), RAN_19, 'a scheduled duty');
+  assert.match(aos(sb, ['doctor']).stdout, /persona runner\s+claude · claude-sonnet-5 \(high\) \(.+\); failover: none$/m);
+  const vc = readJson(vaultCfgFile);
+  assert.deepEqual([vc.provider, vc.persona.model, vc.persona.codexModel, vc.persona.failover], ['auto', null, null, false], '1.9\'s values, not 2.0\'s defaults');
+  assert.equal(vc.persona.perDayUsd, 6, 'the rest of the new defaults still arrive');
+  assert.match(up.stdout, /^ {3}kept until you answer, in brain\/config\.json: provider = "auto", persona\.model = null, persona\.codexModel = null, persona\.failover = false$/m);
+
+  // Both hosts (Codex added later): a signed-out Claude still holds the duty — it waits, as 1.9 never ran it on Codex.
+  const both = readJson(cfgFile);
+  both.hosts.codex = { enabled: true, bin: fakeCodex, home: path.join(sb.dir, 'codex') };
+  fs.writeFileSync(cfgFile, JSON.stringify(both, null, 2));
+  const twoHosts = { AOS_NO_CODEX: '', AOS_CODEX_BIN: fakeCodex };
+  assert.deepEqual(chief(twoHosts).failover, [], 'no failover host named');
+  const out = chief({ ...twoHosts, FAKE_CLAUDE_LOGGED_OUT: '1' });
+  assert.deepEqual([out.host, out.reason, out.primary], [null, 'waiting-for-host', 'claude'], 'never moved to Codex');
+
+  // The card's "Move the Chief of Staff": the CoS models and the failover; Undo puts back what the upgrade kept.
+  const apply = aos(sb, ['migrate', 'local-first', '--apply', '--chief', '--json']);
+  assert.equal(apply.status, 0, apply.stderr + apply.stdout);
+  assert.deepEqual(ran(twoHosts), { host: 'claude', model: 'claude-opus-5-5', effort: 'high' }, 'moved; the interview\'s effort stays');
+  assert.deepEqual(ran(baked()), { host: 'claude', model: 'claude-opus-5-5', effort: 'high' });
+  const moved = chief({ ...twoHosts, FAKE_CLAUDE_LOGGED_OUT: '1' });
+  assert.deepEqual([moved.host, moved.model, moved.reason], ['codex', 'gpt-6-sol', 'auto'], 'with the move, a signed-out Claude hands the duty to Codex');
+  const undo = aos(sb, ['migrate', 'local-first', '--undo', '--json']);
+  assert.equal(undo.status, 0, undo.stderr + undo.stdout);
+  const back = readJson(vaultCfgFile).persona;
+  assert.deepEqual([back.model, back.codexModel, back.failover], [null, null, false]);
+  assert.deepEqual(ran(twoHosts), RAN_19);
+  assert.deepEqual(ran(baked()), RAN_19);
+  assert.equal(chief({ ...twoHosts, FAKE_CLAUDE_LOGGED_OUT: '1' }).host, null, 'and it waits for its own host again');
+});
+
+test('init over an install from before 2.0 pins what it runs on, as upgrade does; over a 2.0 one, or a new vault, nothing', () => {
+  const sb = initialized();
+  const cfgFile = path.join(sb.cfg, 'agenticos.json');
+  const vaultCfgFile = path.join(sb.vault, 'brain', 'config.json');
+  const shape19 = (version) => {
+    fs.writeFileSync(cfgFile, JSON.stringify({ ...readJson(cfgFile), version }, null, 2));
+    const v = readJson(vaultCfgFile);
+    delete v.persona;
+    fs.writeFileSync(vaultCfgFile, JSON.stringify(v, null, 2));
+  };
+  const init = () => aos(sb, ['init', '--vault', sb.vault, '--no-obsidian', '--provider', 'none', '--yes']);
+  shape19('1.9.0');
+  const r = init();
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /kept what this install runs on, in brain\/config\.json: persona\.model = null, persona\.codexModel = null, persona\.failover = false/);
+  assert.deepEqual(readJson(vaultCfgFile).persona, { model: null, codexModel: null, failover: false });
+  shape19('2.0.0');
+  const again = init();
+  assert.equal(again.status, 0, again.stderr + again.stdout);
+  assert.doesNotMatch(again.stdout, /kept what this install runs on/);
+  assert.equal(readJson(vaultCfgFile).persona, undefined, 'a 2.0 install\'s defaults are its own');
+  const fresh = sandbox();
+  const n = aos(fresh, ['init', '--vault', fresh.vault, '--no-obsidian', '--provider', 'none', '--yes']);
+  assert.equal(n.status, 0, n.stderr);
+  assert.doesNotMatch(n.stdout, /kept what/);
+  assert.equal(readJson(path.join(fresh.vault, 'brain', 'config.json')).persona.model, 'claude-opus-5-5', 'a new install starts on the chief role');
 });
 
 test('the migrate flags are refused outside aos migrate (usage, exit 2)', () => {

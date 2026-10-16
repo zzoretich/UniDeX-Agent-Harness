@@ -58,8 +58,11 @@
  *     in, else Codex. A host starts when its CLI resolves and it is signed in (deps.loggedIn: `claude auth status`,
  *     `codex login status`, both free). With both hosts enabled and persona.failover (default true), a primary whose CLI is
  *     missing or signed out moves the duty to the other host's CoS model; `failover` lists that host while the primary
- *     runs. Models per host come from sdk/lib/models.js chiefModel (PERSONA_MODEL, a Claude model by contract, never
- *     reaches Codex); effort from PERSONA_EFFORT → persona.effort → medium. Nobody can start → host null with reason
+ *     runs. persona.failover false (what an install from before 2.0 keeps until it moves its Chief of Staff, local-first
+ *     A9) never moves a duty for a sign-in: auto then takes the first enabled host whose CLI resolves, as before 2.0, and
+ *     a signed-out primary waits. Models per host come from sdk/lib/models.js chiefModel (PERSONA_MODEL, a Claude model by
+ *     contract, never reaches Codex); effort from PERSONA_EFFORT → persona.effort → the interview's dutyEffort → medium
+ *     (the chain the schedules bake, cli/schedule.js dutyRunDefaults). Nobody can start → host null with reason
  *     `waiting-for-host`; persona/chief.js turns either reason into a skipped duty.
  *   CLI: node lib/headless.js --resolve [--kind persona|routines]  prints `host<TAB>bin<TAB>model<TAB>codex home`,
  *        exit 3 (reason on stderr) when no runner resolves. Prompt routines and older run-duty.sh copies read it.
@@ -166,11 +169,15 @@ function resolveRunner({ cfg, kind = 'routines', env = process.env, lookup, cand
 function money(v, d) { return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : d; }
 const DEFAULT_DUTY_DAY_USD = 6;
 
-/** The CoS's effort on `host`: PERSONA_EFFORT → persona.effort → medium, each only when that host's CLI takes it. */
-function chiefEffort(host, cfg, env = process.env) {
+/**
+ * The CoS's effort on `host`: PERSONA_EFFORT → persona.effort → the interview's dutyEffort (`answers`, persona/answers.json)
+ * → medium, each only when that host's CLI takes it — the chain cli/schedule.js dutyRunDefaults bakes into the schedules,
+ * so a duty run by hand, and doctor, say what a scheduled one runs at.
+ */
+function chiefEffort(host, cfg, env = process.env, answers = null) {
   const levels = host === 'codex' ? CODEX_EFFORTS : CLAUDE_EFFORTS;
   const persona = (cfg && cfg.persona) || {};
-  for (const v of [env.PERSONA_EFFORT, persona.effort]) if (levels.includes(v)) return v;
+  for (const v of [env.PERSONA_EFFORT, persona.effort, answers && answers.dutyEffort]) if (levels.includes(v)) return v;
   return 'medium';
 }
 
@@ -207,7 +214,7 @@ async function resolveChief(cfg, deps = {}) {
   const loggedIn = deps.loggedIn || chiefLoggedIn;
   const spentToday = deps.spentToday || chiefSpentToday;
   const binOf = (h) => resolveBin(h, { cfg: c, env, kind: 'persona', lookup: deps.lookup, candidates: deps.candidates });
-  const entry = (h, bin) => ({ host: h, bin, model: chiefModel(h, c, { env, answers }).tag, effort: chiefEffort(h, c, env), home: h === 'codex' ? codexHomeOf(c) : null });
+  const entry = (h, bin) => ({ host: h, bin, model: chiefModel(h, c, { env, answers }).tag, effort: chiefEffort(h, c, env, answers), home: h === 'codex' ? codexHomeOf(c) : null });
 
   const none = (reason, skipped, primary = null) => ({ host: null, bin: null, model: null, effort: null, home: null, reason, primary, failover: [], skipped });
   // One cap over both hosts (the owner's call on local-first A4): a capped day is skipped everywhere, never moved.
@@ -231,6 +238,13 @@ async function resolveChief(cfg, deps = {}) {
     primary = null;
     for (const h of HOSTS) {
       if (!hostEnabled(c, h)) continue;
+      if (!failoverOn) {
+        // Failover off (an install from before 2.0 keeps it so until it moves its Chief of Staff, local-first A9): auto's
+        // host is the first one installed, as it was before 2.0; it is checked for a sign-in below, and waits when out.
+        if (binOf(h)) { primary = h; break; }
+        skipped.push({ host: h, why: 'CLI not found' });
+        continue;
+      }
       const st = await check(h);
       // auto takes the first enabled host that is installed and signed in.
       if (!st.why) { primary = h; break; }
