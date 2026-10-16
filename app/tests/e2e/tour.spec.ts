@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FX, HUD_SETTINGS, HUD_VERSION, TOUR_BOOK, appEnv, command, content, drawer, expectNoErrors, openTab, rail, useApp } from "./harness";
+import { WHATS_NEW, whatsNewHistory } from "../../../obsidian-plugin/src/tour/whatsnew";
 
 const pop = (win: Page) => win.locator(".aos-tour-pop");
 const overlay = (win: Page) => win.locator(".aos-tour");
@@ -191,11 +192,18 @@ test.describe("a Mac that has not seen the tour (Claude Code, no provider)", () 
     } finally { await win.emulateMedia({ reducedMotion: null }); }
   });
 
-  test("What's new says when it has nothing yet; Documentation opens the README in the browser", async () => {
+  test("What's new lists every release up to this one, newest first, with Show me where an entry has steps; Documentation opens the README in the browser", async () => {
     const h = app();
     const { win } = h;
     await helpMenu(win, "whats-new");
-    await expect(drawer(win).locator(".aos-tour-wn-empty")).toBeVisible();
+    // What the drawer shows for the running version (tour/whatsnew.ts whatsNewHistory): from 2.0.0 on there is always one.
+    const releases = whatsNewHistory(WHATS_NEW.releases, HUD_VERSION);
+    expect(releases.length).toBeGreaterThan(0);
+    await expect(drawer(win).locator(".aos-tour-wn-version")).toHaveText(releases.map((r) => `What's new in ${r.version}`));
+    const entries = releases.flatMap((r) => r.entries);
+    await expect(drawer(win).locator(".aos-tour-wn-entry")).toHaveCount(entries.length);
+    await expect(drawer(win).locator(".aos-tour-wn-show")).toHaveCount(entries.filter((e) => e.steps.length > 0).length);
+    await expect(drawer(win).locator(".aos-tour-wn-empty")).toHaveCount(0);
     await helpMenu(win, "docs");
     await expect.poll(async () => (await h.opened()).map((o) => o.arg)).toContain("https://github.com/zzoretich/UniDeX-Agent-Harness#readme");
   });
