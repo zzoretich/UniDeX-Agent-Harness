@@ -162,6 +162,8 @@ test.afterEach(async () => {
   await brain("review");
   await reviewSees(B().unreviewed.length);
   await expect(modeTab("library").locator(".aos-brain-modebadge")).toHaveText(String(B().memories.length - B().archived.length));
+  // And Health counts what the files list: a pair dismissed on this page shows again once memory-notdup.json is put back.
+  await expect(modeTab("health").locator(".aos-brain-modebadge")).toHaveText(String(healthCount()));
 });
 
 test("Brain is the one surface on: the status bar names it and its commands, the verbs, the recall preview, the hub's rebuild and BRAIN.md's", async () => {
@@ -356,6 +358,46 @@ test("M › Keep both: memory-notdup.json records the pair (D11), the new one is
   await mode("library");
   await libRow(older).click();
   await expect(C().locator('aside.aos-lib-context section[data-section="nearby"] .aos-lib-cnote')).toHaveText("Nothing scores close to this one.");
+});
+
+test("Keep both's pair shows again once the files list it again, even when no rebuilt brain-hub.json dropped it in between: Health's badge counts it", async () => {
+  const { win } = app();
+  const [newer, older] = B().duplicate;
+  // The rebuild the action starts waits until the files are put back, so no brain-hub.json without the pair is ever on
+  // disk for the page to read (on a slow machine, the page's read of that one can land after the files are put back).
+  const script = FX.v("brain/scripts/brain-hub.js");
+  const gate = path.join(FX.root, "brain-hub.gate");
+  const real = fs.readFileSync(script, "utf8");
+  fs.rmSync(gate, { force: true });
+  const gated = real.replace(/^'use strict';\n/, `'use strict';\n{ const s = new Int32Array(new SharedArrayBuffer(4)); for (const t = Date.now() + 20000; !require('fs').existsSync(${JSON.stringify(gate)}) && Date.now() < t;) Atomics.wait(s, 0, 0, 50); }\n`);
+  expect(gated).not.toBe(real);
+  fs.writeFileSync(script, gated);
+  try {
+    const builtAt = hub().builtAt;
+    await pickBatch(byKeyOf(B().sessions.claude).key);
+    await focusCard(newer);
+    await win.keyboard.press("m");
+    await card(newer).locator(".aos-brain-rv-cmpacts button", { hasText: "Keep both" }).click();
+    await expect.poll(() => read(NOTDUP)).not.toBeNull();
+    await expect.poll(() => read(newer)).toBe(pristine(newer).replace("reviewed: false\n", "reviewed: true\n"));
+    await expect(queue("duplicates").locator(".aos-brain-chipn")).toHaveText("0");
+    await reviewSees(B().unreviewed.length - 1);
+    // The vault no longer says they are not duplicates (memory-notdup.json gone), and the memory waits for review again.
+    for (const rel of [NOTDUP, newer]) restore(rel);
+    await reviewSees(B().unreviewed.length);
+    fs.writeFileSync(gate, "");
+    await hubRebuilt(builtAt);
+    await idle();
+    expect(hub().dups.map((d) => [d.a, d.b].sort())).toEqual([[newer, older].sort()]);
+  } finally {
+    fs.writeFileSync(script, real);
+    fs.rmSync(gate, { force: true });
+  }
+  await brain("health");
+  await expect(modeTab("health").locator(".aos-brain-modebadge")).toHaveText(String(healthCount()));
+  await expect(C().locator(".aos-brain-health .aos-brain-hl-pair")).toHaveAttribute("data-pair", [newer, older].sort().join("|"));
+  await mode("review");
+  await expect(queue("duplicates").locator(".aos-brain-chipn")).toHaveText("1");
 });
 
 test("a draft's Approve (Review) files it into brain/memory/feedback and the draft goes; Reject… (Library) asks first, then removes the draft and writes no memory", async () => {
@@ -861,7 +903,7 @@ test("Health's Not duplicates records the pair in memory-notdup.json (D11): the 
   const builtAt = hub().builtAt;
   await brain("health");
   // M › Keep both dismissed this pair on this page earlier; the files put back list it again, so it shows again (the page
-  // forgets a dismissal once the rebuilt cache has dropped the pair).
+  // hides a pair as memory-notdup.json says, not by what it dismissed).
   const pair = C().locator(".aos-brain-health .aos-brain-hl-pair");
   await expect(pair).toHaveAttribute("data-pair", [newer, older].sort().join("|"));
   await pair.locator('button[data-act="notdup"]').click();

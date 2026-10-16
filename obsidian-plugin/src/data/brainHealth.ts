@@ -20,7 +20,7 @@ export interface HealthInput {
   drafts: readonly BrainDraft[];
   hub: BrainHub | null;
   sources: BrainSources | null;
-  /** The live duplicate pairs less those dismissed on this page (brainModel livePairs). */
+  /** The live duplicate pairs less those memory-notdup.json lists or this page just dismissed (brainModel livePairs). */
   pairs: readonly HubDup[];
   indexRaw: string | null;
   settings: { telemetry: boolean; neverUsedDays: number };
