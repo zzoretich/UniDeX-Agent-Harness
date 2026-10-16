@@ -59,10 +59,7 @@ function defaultRun(cmd, args, { capture = true, allowFail = true, env } = {}) {
 }
 
 // ── locations ─────────────────────────────────────────────────────────────────
-function codexHome(cfg, env = process.env) {
-  const fromCfg = cfg && cfg.hosts && cfg.hosts.codex && cfg.hosts.codex.home;
-  return path.resolve(fromCfg || env.CODEX_HOME || path.join(os.homedir(), '.codex'));
-}
+function codexHome(cfg, env = process.env) { return require('./host-dirs.js').codexHome(cfg, env); }
 function hooksFile(cfg, env) { return path.join(codexHome(cfg, env), 'hooks.json'); }
 /** Codex scans ~/.agents/skills (canonical). HOME-based, so sandboxed tests never touch the real one. */
 function skillsDir() { return path.join(os.homedir(), '.agents', 'skills'); }

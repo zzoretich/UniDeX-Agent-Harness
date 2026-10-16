@@ -18,7 +18,6 @@
  * Zero dependencies; every external effect is injectable (opts).
  */
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const schedule = require('./schedule.js');
@@ -33,7 +32,7 @@ function resolveModule(rel) {
 const store = () => resolveModule('lib/routines-store.js');
 const hostsLib = () => resolveModule('lib/host-routines.js');
 
-function claudeConfigDir() { return path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')); }
+function claudeConfigDir() { return require('./host-dirs.js').claudeConfigDir(); }
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 function readAgenticos(configDir) { return readJson(process.env.AOS_CONFIG || path.join(configDir, 'agenticos.json')); }
 
