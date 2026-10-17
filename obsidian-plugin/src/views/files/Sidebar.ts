@@ -28,7 +28,8 @@ export function renderSidebar(host: HTMLElement, opts: {
   side.createDiv({ cls: "aos-fx-sh", text: "Favorites" });
   for (const f of opts.favorites) {
     const on = f.path === opts.current;
-    const a = side.createEl("button", { cls: `aos-fx-si${on ? " is-on" : ""}`, attr: { type: "button", "data-fav": f.path, title: f.path || f.label } });
+    // A favorite takes drops into its folder (D15).
+    const a = side.createEl("button", { cls: `aos-fx-si${on ? " is-on" : ""}`, attr: { type: "button", "data-fav": f.path, "data-drop": f.path, title: f.path || f.label } });
     if (on) a.setAttr("aria-current", "true");
     const ic = a.createSpan({ cls: "aos-fx-si-ic" });
     opts.setIcon(ic, f.icon);

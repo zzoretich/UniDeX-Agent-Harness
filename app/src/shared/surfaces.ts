@@ -428,12 +428,20 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "files",
     label: "Files",
-    source: "views/FilesTab.ts and data/vaultFiles.ts: a new note (and its folders), a rename or move (both ends), a file to the Trash",
+    source:
+      "views/files/ (FilesTab.ts, chores.ts) and data/vaultFiles.ts, data/vaultIndex.ts: a new note or a new folder (and the folders above it), " +
+      "a rename or move of a file or folder (both ends), a duplicate (a file copied beside itself, a folder with what is in it), " +
+      "the links in other notes rewritten to follow a rename or move, its undo, and a file or folder to the Trash",
     writes: ["**/*"],
     folders: ["**"],
     // data/vaultFiles.ts PROTECTED_PREFIXES, and every dot-path.
     except: PROTECTED,
     spawns: [],
+    // files-finder D25: the acts of 2.1 (a new folder, a duplicate, rename in place, a drag of several items, Move to…,
+    // the link rewrites and their undo) go through this same rule. Checked live on 2026-10-17 on a copy of a real vault
+    // (6,431 files): a rename rewrote 7 links in 5 notes and left the one in brain/_index alone; ⌘Z put the name and
+    // every note back byte for byte; a new folder, a file and a folder duplicated, a drag of two items and Move to…, each
+    // undone with its links; both copies to the Trash. The guard refused nothing.
     verified: true,
   },
   {

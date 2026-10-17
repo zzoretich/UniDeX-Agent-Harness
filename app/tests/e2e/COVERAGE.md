@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 143 |
-| covered in part | 76 |
+| covered | 146 |
+| covered in part | 77 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| **total** | **274** |
+| **total** | **278** |
 
-Of the 225 items about the app (274 minus the 49 N/A), 219 are asserted (143 fully, 76 in part); the other 6 are not
+Of the 229 items about the app (278 minus the 49 N/A), 223 are asserted (146 fully, 77 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -40,7 +40,7 @@ a live host session, Ollama's embeddings, the look in both themes). The writes, 
 - Chat (CH1, CH3, CH4) in `chat-writes.spec.ts`, against stub `claude` and `codex` CLIs and a stub Ollama server;
 - MCP servers' Make available on … (SK11, SK12) in `history-mcp.spec.ts`, with `AOS_APP_WRITE=mcp`, through the vault's own `aos mcp copy` against stand-in `claude` and `codex` CLIs that log their argv and write the entry as the real ones do;
 - Sessions (SE1–SE13) in `sessions.spec.ts` (SE13, Vault chat's host and model menu, in `chat-writes.spec.ts`), against stand-in `claude` and `codex` CLIs that print recorded-shape streams and answer the host catalog's questions (Claude's `initialize`, Codex's `debug models` and `debug prompt-input`) from synthetic lists, the vault's own runtime, and git repositories the spec makes in workspaces;
-- Files (F5, F6, F7) in `files-writes.spec.ts`;
+- Files (F14–F16, F19–F22) in `files-writes.spec.ts`;
 - the note editor, the app's own Notes surface (beyond the checklist), in `notes-writes.spec.ts`;
 - the settings window (I3, S1, S11) in `settings-window.spec.ts`.
 
@@ -112,7 +112,7 @@ again (`brain-ai`).
 | # | Item | Status | Covered by / reason |
 |---|---|---|---|
 | F1 | Files after Spaces on the rail; Icons at the top level, folders first with their kind tabs, then the files; no dot-folders, node_modules or graphify-out; the foot's count | covered | `shell › rail: three sections…` (its place), `files › Files opens from the rail on Icons…` |
-| F2 | brain/_index and brain/scripts locked; their write items off with the reason | covered | `files › Files opens from the rail on Icons…` (the locks), `files › the right-click menu…` (the items off and their title) |
+| F2 | brain/_index and brain/scripts locked; their write items off with the reason; brain's Rename, Move to… and Trash off | covered | `files › Files opens from the rail on Icons…` (the locks), `files › the right-click menu…` (the items off and their title, brain's too); `write-policy.test.ts › Files' acts…` (main refuses the same) |
 | F3 | Double-click enters or opens; back, forward, the path bar; ⌘↓ and ⌘↑ | covered | `files › a double-click enters a folder or opens a note…` |
 | F4 | The switcher and ⌃⌘1–3; the choice survives leaving the tab and a restart | covered in part | `files › List and Columns come from the switcher and ⌃⌘1–3…` (leaving the tab); `settingsDefaults.test.ts › the Files choice…` (what is stored). A restart of the app: manual. |
 | F5 | List: the header sorts and reverses; triangles; → and ← | covered | `files › List sorts by its header…` |
@@ -120,15 +120,19 @@ again (`brain-ai`).
 | F7 | Selection: click, ⌘-click, ⇧-click, ⌘A, Escape, the arrows, type-ahead; the foot's count | covered | `files › selection: a click, ⌘-click and ⇧-click…`; `filesModel.test.ts` (selection, keys, type-ahead) |
 | F8 | ⇧⌘P's preview pane, kept on | covered | `files › the preview pane (⇧⌘P)…` |
 | F9 | Quick Look: a note, a text file, an image, anything else; ← →; Space or Escape | covered in part | `files › Quick Look: Space shows the note…` (a note, an image, ← → and both closes). A text file in mono and another kind's Open with default app: manual. |
-| F10 | The right-click menu's items; on empty space; Reveal in Finder | covered in part | `files › the right-click menu…` (a note's items, Reveal handed to the OS); `variants › Files on Codex…` (a note's ten items). The empty-space menu and Finder's own window: manual. |
+| F10 | The right-click menu's items; on empty space; Reveal in Finder | covered in part | `files › the right-click menu…` (a note's items, Reveal handed to the OS); `variants › Files on Codex…` (a note's twelve items). The empty-space menu and Finder's own window: manual. |
 | F11 | Workspace · Open in Spaces | covered | `files › a workspace folder offers Open in Spaces…` |
 | F12 | Search across notes, all text files, a line opens its note, Escape; ⌘F and ⇧⌘F | covered | `files › search finds lines across notes…`, `› Search vault… opens Files…` |
 | F13 | Open file… (⌘O, and under ⋯) fuzzy, Markdown first | covered | `files › Open file… matches paths fuzzily…` |
 | F14 | + ▸ New note… in the chosen folder, opened and selected; the form's refusals | covered | `files-writes › New note makes a Markdown note in a new folder…`, `› the new-note form says why it refuses…` |
-| F15 | Rename and Move keep the bytes, and the tab follows the file | covered | `files-writes › rename keeps the folder…`, `› move puts the file in another folder…` |
-| F16 | Move to Trash asks first, how many for a selection; the macOS Trash | covered | `files-writes › Move to Trash asks first…`, `› a selection goes to the Trash together…` |
+| F15 | Rename in place: the stem selected, the check, Return, Escape; Move to… keeps the bytes, and the tab follows the file | covered | `files-writes › Return renames in place…`, `› move puts the file in another folder…`; `filesModel.test.ts`, `vaultFiles.test.ts` (the keys and the rules) |
+| F16 | Move to Trash asks first, how many for a selection; the macOS Trash; the toast points to it, with no Undo | covered | `files-writes › Move to Trash asks first…`, `› a selection goes to the Trash together…` |
 | F17 | Below 900 px the sidebar folds into its button | covered | `files › under 900 px the sidebar folds…` |
 | F18 | Codex only: the same, naming no host | covered | `variants › a Codex-only machine › Files on Codex…` |
+| F19 | Links follow a rename or move: Update N links, on and remembered; the runtime's notes named, not written; the toast's count | covered | `files-writes › a rename takes the links to it along…` (MEMORY.md rewritten, off stays off, nothing refused); `vaultIndex.test.ts` (aliases, headings, embeds, Markdown links, protected notes, moves); `write-policy.test.ts › Files' acts…`. Opening a note at the new name: the vault's own link, by eye. |
+| F20 | New folder (⌥⌘N, +, the menu), numbered; Duplicate (⌘D) of a file and a folder, the copies selected | covered | `files-writes › New folder…`, `› Duplicate (⌘D)…`; `vaultFiles.test.ts › newFolderPath…`, `› duplicatePath…`; `main-services.test.ts › Files' acts on the disk…` |
+| F21 | Drag a selection onto a folder, a favorite or the path bar; the hint; no-drop on a runtime folder with its reason; the tab stays | covered | `files-writes › drag moves a selection onto a path-bar folder…`, `› a runtime folder refuses a drop…`; `vaultFiles.test.ts › movePlan…`. The drag image itself is the OS's. |
+| F22 | ⌘Z and the toast's Undo for moves and renames, links included; stale once moved elsewhere; ⌘Z in a field undoes typing | covered in part | `files-writes › Return renames in place…` (⌘Z, stale), `› a rename takes the links…` (links back), `› drag moves a selection…` (the toast's Undo), `› move puts the file…` (Move to…); `filesModel.test.ts › undo…` (20 deep). ⌘Z in a field: the Edit menu's, by hand. |
 
 ## Settings
 

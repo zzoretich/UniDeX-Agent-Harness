@@ -230,13 +230,23 @@ test("the right-click menu: what it offers, its write items off in the runtime's
   await enter(win, "workspaces/harbor-map");
   await item(win, "workspaces/harbor-map/README.md").click({ button: "right" });
   expect(await content(win).locator(".aos-fx-menu .aos-fx-mi .aos-fx-mlabel").allTextContents()).toEqual([
-    "Open", "Quick Look", "Rename…", "Move to…", "New note here…", "Copy path", "Copy as [[link]]", "Reveal in Finder", "Open with default app", "Move to Trash",
+    "Open", "Quick Look", "Rename", "Move to…", "Duplicate", "New note here…", "New folder", "Copy path", "Copy as [[link]]", "Reveal in Finder",
+    "Open with default app", "Move to Trash",
   ]);
   await win.keyboard.press("Escape");
   await expect(content(win).locator(".aos-fx-menu")).toHaveCount(0);
+  // brain holds the runtime's folders: it is not renamed, moved or trashed whole (main's canMoveTree), but a note can go in it.
+  await content(win).locator('.aos-fx-si[data-fav=""]').click();
+  await item(win, "brain").click({ button: "right" });
+  for (const act of ["rename", "move", "trash"]) {
+    await expect(menuItem(win, act)).toBeDisabled();
+    await expect(menuItem(win, act)).toHaveAttribute("title", "brain holds brain/_index/, which the runtime writes itself");
+  }
+  for (const act of ["new-note", "new-folder", "duplicate"]) await expect(menuItem(win, act)).toBeEnabled();
+  await win.keyboard.press("Escape");
   await enter(win, "brain/_index");
   await item(win, "brain/_index/BRAIN.md").click({ button: "right" });
-  for (const act of ["rename", "move", "new-note", "trash"]) {
+  for (const act of ["rename", "move", "duplicate", "new-note", "new-folder", "trash"]) {
     await expect(menuItem(win, act)).toBeDisabled();
     await expect(menuItem(win, act)).toHaveAttribute("title", "brain/_index/ is written by the runtime itself");
   }

@@ -127,6 +127,30 @@ test("Files writes anywhere in the vault but the runtime's folders and every dot
   refusedResult(svc.rename(v("TODO.md"), v(".mcp.json")));
 });
 
+test("Files' acts on the disk (files-finder D25): a new folder, a folder duplicated file by file, a rename and its undo, links rewritten", () => {
+  reset(["files"]);
+  fs.mkdirSync(v("workspaces/harbor-map/src"), { recursive: true });
+  fs.writeFileSync(v("workspaces/harbor-map/README.md"), "# Harbor Map\n");
+  fs.writeFileSync(v("workspaces/harbor-map/src/tides.js"), "export {};\n");
+  // New folder.
+  assert.equal(svc.mkdir(v("workspaces/untitled folder"), false).ok, true);
+  // Duplicate of a folder: the copy's folders made, then each file copied (chores.ts copyFolder).
+  assert.equal(svc.mkdir(v("workspaces/harbor-map copy"), false).ok, true);
+  assert.equal(svc.mkdir(v("workspaces/harbor-map copy/src"), false).ok, true);
+  for (const rel of ["README.md", "src/tides.js"]) assert.equal(svc.copy(v(`workspaces/harbor-map/${rel}`), v(`workspaces/harbor-map copy/${rel}`)).ok, true, rel);
+  assert.equal(read("workspaces/harbor-map copy/src/tides.js"), "export {};\n");
+  // Rename in place, then its undo, a rename back.
+  assert.equal(svc.rename(v("workspaces/untitled folder"), v("workspaces/charts")).ok, true);
+  assert.equal(svc.rename(v("workspaces/charts"), v("workspaces/untitled folder")).ok, true);
+  // A link rewrite is a write of the note that links: the user's are written, the runtime's never.
+  assert.equal(svc.writeText(v("MEMORY.md"), "[Map](workspaces/harbor-map/README.md)\n", "hud").ok, true);
+  refusedResult(svc.writeText(v("brain/_index/BRAIN.md"), "[Map](../../workspaces/harbor-map/README.md)\n", "hud"));
+  // Nothing of it reaches the runtime's folders: no folder there, no copy into them.
+  refusedResult(svc.mkdir(v("brain/_index/untitled folder"), false));
+  refusedResult(svc.copy(v("workspaces/harbor-map/README.md"), v("brain/scripts/README copy.md")));
+  assert.equal(fs.existsSync(v("brain/_index/untitled folder")), false);
+});
+
 test("Files never reaches the runtime's folders by another spelling or through a link; the disk is left as it was", () => {
   reset(["files", "notes"]);
   fs.mkdirSync(v("brain/_index"), { recursive: true });

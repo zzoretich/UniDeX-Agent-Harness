@@ -32,7 +32,7 @@ export function renderList(host: HTMLElement, ctx: FilesCtx): ViewNav {
       shown.set(it.path, it);
       const open = it.folder && ctx.expanded.has(it.path);
       const row = rows.createDiv({ cls: `aos-fx-row${it.folder ? " is-folder" : ""}${open ? " is-open" : ""}` });
-      itemEl(row, ctx, it.path, folder);
+      itemEl(row, ctx, it, folder);
       if (it.folder) row.setAttr("aria-expanded", open ? "true" : "false");
       const name = row.createDiv({ cls: "aos-fx-cell aos-fx-col-name" });
       name.style.paddingLeft = `${8 + depth * 16}px`;

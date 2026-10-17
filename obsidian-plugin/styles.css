@@ -2450,6 +2450,53 @@ button.aos-fx-mi.is-danger:not(.clickable-icon):hover:not(:disabled), button.aos
 button.aos-fx-mi:hover .aos-fx-mkey, button.aos-fx-mi:focus-visible .aos-fx-mkey { color: inherit; }
 .aos-fx-msep { height: 1px; margin: 4px 6px; background: var(--udx-line); }
 
+/* Rename in place (D14) and its Update N links (D17): the field sits where the name was; the tip floats under it, so
+   the grid and the rows do not move. */
+.aos-fx-hidden { display: none !important; }
+.aos-fx-rename { position: relative; min-width: 0; }
+.aos-fx-tile .aos-fx-rename { width: 108px; }
+.aos-fx-row .aos-fx-rename, .aos-fx-crow .aos-fx-rename { flex: 1; }
+input.aos-fx-rename-input[type="text"] {
+  width: 100%; height: 20px; box-sizing: border-box; margin: 0; padding: 0 5px; border: 1px solid var(--udx-focus); border-radius: 4px;
+  background: var(--udx-field); color: var(--udx-text); box-shadow: 0 0 0 2px color-mix(in srgb, var(--udx-focus) 30%, transparent);
+  font-family: var(--udx-sans); font-size: 12px; line-height: 18px;
+}
+.aos-fx-tile input.aos-fx-rename-input[type="text"] { text-align: center; }
+.aos-fx-rename.is-bad input.aos-fx-rename-input[type="text"] { border-color: var(--udx-danger); box-shadow: 0 0 0 2px var(--udx-danger-bg); }
+.aos-fx-rename-tip {
+  display: none; position: absolute; z-index: 25; top: calc(100% + 4px); left: 50%; transform: translateX(-50%); width: max-content;
+  max-width: 260px; padding: 6px 8px; box-sizing: border-box; border: 1px solid var(--udx-line-2); border-radius: 7px; background: var(--udx-bg);
+  box-shadow: var(--udx-shadow); font-size: 11.5px; line-height: 16px; color: var(--udx-text-2); text-align: left; white-space: normal;
+}
+.aos-fx-row .aos-fx-rename-tip, .aos-fx-crow .aos-fx-rename-tip { left: 0; transform: none; }
+.aos-fx-rename-tip.is-shown { display: flex; flex-direction: column; gap: 4px; }
+.aos-fx-rename-note, .aos-fx-rename-links, .aos-fx-rename-skip { display: none; }
+.aos-fx-rename-note.is-shown { display: block; color: var(--udx-danger); }
+.aos-fx-rename-links.is-shown { display: flex; align-items: center; gap: 6px; color: var(--udx-text); cursor: pointer; }
+.aos-fx-rename-links input { margin: 0; }
+.aos-fx-rename-skip.is-shown { display: block; color: var(--udx-text-3); }
+
+/* Drag to move (D15): a folder that takes the drop is outlined; one that refuses it shows why in the hint. */
+.aos-fx [data-drop].is-drop { box-shadow: inset 0 0 0 2px var(--udx-focus); background: color-mix(in srgb, var(--udx-focus) 12%, transparent); }
+.aos-fx .aos-fx-tile.is-drop { box-shadow: none; }
+.aos-fx .aos-fx-tile.is-drop .aos-fx-tile-art { box-shadow: 0 0 0 2px var(--udx-focus); }
+.aos-fx [data-drop].is-nodrop { cursor: no-drop; }
+.aos-fx-main { position: relative; }
+.aos-fx-drophint {
+  display: none; position: absolute; z-index: 20; left: 50%; bottom: 40px; transform: translateX(-50%); max-width: calc(100% - 40px);
+  padding: 5px 12px; border: 1px solid var(--udx-line-2); border-radius: 999px; background: var(--udx-bg); box-shadow: var(--udx-shadow);
+  font-size: 12px; color: var(--udx-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+}
+.aos-fx-drophint.is-shown { display: block; }
+.aos-fx-drophint.is-bad { color: var(--udx-danger); }
+
+/* The toast's Undo (D16). */
+button.aos-fx-undo:not(.clickable-icon) {
+  height: 22px; margin-left: 6px; padding: 0 10px; border: 1px solid var(--udx-line-2); border-radius: 999px; background: var(--udx-raised);
+  box-shadow: none; color: var(--udx-text); font-size: 12px; font-weight: 550; cursor: pointer; vertical-align: middle;
+}
+button.aos-fx-undo:not(.clickable-icon):hover { background: var(--udx-raised-2); }
+
 /* Quick Look (D11). */
 .aos-fx-ql { position: absolute; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 28px; box-sizing: border-box; background: var(--udx-scrim); }
 .aos-fx-qlpanel {

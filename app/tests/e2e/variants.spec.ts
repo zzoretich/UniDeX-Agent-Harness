@@ -480,7 +480,7 @@ test.describe("a Codex-only machine", () => {
     await expect(C.locator(".aos-fx-qlpanel")).toHaveAttribute("aria-label", "Quick Look: harbor-map.md");
     await win.keyboard.press("Escape");
     await C.locator('.aos-fx-view [data-path="brain/memory/projects/harbor-map.md"]').click({ button: "right" });
-    await expect(C.locator(".aos-fx-menu .aos-fx-mi")).toHaveCount(10);
+    await expect(C.locator(".aos-fx-menu .aos-fx-mi")).toHaveCount(12);
     await expect(C.locator(".aos-fx-menu")).not.toContainText(/Claude|Codex/);
     await win.keyboard.press("Escape");
     await expect(C.locator(".aos-fx-bar")).not.toContainText(/Claude|Codex/);

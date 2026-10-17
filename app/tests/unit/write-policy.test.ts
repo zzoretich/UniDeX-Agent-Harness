@@ -5,7 +5,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { SURFACES, SURFACE_IDS, WritePolicy, foldPath, globToRegExp, parseSurfaces } from "../../src/main/policy/write-policy";
-import { foldPath as hudFoldPath, isProtected } from "../../../obsidian-plugin/src/data/vaultFiles";
+import { duplicatePath, foldPath as hudFoldPath, isProtected, movePlan, newFolderPath, renamePath } from "../../../obsidian-plugin/src/data/vaultFiles";
+import { indexFrom, parseNote, rewritePlan } from "../../../obsidian-plugin/src/data/vaultIndex";
 import { workspaceArgs } from "../../../obsidian-plugin/src/data/spacesModel";
 import { memoryArgs, recallArgs } from "../../../obsidian-plugin/src/data/brainModel";
 import { copyArgs } from "../../../obsidian-plugin/src/data/mcpServers";
@@ -661,6 +662,44 @@ test("Files never writes or creates a dot-path: a compromised page cannot plant 
     ".codex/config.toml", ".git/hooks/pre-commit", ".envrc", "a/.vscode/tasks.json", ".obsidian/app.json"]) assert.equal(p.canWrite(v(rel)), false, rel);
   for (const rel of [".claude", "workspaces/app/.claude", ".git/hooks"]) assert.equal(p.canMakeFolder(v(rel)), false, rel);
   assert.equal(p.canMakeFolder(v("workspaces/new")), true);
+});
+
+test("Files' acts (files-finder D25): what the tab's own rules let it do, the Files rule lets main do; what they refuse, main refuses", () => {
+  const p = new WritePolicy(VAULT, ["files"]);
+  const none = () => false;
+  const ok = <T extends { ok: boolean }>(c: T): T & { ok: true } => { assert.ok(c.ok, JSON.stringify(c)); return c as T & { ok: true }; };
+  // New folder, numbered when taken: a folder main makes.
+  for (const dir of ["", "notes", "workspaces/harbor-map", "2026"]) assert.equal(p.canMakeFolder(v(ok(newFolderPath(dir, none)).path)), true, dir);
+  // Duplicate: a file copied beside itself; a folder made again with its folders and files under the copy's name.
+  assert.equal(p.canWrite(v(ok(duplicatePath("notes/plan.md", false, none)).path)), true);
+  const copy = ok(duplicatePath("workspaces/harbor-map", true, none)).path;
+  assert.equal(copy, "workspaces/harbor-map copy");
+  for (const rel of [copy, `${copy}/src`]) assert.equal(p.canMakeFolder(v(rel)), true, rel);
+  assert.equal(p.canWrite(v(`${copy}/src/tides.js`)), true);
+  // Rename in place and a drop of several: each end of each move.
+  const r = ok(renamePath("workspaces/harbor-map", "chart-viewer", none));
+  assert.equal(p.canMoveTree(v("workspaces/harbor-map")) && p.canWrite(v(r.path)), true);
+  const drop = movePlan(["notes/a.md", "notes/old", "TODO-ideas.md"], "archive", none);
+  assert.ok(drop.ok);
+  for (const m of drop.moves) assert.equal(p.canMoveTree(v(m.from)) && p.canWrite(v(m.to)), true, m.from);
+  // Link updates: the notes rewritePlan writes are the user's; the ones it leaves out are the ones main refuses.
+  const notes = { "MEMORY.md": "[Map](brain/memory/projects/harbor-map.md)\n", "brain/memory/projects/harbor-map.md": "# Map\n", "brain/_index/BRAIN.md": "[Map](../memory/projects/harbor-map.md)\n", "brain/memory/user/profile.md": "[[harbor-map]]\n" };
+  const idx = indexFrom(Object.entries(notes).map(([path, text]) => ({ path, facts: parseNote(text) })), Object.keys(notes));
+  const plan = rewritePlan(idx, [{ from: "brain/memory/projects/harbor-map.md", to: "brain/memory/projects/chart-viewer.md" }]);
+  assert.deepEqual(plan.notes.map((n) => n.path), ["MEMORY.md", "brain/memory/user/profile.md"]);
+  for (const n of plan.notes) assert.equal(p.canWrite(v(n.path)), true, n.path);
+  assert.deepEqual(plan.skipped.map((n) => n.path), ["brain/_index/BRAIN.md"]);
+  for (const n of plan.skipped) assert.equal(p.canWrite(v(n.path)), false, n.path);
+  // In the runtime's folders the tab offers none of it, and main refuses each.
+  assert.equal(newFolderPath("brain/_index", none).ok, false);
+  assert.equal(p.canMakeFolder(v("brain/_index/untitled folder")), false);
+  assert.equal(duplicatePath("brain/scripts/statusline.js", false, none).ok, false);
+  assert.equal(p.canWrite(v("brain/scripts/statusline copy.js")), false);
+  assert.equal(movePlan(["notes/a.md"], "brain/_index", none).ok, false);
+  assert.equal(p.canWrite(v("brain/_index/a.md")), false);
+  assert.equal(movePlan(["brain/scripts"], "archive", none).ok, false);
+  assert.equal(p.canMoveTree(v("brain/scripts")), false);
+  assert.equal(p.canMoveTree(v("brain")), false, "a folder that holds the runtime's own never moves whole");
 });
 
 test("switching Notes on never widens what the HUD may write, and a HUD surface never lets the editor save", () => {

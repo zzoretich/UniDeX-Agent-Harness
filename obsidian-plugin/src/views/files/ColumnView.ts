@@ -15,7 +15,8 @@ export function renderColumns(host: HTMLElement, ctx: FilesCtx): ViewNav {
   chain.forEach((folder, i) => {
     const items = ctx.list(folder);
     lists.set(folder, items);
-    const col = box.createDiv({ cls: "aos-fx-col", attr: { role: "listbox", "aria-multiselectable": "true", "aria-label": folder || ctx.vaultName, "data-folder": folder } });
+    // A column takes drops too: into its folder (D15).
+    const col = box.createDiv({ cls: "aos-fx-col", attr: { role: "listbox", "aria-multiselectable": "true", "aria-label": folder || ctx.vaultName, "data-folder": folder, "data-drop": folder } });
     col.addEventListener("contextmenu", (e) => {
       if ((e.target as HTMLElement).closest("[data-path]")) return;
       e.preventDefault();
@@ -24,7 +25,7 @@ export function renderColumns(host: HTMLElement, ctx: FilesCtx): ViewNav {
     const next = chain[i + 1];
     for (const it of items) {
       const row = col.createDiv({ cls: `aos-fx-crow${it.path === next ? " is-trail" : ""}` });
-      itemEl(row, ctx, it.path, folder);
+      itemEl(row, ctx, it, folder);
       glyphFor(ctx, row.createSpan({ cls: "aos-fx-glyph" }), it);
       row.createSpan({ cls: "aos-fx-name", text: it.name, attr: { title: it.name } });
       if (it.folder) {

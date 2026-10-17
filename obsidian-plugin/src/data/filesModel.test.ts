@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   NO_SELECTION, columnChain, compactCount, crumbs, dateLabel, extOf, extendTo, go, goBack, goForward, groupByKind, itemsLabel,
-  keepSelection, keyAction, kindLabel, kindOf, moveCursor, parentOf, renameInSelection, selectAll, selectOnly, sizeLabel,
-  sortItems, startHistory, tintOf, toggleIn, typeAhead, type Item, type KeyLike,
+  keepSelection, keyAction, kindLabel, kindOf, moveCursor, parentOf, pushUndo, renameInSelection, selectAll, selectOnly, sizeLabel,
+  sortItems, staleUndo, startHistory, tintOf, toggleIn, typeAhead, undoMoves, UNDO_MAX, type Item, type KeyLike, type UndoEntry,
 } from "./filesModel";
 
 const file = (path: string, size = 10, mtime = 1): Item => {
@@ -137,6 +137,13 @@ test("the key map: Finder's keys, view keys on ⌃⌘, nothing for keys it does 
   assert.equal(k("n", { metaKey: true }), "new-note");
   assert.equal(k("1", { metaKey: true, ctrlKey: true }), "view-icons");
   assert.equal(k("3", { metaKey: true, ctrlKey: true }), "view-columns");
+  assert.equal(k("d", { metaKey: true }), "duplicate");
+  assert.equal(k("z", { metaKey: true }), "undo");
+  // ⌥⌘N by the physical key: ⌥N types a dead key on a Mac.
+  assert.equal(k("Dead", { metaKey: true, altKey: true, code: "KeyN" }), "new-folder");
+  assert.equal(k("n", { metaKey: true, altKey: true }), "new-folder");
+  assert.equal(k("z", { metaKey: true, shiftKey: true }), null, "⇧⌘Z is the Edit menu's");
+  assert.equal(k("d", { metaKey: true, altKey: true, code: "KeyD" }), null);
   // ⌘1–⌘9 switch tabs, ⇧⌘N is New workspace, ⇧⌘F is Search vault…: not the view's.
   assert.equal(k("1", { metaKey: true }), null);
   assert.equal(k("n", { metaKey: true, shiftKey: true }), null);
@@ -179,4 +186,21 @@ test("dates: today and yesterday by the local calendar, then the month and day, 
   assert.equal(dateLabel(new Date(2026, 0, 1, 0, 0).getTime(), new Date(2026, 0, 1, 8, 0)), "Today, 00:00");
   assert.equal(dateLabel(new Date(2025, 11, 31, 12, 0).getTime(), new Date(2026, 0, 1, 8, 0)), "Yesterday, 12:00");
   assert.equal(dateLabel(null, now), "--");
+});
+
+test("undo (D16): a stack of 20, the newest last; an entry goes stale once its paths change; moves undo last first", () => {
+  const entry = (n: number): UndoEntry => ({ label: `#${n}`, moves: [{ from: `a${n}.md`, to: `b${n}.md` }], edits: [] });
+  let stack: UndoEntry[] = [];
+  for (let i = 1; i <= UNDO_MAX + 3; i++) stack = pushUndo(stack, entry(i));
+  assert.equal(stack.length, UNDO_MAX);
+  assert.deepEqual([stack[0].label, stack[stack.length - 1].label], ["#4", "#23"]);
+
+  const two: UndoEntry = { label: "move", moves: [{ from: "a/x.md", to: "b/x.md" }, { from: "a/y.md", to: "b/y.md" }], edits: [] };
+  const on = (...paths: string[]) => (p: string) => paths.includes(p);
+  assert.equal(staleUndo(two, on("b/x.md", "b/y.md")), null);
+  assert.equal(staleUndo(two, on("b/x.md")), "y.md is no longer at b/y.md");
+  assert.equal(staleUndo(two, on("b/x.md", "b/y.md", "a/x.md")), "a/x.md exists again");
+  // A rename of the letter case alone is one file on the disk: both spellings answer.
+  assert.equal(staleUndo({ label: "r", moves: [{ from: "n/a.md", to: "n/A.md" }], edits: [] }, on("n/a.md", "n/A.md")), null);
+  assert.deepEqual(undoMoves(two), [{ from: "b/y.md", to: "a/y.md" }, { from: "b/x.md", to: "a/x.md" }]);
 });
