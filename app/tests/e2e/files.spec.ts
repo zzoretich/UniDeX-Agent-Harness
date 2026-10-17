@@ -298,6 +298,9 @@ test("under 900 px the sidebar folds into the toolbar's sidebar button, and a pi
   const undo = await emulateViewport(win, { width: 860, height: 760 });
   try {
     await expect(side).toBeHidden();
+    // The tour's Favorites step still finds a control: the sidebar's button (CI's smaller screen folds the sidebar).
+    const probe = await win.evaluate(() => (window as unknown as { aosHost: { plugin: { tour: { probe(id: string, ms: number): Promise<Array<{ ref: string; status: string }>> } } } }).aosHost.plugin.tour.probe("files", 3000));
+    expect(probe.filter((r) => r.status !== "found")).toEqual([]);
     await toggle.click();
     await expect(side).toBeVisible();
     await content(win).locator('.aos-fx-si[data-fav="brain"]').click();
