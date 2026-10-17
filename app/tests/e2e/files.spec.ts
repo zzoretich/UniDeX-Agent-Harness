@@ -2,11 +2,13 @@
 // Icons at the vault's top level with the runtime's folders locked; entering folders, back and forward and the path
 // bar; List and Columns by the switcher and ⌃⌘1–3; List's header and triangles; Columns' preview with the vault index's
 // tags and links; Finder's selection and keys; the preview pane; Quick Look; the right-click menu; the Workspace chip;
-// search, Open file… and Search vault…; and, with the Files surface off, a new note and a trash refused.
+// search, its scope bar (Vault or this folder, Names or Contents), Open file… and Search vault…; thumbnails; the smart
+// folders, tags and editable Favorites; and, with the Files surface off, a new note and a trash refused.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as zlib from "node:zlib";
 import { FX, closeNotes, command, content, drawer, emulateViewport, notePath, openTab, rail, useApp } from "./harness";
 
 const app = useApp();
@@ -19,6 +21,49 @@ const status = (win: Page) => content(win).locator(".aos-fx-sel");
 const menuItem = (win: Page, act: string) => content(win).locator(`.aos-fx-menu .aos-fx-mi[data-act="${act}"]`);
 const setView = async (win: Page, v: "icons" | "list" | "columns") => { await content(win).locator(`.aos-fx-seg button[data-view="${v}"]`).click(); };
 const toVault = async (win: Page) => { await content(win).locator('.aos-fx-si[data-fav=""]').click(); };
+const smart = (win: Page, id: string) => content(win).locator(`.aos-fx-si[data-smart="${id}"]`);
+const fav = (win: Page, p: string) => content(win).locator(`.aos-fx-si[data-fav="${p}"]`);
+const shownPaths = (win: Page) => view(win).locator("[data-path]").evaluateAll((els) => els.map((e) => e.getAttribute("data-path")!));
+/** A one-pixel PNG. */
+const ONE_PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+/** The Files choice back to its defaults (favorites, recents), as the plugin stores it. */
+async function resetFilesChoice(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    const p = (window as unknown as { aosHost: { plugin: { settings: { files: { favorites: string[] | null; recents: string[] } }; saveSettings(): Promise<void> } } }).aosHost.plugin;
+    p.settings.files = { ...p.settings.files, favorites: null, recents: [] };
+    return p.saveSettings();
+  });
+}
+
+const filesChoice = (win: Page) => win.evaluate(() => (window as unknown as { aosHost: { plugin: { settings: { files: { favorites: string[] | null; recents: string[] } } } } }).aosHost.plugin.settings.files);
+
+/** A greyscale PNG of `w`×`h` that Chromium decodes, written the long way (zlib and a CRC per chunk). */
+function png(w: number, h: number): Buffer {
+  const table = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = (b: Buffer) => { let c = 0xffffffff; for (const x of b) c = table[(c ^ x) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const sum = Buffer.alloc(4); sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const head = Buffer.alloc(13);
+  head.writeUInt32BE(w, 0); head.writeUInt32BE(h, 4); head[8] = 8; // 8-bit greyscale, no interlace
+  const raw = Buffer.alloc((w + 1) * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) raw[y * (w + 1) + 1 + x] = (x + y) & 0xff;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", head), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+/** A drag from `from` dropped on `to`, with the events Chromium sends; the end goes to the tab. */
+async function drag(win: Page, from: Locator, to: Locator): Promise<void> {
+  const dataTransfer = await win.evaluateHandle(() => new DataTransfer());
+  await from.dispatchEvent("dragstart", { dataTransfer });
+  await to.dispatchEvent("dragenter", { dataTransfer });
+  await to.dispatchEvent("dragover", { dataTransfer });
+  await to.dispatchEvent("drop", { dataTransfer });
+  await content(win).locator(".aos-fx").dispatchEvent("dragend", { dataTransfer });
+}
 
 /** Enters each folder down to `dir` from the vault, by double-clicks in Icons. */
 async function enter(win: Page, dir: string): Promise<void> {
@@ -332,6 +377,246 @@ test("search finds lines across notes and highlights the hit; a line opens its n
   await query(win).fill("no such words anywhere in the vault");
   await expect(content(win).locator(".aos-fx-summary")).toHaveText(/^No matches in \d+ files$/);
   await query(win).fill("");
+});
+
+test("search's scope bar: the vault or this folder, names in the view or the lines inside; ↓ and Space work at a hit", async () => {
+  const { win } = app();
+  const bar = content(win).locator(".aos-fx-scopebar");
+  const scope = (id: string) => bar.locator(`button[data-scope="${id}"]`);
+  const allText = content(win).locator(".aos-fx-scope input");
+  try {
+    await expect(bar).toBeHidden();
+    await query(win).fill("tide");
+    await expect(bar).toBeVisible();
+    await expect(scope("vault")).toHaveAttribute("aria-pressed", "true");
+    await expect(scope("contents")).toHaveAttribute("aria-pressed", "true");
+    await expect(scope("here"), "at the vault's top, this folder is the vault").toHaveCount(0);
+    // Names: what matches, from across the vault, as the view's own items.
+    await scope("names").click();
+    await expect(content(win).locator(".aos-fx-summary")).toHaveCount(0);
+    await expect(item(win, "brain/memory/reference/tide-api-notes.md")).toBeVisible();
+    await expect(item(win, "workspaces/harbor-map/src/tides.js")).toBeVisible();
+    for (const p of await shownPaths(win)) expect(p.split("/").pop()!.toLowerCase()).toContain("tide");
+    await expect(allText, "names match every kind of file").toBeDisabled();
+    await expect(query(win)).toHaveAttribute("placeholder", "Search names…");
+    await setView(win, "list");
+    await expect(item(win, "workspaces/harbor-map/src/tides.js").locator(".aos-fx-where")).toHaveText("workspaces/harbor-map/src");
+    await setView(win, "icons");
+    // This folder: everything under it, and nothing else.
+    await query(win).fill("");
+    await expect(bar).toBeHidden();
+    await enter(win, "workspaces/harbor-map");
+    await query(win).fill("tide");
+    await expect(scope("here")).toHaveText("“harbor-map”");
+    await scope("here").click();
+    await expect(item(win, "workspaces/harbor-map/src/tides.js")).toBeVisible();
+    await expect(item(win, "brain/memory/reference/tide-api-notes.md")).toHaveCount(0);
+    // Contents in this folder: its lines only, every text file on request.
+    await scope("contents").click();
+    await allText.check();
+    await expect(content(win).locator('.aos-fx-hit[data-hit="workspaces/harbor-map/src/tides.js"]')).toBeVisible();
+    const hits = await content(win).locator(".aos-fx-hit").evaluateAll((els) => els.map((e) => e.getAttribute("data-hit")!));
+    expect(hits.every((h) => h.startsWith("workspaces/harbor-map/"))).toBe(true);
+    // ↓ goes from the field into the results and on line by line; Space is Quick Look on that file.
+    await query(win).press("ArrowDown");
+    await expect(content(win).locator("button.aos-fx-hitpath").first()).toBeFocused();
+    await win.keyboard.press("ArrowDown");
+    await expect(content(win).locator("button.aos-fx-line").first()).toBeFocused();
+    await win.keyboard.press(" ");
+    await expect(content(win).locator(".aos-fx-qlpanel")).toHaveAttribute("aria-label", `Quick Look: ${hits[0].split("/").pop()}`);
+    await win.keyboard.press("Escape");
+    await expect(content(win).locator(".aos-fx-qlpanel")).toHaveCount(0);
+    await expect(notePath(win), "Space looked; it opened nothing").toHaveCount(0);
+  } finally {
+    if (!(await bar.isVisible())) await query(win).fill("x");
+    if (await allText.isChecked()) await allText.uncheck();
+    await scope("vault").click();
+    await scope("contents").click();
+    await query(win).fill("");
+  }
+});
+
+test("Icons draws an image as its picture once in view, a big one drawn down; one over 4 MB or unreadable keeps its page", async () => {
+  const { win } = app();
+  const dir = "workspaces/harbor-map";
+  const pics = { broken: `${dir}/broken.png`, small: `${dir}/chart.png`, huge: `${dir}/huge.png`, photo: `${dir}/photo.png` };
+  fs.writeFileSync(FX.v(pics.small), Buffer.from(ONE_PX, "base64"));
+  fs.writeFileSync(FX.v(pics.photo), png(480, 320));
+  fs.writeFileSync(FX.v(pics.huge), Buffer.alloc(4_100_000, 7));
+  fs.writeFileSync(FX.v(pics.broken), "not a picture at all\n");
+  try {
+    await enter(win, dir);
+    const art = (p: string) => item(win, p).locator(".aos-fx-tile-art");
+    for (const p of Object.values(pics)) await item(win, p).scrollIntoViewIfNeeded();
+    await expect(art(pics.small).locator("img.aos-fx-thumb")).toHaveAttribute("src", /^data:image\/png;base64,/);
+    await expect(art(pics.small)).toHaveClass(/has-thumb/);
+    await expect(art(pics.small).locator(".aos-fx-art-page")).toHaveCount(0);
+    // Larger than the tile: drawn down to 168 px on its long side, not kept whole.
+    const thumb = art(pics.photo).locator("img.aos-fx-thumb");
+    await expect(thumb).toHaveAttribute("src", /^data:image\/webp;base64,/);
+    expect(await thumb.evaluate((i) => [(i as HTMLImageElement).naturalWidth, (i as HTMLImageElement).naturalHeight])).toEqual([168, 112]);
+    // Read in order, one a frame: broken.png was tried before photo.png landed. Neither it nor the oversize one shows.
+    for (const p of [pics.broken, pics.huge]) {
+      await expect(art(p).locator(".aos-fx-art-page")).toHaveCount(1);
+      await expect(art(p).locator("img.aos-fx-thumb")).toHaveCount(0);
+    }
+    // Drawn again, the cached picture is there at once.
+    await setView(win, "list");
+    await setView(win, "icons");
+    await expect(art(pics.photo)).toHaveClass(/has-thumb/);
+  } finally {
+    for (const p of Object.values(pics)) fs.rmSync(FX.v(p), { force: true });
+  }
+});
+
+test("smart folders: Recents keeps what was opened from Files, ⌘O or Quick Look; each shows in the view in use; back returns", async () => {
+  const { win } = app();
+  await resetFilesChoice(win);
+  await smart(win, "recents").click();
+  await expect(title(win)).toHaveText("Recents");
+  await expect(view(win).locator(".aos-fx-empty")).toHaveText(/^Files you open from Files, ⌘O or Quick Look/);
+  await enter(win, "workspaces/harbor-map");
+  await item(win, "workspaces/harbor-map/README.md").dblclick();
+  await expect(notePath(win)).toHaveText("workspaces/harbor-map/README.md");
+  await closeNotes(win);
+  await openTab(win, "files");
+  await item(win, "workspaces/harbor-map/workspace.md").click();
+  await win.keyboard.press(" ");
+  await expect(content(win).locator(".aos-fx-qlpanel")).toBeVisible();
+  await win.keyboard.press("Escape");
+  expect(await command(win, "agentic-os:open-file")).toBe(true);
+  const input = win.locator(".modal.prompt .prompt-input");
+  await input.fill("harbor plan");
+  await expect(win.locator(".modal.prompt .suggestion-item").first().locator(".aos-omni-label")).toHaveText("PLAN.md");
+  await input.press("Enter");
+  await expect(notePath(win)).toHaveText("workspaces/harbor-map/PLAN.md");
+  await closeNotes(win);
+  await openTab(win, "files");
+  const newest = ["workspaces/harbor-map/PLAN.md", "workspaces/harbor-map/workspace.md", "workspaces/harbor-map/README.md"];
+  expect((await filesChoice(win)).recents).toEqual(newest);
+  await smart(win, "recents").click();
+  await expect(smart(win, "recents")).toHaveAttribute("aria-current", "true");
+  await expect(content(win).locator(".aos-fx-count")).toHaveText("3 items");
+  expect(await shownPaths(win)).toEqual(newest);
+  await setView(win, "list");
+  expect(await shownPaths(win)).toEqual(newest);
+  await setView(win, "columns");
+  await expect(title(win)).toHaveText("Recents");
+  expect(await view(win).locator(".aos-fx-col:not(.aos-fx-pcol) [data-path]").evaluateAll((els) => els.map((e) => e.getAttribute("data-path")))).toEqual(newest);
+  await item(win, newest[1]).click();
+  await expect(view(win).locator(".aos-fx-pcol .aos-fx-pname")).toHaveText("workspace.md");
+  // In a smart folder there is no folder to make things in.
+  await content(win).locator('button[data-act="new"]').click();
+  await expect(menuItem(win, "new-note")).toBeDisabled();
+  await win.keyboard.press("Escape");
+  await setView(win, "icons");
+  await content(win).locator('button[data-act="back"]').click();
+  await expect(title(win)).toHaveText("harbor-map");
+  await resetFilesChoice(win);
+});
+
+test("Changed today lists what changed since midnight and Images every image, both from across the vault but the runtime's folders", async () => {
+  const { win } = app();
+  const fresh = "workspaces/harbor-map/fresh-soundings.md";
+  const old = "workspaces/harbor-map/old-soundings.md";
+  const pic = "workspaces/harbor-map/chart.png";
+  fs.writeFileSync(FX.v(fresh), "# Fresh soundings\n");
+  fs.writeFileSync(FX.v(old), "# Old soundings\n");
+  const ago = new Date(Date.now() - 3 * 86_400_000);
+  fs.utimesSync(FX.v(old), ago, ago);
+  fs.writeFileSync(FX.v(pic), Buffer.from(ONE_PX, "base64"));
+  try {
+    await enter(win, "workspaces/harbor-map");
+    await expect(item(win, old)).toBeVisible();
+    await smart(win, "today").click();
+    await expect(title(win)).toHaveText("Changed today");
+    await expect(item(win, fresh)).toBeVisible();
+    await expect(item(win, old)).toHaveCount(0);
+    const today = await shownPaths(win);
+    expect(today.filter((p) => p.startsWith("brain/_index/") || p.startsWith("brain/scripts/"))).toEqual([]);
+    expect(today.length).toBeGreaterThan(1);
+    // A file changed now joins it.
+    fs.writeFileSync(FX.v(old), "# Old soundings, read again\n");
+    await expect(item(win, old)).toBeVisible();
+    await smart(win, "images").click();
+    await expect(title(win)).toHaveText("Images");
+    await expect(item(win, pic)).toBeVisible();
+    for (const p of await shownPaths(win)) expect(p).toMatch(/\.(png|jpe?g|gif|webp|svg)$/i);
+  } finally {
+    for (const p of [fresh, old, pic]) fs.rmSync(FX.v(p), { force: true });
+  }
+});
+
+test("Tags list the notes' most used frontmatter tags, most first; a tag lists its notes in the view in use", async () => {
+  const { win } = app();
+  const tags = content(win).locator('.aos-fx-tags .aos-fx-si[data-smart^="tag:"]');
+  await expect(tags.first()).toBeVisible();
+  const n = await tags.count();
+  expect(n).toBeGreaterThan(1);
+  expect(n).toBeLessThanOrEqual(12);
+  const counts = (await tags.locator(".aos-fx-si-count").allTextContents()).map(Number);
+  expect([...counts].sort((a, b) => b - a)).toEqual(counts);
+  const active = smart(win, "tag:status/active");
+  const count = Number(await active.locator(".aos-fx-si-count").textContent());
+  await active.click();
+  await expect(title(win)).toHaveText("#status/active");
+  await expect(item(win, "brain/memory/projects/harbor-map.md")).toBeVisible();
+  const notes = await shownPaths(win);
+  expect(notes.length).toBe(count);
+  expect(notes.every((p) => p.endsWith(".md"))).toBe(true);
+  await setView(win, "list");
+  await expect(item(win, "brain/memory/projects/harbor-map.md").locator(".aos-fx-where")).toHaveText("brain/memory/projects");
+  await setView(win, "icons");
+});
+
+test("Favorites: a folder dragged onto them joins them, a file or a favorite refused; right-click removes one or restores the defaults", async () => {
+  const { win } = app();
+  await resetFilesChoice(win);
+  const favs = content(win).locator(".aos-fx-favs");
+  const hint = content(win).locator(".aos-fx-drophint");
+  try {
+    // A file says why it cannot (the drag held over Favorites, not dropped).
+    const dataTransfer = await win.evaluateHandle(() => new DataTransfer());
+    await item(win, "TODO.md").dispatchEvent("dragstart", { dataTransfer });
+    await expect(content(win).locator(".aos-fx")).toHaveClass(/is-dragging/);
+    await expect(content(win).locator(".aos-fx-favslot")).toBeVisible();
+    await content(win).locator(".aos-fx-favslot").dispatchEvent("dragover", { dataTransfer });
+    await expect(hint).toHaveText("Only folders go in Favorites: TODO.md is a file");
+    await expect(favs).toHaveClass(/is-nodrop/);
+    await content(win).locator(".aos-fx").dispatchEvent("dragend", { dataTransfer });
+    await expect(content(win).locator(".aos-fx-favslot")).toBeHidden();
+    // A favorite already: a drop on Favorites adds nothing.
+    await drag(win, item(win, "workspaces"), content(win).locator(".aos-fx-favslot"));
+    expect((await filesChoice(win)).favorites).toBeNull();
+    // A folder joins, at the end.
+    await drag(win, item(win, "templates"), content(win).locator(".aos-fx-favslot"));
+    await expect(fav(win, "templates")).toHaveText("templates");
+    expect((await filesChoice(win)).favorites).toEqual(["", "brain", "brain/memory", "workspaces", "2026", "persona", "templates"]);
+    await fav(win, "templates").click();
+    await expect(title(win)).toHaveText("templates");
+    await fav(win, "templates").click({ button: "right" });
+    await menuItem(win, "remove-favorite").click();
+    await expect(fav(win, "templates")).toHaveCount(0);
+    // A default one goes too; Restore puts the defaults back.
+    await fav(win, "persona").click({ button: "right" });
+    await menuItem(win, "remove-favorite").click();
+    await expect(fav(win, "persona")).toHaveCount(0);
+    await fav(win, "brain").click({ button: "right" });
+    await menuItem(win, "reset-favorites").click();
+    await expect(fav(win, "persona")).toBeVisible();
+    expect((await filesChoice(win)).favorites).toBeNull();
+    // A folder's own menu adds it, then offers to take it out.
+    await toVault(win);
+    await item(win, "templates").click({ button: "right" });
+    await menuItem(win, "add-favorite").click();
+    await expect(fav(win, "templates")).toBeVisible();
+    await item(win, "templates").click({ button: "right" });
+    await expect(menuItem(win, "remove-favorite")).toBeVisible();
+    await win.keyboard.press("Escape");
+  } finally {
+    await resetFilesChoice(win);
+    await toVault(win);
+  }
 });
 
 test("Open file… matches paths fuzzily, Markdown first, and opens the choice; ⋯ offers it too", async () => {

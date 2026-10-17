@@ -1,7 +1,8 @@
 // The Files tab's pure parts (spec 2026-10-17-files-finder): what kind a file is and what it is called, the kind tab
 // a top folder gives everything under it (D3), sorting and grouping (D7, D8), the selection with its cursor and
-// anchor (D4), back and forward (D6), the undo stack (D16), the key map (D23), type-ahead, and the size and date labels. No obsidian
-// import: the tab hands in plain items.
+// anchor (D4), back and forward (D6), the undo stack (D16), the key map (D23), type-ahead, the size and date labels,
+// which images get a thumbnail and the cache that keeps them (D19), the smart folders (D20) and search by name (D22). No
+// obsidian import: the tab hands in plain items.
 
 export type ViewMode = "icons" | "list" | "columns";
 export const VIEW_MODES: readonly ViewMode[] = ["icons", "list", "columns"];
@@ -344,4 +345,101 @@ export function dateLabel(ms: number | null, now: Date): string {
   if (day(d) === yesterday) return `Yesterday, ${time}`;
   if (d.getFullYear() === now.getFullYear()) return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${time}`;
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+// ── thumbnails (D19) ──
+
+/** The largest image Icons draws as a thumbnail: readBinary is synchronous per chunk, so a bigger one keeps its page. */
+export const THUMB_MAX_BYTES = 4_000_000;
+/** How many thumbnails the tab keeps. */
+export const THUMB_CACHE_MAX = 200;
+
+/** Whether Icons reads `item` for a thumbnail: an image of a size it knows, up to THUMB_MAX_BYTES. */
+export function thumbable(item: Pick<Item, "folder" | "ext" | "size">): boolean {
+  return kindOf(item) === "image" && item.size !== null && item.size <= THUMB_MAX_BYTES;
+}
+
+/** A map that keeps its `max` most recently used entries: a get or a set makes an entry the newest, and a set past `max`
+ *  drops the oldest. */
+export class Lru<V> {
+  private m = new Map<string, V>();
+
+  constructor(readonly max: number) {}
+
+  get(key: string): V | undefined {
+    if (!this.m.has(key)) return undefined;
+    const v = this.m.get(key) as V;
+    this.m.delete(key);
+    this.m.set(key, v);
+    return v;
+  }
+
+  set(key: string, value: V): void {
+    this.m.delete(key);
+    this.m.set(key, value);
+    while (this.m.size > this.max) this.m.delete(this.m.keys().next().value as string);
+  }
+
+  get size(): number { return this.m.size; }
+
+  /** The keys, the oldest first. */
+  keys(): string[] { return [...this.m.keys()]; }
+}
+
+// ── smart folders (D20) and search by name (D22) ──
+
+export type SmartId = "recents" | "today" | "images";
+export const SMART_FOLDERS: ReadonlyArray<{ id: SmartId; label: string; icon: string }> = [
+  { id: "recents", label: "Recents", icon: "clock" },
+  { id: "today", label: "Changed today", icon: "calendar-clock" },
+  { id: "images", label: "Images", icon: "image" },
+];
+
+/** A sidebar pick that lists files instead of a folder: a smart folder or a tag (`tag:<name>`). */
+export function isSmartId(id: string): boolean {
+  return SMART_FOLDERS.some((s) => s.id === id) || (id.startsWith("tag:") && id.length > 4);
+}
+
+/** Local midnight of the day `now` is in. */
+export function startOfDay(now: Date): number {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+/**
+ * What a smart folder lists, from `files` (every file the vault lists): Recents the paths in `recents` that still
+ * exist, in that order (the newest opened first); Changed today what was modified since local midnight; Images every
+ * image. The last two leave out what `hidden` names (the runtime's own folders, which it writes all day), sorted by
+ * `sort`.
+ */
+export function smartItems(id: SmartId, files: readonly Item[], opts: { recents: readonly string[]; now: Date; hidden: (path: string) => boolean; sort: SortChoice }): Item[] {
+  if (id === "recents") {
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    return opts.recents.map((p) => byPath.get(p)).filter((f): f is Item => f !== undefined);
+  }
+  const midnight = startOfDay(opts.now);
+  const keep = id === "today"
+    ? (f: Item) => f.mtime !== null && f.mtime >= midnight
+    : (f: Item) => kindOf(f) === "image";
+  return sortItems(files.filter((f) => !f.folder && keep(f) && !opts.hidden(f.path)), opts.sort);
+}
+
+/** The folders `paths` sit in, each once and without the vault itself: every folder a file is under. */
+export function foldersOf(paths: Iterable<string>): string[] {
+  const out = new Set<string>();
+  for (const p of paths) {
+    for (let d = parentOf(p); d && !out.has(d); d = parentOf(d)) out.add(d);
+  }
+  return [...out];
+}
+
+/** Search by name (D22): the items whose name holds `query`, in any case and Unicode form, sorted by `sort`. */
+export function nameMatches(items: readonly Item[], query: string, sort: SortChoice): Item[] {
+  const q = query.trim().normalize("NFC").toLowerCase();
+  if (!q) return [];
+  return sortItems(items.filter((i) => i.name.normalize("NFC").toLowerCase().includes(q)), sort);
+}
+
+/** Whether `path` is `folder` or inside it ("" is the vault: everything is in it). */
+export function within(path: string, folder: string): boolean {
+  return folder === "" || path === folder || path.startsWith(`${folder}/`);
 }

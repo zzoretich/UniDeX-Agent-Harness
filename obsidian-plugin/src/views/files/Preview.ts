@@ -109,6 +109,11 @@ export function renderPreview(host: HTMLElement, path: string, deps: PreviewDeps
 
 const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml" };
 
+/** The media type of the image type `ext` names, or null. */
+export function imageMime(ext: string): string | null {
+  return MIME[ext] ?? null;
+}
+
 /** Bytes as a data: URL of the image type `ext` names; null for a type that is not an image. */
 export function toDataUrl(bytes: ArrayBuffer, ext: string): string | null {
   const mime = MIME[ext];

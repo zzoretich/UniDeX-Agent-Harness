@@ -102,8 +102,13 @@ Run before tagging a release, in the UniDeX app on a vault created by `aos init`
 - [ ] Drag a file, or the whole selection, onto a folder in Icons, List or Columns, a favorite, or a folder in the path bar: the hint at the foot says what the drop will do (and how many links it updates); brain/_index and brain/scripts show no-drop and say why; the tab stays where it was
 - [ ] ⌘Z undoes the last move or rename in Files (up to 20 back), its links included, as does the toast's **Undo**; once the file was moved again outside Files it says it cannot. ⌘Z in a text field still undoes typing
 - [ ] Move to Trash asks first, naming how many for a selection; the files go to the macOS Trash, and the toast says to put them back from the Trash in Finder (there is no Undo)
+- [ ] Icons shows a PNG, JPEG, GIF, WebP or SVG up to 4 MB as its picture (a big one drawn down to the tile); one over 4 MB, or one that cannot be read, keeps its page; a folder of many images scrolls without a stall, the pictures arriving as their tiles come into view
+- [ ] The sidebar's smart folders: **Recents** lists the files opened from Files, ⌘O or Quick Look, newest first (50 at most); **Changed today** what changed since midnight, and a file changed now joins it; **Images** every image; the last two leave out brain/_index and brain/scripts. Each shows in Icons, List (with the folder each file is in) or Columns; **+** makes nothing there and says why; ‹ goes back to the folder before
+- [ ] **Tags** lists the 12 tags the notes' frontmatter uses most, most first, each with its count; a tag lists its notes in the view in use
+- [ ] Favorites: a folder dragged onto **Favorites** (the slot that shows during a drag) joins them at the end; a file, or a folder already there, is refused and the hint says why; **Add to Favorites** in a folder's menu does the same; right-click a favorite to **Remove** it or **Restore the default favorites**; the favorites survive a restart, and one renamed or moved in Files follows it
+- [ ] Typing in the search shows a scope bar: **Vault** or the folder in view (or the smart folder or tag), **Names** (files and folders whose name holds the text, in the view, to select, preview or drag) or **Contents** (each line, as before), and **all text files** for contents; in the results ↓ walks the files and lines, Return opens one and Space shows it in Quick Look; Escape clears the search and the bar
 - [ ] Below 900 px the sidebar folds into the toolbar's sidebar button; a pick folds it again
-- [ ] On a Codex-only Mac Files works the same: Columns' preview with its links, Quick Look and the menu, none naming a host
+- [ ] On a Codex-only Mac Files works the same: Columns' preview with its links, Quick Look, the menu, smart folders and tags, none naming a host
 
 ## To-Do
 

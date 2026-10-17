@@ -277,8 +277,12 @@ export function sanitizeFilesChoice(raw: unknown): FilesChoice {
 }
 
 /** The Files choice after a change: the fields given replace the stored ones; an opened path moves to the front of the
- *  recents. Returns a new object to store. */
-export function rememberFilesChoice(current: unknown, pick: Partial<Omit<FilesChoice, "recents">> & { opened?: string }): FilesChoice {
+ *  recents; `moved` (a rename or a move in Files, files-finder D20) takes the favorites and recents it touches along, a
+ *  folder everything under it. Returns a new object to store. */
+export function rememberFilesChoice(
+  current: unknown,
+  pick: Partial<Omit<FilesChoice, "recents">> & { opened?: string; moved?: ReadonlyArray<{ from: string; to: string }> },
+): FilesChoice {
   const c = sanitizeFilesChoice(current);
   if (pick.view) c.view = pick.view;
   if (pick.sort) c.sort = { ...pick.sort };
@@ -286,5 +290,14 @@ export function rememberFilesChoice(current: unknown, pick: Partial<Omit<FilesCh
   if (pick.favorites !== undefined) c.favorites = pick.favorites ? [...pick.favorites] : null;
   if (pick.updateLinks !== undefined) c.updateLinks = pick.updateLinks;
   if (pick.opened) c.recents = [pick.opened, ...c.recents.filter((p) => p !== pick.opened)];
+  if (pick.moved?.length) {
+    const moves = pick.moved;
+    const follow = (p: string): string => {
+      for (const m of moves) if (p === m.from || p.startsWith(`${m.from}/`)) return m.to + p.slice(m.from.length);
+      return p;
+    };
+    if (c.favorites) c.favorites = c.favorites.map((p) => (p === "" ? p : follow(p)));
+    c.recents = c.recents.map(follow);
+  }
   return sanitizeFilesChoice(c);
 }

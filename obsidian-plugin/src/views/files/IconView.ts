@@ -1,13 +1,15 @@
-// Icons (files-finder D7): the folder's entries as tiles, grouped by kind, each with its art, its name and a line of
-// info (a folder's item count, a file's date). The arrows move by position, so ↑ ↓ cross the groups as Finder's do.
+// Icons (files-finder D7): the folder's entries (or a smart folder's, a tag's, a name search's) as tiles, grouped by
+// kind, each with its art, its name and a line of info (a folder's item count, a file's date); an image's art becomes
+// its thumbnail once the tile is in view (D19). The arrows move by position, so ↑ ↓ cross the groups as Finder's do.
 
-import { dateLabel, groupByKind, itemsLabel, kindOf } from "../../data/filesModel";
+import { dateLabel, groupByKind, itemsLabel, kindOf, parentOf } from "../../data/filesModel";
 import { folderArt, pageArt } from "./art";
 import { itemEl, type Arrow, type FilesCtx, type Step, type ViewNav } from "./ctx";
 
 export function renderIcons(host: HTMLElement, ctx: FilesCtx): ViewNav {
-  const items = ctx.list(ctx.at);
-  const box = host.createDiv({ cls: "aos-fx-icons", attr: { role: "listbox", "aria-multiselectable": "true", "aria-label": ctx.at || ctx.vaultName } });
+  const flat = ctx.flat;
+  const items = flat ? flat.items : ctx.list(ctx.at);
+  const box = host.createDiv({ cls: "aos-fx-icons", attr: { role: "listbox", "aria-multiselectable": "true", "aria-label": flat?.label ?? (ctx.at || ctx.vaultName) } });
   box.addEventListener("contextmenu", (e) => {
     if ((e.target as HTMLElement).closest("[data-path]")) return;
     e.preventDefault();
@@ -15,7 +17,7 @@ export function renderIcons(host: HTMLElement, ctx: FilesCtx): ViewNav {
   });
   const order: string[] = [];
   const els = new Map<string, HTMLElement>();
-  if (!items.length) box.createDiv({ cls: "aos-fx-empty", text: ctx.at ? "This folder is empty." : "The vault is empty." });
+  if (!items.length) box.createDiv({ cls: "aos-fx-empty", text: flat ? flat.empty : ctx.at ? "This folder is empty." : "The vault is empty." });
   for (const g of groupByKind(items)) {
     const sec = box.createDiv({ cls: "aos-fx-group", attr: { "data-group": g.id } });
     const head = sec.createDiv({ cls: "aos-fx-group-head" });
@@ -25,7 +27,7 @@ export function renderIcons(host: HTMLElement, ctx: FilesCtx): ViewNav {
     for (const it of g.items) {
       order.push(it.path);
       const tile = grid.createDiv({ cls: "aos-fx-tile" });
-      itemEl(tile, ctx, it, ctx.at);
+      itemEl(tile, ctx, it, flat ? parentOf(it.path) : ctx.at);
       els.set(it.path, tile);
       const art = tile.createDiv({ cls: "aos-fx-tile-art" });
       if (it.folder) {
@@ -37,8 +39,10 @@ export function renderIcons(host: HTMLElement, ctx: FilesCtx): ViewNav {
       } else {
         const lines = kindOf(it) === "note" ? ctx.index?.notes.get(it.path)?.lines ?? null : null;
         pageArt(art, lines, it.ext.toUpperCase(), 58);
+        if (kindOf(it) === "image") ctx.thumb(art, it);
       }
-      tile.createDiv({ cls: "aos-fx-tile-name", text: it.name, attr: { title: it.name } });
+      // From across the vault, a tile names where it is too.
+      tile.createDiv({ cls: "aos-fx-tile-name", text: it.name, attr: { title: flat ? it.path : it.name } });
       tile.createDiv({ cls: "aos-fx-tile-meta", text: it.folder ? itemsLabel(ctx.count(it.path)) : dateLabel(it.mtime, ctx.now) });
     }
   }

@@ -3,12 +3,12 @@ import { quickOpenFiles } from "../data/vaultFiles";
 
 /**
  * Open file… (the Files tab's quick open): every file the vault indexes, matched fuzzily on its path, Markdown first.
- * Choosing one opens it in a tab, as a click in the Files tree does.
+ * Choosing one opens it in a tab, as a double-click in Files does, and tells `chosen` (Files' Recents, files-finder D20).
  */
 export class QuickOpenModal extends FuzzySuggestModal<TFile> {
   private files: TFile[];
 
-  constructor(app: App) {
+  constructor(app: App, private chosen?: (path: string) => void) {
     super(app);
     this.files = quickOpenFiles(app);
     this.setPlaceholder(`Open a file (${this.files.length} in the vault)…`);
@@ -31,6 +31,7 @@ export class QuickOpenModal extends FuzzySuggestModal<TFile> {
   }
 
   onChooseItem(file: TFile): void {
+    this.chosen?.(file.path);
     void this.app.workspace.getLeaf("tab").openFile(file);
   }
 }

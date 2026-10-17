@@ -1,11 +1,46 @@
 // Columns (files-finder D9): Miller columns from the root the sidebar last picked down to the cursor, then the
-// preview of the file the cursor is on (D10). ↑ ↓ move in the cursor's column, → goes into a folder, ← back out.
+// preview of the file the cursor is on (D10). ↑ ↓ move in the cursor's column, → goes into a folder, ← back out. A smart
+// folder, a tag or a name search (D20, D22) is one column of its files, then the preview.
 
 import { columnChain, compactCount, parentOf, type Item } from "../../data/filesModel";
-import { glyphFor, itemEl, type Arrow, type FilesCtx, type Step, type ViewNav } from "./ctx";
+import { glyphFor, itemEl, type Arrow, type FilesCtx, type FlatListing, type Step, type ViewNav } from "./ctx";
+
+/** One row of a column: the glyph, the name, and a folder's count and chevron. */
+function columnRow(col: HTMLElement, ctx: FilesCtx, it: Item, folder: string, trail: boolean): void {
+  const row = col.createDiv({ cls: `aos-fx-crow${trail ? " is-trail" : ""}` });
+  itemEl(row, ctx, it, folder);
+  glyphFor(ctx, row.createSpan({ cls: "aos-fx-glyph" }), it);
+  row.createSpan({ cls: "aos-fx-name", text: it.name, attr: { title: ctx.flat ? it.path : it.name } });
+  if (it.folder) {
+    row.createSpan({ cls: "aos-fx-ccount", text: compactCount(ctx.count(it.path)) });
+    const chev = row.createSpan({ cls: "aos-fx-chev", attr: { "aria-hidden": "true" } });
+    ctx.setIcon(chev, "chevron-right");
+  }
+}
+
+function renderFlatColumn(box: HTMLElement, ctx: FilesCtx, flat: FlatListing): ViewNav {
+  const items = flat.items;
+  const col = box.createDiv({ cls: "aos-fx-col", attr: { role: "listbox", "aria-multiselectable": "true", "aria-label": flat.label } });
+  col.addEventListener("contextmenu", (e) => { if (!(e.target as HTMLElement).closest("[data-path]")) e.preventDefault(); });
+  for (const it of items) columnRow(col, ctx, it, parentOf(it.path), false);
+  if (!items.length) col.createDiv({ cls: "aos-fx-empty", text: flat.empty });
+  const cursor = ctx.sel.cursor;
+  if (cursor && items.some((i) => i.path === cursor)) ctx.preview(box.createDiv({ cls: "aos-fx-col aos-fx-pcol", attr: { "aria-label": "Preview" } }).createDiv(), cursor);
+  const order = items.map((i) => i.path);
+  const step = (from: string | null, arrow: Arrow): Step => {
+    if (!order.length) return null;
+    const at = from ? order.indexOf(from) : -1;
+    if (at < 0) return { select: order[0] };
+    if (arrow === "up") return at > 0 ? { select: order[at - 1] } : null;
+    if (arrow === "down") return at < order.length - 1 ? { select: order[at + 1] } : null;
+    return null;
+  };
+  return { order, step, typeAheadScope: () => items.map((i) => ({ name: i.name, path: i.path })) };
+}
 
 export function renderColumns(host: HTMLElement, ctx: FilesCtx): ViewNav {
   const box = host.createDiv({ cls: "aos-fx-columns" });
+  if (ctx.flat) return renderFlatColumn(box, ctx, ctx.flat);
   const cursor = ctx.sel.cursor;
   const isFolder = (p: string) => ctx.item(p)?.folder ?? false;
   const target = cursor ?? (ctx.at !== ctx.colRoot ? ctx.at : null);
@@ -23,17 +58,7 @@ export function renderColumns(host: HTMLElement, ctx: FilesCtx): ViewNav {
       ctx.menu(null, e, folder);
     });
     const next = chain[i + 1];
-    for (const it of items) {
-      const row = col.createDiv({ cls: `aos-fx-crow${it.path === next ? " is-trail" : ""}` });
-      itemEl(row, ctx, it, folder);
-      glyphFor(ctx, row.createSpan({ cls: "aos-fx-glyph" }), it);
-      row.createSpan({ cls: "aos-fx-name", text: it.name, attr: { title: it.name } });
-      if (it.folder) {
-        row.createSpan({ cls: "aos-fx-ccount", text: compactCount(ctx.count(it.path)) });
-        const chev = row.createSpan({ cls: "aos-fx-chev", attr: { "aria-hidden": "true" } });
-        ctx.setIcon(chev, "chevron-right");
-      }
-    }
+    for (const it of items) columnRow(col, ctx, it, folder, it.path === next);
     if (!items.length) col.createDiv({ cls: "aos-fx-empty", text: "Empty" });
   });
   const file = cursor && !isFolder(cursor) ? cursor : null;

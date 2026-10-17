@@ -172,6 +172,15 @@ test("remembering a Files change replaces what it names and puts an opened file 
   assert.notEqual(rememberFilesChoice(DEFAULT_SETTINGS.files, {}), DEFAULT_SETTINGS.files, "a fresh copy");
 });
 
+test("a rename or move in Files takes the favorites and recents along, a folder everything under it (files-finder D20)", () => {
+  const c = { ...DEFAULT_SETTINGS.files, favorites: ["", "brain", "work/old", "work/older"], recents: ["work/old/a.md", "b.md", "work/oldx.md"] };
+  const moved = rememberFilesChoice(c, { moved: [{ from: "work/old", to: "work/new" }, { from: "b.md", to: "c/b.md" }] });
+  assert.deepEqual(moved.favorites, ["", "brain", "work/new", "work/older"]);
+  assert.deepEqual(moved.recents, ["work/new/a.md", "c/b.md", "work/oldx.md"]);
+  assert.equal(rememberFilesChoice({ ...c, favorites: null }, { moved: [{ from: "brain", to: "x" }] }).favorites, null, "the defaults stay the defaults");
+  assert.deepEqual(rememberFilesChoice(c, { moved: [] }), sanitizeFilesChoice(c));
+});
+
 test("Update links (files-finder D17) stays on until it is turned off, and only false turns it off", () => {
   assert.equal(sanitizeFilesChoice({ updateLinks: false }).updateLinks, false);
   for (const v of [true, undefined, 0, "no", null]) assert.equal(sanitizeFilesChoice({ updateLinks: v }).updateLinks, true, String(v));

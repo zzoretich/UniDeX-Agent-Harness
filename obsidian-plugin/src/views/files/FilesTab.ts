@@ -5,39 +5,58 @@ import type { WorkbenchView } from "../WorkbenchView";
 import { QuickOpenModal } from "../../ui/QuickOpenModal";
 import { shell } from "../../host";
 import {
-  NO_SELECTION, SORT_KEYS, SORT_LABEL, VIEW_LABEL, crumbs, extOf, extendTo, go, goBack, goForward, itemsLabel, keepSelection,
-  keyAction, kindOf, parentOf, pushUndo, renameInSelection, selectAll, selectOnly, sortItems, staleUndo, toggleIn, typeAhead, undoMoves,
-  type History, type Item, type KeyAction, type Selection, type SortKey, type UndoEntry, type ViewMode,
+  NO_SELECTION, SMART_FOLDERS, SORT_KEYS, SORT_LABEL, VIEW_LABEL, crumbs, extOf, extendTo, foldersOf, go, goBack, goForward, isSmartId,
+  itemsLabel, keepSelection, keyAction, kindOf, nameMatches, parentOf, pushUndo, renameInSelection, selectAll, selectOnly, smartItems,
+  sortItems, staleUndo, toggleIn, typeAhead, undoMoves, within,
+  type History, type Item, type KeyAction, type Selection, type SmartId, type SortKey, type UndoEntry, type ViewMode,
 } from "../../data/filesModel";
-import { buildVaultIndex, moveInIndex, rewritePlan, type VaultIndex } from "../../data/vaultIndex";
+import { buildVaultIndex, moveInIndex, notesTagged, rewritePlan, topTags, type VaultIndex } from "../../data/vaultIndex";
 import {
   childEntries, foldPath, holdsRuntime, isListed, isProtected, movePlan, protectedReason, quickOpenFiles, readCached, renamePath, searchVault, SEARCH_MAX_MATCHES,
   type Move, type SearchResult,
 } from "../../data/vaultFiles";
-import { rememberFilesChoice, sanitizeFilesChoice, type FilesChoice } from "../../settingsDefaults";
+import { FILES_FAVORITES_MAX, rememberFilesChoice, sanitizeFilesChoice, type FilesChoice } from "../../settingsDefaults";
 import { FileChores, type MoveResult } from "./chores";
 import { renderColumns } from "./ColumnView";
-import { FilesDrag } from "./drag";
+import { FilesDrag, type DropVerdict } from "./drag";
 import { renderIcons } from "./IconView";
 import { renderList } from "./ListView";
 import { FilesMenu, type MenuEntry } from "./Menu";
 import { renderPreview, toDataUrl, type PreviewDeps } from "./Preview";
 import { QuickLook } from "./QuickLook";
 import { renameInPlace, type LinkCount } from "./rename";
-import { defaultFavorites, renderSidebar } from "./Sidebar";
-import type { FilesCtx, ViewNav } from "./ctx";
+import { drawSidebar, editFavorites, favoritesFrom, renderSidebar, type Favorite, type SidebarOpts } from "./Sidebar";
+import { Thumbs } from "./thumbs";
+import type { FilesCtx, FlatListing, ViewNav } from "./ctx";
 
 /** Images up to this size are drawn in the preview and Quick Look (readBinary is synchronous per chunk, D19). */
 const IMAGE_MAX_BYTES = 8_000_000;
 const TYPE_AHEAD_MS = 900;
+/** How many tags the sidebar lists (D20). */
+const TAG_MAX = 12;
+/** A smart folder or a tag in the back and forward history, which otherwise holds folders: no vault path holds a NUL. */
+const SMART_KEY = "\u0000";
+
+/** Where a search looks and what it matches (D22): the vault or the folder in view; names, or the text inside. */
+interface SearchScope { where: "vault" | "here"; what: "names" | "contents" }
+
+/** Why a folder's own items (Reveal, Copy path, + New) are off in a smart folder or a tag. */
+const NOT_ON_DISK = "A smart folder or a tag is not a folder on the disk";
+
+const SMART_EMPTY: Record<SmartId, string> = {
+  recents: "Files you open from Files, ⌘O or Quick Look show here.",
+  today: "Nothing in the vault changed today, outside the runtime's own folders.",
+  images: "No images in the vault, outside the runtime's own folders.",
+};
 
 /**
- * FILES — a Finder window onto the vault (spec 2026-10-17-files-finder): a sidebar of favorites; Icons, List and
- * Columns (D2, D7–D9); a selection with Finder's keys (D4, D23); the preview (D10) and Quick Look (D11); the right-click
- * menu (D13); rename in place, New folder and Duplicate (D14); drag to move (D15) with ⌘Z (D16), each rename or move
- * taking the links to it along (D17); and the search across notes kept from today. Reads go through the vault's index;
- * writes through the vault API, which main checks against the Files surface. The pure parts are data/filesModel.ts,
- * data/vaultIndex.ts and data/vaultFiles.ts.
+ * FILES — a Finder window onto the vault (spec 2026-10-17-files-finder): a sidebar of favorites (the user's own, D20),
+ * smart folders and tags; Icons with thumbnails (D19), List and Columns (D2, D7–D9); a selection with Finder's keys (D4,
+ * D23); the preview (D10) and Quick Look (D11); the right-click menu (D13); rename in place, New folder and Duplicate
+ * (D14); drag to move (D15) with ⌘Z (D16), each rename or move taking the links to it along (D17); and search by name
+ * or contents, in the vault or the folder in view (D22). Reads go through the vault's index; writes through the vault
+ * API, which main checks against the Files surface. The pure parts are data/filesModel.ts, data/vaultIndex.ts and
+ * data/vaultFiles.ts.
  */
 export class FilesTab {
   private host: HTMLElement | null = null;
@@ -46,6 +65,8 @@ export class FilesTab {
   private paneEl: HTMLElement | null = null;
   private footEl: HTMLElement | null = null;
   private barEl: HTMLElement | null = null;
+  private sideEl: HTMLElement | null = null;
+  private scopeEl: HTMLElement | null = null;
   private searchInput: HTMLInputElement | null = null;
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
@@ -54,6 +75,8 @@ export class FilesTab {
 
   private at = "";
   private colRoot = "";
+  /** The smart folder or `tag:<name>` the sidebar picked (D20); null while the folder `at` is in view. */
+  private smart: string | null = null;
   private hist: History = { at: "", back: [], forward: [] };
   private sel: Selection = NO_SELECTION;
   private expanded = new Set<string>();
@@ -62,6 +85,7 @@ export class FilesTab {
   private typedAt = 0;
 
   private query = "";
+  private scope: SearchScope = { where: "vault", what: "contents" };
   private allText = false;
   private result: SearchResult | null = null;
   private searching = false;
@@ -74,6 +98,7 @@ export class FilesTab {
   private ql: QuickLook | null = null;
   private hintEl: HTMLElement | null = null;
   private chores: FileChores;
+  private thumbs: Thumbs;
 
   /** The tab's moves and renames, newest last (D16). */
   private undoStack: UndoEntry[] = [];
@@ -85,6 +110,7 @@ export class FilesTab {
 
   constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {
     this.chores = new FileChores(plugin, view, { landed: (to, from) => this.landed(to, from), move: (from, to) => this.moveFromDrawer(from, to) });
+    this.thumbs = new Thumbs({ read: (path) => this.plugin.app.vault.adapter.readBinary(path), toDataUrl });
   }
 
   // ── lifecycle ──
@@ -105,8 +131,12 @@ export class FilesTab {
       this.view.registerEvent(vault.on("create", (f) => tree(f)));
       this.view.registerEvent(vault.on("delete", (f) => tree(f)));
       this.view.registerEvent(vault.on("rename", (f, oldPath) => tree(f, oldPath)));
-      // A note's links and tags change as it is edited; the index catches up a moment later.
-      this.view.registerEvent(vault.on("modify", (f) => { if (f.path.endsWith(".md")) this.scheduleIndex(); }));
+      // A note's links and tags change as it is edited; the index catches up a moment later. Changed today (D20) takes
+      // a file the moment it changes.
+      this.view.registerEvent(vault.on("modify", (f) => {
+        if (this.smart === "today" && !this.query.trim() && isListed(f.path) && !isProtected(f.path)) this.schedule();
+        else if (f.path.endsWith(".md")) this.scheduleIndex();
+      }));
     }
     this.md?.unload();
     this.md = new Component();
@@ -123,6 +153,7 @@ export class FilesTab {
     this.indexSeq++;
     this.menu?.close();
     this.ql?.dispose();
+    this.thumbs.reset(null);
     this.md?.unload();
     this.md = null;
   }
@@ -140,22 +171,27 @@ export class FilesTab {
       void buildVaultIndex(this.plugin.app, { isCancelled: () => seq !== this.indexSeq }).then((idx) => {
         if (!idx || seq !== this.indexSeq) return;
         const before = this.indexSig(this.index);
+        const tagsBefore = this.tagSig(this.index);
         this.index = idx;
+        this.forget();
         if (!this.view.isTabActive("files") || !this.root?.isConnected) return;
-        // The page art, the preview's Tags and Links: redrawn in place, the scroll and the focus kept, and only when
-        // what is on screen changed.
+        // The sidebar's tags, the page art, a tag's notes, the preview's Tags and Links: redrawn in place, the scroll
+        // and the focus kept, and only when what is on screen changed.
+        if (this.tagSig(idx) !== tagsBefore) this.drawSide();
         if (this.indexSig(idx) === before) return;
-        if (!this.query.trim()) this.drawView();
+        if (!this.hitsShown()) this.drawView();
         this.drawPane();
+        // A tag's notes came with it: its count in the title and at the foot.
+        if (this.place()) { this.barEl?.querySelector(".aos-fx-count")?.setText(itemsLabel(this.place()!.items.length)); this.drawFoot(); }
       });
     }, ms);
   }
 
   async refresh(): Promise<void> {
-    if (this.query.trim()) await this.runSearch();
+    if (this.hitsShown()) await this.runSearch();
     if (!this.root?.isConnected) { this.render(); return; }
     // Drawn already: the parts that list the vault are drawn again in place, the scroll and the focus kept.
-    this.listCache.clear();
+    this.forget();
     this.settle();
     this.drawBar();
     this.drawView();
@@ -181,9 +217,14 @@ export class FilesTab {
   }
 
   /** Whether a vault change at `path` shows: in a folder on screen, a folder whose count is on screen, or what is
-   *  shown or selected itself. A search on screen takes every change. */
+   *  shown or selected itself. A search on screen takes every change; a smart folder or a name search every change
+   *  outside the runtime's own folders, Recents only to what it lists; a tag's notes come with the next index. */
   private touches(path: string): boolean {
-    if (this.query.trim()) return true;
+    if (this.hitsShown()) return true;
+    if (this.query.trim()) return !isProtected(path);
+    if (this.smart === "recents") return this.choice().recents.includes(path) || this.sel.paths.includes(path);
+    if (this.smart?.startsWith("tag:")) return this.sel.paths.includes(path);
+    if (this.smart) return !isProtected(path);
     const shown = this.shownFolders();
     const dir = parentOf(path);
     if (shown.has(dir) || (dir !== "" && shown.has(parentOf(dir)))) return true;
@@ -199,9 +240,18 @@ export class FilesTab {
       return n ? `${p}:${n.lines.join(",")}:${n.tags.join(",")}:${n.out.length}:${idx.backlinks.get(p)?.length ?? 0}` : `${p}:-`;
     };
     const parts: string[] = [];
-    for (const dir of this.shownFolders()) for (const it of this.list(dir)) if (it.ext === "md") parts.push(note(it.path));
+    const flat = this.listing();
+    if (flat) for (const it of flat.items) { if (it.ext === "md") parts.push(note(it.path)); }
+    else for (const dir of this.shownFolders()) for (const it of this.list(dir)) if (it.ext === "md") parts.push(note(it.path));
+    // A tag lists the notes the index says carry it.
+    if (this.smart?.startsWith("tag:") && !this.query.trim()) parts.push(`#${notesTagged(idx, this.smart.slice(4)).join(",")}`);
     if (this.sel.cursor) parts.push(note(this.sel.cursor));
     return parts.join("|");
+  }
+
+  /** The sidebar's tags as an index has them, to tell whether a new index changes them. */
+  private tagSig(idx: VaultIndex | null): string {
+    return idx ? topTags(idx, TAG_MAX).map((t) => `${t.tag}:${t.count}`).join("|") : "\u0000";
   }
 
   /** The state after the vault changed: the selection that still exists, a folder in view that still does. */
@@ -276,6 +326,82 @@ export class FilesTab {
     return n && isListed(path) ? this.toItem(n) : null;
   };
 
+  /** What one draw computed from the whole vault: its files as items, and the listing a view shows instead of a folder. */
+  private memo: { files?: Item[]; place?: FlatListing | null; shown?: FlatListing | null } = {};
+
+  /** Forgets what the last draw read, for a draw after a change. */
+  private forget(): void {
+    this.listCache.clear();
+    this.memo = {};
+  }
+
+  /** Every file the vault lists, as items (from the vault's index, without a disk read each). */
+  private vaultItems(): Item[] {
+    return (this.memo.files ??= quickOpenFiles(this.plugin.app).map((f) => this.toItem(f)));
+  }
+
+  /** The smart folder or the tag in view (D20) as a listing; null while a folder is. */
+  private place(): FlatListing | null {
+    if (this.memo.place !== undefined) return this.memo.place;
+    const id = this.smart;
+    const sort = this.choice().sort;
+    let out: FlatListing | null = null;
+    if (id?.startsWith("tag:")) {
+      const tag = id.slice(4);
+      const byPath = new Map(this.vaultItems().map((f) => [f.path, f]));
+      const notes = this.index ? notesTagged(this.index, tag).map((p) => byPath.get(p)).filter((f): f is Item => f !== undefined) : [];
+      out = { id, label: `#${tag}`, items: sortItems(notes, sort), empty: this.index ? `No note carries #${tag} now.` : "Reading the vault…" };
+    } else if (id) {
+      const smart = SMART_FOLDERS.find((x) => x.id === id);
+      if (smart) {
+        const items = smartItems(smart.id, this.vaultItems(), { recents: this.choice().recents, now: new Date(), hidden: (p) => isProtected(p), sort });
+        out = { id, label: smart.label, items, empty: SMART_EMPTY[smart.id] };
+      }
+    }
+    return (this.memo.place = out);
+  }
+
+  /** Contents hits on screen instead of a view (D22). */
+  private hitsShown(): boolean { return !!this.query.trim() && this.scope.what === "contents"; }
+
+  /** Whether the scope bar offers "this folder": a folder below the vault, or a smart folder or a tag, is in view. */
+  private hasHere(): boolean { return !!this.smart || this.at !== ""; }
+
+  /** What a view lists instead of the folder in view: the names a search matched (D22), or the smart folder or tag. */
+  private listing(): FlatListing | null {
+    if (this.memo.shown !== undefined) return this.memo.shown;
+    const q = this.query.trim();
+    let out: FlatListing | null;
+    if (q && this.scope.what === "contents") out = null;
+    else if (q) {
+      const here = this.scope.where === "here" && this.hasHere();
+      const where = here ? ` in ${this.place()?.label ?? this.folderName(this.at)}` : "";
+      out = { id: "search", label: `Names holding “${q}”${where}`, items: nameMatches(this.namePool(here), q, this.choice().sort), empty: `No name holds “${q}”${where}.` };
+    } else out = this.place();
+    return (this.memo.shown = out);
+  }
+
+  /** What a search by name looks through: the smart folder's or tag's files, the folder in view and everything under
+   *  it, or the whole vault; folders too (each one a file is under). */
+  private namePool(here: boolean): Item[] {
+    const place = here ? this.place() : null;
+    if (place) return place.items;
+    const root = here ? this.at : "";
+    const files = this.vaultItems().filter((f) => within(f.path, root));
+    const folders = foldersOf(files.map((f) => f.path)).filter((d) => d !== root && within(d, root))
+      .map((d): Item => ({ path: d, name: d.split("/").pop()!, folder: true, ext: "", size: null, mtime: null, ctime: null }));
+    return [...folders, ...files];
+  }
+
+  /** Which paths a search in "this folder" reads (D22): the smart folder's files, or everything under the folder. */
+  private hereTest(): ((path: string) => boolean) | undefined {
+    if (this.scope.where !== "here" || !this.hasHere()) return undefined;
+    const place = this.place();
+    if (place) { const set = new Set(place.items.map((i) => i.path)); return (p) => set.has(p); }
+    const at = this.at;
+    return (p) => within(p, at);
+  }
+
   private ctx(): FilesCtx {
     return {
       vaultName: this.vaultName(),
@@ -297,6 +423,8 @@ export class FilesTab {
       toggle: (folder) => this.toggleFolder(folder),
       sortBy: (key) => this.sortBy(key),
       preview: (host, path) => renderPreview(host, path, this.previewDeps()),
+      flat: this.listing(),
+      thumb: (art, item) => this.thumbs.show(art, item),
     };
   }
 
@@ -332,7 +460,7 @@ export class FilesTab {
     this.stopRename();
     const hadSearchFocus = document.activeElement === this.searchInput;
     const hadViewFocus = !!this.viewEl && this.viewEl.contains(document.activeElement);
-    this.listCache.clear();
+    this.forget();
     this.settle();
     this.menu?.close();
     host.empty();
@@ -344,19 +472,21 @@ export class FilesTab {
     this.ql?.dispose();
     this.ql = new QuickLook(root, { ...this.previewDeps(), reveal: (p) => this.reveal(p), onClose: (p) => { if (p) this.select(selectOnly(p)); this.viewEl?.focus(); } });
 
-    const years = this.list("").filter((i) => i.folder && /^\d{4}$/.test(i.name)).map((i) => i.name);
-    const favorites = defaultFavorites(this.vaultName(), this.isFolder, years);
-    renderSidebar(root, { favorites, current: this.mode() === "columns" ? this.colRoot : this.at, pick: (p) => this.pickFavorite(p), setIcon: (el, id) => setIcon(el, id) });
+    this.sideEl = renderSidebar(root, this.sideOpts());
 
     const main = root.createEl("section", { cls: "aos-fx-main", attr: { "aria-label": "Files" } });
     this.barEl = main.createDiv({ cls: "aos-fx-bar" });
     this.drawBar();
+    this.scopeEl = main.createDiv({ cls: "aos-fx-scopebar", attr: { role: "toolbar", "aria-label": "Search scope" } });
+    this.drawScope();
     this.hintEl = main.createDiv({ cls: "aos-fx-drophint", attr: { role: "status", "aria-live": "polite" } });
     new FilesDrag(root, {
       start: (path) => this.dragStart(path),
       check: (paths, folder) => this.dropCheck(paths, folder),
+      checkFavorite: (paths) => this.favoriteCheck(paths),
       hint: (text, ok) => { this.hintEl?.setText(text ?? ""); this.hintEl?.toggleClass("is-shown", !!text); this.hintEl?.toggleClass("is-bad", !ok); },
       drop: (paths, folder) => this.dropOn(paths, folder),
+      addFavorites: (paths) => this.addFavorites(paths),
     });
     const body = main.createDiv({ cls: "aos-fx-body" });
     this.viewEl = body.createDiv({ cls: "aos-fx-view", attr: { tabindex: "0", "data-tour": "files-list", "data-view": this.mode() } });
@@ -370,6 +500,77 @@ export class FilesTab {
 
     if (hadSearchFocus && this.searchInput) { this.searchInput.focus(); this.searchInput.setSelectionRange(this.searchInput.value.length, this.searchInput.value.length); }
     else if (hadViewFocus) this.viewEl.focus({ preventScroll: true });
+  }
+
+  // ── the sidebar (D20) ──
+
+  /** The vault's four-digit top folders: the daily notes' newest is the Daily notes favorite. */
+  private years(): string[] {
+    return this.list("").filter((i) => i.folder && /^\d{4}$/.test(i.name)).map((i) => i.name);
+  }
+
+  private sideOpts(): SidebarOpts {
+    return {
+      favorites: favoritesFrom(this.choice().favorites, this.vaultName(), this.isFolder, this.years()),
+      tags: this.index ? topTags(this.index, TAG_MAX) : null,
+      current: this.smart ? null : this.mode() === "columns" ? this.colRoot : this.at,
+      smart: this.smart,
+      pick: (p) => this.pickFavorite(p),
+      pickSmart: (id) => this.pickSmart(id),
+      menu: (f, e) => this.favoriteMenu(f, e),
+      setIcon: (el, id) => setIcon(el, id),
+    };
+  }
+
+  /** Draws the sidebar again in place (the tags came, the favorites changed). */
+  private drawSide(): void {
+    if (this.sideEl?.isConnected) drawSidebar(this.sideEl, this.sideOpts());
+  }
+
+  /** The favorites' paths as they stand: the user's, or the defaults. */
+  private favoritePaths(): string[] { return editFavorites(this.choice().favorites, this.years(), {}); }
+
+  /** A drop on Favorites (D20): folders only, each one not there yet, up to FILES_FAVORITES_MAX. */
+  private favoriteCheck(paths: string[]): DropVerdict {
+    const file = paths.find((p) => !this.isFolder(p));
+    if (file) return { ok: false, text: `Only folders go in Favorites: ${file.split("/").pop()} is a file` };
+    const have = this.favoritePaths();
+    const fresh = paths.filter((p) => !have.includes(p));
+    if (!fresh.length) return { ok: false, text: paths.length === 1 ? `${this.folderName(paths[0])} is in Favorites already` : "These folders are in Favorites already" };
+    if (have.length + fresh.length > FILES_FAVORITES_MAX) return { ok: false, text: `Favorites holds ${FILES_FAVORITES_MAX} folders at most` };
+    return { ok: true, text: fresh.length === 1 ? `Add ${this.folderName(fresh[0])} to Favorites` : `Add ${fresh.length} folders to Favorites` };
+  }
+
+  private addFavorites(paths: string[]): void {
+    if (!this.favoriteCheck(paths).ok) return;
+    this.remember({ favorites: editFavorites(this.choice().favorites, this.years(), { add: paths }) });
+    this.drawSide();
+  }
+
+  private removeFavorite(path: string): void {
+    this.remember({ favorites: editFavorites(this.choice().favorites, this.years(), { remove: path }) });
+    this.drawSide();
+  }
+
+  /** A favorite's right-click: open it, reveal it, take it out, or put the defaults back. */
+  private favoriteMenu(f: Favorite, e: MouseEvent): void {
+    this.menu?.open([
+      { label: "Open", act: "open", run: () => this.pickFavorite(f.path) },
+      { label: "Reveal in Finder", act: "reveal", run: () => this.reveal(f.path) },
+      { separator: true },
+      { label: "Remove from Favorites", act: "remove-favorite", run: () => this.removeFavorite(f.path) },
+      {
+        label: "Restore the default favorites", act: "reset-favorites", off: this.choice().favorites === null ? "Favorites are the defaults" : null,
+        run: () => { this.remember({ favorites: null }); this.drawSide(); },
+      },
+    ], { x: e.clientX, y: e.clientY }, f.label);
+  }
+
+  /** The menu's Add to Favorites or Remove from Favorites for a folder. */
+  private favoriteEntry(path: string): MenuEntry {
+    if (this.favoritePaths().includes(path)) return { label: "Remove from Favorites", act: "remove-favorite", run: () => this.removeFavorite(path) };
+    const v = this.favoriteCheck([path]);
+    return { label: "Add to Favorites", act: "add-favorite", off: v.ok ? null : v.text, run: () => this.addFavorites([path]) };
   }
 
   private nearestFolder(path: string): string {
@@ -396,9 +597,10 @@ export class FilesTab {
     fwd.addEventListener("click", () => this.travel(1));
 
     const title = bar.createDiv({ cls: "aos-fx-title" });
-    title.createEl("h1", { cls: "aos-fx-h1", text: this.at ? this.at.split("/").pop()! : this.vaultName() });
-    title.createSpan({ cls: "aos-fx-count", text: itemsLabel(this.list(this.at).length) });
-    const ws = /^workspaces\/([^/_.][^/]*)$/.exec(this.at);
+    const place = this.place();
+    title.createEl("h1", { cls: "aos-fx-h1", text: place ? place.label : this.at ? this.at.split("/").pop()! : this.vaultName() });
+    title.createSpan({ cls: "aos-fx-count", text: itemsLabel(place ? place.items.length : this.list(this.at).length) });
+    const ws = place ? null : /^workspaces\/([^/_.][^/]*)$/.exec(this.at);
     if (ws) {
       const chip = title.createEl("button", { cls: "aos-fx-chip aos-fx-wschip", attr: { type: "button", "data-act": "open-space" } });
       chip.createSpan({ text: "Workspace · Open in Spaces" });
@@ -434,35 +636,87 @@ export class FilesTab {
     const add = tools.createEl("button", { cls: "aos-fx-iconbtn", attr: { type: "button", "aria-haspopup": "menu", "aria-label": "New", title: "New", "data-tour": "files-new-note", "data-act": "new" } });
     setIcon(add, "plus");
     add.addEventListener("click", () => this.menu?.open([
-      { label: "New note…", key: "⌘N", act: "new-note", off: this.writeOff(`${this.at}/`), run: () => this.chores.newNote(this.at) },
-      { label: "New folder", key: "⌥⌘N", act: "new-folder", off: this.writeOff(`${this.at}/`), run: () => void this.makeFolder(this.at) },
+      { label: "New note…", key: "⌘N", act: "new-note", off: this.hereOff(), run: () => this.chores.newNote(this.at) },
+      { label: "New folder", key: "⌥⌘N", act: "new-folder", off: this.hereOff(), run: () => void this.makeFolder(this.at) },
     ], add, "New"));
     const more = tools.createEl("button", { cls: "aos-fx-iconbtn", attr: { type: "button", "aria-haspopup": "menu", "aria-label": "More actions", title: "More actions", "data-tour": "files-open", "data-act": "more" } });
     setIcon(more, "ellipsis");
     more.addEventListener("click", () => this.menu?.open([
-      { label: "Open file…", key: "⌘O", act: "open-file", run: () => new QuickOpenModal(this.plugin.app).open() },
+      { label: "Open file…", key: "⌘O", act: "open-file", run: () => new QuickOpenModal(this.plugin.app, (p) => this.opened(p)).open() },
       { separator: true },
-      { label: "Reveal in Finder", act: "reveal", run: () => this.reveal(this.at) },
-      { label: "Copy path", act: "copy-path", run: () => this.copy(this.abs(this.at)) },
+      { label: "Reveal in Finder", act: "reveal", off: this.smart ? NOT_ON_DISK : null, run: () => this.reveal(this.at) },
+      { label: "Copy path", act: "copy-path", off: this.smart ? NOT_ON_DISK : null, run: () => this.copy(this.abs(this.at)) },
     ], more, "More actions"));
 
     const search = tools.createDiv({ cls: "aos-fx-search" });
     const field = search.createEl("label", { cls: "aos-fx-field" });
     const lens = field.createSpan({ cls: "aos-fx-field-ic" });
     setIcon(lens, "search");
-    const input = field.createEl("input", { cls: "aos-fx-query", attr: { type: "search", placeholder: this.allText ? "Search every text file…" : "Search notes…", spellcheck: "false", "aria-label": "Search" } });
+    const input = field.createEl("input", { cls: "aos-fx-query", attr: { type: "search", placeholder: this.placeholder(), spellcheck: "false", "aria-label": "Search" } });
     input.value = this.query;
     input.addEventListener("input", () => this.onQuery(input.value));
     input.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && input.value) { e.preventDefault(); e.stopPropagation(); input.value = ""; this.onQuery(""); }
-      else if (e.key === "ArrowDown") { e.preventDefault(); this.viewEl?.focus(); }
+      else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        // Into the results' first line, or the view.
+        const first = this.hitsShown() ? this.viewEl?.querySelector<HTMLElement>("button.aos-fx-hitpath") : null;
+        (first ?? this.viewEl)?.focus();
+      }
     });
     this.searchInput = input;
-    const scope = search.createEl("label", { cls: "aos-fx-scope" });
+  }
+
+  private placeholder(): string {
+    if (this.scope.what === "names") return "Search names…";
+    return this.allText ? "Search every text file…" : "Search notes…";
+  }
+
+  /** The scope bar under the toolbar while a search is typed (D22): the vault or this folder, names or contents, and
+   *  every text file for contents. */
+  private drawScope(): void {
+    const el = this.scopeEl;
+    if (!el) return;
+    el.empty();
+    const shown = !!this.query.trim();
+    el.toggleClass("is-shown", shown);
+    if (!shown) return;
+    const set = (pick: Partial<SearchScope>) => {
+      this.scope = { ...this.scope, ...pick };
+      if (this.searchInput) this.searchInput.placeholder = this.placeholder();
+      this.drawScope();
+      this.onQuery(this.query, 0);
+    };
+    const group = (label: string, opts: Array<{ id: string; text: string; on: boolean; title: string; run: () => void }>) => {
+      const g = el.createDiv({ cls: "aos-fx-scopeseg", attr: { role: "group", "aria-label": label } });
+      for (const o of opts) {
+        const b = g.createEl("button", { cls: o.on ? "is-on" : "", text: o.text, attr: { type: "button", "data-scope": o.id, "aria-pressed": o.on ? "true" : "false", title: o.title } });
+        b.addEventListener("click", o.run);
+      }
+    };
+    el.createSpan({ cls: "aos-fx-scopek", text: "Search" });
+    const here = this.hasHere();
+    const where = here && this.scope.where === "here" ? "here" : "vault";
+    const hereName = this.place()?.label ?? this.folderName(this.at);
+    group("Where", [
+      { id: "vault", text: "Vault", on: where === "vault", title: "Search the whole vault", run: () => set({ where: "vault" }) },
+      ...(here ? [{ id: "here", text: `“${hereName}”`, on: where === "here", title: `Search only ${hereName}`, run: () => set({ where: "here" }) }] : []),
+    ]);
+    group("Match", [
+      { id: "names", text: "Names", on: this.scope.what === "names", title: "Files and folders whose name holds the text, in this view", run: () => set({ what: "names" }) },
+      { id: "contents", text: "Contents", on: this.scope.what === "contents", title: "The lines inside files that hold the text", run: () => set({ what: "contents" }) },
+    ]);
+    const scope = el.createEl("label", { cls: "aos-fx-scope" });
     const box = scope.createEl("input", { attr: { type: "checkbox" } });
     box.checked = this.allText;
+    box.disabled = this.scope.what === "names";
+    if (box.disabled) scope.setAttr("title", "Names match every kind of file");
     scope.appendText("all text files");
-    box.addEventListener("change", () => { this.allText = box.checked; this.onQuery(this.query, 0); });
+    box.addEventListener("change", () => {
+      this.allText = box.checked;
+      if (this.searchInput) this.searchInput.placeholder = this.placeholder();
+      this.onQuery(this.query, 0);
+    });
   }
 
   private drawView(): void {
@@ -475,8 +729,10 @@ export class FilesTab {
     const left = el.scrollLeft;
     const hadFocus = el.contains(document.activeElement);
     el.empty();
-    this.listCache.clear();
-    if (this.query.trim()) { this.nav = null; this.renderResults(el); return; }
+    this.forget();
+    // The last draw's tiles are gone, and with them the thumbnails waiting to be read (D19).
+    this.thumbs.reset(el);
+    if (this.hitsShown()) { this.nav = null; this.renderResults(el); return; }
     const ctx = this.ctx();
     const mode = this.mode();
     this.nav = mode === "icons" ? renderIcons(el, ctx) : mode === "list" ? renderList(el, ctx) : renderColumns(el, ctx);
@@ -490,7 +746,7 @@ export class FilesTab {
     const pane = this.paneEl;
     if (!pane) return;
     pane.empty();
-    const show = this.mode() !== "columns" && this.choice().preview && !this.query.trim();
+    const show = this.mode() !== "columns" && this.choice().preview && !this.hitsShown();
     pane.toggleClass("is-shown", show);
     if (!show) return;
     const cur = this.sel.cursor;
@@ -503,7 +759,10 @@ export class FilesTab {
     if (!foot) return;
     foot.empty();
     const path = foot.createEl("nav", { cls: "aos-fx-path", attr: { "aria-label": "Path", "data-tour": "files-path" } });
-    const cs = crumbs(this.sel.cursor ?? this.at, this.vaultName());
+    const flat = this.listing();
+    // A smart folder, a tag or a name search with nothing selected: its name, where a folder would show its path.
+    const cs = flat && !this.sel.cursor ? [] : crumbs(this.sel.cursor ?? this.at, this.vaultName());
+    if (flat && !cs.length) path.createSpan({ cls: "aos-fx-crumb is-last", text: flat.label });
     cs.forEach((c, i) => {
       if (i) path.createSpan({ cls: "aos-fx-path-sep", text: "›", attr: { "aria-hidden": "true" } });
       const last = i === cs.length - 1;
@@ -513,9 +772,9 @@ export class FilesTab {
       b.addEventListener("click", () => { if (this.isFolder(c.path) && !(last && this.sel.cursor === c.path)) this.enter(c.path); });
     });
     const status = foot.createDiv({ cls: "aos-fx-status" });
-    const parts = [itemsLabel(this.query.trim() ? 0 : this.list(this.at).length)];
+    const parts = [itemsLabel(flat ? flat.items.length : this.list(this.at).length)];
     if (this.sel.paths.length) parts.push(`${this.sel.paths.length} selected`);
-    if (!this.query.trim()) status.createSpan({ cls: "aos-fx-sel", text: parts.join(" · ") });
+    if (!this.hitsShown()) status.createSpan({ cls: "aos-fx-sel", text: parts.join(" · ") });
     status.createSpan({ cls: "aos-fx-total aos-rt-count", text: `${quickOpenFiles(this.plugin.app).length.toLocaleString("en-US")} files` });
   }
 
@@ -539,9 +798,10 @@ export class FilesTab {
   private select(sel: Selection): void {
     this.sel = sel;
     if (this.mode() === "columns") {
-      // Columns follow the cursor: the folder it is in becomes the one the title and + New name.
+      // Columns follow the cursor: the folder it is in becomes the one the title and + New name (not in a listing
+      // from across the vault, which keeps its own title).
       const cur = sel.cursor;
-      if (cur) this.at = this.isFolder(cur) ? cur : parentOf(cur);
+      if (cur && !this.listing()) this.at = this.isFolder(cur) ? cur : parentOf(cur);
       this.drawBar();
       this.drawView();
     } else this.paint();
@@ -562,16 +822,34 @@ export class FilesTab {
     const it = this.item(path);
     if (!it) return;
     if (it.folder) {
-      if (this.mode() === "columns" && !fromPreview) { this.select(selectOnly(path)); return; }
+      if (this.mode() === "columns" && !fromPreview && !this.listing()) { this.select(selectOnly(path)); return; }
       this.enter(path);
       return;
     }
+    this.opened(path);
     if (kindOf(it) === "note" || kindOf(it) === "text") { void this.chores.openNote(path); return; }
     void shell.openPath(this.abs(path)).then((err: string) => { if (err) new Notice(`Cannot open ${path}: ${err}`); });
   }
 
+  /** A file opened from Files or looked at in Quick Look joins Recents (D20); it shows there at the next draw. */
+  private opened(path: string): void {
+    this.plugin.rememberFilesOpened(path);
+  }
+
+  /** Ends a search (a sidebar pick, a folder entered from a name search), as Finder's sidebar does. */
+  private endSearch(): void {
+    if (this.searchDebounce !== null) { window.clearTimeout(this.searchDebounce); this.searchDebounce = null; }
+    this.query = "";
+    this.searchSeq++;
+    this.result = null;
+    this.searching = false;
+  }
+
   /** Shows a folder (Icons and List) or puts the columns' cursor on it; `select` is what to select inside. */
   private enter(folder: string, select: string | null = null): void {
+    // Out of a smart folder or a tag, or a search by name: the folder is what the view shows now.
+    this.smart = null;
+    if (this.query.trim() && this.scope.what === "names") this.endSearch();
     this.hist = go(this.hist, folder);
     this.at = folder;
     if (this.mode() === "columns" && this.colRoot && folder !== this.colRoot && !folder.startsWith(`${this.colRoot}/`)) this.colRoot = "";
@@ -581,22 +859,40 @@ export class FilesTab {
   }
 
   private travel(dir: -1 | 1): void {
-    const from = this.at;
+    const from = this.smart ? null : this.at;
     const h = dir < 0 ? goBack(this.hist) : goForward(this.hist);
-    if (!h || !this.isFolder(h.at)) return;
+    if (!h) return;
+    const smart = h.at.startsWith(SMART_KEY) ? h.at.slice(SMART_KEY.length) : null;
+    if (smart === null && !this.isFolder(h.at)) return;
     this.hist = h;
-    this.at = h.at;
+    if (this.query.trim() && this.scope.what === "names") this.endSearch();
+    this.smart = smart;
+    if (smart === null) this.at = h.at;
     // Back to the folder you came out of selects it, as Finder does.
-    this.sel = parentOf(from) === h.at && this.item(from) ? selectOnly(from) : NO_SELECTION;
+    this.sel = smart === null && from !== null && parentOf(from) === h.at && this.item(from) ? selectOnly(from) : NO_SELECTION;
     this.render();
     this.viewEl?.focus({ preventScroll: true });
   }
 
   private pickFavorite(path: string): void {
     this.root?.removeClass("is-side-open");
+    this.smart = null;
+    this.endSearch();
     this.colRoot = path;
     this.hist = go(this.hist, path);
     this.at = path;
+    this.sel = NO_SELECTION;
+    this.render();
+    this.viewEl?.focus({ preventScroll: true });
+  }
+
+  /** A smart folder or a tag from the sidebar (D20): its files, from across the vault, in the view in use. */
+  private pickSmart(id: string): void {
+    if (!isSmartId(id)) return;
+    this.root?.removeClass("is-side-open");
+    this.endSearch();
+    this.smart = id;
+    this.hist = go(this.hist, SMART_KEY + id);
     this.sel = NO_SELECTION;
     this.render();
     this.viewEl?.focus({ preventScroll: true });
@@ -616,7 +912,7 @@ export class FilesTab {
     if (mode === this.mode()) return;
     this.remember({ view: mode });
     if (mode === "columns" && this.colRoot && this.at !== this.colRoot && !this.at.startsWith(`${this.colRoot}/`)) this.colRoot = "";
-    if (mode === "columns" && !this.sel.cursor && this.at) this.sel = selectOnly(this.at);
+    if (mode === "columns" && !this.sel.cursor && this.at && !this.listing()) this.sel = selectOnly(this.at);
     this.render();
     this.viewEl?.focus({ preventScroll: true });
   }
@@ -648,13 +944,17 @@ export class FilesTab {
     this.drawPane();
   }
 
-  private quickLook(path: string): void {
-    this.ql?.show(path, this.nav?.order ?? [path]);
+  /** Quick Look on `path`, ← → walking `order` (the view's); a file looked at joins Recents (D20). */
+  private quickLook(path: string, order: readonly string[] = this.nav?.order ?? [path]): void {
+    if (!this.isFolder(path)) this.opened(path);
+    this.ql?.show(path, order);
   }
 
   /** A note made, or a file moved or renamed: its folder in view, the file selected. */
   private landed(to: string, from?: string): void {
     if (from) this.sel = renameInSelection(this.sel, from, to);
+    // A listing from across the vault stays in view, the file selected in it.
+    if (this.listing()) { this.sel = selectOnly(to); this.render(); return; }
     const dir = parentOf(to);
     if (this.mode() === "list") {
       const parts = dir ? dir.split("/") : [];
@@ -678,7 +978,7 @@ export class FilesTab {
 
   /** Return or Rename: the item's name becomes a field (D14), with *Update N links* when notes link to it (D17). */
   private startRename(path: string): void {
-    if (this.renaming || this.busy || this.query.trim()) return;
+    if (this.renaming || this.busy || this.hitsShown()) return;
     const it = this.item(path);
     if (!it) return;
     if (this.sel.cursor !== path || this.sel.paths.length !== 1) this.select(selectOnly(path));
@@ -747,6 +1047,9 @@ export class FilesTab {
         this.index = moveInIndex(this.index, r.moved, new Map(r.edits.map((e) => [e.path, e.after])));
       }
       for (const m of r.moved) this.followRename(m.from, m.to);
+      // Favorites and Recents follow the files (D20).
+      this.remember({ moved: r.moved });
+      this.drawSide();
       const entry: UndoEntry = { label: opts.label, moves: r.moved, edits: r.edits };
       this.undoStack = pushUndo(this.undoStack, entry);
       const parts = [opts.head];
@@ -793,6 +1096,8 @@ export class FilesTab {
         this.index = moveInIndex(this.index, back, new Map(top.edits.filter((e) => !changed.includes(e.home)).map((e) => [e.home, e.before])));
       }
       for (const m of back) this.followRename(m.from, m.to);
+      this.remember({ moved: back });
+      this.drawSide();
       new Notice(`Undid ${top.label}${changed.length ? ` · links left as they are in ${changed.join(", ")}, changed since` : ""}`);
       this.showMoved(top.moves.map((m) => m.from), top.moves.length === 1);
     } catch (err) {
@@ -807,7 +1112,8 @@ export class FilesTab {
   private showMoved(paths: string[], follow: boolean): void {
     if (follow && paths.length === 1) { this.landed(paths[0]); return; }
     const shown = this.shownFolders();
-    const visible = paths.filter((p) => shown.has(parentOf(p)));
+    // A listing from across the vault may show any of them; the redraw keeps the ones that are there.
+    const visible = this.listing() ? paths : paths.filter((p) => shown.has(parentOf(p)));
     this.sel = visible.length ? { paths: visible, cursor: visible[visible.length - 1], anchor: visible[0] } : NO_SELECTION;
     void this.refresh();
   }
@@ -882,9 +1188,16 @@ export class FilesTab {
     return protectedReason(path);
   }
 
+  /** Why a new note or folder cannot go in the folder in view: a smart folder or a tag has none. */
+  private hereOff(): string | null {
+    return this.smart ? NOT_ON_DISK : this.writeOff(`${this.at}/`);
+  }
+
   private openMenu(path: string | null, e: MouseEvent, folder: string): void {
     if (path && !this.sel.paths.includes(path)) this.select(selectOnly(path));
     const at = { x: e.clientX, y: e.clientY };
+    // Empty space in a listing from across the vault is no folder to make things in.
+    if (!path && this.listing()) return;
     if (!path) {
       this.menu?.open([
         { label: "New note here…", key: "⌘N", act: "new-note", off: this.writeOff(`${folder}/`), run: () => this.chores.newNote(folder) },
@@ -920,7 +1233,8 @@ export class FilesTab {
       { label: "Copy path", act: "copy-path", run: () => this.copy(this.abs(path)) },
       ...(it.folder ? [] : [{ label: "Copy as [[link]]", act: "copy-link", run: () => this.copy(`[[${it.ext === "md" ? it.name.slice(0, -3) : it.name}]]`) }]),
       { label: "Reveal in Finder", act: "reveal", run: () => this.reveal(path) },
-      ...(it.folder || !text ? [] : [{ label: "Open with default app", act: "open-default", run: () => { void shell.openPath(this.abs(path)).then((err: string) => { if (err) new Notice(`Cannot open ${path}: ${err}`); }); } }]),
+      ...(it.folder ? [this.favoriteEntry(path)] : []),
+      ...(it.folder || !text ? [] : [{ label: "Open with default app", act: "open-default", run: () => { this.opened(path); void shell.openPath(this.abs(path)).then((err: string) => { if (err) new Notice(`Cannot open ${path}: ${err}`); }); } }]),
       { separator: true },
       {
         label: many ? `Move ${many.length} items to Trash` : "Move to Trash", key: "⌘⌫", act: "trash", danger: true,
@@ -981,6 +1295,7 @@ export class FilesTab {
       }
       case "open": if (cur) this.activate(cur, true); return;
       case "parent": {
+        if (this.listing()) return;
         if (this.mode() === "columns") { const st = nav?.step(cur, "left"); if (st && "select" in st) this.select(selectOnly(st.select)); return; }
         if (this.at) this.enter(parentOf(this.at), this.at);
         return;
@@ -995,8 +1310,8 @@ export class FilesTab {
       case "view-columns": this.setView("columns"); return;
       case "preview": this.togglePreview(); return;
       case "search": this.focusSearch(); return;
-      case "new-note": if (!this.writeOff(`${this.at}/`)) this.chores.newNote(this.at); return;
-      case "new-folder": if (!this.writeOff(`${this.at}/`)) void this.makeFolder(this.at); return;
+      case "new-note": if (!this.hereOff()) this.chores.newNote(this.at); return;
+      case "new-folder": if (!this.hereOff()) void this.makeFolder(this.at); return;
       case "duplicate": {
         const paths = this.sel.paths.filter((p) => !this.writeOff(p));
         if (paths.length && paths.length === this.sel.paths.length) void this.duplicate(paths);
@@ -1026,22 +1341,47 @@ export class FilesTab {
     if (i >= 0) { e.preventDefault(); this.select(selectOnly(scope[i].path)); }
   }
 
-  // ── search (today's, D22 widens it in PR 3) ──
+  // ── search (D22): names or contents, in the vault or the folder in view ──
 
   private onQuery(q: string, delay = 250): void {
+    const had = !!this.query.trim();
     this.query = q;
-    if (this.searchDebounce !== null) window.clearTimeout(this.searchDebounce);
-    if (!q.trim()) { this.searchSeq++; this.result = null; this.searching = false; this.drawView(); this.drawPane(); this.drawFoot(); return; }
-    this.searchDebounce = window.setTimeout(() => { void this.runSearch().then(() => { this.drawView(); this.drawPane(); this.drawFoot(); }); }, delay);
+    if (this.searchDebounce !== null) { window.clearTimeout(this.searchDebounce); this.searchDebounce = null; }
+    // The scope bar comes with the first letter and goes with the last.
+    if (had !== !!q.trim()) this.drawScope();
+    const found = () => { this.drawView(); this.drawPane(); this.drawFoot(); };
+    if (!q.trim()) { this.searchSeq++; this.result = null; this.searching = false; found(); return; }
+    // Names filter what the vault's index lists, with no read: the view follows the typing.
+    if (this.scope.what === "names") { this.searchSeq++; this.result = null; this.searching = false; this.searchDebounce = window.setTimeout(() => { this.searchDebounce = null; found(); }, Math.min(delay, 120)); return; }
+    this.searchDebounce = window.setTimeout(() => { this.searchDebounce = null; void this.runSearch().then(found); }, delay);
   }
 
   private async runSearch(): Promise<void> {
     const seq = ++this.searchSeq;
     this.searching = true;
-    const r = await searchVault(this.plugin.app, this.query, { allText: this.allText, isCancelled: () => seq !== this.searchSeq });
+    const r = await searchVault(this.plugin.app, this.query, { allText: this.allText, only: this.hereTest(), isCancelled: () => seq !== this.searchSeq });
     if (seq !== this.searchSeq || r === null) return;
     this.result = r;
     this.searching = false;
+  }
+
+  /** A hit's file opened from the results: a note tab, and Recents (D20). */
+  private openFound(path: string): void {
+    this.opened(path);
+    void this.chores.openNote(path);
+  }
+
+  /** The results' keys: ↑ ↓ walk the files and lines, ↩ opens the file, Space shows it in Quick Look (D22). */
+  private onResultKey(e: KeyboardEvent, box: HTMLElement, path: string, order: readonly string[]): void {
+    if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); e.stopPropagation(); this.quickLook(path, order); return; }
+    if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const all = Array.from(box.querySelectorAll<HTMLElement>("button.aos-fx-hitpath, button.aos-fx-line"));
+    const at = all.indexOf(e.target as HTMLElement);
+    const next = all[at + (e.key === "ArrowDown" ? 1 : -1)];
+    if (next) next.focus();
+    else if (e.key === "ArrowUp") this.searchInput?.focus();
   }
 
   private renderResults(host: HTMLElement): void {
@@ -1052,11 +1392,13 @@ export class FilesTab {
       ? `${r.matches} line${r.matches === 1 ? "" : "s"} in ${r.hits.length} file${r.hits.length === 1 ? "" : "s"}${r.truncated ? ` (the first ${SEARCH_MAX_MATCHES})` : ""} · ${r.files} searched`
       : `No matches in ${r.files} file${r.files === 1 ? "" : "s"}`;
     box.createDiv({ cls: "aos-fx-summary", text: summary });
+    const order = r.hits.map((h) => h.path);
     for (const hit of r.hits) {
       const group = box.createDiv({ cls: "aos-fx-hit", attr: { "data-hit": hit.path } });
       const title = group.createEl("button", { cls: "aos-fx-hitpath", attr: { type: "button" } });
       title.setText(hit.path);
-      title.addEventListener("click", () => void this.chores.openNote(hit.path));
+      title.addEventListener("click", () => this.openFound(hit.path));
+      title.addEventListener("keydown", (e) => this.onResultKey(e, box, hit.path, order));
       for (const m of hit.matches) {
         const line = group.createEl("button", { cls: "aos-fx-line", attr: { type: "button", title: `${hit.path}:${m.line}` } });
         line.createSpan({ cls: "aos-fx-lineno", text: String(m.line) });
@@ -1064,7 +1406,8 @@ export class FilesTab {
         text.appendText(m.text.slice(0, m.start));
         text.createSpan({ cls: "aos-fx-mark", text: m.text.slice(m.start, m.end) });
         text.appendText(m.text.slice(m.end));
-        line.addEventListener("click", () => void this.chores.openNote(hit.path));
+        line.addEventListener("click", () => this.openFound(hit.path));
+        line.addEventListener("keydown", (e) => this.onResultKey(e, box, hit.path, order));
       }
     }
   }

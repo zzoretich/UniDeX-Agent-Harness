@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { App } from "obsidian";
 import {
-  buildVaultIndex, indexFrom, linkMove, moveInIndex, movedPath, parseNote, pathLookup, resolveLink, rewriteLinks, rewritePlan, topTags,
+  buildVaultIndex, indexFrom, linkMove, moveInIndex, movedPath, notesTagged, parseNote, pathLookup, resolveLink, rewriteLinks, rewritePlan, topTags,
   type VaultIndex,
 } from "./vaultIndex";
 
@@ -71,6 +71,10 @@ test("the index resolves links, counts unresolved ones, builds backlinks without
   assert.equal(idx.backlinks.get("c.md"), undefined);
   assert.deepEqual(topTags(idx, 5), [{ tag: "pin", count: 2 }, { tag: "status/active", count: 1 }]);
   assert.deepEqual(topTags(idx, 1), [{ tag: "pin", count: 2 }]);
+  // A tag in the sidebar lists its notes (files-finder D20), the exact tag only.
+  assert.deepEqual(notesTagged(idx, "pin"), ["a.md", "dir/b.md"]);
+  assert.deepEqual(notesTagged(idx, "status/active"), ["dir/b.md"]);
+  assert.deepEqual(notesTagged(idx, "status"), []);
 });
 
 test("buildVaultIndex reads Markdown only, skips what cannot be read, reuses parsed notes, and stops when cancelled", async () => {
