@@ -42,8 +42,9 @@ export interface TerminalChoice {
 }
 
 /** The Files tab's remembered choices (spec 2026-10-17-files-finder D21): the view, the sort, whether Icons and List
- *  show the preview pane, the sidebar's favorites (null: the defaults, D20) and what was opened from Files, newest
- *  first. The same literals as data/filesModel.ts, kept here so this module stays import-free. */
+ *  show the preview pane, the sidebar's favorites (null: the defaults, D20), what was opened from Files, newest
+ *  first, and whether a rename or move updates the links to it (D17, on unless turned off). The same literals as
+ *  data/filesModel.ts, kept here so this module stays import-free. */
 export type FilesViewId = "icons" | "list" | "columns";
 export type FilesSortKey = "name" | "modified" | "size" | "kind";
 export interface FilesChoice {
@@ -52,6 +53,7 @@ export interface FilesChoice {
   preview: boolean;
   favorites: string[] | null;
   recents: string[];
+  updateLinks: boolean;
 }
 
 export interface AgenticOSSettings {
@@ -111,7 +113,7 @@ export const DEFAULT_SETTINGS: AgenticOSSettings = {
   pulseSeenAt: null,
   brainReviewSeenAt: null,
   tour: DEFAULT_TOUR_STATE,
-  files: { view: "icons", sort: { key: "name", desc: false }, preview: false, favorites: null, recents: [] },
+  files: { view: "icons", sort: { key: "name", desc: false }, preview: false, favorites: null, recents: [], updateLinks: true },
 };
 
 // ── remembered choices (U12) ──
@@ -270,6 +272,7 @@ export function sanitizeFilesChoice(raw: unknown): FilesChoice {
     preview: r.preview === true,
     favorites,
     recents: pathList(r.recents, FILES_RECENTS_MAX),
+    updateLinks: r.updateLinks !== false,
   };
 }
 
@@ -281,6 +284,7 @@ export function rememberFilesChoice(current: unknown, pick: Partial<Omit<FilesCh
   if (pick.sort) c.sort = { ...pick.sort };
   if (pick.preview !== undefined) c.preview = pick.preview;
   if (pick.favorites !== undefined) c.favorites = pick.favorites ? [...pick.favorites] : null;
+  if (pick.updateLinks !== undefined) c.updateLinks = pick.updateLinks;
   if (pick.opened) c.recents = [pick.opened, ...c.recents.filter((p) => p !== pick.opened)];
   return sanitizeFilesChoice(c);
 }

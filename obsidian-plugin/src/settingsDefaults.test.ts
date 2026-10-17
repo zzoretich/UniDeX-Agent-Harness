@@ -137,7 +137,7 @@ test("remembering a launch: the host becomes ⌘T's, the workspace moves to the 
 // ── Files (spec 2026-10-17-files-finder D21) ──
 
 test("the Files choice defaults to Icons by name, no preview pane, the default favorites and no recents", () => {
-  assert.deepEqual(DEFAULT_SETTINGS.files, { view: "icons", sort: { key: "name", desc: false }, preview: false, favorites: null, recents: [] });
+  assert.deepEqual(DEFAULT_SETTINGS.files, { view: "icons", sort: { key: "name", desc: false }, preview: false, favorites: null, recents: [], updateLinks: true });
   for (const raw of [undefined, null, {}, [], "list", 3]) assert.deepEqual(sanitizeFilesChoice(raw), DEFAULT_SETTINGS.files, String(raw));
 });
 
@@ -170,4 +170,13 @@ test("remembering a Files change replaces what it names and puts an opened file 
   assert.deepEqual(rememberFilesChoice(c, { favorites: ["brain"] }).favorites, ["brain"]);
   assert.equal(rememberFilesChoice({ ...c, favorites: ["brain"] }, { favorites: null }).favorites, null);
   assert.notEqual(rememberFilesChoice(DEFAULT_SETTINGS.files, {}), DEFAULT_SETTINGS.files, "a fresh copy");
+});
+
+test("Update links (files-finder D17) stays on until it is turned off, and only false turns it off", () => {
+  assert.equal(sanitizeFilesChoice({ updateLinks: false }).updateLinks, false);
+  for (const v of [true, undefined, 0, "no", null]) assert.equal(sanitizeFilesChoice({ updateLinks: v }).updateLinks, true, String(v));
+  const off = rememberFilesChoice(undefined, { updateLinks: false });
+  assert.equal(off.updateLinks, false);
+  assert.equal(rememberFilesChoice(off, { view: "list" }).updateLinks, false, "another change keeps it");
+  assert.equal(rememberFilesChoice(off, { updateLinks: true }).updateLinks, true);
 });

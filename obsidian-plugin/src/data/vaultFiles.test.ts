@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { App } from "obsidian";
 import {
-  childEntries, cleanPath, foldPath, isListed, isProtected, matchLines, movePath, newNotePath, quickOpenFiles, renamePath, searchVault, sortEntries,
-  SEARCH_MAX_MATCHES,
+  childEntries, cleanPath, duplicatePath, foldPath, isListed, isProtected, matchLines, movePath, movePlan, newFolderPath, newNotePath, quickOpenFiles,
+  renamePath, searchVault, sortEntries, SEARCH_MAX_MATCHES,
 } from "./vaultFiles";
 
 /** A vault index the way the HUD sees it: files with a path, an extension and a stat; folders with children. */
@@ -126,4 +126,48 @@ test("renamePath keeps the folder and the extension; movePath keeps the name", (
   assert.deepEqual(movePath("notes/a.md", "app/node_modules", none), { ok: false, error: "node_modules/ belongs to a package manager" });
   assert.equal((newNotePath("BRAIN/_INDEX", "x", none) as { error: string }).error, "brain/_index/ is written by the runtime itself");
   assert.deepEqual(movePath("notes/a.md", "x", (p) => p === "x/a.md"), { ok: false, error: "x/a.md already exists" });
+});
+
+test("movePath refuses a folder into itself or a folder under it", () => {
+  const none = () => false;
+  assert.deepEqual(movePath("notes", "notes", none), { ok: false, error: "notes cannot go inside itself" });
+  assert.deepEqual(movePath("notes", "notes/2026", none), { ok: false, error: "notes cannot go inside itself" });
+  assert.deepEqual(movePath("notes", "notes-old", none), { ok: true, path: "notes-old/notes" });
+});
+
+test("movePlan checks every item before the first moves (files-finder D15)", () => {
+  const none = () => false;
+  assert.deepEqual(movePlan(["a/x.md", "a/y.png"], "b", none), { ok: true, moves: [{ from: "a/x.md", to: "b/x.md" }, { from: "a/y.png", to: "b/y.png" }] });
+  // One that cannot go stops all of them, naming it.
+  assert.deepEqual(movePlan(["a/x.md", "a/y.png"], "b", (p) => p === "b/y.png"), { ok: false, error: "y.png: b/y.png already exists" });
+  assert.deepEqual(movePlan(["a/x.md", "brain/_index/BRAIN.md"], "b", none), { ok: false, error: "BRAIN.md: brain/_index/BRAIN.md is written by the runtime itself" });
+  // A runtime folder says why once, whatever is dropped on it; a lone item keeps its own reason.
+  assert.deepEqual(movePlan(["a/x.md", "a/y.png"], "brain/_index", none), { ok: false, error: "brain/_index/ is written by the runtime itself" });
+  assert.deepEqual(movePlan(["a/x.md"], "Brain/Scripts/lib", none), { ok: false, error: "brain/scripts/ is written by the runtime itself" });
+  assert.deepEqual(movePlan(["a/x.md"], "b", (p) => p === "b/x.md"), { ok: false, error: "b/x.md already exists" });
+  // Something inside a folder that moves goes with it; items already there stay; two of one name cannot share a folder.
+  assert.deepEqual(movePlan(["a", "a/x.md"], "b", none), { ok: true, moves: [{ from: "a", to: "b/a" }] });
+  assert.deepEqual(movePlan(["b/x.md", "a/y.md"], "b", none), { ok: true, moves: [{ from: "a/y.md", to: "b/y.md" }] });
+  assert.deepEqual(movePlan(["b/x.md"], "b", none), { ok: false, error: "it is in that folder already" });
+  assert.deepEqual(movePlan(["b/x.md", "b/y.md"], "b/", none), { ok: false, error: "they are in that folder already" });
+  assert.deepEqual(movePlan(["a/x.md", "c/X.md"], "b", none), { ok: false, error: "two items are named X.md" });
+  assert.deepEqual(movePlan(["a", "c"], "a/d", none), { ok: false, error: "a: a cannot go inside itself" });
+});
+
+test("newFolderPath: untitled folder, then numbered as Finder does; never in the runtime's folders", () => {
+  const taken = new Set(["notes/untitled folder", "notes/untitled folder 2"]);
+  assert.deepEqual(newFolderPath("", () => false), { ok: true, path: "untitled folder" });
+  assert.deepEqual(newFolderPath("notes", (p) => taken.has(p)), { ok: true, path: "notes/untitled folder 3" });
+  assert.deepEqual(newFolderPath("brain/_index", () => false), { ok: false, error: "brain/_index/ is written by the runtime itself" });
+});
+
+test("duplicatePath: name copy.ext beside it, then copy 2; a folder has no extension; never the runtime's files", () => {
+  const taken = new Set(["notes/a copy.md", "notes/a copy 2.md"]);
+  assert.deepEqual(duplicatePath("notes/a.md", false, () => false), { ok: true, path: "notes/a copy.md" });
+  assert.deepEqual(duplicatePath("notes/a.md", false, (p) => taken.has(p)), { ok: true, path: "notes/a copy 3.md" });
+  assert.deepEqual(duplicatePath("archive.tar.gz", false, () => false), { ok: true, path: "archive.tar copy.gz" });
+  assert.deepEqual(duplicatePath("README", false, () => false), { ok: true, path: "README copy" });
+  assert.deepEqual(duplicatePath("notes/v1.2", true, () => false), { ok: true, path: "notes/v1.2 copy" });
+  assert.deepEqual(duplicatePath("brain/_index/BRAIN.md", false, () => false), { ok: false, error: "brain/_index/ is written by the runtime itself" });
+  assert.deepEqual(duplicatePath("brain/scripts", true, () => false), { ok: false, error: "brain/scripts/ is written by the runtime itself" });
 });

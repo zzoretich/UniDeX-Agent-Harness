@@ -1,5 +1,6 @@
 // The Files tab's data (spec 2026-10-05-workbench-app, phase 2): what the vault tree shows, quick open's list, vault
-// search, and the rules for a new note, a rename and a move. Everything goes through the vault's own index
+// search, and the rules for a new note, a rename and a move, and (files-finder D14, D15, D24) a new folder, a duplicate
+// and a drop of several items. Everything goes through the vault's own index
 // (getFiles, folder children), so it reads the same in Obsidian and in the app; the pure parts take plain values.
 
 import type { App, TAbstractFile, TFile } from "obsidian";
@@ -201,5 +202,57 @@ export function movePath(from: string, folder: string, exists: (p: string) => bo
   const dir = cleanPath(folder);
   const to = dir ? `${dir}/${name}` : name;
   if (to === from) return { ok: false, error: "it is in that folder already" };
+  if (dir === from || dir.startsWith(`${from}/`)) return { ok: false, error: `${name} cannot go inside itself` };
   return checkTarget(to, exists);
+}
+
+export interface Move { from: string; to: string }
+export type MovePlan = { ok: true; moves: Move[] } | { ok: false; error: string };
+
+/**
+ * Several items dropped on one folder (files-finder D15): every movePath check passes before the first one moves, so a
+ * drop moves all of them or none. An item inside another one that moves goes with it; items already in that folder stay
+ * where they are, and a drop of only those does nothing.
+ */
+export function movePlan(paths: readonly string[], folder: string, exists: (p: string) => boolean): MovePlan {
+  const dir = cleanPath(folder);
+  // A runtime folder refuses the drop whatever is dropped, and says so once.
+  if (dir && isProtected(`${dir}/`)) return { ok: false, error: protectedError(`${dir}/`) };
+  const tops = [...new Set(paths)].filter((p) => !paths.some((q) => q !== p && p.startsWith(`${q}/`)));
+  const going = tops.filter((p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") !== dir);
+  if (!going.length) return { ok: false, error: tops.length === 1 ? "it is in that folder already" : "they are in that folder already" };
+  const moves: Move[] = [];
+  const taken = new Set<string>();
+  for (const from of going) {
+    const c = movePath(from, dir, exists);
+    if (!c.ok) return going.length === 1 ? c : { ok: false, error: `${from.split("/").pop()}: ${c.error}` };
+    if (taken.has(foldPath(c.path))) return { ok: false, error: `two items are named ${from.split("/").pop()}` };
+    taken.add(foldPath(c.path));
+    moves.push({ from, to: c.path });
+  }
+  return { ok: true, moves };
+}
+
+/** `name 2`, `name 3`, …, the first that is free (Finder's numbering), the extension kept after the number. */
+function numbered(dir: string, stem: string, ext: string, exists: (p: string) => boolean): string {
+  const at = (n: number) => { const name = `${stem}${n > 1 ? ` ${n}` : ""}${ext}`; return dir ? `${dir}/${name}` : name; };
+  let n = 1;
+  while (exists(at(n)) && n < 10_000) n++;
+  return at(n);
+}
+
+/** New folder (files-finder D14): `untitled folder` in `folder`, numbered when that is taken. */
+export function newFolderPath(folder: string, exists: (p: string) => boolean): PathCheck {
+  const dir = cleanPath(folder);
+  return checkTarget(numbered(dir, "untitled folder", "", exists), exists);
+}
+
+/** Duplicate (files-finder D24): `name copy.ext` beside the original, then `name copy 2.ext`, as Finder names them. */
+export function duplicatePath(from: string, isFolder: boolean, exists: (p: string) => boolean): PathCheck {
+  if (isProtected(from)) return { ok: false, error: protectedError(from) };
+  const dir = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
+  const name = from.split("/").pop()!;
+  const dot = isFolder ? -1 : name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  return checkTarget(numbered(dir, `${stem} copy`, ext, exists), exists);
 }

@@ -1,6 +1,6 @@
 // The Files tab's pure parts (spec 2026-10-17-files-finder): what kind a file is and what it is called, the kind tab
 // a top folder gives everything under it (D3), sorting and grouping (D7, D8), the selection with its cursor and
-// anchor (D4), back and forward (D6), the key map (D23), type-ahead, and the size and date labels. No obsidian
+// anchor (D4), back and forward (D6), the undo stack (D16), the key map (D23), type-ahead, and the size and date labels. No obsidian
 // import: the tab hands in plain items.
 
 export type ViewMode = "icons" | "list" | "columns";
@@ -209,14 +209,52 @@ export function columnChain(root: string, path: string | null, isFolder: (p: str
   return chain;
 }
 
+// ── undo (D16) ──
+
+/** One undoable change: the moves it made (a rename is one), and the notes whose links it rewrote, each with its text
+ *  before and after, by the path it had before (`home`) and after the move. */
+export interface UndoEntry {
+  label: string;
+  moves: Array<{ from: string; to: string }>;
+  edits: Array<{ home: string; path: string; before: string; after: string }>;
+}
+
+export const UNDO_MAX = 20;
+
+/** The stack after a change: the newest last, the oldest dropped past UNDO_MAX. */
+export function pushUndo(stack: readonly UndoEntry[], entry: UndoEntry, max = UNDO_MAX): UndoEntry[] {
+  return [...stack, entry].slice(-max);
+}
+
+/**
+ * Why an entry cannot be undone any more, or null: it is stale once its paths changed, so every moved item must still
+ * be where it went and nothing may have taken its old place. `exists` asks the vault.
+ */
+export function staleUndo(entry: UndoEntry, exists: (p: string) => boolean): string | null {
+  for (const m of entry.moves) {
+    const name = m.to.split("/").pop()!;
+    if (!exists(m.to)) return `${name} is no longer at ${m.to}`;
+    // A rename that only changed the letter case is the same file on the disk.
+    if (exists(m.from) && m.from.toLowerCase() !== m.to.toLowerCase()) return `${m.from} exists again`;
+  }
+  return null;
+}
+
+/** The moves that undo an entry: each one back, the last first. */
+export function undoMoves(entry: UndoEntry): Array<{ from: string; to: string }> {
+  return [...entry.moves].reverse().map((m) => ({ from: m.to, to: m.from }));
+}
+
 // ── keys (D23) ──
 
 export type KeyAction =
   | "up" | "down" | "left" | "right" | "first" | "last"
   | "open" | "parent" | "rename" | "quicklook" | "clear" | "trash" | "select-all"
-  | "view-icons" | "view-list" | "view-columns" | "preview" | "search" | "new-note";
+  | "view-icons" | "view-list" | "view-columns" | "preview" | "search" | "new-note"
+  | "new-folder" | "duplicate" | "undo";
 
-export interface KeyLike { key: string; metaKey: boolean; shiftKey: boolean; altKey: boolean; ctrlKey: boolean }
+/** `code` is the physical key: ⌥ turns a letter into another character (⌥N is a dead key), so ⌥⌘N is read by it. */
+export interface KeyLike { key: string; metaKey: boolean; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; code?: string }
 
 /** The view's own keys, while focus is in Files and not in a field. ⇧ on an arrow extends (the caller reads shiftKey). */
 export function keyAction(e: KeyLike): KeyAction | null {
@@ -229,6 +267,7 @@ export function keyAction(e: KeyLike): KeyAction | null {
     return null;
   }
   if (e.ctrlKey) return null;
+  if (e.metaKey && e.altKey && !e.shiftKey) return e.code === "KeyN" || k.toLowerCase() === "n" ? "new-folder" : null;
   if (e.metaKey && !e.altKey) {
     const l = k.toLowerCase();
     if (k === "ArrowDown" && !e.shiftKey) return "open";
@@ -238,6 +277,9 @@ export function keyAction(e: KeyLike): KeyAction | null {
     if (l === "p" && e.shiftKey) return "preview";
     if (l === "f" && !e.shiftKey) return "search";
     if (l === "n" && !e.shiftKey) return "new-note";
+    if (l === "d" && !e.shiftKey) return "duplicate";
+    // ⇧⌘Z (redo) is the Edit menu's.
+    if (l === "z" && !e.shiftKey) return "undo";
     return null;
   }
   if (!plain) return null;
