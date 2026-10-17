@@ -23,6 +23,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **Files' search opens a hit at its line.** A click or Return on a matching line opens the note scrolled to that line, marked for a moment (a text file at the line itself), and Space shows it in Quick Look there; ↑ ↓ walk the files and lines, and **all text files** moved into the new scope bar. <!-- tour: files.search, files.scope -->
 - **Files says where trashed files went.** After Move to Trash the toast says to put them back from the Trash in Finder; the Trash itself cannot hand them back, so there is no Undo for it. <!-- no-tour: a toast's wording, no control of its own -->
 
+### Fixed
+- **The Skills and Agents filters keep the cursor when the list redraws under them** (a sync finishing just as you start typing): before, the redraw took the focus away and the letters typed next went nowhere.
+
 ## [2.0.0] — 2026-10-16
 
 ### Upgrading

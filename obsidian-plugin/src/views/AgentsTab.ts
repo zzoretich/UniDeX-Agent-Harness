@@ -98,6 +98,10 @@ export class AgentsTab {
     if (!this.view.isTabActive("agents")) return;
     const host = this.host;
     if (!host) return;
+    // A redraw (a sync landing, the cache rewritten) keeps the filter's focus and caret: one between a click in the
+    // filter and the typing would otherwise send the letters nowhere.
+    const was = host.querySelector<HTMLInputElement>("input.aos-sk-filter");
+    const caret = was && document.activeElement === was ? { start: was.selectionStart, end: was.selectionEnd } : null;
     host.empty();
     const { yours, listed } = groupAgents(this.cache.agents);
     const n = agentCounts(yours);
@@ -123,6 +127,7 @@ export class AgentsTab {
     const search = host.createEl("input", { cls: "aos-sk-filter", attr: { type: "search", placeholder: "filter agents…", "aria-label": "Filter agents" } });
     search.value = this.query;
     search.addEventListener("input", () => { this.query = search.value; this.renderList(); });
+    if (caret) { search.focus({ preventScroll: true }); search.setSelectionRange(caret.start, caret.end); }
 
     this.listHost = host.createDiv({ cls: "aos-sk-list" });
     this.renderList();
