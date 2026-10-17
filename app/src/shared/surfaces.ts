@@ -437,6 +437,11 @@ export const SURFACES: readonly Surface[] = [
     // data/vaultFiles.ts PROTECTED_PREFIXES, and every dot-path.
     except: PROTECTED,
     spawns: [],
+    // files-finder D25: the acts of 2.1 (a new folder, a duplicate, rename in place, a drag of several items, Move to…,
+    // the link rewrites and their undo) go through this same rule. Checked live on 2026-10-17 on a copy of a real vault
+    // (6,431 files): a rename rewrote 7 links in 5 notes and left the one in brain/_index alone; ⌘Z put the name and
+    // every note back byte for byte; a new folder, a file and a folder duplicated, a drag of two items and Move to…, each
+    // undone with its links; both copies to the Trash. The guard refused nothing.
     verified: true,
   },
   {
