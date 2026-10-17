@@ -18,6 +18,17 @@ export interface ViewNav {
   typeAheadScope(cursor: string | null): Array<{ name: string; path: string }>;
 }
 
+/** A listing of files from across the vault, drawn by each view in place of a folder (D20, D22): a smart folder, a tag,
+ *  or the names a search matched. */
+export interface FlatListing {
+  /** The smart folder's id, `tag:<name>`, or `search`. */
+  id: string;
+  label: string;
+  items: Item[];
+  /** What a view says when there is nothing in it. */
+  empty: string;
+}
+
 export interface FilesCtx {
   vaultName: string;
   now: Date;
@@ -25,6 +36,8 @@ export interface FilesCtx {
   at: string;
   /** Where Columns starts: the favorite last picked, or the vault. */
   colRoot: string;
+  /** What the views list instead of `at`, when the sidebar picked a smart folder or a tag, or a search matched names. */
+  flat: FlatListing | null;
   sel: Selection;
   sort: SortChoice;
   index: VaultIndex | null;
@@ -50,6 +63,8 @@ export interface FilesCtx {
   sortBy(key: SortKey): void;
   /** Draws the preview of `path` into `host` (Columns' last column, D10). */
   preview(host: HTMLElement, path: string): void;
+  /** Gives an image's tile art its thumbnail once the tile is in view (Icons, D19). */
+  thumb(art: HTMLElement, item: Item): void;
 }
 
 /** Marks an element as one item of a view: its path, the role, the right-click, and dragging (D15): every item drags,

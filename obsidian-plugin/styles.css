@@ -2227,6 +2227,16 @@ button.aos-fx-si.is-on:not(.clickable-icon) { background: var(--udx-raised-2); f
 .aos-fx-si-ic { display: inline-flex; color: var(--udx-text-2); }
 .aos-fx-si-ic svg { width: 16px; height: 16px; }
 .aos-fx-si-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-fx-si-count { margin-left: auto; padding-left: 6px; font-family: var(--udx-mono); font-size: 11px; color: var(--udx-text-3); }
+/* Favorites, Smart folders, Tags (D20): each a group; a folder dragged onto Favorites, not onto a favorite, joins them. */
+.aos-fx-sgroup { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; border-radius: 8px; }
+.aos-fx-sdim { padding: 2px 8px; font-size: 12px; color: var(--udx-text-3); }
+.aos-fx-favslot {
+  display: none; margin-top: 2px; padding: 6px 8px; border: 1px dashed var(--udx-line-2); border-radius: 6px;
+  font-size: 11.5px; color: var(--udx-text-3); text-align: center;
+}
+.aos-fx.is-dragging .aos-fx-favslot { display: block; }
+.aos-fx [data-fav-add].is-drop .aos-fx-favslot { border-color: var(--udx-focus); color: var(--udx-text); }
 
 /* Toolbar. */
 .aos-fx-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -2285,6 +2295,21 @@ button.aos-fx-wschip:not(.clickable-icon):hover { background: var(--udx-raised);
 .aos-fx-field-ic svg { width: 14px; height: 14px; }
 input.aos-fx-query { flex: 1; min-width: 0; height: 24px; padding: 0; border: none; outline: none; background: none; box-shadow: none; color: var(--udx-text); font-size: 12px; }
 .aos-fx-scope { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--udx-text-2); white-space: nowrap; }
+.aos-fx-scope:has(input:disabled) { color: var(--udx-text-3); }
+/* The search's scope bar (D22), under the toolbar while a search is typed. */
+.aos-fx-scopebar { display: none; }
+.aos-fx-scopebar.is-shown {
+  flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 14px; box-sizing: border-box;
+  border-bottom: 1px solid var(--udx-line); background: var(--udx-surface); font-size: 12px;
+}
+.aos-fx-scopek { font-size: 11px; font-weight: 600; color: var(--udx-text-3); }
+.aos-fx-scopeseg { display: flex; border: 1px solid var(--udx-line-2); border-radius: 7px; overflow: hidden; }
+.aos-fx-scopeseg button:not(.clickable-icon) {
+  height: 24px; padding: 0 10px; border: none; border-radius: 0; background: var(--udx-bg); box-shadow: none;
+  color: var(--udx-text-2); font-size: 12px; font-weight: 400; cursor: pointer; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+}
+.aos-fx-scopeseg button + button:not(.clickable-icon) { border-left: 1px solid var(--udx-line-2); }
+.aos-fx-scopeseg button.is-on:not(.clickable-icon) { background: var(--udx-raised-2); color: var(--udx-text); font-weight: 550; }
 
 /* The view. */
 .aos-fx-body { flex: 1; min-height: 0; display: flex; }
@@ -2309,6 +2334,13 @@ input.aos-fx-query { flex: 1; min-width: 0; height: 24px; padding: 0; border: no
 }
 .aos-fx-tile-art { position: relative; width: 84px; height: 70px; display: flex; align-items: flex-end; justify-content: center; border-radius: 8px; }
 .aos-fx-tile.is-selected .aos-fx-tile-art { background: var(--udx-raised-2); }
+/* A thumbnail (D19): hidden until it has loaded, then in place of the page. */
+.aos-fx-thumb { display: none; }
+.aos-fx-tile-art.has-thumb { align-items: center; }
+.aos-fx-tile-art.has-thumb .aos-fx-thumb {
+  display: block; max-width: 78px; max-height: 64px; object-fit: contain; border-radius: 4px;
+  background: var(--udx-raised); box-shadow: 0 0 0 1px var(--udx-line-2);
+}
 .aos-fx-tile-name {
   max-width: 108px; padding: 1px 6px; border-radius: 4px; font-size: 12px; line-height: 15px; text-align: center; word-break: break-word;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -2360,6 +2392,9 @@ button.aos-fx-lh.aos-fx-col-size:not(.clickable-icon) { padding-right: 16px; jus
 .aos-fx-glyph { display: inline-flex; flex: none; color: var(--udx-text-2); }
 .aos-fx-glyph svg { width: 15px; height: 15px; }
 .aos-fx-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A row from across the vault names the folder it is in (D20, D22). */
+.aos-fx-where { min-width: 0; flex-shrink: 2; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--udx-text-3); }
+.aos-fx-row.is-selected .aos-fx-where { color: inherit; opacity: .75; }
 
 /* Columns (D9). */
 .aos-fx-columns { display: flex; height: 100%; min-width: min-content; }

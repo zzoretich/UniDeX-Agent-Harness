@@ -25,7 +25,7 @@ import { COMMAND_REGISTRY, executeCommand, setSpawnContext } from "./src/data/co
 import { resolveNodeBinary } from "./src/data/nodeResolver";
 import { readAgenticosJson, readVaultConfig, readProviderState, claudeConfigDir as defaultClaudeConfigDir } from "./src/data/aosConfig";
 import { resolveClaudeBin } from "./src/data/claudeAsk";
-import { DEAD_SETTINGS_KEYS } from "./src/settingsDefaults";
+import { DEAD_SETTINGS_KEYS, rememberFilesChoice } from "./src/settingsDefaults";
 import { runAos, runAosJson } from "./src/data/aosRun";
 import type { AosResult, AosJsonResult } from "./src/data/aosRun";
 import type { VaultConfig } from "./src/data/aosConfig";
@@ -150,7 +150,7 @@ export default class AgenticOSPlugin extends Plugin {
     this.addCommand({ id: "open-omnisearch", name: "Omnisearch",
       callback: () => { void this.openOmni(); } });
     // The Files tab's two entry points (no default hotkeys: in Obsidian ⌘O and ⌘⇧F are its own; the app's menu binds them).
-    this.addCommand({ id: "open-file", name: "Open file…", callback: () => { new QuickOpenModal(this.app).open(); } });
+    this.addCommand({ id: "open-file", name: "Open file…", callback: () => { new QuickOpenModal(this.app, (p) => this.rememberFilesOpened(p)).open(); } });
     this.addCommand({ id: "search-vault", name: "Search vault…",
       callback: () => { void this.openWorkbenchTab("files").then(() => this.currentFilesTab()?.focusSearch()); } });
     // Help (tour C12): Take the tour, Tour this tab, What's new, Getting started, Documentation. The app's Help menu
@@ -233,6 +233,12 @@ export default class AgenticOSPlugin extends Plugin {
     }
   }
   async saveSettings(): Promise<void> { await this.saveData(this.settings); }
+
+  /** A file opened from Files, ⌘O or Quick Look goes to the front of Files' Recents (files-finder D20, D21). */
+  rememberFilesOpened(path: string): void {
+    this.settings.files = rememberFilesChoice(this.settings.files, { opened: path });
+    void this.saveSettings();
+  }
 
   // ── AgenticOS accessors: every read of brain/_index and every spawn goes through these ──
 

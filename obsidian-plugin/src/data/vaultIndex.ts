@@ -208,6 +208,13 @@ export function topTags(index: VaultIndex, n: number): Array<{ tag: string; coun
     .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)).slice(0, n);
 }
 
+/** The notes that carry `tag` in their frontmatter (files-finder D20, the sidebar's Tags), in path order. */
+export function notesTagged(index: VaultIndex, tag: string): string[] {
+  const out: string[] = [];
+  for (const [path, n] of index.notes) if (n.tags.includes(tag)) out.push(path);
+  return out.sort();
+}
+
 // ── link updates (D17) ──
 
 /** Where `p` is after `moves`; a folder that moves takes everything under it. */

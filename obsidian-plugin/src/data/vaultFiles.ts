@@ -131,13 +131,14 @@ export async function readCached(app: App, f: TFile): Promise<string | null> {
 }
 
 /**
- * Searches the vault's files for `query`: Markdown, or every text type with `allText`. Yields to the UI every few
- * files; `isCancelled` stops a search a newer one replaced. Stops at SEARCH_MAX_MATCHES lines.
+ * Searches the vault's files for `query`: Markdown, or every text type with `allText`; only the paths `only` takes
+ * when it is given (files-finder D22's "this folder"). Yields to the UI every few files; `isCancelled` stops a search a
+ * newer one replaced. Stops at SEARCH_MAX_MATCHES lines.
  */
-export async function searchVault(app: App, query: string, opts: { allText?: boolean; isCancelled?: () => boolean } = {}): Promise<SearchResult | null> {
+export async function searchVault(app: App, query: string, opts: { allText?: boolean; only?: (path: string) => boolean; isCancelled?: () => boolean } = {}): Promise<SearchResult | null> {
   const result: SearchResult = { hits: [], files: 0, matches: 0, truncated: false };
   if (!query.trim()) return result;
-  const files = quickOpenFiles(app).filter((f) => (opts.allText ? TEXT_EXTENSIONS.includes(f.extension) : f.extension === "md") && f.stat.size <= SEARCH_MAX_BYTES);
+  const files = quickOpenFiles(app).filter((f) => (opts.allText ? TEXT_EXTENSIONS.includes(f.extension) : f.extension === "md") && f.stat.size <= SEARCH_MAX_BYTES && (!opts.only || opts.only(f.path)));
   for (let i = 0; i < files.length; i++) {
     if (i % 40 === 0) {
       await new Promise((r) => setTimeout(r, 0));

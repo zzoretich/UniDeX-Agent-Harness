@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 146 |
-| covered in part | 77 |
+| covered | 149 |
+| covered in part | 79 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| **total** | **278** |
+| **total** | **283** |
 
-Of the 229 items about the app (278 minus the 49 N/A), 223 are asserted (146 fully, 77 in part); the other 6 are not
+Of the 234 items about the app (283 minus the 49 N/A), 228 are asserted (149 fully, 79 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -128,11 +128,16 @@ again (`brain-ai`).
 | F15 | Rename in place: the stem selected, the check, Return, Escape; Move to… keeps the bytes, and the tab follows the file | covered | `files-writes › Return renames in place…`, `› move puts the file in another folder…`; `filesModel.test.ts`, `vaultFiles.test.ts` (the keys and the rules) |
 | F16 | Move to Trash asks first, how many for a selection; the macOS Trash; the toast points to it, with no Undo | covered | `files-writes › Move to Trash asks first…`, `› a selection goes to the Trash together…` |
 | F17 | Below 900 px the sidebar folds into its button | covered | `files › under 900 px the sidebar folds…` |
-| F18 | Codex only: the same, naming no host | covered | `variants › a Codex-only machine › Files on Codex…` |
+| F18 | Codex only: the same, naming no host; smart folders and tags too | covered | `variants › a Codex-only machine › Files on Codex…` (Columns, Quick Look, the menu, a tag's notes, Recents) |
 | F19 | Links follow a rename or move: Update N links, on and remembered; the runtime's notes named, not written; the toast's count | covered | `files-writes › a rename takes the links to it along…` (MEMORY.md rewritten, off stays off, nothing refused); `vaultIndex.test.ts` (aliases, headings, embeds, Markdown links, protected notes, moves); `write-policy.test.ts › Files' acts…`. Opening a note at the new name: the vault's own link, by eye. |
 | F20 | New folder (⌥⌘N, +, the menu), numbered; Duplicate (⌘D) of a file and a folder, the copies selected | covered | `files-writes › New folder…`, `› Duplicate (⌘D)…`; `vaultFiles.test.ts › newFolderPath…`, `› duplicatePath…`; `main-services.test.ts › Files' acts on the disk…` |
 | F21 | Drag a selection onto a folder, a favorite or the path bar; the hint; no-drop on a runtime folder with its reason; the tab stays | covered | `files-writes › drag moves a selection onto a path-bar folder…`, `› a runtime folder refuses a drop…`; `vaultFiles.test.ts › movePlan…`. The drag image itself is the OS's. |
 | F22 | ⌘Z and the toast's Undo for moves and renames, links included; stale once moved elsewhere; ⌘Z in a field undoes typing | covered in part | `files-writes › Return renames in place…` (⌘Z, stale), `› a rename takes the links…` (links back), `› drag moves a selection…` (the toast's Undo), `› move puts the file…` (Move to…); `filesModel.test.ts › undo…` (20 deep). ⌘Z in a field: the Edit menu's, by hand. |
+| F23 | Thumbnails: an image up to 4 MB as its picture, a big one drawn down; over 4 MB or unreadable keeps its page; a folder of images scrolls without a stall | covered in part | `files › Icons draws an image as its picture once in view…` (a PNG kept as is, one drawn down to 168 px, a 4.1 MB one and an unreadable one keep their pages, the cache on a redraw); `filesModel.test.ts › thumbnails…`, `› the thumbnail cache…` (4 MB, the LRU of 200). Scrolling a real folder of photos without a stall: by eye on a real vault. |
+| F24 | Smart folders: Recents (Files, ⌘O, Quick Look; newest first), Changed today (a change joins it), Images; not the runtime's folders; each view; + off; ‹ back | covered | `files › smart folders: Recents keeps what was opened…`, `› Changed today lists what changed since midnight…`; `filesModel.test.ts › smart folders…` (the rules, local midnight, 50 recents in settingsDefaults.test.ts) |
+| F25 | Tags: the 12 most used, most first, with counts; a tag lists its notes in the view in use | covered | `files › Tags list the notes' most used frontmatter tags…`; `vaultIndex.test.ts › indexFrom…` (topTags, notesTagged) |
+| F26 | Favorites: drag a folder in; a file or one already there refused with why; Add to Favorites; Remove; Restore the defaults; kept across a restart; a rename takes it along | covered in part | `files › Favorites: a folder dragged onto them joins them…`; `Sidebar.test.ts` (defaults, order, edits); `settingsDefaults.test.ts › a rename or move in Files takes the favorites…`. A restart of the app: manual. |
+| F27 | The scope bar: Vault or this folder, Names or Contents, all text files; ↓, Return and Space in the results; Escape | covered | `files › search's scope bar…`, `› search finds lines across notes…` (Escape, all text files) |
 
 ## Settings
 

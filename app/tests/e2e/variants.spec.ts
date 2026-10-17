@@ -468,7 +468,7 @@ test.describe("a Codex-only machine", () => {
     await expect(sources).not.toContainText("/wrap");
     await C.locator('.aos-brain-modes [role="tab"][data-mode="review"]').click();
   });
-  test("Files on Codex: Columns' preview with the vault index, Quick Look and the menu work as on any machine, and none names a host (files-finder §5)", async () => {
+  test("Files on Codex: Columns' preview with the vault index, Quick Look, the menu, smart folders and tags work as on any machine, and none names a host (files-finder §5)", async () => {
     const { win } = app();
     await openTab(win, "files");
     const C = content(win);
@@ -485,6 +485,12 @@ test.describe("a Codex-only machine", () => {
     await win.keyboard.press("Escape");
     await expect(C.locator(".aos-fx-bar")).not.toContainText(/Claude|Codex/);
     await C.locator('.aos-fx-seg button[data-view="icons"]').click();
+    // The sidebar's smart folders and tags (files-finder D20) read the vault alone: a tag lists its notes here too.
+    await C.locator('.aos-fx-si[data-smart="tag:status/active"]').click();
+    await expect(C.locator('.aos-fx-view [data-path="brain/memory/projects/harbor-map.md"]')).toBeVisible();
+    await C.locator('.aos-fx-si[data-smart="recents"]').click();
+    await expect(C.locator(".aos-fx-h1")).toHaveText("Recents");
+    await expect(C.locator(".aos-fx-side")).not.toContainText(/Claude|Codex/);
   });
 });
 

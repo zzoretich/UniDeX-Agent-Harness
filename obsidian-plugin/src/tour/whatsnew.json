@@ -2,6 +2,35 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.1.0",
+      "entries": [
+        {
+          "id": "files-finder",
+          "title": "Files is a Finder for your vault",
+          "body": "Icons, List and Columns (⌃⌘1–3), with folder art, item counts and a tab of colour for brain, workspaces, persona and the daily notes. A click selects and a double-click opens; Space is Quick Look, ⇧⌘P the preview, and files that are not text open in their own app.",
+          "steps": ["files.views", "files.tree"]
+        },
+        {
+          "id": "files-move",
+          "title": "Rename, move and undo, links included",
+          "body": "Return renames in place, drag moves a file or a selection onto any folder, and ⌘Z undoes the last move or rename. The notes that link to it are updated, so their links keep working; the runtime's own folders say why they refuse.",
+          "steps": ["files.drag"]
+        },
+        {
+          "id": "files-smart",
+          "title": "Thumbnails, smart folders and tags",
+          "body": "Images show as pictures in Icons. The sidebar's Recents, Changed today and Images gather files from across the vault, Tags lists the notes under your most used tags, and Favorites take any folder you drag onto them.",
+          "steps": ["files.favorites"]
+        },
+        {
+          "id": "files-search",
+          "title": "Search by name or inside, here or everywhere",
+          "body": "As you type in Files' search, a bar picks the whole vault or the folder you are in, and names (shown in the view, ready to open or drag) or the lines inside the files.",
+          "steps": ["files.scope"]
+        }
+      ]
+    },
+    {
       "version": "2.0.0",
       "entries": [
         {

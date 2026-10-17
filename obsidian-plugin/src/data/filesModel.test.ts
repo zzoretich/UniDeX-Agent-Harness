@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  NO_SELECTION, columnChain, compactCount, crumbs, dateLabel, extOf, extendTo, go, goBack, goForward, groupByKind, itemsLabel,
-  keepSelection, keyAction, kindLabel, kindOf, moveCursor, parentOf, pushUndo, renameInSelection, selectAll, selectOnly, sizeLabel,
-  sortItems, staleUndo, startHistory, tintOf, toggleIn, typeAhead, undoMoves, UNDO_MAX, type Item, type KeyLike, type UndoEntry,
+  Lru, NO_SELECTION, THUMB_MAX_BYTES, columnChain, compactCount, crumbs, dateLabel, extOf, extendTo, foldersOf, go, goBack, goForward,
+  groupByKind, isSmartId, itemsLabel, keepSelection, keyAction, kindLabel, kindOf, moveCursor, nameMatches, parentOf, pushUndo,
+  renameInSelection, selectAll, selectOnly, sizeLabel, smartItems, sortItems, staleUndo, startHistory, startOfDay, thumbable, tintOf,
+  toggleIn, typeAhead, undoMoves, within, UNDO_MAX, type Item, type KeyLike, type SortChoice, type UndoEntry,
 } from "./filesModel";
 
 const file = (path: string, size = 10, mtime = 1): Item => {
@@ -203,4 +204,64 @@ test("undo (D16): a stack of 20, the newest last; an entry goes stale once its p
   // A rename of the letter case alone is one file on the disk: both spellings answer.
   assert.equal(staleUndo({ label: "r", moves: [{ from: "n/a.md", to: "n/A.md" }], edits: [] }, on("n/a.md", "n/A.md")), null);
   assert.deepEqual(undoMoves(two), [{ from: "b/y.md", to: "a/y.md" }, { from: "b/x.md", to: "a/x.md" }]);
+});
+
+test("thumbnails (D19): images of a known size up to 4 MB, nothing else", () => {
+  assert.equal(thumbable(file("a.png", 1)), true);
+  assert.equal(thumbable(file("a.SVG", THUMB_MAX_BYTES)), true);
+  assert.equal(thumbable(file("a.webp", THUMB_MAX_BYTES + 1)), false, "too large: the page stays");
+  assert.equal(thumbable({ ...file("a.gif"), size: null }), false, "a size it does not know");
+  for (const p of ["a.md", "a.pdf", "a.json"]) assert.equal(thumbable(file(p)), false, p);
+  assert.equal(thumbable(dir("pics.png")), false, "a folder named like an image");
+});
+
+test("the thumbnail cache keeps the most recently used, a get or a set making an entry the newest", () => {
+  const lru = new Lru<number>(3);
+  lru.set("a", 1);
+  lru.set("b", 2);
+  lru.set("c", 3);
+  assert.equal(lru.get("a"), 1);
+  lru.set("d", 4);
+  assert.deepEqual(lru.keys(), ["c", "a", "d"], "b, the least recently used, went");
+  lru.set("c", 30);
+  assert.deepEqual(lru.keys(), ["a", "d", "c"]);
+  assert.equal(lru.get("c"), 30);
+  assert.equal(lru.get("b"), undefined);
+  assert.equal(lru.size, 3);
+  const nulls = new Lru<string | null>(2);
+  nulls.set("x", null);
+  assert.equal(nulls.get("x"), null, "a remembered failure is not a miss");
+});
+
+test("smart folders (D20): Recents in the order opened, Changed today since local midnight, Images; the runtime's folders left out", () => {
+  const now = new Date(2026, 9, 17, 15, 30);
+  const midnight = startOfDay(now);
+  assert.equal(midnight, new Date(2026, 9, 17).getTime());
+  const files = [
+    file("notes/b.md", 10, midnight + 1000), file("notes/a.md", 10, midnight - 1), file("pics/z.png", 10, midnight - 5000),
+    file("pics/y.JPG", 10, midnight + 10), file("brain/_index/snap.json", 10, midnight + 50), file("brain/_index/chart.png", 10, 1),
+  ];
+  const hidden = (p: string) => p.startsWith("brain/_index/");
+  const sort: SortChoice = { key: "name", desc: false };
+  const opts = { recents: ["pics/z.png", "gone.md", "brain/_index/snap.json", "notes/a.md"], now, hidden, sort };
+  assert.deepEqual(smartItems("recents", files, opts).map((f) => f.path), ["pics/z.png", "brain/_index/snap.json", "notes/a.md"], "newest opened first; a file gone is left out; Recents keeps what you opened anywhere");
+  assert.deepEqual(smartItems("today", files, opts).map((f) => f.path), ["notes/b.md", "pics/y.JPG"]);
+  assert.deepEqual(smartItems("today", files, { ...opts, sort: { key: "modified", desc: true } }).map((f) => f.path), ["notes/b.md", "pics/y.JPG"]);
+  assert.deepEqual(smartItems("images", files, opts).map((f) => f.path), ["pics/y.JPG", "pics/z.png"]);
+  assert.deepEqual(smartItems("today", [dir("notes"), ...files], opts).map((f) => f.path), ["notes/b.md", "pics/y.JPG"], "files only");
+  for (const id of ["recents", "today", "images", "tag:status/active"]) assert.equal(isSmartId(id), true, id);
+  for (const id of ["tag:", "brain", "", "Recents"]) assert.equal(isSmartId(id), false, id);
+});
+
+test("search by name (D22): any case, folders from the files' paths, within a folder or the vault", () => {
+  const sort: SortChoice = { key: "name", desc: false };
+  const items = [file("Harbor/Tide.md"), file("harbor/notes.md"), file("tides.js"), dir("harbor/tide-charts"), file("x/Café.md".normalize("NFD"))];
+  assert.deepEqual(nameMatches(items, "  TIDE ", sort).map((i) => i.path), ["harbor/tide-charts", "Harbor/Tide.md", "tides.js"], "folders first");
+  assert.deepEqual(nameMatches(items, "café", sort).length, 1, "Unicode forms compare alike");
+  assert.deepEqual(nameMatches(items, "  ", sort), []);
+  assert.deepEqual(foldersOf(["a/b/c.md", "a/d.md", "e.md", "a/b/f/g.md"]).sort(), ["a", "a/b", "a/b/f"]);
+  assert.equal(within("a/b.md", ""), true);
+  assert.equal(within("a/b.md", "a"), true);
+  assert.equal(within("a", "a"), true);
+  assert.equal(within("ab/c.md", "a"), false);
 });
