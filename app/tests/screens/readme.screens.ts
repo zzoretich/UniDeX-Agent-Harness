@@ -131,9 +131,12 @@ test.describe("the Workbench", () => {
     await shot(h.win, "brain-map");
   });
 
-  test("files, with a workspace open", async () => {
+  test("files, a workspace in Icons with a note previewed", async () => {
     await openTab(h.win, "files");
-    for (const p of ["workspaces", "workspaces/harbor-map"]) await content(h.win).locator(`.aos-fl-row[data-path="${p}"]`).click();
+    const C = content(h.win);
+    for (const p of ["workspaces", "workspaces/harbor-map"]) await C.locator(`.aos-fx-view [data-path="${p}"]`).dblclick();
+    await C.locator('.aos-fx-view [data-path="workspaces/harbor-map/README.md"]').click();
+    await h.win.keyboard.press("Shift+Meta+P");
     await h.win.waitForTimeout(800);
     await shot(h.win, "files");
   });

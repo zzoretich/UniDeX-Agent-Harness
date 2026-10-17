@@ -193,7 +193,7 @@ UniDeX on a demo vault, in its light theme with one picture in dark. Everything 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/screens/files.png" width="100%" alt="Files: the vault as a tree, with search across notes" />
+      <img src="docs/assets/screens/files.png" width="100%" alt="Files: the vault as a Finder window, a workspace in Icons with a note previewed" />
       <br /><sub><b>Files.</b> The vault as a tree, search across every note, Open file… (⌘O), and new, rename, move and delete to the Trash.</sub>
     </td>
     <td width="50%" valign="top">

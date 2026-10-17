@@ -39,12 +39,14 @@ test("after a visit to Code, the tabs keep their layout: lists beside their read
     expect(Math.abs(list.y - pane.y)).toBeLessThan(8);
   }
 
-  // Files: the search box above the tree, both at the left.
+  // Files (files-finder D6): the sidebar on the left, the toolbar above the view, both beside it.
   await openTab(win, "files");
-  const query = await box(win, ".aos-fl-query");
-  const tree = await box(win, ".aos-fl-tree");
-  expect(query.y + query.height).toBeLessThanOrEqual(tree.y + 1);
-  expect(Math.abs(query.x - tree.x)).toBeLessThan(40);
+  const side = await box(win, ".aos-fx-side");
+  const bar = await box(win, ".aos-fx-bar");
+  const view = await box(win, ".aos-fx-view");
+  expect(side.x + side.width).toBeLessThanOrEqual(view.x + 1);
+  expect(bar.y + bar.height).toBeLessThanOrEqual(view.y + 1);
+  expect(Math.abs(bar.x - view.x)).toBeLessThan(2);
 
   // To-Do: one list, every row starting at the same left edge.
   await openTab(win, "todo");

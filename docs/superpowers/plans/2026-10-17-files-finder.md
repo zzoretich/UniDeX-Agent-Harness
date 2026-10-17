@@ -8,7 +8,7 @@ Spec: `docs/superpowers/specs/2026-10-17-files-finder-design.md` (approved 2026-
 |---|---|---|---|
 | `obsidian-plugin/src/data/filesModel.ts` (+ test) | 1, 2, 3 | new | Kinds and their labels; the kind tab per path (D3); sort and groups (D7, D8); selection with cursor and anchor (D4); back/forward history; the key map; type-ahead; size and date labels. PR 2: the undo stack (D16). PR 3: smart folders (D20) |
 | `obsidian-plugin/src/data/vaultIndex.ts` (+ test) | 1, 2 | new | `parseNote` (frontmatter tags, wiki/embed/Markdown links, the first lines' lengths), `resolveLink`, `buildVaultIndex` (yields every 40 files; the shared mtime cache), `linksOf` / `backlinksOf`. PR 2: `rewritePlan` (D17) |
-| `obsidian-plugin/src/data/vaultFiles.ts` (+ test) | 1, 2 | changed | exports `readCached` (the cache `searchVault` uses) and `IMAGE_EXTENSIONS`; PR 2: `newFolderPath`, `duplicatePath` |
+| `obsidian-plugin/src/data/vaultFiles.ts` (+ test) | 1, 2 | changed | exports `readCached` (the cache `searchVault` uses) and `protectedReason`; PR 2: `newFolderPath`, `duplicatePath` |
 | `obsidian-plugin/src/settingsDefaults.ts` (+ test) | 1 | changed | `files: FilesChoice` (view, sort, direction, preview, favorites, recents), D21 |
 | `obsidian-plugin/src/views/files/FilesTab.ts` | 1, 2, 3 | new (replaces `views/FilesTab.ts`) | the shell (D6): toolbar, the view host, path and status bar, vault events, focus and keys (D23), Open (D12), the search results kept from today |
 | `obsidian-plugin/src/views/files/{IconView,ListView,ColumnView}.ts` | 1, 2 | new | the three views (D7–D9); PR 2: rename in place, and drag sources and targets |
@@ -39,7 +39,7 @@ Spec: `docs/superpowers/specs/2026-10-17-files-finder-design.md` (approved 2026-
   - `resolveLink`: the exact path, the path plus `.md`, then the shortest basename match;
   - `buildVaultIndex` with cancellation;
   - backlinks.
-- [ ] `vaultFiles.ts`: export `readCached` and `IMAGE_EXTENSIONS`; `searchVault` uses `readCached`.
+- [ ] `vaultFiles.ts`: export `readCached` and `protectedReason`; `searchVault` uses `readCached` (the image types live in `filesModel.ts`).
 - [ ] `settingsDefaults.ts`: `files` defaults and the merge of a stored value (tested).
 - [ ] `views/files/*`:
   - the shell, the three views and the sidebar (default favorites);
