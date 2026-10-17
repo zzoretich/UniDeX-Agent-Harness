@@ -255,6 +255,30 @@ test("a workspace folder offers Open in Spaces, which shows that workspace there
   await expect(content(win).locator('button[data-act="open-space"]')).toHaveCount(0);
 });
 
+test("a change elsewhere in the vault leaves the view alone; a change in the folder on screen shows at once", async () => {
+  const { win } = app();
+  await enter(win, "workspaces/harbor-map");
+  await item(win, "workspaces/harbor-map/README.md").click();
+  // A mark on the drawn tile: a redraw would replace the element and lose it (a redraw between the two clicks of a
+  // double-click loses the double-click).
+  const marked = () => item(win, "workspaces/harbor-map/README.md").evaluate((el) => (el as unknown as { __mark?: number }).__mark ?? 0);
+  await item(win, "workspaces/harbor-map/README.md").evaluate((el) => { (el as unknown as { __mark: number }).__mark = 1; });
+  const elsewhere = FX.v("brain/_index/zz-elsewhere.json");
+  const here = FX.v("workspaces/harbor-map/zz-here.md");
+  try {
+    // Kept until after the wait: the watcher looks at the file when it reports it, and a file already gone is no event.
+    fs.writeFileSync(elsewhere, "{}\n");
+    await win.waitForTimeout(900);
+    expect(await marked()).toBe(1);
+    fs.writeFileSync(here, "# Here\n");
+    await expect(item(win, "workspaces/harbor-map/zz-here.md")).toBeVisible();
+    await expect(item(win, "workspaces/harbor-map/README.md")).toHaveClass(/is-selected/);
+  } finally {
+    fs.rmSync(elsewhere, { force: true });
+    fs.rmSync(here, { force: true });
+  }
+});
+
 test("under 900 px the sidebar folds into the toolbar's sidebar button, and a pick folds it again", async () => {
   const { win } = app();
   const side = content(win).locator(".aos-fx-side");

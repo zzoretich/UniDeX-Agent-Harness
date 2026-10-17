@@ -79,9 +79,13 @@ export class FilesTab {
     if (!this.listenersRegistered) {
       this.listenersRegistered = true;
       const vault = this.plugin.app.vault;
+      // Only a change to what is on screen redraws it: the runtime writes brain/_index all day, and a redraw between
+      // the two clicks of a double-click would lose it. Notes still reach the index, which links depend on.
       const tree = (f: TAbstractFile, oldPath?: string) => {
         if (oldPath !== undefined) this.followRename(oldPath, f.path);
-        if (isListed(f.path) || (oldPath !== undefined && isListed(oldPath))) this.schedule();
+        const paths = oldPath !== undefined ? [f.path, oldPath] : [f.path];
+        if (paths.some((p) => isListed(p) && this.touches(p))) this.schedule();
+        else if (paths.some((p) => p.endsWith(".md"))) this.scheduleIndex();
       };
       this.view.registerEvent(vault.on("create", (f) => tree(f)));
       this.view.registerEvent(vault.on("delete", (f) => tree(f)));
@@ -119,9 +123,12 @@ export class FilesTab {
       const seq = ++this.indexSeq;
       void buildVaultIndex(this.plugin.app, { isCancelled: () => seq !== this.indexSeq }).then((idx) => {
         if (!idx || seq !== this.indexSeq) return;
+        const before = this.indexSig(this.index);
         this.index = idx;
         if (!this.view.isTabActive("files") || !this.root?.isConnected) return;
-        // The page art, the preview's Tags and Links: redrawn in place, the scroll and the focus kept.
+        // The page art, the preview's Tags and Links: redrawn in place, the scroll and the focus kept, and only when
+        // what is on screen changed.
+        if (this.indexSig(idx) === before) return;
         if (!this.query.trim()) this.drawView();
         this.drawPane();
       });
@@ -130,7 +137,62 @@ export class FilesTab {
 
   async refresh(): Promise<void> {
     if (this.query.trim()) await this.runSearch();
-    this.render();
+    if (!this.root?.isConnected) { this.render(); return; }
+    // Drawn already: the parts that list the vault are drawn again in place, the scroll and the focus kept.
+    this.listCache.clear();
+    this.settle();
+    this.drawBar();
+    this.drawView();
+    this.drawPane();
+    this.drawFoot();
+  }
+
+  /** The folders the view lists now: the one in view, List's open ones, Columns' from the root to the cursor. */
+  private shownFolders(): Set<string> {
+    const out = new Set<string>([this.at]);
+    const mode = this.mode();
+    if (mode === "list") for (const f of this.expanded) out.add(f);
+    if (mode === "columns") {
+      out.add(this.colRoot);
+      const deepest = this.sel.cursor ?? this.at;
+      const parts = deepest.split("/");
+      for (let i = 1; i <= parts.length; i++) {
+        const p = parts.slice(0, i).join("/");
+        if (!this.colRoot || p === this.colRoot || p.startsWith(`${this.colRoot}/`)) out.add(p);
+      }
+    }
+    return out;
+  }
+
+  /** Whether a vault change at `path` shows: in a folder on screen, a folder whose count is on screen, or what is
+   *  shown or selected itself. A search on screen takes every change. */
+  private touches(path: string): boolean {
+    if (this.query.trim()) return true;
+    const shown = this.shownFolders();
+    const dir = parentOf(path);
+    if (shown.has(dir) || (dir !== "" && shown.has(parentOf(dir)))) return true;
+    const inside = (p: string) => p === path || p.startsWith(`${path}/`);
+    return inside(this.at) || inside(this.colRoot) || this.sel.paths.some(inside);
+  }
+
+  /** What the index draws on screen (page art, tags, links), to tell whether a new index changes it. */
+  private indexSig(idx: VaultIndex | null): string {
+    if (!idx) return "";
+    const note = (p: string) => {
+      const n = idx.notes.get(p);
+      return n ? `${p}:${n.lines.join(",")}:${n.tags.join(",")}:${n.out.length}:${idx.backlinks.get(p)?.length ?? 0}` : `${p}:-`;
+    };
+    const parts: string[] = [];
+    for (const dir of this.shownFolders()) for (const it of this.list(dir)) if (it.ext === "md") parts.push(note(it.path));
+    if (this.sel.cursor) parts.push(note(this.sel.cursor));
+    return parts.join("|");
+  }
+
+  /** The state after the vault changed: the selection that still exists, a folder in view that still does. */
+  private settle(): void {
+    this.sel = keepSelection(this.sel, (p) => this.item(p) !== null);
+    if (this.at && !this.isFolder(this.at)) this.at = this.nearestFolder(this.at);
+    if (this.colRoot && !this.isFolder(this.colRoot)) this.colRoot = "";
   }
 
   /** Search vault…: shows the tab with the cursor in the search box. */
@@ -248,9 +310,7 @@ export class FilesTab {
     const hadSearchFocus = document.activeElement === this.searchInput;
     const hadViewFocus = !!this.viewEl && this.viewEl.contains(document.activeElement);
     this.listCache.clear();
-    this.sel = keepSelection(this.sel, (p) => this.item(p) !== null);
-    if (this.at && !this.isFolder(this.at)) this.at = this.nearestFolder(this.at);
-    if (this.colRoot && !this.isFolder(this.colRoot)) this.colRoot = "";
+    this.settle();
     this.menu?.close();
     host.empty();
 
@@ -565,7 +625,7 @@ export class FilesTab {
       if (dir !== this.at && !dir.startsWith(`${this.at}/`)) { this.at = dir; this.hist = go(this.hist, dir); }
     } else if (this.mode() === "icons" && dir !== this.at) { this.at = dir; this.hist = go(this.hist, dir); }
     this.sel = selectOnly(to);
-    this.schedule();
+    this.render();
   }
 
   /** A vault rename carries the folder in view, the columns' root, the open folders and the selection with it. */
@@ -646,6 +706,8 @@ export class FilesTab {
     // own Space and Return keep working.
     const global: KeyAction[] = ["view-icons", "view-list", "view-columns", "preview", "search", "new-note"];
     if (!global.includes(a) && !inView) return;
+    // A button inside the view (List's header) keeps its own Space and Return.
+    if (!global.includes(a) && t !== this.viewEl && t.closest("button, a")) return;
     e.preventDefault();
     e.stopPropagation();
     this.run(a, e.shiftKey);
