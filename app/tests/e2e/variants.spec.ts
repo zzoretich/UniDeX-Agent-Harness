@@ -468,6 +468,24 @@ test.describe("a Codex-only machine", () => {
     await expect(sources).not.toContainText("/wrap");
     await C.locator('.aos-brain-modes [role="tab"][data-mode="review"]').click();
   });
+  test("Files on Codex: Columns' preview with the vault index, Quick Look and the menu work as on any machine, and none names a host (files-finder §5)", async () => {
+    const { win } = app();
+    await openTab(win, "files");
+    const C = content(win);
+    await C.locator('.aos-fx-seg button[data-view="columns"]').click();
+    await C.locator('.aos-fx-si[data-fav=""]').click();
+    for (const p of ["brain", "brain/memory", "brain/memory/projects", "brain/memory/projects/harbor-map.md"]) await C.locator(`.aos-fx-view [data-path="${p}"]`).click();
+    await expect(C.locator(".aos-fx-pcol [data-links]")).toHaveText(/^\d+ out · [1-9]\d* in$/);
+    await win.keyboard.press(" ");
+    await expect(C.locator(".aos-fx-qlpanel")).toHaveAttribute("aria-label", "Quick Look: harbor-map.md");
+    await win.keyboard.press("Escape");
+    await C.locator('.aos-fx-view [data-path="brain/memory/projects/harbor-map.md"]').click({ button: "right" });
+    await expect(C.locator(".aos-fx-menu .aos-fx-mi")).toHaveCount(10);
+    await expect(C.locator(".aos-fx-menu")).not.toContainText(/Claude|Codex/);
+    await win.keyboard.press("Escape");
+    await expect(C.locator(".aos-fx-bar")).not.toContainText(/Claude|Codex/);
+    await C.locator('.aos-fx-seg button[data-view="icons"]').click();
+  });
 });
 
 test.describe("a Codex-only machine, the Brain surface on", () => {

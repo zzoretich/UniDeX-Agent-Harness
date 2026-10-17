@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 135 |
-| covered in part | 73 |
+| covered | 143 |
+| covered in part | 76 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| **total** | **263** |
+| **total** | **274** |
 
-Of the 214 items about the app (263 minus the 49 N/A), 208 are asserted (135 fully, 73 in part); the other 6 are not
+Of the 225 items about the app (274 minus the 49 N/A), 219 are asserted (143 fully, 76 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -111,13 +111,24 @@ again (`brain-ai`).
 
 | # | Item | Status | Covered by / reason |
 |---|---|---|---|
-| F1 | Files after Spaces on the rail; the top level, folders first, without dot-folders, node_modules or graphify-out | covered | `shell › rail: three sections…` (its place), `files › Files opens from the rail…` |
-| F2 | A folder opens and closes in place; a click on a note opens it | covered | `files › a folder opens and closes in place…` |
-| F3 | Search across notes with the hit highlighted; all text files; a line opens its note; Escape clears | covered | `files › search finds lines across notes…` |
-| F4 | Open file… (⌘O) fuzzy, Markdown first; Search vault… (⌘⇧F) focuses the search box | covered | `files › Open file… matches paths fuzzily…`, `› Search vault… opens Files…` |
-| F5 | + note in the chosen folder (created if missing), opened; the form says why it refuses | covered | `files-writes › + note makes a Markdown note in a new folder…`, `› the new-note form says why it refuses…` |
-| F6 | Rename keeps the folder and extension; Move to another folder; both keep the bytes | covered | `files-writes › rename keeps the folder, the extension and the bytes`, `› move puts the file in another folder…` |
-| F7 | ✕ asks first; Move to Trash; brain/_index and brain/scripts files offer no actions | covered | `files-writes › ✕ asks first…`, `files › folders AgenticOS writes itself have no new-note action…` |
+| F1 | Files after Spaces on the rail; Icons at the top level, folders first with their kind tabs, then the files; no dot-folders, node_modules or graphify-out; the foot's count | covered | `shell › rail: three sections…` (its place), `files › Files opens from the rail on Icons…` |
+| F2 | brain/_index and brain/scripts locked; their write items off with the reason | covered | `files › Files opens from the rail on Icons…` (the locks), `files › the right-click menu…` (the items off and their title) |
+| F3 | Double-click enters or opens; back, forward, the path bar; ⌘↓ and ⌘↑ | covered | `files › a double-click enters a folder or opens a note…` |
+| F4 | The switcher and ⌃⌘1–3; the choice survives leaving the tab and a restart | covered in part | `files › List and Columns come from the switcher and ⌃⌘1–3…` (leaving the tab); `settingsDefaults.test.ts › the Files choice…` (what is stored). A restart of the app: manual. |
+| F5 | List: the header sorts and reverses; triangles; → and ← | covered | `files › List sorts by its header…` |
+| F6 | Columns: a folder's column; the preview with Tags and Links; ← → | covered | `files › Columns open a folder's column…`; `vaultIndex.test.ts` (tags, links, backlinks) |
+| F7 | Selection: click, ⌘-click, ⇧-click, ⌘A, Escape, the arrows, type-ahead; the foot's count | covered | `files › selection: a click, ⌘-click and ⇧-click…`; `filesModel.test.ts` (selection, keys, type-ahead) |
+| F8 | ⇧⌘P's preview pane, kept on | covered | `files › the preview pane (⇧⌘P)…` |
+| F9 | Quick Look: a note, a text file, an image, anything else; ← →; Space or Escape | covered in part | `files › Quick Look: Space shows the note…` (a note, an image, ← → and both closes). A text file in mono and another kind's Open with default app: manual. |
+| F10 | The right-click menu's items; on empty space; Reveal in Finder | covered in part | `files › the right-click menu…` (a note's items, Reveal handed to the OS); `variants › Files on Codex…` (a note's ten items). The empty-space menu and Finder's own window: manual. |
+| F11 | Workspace · Open in Spaces | covered | `files › a workspace folder offers Open in Spaces…` |
+| F12 | Search across notes, all text files, a line opens its note, Escape; ⌘F and ⇧⌘F | covered | `files › search finds lines across notes…`, `› Search vault… opens Files…` |
+| F13 | Open file… (⌘O, and under ⋯) fuzzy, Markdown first | covered | `files › Open file… matches paths fuzzily…` |
+| F14 | + ▸ New note… in the chosen folder, opened and selected; the form's refusals | covered | `files-writes › New note makes a Markdown note in a new folder…`, `› the new-note form says why it refuses…` |
+| F15 | Rename and Move keep the bytes, and the tab follows the file | covered | `files-writes › rename keeps the folder…`, `› move puts the file in another folder…` |
+| F16 | Move to Trash asks first, how many for a selection; the macOS Trash | covered | `files-writes › Move to Trash asks first…`, `› a selection goes to the Trash together…` |
+| F17 | Below 900 px the sidebar folds into its button | covered | `files › under 900 px the sidebar folds…` |
+| F18 | Codex only: the same, naming no host | covered | `variants › a Codex-only machine › Files on Codex…` |
 
 ## Settings
 

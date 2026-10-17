@@ -1,0 +1,182 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  NO_SELECTION, columnChain, compactCount, crumbs, dateLabel, extOf, extendTo, go, goBack, goForward, groupByKind, itemsLabel,
+  keepSelection, keyAction, kindLabel, kindOf, moveCursor, parentOf, renameInSelection, selectAll, selectOnly, sizeLabel,
+  sortItems, startHistory, tintOf, toggleIn, typeAhead, type Item, type KeyLike,
+} from "./filesModel";
+
+const file = (path: string, size = 10, mtime = 1): Item => {
+  const name = path.split("/").pop()!;
+  return { path, name, folder: false, ext: extOf(name), size, mtime, ctime: mtime };
+};
+const dir = (path: string): Item => ({ path, name: path.split("/").pop()!, folder: true, ext: "", size: null, mtime: null, ctime: null });
+
+test("kinds and their labels: folders, notes, images, text types, anything else", () => {
+  assert.equal(kindOf(dir("brain")), "folder");
+  assert.equal(kindOf(file("a.md")), "note");
+  assert.equal(kindOf(file("chart.PNG")), "image");
+  assert.equal(kindOf(file("config.json")), "text");
+  assert.equal(kindOf(file("report.pdf")), "other");
+  assert.equal(kindOf(file("Makefile")), "other");
+  assert.deepEqual([dir("x"), file("a.md"), file("b.png"), file("c.jpeg"), file("d.json"), file("e.pdf"), file("LICENSE")].map(kindLabel),
+    ["Folder", "Markdown note", "PNG image", "JPEG image", "JSON", "PDF file", "Document"]);
+  assert.equal(extOf(".env"), "");
+  assert.equal(extOf("a.tar.GZ"), "gz");
+});
+
+test("the kind tab: brain, workspaces and persona by their top folder, the daily notes' year folders, nothing else", () => {
+  assert.equal(tintOf("brain"), "gate");
+  assert.equal(tintOf("brain/memory/projects"), "gate");
+  assert.equal(tintOf("workspaces/harbor-map/src"), "info");
+  assert.equal(tintOf("persona/journal"), "ok");
+  assert.equal(tintOf("2026/2026-10-October"), "warn");
+  assert.equal(tintOf("templates"), null);
+  assert.equal(tintOf("brainstorm"), null);
+  assert.equal(tintOf("20261"), null);
+});
+
+test("sorting keeps folders first, sorts by the key, and breaks ties by name in natural order", () => {
+  const items = [file("b10.md", 5, 30), dir("zeta"), file("b2.md", 50, 10), dir("alpha"), file("a.png", 5, 20)];
+  assert.deepEqual(sortItems(items, { key: "name", desc: false }).map((i) => i.name), ["alpha", "zeta", "a.png", "b2.md", "b10.md"]);
+  assert.deepEqual(sortItems(items, { key: "name", desc: true }).map((i) => i.name), ["zeta", "alpha", "b10.md", "b2.md", "a.png"]);
+  assert.deepEqual(sortItems(items, { key: "modified", desc: true }).map((i) => i.name), ["zeta", "alpha", "b10.md", "a.png", "b2.md"]);
+  assert.deepEqual(sortItems(items, { key: "size", desc: false }).map((i) => i.name), ["alpha", "zeta", "a.png", "b10.md", "b2.md"]);
+  assert.deepEqual(sortItems(items, { key: "kind", desc: false }).map((i) => i.name), ["alpha", "zeta", "b2.md", "b10.md", "a.png"]);
+});
+
+test("Icons' groups come in a fixed order, keep the order they were handed, and leave empty ones out", () => {
+  const groups = groupByKind([file("z.md"), dir("d"), file("a.md"), file("p.png"), file("x.json"), file("y.pdf")]);
+  assert.deepEqual(groups.map((g) => [g.id, g.label, g.items.map((i) => i.name)]), [
+    ["folders", "Folders", ["d"]], ["notes", "Notes", ["z.md", "a.md"]], ["images", "Images", ["p.png"]], ["other", "Other files", ["x.json", "y.pdf"]],
+  ]);
+  assert.deepEqual(groupByKind([file("a.md")]).map((g) => g.id), ["notes"]);
+});
+
+test("selection: one, ⌘-toggle, ⇧-range from the anchor either way, all", () => {
+  const order = ["a", "b", "c", "d", "e"];
+  let s = selectOnly("b");
+  assert.deepEqual(s, { paths: ["b"], cursor: "b", anchor: "b" });
+  s = toggleIn(s, "d");
+  assert.deepEqual(s.paths, ["b", "d"]);
+  assert.equal(s.anchor, "d");
+  s = toggleIn(s, "b");
+  assert.deepEqual(s.paths, ["d"]);
+  s = extendTo(selectOnly("b"), order, "d");
+  assert.deepEqual(s, { paths: ["b", "c", "d"], cursor: "d", anchor: "b" });
+  s = extendTo(s, order, "a");
+  assert.deepEqual(s.paths, ["a", "b"]);
+  assert.deepEqual(extendTo(NO_SELECTION, order, "c").paths, ["c"]);
+  assert.deepEqual(extendTo(selectOnly("b"), order, "zz"), selectOnly("b"));
+  assert.deepEqual(selectAll(order), { paths: order, cursor: "e", anchor: "a" });
+  assert.deepEqual(selectAll([]), { paths: [], cursor: null, anchor: null });
+});
+
+test("the arrows move the cursor, clamp at the ends, start at an end with no cursor, and extend with ⇧", () => {
+  const order = ["a", "b", "c", "d", "e", "f"];
+  assert.deepEqual(moveCursor(NO_SELECTION, order, 1).paths, ["a"]);
+  assert.deepEqual(moveCursor(NO_SELECTION, order, -1).paths, ["f"]);
+  assert.deepEqual(moveCursor(selectOnly("b"), order, 3).paths, ["e"]);
+  assert.deepEqual(moveCursor(selectOnly("e"), order, 3).paths, ["f"]);
+  assert.deepEqual(moveCursor(selectOnly("b"), order, -3).paths, ["a"]);
+  const ext = moveCursor(moveCursor(selectOnly("b"), order, 1, true), order, 1, true);
+  assert.deepEqual(ext, { paths: ["b", "c", "d"], cursor: "d", anchor: "b" });
+  assert.deepEqual(moveCursor(selectOnly("b"), [], 1), selectOnly("b"));
+});
+
+test("a redraw keeps the selection that still exists; a rename carries it, folders included", () => {
+  const s = { paths: ["a", "b/x.md", "c"], cursor: "c", anchor: "a" };
+  assert.deepEqual(keepSelection(s, (p) => p !== "c"), { paths: ["a", "b/x.md"], cursor: "b/x.md", anchor: "a" });
+  assert.deepEqual(keepSelection(s, () => false), { paths: [], cursor: null, anchor: null });
+  assert.deepEqual(renameInSelection({ paths: ["b/x.md", "bb/y.md"], cursor: "b/x.md", anchor: "b" }, "b", "z"),
+    { paths: ["z/x.md", "bb/y.md"], cursor: "z/x.md", anchor: "z" });
+});
+
+test("back and forward: entering a folder clears forward, the same folder is no step, empty stacks give null", () => {
+  let h = startHistory("");
+  h = go(h, "brain");
+  h = go(h, "brain/memory");
+  assert.equal(go(h, "brain/memory"), h);
+  const b = goBack(h)!;
+  assert.deepEqual(b, { at: "brain", back: [""], forward: ["brain/memory"] });
+  const f = goForward(b)!;
+  assert.deepEqual(f, { at: "brain/memory", back: ["", "brain"], forward: [] });
+  assert.deepEqual(go(b, "persona").forward, []);
+  assert.equal(goBack(startHistory("")), null);
+  assert.equal(goForward(h), null);
+});
+
+test("paths: the parent, the path bar's crumbs, and Columns' chain from a root", () => {
+  assert.equal(parentOf("brain/memory/a.md"), "brain/memory");
+  assert.equal(parentOf("TODO.md"), "");
+  assert.deepEqual(crumbs("brain/memory", "AgenticOS"), [{ name: "AgenticOS", path: "" }, { name: "brain", path: "brain" }, { name: "memory", path: "brain/memory" }]);
+  assert.deepEqual(crumbs("", "Vault"), [{ name: "Vault", path: "" }]);
+  const folders = new Set(["brain", "brain/memory", "brain/memory/projects"]);
+  const isFolder = (p: string) => folders.has(p);
+  assert.deepEqual(columnChain("", "brain/memory/projects/a.md", isFolder), ["", "brain", "brain/memory", "brain/memory/projects"]);
+  assert.deepEqual(columnChain("", "brain/memory", isFolder), ["", "brain", "brain/memory"]);
+  assert.deepEqual(columnChain("brain", "brain/memory/projects/a.md", isFolder), ["brain", "brain/memory", "brain/memory/projects"]);
+  assert.deepEqual(columnChain("brain", "persona/x.md", isFolder), ["brain"]);
+  assert.deepEqual(columnChain("", null, isFolder), [""]);
+});
+
+test("the key map: Finder's keys, view keys on ⌃⌘, nothing for keys it does not own", () => {
+  const k = (key: string, mods: Partial<KeyLike> = {}) => keyAction({ key, metaKey: false, shiftKey: false, altKey: false, ctrlKey: false, ...mods });
+  assert.equal(k("ArrowDown"), "down");
+  assert.equal(k("ArrowLeft", { shiftKey: true }), "left");
+  assert.equal(k("Enter"), "rename");
+  assert.equal(k(" "), "quicklook");
+  assert.equal(k("Escape"), "clear");
+  assert.equal(k("Home"), "first");
+  assert.equal(k("ArrowDown", { metaKey: true }), "open");
+  assert.equal(k("ArrowUp", { metaKey: true }), "parent");
+  assert.equal(k("Backspace", { metaKey: true }), "trash");
+  assert.equal(k("a", { metaKey: true }), "select-all");
+  assert.equal(k("P", { metaKey: true, shiftKey: true }), "preview");
+  assert.equal(k("f", { metaKey: true }), "search");
+  assert.equal(k("n", { metaKey: true }), "new-note");
+  assert.equal(k("1", { metaKey: true, ctrlKey: true }), "view-icons");
+  assert.equal(k("3", { metaKey: true, ctrlKey: true }), "view-columns");
+  // ⌘1–⌘9 switch tabs, ⇧⌘N is New workspace, ⇧⌘F is Search vault…: not the view's.
+  assert.equal(k("1", { metaKey: true }), null);
+  assert.equal(k("n", { metaKey: true, shiftKey: true }), null);
+  assert.equal(k("f", { metaKey: true, shiftKey: true }), null);
+  assert.equal(k("a"), null);
+  assert.equal(k("Enter", { shiftKey: true }), null);
+  assert.equal(k("ArrowDown", { altKey: true }), null);
+  assert.equal(k("ArrowDown", { ctrlKey: true }), null);
+});
+
+test("type-ahead finds the first name that starts with the letters, else the first after them", () => {
+  const names = ["agents", "archive", "memory", "notifications", "patterns"];
+  assert.equal(typeAhead(names, "ar"), 1);
+  assert.equal(typeAhead(names, "M"), 2);
+  assert.equal(typeAhead(names, "o"), 4);
+  assert.equal(typeAhead(names, "zz"), -1);
+  assert.equal(typeAhead(names, ""), -1);
+});
+
+test("labels: Finder's decimal sizes, counts, compact counts", () => {
+  assert.equal(sizeLabel(265), "265 B");
+  assert.equal(sizeLabel(12_682), "12.7 KB");
+  assert.equal(sizeLabel(128_400), "128 KB");
+  assert.equal(sizeLabel(1_900_000), "1.9 MB");
+  assert.equal(sizeLabel(null), "--");
+  assert.equal(itemsLabel(1), "1 item");
+  assert.equal(itemsLabel(6416), "6,416 items");
+  assert.equal(compactCount(724), "724");
+  assert.equal(compactCount(1861), "1.9k");
+  assert.equal(compactCount(12_400), "12k");
+});
+
+test("dates: today and yesterday by the local calendar, then the month and day, then the year", () => {
+  // Built from local fields, so the result is the same in every time zone the tz-env job runs.
+  const now = new Date(2026, 9, 17, 9, 30);
+  assert.equal(dateLabel(new Date(2026, 9, 17, 0, 5).getTime(), now), "Today, 00:05");
+  assert.equal(dateLabel(new Date(2026, 9, 16, 22, 41).getTime(), now), "Yesterday, 22:41");
+  assert.equal(dateLabel(new Date(2026, 9, 15, 18, 2).getTime(), now), "Oct 15, 18:02");
+  assert.equal(dateLabel(new Date(2025, 11, 31, 23, 59).getTime(), now), "Dec 31, 2025");
+  assert.equal(dateLabel(new Date(2026, 0, 1, 0, 0).getTime(), new Date(2026, 0, 1, 8, 0)), "Today, 00:00");
+  assert.equal(dateLabel(new Date(2025, 11, 31, 12, 0).getTime(), new Date(2026, 0, 1, 8, 0)), "Yesterday, 12:00");
+  assert.equal(dateLabel(null, now), "--");
+});

@@ -41,6 +41,19 @@ export interface TerminalChoice {
   recent: string[];
 }
 
+/** The Files tab's remembered choices (spec 2026-10-17-files-finder D21): the view, the sort, whether Icons and List
+ *  show the preview pane, the sidebar's favorites (null: the defaults, D20) and what was opened from Files, newest
+ *  first. The same literals as data/filesModel.ts, kept here so this module stays import-free. */
+export type FilesViewId = "icons" | "list" | "columns";
+export type FilesSortKey = "name" | "modified" | "size" | "kind";
+export interface FilesChoice {
+  view: FilesViewId;
+  sort: { key: FilesSortKey; desc: boolean };
+  preview: boolean;
+  favorites: string[] | null;
+  recents: string[];
+}
+
 export interface AgenticOSSettings {
   statusBarEnabled: boolean;
   autoOpenSidebarOnStart: boolean;
@@ -69,6 +82,8 @@ export interface AgenticOSSettings {
   // The guided tour (spec 2026-10-14-guided-tour-design C4): what ran, what was offered, Getting started, the version
   // whose What's new was last shown. Read through tour/state.ts sanitizeTourState.
   tour: TourState;
+  // Files (spec 2026-10-17-files-finder D21): read through sanitizeFilesChoice
+  files: FilesChoice;
 }
 
 /** Keys data.json may still hold from earlier versions; loadSettings prunes them (the two HUD-only toggles, D10). */
@@ -96,6 +111,7 @@ export const DEFAULT_SETTINGS: AgenticOSSettings = {
   pulseSeenAt: null,
   brainReviewSeenAt: null,
   tour: DEFAULT_TOUR_STATE,
+  files: { view: "icons", sort: { key: "name", desc: false }, preview: false, favorites: null, recents: [] },
 };
 
 // ── remembered choices (U12) ──
@@ -222,4 +238,49 @@ export function rememberTerminalChoice(
   if (pick.agentPlace) c.agentPlace = pick.agentPlace;
   if (pick.workspace) c.recent = [pick.workspace, ...c.recent.filter((n) => n !== pick.workspace)];
   return sanitizeTerminalChoice(c);
+}
+
+// ── Files (spec 2026-10-17-files-finder D21) ──
+
+const FILES_VIEWS: readonly FilesViewId[] = ["icons", "list", "columns"];
+const FILES_SORTS: readonly FilesSortKey[] = ["name", "modified", "size", "kind"];
+export const FILES_FAVORITES_MAX = 30;
+export const FILES_RECENTS_MAX = 50;
+
+/** A vault-relative path a favorite or a recent may hold: no leading slash, no `.` or `..` segment, no empty one. */
+function vaultPath(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0 && v.length <= 1024 && !v.startsWith("/") && v.split("/").every((s) => s !== "" && s !== "." && s !== "..");
+}
+
+function pathList(v: unknown, max: number): string[] {
+  return Array.isArray(v) ? [...new Set(v.filter(vaultPath))].slice(0, max) : [];
+}
+
+/** A clean copy of a stored Files choice; anything missing or malformed reads as its default. The favorites stay null
+ *  (the defaults) until the user changes them; "" (the vault itself) is a favorite like any folder. */
+export function sanitizeFilesChoice(raw: unknown): FilesChoice {
+  const r = isRecord(raw) ? raw : {};
+  const sort = isRecord(r.sort) ? r.sort : {};
+  const favorites = Array.isArray(r.favorites)
+    ? [...new Set(r.favorites.filter((p): p is string => p === "" || vaultPath(p)))].slice(0, FILES_FAVORITES_MAX)
+    : null;
+  return {
+    view: FILES_VIEWS.includes(r.view as FilesViewId) ? (r.view as FilesViewId) : "icons",
+    sort: { key: FILES_SORTS.includes(sort.key as FilesSortKey) ? (sort.key as FilesSortKey) : "name", desc: sort.desc === true },
+    preview: r.preview === true,
+    favorites,
+    recents: pathList(r.recents, FILES_RECENTS_MAX),
+  };
+}
+
+/** The Files choice after a change: the fields given replace the stored ones; an opened path moves to the front of the
+ *  recents. Returns a new object to store. */
+export function rememberFilesChoice(current: unknown, pick: Partial<Omit<FilesChoice, "recents">> & { opened?: string }): FilesChoice {
+  const c = sanitizeFilesChoice(current);
+  if (pick.view) c.view = pick.view;
+  if (pick.sort) c.sort = { ...pick.sort };
+  if (pick.preview !== undefined) c.preview = pick.preview;
+  if (pick.favorites !== undefined) c.favorites = pick.favorites ? [...pick.favorites] : null;
+  if (pick.opened) c.recents = [pick.opened, ...c.recents.filter((p) => p !== pick.opened)];
+  return sanitizeFilesChoice(c);
 }

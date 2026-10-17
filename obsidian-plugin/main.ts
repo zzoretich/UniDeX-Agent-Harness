@@ -6,7 +6,7 @@ import { RunInspectorView, VIEW_TYPE_RUN_INSPECTOR, consumePendingRunId } from "
 import { WorkbenchView, VIEW_TYPE_WORKBENCH, WORKBENCH_TAB_IDS, type WorkbenchTarget } from "./src/views/WorkbenchView";
 import type { PulseTab } from "./src/views/PulseTab";
 import type { RunsTab } from "./src/views/RunsTab";
-import type { FilesTab } from "./src/views/FilesTab";
+import type { FilesTab } from "./src/views/files/FilesTab";
 import { QuickOpenModal } from "./src/ui/QuickOpenModal";
 import { TerminalPool } from "./src/data/terminalPool";
 import { TerminalLauncher } from "./src/data/terminalLauncher";

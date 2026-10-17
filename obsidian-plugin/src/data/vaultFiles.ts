@@ -49,6 +49,11 @@ export function isProtected(path: string): boolean {
   return protectedBy(path) !== null;
 }
 
+/** Why the tab does not write there (the reason a menu item that is off gives, files-finder D13). */
+export function protectedReason(path: string): string | null {
+  return protectedBy(path) === null ? null : protectedError(path);
+}
+
 /** Why the tab does not write there. */
 function protectedError(path: string): string {
   const by = protectedBy(path) ?? path;
@@ -96,8 +101,21 @@ export function matchLines(text: string, query: string, limit = SEARCH_MAX_MATCH
 export interface SearchHit { path: string; matches: LineMatch[] }
 export interface SearchResult { hits: SearchHit[]; files: number; matches: number; truncated: boolean }
 
-/** Contents by path and modification time, so a second search reads only what changed. */
+/** Contents by path and modification time, so a second search (or the vault index) reads only what changed. */
 const contentCache = new Map<string, { mtime: number; text: string }>();
+
+/** A file's text through the cache search and the vault index share (files-finder D18); null when it cannot be read. */
+export async function readCached(app: App, f: TFile): Promise<string | null> {
+  const cached = contentCache.get(f.path);
+  if (cached && cached.mtime === f.stat.mtime) return cached.text;
+  try {
+    const text = await app.vault.cachedRead(f);
+    contentCache.set(f.path, { mtime: f.stat.mtime, text });
+    return text;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Searches the vault's files for `query`: Markdown, or every text type with `allText`. Yields to the UI every few
@@ -113,13 +131,8 @@ export async function searchVault(app: App, query: string, opts: { allText?: boo
       if (opts.isCancelled?.()) return null;
     }
     const f = files[i];
-    let text: string;
-    const cached = contentCache.get(f.path);
-    if (cached && cached.mtime === f.stat.mtime) text = cached.text;
-    else {
-      try { text = await app.vault.cachedRead(f); } catch { continue; }
-      contentCache.set(f.path, { mtime: f.stat.mtime, text });
-    }
+    const text = await readCached(app, f);
+    if (text === null) continue;
     result.files++;
     const matches = matchLines(text, query, SEARCH_MAX_MATCHES - result.matches);
     if (!matches.length) continue;
