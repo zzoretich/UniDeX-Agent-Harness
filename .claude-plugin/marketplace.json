@@ -11,7 +11,7 @@
       "source": "./plugin",
       "description": "Brain context injection, session capture, telemetry, slash commands, skills, and the agenticos MCP server for an AgenticOS vault.",
       "category": "productivity",
-      "version": "2.0.0"
+      "version": "2.1.0"
     }
   ]
 }

@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-10-17
+
 ### Added
 - **Files is a Finder window onto your vault.** A sidebar of favorites (the vault, Brain, Memory, Workspaces, the daily notes, Persona), a toolbar with back and forward, and three views: **Icons** (the default: graphite folders with item counts and a coloured tab for brain, workspaces, persona and the daily notes, pages drawn from each note's first lines), **List** (Name · Date Modified · Size · Kind, sortable, folders opening in place) and **Columns** (one column per folder, the file previewed at the end). Switch with the toolbar or ⌃⌘1 ⌃⌘2 ⌃⌘3; Files remembers the view and the sort. The path bar at the foot goes anywhere along the path, and a workspace folder offers **Open in Spaces**. <!-- tour: files.places, files.views, files.count -->
 - **Preview and Quick Look in Files.** The preview (Columns' last column, or ⇧⌘P in Icons and List) renders the start of a note and shows its kind, size, dates, tags and how many notes it links to and from. **Space** opens Quick Look over the tab: a note rendered, a text file in mono, an image shown, anything else with **Open with default app**; ← → walk the folder. Files that are not text now open in their own app instead of doing nothing. <!-- tour: files.tree, files.views -->
@@ -648,7 +650,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.1.0
 [2.0.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.0.0
 [1.9.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.9.0
 [1.8.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.8.0
