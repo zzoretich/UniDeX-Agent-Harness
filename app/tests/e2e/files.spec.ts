@@ -9,7 +9,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
-import { FX, closeNotes, command, content, drawer, emulateViewport, notePath, openTab, rail, useApp } from "./harness";
+import { FX, closeNotes, command, content, drawer, emulateViewport, noteBody, notePath, openTab, rail, useApp } from "./harness";
 
 const app = useApp();
 
@@ -433,6 +433,68 @@ test("search's scope bar: the vault or this folder, names in the view or the lin
     await scope("vault").click();
     await scope("contents").click();
     await query(win).fill("");
+  }
+});
+
+test("a contents hit opens its note at the line, by a click or Return, and Space looks at it there; a text file at the line itself", async () => {
+  const { win } = app();
+  const note = "workspaces/harbor-map/survey-log.md";
+  const text = "workspaces/harbor-map/survey-log.txt";
+  // The phrase sits far down, below what a window shows of the note's top.
+  const body = (n: number) => Array.from({ length: n }, (_, i) => (i + 1 === 97 ? "Logged a tidal bore at the north mole." : `Sounding ${i + 1}: depth nominal.`));
+  fs.writeFileSync(FX.v(note), `---\ntags: [survey]\n---\n# Survey log\n\n${body(120).slice(4).join("\n\n")}\n`);
+  fs.writeFileSync(FX.v(text), `${body(120).join("\n")}\n`);
+  const noteLine = fs.readFileSync(FX.v(note), "utf8").split("\n").findIndex((l) => l.includes("tidal bore")) + 1;
+  const scope = (id: string) => content(win).locator(`.aos-fx-scopebar button[data-scope="${id}"]`);
+  const allText = content(win).locator(".aos-fx-scope input");
+  try {
+    await enter(win, "workspaces/harbor-map");
+    await expect(item(win, note)).toBeVisible();
+    await query(win).fill("tidal bore");
+    const hit = content(win).locator(`.aos-fx-hit[data-hit="${note}"] button.aos-fx-line`);
+    await expect(hit).toHaveAttribute("title", `${note}:${noteLine}`);
+    // A click on the line: the note, scrolled to the paragraph that holds it, marked.
+    await hit.click();
+    await expect(notePath(win)).toHaveText(note);
+    const at = noteBody(win).locator(`[data-at-line="${noteLine}"]`);
+    await expect(at).toHaveText("Logged a tidal bore at the north mole.");
+    await expect(at).toBeInViewport();
+    await expect(noteBody(win).locator("h1")).not.toBeInViewport();
+    await closeNotes(win);
+    await openTab(win, "files");
+    // Return on the focused line does the same.
+    await query(win).press("ArrowDown");
+    await win.keyboard.press("ArrowDown");
+    await expect(hit).toBeFocused();
+    await win.keyboard.press("Enter");
+    await expect(noteBody(win).locator(`[data-at-line="${noteLine}"]`)).toBeInViewport();
+    await closeNotes(win);
+    await openTab(win, "files");
+    // Space: Quick Look, at the line.
+    await hit.focus();
+    await win.keyboard.press(" ");
+    const qlAt = content(win).locator(".aos-fx-qlbody .aos-fx-qlat");
+    await expect(qlAt).toHaveText("Logged a tidal bore at the north mole.");
+    await expect(qlAt).toBeInViewport();
+    await win.keyboard.press("Escape");
+    // A text file opens at the line itself, marked inside the text.
+    await allText.check();
+    const textHit = content(win).locator(`.aos-fx-hit[data-hit="${text}"] button.aos-fx-line`);
+    await expect(textHit).toHaveAttribute("title", `${text}:97`);
+    await textHit.click();
+    await expect(notePath(win)).toHaveText(text);
+    const mark = noteBody(win).locator('mark.aos-note-at[data-at-line="97"]');
+    await expect(mark).toHaveText("Logged a tidal bore at the north mole.");
+    await expect(mark).toBeInViewport();
+    // The text around it is all still there.
+    expect(await noteBody(win).locator("pre.aos-note-raw").textContent()).toBe(fs.readFileSync(FX.v(text), "utf8"));
+  } finally {
+    await closeNotes(win);
+    await openTab(win, "files");
+    if (await allText.isVisible() && await allText.isChecked()) await allText.uncheck();
+    if (await scope("vault").isVisible()) await scope("vault").click();
+    await query(win).fill("");
+    for (const p of [note, text]) fs.rmSync(FX.v(p), { force: true });
   }
 });
 

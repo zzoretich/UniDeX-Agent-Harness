@@ -20,7 +20,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 ### Changed
 - **Files uses Finder's keys.** A click selects (⌘-click and ⇧-click select several, ⌘A all, typing jumps to a name); a double-click or ⌘↓ opens; Return renames; ⌘⌫ moves the selection to the Trash after one confirm; ⌘↑ goes up; ⌘N makes a note here; ⌘F searches. **+ note** and **open…** moved into the toolbar's **+** and **⋯** menus, and the hover ✎ → ✕ became the right-click menu. <!-- tour: files.tree, files.new-note, files.open, files.search -->
 - **Rename works in place in Files.** The name becomes a field with the part before the extension selected, checked as you type; Return renames and Escape keeps the name. The rename drawer is gone; Move to… keeps its folder picker and is undone with ⌘Z like a drag. <!-- tour: files.tree -->
-- **Files' search keys.** **all text files** moved into the new scope bar; in the contents results ↑ ↓ walk the files and lines, Return opens one and Space shows it in Quick Look. <!-- tour: files.scope, files.search -->
+- **Files' search opens a hit at its line.** A click or Return on a matching line opens the note scrolled to that line, marked for a moment (a text file at the line itself), and Space shows it in Quick Look there; ↑ ↓ walk the files and lines, and **all text files** moved into the new scope bar. <!-- tour: files.search, files.scope -->
 - **Files says where trashed files went.** After Move to Trash the toast says to put them back from the Trash in Finder; the Trash itself cannot hand them back, so there is no Undo for it. <!-- no-tour: a toast's wording, no control of its own -->
 
 ## [2.0.0] — 2026-10-16

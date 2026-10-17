@@ -281,10 +281,11 @@ export class FileChores {
     }).open();
   }
 
-  /** Opens a text file in a note tab. */
-  async openNote(path: string, newTab = true): Promise<void> {
+  /** Opens a text file in a note tab; at `line` (1-based, a search hit's, files-finder D22) when it is given. */
+  async openNote(path: string, newTab = true, line?: number): Promise<void> {
     const f = this.plugin.app.vault.getAbstractFileByPath(path);
-    if (f instanceof TFile) await this.plugin.app.workspace.getLeaf(newTab ? "tab" : false).openFile(f);
-    else new Notice(`${path} is gone`);
+    if (!(f instanceof TFile)) { new Notice(`${path} is gone`); return; }
+    // Obsidian's ephemeral state counts lines from 0.
+    await this.plugin.app.workspace.getLeaf(newTab ? "tab" : false).openFile(f, line ? { eState: { line: line - 1 } } : undefined);
   }
 }

@@ -1,8 +1,9 @@
 // Quick Look (files-finder D11): Space shows the item over the tab without opening it. A note rendered, a text file
 // as mono, an image fitted, a folder's art and count, anything else its icon and Open with default app. ← → go through
-// the view's order, ⌘↓ opens, Space or Esc closes. PDFs are not drawn inline (the CSP has object-src 'none').
+// the view's order, ⌘↓ opens, Space or Esc closes. PDFs are not drawn inline (the CSP has object-src 'none'). From a
+// search hit it opens at the hit's line (D22).
 
-import { itemsLabel, kindLabel, kindOf, sizeLabel } from "../../data/filesModel";
+import { blockAtLine, itemsLabel, kindLabel, kindOf, sizeLabel } from "../../data/filesModel";
 import { folderArt, pageArt } from "./art";
 import type { PreviewDeps } from "./Preview";
 
@@ -14,21 +15,25 @@ export class QuickLook {
   private order: string[] = [];
   private at = -1;
   private seq = 0;
+  /** The line to show of the item it opened on (a search hit's, 1-based). */
+  private line: { path: string; line: number } | null = null;
 
   constructor(private host: HTMLElement, private deps: PreviewDeps & { reveal(path: string): void; onClose(path: string | null): void }) {}
 
   isOpen(): boolean { return this.el !== null; }
   current(): string | null { return this.at >= 0 ? this.order[this.at] ?? null : null; }
 
-  /** Shows `path`; `order` is the view's, for ← →. */
-  show(path: string, order: readonly string[]): void {
+  /** Shows `path`, at `line` of it when given; `order` is the view's, for ← →. */
+  show(path: string, order: readonly string[], line?: number): void {
     this.order = order.includes(path) ? [...order] : [path];
     this.at = this.order.indexOf(path);
+    this.line = line ? { path, line } : null;
     this.draw();
   }
 
   step(delta: number): void {
     if (!this.el || this.order.length < 2) return;
+    this.line = null;
     this.at = (this.at + delta + this.order.length) % this.order.length;
     this.draw();
   }
@@ -85,6 +90,8 @@ export class QuickLook {
         const t = text.length > QL_CHARS ? `${text.slice(0, QL_CHARS)}\n…` : text;
         if (kind === "note") this.deps.renderMarkdown(body.createDiv({ cls: "aos-fx-md" }), t, path);
         else body.createEl("pre", { cls: "aos-fx-pre", text: t });
+        const at = this.line?.path === path ? this.line.line : null;
+        if (at !== null) window.requestAnimationFrame(() => { if (live()) showLine(body, at); });
       });
     } else if (kind === "image") {
       void this.deps.readImage(path).then((url) => {
@@ -110,4 +117,31 @@ export class QuickLook {
     f.createDiv({ cls: "aos-fx-pkind", text: line });
     if (note) f.createDiv({ cls: "aos-fx-dim", text: note });
   }
+}
+
+/**
+ * Shows `line` (1-based) of what Quick Look drew, marked: the line itself in a text file, or the rendered block it falls
+ * in (the app's renderer marks each block with the line it starts on; Obsidian's does not, and the note stays at its top).
+ */
+function showLine(body: HTMLElement, line: number): void {
+  let at: HTMLElement | null = null;
+  const pre = body.querySelector<HTMLElement>("pre.aos-fx-pre");
+  if (pre) {
+    const text = pre.textContent ?? "";
+    const lines = text.split("\n");
+    if (line > lines.length) return;
+    const start = lines.slice(0, line - 1).reduce((n, l) => n + l.length + 1, 0);
+    pre.empty();
+    pre.appendText(text.slice(0, start));
+    at = pre.createEl("mark", { cls: "aos-fx-qlat", text: lines[line - 1] || " " });
+    pre.appendText(text.slice(start + lines[line - 1].length));
+  } else {
+    const blocks = Array.from(body.querySelectorAll<HTMLElement>("[data-line]"));
+    const i = blockAtLine(blocks.map((b) => Number(b.dataset.line)), line);
+    if (i === null) return;
+    at = blocks[i];
+    at.addClass("aos-fx-qlat");
+  }
+  at.setAttr("data-at-line", String(line));
+  at.scrollIntoView({ block: "center" });
 }

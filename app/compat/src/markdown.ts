@@ -1,5 +1,6 @@
 // MarkdownRenderer: markdown-it with Obsidian's [[wiki-links]] and task checkboxes, sanitized by DOMPurify before it
-// touches the DOM. Raw HTML in notes is escaped rather than rendered: notifications carry text from the web.
+// touches the DOM. Raw HTML in notes is escaped rather than rendered: notifications carry text from the web. Each block
+// carries the line of the note it starts on (`data-line`, 1-based, frontmatter counted), so a note can open at a line.
 
 import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
@@ -42,10 +43,35 @@ md.renderer.rules.wikilink = (tokens, idx) => {
   return `<a class="internal-link" data-href="${md.utils.escapeHtml(target)}" href="#">${md.utils.escapeHtml(label)}</a>`;
 };
 
+// Every block's opening tag names the note line it starts on; `env.lineOffset` is how many lines the frontmatter took.
+const LINE_BLOCKS = new Set(["fence", "code_block", "hr", "html_block"]);
+md.core.ruler.push("source_lines", (state) => {
+  const offset = (state.env as { lineOffset?: number } | undefined)?.lineOffset ?? 0;
+  for (const t of state.tokens) {
+    if (t.map && t.block && (t.nesting === 1 || LINE_BLOCKS.has(t.type))) t.attrSet("data-line", String(t.map[0] + offset + 1));
+  }
+});
+
 function stripFrontmatter(text: string): string {
   if (!text.startsWith("---")) return text;
   const m = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/.exec(text);
   return m ? text.slice(m[0].length) : text;
+}
+
+/** A note as HTML, unsanitized, each block marked with the line it starts on in `markdown` (frontmatter included). */
+export function renderHtml(markdown: string): string {
+  const text = markdown ?? "";
+  const body = stripFrontmatter(text);
+  const lineOffset = text.slice(0, text.length - body.length).split("\n").length - 1;
+  return md.render(body, { lineOffset });
+}
+
+/** The block a 1-based note `line` falls in: the last of `starts` (each block's first line, in reading order) at or
+ *  before it, or null when the line is above every block. */
+export function blockAtLine(starts: readonly number[], line: number): number | null {
+  let best = -1;
+  for (let i = 0; i < starts.length; i++) if (starts[i] <= line && (best < 0 || starts[i] >= starts[best])) best = i;
+  return best < 0 ? null : best;
 }
 
 function taskify(root: DocumentFragment): void {
@@ -115,7 +141,7 @@ function wireLinks(root: HTMLElement, sourcePath: string): void {
 }
 
 function renderInto(markdown: string, el: HTMLElement, sourcePath: string): void {
-  const html = md.render(stripFrontmatter(markdown ?? ""));
+  const html = renderHtml(markdown);
   const frag = DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true }) as DocumentFragment;
   taskify(frag);
   markVaultLinks(frag);

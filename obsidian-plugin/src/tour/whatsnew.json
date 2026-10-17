@@ -25,7 +25,7 @@
         {
           "id": "files-search",
           "title": "Search by name or inside, here or everywhere",
-          "body": "As you type in Files' search, a bar picks the whole vault or the folder you are in, and names (shown in the view, ready to open or drag) or the lines inside the files.",
+          "body": "As you type in Files' search, a bar picks the whole vault or the folder you are in, and names (shown in the view, ready to open or drag) or the lines inside the files, each opening at its line.",
           "steps": ["files.scope"]
         }
       ]

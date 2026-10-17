@@ -944,10 +944,11 @@ export class FilesTab {
     this.drawPane();
   }
 
-  /** Quick Look on `path`, ← → walking `order` (the view's); a file looked at joins Recents (D20). */
-  private quickLook(path: string, order: readonly string[] = this.nav?.order ?? [path]): void {
+  /** Quick Look on `path`, ← → walking `order` (the view's), at `line` of it (a search hit's, 1-based); a file looked at
+   *  joins Recents (D20). */
+  private quickLook(path: string, order: readonly string[] = this.nav?.order ?? [path], line?: number): void {
     if (!this.isFolder(path)) this.opened(path);
-    this.ql?.show(path, order);
+    this.ql?.show(path, order, line);
   }
 
   /** A note made, or a file moved or renamed: its folder in view, the file selected. */
@@ -1365,15 +1366,16 @@ export class FilesTab {
     this.searching = false;
   }
 
-  /** A hit's file opened from the results: a note tab, and Recents (D20). */
-  private openFound(path: string): void {
+  /** A hit's file opened from the results: a note tab, at the hit's line when it is one (D22), and Recents (D20). */
+  private openFound(path: string, line?: number): void {
     this.opened(path);
-    void this.chores.openNote(path);
+    void this.chores.openNote(path, true, line);
   }
 
-  /** The results' keys: ↑ ↓ walk the files and lines, ↩ opens the file, Space shows it in Quick Look (D22). */
-  private onResultKey(e: KeyboardEvent, box: HTMLElement, path: string, order: readonly string[]): void {
-    if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); e.stopPropagation(); this.quickLook(path, order); return; }
+  /** The results' keys: ↑ ↓ walk the files and lines, ↩ opens the file at the line, Space shows it in Quick Look there
+   *  (D22). */
+  private onResultKey(e: KeyboardEvent, box: HTMLElement, path: string, order: readonly string[], line?: number): void {
+    if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); e.stopPropagation(); this.quickLook(path, order, line); return; }
     if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.metaKey || e.ctrlKey || e.altKey) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1406,8 +1408,8 @@ export class FilesTab {
         text.appendText(m.text.slice(0, m.start));
         text.createSpan({ cls: "aos-fx-mark", text: m.text.slice(m.start, m.end) });
         text.appendText(m.text.slice(m.end));
-        line.addEventListener("click", () => this.openFound(hit.path));
-        line.addEventListener("keydown", (e) => this.onResultKey(e, box, hit.path, order));
+        line.addEventListener("click", () => this.openFound(hit.path, m.line));
+        line.addEventListener("keydown", (e) => this.onResultKey(e, box, hit.path, order, m.line));
       }
     }
   }
