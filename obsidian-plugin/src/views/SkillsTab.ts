@@ -146,6 +146,10 @@ export class SkillsTab {
     if (!this.view.isTabActive("skills")) return;
     const host = this.host;
     if (!host) return;
+    // A redraw (a sync landing, the cache rewritten) keeps the filter's focus and caret: one between a click in the
+    // filter and the typing would otherwise send the letters nowhere.
+    const was = host.querySelector<HTMLInputElement>("input.aos-sk-filter");
+    const caret = was && document.activeElement === was ? { start: was.selectionStart, end: was.selectionEnd } : null;
     host.empty();
     const { yours, listed } = groupSkills(this.cache.skills);
     const n = skillCounts(yours);
@@ -167,6 +171,7 @@ export class SkillsTab {
     const search = host.createEl("input", { cls: "aos-sk-filter", attr: { type: "search", placeholder: "filter skills…", "aria-label": "Filter skills" } });
     search.value = this.query;
     search.addEventListener("input", () => { this.query = search.value; this.renderList(); });
+    if (caret) { search.focus({ preventScroll: true }); search.setSelectionRange(caret.start, caret.end); }
 
     this.listHost = host.createDiv({ cls: "aos-sk-list" });
     this.renderList();

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  Lru, NO_SELECTION, THUMB_MAX_BYTES, columnChain, compactCount, crumbs, dateLabel, extOf, extendTo, foldersOf, go, goBack, goForward,
+  Lru, NO_SELECTION, THUMB_MAX_BYTES, blockAtLine, columnChain, compactCount, crumbs, dateLabel, extOf, extendTo, foldersOf, go, goBack, goForward,
   groupByKind, isSmartId, itemsLabel, keepSelection, keyAction, kindLabel, kindOf, moveCursor, nameMatches, parentOf, pushUndo,
   renameInSelection, selectAll, selectOnly, sizeLabel, smartItems, sortItems, staleUndo, startHistory, startOfDay, thumbable, tintOf,
   toggleIn, typeAhead, undoMoves, within, UNDO_MAX, type Item, type KeyLike, type SortChoice, type UndoEntry,
@@ -264,4 +264,11 @@ test("search by name (D22): any case, folders from the files' paths, within a fo
   assert.equal(within("a/b.md", "a"), true);
   assert.equal(within("a", "a"), true);
   assert.equal(within("ab/c.md", "a"), false);
+});
+
+test("a search hit's line in Quick Look: the last block starting at or before it, the innermost of a tie", () => {
+  assert.equal(blockAtLine([1, 3, 3, 8], 5), 2);
+  assert.equal(blockAtLine([1, 3, 3, 8], 8), 3);
+  assert.equal(blockAtLine([4, 6], 1), null);
+  assert.equal(blockAtLine([], 3), null);
 });

@@ -443,3 +443,11 @@ export function nameMatches(items: readonly Item[], query: string, sort: SortCho
 export function within(path: string, folder: string): boolean {
   return folder === "" || path === folder || path.startsWith(`${folder}/`);
 }
+
+/** The block a 1-based `line` falls in (a search hit's, D22): the last of `starts` (each rendered block's first line, in
+ *  reading order) at or before it, the innermost when several start there; null above every block. */
+export function blockAtLine(starts: readonly number[], line: number): number | null {
+  let best = -1;
+  for (let i = 0; i < starts.length; i++) if (starts[i] <= line && (best < 0 || starts[i] >= starts[best])) best = i;
+  return best < 0 ? null : best;
+}

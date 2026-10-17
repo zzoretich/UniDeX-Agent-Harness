@@ -4,13 +4,22 @@
 // On a machine with both hosts and the sharing surface off, unshare is refused. share / unshare themselves, and sync
 // now, are in sharing-writes.spec.ts.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FX, content, openTab, readVaultJson, shareBothHosts, terminalText, useApp } from "./harness";
 
 interface Row { name: string; status: string; origin: { scope: string; host?: string; plugin?: string | null; path?: string }; on: Record<string, { invoke: string } | null> }
 const yours = (r: Row) => ["user", "synced", "mirror"].includes(r.origin.scope);
+
+/** Redraws the tab as a sync landing does (its cache rewritten, the same bytes) and waits until the filter that had the
+ *  focus is replaced: the redraw CI met between the click in the filter and the typing. */
+async function redrawUnder(filter: Locator, rel: string): Promise<void> {
+  const old = await filter.elementHandle();
+  const file = FX.v(rel);
+  fs.writeFileSync(file, fs.readFileSync(file));
+  await expect.poll(() => old!.evaluate((e) => e.isConnected)).toBe(false);
+}
 
 test.describe("Skills and Agents", () => {
   const app = useApp();
@@ -57,6 +66,7 @@ test.describe("Skills and Agents", () => {
     const skills = C().locator(".aos-sk-row:not(.aos-sk-mcprow) .aos-sk-name > div:first-child");
     const servers = C().locator(".aos-sk-mcprow .aos-sk-name > div:first-child");
     await filter.click();
+    await redrawUnder(filter, "brain/_index/skills.json");
     await win.keyboard.type("chart");
     await expect(skills).toHaveText(["chart-check"]);
     // MCP SERVERS (install-import B6): a server's name or its program or URL.
@@ -114,7 +124,10 @@ test.describe("Skills and Agents", () => {
     await openTab(win, "agents");
     const filter = C().locator("input.aos-sk-filter");
     await filter.click();
-    await win.keyboard.type("team-");
+    await win.keyboard.type("te");
+    // A redraw mid-typing keeps the letters and the focus.
+    await redrawUnder(filter, "brain/_index/agents.json");
+    await win.keyboard.type("am-");
     await expect(C().locator(".aos-sk-row .aos-sk-name > div:first-child")).toHaveText(["team-builder", "team-lead", "team-reviewer"]);
     await expect(filter).toBeFocused();
     await filter.fill("");

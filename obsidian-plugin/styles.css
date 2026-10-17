@@ -2545,6 +2545,9 @@ button.aos-fx-undo:not(.clickable-icon):hover { background: var(--udx-raised-2);
 .aos-fx-qlbody.is-image { display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--udx-raised); }
 .aos-fx-qlimg { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
 .aos-fx-qlother { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+/* Opened from a search hit: the line, or the block it is in (D22). */
+.aos-fx-qlat { border-radius: 4px; background: color-mix(in srgb, var(--udx-warn-dot) 30%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--udx-warn-dot) 30%, transparent); }
+mark.aos-fx-qlat { color: inherit; }
 .aos-fx-qlfoot {
   flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 32px; padding: 0 14px;
   border-top: 1px solid var(--udx-line); font-size: 11.5px; color: var(--udx-text-2);

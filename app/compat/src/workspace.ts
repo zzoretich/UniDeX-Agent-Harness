@@ -8,7 +8,7 @@ import { Component, Events } from "./events";
 import { TFile, normalizePath } from "./files";
 import { bridge } from "./bridge";
 import { canSave } from "./guard";
-import { MarkdownRenderer } from "./markdown";
+import { MarkdownRenderer, blockAtLine } from "./markdown";
 import { NoteEditor, type SaveState } from "./noteEditor";
 import { Notice } from "./notice";
 import type { App } from "./plugin";
@@ -96,8 +96,11 @@ export class WorkspaceLeaf extends Component {
     return view;
   }
 
-  async openFile(file: TFile): Promise<void> {
-    await this.open(new NoteView(this, file));
+  /** Opens a file in a note tab; `openState.eState.line` (0-based, as Obsidian's) shows that line of it. */
+  async openFile(file: TFile, openState?: { eState?: Record<string, unknown> }): Promise<void> {
+    const view = new NoteView(this, file);
+    await this.open(view);
+    if (openState?.eState) view.setEphemeralState(openState.eState);
     this.workspace.setActiveLeaf(this);
   }
 
@@ -252,6 +255,37 @@ export class NoteView extends ItemView {
     } else if (st === "refused") {
       box.createSpan({ text: "Not saved: the Notes write surface is off for this run (AOS_APP_WRITE)." });
     }
+  }
+
+  /** Obsidian's ephemeral state: `{ line }` (0-based) scrolls the rendered note to the block that line is in, or a
+   *  text file to the line itself, and marks it for a moment. */
+  setEphemeralState(state: Record<string, unknown>): void {
+    const line = state.line;
+    if (typeof line !== "number" || !Number.isInteger(line) || line < 0 || this.editor) return;
+    const body = this.bodyEl;
+    if (!body) return;
+    let at: HTMLElement | null = null;
+    const raw = body.querySelector<HTMLElement>("pre.aos-note-raw");
+    if (raw) {
+      // A text file: the line itself, marked inside the text.
+      const text = raw.textContent ?? "";
+      const lines = text.split("\n");
+      if (line >= lines.length) return;
+      const start = lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0);
+      raw.empty();
+      raw.appendText(text.slice(0, start));
+      at = raw.createEl("mark", { cls: "aos-note-at", text: lines[line] || " " });
+      raw.appendText(text.slice(start + lines[line].length));
+    } else {
+      const blocks = Array.from(body.querySelectorAll<HTMLElement>("[data-line]"));
+      const i = blockAtLine(blocks.map((b) => Number(b.dataset.line)), line + 1);
+      if (i === null) return;
+      at = blocks[i];
+      at.addClass("aos-note-at");
+      window.setTimeout(() => at?.removeClass("aos-note-at"), 2400);
+    }
+    at.setAttr("data-at-line", String(line + 1));
+    at.scrollIntoView({ block: "center" });
   }
 
   private async diskChanged(): Promise<void> {

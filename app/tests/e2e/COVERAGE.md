@@ -137,7 +137,7 @@ again (`brain-ai`).
 | F24 | Smart folders: Recents (Files, ⌘O, Quick Look; newest first), Changed today (a change joins it), Images; not the runtime's folders; each view; + off; ‹ back | covered | `files › smart folders: Recents keeps what was opened…`, `› Changed today lists what changed since midnight…`; `filesModel.test.ts › smart folders…` (the rules, local midnight, 50 recents in settingsDefaults.test.ts) |
 | F25 | Tags: the 12 most used, most first, with counts; a tag lists its notes in the view in use | covered | `files › Tags list the notes' most used frontmatter tags…`; `vaultIndex.test.ts › indexFrom…` (topTags, notesTagged) |
 | F26 | Favorites: drag a folder in; a file or one already there refused with why; Add to Favorites; Remove; Restore the defaults; kept across a restart; a rename takes it along | covered in part | `files › Favorites: a folder dragged onto them joins them…`; `Sidebar.test.ts` (defaults, order, edits); `settingsDefaults.test.ts › a rename or move in Files takes the favorites…`. A restart of the app: manual. |
-| F27 | The scope bar: Vault or this folder, Names or Contents, all text files; ↓, Return and Space in the results; Escape | covered | `files › search's scope bar…`, `› search finds lines across notes…` (Escape, all text files) |
+| F27 | The scope bar: Vault or this folder, Names or Contents, all text files; ↓ in the results; a line opens at that line (click, Return), Space looks there; Escape | covered | `files › search's scope bar…`, `› a contents hit opens its note at the line…` (a note and a text file, Quick Look), `› search finds lines across notes…` (Escape, all text files); `host.test.ts › rendered blocks carry the note line…`; `filesModel.test.ts › a search hit's line…` |
 
 ## Settings
 

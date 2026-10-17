@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { isIgnored } from "../../compat/src/ignore";
 import { fuzzyScore } from "../../compat/src/modal";
 import { normalizePath } from "../../compat/src/files";
-import { opensOutside } from "../../compat/src/markdown";
+import { blockAtLine, opensOutside, renderHtml } from "../../compat/src/markdown";
 import { canRun, canSave, canWrite, setWriteGuard } from "../../compat/src/guard";
 import { PagePolicy } from "../../src/renderer/pagePolicy";
 
@@ -88,6 +88,20 @@ test("a vault link to a page, PDF or image opens with its default app; notes and
   assert.equal(opensOutside("brain/memory/user/profile"), false, "no extension is a note");
   assert.equal(opensOutside("brain/_index/routines.json"), false, "text shows in a note");
   assert.equal(opensOutside("notes/v1.2 plan"), false, "a dot inside a note name");
+});
+
+test("rendered blocks carry the note line they start on, frontmatter counted, so a note opens at a search hit's line", () => {
+  const note = "---\ntags: [a]\n---\n# Title\n\nA paragraph\nthat wraps.\n\n- one\n- two\n\n```js\nx()\n```\n";
+  const html = renderHtml(note);
+  const lines = [...html.matchAll(/<(\w+)[^>]*data-line="(\d+)"/g)].map((m) => `${m[1]}:${m[2]}`);
+  assert.deepEqual(lines, ["h1:4", "p:6", "ul:9", "li:9", "li:10", "code:12"]);
+  assert.deepEqual([...renderHtml("plain\n").matchAll(/data-line="(\d+)"/g)].map((m) => m[1]), ["1"], "no frontmatter: from line 1");
+  // The block a line falls in: the last that starts at or before it, the innermost when several start on it.
+  const starts = [4, 6, 9, 9, 10, 12];
+  assert.equal(blockAtLine(starts, 7), 1, "the paragraph's second line");
+  assert.equal(blockAtLine(starts, 9), 3, "the list item, not the list");
+  assert.equal(blockAtLine(starts, 13), 5, "inside the code block");
+  assert.equal(blockAtLine(starts, 2), null, "in the frontmatter, above every block");
 });
 
 test("normalizePath matches Obsidian's", () => {
