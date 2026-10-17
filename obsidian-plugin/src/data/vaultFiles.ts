@@ -50,6 +50,18 @@ export function isProtected(path: string): boolean {
   return protectedBy(path) !== null;
 }
 
+/** The runtime's own folders: never moved, renamed or trashed, nor any folder above them (surfaces.ts RUNTIME_FOLDERS,
+ *  its twin, which main enforces). */
+const RUNTIME_FOLDERS: readonly string[] = ["brain/_index", "brain/scripts"];
+
+/** Why `path` cannot move with everything in it because it holds a runtime folder (moving `brain` would take
+ *  brain/scripts along), or null. Compared folded, as the disk compares. */
+export function holdsRuntime(path: string): string | null {
+  const p = foldPath(path.replace(/^\/+|\/+$/g, ""));
+  const held = RUNTIME_FOLDERS.find((r) => p === "" || r.startsWith(`${p}/`));
+  return held ? `${path} holds ${held}/, which the runtime writes itself` : null;
+}
+
 /** Why the tab does not write there (the reason a menu item that is off gives, files-finder D13). */
 export function protectedReason(path: string): string | null {
   return protectedBy(path) === null ? null : protectedError(path);
@@ -185,6 +197,8 @@ export function newNotePath(folder: string, name: string, exists: (p: string) =>
 /** A rename in place: the new name keeps the old extension when the user leaves it off. */
 export function renamePath(from: string, name: string, exists: (p: string) => boolean): PathCheck {
   if (isProtected(from)) return { ok: false, error: `${from} is written by the runtime itself` };
+  const held = holdsRuntime(from);
+  if (held) return { ok: false, error: held };
   let n = cleanPath(name);
   if (n.includes("/")) return { ok: false, error: "a name cannot contain / (use Move to change the folder)" };
   const ext = from.includes(".") ? from.slice(from.lastIndexOf(".")) : "";
@@ -198,6 +212,8 @@ export function renamePath(from: string, name: string, exists: (p: string) => bo
 /** A move into another folder, keeping the name. `folder` is vault-relative ("" is the vault root). */
 export function movePath(from: string, folder: string, exists: (p: string) => boolean): PathCheck {
   if (isProtected(from)) return { ok: false, error: `${from} is written by the runtime itself` };
+  const held = holdsRuntime(from);
+  if (held) return { ok: false, error: held };
   const name = from.split("/").pop()!;
   const dir = cleanPath(folder);
   const to = dir ? `${dir}/${name}` : name;

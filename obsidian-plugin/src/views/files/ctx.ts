@@ -52,11 +52,15 @@ export interface FilesCtx {
   preview(host: HTMLElement, path: string): void;
 }
 
-/** Marks an element as one item of a view: its path, the role, focusability, and the right-click. */
-export function itemEl(el: HTMLElement, ctx: FilesCtx, path: string, folder: string): void {
+/** Marks an element as one item of a view: its path, the role, the right-click, and dragging (D15): every item drags,
+ *  a folder takes drops. */
+export function itemEl(el: HTMLElement, ctx: FilesCtx, item: Item, folder: string): void {
+  const path = item.path;
   el.setAttr("data-path", path);
   el.setAttr("role", "option");
   el.setAttr("aria-selected", "false");
+  el.setAttr("draggable", "true");
+  if (item.folder) el.setAttr("data-drop", path);
   el.addEventListener("click", (e) => ctx.press(path, e));
   el.addEventListener("dblclick", (e) => { e.preventDefault(); ctx.activate(path); });
   el.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); ctx.menu(path, e, folder); });

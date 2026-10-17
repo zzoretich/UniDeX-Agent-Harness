@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { App } from "obsidian";
 import {
-  childEntries, cleanPath, duplicatePath, foldPath, isListed, isProtected, matchLines, movePath, movePlan, newFolderPath, newNotePath, quickOpenFiles,
+  childEntries, cleanPath, duplicatePath, foldPath, holdsRuntime, isListed, isProtected, matchLines, movePath, movePlan, newFolderPath, newNotePath, quickOpenFiles,
   renamePath, searchVault, sortEntries, SEARCH_MAX_MATCHES,
 } from "./vaultFiles";
 
@@ -170,4 +170,16 @@ test("duplicatePath: name copy.ext beside it, then copy 2; a folder has no exten
   assert.deepEqual(duplicatePath("notes/v1.2", true, () => false), { ok: true, path: "notes/v1.2 copy" });
   assert.deepEqual(duplicatePath("brain/_index/BRAIN.md", false, () => false), { ok: false, error: "brain/_index/ is written by the runtime itself" });
   assert.deepEqual(duplicatePath("brain/scripts", true, () => false), { ok: false, error: "brain/scripts/ is written by the runtime itself" });
+});
+
+test("a folder that holds the runtime's own folders never moves, renames or goes whole, as main refuses (canMoveTree)", () => {
+  const none = () => false;
+  assert.equal(holdsRuntime("brain"), "brain holds brain/_index/, which the runtime writes itself");
+  assert.equal(holdsRuntime("Brain"), "Brain holds brain/_index/, which the runtime writes itself");
+  assert.ok(holdsRuntime(""), "the vault itself holds them");
+  for (const p of ["brain/memory", "brain/_index", "brain/scripts", "brainstorm", "notes/brain"]) assert.equal(holdsRuntime(p), null, p);
+  assert.deepEqual(renamePath("brain", "mind", none), { ok: false, error: "brain holds brain/_index/, which the runtime writes itself" });
+  assert.deepEqual(movePath("brain", "archive", none), { ok: false, error: "brain holds brain/_index/, which the runtime writes itself" });
+  assert.deepEqual(movePlan(["brain", "notes/a.md"], "archive", none), { ok: false, error: "brain: brain holds brain/_index/, which the runtime writes itself" });
+  assert.deepEqual(movePath("brain/memory", "archive", none), { ok: true, path: "archive/memory" });
 });

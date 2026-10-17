@@ -25,7 +25,7 @@ export function renderIcons(host: HTMLElement, ctx: FilesCtx): ViewNav {
     for (const it of g.items) {
       order.push(it.path);
       const tile = grid.createDiv({ cls: "aos-fx-tile" });
-      itemEl(tile, ctx, it.path, ctx.at);
+      itemEl(tile, ctx, it, ctx.at);
       els.set(it.path, tile);
       const art = tile.createDiv({ cls: "aos-fx-tile-art" });
       if (it.folder) {

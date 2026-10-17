@@ -428,7 +428,10 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "files",
     label: "Files",
-    source: "views/FilesTab.ts and data/vaultFiles.ts: a new note (and its folders), a rename or move (both ends), a file to the Trash",
+    source:
+      "views/files/ (FilesTab.ts, chores.ts) and data/vaultFiles.ts, data/vaultIndex.ts: a new note or a new folder (and the folders above it), " +
+      "a rename or move of a file or folder (both ends), a duplicate (a file copied beside itself, a folder with what is in it), " +
+      "the links in other notes rewritten to follow a rename or move, its undo, and a file or folder to the Trash",
     writes: ["**/*"],
     folders: ["**"],
     // data/vaultFiles.ts PROTECTED_PREFIXES, and every dot-path.

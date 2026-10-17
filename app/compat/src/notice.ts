@@ -12,8 +12,10 @@ export class Notice {
     // A live region, so a screen reader says each notice ("copied", "copy failed", why a Resume was refused) as it shows.
     container ??= document.body.createDiv({ cls: "notice-container", attr: { role: "status", "aria-live": "polite" } });
     this.noticeEl = container.createDiv({ cls: "notice" });
+    // Read before setMessage: appending a fragment empties it.
+    const text = typeof message === "string" ? message : message.textContent;
     this.setMessage(message);
-    console.info("[notice]", typeof message === "string" ? message : message.textContent);
+    console.info("[notice]", text);
     this.noticeEl.addEventListener("click", () => this.hide());
     if (duration !== 0) this.timer = setTimeout(() => this.hide(), duration ?? 5000);
   }

@@ -6,19 +6,24 @@ import { QuickOpenModal } from "../../ui/QuickOpenModal";
 import { shell } from "../../host";
 import {
   NO_SELECTION, SORT_KEYS, SORT_LABEL, VIEW_LABEL, crumbs, extOf, extendTo, go, goBack, goForward, itemsLabel, keepSelection,
-  keyAction, kindOf, parentOf, renameInSelection, selectAll, selectOnly, sortItems, toggleIn, typeAhead,
-  type History, type Item, type KeyAction, type Selection, type SortKey, type ViewMode,
+  keyAction, kindOf, parentOf, pushUndo, renameInSelection, selectAll, selectOnly, sortItems, staleUndo, toggleIn, typeAhead, undoMoves,
+  type History, type Item, type KeyAction, type Selection, type SortKey, type UndoEntry, type ViewMode,
 } from "../../data/filesModel";
-import { buildVaultIndex, type VaultIndex } from "../../data/vaultIndex";
-import { childEntries, isListed, isProtected, protectedReason, quickOpenFiles, readCached, searchVault, SEARCH_MAX_MATCHES, type SearchResult } from "../../data/vaultFiles";
+import { buildVaultIndex, moveInIndex, rewritePlan, type VaultIndex } from "../../data/vaultIndex";
+import {
+  childEntries, holdsRuntime, isListed, isProtected, movePlan, protectedReason, quickOpenFiles, readCached, renamePath, searchVault, SEARCH_MAX_MATCHES,
+  type Move, type SearchResult,
+} from "../../data/vaultFiles";
 import { rememberFilesChoice, sanitizeFilesChoice, type FilesChoice } from "../../settingsDefaults";
-import { FileChores } from "./chores";
+import { FileChores, type MoveResult } from "./chores";
 import { renderColumns } from "./ColumnView";
+import { FilesDrag } from "./drag";
 import { renderIcons } from "./IconView";
 import { renderList } from "./ListView";
 import { FilesMenu, type MenuEntry } from "./Menu";
 import { renderPreview, toDataUrl, type PreviewDeps } from "./Preview";
 import { QuickLook } from "./QuickLook";
+import { renameInPlace, type LinkCount } from "./rename";
 import { defaultFavorites, renderSidebar } from "./Sidebar";
 import type { FilesCtx, ViewNav } from "./ctx";
 
@@ -29,7 +34,8 @@ const TYPE_AHEAD_MS = 900;
 /**
  * FILES — a Finder window onto the vault (spec 2026-10-17-files-finder): a sidebar of favorites; Icons, List and
  * Columns (D2, D7–D9); a selection with Finder's keys (D4, D23); the preview (D10) and Quick Look (D11); the right-click
- * menu (D13) over today's chores; and the search across notes kept from today. Reads go through the vault's index;
+ * menu (D13); rename in place, New folder and Duplicate (D14); drag to move (D15) with ⌘Z (D16), each rename or move
+ * taking the links to it along (D17); and the search across notes kept from today. Reads go through the vault's index;
  * writes through the vault API, which main checks against the Files surface. The pure parts are data/filesModel.ts,
  * data/vaultIndex.ts and data/vaultFiles.ts.
  */
@@ -66,10 +72,19 @@ export class FilesTab {
   private md: Component | null = null;
   private menu: FilesMenu | null = null;
   private ql: QuickLook | null = null;
+  private hintEl: HTMLElement | null = null;
   private chores: FileChores;
 
+  /** The tab's moves and renames, newest last (D16). */
+  private undoStack: UndoEntry[] = [];
+  /** The rename field while one is open (D14); the view's redraws wait for it (`heldDraw`). */
+  private renaming: { end: () => void } | null = null;
+  private heldDraw = false;
+  /** A write in flight (a move, an undo, a duplicate): a second waits for it. */
+  private busy = false;
+
   constructor(private plugin: AgenticOSPlugin, private view: WorkbenchView) {
-    this.chores = new FileChores(plugin, view, { landed: (to, from) => this.landed(to, from) });
+    this.chores = new FileChores(plugin, view, { landed: (to, from) => this.landed(to, from), move: (from, to) => this.moveFromDrawer(from, to) });
   }
 
   // ── lifecycle ──
@@ -101,6 +116,7 @@ export class FilesTab {
   }
 
   unmount(): void {
+    this.stopRename();
     for (const t of [this.refreshDebounce, this.indexDebounce, this.searchDebounce]) if (t !== null) window.clearTimeout(t);
     this.refreshDebounce = this.indexDebounce = this.searchDebounce = null;
     this.searchSeq++;
@@ -228,6 +244,11 @@ export class FilesTab {
     return !!n && "children" in n;
   };
 
+  private exists = (path: string): boolean => this.plugin.app.vault.getAbstractFileByPath(path) !== null;
+
+  /** A folder as the tab names it: its own name, or the vault's. */
+  private folderName(path: string): string { return path ? path.split("/").pop()! : this.vaultName(); }
+
   private toItem(f: TAbstractFile): Item {
     const folder = "children" in f;
     const stat = folder ? null : (f as unknown as { stat?: { size: number; mtime: number; ctime: number } }).stat ?? null;
@@ -307,6 +328,8 @@ export class FilesTab {
     if (!this.view.isTabActive("files")) return;
     const host = this.host;
     if (!host) return;
+    // A redraw of everything ends a rename that is open, keeping the name (one being made carries on).
+    this.stopRename();
     const hadSearchFocus = document.activeElement === this.searchInput;
     const hadViewFocus = !!this.viewEl && this.viewEl.contains(document.activeElement);
     this.listCache.clear();
@@ -328,6 +351,13 @@ export class FilesTab {
     const main = root.createEl("section", { cls: "aos-fx-main", attr: { "aria-label": "Files" } });
     this.barEl = main.createDiv({ cls: "aos-fx-bar" });
     this.drawBar();
+    this.hintEl = main.createDiv({ cls: "aos-fx-drophint", attr: { role: "status", "aria-live": "polite" } });
+    new FilesDrag(root, {
+      start: (path) => this.dragStart(path),
+      check: (paths, folder) => this.dropCheck(paths, folder),
+      hint: (text, ok) => { this.hintEl?.setText(text ?? ""); this.hintEl?.toggleClass("is-shown", !!text); this.hintEl?.toggleClass("is-bad", !ok); },
+      drop: (paths, folder) => this.dropOn(paths, folder),
+    });
     const body = main.createDiv({ cls: "aos-fx-body" });
     this.viewEl = body.createDiv({ cls: "aos-fx-view", attr: { tabindex: "0", "data-tour": "files-list", "data-view": this.mode() } });
     // A click on empty space clears the selection, as Finder's does.
@@ -404,6 +434,7 @@ export class FilesTab {
     setIcon(add, "plus");
     add.addEventListener("click", () => this.menu?.open([
       { label: "New note…", key: "⌘N", act: "new-note", off: this.writeOff(`${this.at}/`), run: () => this.chores.newNote(this.at) },
+      { label: "New folder", key: "⌥⌘N", act: "new-folder", off: this.writeOff(`${this.at}/`), run: () => void this.makeFolder(this.at) },
     ], add, "New"));
     const more = tools.createEl("button", { cls: "aos-fx-iconbtn", attr: { type: "button", "aria-haspopup": "menu", "aria-label": "More actions", title: "More actions", "data-tour": "files-open", "data-act": "more" } });
     setIcon(more, "ellipsis");
@@ -436,6 +467,9 @@ export class FilesTab {
   private drawView(): void {
     const el = this.viewEl;
     if (!el) return;
+    // Not under an open rename field: it is drawn once the field is gone.
+    if (this.renaming) { this.heldDraw = true; return; }
+    this.heldDraw = false;
     const top = el.scrollTop;
     const left = el.scrollLeft;
     const hadFocus = el.contains(document.activeElement);
@@ -467,12 +501,14 @@ export class FilesTab {
     const foot = this.footEl;
     if (!foot) return;
     foot.empty();
-    const path = foot.createEl("nav", { cls: "aos-fx-path", attr: { "aria-label": "Path" } });
+    const path = foot.createEl("nav", { cls: "aos-fx-path", attr: { "aria-label": "Path", "data-tour": "files-path" } });
     const cs = crumbs(this.sel.cursor ?? this.at, this.vaultName());
     cs.forEach((c, i) => {
       if (i) path.createSpan({ cls: "aos-fx-path-sep", text: "›", attr: { "aria-hidden": "true" } });
       const last = i === cs.length - 1;
       const b = path.createEl("button", { cls: `aos-fx-crumb${last ? " is-last" : ""}`, text: c.name, attr: { type: "button", "data-path": c.path } });
+      // A folder on the path takes drops (D15); the last part is the selection, which may be a file.
+      if (!last || this.isFolder(c.path)) b.setAttr("data-drop", c.path);
       b.addEventListener("click", () => { if (this.isFolder(c.path) && !(last && this.sel.cursor === c.path)) this.enter(c.path); });
     });
     const status = foot.createDiv({ cls: "aos-fx-status" });
@@ -637,6 +673,207 @@ export class FilesTab {
     this.sel = renameInSelection(this.sel, from, to);
   }
 
+  // ── act: rename, new folder, duplicate, move, undo (D14–D17) ──
+
+  /** Return or Rename: the item's name becomes a field (D14), with *Update N links* when notes link to it (D17). */
+  private startRename(path: string): void {
+    if (this.renaming || this.busy || this.query.trim()) return;
+    const it = this.item(path);
+    if (!it) return;
+    if (this.sel.cursor !== path || this.sel.paths.length !== 1) this.select(selectOnly(path));
+    const el = this.viewEl ? Array.from(this.viewEl.querySelectorAll<HTMLElement>("[data-path]")).find((n) => n.dataset.path === path) : null;
+    const nameEl = el?.querySelector<HTMLElement>(".aos-fx-tile-name, .aos-fx-name");
+    if (!el || !nameEl) return;
+    let target = path;
+    const mine = {
+      end: renameInPlace(el, nameEl, it.name, it.folder, {
+        check: (name) => renamePath(path, name, this.exists),
+        links: (to) => this.linkCount([{ from: path, to }]),
+        updateLinks: this.choice().updateLinks,
+        setUpdateLinks: (on) => this.remember({ updateLinks: on }),
+        commit: async (to, updateLinks) => {
+          target = to;
+          await this.relocate([{ from: path, to }], {
+            label: `the rename of ${it.name}`, head: `Renamed ${it.name} to ${to.split("/").pop()}`, updateLinks,
+          });
+        },
+        done: (committed) => {
+          // Ended by a redraw (stopRename): that redraw shows what is there.
+          if (this.renaming !== mine) return;
+          this.renaming = null;
+          if (committed && el.isConnected) this.landed(target, path);
+          else if (committed || this.heldDraw) this.drawView();
+          this.viewEl?.focus({ preventScroll: true });
+        },
+      }),
+    };
+    this.renaming = mine;
+  }
+
+  /** Ends an open rename field, keeping the name; one already being made still lands. */
+  private stopRename(): void {
+    const r = this.renaming;
+    this.renaming = null;
+    r?.end();
+  }
+
+  /** What *Update N links* says for these moves (null until the index is read). */
+  private linkCount(moves: Move[]): LinkCount | null {
+    if (!this.index) return null;
+    const plan = rewritePlan(this.index, moves);
+    return { links: plan.links, notes: plan.notes.length, skipped: plan.skipped.length };
+  }
+
+  /** The vault's files now, which the links of a move resolve against. */
+  private filePaths(): string[] { return quickOpenFiles(this.plugin.app).map((f) => f.path); }
+
+  /**
+   * A rename or a move (D14, D15): the items moved, the links to them rewritten when `updateLinks` (D17), the index kept
+   * in step, an undo entry pushed (D16) and a toast that offers it. Throws when nothing moved.
+   */
+  private async relocate(moves: Move[], opts: { label: string; head: string; updateLinks: boolean }): Promise<MoveResult> {
+    if (this.busy) throw new Error("another change in Files is still being made");
+    this.busy = true;
+    try {
+      const paths = this.filePaths();
+      const plan = opts.updateLinks && this.index ? rewritePlan(this.index, moves, paths) : null;
+      const r = await this.chores.moveAll(moves, plan, paths);
+      if (!r.moved.length) throw new Error(r.failed ?? "nothing moved");
+      if (this.index) {
+        // The next pass reads the vault again; until then the index knows the new paths and links.
+        this.indexSeq++;
+        this.index = moveInIndex(this.index, r.moved, new Map(r.edits.map((e) => [e.path, e.after])));
+      }
+      for (const m of r.moved) this.followRename(m.from, m.to);
+      const entry: UndoEntry = { label: opts.label, moves: r.moved, edits: r.edits };
+      this.undoStack = pushUndo(this.undoStack, entry);
+      const parts = [opts.head];
+      if (r.links) parts.push(`${r.links} link${r.links === 1 ? "" : "s"} updated${r.notes > 1 ? ` in ${r.notes} notes` : ""}`);
+      if (r.skipped.length) parts.push(`${r.skipped.length} note${r.skipped.length === 1 ? "" : "s"} in the runtime's folders not updated`);
+      if (r.unwritten.length) parts.push(`links not updated in ${r.unwritten.join(", ")}`);
+      if (r.failed) parts.push(`stopped at ${r.failed}`);
+      this.toast(parts.join(" · "), entry);
+      return r;
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** A toast with an Undo button for `entry` (D16). */
+  private toast(text: string, entry: UndoEntry): void {
+    const frag = document.createDocumentFragment();
+    const msg = document.createElement("span");
+    msg.textContent = text;
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.className = "aos-fx-undo";
+    undo.textContent = "Undo";
+    undo.addEventListener("click", () => void this.undo(entry));
+    frag.append(msg, " ", undo);
+    new Notice(frag, 8000);
+  }
+
+  /** ⌘Z or a toast's Undo: the newest move or rename goes back (D16), unless its paths changed since. */
+  private async undo(entry?: UndoEntry): Promise<void> {
+    if (this.busy || this.renaming) return;
+    const top = this.undoStack[this.undoStack.length - 1];
+    if (!top) { new Notice("Nothing to undo in Files"); return; }
+    if (entry && entry !== top) { new Notice("Undo the later moves and renames first (⌘Z in Files)"); return; }
+    this.undoStack = this.undoStack.slice(0, -1);
+    const stale = staleUndo(top, this.exists);
+    if (stale) { new Notice(`Cannot undo ${top.label}: ${stale}`); return; }
+    this.busy = true;
+    try {
+      const back = undoMoves(top);
+      const { changed } = await this.chores.undo(top);
+      if (this.index) {
+        this.indexSeq++;
+        this.index = moveInIndex(this.index, back, new Map(top.edits.filter((e) => !changed.includes(e.home)).map((e) => [e.home, e.before])));
+      }
+      for (const m of back) this.followRename(m.from, m.to);
+      new Notice(`Undid ${top.label}${changed.length ? ` · links left as they are in ${changed.join(", ")}, changed since` : ""}`);
+      this.showMoved(top.moves.map((m) => m.from), top.moves.length === 1);
+    } catch (err) {
+      new Notice(`Could not undo ${top.label}: ${err instanceof Error ? err.message : String(err)}`);
+      void this.refresh();
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** After a move: a single item followed to its folder and selected; several selected where they show. */
+  private showMoved(paths: string[], follow: boolean): void {
+    if (follow && paths.length === 1) { this.landed(paths[0]); return; }
+    const shown = this.shownFolders();
+    const visible = paths.filter((p) => shown.has(parentOf(p)));
+    this.sel = visible.length ? { paths: visible, cursor: visible[visible.length - 1], anchor: visible[0] } : NO_SELECTION;
+    void this.refresh();
+  }
+
+  /** A drag (D15) carries the selection when it starts on a selected item, else that item, which it selects. Marked
+   *  in place: a redraw now would take the dragged element away. */
+  private dragStart(path: string): string[] {
+    this.stopRename();
+    if (this.sel.paths.includes(path)) return [...this.sel.paths];
+    this.sel = selectOnly(path);
+    this.paint();
+    return [path];
+  }
+
+  private dropCheck(paths: string[], folder: string): { ok: boolean; text: string } {
+    const plan = movePlan(paths, folder, this.exists);
+    if (!plan.ok) return { ok: false, text: `Cannot move here: ${plan.error}` };
+    const what = plan.moves.length === 1 ? plan.moves[0].from.split("/").pop()! : `${plan.moves.length} items`;
+    const n = this.choice().updateLinks ? this.linkCount(plan.moves) : null;
+    const links = n?.links ? ` · update ${n.links} link${n.links === 1 ? "" : "s"}` : "";
+    return { ok: true, text: `Move ${what} to ${this.folderName(folder)}${links}` };
+  }
+
+  private dropOn(paths: string[], folder: string): void {
+    const plan = movePlan(paths, folder, this.exists);
+    if (!plan.ok) { new Notice(`Not moved: ${plan.error}`); return; }
+    const one = plan.moves.length === 1 ? plan.moves[0].from.split("/").pop()! : null;
+    const what = one ?? `${plan.moves.length} items`;
+    void this.relocate(plan.moves, { label: `the move of ${what}`, head: `Moved ${what} to ${this.folderName(folder)}`, updateLinks: this.choice().updateLinks })
+      .then((r) => this.showMoved(r.moved.map((m) => m.to), false), (err: unknown) => new Notice(`Not moved: ${err instanceof Error ? err.message : String(err)}`));
+  }
+
+  /** Move to…'s move, as a drop makes it; then the tab follows the file, with the focus, so ⌘Z is at hand. */
+  private async moveFromDrawer(from: string, to: string): Promise<void> {
+    const name = from.split("/").pop()!;
+    await this.relocate([{ from, to }], { label: `the move of ${name}`, head: `Moved ${name} to ${this.folderName(parentOf(to))}`, updateLinks: this.choice().updateLinks });
+    this.landed(to, from);
+    this.viewEl?.focus({ preventScroll: true });
+  }
+
+  /** New folder (⌥⌘N, D14): `untitled folder` here, selected, its name open for a rename. */
+  private async makeFolder(folder: string): Promise<void> {
+    if (this.renaming || this.busy) return;
+    try {
+      const path = await this.chores.newFolder(folder);
+      this.landed(path);
+      this.startRename(path);
+    } catch (err) {
+      new Notice(`No new folder: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Duplicate (⌘D): each item beside itself as `name copy`, the copies selected. */
+  private async duplicate(paths: string[]): Promise<void> {
+    if (this.renaming || this.busy || !paths.length) return;
+    this.busy = true;
+    try {
+      const { made, failed } = await this.chores.duplicate(paths);
+      if (made.length) {
+        new Notice(made.length === 1 ? `Duplicated ${paths[0].split("/").pop()} as ${made[0].split("/").pop()}` : `Duplicated ${made.length} items`);
+        this.showMoved(made, false);
+      }
+      if (failed) new Notice(`Not duplicated: ${failed}`);
+    } finally {
+      this.busy = false;
+    }
+  }
+
   // ── the menu (D13) ──
 
   private writeOff(path: string): string | null {
@@ -649,6 +886,7 @@ export class FilesTab {
     if (!path) {
       this.menu?.open([
         { label: "New note here…", key: "⌘N", act: "new-note", off: this.writeOff(`${folder}/`), run: () => this.chores.newNote(folder) },
+        { label: "New folder", key: "⌥⌘N", act: "new-folder", off: this.writeOff(`${folder}/`), run: () => void this.makeFolder(folder) },
         { separator: true },
         { label: "Reveal in Finder", act: "reveal", run: () => this.reveal(folder) },
         { label: "Copy path", act: "copy-path", run: () => this.copy(this.abs(folder)) },
@@ -659,15 +897,23 @@ export class FilesTab {
     if (!it) return;
     const many = this.sel.paths.length > 1 ? this.sel.paths : null;
     const off = this.writeOff(it.folder ? `${path}/` : path);
+    // Rename, move and Trash take a folder whole: off for one that holds the runtime's own (brain), as main refuses.
+    const whole = off ?? (it.folder ? holdsRuntime(path) : null);
     const text = kindOf(it) === "note" || kindOf(it) === "text";
+    const here = it.folder ? path : folder;
     const entries: MenuEntry[] = [
       { label: "Open", key: "⌘↓", act: "open", run: () => this.activate(path, true) },
       ...(it.folder ? [] : [{ label: "Quick Look", key: "Space", act: "quicklook", run: () => this.quickLook(path) }]),
       { separator: true },
-      { label: "Rename…", key: "↩", act: "rename", off: many ? "Rename one item at a time" : off, run: () => this.chores.rename(path) },
-      { label: "Move to…", act: "move", off: many ? "Move one item at a time" : off, run: () => this.chores.move(path) },
+      { label: "Rename", key: "↩", act: "rename", off: many ? "Rename one item at a time" : whole, run: () => this.startRename(path) },
+      { label: "Move to…", act: "move", off: many ? "Move one item at a time" : whole, run: () => this.chores.move(path) },
+      {
+        label: many ? `Duplicate ${many.length} items` : "Duplicate", key: "⌘D", act: "duplicate",
+        off: many ? many.map((p) => this.writeOff(p)).find((r) => r) ?? null : off, run: () => void this.duplicate(many ?? [path]),
+      },
       { separator: true },
-      { label: "New note here…", key: "⌘N", act: "new-note", off: this.writeOff(`${it.folder ? path : folder}/`), run: () => this.chores.newNote(it.folder ? path : folder) },
+      { label: "New note here…", key: "⌘N", act: "new-note", off: this.writeOff(`${here}/`), run: () => this.chores.newNote(here) },
+      { label: "New folder", key: "⌥⌘N", act: "new-folder", off: this.writeOff(`${here}/`), run: () => void this.makeFolder(here) },
       { separator: true },
       { label: "Copy path", act: "copy-path", run: () => this.copy(this.abs(path)) },
       ...(it.folder ? [] : [{ label: "Copy as [[link]]", act: "copy-link", run: () => this.copy(`[[${it.ext === "md" ? it.name.slice(0, -3) : it.name}]]`) }]),
@@ -676,7 +922,7 @@ export class FilesTab {
       { separator: true },
       {
         label: many ? `Move ${many.length} items to Trash` : "Move to Trash", key: "⌘⌫", act: "trash", danger: true,
-        off: many ? (many.every((p) => isProtected(p)) ? protectedReason(many[0]) : null) : off,
+        off: many ? (many.every((p) => isProtected(p) || holdsRuntime(p)) ? protectedReason(many[0]) ?? holdsRuntime(many[0]) : null) : whole,
         run: () => this.chores.trash(many ?? [path]),
       },
     ];
@@ -693,7 +939,7 @@ export class FilesTab {
 
   private onKey(e: KeyboardEvent): void {
     if (this.ql?.isOpen()) { this.onQuickLookKey(e); return; }
-    if (this.menu?.isOpen()) return;
+    if (this.menu?.isOpen() || this.renaming) return;
     const t = e.target as HTMLElement;
     if (t.closest("input, textarea, select, [contenteditable='true']")) return;
     const inView = !!this.viewEl && this.viewEl.contains(t);
@@ -704,7 +950,7 @@ export class FilesTab {
     }
     // Anywhere in Files: the views, the preview, search, a new note. The rest only with focus in the view, so a button's
     // own Space and Return keep working.
-    const global: KeyAction[] = ["view-icons", "view-list", "view-columns", "preview", "search", "new-note"];
+    const global: KeyAction[] = ["view-icons", "view-list", "view-columns", "preview", "search", "new-note", "new-folder", "duplicate", "undo"];
     if (!global.includes(a) && !inView) return;
     // A button inside the view (List's header) keeps its own Space and Return.
     if (!global.includes(a) && t !== this.viewEl && t.closest("button, a")) return;
@@ -737,7 +983,7 @@ export class FilesTab {
         if (this.at) this.enter(parentOf(this.at), this.at);
         return;
       }
-      case "rename": if (cur && this.sel.paths.length <= 1 && !this.writeOff(this.isFolder(cur) ? `${cur}/` : cur)) this.chores.rename(cur); return;
+      case "rename": if (cur && this.sel.paths.length <= 1 && !this.writeOff(this.isFolder(cur) ? `${cur}/` : cur) && !holdsRuntime(cur)) this.startRename(cur); return;
       case "quicklook": if (cur) this.quickLook(cur); return;
       case "clear": if (this.sel.paths.length) this.select(NO_SELECTION); return;
       case "trash": if (this.sel.paths.length) this.chores.trash(this.sel.paths); return;
@@ -748,6 +994,13 @@ export class FilesTab {
       case "preview": this.togglePreview(); return;
       case "search": this.focusSearch(); return;
       case "new-note": if (!this.writeOff(`${this.at}/`)) this.chores.newNote(this.at); return;
+      case "new-folder": if (!this.writeOff(`${this.at}/`)) void this.makeFolder(this.at); return;
+      case "duplicate": {
+        const paths = this.sel.paths.filter((p) => !this.writeOff(p));
+        if (paths.length && paths.length === this.sel.paths.length) void this.duplicate(paths);
+        return;
+      }
+      case "undo": void this.undo(); return;
     }
   }
 
