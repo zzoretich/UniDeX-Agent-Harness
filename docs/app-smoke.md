@@ -83,7 +83,7 @@ Run before tagging a release, in the UniDeX app on a vault created by `aos init`
 
 ## Files
 - [ ] The rail shows Files right after Spaces, in its second section. Files opens on **Icons** at the vault's top level: Folders first (graphite, with a coloured tab on brain, workspaces, persona and the daily notes' year folders and everything under them), then Notes and Other files; no dot-folders, node_modules or graphify-out; the foot counts every file
-- [ ] brain/_index and brain/scripts show a lock; their right-click menu's Rename…, Move to…, New note here… and Move to Trash are off and say "… is written by the runtime itself"
+- [ ] brain/_index and brain/scripts show a lock; their right-click menu's Rename, Move to…, Duplicate, New note here…, New folder and Move to Trash are off and say "… is written by the runtime itself"; brain itself takes a new note or folder, but its Rename, Move to… and Move to Trash are off and say it holds brain/_index/
 - [ ] A double-click enters a folder or opens a note in a tab; ‹ › go back and forward (back selects the folder you came out of); a part of the path bar goes there; ⌘↓ opens what is selected, ⌘↑ goes up
 - [ ] The switcher and ⌃⌘1 ⌃⌘2 ⌃⌘3 show Icons, List and Columns (⌘1–⌘9 still switch tabs); the choice survives leaving the tab and restarting the app
 - [ ] List: Name · Date Modified · Size · Kind; a header click sorts, again reverses; a folder's triangle opens it in place; → opens a folder then goes into it, ← closes it then goes to its parent
@@ -91,13 +91,17 @@ Run before tagging a release, in the UniDeX app on a vault created by `aos init`
 - [ ] Selection: a click selects, ⌘-click adds, ⇧-click selects a range, ⌘A all, Escape none; the arrows move it (⇧ extends); typing a name's first letters jumps to it; the foot counts what is selected
 - [ ] ⇧⌘P shows the preview pane in Icons and List, and it stays on until turned off
 - [ ] Quick Look: Space shows the selected note rendered, a text file in mono, an image fitted, anything else with Open with default app; ← → walk the folder; Space or Escape closes it on that item
-- [ ] The right-click menu: Open, Quick Look, Rename…, Move to…, New note here…, Copy path, Copy as [[link]], Reveal in Finder (Finder shows the file), Open with default app, Move to Trash; on empty space New note here…, Reveal in Finder and Copy path
+- [ ] The right-click menu: Open, Quick Look, Rename, Move to…, Duplicate, New note here…, New folder, Copy path, Copy as [[link]], Reveal in Finder (Finder shows the file), Open with default app, Move to Trash; on empty space New note here…, New folder, Reveal in Finder and Copy path
 - [ ] A workspace folder shows **Workspace · Open in Spaces**, which opens Spaces on that workspace
 - [ ] Search finds lines across notes with the hit highlighted; "all text files" adds code and data files; a line opens its note; Escape clears it; ⌘F in Files and ⇧⌘F anywhere put the cursor in the search box
 - [ ] Open file… (⌘O, also under ⋯) matches paths fuzzily, Markdown first
 - [ ] + ▸ New note… (⌘N) makes a Markdown note in the chosen folder (created if missing), opens it and selects it in its folder; the form says why it refuses (exists, brain/_index or brain/scripts, a climb out, no name)
-- [ ] Rename… keeps the folder and the extension; Move to… puts the file in another folder; both keep the bytes, and the tab follows the file
-- [ ] Move to Trash asks first, naming how many for a selection; the files go to the macOS Trash
+- [ ] Return (or the menu's Rename) turns the name into a field with the part before the extension selected; the line under it says why a name cannot be (taken, a / or a : in it); Return renames, keeping the folder, the extension and the bytes; Escape keeps the name. Move to… puts the file in another folder, keeping the bytes; the tab follows the file
+- [ ] A rename or move takes the links to it along: the rename field shows **Update N links** (on; turned off, it stays off), notes in brain/_index are named as not updated, and the toast says how many links changed; the notes that linked now open the file at its new name
+- [ ] New folder (⌥⌘N, under + and in the menu) makes **untitled folder** (then **untitled folder 2**) with its name open to type; Duplicate (⌘D) puts **name copy** beside a file, or a folder with everything in it, and selects the copies
+- [ ] Drag a file, or the whole selection, onto a folder in Icons, List or Columns, a favorite, or a folder in the path bar: the hint at the foot says what the drop will do (and how many links it updates); brain/_index and brain/scripts show no-drop and say why; the tab stays where it was
+- [ ] ⌘Z undoes the last move or rename in Files (up to 20 back), its links included, as does the toast's **Undo**; once the file was moved again outside Files it says it cannot. ⌘Z in a text field still undoes typing
+- [ ] Move to Trash asks first, naming how many for a selection; the files go to the macOS Trash, and the toast says to put them back from the Trash in Finder (there is no Undo)
 - [ ] Below 900 px the sidebar folds into the toolbar's sidebar button; a pick folds it again
 - [ ] On a Codex-only Mac Files works the same: Columns' preview with its links, Quick Look and the menu, none naming a host
 
