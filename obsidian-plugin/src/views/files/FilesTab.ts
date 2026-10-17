@@ -352,7 +352,8 @@ export class FilesTab {
     const bar = this.barEl;
     if (!bar) return;
     bar.empty();
-    const side = bar.createEl("button", { cls: "aos-fx-iconbtn aos-fx-sidetoggle", attr: { type: "button", "aria-label": "Show the sidebar" } });
+    // The tour's Favorites step anchors here too: under 900 px the sidebar folds behind this button (D6).
+    const side = bar.createEl("button", { cls: "aos-fx-iconbtn aos-fx-sidetoggle", attr: { type: "button", "aria-label": "Show the sidebar", "data-tour": "files-places" } });
     setIcon(side, "panel-left");
     side.addEventListener("click", () => this.root?.toggleClass("is-side-open", !this.root.hasClass("is-side-open")));
     const back = bar.createEl("button", { cls: "aos-fx-iconbtn", attr: { type: "button", "aria-label": "Back", "data-act": "back" } });
