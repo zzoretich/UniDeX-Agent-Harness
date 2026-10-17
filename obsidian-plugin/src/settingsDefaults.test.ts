@@ -4,6 +4,7 @@ import {
   DEFAULT_SETTINGS, DEAD_SETTINGS_KEYS,
   sanitizeSessionChoice, sanitizeVaultChoice, rememberSessionChoice, rememberVaultChoice,
   sanitizeTerminalChoice, rememberTerminalChoice, TERM_RECENT_MAX,
+  sanitizeFilesChoice, rememberFilesChoice, FILES_FAVORITES_MAX, FILES_RECENTS_MAX,
 } from "./settingsDefaults";
 
 test("the contract §5 settings exist with their defaults", () => {
@@ -131,4 +132,42 @@ test("remembering a launch: the host becomes ⌘T's, the workspace moves to the 
   assert.equal(c.recent.length, TERM_RECENT_MAX);
   assert.equal(rememberTerminalChoice(c, { access: "read" }).access, "read");
   assert.equal(rememberTerminalChoice(c, {}).host, "codex");
+});
+
+// ── Files (spec 2026-10-17-files-finder D21) ──
+
+test("the Files choice defaults to Icons by name, no preview pane, the default favorites and no recents", () => {
+  assert.deepEqual(DEFAULT_SETTINGS.files, { view: "icons", sort: { key: "name", desc: false }, preview: false, favorites: null, recents: [] });
+  for (const raw of [undefined, null, {}, [], "list", 3]) assert.deepEqual(sanitizeFilesChoice(raw), DEFAULT_SETTINGS.files, String(raw));
+});
+
+test("a Files choice keeps its good parts: paths inside the vault, deduplicated and capped; the vault itself as a favorite", () => {
+  const raw = {
+    view: "columns", sort: { key: "modified", desc: true }, preview: true,
+    favorites: ["", "brain", "brain", "/etc", "../out", "a//b", "a/./b", 7, "workspaces/harbor-map"],
+    recents: ["TODO.md", "", "TODO.md", "brain/../x.md", ...Array.from({ length: 60 }, (_, i) => `n/${i}.md`)],
+  };
+  const c = sanitizeFilesChoice(raw);
+  assert.equal(c.view, "columns");
+  assert.deepEqual(c.sort, { key: "modified", desc: true });
+  assert.equal(c.preview, true);
+  assert.deepEqual(c.favorites, ["", "brain", "workspaces/harbor-map"]);
+  assert.equal(c.recents[0], "TODO.md");
+  assert.equal(c.recents.length, FILES_RECENTS_MAX);
+  assert.ok(!c.recents.includes("") && !c.recents.includes("brain/../x.md"));
+  assert.equal(sanitizeFilesChoice({ favorites: Array.from({ length: 40 }, (_, i) => `f${i}`) }).favorites!.length, FILES_FAVORITES_MAX);
+  assert.deepEqual(sanitizeFilesChoice({ view: "gallery", sort: { key: "colour", desc: "yes" }, preview: 1 }), DEFAULT_SETTINGS.files);
+});
+
+test("remembering a Files change replaces what it names and puts an opened file first", () => {
+  let c = rememberFilesChoice(undefined, { view: "list" });
+  assert.equal(c.view, "list");
+  c = rememberFilesChoice(c, { opened: "a.md" });
+  c = rememberFilesChoice(c, { opened: "b.md" });
+  c = rememberFilesChoice(c, { opened: "a.md", sort: { key: "size", desc: true } });
+  assert.deepEqual(c.recents, ["a.md", "b.md"]);
+  assert.deepEqual(c.sort, { key: "size", desc: true });
+  assert.deepEqual(rememberFilesChoice(c, { favorites: ["brain"] }).favorites, ["brain"]);
+  assert.equal(rememberFilesChoice({ ...c, favorites: ["brain"] }, { favorites: null }).favorites, null);
+  assert.notEqual(rememberFilesChoice(DEFAULT_SETTINGS.files, {}), DEFAULT_SETTINGS.files, "a fresh copy");
 });
