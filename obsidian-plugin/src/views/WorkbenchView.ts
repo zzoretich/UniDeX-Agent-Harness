@@ -3,7 +3,7 @@ import type AgenticOSPlugin from "../../main";
 import { PulseTab } from "./PulseTab";
 import { SpacesTab } from "./SpacesTab";
 import { BrainTab } from "./BrainTab";
-import { FilesTab } from "./FilesTab";
+import { FilesTab } from "./files/FilesTab";
 import { RunsTab } from "./RunsTab";
 import { RoutinesTab } from "./RoutinesTab";
 import { SkillsTab } from "./SkillsTab";
