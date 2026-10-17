@@ -172,6 +172,17 @@ test("Return renames in place: the stem selected, the check under the field, Esc
   await win.keyboard.press("Meta+z");
   await expect.poll(() => h.notices.includes("Cannot undo the rename of PLAN.md: GOALS.md is no longer at workspaces/harbor-map/GOALS.md")).toBe(true);
   expect(fs.existsSync(FX.v("workspaces/harbor-map/PLAN.md"))).toBe(true);
+
+  // A change of the letter case alone, which the disk takes as the same file, renames and undoes like any other.
+  const names = () => fs.readdirSync(FX.v("workspaces/harbor-map")).filter((n) => n.toLowerCase() === "plan.md");
+  await item(win, "workspaces/harbor-map/PLAN.md").click();
+  await win.keyboard.press("Enter");
+  await field(win).fill("Plan");
+  await expect(renameNote(win)).toHaveText("");
+  await win.keyboard.press("Enter");
+  await expect.poll(names).toEqual(["Plan.md"]);
+  await win.keyboard.press("Meta+z");
+  await expect.poll(names).toEqual(["PLAN.md"]);
 });
 
 test("a rename takes the links to it along (Update N links, on), leaves the runtime's notes, and ⌘Z puts both back", async () => {

@@ -11,7 +11,7 @@ import {
 } from "../../data/filesModel";
 import { buildVaultIndex, moveInIndex, rewritePlan, type VaultIndex } from "../../data/vaultIndex";
 import {
-  childEntries, holdsRuntime, isListed, isProtected, movePlan, protectedReason, quickOpenFiles, readCached, renamePath, searchVault, SEARCH_MAX_MATCHES,
+  childEntries, foldPath, holdsRuntime, isListed, isProtected, movePlan, protectedReason, quickOpenFiles, readCached, renamePath, searchVault, SEARCH_MAX_MATCHES,
   type Move, type SearchResult,
 } from "../../data/vaultFiles";
 import { rememberFilesChoice, sanitizeFilesChoice, type FilesChoice } from "../../settingsDefaults";
@@ -687,7 +687,8 @@ export class FilesTab {
     let target = path;
     const mine = {
       end: renameInPlace(el, nameEl, it.name, it.folder, {
-        check: (name) => renamePath(path, name, this.exists),
+        // The item itself under another letter case is not in the way: the disk takes a rename of the case alone.
+        check: (name) => renamePath(path, name, (p) => foldPath(p) !== foldPath(path) && this.exists(p)),
         links: (to) => this.linkCount([{ from: path, to }]),
         updateLinks: this.choice().updateLinks,
         setUpdateLinks: (on) => this.remember({ updateLinks: on }),
