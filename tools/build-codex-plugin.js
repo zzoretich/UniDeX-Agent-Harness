@@ -60,7 +60,7 @@ function manifest() {
     mcpServers: './.mcp.json',
     interface: {
       displayName: 'UniDeX',
-      shortDescription: 'A second brain for Codex, shared with Claude Code',
+      shortDescription: 'UniDeX memory for Codex, shared with Claude Code',
       longDescription: 'Persistent memory for Codex sessions in a Markdown vault on your machine: brain context on every prompt, '
         + 'session capture into memory at the end, recall over the whole vault through the agenticos MCP server, and the same '
         + 'vocabulary as under Claude Code ($agenticos:wrap, $agenticos:remember, $agenticos:recall). Run `aos init` first; '

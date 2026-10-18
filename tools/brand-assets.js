@@ -123,19 +123,6 @@ const ICONS = {
       '<path d="M35 34 V24"/>',
     ],
   },
-  'icon-quickstart': {
-    label: 'Quick start',
-    color: C.green,
-    body: ['<path d="M27 8 L13 27 h8.5 L20 40 L35 21 h-9 z"/>'],
-  },
-  'icon-prereq': {
-    label: 'Prerequisites',
-    color: C.amber,
-    body: [
-      '<rect x="9" y="9" width="30" height="30" rx="3"/>',
-      '<path d="M16 24 l5.5 5.5 L33 18"/>',
-    ],
-  },
   'icon-install': {
     label: 'Installation',
     color: C.blue,
@@ -143,15 +130,6 @@ const ICONS = {
       '<path d="M24 9 V28"/>',
       '<path d="M16 21 l8 8 8-8"/>',
       '<path d="M11 33 v6 h26 v-6"/>',
-    ],
-  },
-  'icon-screens': {
-    label: 'Screenshots',
-    color: C.purple,
-    body: [
-      '<rect x="8" y="11" width="32" height="26" rx="3"/>',
-      '<circle cx="17" cy="19" r="2.5"/>',
-      '<path d="M9 32 l8-7 6 5 5-4 11 8"/>',
     ],
   },
   'icon-first': {
@@ -193,19 +171,6 @@ const ICONS = {
       '<path d="M18 24 l4.5 4.5 L31 20"/>',
     ],
   },
-  'icon-layout': {
-    label: 'Repository layout',
-    color: C.blue,
-    body: [
-      '<path d="M12 11 V33"/>',
-      '<path d="M12 17 h6"/>',
-      '<path d="M12 24 h6"/>',
-      '<path d="M12 31 h6"/>',
-      '<rect x="19" y="14" width="17" height="6" rx="1.5"/>',
-      '<rect x="19" y="21" width="17" height="6" rx="1.5"/>',
-      '<rect x="19" y="28" width="17" height="6" rx="1.5"/>',
-    ],
-  },
   'icon-dev': {
     label: 'Development',
     color: C.purple,
@@ -215,17 +180,6 @@ const ICONS = {
       '<path d="M27 13 l-6 22"/>',
     ],
   },
-  'icon-uninstall': {
-    label: 'Uninstall',
-    color: C.red,
-    body: [
-      '<path d="M10 15 h28"/>',
-      '<path d="M19 15 v-4 h10 v4"/>',
-      '<path d="M13 15 l2 24 h18 l2 -24"/>',
-      '<path d="M21 22 v10"/>',
-      '<path d="M27 22 v10"/>',
-    ],
-  },
   'icon-docs': {
     label: 'Docs',
     color: C.cyan,
@@ -233,17 +187,6 @@ const ICONS = {
       '<path d="M24 14 c-3 -2.5 -7 -3.5 -13 -3.5 V34 c6 0 10 1 13 3.5"/>',
       '<path d="M24 14 c3 -2.5 7 -3.5 13 -3.5 V34 c-6 0 -10 1 -13 3.5"/>',
       '<path d="M24 14 V37.5"/>',
-    ],
-  },
-  'icon-license': {
-    label: 'License',
-    color: C.muted,
-    body: [
-      '<rect x="10" y="9" width="28" height="22" rx="2.5"/>',
-      '<path d="M16 17 h16"/>',
-      '<path d="M16 23 h10"/>',
-      '<circle cx="31" cy="34" r="5"/>',
-      '<path d="M27.5 37.8 L26 43 l5 -2.5 5 2.5 l-1.5 -5.2"/>',
     ],
   },
 };
