@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "agenticos-workbench",
-  "description": "UniDeX: a second brain for Claude Code and Codex with persistent memory, recall, session capture, and the UniDeX app for macOS.",
+  "description": "UniDeX, the Unified Agentic Development Harness: Claude Code, Codex and local models building software together, with persistent memory, recall, session capture, a Chief of Staff, and the UniDeX app for macOS.",
   "owner": {
     "name": "AgenticOS Workbench contributors"
   },

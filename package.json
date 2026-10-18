@@ -2,7 +2,7 @@
   "name": "agenticos-workbench",
   "private": true,
   "version": "2.1.0",
-  "description": "AgenticOS Workbench: a second brain for Claude Code and Codex CLI, and the macOS app that shows it",
+  "description": "UniDeX, the Unified Agentic Development Harness: Claude Code, Codex and local models building software together, run by a Chief of Staff, with a macOS app over all of it",
   "license": "MIT",
   "engines": {
     "node": ">=20"
