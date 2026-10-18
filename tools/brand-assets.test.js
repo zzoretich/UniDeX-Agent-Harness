@@ -90,6 +90,14 @@ test('the banner credits its author in the accessible label', () => {
   assert.match(label, /UniDeX/, 'banner aria-label omits the product');
 });
 
+test('the download button says what it downloads and for which platform', () => {
+  const button = built.get('download.svg');
+  const label = button.match(/aria-label="([^"]+)"/)[1];
+  assert.match(label, /UniDeX/, 'download aria-label omits the product');
+  assert.match(label, /macOS/, 'download aria-label omits the platform');
+  assert.doesNotMatch(button, /\d+\.\d+\.\d+/, 'download art names a version, which goes stale with the next release');
+});
+
 test('only the declared assets animate, and they really do', () => {
   for (const [name, svg] of built) {
     const animates = (svg.match(/<animate\b/g) || []).length;
