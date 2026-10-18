@@ -1,21 +1,23 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" width="960" alt="UniDeX — a second brain for Claude Code and Codex. Created by Zach Zoretich." />
+  <img src="docs/assets/banner.svg" width="960" alt="UniDeX — the Unified Agentic Development Harness. Created by Zach Zoretich." />
 </p>
 
 <p align="center">
-  <strong>A second brain for Claude Code and Codex CLI, and a macOS app that renders it.</strong><br />
-  Persistent memory · recall · session capture · a named Chief of Staff · a live monitor of it all.
+  <strong>Claude Code, Codex and local models building software together, run by a Chief of Staff that learns how you work.</strong><br />
+  Plan · build · review · ship, on Claude Code, Codex or both, with a macOS app over all of it.
 </p>
 
 <p align="center">
+  <a href="https://github.com/zzoretich/UniDeX-Agent-Harness/releases/latest"><img src="https://img.shields.io/github/v/release/zzoretich/UniDeX-Agent-Harness?style=flat-square&amp;labelColor=0d1117&amp;color=3fb950&amp;label=release" alt="Latest release" /></a>
   <a href="https://github.com/zzoretich/UniDeX-Agent-Harness/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zzoretich/UniDeX-Agent-Harness/ci.yml?branch=main&amp;style=flat-square&amp;labelColor=0d1117&amp;label=ci" alt="CI status" /></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A5%2020-3fb950?style=flat-square&amp;labelColor=0d1117" alt="Node 20 or newer" />
   <img src="https://img.shields.io/badge/platform-macOS-58a6ff?style=flat-square&amp;labelColor=0d1117" alt="macOS" />
-  <img src="https://img.shields.io/badge/hosts-Claude%20Code%20%C2%B7%20Codex%20CLI%20%C2%B7%20Ollama-bc8cff?style=flat-square&amp;labelColor=0d1117" alt="Works with Claude Code or Codex CLI, with a local Ollama" />
+  <img src="https://img.shields.io/badge/works%20with-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20local%20models-bc8cff?style=flat-square&amp;labelColor=0d1117" alt="Works with Claude Code, Codex and local models" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-e6edf3?style=flat-square&amp;labelColor=0d1117" alt="MIT" /></a>
 </p>
 
 <p align="center">
+  <a href="#download">Download</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#prerequisites">Prerequisites</a> ·
   <a href="#installation">Installation</a> ·
@@ -29,9 +31,20 @@
 
 <p align="center"><img src="docs/assets/divider.svg" width="960" alt="" /></p>
 
-Claude Code and Codex CLI forget everything between sessions. UniDeX gives them a vault they can read from on every prompt and write back to at the end of every session, then puts a dashboard on top, the UniDeX app, so you can see what they remember, what ran, and what it cost.
+UniDeX is an agent-driven development harness: Claude Code, Codex and local models work on your projects together throughout the development lifecycle. One model plans and the other reviews the plan, one builds and the other inspects the diff, and a model on your Mac handles the routine background work (session summaries, memory, insights) at no cost. You work through your **Chief of Staff**, a named agent you interview once that answers in every Claude Code or Codex session, briefs you on where your work stands, and improves itself as it goes: repeated corrections become rules, changes to its own duties arrive as proposals you approve, and it earns autonomy one kind of change at a time. Run it with Claude Code, Codex or both: they share one memory, so every session starts with what the last ones learned, and your data goes nowhere but your Mac and your own Claude Code or Codex login.
 
-It works with **Claude Code alone**, with **Codex CLI alone**, with both sharing one vault, or with neither yet. Background work (session summaries, memory, insights, the briefing, the AI buttons) runs on a model on your Mac and never spends. Nothing about you ships in this repository, and background work only ever goes through the local model on your Mac or your own Claude Code or Codex login, never a third-party service.
+<a name="download"></a>
+<p align="center">
+  <a href="https://github.com/zzoretich/UniDeX-Agent-Harness/releases/latest"><img src="docs/assets/download.svg" width="280" alt="Download UniDeX for macOS" /></a>
+  <br /><sub>Apple silicon · macOS 13 or later · the setup wizard installs everything else · <a href="#quick-start">Quick start</a></sub>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screens/pulse-dark.png" />
+    <img src="docs/assets/screens/pulse.png" width="960" alt="UniDeX's Pulse tab: your Chief of Staff's briefing, then what needs you, system health, agents, workspaces and spend" />
+  </picture>
+</p>
 
 <a name="what-you-get"></a>
 ## <img src="docs/assets/icon-brain.svg" width="36" align="top" alt="" /> What you get

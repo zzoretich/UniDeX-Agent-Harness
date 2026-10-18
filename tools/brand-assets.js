@@ -261,16 +261,20 @@ function buildIcon(def) {
 }
 
 // ----------------------------------------------------------------- banner --
-// The status lights mirror the product's real Pulse row, so the banner reads
-// as a live system rather than a logo. Staggered begins keep the row from
-// breathing in unison, which is what makes it feel like telemetry.
+// The status lights name the lifecycle the harness runs, with the Chief of
+// Staff over it, so the banner reads as a live system rather than a logo.
+// Staggered begins keep the row from breathing in unison, which is what makes
+// it feel like telemetry.
 const BANNER_LEDS = [
-  ['SCAN', C.green],
-  ['WRAP', C.green],
-  ['COST', C.amber],
-  ['MAP', C.blue],
-  ['STAFF', C.green],
+  ['PLAN', C.blue],
+  ['BUILD', C.green],
+  ['REVIEW', C.amber],
+  ['SHIP', C.green],
+  ['STAFF', C.purple],
 ];
+// REVIEW is the widest label; 50 units between centres keeps a clear gap
+// beside it at 9px on any platform's UI face.
+const BANNER_LED_STEP = 50;
 
 // The Line mark's 130 × 46 drawing (UniDeX spec D10).
 const MARK_PATH = 'M6 6V26a14 14 0 0 0 28 0V6 M48 6V40H60a17 17 0 0 0 0-34H48Z M92 6L124 40 M124 6L92 40';
@@ -296,28 +300,49 @@ function buildBanner() {
     '</g>',
 
     `<text x="120" y="86" font-family="${SANS}" font-size="38" font-weight="600" letter-spacing="-0.5" fill="${C.text}">UniDeX</text>`,
-    `<text x="122" y="112" font-family="${SANS}" font-size="16" fill="${C.muted}">A second brain for Claude Code and Codex</text>`,
+    `<text x="122" y="112" font-family="${SANS}" font-size="16" fill="${C.muted}">The Unified Agentic Development Harness</text>`,
     `<rect x="122" y="126" width="160" height="1.5" rx="0.75" fill="${C.border}"/>`,
     `<text x="122" y="151" font-family="${SANS}" font-size="13" letter-spacing="0.3" fill="${C.dim}">Created by Zach Zoretich</text>`,
   ];
 
   // The lamp labels share the tagline's baseline, so the right cluster is
   // tied to the lockup by a real alignment rather than parked arbitrarily.
-  let x = 724;
+  // The last lamp stays at x 900, a 60-unit margin from the card's right edge.
+  let x = 900 - BANNER_LED_STEP * (BANNER_LEDS.length - 1);
   for (let i = 0; i < BANNER_LEDS.length; i++) {
     const [name, color] = BANNER_LEDS[i];
     body.push(
       `<circle cx="${x}" cy="93" r="4.5" fill="${color}" opacity="0.35">${pulse('0.35', '1', '3s', `${(i * 0.4).toFixed(1)}s`)}</circle>`,
       `<text x="${x}" y="112" font-family="${SANS}" font-size="9" letter-spacing="1.2" text-anchor="middle" fill="${C.muted}">${name}</text>`
     );
-    x += 44;
+    x += BANNER_LED_STEP;
   }
 
   return doc(
     'width="960" height="200" viewBox="0 0 960 200" fill="none"',
-    'UniDeX — a second brain for Claude Code and Codex. Created by Zach Zoretich.',
+    'UniDeX — the Unified Agentic Development Harness. Created by Zach Zoretich.',
     body
   );
+}
+
+// --------------------------------------------------------------- download --
+// The README's one call to action, linked to the latest release page (the DMG
+// carries its version in its name, so no direct link to it stays valid). A
+// green fill reads as a button on both GitHub themes. The glyph sits at a
+// fixed spot on the left and the label is centred on the space after it, so a
+// wider or narrower UI face shifts the label evenly instead of crowding the
+// right edge. No version in the art: the line under it in the README says
+// what to run it on, and the release page says which version it is.
+function buildDownload() {
+  return doc('width="280" height="56" viewBox="0 0 280 56" fill="none"', 'Download UniDeX for macOS', [
+    `<rect x="0" y="0" width="280" height="56" rx="12" fill="${C.green}"/>`,
+    `<g stroke="${C.bg}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none">`,
+    '<path d="M36 17V32"/>',
+    '<path d="M30 26.5L36 32L42 26.5"/>',
+    '<path d="M27 34V38H45V34"/>',
+    '</g>',
+    `<text x="158" y="34" font-family="${SANS}" font-size="17" font-weight="600" text-anchor="middle" fill="${C.bg}">Download for macOS</text>`,
+  ]);
 }
 
 // ---------------------------------------------------------------- divider --
@@ -404,6 +429,7 @@ function build() {
   files.set('divider.svg', buildDivider());
   files.set('pulse.svg', buildPulse());
   files.set('made-with.svg', buildMadeWith());
+  files.set('download.svg', buildDownload());
   for (const [name, def] of Object.entries(ICONS)) files.set(`${name}.svg`, buildIcon(def));
   return files;
 }
@@ -413,6 +439,7 @@ const ASSET_NAMES = [
   'divider.svg',
   'pulse.svg',
   'made-with.svg',
+  'download.svg',
   ...Object.keys(ICONS).map(n => `${n}.svg`),
 ];
 
