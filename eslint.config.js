@@ -19,7 +19,7 @@ const languageOptions = (sourceType) => ({ ecmaVersion: 2023, sourceType, global
 module.exports = [
   // Generated or bundled output, the HUD's TypeScript sources (tsc), and the gitignored private *.local.* files. The app's
   // TypeScript is checked by its own tsc (`npm run typecheck` in app/); its .js/.cjs/.mjs scripts are linted here.
-  { ignores: ['**/node_modules/**', 'codex-plugin/**', 'obsidian-plugin/main.js', 'obsidian-plugin/src/**', '**/*.local.*',
+  { ignores: ['**/node_modules/**', 'codex-plugin/**', 'hud/src/**', '**/*.local.*',
     // The app's build output, packages, test runs and generated fixture vault (app/.gitignore).
     'app/out/**', 'app/out-test/**', 'app/dist/**', 'app/dist-test/**', 'app/test-results/**', 'app/playwright-report/**', 'app/tests/.fixture/**', 'app/tests/.cache/**', 'app/payload/**'] },
   { files: ['**/*.js', '**/*.cjs'], languageOptions: languageOptions('commonjs'), rules },

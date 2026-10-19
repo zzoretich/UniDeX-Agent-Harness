@@ -22,13 +22,13 @@
     "baseUrl": ".",
     "paths": {
       "obsidian": [
-        "compat/src/index.ts"
+        "obsidian-compat/src/index.ts"
       ]
     }
   },
   "include": [
     "src/**/*.ts",
-    "compat/src/**/*.ts",
+    "obsidian-compat/src/**/*.ts",
     "tests/unit/**/*.ts",
     "tests/e2e/**/*.ts",
     "tests/screens/**/*.ts",
@@ -37,6 +37,6 @@
   "exclude": [
     "node_modules",
     "out",
-    "../obsidian-plugin/**/*.test.ts"
+    "../hud/**/*.test.ts"
   ]
 }

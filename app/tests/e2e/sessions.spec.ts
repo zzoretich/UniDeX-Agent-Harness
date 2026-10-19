@@ -12,7 +12,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ACCESS_LEVELS, CODEX_ACCESS_NOTE, accessHostLine } from "../../../obsidian-plugin/src/data/agentSessions";
+import { ACCESS_LEVELS, CODEX_ACCESS_NOTE, accessHostLine } from "../../../hud/src/data/agentSessions";
 import { FX, USER_DATA, content, expectNoErrors, openTab, providerState, rail, useApp } from "./harness";
 
 // ── the host stand-ins ───────────────────────────────────────────────

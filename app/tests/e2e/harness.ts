@@ -19,8 +19,8 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 
 export const REPO = path.resolve(__dirname, "..", "..");
-/** The HUD's version as the app reads it (boot.ts: ../obsidian-plugin/package.json), so a version bump needs no test edit. */
-export const HUD_VERSION = (JSON.parse(fs.readFileSync(path.join(REPO, "..", "obsidian-plugin", "package.json"), "utf8")) as { version: string }).version;
+/** The HUD's version as the app reads it (boot.ts: ../hud/package.json), so a version bump needs no test edit. */
+export const HUD_VERSION = (JSON.parse(fs.readFileSync(path.join(REPO, "..", "hud", "package.json"), "utf8")) as { version: string }).version;
 const ROOT = process.env.AOS_E2E_FIXTURE ? path.resolve(process.env.AOS_E2E_FIXTURE) : path.join(REPO, "tests", ".fixture");
 
 export const FX = {
@@ -276,14 +276,14 @@ export interface LaunchOptions {
   launch?: boolean;
 }
 
-/** A vault path's key in tour.launched: FNV-1a's 32 bits in hex, as obsidian-plugin/src/tour/launch.ts vaultKey has it. */
+/** A vault path's key in tour.launched: FNV-1a's 32 bits in hex, as hud/src/tour/launch.ts vaultKey has it. */
 export function vaultKey(vault: string): string {
   let h = 0x811c9dc5;
   for (const ch of Buffer.from(vault, "utf8")) { h ^= ch; h = Math.imul(h, 0x01000193) >>> 0; }
   return h.toString(16).padStart(8, "0");
 }
 
-/** The launch sequence's dialogs as tour.launched names them (obsidian-plugin/src/tour/launch.ts): the fixture vault's
+/** The launch sequence's dialogs as tour.launched names them (hud/src/tour/launch.ts): the fixture vault's
  *  Go-local card and Import sheet, and this version's What's new card. */
 export const LAUNCHED = [`go-local@${vaultKey(FX.vault)}`, `import@${vaultKey(FX.vault)}`, `whats-new@${HUD_VERSION}`];
 
@@ -299,9 +299,9 @@ export function markNoted(vault: string | null): void {
   fs.writeFileSync(file, `${JSON.stringify({ vaults: { [path.resolve(vault)]: { firstAt: at, notedAt: at } } }, null, 2)}\n`);
 }
 
-/** The tour's chapters, as the HUD ships them (obsidian-plugin/src/tour/steps.json). */
+/** The tour's chapters, as the HUD ships them (hud/src/tour/steps.json). */
 export interface TourBookFile { core: string; chapters: Array<{ id: string; title: string; tab?: string; mode?: string; when?: string; steps: Array<{ id: string; anchor: string; advance: string; when?: string; tab?: string }> }> }
-export const TOUR_BOOK = JSON.parse(fs.readFileSync(path.join(REPO, "..", "obsidian-plugin", "src", "tour", "steps.json"), "utf8")) as TourBookFile;
+export const TOUR_BOOK = JSON.parse(fs.readFileSync(path.join(REPO, "..", "hud", "src", "tour", "steps.json"), "utf8")) as TourBookFile;
 /** The HUD's settings file in the app's data folder (src/main/services/fs.ts loadPluginData). */
 export const HUD_SETTINGS = path.join(USER_DATA, "plugins", "agentic-os.json");
 

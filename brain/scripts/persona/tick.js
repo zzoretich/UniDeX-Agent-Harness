@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * tick.js — the hourly tick (docs/superpowers/specs/2026-09-22-persona-tick-design.md; local-first A5). Since 2.0 the
+ * tick.js — the hourly tick (docs/design/specs/2026-09-22-persona-tick-design.md; local-first A5). Since 2.0 the
  * hourly routine is this script's local triage, and the Chief of Staff's model runs only when it is worth waking:
  *
  *   --triage   (the `tick` routine, kind command, every hour) records the recheck confirmations, then compares the change

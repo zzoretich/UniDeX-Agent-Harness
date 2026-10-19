@@ -1,12 +1,12 @@
 // Page entry: builds the Obsidian-compatible App over the vault, then constructs and loads the real Workbench plugin
-// from ../obsidian-plugin, exactly as Obsidian would. The page is sandboxed with no Node (phase 4): it reaches main only
+// from ../hud, exactly as Obsidian would. The page is sandboxed with no Node (phase 4): it reaches main only
 // through window.aos (src/preload), and the HUD's own I/O goes through the bridge host installed here before the plugin
 // loads. Main feeds it vault changes, menu commands and agenticos:// links.
 
 import { App, Notice, guardState, setBridge, setMarkdownHost, setWriteGuard, type PluginManifest } from "obsidian";
 import AgenticOSPlugin from "@workbench/hud";
 import { version as hudVersion } from "@workbench/hud-package";
-import { setHudHost } from "../../../obsidian-plugin/src/host";
+import { setHudHost } from "../../../hud/src/host";
 import { HOST_COMMANDS, type AosBridge, type ProtocolRequest, type ReadyInfo, type WriteSource } from "../shared/ipc";
 import { AppSettingTab } from "./appSettingTab";
 import { createBridgeHost } from "./bridgeHost";

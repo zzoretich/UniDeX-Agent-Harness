@@ -1,5 +1,5 @@
-// Tripwire: fails when the Workbench HUD (../obsidian-plugin) imports a name from "obsidian", calls one of Obsidian's
-// DOM helpers, or names an icon that compat does not provide. Run it after every change to obsidian-plugin/.
+// Tripwire: fails when the Workbench HUD (../hud) imports a name from "obsidian", calls one of Obsidian's
+// DOM helpers, or names an icon that compat does not provide. Run it after every change to hud/.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -7,8 +7,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const hud = path.join(root, "../obsidian-plugin");
-const compat = path.join(root, "compat/src");
+const hud = path.join(root, "../hud");
+const compat = path.join(root, "obsidian-compat/src");
 
 // Obsidian's DOM helpers whose names cannot be confused with Array/Events/String methods.
 const OBSIDIAN_DOM_HELPERS = [

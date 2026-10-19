@@ -32,7 +32,7 @@ jobs:
       # (the workspaces' own test scripts preload it too).
       - run: node --require ./tools/test-env.js --test tools/*.test.js cli/*.test.js
       - run: npm test -w brain/scripts
-      - run: npm test -w obsidian-plugin
+      - run: npm test -w hud
       - run: cd extras/cost && python3 -m unittest -v
   lint:
     runs-on: ubuntu-latest
@@ -99,7 +99,7 @@ jobs:
         run: sh cli/rehearsal/codex-host.sh
   app:
     # The desktop app (app/, with its own lockfile, so the jobs above never install Electron): typecheck, unit tests,
-    # the compat tripwire against obsidian-plugin/, then the build and the Playwright _electron suite over a synthetic
+    # the compat tripwire against hud/, then the build and the Playwright _electron suite over a synthetic
     # fixture vault. macOS only, like the app.
     runs-on: macos-latest
     timeout-minutes: 30
@@ -116,7 +116,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:unit
-      - name: compat tripwire (every Obsidian API, DOM helper and icon the HUD uses exists in app/compat)
+      - name: compat tripwire (every Obsidian API, DOM helper and icon the HUD uses exists in app/obsidian-compat)
         run: npm run check:compat
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

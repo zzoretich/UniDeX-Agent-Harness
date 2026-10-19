@@ -47,7 +47,7 @@ function parseFrontmatter(text) {
 }
 
 /** A `workspace:` value as a workspace name (spaces-redesign D27), as the Workbench reads a memory note's: quotes, a
- *  `[[link]]` and a leading `workspaces/` stripped; null when empty. Mirrored by obsidian-plugin memories.ts workspaceKey. */
+ *  `[[link]]` and a leading `workspaces/` stripped; null when empty. Mirrored by the HUD's memories.ts workspaceKey. */
 function workspaceKey(raw) {
   if (raw == null) return null;
   let v = String(raw).trim();

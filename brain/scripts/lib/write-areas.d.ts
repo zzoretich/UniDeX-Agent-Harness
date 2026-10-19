@@ -1,4 +1,4 @@
-// Types for write-areas.js, which the Workbench's Routines editor (obsidian-plugin/src/data/routines.ts) imports as it is:
+// Types for write-areas.js, which the Workbench's Routines editor (hud/src/data/routines.ts) imports as it is:
 // the routine write rule its runners enforce. Keep in step with the module's exports.
 export declare const GUARDED: readonly string[];
 export declare const LEDGER: string;

@@ -18,7 +18,7 @@ import * as path from "node:path";
 import {
   FX, badge, closeNotes, command, content, expected, guardWrites, notePath, openTab, rail, readVaultJson, useApp,
 } from "./harness";
-import { BRAIN_OFF_TEXT, batchMeta, batchWhen, brainMdLine, defaultMarkBefore, shortDay } from "../../../obsidian-plugin/src/data/brainModel";
+import { BRAIN_OFF_TEXT, batchMeta, batchWhen, brainMdLine, defaultMarkBefore, shortDay } from "../../../hud/src/data/brainModel";
 
 const app = useApp();
 const C = () => content(app().win);

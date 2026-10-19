@@ -7,7 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { routineFromFile, routineToFile, type Routine, type RoutinesState } from "../../../obsidian-plugin/src/data/routines";
+import { routineFromFile, routineToFile, type Routine, type RoutinesState } from "../../../hud/src/data/routines";
 import { FX, content, drawer, guardWrites, openTab, readVaultJson, useApp } from "./harness";
 
 const app = useApp({ env: { AOS_APP_WRITE: "routines" } });

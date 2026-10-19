@@ -19,8 +19,8 @@ import { promisify } from "node:util";
 import {
   FX, appEnv, chatReply, claudeCalls, closeNotes, content, expected, guardWrites, installChatStubs, openTab, providerState, readVaultJson, useApp,
 } from "./harness";
-import { shortDay, usdText } from "../../../obsidian-plugin/src/data/brainModel";
-import { scopePaths } from "../../../obsidian-plugin/src/data/brainSweep";
+import { shortDay, usdText } from "../../../hud/src/data/brainModel";
+import { scopePaths } from "../../../hud/src/data/brainSweep";
 
 const app = useApp({ env: { AOS_APP_WRITE: "brain" } });
 const C = () => content(app().win);

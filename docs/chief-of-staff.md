@@ -151,12 +151,12 @@ journaled FAILED.
 ### What a duty may write
 
 A duty is steered by text it did not write (commit subjects, correction quotes, journal lines), so the runner limits
-what it can write, on both hosts (`docs/superpowers/specs/2026-09-23-duty-write-scope-design.md`):
+what it can write, on both hosts (`docs/design/specs/2026-09-23-duty-write-scope-design.md`):
 
 - **The write scope**: `persona/journal/`, `persona/STATE.md`, `persona/proposals/`, `persona/PLAYBOOK.md`,
   `brain/reflections/`, `brain/_index/sitrep.md` and today's daily-note folder; for `reflect` and `reflect-daily` also
   `brain/memory/feedback/` and `MEMORY.md`, so they can promote a repeated correction
-  (`docs/superpowers/specs/2026-09-28-reflect-memory-writes-design.md`); plus the routine's `writes:` entries.
+  (`docs/design/specs/2026-09-28-reflect-memory-writes-design.md`); plus the routine's `writes:` entries.
   An entry that is the vault, sits in or holds a guarded or executable area (`persona/IDENTITY.md`, `duties/`,
   `routines/`, `autoapply.json`, `flag-closer/`, `repos.json`, `ledger.jsonl`, `brain/scripts/`, `brain/routines/`,
   `workspaces/`) or has a dot-segment is refused and logged.

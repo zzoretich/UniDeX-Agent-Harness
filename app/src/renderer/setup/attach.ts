@@ -1,5 +1,5 @@
 // Attach mode (phase 5, I5): an existing install opens straight into the Workbench. What opens on its own at launch is
-// the HUD's launch sequence (tour C11, obsidian-plugin/src/ui/launchSequence.ts), one dialog at a time: this app's
+// the HUD's launch sequence (tour C11, hud/src/ui/launchSequence.ts), one dialog at a time: this app's
 // runtime update when the vault's runtime is older than the one the app carries (the dialog below, which runs
 // `aos upgrade` from it with its output shown), then Go local and Import while that upgrade left them pending, then the
 // welcome tour (a vault the wizard just installed) or What's new, then Getting started. The runtime update is never run

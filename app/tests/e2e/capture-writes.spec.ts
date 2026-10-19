@@ -6,10 +6,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { appendUnderHeading } from "../../../obsidian-plugin/src/data/mdSections";
-import { addPatternIndexEntry, appendPattern, newPatternFile } from "../../../obsidian-plugin/src/data/patternNotes";
-import { appendRemember } from "../../../obsidian-plugin/src/data/sessionNotes";
-import { localDay } from "../../../obsidian-plugin/src/data/todos";
+import { appendUnderHeading } from "../../../hud/src/data/mdSections";
+import { addPatternIndexEntry, appendPattern, newPatternFile } from "../../../hud/src/data/patternNotes";
+import { appendRemember } from "../../../hud/src/data/sessionNotes";
+import { localDay } from "../../../hud/src/data/todos";
 import { FX, command, content, guardWrites, openTab, useApp } from "./harness";
 
 const app = useApp({ env: { AOS_APP_WRITE: "capture" } });

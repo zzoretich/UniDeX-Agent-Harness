@@ -5,7 +5,7 @@
 This skill is adapted from the **claudex-route** skill of claudex-loop by Chase AI,
 <https://github.com/chaseai-yt/claudex-loop>, at commit `8cf5e2c` (v2.1.0), used under the MIT License.
 
-What changed in the adaptation (design: `docs/superpowers/specs/2026-09-23-cross-review-design.md`, D12 and D13): the
+What changed in the adaptation (design: `docs/design/specs/2026-09-23-cross-review-design.md`, D12 and D13): the
 handoff runs through `aos cross-review handoff` (read-only by default, an unsaved child session with the AgenticOS
 hooks off, the `crossReview` budget and spend ledger) instead of a CLI command typed by the model; the candidate table
 is dated and starts from the CLIs `preflight` reports; the loop it recommends is `/cross-review`.

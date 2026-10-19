@@ -8,7 +8,7 @@ import type { ThemeSource } from "../shared/ipc";
 
 export const THEME_SOURCES: readonly ThemeSource[] = ["system", "light", "dark"];
 
-/** A window's background before the page paints: the tokens' --udx-bg (obsidian-plugin/styles.css). */
+/** A window's background before the page paints: the tokens' --udx-bg (hud/styles.css). */
 export const WINDOW_BG = { light: "#ffffff", dark: "#0b0b0b" } as const;
 
 function file(userData: string): string { return path.join(userData, "app-settings.json"); }

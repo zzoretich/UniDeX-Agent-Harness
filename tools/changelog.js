@@ -16,7 +16,7 @@
  * The tour-marker rule (tour C3, C13), so the tour and What's new keep up with what ships. Every bullet under
  * [Unreleased]'s `### Added` and `### Changed` carries exactly one marker, best at its end:
  *   <!-- tour: <id>[, <id>…] -->    the tour step or chapter that shows the change. An id is a chapter id (`settings`)
- *                                   or `<chapter>.<step>` (`settings.local`) in obsidian-plugin/src/tour/steps.json:
+ *                                   or `<chapter>.<step>` (`settings.local`) in hud/src/tour/steps.json:
  *                                   the same refs a What's new entry's "Show me" takes (steps.ts allRefs). Several ids,
  *                                   comma-separated, when the change shows in more than one place.
  *   <!-- no-tour: <reason> -->      why nothing in the app shows it (a CLI verb, the setup wizard, background work);
@@ -33,7 +33,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 const LINK = /^\[[^\]]+\]:\s*\S/;
-const STEPS = 'obsidian-plugin/src/tour/steps.json';
+const STEPS = 'hud/src/tour/steps.json';
 /** A tour marker: `<!-- tour: ids -->` or `<!-- no-tour: reason -->`, spaces optional. */
 const MARKER = /<!--\s*(tour|no-tour)\s*:([\s\S]*?)-->/g;
 /** The subsections whose every bullet needs a marker (tour C3). */

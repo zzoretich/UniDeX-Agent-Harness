@@ -11,7 +11,7 @@ import type { HostId, ImportRunRequest, InstallRequest, PersonaAnswers, SetupChe
 import { foldPath } from "../../shared/surfaces";
 import { sameOnDisk } from "./identity";
 import type { ToolchainJob } from "../setup/toolchain";
-import { importArgs } from "../../../../obsidian-plugin/src/data/importModel";
+import { importArgs } from "../../../../hud/src/data/importModel";
 
 export type Fix =
   /** Run by /bin/sh -c in the wizard's terminal, with the login PATH (setup/env.ts). */
@@ -96,7 +96,7 @@ export function zprofilePath(home: string, env: NodeJS.ProcessEnv): string {
 
 /**
  * "Bring in your history" (install-import B13): `aos import`'s arguments from the payload's CLI, as the HUD builds them
- * (obsidian-plugin/src/data/importModel.ts importArgs, the one argv the import surface admits too), with only the
+ * (hud/src/data/importModel.ts importArgs, the one argv the import surface admits too), with only the
  * proposals main's own last scan listed. Throws on a request the runtime would refuse.
  */
 export function importJobArgs(cli: string, req: ImportRunRequest, scanned: ReadonlySet<string>): string[] {

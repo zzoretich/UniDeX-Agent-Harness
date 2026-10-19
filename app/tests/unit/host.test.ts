@@ -8,11 +8,11 @@ import { loadWriteSettings } from "../../src/main/write-settings";
 import { SURFACES } from "../../src/main/policy/write-policy";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isIgnored } from "../../compat/src/ignore";
-import { fuzzyScore } from "../../compat/src/modal";
-import { normalizePath } from "../../compat/src/files";
-import { blockAtLine, opensOutside, renderHtml } from "../../compat/src/markdown";
-import { canRun, canSave, canWrite, setWriteGuard } from "../../compat/src/guard";
+import { isIgnored } from "../../obsidian-compat/src/ignore";
+import { fuzzyScore } from "../../obsidian-compat/src/modal";
+import { normalizePath } from "../../obsidian-compat/src/files";
+import { blockAtLine, opensOutside, renderHtml } from "../../obsidian-compat/src/markdown";
+import { canRun, canSave, canWrite, setWriteGuard } from "../../obsidian-compat/src/guard";
 import { PagePolicy } from "../../src/renderer/pagePolicy";
 
 test("agenticos:// links parse into an action and safe params", () => {

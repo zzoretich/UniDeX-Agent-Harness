@@ -1,6 +1,6 @@
 'use strict';
 // lib/pulse-facts.js (spec 2026-10-08-pulse-cockpit-design P8, P9). The fixture vault is shared with the Workbench's
-// obsidian-plugin/src/data/pulseFacts.test.ts, which checks the TypeScript twin gives the same facts.
+// hud/src/data/pulseFacts.test.ts, which checks the TypeScript twin gives the same facts.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

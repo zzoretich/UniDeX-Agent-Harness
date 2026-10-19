@@ -13,8 +13,8 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as path from "node:path";
-import { buildAskArgs } from "../../../obsidian-plugin/src/data/askSpawner";
-import { buildClaudeArgs, composePrompt, SPEND_LEDGER_PATH } from "../../../obsidian-plugin/src/data/claudeAsk";
+import { buildAskArgs } from "../../../hud/src/data/askSpawner";
+import { buildClaudeArgs, composePrompt, SPEND_LEDGER_PATH } from "../../../hud/src/data/claudeAsk";
 import {
   CLAUDE_ANSWER, CODEX_ANSWER, FX, USER_DATA, appEnv, chatReply, claudeCalls, codexCalls, content, expectNoErrors, guardWrites, installChatStubs,
   openTab, providerState, useApp,

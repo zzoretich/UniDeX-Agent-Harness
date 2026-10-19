@@ -12,13 +12,13 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const files = process.argv.slice(2).map((f) => path.resolve(f));
 if (!files.length) {
-  process.stderr.write('usage: npm run test:one -- <test file>… (brain/scripts/test, obsidian-plugin, cli or tools)\n');
+  process.stderr.write('usage: npm run test:one -- <test file>… (brain/scripts/test, hud, cli or tools)\n');
   process.exit(2);
 }
 const under = (dir) => (f) => f.startsWith(path.join(ROOT, dir) + path.sep);
 const suites = [
   { match: under('brain/scripts'), cwd: path.join(ROOT, 'brain', 'scripts'), args: [], env: { NODE_OPTIONS: `--require=${path.join(ROOT, 'brain', 'scripts', 'test', 'setup.js')}` } },
-  { match: under('obsidian-plugin'), cwd: path.join(ROOT, 'obsidian-plugin'), args: ['--require', path.join(ROOT, 'tools', 'test-env.js'), '--import', 'tsx'], env: {} },
+  { match: under('hud'), cwd: path.join(ROOT, 'hud'), args: ['--require', path.join(ROOT, 'tools', 'test-env.js'), '--import', 'tsx'], env: {} },
   { match: () => true, cwd: ROOT, args: ['--require', path.join(ROOT, 'tools', 'test-env.js')], env: {} },
 ];
 let status = 0;

@@ -1,7 +1,7 @@
 'use strict';
 /**
  * markdown-html.js — a small, dependency-free Markdown → HTML converter for the pages the runtime renders from vault
- * files (docs/superpowers/specs/2026-09-22-proposal-pages-design.md D5). The subset: ATX headings, paragraphs, `-` `*`
+ * files (docs/design/specs/2026-09-22-proposal-pages-design.md D5). The subset: ATX headings, paragraphs, `-` `*`
  * `+` and `1.` lists nested by indentation, `**bold**`, `*em*`, `` `code` ``, fenced blocks (a `diff` fence colours its
  * `+` / `-` / `@@` lines), GFM tables, `>` quotes, `---` rules and `[text](url)` links.
  *

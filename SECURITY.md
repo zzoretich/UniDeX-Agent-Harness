@@ -13,7 +13,7 @@ permission settings. What follows is how the app keeps what it displays from bec
 
 The Workbench shows text it did not write: notes, proposals, notifications whose stories come from the web, and agents'
 output. The design treats the page that shows them as untrusted (design D7,
-`docs/superpowers/specs/2026-10-05-workbench-app-design.md`; plan `docs/superpowers/plans/2026-10-05-sandbox-renderer.md`).
+`docs/design/specs/2026-10-05-workbench-app-design.md`; plan `docs/design/plans/2026-10-05-sandbox-renderer.md`).
 
 - **Nothing in the page can run code it was handed.** The page loads only the app's own files from `app://hud`, under a
   Content Security Policy that allows only those scripts (`script-src 'self'`, no inline script, no `eval`). Markdown is
@@ -102,7 +102,7 @@ output. The design treats the page that shows them as untrusted (design D7,
     vault is attached: main runs the bundled CLI's `aos import --dry-run --json` (it writes nothing; stopped after 3
     minutes) and hands the report to the page, then `aos import` with the hosts (`claude`, `codex`) and kinds the page
     ticked and only those workspace proposals the scan listed (any other id is dropped); the argv is the one
-    `obsidian-plugin/src/data/importModel.ts` builds and the `import` surface admits. An earlier install's host that
+    `hud/src/data/importModel.ts` builds and the `import` surface admits. An earlier install's host that
     the user's choice would drop (inspection F7: `aos init` refuses such an install, never unwiring a host) is taken
     out only on the page's ask, before the install, with the bundled CLI's `aos uninstall --host <claude|codex>`
     (`setup:unwire`), and main checks the premise itself: that host is on in `agenticos.json`, the vault that file

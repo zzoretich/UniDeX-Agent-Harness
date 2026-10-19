@@ -16,11 +16,11 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const r = (...p) => path.join(root, ...p);
 const out = r("out");
-const hud = r("../obsidian-plugin");
+const hud = r("../hud");
 const testBuild = process.env.AOS_APP_TEST_BUILD === "1";
 
 const redirects = {
-  obsidian: r("compat/src/index.ts"),
+  obsidian: r("obsidian-compat/src/index.ts"),
   path: r("src/renderer/shims/path.ts"),
   "node:path": r("src/renderer/shims/path.ts"),
   // The HUD, by name (tsc sees typed stubs for these; see src/types/workbench-hud.d.ts).
@@ -42,12 +42,12 @@ const pageResolve = {
     build.onResolve({ filter: /.*/ }, (args) => {
       if (!NODE_ONLY.has(args.path)) return undefined;
       const from = path.relative(path.dirname(root), args.importer);
-      return { errors: [{ text: `${from} imports "${args.path}": the page has no Node; go through the HudHost (obsidian-plugin/src/host.ts) or the bridge (window.aos)` }] };
+      return { errors: [{ text: `${from} imports "${args.path}": the page has no Node; go through the HudHost (hud/src/host.ts) or the bridge (window.aos)` }] };
     });
   },
 };
 
-// The HUD lives beside the app (../obsidian-plugin), so its imports (xterm and its addons) would resolve from the repo
+// The HUD lives beside the app (../hud), so its imports (xterm and its addons) would resolve from the repo
 // root's node_modules, which only a root install has. They resolve from the app's own, as they did when the HUD was
 // vendored inside the app.
 const nodePaths = [r("node_modules")];
@@ -109,7 +109,7 @@ for (const scale of ["", "@2x"]) cpSync(r("build", `trayTemplate${scale}.png`), 
 mkdirSync(path.join(out, "renderer"), { recursive: true });
 cpSync(r("src/renderer/index.html"), path.join(out, "renderer/index.html"));
 cpSync(r("src/renderer/host.css"), path.join(out, "renderer/host.css"));
-cpSync(r("compat/src/base.css"), path.join(out, "renderer/base.css"));
+cpSync(r("obsidian-compat/src/base.css"), path.join(out, "renderer/base.css"));
 cpSync(path.join(hud, "styles.css"), path.join(out, "renderer/hud.css"));
 // The two typefaces (UniDeX D9), bundled because the page's CSP takes fonts only from the app: Inter and JetBrains Mono,
 // variable weight, Latin and Latin Extended (base.css's @font-face rules), each with its OFL licence.

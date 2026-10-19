@@ -1,6 +1,6 @@
 # The signed, notarized app (spec 2026-10-05-workbench-app-design D9). `npm run dist` builds it into dist/,
 # `npm run dist:verify` checks it, `npm run smoke:packaged` runs the smoke build, and `npm run release:app` builds, signs,
-# notarizes and uploads a release (phase 5, docs/superpowers/plans/2026-10-05-install-and-update.md).
+# notarizes and uploads a release (phase 5, docs/design/plans/2026-10-05-install-and-update.md).
 appId: com.zzoretich.agenticos-workbench
 productName: UniDeX
 artifactName: AgenticOS-Workbench-${version}-${arch}.${ext}

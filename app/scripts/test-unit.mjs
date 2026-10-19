@@ -22,7 +22,7 @@ await esbuild.build({
   platform: "node",
   format: "cjs",
   target: "node22",
-  // HUD modules imported from ../obsidian-plugin resolve their packages from the app's node_modules (scripts/build.mjs).
+  // HUD modules imported from ../hud resolve their packages from the app's node_modules (scripts/build.mjs).
   nodePaths: [path.join(root, "node_modules")],
   plugins: [{
     name: "electron-stub",

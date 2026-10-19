@@ -2,7 +2,7 @@
 'use strict';
 /**
  * duty-guard.js — what a duty may write, and a check that it wrote nothing else it could reach
- * (docs/superpowers/specs/2026-09-23-duty-write-scope-design.md). run-duty.sh calls it around every duty, on both hosts.
+ * (docs/design/specs/2026-09-23-duty-write-scope-design.md). run-duty.sh calls it around every duty, on both hosts.
  *
  *   node duty-guard.js scope --host claude [--duty <slug>] [--tools <list>] [--writes <list>]
  *        two lines: the --allowedTools value (D1: bare Write/Edit and every Edit(…)/Write(…) rule dropped, one absolute

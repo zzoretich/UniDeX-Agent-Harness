@@ -7,8 +7,8 @@ const path = require('path');
 const N = require('../lib/notifications.js');
 const { main } = require('../notify.js');
 
-// The shared on-disk contract (spec D7): obsidian-plugin/src/data/notifications.test.ts parses the same files.
-const FIXTURES = path.join(__dirname, '..', '..', '..', 'obsidian-plugin', 'src', 'data', 'fixtures', 'notifications-vault');
+// The shared on-disk contract (spec D7): hud/src/data/notifications.test.ts parses the same files.
+const FIXTURES = path.join(__dirname, '..', '..', '..', 'hud', 'src', 'data', 'fixtures', 'notifications-vault');
 const NOW = new Date('2026-09-24T11:00:00Z');
 const MIN = 60e3;
 

@@ -21,7 +21,7 @@ const TABLE = {
     { file: 'brain/scripts/lib/drafts.js', from: /awaiting [A-Z][a-z]+'s batch approval/, to: "awaiting the owner's batch approval" },
     { file: ['plugin/skills/demo-skill/scripts/a.js', 'plugin/skills/demo-skill/scripts/b.js'], from: /Demo Review/g, to: 'Persona Review' },
     { file: 'docs/overview.md', from: 'Casey', to: 'the owner' },
-    { file: 'obsidian-plugin/styles.css', from: 'never exported', to: 'x' },
+    { file: 'hud/styles.css', from: 'never exported', to: 'x' },
   ],
 };
 const EXPORT = path.join(__dirname, 'export-from-vault.js');
@@ -77,8 +77,8 @@ test('an existing, different destination file is kept unless force', () => {
 
 test('a scrub whose file is never exported is reported unmatched by plan()', () => {
   const r = plan({ source: fixtureVault(), dest: tmpDest(), force: false, table: TABLE });
-  assert.ok(r.unmatched.some(u => u.file === 'obsidian-plugin/styles.css'));
-  assert.ok(!r.copy.some(c => c.file === 'obsidian-plugin/styles.css'));
+  assert.ok(r.unmatched.some(u => u.file === 'hud/styles.css'));
+  assert.ok(!r.copy.some(c => c.file === 'hud/styles.css'));
 });
 
 test('applyScrubs records unmatched scrubs so drift is visible', () => {

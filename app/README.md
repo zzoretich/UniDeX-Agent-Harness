@@ -1,11 +1,11 @@
 # UniDeX — the app
 
-The Workbench as a macOS app. The HUD in `../obsidian-plugin` runs in its own Electron window, compiled unchanged
-against an Obsidian compatibility package (`compat/`), so the same source is the Workbench everywhere. The runtime,
+The Workbench as a macOS app. The HUD in `../hud` runs in its own Electron window, compiled unchanged
+against an Obsidian compatibility package (`obsidian-compat/`), so the same source is the Workbench everywhere. The runtime,
 the Claude Code and Codex plugins, the routines and the vault format are the ones in this repo.
 
-Design and roadmap: `docs/superpowers/specs/2026-10-05-workbench-app-design.md` and
-`docs/superpowers/plans/2026-10-05-workbench-app.md`. macOS only, built for Apple silicon.
+Design and roadmap: `docs/design/specs/2026-10-05-workbench-app-design.md` and
+`docs/design/plans/2026-10-05-workbench-app.md`. macOS only, built for Apple silicon.
 
 To use it, download `AgenticOS-Workbench-<version>-arm64.dmg` from the
 [latest release](https://github.com/zzoretich/UniDeX-Agent-Harness/releases/latest). This file is for running, testing
@@ -26,8 +26,8 @@ B13), then lists what is left step by step (the `CLAUDE.md` line as a diff, Code
 host to add later, the line that puts `aos` on the PATH) and opens the Workbench, where the welcome tour starts. With an
 install it opens the Workbench (attach mode) and hands over to the HUD's launch sequence (tour C11): `aos upgrade`
 offered when it carries a newer runtime than the vault has, then the Go-local card and What's new, one at a time, each
-once. Plans: `docs/superpowers/plans/2026-10-05-install-and-update.md`,
-`docs/superpowers/specs/2026-10-14-install-and-import-design.md`.
+once. Plans: `docs/design/plans/2026-10-05-install-and-update.md`,
+`docs/design/specs/2026-10-14-install-and-import-design.md`.
 
 The pins are refreshed by hand before a release: each tool's `from` says where its version and SHA-256 come from (the
 maker's checksum file), and `teamId` is what `codesign -dv` reports on the download. `tests/unit/toolchain.test.ts`
@@ -75,7 +75,7 @@ npm run dist:test && npm run smoke:packaged                               # the 
 ## Layout
 
 ```
-compat/          the `obsidian` module as the app provides it (the HUD imports it by that name)
+obsidian-compat/ the `obsidian` module as the app provides it (the HUD imports it by that name)
 src/main/        Electron main: window, menubar item, app menu, agenticos:// links, app://hud, vault watcher
 src/main/ipc/    the bridge's handlers: sender check, zod schemas, a Result for every call
 src/main/policy/ what the page may read, write, run and open (read scope, write policy, programs, shell, debug switches, setup)
@@ -98,7 +98,7 @@ tests/           unit tests, and the end-to-end suite with its coverage map (tes
 | `npm run build` | bundle main, the preload and the page into `out/` (a Node import from the page fails the build) |
 | `npm run typecheck` | strict `tsc` over the app and the compat package |
 | `npm run test:unit` | unit tests (the policies and services behind the bridge, the path shim, links, tray, menu, paths) |
-| `npm run check:compat` | fail if the HUD uses an Obsidian API, DOM helper or icon `compat/` lacks |
+| `npm run check:compat` | fail if the HUD uses an Obsidian API, DOM helper or icon `obsidian-compat/` lacks |
 | `npm run test:e2e` | build, generate the synthetic fixture vault, run the Playwright `_electron` suite |
 | `npm run fixture` | generate the fixture vault alone (`tests/.fixture/`) |
 | `npm run screens` | the README's screenshots: the app on a synthetic demo vault (the e2e fixture, its test-only error cases taken out), into `../docs/assets/screens/` |

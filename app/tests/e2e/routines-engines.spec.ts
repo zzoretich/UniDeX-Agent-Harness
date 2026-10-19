@@ -11,8 +11,8 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FX, appEnv, content, drawer, expectNoErrors, guardWrites, openTab, readVaultJson, useApp } from "./harness";
-import { routineToFile } from "../../../obsidian-plugin/src/data/routines";
-import { CLAUDE_MODELS, SMALL_MODEL_NOTE, WRITES_NOTE } from "../../../obsidian-plugin/src/data/routineEngines";
+import { routineToFile } from "../../../hud/src/data/routines";
+import { CLAUDE_MODELS, SMALL_MODEL_NOTE, WRITES_NOTE } from "../../../hud/src/data/routineEngines";
 
 const C = (win: Page) => content(win);
 const field = (win: Page, label: RegExp) => drawer(win).locator(".aos-rt-field", { hasText: label });

@@ -7,7 +7,7 @@
  *   update-check.json   state (schema 1)
  *   update-line.txt     pre-rendered status line fragment: zero bytes, or one line plus "\n"
  *
- * Design: docs/superpowers/specs/2026-09-15-update-notification-design.md
+ * Design: docs/design/specs/2026-09-15-update-notification-design.md
  * Contract: every path exits 0 with empty stdout — a hook must never fail a Claude Code session.
  * Zero dependencies; the HTTP getter and the clock are injectable (the `getFn` seam).
  */

@@ -1,7 +1,7 @@
 'use strict';
 /**
  * recipe.js — the read-only grammar every proposal `recheck` recipe must pass before anything runs it
- * (docs/superpowers/specs/2026-09-23-recipe-guard-design.md D1). ledger.runRecipe() is the one place recipes are
+ * (docs/design/specs/2026-09-23-recipe-guard-design.md D1). ledger.runRecipe() is the one place recipes are
  * spawned (the tick's confirmations, the watchdog's verify, the flag-closer review), and it asks checkRecipe() first.
  *
  * A recipe is one or more pipelines joined by `&&` / `||`; a pipeline is simple commands joined by `|`, optionally led

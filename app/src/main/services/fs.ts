@@ -4,7 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isIgnoredName } from "../../../compat/src/ignore";
+import { isIgnoredName } from "../../../obsidian-compat/src/ignore";
 import type { DirEntryInfo, Result, StatInfo, WalkEntry, WriteVia } from "../../shared/ipc";
 import type { ReadScope } from "../policy/read-scope";
 import type { WritePolicy } from "../policy/write-policy";

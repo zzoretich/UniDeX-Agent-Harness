@@ -2,7 +2,7 @@
 'use strict';
 /**
  * recheck.js — deterministic re-verification of pending proposals and the auto-apply gate
- * (docs/superpowers/specs/2026-09-22-persona-earned-autonomy-design.md D1, D2). A proposal's `recheck` recipe re-runs the
+ * (docs/design/specs/2026-09-22-persona-earned-autonomy-design.md D1, D2). A proposal's `recheck` recipe re-runs the
  * ORIGINAL check that found the problem:
  *   exit 0                      => STILL-VALID  (the finding is still present; the proposal still applies)
  *   nonzero                     => STALE        (already fixed or the premises changed)

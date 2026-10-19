@@ -5,7 +5,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { TODO_TEMPLATE } from "../../../obsidian-plugin/src/data/todos";
+import { TODO_TEMPLATE } from "../../../hud/src/data/todos";
 import { FX, badge, closeNotes, content, day, expected, guardWrites, openTab, useApp } from "./harness";
 
 const app = useApp({ env: { AOS_APP_WRITE: "todo" } });

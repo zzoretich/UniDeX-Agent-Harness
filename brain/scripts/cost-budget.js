@@ -44,7 +44,7 @@ function readConfig() {
   try { c = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); }
   catch { c = { month: '', anchorUsd: 0, anchorAt: '', calibration: 1, note: '' }; }
   // execution amendment 2026-09-15 (A35): fill `budget` from config only when that gives a positive number — main() persists
-  // this object, and a stored `budget: 0` would make the HUD's `config?.budget ?? monthlyBudget` (obsidian-plugin/src/data/cost.ts:149)
+  // this object, and a stored `budget: 0` would make the HUD's `config?.budget ?? monthlyBudget` (hud/src/data/cost.ts:149)
   // hide a monthlyBudget set later. With no budget anywhere the key stays absent; deriveState() falls back to defaultBudget().
   if (!(typeof c.budget === 'number' && c.budget > 0)) { const b = defaultBudget(); if (b > 0) c.budget = b; }
   return c;

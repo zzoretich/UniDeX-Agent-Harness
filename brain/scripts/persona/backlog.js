@@ -2,7 +2,7 @@
 'use strict';
 /**
  * backlog.js — the idea backlog: <vault>/persona/backlog.md, one Markdown section per accepted `workflow` or `product`
- * proposal (docs/superpowers/specs/2026-09-22-persona-reflect-daily-design.md D5). Written only through this script by
+ * proposal (docs/design/specs/2026-09-22-persona-reflect-daily-design.md D5). Written only through this script by
  * the persona-flag-closer review's Accept lane; the file is tracked, unlike STATE.md, so an accepted idea survives.
  *
  *   node backlog.js append <proposal-file> [--by <who>] [--root <vault>]
