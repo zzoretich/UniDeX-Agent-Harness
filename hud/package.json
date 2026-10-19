@@ -1,6 +1,6 @@
 {
   "name": "agentic-os",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "The Workbench HUD's source, which the AgenticOS Workbench app (app/) compiles",
   "private": true,
   "engines": {

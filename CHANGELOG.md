@@ -4,6 +4,13 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.1.1] — 2026-10-18
+
+### Changed
+- **The plugin listings describe UniDeX as it is now.** The Claude Code marketplace and the Codex plugin listing describe the Unified Agentic Development Harness instead of a second brain. <!-- no-tour: plugin listing text; nothing in the app changes -->
+- **The repository's folders say what they hold.** `obsidian-plugin/` is now `hud/` (the app's interface), `app/compat/` is `app/obsidian-compat/` and `docs/superpowers/` is `docs/design/`. Nothing changes for an install, and `aos upgrade` works as before. <!-- no-tour: repository layout only -->
+- **A shorter README and a CONTRIBUTING.md.** The README leads with the harness and a download button and folds the rest into six sections; the command reference, how it works and the screenshots moved into `docs/`, and working on UniDeX itself is in CONTRIBUTING.md. <!-- no-tour: documentation only -->
+
 ### Fixed
 - **The file preview in Spaces ▸ Files keeps your place when files come and go beside it.** A file made or removed in the workspace (an agent at work there, say) redrew the preview you were reading, which dropped a text selection and drew a Markdown file again. Now only what the preview shows redraws it: the file's description in the map, or the file itself being removed.
 
@@ -653,7 +660,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.1.1
 [2.1.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.1.0
 [2.0.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.0.0
 [1.9.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v1.9.0
