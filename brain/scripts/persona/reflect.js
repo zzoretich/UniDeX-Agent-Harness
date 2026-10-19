@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * reflect.js — the runner-side half of the nightly `reflect-daily` duty (docs/superpowers/specs/2026-09-22-persona-reflect-daily-design.md).
+ * reflect.js — the runner-side half of the nightly `reflect-daily` duty (docs/design/specs/2026-09-22-persona-reflect-daily-design.md).
  * The duty is a model run (persona/duties/reflect-daily.md through run-duty.sh, 0.50 USD); this script drains the
  * tick's queue deterministically and hands both reflects one evidence pack. run-duty.sh calls two verbs around the model:
  *

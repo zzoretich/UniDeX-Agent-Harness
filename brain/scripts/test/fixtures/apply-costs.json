@@ -1,5 +1,5 @@
 {
-  "about": "Shared cases for applyCosts: brain/scripts/lib/runs-log.js and obsidian-plugin/src/data/runs.ts must agree on every one (spec 2026-09-24-append-only-runs D3).",
+  "about": "Shared cases for applyCosts: brain/scripts/lib/runs-log.js and hud/src/data/runs.ts must agree on every one (spec 2026-09-24-append-only-runs D3).",
   "cases": [
     {
       "name": "one session run takes its session's cost record",

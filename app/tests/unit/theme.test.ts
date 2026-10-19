@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { THEMES } from "../../../obsidian-plugin/src/ui/tokens";
+import { THEMES } from "../../../hud/src/ui/tokens";
 import { ThemeSetArgs } from "../../src/main/ipc/schemas";
 import { appearanceItem } from "../../src/main/menu";
 import { WINDOW_BG, loadThemeSource, saveThemeSource, windowBackground } from "../../src/main/theme";

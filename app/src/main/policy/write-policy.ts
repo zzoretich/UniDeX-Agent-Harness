@@ -1,4 +1,4 @@
-// The write policy, enforced in the main process (phase 4, docs/superpowers/plans/2026-10-05-sandbox-renderer.md S3).
+// The write policy, enforced in the main process (phase 4, docs/design/plans/2026-10-05-sandbox-renderer.md S3).
 // The surface table and its matching live in ../../shared/surfaces.ts; this adds what only main may decide: which
 // absolute path is which vault path (the vault as configured and as the disk spells it), and which `node <script>` is
 // one of this vault's runtime scripts. Every write and spawn the page asks for over the bridge is checked here.

@@ -3,7 +3,7 @@
  * write-areas.js — where a routine may never write, and why: the one rule its runners enforce when it runs and its
  * editors check before it is saved. The runners are persona/duty-guard.js (a duty's write scope, spec
  * 2026-09-23-duty-write-scope D5/D6) and lib/local-agent.js (a prompt routine on the local engine, local-first A7); the
- * editors are lib/routines-store.js validate() and the Workbench's Routines editor, whose obsidian-plugin/src/data/
+ * editors are lib/routines-store.js validate() and the Workbench's Routines editor, whose hud/src/data/
  * routines.ts imports this file as it is. So it stays pure: no file system, nothing from Node but `path.posix` (the
  * app's page gives `path` its POSIX shim); write-areas.d.ts types it for the TypeScript that imports it.
  *

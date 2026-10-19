@@ -36,7 +36,7 @@ function vaultWith({ mems, graph, marker = null, out = 'brain/graphify-out', pre
   return { v, memories: ops.listMemories(v) };
 }
 
-// ── the shape: what obsidian-plugin/src/data/brainModel.ts parseBrainMap reads, checked field by field ──
+// ── the shape: what hud/src/data/brainModel.ts parseBrainMap reads, checked field by field ──
 
 const MEMORY_PATH_RE = /^brain\/memory\/(user|feedback|projects|reference)\/([a-z0-9][a-z0-9.-]{0,120})\.md$/;
 const isNum = (x) => typeof x === 'number' && Number.isFinite(x);

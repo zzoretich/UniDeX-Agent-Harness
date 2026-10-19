@@ -5,13 +5,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { SURFACES, SURFACE_IDS, WritePolicy, foldPath, globToRegExp, parseSurfaces } from "../../src/main/policy/write-policy";
-import { duplicatePath, foldPath as hudFoldPath, isProtected, movePlan, newFolderPath, renamePath } from "../../../obsidian-plugin/src/data/vaultFiles";
-import { indexFrom, parseNote, rewritePlan } from "../../../obsidian-plugin/src/data/vaultIndex";
-import { workspaceArgs } from "../../../obsidian-plugin/src/data/spacesModel";
-import { memoryArgs, recallArgs } from "../../../obsidian-plugin/src/data/brainModel";
-import { copyArgs } from "../../../obsidian-plugin/src/data/mcpServers";
-import { importArgs, IMPORT_KINDS, migrateImportArgs } from "../../../obsidian-plugin/src/data/importModel";
-import { migrateArgs } from "../../../obsidian-plugin/src/data/goLocal";
+import { duplicatePath, foldPath as hudFoldPath, isProtected, movePlan, newFolderPath, renamePath } from "../../../hud/src/data/vaultFiles";
+import { indexFrom, parseNote, rewritePlan } from "../../../hud/src/data/vaultIndex";
+import { workspaceArgs } from "../../../hud/src/data/spacesModel";
+import { memoryArgs, recallArgs } from "../../../hud/src/data/brainModel";
+import { copyArgs } from "../../../hud/src/data/mcpServers";
+import { importArgs, IMPORT_KINDS, migrateImportArgs } from "../../../hud/src/data/importModel";
+import { migrateArgs } from "../../../hud/src/data/goLocal";
 
 const VAULT = "/vaults/demo";
 const v = (rel: string) => `${VAULT}/${rel}`;
@@ -588,7 +588,7 @@ test("the Go local surface runs `aos migrate local-first` apply, decline and und
   for (const a of [["--apply"], ["--apply", "--chief"], ["--decline"], ["--undo"]]) {
     assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, "migrate", "local-first", ...a, "--json"]), true, a.join(" "));
   }
-  // What the Go-local card and Settings build (obsidian-plugin/src/data/goLocal.ts) is exactly what the rule admits.
+  // What the Go-local card and Settings build (hud/src/data/goLocal.ts) is exactly what the rule admits.
   for (const [action, chief] of [["apply", true], ["apply", false], ["decline", false], ["undo", false]] as const) {
     assert.equal(p.canSpawn(NODE, [`${S}/cli/aos.js`, ...migrateArgs(action, chief)]), true, `${action} ${chief}`);
   }
@@ -604,7 +604,7 @@ test("the Go local surface runs `aos migrate local-first` apply, decline and und
 test("the Go local surface also runs the Import sheet: its dry run, migrate import --apply [--accept], --decline (install-import B12)", () => {
   const p = new WritePolicy(VAULT, ["migrate"]);
   const run = (...a: string[]) => p.canSpawn(NODE, [`${S}/cli/aos.js`, ...a]);
-  // What the sheet builds (obsidian-plugin/src/data/importModel.ts) is exactly what the rules admit.
+  // What the sheet builds (hud/src/data/importModel.ts) is exactly what the rules admit.
   for (const a of [migrateImportArgs("apply"), migrateImportArgs("apply", ["~/code/harbor", "/opt/work/reef"]), migrateImportArgs("decline"),
     importArgs({ from: ["claude", "codex"], only: ["instructions", "memories", "projects", "mcp", "sessions"] }, { dryRun: true, json: true })]) {
     assert.equal(run(...a), true, a.join(" "));

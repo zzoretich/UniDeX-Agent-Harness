@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BRAND as HUD } from "../../../obsidian-plugin/src/brand";
+import { BRAND as HUD } from "../../../hud/src/brand";
 import { BRAND as APP } from "../../src/shared/brand";
 
 test("the app and the HUD name the product the same way", () => {

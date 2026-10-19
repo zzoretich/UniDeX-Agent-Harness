@@ -146,7 +146,7 @@ test('markerProblems: an unknown id fails, naming each unknown one; a checklist 
   const p = C.markerProblems(text, C.tourRefs(BOOK));
   assert.equal(p.length, 1);
   assert.match(p[0], /^CHANGELOG\.md:11: \[Unreleased\] ▸ Added "Two places\.": unknown tour id settings\.nope, first-session — /);
-  assert.match(p[0], /obsidian-plugin\/src\/tour\/steps\.json/);
+  assert.match(p[0], /hud\/src\/tour\/steps\.json/);
 });
 
 test('markerProblems: an empty reason, an empty id list, two markers or a stray comma fail', () => {
@@ -179,8 +179,8 @@ test('stripMarkers: the notes never show a marker; text and other comments stay'
 test('main check: the version\'s section and [Unreleased]\'s markers, all problems at once; notes strips markers', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'changelog-tour-'));
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '0.2.0' }));
-  fs.mkdirSync(path.join(root, 'obsidian-plugin/src/tour'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'obsidian-plugin/src/tour/steps.json'), JSON.stringify(BOOK));
+  fs.mkdirSync(path.join(root, 'hud/src/tour'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'hud/src/tour/steps.json'), JSON.stringify(BOOK));
   fs.writeFileSync(path.join(root, 'CHANGELOG.md'), MARKED);
   const out = []; const errs = [];
   const io = { root, log: (s) => out.push(s), err: (s) => errs.push(s) };
@@ -203,7 +203,7 @@ test('main check: the version\'s section and [Unreleased]\'s markers, all proble
   assert.doesNotMatch(out.pop(), /<!--/, 'the rolled section keeps its markers in the file, never in the notes');
   assert.match(fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8'), /## \[0\.3\.0\] — 2026-10-15[\s\S]*<!-- tour: settings\.local -->/);
 
-  fs.rmSync(path.join(root, 'obsidian-plugin'), { recursive: true });
+  fs.rmSync(path.join(root, 'hud'), { recursive: true });
   fs.writeFileSync(path.join(root, 'CHANGELOG.md'), MARKED);
   errs.length = 0;
   assert.equal(C.main(['check', 'current'], io), 1, 'no steps.json: no tour id can be known');
@@ -213,6 +213,6 @@ test('main check: the version\'s section and [Unreleased]\'s markers, all proble
 test('this repo: every [Unreleased] Added and Changed bullet carries a marker steps.json knows', () => {
   const root = path.resolve(__dirname, '..');
   const text = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
-  const book = JSON.parse(fs.readFileSync(path.join(root, 'obsidian-plugin/src/tour/steps.json'), 'utf8'));
+  const book = JSON.parse(fs.readFileSync(path.join(root, 'hud/src/tour/steps.json'), 'utf8'));
   assert.deepEqual(C.markerProblems(text, C.tourRefs(book)), []);
 });

@@ -6,7 +6,7 @@ This skill, `references/build.md` and the runner it calls (`brain/scripts/cross-
 **claudex-loop** by Chase AI, <https://github.com/chaseai-yt/claudex-loop>, at commit `8cf5e2c` (v2.1.0), used under
 the MIT License.
 
-What changed in the adaptation (design: `docs/superpowers/specs/2026-09-23-cross-review-design.md`):
+What changed in the adaptation (design: `docs/design/specs/2026-09-23-cross-review-design.md`):
 
 - The Python runner is rewritten in Node on the AgenticOS seams: binaries from the recorded host paths, argv from
   `lib/headless.js`, every child with the AgenticOS hooks switched off.

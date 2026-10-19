@@ -7,7 +7,7 @@ import { WorkspaceLeaf, type App } from "obsidian";
 import { POPOVER } from "../shared/ipc";
 import { BRAND } from "../shared/brand";
 
-/** ../obsidian-plugin/src/views/SidebarHUD.ts VIEW_TYPE_SIDEBAR_HUD. */
+/** ../hud/src/views/SidebarHUD.ts VIEW_TYPE_SIDEBAR_HUD. */
 const SIDEBAR_HUD = "agentic-os-sidebar-hud";
 
 export async function openPopover(app: App): Promise<Window | null> {

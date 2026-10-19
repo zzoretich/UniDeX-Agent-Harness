@@ -9,7 +9,7 @@
 //
 // This file is data and pure matching over vault-relative paths, with no imports: the main process enforces it
 // (main/policy/write-policy.ts, behind the IPC bridge) and the sandboxed page reads it to show what writes are on and
-// whether a note may be edited. Sources below are relative to ../obsidian-plugin/src.
+// whether a note may be edited. Sources below are relative to ../hud/src.
 
 export type ArgRule = RegExp | ((argv: readonly string[]) => boolean);
 
@@ -90,7 +90,7 @@ const SLUG = /[a-z0-9][a-z0-9-]{1,40}/;     // RoutinesTab's routine slug
 const ASK_HOST = /--host=(?:claude|codex)/;
 const ASK_MODEL = new RegExp(`--model=${WORD.source}`);
 const ASK_EFFORT = /--effort=(?:minimal|low|medium|high|xhigh|max)/;
-// An MCP server's name as both host CLIs take it (cli/mcp.js NAME_RE, obsidian-plugin/src/data/mcpServers.ts MCP_NAME_RE).
+// An MCP server's name as both host CLIs take it (cli/mcp.js NAME_RE, hud/src/data/mcpServers.ts MCP_NAME_RE).
 const MCP_NAME = /[A-Za-z0-9_][A-Za-z0-9_-]{0,63}/;
 
 /** The refreshes the HUD starts by itself on load and on timers; they write only runtime-owned caches under the runtime's locks.
@@ -139,10 +139,10 @@ const MEMORY = /brain\/memory\/(?:user|feedback|projects|reference)\/[a-z0-9][a-
 const DRAFT = /[a-z0-9][a-z0-9.-]{0,120}/;
 // A hygiene fix's kind (lib/memory-fix.js KINDS).
 const FIX_KIND = /sources|types|descriptions|index|drafts/;
-/** At most this many memories per keep, archive or restore (obsidian-plugin/src/data/brainModel.ts MAX_PATHS_PER_CALL). */
+/** At most this many memories per keep, archive or restore (hud/src/data/brainModel.ts MAX_PATHS_PER_CALL). */
 export const MAX_MEMORY_PATHS = 50;
 const MEMORY_WHOLE = new RegExp(`^(?:${MEMORY.source})$`);
-/** A merge's memories (brain-ai A8): 2 to MERGE_MAX_PATHS (obsidian-plugin/src/data/brainModel.ts MERGE_MAX). */
+/** A merge's memories (brain-ai A8): 2 to MERGE_MAX_PATHS (hud/src/data/brainModel.ts MERGE_MAX). */
 export const MERGE_MAX_PATHS = 6;
 // One memory's sha256 (memory-ops.js sha256): merge's --expect holds one per path, comma-joined, in path order (A9).
 const MEMORY_HASH = /[0-9a-f]{16,64}/;
@@ -215,7 +215,7 @@ const MEMORY_VERBS: readonly SpawnRule[] = [
 const RECALL_QUERY = /[^\s\-\0-\x1f\x7f\u2028\u2029][^\0-\x1f\x7f\u2028\u2029]{0,199}/;
 const RECALL_PREVIEW: SpawnRule = { script: "sdk/recall-cli.js", args: argv(RECALL_QUERY, "--limit", /\d{1,2}/, "--json") };
 
-// `aos import` as obsidian-plugin/src/data/importModel.ts importArgs builds it (install-import B7): optional flags, each at
+// `aos import` as hud/src/data/importModel.ts importArgs builds it (install-import B7): optional flags, each at
 // most once and in one order (--from, --since, --only, --accept, then --dry-run, then --json); --accept never with
 // --dry-run, and only a JSON list of 1 to MAX_IMPORT_ACCEPT proposal ids (the `~/…` or absolute folder the scan printed,
 // no NUL or line break). cli/import.js checks every value again and refuses anything else, writing nothing.
@@ -250,7 +250,7 @@ const importArgv = (a: readonly string[]): boolean => {
 };
 
 /**
- * The launch sequence's Import sheet on the `migrate` surface (install-import B12), as obsidian-plugin/src/data/importModel.ts
+ * The launch sequence's Import sheet on the `migrate` surface (install-import B12), as hud/src/data/importModel.ts
  * migrateImportArgs builds it: `migrate import --apply`, alone or with `--accept` and a JSON list of 1 to
  * MAX_IMPORT_ACCEPT proposal ids (the import surface's own check). cli/migrations.js runs the import and records it.
  */
@@ -447,7 +447,7 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "notes",
     label: "Notes",
-    source: "the app's own note editor (compat/src/noteEditor.ts), not the HUD: saves of a Markdown note open in the note pane",
+    source: "the app's own note editor (obsidian-compat/src/noteEditor.ts), not the HUD: saves of a Markdown note open in the note pane",
     scope: "editor",
     writes: ["**/*.md"],
     // Written only by the runtime's scripts (brain/_index), vendored (brain/scripts), or not notes at all.
@@ -590,7 +590,7 @@ export function parseSurfaces(spec: string | readonly string[] | null | undefine
  * A path as macOS's default disk (APFS: case-insensitive, normalization-insensitive) compares names: decomposed, case
  * folded (lower, upper, lower, so U+017F LONG S, the Kelvin sign, ß and the ﬁ ligature fold as they do there), then
  * recomposed. Where it differs from the disk it is coarser (dotless ı folds to i), so a check that refuses a folded path
- * refuses every spelling the disk opens as that path. obsidian-plugin/src/data/vaultFiles.ts foldPath is its twin.
+ * refuses every spelling the disk opens as that path. hud/src/data/vaultFiles.ts foldPath is its twin.
  */
 export function foldPath(p: string): string {
   return p.normalize("NFD").toLowerCase().toUpperCase().toLowerCase().normalize("NFC");

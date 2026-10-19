@@ -9,7 +9,7 @@
   },
   "workspaces": [
     "brain/scripts",
-    "obsidian-plugin"
+    "hud"
   ],
   "scripts": {
     "test": "node --require ./tools/test-env.js --test tools/*.test.js cli/*.test.js && npm test --workspaces --if-present",
@@ -21,7 +21,7 @@
     "build:codex-plugin": "node tools/build-codex-plugin.js",
     "lint": "eslint .",
     "lint:sh": "node tools/lint-shell.js",
-    "typecheck": "npm run typecheck -w obsidian-plugin"
+    "typecheck": "npm run typecheck -w hud"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

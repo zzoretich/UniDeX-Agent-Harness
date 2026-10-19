@@ -19,8 +19,8 @@ import { JobTerminal } from "./jobTerminal";
 import {
   IMPORT_HOST_LABEL, IMPORT_KIND_LABEL, ProgressFollower, engineLine, importSteps, parseScan, scanCell, scanEmpty, scanHosts, scanKinds,
   type ImportHost, type ImportKind, type ImportProgress, type ImportScan,
-} from "../../../../obsidian-plugin/src/data/importModel";
-import { INSTALL_COMMAND, LOGIN_COMMAND } from "../../../../obsidian-plugin/src/data/hostsState";
+} from "../../../../hud/src/data/importModel";
+import { INSTALL_COMMAND, LOGIN_COMMAND } from "../../../../hud/src/data/hostsState";
 
 type Step = "check" | "choose" | "persona" | "install" | "history" | "finish";
 type Host = InstallRequest["host"];

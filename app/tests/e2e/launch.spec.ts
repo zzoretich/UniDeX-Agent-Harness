@@ -18,9 +18,9 @@ const VERSION = (JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "pa
 const AGENTICOS = path.join(FX.claude, "agenticos.json");
 const MIGRATIONS = FX.v("brain/_index/migrations.json");
 const LOCAL_URL = "http://127.0.0.1:9";
-/** The fixture vault's Go-local mark in tour.launched (per vault: obsidian-plugin/src/tour/launch.ts goLocalId). */
+/** The fixture vault's Go-local mark in tour.launched (per vault: hud/src/tour/launch.ts goLocalId). */
 const GO_LOCAL = `go-local@${vaultKey(FX.vault)}`;
-const WHATS_NEW = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "..", "obsidian-plugin", "src", "tour", "whatsnew.json"), "utf8")) as { releases: Array<{ version: string; entries: unknown[] }> };
+const WHATS_NEW = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "..", "hud", "src", "tour", "whatsnew.json"), "utf8")) as { releases: Array<{ version: string; entries: unknown[] }> };
 
 const readJson = (file: string) => JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
 const editJson = (file: string, fn: (j: Record<string, any>) => void) => { const j = readJson(file); fn(j); fs.writeFileSync(file, `${JSON.stringify(j, null, 2)}\n`); };
@@ -31,7 +31,7 @@ const tourState = () => (readJson(HUD_SETTINGS).tour ?? {}) as { lastSeenVersion
 const pending = (ids = ["local-first", "import"]) => fs.writeFileSync(MIGRATIONS, `${JSON.stringify({ schema: 1, migrations: ids.map((id) => ({ id, state: "pending", since: "2.0.0", from: "1.9.0", at: new Date().toISOString() })) }, null, 2)}\n`);
 const card = (win: Page) => win.locator(".modal.aos-golocal-modal");
 const sheet = (win: Page) => win.locator(".modal.aos-importsheet-modal");
-/** The fixture vault's Import mark in tour.launched (obsidian-plugin/src/tour/launch.ts importId). */
+/** The fixture vault's Import mark in tour.launched (hud/src/tour/launch.ts importId). */
 const IMPORT = `import@${vaultKey(FX.vault)}`;
 /** A Mac with no host history: no Claude Code transcripts, no Codex sessions (the scan then finds nothing to bring). */
 const noHistory = () => {

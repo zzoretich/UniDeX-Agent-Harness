@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * proposal-html.js — the HTML page for every proposal (docs/superpowers/specs/2026-09-22-proposal-pages-design.md).
+ * proposal-html.js — the HTML page for every proposal (docs/design/specs/2026-09-22-proposal-pages-design.md).
  * The Markdown file in <vault>/persona/proposals/ stays the source. This renders it to
  * <vault>/brain/_index/proposals/<date>-<slug>.html — the gitignored cache folder, so the page outlives the review's
  * decision and the Proposals tab's Backlog and History rows can still open it — and keeps the file's link line

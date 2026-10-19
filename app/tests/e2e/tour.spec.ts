@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FX, HUD_SETTINGS, HUD_VERSION, TOUR_BOOK, appEnv, command, content, drawer, expectNoErrors, openTab, rail, useApp } from "./harness";
-import { WHATS_NEW, whatsNewHistory } from "../../../obsidian-plugin/src/tour/whatsnew";
+import { WHATS_NEW, whatsNewHistory } from "../../../hud/src/tour/whatsnew";
 
 const pop = (win: Page) => win.locator(".aos-tour-pop");
 const overlay = (win: Page) => win.locator(".aos-tour");

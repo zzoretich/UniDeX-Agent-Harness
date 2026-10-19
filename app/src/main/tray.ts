@@ -5,7 +5,7 @@ import { Menu, Tray, app, nativeImage, type MenuItemConstructorOptions } from "e
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { BRAND } from "../shared/brand";
-import { STATUSLINE_PATH, barSegments, parseStatusline, type BarSegment } from "../../../obsidian-plugin/src/data/statusline";
+import { STATUSLINE_PATH, barSegments, parseStatusline, type BarSegment } from "../../../hud/src/data/statusline";
 
 export { STATUSLINE_PATH };
 

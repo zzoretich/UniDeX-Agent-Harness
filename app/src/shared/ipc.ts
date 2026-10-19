@@ -1,7 +1,7 @@
 // The contract between main, the preload and the page: channel names and payload types only, no imports (the preload
 // bundles this file, and a sandboxed preload can load nothing else). The page reaches main only through the named
 // functions of AosBridge (window.aos, src/preload/index.ts); main checks every call's sender and arguments
-// (src/main/ipc/) and answers with a Result. Phase 4: docs/superpowers/plans/2026-10-05-sandbox-renderer.md.
+// (src/main/ipc/) and answers with a Result. Phase 4: docs/design/plans/2026-10-05-sandbox-renderer.md.
 
 export const CH = {
   /** sync: everything the page needs to boot. */
@@ -317,7 +317,7 @@ export interface ProtocolRequest { action: string; params: Record<string, string
 
 /** Commands the host itself answers, alongside the plugin's own. */
 /**
- * The HUD's Help commands (obsidian-plugin/src/tour/controller.ts TOUR_COMMANDS, under the plugin's id): the app's Help
+ * The HUD's Help commands (hud/src/tour/controller.ts TOUR_COMMANDS, under the plugin's id): the app's Help
  * menu lists them, and a new install's first launch runs `start`.
  */
 export const TOUR_COMMANDS = {

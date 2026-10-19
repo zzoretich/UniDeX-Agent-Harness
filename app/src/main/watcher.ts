@@ -3,7 +3,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isIgnored } from "../../compat/src/ignore";
+import { isIgnored } from "../../obsidian-compat/src/ignore";
 
 export class VaultWatcher {
   private watcher: fs.FSWatcher | null = null;

@@ -344,13 +344,13 @@ brain/scripts      the runtime that gets vendored into your vault (hooks, collec
 cli                the installer and the aos subcommands (persona, schedule, routines, cost, the Codex host) + two install rehearsals
 plugin             the Claude Code plugin: hooks.json, .mcp.json, bin/aos, 21 commands, 9 skills (also the source of codex-plugin)
 codex-plugin       the Codex plugin, generated from plugin/ by npm run build:codex-plugin: hooks.json, .mcp.json, bin/aos, 28 skills
-obsidian-plugin    the UniDeX app's interface (TypeScript), which the app compiles (the folder keeps its old name)
+hud                the UniDeX app's interface (TypeScript), which the app compiles into its window
 app                the UniDeX macOS app: that interface in an Electron window (its own lockfile; see app/README.md)
 vault-template     the seed vault (AGENTICOS.md, MEMORY.md, brain/ incl. the duty routines, persona templates incl. the heartbeat watchdog, hourly tick and nightly reflect routines)
 extras             the launchd schedule template, the cost analyzer, optional Ollama helpers
 tools              export-from-vault, the privacy gate, and the brand-asset generator behind docs/assets
 docs               install, commands, how it works, screenshots, chief of staff, cost, migrating to 2.0 and to 1.0,
-                   the app's smoke checklist, the release acceptance runbook, and superpowers/ — the spec and plan behind each feature
+                   the app's smoke checklist, the release acceptance runbook, and design/ — the spec and plan behind each feature
 ```
 
 </details>

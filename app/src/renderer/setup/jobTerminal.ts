@@ -4,7 +4,7 @@
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { TERMINAL_FONT, currentTheme, onThemeChange, xtermTheme } from "../../../../obsidian-plugin/src/ui/theme";
+import { TERMINAL_FONT, currentTheme, onThemeChange, xtermTheme } from "../../../../hud/src/ui/theme";
 
 export class JobTerminal {
   readonly el: HTMLElement;

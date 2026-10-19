@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { FX, appEnv, closeNotes, content, expected, guardWrites, openTab, readVaultJson, useApp, type ExpectedBrain, type ExpectedFix, type ExpectedFixChange, type ExpectedSources } from "./harness";
-import { shortDay } from "../../../obsidian-plugin/src/data/brainModel";
+import { shortDay } from "../../../hud/src/data/brainModel";
 
 const app = useApp({ env: { AOS_APP_WRITE: "brain" } });
 const C = () => content(app().win);

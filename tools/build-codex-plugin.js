@@ -3,7 +3,7 @@
 /**
  * build-codex-plugin.js — generates codex-plugin/, the Codex CLI plugin, from plugin/ (the Claude Code plugin).
  *
- * Design docs/superpowers/specs/2026-09-23-codex-plugin-design.md (D1–D3). Codex reads
+ * Design docs/design/specs/2026-09-23-codex-plugin-design.md (D1–D3). Codex reads
  * .agents/plugins/marketplace.json before the Claude marketplace file, so one repository serves each host its own
  * folder: Claude Code installs plugin/, Codex installs codex-plugin/. The output is committed because a marketplace
  * install copies files and runs nothing; `--check` rebuilds in memory and exits 1 when the committed tree differs,

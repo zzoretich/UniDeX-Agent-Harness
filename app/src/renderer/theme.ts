@@ -1,5 +1,5 @@
 // Light and dark on the page (UniDeX D6). Main resolves the user's choice against macOS's appearance; the page sets
-// body.theme-light or body.theme-dark, which the --udx-* tokens key on (obsidian-plugin/styles.css), and color-scheme
+// body.theme-light or body.theme-dark, which the --udx-* tokens key on (hud/styles.css), and color-scheme
 // for the native controls. The tray popover is a document of this page's too, so it is themed the same way.
 
 import type { AosBridge, ThemeSource, ThemeState } from "../shared/ipc";

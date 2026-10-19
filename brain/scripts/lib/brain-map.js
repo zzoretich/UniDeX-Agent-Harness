@@ -16,7 +16,7 @@
  * A memory link is a graph link between nodes of two live memories (each counted), or a node of no memory (a session
  * note's heading, a concept) that both link to, once per such node; a node touching more than SHARED_MAX memories is a
  * hub-like concept and links nothing. An archived or superseded memory is out with its nodes, as if deleted. The shape
- * is obsidian-plugin/src/data/brainModel.ts BrainMap (parseBrainMap is the contract). Takes the vault; resolves nothing
+ * is hud/src/data/brainModel.ts BrainMap (parseBrainMap is the contract). Takes the vault; resolves nothing
  * at load.
  */
 const fs = require('fs');

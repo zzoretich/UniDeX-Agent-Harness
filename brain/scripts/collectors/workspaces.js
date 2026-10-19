@@ -30,7 +30,7 @@ const HANDOFF_FILE = /^handoff.*\.md$/i;
 
 // spaces-redesign D23: the placeholder text `aos workspace new` writes (cli/workspace.js stubs()) never counts as a
 // summary, an objective or a next step; `<slug>` stands for any workspace name, and backticks are ignored. Mirrored in
-// obsidian-plugin/src/data/terminalLaunch.ts, where a drift test pins the copy. The stubs' empty `- ` bullets are
+// hud/src/data/terminalLaunch.ts, where a drift test pins the copy. The stubs' empty `- ` bullets are
 // skipped wherever bullets are read.
 const TEMPLATE_TEXT = Object.freeze([
   'One line about what this project is.',

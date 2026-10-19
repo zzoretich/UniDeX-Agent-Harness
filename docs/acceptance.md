@@ -90,7 +90,7 @@ Tools; accept. Then `git clone https://github.com/zzoretich/UniDeX-Agent-Harness
 - [ ] GitHub Actions: for the release commit, the `privacy` run (the gate with the maintainer's private terms, on every push to `main` and every pull request) is green, and so is the `ci` run (tests on Ubuntu and macOS, the install rehearsals and the app); the `release` run for the `v*` tag (Ubuntu only) shows its own gate step green in the `build` job, and the `publish` job created the release with the version's `CHANGELOG.md` section as its notes. The release's assets are what `release:app` uploaded: `AgenticOS-Workbench-<version>-arm64.dmg`, `AgenticOS-Workbench-<version>-arm64.zip` and its `.zip.blockmap`, and `latest-mac.yml`, and nothing else.
 
 ## 4. Test suites offline (criterion 4)
-- [ ] Turn Wi-Fi off. `npm test` → three aggregates, each `ℹ fail 0`: tools+cli, brain (`brain/scripts`), plugin (`obsidian-plugin`).
+- [ ] Turn Wi-Fi off. `npm test` → three aggregates, each `ℹ fail 0`: tools+cli, brain (`brain/scripts`), the HUD (`hud`).
 - [ ] Note: `cli/plugin-manifests.test.js` skips its `claude plugin validate` case whenever `claude` is not on PATH (this is what every hosted CI runner does, so the same case shows as skipped in Actions). §0 installed Claude Code here, so on this account the case runs instead of skipping; a `skipped` line for it means PATH, not a failure.
 - [ ] `(cd extras/cost && python3 -m unittest 2>&1 | /usr/bin/grep -E "^(Ran|OK|FAILED)")` → `Ran <n> tests` with **n ≥ 1** and `OK` (the exact `<n>` drifts between releases; `Ran 0 tests` also prints `OK` on macOS system python, so a zero count means discovery broke and is a failure; `FAILED` is the other failure).
 - [ ] Turn Wi-Fi on.

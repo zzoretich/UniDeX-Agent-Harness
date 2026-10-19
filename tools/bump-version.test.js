@@ -9,9 +9,9 @@ const { bumpFiles, checkFiles, whatsNewProblem, main } = require('./bump-version
 function repo() {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), 'bump-'));
   const w = (rel, obj) => { fs.mkdirSync(path.dirname(path.join(r, rel)), { recursive: true }); fs.writeFileSync(path.join(r, rel), JSON.stringify(obj, null, 2) + '\n'); };
-  w('package.json', { name: 'agenticos-workbench', version: '0.1.0', private: true, workspaces: ['obsidian-plugin'] });
+  w('package.json', { name: 'agenticos-workbench', version: '0.1.0', private: true, workspaces: ['hud'] });
   w('brain/scripts/package.json', { name: 'agenticos-brain', private: true, version: '0.1.0', type: 'commonjs' });
-  w('obsidian-plugin/package.json', { name: 'agentic-os', version: '1.2.0' });
+  w('hud/package.json', { name: 'agentic-os', version: '1.2.0' });
   w('plugin/.claude-plugin/plugin.json', { name: 'agenticos', version: '0.1.0' });
   w('.claude-plugin/marketplace.json', { name: 'agenticos-workbench', plugins: [{ name: 'agenticos', source: './plugin' }] });
   w('codex-plugin/.codex-plugin/plugin.json', { name: 'agenticos', version: '0.1.0', skills: './skills/' });
@@ -26,10 +26,10 @@ test('bumpFiles rewrites every version surface (root package.json included)', ()
   assert.deepEqual(out.skipped, []);
   assert.equal(out.updated.length, 7);
   assert.equal(read(r, 'package.json').version, '1.3.0');
-  assert.deepEqual(read(r, 'package.json').workspaces, ['obsidian-plugin']); // only .version is touched
+  assert.deepEqual(read(r, 'package.json').workspaces, ['hud']); // only .version is touched
   assert.equal(read(r, 'brain/scripts/package.json').version, '1.3.0'); // the MCP server reports this one
   assert.equal(read(r, 'brain/scripts/package.json').type, 'commonjs');
-  assert.equal(read(r, 'obsidian-plugin/package.json').version, '1.3.0');
+  assert.equal(read(r, 'hud/package.json').version, '1.3.0');
   assert.equal(read(r, 'plugin/.claude-plugin/plugin.json').version, '1.3.0');
   assert.equal(read(r, '.claude-plugin/marketplace.json').plugins[0].version, '1.3.0');
   assert.equal(read(r, 'codex-plugin/.codex-plugin/plugin.json').version, '1.3.0');
@@ -43,12 +43,12 @@ test('bumpFiles rewrites every version surface (root package.json included)', ()
 test('the Obsidian packaging is no surface: a manifest.json or versions.json left in a checkout is neither bumped nor checked', () => {
   const r = repo();
   const w = (rel, obj) => fs.writeFileSync(path.join(r, rel), JSON.stringify(obj, null, 2) + '\n');
-  w('obsidian-plugin/manifest.json', { id: 'agentic-os', version: '0.21.0', minAppVersion: '1.4.0' });
-  w('obsidian-plugin/versions.json', { '0.21.0': '1.4.0' });
+  w('hud/manifest.json', { id: 'agentic-os', version: '0.21.0', minAppVersion: '1.4.0' });
+  w('hud/versions.json', { '0.21.0': '1.4.0' });
   const out = bumpFiles(r, '1.3.0');
   assert.ok(!out.updated.some((f) => /manifest|versions/.test(f)));
-  assert.equal(read(r, 'obsidian-plugin/manifest.json').version, '0.21.0');
-  assert.deepEqual(read(r, 'obsidian-plugin/versions.json'), { '0.21.0': '1.4.0' });
+  assert.equal(read(r, 'hud/manifest.json').version, '0.21.0');
+  assert.deepEqual(read(r, 'hud/versions.json'), { '0.21.0': '1.4.0' });
   assert.deepEqual(checkFiles(r, '1.3.0'), []);
 });
 
@@ -100,7 +100,7 @@ test('--check also verifies the package-lock.json version fields (brain/scripts 
     lockfileVersion: 3,
     packages: {
       '': { name: 'agenticos-workbench', version: '0.1.0' },
-      'obsidian-plugin': { name: 'agentic-os', version: '1.2.0' },
+      'hud': { name: 'agentic-os', version: '1.2.0' },
       'brain/scripts': { name: 'agenticos-brain', version: '0.1.0' },
     },
   }, null, 2) + '\n');
@@ -113,7 +113,7 @@ test('--check also verifies the package-lock.json version fields (brain/scripts 
   const lock = read(r, 'package-lock.json');
   lock.version = '1.3.0';
   lock.packages[''].version = '1.3.0';
-  lock.packages['obsidian-plugin'].version = '1.3.0';
+  lock.packages['hud'].version = '1.3.0';
   lock.packages['brain/scripts'].version = '1.3.0';
   fs.writeFileSync(path.join(r, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n');
   assert.deepEqual(checkFiles(r, '1.3.0'), []);
@@ -121,7 +121,7 @@ test('--check also verifies the package-lock.json version fields (brain/scripts 
 
 // ---- What's new for every release (tour C13) -------------------------------------------------------------------------
 
-const WHATSNEW = 'obsidian-plugin/src/tour/whatsnew.json';
+const WHATSNEW = 'hud/src/tour/whatsnew.json';
 const CHANGES = '# Changelog\n\n## [Unreleased]\n\n### Fixed\n- A fix.\n\n## [0.1.0] — 2026-09-10\n\n### Added\n- The first thing.\n';
 function releaseRepo(releases) {
   const r = repo();
@@ -142,7 +142,7 @@ test('a bump fails, changing nothing, when whatsnew.json has no release for the 
   const r = releaseRepo([{ version: '1.2.0', entries: [] }]);
   const res = run(r, ['1.3.0']);
   assert.equal(res.code, 1);
-  assert.match(res.err, /obsidian-plugin\/src\/tour\/whatsnew\.json has no release 1\.3\.0/);
+  assert.match(res.err, /hud\/src\/tour\/whatsnew\.json has no release 1\.3\.0/);
   assert.match(res.err, /\{"version": "1\.3\.0", "entries": \[\]\}/, 'it says what to add');
   assert.match(res.err, /nothing was changed/);
   assert.equal(read(r, 'package.json').version, '0.1.0');

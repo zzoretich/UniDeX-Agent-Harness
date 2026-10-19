@@ -7,7 +7,7 @@
  *                          so one unreadable file drops one input, never the whole read
  *   facts(inputs, now)     pure: { schema, at, needsYou[], summary, hash }
  *
- * obsidian-plugin/src/data/pulseFacts.ts is this module's twin over the same inputs (the HUD builds them from its own
+ * hud/src/data/pulseFacts.ts is this module's twin over the same inputs (the HUD builds them from its own
  * loaders); its test loads this file and checks both give the same facts for the fixture vault, so change both.
  *
  * Order (P9, amendment A2): tier 0 is what is broken (health errors); 1 what waits on a decision (team gates, proposals,
@@ -26,7 +26,7 @@ const SCHEMA = 1;
 const AREAS = ['needs', 'health', 'agents', 'workspaces', 'todo', 'proposals', 'notifications', 'routines', 'spend', 'memory'];
 const MAX_NOTIFICATIONS = 300;
 
-// obsidian-plugin/src/data/pipelines.ts PIPELINES_MANIFEST (staleMs) and DIED_AFTER_MS; a name outside it is stale after an hour.
+// hud/src/data/pipelines.ts PIPELINES_MANIFEST (staleMs) and DIED_AFTER_MS; a name outside it is stale after an hour.
 const PIPELINE_STALE_MS = {
   'scan-vault': 45 * 60e3, 'session-summary': 24 * 3600e3, 'auto-cost': 24 * 3600e3, 'auto-cost-backfill': 7 * 24 * 3600e3,
   'heartbeat-writer': 45 * 60e3, 'file-map': null, 'auto-wrap': 24 * 3600e3, 'build-brain-md': 45 * 60e3, 'embed-vault': null,
@@ -35,7 +35,7 @@ const PIPELINE_STALE_MS = {
 const UNKNOWN_STALE_MS = 60 * 60e3;
 const DIED_AFTER_MS = 10 * 60e3;
 
-// obsidian-plugin/src/data/todos.ts ITEM_RE, DUE_RE, DONE_RE.
+// hud/src/data/todos.ts ITEM_RE, DUE_RE, DONE_RE.
 const ITEM_RE = /^([-*]) \[([ xX])\] ?(.*)$/;
 const DUE_RE = /\s*📅️?\s*(\d{4}-\d{2}-\d{2})/u;
 
@@ -207,7 +207,7 @@ function openFlags(text) { return require('./statusline-model.js').openFlags(tex
 /**
  * Whether a memory's text still waits for review: `reviewed: false` and live, read as lib/memory-ops.js reads
  * frontmatter. Archive and supersede leave `reviewed:` as it was (memory-ops retire), so `reviewed: false` alone would
- * keep counting what the Brain tab retired (brain-hub D5, D7). obsidian-plugin/src/data/brainModel.ts pendingReview.
+ * keep counting what the Brain tab retired (brain-hub D5, D7). hud/src/data/brainModel.ts pendingReview.
  */
 function pendingReview(text) {
   if (!text) return false;

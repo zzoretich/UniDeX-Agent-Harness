@@ -16,7 +16,7 @@ The app has its own dependencies under `app/` (Node 22.12 or newer); [app/README
 ## Run the checks
 
 ```sh
-npm test                 # every suite: tools + cli, brain/scripts, obsidian-plugin
+npm test                 # every suite: tools + cli, brain/scripts, hud
 npm run test:one -- <file>…   # one or a few test files, each with its suite's setup (a temp vault, config and host homes)
 npm run gate             # the privacy gate — fails on any forbidden term
 npm run lint             # eslint over the JavaScript
@@ -38,7 +38,7 @@ The suites never see your shell's `AOS_*`, `BRAIN_*`, `CLAUDE*` or `CODEX_*` var
 - `plugin/` is the Claude Code plugin and the source of the Codex plugin. `codex-plugin/` is generated: never edit it by hand. Change `plugin/`, run `npm run build:codex-plugin`, and commit the output with its source.
 - Write commands and skills host-neutrally ("ask the user", "read the file"), so the generated Codex skill reads right too.
 - Code that branches on the host goes through the existing seams (`brain/scripts/lib/host.js`, `brain/scripts/sdk/lib/provider.js`, `brain/scripts/lib/headless.js`) and gets a test per host. Never hard-code `claude`, `~/.claude` or `CLAUDE_*`.
-- The runtime, `cli` and `tools` are Node 20+, CommonJS, `node:test`, with no new runtime dependencies and no network in tests. `app/` and the HUD (`obsidian-plugin/`, compiled into the app) are TypeScript with their own suites.
+- The runtime, `cli` and `tools` are Node 20+, CommonJS, `node:test`, with no new runtime dependencies and no network in tests. `app/` and the HUD (`hud/`, compiled into the app) are TypeScript with their own suites.
 
 ## Nothing personal in the repository
 
@@ -46,7 +46,7 @@ This repository ships machinery, not anyone's content. The privacy gate (`npm ru
 
 ## Changelog and the guided tour
 
-A user-visible change gets a line under `## [Unreleased]` in `CHANGELOG.md`, and each **Added** and **Changed** line ends with the guided-tour step that shows it, `<!-- tour: <chapter>[.<step>] -->` (ids from `obsidian-plugin/src/tour/steps.json`; several comma-separated), or says why none does, `<!-- no-tour: <reason> -->`. `node tools/changelog.js check current` (CI's lint job) fails a line with neither, an unknown id or an empty reason; GitHub hides the markers and the release notes drop them. A release also needs its What's new entry in `obsidian-plugin/src/tour/whatsnew.json` before `npm run version:bump`, or the bump refuses ([docs/app-smoke.md](docs/app-smoke.md), Release procedure).
+A user-visible change gets a line under `## [Unreleased]` in `CHANGELOG.md`, and each **Added** and **Changed** line ends with the guided-tour step that shows it, `<!-- tour: <chapter>[.<step>] -->` (ids from `hud/src/tour/steps.json`; several comma-separated), or says why none does, `<!-- no-tour: <reason> -->`. `node tools/changelog.js check current` (CI's lint job) fails a line with neither, an unknown id or an empty reason; GitHub hides the markers and the release notes drop them. A release also needs its What's new entry in `hud/src/tour/whatsnew.json` before `npm run version:bump`, or the bump refuses ([docs/app-smoke.md](docs/app-smoke.md), Release procedure).
 
 ## Pull requests
 

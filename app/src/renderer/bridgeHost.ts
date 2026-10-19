@@ -1,11 +1,11 @@
-// The HUD's host in the app (phase 4, S1): HudHost (../obsidian-plugin/src/host.ts) over the preload's bridge. The page
+// The HUD's host in the app (phase 4, S1): HudHost (../hud/src/host.ts) over the preload's bridge. The page
 // has no Node; every file, process, terminal and OS call here is a call to main, which checks it. What main refuses is
 // recorded in the guard log and answered as Node would answer a refusal: an EROFS error, or for a spawn a child that
 // prints why and exits 1 (as the page's write guards did before main took the checks over).
 
-import type { HostChild, HostDirent, HostFs, HostGit, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../obsidian-plugin/src/host";
-import { refuse } from "../../compat/src/guard";
-import { callError } from "../../compat/src/bridge";
+import type { HostChild, HostDirent, HostFs, HostGit, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
+import { refuse } from "../../obsidian-compat/src/guard";
+import { callError } from "../../obsidian-compat/src/bridge";
 import * as path from "./shims/path";
 import type { AosBridge, BootInfo, DirEntryInfo, ProcEvent, PtyEvent, Result, StatInfo } from "../shared/ipc";
 
