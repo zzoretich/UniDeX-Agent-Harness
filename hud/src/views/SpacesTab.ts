@@ -25,8 +25,8 @@ import { listen } from "../data/listen";
 import type { TerminalSession } from "../data/terminalSession";
 import { env, fs, sessionsHost, shell, type HostSessionThread } from "../host";
 import {
-  PROJECT_NOTES_DIR, entryAbs, entryPlace, freshUiState, keepPlace, panesFor, statusMenuItems, targetFor, threadSignature, threadsIn,
-  verbsOff, watchFlags,
+  PROJECT_NOTES_DIR, entryAbs, entryPlace, freshUiState, keepPlace, panesFor, rightPaneKey, statusMenuItems, targetFor, threadSignature,
+  threadsIn, verbsOff, watchFlags,
   type CloneState, type Flag, type HiddenFolder, type MenuItem, type Pane, type SpacesActions, type SpacesCtx, type SpacesUiState,
 } from "./spaces/ui";
 import { NewSpaceModal, cloneLine, newSpaceArgs, renameName, type NewSpaceRequest } from "../ui/spaces/NewSpaceModal";
@@ -296,10 +296,9 @@ export class SpacesTab {
     return panes;
   }
 
-  /** What the right pane shows: the preview of a file of a workspace, or that workspace's History and Linked. */
+  /** What the right pane shows (rightPaneKey): a file made or removed beside the previewed one leaves it as it was. */
   private rightKey(): string {
-    const sel = this.ui.selected ?? "";
-    return this.ui.centre === "files" ? `files:${sel}:${this.ui.files.preview ?? ""}` : `${this.ui.centre}:${sel}`;
+    return rightPaneKey(this.ui, this.listings);
   }
 
   // ── reads ──
