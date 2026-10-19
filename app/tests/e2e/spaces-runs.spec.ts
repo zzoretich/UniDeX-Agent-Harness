@@ -615,9 +615,10 @@ test.describe("Spaces", () => {
     await expect(R().locator(".aos-spc-history")).toHaveCount(1);
   });
 
-  test("the preview keeps the reader's place: a to-do change leaves it alone, and a map change redraws it at the same scroll (D9)", async () => {
+  test("the preview keeps the reader's place: a to-do or a file made beside it leaves it alone, and a map change redraws it at the same scroll (D9)", async () => {
     const long = FX.v("workspaces/reef-survey/transects.txt");
     fs.writeFileSync(long, `${Array.from({ length: 400 }, (_, i) => `transect ${i + 1}: 12 m, 4 colonies`).join("\n")}\n`);
+    const beside = FX.v("workspaces/reef-survey/transects-2.txt");
     const todo = FX.v("TODO.md");
     const todoWas = fs.readFileSync(todo, "utf8");
     const mapFile = FX.v("brain/_index/workspace-maps/reef-survey.json");
@@ -632,8 +633,12 @@ test.describe("Spaces", () => {
       await R().evaluate((el) => { el.scrollTop = 600; });
       await pre.evaluate((el) => { (el as HTMLElement).dataset.mark = "1"; });
       // A to-do tagged for the workspace changes the list's counts, not the preview: the same element, the same place.
+      // So does a file made beside it, which re-lists the tree. The watcher can report transects.txt itself this late too
+      // (it was written just before Files opened), in the same batch as the to-do.
+      fs.writeFileSync(beside, "transect 401: 9 m, 2 colonies\n");
       fs.writeFileSync(todo, todoWas.replace("## Open\n\n", "## Open\n\n- [ ] Recount transect 7 #ws/reef-survey\n"));
       await expect(row("reef-survey").locator(".aos-spc-rowcount")).toHaveText(["☐ 1"]);
+      await expect(treeRow("transects-2.txt")).toHaveCount(1);
       await expect(pre).toHaveAttribute("data-mark", "1");
       expect(await R().evaluate((el) => el.scrollTop)).toBe(600);
       // The map is the preview's to show: it is redrawn from the last read at once, so no "Reading…" and the same scroll.
@@ -646,6 +651,7 @@ test.describe("Spaces", () => {
       fs.writeFileSync(todo, todoWas);
       fs.writeFileSync(mapFile, mapWas);
       fs.rmSync(long, { force: true });
+      fs.rmSync(beside, { force: true });
     }
     await expect(row("reef-survey").locator(".aos-spc-rowcount")).toHaveCount(0);
     await tab("Overview").click();

@@ -5,7 +5,7 @@ import * as path from "path";
 import type { WorkspaceEntry } from "../../data/snapshot";
 import { FILE_BADGE_LABEL, NOT_MAPPED_TEXT, UNDESCRIBED_TEXT, describeDisabledReason, fileBadge } from "../../data/workspaceMaps";
 import { mapSkipReason, MAP_SKIP_TEXT, type PreviewResult } from "../../data/workspaceFiles";
-import { button, entryAbs, mappable, HIDDEN_MAP_TEXT, type SpacesCtx } from "./ui";
+import { button, entryAbs, listedEntry, mappable, HIDDEN_MAP_TEXT, type SpacesCtx } from "./ui";
 
 const kb = (bytes: number): string => (bytes >= 1024 * 1024 ? `${Math.round(bytes / (1024 * 1024))} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
@@ -16,8 +16,7 @@ export function renderPreview(host: HTMLElement, ctx: SpacesCtx, e: WorkspaceEnt
   const abs = path.join(entryAbs(e, ctx.vault), rel);
   const f = ctx.index.files.get(rel) ?? null;
   // The listing's size, as the tree row reads it (mergeDir), so a file over 1 MB is "not mapped" in both places (D9).
-  const dir = path.posix.dirname(rel);
-  const size = ctx.listings.get(dir === "." ? "" : dir)?.find((d) => d.name === path.posix.basename(rel))?.size;
+  const size = listedEntry(rel, ctx.listings)?.size;
   const skip = f ? null : mapSkipReason(rel, size);
 
   const head = sec.createDiv({ cls: "aos-spc-prevhead" });

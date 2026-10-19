@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Fixed
+- **The file preview in Spaces ▸ Files keeps your place when files come and go beside it.** A file made or removed in the workspace (an agent at work there, say) redrew the preview you were reading, which dropped a text selection and drew a Markdown file again. Now only what the preview shows redraws it: the file's description in the map, or the file itself being removed.
+
 ## [2.1.0] — 2026-10-17
 
 ### Added

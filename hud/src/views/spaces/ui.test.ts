@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  PANES_FOR, entryAbs, entryPlace, moreMenuItems, outsideMenuItems, panesFor, primaryAction, sessionsFooter, splitMenuItems,
-  statusMenuItems, targetFor, threadSignature, tilde, typedCommand, watchFlags, type SpacesActions, type SpacesCtx,
+  PANES_FOR, entryAbs, entryPlace, listedEntry, moreMenuItems, outsideMenuItems, panesFor, primaryAction, rightPaneKey, sessionsFooter,
+  splitMenuItems, statusMenuItems, targetFor, threadSignature, tilde, typedCommand, watchFlags, type SpacesActions, type SpacesCtx,
 } from "./ui";
 import type { OutsideListRow } from "../../data/hostSessions";
 import { SESSIONS_OFF_TEXT, CLI_THREAD_TEXT } from "../../data/spacesModel";
 import { launchLine, type LaunchSpec, type PlaceWorld, type TermHostChoice } from "../../data/terminalLaunch";
 import type { Snapshot, WorkspaceEntry, WorkspaceSessionRow } from "../../data/snapshot";
+import type { DirEntry } from "../../data/workspaceFiles";
 import type { HostSessionThread } from "../../host";
 
 // spaces-redesign PR 2: the parts of the Spaces panes that decide something (what a file event redraws, what Resume
@@ -91,11 +92,28 @@ test("panesFor: while Files shows the preview, only what the preview shows redra
   assert.deepEqual([...panesFor(["world"], files)], ["centre"]);
   assert.deepEqual([...panesFor(["map"], files)], ["centre", "right"], "the map is the preview's description");
   assert.deepEqual([...panesFor(["snapshot"], files)], ["list", "centre", "right"]);
-  assert.deepEqual([...panesFor(["listing"], files)], ["centre", "right"]);
+  assert.deepEqual([...panesFor(["listing"], files)], ["centre"], "a file made or removed beside the previewed one");
+  assert.deepEqual([...panesFor(["listing"], { previewShown: true, rightChanged: true })], ["centre", "right"], "the previewed file's own row changed");
   assert.deepEqual([...panesFor(["tree"], { previewShown: true, rightChanged: true })], ["centre", "right"], "Overview → Files swaps the right pane");
   assert.deepEqual([...panesFor(["threads"], { previewShown: false, rightChanged: false })], ["list", "right"], "History is redrawn as before");
   assert.deepEqual([...panesFor([], files)], []);
   assert.deepEqual([...panesFor([], { previewShown: true, rightChanged: true })], ["right"]);
+});
+
+test("rightPaneKey: the preview's key holds the file's own row in the listing, not its folder's other files", () => {
+  const ui = { selected: "reef-survey", centre: "files" as const, files: { filter: "all" as const, query: "", open: new Set<string>(), preview: "notes/transects.txt" } };
+  const listed = (...rows: Array<[string, number]>) =>
+    new Map<string, DirEntry[] | null>([["", [{ name: "notes", isDir: true }]], ["notes", rows.map(([name, size]) => ({ name, isDir: false, size }))]]);
+  const key = rightPaneKey(ui, listed(["transects.txt", 12_000]));
+  assert.equal(key, "files:reef-survey:notes/transects.txt:12000");
+  assert.equal(rightPaneKey(ui, listed(["transects.txt", 12_000], ["transects-2.txt", 30])), key, "a file made beside it");
+  assert.notEqual(rightPaneKey(ui, listed(["transects.txt", 2_000_000])), key, "its size: over 1 MB it reads not mapped");
+  assert.equal(rightPaneKey(ui, listed(["transects-2.txt", 30])), "files:reef-survey:notes/transects.txt:gone");
+  assert.equal(rightPaneKey(ui, new Map()), "files:reef-survey:notes/transects.txt:", "its folder not listed (yet)");
+  assert.equal(rightPaneKey({ ...ui, files: { ...ui.files, preview: null } }, listed(["transects.txt", 12_000])), "files:reef-survey::");
+  assert.equal(rightPaneKey({ ...ui, centre: "overview" }, listed()), "overview:reef-survey", "History and Linked read no listing");
+  assert.equal(listedEntry("top.md", new Map([["", [{ name: "top.md", isDir: false, size: 5 }]]]))?.size, 5, "a file at the workspace's root");
+  assert.equal(listedEntry("notes/a.md", new Map([["notes", null]])), undefined, "a folder that could not be listed");
 });
 
 test("threadSignature: the same threads, workspaces and running states read the same in any order", () => {

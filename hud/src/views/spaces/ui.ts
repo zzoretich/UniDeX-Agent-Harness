@@ -216,14 +216,17 @@ export const PANES_FOR: Record<Flag, readonly Pane[]> = {
   tree: ["centre", "right"],
 };
 
-/** What the file preview (the right pane while Files is open, D9) shows: the selection, the scan, the map and the
- *  folder's listing. Threads, Linked, the live dots, the world and opening a folder in the tree change none of it. */
-export const PREVIEW_FLAGS: readonly Flag[] = ["select", "snapshot", "map", "listing"];
+/** What the file preview (the right pane while Files is open, D9) shows: the selection, the scan and the map. Of the
+ *  folder's listing it shows only the file's own row, which rightPaneKey holds: a file made or removed beside it
+ *  re-lists the tree and changes nothing in the preview. Threads, Linked, the live dots, the world and opening a folder
+ *  in the tree change none of it either. */
+export const PREVIEW_FLAGS: readonly Flag[] = ["select", "snapshot", "map"];
 
 /**
  * The panes a batch of flags redraws. While the right pane is the preview it is redrawn exactly when a flag in
- * PREVIEW_FLAGS came in or it should now show something else (`rightChanged`: another file, workspace or view), so a
- * Sessions turn or a to-do change does not throw a reader back to the top of the file.
+ * PREVIEW_FLAGS came in or it should now show something else (`rightChanged`: another file, workspace or view, or the
+ * file's own row in the listing), so a Sessions turn, a to-do change or a file made beside it does not take a reader's
+ * place in the file (the scroll, a selection).
  */
 export function panesFor(flags: Iterable<Flag>, o: { previewShown: boolean; rightChanged: boolean }): Set<Pane> {
   const list = [...flags];
@@ -234,6 +237,26 @@ export function panesFor(flags: Iterable<Flag>, o: { previewShown: boolean; righ
     else panes.delete("right");
   }
   return panes;
+}
+
+/** A workspace file's row in its folder's listing: undefined while that folder is not listed (or could not be), null
+ *  when the listed folder does not hold it. */
+export function listedEntry(rel: string, listings: ReadonlyMap<string, DirEntry[] | null>): DirEntry | null | undefined {
+  const dir = path.posix.dirname(rel);
+  const entries = listings.get(dir === "." ? "" : dir);
+  if (!entries) return undefined;
+  return entries.find((d) => d.name === path.posix.basename(rel)) ?? null;
+}
+
+/** What the right pane shows, compared with what it last drew (panesFor's `rightChanged`): the preview of a file of a
+ *  workspace, with that file's own row in the listing (its size, the "not mapped" over 1 MB, or that it is gone), or
+ *  that workspace's History and Linked. */
+export function rightPaneKey(ui: Pick<SpacesUiState, "selected" | "centre" | "files">, listings: ReadonlyMap<string, DirEntry[] | null>): string {
+  const sel = ui.selected ?? "";
+  if (ui.centre !== "files") return `${ui.centre}:${sel}`;
+  const rel = ui.files.preview ?? "";
+  const row = rel ? listedEntry(rel, listings) : undefined;
+  return `files:${sel}:${rel}:${row === undefined ? "" : row === null ? "gone" : `${row.size ?? "?"}`}`;
 }
 
 /** What Spaces shows of the app's Sessions threads (the live dot, "All n in Sessions"): a list that reads the same
