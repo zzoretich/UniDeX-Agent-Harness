@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Fixed
+- **A Chief of Staff duty that stopped after `brew upgrade node` runs again.** The duty files are rendered once, when the Chief of Staff is set up, with the Node of that day; an install set up before the stable-link change recorded Homebrew's versioned `Cellar/` path, which `brew upgrade` deletes, so every duty ran a Node that was gone and its Bash allowlist, built from the schedule's Node, denied the command. `aos upgrade` now puts the recorded Node in their place and keeps every other line as you edited it, and `aos doctor` names the duty files still carrying a versioned path.
+
 ## [2.1.1] — 2026-10-18
 
 ### Changed

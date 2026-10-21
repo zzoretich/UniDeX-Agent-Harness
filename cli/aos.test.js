@@ -562,6 +562,38 @@ test('doctor warns on a node path recorded inside Homebrew\'s Cellar', () => {
   assert.match(r.stdout, /ok\s+node in config/);
 });
 
+// node-path D12: a duty file the interview rendered with a versioned Homebrew path runs a Node `brew upgrade` deletes, and
+// run-duty.sh's allowlist (the schedule's Node) no longer matches the command in it. doctor names the files; upgrade
+// puts the recorded Node in their place and keeps every other byte.
+test('doctor warns on duty files that still name a Cellar node; upgrade rewrites just that path and keeps the owner\'s edits', () => {
+  const sb = initialized();
+  const duties = path.join(sb.vault, 'persona', 'duties');
+  fs.mkdirSync(duties, { recursive: true });
+  const a = '/opt/homebrew/Cellar/node/25.1.0/bin/node';
+  const b = '/usr/local/Cellar/node@22/22.20.0/bin/node';
+  const tick = `# Duty: tick (hourly)\n\n1. Run \`${a} ${sb.vault}/brain/scripts/persona/tick.js signals\` — keep the JSON.\n2. Mine: \`${a} ${sb.vault}/brain/scripts/persona/ledger.js summary --days 7\`.   \n`;
+  const reflect = `# Duty: reflect\n\n1. Run \`${b} ${sb.vault}/brain/scripts/persona/reflect.js inputs --days 28\`.\n`;
+  const sitrep = `# Duty: sitrep\n\n1. Run \`/opt/homebrew/opt/node/bin/node ${sb.vault}/brain/scripts/persona/sitrep-state.js diff\`.\n`;
+  fs.writeFileSync(path.join(duties, 'tick.md'), tick);
+  fs.writeFileSync(path.join(duties, 'reflect.md'), reflect);
+  fs.writeFileSync(path.join(duties, 'sitrep.md'), sitrep);
+  const env = { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') };
+  const before = aos(sb, ['doctor'], env);
+  assert.equal(before.status, 0, before.stderr + before.stdout);
+  assert.match(before.stdout, new RegExp(`^warn  duty node path\\s+reflect\\.md, tick\\.md still run a versioned Homebrew Cellar node \\(${reEsc(b)}, ${reEsc(a)}\\) — run \`aos upgrade\` to rewrite it$`, 'm'));
+  const up = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(up.status, 0, up.stderr + up.stdout);
+  const node = require('./node-path.js').stableNode(process.execPath);
+  assert.match(up.stdout, new RegExp(`^- put the recorded Node in persona/duties/ where a versioned Homebrew path is left\\n   persona/duties/reflect\\.md: ${reEsc(b)} → ${reEsc(node)}\\n   persona/duties/tick\\.md: ${reEsc(a)} → ${reEsc(node)}$`, 'm'));
+  assert.match(up.stdout, /Memory and notes were not touched; in persona\/duties\/ only that Node path changed\.$/m);
+  assert.equal(fs.readFileSync(path.join(duties, 'tick.md'), 'utf8'), tick.split(a).join(node), 'only the path changed; the edits and their bytes stay');
+  assert.equal(fs.readFileSync(path.join(duties, 'reflect.md'), 'utf8'), reflect.split(b).join(node));
+  assert.equal(fs.readFileSync(path.join(duties, 'sitrep.md'), 'utf8'), sitrep, 'a file without one is untouched');
+  const after = aos(sb, ['doctor'], env);
+  assert.doesNotMatch(after.stdout, /duty node path/, after.stdout);
+  assert.match(aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]).stdout, /^- put the recorded Node in persona\/duties\/ where a versioned Homebrew path is left\n   none\n/m, 'idempotent');
+});
+
 test('doctor warns when AOS_VAULT points at a directory that does not exist', () => {
   const sb = initialized();
   const bad = path.join(sb.dir, 'nope');

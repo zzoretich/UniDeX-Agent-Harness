@@ -70,3 +70,42 @@ test('isCellarPath: only a versioned Cellar path', () => {
   assert.equal(isCellarPath('/opt/homebrew/opt/node/bin/node'), false);
   assert.equal(isCellarPath(null), false);
 });
+
+test('stableNode: a versioned Node that is gone becomes its link while the link is there (the upgrade already ran)', () => {
+  const b = brew({ version: '25.1.0', opt: '25.2.0' });
+  fs.rmSync(path.join(b.prefix, 'Cellar', 'node', '25.1.0'), { recursive: true });
+  assert.equal(stableNode(b.cellar), b.opt, 'brew upgrade deleted 25.1.0; opt runs 25.2.0, the one Node left');
+  const gone = brew();
+  fs.rmSync(path.join(gone.prefix, 'Cellar'), { recursive: true });
+  assert.equal(stableNode(gone.cellar), gone.cellar, 'nothing behind the link either: unchanged');
+  const u = unidex({ version: 'v24.21.0', current: 'v24.22.0' });
+  fs.rmSync(path.dirname(path.dirname(u.versioned)), { recursive: true });
+  assert.equal(stableNode(u.versioned), u.current, 'the app moved current on and removed the old Node');
+});
+
+// The duty files hold the path inside backticks, a Bash(...) allowlist entry, quotes, after `=`, before a full stop, or
+// bare; a text regex must find each of those and nothing that only looks like one.
+test('cellarPathsIn / replaceCellarPaths: every versioned Cellar node in a text, as a duty file holds it, and nothing else', () => {
+  const { cellarPathsIn, replaceCellarPaths, CELLAR_RE } = require('./node-path.js');
+  const stable = '/opt/homebrew/opt/node/bin/node';
+  const a = '/opt/homebrew/Cellar/node/25.1.0/bin/node';
+  const b = '/usr/local/Cellar/node@22/22.20.0/bin/node';
+  const c = '/home/linuxbrew/.linuxbrew/Cellar/node/24.9.0/bin/node';
+  const cases = [
+    [`1. Run \`${a} <vault>/brain/scripts/persona/tick.js signals\` — keep the JSON.`, `1. Run \`${stable} <vault>/brain/scripts/persona/tick.js signals\` — keep the JSON.`],
+    [`tools: "Read,Bash(${b} <vault>/brain/scripts/persona/ledger.js:*),Bash(node x:*)"`, `tools: "Read,Bash(${stable} <vault>/brain/scripts/persona/ledger.js:*),Bash(node x:*)"`],
+    [c, stable], [`AOS_NODE=${a}`, `AOS_NODE=${stable}`], [`see ${a}.`, `see ${stable}.`], [`"${a}" '${a}'`, `"${stable}" '${stable}'`],
+    [`${a} ${a}`, `${stable} ${stable}`],
+    // left alone: the stable link, a file beside the node, a longer name, a path glued to a word, a relative one
+    [stable, stable], [a.replace(/bin\/node$/, 'README.md'), a.replace(/bin\/node$/, 'README.md')],
+    [`${a}.js ${a}-gyp ${a}/x`, `${a}.js ${a}-gyp ${a}/x`], [`x${a}`, `x${a}`], ['Cellar/node/25.1.0/bin/node', 'Cellar/node/25.1.0/bin/node'],
+  ];
+  for (const [input, expected] of cases) assert.equal(replaceCellarPaths(input, stable), expected, input);
+  const text = cases.map((k) => k[0]).join('\n');
+  assert.deepEqual(cellarPathsIn(text), [a, b, c], 'distinct, in order of first appearance');
+  for (const p of cellarPathsIn(text)) assert.match(p, CELLAR_RE, `${p}: a path CELLAR_RE accepts whole`);
+  assert.equal(replaceCellarPaths(text, stable), cases.map((k) => k[1]).join('\n'));
+  assert.equal(replaceCellarPaths('nothing here', stable), 'nothing here');
+  assert.equal(replaceCellarPaths(a, '$& $1'), '$& $1', 'the replacement is literal');
+  assert.deepEqual(cellarPathsIn(''), []);
+});
