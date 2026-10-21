@@ -431,6 +431,14 @@ async function doctor() {
     add('node in config', exists(cfg.node), cfg.node);
     // D12: a versioned Homebrew path disappears with the next `brew upgrade`, and every hook and schedule with it.
     if (isCellarPath(cfg.node)) add('node path', false, 'a versioned Homebrew Cellar path — re-run `aos upgrade` to record the stable link', 'warn');
+    // The duty files were rendered once with the Node of their day and are the owner's to edit: one still naming a
+    // versioned Homebrew path runs a binary `brew upgrade` deleted, and run-duty.sh's allowlist (the schedule's Node)
+    // no longer matches it — every duty "Bash denied". `aos upgrade` rewrites just that path (cli/migrations.js).
+    const stale = require('./migrations.js').staleDutyNodes(vault);
+    if (stale.length) {
+      const paths = [...new Set(stale.flatMap((d) => d.paths))].join(', ');
+      add('duty node path', false, `${stale.map((d) => path.basename(d.file)).join(', ')} still run${stale.length === 1 ? 's' : ''} a versioned Homebrew Cellar node (${paths}) — run \`aos upgrade\` to rewrite it`, 'warn');
+    }
   }
   if (hosts.claude) {
     const plugin = bin ? installedPlugin(bin) : null;
@@ -1336,6 +1344,18 @@ async function upgrade(flags) {
   });
   await act('re-vendor brain/scripts (force) and reinstall its dependencies', () => vendorRuntime(ctx, { force: true }));
   await act('seed brain/routines/ and re-render the installed schedules', () => migrateRoutines(ctx));
+  // node-path D12: the duty files were rendered once with the Node of that day; a versioned Homebrew path in them goes
+  // with the next `brew upgrade`, and run-duty.sh's allowlist (the schedule's Node) stops matching the command in the
+  // file. Nothing else re-renders a file the owner edits, so the upgrade puts the schedules' Node in its place, and
+  // changes nothing else (cli/migrations.js repairDutyNode).
+  let dutyNodeFixed = false;
+  await act('put the recorded Node in persona/duties/ where a versioned Homebrew path is left', () => {
+    const node = stableNode(cfg.node || process.execPath);
+    const fixed = require('./migrations.js').repairDutyNode({ vault, node });
+    dutyNodeFixed = fixed.length > 0;
+    if (!fixed.length) { out.log('   none'); return; }
+    for (const f of fixed) out.log(`   ${f.file}: ${f.paths.join(', ')} → ${node}`);
+  });
   const hosts = hostsOf(cfg);
   await act(`migrate ${configPath()} keys (version → ${version})`, () => {
     const next = buildUserConfig(cfg, { vault, version, bin: hosts.claude ? bin : undefined, codexBin: hosts.codex ? codexBin(cfg) : undefined });
@@ -1401,7 +1421,7 @@ async function upgrade(flags) {
   if (isDir(path.join(vault, '.obsidian', 'plugins', OBSIDIAN_PLUGIN_ID))) {
     out.log(`The Workbench is now the ${APP_NAME} app for macOS (${APP_DOWNLOAD}); once you use the app, you can remove the old Obsidian plugin folder ${path.join(vault, '.obsidian', 'plugins', OBSIDIAN_PLUGIN_ID)}.`);
   }
-  out.log(`upgraded to v${version}. Memory, notes and persona were not touched.`);
+  out.log(`upgraded to v${version}. ${dutyNodeFixed ? 'Memory and notes were not touched; in persona/duties/ only that Node path changed.' : 'Memory, notes and persona were not touched.'}`);
   try {
     await require('./migrations.js').offer(migrationsAdded, { io: { log: out.log }, vault, configDir: configDir() });
   } catch (e) { out.warn(`aos migrate: ${e.message}`); }

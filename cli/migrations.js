@@ -35,6 +35,10 @@
  *   key changed since is kept and named, as tick.md is kept once changed since; then it re-renders.
  * import --apply: the import's fast phases and the digest queue, as `aos import` runs them (cli/import.js runWith), with
  *   no workspace created unless --accept names it; --decline records it. A plain `aos import` settles it too.
+ * repairDutyNode (node-path D12, every `aos upgrade`, no choice to record): the persona interview rendered `{{NODE}}` into
+ *   persona/duties/*.md once, as the Node of that day — before cli/node-path.js, Homebrew's versioned Cellar path, which
+ *   `brew upgrade node` deletes — and the owner edits them from then on, so nothing re-renders them. The stale path in
+ *   them becomes the recorded Node; every other byte stays. staleDutyNodes is `aos doctor`'s row for the same files.
  *
  * Runs from the checkout and from the vendored copy (<vault>/brain/scripts/cli); zero dependencies; every effect
  * injectable through opts (env, configDir, vault, now, io, schedule seams, notify, importer).
@@ -42,6 +46,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { cellarPathsIn, replaceCellarPaths } = require('./node-path.js');
 
 const REPO = path.join(__dirname, '..');
 const SCHEMA = 1;
@@ -211,6 +216,48 @@ function settle(vault, id, state = 'applied', now = new Date()) {
   if (!e || e.state !== 'pending') return false;
   record(vault, id, { state }, now);
   return true;
+}
+
+// ── the duty files' Node ──────────────────────────────────────────────────────
+const DUTIES_REL = 'persona/duties';
+
+/** persona/duties/*.md: [{ file, abs, text }], file vault-relative, sorted; none without the folder. */
+function dutyFiles(vault) {
+  const dir = path.join(vault, DUTIES_REL);
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort(); } catch { return []; }
+  const out = [];
+  for (const name of names) {
+    const abs = path.join(dir, name);
+    try { out.push({ file: `${DUTIES_REL}/${name}`, abs, text: fs.readFileSync(abs, 'utf8') }); } catch { /* a folder, or unreadable: not a duty file */ }
+  }
+  return out;
+}
+
+/** The duty files that still name a versioned Homebrew Cellar node: [{ file, paths }] (`aos doctor`). */
+function staleDutyNodes(vault) {
+  return dutyFiles(vault).map(({ file, text }) => ({ file, paths: cellarPathsIn(text) })).filter((d) => d.paths.length);
+}
+
+/**
+ * `aos upgrade`, every run: puts `node` (the Node the schedules get, stableNode of the recorded one) in place of every
+ * versioned Homebrew Cellar node in persona/duties/*.md. Why: the interview rendered `{{NODE}}` into them once, and a
+ * duty file is the owner's to edit, so nothing re-renders it; a Cellar path left in one runs a binary `brew upgrade`
+ * deleted, and run-duty.sh's allowlist (built from $AOS_NODE, the schedule's Node) no longer matches the command in the
+ * file — every duty fails as "Bash denied", with nothing to say why. Only that path changes: every other byte, the
+ * owner's edits included, is kept, and a file without one is not written at all. Idempotent.
+ * → [{ file, paths }] for the files rewritten (file vault-relative, paths the ones replaced).
+ */
+function repairDutyNode({ vault, node }) {
+  if (!node) return [];
+  const done = [];
+  for (const { file, abs, text } of dutyFiles(vault)) {
+    const paths = cellarPathsIn(text).filter((p) => p !== node);
+    if (!paths.length) continue;
+    writeAtomic(abs, replaceCellarPaths(text, node));
+    done.push({ file, paths });
+  }
+  return done;
 }
 
 // ── schedules and notices ─────────────────────────────────────────────────────
@@ -556,7 +603,7 @@ function defaultAsk(question) {
 }
 
 module.exports = {
-  MIGRATIONS, IDS, STATES, SHIPPED_TICKS, AI_KEYS, TICK_REL, PRE_2_0, USAGE, UsageError, Refused,
-  main, parse, readState, recordPending, pinPrevious, settle, offer, pendingLines, statusRows,
+  MIGRATIONS, IDS, STATES, SHIPPED_TICKS, AI_KEYS, TICK_REL, DUTIES_REL, PRE_2_0, USAGE, UsageError, Refused,
+  main, parse, readState, recordPending, pinPrevious, settle, staleDutyNodes, repairDutyNode, offer, pendingLines, statusRows,
   applyLocalFirst, undoLocalFirst, applyImport, decline, tickPlan, shippedTick, resolveCtx, getKey, setKey, deleteKey, sha256,
 };

@@ -381,3 +381,53 @@ test('a failed import is not recorded as applied, through aos migrate or a plain
   assert.equal(await I.main([], { env: { CLAUDE_CONFIG_DIR: w.cfgDir }, configDir: w.cfgDir, runWith: async () => ({ code: 1, report: {} }) }), 1);
   assert.equal(entry(w, 'import').state, 'pending');
 });
+
+// node-path D12: the interview rendered {{NODE}} into the duty files once, as the Node of that day; a versioned Homebrew
+// path in them goes with the next `brew upgrade`, and run-duty.sh's allowlist (the schedule's Node) stops matching the
+// command in the file. repairDutyNode puts the recorded Node in its place and leaves every other byte, the owner's edits
+// included; a file without one is not written; staleDutyNodes is doctor's view of the same files.
+test('repairDutyNode: only the versioned Cellar node changes in persona/duties/*.md; edits, bytes and other files stay; idempotent', () => {
+  const w = world();
+  const duties = path.join(w.v, 'persona', 'duties');
+  fs.mkdirSync(duties, { recursive: true });
+  const cellar = '/opt/homebrew/Cellar/node/25.1.0/bin/node';
+  const other = '/usr/local/Cellar/node@22/22.20.0/bin/node';
+  const stable = '/opt/homebrew/opt/node/bin/node';
+  const vars = { NODE: cellar, VAULT: w.v, AGENT_NAME: 'Atlas', ADDRESS_AS: 'the owner' };
+  const rendered = (name) => Object.entries(vars).reduce((t, [k, v]) => t.split(`{{${k}}}`).join(v), fs.readFileSync(path.join(ROOT, 'vault-template', 'persona', 'duties', name), 'utf8'));
+  // tick.md as the interview rendered it, then edited by hand: a step added with the same path, a file beside the node
+  // (not one), the stable link already there once, trailing spaces and a CRLF a re-render would lose.
+  const tick = `${rendered('tick.md')}\n## Mine\n5. Then \`${cellar} ${w.v}/brain/scripts/persona/ledger.js summary --days 7\`.   \n6. Read ${cellar.replace(/bin\/node$/, 'README.md')} and \`${stable} --version\`.\r\n`;
+  assert.ok(tick.includes(`\`${cellar} ${w.v}/brain/scripts/persona/tick.js signals\``), 'the template puts the Node where the duty runs it');
+  const sitrep = rendered('sitrep.md').split(cellar).join(stable);     // already on the stable link
+  const reflect = rendered('reflect.md').split(cellar).join(other);    // another formula, another prefix
+  fs.writeFileSync(path.join(duties, 'tick.md'), tick);
+  fs.writeFileSync(path.join(duties, 'sitrep.md'), sitrep);
+  fs.writeFileSync(path.join(duties, 'reflect.md'), reflect);
+  fs.writeFileSync(path.join(duties, 'notes.txt'), `${cellar}\n`);     // not a duty file
+  const untouched = fs.statSync(path.join(duties, 'sitrep.md')).mtimeMs;
+  const stale = [{ file: 'persona/duties/reflect.md', paths: [other] }, { file: 'persona/duties/tick.md', paths: [cellar] }];
+  assert.deepEqual(M.staleDutyNodes(w.v), stale);
+  assert.deepEqual(M.repairDutyNode({ vault: w.v, node: stable }), stale);
+  assert.equal(w.read('persona/duties/tick.md'), tick.split(cellar).join(stable), 'that path wherever it is, every other byte kept');
+  assert.equal(w.read('persona/duties/reflect.md'), reflect.split(other).join(stable));
+  assert.equal(w.read('persona/duties/sitrep.md'), sitrep, 'unchanged');
+  assert.equal(fs.statSync(path.join(duties, 'sitrep.md')).mtimeMs, untouched, 'not even rewritten');
+  assert.equal(w.read('persona/duties/notes.txt'), `${cellar}\n`);
+  assert.deepEqual(M.staleDutyNodes(w.v), []);
+  assert.deepEqual(M.repairDutyNode({ vault: w.v, node: stable }), [], 'idempotent');
+  assert.equal(w.read('persona/duties/tick.md'), tick.split(cellar).join(stable));
+  // The recorded Node is itself the Cellar path the file holds (brew upgrade has not run): nothing to change; another
+  // Cellar path still becomes the recorded one, the one Node that exists.
+  fs.writeFileSync(path.join(duties, 'tick.md'), tick);
+  assert.deepEqual(M.repairDutyNode({ vault: w.v, node: cellar }), []);
+  assert.equal(w.read('persona/duties/tick.md'), tick);
+  fs.writeFileSync(path.join(duties, 'reflect.md'), reflect);
+  assert.deepEqual(M.repairDutyNode({ vault: w.v, node: cellar }), [{ file: 'persona/duties/reflect.md', paths: [other] }]);
+  assert.equal(w.read('persona/duties/reflect.md'), reflect.split(other).join(cellar));
+  assert.deepEqual(M.repairDutyNode({ vault: w.v, node: '' }), [], 'no Node to put in: nothing');
+  // No persona yet: nothing to do, nothing thrown.
+  const w2 = world();
+  assert.deepEqual(M.staleDutyNodes(w2.v), []);
+  assert.deepEqual(M.repairDutyNode({ vault: w2.v, node: stable }), []);
+});
