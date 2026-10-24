@@ -209,14 +209,14 @@ function parseMcpArgs(argv) {
     const key = eq === -1 ? kv : kv.slice(0, eq);
     const v = eq === -1 ? null : VAR_RE.exec(kv.slice(eq + 1));
     if (!ENV_KEY_RE.test(key)) throw new UsageError('aos mcp add: --env takes KEY=$VAR, KEY a variable name (letters, digits and _)');
-    if (!v) throw new UsageError(`aos mcp add: --env ${key}= takes the name of a variable, $NAME, never its value: quote it ('${key}=$NAME') so the shell leaves it as written`);
+    if (!v || lib().tokenLike(v[1])) throw new UsageError(`aos mcp add: --env ${key}= takes the name of a variable, $NAME, never its value: quote it ('${key}=$NAME') so the shell leaves it as written`);
     if (env.some((e) => e.key === key)) throw new UsageError(`aos mcp add: --env ${key} is given twice`);
     env.push({ key, var: v[1] });
   }
   let bearer = null;
   if (f.bearerEnv !== null) {
     const v = VAR_RE.exec(f.bearerEnv);
-    if (!v) throw new UsageError("aos mcp add: --bearer-env takes the name of a variable, $NAME, never its value: quote it ('$NAME') so the shell leaves it as written");
+    if (!v || lib().tokenLike(v[1])) throw new UsageError("aos mcp add: --bearer-env takes the name of a variable, $NAME, never its value: quote it ('$NAME') so the shell leaves it as written");
     bearer = v[1];
   }
   return { ...base, to: f.to, command: f.command, args: f.arg, url: f.url, env, bearerEnv: bearer };

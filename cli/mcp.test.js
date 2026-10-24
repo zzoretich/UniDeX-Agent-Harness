@@ -649,7 +649,9 @@ test('usage: park, unpark and remove take a name and --host; add takes --to, a c
     assert.match(r.stderr, msg, args.join(' '));
   }
   // A value where a variable's name belongs (the shell expanded it, or it was typed): refused, and never echoed.
-  for (const args of [['--env', `API_TOKEN=${SECRET.env}`], ['--env', 'API_TOKEN=$'], ['--env', 'API_TOKEN'], ['--env', `${SECRET.env}=$V`]]) {
+  // A token pasted after the $ is no variable's name either (tokenLike: here a known prefix).
+  const pasted = ['$', 'sk', '-fixture0003'].join('').replace('-', '_');
+  for (const args of [['--env', `API_TOKEN=${SECRET.env}`], ['--env', 'API_TOKEN=$'], ['--env', 'API_TOKEN'], ['--env', `${SECRET.env}=$V`], ['--env', `API_TOKEN=${pasted}`]]) {
     const r = aos(['add', 'x', '--to', 'claude', '--command', 'y', ...args]);
     assert.equal(r.status, 2, args.join(' '));
     assert.match(r.stderr, /--env takes KEY=\$VAR|takes the name of a variable, \$NAME, never its value/);

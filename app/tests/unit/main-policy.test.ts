@@ -64,12 +64,14 @@ test("credential files are never read, even inside a root", () => {
   assert.equal(s.canRead(`${HOME}/.codex/skills/x/SKILL.md`), true);
 });
 
-test("MCP config backups are never read: their folder is outside every root, brain/_index/backups is refused too, and no link reaches either (install-import B6)", () => {
+test("MCP config backups and parked servers are never read: their folders are outside every root, brain/_index/backups is refused too, and no link reaches either (install-import B6, connectors-tab D16)", () => {
   const s = new ReadScope(ctx());
   // Where `aos mcp copy` writes them (cli/mcp.js backupDir): each holds a whole host config, secrets included.
   const dir = `${HOME}/.local/share/unidex/backups/mcp`;
   const bak = `${dir}/codex-config.toml-20261015T142233123Z.bak`;
-  for (const p of [bak, dir, `${HOME}/.local/share/unidex/backups`, `${VAULT}/brain/_index/backups/mcp/claude-claude.json-x.bak`, `${VAULT}/brain/_index/backups`]) {
+  // And where `aos mcp park` keeps a parked server's exact entry (cli/mcp.js parkDir, connectors-tab D16).
+  const parked = `${HOME}/.local/share/unidex/parked`;
+  for (const p of [bak, dir, `${HOME}/.local/share/unidex/backups`, `${VAULT}/brain/_index/backups/mcp/claude-claude.json-x.bak`, `${VAULT}/brain/_index/backups`, parked, `${parked}/mcp`, `${parked}/mcp/codex-docs.json`]) {
     assert.equal(s.canRead(p), false, p);
     assert.equal(s.canList(p), false, p);
     assert.equal(s.canProbe(p), false, p);
@@ -156,21 +158,21 @@ test("a deny reaches a folder made after the scope was built: ~/.local turned in
 test("a check resolves the path asked once, and each denied folder once, whichever of read, list or probe asks (third review 6)", () => {
   const home = path.join(ROOT, "home-c");
   const vault = path.join(ROOT, "vault-c");
-  for (const d of [path.join(home, ".local", "share", "unidex", "backups"), path.join(home, ".local", "share", "unidex", "keys"), path.join(vault, "brain", "_index", "backups")]) fs.mkdirSync(d, { recursive: true });
+  for (const d of [path.join(home, ".local", "share", "unidex", "backups"), path.join(home, ".local", "share", "unidex", "keys"), path.join(home, ".local", "share", "unidex", "parked"), path.join(vault, "brain", "_index", "backups")]) fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(vault, "notes.md"), "x");
   let calls = 0;
   const realpath = (p: string): string => { calls++; return fs.realpathSync.native(p); };
   const s = new ReadScope({ ...ctx({ vaultRoot: vault, home }), realpath });
-  // Three denied folders, all there: one resolution each, plus the path itself.
+  // Four denied folders, all there: one resolution each, plus the path itself.
   for (const ask of [(p: string) => s.canRead(p), (p: string) => s.canList(p), (p: string) => s.canProbe(p)]) {
     calls = 0;
     assert.equal(ask(`${vault}/notes.md`), true);
-    assert.equal(calls, 4, "one walk for the path, one per denied folder");
+    assert.equal(calls, 5, "one walk for the path, one per denied folder");
   }
   fs.writeFileSync(path.join(vault, "brain", "_index", "backups", "x.bak"), "x");
   calls = 0;
   assert.equal(s.canProbe(`${vault}/brain/_index/backups/x.bak`), false);
-  assert.ok(calls <= 4, `a denied probe stops early (${calls})`);
+  assert.ok(calls <= 5, `a denied probe stops early (${calls})`);
 });
 
 test("relUnder finds a path under a folder by the folder's identity, whatever the path calls it", () => {
