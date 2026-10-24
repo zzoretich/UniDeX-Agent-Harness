@@ -1,15 +1,15 @@
-// Sessions ▸ History and Skills ▸ MCP servers (install-import B11, B6), on the fixture as it is (Claude Code on but not
-// signed in, Codex off), on a Codex-only machine, on a machine with no host, and with both hosts and the MCP servers
-// surface on. History reads the scan's session index and the digests the fixture writes (the import-digest routine's
-// output); Resume types the host's resume line into a Code terminal, whose `claude` and `codex` are the fixture's echo
-// stubs. Make available on … runs the vault's own `aos mcp copy` through the app's policy against stand-in `claude` and
-// `codex` CLIs that log their argv and write the entry the way the real ones do (app-smoke: Sessions ▸ History, Skills
-// ▸ MCP servers).
+// Sessions ▸ History and the MCP server copy (install-import B11, B6; Copy to … in a Connectors sheet since
+// connectors-tab D20), on the fixture as it is (Claude Code on but not signed in, Codex off), on a Codex-only machine, on
+// a machine with no host, and with both hosts and the MCP servers surface on. History reads the scan's session index and
+// the digests the fixture writes (the import-digest routine's output); Resume types the host's resume line into a Code
+// terminal, whose `claude` and `codex` are the fixture's echo stubs. Copy to … runs the vault's own `aos mcp copy`
+// through the app's policy against stand-in `claude` and `codex` CLIs that log their argv and write the entry the way the
+// real ones do (app-smoke: Sessions ▸ History, Connectors). The copy refused without the surface is connectors.spec.ts's.
 
 import { expect, test, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, content, expected, expectNoErrors, openTab, rail, terminalText, useApp } from "./harness";
+import { FX, content, expected, expectNoErrors, freshConnectorsCheck, openTab, rail, terminalText, useApp } from "./harness";
 
 const editJson = (file: string, fn: (j: Record<string, any>) => void) => {
   const j = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -21,14 +21,17 @@ const PROVIDER_STATE = () => FX.v("brain/_index/provider-state.json");
 
 const history = (win: Page) => content(win).locator(".aos-ss-history");
 const hrow = (win: Page, title: string) => history(win).locator(".aos-ss-hrow", { hasText: title });
-const mcpRow = (win: Page, name: string) => content(win).locator(`.aos-sk-mcprow[data-mcp="${name}"]`);
+/** A server's card on the Connectors board, and the host rows of the sheet it opens. */
+const serverCard = (win: Page, name: string) => content(win).locator(`[data-conn="s:${name}"]`).first();
+const sheetHost = (win: Page, host: string) => content(win).locator(`aside.aos-con-sheet .aos-con-hostrow[data-host="${host}"]`);
 
 /** The fixture's two digested sessions and what the scan indexed besides. */
 const CLAUDE_ROW = "Tide parser in the chart view";
 const CODEX_ROW = "Sketch the depth contours layer for the chart view";
 
 test.describe("the fixture: Claude Code on but not signed in, Codex off", () => {
-  const app = useApp();
+  // The fixture's Connectors check dated now: opening Connectors starts no check of its own.
+  const app = useApp({ prepare: freshConnectorsCheck });
 
   test("Sessions is on the rail for History and opens there: past sessions by day with the digest's line; Resume on Claude Code's rows, none on Codex's (B11)", async () => {
     const h = app();
@@ -78,27 +81,22 @@ test.describe("the fixture: Claude Code on but not signed in, Codex off", () => 
     await expect(history(win).locator(".aos-ss-hrow").first()).toBeVisible();
   });
 
-  test("Skills ▸ MCP servers: each server once with a pill per host; Make available on Claude Code for Codex's own, none to Codex (off); with the surface off it says how to run it (B6)", async () => {
+  test("Skills says MCP servers moved and opens Connectors; with Codex off a server's sheet has Claude Code's row only and nothing to copy (B6, connectors-tab D2, D20)", async () => {
     const h = app();
     const { win } = h;
     await openTab(win, "skills");
+    const moved = content(win).locator(".aos-sk-mcpmoved a");
+    await expect(moved).toHaveText("MCP servers and connectors moved to Connectors →");
+    await moved.click();
+    await expect(rail(win, "connectors")).toHaveClass(/is-active/);
     const m = expected().mcp;
-    await expect(content(win).locator(".aos-sk-mcphead")).toContainText("MCP SERVERS (4)");
-    await expect(content(win).locator(".aos-sk-mcprow")).toHaveCount(4);
-    await expect(mcpRow(win, m.claude).locator(".aos-sk-desc")).toHaveText("npx");
-    await expect(mcpRow(win, m.claude).locator(".aos-pill.is-absent")).toHaveText("codex");
-    await expect(mcpRow(win, m.both).locator(".aos-pill.is-absent")).toHaveCount(0);
-    await expect(mcpRow(win, m.remote).locator(".aos-sk-source")).toHaveText("http");
-    // Codex is off on this machine: nothing is offered to it; Codex's own server is offered to Claude Code.
-    await expect(content(win).locator('button.aos-sk-mcpcopy[data-to="codex"]')).toHaveCount(0);
-    const copy = mcpRow(win, m.codex).locator('button.aos-sk-mcpcopy[data-to="claude"]');
-    await expect(copy).toHaveText("Make available on Claude Code");
-    await expect(copy).toBeEnabled();
-    // The app's write surfaces are off here: the dry run is refused, nothing runs, and the notice names the command.
-    await copy.click();
-    await expect(win.locator(".notice-container")).toContainText(/refused; no write surface that allows it is on — or run aos mcp copy issue-tracker --to claude in the Code tab/);
-    await expect(win.locator(".aos-confirm-modal")).toHaveCount(0);
-    await expect(copy).toHaveText("Make available on Claude Code");
+    // Codex is off on this machine: its own server is not on the board, and nothing is offered to it.
+    await expect(serverCard(win, m.codex)).toHaveCount(0);
+    await serverCard(win, m.claude).click();
+    await expect(sheetHost(win, "claude")).toHaveCount(1);
+    await expect(sheetHost(win, "codex")).toHaveCount(0);
+    await expect(content(win).locator("button.aos-con-copy")).toHaveCount(0);
+    await win.keyboard.press("Escape");
     expectNoErrors(h);
   });
 });
@@ -106,6 +104,7 @@ test.describe("the fixture: Claude Code on but not signed in, Codex off", () => 
 test.describe("a Codex-only machine", () => {
   const app = useApp({
     prepare: () => {
+      freshConnectorsCheck();
       editJson(AGENTICOS, (j) => { j.hosts.claude.enabled = false; j.hosts.codex.enabled = true; });
       editJson(PROVIDER_STATE(), (j) => { j.name = "codex"; j.reason = "fixture"; j.codex = { ...(j.codex ?? {}), loggedIn: true, checkedAt: new Date().toISOString() }; });
     },
@@ -131,22 +130,22 @@ test.describe("a Codex-only machine", () => {
     expectNoErrors(h);
   });
 
-  test("Skills ▸ MCP servers: Claude Code's servers offered to Codex; a remote one off with why; nothing offered to Claude Code (off)", async () => {
+  test("Connectors: Claude Code is off, so its servers are not on the board and nothing is offered to either host (connectors-tab D20)", async () => {
     const { win } = app();
-    await openTab(win, "skills");
+    await openTab(win, "connectors");
     const m = expected().mcp;
-    await expect(mcpRow(win, m.claude).locator('button.aos-sk-mcpcopy[data-to="codex"]')).toBeEnabled();
-    const remote = mcpRow(win, m.remote).locator('button.aos-sk-mcpcopy[data-to="codex"]');
-    await expect(remote).toBeDisabled();
-    await expect(remote).toHaveAttribute("title", /A remote \(http\) server: `codex mcp add` takes a command to run/);
-    await expect(content(win).locator('button.aos-sk-mcpcopy[data-to="claude"]')).toHaveCount(0);
+    await expect(serverCard(win, m.claude)).toHaveCount(0);
+    await serverCard(win, m.codex).click();
+    await expect(sheetHost(win, "codex")).toHaveCount(1);
+    await expect(sheetHost(win, "claude")).toHaveCount(0);
+    await expect(content(win).locator("button.aos-con-copy")).toHaveCount(0);
   });
 });
 
 test.describe("no host on this Mac", () => {
-  const app = useApp({ prepare: () => editJson(AGENTICOS, (j) => { j.hosts.claude.enabled = false; j.hosts.codex.enabled = false; }) });
+  const app = useApp({ prepare: () => { freshConnectorsCheck(); editJson(AGENTICOS, (j) => { j.hosts.claude.enabled = false; j.hosts.codex.enabled = false; }); } });
 
-  test("History still lists what is on disk, with no Resume anywhere; MCP servers are listed with nothing to offer (B11 §5.6, B6)", async () => {
+  test("History still lists what is on disk, with no Resume anywhere; Connectors says no host is on and offers nothing (B11 §5.6, B6)", async () => {
     const h = app();
     const { win } = h;
     await expect(rail(win, "chat")).toHaveCount(1);
@@ -155,9 +154,10 @@ test.describe("no host on this Mac", () => {
     await expect(hrow(win, CLAUDE_ROW)).toHaveCount(1);
     await expect(hrow(win, CODEX_ROW)).toHaveCount(1);
     await expect(history(win).locator("button.aos-ss-hresume")).toHaveCount(0);
-    await openTab(win, "skills");
-    await expect(content(win).locator(".aos-sk-mcprow")).toHaveCount(4);
-    await expect(content(win).locator("button.aos-sk-mcpcopy")).toHaveCount(0);
+    await openTab(win, "connectors");
+    await expect(content(win).locator(".aos-con-banner")).toHaveText("No host is on for this vault: Settings ▸ Hosts adds Claude Code or Codex.");
+    await expect(content(win).locator(".aos-con-card")).toHaveCount(0);
+    await expect(content(win).locator("button.aos-con-check")).toBeDisabled();
     expectNoErrors(h);
   });
 });
@@ -192,6 +192,8 @@ test.describe("both hosts, the MCP servers surface on", () => {
         j.codex = { loggedIn: true, checkedAt: at };
       });
       installMcpStubs();
+      // Checked a moment ago: with surfaces on, a check of its own would start every server the fixture names.
+      freshConnectorsCheck();
     },
   });
 
@@ -206,13 +208,15 @@ test.describe("both hosts, the MCP servers surface on", () => {
     await expect(hrow(win, CODEX_ROW).locator("button.aos-ss-hresume")).toBeEnabled();
   });
 
-  test("Make available on Codex: the dry run's exact command and file in the confirm, nothing on Cancel; Add backs config.toml up and runs `codex mcp add` with the real values", async () => {
+  test("Copy to Codex: the dry run's exact command and file in the confirm, nothing on Cancel; Add backs config.toml up and runs `codex mcp add` with the real values", async () => {
     const h = app();
     const { win } = h;
-    await openTab(win, "skills");
+    await openTab(win, "connectors");
     const toml = path.join(FX.home, ".codex", "config.toml");
     const before = fs.readFileSync(toml, "utf8");
-    const copy = mcpRow(win, "docs-search").locator('button.aos-sk-mcpcopy[data-to="codex"]');
+    await serverCard(win, "docs-search").click();
+    const copy = sheetHost(win, "codex").locator('button.aos-con-copy[data-to="codex"]');
+    await expect(copy).toHaveText("Copy to Codex");
     await copy.click();
     const modal = win.locator(".aos-confirm-modal");
     await expect(modal.locator("h3")).toHaveText("Make docs-search available on Codex?");
@@ -240,17 +244,22 @@ test.describe("both hosts, the MCP servers surface on", () => {
     // The page cannot read it: main refuses a backup's path whatever asks (read-scope deniedDirs).
     const read = await win.evaluate((p) => (window as unknown as { aos: { fs: { readText(p: string): Promise<{ ok: boolean; error?: string }> } } }).aos.fs.readText(p), path.join(dir, backups[0]));
     expect(read).toMatchObject({ ok: false });
-    // Listed again: the row has both pills now and nothing to offer.
-    await expect(mcpRow(win, "docs-search").locator(".aos-pill.is-absent")).toHaveCount(0);
-    await expect(mcpRow(win, "docs-search").locator("button.aos-sk-mcpcopy")).toHaveCount(0);
+    // Listed again (aos mcp list): the card is on both hosts now, and its sheet has nothing to offer.
+    await expect(serverCard(win, "docs-search").locator(".aos-con-dot.is-codex:not(.is-absent)")).toHaveCount(1);
+    await expect(sheetHost(win, "codex").locator(".aos-con-scope")).toHaveText("user · ~/.codex/config.toml");
+    await expect(content(win).locator("button.aos-con-copy")).toHaveCount(0);
+    // Esc closes the sheet though the confirm took the focus away from it.
+    await win.keyboard.press("Escape");
+    await expect(content(win).locator("aside.aos-con-sheet")).toHaveCount(0);
     expectNoErrors(h);
   });
 
-  test("Make available on Claude Code: `claude mcp add-json --scope user` with Codex's command, args and env", async () => {
+  test("Copy to Claude Code: `claude mcp add-json --scope user` with Codex's command, args and env", async () => {
     const h = app();
     const { win } = h;
-    await openTab(win, "skills");
-    await mcpRow(win, "issue-tracker").locator('button.aos-sk-mcpcopy[data-to="claude"]').click();
+    await openTab(win, "connectors");
+    await serverCard(win, "issue-tracker").click();
+    await sheetHost(win, "claude").locator('button.aos-con-copy[data-to="claude"]').click();
     const modal = win.locator(".aos-confirm-modal");
     await expect(modal.locator("pre.aos-confirm-detail")).toContainText(`claude mcp add-json --scope user issue-tracker '{"type":"stdio","command":"issue-mcp","args":["--stdio"],"env":{"LOG_LEVEL":"<redacted>"}}'`);
     await expect(modal.locator("pre.aos-confirm-detail")).toContainText("Writes ~/.claude.json");
@@ -258,7 +267,8 @@ test.describe("both hosts, the MCP servers surface on", () => {
     await expect(win.locator(".notice-container")).toContainText("issue-tracker is on Claude Code now");
     expect(stubCalls().filter((c) => c.cli === "claude")).toEqual([{ cli: "claude", argv: ["mcp", "add-json", "--scope", "user", "issue-tracker", JSON.stringify({ type: "stdio", command: "issue-mcp", args: ["--stdio"], env: { LOG_LEVEL: "warn" } })] }]);
     expect(JSON.parse(fs.readFileSync(path.join(FX.home, ".claude.json"), "utf8")).mcpServers["issue-tracker"]).toEqual({ type: "stdio", command: "issue-mcp", args: ["--stdio"], env: { LOG_LEVEL: "warn" } });
-    await expect(mcpRow(win, "issue-tracker").locator(".aos-pill.is-absent")).toHaveCount(0);
+    await expect(serverCard(win, "issue-tracker").locator(".aos-con-dot.is-claude:not(.is-absent)")).toHaveCount(1);
+    await expect(sheetHost(win, "claude").locator(".aos-con-scope")).toHaveText("user · ~/.claude.json");
     expectNoErrors(h);
   });
 });

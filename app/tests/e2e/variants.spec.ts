@@ -138,7 +138,7 @@ test.describe("a provider on record, Claude Code signed in", () => {
     const { win } = app();
     const ids = await win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
     expect(ids.slice(0, 4)).toEqual(["notifications", "pulse", "term", "chat"]);
-    // All fourteen buttons and the two lines, Sessions included (spec 2026-10-09-rail-sections-code D1, D5).
+    // All fifteen buttons and the two lines, Sessions included (spec 2026-10-09-rail-sections-code D1, D5).
     const seq = await win.locator(".aos-wb-railtabs > *").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab ?? (e.classList.contains("aos-wb-railsep") ? "|" : "?")));
     expect(seq).toEqual(RAIL_SECTIONS.map((s) => s.join(",")).join(",|,").split(","));
     await expect(win.locator(".aos-wb-railsep[role='separator']")).toHaveCount(2);
