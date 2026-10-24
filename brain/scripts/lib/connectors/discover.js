@@ -38,7 +38,6 @@ const P = require('./plugins.js');
 const CLAUDE_AI = 'claude.ai ';
 
 function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
-function str(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
 
 /** `~/…` for a path under home, else the path; null stays null. */
 function shown(p, home) { return p ? C.tilde(p, home) : null; }
