@@ -532,7 +532,7 @@ test("the MCP servers surface runs `aos mcp copy` as the page builds it, dry run
   assert.equal(SURFACES.find((s) => s.id === "mcp")?.verified, true, "on by default since its live check copied a server each way");
 });
 
-test("MCP server changes (mcp-manage) runs park, Turn on, remove and add exactly as the page builds them, dry run or real; off by default; it writes nothing (connectors-tab D16–D18, D21)", () => {
+test("MCP server changes (mcp-manage) runs park, Turn on, remove and add exactly as the page builds them, dry run or real; on by default since its live check; it writes nothing (connectors-tab D16–D18, D21)", () => {
   const p = new WritePolicy(VAULT, ["mcp-manage"]);
   const others = new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "mcp-manage"));
   const cli = (a: readonly string[]): string[] => [`${S}/cli/aos.js`, ...a];
@@ -581,7 +581,7 @@ test("MCP server changes (mcp-manage) runs park, Turn on, remove and add exactly
   assert.equal(p.canSpawn(NODE, cli(["mcp", "add", "gh", "--to", "claude", "--command", "npx", "--arg", "--dry-run", "--dry-run", "--json"])), true);
   assert.equal(p.canSpawn(NODE, cli(["mcp", "add", "gh", "--to", "claude", "--command", "npx", "--arg", "--dry-run", "--json"])), false, "its value taken, no tail is left");
   for (const rel of ["brain/_index/connectors.json", "brain/_index/mcp-servers.json"]) assert.equal(p.canWrite(v(rel)), false, rel);
-  assert.equal(SURFACES.find((s) => s.id === "mcp-manage")?.verified, false, "off by default until a live check per host");
+  assert.equal(SURFACES.find((s) => s.id === "mcp-manage")?.verified, true, "on by default since its live check parked, turned on, removed and added a server on each host (2026-10-24)");
   assert.equal(new WritePolicy(VAULT, ["mcp"]).canSpawn(NODE, cli(hostArgs("park", "docs", "claude", true))), false, "the copy's surface does not admit these");
   assert.deepEqual(parseSurfaces("mcp,mcp-manage").ids, ["mcp", "mcp-manage"]);
 });
