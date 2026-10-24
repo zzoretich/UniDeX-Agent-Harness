@@ -30,7 +30,7 @@ const MAX_NOTIFICATIONS = 300;
 const PIPELINE_STALE_MS = {
   'scan-vault': 45 * 60e3, 'session-summary': 24 * 3600e3, 'auto-cost': 24 * 3600e3, 'auto-cost-backfill': 7 * 24 * 3600e3,
   'heartbeat-writer': 45 * 60e3, 'file-map': null, 'auto-wrap': 24 * 3600e3, 'build-brain-md': 45 * 60e3, 'embed-vault': null,
-  'graph-build': null, 'graph-semantic': null, 'brain-hub': null,
+  'graph-build': null, 'graph-semantic': null, 'brain-hub': null, connectors: null,
 };
 const UNKNOWN_STALE_MS = 60 * 60e3;
 const DIED_AFTER_MS = 10 * 60e3;

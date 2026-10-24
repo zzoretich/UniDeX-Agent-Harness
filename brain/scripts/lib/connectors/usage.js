@@ -145,7 +145,10 @@ function collectUsage({ vault, userConfig = null, env = process.env, now = Date.
   };
   if (write && vault) {
     if (dirty) fsx.writeAtomic(idxPath, JSON.stringify({ schema: SCHEMA, files }) + '\n');
-    fsx.writeAtomic(outFile(vault), JSON.stringify(result, null, 2) + '\n');
+    // The rows only when they changed, so a scan with nothing new fires no vault change (and no redraw).
+    const prevRows = C.readJson(outFile(vault));
+    const same = prevRows && prevRows.schema === SCHEMA && prevRows.days === span && JSON.stringify(prevRows.rows) === JSON.stringify(result.rows);
+    if (!same) fsx.writeAtomic(outFile(vault), JSON.stringify(result, null, 2) + '\n');
   }
   return result;
 }

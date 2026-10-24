@@ -252,14 +252,16 @@ function listServers(host, opts) {
   return host === 'codex' ? codexServers(opts) : claudeServers(opts);
 }
 
-/** Write the listing for `hosts`, keeping the other host's rows. → { file, servers, counts: { host: n } } */
-function writeServers(vault, hosts, byHost, { now = new Date() } = {}) {
+/** Write the listing for `hosts`, keeping the other host's rows. ifChanged (lib/connectors, on every scan) leaves an
+ *  unchanged listing as it is. → { file, servers, written } */
+function writeServers(vault, hosts, byHost, { now = new Date(), ifChanged = false } = {}) {
   const prev = C.readJson(outFile(vault));
   const kept = prev && Array.isArray(prev.servers) ? prev.servers.filter((s) => s && !hosts.includes(s.host)) : [];
   const servers = [...kept, ...hosts.flatMap((h) => byHost[h] || [])]
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.host < b.host ? -1 : 1));
+  if (ifChanged && prev && prev.schema === C.SCHEMA && JSON.stringify(prev.servers) === JSON.stringify(servers)) return { file: outFile(vault), servers, written: false };
   require('../fsx.js').writeAtomic(outFile(vault), JSON.stringify({ schema: C.SCHEMA, updatedAt: now.toISOString(), servers }, null, 2) + '\n');
-  return { file: outFile(vault), servers };
+  return { file: outFile(vault), servers, written: true };
 }
 
 module.exports = {

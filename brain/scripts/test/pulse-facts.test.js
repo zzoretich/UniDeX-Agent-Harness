@@ -40,7 +40,7 @@ test('the fixture: needs-you in tier order (broken, decisions, stale, breaking, 
 
 test('the fixture: the summary per area', () => {
   const s = factsOf().summary;
-  assert.deepEqual(s.health, { errors: 1, warnings: 2, notes: 1, pipelines: { total: 12, ok: 1, neutral: 9, stale: 1, failed: 1 } });
+  assert.deepEqual(s.health, { errors: 1, warnings: 2, notes: 1, pipelines: { total: 13, ok: 1, neutral: 10, stale: 1, failed: 1 } });
   assert.deepEqual(s.decisions, { proposals: 2, gates: 1, flags: 2, drafts: 2, oldestDays: 16 });
   assert.deepEqual(s.notifications, { total: 4, unread: 3, breaking: 1, alerts: 0, latest: { title: 'The Evening News', from: 'news', created: '2026-10-08T18:01:00' } });
   assert.deepEqual(s.todo, { open: 4, done: 1, overdue: 1, today: 1 });

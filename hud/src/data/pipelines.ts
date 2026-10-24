@@ -66,6 +66,9 @@ export const PIPELINES_MANIFEST: Record<string, PipelineManifestEntry> = {
   // The Brain hub's cache and the usage fold (spec 2026-10-11-brain-hub D12): a scan-vault stage like embed-vault, so
   // its rerun is the scan and freshness follows the scan's own window.
   "brain-hub":          { short: "HUB",      staleMs: null,                  safeRerun: { script: "brain/scripts/scan-vault.js", args: ["--quiet"] } },
+  // Every MCP server and connector both hosts can use, and their use (spec 2026-10-23-connectors-tab D8, D13): a
+  // scan-vault stage from files alone, so its rerun is the scan. The live check is the Connectors tab's own.
+  "connectors":         { short: "CONN",     staleMs: null,                  safeRerun: { script: "brain/scripts/scan-vault.js", args: ["--quiet"] } },
 };
 const DIED_AFTER_MS = 10 * 60_000;
 
