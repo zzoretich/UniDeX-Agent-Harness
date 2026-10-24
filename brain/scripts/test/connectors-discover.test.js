@@ -187,3 +187,28 @@ test('workspace folders and trust: _ folders skipped, repo: expanded, quoted pro
   assert.equal(D.approvalOf(undefined, 'x'), 'pending');
   assert.equal(D.approvalOf({ enableAllProjectMcpServers: true }, 'x'), 'approved');
 });
+
+test('discovery: a parked server (aos mcp park, D16) is a user row, off and parked, per host; its stash\'s secrets never reach it; a name the host declares again, a stash for the other host or one that does not parse is not listed', () => {
+  const w = world();
+  const dir = D.parkDir(w.home);
+  write(path.join(dir, 'claude-quiet.json'), { schema: 1, host: 'claude', name: 'quiet', entry: { type: 'stdio', command: '/opt/tools/quiet-mcp', args: ['--token', MARK], env: { TOKEN: MARK } } });
+  write(path.join(dir, 'codex-faraway.json'), { schema: 1, host: 'codex', name: 'faraway', entry: { url: `https://far.example.com/mcp?key=${MARK}`, bearer_token_env_var: 'FAR' } });
+  // The host has `docs` again: the user row wins. A stash under another name, and one that does not parse.
+  write(path.join(dir, 'claude-docs.json'), { schema: 1, host: 'claude', name: 'docs', entry: { command: 'old-docs' } });
+  write(path.join(dir, 'claude-liar.json'), { schema: 1, host: 'codex', name: 'liar', entry: { command: 'x' } });
+  write(path.join(dir, 'codex-broken.json'), '{ not json');
+  const d = D.discover({ vault: w.vault, userConfig: w.userConfig, env: w.env, home: w.home });
+  const parked = d.rows.filter((r) => r.parked);
+  assert.deepEqual(parked.map((r) => [r.host, r.name, r.scope, r.enabled, r.command || r.url, r.kind]), [
+    ['codex', 'faraway', 'user', false, 'https://far.example.com/mcp', 'server'],
+    ['claude', 'quiet', 'user', false, '/opt/tools/quiet-mcp', 'server'],
+  ]);
+  assert.equal(parked.find((r) => r.name === 'quiet').file, '~/.claude.json');
+  assert.equal(parked.find((r) => r.name === 'faraway').file, '~/.codex/config.toml');
+  assert.equal(d.rows.filter((r) => r.host === 'claude' && r.name === 'docs').length, 1);
+  assert.equal(d.rows.find((r) => r.host === 'claude' && r.name === 'docs').parked, undefined);
+  assert.ok(!d.rows.some((r) => r.name === 'liar' || r.name === 'broken'));
+  assert.ok(!JSON.stringify(d).includes(MARK));
+  const claudeOnly = D.discover({ vault: w.vault, userConfig: { ...w.userConfig, hosts: { claude: { enabled: true }, codex: { enabled: false } } }, env: w.env, home: w.home });
+  assert.deepEqual(claudeOnly.rows.filter((r) => r.parked).map((r) => r.name), ['quiet']);
+});
