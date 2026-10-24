@@ -2,6 +2,17 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.2.0",
+      "entries": [
+        {
+          "id": "connectors",
+          "title": "Connectors: every MCP server, on both hosts",
+          "body": "A new tab after Skills finds every MCP server and connector Claude Code and Codex can use, checks which work, lists their tools and counts their calls over 30 days. What failed comes first with one fix, and the rail's badge counts it. Copy to … moved here from Skills.",
+          "steps": ["connectors.tiles", "connectors.attention", "connectors.servers"]
+        }
+      ]
+    },
+    {
       "version": "2.1.0",
       "entries": [
         {
