@@ -343,7 +343,7 @@ fi
 cat "$OUT" >> "$LOG"
 if [ -n "$NODE" ] && [ -x "$NODE" ] && [ -f "$RECORD" ] && [ -s "$OUT" ]; then
   SPEND_MODEL="$MODEL"; [ "$RUNNER" = "codex" ] && SPEND_MODEL="${CODEX_MODEL:-codex-default}"
-  AOS_VAULT="$VAULT" AOS_CONFIG="$CONFIG" "$NODE" "$RECORD" --file "$OUT" --feature "duty:$DUTY" --model "$SPEND_MODEL" >> "$LOG" 2>> "$ERR" || true
+  AOS_VAULT="$VAULT" AOS_CONFIG="$CONFIG" "$NODE" "$RECORD" --file "$OUT" --feature "duty:$DUTY" --model "$SPEND_MODEL" --allowed "$ALLOWED" >> "$LOG" 2>> "$ERR" || true
 fi
 rm -f "$OUT" "$OUT.msg"; [ -n "$IN" ] && rm -f "$IN"
 

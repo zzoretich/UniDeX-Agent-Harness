@@ -463,3 +463,25 @@ test('mainTriage prints one JSON line and returns the woken duty\'s exit', async
   assert.deepEqual(line.changes, ['first triage']);
   assert.equal(line.decision.by, 'rules');
 });
+
+// Spec 2026-10-24-persona-learning-loop-design D11: a duty that was refused tool calls is news, with the refused call
+// and the rule it came closest to in the title, so a wrong node spelling is visible without reading the duty log.
+test('signals: a duty run refused tool calls since the last beat is a duty-denied candidate; queue takes the type', () => {
+  const v = vault(); const d = deps(v);
+  const SINCE = at(-HOUR + 60e3);
+  T.precheck({ deps: d }); T.beat({ deps: d, now: SINCE });
+  const near = 'Bash(/opt/homebrew/Cellar/node/26.0.0/bin/node /srv/vault/brain/scripts/persona/tick.js:*)';
+  const rec = (ts, duty) => JSON.stringify({ schema: 1, ts, duty, model: 'm', count: 2, denied: [
+    { tool: 'Bash', input: '/opt/homebrew/opt/node/bin/node /srv/vault/brain/scripts/persona/tick.js signals', near }, { tool: 'Edit', input: 'x', near: null }] });
+  const fresh = at(-10 * 60e3).toISOString();
+  fs.writeFileSync(path.join(v, 'brain', '_index', 'duty-denials.jsonl'), `${rec(at(-2 * HOUR).toISOString(), 'monitor')}\n${rec(fresh, 'tick')}\nnot json\n`);
+  const dd = T.signals({ deps: d }).candidates.filter((c) => c.type === 'duty-denied');
+  assert.equal(dd.length, 1, 'the run before the last beat was already seen');
+  assert.equal(dd[0].source, `brain/_index/duty-denials.jsonl#tick@${fresh}`);
+  assert.equal(dd[0].title, `duty 'tick': 2 tool call(s) denied, e.g. Bash \`/opt/homebrew/opt/node/bin/node /srv/vault/brain/scripts/persona/tick.js signals\`; nearest allowed rule ${near}`);
+  assert.equal(dd[0].queued, false);
+  const q = T.queue({ type: 'duty-denied', source: dd[0].source, note: 'the rule names the Cellar node', deps: d });
+  assert.equal(q.duplicate, false);
+  assert.equal(q.record.type, 'duty-denied');
+  assert.equal(T.signals({ deps: d }).candidates.find((c) => c.type === 'duty-denied').queued, true);
+});

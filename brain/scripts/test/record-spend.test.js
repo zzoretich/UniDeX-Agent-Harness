@@ -123,3 +123,51 @@ test('a codex --json event stream is recognised and priced as an estimate; claud
   assert.equal(written.provider, 'codex');
   assert.equal(written.inputTokens, 2000);
 });
+
+// Spec 2026-10-24-persona-learning-loop-design D11 — the denial seen live: the duty prompt named the stable node link,
+// the routine's rule the versioned Cellar node, and dontAsk refused the call. Each refused call is paired with the rule
+// that names the same script, so the next run (and the owner) can see why.
+test('deniedCalls pairs each refused call with the allow rule naming the same script; a folder argument names none', () => {
+  const { deniedCalls, nearRule } = require('../persona/record-spend.js');
+  const cellar = 'Bash(/opt/homebrew/Cellar/node/26.0.0/bin/node /srv/vault/brain/scripts/persona/tick.js:*)';
+  const allowed = `Read,Glob,Bash(date:*),${cellar},Edit(//srv/vault/persona/STATE.md)`;
+  const json = { total_cost_usd: 0.29, permission_denials: [
+    { tool_name: 'Bash', tool_use_id: 't1', tool_input: { command: '/opt/homebrew/opt/node/bin/node /srv/vault/brain/scripts/persona/tick.js signals', description: 'x' } },
+    { tool_name: 'Edit', tool_use_id: 't2', tool_input: { file_path: '/srv/vault/brain/sessions/2026-10-20.md', old_string: 'a', new_string: 'b' } },
+    { tool_name: 'Bash', tool_use_id: 't3', tool_input: { command: 'git -C /srv/vault status --porcelain' } },
+  ] };
+  assert.deepEqual(deniedCalls(json, allowed), [
+    { tool: 'Bash', input: '/opt/homebrew/opt/node/bin/node /srv/vault/brain/scripts/persona/tick.js signals', near: cellar },
+    { tool: 'Edit', input: '/srv/vault/brain/sessions/2026-10-20.md', near: null },
+    { tool: 'Bash', input: 'git -C /srv/vault status --porcelain', near: null },
+  ]);
+  assert.equal(nearRule('node brain/scripts/persona/tick.js signals', allowed), cellar, 'a relative spelling finds it too');
+  assert.deepEqual(deniedCalls({ permission_denials: [] }, allowed), []);
+  assert.deepEqual(deniedCalls(null, allowed), [], 'a codex stream or unparsable output has none');
+  assert.equal(deniedCalls({ permission_denials: Array.from({ length: 14 }, () => json.permission_denials[0]) }).length, 10, 'at most 10');
+});
+
+test('record-spend.js --file writes brain/_index/duty-denials.jsonl for a refused run, nothing for a clean one', () => {
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'record-spend-denials-'));
+  fs.mkdirSync(path.join(vault, 'brain', '_index'), { recursive: true });
+  const script = path.join(__dirname, '..', 'persona', 'record-spend.js');
+  const env = { ...process.env, AOS_VAULT: vault, AOS_CONFIG: path.join(vault, 'no-agenticos.json') };
+  const out = path.join(vault, 'out.json');
+  const denials = path.join(vault, 'brain', '_index', 'duty-denials.jsonl');
+  const rule = 'Bash(/usr/local/bin/node /srv/vault/brain/scripts/persona/reflect.js:*)';
+  fs.writeFileSync(out, JSON.stringify({ total_cost_usd: 0.31, usage: {}, permission_denials: [
+    { tool_name: 'Bash', tool_input: { command: '/opt/homebrew/opt/node/bin/node /srv/vault/brain/scripts/persona/reflect.js inputs --days 7' } }] }));
+  const r = spawnSync(process.execPath, [script, '--file', out, '--feature', 'duty:reflect-daily', '--model', 'm', '--allowed', `Read,${rule}`], { env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"denials":1/);
+  const lines = fs.readFileSync(denials, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].schema, 1);
+  assert.equal(lines[0].duty, 'reflect-daily');
+  assert.equal(lines[0].count, 1);
+  assert.equal(lines[0].denied[0].near, rule);
+  fs.writeFileSync(out, JSON.stringify({ total_cost_usd: 0.1, usage: {}, permission_denials: [] }));
+  assert.equal(spawnSync(process.execPath, [script, '--file', out, '--feature', 'duty:tick', '--model', 'm', '--allowed', ''], { env, encoding: 'utf8' }).status, 0);
+  assert.equal(fs.readFileSync(denials, 'utf8').trim().split('\n').length, 1, 'a clean run adds nothing');
+  fs.rmSync(vault, { recursive: true, force: true });
+});

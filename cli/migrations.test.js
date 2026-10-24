@@ -67,7 +67,7 @@ test('recordPending: an upgrade from before 2.0.0 records both once; from 2.0.0 
   assert.deepEqual(M.recordPending({ vault: w.v, from: '1.9.0', now: NOW }), ['local-first', 'import']);
   assert.deepEqual(w.state().migrations.map((m) => [m.id, m.state, m.since, m.from]), [['local-first', 'pending', '2.0.0', '1.9.0'], ['import', 'pending', '2.0.0', '1.9.0']]);
   assert.deepEqual(M.recordPending({ vault: w.v, from: '1.9.0', now: NOW }), [], 'never one already recorded');
-  M.decline(M.resolveCtx(w.opts), 'local-first');
+  M.decline(M.resolveCtx(w.opts), 'local-first', w.opts);
   assert.deepEqual(M.recordPending({ vault: w.v, from: '1.8.0', now: NOW }), [], 'a declined one stays declined');
   const w2 = world();
   assert.deepEqual(M.recordPending({ vault: w2.v, from: '2.0.0', now: NOW }), []);
@@ -210,11 +210,11 @@ test('--decline records the choice and changes nothing; a declined one can still
   const files = () => [fs.readFileSync(w.cfgFile, 'utf8'), w.read('brain/config.json'), w.read(M.TICK_REL)];
   const before = files();
   const ctx = M.resolveCtx(w.opts);
-  assert.equal(M.decline(ctx, 'local-first').state, 'declined');
+  assert.equal(M.decline(ctx, 'local-first', w.opts).state, 'declined');
   assert.deepEqual(files(), before);
   assert.equal(w.calls.installs, 0);
   assert.equal(M.applyLocalFirst(ctx, { chief: false }, w.opts).state, 'applied');
-  assert.throws(() => M.decline(ctx, 'local-first'), /--undo puts your settings back/);
+  assert.throws(() => M.decline(ctx, 'local-first', w.opts), /--undo puts your settings back/);
 });
 
 test('import --apply runs the import from both hosts and records it; import --decline records only', async () => {
@@ -332,8 +332,11 @@ test('declining an apply that stopped half way puts the settings back first, the
   const ctx = M.resolveCtx(w.opts);
   fs.chmodSync(path.join(w.v, 'brain'), 0o555);
   try { assert.throws(() => M.applyLocalFirst(ctx, { chief: true }, w.opts)); } finally { fs.chmodSync(path.join(w.v, 'brain'), 0o755); }
-  const d = M.decline(ctx, 'local-first');
+  const d = M.decline(ctx, 'local-first', w.opts);
   assert.equal(d.state, 'declined');
+  // The settings put back are re-rendered through the injected seam: without it, rerender() reached the real
+  // schedule.installSchedules and rewrote the owner's LaunchAgents (spec 2026-10-24-persona-learning-loop-design D11).
+  assert.equal(w.calls.installs, 1, 'the re-render went through opts.installSchedules');
   assert.deepEqual(w.user(), userBefore, 'nothing half-local is left behind a "keep my settings"');
 });
 

@@ -37,6 +37,9 @@
  *                repo-stall    a tracked repo (persona/repos.json) whose .planning/STATE.md idled past the threshold
  *                regressed     an approved proposal the ledger marked regressed since the last beat
  *                flag-aged     a `- [ ] <date>` flag in STATE.md older than persona.tick.flagAgeDays (default 7)
+ *                duty-denied   a duty run refused tool calls since the last beat (brain/_index/duty-denials.jsonl, written
+ *                              by record-spend.js), titled with the first refused call and the allow rule it came closest
+ *                              to (spec 2026-10-24-persona-learning-loop-design D11)
  *   queue <type> --source <ptr> [--note <text>]
  *              appends one line to <vault>/persona/queue.jsonl — { schema: 1, ts, type, source, note, by: "tick" } —
  *              unless the same (type, source) is already queued. Slice 3's daily reflect drains the queue.
@@ -65,7 +68,7 @@ const path = require('path');
 const { assertPinned } = require('../lib/pin-root.js');
 
 const SCHEMA = 1;
-const TYPES = ['correction', 'duty-failure', 'repo-stall', 'regressed', 'flag-aged'];
+const TYPES = ['correction', 'duty-failure', 'repo-stall', 'regressed', 'flag-aged', 'duty-denied'];
 const EXIT_UNCHANGED = 3;
 const DEFAULT_FLAG_AGE_DAYS = 7;
 const DEFAULT_EARLY_REFLECT = { corrections: 3, dutyFailures: 2 };
@@ -109,6 +112,7 @@ function files(deps) {
   return {
     state: path.join(v, 'brain', '_index', 'persona-tick.json'),
     heartbeat: path.join(v, 'brain', '_index', 'persona-heartbeat.json'),
+    denials: path.join(v, 'brain', '_index', 'duty-denials.jsonl'),
     queue: path.join(v, 'persona', 'queue.jsonl'),
     ledger: path.join(v, 'persona', 'ledger.jsonl'),
     stateMd: path.join(v, 'persona', 'STATE.md'),
@@ -579,6 +583,15 @@ function signals({ deps = defaultDeps(), now = deps.now() } = {}) {
     const at = Date.parse(e.ts);
     if (Number.isFinite(at) && at <= since) continue;
     out.push({ type: 'regressed', source: `${rel(deps, f.ledger)}#${e.slug}`, title: `approved proposal '${e.slug}' regressed`, at: e.ts || null });
+  }
+
+  for (const d of readJsonl(f.denials)) {
+    const at = Date.parse(d.ts);
+    if (typeof d.duty !== 'string' || !Number.isFinite(at) || at <= since) continue;
+    const first = (Array.isArray(d.denied) && d.denied[0]) || {};
+    const near = first.near ? `; nearest allowed rule ${String(first.near).slice(0, 160)}` : '; no allowed rule names it';
+    out.push({ type: 'duty-denied', source: `${rel(deps, f.denials)}#${d.duty}@${d.ts}`,
+      title: `duty '${d.duty}': ${d.count || 1} tool call(s) denied, e.g. ${first.tool || 'a tool'} \`${String(first.input || '').slice(0, 120)}\`${near}`, at: d.ts });
   }
 
   let stateMd = '';

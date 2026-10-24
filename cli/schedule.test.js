@@ -310,3 +310,31 @@ test('removeSchedule takes one routine out and touches nothing else (install-imp
   const none = S.removeSchedule({ slug: 'brief', platform: 'linux', readCrontab: () => tab, writeCrontab: () => { throw new Error('nothing to write'); } });
   assert.deepEqual(none.removed, []);
 });
+
+// Spec 2026-10-24-persona-learning-loop-design D11: a test that reached the defaults rewrote the owner's tick plist and
+// deleted the legacy duties' plists. Under the test runner the real LaunchAgents folder and the real launchctl/crontab
+// are refused. Every probe below is harmless even if the guard regressed: a read, a remove of a slug that never existed,
+// and `crontab -l`.
+test('under the test runner the real LaunchAgents folder and the real launchctl/crontab are refused', () => {
+  const real = S.realLaunchAgentsDir();
+  const unsafe = (e) => e && e.code === 'UNSAFE_TEST_ENV';
+  assert.equal(real, path.join(os.userInfo().homedir, 'Library', 'LaunchAgents'), 'the account home, whatever HOME says');
+  const v = vault([]);
+  assert.throws(() => S.isInstalled({ platform: 'darwin', vault: v.dir, launchAgentsDir: real }), unsafe);
+  assert.throws(() => S.removeSchedule({ slug: 'aos-guard-probe-never-a-routine', platform: 'darwin', launchAgentsDir: real, exec: () => {} }), unsafe);
+  assert.throws(() => S.refuseRealLaunchAgents(v.launchAgentsDir, v.launchAgentsDir), unsafe, 'an injected real dir is refused too');
+  assert.doesNotThrow(() => S.refuseRealLaunchAgents(v.launchAgentsDir), 'a temp folder is fine');
+  assert.equal(S.isInstalled({ platform: 'darwin', vault: v.dir, launchAgentsDir: v.launchAgentsDir }), false);
+
+  const saved = process.env.AOS_CRONTAB_BIN;
+  try {
+    delete process.env.AOS_CRONTAB_BIN;
+    assert.throws(() => S.defaultExec('crontab', ['-l'], { stdio: 'ignore' }), unsafe);
+    const fake = path.join(v.dir, 'fake-crontab');
+    fs.writeFileSync(fake, '#!/bin/sh\necho "fake $*"\n', { mode: 0o755 });
+    process.env.AOS_CRONTAB_BIN = fake;
+    assert.equal(String(S.defaultExec('crontab', ['-l'], { encoding: 'utf8' })).trim(), 'fake -l', 'the seam still runs');
+  } finally {
+    if (saved === undefined) delete process.env.AOS_CRONTAB_BIN; else process.env.AOS_CRONTAB_BIN = saved;
+  }
+});

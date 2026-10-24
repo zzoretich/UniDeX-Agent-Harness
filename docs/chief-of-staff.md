@@ -243,8 +243,9 @@ when the triage wakes it:
    `ledger.js summary` — no git) as `PERSONA_MAX_USD` and `PERSONA_TOOLS`. The duty runs `tick.js signals`, which
    lists the candidates since the last beat with a source pointer each — `correction` (a feedback file or draft),
    `duty-failure` (a failed or missed beat), `repo-stall` (`.planning/STATE.md` idle past `stall_threshold_days`),
-   `regressed` (a ledger event) and `flag-aged` (a `- [ ] <date>` flag older than `persona.tick.flagAgeDays`,
-   default 7) — and queues the ones worth reflect's time with `tick.js queue <type> --source <pointer> --note <why>`,
+   `regressed` (a ledger event), `flag-aged` (a `- [ ] <date>` flag older than `persona.tick.flagAgeDays`,
+   default 7) and `duty-denied` (a duty run that was refused tool calls: `record-spend.js` writes each refused call and
+   the allowed rule that names the same script to `brain/_index/duty-denials.jsonl`) — and queues the ones worth reflect's time with `tick.js queue <type> --source <pointer> --note <why>`,
    which validates the type and never queues the same (type, source) twice. The queue is `persona/queue.jsonl`, one
    JSON line per signal, drained by the nightly reflect (see Self-improvement). `tick.js beat` records the beat after
    the contract check passes. `--triage` refuses to run inside a duty (`AOS_HEADLESS=1`), so a duty never starts

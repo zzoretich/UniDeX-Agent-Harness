@@ -31,4 +31,19 @@ function guardTestEnv(what, opts = {}) {
     + 'Run tests through `npm test`, or one file with `npm run test:one -- <file>` (node --require ./tools/test-env.js --test <file>).');
 }
 
-module.exports = { MARKER, UnsafeTestEnv, underTestRunner, guardTestEnv };
+/**
+ * Throws UnsafeTestEnv when a test is about to use the real OS scheduler: launchd's LaunchAgents folder in the real
+ * home, or the real launchctl or crontab binary. Unlike guardTestEnv it holds with the test environment too:
+ * tools/test-env.js scrubs variables but cannot move launchd, and a test that reached cli/schedule.js's defaults rewrote
+ * the owner's tick plist and deleted the legacy duties' plists (spec 2026-10-24-persona-learning-loop-design D11). Every
+ * test injects launchAgentsDir and exec, sets the AOS_LAUNCHCTL_BIN / AOS_CRONTAB_BIN seams, or runs its child under a
+ * temp HOME.
+ */
+function guardRealScheduler(what, opts = {}) {
+  const env = opts.env || process.env;
+  if (!underTestRunner({ env, argv: opts.argv, execArgv: opts.execArgv })) return;
+  throw new UnsafeTestEnv(`refusing to use ${what} under the test runner: a test never schedules, loads or deletes a real job. `
+    + 'Inject launchAgentsDir and exec (or readCrontab/writeCrontab), or set AOS_LAUNCHCTL_BIN / AOS_CRONTAB_BIN.');
+}
+
+module.exports = { MARKER, UnsafeTestEnv, underTestRunner, guardTestEnv, guardRealScheduler };
