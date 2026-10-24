@@ -4,6 +4,16 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- **A duty that was refused tool calls says which and why.** After each Claude Code duty run, the calls it was denied go to `brain/_index/duty-denials.jsonl`, each beside the allowed rule that names the same script, and the hourly tick lists them as a `duty-denied` signal for the nightly reflect. A rule that names another Node path than the call reads as exactly that, instead of looking like a permission-mode quirk. Codex has no per-tool allowlist (its sandbox is the guard), so its runs record none. <!-- no-tour: runtime signal; nothing in the app changes -->
+
+### Fixed
+- **The tick and the nightly reflect run their helper scripts again.** A routine's `tools:` line expanded `{{NODE}}` to the running Node's real path (Homebrew's versioned `Cellar/` folder) while the duty prompts name the stable link, so every `tick.js`, `reflect.js` and `ledger.js` call was denied and the duties journaled "Bash denied". A `{{NODE}}` rule is now allowed for each Node spelling: the schedule's, `agenticos.json`'s and the running one.
+- **Running the test suite on a Mac no longer unschedules the Chief of Staff.** One migration test reached the real scheduler: it rewrote `~/Library/LaunchAgents/com.agenticos.tick.plist` to point at a deleted temp vault and unloaded and deleted the `monitor`, `sitrep` and `reflect` jobs. The test now uses its fakes, and under the test runner the scheduler refuses the real LaunchAgents folder and the real `launchctl` and `crontab`.
+
+### Upgrading
+- If your Chief of Staff's tick, monitor, sitrep or weekly reflect stopped (the Workbench's heartbeat pill shows them missed, or `aos routines list` says `missed`), run `aos routines sync` once after `aos upgrade` to reinstall their schedules.
+
 ## [2.2.0] — 2026-10-24
 
 ### Added

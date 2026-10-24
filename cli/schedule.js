@@ -48,16 +48,40 @@ function loadCron() {
   throw new Error('cron.js not found beside cli/schedule.js');
 }
 
+/** lib/test-guard.js beside this file (vendored) or in the checkout; null when neither exists (the guard is inert). */
+let testGuard;
+function loadTestGuard() {
+  if (testGuard !== undefined) return testGuard;
+  testGuard = null;
+  for (const p of [path.join(__dirname, '..', 'lib', 'test-guard.js'), path.join(__dirname, '..', 'brain', 'scripts', 'lib', 'test-guard.js')]) {
+    if (fs.existsSync(p)) { testGuard = require(p); break; }
+  }
+  return testGuard;
+}
+
 /** Default exec: execFileSync, with AOS_LAUNCHCTL_BIN / AOS_CRONTAB_BIN as test seams that replace the binary
  *  (the CLI test sandbox points them at logging fakes so no test ever loads a plist into the real launchd or
- *  rewrites a real crontab). Unset in normal use. */
+ *  rewrites a real crontab). Unset in normal use; under the test runner the real binary is refused (test-guard.js). */
 function defaultExec(cmd, args, opts) {
   const bin = cmd === 'launchctl' ? process.env.AOS_LAUNCHCTL_BIN : cmd === 'crontab' ? process.env.AOS_CRONTAB_BIN : null;
+  if (!bin && (cmd === 'launchctl' || cmd === 'crontab') && loadTestGuard()) loadTestGuard().guardRealScheduler(`the real ${cmd}`);
   return execFileSync(bin || cmd, args, opts);
 }
 
 function launchdLabel(slug) { return `com.agenticos.${slug}`; }
 function defaultLaunchAgentsDir() { return path.join(os.homedir(), 'Library', 'LaunchAgents'); }
+/** The account's own LaunchAgents folder: os.userInfo() reads the user database, so a test's HOME does not move it. */
+function realLaunchAgentsDir() {
+  let home;
+  try { home = os.userInfo().homedir; } catch { home = os.homedir(); }
+  return path.join(home, 'Library', 'LaunchAgents');
+}
+/** Under the test runner the real LaunchAgents folder is never read, written or emptied (spec
+ *  2026-10-24-persona-learning-loop-design D11): a test that reached the default rewrote and deleted real plists. */
+function refuseRealLaunchAgents(dir, real = realLaunchAgentsDir()) {
+  const g = loadTestGuard();
+  if (g && path.resolve(dir) === path.resolve(real)) g.guardRealScheduler(dir);
+}
 function defaultWarn(message) { process.stderr.write(`schedule: ${message}\n`); }
 function routinesDir(vault) { return path.join(vault, 'brain', 'routines'); }
 function stateFileFor(vault) { return path.join(vault, 'brain', '_index', 'routines.json'); }
@@ -215,6 +239,7 @@ function installSchedules({ platform = process.platform, vars, routines, store =
     } catch (e) { warn(`could not record the sync in ${file}: ${e.message}`); }
   };
   if (platform === 'darwin') {
+    refuseRealLaunchAgents(launchAgentsDir);
     fs.mkdirSync(launchAgentsDir, { recursive: true });
     const written = []; const removed = []; const warnings = [];
     const unchanged = [];
@@ -285,6 +310,7 @@ function removeSchedule({ slug, platform = process.platform, vault, store = null
   exec = defaultExec, readCrontab, writeCrontab, warn = defaultWarn } = {}) {
   const removed = []; const warnings = [];
   const plist = path.join(launchAgentsDir, `${launchdLabel(slug)}.plist`);
+  if (platform === 'darwin') refuseRealLaunchAgents(launchAgentsDir);
   if (platform === 'darwin' && fs.existsSync(plist)) {
     try { exec('launchctl', ['unload', plist], { stdio: 'ignore' }); } catch { /* not loaded */ }
     fs.unlinkSync(plist);
@@ -329,6 +355,7 @@ function removeSchedules({ platform = process.platform, vault, store = null, lau
   // Plists go on every platform (Plan 3's uninstall test seeds them under $HOME on ubuntu too; a stray plist on
   // Linux is harmless to delete). Only launchctl is darwin-specific. Anything else in launchAgentsDir — the
   // com.agenticos.ollama supervisor included — is never matched.
+  refuseRealLaunchAgents(launchAgentsDir);
   for (const s of slugs) {
     const plist = path.join(launchAgentsDir, `${launchdLabel(s)}.plist`);
     if (!fs.existsSync(plist)) continue;
@@ -373,7 +400,10 @@ function isInstalled({ platform = process.platform, vault, launchAgentsDir = def
   let routines = []; let st = null;
   if (vault) { try { const store = loadStore(); routines = listRoutines({ vault, store }); st = readStateSafe(store, stateFile || stateFileFor(vault)); } catch { /* legacy only */ } }
   const slugs = knownSlugs({ routines, state: st });
-  if (platform === 'darwin') return slugs.some(s => fs.existsSync(path.join(launchAgentsDir, `${launchdLabel(s)}.plist`)));
+  if (platform === 'darwin') {
+    refuseRealLaunchAgents(launchAgentsDir);
+    return slugs.some(s => fs.existsSync(path.join(launchAgentsDir, `${launchdLabel(s)}.plist`)));
+  }
   if (platform === 'linux') return tagRe(slugs).test((readCrontab || (() => readCrontabWith(exec)))() || '');
   return false;
 }
@@ -381,5 +411,5 @@ function isInstalled({ platform = process.platform, vault, launchAgentsDir = def
 module.exports = {
   CRON_TAG, TEMPLATES_DIR, LEGACY_DUTIES, RUNNER_REL, launchdLabel, renderTemplate, xmlEscape, scheduleVars, dutyRunDefaults, readVaultConfig, chiefModels,
   listRoutines, installable, calendarXml, renderLaunchd, renderCron, cronLine, stripAgenticosCron, knownSlugs,
-  installSchedules, removeSchedules, removeSchedule, isInstalled,
+  installSchedules, removeSchedules, removeSchedule, isInstalled, defaultExec, realLaunchAgentsDir, refuseRealLaunchAgents,
 };

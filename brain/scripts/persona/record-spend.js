@@ -9,9 +9,12 @@
  *   node persona/record-spend.js --check
  *       prints {allowed, spentToday, perDayUsd, perDutyUsd}; exit 0 when allowed, 3 when capped. One cap over both hosts:
  *       every duty:* row counts, whichever provider (local-first A4: a capped day is skipped on every host, never moved)
- *   node persona/record-spend.js --file <output> --feature duty:<name> --model <model>
+ *   node persona/record-spend.js --file <output> --feature duty:<name> --model <model> [--allowed <allowlist>]
  *       parses `claude -p --output-format json` output — or, when the file holds a `codex exec --json`
- *       event stream (codex runner, codex-parity D5), prices its usage block — and appends one ledger row
+ *       event stream (codex runner, codex-parity D5), prices its usage block — and appends one ledger row.
+ *       A Claude run that was refused tool calls (`permission_denials`) also appends one line to
+ *       <vault>/brain/_index/duty-denials.jsonl, each call paired with the --allowed rule that names the same script
+ *       (spec 2026-10-24-persona-learning-loop-design D11); tick.js turns it into a `duty-denied` signal
  *
  * Rows go through sdk/lib/provider.js recordSpend when that module loads; otherwise they are
  * appended to <vault>/brain/_index/provider-spend.jsonl with the same row shape. The duty sum
@@ -28,6 +31,27 @@ function parseClaudeJson(text) {
     try { const o = JSON.parse(lines[i]); if (o && typeof o === 'object') return o; } catch { /* try the previous line */ }
   }
   return null;
+}
+
+/** The allowlist rule a denied Bash command came closest to: the first `Bash(…)` rule naming one of the scripts the
+ *  command runs (a path whose last segment has an extension, such as …/tick.js), so a wrong node spelling reads as
+ *  such. A folder argument (`git -C <vault>`) names no script. Null when none. */
+function nearRule(command, allowed) {
+  const rules = String(allowed || '').match(/Bash\([^)]*\)/g) || [];
+  const keys = String(command || '').split(/\s+/).filter((w) => w.includes('/')).map((w) => w.split('/').pop()).filter((k) => /^[\w.-]+\.[a-z0-9]+$/i.test(k));
+  return rules.find((r) => keys.some((k) => r.includes(`/${k}`))) || null;
+}
+
+/** A Claude run's refused calls: [{ tool, input, near }], at most 10, the input clipped to 300 characters. Codex has no
+ *  per-tool allowlist (its sandbox is the guard), so its event stream has none. */
+function deniedCalls(json, allowed = '') {
+  const list = json && Array.isArray(json.permission_denials) ? json.permission_denials : [];
+  return list.slice(0, 10).map((d) => {
+    const input = (d && d.tool_input) || {};
+    const what = String(input.command || input.file_path || input.notebook_path || '').slice(0, 300);
+    const tool = String((d && d.tool_name) || 'unknown');
+    return { tool, input: what, near: tool === 'Bash' ? nearRule(what, allowed) : null };
+  });
 }
 
 /** The `codex exec --json` event stream → { isCodex, usage, errors } (codex-parity D5). Mirrors sdk/lib/codex-cli.js parseEvents
@@ -126,6 +150,16 @@ function recordSpend(row) {
   fs.appendFileSync(file, JSON.stringify(row) + '\n');
   return row;
 }
+/** brain/_index/duty-denials.jsonl, beside the spend ledger. */
+function denialsPath() { return path.join(path.dirname(ledgerPath()), 'duty-denials.jsonl'); }
+/** Appends { schema: 1, ts, duty, model, count, denied } when the run was refused any call; returns the record or null. */
+function recordDenials({ duty, model, denied, now = new Date(), file = denialsPath() }) {
+  if (!denied.length) return null;
+  const rec = { schema: 1, ts: now.toISOString(), duty, model: model || null, count: denied.length, denied };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, JSON.stringify(rec) + '\n');
+  return rec;
+}
 function dutySpendToday() {
   try { return dutySpendFrom(fs.readFileSync(ledgerPath(), 'utf8')); } catch { return 0; }   // no ledger yet
 }
@@ -153,13 +187,19 @@ function main(argv) {
   const text = fs.readFileSync(file, 'utf8');
   const feature = arg('--feature') || 'duty:unknown';
   // A codex runner writes its `--json` event stream to the same file; the row is then an estimate (D5).
-  const row = parseCodexEvents(text).isCodex
+  const isCodex = parseCodexEvents(text).isCodex;
+  const json = isCodex ? null : parseClaudeJson(text);
+  const row = isCodex
     ? rowFromCodex(text, { feature, model: arg('--model') || null })
-    : rowFrom(parseClaudeJson(text), { feature, model: arg('--model') || 'unknown' });
+    : rowFrom(json, { feature, model: arg('--model') || 'unknown' });
   const written = recordSpend(row);   // execution amendment 2026-09-15 (A27): print what the ledger wrote
   process.stdout.write(JSON.stringify(written) + '\n');
+  try {
+    const rec = recordDenials({ duty: feature.replace(/^duty:/, ''), model: row.model, denied: deniedCalls(json, arg('--allowed')) });
+    if (rec) process.stdout.write(JSON.stringify({ denials: rec.count, near: rec.denied.map((d) => d.near).filter(Boolean) }) + '\n');
+  } catch (e) { process.stderr.write(`record-spend: could not record the denials (${e.message})\n`); }
   return 0;
 }
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
-module.exports = { parseClaudeJson, parseCodexEvents, rowFrom, rowFromCodex, check, dutySpendFrom, dutySpendToday, caps };
+module.exports = { parseClaudeJson, parseCodexEvents, rowFrom, rowFromCodex, check, dutySpendFrom, dutySpendToday, caps, deniedCalls, nearRule, recordDenials };

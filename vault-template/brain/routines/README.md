@@ -13,7 +13,7 @@ engine: claude          # prompt only; local | claude | codex (leave it out: rou
 model: haiku            # prompt: a model of its engine (default claude.model) · duty: that duty's Claude model (default persona.model, see below)
 effort: low             # prompt, duty; low | medium | high
 budgetUsd: 0.5          # prompt: default routines.perRunUsd · duty: PERSONA_MAX_USD for that duty (default persona.perDutyUsd)
-tools: "Read,Glob,Grep" # duty only; the PERSONA_TOOLS allowlist for that duty ({{NODE}} and {{VAULT}} expand)
+tools: "Read,Glob,Grep" # duty only; the PERSONA_TOOLS allowlist for that duty ({{NODE}} and {{VAULT}} expand; a {{NODE}} rule is allowed for each node spelling: the schedule's, agenticos.json's and the running one)
 writes: [notes/inbox/]  # duty: vault-relative paths it may write on top of the default scope · prompt on engine local: all it may write
 timeoutSec: 600
 tags: [brief]

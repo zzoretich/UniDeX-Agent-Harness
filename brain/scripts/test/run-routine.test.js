@@ -176,6 +176,22 @@ test('duty kind: budgetUsd and tools in the routine file reach run-duty.sh as PE
   assert.equal(d.calls[0].opts.env.CLAUDECODE, '1', 'the rest of the env is still passed through');
 });
 
+// Spec 2026-10-24-persona-learning-loop-design D11: `{{NODE}}` was only this process's realpath (Homebrew's versioned
+// Cellar node) while the duty prompts and run-duty.sh's own rules name the schedule's stable link, so under dontAsk every
+// helper call was denied. A rule naming `{{NODE}}` now appears once per spelling; the other rules once.
+test('duty kind: a tools rule with {{NODE}} is allowed for the schedule\'s AOS_NODE, agenticos.json\'s node and this node', async () => {
+  put('tick', { kind: 'duty', guarded: true, tools: 'Read,Bash(date:*),Bash({{NODE}} {{VAULT}}/brain/scripts/persona/tick.js:*)' });
+  const stable = '/opt/homebrew/opt/node/bin/node';
+  const recorded = '/usr/local/bin/node';
+  const d = deps({ env: { PATH: '/usr/bin:/bin', HOME: VAULT, AOS_NODE: stable }, config: () => ({ node: recorded, routines: { enabled: true, perRunUsd: 2, perDayUsd: 6 } }) });
+  assert.equal(await runRoutine('tick', { deps: d }), 0);
+  const rule = (n) => `Bash(${n} ${VAULT}/brain/scripts/persona/tick.js:*)`;
+  assert.equal(d.calls[0].opts.env.PERSONA_TOOLS, ['Read', 'Bash(date:*)', rule(stable), rule(recorded), rule(process.execPath)].join(','));
+  const same = deps({ env: { PATH: '/usr/bin:/bin', HOME: VAULT, AOS_NODE: process.execPath }, config: () => ({ node: process.execPath, routines: { enabled: true, perRunUsd: 2, perDayUsd: 6 } }) });
+  assert.equal(await runRoutine('tick', { deps: same }), 0);
+  assert.equal(same.calls[0].opts.env.PERSONA_TOOLS, ['Read', 'Bash(date:*)', rule(process.execPath)].join(','), 'one spelling, one rule');
+});
+
 test('duty kind: writes in the routine file reach run-duty.sh as PERSONA_WRITES (spec 2026-09-23-duty-write-scope-design D5)', async () => {
   put('sitrep', { kind: 'duty', writes: ['notes/inbox/', 'TODO.md'] });
   const d = deps();

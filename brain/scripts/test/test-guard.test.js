@@ -60,3 +60,12 @@ test('guardTestEnv: inert outside the test runner and with the test environment;
   assert.equal(G.underTestRunner({ env: {}, argv: ['node', 'x.js'], execArgv: ['--test'] }), true);
   assert.equal(G.underTestRunner({ env: {}, argv: ['node', 'x.js'], execArgv: [] }), false);
 });
+
+test('guardRealScheduler: throws under the test runner with or without the test environment; inert in production', () => {
+  const run = { env: { NODE_TEST_CONTEXT: 'child-v8' }, argv: ['node', 'x.js'], execArgv: [] };
+  for (const env of [run.env, { ...run.env, AOS_TEST_ENV_CLEAN: '1' }]) {
+    assert.throws(() => G.guardRealScheduler('the real launchctl', { ...run, env }),
+      (e) => e instanceof G.UnsafeTestEnv && /refusing to use the real launchctl under the test runner/.test(e.message));
+  }
+  assert.doesNotThrow(() => G.guardRealScheduler('the real launchctl', { env: {}, argv: ['node', '/opt/aos/cli/aos.js', 'routines', 'sync'], execArgv: [] }), 'production');
+});

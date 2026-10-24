@@ -138,6 +138,33 @@ function expandArgv(a, deps) {
   return String(a).split('{{NODE}}').join(deps.node || process.execPath).split('{{VAULT}}').join(deps.vault);
 }
 
+/** A comma-separated allowlist split into its rules; a comma inside a rule's parentheses stays in the rule. */
+function splitRules(s) {
+  const out = []; let depth = 0; let cur = '';
+  for (const ch of String(s)) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) { if (cur.trim()) out.push(cur.trim()); cur = ''; } else cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/**
+ * A duty routine's `tools:` with the placeholders expanded. A rule naming `{{NODE}}` is repeated once per spelling of
+ * the node a duty may be told to run: the schedule's AOS_NODE and agenticos.json's `node` (the stable link that
+ * run-duty.sh's own rules and the duty prompts name) and this node (process.execPath, Homebrew's versioned Cellar path).
+ * Only the last one before spec 2026-10-24-persona-learning-loop-design D11, so under dontAsk every helper call spelled
+ * with the stable link was denied.
+ */
+function expandTools(tools, cfg, deps) {
+  const nodes = [...new Set([deps.env && deps.env.AOS_NODE, cfg && cfg.node, deps.node || process.execPath]
+    .filter((n) => typeof n === 'string' && n.trim()))];
+  return splitRules(tools)
+    .flatMap((rule) => (rule.includes('{{NODE}}') ? nodes.map((node) => expandArgv(rule, { ...deps, node })) : [expandArgv(rule, deps)]))
+    .join(',');
+}
+
 /** Plan the child process for a routine: { cmd, args, env, feature } — or { skip: reason }. */
 function plan(routine, cfg, deps) {
   const rc = cfg.routines || {};
@@ -148,7 +175,7 @@ function plan(routine, cfg, deps) {
     // already honours; `{{NODE}}`/`{{VAULT}}` in tools expand like argv so the template file works on every machine.
     const env = { ...deps.env };
     if (routine.budgetUsd !== undefined) env.PERSONA_MAX_USD = String(routine.budgetUsd);
-    if (typeof routine.tools === 'string' && routine.tools.trim()) env.PERSONA_TOOLS = expandArgv(routine.tools, deps);
+    if (typeof routine.tools === 'string' && routine.tools.trim()) env.PERSONA_TOOLS = expandTools(routine.tools, cfg, deps);
     // Extra write scope on top of the default one (spec 2026-09-23-duty-write-scope-design D5); duty-guard.js checks it.
     if (Array.isArray(routine.writes) && routine.writes.length) env.PERSONA_WRITES = routine.writes.join(',');
     // A duty's own model and effort win over the schedule's (spec 2026-09-24-duty-model-settings-design D1). The model is
@@ -320,4 +347,4 @@ function main(argv) {
 }
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code), (e) => { process.stderr.write(`run-routine: ${e.message}\n`); process.exit(1); });
-module.exports = { runRoutine, plan, promptArgs, promptSpec, expandArgv, main, unscheduleRoutine, cliPath, TRIGGERS };
+module.exports = { runRoutine, plan, promptArgs, promptSpec, expandArgv, expandTools, splitRules, main, unscheduleRoutine, cliPath, TRIGGERS };
