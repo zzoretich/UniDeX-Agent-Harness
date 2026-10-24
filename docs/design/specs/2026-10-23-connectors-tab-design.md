@@ -1,7 +1,7 @@
 # UniDeX Connectors: every MCP server and connector, on both hosts — design
 
 **Date:** 2026-10-23
-**Status:** approved 2026-10-23, on `feat/connectors-data`. *(user)* rows are the user's interview answers; the rest are approved technical decisions (D4 included). Mockups are private (a Design canvas). A1 and A3 answered (§6); A2 is a build check in PR 3.
+**Status:** approved 2026-10-23, on `feat/connectors-data`. *(user)* rows are the user's interview answers; the rest are approved technical decisions (D4 included). Mockups are private (a Design canvas). A1 and A3 answered (§6); A2 checked in PR 3: yes. PR 3's deviations are in §8.
 **Base:** `main` at `38b4c97` (2.1.1 plus #170). Runtime (`brain/scripts`, `cli`), the HUD, the app's surface rules; no `plugin/` change, so `codex-plugin/` is untouched.
 **Scope:** a new rail tab, **Connectors** (id `connectors`, icon `plug`), that finds every MCP server and connector both hosts can use, says which work, what tools they give and how much they are used, and later turns them on and off. Code comments cite `connectors-tab D<n>`.
 
@@ -41,7 +41,7 @@ At 38b4c97, on a real vault (Claude Code 2.1.310, codex-cli 0.162.1):
 | D18 | *(user)* **Add takes names, never values**: a secret is `NAME ← $VAR`; Claude Code gets `${VAR}` in `add-json`, a remote Codex server `--bearer-token-env-var`. Every write is a dry run, a hash, and the run with `--expect` (as `aos mcp copy`), with the host's config backed up first. | Values in the form. A terminal paste. |
 | D19 | *(user)* **Sign in:** Codex runs `codex mcp login <name>` (the browser finishes it; 5 min cap); Claude Code has no CLI login, so a local server opens a Code terminal running `claude` to type `/mcp`, and a claude.ai connector links to claude.ai. | Claude-only sign-in. |
 | D20 | **Copy goes on**, moved into the sheet ("Copy to Codex"), and now copies a remote server to Codex with `codex mcp add --url`. | Leaving the refusal. |
-| D21 | **Surfaces:** PR 1 adds `mcp list --json` and `mcp check --json` to `BACKGROUND` (runtime-owned caches only, under locks); PR 3 adds argv rules to the existing `mcp` surface, which stays off for the new verbs (`verified: false`) until a live check per host. | A new surface. |
+| D21 | **Surfaces:** PR 1 adds `mcp list --json` and `mcp check --json` to `BACKGROUND` (runtime-owned caches only, under locks); PR 3 adds argv rules for the new verbs, off (`verified: false`) until a live check per host. *Built (§8):* as a new `mcp-manage` surface, since `verified` is per surface and the copy on `mcp` is on since its live check. | Rules on `mcp` (it would turn the copy off, or the new verbs on). |
 | D22 | **Config `connectors.*`:** `checkEveryMin` 15, `usageDays` 30, `probeTimeoutSec` 10, `probeConcurrency` 4. | Hard-coded. |
 | D23 | **Feel:** `--udx-*` tokens, both themes, colour only for state; Claude Code info blue, Codex gate violet (as Spaces); `.aos-con-*` classes. | New colours. |
 
@@ -86,8 +86,19 @@ Host differences (D-rows): Claude's status comes from `claude mcp list`, Codex's
 ## 6. Decided 2026-10-23, and one build check
 
 - **A1** *(user)* Codex stdio secrets: `codex mcp add` takes `--env K=V` values only and `env_vars = ["NAME"]` exists only in TOML, so the add runs without the secret and the confirm shows the one `env_vars` line to paste (with Copy). Host config still changes only through the host's CLI. Rejected: a surgical TOML write; values for Codex only.
-- **A2** Build check (PR 3): Claude Code expands `${VAR}` in a user-scope `add-json` entry as it does in `.mcp.json`. If not, Claude Code gets A1's answer too.
+- **A2** Build check (PR 3): Claude Code expands `${VAR}` in a user-scope `add-json` entry as it does in `.mcp.json`. If not, Claude Code gets A1's answer too. **Checked 2026-10-23: yes**, Claude Code 2.1.310, hermetic (a temp `CLAUDE_CONFIG_DIR` and `HOME`, deleted after): `claude mcp add-json --scope user probe '{"command":"<node>","args":["<fixture>"],"env":{"FIXTURE_TOKEN":"${PROBE_VAR}"}}'` kept the reference as written; `claude mcp list` showed ✔ Connected with `PROBE_VAR` set to the value the fixture server requires, and ✘ with it unset (plus "Missing environment variables: PROBE_VAR") or wrong. A remote entry's `"headers": {"Authorization": "Bearer ${PROBE_VAR}"}` the same (✔ set; HTTP 401 unset). So Claude Code's add takes `${VAR}`; only Codex needs A1's paste line.
 - **A3** *(user)* Usage lives in Connectors only. Rejected: a Pulse line.
 
 ## 7. Out of scope
 Installing servers from a marketplace or registry; editing a server's arguments in place; an MCP tool that lists connectors to agents; Claude Desktop's config; per-tool allow/deny lists; Notifications for failures (D5); cost per server.
+
+## 8. PR 3 as built (2026-10-23)
+
+Deviations from the decisions above, each for a reason:
+
+- **D21:** a new surface, `mcp-manage` (label "MCP server changes"), not more rules on `mcp`: `verified` is per surface, and the copy on `mcp` is on since its live check of 2026-10-16. Its rules: `aos mcp park|unpark|remove <name> --host claude|codex` and `aos mcp add …` (D18's shape), each `--dry-run --json` or `--expect <64 hex> --json`.
+- **D15, §4.4:** no `aos mcp login`. Sign-in shipped in PR 2 (D19: `codex mcp login <name>` in a Code terminal, `/mcp` for Claude Code), so no runtime verb was needed; the app's `claude plugin disable` is not run either: D17's rows show what to do instead (the command, Codex's plugin settings, claude.ai's or ChatGPT's connector settings), not a button.
+- **D16:** park takes only an entry Turn on can put back as it was through the host's CLI (Claude Code: type stdio/http/sse, command, args, env, url, headers; Codex: command, args, env, url, bearer_token_env_var, env_vars). Anything else (a working folder, timeouts, tool lists, Codex's header tables) is refused with what it cannot take, and Remove is offered instead. Codex's `env_vars` comes back as A1's paste line on Turn on. A server turned off is not parked (its off state cannot come back through either CLI's add); it can be removed.
+- **D18:** `--bearer-env` takes `$VAR`, as `--env` does, so a value the shell expanded is refused rather than taken as a name; a variable name shaped like a token is refused too (the Add dialog asks for upper-case names).
+- **D20:** an SSE server still does not go to Codex (`codex mcp add --url` takes a streamable HTTP server); a copy's `${VAR}` environment value goes to Codex as A1's paste line, and a header `Authorization: Bearer ${VAR}` as `--bearer-token-env-var VAR`.
+
