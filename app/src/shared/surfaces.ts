@@ -595,8 +595,8 @@ export const SURFACES: readonly Surface[] = [
       { script: "cli/aos.js", args: argv("mcp", /park|unpark|remove/, MCP_NAME, "--host", /claude|codex/, "--expect", /[0-9a-f]{64}/, "--json") },
       { script: "cli/aos.js", args: mcpAdd },
     ],
-    // Added in 2.2; off by default until a live check per host parks and turns on, removes, and adds a server.
-    verified: false,
+    // Added in 2.2; on by default since its live check on 2026-10-24 parked and turned on, removed and added a server on each host.
+    verified: true,
   },
   {
     id: "chat",
