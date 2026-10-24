@@ -209,6 +209,7 @@ const APPLIES: Record<string, string> = {
   "next-reply": "applies from the next reply",
   "next-duty": "applies at the next duty", "next-routine": "applies at the next routine run", "next-sync": "applies at the next sync",
   "next-check": "applies at the next update check", "next-render": "applies at the next status line refresh",
+  "next-connectors-check": "applies at the next Connectors check",
   "next-install": "applies at the next aos statusline install", reinstall: "changes only through the installer",
 };
 export function appliesLabel(applies: string): string { return APPLIES[applies] ?? `applies: ${applies}`; }

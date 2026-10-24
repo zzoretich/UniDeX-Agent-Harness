@@ -10,7 +10,7 @@
  *   gt        exclusive lower bound (a perCallUsd must be more than 0; a perDayUsd of 0 means no spend, D10)
  *   risk      spend | autonomy | privacy — the HUD asks before saving these
  *   applies   when a change takes effect: next-call | next-session | next-scan | next-duty | next-routine | next-sync |
- *             next-check | reinstall
+ *             next-check | next-connectors-check | reinstall
  *   vaultOnly the runtime reads the key from brain/config.json alone, so it is always written there (D4)
  *   followUp  { command, why } — printed as a `next:` line after a set (D7)
  *   host      claude | codex — the setting only matters when that host is enabled (spec 2026-09-24-settings-tab D8)
@@ -258,6 +258,15 @@ const SETTINGS = [
     help: 'Copy each host\'s own subagents to the other host at session end (needs both hosts).' },
   { key: 'agents.exclude', section: 'sharing', label: 'Agents not shared', type: 'list', applies: 'next-sync', followUp: AGENTS_SYNC,
     help: 'Agent names never shared, as a JSON list (aos agents exclude|include edits it too).' },
+  // The Connectors tab (spec 2026-10-23-connectors-tab D10, D13, D22).
+  { key: 'connectors.checkEveryMin', section: 'sharing', label: 'Connectors check every', type: 'number', int: true, min: 1, applies: 'next-connectors-check',
+    help: 'Minutes between live checks while the Connectors tab is open (it also checks when it opens, and on Check now). Each check starts the servers each host would.' },
+  { key: 'connectors.usageDays', section: 'sharing', label: 'Connector usage window', type: 'number', int: true, min: 1, max: 365, applies: 'next-scan',
+    help: 'Days of both hosts\' session transcripts the Connectors tab counts MCP calls over.' },
+  { key: 'connectors.probeTimeoutSec', section: 'sharing', label: 'Connector check timeout', type: 'number', int: true, min: 1, applies: 'next-connectors-check',
+    help: 'Seconds the live check waits for one server to answer before it reports no answer.' },
+  { key: 'connectors.probeConcurrency', section: 'sharing', label: 'Servers checked at once', type: 'number', int: true, min: 1, max: 16, applies: 'next-connectors-check',
+    help: 'How many servers the live check starts at the same time.' },
 
   // ── Telemetry & privacy ─────────────────────────────────────────────────────
   { key: 'telemetry.enabled', section: 'telemetry', label: 'Telemetry', type: 'bool', applies: 'next-session',
@@ -349,6 +358,8 @@ const PICKS = {
   'workspaces.activeDays': { choices: [3, 5, 7, 10, 14, 21], unit: 'days' }, 'workspaces.idleDays': { choices: [14, 21, 30, 45, 60, 90], unit: 'days' },
   'workspaces.commits': { choices: [0, 5, 10, 20, 30] }, 'workspaces.recentSessions': { choices: [6, 12, 20, 30] },
   'workspaces.ignoreCommitSubjects': { editIn: 'file' },
+  'connectors.checkEveryMin': { choices: [5, 10, 15, 30, 60], unit: 'min' }, 'connectors.usageDays': { choices: [7, 14, 30, 60, 90], unit: 'days' },
+  'connectors.probeTimeoutSec': { choices: [5, 10, 20, 30], unit: 's' }, 'connectors.probeConcurrency': { choices: [1, 2, 4, 8] },
   'memory.usageDays': { choices: [30, 60, 90, 180, 365], unit: 'days' }, 'memory.neverUsedDays': { choices: [14, 30, 60, 90], unit: 'days' },
   'memory.dupScore': { choices: [0.7, 0.75, 0.8, 0.85, 0.9] }, 'memory.clusterMin': { choices: [2, 3, 4, 5] }, 'memory.mapMin': { choices: [3, 5, 8, 12, 20] },
   'persona.watchdog.graceMinutes': { choices: [15, 30, 45, 60, 90, 120], unit: 'min' }, 'persona.tick.flagAgeDays': { choices: [3, 5, 7, 14, 30], unit: 'days' },

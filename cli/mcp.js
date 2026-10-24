@@ -1,6 +1,16 @@
 'use strict';
 /**
- * mcp.js — `aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]`: make one MCP server of one
+ * mcp.js — the vault's view of both hosts' MCP servers and connectors.
+ *
+ * `aos mcp list [--json]` (connectors-tab D8, D15): every MCP server and connector each enabled host can use, read from
+ *   files alone (brain/scripts/lib/connectors/discover.js), with each one's use in the last connectors.usageDays from
+ *   both hosts' transcripts; writes brain/_index/connectors.json, connectors-usage.json and mcp-servers.json, as every
+ *   scan-vault does. Starts nothing.
+ * `aos mcp check [--json]` (D10, D11): the live check (lib/connectors/check.js): `claude mcp list`, `codex mcp list
+ *   --json`, and the runtime's own MCP client listing each server's tools, for the servers each host would start
+ *   itself; writes brain/_index/connectors-live.json, then lists again. One check at a time: a second is refused.
+ *
+ * `aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]`: make one MCP server of one
  * host available on the other, per item and on request (install-import B6; the Workbench's Skills ▸ MCP servers runs it
  * on a click).
  *
@@ -52,7 +62,7 @@ const { spawnSync } = require('child_process');
 
 const HOSTS = ['claude', 'codex'];
 const HOST_LABEL = { claude: 'Claude Code', codex: 'Codex' };
-const USAGE = 'aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]';
+const USAGE = 'aos mcp list [--json] | aos mcp check [--json] | aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]';
 /** What both CLIs accept as a server name (and the Workbench's surface rule), at most 64 characters. */
 const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -87,7 +97,7 @@ function isPlainObject(v) { return v !== null && typeof v === 'object' && !Array
 function str(v) { return typeof v === 'string' && v.trim() ? v : null; }
 function tilde(p, home) { return home && (p === home || p.startsWith(home + path.sep)) ? `~${p.slice(home.length)}` : p; }
 
-/** The words and flags after `aos mcp`: `copy <name> --to <host> [--dry-run] [--expect <hash>] [--json]`. */
+/** The words and flags after `aos mcp`: `list|check [--json]`, or `copy <name> --to <host> [--dry-run] [--expect <hash>] [--json]`. */
 function parseMcpArgs(argv) {
   const words = [];
   const flags = { dryRun: false, json: false, to: null, expect: null };
@@ -105,6 +115,10 @@ function parseMcpArgs(argv) {
     else throw new UsageError(`aos mcp: unknown flag ${a} (${USAGE})`);
   }
   const [verb, name, ...rest] = words;
+  if (verb === 'list' || verb === 'check') {
+    if (name !== undefined || flags.to !== null || flags.expect !== null || flags.dryRun) throw new UsageError(`aos mcp ${verb} takes only --json`);
+    return { verb, json: flags.json };
+  }
   if (verb !== 'copy' || !name || rest.length) throw new UsageError(USAGE);
   if (!HOSTS.includes(flags.to)) throw new UsageError('aos mcp copy: --to takes claude or codex');
   if (flags.expect !== null && !HASH_RE.test(flags.expect)) throw new UsageError('aos mcp copy: --expect takes the 64-character hash a dry run printed');
@@ -617,17 +631,73 @@ function lines(r) {
   return out;
 }
 
-/** `argv` = the words after `aos mcp`. → exit code */
+// ── list and check (connectors-tab) ──────────────────────────────────────────
+
+function connectors(rel) { return require(resolveScript(`lib/connectors/${rel}`)); }
+
+/** `aos mcp list`: discovery and usage into the caches, from files alone. opts as copy's. */
+function list(opts = {}) {
+  const ctx = require('./import.js').resolveCtx(opts);
+  const { connectors: c, usage } = connectors('index.js').refresh({ vault: ctx.vault, cfg: ctx.cfg, env: ctx.env, home: ctx.home, now: opts.now || Date.now() });
+  return { ok: true, updatedAt: c.updatedAt, hosts: c.hosts, rows: c.rows, usage: usage.rows };
+}
+
+/** `aos mcp check`: the live check, then the list again (it may have named new claude.ai connectors). opts as copy's,
+ *  plus run and probe (check.js's stand-ins, for tests). */
+async function checkNow(opts = {}) {
+  const ctx = require('./import.js').resolveCtx(opts);
+  const K = connectors('check.js');
+  let live;
+  try {
+    live = await K.check({
+      vault: ctx.vault, userConfig: ctx.cfg, cfg: ctx.cfg, env: ctx.env, home: ctx.home,
+      claudeBin: () => (opts.claudeBin ? opts.claudeBin(ctx.user) : null), codexBin: () => (opts.codexBin ? opts.codexBin(ctx.user) : null),
+      ...(opts.run ? { run: opts.run } : {}), ...(opts.probe ? { probe: opts.probe } : {}),
+    });
+  } catch (e) {
+    if (e instanceof K.Busy) throw new Refused(`${e.message}: try again in a moment`);
+    throw e;
+  }
+  connectors('index.js').refresh({ vault: ctx.vault, cfg: ctx.cfg, env: ctx.env, home: ctx.home, now: opts.now || Date.now() });
+  return { ok: true, checkedAt: live.checkedAt, durationMs: live.durationMs, hosts: live.hosts, rows: live.rows };
+}
+
+const MARK = { connected: '✔', failed: '✘', 'needs-auth': '!', pending: '⏸', off: '–', unknown: '?' };
+
+function listLines(r) {
+  const used = new Map(r.usage.map((u) => [`${u.host}\t${u.name}`, u]));
+  const out = [`${r.rows.length} MCP servers and connectors (${Object.entries(r.hosts).filter(([, h]) => h.enabled).map(([h, x]) => `${HOST_LABEL[h]} ${x.rows}`).join(', ')})`];
+  for (const x of r.rows) {
+    const u = used.get(`${x.host}\t${x.name}`);
+    const where = x.kind === 'connector' ? 'connector' : `${x.scope}${x.workspace ? ` · ${x.workspace}` : ''}`;
+    out.push(`  ${x.host.padEnd(6)} ${x.name.padEnd(32)} ${where.padEnd(18)} ${x.enabled === false ? 'off' : (x.approval === 'pending' ? 'pending' : 'on ')}  ${u ? `${u.calls} calls` : ''}`);
+  }
+  const builtins = r.usage.filter((u) => u.builtin);
+  if (builtins.length) out.push(`  built in, seen in use: ${builtins.map((u) => `${u.name} (${u.calls})`).join(', ')}`);
+  return out;
+}
+
+function checkLines(r) {
+  const out = [`checked in ${(r.durationMs / 1000).toFixed(1)} s`];
+  for (const [h, x] of Object.entries(r.hosts)) if (x.enabled && !x.ran) out.push(`  ${HOST_LABEL[h]}: not checked (${x.error})`);
+  for (const x of r.rows) {
+    const tools = x.tools ? `${x.tools.length} tools` : '';
+    out.push(`  ${MARK[x.status] || '?'} ${x.host.padEnd(6)} ${x.name.padEnd(32)} ${x.status.padEnd(10)} ${tools.padEnd(9)} ${x.detail || ''}`.trimEnd());
+  }
+  return out;
+}
+
+/** `argv` = the words after `aos mcp`. → exit code (a promise for `check`) */
 function main(argv, opts = {}) {
   const io = opts.io || console;
   const args = parseMcpArgs(argv);
-  const r = copy(args, { home: os.homedir(), ...opts });
-  if (args.json) io.log(JSON.stringify(r, null, 2));
-  else for (const l of lines(r)) io.log(l);
-  return 0;
+  const print = (r, toLines) => { if (args.json) io.log(JSON.stringify(r, null, 2)); else for (const l of toLines(r)) io.log(l); return 0; };
+  if (args.verb === 'list') return print(list({ home: os.homedir(), ...opts }), listLines);
+  if (args.verb === 'check') return checkNow({ home: os.homedir(), ...opts }).then((r) => print(r, checkLines));
+  return print(copy(args, { home: os.homedir(), ...opts }), lines);
 }
 
 module.exports = {
-  main, copy, parseMcpArgs, readEntry, normalize, targetCommand, redactArgs, scrub, backup, backupDir, backupName, configFileOf, planHash, planKey, keyDir,
+  main, copy, list, checkNow, parseMcpArgs, readEntry, normalize, targetCommand, redactArgs, scrub, backup, backupDir, backupName, configFileOf, planHash, planKey, keyDir,
   UsageError, Refused, USAGE, NAME_RE, KEEP_BACKUPS, HIDDEN,
 };

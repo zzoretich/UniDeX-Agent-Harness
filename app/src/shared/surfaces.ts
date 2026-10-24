@@ -95,9 +95,14 @@ const MCP_NAME = /[A-Za-z0-9_][A-Za-z0-9_-]{0,63}/;
 
 /** The refreshes the HUD starts by itself on load and on timers; they write only runtime-owned caches under the runtime's locks.
  *  `aos hosts status --json` (Settings ▸ Hosts, install-import B2) writes nothing: it finds each host's CLI and asks it
- *  whether it is signed in (`claude auth status`, `codex login status`), no model call. */
+ *  whether it is signed in (`claude auth status`, `codex login status`), no model call.
+ *  `aos mcp list --json` and `aos mcp check --json` (the Connectors tab, spec 2026-10-23-connectors-tab D8, D10, D21):
+ *  list reads both hosts' MCP config and transcripts into brain/_index/connectors*.json and mcp-servers.json, starting
+ *  nothing; check runs `claude mcp list`, `codex mcp list --json` and `codex login status`, and starts each MCP server
+ *  its host would start itself to list its tools (never one the host keeps pending, off or untrusted), writing only
+ *  brain/_index/connectors-live.json; one at a time, no model call. Neither writes a host's config. */
 export const BACKGROUND: readonly SpawnRule[] = [
-  { script: "cli/aos.js", args: /^(config (list|get)( .*)?|routines hosts --refresh|skills sync|agents sync|hosts status --json)$/ },
+  { script: "cli/aos.js", args: /^(config (list|get)( .*)?|routines hosts --refresh|skills sync|agents sync|hosts status --json|mcp (list|check) --json)$/ },
   { script: "reconcile-sessions.js", args: /^$/ },
   { script: "statusline.js", args: /^refresh$/ },
   { script: "scan-vault.js", args: /^(--quiet)?$/ },

@@ -29,5 +29,6 @@
   "crossReview": { "enabled": true, "claudeModel": null, "codexModel": null, "effort": null, "perCallUsd": 3.0, "perDayUsd": 10.0, "timeoutSec": 600, "rounds": 5 },
   "skills": { "sync": true, "exclude": [] },
   "agents": { "sync": true, "exclude": [] },
+  "connectors": { "checkEveryMin": 15, "usageDays": 30, "probeTimeoutSec": 10, "probeConcurrency": 4 },
   "statusline": { "segments": ["needs-you", "runs", "spend", "health"], "links": true, "chainPosition": "top", "subagents": true, "refreshSeconds": 5, "codexItems": ["model-with-reasoning", "task-progress", "project-name", "git-branch", "context-used", "five-hour-limit", "weekly-limit"] }
 }
