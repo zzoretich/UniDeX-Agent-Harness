@@ -95,12 +95,14 @@ function noSecrets(text, what) {
   for (const s of Object.values(SECRET)) assert.ok(!String(text).includes(s), `${what} shows a secret: ${s}`);
 }
 
-test('usage: copy, a name and --to claude|codex; anything else exits 2', () => {
+test('usage: copy, a name and --to claude|codex; list and check take only --json; anything else exits 2', () => {
   const { aos } = setup();
   for (const [args, msg] of [
     [[], /aos mcp copy <name> --to claude\|codex/],
     [['copy'], /aos mcp copy <name>/],
-    [['list'], /aos mcp copy <name>/],
+    [['sync'], /aos mcp list \[--json\]/],
+    [['list', 'vault'], /aos mcp list takes only --json/],
+    [['check', '--to', 'codex'], /aos mcp check takes only --json/],
     [['copy', 'vault'], /--to takes claude or codex/],
     [['copy', 'vault', '--to', 'cursor'], /--to takes claude or codex/],
     [['copy', 'vault', 'extra', '--to', 'codex'], /aos mcp copy <name>/],
@@ -489,4 +491,59 @@ test('third review 5: parallel first dry runs share one key and agree on the has
     const dir = path.join(w.home, '.local', 'share', 'unidex', 'keys');
     assert.deepEqual(fs.readdirSync(dir), ['mcp-plan.key'], 'no temp file left behind');
   }
+});
+
+// ── aos mcp list | check (connectors-tab D8, D10, D15) ──────────────────────
+
+test('list: every server and connector of both hosts into the caches, from files alone; no secret in the output or the vault', () => {
+  const { w, aos, calls } = setup();
+  const r = aos(['list', '--json']);
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  const names = out.rows.map((x) => `${x.host}:${x.name}`);
+  for (const n of ['claude:vault', 'claude:remote', 'codex:notes-db', 'codex:inline-one', 'codex:paused']) assert.ok(names.includes(n), n);
+  assert.equal(out.rows.find((x) => x.host === 'codex' && x.name === 'paused').enabled, false);
+  assert.deepEqual(Object.keys(out.hosts).sort(), ['claude', 'codex']);
+  for (const f of ['connectors.json', 'connectors-usage.json', 'mcp-servers.json']) assert.ok(fs.existsSync(path.join(w.vault, 'brain', '_index', f)), f);
+  assert.equal(calls().length, 0, 'list starts nothing: no host CLI ran');
+  noSecrets(r.stdout + r.stderr, 'aos mcp list');
+  for (const f of ['connectors.json', 'connectors-usage.json', 'mcp-servers.json']) noSecrets(fs.readFileSync(path.join(w.vault, 'brain', '_index', f), 'utf8'), f);
+  const human = aos(['list']);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /MCP servers and connectors \(Claude Code \d+, Codex \d+\)/);
+});
+
+test('check: the hosts\' own lists and the probe, written to connectors-live.json; the list then carries a new claude.ai connector', async () => {
+  const { w, env } = setup();
+  const seen = [];
+  const run = async (bin, args) => {
+    seen.push([bin, ...args].join(' '));
+    if (bin === 'claude') return { status: 0, stdout: 'vault: /opt/tools/vault-mcp - ✔ Connected\nremote: https://mcp.example.com/v1 (HTTP) - ! Needs authentication\nclaude.ai Notes: https://n - ✔ Connected\n', stderr: '' };
+    if (args[0] === 'login') return { status: 0, stdout: 'Logged in', stderr: '' };
+    return { status: 0, stdout: JSON.stringify([{ name: 'notes-db', enabled: true, auth_status: 'unsupported' }, { name: 'paused', enabled: false, disabled_reason: 'off' }]), stderr: '' };
+  };
+  const probe = async () => ({ ok: true, tools: [{ name: 'one', summary: 'One tool.' }] });
+  const r = await M.checkNow({ env, home: w.home, run, probe, claudeBin: () => 'claude', codexBin: () => 'codex' });
+  assert.equal(r.ok, true);
+  const at = (h, n) => r.rows.find((x) => x.host === h && x.name === n);
+  assert.deepEqual([at('claude', 'vault').status, at('claude', 'vault').tools.length], ['connected', 1]);
+  assert.equal(at('claude', 'remote').status, 'needs-auth');
+  assert.equal(at('codex', 'notes-db').status, 'connected');
+  assert.equal(at('codex', 'paused').status, 'off');
+  assert.deepEqual(seen, ['claude mcp list', 'codex mcp list --json']);
+  const live = JSON.parse(fs.readFileSync(path.join(w.vault, 'brain', '_index', 'connectors-live.json'), 'utf8'));
+  assert.equal(live.schema, 1);
+  noSecrets(JSON.stringify(live), 'connectors-live.json');
+  const listed = JSON.parse(fs.readFileSync(path.join(w.vault, 'brain', '_index', 'connectors.json'), 'utf8'));
+  assert.ok(listed.rows.some((x) => x.name === 'claude.ai Notes' && x.kind === 'connector'), 'the list after the check knows the new connector');
+});
+
+test('check: one at a time — a check while another holds the lock is refused (exit 1 through aos)', async () => {
+  const { w, env, aos } = setup();
+  const lock = path.join(w.vault, 'brain', '_index', 'connectors-live.json.lock');
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, id: 'held', until: new Date(Date.now() + 60000).toISOString() }));
+  await assert.rejects(() => M.checkNow({ env, home: w.home, claudeBin: () => null, codexBin: () => null }), (e) => e instanceof M.Refused && /already running/.test(e.message));
+  const r = aos(['check', '--json']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /mcp check: a check is already running/);
 });

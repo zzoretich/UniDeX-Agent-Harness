@@ -533,6 +533,21 @@ async function main(report) {
     console.error('[scan-vault] brain-hub failed (loud in ledger):', e.message);
   }
 
+  // Connectors (spec 2026-10-23-connectors-tab D8, D13): every MCP server and connector both hosts can use, read from
+  // files alone, and their use from both hosts' transcripts. Nothing is started here: the live check is `aos mcp
+  // check`, which the Connectors tab runs while it is open.
+  try {
+    await withReport('connectors', async (r) => {
+      const { connectors, usage } = require('./lib/connectors/index.js').refresh({ vault: VAULT, cfg });
+      r.counts.rows = connectors.rows.length;
+      r.counts.used = usage.rows.length;
+      r.wrote.push('brain/_index/connectors.json', 'brain/_index/connectors-usage.json');
+      if (report) report.wrote.push(`brain/_index/connectors.json (${connectors.rows.length} servers and connectors, ${usage.rows.length} in use)`);
+    });
+  } catch (e) {
+    console.error('[scan-vault] connectors failed (loud in ledger):', e.message);
+  }
+
   if (argv.has('--json')) {
     process.stdout.write(JSON.stringify(snapshot, null, 2));
     return;

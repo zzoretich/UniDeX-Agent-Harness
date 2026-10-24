@@ -35,6 +35,10 @@
  *       item_completed FileChange items, which newer CLIs write instead) plus each turn_context.cwd; reads through
  *       shell commands carry no path. `offset` stops after the last complete line, so a line still being written
  *       is read next time; pass it back as fromOffset (and `cwd` as opts.cwd) to read only what was appended.
+ *   mcpCalls(file, fromOffset = 0)        → { calls: [{ server, tool, at }], offset, reset } | null: the MCP tool calls
+ *       from fromOffset on (connectors-tab D13), read the way fileTouches reads. Claude: tool_use blocks named
+ *       mcp__<server>__<tool>; Codex: event_msg mcp_tool_call_end's invocation { server, tool }. Each call once, by its
+ *       tool_use id or call_id; `at` is its line's timestamp (ms), null when it has none.
  */
 const fs = require('fs');
 const path = require('path');
@@ -465,7 +469,12 @@ function fileTouches(file, fromOffset = 0, opts = {}) {
     if (p.type === 'patch_apply_end') changes(str(p.call_id), p.changes);
     else if (p.type === 'item_completed' && p.item && p.item.type === 'FileChange') changes(str(p.item.id), p.item.changes);
   };
-  const onLine = format === 'codex' ? onCodex : onClaude;
+  const offset = eachLine(file, start, size, format === 'codex' ? onCodex : onClaude);
+  return { touches, offset, cwd, reset };
+}
+
+/** Call onLine(buffer) for each complete line from `start` to `size`; → the offset after the last complete line. */
+function eachLine(file, start, size, onLine) {
   let offset = start;
   let fd = null;
   try {
@@ -490,7 +499,55 @@ function fileTouches(file, fromOffset = 0, opts = {}) {
   } catch { /* keep what was read: offset marks the last complete line */ } finally {
     if (fd !== null) { try { fs.closeSync(fd); } catch { /* closed */ } }
   }
-  return { touches, offset, cwd, reset };
+  return offset;
+}
+
+/**
+ * The MCP tool calls a transcript holds from `fromOffset` on (module comment): Claude `tool_use` blocks named
+ * mcp__<server>__<tool>, Codex `mcp_tool_call_end` events, each call once (by its id) with the time its line carries.
+ */
+function mcpCalls(file, fromOffset = 0, opts = {}) {
+  let size;
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile()) return null;
+    size = st.size;
+  } catch { return null; }
+  let start = Number.isInteger(fromOffset) && fromOffset > 0 ? fromOffset : 0;
+  let reset = false;
+  if (start > size) { start = 0; reset = true; }
+  const format = opts.format || fileFormat(file);
+  const calls = [];
+  const seen = new Set();
+  const take = (id, server, tool, ts) => {
+    if (!server || !tool) return;
+    if (id) { if (seen.has(id)) return; seen.add(id); }
+    const at = Date.parse(typeof ts === 'string' ? ts : '');
+    calls.push({ server, tool, at: Number.isFinite(at) ? at : null });
+  };
+  const onClaude = (line) => {
+    if (!line.includes('"mcp__')) return;
+    let e;
+    try { e = JSON.parse(line.toString('utf8')); } catch { return; }
+    const content = e && e.message && e.message.content;
+    if (!Array.isArray(content)) return;
+    for (const b of content) {
+      if (!b || b.type !== 'tool_use' || typeof b.name !== 'string') continue;
+      const m = /^mcp__(.+?)__(.+)$/.exec(b.name);
+      if (m) take(str(b.id), m[1], m[2], e.timestamp);
+    }
+  };
+  const onCodex = (line) => {
+    if (!line.includes('"mcp_tool_call_end"')) return;
+    let r;
+    try { r = JSON.parse(line.toString('utf8')); } catch { return; }
+    const p = r && r.type === 'event_msg' && r.payload && typeof r.payload === 'object' ? r.payload : null;
+    if (!p || p.type !== 'mcp_tool_call_end') return;
+    const inv = p.invocation && typeof p.invocation === 'object' ? p.invocation : {};
+    take(str(p.call_id), str(inv.server), str(inv.tool), r.timestamp);
+  };
+  const offset = eachLine(file, start, size, format === 'codex' ? onCodex : onClaude);
+  return { calls, offset, reset };
 }
 
 /**
@@ -516,5 +573,5 @@ function readSessionIndex(file) {
 
 module.exports = {
   parseJsonl, textOf, kindOf, detectFormat, isRealPrompt, parseEntries, readTurns, readTranscriptFile, flattenTurns, sessionModel, sessionModelFile, FILE_TOOLS,
-  sessionHead, sessionTail, fileTouches, readSessionIndex,
+  sessionHead, sessionTail, fileTouches, mcpCalls, readSessionIndex,
 };

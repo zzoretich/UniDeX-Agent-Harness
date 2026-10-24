@@ -80,7 +80,7 @@ const USAGE = `usage:
   aos import [--from claude|codex|all] [--since 90d|all] [--only instructions,memories,projects,mcp,sessions] [--accept <json list>] [--dry-run] [--json]
   aos hosts add <claude|codex> [--from-local <repo-dir>] [--persona-json <file>] [--yes] | aos hosts status [--json]
   aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--accept <json list>] [--json]
-  aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]
+  aos mcp list [--json] | aos mcp check [--json] | aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1582,17 +1582,17 @@ async function hostsCmd(sub, flags) {
   }
 }
 
-/** `aos mcp copy <name> --to <host>` (install-import B6): cli/mcp.js, one MCP server made available on the other host. */
-function mcpCmd(sub, flags) {
+/** `aos mcp list|check|copy` (connectors-tab D15; install-import B6): cli/mcp.js, both hosts' MCP servers and connectors. */
+async function mcpCmd(sub, flags) {
   const M = require('./mcp.js');
   try {
-    return M.main([
+    return await M.main([
       ...sub, ...(flags.to !== undefined ? ['--to', flags.to] : []), ...(flags.expect !== undefined ? ['--expect', flags.expect] : []),
       ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.json ? ['--json'] : []),
     ], { io: console, claudeBin, codexBin });
   } catch (e) {
     if (e instanceof M.UsageError) throw new UsageError(e.message);
-    if (e instanceof M.Refused) throw new CheckFailed(`mcp copy: ${e.message}`);
+    if (e instanceof M.Refused) throw new CheckFailed(`mcp ${sub[0] || 'copy'}: ${e.message}`);
     throw e;
   }
 }

@@ -76,6 +76,9 @@ export interface VaultConfig {
   skills: { sync: boolean; exclude: string[] };
   // Universal agents (spec 2026-09-23-universal-agents D6): the Agents tab reads the runtime's cache, not these; mirrored likewise.
   agents: { sync: boolean; exclude: string[] };
+  // The Connectors tab (spec 2026-10-23-connectors-tab D22): its check cadence while open, the usage window, and the
+  // live check's per-server timeout and parallelism. The tab reads checkEveryMin; the runtime reads the rest.
+  connectors: { checkEveryMin: number; usageDays: number; probeTimeoutSec: number; probeConcurrency: number };
   // The status line (spec 2026-09-28-statusline-design): the status bar reads the runtime's statusline.json, not these.
   statusline: { segments: string[]; links: boolean; chainPosition: "top" | "bottom"; subagents: boolean; refreshSeconds: number; codexItems: string[] };
 }
@@ -128,6 +131,7 @@ export const VAULT_CONFIG_DEFAULTS: VaultConfig = {
   memory: { usageDays: 90, neverUsedDays: 30, dupScore: 0.8, clusterMin: 3, mapMin: 8 },
   skills: { sync: true, exclude: [] },
   agents: { sync: true, exclude: [] },
+  connectors: { checkEveryMin: 15, usageDays: 30, probeTimeoutSec: 10, probeConcurrency: 4 },
   statusline: {
     segments: ["needs-you", "runs", "spend", "health"], links: true, chainPosition: "top", subagents: true, refreshSeconds: 5,
     codexItems: ["model-with-reasoning", "task-progress", "project-name", "git-branch", "context-used", "five-hour-limit", "weekly-limit"],

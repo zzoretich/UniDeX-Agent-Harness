@@ -518,7 +518,7 @@ test("the MCP servers surface runs `aos mcp copy` as the page builds it, dry run
   for (const a of [
     ["mcp", "copy", "docs-search", "--to", "codex"], ["mcp", "copy", "docs-search", "--to", "cursor", "--json"], ["mcp", "copy", "-x", "--to", "codex", "--json"],
     ["mcp", "copy", "web fetch", "--to", "codex", "--json"], ["mcp", "copy", "a/b", "--to", "codex", "--json"], ["mcp", "copy", "docs-search", "--json", "--to", "codex"],
-    ["mcp", "list", "--json"], ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run"], ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run", "--json", "--force"],
+    ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run"], ["mcp", "copy", "docs-search", "--to", "codex", "--dry-run", "--json", "--force"],
     ["mcp", "copy", "a".repeat(65), "--to", "codex", "--json"],
     // The real run only with the dry run's hash (security review 3): not without it, nor with a short or upper-case one.
     ["mcp", "copy", "docs-search", "--to", "codex", "--json"], ["mcp", "copy", "docs-search", "--to", "codex", "--expect", "abc", "--json"],
@@ -566,6 +566,17 @@ test("Import runs `aos import` exactly as importArgs builds it, flags in one ord
   ];
   for (const a of no) assert.equal(all.canSpawn(NODE, cli(...a)), false, `never: ${JSON.stringify(a)}`);
   assert.equal(imp.canWrite(v("brain/_index/import-state.json")), false, "the runtime writes, never the page");
+});
+
+test("the Connectors tab's `aos mcp list --json` and `aos mcp check --json` are background refreshes, whatever is on; nothing near them (connectors-tab D21)", () => {
+  const none = new WritePolicy(VAULT, []);
+  const all = new WritePolicy(VAULT, [...SURFACE_IDS]);
+  const cli = (...a: string[]): string[] => [`${S}/cli/aos.js`, ...a];
+  for (const verb of ["list", "check"]) assert.equal(none.canSpawn(NODE, cli("mcp", verb, "--json")), true, verb);
+  for (const a of [["mcp", "list"], ["mcp", "check"], ["mcp", "check", "--json", "--force"], ["mcp", "list", "--json", "x"], ["mcp", "check", "x", "--json"], ["mcp", "park", "x", "--json"], ["mcp", "--json", "list"]]) {
+    assert.equal(all.canSpawn(NODE, cli(...a)), false, a.join(" "));
+  }
+  for (const rel of ["brain/_index/connectors.json", "brain/_index/connectors-live.json", "brain/_index/connectors-usage.json"]) assert.equal(all.canWrite(v(rel)), false, `${rel} is the runtime's`);
 });
 
 test("Hosts runs `aos hosts add claude|codex` alone; `aos hosts status --json` is a background read (install-import B2)", () => {

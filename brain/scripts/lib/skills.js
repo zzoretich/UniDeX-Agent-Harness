@@ -119,14 +119,15 @@ function codexEnabledPlugins(toml) {
   return out.filter((p) => p.enabled).map(({ plugin, market }) => ({ plugin, market }));
 }
 
-/** The newest cached version of a Codex plugin that has skills: cache/<market>[-*]/<plugin>/<version>/. */
-function codexPluginRoot(cache, { plugin, market }) {
+/** The newest cached version of a Codex plugin that has skills: cache/<market>[-*]/<plugin>/<version>/. `has` picks
+ *  another test (lib/connectors/plugins.js: a manifest, since an apps-only plugin has no skills/). */
+function codexPluginRoot(cache, { plugin, market }, has = (v) => isDir(path.join(v, 'skills'))) {
   let markets = [];
   try { markets = fs.readdirSync(cache).filter((m) => m === market || m.startsWith(`${market}-`)); } catch { return null; }
   markets.sort((a, b) => (a === market ? -1 : b === market ? 1 : a.localeCompare(b)));
   for (const m of markets) {
     const base = path.join(cache, m, plugin);
-    const versions = listDirs(base).map((v) => path.join(base, v)).filter((v) => isDir(path.join(v, 'skills')));
+    const versions = listDirs(base).map((v) => path.join(base, v)).filter(has);
     if (!versions.length) continue;
     versions.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
     return versions[0];

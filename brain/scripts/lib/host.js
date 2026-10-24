@@ -181,16 +181,26 @@ function walkRollouts(dir, depth, onFile) {
  *   codex:  rollout-*.jsonl under <home>/sessions/YYYY/MM/DD/ and <home>/archived_sessions/ (`archived: true`)
  * Rows are { file, host, id (from the file name), size, mtimeMs, archived }. Listing only: whether the host is on is
  * the caller's call. Missing folders give an empty list.
+ * opts.subagents (connectors-tab D13) lists Claude Code's <slug>/<id>/subagents/**\/*.jsonl too (two folders deep:
+ * workflows/<run>/), each with `parent`, the session id that ran it. Codex writes a subagent's rollout among the
+ * others, so nothing changes there.
  */
-function sessionFiles(host, { env = process.env, userConfig, dirs } = {}) {
+function sessionFiles(host, { env = process.env, userConfig, dirs, subagents = false } = {}) {
   if (!isHost(host)) return [];
   const d = dirs || hostDirs(host, { env, userConfig });
   const out = [];
-  const take = (file, archived) => {
+  const take = (file, archived, parent = null) => {
     let st;
     try { st = fs.statSync(file); } catch { return; }
     if (!st.isFile()) return;
-    out.push({ file, host, id: sessionIdFromFile(host, file), size: st.size, mtimeMs: st.mtimeMs, archived });
+    out.push({ file, host, id: sessionIdFromFile(host, file), size: st.size, mtimeMs: st.mtimeMs, archived, ...(parent ? { parent } : {}) });
+  };
+  const walkSubagents = (dir, parent, depth) => {
+    for (const e of listEntries(dir)) {
+      const full = path.join(dir, e.name);
+      if (e.isFile() && e.name.endsWith('.jsonl')) take(full, false, parent);
+      else if (e.isDirectory() && depth > 0) walkSubagents(full, parent, depth - 1);
+    }
   };
   if (host === 'codex') {
     if (d.sessions) walkRollouts(d.sessions, 3, (f) => take(f, false));
@@ -201,6 +211,7 @@ function sessionFiles(host, { env = process.env, userConfig, dirs } = {}) {
       const dir = path.join(d.sessions, slug.name);
       for (const e of listEntries(dir)) {
         if (e.isFile() && e.name.endsWith('.jsonl')) take(path.join(dir, e.name), false);
+        else if (subagents && e.isDirectory()) walkSubagents(path.join(dir, e.name, 'subagents'), e.name, 2);
       }
     }
   }

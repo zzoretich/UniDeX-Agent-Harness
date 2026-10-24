@@ -138,7 +138,7 @@ function claudeServers(opts) {
   const servers = j && j.mcpServers && typeof j.mcpServers === 'object' && !Array.isArray(j.mcpServers) ? j.mcpServers : {};
   const out = [];
   for (const [name, spec] of Object.entries(servers)) {
-    if (name === OWN || !spec || typeof spec !== 'object') continue;
+    if ((name === OWN && !opts.keepOwn) || !spec || typeof spec !== 'object') continue;
     out.push(row(name, 'claude', spec, opts.home));
   }
   return { file, servers: out };
@@ -228,39 +228,43 @@ function codexHeaderNames(text) {
   return names;
 }
 
-function codexServers({ dirs, home }) {
-  const file = path.join(dirs.configDir, 'config.toml');
+function codexServers({ dirs, home, keepOwn = false, file: at = null }) {
+  const file = at || path.join(dirs.configDir, 'config.toml');
   const text = C.readRegular(file, MAX_FILE);
   const out = [];
   if (text === null) return { file, servers: out };
   let map = null;
   try { map = codexServerMap(text); } catch { map = null; }
   if (!map) {
-    for (const name of codexHeaderNames(text)) if (name !== OWN) out.push(row(name, 'codex', {}, home));
+    for (const name of codexHeaderNames(text)) if (name !== OWN || keepOwn) out.push(row(name, 'codex', {}, home));
     return { file, servers: out };
   }
   for (const e of map.values()) {
-    if (e.name === OWN) continue;
+    if (e.name === OWN && !keepOwn) continue;
     out.push(row(e.name, 'codex', { ...(e.spec || {}), ...(Object.keys(e.env).length ? { env: e.env } : {}) }, home));
   }
   return { file, servers: out };
 }
 
-/** The servers one host declares (module comment). */
+/** The servers one host declares (module comment). opts.keepOwn keeps the vault's own server (lib/connectors lists it);
+ *  opts.file reads another config.toml (a Codex project's .codex/config.toml). */
 function listServers(host, opts) {
   return host === 'codex' ? codexServers(opts) : claudeServers(opts);
 }
 
-/** Write the listing for `hosts`, keeping the other host's rows. → { file, servers, counts: { host: n } } */
-function writeServers(vault, hosts, byHost, { now = new Date() } = {}) {
+/** Write the listing for `hosts`, keeping the other host's rows. ifChanged (lib/connectors, on every scan) leaves an
+ *  unchanged listing as it is. → { file, servers, written } */
+function writeServers(vault, hosts, byHost, { now = new Date(), ifChanged = false } = {}) {
   const prev = C.readJson(outFile(vault));
   const kept = prev && Array.isArray(prev.servers) ? prev.servers.filter((s) => s && !hosts.includes(s.host)) : [];
   const servers = [...kept, ...hosts.flatMap((h) => byHost[h] || [])]
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.host < b.host ? -1 : 1));
+  if (ifChanged && prev && prev.schema === C.SCHEMA && JSON.stringify(prev.servers) === JSON.stringify(servers)) return { file: outFile(vault), servers, written: false };
   require('../fsx.js').writeAtomic(outFile(vault), JSON.stringify({ schema: C.SCHEMA, updatedAt: now.toISOString(), servers }, null, 2) + '\n');
-  return { file: outFile(vault), servers };
+  return { file: outFile(vault), servers, written: true };
 }
 
 module.exports = {
   listServers, writeServers, claudeUserFile, cleanUrl, maskUrl, codexSections, codexServerMap, outFile, HIDDEN, TOKEN_SHAPE, secretName, tokenLike,
+  serverRow: row, OWN,
 };
