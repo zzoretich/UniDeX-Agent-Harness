@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  attentionFix, buildBoard, checkDue, connectorsBadge, copyOffers, filterCards, kindLine, parseCaches, scopeLine, toolChips, useLine,
+  agoWords, alertKind, attentionFix, buildBoard, checkDue, connectorsBadge, copyOffers, filterCards, foundFiles, groupPeek, inTile, kindLine,
+  metaLine, onBoth, parseCaches, scopeLine, serverSub, sparkHeights, tileSub, toolChips, useLine, CONN_TILES,
   type ConnCard,
 } from "./connectorsModel";
 
@@ -162,4 +163,42 @@ test("a runtime that writes no connectors.json reads as not listed; junk never t
   const c = parseCaches(null, "{", "nope");
   assert.equal(c.listed, false);
   assert.deepEqual(buildBoard(c, both).cards, []);
+});
+
+test("a tile keeps exactly the cards it counts; its sub line names their kinds", () => {
+  const b = board();
+  for (const t of CONN_TILES) assert.equal(b.cards.filter((k) => inTile(k, t)).length, b.tiles[t], t);
+  assert.equal(tileSub(b.cards, "attention", 30), "1 connector · 1 server");
+  assert.equal(tileSub(b.cards, "connected", 30), "2 connectors · 4 servers · 1 built in");
+  assert.equal(tileSub(b.cards, "unused", 30), "no call in 30 days");
+  assert.equal(tileSub(b.cards, "off", 30), "1 server");
+  assert.equal(tileSub([], "attention", 30), "nothing failed");
+});
+
+test("the header line: the check's age, the next one, each enabled host's count; Checking… and a failure lead it", () => {
+  const b = board();
+  assert.equal(metaLine(b, NOW, 15), "checked 5 min ago · next check in 10 min · Claude Code 9 · Codex 5");
+  assert.equal(metaLine(b, NOW + 20 * 60_000, 15), "checked 25 min ago · check due · Claude Code 9 · Codex 5");
+  assert.equal(metaLine(board(["codex"]), NOW, 15, { checking: true }), "Checking… · Codex 5");
+  assert.equal(metaLine(board(both, null), NOW, 15), "never checked · Claude Code 8 · Codex 5");
+  assert.equal(metaLine(b, NOW, 15, { failed: "aos did not answer in time" }), "last check failed: aos did not answer in time · Claude Code 9 · Codex 5");
+  assert.deepEqual([agoWords(null, NOW), agoWords("2026-10-23T12:04:30.000Z", NOW), agoWords("2026-10-23T09:00:00.000Z", NOW), agoWords("2026-10-19T12:00:00.000Z", NOW)], ["never", "just now", "3 h ago", "4 d ago"]);
+});
+
+test("cards' words: sparkline heights, server sub lines, alert kinds, both-hosts tag, found-in files, folded peeks", () => {
+  const b = board();
+  assert.deepEqual(sparkHeights([0, 2, 4], 5, 24), [0, 0, 0, 12, 24], "padded at the front to the window, today last");
+  assert.deepEqual(sparkHeights([1, 100], 2, 24), [3, 24], "a day with a call is never invisible");
+  assert.equal(sparkHeights([], 30, 24).length, 30);
+  assert.equal(serverSub(byTitle(b, "docs")), "stdio · docs-mcp");
+  assert.equal(serverSub(byTitle(b, "remote")), "http · r.example.com");
+  assert.equal(serverSub(byTitle(b, "agenticos")), "plugin · agenticos");
+  assert.equal(serverSub(byTitle(b, "waiting")), "project · alpha");
+  assert.equal(alertKind(byTitle(b, "Tickets").sides.claude!, byTitle(b, "Tickets")), "claude.ai connector");
+  assert.equal(alertKind(byTitle(b, "oauth").sides.codex!, byTitle(b, "oauth")), "http · Codex");
+  assert.deepEqual([onBoth(byTitle(b, "docs")), onBoth(byTitle(b, "remote"))], [true, false]);
+  assert.deepEqual(foundFiles(byTitle(b, "docs")), ["~/.claude.json", "~/.codex/config.toml"]);
+  assert.deepEqual(foundFiles(byTitle(b, "Mail")), []);
+  assert.equal(groupPeek(b.groups.builtin, "builtin"), "claude-in-chrome");
+  assert.equal(groupPeek([], "project"), "no workspace declares its own servers");
 });

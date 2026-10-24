@@ -37,3 +37,9 @@ test("touchesBadges matches TODO.md, the proposals folder and its files only", (
   assert.equal(touchesBadges("persona/proposals-old/x.md"), false);
   assert.equal(touchesBadges("persona/STATE.md"), false);
 });
+
+test("touchesBadges matches the three Connectors caches (connectors-tab D5), not the usage index beside them", () => {
+  for (const p of ["brain/_index/connectors.json", "brain/_index/connectors-live.json", "brain/_index/connectors-usage.json"]) assert.equal(touchesBadges(p), true, p);
+  assert.equal(touchesBadges("brain/_index/connectors-usage-index.json"), false);
+  assert.equal(touchesBadges("brain/_index/mcp-servers.json"), false);
+});

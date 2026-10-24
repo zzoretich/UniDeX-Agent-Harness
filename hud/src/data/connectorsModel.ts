@@ -267,16 +267,28 @@ export function buildBoard(c: ConnCaches, enabled: readonly ConnHost[]): ConnBoa
     const x = c.live?.hosts[h];
     hostInfo[h] = { enabled: enabled.includes(h), checked: !!x?.ran, error: x?.error ?? null, count: out.filter((k) => k.sides[h]).length };
   }
-  const working = (k: ConnCard) => k.group !== "off" && k.group !== "attention";
   return {
     listed: c.listed, checkedAt: c.live?.checkedAt ?? null, hosts: hostInfo, cards: out, groups, days: c.usage.days,
     tiles: {
-      attention: groups.attention.length,
-      connected: out.filter((k) => working(k) && (Object.values(k.sides) as ConnSide[]).some((x) => x.status === "connected" || x.status === "builtin")).length,
-      unused: out.filter((k) => k.group !== "off" && k.calls === 0).length,
-      off: groups.off.length,
+      attention: out.filter((k) => inTile(k, "attention")).length,
+      connected: out.filter((k) => inTile(k, "connected")).length,
+      unused: out.filter((k) => inTile(k, "unused")).length,
+      off: out.filter((k) => inTile(k, "off")).length,
     },
   };
+}
+
+/** The summary tiles (D3), in board order. */
+export type ConnTile = "attention" | "connected" | "unused" | "off";
+export const CONN_TILES: readonly ConnTile[] = ["attention", "connected", "unused", "off"];
+
+/** Whether a card counts toward a tile: what the tile's number counts, and what a click on it keeps. Unused counts every
+ *  card not off with no call in the window, failing ones too (they are the first candidates to park). */
+export function inTile(k: ConnCard, tile: ConnTile): boolean {
+  if (tile === "attention") return k.group === "attention";
+  if (tile === "off") return k.group === "off";
+  if (tile === "unused") return k.group !== "off" && k.calls === 0;
+  return k.group !== "off" && k.group !== "attention" && (Object.values(k.sides) as ConnSide[]).some((x) => x.status === "connected" || x.status === "builtin");
 }
 
 /** Whether the tab should check now: never checked, or the last check is older than `everyMin` minutes. */
@@ -396,4 +408,106 @@ export function toolChips(k: ConnCard): { name: string; calls: number; summary: 
     for (const [name, n] of Object.entries(x.usage?.perTool ?? {})) { const have = by.get(name); by.set(name, { name, calls: (have?.calls ?? 0) + n, summary: have?.summary ?? "" }); }
   }
   return [...by.values()].sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
+}
+
+
+// ── the board's words (views/ConnectorsTab.ts renders them) ──────────────────
+
+export const TILE_LABEL: Record<ConnTile, string> = { attention: "Need attention", connected: "Connected", unused: "Unused in {days} days", off: "Off" };
+
+const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
+
+/** A tile's second line: what its cards are (`2 connectors · 1 server`), or for Unused what it means. */
+export function tileSub(cards: readonly ConnCard[], tile: ConnTile, days: number): string {
+  const ks = cards.filter((k) => inTile(k, tile));
+  if (tile === "unused") return ks.length ? `no call in ${days} days` : "everything was used";
+  if (!ks.length) return tile === "attention" ? "nothing failed" : "none";
+  const parts: string[] = [];
+  const n = (kind: ConnCard["kind"]) => ks.filter((k) => k.kind === kind).length;
+  if (n("connector")) parts.push(plural(n("connector"), "connector"));
+  if (n("server")) parts.push(plural(n("server"), "server"));
+  if (n("builtin")) parts.push(`${n("builtin")} built in`);
+  return parts.join(" · ");
+}
+
+/** "just now", "2 min ago", "3 h ago", "4 d ago": the header's age of the last check. */
+export function agoWords(iso: string | null, nowMs: number): string {
+  const ms = iso ? nowMs - Date.parse(iso) : NaN;
+  if (!Number.isFinite(ms)) return "never";
+  const m = Math.floor(Math.max(0, ms) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.floor(h / 24)} d ago`;
+}
+
+/**
+ * The header's mono line (D3): `checked 2 min ago · next check in 13 min · Claude Code 4 · Codex 2`, the hosts being
+ * the enabled ones with how many cards each has. While a check runs it leads with `Checking…`; after an automatic check
+ * failed, with why.
+ */
+export function metaLine(b: Pick<ConnBoard, "checkedAt" | "hosts">, nowMs: number, everyMin: number, o: { checking?: boolean; failed?: string | null } = {}): string {
+  const parts: string[] = [];
+  if (o.checking) parts.push("Checking…");
+  else if (o.failed) parts.push(`last check failed: ${o.failed}`);
+  else if (!b.checkedAt) parts.push("never checked");
+  else {
+    parts.push(`checked ${agoWords(b.checkedAt, nowMs)}`);
+    const left = Math.ceil((Date.parse(b.checkedAt) + Math.max(1, everyMin) * 60_000 - nowMs) / 60_000);
+    parts.push(left > 0 ? `next check in ${left} min` : "check due");
+  }
+  for (const h of CONN_HOSTS) if (b.hosts[h].enabled) parts.push(`${CONN_HOST_LABEL[h]} ${b.hosts[h].count}`);
+  return parts.join(" · ");
+}
+
+/** A sparkline's bar heights (px) over `days` days, oldest first: 0 for a day with no call, else at least `minPx`. */
+export function sparkHeights(perDay: readonly number[], days: number, maxPx: number, minPx = 3): number[] {
+  const n = Math.max(1, days);
+  const d = perDay.length >= n ? perDay.slice(perDay.length - n) : [...new Array<number>(n - perDay.length).fill(0), ...perDay];
+  const max = Math.max(1, ...d);
+  return d.map((x) => (x > 0 ? Math.max(minPx, Math.round((x / max) * maxPx)) : 0));
+}
+
+/** The side a card's words come from: Claude Code's when it has one. */
+function firstSide(k: ConnCard): ConnSide | null {
+  return k.sides.claude ?? k.sides.codex ?? null;
+}
+
+/** A server card's sub line: `plugin · logbook`, `project · alpha`, `stdio · npx`, `http · charts.example.com`. */
+export function serverSub(k: ConnCard): string {
+  const s = firstSide(k);
+  if (!s) return "";
+  if (s.scope === "builtin") return scopeLine(s);
+  if (s.scope === "plugin") return `plugin · ${s.plugin ?? ""}`.trim();
+  if (s.scope === "project" || s.scope === "local") return `${s.scope} · ${s.workspace ?? ""}`;
+  let what = s.what;
+  if (/^https?:\/\//.test(what)) { try { what = new URL(what).host; } catch { /* as written */ } }
+  else what = (what.split(/\s+/)[0] ?? "").split("/").pop() ?? what;
+  return `${s.transport ?? "stdio"}${what ? ` · ${what}` : ""}`;
+}
+
+/** An attention card's kind: `claude.ai connector`, `ChatGPT app`, `stdio · Claude Code`. */
+export function alertKind(x: ConnSide, k: ConnCard): string {
+  if (k.kind === "connector") return x.host === "claude" ? "claude.ai connector" : "ChatGPT app";
+  return `${x.transport ?? "stdio"} · ${CONN_HOST_LABEL[x.host]}`;
+}
+
+/** Whether a card is on both hosts (the sheet's tag). */
+export function onBoth(k: ConnCard): boolean {
+  return !!k.sides.claude && !!k.sides.codex;
+}
+
+/** The files a card's sides were found in, each once, in host order. */
+export function foundFiles(k: ConnCard): string[] {
+  const out: string[] = [];
+  for (const h of CONN_HOSTS) { const f = k.sides[h]?.file; if (f && !out.includes(f)) out.push(f); }
+  return out;
+}
+
+/** A folded group's peek: the first few titles, or why it is empty. */
+export function groupPeek(cards: readonly ConnCard[], group: "builtin" | "off" | "project"): string {
+  if (!cards.length) return group === "builtin" ? "no built-in server was seen in use" : group === "off" ? "nothing is turned off" : "no workspace declares its own servers";
+  const names = cards.slice(0, 3).map((k) => k.title).join(" · ");
+  return cards.length > 3 ? `${names} · +${cards.length - 3}` : names;
 }
