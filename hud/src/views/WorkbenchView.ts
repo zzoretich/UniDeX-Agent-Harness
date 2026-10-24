@@ -7,6 +7,7 @@ import { FilesTab } from "./files/FilesTab";
 import { RunsTab } from "./RunsTab";
 import { RoutinesTab } from "./RoutinesTab";
 import { SkillsTab } from "./SkillsTab";
+import { ConnectorsTab } from "./ConnectorsTab";
 import { AgentsTab } from "./AgentsTab";
 import { SessionsTab } from "./SessionsTab";
 import { TermTab } from "./TermTab";
@@ -24,7 +25,8 @@ import { TODO_PATH, localDay } from "../data/todos";
 import { readTeams, diskAdapter, gateBadge } from "../data/teams";
 import { TRAIL_PATH } from "../data/promoteTrail";
 import { pendingReview, readTrailRows, touchesBrain, trailSince, type BrainMode, type ReviewQueue } from "../data/brainModel";
-import { PROVIDER_STATE_PATH } from "../data/aosConfig";
+import { PROVIDER_STATE_PATH, readAgenticosJson, sessionHosts } from "../data/aosConfig";
+import { CONNECTORS_LIVE_PATH, CONNECTORS_PATH, CONNECTORS_USAGE_PATH, buildBoard, connectorsBadge, parseCaches } from "../data/connectorsModel";
 import { CaptureModal } from "../ui/CaptureModal";
 import { HOST_APP_SETTINGS, HOST_TOGGLE_THEME, runHostCommand } from "../ui/hostCommands";
 import { currentTheme, onThemeChange } from "../ui/theme";
@@ -61,6 +63,8 @@ const RAIL_SECTIONS: RailTab[][] = [
     { id: "agent-teams", icon: "users", label: "Agent Teams" },
     { id: "agents", icon: "bot", label: "Agents" },
     { id: "skills", icon: "sparkles", label: "Skills" },
+    // Every MCP server and connector both hosts can use (spec 2026-10-23-connectors-tab D2), right after Skills.
+    { id: "connectors", icon: "plug", label: "Connectors" },
     { id: "runs", icon: "list", label: "Runs" },
   ],
 ];
@@ -221,7 +225,8 @@ export class WorkbenchView extends ItemView {
     this.registerEvent(this.app.vault.on("delete", (f) => onPath(f)));
     this.registerEvent(this.app.vault.on("rename", (f, oldPath) => onPath(f, oldPath)));
     // A vault root outside Obsidian sends no vault events, so the gate badge is also recounted once a minute.
-    this.registerInterval(window.setInterval(() => void this.refreshTeamsBadge(), 60_000));
+    // Connectors' badge goes once its check is a day old (D5), which no vault event marks: recounted on the same clock.
+    this.registerInterval(window.setInterval(() => { void this.refreshTeamsBadge(); void this.refreshConnectorsBadge(); }, 60_000));
     void this.refreshBadges();
   }
 
@@ -320,6 +325,19 @@ export class WorkbenchView extends ItemView {
     await this.refreshTeamsBadge();
     await this.refreshPulseBadge();
     await this.refreshBrainBadge();
+    await this.refreshConnectorsBadge();
+  }
+
+  /** Connectors' badge (spec 2026-10-23-connectors-tab D5): what needs attention after the last check, rose, for the
+   *  enabled hosts only; none when that check is over a day old or never ran. Reads the three caches alone. */
+  private async refreshConnectorsBadge(): Promise<void> {
+    try {
+      const a = this.app.vault.adapter;
+      const read = async (p: string): Promise<string | null> => ((await a.exists(p)) ? await a.read(p) : null);
+      const [found, live, usage] = [await read(CONNECTORS_PATH), await read(CONNECTORS_LIVE_PATH), await read(CONNECTORS_USAGE_PATH)];
+      const board = buildBoard(parseCaches(found, live, usage), sessionHosts(readAgenticosJson(this.plugin.claudeConfigDir())));
+      this.setBadge("connectors", connectorsBadge(board, Date.now()), true);
+    } catch { /* unreadable: no badge */ }
   }
 
   /**
@@ -533,6 +551,7 @@ export class WorkbenchView extends ItemView {
     if (id === "runs") return new RunsTab(this.plugin, this);
     if (id === "routines") return new RoutinesTab(this.plugin, this);
     if (id === "skills") return new SkillsTab(this.plugin, this);
+    if (id === "connectors") return new ConnectorsTab(this.plugin, this);
     if (id === "agents") return new AgentsTab(this.plugin, this);
     if (id === "agent-teams") return new AgentTeamsTab(this.plugin, this);
     if (id === "chat") return new SessionsTab(this.plugin, this);

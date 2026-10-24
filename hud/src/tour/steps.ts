@@ -63,7 +63,7 @@ export interface TourBook {
 }
 
 /** The tabs a step may route to (WorkbenchView WORKBENCH_TAB_IDS; kept here so this module stays import-free of views). */
-export const TOUR_TABS = ["notifications", "pulse", "term", "chat", "todo", "spaces", "files", "routines", "proposals", "memory", "agent-teams", "agents", "skills", "runs", "settings"];
+export const TOUR_TABS = ["notifications", "pulse", "term", "chat", "todo", "spaces", "files", "routines", "proposals", "memory", "agent-teams", "agents", "skills", "connectors", "runs", "settings"];
 const TOUR_MODES: readonly string[] = BRAIN_MODES;
 const TOUR_PANES: readonly string[] = SPACES_PANES;
 /** The Sessions tab's one pane a step may show: History (install-import B11). */

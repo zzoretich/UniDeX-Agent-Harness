@@ -68,6 +68,13 @@ export interface Expected {
   history: { digests: Record<"claude" | "codex", { id: string; title: string; summary: string }> };
   /** Skills ▸ MCP servers (install-import B6): the servers in each host's config, and the listing `aos import` wrote. */
   mcp: { claude: string; codex: string; both: string; remote: string; listed: Array<{ name: string; host: string; transport: string; command?: string; url?: string }> };
+  /** The Connectors tab's caches (connectors-tab §4.2): the connectors the check named, the server needing sign-in, the
+   *  built-in seen in use; what `aos mcp list` found and counted. */
+  connectors: {
+    failed: string; connected: string; needsAuth: string; builtin: string; checkedAt: string;
+    rows: Array<{ host: string; name: string; kind: string; scope: string }>;
+    usage: Array<{ host: string; name: string; builtin: boolean; calls: number; perTool: Record<string, number> }>;
+  };
 }
 
 export interface ExpectedBrainBatch { key: string; session: string | null; title: string; host: string | null; lead: string | null; at: string; paths: string[] }
@@ -152,6 +159,15 @@ export function expected(): Expected {
 }
 
 export function readVaultJson<T = unknown>(rel: string): T { return JSON.parse(fs.readFileSync(FX.v(rel), "utf8")) as T; }
+
+/** A `prepare` that dates the fixture's Connectors check now (connectors-tab D10): the tab then starts no check of its
+ *  own while a spec runs, which on a surface that allows it would start every server the fixture names. */
+export function freshConnectorsCheck(): void {
+  const file = FX.v("brain/_index/connectors-live.json");
+  const j = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+  j.checkedAt = new Date().toISOString();
+  fs.writeFileSync(file, `${JSON.stringify(j, null, 2)}\n`);
+}
 
 // ── fixture copy ─────────────────────────────────────────────────────
 
@@ -619,7 +635,7 @@ export function useApp(opts: LaunchOptions = {}): () => AppHandle {
 export const RAIL_SECTIONS = [
   ["notifications", "pulse", "term", "chat"],
   ["todo", "spaces", "files", "routines", "proposals"],
-  ["memory", "agent-teams", "agents", "skills", "runs"],
+  ["memory", "agent-teams", "agents", "skills", "connectors", "runs"],
 ];
 export const RAIL_ORDER = RAIL_SECTIONS.flat();
 
@@ -686,6 +702,9 @@ export const BACKGROUND_SPAWNS: RegExp[] = [
   /aos\.js skills sync/,
   /aos\.js agents sync/,
   /team\.js list/,
+  // The Connectors tab (connectors-tab D10): its check, and the list after a copy. The guard cuts the vault path, so a tail.
+  /mcp check --json$/,
+  /mcp list --json$/,
 ];
 
 /** Fails the test when the app raised renderer or main-process errors since `from` (an index into handle.errors). */

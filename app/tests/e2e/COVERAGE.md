@@ -16,13 +16,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 149 |
-| covered in part | 79 |
+| covered | 154 |
+| covered in part | 82 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| **total** | **283** |
+| **total** | **291** |
 
-Of the 234 items about the app (283 minus the 49 N/A), 228 are asserted (149 fully, 79 in part); the other 6 are not
+Of the 242 items about the app (291 minus the 49 N/A), 236 are asserted (154 fully, 82 in part); the other 6 are not
 covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -38,7 +38,7 @@ a live host session, Ollama's embeddings, the look in both themes). The writes, 
 - Spaces' Describe N new, ↻ per file and the read's ↻ (SMR8, SMR9) and its actions (SMR14–SMR20, SMR22) in `spaces-writes.spec.ts`, with `spaces,todo` for + to-do and Link to-dos… (SMR22, SMR23);
 - Agent Teams (AT1, AT3, AT5's budget, AT7, AT8) in `teams-writes.spec.ts`, and the seed in `variants.spec.ts`;
 - Chat (CH1, CH3, CH4) in `chat-writes.spec.ts`, against stub `claude` and `codex` CLIs and a stub Ollama server;
-- MCP servers' Make available on … (SK11, SK12) in `history-mcp.spec.ts`, with `AOS_APP_WRITE=mcp`, through the vault's own `aos mcp copy` against stand-in `claude` and `codex` CLIs that log their argv and write the entry as the real ones do;
+- MCP servers' Copy to … in a Connectors sheet (CN8, CN9) in `history-mcp.spec.ts`, with `AOS_APP_WRITE=mcp`, through the vault's own `aos mcp copy` against stand-in `claude` and `codex` CLIs that log their argv and write the entry as the real ones do;
 - Sessions (SE1–SE13) in `sessions.spec.ts` (SE13, Vault chat's host and model menu, in `chat-writes.spec.ts`), against stand-in `claude` and `codex` CLIs that print recorded-shape streams and answer the host catalog's questions (Claude's `initialize`, Codex's `debug models` and `debug prompt-input`) from synthetic lists, the vault's own runtime, and git repositories the spec makes in workspaces;
 - Files (F14–F16, F19–F22) in `files-writes.spec.ts`;
 - the note editor, the app's own Notes surface (beyond the checklist), in `notes-writes.spec.ts`;
@@ -359,9 +359,22 @@ again (`brain-ai`).
 | SK7 | Codex: a new skill is mirrored to Claude Code | N/A in the app | Host session hooks. |
 | SK8 | A hand-edited copy is left alone, reads `copy edited`, doctor warns; reset | N/A in the app | Runtime CLI. |
 | SK9 | `hosts.codex.enabled: false`: sharing off note, claude pill only, nothing written under `~/.agents/skills` | covered | `› Skills: head counts, the sharing note…`, `› Skills: a row carries a cyan claude pill, a struck codex pill…` |
-| SK10 | MCP SERVERS: each server once with its program or URL, host pills, transport; "not listed yet" with ❯_ `aos import --only mcp`; the filter | covered in part | `history-mcp › the fixture… › Skills ▸ MCP servers: each server once…` (the fixture's servers listed by the runtime's `aos import --only mcp`), `› no host on this Mac…`; `mcpServers.test.ts` (`parseMcpServers` for a missing listing, `filterMcp`). The "not listed yet" line on a vault with no listing: unit only. |
-| SK11 | Make available on Codex: the confirm's file, backup and `codex mcp add` with secrets hidden; Cancel; Add runs exactly that (`--expect`), backs `config.toml` up outside the vault (600, 700 folder), the row gains its pill; a remote or turned-off server off with why; one copy per host at a time; refused with the surface off | covered in part | `history-mcp › both hosts, the MCP servers surface on › Make available on Codex…` (and the page refused the backup's read), `› a Codex-only machine › Skills ▸ MCP servers…` (the remote one off), `› the fixture… › Skills ▸ MCP servers…` (refused with the surface off, naming the command); `cli/mcp.test.js` (both directions, the secrets hidden, `--expect`, scrubbed failures, refusals, backups, the lock per host), `main-policy.test.ts` (the backups never read), `mcpServers.test.ts` (a turned-off server's offer off). `codex mcp list` with the real CLI: manual. |
-| SK12 | Make available on Claude Code: the confirm's `Writes ~/.claude.json` and `claude mcp add-json --scope user`; Add runs it; no button for a host that is off or with no host | covered in part | `history-mcp › both hosts… › Make available on Claude Code…`, `› a Codex-only machine…` (nothing to Claude Code), `› no host on this Mac…`. `claude mcp list` with the real CLI: manual. |
+| SK10 | The list ends with "MCP servers and connectors moved to Connectors →", which opens Connectors | covered | `skills-agents › Skills: head counts, the sharing note…`, `history-mcp › the fixture… › Skills says MCP servers moved and opens Connectors…` |
+
+## Connectors (both hosts)
+
+| # | Item | Status | Covered by / reason |
+|---|---|---|---|
+| CN1 | The board: the head's line, four tiles, NEEDS ATTENTION, CONNECTORS and MCP SERVERS cards (host dots, tools, use, sparkline), the folded rows; light and dark | covered in part | `connectors › the fixture… › the board: the header's line, four tiles…`; `connectorsModel.test.ts` (merge, groups, tiles, words). The look in both themes: manual. |
+| CN2 | A card's sheet: tags, host rows, usage, tools with calls (seen in use), where found; Esc, ✕, the scrim; focus back on the card | covered | `connectors › the fixture… › a card opens its sheet…` |
+| CN3 | The filter keeps focus; a tile filters until clicked again | covered | `connectors › the fixture… › the filter narrows every section…` |
+| CN4 | Check now runs `aos mcp check`; a check on open when due and every minute's look while in front; a held check refused (notice for Check now, the head for an automatic one, no retry before the cadence) | covered in part | `connectors › the fixture… › fixes: …Check now while another check runs says why; Check again runs aos mcp check…`, `› before any check…`; `connectorsModel.test.ts` (`checkDue`, `metaLine`). The 15-minute cadence while the tab stays in front is not waited for. |
+| CN5 | The rail badge: rose, the attention count after a check within a day; hidden at 0, before any check, after a day | covered in part | `connectors › the fixture… › the board…` (2, rose), `› before any check…`, `› a Codex-only machine…`, `› a runtime from before Connectors…` (hidden); `connectorsModel.test.ts` and `badges.test.ts` (`connectorsBadge` after a day, `touchesBadges`). A day passing in the app: unit only. |
+| CN6 | Claude Code: a claude.ai connector's fix opens claude.ai's connector settings; `/mcp` hint; Check again; `claude` not found: the banner | covered | `connectors › the fixture… › the board…` (the reasons, hints and fixes), `› fixes: …` (the page handed to the OS, Check again, the banner) |
+| CN7 | Codex only: Codex's servers and ChatGPT apps with Codex's dot, no claude.ai connector or Claude Code dot; Sign in with Codex runs `codex mcp login`; `codex` not found: the banner | covered in part | `connectors › a Codex-only machine…`, `history-mcp › a Codex-only machine › Connectors…`; `connectorsModel.test.ts` (`attentionFix` → login, Codex-only boards). The fixture has no ChatGPT app or OAuth server; the banner for Codex: unit only. |
+| CN8 | Copy to Codex: the confirm's file, backup and `codex mcp add` with secrets hidden; Cancel; Add runs exactly that (`--expect`), backs `config.toml` up outside the vault (600, 700 folder), the card gains its dot; a remote or turned-off server off with why; one copy per host at a time; refused with the surface off | covered in part | `history-mcp › both hosts, the MCP servers surface on › Copy to Codex…` (and the page refused the backup's read), `connectors › both hosts, read-only › …Copy to …` (the remote one off with why; refused with the surface off, naming the command); `cli/mcp.test.js` (both directions, the secrets hidden, `--expect`, scrubbed failures, refusals, backups, the lock per host), `main-policy.test.ts` (the backups never read), `connectorsModel.test.ts` (`copyOffers`: a turned-off or remote server's offer off). `codex mcp list` with the real CLI: manual. |
+| CN9 | Copy to Claude Code: the confirm's `Writes ~/.claude.json` and `claude mcp add-json --scope user`; Add runs it; no row or button for a host that is off; no host: the board says so | covered in part | `history-mcp › both hosts… › Copy to Claude Code…`, `› a Codex-only machine › Connectors…` (nothing to Claude Code), `› no host on this Mac…`. `claude mcp list` with the real CLI: manual. |
+| CN10 | Before any check: Not checked, "Nothing to report until the first check."; a runtime from before Connectors asks for `aos upgrade`, Check now off | covered | `connectors › before any check…`, `› a runtime from before Connectors…` |
 
 ## Agents (both hosts)
 

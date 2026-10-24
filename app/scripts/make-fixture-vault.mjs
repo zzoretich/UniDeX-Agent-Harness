@@ -591,6 +591,11 @@ stage(`${WS_FIXTURE.git}: its own git repository (one commit, one dirty file, no
   return `main · ${git("rev-parse", "--short", "HEAD").trim()} · dirty: ${git("status", "--porcelain").trim()}`;
 }, { optional: true });
 
+const MCP_FIXTURE = { claude: "docs-search", codex: "issue-tracker", both: "tide-feed", remote: "chart-api" };
+// The Connectors tab (connectors-tab D3, D12, D13): two claude.ai connectors the last check named, one failing; the
+// remote server needing sign-in; a built-in server no config declares, seen in a subagent's calls.
+const CONNECTORS_FIXTURE = { failed: "Mail", connected: "Notes", needsAuth: MCP_FIXTURE.remote, builtin: "ide" };
+
 stage("host sessions (Codex rollouts and Claude Code transcripts)", () => {
   // Codex: sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl, opening with session_meta; `lines` are the records after it as
   // [ms after the start, type, payload]. The file's mtime is its last record's time, as Codex leaves it.
@@ -662,6 +667,24 @@ stage("host sessions (Codex rollouts and Claude Code transcripts)", () => {
     fs.utimesSync(file, new Date(at(90)), new Date(at(90)));
   };
   transcript(harbor, WS_FIXTURE.claude["harbor-map"], 3 * HOUR, { prompt: "Wire the tide parser into the chart view", read: "src/tides.js", reply: "The parser's rows now feed the chart view's overlay.", title: "Tide parser in the chart view" });
+  // A subagent of that session called MCP tools (Connectors' usage, connectors-tab D13): four calls to docs-search's tools
+  // and one to a server no config declares (a built-in). Claude Code keeps it in <session>/subagents/, which only the
+  // usage count reads, so History, Sessions and Runs see nothing new.
+  {
+    const sid = WS_FIXTURE.claude["harbor-map"];
+    const cwd = fs.realpathSync(harbor);
+    const t0 = ago(3 * HOUR - 30_000);
+    const at = (sec) => new Date(t0.getTime() + sec * 1000).toISOString();
+    const call = (n, name) => ({ type: "assistant", isSidechain: true, sessionId: sid, cwd, timestamp: at(n * 5), message: { role: "assistant", content: [{ type: "tool_use", id: `toolu_fxmcp${n}`, name, input: {} }] } });
+    const lines = [
+      { type: "user", isSidechain: true, sessionId: sid, cwd, timestamp: at(0), message: { role: "user", content: "Find what the docs say about tide offsets" } },
+      call(1, `mcp__${MCP_FIXTURE.claude}__lookup`), call(2, `mcp__${MCP_FIXTURE.claude}__lookup`), call(3, `mcp__${MCP_FIXTURE.claude}__lookup`),
+      call(4, `mcp__${MCP_FIXTURE.claude}__search`), call(5, `mcp__${CONNECTORS_FIXTURE.builtin}__getDiagnostics`),
+    ];
+    const file = path.join(CLAUDE, "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"), sid, "subagents", "agent-fx01.jsonl");
+    write(file, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+    fs.utimesSync(file, new Date(at(25)), new Date(at(25)));
+  }
   transcript(v(`workspaces/${WS_FIXTURE.stalled}`), WS_FIXTURE.claude["reef-survey"], 12 * DAY, { prompt: "Enter the north reef coral counts from the dive log", read: `HANDOFF-${WS_FIXTURE.stalled}.md`, reply: "North reef counts entered; the south reef is next." });
 });
 
@@ -685,9 +708,9 @@ stage("session digests (lib/import/digest.js's output; the digest needs a local 
   return `${sessions.length} digests`;
 });
 
-// Skills ▸ MCP servers (install-import B6): a server on each host only, and one on both, in each host's own user config
-// (Claude Code's ~/.claude.json beside the default ~/.claude, Codex's config.toml); the importer's listing lists them below.
-const MCP_FIXTURE = { claude: "docs-search", codex: "issue-tracker", both: "tide-feed", remote: "chart-api" };
+// MCP servers (install-import B6, the Connectors tab): a server on each host only, and one on both, in each host's own
+// user config (Claude Code's ~/.claude.json beside the default ~/.claude, Codex's config.toml); the importer's listing and
+// `aos mcp list` list them below (MCP_FIXTURE and CONNECTORS_FIXTURE are above the host sessions, which call two of them).
 stage("MCP servers in each host's config (Claude Code's .claude.json, Codex's config.toml)", () => {
   writeJson(path.join(HOME, ".claude.json"), {
     numStartups: 3,
@@ -1097,6 +1120,34 @@ stage("aos routines hosts --refresh", () => aos(["routines", "hosts", "--refresh
 stage("heartbeat-writer.js (staff heartbeats)", () => run(NODE, [path.join(SCRIPTS, "heartbeat-writer.js")], { env: HOOK_ENV() }).trim().split("\n")[0], { optional: true });
 stage("proposal-html.js (proposal pages)", () => brainScript("persona/proposal-html.js").trim().split("\n").slice(-1)[0], { optional: true });
 stage("scan-vault.js --quiet", () => brainScript("scan-vault.js", ["--quiet"], { env: USER_ENV(), timeout: 300_000 }).trim().split("\n").slice(-1)[0]);
+// Connectors (connectors-tab §4.2): a check's result, hand-made because a real check starts every server (the fixture's
+// programs do not exist), written as lib/connectors/check.js writes it; then `aos mcp list` with both hosts on, so
+// connectors.json carries Codex's servers too (the HUD shows only the enabled hosts') and the claude.ai connectors the
+// check named, and connectors-usage.json counts the subagent's calls.
+stage("Connectors: the last check, then aos mcp list with both hosts", () => {
+  const F = CONNECTORS_FIXTURE;
+  const tools = (...t) => t.map(([name, summary]) => ({ name, summary }));
+  writeJson(v("brain/_index/connectors-live.json"), {
+    schema: 1, checkedAt: NOW.toISOString(), durationMs: 4200,
+    hosts: { claude: { enabled: true, ran: true }, codex: { enabled: false, ran: false } },
+    rows: [
+      { host: "claude", name: MCP_FIXTURE.claude, kind: "server", status: "connected", detail: "", tools: tools(["lookup", "Look a term up in the docs"], ["search", "Search the docs"], ["fetch_page", "Fetch one docs page"]) },
+      { host: "claude", name: MCP_FIXTURE.both, kind: "server", status: "connected", detail: "", tools: tools(["tides", "Today's tide table for a station"]) },
+      { host: "claude", name: "plugin:agenticos:agenticos", kind: "server", status: "connected", detail: "", tools: tools(["recall", "Recall from the vault"], ["memory_search", "Search the memories"], ["wrap_session", "Wrap the session"]) },
+      { host: "claude", name: F.needsAuth, kind: "server", status: "needs-auth", detail: "Needs authentication", tools: null },
+      { host: "claude", name: `claude.ai ${F.failed}`, kind: "connector", status: "failed", detail: "-32600: client not permitted", tools: null },
+      { host: "claude", name: `claude.ai ${F.connected}`, kind: "connector", status: "connected", detail: "", tools: null },
+    ],
+  });
+  const cfg = path.join(OUT, "agenticos-both-hosts.json");
+  const both = readJson(AOS_CONFIG);
+  both.hosts = { ...both.hosts, claude: { ...both.hosts?.claude, enabled: true }, codex: { ...both.hosts?.codex, enabled: true } };
+  writeJson(cfg, both);
+  try {
+    const r = JSON.parse(aos(["mcp", "list", "--json"], { env: { ...USER_ENV(), AOS_CONFIG: cfg } }));
+    return `${r.rows.length} servers and connectors, ${r.usage.length} in use`;
+  } finally { fs.rmSync(cfg, { force: true }); }
+});
 stage("build-brain-md.js", () => brainScript("build-brain-md.js").trim().split("\n").slice(-1)[0]);
 stage("recall --warm", () => brainScript("sdk/recall-cli.js", ["--warm"], { timeout: 120_000 }).trim().split("\n").slice(-1)[0], { optional: true });
 
@@ -1162,6 +1213,12 @@ stage("expected values", () => {
   let listed = [];
   try { listed = readJson(v("brain/_index/mcp-servers.json")).servers; } catch { /* the listing stage failed: specs say so */ }
   expected.mcp = { ...MCP_FIXTURE, listed };
+  {
+    const found = readJson(v("brain/_index/connectors.json"));
+    const usage = readJson(v("brain/_index/connectors-usage.json"));
+    const live = readJson(v("brain/_index/connectors-live.json"));
+    expected.connectors = { ...CONNECTORS_FIXTURE, checkedAt: live.checkedAt, rows: found.rows.map((r) => ({ host: r.host, name: r.name, kind: r.kind, scope: r.scope })), usage: usage.rows.map((u) => ({ host: u.host, name: u.name, builtin: u.builtin, calls: u.calls, perTool: u.perTool })) };
+  }
   expected.workspaces = { ...WS_FIXTURE, status: Object.fromEntries((snap.workspaces ?? []).map((w) => [w.name, w.status ?? null])) };
   // The Brain hub (brain-hub D3, D11, D12): the scan's brain-hub.json, `aos memory list --json` and the trail, so a spec
   // asserts what the runtime built. `older` is Review's "Older than 30d" queue as brainModel.ts olderQueue reads it:

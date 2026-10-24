@@ -203,7 +203,7 @@ test("commands: the plugin registers its palette commands; each 'Open Workbench:
   const cmds = await win.evaluate(() => (window as unknown as { aosHost: { app: { commands: { list(): Array<{ id: string; name: string; hotkeys?: unknown[] }> } } } })
     .aosHost.app.commands.list().map((c) => ({ id: c.id, name: c.name, hotkeys: c.hotkeys ?? [] })));
   const ids = cmds.map((c) => c.id);
-  for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "agents", "agent-teams", "chat", "term", "settings"]) {
+  for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "connectors", "agents", "agent-teams", "chat", "term", "settings"]) {
     expect(ids).toContain(`agentic-os:open-workbench-${t}`);
   }
   for (const id of ["open-workbench", "open-sidebar-hud", "open-memory-inspector", "open-run-inspector", "new-terminal", "quick-capture", "open-omnisearch"]) {
@@ -278,7 +278,7 @@ test("read-only guard: the tour wrote nothing and refused only the runtime's own
   const log = await h.guard();
   expect(log.filter((e) => e.kind === "write"), "refused writes").toEqual([]);
   // The guard shortens each argument to 90 characters, so a long vault path hides the script name: match on the tail too.
-  const tails = [/…$/, / refresh$/, / --quiet$/, /routines hosts --refresh$/, /skills sync$/, /agents sync$/, / list --json$/];
+  const tails = [/…$/, / refresh$/, / --quiet$/, /routines hosts --refresh$/, /skills sync$/, /agents sync$/, / list --json$/, /mcp check --json$/];
   for (const e of log) {
     expect(BACKGROUND_SPAWNS.some((re) => re.test(e.what)) || tails.some((re) => re.test(e.what)), `unexpected refused spawn: ${e.what}`).toBe(true);
   }
