@@ -333,7 +333,7 @@ async function check(opts = {}) {
         } else if (codexSignedIn === true) { r.status = 'connected'; r.detail = 'through your ChatGPT sign-in'; } else if (codexSignedIn === false) { r.status = 'needs-auth'; r.detail = 'codex login'; } else r.detail = (hosts.codex && hosts.codex.error) || '';
         continue;
       }
-      if (x.enabled === false) { r.status = 'off'; r.detail = x.approval === 'off' ? 'turned off for this project' : 'turned off'; continue; }
+      if (x.enabled === false) { r.status = 'off'; r.detail = x.parked ? 'parked' : x.approval === 'off' ? 'turned off for this project' : 'turned off'; continue; }
       if (x.approval === 'pending') { r.status = 'pending'; r.detail = 'waiting for approval in Claude Code'; continue; }
       if (x.host === 'claude') {
         const l = claudeList && claudeList.get(x.name);

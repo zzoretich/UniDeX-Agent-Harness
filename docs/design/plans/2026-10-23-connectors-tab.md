@@ -55,10 +55,10 @@ worktree `connectors-data`. Three PRs, each shippable alone (D6): the data layer
 
 ## PR 3: actions (`feat: park, add, remove and sign in to MCP servers from Connectors`)
 
-- [ ] A1–A3 answered and recorded in the spec.
-- [ ] `aos mcp park|unpark|add|remove|login` with dry run → hash → `--expect`; stash and backups under `~/.local/share/unidex/` with `ownDir`; refusals (own server, plugin rows per D17, connectors, host off).
-- [ ] Copy: `--url` to Codex; moved into the sheet.
-- [ ] Surface rules (`verified: false`), `sandbox.spec.ts` unchanged (no new channel), e2e for every confirm, SECURITY.md rows.
+- [x] A1–A3 answered and recorded in the spec (A2 checked: yes, Claude Code 2.1.310).
+- [x] `aos mcp park|unpark|add|remove` with dry run → hash → `--expect`; stash and backups under `~/.local/share/unidex/` with `ownDir`; refusals (own server, plugin rows per D17, connectors, host off). No `login` verb (spec §8).
+- [x] Copy: `--url` to Codex; moved into the sheet.
+- [x] Surface rules (`verified: false`, on a new `mcp-manage` surface: spec §8), `sandbox.spec.ts` unchanged (no new channel), e2e for every confirm (`connectors-writes.spec.ts`), SECURITY.md rows.
 - [ ] Live check per host before merge (ask first): park and turn back on a throwaway server on each host; add and remove one with a `$VAR` secret; `codex mcp login` on an OAuth test server if one is available.
 
 ## Release (when asked)

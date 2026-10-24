@@ -81,6 +81,8 @@ const USAGE = `usage:
   aos hosts add <claude|codex> [--from-local <repo-dir>] [--persona-json <file>] [--yes] | aos hosts status [--json]
   aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--accept <json list>] [--json]
   aos mcp list [--json] | aos mcp check [--json] | aos mcp copy <name> --to claude|codex [--dry-run] [--expect <hash>] [--json]
+  aos mcp park|unpark|remove <name> --host claude|codex [--dry-run] [--expect <hash>] [--json]
+  aos mcp add <name> --to claude|codex|both (--command <cmd> [--arg <a>]… | --url <url> [--bearer-env '$VAR']) [--env 'KEY=$VAR']… [--dry-run] [--expect <hash>] [--json]
   aos statusline [install [--host claude|codex] [--force] [--chain-output] | uninstall [--host claude|codex] | status [--json] | preview [--width N] | refresh]
   aos update-status [--statusline | --snooze <N>d|<N>h | --off]
   aos update-check [--quiet]`;
@@ -1582,17 +1584,18 @@ async function hostsCmd(sub, flags) {
   }
 }
 
-/** `aos mcp list|check|copy` (connectors-tab D15; install-import B6): cli/mcp.js, both hosts' MCP servers and connectors. */
-async function mcpCmd(sub, flags) {
+/**
+ * `aos mcp list|check|copy|park|unpark|remove|add` (connectors-tab D15; install-import B6): cli/mcp.js, both hosts' MCP
+ * servers and connectors. Its words go to cli/mcp.js as typed: add's `--arg` and `--env` repeat, and an `--arg` may
+ * start with a dash (`--arg -y`), which this file's own parser would refuse.
+ */
+async function mcpCmd(argv) {
   const M = require('./mcp.js');
   try {
-    return await M.main([
-      ...sub, ...(flags.to !== undefined ? ['--to', flags.to] : []), ...(flags.expect !== undefined ? ['--expect', flags.expect] : []),
-      ...(flags.dryRun ? ['--dry-run'] : []), ...(flags.json ? ['--json'] : []),
-    ], { io: console, claudeBin, codexBin });
+    return await M.main(argv, { io: console, claudeBin, codexBin });
   } catch (e) {
     if (e instanceof M.UsageError) throw new UsageError(e.message);
-    if (e instanceof M.Refused) throw new CheckFailed(`mcp ${sub[0] || 'copy'}: ${e.message}`);
+    if (e instanceof M.Refused) throw new CheckFailed(`mcp ${argv.find((a) => !String(a).startsWith('-')) || 'copy'}: ${e.message}`);
     throw e;
   }
 }
@@ -1674,6 +1677,7 @@ function parseArgs(argv) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'mcp') return mcpCmd(argv.slice(1));
   const { cmd, sub, flags } = parseArgs(argv);
   // --dry-run is an init-only preview (contract §4.3); on a mutating command it must be a loud error, never a silent no-op.
   const misplaced = cmd === 'migrate' ? undefined : MIGRATE_FLAGS.find((f) => flags[f] !== undefined);
@@ -1700,7 +1704,6 @@ async function main(argv) {
     case 'import': return importCmd(sub, flags);
     case 'hosts': return hostsCmd(sub, flags);
     case 'migrate': return migrateCmd(sub, flags);
-    case 'mcp': return mcpCmd(sub, flags);
     case 'update-check': return updateCheck(flags);
     case 'update-status': return updateStatus(flags);
     case 'update-notice': return updateNotice();
