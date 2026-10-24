@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- **`aos mcp list` and `aos mcp check`: every MCP server and connector both hosts can use, found by themselves.** Claude Code's user, local and project servers (with their approvals), its plugins' servers and your claude.ai connectors; Codex's `config.toml`, trusted projects, its plugins' servers and the ChatGPT apps they bring. Every scan refreshes the list from files alone and counts each one's calls in the last 30 days from both hosts' sessions (subagents included), and names the built-in ones only sessions show. `aos mcp check` asks each host which of them connect (`claude mcp list`, `codex mcp list --json`) and lists the tools of every server its host would start itself. The Workbench's Connectors tab, next, shows all of it. <!-- no-tour: runtime and CLI only; the Connectors tab brings its own tour chapter -->
+
 ### Fixed
 - **A Chief of Staff duty that stopped after `brew upgrade node` runs again.** The duty files are rendered once, when the Chief of Staff is set up, with the Node of that day; an install set up before the stable-link change recorded Homebrew's versioned `Cellar/` path, which `brew upgrade` deletes, so every duty ran a Node that was gone and its Bash allowlist, built from the schedule's Node, denied the command. `aos upgrade` now puts the recorded Node in their place and keeps every other line as you edited it, and `aos doctor` names the duty files still carrying a versioned path.
 
