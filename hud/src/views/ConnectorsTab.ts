@@ -114,6 +114,8 @@ export class ConnectorsTab {
     this.hosts = sessionHosts(readAgenticosJson(this.plugin.claudeConfigDir()));
     try { this.everyMin = Number(this.plugin.systemConfig().connectors.checkEveryMin) || VAULT_CONFIG_DEFAULTS.connectors.checkEveryMin; } catch { /* the default */ }
     this.board = buildBoard(parseCaches(this.read(CONNECTORS_PATH), this.read(CONNECTORS_LIVE_PATH), this.read(CONNECTORS_USAGE_PATH)), this.hosts);
+    // A check that ran since the tab's own failed (a terminal's `aos mcp check`, a later try) clears the failure.
+    if (this.checkFailed && this.board.checkedAt && Date.parse(this.board.checkedAt) >= this.lastTry) this.checkFailed = null;
   }
 
   // ── the check (D10) ──
@@ -145,7 +147,11 @@ export class ConnectorsTab {
       this.checkFailed = failed;
       if (failed && forced) new Notice(`Connectors: the check failed: ${failed}`, 10000);
       this.load();
-      this.render();
+      // Check now and Check again were off while it ran, which dropped the focus: it goes back to the button the check
+      // came from (the sheet's close when the sheet is open).
+      const active = this.host?.ownerDocument.activeElement;
+      const lost = !active || !this.host?.contains(active);
+      this.render(forced && lost ? (this.openKey !== null ? "close" : "check") : null);
     }
   }
 
