@@ -50,7 +50,7 @@ const queueLines = (v) => { try { return fs.readFileSync(path.join(v, 'persona',
 test('precheck: the first run is a change; after a beat an untouched vault is unchanged and counts the skip', () => {
   const v = vault(); const d = deps(v);
   const first = T.precheck({ deps: d });
-  assert.deepEqual(first, { changed: true, changes: ['first-run'], since: null, confirmations: { recorded: true, day: '2026-09-22', slugs: {} } });
+  assert.deepEqual(first, { changed: true, changes: ['first-run'], since: null });
   assert.ok(state(v).pending, 'the pending signature waits for the beat');
   const b = T.beat({ deps: d, now: at(60e3) });
   assert.equal(b.beats, 1);
@@ -318,24 +318,15 @@ test('CLI: queue prints the record, a bad queue call exits 2, usage exits 2, a c
   assert.equal(state(v).schema, 1);
 });
 
-// Spec 2026-09-22-persona-earned-autonomy-design D2: the precheck records the recheck confirmations (once per local day)
-// before the signature compare, and a failing recorder never stops the tick.
-test('precheck records the confirmations through recheck.js once per day and survives a recorder that throws', () => {
+// Spec 2026-10-24-persona-learning-loop-design D1: nothing applies a proposal unasked, so the precheck no longer counts
+// daily confirmations toward an auto-apply gate — not even for a proposal that still declares a class.
+test('precheck records no confirmations, whatever a proposal declares', () => {
   const v = vault();
   fs.writeFileSync(path.join(v, 'persona', 'proposals', '2026-09-20-fix-thing.md'), '---\nslug: fix-thing\nrecheck: "true"\nautoapply_class: doc-typo\n---\n## What\nx\n');
-  let r = T.precheck({ deps: deps(v) });
-  assert.deepEqual(r.confirmations, { recorded: true, day: '2026-09-22', slugs: { 'fix-thing': 1 } });
-  const conf = () => JSON.parse(fs.readFileSync(path.join(v, 'persona', 'flag-closer', 'confirmations.json'), 'utf8'));
-  assert.equal(conf().slugs['fix-thing'], 1);
-  r = T.precheck({ deps: deps(v), now: at(HOUR) });
-  assert.equal(r.confirmations.recorded, false, 'the same local day counts once');
-  r = T.precheck({ deps: deps(v), now: at(DAY) });
-  assert.equal(r.confirmations.slugs['fix-thing'], 2);
-  const errs = []; const orig = console.error; console.error = (m) => errs.push(m);
-  try { r = T.precheck({ deps: { ...deps(v), recheck: { record() { throw new Error('boom'); } } } }); } finally { console.error = orig; }
-  assert.deepEqual(r.confirmations, { recorded: false, error: 'boom' });
-  assert.equal(typeof r.changed, 'boolean', 'the precheck still answers');
-  assert.match(errs[0], /confirmations not recorded: boom/);
+  const r = T.precheck({ deps: deps(v) });
+  assert.equal(typeof r.changed, 'boolean');
+  assert.equal('confirmations' in r, false);
+  assert.equal(fs.existsSync(path.join(v, 'persona', 'flag-closer', 'confirmations.json')), false);
 });
 
 // ── triage (local-first A5): rules first, the local model on a real change, the hosted tick duty only when it wakes ──

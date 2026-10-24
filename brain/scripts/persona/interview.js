@@ -3,7 +3,8 @@
 /**
  * interview.js — Chief of Staff identity interview → <vault>/persona/.
  * Writes IDENTITY.md (always), STATE.md (kept on re-run), PLAYBOOK.md (generated once via
- * build-playbook.js), duties/*.md (always), proposals/README.md and autoapply.json (kept),
+ * build-playbook.js), duties/*.md (always), proposals/README.md (kept; no autoapply.json since the auto-apply
+ * ladder was retired, spec 2026-10-24-persona-learning-loop-design D1),
  * the persona routines from templates/routines/*.md into <vault>/brain/routines/ (kept),
  * journal/logs/ and answers.json. Pure file work: no model call, and no dependency on
  * lib/paths.js when --vault is given (cli/persona-cmd.js always gives it).
@@ -167,7 +168,6 @@ function writePersona({ vault, configDir, templatesDir, answers, node, logDir, n
   const tmpl = (rel) => fs.readFileSync(path.join(templatesDir, rel), 'utf8');
   put('STATE.md', renderTemplate(tmpl('STATE.template.md'), vars), true);
   put('proposals/README.md', renderTemplate(tmpl(path.join('proposals', 'README.md')), vars), true);
-  put('autoapply.json', JSON.stringify({ classes: [] }, null, 2) + '\n', true);
   // The persona's own routines — the heartbeat watchdog, the hourly tick and the nightly reflect — seeded verbatim into brain/routines/ and
   // kept once present (`{{NODE}}`/`{{VAULT}}` in them are expanded by run-routine.js, not here). `aos persona --yes`
   // on an existing vault is how a routine added by an upgrade arrives.

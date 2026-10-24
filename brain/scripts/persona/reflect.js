@@ -17,9 +17,8 @@
  *   inputs [--days N]   one JSON pack for the daily (7 days) and the Sunday (28 days) reflect: the pending queue grouped
  *                       by type with each source's title, the ledger summary, duty health from brain/_index/routines.json,
  *                       spend per duty from brain/_index/provider-spend.jsonl, feedback memories and drafts modified in
- *                       the window, agent-runs per day, and (spec 2026-09-22-persona-earned-autonomy-design D4) the auto-apply
- *                       ladder: the whitelisted classes, persona.autoapply.minVerified and the candidates the ledger's class
- *                       stats earned, minus any class with an open or rejected `autoapply-<class>` proposal. Every source may
+ *                       the window and agent-runs per day. The auto-apply ladder's section is gone (spec
+ *                       2026-10-24-persona-learning-loop-design D1): every proposal waits for the user. Every source may
  *                       be missing; the pack says so instead of failing.
  *
  * State: brain/_index/persona-reflect.json (schema 1). Every path is injectable; --root <vault> for the CLI.
@@ -56,7 +55,6 @@ function files(deps) {
     duties: path.join(v, 'persona', 'duties'),
     feedback: path.join(v, 'brain', 'memory', 'feedback'),
     drafts: path.join(v, 'brain', 'memory', 'feedback', '_drafts'),
-    autoapply: path.join(v, 'persona', 'autoapply.json'),
   };
 }
 
@@ -223,33 +221,15 @@ function agentRunsSection(deps, since) {
   });
 }
 
-/** The ladder (D4): whitelisted classes, the bar, and the candidates minus classes already proposed (open) or refused (rejected). */
-function autoapplySection(deps, ledgerSummary, records) {
-  const L = require('./ledger.js');
-  const cfg = deps.config() || {};
-  const a = (cfg.persona && cfg.persona.autoapply) || {};
-  const minVerified = Number.isFinite(a.minVerified) && a.minVerified > 0 ? a.minVerified : L.DEFAULT_MIN_VERIFIED;
-  const j = readJson(files(deps).autoapply, 'the auto-apply whitelist');
-  const classes = j && Array.isArray(j.classes) ? j.classes.filter(c => typeof c === 'string') : [];
-  const open = new Set((ledgerSummary && ledgerSummary.open) || []);
-  const rejected = new Set(records.filter(r => r.event === 'rejected').map(r => r.slug));
-  const candidates = L.autoapplyCandidates((ledgerSummary && ledgerSummary.byClass) || {}, { minVerified, whitelisted: classes })
-    .filter(c => !open.has(`autoapply-${c.class}`) && !rejected.has(`autoapply-${c.class}`));
-  return { classes, minVerified, candidates };
-}
-
 /** Model verb. The evidence pack for a reflect over the last `days`. */
 function inputs({ deps = defaultDeps(), now = deps.now(), days = DEFAULT_DAYS } = {}) {
   const d = Number(days) > 0 ? Number(days) : DEFAULT_DAYS;
   const since = now.getTime() - d * DAY_MS;
-  let ledger = null, records = [];
+  let ledger = null;
   try {
     const L = require('./ledger.js');
     ledger = L.summary({ file: files(deps).ledger, days: d, now });
-    records = L.read({ file: files(deps).ledger });
   } catch (e) { console.error(`[reflect] ledger summary failed: ${e.message}`); }
-  let autoapply = { classes: [], minVerified: null, candidates: [] };
-  try { autoapply = autoapplySection(deps, ledger, records); } catch (e) { console.error(`[reflect] autoapply section failed: ${e.message}`); }
   // `today` leads the pack: the ISO stamps below are UTC, and a model dating its journal entry from generatedAt
   // files it under tomorrow for the last local hours of every day west of UTC.
   return {
@@ -261,7 +241,6 @@ function inputs({ deps = defaultDeps(), now = deps.now(), days = DEFAULT_DAYS } 
     spend: spendSection(deps, since),
     feedback: feedbackSection(deps, since),
     agentRuns: agentRunsSection(deps, since),
-    autoapply,
   };
 }
 

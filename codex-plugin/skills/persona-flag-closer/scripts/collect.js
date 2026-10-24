@@ -87,7 +87,7 @@ function collectProposals(root) {
     const slug = fm.slug || f.replace(/^\d{4}-\d{2}-\d{2}-/, '').replace(/\.md$/, '');
     return { file: path.join(dir, f), slug, filed: fm.filed || f.slice(0, 10), kind, surface, verbs: verbsFor(kind),
              workspace: workspaceKey(fm.workspace), target: fm.target || '(unspecified)', recheck: fm.recheck || null,
-             autoapply_class: fm.autoapply_class || null, premises: premises || [], lint };
+             premises: premises || [], lint };
   });
 }
 

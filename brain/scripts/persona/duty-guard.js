@@ -38,13 +38,17 @@ const crypto = require('crypto');
 const SCHEMA = 1;
 const EXIT_RESTORED = 4;
 const EXIT_NO_SNAPSHOT = 5;
-/** Vault-relative; a trailing / marks a folder. The built-in duties' writes, so an un-reseeded vault keeps working. */
-const DEFAULT_WRITES = ['persona/journal/', 'persona/STATE.md', 'persona/proposals/', 'persona/PLAYBOOK.md', 'brain/reflections/', 'brain/_index/sitrep.md'];
-/** The feedback-memory folder the reflect duties promote corrections into (their contracts: one file + one index line). */
+/** Vault-relative; a trailing / marks a folder. The built-in duties' writes, so an un-reseeded vault keeps working.
+ *  Not the playbook: it is the Chief of Staff's own routing, an instruction, so a duty proposes a change to it
+ *  (spec 2026-10-24-persona-learning-loop-design D2) and lib/write-areas.js guards it. */
+const DEFAULT_WRITES = ['persona/journal/', 'persona/STATE.md', 'persona/proposals/', 'brain/reflections/', 'brain/_index/sitrep.md'];
+/** The feedback-memory folder; a duty with it among its built-in writes gets each new memory indexed by `check`. */
 const FEEDBACK_DIR = 'brain/memory/feedback/';
 /** Per-duty built-in writes on top of DEFAULT_WRITES (spec 2026-09-28-reflect-memory-writes-design D1/D2): in the
- *  runtime, not the routine files, because brain/routines/ is seeded once and an upgrade never rewrites it. */
-const DUTY_WRITES = { reflect: [FEEDBACK_DIR, 'MEMORY.md'], 'reflect-daily': [FEEDBACK_DIR, 'MEMORY.md'] };
+ *  runtime, not the routine files, because brain/routines/ is seeded once and an upgrade never rewrites it. Empty since
+ *  spec 2026-10-24-persona-learning-loop-design D2: a feedback rule is an instruction, so the reflect duties propose one
+ *  instead of writing it. The duty that writes observations (the user model, D6) registers its entries here. */
+const DUTY_WRITES = {};
 /** D6: what decides what runs and what is trusted (GUARDED; the ledger, LEDGER, is guarded separately: append-only,
  *  `filed` only), and what no duty writes on top of it (EXECUTABLE: code, schedules, other projects). They and the
  *  refusal rule live in lib/write-areas.js, which the routine editors check a duty's `writes` against before it runs. */

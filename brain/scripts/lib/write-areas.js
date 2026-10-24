@@ -21,8 +21,10 @@
  */
 const path = require('path');
 
-/** D6: what decides what runs and what is trusted. The ledger is guarded separately (append-only, `filed` only). */
-const GUARDED = ['persona/IDENTITY.md', 'persona/duties/', 'persona/routines/', 'persona/autoapply.json', 'persona/flag-closer/', 'persona/repos.json'];
+/** D6: what decides what runs and what is trusted. The ledger is guarded separately (append-only, `filed` only). The
+ *  playbook is the Chief of Staff's own routing, so it is guarded too (spec 2026-10-24-persona-learning-loop-design D2);
+ *  `autoapply.json` left with the ladder it fed (D1). */
+const GUARDED = ['persona/IDENTITY.md', 'persona/duties/', 'persona/routines/', 'persona/PLAYBOOK.md', 'persona/flag-closer/', 'persona/repos.json'];
 const LEDGER = 'persona/ledger.jsonl';
 /** Never writable by a routine, on top of GUARDED: code, schedules, other projects. */
 const EXECUTABLE = ['brain/scripts/', 'brain/routines/', 'workspaces/'];

@@ -21,9 +21,10 @@
  * shell sees it (spec 2026-09-23-recipe-guard-design D1). `approved` and `auto-applied` are refused under
  * AOS_HEADLESS=1 — every duty runs headless, so only an interactive review can record an approval (D2).
  *
- * Line shape: { schema: 1, ts, event, slug, kind, target, by, class?, recheck?, commit?, note? }. `class` is the
- * proposal's autoapply_class (spec 2026-09-22-persona-earned-autonomy-design D3): summary counts per class over the
- * whole file, and autoapplyCandidates() names the classes that earned an auto-apply proposal.
+ * Line shape: { schema: 1, ts, event, slug, kind, target, by, class?, recheck?, commit?, note? }. `class` was the
+ * proposal's autoapply_class for the retired auto-apply ladder (spec 2026-10-24-persona-learning-loop-design D1): it is
+ * still accepted and kept on old lines, and nothing counts it. `auto-applied` stays readable for old ledgers; nothing
+ * writes it any more.
  * Events: filed · approved · rejected · stale-dropped · auto-applied · verified · regressed, plus the two verbs an idea
  * (kind workflow or product) gets instead of approve/reject: accepted (kept in persona/backlog.md) · dismissed.
  * A corrupt line is skipped with one stderr warning (the twin of loadRepos() in sitrep-state.js).
@@ -43,8 +44,6 @@ const APPLIED = new Set(['approved', 'auto-applied']);
 const VERDICTS = new Set(['verified', 'regressed']);
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,60}$/;
 const CLASS_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
-const CLASS_COUNTS = { filed: 'filed', approved: 'approved', rejected: 'rejected', 'auto-applied': 'autoApplied', verified: 'verified', regressed: 'regressed', 'stale-dropped': 'staleDropped' };
-const DEFAULT_MIN_VERIFIED = 3;
 const DAY_MS = 86400e3;
 
 function defaultFile(root) {
@@ -145,27 +144,7 @@ function verify({ file, root, now = new Date(), run = runRecipe, minDays = 1, se
   return out;
 }
 
-/** Per-class counts over every record (trust accrues over months, so no window): { filed, approved, rejected, autoApplied, verified, regressed, staleDropped }. */
-function classStats(records) {
-  const out = {};
-  for (const r of records) {
-    if (typeof r.class !== 'string' || !r.class) continue;
-    const c = out[r.class] || (out[r.class] = { filed: 0, approved: 0, rejected: 0, autoApplied: 0, verified: 0, regressed: 0, staleDropped: 0 });
-    const k = CLASS_COUNTS[r.event];
-    if (k) c[k]++;
-  }
-  return out;
-}
-/** Pure (spec D3): the classes whose record earned an auto-apply proposal — verified ≥ minVerified, no regression, no rejection, not whitelisted yet. */
-function autoapplyCandidates(byClass, { minVerified = DEFAULT_MIN_VERIFIED, whitelisted = [] } = {}) {
-  const min = Number(minVerified) > 0 ? Number(minVerified) : DEFAULT_MIN_VERIFIED;
-  return Object.keys(byClass || {}).sort()
-    .filter(c => !whitelisted.includes(c))
-    .map(c => ({ class: c, ...byClass[c] }))
-    .filter(c => c.verified >= min && c.regressed === 0 && c.rejected === 0);
-}
-
-/** Counts over the last `days`, plus the all-time open (filed, undecided) and unverified slugs, and byClass over every record. */
+/** Counts over the last `days`, plus the all-time open (filed, undecided) and unverified slugs. */
 function summary({ file, days = 28, now = new Date() } = {}) {
   const records = read({ file });
   const since = now - days * DAY_MS;
@@ -196,7 +175,6 @@ function summary({ file, days = 28, now = new Date() } = {}) {
     dismissed: win.filter(r => r.event === 'dismissed').map(r => r.slug),
     open: open.sort(),
     unverified: unverified(records).map(a => a.slug).sort(),
-    byClass: classStats(records),
   };
 }
 
@@ -205,11 +183,10 @@ function formatSummary(s) {
   const ideas = ['workflow', 'product'].map(k => `${k} ${s.byKind[k].filed}/${s.byKind[k].accepted}/${s.byKind[k].dismissed}`).join(' · ');
   return [
     `ledger: last ${s.days}d — ${s.total} event(s)`,
-    `  filed ${s.counts.filed} · approved ${s.counts.approved} · rejected ${s.counts.rejected} · stale-dropped ${s.counts['stale-dropped']} · auto-applied ${s.counts['auto-applied']} · accepted ${s.counts.accepted} · dismissed ${s.counts.dismissed}${s.dismissed.length ? ` (${s.dismissed.join(', ')})` : ''}`,
+    `  filed ${s.counts.filed} · approved ${s.counts.approved} · rejected ${s.counts.rejected} · stale-dropped ${s.counts['stale-dropped']}${s.counts['auto-applied'] ? ` · auto-applied ${s.counts['auto-applied']}` : ''} · accepted ${s.counts.accepted} · dismissed ${s.counts.dismissed}${s.dismissed.length ? ` (${s.dismissed.join(', ')})` : ''}`,
     `  verified ${s.counts.verified} · regressed ${s.counts.regressed}${s.regressed.length ? ` (${s.regressed.join(', ')})` : ''} · approval rate ${s.approvalRate === null ? 'n/a' : s.approvalRate} · accept rate ${s.acceptRate === null ? 'n/a' : s.acceptRate}`,
     `  by kind (filed/approved/rejected): ${applied} · (filed/accepted/dismissed): ${ideas}`,
     `  open: ${s.open.length ? s.open.join(', ') : 'none'} · unverified approvals: ${s.unverified.length ? s.unverified.join(', ') : 'none'}`,
-    ...(Object.keys(s.byClass || {}).length ? [`  by class (all time, approved/verified/regressed/rejected): ${Object.keys(s.byClass).sort().map(c => `${c} ${s.byClass[c].approved}/${s.byClass[c].verified}/${s.byClass[c].regressed}/${s.byClass[c].rejected}`).join(' · ')}`] : []),
   ].join('\n');
 }
 
@@ -261,4 +238,4 @@ function main(argv, { stdout = (s) => process.stdout.write(s), stderr = (s) => p
 }
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
-module.exports = { SCHEMA, EVENTS, KINDS, DECISIONS, DEFAULT_MIN_VERIFIED, defaultFile, read, validate, append, runRecipe, verify, summary, classStats, autoapplyCandidates, formatSummary, main };
+module.exports = { SCHEMA, EVENTS, KINDS, DECISIONS, defaultFile, read, validate, append, runRecipe, verify, summary, formatSummary, main };

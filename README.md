@@ -61,7 +61,7 @@ UniDeX is an agent-driven development harness: Claude Code, Codex and local mode
     <td width="50%" valign="top">
       <img src="docs/assets/icon-staff.svg" width="40" alt="" /><br />
       <b>A self-improving Chief of Staff</b><br />
-      A named agent you interview once. It rides along on every prompt, runs its duties on a schedule, files a proposal for anything guarded, and earns autonomy one kind of change at a time.
+      A named agent you interview once. It rides along on every prompt, runs its duties on a schedule, files a proposal for anything guarded, and changes its own instructions only when you approve.
     </td>
   </tr>
   <tr>
@@ -293,7 +293,6 @@ flowchart LR
   Y --> L[("ledger.jsonl")]
   L --> W["heartbeat · daily<br/>verified, or regressed"]
   W -. "a regression is a new signal" .-> T
-  L -. "3 verified · no regression · no rejection" .-> A["auto-apply for that one class<br/>— a proposal you approve"]
 ```
 
 Its identity, its duties and anything outside its own folder are guarded: it changes them only by filing a proposal with a recheck, a command that keeps passing for as long as the finding is still true. Every outcome lands in a ledger, so a rejected idea is never filed twice and a regression counts against the fix that caused it. Once one kind of change has three verified approvals with no regression and no rejection, it may propose applying that kind on its own, a proposal you approve like any other. `aos persona off` is the kill switch.

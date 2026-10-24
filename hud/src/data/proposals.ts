@@ -3,8 +3,8 @@
 // persona-flag-closer skill, which owns the ledger, the backlog and the commits.
 // Mirrors, rule for rule: plugin/skills/persona-flag-closer/scripts/collect.js (frontmatter, premise
 // table, kinds, surfaces, lint, the workspace key), brain/scripts/persona/backlog.js (section shape),
-// brain/scripts/persona/ledger.js summary() (28-day rates) and brain/scripts/persona/recheck.js
-// readConfirmations(), and brain/scripts/persona/proposal-html.js pagePath() (spec 2026-09-22-proposal-pages D7).
+// brain/scripts/persona/ledger.js summary() (28-day rates) and brain/scripts/persona/proposal-html.js pagePath()
+// (spec 2026-09-22-proposal-pages D7). The auto-apply confirmations are gone (spec 2026-10-24-persona-learning-loop-design D1).
 // proposals.test.ts runs both sides on the same fixtures.
 
 import { workspaceKey } from "./memories";
@@ -12,15 +12,12 @@ import { workspaceKey } from "./memories";
 export const PROPOSALS_DIR = "persona/proposals";
 export const LEDGER_PATH = "persona/ledger.jsonl";
 export const BACKLOG_PATH = "persona/backlog.md";
-export const CONFIRMATIONS_PATH = "persona/flag-closer/confirmations.json";
 /** Where proposal-html.js renders each proposal's page: gitignored, and kept after the proposal is decided. */
 export const PAGES_DIR = "brain/_index/proposals";
 
 export const KINDS = ["self", "vault", "workflow", "product"];
 export const IDEA_KINDS = ["workflow", "product"];
 export const SURFACES = ["cli", "plugin", "brain", "hud", "vault-template", "docs"];
-/** recheck.js MIN_CONFIRMATIONS: consecutive daily confirmations the auto-apply gate needs. */
-export const MIN_CONFIRMATIONS = 2;
 const RATE_DAYS = 28;
 const DAY_MS = 86_400_000;
 
@@ -36,7 +33,6 @@ export interface Proposal {
   workspace: string | null;
   target: string;
   recheck: string | null;
-  autoapplyClass: string | null;
   what: string | null;
   why: string | null;
   risk: string | null;
@@ -121,7 +117,6 @@ export function parseProposal(name: string, text: string): Proposal {
     workspace: workspaceKey(fm.workspace ?? null),
     target: fm.target || "(unspecified)",
     recheck: fm.recheck || null,
-    autoapplyClass: fm.autoapply_class || null,
     what: section(text, "What"),
     why: section(text, "Why"),
     risk: section(text, "Risk"),
@@ -227,19 +222,3 @@ export function parseBacklog(text: string): BacklogEntry[] {
   return out;
 }
 
-// ── confirmations ────────────────────────────────────────────────────────────
-
-/** recheck.js readConfirmations(): { schema, recordedDay, slugs } or a legacy flat { slug: n }; bad input → {}. */
-export function parseConfirmations(text: string | null): Record<string, number> {
-  if (!text) return {};
-  let j: unknown;
-  try { j = JSON.parse(text); } catch { return {}; }
-  if (!j || typeof j !== "object" || Array.isArray(j)) return {};
-  const obj = j as Record<string, unknown>;
-  const src = obj.slugs && typeof obj.slugs === "object" ? (obj.slugs as Record<string, unknown>) : obj;
-  const out: Record<string, number> = {};
-  for (const [k, v] of Object.entries(src)) {
-    if (k !== "schema" && k !== "recordedDay" && Number.isInteger(v) && (v as number) >= 0) out[k] = v as number;
-  }
-  return out;
-}

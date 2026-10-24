@@ -58,7 +58,7 @@ Start a timer. Do not open Terminal until the box says so.
   exits 0, its `workbench app` row reads `UniDeX <version>`, its `local engine` and `local model` rows are ok, and its
   `persona runner` row names `claude-opus-5-5` (or `gpt-6-sol` on a Codex-only account).
 - [ ] `ls ~/AgenticOS` shows no `.obsidian`.
-- [ ] `ls ~/AgenticOS/persona` shows `IDENTITY.md STATE.md PLAYBOOK.md duties proposals journal answers.json autoapply.json` — and no `identity.template.md` or `STATE.template.md`; `grep -c Atlas ~/AgenticOS/persona/IDENTITY.md` ≥ 1.
+- [ ] `ls ~/AgenticOS/persona` shows `IDENTITY.md STATE.md PLAYBOOK.md duties proposals journal answers.json` — and no `identity.template.md` or `STATE.template.md`; `grep -c Atlas ~/AgenticOS/persona/IDENTITY.md` ≥ 1.
 - [ ] `ls ~/Library/LaunchAgents | grep agenticos` lists `com.agenticos.<slug>` for briefing, heartbeat, import-digest,
   monitor, reflect, reflect-daily, sitrep and tick (import-digest's goes once its first run finds nothing to digest);
   `launchctl list | grep com.agenticos` shows them loaded.

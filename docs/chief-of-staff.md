@@ -29,7 +29,8 @@ answers). The answers file shape is
 `{ "name", "addressAs", "voice", "priorities", "dutyModel", "dutyCodexModel", "dutyEffort", "schedule" }`
 (`dutyCodexModel` is used only on a Codex host).
 Re-running the interview regenerates `IDENTITY.md` and `duties/*.md`; it keeps `STATE.md`,
-`PLAYBOOK.md`, `proposals/README.md` and `autoapply.json`.
+`PLAYBOOK.md` and `proposals/README.md`. `aos upgrade` never rewrites those guarded prompts: each one that differs
+from the new release's render becomes an `update-identity` or `update-duty-<name>` proposal (see Proposals).
 
 ## Layout: `<vault>/persona/`
 
@@ -37,17 +38,15 @@ Re-running the interview regenerates `IDENTITY.md` and `duties/*.md`; it keeps `
 |---|---|---|
 | `IDENTITY.md` | interview | persona + directives; guarded |
 | `STATE.md` | duties, you | `## Sitrep`, `## Flags` (`- [ ]` items), `## Priorities`, `## Pending Proposals`, `## Last Duty Runs` |
-| `PLAYBOOK.md` | `build-playbook.js` once | intent → route table over your `<configDir>/{skills,agents,commands}` |
+| `PLAYBOOK.md` | `build-playbook.js` once, then approved proposals | intent → route table over your `<configDir>/{skills,agents,commands}`; guarded: the weekly reflect proposes its edits |
 | `duties/{monitor,reflect,reflect-daily,sitrep,tick}.md` | interview | duty prompts (guarded) |
 | `proposals/` | agent | guarded changes awaiting approval (see its README) |
 | `queue.jsonl` | `tick.js` (tracked) | signals the tick queued for the nightly reflect, one JSON line each; drained by `reflect.js` after the daily reflect runs |
 | `backlog.md` | `backlog.js` (tracked) | accepted `workflow` and `product` proposals, one section each with the What and Why; a product entry names its surface |
 | `journal/` | duties | one file per day; `journal/logs/` holds duty logs |
 | `answers.json` | interview | the interview answers (for prefilled re-runs and rename) |
-| `autoapply.json` | interview, then approved `autoapply-<class>` proposals | `{ "classes": [] }` at install — the auto-apply whitelist; only your approval adds a class |
-| `flag-closer/confirmations.json` | `recheck.js record` (the tick, once a day) | per pending proposal, how many consecutive days its recipe still found the finding — the auto-apply gate's second condition |
 | `repos.json` | you (optional) | `{ "stall_threshold_days": 4, "repos": [{ "name", "path" }] }` for the sitrep |
-| `ledger.jsonl` | `ledger.js` (tracked) | append-only proposal outcomes: `filed`, `approved`, `rejected`, `stale-dropped`, `accepted`, `dismissed`, `auto-applied`, `verified`, `regressed`, each with the proposal's `class` when it has one |
+| `ledger.jsonl` | `ledger.js` (tracked) | append-only proposal outcomes: `filed`, `approved`, `rejected`, `stale-dropped`, `accepted`, `dismissed`, `verified`, `regressed` (`auto-applied` only on ledgers older than 2.3) |
 | `DISABLED` | `aos persona off` | kill switch: no injection, no duties |
 
 ## Every session
@@ -153,23 +152,24 @@ journaled FAILED.
 A duty is steered by text it did not write (commit subjects, correction quotes, journal lines), so the runner limits
 what it can write, on both hosts (`docs/design/specs/2026-09-23-duty-write-scope-design.md`):
 
-- **The write scope**: `persona/journal/`, `persona/STATE.md`, `persona/proposals/`, `persona/PLAYBOOK.md`,
-  `brain/reflections/`, `brain/_index/sitrep.md` and today's daily-note folder; for `reflect` and `reflect-daily` also
-  `brain/memory/feedback/` and `MEMORY.md`, so they can promote a repeated correction
-  (`docs/design/specs/2026-09-28-reflect-memory-writes-design.md`); plus the routine's `writes:` entries.
+- **The write scope**: `persona/journal/`, `persona/STATE.md`, `persona/proposals/`, `brain/reflections/`,
+  `brain/_index/sitrep.md` and today's daily-note folder, plus the routine's `writes:` entries. Not the playbook and
+  not a feedback memory: both are instructions, so a duty proposes a change to them and you approve it
+  (`docs/design/specs/2026-10-24-persona-learning-loop-design.md` D2).
   An entry that is the vault, sits in or holds a guarded or executable area (`persona/IDENTITY.md`, `duties/`,
-  `routines/`, `autoapply.json`, `flag-closer/`, `repos.json`, `ledger.jsonl`, `brain/scripts/`, `brain/routines/`,
+  `routines/`, `PLAYBOOK.md`, `flag-closer/`, `repos.json`, `ledger.jsonl`, `brain/scripts/`, `brain/routines/`,
   `workspaces/`) or has a dot-segment is refused and logged.
 - **Claude Code**: `--permission-mode dontAsk`, so your settings' `defaultMode` never widens a duty; the routine's
   `tools` without write tools, `git log`/`diff`/`show` or unrestricted `Bash`; one absolute `Edit(//…)` rule per
   scope entry; deny rules for the guarded and executable areas and for `git … --output`.
 - **Codex**: the duty's workspace is `persona/` (`-C`) with one `--add-dir` per other scope folder, so the sandbox
   refuses `brain/scripts/`, `workspaces/`, `.obsidian/` and the vault's `.git`. A file entry grants its folder
-  (Codex roots are folders); a file at the vault root cannot be granted, so after a clean run of a reflect duty the
-  guard writes the `MEMORY.md` line of each feedback memory the run added and did not index (on both hosts).
+  (Codex roots are folders); a file at the vault root cannot be granted, so after a clean run of a duty whose built-in
+  writes hold the feedback folder the guard writes the `MEMORY.md` line of each memory the run added (on both hosts;
+  no built-in duty has that scope since 2.3).
 - **Both**: the persona scripts a duty may call refuse a `--root`, `--file` or file argument outside the vault under
   `AOS_HEADLESS=1`. Before the run, `persona/duty-guard.js` copies the persona's trust files (`IDENTITY.md`,
-  `duties/`, `autoapply.json`, `flag-closer/`, `repos.json`) to `agenticos-duty-guard/` next to `agenticos.json`;
+  `duties/`, `PLAYBOOK.md`, `flag-closer/`, `repos.json`) to `agenticos-duty-guard/` next to `agenticos.json`;
   after it, any of them the duty added, changed or removed is restored, the duty's version kept in
   `persona/journal/logs/guard-<duty>-<time>/`, `ledger.jsonl` keeps only appended `filed` events, `STATE.md` gets a
   flag and the run ends FAILED. Under Codex those files sit in the duty's workspace, so they are writable during the
@@ -298,7 +298,7 @@ watchdog and the review run their recipes, so every recipe passes `brain/scripts
 sees it: read-only programs (`grep`, `test`, `ls`, `wc`, `head`, `tail`, `cat`, `diff`, read-only `git`, …) joined
 by `|`, `&&`, `||`, with `$HOME` the only expansion. Anything else is never run and reviews as RECIPE-ERROR with the
 reason; `node brain/scripts/persona/ledger.js run-recipe '<recipe>'` checks one. Two more guards: `ledger.js`
-refuses `approved` and `auto-applied` under `AOS_HEADLESS=1`, so a duty cannot record an approval, and the
+refuses `approved` (and the retired `auto-applied`) under `AOS_HEADLESS=1`, so a duty cannot record an approval, and the
 `SessionStart` hook no longer re-runs approved recipes (the heartbeat still verifies once a day).
 
 Every outcome lands in `persona/ledger.jsonl` (tracked, unlike `STATE.md`) through
@@ -313,10 +313,16 @@ verbs for them: **Accept** appends the proposal's What and Why to `persona/backl
 deletes the file. A product proposal names its `surface` (`cli | plugin | brain | hud | vault-template |
 docs`), so a backlog entry says where a feature run would start. `ledger.js summary [--days N]` prints
 counts per event and kind, the approval and accept rates, open proposals, dismissed slugs, unverified
-approvals and, over the whole file, the counts per `autoapply_class` (approved, verified, regressed,
-rejected); both reflects read it before proposing, so a rejected or dismissed idea is not filed twice and
-a regression counts as evidence against the earlier fix. An `auto-applied` change (below) keeps its recipe
-like an approval and is verified the same way. Under the hood a duty may run `ledger.js` (it is
+approvals; both reflects read it before proposing, so a rejected or dismissed idea is not filed twice and
+a regression counts as evidence against the earlier fix. Nothing is applied without your decision: the
+earned auto-apply ladder of 2.2 and earlier is retired, and a vault's old `autoapply.json` is ignored.
+
+**New prompts arrive as proposals.** `aos upgrade` never rewrites `IDENTITY.md` or `duties/*.md`. For each one
+that differs from this release's render with your answers, `brain/scripts/persona/prompt-updates.js` files a `self`
+proposal, `update-identity` or `update-duty-<name>`: the What is the whole new text, the Why the diff (a line you
+edited by hand shows as `-`), and its recheck compares the file with the render kept in
+`brain/_index/persona-prompts/`. Approve it to take the new prompt, or reject it to keep yours: the same render is
+not proposed again. Under the hood a duty may run `ledger.js` (it is
 on the runner's tool allowlist), and the runner's system prompt opens with today's date and the journal
 path, so a duty that runs just after midnight no longer journals into yesterday's file.
 
@@ -333,7 +339,7 @@ The pieces above form one loop, and each step is deterministic except the two mo
    duty reads one evidence pack — `reflect.js inputs --days 7`: the queue grouped by type with each source's
    title, `ledger.js summary`, each duty's last run and fail streak from `routines.json`, spend per duty,
    the week's feedback memories and drafts, sessions per day from the agent-runs telemetry — and files at
-   most two proposals, promoting a correction that repeated to a feedback memory on the way. After the
+   most two proposals, a correction that repeated among them as a proposed feedback rule. After the
    journal entry passes the runner's contract check, `reflect.js beat` removes exactly the snapshotted
    lines, so a signal queued during the run waits for the next drain. When the queue is empty and today
    already drained, `precheck` skips the run (exit 3, one log line, no journal entry). The Sunday reflect
@@ -357,21 +363,10 @@ The pieces above form one loop, and each step is deterministic except the two mo
    sees it. Nothing asks you to rate anything: the evidence is whether the recheck stays clean, whether the
    duty metrics move, and whether the corrections on that topic stop.
 
-6. **Earn.** Autonomy is granted per class of change, and only by you. A proposal may declare an
-   `autoapply_class` (say `doc-typo`); every ledger line for it carries that class, so the summary knows,
-   per class, how many approvals held (`verified`), how many regressed and how many you rejected. Once a
-   class has `persona.autoapply.minVerified` (3) verified approvals and neither a regression nor a
-   rejection, `reflect.js inputs` lists it under `autoapply.candidates` and the next reflect files
-   `autoapply-<class>`: a `self` proposal whose What is the exact new `persona/autoapply.json`. You approve
-   it like any other proposal (the file is gitignored, so that approval commits only the ledger). From then
-   on a proposal of that class is applied during the review without a question — but only after the tick
-   has confirmed it two days running: every hour `tick.js precheck` runs `recheck.js record`, which re-runs
-   each pending proposal's recipe once per local day and keeps the streak in
-   `persona/flag-closer/confirmations.json` (a STALE verdict resets it; an interactive review never counts).
-   The applied change is ledgered `auto-applied` with its recipe and class, committed on its own, and the
-   watchdog verifies it exactly like an approval, so a regression feeds step 5 and the class's record.
-   While the ledger is thin the ladder is inert: no class has three verified approvals, `candidates` is
-   empty, the whitelist stays `[]`, and the review's auto-apply lane finds nothing eligible.
+6. **Approve.** Nothing applies itself. Every change to the Chief of Staff's instructions — its identity, its duty
+   prompts, its playbook, a feedback rule — is a proposal, and only your decision in the review applies it. The
+   auto-apply ladder of 2.2 and earlier (`autoapply.json`, the daily confirmations, the `autoapply-<class>`
+   proposals) is retired (`docs/design/specs/2026-10-24-persona-learning-loop-design.md` D1).
 
 ## Privacy
 

@@ -8,7 +8,7 @@ You are {{AGENT_NAME}}. This is the hourly beat: notice what changed, queue what
    - queue a correction, a duty failure, a denied duty call, a regression, or a stalled repo — these are what the daily reflect drains;
    - queue an aged flag only if nothing in `{{VAULT}}/persona/STATE.md` says it is being handled;
    - drop a duplicate of an open flag or a pending proposal, and anything you cannot point at.
-3. For every keeper: `{{NODE}} {{VAULT}}/brain/scripts/persona/tick.js queue <type> --source "<source>" --note "<one line: why it matters>"`. The script rejects an unknown type and ignores a (type, source) that is already queued. Never edit `queue.jsonl` by hand.
+3. For every keeper: `{{NODE}} {{VAULT}}/brain/scripts/persona/tick.js queue <type> --source "<source>" --note "<one line: why it matters>"`. The script rejects an unknown type and ignores a (type, source) that is already queued. Run each call as its own plain command, one per keeper: never a loop, `;`, `&&` or a shell variable — the allowlist matches one command at a time and refuses the rest. Never edit `queue.jsonl` by hand.
 4. Read nothing else unless a candidate's `title` is not enough to decide; then read only its source.
 
 ## Duty contract (mandatory, in this order)

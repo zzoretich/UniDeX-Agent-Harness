@@ -1358,6 +1358,16 @@ async function upgrade(flags) {
     if (!fixed.length) { out.log('   none'); return; }
     for (const f of fixed) out.log(`   ${f.file}: ${f.paths.join(', ')} → ${node}`);
   });
+  // Spec 2026-10-24-persona-learning-loop-design D13: a release's new Chief of Staff prompts arrive as proposals. The
+  // guarded IDENTITY.md and duties/*.md are never rewritten here; each one that differs from the new render (with this
+  // vault's answers) becomes a `self` proposal the user approves or rejects in the review, like any other.
+  await act('offer this release\'s Chief of Staff prompts as proposals (persona/IDENTITY.md, persona/duties/)', () => {
+    const P = require(path.join(vault, 'brain', 'scripts', 'persona', 'prompt-updates.js'));
+    const r = P.file({ vault, node: stableNode(cfg.node || process.execPath), version, deps: { templatesDir: path.join(vault, 'brain', 'scripts', 'persona', 'templates') } });
+    if (r.skipped) { out.log(`   ${r.skipped}`); return; }
+    if (!r.filed.length) { out.log(`   none${r.pending.length ? ` new (${r.pending.length} still pending)` : ''}`); return; }
+    out.log(`   ${r.filed.length} in persona/proposals/: ${r.filed.join(', ')} — review them with "review persona flags"`);
+  });
   const hosts = hostsOf(cfg);
   await act(`migrate ${configPath()} keys (version → ${version})`, () => {
     const next = buildUserConfig(cfg, { vault, version, bin: hosts.claude ? bin : undefined, codexBin: hosts.codex ? codexBin(cfg) : undefined });

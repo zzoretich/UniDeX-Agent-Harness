@@ -81,7 +81,7 @@ test("confirmFor (D6): spend switches, autonomy, privacy", () => {
   const cos = row({ key: "persona.enabled", label: "Chief of Staff", value: false, risk: "autonomy" });
   assert.equal(confirmFor(cos, true)!.cta, "Turn on");
   assert.equal(confirmFor({ ...cos, value: true }, false), null, "turning it off never asks");
-  const min = row({ key: "persona.autoapply.minVerified", label: "Autoapply threshold", type: "number", value: 3, risk: "autonomy" });
+  const min = row({ key: "example.threshold", label: "A threshold", type: "number", value: 3, risk: "autonomy" });
   assert.equal(confirmFor(min, 1)!.cta, "Lower");
   assert.equal(confirmFor(min, 5), null);
   assert.equal(confirmFor(row({ key: "routines.tools", type: "string", value: "Read,Glob,Grep", risk: "autonomy" }), "Read,Write")!.cta, "Change");

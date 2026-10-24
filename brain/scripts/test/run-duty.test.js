@@ -515,9 +515,11 @@ test('codex: the workspace is persona/, the user config cannot add roots, and th
   assert.ok(fs.statSync(path.join(s.vault, 'brain', 'sessions')).isDirectory(), 'a real run creates the folders it grants');
 });
 
-// ── the reflect duties' feedback memories (spec 2026-09-28-reflect-memory-writes-design) ───────────────────────────
+// ── the reflect duties propose, they do not write rules (spec 2026-10-24-persona-learning-loop-design D2) ───────────
+// Their built-in feedback writes (spec 2026-09-28-reflect-memory-writes-design) are retired on both hosts: a feedback
+// rule and the playbook are instructions, so the duty files a proposal and the user approves it.
 
-test('reflect on claude: the scope names the feedback folder and MEMORY.md, and a memory the duty did not index is indexed after the run', () => {
+test('reflect on claude: the scope names no feedback folder, MEMORY.md or playbook, and nothing the duty wrote is indexed', () => {
   const s = sandbox();
   fs.writeFileSync(path.join(s.vault, 'persona', 'duties', 'reflect.md'), 'ascii fixture weekly reflect\n');
   fs.writeFileSync(path.join(s.vault, 'MEMORY.md'), '# Index\n\n## Feedback (how to work)\n');
@@ -526,26 +528,24 @@ test('reflect on claude: the scope names the feedback folder and MEMORY.md, and 
     '#!/bin/sh',
     FAKE_AUTH,
     '[ -n "${FAKE_JOURNAL:-}" ] && { mkdir -p "$(dirname "$FAKE_JOURNAL")"; printf "\\n## 18:00 — duty: reflect\\n- status: OK\\n" >> "$FAKE_JOURNAL"; }',
-    '[ -n "${FAKE_MEMORY:-}" ] && { mkdir -p "$(dirname "$FAKE_MEMORY")"; printf "# Promote on repeat\\n\\nA correction seen twice becomes a feedback memory.\\n" > "$FAKE_MEMORY"; }',
+    '[ -n "${FAKE_MEMORY:-}" ] && { mkdir -p "$(dirname "$FAKE_MEMORY")"; printf "# Promote on repeat\\n\\nA correction seen twice.\\n" > "$FAKE_MEMORY"; }',
     'echo "{\\"type\\":\\"result\\",\\"result\\":\\"done\\",\\"total_cost_usd\\":0.02,\\"usage\\":{\\"input_tokens\\":1,\\"output_tokens\\":1},\\"duration_ms\\":10}"',
     '',
   ].join('\n'), { mode: 0o755 });
   const env = { ...s.env, PERSONA_CLAUDE_BIN: fake };
   const dry = run(['reflect', '--dry-run'], env);
   assert.equal(dry.status, 0, dry.stderr);
-  const real = fs.realpathSync(s.vault);
   const allowed = dryValue(dry.stdout, '--allowedTools');
-  assert.ok(allowed.includes(`Edit(/${real}/brain/memory/feedback/**)`) && allowed.includes(`Edit(/${real}/MEMORY.md)`));
-  assert.ok(!dryValue(run(['testduty', '--dry-run'], env).stdout, '--allowedTools').some((a) => a.includes('brain/memory')), 'other duties get none of it');
+  assert.ok(!allowed.some((a) => a.includes('brain/memory') || a.includes('MEMORY.md') || a.includes('PLAYBOOK.md')), allowed.join(' '));
+  assert.ok(dryValue(dry.stdout, '--disallowedTools').some((a) => a.includes('/persona/PLAYBOOK.md)')), 'the playbook is denied like the other guarded files');
   const memory = path.join(s.vault, 'brain', 'memory', 'feedback', 'promote-on-repeat.md');
   const r = run(['reflect'], { ...env, FAKE_JOURNAL: s.journal, FAKE_MEMORY: memory });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(fs.readFileSync(path.join(s.vault, 'MEMORY.md'), 'utf8'),
-    '# Index\n\n## Feedback (how to work)\n- [Promote on repeat](brain/memory/feedback/promote-on-repeat.md) — A correction seen twice becomes a feedback memory.\n');
-  assert.match(fs.readFileSync(path.join(s.logDir, 'duty-reflect.log'), 'utf8'), /duty=reflect guard .*"indexed":\["brain\/memory\/feedback\/promote-on-repeat\.md"\]/);
+  assert.equal(fs.readFileSync(path.join(s.vault, 'MEMORY.md'), 'utf8'), '# Index\n\n## Feedback (how to work)\n', 'no index line: the runner backfills no duty\'s rules');
+  assert.doesNotMatch(fs.readFileSync(path.join(s.logDir, 'duty-reflect.log'), 'utf8'), /"indexed"/);
 });
 
-test('reflect on codex: the feedback folder arrives as --add-dir, MEMORY.md is left out without a refusal, and the runner writes its index line', () => {
+test('reflect on codex: no --add-dir for the feedback folder, and the runner writes no index line', () => {
   const s = sandbox();
   fs.writeFileSync(path.join(s.vault, 'persona', 'duties', 'reflect.md'), 'ascii fixture weekly reflect\n');
   const fakeCodex = path.join(__dirname, '..', '..', '..', 'cli', 'fixtures', 'fake-codex.sh');
@@ -556,13 +556,12 @@ test('reflect on codex: the feedback folder arrives as --add-dir, MEMORY.md is l
   delete env.PERSONA_CLAUDE_BIN;
   const dry = run(['reflect', '--dry-run'], env);
   assert.equal(dry.status, 0, dry.stderr);
-  assert.ok(dry.stdout.includes(`--add-dir\n${path.join(s.vault, 'brain', 'memory', 'feedback')}\n`));
+  assert.ok(!dry.stdout.includes(path.join(s.vault, 'brain', 'memory', 'feedback')), 'no feedback folder in the Codex roots');
   assert.ok(!dry.stdout.includes(`--add-dir\n${s.vault}\n`), 'never the vault itself');
-  assert.doesNotMatch(dry.stderr, /refused/);
   const memory = path.join(s.vault, 'brain', 'memory', 'feedback', 'codex-rule.md');
   const r = run(['reflect'], { ...env, FAKE_JOURNAL: s.journal, FAKE_DUTY: 'reflect', FAKE_TAMPER: memory });
   assert.equal(r.status, 0, r.stderr + fs.readFileSync(path.join(s.logDir, 'duty-reflect.log'), 'utf8'));
-  assert.equal(fs.readFileSync(path.join(s.vault, 'MEMORY.md'), 'utf8'), '# Index\n\n## Feedback\n- [codex-rule](brain/memory/feedback/codex-rule.md) — tampered');
+  assert.equal(fs.existsSync(path.join(s.vault, 'MEMORY.md')), false, 'no index line written');
 });
 
 // local-first A4: the Chief of Staff runs on its hosted model per host, fails over to the other host when the primary

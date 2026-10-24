@@ -1,4 +1,4 @@
-// Proposals (app-smoke: Proposals): pending proposals with lint and confirmations, the expanded detail, rendered
+// Proposals (app-smoke: Proposals): pending proposals with lint, the expanded detail, rendered
 // proposal pages, BACKLOG and HISTORY from the ledger, the live badge, and the Review button's terminal session.
 // Deciding a proposal is the flag-closer skill's job, never the tab's.
 
@@ -24,7 +24,7 @@ test("head, review button and the 28-day rates line (matching ledger.js summary)
   await expect(P().locator(".aos-pr-rates")).toHaveText(`last 28 d · approval ${pct(e.ledger?.approvalRate)} · accept ${pct(e.ledger?.acceptRate)}`);
 });
 
-test("PENDING: slug, target, kind and surface pills, age, confirmations and lint", async () => {
+test("PENDING: slug, target, kind and surface pills, age and lint; no auto-apply streak", async () => {
   const { win } = app();
   await expect(badge(win, "proposals")).toHaveText("3");
   const trim = row("trim-playbook");
@@ -32,13 +32,10 @@ test("PENDING: slug, target, kind and surface pills, age, confirmations and lint
   await expect(trim.locator(".aos-pill")).toHaveText(["self"]);
   await expect(trim.locator(".aos-pill").first()).toHaveClass(/aos-pill-cyan/);
   await expect(trim.locator(".aos-pr-age")).toHaveText("5d");
-  await expect(trim.locator(".aos-pr-streak")).toHaveText("confirmed 2d");
-  await expect(trim.locator(".aos-pr-streak")).toHaveClass(/aos-text-green/);
+  await expect(trim.locator(".aos-pr-streak")).toHaveCount(0); // spec 2026-10-24-persona-learning-loop-design D1
   const sitrep = row("todo-in-sitrep");
   await expect(sitrep.locator(".aos-pill")).toHaveText(["product", "hud"]);
   await expect(sitrep.locator(".aos-pill").first()).toHaveClass(/aos-pill-green/);
-  await expect(sitrep.locator(".aos-pr-streak")).toHaveText("confirmed 1d");
-  await expect(sitrep.locator(".aos-pr-streak")).toHaveClass(/aos-dim/);
   const loose = row("no-surface");
   await expect(loose.locator(".aos-pr-lint")).toHaveText("⚠ 3");
   await expect(loose.locator(".aos-pr-lint")).toHaveAttribute("title", /missing recheck recipe\nmissing premise table\nproduct proposal names no surface/);
@@ -50,7 +47,7 @@ test("a row expands to the decision, recipe, What / Why / Risk as Markdown and t
   const d = P().locator(".aos-pr-detail");
   await expect(d.locator(".aos-pr-meta > div").first()).toHaveText("needs: approve / reject");
   await expect(d.locator(".aos-pr-meta code")).toHaveText("grep -q 'Old heading' persona/PLAYBOOK.md");
-  await expect(d.locator(".aos-pr-meta")).toContainText("auto-apply class: playbook-trim");
+  await expect(d.locator(".aos-pr-meta")).not.toContainText("auto-apply"); // spec 2026-10-24-persona-learning-loop-design D1
   await expect(d.locator(".aos-pr-md h4")).toHaveText(["What", "Why", "Risk"]);
   await expect(d.locator(".aos-pr-md code").first()).toHaveText("## Old heading");
   await expect(d.locator(".aos-pr-premises .aos-rt-subhead")).toHaveText("PREMISES · 1 verified / 1 assumed");
