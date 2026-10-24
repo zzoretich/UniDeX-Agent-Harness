@@ -1901,10 +1901,8 @@ body {
 .aos-sk-pills .is-absent { opacity: 0.45; text-decoration: line-through; }
 .aos-sk-source { flex: 0 0 auto; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aos-sk-actions { flex: 0 0 auto; font-family: var(--aos-mono); font-size: 10.5px; white-space: nowrap; }
-/* MCP SERVERS (install-import B6): Make available on … per server. */
-.aos-sk-mcpactions { flex: 0 0 auto; display: flex; gap: 6px; white-space: nowrap; }
-.aos-sk-mcpactions button.aos-sk-mcpcopy { font-size: 11px; }
-.aos-sk-mcpempty a.aos-link { font-family: var(--aos-mono); }
+/* MCP SERVERS moved to Connectors (spec 2026-10-23-connectors-tab D2): the one line that links there. */
+.aos-sk-mcpmoved { margin: 14px 0 4px; font-size: 11.5px; }
 .aos-ag-ro { margin-left: 6px; font-size: 9.5px; vertical-align: 1px; }
 .aos-ag-warn { color: var(--aos-amber); }
 

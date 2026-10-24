@@ -524,7 +524,7 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "mcp",
     label: "MCP servers",
-    source: "views/SkillsTab.ts (MCP SERVERS: Make available on <host>), data/mcpServers.ts (copyArgs)",
+    source: "views/ConnectorsTab.ts (a server's sheet: Copy to <host>; Skills had it before 2.2), data/mcpServers.ts (copyArgs)",
     // `aos mcp copy` (cli/mcp.js, install-import B6): the dry run writes nothing and the page shows its command before the
     // confirm; the copy names the dry run's hash, reads the server's config from the source host's own file, backs the
     // target host's config file up outside the vault (~/.local/share/unidex/backups/mcp/, which the page never reads),

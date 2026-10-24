@@ -1,4 +1,6 @@
-// mcpServers.ts — Skills ▸ MCP servers (install-import B6): both hosts' user-scope MCP servers from
+// mcpServers.ts — the MCP server copy (install-import B6), offered as "Copy to <host>" in a Connectors card's sheet since
+// 2.2 (spec 2026-10-23-connectors-tab D20; Skills ▸ MCP servers had it before): copyArgs, planFor and planConfirm. The
+// listing below (parseMcpServers, mcpItems) reads the older cache, mcp-servers.json: both hosts' user-scope MCP servers from
 // brain/_index/mcp-servers.json (the importer's listing, lib/import/mcp.js: the program or URL alone, never arguments,
 // environment or headers), one row per name with the hosts that have it, and per row "Make available on <other host>"
 // for an enabled host that lacks it. The page never sees a server's config: the click runs `aos mcp copy <name> --to
