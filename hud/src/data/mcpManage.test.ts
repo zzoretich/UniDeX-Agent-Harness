@@ -90,7 +90,7 @@ test("checkAdd: a name both CLIs take, an enabled host, a command or a URL, and 
   assert.match(err({ command: "npx 'open" })!, /does not close/);
   assert.match(err({ command: "-y npx" })!, /not a flag/);
   assert.match(err({ kind: "remote", url: "ftp://x" })!, /http or https URL/);
-  assert.match(err({ kind: "remote", url: "https://u:p@h.example.com/mcp" })!, /Leave credentials out/);
+  assert.match(err({ kind: "remote", url: "https://u:p@localhost:8443/mcp" })!, /Leave credentials out/);
   // A value where a name belongs: lower case (a pasted secret), a token's shape, the key twice.
   // Token shapes built here, so the source holds nothing a secret scanner reads as one.
   const gh = ["gh", "p_"].join("");

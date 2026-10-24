@@ -892,7 +892,7 @@ test('add a remote server: Claude Code\'s `Authorization: Bearer ${VAR}` header,
     [['add', 'kept', '--to', 'codex', '--command', 'x'], /kept is parked on Codex: `aos mcp unpark kept --host codex` puts it back/],
     [['add', 'agenticos', '--to', 'claude', '--command', 'x'], /the vault's own server/],
     [['add', 'web fetch', '--to', 'claude', '--command', 'x'], /is not a server name both CLIs take/],
-    [['add', 'x', '--to', 'claude', '--url', 'https://u:pw-fixture-a1@h.example.com/mcp'], /https:\/\/<redacted>@h\.example\.com\/mcp carries credentials: give the token's variable with --bearer-env/],
+    [['add', 'x', '--to', 'claude', '--url', 'https://u:pw-fixture-a1@localhost:8443/mcp'], /https:\/\/<redacted>@localhost:8443\/mcp carries credentials: give the token's variable with --bearer-env/],
     [['add', 'x', '--to', 'claude', '--url', 'ftp://h.example.com/mcp'], /is not an http or https URL/],
   ]) {
     const x = aos(a);
