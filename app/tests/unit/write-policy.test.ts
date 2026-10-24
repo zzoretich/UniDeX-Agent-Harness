@@ -10,6 +10,7 @@ import { indexFrom, parseNote, rewritePlan } from "../../../hud/src/data/vaultIn
 import { workspaceArgs } from "../../../hud/src/data/spacesModel";
 import { memoryArgs, recallArgs } from "../../../hud/src/data/brainModel";
 import { copyArgs } from "../../../hud/src/data/mcpServers";
+import { addArgs, hostArgs, type AddSpec } from "../../../hud/src/data/mcpManage";
 import { importArgs, IMPORT_KINDS, migrateImportArgs } from "../../../hud/src/data/importModel";
 import { migrateArgs } from "../../../hud/src/data/goLocal";
 
@@ -34,7 +35,7 @@ test("globs: * stays in one segment, /** is the folder and everything below it",
 test("every surface cites its HUD module and names at least one write or command", () => {
   assert.ok(SURFACES.length > 0);
   for (const s of SURFACES) {
-    assert.match(s.id, /^[a-z]+$/, s.id);
+    assert.match(s.id, /^[a-z]+(?:-[a-z]+)*$/, s.id);
     assert.ok(s.label && s.source, s.id);
     assert.ok(s.writes.length + s.spawns.length > 0, s.id);
     for (const r of s.spawns) assert.ok(!!r.script !== !!r.bin, `${s.id}: a rule names a script or a program, not both`);
@@ -529,6 +530,60 @@ test("the MCP servers surface runs `aos mcp copy` as the page builds it, dry run
   assert.equal(new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "mcp")).canSpawn(NODE, [`${S}/cli/aos.js`, ...copyArgs("docs-search", "codex", true)]), false, "only MCP servers");
   for (const rel of ["brain/_index/mcp-servers.json", "brain/_index/backups/mcp/codex-config.toml-x.bak"]) assert.equal(p.canWrite(v(rel)), false, rel);
   assert.equal(SURFACES.find((s) => s.id === "mcp")?.verified, true, "on by default since its live check copied a server each way");
+});
+
+test("MCP server changes (mcp-manage) runs park, Turn on, remove and add exactly as the page builds them, dry run or real; off by default; it writes nothing (connectors-tab D16–D18, D21)", () => {
+  const p = new WritePolicy(VAULT, ["mcp-manage"]);
+  const others = new WritePolicy(VAULT, SURFACE_IDS.filter((id) => id !== "mcp-manage"));
+  const cli = (a: readonly string[]): string[] => [`${S}/cli/aos.js`, ...a];
+  const H = "0f".repeat(32);
+  const local: AddSpec = { name: "gh-tools", to: "both", kind: "local", command: "npx", args: ["-y", "--stdio", "gh mcp"], url: "", bearer: null, env: [{ key: "GITHUB_TOKEN", var: "GH" }, { key: "LOG", var: "LOG_LEVEL" }] };
+  const remote: AddSpec = { name: "charts", to: "codex", kind: "remote", command: "", args: [], url: "https://charts.example.com/mcp?region=eu", bearer: "CHARTS_TOKEN", env: [] };
+  const sent = [
+    ...(["park", "unpark", "remove"] as const).flatMap((verb) => [hostArgs(verb, "docs-search", "claude", true), hostArgs(verb, "x_2", "codex", false, H)]),
+    addArgs(local, true), addArgs(local, false, H), addArgs({ ...local, to: "claude", args: [], env: [] }, true),
+    addArgs(remote, true), addArgs(remote, false, H), addArgs({ ...remote, to: "both", bearer: null }, true),
+    addArgs({ ...local, args: Array.from({ length: 32 }, (_, i) => `a${i}`), env: Array.from({ length: 16 }, (_, i) => ({ key: `K${i}`, var: "V" })) }, true),
+  ];
+  for (const a of sent) {
+    assert.equal(p.canSpawn(NODE, cli(a)), true, a.join(" "));
+    assert.equal(others.canSpawn(NODE, cli(a)), false, `only with MCP server changes on: ${a.join(" ")}`);
+  }
+  const no: string[][] = [
+    // The verbs' shapes: the host, the name, the tail.
+    ["mcp", "park", "docs", "--host", "claude", "--json"], ["mcp", "park", "docs", "--host", "cursor", "--dry-run", "--json"], ["mcp", "park", "docs", "--host", "both", "--dry-run", "--json"],
+    ["mcp", "park", "-x", "--host", "claude", "--dry-run", "--json"], ["mcp", "park", "web fetch", "--host", "claude", "--dry-run", "--json"], ["mcp", "park", "docs", "--dry-run", "--json"],
+    ["mcp", "unpark", "docs", "--host", "claude", "--expect", "abc", "--json"], ["mcp", "remove", "docs", "--host", "claude", "--expect", "0F".repeat(32), "--json"],
+    ["mcp", "remove", "docs", "--host", "claude", "--dry-run", "--expect", H, "--json"], ["mcp", "park", "docs", "--host", "claude", "--dry-run", "--json", "--force"],
+    ["mcp", "login", "docs", "--host", "codex", "--dry-run", "--json"], ["mcp", "park", "docs", "--to", "claude", "--dry-run", "--json"],
+    // Add: values never, only variables' names; one order; the tail.
+    ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--env", "GITHUB_TOKEN=tok_value", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--env", "GITHUB_TOKEN=${GH}", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--env", "A=$X", "--env", "A=$Y", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--env", "A=$X", "--arg", "-y", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--url", "https://h.example.com/mcp", "--env", "A=$X", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--url", "https://h.example.com/mcp", "--bearer-env", "tok-value", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--url", "https://h.example.com/mcp", "--bearer-env", "$A", "--bearer-env", "$B", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--url", "ftp://h.example.com/mcp", "--dry-run", "--json"], ["mcp", "add", "gh", "--to", "both", "--url", "https://h.example.com/a b", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--url", "https://h.example.com/mcp", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--command", "-npx", "--dry-run", "--json"], ["mcp", "add", "gh", "--to", "both", "--command", "", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--arg", "", "--dry-run", "--json"], ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--arg", "a\nb", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--arg", "-y"], ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--json"],
+    ["mcp", "add", "gh", "--to", "both", "--command", "npx", "--expect", "abc", "--json"], ["mcp", "add", "gh", "--to", "all", "--command", "npx", "--dry-run", "--json"],
+    ["mcp", "add", "web fetch", "--to", "claude", "--command", "npx", "--dry-run", "--json"], ["mcp", "add", "gh", "--command", "npx", "--to", "claude", "--dry-run", "--json"],
+    ["mcp", "add", "gh", "--to", "claude", "--command=npx", "--dry-run", "--json"], ["mcp", "add", "gh", "--to", "claude", "--command", "npx", "--dry-run", "--json", "--json"],
+    addArgs({ ...local, args: Array.from({ length: 33 }, (_, i) => `a${i}`) }, true),
+    addArgs({ ...local, env: Array.from({ length: 17 }, (_, i) => ({ key: `K${i}`, var: "V" })) }, true),
+  ];
+  const all = new WritePolicy(VAULT, [...SURFACE_IDS]);
+  for (const a of no) assert.equal(all.canSpawn(NODE, cli(a)), false, `never: ${JSON.stringify(a)}`);
+  // An --arg takes the next argument whatever it is, here as in the runtime: a dash-led one is an argument, not a flag.
+  assert.equal(p.canSpawn(NODE, cli(["mcp", "add", "gh", "--to", "claude", "--command", "npx", "--arg", "--dry-run", "--dry-run", "--json"])), true);
+  assert.equal(p.canSpawn(NODE, cli(["mcp", "add", "gh", "--to", "claude", "--command", "npx", "--arg", "--dry-run", "--json"])), false, "its value taken, no tail is left");
+  for (const rel of ["brain/_index/connectors.json", "brain/_index/mcp-servers.json"]) assert.equal(p.canWrite(v(rel)), false, rel);
+  assert.equal(SURFACES.find((s) => s.id === "mcp-manage")?.verified, false, "off by default until a live check per host");
+  assert.equal(new WritePolicy(VAULT, ["mcp"]).canSpawn(NODE, cli(hostArgs("park", "docs", "claude", true))), false, "the copy's surface does not admit these");
+  assert.deepEqual(parseSurfaces("mcp,mcp-manage").ids, ["mcp", "mcp-manage"]);
 });
 
 test("Import runs `aos import` exactly as importArgs builds it, flags in one order; nothing else (install-import B7)", () => {

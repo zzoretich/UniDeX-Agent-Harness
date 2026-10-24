@@ -8,16 +8,23 @@ import { dialogId } from "./spaces/SpaceDialogs";
  * opens: a question that lands while the person is typing gets the next keys, never the field behind it, and a stray
  * Enter keeps things as they are. The host gives the keyboard back to what had it when the dialog closes.
  */
+export interface ConfirmOptions {
+  /** The confirm button in the danger tone (a Remove that cannot be turned back on). */
+  danger?: boolean;
+  /** A line the person may copy before confirming (A1's env_vars line for Codex), with its button's label. */
+  copy?: { label: string; text: string } | null;
+}
+
 export class ConfirmModal extends Modal {
   private resolved = false;
   /** `detail`, when given, is shown as written under the message in a monospace block: the exact command a confirm runs
-   *  (Skills ▸ MCP servers' Make available on …). */
-  constructor(app: App, private title: string, private message: string, private confirmLabel = "Confirm", private resolve: (ok: boolean) => void = () => {}, private detail: string | null = null) {
+   *  (Connectors' Copy to …, Park, Turn on, Remove and Add server). */
+  constructor(app: App, private title: string, private message: string, private confirmLabel = "Confirm", private resolve: (ok: boolean) => void = () => {}, private detail: string | null = null, private opts: ConfirmOptions = {}) {
     super(app);
   }
 
-  static ask(app: App, title: string, message: string, confirmLabel = "Confirm", detail: string | null = null): Promise<boolean> {
-    return new Promise((resolve) => new ConfirmModal(app, title, message, confirmLabel, resolve, detail).open());
+  static ask(app: App, title: string, message: string, confirmLabel = "Confirm", detail: string | null = null, opts: ConfirmOptions = {}): Promise<boolean> {
+    return new Promise((resolve) => new ConfirmModal(app, title, message, confirmLabel, resolve, detail, opts).open());
   }
 
   onOpen(): void {
@@ -33,9 +40,17 @@ export class ConfirmModal extends Modal {
     contentEl.createEl("p", { text: this.message, attr: { id: ids.message } });
     if (this.detail) contentEl.createEl("pre", { cls: "aos-confirm-detail", text: this.detail });
     const actions = contentEl.createDiv({ cls: "aos-capture-actions" });
+    const copy = this.opts.copy;
+    if (copy) {
+      const b = actions.createEl("button", { text: copy.label, cls: "aos-confirm-copy", attr: { type: "button" } });
+      b.addEventListener("click", () => {
+        const clip = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+        void (clip ? clip.writeText(copy.text) : Promise.reject(new Error("no clipboard"))).then(() => b.setText("Copied"), () => b.setText("Copy failed"));
+      });
+    }
     const cancel = actions.createEl("button", { text: "Cancel", attr: { type: "button" } });
     cancel.addEventListener("click", () => this.close());
-    const ok = actions.createEl("button", { text: this.confirmLabel, cls: "mod-cta", attr: { type: "button" } });
+    const ok = actions.createEl("button", { text: this.confirmLabel, cls: this.opts.danger ? "mod-warning" : "mod-cta", attr: { type: "button" } });
     ok.addEventListener("click", () => { this.resolved = true; this.resolve(true); this.close(); });
     cancel.focus();
   }

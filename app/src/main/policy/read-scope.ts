@@ -80,11 +80,12 @@ const CODEX_LIST = ["sessions", "archived_sessions"];
 /**
  * Folders never read, inside a root or not: backups of a host's config, which hold every MCP server's secrets. `aos mcp
  * copy` writes them under ~/.local/share/unidex/backups (outside every root); brain/_index/backups is refused too, so a
- * runtime that put one in the vault would still not hand it to the page (install-import B6).
+ * runtime that put one in the vault would still not hand it to the page (install-import B6). `aos mcp park` keeps each
+ * parked server's exact entry, secrets included, under ~/.local/share/unidex/parked (connectors-tab D16): never read either.
  */
 export function deniedDirs(o: Pick<ScopeOptions, "vaultRoot" | "home">): string[] {
   const unidex = path.join(o.home, ".local", "share", "unidex");
-  return [path.join(unidex, "backups"), path.join(unidex, "keys"), ...(o.vaultRoot ? [path.join(o.vaultRoot, "brain", "_index", "backups")] : [])];
+  return [path.join(unidex, "backups"), path.join(unidex, "keys"), path.join(unidex, "parked"), ...(o.vaultRoot ? [path.join(o.vaultRoot, "brain", "_index", "backups")] : [])];
 }
 
 /** A path compared the way APFS compares names by default: one Unicode form (NFC), case folded. */

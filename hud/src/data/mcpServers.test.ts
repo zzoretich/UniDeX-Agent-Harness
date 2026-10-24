@@ -28,7 +28,7 @@ test("the listing parses; a missing or broken file reads as not listed", () => {
   for (const bad of [null, "", "{", "[]", '{"servers":{}}']) assert.deepEqual(parseMcpServers(bad), { listed: false, updatedAt: null, servers: [] }, String(bad));
 });
 
-test("one item per name; Make available on the enabled host that lacks it; a remote server's offer to Codex is off with why (B6)", () => {
+test("one item per name; Make available on the enabled host that lacks it, a streamable HTTP server to Codex too (B6, connectors-tab D20)", () => {
   const items = mcpItems(parseMcpServers(LISTING), ["claude", "codex"]);
   assert.deepEqual(items.map((i) => [i.name, Object.keys(i.on).sort().join("+"), i.what]), [
     ["docs-search", "claude", "npx"],
@@ -41,8 +41,7 @@ test("one item per name; Make available on the enabled host that lacks it; a rem
   assert.deepEqual(by("docs-search").offers, [{ to: "codex", label: "Make available on Codex", disabled: false, reason: null }]);
   assert.deepEqual(by("issue-tracker").offers, [{ to: "claude", label: "Make available on Claude Code", disabled: false, reason: null }]);
   assert.deepEqual(by("shared").offers, [], "on both: nothing to offer");
-  assert.equal(by("tracker").offers[0].disabled, true);
-  assert.match(by("tracker").offers[0].reason!, /A remote \(http\) server: `codex mcp add` takes a command to run/);
+  assert.deepEqual(by("tracker").offers, [{ to: "codex", label: "Make available on Codex", disabled: false, reason: null }]);
   assert.equal(by("web fetch").offers[0].disabled, true, "a name Claude Code's CLI refuses");
   assert.match(by("web fetch").offers[0].reason!, /does not take the name "web fetch"/);
   // Turned off on its host: neither CLI's add takes an off state, so it is not copied on as if it were on.
@@ -89,6 +88,20 @@ test("a dry run's answer becomes the confirm: the file, the backup, the exact co
   assert.equal(parsePlan({ ...plan!, expect: undefined }), null, "a plan without its hash cannot be confirmed");
   assert.equal(parsePlan({ ok: true, command: "x", file: "y", name: "n", from: "cursor", to: "codex" }), null);
   assert.equal(planConfirm({ ...plan!, backup: null }).detail.split("\n")[1], "No backup: the file does not exist yet");
+});
+
+test("a copy to Codex names a header it could not carry and A1's env_vars line in the confirm (connectors-tab D20, A1)", () => {
+  const plan = parsePlan({
+    ok: true, dryRun: true, name: "gh", from: "claude", to: "codex", transport: "stdio", command: "codex mcp add gh -- gh-mcp", source: "~/.claude.json",
+    file: "~/.codex/config.toml", backup: null, dropped: ["headers.X-Team"], note: "`codex mcp add` takes no header values: to send a token, name the variable that holds it with bearer_token_env_var",
+    paste: 'env_vars = ["GITHUB_TOKEN"]', pasteUnder: "[mcp_servers.gh]", pasteFile: "~/.codex/config.toml", pasteNote: "Codex passes each of these to the server from its own environment, by that name", expect: "d".repeat(64),
+  })!;
+  assert.deepEqual(plan.paste, { line: 'env_vars = ["GITHUB_TOKEN"]', under: "[mcp_servers.gh]", file: "~/.codex/config.toml", note: "Codex passes each of these to the server from its own environment, by that name" });
+  const c = planConfirm(plan);
+  assert.match(c.message, /`codex mcp add` takes no header values: to send a token, name the variable that holds it with bearer_token_env_var\./);
+  assert.match(c.message, /by that name: `codex mcp add` takes values only, so paste the env_vars line below/);
+  assert.match(c.detail, /codex mcp add gh -- gh-mcp\n\nThen paste under \[mcp_servers\.gh\] in ~\/\.codex\/config\.toml:\n {2}env_vars = \["GITHUB_TOKEN"\]$/);
+  assert.equal(parsePlan({ ...plan, paste: undefined, note: undefined })!.paste, null);
 });
 
 test("a dry run's answer is offered for confirm only when it is the one asked for: the same server and target (security re-review E)", () => {

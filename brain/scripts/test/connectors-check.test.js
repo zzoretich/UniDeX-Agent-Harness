@@ -159,6 +159,16 @@ test('check: never starts what its host would not (D11); identical entries start
   assert.ok(!seen.some((l) => l.args && l.args.includes('')), 'the entry naming an unset variable never ran');
 });
 
+test('check: a parked server (D16) is off, says it is parked, and is never started', async () => {
+  const w = world();
+  const dir = path.join(w.home, '.local', 'share', 'unidex', 'parked', 'mcp');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'claude-resting.json'), JSON.stringify({ schema: 1, host: 'claude', name: 'resting', entry: { command: 'resting-mcp' } }));
+  const { at, seen } = await runCheck(w);
+  assert.deepEqual([at('claude', 'resting').status, at('claude', 'resting').detail], ['off', 'parked']);
+  assert.ok(!seen.some((l) => l.command === 'resting-mcp'));
+});
+
 test('check: no secret in the cache; the cache is schema 1 and readLive returns it', async () => {
   const w = world();
   const { live } = await runCheck(w);

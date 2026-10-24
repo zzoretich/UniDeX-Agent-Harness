@@ -26,6 +26,8 @@ export interface FoundRow {
   host: ConnHost; name: string; kind: "server" | "connector"; transport: "stdio" | "http" | "sse"; command: string | null; url: string | null;
   scope: "user" | "local" | "project" | "plugin" | "account"; file: string | null; enabled: boolean; plugin: string | null; workspace: string | null;
   approval: "approved" | "pending" | "off" | null; own: boolean; displayName: string | null; unverified: boolean;
+  /** Taken off its host by `aos mcp park`, its exact entry kept (D16): Turn on puts it back. */
+  parked: boolean;
 }
 export interface LiveRow { host: ConnHost; name: string; kind: string; status: ConnStatus; detail: string; tools: ToolInfo[] | null; toolsError: string | null }
 export interface UsageRow { host: ConnHost; key: string; name: string; builtin: boolean; calls: number; sessions: number; lastUsed: string | null; perDay: number[]; perTool: Record<string, number> }
@@ -54,6 +56,8 @@ export interface ConnSide {
   what: string;
   enabled: boolean;
   own: boolean;
+  /** Parked (D16): off its host, Turn on puts it back. */
+  parked: boolean;
   tools: ToolInfo[] | null;
   /** The tools are the ones seen in use (D12): the check could not list them. */
   toolsSeen: boolean;
@@ -115,7 +119,7 @@ export function parseCaches(found: string | null, live: string | null, usage: st
         command: str(r.command), url: str(r.url), scope, file: str(r.file), enabled: r.enabled !== false,
         plugin: str(r.plugin), workspace: str(r.workspace),
         approval: r.approval === "approved" || r.approval === "pending" || r.approval === "off" ? r.approval : null,
-        own: r.own === true, displayName: str(r.displayName), unverified: r.unverified === true,
+        own: r.own === true, displayName: str(r.displayName), unverified: r.unverified === true, parked: r.parked === true,
       });
     }
   }
@@ -210,13 +214,14 @@ export function buildBoard(c: ConnCaches, enabled: readonly ConnHost[]): ConnBoa
     const u = used.get(`${r.host}\t${r.name}`) ?? null;
     let status: ConnStatus = l ? l.status : checked && !r.unverified ? "unknown" : "not-checked";
     let detail = l?.detail ?? (r.unverified ? "not checked yet" : "");
-    if (!r.enabled) { status = "off"; detail = detail || (r.approval === "off" ? "turned off for this project" : "turned off"); }
+    if (r.parked) { status = "off"; detail = "parked: Turn on puts it back as it was"; }
+    else if (!r.enabled) { status = "off"; detail = detail || (r.approval === "off" ? "turned off for this project" : "turned off"); }
     else if (r.approval === "pending" && !l) { status = "pending"; detail = "waiting for approval in Claude Code"; }
     const liveTools = l?.tools ?? null;
     const seenTools = u && Object.keys(u.perTool).length ? Object.keys(u.perTool).sort().map((name) => ({ name, summary: "" })) : null;
     const side: ConnSide = {
       host: r.host, name: r.name, status, detail, scope: r.scope, file: r.file, plugin: r.plugin, workspace: r.workspace,
-      transport: r.kind === "connector" ? null : r.transport, what: r.command ?? r.url ?? "", enabled: r.enabled, own: r.own,
+      transport: r.kind === "connector" ? null : r.transport, what: r.command ?? r.url ?? "", enabled: r.enabled, own: r.own, parked: r.parked,
       tools: liveTools ?? seenTools, toolsSeen: !liveTools && !!seenTools, toolsError: l?.toolsError ?? null, usage: u,
     };
     const k = card(cardKey(r), r.kind === "connector" ? connectorTitle(r) : serverName(r), r.kind);
@@ -228,7 +233,7 @@ export function buildBoard(c: ConnCaches, enabled: readonly ConnHost[]): ConnBoa
     const title = r.name.startsWith(CLAUDE_AI) ? r.name.slice(CLAUDE_AI.length) : r.name;
     card(`c:${title.toLowerCase()}`, title, "connector").sides[r.host] = {
       host: r.host, name: r.name, status: r.status, detail: r.detail, scope: "account", file: null, plugin: null, workspace: null, transport: null,
-      what: "", enabled: true, own: false, tools: null, toolsSeen: false, toolsError: null, usage: used.get(`${r.host}\t${r.name}`) ?? null,
+      what: "", enabled: true, own: false, parked: false, tools: null, toolsSeen: false, toolsError: null, usage: used.get(`${r.host}\t${r.name}`) ?? null,
     };
   }
   // Built-ins: servers the sessions called that no file declares (D13).
@@ -237,7 +242,7 @@ export function buildBoard(c: ConnCaches, enabled: readonly ConnHost[]): ConnBoa
     const tools = Object.keys(u.perTool).sort().map((name) => ({ name, summary: "" }));
     card(`b:${u.name.toLowerCase()}`, u.name, "builtin").sides[u.host] = {
       host: u.host, name: u.name, status: "builtin", detail: `built into ${CONN_HOST_LABEL[u.host]}`, scope: "builtin", file: null, plugin: null,
-      workspace: null, transport: null, what: "", enabled: true, own: false, tools, toolsSeen: true, toolsError: null, usage: u,
+      workspace: null, transport: null, what: "", enabled: true, own: false, parked: false, tools, toolsSeen: true, toolsError: null, usage: u,
     };
   }
 
@@ -340,6 +345,7 @@ export function scopeLine(x: ConnSide): string {
   if (x.scope === "account") return x.host === "claude" ? "claude.ai account" : `ChatGPT app${x.plugin ? ` · plugin ${x.plugin}` : ""}`;
   if (x.scope === "plugin") return `plugin ${x.plugin ?? ""}${x.own ? " · this vault's own" : ""}`.trim();
   if (x.scope === "project" || x.scope === "local") return `${x.scope} · ${x.workspace ?? ""}${x.file ? ` · ${x.file}` : ""}`;
+  if (x.parked) return `user · parked${x.file ? ` · Turn on puts it back in ${x.file}` : ""}`;
   return `user${x.file ? ` · ${x.file}` : ""}`;
 }
 
@@ -362,8 +368,8 @@ export function useLine(k: ConnCard, days: number, nowMs: number): string {
 }
 
 /**
- * What a card needing attention suggests: a sentence and the one fix the tab can offer in PR 2 (the sign-in and park
- * actions come with PR 3). `fix` names the button: `claude.ai` opens claude.ai's connectors page; `login` runs
+ * What a card needing attention suggests: a sentence and the one fix the tab offers (a sheet's Park and Remove are the
+ * other ways out, sideActions). `fix` names the button: `claude.ai` opens claude.ai's connectors page; `login` runs
  * `codex mcp login <name>` in a Code terminal; `check` checks again.
  */
 export function attentionFix(k: ConnCard): { side: ConnSide; hint: string; fix: "claude.ai" | "login" | "check"; label: string } | null {
@@ -381,7 +387,8 @@ export function attentionFix(k: ConnCard): { side: ConnSide; hint: string; fix: 
 
 /**
  * "Copy to <host>" for a server card (D20, the copy Skills offered): a user-scope server on one enabled host that the
- * other enabled host lacks. Codex's `mcp add` takes a remote server's URL only from PR 3 on, so that offer is off with why.
+ * other enabled host lacks. Codex's `mcp add --url` takes a streamable HTTP server, so an SSE server's offer to Codex is
+ * off with why, and so is a parked or turned-off one's.
  */
 export function copyOffers(k: ConnCard, enabled: readonly ConnHost[]): CopyOffer[] {
   if (k.kind !== "server") return [];
@@ -393,10 +400,44 @@ export function copyOffers(k: ConnCard, enabled: readonly ConnHost[]): CopyOffer
     if (!s || s.scope !== "user" || s.own) continue;
     let reason: string | null = null;
     if (!MCP_NAME_RE.test(s.name)) reason = `${CONN_HOST_LABEL[to]}'s CLI does not take the name ${JSON.stringify(s.name)}: letters, digits, - and _ only`;
+    else if (s.parked) reason = `Parked on ${CONN_HOST_LABEL[from]}: turn it on there first`;
     else if (!s.enabled) reason = `Turned off on ${CONN_HOST_LABEL[from]}: turn it on there first`;
-    else if (to === "codex" && s.transport !== "stdio") reason = `A remote (${s.transport}) server: add it in Codex's config.toml yourself for now`;
+    else if (to === "codex" && s.transport === "sse") reason = "An SSE server: Codex's mcp add --url takes a streamable HTTP server only";
     out.push({ to, label: `Copy to ${CONN_HOST_LABEL[to]}`, disabled: reason !== null, reason });
   }
+  return out;
+}
+
+export type ManageVerb = "park" | "unpark" | "remove";
+
+/**
+ * What a sheet's host row offers for one side (D16, D17): a user-scope server Park and Remove (only Remove when it is
+ * off: Turn on could not bring that state back), a parked one Turn on; every other row says what to do instead, and the
+ * vault's own server and a built-in neither.
+ */
+export function sideActions(x: ConnSide): { actions: ManageVerb[]; hint: string | null } {
+  const none = (hint: string | null) => ({ actions: [] as ManageVerb[], hint });
+  if (x.scope === "builtin") return none(null);
+  if (x.own) return none("The vault's own server: aos init and aos hosts add wire it on each host.");
+  if (x.scope === "account") {
+    return none(x.host === "claude" ? "A claude.ai connector: turn it off in claude.ai's connector settings." : "A ChatGPT app: turn it off in ChatGPT's connector settings.");
+  }
+  if (x.scope === "plugin") {
+    return none(x.host === "claude"
+      ? `From the plugin ${x.plugin ?? ""}: turn the plugin off with claude plugin disable ${x.plugin ?? ""} (that turns off its skills too).`
+      : `From the Codex plugin ${x.plugin ?? ""}: Codex has no command for it, so turn the plugin off in Codex's plugin settings.`);
+  }
+  if (x.scope === "project" || x.scope === "local") return none(`Declared by the workspace ${x.workspace ?? ""}: change it in ${x.file ?? "its config"}.`);
+  if (!MCP_NAME_RE.test(x.name)) return none(`${CONN_HOST_LABEL[x.host]}'s CLI does not take the name ${JSON.stringify(x.name)}: change it in ${x.file ?? "its config"}.`);
+  if (x.parked) return { actions: ["unpark"], hint: null };
+  if (!x.enabled) return { actions: ["remove"], hint: null };
+  return { actions: ["park", "remove"], hint: null };
+}
+
+/** The user-scope names each enabled host has, parked ones included: what Add server would clash with. */
+export function takenNames(b: Pick<ConnBoard, "cards">): Record<ConnHost, Set<string>> {
+  const out: Record<ConnHost, Set<string>> = { claude: new Set(), codex: new Set() };
+  for (const k of b.cards) for (const x of Object.values(k.sides) as ConnSide[]) if (x.scope === "user") out[x.host].add(x.name);
   return out;
 }
 

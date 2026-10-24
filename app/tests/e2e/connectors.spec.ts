@@ -277,7 +277,7 @@ test.describe("both hosts, read-only", () => {
     },
   });
 
-  test("a server on both is one card with both dots and On both hosts; Copy to … is offered for a server on one, a remote one to Codex off with why", async () => {
+  test("a server on both is one card with both dots and On both hosts; Copy to … is offered for a server on one, a remote one to Codex too (D20)", async () => {
     const h = app();
     const { win } = h;
     await openTab(win, "connectors");
@@ -290,12 +290,12 @@ test.describe("both hosts, read-only", () => {
     await expect(sheet(win).locator(".aos-con-hostrow")).toHaveCount(2);
     await expect(sheet(win).locator("button.aos-con-copy")).toHaveCount(0);
     await win.keyboard.press("Escape");
-    // Claude Code's remote server: Codex's `mcp add` takes a URL only from PR 3 on.
+    // Claude Code's remote server: Codex takes a streamable HTTP server as `codex mcp add --url` (D20).
     await card(win, `s:${expected().mcp.remote}`).locator("button.aos-con-alertname").click();
     const remote = hostRow(win, "codex").locator('button.aos-con-copy[data-to="codex"]');
     await expect(remote).toHaveText("Copy to Codex");
-    await expect(remote).toBeDisabled();
-    await expect(remote).toHaveAttribute("title", /^A remote \(http\) server: add it in Codex's config\.toml yourself for now$/);
+    await expect(remote).toBeEnabled();
+    await expect(remote).toHaveAttribute("title", "Shows the exact Codex command and the file it writes before anything changes");
     await win.keyboard.press("Escape");
     // The app's write surfaces are off here: the dry run is refused, nothing runs, and the notice names the command.
     await card(win, `s:${expected().mcp.codex}`).click();

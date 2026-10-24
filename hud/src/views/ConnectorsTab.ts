@@ -6,14 +6,16 @@ import type { WorkbenchView } from "./WorkbenchView";
 import { readAgenticosJson, sessionHosts, VAULT_CONFIG_DEFAULTS } from "../data/aosConfig";
 import {
   CONNECTOR_FILES, CONNECTORS_LIVE_PATH, CONNECTORS_PATH, CONNECTORS_USAGE_PATH, CONN_HOST_LABEL, attentionFix, buildBoard, checkDue, copyOffers,
-  metaLine, parseCaches, type ConnBoard, type ConnCard, type ConnHost, type ConnTile,
+  metaLine, parseCaches, takenNames, type ConnBoard, type ConnCard, type ConnHost, type ConnTile, type ManageVerb,
 } from "../data/connectorsModel";
 import { MCP_NAME_RE, copyArgs, planConfirm, planFor } from "../data/mcpServers";
-import { failureText } from "../data/aosRun";
+import { addArgs, addConfirm, addPlanFor, hostArgs, hostConfirm, hostPlanFor, terminalLine, type AddForm, type AddPlan, type HostPlan } from "../data/mcpManage";
+import { failureText, type AosResult } from "../data/aosRun";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { fs, shell } from "../host";
 import { drawBody, drawHead, type BoardCtx, type FoldGroup } from "./connectors/board";
 import { drawSheet } from "./connectors/sheet";
+import { AddServerSheet } from "./connectors/addSheet";
 
 /** How often the tab asks whether a check is due while it is shown (the cadence itself is connectors.checkEveryMin). */
 const TICK_MS = 60_000;
@@ -23,13 +25,16 @@ const CLAUDE_AI_CONNECTORS = "https://claude.ai/settings/connectors";
 
 /**
  * CONNECTORS — every MCP server and connector both hosts can use (spec 2026-10-23-connectors-tab D3–D5, D9, D10, D12,
- * D20), from the runtime's three caches (data/connectorsModel.ts): the health board and a card's detail sheet. The tab
- * reads files only; what it starts is the runtime: `aos mcp check --json` when the tab is shown and the last check is
- * older than connectors.checkEveryMin, again every so often while it stays in front, and on Check now (one at a time);
- * `aos mcp copy` behind "Copy to <host>" in a server's sheet (the copy Skills offered, install-import B6: a dry run, its
- * exact command in a confirm, then the run naming the dry run's hash), and `aos mcp list --json` after a copy so the
- * board shows it at once. The fixes are a link (claude.ai's connectors page), a Code terminal (`codex mcp login`) or a
- * check. The badge is WorkbenchView's (D5).
+ * D16–D18, D20), from the runtime's three caches (data/connectorsModel.ts): the health board and a card's detail sheet.
+ * The tab reads files only; what it starts is the runtime: `aos mcp check --json` when the tab is shown and the last
+ * check is older than connectors.checkEveryMin, again every so often while it stays in front, and on Check now (one at
+ * a time); `aos mcp copy` behind "Copy to <host>" in a server's sheet (the copy Skills offered, install-import B6),
+ * `aos mcp park|unpark|remove` behind a sheet's Park, Turn on and Remove, and `aos mcp add` behind the header's Add
+ * server (data/mcpManage.ts): each a dry run, its exact commands in a confirm, then the run naming the dry run's hash,
+ * and `aos mcp list --json` after it so the board shows it at once. Without the surface a run needs (`mcp` for the copy,
+ * `mcp-manage` for the rest) the dry run is refused and the notice names the same command for a Code terminal. The
+ * fixes are a link (claude.ai's connectors page), a Code terminal (`codex mcp login`) or a check. The badge is
+ * WorkbenchView's (D5).
  */
 export class ConnectorsTab {
   private host: HTMLElement | null = null;
@@ -48,6 +53,10 @@ export class ConnectorsTab {
   private lastTry = 0;
   /** The target hosts a copy is running for: one at a time per host, as the runtime's lock has it. */
   private copyBusy = new Set<ConnHost>();
+  /** The hosts a park, Turn on, remove or add is running for (the same lock per host). */
+  private manageBusy = new Set<ConnHost>();
+  /** The Add sheet's last form, so a dry run that was refused or cancelled opens it as it was. */
+  private lastAdd: AddForm | null = null;
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
   private tick: number | null = null;
@@ -189,7 +198,7 @@ export class ConnectorsTab {
       const plan = dry.code === 0 ? planFor(dry.json, name, to, true) : null;
       if (!plan) { new Notice(`Make available on ${label}: ${dry.code === 0 ? "aos mcp copy answered in an unexpected shape" : failureText(dry)} — or run ${by} in the Code tab`, 12000); return; }
       const c = planConfirm(plan);
-      if (!(await ConfirmModal.ask(this.plugin.app, c.title, c.message, c.confirm, c.detail))) return;
+      if (!(await ConfirmModal.ask(this.plugin.app, c.title, c.message, c.confirm, c.detail, { copy: plan.paste ? { label: "Copy env_vars line", text: plan.paste.line } : null }))) return;
       // The dry run's hash: the copy runs only what the confirm showed, and is refused when the config changed since.
       const r = await this.plugin.aosJson<unknown>(copyArgs(name, to, false, plan.expect), 90_000);
       const done = r.code === 0 ? planFor(r.json, name, to, false) : null;
@@ -202,6 +211,101 @@ export class ConnectorsTab {
       this.load();
       this.render();
     }
+  }
+
+  /** The notice for a refused or failed run: with the surface off, says so; either way names the command for a Code
+   *  terminal. */
+  private refusedNotice(what: string, r: AosResult, line: string, shape = false): void {
+    if (shape) { new Notice(`${what}: aos mcp answered in an unexpected shape — or run ${line} in the Code tab`, 12000); return; }
+    const why = failureText(r);
+    if (/no write surface that allows it is on/.test(why)) {
+      new Notice(`${what}: refused, since MCP server changes are off in this app's write access — run ${line} in the Code tab instead`, 15000);
+      return;
+    }
+    new Notice(`${what}: ${why} — or run ${line} in the Code tab`, 12000);
+  }
+
+  /**
+   * Park, Turn on or Remove one side (D16, D17): the dry run, its exact command, file, backup and stash in a confirm
+   * (Remove in the danger tone), then the run naming its hash, then the list again.
+   */
+  private async manage(verb: ManageVerb, name: string, h: ConnHost): Promise<void> {
+    if (this.manageBusy.has(h)) return;
+    const what = `${{ park: "Park", unpark: "Turn on", remove: "Remove" }[verb]} ${name}`;
+    const line = terminalLine(hostArgs(verb, name, h, true));
+    this.manageBusy.add(h);
+    this.render();
+    let changed = false;
+    try {
+      const dry = await this.plugin.aosJson<unknown>(hostArgs(verb, name, h, true));
+      const plan = dry.code === 0 ? hostPlanFor(dry.json, verb, name, h, true) : null;
+      if (!plan) { this.refusedNotice(what, dry, line, dry.code === 0); return; }
+      const c = hostConfirm(plan);
+      const copy = plan.paste ? { label: "Copy env_vars line", text: plan.paste.line } : null;
+      if (!(await ConfirmModal.ask(this.plugin.app, c.title, c.message, c.confirm, c.detail, { danger: c.danger, copy }))) return;
+      const r = await this.plugin.aosJson<unknown>(hostArgs(verb, name, h, false, plan.expect), 90_000);
+      const done = r.code === 0 ? hostPlanFor(r.json, verb, name, h, false) : null;
+      if (!done) { this.refusedNotice(what, r, terminalLine(hostArgs(verb, name, h, false, plan.expect)), r.code === 0); return; }
+      changed = true;
+      new Notice(this.doneText(done), done.paste ? 0 : 10000);
+    } finally {
+      if (changed) await this.plugin.aosJson<unknown>(["mcp", "list", "--json"], 120_000).catch(() => null);
+      this.manageBusy.delete(h);
+      this.load();
+      this.render();
+    }
+  }
+
+  private doneText(p: HostPlan): string {
+    const on = CONN_HOST_LABEL[p.host];
+    const backup = p.backup ? ` (backup: ${p.backup})` : "";
+    if (p.verb === "park") return `${p.name} is parked: off ${on}, its exact settings kept for Turn on${backup}.`;
+    if (p.verb === "remove") return `${p.name} is removed from ${on}${backup}.`;
+    const paste = p.paste ? ` Paste ${p.paste.line} under ${p.paste.under} in ${p.paste.file} so it gets its variables.` : "";
+    return `${p.name} is back on ${on}${p.listed === false ? ", but it does not list it yet: the stash is kept" : ""}.${paste}`;
+  }
+
+  /**
+   * Add server (D18): the Add sheet's form, then the dry run of each host's command, the confirm with each and A1's
+   * env_vars line for Codex (with Copy), then the run naming its hash, then the list again.
+   */
+  private async addServer(): Promise<void> {
+    if (this.hosts.some((h) => this.manageBusy.has(h))) return;
+    const got = await AddServerSheet.ask(this.plugin.app, this.hosts, takenNames(this.board), this.lastAdd);
+    if (!got) return;
+    this.lastAdd = got.form;
+    const { spec } = got;
+    const what = `Add ${spec.name}`;
+    const line = terminalLine(addArgs(spec, true));
+    const busy: ConnHost[] = spec.to === "both" ? ["claude", "codex"] : [spec.to];
+    for (const h of busy) this.manageBusy.add(h);
+    this.render();
+    let changed = false;
+    try {
+      const dry = await this.plugin.aosJson<unknown>(addArgs(spec, true));
+      const plan = dry.code === 0 ? addPlanFor(dry.json, spec.name, spec.to, true) : null;
+      if (!plan) { this.refusedNotice(what, dry, line, dry.code === 0); return; }
+      const c = addConfirm(plan);
+      const paste = plan.hosts.find((x) => x.paste)?.paste ?? null;
+      if (!(await ConfirmModal.ask(this.plugin.app, c.title, c.message, c.confirm, c.detail, { copy: paste ? { label: "Copy env_vars line", text: paste.line } : null }))) return;
+      const r = await this.plugin.aosJson<unknown>(addArgs(spec, false, plan.expect), 120_000);
+      const done = r.code === 0 ? addPlanFor(r.json, spec.name, spec.to, false) : null;
+      if (!done) { this.refusedNotice(what, r, line, r.code === 0); return; }
+      changed = true;
+      this.lastAdd = null;
+      new Notice(this.addedText(done), paste ? 0 : 10000);
+    } finally {
+      if (changed) await this.plugin.aosJson<unknown>(["mcp", "list", "--json"], 120_000).catch(() => null);
+      for (const h of busy) this.manageBusy.delete(h);
+      this.load();
+      this.render();
+    }
+  }
+
+  private addedText(p: AddPlan): string {
+    const on = p.hosts.filter((x) => x.listed !== false).map((x) => CONN_HOST_LABEL[x.host]).join(" and ");
+    const paste = p.hosts.find((x) => x.paste)?.paste;
+    return `${p.name} is on ${on || "neither host yet"} now.${paste ? ` For Codex, paste ${paste.line} under ${paste.under} in ${paste.file}.` : ""}`;
   }
 
   private openSheet(k: ConnCard): void {
@@ -244,6 +348,7 @@ export class ConnectorsTab {
         fold: (g) => { if (this.folds.has(g)) this.folds.delete(g); else this.folds.add(g); this.render(`fold:${g}`); },
         fix: (k) => this.fix(k),
         upgrade: () => { this.view.runInTerm("aos upgrade", { origin: "Connectors" }); },
+        add: () => void this.addServer(),
       },
     };
     this.ctx = ctx;
@@ -257,8 +362,8 @@ export class ConnectorsTab {
     if (this.openKey !== null && !card) this.openKey = null;
     if (card) {
       drawSheet(root, {
-        card, board: this.board, hosts: this.hosts, now, offers: copyOffers(card, this.hosts), busy: this.copyBusy, checking: this.checking,
-        on: { close: () => this.closeSheet(), copy: (name, to) => void this.copyTo(name, to), fix: (k) => this.fix(k) },
+        card, board: this.board, hosts: this.hosts, now, offers: copyOffers(card, this.hosts), busy: this.copyBusy, manageBusy: this.manageBusy, checking: this.checking,
+        on: { close: () => this.closeSheet(), copy: (name, to) => void this.copyTo(name, to), fix: (k) => this.fix(k), manage: (verb, name, h) => void this.manage(verb, name, h) },
       });
       const sb = root.querySelector(".aos-con-sheetbody");
       if (sb) sb.scrollTop = sheetScroll;

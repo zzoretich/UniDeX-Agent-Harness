@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   agoWords, alertKind, attentionFix, buildBoard, checkDue, connectorsBadge, copyOffers, filterCards, foundFiles, groupPeek, inTile, kindLine,
-  metaLine, onBoth, parseCaches, scopeLine, serverSub, sparkHeights, tileSub, toolChips, useLine, CONN_TILES,
+  metaLine, onBoth, parseCaches, scopeLine, serverSub, sideActions, sparkHeights, takenNames, tileSub, toolChips, useLine, CONN_TILES,
   type ConnCard,
 } from "./connectorsModel";
 
@@ -134,12 +134,10 @@ test("attention fixes: claude.ai connector → claude.ai; Codex OAuth → codex 
   assert.equal(attentionFix(byTitle(b, "docs")), null);
 });
 
-test("copy offers: a user-scope server on one host to the other enabled host; remote to Codex off with why; the vault's own never", () => {
+test("copy offers: a user-scope server on one host to the other enabled host, a streamable HTTP one to Codex too (D20); the vault's own never", () => {
   const b = board();
   assert.deepEqual(copyOffers(byTitle(b, "local-only"), both).map((o) => [o.to, o.disabled]), [["codex", false]]);
-  const r = copyOffers(byTitle(b, "remote"), both);
-  assert.equal(r[0].disabled, true);
-  assert.match(r[0].reason!, /remote \(http\)/);
+  assert.deepEqual(copyOffers(byTitle(b, "remote"), both), [{ to: "codex", label: "Copy to Codex", disabled: false, reason: null }]);
   assert.deepEqual(copyOffers(byTitle(b, "agenticos"), both), []);
   assert.deepEqual(copyOffers(byTitle(b, "docs"), both), [], "on both already");
   assert.deepEqual(copyOffers(byTitle(b, "local-only"), ["claude"]), [], "the other host is off");
@@ -201,4 +199,45 @@ test("cards' words: sparkline heights, server sub lines, alert kinds, both-hosts
   assert.deepEqual(foundFiles(byTitle(b, "Mail")), []);
   assert.equal(groupPeek(b.groups.builtin, "builtin"), "claude-in-chrome");
   assert.equal(groupPeek([], "project"), "no workspace declares its own servers");
+});
+
+// A board of what the sheet's actions depend on (D16, D17): a parked server, an SSE one, plugins' servers on each host,
+// a connector on each, the vault's own, a project's, a turned-off one.
+const ACTIONS = JSON.stringify({
+  schema: 1, updatedAt: "2026-10-23T12:00:00.000Z", hosts: { claude: { enabled: true, rows: 6 }, codex: { enabled: true, rows: 4 } },
+  rows: [
+    { host: "claude", name: "resting", kind: "server", transport: "stdio", command: "rest-mcp", scope: "user", file: "~/.claude.json", enabled: false, parked: true },
+    { host: "claude", name: "feed", kind: "server", transport: "sse", url: "https://feed.example.com/sse", scope: "user", file: "~/.claude.json", enabled: true },
+    { host: "claude", name: "plugin:helper:helper", kind: "server", transport: "stdio", command: "h", scope: "plugin", file: "~/p/.mcp.json", enabled: true, plugin: "helper" },
+    { host: "codex", name: "toolbox", kind: "server", transport: "stdio", command: "t", scope: "plugin", file: "~/c/.mcp.json", enabled: true, plugin: "tools" },
+    { host: "claude", name: "claude.ai Notes", kind: "connector", transport: "http", url: null, scope: "account", enabled: true, displayName: "Notes" },
+    { host: "codex", name: "tasks", kind: "connector", transport: "http", url: null, scope: "account", enabled: true, plugin: "tasks", displayName: "Tasks" },
+    { host: "claude", name: "agenticos", kind: "server", transport: "stdio", command: "sh", scope: "user", file: "~/.claude.json", enabled: true, own: true },
+    { host: "claude", name: "waiting", kind: "server", transport: "stdio", command: "w", scope: "project", file: "~/v/workspaces/alpha/.mcp.json", workspace: "alpha", enabled: true, approval: "pending" },
+    { host: "codex", name: "sleepy", kind: "server", transport: "stdio", command: "sleepy", scope: "user", file: "~/.codex/config.toml", enabled: false },
+    { host: "codex", name: "docs", kind: "server", transport: "stdio", command: "docs-mcp", scope: "user", file: "~/.codex/config.toml", enabled: true },
+  ],
+});
+
+test("a parked server is off with how to bring it back; the sheet's actions per side: Park and Remove, Turn on, Remove alone when off, the D17 hint otherwise", () => {
+  const b = buildBoard(parseCaches(ACTIONS, null, null), both);
+  const at = (t: string, h: "claude" | "codex") => byTitle(b, t).sides[h]!;
+  const resting = at("resting", "claude");
+  assert.deepEqual([resting.parked, resting.status, resting.detail, byTitle(b, "resting").group], [true, "off", "parked: Turn on puts it back as it was", "off"]);
+  assert.equal(scopeLine(resting), "user · parked · Turn on puts it back in ~/.claude.json");
+  assert.deepEqual(sideActions(resting), { actions: ["unpark"], hint: null });
+  assert.deepEqual(copyOffers(byTitle(b, "resting"), both).map((o) => o.reason), ["Parked on Claude Code: turn it on there first"]);
+  assert.deepEqual(copyOffers(byTitle(b, "feed"), both).map((o) => [o.disabled, o.reason]), [[true, "An SSE server: Codex's mcp add --url takes a streamable HTTP server only"]]);
+  assert.deepEqual(sideActions(at("feed", "claude")), { actions: ["park", "remove"], hint: null });
+  assert.deepEqual(sideActions(at("docs", "codex")), { actions: ["park", "remove"], hint: null });
+  assert.deepEqual(sideActions(at("sleepy", "codex")), { actions: ["remove"], hint: null }, "off: Turn on could not bring that back");
+  const hint = (t: string, h: "claude" | "codex") => { const m = sideActions(at(t, h)); assert.deepEqual(m.actions, [], t); return m.hint; };
+  assert.equal(hint("helper", "claude"), "From the plugin helper: turn the plugin off with claude plugin disable helper (that turns off its skills too).");
+  assert.equal(hint("toolbox", "codex"), "From the Codex plugin tools: Codex has no command for it, so turn the plugin off in Codex's plugin settings.");
+  assert.equal(hint("Notes", "claude"), "A claude.ai connector: turn it off in claude.ai's connector settings.");
+  assert.equal(hint("Tasks", "codex"), "A ChatGPT app: turn it off in ChatGPT's connector settings.");
+  assert.equal(hint("agenticos", "claude"), "The vault's own server: aos init and aos hosts add wire it on each host.");
+  assert.equal(hint("waiting", "claude"), "Declared by the workspace alpha: change it in ~/v/workspaces/alpha/.mcp.json.");
+  const taken = takenNames(b);
+  assert.deepEqual([[...taken.claude].sort(), [...taken.codex].sort()], [["agenticos", "feed", "resting"], ["docs", "sleepy"]]);
 });
