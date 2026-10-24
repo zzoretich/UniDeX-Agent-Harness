@@ -70,8 +70,8 @@ export function parseMcpServers(text: string | null): McpCache {
 
 /**
  * One item per server name, by name: which hosts have it, and "Make available on <host>" for each enabled host that
- * lacks it while the other has it. Codex takes only a command (`codex mcp add … -- <command>`), so a remote server's
- * offer to Codex is off with why; a name either CLI would refuse is off too. A host that is off gets no offer.
+ * lacks it while the other has it. Codex's `mcp add --url` takes a streamable HTTP server (connectors-tab D20), so an SSE
+ * server's offer to Codex is off with why; a name either CLI would refuse is off too. A host that is off gets no offer.
  */
 export function mcpItems(cache: McpCache, enabled: readonly McpHost[]): McpItem[] {
   const byName = new Map<string, McpItem>();
@@ -93,7 +93,7 @@ export function mcpItems(cache: McpCache, enabled: readonly McpHost[]): McpItem[
       let reason: string | null = null;
       if (!MCP_NAME_RE.test(it.name)) reason = `${MCP_HOST_LABEL[to]}'s CLI does not take the name ${JSON.stringify(it.name)}: letters, digits, - and _ only`;
       else if (!s.enabled) reason = `Turned off on ${MCP_HOST_LABEL[from]}: turn it on there first, or add it to ${MCP_HOST_LABEL[to]} yourself`;
-      else if (to === "codex" && s.transport !== "stdio") reason = `A remote (${s.transport}) server: \`codex mcp add\` takes a command to run, so add it in Codex's config.toml yourself`;
+      else if (to === "codex" && s.transport === "sse") reason = "An SSE server: Codex's mcp add --url takes a streamable HTTP server only";
       it.offers.push({ to, label: `Make available on ${MCP_HOST_LABEL[to]}`, disabled: reason !== null, reason });
     }
   }
@@ -131,6 +131,10 @@ export interface McpPlan {
   file: string;
   backup: string | null;
   dropped: string[];
+  /** Why a header did not go to Codex, naming bearer_token_env_var (D20). */
+  note: string | null;
+  /** A1: the env_vars line Codex needs pasted for a value that only names a variable. */
+  paste: { line: string; under: string; file: string; note: string } | null;
   /** The dry run's hash, which the real run names (--expect). */
   expect: string;
   listed?: boolean;
@@ -147,6 +151,8 @@ export function parsePlan(j: unknown): McpPlan | null {
     ok: true, dryRun: j.dryRun === true, name: j.name, from, to, transport: String(j.transport ?? "stdio"), command: j.command,
     source: String(j.source ?? ""), file: j.file, backup: typeof j.backup === "string" ? j.backup : null,
     dropped: Array.isArray(j.dropped) ? j.dropped.map(String) : [], expect: j.expect,
+    note: typeof j.note === "string" ? j.note : null,
+    paste: typeof j.paste === "string" ? { line: j.paste, under: String(j.pasteUnder ?? ""), file: String(j.pasteFile ?? ""), note: String(j.pasteNote ?? "") } : null,
     ...(typeof j.listed === "boolean" ? { listed: j.listed } : {}),
   };
 }
@@ -167,11 +173,14 @@ export function planConfirm(p: McpPlan): { title: string; message: string; detai
     p.backup ? `Backs it up first to ${p.backup}` : "No backup: the file does not exist yet",
     "",
     p.command,
+    ...(p.paste ? ["", `Then paste under ${p.paste.under} in ${p.paste.file}:`, `  ${p.paste.line}`] : []),
   ];
   const notes = [
     `Copies ${p.name} from ${MCP_HOST_LABEL[p.from]} (${p.source}) through ${MCP_HOST_LABEL[p.to]}'s own CLI.`,
     "Environment and header values, URL credentials and queries, and arguments named or shaped like secrets are hidden here; one it does not recognise shows as written. The command takes the real values from the source.",
   ];
   if (p.dropped.length) notes.push(`Not carried over: ${p.dropped.join(", ")}.`);
+  if (p.note) notes.push(`${p.note[0].toUpperCase()}${p.note.slice(1)}.`);
+  if (p.paste) notes.push(`${p.paste.note}: \`codex mcp add\` takes values only, so paste the env_vars line below to pass them.`);
   return { title: `Make ${p.name} available on ${MCP_HOST_LABEL[p.to]}?`, message: notes.join(" "), detail: lines.join("\n"), confirm: `Add to ${MCP_HOST_LABEL[p.to]}` };
 }

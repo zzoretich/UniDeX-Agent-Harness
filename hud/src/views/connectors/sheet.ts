@@ -1,12 +1,13 @@
-// sheet.ts — a Connectors card's detail sheet (spec 2026-10-23-connectors-tab D4, D12, D20): 480 px from the right, over
-// the board behind a scrim. One row per host (status, where it comes from, and in PR 2 only "Copy to <host>" where
-// copyOffers gives one, plus the attention fix), USAGE over the window (calls, sessions, by host, per day), TOOLS as
-// chips with their calls, and where it was found. It only draws; ConnectorsTab owns every action.
+// sheet.ts — a Connectors card's detail sheet (spec 2026-10-23-connectors-tab D4, D12, D16, D17, D20): 480 px from the
+// right, over the board behind a scrim. One row per host (status, where it comes from, "Copy to <host>" where copyOffers
+// gives one, the attention fix, and sideActions' Park and Remove for a user-scope server, Turn on for a parked one, or
+// for a plugin's, a connector's or a project's row what to do instead), USAGE over the window (calls, sessions, by host,
+// per day), TOOLS as chips with their calls, and where it was found. It only draws; ConnectorsTab owns every action.
 import { setIcon } from "obsidian";
 import {
-  CONN_HOSTS, CONN_HOST_LABEL, STATUS_LABEL, agoWords, attentionFix, foundFiles, kindLine, onBoth, scopeLine, sparkHeights, statusTone,
+  CONN_HOSTS, CONN_HOST_LABEL, STATUS_LABEL, agoWords, attentionFix, foundFiles, kindLine, onBoth, scopeLine, sideActions, sparkHeights, statusTone,
   toolChips,
-  type ConnBoard, type ConnCard, type ConnHost, type ConnSide, type CopyOffer,
+  type ConnBoard, type ConnCard, type ConnHost, type ConnSide, type CopyOffer, type ManageVerb,
 } from "../../data/connectorsModel";
 
 export interface SheetCtx {
@@ -17,13 +18,23 @@ export interface SheetCtx {
   offers: CopyOffer[];
   /** The target hosts a copy is running for. */
   busy: ReadonlySet<ConnHost>;
+  /** The hosts a park, Turn on, remove or add is running for. */
+  manageBusy: ReadonlySet<ConnHost>;
   checking: boolean;
   on: {
     close(): void;
     copy(name: string, to: ConnHost): void;
     fix(card: ConnCard): void;
+    manage(verb: ManageVerb, name: string, host: ConnHost): void;
   };
 }
+
+const VERB_LABEL: Record<ManageVerb, string> = { park: "Park", unpark: "Turn on", remove: "Remove" };
+const VERB_TITLE: Record<ManageVerb, (host: string) => string> = {
+  park: (h) => `Takes it off ${h} and keeps its exact settings in a private stash outside the vault; shows the exact command first`,
+  unpark: (h) => `Puts it back on ${h} as it was; shows the exact command first`,
+  remove: (h) => `Takes it out of ${h}'s config for good, its file backed up first; shows the exact command first`,
+};
 
 const BARS_PX = 46;
 
@@ -86,7 +97,20 @@ function drawHostRows(body: HTMLElement, c: SheetCtx): void {
       b.addEventListener("click", () => c.on.fix(k));
     }
     if (!side && offer) drawCopy(acts, row, offer, k, c);
+    const m = side ? sideActions(side) : null;
+    if (side && m) {
+      for (const verb of m.actions) {
+        const busy = c.manageBusy.has(h);
+        const b = acts.createEl("button", {
+          cls: `aos-con-btn aos-con-small aos-con-manage aos-con-${verb}${verb === "remove" ? " is-danger" : ""}`, text: busy ? "Working…" : VERB_LABEL[verb],
+          attr: { type: "button", "data-verb": verb, "data-fk": `${verb}:${h}`, title: VERB_TITLE[verb](CONN_HOST_LABEL[h]), ...(verb === "park" ? { "data-tour": "connectors-park" } : {}) },
+        });
+        b.disabled = busy;
+        b.addEventListener("click", () => c.on.manage(verb, side.name, h));
+      }
+    }
     if (side?.detail && side.status !== "connected") row.createEl("p", { cls: `aos-con-detail is-${statusTone(side.status)}`, text: side.detail });
+    if (m?.hint) row.createEl("p", { cls: "aos-con-detail aos-con-instead", text: m.hint });
   }
 }
 
