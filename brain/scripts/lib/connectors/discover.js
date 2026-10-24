@@ -5,7 +5,7 @@
  *
  *   discover({ vault, userConfig, env, home, hosts, live }) → { hosts: { <h>: { enabled, rows: n } }, rows }
  *   row: { host, name, kind: 'server' | 'connector', transport, command | url, scope, file, enabled,
- *          plugin?, workspace?, approval?, own?, displayName?, connectorId?, unverified? }
+ *          plugin?, workspace?, approval?, own?, parked?, displayName?, connectorId?, unverified? }
  *     `command` is the program alone and `url` has its credentials, query and token-like segments out (lib/import/mcp.js
  *     serverRow): arguments, environment and headers are never read into a row. `file` is `~/…` under home.
  *
@@ -24,6 +24,11 @@
  *               trust_level = "trusted" (D11)
  *     plugin    enabled plugins' `.mcp.json` servers (plugins.js)
  *     account   enabled plugins' `.app.json` apps (ChatGPT connectors), named by the plugin's display name
+ *   Both hosts
+ *     parked    a user-scope server `aos mcp park` took off its host (D16): its stash,
+ *               ~/.local/share/unidex/parked/mcp/<host>-<name>.json, as a row with scope `user`, `enabled: false` and
+ *               `parked: true`, unless the host declares that name again. Only the name and the cleaned command or URL
+ *               are read into the row (serverRow), never the stash's environment or headers; the check never starts it.
  *   The vault's own `agenticos` server is listed with `own: true` (the board shows it; no action takes it).
  */
 const fs = require('fs');
@@ -95,6 +100,7 @@ function claudeRows({ vault, home, dirs, r, live, specs }) {
   for (const s of M.listServers('claude', { dirs, home, keepOwn: true }).servers) {
     rows.push(keep(specs, { ...s, kind: 'server', file: shown(userFile, home), ...(s.name === M.OWN ? { own: true } : {}) }, user[s.name]));
   }
+  rows.push(...parkedRows('claude', home, new Set(Object.keys(user)), userFile));
   const projects = isObj(json.projects) ? json.projects : {};
   for (const f of workspaceFolders(vault, home)) {
     const entry = projects[f.dir];
@@ -163,9 +169,11 @@ function codexRows({ vault, home, dirs, r, specs }) {
   const rows = [];
   const file = path.join(dirs.configDir, 'config.toml');
   const full = specs ? codexSpecs(file) : {};
-  for (const s of M.listServers('codex', { dirs, home, keepOwn: true }).servers) {
+  const declared = M.listServers('codex', { dirs, home, keepOwn: true }).servers;
+  for (const s of declared) {
     rows.push(keep(specs, { ...s, kind: 'server', file: shown(file, home), ...(s.name === M.OWN ? { own: true } : {}) }, full[s.name]));
   }
+  rows.push(...parkedRows('codex', home, new Set(declared.map((s) => s.name)), file));
   const trusted = trustedFolders(C.readRegular(file, 4 * 1024 * 1024));
   for (const f of workspaceFolders(vault, home)) {
     if (!trusted.has(path.resolve(f.dir))) continue;
@@ -188,6 +196,31 @@ function codexRows({ vault, home, dirs, r, specs }) {
         enabled: true, plugin: p.plugin, displayName: a.displayName, ...(a.id ? { connectorId: a.id } : {}),
       });
     }
+  }
+  return rows;
+}
+
+/** The folder `aos mcp park` keeps its stashes in (cli/mcp.js parkDir). */
+function parkDir(home) { return path.join(home, '.local', 'share', 'unidex', 'parked', 'mcp'); }
+const STASH_NAME = /^(claude|codex)-([A-Za-z0-9_][A-Za-z0-9_-]{0,63})\.json$/;
+
+/** `host`'s parked servers (D16), but a name `have` holds (the host declares it again): rows only, never the entry. */
+function parkedRows(host, home, have, file) {
+  const dir = parkDir(home);
+  let names = [];
+  try {
+    const st = fs.lstatSync(dir);
+    if (!st.isDirectory()) return [];
+    names = fs.readdirSync(dir);
+  } catch { return []; }
+  const rows = [];
+  for (const f of names.sort()) {
+    const m = STASH_NAME.exec(f);
+    if (!m || m[1] !== host || have.has(m[2])) continue;
+    let j = null;
+    try { j = JSON.parse(C.readRegular(path.join(dir, f), 1024 * 1024) || 'null'); } catch { j = null; }
+    if (!isObj(j) || j.host !== host || j.name !== m[2] || !isObj(j.entry)) continue;
+    rows.push({ ...M.serverRow(m[2], host, j.entry, home), kind: 'server', scope: 'user', file: shown(file, home), enabled: false, parked: true });
   }
   return rows;
 }
@@ -215,4 +248,4 @@ function discover({ vault, userConfig = null, env = process.env, home = os.homed
   return out;
 }
 
-module.exports = { discover, workspaceFolders, trustedFolders, approvalOf, CLAUDE_AI };
+module.exports = { discover, workspaceFolders, trustedFolders, approvalOf, parkDir, CLAUDE_AI };

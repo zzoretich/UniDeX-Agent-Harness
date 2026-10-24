@@ -1,7 +1,7 @@
-// board.ts — the Connectors tab's health board (spec 2026-10-23-connectors-tab D3, D23): the header, the four summary
-// tiles, NEEDS ATTENTION with one fix each, the CONNECTORS and MCP SERVERS grids, and the folded BUILT IN, OFF and
-// PROJECT rows. It only draws: every action is a callback ConnectorsTab owns. Elements that can hold the focus carry a
-// `data-fk` key so a redraw puts it back (ConnectorsTab.render).
+// board.ts — the Connectors tab's health board (spec 2026-10-23-connectors-tab D3, D18, D23): the header (with Add
+// server), the four summary tiles, NEEDS ATTENTION with one fix each, the CONNECTORS and MCP SERVERS grids, and the
+// folded BUILT IN, OFF and PROJECT rows. It only draws: every action is a callback ConnectorsTab owns. Elements that can
+// hold the focus carry a `data-fk` key so a redraw puts it back (ConnectorsTab.render).
 import { setIcon } from "obsidian";
 import {
   CONN_HOSTS, CONN_HOST_LABEL, CONN_TILES, TILE_LABEL, STATUS_LABEL, alertKind, attentionFix, filterCards, groupPeek, inTile, metaLine,
@@ -30,6 +30,7 @@ export interface BoardCtx {
     fold(group: FoldGroup): void;
     fix(card: ConnCard): void;
     upgrade(): void;
+    add(): void;
   };
 }
 
@@ -59,6 +60,15 @@ export function drawHead(parent: HTMLElement, c: BoardCtx): void {
   q.value = c.query;
   q.addEventListener("input", () => c.on.query(q.value));
   const can = c.board.listed && c.hosts.length > 0;
+  const add = tools.createEl("button", {
+    cls: "aos-con-btn aos-con-add",
+    attr: { type: "button", "data-tour": "connectors-add", "data-fk": "add", title: "Add an MCP server to Claude Code, Codex or both: secrets by name only, the exact commands shown first" },
+  });
+  const plus = add.createSpan({ cls: "aos-con-ico" });
+  setIcon(plus, "plus");
+  add.createSpan({ text: "Add server" });
+  add.disabled = !can;
+  add.addEventListener("click", () => c.on.add());
   const check = tools.createEl("button", {
     cls: "aos-con-btn aos-con-check",
     attr: { type: "button", "data-tour": "connectors-check", "data-fk": "check", title: "aos mcp check: ask each host which servers work and list their tools" },

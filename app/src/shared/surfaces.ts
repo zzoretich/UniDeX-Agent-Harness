@@ -92,6 +92,44 @@ const ASK_MODEL = new RegExp(`--model=${WORD.source}`);
 const ASK_EFFORT = /--effort=(?:minimal|low|medium|high|xhigh|max)/;
 // An MCP server's name as both host CLIs take it (cli/mcp.js NAME_RE, hud/src/data/mcpServers.ts MCP_NAME_RE).
 const MCP_NAME = /[A-Za-z0-9_][A-Za-z0-9_-]{0,63}/;
+// `aos mcp add`'s values (connectors-tab D18; cli/mcp.js parseMcpArgs checks each again). A secret is a variable's name,
+// never a value: an environment entry is exactly KEY=$VAR and the bearer token's variable $VAR. The program is not dash-led;
+// an argument may be (`-y`), since `--arg` takes the next argument whatever it is, here and in the runtime; neither may
+// hold a NUL or a line break, nor a URL a blank. At most MCP_MAX_ARGS arguments and MCP_MAX_ENV variables.
+const MCP_VAR = /\$[A-Za-z_][A-Za-z0-9_]*/;
+const MCP_ENV = /[A-Za-z_][A-Za-z0-9_]*=\$[A-Za-z_][A-Za-z0-9_]*/;
+const MCP_URL = /https?:\/\/[^\s\0\u2028\u2029]+/;
+const MCP_CMD = /[^\s\0-][^\0\n\r\u2028\u2029]{0,1023}/;
+const MCP_ARG = /[^\0\n\r\u2028\u2029]{1,1024}/;
+export const MCP_MAX_ARGS = 32;
+export const MCP_MAX_ENV = 16;
+const whole = (re: RegExp, v: string | undefined): boolean => v !== undefined && new RegExp(`^(?:${re.source})$`).test(v);
+/** A dry run (`--dry-run --json`) or the real run with its hash (`--expect <64 hex> --json`), from `a[i]` to the end. */
+const dryOrExpect = (a: readonly string[], i: number): boolean =>
+  (a.length === i + 2 && a[i] === "--dry-run" && a[i + 1] === "--json") ||
+  (a.length === i + 3 && a[i] === "--expect" && /^[0-9a-f]{64}$/.test(a[i + 1]) && a[i + 2] === "--json");
+/**
+ * `mcp add <name> --to claude|codex|both` with `--command <cmd> (--arg <a>)* (--env KEY=$VAR)*` or `--url <url>
+ * [--bearer-env $VAR]`, then the dry run's or the real run's tail: in that one order, each flag apart from its value
+ * (hud/src/data/mcpManage.ts addArgs builds it so).
+ */
+const mcpAdd = (a: readonly string[]): boolean => {
+  if (a[0] !== "mcp" || a[1] !== "add" || !whole(MCP_NAME, a[2]) || a[3] !== "--to" || !/^(?:claude|codex|both)$/.test(a[4] ?? "")) return false;
+  let i = 5;
+  if (a[i] === "--command" && whole(MCP_CMD, a[i + 1])) {
+    i += 2;
+    let n = 0;
+    while (a[i] === "--arg" && whole(MCP_ARG, a[i + 1])) { i += 2; if (++n > MCP_MAX_ARGS) return false; }
+    const keys = new Set<string>();
+    let e = 0;
+    while (a[i] === "--env" && whole(MCP_ENV, a[i + 1])) { keys.add(a[i + 1].split("=")[0]); i += 2; if (++e > MCP_MAX_ENV) return false; }
+    if (keys.size !== e) return false;
+  } else if (a[i] === "--url" && whole(MCP_URL, a[i + 1])) {
+    i += 2;
+    if (a[i] === "--bearer-env") { if (!whole(MCP_VAR, a[i + 1])) return false; i += 2; }
+  } else return false;
+  return dryOrExpect(a, i);
+};
 
 /** The refreshes the HUD starts by itself on load and on timers; they write only runtime-owned caches under the runtime's locks.
  *  `aos hosts status --json` (Settings ▸ Hosts, install-import B2) writes nothing: it finds each host's CLI and asks it
@@ -539,6 +577,26 @@ export const SURFACES: readonly Surface[] = [
     // Added in 2.0. Checked live on 2026-10-16 on a real install with both hosts: a server copied each way (Claude Code
     // to Codex, Codex to Claude Code), each target file backed up first and changed only by that one server.
     verified: true,
+  },
+  {
+    id: "mcp-manage",
+    label: "MCP server changes",
+    source: "views/ConnectorsTab.ts (a server's sheet: Park, Turn on, Remove; the header's Add server), views/connectors/addSheet.ts, data/mcpManage.ts (hostArgs, addArgs)",
+    // `aos mcp park|unpark|remove|add` (cli/mcp.js, connectors-tab D16–D18, D21). A surface of its own rather than more
+    // rules on `mcp`, so the copy, on by default since its live check, stays on while these stay off until theirs. Each
+    // is the dry run, which writes nothing and whose command, file, backup and stash the confirm shows, then the real
+    // run naming the dry run's hash: under the per-host lock, the host's config file backed up outside the vault, park's
+    // exact entry saved 0600 in ~/.local/share/unidex/parked/mcp/ (which the page never reads), the config written only
+    // through the host's own CLI (`claude mcp remove|add-json --scope user`, `codex mcp remove|add`), then listed again.
+    // Add takes secrets as variables' names alone. The page writes nothing itself.
+    writes: [],
+    spawns: [
+      { script: "cli/aos.js", args: argv("mcp", /park|unpark|remove/, MCP_NAME, "--host", /claude|codex/, "--dry-run", "--json") },
+      { script: "cli/aos.js", args: argv("mcp", /park|unpark|remove/, MCP_NAME, "--host", /claude|codex/, "--expect", /[0-9a-f]{64}/, "--json") },
+      { script: "cli/aos.js", args: mcpAdd },
+    ],
+    // Added in 2.2; off by default until a live check per host parks and turns on, removes, and adds a server.
+    verified: false,
   },
   {
     id: "chat",
