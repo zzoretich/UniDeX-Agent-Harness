@@ -82,36 +82,43 @@ function approvalOf(entry, name) {
   return 'pending';
 }
 
-function claudeRows({ vault, home, dirs, r, live }) {
+/** Remember a row's full entry for the live check (only when it asked: `specs` is a Map, never written anywhere). */
+function keep(specs, row, spec, extra = {}) {
+  if (specs && isObj(spec)) specs.set(`${row.host}\t${row.name}`, { spec, ...extra });
+  return row;
+}
+
+function claudeRows({ vault, home, dirs, r, live, specs }) {
   const rows = [];
   const userFile = M.claudeUserFile({ dirs, home });
   const json = C.readJson(userFile) || {};
+  const user = isObj(json.mcpServers) ? json.mcpServers : {};
   for (const s of M.listServers('claude', { dirs, home, keepOwn: true }).servers) {
-    rows.push({ ...s, kind: 'server', file: shown(userFile, home), ...(s.name === M.OWN ? { own: true } : {}) });
+    rows.push(keep(specs, { ...s, kind: 'server', file: shown(userFile, home), ...(s.name === M.OWN ? { own: true } : {}) }, user[s.name]));
   }
   const projects = isObj(json.projects) ? json.projects : {};
   for (const f of workspaceFolders(vault, home)) {
     const entry = projects[f.dir];
     if (isObj(entry) && isObj(entry.mcpServers)) {
       for (const [name, spec] of Object.entries(entry.mcpServers)) {
-        if (isObj(spec)) rows.push({ ...M.serverRow(name, 'claude', spec, home), kind: 'server', scope: 'local', file: shown(userFile, home), workspace: f.workspace });
+        if (isObj(spec)) rows.push(keep(specs, { ...M.serverRow(name, 'claude', spec, home), kind: 'server', scope: 'local', file: shown(userFile, home), workspace: f.workspace }, spec, { cwd: f.dir }));
       }
     }
     const mcpJson = path.join(f.dir, '.mcp.json');
     for (const [name, spec] of Object.entries(P.serverMap(C.readJson(mcpJson)))) {
       const approval = approvalOf(entry, name);
-      rows.push({
+      rows.push(keep(specs, {
         ...M.serverRow(name, 'claude', spec, home), kind: 'server', scope: 'project', file: shown(mcpJson, home), workspace: f.workspace, approval,
         ...(approval === 'off' ? { enabled: false } : {}),
-      });
+      }, spec, { cwd: f.dir }));
     }
   }
   for (const p of P.claudePluginServers(r)) {
     for (const [server, spec] of Object.entries(p.servers)) {
-      rows.push({
+      rows.push(keep(specs, {
         ...M.serverRow(`plugin:${p.plugin}:${server}`, 'claude', spec, home), kind: 'server', scope: 'plugin', file: shown(p.file, home), plugin: p.plugin,
         ...(p.plugin === M.OWN && server === M.OWN ? { own: true } : {}),
-      });
+      }, spec, { root: p.root }));
     }
   }
   // claude.ai connectors: the last check's names, else the ones this account ever connected (unverified).
@@ -142,26 +149,39 @@ function trustedFolders(toml) {
   return out;
 }
 
-function codexRows({ vault, home, dirs, r }) {
+/** A config.toml's servers as full entries (`env` folded in), for the live check; {} when it does not parse. */
+function codexSpecs(file) {
+  const text = C.readRegular(file, 4 * 1024 * 1024);
+  const out = {};
+  if (text === null) return out;
+  let map;
+  try { map = M.codexServerMap(text); } catch { return out; }
+  for (const e of map.values()) if (e.spec) out[e.name] = { ...e.spec, ...(Object.keys(e.env).length ? { env: e.env } : {}) };
+  return out;
+}
+
+function codexRows({ vault, home, dirs, r, specs }) {
   const rows = [];
   const file = path.join(dirs.configDir, 'config.toml');
+  const full = specs ? codexSpecs(file) : {};
   for (const s of M.listServers('codex', { dirs, home, keepOwn: true }).servers) {
-    rows.push({ ...s, kind: 'server', file: shown(file, home), ...(s.name === M.OWN ? { own: true } : {}) });
+    rows.push(keep(specs, { ...s, kind: 'server', file: shown(file, home), ...(s.name === M.OWN ? { own: true } : {}) }, full[s.name]));
   }
   const trusted = trustedFolders(C.readRegular(file, 4 * 1024 * 1024));
   for (const f of workspaceFolders(vault, home)) {
     if (!trusted.has(path.resolve(f.dir))) continue;
     const local = path.join(f.dir, '.codex', 'config.toml');
+    const localFull = specs ? codexSpecs(local) : {};
     for (const s of M.listServers('codex', { dirs, home, file: local }).servers) {
-      rows.push({ ...s, kind: 'server', scope: 'project', file: shown(local, home), workspace: f.workspace });
+      rows.push(keep(specs, { ...s, kind: 'server', scope: 'project', file: shown(local, home), workspace: f.workspace }, localFull[s.name], { cwd: f.dir }));
     }
   }
   for (const p of P.codexPlugins(r)) {
     for (const [server, spec] of Object.entries(p.servers)) {
-      rows.push({
+      rows.push(keep(specs, {
         ...M.serverRow(server, 'codex', spec, home), kind: 'server', scope: 'plugin', file: shown(p.file, home), plugin: p.plugin,
         ...(p.plugin === M.OWN && server === M.OWN ? { own: true } : {}),
-      });
+      }, spec, { root: p.root }));
     }
     for (const a of p.apps) {
       rows.push({
@@ -173,8 +193,12 @@ function codexRows({ vault, home, dirs, r }) {
   return rows;
 }
 
-/** Every row of every host `hosts` names (default: the enabled ones). */
-function discover({ vault, userConfig = null, env = process.env, home = os.homedir(), hosts = null, live = null } = {}) {
+/**
+ * Every row of every host `hosts` names (default: the enabled ones). `specs` (a Map) also collects each server's full
+ * entry, `${host}\t${name}` → { spec, root (a plugin's folder), cwd (a project's folder) }, for check.js to start it
+ * as its host would: those hold secrets and are never written, logged or returned to the page.
+ */
+function discover({ vault, userConfig = null, env = process.env, home = os.homedir(), hosts = null, live = null, specs = null } = {}) {
   // A config without `hosts` (pre-0.5.0) names none: Claude Code, as lib/skills.js reads it.
   const on = hosts || (H.enabledHosts(userConfig).length ? H.enabledHosts(userConfig) : ['claude']);
   const r = S.roots({ userCfg: userConfig, env, home });
@@ -184,7 +208,7 @@ function discover({ vault, userConfig = null, env = process.env, home = os.homed
     out.hosts[host] = { enabled, rows: 0 };
     if (!enabled) continue;
     const dirs = H.hostDirs(host, { env, userConfig });
-    const rows = host === 'codex' ? codexRows({ vault, home, dirs, r }) : claudeRows({ vault, home, dirs, r, live });
+    const rows = host === 'codex' ? codexRows({ vault, home, dirs, r, specs }) : claudeRows({ vault, home, dirs, r, live, specs });
     out.hosts[host].rows = rows.length;
     out.rows.push(...rows);
   }
