@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-10-24
+
 ### Added
 - **`aos mcp list` and `aos mcp check`: every MCP server and connector both hosts can use, found by themselves.** Claude Code's user, local and project servers (with their approvals), its plugins' servers and your claude.ai connectors; Codex's `config.toml`, trusted projects, its plugins' servers and the ChatGPT apps they bring. Every scan refreshes the list from files alone and counts each one's calls in the last 30 days from both hosts' sessions (subagents included), and names the built-in ones only sessions show. `aos mcp check` asks each host which of them connect (`claude mcp list`, `codex mcp list --json`) and lists the tools of every server its host would start itself. The Workbench's Connectors tab, next, shows all of it. <!-- no-tour: runtime and CLI only; the Connectors tab brings its own tour chapter -->
 - **A Connectors tab: every MCP server and connector both hosts can use, and whether it works.** It sits after Skills and reads what `aos mcp list` and `aos mcp check` found: four tiles (need attention, connected, unused in 30 days, off) that filter the board when clicked, a NEEDS ATTENTION card for each one that failed or needs signing in, with the reason and one fix (open claude.ai's connectors page, sign in with `codex mcp login` in a Code terminal, or check again), then the connectors and the MCP servers as cards with a dot per host, their tools and a 30-day sparkline of calls, and folded rows for built-in servers seen in use, servers that are off and project servers. A card opens a sheet with each host's status and where it comes from, its calls by host and per day, and its tools with how often each was called (for connectors, the tools seen in use). The tab checks when you open it and every `connectors.checkEveryMin` minutes (15) while it stays open, and **Check now** checks at once; the rail's badge counts what needs attention after a check within the last day. Only enabled hosts show. <!-- tour: connectors.check, connectors.tiles, connectors.attention, connectors.servers -->
@@ -674,7 +676,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.2.0
 [2.1.1]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.1.1
 [2.1.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.1.0
 [2.0.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.0.0
