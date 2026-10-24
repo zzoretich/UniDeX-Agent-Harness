@@ -153,6 +153,6 @@ test('mcpCalls: Claude tool_use and Codex mcp_tool_call_end, from an offset, ski
   assert.equal(T.mcpCalls(w.main, tail.offset, { format: 'claude' }).calls.length, 0);
   assert.equal(T.mcpCalls(w.main, tail.offset + 10, { format: 'claude' }).reset, true);
   assert.equal(T.mcpCalls(path.join(w.T0, 'missing.jsonl')), null);
-  assert.equal(U.callKey('claude.ai Google Drive'), 'claude_ai_Google_Drive');
+  assert.equal(U.callKey('claude.ai Team Drive'), 'claude_ai_Team_Drive');
   assert.equal(U.callKey('plugin:a:b'), 'plugin_a_b');
 });
