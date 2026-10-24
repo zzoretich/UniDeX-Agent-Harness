@@ -51,6 +51,7 @@ export class ConnectorsTab {
   private listenersRegistered = false;
   private refreshDebounce: number | null = null;
   private tick: number | null = null;
+  private keyListening = false;
   /** The board as last drawn, for a redraw of its body alone (the filter) or of the header's age (the clock). */
   private ctx: BoardCtx | null = null;
   private bodyEl: HTMLElement | null = null;
@@ -69,13 +70,27 @@ export class ConnectorsTab {
     }
     // The cadence (D10): only while this tab is in front; the timer itself lives until the view closes.
     if (this.tick === null) this.tick = window.setInterval(() => { if (this.view.isTabActive("connectors")) { this.renderMeta(); this.maybeCheck(); } }, TICK_MS);
+    if (!this.keyListening) { this.keyListening = true; window.addEventListener("keydown", this.onKey); }
     void this.refresh();
   }
 
   unmount(): void {
     if (this.refreshDebounce !== null) { window.clearTimeout(this.refreshDebounce); this.refreshDebounce = null; }
     if (this.tick !== null) { window.clearInterval(this.tick); this.tick = null; }
+    if (this.keyListening) { this.keyListening = false; window.removeEventListener("keydown", this.onKey); }
   }
+
+  /** Esc closes the sheet from the tab or from nowhere in particular (the focus back on the page after a confirm), never
+   *  from another surface's own field, menu or dialog, which keeps its Esc. */
+  private onKey = (e: KeyboardEvent): void => {
+    if (e.key !== "Escape" || e.defaultPrevented || this.openKey === null || !this.view.isTabActive("connectors")) return;
+    const doc = this.host?.ownerDocument;
+    const t = e.target instanceof Node ? e.target : null;
+    if (!doc || (t && t !== doc.body && t !== doc.documentElement && !this.host?.contains(t))) return;
+    if (doc.querySelector(".modal-container")) return;
+    e.preventDefault();
+    this.closeSheet();
+  };
 
   private schedule(): void {
     if (this.refreshDebounce !== null) window.clearTimeout(this.refreshDebounce);
@@ -211,11 +226,6 @@ export class ConnectorsTab {
     host.empty();
 
     const root = host.createDiv({ cls: "aos-con" });
-    root.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape" || e.defaultPrevented || this.openKey === null) return;
-      e.preventDefault();
-      this.closeSheet();
-    });
     const now = Date.now();
     const ctx: BoardCtx = {
       board: this.board, hosts: this.hosts, now, everyMin: this.everyMin, checking: this.checking, failed: this.checkFailed,
