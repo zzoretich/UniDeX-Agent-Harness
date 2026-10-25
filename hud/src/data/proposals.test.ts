@@ -5,8 +5,8 @@ import * as os from "os";
 import * as path from "path";
 import { createRequire } from "module";
 import {
-  PROPOSALS_DIR, LEDGER_PATH, CONFIRMATIONS_PATH, isProposalFile, parseProposal, parseLedger, ledgerRates,
-  historyRows, parseBacklog, parseConfirmations, ageDays, decisionFor, pageFor, pageForSlug,
+  PROPOSALS_DIR, LEDGER_PATH, isProposalFile, parseProposal, parseLedger, ledgerRates,
+  historyRows, parseBacklog, ageDays, decisionFor, pageFor, pageForSlug,
 } from "./proposals";
 
 // The fixture vault is read by both sides: this module and the runtime scripts it mirrors.
@@ -30,9 +30,9 @@ test("every fixture proposal parses to the same fields and lint as collect.js", 
     const t = theirs[i];
     assert.deepEqual(
       { slug: p.slug, filed: p.filed, kind: p.kind, surface: p.surface, workspace: p.workspace, target: p.target,
-        recheck: p.recheck, autoapplyClass: p.autoapplyClass, premises: p.premises, lint: p.lint },
+        recheck: p.recheck, premises: p.premises, lint: p.lint },
       { slug: t.slug, filed: t.filed, kind: t.kind, surface: t.surface, workspace: t.workspace, target: t.target,
-        recheck: t.recheck, autoapplyClass: t.autoapply_class, premises: t.premises, lint: t.lint },
+        recheck: t.recheck, premises: t.premises, lint: t.lint },
       p.name,
     );
   }
@@ -120,21 +120,6 @@ test("parseBacklog reads what backlog.js append writes", () => {
     { filed: "2026-09-20", kind: "product", slug: "todo-in-sitrep", target: "the morning sitrep", surface: "hud", accepted: "2026-09-22 by user" });
   assert.match(e.body, /^### What\n\nList todos due today in the sitrep\.\n\n### Why\n\nThe owner asked for it twice\.$/);
   assert.deepEqual(parseBacklog("# Persona backlog\n\nno sections yet\n"), []);
-  fs.rmSync(dir, { recursive: true, force: true });
-});
-
-test("parseConfirmations matches recheck.js readConfirmations for both shapes", () => {
-  assert.deepEqual(parseConfirmations(read(CONFIRMATIONS_PATH)), recheckJs.readConfirmations(VAULT).slugs);
-  assert.deepEqual(parseConfirmations(read(CONFIRMATIONS_PATH)), { "trim-playbook": 2, "todo-in-sitrep": 1 });
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-conf-"));
-  const legacy = '{ "old-one": 3, "bad": -1, "frac": 1.5, "recordedDay": "2026-09-01" }';
-  fs.mkdirSync(path.join(dir, "persona/flag-closer"), { recursive: true });
-  fs.writeFileSync(path.join(dir, CONFIRMATIONS_PATH), legacy);
-  assert.deepEqual(parseConfirmations(legacy), recheckJs.readConfirmations(dir).slugs);
-  assert.deepEqual(parseConfirmations(legacy), { "old-one": 3 });
-  assert.deepEqual(parseConfirmations(null), {});
-  assert.deepEqual(parseConfirmations("[1,2]"), {});
-  assert.deepEqual(parseConfirmations("{nope"), {});
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

@@ -59,8 +59,9 @@ test('validate: bounds, zero caps (D10), nulls, lists and objects', () => {
   assert.equal(v('claude.perDayUsd', 0), null, 'a daily cap of 0 means no spend');
   assert.match(v('claude.perDayUsd', -1), /at least 0/);
   assert.match(v('ollama.port', 70000), /at most 65535/);
-  assert.match(v('persona.autoapply.minVerified', 1.5), /whole number/);
-  assert.match(v('persona.autoapply.minVerified', 0), /at least 1/);
+  assert.match(v('persona.tick.flagAgeDays', 1.5), /whole number/);
+  assert.match(v('persona.tick.flagAgeDays', 0), /at least 1/);
+  assert.equal(S.SETTINGS.some((e) => e.key.startsWith('persona.autoapply')), false, 'the retired auto-apply bar has no setting (spec 2026-10-24-persona-learning-loop-design D1)');
   assert.equal(v('cost.monthlyBudget', null), null);
   assert.match(v('claude.model', null), /cannot be null/);
   assert.match(v('claude.model', '  '), /non-empty/);

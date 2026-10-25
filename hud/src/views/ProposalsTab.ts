@@ -3,14 +3,14 @@ import type { DataAdapter, TAbstractFile } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import {
-  PROPOSALS_DIR, LEDGER_PATH, BACKLOG_PATH, CONFIRMATIONS_PATH, MIN_CONFIRMATIONS, PAGES_DIR, pageFor, pageForSlug,
+  PROPOSALS_DIR, LEDGER_PATH, BACKLOG_PATH, PAGES_DIR, pageFor, pageForSlug,
   Proposal, LedgerRecord, LedgerRates, BacklogEntry,
-  isProposalFile, parseProposal, parseLedger, ledgerRates, historyRows, parseBacklog, parseConfirmations, ageDays,
+  isProposalFile, parseProposal, parseLedger, ledgerRates, historyRows, parseBacklog, ageDays,
 } from "../data/proposals";
 import { readAgenticosJson, reviewCommand } from "../data/aosConfig";
 import { shell } from "../host";
 
-const WATCHED = [LEDGER_PATH, BACKLOG_PATH, CONFIRMATIONS_PATH];
+const WATCHED = [LEDGER_PATH, BACKLOG_PATH];
 const KIND_PILL: Record<string, string> = { self: "aos-pill-cyan", vault: "aos-pill-cyan", workflow: "aos-pill-green", product: "aos-pill-green" };
 const EVENT_MARK: Record<string, [string, string]> = {
   approved: ["✓", "aos-text-green"], "auto-applied": ["✓", "aos-text-green"], verified: ["✓", "aos-text-green"],
@@ -36,7 +36,6 @@ export class ProposalsTab {
   private ledger: LedgerRecord[] = [];
   private rates: LedgerRates | null = null;
   private backlog: BacklogEntry[] = [];
-  private streak: Record<string, number> = {};
   private pages: string[] = [];               // file names in PAGES_DIR (spec 2026-09-22-proposal-pages D7)
   /** The proposal or backlog idea open in the reading pane (UniDeX D4): `p:<file>` or `b:<slug>`, or none. */
   private selected: string | null = null;
@@ -86,7 +85,6 @@ export class ProposalsTab {
     this.ledger = parseLedger(await readOr(a, LEDGER_PATH, ""));
     this.rates = ledgerRates(this.ledger, new Date());
     this.backlog = parseBacklog(await readOr(a, BACKLOG_PATH, "")).reverse();   // the file is newest last
-    this.streak = parseConfirmations(await readOr(a, CONFIRMATIONS_PATH, null));
     try { this.pages = (await a.list(PAGES_DIR)).files.map((f) => f.split("/").pop() ?? "").filter((n) => n.endsWith(".html")); } catch { this.pages = []; }
     this.view.setBadge("proposals", this.proposals.length);
     this.render();
@@ -175,13 +173,6 @@ export class ProposalsTab {
     if (p.surface) meta.createSpan({ cls: "aos-pill aos-pill-dim", text: p.surface });
     const age = ageDays(p.filed, new Date());
     meta.createSpan({ cls: "aos-dim aos-pr-age", text: age === null ? p.filed : `${age}d`, attr: { title: `filed ${p.filed}` } });
-    const n = this.streak[p.slug] ?? 0;
-    if (n > 0) {
-      meta.createSpan({
-        cls: `aos-pr-streak ${n >= MIN_CONFIRMATIONS ? "aos-text-green" : "aos-dim"}`, text: `confirmed ${n}d`,
-        attr: { title: `the recheck recipe still found the finding on ${n} consecutive day(s); auto-apply needs ${MIN_CONFIRMATIONS}+ and a whitelisted class` },
-      });
-    }
     if (p.lint.length) meta.createSpan({ cls: "aos-text-amber aos-pr-lint", text: `⚠ ${p.lint.length}`, attr: { title: p.lint.join("\n") } });
     row.addEventListener("click", () => { this.toggle(key); });
   }
@@ -198,7 +189,6 @@ export class ProposalsTab {
     const meta = d.createDiv({ cls: "aos-pr-meta" });
     meta.createDiv({ text: `needs: ${p.decision}` });
     if (p.recheck) meta.createDiv({ cls: "aos-dim" }).createEl("code", { text: p.recheck });
-    if (p.autoapplyClass) meta.createDiv({ cls: "aos-dim", text: `auto-apply class: ${p.autoapplyClass}` });
     for (const l of p.lint) meta.createDiv({ cls: "aos-text-amber", text: `⚠ ${l}` });
     const body = [["What", p.what], ["Why", p.why], ["Risk", p.risk]].filter(([, v]) => v).map(([h, v]) => `#### ${h}\n\n${v}`).join("\n\n");
     if (body && this.md) void MarkdownRenderer.renderMarkdown(body, d.createDiv({ cls: "aos-pr-md" }), `${PROPOSALS_DIR}/${p.name}`, this.md);

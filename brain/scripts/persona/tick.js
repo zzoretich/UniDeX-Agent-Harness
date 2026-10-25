@@ -4,8 +4,8 @@
  * tick.js — the hourly tick (docs/design/specs/2026-09-22-persona-tick-design.md; local-first A5). Since 2.0 the
  * hourly routine is this script's local triage, and the Chief of Staff's model runs only when it is worth waking:
  *
- *   --triage   (the `tick` routine, kind command, every hour) records the recheck confirmations, then compares the change
- *              signature below with the one it last triaged. Unchanged (or back to what the Chief of Staff last saw): it
+ *   --triage   (the `tick` routine, kind command, every hour) compares the change signature below with the one it last
+ *              triaged. Unchanged (or back to what the Chief of Staff last saw): it
  *              stops there — no hosted call, no local call. A real change goes to the local model through provider.js
  *              (the background provider, used only when it is the local engine) as a small JSON decision
  *              { wake, reason }; when the local model is down or answers nonsense, any real change wakes. One journal
@@ -17,9 +17,9 @@
  * a pre-2.0 vault whose tick routine is still `kind: duty` runs it hourly through them, so precheck still skips quiet
  * hours there):
  *
- *   precheck   first records the recheck confirmations (spec 2026-09-22-persona-earned-autonomy-design D2: recheck.js
- *              `record`, at most once per local day, never fatal), then compares a signature of the vault's inputs with
- *              the one recorded at the last beat and exits 3 when nothing changed — the runner then skips the model
+ *   precheck   compares a signature of the vault's inputs with the one recorded at the last beat and exits 3 when
+ *              nothing changed (no recheck confirmations since spec 2026-10-24-persona-learning-loop-design D1: nothing
+ *              applies a proposal unasked, so nothing counts toward it) — the runner then skips the model
  *              call (one duty-log line, no journal entry).
  *   beat       after the duty met its contract: records the beat and the signature the next precheck compares with,
  *              then (spec 2026-09-22-persona-reflect-daily-design D7) starts `reflect-daily` early — detached, through
@@ -309,20 +309,8 @@ function describe(prev, cur, keys) {
   });
 }
 
-/** The confirmation pass (D2) — a broken recipe or a missing script never stops the tick. */
-function recordConfirmations(deps, now) {
-  try {
-    const recheck = deps.recheck || require('./recheck.js');
-    return recheck.record({ root: deps.vault, now });
-  } catch (e) {
-    console.error(`[tick] confirmations not recorded: ${e.message}`);
-    return { recorded: false, error: e.message };
-  }
-}
-
-/** Runner verb. Records the confirmations, then the pending signature; `changed: false` means the runner skips the model call. */
+/** Runner verb. Records the pending signature; `changed: false` means the runner skips the model call. */
 function precheck({ deps = defaultDeps(), now = deps.now() } = {}) {
-  const confirmations = recordConfirmations(deps, now);
   const s = readState(deps);
   const sig = signature(deps);
   const changes = diff(s.lastSignature, sig);
@@ -331,7 +319,7 @@ function precheck({ deps = defaultDeps(), now = deps.now() } = {}) {
   s.pending = changed ? { at: s.lastPrecheckAt, signature: sig, changes } : null;
   if (!changed) s.skipped = (s.skipped || 0) + 1;
   writeState(deps, s);
-  return { changed, changes, since: s.lastBeatAt, confirmations };
+  return { changed, changes, since: s.lastBeatAt };
 }
 
 /** Runner verb. Promotes the pending signature (the tick's own writes are in none of its keys); then the early-reflect check. */
@@ -445,7 +433,6 @@ function wakeDuty(deps) {
 async function triage({ deps = defaultDeps(), now = deps.now() } = {}) {
   const cfg = deps.config() || {};
   if (personaOff(deps, cfg)) return { action: 'off', changes: [], exit: 0 };
-  const confirmations = recordConfirmations(deps, now);
   const s = readState(deps);
   const sig = signature(deps);
   const seen = s.lastTriage && s.lastTriage.signature ? s.lastTriage.signature : null;
@@ -457,7 +444,7 @@ async function triage({ deps = defaultDeps(), now = deps.now() } = {}) {
     s.skipped = (s.skipped || 0) + 1;
     if (fresh.length) s.lastTriage = { ...(s.lastTriage || {}), signature: sig, at: s.lastPrecheckAt, wake: false, reason: 'back to the last run\'s state', by: 'rules', changes: [] };
     writeState(deps, s);
-    return { action: 'unchanged', changes: [], exit: 0, confirmations };
+    return { action: 'unchanged', changes: [], exit: 0 };
   }
   const changes = describe(seen || s.lastSignature, sig, fresh);
   const candidates = (() => { try { return signals({ deps, now }).candidates; } catch { return []; } })()
@@ -687,4 +674,4 @@ if (require.main === module) {
   if (isTriage(argv)) mainTriage(argv).then((code) => process.exit(code), (e) => { process.stderr.write(`tick: ${e.message}\n`); process.exit(1); });
   else process.exit(main(argv));
 }
-module.exports = { SCHEMA, TYPES, EXIT_UNCHANGED, DEFAULT_FLAG_AGE_DAYS, DEFAULT_EARLY_REFLECT, SIG_VERSION, TICK_DUTY, DECISION_SCHEMA, TRIAGE_FEATURE, signature, diff, describe, repoHead, precheck, recordConfirmations, beat, signals, queue, triage, decide, parseDecision, wakeDuty, mainTriage, shouldReflectEarly, earlyThresholds, startEarlyReflect, readState, positionals, main };
+module.exports = { SCHEMA, TYPES, EXIT_UNCHANGED, DEFAULT_FLAG_AGE_DAYS, DEFAULT_EARLY_REFLECT, SIG_VERSION, TICK_DUTY, DECISION_SCHEMA, TRIAGE_FEATURE, signature, diff, describe, repoHead, precheck, beat, signals, queue, triage, decide, parseDecision, wakeDuty, mainTriage, shouldReflectEarly, earlyThresholds, startEarlyReflect, readState, positionals, main };

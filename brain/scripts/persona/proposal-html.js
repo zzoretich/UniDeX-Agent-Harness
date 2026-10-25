@@ -151,7 +151,6 @@ function renderPage({ name, text, file, now = new Date() }) {
     ['Target', esc(fm.target || '(unspecified)')],
     ['Decision', IDEA_KINDS.includes(kind) ? 'Accept (kept in the backlog) or dismiss' : 'Approve (applied exactly as written) or reject'],
     ['Recheck', fm.recheck ? `<code>${esc(fm.recheck)}</code>` : '<span class="warn">none — the review cannot re-verify it</span>'],
-    fm.autoapply_class ? ['Auto-apply class', esc(fm.autoapply_class)] : null,
   ].filter(Boolean).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   const sections = sectionsOf(body).map((s) => `<section>\n<h2>${inline(s.name)}</h2>\n${s.name === 'Premises' ? premisesHtml(s.text) : toHtml(s.text)}\n</section>`).join('\n');
   const eyebrow = [`Proposal · <span class="pill kind">${esc(kind)}</span>`, fm.surface ? `surface ${esc(fm.surface)}` : null, `filed ${esc(fm.filed || name.slice(0, 10))}`, esc(slug)].filter(Boolean).join(' · ');

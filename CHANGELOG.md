@@ -5,13 +5,22 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 ## [Unreleased]
 
 ### Added
+- **A new release's Chief of Staff prompts arrive as proposals.** `aos upgrade` never rewrites the guarded `persona/IDENTITY.md` or `persona/duties/*.md`. Each one that differs from the new render with your answers becomes an `update-identity` or `update-duty-<name>` proposal: the whole new text, the diff (a line you edited by hand shows as `-`), and a recheck that knows when it is applied. Approve it in the review to take the new prompt, or reject it to keep yours; the same render is not proposed again. <!-- no-tour: runtime and review; the Proposals tab shows them like any proposal -->
 - **A duty that was refused tool calls says which and why.** After each Claude Code duty run, the calls it was denied go to `brain/_index/duty-denials.jsonl`, each beside the allowed rule that names the same script, and the hourly tick lists them as a `duty-denied` signal for the nightly reflect. A rule that names another Node path than the call reads as exactly that, instead of looking like a permission-mode quirk. Codex has no per-tool allowlist (its sandbox is the guard), so its runs record none. <!-- no-tour: runtime signal; nothing in the app changes -->
+
+### Changed
+- **The Chief of Staff never applies its own changes.** The earned auto-apply ladder is gone: no `persona/autoapply.json` whitelist, no daily confirmations, no `autoapply-<class>` proposals, no auto-apply lane in the review, and the Proposals tab no longer shows a "confirmed Nd" streak. Every change to its instructions waits for your decision. <!-- no-tour: nothing new to point at; the streak pill is gone -->
+- **The playbook and feedback rules are proposed, not edited, by the duties.** The weekly reflect files one proposal with the week's playbook edits, and both reflects propose a repeated correction as a feedback rule instead of writing it. `persona/PLAYBOOK.md` is guarded like the duty prompts, and the identity says the duty model follows Settings, so a duty on another model is no longer flagged as drift. <!-- no-tour: duty behavior; nothing in the app changes -->
+
+### Removed
+- **`persona.autoapply.minVerified`** and its Settings row: no class of change applies itself any more.
 
 ### Fixed
 - **The tick and the nightly reflect run their helper scripts again.** A routine's `tools:` line expanded `{{NODE}}` to the running Node's real path (Homebrew's versioned `Cellar/` folder) while the duty prompts name the stable link, so every `tick.js`, `reflect.js` and `ledger.js` call was denied and the duties journaled "Bash denied". A `{{NODE}}` rule is now allowed for each Node spelling: the schedule's, `agenticos.json`'s and the running one.
 - **Running the test suite on a Mac no longer unschedules the Chief of Staff.** One migration test reached the real scheduler: it rewrote `~/Library/LaunchAgents/com.agenticos.tick.plist` to point at a deleted temp vault and unloaded and deleted the `monitor`, `sitrep` and `reflect` jobs. The test now uses its fakes, and under the test runner the scheduler refuses the real LaunchAgents folder and the real `launchctl` and `crontab`.
 
 ### Upgrading
+- After `aos upgrade`, review the `update-…` proposals it filed for your Chief of Staff's prompts (say "review persona flags", or open the Proposals tab): approving them is how the playbook and rule changes above reach a vault set up before this release. Your old `persona/autoapply.json`, if any, is ignored and can be deleted.
 - If your Chief of Staff's tick, monitor, sitrep or weekly reflect stopped (the Workbench's heartbeat pill shows them missed, or `aos routines list` says `missed`), run `aos routines sync` once after `aos upgrade` to reinstall their schedules.
 
 ## [2.2.0] — 2026-10-24

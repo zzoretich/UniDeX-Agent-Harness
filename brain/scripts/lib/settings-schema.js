@@ -194,8 +194,6 @@ const SETTINGS = [
     help: 'The Chief of Staff writes the paragraph at the top of Pulse (the briefing routine, every 30 minutes from 7:00 to 22:00, only when the facts changed), as a duty:briefing call against the daily duty cap. Off: Pulse composes it from the same facts.' },
   { key: 'persona.briefing.staleHours', section: 'persona', label: 'Pulse briefing shown for', type: 'number', int: true, min: 1, applies: 'next-session',
     help: 'Hours a written briefing stays on Pulse; after that, or when the last run failed, Pulse composes the paragraph from the facts.' },
-  { key: 'persona.autoapply.minVerified', section: 'persona', label: 'Autoapply threshold', type: 'number', int: true, min: 1, risk: 'autonomy', applies: 'next-duty',
-    help: 'Verified outcomes a proposal class needs before the Chief of Staff may apply it without asking. Lower means more autonomy.' },
 
   // ── Routines ────────────────────────────────────────────────────────────────
   { key: 'notifications.osAlert', section: 'notifications', label: 'Desktop alerts', type: 'bool', applies: 'next-call',
@@ -365,7 +363,6 @@ const PICKS = {
   'persona.watchdog.graceMinutes': { choices: [15, 30, 45, 60, 90, 120], unit: 'min' }, 'persona.tick.flagAgeDays': { choices: [3, 5, 7, 14, 30], unit: 'days' },
   'persona.briefing.staleHours': { choices: [1, 2, 3, 6, 12], unit: 'h' },
   'persona.tick.earlyReflect.corrections': { choices: [1, 2, 3, 5, 10] }, 'persona.tick.earlyReflect.dutyFailures': { choices: [1, 2, 3, 5, 10] },
-  'persona.autoapply.minVerified': { choices: [1, 2, 3, 5, 10] },
   'routines.tools': { pick: 'many', choices: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Write', 'Edit', 'Bash'] },
   'graph.out': { choices: ['brain/graphify-out'] }, 'graph.timeoutSec': { choices: [60, 120, 300, 600], unit: 's' },
   'graph.staleDays': { choices: [1, 3, 7, 14, 30], unit: 'days' }, 'graph.semantic.everyHours': { choices: [6, 12, 24, 48, 168], unit: 'h' },

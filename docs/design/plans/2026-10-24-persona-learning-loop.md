@@ -23,7 +23,13 @@ and never changes any agent's instructions, its own included, without the user's
 - [ ] verify (gate, tests, lint, typecheck, changelog, parity, rehearsals), PR, CI, merge; bring home: `aos upgrade
       --from-local`, `aos routines sync`, check the next tick's journal
 
-### PR 1 — trust boundary (D1, D3, D4)
+### PR 1a — no self-application (D1, D2, D13) — split from PR 1 so neither half regresses
+- [x] retire the ladder (tick, recheck, reflect, ledger, review skill, HUD streak and class, config key, fixtures)
+- [x] the playbook guarded and proposed; no built-in feedback writes for the reflect duties (proposals instead)
+- [x] `persona/prompt-updates.js` + the `aos upgrade` step (D13)
+- [ ] verify, PR, CI, merge; bring home and review the prompt proposals it files
+
+### PR 1b — trust boundary (D3, D4)
 - [ ] retire the ladder: `recheck.js record` out of `tick.js precheck`, `autoapply` out of `reflect.js inputs`, the
       autoapply paragraphs out of both reflect prompts and `proposals/README.md`, flag-closer step 7; `aos upgrade`
       leaves `persona/autoapply.json` in place and nothing reads it

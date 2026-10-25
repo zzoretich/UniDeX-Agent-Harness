@@ -173,37 +173,18 @@ test('localDay and identity', () => {
   assert.equal(R.identity(line('correction', 'x', 't')), 't\u0000correction\u0000x');
 });
 
-// Spec 2026-09-22-persona-earned-autonomy-design D4: the pack carries the auto-apply ladder — the whitelist, the bar and
-// the candidates the ledger's class stats earned, minus a class whose autoapply-<class> proposal is open or was rejected.
-test('inputs.autoapply: empty on a fresh vault; candidates from the class stats minus open or rejected autoapply proposals', () => {
+// Spec 2026-10-24-persona-learning-loop-design D1: the pack no longer carries the auto-apply ladder — no whitelist, no bar,
+// no candidates, however many approvals of one class held.
+test('inputs carries no autoapply section, even with verified approvals of one class and a whitelist file', () => {
   const v = vault();
-  const cfg = () => ({ persona: { autoapply: { minVerified: 2 } } });
-  let a = R.inputs({ deps: { vault: v, config: cfg, now: () => NOW } }).autoapply;
-  assert.deepEqual(a, { classes: [], minVerified: 2, candidates: [] });
   const L = require('../persona/ledger.js');
   const file = path.join(v, 'persona', 'ledger.jsonl');
-  for (const slug of ['t-one', 't-two']) {
+  for (const slug of ['t-one', 't-two', 't-three']) {
     L.append({ event: 'approved', slug, class: 'doc-typo', recheck: 'exit 1' }, { file, now: at(-20 * DAY) });
     L.append({ event: 'verified', slug, class: 'doc-typo' }, { file, now: at(-10 * DAY) });
   }
-  L.append({ event: 'approved', slug: 's-one', class: 'schedule' }, { file, now: at(-20 * DAY) });
-  L.append({ event: 'verified', slug: 's-one', class: 'schedule' }, { file, now: at(-10 * DAY) });
-  a = R.inputs({ deps: { vault: v, config: cfg, now: () => NOW } }).autoapply;
-  assert.deepEqual(a.candidates.map(c => c.class), ['doc-typo']);
-  assert.equal(a.candidates[0].verified, 2);
-  assert.equal(R.inputs({ deps: { vault: v, config: () => ({}), now: () => NOW } }).autoapply.minVerified, 3, 'the default bar');
   fs.writeFileSync(path.join(v, 'persona', 'autoapply.json'), JSON.stringify({ classes: ['doc-typo'] }));
-  a = R.inputs({ deps: { vault: v, config: cfg, now: () => NOW } }).autoapply;
-  assert.deepEqual(a.classes, ['doc-typo']);
-  assert.deepEqual(a.candidates, [], 'whitelisted already');
-  fs.writeFileSync(path.join(v, 'persona', 'autoapply.json'), '{corrupt');
-  L.append({ event: 'filed', slug: 'autoapply-doc-typo', kind: 'self' }, { file, now: at(-DAY) });
-  const errs = []; const orig = console.error; console.error = (m) => errs.push(m);
-  try { a = R.inputs({ deps: { vault: v, config: cfg, now: () => NOW } }).autoapply; } finally { console.error = orig; }
-  assert.deepEqual(a.classes, [], 'a corrupt whitelist whitelists nothing');
-  assert.ok(errs.some(m => /auto-apply whitelist/.test(m)));
-  assert.deepEqual(a.candidates, [], 'an open autoapply-<class> proposal is not filed twice');
-  L.append({ event: 'rejected', slug: 'autoapply-doc-typo', kind: 'self', by: 'user' }, { file, now: NOW });
-  a = R.inputs({ deps: { vault: v, config: cfg, now: () => NOW } }).autoapply;
-  assert.deepEqual(a.candidates, [], 'a rejected autoapply-<class> proposal is not filed again');
+  const pack = R.inputs({ deps: { vault: v, config: () => ({ persona: { autoapply: { minVerified: 2 } } }), now: () => NOW } });
+  assert.equal('autoapply' in pack, false);
+  assert.ok(pack.ledger, 'the ledger summary is still there');
 });

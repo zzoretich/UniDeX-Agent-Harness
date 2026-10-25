@@ -52,7 +52,7 @@ test('writePersona renders the full layout from the templates', () => {
   const answers = I.normalizeAnswers(ANSWERS, {});
   const r = I.writePersona({ vault, configDir: configDir(), templatesDir: TEMPLATES, answers, node: '/opt/node/bin/node', now: new Date('2026-09-04T00:00:00Z') });
   const p = (rel) => fs.readFileSync(path.join(vault, 'persona', rel), 'utf8');
-  assert.deepEqual(r.written.sort(), ['../brain/routines/heartbeat.md', '../brain/routines/reflect-daily.md', '../brain/routines/tick.md', 'IDENTITY.md', 'PLAYBOOK.md', 'STATE.md', 'answers.json', 'autoapply.json', 'duties/monitor.md', 'duties/reflect.md', 'duties/reflect-daily.md', 'duties/sitrep.md', 'duties/tick.md', 'proposals/README.md'].sort());
+  assert.deepEqual(r.written.sort(), ['../brain/routines/heartbeat.md', '../brain/routines/reflect-daily.md', '../brain/routines/tick.md', 'IDENTITY.md', 'PLAYBOOK.md', 'STATE.md', 'answers.json', 'duties/monitor.md', 'duties/reflect.md', 'duties/reflect-daily.md', 'duties/sitrep.md', 'duties/tick.md', 'proposals/README.md'].sort());
   for (const name of ['heartbeat.md', 'tick.md', 'reflect-daily.md']) assert.equal(fs.readFileSync(path.join(vault, 'brain', 'routines', name), 'utf8'), fs.readFileSync(path.join(TEMPLATES, 'routines', name), 'utf8'), `${name} is seeded verbatim (run-routine.js expands {{NODE}}/{{VAULT}})`);
   assert.match(p('duties/tick.md'), new RegExp(`/opt/node/bin/node ${vault.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/brain/scripts/persona/tick.js signals`));
   assert.match(p('duties/reflect-daily.md'), new RegExp(`/opt/node/bin/node ${vault.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/brain/scripts/persona/reflect.js inputs --days 7`));
@@ -67,7 +67,7 @@ test('writePersona renders the full layout from the templates', () => {
   assert.match(p('duties/sitrep.md'), new RegExp(`/opt/node/bin/node ${vault.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/brain/scripts/persona/sitrep-state.js diff`));
   assert.match(p('duties/monitor.md'), /\{yyyy\}\/\{yyyy\}-\{MM\}-\{MMMM\}\/\{yyyy\}-\{MM\}-\{dd\}\.md/);
   assert.equal(JSON.parse(p('answers.json')).name, 'Atlas');
-  assert.deepEqual(JSON.parse(p('autoapply.json')), { classes: [] });
+  assert.equal(fs.existsSync(path.join(vault, 'persona', 'autoapply.json')), false, 'no auto-apply whitelist (spec 2026-10-24-persona-learning-loop-design D1)');
   assert.ok(fs.statSync(path.join(vault, 'persona', 'journal', 'logs')).isDirectory());
   for (const rel of ['IDENTITY.md', 'STATE.md', 'duties/monitor.md', 'duties/reflect.md', 'duties/reflect-daily.md', 'duties/sitrep.md', 'duties/tick.md', 'proposals/README.md']) assert.ok(!p(rel).includes('{{'), `${rel} fully rendered`);
   assert.ok(!fs.existsSync(path.join(vault, 'persona', 'DISABLED')));
@@ -78,7 +78,7 @@ test('a prefilled re-run keeps STATE.md, PLAYBOOK.md and proposals/README.md but
   I.writePersona({ vault, configDir: cfg, templatesDir: TEMPLATES, answers: I.normalizeAnswers(ANSWERS, {}) });
   fs.appendFileSync(path.join(vault, 'persona', 'STATE.md'), '- [ ] keep me\n');
   const r = I.writePersona({ vault, configDir: cfg, templatesDir: TEMPLATES, answers: I.normalizeAnswers({ ...ANSWERS, voice: 'warmer' }, {}) });
-  assert.deepEqual(r.kept.sort(), ['../brain/routines/heartbeat.md', '../brain/routines/reflect-daily.md', '../brain/routines/tick.md', 'PLAYBOOK.md', 'STATE.md', 'autoapply.json', 'proposals/README.md']);
+  assert.deepEqual(r.kept.sort(), ['../brain/routines/heartbeat.md', '../brain/routines/reflect-daily.md', '../brain/routines/tick.md', 'PLAYBOOK.md', 'STATE.md', 'proposals/README.md']);
   assert.match(fs.readFileSync(path.join(vault, 'persona', 'STATE.md'), 'utf8'), /keep me/);
   assert.match(fs.readFileSync(path.join(vault, 'persona', 'IDENTITY.md'), 'utf8'), /^warmer$/m);
 });

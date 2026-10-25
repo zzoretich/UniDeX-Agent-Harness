@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const SCRIPTS = path.join(__dirname, '..', '..', '..', 'plugin', 'skills', 'persona-flag-closer', 'scripts');
 const { collect, defaultRoot, defaultLogDir, verbsFor, KINDS, SURFACES } = require(path.join(SCRIPTS, 'collect.js'));
-const { recheck, runRecipe, gateAutoApply, loadConfig } = require('../persona/recheck.js');   // the runner moved into the vendored runtime (spec 2026-09-22-persona-earned-autonomy-design D1)
+const { recheck, runRecipe } = require('../persona/recheck.js');   // the runner moved into the vendored runtime (spec 2026-09-22-persona-earned-autonomy-design D1)
 const { render } = require(path.join(SCRIPTS, 'render-digest.js'));
 
 const PROPOSAL = (recipe) => `---
@@ -72,22 +72,20 @@ test('defaultRoot honors AOS_VAULT, then agenticos.json; defaultLogDir follows P
   }
 });
 
-test('recheck verdicts and the dormant auto-apply gate', () => {
+test('recheck verdicts; no auto-apply gate (spec 2026-10-24-persona-learning-loop-design D1)', () => {
   assert.equal(runRecipe('true', os.tmpdir()), 'STILL-VALID');
   assert.equal(runRecipe('false', os.tmpdir()), 'STALE');
   assert.equal(runRecipe('exit 127', os.tmpdir()), 'RECIPE-ERROR');
   const v = vault('true');
-  const review = recheck(collect(v), v, { record: true });
-  assert.equal(review.proposals[0].verdict, 'STILL-VALID');
-  assert.equal(review.proposals[0].autoApply.eligible, false, 'autoapply.json is missing → nothing is whitelisted');
-  assert.deepEqual(review.autoApplyWhitelist, []);
   fs.writeFileSync(path.join(v, 'persona', 'autoapply.json'), JSON.stringify({ classes: ['doc-typo'] }));
-  // execution amendment 2026-09-15 (A32): the one Produces claim this task does not implement itself — Task 1's scrub repointed
-  // loadConfig at <vault>/persona/autoapply.json — is asserted here so a mis-scrubbed path cannot ship green.
-  assert.deepEqual(loadConfig(v).classes, ['doc-typo'], 'whitelist read from <vault>/persona/autoapply.json');
-  const gated = gateAutoApply({ slug: 'fix-thing', autoapply_class: 'doc-typo', verdict: 'STILL-VALID' }, { classes: ['doc-typo'] }, { 'fix-thing': 2 });
-  assert.equal(gated.eligible, true);
-  assert.ok(fs.existsSync(path.join(v, 'persona', 'flag-closer', 'confirmations.json')));
+  const review = recheck(collect(v), v);
+  assert.equal(review.proposals[0].verdict, 'STILL-VALID');
+  assert.equal('autoApply' in review.proposals[0], false, 'a whitelisted class earns nothing');
+  assert.equal('autoapply_class' in review.proposals[0], false, 'collect no longer carries the class');
+  assert.equal(fs.existsSync(path.join(v, 'persona', 'flag-closer', 'confirmations.json')), false);
+  const html = render(review);
+  assert.ok(!/auto-apply/i.test(html), 'the digest has no auto-apply column or whitelist');
+  assert.match(html, /nothing applies without your decision/);
 });
 
 test('render escapes and titles the digest neutrally', () => {

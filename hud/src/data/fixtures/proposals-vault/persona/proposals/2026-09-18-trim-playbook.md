@@ -3,7 +3,6 @@ slug: trim-playbook
 filed: 2026-09-18
 target: persona/PLAYBOOK.md
 recheck: "grep -q \"old heading\" persona/PLAYBOOK.md"
-autoapply_class: playbook-trim
 ---
 ## What
 Remove the `## Old heading` section from `persona/PLAYBOOK.md`.

@@ -440,13 +440,13 @@ stage("TODO.md (Obsidian Tasks syntax)", () => {
 });
 
 const PROPOSALS = [
-  { name: `${day(-5)}-trim-playbook.md`, slug: "trim-playbook", kind: "self", target: "persona/PLAYBOOK.md", confirmations: 2 },
-  { name: `${day(-3)}-todo-in-sitrep.md`, slug: "todo-in-sitrep", kind: "product", surface: "hud", target: "the morning sitrep", confirmations: 1 },
+  { name: `${day(-5)}-trim-playbook.md`, slug: "trim-playbook", kind: "self", target: "persona/PLAYBOOK.md" },
+  { name: `${day(-3)}-todo-in-sitrep.md`, slug: "todo-in-sitrep", kind: "product", surface: "hud", target: "the morning sitrep" },
   { name: `${day(-1)}-no-surface.md`, slug: "no-surface", kind: "product", target: "somewhere in the HUD", lint: 3 },
 ];
-stage("persona proposals, ledger, backlog, confirmations", () => {
+stage("persona proposals, ledger, backlog", () => {
   const dir = v("persona/proposals");
-  write(path.join(dir, PROPOSALS[0].name), `---\nslug: trim-playbook\nfiled: ${day(-5)}\ntarget: persona/PLAYBOOK.md\nrecheck: "grep -q 'Old heading' persona/PLAYBOOK.md"\nautoapply_class: playbook-trim\n---\n# Trim the playbook\n\n## What\nRemove the \`## Old heading\` section from \`persona/PLAYBOOK.md\`.\n\n## Why\nThe section names a skill that no longer exists (journal ${day(-6)}).\n\n## Risk\nNone beyond losing a stale line.\n\n## Premises\n| Premise | Status | Evidence |\n|---|---|---|\n| the section exists | VERIFIED | grep, ${day(-5)} |\n| nothing links to it | ASSUMED | no wiki-links found by search |\n`);
+  write(path.join(dir, PROPOSALS[0].name), `---\nslug: trim-playbook\nfiled: ${day(-5)}\ntarget: persona/PLAYBOOK.md\nrecheck: "grep -q 'Old heading' persona/PLAYBOOK.md"\n---\n# Trim the playbook\n\n## What\nRemove the \`## Old heading\` section from \`persona/PLAYBOOK.md\`.\n\n## Why\nThe section names a skill that no longer exists (journal ${day(-6)}).\n\n## Risk\nNone beyond losing a stale line.\n\n## Premises\n| Premise | Status | Evidence |\n|---|---|---|\n| the section exists | VERIFIED | grep, ${day(-5)} |\n| nothing links to it | ASSUMED | no wiki-links found by search |\n`);
   write(path.join(dir, PROPOSALS[1].name), `---\nslug: todo-in-sitrep\nfiled: ${day(-3)}\ntarget: the morning sitrep\nkind: product\nsurface: hud\nrecheck: "test -f TODO.md"\n---\n# To-dos in the sitrep\n\n## What\nList the to-dos due today in the morning sitrep.\n\n## Why\nThe operator asked for it twice this week.\n\n## Risk\nA longer sitrep.\n\n## Premises\n| Premise | Status | Evidence |\n|---|---|---|\n| TODO.md exists | VERIFIED | test -f |\n`);
   // Ledger events, with ts relative to now: two decisions and two ideas inside the 28-day window, one outside it.
   const ev = (ms, event, slug, kind, target, extra = {}) => JSON.stringify({ schema: 1, ts: ago(ms).toISOString(), event, slug, kind, target, by: event === "filed" ? "reflect" : event === "verified" ? "watchdog" : "user", ...extra });
@@ -465,7 +465,6 @@ stage("persona proposals, ledger, backlog, confirmations", () => {
     ev(5 * DAY, "filed", "trim-playbook", "self", "persona/PLAYBOOK.md"),
     ev(3 * DAY, "filed", "todo-in-sitrep", "product", "the morning sitrep"),
   ].join("\n") + "\n");
-  writeJson(v("persona/flag-closer/confirmations.json"), { schema: 1, recordedDay: TODAY, slugs: { "trim-playbook": 2, "todo-in-sitrep": 1 } });
 });
 
 stage("backlog.js append (accepted ideas)", () => {
