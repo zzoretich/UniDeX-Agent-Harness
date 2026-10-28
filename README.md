@@ -68,7 +68,7 @@ UniDeX is an agent-driven development harness: Claude Code, Codex and local mode
     <td width="50%" valign="top">
       <img src="docs/assets/icon-dev.svg" width="40" alt="" /><br />
       <b>Agent teams</b><br />
-      A lead moves work across a board and dispatches seats into git worktrees on Claude Code or Codex, with reviewers on the other provider. You decide the gates.
+      A lead moves work across a board and dispatches seats into Git worktrees on Claude Code or Codex, with reviewers on the other provider. You decide the gates.
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/icon-brain.svg" width="40" alt="" /><br />
