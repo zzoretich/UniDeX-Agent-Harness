@@ -179,17 +179,27 @@ test('duty kind: budgetUsd and tools in the routine file reach run-duty.sh as PE
 // Spec 2026-10-24-persona-learning-loop-design D11: `{{NODE}}` was only this process's realpath (Homebrew's versioned
 // Cellar node) while the duty prompts and run-duty.sh's own rules name the schedule's stable link, so under dontAsk every
 // helper call was denied. A rule naming `{{NODE}}` now appears once per spelling; the other rules once.
-test('duty kind: a tools rule with {{NODE}} is allowed for the schedule\'s AOS_NODE, agenticos.json\'s node and this node', async () => {
-  put('tick', { kind: 'duty', guarded: true, tools: 'Read,Bash(date:*),Bash({{NODE}} {{VAULT}}/brain/scripts/persona/tick.js:*)' });
-  const stable = '/opt/homebrew/opt/node/bin/node';
-  const recorded = '/usr/local/bin/node';
-  const d = deps({ env: { PATH: '/usr/bin:/bin', HOME: VAULT, AOS_NODE: stable }, config: () => ({ node: recorded, routines: { enabled: true, perRunUsd: 2, perDayUsd: 6 } }) });
-  assert.equal(await runRoutine('tick', { deps: d }), 0);
-  const rule = (n) => `Bash(${n} ${VAULT}/brain/scripts/persona/tick.js:*)`;
-  assert.equal(d.calls[0].opts.env.PERSONA_TOOLS, ['Read', 'Bash(date:*)', rule(stable), rule(recorded), rule(process.execPath)].join(','));
-  const same = deps({ env: { PATH: '/usr/bin:/bin', HOME: VAULT, AOS_NODE: process.execPath }, config: () => ({ node: process.execPath, routines: { enabled: true, perRunUsd: 2, perDayUsd: 6 } }) });
-  assert.equal(await runRoutine('tick', { deps: same }), 0);
-  assert.equal(same.calls[0].opts.env.PERSONA_TOOLS, ['Read', 'Bash(date:*)', rule(process.execPath)].join(','), 'one spelling, one rule');
+test('duty kind: a tools rule with {{NODE}} is allowed once per distinct Node spelling', async (t) => {
+  // These spellings are only inspected, never executed; keep them distinct from any installed Node path.
+  const runtime = process.execPath;
+  const stable = `${runtime}-scheduled`;
+  const recorded = `${runtime}-recorded`;
+  const cases = [
+    { name: 'three distinct spellings', scheduled: stable, configured: recorded, expected: [stable, recorded, runtime] },
+    { name: 'configured node equals runtime', scheduled: stable, configured: runtime, expected: [stable, runtime] },
+    { name: 'scheduled node equals runtime', scheduled: runtime, configured: recorded, expected: [runtime, recorded] },
+    { name: 'scheduled and configured node match', scheduled: stable, configured: stable, expected: [stable, runtime] },
+    { name: 'one spelling, one rule', scheduled: runtime, configured: runtime, expected: [runtime] },
+  ];
+  for (const { name, scheduled, configured, expected } of cases) {
+    await t.test(name, async () => {
+      put('tick', { kind: 'duty', guarded: true, tools: 'Read,Bash(date:*),Bash({{NODE}} {{VAULT}}/brain/scripts/persona/tick.js:*)' });
+      const d = deps({ env: { PATH: '/usr/bin:/bin', HOME: VAULT, AOS_NODE: scheduled }, config: () => ({ node: configured, routines: { enabled: true, perRunUsd: 2, perDayUsd: 6 } }) });
+      assert.equal(await runRoutine('tick', { deps: d }), 0);
+      const rule = (n) => `Bash(${n} ${VAULT}/brain/scripts/persona/tick.js:*)`;
+      assert.equal(d.calls[0].opts.env.PERSONA_TOOLS, ['Read', 'Bash(date:*)', ...expected.map(rule)].join(','));
+    });
+  }
 });
 
 test('duty kind: writes in the routine file reach run-duty.sh as PERSONA_WRITES (spec 2026-09-23-duty-write-scope-design D5)', async () => {
