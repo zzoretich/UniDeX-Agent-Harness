@@ -48,7 +48,9 @@ estimate, and its scope matters when a thread resumes.
 
 [Claude's cost-tracking guide](https://code.claude.com/docs/en/agent-sdk/cost-tracking#accumulate-costs-across-multiple-calls)
 documents that, from Claude Code 2.1.277, a normal exit saves session totals and `claude -p --resume`
-restores them: later results include earlier spend. UniDeX currently passes that total through
+restores them: later results include earlier spend.
+
+UniDeX currently passes that total through
 `brain/scripts/lib/session-events.js`, sums each turn's amount in `app/src/main/services/sessions.ts`, and
 records it under `session:claude` in the provider-spend ledger. With restored cumulative totals, that can
 count earlier spend again in the thread display and against `sessions.perDayUsd`, refusing later turns too
