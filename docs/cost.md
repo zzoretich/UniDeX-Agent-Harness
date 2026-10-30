@@ -40,6 +40,25 @@ counts (`brain/scripts/sdk/lib/codex-pricing.js`). Each family has its daily cap
   work spent in the last 7 days, from this ledger: hosted rows only, without the work that stays hosted (duties,
   prompt routines, Sessions, cross-review, teams).
 
+## Resumed app sessions
+
+The app's Sessions surface records host-reported USD separately from the opt-in transcript analyzer above.
+Treat those amounts as estimates, not invoices. In particular, Claude's `total_cost_usd` is a client-side
+estimate, and its scope matters when a thread resumes.
+
+[Claude's cost-tracking guide](https://code.claude.com/docs/en/agent-sdk/cost-tracking#accumulate-costs-across-multiple-calls)
+documents that, from Claude Code 2.1.277, a normal exit saves session totals and `claude -p --resume`
+restores them: later results include earlier spend. UniDeX currently passes that total through
+`brain/scripts/lib/session-events.js`, sums each turn's amount in `app/src/main/services/sessions.ts`, and
+records it under `session:claude` in the provider-spend ledger. With restored cumulative totals, that can
+count earlier spend again in the thread display and against `sessions.perDayUsd`, refusing later turns too
+early. It does not mean the provider charged twice.
+
+This is a compatibility warning from the documented contract and current code path, not a live-host
+reproduction or an accounting fix. It does not describe Codex's token-priced estimates, independent
+non-resumed background calls, or the transcript analyzer's latest-run deduplication. Check the provider's
+account usage for actual charges rather than treating these app-session totals as billing records.
+
 ## Enable / disable
 
 ```
