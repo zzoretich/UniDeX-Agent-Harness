@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-10-30
+
 ### Added
 - **Instruction proposals show exact changes before approval.** The Proposals tab previews the current file and proposed result, binds approval to the reviewed hashes, checks the result, and restores the old files if verification fails. History offers Undo while the files still match. Automatic duties restore guarded vault and host instruction files if a write slips through; new hooks also refuse explicit protected writes. Older prose-only proposals need an exact diff before approval. <!-- tour: proposals.exact -->
 - **A new release's Chief of Staff prompts arrive as proposals.** `aos upgrade` never rewrites the guarded `persona/IDENTITY.md` or `persona/duties/*.md`. Each one that differs from the new render with your answers becomes an `update-identity` or `update-duty-<name>` proposal: the whole new text, the diff (a line you edited by hand shows as `-`), and a recheck that knows when it is applied. Approve it in the review to take the new prompt, or reject it to keep yours; the same render is not proposed again. <!-- no-tour: runtime and review; the Proposals tab shows them like any proposal -->
@@ -698,7 +700,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.3.0
 [2.2.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.2.0
 [2.1.1]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.1.1
 [2.1.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.1.0
