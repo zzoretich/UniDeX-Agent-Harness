@@ -46,9 +46,11 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
     return { top: keys(aos), fs: keys(aos.fs as Record<string, unknown>), proc: keys(aos.proc as Record<string, unknown>), pty: keys(aos.pty as Record<string, unknown>),
       shell: keys(aos.shell as Record<string, unknown>), plugin: keys(aos.plugin as Record<string, unknown>),
       setup: keys(aos.setup as Record<string, unknown>), update: keys(aos.update as Record<string, unknown>), theme: keys(aos.theme as Record<string, unknown>),
-      sessions: keys(aos.sessions as Record<string, unknown>), git: keys(aos.git as Record<string, unknown>) };
+      sessions: keys(aos.sessions as Record<string, unknown>), git: keys(aos.git as Record<string, unknown>),
+      proposals: keys(aos.proposals as Record<string, unknown>) };
   });
-  expect(shape.top).toEqual(["boot", "fs", "git", "onCommand", "onProtocol", "onVaultChanges", "plugin", "proc", "pty", "ready", "sessions", "setup", "shell", "theme", "update"]);
+  expect(shape.top).toEqual(["boot", "fs", "git", "onCommand", "onProtocol", "onVaultChanges", "plugin", "proc", "proposals", "pty", "ready", "sessions", "setup", "shell", "theme", "update"]);
+  expect(shape.proposals).toEqual(["apply", "preview", "reject", "undo", "undos"]);
   expect(shape.fs).toEqual(["appendText", "copy", "exists", "mkdir", "readBytes", "readText", "readdir", "remove", "rename", "stat", "trash", "walk", "writeText"]);
   expect(shape.proc).toEqual(["execSync", "kill", "onEvent", "spawn"]);
   expect(shape.pty).toEqual(["available", "kill", "onEvent", "resize", "spawn", "write"]);
@@ -59,6 +61,12 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.theme).toEqual(["onChange", "set", "state"]);
   expect(shape.sessions).toEqual(["catalog", "list", "onEvent", "read", "send", "start", "stop"]);
   expect(shape.git).toEqual(["commit", "diff", "status"]);
+});
+
+test("proposal decisions reject paths, malformed hashes and unknown undo records", async () => {
+  expect(await call((aos) => aos.proposals.preview("../persona/IDENTITY.md"))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => aos.proposals.apply("2026-10-30-test.md", "bad-hash", "bad-token"))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => aos.proposals.undo("../outside"))).toMatchObject({ ok: false, code: "EINVAL" });
 });
 
 test("setup names a fix by id only, and refuses each step outside its state", async () => {

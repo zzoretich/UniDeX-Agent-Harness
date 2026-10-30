@@ -3,7 +3,7 @@
 // recorded in the guard log and answered as Node would answer a refusal: an EROFS error, or for a spawn a child that
 // prints why and exits 1 (as the page's write guards did before main took the checks over).
 
-import type { HostChild, HostDirent, HostFs, HostGit, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
+import type { HostChild, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
 import { refuse } from "../../obsidian-compat/src/guard";
 import { callError } from "../../obsidian-compat/src/bridge";
 import * as path from "./shims/path";
@@ -210,11 +210,20 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     commit: (workspace, message) => settle(aos.git.commit(workspace, message)),
   };
 
+  const proposals: HostProposals = {
+    preview: (name) => settle(aos.proposals.preview(name)),
+    apply: (name, digest, token) => settle(aos.proposals.apply(name, digest, token)),
+    reject: (name, digest, token) => settle(aos.proposals.reject(name, digest, token)),
+    undos: () => settle(aos.proposals.undos()),
+    undo: (undoId) => settle(aos.proposals.undo(undoId)),
+  };
+
   const host: HudHost = {
     fs,
     spawn,
     sessions,
     git,
+    proposals,
     execFileSync: (file, args, opts) => {
       const r = aos.proc.execSync({ file, args, timeoutMs: opts.timeout });
       if (!r.ok) throw r.code === "EROFS" ? refuse("spawn", describe(file, args)) : callError(r, describe(file, args));

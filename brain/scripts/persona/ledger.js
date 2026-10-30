@@ -36,12 +36,12 @@ const { checkRecipe } = require('./recipe.js');
 const { assertPinned } = require('../lib/pin-root.js');
 
 const SCHEMA = 1;
-const EVENTS = ['filed', 'approved', 'rejected', 'stale-dropped', 'auto-applied', 'verified', 'regressed', 'accepted', 'dismissed'];
+const EVENTS = ['filed', 'approved', 'rejected', 'stale-dropped', 'auto-applied', 'verified', 'regressed', 'accepted', 'dismissed', 'undone'];
 const KINDS = ['self', 'vault', 'workflow', 'product'];
 const DECISIONS = ['filed', 'approved', 'rejected', 'accepted', 'dismissed'];
 const TERMINAL = new Set(['approved', 'rejected', 'stale-dropped', 'auto-applied', 'accepted', 'dismissed']);
 const APPLIED = new Set(['approved', 'auto-applied']);
-const VERDICTS = new Set(['verified', 'regressed']);
+const VERDICTS = new Set(['verified', 'regressed', 'undone']);
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,60}$/;
 const CLASS_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 const DAY_MS = 86400e3;

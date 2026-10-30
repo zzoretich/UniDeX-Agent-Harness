@@ -1334,7 +1334,7 @@ test('direct wiring (a Codex CLI without plugins): init --host both wires the pl
   assert.match(sb.log('FAKE_CLAUDE_LOG'), /^plugin install agenticos@agenticos-workbench$/m);
   assert.match(sb.log('FAKE_CODEX_LOG'), new RegExp(`^mcp add agenticos --env AOS_CONFIG=${cfgPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} --env AOS_HOST=codex -- sh ${path.join(sb.vault, 'brain', 'scripts', 'bin', 'aos').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} mcp-server$`, 'm'));
   const doc = readJson(hooks);
-  assert.deepEqual(Object.keys(doc.hooks), ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']);
+  assert.deepEqual(Object.keys(doc.hooks), ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']);
   assert.match(doc.hooks.Stop[0].hooks[0].command, new RegExp(`^env AOS_HOST=codex AOS_CONFIG='${cfgPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' sh '.*bin/aos' update-session$`));
   assert.ok(fs.existsSync(path.join(skills, 'wrap', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(sb.vault, 'brain', 'scripts', 'plugin', 'commands', 'wrap.md')), 'plugin/commands is vendored for the generator');
@@ -1346,7 +1346,7 @@ test('direct wiring (a Codex CLI without plugins): init --host both wires the pl
   assert.match(dr.stdout, /ok\s+claude login/);
   assert.match(dr.stdout, /ok\s+plugin installed/);
   assert.match(dr.stdout, /ok\s+codex login/);
-  assert.match(dr.stdout, /ok\s+codex hooks\s+5 of 5 events/);
+  assert.match(dr.stdout, /ok\s+codex hooks\s+6 of 6 events/);
   assert.match(dr.stdout, /ok\s+codex MCP declared/);
   assert.match(dr.stdout, /ok\s+codex skills\s+28 generated/);
   assert.match(dr.stdout, /ok\s+cross-review\s+cross-provider \(claude and codex review each other\)$/m);
@@ -1359,7 +1359,7 @@ test('direct wiring (a Codex CLI without plugins): init --host both wires the pl
   // partial uninstall: the Codex wiring goes, the plugin, config, launcher and vault stay
   const part = aos(sb, ['uninstall', '--host', 'codex', '--yes']);
   assert.equal(part.status, 0, part.stderr + part.stdout);
-  assert.match(part.stdout, /codex host removed: hooks deleted \(5 entries\) · MCP removed · 28 skills deleted/);
+  assert.match(part.stdout, /codex host removed: hooks deleted \(6 entries\) · MCP removed · 28 skills deleted/);
   assert.match(part.stdout, /hosts now: claude$/m);
   assert.ok(!fs.existsSync(hooks));
   assert.ok(!fs.existsSync(path.join(skills, 'wrap')));
@@ -1426,11 +1426,11 @@ test('plugin mode: init --host both installs the agenticos Codex plugin and writ
   const dr = aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') });
   assert.equal(dr.status, 0, dr.stdout + dr.stderr);
   assert.match(dr.stdout, /ok\s+codex plugin\s+agenticos@agenticos-workbench 0\.0\.0-fake/);
-  assert.match(dr.stdout, /warn\s+codex hooks trusted\s+0 of 16 — open codex, run \/hooks/);
+  assert.match(dr.stdout, /warn\s+codex hooks trusted\s+0 of 17 — open codex, run \/hooks/);
   assert.match(dr.stdout, /ok\s+codex MCP declared\s+agenticos from the plugin/);
   assert.doesNotMatch(dr.stdout, /codex direct wiring|codex skills|codex hooks\s+\d/);
   trustAllPluginHooks(sb.codexHome);
-  assert.match(aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') }).stdout, /ok\s+codex hooks trusted\s+16 of 16$/m);
+  assert.match(aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') }).stdout, /ok\s+codex hooks trusted\s+17 of 17$/m);
   assert.match(aos(sb, ['status']).stdout, /^codex\s+bin=.* install=plugin$/m);
 
   // upgrade --from-local switches the marketplace to this checkout and reinstalls its version
@@ -1466,7 +1466,7 @@ test('plugin mode: aos upgrade moves a direct install to the plugin and removes 
   // the CLI now installs plugins
   const up = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
   assert.equal(up.status, 0, up.stderr + up.stdout);
-  assert.match(up.stdout, / installed from .* · direct wiring removed \(5 hook entries, the MCP registration, 28 skills\)$/m);
+  assert.match(up.stdout, / installed from .* · direct wiring removed \(6 hook entries, the MCP registration, 28 skills\)$/m);
   assert.match(up.stdout, /Codex asks once to trust the plugin's hooks: open codex, run \/hooks/);
   assert.ok(!fs.existsSync(hooks));
   assert.ok(!fs.existsSync(path.join(skills, 'wrap')));
@@ -1477,7 +1477,7 @@ test('plugin mode: aos upgrade moves a direct install to the plugin and removes 
   assert.doesNotMatch(dr.stdout, /codex direct wiring/);
   // leftovers written by hand beside the plugin show up in doctor, and the next upgrade clears them
   fs.writeFileSync(hooks, JSON.stringify(require('./codex-host.js').mergeHooks(null, { launcher: '/v/brain/scripts/bin/aos', config: cfgPath })));
-  assert.match(aos(sb, ['doctor']).stdout, /warn\s+codex direct wiring\s+still present beside the plugin: 5 hook events in /);
+  assert.match(aos(sb, ['doctor']).stdout, /warn\s+codex direct wiring\s+still present beside the plugin: 6 hook events in /);
   assert.equal(aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]).status, 0);
   assert.ok(!fs.existsSync(hooks));
   // full uninstall with the plugin in place

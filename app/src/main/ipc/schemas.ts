@@ -27,6 +27,10 @@ export const AppendArgs = z.object({ p: AbsPath, data: z.string().max(64 * MB) }
 export const FolderArgs = z.object({ p: AbsPath, recursive: z.boolean() });
 export const TwoPathArgs = z.object({ from: AbsPath, to: AbsPath });
 export const NoArgs = z.object({}).strict();
+/** An instruction proposal decision names only a vault proposal and the digest reviewed by the user. */
+export const ProposalNameArgs = z.object({ name: z.string().regex(/^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]{0,60}\.md$/) }).strict();
+export const ProposalDecisionArgs = ProposalNameArgs.extend({ digest: z.string().regex(/^sha256:[a-f0-9]{64}$/), token: z.string().regex(/^[a-f0-9]{32}$/) }).strict();
+export const ProposalUndoArgs = z.object({ undoId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,60}-\d{4}-\d{2}-\d{2}T[0-9-]+Z$/) }).strict();
 /** The theme choice: one of the three, nothing else. */
 export const ThemeSetArgs = z.object({ source: z.enum(["system", "light", "dark"]) satisfies z.ZodType<ThemeSource> }).strict();
 

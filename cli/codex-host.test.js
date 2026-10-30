@@ -77,12 +77,14 @@ function fakeRun(state = {}) {
 }
 const argvOf = (calls) => calls.map((c) => c.slice(1).join(' '));
 
-test('mergeHooks writes the five events through the launcher with AOS_HOST=codex, SessionEnd under the 3 s cap, and is idempotent', () => {
+test('mergeHooks writes the six events through the launcher with AOS_HOST=codex, SessionEnd under the 3 s cap, and is idempotent', () => {
   const doc = CH.mergeHooks(null, CTX);
-  assert.deepEqual(Object.keys(doc.hooks), ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']);
+  assert.deepEqual(Object.keys(doc.hooks), ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']);
   const names = (ev) => doc.hooks[ev].flatMap((g) => g.hooks.map((h) => h.command.replace(/^env AOS_HOST=codex AOS_CONFIG='[^']*' sh '[^']*' /, '')));
   assert.deepEqual(names('SessionStart'), ['telemetry-hook', 'update-notice', 'persona-watchdog', 'reconcile-sessions', 'inject-conventions']);
   assert.deepEqual(names('UserPromptSubmit'), ['inject-context']);
+  assert.deepEqual(names('PreToolUse'), ['instruction-guard']);
+  assert.match(doc.hooks.PreToolUse[0].matcher, /apply_patch/);
   assert.deepEqual(names('PostToolUse'), ['telemetry-hook']);
   assert.deepEqual(names('Stop'), ['update-session', 'heartbeat-writer', 'reconcile-sessions']);
   assert.deepEqual(names('SessionEnd'), ['telemetry-hook', 'auto-cost', 'heartbeat-writer', 'auto-wrap', 'scan-vault --quiet', 'skills-sync']);
@@ -99,13 +101,14 @@ test('mergeHooks keeps foreign entries and unknown keys; a moved launcher replac
   const existing = { note: 'mine', hooks: { Stop: [foreign], PreToolUse: [foreign] } };
   const doc = CH.mergeHooks(existing, CTX);
   assert.equal(doc.note, 'mine');
-  assert.deepEqual(doc.hooks.PreToolUse, [foreign]);
+  assert.deepEqual(doc.hooks.PreToolUse[0], foreign);
+  assert.equal(doc.hooks.PreToolUse.length, 2);
   assert.equal(doc.hooks.Stop.length, 2);
   assert.deepEqual(doc.hooks.Stop[0], foreign);
   const moved = CH.mergeHooks(doc, { launcher: '/elsewhere/brain/scripts/bin/aos', config: CONFIG });
   assert.equal(moved.hooks.Stop.length, 2);
   assert.match(moved.hooks.Stop[1].hooks[0].command, /elsewhere/);
-  assert.equal(CH.countOurEvents(moved), 5);
+  assert.equal(CH.countOurEvents(moved), 6);
   assert.equal(CH.countOurEvents({ hooks: { Stop: [foreign] } }), 0);
 });
 
@@ -113,9 +116,9 @@ test('stripHooks removes only ours and reports an empty document as null', () =>
   const foreign = { hooks: [{ type: 'command', command: 'echo theirs' }] };
   const doc = CH.mergeHooks({ hooks: { Stop: [foreign] } }, CTX);
   const { doc: left, removed } = CH.stripHooks(doc);
-  assert.equal(removed, 5);
+  assert.equal(removed, 6);
   assert.deepEqual(left, { hooks: { Stop: [foreign] } });
-  assert.deepEqual(CH.stripHooks(CH.mergeHooks(null, CTX)), { doc: null, removed: 5 });
+  assert.deepEqual(CH.stripHooks(CH.mergeHooks(null, CTX)), { doc: null, removed: 6 });
   assert.deepEqual(CH.stripHooks(null), { doc: null, removed: 0 });
   assert.deepEqual(CH.stripHooks({ other: 1 }), { doc: { other: 1 }, removed: 0 });
 });
@@ -213,7 +216,7 @@ test('installCodexHost writes hooks.json, registers the MCP server once, generat
   assert.ok(calls.some((c) => c.join(' ') === `/x/codex mcp add agenticos --env AOS_CONFIG=${CONFIG} --env AOS_HOST=codex -- sh ${LAUNCHER} mcp-server`));
   assert.equal(r.skills.written.length, 28);
   const doc = JSON.parse(fs.readFileSync(r.hooksFile, 'utf8'));
-  assert.equal(CH.countOurEvents(doc), 5);
+  assert.equal(CH.countOurEvents(doc), 6);
   // second run: present, unchanged
   const again = CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
   assert.equal(again.hooksChanged, false);
@@ -221,13 +224,13 @@ test('installCodexHost writes hooks.json, registers the MCP server once, generat
   assert.equal(calls.filter((c) => c[1] === 'mcp' && c[2] === 'add').length, 1);
   const st = CH.codexHostStatus({ cfg: {}, launcher: LAUNCHER, run, env: { ...env, AOS_CODEX_BIN: '/x/codex' }, dir });
   assert.equal(st.loggedIn, true);
-  assert.equal(st.hookEvents, 5);
+  assert.equal(st.hookEvents, 6);
   assert.equal(st.mcp, 'ok');
   assert.equal(st.skills, 28);
   assert.equal(st.memories, false);
   const rm = CH.removeCodexHost({ cfg: {}, bin: '/x/codex', run, env, dir });
   assert.equal(rm.hooksFileState, 'deleted');
-  assert.equal(rm.hooksRemoved, 5);
+  assert.equal(rm.hooksRemoved, 6);
   assert.equal(rm.mcp, 'removed');
   assert.equal(state.registered, null);
   assert.equal(rm.skills.length, 28);
@@ -311,7 +314,7 @@ test('the plugin wiring names nothing on this machine: ${PLUGIN_ROOT} in hooks, 
   assert.ok(CH.isOurs(CH.pluginHookCommand('x')), 'the same AOS_HOST prefix as direct entries');
   assert.deepEqual(CH.pluginMcpServers().mcpServers.agenticos.args, ['./bin/aos', 'mcp-server']);
   assert.equal(CH.pluginMcpServers().mcpServers.agenticos.cwd, '.');
-  assert.equal(CH.pluginHookCount(), 16);
+  assert.equal(CH.pluginHookCount(), 17);
 });
 
 test('installCodexPlugin: a fresh install adds the marketplace and the plugin; a re-run refreshes a git marketplace first', () => {
@@ -383,7 +386,7 @@ test('removeDirectWiring takes out what a direct install wrote (hooks, MCP regis
   const { run, state } = fakeRun();
   CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
   CH.installCodexPlugin({ bin: '/x/codex', source: 'owner/repo', run });
-  assert.deepEqual(CH.removeDirectWiring({ cfg: {}, bin: '/x/codex', run, env, dir }), { hooks: 5, mcp: true, skills: 28 });
+  assert.deepEqual(CH.removeDirectWiring({ cfg: {}, bin: '/x/codex', run, env, dir }), { hooks: 6, mcp: true, skills: 28 });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8')), { hooks: { Stop: [foreign] } });
   assert.equal(state.registered, null);
   assert.equal(state.installed, true, 'the plugin stays');
@@ -391,7 +394,7 @@ test('removeDirectWiring takes out what a direct install wrote (hooks, MCP regis
   // a hooks.json that held only our entries is deleted
   const home2 = tmp('aos-codex-home6-');
   CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: null, run, env: { CODEX_HOME: home2 }, dir });
-  assert.equal(CH.removeDirectWiring({ cfg: {}, bin: null, run, env: { CODEX_HOME: home2 }, dir }).hooks, 5);
+  assert.equal(CH.removeDirectWiring({ cfg: {}, bin: null, run, env: { CODEX_HOME: home2 }, dir }).hooks, 6);
   assert.ok(!fs.existsSync(path.join(home2, 'hooks.json')));
 });
 
@@ -426,14 +429,14 @@ test('codexPluginStatus reports the plugin, its MCP server and any direct wiring
   const before = CH.codexPluginStatus({ cfg: {}, launcher: LAUNCHER, run, env, dir });
   assert.equal(before.installed, false);
   assert.equal(before.mcp, 'missing');
-  assert.equal(before.hooksTotal, 16);
+  assert.equal(before.hooksTotal, 17);
   CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
   CH.installCodexPlugin({ bin: '/x/codex', source: 'owner/repo', run });
   const both = CH.codexPluginStatus({ cfg: {}, launcher: LAUNCHER, run, env, dir });
   assert.equal(both.installed, true);
   assert.equal(both.version, '1.0.0');
   assert.equal(both.mcp, 'ok');
-  assert.deepEqual(both.direct, { hookEvents: 5, mcp: true, skills: 28 });
+  assert.deepEqual(both.direct, { hookEvents: 6, mcp: true, skills: 28 });
   CH.removeDirectWiring({ cfg: {}, bin: '/x/codex', run, env, dir });
   assert.deepEqual(CH.codexPluginStatus({ cfg: {}, launcher: LAUNCHER, run, env, dir }).direct, { hookEvents: 0, mcp: false, skills: 0 });
 });

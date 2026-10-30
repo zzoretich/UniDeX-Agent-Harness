@@ -8,14 +8,14 @@ import {
   isProposalFile, parseProposal, parseLedger, ledgerRates, historyRows, parseBacklog, ageDays,
 } from "../data/proposals";
 import { readAgenticosJson, reviewCommand } from "../data/aosConfig";
-import { shell } from "../host";
+import { shell, hudHost, type HostProposalPreview, type HostProposalUndo } from "../host";
 
 const WATCHED = [LEDGER_PATH, BACKLOG_PATH];
 const KIND_PILL: Record<string, string> = { self: "aos-pill-cyan", vault: "aos-pill-cyan", workflow: "aos-pill-green", product: "aos-pill-green" };
 const EVENT_MARK: Record<string, [string, string]> = {
   approved: ["✓", "aos-text-green"], "auto-applied": ["✓", "aos-text-green"], verified: ["✓", "aos-text-green"],
   accepted: ["◇", "aos-text-cyan"], rejected: ["✗", "aos-text-rose"], regressed: ["✗", "aos-text-rose"],
-  dismissed: ["–", "aos-dim"], "stale-dropped": ["–", "aos-dim"],
+  dismissed: ["–", "aos-dim"], "stale-dropped": ["–", "aos-dim"], undone: ["↶", "aos-text-amber"],
 };
 type Group = "pending" | "backlog" | "history";
 
@@ -26,7 +26,7 @@ const pct = (r: number | null) => (r === null ? "n/a" : `${Math.round(r * 100)}%
 
 /**
  * PROPOSALS — the Chief of Staff's pending proposals, accepted backlog and ledger history (spec
- * 2026-09-22-todo-and-proposals-tabs D5/D6). Read-only: every decision goes through the
+ * 2026-09-22-todo-and-proposals-tabs D5/D6). Instruction changes are approved or rejected here through trusted app IPC; ideas and flags go through the
  * persona-flag-closer skill, reached with the Review button (Claude Code or Codex). Parsing lives in src/data/proposals.ts.
  */
 export class ProposalsTab {
@@ -36,7 +36,12 @@ export class ProposalsTab {
   private ledger: LedgerRecord[] = [];
   private rates: LedgerRates | null = null;
   private backlog: BacklogEntry[] = [];
-  private pages: string[] = [];               // file names in PAGES_DIR (spec 2026-09-22-proposal-pages D7)
+  private pages: string[] = [];
+  private preview: HostProposalPreview | null = null;
+  private previewError: string | null = null;
+  private previewLoading = false;
+  private decisionBusy = false;
+  private undos: HostProposalUndo[] = [];               // file names in PAGES_DIR (spec 2026-09-22-proposal-pages D7)
   /** The proposal or backlog idea open in the reading pane (UniDeX D4): `p:<file>` or `b:<slug>`, or none. */
   private selected: string | null = null;
   private collapsed = new Set<Group>();
@@ -86,6 +91,11 @@ export class ProposalsTab {
     this.rates = ledgerRates(this.ledger, new Date());
     this.backlog = parseBacklog(await readOr(a, BACKLOG_PATH, "")).reverse();   // the file is newest last
     try { this.pages = (await a.list(PAGES_DIR)).files.map((f) => f.split("/").pop() ?? "").filter((n) => n.endsWith(".html")); } catch { this.pages = []; }
+    const service = hudHost().proposals;
+    if (service) {
+      const result = await service.undos();
+      this.undos = result.ok ? result.data : [];
+    }
     this.view.setBadge("proposals", this.proposals.length);
     this.render();
   }
@@ -202,9 +212,80 @@ export class ProposalsTab {
         r.createSpan({ cls: "aos-dim", text: x.evidence });
       }
     }
+    if (p.kind === "self" || p.kind === "vault") this.renderDecision(d, p);
     const links = d.createDiv({ cls: "aos-rt-rowactions" });
     const openFile = links.createEl("a", { text: "Open file", cls: "aos-link", href: "#" });
     openFile.addEventListener("click", (e) => { e.preventDefault(); void this.openFile(`${PROPOSALS_DIR}/${p.name}`); });
+  }
+
+  private renderDecision(host: HTMLElement, p: Proposal): void {
+    if (!hudHost().proposals) {
+      host.createDiv({ cls: "aos-dim", text: "Open UniDeX to review exact changes." });
+      return;
+    }
+    const box = host.createDiv({ cls: "aos-pr-detail" });
+    box.createDiv({ cls: "aos-rt-subhead", text: "EXACT CHANGES" });
+    if (this.previewLoading) { box.createDiv({ cls: "aos-dim", text: "Loading the current files…" }); return; }
+    if (this.previewError) { box.createDiv({ cls: "aos-text-amber", text: this.previewError }); return; }
+    const preview = this.preview;
+    if (!preview || preview.name !== p.name) { box.createDiv({ cls: "aos-dim", text: "Select this proposal to load its changes." }); return; }
+    if (preview.legacy || !preview.changes.length) {
+      box.createDiv({ cls: "aos-text-amber", text: "This older proposal has no exact diff. Add a changes field with file hashes before approval." });
+    } else {
+      for (const change of preview.changes) {
+        const item = box.createDiv({ cls: "aos-pr-premise" });
+        item.createDiv({ text: `${change.op.toUpperCase()} · ${change.path}` });
+        item.createDiv({ cls: "aos-dim", text: `Base ${change.base ?? "new file"} · Result ${change.after ?? "deleted"}` });
+        item.createDiv({ cls: "aos-dim", text: "Before" });
+        item.createEl("pre", { text: change.before ?? "(file does not exist)" });
+        item.createDiv({ cls: "aos-dim", text: "After" });
+        item.createEl("pre", { text: change.content ?? "(file deleted)" });
+      }
+    }
+    const actions = box.createDiv({ cls: "aos-rt-rowactions" });
+    if (!preview.legacy && preview.changes.length) {
+      const approve = actions.createEl("button", { cls: "aos-ws-action", text: "Approve exact changes" });
+      approve.disabled = this.decisionBusy;
+      approve.addEventListener("click", () => void this.decide("apply", p.name, preview.digest, preview.token));
+    }
+    const reject = actions.createEl("button", { cls: "aos-ws-action", text: "Reject" });
+    reject.disabled = this.decisionBusy;
+    reject.addEventListener("click", () => void this.decide("reject", p.name, preview.digest, preview.token));
+  }
+
+  private async loadPreview(name: string): Promise<void> {
+    const service = hudHost().proposals;
+    if (!service) return;
+    this.previewLoading = true; this.previewError = null; this.preview = null; this.render();
+    const result = await service.preview(name);
+    if (this.selected !== `p:${name}`) return;
+    this.previewLoading = false;
+    if (result.ok) this.preview = result.data;
+    else this.previewError = result.error;
+    this.render();
+  }
+
+  private async decide(verb: "apply" | "reject", name: string, digest: string, token: string): Promise<void> {
+    const service = hudHost().proposals;
+    if (!service || this.decisionBusy) return;
+    this.decisionBusy = true; this.render();
+    const result = verb === "apply" ? await service.apply(name, digest, token) : await service.reject(name, digest, token);
+    this.decisionBusy = false;
+    if (!result.ok) { this.previewError = result.error; this.render(); new Notice(result.error); return; }
+    this.selected = null; this.preview = null; this.previewError = null;
+    new Notice(verb === "apply" ? "Proposal applied and verified" : "Proposal rejected");
+    await this.refresh();
+  }
+
+  private async undo(undoId: string): Promise<void> {
+    const service = hudHost().proposals;
+    if (!service || this.decisionBusy) return;
+    this.decisionBusy = true;
+    const result = await service.undo(undoId);
+    this.decisionBusy = false;
+    if (!result.ok) { new Notice(result.error); return; }
+    new Notice("Proposal changes restored");
+    await this.refresh();
   }
 
   private renderBacklog(table: HTMLElement, b: BacklogEntry): void {
@@ -247,12 +328,20 @@ export class ProposalsTab {
     meta.createSpan({ cls: "aos-dim aos-pr-age", text: `${r.ts.slice(0, 10)}${r.by ? ` · ${r.by}` : ""}` });
     const page = pageForSlug(this.pages, r.slug);
     if (page) this.pageLink(meta, page, "page ↗").addClass("aos-pr-pagelink");
+    const undo = r.event === "approved" ? this.undos.find((u) => u.slug === r.slug) : undefined;
+    if (undo) {
+      const button = meta.createEl("button", { cls: "aos-ws-action", text: "Undo" });
+      button.disabled = this.decisionBusy;
+      button.addEventListener("click", (e) => { e.stopPropagation(); void this.undo(undo.undoId); });
+    }
     if (r.note) row.setAttr("title", r.note);
   }
 
   private toggle(key: string): void {
     this.selected = this.selected === key ? null : key;
+    this.preview = null; this.previewError = null;
     this.render();
+    if (this.selected?.startsWith("p:")) void this.loadPreview(this.selected.slice(2));
   }
 
   /** A link that opens a rendered proposal page in the OS default browser. */

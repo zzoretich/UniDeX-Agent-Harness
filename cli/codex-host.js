@@ -31,6 +31,7 @@ const { spawnSync } = require('child_process');
 const HOOKS = [
   ['SessionStart', [['telemetry-hook', 10], ['update-notice', 10], ['persona-watchdog', 10], ['reconcile-sessions', 10], ['inject-conventions', 10]]],
   ['UserPromptSubmit', [['inject-context', 10]]],
+  ['PreToolUse', [['instruction-guard', 10]], 'Write|Edit|MultiEdit|NotebookEdit|Bash|apply_patch|mcp__.*'],
   ['PostToolUse', [['telemetry-hook', 10]]],
   ['Stop', [['update-session', 10], ['heartbeat-writer', 10], ['reconcile-sessions', 10]]],
   ['SessionEnd', [['telemetry-hook', 3], ['auto-cost', 3], ['heartbeat-writer', 3], ['auto-wrap', 3], ['scan-vault --quiet', 3], ['skills-sync', 3]]],
@@ -112,9 +113,9 @@ function isOurGroup(g) { return !!(g && Array.isArray(g.hooks) && g.hooks.length
 function mergeHooks(existing, ctx) {
   const doc = existing && typeof existing === 'object' && !Array.isArray(existing) ? { ...existing } : {};
   const hooks = { ...(doc.hooks && typeof doc.hooks === 'object' ? doc.hooks : {}) };
-  for (const [event, cmds] of HOOKS) {
+  for (const [event, cmds, matcher] of HOOKS) {
     const foreign = (Array.isArray(hooks[event]) ? hooks[event] : []).filter((g) => !isOurGroup(g));
-    const group = { hooks: cmds.map(([name, timeout]) => ({ type: 'command', command: hookCommand(ctx, name), timeout })) };
+    const group = { ...(matcher ? { matcher } : {}), hooks: cmds.map(([name, timeout]) => ({ type: 'command', command: hookCommand(ctx, name), timeout })) };
     hooks[event] = [...foreign, group];
   }
   doc.hooks = hooks;

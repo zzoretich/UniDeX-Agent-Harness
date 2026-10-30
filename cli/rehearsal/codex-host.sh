@@ -47,7 +47,7 @@ echo "== what init wrote: the direct wiring"
 node -e '
 const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 const ev = Object.keys(d.hooks);
-if (ev.join(",") !== "SessionStart,UserPromptSubmit,PostToolUse,Stop,SessionEnd") throw new Error("events: " + ev);
+if (ev.join(",") !== "SessionStart,UserPromptSubmit,PreToolUse,PostToolUse,Stop,SessionEnd") throw new Error("events: " + ev);
 for (const e of ev) for (const g of d.hooks[e]) for (const h of g.hooks) if (!/^env AOS_HOST=codex /.test(h.command)) throw new Error("foreign command: " + h.command);
 for (const g of d.hooks.SessionEnd) for (const h of g.hooks) if (h.timeout !== 3) throw new Error("SessionEnd timeout " + h.timeout);
 ' "$CODEX_HOME/hooks.json"
@@ -86,7 +86,7 @@ echo "$DOC" | grep -q 'all checks passed'
 echo "== 2. the Codex CLI now installs plugins: aos upgrade moves the host to the agenticos plugin"
 UP=$(node "$ROOT/cli/aos.js" upgrade --from-local "$ROOT")
 echo "$UP"
-echo "$UP" | grep -q 'direct wiring removed (5 hook entries, the MCP registration, 28 skills)'
+echo "$UP" | grep -q 'direct wiring removed (6 hook entries, the MCP registration, 28 skills)'
 echo "$UP" | grep -q 'open codex, run /hooks'
 grep -q "^plugin marketplace add $ROOT --json\$" "$FAKE_CODEX_LOG"
 grep -q '^plugin add agenticos@agenticos-workbench --json$' "$FAKE_CODEX_LOG"
@@ -121,7 +121,7 @@ echo "== doctor (plugin rows)"
 DOC=$(node "$ROOT/cli/aos.js" doctor)
 echo "$DOC"
 echo "$DOC" | grep -q '^ok    codex plugin *agenticos@agenticos-workbench'
-echo "$DOC" | grep -q '^warn  codex hooks trusted *0 of 16'
+echo "$DOC" | grep -q '^warn  codex hooks trusted *0 of 17'
 echo "$DOC" | grep -q '^ok    codex MCP declared *agenticos from the plugin'
 echo "$DOC" | grep -q '^ok    persona runner *codex'
 echo "$DOC" | grep -q '^ok    routines runner *codex'

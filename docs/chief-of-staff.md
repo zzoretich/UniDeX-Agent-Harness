@@ -46,7 +46,7 @@ from the new release's render becomes an `update-identity` or `update-duty-<name
 | `journal/` | duties | one file per day; `journal/logs/` holds duty logs |
 | `answers.json` | interview | the interview answers (for prefilled re-runs and rename) |
 | `repos.json` | you (optional) | `{ "stall_threshold_days": 4, "repos": [{ "name", "path" }] }` for the sitrep |
-| `ledger.jsonl` | `ledger.js` (tracked) | append-only proposal outcomes: `filed`, `approved`, `rejected`, `stale-dropped`, `accepted`, `dismissed`, `verified`, `regressed` (`auto-applied` only on ledgers older than 2.3) |
+| `ledger.jsonl` | `ledger.js` (tracked) | append-only proposal outcomes: `filed`, `approved`, `rejected`, `stale-dropped`, `accepted`, `dismissed`, `verified`, `regressed`, `undone` (`auto-applied` only on ledgers older than 2.3) |
 | `DISABLED` | `aos persona off` | kill switch: no injection, no duties |
 
 ## Every session
@@ -278,12 +278,7 @@ any miss; the tooltip lists each duty with its status, last run and next fire.
 
 ## Proposals
 
-Guarded files (IDENTITY.md, duties and their routine files — `guarded: true`, which the Routines tab confirms before changing — persona scripts, schedules, anything outside `persona/`)
-change only through `persona/proposals/YYYY-MM-DD-<slug>.md` with a `recheck` recipe and a
-premise table; approval applies the change exactly as written and re-runs the recipe expecting
-the finding to be gone. See `persona/proposals/README.md` in your vault. The Workbench's Proposals tab
-shows the pending files, the backlog and the ledger history read-only; its **Review in Claude** button starts
-this review in the Code tab (on a Codex-only setup, where Claude Code is not enabled, it reads **Review in Codex** and runs `codex '$agenticos:persona-flag-closer'`).
+Instruction changes are filed as `persona/proposals/YYYY-MM-DD-<slug>.md` with a `recheck` recipe, premise table and exact `changes` array. The Workbench Proposals tab shows the current before and after text, then offers **Approve exact changes** or **Reject**. Approval binds the reviewed proposal digest and file hashes to a one-use UI token. The deterministic applier verifies the change, restores the prior files if verification fails, records the decision and offers **Undo** in History. Undo refuses to overwrite a later edit. Older prose-only proposals stay readable but need an exact diff before approval. The **Review in Claude** or **Review in Codex** button starts the terminal review for ideas and flags. Inline instruction edits during a live session follow that host's usual permission flow.
 
 Every proposal shares one format — frontmatter, a `# ` title, the link line
 `**[Open the proposal in browser](file:///…)**`, then What / Why / Risk / Premises — and exists as an HTML page.
@@ -321,7 +316,7 @@ earned auto-apply ladder of 2.2 and earlier is retired, and a vault's old `autoa
 that differs from this release's render with your answers, `brain/scripts/persona/prompt-updates.js` files a `self`
 proposal, `update-identity` or `update-duty-<name>`: the What is the whole new text, the Why the diff (a line you
 edited by hand shows as `-`), and its recheck compares the file with the render kept in
-`brain/_index/persona-prompts/`. Approve it to take the new prompt, or reject it to keep yours: the same render is
+`brain/_index/persona-prompts/`. The proposal includes the exact replacement and current-file hash; approve it in the Proposals tab to take the new prompt, or reject it to keep yours: the same render is
 not proposed again. Under the hood a duty may run `ledger.js` (it is
 on the runner's tool allowlist), and the runner's system prompt opens with today's date and the journal
 path, so a duty that runs just after midnight no longer journals into yesterday's file.
@@ -355,8 +350,7 @@ The pieces above form one loop, and each step is deterministic except the two mo
    an empty queue and skips unless something new arrived. The tick's own model never decides this: it runs
    under a read-only allowlist, and the trigger belongs to the runner.
 4. **Review.** "review persona flags" (`persona-flag-closer`) re-runs each recipe and asks once per item.
-   A `self` or `vault` proposal is approved (applied exactly as written, recipe re-run expecting the finding
-   gone, one commit) or rejected (feedback memory). A `workflow` or `product` proposal is accepted into
+   A `self` or `vault` instruction proposal is decided in the Proposals UI after an exact diff review. A `workflow` or `product` proposal is accepted into
    `persona/backlog.md` or dismissed. Every decision is a ledger line.
 5. **Verify.** The watchdog re-runs each approval's recipe daily for two weeks and writes `verified` or
    `regressed`; a regression is a flag, a notification, and the next tick's `regressed` signal, so step 2
@@ -364,7 +358,7 @@ The pieces above form one loop, and each step is deterministic except the two mo
    duty metrics move, and whether the corrections on that topic stop.
 
 6. **Approve.** Nothing applies itself. Every change to the Chief of Staff's instructions — its identity, its duty
-   prompts, its playbook, a feedback rule — is a proposal, and only your decision in the review applies it. The
+   prompts, its playbook, a feedback rule — is a proposal, and only your click in the Proposals UI applies it. The
    auto-apply ladder of 2.2 and earlier (`autoapply.json`, the daily confirmations, the `autoapply-<class>`
    proposals) is retired (`docs/design/specs/2026-10-24-persona-learning-loop-design.md` D1).
 

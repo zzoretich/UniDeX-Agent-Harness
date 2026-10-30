@@ -198,6 +198,19 @@ export interface HostGit {
   commit(workspace: string, message: string): Promise<HostResult<{ commit: string }>>;
 }
 
+export interface HostProposalPreview {
+  name: string; slug: string; digest: string; token: string; recheck: string | null; legacy?: boolean;
+  changes: { path: string; op: string; base: string | null; after: string | null; before: string | null; content: string | null }[];
+}
+export interface HostProposalUndo { undoId: string; slug: string; at: string; changes: string[] }
+export interface HostProposals {
+  preview(name: string): Promise<HostResult<HostProposalPreview>>;
+  apply(name: string, digest: string, token: string): Promise<HostResult<unknown>>;
+  reject(name: string, digest: string, token: string): Promise<HostResult<unknown>>;
+  undos(): Promise<HostResult<HostProposalUndo[]>>;
+  undo(undoId: string): Promise<HostResult<unknown>>;
+}
+
 export interface HudHost {
   fs: HostFs;
   spawn: SpawnFn;
@@ -208,6 +221,7 @@ export interface HudHost {
   /** Agent sessions and their repositories: only the app has them (its main runs the turns); undefined elsewhere. */
   sessions?: HostSessions;
   git?: HostGit;
+  proposals?: HostProposals;
 }
 
 let current: HudHost | null = null;
