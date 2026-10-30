@@ -1,6 +1,6 @@
 # Chief of Staff instruction guard — implementation plan
 
-Date: 2026-10-30 · Status: implemented in an isolated worktree; final validation and live host probes pending
+Date: 2026-10-30 · Status: implemented and validated in an isolated worktree; PR review pending
 Base: `f4978736` on `feat/persona-trust-boundary` · Related design: `2026-10-24-persona-learning-loop-design.md` D1–D4
 
 ## Goal and existing baseline
@@ -41,6 +41,13 @@ The earlier design already decided that observation files may be written by duti
 - **Design gate:** G1–G5 were confirmed by the owner. Record them in the design spec and host-parity matrix before implementation (per the AgenticOS feature workflow).
 - **Security gate:** if a host cannot reliably deny a direct protected write, prove restore-after-write for automatic duties and disclose the interactive limit (G2); do not advertise hook denial as complete.
 - **Ship gate:** verify privacy and host parity; review the diff and PR. Merge, a direct push to `main`, and a release tag each require the owner's approval under the feature workflow.
+
+## Validation record
+
+- The full repository suite, both host install rehearsals, private-term gate, app typecheck and unit checks, 551 Electron e2e tests, and 46 packaged smoke checks passed.
+- In a disposable vault, a live headless Claude Code session attempted a `Write` to `persona/IDENTITY.md`; `PreToolUse` denied it and the file remained unchanged.
+- A live headless Codex session attempted a Python shell write to the same protected file; `PreToolUse` blocked the command, the file remained unchanged, and the duty snapshot had nothing to restore. This proves that shell route for the tested CLI build; it does not establish that every Codex tool route honors denial.
+- A separate forced-write test changed the protected identity and a host-owned skill. The duty check restored both and left an observation note in place. Its restoration exit code was the expected nonzero signal.
 
 ## Acceptance criteria
 
