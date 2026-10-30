@@ -9,6 +9,7 @@ const path = require('path');
 const I = require('../persona/interview.js');
 const L = require('../persona/ledger.js');
 const P = require('../persona/prompt-updates.js');
+const Exact = require('../persona/proposal.js');
 const { checkRecipe } = require('../persona/recipe.js');
 
 const TEMPLATES = path.join(__dirname, '..', '..', '..', 'vault-template', 'persona');
@@ -62,6 +63,10 @@ test('a prompt that differs becomes one self proposal: the whole new text, the d
   assert.deepEqual(filed.map((e) => [e.event, e.by, e.kind]), [['filed', 'upgrade', 'self']]);
   assert.match(filed[0].note, /^render [0-9a-f]{12}$/);
   assert.equal(read(vault, rel).includes('2.00 USD'), true, 'the guarded file itself is never touched');
+  const exact = Exact.preview(vault, '2026-10-24-update-duty-reflect-daily.md');
+  assert.equal(exact.changes[0].path, rel);
+  assert.equal(exact.changes[0].content, shipped);
+  assert.equal(exact.changes[0].before.includes('2.00 USD'), true);
 
   assert.deepEqual(run(vault).pending, ['update-duty-reflect-daily'], 'the next upgrade leaves the pending one alone');
   assert.equal(proposals(vault).length, 1);

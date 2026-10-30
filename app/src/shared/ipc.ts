@@ -107,6 +107,11 @@ export const CH = {
   /** main → page: one event of a running turn. */
   sessionEvent: "session:event",
   // The workspace's repository: what changed, a file's diff, and the commit the user asks for.
+  proposalPreview: "proposal:preview",
+  proposalApply: "proposal:apply",
+  proposalReject: "proposal:reject",
+  proposalUndos: "proposal:undos",
+  proposalUndo: "proposal:undo",
   gitStatus: "git:status",
   gitDiff: "git:diff",
   gitCommit: "git:commit",
@@ -488,6 +493,12 @@ export type PtyEvent =
   | { id: string; type: "exit"; exitCode: number; signal?: number };
 
 /** window.aos: everything the page may ask of main. Named functions only (no channel names, no event objects). */
+export interface ProposalPreview {
+  name: string; slug: string; digest: string; token: string; recheck: string | null; legacy?: boolean;
+  changes: { path: string; op: string; base: string | null; after: string | null; before: string | null; content: string | null }[];
+}
+export interface ProposalUndo { undoId: string; slug: string; at: string; changes: string[] }
+
 export interface AosBridge {
   boot(): BootInfo | null;
   ready(info: ReadyInfo): void;
@@ -594,6 +605,14 @@ export interface AosBridge {
     /** Each host's models and commands (cached by the runtime for a day; `refresh` asks the hosts again). */
     catalog(refresh?: boolean): Promise<Result<HostCatalog>>;
     onEvent(cb: (ev: SessionEvent) => void): () => void;
+  };
+  /** The app-owned instruction proposal transaction. Decisions come from the trusted main window. */
+  proposals: {
+    preview(name: string): Promise<Result<ProposalPreview>>;
+    apply(name: string, digest: string, token: string): Promise<Result<unknown>>;
+    reject(name: string, digest: string, token: string): Promise<Result<unknown>>;
+    undos(): Promise<Result<ProposalUndo[]>>;
+    undo(undoId: string): Promise<Result<unknown>>;
   };
   /** A workspace's repository: read, and commit on the user's word. Nothing is pushed. */
   git: {

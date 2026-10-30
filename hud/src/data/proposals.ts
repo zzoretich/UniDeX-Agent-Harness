@@ -1,6 +1,6 @@
 // proposals.ts — readers for the Proposals tab (spec 2026-09-22-todo-and-proposals-tabs D5/D6).
-// Pure: file text in, rows out. The tab is read-only; every decision goes through the
-// persona-flag-closer skill, which owns the ledger, the backlog and the commits.
+// Pure: file text in, rows out. Instruction changes are decided through the app bridge; ideas and flags still use the
+// persona-flag-closer skill, which owns their ledger, backlog and commits.
 // Mirrors, rule for rule: plugin/skills/persona-flag-closer/scripts/collect.js (frontmatter, premise
 // table, kinds, surfaces, lint, the workspace key), brain/scripts/persona/backlog.js (section shape),
 // brain/scripts/persona/ledger.js summary() (28-day rates) and brain/scripts/persona/proposal-html.js pagePath()

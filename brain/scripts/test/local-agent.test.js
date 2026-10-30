@@ -496,9 +496,9 @@ test('review 7: a local routine never writes what feeds hosted sessions, whateve
   const root = fs.realpathSync(VAULT);
   const { rules, refused } = A.compileWrites(['persona/journal/', 'brain/memory/feedback/', 'brain/_index/', 'notes/'], root);
   assert.deepEqual(rules.map((r) => r.entry), ['notes/']);
-  assert.deepEqual(refused.map((r) => r.why), ["persona/: the Chief of Staff's files", 'brain/memory/: memories feed every session', "brain/_index/: the session bootstrap and the runtime's caches"]);
+  assert.deepEqual(refused.map((r) => r.why), ["persona/: the Chief of Staff's files", 'guarded instruction (rule)', "brain/_index/: the session bootstrap and the runtime's caches"]);
   for (const t of ['notes/CLAUDE.md', 'notes/Agents.md', 'notes/sub/MEMORY.md']) assert.throws(() => A.writable(root, t, rules), /feeds? every session/, t);
-  assert.throws(() => A.writable(root, 'AGENTICOS.md', null), /AGENTICOS\.md: it feeds every session/);
+  assert.throws(() => A.writable(root, 'AGENTICOS.md', null), /guarded \(AGENTICOS\.md\)/);
   assert.throws(() => A.writable(root, 'brain/memory/user/x.md', null), /brain\/memory\//);
   script = [answer('done')];
   const { out } = await run(routine({ output: 'MEMORY.md' }));

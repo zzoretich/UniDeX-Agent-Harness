@@ -17,6 +17,7 @@ import { writeHudHostMarker } from "./hud-host";
 import { registerFsIpc } from "./ipc/fs";
 import { registerHostIpc } from "./ipc/host";
 import { registerProcIpc } from "./ipc/proc";
+import { registerProposalsIpc } from "./ipc/proposals";
 import { registerSessionIpc } from "./ipc/sessions";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
 import { openExternalSafe, registerShellIpc } from "./ipc/shell";
@@ -342,6 +343,7 @@ registerProcIpc(trust, procService, ptyService);
 registerSessionIpc(trust, sessionService, gitService);
 registerShellIpc(trust, () => (vault.root ? scope : null), () => vault.root);
 registerSetupIpc(trust, setup);
+registerProposalsIpc(trust, () => vault.root, () => path.join(app.getPath("userData"), "proposal-undo"), () => policy.ids.includes("proposals"));
 registerUpdateIpc(trust, {
   state: () => updates.state,
   check: () => updates.check(),

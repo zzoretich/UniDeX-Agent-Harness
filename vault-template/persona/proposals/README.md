@@ -13,6 +13,8 @@ Guarded changes wait here for the user's sign-off. One file per proposal, `YYYY-
           approval; workflow and product are ideas for the user and go to persona/backlog.md when accepted>
     surface: <product proposals only: cli | plugin | brain | hud | vault-template | docs — where the
           change would live, so a feature run can start from the backlog entry>
+    changes: |
+      [{"path":"persona/PLAYBOOK.md","op":"replace","base":"sha256:<64 hex>","content":"<exact new text>"}]
     ---
 
     # <Title — one line the user recognises>
@@ -31,10 +33,12 @@ Body sections, in order: **What** (the exact change, as a diff or full replaceme
     | <claim the fix depends on> | VERIFIED | <how checked, with path/date> |
     | <claim taken on faith> | ASSUMED | <why it is believed> |
 
-Approval flow: the user says "approve <slug>" or "reject <slug>" in any session, or answers the batch review run by the `persona-flag-closer` skill. On approval the agent applies the change exactly as written, re-runs `recheck` expecting a NONZERO exit (finding gone), commits with `persona: apply approved proposal <slug>` — naming the changed paths and this proposal file, never a pathspec-less commit — and deletes the proposal file. If recheck still exits 0 after applying, it stops and reports — no commit. On rejection it deletes the file and records the reasoning as a feedback memory so the idea is not proposed again.
+Instruction proposal approval happens in the UniDeX Proposals tab. It shows the exact before and after text and binds the click to this proposal's digest and current file hashes. Older prose-only proposals remain readable but need an exact `changes` array before approval. The deterministic applier verifies with `recheck` and restores the prior files automatically if verification fails. The same tab offers Reject and Undo; Undo refuses to overwrite a file changed since approval. Inline instruction edits during active work follow the host's permission flow.
+
+For `changes`, use 1–20 vault-relative paths. Operations are `create` (`base: null`, `content`), `replace` (`base: sha256:<64 hex>`, `content`), `patch` (`base`, exact unique `old` and exact `new`) or `delete` (`base`). Paths must be protected instruction files. Vault-relative paths and user-owned host paths (`host/claude-skills/<skill>/SKILL.md`, `host/codex-skills/<skill>/SKILL.md`, `host/claude-agents/<name>.md`, `host/codex-agents/<name>.toml`) are accepted. Dot segments, links, generated mirrors and other external paths are refused. The `base` hash is SHA-256 of the current file's bytes. `changes` is a JSON array in a YAML block scalar as shown above.
 
 A `workflow` or `product` proposal is an idea, not a change the agent applies, so the review offers **accept** and **dismiss** instead: accept appends the proposal's What and Why to `persona/backlog.md` (through `brain/scripts/persona/backlog.js`, tracked) and deletes the file; dismiss deletes the file and records a `dismissed` ledger line, so the idea is not filed again.
 
-Every outcome is appended to `persona/ledger.jsonl` through `brain/scripts/persona/ledger.js` (`filed` by the duty that wrote the proposal, `approved` / `rejected` / `stale-dropped` / `accepted` / `dismissed` by the review, `verified` / `regressed` by the watchdog once it has re-run an approved proposal's `recheck` for two weeks). `ledger.js summary` is the agent's track record, per kind; both reflects read it before proposing. Nothing is ever applied without the user's decision: there is no auto-apply.
+Every outcome is appended to `persona/ledger.jsonl` through `brain/scripts/persona/ledger.js` (`filed` by the duty that wrote the proposal, `approved` / `rejected` / `stale-dropped` / `accepted` / `dismissed` by the review, `verified` / `regressed` by the watchdog once it has re-run an approved proposal's `recheck` for two weeks, `undone` when the user restores it). `ledger.js summary` is the agent's track record, per kind; both reflects read it before proposing. Nothing is ever applied without the user's decision: there is no auto-apply.
 
-Guarded territory (proposal required): IDENTITY.md, duties/*.md, brain/scripts/persona/*, the duty schedules, and anything outside `persona/`.
+Guarded instruction territory: root CLAUDE.md, AGENTS.md, AGENTICOS.md; persona identity, playbooks, duties, routines, named agent skills and team TEAM.md; active feedback rules. Observation notes and feedback drafts stay outside this approval path. Code changes and product ideas use their existing review flows.

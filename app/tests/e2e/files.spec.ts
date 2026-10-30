@@ -509,7 +509,11 @@ test("Icons draws an image as its picture once in view, a big one drawn down; on
   try {
     await enter(win, dir);
     const art = (p: string) => item(win, p).locator(".aos-fx-tile-art");
-    for (const p of Object.values(pics)) await item(win, p).scrollIntoViewIfNeeded();
+    // Thumbnail decoding can redraw a tile between locator resolution and scrolling.
+    // Re-resolve it after a detach rather than treating that redraw as a failed image.
+    for (const p of Object.values(pics)) {
+      await expect(async () => { await item(win, p).scrollIntoViewIfNeeded({ timeout: 3_000 }); }).toPass({ timeout: 15_000 });
+    }
     await expect(art(pics.small).locator("img.aos-fx-thumb")).toHaveAttribute("src", /^data:image\/png;base64,/);
     await expect(art(pics.small)).toHaveClass(/has-thumb/);
     await expect(art(pics.small).locator(".aos-fx-art-page")).toHaveCount(0);

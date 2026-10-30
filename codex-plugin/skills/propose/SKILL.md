@@ -18,7 +18,8 @@ Vault: the `vault` value in `${CLAUDE_CONFIG_DIR:-~/.claude}/agenticos.json` (al
    - `slug`: kebab-case, `[a-z0-9-]`, 2–61 characters, not used by a file in `persona/proposals/` or a section of `persona/backlog.md`.
    - `workspace`: run `aos workspace which --json` in the shell from the folder this session runs in, without changing directory first (fallback: `sh "<plugin root>/bin/aos" workspace which --json`). It prints `{"name": "<name>", "slug": "<slug>", "via": "<how it matched>"}` when the folder belongs to a workspace (the workspace itself, a worktree of it, or a code folder linked to it), or `{"name": null}` when it does not. Only when `name` is set, the proposal records it as `workspace: <name>`, which links it to that workspace in the Workbench Spaces tab. When `name` is null, or the command fails or prints anything else, the proposal has no `workspace:` line.
 2. **Recheck.** One read-only `/bin/sh` command, under 15 seconds, no network, that exits 0 while the situation behind the proposal still holds and nonzero once it is resolved (a file still lacks a line, a version is still below a number). For an idea with nothing to check, use `true`. It must pass the read-only grammar in the proposals README — `grep`, `test`, `ls`, `wc`, `head`, `tail`, `cat`, `diff` and read-only `git` joined by `|`, `&&`, `||`, a leading `!`, `$HOME` the only expansion; no `;`, redirections or `$(…)` — or it never runs; check it with `node <vault>/brain/scripts/persona/ledger.js run-recipe '<recipe>'` (it prints `refused: <reason>` when it does not pass).
-3. **Write** `<vault>/persona/proposals/<today>-<slug>.md` (local date; create the folder when missing) in exactly this shape:
+3. **Exact changes for instruction proposals.** If a `self` or `vault` proposal changes an agent instruction, active feedback rule, team `TEAM.md`, or user-owned skill, include a `changes: |` frontmatter field. Its value is a JSON array (1–20 entries), indented by two spaces. Each entry names a protected `path`: a vault-relative path, or `host/claude-skills/<skill>/SKILL.md`, `host/codex-skills/<skill>/SKILL.md`, `host/claude-agents/<name>.md`, or `host/codex-agents/<name>.toml` for user-owned host instructions and an `op`: `create` with `base: null` and `content`; `replace` or `delete` with the current file's `base` SHA-256 (`sha256:<64 hex>`), and `content` for replace; or `patch` with `base`, exact unique `old` text and exact `new` text. Read each current file and calculate its hash before filing. The Workbench shows the exact before and after text, refuses stale hashes, and requires the user's click to apply. If you cannot specify exact bytes, file the prose proposal but say it needs an exact diff before approval. Do not apply the change yourself.
+4. **Write** `<vault>/persona/proposals/<today>-<slug>.md` (local date; create the folder when missing) in this shape:
 
 ```markdown
 ---
@@ -29,6 +30,8 @@ surface: <surface — product proposals only; leave the line out otherwise>
 workspace: <name — only when step 1's `which` printed one; leave the line out otherwise>
 target: <one line — what the change touches, or what the idea is about>
 recheck: "<the recipe, with any inner double quote written as \">"
+changes: |
+  <JSON array of exact operations for instruction proposals; omit for ideas>
 ---
 
 # <Title — one line the user recognises>
@@ -50,8 +53,8 @@ recheck: "<the recipe, with any inner double quote written as \">"
 ```
 
    Mark a premise VERIFIED only when you checked it in this session. Do not write the "Open the proposal in browser" line: the renderer owns it.
-4. **Ledger and render**, in the vault:
+5. **Ledger and render**, in the vault:
    - `node <vault>/brain/scripts/persona/ledger.js append filed <slug> --kind <kind> --by user --target "<target>"`
    - `node <vault>/brain/scripts/persona/proposal-html.js <vault>/persona/proposals/<today>-<slug>.md` — writes the page to `<vault>/brain/_index/proposals/<today>-<slug>.html` and the link line under the title.
    If either script is missing (a vault not yet upgraded), say so and leave the file in place: the next `aos upgrade` and scan render it.
-5. **Reply** in two lines: the title as the page link, copied from the file's `**[Open the proposal in browser](file://…)**` line, then "Decide it in the Workbench Proposals tab, or say `review persona flags`." Commit nothing — proposals stay uncommitted until the review decides them.
+6. **Reply** in two lines: the title as the page link, copied from the file's `**[Open the proposal in browser](file://…)**` line, then "Decide instruction changes in the Workbench Proposals tab; use `review persona flags` for ideas and flags." Commit nothing — proposals stay uncommitted until the review decides them.

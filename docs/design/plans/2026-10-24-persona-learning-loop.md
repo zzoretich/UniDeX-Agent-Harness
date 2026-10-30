@@ -20,19 +20,16 @@ and never changes any agent's instructions, its own included, without the user's
 - [x] `persona/record-spend.js` `deniedCalls` + `nearRule` → `brain/_index/duty-denials.jsonl`; `run-duty.sh` passes
       `--allowed`; `tick.js` `duty-denied` signal; the tick and reflect-daily prompts name it
 - [x] CHANGELOG (Added, Fixed, Upgrading: `aos routines sync`), `docs/chief-of-staff.md`, the routines README
-- [ ] verify (gate, tests, lint, typecheck, changelog, parity, rehearsals), PR, CI, merge; bring home: `aos upgrade
-      --from-local`, `aos routines sync`, check the next tick's journal
+- [x] verified and merged as PR #175; local runtime upgraded after the merge
 
 ### PR 1a — no self-application (D1, D2, D13) — split from PR 1 so neither half regresses
 - [x] retire the ladder (tick, recheck, reflect, ledger, review skill, HUD streak and class, config key, fixtures)
 - [x] the playbook guarded and proposed; no built-in feedback writes for the reflect duties (proposals instead)
 - [x] `persona/prompt-updates.js` + the `aos upgrade` step (D13)
-- [ ] verify, PR, CI, merge; bring home and review the prompt proposals it files
+- [x] verified and merged as PR #176; local runtime upgraded after the merge
 
 ### PR 1b — trust boundary (D3, D4)
-- [ ] retire the ladder: `recheck.js record` out of `tick.js precheck`, `autoapply` out of `reflect.js inputs`, the
-      autoapply paragraphs out of both reflect prompts and `proposals/README.md`, flag-closer step 7; `aos upgrade`
-      leaves `persona/autoapply.json` in place and nothing reads it
+- [x] ladder retirement moved to PR 1a (#176); keep the old `persona/autoapply.json` ignored
 - [ ] `lib/write-areas.js`: `INSTRUCTIONS` (the Chief of Staff's own: identity, duties, routines, the playbook) and
       `AGENT_INSTRUCTIONS` (other personas' folders, `persona/teams/*/TEAM.md`); both in `GUARDED`
 - [ ] `brain/scripts/instruction-guard.js` (PreToolUse): headless → deny every instruction path; interactive → the
@@ -46,6 +43,9 @@ and never changes any agent's instructions, its own included, without the user's
       `sandbox.spec.ts`, `SECURITY.md`); `docs/app-smoke.md` item per host
 - [ ] live probes before `verified: true`: plugin hooks in `claude -p`; Claude `ask` under auto and bypass; Codex
       `deny` on `apply_patch`; `codex exec` hook trust
+- [ ] Codex `PreToolUse` deny must be proved on the installed Mac build before it counts as enforcement. Open
+      upstream issue #27833 reports `apply_patch` writes proceeding after a deny; keep `duty-guard` snapshot/restore as
+      the headless backstop and add a post-write recovery path if the live probe reproduces it.
 
 ### PR 2 — proposal targets (D5)
 - [ ] `kind: self | agent | skill | rule | idea`; `agent:` resolved through `lib/teams.js` + `lib/agents.js`; `skill:`

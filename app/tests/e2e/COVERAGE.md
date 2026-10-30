@@ -208,6 +208,8 @@ again (`brain-ai`).
 
 ## Proposals
 
+| R7 | Exact instruction proposal preview, UI approval, and Undo | covered | `proposals › an exact instruction proposal applies from the UI and Undo restores it` |
+
 | # | Item | Status | Covered by / reason |
 |---|---|---|---|
 | R1 | Closes the rail's second section, after Routines; badge hidden with no proposals; a copied-in proposal shows an amber count within a second with another tab active, and goes when deleted | covered | `shell › rail…`, `variants › an empty vault › badges…`, `proposals › badge…` |

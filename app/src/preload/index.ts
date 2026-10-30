@@ -105,6 +105,13 @@ const api: AosBridge = {
     catalog: (refresh) => invoke(CH.sessionCatalog, refresh ? { refresh: true } : {}),
     onEvent: (cb) => listen<SessionEvent>(CH.sessionEvent, cb),
   },
+  proposals: {
+    preview: (name) => invoke(CH.proposalPreview, { name }),
+    apply: (name, digest, token) => invoke(CH.proposalApply, { name, digest, token }),
+    reject: (name, digest, token) => invoke(CH.proposalReject, { name, digest, token }),
+    undos: () => invoke(CH.proposalUndos, {}),
+    undo: (undoId) => invoke(CH.proposalUndo, { undoId }),
+  },
   git: {
     status: (workspace) => invoke(CH.gitStatus, { workspace }),
     diff: (workspace, file) => invoke(CH.gitDiff, file === undefined ? { workspace } : { workspace, file }),

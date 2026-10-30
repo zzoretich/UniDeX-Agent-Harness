@@ -61,6 +61,8 @@ function proposalText({ rel, slug, next, current, renderHash, today, version }) 
   const what = rel === 'IDENTITY.md' ? 'the Chief of Staff\'s identity' : `the ${path.basename(rel, '.md')} duty's prompt`;
   const fence = fenceFor(next);
   const diff = unifiedDiff(current, next, `persona/${rel}`);
+  const change = [{ path: `persona/${rel}`, op: 'replace', base: `sha256:${crypto.createHash('sha256').update(current).digest('hex')}`, content: next }];
+  const changes = JSON.stringify(change, null, 2).split('\n').map((line) => `  ${line}`).join('\n');
   return `---
 slug: ${slug}
 filed: ${today}
@@ -68,6 +70,8 @@ kind: self
 target: persona/${rel} (guarded)
 recheck: "! cmp -s persona/${rel} ${RENDERS}/${rel}"
 render: ${renderHash}
+changes: |
+${changes}
 ---
 
 # Update ${what} to the one ${release} ships

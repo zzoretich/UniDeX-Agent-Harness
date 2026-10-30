@@ -66,6 +66,7 @@ case "$NAME" in
   inject-conventions) SCRIPT=inject-conventions.js ;;
   update-session) SCRIPT=update-session.js ;;
   telemetry-hook) SCRIPT=telemetry-hook.js ;;
+  instruction-guard) SCRIPT=instruction-guard.js ;;
   heartbeat-writer) SCRIPT=heartbeat-writer.js ;;
   reconcile-sessions) SCRIPT=reconcile-sessions.js ;;
   auto-cost) SCRIPT=auto-cost.js ;;

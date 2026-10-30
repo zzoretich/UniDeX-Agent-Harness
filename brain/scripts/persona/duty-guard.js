@@ -52,7 +52,7 @@ const DUTY_WRITES = {};
 /** D6: what decides what runs and what is trusted (GUARDED; the ledger, LEDGER, is guarded separately: append-only,
  *  `filed` only), and what no duty writes on top of it (EXECUTABLE: code, schedules, other projects). They and the
  *  refusal rule live in lib/write-areas.js, which the routine editors check a duty's `writes` against before it runs. */
-const { GUARDED, LEDGER, EXECUTABLE, fold, refusal, normEntry: norm, dutyWritesRefusal } = require('../lib/write-areas.js');
+const { GUARDED, LEDGER, EXECUTABLE, fold, refusal, instructionKind, normEntry: norm, dutyWritesRefusal } = require('../lib/write-areas.js');
 /** The vault's own dot-folders (git, Obsidian, each host's project settings) — never the user's config dir. */
 const DENY_DOT_DIRS = ['.git/', '.obsidian/', '.claude/', '.codex/', '.agents/'];
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -179,7 +179,30 @@ function listGuarded(vault) {
     else if (st.isDirectory()) for (const n of fs.readdirSync(abs).sort()) visit(`${rel}/${n}`);
     else if (st.isFile()) out[rel] = `sha256:${sha(fs.readFileSync(abs))}`;
   };
-  for (const g of GUARDED) visit(g.replace(/\/$/, ''));
+  for (const g of [...GUARDED, 'CLAUDE.md', 'AGENTS.md', 'AGENTICOS.md']) visit(g.replace(/\/$/, ''));
+  // Dynamic instruction paths cannot be represented as a single guarded folder: feedback drafts,
+  // team boards and each agent's state must stay writable. Enumerate just the instruction files.
+  const list = (rel) => {
+    try { return fs.readdirSync(path.join(vault, ...rel.split('/'))).sort(); } catch { return []; }
+  };
+  for (const name of list('brain/memory/feedback')) {
+    const rel = `brain/memory/feedback/${name}`;
+    if (instructionKind(rel)) visit(rel);
+  }
+  for (const team of list('persona/teams')) {
+    const dir = `persona/teams/${team}`;
+    try { if (fs.lstatSync(path.join(vault, dir)).isSymbolicLink()) { visit(dir); continue; } } catch { continue; }
+    visit(`${dir}/TEAM.md`);
+  }
+  for (const agent of list('persona')) {
+    if (['teams', 'duties', 'routines', 'flag-closer', 'journal', 'proposals'].includes(agent)) continue;
+    const agentDir = `persona/${agent}`;
+    try { if (fs.lstatSync(path.join(vault, agentDir)).isSymbolicLink()) { visit(agentDir); continue; } } catch { continue; }
+    for (const name of ['IDENTITY.md', 'PLAYBOOK.md', 'duties', 'routines', 'skills']) {
+      const rel = `persona/${agent}/${name}`;
+      if (instructionKind(rel)) visit(rel);
+    }
+  }
   return out;
 }
 
@@ -192,7 +215,103 @@ function copyEntry(fromRoot, toRoot, rel) {
   else fs.copyFileSync(src, dst);
 }
 
-function snapshot({ vault, slug, dir = guardDir(slug), now = new Date() } = {}) {
+/** User-owned instruction roots, only when the installed config identifies this vault. */
+function hostInstructionRoots(vault, env = process.env) {
+  let cfg;
+  try {
+    const file = env.AOS_CONFIG || path.join(require('../lib/host.js').claudeConfigDir(env), 'agenticos.json');
+    cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const configured = path.resolve(cfg.vault);
+    const attached = path.resolve(vault);
+    if (configured !== attached && fs.realpathSync(configured) !== fs.realpathSync(attached)) return [];
+  } catch { return []; }
+  const skills = require('../lib/skills.js').roots({ userCfg: cfg, env, home: env.HOME || require('os').homedir() });
+  const agents = require('../lib/agents.js').roots({ userCfg: cfg, env });
+  return [
+    { id: 'claude-skills', dir: skills.claudeSkills, kind: 'skills' },
+    { id: 'codex-skills', dir: skills.codexSkills, kind: 'skills' },
+    { id: 'claude-agents', dir: agents.claudeAgents, kind: 'agents' },
+    { id: 'codex-agents', dir: agents.codexAgents, kind: 'agents' },
+  ];
+}
+
+/** Only instruction documents: user skills' SKILL.md and host agent definitions. Never follow a symlink folder. */
+function listHostInstructions(root, kind) {
+  const out = {};
+  const walk = (rel, depth) => {
+    const abs = path.join(root, rel);
+    let names;
+    try { names = fs.readdirSync(abs).sort(); } catch { return; }
+    for (const name of names) {
+      if (name.startsWith('.')) continue;
+      const next = rel ? `${rel}/${name}` : name;
+      const file = path.join(root, next);
+      let st;
+      try { st = fs.lstatSync(file); } catch { continue; }
+      if (kind === 'skills' && st.isDirectory() && depth < 4) { walk(next, depth + 1); continue; }
+      const target = kind === 'skills' ? name === 'SKILL.md' : depth === 0 && /\.(md|toml)$/.test(name);
+      if (!target || !(st.isFile() || st.isSymbolicLink())) continue;
+      out[next] = st.isSymbolicLink() ? `link:${fs.readlinkSync(file)}` : `sha256:${sha(fs.readFileSync(file))}`;
+    }
+  };
+  walk('', 0);
+  return out;
+}
+
+/** Roots are resolved once at snapshot time; a changed root alias is an error, never followed during restore. */
+function snapshotHostRoots(roots, dir) {
+  const specs = [], files = {};
+  for (const root of roots) {
+    if (!/^(claude|codex)-(skills|agents)$/.test(root.id) || !['skills', 'agents'].includes(root.kind)) throw new Error('invalid host instruction root');
+    const alias = path.resolve(root.dir);
+    let real;
+    try { real = fs.realpathSync(alias); } catch { real = alias; }
+    const spec = { id: root.id, alias, real, kind: root.kind };
+    specs.push(spec);
+    const found = listHostInstructions(real, root.kind);
+    for (const [rel, hash] of Object.entries(found)) {
+      const key = `${root.id}/${rel}`;
+      files[key] = hash;
+      copyEntry(real, path.join(dir, 'host-files', root.id), rel);
+    }
+  }
+  return { roots: specs, files };
+}
+
+function checkHostRoots(manifest, snapDir, keepDir) {
+  const restored = [];
+  const before = manifest.hostFiles || {};
+  for (const spec of manifest.hostRoots || []) {
+    let actual;
+    try { actual = fs.realpathSync(spec.alias); } catch { actual = spec.alias; }
+    if (actual !== spec.real) throw new Error(`host instruction root changed: ${spec.id}`);
+    const prefix = `${spec.id}/`;
+    const current = listHostInstructions(spec.real, spec.kind);
+    const after = Object.fromEntries(Object.entries(current).map(([rel, hash]) => [`${prefix}${rel}`, hash]));
+    for (const key of Object.keys(after).sort()) {
+      if (before[key] === after[key]) continue;
+      moveAside(spec.real, path.join(keepDir, 'host', spec.id), key.slice(prefix.length));
+      restored.push({ path: `host/${key}`, change: key in before ? 'changed' : 'added' });
+    }
+    for (const key of Object.keys(before).filter((k) => k.startsWith(prefix)).sort()) {
+      if (after[key] === before[key]) continue;
+      const rel = key.slice(prefix.length);
+      const dst = path.join(spec.real, rel);
+      let parent = path.posix.dirname(rel);
+      while (parent && parent !== '.') {
+        const abs = path.join(spec.real, parent);
+        try { if (!fs.lstatSync(abs).isDirectory()) { moveAside(spec.real, path.join(keepDir, 'host', spec.id), parent); break; } } catch { /* created by copyEntry */ }
+        parent = path.posix.dirname(parent);
+      }
+      fs.rmSync(dst, { recursive: true, force: true });
+      copyEntry(path.join(snapDir, 'host-files', spec.id), spec.real, rel);
+      if (!(key in after)) restored.push({ path: `host/${key}`, change: 'removed' });
+    }
+  }
+  return restored;
+}
+
+function snapshot({ vault, slug, dir = guardDir(slug), now = new Date(), hostRoots = [] } = {}) {
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(path.join(dir, 'files'), { recursive: true });
   const files = listGuarded(vault);
@@ -200,7 +319,8 @@ function snapshot({ vault, slug, dir = guardDir(slug), now = new Date() } = {}) 
   const ledgerAbs = path.join(vault, ...LEDGER.split('/'));
   const ledger = fs.existsSync(ledgerAbs);
   if (ledger) fs.copyFileSync(ledgerAbs, path.join(dir, 'ledger.jsonl'));
-  const manifest = { schema: SCHEMA, slug, at: now.toISOString(), vault: path.resolve(vault), files, ledger };
+  const host = snapshotHostRoots(hostRoots, dir);
+  const manifest = { schema: SCHEMA, slug, at: now.toISOString(), vault: path.resolve(vault), files, ledger, hostRoots: host.roots, hostFiles: host.files };
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
   return { schema: SCHEMA, slug, files: Object.keys(files).length, ledger };
 }
@@ -334,6 +454,8 @@ function check({ vault, slug, dir = guardDir(slug), keepRoot = path.join(vault, 
     copyEntry(path.join(dir, 'files'), vault, rel);
     if (!(rel in after)) restored.push({ path: rel, change: 'removed' });
   }
+  const hostRestored = checkHostRoots(manifest, dir, keepDir);
+  restored.push(...hostRestored);
   const ledger = reconcileLedger(vault, dir, keepDir);
   if (ledger) restored.push({ path: LEDGER, change: ledger });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -396,7 +518,7 @@ function main(argv, { stdout = (s) => process.stdout.write(s), stderr = (s) => p
     }
     if ((verb === 'snapshot' || verb === 'check') && !SLUG_RE.test(String(slug || ''))) { stderr(USAGE); return 2; }
     const dir = guardDir(slug, configHome(env));
-    if (verb === 'snapshot') { stdout(JSON.stringify(snapshot({ vault, slug, dir, now })) + '\n'); return 0; }
+    if (verb === 'snapshot') { stdout(JSON.stringify(snapshot({ vault, slug, dir, now, hostRoots: hostInstructionRoots(vault, env) })) + '\n'); return 0; }
     if (verb === 'check') {
       const r = check({ vault, slug, dir, keepRoot: flags.keep || undefined, now });
       stdout(JSON.stringify(r) + '\n');
@@ -411,6 +533,6 @@ function main(argv, { stdout = (s) => process.stdout.write(s), stderr = (s) => p
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 module.exports = {
   SCHEMA, EXIT_RESTORED, EXIT_NO_SNAPSHOT, DEFAULT_WRITES, FEEDBACK_DIR, DUTY_WRITES, GUARDED, LEDGER, EXECUTABLE, GIT_WRITE_OUT,
-  splitTools, fold, refusal, dailyNoteDir, dutyWrites, writeScope, vaultForms, claudeTools, codexDirs, configHome, guardDir, listGuarded, snapshot,
+  splitTools, fold, refusal, dailyNoteDir, dutyWrites, writeScope, vaultForms, claudeTools, codexDirs, configHome, guardDir, listGuarded, listHostInstructions, hostInstructionRoots, snapshot,
   memoryLabel, indexFeedback, check, flagState, main,
 };

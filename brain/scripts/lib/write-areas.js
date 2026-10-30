@@ -24,7 +24,9 @@ const path = require('path');
 /** D6: what decides what runs and what is trusted. The ledger is guarded separately (append-only, `filed` only). The
  *  playbook is the Chief of Staff's own routing, so it is guarded too (spec 2026-10-24-persona-learning-loop-design D2);
  *  `autoapply.json` left with the ladder it fed (D1). */
-const GUARDED = ['persona/IDENTITY.md', 'persona/duties/', 'persona/routines/', 'persona/PLAYBOOK.md', 'persona/flag-closer/', 'persona/repos.json'];
+const INSTRUCTIONS = ['CLAUDE.md', 'AGENTS.md', 'AGENTICOS.md', 'persona/IDENTITY.md', 'persona/duties/', 'persona/routines/', 'persona/PLAYBOOK.md'];
+const AGENT_INSTRUCTIONS = ['persona/teams/*/TEAM.md', 'persona/*/IDENTITY.md', 'persona/*/PLAYBOOK.md', 'persona/*/duties/', 'persona/*/routines/', 'persona/*/skills/'];
+const GUARDED = [...INSTRUCTIONS, 'persona/flag-closer/', 'persona/repos.json'];
 const LEDGER = 'persona/ledger.jsonl';
 /** Never writable by a routine, on top of GUARDED: code, schedules, other projects. */
 const EXECUTABLE = ['brain/scripts/', 'brain/routines/', 'workspaces/'];
@@ -50,6 +52,26 @@ const GLOB = /[*?]/;
  *  lower, so U+017F LONG S and the Kelvin sign fold to s and k as they do there). */
 function fold(p) { return String(p).normalize('NFC').toUpperCase().toLowerCase().normalize('NFC'); }
 
+/** Protected instruction path, excluding observations and draft feedback. Input is vault-relative. */
+function instructionKind(rel) {
+  const f = fold(String(rel).replace(/\\/g, '/').replace(/\/+$/, ''));
+  for (const entry of INSTRUCTIONS) {
+    const g = fold(entry.replace(/\/$/, ''));
+    if (f === g || (entry.endsWith('/') && f.startsWith(`${g}/`))) return 'self';
+  }
+  const parts = f.split('/');
+  if (f === 'brain/memory/feedback') return 'rule';
+  if (parts[0] === 'brain' && parts[1] === 'memory' && parts[2] === 'feedback' &&
+      parts.length === 4 && parts[3] !== 'readme.md' && parts[3].endsWith('.md')) return 'rule';
+  if (parts[0] !== 'persona' || parts.length < 2) return null;
+  if (parts[1] === 'teams') return parts.length === 2 || parts.length === 3 || (parts.length === 4 && parts[3] === 'team.md') ? 'agent' : null;
+  if (parts.length === 2 && !['journal', 'proposals', 'flag-closer'].includes(parts[1]) && !parts[1].includes('.')) return 'agent';
+  if (parts.length < 3) return null;
+  if (new Set(['identity.md', 'playbook.md']).has(parts[2]) && parts.length === 3) return 'agent';
+  if (new Set(['duties', 'routines', 'skills']).has(parts[2]) && parts.length >= 3) return 'agent';
+  return null;
+}
+
 /** Why a write-scope path is refused, or null. `rel` is posix, normalized, without a trailing slash. The guarded and
  *  executable areas are compared folded (fold), so `Persona/IDENTITY.md` is refused like `persona/IDENTITY.md`. */
 function refusal(rel) {
@@ -64,6 +86,11 @@ function refusal(rel) {
     if (f === gr || f.startsWith(`${gr}/`)) return `guarded (${g})`;
     if (gr.startsWith(`${f}/`)) return `it holds a guarded path (${g})`;
   }
+  const kind = instructionKind(rel);
+  if (kind) return `guarded instruction (${kind})`;
+  // A write scope on a parent directory could still reach protected dynamic children.
+  if (['brain/memory/feedback', 'persona/teams'].includes(f)) return 'it holds guarded instructions';
+  if (f.startsWith('persona/teams/') && f.split('/').length === 3) return 'it holds guarded instructions';
   return null;
 }
 
@@ -135,6 +162,6 @@ function normEntry(entry) {
 function dutyWritesRefusal(entry) { return refusal(normEntry(String(entry).trim()).rel); }
 
 module.exports = {
-  GUARDED, LEDGER, EXECUTABLE, LOCAL_DENY,
-  fold, refusal, localDenied, vaultRel, localPathRefusal, writesEntry, localWritesRefusal, localOutputRefusal, normEntry, dutyWritesRefusal,
+  INSTRUCTIONS, AGENT_INSTRUCTIONS, GUARDED, LEDGER, EXECUTABLE, LOCAL_DENY,
+  fold, instructionKind, refusal, localDenied, vaultRel, localPathRefusal, writesEntry, localWritesRefusal, localOutputRefusal, normEntry, dutyWritesRefusal,
 };

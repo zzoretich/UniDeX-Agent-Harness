@@ -61,6 +61,7 @@ const USAGE = `usage:
   aos upgrade [--from-local <repo-dir>]
   aos uninstall [--host claude|codex] [--keep-vault] [--yes]
   aos persona [rename <name> | on | off] [--persona-json <file>] [--yes]
+  aos proposals list [--json] | preview <YYYY-MM-DD-slug.md> [--json]
   aos cost [enable [--budget <usd>] [--yes] | disable]
   aos graph [status | build [--semantic [--yes]] | on | off | semantic on|off|auto]
   aos routines [list [--json] | sync | unschedule <slug> | run <slug> [--dry-run] | enable <slug> | disable <slug> | next [<slug>] | hosts [--refresh] [--json] | import-cloud <file>]
@@ -1529,6 +1530,32 @@ function persona(sub, flags) {
   });
 }
 
+function proposals(sub, flags) {
+  const cfg = loadConfigOrThrow();
+  const root = cfg.vault;
+  const local = path.join(__dirname, '..', 'brain', 'scripts', 'persona', 'proposal.js');
+  const file = scriptPath(root, 'persona/proposal.js');
+  const P = require(exists(file) ? file : local);
+  const [verb, name] = sub;
+  if (verb === 'list' && !name) {
+    const dir = path.join(root, 'persona', 'proposals');
+    const names = exists(dir) ? fs.readdirSync(dir).filter((n) => /^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]{0,60}\.md$/.test(n)).sort() : [];
+    const rows = names.map((n) => {
+      try { const p = P.read(root, n); return { name: n, slug: p.slug, kind: p.fields.kind || 'self', exact: !!p.changes, digest: p.digest }; }
+      catch (e) { return { name: n, error: e.message }; }
+    });
+    if (flags.json) out.log(JSON.stringify(rows));
+    else for (const row of rows) out.log(`${row.name} · ${row.error || (row.exact ? 'exact diff' : 'needs exact diff')}`);
+    return 0;
+  }
+  if (verb === 'preview' && name && sub.length === 2) {
+    const p = P.preview(root, name);
+    out.log(flags.json ? JSON.stringify(p, null, 2) : p.changes.map((c) => `${c.op} ${c.path}\nBEFORE\n${c.before ?? '(new file)'}\nAFTER\n${c.content ?? '(deleted)'}`).join('\n\n'));
+    return 0;
+  }
+  throw new UsageError('use `aos proposals list` or `aos proposals preview <file>`; approval is in the Proposals UI');
+}
+
 function cost(sub, flags) {
   return require('./cost-cmd.js').run(sub, { budget: flags.budget, yes: !!flags.yes, hint: flags.fromLocal || process.env.AOS_REPO_HINT, io: console });
 }
@@ -1699,6 +1726,7 @@ async function main(argv) {
     case 'uninstall': return uninstall(flags);
     case 'terminal': return terminal(sub);
     case 'persona': return persona(sub, flags);
+    case 'proposals': return proposals(sub, flags);
     case 'cost': return cost(sub, flags);
     case 'graph': return graph(sub, flags);
     case 'routines': return routines(sub, flags);

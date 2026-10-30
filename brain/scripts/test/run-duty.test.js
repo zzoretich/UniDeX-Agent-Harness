@@ -540,7 +540,8 @@ test('reflect on claude: the scope names no feedback folder, MEMORY.md or playbo
   assert.ok(dryValue(dry.stdout, '--disallowedTools').some((a) => a.includes('/persona/PLAYBOOK.md)')), 'the playbook is denied like the other guarded files');
   const memory = path.join(s.vault, 'brain', 'memory', 'feedback', 'promote-on-repeat.md');
   const r = run(['reflect'], { ...env, FAKE_JOURNAL: s.journal, FAKE_MEMORY: memory });
-  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(fs.existsSync(memory), false, 'the guard restores a rule the duty wrote');
   assert.equal(fs.readFileSync(path.join(s.vault, 'MEMORY.md'), 'utf8'), '# Index\n\n## Feedback (how to work)\n', 'no index line: the runner backfills no duty\'s rules');
   assert.doesNotMatch(fs.readFileSync(path.join(s.logDir, 'duty-reflect.log'), 'utf8'), /"indexed"/);
 });
@@ -560,7 +561,8 @@ test('reflect on codex: no --add-dir for the feedback folder, and the runner wri
   assert.ok(!dry.stdout.includes(`--add-dir\n${s.vault}\n`), 'never the vault itself');
   const memory = path.join(s.vault, 'brain', 'memory', 'feedback', 'codex-rule.md');
   const r = run(['reflect'], { ...env, FAKE_JOURNAL: s.journal, FAKE_DUTY: 'reflect', FAKE_TAMPER: memory });
-  assert.equal(r.status, 0, r.stderr + fs.readFileSync(path.join(s.logDir, 'duty-reflect.log'), 'utf8'));
+  assert.equal(r.status, 1, r.stderr + fs.readFileSync(path.join(s.logDir, 'duty-reflect.log'), 'utf8'));
+  assert.equal(fs.existsSync(memory), false, 'the guard restores a rule the duty wrote');
   assert.equal(fs.existsSync(path.join(s.vault, 'MEMORY.md')), false, 'no index line written');
 });
 

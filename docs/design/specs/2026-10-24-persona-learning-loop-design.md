@@ -59,6 +59,18 @@ few turns (its docs: the review "can burn a meaningful share of total tokens").
 | D12 | **Privacy.** What is learned lives in the vault; the repo carries templates and code; telemetry adds names only. | — | The privacy gate and the telemetry policy. |
 | D13 | **New prompts arrive as proposals** (added while building PR 1a, 2026-10-24). `aos upgrade` files an `update-identity` / `update-duty-<name>` `self` proposal for each guarded prompt that differs from the new render with the vault's answers: the whole new text as the What, the diff as the Why, `! cmp -s` against the render kept in `brain/_index/persona-prompts/` as the recheck; a rejected render is not filed again. | Re-render untouched files only; tell the user to run `aos persona`. | Live vaults hold hand-edited prompts from older templates (one vault: all five duties), so "untouched" never matches; a re-render overwrites edits. A proposal keeps the user's approval in front of every prompt change. |
 
+## Trust-boundary decisions confirmed 2026-10-30
+
+The owner refined D3 and D4 for PR 1b. These choices supersede the corresponding implementation details above:
+
+- **Inline work:** an instruction edit made during an interactive session stays inline and uses the host's usual permission prompt. An explicit edit the user makes in a first-party editor is already a user action. If a host cannot present the expected prompt, show a refusal or a clear fallback rather than silently treating agent output as approval.
+- **Self-improvement proposals:** review and approve in the Workbench Proposals UI, with the exact diff and base hashes visible. An agent cannot mint the UI approval record from a CLI flag or chat text.
+- **Headless Codex hook gap:** keep duties running with snapshot/restore protection if the installed Codex build writes after a `PreToolUse` deny. Prove restoration on the installed build and disclose the remaining interactive limit. The hook's deny response alone is not sufficient evidence.
+- **Legacy proposals:** convert prose-only changes into a concrete diff before approval. The old proposal remains readable but cannot be applied as freeform prose.
+- **Failure:** if applying a proposal fails its verification check, restore the prior files automatically and record the failure.
+
+The implementation checklist and acceptance criteria are in `docs/design/plans/2026-10-30-persona-trust-boundary.md`.
+
 ## What already exists (at `ae83df3`)
 
 - **Human-only approval:** `persona/ledger.js:91` refuses `approved` / `auto-applied` under `AOS_HEADLESS=1`;

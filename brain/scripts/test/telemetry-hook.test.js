@@ -107,7 +107,8 @@ test('a Codex header records the Codex process the hook runs under (host_pid, ho
   const run = spawnSync(fake, ['-e', inner], { encoding: 'utf8', env });
   assert.equal(run.status, 0, run.stderr);
   const header = JSON.parse(fs.readFileSync(LIVE('cx-p'), 'utf8').split('\n')[0]);
-  assert.equal(header.host_pid, Number(run.stdout), 'the pid of the codex process, not the hook\'s own');
+  const outer = require('../lib/host-process.js').findHostProcess('codex');
+  assert.equal(header.host_pid, outer?.pid || Number(run.stdout), 'the outermost Codex pid, not the hook\'s own');
   assert.match(header.host_started, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
   assert.notEqual(header.pid, header.host_pid);
   // Outside Codex (the test runner is the ancestor chain) both keys are present and null.

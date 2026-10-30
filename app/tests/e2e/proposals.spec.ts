@@ -1,14 +1,15 @@
 // Proposals (app-smoke: Proposals): pending proposals with lint, the expanded detail, rendered
 // proposal pages, BACKLOG and HISTORY from the ledger, the live badge, and the Review button's terminal session.
-// Deciding a proposal is the flag-closer skill's job, never the tab's.
+// Instruction proposals are decided from the exact-diff UI; the review skill handles ideas and flags.
 
 import { expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FX, appEnv, badge, closeNotes, content, expected, noteBody, notePath, openTab, terminalText, useApp } from "./harness";
 
-const app = useApp();
+const app = useApp({ env: { AOS_APP_WRITE: "proposals" } });
 const P = () => content(app().win);
 const row = (slug: string) => P().locator(".aos-pr-row", { has: app().win.locator(".aos-rt-name > div", { hasText: new RegExp(`^${slug}$`) }) });
 
@@ -167,4 +168,28 @@ test("Review in Claude ❯_ opens Code with a new session in the vault running t
   await expect(win.locator(".aos-wb-content .aos-term-tab.aos-term-tab-active")).toHaveAttribute("data-host", "claude");
   await expect(win.locator(".aos-wb-content .aos-tl-group[data-group='vault']")).toHaveCount(1);
   await expect(win.locator(".aos-wb-content .aos-term-tab.aos-term-tab-active .aos-tl-origin")).toHaveText("from Proposals");
+});
+
+test("an exact instruction proposal applies from the UI and Undo restores it", async () => {
+  const target = FX.v("persona/test-agent/PLAYBOOK.md");
+  const name = "2026-10-30-exact-ui.md";
+  const proposal = FX.v(`persona/proposals/${name}`);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, "old\n");
+  const base = `sha256:${createHash("sha256").update("old\n").digest("hex")}`;
+  const change = { path: "persona/test-agent/PLAYBOOK.md", op: "replace", base, content: "new\n" };
+  fs.writeFileSync(proposal, ["---", "slug: exact-ui", "kind: self", "target: persona/test-agent/PLAYBOOK.md",
+    "recheck: grep old persona/test-agent/PLAYBOOK.md", "changes: |", `  ${JSON.stringify([change])}`, "---", "", "# Exact UI", ""].join("\n"));
+  await expect(row("exact-ui")).toBeVisible();
+  await row("exact-ui").click();
+  const decision = P().locator(".aos-pr-reader");
+  await expect(decision.locator("pre")).toHaveText(["old\n", "new\n"]);
+  await decision.getByRole("button", { name: "Approve exact changes" }).click();
+  await expect.poll(() => fs.readFileSync(target, "utf8")).toBe("new\n");
+  await expect.poll(() => fs.existsSync(proposal)).toBe(false);
+  const history = P().locator(".aos-pr-history", { hasText: "exact-ui" });
+  await expect(history.getByRole("button", { name: "Undo" })).toBeVisible();
+  await history.getByRole("button", { name: "Undo" }).click();
+  await expect.poll(() => fs.readFileSync(target, "utf8")).toBe("old\n");
+  await expect.poll(() => fs.existsSync(proposal)).toBe(true);
 });

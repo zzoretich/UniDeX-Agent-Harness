@@ -2,6 +2,17 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.3.0",
+      "entries": [
+        {
+          "id": "instruction-approval",
+          "title": "Review exact instruction changes",
+          "body": "Self-improvement proposals show each file's before and after text in Proposals. Your approval is tied to the reviewed version, a failed check restores the old files, and History offers Undo while the files still match. Older prose proposals need an exact diff before approval.",
+          "steps": ["proposals.exact"]
+        }
+      ]
+    },
+    {
       "version": "2.2.0",
       "entries": [
         {

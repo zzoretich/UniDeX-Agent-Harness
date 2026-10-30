@@ -619,6 +619,16 @@ export const SURFACES: readonly Surface[] = [
     verified: true,
   },
   {
+    id: "proposals",
+    label: "Instruction proposals",
+    source: "main/ipc/proposals.ts for views/ProposalsTab.ts: the app-bundled applier accepts a reviewed digest and one-use token, validates exact paths and hashes, and applies or restores an instruction change",
+    scope: "main",
+    writes: ["persona/ledger.jsonl", "persona/proposals/*.md", "persona/IDENTITY.md", "persona/PLAYBOOK.md", "persona/duties/**", "persona/routines/**", "persona/*/IDENTITY.md", "persona/*/PLAYBOOK.md", "persona/*/duties/**", "persona/*/routines/**", "persona/*/skills/**", "persona/teams/*/TEAM.md", "brain/memory/feedback/*.md", "CLAUDE.md", "AGENTS.md", "AGENTICOS.md"],
+    spawns: [],
+    // Checked by the Proposals Electron fixture: preview, apply, and Undo run through the real main bridge.
+    verified: true,
+  },
+  {
     id: "sessions",
     label: "Sessions",
     source: "main/services/sessions.ts and main/services/git.ts, for views/SessionsTab.ts (spec 2026-10-07-unidex-sessions): main runs each turn through the runtime's lib/sessions.js in a workspace folder, keeps the thread, and diffs and commits the workspace repository; the page only names a workspace, a host and a prompt",

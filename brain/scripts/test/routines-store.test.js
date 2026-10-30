@@ -95,7 +95,7 @@ test('localDenied: a local routine never writes what feeds hosted sessions', () 
   assert.equal(store.validate({ ...base, output: 'MEMORY.md' }).join(), 'output: MEMORY.md is off limits to a local routine (MEMORY.md: it feeds every session)');
   assert.equal(store.validate({ ...base, output: 'brain/_index/out.md' }).join(), 'output: brain/_index/out.md is off limits to a local routine (brain/_index/: the session bootstrap and the runtime\'s caches)');
   assert.deepEqual(store.validate({ ...base, output: 'notes/out.md' }), []);
-  assert.deepEqual(store.validate({ ...base, kind: 'duty', engine: undefined, writes: ['brain/memory/feedback/'] }), [], 'a duty keeps its own rule');
+  assert.match(store.validate({ ...base, kind: 'duty', engine: undefined, writes: ['brain/memory/feedback/'] }).join(), /guarded instruction \(rule\)/, 'duties cannot write active feedback rules');
 });
 
 test('KEY_ORDER: engine sits before model, maxTurns after budgetUsd, output after writes', () => {
