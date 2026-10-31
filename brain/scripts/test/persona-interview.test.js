@@ -60,6 +60,7 @@ test('writePersona renders the full layout from the templates', () => {
   assert.match(p('STATE.md'), /- reflect: never\n- reflect-daily: never\n- sitrep: never\n- tick: never\n/);
   assert.match(p('IDENTITY.md'), /^# Atlas$/m);
   assert.match(p('IDENTITY.md'), /address the user as boss/);
+  assert.match(p('IDENTITY.md'), /For interactive software development, if Superpowers is installed/);
   assert.match(p('IDENTITY.md'), /^updated: 2026-09-04$/m);
   assert.match(p('STATE.md'), /^# Persona State$/m);
   assert.match(p('STATE.md'), /## Flags\n\n## Priorities\n- shipping\n- tests\n/);

@@ -72,6 +72,7 @@ test('buildPlaybook writes <vault>/persona/PLAYBOOK.md with the agent name and g
   assert.match(md, /^type: persona-playbook$/m);
   assert.match(md, /^updated: 2026-09-04$/m);
   assert.match(md, /^# Atlas PLAYBOOK — the front door$/m);
+  assert.match(md, /\| Interactive software development \| If installed in this host, use Superpowers skills/);
   for (const h of ['## Core Routes', '## Skills (generated)', '## Agents (generated)', '## Commands (generated)']) assert.ok(md.includes(h), h);
   assert.ok(md.includes('| demo-skill | Does demo things | |'));
   assert.ok(!md.includes('{{'), 'no unrendered placeholder');

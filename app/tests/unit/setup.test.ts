@@ -405,6 +405,7 @@ test("persona answers: trimmed, and each host's model only where that host is on
   assert.deepEqual(Object.keys(personaJson(a, { claude: false, codex: true })), ["name", "addressAs", "voice", "priorities", "dutyCodexModel", "dutyEffort", "schedule"]);
   assert.deepEqual(installArgs("/p/cli/aos.js", { host: "both", vault: "x", persona: null }, "/v", null), ["/p/cli/aos.js", "init", "--yes", "--vault", "/v", "--host", "both"]);
   assert.deepEqual(installArgs("/p/cli/aos.js", { host: "codex", vault: "x", persona: null }, "/v", "/a.json").slice(-2), ["--persona-json", "/a.json"]);
+  assert.ok(installArgs("/p/cli/aos.js", { host: "codex", vault: "x", persona: null, superpowers: false }, "/v", null).includes("--no-superpowers"));
   assert.deepEqual(installArgs("/p/cli/aos.js", { host: "none", vault: "x", persona: null }, "/v", null).slice(-2), ["--host", "none"]);
   assert.deepEqual(requestHosts("none"), { claude: false, codex: false });
   assert.deepEqual(requestHosts("both"), { claude: true, codex: true });

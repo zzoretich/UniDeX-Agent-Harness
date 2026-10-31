@@ -2,6 +2,17 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.4.0",
+      "entries": [
+        {
+          "id": "superpowers-coding",
+          "title": "Superpowers for interactive coding",
+          "body": "New setup can install the official Superpowers plugin on Claude Code and Codex. Your Chief of Staff uses its coding workflow when available. Existing installs can opt in from Settings or run aos superpowers install, and older Codex versions show upgrade guidance.",
+          "steps": ["settings.superpowers"]
+        }
+      ]
+    },
+    {
       "version": "2.3.0",
       "entries": [
         {

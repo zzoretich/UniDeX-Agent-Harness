@@ -112,6 +112,7 @@ export const InstallRequestSchema: z.ZodType<InstallRequest> = z.object({
   host: z.enum(["claude", "codex", "both", "none"]),
   vault: Text(4096).refine((s) => s.trim().length > 0, "a folder"),
   persona: PersonaSchema.nullable(),
+  superpowers: z.boolean().optional(),
 });
 
 /** "Bring in your history" (install-import B9, B13): ticked hosts and kinds, each once, and up to 100 proposal ids. */

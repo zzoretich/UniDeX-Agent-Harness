@@ -899,6 +899,7 @@ if (argv[0] === "init") {
   const cfg = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(FX.pristine, "home", ".claude", "agenticos.json"))}, "utf8"));
   cfg.vault = at("--vault");
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\\n");
+  if (!argv.includes("--no-superpowers")) for (const h of ["claude", "codex"]) if (at("--host") === h || at("--host") === "both") console.log("   Superpowers " + h + ": installed v" + (h === "claude" ? "7.0.0" : "7.0.1"));
   console.log("done.");
 } else if (argv[0] === "upgrade") {
   const cfg = JSON.parse(fs.readFileSync(file, "utf8"));

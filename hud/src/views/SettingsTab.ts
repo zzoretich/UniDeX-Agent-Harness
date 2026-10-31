@@ -311,7 +311,7 @@ export class SettingsTab {
     host.createDiv({ cls: "aos-rt-subhead aos-dim", text: "MASTER SWITCHES" });
     const grid = host.createDiv({ cls: "aos-st-master" });
     for (const { sw, row, on } of masterRows(list)) {
-      const chip = grid.createEl("label", { cls: `aos-st-switch${on ? " is-on" : ""}${this.busy.has(row.key) ? " is-busy" : ""}` });
+      const chip = grid.createEl("label", { cls: `aos-st-switch${on ? " is-on" : ""}${this.busy.has(row.key) ? " is-busy" : ""}`, attr: row.key === "integrations.superpowers.enabled" ? { "data-tour": "settings-superpowers" } : {} });
       chip.setAttr("title", `${row.key} — ${row.help}`);
       const box = chip.createEl("input", { attr: { type: "checkbox" } });
       box.checked = on;

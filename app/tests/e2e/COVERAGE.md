@@ -515,3 +515,5 @@ again (`brain-ai`).
    cuts each argument to 90 characters from its start, so `…/brain/scripts/reconcile-sessions.js` logs as
    `…/brain/scri…` and the spawns can only be told apart by their trailing arguments. `shell › read-only guard…` matches on
    those tails.
+
+Superpowers setup: `setup.spec.ts` checks the default-on choice; `app/tests/unit/setup.test.ts` checks the opt-out CLI flag. The per-host marketplace result and Settings retry are manual checks in `docs/app-smoke.md` until a signed-in host fixture is available.

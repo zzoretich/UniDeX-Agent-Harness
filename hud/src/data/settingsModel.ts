@@ -53,6 +53,7 @@ export const MASTER_SWITCHES: MasterSwitch[] = [
   flag("telemetry.enabled", "Telemetry"),
   flag("updates.check", "Update checks"),
   flag("skills.sync", "Skill sharing"),
+  flag("integrations.superpowers.enabled", "Superpowers coding skills"),
   flag("agents.sync", "Agent sharing"),
 ];
 

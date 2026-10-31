@@ -366,7 +366,7 @@ test('init --dry-run prints the numbered plan and writes nothing', () => {
   assert.equal(r.status, 0, r.stderr);
   const lines = r.stdout.split('\n').filter((l) => l.startsWith('[dry-run] '));
   assert.deepEqual(lines.map((l) => l.replace(/^\[dry-run\] (\d+)\. (\S+).*/, '$1 $2')),
-    ['1 copy', '2 vendor', '3 write', '4 install', '5 register', '6 run', '7 first']);
+    ['1 copy', '2 vendor', '3 write', '4 install', '5 register', '6 install', '7 run', '8 first']);
   assert.ok(!fs.existsSync(sb.vault));
   assert.ok(!fs.existsSync(path.join(sb.cfg, 'agenticos.json')));
   assert.equal(sb.log('FAKE_NPM_LOG'), '');
@@ -410,9 +410,10 @@ test('init into a temp vault: seed set, vendored runtime, agenticos.json, plugin
   assert.equal(readJson(path.join(v, 'brain', 'config.json')).dailyNote.layout, '{yyyy}/{yyyy}-{MM}-{MMMM}/{yyyy}-{MM}-{dd}.md');
 
   const cfg = readJson(path.join(sb.cfg, 'agenticos.json'));
-  assert.deepEqual(Object.keys(cfg), ['version', 'vault', 'node', 'claudeConfigDir', 'provider', 'claude', 'ollama', 'telemetry', 'cost', 'persona', 'graph', 'hosts']);
+  assert.deepEqual(Object.keys(cfg), ['version', 'vault', 'node', 'claudeConfigDir', 'provider', 'claude', 'ollama', 'telemetry', 'cost', 'persona', 'graph', 'integrations', 'hosts']);
   // Design D1: a Claude-only install records exactly that; the Codex home is remembered for a later --host codex.
   assert.deepEqual(cfg.hosts, { claude: { enabled: true, configDir: sb.cfg, bin: FAKE_CLAUDE }, codex: { enabled: false, home: path.join(sb.home, '.codex') } });
+  assert.equal(cfg.integrations.superpowers.enabled, true, 'new installs default to Superpowers');
   assert.equal(cfg.vault, v);
   // D12: Homebrew's stable opt link when this Node runs from the Cellar, else the running Node itself.
   assert.equal(cfg.node, require('./node-path.js').stableNode(process.execPath));
@@ -1564,4 +1565,43 @@ test('output larger than a pipe buffer arrives whole: `aos config list --json` r
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.stdout.length > 65536, `the list is ${r.stdout.length} bytes: past one 64 KB pipe buffer, as the test needs`);
   assert.ok(JSON.parse(r.stdout).settings.length > 80, 'the whole list, not the first 64 KB');
+});
+
+test('Superpowers setup defaults on, opt-out skips both host plugin installs, and existing installs stay off on upgrade', () => {
+  const on = twoHostSandbox();
+  const both = aos(on, ['init', '--host', 'both', '--vault', on.vault, '--provider', 'none', '--yes']);
+  assert.equal(both.status, 0, both.stderr + both.stdout);
+  assert.equal(readJson(path.join(on.cfg, 'agenticos.json')).integrations.superpowers.enabled, true);
+  assert.match(on.log('FAKE_CLAUDE_LOG'), /plugin install superpowers@claude-plugins-official/);
+  assert.match(on.log('FAKE_CODEX_LOG'), /plugin add superpowers@openai-curated-remote/);
+  const off = twoHostSandbox();
+  const opted = aos(off, ['init', '--host', 'both', '--vault', off.vault, '--provider', 'none', '--yes', '--no-superpowers']);
+  assert.equal(opted.status, 0, opted.stderr + opted.stdout);
+  assert.equal(readJson(path.join(off.cfg, 'agenticos.json')).integrations.superpowers.enabled, false);
+  assert.doesNotMatch(off.log('FAKE_CLAUDE_LOG'), /plugin install superpowers@/);
+  assert.doesNotMatch(off.log('FAKE_CODEX_LOG'), /plugin add superpowers@/);
+  const p = path.join(off.cfg, 'agenticos.json');
+  const cfg = readJson(p); delete cfg.integrations; fs.writeFileSync(p, JSON.stringify(cfg));
+  const before = off.log('FAKE_CLAUDE_LOG').length;
+  const up = aos(off, ['upgrade', '--from-local', ROOT]);
+  assert.equal(up.status, 0, up.stderr + up.stdout);
+  assert.equal(readJson(p).integrations.superpowers.enabled, false);
+  assert.doesNotMatch(off.log('FAKE_CLAUDE_LOG').slice(before), /plugin install superpowers@/);
+});
+
+test('Superpowers CLI opt-in and Settings config write the machine preference', () => {
+  const sb = sandbox();
+  assert.equal(aos(sb, ['init', '--host', 'none', '--vault', sb.vault, '--provider', 'none', '--yes', '--no-superpowers']).status, 0);
+  const set = aos(sb, ['config', 'set', 'integrations.superpowers.enabled', 'true', '--json']);
+  assert.equal(set.status, 0, set.stderr + set.stdout);
+  assert.equal(readJson(path.join(sb.cfg, 'agenticos.json')).integrations.superpowers.enabled, true);
+  assert.ok(JSON.parse(set.stdout).followUps.some((x) => x.command === 'aos superpowers install'));
+  const off = aos(sb, ['config', 'set', 'integrations.superpowers.enabled', 'false', '--json']);
+  assert.equal(off.status, 0, off.stderr + off.stdout);
+  assert.deepEqual(JSON.parse(off.stdout).followUps, []);
+  const denied = aos(sb, ['superpowers', 'install'], { AOS_HEADLESS: '1' });
+  assert.equal(denied.status, 1);
+  assert.match(denied.stderr, /needs an interactive session/);
+  assert.equal(aos(sb, ['superpowers', 'install']).status, 0, 'no host yet saves the preference');
+  assert.equal(readJson(path.join(sb.cfg, 'agenticos.json')).integrations.superpowers.enabled, true);
 });

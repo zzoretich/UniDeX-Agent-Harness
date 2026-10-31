@@ -100,6 +100,11 @@ async function add(host, flags = {}, opts = {}) {
     codexMode = A.wireCodex(ctx, { bin, mode });
   }
 
+  if (require('./superpowers.js').enabled(next)) {
+    const r = require('./superpowers.js').ensure({ host, bin, mode: codexMode || 'plugin', run: A.run });
+    io.log(`- Superpowers ${host}: ${r.state}${r.version ? ` v${r.version}` : ''}${r.state === 'installed' ? '' : ` — ${r.detail || r.command}`}`);
+  }
+
   // 4. that host's fast import phases
   io.log(`- import from ${host === 'claude' ? 'Claude Code' : 'Codex'}: instructions, memories, projects (proposed only), MCP servers`);
   const I = require('./import.js');

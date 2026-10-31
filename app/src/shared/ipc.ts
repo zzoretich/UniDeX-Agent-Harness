@@ -252,6 +252,8 @@ export interface InstallRequest {
   vault: string;
   /** null: no interview now (`aos persona` later). */
   persona: PersonaAnswers | null;
+  /** Include the official third-party Superpowers plugin for selected hosts. Default on for new setup. */
+  superpowers?: boolean;
 }
 
 export type SetupJob = "fix" | "install" | "upgrade" | "import" | "unwire";

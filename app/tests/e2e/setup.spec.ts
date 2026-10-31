@@ -143,6 +143,7 @@ test("hosts offer what is ready, and No agent CLI yet always; the ready host is 
   await win.locator(".aos-setup-next").click();
   await expect(win.locator('.aos-setup-body[data-step="choose"]')).toBeVisible();
   await expect(win.locator('input[name="aos-host"][value="claude"]')).toBeChecked();
+  await expect(win.locator('input[data-superpowers="true"]')).toBeChecked();
   await expect(win.locator('input[name="aos-host"][value="codex"]')).toBeDisabled();
   await expect(win.locator('input[name="aos-host"][value="both"]')).toBeDisabled();
   await expect(win.locator('input[name="aos-host"][value="none"]')).toBeEnabled();
@@ -223,6 +224,7 @@ test("Bring in your history: Claude Code's counts per kind, all ticked, the prop
 
 test("Finish lists what is left: the CLAUDE.md line as a diff, added only when asked, and no Codex or no-host steps", async () => {
   const { win } = app();
+  await expect(win.locator('[data-section="superpowers"]')).toContainText("Superpowers claude: installed v7.0.0");
   const diff = win.locator('[data-section="claude-md"] .aos-setup-diff');
   await expect(diff.locator(".aos-setup-diff-path")).toHaveText(CLAUDE_MD);
   await expect(diff.locator(".aos-setup-diff-line.is-context")).toHaveText(["  # My Claude notes", "  ", "  Prefer small diffs."]);

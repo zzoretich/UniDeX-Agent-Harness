@@ -4,6 +4,13 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- **Superpowers for interactive coding.** New setup installs the official third-party Superpowers plugin on each selected Claude Code and modern Codex host by default, with a visible opt-out. The Chief of Staff routes software-development work through its available skills. `aos superpowers status|install`, doctor, and Settings show status or retry missing installs; older Codex CLIs show upgrade guidance. Existing installs keep their current host plugins and require explicit opt-in. <!-- tour: settings.superpowers -->
+
+### Upgrading
+- Existing installations can enable this in Settings or run `aos superpowers install`. Review the Chief of Staff identity update in Proposals to add the coding route; `aos upgrade` never rewrites an existing identity directly.
+
+
 ## [2.3.0] — 2026-10-30
 
 ### Added

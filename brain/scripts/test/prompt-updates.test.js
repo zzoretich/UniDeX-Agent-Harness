@@ -119,3 +119,18 @@ test('fenceFor outruns the longest backtick run inside the text', () => {
   assert.equal(P.slugFor('IDENTITY.md'), 'update-identity');
   assert.equal(P.slugFor('duties/sitrep.md'), 'update-duty-sitrep');
 });
+
+
+test('an older identity receives the Superpowers coding route only as an exact-diff proposal', () => {
+  const vault = setUp();
+  const rel = 'persona/IDENTITY.md';
+  const current = read(vault, rel);
+  const old = current.split('\n').filter((line) => !line.includes('For interactive software development, if Superpowers is installed')).join('\n');
+  fs.writeFileSync(path.join(vault, rel), old);
+  const result = run(vault);
+  assert.deepEqual(result.filed, ['update-identity']);
+  assert.equal(read(vault, rel), old, 'upgrade leaves the protected identity untouched');
+  const proposal = Exact.preview(vault, '2026-10-24-update-identity.md');
+  assert.equal(proposal.changes[0].path, rel);
+  assert.match(proposal.changes[0].content, /For interactive software development, if Superpowers is installed/);
+});

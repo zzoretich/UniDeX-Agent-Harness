@@ -7,6 +7,10 @@ skills and agents, five scheduled duties (monitor, reflect, reflect-daily, sitre
 a heartbeat, and a proposals protocol for changes that need your
 sign-off. The machinery ships; the content is generated for you and never leaves your machine.
 
+## Interactive coding route
+
+On new installs, the Chief of Staff identity and initial playbook tell it to consult available [Superpowers](https://github.com/obra/superpowers) skills for discovery, design, planning, tests, debugging, review and finish during interactive software development. Claude Code and Codex receive the official plugin separately. If the plugin is absent or disabled on a host, this route is skipped there. User instructions, host permissions and approval of guarded instruction proposals still govern. Background duties do not use this route. Existing identities receive an exact-diff proposal on `aos upgrade`; approve it in Proposals to add the route.
+
 ## The interview
 
 The `aos init` Chief of Staff interview (the **Chief of Staff interview** step in `docs/install.md`), and `aos persona` at any time, ask in order:

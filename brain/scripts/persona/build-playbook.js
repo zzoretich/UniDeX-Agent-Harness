@@ -28,6 +28,7 @@ updated: ${now.toISOString().slice(0, 10)}
 
 | Intent | Route | Notes |
 |---|---|---|
+| Interactive software development | If installed in this host, use Superpowers skills for discovery, design, planning, TDD, debugging, review, and finish; follow user instructions and host permissions. | |
 | _curated after the first reflect duty_ | | |
 `;
 }

@@ -71,6 +71,7 @@ test('a Claude Code install adds Codex: wired as a plugin, both hosts on, AGENTS
   assert.deepEqual([cfg.hosts.claude.enabled, cfg.hosts.codex.enabled, cfg.hosts.codex.install, cfg.hosts.codex.bin], [true, true, 'plugin', F('fake-codex.sh')]);
   assert.equal(cfg.hosts.claude.bin, before.hosts.claude.bin, 'the other host is untouched');
   assert.match(sb.log('FAKE_CODEX_LOG'), /^plugin add agenticos@agenticos-workbench --json$/m);
+  assert.match(sb.log('FAKE_CODEX_LOG'), /^plugin add superpowers@openai-curated-remote --json$/m, 'the new host inherits the Superpowers preference');
   assert.match(r.stdout, /^hosts add codex: .*fake-codex\.sh$/m);
   assert.match(r.stdout, /^- instructions \(Codex\): 1 written/m, 'whole file: no local model under provider none');
   assert.match(r.stdout, /^- mcp: 2 on Codex listed$/m);
