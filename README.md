@@ -31,6 +31,10 @@
 
 UniDeX is an agent-driven development harness: Claude Code, Codex and local models work on your projects together throughout the development lifecycle. One model plans and the other reviews the plan, one builds and the other inspects the diff, and a model on your Mac handles the routine background work (session summaries, memory, insights) at no cost. You work through your **Chief of Staff**, a named agent you interview once that answers in every Claude Code or Codex session, briefs you on where your work stands, and improves itself as it goes: repeated corrections become rules, changes to its own duties arrive as proposals you approve, and it earns autonomy one kind of change at a time. Run it with Claude Code, Codex or both: they share one memory, so every session starts with what the last ones learned, and your data goes nowhere but your Mac and your own Claude Code or Codex login.
 
+## Superpowers coding skills
+
+New setup offers the [Superpowers](https://github.com/obra/superpowers) third-party plugin, checked by default, for every selected Claude Code or modern Codex host. The Chief of Staff consults its skills during interactive software development; background duties and user approvals stay under their existing rules. Use `aos superpowers status` to check each host or `aos superpowers install` to enable and retry. Existing UniDeX installs keep Superpowers off until enabled in Settings or CLI. UniDeX never removes a user-owned Superpowers plugin. Older Codex CLIs need plugin support first.
+
 <a name="download"></a>
 <p align="center">
   <a href="https://github.com/zzoretich/UniDeX-Agent-Harness/releases/latest"><img src="docs/assets/download.svg" width="280" alt="Download UniDeX for macOS" /></a>

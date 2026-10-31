@@ -33,6 +33,7 @@ export interface AgenticosJson {
   telemetry?: { enabled?: boolean; redact?: boolean; retentionDays?: number; staleAfterMinutes?: number };
   updates?: { check?: boolean; intervalHours?: number };
   cost?: { enabled?: boolean; monthlyBudget?: number | null };
+  integrations?: { superpowers?: { enabled?: boolean } };
   persona?: { enabled?: boolean };
   routines?: { enabled?: boolean; perRunUsd?: number; perDayUsd?: number; tools?: string; externalLabels?: string[] };
 }
@@ -60,6 +61,7 @@ export interface VaultConfig {
   telemetry: { enabled: boolean; redact: boolean; retentionDays: number; staleAfterMinutes: number };
   updates: { check: boolean; intervalHours: number };
   cost: { enabled: boolean; monthlyBudget: number | null };
+  integrations: { superpowers: { enabled: boolean } };
   graph: { enabled: boolean; out: string; timeoutSec: number; staleDays: number; semantic: { enabled: boolean | "auto"; runner: "auto" | "claude" | "codex"; everyHours: number; perCallUsd: number; perDayUsd: number; tokenBudget: number; timeoutSec: number } };
   notifications: { osAlert: boolean; retentionDays: number; maxPerSenderPerHour: number };
   persona: { enabled: boolean; runner: "auto" | "claude" | "codex"; model: string | null; effort: "low" | "medium" | "high" | null; codexModel: string | null; failover: boolean; perDutyUsd: number; perDayUsd: number; watchdog: { graceMinutes: number; notify: boolean }; tick: { flagAgeDays: number; earlyReflect: { corrections: number; dutyFailures: number } }; briefing: { enabled: boolean; staleHours: number } };
@@ -121,6 +123,7 @@ export const VAULT_CONFIG_DEFAULTS: VaultConfig = {
   telemetry: { enabled: true, redact: true, retentionDays: 30, staleAfterMinutes: 30 },
   updates: { check: true, intervalHours: 24 },
   cost: { enabled: false, monthlyBudget: null },
+  integrations: { superpowers: { enabled: false } },
   graph: { enabled: true, out: "brain/graphify-out", timeoutSec: 120, staleDays: 7, semantic: { enabled: "auto", runner: "auto", everyHours: 24, perCallUsd: 0.25, perDayUsd: 1.0, tokenBudget: 20000, timeoutSec: 1800 } },
   notifications: { osAlert: true, retentionDays: 30, maxPerSenderPerHour: 6 },
   persona: { enabled: true, runner: "auto", model: "claude-opus-5-5", effort: null, codexModel: "gpt-6-sol", failover: true, perDutyUsd: 2.0, perDayUsd: 6.0, watchdog: { graceMinutes: 45, notify: true }, tick: { flagAgeDays: 7, earlyReflect: { corrections: 3, dutyFailures: 2 } }, briefing: { enabled: true, staleHours: 3 } },

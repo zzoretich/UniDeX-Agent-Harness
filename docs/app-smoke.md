@@ -401,3 +401,10 @@ On by default since 1.2.0 (plan 2026-10-07-unidex-sessions C3). Run these in a w
 - [ ] The HUD's Omnisearch command registers no default hotkey; the app binds ⌘K to it (View ▸ Search…), and ⌘P opens the command palette.
 - [ ] DISK donut and COST DETAIL sparkline render (SVG nodes, no innerHTML) in the SYSTEM drawer.
 - [ ] Timestamps follow the OS locale (the Workbench has no clock since UniDeX).
+
+### Superpowers setup check
+
+- On a fresh Claude-only setup, leave Include Superpowers checked. Finish and `aos doctor` show the installed Claude plugin version; a new Chief uses its coding route.
+- Repeat with Codex-only plugin mode, then both hosts. Each host has its own plugin status. Uncheck the choice once and confirm no Superpowers install is attempted.
+- With an old Codex CLI using direct wiring, doctor and Finish show the plugin-support gap and retry command. A failed marketplace install leaves UniDeX usable and reports the manual command.
+- In Settings, turn on Superpowers for an existing install and click the `aos superpowers install` follow-up. Turning it off leaves the host plugin in place.

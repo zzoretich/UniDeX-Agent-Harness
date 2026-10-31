@@ -4,7 +4,7 @@
  * aos.js — AgenticOS Workbench installer and maintenance CLI. Zero dependencies (node: builtins only).
  *
  *   aos init [--vault <dir>] [--host auto|claude|codex|both|none] [--provider local|auto|ollama|claude|codex|none]
- *            [--cost] [--budget <usd>] [--persona-json <file>] [--from-local <repo-dir>] [--dry-run] [--yes]
+ *            [--cost] [--budget <usd>] [--persona-json <file>] [--from-local <repo-dir>] [--no-superpowers] [--dry-run] [--yes]
  *   (Node >= 20 and uv are hard prerequisites of init; Ollama is a warning, and python3 >= 3.9 is needed only with --cost
  *   (install-import B1). --host none installs with no host (B2). The Workbench is the AgenticOS Workbench app, which
  *   installs nothing into the vault, so Obsidian is no longer one: --no-obsidian, --terminal and `aos terminal install`
@@ -50,12 +50,14 @@ const PROVIDERS = ['local', 'auto', 'ollama', 'claude', 'codex', 'none'];
 const RUNTIME_SCRIPTS = { 'scan-vault': 'scan-vault.js', 'build-brain-md': 'build-brain-md.js', recall: 'sdk/recall-cli.js', 'skills-sync': 'skills-sync.js' };
 const HOST_CHOICES = ['auto', 'claude', 'codex', 'both', 'none'];
 const CH = require('./codex-host.js');
+const SP = require('./superpowers.js');
 const HD = require('./host-dirs.js');
 const { stableNode, isCellarPath } = require('./node-path.js');
 
 const USAGE = `usage:
   aos init [--vault <dir>] [--host auto|claude|codex|both|none] [--provider local|auto|ollama|claude|codex|none]
            [--cost] [--budget <usd>] [--persona-json <file>] [--from-local <repo-dir>] [--dry-run] [--yes]
+  aos superpowers [status | install] (install enables it and retries missing host plugins)
   aos doctor | status | provider [local|auto|ollama|claude|codex|none]
   aos local [status [--json] | pull [model…] | use <model>]
   aos upgrade [--from-local <repo-dir>]
@@ -479,6 +481,13 @@ async function doctor() {
     add('codex skills', cx.skills > 0, `${cx.skills} generated under ${cx.skillsDir}${cx.skills ? '' : ' — run: aos upgrade'}`);
     if (cx.memories) add('codex memories', true, 'Codex\'s built-in memories are on (separate from the vault; aos never touches them)', 'info');
   }
+  if (cfg && SP.enabled(cfg)) for (const host of ['claude', 'codex']) {
+    if (!hosts[host]) continue;
+    const sb = host === 'claude' ? bin : codexBin(cfg);
+    const mode = host === 'codex' ? CH.codexInstallMode(sb, run) : 'plugin';
+    const r = SP.status({ host, bin: sb, mode, run });
+    add(`Superpowers (${host})`, r.state === 'installed', r.state === 'installed' ? `installed${r.version ? ` v${r.version}` : ''}` : `${r.state}: ${r.detail || ''} — ${r.command}`, 'warn');
+  }
   // Which CLI runs persona duties and prompt routines (codex-parity D4): claude when enabled and installed, else codex.
   // The persona row is the Chief of Staff's (local-first A4): its host, its model there, and the host a duty fails over to.
   if (vault && exists(scriptPath(vault, 'lib/headless.js'))) {
@@ -783,7 +792,7 @@ function assertVaultOk(vault) {
   if (insideDir(cxHome, vault)) throw new CheckFailed(`refusing ${vault}: it contains the Codex home ${cxHome}`);
 }
 
-function buildUserConfig(existing, { vault, provider, version, bin, hosts, codexBin: cxBin, codexHome: cxHome }) {
+function buildUserConfig(existing, { vault, provider, version, bin, hosts, codexBin: cxBin, codexHome: cxHome, superpowers }) {
   const base = {
     // local-first A10: a new install runs background work on the local engine; a file written before 2.0 without the key
     // was on auto, and moves to local only when its owner says so (A9: aos migrate local-first).
@@ -794,6 +803,7 @@ function buildUserConfig(existing, { vault, provider, version, bin, hosts, codex
     cost: { enabled: false },
     persona: { enabled: true },
     graph: { enabled: true },
+    integrations: { superpowers: { enabled: false } },
     // Design D1: the hosts a session may run under. A config written before this key existed is a Claude-only install.
     hosts: { claude: { enabled: true, configDir: configDir() }, codex: { enabled: false, home: CH.codexHome(existing) } },
   };
@@ -804,6 +814,7 @@ function buildUserConfig(existing, { vault, provider, version, bin, hosts, codex
   merged.node = stableNode(process.execPath);
   merged.claudeConfigDir = configDir();
   if (provider) merged.provider = provider;
+  if (superpowers !== undefined) merged.integrations.superpowers.enabled = !!superpowers;
   // Contract §2: record the resolved `claude` CLI; absent when none was found, so every reader falls back to its probe.
   if (bin !== undefined) {
     const caps = { ...(merged.claude || {}) };
@@ -1049,6 +1060,9 @@ async function init(flags) {
   const hosts = resolveHosts(flags, cfg0, { claudeAvail: claudeOk, codexAvail: codexOk });
   assertKeepsHosts(flags, cfg0, hosts);
   ctx.hosts = hosts;
+  // Existing installs without this preference remain off; new installs default on.
+  const superpowers = flags.superpowers === false ? false : cfg0 ? SP.enabled(cfg0) : true;
+  out.log(`Superpowers (third-party coding plugin): ${superpowers ? 'included' : 'off'}${hosts.codex && CH.codexInstallMode(cxBin, run) === 'direct' ? '; this Codex CLI needs plugin support' : ''}`);
   if (hosts.claude) {
     if (!bin) {
       if (provider !== 'none') throw new CheckFailed('claude CLI not found — install Claude Code, pass --host codex, or pass --host none to install with no host yet');
@@ -1136,7 +1150,7 @@ async function init(flags) {
   // 5. agenticos.json
   await act(`write ${configPath()}`, () => {
     const existing = readJson(configPath());
-    const next = buildUserConfig(existing, { vault, provider, version, bin: hosts.claude ? bin : undefined, hosts, codexBin: hosts.codex ? cxBin : undefined, codexHome: hosts.codex ? CH.codexHome(existing) : undefined });   // execution amendment 2026-09-15 (A15): `cost:` dropped, `bin` stays
+    const next = buildUserConfig(existing, { vault, provider, version, bin: hosts.claude ? bin : undefined, hosts, codexBin: hosts.codex ? cxBin : undefined, codexHome: hosts.codex ? CH.codexHome(existing) : undefined, superpowers });   // execution amendment 2026-09-15 (A15): `cost:` dropped, `bin` stays
     writeJson(configPath(), next);
     written.push(configPath());
     noteClaudeBinChange(vault, existing && existing.claude && existing.claude.bin, next.claude.bin);
@@ -1160,6 +1174,11 @@ async function init(flags) {
   if (hosts.codex) await act(cxMode === 'plugin'
     ? `install the Codex plugin ${CH.PLUGIN_ID} from the ${MARKETPLACE} marketplace and remove any direct wiring`
     : 'wire the Codex host: hooks.json, the agenticos MCP server, and the skills under ~/.agents/skills', () => { ctx.codexInstall = wireCodex(ctx, { bin: cxBin, mode: cxMode }); });
+
+  if (superpowers) {
+    if (hosts.claude) await act('install or check Superpowers for Claude Code', () => superpowersInstall('claude', bin));
+    if (hosts.codex) await act('install or check Superpowers for Codex', () => superpowersInstall('codex', cxBin, ctx.codexInstall));
+  }
 
   // 7. The Workbench is the app, which brings its own terminal: --terminal has nothing left to install.
   if (flags.terminal) out.log(TERMINAL_NOTE);
@@ -1383,6 +1402,10 @@ async function upgrade(flags) {
       ? `install or refresh the Codex plugin ${CH.PLUGIN_ID}, then remove any direct wiring`
       : 're-wire the Codex host (hooks.json, MCP registration, regenerated skills)', () => wireCodex(ctx, { bin: cbin, mode, upgrade: true }));
   }
+  if (SP.enabled(cfg)) {
+    if (hosts.claude) await act('check Superpowers for Claude Code', () => superpowersInstall('claude', bin));
+    if (hosts.codex) await act('check Superpowers for Codex', () => superpowersInstall('codex', codexBin(cfg), CH.codexInstallMode(codexBin(cfg), run)));
+  }
   await act('add any new default keys to brain/config.json (user values win)', () => {
     const defaults = readJson(path.join(repo, 'brain', 'scripts', 'config.default.json'), {});
     const p = path.join(vault, 'brain', 'config.json');
@@ -1471,6 +1494,7 @@ async function uninstall(flags) {
     const next = buildUserConfig(cfg, { vault: cfg.vault, version: cfg.version, hosts: { claude: hosts.claude && flags.host !== 'claude', codex: hosts.codex && flags.host !== 'codex' } });
     if (flags.host === 'codex') delete next.hosts.codex.install;
     writeJson(configPath(), next);
+    out.log('Superpowers is a separate plugin and remains installed on your hosts.');
     out.log(`hosts now: ${[next.hosts.claude.enabled && 'claude', next.hosts.codex.enabled && 'codex'].filter(Boolean).join(', ') || 'none'}`);
     return 0;
   }
@@ -1487,6 +1511,7 @@ async function uninstall(flags) {
   } else if (hosts.claude) {
     out.warn(`claude CLI not found; skipped: claude plugin uninstall ${PLUGIN_ID} && claude plugin marketplace remove ${MARKETPLACE}`);
   }
+  out.log('Superpowers is a separate plugin and remains installed on your hosts.');
   removeSchedules();
   const graphTools = require('./graph-cmd.js').removeTools();
   if (graphTools) out.log(`removed ${graphTools}`);
@@ -1666,6 +1691,41 @@ function updateNotice() {
   return require('./update-check.js').cmdUpdateNotice({ vault: updateVault(), configDir: configDir(), io: console });
 }
 
+function superpowersInstall(host, bin, mode = 'plugin') {
+  const result = SP.ensure({ host, bin, mode, run });
+  const detail = result.version ? ` v${result.version}` : '';
+  if (result.state === 'installed') out.log(`   Superpowers ${host}: installed${detail}`);
+  else if (result.state === 'disabled') out.warn(`Superpowers ${host} is installed but disabled; leaving your host setting unchanged`);
+  else out.warn(`Superpowers ${host}: ${result.state}${result.detail ? ` (${result.detail})` : ''}; run: ${result.command}`);
+  return result;
+}
+
+function superpowersCmd(sub) {
+  const verb = sub[0] || 'status';
+  if (!['status', 'install'].includes(verb) || sub.length > 1) throw new UsageError('aos superpowers [status | install]');
+  if (verb === 'install' && process.env.AOS_HEADLESS === '1') throw new CheckFailed('Superpowers install needs an interactive session');
+  const cfg = loadConfigOrThrow();
+  if (verb === 'install' && !SP.enabled(cfg)) {
+    cfg.integrations = { ...(cfg.integrations || {}), superpowers: { enabled: true } };
+    writeJson(configPath(), cfg);
+  }
+  const hosts = hostsOf(cfg);
+  if (!hosts.claude && !hosts.codex) { out.log('Superpowers preference saved; add a host with aos hosts add claude|codex'); return 0; }
+  let healthy = true;
+  for (const host of ['claude', 'codex']) {
+    if (!hosts[host]) continue;
+    const bin = host === 'claude' ? claudeBin(cfg) : codexBin(cfg);
+    const mode = host === 'codex' ? CH.codexInstallMode(bin, run) : 'plugin';
+    if (verb === 'install') { if (superpowersInstall(host, bin, mode).state !== 'installed') healthy = false; }
+    else {
+      const r = SP.status({ host, bin, mode, run });
+      out.log(`${host}: ${r.state}${r.version ? ` v${r.version}` : ''}${r.detail ? ` — ${r.detail}` : ''}${r.state === 'installed' ? '' : `; run: ${r.command}`}`);
+      if (r.state !== 'installed') healthy = false;
+    }
+  }
+  return healthy ? 0 : 1;
+}
+
 // ── args and main ─────────────────────────────────────────────────────────────
 // `aos workspace`'s own (spaces-redesign D28): --into, --cwd, --set, --expect take a value; --git, --pin, --empty do not.
 // `aos memory`'s (brain-hub D13): --by takes a value (supersede's winner), --into merge's fields (brain-ai A9); set's
@@ -1678,7 +1738,7 @@ const MIGRATE_FLAGS = ['status', 'apply', 'chief', 'decline', 'undo'];
 const BOOL_FLAGS = new Set(['dry-run', 'yes', 'terminal', 'cost', 'keep-vault', 'statusline', 'off', 'quiet', 'json', 'refresh', 'semantic', 'all', 'git', 'pin', 'empty', 'skip-brain-md', 'estimate',
   ...MIGRATE_FLAGS]);
 // --no-obsidian is parsed and ignored: Obsidian is no longer installed, and a script written for an older release keeps working.
-const NEGATABLE_FLAGS = new Set(['obsidian']);
+const NEGATABLE_FLAGS = new Set(['obsidian', 'superpowers']);
 function camel(s) { return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }
 /** `--flag`, `--no-flag`, `--flag value`, `--flag=value`; unknown flags are a usage error (a typo must never start a real install). */
 function parseArgs(argv) {
@@ -1722,6 +1782,7 @@ async function main(argv) {
   if (flags.dryRun && !['init', 'routines', 'skills', 'agents', 'config', 'workspace', 'memory', 'import', 'mcp'].includes(cmd)) throw new UsageError('--dry-run is only supported by `aos init`, `aos routines run`, `aos skills sync`, `aos agents sync`, `aos config set`, `aos config unset`, `aos workspace set`, `aos memory set`, `aos memory fix`, `aos import` and `aos mcp copy`');
   switch (cmd) {
     case 'init': return init(flags);
+    case 'superpowers': return superpowersCmd(sub);
     case 'upgrade': return upgrade(flags);
     case 'uninstall': return uninstall(flags);
     case 'terminal': return terminal(sub);

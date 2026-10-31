@@ -77,7 +77,7 @@ export function personaJson(a: PersonaAnswers, hosts: { claude: boolean; codex: 
 
 /** `aos init`'s arguments: unattended (--yes), the user's host (or none) and folder, the persona answers when given. */
 export function installArgs(cli: string, req: InstallRequest, vault: string, personaFile: string | null): string[] {
-  return [cli, "init", "--yes", "--vault", vault, "--host", req.host, ...(personaFile ? ["--persona-json", personaFile] : [])];
+  return [cli, "init", "--yes", "--vault", vault, "--host", req.host, ...(req.superpowers === false ? ["--no-superpowers"] : []), ...(personaFile ? ["--persona-json", personaFile] : [])];
 }
 
 /** The hosts an install request turns on. */

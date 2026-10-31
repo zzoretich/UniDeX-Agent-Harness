@@ -65,6 +65,8 @@ interface State {
   host: Host;
   /** The user clicked a host radio: their choice stands across checks while it is offered (F5). */
   hostPicked: boolean;
+  superpowers: boolean;
+  superpowersResult: Partial<Record<"claude" | "codex", string>>;
   vault: string;
   persona: PersonaAnswers;
   personaSkipped: boolean;
@@ -95,7 +97,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
   const setup = info.setup;
   const s: State = {
     step: "check", report: null, checking: false, job: null, progress: null, failed: null, queue: [],
-    host: "claude", hostPicked: false,
+    host: "claude", hostPicked: false, superpowers: true, superpowersResult: {},
     vault: setup?.configuredVault ?? setup?.defaultVault ?? "~/AgenticOS",
     // local-first A4: the Chief of Staff's hosted models, preselected; each is sent only where its host is on.
     persona: { name: "", addressAs: "", voice: "", priorities: [], dutyModel: CHIEF_MODELS.claude, dutyCodexModel: CHIEF_MODELS.codex, dutyEffort: "medium", schedule: true },
@@ -146,6 +148,11 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       void check().then(() => { if (code === 0) next(); });
     } else if (job?.kind === "install") {
       s.installExit = code;
+      const installLog = term?.plain ?? "";
+      for (const host of ["claude", "codex"] as const) {
+        const line = installLog.split("\n").find((text) => text.includes(`Superpowers ${host}:`) || text.includes(`Superpowers ${host} is installed but disabled`));
+        if (line) s.superpowersResult[host] = line.replace(/^.*Superpowers /, "Superpowers ").trim();
+      }
       if (code === 0) { s.step = "history"; void loadHistory(); }
       render();
     } else if (job?.kind === "unwire") {
@@ -224,7 +231,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     if (!s.report || !hostOffered(s.host, s.report.hosts)) { s.host = reconcileHost(s.host, s.report?.hosts ?? { claude: false, codex: false }, s.hostPicked); s.step = "choose"; s.error = "Choose a host again: what is ready changed."; render(); return; }
     // Inspection F7: aos init refuses a choice that drops a host an earlier install has on; Choose resolves it first.
     if (droppedHosts(s.host, s.report.wired).length) { s.step = "choose"; s.error = null; render(); return; }
-    const req: InstallRequest = { host: s.host, vault: s.vault, persona: s.personaSkipped || s.host === "none" ? null : { ...s.persona } };
+    const req: InstallRequest = { host: s.host, superpowers: s.superpowers, vault: s.vault, persona: s.personaSkipped || s.host === "none" ? null : { ...s.persona } };
     terminal(false);
     const r = aos.setup.install(req);
     if (!r.ok) { s.error = r.error; s.installExit = undefined; render(); return; }
@@ -424,6 +431,14 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
       input.addEventListener("change", () => { if (input.checked) { s.host = id; s.hostPicked = true; render(); } });
       lab.appendText(` ${label}`);
     }
+    const sp = el.createEl("label", { cls: "aos-setup-check-field" });
+    const spBox = sp.createEl("input", { attr: { type: "checkbox", "data-superpowers": "true" } });
+    spBox.checked = s.superpowers;
+    spBox.addEventListener("change", () => { s.superpowers = spBox.checked; });
+    sp.appendText(" Include Superpowers coding skills (third-party plugin)");
+    const spLink = el.createEl("a", { text: "About Superpowers", attr: { href: "https://github.com/obra/superpowers", target: "_blank", rel: "noopener noreferrer" } });
+    spLink.addClass("aos-setup-hint");
+    el.createEl("p", { cls: "aos-setup-hint", text: "Installs the official Superpowers plugin on each selected host. Needs network and host sign-in. Existing disabled installs stay disabled. Its optional visual companion can load a remote logo if you later enable that upstream feature; UniDeX does not enable it." });
     if (s.host === "none") el.createEl("p", { cls: "aos-setup-hint", attr: { "data-hint": "no-host" }, text: "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Finish says how." });
     const dropped = droppedHosts(s.host, s.report?.wired);
     if (dropped.length) renderWired(el, dropped, ready);
@@ -660,6 +675,12 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     el.createEl("h2", { text: "Almost there" });
     el.createEl("p", { cls: "aos-setup-hint", text: "What is left, step by step. None of it is needed to open the Workbench; each can be done later." });
     const aosCmd = s.pathLine?.onPath || s.pathLine?.present ? "aos" : "~/.local/bin/aos";
+    if (s.superpowers) {
+      const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": "superpowers" } });
+      sec.createEl("h3", { text: "Superpowers coding skills" });
+      sec.createEl("p", { cls: "aos-setup-hint", text: "The installer checked each selected host. Run aos superpowers status to see the installed version or a recovery command. If an install failed, run aos superpowers install to retry. Older Codex CLIs need plugin support first." });
+      for (const host of ["claude", "codex"] as const) if (s.host === host || s.host === "both") sec.createEl("p", { text: `${HOST_NAME[host]}: ${s.superpowersResult[host] ?? "status not captured"}. Manual install: ${host === "claude" ? "claude plugin install superpowers@claude-plugins-official" : "codex plugin add superpowers@openai-curated-remote"}` });
+    }
     if (s.host === "claude" || s.host === "both") {
       const sec = el.createDiv({ cls: "aos-setup-section", attr: { "data-section": "claude-md" } });
       sec.createEl("h3", { text: "Connect Claude Code" });

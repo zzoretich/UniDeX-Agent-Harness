@@ -9,6 +9,10 @@ AgenticOS runs on your own Mac, with your own permissions: the runtime and its h
 Workbench app reads and writes your vault, and the agents it starts (Claude Code, Codex) act as you within their own
 permission settings. What follows is how the app keeps what it displays from becoming what it runs.
 
+## Superpowers integration
+
+The setup wizard can install the official third-party Superpowers plugin into selected Claude Code and Codex host profiles. It is a separate host plugin fetched from the host marketplace; UniDeX does not bundle its code, run it in background duties, or uninstall it. The Settings surface can run only the fixed `aos superpowers install` follow-up after the user enables the preference. The optional upstream visual companion can load a remote logo if a user later activates it; UniDeX does not activate that feature or send integration telemetry.
+
 ## The app: how it is built to be safe
 
 The Workbench shows text it did not write: notes, proposals, notifications whose stories come from the web, and agents'

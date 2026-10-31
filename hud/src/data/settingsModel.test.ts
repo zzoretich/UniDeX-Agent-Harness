@@ -44,8 +44,8 @@ test("master switches (D5): Background AI is provider none ↔ auto; flags are t
   assert.equal(ai.valueFor(true), "auto");
   assert.equal(ai.valueFor(false), "none");
   assert.equal(ai.isOn("ollama"), true);
-  assert.equal(MASTER_SWITCHES.length, 10);
-  assert.equal(new Set(MASTER_SWITCHES.map((s) => s.key)).size, 10);
+  assert.equal(MASTER_SWITCHES.length, 11);
+  assert.equal(new Set(MASTER_SWITCHES.map((s) => s.key)).size, 11);
 });
 
 test("valueArg: strings as typed, null as `null`, the rest as JSON", () => {

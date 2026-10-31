@@ -37,6 +37,7 @@ const SECTIONS = [
   { id: 'updates', label: 'Updates' },
   { id: 'statusline', label: 'Status line' },
   { id: 'hosts', label: 'Hosts & install' },
+  { id: 'integrations', label: 'Coding integrations' },
 ];
 
 const RUNNERS = ['auto', 'claude', 'codex'];
@@ -53,6 +54,8 @@ const perCall = (key, section, label, help, extra = {}) => ({ key, section, labe
 const perDay = (key, section, label, help, extra) => ({ key, section, label, help: `${help} 0 means no spend.`, type: 'number', min: 0, risk: 'spend', applies: 'next-call', ...extra });
 
 const SETTINGS = [
+  { key: 'integrations.superpowers.enabled', section: 'integrations', label: 'Superpowers coding skills', type: 'bool', machine: true, applies: 'next-install', followUp: { command: 'aos superpowers install', why: 'Install the official plugin on selected hosts, or retry a failed marketplace install' },
+    help: 'Third-party Superpowers plugin for interactive coding in Claude Code and Codex. Turning this on offers an install step; turning it off leaves any installed plugin untouched.' },
   // ── Provider & models ───────────────────────────────────────────────────────
   { key: 'provider', section: 'provider', label: 'Background provider', type: 'enum', values: ['local', 'auto', 'ollama', 'claude', 'codex', 'none'], risk: 'spend', applies: 'next-call',
     help: 'Who answers background work: local runs it on the model on this Mac and never spends (with local.hostedFallback off); auto picks Ollama when it answers, then Claude, then Codex; none turns background model calls off.' },

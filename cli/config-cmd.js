@@ -192,7 +192,7 @@ async function set(ctx, key, text, o) {
   if (bad) throw new BadValue(bad);
   const before = W.resolve(e, ctx);
   let target = W.targetFile(e, ctx);
-  const res = { key, old: before.value, value, file: null, source: target, dryRun: o.dryRun, effects: [], followUps: e.followUp ? [e.followUp] : [] };
+  const res = { key, old: before.value, value, file: null, source: target, dryRun: o.dryRun, effects: [], followUps: e.followUp && !(key === 'integrations.superpowers.enabled' && value === false) ? [e.followUp] : [] };
   if (e.key === 'cost.enabled') {
     target = 'machine'; // cost-cmd writes cost.enabled into agenticos.json, where `aos init` put it
     res.source = target;
@@ -232,7 +232,7 @@ function unset(ctx, key, o) {
   }
   res.effects.push(`${o.dryRun ? 'would remove' : 'removed'} it from ${removed.map((s) => FILE_LABEL[s]).join(' and ')}; the default applies`);
   res.effects.push(...sideEffects(ctx, e, value, o, !o.dryRun));
-  if (e.followUp) res.followUps.push(e.followUp);
+  if (e.followUp && key !== 'integrations.superpowers.enabled') res.followUps.push(e.followUp);
   report(res, o);
   return 0;
 }

@@ -347,7 +347,7 @@ export const SURFACES: readonly Surface[] = [
       { script: "cli/aos.js", args: argv("config", "set", ID, ANY, "--json") },
       { script: "cli/aos.js", args: argv("config", "unset", ID, "--json") },
       // The follow-ups `aos config set` prints (brain/scripts/lib/settings-schema.js); skills and agents sync are background.
-      { script: "cli/aos.js", args: /^(routines sync|statusline install)$/ },
+      { script: "cli/aos.js", args: /^(routines sync|statusline install|superpowers install)$/ },
       ...["zsh", "bash", "sh", "fish"].map((bin): SpawnRule => ({ bin, args: argv("-lic", "command -v node") })),
     ],
     verified: true,

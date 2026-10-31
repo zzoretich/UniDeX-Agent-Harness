@@ -102,6 +102,7 @@ function resolve(e, { userCfg = {}, vaultCfg = {} } = {}) {
 
 /** D4: the file a `set` writes — the one that holds the key now (agenticos.json wins the merge), else the vault file. */
 function targetFile(e, { userCfg = {} } = {}) {
+  if (e.machine) return 'machine';
   if (e.vaultOnly) return 'vault';
   return hasPath(userCfg, e.key) ? 'machine' : 'vault';
 }
