@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-10-31
+
 ### Added
 - **Superpowers for interactive coding.** New setup installs the official third-party Superpowers plugin on each selected Claude Code and modern Codex host by default, with a visible opt-out. The Chief of Staff routes software-development work through its available skills. `aos superpowers status|install`, doctor, and Settings show status or retry missing installs; older Codex CLIs show upgrade guidance. Existing installs keep their current host plugins and require explicit opt-in. <!-- tour: settings.superpowers -->
 
@@ -707,7 +709,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.4.0
 [2.3.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.3.0
 [2.2.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.2.0
 [2.1.1]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.1.1
