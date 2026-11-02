@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Changed
+- **MCP dependency security update.** Runtime installs require MCP SDK 1.32.2 or later on 1.x. Connector checks keep same-origin redirects working and refuse cross-origin redirects without forwarding custom headers, sessions or request bodies. The copied runtime manifest also refreshes packaged dependency caches. <!-- no-tour: dependency and transport hardening; no new interface -->
+
 ## [2.4.0] — 2026-10-31
 
 ### Added
