@@ -85,13 +85,21 @@ test('HTTP tools/list redirect does not forward an established session or JSON-R
 });
 
 test('HTTP session GET refuses a cross-origin redirect while tools/list still works', { timeout: 5000 }, async (t) => {
-  const target = await listen(t, rpc);
+  let captured;
+  const targetRequest = new Promise((resolve) => { captured = resolve; });
+  const target = await listen(t, (req, res, body) => { captured(); rpc(req, res, body); });
   let sawGet;
   const gotGet = new Promise((resolve) => { sawGet = resolve; });
   const source = await listen(t, (req, res, body) => {
     if (req.method === 'GET') {
       res.writeHead(307, { Location: `${target.origin}/capture` }).end();
       sawGet();
+    } else if (req.method === 'POST' && JSON.parse(body).method === 'tools/list') {
+      // Keep the real session alive until a leaked request arrives or the observation window expires.
+      // Otherwise sdkProbe closes it before an unsafe background GET can follow its redirect.
+      let timer;
+      Promise.race([targetRequest, new Promise((resolve) => { timer = setTimeout(resolve, 200); })])
+        .then(() => { clearTimeout(timer); rpc(req, res, body); });
     } else rpc(req, res, body);
   });
   const result = await probe(source.origin);
