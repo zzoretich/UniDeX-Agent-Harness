@@ -184,7 +184,7 @@ page with script running in it would. The Evidence column's line numbers were la
 | | Secrets in code or history | pass | the repository's privacy gate on every commit and in CI |
 | | Injection sinks | pass | no `innerHTML`, `eval` or `new Function` in the page's code; Markdown with raw HTML off, then DOMPurify |
 | | Entitlements | pass | `allow-jit`, and `apple-events` with its reason (`electron-builder.yml:52`: a command in the terminal may control another app) |
-| | Production dependencies | pass | `npm audit --omit=dev`: 0 vulnerabilities. The page's bundled packages are the app's devDependencies; `npm audit` finds nothing in them (rechecked when `@xterm/addon-search` 0.15.0 joined for ⌘F, in 1.4.0): its findings are build tooling only (electron-builder, `@electron/get`) |
+| | Production dependencies | scope-specific checks required | Audit the root production tree and the independently installed runtime used by CLI/payload builds; the root workspace lock does not govern those standalone installs. Audit the app separately, including its bundled dev-declared dependencies (such as Zod), not only `npm audit --omit=dev`. SDK remediation is package-scoped; remaining dependency advisories are not cleared by this change. Recheck current installed versions and advisory IDs before shipping; the historical zero-audit result is not a current assurance. |
 | | Remote debugging of a release | pass | `policy/debug.ts`; `dist:verify` starts the release with `--remote-debugging-port`: it exits 1 before anything listens |
 
 The independent review found no critical or high issue. Its findings, and what became of them:

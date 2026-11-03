@@ -12,7 +12,7 @@
     "test:live": "for f in test/live/test-*.js; do node \"$f\" || exit 1; done"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "zod": "^3.23.8"
   }
 }
