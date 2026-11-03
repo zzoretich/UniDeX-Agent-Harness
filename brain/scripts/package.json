@@ -16,6 +16,7 @@
     "zod": "^4.6.7"
   },
   "overrides": {
-    "proxy-addr": "^2.0.8"
+    "proxy-addr": "^2.0.8",
+    "body-parser": "^2.4.0"
   }
 }

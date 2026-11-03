@@ -7,7 +7,7 @@ const path = require('node:path');
 test('root and independently installed runtime enforce matching patched transitive floors', () => {
   const root = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'));
   const runtime = JSON.parse(fs.readFileSync(path.join(__dirname, '../brain/scripts/package.json'), 'utf8'));
-  const required = { 'proxy-addr': [2, 0, 8] };
+  const required = { 'proxy-addr': [2, 0, 8], 'body-parser': [2, 4, 0] };
   assert.deepEqual(root.overrides, runtime.overrides, 'payload/CLI install root must enforce the root policy');
   for (const [name, floor] of Object.entries(required)) {
     const range = root.overrides?.[name];
