@@ -4,10 +4,10 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
-### Changed
-- **Patched proxy-address handling in runtime dependencies.** Root and independently installed runtimes now enforce proxy-addr 2.0.8 or later on 2.x, with a regression for mapped-IPv6 trust subnet handling and matching install-root policy. UniDeX does not enable the affected trust-proxy configuration. <!-- no-tour: scoped dependency hardening; no new interface -->
-- **Patched Zod across the runtime and app.** The MCP runtime now validates with native Zod 4, and both runtime installs and the app's bundled validator require Zod 4.6.7 or later on 4.x. Tool schema, error handling and IPC collection checks are covered without a Zod 3 compatibility escape. <!-- no-tour: dependency validation hardening; no new interface -->
-- **MCP dependency security update.** Runtime installs require MCP SDK 1.32.2 or later on 1.x. Connector checks keep same-origin redirects working and refuse cross-origin redirects without forwarding custom headers, sessions or request bodies. The copied runtime manifest also refreshes packaged dependency caches. <!-- no-tour: dependency and transport hardening; no new interface -->
+### Security
+- **Patched proxy-address handling in runtime dependencies.** Root and independently installed runtimes now enforce proxy-addr 2.0.8 or later on 2.x, with a regression for mapped-IPv6 trust subnet handling and matching install-root policy. UniDeX does not enable the affected trust-proxy configuration.
+- **Patched Zod across the runtime and app.** The MCP runtime now validates with native Zod 4, and both runtime installs and the app's bundled validator require Zod 4.6.7 or later on 4.x. Tool schema, error handling and IPC collection checks are covered without a Zod 3 compatibility escape.
+- **MCP dependency security update.** Runtime installs require MCP SDK 1.32.2 or later on 1.x. Connector checks keep same-origin redirects working and refuse cross-origin redirects without forwarding custom headers, sessions or request bodies. The copied runtime manifest also refreshes packaged dependency caches.
 
 ## [2.4.0] — 2026-10-31
 
