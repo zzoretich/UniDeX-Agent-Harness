@@ -1,13 +1,17 @@
 // The peer addon (agent-computer D18): what Node cannot tell the agent bridge about a connection. Plain Node-API (no
 // node-addon-api); src/main/computer/peer.ts loads it and carries its types.
 //
-//   peerPid(fd)    the pid at the other end of a connected Unix socket (getsockopt LOCAL_PEERPID); throws on failure
-//   procInfo(pid)  { pid, ppid, path, argv } from proc_pidinfo, proc_pidpath and KERN_PROCARGS2; null when the process
-//                  is gone or not this user's to read
-//   teamId(path)   the Apple team that signed the file at an absolute path; null when it is unsigned, ad hoc, invalid
-//                  or not code
+//   peerPid(fd)         the pid at the other end of a connected Unix socket (getsockopt LOCAL_PEERPID); throws on
+//                       failure
+//   procInfo(pid)       { pid, ppid, path, argv } from proc_pidinfo, proc_pidpath and KERN_PROCARGS2; null when the
+//                       process is gone or not this user's to read
+//   teamId(path)        the Apple team that signed the file at an absolute path, the check before a launch; null when
+//                       it is unsigned, ad hoc, invalid or not code
+//   processTeamId(pid)  the Apple team that signed the code a running process runs, the check at admission; null when
+//                       the process is gone, or its code is unsigned, ad hoc, invalid or no longer the file at its path
 //
-// An argument of the wrong type throws a TypeError.
+// Either team counts only when an Apple-issued certificate vouches for it. An argument of the wrong type throws a
+// TypeError.
 
 #include <node_api.h>
 
@@ -94,6 +98,10 @@ napi_value peer_pid(napi_env env, napi_callback_info info) {
     napi_throw_error(env, nullptr, msg.c_str());
     return nullptr;
   }
+  if (len != sizeof pid) {
+    napi_throw_error(env, nullptr, "peerPid: getsockopt(LOCAL_PEERPID) returned no pid");
+    return nullptr;
+  }
   napi_value out = nullptr;
   return ok(env, napi_create_int32(env, pid, &out)) ? out : nullptr;
 }
@@ -155,7 +163,7 @@ napi_value proc_info(napi_env env, napi_callback_info info) {
   return set(env, obj, "argv", list) ? obj : nullptr;
 }
 
-// ── teamId ───────────────────────────────────────────────────────────
+// ── teamId and processTeamId ─────────────────────────────────────────
 
 std::string utf8(CFStringRef s) {
   CFIndex max = CFStringGetMaximumSizeForEncoding(CFStringGetLength(s), kCFStringEncodingUTF8) + 1;
@@ -165,24 +173,36 @@ std::string utf8(CFStringRef s) {
   return out;
 }
 
-// Whether an Apple-issued certificate vouches for the team: the signature satisfies `anchor apple generic and
-// certificate leaf[subject.OU] = "<team>"`. A check with no requirement passes any intact signature, a self-signed one
-// included, and the team field in a signature is only its signer's word.
-bool apple_vouches(SecStaticCodeRef code, const std::string& team) {
-  // Team IDs are capital letters and digits; anything else could not be quoted into the requirement safely.
-  if (team.size() > 32 || team.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos) return false;
+// The team a signature names (kSecCodeInfoTeamIdentifier), or "". Only its signer's word until vendor_requirement holds.
+std::string named_team(SecStaticCodeRef code) {
+  std::string team;
+  CFDictionaryRef signing = nullptr;
+  if (SecCodeCopySigningInformation(code, kSecCSSigningInformation, &signing) == errSecSuccess && signing) {
+    CFTypeRef value = CFDictionaryGetValue(signing, kSecCodeInfoTeamIdentifier);  // owned by `signing`
+    if (value && CFGetTypeID(value) == CFStringGetTypeID()) team = utf8(static_cast<CFStringRef>(value));
+  }
+  if (signing) CFRelease(signing);
+  return team;
+}
+
+// `anchor apple generic and certificate leaf[subject.OU] = "<team>"`: an Apple-issued certificate vouches for the team.
+// A check with no requirement passes any intact signature, a self-signed one included. Null when the team is not
+// capital letters and digits (all a team ID is, and all that can be quoted into the requirement safely); the caller
+// releases the rest.
+SecRequirementRef vendor_requirement(const std::string& team) {
+  if (team.empty() || team.size() > 32 || team.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos) return nullptr;
   std::string text = "anchor apple generic and certificate leaf[subject.OU] = \"" + team + "\"";
   CFStringRef cf = CFStringCreateWithCString(kCFAllocatorDefault, text.c_str(), kCFStringEncodingUTF8);
-  if (!cf) return false;
+  if (!cf) return nullptr;
   SecRequirementRef requirement = nullptr;
   OSStatus status = SecRequirementCreateWithString(cf, kSecCSDefaultFlags, &requirement);
   CFRelease(cf);
-  bool vouched = status == errSecSuccess && requirement && SecStaticCodeCheckValidity(code, kSecCSDefaultFlags, requirement) == errSecSuccess;
+  if (status == errSecSuccess) return requirement;
   if (requirement) CFRelease(requirement);
-  return vouched;
+  return nullptr;
 }
 
-// The team that signed the file at `file`, or "" when there is none to trust.
+// The team that signed the file at `file`, or "" when there is none to trust. This hashes the whole file.
 std::string signing_team(const std::string& file) {
   CFURLRef url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, reinterpret_cast<const UInt8*>(file.data()),
                                                          static_cast<CFIndex>(file.size()), false);
@@ -194,26 +214,55 @@ std::string signing_team(const std::string& file) {
     if (code) CFRelease(code);
     return "";
   }
-  std::string team;
-  CFDictionaryRef signing = nullptr;
-  if (SecStaticCodeCheckValidity(code, kSecCSDefaultFlags, nullptr) == errSecSuccess &&
-      SecCodeCopySigningInformation(code, kSecCSSigningInformation, &signing) == errSecSuccess && signing) {
-    CFTypeRef value = CFDictionaryGetValue(signing, kSecCodeInfoTeamIdentifier);  // owned by `signing`
-    if (value && CFGetTypeID(value) == CFStringGetTypeID()) team = utf8(static_cast<CFStringRef>(value));
-  }
-  if (signing) CFRelease(signing);
-  if (!team.empty() && !apple_vouches(code, team)) team.clear();
+  std::string team = SecStaticCodeCheckValidity(code, kSecCSDefaultFlags, nullptr) == errSecSuccess ? named_team(code) : "";
+  SecRequirementRef requirement = vendor_requirement(team);
+  if (!requirement || SecStaticCodeCheckValidity(code, kSecCSDefaultFlags, requirement) != errSecSuccess) team.clear();
+  if (requirement) CFRelease(requirement);
   CFRelease(code);
   return team;
 }
 
-napi_value team_id(napi_env env, napi_callback_info info) {
-  std::string file;
-  if (!path_arg(env, info, "teamId", &file)) return nullptr;
-  std::string team = signing_team(file);
+// The team that signed the code process `pid` runs, or "" when there is none to trust. SecCodeCheckValidity checks
+// the kernel's view of the running code, and fails (errSecCSStaticCodeChanged) when the file at its path is no longer
+// what was loaded, so a vendor's binary renamed over a running program's path does not lend it the vendor's team.
+std::string running_team(int pid) {
+  CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pid);
+  if (!number) return "";
+  const void* keys[] = {kSecGuestAttributePid};
+  const void* values[] = {number};
+  CFDictionaryRef attributes = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks,
+                                                  &kCFTypeDictionaryValueCallBacks);
+  CFRelease(number);
+  if (!attributes) return "";
+  SecCodeRef code = nullptr;
+  OSStatus status = SecCodeCopyGuestWithAttributes(nullptr, attributes, kSecCSDefaultFlags, &code);
+  CFRelease(attributes);
+  if (status != errSecSuccess || !code) {
+    if (code) CFRelease(code);
+    return "";
+  }
+  std::string team = named_team(code);
+  SecRequirementRef requirement = vendor_requirement(team);
+  if (!requirement || SecCodeCheckValidity(code, kSecCSDefaultFlags, requirement) != errSecSuccess) team.clear();
+  if (requirement) CFRelease(requirement);
+  CFRelease(code);
+  return team;
+}
+
+napi_value team_value(napi_env env, const std::string& team) {
   napi_value out = nullptr;
   napi_status status = team.empty() ? napi_get_null(env, &out) : napi_create_string_utf8(env, team.data(), team.size(), &out);
   return ok(env, status) ? out : nullptr;
+}
+
+napi_value team_id(napi_env env, napi_callback_info info) {
+  std::string file;
+  return path_arg(env, info, "teamId", &file) ? team_value(env, signing_team(file)) : nullptr;
+}
+
+napi_value process_team_id(napi_env env, napi_callback_info info) {
+  int pid = 0;
+  return int_arg(env, info, "processTeamId", "pid", 1, &pid) ? team_value(env, running_team(pid)) : nullptr;
 }
 
 }  // namespace
@@ -223,6 +272,7 @@ NAPI_MODULE_INIT() {
       {"peerPid", nullptr, peer_pid, nullptr, nullptr, nullptr, napi_enumerable, nullptr},
       {"procInfo", nullptr, proc_info, nullptr, nullptr, nullptr, napi_enumerable, nullptr},
       {"teamId", nullptr, team_id, nullptr, nullptr, nullptr, napi_enumerable, nullptr},
+      {"processTeamId", nullptr, process_team_id, nullptr, nullptr, nullptr, napi_enumerable, nullptr},
   };
   return napi_define_properties(env, exports, sizeof props / sizeof props[0], props) == napi_ok ? exports : nullptr;
 }

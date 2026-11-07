@@ -1,16 +1,23 @@
 // The peer addon (agent-computer D18): Node has no peer-credential or code-signature API, so the bridge admits a
 // connection through app/native/peer, the app's own Node-API addon. peerPid reads the pid at the other end of a Unix
 // socket (LOCAL_PEERPID); procInfo reads a process's parent, executable and argv (null when it is gone or not this
-// user's to read); teamId reads the Apple team that signed the file at an absolute path (null when it is unsigned,
-// ad hoc or invalid). Packaged, the addon is unpacked beside the archive, like node-pty's pty.node, so it loads as a
-// plain signed file.
+// user's to read). teamId reads the Apple team that signed the file at an absolute path, the check before a launch;
+// processTeamId reads the team of the code a running process runs, the check at admission, which a binary renamed over
+// the process's path cannot change and which does not hash the whole file. Both are null when the code is unsigned, ad
+// hoc or invalid. Packaged, the addon is unpacked beside the archive, like node-pty's pty.node, so it loads as a plain
+// signed file.
 
 import { app } from "electron";
 import type net from "node:net";
 import path from "node:path";
 
 export interface ProcInfo { pid: number; ppid: number; path: string; argv: string[] }
-export interface PeerAddon { peerPid(fd: number): number; procInfo(pid: number): ProcInfo | null; teamId(path: string): string | null }
+export interface PeerAddon {
+  peerPid(fd: number): number;
+  procInfo(pid: number): ProcInfo | null;
+  teamId(path: string): string | null;
+  processTeamId(pid: number): string | null;
+}
 
 const ADDON = path.join("native", "peer", "build", "Release", "peer.node");
 
