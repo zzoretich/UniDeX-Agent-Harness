@@ -14,9 +14,11 @@ export interface Snapshot { text: string; refs: Map<string, { backendNodeId: num
 export interface CdpDomNode {
   nodeId: number; backendNodeId: number; nodeType: number; nodeName: string; nodeValue?: string; attributes?: string[]; frameId?: string;
   children?: CdpDomNode[]; shadowRoots?: CdpDomNode[]; shadowRootType?: string; contentDocument?: CdpDomNode;
+  /** On a <slot>: the light-DOM nodes assigned to it (the flat tree's children of the slot). */
+  distributedNodes?: { backendNodeId: number }[];
 }
 /** A node of `Accessibility.getFullAXTree`, the fields used here. */
-export interface CdpAxNode { nodeId: string; ignored: boolean; role?: { value?: unknown }; name?: { value?: unknown }; value?: { value?: unknown }; childIds?: string[]; backendDOMNodeId?: number }
+export interface CdpAxNode { nodeId: string; ignored: boolean; role?: { value?: unknown }; name?: { value?: unknown }; value?: { value?: unknown }; childIds?: string[]; parentId?: string; backendDOMNodeId?: number }
 
 /** What the browser needs to know about a page's DOM, keyed by backend node id (stable for the document's life). */
 export interface DomIndex {
@@ -26,6 +28,10 @@ export interface DomIndex {
   backendOf: Map<number, number>;
   /** A node's parent; a shadow root's is its host and a frame's document's is its owner element. */
   parent: Map<number, number>;
+  /** A slotted node to the <slot> it is assigned to: its parent in the flat tree, where a click travels (R26). */
+  slotOf: Map<number, number>;
+  /** Each shadow host to its author shadow roots. */
+  shadowRoots: Map<number, number[]>;
   /** Node names ("TEXTAREA", "#document", "#text"). */
   names: Map<number, string>;
   /** The frame each node's document belongs to. */
@@ -42,8 +48,10 @@ export interface DomIndex {
   labels: Map<number, number | null>;
   /** An activatable element's role from its markup, for when the accessibility tree hides it. */
   roles: Map<number, string>;
-  /** An activatable element's name from its markup (aria-label, an input's value or alt, title). */
+  /** An activatable element's name from its markup (aria-label, a button input's value, an image input's alt, title). */
   hints: Map<number, string>;
+  /** Inputs and textareas a person types into (not button-type inputs): what they hold is never a name (D9). */
+  textFields: Set<number>;
   /** Light-DOM children (no shadow roots, no frame documents) and text node values, for `domText`. */
   children: Map<number, number[]>;
   values: Map<number, string>;
@@ -53,6 +61,7 @@ export interface DomIndex {
 export const CLICK_ROLES: ReadonlySet<string> = new Set(["button", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "checkbox", "radio",
   "switch", "tab", "option", "textbox", "searchbox", "combobox", "slider", "spinbutton", "listbox", "treeitem"]);
 const LABELABLE = new Set(["BUTTON", "INPUT", "METER", "OUTPUT", "PROGRESS", "SELECT", "TEXTAREA"]);
+const BUTTON_INPUTS = new Set(["button", "submit", "reset", "image"]);
 const INPUT_ROLES: Record<string, string> = {
   button: "button", submit: "button", reset: "button", image: "button", file: "button", checkbox: "checkbox", radio: "radio",
   range: "slider", number: "spinbutton", search: "searchbox",
@@ -96,8 +105,8 @@ const attr = (doc: CdpDomNode, name: string): string | undefined => {
 export function indexDom(root: CdpDomNode): DomIndex {
   const ix: DomIndex = {
     roots: [], backendOf: new Map(), parent: new Map(), names: new Map(), frameOf: new Map(), inForm: new Set(), fileInput: new Set(),
-    frameOwners: new Map(), remoteFrames: new Set(), activatable: new Set(), labels: new Map(), roles: new Map(), hints: new Map(),
-    children: new Map(), values: new Map(),
+    slotOf: new Map(), shadowRoots: new Map(), frameOwners: new Map(), remoteFrames: new Set(), activatable: new Set(), labels: new Map(),
+    roles: new Map(), hints: new Map(), textFields: new Set(), children: new Map(), values: new Map(),
   };
   const mainFrame = root.children?.find((c) => c.frameId)?.frameId;
   // `scope` is the tree a node's ids resolve in (its document or shadow root); `label` the nearest label without for=.
@@ -124,15 +133,23 @@ export function indexDom(root: CdpDomNode): DomIndex {
     }
     if (n.nodeType === 3) ix.values.set(b, n.nodeValue ?? "");
     ix.children.set(b, (n.children ?? []).map((c) => c.backendNodeId));
+    for (const d of n.distributedNodes ?? []) ix.slotOf.set(d.backendNodeId, b);
+    const authorRoots = (n.shadowRoots ?? []).filter((s) => s.shadowRootType !== "user-agent");
+    if (authorRoots.length) ix.shadowRoots.set(b, authorRoots.map((s) => s.backendNodeId));
     let ownLabel = label;
     if (n.nodeType === 1) {
       const id = attr(n, "id");
-      if (id) ids.set(`${scope}|${id}`, b);
+      // Duplicate ids: the first element wins, as it does for the page's own `for=` lookups.
+      if (id && !ids.has(`${scope}|${id}`)) ids.set(`${scope}|${id}`, b);
+      const type = name === "INPUT" ? (attr(n, "type") ?? "text").toLowerCase() : "";
+      if (name === "TEXTAREA" || (name === "INPUT" && type !== "hidden" && !BUTTON_INPUTS.has(type))) ix.textFields.add(b);
       const role = nativeRole(n, name);
       if (role) {
         ix.activatable.add(b);
         ix.roles.set(b, role);
-        const hint = attr(n, "aria-label") ?? (name === "INPUT" ? attr(n, "value") ?? attr(n, "alt") : undefined) ?? attr(n, "title");
+        // D9: an input's `value` is a label only on a button-type input (a text field's value is what was typed into it).
+        const own = type === "image" ? attr(n, "alt") : BUTTON_INPUTS.has(type) ? attr(n, "value") : undefined;
+        const hint = attr(n, "aria-label") ?? own ?? attr(n, "title");
         if (hint?.trim()) ix.hints.set(b, hint.trim());
       }
       if (LABELABLE.has(name) && !(name === "INPUT" && attr(n, "type")?.toLowerCase() === "hidden")) {

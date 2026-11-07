@@ -23,14 +23,15 @@ export const VOCABULARY: Readonly<Record<AskCategory, readonly string[]>> = {
 /** Labels that ask only on a control inside a form. */
 const FORM_ONLY: readonly string[] = ["continue", "save"];
 
-const ROLES = new Set(["button", "link", "menuitem", "menuitemcheckbox", "menuitemradio"]);
+/** The roles whose label is judged. */
+export const ASK_ROLES: ReadonlySet<string> = new Set(["button", "link", "menuitem", "menuitemcheckbox", "menuitemradio"]);
 
 const phrase = (name: string): string =>
   ` ${name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
 
 /** The category a control asks under, or null when the agent may act without asking. */
 export function categoryOf(t: Target): AskCategory | null {
-  if (!ROLES.has(t.role)) return null;
+  if (!ASK_ROLES.has(t.role)) return null;
   const text = phrase(t.name);
   for (const [category, labels] of Object.entries(VOCABULARY) as [AskCategory, readonly string[]][]) {
     if (labels.some((l) => text.includes(` ${l} `))) return category;

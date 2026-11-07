@@ -10,16 +10,19 @@ import type { BaseWindow, DownloadItem, Session, WebContents } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
-import type { Target } from "./categories";
+import { ASK_ROLES, type Target } from "./categories";
 import { cdp, CdpTimeout, keyEvents, unlessGone } from "./cdp";
 import type { Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
+import { accepted, reach, within, type Reach } from "./reach";
 import { domText, formatSnapshot, indexDom, mergeFrames, SNAPSHOT_CAP, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf } from "../policy/computer-url";
 
 export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean }
-/** `pageToken` and `tab` say where it was resolved: `click` and `scroll` refuse once either has changed. */
-export interface Resolved { target: Target; sensitive: boolean; backendNodeId: number; point: { x: number; y: number }; pageToken: string; tab: number }
+/** `pageToken` and `tab` say where it was resolved: `click` and `scroll` refuse once either has changed. `judged` holds
+ *  every control the gate judged (R26: `backendNodeId` and, when the two walks disagreed, the other one; none when the
+ *  element is plain): the click is delivered only while a click at `point` reaches no other control. */
+export interface Resolved { target: Target; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; pageToken: string; tab: number }
 export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void }
 
 const PARTITION = "persist:computer";
@@ -38,6 +41,11 @@ const KEPT_DOCUMENTS = 8;
 const DEFAULT_SIZE = { width: 1280, height: 800 };
 // R26: after the pointer moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
 const HOVER_MS = 100;
+// R26: how deep a hit on a shadow host is followed into nested shadow trees, and how many controls of one shadow tree
+// are box-tested before the browser gives up telling which one the click reaches.
+const SHADOW_DEPTH = 8;
+const SHADOW_CANDIDATES = 64;
+const CANT_TELL = "Cannot tell which control this click reaches: take a new snapshot.";
 const URL_NOTE_MAX = 2_000;
 const D9_REFUSAL = "Typing into a password field is refused (D9).";
 const DIALOGS = new Set(["alert", "confirm", "prompt", "beforeunload"]);
@@ -143,11 +151,6 @@ const quadRect = (q: number[]): Rect => {
   const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
   const x = Math.min(...xs), y = Math.min(...ys);
   return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
-};
-/** Whether node `a` sits inside node `b` (through shadow hosts and frame owners). */
-const within = (a: number, b: number, dom: DomIndex): boolean => {
-  for (let n = dom.parent.get(a); n !== undefined; n = dom.parent.get(n)) if (n === b) return true;
-  return false;
 };
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const centre = (r: Rect): Point => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
@@ -267,8 +270,8 @@ export class ComputerBrowser {
   /**
    * The element a click will hit, for the gate to judge (R26: never the container a ref named). The point is a ref's
    * centre (scrolled into view first) or the given x, y. The pointer moves there first, so the element judged is the
-   * one in the hovered state the press will meet (a row that shows Delete on hover). The target is the element a click
-   * there activates (`receiver`); `click()` delivers at exactly that point.
+   * one in the hovered state the press will meet (a row that shows Delete on hover). The target is the control a click
+   * there reaches by either walk (`judgeReach`); `click()` delivers at exactly that point.
    */
   async resolve(by: { ref: string } | { x: number; y: number }): Promise<Resolved> {
     const t = this.tab();
@@ -286,15 +289,12 @@ export class ComputerBrowser {
     }
     p = { x: Math.round(p.x), y: Math.round(p.y) };
     await this.hover(t, p);
-    // The hit test comes first and the DOM is read after it, so the facts read (form, file input) include the hit node.
-    const hit = await this.hitAt(t, p);
-    const dom = await this.locked(t, () => this.readDom(t));
-    if (!dom.names.has(hit)) throw new Error("The page changed: look again.");
-    if (named !== null && hit !== named && !within(hit, named, dom) && !within(named, hit, dom)) {
-      throw new Error("Something else covers that element now: take a new snapshot.");
-    }
-    const r = await this.receiver(t, hit, dom);
-    return { target: r.target, sensitive: t.sensitive.has(r.b) || t.sensitive.has(hit), backendNodeId: r.b, point: p, ...where };
+    const { hit, dom, reached } = await this.reachAt(t, p, (h, d) => {
+      if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error("Something else covers that element now: take a new snapshot.");
+    });
+    const target = await this.judgeReach(t, reached, dom);
+    const b = reached.controls[0] ?? hit;
+    return { target, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: p, ...where };
   }
 
   /** What has keyboard focus (D39), and whether it is a password field (D9). */
@@ -313,11 +313,13 @@ export class ComputerBrowser {
     const t = this.where(r);
     if (typeof r.backendNodeId !== "number") throw new Error("The page changed: look again.");
     const p = r.point;
-    // R26: hover the point again, then deliver only while the element a click there activates is still the one the gate
-    // judged; the press follows the check with no move in between.
+    // R26: hover the point again, hit-test, read the DOM and walk again, and deliver only while a click there reaches no
+    // control the gate did not judge; the press follows the check with no move in between.
     await this.hover(t, p);
-    const dom = await this.locked(t, () => this.readDom(t));
-    if (!(await this.accepts(t, p, r.backendNodeId, dom))) throw new Error("The page changed: look again.");
+    const now = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
+    if (!now) throw new Error("The page changed: look again.");
+    const ok = now.dom.remoteFrames.has(now.hit) ? now.hit === r.backendNodeId : accepted(now.dom, now.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
+    if (!ok) throw new Error("The page changed: look again.");
     await this.mouse(t, "mousePressed", p);
     await this.mouse(t, "mouseReleased", p);
   }
@@ -833,46 +835,83 @@ export class ComputerBrowser {
     await sleep(HOVER_MS);
   }
 
-  /** R26: whether a click at `p` still activates the judged element: the walk from the node there now ends on it, or,
-   *  when it judged a plain element, the node there is it or inside it with nothing activatable above. */
-  private async accepts(t: Tab, p: Point, judged: number, dom: DomIndex): Promise<boolean> {
-    const hit = await this.hitAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
-    if (hit === null || !dom.names.has(hit)) return false;
-    if (dom.remoteFrames.has(hit)) return hit === judged;
-    const r = this.activates(hit, dom);
-    return r.actionable ? r.b === judged : hit === judged || within(hit, judged, dom);
+  /**
+   * What a click at `p` reaches now (R26): the hit test comes first and the DOM is read after it, so the facts read
+   * (form, file input) include the hit node; `check` sees the hit before it is followed into a shadow tree. A hit on a
+   * shadow host resolves into its shadow tree at the point; then both walks (./reach) look for the control.
+   */
+  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; dom: DomIndex; reached: Reach }> {
+    const first = await this.hitAt(t, p);
+    const dom = await this.locked(t, () => this.readDom(t));
+    if (!dom.names.has(first)) throw new Error("The page changed: look again.");
+    check?.(first, dom);
+    const hit = dom.remoteFrames.has(first) ? first : await this.intoShadow(t, first, p, dom);
+    if (dom.remoteFrames.has(hit)) return { hit, dom, reached: { hit, controls: [hit] } };
+    const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: hit, fetchRelatives: true }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
+    return { hit, dom, reached: reach(dom, hit, nodes) };
   }
 
-  /** The element a click on `hit` activates, walking DOM ancestors (not the accessibility tree, which aria-owns can
-   *  rearrange) up to its document: a label forwards to its control, else the nearest activatable element, else none. */
-  private activates(hit: number, dom: DomIndex): { b: number; actionable: boolean } {
-    for (let n: number | undefined = hit; n !== undefined; n = dom.names.get(n) === "#document" ? undefined : dom.parent.get(n)) {
-      if (dom.labels.has(n)) {
-        const control = dom.labels.get(n);
-        return control != null ? { b: control, actionable: true } : { b: n, actionable: true };
+  /** A hit on a shadow host (a bare slotted text node climbs to its host in the hit test): the deepest control of its
+   *  shadow tree whose box holds the point is what the click reaches; a nested host there is looked into in turn. */
+  private async intoShadow(t: Tab, hit: number, p: Point, dom: DomIndex): Promise<number> {
+    for (let round = 0; round < SHADOW_DEPTH; round++) {
+      const roots = dom.shadowRoots.get(hit);
+      if (!roots?.length) return hit;
+      const candidates: number[] = [];
+      const stack = [...roots];
+      while (stack.length) {
+        const n = stack.pop()!;
+        if (dom.activatable.has(n) || dom.shadowRoots.has(n)) {
+          candidates.push(n);
+          if (candidates.length > SHADOW_CANDIDATES) throw new Error(CANT_TELL);
+        }
+        stack.push(...(dom.children.get(n) ?? []));
       }
-      if (dom.activatable.has(n)) return { b: n, actionable: true };
+      let best: { b: number; depth: number } | null = null;
+      for (const c of candidates) {
+        const { quads } = await this.send<{ quads: number[][] }>(t, "DOM.getContentQuads", { backendNodeId: c }).catch(unlessGone({ quads: [] as number[][] }));
+        if (!quads.map(quadRect).some((r) => p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height)) continue;
+        let depth = 0;
+        for (let n = dom.parent.get(c); n !== undefined; n = dom.parent.get(n)) depth++;
+        if (!best || depth > best.depth) best = { b: c, depth };
+      }
+      if (!best) return hit;
+      if (dom.activatable.has(best.b)) return best.b;
+      hit = best.b;
     }
-    return { b: hit, actionable: false };
+    return hit;
   }
 
-  /** The element that receives a click on `hit`, as the gate judges it (D43 reads its role and label): a frame from
-   *  another site (opaque), or what `activates` finds, named from the accessibility tree and, where that is silent or
-   *  hides it, from the markup; with nothing activatable, the hit element itself as it is. */
-  private async receiver(t: Tab, hit: number, dom: DomIndex): Promise<{ b: number; target: Target; actionable: boolean }> {
-    if (dom.remoteFrames.has(hit)) return { b: hit, target: { ...(await this.targetOf(t, hit, dom)), opaque: true }, actionable: true };
-    const { b, actionable } = this.activates(hit, dom);
+  /** The target the gate judges for what a click reaches (D43 reads role and label): a frame from another site
+   *  (opaque); a plain element as it is; one control by its name; or, when the two walks found different controls, both
+   *  names joined so the click asks if either matches, refused when either cannot be named. */
+  private async judgeReach(t: Tab, r: Reach, dom: DomIndex): Promise<Target> {
+    if (dom.remoteFrames.has(r.hit)) return { ...(await this.targetOf(t, r.hit, dom)), opaque: true };
+    if (!r.controls.length) return this.targetOf(t, r.hit, dom);
+    const targets: Target[] = [];
+    for (const c of r.controls) targets.push(await this.named(t, c, dom));
+    if (targets.length === 1) return targets[0];
+    if (targets.some((x) => !x.name)) throw new Error(CANT_TELL);
+    const [a, b] = targets;
+    const name = a.name.toLowerCase().includes(b.name.toLowerCase()) ? a.name : `${a.name} (${b.name})`;
+    return { role: targets.find((x) => ASK_ROLES.has(x.role))?.role ?? a.role, name, inForm: a.inForm || b.inForm, fileInput: a.fileInput || b.fileInput };
+  }
+
+  /** A control's role and name: from the accessibility tree, with its markup role where that tree hides it, and its own
+   *  markup name and text added when the accessible name does not already contain them (a <label for> names a Buy
+   *  button "Learn more"; aria-owns moves its text away). D9: nothing a person typed becomes a name, so a text field or
+   *  a sensitive node gets no markup hint and no text. */
+  private async named(t: Tab, b: number, dom: DomIndex): Promise<Target> {
     const ax = await this.targetOf(t, b, dom);
-    if (!actionable) return { b, target: ax, actionable };
     const native = dom.roles.get(b);
     const role = native && (ax.role === "generic" || ax.role === "none" || ax.role === "") ? native : ax.role;
-    // The accessible name can hide what the control says (a <label for> names a Buy button "Learn more"; aria-owns moves
-    // its text away), so its own markup name and text are added when the name does not already contain them.
     let name = ax.name;
-    for (const extra of [dom.hints.get(b), domText(dom, b)]) {
-      if (extra && !name.toLowerCase().includes(extra.toLowerCase())) name = name ? `${name} (${extra})` : extra;
+    if (!dom.textFields.has(b) && !t.sensitive.has(b)) {
+      for (const extra of [dom.hints.get(b), domText(dom, b)]) {
+        if (extra && !name.toLowerCase().includes(extra.toLowerCase())) name = name ? `${name} (${extra})` : extra;
+      }
     }
-    return { b, target: { ...ax, role, name }, actionable };
+    return { ...ax, role, name };
   }
 
   private async targetOf(t: Tab, b: number, dom: DomIndex): Promise<Target> {

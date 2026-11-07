@@ -223,3 +223,53 @@ test("indexDom finds the elements a click activates, label targets, native roles
   assert.equal(domText(dom, plain.backendNodeId), "Just words");
   assert.equal(domText(dom, host.backendNodeId), "", "shadow content is not the host's text");
 });
+
+// D9: what a person typed into a field never becomes its name. React keeps a controlled input's `value` attribute in
+// step with its value, so the attribute of a password or one-time-code field holds the secret.
+test("indexDom takes an input's value as a name hint only for button-type inputs", () => {
+  let id = 200;
+  const el = (nodeName: string, attributes: string[] = [], children: CdpDomNode[] = []): CdpDomNode =>
+    ({ nodeId: ++id, backendNodeId: id, nodeType: 1, nodeName, attributes, children });
+  const pw = el("INPUT", ["id", "pw", "type", "password", "value", "hunter2-secret"]);
+  const otp = el("INPUT", ["id", "otp", "autocomplete", "one-time-code", "value", "424242"]);
+  const text = el("INPUT", ["type", "text", "value", "my street", "title", "Street"]);
+  const area = el("TEXTAREA", [], [{ nodeId: ++id, backendNodeId: id, nodeType: 3, nodeName: "#text", nodeValue: "dear diary" }]);
+  const submit = el("INPUT", ["type", "SUBMIT", "value", "Delete account"]);
+  const plainButton = el("INPUT", ["type", "button", "value", "Buy"]);
+  const image = el("INPUT", ["type", "image", "alt", "Pay now", "value", "ignored"]);
+  const hidden = el("INPUT", ["type", "hidden", "value", "token"]);
+  const dom = indexDom({ nodeId: 1, backendNodeId: 1, nodeType: 9, nodeName: "#document", children: [
+    el("HTML", [], [el("BODY", [], [el("LABEL", ["for", "pw"]), pw, el("LABEL", ["for", "otp"]), otp, text, area, submit, plainButton, image, hidden])]),
+  ] });
+  for (const n of [pw, otp, text, area]) {
+    assert.equal(dom.hints.get(n.backendNodeId), n === text ? "Street" : undefined, n.nodeName);
+    assert.ok(dom.textFields.has(n.backendNodeId), `${n.nodeName} is a text field`);
+  }
+  assert.ok(!JSON.stringify([...dom.hints]).match(/hunter2-secret|424242|my street/));
+  assert.equal(dom.hints.get(submit.backendNodeId), "Delete account");
+  assert.equal(dom.hints.get(plainButton.backendNodeId), "Buy");
+  assert.equal(dom.hints.get(image.backendNodeId), "Pay now");
+  for (const n of [submit, plainButton, image, hidden]) assert.ok(!dom.textFields.has(n.backendNodeId), n.nodeName);
+});
+
+test("indexDom resolves a duplicate id to the first element, and indexes slots and shadow hosts", () => {
+  let id = 300;
+  const el = (nodeName: string, attributes: string[] = [], children: CdpDomNode[] = [], extra: Partial<CdpDomNode> = {}): CdpDomNode =>
+    ({ nodeId: ++id, backendNodeId: id, nodeType: 1, nodeName, attributes, children, ...extra });
+  const first = el("BUTTON", ["id", "dup"]);
+  const second = el("BUTTON", ["id", "dup"]);
+  const label = el("LABEL", ["for", "dup"]);
+  const slotted = el("SPAN", [], [{ nodeId: ++id, backendNodeId: id, nodeType: 3, nodeName: "#text", nodeValue: "Delete" }]);
+  const slot = el("SLOT", [], [], { distributedNodes: [{ backendNodeId: slotted.backendNodeId }] });
+  const shadowButton = el("BUTTON", [], [slot]);
+  const root: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [shadowButton] };
+  const ua: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "user-agent" };
+  const host = el("X-BTN", [], [slotted], { shadowRoots: [root] });
+  const input = el("INPUT", [], [], { shadowRoots: [ua] });
+  const dom = indexDom({ nodeId: 1, backendNodeId: 1, nodeType: 9, nodeName: "#document", children: [el("HTML", [], [el("BODY", [], [first, second, label, host, input])])] });
+  assert.equal(dom.labels.get(label.backendNodeId), first.backendNodeId, "the first element with the id wins, as in HTML");
+  assert.equal(dom.slotOf.get(slotted.backendNodeId), slot.backendNodeId, "a slotted node knows its slot");
+  assert.deepEqual(dom.shadowRoots.get(host.backendNodeId), [root.backendNodeId]);
+  assert.equal(dom.shadowRoots.get(input.backendNodeId), undefined, "a user-agent shadow root is not an author tree");
+  assert.equal(dom.parent.get(slotted.backendNodeId), host.backendNodeId, "its DOM parent is still the host");
+});
