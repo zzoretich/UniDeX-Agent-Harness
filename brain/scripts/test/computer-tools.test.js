@@ -30,7 +30,7 @@ function makeVault(socket) {
 }
 
 // A fake bridge: admits (or refuses) the first hello, then hands each request line to `onCall(req, reply, conn)`.
-function fakeBridge({ refuse, onCall }) {
+function fakeBridge({ refuse, onCall, admitDelayMs = 0 }) {
   const sock = path.join(ROOT, `b${++seq}.sock`);
   const seen = { hello: 0, calls: [], conns: [] };
   const server = net.createServer((conn) => {
@@ -45,7 +45,7 @@ function fakeBridge({ refuse, onCall }) {
         buf = buf.slice(i + 1);
         if (msg.hello) {
           seen.hello++;
-          if (refuse) { conn.end(JSON.stringify({ admitted: false, reason: refuse }) + '\n'); } else conn.write(JSON.stringify({ admitted: true, session: 's' }) + '\n');
+          if (refuse) { conn.end(JSON.stringify({ admitted: false, reason: refuse }) + '\n'); } else setTimeout(() => conn.write(JSON.stringify({ admitted: true, session: 's' }) + '\n'), admitDelayMs);
         } else {
           seen.calls.push(msg);
           onCall && onCall(msg, (r) => conn.write(JSON.stringify({ id: msg.id, ...r }) + '\n'), conn);
@@ -202,5 +202,47 @@ test('overlapping calls resolve to their own replies', async () => {
       assert.equal(text(c), 'r:computer_snapshot');
     });
     assert.equal(new Set(b.seen.calls.map((c) => c.id)).size, 2);
+  } finally { b.close(); }
+});
+
+test('a call made before the hello answer waits for it and then succeeds', async () => {
+  const b = await fakeBridge({ admitDelayMs: 300, onCall: (req, reply) => reply({ text: 'late but fine' }) });
+  try {
+    await withClient(makeVault(b.sock), async (client) => {
+      const r = await client.callTool({ name: 'computer_status', arguments: {} });
+      assert.ok(!r.isError);
+      assert.equal(text(r), 'late but fine');
+    });
+  } finally { b.close(); }
+});
+
+test('the timeout elapsing while waiting for the hello answer gives the timeout text', async () => {
+  const b = await fakeBridge({ admitDelayMs: 1500, onCall: (req, reply) => reply({ text: 'never asked' }) });
+  try {
+    await withClient(makeVault(b.sock), async (client) => {
+      const r = await client.callTool({ name: 'computer_status', arguments: {} });
+      assert.equal(r.isError, true);
+      assert.equal(text(r), TIMEOUT);
+    }, { AOS_COMPUTER_TIMEOUT_MS: '200' });
+    assert.equal(b.seen.calls.length, 0);
+  } finally { b.close(); }
+});
+
+test('the server exits on its own when its host closes stdin, with the bridge still connected', async () => {
+  const b = await fakeBridge({ onCall: (req, reply) => reply({ text: 'ok' }) });
+  try {
+    const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER], env: { ...process.env, AOS_VAULT: makeVault(b.sock), AOS_CONFIG: path.join(ROOT, 'none.json') } });
+    const client = new Client({ name: 'computer-test', version: '0.0.0' });
+    await client.connect(transport);
+    assert.equal(text(await client.callTool({ name: 'computer_status', arguments: {} })), 'ok');
+    const pid = transport.pid;
+    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    // Close stdin only (what a host going away does); the transport's own close would signal the child after 2 s.
+    transport._process.stdin.end();
+    const t0 = Date.now();
+    while (alive() && Date.now() - t0 < 1500) await new Promise((r) => setTimeout(r, 25));
+    const exited = !alive();
+    await client.close();
+    assert.ok(exited, 'the server process exited without a signal');
   } finally { b.close(); }
 });

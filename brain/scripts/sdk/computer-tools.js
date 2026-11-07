@@ -29,7 +29,7 @@ function registerComputerTools(server, z, client) {
       'Return a PNG screenshot of the page in the Computer pane.' + SAFETY,
       { tab }],
     computer_click: ['Click an element or a point',
-      'Click an element by ref, or a point by x and y in page pixels.' + SAFETY,
+      'Click an element by ref, or a point by x and y in page pixels. Give either ref, or both x and y.' + SAFETY,
       { ref, x: z.number().optional().describe('X in page pixels'), y: z.number().optional().describe('Y in page pixels') }],
     computer_type: ['Type text',
       'Type text into the focused element, or into the element named by ref.' + SAFETY,

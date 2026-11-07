@@ -67,6 +67,7 @@ function createComputerClient({ vault, net = require('net'), readMarker = requir
     try {
       sock = net.createConnection(marker.computerSocket);
     } catch { settle('failed', failure(NO_APP)); return; }
+    sock.unref(); // an open bridge socket must not keep the MCP server alive after its host is gone
     sock.setEncoding('utf8'); // multibyte characters split across reads survive
     sock.on('connect', () => { try { sock.write('{"hello":1}\n'); } catch { /* close follows */ } });
     sock.on('data', (chunk) => {
@@ -111,7 +112,9 @@ function createComputerClient({ vault, net = require('net'), readMarker = requir
     });
   }
 
-  return { start, call };
+  function stop() { if (sock) sock.destroy(); }
+
+  return { start, call, stop };
 }
 
 module.exports = { createComputerClient, NO_APP, CLOSED, TIMEOUT };

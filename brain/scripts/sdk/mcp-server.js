@@ -415,11 +415,17 @@ server.registerTool(
 // The Computer pane's tools (agent-computer D19): started before the transport connects, never awaited.
 const { createComputerClient } = require('./lib/computer-client.js');
 const { registerComputerTools } = require('./computer-tools.js');
-const computer = createComputerClient({ vault: brain.PATHS.VAULT, timeoutMs: Number(process.env.AOS_COMPUTER_TIMEOUT_MS) || 50000 });
+// AOS_COMPUTER_TIMEOUT_MS is a test seam (the tests need a short timeout); clamped to [50, 50000] ms.
+const timeoutMs = Math.min(50000, Math.max(50, Number(process.env.AOS_COMPUTER_TIMEOUT_MS) || 50000));
+const computer = createComputerClient({ vault: brain.PATHS.VAULT, timeoutMs });
 registerComputerTools(server, z, computer);
 
 async function main() {
   computer.start();
+  // The host closing stdin ends the session: release the bridge socket (and its admission slot) and exit.
+  const bye = () => { computer.stop(); process.exit(0); };
+  process.stdin.once('end', bye);
+  process.stdin.once('close', bye);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
