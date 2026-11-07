@@ -76,7 +76,7 @@ test("the terminal shows at once; main's agent becomes its process; when the age
   assert.equal(session.isExited, false);
   assert.deepEqual(requests, [{
     host: "claude", argv: launchArgs(SPEC), cwd: PLACE.dir, configDir: "/cfg/claude", gitInit: true, cols: 80, rows: 24,
-    place: "harbor-map", label: "Claude Code in harbor-map", access: "edit",
+    place: "ws:harbor-map", label: "Claude Code in harbor-map", access: "edit",
   }]);
   session.write("typed early");
   session.resize(132, 50);
@@ -123,6 +123,36 @@ test("a fallback starts the shell and types the launch line, and hands back main
   assert.deepEqual(plain.shells[0].p.written, [`${launchLine(SPEC)}\r`]);
 });
 
+test("a fallback types the launch line before what was typed while the terminal started: typeahead reaches the agent, never the shell's line", async () => {
+  let answer: (r: HostResult<HostPtyProcess>) => void = () => {};
+  const { shells } = fakeHost(() => new Promise((r) => { answer = r; }));
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  session.write("fix the parser");
+  session.write("\r");
+  answer({ ok: false, error: "Claude Code at /opt/claude isn't a supported install: unsigned", code: "fallback" });
+  await ready;
+  assert.equal(shells[0].p.written.join(""), `${launchLine(SPEC)}\rfix the parser\r`);
+});
+
+test("what main's schema would refuse never blocks the launch: a long label is cut to 200 characters, a place key over 512 falls back without asking main", async () => {
+  const { shells, requests } = fakeHost(async () => ({ ok: true, data: proc(4300) }));
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const long = "w".repeat(300);
+  const named: Place = { kind: "workspace", label: long, dir: `/vault/workspaces/${long}`, workspace: long };
+  const a = pool.createAgent({ spec: SPEC, place: named, meta: META });
+  assert.deepEqual(await a.ready, { agent: true, reason: null });
+  assert.equal(requests[0].label.length, 200);
+  assert.equal(requests[0].place, `ws:${long}`);
+  const deep: Place = { kind: "other", label: "deep", dir: `/${"d".repeat(600)}` };
+  const b = pool.createAgent({ spec: SPEC, place: deep, meta: META });
+  const r = await b.ready;
+  assert.equal(r.agent, false);
+  assert.match(r.reason ?? "", /too long/);
+  assert.equal(requests.length, 1, "main was not asked");
+  assert.deepEqual(shells.at(-1)?.p.written, [`${launchLine(SPEC)}\r`]);
+});
+
 test("a refusal ends the terminal with the reason in it and rejects; a value launchArgs refuses throws before any terminal opens", async () => {
   const { shells, requests } = fakeHost(async () => ({ ok: false, error: "a working directory that is not there", code: "EROFS" }));
   const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
@@ -140,7 +170,7 @@ test("a refusal ends the terminal with the reason in it and rejects; a value lau
   assert.deepEqual(pool.list(), [session]);
 });
 
-test("a terminal closed while it starts kills the agent when it arrives, and opens no shell", async () => {
+test("a terminal closed while it starts kills the agent when it arrives, opens no shell, and reports it not started (no note)", async () => {
   const agent = proc(4243);
   let answer: (r: HostResult<HostPtyProcess>) => void = () => {};
   const { shells } = fakeHost(() => new Promise((r) => { answer = r; }));
@@ -148,8 +178,15 @@ test("a terminal closed while it starts kills the agent when it arrives, and ope
   const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
   pool.remove(session.id);
   answer({ ok: true, data: agent });
-  await ready;
+  await assert.rejects(ready, /closed/);
   assert.equal(agent.killed, 1);
   agent.exit(0);
   assert.equal(shells.length, 0);
+  // The same on the fallback path: no shell for a closed terminal.
+  const fb = fakeHost(async () => ({ ok: false, error: "unsigned", code: "fallback" }));
+  const pool2 = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const c = pool2.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  pool2.remove(c.session.id);
+  await assert.rejects(c.ready, /closed/);
+  assert.equal(fb.shells.length, 0);
 });

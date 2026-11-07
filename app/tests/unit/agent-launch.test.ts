@@ -128,14 +128,14 @@ function fakePty(): { lib: PtyLib; spawned: Array<{ file: string; args: string[]
   return { lib, spawned };
 }
 
-function service(o: { bin?: string | null; sys?: Sys | null; git?: string[]; registry?: AgentRegistry; resolveBin?: boolean } = {}) {
+function service(o: { bin?: string | { reason: string }; sys?: Sys | null; git?: string[]; registry?: AgentRegistry; resolveBin?: boolean } = {}) {
   const { lib, spawned } = fakePty();
   const events: PtyEvent[] = [];
   const registry = o.registry ?? new AgentRegistry();
   const asked: string[] = [];
   const t = new PtyService({
     context, env: { PATH: "/usr/bin:/bin", HOME }, emit: (ev) => events.push(ev), load: () => lib,
-    ...(o.resolveBin === false ? {} : { resolveBin: async (host: "claude" | "codex") => { asked.push(host); return o.bin === undefined ? CLAUDE : o.bin; } }),
+    ...(o.resolveBin === false ? {} : { resolveBin: async (host: "claude" | "codex") => { asked.push(host); return typeof o.bin === "object" ? o.bin : { bin: o.bin ?? CLAUDE }; } }),
     registry,
     sys: o.sys === undefined ? sysOf(VENDOR.claude.team) : o.sys,
     gitInit: async (cwd) => { o.git?.push(cwd); },
@@ -175,7 +175,7 @@ test("spawnAgent: the runtime's binary runs as the terminal's own process, regis
 test("spawnAgent: closing the terminal, and every terminal ending with the page, forget the agent at once", async () => {
   const { t, spawned, registry } = service();
   assert.ok((await t.spawnAgent(req({ id: "t1" }))).ok);
-  assert.ok((await t.spawnAgent(req({ id: "t2", place: "harbor-map" }))).ok);
+  assert.ok((await t.spawnAgent(req({ id: "t2", place: "ws:harbor-map" }))).ok);
   assert.ok((await t.spawnAgent(req({ id: "t3" }))).ok);
   const [a, b, c] = spawned.map((s) => s.p.pid);
   t.kill("t1");
@@ -186,7 +186,7 @@ test("spawnAgent: closing the terminal, and every terminal ending with the page,
   assert.equal(registry.get(b), undefined);
   assert.equal(registry.get(c), undefined);
   // A late exit of a forgotten agent leaves a newer registration of the same pid alone.
-  registry.add({ pid: b, host: "claude", page: "chat", key: "chat:thread-1", label: "x", place: "harbor-map", access: "edit" });
+  registry.add({ pid: b, host: "claude", page: "chat", key: "chat:thread-1", label: "x", place: "ws:harbor-map", access: "edit" });
   spawned[1].p.exit(0);
   assert.equal(registry.get(b)?.key, "chat:thread-1");
 });
@@ -194,7 +194,7 @@ test("spawnAgent: closing the terminal, and every terminal ending with the page,
 test("spawnAgent: an agent still being resolved when every terminal ends with its page is never started", async () => {
   const { lib, spawned } = fakePty();
   const registry = new AgentRegistry();
-  let answer: (bin: string) => void = () => {};
+  let answer: (r: { bin: string }) => void = () => {};
   const t = new PtyService({
     context, env: { PATH: "/usr/bin" }, emit: () => {}, load: () => lib, registry, sys: sysOf(VENDOR.claude.team),
     resolveBin: () => new Promise((r) => { answer = r; }),
@@ -202,11 +202,24 @@ test("spawnAgent: an agent still being resolved when every terminal ends with it
   const pending = t.spawnAgent(req());
   await new Promise((r) => setImmediate(r));
   t.killAll();
-  answer(CLAUDE);
+  answer({ bin: CLAUDE });
   const r = await pending;
   assert.equal(!r.ok && r.code, "ECANCELED");
   assert.equal(spawned.length, 0);
   assert.equal(t.open, 0);
+});
+
+test("spawnAgent: a stale agent's late exit (its page reloaded, its id taken again) is not sent as the new terminal's", async () => {
+  const { t, spawned, events, registry } = service();
+  assert.ok((await t.spawnAgent(req({ id: "t1" }))).ok);
+  t.killAll();
+  assert.ok((await t.spawnAgent(req({ id: "t1" }))).ok, "the reloaded page's first terminal");
+  spawned[0].p.exit(0);
+  assert.deepEqual(events.filter((e) => e.type === "exit"), [], "no exit for t1 while the new t1 runs");
+  assert.equal(t.open, 1);
+  assert.equal(registry.get(spawned[1].p.pid)?.key, "code:t1");
+  spawned[1].p.exit(0);
+  assert.deepEqual(events.filter((e) => e.type === "exit"), [{ id: "t1", type: "exit", exitCode: 0 }]);
 });
 
 test("spawnAgent: an npm install of the vendor's package is accepted without a signature; the config folder reaches the agent's environment", async () => {
@@ -221,7 +234,7 @@ test("spawnAgent: an npm install of the vendor's package is accepted without a s
 test("spawnAgent: git init runs first when asked and the folder has no .git; a linked code folder outside the vault is a place too (D30)", async () => {
   const git: string[] = [];
   const { t } = service({ git });
-  assert.ok((await t.spawnAgent(req({ id: "t1", cwd: CODE, gitInit: true, place: "tide-chart" }))).ok);
+  assert.ok((await t.spawnAgent(req({ id: "t1", cwd: CODE, gitInit: true, place: "ws:tide-chart" }))).ok);
   assert.deepEqual(git, [CODE]);
   fs.mkdirSync(path.join(CODE, ".git"));
   assert.ok((await t.spawnAgent(req({ id: "t2", cwd: CODE, gitInit: true }))).ok);
@@ -232,7 +245,9 @@ test("spawnAgent: git init runs first when asked and the folder has no .git; a l
 
 test("spawnAgent: what main cannot vouch for falls back with a one-line reason, and nothing starts or registers", async () => {
   const cases: Array<{ name: string; o: Parameters<typeof service>[0]; reason: RegExp }> = [
-    { name: "no binary", o: { bin: null }, reason: /no Claude Code binary/ },
+    { name: "the runtime's reason: no binary", o: { bin: { reason: "the runtime found no Claude Code binary: run aos doctor" } }, reason: /^the runtime found no Claude Code binary: run aos doctor$/ },
+    { name: "the runtime's reason: no answer", o: { bin: { reason: "the runtime didn't answer" } }, reason: /^the runtime didn't answer$/ },
+    { name: "the runtime's reason: too old", o: { bin: { reason: "the runtime is older than this app: run aos upgrade" } }, reason: /^the runtime is older than this app: run aos upgrade$/ },
     { name: "an unsigned native binary", o: { sys: sysOf(null) }, reason: new RegExp(`^Claude Code at ${CLAUDE.replace(/[/.]/g, "\\$&")} isn't a supported install: `) },
     { name: "another vendor's signature", o: { sys: sysOf(VENDOR.codex.team) }, reason: /isn't a supported install/ },
     { name: "no peer addon", o: { sys: null }, reason: /addon/ },
@@ -268,7 +283,7 @@ test("spawnAgent: a refused argv or folder, a taken id and no node-pty are error
   // A shell terminal and an agent share the ids and the cap.
   assert.equal(t.spawn({ id: "t1", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok, false);
   t.killAll();
-  const none = new PtyService({ context, env: {}, emit: () => {}, load: () => { throw new Error("Cannot find module 'node-pty'"); }, resolveBin: async () => CLAUDE, registry: new AgentRegistry(), sys: sysOf(VENDOR.claude.team) });
+  const none = new PtyService({ context, env: {}, emit: () => {}, load: () => { throw new Error("Cannot find module 'node-pty'"); }, resolveBin: async () => ({ bin: CLAUDE }), registry: new AgentRegistry(), sys: sysOf(VENDOR.claude.team) });
   const r = await none.spawnAgent(req());
   assert.equal(!r.ok && r.code, "ENOSYS");
 });

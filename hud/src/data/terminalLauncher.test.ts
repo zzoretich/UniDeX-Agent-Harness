@@ -26,6 +26,7 @@ function world(answers: Array<Answer | ((args: string[]) => Answer)>) {
   const launched: unknown[] = [];
   /** What a Code launch's attach answers (TerminalPool.createAgent): main's agent, a fallback's reason, or a refusal. */
   let attach: () => Promise<{ agent: boolean; reason: string | null }> = async () => ({ agent: true, reason: null });
+  let closed = false;
   let n = 0;
   const plugin = {
     vaultRoot: () => vault,
@@ -49,7 +50,7 @@ function world(answers: Array<Answer | ((args: string[]) => Answer)>) {
       },
       createAgent(o: { spec: { host: string; configDir?: string | null }; place: { dir: string }; shell?: string }) {
         agents.push(o);
-        return { session: { id: `t${++n}`, write: () => {} }, ready: attach() };
+        return { session: { id: `t${++n}`, write: () => {}, get isClosed() { return closed; } }, ready: attach() };
       },
       select() {},
       trigger(name: string, note: unknown) { if (name === "session-launched") launched.push(note); },
@@ -59,6 +60,7 @@ function world(answers: Array<Answer | ((args: string[]) => Answer)>) {
   return {
     root, vault, calls, scans, terminals, agents, launched, launcher,
     setAttach: (f: typeof attach) => { attach = f; },
+    setClosed: (c: boolean) => { closed = c; },
     ws: (...rel: string[]) => path.join(vault, "workspaces", ...rel),
   };
 }
@@ -179,6 +181,17 @@ test("launch: an agent goes through the pool's createAgent (agent-computer D18);
   await w.launcher.launch({ host: "claude", picked: { kind: "vault", label: "Vault", dir: w.vault } });
   await flush();
   assert.equal((w.launched[1] as { text: string }).text, "Started Claude Code in Vault (the computer is off for this session: Claude Code at /opt/claude isn't a supported install: unsigned)");
+});
+
+test("launch: a terminal closed before its agent started gets no note", async () => {
+  const w = world([]);
+  let answer: (v: { agent: boolean; reason: string | null }) => void = () => {};
+  w.setAttach(() => new Promise((r) => { answer = r; }));
+  w.setClosed(true);
+  await w.launcher.launch({ host: "claude", picked: { kind: "vault", label: "Vault", dir: w.vault } });
+  answer({ agent: true, reason: null });
+  await flush();
+  assert.deepEqual(w.launched, []);
 });
 
 test("launch: a refused agent announces nothing: its terminal says why (TerminalPool.createAgent)", async () => {

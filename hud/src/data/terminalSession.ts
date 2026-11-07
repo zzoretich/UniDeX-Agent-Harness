@@ -161,11 +161,18 @@ export class TerminalSession {
     this.attach(p, true, spawned);
   }
 
-  /** A deferred terminal's shell, when main fell back (D18). Throws as a new terminal's shell would. */
-  startShell(): void {
+  /** A deferred terminal's shell, when main fell back (D18), with `first` (the launch line) typed into it before what
+   *  was typed while it started, so that typeahead reaches the agent and never the line. Throws as a new terminal's
+   *  shell would. */
+  startShell(first = ""): void {
     if (this.disposed || this.exited || this.pty) return;
-    this.attach(this.spawnShell(), false);
+    const p = this.spawnShell();
+    this.pending = first + this.pending;
+    this.attach(p, false);
   }
+
+  /** Closed (removed from the deck) before or after its process started. */
+  get isClosed(): boolean { return this.disposed; }
 
   /** Ends a deferred terminal that got no process (main refused the agent, or no shell could start), saying why in it. */
   fail(message: string): void {

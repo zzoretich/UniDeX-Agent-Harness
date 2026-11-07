@@ -155,11 +155,13 @@ test("placeOf finds the longest match: a linked folder, a workspace, the vault, 
   assert.deepEqual([other.kind, other.label], ["other", "proj"]);
 });
 
-test("placeKey: the computer a place shares (agent-computer D30): a workspace's or Scratch's name, the vault, home, or the folder", () => {
-  const w: PlaceWorld = { vault: "/v", home: "/h", workspaces: ["tide", SCRATCH], links: { tide: "/code/tide" } };
-  assert.equal(placeKey(workspacePlace("tide", w)), "tide", "a linked workspace is still its workspace");
-  assert.equal(placeKey(placeOf("/v/workspaces/tide/src", w)), "tide");
-  assert.equal(placeKey(workspacePlace(SCRATCH, w)), "scratch");
+test("placeKey: the computer a place shares (agent-computer D30): ws:<workspace> (Scratch too), the vault, home, or dir:<folder>; none collide", () => {
+  const w: PlaceWorld = { vault: "/v", home: "/h", workspaces: ["tide", SCRATCH, "vault", "home"], links: { tide: "/code/tide" } };
+  assert.equal(placeKey(workspacePlace("tide", w)), "ws:tide", "a linked workspace is still its workspace");
+  assert.equal(placeKey(placeOf("/v/workspaces/tide/src", w)), "ws:tide");
+  assert.equal(placeKey(workspacePlace(SCRATCH, w)), "ws:scratch");
+  assert.equal(placeKey(workspacePlace("vault", w)), "ws:vault", "a workspace named vault is not the vault");
+  assert.equal(placeKey(workspacePlace("home", w)), "ws:home");
   assert.equal(placeKey(vaultPlace(w)), "vault");
   assert.equal(placeKey(homePlace(w)), "home");
   assert.equal(placeKey(placeOf("/elsewhere/proj", w)), "dir:/elsewhere/proj");

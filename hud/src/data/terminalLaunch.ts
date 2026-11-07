@@ -213,11 +213,12 @@ export function placeOf(dir: string, w: PlaceWorld): Place {
 }
 
 /**
- * The computer a place shares (agent-computer D30, D3): a workspace's (Scratch's too) is its name, which a Chat thread in
- * that workspace shares; the vault, home and any other folder each have their own.
+ * The computer a place shares (agent-computer D30, D3): `ws:<name>` for a workspace (Scratch too), which a Chat thread
+ * in that workspace shares; `vault`, `home`, and `dir:<absolute folder>` for any other folder. The prefixes keep a
+ * workspace named "vault" or "home" apart from those places.
  */
 export function placeKey(p: Place): string {
-  if ((p.kind === "workspace" || p.kind === "scratch") && p.workspace) return p.workspace;
+  if ((p.kind === "workspace" || p.kind === "scratch") && p.workspace) return `ws:${p.workspace}`;
   if (p.kind === "vault") return "vault";
   if (p.kind === "home") return "home";
   return `dir:${path.resolve(p.dir)}`;

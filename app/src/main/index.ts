@@ -142,9 +142,10 @@ const sessionService = new SessionService({
   vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, context: () => context, env: process.env, node: sessionNode, emit: (ev) => send(CH.sessionEvent, ev),
   // A Code launch's binary is the one its terminal's PATH finds, as the typed line's was (agent-computer D18).
   terminalPATH: () => termPATH(),
-  // A Chat turn's CLI is registered while it runs, in its thread's workspace (agent-computer D18, D3).
+  // A Chat turn's CLI is registered while it runs, in its thread's workspace: the computer a Code launch there shares
+  // (the HUD's placeKey, `ws:<name>`; agent-computer D18, D3, D30).
   onAgent: (ev) => {
-    if (ev.kind === "start") agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: ev.workspace, access: ev.access });
+    if (ev.kind === "start") agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access });
     else if (agentRegistry.get(ev.pid)?.key === `chat:${ev.thread}`) agentRegistry.remove(ev.pid);
   },
 });

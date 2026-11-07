@@ -18,6 +18,7 @@ import type { AgentRegistry } from "../computer/registry";
 import { agentArgvRefusal } from "../policy/agent-launch";
 import { programRefusal, ptyEnv, shellRefusal, type ProgramContext } from "../policy/programs";
 import { failure, refused } from "./fs";
+import type { BinResolution } from "./sessions";
 
 export type { PtyAgentRequest };
 
@@ -55,8 +56,8 @@ export interface PtyServiceOptions {
   emit: (ev: PtyEvent) => void;
   /** Loads node-pty (the tests pass a fake). */
   load: () => PtyLib;
-  /** agent-computer D18: the binary a Code launch runs, as the runtime resolves it (SessionService.resolveBin). */
-  resolveBin?: (host: "claude" | "codex") => Promise<string | null>;
+  /** agent-computer D18: the binary a Code launch runs, as the runtime resolves it, or why none (SessionService.resolveBin). */
+  resolveBin?: (host: "claude" | "codex") => Promise<BinResolution>;
   /** The agents this app spawned: a Code launch's CLI is registered while it runs. */
   registry?: AgentRegistry;
   /** The peer addon's checks, or null when it did not load (every Code launch then falls back). */
@@ -169,8 +170,9 @@ export class PtyService {
     const { resolveBin, registry, sys } = this.o;
     if (!resolveBin || !registry) return fallback("this app keeps no record of the agents it starts");
     if (!sys) return fallback("the app's peer addon did not load");
-    const bin = await resolveBin(req.host);
-    if (!bin) return fallback(`the runtime found no ${label} binary: run aos doctor`);
+    const resolved = await resolveBin(req.host);
+    if ("reason" in resolved) return fallback(resolved.reason);
+    const { bin } = resolved;
     const ctx = this.o.context();
     const program = programRefusal(bin, ctx);
     if (program) return fallback(`${label} at ${bin}: ${program}`);
@@ -200,8 +202,10 @@ export class PtyService {
     registry.add({ pid, host: req.host, page: "code", key: `code:${id}`, label: req.label, place: req.place, access: req.access });
     p.onData((data) => this.o.emit({ id, type: "data", data }));
     p.onExit((e) => {
-      if (this.sessions.get(id) === p) this.sessions.delete(id);
       this.forget(id, pid);
+      // A stale agent (its page went, its id taken again since) says nothing to the terminal that has the id now.
+      if (this.sessions.get(id) !== p) return;
+      this.sessions.delete(id);
       this.o.emit({ id, type: "exit", exitCode: e.exitCode, ...(e.signal !== undefined ? { signal: e.signal } : {}) });
     });
     return { ok: true, data: { pid } };

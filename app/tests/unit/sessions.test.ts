@@ -167,16 +167,16 @@ test("onAgent: the turn's CLI is announced with its pid, workspace, host, access
   assert.equal(agents.length, 2);
 });
 
-test("resolveBin: the binary the runtime resolves for a Code launch (sessions.js bin), or null when it cannot say", async () => {
+test("resolveBin: the binary the runtime resolves for a Code launch (sessions.js bin), or why not", async () => {
   const { s } = service();
-  assert.equal(await s.resolveBin("claude"), CLAUDE);
-  assert.equal(await s.resolveBin("codex"), CODEX);
+  assert.deepEqual(await s.resolveBin("claude"), { bin: CLAUDE });
+  assert.deepEqual(await s.resolveBin("codex"), { bin: CODEX });
   const noNode = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => null, emit: () => {} });
-  assert.equal(await noNode.resolveBin("claude"), null);
+  assert.deepEqual(await noNode.resolveBin("claude"), { reason: "no node: run aos doctor" });
   // Not behind the Sessions surface: a Code launch needs no Sessions.
-  assert.equal(await service(false).s.resolveBin("claude"), CLAUDE);
+  assert.deepEqual(await service(false).s.resolveBin("claude"), { bin: CLAUDE });
   const noVault = new SessionService({ vaultRoot: () => null, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
-  assert.equal(await noVault.resolveBin("claude"), null);
+  assert.deepEqual(await noVault.resolveBin("claude"), { reason: "no vault is open" });
   // With no binary recorded, the one a Code terminal's PATH finds: the CLI its typed line would have run.
   const termBin = path.join(tmp, "term-bin");
   fs.mkdirSync(termBin, { recursive: true });
@@ -185,9 +185,36 @@ test("resolveBin: the binary the runtime resolves for a Code launch (sessions.js
   fs.writeFileSync(path.join(vault, "brain", "config.json"), JSON.stringify({ hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: true } } }));
   try {
     const onPath = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, terminalPATH: () => `${termBin}:/usr/bin:/bin` });
-    assert.equal(await onPath.resolveBin("codex"), termCodex);
-    assert.equal(await onPath.resolveBin("claude"), CLAUDE, "a recorded binary still comes first");
+    assert.deepEqual(await onPath.resolveBin("codex"), { bin: termCodex });
+    assert.deepEqual(await onPath.resolveBin("claude"), { bin: CLAUDE }, "a recorded binary still comes first");
+    // The runtime found none (AOS_NO_CODEX hides every Codex, the usual install folders included).
+    const hidden = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env: { ...env, AOS_NO_CODEX: "1" }, node: () => process.execPath, emit: () => {} });
+    assert.deepEqual(await hidden.resolveBin("codex"), { reason: "the runtime found no Codex binary: run aos doctor" });
   } finally { config(); }
+});
+
+/** A SessionService whose `sessions.js bin` is replaced by `code` (node -e): an old runtime, or one that never answers. */
+function binStandIn(code: string, extra: Partial<ConstructorParameters<typeof SessionService>[0]> = {}) {
+  const children: childProcess.ChildProcess[] = [];
+  const spawnImpl = ((cmd: string, args: string[], opts: object) => {
+    const c = args[1] === "bin" ? childProcess.spawn(process.execPath, ["-e", code], opts) : childProcess.spawn(cmd, args, opts);
+    if (args[1] === "bin") children.push(c);
+    return c;
+  }) as unknown as typeof childProcess.spawn;
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl, ...extra });
+  return { s, children };
+}
+
+test("resolveBin: a runtime older than the bin verb says to upgrade; one that never answers is given up on and killed", async () => {
+  const old = binStandIn("process.stderr.write('usage: sessions.js args <json> | events --host claude|codex [--model m] | catalog [--refresh] [--host h] | record <json>\\n'); process.exit(2);");
+  assert.deepEqual(await old.s.resolveBin("claude"), { reason: "the runtime is older than this app: run aos upgrade" });
+  const hung = binStandIn("setInterval(() => {}, 1000);", { binTimeoutMs: 300 });
+  const started = Date.now();
+  assert.deepEqual(await hung.s.resolveBin("claude"), { reason: "the runtime didn't answer" });
+  assert.ok(Date.now() - started < 5000);
+  const child = hung.children[0];
+  if (child.exitCode === null && child.signalCode === null) await new Promise((r) => child.once("exit", r));
+  assert.ok(child.signalCode !== null, "the runtime child was killed");
 });
 
 test("nothing runs while the Sessions surface is off, and a thread that is not there is ENOENT", async () => {

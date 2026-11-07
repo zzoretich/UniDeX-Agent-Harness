@@ -209,6 +209,7 @@ export class TerminalLauncher {
       void this.plugin.saveSettings();
     }
     ready.then((off) => {
+      if (session.isClosed) return;
       const asides = [aside, off ? `the computer is off for this session: ${off}` : null].filter((a): a is string => !!a);
       this.announce(session, place, why, req.host, asides.length ? asides.join("; ") : null);
     }, () => { /* the terminal says why it did not start */ });
