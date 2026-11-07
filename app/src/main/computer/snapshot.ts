@@ -225,7 +225,7 @@ export function mergeFrames(frames: { frameId: string; nodes: CdpAxNode[] }[], d
   return out;
 }
 
-/** Secrets of fewer characters scrub only as a whole word (a one-time code typed so far, "123"): longer ones anywhere. */
+/** Secrets of fewer characters scrub only as a whole word, and only when all digits or from a one-time-code field. */
 const SHORT_SECRET = 4;
 const literal = (s: string): string => s.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
 
@@ -233,21 +233,24 @@ const literal = (s: string): string => s.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")
  * D9: the scrub for secrets, the current values of sensitive fields, from any text that leaves the main process: a
  * snapshot line, a title, a URL, an ask title, a note or a tool reply (R27: Chrome names a label's checkbox or an
  * aria-labelledby button from an embedded one-time-code field's value). Whitespace is collapsed on both sides (a name
- * carries "12 3456" for a value "12  3456" or "12\t3456"); a secret of fewer than 4 characters goes only as a whole word;
- * longest first, so a secret inside another goes with it. Bullet-only strings are not secrets. The gate never sees the
- * result: it judges raw names (Task 11b), and this runs on the way out.
+ * carries "12 3456" for a value "12  3456" or "12\t3456"); longest first, so a secret inside another goes with it.
+ * A secret of fewer than 4 characters goes only as a whole word, and only when it is all digits (a one-time code typed
+ * so far) or in `whole` (the value of a one-time-code field): a short password stays, so prose keeps its "a". Bullet-only
+ * strings are not secrets. The gate never sees the result: it judges raw names (Task 11b), and this runs on the way out.
  */
-export function scrubber(values: Iterable<string | undefined>): (s: string) => string {
+export function scrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = []): (s: string) => string {
   const secrets = new Set<string>();
-  for (const v of values) {
+  const add = (v: string | undefined, short: boolean): void => {
     const t = v?.replace(/\s+/g, " ").trim();
-    if (t && !/^[•●* ]+$/.test(t)) secrets.add(t);
-  }
+    if (t && !/^[•●* ]+$/.test(t) && (t.length >= SHORT_SECRET || short)) secrets.add(t);
+  };
+  for (const v of values) add(v, /^\d+$/.test(v?.trim() ?? ""));
+  for (const v of whole) add(v, true);
   const patterns = [...secrets].sort((a, b) => b.length - a.length).map((x) => {
     const body = x.split(" ").map(literal).join("\\s+");
     return x.length >= SHORT_SECRET ? new RegExp(body, "gu") : new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "gu");
   });
-  return (s) => patterns.reduce((acc, re) => acc.replace(re, REDACTED), s);
+  return (s) => patterns.reduce((acc, re) => acc.replace(re, () => REDACTED), s);
 }
 
 /** The values the sensitive nodes among `nodes` hold: each one's own value and the names and values under it (its inner
@@ -286,7 +289,13 @@ const clip = (s: string): string => {
  * A ref's `target` carries the raw name: it is what the gate judges (D9 is kept by scrubbing the text that leaves, never
  * the name that is judged, Task 11b); the browser's `scrub` runs on any text built from it.
  */
-export function formatSnapshot(nodes: AxNode[], o: { origin: string; url: string; title: string; sensitive: ReadonlySet<number>; cap: number; values?: Iterable<string | undefined> }): Snapshot {
+export function formatSnapshot(nodes: AxNode[], o: {
+  origin: string; url: string; title: string; sensitive: ReadonlySet<number>; cap: number;
+  /** The sensitive fields' DOM values, and those of one-time-code fields (`whole`: short ones scrub as whole words). */
+  values?: Iterable<string | undefined>; whole?: Iterable<string | undefined>;
+  /** The sensitive nodes that are one-time-code fields: their accessibility values go into `whole` too. */
+  otp?: ReadonlySet<number>;
+}): Snapshot {
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const isSensitive = (n: AxNode): boolean => n.backendDOMNodeId !== undefined && o.sensitive.has(n.backendDOMNodeId);
 
@@ -294,20 +303,22 @@ export function formatSnapshot(nodes: AxNode[], o: { origin: string; url: string
   // embeds the field, a title, a URL). `o.values` are the fields' DOM values, read by the browser: what Chrome composes
   // other names from (a type=number field's AX value is the parsed float, "123" for "000123").
   const secrets: (string | undefined)[] = [...(o.values ?? [])];
+  const whole: (string | undefined)[] = [...(o.whole ?? [])];
   for (const n of nodes) {
     if (!isSensitive(n)) continue;
-    secrets.push(n.value);
+    const into = o.otp?.has(n.backendDOMNodeId!) ? whole : secrets;
+    into.push(n.value);
     const stack = [...n.childIds];
     const seen = new Set<string>();
     while (stack.length) {
       const c = byId.get(stack.pop()!);
       if (!c || seen.has(c.nodeId)) continue;
       seen.add(c.nodeId);
-      secrets.push(c.name, c.value);
+      into.push(c.name, c.value);
       stack.push(...c.childIds);
     }
   }
-  const scrub = scrubber(secrets);
+  const scrub = scrubber(secrets, whole);
 
   const url = scrub(o.url);
   const open = `<untrusted-page origin="${attrValue(scrub(o.origin))}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;

@@ -23,8 +23,10 @@ export interface TabInfo { index: number; url: string; title: string; openedBy: 
 /** `pageToken` and `tab` say where it was resolved: `click` and `scroll` refuse once either has changed. `judged` holds
  *  every control the gate judged (R26: `backendNodeId` and, when the walks disagreed, the others; none when the element
  *  is plain): the click is delivered only while a click at `point` reaches no other control. `target.name` is raw, for
- *  the gate: run it through `scrub` before it goes into a title, a note or a reply (D9). */
-export interface Resolved { target: Target; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; pageToken: string; tab: number }
+ *  the gate alone; `shown` is that name scrubbed of every sensitive field's value as read in this same call (D9), the
+ *  only name to put in text that leaves the main process. Any other text built from this page goes through
+ *  `scrub(text, r.tab)`: the tab, not the current one, since a popup may have made another tab current. */
+export interface Resolved { target: Target; shown: string; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; pageToken: string; tab: number }
 export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void }
 
 const PARTITION = "persist:computer";
@@ -47,9 +49,12 @@ const CANT_TELL = "Cannot tell which control this click reaches: take a new snap
 const URL_NOTE_MAX = 2_000;
 const D9_REFUSAL = "Typing into a password field is refused (D9).";
 const D9_UNREAD = "Could not read a password field's value to scrub it, so the text was held back (D9): try again.";
-// A field's current value through the native getter (an isolated world sees no page-defined one); "" for anything else.
-const VALUE_OF = "function () { return typeof this.value === 'string' ? this.value : ''; }";
+// A field's current value through the native getter (an isolated world sees no page-defined one; "" for anything else)
+// and whether it is a one-time-code field (a short code typed so far is scrubbed as a whole word).
+const VALUE_OF = "function () { return { v: typeof this.value === 'string' ? this.value : '', otp: /(^|\\s)one-time-code(\\s|$)/i.test((this.getAttribute && this.getAttribute('autocomplete')) || '') }; }";
 const WORLD = "agent-computer";
+// D9: how many secret values a tab remembers across its navigations, so a scrub after the page changed still finds them.
+const MEMORY = 256;
 const DIALOGS = new Set(["alert", "confirm", "prompt", "beforeunload"]);
 // The focused element behind open shadow roots and readable frames, run in an isolated world (native getters only).
 const ACTIVE_ELEMENT = `(() => { let e = document.activeElement;
@@ -84,7 +89,15 @@ interface Tab {
   /** The isolated world made in each frame (by frame id) for reading field values and the focused element; dropped when
    *  the frame navigates or goes. */
   worlds: Map<string, number>;
+  /** D9: every secret value read in this tab (value to whether it came from a one-time-code field), kept across the tab's
+   *  navigations and capped at `MEMORY`, so text about a page the tab has since left is still scrubbed. */
+  memory: Map<string, boolean>;
 }
+
+/** A sensitive field's current value and whether the field is a one-time-code field. */
+interface FieldValue { b: number; value: string; otp: boolean }
+/** What the scrub removes: `values` (short ones only when all digits), `whole` (one-time-code values, short ones as words). */
+interface Secrets { values: string[]; whole: string[] }
 
 interface Handlers { permission(permission: string, url: string): Promise<boolean>; download(item: DownloadItem, wc: WebContents): void }
 
@@ -188,8 +201,12 @@ export class ComputerBrowser {
     computerSession();
   }
 
+  /** Each tab's URL and title scrubbed of the secrets the tab has read (D9: a code submitted by GET sits in the URL). */
   tabs(): TabInfo[] {
-    return this.list.map((t, index) => ({ index, url: t.wc.getURL(), title: t.wc.getTitle(), openedBy: t.openedBy, active: index === this.current }));
+    return this.list.map((t, index) => {
+      const out = this.remembered(t);
+      return { index, url: out(t.wc.getURL()), title: out(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current };
+    });
   }
 
   /** Changes on every main-frame navigation commit of the active tab, and when the active tab changes. */
@@ -214,7 +231,8 @@ export class ComputerBrowser {
     if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") throw new Error(`The page redirected to ${t.refused ? `a ${t.refused}` : "a non-web"} URL, which is refused.`);
     // ERR_ABORTED: the page went somewhere else before it finished loading.
     if (failed && failed.code !== "ERR_ABORTED") throw new Error(`Could not open ${href}: ${failed.code ?? failed.message ?? "failed"}.`);
-    return { url: t.wc.getURL(), title: t.wc.getTitle() };
+    const out = this.remembered(t);
+    return { url: out(t.wc.getURL()), title: out(t.wc.getTitle()) };
   }
 
   /** Makes tab `index` the active one. */
@@ -237,6 +255,7 @@ export class ComputerBrowser {
   async snapshot(tab?: number): Promise<Snapshot> {
     const t = this.tab(tab);
     const dom = await this.locked(t, () => this.readDom(t));
+    const before = await this.fieldValues(t, dom);
     const frames: { id: string }[] = [];
     const walk = (n: { frame: { id: string }; childFrames?: unknown[] }): void => { frames.push(n.frame); for (const c of n.childFrames ?? []) walk(c as typeof n); };
     walk((await this.send<{ frameTree: { frame: { id: string } } }>(t, "Page.getFrameTree")).frameTree);
@@ -249,9 +268,13 @@ export class ComputerBrowser {
       }
     }
     const url = t.wc.getURL();
-    // D9: the fields' DOM values go into the scrub too (a type=number field's AX value is the parsed float, not its string).
-    const values = await this.fieldValues(t, dom);
-    const snap = formatSnapshot(mergeFrames(trees, dom), { origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP, values });
+    // D9: the fields' DOM values go into the scrub too (a type=number field's AX value is the parsed float, not its string),
+    // read before and after the accessibility trees so a value that changed meanwhile is scrubbed in both forms.
+    const fields = [...before, ...(await this.fieldValues(t, dom))];
+    const otp = new Set(fields.filter((f) => f.otp).map((f) => f.b));
+    const secrets = this.remember(t, { values: fields.filter((f) => !f.otp).map((f) => f.value), whole: fields.filter((f) => f.otp).map((f) => f.value) });
+    for (const { nodes } of trees) this.remember(t, { values: secretsOf(nodes, new Set([...t.sensitive].filter((b) => !otp.has(b)))), whole: secretsOf(nodes, otp) });
+    const snap = formatSnapshot(mergeFrames(trees, dom), { origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP, ...secrets, otp });
     t.refs = snap.refs;
     t.refsToken = this.tokenOf(t);
     return snap;
@@ -276,8 +299,8 @@ export class ComputerBrowser {
    * The element a click will hit, for the gate to judge (R26: never the container a ref named). The point is a ref's
    * centre (scrolled into view first) or the given x, y. The pointer moves there first, so the element judged is the
    * one in the hovered state the press will meet (a row that shows Delete on hover). The target is the control a click
-   * there reaches by either walk (`judgeReach`); `click()` delivers at exactly that point. The name is raw (D9: the gate
-   * judges what the page shows; `scrub` runs on the text that leaves).
+   * there reaches by either walk (`judgeReach`); `click()` delivers at exactly that point. `target.name` is raw (D9: the
+   * gate judges what the page shows); `shown` is the name for outgoing text, scrubbed with the values read in this call.
    */
   async resolve(by: { ref: string } | { x: number; y: number }): Promise<Resolved> {
     const t = this.tab();
@@ -295,25 +318,31 @@ export class ComputerBrowser {
     }
     p = { x: Math.round(p.x), y: Math.round(p.y) };
     await this.hover(t, p);
-    const { hit, dom, reached } = await this.reachAt(t, p, (h, d) => {
+    const { hit, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
       if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error("Something else covers that element now: take a new snapshot.");
     });
-    const target = await this.judgeReach(t, reached, dom);
+    const target = await this.judgeReach(t, reached, dom, own);
     const b = reached.controls[0] ?? hit;
+    // D9: the name for outgoing text is scrubbed with the values read now, in this call, before the page can change.
+    const shown = this.scrubWith(t, await this.secrets(t, dom))(target.name);
     // D9: `hit` is the node the hit test returned, so a sensitive host hit on its padding or its slotted text counts.
-    return { target, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: p, ...where };
+    return { target, shown, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: p, ...where };
   }
 
-  /** What has keyboard focus (D39), and whether it is a password field (D9). The target's name is raw, for the gate. */
+  /** What has keyboard focus (D39), and whether it is a password field (D9). `target.name` is raw, for the gate; `shown`
+   *  is the name for outgoing text, scrubbed with the values read in this call. */
   async focus(): Promise<Focus> {
     const t = this.tab();
     const f = await this.focused(t);
     // D9: focus inside a frame from another site counts as sensitive, so typing there is refused.
-    if (f === "remote") return { target: await this.remoteTarget(t), sensitive: true, plainTextarea: false };
-    if (!f) return { target: null, sensitive: false, plainTextarea: false };
+    if (f === "remote") {
+      const target = await this.remoteTarget(t);
+      return { target, shown: this.scrubWith(t, await this.secrets(t))(target.name), sensitive: true, plainTextarea: false };
+    }
+    if (!f) return { target: null, shown: "", sensitive: false, plainTextarea: false };
     const target = await this.targetOf(t, f.b, f.dom);
     const plainTextarea = f.dom.names.get(f.b) === "TEXTAREA" && !(await this.keyListened(t, f.b, f.dom));
-    return { target, sensitive: t.sensitive.has(f.b), plainTextarea };
+    return { target, shown: this.scrubWith(t, await this.secrets(t, f.dom))(target.name), sensitive: t.sensitive.has(f.b), plainTextarea };
   }
 
   /**
@@ -322,13 +351,15 @@ export class ComputerBrowser {
    * refs return raw. Chrome composes some controls' names from an embedded field's value (a label holding a checkbox
    * and a one-time-code field names the checkbox with the code; so does aria-labelledby). Both what Chrome shows (the
    * accessibility value) and what the field holds (its DOM value, read on the node in an isolated world of its frame)
-   * are scrubbed, whitespace collapsed (./snapshot `scrubber`). A value that cannot be read throws rather than letting
-   * the text out. The gate never sees the result: a page could plant a value that matches a label (R26, Task 11b).
+   * are scrubbed, whitespace collapsed (./snapshot `scrubber`), together with every value this tab has read before (its
+   * memory), so a code the page has since cleared or navigated away from still goes. A value that cannot be read throws
+   * rather than letting the text out. The gate never sees the result: a page could plant a value that matches a label
+   * (R26, Task 11b). Pass the tab the text is about (`Resolved.tab`): a popup may have made another tab current.
    */
   async scrub(text: string, tab?: number): Promise<string> {
     const t = this.tab(tab);
     if (!text) return text;
-    return scrubber(await this.secrets(t))(text);
+    return this.scrubWith(t, await this.secrets(t))(text);
   }
 
   async click(r: Resolved): Promise<void> {
@@ -457,7 +488,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
-      worlds: new Map(),
+      worlds: new Map(), memory: new Map(),
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -562,11 +593,12 @@ export class ComputerBrowser {
     wc.on("did-fail-load", (_e, code, _d, _url, isMainFrame) => { if (code === -311) note(`Refused ${isMainFrame ? "a" : "a frame's"} redirect to a URL that is not http or https.`); });
     // D21: a navigation the page started (not open(), which loads from main) is noted with its URL. This fires before
     // the refusal above, so a refused URL is left to the refusal's scheme-only note.
-    wc.on("did-start-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument && e.initiator && navAllowed(e.url)) note(`The page went to ${clipUrl(e.url)}`); });
+    // D9: a code submitted by GET sits in the URL; the tab's remembered secrets are scrubbed from every URL that goes out.
+    wc.on("did-start-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument && e.initiator && navAllowed(e.url)) note(`The page went to ${clipUrl(this.remembered(t)(e.url))}`); });
     wc.on("did-navigate", () => { t.seq++; this.o.hooks.changed(); });
     wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => { if (isMainFrame) { t.seq++; this.o.hooks.changed(); } });
     wc.on("page-title-updated", () => this.o.hooks.changed());
-    wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(wc.getURL())} stopped (${d.reason}).`));
+    wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.remembered(t)(wc.getURL()))} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });
     wc.debugger.on("message", (_e, method: string, params: Record<string, unknown>) => this.onCdp(t, method, params));
     wc.debugger.on("detach", (_e, reason: string) => { if (!t.closing) note(`The tab's DevTools connection closed (${reason}); the next action reconnects.`); });
@@ -623,9 +655,12 @@ export class ComputerBrowser {
   }
 
   private async popup(t: Tab, d: Electron.HandlerDetails): Promise<void> {
-    if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${clipUrl(d.url)} in a new tab; ${MAX_TABS} tabs are open.`); return; }
+    const out = this.remembered(t);
+    if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${clipUrl(out(d.url))} in a new tab; ${MAX_TABS} tabs are open.`); return; }
     const nt = await this.addTab(t.openedBy);
-    this.o.hooks.note(`The page opened ${clipUrl(d.url)} in a new tab.`);
+    // The new tab starts with the opener's memory: the URL it was given may carry a code the opener's page held.
+    for (const [v, otp] of t.memory) nt.memory.set(v, otp);
+    this.o.hooks.note(`The page opened ${clipUrl(out(d.url))} in a new tab.`);
     const post = d.postBody;
     // A form posted into a new tab keeps its fields, never a file from this Mac (only raw data is passed on).
     const raw = post?.data.filter((x): x is Electron.UploadRawData => x.type === "rawData") ?? [];
@@ -850,23 +885,51 @@ export class ComputerBrowser {
     return contextId;
   }
 
-  /** D9: every sensitive field's current value, as the accessibility tree shows it and as the field holds it (`fieldValues`).
-   *  The sensitive set is refreshed first. */
-  private async secrets(t: Tab): Promise<string[]> {
-    const dom = await this.locked(t, () => this.readDom(t));
-    const out = await this.fieldValues(t, dom);
+  /** D9: every sensitive field's current value, as the field holds it (`fieldValues`) and as the accessibility tree shows
+   *  it, remembered in the tab. The sensitive set is refreshed first unless the caller just read `dom`. */
+  private async secrets(t: Tab, dom?: DomIndex): Promise<Secrets> {
+    const d = dom ?? await this.locked(t, () => this.readDom(t));
+    const fields = await this.fieldValues(t, d);
+    const otp = new Set(fields.filter((f) => f.otp).map((f) => f.b));
+    const out: Secrets = { values: fields.filter((f) => !f.otp).map((f) => f.value), whole: fields.filter((f) => f.otp).map((f) => f.value) };
     for (const b of t.sensitive) {
       const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: b, fetchRelatives: false }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
-      out.push(...secretsOf(nodes, t.sensitive));
+      (otp.has(b) ? out.whole : out.values).push(...secretsOf(nodes, t.sensitive));
     }
-    return out;
+    return this.remember(t, out);
+  }
+
+  /** D9: adds `s` to the tab's memory (oldest dropped past `MEMORY`; a value seen as a one-time code stays one) and returns it. */
+  private remember(t: Tab, s: Secrets): Secrets {
+    for (const [list, otp] of [[s.values, false], [s.whole, true]] as const) {
+      for (const raw of list) {
+        const v = raw.replace(/\s+/g, " ").trim();
+        if (!v || /^[•●* ]+$/.test(v)) continue;
+        const was = t.memory.get(v);
+        t.memory.delete(v);
+        t.memory.set(v, was || otp);
+      }
+    }
+    while (t.memory.size > MEMORY) t.memory.delete(t.memory.keys().next().value!);
+    return s;
+  }
+
+  /** The scrub for the secrets just read plus everything the tab remembers. */
+  private scrubWith(t: Tab, s: Secrets): (text: string) => string {
+    const mem = [...t.memory];
+    return scrubber([...s.values, ...mem.filter(([, otp]) => !otp).map(([v]) => v)], [...s.whole, ...mem.filter(([, otp]) => otp).map(([v]) => v)]);
+  }
+
+  /** The scrub from the tab's memory alone (for a URL or title going out where nothing new is read). */
+  private remembered(t: Tab): (text: string) => string {
+    return this.scrubWith(t, { values: [], whole: [] });
   }
 
   /** D9: the DOM value (`this.value`) of every sensitive field in `dom`, read on the node in an isolated world of its
    *  frame, so a page-defined getter cannot answer instead. A field that is gone has nothing to read; a stale world is
    *  made again once; any other failure throws (the text it was for is held back rather than let out unscrubbed). */
-  private async fieldValues(t: Tab, dom: DomIndex): Promise<string[]> {
-    const out: string[] = [];
+  private async fieldValues(t: Tab, dom: DomIndex): Promise<FieldValue[]> {
+    const out: FieldValue[] = [];
     if (!t.sensitive.size) return out;
     const group = `agent-computer-values-${t.uid}`;
     try {
@@ -874,7 +937,7 @@ export class ComputerBrowser {
         const frameId = dom.frameOf.get(b);
         if (frameId === undefined) continue;
         const v = await this.fieldValue(t, b, frameId, group);
-        if (v !== undefined) out.push(v);
+        if (v) out.push(v);
       }
     } finally {
       await this.send(t, "Runtime.releaseObjectGroup", { objectGroup: group }).catch(() => undefined);
@@ -882,20 +945,27 @@ export class ComputerBrowser {
     return out;
   }
 
-  private async fieldValue(t: Tab, b: number, frameId: string, group: string): Promise<string | undefined> {
-    for (let attempt = 0; attempt < 2; attempt++) {
+  /** One field's value. A cached world may be stale (a reload keeps the frame id; DevTools then answers as if the node were
+   *  gone), so any failure with a cached world drops it and tries once more with a fresh one; the node counts as gone only
+   *  when the fresh world says so, and any other failure throws. */
+  private async fieldValue(t: Tab, b: number, frameId: string, group: string): Promise<FieldValue | undefined> {
+    let fresh = !t.worlds.has(frameId);
+    for (;;) {
       try {
         const executionContextId = await this.world(t, frameId);
         const { object } = await this.send<{ object: { objectId: string } }>(t, "DOM.resolveNode", { backendNodeId: b, executionContextId, objectGroup: group });
-        const { result } = await this.send<{ result: { value?: unknown } }>(t, "Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: VALUE_OF, returnByValue: true, objectGroup: group });
-        return typeof result.value === "string" ? result.value : undefined;
+        const { result } = await this.send<{ result: { value?: { v?: unknown; otp?: unknown } } }>(t, "Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: VALUE_OF, returnByValue: true, objectGroup: group });
+        return typeof result.value?.v === "string" ? { b, value: result.value.v, otp: result.value.otp === true } : undefined;
       } catch (e) {
         if (e instanceof CdpTimeout) throw e;
-        if (isGone(e)) return undefined;
+        if (fresh) {
+          if (isGone(e)) return undefined;
+          throw new Error(D9_UNREAD);
+        }
         t.worlds.delete(frameId);
+        fresh = true;
       }
     }
-    throw new Error(D9_UNREAD);
   }
 
   /** The node a click at `p` would hit. */
@@ -925,19 +995,23 @@ export class ComputerBrowser {
    * hidden, the wrapper hit) also starts at each host above it, where the click bubbles (`hostsAbove`). `hit` stays
    * the node the hit test returned.
    */
-  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; dom: DomIndex; reached: Reach }> {
+  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; dom: DomIndex; reached: Reach; own: number }> {
     const hit = await this.hitAt(t, p);
     const dom = await this.locked(t, () => this.readDom(t));
     if (!dom.names.has(hit)) throw new Error("The page changed: look again.");
     check?.(hit, dom);
-    if (dom.remoteFrames.has(hit)) return { hit, dom, reached: { hit, controls: [hit] } };
+    if (dom.remoteFrames.has(hit)) return { hit, dom, reached: { hit, controls: [hit] }, own: 1 };
     const text = await this.slottedText(t, hit, p, dom);
+    // The hit's own starts first (the text and the host, or the hit), then the hosts the click bubbles to, each once.
+    const ownFrom = text === null ? [hit] : [text, hit];
+    const froms = [...ownFrom, ...hostsAbove(dom, hit).filter((h) => !ownFrom.includes(h))];
     const starts: Start[] = [];
-    for (const from of [...(text === null ? [] : [text]), hit, ...hostsAbove(dom, hit)]) {
+    for (const from of froms) {
       const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: from, fetchRelatives: true }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
       starts.push({ from, ax: nodes });
     }
-    return { hit, dom, reached: reach(dom, hit, starts) };
+    // The controls the own starts found come first in the union; `own` says how many, for `judgeReach`.
+    return { hit, dom, reached: reach(dom, hit, starts), own: reach(dom, hit, starts.slice(0, ownFrom.length)).controls.length };
   }
 
   /** On a hit on a shadow host: the host's light-DOM text node whose own box holds the point (`DOM.getContentQuads` works
@@ -956,19 +1030,23 @@ export class ComputerBrowser {
 
   /** The target the gate judges for what a click reaches (D43 reads role and label): a frame from another site
    *  (opaque); a plain element as it is; one control by its name; or, when the walks found different controls, every
-   *  name joined so the click asks if any matches, refused when one cannot be named. */
-  private async judgeReach(t: Tab, r: Reach, dom: DomIndex): Promise<Target> {
+   *  name joined so the click asks if any matches. Refused only when the hit's own walks (the first `own` controls)
+   *  disagree and one of them cannot be named: then which control the click activates cannot be told. A nameless
+   *  control elsewhere (an icon button inside a host inside a named link) is judged by the named ones. */
+  private async judgeReach(t: Tab, r: Reach, dom: DomIndex, own: number): Promise<Target> {
     if (dom.remoteFrames.has(r.hit)) return { ...(await this.targetOf(t, r.hit, dom)), opaque: true };
     if (!r.controls.length) return this.targetOf(t, r.hit, dom);
     const targets: Target[] = [];
     for (const c of r.controls) targets.push(await this.named(t, c, dom));
     if (targets.length === 1) return targets[0];
-    if (targets.some((x) => !x.name)) throw new Error(CANT_TELL);
+    if (own > 1 && targets.slice(0, own).some((x) => !x.name)) throw new Error(CANT_TELL);
+    const named = targets.filter((x) => x.name);
+    if (!named.length) return targets[0];
     // Each further name is added unless the name so far holds it as whole words (then every label in it is matched
     // already): "Deleted messages" holds "Delete" as letters only, so the name is "Deleted messages (Delete)" and asks.
-    let name = targets[0].name;
-    for (const x of targets.slice(1)) if (!covers(name, x.name)) name = `${name} (${x.name})`;
-    return { role: targets.find((x) => ASK_ROLES.has(x.role))?.role ?? targets[0].role, name, inForm: targets.some((x) => x.inForm), fileInput: targets.some((x) => x.fileInput) };
+    let name = named[0].name;
+    for (const x of named.slice(1)) if (!covers(name, x.name)) name = `${name} (${x.name})`;
+    return { role: named.find((x) => ASK_ROLES.has(x.role))?.role ?? named[0].role, name, inForm: targets.some((x) => x.inForm), fileInput: targets.some((x) => x.fileInput) };
   }
 
   /** A control's role and name: from the accessibility tree, with its markup role where that tree hides it, and its own

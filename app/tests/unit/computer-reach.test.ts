@@ -138,7 +138,8 @@ test("a hit inside a shadow tree also starts a walk from each host above it, whe
   const d = indexDom({ nodeId: ++id, backendNodeId: id, nodeType: 9, nodeName: "#document", children: [el("HTML", [], [el("BODY", [], [host5, lightButton])], { frameId: "F4" })] });
   assert.deepEqual(hostsAbove(d, b(link5)), [b(host5)], "the host whose shadow tree holds the link");
   assert.deepEqual(hostsAbove(d, b(host5)), [], "a host in the light DOM is inside no shadow tree");
-  assert.deepEqual(hostsAbove(d, b(text)), [], "slotted light-DOM text is a child of its host, not of its shadow tree");
+  // Fix round 1 (S4): the walk follows the flat tree, so slotted content crosses its slot's shadow root to the host too.
+  assert.deepEqual(hostsAbove(d, b(text)), [b(host5)], "slotted light-DOM text reaches its host through its slot's shadow tree");
   assert.deepEqual(hostsAbove(d, b(innerButton)), [b(innerHost), b(outerHost)], "nested hosts, nearest first");
   const axLink = [axNode(link5, "link", "Item 3", host5), axNode(host5, "button", "Delete item 3")];
   assert.deepEqual(reach(d, b(link5), [{ from: b(link5), ax: axLink }]), { hit: b(link5), controls: [b(link5)] }, "the link's own walks stop at the link");
@@ -146,4 +147,39 @@ test("a hit inside a shadow tree also starts a walk from each host above it, whe
   assert.deepEqual(both, { hit: b(link5), controls: [b(link5), b(host5)] }, "with the host's walk the button is judged too");
   const nested = reach(d, b(innerButton), [{ from: b(innerButton), ax: [] }, ...hostsAbove(d, b(innerButton)).map((from) => ({ from, ax: [] }))]);
   assert.deepEqual(nested, { hit: b(innerButton), controls: [b(innerButton), b(lightButton)] }, "the light-DOM button the click bubbles to, once");
+});
+
+test("hostsAbove follows the flat tree, so a slotted span finds its host whatever the shadow wrapper does (D43, R26, fix round 1)", () => {
+  // S4: <x-s4 role=button aria-label="Delete item 3"><span>Item 3</span></x-s4>, shadow <a href="#help"><slot>: nothing hidden,
+  // the hit test returns the span, and the click bubbles through the link to the host's listener.
+  const span4 = el("SPAN", [], [txt("Item 3")]);
+  const slot6 = el("SLOT", [], [], { distributedNodes: [{ backendNodeId: span4.backendNodeId }] });
+  const link6 = el("A", ["href", "#help"], [slot6]);
+  const root6: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [link6] };
+  const host6 = el("X-S4", ["role", "button", "aria-label", "Delete item 3"], [span4], { shadowRoots: [root6] });
+  // N2c with a span: the same component with no role, inside a light-DOM <button aria-label="Delete item 3">.
+  const span7 = el("SPAN", [], [txt("Item 3")]);
+  const slot7 = el("SLOT", [], [], { distributedNodes: [{ backendNodeId: span7.backendNodeId }] });
+  const link7 = el("A", ["href", "#help", "style", "pointer-events:none"], [slot7]);
+  const root7: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [link7] };
+  const host7 = el("X-N2C", [], [span7], { shadowRoots: [root7] });
+  const button7 = el("BUTTON", ["aria-label", "Delete item 3"], [host7]);
+  // An iframe's document: the walk stops at it (a click does not bubble into the parent page).
+  const inner = el("BUTTON", [], [txt("Inner")]);
+  const innerDoc: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 9, nodeName: "#document", children: [el("HTML", [], [el("BODY", [], [inner])], { frameId: "F6" })] };
+  const frameSlot = el("SLOT", [], [], { distributedNodes: [] });
+  const frameRoot: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [frameSlot] };
+  const frameHost = el("X-FRAME", ["role", "button"], [el("IFRAME", [], [], { frameId: "F6", contentDocument: innerDoc })], { shadowRoots: [frameRoot] });
+  const d = indexDom({ nodeId: ++id, backendNodeId: id, nodeType: 9, nodeName: "#document", children: [el("HTML", [], [el("BODY", [], [host6, button7, frameHost])], { frameId: "F5" })] });
+  assert.deepEqual(hostsAbove(d, b(span4)), [b(host6)], "span -> slot -> link -> shadow root -> host");
+  assert.deepEqual(hostsAbove(d, b(span4.children![0])), [b(host6)], "the span's text too");
+  assert.deepEqual(hostsAbove(d, b(span7)), [b(host7)]);
+  assert.deepEqual(hostsAbove(d, b(inner)), [], "a click inside a frame does not bubble to the host around the frame");
+  const own = [{ from: b(span4), ax: [axNode(span4, "generic", "", link6), axNode(link6, "link", "Item 3", host6), axNode(host6, "button", "Delete item 3")] }];
+  assert.deepEqual(reach(d, b(span4), own), { hit: b(span4), controls: [b(link6)] }, "the span's own walks stop at the link");
+  const all = reach(d, b(span4), [...own, ...hostsAbove(d, b(span4)).map((from) => ({ from, ax: [axNode(host6, "button", "Delete item 3")] }))]);
+  assert.deepEqual(all, { hit: b(span4), controls: [b(link6), b(host6)] }, "with the host the button is judged too");
+  assert.equal(all.controls.slice(0, reach(d, b(span4), own).controls.length).length, 1, "the controls the hit's own walks found come first");
+  const c = reach(d, b(span7), [{ from: b(span7), ax: [] }, ...hostsAbove(d, b(span7)).map((from) => ({ from, ax: [] }))]);
+  assert.deepEqual(c, { hit: b(span7), controls: [b(link7), b(button7)] }, "N2c with a span: the light-DOM button around the host");
 });

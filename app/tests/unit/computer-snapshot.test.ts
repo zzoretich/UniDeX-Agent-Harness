@@ -301,11 +301,17 @@ test("scrubber matches with whitespace collapsed on both sides, and a short valu
   assert.equal(scrubber(["  123456  "])("Keep 123456 "), `Keep ${REDACTED} `, "trimmed, the surrounding text kept");
   // N3b: a type=number field's AX value is the parsed float ("123"); the DOM string "000123" is what the name carries.
   assert.equal(scrubber(["123", "000123"])(" Keep 000123"), ` Keep ${REDACTED}`);
-  // A value under 4 characters scrubs only as a whole word, so a one-time code typed so far goes while letters inside words stay.
+  // A value under 4 characters scrubs only as a whole word, and only when it is all digits (a one-time code typed so far)
+  // or comes from a one-time-code field (`whole`); a short password ("a") is left alone, so prose keeps its words (S5).
   assert.equal(scrubber(["123"])("Keep 123 and 1234 and e123"), `Keep ${REDACTED} and 1234 and e123`);
-  assert.equal(scrubber(["k9z"])("k9z"), REDACTED);
-  assert.equal(scrubber(["k9z"])("ak9z k9zb"), "ak9z k9zb", "not a whole word");
-  assert.equal(scrubber(["a.b"])("say a.b (a-b) axb"), `say ${REDACTED} (a-b) axb`, "regex characters in a value are literal");
+  assert.equal(scrubber(["3", "a"])("Delete item 3. Add a comment to step 3 of 3"), `Delete item ${REDACTED}. Add a comment to step ${REDACTED} of ${REDACTED}`);
+  assert.equal(scrubber(["k9z"])("k9z"), "k9z", "a short value that is not all digits is not a one-time code unless the field says so");
+  assert.equal(scrubber([], ["k9z"])("k9z ak9z k9zb"), `${REDACTED} ak9z k9zb`, "from a one-time-code field it scrubs as a whole word");
+  assert.equal(scrubber([], ["abcdefgh"])("xabcdefghx"), `x${REDACTED}x`, "a long one-time-code value scrubs anywhere, as any long value");
+  assert.equal(scrubber(["Pass"])("password Pass"), `pass word ${REDACTED}`.replace("pass word", "pass" + "word"), "4+ characters scrub as a substring");
+  assert.equal(scrubber(["a.b."])("say a.b. (a-b-) axbx"), `say ${REDACTED} (a-b-) axbx`, "regex characters in a value are literal");
+  assert.equal(scrubber(["$&$&", "\\d+\\d+", "{1}{1}", "(((("])("pay $&$& now \\d+\\d+ x{1}{1} f((((x"), `pay ${REDACTED} now ${REDACTED} x${REDACTED} f${REDACTED}x`, "replacement patterns and regex syntax are literal too");
+  assert.equal(scrubber([], ["$&", "\\d+"])("pay $& now \\d+ x"), `pay ${REDACTED} now ${REDACTED} x`, "short ones from a one-time-code field, as whole words");
   assert.equal(scrubber(["Delete"])("Delete branch"), `${REDACTED} branch`, "a planted value hides a label: the gate must judge the raw name, the scrub runs on outgoing text only");
 });
 
@@ -322,6 +328,15 @@ test("formatSnapshot scrubs the DOM values it is given too, and a ref keeps its 
   const s = formatSnapshot(nodes, { ...opts([3]), values: ["000123", undefined] });
   assert.match(s.text, /checkbox "Keep ••••••"/);
   assert.match(s.text, /spinbutton value="••••••"/);
+  // Fix round 1: a short value from a one-time-code field (`otp` nodes, or `whole`) scrubs as a whole word; a short password does not.
+  const short = [ax("1", "RootWebArea", "", ["2", "3", "4", "5"]), ax("2", "button", "Delete item 3"), ax("3", "textbox", "Code", [], { value: "3" }), ax("4", "textbox", "PIN", [], { value: "a" }), ax("5", "paragraph", "Add a comment to step 3 of 3")];
+  const digits = formatSnapshot(short, opts([3, 4]));
+  assert.match(digits.text, /button "Delete item ••••••"/, "an all-digit short value scrubs as a whole word");
+  assert.match(digits.text, /paragraph "Add a comment to step •••••• of ••••••"/, "the password 'a' is left in the prose");
+  const k9z = [ax("1", "RootWebArea", "", ["2", "3"]), ax("2", "button", "Enter k9z now"), ax("3", "textbox", "Code", [], { value: "k9z" })];
+  assert.match(formatSnapshot(k9z, opts([3])).text, /button "Enter k9z now"/, "not digits, not known as a one-time-code field: kept");
+  assert.match(formatSnapshot(k9z, { ...opts([3]), otp: new Set([3]) }).text, /button "Enter •••••• now"/, "a one-time-code field's short value goes");
+  assert.match(formatSnapshot(k9z, { ...opts([3]), whole: ["k9z"] }).text, /button "Enter •••••• now"/, "so does one given as `whole`");
   assert.equal(refFor(s, 2)![1].target.name, "Keep 000123", "the ref's target is what the gate judges: raw, scrubbed only on its way out");
   // A planted value equal to a label: the line is scrubbed, the ref's target is not, so the gate still asks.
   const planted = formatSnapshot([ax("1", "RootWebArea", "", ["2", "3"]), ax("2", "textbox", "Code", [], { value: "Delete" }), ax("3", "button", "Delete branch")], opts([2]));

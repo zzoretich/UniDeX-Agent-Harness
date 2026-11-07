@@ -23,13 +23,14 @@ export function within(dom: DomIndex, a: number, b: number): boolean {
   return false;
 }
 
-/** The shadow hosts whose trees hold `n`, nearest first, up to its document: a click on an element inside a shadow
- *  tree bubbles to each of them, so a host with a role of its own (or a light-DOM control around it) takes the click
- *  too (Task 11b: a role=button host whose shadow wraps the slot in a link). Slotted light-DOM content is a child of
- *  its host, not of the host's shadow tree, so it names none. */
+/** The shadow hosts a click on `n` bubbles to, nearest first, up to its document: along the flat-tree path from `n`
+ *  (a slotted node steps to its slot, so slotted content crosses its slot's shadow tree), every host the path leaves a
+ *  shadow root into. A host with a role of its own, or a light-DOM control around it, takes the click too (Task 11b,
+ *  fix round 1: a role=button host whose shadow wraps the slot in a link, whether the slotted content is bare text, a
+ *  span, hidden or unhittable). */
 export function hostsAbove(dom: DomIndex, n: number): number[] {
   const out: number[] = [];
-  for (let prev = n, p = dom.parent.get(n); p !== undefined && dom.names.get(prev) !== "#document" && out.length < HOST_DEPTH; prev = p, p = dom.parent.get(p)) {
+  for (let prev = n, p = flatParent(dom, n); p !== undefined && dom.names.get(prev) !== "#document" && out.length < HOST_DEPTH; prev = p, p = flatParent(dom, p)) {
     if (dom.shadowRoots.get(p)?.includes(prev)) out.push(p);
   }
   return out;
