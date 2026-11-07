@@ -4,7 +4,8 @@
 // refuses to start with a debugging switch, so nothing can drive it from outside (src/main/policy/debug.ts). Phase 5: the
 // bundle carries the runtime (Resources/payload) at the app's version, with its dependencies and without tests, npm's
 // .bin links or a home path, and its CLI loads; a full build knows its update feed (app-update.yml) and has the zip and
-// latest-mac.yml the updater reads.
+// latest-mac.yml the updater reads. Agent computer D18: the peer addon ships unpacked beside node-pty, signed like it,
+// and nothing else of native/ ships.
 //
 //   node scripts/verify-dist.mjs [--notarize-dmg] [--app-only]
 //
@@ -30,6 +31,7 @@ const APP = path.join(repo, "dist", "mac-arm64", `${NAME}.app`);
 const DMG = path.join(repo, "dist", `AgenticOS-Workbench-${pkg.version}-arm64.dmg`);
 const RES = path.join(APP, "Contents", "Resources");
 const PTY = path.join(RES, "app.asar.unpacked", "node_modules", "node-pty", "prebuilds", "darwin-arm64");
+const PEER = path.join(RES, "app.asar.unpacked", "native", "peer", "build", "Release", "peer.node");
 const ENTITLEMENTS = ["com.apple.security.automation.apple-events", "com.apple.security.cs.allow-jit"];
 const ON = 49;
 const OFF = 48;
@@ -110,6 +112,8 @@ for (const bin of ["pty.node", "spawn-helper"]) {
   check(`node-pty's ${bin} is signed by the same team, hardened`, s.team === sig.team && s.runtime, `${s.identifier} team ${s.team}`);
 }
 check("spawn-helper is executable", (fs.statSync(path.join(PTY, "spawn-helper")).mode & 0o111) === 0o111);
+const peer = fs.existsSync(PEER) ? signature(PEER) : null;
+check("the peer addon is unpacked and signed by the same team, hardened", peer && peer.team === sig.team && peer.runtime, peer ? `${peer.identifier} team ${peer.team}` : `missing: ${PEER}`);
 
 const wire = await getCurrentFuseWire(APP);
 for (const [name, want] of Object.entries(FUSES)) {
@@ -130,10 +134,16 @@ const expectedOut = ["/out/main/index.js", ...TRAY, "/out/preload/index.js", "/o
   "/out/renderer/hud.js", "/out/renderer/index.html", ...FONTS].sort();
 check("out/ holds the app and nothing else", JSON.stringify(outFiles) === JSON.stringify(expectedOut), outFiles.join(" "));
 check("no source maps", !files.some((f) => f.endsWith(".map")));
+// The archive lists the addon (its bytes are unpacked) and the folders above it, and nothing else of native/.
+const PEER_ENTRY = "/native/peer/build/Release/peer.node";
+const peerEntries = new Set(["/native", "/native/peer", "/native/peer/build", "/native/peer/build/Release", PEER_ENTRY]);
+const nativeStray = files.filter((f) => (f === "/native" || f.startsWith("/native/")) && !peerEntries.has(f));
+check("native/ ships the peer addon and nothing else", files.includes(PEER_ENTRY) && nativeStray.length === 0, nativeStray.join(" "));
 check("only this Mac's node-pty prebuild", !files.some((f) => /prebuilds\/(darwin-x64|win32)/.test(f)) && fs.readdirSync(path.dirname(PTY)).join() === "darwin-arm64");
 const home = os.homedir();
 const leaks = expectedOut.filter((f) => extractFile(asar, f.slice(1)).toString("utf8").includes(home));
-check("no home-folder path in the bundled code", leaks.length === 0, leaks.join(", "));
+if (fs.existsSync(PEER) && fs.readFileSync(PEER).includes(home)) leaks.push(PEER_ENTRY);
+check("no home-folder path in the bundled code or the peer addon", leaks.length === 0, leaks.join(", "));
 
 // ── the runtime it carries, and its update feed (phase 5) ────────────
 

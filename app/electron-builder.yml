@@ -10,20 +10,24 @@ directories:
   buildResources: build
 
 # esbuild bundles the app and the HUD into out/. The one runtime dependency is node-pty, which main loads with require()
-# for the Workbench's terminals: only its JavaScript and this Mac's prebuild ship.
+# for the Workbench's terminals: only its JavaScript and this Mac's prebuild ship. Of native/, only the built peer addon
+# ships (agent-computer D18; scripts/build-native.mjs builds it at install), not its sources or build intermediates.
 files:
   - out/**/*
   - "!out/**/*.map"
   - package.json
+  - native/peer/build/Release/peer.node
   - "!node_modules/node-pty/{binding.gyp,deps,scripts,src,third_party,typings}{,/**/*}"
   - "!node_modules/node-pty/prebuilds/{darwin-x64,win32-arm64,win32-x64}{,/**/*}"
   - "!node_modules/node-pty/lib/**/*.{map,test.js}"
   - "!node_modules/node-pty/lib/{conpty_console_list_agent,windowsConoutConnection,windowsPtyAgent,windowsTerminal}.js"
   - "!node_modules/node-addon-api{,/**/*}"
 # node-pty runs spawn-helper as a program, so it and pty.node live outside the archive (unixTerminal.js looks in
-# app.asar.unpacked). Both are signed with the app.
+# app.asar.unpacked). Both are signed with the app. The peer addon lives there too, signed the same way:
+# src/main/computer/peer.ts loads it from app.asar.unpacked.
 asarUnpack:
   - node_modules/node-pty/prebuilds/darwin-arm64/*
+  - native/peer/build/Release/peer.node
 # Phase 5 (I1): the runtime the app installs and upgrades from, a release tree scripts/make-payload.mjs builds. Plain
 # files under Resources, sealed by the app's signature; the wizard runs its cli/aos.js with the user's own Node.
 extraResources:
