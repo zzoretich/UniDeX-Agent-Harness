@@ -5,8 +5,9 @@
 
 export type AskCategory = "submit" | "purchase" | "send" | "delete" | "merge" | "signin" | "download";
 
-/** What the gate looks at. `fileInput` is for the gate's own use; `categoryOf` ignores it. */
-export interface Target { role: string; name: string; inForm: boolean; fileInput: boolean }
+/** What the gate looks at. `fileInput` and `opaque` are for the gate's own use; `categoryOf` ignores them. `opaque`: the
+ *  control is a frame from another site, whose contents the browser cannot read (agent-computer D9, D43). */
+export interface Target { role: string; name: string; inForm: boolean; fileInput: boolean; opaque?: boolean }
 
 /** Labels that ask wherever they appear. */
 export const VOCABULARY: Readonly<Record<AskCategory, readonly string[]>> = {

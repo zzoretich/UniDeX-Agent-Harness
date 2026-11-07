@@ -11,14 +11,15 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
 import type { Target } from "./categories";
-import { cdp, CdpTimeout, keyEvents } from "./cdp";
+import { cdp, CdpTimeout, keyEvents, unlessGone } from "./cdp";
 import type { Focus } from "./gate";
-import { deviceRects, paintRects, type Rect } from "./mask";
+import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
 import { formatSnapshot, indexDom, mergeFrames, SNAPSHOT_CAP, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf } from "../policy/computer-url";
 
 export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean }
-export interface Resolved { target: Target; sensitive: boolean; backendNodeId: number | null; point: { x: number; y: number } }
+/** `pageToken` and `tab` say where it was resolved: `click` and `scroll` refuse once either has changed. */
+export interface Resolved { target: Target; sensitive: boolean; backendNodeId: number | null; point: { x: number; y: number }; pageToken: string; tab: number }
 export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void }
 
 const PARTITION = "persist:computer";
@@ -38,6 +39,18 @@ const QUERY_MS = 100;
 const MAX_TABS = 20;
 const KEPT_DOCUMENTS = 8;
 const DEFAULT_SIZE = { width: 1280, height: 800 };
+const URL_NOTE_MAX = 2_000;
+const D9_REFUSAL = "Typing into a password field is refused (D9).";
+const DIALOGS = new Set(["alert", "confirm", "prompt", "beforeunload"]);
+// The focused element behind open shadow roots and readable frames, run in an isolated world (native getters only).
+const ACTIVE_ELEMENT = `(() => { let e = document.activeElement;
+  for (let i = 0; e && i < 64; i++) {
+    if (e.shadowRoot && e.shadowRoot.activeElement) { e = e.shadowRoot.activeElement; continue; }
+    let d = null; try { d = e.contentDocument; } catch (_) {}
+    if (d && d.activeElement) { e = d.activeElement; continue; }
+    break;
+  }
+  return e; })()`;
 
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
@@ -57,6 +70,8 @@ interface Tab {
   refs: Snapshot["refs"]; refsToken: string;
   /** The scheme of a main-frame redirect refused during `open()`. */
   refused: string | null;
+  /** Set while the tab is being closed, so its own debugger detach is not noted. */
+  closing: boolean;
 }
 
 interface Handlers { permission(permission: string, url: string): Promise<boolean>; download(item: DownloadItem, wc: WebContents): void }
@@ -120,6 +135,7 @@ function leavePark(owner: ComputerBrowser): void {
   if (win && !win.isDestroyed()) win.destroy();
 }
 
+const clipUrl = (url: string): string => (url.length > URL_NOTE_MAX ? `${url.slice(0, URL_NOTE_MAX - 1)}…` : url);
 const schemeOf = (url: string): string => { try { return new URL(url).protocol; } catch { return "unreadable"; } };
 const hostOf = (site: string | null, url: string): string => { try { return new URL(site ?? url).host || url; } catch { return url; } };
 const quadRect = (q: number[]): Rect => {
@@ -131,7 +147,9 @@ const centre = (r: Rect): Point => ({ x: r.x + r.width / 2, y: r.y + r.height / 
 
 /** A file name for the Downloads folder: no folders, no control characters, not hidden, never an existing file. */
 function downloadPath(dir: string, suggested: string): string {
-  const name = path.basename(suggested).replace(/[\u0000-\u001f\u007f/\\:]/g, "_").replace(/^\.+/, "").trim() || "download";
+  // Bidirectional controls go too: a page-chosen name must not read differently in a note or an ask than on disk.
+  const name = path.basename(suggested).replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+    .replace(/[\u0000-\u001f\u007f/\\:]/g, "_").replace(/^\.+/, "").trim() || "download";
   const ext = path.extname(name);
   const stem = ext ? name.slice(0, -ext.length) : name;
   for (let i = 0; ; i++) {
@@ -188,7 +206,7 @@ export class ComputerBrowser {
 
   /** Makes tab `index` the active one. */
   select(index: number): void {
-    if (!this.list[index]) return;
+    this.tab(index);
     this.current = index;
     this.place();
     this.o.hooks.changed();
@@ -196,9 +214,7 @@ export class ComputerBrowser {
 
   /** Closes tab `index`; the next tab (or the last one) becomes active. */
   close(index: number): void {
-    const t = this.list[index];
-    if (!t) return;
-    this.drop(t);
+    this.drop(this.tab(index));
     if (index < this.current) this.current--;
     this.current = Math.min(this.current, this.list.length - 1);
     this.place();
@@ -234,31 +250,38 @@ export class ComputerBrowser {
       return await this.capture(t);
     } catch (e) {
       if (!(e instanceof CdpTimeout)) throw e;
-      // D27: a view that stopped painting (its window hidden under it) is moved to the park window and tried once more.
-      this.parkTab(t);
+      // D27: a view that stopped painting (its window hidden under it) is moved to the park window, or the park window is
+      // shown again with the view re-added, and the capture is tried once more.
+      this.parkTab(t, true);
       return await this.capture(t);
     }
   }
 
   async resolve(by: { ref: string } | { x: number; y: number }): Promise<Resolved> {
     const t = this.tab();
+    const where = { pageToken: this.tokenOf(t), tab: this.current };
     const dom = await this.locked(t, () => this.readDom(t));
+    // A frame from another site cannot be read or judged by its label: the target says so and the gate asks "frame".
+    const opaque = (target: Target, b: number): Target => (dom.remoteFrames.has(b) || target.opaque ? { ...target, opaque: true } : target);
     if ("ref" in by) {
       const ref = t.refs.get(by.ref);
       if (!ref || t.refsToken !== this.tokenOf(t)) throw new Error(`There is no ${by.ref} on this page now: take a new snapshot.`);
       const box = await this.box(t, ref.backendNodeId);
-      return { target: ref.target, sensitive: t.sensitive.has(ref.backendNodeId), backendNodeId: ref.backendNodeId, point: centre(box) };
+      return { target: opaque(ref.target, ref.backendNodeId), sensitive: t.sensitive.has(ref.backendNodeId), backendNodeId: ref.backendNodeId, point: centre(box), ...where };
     }
     const hit = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { x: Math.round(by.x), y: Math.round(by.y), includeUserAgentShadowDOM: false });
-    const { target, backendNodeId } = await this.targetAt(t, hit.backendNodeId, dom);
-    return { target, sensitive: t.sensitive.has(backendNodeId) || t.sensitive.has(hit.backendNodeId), backendNodeId, point: { x: by.x, y: by.y } };
+    const { target, backendNodeId } = dom.remoteFrames.has(hit.backendNodeId)
+      ? { target: await this.targetOf(t, hit.backendNodeId, dom), backendNodeId: hit.backendNodeId }
+      : await this.targetAt(t, hit.backendNodeId, dom);
+    return { target: opaque(target, backendNodeId), sensitive: t.sensitive.has(backendNodeId) || t.sensitive.has(hit.backendNodeId), backendNodeId, point: { x: by.x, y: by.y }, ...where };
   }
 
   /** What has keyboard focus (D39), and whether it is a password field (D9). */
   async focus(): Promise<Focus> {
     const t = this.tab();
     const f = await this.focused(t);
-    if (f === "remote") return { target: null, sensitive: true, plainTextarea: false };
+    // D9: focus inside a frame from another site counts as sensitive, so typing there is refused.
+    if (f === "remote") return { target: await this.remoteTarget(t), sensitive: true, plainTextarea: false };
     if (!f) return { target: null, sensitive: false, plainTextarea: false };
     const target = await this.targetOf(t, f.b, f.dom);
     const plainTextarea = f.dom.names.get(f.b) === "TEXTAREA" && !(await this.keyListened(t, f.b, f.dom));
@@ -266,7 +289,7 @@ export class ComputerBrowser {
   }
 
   async click(r: Resolved): Promise<void> {
-    const t = this.tab();
+    const t = this.where(r);
     let p = r.point;
     if (r.backendNodeId !== null) {
       const b = r.backendNodeId;
@@ -296,19 +319,22 @@ export class ComputerBrowser {
       for (let k = 0; k < chars.length; k += CHUNK) {
         if (!keepGoing()) return;
         // D9: the gate refuses typing into a password field; focus can move while typing, so each chunk checks again.
-        const f = await this.focused(t);
-        if (f === "remote" || (f && t.sensitive.has(f.b))) throw new Error("Typing into a password field is refused (D9).");
+        await this.refuseSensitiveFocus(t);
         await this.send(t, "Input.insertText", { text: chars.slice(k, k + CHUNK).join("") });
       }
     }
   }
 
   async key(key: string): Promise<void> {
-    await this.keys(this.tab(), key);
+    const t = this.tab();
+    const events = keyEvents(key);
+    // D9: a key that types (not Enter, which submits) into a password field is typing into it.
+    if (events.some((e) => e.text !== undefined && e.text !== "\r")) await this.refuseSensitiveFocus(t);
+    for (const e of events) await this.send(t, "Input.dispatchKeyEvent", e);
   }
 
   async scroll(dx: number, dy: number, at?: Resolved): Promise<void> {
-    const t = this.tab();
+    const t = at ? this.where(at) : this.tab();
     let p: Point;
     if (at?.backendNodeId != null) {
       await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: at.backendNodeId }).catch(() => undefined);
@@ -370,6 +396,13 @@ export class ComputerBrowser {
 
   private tokenOf(t: Tab): string { return `${t.uid}.${t.seq}`; }
 
+  /** The active tab, if `r` was resolved on it and the page has not moved since. */
+  private where(r: Resolved): Tab {
+    const t = this.tab();
+    if (r.tab !== this.current || r.pageToken !== this.tokenOf(t)) throw new Error("The page changed: look again.");
+    return t;
+  }
+
   private async addTab(by: string | null): Promise<Tab> {
     if (this.gone) throw new Error("This computer was closed.");
     if (this.list.length >= MAX_TABS) throw new Error(`${MAX_TABS} tabs are open: close one first.`);
@@ -385,7 +418,7 @@ export class ComputerBrowser {
     const sensitive = new Set<number>();
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
-      query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null,
+      query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -400,6 +433,7 @@ export class ComputerBrowser {
   }
 
   private drop(t: Tab): void {
+    t.closing = true;
     if (t.query) clearTimeout(t.query);
     owners.delete(t.wc.id);
     this.attachTo(t, null);
@@ -426,9 +460,15 @@ export class ComputerBrowser {
     }
   }
 
-  private parkTab(t: Tab): void {
+  private parkTab(t: Tab, reshow = false): void {
     const size = this.list[this.current] === t ? this.size : { width: t.view.getBounds().width || this.size.width, height: t.view.getBounds().height || this.size.height };
-    this.attachTo(t, parkWindow(this, size));
+    const win = parkWindow(this, size);
+    if (reshow && t.in === win) {
+      win.showInactive();
+      win.contentView.removeChildView(t.view);
+      win.contentView.addChildView(t.view);
+    }
+    this.attachTo(t, win);
     t.view.setBounds({ x: 0, y: 0, ...size });
   }
 
@@ -483,13 +523,14 @@ export class ComputerBrowser {
     wc.on("did-fail-load", (_e, code, _d, _url, isMainFrame) => { if (code === -311) note(`Refused ${isMainFrame ? "a" : "a frame's"} redirect to a URL that is not http or https.`); });
     // D21: a navigation the page started (not open(), which loads from main) is noted with its URL. This fires before
     // the refusal above, so a refused URL is left to the refusal's scheme-only note.
-    wc.on("did-start-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument && e.initiator && navAllowed(e.url)) note(`The page went to ${e.url}`); });
+    wc.on("did-start-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument && e.initiator && navAllowed(e.url)) note(`The page went to ${clipUrl(e.url)}`); });
     wc.on("did-navigate", () => { t.seq++; this.o.hooks.changed(); });
     wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => { if (isMainFrame) { t.seq++; this.o.hooks.changed(); } });
     wc.on("page-title-updated", () => this.o.hooks.changed());
-    wc.on("render-process-gone", (_e, d) => note(`The page ${wc.getURL()} stopped (${d.reason}).`));
+    wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(wc.getURL())} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });
     wc.debugger.on("message", (_e, method: string, params: Record<string, unknown>) => this.onCdp(t, method, params));
+    wc.debugger.on("detach", (_e, reason: string) => { if (!t.closing) note(`The tab's DevTools connection closed (${reason}); the next action reconnects.`); });
   }
 
   private onCdp(t: Tab, method: string, p: Record<string, unknown>): void {
@@ -524,7 +565,7 @@ export class ComputerBrowser {
         void this.chooseFile(t, p as { mode: string; backendNodeId?: number }).catch(() => undefined);
         break;
       case "Page.javascriptDialogOpening":
-        this.dialogOpened(p as { type: string; message: string });
+        this.dialogOpened(p as { type: string });
         break;
     }
   }
@@ -539,13 +580,15 @@ export class ComputerBrowser {
   }
 
   private async popup(t: Tab, d: Electron.HandlerDetails): Promise<void> {
-    if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${d.url} in a new tab; ${MAX_TABS} tabs are open.`); return; }
+    if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${clipUrl(d.url)} in a new tab; ${MAX_TABS} tabs are open.`); return; }
     const nt = await this.addTab(t.openedBy);
-    this.o.hooks.note(`The page opened ${d.url} in a new tab.`);
+    this.o.hooks.note(`The page opened ${clipUrl(d.url)} in a new tab.`);
     const post = d.postBody;
+    // A form posted into a new tab keeps its fields, never a file from this Mac (only raw data is passed on).
+    const raw = post?.data.filter((x): x is Electron.UploadRawData => x.type === "rawData") ?? [];
     await nt.wc.loadURL(new URL(d.url).href, {
       httpReferrer: d.referrer,
-      ...(post ? { postData: post.data, extraHeaders: `Content-Type: ${post.contentType}${post.boundary ? `; boundary=${post.boundary}` : ""}` } : {}),
+      ...(post && raw.length ? { postData: raw, extraHeaders: `Content-Type: ${post.contentType}${post.boundary ? `; boundary=${post.boundary}` : ""}` } : {}),
     }).catch(() => undefined);
   }
 
@@ -588,10 +631,11 @@ export class ComputerBrowser {
       .catch((e: Error) => this.o.hooks.note(`The chosen file did not reach the page: ${e.message}`));
   }
 
-  /** Dialogs are off in computer views (`disableDialogs`); the page got its answer already, and the transcript a note. */
-  private dialogOpened(p: { type: string; message: string }): void {
-    const message = p.message.length > 120 ? `${p.message.slice(0, 120)}…` : p.message;
-    this.o.hooks.note(`The page showed a ${p.type} dialog (${JSON.stringify(message)}); dialogs are off here, so it was ${p.type === "alert" ? "closed" : "dismissed"}.`);
+  /** Dialogs are off in computer views (`disableDialogs`); the page got its answer already, and the transcript a note
+   *  naming the kind only (the message is page-chosen text). */
+  private dialogOpened(p: { type: string }): void {
+    const kind = DIALOGS.has(p.type) ? `${p.type} dialog` : "dialog";
+    this.o.hooks.note(`The page tried to show a ${kind}; dialogs are off here, so it was blocked.`);
   }
 
   // ---- the DevTools protocol
@@ -617,6 +661,7 @@ export class ComputerBrowser {
   /** Every command goes through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). */
   private async send<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
     if (t.wc.isDestroyed()) throw new Error("That tab was closed.");
+    if (t.wc.isDevToolsOpened()) throw new Error("DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
     if (t.attaching) await t.attaching;
     else if (!t.wc.debugger.isAttached()) await this.attach(t);
     return cdp<T>(t.wc.debugger, method, params);
@@ -627,7 +672,8 @@ export class ComputerBrowser {
     const { root } = await this.send<{ root: CdpDomNode }>(t, "DOM.getDocument", { depth: -1, pierce: true });
     const dom = indexDom(root);
     for (const r of dom.roots) {
-      const { nodeIds } = await this.send<{ nodeIds: number[] }>(t, "DOM.querySelectorAll", { nodeId: r.nodeId, selector: SENSITIVE }).catch(() => ({ nodeIds: [] as number[] }));
+      // A root that went away has nothing to hide; a timeout or any other failure fails the read (D9 never fails open).
+      const { nodeIds } = await this.send<{ nodeIds: number[] }>(t, "DOM.querySelectorAll", { nodeId: r.nodeId, selector: SENSITIVE }).catch(unlessGone({ nodeIds: [] as number[] }));
       for (const id of nodeIds) {
         const b = dom.backendOf.get(id);
         if (b !== undefined) t.sensitive.add(b);
@@ -637,24 +683,45 @@ export class ComputerBrowser {
   }
 
   private async capture(t: Tab): Promise<Buffer> {
-    const before = await this.sensitiveRects(t);
-    const shot = await this.send<{ data: string }>(t, "Page.captureScreenshot", { format: "png" });
-    // Boxes read before and after the capture are both painted, so a field that moved meanwhile stays covered.
-    const after = await this.sensitiveRects(t);
-    const img = nativeImage.createFromBuffer(Buffer.from(shot.data, "base64"));
-    const { width, height } = img.getSize();
-    const zoom = t.wc.getZoomFactor();
-    const dpr = width / (t.view.getBounds().width || width);
-    const viewport = { x: 0, y: 0, width: width / (dpr * zoom), height: height / (dpr * zoom) };
-    const bitmap = paintRects(img.toBitmap(), width, height, deviceRects([...before, ...after], { dpr, zoom, viewport }));
-    return nativeImage.createFromBitmap(bitmap, { width, height }).toPNG();
+    for (let attempt = 0; ; attempt++) {
+      const before = await this.maskRects(t);
+      const m1 = await this.viewport(t);
+      const shot = await this.send<{ data: string }>(t, "Page.captureScreenshot", { format: "png" });
+      const m2 = await this.viewport(t);
+      // Boxes read before and after the capture are both painted, so a field that moved meanwhile stays covered.
+      const after = await this.maskRects(t);
+      const img = nativeImage.createFromBuffer(Buffer.from(shot.data, "base64"));
+      const size = img.getSize();
+      // The scale comes from the capture against the page's own metrics; if they disagree (the view resized meanwhile)
+      // the masks could land in the wrong place, so the capture is taken again once and otherwise refused (D9).
+      const same = m1.width === m2.width && m1.height === m2.height && m1.zoom === m2.zoom && m1.scale === m2.scale;
+      const sc = same ? screenScale(size, m2) : null;
+      if (!sc) {
+        if (attempt === 0) continue;
+        throw new Error("The page changed size while the screenshot was taken, so it was not returned: try again.");
+      }
+      const viewport = { x: 0, y: 0, width: sc.width, height: sc.height };
+      // One CSS pixel of margin, so the box's edge stays fully covered once the image is scaled down.
+      const boxes = [...before, ...after].map((r) => ({ x: r.x - 1, y: r.y - 1, width: r.width + 2, height: r.height + 2 }));
+      const painted = nativeImage.createFromBitmap(paintRects(img.toBitmap(), size.width, size.height, deviceRects(boxes, { dpr: sc.dpr, zoom: sc.zoom, viewport })), size);
+      // Clicks take CSS pixels, so the image is returned at that size, after the masks are painted.
+      const out = size.width === sc.width && size.height === sc.height ? painted : painted.resize({ width: sc.width, height: sc.height, quality: "good" });
+      return out.toPNG();
+    }
   }
 
-  private async sensitiveRects(t: Tab): Promise<Rect[]> {
-    await this.locked(t, () => this.readDom(t));
+  private async viewport(t: Tab): Promise<{ width: number; height: number; zoom: number; scale: number }> {
+    const { cssVisualViewport: v } = await this.send<{ cssVisualViewport: { clientWidth: number; clientHeight: number; zoom?: number; scale: number } }>(t, "Page.getLayoutMetrics");
+    return { width: v.clientWidth, height: v.clientHeight, zoom: v.zoom ?? t.wc.getZoomFactor(), scale: v.scale };
+  }
+
+  /** The boxes painted over: every field that was ever sensitive (D9), and every frame from another site, whose contents
+   *  cannot be read (a revealed password or a one-time code inside one must not leak either). */
+  private async maskRects(t: Tab): Promise<Rect[]> {
+    const dom = await this.locked(t, () => this.readDom(t));
     const rects: Rect[] = [];
-    for (const b of t.sensitive) {
-      const m = await this.send<{ model: { border: number[] } }>(t, "DOM.getBoxModel", { backendNodeId: b }).catch(() => null);
+    for (const b of new Set([...t.sensitive, ...dom.remoteFrames])) {
+      const m = await this.send<{ model: { border: number[] } }>(t, "DOM.getBoxModel", { backendNodeId: b }).catch(unlessGone(null));
       if (m) rects.push(quadRect(m.model.border));
     }
     return rects;
@@ -662,7 +729,7 @@ export class ComputerBrowser {
 
   /** The element's first visible box (its first line, for an inline element). */
   private async box(t: Tab, backendNodeId: number): Promise<Rect> {
-    const q = await this.send<{ quads: number[][] }>(t, "DOM.getContentQuads", { backendNodeId }).catch(() => ({ quads: [] as number[][] }));
+    const q = await this.send<{ quads: number[][] }>(t, "DOM.getContentQuads", { backendNodeId }).catch(unlessGone({ quads: [] as number[][] }));
     const r = q.quads.map(quadRect).find((x) => x.width > 0 && x.height > 0);
     if (!r) throw new Error("That element is not visible on the page: take a new snapshot.");
     return r;
@@ -670,16 +737,16 @@ export class ComputerBrowser {
 
   /** The focused node and the DOM it was read from; "remote" when focus is in a cross-site frame. */
   private async focused(t: Tab): Promise<{ b: number; dom: DomIndex } | "remote" | null> {
-    // A cross-site frame's document is in another process, out of this debugger's reach: treated as sensitive, so
-    // typing into it is refused rather than judged blind (D9).
-    const ff = t.wc.focusedFrame;
-    if (ff && ff.processId !== t.wc.mainFrame.processId) return "remote";
+    // A cross-site frame's document is in another process, out of this debugger's reach (so is anything inside one):
+    // treated as sensitive, so typing into it is refused rather than judged blind (D9).
+    const main = t.wc.mainFrame.processId;
+    for (let f = t.wc.focusedFrame; f; f = f.parent) if (f.processId !== main) return "remote";
     return this.locked(t, async () => {
       const dom = await this.readDom(t);
       // :focus matches in the deepest root that holds focus (an iframe's document, a shadow root), so every root is asked.
       let best: { b: number; depth: number } | null = null;
       for (const r of dom.roots) {
-        const { nodeIds } = await this.send<{ nodeIds: number[] }>(t, "DOM.querySelectorAll", { nodeId: r.nodeId, selector: ":focus" }).catch(() => ({ nodeIds: [] as number[] }));
+        const { nodeIds } = await this.send<{ nodeIds: number[] }>(t, "DOM.querySelectorAll", { nodeId: r.nodeId, selector: ":focus" }).catch(unlessGone({ nodeIds: [] as number[] }));
         for (const id of nodeIds) {
           const b = dom.backendOf.get(id);
           if (b !== undefined && (!best || r.depth >= best.depth)) best = { b, depth: r.depth };
@@ -689,9 +756,34 @@ export class ComputerBrowser {
     });
   }
 
+  /** D9: refuses when focus is on a field that was ever sensitive, or inside a frame from another site. */
+  private async refuseSensitiveFocus(t: Tab): Promise<void> {
+    const f = await this.focused(t);
+    if (f === "remote" || (f && t.sensitive.has(f.b))) throw new Error(D9_REFUSAL);
+  }
+
+  /** The frame element holding focus that lives in another site's process, read through `document.activeElement` in an
+   *  isolated world (DOM :focus does not match it); a generic frame target when it cannot be read. */
+  private async remoteTarget(t: Tab): Promise<Target> {
+    const frame: Target = { role: "Iframe", name: "", inForm: false, fileInput: false, opaque: true };
+    try {
+      const { frameTree } = await this.send<{ frameTree: { frame: { id: string } } }>(t, "Page.getFrameTree");
+      const { executionContextId } = await this.send<{ executionContextId: number }>(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "agent-computer" });
+      const { result } = await this.send<{ result: { objectId?: string } }>(t, "Runtime.evaluate", { expression: ACTIVE_ELEMENT, contextId: executionContextId, objectGroup: "agent-computer-focus" });
+      if (!result.objectId) return frame;
+      const { node } = await this.send<{ node: { backendNodeId: number } }>(t, "DOM.describeNode", { objectId: result.objectId });
+      await this.send(t, "Runtime.releaseObjectGroup", { objectGroup: "agent-computer-focus" });
+      const dom = await this.locked(t, () => this.readDom(t));
+      return { ...(await this.targetOf(t, node.backendNodeId, dom)), opaque: true };
+    } catch (e) {
+      if (e instanceof CdpTimeout) throw e;
+      return frame;
+    }
+  }
+
   /** Whether the node under `p` is the target or inside it (a text node target counts its element). */
   private async hits(t: Tab, p: Point, target: number, dom: DomIndex): Promise<boolean> {
-    const hit = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { x: Math.round(p.x), y: Math.round(p.y), includeUserAgentShadowDOM: false }).catch(() => null);
+    const hit = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { x: Math.round(p.x), y: Math.round(p.y), includeUserAgentShadowDOM: false }).catch(unlessGone(null));
     if (!hit) return false;
     const goal = dom.names.get(target) === "#text" ? dom.parent.get(target) : target;
     for (let n: number | undefined = hit.backendNodeId; n !== undefined; n = dom.parent.get(n)) if (n === target || n === goal) return true;
@@ -716,7 +808,7 @@ export class ComputerBrowser {
   }
 
   private async targetOf(t: Tab, b: number, dom: DomIndex): Promise<Target> {
-    const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: b, fetchRelatives: false }).catch(() => ({ nodes: [] as CdpAxNode[] }));
+    const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: b, fetchRelatives: false }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
     const n = nodes.find((x) => x.backendDOMNodeId === b) ?? nodes[0];
     return { role: n && !n.ignored ? String(n.role?.value ?? "generic") : "generic", name: String(n?.name?.value ?? ""), inForm: dom.inForm.has(b), fileInput: dom.fileInput.has(b) };
   }

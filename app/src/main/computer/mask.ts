@@ -1,6 +1,7 @@
-// Screenshot masks for password fields (agent-computer D9): the browser reads each sensitive field's box in CSS pixels
-// (DOM.getBoxModel), `deviceRects` turns the boxes into the screenshot's device pixels, and `paintRects` paints over
-// them on the bitmap before the image leaves main. Pure, so the pixel arithmetic is tested without a page.
+// Screenshot masks for password fields and cross-site frames (agent-computer D9): the browser reads each box in CSS
+// pixels (DOM.getBoxModel), `screenScale` reads the capture's scale against the page's CSS viewport, `deviceRects` turns
+// the boxes into the capture's device pixels, and `paintRects` paints over them on the bitmap before the image is scaled
+// to CSS pixels (the space clicks use) and leaves main. Pure, so the pixel arithmetic is tested without a page.
 
 export interface Rect { x: number; y: number; width: number; height: number }
 
@@ -40,4 +41,25 @@ export function paintRects(bgra: Buffer, width: number, height: number, rects: R
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) px.copy(out, (y * width + x) * 4);
   }
   return out;
+}
+
+// The most a classic scrollbar adds to the capture beyond the CSS client size, in device-independent pixels.
+const SCROLLBAR_DIP = 24;
+
+/**
+ * The capture's scale, from its size against the page's CSS viewport (`Page.getLayoutMetrics().cssVisualViewport`:
+ * client size without scrollbars, page zoom, pinch scale): one CSS pixel is `dpr * zoom` capture pixels, and
+ * `width` x `height` is the capture in CSS pixels. Null when the two disagree (the view resized between the capture and
+ * the metrics, or a pinch zoom), so the caller refuses the screenshot rather than paint masks in the wrong place.
+ */
+export function screenScale(png: { width: number; height: number }, css: { width: number; height: number; zoom: number; scale?: number }): { dpr: number; zoom: number; width: number; height: number } | null {
+  if (!(css.width > 0 && css.height > 0 && css.zoom > 0 && png.width > 0 && png.height > 0) || (css.scale ?? 1) !== 1) return null;
+  const dpr = Math.round(png.width / (css.width * css.zoom));
+  if (dpr < 1) return null;
+  const s = dpr * css.zoom;
+  const width = png.width / s, height = png.height / s;
+  const slack = SCROLLBAR_DIP / css.zoom + 1;
+  const fits = (got: number, want: number): boolean => got >= want - 1 && got <= want + slack;
+  if (!fits(width, css.width) || !fits(height, css.height)) return null;
+  return { dpr, zoom: css.zoom, width: Math.round(width), height: Math.round(height) };
 }

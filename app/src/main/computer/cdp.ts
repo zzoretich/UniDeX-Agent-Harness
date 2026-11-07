@@ -26,6 +26,22 @@ export function cdp<T = unknown>(target: CdpTarget, method: string, params?: obj
   });
 }
 
+// The answers DevTools gives when a node or its box no longer exists: the page moved on, which a reader may skip.
+const GONE = /^(Could not compute box model|Could not compute content quads|No node found for given backend id|Could not find node with given id|No node with given id found|Node with given id does not belong to the document)/;
+
+/** Whether `e` says the node (or its box) is gone. A timeout or any other failure is not. */
+export function isGone(e: unknown): boolean {
+  return e instanceof Error && !(e instanceof CdpTimeout) && GONE.test(e.message);
+}
+
+/** A `.catch` that turns a node-gone error into `fallback` and rethrows everything else (a D9 read must not fail open). */
+export function unlessGone<T>(fallback: T): (e: unknown) => T {
+  return (e) => {
+    if (isGone(e)) return fallback;
+    throw e;
+  };
+}
+
 export interface KeyEvent { type: "rawKeyDown" | "keyDown" | "char" | "keyUp"; key: string; code: string; windowsVirtualKeyCode: number; modifiers: number; text?: string }
 
 interface KeyDef { key: string; code: string; vk: number; text?: string; shifted?: KeyDef }

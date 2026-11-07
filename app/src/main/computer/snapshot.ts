@@ -6,7 +6,8 @@
 
 import type { Target } from "./categories";
 
-export interface AxNode { nodeId: string; backendDOMNodeId?: number; role: string; name: string; value?: string; ignored: boolean; childIds: string[]; frameId?: string; inForm?: boolean; fileInput?: boolean }
+/** `opaque`: the node owns a frame from another site, whose contents this page's DevTools session cannot read. */
+export interface AxNode { nodeId: string; backendDOMNodeId?: number; role: string; name: string; value?: string; ignored: boolean; childIds: string[]; frameId?: string; inForm?: boolean; fileInput?: boolean; opaque?: boolean }
 export interface Snapshot { text: string; refs: Map<string, { backendNodeId: number; frameId?: string; target: Target }>; truncated: boolean }
 
 /** A node of `DOM.getDocument({ depth: -1, pierce: true })`, the fields used here. */
@@ -41,6 +42,8 @@ export const SNAPSHOT_CAP = 40_000;
 export const REDACTED = "••••••";
 
 const NAME_MAX = 1_000;
+const URL_MAX = 2_000;
+const OPAQUE = " (a frame from another site: its contents cannot be read)";
 // Roles that print only when they carry a name.
 const QUIET = new Set(["none", "generic", "Ignored", "IgnoredRole", "LineBreak", "presentation"]);
 // Roles that never print (the title has its own line; inline boxes repeat their text).
@@ -104,6 +107,7 @@ export function mergeFrames(frames: { frameId: string; nodes: CdpAxNode[] }[], d
       const node: AxNode = {
         nodeId: id(n.nodeId), role: str(n.role?.value), name: str(n.name?.value), ignored: n.ignored, childIds: (n.childIds ?? []).map(id), frameId,
         ...(b === undefined ? {} : { backendDOMNodeId: b, inForm: dom.inForm.has(b), fileInput: dom.fileInput.has(b) }),
+        ...(b !== undefined && dom.remoteFrames.has(b) ? { opaque: true } : {}),
       };
       const value = str(n.value?.value);
       if (value) node.value = value;
@@ -157,7 +161,8 @@ export function formatSnapshot(nodes: AxNode[], o: { origin: string; url: string
   const ordered = [...secrets].sort((a, b) => b.length - a.length);
   const scrub = (s: string): string => ordered.reduce((acc, x) => (acc.includes(x) ? acc.split(x).join(REDACTED) : acc), s);
 
-  const open = `<untrusted-page origin="${attrValue(scrub(o.origin))}" url="${attrValue(scrub(o.url))}">`;
+  const url = scrub(o.url);
+  const open = `<untrusted-page origin="${attrValue(scrub(o.origin))}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;
   const close = "</untrusted-page>";
   const lines = [open, `title ${quote(clip(scrub(o.title)))}`];
   const reserve = `\n[truncated: ${nodes.length} more nodes]`.length + 1 + close.length;
@@ -192,14 +197,14 @@ export function formatSnapshot(nodes: AxNode[], o: { origin: string; url: string
       } else {
         const ref = n.backendDOMNodeId === undefined ? null : `e${refs.size + 1}`;
         const value = sensitive ? (n.value ? REDACTED : "") : clip(scrub(n.value ?? ""));
-        const line = `${"  ".repeat(depth)}${ref ? `[${ref}] ` : ""}${n.role || "node"}${name ? ` ${quote(name)}` : ""}${value ? ` value=${quote(value)}` : ""}`;
+        const line = `${"  ".repeat(depth)}${ref ? `[${ref}] ` : ""}${n.role || "node"}${name ? ` ${quote(name)}` : ""}${value ? ` value=${quote(value)}` : ""}${n.opaque ? OPAQUE : ""}`;
         if (used + 1 + line.length + reserve > o.cap) {
           truncated = true;
           more++;
         } else {
           lines.push(line);
           used += 1 + line.length;
-          if (ref) refs.set(ref, { backendNodeId: n.backendDOMNodeId!, frameId: n.frameId, target: { role: n.role, name: scrub(n.name), inForm: !!n.inForm, fileInput: !!n.fileInput } });
+          if (ref) refs.set(ref, { backendNodeId: n.backendDOMNodeId!, frameId: n.frameId, target: { role: n.role, name: scrub(n.name), inForm: !!n.inForm, fileInput: !!n.fileInput, ...(n.opaque ? { opaque: true } : {}) } });
         }
       }
     }

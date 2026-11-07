@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deviceRects, paintRects, MASK_BGRA } from "../../src/main/computer/mask";
+import { deviceRects, paintRects, screenScale, MASK_BGRA } from "../../src/main/computer/mask";
 
 const viewport = { x: 0, y: 0, width: 800, height: 600 };
 
@@ -37,4 +37,21 @@ test("paintRects changes exactly the rect's pixels", () => {
   }
   assert.equal(changed, 7);
   assert.throws(() => paintRects(Buffer.alloc(10), width, height, []), /bitmap/);
+});
+
+test("screenScale reads the capture against the page's CSS viewport", () => {
+  // A 900x650 view on a 2x display at 125 % zoom: the capture is 1800x1300 and the CSS viewport 720x520.
+  assert.deepEqual(screenScale({ width: 1800, height: 1300 }, { width: 720, height: 520, zoom: 1.25 }), { dpr: 2, zoom: 1.25, width: 720, height: 520 });
+  assert.deepEqual(screenScale({ width: 900, height: 650 }, { width: 900, height: 650, zoom: 1 }), { dpr: 1, zoom: 1, width: 900, height: 650 });
+  // A classic 15 px scrollbar is outside the CSS client width but inside the capture.
+  assert.deepEqual(screenScale({ width: 1800, height: 1300 }, { width: 885, height: 650, zoom: 1 }), { dpr: 2, zoom: 1, width: 900, height: 650 });
+});
+
+test("screenScale refuses a capture that does not match the page (fail closed)", () => {
+  // The view was resized between the capture and the metrics.
+  assert.equal(screenScale({ width: 1000, height: 650 }, { width: 720, height: 520, zoom: 1.25 }), null);
+  assert.equal(screenScale({ width: 1800, height: 1300 }, { width: 720, height: 400, zoom: 1.25 }), null);
+  assert.equal(screenScale({ width: 300, height: 200 }, { width: 900, height: 650, zoom: 1 }), null);
+  assert.equal(screenScale({ width: 900, height: 650 }, { width: 900, height: 650, zoom: 1, scale: 2 }), null, "a pinch-zoomed visual viewport");
+  assert.equal(screenScale({ width: 0, height: 0 }, { width: 0, height: 0, zoom: 1 }), null);
 });

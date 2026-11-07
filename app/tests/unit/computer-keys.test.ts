@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cdp, CdpTimeout, keyEvents } from "../../src/main/computer/cdp";
+import { cdp, CdpTimeout, isGone, keyEvents, unlessGone } from "../../src/main/computer/cdp";
 
 test("keyEvents for Shift+Tab", () => {
   assert.deepEqual(keyEvents("Shift+Tab"), [
@@ -54,4 +54,18 @@ test("cdp passes results through and times out with a clear error", async () => 
   await assert.rejects(cdp({ sendCommand: async () => { throw new Error("No node"); } }, "DOM.getBoxModel"), /No node/);
   const hang = { sendCommand: () => new Promise<unknown>(() => {}) };
   await assert.rejects(cdp(hang, "Page.captureScreenshot", {}, 20), (e: unknown) => e instanceof CdpTimeout && /Page\.captureScreenshot/.test(e.message));
+});
+
+test("only a node-gone error is swallowed; a timeout or anything else is rethrown", async () => {
+  for (const m of ["Could not compute box model.", "No node found for given backend id", "Could not find node with given id", "No node with given id found", "Could not compute content quads."])
+    assert.equal(isGone(new Error(m)), true, m);
+  assert.equal(isGone(new CdpTimeout("The page did not answer DOM.getBoxModel within 5 s.")), false);
+  assert.equal(isGone(new Error("Target closed")), false);
+  assert.equal(isGone("Could not compute box model."), false, "only Error objects");
+  const gone = { sendCommand: async () => { throw new Error("No node found for given backend id"); } };
+  assert.equal(await cdp(gone, "DOM.getBoxModel").catch(unlessGone(null)), null);
+  const hang = { sendCommand: () => new Promise<unknown>(() => {}) };
+  await assert.rejects(cdp(hang, "DOM.getBoxModel", {}, 20).catch(unlessGone(null)), CdpTimeout);
+  const odd = { sendCommand: async () => { throw new Error("Internal error"); } };
+  await assert.rejects(cdp(odd, "DOM.querySelectorAll").catch(unlessGone({ nodeIds: [] })), /Internal error/);
 });

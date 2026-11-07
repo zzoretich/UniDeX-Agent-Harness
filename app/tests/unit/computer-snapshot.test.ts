@@ -158,3 +158,28 @@ test("snapshot caps size with a note", () => {
   assert.ok(m, s.text.slice(-200));
   assert.equal(Number(m[1]) + s.refs.size, count, "every node is either printed or counted");
 });
+
+test("a frame from another site is marked opaque, and a long URL is clipped in the wrapper", () => {
+  const nodes = [
+    ax("1", "RootWebArea", "Checkout", ["2", "3"]),
+    ax("2", "Iframe", "Card details", [], { opaque: true }),
+    ax("3", "button", "Pay"),
+  ];
+  const long = `https://shop.test/?q=${"x".repeat(5000)}`;
+  const s = formatSnapshot(nodes, { ...opts(), url: long });
+  assert.match(s.text, /\[e1\] Iframe "Card details" \(a frame from another site: its contents cannot be read\)\n/);
+  assert.equal(refFor(s, 2)![1].target.opaque, true);
+  assert.equal(refFor(s, 3)![1].target.opaque, undefined);
+  const url = /url="([^"]*)"/.exec(s.text)![1];
+  assert.ok(url.length <= 2_000 && url.endsWith("…"), String(url.length));
+
+  const dom = indexDom({ nodeId: 1, backendNodeId: 1, nodeType: 9, nodeName: "#document", children: [
+    { nodeId: 2, backendNodeId: 2, nodeType: 1, nodeName: "HTML", frameId: "F1", children: [{ nodeId: 5, backendNodeId: 5, nodeType: 1, nodeName: "IFRAME", frameId: "F9" }] },
+  ] });
+  const merged = mergeFrames([{ frameId: "F1", nodes: [
+    { nodeId: "2", ignored: false, role: { value: "RootWebArea" }, name: { value: "" }, childIds: ["5"], backendDOMNodeId: 2 },
+    { nodeId: "5", ignored: false, role: { value: "Iframe" }, name: { value: "Card details" }, childIds: [], backendDOMNodeId: 5 },
+  ] }], dom);
+  assert.equal(merged.find((n) => n.backendDOMNodeId === 5)!.opaque, true);
+  assert.equal(merged.find((n) => n.backendDOMNodeId === 2)!.opaque, undefined);
+});

@@ -31,8 +31,9 @@ test("status, snapshot, screenshot, wait and scroll go", () => {
 });
 
 test("click rows", () => {
-  assert.deepEqual(judge({ kind: "click", target: btn("Upload", { fileInput: true }) }, edit(true)), { ask: "file" });
-  assert.deepEqual(judge({ kind: "click", target: btn("Upload", { fileInput: true }) }, edit(false)), { ask: "file" });
+  // A file input no longer asks on click: the browser asks "file" when the chooser opens (also for script-opened ones).
+  assert.deepEqual(judge({ kind: "click", target: btn("Upload", { fileInput: true }) }, edit(true)), { go: true });
+  assert.deepEqual(judge({ kind: "click", target: btn("Upload", { fileInput: true }) }, edit(false)), { ask: "unmarked" });
   assert.deepEqual(judge({ kind: "click", target: btn("Next") }, edit(false)), { ask: "unmarked" });
   assert.deepEqual(judge({ kind: "click", target: btn("Merge pull request") }, edit(true)), { ask: "merge" });
   assert.deepEqual(judge({ kind: "click", target: btn("Next") }, edit(true)), { go: true });
@@ -51,7 +52,37 @@ test("key rows", () => {
   assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Delete") } }, edit(true)), { ask: "delete" });
   assert.deepEqual(judge({ kind: "key", key: "Space", focus: { ...field, target: btn("Next") } }, edit(true)), { go: true });
   assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: null } }, edit(true)), { go: true });
-  assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Up", { fileInput: true }) } }, edit(true)), { ask: "file" });
+  assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Up", { fileInput: true }) } }, edit(true)), { go: true });
+});
+
+const D9 = { refuse: "Typing into a password field is refused (D9)." };
+
+test("a click into a cross-site frame asks frame on every site", () => {
+  for (const marked of [true, false]) {
+    assert.deepEqual(judge({ kind: "click", target: btn("", { role: "Iframe", opaque: true }) }, edit(marked)), { ask: "frame" }, String(marked));
+    assert.deepEqual(judge({ kind: "click", target: btn("Pay now", { opaque: true }) }, edit(marked)), { ask: "frame" }, String(marked));
+  }
+  assert.deepEqual(judge({ kind: "click", target: btn("Next", { opaque: false }) }, edit(true)), { go: true });
+});
+
+test("a key into a cross-site frame asks frame on every site, except navigation keys", () => {
+  const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, sensitive: false, plainTextarea: false };
+  for (const marked of [true, false]) {
+    for (const k of ["a", "Backspace", " ", "Control+v"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { ask: "frame" }, `${marked} ${k}`);
+    for (const k of ["Tab", "Shift+Tab", "Escape", "ArrowDown"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { go: true }, `${marked} ${k}`);
+    assert.deepEqual(judge({ kind: "key", key: "Enter", focus: inFrame }, edit(marked)), { ask: "return" });
+  }
+  // As the browser reports it: focus in a cross-site frame also counts as sensitive, so a printable key is refused.
+  assert.deepEqual(judge({ kind: "key", key: "a", focus: { ...inFrame, sensitive: true } }, edit(true)), D9);
+});
+
+test("a non-navigation key into a password field is refused (D9)", () => {
+  const pw: Focus = { target: { role: "textbox", name: "Password", inForm: true, fileInput: false }, sensitive: true, plainTextarea: false };
+  for (const marked of [true, false]) {
+    for (const k of ["a", "Shift+a", "1", " ", "Backspace", "Control+v", "Meta+a"]) assert.deepEqual(judge({ kind: "key", key: k, focus: pw }, edit(marked)), D9, `${marked} ${k}`);
+    for (const k of NAV_KEYS) assert.deepEqual(judge({ kind: "key", key: k, focus: pw }, edit(marked)), { go: true }, `${marked} ${k}`);
+    assert.deepEqual(judge({ kind: "key", key: "Enter", focus: pw }, edit(marked)), { ask: "return" });
+  }
 });
 
 test("NAV_KEYS is exactly the listed keys", () => {
