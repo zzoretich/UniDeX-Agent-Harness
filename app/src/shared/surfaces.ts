@@ -647,6 +647,15 @@ export const SURFACES: readonly Surface[] = [
     // and the real CLIs, recorded in the ledger and in Runs.
     verified: true,
   },
+  {
+    id: "computer",
+    label: "Computer",
+    source: "main/computer (bridge socket, ask notices)",
+    writes: [],
+    scope: "main",
+    spawns: [],
+    verified: false,
+  },
 ];
 
 export const SURFACE_IDS: readonly string[] = SURFACES.map((s) => s.id);

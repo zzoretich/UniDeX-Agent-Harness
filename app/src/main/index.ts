@@ -14,7 +14,7 @@ import { APP_ORIGIN, CH, POPOVER, type AttachInfo, type BootInfo, type CommandIn
 import { registerAppScheme, serveAppScheme } from "./app-scheme";
 import { BRAND } from "../shared/brand";
 import type { Sys } from "./computer/admission";
-import { loadPeer } from "./computer/peer";
+import { loadPeer, type PeerAddon } from "./computer/peer";
 import { AgentRegistry } from "./computer/registry";
 import { writeHudHostMarker } from "./hud-host";
 import { registerFsIpc } from "./ipc/fs";
@@ -32,6 +32,8 @@ import { parseShells, type ProgramContext } from "./policy/programs";
 import { ReadScope, type AgenticosPaths } from "./policy/read-scope";
 import { WritePolicy } from "./policy/write-policy";
 import { SCHEME, parseAgenticosUrl, urlFromArgv } from "./protocol";
+import { admit } from "./computer/admission";
+import { ComputerBridge } from "./computer/bridge";
 import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
 import { GitService } from "./services/git";
@@ -104,9 +106,10 @@ const procService = new ProcService({ policy: () => policy, context: () => conte
 // from, and the peer addon's checks behind it: one registry and one Sys for the app's life (launchForm caches per Sys).
 // Without the addon every Code launch falls back to the typed line in a shell, and says so.
 const agentRegistry = new AgentRegistry();
+let computerPeer: PeerAddon | null = null;
 const computerSys: Sys | null = (() => {
   try {
-    const peer = loadPeer();
+    const peer = (computerPeer = loadPeer());
     return {
       procInfo: (pid) => peer.procInfo(pid), teamId: (p) => peer.teamId(p), processTeamId: (pid) => peer.processTeamId(pid),
       realpath: (p) => fs.realpathSync(p), stat: (p) => fs.statSync(p),
@@ -288,6 +291,42 @@ function setTheme(source: ThemeSource): ThemeState {
   return themeState();
 }
 
+// agent-computer D18, D26: the bridge socket the agent CLIs' MCP servers connect to. One per attached vault, only when the
+// peer addon loaded. The handler is a stub until the computer service arrives: status answers, every other tool says so.
+let bridge: ComputerBridge | null = null;
+function startBridge(root: string): void {
+  const old = bridge;
+  bridge = null;
+  void (async () => {
+    try {
+      await old?.stop();
+      if (!computerSys || !computerPeer) return;
+      const sys = computerSys;
+      const socketPath = path.join(app.getPath("userData"), "computer", "bridge.sock");
+      const next = new ComputerBridge({
+        socketPath,
+        peer: computerPeer,
+        admit: (pid) => {
+          let server: string;
+          try { server = fs.realpathSync(path.join(root, "brain/scripts/sdk/mcp-server.js")); }
+          catch { return { ok: false, reason: "The agenticos MCP server is not in this vault." }; }
+          return admit(pid, { reg: agentRegistry, sys, server });
+        },
+        handle: async (agent, call) => call.tool === "computer_status"
+          ? { text: `${agent.label} in ${agent.place}, access: ${agent.access}.` }
+          : { text: "The browser arrives with the next part of release 1." },
+        onClose: () => {},
+      });
+      await next.start();
+      if (bridge !== null || vault.root !== root) { await next.stop(); return; }
+      bridge = next;
+      writeHudHostMarker(root, { name: app.getName(), version: app.getVersion(), computerSocket: socketPath });
+    } catch (err) {
+      console.warn(`[main] the computer bridge did not start: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  })();
+}
+
 /**
  * Attaches a vault: the services the page's calls go through, the app's record in the vault, the menubar item and the
  * watcher. At launch for an existing install; after the wizard's install, then the page reloads into the Workbench.
@@ -304,6 +343,7 @@ function attachVault(root: string, source: string): void {
   // vault the app cannot write to still opens: the record is informational.
   try { writeHudHostMarker(root, { name: app.getName(), version: app.getVersion() }); }
   catch (err) { console.warn(`[main] could not record the app in ${root}: ${err instanceof Error ? err.message : String(err)}`); }
+  startBridge(root);
   tray?.destroy();
   tray = new StatusTray(root, {
     openTab: (tab) => runCommand(tab === "pulse" ? "agentic-os:open-workbench" : `agentic-os:open-workbench-${tab}`),
@@ -460,7 +500,7 @@ if (!app.requestSingleInstanceLock()) {
   // Any quitAndInstall, not only Restart to Update's: Squirrel's own signal comes before the windows are asked to close.
   autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-  app.on("will-quit", () => { watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); });
+  app.on("will-quit", () => { void bridge?.stop(); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); });
 
   void app.whenReady().then(() => {
     // Only a packaged, signed app claims the scheme; a dev run must not re-point the system's agenticos:// handler.

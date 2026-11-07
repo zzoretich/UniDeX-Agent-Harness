@@ -25,13 +25,16 @@ function readMarker(vault) {
   try { m = JSON.parse(fs.readFileSync(path.join(vault, MARKER_REL), 'utf8')); } catch { return null; }
   if (!m || typeof m !== 'object' || m.schema !== SCHEMA || m.host !== 'app') return null;
   if (typeof m.version !== 'string' || !SEMVER_RE.test(m.version)) return null;
-  return {
+  const marker = {
     schema: m.schema,
     host: m.host,
     name: typeof m.name === 'string' && m.name ? m.name : null,
     version: m.version,
     at: typeof m.at === 'string' ? m.at : null,
   };
+  // agent-computer D26: where the app's computer bridge listens, when it does.
+  if (typeof m.computerSocket === 'string' && m.computerSocket) marker.computerSocket = m.computerSocket;
+  return marker;
 }
 
 /** Link builders: a Workbench tab by rail id, and a vault file by its vault-relative path. */
