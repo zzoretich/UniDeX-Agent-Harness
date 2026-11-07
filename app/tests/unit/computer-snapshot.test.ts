@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatSnapshot, indexDom, mergeFrames, REDACTED, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
+import { domText, formatSnapshot, indexDom, mergeFrames, REDACTED, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
 
 const ax = (nodeId: string, role: string, name: string, childIds: string[] = [], extra: Partial<AxNode> = {}): AxNode =>
   ({ nodeId, role, name, ignored: false, childIds, backendDOMNodeId: Number(nodeId), ...extra });
@@ -182,4 +182,44 @@ test("a frame from another site is marked opaque, and a long URL is clipped in t
   ] }], dom);
   assert.equal(merged.find((n) => n.backendDOMNodeId === 5)!.opaque, true);
   assert.equal(merged.find((n) => n.backendDOMNodeId === 2)!.opaque, undefined);
+});
+
+// R26: what the browser needs to judge the element a click really reaches, from the DOM (not the accessibility tree,
+// which aria-owns can rearrange).
+test("indexDom finds the elements a click activates, label targets, native roles and text", () => {
+  let id = 100;
+  const el = (nodeName: string, attributes: string[] = [], children: CdpDomNode[] = [], extra: Partial<CdpDomNode> = {}): CdpDomNode =>
+    ({ nodeId: ++id, backendNodeId: id, nodeType: 1, nodeName, attributes, children, ...extra });
+  const text = (v: string): CdpDomNode => ({ nodeId: ++id, backendNodeId: id, nodeType: 3, nodeName: "#text", nodeValue: v });
+  const del = el("BUTTON", [], [el("SPAN", ["id", "s3"], [text("Delete")])]);
+  const buy = el("BUTTON", ["id", "buy2", "type", "button"], [text("Buy now")]);
+  const forLabel = el("LABEL", ["for", "buy2"], [text("Learn more")]);
+  const box = el("INPUT", ["type", "checkbox"]);
+  const nested = el("LABEL", [], [text("Remember me "), box]);
+  const badFor = el("LABEL", ["for", "nope"], [text("Orphan")]);
+  const link = el("A", ["href", "/x"], [text("Docs")]);
+  const anchor = el("A", ["name", "top"], [text("Top")]);
+  const hidden = el("INPUT", ["type", "hidden", "value", "t"]);
+  const submit = el("INPUT", ["type", "submit", "value", "Delete account"]);
+  const roleBtn = el("DIV", ["role", "button", "aria-label", "Archive"]);
+  const summary = el("SUMMARY", [], [text("More")]);
+  const shadowBtn = el("BUTTON", ["id", "in"], [text("Inside")]);
+  const shadowLabel = el("LABEL", ["for", "in"], [text("Shadow label")]);
+  const host = el("DIV", [], [], { shadowRoots: [{ nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [shadowLabel, shadowBtn] }] });
+  const plain = el("DIV", [], [text("Just "), el("B", [], [text("words")])]);
+  const dom = indexDom({ nodeId: 1, backendNodeId: 1, nodeType: 9, nodeName: "#document", children: [
+    el("HTML", [], [el("BODY", [], [del, buy, forLabel, nested, badFor, link, anchor, hidden, submit, roleBtn, summary, host, plain])], { frameId: "F1" }),
+  ] });
+  for (const n of [del, buy, link, submit, roleBtn, summary, shadowBtn, box]) assert.ok(dom.activatable.has(n.backendNodeId), n.nodeName);
+  for (const n of [anchor, hidden, plain]) assert.ok(!dom.activatable.has(n.backendNodeId), n.nodeName);
+  assert.equal(dom.labels.get(forLabel.backendNodeId), buy.backendNodeId, "for= names its control");
+  assert.equal(dom.labels.get(nested.backendNodeId), box.backendNodeId, "a label without for= forwards to its nested control");
+  assert.equal(dom.labels.get(badFor.backendNodeId), null, "for= naming nothing labels nothing");
+  assert.equal(dom.labels.get(shadowLabel.backendNodeId), shadowBtn.backendNodeId, "ids resolve inside the label's own shadow tree");
+  assert.deepEqual([del, link, submit, roleBtn, summary, box].map((n) => dom.roles.get(n.backendNodeId)), ["button", "link", "button", "button", "button", "checkbox"]);
+  assert.equal(dom.hints.get(submit.backendNodeId), "Delete account");
+  assert.equal(dom.hints.get(roleBtn.backendNodeId), "Archive");
+  assert.equal(domText(dom, del.backendNodeId), "Delete");
+  assert.equal(domText(dom, plain.backendNodeId), "Just words");
+  assert.equal(domText(dom, host.backendNodeId), "", "shadow content is not the host's text");
 });

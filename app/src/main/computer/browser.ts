@@ -14,21 +14,17 @@ import type { Target } from "./categories";
 import { cdp, CdpTimeout, keyEvents, unlessGone } from "./cdp";
 import type { Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
-import { formatSnapshot, indexDom, mergeFrames, SNAPSHOT_CAP, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
+import { domText, formatSnapshot, indexDom, mergeFrames, SNAPSHOT_CAP, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf } from "../policy/computer-url";
 
 export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean }
 /** `pageToken` and `tab` say where it was resolved: `click` and `scroll` refuse once either has changed. */
-export interface Resolved { target: Target; sensitive: boolean; backendNodeId: number | null; point: { x: number; y: number }; pageToken: string; tab: number }
+export interface Resolved { target: Target; sensitive: boolean; backendNodeId: number; point: { x: number; y: number }; pageToken: string; tab: number }
 export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void }
 
 const PARTITION = "persist:computer";
 const SENSITIVE = 'input[type="password" i], [autocomplete~="current-password" i], [autocomplete~="new-password" i], [autocomplete~="one-time-code" i]';
 const KEY_LISTENERS = new Set(["keydown", "keypress", "keyup", "beforeinput"]);
-// Actionable roles (controls and form controls): a click is judged by the nearest of these at or above the node it hits
-// (agent-computer D43 reads role and label; R26: never the container a ref named).
-const CONTROLS = new Set(["button", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "checkbox", "radio", "switch", "tab",
-  "option", "textbox", "searchbox", "combobox", "slider", "spinbutton", "listbox", "treeitem"]);
 const ENABLE: [string, object?][] = [
   ["Page.enable"], ["DOM.enable"], ["Accessibility.enable"], ["Page.setInterceptFileChooserDialog", { enabled: true }],
   // An off-screen page is never the focused window: emulate focus so :focus matches and typing lands (D27).
@@ -40,6 +36,8 @@ const QUERY_MS = 100;
 const MAX_TABS = 20;
 const KEPT_DOCUMENTS = 8;
 const DEFAULT_SIZE = { width: 1280, height: 800 };
+// R26: after the pointer moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
+const HOVER_MS = 100;
 const URL_NOTE_MAX = 2_000;
 const D9_REFUSAL = "Typing into a password field is refused (D9).";
 const DIALOGS = new Set(["alert", "confirm", "prompt", "beforeunload"]);
@@ -151,6 +149,7 @@ const within = (a: number, b: number, dom: DomIndex): boolean => {
   for (let n = dom.parent.get(a); n !== undefined; n = dom.parent.get(n)) if (n === b) return true;
   return false;
 };
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const centre = (r: Rect): Point => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
 
 /** A file name for the Downloads folder: no folders, no control characters, not hidden, never an existing file. */
@@ -267,8 +266,9 @@ export class ComputerBrowser {
 
   /**
    * The element a click will hit, for the gate to judge (R26: never the container a ref named). The point is a ref's
-   * centre (scrolled into view first) or the given x, y; the target is the element under it, or its nearest actionable
-   * ancestor, or an opaque frame from another site. `click()` delivers at exactly that point.
+   * centre (scrolled into view first) or the given x, y. The pointer moves there first, so the element judged is the
+   * one in the hovered state the press will meet (a row that shows Delete on hover). The target is the element a click
+   * there activates (`receiver`); `click()` delivers at exactly that point.
    */
   async resolve(by: { ref: string } | { x: number; y: number }): Promise<Resolved> {
     const t = this.tab();
@@ -285,8 +285,11 @@ export class ComputerBrowser {
       p = { x: by.x, y: by.y };
     }
     p = { x: Math.round(p.x), y: Math.round(p.y) };
-    const dom = await this.locked(t, () => this.readDom(t));
+    await this.hover(t, p);
+    // The hit test comes first and the DOM is read after it, so the facts read (form, file input) include the hit node.
     const hit = await this.hitAt(t, p);
+    const dom = await this.locked(t, () => this.readDom(t));
+    if (!dom.names.has(hit)) throw new Error("The page changed: look again.");
     if (named !== null && hit !== named && !within(hit, named, dom) && !within(named, hit, dom)) {
       throw new Error("Something else covers that element now: take a new snapshot.");
     }
@@ -308,13 +311,13 @@ export class ComputerBrowser {
 
   async click(r: Resolved): Promise<void> {
     const t = this.where(r);
+    if (typeof r.backendNodeId !== "number") throw new Error("The page changed: look again.");
     const p = r.point;
-    if (r.backendNodeId !== null) {
-      const dom = await this.locked(t, () => this.readDom(t));
-      // R26: the click is delivered only while the element at the point is still the one the gate judged.
-      if (!(await this.accepts(t, p, r.backendNodeId, dom))) throw new Error("The page changed: look again.");
-    }
-    await this.mouse(t, "mouseMoved", p);
+    // R26: hover the point again, then deliver only while the element a click there activates is still the one the gate
+    // judged; the press follows the check with no move in between.
+    await this.hover(t, p);
+    const dom = await this.locked(t, () => this.readDom(t));
+    if (!(await this.accepts(t, p, r.backendNodeId, dom))) throw new Error("The page changed: look again.");
     await this.mouse(t, "mousePressed", p);
     await this.mouse(t, "mouseReleased", p);
   }
@@ -349,11 +352,9 @@ export class ComputerBrowser {
   async scroll(dx: number, dy: number, at?: Resolved): Promise<void> {
     const t = at ? this.where(at) : this.tab();
     let p: Point;
-    if (at?.backendNodeId != null) {
+    if (at) {
       await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: at.backendNodeId }).catch(() => undefined);
       p = centre(await this.box(t, at.backendNodeId));
-    } else if (at) {
-      p = at.point;
     } else {
       const m = await this.send<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(t, "Page.getLayoutMetrics");
       p = { x: m.cssVisualViewport.clientWidth / 2, y: m.cssVisualViewport.clientHeight / 2 };
@@ -826,33 +827,52 @@ export class ComputerBrowser {
     }
   }
 
-  /** R26: whether a click at `p` still reaches the judged element: the element there is it, or a descendant of it that is
-   *  not a control of its own and not a frame from another site. */
-  private async accepts(t: Tab, p: Point, judged: number, dom: DomIndex): Promise<boolean> {
-    const hit = await this.hitAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
-    if (hit === null) return false;
-    if (hit === judged) return true;
-    if (dom.remoteFrames.has(hit) || !within(hit, judged, dom)) return false;
-    const r = await this.receiver(t, hit, dom);
-    return !r.actionable || r.b === judged;
+  /** Moves the pointer to `p` and gives hover styles and handlers a moment to apply. */
+  private async hover(t: Tab, p: Point): Promise<void> {
+    await this.mouse(t, "mouseMoved", p);
+    await sleep(HOVER_MS);
   }
 
-  /** The element that receives a click on `hit` (D43 reads its role and label): a frame from another site (opaque), the
-   *  nearest actionable node at or above the hit, or, when there is none, the hit element itself as it is. */
+  /** R26: whether a click at `p` still activates the judged element: the walk from the node there now ends on it, or,
+   *  when it judged a plain element, the node there is it or inside it with nothing activatable above. */
+  private async accepts(t: Tab, p: Point, judged: number, dom: DomIndex): Promise<boolean> {
+    const hit = await this.hitAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
+    if (hit === null || !dom.names.has(hit)) return false;
+    if (dom.remoteFrames.has(hit)) return hit === judged;
+    const r = this.activates(hit, dom);
+    return r.actionable ? r.b === judged : hit === judged || within(hit, judged, dom);
+  }
+
+  /** The element a click on `hit` activates, walking DOM ancestors (not the accessibility tree, which aria-owns can
+   *  rearrange) up to its document: a label forwards to its control, else the nearest activatable element, else none. */
+  private activates(hit: number, dom: DomIndex): { b: number; actionable: boolean } {
+    for (let n: number | undefined = hit; n !== undefined; n = dom.names.get(n) === "#document" ? undefined : dom.parent.get(n)) {
+      if (dom.labels.has(n)) {
+        const control = dom.labels.get(n);
+        return control != null ? { b: control, actionable: true } : { b: n, actionable: true };
+      }
+      if (dom.activatable.has(n)) return { b: n, actionable: true };
+    }
+    return { b: hit, actionable: false };
+  }
+
+  /** The element that receives a click on `hit`, as the gate judges it (D43 reads its role and label): a frame from
+   *  another site (opaque), or what `activates` finds, named from the accessibility tree and, where that is silent or
+   *  hides it, from the markup; with nothing activatable, the hit element itself as it is. */
   private async receiver(t: Tab, hit: number, dom: DomIndex): Promise<{ b: number; target: Target; actionable: boolean }> {
     if (dom.remoteFrames.has(hit)) return { b: hit, target: { ...(await this.targetOf(t, hit, dom)), opaque: true }, actionable: true };
-    type Ax = CdpAxNode & { parentId?: string };
-    const { nodes } = await this.send<{ nodes: Ax[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: hit, fetchRelatives: true }).catch(unlessGone({ nodes: [] as Ax[] }));
-    const byId = new Map(nodes.map((n) => [n.nodeId, n]));
-    const own = nodes.find((x) => x.backendDOMNodeId === hit);
-    const facts = (b: number): Pick<Target, "inForm" | "fileInput"> => ({ inForm: dom.inForm.has(b), fileInput: dom.fileInput.has(b) });
-    for (let n: Ax | undefined = own; n; n = n.parentId ? byId.get(n.parentId) : undefined) {
-      if (!n.ignored && n.backendDOMNodeId !== undefined && CONTROLS.has(String(n.role?.value ?? ""))) {
-        return { b: n.backendDOMNodeId, target: { role: String(n.role?.value), name: String(n.name?.value ?? ""), ...facts(n.backendDOMNodeId) }, actionable: true };
-      }
+    const { b, actionable } = this.activates(hit, dom);
+    const ax = await this.targetOf(t, b, dom);
+    if (!actionable) return { b, target: ax, actionable };
+    const native = dom.roles.get(b);
+    const role = native && (ax.role === "generic" || ax.role === "none" || ax.role === "") ? native : ax.role;
+    // The accessible name can hide what the control says (a <label for> names a Buy button "Learn more"; aria-owns moves
+    // its text away), so its own markup name and text are added when the name does not already contain them.
+    let name = ax.name;
+    for (const extra of [dom.hints.get(b), domText(dom, b)]) {
+      if (extra && !name.toLowerCase().includes(extra.toLowerCase())) name = name ? `${name} (${extra})` : extra;
     }
-    const role = own && !own.ignored ? String(own.role?.value ?? "generic") : "generic";
-    return { b: hit, target: { role, name: String(own?.name?.value ?? ""), ...facts(hit) }, actionable: false };
+    return { b, target: { ...ax, role, name }, actionable };
   }
 
   private async targetOf(t: Tab, b: number, dom: DomIndex): Promise<Target> {

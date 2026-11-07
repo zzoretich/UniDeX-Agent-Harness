@@ -12,7 +12,7 @@ export interface Snapshot { text: string; refs: Map<string, { backendNodeId: num
 
 /** A node of `DOM.getDocument({ depth: -1, pierce: true })`, the fields used here. */
 export interface CdpDomNode {
-  nodeId: number; backendNodeId: number; nodeType: number; nodeName: string; attributes?: string[]; frameId?: string;
+  nodeId: number; backendNodeId: number; nodeType: number; nodeName: string; nodeValue?: string; attributes?: string[]; frameId?: string;
   children?: CdpDomNode[]; shadowRoots?: CdpDomNode[]; shadowRootType?: string; contentDocument?: CdpDomNode;
 }
 /** A node of `Accessibility.getFullAXTree`, the fields used here. */
@@ -36,6 +36,43 @@ export interface DomIndex {
   frameOwners: Map<number, string>;
   /** Frame owner elements whose document lives in another process (a cross-site frame): not readable here. */
   remoteFrames: Set<number>;
+  /** Elements a click activates (R26): buttons, links with an href, form controls, summaries, click-capable roles. */
+  activatable: Set<number>;
+  /** Each label to the control its click is forwarded to (its `for=` target or first nested control), or null. */
+  labels: Map<number, number | null>;
+  /** An activatable element's role from its markup, for when the accessibility tree hides it. */
+  roles: Map<number, string>;
+  /** An activatable element's name from its markup (aria-label, an input's value or alt, title). */
+  hints: Map<number, string>;
+  /** Light-DOM children (no shadow roots, no frame documents) and text node values, for `domText`. */
+  children: Map<number, number[]>;
+  values: Map<number, string>;
+}
+
+/** Roles that take a click as a control (agent-computer D43, R26). */
+export const CLICK_ROLES: ReadonlySet<string> = new Set(["button", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "checkbox", "radio",
+  "switch", "tab", "option", "textbox", "searchbox", "combobox", "slider", "spinbutton", "listbox", "treeitem"]);
+const LABELABLE = new Set(["BUTTON", "INPUT", "METER", "OUTPUT", "PROGRESS", "SELECT", "TEXTAREA"]);
+const INPUT_ROLES: Record<string, string> = {
+  button: "button", submit: "button", reset: "button", image: "button", file: "button", checkbox: "checkbox", radio: "radio",
+  range: "slider", number: "spinbutton", search: "searchbox",
+};
+
+/** The role an element's markup gives it when a click activates it, else undefined. */
+function nativeRole(n: CdpDomNode, name: string): string | undefined {
+  const role = attr(n, "role")?.trim().toLowerCase().split(/\s+/)[0];
+  if (role && CLICK_ROLES.has(role)) return role;
+  switch (name) {
+    case "BUTTON": case "SUMMARY": return "button";
+    case "A": case "AREA": return attr(n, "href") !== undefined ? "link" : undefined;
+    case "SELECT": return "combobox";
+    case "TEXTAREA": return "textbox";
+    case "INPUT": {
+      const type = (attr(n, "type") ?? "text").toLowerCase();
+      return type === "hidden" ? undefined : INPUT_ROLES[type] ?? "textbox";
+    }
+    default: return undefined;
+  }
 }
 
 export const SNAPSHOT_CAP = 40_000;
@@ -59,12 +96,18 @@ const attr = (doc: CdpDomNode, name: string): string | undefined => {
 export function indexDom(root: CdpDomNode): DomIndex {
   const ix: DomIndex = {
     roots: [], backendOf: new Map(), parent: new Map(), names: new Map(), frameOf: new Map(), inForm: new Set(), fileInput: new Set(),
-    frameOwners: new Map(), remoteFrames: new Set(),
+    frameOwners: new Map(), remoteFrames: new Set(), activatable: new Set(), labels: new Map(), roles: new Map(), hints: new Map(),
+    children: new Map(), values: new Map(),
   };
   const mainFrame = root.children?.find((c) => c.frameId)?.frameId;
-  const stack: { n: CdpDomNode; parent?: number; form: boolean; frame?: string; depth: number }[] = [{ n: root, form: false, frame: mainFrame, depth: 0 }];
+  // `scope` is the tree a node's ids resolve in (its document or shadow root); `label` the nearest label without for=.
+  type Item = { n: CdpDomNode; parent?: number; form: boolean; frame?: string; depth: number; scope: number; label?: number };
+  const stack: Item[] = [{ n: root, form: false, frame: mainFrame, depth: 0, scope: root.backendNodeId }];
+  const ids = new Map<string, number>();
+  const labelable = new Set<number>();
+  const pending: { label: number; scope: number; id: string }[] = [];
   while (stack.length) {
-    const { n, parent, form: inheritedForm, frame, depth } = stack.pop()!;
+    const { n, parent, form: inheritedForm, frame, depth, scope, label } = stack.pop()!;
     const b = n.backendNodeId;
     ix.backendOf.set(n.nodeId, b);
     ix.names.set(b, n.nodeName);
@@ -79,15 +122,57 @@ export function indexDom(root: CdpDomNode): DomIndex {
       if (n.contentDocument) ix.frameOwners.set(b, n.frameId);
       else ix.remoteFrames.add(b);
     }
+    if (n.nodeType === 3) ix.values.set(b, n.nodeValue ?? "");
+    ix.children.set(b, (n.children ?? []).map((c) => c.backendNodeId));
+    let ownLabel = label;
+    if (n.nodeType === 1) {
+      const id = attr(n, "id");
+      if (id) ids.set(`${scope}|${id}`, b);
+      const role = nativeRole(n, name);
+      if (role) {
+        ix.activatable.add(b);
+        ix.roles.set(b, role);
+        const hint = attr(n, "aria-label") ?? (name === "INPUT" ? attr(n, "value") ?? attr(n, "alt") : undefined) ?? attr(n, "title");
+        if (hint?.trim()) ix.hints.set(b, hint.trim());
+      }
+      if (LABELABLE.has(name) && !(name === "INPUT" && attr(n, "type")?.toLowerCase() === "hidden")) {
+        labelable.add(b);
+        if (label !== undefined && ix.labels.get(label) === null) ix.labels.set(label, b);
+      }
+      if (name === "LABEL") {
+        const forId = attr(n, "for");
+        ix.labels.set(b, null);
+        if (forId !== undefined) pending.push({ label: b, scope, id: forId });
+        else ownLabel = b;
+      }
+    }
     // Pushed in reverse so the walk (and the roots) come out in document order.
     const next: typeof stack = [];
-    for (const c of n.children ?? []) next.push({ n: c, parent: b, form, frame, depth });
-    for (const s of n.shadowRoots ?? []) next.push({ n: s, parent: b, form, frame, depth: depth + 1 });
-    if (n.contentDocument) next.push({ n: n.contentDocument, parent: b, form: false, frame: n.frameId, depth: depth + 1 });
+    for (const c of n.children ?? []) next.push({ n: c, parent: b, form, frame, depth, scope, label: ownLabel });
+    for (const s of n.shadowRoots ?? []) next.push({ n: s, parent: b, form, frame, depth: depth + 1, scope: s.backendNodeId });
+    if (n.contentDocument) next.push({ n: n.contentDocument, parent: b, form: false, frame: n.frameId, depth: depth + 1, scope: n.contentDocument.backendNodeId });
     for (let i = next.length - 1; i >= 0; i--) stack.push(next[i]);
+  }
+  for (const p of pending) {
+    const target = ids.get(`${p.scope}|${p.id}`);
+    ix.labels.set(p.label, target !== undefined && labelable.has(target) ? target : null);
   }
   ix.roots.sort((a, b) => a.depth - b.depth);
   return ix;
+}
+
+/** A node's light-DOM text, whitespace collapsed, cut at `max` characters (a control's text aria-owns moved away). */
+export function domText(dom: DomIndex, b: number, max = 300): string {
+  let out = "";
+  const stack = [b];
+  while (stack.length && out.length < max) {
+    const n = stack.pop()!;
+    const v = dom.values.get(n);
+    if (v !== undefined) out += v;
+    const kids = dom.children.get(n) ?? [];
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+  }
+  return out.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
 const str = (v: unknown): string => (v === undefined || v === null ? "" : String(v));
