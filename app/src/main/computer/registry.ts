@@ -18,10 +18,9 @@ export class AgentRegistry {
   private readonly agents = new Map<number, AgentRef>();
   private readonly claimed = new Set<number>();
 
-  /** Registers (or re-registers) an agent; a fresh registration can be claimed again. */
+  /** Registers an agent, or replaces the fields of one already registered. A live claim survives a replace: only remove then add re-arms it. */
   add(a: AgentRef): void {
     this.agents.set(a.pid, a);
-    this.claimed.delete(a.pid);
   }
 
   remove(pid: number): void {

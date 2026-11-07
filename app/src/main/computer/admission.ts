@@ -17,7 +17,7 @@ export interface Sys {
   processTeamId(pid: number): string | null;
   realpath(p: string): string;
   /** File identity for the launch cache; fs.statSync when absent. */
-  stat?(p: string): { ino: number; size: number; mtimeMs: number };
+  stat?(p: string): { ino: number; size: number; mtimeMs: number; ctimeMs: number };
 }
 
 type Host = "claude" | "codex";
@@ -42,7 +42,9 @@ function real(sys: Sys, p: string): string | null {
 }
 
 function inPackage(rp: string, host: Host): boolean {
-  return rp.includes(`/node_modules/${VENDOR[host].pkg}/`);
+  // The last node_modules segment must be the vendor's package: nothing nested inside it, nor a copy under another package.
+  const i = rp.lastIndexOf("/node_modules/");
+  return i >= 0 && rp.slice(i + "/node_modules/".length).startsWith(`${VENDOR[host].pkg}/`);
 }
 
 const launchCache = new WeakMap<Sys, Map<string, string | null>>();
@@ -55,19 +57,22 @@ export function launchForm(host: Host, bin: string, sys: Sys, trusted: readonly 
   if (inPackage(rp, host)) return "npm";
   let team: string | null;
   try {
-    let key: string | null = null;
-    try {
-      const st = (sys.stat ?? fs.statSync)(rp);
-      key = `${rp}|${st.ino}|${st.size}|${st.mtimeMs}`;
-    } catch {
-      key = null;
-    }
+    const identity = (): string | null => {
+      try {
+        const st = (sys.stat ?? fs.statSync)(rp);
+        return `${rp}|${st.ino}|${st.size}|${st.mtimeMs}|${st.ctimeMs}`;
+      } catch {
+        return null;
+      }
+    };
+    const key = identity();
     let cache = launchCache.get(sys);
     if (!cache) launchCache.set(sys, (cache = new Map()));
     if (key !== null && cache.has(key)) team = cache.get(key) ?? null;
     else {
       team = sys.teamId(rp);
-      if (key !== null) cache.set(key, team);
+      // Cache only when the file is the same after the slow check as before it.
+      if (key !== null && identity() === key) cache.set(key, team);
     }
   } catch {
     return null;
@@ -85,7 +90,7 @@ export function installForm(host: Host, p: ProcInfo, sys: Sys, trusted: readonly
   } catch {
     return null;
   }
-  if (path.basename(p.path) === "node" && typeof p.argv[1] === "string") {
+  if (path.basename(p.path) === "node" && typeof p.argv[1] === "string" && path.isAbsolute(p.argv[1])) {
     const script = real(sys, p.argv[1]);
     if (script !== null && inPackage(script, host)) return "npm";
   }
@@ -101,7 +106,7 @@ export function admit(peerPid: number, o: { reg: AgentRegistry; sys: Sys; server
   const trusted = o.trusted ?? [];
   try {
     const peer = sys.procInfo(peerPid);
-    if (!peer || typeof peer.argv[1] !== "string" || real(sys, peer.argv[1]) !== server) return refuse(NOT_STARTED);
+    if (!peer || typeof peer.argv[1] !== "string" || !path.isAbsolute(peer.argv[1]) || real(sys, peer.argv[1]) !== server) return refuse(NOT_STARTED);
     const parent = sys.procInfo(peer.ppid);
     if (!parent) return refuse(NOT_STARTED);
 

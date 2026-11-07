@@ -28,7 +28,7 @@ function fake(w: World): Sys & { teamCalls: number } {
       if (w.missing?.includes(p)) throw new Error("ENOENT");
       return w.links?.[p] ?? p;
     },
-    stat: () => ({ ino: 1, size: 2, mtimeMs: 3 }),
+    stat: () => ({ ino: 1, size: 2, mtimeMs: 3, ctimeMs: 4 }),
   };
   return sys;
 }
@@ -89,6 +89,14 @@ test("refused: every case outside the admitted forms", () => {
     ["an npm Claude shim (the shim path is Codex only)", { procs: [server(30, 20), proc(20, 10, "/pkg/claude"), proc(10, 1, "/usr/local/bin/node", ["node", "c.js"])], running: { 20: CLAUDE }, links: { "c.js": NPM_CLAUDE } }, [agent(10, "claude")]],
     ["npm form with the wrong package", { procs: [server(20, 10), proc(10, 1, "/usr/bin/node", ["node", "/usr/lib/node_modules/left-pad/index.js"])] }, [agent(10)]],
     ["npm form not run by node", { procs: [server(20, 10), proc(10, 1, "/usr/bin/python", ["python", NPM_CLAUDE])] }, [agent(10)]],
+    ["a sibling package name", { procs: [server(20, 10), proc(10, 1, "/usr/bin/node", ["node", "/usr/lib/node_modules/@anthropic-ai/claude-code-evil/cli.js"])] }, [agent(10)]],
+    ["a Claude process running the Codex package", { procs: [server(20, 10), proc(10, 1, "/usr/bin/node", ["node", NPM_CODEX])] }, [agent(10, "claude")]],
+    ["a nested dependency inside the package", { procs: [server(20, 10), proc(10, 1, "/usr/bin/node", ["node", `/usr/lib/node_modules/${VENDOR.claude.pkg}/node_modules/x/bin.js`])] }, [agent(10)]],
+    ["a relative npm entry", { procs: [server(20, 10), proc(10, 1, "/usr/bin/node", ["node", `node_modules/${VENDOR.claude.pkg}/cli.js`])] }, [agent(10)]],
+    ["a relative server path", { procs: [proc(20, 10, "/usr/bin/node", ["node", "mcp-server.js"]), proc(10, 1, "/opt/claude")], running: { 10: CLAUDE } }, [agent(10)]],
+    ["a shim whose grandparent is registered as Claude (npm form of the Codex package)", { procs: [server(30, 20), proc(20, 10, "/pkg/codex"), proc(10, 1, "/usr/bin/node", ["node", NPM_CODEX])], running: { 20: CODEX } }, [agent(10, "claude")]],
+    ["a shim whose grandparent is a native Codex", { procs: [server(30, 20), proc(20, 10, "/pkg/codex"), proc(10, 1, "/opt/codex")], running: { 20: CODEX, 10: CODEX } }, [agent(10, "codex")]],
+    ["trusted naming an unresolved link", { procs: [server(20, 10), proc(10, 1, "/build/fake")], links: { "/build/fake": "/real/fake" } }, [agent(10)]],
   ];
   // the peer is the first process listed, except where the case is a peer that is gone (pid 20 is not listed)
   for (const [name, w, regs] of cases) {
@@ -161,11 +169,53 @@ test("launchForm: trusted counts as native", () => {
 test("launchForm: the static check is cached per file identity", () => {
   let mtime = 1;
   const sys = fake({ procs: [], files: { "/opt/cached": CLAUDE } });
-  sys.stat = () => ({ ino: 7, size: 9, mtimeMs: mtime });
+  sys.stat = () => ({ ino: 7, size: 9, mtimeMs: mtime, ctimeMs: 5 });
   assert.equal(launchForm("claude", "/opt/cached", sys), "native");
   assert.equal(launchForm("claude", "/opt/cached", sys), "native");
   assert.equal(sys.teamCalls, 1);
   mtime = 2;
   assert.equal(launchForm("claude", "/opt/cached", sys), "native");
+  assert.equal(sys.teamCalls, 2);
+});
+
+test("a registered agent keeps a live claim when its fields are replaced; remove then add re-arms it", () => {
+  const reg = new AgentRegistry();
+  reg.add(agent(1));
+  assert.equal(reg.claim(1), true);
+  reg.add({ ...agent(1), access: "run" });
+  assert.equal(reg.get(1)?.access, "run");
+  assert.equal(reg.claim(1), false);
+  reg.remove(1);
+  reg.add(agent(1));
+  assert.equal(reg.claim(1), true);
+});
+
+test("a trusted list naming a link does not match; only the realpath does", () => {
+  const w: World = { procs: [], links: { "/build/fake": "/real/fake" } };
+  assert.equal(installForm("claude", proc(10, 1, "/build/fake"), fake(w), ["/build/fake"]), null);
+  assert.equal(launchForm("claude", "/build/fake", fake(w), ["/build/fake"]), null);
+});
+
+test("a lookup that throws is a refusal, not an exception", () => {
+  const w: World = { procs: [server(20, 10), proc(10, 1, "/opt/claude")], running: { 10: CLAUDE } };
+  const reg = new AgentRegistry();
+  reg.add(agent(10));
+  const a = fake(w);
+  a.procInfo = () => { throw new Error("boom"); };
+  assert.deepEqual(admit(20, { reg, sys: a, server: SERVER }), { ok: false, reason: NOT_STARTED });
+  const b = fake(w);
+  b.processTeamId = () => { throw new Error("boom"); };
+  assert.deepEqual(admit(20, { reg, sys: b, server: SERVER }), { ok: false, reason: NOT_STARTED });
+  assert.equal(installForm("claude", proc(10, 1, "/opt/claude"), b), null);
+});
+
+test("launchForm does not cache a result when the file changed during the check", () => {
+  let ctime = 1;
+  const sys = fake({ procs: [], files: { "/opt/racy": CLAUDE } });
+  sys.stat = () => ({ ino: 7, size: 9, mtimeMs: 1, ctimeMs: ctime });
+  const t = sys.teamId;
+  sys.teamId = (p: string) => { ctime++; return t(p); };
+  launchForm("claude", "/opt/racy", sys);
+  launchForm("claude", "/opt/racy", sys);
   assert.equal(sys.teamCalls, 2);
 });
