@@ -26,10 +26,20 @@ export const NAV_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 const LOOKING = new Set(["status", "snapshot", "screenshot", "wait"]);
-const GO: Verdict = { go: true };
+const NAV_LOWER: ReadonlySet<string> = new Set([...NAV_KEYS].map((k) => k.toLowerCase()));
+const GO: Verdict = Object.freeze({ go: true as const });
 
-const hasEnter = (key: string): boolean =>
-  key.split("+").some((p) => ["enter", "return"].includes(p.toLowerCase()));
+/** A key string split into trimmed, lower-cased parts on "+". A lone space part is "space"; "\r", "\n" and "return"
+ *  are "enter". Shared with the browser's key-event builder so both read a key the same way. */
+export function parseKey(key: string): { parts: string[]; enter: boolean; space: boolean } {
+  const parts = key.split("+").map((raw) => {
+    if (raw === " ") return "space";
+    if (/^[\r\n]+$/.test(raw)) return "enter";
+    const p = raw.trim().toLowerCase();
+    return p === "return" ? "enter" : p;
+  });
+  return { parts, enter: parts.includes("enter"), space: parts.includes("space") };
+}
 
 function click(t: Target, marked: boolean): Verdict {
   if (t.fileInput) return { ask: "file" };
@@ -47,20 +57,30 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
     case "click":
       return click(a.target, ctx.marked);
     case "key": {
-      if (hasEnter(a.key) && !a.focus.plainTextarea) return { ask: "return" };
-      if (NAV_KEYS.has(a.key)) return GO;
+      const k = parseKey(a.key);
+      if (k.enter && !a.focus.plainTextarea) return { ask: "return" };
+      if (NAV_LOWER.has(k.parts.join("+"))) return GO;
       if (!ctx.marked) return { ask: "unmarked" };
-      if ((a.key === " " || a.key === "Space") && a.focus.target) return click(a.focus.target, true);
+      if (k.space && a.focus.target) return click(a.focus.target, true);
       return GO;
     }
     case "type": {
       if (a.focus.sensitive) return { refuse: "Typing into a password field is refused (D9)." };
-      if (a.text.includes("\n") && !a.focus.plainTextarea) return { ask: "return" };
+      if (/[\r\n]/.test(a.text) && !a.focus.plainTextarea) return { ask: "return" };
       if (!ctx.marked) return { ask: "unmarked" };
       if (a.focus.target?.fileInput) return { ask: "file" };
       return GO;
     }
-    default:
+    case "status":
+    case "snapshot":
+    case "screenshot":
+    case "wait":
+    case "scroll":
       return GO;
+    default: {
+      const _exhaustive: never = a;
+      void _exhaustive;
+      return { refuse: "Unknown action." };
+    }
   }
 }

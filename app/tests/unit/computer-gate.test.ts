@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { judge, NAV_KEYS, type Action, type Focus, type Access } from "../../src/main/computer/gate";
+import { judge, parseKey, NAV_KEYS, type Action, type Focus, type Access } from "../../src/main/computer/gate";
 import type { Target } from "../../src/main/computer/categories";
 
 const btn = (name: string, extra: Partial<Target> = {}): Target => ({ role: "button", name, inForm: false, fileInput: false, ...extra });
@@ -67,4 +67,45 @@ test("type rows", () => {
   assert.deepEqual(judge({ kind: "type", text: "hi", focus: field }, edit(false)), { ask: "unmarked" });
   assert.deepEqual(judge({ kind: "type", text: "hi", focus: { ...field, target: { ...field.target!, fileInput: true } } }, edit(true)), { ask: "file" });
   assert.deepEqual(judge({ kind: "type", text: "hi", focus: field }, edit(true)), { go: true });
+});
+
+test("unknown action kinds are refused under every access", () => {
+  for (const access of ["edit", "run", "host"] as const)
+    assert.ok("refuse" in judge({ kind: "teleport" } as unknown as Action, { access, marked: true }), access);
+});
+
+test("a bare carriage return in typed text asks return", () => {
+  assert.deepEqual(judge({ kind: "type", text: "hi\r", focus: field }, edit(true)), { ask: "return" });
+  assert.deepEqual(judge({ kind: "type", text: "hi\r\n", focus: field }, edit(true)), { ask: "return" });
+});
+
+test("key variants are canonicalised before judging", () => {
+  for (const k of ["\r", "\n", " Enter", "Ctrl + Enter", "enter", "RETURN", "Shift+ Return "])
+    assert.deepEqual(judge({ kind: "key", key: k, focus: field }, edit(true)), { ask: "return" }, JSON.stringify(k));
+  const del = { ...field, target: btn("Delete") };
+  for (const k of [" ", "Space", "space", "SPACE", "Shift+Space", "Shift + space"])
+    assert.deepEqual(judge({ kind: "key", key: k, focus: del }, edit(true)), { ask: "delete" }, JSON.stringify(k));
+  for (const k of ["arrowdown", " Tab ", "Shift+Tab", "SHIFT + TAB", "escape"])
+    assert.deepEqual(judge({ kind: "key", key: k, focus: field }, edit(false)), { go: true }, JSON.stringify(k));
+});
+
+test("parseKey canonicalises", () => {
+  assert.deepEqual(parseKey(" "), { parts: ["space"], enter: false, space: true });
+  assert.deepEqual(parseKey("\r"), { parts: ["enter"], enter: true, space: false });
+  assert.deepEqual(parseKey("Ctrl + Return"), { parts: ["ctrl", "enter"], enter: true, space: false });
+});
+
+test("run and host access judge like edit", () => {
+  for (const access of ["run", "host"] as const) {
+    assert.deepEqual(judge({ kind: "click", target: btn("Merge pull request") }, { access, marked: true }), { ask: "merge" });
+    assert.deepEqual(judge({ kind: "click", target: btn("Next") }, { access, marked: false }), { ask: "unmarked" });
+    assert.deepEqual(judge({ kind: "key", key: "Enter", focus: field }, { access, marked: true }), { ask: "return" });
+    assert.deepEqual(judge({ kind: "key", key: "a", focus: field }, { access, marked: true }), { go: true });
+    assert.deepEqual(judge({ kind: "type", text: "x", focus: field }, { access, marked: true }), { go: true });
+    assert.deepEqual(judge({ kind: "type", text: "x", focus: { ...field, sensitive: true } }, { access, marked: true }), { refuse: "Typing into a password field is refused (D9)." });
+  }
+});
+
+test("a newline in a plain textarea on an unmarked site asks unmarked", () => {
+  assert.deepEqual(judge({ kind: "type", text: "a\nb", focus: { ...field, plainTextarea: true } }, edit(false)), { ask: "unmarked" });
 });
