@@ -286,7 +286,7 @@ const SETTINGS = [
   { key: 'updates.intervalHours', section: 'updates', label: 'Update check interval', type: 'number', gt: 0, applies: 'next-check',
     help: 'Hours between update checks.' },
 
-  // ── Computer pane (agent-computer D7, D31) ──────────────────────────────────
+  // ── Computer pane (agent-computer D25) ──────────────────────────────────
   { key: 'computer.enabled', section: 'computer', label: 'Computer pane', type: 'bool', applies: 'next-call',
     help: 'The in-app browser agents can drive on the Code and Chat pages.' },
   { key: 'computer.askTimeoutSec', section: 'computer', label: 'Ask timeout', type: 'number', int: true, min: 30, applies: 'next-call',

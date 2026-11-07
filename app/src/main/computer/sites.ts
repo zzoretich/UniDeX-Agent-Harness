@@ -1,4 +1,4 @@
-// Marked sites (agent-computer D25): origins the person has marked as ones an agent may act on without asking "unmarked",
+// Marked sites (agent-computer D39): origins the person has marked as ones an agent may act on without asking "unmarked",
 // plus per-origin allowances for ask categories ("always allow merge here"). Local development hosts start marked.
 // Stored at <userData>/computer/sites.json, written 0600 by temp file and rename.
 

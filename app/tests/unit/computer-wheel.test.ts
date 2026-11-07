@@ -29,7 +29,7 @@ test("the first take holds the wheel; a second session is busy with the holder's
   const { w } = make();
   assert.deepEqual(w.take("c", "s1", "Alpha"), { ok: true });
   assert.deepEqual(w.holder("c"), { kind: "agent", session: "s1", label: "Alpha" });
-  assert.deepEqual(w.take("c", "s2", "Beta"), { ok: false, busy: "Alpha" });
+  assert.deepEqual(w.take("c", "s2", "Beta"), { ok: false, busy: "Alpha is driving" });
   assert.deepEqual(w.take("c", "s1", "Alpha"), { ok: true });
 });
 
@@ -70,5 +70,12 @@ test("takeOver makes the user the holder and handBack restores the agent", () =>
 test("takeOver on a free wheel resumes nothing; handBack frees it", () => {
   const { w } = make();
   w.takeOver("c"); assert.deepEqual(w.holder("c"), { kind: "user", resume: null });
+  w.handBack("c"); assert.equal(w.holder("c"), null);
+});
+
+test("turnEnded clears a user holder's resume that points at that session", () => {
+  const { w } = make();
+  w.take("c", "s1", "A"); w.takeOver("c"); w.turnEnded("s1");
+  assert.deepEqual(w.holder("c"), { kind: "user", resume: null });
   w.handBack("c"); assert.equal(w.holder("c"), null);
 });

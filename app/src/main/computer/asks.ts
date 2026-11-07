@@ -1,4 +1,4 @@
-// The ask broker (agent-computer D7, D31): an agent's action that needs the person's yes waits here. A tool call holds
+// The ask broker (agent-computer D34, D7): an agent's action that needs the person's yes waits here. A tool call holds
 // for up to 45 s; if the person has not answered it returns `waiting_for_user` and the ask stays pending, so the agent
 // can `wait` on it again. The ask expires as denied at the configured timeout, measured from when it was raised.
 
@@ -21,11 +21,15 @@ export type Outcome =
   | { state: "waiting_for_user"; askId: string };
 
 const HOLD_MS = 45_000;
+const KEEP_MS = 60_000;
 
+interface Settled { outcome: Outcome; drop: unknown }
 interface Entry { ask: Ask; expiry: unknown; waiters: Set<(o: Outcome) => void> }
 
 export class AskBroker {
   private entries = new Map<string, Entry>();
+  // Outcomes kept after an ask settles, so a wait that comes after the answer still sees it.
+  private settled = new Map<string, Settled>();
   private readonly holdMs: number;
   private readonly clock: Clock;
 
@@ -44,6 +48,8 @@ export class AskBroker {
   }
 
   wait(askId: string): Promise<Outcome> {
+    const kept = this.settled.get(askId);
+    if (kept) return Promise.resolve(kept.outcome);
     const entry = this.entries.get(askId);
     if (!entry) return Promise.resolve({ state: "denied", askId, reason: "unknown ask" });
     return new Promise<Outcome>((resolve) => {
@@ -55,7 +61,7 @@ export class AskBroker {
 
   answer(askId: string, a: Answer): boolean {
     if (!this.entries.has(askId)) return false;
-    this.settle(askId, a === "deny" ? { state: "denied", askId, answer: a } : { state: "allowed", askId, answer: a });
+    this.settle(askId, a === "once" || a === "always" ? { state: "allowed", askId, answer: a } : { state: "denied", askId, answer: "deny" });
     return true;
   }
 
@@ -75,6 +81,8 @@ export class AskBroker {
     if (!entry) return;
     this.entries.delete(askId);
     this.clock.clearTimeout(entry.expiry);
+    const keepMs = Math.max(entry.ask.at + this.o.timeoutMs() - this.clock.now(), KEEP_MS);
+    this.settled.set(askId, { outcome, drop: this.clock.setTimeout(() => this.settled.delete(askId), keepMs) });
     for (const w of [...entry.waiters]) w(outcome);
     this.o.onChange(this.pending());
   }

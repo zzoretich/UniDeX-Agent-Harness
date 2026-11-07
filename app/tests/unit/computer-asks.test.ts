@@ -5,6 +5,7 @@ import { AskBroker, type AskInput, type Ask, type Clock } from "../../src/main/c
 class FakeClock implements Clock {
   t = 0; private n = 0; private q = new Map<number, { at: number; fn: () => void }>();
   now() { return this.t; }
+  pendingTimers() { return this.q.size; }
   setTimeout(fn: () => void, ms: number) { const id = ++this.n; this.q.set(id, { at: this.t + ms, fn }); return id; }
   clearTimeout(id: unknown) { this.q.delete(id as number); }
   async advance(ms: number) {
@@ -98,4 +99,44 @@ test("an unknown id waits as denied; ids are unguessable; pending filters by com
   const [a, c] = b.pending();
   assert.match(a.id, /^[0-9a-f-]{36}$/); assert.notEqual(a.id, c.id);
   assert.equal(b.pending("c2").length, 1);
+});
+
+test("an answer given between two waits is kept: wait returns it", async () => {
+  const { b, clock } = make();
+  const first = b.hold(input); const id = b.pending()[0].id;
+  await clock.advance(45_000); await first;
+  assert.equal(b.answer(id, "once"), true);
+  await clock.advance(5_000);
+  assert.deepEqual(await b.wait(id), { state: "allowed", askId: id, answer: "once" });
+});
+
+test("an answer given synchronously from onChange inside hold resolves the hold", async () => {
+  const clock = new FakeClock(); let b!: AskBroker;
+  b = new AskBroker({ timeoutMs: () => 120_000, clock, onChange: (p) => { if (p.length) b.answer(p[0].id, "always"); } });
+  const r = await b.hold(input);
+  assert.deepEqual(r, { state: "allowed", askId: r.askId, answer: "always" });
+});
+
+test("a kept outcome is dropped at the later of at+timeout and 60 s after settling, with no timer left", async () => {
+  const { b, clock } = make();
+  const p = b.hold(input); const id = b.pending()[0].id;
+  b.answer(id, "deny"); await p;
+  await clock.advance(119_999);
+  assert.equal((await b.wait(id)).state, "denied");
+  await clock.advance(1);
+  assert.deepEqual(await b.wait(id), { state: "denied", askId: id, reason: "unknown ask" });
+  const q = b.hold(input); const id2 = b.pending()[0].id;
+  await clock.advance(110_000); b.answer(id2, "once"); await q;
+  await clock.advance(59_999);
+  assert.equal((await b.wait(id2)).state, "allowed");
+  await clock.advance(1);
+  assert.equal((await b.wait(id2)).state, "denied");
+  assert.equal(clock.pendingTimers(), 0);
+});
+
+test("only once and always allow; any other answer denies", async () => {
+  const { b } = make();
+  const p = b.hold(input); const id = b.pending()[0].id;
+  b.answer(id, "yes" as never);
+  assert.equal((await p).state, "denied");
 });

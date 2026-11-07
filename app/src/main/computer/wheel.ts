@@ -1,4 +1,4 @@
-// Who holds the wheel of a computer (agent-computer D34): one agent session at a time, or the person. An agent's hold
+// Who holds the wheel of a computer (agent-computer D31, D34): one agent session at a time, or the person. An agent's hold
 // frees after 30 s idle (never while the computer is reserved by an ask or a running action) and when its turn ends.
 
 import { realClock, type Clock } from "./asks";
@@ -26,7 +26,7 @@ export class Wheel {
   take(computer: string, session: string, label: string): { ok: true } | { ok: false; busy: string } {
     const h = this.holder(computer);
     if (h?.kind === "user") return { ok: false, busy: "the user is driving" };
-    if (h && h.session !== session) return { ok: false, busy: h.label };
+    if (h && h.session !== session) return { ok: false, busy: `${h.label} is driving` };
     if (!h) this.set(computer, { kind: "agent", session, label });
     this.arm(computer);
     return { ok: true };
@@ -38,7 +38,10 @@ export class Wheel {
   }
 
   turnEnded(session: string): void {
-    for (const [computer, h] of [...this.holders]) if (h?.kind === "agent" && h.session === session) this.set(computer, null);
+    for (const [computer, h] of [...this.holders]) {
+      if (h?.kind === "agent" && h.session === session) this.set(computer, null);
+      else if (h?.kind === "user" && h.resume?.session === session) this.set(computer, { kind: "user", resume: null });
+    }
   }
 
   takeOver(computer: string): void {
