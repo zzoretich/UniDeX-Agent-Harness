@@ -70,10 +70,20 @@ test("a key into a cross-site frame asks frame on every site, except navigation 
   for (const marked of [true, false]) {
     for (const k of ["a", "Backspace", " ", "Control+v"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { ask: "frame" }, `${marked} ${k}`);
     for (const k of ["Tab", "Shift+Tab", "Escape", "ArrowDown"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { go: true }, `${marked} ${k}`);
-    assert.deepEqual(judge({ kind: "key", key: "Enter", focus: inFrame }, edit(marked)), { ask: "return" });
+    // Enter too: the frame's own form is out of sight, so frame is asked before the return rule.
+    for (const k of ["Enter", "Shift+Enter"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { ask: "frame" }, `${marked} ${k}`);
+    assert.deepEqual(judge({ kind: "key", key: "Enter", focus: { ...inFrame, plainTextarea: true } }, edit(marked)), { ask: "frame" });
   }
   // As the browser reports it: focus in a cross-site frame also counts as sensitive, so a printable key is refused.
   assert.deepEqual(judge({ kind: "key", key: "a", focus: { ...inFrame, sensitive: true } }, edit(true)), D9);
+});
+
+test("typing into a cross-site frame is refused, sensitive or not", () => {
+  const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, sensitive: false, plainTextarea: false };
+  for (const marked of [true, false]) {
+    assert.deepEqual(judge({ kind: "type", text: "4242", focus: inFrame }, edit(marked)), { refuse: "Typing into a frame from another site is refused (D9)." });
+    assert.deepEqual(judge({ kind: "type", text: "4242", focus: { ...inFrame, sensitive: true } }, edit(marked)), D9);
+  }
 });
 
 test("a non-navigation key into a password field is refused (D9)", () => {

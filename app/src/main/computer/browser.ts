@@ -25,7 +25,8 @@ export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail"
 const PARTITION = "persist:computer";
 const SENSITIVE = 'input[type="password" i], [autocomplete~="current-password" i], [autocomplete~="new-password" i], [autocomplete~="one-time-code" i]';
 const KEY_LISTENERS = new Set(["keydown", "keypress", "keyup", "beforeinput"]);
-// Roles a click by point is judged by: the nearest of these above the node under the point (D43 reads role and label).
+// Actionable roles (controls and form controls): a click is judged by the nearest of these at or above the node it hits
+// (agent-computer D43 reads role and label; R26: never the container a ref named).
 const CONTROLS = new Set(["button", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "checkbox", "radio", "switch", "tab",
   "option", "textbox", "searchbox", "combobox", "slider", "spinbutton", "listbox", "treeitem"]);
 const ENABLE: [string, object?][] = [
@@ -72,6 +73,8 @@ interface Tab {
   refused: string | null;
   /** Set while the tab is being closed, so its own debugger detach is not noted. */
   closing: boolean;
+  /** The main frame's current loader, and the isolated world made for that document (remote-focus reads). */
+  loader: string; world: { loader: string; contextId: number } | null;
 }
 
 interface Handlers { permission(permission: string, url: string): Promise<boolean>; download(item: DownloadItem, wc: WebContents): void }
@@ -142,6 +145,11 @@ const quadRect = (q: number[]): Rect => {
   const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
   const x = Math.min(...xs), y = Math.min(...ys);
   return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+};
+/** Whether node `a` sits inside node `b` (through shadow hosts and frame owners). */
+const within = (a: number, b: number, dom: DomIndex): boolean => {
+  for (let n = dom.parent.get(a); n !== undefined; n = dom.parent.get(n)) if (n === b) return true;
+  return false;
 };
 const centre = (r: Rect): Point => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
 
@@ -257,23 +265,33 @@ export class ComputerBrowser {
     }
   }
 
+  /**
+   * The element a click will hit, for the gate to judge (R26: never the container a ref named). The point is a ref's
+   * centre (scrolled into view first) or the given x, y; the target is the element under it, or its nearest actionable
+   * ancestor, or an opaque frame from another site. `click()` delivers at exactly that point.
+   */
   async resolve(by: { ref: string } | { x: number; y: number }): Promise<Resolved> {
     const t = this.tab();
     const where = { pageToken: this.tokenOf(t), tab: this.current };
-    const dom = await this.locked(t, () => this.readDom(t));
-    // A frame from another site cannot be read or judged by its label: the target says so and the gate asks "frame".
-    const opaque = (target: Target, b: number): Target => (dom.remoteFrames.has(b) || target.opaque ? { ...target, opaque: true } : target);
+    let named: number | null = null;
+    let p: Point;
     if ("ref" in by) {
       const ref = t.refs.get(by.ref);
       if (!ref || t.refsToken !== this.tokenOf(t)) throw new Error(`There is no ${by.ref} on this page now: take a new snapshot.`);
-      const box = await this.box(t, ref.backendNodeId);
-      return { target: opaque(ref.target, ref.backendNodeId), sensitive: t.sensitive.has(ref.backendNodeId), backendNodeId: ref.backendNodeId, point: centre(box), ...where };
+      named = ref.backendNodeId;
+      await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: named }).catch(() => undefined);
+      p = centre(await this.box(t, named));
+    } else {
+      p = { x: by.x, y: by.y };
     }
-    const hit = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { x: Math.round(by.x), y: Math.round(by.y), includeUserAgentShadowDOM: false });
-    const { target, backendNodeId } = dom.remoteFrames.has(hit.backendNodeId)
-      ? { target: await this.targetOf(t, hit.backendNodeId, dom), backendNodeId: hit.backendNodeId }
-      : await this.targetAt(t, hit.backendNodeId, dom);
-    return { target: opaque(target, backendNodeId), sensitive: t.sensitive.has(backendNodeId) || t.sensitive.has(hit.backendNodeId), backendNodeId, point: { x: by.x, y: by.y }, ...where };
+    p = { x: Math.round(p.x), y: Math.round(p.y) };
+    const dom = await this.locked(t, () => this.readDom(t));
+    const hit = await this.hitAt(t, p);
+    if (named !== null && hit !== named && !within(hit, named, dom) && !within(named, hit, dom)) {
+      throw new Error("Something else covers that element now: take a new snapshot.");
+    }
+    const r = await this.receiver(t, hit, dom);
+    return { target: r.target, sensitive: t.sensitive.has(r.b) || t.sensitive.has(hit), backendNodeId: r.b, point: p, ...where };
   }
 
   /** What has keyboard focus (D39), and whether it is a password field (D9). */
@@ -290,16 +308,11 @@ export class ComputerBrowser {
 
   async click(r: Resolved): Promise<void> {
     const t = this.where(r);
-    let p = r.point;
+    const p = r.point;
     if (r.backendNodeId !== null) {
-      const b = r.backendNodeId;
-      await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: b }).catch(() => undefined);
       const dom = await this.locked(t, () => this.readDom(t));
-      // The click lands where it was judged: on the target or inside it, never on something covering it.
-      if (!(await this.hits(t, p, b, dom))) {
-        p = centre(await this.box(t, b));
-        if (!(await this.hits(t, p, b, dom))) throw new Error("Something else covers that element now: take a new snapshot.");
-      }
+      // R26: the click is delivered only while the element at the point is still the one the gate judged.
+      if (!(await this.accepts(t, p, r.backendNodeId, dom))) throw new Error("The page changed: look again.");
     }
     await this.mouse(t, "mouseMoved", p);
     await this.mouse(t, "mousePressed", p);
@@ -419,6 +432,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
+      loader: "", world: null,
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -539,6 +553,7 @@ export class ComputerBrowser {
         const frame = p.frame as { parentId?: string; loaderId: string };
         if (frame.parentId) break;
         // D9: a document keeps its sensitive set for its life (a back/forward-cache restore brings its set back).
+        t.loader = frame.loaderId;
         t.sensitive = t.documents.get(frame.loaderId) ?? new Set();
         t.documents.delete(frame.loaderId);
         t.documents.set(frame.loaderId, t.sensitive);
@@ -766,45 +781,78 @@ export class ComputerBrowser {
    *  isolated world (DOM :focus does not match it); a generic frame target when it cannot be read. */
   private async remoteTarget(t: Tab): Promise<Target> {
     const frame: Target = { role: "Iframe", name: "", inForm: false, fileInput: false, opaque: true };
+    const group = `agent-computer-focus-${t.uid}`;
     try {
-      const { frameTree } = await this.send<{ frameTree: { frame: { id: string } } }>(t, "Page.getFrameTree");
-      const { executionContextId } = await this.send<{ executionContextId: number }>(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "agent-computer" });
-      const { result } = await this.send<{ result: { objectId?: string } }>(t, "Runtime.evaluate", { expression: ACTIVE_ELEMENT, contextId: executionContextId, objectGroup: "agent-computer-focus" });
-      if (!result.objectId) return frame;
-      const { node } = await this.send<{ node: { backendNodeId: number } }>(t, "DOM.describeNode", { objectId: result.objectId });
-      await this.send(t, "Runtime.releaseObjectGroup", { objectGroup: "agent-computer-focus" });
+      const objectId = await this.activeElement(t, group);
+      if (!objectId) return frame;
+      const { node } = await this.send<{ node: { backendNodeId: number } }>(t, "DOM.describeNode", { objectId });
       const dom = await this.locked(t, () => this.readDom(t));
       return { ...(await this.targetOf(t, node.backendNodeId, dom)), opaque: true };
     } catch (e) {
       if (e instanceof CdpTimeout) throw e;
       return frame;
+    } finally {
+      await this.send(t, "Runtime.releaseObjectGroup", { objectGroup: group }).catch(() => undefined);
     }
   }
 
-  /** Whether the node under `p` is the target or inside it (a text node target counts its element). */
-  private async hits(t: Tab, p: Point, target: number, dom: DomIndex): Promise<boolean> {
-    const hit = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { x: Math.round(p.x), y: Math.round(p.y), includeUserAgentShadowDOM: false }).catch(unlessGone(null));
-    if (!hit) return false;
-    const goal = dom.names.get(target) === "#text" ? dom.parent.get(target) : target;
-    for (let n: number | undefined = hit.backendNodeId; n !== undefined; n = dom.parent.get(n)) if (n === target || n === goal) return true;
-    return false;
+  /** `ACTIVE_ELEMENT` in the main frame's isolated world, made once per document (a stale one is replaced once). */
+  private async activeElement(t: Tab, group: string): Promise<string | undefined> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!t.world || t.world.loader !== t.loader) {
+        const { frameTree } = await this.send<{ frameTree: { frame: { id: string } } }>(t, "Page.getFrameTree");
+        const { executionContextId } = await this.send<{ executionContextId: number }>(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "agent-computer" });
+        t.world = { loader: t.loader, contextId: executionContextId };
+      }
+      try {
+        const { result } = await this.send<{ result: { objectId?: string } }>(t, "Runtime.evaluate", { expression: ACTIVE_ELEMENT, contextId: t.world.contextId, objectGroup: group });
+        return result.objectId;
+      } catch (e) {
+        if (e instanceof CdpTimeout) throw e;
+        t.world = null;
+      }
+    }
+    return undefined;
   }
 
-  /** The control a click at a node is judged by: the nearest button-like node above it, else the node itself (D43). */
-  private async targetAt(t: Tab, backendNodeId: number, dom: DomIndex): Promise<{ target: Target; backendNodeId: number }> {
+  /** The node a click at `p` would hit. */
+  private async hitAt(t: Tab, p: Point): Promise<number> {
+    try {
+      const { backendNodeId } = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { x: p.x, y: p.y, includeUserAgentShadowDOM: false, ignorePointerEventsNone: false });
+      return backendNodeId;
+    } catch (e) {
+      if (e instanceof Error && /^No node found at given location/.test(e.message)) throw new Error("There is nothing at that point on the page.");
+      throw e;
+    }
+  }
+
+  /** R26: whether a click at `p` still reaches the judged element: the element there is it, or a descendant of it that is
+   *  not a control of its own and not a frame from another site. */
+  private async accepts(t: Tab, p: Point, judged: number, dom: DomIndex): Promise<boolean> {
+    const hit = await this.hitAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
+    if (hit === null) return false;
+    if (hit === judged) return true;
+    if (dom.remoteFrames.has(hit) || !within(hit, judged, dom)) return false;
+    const r = await this.receiver(t, hit, dom);
+    return !r.actionable || r.b === judged;
+  }
+
+  /** The element that receives a click on `hit` (D43 reads its role and label): a frame from another site (opaque), the
+   *  nearest actionable node at or above the hit, or, when there is none, the hit element itself as it is. */
+  private async receiver(t: Tab, hit: number, dom: DomIndex): Promise<{ b: number; target: Target; actionable: boolean }> {
+    if (dom.remoteFrames.has(hit)) return { b: hit, target: { ...(await this.targetOf(t, hit, dom)), opaque: true }, actionable: true };
     type Ax = CdpAxNode & { parentId?: string };
-    const { nodes } = await this.send<{ nodes: Ax[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId, fetchRelatives: true });
+    const { nodes } = await this.send<{ nodes: Ax[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: hit, fetchRelatives: true }).catch(unlessGone({ nodes: [] as Ax[] }));
     const byId = new Map(nodes.map((n) => [n.nodeId, n]));
-    let n: Ax | undefined = nodes.find((x) => x.backendDOMNodeId === backendNodeId) ?? nodes[0];
-    let fallback: Ax | undefined;
-    for (; n; n = n.parentId ? byId.get(n.parentId) : undefined) {
-      const role = String(n.role?.value ?? "");
-      if (!n.ignored && !fallback && role && role !== "generic" && role !== "none" && role !== "StaticText") fallback = n;
-      if (!n.ignored && CONTROLS.has(role)) break;
+    const own = nodes.find((x) => x.backendDOMNodeId === hit);
+    const facts = (b: number): Pick<Target, "inForm" | "fileInput"> => ({ inForm: dom.inForm.has(b), fileInput: dom.fileInput.has(b) });
+    for (let n: Ax | undefined = own; n; n = n.parentId ? byId.get(n.parentId) : undefined) {
+      if (!n.ignored && n.backendDOMNodeId !== undefined && CONTROLS.has(String(n.role?.value ?? ""))) {
+        return { b: n.backendDOMNodeId, target: { role: String(n.role?.value), name: String(n.name?.value ?? ""), ...facts(n.backendDOMNodeId) }, actionable: true };
+      }
     }
-    const pick = n ?? fallback;
-    const b = pick?.backendDOMNodeId ?? backendNodeId;
-    return { target: { role: String(pick?.role?.value ?? "generic"), name: String(pick?.name?.value ?? ""), inForm: dom.inForm.has(b), fileInput: dom.fileInput.has(b) }, backendNodeId: b };
+    const role = own && !own.ignored ? String(own.role?.value ?? "generic") : "generic";
+    return { b: hit, target: { role, name: String(own?.name?.value ?? ""), ...facts(hit) }, actionable: false };
   }
 
   private async targetOf(t: Tab, b: number, dom: DomIndex): Promise<Target> {

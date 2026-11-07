@@ -30,6 +30,7 @@ const LOOKING = new Set(["status", "snapshot", "screenshot", "wait"]);
 const NAV_LOWER: ReadonlySet<string> = new Set([...NAV_KEYS].map((k) => k.toLowerCase()));
 const GO: Verdict = Object.freeze({ go: true as const });
 const D9_REFUSAL = "Typing into a password field is refused (D9).";
+const FRAME_REFUSAL = "Typing into a frame from another site is refused (D9).";
 
 /** A key string split into trimmed, lower-cased parts on "+". A lone space part is "space"; "\r", "\n" and "return"
  *  are "enter". Shared with the browser's key-event builder so both read a key the same way. */
@@ -62,6 +63,8 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
       return click(a.target, ctx.marked);
     case "key": {
       const k = parseKey(a.key);
+      // A frame from another site cannot be read, so Enter there is asked as input into the frame, not judged as a return.
+      if (k.enter && a.focus.target?.opaque) return { ask: "frame" };
       if (k.enter && !a.focus.plainTextarea) return { ask: "return" };
       if (NAV_LOWER.has(k.parts.join("+"))) return GO;
       // D9: any other key into a password field is typing into it (Enter asked above; it submits, it does not type).
@@ -73,6 +76,7 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
     }
     case "type": {
       if (a.focus.sensitive) return { refuse: D9_REFUSAL };
+      if (a.focus.target?.opaque) return { refuse: FRAME_REFUSAL };
       if (/[\r\n]/.test(a.text) && !a.focus.plainTextarea) return { ask: "return" };
       if (!ctx.marked) return { ask: "unmarked" };
       if (a.focus.target?.fileInput) return { ask: "file" };
