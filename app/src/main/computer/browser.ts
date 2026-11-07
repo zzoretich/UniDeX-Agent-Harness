@@ -10,12 +10,12 @@ import type { BaseWindow, DownloadItem, Session, WebContents } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
-import { ASK_ROLES, type Target } from "./categories";
+import { ASK_ROLES, covers, type Target } from "./categories";
 import { cdp, CdpTimeout, keyEvents, unlessGone } from "./cdp";
 import type { Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
 import { accepted, reach, within, type Reach } from "./reach";
-import { domText, formatSnapshot, indexDom, mergeFrames, SNAPSHOT_CAP, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
+import { domText, formatSnapshot, indexDom, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf } from "../policy/computer-url";
 
 export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean }
@@ -41,10 +41,6 @@ const KEPT_DOCUMENTS = 8;
 const DEFAULT_SIZE = { width: 1280, height: 800 };
 // R26: after the pointer moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
 const HOVER_MS = 100;
-// R26: how deep a hit on a shadow host is followed into nested shadow trees, and how many controls of one shadow tree
-// are box-tested before the browser gives up telling which one the click reaches.
-const SHADOW_DEPTH = 8;
-const SHADOW_CANDIDATES = 64;
 const CANT_TELL = "Cannot tell which control this click reaches: take a new snapshot.";
 const URL_NOTE_MAX = 2_000;
 const D9_REFUSAL = "Typing into a password field is refused (D9).";
@@ -292,8 +288,9 @@ export class ComputerBrowser {
     const { hit, dom, reached } = await this.reachAt(t, p, (h, d) => {
       if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error("Something else covers that element now: take a new snapshot.");
     });
-    const target = await this.judgeReach(t, reached, dom);
+    const target = await this.scrubbed(t, await this.judgeReach(t, reached, dom));
     const b = reached.controls[0] ?? hit;
+    // D9: `hit` is the node the hit test returned, so a sensitive host hit on its padding or its slotted text counts.
     return { target, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: p, ...where };
   }
 
@@ -302,9 +299,9 @@ export class ComputerBrowser {
     const t = this.tab();
     const f = await this.focused(t);
     // D9: focus inside a frame from another site counts as sensitive, so typing there is refused.
-    if (f === "remote") return { target: await this.remoteTarget(t), sensitive: true, plainTextarea: false };
+    if (f === "remote") return { target: await this.scrubbed(t, await this.remoteTarget(t)), sensitive: true, plainTextarea: false };
     if (!f) return { target: null, sensitive: false, plainTextarea: false };
-    const target = await this.targetOf(t, f.b, f.dom);
+    const target = await this.scrubbed(t, await this.targetOf(t, f.b, f.dom));
     const plainTextarea = f.dom.names.get(f.b) === "TEXTAREA" && !(await this.keyListened(t, f.b, f.dom));
     return { target, sensitive: t.sensitive.has(f.b), plainTextarea };
   }
@@ -837,49 +834,33 @@ export class ComputerBrowser {
 
   /**
    * What a click at `p` reaches now (R26): the hit test comes first and the DOM is read after it, so the facts read
-   * (form, file input) include the hit node; `check` sees the hit before it is followed into a shadow tree. A hit on a
-   * shadow host resolves into its shadow tree at the point; then both walks (./reach) look for the control.
+   * (form, file input) include the hit node; `check` sees the hit. The hit test stops short in one case, a slotted text
+   * node, which it climbs to its DOM parent, the shadow host: `slottedText` finds the text node under the point and both
+   * walks (./reach) start from it (its slot is its flat-tree parent). `hit` stays the node the hit test returned.
    */
   private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; dom: DomIndex; reached: Reach }> {
-    const first = await this.hitAt(t, p);
+    const hit = await this.hitAt(t, p);
     const dom = await this.locked(t, () => this.readDom(t));
-    if (!dom.names.has(first)) throw new Error("The page changed: look again.");
-    check?.(first, dom);
-    const hit = dom.remoteFrames.has(first) ? first : await this.intoShadow(t, first, p, dom);
+    if (!dom.names.has(hit)) throw new Error("The page changed: look again.");
+    check?.(hit, dom);
     if (dom.remoteFrames.has(hit)) return { hit, dom, reached: { hit, controls: [hit] } };
-    const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: hit, fetchRelatives: true }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
-    return { hit, dom, reached: reach(dom, hit, nodes) };
+    const from = await this.slottedText(t, hit, p, dom);
+    const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: from, fetchRelatives: true }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
+    return { hit, dom, reached: reach(dom, hit, nodes, from) };
   }
 
-  /** A hit on a shadow host (a bare slotted text node climbs to its host in the hit test): the deepest control of its
-   *  shadow tree whose box holds the point is what the click reaches; a nested host there is looked into in turn. */
-  private async intoShadow(t: Tab, hit: number, p: Point, dom: DomIndex): Promise<number> {
-    for (let round = 0; round < SHADOW_DEPTH; round++) {
-      const roots = dom.shadowRoots.get(hit);
-      if (!roots?.length) return hit;
-      const candidates: number[] = [];
-      const stack = [...roots];
-      while (stack.length) {
-        const n = stack.pop()!;
-        if (dom.activatable.has(n) || dom.shadowRoots.has(n)) {
-          candidates.push(n);
-          if (candidates.length > SHADOW_CANDIDATES) throw new Error(CANT_TELL);
-        }
-        stack.push(...(dom.children.get(n) ?? []));
-      }
-      let best: { b: number; depth: number } | null = null;
-      for (const c of candidates) {
-        const { quads } = await this.send<{ quads: number[][] }>(t, "DOM.getContentQuads", { backendNodeId: c }).catch(unlessGone({ quads: [] as number[][] }));
-        if (!quads.map(quadRect).some((r) => p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height)) continue;
-        let depth = 0;
-        for (let n = dom.parent.get(c); n !== undefined; n = dom.parent.get(n)) depth++;
-        if (!best || depth > best.depth) best = { b: c, depth };
-      }
-      if (!best) return hit;
-      if (dom.activatable.has(best.b)) return best.b;
-      hit = best.b;
+  /** On a hit on a shadow host: the host's light-DOM text node whose own box holds the point (`DOM.getContentQuads` works
+   *  on text nodes), which is what the click really landed on; else the host as it is (hit on its padding, or on nothing
+   *  slotted). Nothing in the shadow tree is guessed at by its box: a shadow element the point falls in is only what the
+   *  click reaches when the hit test says so. */
+  private async slottedText(t: Tab, host: number, p: Point, dom: DomIndex): Promise<number> {
+    if (!dom.shadowRoots.has(host)) return host;
+    for (const c of dom.children.get(host) ?? []) {
+      if (dom.names.get(c) !== "#text") continue;
+      const { quads } = await this.send<{ quads: number[][] }>(t, "DOM.getContentQuads", { backendNodeId: c }).catch(unlessGone({ quads: [] as number[][] }));
+      if (quads.map(quadRect).some((r) => p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height)) return c;
     }
-    return hit;
+    return host;
   }
 
   /** The target the gate judges for what a click reaches (D43 reads role and label): a frame from another site
@@ -893,14 +874,16 @@ export class ComputerBrowser {
     if (targets.length === 1) return targets[0];
     if (targets.some((x) => !x.name)) throw new Error(CANT_TELL);
     const [a, b] = targets;
-    const name = a.name.toLowerCase().includes(b.name.toLowerCase()) ? a.name : `${a.name} (${b.name})`;
+    // Both names, unless the first holds the second as whole words (then every label in it is matched already): "Deleted
+    // messages" holds "Delete" as letters only, so the name is "Deleted messages (Delete)" and the click asks.
+    const name = covers(a.name, b.name) ? a.name : `${a.name} (${b.name})`;
     return { role: targets.find((x) => ASK_ROLES.has(x.role))?.role ?? a.role, name, inForm: a.inForm || b.inForm, fileInput: a.fileInput || b.fileInput };
   }
 
   /** A control's role and name: from the accessibility tree, with its markup role where that tree hides it, and its own
-   *  markup name and text added when the accessible name does not already contain them (a <label for> names a Buy
-   *  button "Learn more"; aria-owns moves its text away). D9: nothing a person typed becomes a name, so a text field or
-   *  a sensitive node gets no markup hint and no text. */
+   *  markup name and text added when the accessible name does not already contain them as whole words (a <label for>
+   *  names a Buy button "Learn more"; aria-owns moves its text away; "Approved requests" does not cover "Approve"). D9:
+   *  nothing a person typed becomes a name, so a text field or a sensitive node gets no markup hint and no text. */
   private async named(t: Tab, b: number, dom: DomIndex): Promise<Target> {
     const ax = await this.targetOf(t, b, dom);
     const native = dom.roles.get(b);
@@ -908,10 +891,25 @@ export class ComputerBrowser {
     let name = ax.name;
     if (!dom.textFields.has(b) && !t.sensitive.has(b)) {
       for (const extra of [dom.hints.get(b), domText(dom, b)]) {
-        if (extra && !name.toLowerCase().includes(extra.toLowerCase())) name = name ? `${name} (${extra})` : extra;
+        if (extra && !covers(name, extra)) name = name ? `${name} (${extra})` : extra;
       }
     }
     return { ...ax, role, name };
+  }
+
+  /** D9 (R27): the target with every sensitive field's current value scrubbed from its name, as the snapshot scrubs its
+   *  lines. Chrome builds some controls' names from an embedded field's value (a label holding a checkbox and a one-time-
+   *  code field names the checkbox with the code; so does aria-labelledby pointing at the field), and a name goes into
+   *  ask titles, notifications and the agent's reply. The values are read from the accessibility tree, where those names
+   *  come from (a password field's is bullets there already). */
+  private async scrubbed(t: Tab, target: Target): Promise<Target> {
+    if (!target.name || !t.sensitive.size) return target;
+    const values: string[] = [];
+    for (const b of t.sensitive) {
+      const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: b, fetchRelatives: false }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
+      values.push(...secretsOf(nodes, t.sensitive));
+    }
+    return { ...target, name: scrubber(values)(target.name) };
   }
 
   private async targetOf(t: Tab, b: number, dom: DomIndex): Promise<Target> {

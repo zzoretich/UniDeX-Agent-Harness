@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { domText, formatSnapshot, indexDom, mergeFrames, REDACTED, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
+import { domText, formatSnapshot, indexDom, mergeFrames, REDACTED, scrubber, secretsOf, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
 
 const ax = (nodeId: string, role: string, name: string, childIds: string[] = [], extra: Partial<AxNode> = {}): AxNode =>
   ({ nodeId, role, name, ignored: false, childIds, backendDOMNodeId: Number(nodeId), ...extra });
@@ -272,4 +272,24 @@ test("indexDom resolves a duplicate id to the first element, and indexes slots a
   assert.deepEqual(dom.shadowRoots.get(host.backendNodeId), [root.backendNodeId]);
   assert.equal(dom.shadowRoots.get(input.backendNodeId), undefined, "a user-agent shadow root is not an author tree");
   assert.equal(dom.parent.get(slotted.backendNodeId), host.backendNodeId, "its DOM parent is still the host");
+});
+
+test("scrubber hides every value the sensitive nodes hold from a name, longest first, and skips bullets and short strings", () => {
+  // D9, R27: a checkbox named from a label that embeds a one-time-code field, and a button named by aria-labelledby.
+  const nodes: CdpAxNode[] = [
+    { nodeId: "1", ignored: false, role: { value: "checkbox" }, name: { value: " Remember this code 777777" }, backendDOMNodeId: 10 },
+    { nodeId: "2", ignored: false, role: { value: "textbox" }, name: { value: "Code" }, value: { value: "777777" }, backendDOMNodeId: 11, childIds: ["3"] },
+    { nodeId: "3", ignored: false, role: { value: "StaticText" }, name: { value: "777777" }, backendDOMNodeId: 12 },
+    { nodeId: "4", ignored: false, role: { value: "textbox" }, name: { value: "Password" }, value: { value: "••••••••" }, backendDOMNodeId: 13 },
+    { nodeId: "5", ignored: false, role: { value: "textbox" }, name: { value: "PIN" }, value: { value: "k9z" }, backendDOMNodeId: 14 },
+  ];
+  const secrets = secretsOf(nodes, new Set([11, 13, 14]));
+  assert.deepEqual(secrets, ["777777", "777777", "", "••••••••", "k9z"], "the sensitive nodes' values and the names and values under them; never the checkbox's own name");
+  const scrub = scrubber(secrets);
+  assert.equal(scrub(" Remember this code 777777"), ` Remember this code ${REDACTED}`);
+  assert.equal(scrub("777777 (Go)"), `${REDACTED} (Go)`);
+  assert.equal(scrub("Go"), "Go");
+  assert.equal(scrub("Your ••••••••"), "Your ••••••••", "bullets are not a secret");
+  assert.equal(scrub("k9z"), "k9z", "a value under 4 characters is not scrubbed");
+  assert.equal(scrubber(["abcdefgh", "abcd", undefined, "  "])("x abcdefgh y abcd"), `x ${REDACTED} y ${REDACTED}`, "longest first, blanks ignored");
 });

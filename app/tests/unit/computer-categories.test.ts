@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { categoryOf } from "../../src/main/computer/categories";
+import { categoryOf, covers } from "../../src/main/computer/categories";
 
 const b = (name: string, inForm = false) => categoryOf({ role: "button", name, inForm, fileInput: false });
 
@@ -24,4 +24,13 @@ test("punctuation is stripped and multi-word phrases match", () => {
 test("only button-like roles match", () => {
   assert.equal(categoryOf({ role: "heading", name: "Delete", inForm: false, fileInput: false }), null);
   assert.equal(categoryOf({ role: "link", name: "Sign in", inForm: false, fileInput: false }), "signin");
+});
+
+test("covers matches whole words only, so a name is never taken to hold a label it has only as letters", () => {
+  assert.equal(covers("Deleted messages", "Delete"), false);
+  assert.equal(covers("Approved requests", "Approve"), false);
+  assert.equal(covers("Delete item", "delete"), true);
+  assert.equal(covers("Squash and merge!", "squash and merge"), true);
+  assert.equal(covers("Learn more", "Buy now"), false);
+  assert.equal(covers("", "Delete"), false);
 });

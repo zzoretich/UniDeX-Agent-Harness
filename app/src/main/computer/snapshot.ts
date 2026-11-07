@@ -225,6 +225,43 @@ export function mergeFrames(frames: { frameId: string; nodes: CdpAxNode[] }[], d
   return out;
 }
 
+/**
+ * D9: the scrub for secrets, the current values of sensitive fields, from any text that reaches the agent or the person: a
+ * snapshot line, a title, a URL, and every name the gate builds (R27: Chrome names a label's checkbox or an
+ * aria-labelledby button from an embedded one-time-code field's value). Longest first, so a secret inside another goes
+ * with it. Bullet-only strings and very short ones are not worth scrubbing.
+ */
+export function scrubber(values: Iterable<string | undefined>): (s: string) => string {
+  const secrets = new Set<string>();
+  for (const v of values) {
+    const t = v?.trim();
+    if (t && t.length >= 4 && !/^[•●*\s]+$/.test(t)) secrets.add(t);
+  }
+  const ordered = [...secrets].sort((a, b) => b.length - a.length);
+  return (s) => ordered.reduce((acc, x) => (acc.includes(x) ? acc.split(x).join(REDACTED) : acc), s);
+}
+
+/** The values the sensitive nodes among `nodes` hold: each one's own value and the names and values under it (its inner
+ *  text), from the protocol's accessibility nodes. */
+export function secretsOf(nodes: CdpAxNode[], sensitive: ReadonlySet<number>): string[] {
+  const byId = new Map(nodes.map((n) => [n.nodeId, n]));
+  const out: string[] = [];
+  for (const n of nodes) {
+    if (n.backendDOMNodeId === undefined || !sensitive.has(n.backendDOMNodeId)) continue;
+    out.push(str(n.value?.value));
+    const stack = [...(n.childIds ?? [])];
+    const seen = new Set<string>();
+    while (stack.length) {
+      const c = byId.get(stack.pop()!);
+      if (!c || seen.has(c.nodeId)) continue;
+      seen.add(c.nodeId);
+      out.push(str(c.name?.value), str(c.value?.value));
+      stack.push(...(c.childIds ?? []));
+    }
+  }
+  return out;
+}
+
 /** A JSON-quoted string that cannot open or close a tag. */
 const quote = (s: string): string => JSON.stringify(s).replace(/</g, "\\u003c");
 const attrValue = (s: string): string => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -243,25 +280,22 @@ export function formatSnapshot(nodes: AxNode[], o: { origin: string; url: string
   const isSensitive = (n: AxNode): boolean => n.backendDOMNodeId !== undefined && o.sensitive.has(n.backendDOMNodeId);
 
   // D9: a sensitive field's value, and the text inside it, are secrets to scrub from every other line too (a label that
-  // embeds the field, a title, a URL). Bullet-only strings and very short ones are not worth scrubbing.
-  const secrets = new Set<string>();
-  const keep = (s: string | undefined): void => { const t = s?.trim(); if (t && t.length >= 4 && !/^[•●*\s]+$/.test(t)) secrets.add(t); };
+  // embeds the field, a title, a URL).
+  const secrets: (string | undefined)[] = [];
   for (const n of nodes) {
     if (!isSensitive(n)) continue;
-    keep(n.value);
+    secrets.push(n.value);
     const stack = [...n.childIds];
     const seen = new Set<string>();
     while (stack.length) {
       const c = byId.get(stack.pop()!);
       if (!c || seen.has(c.nodeId)) continue;
       seen.add(c.nodeId);
-      keep(c.name);
-      keep(c.value);
+      secrets.push(c.name, c.value);
       stack.push(...c.childIds);
     }
   }
-  const ordered = [...secrets].sort((a, b) => b.length - a.length);
-  const scrub = (s: string): string => ordered.reduce((acc, x) => (acc.includes(x) ? acc.split(x).join(REDACTED) : acc), s);
+  const scrub = scrubber(secrets);
 
   const url = scrub(o.url);
   const open = `<untrusted-page origin="${attrValue(scrub(o.origin))}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;

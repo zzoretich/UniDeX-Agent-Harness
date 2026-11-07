@@ -44,12 +44,13 @@ export function axControl(nodes: CdpAxNode[], hit: number): number | null {
   return null;
 }
 
-/** The union of both walks: the DOM's control first, then the accessibility tree's when it names another. */
-export function reach(dom: DomIndex, hit: number, ax: CdpAxNode[]): Reach {
+/** The union of both walks: the DOM's control first, then the accessibility tree's when it names another. The walks
+ *  start at `from` where the hit test stopped short of it: the slotted text node whose host it returned (R26). */
+export function reach(dom: DomIndex, hit: number, ax: CdpAxNode[], from = hit): Reach {
   const controls: number[] = [];
-  const d = activates(dom, hit);
+  const d = activates(dom, from);
   if (d.actionable) controls.push(d.b);
-  const a = axControl(ax, hit);
+  const a = axControl(ax, from);
   if (a !== null && !controls.includes(a)) controls.push(a);
   return { hit, controls };
 }

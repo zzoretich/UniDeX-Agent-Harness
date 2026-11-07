@@ -29,6 +29,10 @@ export const ASK_ROLES: ReadonlySet<string> = new Set(["button", "link", "menuit
 const phrase = (name: string): string =>
   ` ${name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
 
+/** Whether `part` already appears in `name` as whole words, so every label `categoryOf` finds in `part` it finds in `name`
+ *  too ("Deleted messages" does not cover "Delete"; "Delete item" does). */
+export const covers = (name: string, part: string): boolean => phrase(name).includes(phrase(part));
+
 /** The category a control asks under, or null when the agent may act without asking. */
 export function categoryOf(t: Target): AskCategory | null {
   if (!ASK_ROLES.has(t.role)) return null;

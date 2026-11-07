@@ -73,3 +73,17 @@ test("reach takes the union of both walks, and accepted lets a click through onl
   assert.ok(accepted(dom, { hit: b(cellText), controls: [] }, plain), "the cell's text node is inside it");
   assert.ok(!accepted(dom, { hit: b(cell), controls: [b(cancel)] }, plain), "a control wrapping the plain element refuses");
 });
+
+test("reach walks from the slotted text node the hit test climbed to its host, and keeps the host as the hit", () => {
+  // R26: <x-btn>Delete</x-btn> with a shadow <button><slot>: the hit test returns the host for a click on the bare text.
+  const text = txt("Delete");
+  const slot2 = el("SLOT", [], [], { distributedNodes: [{ backendNodeId: text.backendNodeId }] });
+  const button2 = el("BUTTON", [], [slot2]);
+  const root2: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [button2] };
+  const host2 = el("X-BTN", [], [text], { shadowRoots: [root2] });
+  const d = indexDom({ nodeId: ++id, backendNodeId: id, nodeType: 9, nodeName: "#document", children: [el("HTML", [], [el("BODY", [], [host2])], { frameId: "F2" })] });
+  assert.equal(flatParent(d, b(text)), b(slot2), "a slotted text node's flat-tree parent is its slot");
+  assert.deepEqual(reach(d, b(host2), [], b(text)), { hit: b(host2), controls: [b(button2)] });
+  assert.deepEqual(reach(d, b(host2), []), { hit: b(host2), controls: [] }, "from the host itself (a hit on its padding) nothing in its shadow tree is guessed at");
+  assert.ok(accepted(d, reach(d, b(host2), [], b(text)), { b: b(button2), controls: [b(button2)] }), "the same reach at click time is accepted");
+});
