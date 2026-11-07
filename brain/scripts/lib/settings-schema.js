@@ -35,6 +35,7 @@ const SECTIONS = [
   { id: 'sharing', label: 'Skills & agents' },
   { id: 'telemetry', label: 'Telemetry & privacy' },
   { id: 'updates', label: 'Updates' },
+  { id: 'computer', label: 'Computer pane' },
   { id: 'statusline', label: 'Status line' },
   { id: 'hosts', label: 'Hosts & install' },
   { id: 'integrations', label: 'Coding integrations' },
@@ -285,6 +286,12 @@ const SETTINGS = [
   { key: 'updates.intervalHours', section: 'updates', label: 'Update check interval', type: 'number', gt: 0, applies: 'next-check',
     help: 'Hours between update checks.' },
 
+  // ── Computer pane (agent-computer D7, D31) ──────────────────────────────────
+  { key: 'computer.enabled', section: 'computer', label: 'Computer pane', type: 'bool', applies: 'next-call',
+    help: 'The in-app browser agents can drive on the Code and Chat pages.' },
+  { key: 'computer.askTimeoutSec', section: 'computer', label: 'Ask timeout', type: 'number', int: true, min: 30, applies: 'next-call',
+    help: 'Seconds an ask waits before it counts as Deny.' },
+
   // ── Status line (spec 2026-09-28-statusline-design) ─────────────────────────
   { key: 'statusline.segments', section: 'statusline', label: 'Status line segments', type: 'list', applies: 'next-render',
     help: 'What the third line shows, in order of priority: needs-you, runs, spend, health.' },
@@ -373,6 +380,7 @@ const PICKS = {
   'crossReview.timeoutSec': { choices: [300, 600, 900, 1800], unit: 's' }, 'crossReview.rounds': { choices: [1, 2, 3, 4, 5, 6, 8, 10] },
   'telemetry.retentionDays': { choices: [7, 14, 30, 60, 90, 180, 365], unit: 'days' }, 'telemetry.staleAfterMinutes': { choices: [10, 15, 30, 60, 120], unit: 'min' },
   'updates.intervalHours': { choices: [6, 12, 24, 48, 168], unit: 'h' },
+  'computer.askTimeoutSec': { choices: [60, 120, 300, 600], unit: 's' },
   'notifications.retentionDays': { choices: [7, 14, 30, 60, 90, 180], unit: 'days' }, 'notifications.maxPerSenderPerHour': { choices: [0, 1, 3, 6, 10, 20] },
   'statusline.segments': { pick: 'many', strict: true, choices: ['needs-you', 'runs', 'spend', 'health'] },
   'statusline.refreshSeconds': { choices: [1, 2, 5, 10, 30], unit: 's' },
