@@ -2,8 +2,9 @@
 // shared `persist:computer` partition, driven through its own `webContents.debugger` (the DevTools protocol in process:
 // no port, never the HUD, D20). Navigation is limited to http, https and about:blank on every path (§4.2); permissions,
 // downloads and file choosers ask the person through `hooks.ask` (D39); navigations a page starts are noted (D21).
-// Password fields are tracked for the document's life and never reach the agent: snapshots redact them and screenshots
-// paint over them (D9). Off-screen, the active view sits in an invisible park window so it keeps painting (D27).
+// Password fields are tracked for the document's life and never reach the agent: snapshots redact them, screenshots
+// paint over them, and `scrub` removes their values from any text that leaves the main process, while the gate judges
+// the raw names (D9). Off-screen, the active view sits in an invisible park window so it keeps painting (D27).
 
 import { app, BrowserWindow, dialog, nativeImage, session, WebContentsView } from "electron";
 import type { BaseWindow, DownloadItem, Session, WebContents } from "electron";
@@ -11,17 +12,18 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
 import { ASK_ROLES, covers, type Target } from "./categories";
-import { cdp, CdpTimeout, keyEvents, unlessGone } from "./cdp";
+import { cdp, CdpTimeout, isGone, keyEvents, unlessGone } from "./cdp";
 import type { Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
-import { accepted, reach, within, type Reach } from "./reach";
+import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
 import { domText, formatSnapshot, indexDom, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf } from "../policy/computer-url";
 
 export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean }
 /** `pageToken` and `tab` say where it was resolved: `click` and `scroll` refuse once either has changed. `judged` holds
- *  every control the gate judged (R26: `backendNodeId` and, when the two walks disagreed, the other one; none when the
- *  element is plain): the click is delivered only while a click at `point` reaches no other control. */
+ *  every control the gate judged (R26: `backendNodeId` and, when the walks disagreed, the others; none when the element
+ *  is plain): the click is delivered only while a click at `point` reaches no other control. `target.name` is raw, for
+ *  the gate: run it through `scrub` before it goes into a title, a note or a reply (D9). */
 export interface Resolved { target: Target; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; pageToken: string; tab: number }
 export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void }
 
@@ -44,6 +46,10 @@ const HOVER_MS = 100;
 const CANT_TELL = "Cannot tell which control this click reaches: take a new snapshot.";
 const URL_NOTE_MAX = 2_000;
 const D9_REFUSAL = "Typing into a password field is refused (D9).";
+const D9_UNREAD = "Could not read a password field's value to scrub it, so the text was held back (D9): try again.";
+// A field's current value through the native getter (an isolated world sees no page-defined one); "" for anything else.
+const VALUE_OF = "function () { return typeof this.value === 'string' ? this.value : ''; }";
+const WORLD = "agent-computer";
 const DIALOGS = new Set(["alert", "confirm", "prompt", "beforeunload"]);
 // The focused element behind open shadow roots and readable frames, run in an isolated world (native getters only).
 const ACTIVE_ELEMENT = `(() => { let e = document.activeElement;
@@ -75,8 +81,9 @@ interface Tab {
   refused: string | null;
   /** Set while the tab is being closed, so its own debugger detach is not noted. */
   closing: boolean;
-  /** The main frame's current loader, and the isolated world made for that document (remote-focus reads). */
-  loader: string; world: { loader: string; contextId: number } | null;
+  /** The isolated world made in each frame (by frame id) for reading field values and the focused element; dropped when
+   *  the frame navigates or goes. */
+  worlds: Map<string, number>;
 }
 
 interface Handlers { permission(permission: string, url: string): Promise<boolean>; download(item: DownloadItem, wc: WebContents): void }
@@ -242,7 +249,9 @@ export class ComputerBrowser {
       }
     }
     const url = t.wc.getURL();
-    const snap = formatSnapshot(mergeFrames(trees, dom), { origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP });
+    // D9: the fields' DOM values go into the scrub too (a type=number field's AX value is the parsed float, not its string).
+    const values = await this.fieldValues(t, dom);
+    const snap = formatSnapshot(mergeFrames(trees, dom), { origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP, values });
     t.refs = snap.refs;
     t.refsToken = this.tokenOf(t);
     return snap;
@@ -267,7 +276,8 @@ export class ComputerBrowser {
    * The element a click will hit, for the gate to judge (R26: never the container a ref named). The point is a ref's
    * centre (scrolled into view first) or the given x, y. The pointer moves there first, so the element judged is the
    * one in the hovered state the press will meet (a row that shows Delete on hover). The target is the control a click
-   * there reaches by either walk (`judgeReach`); `click()` delivers at exactly that point.
+   * there reaches by either walk (`judgeReach`); `click()` delivers at exactly that point. The name is raw (D9: the gate
+   * judges what the page shows; `scrub` runs on the text that leaves).
    */
   async resolve(by: { ref: string } | { x: number; y: number }): Promise<Resolved> {
     const t = this.tab();
@@ -288,22 +298,37 @@ export class ComputerBrowser {
     const { hit, dom, reached } = await this.reachAt(t, p, (h, d) => {
       if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error("Something else covers that element now: take a new snapshot.");
     });
-    const target = await this.scrubbed(t, await this.judgeReach(t, reached, dom));
+    const target = await this.judgeReach(t, reached, dom);
     const b = reached.controls[0] ?? hit;
     // D9: `hit` is the node the hit test returned, so a sensitive host hit on its padding or its slotted text counts.
     return { target, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: p, ...where };
   }
 
-  /** What has keyboard focus (D39), and whether it is a password field (D9). */
+  /** What has keyboard focus (D39), and whether it is a password field (D9). The target's name is raw, for the gate. */
   async focus(): Promise<Focus> {
     const t = this.tab();
     const f = await this.focused(t);
     // D9: focus inside a frame from another site counts as sensitive, so typing there is refused.
-    if (f === "remote") return { target: await this.scrubbed(t, await this.remoteTarget(t)), sensitive: true, plainTextarea: false };
+    if (f === "remote") return { target: await this.remoteTarget(t), sensitive: true, plainTextarea: false };
     if (!f) return { target: null, sensitive: false, plainTextarea: false };
-    const target = await this.scrubbed(t, await this.targetOf(t, f.b, f.dom));
+    const target = await this.targetOf(t, f.b, f.dom);
     const plainTextarea = f.dom.names.get(f.b) === "TEXTAREA" && !(await this.keyListened(t, f.b, f.dom));
     return { target, sensitive: t.sensitive.has(f.b), plainTextarea };
+  }
+
+  /**
+   * D9: `text` with every sensitive field's current value removed, for any text that leaves the main process: an ask
+   * title, a notification, a note, a tool reply, anything built from the names `resolve()`, `focus()` and a snapshot's
+   * refs return raw. Chrome composes some controls' names from an embedded field's value (a label holding a checkbox
+   * and a one-time-code field names the checkbox with the code; so does aria-labelledby). Both what Chrome shows (the
+   * accessibility value) and what the field holds (its DOM value, read on the node in an isolated world of its frame)
+   * are scrubbed, whitespace collapsed (./snapshot `scrubber`). A value that cannot be read throws rather than letting
+   * the text out. The gate never sees the result: a page could plant a value that matches a label (R26, Task 11b).
+   */
+  async scrub(text: string, tab?: number): Promise<string> {
+    const t = this.tab(tab);
+    if (!text) return text;
+    return scrubber(await this.secrets(t))(text);
   }
 
   async click(r: Resolved): Promise<void> {
@@ -432,7 +457,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
-      loader: "", world: null,
+      worlds: new Map(),
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -550,10 +575,10 @@ export class ComputerBrowser {
   private onCdp(t: Tab, method: string, p: Record<string, unknown>): void {
     switch (method) {
       case "Page.frameNavigated": {
-        const frame = p.frame as { parentId?: string; loaderId: string };
+        const frame = p.frame as { id: string; parentId?: string; loaderId: string };
+        t.worlds.delete(frame.id);
         if (frame.parentId) break;
         // D9: a document keeps its sensitive set for its life (a back/forward-cache restore brings its set back).
-        t.loader = frame.loaderId;
         t.sensitive = t.documents.get(frame.loaderId) ?? new Set();
         t.documents.delete(frame.loaderId);
         t.documents.set(frame.loaderId, t.sensitive);
@@ -571,6 +596,9 @@ export class ComputerBrowser {
         this.requery(t);
         break;
       }
+      case "Page.frameDetached":
+        t.worlds.delete(String(p.frameId));
+        break;
       case "DOM.documentUpdated":
       case "DOM.childNodeInserted":
       case "Page.loadEventFired":
@@ -796,23 +824,78 @@ export class ComputerBrowser {
     }
   }
 
-  /** `ACTIVE_ELEMENT` in the main frame's isolated world, made once per document (a stale one is replaced once). */
+  /** `ACTIVE_ELEMENT` in the main frame's isolated world (a stale one is replaced once). */
   private async activeElement(t: Tab, group: string): Promise<string | undefined> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (!t.world || t.world.loader !== t.loader) {
-        const { frameTree } = await this.send<{ frameTree: { frame: { id: string } } }>(t, "Page.getFrameTree");
-        const { executionContextId } = await this.send<{ executionContextId: number }>(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "agent-computer" });
-        t.world = { loader: t.loader, contextId: executionContextId };
-      }
+      const { frameTree } = await this.send<{ frameTree: { frame: { id: string } } }>(t, "Page.getFrameTree");
       try {
-        const { result } = await this.send<{ result: { objectId?: string } }>(t, "Runtime.evaluate", { expression: ACTIVE_ELEMENT, contextId: t.world.contextId, objectGroup: group });
+        const contextId = await this.world(t, frameTree.frame.id);
+        const { result } = await this.send<{ result: { objectId?: string } }>(t, "Runtime.evaluate", { expression: ACTIVE_ELEMENT, contextId, objectGroup: group });
         return result.objectId;
       } catch (e) {
         if (e instanceof CdpTimeout) throw e;
-        t.world = null;
+        t.worlds.delete(frameTree.frame.id);
       }
     }
     return undefined;
+  }
+
+  /** The isolated world of frame `frameId`, made once per document (page scripts cannot reach it). */
+  private async world(t: Tab, frameId: string): Promise<number> {
+    let contextId = t.worlds.get(frameId);
+    if (contextId === undefined) {
+      ({ executionContextId: contextId } = await this.send<{ executionContextId: number }>(t, "Page.createIsolatedWorld", { frameId, worldName: WORLD }));
+      t.worlds.set(frameId, contextId);
+    }
+    return contextId;
+  }
+
+  /** D9: every sensitive field's current value, as the accessibility tree shows it and as the field holds it (`fieldValues`).
+   *  The sensitive set is refreshed first. */
+  private async secrets(t: Tab): Promise<string[]> {
+    const dom = await this.locked(t, () => this.readDom(t));
+    const out = await this.fieldValues(t, dom);
+    for (const b of t.sensitive) {
+      const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: b, fetchRelatives: false }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
+      out.push(...secretsOf(nodes, t.sensitive));
+    }
+    return out;
+  }
+
+  /** D9: the DOM value (`this.value`) of every sensitive field in `dom`, read on the node in an isolated world of its
+   *  frame, so a page-defined getter cannot answer instead. A field that is gone has nothing to read; a stale world is
+   *  made again once; any other failure throws (the text it was for is held back rather than let out unscrubbed). */
+  private async fieldValues(t: Tab, dom: DomIndex): Promise<string[]> {
+    const out: string[] = [];
+    if (!t.sensitive.size) return out;
+    const group = `agent-computer-values-${t.uid}`;
+    try {
+      for (const b of t.sensitive) {
+        const frameId = dom.frameOf.get(b);
+        if (frameId === undefined) continue;
+        const v = await this.fieldValue(t, b, frameId, group);
+        if (v !== undefined) out.push(v);
+      }
+    } finally {
+      await this.send(t, "Runtime.releaseObjectGroup", { objectGroup: group }).catch(() => undefined);
+    }
+    return out;
+  }
+
+  private async fieldValue(t: Tab, b: number, frameId: string, group: string): Promise<string | undefined> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const executionContextId = await this.world(t, frameId);
+        const { object } = await this.send<{ object: { objectId: string } }>(t, "DOM.resolveNode", { backendNodeId: b, executionContextId, objectGroup: group });
+        const { result } = await this.send<{ result: { value?: unknown } }>(t, "Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: VALUE_OF, returnByValue: true, objectGroup: group });
+        return typeof result.value === "string" ? result.value : undefined;
+      } catch (e) {
+        if (e instanceof CdpTimeout) throw e;
+        if (isGone(e)) return undefined;
+        t.worlds.delete(frameId);
+      }
+    }
+    throw new Error(D9_UNREAD);
   }
 
   /** The node a click at `p` would hit. */
@@ -834,9 +917,13 @@ export class ComputerBrowser {
 
   /**
    * What a click at `p` reaches now (R26): the hit test comes first and the DOM is read after it, so the facts read
-   * (form, file input) include the hit node; `check` sees the hit. The hit test stops short in one case, a slotted text
-   * node, which it climbs to its DOM parent, the shadow host: `slottedText` finds the text node under the point and both
-   * walks (./reach) start from it (its slot is its flat-tree parent). `hit` stays the node the hit test returned.
+   * (form, file input) include the hit node; `check` sees the hit. The hit test returns the shadow host in two cases it
+   * cannot tell apart: a slotted bare text node, which it climbs to its DOM parent (the host), and a slotted text that
+   * cannot be hit (pointer-events:none inherited from a shadow wrapper), where the click lands on the host itself or
+   * bubbles to a light-DOM ancestor. So when a slotted text holds the point (`slottedText`), both walks (./reach) start
+   * from the text and from the host, and the gate judges the union (Task 11b). A hit inside a shadow tree (the text
+   * hidden, the wrapper hit) also starts at each host above it, where the click bubbles (`hostsAbove`). `hit` stays
+   * the node the hit test returned.
    */
   private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; dom: DomIndex; reached: Reach }> {
     const hit = await this.hitAt(t, p);
@@ -844,28 +931,32 @@ export class ComputerBrowser {
     if (!dom.names.has(hit)) throw new Error("The page changed: look again.");
     check?.(hit, dom);
     if (dom.remoteFrames.has(hit)) return { hit, dom, reached: { hit, controls: [hit] } };
-    const from = await this.slottedText(t, hit, p, dom);
-    const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: from, fetchRelatives: true }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
-    return { hit, dom, reached: reach(dom, hit, nodes, from) };
+    const text = await this.slottedText(t, hit, p, dom);
+    const starts: Start[] = [];
+    for (const from of [...(text === null ? [] : [text]), hit, ...hostsAbove(dom, hit)]) {
+      const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: from, fetchRelatives: true }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
+      starts.push({ from, ax: nodes });
+    }
+    return { hit, dom, reached: reach(dom, hit, starts) };
   }
 
   /** On a hit on a shadow host: the host's light-DOM text node whose own box holds the point (`DOM.getContentQuads` works
-   *  on text nodes), which is what the click really landed on; else the host as it is (hit on its padding, or on nothing
-   *  slotted). Nothing in the shadow tree is guessed at by its box: a shadow element the point falls in is only what the
-   *  click reaches when the hit test says so. */
-  private async slottedText(t: Tab, host: number, p: Point, dom: DomIndex): Promise<number> {
-    if (!dom.shadowRoots.has(host)) return host;
+   *  on text nodes), where the click landed if the text could be hit; else null (a hit on the host's padding, or nothing
+   *  slotted there). Nothing in the shadow tree is guessed at by its box: a shadow element the point falls in is only
+   *  what the click reaches when the hit test says so. */
+  private async slottedText(t: Tab, host: number, p: Point, dom: DomIndex): Promise<number | null> {
+    if (!dom.shadowRoots.has(host)) return null;
     for (const c of dom.children.get(host) ?? []) {
       if (dom.names.get(c) !== "#text") continue;
       const { quads } = await this.send<{ quads: number[][] }>(t, "DOM.getContentQuads", { backendNodeId: c }).catch(unlessGone({ quads: [] as number[][] }));
       if (quads.map(quadRect).some((r) => p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height)) return c;
     }
-    return host;
+    return null;
   }
 
   /** The target the gate judges for what a click reaches (D43 reads role and label): a frame from another site
-   *  (opaque); a plain element as it is; one control by its name; or, when the two walks found different controls, both
-   *  names joined so the click asks if either matches, refused when either cannot be named. */
+   *  (opaque); a plain element as it is; one control by its name; or, when the walks found different controls, every
+   *  name joined so the click asks if any matches, refused when one cannot be named. */
   private async judgeReach(t: Tab, r: Reach, dom: DomIndex): Promise<Target> {
     if (dom.remoteFrames.has(r.hit)) return { ...(await this.targetOf(t, r.hit, dom)), opaque: true };
     if (!r.controls.length) return this.targetOf(t, r.hit, dom);
@@ -873,11 +964,11 @@ export class ComputerBrowser {
     for (const c of r.controls) targets.push(await this.named(t, c, dom));
     if (targets.length === 1) return targets[0];
     if (targets.some((x) => !x.name)) throw new Error(CANT_TELL);
-    const [a, b] = targets;
-    // Both names, unless the first holds the second as whole words (then every label in it is matched already): "Deleted
-    // messages" holds "Delete" as letters only, so the name is "Deleted messages (Delete)" and the click asks.
-    const name = covers(a.name, b.name) ? a.name : `${a.name} (${b.name})`;
-    return { role: targets.find((x) => ASK_ROLES.has(x.role))?.role ?? a.role, name, inForm: a.inForm || b.inForm, fileInput: a.fileInput || b.fileInput };
+    // Each further name is added unless the name so far holds it as whole words (then every label in it is matched
+    // already): "Deleted messages" holds "Delete" as letters only, so the name is "Deleted messages (Delete)" and asks.
+    let name = targets[0].name;
+    for (const x of targets.slice(1)) if (!covers(name, x.name)) name = `${name} (${x.name})`;
+    return { role: targets.find((x) => ASK_ROLES.has(x.role))?.role ?? targets[0].role, name, inForm: targets.some((x) => x.inForm), fileInput: targets.some((x) => x.fileInput) };
   }
 
   /** A control's role and name: from the accessibility tree, with its markup role where that tree hides it, and its own
@@ -895,21 +986,6 @@ export class ComputerBrowser {
       }
     }
     return { ...ax, role, name };
-  }
-
-  /** D9 (R27): the target with every sensitive field's current value scrubbed from its name, as the snapshot scrubs its
-   *  lines. Chrome builds some controls' names from an embedded field's value (a label holding a checkbox and a one-time-
-   *  code field names the checkbox with the code; so does aria-labelledby pointing at the field), and a name goes into
-   *  ask titles, notifications and the agent's reply. The values are read from the accessibility tree, where those names
-   *  come from (a password field's is bullets there already). */
-  private async scrubbed(t: Tab, target: Target): Promise<Target> {
-    if (!target.name || !t.sensitive.size) return target;
-    const values: string[] = [];
-    for (const b of t.sensitive) {
-      const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: b, fetchRelatives: false }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
-      values.push(...secretsOf(nodes, t.sensitive));
-    }
-    return { ...target, name: scrubber(values)(target.name) };
   }
 
   private async targetOf(t: Tab, b: number, dom: DomIndex): Promise<Target> {

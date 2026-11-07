@@ -1,8 +1,8 @@
 // The page as text for the agent (agent-computer D9, D21, §4.2). The browser reads the pierced DOM tree (frames and shadow
 // roots included) and each frame's accessibility tree; `indexDom` and `mergeFrames` join them, and `formatSnapshot`
 // prints one line per named or roled node with a ref the agent can click. A password field's value never prints: the
-// field shows "••••••", its subtree is skipped, and its text is scrubbed from every other line (D9). The whole text is
-// wrapped as untrusted page data with its origin (D21) and capped at 40,000 characters. Pure: no Electron here.
+// field shows "••••••", its subtree is skipped, and its value (AX and DOM) is scrubbed from every other line (D9). The
+// whole text is wrapped as untrusted page data with its origin (D21) and capped at 40,000 characters. Pure: no Electron.
 
 import type { Target } from "./categories";
 
@@ -225,20 +225,29 @@ export function mergeFrames(frames: { frameId: string; nodes: CdpAxNode[] }[], d
   return out;
 }
 
+/** Secrets of fewer characters scrub only as a whole word (a one-time code typed so far, "123"): longer ones anywhere. */
+const SHORT_SECRET = 4;
+const literal = (s: string): string => s.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+
 /**
- * D9: the scrub for secrets, the current values of sensitive fields, from any text that reaches the agent or the person: a
- * snapshot line, a title, a URL, and every name the gate builds (R27: Chrome names a label's checkbox or an
- * aria-labelledby button from an embedded one-time-code field's value). Longest first, so a secret inside another goes
- * with it. Bullet-only strings and very short ones are not worth scrubbing.
+ * D9: the scrub for secrets, the current values of sensitive fields, from any text that leaves the main process: a
+ * snapshot line, a title, a URL, an ask title, a note or a tool reply (R27: Chrome names a label's checkbox or an
+ * aria-labelledby button from an embedded one-time-code field's value). Whitespace is collapsed on both sides (a name
+ * carries "12 3456" for a value "12  3456" or "12\t3456"); a secret of fewer than 4 characters goes only as a whole word;
+ * longest first, so a secret inside another goes with it. Bullet-only strings are not secrets. The gate never sees the
+ * result: it judges raw names (Task 11b), and this runs on the way out.
  */
 export function scrubber(values: Iterable<string | undefined>): (s: string) => string {
   const secrets = new Set<string>();
   for (const v of values) {
-    const t = v?.trim();
-    if (t && t.length >= 4 && !/^[•●*\s]+$/.test(t)) secrets.add(t);
+    const t = v?.replace(/\s+/g, " ").trim();
+    if (t && !/^[•●* ]+$/.test(t)) secrets.add(t);
   }
-  const ordered = [...secrets].sort((a, b) => b.length - a.length);
-  return (s) => ordered.reduce((acc, x) => (acc.includes(x) ? acc.split(x).join(REDACTED) : acc), s);
+  const patterns = [...secrets].sort((a, b) => b.length - a.length).map((x) => {
+    const body = x.split(" ").map(literal).join("\\s+");
+    return x.length >= SHORT_SECRET ? new RegExp(body, "gu") : new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "gu");
+  });
+  return (s) => patterns.reduce((acc, re) => acc.replace(re, REDACTED), s);
 }
 
 /** The values the sensitive nodes among `nodes` hold: each one's own value and the names and values under it (its inner
@@ -274,14 +283,17 @@ const clip = (s: string): string => {
  * The page as text: `title "…"`, then one line per named or roled node in document order, indented by depth, such as
  * `[e12] button "Merge pull request"` or `[e3] textbox "Password" value="••••••"`, wrapped as
  * `<untrusted-page origin="…" url="…">…</untrusted-page>` and cut at `cap` characters with `[truncated: N more nodes]`.
+ * A ref's `target` carries the raw name: it is what the gate judges (D9 is kept by scrubbing the text that leaves, never
+ * the name that is judged, Task 11b); the browser's `scrub` runs on any text built from it.
  */
-export function formatSnapshot(nodes: AxNode[], o: { origin: string; url: string; title: string; sensitive: ReadonlySet<number>; cap: number }): Snapshot {
+export function formatSnapshot(nodes: AxNode[], o: { origin: string; url: string; title: string; sensitive: ReadonlySet<number>; cap: number; values?: Iterable<string | undefined> }): Snapshot {
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const isSensitive = (n: AxNode): boolean => n.backendDOMNodeId !== undefined && o.sensitive.has(n.backendDOMNodeId);
 
   // D9: a sensitive field's value, and the text inside it, are secrets to scrub from every other line too (a label that
-  // embeds the field, a title, a URL).
-  const secrets: (string | undefined)[] = [];
+  // embeds the field, a title, a URL). `o.values` are the fields' DOM values, read by the browser: what Chrome composes
+  // other names from (a type=number field's AX value is the parsed float, "123" for "000123").
+  const secrets: (string | undefined)[] = [...(o.values ?? [])];
   for (const n of nodes) {
     if (!isSensitive(n)) continue;
     secrets.push(n.value);
@@ -340,7 +352,7 @@ export function formatSnapshot(nodes: AxNode[], o: { origin: string; url: string
         } else {
           lines.push(line);
           used += 1 + line.length;
-          if (ref) refs.set(ref, { backendNodeId: n.backendDOMNodeId!, frameId: n.frameId, target: { role: n.role, name: scrub(n.name), inForm: !!n.inForm, fileInput: !!n.fileInput, ...(n.opaque ? { opaque: true } : {}) } });
+          if (ref) refs.set(ref, { backendNodeId: n.backendDOMNodeId!, frameId: n.frameId, target: { role: n.role, name: n.name, inForm: !!n.inForm, fileInput: !!n.fileInput, ...(n.opaque ? { opaque: true } : {}) } });
         }
       }
     }

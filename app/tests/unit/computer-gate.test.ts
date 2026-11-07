@@ -150,3 +150,14 @@ test("run and host access judge like edit", () => {
 test("a newline in a plain textarea on an unmarked site asks unmarked", () => {
   assert.deepEqual(judge({ kind: "type", text: "a\nb", focus: { ...field, plainTextarea: true } }, edit(false)), { ask: "unmarked" });
 });
+
+test("the gate judges the raw name: a planted sensitive value that matches a label does not hide it (D9, R26, Task 11b)", () => {
+  // N1/N1b: a page plants a one-time-code field holding "Delete" (or "elet"). The browser hands the gate the raw name; the
+  // scrub runs only on text that leaves the main process. Had the name been scrubbed first, the click would have gone through.
+  assert.deepEqual(judge({ kind: "click", target: btn("Delete branch") }, edit(true)), { ask: "delete" });
+  assert.deepEqual(judge({ kind: "click", target: btn("Delete") }, edit(true)), { ask: "delete" });
+  assert.deepEqual(judge({ kind: "click", target: { role: "link", name: "Item 3 (Delete item 3)", inForm: false, fileInput: false } }, edit(true)), { ask: "delete" });
+  assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Delete branch") } }, edit(true)), { ask: "delete" });
+  assert.deepEqual(judge({ kind: "click", target: btn("•••••• branch") }, edit(true)), { go: true }, "what a scrubbed name would do: why judge must never see one");
+  assert.deepEqual(judge({ kind: "click", target: btn("D••••••e branch") }, edit(true)), { go: true });
+});

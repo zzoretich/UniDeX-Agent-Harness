@@ -274,7 +274,7 @@ test("indexDom resolves a duplicate id to the first element, and indexes slots a
   assert.equal(dom.parent.get(slotted.backendNodeId), host.backendNodeId, "its DOM parent is still the host");
 });
 
-test("scrubber hides every value the sensitive nodes hold from a name, longest first, and skips bullets and short strings", () => {
+test("scrubber hides every value the sensitive nodes hold from a name, longest first, and skips bullets", () => {
   // D9, R27: a checkbox named from a label that embeds a one-time-code field, and a button named by aria-labelledby.
   const nodes: CdpAxNode[] = [
     { nodeId: "1", ignored: false, role: { value: "checkbox" }, name: { value: " Remember this code 777777" }, backendDOMNodeId: 10 },
@@ -290,6 +290,41 @@ test("scrubber hides every value the sensitive nodes hold from a name, longest f
   assert.equal(scrub("777777 (Go)"), `${REDACTED} (Go)`);
   assert.equal(scrub("Go"), "Go");
   assert.equal(scrub("Your ••••••••"), "Your ••••••••", "bullets are not a secret");
-  assert.equal(scrub("k9z"), "k9z", "a value under 4 characters is not scrubbed");
   assert.equal(scrubber(["abcdefgh", "abcd", undefined, "  "])("x abcdefgh y abcd"), `x ${REDACTED} y ${REDACTED}`, "longest first, blanks ignored");
+});
+
+test("scrubber matches with whitespace collapsed on both sides, and a short value as a whole word (D9, Task 11b)", () => {
+  // N4a/N4b: Chrome collapses the runs of whitespace in a value when it composes a name from it.
+  assert.equal(scrubber(["12  3456"])("Keep 12 3456"), `Keep ${REDACTED}`);
+  assert.equal(scrubber(["12\t3456"])("Keep 12 3456"), `Keep ${REDACTED}`);
+  assert.equal(scrubber(["12 3456"])("Keep 12\u00a0\n 3456 now"), `Keep ${REDACTED} now`, "a whitespace run in the text matches one space");
+  assert.equal(scrubber(["  123456  "])("Keep 123456 "), `Keep ${REDACTED} `, "trimmed, the surrounding text kept");
+  // N3b: a type=number field's AX value is the parsed float ("123"); the DOM string "000123" is what the name carries.
+  assert.equal(scrubber(["123", "000123"])(" Keep 000123"), ` Keep ${REDACTED}`);
+  // A value under 4 characters scrubs only as a whole word, so a one-time code typed so far goes while letters inside words stay.
+  assert.equal(scrubber(["123"])("Keep 123 and 1234 and e123"), `Keep ${REDACTED} and 1234 and e123`);
+  assert.equal(scrubber(["k9z"])("k9z"), REDACTED);
+  assert.equal(scrubber(["k9z"])("ak9z k9zb"), "ak9z k9zb", "not a whole word");
+  assert.equal(scrubber(["a.b"])("say a.b (a-b) axb"), `say ${REDACTED} (a-b) axb`, "regex characters in a value are literal");
+  assert.equal(scrubber(["Delete"])("Delete branch"), `${REDACTED} branch`, "a planted value hides a label: the gate must judge the raw name, the scrub runs on outgoing text only");
+});
+
+test("formatSnapshot scrubs the DOM values it is given too, and a ref keeps its raw name for the gate (D9, Task 11b)", () => {
+  // N3b: a number one-time-code field whose AX value is the parsed float; the checkbox's name carries the DOM string.
+  const nodes = [
+    ax("1", "RootWebArea", "", ["2", "3", "4"]),
+    ax("2", "checkbox", "Keep 000123"),
+    ax("3", "spinbutton", "", [], { value: "123" }),
+    ax("4", "button", "Delete"),
+  ];
+  const plain = formatSnapshot(nodes, opts([3]));
+  assert.match(plain.text, /checkbox "Keep 000123"/, "the AX float alone does not cover the DOM string");
+  const s = formatSnapshot(nodes, { ...opts([3]), values: ["000123", undefined] });
+  assert.match(s.text, /checkbox "Keep ••••••"/);
+  assert.match(s.text, /spinbutton value="••••••"/);
+  assert.equal(refFor(s, 2)![1].target.name, "Keep 000123", "the ref's target is what the gate judges: raw, scrubbed only on its way out");
+  // A planted value equal to a label: the line is scrubbed, the ref's target is not, so the gate still asks.
+  const planted = formatSnapshot([ax("1", "RootWebArea", "", ["2", "3"]), ax("2", "textbox", "Code", [], { value: "Delete" }), ax("3", "button", "Delete branch")], opts([2]));
+  assert.match(planted.text, /button "•••••• branch"/);
+  assert.equal(refFor(planted, 3)![1].target.name, "Delete branch");
 });

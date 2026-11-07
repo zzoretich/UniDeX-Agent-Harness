@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { accepted, activates, axControl, flatParent, reach, within } from "../../src/main/computer/reach";
+import { accepted, activates, axControl, flatParent, hostsAbove, reach, within } from "../../src/main/computer/reach";
 import { indexDom, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
 
 // A page with a web component whose shadow tree is <button><slot>, a host whose button role comes from ElementInternals
@@ -51,15 +51,15 @@ test("the accessibility walk finds a click role the markup does not show, and sk
 test("reach takes the union of both walks, and accepted lets a click through only to what was judged", () => {
   // The slotted span: both walks agree on the shadow button.
   const agree = [axNode(span, "generic", "", slot), axNode(slot, "none", "", shadowButton, true), axNode(shadowButton, "button", "Delete", host), axNode(host, "generic", "")];
-  assert.deepEqual(reach(dom, b(span), agree), { hit: b(span), controls: [b(shadowButton)] });
+  assert.deepEqual(reach(dom, b(span), [{ from: b(span), ax: agree }]), { hit: b(span), controls: [b(shadowButton)] });
   // The ElementInternals host: only the accessibility walk sees a control.
   const internals = [axNode(innerSpan, "generic", "", internalsHost), axNode(internalsHost, "button", "Delete")];
-  assert.deepEqual(reach(dom, b(innerSpan), internals), { hit: b(innerSpan), controls: [b(internalsHost)] });
+  assert.deepEqual(reach(dom, b(innerSpan), [{ from: b(innerSpan), ax: internals }]), { hit: b(innerSpan), controls: [b(internalsHost)] });
   // A disagreement (aria-owns moved the label's text under another control): both are judged, the DOM's first.
   const owned = [axNode(label, "LabelText", "", internalsHost), axNode(internalsHost, "button", "Delete")];
-  assert.deepEqual(reach(dom, b(label), owned), { hit: b(label), controls: [b(cancel), b(internalsHost)] });
+  assert.deepEqual(reach(dom, b(label), [{ from: b(label), ax: owned }]), { hit: b(label), controls: [b(cancel), b(internalsHost)] });
   // A plain cell with nothing above it.
-  assert.deepEqual(reach(dom, b(cell), [axNode(cell, "cell", "Nov 8")]), { hit: b(cell), controls: [] });
+  assert.deepEqual(reach(dom, b(cell), [{ from: b(cell), ax: [axNode(cell, "cell", "Nov 8")] }]), { hit: b(cell), controls: [] });
 
   const judged = { b: b(shadowButton), controls: [b(shadowButton)] };
   assert.ok(accepted(dom, { hit: b(span), controls: [b(shadowButton)] }, judged));
@@ -83,7 +83,67 @@ test("reach walks from the slotted text node the hit test climbed to its host, a
   const host2 = el("X-BTN", [], [text], { shadowRoots: [root2] });
   const d = indexDom({ nodeId: ++id, backendNodeId: id, nodeType: 9, nodeName: "#document", children: [el("HTML", [], [el("BODY", [], [host2])], { frameId: "F2" })] });
   assert.equal(flatParent(d, b(text)), b(slot2), "a slotted text node's flat-tree parent is its slot");
-  assert.deepEqual(reach(d, b(host2), [], b(text)), { hit: b(host2), controls: [b(button2)] });
-  assert.deepEqual(reach(d, b(host2), []), { hit: b(host2), controls: [] }, "from the host itself (a hit on its padding) nothing in its shadow tree is guessed at");
-  assert.ok(accepted(d, reach(d, b(host2), [], b(text)), { b: b(button2), controls: [b(button2)] }), "the same reach at click time is accepted");
+  assert.deepEqual(reach(d, b(host2), [{ from: b(text), ax: [] }]), { hit: b(host2), controls: [b(button2)] });
+  assert.deepEqual(reach(d, b(host2), [{ from: b(host2), ax: [] }]), { hit: b(host2), controls: [] }, "from the host itself (a hit on its padding) nothing in its shadow tree is guessed at");
+  assert.ok(accepted(d, reach(d, b(host2), [{ from: b(text), ax: [] }]), { b: b(button2), controls: [b(button2)] }), "the same reach at click time is accepted");
+});
+
+test("on a shadow-host hit the walks start from the slotted text and the host both, and the union is judged (D43, R26, Task 11b)", () => {
+  // N2: <x-n2 role=button aria-label="Delete item 3">Item 3</x-n2> with a shadow <a href style="pointer-events:none"><slot>.
+  // The text is unhittable, so the click lands on the host; the hit test returns the host either way. Judging only the
+  // text's walk gives link "Item 3" (GO); the host's walk gives the button, so both are judged and the click asks.
+  const text = txt("Item 3");
+  const slot3 = el("SLOT", [], [], { distributedNodes: [{ backendNodeId: text.backendNodeId }] });
+  const link = el("A", ["href", "#help", "style", "pointer-events:none"], [slot3]);
+  const root3: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [link] };
+  const host3 = el("X-N2", ["role", "button", "aria-label", "Delete item 3"], [text], { shadowRoots: [root3] });
+  // N2c: a light-DOM <button aria-label="Delete item 3"> around a host with no role of its own.
+  const text4 = txt("Item 3");
+  const slot4 = el("SLOT", [], [], { distributedNodes: [{ backendNodeId: text4.backendNodeId }] });
+  const link4 = el("A", ["href", "#help"], [slot4]);
+  const root4: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [link4] };
+  const host4 = el("X-N2C", [], [text4], { shadowRoots: [root4] });
+  const outer = el("BUTTON", ["aria-label", "Delete item 3"], [host4]);
+  const d = indexDom({ nodeId: ++id, backendNodeId: id, nodeType: 9, nodeName: "#document", children: [el("HTML", [], [el("BODY", [], [host3, outer])], { frameId: "F3" })] });
+  const axText = [axNode(text, "StaticText", "Item 3", link), axNode(link, "link", "Item 3", host3), axNode(host3, "button", "Delete item 3")];
+  const axHost = [axNode(host3, "button", "Delete item 3")];
+  assert.deepEqual(reach(d, b(host3), [{ from: b(text), ax: axText }]), { hit: b(host3), controls: [b(link)] }, "the text's walk alone sees only the link");
+  const both = reach(d, b(host3), [{ from: b(text), ax: axText }, { from: b(host3), ax: axHost }]);
+  assert.deepEqual(both, { hit: b(host3), controls: [b(link), b(host3)] }, "the union: the link and the host, each once");
+  assert.ok(accepted(d, both, { b: b(link), controls: [b(link), b(host3)] }), "the same union at click time is accepted");
+  assert.ok(!accepted(d, both, { b: b(link), controls: [b(link)] }), "a judgement that missed the host refuses");
+  // N2c: the host's walk climbs the light DOM to the button around it (where the click really lands).
+  const c = reach(d, b(host4), [{ from: b(text4), ax: [] }, { from: b(host4), ax: [] }]);
+  assert.deepEqual(c, { hit: b(host4), controls: [b(link4), b(outer)] });
+  // The same control reached from both starts is listed once.
+  assert.deepEqual(reach(d, b(outer), [{ from: b(host4), ax: [] }, { from: b(outer), ax: [] }]), { hit: b(outer), controls: [b(outer)] });
+});
+
+test("a hit inside a shadow tree also starts a walk from each host above it, where the click bubbles (D43, R26, Task 11b)", () => {
+  // N8: <x-n8 role=button aria-label="Delete item 3">Item 3</x-n8>, shadow <a href><span style="visibility:hidden"><slot>.
+  // The hidden text cannot be hit, so the hit test returns the shadow link; the click lands on it and bubbles to the host.
+  const text = txt("Item 3");
+  const slot5 = el("SLOT", [], [], { distributedNodes: [{ backendNodeId: text.backendNodeId }] });
+  const hiddenSpan = el("SPAN", ["style", "visibility:hidden"], [slot5]);
+  const link5 = el("A", ["href", "#help"], [hiddenSpan]);
+  const root5: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [link5] };
+  const host5 = el("X-N8", ["role", "button", "aria-label", "Delete item 3"], [text], { shadowRoots: [root5] });
+  // A nested case: a plain host whose shadow tree holds another host with a shadow button, all inside a light <button>.
+  const innerButton = el("BUTTON", [], [txt("Go")]);
+  const innerRoot: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [innerButton] };
+  const innerHost = el("X-IN", [], [], { shadowRoots: [innerRoot] });
+  const outerRoot: CdpDomNode = { nodeId: ++id, backendNodeId: id, nodeType: 11, nodeName: "#document-fragment", shadowRootType: "open", children: [innerHost] };
+  const outerHost = el("X-OUT", [], [], { shadowRoots: [outerRoot] });
+  const lightButton = el("BUTTON", ["aria-label", "Delete all"], [outerHost]);
+  const d = indexDom({ nodeId: ++id, backendNodeId: id, nodeType: 9, nodeName: "#document", children: [el("HTML", [], [el("BODY", [], [host5, lightButton])], { frameId: "F4" })] });
+  assert.deepEqual(hostsAbove(d, b(link5)), [b(host5)], "the host whose shadow tree holds the link");
+  assert.deepEqual(hostsAbove(d, b(host5)), [], "a host in the light DOM is inside no shadow tree");
+  assert.deepEqual(hostsAbove(d, b(text)), [], "slotted light-DOM text is a child of its host, not of its shadow tree");
+  assert.deepEqual(hostsAbove(d, b(innerButton)), [b(innerHost), b(outerHost)], "nested hosts, nearest first");
+  const axLink = [axNode(link5, "link", "Item 3", host5), axNode(host5, "button", "Delete item 3")];
+  assert.deepEqual(reach(d, b(link5), [{ from: b(link5), ax: axLink }]), { hit: b(link5), controls: [b(link5)] }, "the link's own walks stop at the link");
+  const both = reach(d, b(link5), [{ from: b(link5), ax: axLink }, ...hostsAbove(d, b(link5)).map((from) => ({ from, ax: [axNode(host5, "button", "Delete item 3")] }))]);
+  assert.deepEqual(both, { hit: b(link5), controls: [b(link5), b(host5)] }, "with the host's walk the button is judged too");
+  const nested = reach(d, b(innerButton), [{ from: b(innerButton), ax: [] }, ...hostsAbove(d, b(innerButton)).map((from) => ({ from, ax: [] }))]);
+  assert.deepEqual(nested, { hit: b(innerButton), controls: [b(innerButton), b(lightButton)] }, "the light-DOM button the click bubbles to, once");
 });
