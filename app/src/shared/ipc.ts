@@ -39,6 +39,8 @@ export const CH = {
   // Terminals, hosted by main's node-pty.
   ptyAvailable: "pty:available",
   ptySpawn: "pty:spawn",
+  /** A Code launch: main starts the agent CLI as the terminal's own process (agent-computer D18). Invoke. */
+  ptySpawnAgent: "pty:spawn-agent",
   ptyWrite: "pty:write",
   ptyResize: "pty:resize",
   ptyKill: "pty:kill",
@@ -490,6 +492,27 @@ export interface PtySpawnRequest {
   env?: Record<string, string>;
 }
 
+/**
+ * A Code launch's agent, which main starts as the terminal's own process so it holds the CLI's pid (agent-computer D18).
+ * The page names the host and the words after the binary (only what the Code page's launch line carries); main resolves
+ * the binary itself. `place` is the computer the agent shares (the HUD's placeKey, D30), `label` names it.
+ */
+export interface PtyAgentRequest {
+  id: string;
+  host: "claude" | "codex";
+  argv: string[];
+  cwd: string;
+  /** CLAUDE_CONFIG_DIR or CODEX_HOME for the agent, or null for the one a new terminal would find. */
+  configDir: string | null;
+  /** Make the folder its own repository first when it has no .git. */
+  gitInit: boolean;
+  cols: number;
+  rows: number;
+  place: string;
+  label: string;
+  access: "host" | "read" | "edit" | "run";
+}
+
 export type PtyEvent =
   | { id: string; type: "data"; data: string }
   | { id: string; type: "exit"; exitCode: number; signal?: number };
@@ -532,6 +555,8 @@ export interface AosBridge {
   pty: {
     available(): Result<null>;
     spawn(req: PtySpawnRequest): Result<{ pid: number }>;
+    /** `code: "fallback"`: main cannot vouch for the agent; the page types the launch line into a shell, `error` says why. */
+    spawnAgent(req: PtyAgentRequest): Promise<Result<{ pid: number }>>;
     write(id: string, data: string): void;
     resize(id: string, cols: number, rows: number): void;
     kill(id: string, signal?: string): void;

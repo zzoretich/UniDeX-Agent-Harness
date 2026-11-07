@@ -7,7 +7,7 @@ import { createRequire } from "module";
 import {
   slugify, isReserved, workspaceStubs, scratchStubs, stubWrites, workspaceNameProblem, gitInitWanted, TEMPLATE_TEXT, isTemplateText,
   workspacePlace, placeOf, resolvePlace, isContextPlace, vaultPlace, homePlace, parseRepoLink, withRepoLink, repoValue,
-  termHostChoices, quickHost, launchLine, launchArgs, launchIds, previewLine, SCRATCH, menuRows, firstActionable,
+  termHostChoices, quickHost, launchLine, launchArgs, launchIds, previewLine, SCRATCH, menuRows, firstActionable, placeKey,
 } from "./terminalLaunch";
 import type { PlaceWorld } from "./terminalLaunch";
 import type { AgenticosJson, ProviderState } from "./aosConfig";
@@ -153,6 +153,16 @@ test("placeOf finds the longest match: a linked folder, a workspace, the vault, 
   assert.equal(placeOf(home, world).kind, "home");
   const other = placeOf(path.join(home, "elsewhere", "proj"), world);
   assert.deepEqual([other.kind, other.label], ["other", "proj"]);
+});
+
+test("placeKey: the computer a place shares (agent-computer D30): a workspace's or Scratch's name, the vault, home, or the folder", () => {
+  const w: PlaceWorld = { vault: "/v", home: "/h", workspaces: ["tide", SCRATCH], links: { tide: "/code/tide" } };
+  assert.equal(placeKey(workspacePlace("tide", w)), "tide", "a linked workspace is still its workspace");
+  assert.equal(placeKey(placeOf("/v/workspaces/tide/src", w)), "tide");
+  assert.equal(placeKey(workspacePlace(SCRATCH, w)), "scratch");
+  assert.equal(placeKey(vaultPlace(w)), "vault");
+  assert.equal(placeKey(homePlace(w)), "home");
+  assert.equal(placeKey(placeOf("/elsewhere/proj", w)), "dir:/elsewhere/proj");
 });
 
 test("only a workspace counts as context: never Scratch, the vault or home", () => {

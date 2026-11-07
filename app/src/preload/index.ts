@@ -51,6 +51,7 @@ const api: AosBridge = {
   pty: {
     available: () => sync(CH.ptyAvailable, {}),
     spawn: (req) => sync(CH.ptySpawn, req),
+    spawnAgent: (req) => invoke(CH.ptySpawnAgent, req),
     write: (id, data) => ipcRenderer.send(CH.ptyWrite, { id, data }),
     resize: (id, cols, rows) => ipcRenderer.send(CH.ptyResize, { id, cols, rows }),
     kill: (id, signal) => ipcRenderer.send(CH.ptyKill, { id, signal }),

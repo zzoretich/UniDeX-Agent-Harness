@@ -94,11 +94,34 @@ export interface HostPtyProcess {
   onExit(listener: (info: { exitCode: number; signal?: number }) => void): void;
 }
 
+/**
+ * A Code launch's agent, run by the app's main process as the terminal's own process so it knows the CLI's pid
+ * (agent-computer D18). Mirrors app/src/shared/ipc.ts PtyAgentRequest without the id, which the bridge assigns. `place`
+ * is the computer the agent shares (terminalLaunch.placeKey, D30); `label` names it.
+ */
+export interface HostPtyAgentRequest {
+  host: "claude" | "codex";
+  /** The words after the binary (terminalLaunch.launchArgs); main resolves the binary itself. */
+  argv: string[];
+  cwd: string;
+  /** CLAUDE_CONFIG_DIR or CODEX_HOME for the agent, or null for the one a new terminal would find. */
+  configDir: string | null;
+  gitInit: boolean;
+  cols: number;
+  rows: number;
+  place: string;
+  label: string;
+  access: "host" | "read" | "edit" | "run";
+}
+
 export interface HostPty {
   /** Starts a terminal; throws when terminals are unavailable or this one is refused. */
   spawn(file: string, args: string[], opts: HostPtyOptions): HostPtyProcess;
   /** Why terminals are unavailable (loading node-pty failed), or null when they are. Loads it on first call. */
   loadError(): string | null;
+  /** Starts a Code launch's agent as the terminal's own process (the app only). `code: "fallback"`: start the shell and
+   *  type the launch line instead, `error` says why; any other failure is a refusal. */
+  spawnAgent?(req: HostPtyAgentRequest): Promise<HostResult<HostPtyProcess>>;
 }
 
 export interface HostShell {
@@ -262,9 +285,16 @@ export function execFileSync(file: string, args: string[], opts: { encoding: "ut
   return hudHost().execFileSync(file, args, opts);
 }
 
-export const pty: HostPty = {
+/** What a host without agent terminals answers (plain Node): fall back, with nothing to say about a computer. */
+const NO_AGENT_SPAWN: HostResult<never> = { ok: false, error: "", code: "fallback" };
+
+export const pty: Required<HostPty> = {
   spawn: (file, args, opts) => hudHost().pty.spawn(file, args, opts),
   loadError: () => hudHost().pty.loadError(),
+  spawnAgent: (req) => {
+    const p = hudHost().pty;
+    return p.spawnAgent ? p.spawnAgent(req) : Promise.resolve(NO_AGENT_SPAWN);
+  },
 };
 
 export const shell: HostShell = {

@@ -4,6 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as childProcess from "node:child_process";
 import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -131,6 +132,62 @@ test("the runtime's refusal (the day cap) is the turn's error; Stop ends a runni
   assert.deepEqual(kinds(stopped.data).slice(-2), ["error", "done"]);
   assert.equal(stopped.data.at(-2)?.message, "stopped");
   assert.equal(runs().at(-1)?.status, "stopped");
+});
+
+test("onAgent: the turn's CLI is announced with its pid, workspace, host, access and title right after it starts, and again when it exits (agent-computer D18)", async () => {
+  const spawned: Array<{ cmd: string; pid: number | undefined }> = [];
+  const agents: Array<Record<string, unknown>> = [];
+  const spawnImpl = ((cmd: string, args: string[], opts: object) => {
+    const c = childProcess.spawn(cmd, args, opts);
+    spawned.push({ cmd, pid: c.pid });
+    return c;
+  }) as unknown as typeof childProcess.spawn;
+  const s = new SessionService({
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500, spawnImpl,
+    onAgent: (ev) => {
+      agents.push({ ...ev });
+      // The CLI is still running when it is announced: its pid is the agent's, not a runtime command's.
+      if (ev.kind === "start") assert.equal(spawned.at(-1)?.cmd, CLAUDE);
+    },
+  });
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "fix the parser\nand the tests", access: "read" });
+  assert.ok(r.ok);
+  await idle(s);
+  const pid = spawned.find((x) => x.cmd === CLAUDE)?.pid;
+  assert.equal(typeof pid, "number");
+  assert.deepEqual(agents, [
+    { kind: "start", pid, thread: r.data.id, workspace: "harbor-map", host: "claude", access: "read", title: "fix the parser" },
+    { kind: "end", pid, thread: r.data.id },
+  ]);
+  // A turn the runtime refuses starts no CLI and announces nothing.
+  config({ sessions: { perDayUsd: 0 } });
+  await s.send({ thread: r.data.id, text: "again" });
+  await idle(s);
+  config();
+  assert.equal(agents.length, 2);
+});
+
+test("resolveBin: the binary the runtime resolves for a Code launch (sessions.js bin), or null when it cannot say", async () => {
+  const { s } = service();
+  assert.equal(await s.resolveBin("claude"), CLAUDE);
+  assert.equal(await s.resolveBin("codex"), CODEX);
+  const noNode = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => null, emit: () => {} });
+  assert.equal(await noNode.resolveBin("claude"), null);
+  // Not behind the Sessions surface: a Code launch needs no Sessions.
+  assert.equal(await service(false).s.resolveBin("claude"), CLAUDE);
+  const noVault = new SessionService({ vaultRoot: () => null, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
+  assert.equal(await noVault.resolveBin("claude"), null);
+  // With no binary recorded, the one a Code terminal's PATH finds: the CLI its typed line would have run.
+  const termBin = path.join(tmp, "term-bin");
+  fs.mkdirSync(termBin, { recursive: true });
+  const termCodex = path.join(termBin, "codex");
+  fs.writeFileSync(termCodex, "#!/bin/sh\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(vault, "brain", "config.json"), JSON.stringify({ hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: true } } }));
+  try {
+    const onPath = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, terminalPATH: () => `${termBin}:/usr/bin:/bin` });
+    assert.equal(await onPath.resolveBin("codex"), termCodex);
+    assert.equal(await onPath.resolveBin("claude"), CLAUDE, "a recorded binary still comes first");
+  } finally { config(); }
 });
 
 test("nothing runs while the Sessions surface is off, and a thread that is not there is ENOENT", async () => {

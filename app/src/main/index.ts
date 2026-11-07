@@ -13,6 +13,9 @@ import * as path from "node:path";
 import { APP_ORIGIN, CH, POPOVER, type AttachInfo, type BootInfo, type CommandInfo, type ProtocolRequest, type ReadyInfo, type ThemeSource, type ThemeState } from "../shared/ipc";
 import { registerAppScheme, serveAppScheme } from "./app-scheme";
 import { BRAND } from "../shared/brand";
+import type { Sys } from "./computer/admission";
+import { loadPeer } from "./computer/peer";
+import { AgentRegistry } from "./computer/registry";
 import { writeHudHostMarker } from "./hud-host";
 import { registerFsIpc } from "./ipc/fs";
 import { registerHostIpc } from "./ipc/host";
@@ -97,9 +100,29 @@ let scope = new ReadScope(context);
 let fsService = vault.root ? new FsService({ vaultRoot: vault.root, userData: context.userData, scope: () => scope, policy: () => policy }) : null;
 let attached: AttachInfo | null = null;
 const procService = new ProcService({ policy: () => policy, context: () => context, env: process.env, emit: (ev) => send(CH.procEvent, ev) });
+// agent-computer D18: the agent CLIs this app spawned (a Chat turn's, a Code launch's), which the computer bridge admits
+// from, and the peer addon's checks behind it: one registry and one Sys for the app's life (launchForm caches per Sys).
+// Without the addon every Code launch falls back to the typed line in a shell, and says so.
+const agentRegistry = new AgentRegistry();
+const computerSys: Sys | null = (() => {
+  try {
+    const peer = loadPeer();
+    return {
+      procInfo: (pid) => peer.procInfo(pid), teamId: (p) => peer.teamId(p), processTeamId: (pid) => peer.processTeamId(pid),
+      realpath: (p) => fs.realpathSync(p), stat: (p) => fs.statSync(p),
+    };
+  } catch (err) {
+    console.warn(`[main] the peer addon did not load, so agents run without the computer: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+    return null;
+  }
+})();
 // The app's own node-pty: in a packaged build its JavaScript is in the archive and its native parts are unpacked beside it.
-// Its terminals start with the login shell's PATH (T14), worked out once and shared with sessionNode.
-const ptyService = new PtyService({ context: () => context, env: () => terminalBaseEnv(process.env, termPATH()), emit: (ev) => send(CH.ptyEvent, ev), load: () => require("node-pty") as PtyLib });
+// Its terminals start with the login shell's PATH (T14), worked out once and shared with sessionNode. A Code launch's
+// agent runs as its terminal's own process, from the binary the runtime resolves (D18).
+const ptyService = new PtyService({
+  context: () => context, env: () => terminalBaseEnv(process.env, termPATH()), emit: (ev) => send(CH.ptyEvent, ev), load: () => require("node-pty") as PtyLib,
+  resolveBin: (host) => sessionService.resolveBin(host), registry: agentRegistry, sys: computerSys,
+});
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
 // surface. A turn outlives a page reload; quitting stops every one.
 const sessionsOn = (): boolean => policy.ids.includes("sessions");
@@ -115,7 +138,16 @@ function sessionNode(): string | null {
   if (typeof recorded === "string" && isExecutable(recorded)) return recorded;
   return findOnPath("node", termPATH());
 }
-const sessionService = new SessionService({ vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, context: () => context, env: process.env, node: sessionNode, emit: (ev) => send(CH.sessionEvent, ev) });
+const sessionService = new SessionService({
+  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, context: () => context, env: process.env, node: sessionNode, emit: (ev) => send(CH.sessionEvent, ev),
+  // A Code launch's binary is the one its terminal's PATH finds, as the typed line's was (agent-computer D18).
+  terminalPATH: () => termPATH(),
+  // A Chat turn's CLI is registered while it runs, in its thread's workspace (agent-computer D18, D3).
+  onAgent: (ev) => {
+    if (ev.kind === "start") agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: ev.workspace, access: ev.access });
+    else if (agentRegistry.get(ev.pid)?.key === `chat:${ev.thread}`) agentRegistry.remove(ev.pid);
+  },
+});
 const gitService = new GitService({ workspace: (name) => workspaceDir(context.vaultRoot ?? null, name), enabled: sessionsOn, env: process.env });
 
 /** The variables the HUD reads (HudHost.env), from main's environment; nothing else of it reaches the page. */

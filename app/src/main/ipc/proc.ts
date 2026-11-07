@@ -3,8 +3,8 @@
 import { CH } from "../../shared/ipc";
 import type { ProcService } from "../services/proc";
 import type { PtyService } from "../services/pty";
-import { ExecRequestSchema, KillArgs, NoArgs, PtyResizeArgs, PtySpawnRequestSchema, PtyWriteArgs, SpawnRequestSchema } from "./schemas";
-import { onSend, onSync, type Trust } from "./trust";
+import { ExecRequestSchema, KillArgs, NoArgs, PtyAgentRequestSchema, PtyResizeArgs, PtySpawnRequestSchema, PtyWriteArgs, SpawnRequestSchema } from "./schemas";
+import { onInvoke, onSend, onSync, type Trust } from "./trust";
 
 export function registerProcIpc(trust: Trust, proc: ProcService, pty: PtyService): void {
   onSync(CH.procSpawn, trust, SpawnRequestSchema, (req) => {
@@ -19,6 +19,12 @@ export function registerProcIpc(trust: Trust, proc: ProcService, pty: PtyService
   onSync(CH.ptySpawn, trust, PtySpawnRequestSchema, (req) => {
     const r = pty.spawn(req);
     if (!r.ok && r.code === "EROFS") console.warn(`[main] refused terminal ${req.file} (${r.error})`);
+    return r;
+  });
+  // A Code launch's agent as the terminal's own process (agent-computer D18); a fallback is the page's to handle.
+  onInvoke(CH.ptySpawnAgent, trust, PtyAgentRequestSchema, async (req) => {
+    const r = await pty.spawnAgent(req);
+    if (!r.ok && r.code === "EROFS") console.warn(`[main] refused agent terminal ${req.host} (${r.error})`);
     return r;
   });
   onSend(CH.ptyWrite, trust, PtyWriteArgs, ({ id, data }) => pty.write(id, data));

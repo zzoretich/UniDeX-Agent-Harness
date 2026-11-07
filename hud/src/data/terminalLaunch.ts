@@ -212,6 +212,17 @@ export function placeOf(dir: string, w: PlaceWorld): Place {
   return { kind: "other", label: path.basename(abs) || abs, dir: abs };
 }
 
+/**
+ * The computer a place shares (agent-computer D30, D3): a workspace's (Scratch's too) is its name, which a Chat thread in
+ * that workspace shares; the vault, home and any other folder each have their own.
+ */
+export function placeKey(p: Place): string {
+  if ((p.kind === "workspace" || p.kind === "scratch") && p.workspace) return p.workspace;
+  if (p.kind === "vault") return "vault";
+  if (p.kind === "home") return "home";
+  return `dir:${path.resolve(p.dir)}`;
+}
+
 /** Whether a place counts as context for a launch: only a workspace, never Scratch, the vault, home or elsewhere. */
 export function isContextPlace(p: Place | null | undefined): p is Place {
   return !!p && p.kind === "workspace";
@@ -371,6 +382,9 @@ export interface LaunchSpec {
   gitInit?: boolean;
   /** `NAME='value' ` prefixes for a non-default config folder (teams.ts envPrefix). */
   envPrefix?: string;
+  /** The folder that prefix names (CLAUDE_CONFIG_DIR or CODEX_HOME), or null when there is none: main sets it in the
+   *  environment of an agent it runs as the terminal's own process (agent-computer D18). */
+  configDir?: string | null;
 }
 
 const CLAUDE_ACCESS: Record<TermAccess, string[]> = {
@@ -436,9 +450,10 @@ export function launchArgs(s: LaunchSpec): string[] {
 }
 
 /**
- * The line typed into the fresh shell. The leading space keeps it out of a history that ignores spaced lines. `exec`
- * hands the terminal to the agent, so the row ends with the agent's own exit code; when the binary is not there the
- * shell stays open and says so instead.
+ * The line typed into the fresh shell, when the app's main process cannot run the agent as the terminal's own process
+ * (agent-computer D18: a fallback) and for Spaces' resume hint. The leading space keeps it out of a history that ignores
+ * spaced lines. `exec` hands the terminal to the agent, so the row ends with the agent's own exit code; when the binary
+ * is not there the shell stays open and says so instead.
  */
 export function launchLine(s: LaunchSpec): string {
   const bin = shq(s.bin || s.host);

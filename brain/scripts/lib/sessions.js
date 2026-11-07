@@ -15,6 +15,9 @@
  *     stdout: the host catalog (host-catalog.js), one JSON line. Served from brain/_index/host-catalog.json while it is
  *     fresh (a day, every host answered or off); --refresh asks the hosts again, --host only that one (merged into the
  *     cache, which keeps its older date). Never calls a model (spec 2026-10-07-sessions-ux U3).
+ *   node lib/sessions.js bin claude|codex
+ *     out: { ok: true, bin }  or  { ok: false, reason }  (exit 0 / 3). The binary a Code launch runs: the app's main
+ *     process spawns it as the terminal's own process (agent-computer D18), resolved as `args` resolves a turn's.
  *   node lib/sessions.js record '<json>'
  *     { host, model?, usd, inputTokens?, outputTokens?, ms?, startedAt?, status?, prompt?, reply?, toolCount?, error?,
  *       workspace?, thread? } → the turn's ledger row (feature session:<host>, when it cost anything) and its row in
@@ -111,6 +114,13 @@ async function main(argv) {
     process.stdout.write(`${JSON.stringify(cat)}\n`);
     return 0;
   }
+  if (verb === 'bin') {
+    if (!H.HOSTS.includes(arg)) { process.stderr.write('sessions: bin takes claude or codex\n'); return 2; }
+    const { loadConfig } = require('./config.js');
+    const bin = H.resolveBin(arg, { cfg: loadConfig() });
+    process.stdout.write(`${JSON.stringify(bin ? { ok: true, bin } : { ok: false, reason: `no ${arg} binary found` })}\n`);
+    return bin ? 0 : 3;
+  }
   if (verb === 'record') {
     let r;
     try { r = JSON.parse(arg || (await readStdin())); } catch { process.stderr.write('sessions: record takes one JSON argument\n'); return 2; }
@@ -134,7 +144,7 @@ async function main(argv) {
     });
     return 0;
   }
-  process.stderr.write('usage: sessions.js args <json> | events --host claude|codex [--model m] | catalog [--refresh] [--host h] | record <json>\n');
+  process.stderr.write('usage: sessions.js args <json> | events --host claude|codex [--model m] | catalog [--refresh] [--host h] | bin claude|codex | record <json>\n');
   return 2;
 }
 

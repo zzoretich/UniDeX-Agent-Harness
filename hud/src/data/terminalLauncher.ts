@@ -13,7 +13,7 @@ import { envPrefix } from "./teams";
 import { shq } from "./skills";
 import type { TerminalSession } from "./terminalSession";
 import {
-  SCRATCH, TERM_HOST_LABEL, gitInitWanted, homePlace, launchIds, launchLine, parseRepoLink, placeOf, previewLine, quickHost,
+  SCRATCH, TERM_HOST_LABEL, gitInitWanted, homePlace, launchIds, parseRepoLink, placeOf, previewLine, quickHost,
   repoValue, resolvePlace, scratchStubs, slugify, stubWrites, termHostChoices, vaultPlace, withRepoLink, workspaceNameProblem,
   workspacePlace, workspaceStubs,
 } from "./terminalLaunch";
@@ -129,10 +129,14 @@ export class TerminalLauncher {
     const access = sanitizeTerminalChoice(this.plugin.settings.terminalChoice).access as TermAccess;
     // The folder each host uses, set on the line only when a new terminal would find another (AgentTeamsTab.hostEnv).
     const envCodex = path.resolve(env.get("CODEX_HOME") || path.join(this.home(), ".codex"));
+    const dir = host === "claude" ? this.plugin.claudeConfigDir() : cfg?.hosts?.codex?.home || envCodex;
     const prefix = host === "claude"
-      ? envPrefix("CLAUDE_CONFIG_DIR", this.plugin.claudeConfigDir(), envClaudeConfigDir())
-      : envPrefix("CODEX_HOME", cfg?.hosts?.codex?.home || envCodex, envCodex);
-    return { host, bin, model, access, resume: opts.resume ?? null, gitInit: opts.gitInit, sessionId: opts.sessionId ?? null, cwd: opts.cwd ?? null, envPrefix: prefix };
+      ? envPrefix("CLAUDE_CONFIG_DIR", dir, envClaudeConfigDir())
+      : envPrefix("CODEX_HOME", dir, envCodex);
+    return {
+      host, bin, model, access, resume: opts.resume ?? null, gitInit: opts.gitInit, sessionId: opts.sessionId ?? null, cwd: opts.cwd ?? null,
+      envPrefix: prefix, configDir: prefix ? dir : null,
+    };
   }
 
   /** What the menu previews for a launch of `host`: the short command, or a shell's note. */
@@ -182,7 +186,12 @@ export class TerminalLauncher {
 
   // ── launching ──
 
-  /** Starts a terminal: makes Scratch when it lands there, types the agent's line, selects it and shows Term. */
+  /**
+   * Starts a terminal: makes Scratch when it lands there, starts the agent (as the terminal's own process, or by its
+   * typed line when the app falls back: agent-computer D18), selects it and shows Term. Settles once the terminal is in
+   * the deck; the "Started …" note follows when its agent has started, naming why the computer is off when main fell
+   * back. A terminal main refused says why in itself and ends, with no note.
+   */
   async launch(req: LaunchRequest): Promise<Launched> {
     let { place, why } = this.resolve(req.host, req.picked, req.context);
     let gitInit = !!req.gitInit;
@@ -194,12 +203,15 @@ export class TerminalLauncher {
         if (!fs.existsSync(place.dir)) { place = vaultPlace(this.world()); why = "default"; aside = "Scratch needs file writes"; }
       }
     }
-    const session = this.start(req.host, place, { resume: req.resume ?? null, gitInit, origin: req.origin ?? null });
+    const { session, ready } = this.start(req.host, place, { resume: req.resume ?? null, gitInit, origin: req.origin ?? null });
     if (!req.origin) {
       this.plugin.settings.terminalChoice = rememberTerminalChoice(this.plugin.settings.terminalChoice, { host: req.host, workspace: place.workspace ?? null });
       void this.plugin.saveSettings();
     }
-    this.announce(session, place, why, req.host, aside);
+    ready.then((off) => {
+      const asides = [aside, off ? `the computer is off for this session: ${off}` : null].filter((a): a is string => !!a);
+      this.announce(session, place, why, req.host, asides.length ? asides.join("; ") : null);
+    }, () => { /* the terminal says why it did not start */ });
     return { session, place, why };
   }
 
@@ -235,7 +247,7 @@ export class TerminalLauncher {
       this.ensureFolder(slug, workspaceStubs(slug));
     } catch (e) {
       // File writes are off (AOS_APP_WRITE): let the CLI make it, in a shell the user can see.
-      const s = this.start("shell", vaultPlace(this.world()), { resume: null, gitInit: false, origin: "New workspace" });
+      const s = this.start("shell", vaultPlace(this.world()), { resume: null, gitInit: false, origin: "New workspace" }).session;
       s.write(` aos workspace new ${shq(name)}\r`);
       this.announce(s, vaultPlace(this.world()), "picked", "shell");
       throw new Error(`File writes are off, so the workspace is being made with aos workspace new in a shell (${e instanceof Error ? e.message : String(e)})`);
@@ -306,25 +318,35 @@ export class TerminalLauncher {
     }
   }
 
-  /** The terminal itself: a fresh shell in the place, with the agent's line typed when it is an agent. Throws before any
-   *  terminal opens when the line would carry a value that starts with `-` (launchArgs). */
-  private start(host: TermHost, place: Place, o: { resume: "last" | { id: string } | null; gitInit: boolean; origin: string | null }): TerminalSession {
+  /**
+   * The terminal itself, in the deck at once: a shell in the place, or for an agent a terminal that main runs the agent
+   * in as its own process (TerminalPool.createAgent, agent-computer D18). `ready` settles when the agent has started:
+   * null, or the reason main fell back to the typed line; it rejects when main refused it (the terminal then says why).
+   * Throws before any terminal opens when the line would carry a value that starts with `-` (launchArgs).
+   */
+  private start(host: TermHost, place: Place, o: { resume: "last" | { id: string } | null; gitInit: boolean; origin: string | null }): { session: TerminalSession; ready: Promise<string | null> } {
     const pool = this.plugin.terminalPool;
     const shell = this.plugin.settings.terminalShell || pool.defaults.shell;
     // The deck names a new Claude Code conversation; a resume by id names the thread on either host. Either way the
     // terminal keeps the id, so its end bar resumes this conversation and not the folder's latest (spaces-redesign D7).
     const ids = launchIds(host, o.resume, newId);
     const sessionId = ids.known;
-    const spec = host === "shell" ? null : this.spec(host, { resume: o.resume, gitInit: o.gitInit, sessionId: ids.fresh, cwd: place.dir });
-    const line = spec ? launchLine(spec) : null;
-    const session = pool.create({
-      shell, cwd: place.dir,
-      meta: { host, place, origin: o.origin, label: null, model: spec?.model ?? null, access: spec?.access ?? null, sessionId, startedAt: Date.now() },
+    if (host === "shell") {
+      const session = pool.create({
+        shell, cwd: place.dir,
+        meta: { host, place, origin: o.origin, label: null, model: null, access: null, sessionId, startedAt: Date.now() },
+      });
+      if (o.gitInit) session.write(" [ -e .git ] || git init -q\r");
+      pool.select(session.id);
+      return { session, ready: Promise.resolve(null) };
+    }
+    const spec = this.spec(host, { resume: o.resume, gitInit: o.gitInit, sessionId: ids.fresh, cwd: place.dir });
+    const { session, ready } = pool.createAgent({
+      spec, place, shell,
+      meta: { host, place, origin: o.origin, label: null, model: spec.model, access: spec.access, sessionId, startedAt: Date.now() },
     });
-    if (line) session.write(`${line}\r`);
-    else if (o.gitInit) session.write(" [ -e .git ] || git init -q\r");
     pool.select(session.id);
-    return session;
+    return { session, ready: ready.then((r) => r.reason) };
   }
 
   private announce(session: TerminalSession, place: Place, why: PlaceWhy, host: TermHost, aside: string | null = null): void {

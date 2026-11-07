@@ -3,7 +3,7 @@
 // HUD sends and small enough that one call cannot exhaust main.
 
 import { z } from "zod";
-import type { ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
+import type { ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
 
 const MB = 1024 * 1024;
 
@@ -62,6 +62,21 @@ export const PtySpawnRequestSchema: z.ZodType<PtySpawnRequest> = z.object({
   cols: z.number().int().min(1).max(2000),
   rows: z.number().int().min(1).max(1000),
   env: EnvSet.optional(),
+});
+
+/** A Code launch's agent (agent-computer D18): the host and its words; main resolves the binary and checks the words. */
+export const PtyAgentRequestSchema: z.ZodType<PtyAgentRequest> = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,127}$/),
+  host: z.enum(["claude", "codex"]),
+  argv: z.array(Text(4096)).max(64),
+  cwd: AbsPath,
+  configDir: AbsPath.nullable(),
+  gitInit: z.boolean(),
+  cols: z.number().int().min(1).max(1000),
+  rows: z.number().int().min(1).max(1000),
+  place: Text(512),
+  label: Text(200),
+  access: z.enum(["host", "read", "edit", "run"]),
 });
 
 export const PtyWriteArgs = z.object({ id: Id, data: z.string().max(MB) });

@@ -22,6 +22,10 @@ function world(answers: Array<Answer | ((args: string[]) => Answer)>) {
   const calls: string[][] = [];
   const scans: string[] = [];
   const terminals: Array<{ cwd: string; host: string; typed: string[] }> = [];
+  const agents: Array<{ spec: { host: string; configDir?: string | null }; place: { dir: string }; shell?: string }> = [];
+  const launched: unknown[] = [];
+  /** What a Code launch's attach answers (TerminalPool.createAgent): main's agent, a fallback's reason, or a refusal. */
+  let attach: () => Promise<{ agent: boolean; reason: string | null }> = async () => ({ agent: true, reason: null });
   let n = 0;
   const plugin = {
     vaultRoot: () => vault,
@@ -43,12 +47,20 @@ function world(answers: Array<Answer | ((args: string[]) => Answer)>) {
         terminals.push(t);
         return { id: `t${++n}`, write: (s: string) => { t.typed.push(s); } };
       },
+      createAgent(o: { spec: { host: string; configDir?: string | null }; place: { dir: string }; shell?: string }) {
+        agents.push(o);
+        return { session: { id: `t${++n}`, write: () => {} }, ready: attach() };
+      },
       select() {},
-      trigger() {},
+      trigger(name: string, note: unknown) { if (name === "session-launched") launched.push(note); },
     },
   };
   const launcher = new TerminalLauncher(plugin as never);
-  return { root, vault, calls, scans, terminals, launcher, ws: (...rel: string[]) => path.join(vault, "workspaces", ...rel) };
+  return {
+    root, vault, calls, scans, terminals, agents, launched, launcher,
+    setAttach: (f: typeof attach) => { attach = f; },
+    ws: (...rel: string[]) => path.join(vault, "workspaces", ...rel),
+  };
 }
 
 const sha = (p: string): string => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
@@ -146,4 +158,34 @@ test("setManifest: a compare-and-set miss reads the hash again and retries once;
   fs.mkdirSync(twice.ws("tide"));
   const r = await twice.launcher.setManifest("tide", { pinned: true });
   assert.deepEqual([r.ok, !r.ok && r.reason, twice.calls.length], [false, "workspace.md changed meanwhile: try again", 2]);
+});
+
+const flush = async (): Promise<void> => { for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r)); };
+
+test("launch: an agent goes through the pool's createAgent (agent-computer D18); it settles at once, and the note follows, saying when the computer is off", async () => {
+  const w = world([]);
+  let answer: (v: { agent: boolean; reason: string | null }) => void = () => {};
+  w.setAttach(() => new Promise((r) => { answer = r; }));
+  const r = await w.launcher.launch({ host: "claude", picked: { kind: "vault", label: "Vault", dir: w.vault } });
+  assert.equal(r.session.id, "t1", "settled while the agent still starts: the menu and the tab do not wait for main");
+  assert.deepEqual(w.terminals, [], "no shell with a typed line");
+  assert.deepEqual(w.agents.map((a) => [a.spec.host, a.place.dir, a.shell]), [["claude", w.vault, "/bin/sh"]]);
+  assert.equal(w.agents[0].spec.configDir, path.join(w.root, "cfg"), "the config folder the line's prefix names, for main to set");
+  assert.deepEqual(w.launched, []);
+  answer({ agent: true, reason: null });
+  await flush();
+  assert.deepEqual((w.launched[0] as { text: string }).text, "Started Claude Code in Vault");
+  w.setAttach(async () => ({ agent: false, reason: "Claude Code at /opt/claude isn't a supported install: unsigned" }));
+  await w.launcher.launch({ host: "claude", picked: { kind: "vault", label: "Vault", dir: w.vault } });
+  await flush();
+  assert.equal((w.launched[1] as { text: string }).text, "Started Claude Code in Vault (the computer is off for this session: Claude Code at /opt/claude isn't a supported install: unsigned)");
+});
+
+test("launch: a refused agent announces nothing: its terminal says why (TerminalPool.createAgent)", async () => {
+  const w = world([]);
+  w.setAttach(async () => { throw new Error("Claude Code did not start: a working directory that is not there"); });
+  await w.launcher.launch({ host: "claude", picked: { kind: "vault", label: "Vault", dir: w.vault } });
+  await flush();
+  assert.deepEqual(w.launched, []);
+  assert.equal(w.agents.length, 1);
 });
