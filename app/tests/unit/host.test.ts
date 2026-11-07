@@ -112,9 +112,8 @@ test("normalizePath matches Obsidian's", () => {
 test("write surfaces: every verified surface by default; AOS_APP_WRITE narrows or widens a run", () => {
   const verified = SURFACES.filter((s) => s.verified).map((s) => s.id);
   assert.deepEqual(loadWriteSettings({}), { surfaces: verified, source: "default" });
-  // Every surface but Hosts and MCP server changes is verified today (2.0's Local engine, Go local, Import and MCP
-  // servers after their live checks on 2026-10-16); Hosts waits for a host added live through it (install-import B2),
-  // Computer waits for its live check (agent-computer D26); MCP server changes for a park, a Turn on, a remove and an add live on each host (connectors-tab D21).
+  // Two surfaces are unverified today: Hosts waits for a host added live through it (install-import B2), and Computer
+  // for its live check (agent-computer D26). Everything else is verified, including MCP server changes (connectors-tab D21).
   assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["hosts", "computer"]);
   assert.ok(verified.length > 0 && verified.length === SURFACES.length - 2);
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo,chat" }), { surfaces: ["todo", "chat"], source: "AOS_APP_WRITE" });

@@ -27,10 +27,13 @@ export interface BridgeOptions {
   peer: PeerAddon;
   handle: (agent: AgentRef, call: ToolCall) => Promise<Omit<ToolReply, "id">>;
   onClose: (agent: AgentRef) => void;
+  /** How long a connection may stay silent before its hello is answered (5 s; tests shorten it). */
+  helloMs?: number;
 }
 
 export class ComputerBridge {
   private server: net.Server | null = null;
+  private bound: { dev: number; ino: number } | null = null;
   private readonly conns = new Set<net.Socket>();
 
   constructor(private readonly o: BridgeOptions) {}
@@ -41,14 +44,27 @@ export class ComputerBridge {
     const dir = path.dirname(socketPath);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(dir, 0o700);
-    try { fs.unlinkSync(socketPath); } catch { /* none left over */ }
+    // Only a leftover socket is replaced; a file, link or folder at the path is somebody's, so refuse.
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(socketPath); } catch { /* nothing there */ }
+    if (st) {
+      if (!st.isSocket()) throw new Error(`${socketPath} exists and is not a socket, so the bridge will not replace it`);
+      fs.unlinkSync(socketPath);
+    }
     const server = net.createServer((s) => this.connection(s));
     server.on("error", () => {});
     await new Promise<void>((res, rej) => {
       server.once("error", rej);
       server.listen(socketPath, () => { server.off("error", rej); res(); });
     });
-    fs.chmodSync(socketPath, 0o600);
+    try {
+      fs.chmodSync(socketPath, 0o600);
+      const b = fs.lstatSync(socketPath);
+      this.bound = { dev: b.dev, ino: b.ino };
+    } catch (err) {
+      await new Promise<void>((res) => server.close(() => res()));
+      throw err;
+    }
     this.server = server;
   }
 
@@ -57,7 +73,13 @@ export class ComputerBridge {
     this.server = null;
     for (const s of this.conns) s.destroy();
     if (server) await new Promise<void>((res) => server.close(() => res()));
-    try { fs.unlinkSync(this.o.socketPath); } catch { /* already gone */ }
+    // libuv unlinks by name on close; make sure of it, but only if the path is still the socket this bridge bound.
+    const bound = this.bound;
+    this.bound = null;
+    try {
+      const now = fs.lstatSync(this.o.socketPath);
+      if (bound && now.dev === bound.dev && now.ino === bound.ino) fs.unlinkSync(this.o.socketPath);
+    } catch { /* already gone */ }
   }
 
   private connection(sock: net.Socket): void {
@@ -66,9 +88,12 @@ export class ComputerBridge {
     let hello = false;
     let buf = "";
     let done = false;
+    sock.setEncoding("utf8");   // a StringDecoder: a character split across reads is kept whole
+    const timer = setTimeout(() => end(), this.o.helloMs ?? 5000);
     const end = (): void => {
       if (done) return;
       done = true;
+      clearTimeout(timer);
       this.conns.delete(sock);
       sock.destroy();
       if (agent) { try { this.o.onClose(agent); } catch { /* a later task's cleanup must not break the bridge */ } }
@@ -81,6 +106,7 @@ export class ComputerBridge {
       if (!hello) {
         if (msg.hello !== 1) return end();
         hello = true;
+        clearTimeout(timer);
         let verdict: Admit;
         try { verdict = this.o.admit(this.o.peer.peerPid(socketFd(sock))); }
         catch { verdict = { ok: false, reason: REFUSED }; }
@@ -93,17 +119,18 @@ export class ComputerBridge {
       const who = agent;
       const call: ToolCall = { id: msg.id, tool: msg.tool as ComputerTool, args: msg.args !== null && typeof msg.args === "object" && !Array.isArray(msg.args) ? msg.args : {} };
       void (async () => {
-        let reply: ToolReply;
-        try { reply = { id: call.id, ...(await this.o.handle(who, call)) }; }
-        catch (err) { reply = { id: call.id, text: `The computer failed: ${err instanceof Error ? err.message : String(err)}`, isError: true }; }
-        write(reply);
+        try {
+          write({ id: call.id, ...(await this.o.handle(who, call)) } as ToolReply);
+        } catch (err) {
+          try { write({ id: call.id, text: `The computer failed: ${err instanceof Error ? err.message : String(err)}`, isError: true }); } catch { end(); }
+        }
       })();
     };
     sock.on("error", end);
     sock.on("close", end);
-    sock.on("data", (d) => {
+    sock.on("data", (d: string) => {
       try {
-        buf += d.toString("utf8");
+        buf += d;
         let i: number;
         while (!done && (i = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, i);

@@ -294,13 +294,19 @@ function setTheme(source: ThemeSource): ThemeState {
 // agent-computer D18, D26: the bridge socket the agent CLIs' MCP servers connect to. One per attached vault, only when the
 // peer addon loaded. The handler is a stub until the computer service arrives: status answers, every other tool says so.
 let bridge: ComputerBridge | null = null;
+let bridgeRoot: string | null = null;
+let bridgeChain: Promise<void> = Promise.resolve();
+/** Starts the bridge for a vault, one at a time. The same vault again keeps the running one: restarting would drop admitted
+ * connections whose CLIs cannot reconnect (each connects once). */
 function startBridge(root: string): void {
-  const old = bridge;
-  bridge = null;
-  void (async () => {
+  bridgeChain = bridgeChain.then(async () => {
     try {
-      await old?.stop();
       if (!computerSys || !computerPeer) return;
+      if (bridge && bridgeRoot === root) return;
+      const old = bridge;
+      bridge = null;
+      bridgeRoot = null;
+      await old?.stop();
       const sys = computerSys;
       const socketPath = path.join(app.getPath("userData"), "computer", "bridge.sock");
       const next = new ComputerBridge({
@@ -318,13 +324,14 @@ function startBridge(root: string): void {
         onClose: () => {},
       });
       await next.start();
-      if (bridge !== null || vault.root !== root) { await next.stop(); return; }
       bridge = next;
-      writeHudHostMarker(root, { name: app.getName(), version: app.getVersion(), computerSocket: socketPath });
+      bridgeRoot = root;
+      try { writeHudHostMarker(root, { name: app.getName(), version: app.getVersion(), computerSocket: socketPath }); }
+      catch (err) { console.warn(`[main] could not record the computer socket in ${root}: ${err instanceof Error ? err.message : String(err)}`); }
     } catch (err) {
       console.warn(`[main] the computer bridge did not start: ${err instanceof Error ? err.message : String(err)}`);
     }
-  })();
+  });
 }
 
 /**

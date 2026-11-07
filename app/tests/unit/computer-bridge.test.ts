@@ -1,4 +1,5 @@
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -14,16 +15,20 @@ import type { PeerAddon } from "../../src/main/computer/peer";
 const AGENT: AgentRef = { pid: 4242, host: "claude", page: "code", key: "code:t1", label: "Code 1", place: "~/proj", access: "read" };
 const peer: PeerAddon = { peerPid: () => 4242, procInfo: () => null, teamId: () => null, processTeamId: () => null };
 
+const made: string[] = [];
+afterEach(() => { for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
 function tmpSock(): string {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-br-")), "computer", "bridge.sock");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "aos-br-"));
+  made.push(d);
+  return path.join(d, "computer", "bridge.sock");
 }
 
-interface Opts { admit?: (pid: number) => Admit; handle?: (a: AgentRef, c: ToolCall) => Promise<Omit<ToolReply, "id">>; onClose?: (a: AgentRef) => void }
+interface Opts { peer?: PeerAddon; helloMs?: number; admit?: (pid: number) => Admit; handle?: (a: AgentRef, c: ToolCall) => Promise<Omit<ToolReply, "id">>; onClose?: (a: AgentRef) => void }
 async function boot(o: Opts = {}) {
   const socketPath = tmpSock();
   const calls: Array<{ agent: AgentRef; call: ToolCall }> = [];
   const bridge = new ComputerBridge({
-    socketPath, peer,
+    socketPath, peer: o.peer ?? peer, helloMs: o.helloMs,
     admit: o.admit ?? (() => ({ ok: true, agent: AGENT })),
     handle: o.handle ?? (async (agent, call) => { calls.push({ agent, call }); return { text: `done ${call.tool}` }; }),
     onClose: o.onClose ?? (() => {}),
@@ -160,7 +165,9 @@ test("one connection's failure does not touch another", async () => {
 test("the folder is 0700, the socket 0600, and a stale socket is replaced", async () => {
   const socketPath = tmpSock();
   fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o755 });
-  fs.writeFileSync(socketPath, "stale");
+  // A real leftover: a process that listened and was killed leaves its socket file behind.
+  spawnSync(process.execPath, ["-e", `require("net").createServer().listen(${JSON.stringify(socketPath)}, () => process.kill(process.pid, "SIGKILL"))`]);
+  assert.ok(fs.lstatSync(socketPath).isSocket(), "the leftover is a socket");
   const bridge = new ComputerBridge({ socketPath, peer, admit: () => ({ ok: true, agent: AGENT }), handle: async () => ({ text: "" }), onClose: () => {} });
   await bridge.start();
   assert.equal(fs.statSync(path.dirname(socketPath)).mode & 0o777, 0o700);
@@ -176,4 +183,97 @@ test("a path over 103 bytes is refused", async () => {
   const bridge = new ComputerBridge({ socketPath, peer, admit: () => ({ ok: true, agent: AGENT }), handle: async () => ({ text: "" }), onClose: () => {} });
   await assert.rejects(bridge.start(), /103/);
   assert.equal(fs.existsSync(path.dirname(socketPath)), false);
+});
+
+test("a regular file, a link or a folder at the path makes start() reject and is left alone", async () => {
+  for (const make of [(p: string) => fs.writeFileSync(p, "mine"), (p: string) => fs.symlinkSync("/nonexistent", p), (p: string) => fs.mkdirSync(p)]) {
+    const socketPath = tmpSock();
+    fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+    make(socketPath);
+    const bridge = new ComputerBridge({ socketPath, peer, admit: () => ({ ok: true, agent: AGENT }), handle: async () => ({ text: "" }), onClose: () => {} });
+    await assert.rejects(bridge.start(), /not a socket/);
+    assert.ok(fs.lstatSync(socketPath));
+  }
+});
+
+test("a line over 16 KiB of multibyte text reaches handle unchanged", async () => {
+  const seen: string[] = [];
+  const { bridge, socketPath } = await boot({ handle: async (_a, call) => { seen.push(String(call.args.t)); return { text: "ok" }; } });
+  const c = client(socketPath);
+  c.send({ hello: 1 });
+  await c.line(1);
+  const t = "é漢😀".repeat(8000);
+  c.send({ id: 1, tool: "computer_type", args: { t } });
+  await c.line(2);
+  assert.equal(seen[0], t);
+  c.sock.destroy();
+  await bridge.stop();
+});
+
+test("admit or peerPid throwing is a refusal", async () => {
+  for (const o of [{ admit: () => { throw new Error("x"); } }, { peer: { ...peer, peerPid: () => { throw new Error("y"); } } }]) {
+    const { bridge, socketPath } = await boot(o);
+    const c = client(socketPath);
+    c.send({ hello: 1 });
+    const r = await c.line(1);
+    assert.equal(r.admitted, false);
+    await c.closed();
+    await bridge.stop();
+  }
+});
+
+test("hello and a first call in one write: the admitted line, then the reply", async () => {
+  const { bridge, socketPath } = await boot();
+  const c = client(socketPath);
+  c.sock.write(`${JSON.stringify({ hello: 1 })}\n${JSON.stringify({ id: 3, tool: "computer_status", args: {} })}\n`);
+  assert.deepEqual(await c.line(1), { admitted: true, session: "Code 1" });
+  assert.deepEqual(await c.line(2), { id: 3, text: "done computer_status" });
+  c.sock.destroy();
+  await bridge.stop();
+});
+
+test("a non-numeric id, or JSON that is not an object, closes the connection", async () => {
+  const { bridge, socketPath } = await boot();
+  for (const bad of [{ id: "1", tool: "computer_status", args: {} }, [], null]) {
+    const c = client(socketPath);
+    c.send({ hello: 1 });
+    await c.line(1);
+    c.send(bad);
+    await c.closed();
+  }
+  await bridge.stop();
+});
+
+test("stop() with a call in flight writes nothing after the close", async () => {
+  let release!: () => void;
+  const { bridge, socketPath } = await boot({ handle: () => new Promise((res) => { release = () => res({ text: "late" }); }) });
+  const c = client(socketPath);
+  c.send({ hello: 1 });
+  await c.line(1);
+  c.send({ id: 1, tool: "computer_wait", args: {} });
+  await new Promise((r) => setTimeout(r, 50));
+  await bridge.stop();
+  release();
+  await c.closed();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(c.lines.length, 1);
+});
+
+test("a reply that cannot be serialised becomes an error reply", async () => {
+  const { bridge, socketPath } = await boot({ handle: async () => ({ text: 1n as unknown as string }) });
+  const c = client(socketPath);
+  c.send({ hello: 1 });
+  await c.line(1);
+  c.send({ id: 1, tool: "computer_status", args: {} });
+  const r = await c.line(2);
+  assert.equal(r.isError, true);
+  c.sock.destroy();
+  await bridge.stop();
+});
+
+test("a connection that never says hello is closed after the deadline", async () => {
+  const { bridge, socketPath } = await boot({ helloMs: 50 });
+  const c = client(socketPath);
+  await c.closed();
+  await bridge.stop();
 });
