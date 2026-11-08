@@ -295,6 +295,8 @@ export function formatSnapshot(nodes: AxNode[], o: {
   values?: Iterable<string | undefined>; whole?: Iterable<string | undefined>;
   /** The sensitive nodes that are one-time-code fields: their accessibility values go into `whole` too. */
   otp?: ReadonlySet<number>;
+  /** Values another site carried into this page's URL (R35): scrubbed from the `url` and `origin` attributes only. */
+  urlValues?: Iterable<string | undefined>;
 }): Snapshot {
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const isSensitive = (n: AxNode): boolean => n.backendDOMNodeId !== undefined && o.sensitive.has(n.backendDOMNodeId);
@@ -319,9 +321,10 @@ export function formatSnapshot(nodes: AxNode[], o: {
     }
   }
   const scrub = scrubber(secrets, whole);
+  const scrubUrl = scrubber([...secrets, ...(o.urlValues ?? [])], whole);
 
-  const url = scrub(o.url);
-  const open = `<untrusted-page origin="${attrValue(scrub(o.origin))}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;
+  const url = scrubUrl(o.url);
+  const open = `<untrusted-page origin="${attrValue(scrubUrl(o.origin))}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;
   const close = "</untrusted-page>";
   const lines = [open, `title ${quote(clip(scrub(o.title)))}`];
   const reserve = `\n[truncated: ${nodes.length} more nodes]`.length + 1 + close.length;

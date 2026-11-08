@@ -337,6 +337,11 @@ test("formatSnapshot scrubs the DOM values it is given too, and a ref keeps its 
   assert.match(formatSnapshot(k9z, opts([3])).text, /button "Enter k9z now"/, "not digits, not known as a one-time-code field: kept");
   assert.match(formatSnapshot(k9z, { ...opts([3]), otp: new Set([3]) }).text, /button "Enter •••••• now"/, "a one-time-code field's short value goes");
   assert.match(formatSnapshot(k9z, { ...opts([3]), whole: ["k9z"] }).text, /button "Enter •••••• now"/, "so does one given as `whole`");
+  // R35: values carried from another site scrub the URL (and origin) only, never names or text.
+  const carried = formatSnapshot([ax("1", "RootWebArea", "", ["2"]), ax("2", "button", "Delete account")], { ...opts([]), url: "https://login.test/v1?ref=Delete+account&code=888888", urlValues: ["Delete", "account", "888888"] });
+  assert.ok(carried.text.includes('url="https://login.test/v1?ref=••••••+••••••&amp;code=••••••"'), carried.text);
+  assert.match(carried.text, /button "Delete account"/, "the page's own words stay");
+  assert.equal(carried.refs.get("e1")!.target.name, "Delete account");
   assert.equal(refFor(s, 2)![1].target.name, "Keep 000123", "the ref's target is what the gate judges: raw, scrubbed only on its way out");
   // A planted value equal to a label: the line is scrubbed, the ref's target is not, so the gate still asks.
   const planted = formatSnapshot([ax("1", "RootWebArea", "", ["2", "3"]), ax("2", "textbox", "Code", [], { value: "Delete" }), ax("3", "button", "Delete branch")], opts([2]));

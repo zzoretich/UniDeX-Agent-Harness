@@ -106,6 +106,12 @@ interface Tab {
   memory: SecretMemory;
   /** The main frame's id (from `Page.frameNavigated`) and the frames of the last DOM read: where a leaving read runs (G2). */
   frame: string; frames: string[];
+  /** A page-started navigation under way: the site being left and the read of its document's values (G2), consumed at
+   *  commit (R35: what the committed URL carries from the old site goes to the carried set). */
+  leaving: { from: string; read: Promise<Secrets | null> } | null;
+  /** D9 (F1): the current document arrived through a navigation whose leaving read failed, so its URL may carry a code
+   *  no one read: the URL goes out without its query and fragment while this document is current. */
+  urlHidden: boolean;
 }
 
 /** A sensitive field's current value and whether the field is a one-time-code field. */
@@ -215,10 +221,7 @@ export class ComputerBrowser {
 
   /** Each tab's URL and title scrubbed of the secrets the tab has read (D9: a code submitted by GET sits in the URL). */
   tabs(): TabInfo[] {
-    return this.list.map((t, index) => {
-      const out = this.remembered(t, [this.site(t)]);
-      return { index, url: out(t.wc.getURL()), title: out(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current };
-    });
+    return this.list.map((t, index) => ({ index, url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current }));
   }
 
   /** Changes on every main-frame navigation commit of the active tab, and when the active tab changes. */
@@ -243,8 +246,7 @@ export class ComputerBrowser {
     if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") throw new Error(`The page redirected to ${t.refused ? `a ${t.refused}` : "a non-web"} URL, which is refused.`);
     // ERR_ABORTED: the page went somewhere else before it finished loading.
     if (failed && failed.code !== "ERR_ABORTED") throw new Error(`Could not open ${href}: ${failed.code ?? failed.message ?? "failed"}.`);
-    const out = this.remembered(t, [this.site(t)]);
-    return { url: out(t.wc.getURL()), title: out(t.wc.getTitle()) };
+    return { url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()) };
   }
 
   /** Makes tab `index` the active one. */
@@ -266,6 +268,9 @@ export class ComputerBrowser {
 
   async snapshot(tab?: number): Promise<Snapshot> {
     const t = this.tab(tab);
+    // The site and document the reads belong to are fixed before them: a navigation during the reads (a value of the
+    // old site read after the page moved on) is remembered for neither.
+    const site = this.site(t), seq = t.seq;
     const dom = await this.locked(t, () => this.readDom(t));
     const before = await this.fieldValues(t, dom);
     const frames: { id: string }[] = [];
@@ -279,16 +284,21 @@ export class ComputerBrowser {
         if (i === 0) throw e; // a child frame that went away meanwhile is left out
       }
     }
-    const url = t.wc.getURL();
     // D9: the fields' DOM values go into the scrub too (a type=number field's AX value is the parsed float, not its string),
     // read before and after the accessibility trees so a value that changed meanwhile is scrubbed in both forms.
     const fields = [...before, ...(await this.fieldValues(t, dom))];
     const otp = new Set(fields.filter((f) => f.otp).map((f) => f.b));
-    const site = this.site(t);
-    this.remember(t, site, { values: fields.filter((f) => !f.otp).map((f) => f.value), whole: fields.filter((f) => f.otp).map((f) => f.value) });
-    for (const { nodes } of trees) this.remember(t, site, { values: secretsOf(nodes, new Set([...t.sensitive].filter((b) => !otp.has(b)))), whole: secretsOf(nodes, otp) });
-    // R32: the site's remembered secrets go into the scrub too (a code submitted by GET sits in the URL and the page's text).
-    const snap = formatSnapshot(mergeFrames(trees, dom), { origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP, ...t.memory.pool([site]), otp });
+    const read: Secrets = { values: fields.filter((f) => !f.otp).map((f) => f.value), whole: fields.filter((f) => f.otp).map((f) => f.value) };
+    for (const { nodes } of trees) { read.values.push(...secretsOf(nodes, new Set([...t.sensitive].filter((b) => !otp.has(b))))); read.whole.push(...secretsOf(nodes, otp)); }
+    if (t.seq === seq) this.remember(t, site, read);
+    // R32: the values just read and the site's remembered secrets scrub the text; what other sites carried into the URL
+    // scrubs the URL only (R35); a URL whose leaving read failed loses its query and fragment (F1).
+    const pool = t.memory.pool([site]);
+    const url = t.urlHidden ? stripQuery(t.wc.getURL()) : t.wc.getURL();
+    const snap = formatSnapshot(mergeFrames(trees, dom), {
+      origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP,
+      values: [...read.values, ...pool.values], whole: [...read.whole, ...pool.whole], otp, urlValues: t.memory.carried(),
+    });
     t.refs = snap.refs;
     t.refsToken = this.tokenOf(t);
     return snap;
@@ -507,7 +517,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
-      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [],
+      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], leaving: null, urlHidden: false,
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -616,11 +626,11 @@ export class ComputerBrowser {
     // scrubbed from the note, once the leaving document's values have been read (or that read has failed). This event is
     // the earliest the main process hears of a page-started navigation (before will-frame-navigate; the probe showed the
     // old document gone about 5 ms later on a local server), so the leaving read starts here.
-    wc.on("did-start-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument && e.initiator && navAllowed(e.url)) void this.noteNavigation(t, e.url); });
-    wc.on("did-navigate", () => { t.seq++; this.o.hooks.changed(); });
+    wc.on("did-start-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument && e.initiator && navAllowed(e.url)) this.noteNavigation(t, e.url); });
+    wc.on("did-navigate", (_e, url) => { t.seq++; this.committed(t, url); this.o.hooks.changed(); });
     wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => { if (isMainFrame) { t.seq++; this.o.hooks.changed(); } });
     wc.on("page-title-updated", () => this.o.hooks.changed());
-    wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.remembered(t, [this.site(t)])(wc.getURL()))} stopped (${d.reason}).`));
+    wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.urlOut(t))} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });
     wc.debugger.on("message", (_e, method: string, params: Record<string, unknown>) => this.onCdp(t, method, params));
     wc.debugger.on("detach", (_e, reason: string) => { if (!t.closing) note(`The tab's DevTools connection closed (${reason}); the next action reconnects.`); });
@@ -682,13 +692,13 @@ export class ComputerBrowser {
 
   private async popup(t: Tab, d: Electron.HandlerDetails): Promise<void> {
     const from = this.site(t);
-    const out = this.remembered(t, [from, siteOf(d.url) ?? "null"]);
+    const out = this.urlScrub(t, [from, siteOf(d.url) ?? "null"]);
     if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${clipUrl(out(d.url))} in a new tab; ${MAX_TABS} tabs are open.`); return; }
     const nt = await this.addTab(t.openedBy);
-    // R32: the new tab inherits the opener's secrets for the opener's site only; a code the opener put in the new tab's URL
-    // is pinned for the site that URL is on.
+    // R32: the new tab inherits the opener's secrets for the opener's site only. R35: a value the opener put in the new
+    // tab's URL is carried for that URL string only, never into the new tab's site pool.
     nt.memory.inherit(t.memory, from);
-    nt.memory.pin(siteOf(d.url) ?? "null", this.inUrl(d.url, t.memory.pool([from])));
+    nt.memory.carry(this.inUrl(d.url, t.memory.pool([from])));
     this.o.hooks.note(`The page opened ${clipUrl(out(d.url))} in a new tab.`);
     const post = d.postBody;
     // A form posted into a new tab keeps its fields, never a file from this Mac (only raw data is passed on).
@@ -919,6 +929,8 @@ export class ComputerBrowser {
    *  it, remembered for `site` (the current one by default). The sensitive set is refreshed first unless the caller just
    *  read `dom`; `ids` reads a given set of fields (the document being left) instead of the tab's current set. */
   private async secrets(t: Tab, o: { dom?: DomIndex; ids?: Iterable<number>; site?: string } = {}): Promise<Secrets> {
+    // The site and document are fixed before the reads; a navigation during them leaves the values unremembered.
+    const site = o.site ?? this.site(t), seq = t.seq;
     const d = o.dom ?? await this.locked(t, () => this.readDom(t));
     const ids = new Set(o.ids ?? t.sensitive);
     const fields = await this.fieldValues(t, d, ids);
@@ -928,14 +940,15 @@ export class ComputerBrowser {
       const { nodes } = await this.send<{ nodes: CdpAxNode[] }>(t, "Accessibility.getPartialAXTree", { backendNodeId: b, fetchRelatives: false }).catch(unlessGone({ nodes: [] as CdpAxNode[] }));
       (otp.has(b) ? out.whole : out.values).push(...secretsOf(nodes, ids));
     }
-    return this.remember(t, o.site ?? this.site(t), out);
+    return t.seq === seq ? this.remember(t, site, out) : out;
   }
 
   /** The site (origin) the tab is on, the key its remembered secrets are scoped by (R32). */
   private site(t: Tab): string { return siteOf(t.wc.getURL()) ?? "null"; }
 
-  private remember(t: Tab, site: string, s: Secrets): Secrets {
-    t.memory.remember(site, s);
+  /** Adds `s` to the tab's memory for `site`; `keep` (the current site by default) is never evicted with the oldest sites. */
+  private remember(t: Tab, site: string, s: Secrets, keep: string = site): Secrets {
+    t.memory.remember(site, s, keep);
     return s;
   }
 
@@ -945,9 +958,21 @@ export class ComputerBrowser {
     return scrubber([...s.values, ...mem.values], [...s.whole, ...mem.whole]);
   }
 
-  /** The scrub from the tab's memory alone (for a URL or title going out where nothing new is read). */
+  /** The scrub from the tab's memory alone (for a title going out where nothing new is read). */
   private remembered(t: Tab, sites: string[]): (text: string) => string {
     return this.scrubWith(t, { values: [], whole: [] }, sites);
+  }
+
+  /** The scrub for a URL string: the sites' pools plus what other sites carried into this tab's URLs (R35). */
+  private urlScrub(t: Tab, sites: string[]): (url: string) => string {
+    return this.scrubWith(t, { values: t.memory.carried(), whole: [] }, sites);
+  }
+
+  /** The tab's current URL as it may leave: scrubbed for the current site, and without its query and fragment while the
+   *  document arrived through a navigation whose leaving read failed (F1). */
+  private urlOut(t: Tab): string {
+    const url = t.wc.getURL();
+    return this.urlScrub(t, [this.site(t)])(t.urlHidden ? stripQuery(url) : url);
   }
 
   /** The secrets among `s` that appear in `url` (as given or percent-decoded): a code carried by a GET submit. */
@@ -975,26 +1000,49 @@ export class ComputerBrowser {
   }
 
   /**
-   * D21 with D9: the note for a page-started navigation, written once the leaving document's values have been read (or
-   * that read has failed). Secrets remembered for the site being left and the one arrived at are scrubbed from the URL
-   * (R32: a GET submit carries a code from the old site into the new URL); those found in the URL are pinned for the
-   * new site, so `tabs()`, `open()` and the snapshot there scrub them too. If the read did not complete, the URL goes
-   * out without its query string and fragment. SECURITY.md (Task 16): a code the person typed and submitted by GET with
-   * no agent read in between is covered only when the one-command read answers before the old document is torn down
+   * D21 with D9: a page-started main-frame navigation. The leaving document's values are read now (G2) and remembered
+   * for the site being left; the note is written once that read has answered or failed, with the secrets of the site
+   * being left and the one arrived at scrubbed from the URL (R32: a GET submit carries a code from the old site into
+   * the new URL), or without the URL's query and fragment when the read failed. What the URL carries goes to the
+   * carried set at commit (`committed`), not here: a cancelled navigation carries nothing, and the committed URL (after
+   * redirects) is the one `tabs()` shows. SECURITY.md (Task 16): a code the person typed and submitted by GET with no
+   * agent read in between is covered only when the one-command read answers before the old document is torn down
    * (about 5 ms after the navigation starts against a local server, longer against a real one); a field revealed from
    * type=password to text is outside that read's selector; and when the read loses, the new page's own text (a
-   * confirmation echoing the code) is scrubbed only if the same value was read earlier in this tab on that site.
+   * confirmation echoing the code) is scrubbed only if the same value was read earlier in this tab on that site, while
+   * its URL goes out without query and fragment.
    */
-  private async noteNavigation(t: Tab, url: string): Promise<void> {
+  private noteNavigation(t: Tab, url: string): void {
     const from = this.site(t), to = siteOf(url) ?? "null";
-    const got = await this.leavingValues(t, from);
-    // A value the URL carries is pinned first (never evicted), then the read is remembered: a flood of filler fields on
-    // the leaving page cannot push the one that reached the URL out of memory.
-    const known = t.memory.pool([from]);
-    t.memory.pin(to, this.inUrl(url, { values: [...known.values, ...(got?.values ?? [])], whole: [...known.whole, ...(got?.whole ?? [])] }));
-    if (got) this.remember(t, from, got);
-    const out = this.remembered(t, [from, to]);
-    this.o.hooks.note(`The page went to ${clipUrl(out(got ? url : stripQuery(url)))}`);
+    const read = this.leavingValues(t, from);
+    t.leaving = { from, read };
+    void read.then((got) => {
+      if (got) this.remember(t, from, got, this.site(t));
+      // The values just read scrub the note directly (a flood on the leaving page may have evicted one of them from the
+      // pool already, and the carry at commit runs after this).
+      const carried = { values: [...t.memory.carried(), ...(got?.values ?? [])], whole: got?.whole ?? [] };
+      const out = this.scrubWith(t, carried, [from, to]);
+      this.o.hooks.note(`The page went to ${clipUrl(out(got ? url : stripQuery(url)))}`);
+    });
+  }
+
+  /** R35: at a main-frame commit, the values the committed URL carries from the site being left (its pool and the
+   *  leaving read) go to the tab's carried set, which scrubs URL strings only; the URL is held back (query and fragment)
+   *  while the leaving read is pending and for the document's life when it failed (F1). An agent-started navigation
+   *  (`open()`) has no leaving read and carries nothing. */
+  private committed(t: Tab, url: string): void {
+    const leaving = t.leaving;
+    t.leaving = null;
+    t.urlHidden = leaving !== null;
+    if (!leaving) return;
+    const seq = t.seq;
+    void leaving.read.then((got) => {
+      if (t.seq !== seq) return;
+      const known = t.memory.pool([leaving.from]);
+      t.memory.carry(this.inUrl(url, { values: [...known.values, ...(got?.values ?? [])], whole: [...known.whole, ...(got?.whole ?? [])] }));
+      t.urlHidden = got === null;
+      this.o.hooks.changed();
+    });
   }
 
   /** D9: the DOM value (`this.value`) of every sensitive field in `dom`, read on the node in an isolated world of its
