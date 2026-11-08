@@ -451,8 +451,9 @@ test.describe("Spaces", () => {
     expect(await last.locator(".aos-spc-who").evaluate((el) => getComputedStyle(el).display)).toBe("inline-flex");
     await expect(last.locator(".aos-spc-who .aos-spc-hostdot")).toHaveAttribute("aria-label", "Claude Code");
     await expect(last).toContainText(/claude · \d+h — “Tide parser in the chart view”/);
-    // The hint is the line Resume types (launchLine: the configured binary), and where it resumes (D7).
-    await expect(last.locator(".aos-spc-hint .aos-spc-mono")).toHaveText("↳ claude --resume c1a0de00-0000-4000-8000-000000000001");
+    // The hint is the line Resume types (launchLine: the configured binary), and where it resumes (D7); the computer
+    // tools' approval reads short (agent-computer D33).
+    await expect(last.locator(".aos-spc-hint .aos-spc-mono")).toHaveText("↳ claude --resume c1a0de00-0000-4000-8000-000000000001 --allowedTools computer_*");
     await expect(last.locator(".aos-spc-hinttext")).toHaveText("Resumes in workspaces/harbor-map");
     await expect(pickRow("now")).toHaveText("No Now line in a handoff");
     await expect(pickRow("next").locator(".aos-spc-next")).toHaveText("Wire the tide parser into the chart view");

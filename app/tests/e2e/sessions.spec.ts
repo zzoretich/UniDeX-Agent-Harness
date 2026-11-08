@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ACCESS_LEVELS, CODEX_ACCESS_NOTE, accessHostLine } from "../../../hud/src/data/agentSessions";
+import { COMPUTER_LOOK, COMPUTER_TOOLS } from "../../../hud/src/data/terminalLaunch";
 import { FX, USER_DATA, content, expectNoErrors, openTab, providerState, rail, useApp } from "./harness";
 
 // ── the host stand-ins ───────────────────────────────────────────────
@@ -215,6 +216,11 @@ const codexDone = (choice: string) => new RegExp(`^Done · ${esc(choice)} · \\d
 const FAILED_DONE = /^Did not finish · (.+ · )?no cost recorded$/;
 /** The value after `flag` in an argv. */
 const argOf = (argv: string[], flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
+// What a Claude turn pre-approves by access (agent-computer D33): the look tools, all nine computer tools, or Bash and all nine.
+const plug = (t: string) => `mcp__plugin_agenticos_agenticos__${t}`;
+const TOOLS_READ = COMPUTER_LOOK.map(plug).join(",");
+const TOOLS_EDIT = COMPUTER_TOOLS.map(plug).join(",");
+const TOOLS_RUN = `Bash,${TOOLS_EDIT}`;
 
 async function openMenu(win: Page): Promise<void> {
   if ((await chip(win).getAttribute("aria-expanded")) !== "true") await chip(win).click();
@@ -389,7 +395,7 @@ test.describe("both hosts, the Sessions surface on", () => {
     expect(fs.realpathSync(call.cwd)).toBe(fs.realpathSync(FX.v("workspaces/harbor-map")));
     expect(argOf(call.argv, "--session-id")).toBe(id);
     expect(argOf(call.argv, "--permission-mode")).toBe("acceptEdits");
-    expect(argOf(call.argv, "--allowedTools")).toBe("Bash");
+    expect(argOf(call.argv, "--allowedTools")).toBe(TOOLS_RUN);
     expect(argOf(call.argv, "--model")).toBe("opus");
     expect(argOf(call.argv, "--effort")).toBe("high");
     expect(call.argv.at(-1)).toBe("Fix the tide parser");
@@ -412,7 +418,7 @@ test.describe("both hosts, the Sessions surface on", () => {
     const second = calls("claude").slice(before)[1];
     expect(argOf(second.argv, "--resume")).toBe(id);
     expect(second.argv).not.toContain("--session-id");
-    expect([argOf(second.argv, "--model"), argOf(second.argv, "--effort"), argOf(second.argv, "--allowedTools")]).toEqual(["opus", "high", "Bash"]);
+    expect([argOf(second.argv, "--model"), argOf(second.argv, "--effort"), argOf(second.argv, "--allowedTools")]).toEqual(["opus", "high", TOOLS_RUN]);
     await expect(row).toHaveAttribute("title", /^Claude Code · 2 turns · \$0\.04 · /);
   });
 
@@ -867,9 +873,9 @@ test.describe("both hosts, the Sessions surface on", () => {
     await expect(r.locator(".aos-ss-done")).toHaveCount(3, { timeout: 30_000 });
     await expect(r.locator(".aos-ss-turnchangetext")).toHaveText(["Next turn on Default · Medium · Edit files", "Next turn on Default · Medium · Edit and run commands"]);
     const [a, b, c] = calls("claude").slice(before);
-    expect([argOf(a.argv, "--permission-mode"), argOf(a.argv, "--allowedTools")]).toEqual(["plan", undefined]);
-    expect([argOf(b.argv, "--permission-mode"), argOf(b.argv, "--allowedTools")]).toEqual(["acceptEdits", undefined]);
-    expect([argOf(c.argv, "--permission-mode"), argOf(c.argv, "--allowedTools")]).toEqual(["acceptEdits", "Bash"]);
+    expect([argOf(a.argv, "--permission-mode"), argOf(a.argv, "--allowedTools")]).toEqual(["plan", TOOLS_READ]);
+    expect([argOf(b.argv, "--permission-mode"), argOf(b.argv, "--allowedTools")]).toEqual(["acceptEdits", TOOLS_EDIT]);
+    expect([argOf(c.argv, "--permission-mode"), argOf(c.argv, "--allowedTools")]).toEqual(["acceptEdits", TOOLS_RUN]);
 
     // Codex: the sandbox note; read-only, then workspace-write for both levels that edit.
     const codex0 = calls("codex").length;

@@ -14,7 +14,7 @@ import { agentArgvRefusal } from "../../src/main/policy/agent-launch";
 import { PtyService, type PtyAgentRequest, type PtyLib, type PtyProcess } from "../../src/main/services/pty";
 import { AgentRegistry } from "../../src/main/computer/registry";
 import { VENDOR, type Sys } from "../../src/main/computer/admission";
-import { TERM_ACCESS, launchArgs, type LaunchSpec } from "../../../hud/src/data/terminalLaunch";
+import { COMPUTER_LOOK, COMPUTER_TOOLS, TERM_ACCESS, launchArgs, type LaunchSpec } from "../../../hud/src/data/terminalLaunch";
 
 // ── agentArgvRefusal ─────────────────────────────────────────────────
 
@@ -56,6 +56,9 @@ test("agentArgvRefusal refuses what launchArgs never emits: skip-permission and 
   no("claude", ["say hello"]);
   no("claude", ["--permission-mode", "bypassPermissions"]);
   no("claude", ["--allowedTools", "Bash,Write"]);
+  no("claude", ["--allowedTools", "Write"]);
+  no("claude", ["--allowedTools", "Bash", "Write"]);
+  no("claude", ["--allowedTools"]);
   no("claude", ["--model", "a", "--model", "b"]);
   no("claude", ["-c", "x=y"]);
   no("codex", ["-c", "approval_policy=never"]);
@@ -74,6 +77,36 @@ test("agentArgvRefusal refuses what launchArgs never emits: skip-permission and 
   no("codex", ["resume", "019a-thread", "-c", "x=y"]);
   no("codex", ["resume"]);
   no("codex", ["-s", "read-only", "-s", "workspace-write"]);
+});
+
+test("agentArgvRefusal: --allowedTools takes one comma-joined value of Bash and the known computer tools, nothing else (agent-computer D33)", () => {
+  const plug = (t: string) => `mcp__plugin_agenticos_agenticos__${t}`;
+  const yes = (v: string) => assert.equal(agentArgvRefusal("claude", ["--permission-mode", "acceptEdits", "--allowedTools", v]), null, v);
+  const no = (v: string) => assert.match(agentArgvRefusal("claude", ["--allowedTools", v]) ?? "", /^--allowedTools with the value /, v);
+  yes("Bash");
+  for (const t of COMPUTER_TOOLS) yes(plug(t));
+  yes(COMPUTER_LOOK.map(plug).join(","));
+  yes(COMPUTER_TOOLS.map(plug).join(","));
+  yes(["Bash", ...COMPUTER_TOOLS.map(plug)].join(","));
+  no("");
+  no(",");
+  no(`Bash,${plug("computer_open")},`);
+  no(`Bash,,${plug("computer_open")}`);
+  no(`Bash, ${plug("computer_open")}`);
+  no(`Bash,Bash`);
+  no(`${plug("computer_open")},${plug("computer_open")}`);
+  no(plug("computer_frobnicate"));
+  no(plug("wrap_session"));
+  no("mcp__agenticos__computer_open");
+  no("mcp__plugin_other_other__computer_open");
+  no("computer_open");
+  no("Bash(rm:*)");
+  no("mcp__plugin_agenticos_agenticos__*");
+  no("Write,Bash");
+  no(`${plug("computer_open")}\u0015`);
+  // Still once only, and -c stays refused on both hosts.
+  assert.match(agentArgvRefusal("claude", ["--allowedTools", "Bash", "--allowedTools", plug("computer_open")]) ?? "", /twice/);
+  assert.match(agentArgvRefusal("codex", ["-c", `mcp_servers.agenticos.tools.computer_open.approval_mode="approve"`]) ?? "", /-c override/);
 });
 
 // ── spawnAgent ───────────────────────────────────────────────────────

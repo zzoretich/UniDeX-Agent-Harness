@@ -13,7 +13,24 @@
       "env_vars": [
         "AOS_CONFIG",
         "CLAUDE_CONFIG_DIR"
-      ]
+      ],
+      "tools": {
+        "computer_open": {
+          "approval_mode": "approve"
+        },
+        "computer_click": {
+          "approval_mode": "approve"
+        },
+        "computer_type": {
+          "approval_mode": "approve"
+        },
+        "computer_key": {
+          "approval_mode": "approve"
+        },
+        "computer_scroll": {
+          "approval_mode": "approve"
+        }
+      }
     }
   }
 }

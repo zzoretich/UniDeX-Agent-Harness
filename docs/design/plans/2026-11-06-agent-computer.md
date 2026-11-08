@@ -8,7 +8,7 @@
 
 **Tech Stack:** Electron 44 (`WebContentsView`, DevTools Protocol), TypeScript (app, HUD), a Node-API Objective-C++ addon built with node-gyp, the Node ≥ 20 CommonJS runtime with `@modelcontextprotocol/sdk` and zod, `node:test`, Playwright Electron.
 
-**Spec:** `docs/design/specs/2026-11-06-agent-computer-design.md` (approved 2026-11-07). Release 1 covers D3–D9, D17–D21, D23, D25–D27, D29–D35, D39, D43, §4.1–§4.4 and §6 "Release 1". Releases 2 (Sandbox) and 3 (Your Mac) get their own plans; the mode switch and the Sandbox tab are not built here.
+**Spec:** `docs/design/specs/2026-11-06-agent-computer-design.md` (approved 2026-11-07). Release 1 covers D3–D9, D17–D21, D23, D25–D27, D29–D35, D39, D43, §4.1–§4.4 and §6 "Release 1". Release 2 (Your Mac, with the Browser · Your Mac switch) gets its own plan. The owner dropped the Sandbox release on 2026-11-07, so nothing here prepares for it.
 
 ## Delivery
 
@@ -85,7 +85,20 @@ The owner's OK comes first: E1–E5 run real host turns (a few cents). A 2026-09
 - [ ] **Step 8 (D27):** In a scratch Electron 44.5.1 script, load a local page in a `WebContentsView` and try `Page.captureScreenshot` and `Input.dispatchMouseEvent` in three states: (a) attached at its bounds, (b) attached with its bounds moved outside the window's content, (c) removed from the window. Record which states paint and take input.
 - [ ] **Step 9:** Record the results below. **Stop if E1–E4 all fail:** Codex's scope goes back to the owner before Task 10 (D33). Task 10 uses the first Codex mechanism that passed in each mode; Task 11 uses the first off-screen state that worked (expected: b).
 
-Proof results: _(filled in by Step 9)_
+Proof results (2026-11-07, codex-cli 0.167.0, Claude Code 2.1.318, Electron 44.5.1):
+
+| Run | Mechanism | Result |
+|---|---|---|
+| E0 | Codex, `approval_policy="never"`, no key | refused: "MCP tool call requires approval, but approval policy is never" |
+| E1 | E0 + `mcp_servers.<name>.tools.<tool>.approval_mode="approve"` | runs |
+| E2 | E0 + `mcp_servers.<name>.default_tools_approval_mode="approve"` | runs |
+| E3 | plugin mode: a launch-time `-c mcp_servers.<name>…` override | config load fails ("invalid transport") |
+| E3 | plugin mode: the per-tool key inside the plugin's `.mcp.json` server entry | runs |
+| E4 | `approval_policy="on-request"` + the per-tool key | runs without a prompt |
+| E5 | Claude Code `-p --permission-prompts none --allowedTools <tool>` | runs (denied without it) |
+| D27 | `WebContentsView` off-screen | input lands in every state; screenshots hang when far off-screen, `setVisible(false)` or in a hidden window; they work at real bounds, 0x0, detached, minimized or at opacity 0 |
+
+So D33 keeps full parity: Task 10 ships the per-tool keys in each Codex registration (the plugin's server entry and the direct-mode registration) and passes no launch-time `-c mcp_servers…` override; Claude gets `--allowedTools` at launch. Task 11 parks hidden views in an opacity-0, click-through window (ruling R4).
 
 ### Task 2: The ask-first vocabulary (D43)
 

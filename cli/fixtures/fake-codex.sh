@@ -6,6 +6,9 @@
 # registration written the 0.5.0 way (no host env) reads back as stale, exactly like the real CLI.
 # Knobs: FAKE_CODEX_LOGGED_OUT=1 makes `login status` report no login; FAKE_CODEX_FAIL_MCP=1 makes
 # `mcp add` fail, to exercise the allowFail path without touching the network.
+# With CODEX_HOME set, `mcp add` and `mcp remove` also edit "$CODEX_HOME/config.toml" the way codex-cli 0.167 does
+# (checked in a scratch Codex home): remove drops every [mcp_servers.agenticos…] table, the per-tool approvals among
+# them (agent-computer D33); add writes the server's own tables in place of any it had.
 #
 # Plugins (design 2026-09-23-codex-plugin), answered the way Codex 0.155.1 did in the design spike: the marketplace
 # source lives in "$FAKE_CODEX_STATE.mkt", the installed plugin version in "$FAKE_CODEX_STATE.plugin" (read from
@@ -17,6 +20,18 @@ echo "$*" >> "${FAKE_CODEX_LOG:-/dev/null}"
 STATE="${FAKE_CODEX_STATE:-}"
 PSTATE="${STATE:+$STATE.plugin}"
 MSTATE="${STATE:+$STATE.mkt}"
+# drop_server — config.toml in the Codex home without any [mcp_servers.agenticos…] table. Like Codex, the blank lines
+# before a dropped table go with it; those before a table that stays, stay.
+drop_server() {
+  [ -n "${CODEX_HOME:-}" ] && [ -f "$CODEX_HOME/config.toml" ] || return 0
+  awk '
+    /^[[:space:]]*$/ { blanks = blanks $0 "\n"; next }
+    /^[[:space:]]*\[/ { skip = ($0 ~ /^[[:space:]]*\[mcp_servers\.agenticos[].]/) }
+    skip { blanks = ""; next }
+    { printf "%s", blanks; blanks = ""; print }
+    END { if (!skip) printf "%s", blanks }
+  ' "$CODEX_HOME/config.toml" > "$CODEX_HOME/config.toml.fake" && mv "$CODEX_HOME/config.toml.fake" "$CODEX_HOME/config.toml"
+}
 PLUGIN_SERVER='{"name":"agenticos","enabled":true,"transport":{"type":"stdio","command":"sh","args":["./bin/aos","mcp-server"],"env":{"AOS_HOST":"codex"},"cwd":"/fake/plugins/cache/agenticos-workbench/agenticos/."}}'
 if [ "$1" = "plugin" ] && [ "${FAKE_CODEX_NO_PLUGINS:-}" = "1" ]; then echo "error: unrecognized subcommand 'plugin'" >&2; exit 2; fi
 # sdk/lib/codex-cli.js puts `-` (stdin) last, lib/headless.js right after `exec`: both are the same headless run here.
@@ -87,11 +102,25 @@ case "$KEY" in
   "mcp add")
     if [ "${FAKE_CODEX_FAIL_MCP:-}" = "1" ]; then echo "fake: mcp add failed" >&2; exit 1; fi
     HOSTENV=""; for a in "$@"; do [ "$a" = "AOS_HOST=codex" ] && HOSTENV="AOS_HOST=codex"; done
+    # the server's env table, from each `--env K=V` before `--`
+    ENVTOML=""; PREV=""
+    for a in "$@"; do
+      [ "$a" = "--" ] && break
+      [ "$PREV" = "--env" ] && ENVTOML="$ENVTOML${a%%=*} = \"${a#*=}\"
+"
+      PREV="$a"
+    done
     # the launcher is the argument right after `-- sh`
     while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
-    [ -n "$STATE" ] && [ $# -ge 3 ] && printf '%s\n%s\n' "$3" "$HOSTENV" > "$STATE" ;;
+    [ -n "$STATE" ] && [ $# -ge 3 ] && printf '%s\n%s\n' "$3" "$HOSTENV" > "$STATE"
+    if [ -n "${CODEX_HOME:-}" ] && [ $# -ge 3 ]; then
+      drop_server
+      printf '\n[mcp_servers.agenticos]\ncommand = "sh"\nargs = ["%s", "mcp-server"]\n' "$3" >> "$CODEX_HOME/config.toml"
+      [ -n "$ENVTOML" ] && printf '\n[mcp_servers.agenticos.env]\n%s' "$ENVTOML" >> "$CODEX_HOME/config.toml"
+    fi ;;
   "mcp remove")
     # Like the real CLI: exit 0 either way, and never touches a plugin's server.
+    drop_server
     if [ -n "$STATE" ] && [ -f "$STATE" ]; then rm -f "$STATE"; echo "Removed global MCP server 'agenticos'."
     else echo "No MCP server named 'agenticos' found."; fi ;;
   "exec -")

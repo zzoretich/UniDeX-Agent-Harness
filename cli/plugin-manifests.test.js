@@ -131,8 +131,11 @@ test('the Codex plugin ships the same launcher, executable, and starts the MCP s
   assert.ok(fs.readFileSync(dst).equals(fs.readFileSync(src)), 'codex-plugin/bin/aos differs from plugin/bin/aos — run: npm run build:codex-plugin');
   assert.ok(fs.statSync(dst).mode & 0o111, 'codex-plugin/bin/aos is not executable');
   // Codex expands no variable in MCP args; "./bin/aos" with cwd "." resolves in the installed plugin folder (spec §2).
+  // `tools` approves the five acting computer tools in plugin mode (agent-computer D33); the look tools need none.
+  const approve = { approval_mode: 'approve' };
   assert.deepEqual(read('codex-plugin/.mcp.json'), {
-    mcpServers: { agenticos: { command: 'sh', args: ['./bin/aos', 'mcp-server'], cwd: '.', env: { AOS_HOST: 'codex' }, env_vars: ['AOS_CONFIG', 'CLAUDE_CONFIG_DIR'] } },
+    mcpServers: { agenticos: { command: 'sh', args: ['./bin/aos', 'mcp-server'], cwd: '.', env: { AOS_HOST: 'codex' }, env_vars: ['AOS_CONFIG', 'CLAUDE_CONFIG_DIR'],
+      tools: { computer_open: approve, computer_click: approve, computer_type: approve, computer_key: approve, computer_scroll: approve } } },
   });
 });
 

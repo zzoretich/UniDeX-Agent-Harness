@@ -2,7 +2,11 @@
 // Only what the Code page's launchArgs emits (hud/src/data/terminalLaunch.ts): the model, the access level's flags, a
 // conversation id, and for a Codex resume by id the folder (`-C`). Anything else (a skip-permission or MCP flag, a
 // prompt, a `-c` override, a value that reads as a flag) is refused: the page chooses the words, never the program, and
-// cannot widen what the agent may do through them. Every `-c` key is refused for now; the approval keys come later.
+// cannot widen what the agent may do through them. Claude's `--allowedTools` takes one comma-joined value of Bash and the
+// computer tools (agent-computer D33: they are pre-approved, the app's ask gate is their gate) and nothing else. Every
+// `-c` key stays refused: Codex's per-tool approvals ship in its MCP registration, never on the launch line.
+
+import type { ComputerTool } from "../computer/bridge";
 
 type Host = "claude" | "codex";
 
@@ -16,13 +20,25 @@ function free(v: string | undefined): boolean {
 
 const oneOf = (...allowed: string[]) => (v: string | undefined): boolean => typeof v === "string" && allowed.includes(v);
 
+/** The computer tools as Claude Code names the agenticos plugin's (hud/src/data/terminalLaunch.ts COMPUTER_TOOLS). */
+const COMPUTER_TOOLS = ["computer_open", "computer_snapshot", "computer_screenshot", "computer_click", "computer_type", "computer_key",
+  "computer_scroll", "computer_wait", "computer_status"] as const satisfies readonly ComputerTool[];
+const ALLOWED_TOOLS: ReadonlySet<string> = new Set(["Bash", ...COMPUTER_TOOLS.map((t) => `mcp__plugin_agenticos_agenticos__${t}`)]);
+
+/** `--allowedTools`' one value: Bash and computer tools, comma-joined, each at most once, no empty entry. */
+function allowedTools(v: string | undefined): boolean {
+  if (typeof v !== "string" || !v) return false;
+  const names = v.split(",");
+  return names.every((n) => ALLOWED_TOOLS.has(n)) && new Set(names).size === names.length;
+}
+
 /** A flag's value rule, or null for a flag that takes none. */
 type Rule = ((v: string | undefined) => boolean) | null;
 
 const CLAUDE_FLAGS: Readonly<Record<string, Rule>> = {
   "--model": free,
   "--permission-mode": oneOf("plan", "acceptEdits"),
-  "--allowedTools": oneOf("Bash"),
+  "--allowedTools": allowedTools,
   "--continue": null,
   "--resume": free,
   "--session-id": free,
