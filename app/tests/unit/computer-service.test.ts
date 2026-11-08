@@ -804,3 +804,44 @@ test("popOut marks the pane popped out only when the app can open its window", a
   assert.deepEqual(popped, ["ws:alpha"]);
   assert.equal(h.lastState().poppedOut, true);
 });
+
+test("onScreen: the pane shows the place with bounds, or popped out (what the ask notices check, agent-computer D27)", async () => {
+  const h = make({ popOut: () => {} });
+  assert.equal(h.svc.onScreen("ws:alpha"), false);
+  h.svc.select("ws:alpha");
+  assert.equal(h.svc.onScreen("ws:alpha"), false, "selected but collapsed or behind another tab: no bounds");
+  h.svc.show({ x: 0, y: 0, width: 400, height: 300 });
+  assert.equal(h.svc.onScreen("ws:alpha"), true);
+  assert.equal(h.svc.onScreen("ws:beta"), false);
+  h.svc.show(null);
+  assert.equal(h.svc.onScreen("ws:alpha"), false);
+  h.svc.popOut();
+  assert.equal(h.svc.onScreen("ws:alpha"), true, "popped out: its own window shows it");
+  h.svc.popIn();
+  assert.equal(h.svc.onScreen("ws:alpha"), false);
+});
+
+test("popped out, the pane's bounds stay with the pane; popping in puts the computer back at them", async () => {
+  const popped: string[] = [];
+  const h = make({ popOut: (place) => popped.push(place) });
+  h.svc.select("ws:alpha");
+  await h.svc.navigate("https://a.test/");
+  const a = h.b("ws:alpha");
+  h.svc.show({ x: 1, y: 2, width: 300, height: 200 });
+  assert.deepEqual(a.shows.at(-1), { x: 1, y: 2, width: 300, height: 200 });
+  h.svc.popOut();
+  const before = a.shows.length;
+  h.svc.show({ x: 5, y: 5, width: 50, height: 50 });
+  h.svc.show(null);
+  h.svc.show({ x: 9, y: 9, width: 90, height: 90 });
+  assert.equal(a.shows.length, before, "the pop-out window places the view, not the docked placeholder's rectangle");
+  // Another place selected while popped out goes into the window too, and the one before is parked.
+  h.svc.select("ws:beta");
+  assert.deepEqual(popped, ["ws:alpha", "ws:beta"]);
+  assert.equal(a.shows.at(-1), null);
+  h.svc.select("ws:alpha");
+  assert.deepEqual(popped, ["ws:alpha", "ws:beta", "ws:alpha"]);
+  h.svc.popIn();
+  assert.deepEqual(a.shows.at(-1), { x: 9, y: 9, width: 90, height: 90 }, "back in the pane at its latest rectangle");
+  assert.equal(h.lastState().poppedOut, false);
+});

@@ -1,7 +1,8 @@
 // The computer bridge (agent-computer D18, D26): a Unix socket in the app's userData that the agenticos MCP servers of
 // agent CLIs connect to. Newline-delimited JSON. The first line must be {"hello":1}; the peer is then judged by `admit`
 // (which also claims the agent's one connection) and answered {"admitted":true,"session":<label>} or
-// {"admitted":false,"reason":…} and closed. After that ToolCall lines flow and replies match by id, overlapping freely.
+// {"admitted":false,"reason":…} and closed. After that ToolCall lines flow and replies match by id, overlapping up to four
+// at a time per connection (a fifth is answered at once with an error).
 // Anything unexpected closes that one connection without a reply; no connection's failure reaches another or main.
 
 import fs from "node:fs";
@@ -19,6 +20,10 @@ const TOOLS: ReadonlySet<string> = new Set<ComputerTool>(["computer_status", "co
 /** sockaddr_un.sun_path holds 104 bytes on macOS, the last for the terminator. */
 const MAX_PATH_BYTES = 103;
 const MAX_LINE_BYTES = 1024 * 1024;
+/** Calls in flight per connection (agent-computer D18, backpressure): another is answered at once and never reaches the
+ *  service, so one agent cannot queue unbounded work behind the wheel. */
+const MAX_IN_FLIGHT = 4;
+const TOO_MANY = "Too many computer calls at once: wait for one to finish.";
 const REFUSED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
 
 export interface BridgeOptions {
@@ -88,6 +93,7 @@ export class ComputerBridge {
     let hello = false;
     let buf = "";
     let done = false;
+    let inFlight = 0;
     sock.setEncoding("utf8");   // a StringDecoder: a character split across reads is kept whole
     const timer = setTimeout(() => end(), this.o.helloMs ?? 5000);
     const end = (): void => {
@@ -118,11 +124,15 @@ export class ComputerBridge {
       if (!agent || typeof msg.id !== "number" || !Number.isFinite(msg.id) || typeof msg.tool !== "string" || !TOOLS.has(msg.tool)) return end();
       const who = agent;
       const call: ToolCall = { id: msg.id, tool: msg.tool as ComputerTool, args: msg.args !== null && typeof msg.args === "object" && !Array.isArray(msg.args) ? msg.args : {} };
+      if (inFlight >= MAX_IN_FLIGHT) { write({ id: call.id, text: TOO_MANY, isError: true } satisfies ToolReply); return; }
+      inFlight++;
       void (async () => {
         try {
           write({ id: call.id, ...(await this.o.handle(who, call)) } as ToolReply);
         } catch (err) {
           try { write({ id: call.id, text: `The computer failed: ${err instanceof Error ? err.message : String(err)}`, isError: true }); } catch { end(); }
+        } finally {
+          inFlight--;
         }
       })();
     };

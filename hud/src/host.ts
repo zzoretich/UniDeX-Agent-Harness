@@ -153,10 +153,11 @@ export type HostSessionHost = "claude" | "codex";
 export type HostSessionAccess = "read" | "edit" | "run";
 
 /** One event of a thread: prompt (with its model, effort and access), session, text, tool, tool_result, patch, plan,
- *  usage, error or done, and its turn. */
+ *  usage, error or done, and its turn. `computer` (with `text`) is a Computer pane line, sent live and never stored
+ *  (agent-computer D35). */
 export interface HostSessionEvent {
   t: string;
-  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done";
+  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done" | "computer";
   turn: number;
   [field: string]: unknown;
 }

@@ -6,7 +6,7 @@
 // check it against the read scope, the write surfaces and the program rules (./policy). Main itself writes one file
 // outside its userData: the app's record in the vault's runtime cache (hud-host.ts). The app updates itself (./updater).
 
-import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, screen, type Rectangle } from "electron";
+import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, Notification, screen, type Rectangle } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,8 +14,15 @@ import { APP_ORIGIN, CH, POPOVER, type AttachInfo, type BootInfo, type CommandIn
 import { registerAppScheme, serveAppScheme } from "./app-scheme";
 import { BRAND } from "../shared/brand";
 import type { Sys } from "./computer/admission";
+import { AskBroker } from "./computer/asks";
+import { ComputerBrowser } from "./computer/browser";
+import { computerConfig, type ComputerConfig } from "./computer/config";
+import { AskNotifier, testSwitches } from "./computer/notify";
 import { loadPeer, type PeerAddon } from "./computer/peer";
 import { AgentRegistry } from "./computer/registry";
+import { ComputerService } from "./computer/service";
+import { SiteMarks } from "./computer/sites";
+import { Wheel } from "./computer/wheel";
 import { writeHudHostMarker } from "./hud-host";
 import { registerFsIpc } from "./ipc/fs";
 import { registerHostIpc } from "./ipc/host";
@@ -60,6 +67,11 @@ if (debugging.length && app.isPackaged && !__AOS_TEST_BUILD__) {
   console.error(`[main] refusing to start with ${debugging.join(", ")}: this build cannot be debugged from outside`);
   process.exit(1);
 }
+
+// agent-computer Task 13: the e2e suite's switches, which a packaged build ignores (computer/notify.ts testSwitches).
+// Chromium reads its switches before `ready`: the host rules give the suite's fixture sites unmarked *.test origins.
+const e2e = testSwitches(process.env, app.isPackaged);
+if (e2e.hostRules) app.commandLine.appendSwitch("host-resolver-rules", e2e.hostRules);
 
 /** The install's agenticos.json (the launcher's lookup): its path, and what `aos init` / `aos upgrade` wrote there. */
 const agenticosFile = process.env.AOS_CONFIG || path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "agenticos.json");
@@ -124,7 +136,9 @@ const computerSys: Sys | null = (() => {
 // agent runs as its terminal's own process, from the binary the runtime resolves (D18).
 const ptyService = new PtyService({
   context: () => context, env: () => terminalBaseEnv(process.env, termPATH()), emit: (ev) => send(CH.ptyEvent, ev), load: () => require("node-pty") as PtyLib,
-  resolveBin: (host) => sessionService.resolveBin(host), registry: agentRegistry, sys: computerSys,
+  resolveBin: (host) => sessionService.resolveBin(host), registry: agentRegistry, sys: computerSys, trusted: e2e.trustedCli,
+  // agent-computer D31: a Code agent that exits (or whose terminal closes) frees its computer's wheel and cancels its asks.
+  onAgentGone: (agent) => computerService.agentGone(agent),
 });
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
 // surface. A turn outlives a page reload; quitting stops every one.
@@ -147,12 +161,63 @@ const sessionService = new SessionService({
   terminalPATH: () => termPATH(),
   // A Chat turn's CLI is registered while it runs, in its thread's workspace: the computer a Code launch there shares
   // (the HUD's placeKey, `ws:<name>`; agent-computer D18, D3, D30).
+  // Its exit ends the turn on the computer too: the wheel frees and its asks are cancelled (D31).
   onAgent: (ev) => {
-    if (ev.kind === "start") agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access });
-    else if (agentRegistry.get(ev.pid)?.key === `chat:${ev.thread}`) agentRegistry.remove(ev.pid);
+    if (ev.kind === "start") { agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access }); return; }
+    const ref = agentRegistry.get(ev.pid);
+    if (ref?.key !== `chat:${ev.thread}`) return;
+    agentRegistry.remove(ev.pid);
+    computerService.agentGone(ref);
   },
 });
 const gitService = new GitService({ workspace: (name) => workspaceDir(context.vaultRoot ?? null, name), enabled: sessionsOn, env: process.env });
+
+// agent-computer D3, D7, D27, D31, D34, D35: the computer behind the bridge. One ask broker, one wheel, the marked sites
+// (<userData>/computer/sites.json), and a browser per place, made on its first use (after ready: the bridge starts only
+// then). Its state, and the reveal a notification's click asks for, reach the page on `computer:event`; a Chat agent's
+// lines reach its thread live. An ask the pane does not show raises a desktop notification and a Notifications item.
+const computerSettings = (): ComputerConfig => computerConfig(vault.root, agenticosFile);
+const computerBrowsers = new Map<string, ComputerBrowser>();
+/** The notices raised off-screen, newest last, for the e2e suite (`__aosMain.computerNotices`). */
+const computerNotices: Array<{ title: string; body: string }> = [];
+const askNotifier = new AskNotifier({
+  visible: (ask) => computerService.onScreen(ask.computer) && computerWindowShown(),
+  desktop: (title, body, onClick) => {
+    computerNotices.push({ title, body });
+    if (computerNotices.length > 50) computerNotices.shift();
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title, body });
+    n.on("click", onClick);
+    n.show();
+    // Held until the ask settles (the notifier withdraws it then), so its click handler stays alive.
+    return () => n.close();
+  },
+  post: (title, body) => sessionService.postComputerNotice(title, body),
+  reveal: (askId) => { show(); send(CH.computerEvent, { type: "reveal", askId }); },
+});
+const askBroker = new AskBroker({
+  timeoutMs: () => computerSettings().askTimeoutSec * 1000,
+  onChange: (pending) => { computerService.refresh(); askNotifier.sync(pending); },
+});
+const computerWheel = new Wheel({ reserved: (c) => computerService.reserved(c), onChange: () => computerService.refresh() });
+const computerService: ComputerService = new ComputerService({
+  browser: (place, hooks) => {
+    const b = new ComputerBrowser({ key: place, window: () => win, hooks });
+    computerBrowsers.set(place, b);
+    return b;
+  },
+  broker: askBroker,
+  wheel: computerWheel,
+  sites: new SiteMarks(path.join(app.getPath("userData"), "computer", "sites.json")),
+  config: computerSettings,
+  emit: (state) => send(CH.computerEvent, { type: "state", state }),
+  // D35: a Chat agent's line joins its thread's timeline, live; a Code agent's stays in the pane's activity log (the
+  // service keeps it there) and its tool results. The app never writes into a terminal.
+  note: (agent, line) => {
+    if (agent.page === "chat" && agent.key.startsWith("chat:")) sessionService.noteEvent(agent.key.slice("chat:".length), line);
+  },
+  popOut: (place) => popOutComputer(place),
+});
 
 /** The variables the HUD reads (HudHost.env), from main's environment; nothing else of it reaches the page. */
 const PAGE_ENV = ["SHELL", "CLAUDE_CONFIG_DIR", "AOS_CONFIG", "AOS_VAULT", "CODEX_HOME"];
@@ -243,6 +308,71 @@ function togglePopover(anchor: Rectangle): boolean {
   return true;
 }
 
+// ── the computer's pop-out window ────────────────────────────────────
+
+/** The pop-out window and the place whose computer it holds (agent-computer D5: the pane's Pop out). */
+let computerPop: { win: BrowserWindow; place: string } | null = null;
+
+const popBounds = (w: BrowserWindow): Rectangle => { const [width, height] = w.getContentSize(); return { x: 0, y: 0, width, height }; };
+
+/**
+ * Moves a place's computer into the pop-out window, made on first use, and the one it held before back to the main
+ * window. The window loads nothing and has no preload: it only holds the computer's view, with the main window's
+ * hardening. Closing it moves the view back to the main window first, since a view has no host once its window is gone.
+ */
+function popOutComputer(place: string): void {
+  const b = computerBrowsers.get(place);
+  if (!b) return;
+  const back = (other: ComputerBrowser | undefined): void => {
+    if (!other) return;
+    if (win && !win.isDestroyed()) other.moveTo(win); else other.show(null);
+  };
+  let pop = computerPop && !computerPop.win.isDestroyed() ? computerPop : null;
+  if (pop?.place === place) { pop.win.show(); pop.win.focus(); return; }
+  if (pop) {
+    back(computerBrowsers.get(pop.place));
+    pop.place = place;
+  } else {
+    const w = new BrowserWindow({
+      width: 1100, height: 760, minWidth: 480, minHeight: 360, show: false, title: `${BRAND.name} Computer`,
+      backgroundColor: windowBackground(nativeTheme.shouldUseDarkColors),
+      webPreferences: {
+        nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true, webSecurity: true,
+        allowRunningInsecureContent: false, webviewTag: false, spellcheck: false, backgroundThrottling: false,
+      },
+    });
+    w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    w.webContents.on("will-navigate", (e) => e.preventDefault());
+    w.on("resize", () => { if (computerPop?.win === w) computerBrowsers.get(computerPop.place)?.show(popBounds(w)); });
+    w.on("close", () => {
+      if (computerPop?.win !== w) return;
+      const held = computerBrowsers.get(computerPop.place);
+      computerPop = null;
+      back(held);
+      computerService.popIn();
+    });
+    pop = computerPop = { win: w, place };
+  }
+  b.moveTo(pop.win);
+  pop.win.show();
+  b.show(popBounds(pop.win));
+}
+
+/** Whether the window holding the pane's computer is on screen: the pop-out window while there is one, else the main one. */
+function computerWindowShown(): boolean {
+  const w = computerPop && !computerPop.win.isDestroyed() ? computerPop.win : win;
+  return !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized();
+}
+
+/** On quit: every computer's views and the park window go (ComputerBrowser.destroy), and the pop-out window. */
+function shutdownComputer(): void {
+  for (const b of computerBrowsers.values()) { try { b.destroy(); } catch { /* already gone */ } }
+  computerBrowsers.clear();
+  const pop = computerPop;
+  computerPop = null;
+  if (pop && !pop.win.isDestroyed()) pop.win.destroy();
+}
+
 function show(): void {
   if (!win) createWindow();
   else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
@@ -278,7 +408,7 @@ function themeState(): ThemeState {
 /** Tells the page, repaints the windows' backgrounds and re-checks the menu's Appearance item. */
 function broadcastTheme(): void {
   const s = themeState();
-  for (const w of [win, popover]) if (w && !w.isDestroyed()) w.setBackgroundColor(windowBackground(s.dark));
+  for (const w of [win, popover, computerPop?.win]) if (w && !w.isDestroyed()) w.setBackgroundColor(windowBackground(s.dark));
   send(CH.themeEvent, s);
   setMenu();
 }
@@ -292,7 +422,7 @@ function setTheme(source: ThemeSource): ThemeState {
 }
 
 // agent-computer D18, D26: the bridge socket the agent CLIs' MCP servers connect to. One per attached vault, only when the
-// peer addon loaded. The handler is a stub until the computer service arrives: status answers, every other tool says so.
+// peer addon loaded. Every admitted call goes to the computer service; a closed connection ends its agent's hold (D31).
 let bridge: ComputerBridge | null = null;
 let bridgeRoot: string | null = null;
 let bridgeChain: Promise<void> = Promise.resolve();
@@ -316,12 +446,10 @@ function startBridge(root: string): void {
           let server: string;
           try { server = fs.realpathSync(path.join(root, "brain/scripts/sdk/mcp-server.js")); }
           catch { return { ok: false, reason: "The agenticos MCP server is not in this vault." }; }
-          return admit(pid, { reg: agentRegistry, sys, server });
+          return admit(pid, { reg: agentRegistry, sys, server, trusted: e2e.trustedCli });
         },
-        handle: async (agent, call) => call.tool === "computer_status"
-          ? { text: `${agent.label} in ${agent.place}, access: ${agent.access}.` }
-          : { text: "The browser arrives with the next part of release 1." },
-        onClose: () => {},
+        handle: (agent, call) => computerService.call(agent, call),
+        onClose: (agent) => computerService.agentGone(agent),
       });
       await next.start();
       bridge = next;
@@ -437,6 +565,11 @@ function endPageWork(): void {
   ptyService.killAll();
   procService.killAttached();
   setup.cancel();
+  // agent-computer D7, D27: the page's asks go with it (each agent hears it was cancelled), and no computer is on screen
+  // until the page selects one again.
+  askBroker.cancel(() => true, "the app's window closed or reloaded");
+  computerService.show(null);
+  computerService.select(null);
 }
 
 function createWindow(): void {
@@ -507,7 +640,7 @@ if (!app.requestSingleInstanceLock()) {
   // Any quitAndInstall, not only Restart to Update's: Squirrel's own signal comes before the windows are asked to close.
   autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-  app.on("will-quit", () => { void bridge?.stop(); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); });
+  app.on("will-quit", () => { void bridge?.stop(); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); shutdownComputer(); });
 
   void app.whenReady().then(() => {
     // Only a packaged, signed app claims the scheme; a dev run must not re-point the system's agenticos:// handler.
@@ -536,4 +669,6 @@ if (!app.requestSingleInstanceLock()) {
   // Light and dark as the theme spec drives them (it cannot switch macOS's own appearance).
   theme: () => themeState(),
   setTheme: (source: ThemeSource) => setTheme(source),
+  // The computer's ask notices raised off-screen (agent-computer D27), as the notifier passed them to the desktop.
+  computerNotices: () => computerNotices.map((n) => ({ ...n })),
 };

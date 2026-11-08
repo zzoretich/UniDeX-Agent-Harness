@@ -591,7 +591,7 @@ export class ComputerService {
       : h.session === agent.key ? `this session (${h.label})` : `${h.label} (look tools still work; acting is busy)`;
     const access = agent.access === "read" ? "read only: this session can look but not act (D17)"
       : "this session can act; the user is asked first on sites they haven't marked and for irreversible actions";
-    const onScreen = this.selected === p.key && (this.bounds !== null || this.popped);
+    const onScreen = this.onScreen(p.key);
     const tabs = p.browser?.tabs() ?? [];
     const asks = this.o.broker.pending(p.key);
     return [
@@ -608,22 +608,31 @@ export class ComputerService {
 
   // ---- the pane's operations
 
-  /** The pane shows `place`'s computer (agent-computer D32); the one it showed before is parked. */
+  /** The pane shows `place`'s computer (agent-computer D32); the one it showed before is parked. Popped out, the newly
+   *  selected computer goes into the pop-out window. */
   select(place: string | null): ComputerState | null {
     if (place !== this.selected) {
       if (this.selected) this.places.get(this.selected)?.browser?.show(null);
       this.selected = place;
       if (place) {
-        this.places.get(place)?.browser?.show(this.bounds);
         if (this.popped) this.popOut();
+        else this.places.get(place)?.browser?.show(this.bounds);
       }
     }
     return place ? this.state(this.placeOf(place)) : null;
   }
 
+  /** The pane's rectangle for the view, or null (collapsed, another tab, a modal on top). Popped out, the app's pop-out
+   *  window places the view; the rectangle is kept for when the pane pops back in. */
   show(bounds: Rect | null): void {
     this.bounds = bounds;
-    if (this.selected) this.places.get(this.selected)?.browser?.show(bounds);
+    if (this.selected && !this.popped) this.places.get(this.selected)?.browser?.show(bounds);
+  }
+
+  /** True while the pane shows `place`'s computer: selected and given a rectangle, or popped out (agent-computer D27: an
+   *  ask on a computer not on screen raises a notice). Whether the window holding it is visible is the app's to add. */
+  onScreen(place: string): boolean {
+    return this.selected === place && (this.bounds !== null || this.popped);
   }
 
   /** The address bar: the person opens a page (no ask; the agent's approved actions revalidate against the new page). */
@@ -701,9 +710,11 @@ export class ComputerService {
     this.refresh(this.selected);
   }
 
-  /** The pop-out window closed: the pane is back in the main window. */
+  /** The pop-out window closed (the app has moved the views back to the main window): the selected computer goes back
+   *  to the pane's latest rectangle. */
   popIn(): void {
     this.popped = false;
+    if (this.selected) this.places.get(this.selected)?.browser?.show(this.bounds);
     this.refresh();
   }
 
@@ -753,7 +764,7 @@ export class ComputerService {
         note: (text) => { void this.pageNote(key, text); },
         changed: () => this.refresh(key),
       });
-      if (key === this.selected) p.browser.show(this.bounds);
+      if (key === this.selected && !this.popped) p.browser.show(this.bounds);
     }
     return p.browser;
   }

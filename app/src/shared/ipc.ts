@@ -117,6 +117,13 @@ export const CH = {
   gitStatus: "git:status",
   gitDiff: "git:diff",
   gitCommit: "git:commit",
+
+  /**
+   * main → page: the Computer pane (agent-computer D27, D32). `{ type: "state", state }` after a computer changes, and
+   * `{ type: "reveal", askId }` when the person clicks an ask's desktop notification (open the pane on that ask). The
+   * page's calls and its listener arrive with the pane (Task 14).
+   */
+  computerEvent: "computer:event",
 } as const;
 
 /** Where the app's own pages come from (main/app-scheme.ts): the main window loads `${APP_ORIGIN}/index.html`. */
@@ -363,11 +370,12 @@ export type SessionAccess = "read" | "edit" | "run";
 /**
  * One event of a thread: the runtime's lib/session-events.js shape (session, text, tool, tool_result, patch, plan, usage,
  * error, done), plus `prompt` (what the user sent, with the turn's model, effort and access) and `turn`, the turn it
- * belongs to.
+ * belongs to. `computer` (with `text`) is a Computer pane line for the thread's timeline (agent-computer D35): sent live,
+ * never stored in the thread's file.
  */
 export interface SessionEventRecord {
   t: string;
-  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done";
+  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done" | "computer";
   turn: number;
   [field: string]: unknown;
 }

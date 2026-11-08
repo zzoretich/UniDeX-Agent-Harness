@@ -11,8 +11,8 @@ import * as path from "node:path";
 import type { PtyEvent } from "../../src/shared/ipc";
 import type { ProgramContext } from "../../src/main/policy/programs";
 import { agentArgvRefusal } from "../../src/main/policy/agent-launch";
-import { PtyService, type PtyAgentRequest, type PtyLib, type PtyProcess } from "../../src/main/services/pty";
-import { AgentRegistry } from "../../src/main/computer/registry";
+import { PtyService, type PtyAgentRequest, type PtyLib, type PtyProcess, type PtyServiceOptions } from "../../src/main/services/pty";
+import { AgentRegistry, type AgentRef } from "../../src/main/computer/registry";
 import { VENDOR, type Sys } from "../../src/main/computer/admission";
 import { COMPUTER_LOOK, COMPUTER_TOOLS, TERM_ACCESS, launchArgs, type LaunchSpec } from "../../../hud/src/data/terminalLaunch";
 
@@ -161,7 +161,7 @@ function fakePty(): { lib: PtyLib; spawned: Array<{ file: string; args: string[]
   return { lib, spawned };
 }
 
-function service(o: { bin?: string | { reason: string }; sys?: Sys | null; git?: string[]; registry?: AgentRegistry; resolveBin?: boolean } = {}) {
+function service(o: { bin?: string | { reason: string }; sys?: Sys | null; git?: string[]; registry?: AgentRegistry; resolveBin?: boolean; extra?: Partial<PtyServiceOptions> } = {}) {
   const { lib, spawned } = fakePty();
   const events: PtyEvent[] = [];
   const registry = o.registry ?? new AgentRegistry();
@@ -172,6 +172,7 @@ function service(o: { bin?: string | { reason: string }; sys?: Sys | null; git?:
     registry,
     sys: o.sys === undefined ? sysOf(VENDOR.claude.team) : o.sys,
     gitInit: async (cwd) => { o.git?.push(cwd); },
+    ...o.extra,
   });
   return { t, spawned, events, registry, asked };
 }
@@ -319,4 +320,29 @@ test("spawnAgent: a refused argv or folder, a taken id and no node-pty are error
   const none = new PtyService({ context, env: {}, emit: () => {}, load: () => { throw new Error("Cannot find module 'node-pty'"); }, resolveBin: async () => ({ bin: CLAUDE }), registry: new AgentRegistry(), sys: sysOf(VENDOR.claude.team) });
   const r = await none.spawnAgent(req());
   assert.equal(!r.ok && r.code, "ENOSYS");
+});
+
+test("spawnAgent: a CLI the test build trusts by its real path runs without a signature (agent-computer Task 13)", async () => {
+  const plain = service({ sys: sysOf(null) });
+  assert.equal((await plain.t.spawnAgent(req())).ok, false, "unsigned and not trusted: falls back");
+  const trusted = service({ sys: sysOf(null), extra: { trusted: [fs.realpathSync(CLAUDE)] } });
+  const r = await trusted.t.spawnAgent(req());
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(trusted.registry.get(r.data.pid)?.key, "code:t1");
+});
+
+test("spawnAgent: the agent's exit, its terminal closing, or its page going tells onAgentGone once, with its ref (agent-computer D31)", async () => {
+  const gone: AgentRef[] = [];
+  const { t, spawned } = service({ extra: { onAgentGone: (a) => gone.push(a) } });
+  assert.ok((await t.spawnAgent(req({ id: "t1" }))).ok);
+  assert.ok((await t.spawnAgent(req({ id: "t2", place: "ws:harbor-map" }))).ok);
+  assert.ok((await t.spawnAgent(req({ id: "t3" }))).ok);
+  spawned[0].p.exit(0);
+  assert.deepEqual(gone.map((a) => [a.key, a.pid, a.place]), [["code:t1", spawned[0].p.pid, "vault"]]);
+  t.kill("t2");
+  assert.deepEqual(gone.map((a) => a.key), ["code:t1", "code:t2"]);
+  spawned[1].p.exit(0);
+  assert.equal(gone.length, 2, "the late exit of a terminal already closed says nothing again");
+  t.killAll();
+  assert.deepEqual(gone.map((a) => a.key), ["code:t1", "code:t2", "code:t3"]);
 });

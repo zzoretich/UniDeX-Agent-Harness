@@ -519,3 +519,61 @@ test("an archived workspace's threads stay listed and readable, and refuse a tur
   await idle(s);
   assert.equal(calls(), seen + 1, "the host ran once");
 });
+
+test("noteEvent: a Computer pane line reaches the page as a live computer event of the thread's turn and is never stored (agent-computer D35)", async () => {
+  const events: SessionEvent[] = [];
+  let during: SessionEvent[] = [];
+  const s: SessionService = new SessionService({
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: (e) => events.push(e), graceMs: 500,
+    onAgent: (ev) => {
+      if (ev.kind !== "start") return;
+      s.noteEvent(ev.thread, "Asked the user: Submit: Click “Pay” on a.test?");
+      during = events.filter((e) => e.event.kind === "computer");
+    },
+  });
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "buy it" });
+  assert.ok(r.ok);
+  await idle(s);
+  assert.equal(during.length, 1);
+  assert.equal(during[0].thread, r.data.id);
+  assert.deepEqual({ ...during[0].event, t: "" }, { t: "", kind: "computer", turn: 1, text: "Asked the user: Submit: Click “Pay” on a.test?" });
+  const read = await s.read(r.data.id);
+  assert.ok(read.ok);
+  assert.ok(!read.data.some((e) => e.kind === ("computer" as string)), "not in the thread's file");
+  // After the turn (an ask cancelled as it ended), the line still reaches the thread, under its last turn.
+  s.noteEvent(r.data.id, "Cancelled because the turn ended: Submit: Click “Pay” on a.test?");
+  assert.equal(events.at(-1)?.event.kind, "computer");
+  assert.equal(events.at(-1)?.event.turn, 1);
+  const n = events.length;
+  s.noteEvent("no-such-thread", "x");
+  assert.equal(events.length, n, "a thread main does not know gets nothing");
+});
+
+test("postComputerNotice: one Notifications item from computer at level info, through the runtime's notify.js, the body on stdin (agent-computer D27)", async () => {
+  const { s } = service();
+  const dir = path.join(vault, "brain", "notifications");
+  fs.rmSync(dir, { recursive: true, force: true });
+  await s.postComputerNotice("Submit: Click “Pay” on a.test?", "Alpha is waiting for your answer in the Computer pane.\n--json is just text here");
+  const years = fs.readdirSync(dir).filter((d) => /^\d{4}$/.test(d));
+  assert.equal(years.length, 1);
+  const files = fs.readdirSync(path.join(dir, years[0]));
+  assert.equal(files.length, 1);
+  const text = fs.readFileSync(path.join(dir, years[0], files[0]), "utf8");
+  assert.match(text, /^from: "computer"$/m);
+  assert.match(text, /^level: "info"$/m);
+  assert.match(text, /^title: "Submit: Click “Pay” on a\.test\?"$/m);
+  assert.match(text, /Alpha is waiting for your answer in the Computer pane\.\n--json is just text here\n$/);
+});
+
+test("postComputerNotice: a title the runtime would refuse, or no vault, rejects without running anything", async () => {
+  let spawned = 0;
+  const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  for (const bad of ["", "  ", "two\nlines", "-flag", "--json", "x".repeat(161)]) {
+    await assert.rejects(s.postComputerNotice(bad, "body"), /title/, JSON.stringify(bad));
+  }
+  assert.equal(spawned, 0);
+  const none = new SessionService({ vaultRoot: () => null, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  await assert.rejects(none.postComputerNotice("Submit: x?", "body"), /no vault is open/);
+  assert.equal(spawned, 0);
+});

@@ -277,3 +277,56 @@ test("a connection that never says hello is closed after the deadline", async ()
   await c.closed();
   await bridge.stop();
 });
+
+test("a fifth call in flight on one connection is answered at once and never reaches handle; a finished call frees a slot", async () => {
+  const gates = new Map<number, () => void>();
+  const seen: number[] = [];
+  const { bridge, socketPath } = await boot({
+    handle: (_a, call) => { seen.push(call.id); return new Promise((res) => gates.set(call.id, () => res({ text: `r${call.id}` }))); },
+  });
+  const c = client(socketPath);
+  const other = client(socketPath);
+  try {
+    c.send({ hello: 1 });
+    await c.line(1);
+    for (let id = 1; id <= 5; id++) c.send({ id, tool: "computer_wait", args: {} });
+    assert.deepEqual(await c.line(2), { id: 5, text: "Too many computer calls at once: wait for one to finish.", isError: true });
+    assert.deepEqual(seen, [1, 2, 3, 4]);
+    gates.get(2)!();
+    assert.deepEqual(await c.line(3), { id: 2, text: "r2" });
+    c.send({ id: 6, tool: "computer_wait", args: {} });
+    for (let i = 0; i < 50 && !seen.includes(6); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(seen, [1, 2, 3, 4, 6], "the freed slot takes the next call");
+    // The cap is per connection.
+    other.send({ hello: 1 });
+    await other.line(1);
+    other.send({ id: 1, tool: "computer_status", args: {} });
+    for (let i = 0; i < 50 && seen.length < 6; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(seen.length, 6, "another connection's call reaches handle");
+  } finally {
+    for (const g of gates.values()) g();
+    c.sock.destroy();
+    other.sock.destroy();
+    await bridge.stop();
+  }
+});
+
+test("a call that throws frees its slot", async () => {
+  let n = 0;
+  const { bridge, socketPath } = await boot({ handle: async () => { n++; throw new Error("boom"); } });
+  const c = client(socketPath);
+  try {
+    c.send({ hello: 1 });
+    await c.line(1);
+    for (let id = 1; id <= 6; id++) {
+      c.send({ id, tool: "computer_status", args: {} });
+      const r = await c.line(id + 1);
+      assert.equal(r.isError, true);
+      assert.match(r.text, /boom/);
+    }
+    assert.equal(n, 6, "every call reached handle: none was held by a slot a thrown call kept");
+  } finally {
+    c.sock.destroy();
+    await bridge.stop();
+  }
+});
