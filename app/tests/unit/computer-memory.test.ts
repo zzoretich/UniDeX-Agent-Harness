@@ -99,3 +99,17 @@ test("memory is bounded across sites: at most 16 sites per tab, the least recent
   assert.deepEqual(n.pool([site(0)]).values, ["v", "w"], "site 0 was touched, so site 1 went instead");
   assert.deepEqual(n.pool([site(1)]), { values: [], whole: [] });
 });
+
+test("the header's guarantee is exactly the 64 most recent of a kind per site: a code read once is forgotten past the cap (R38)", () => {
+  const m = new SecretMemory();
+  assert.equal(m.remember(A, { values: [], whole: ["123456"] }), false);
+  for (let r = 0; r < 3; r++) assert.equal(m.remember(A, { values: [], whole: codes(60, `f${r}x`) }), false, "60 fillers a read never flood");
+  assert.ok(m.pool([A]).whole.includes("123456"), "under the cap (181 values) nothing is evicted");
+  for (let r = 3; r < 5; r++) assert.equal(m.remember(A, { values: [], whole: codes(60, `f${r}x`) }), false);
+  assert.ok(!m.pool([A]).whole.includes("123456"), "past the cap, no longer among the 64 most recent one-time codes: gone, with no flood flag");
+  assert.ok(m.size() <= MEMORY + RESERVE, `bounded: ${m.size()}`);
+  const n = new SecretMemory();
+  n.remember(A, { values: [], whole: ["123456"] });
+  for (let r = 0; r < 5; r++) n.remember(A, { values: codes(60, `p${r}x`), whole: [] });
+  assert.ok(n.pool([A]).whole.includes("123456"), "later reads of the other kind cannot push it out: it stays the most recent one-time code");
+});

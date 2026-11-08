@@ -237,8 +237,10 @@ const literal = (s: string): string => s.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")
  * A secret of fewer than 4 characters goes only as a whole word, and only when it is all digits (a one-time code typed
  * so far) or in `whole` (the value of a one-time-code field): a short password stays, so prose keeps its "a". Bullet-only
  * strings are not secrets. The gate never sees the result: it judges raw names (Task 11b), and this runs on the way out.
+ * `gap` is what a space of a value may match in the text (R38): a run of whitespace in prose; in a URL also `+` and the
+ * percent-escapes of whitespace (`URL_GAP`), since the memory keeps values collapsed while a URL keeps every space.
  */
-export function scrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = []): (s: string) => string {
+export function scrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = [], gap = "\\s+"): (s: string) => string {
   const secrets = new Set<string>();
   const add = (v: string | undefined, short: boolean): void => {
     const t = v?.replace(/\s+/g, " ").trim();
@@ -247,19 +249,41 @@ export function scrubber(values: Iterable<string | undefined>, whole: Iterable<s
   for (const v of values) add(v, /^\d+$/.test(v?.trim() ?? ""));
   for (const v of whole) add(v, true);
   const patterns = [...secrets].sort((a, b) => b.length - a.length).map((x) => {
-    const body = x.split(" ").map(literal).join("\\s+");
+    const body = x.split(" ").map(literal).join(gap);
     return x.length >= SHORT_SECRET ? new RegExp(body, "gu") : new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "gu");
   });
   return (s) => patterns.reduce((acc, re) => acc.replace(re, () => REDACTED), s);
 }
 
+/** R38: in a URL a space of a value may be written as any run of a literal space, `+` (a GET submit), or the percent-escape
+ *  of a space, tab, newline, vertical tab, form feed, carriage return or no-break space (either case). */
+const URL_GAP = "(?:\\s|\\+|%20|%09|%0[aAbBcCdD]|%[cC]2%[aA]0)+";
+
 /** The forms a value takes inside a URL (R37): as typed, percent-encoded (a path or a fragment: `p%40ss`,
- *  `correct%20horse`) and form-encoded as a GET submit writes it (spaces as `+`: `correct+horse`). */
+ *  `correct%20horse`) and form-encoded as a GET submit writes it (spaces as `+`: `correct+horse`). R38: the encoded forms
+ *  are built from the raw value as well as the whitespace-collapsed one, since a URL keeps every space of a password with
+ *  a run of them (`a  b c` arrives as `a++b+c` or `a%20%20b%20c`), while the scrub matches typed text collapsed. */
 const urlForms = (v: string): string[] => {
   const t = v.replace(/\s+/g, " ").trim();
-  if (!t) return [];
-  return [...new Set([t, encodeURIComponent(t), new URLSearchParams([["k", t]]).toString().slice(2)])];
+  if (!t || /^[•●* ]+$/.test(t)) return [];
+  const forms = new Set<string>();
+  for (const x of [t, v]) forms.add(x).add(encodeURIComponent(x)).add(new URLSearchParams([["k", x]]).toString().slice(2));
+  return [...forms];
 };
+
+/**
+ * R35 with R38: the secrets among `s` that appear in `url`, each keeping its kind (R37): a value a GET submit, a redirect or
+ * a popup carried into the address. The URL is matched as given, percent-decoded, and form-decoded with `+` as a space,
+ * each with whitespace collapsed like the value (so `a  b c` is found in `?pw=a++b+c` and `?pw=a%20%20b%20c`).
+ */
+export function inUrl(url: string, s: { values: string[]; whole: string[] }): { values: string[]; whole: string[] } {
+  const forms = [url];
+  try { forms.push(decodeURIComponent(url)); } catch { /* left as given */ }
+  forms.push(forms[forms.length - 1].replace(/\+/g, " "));
+  const flat = forms.map((f) => f.replace(/\s+/g, " "));
+  const has = (v: string): boolean => { const c = v.replace(/\s+/g, " ").trim(); return !!c && flat.some((f) => f.includes(c)); };
+  return { values: s.values.filter(has), whole: s.whole.filter(has) };
+}
 
 /**
  * D9 with R35 and R37: the scrub for a URL string (a tab's URL, `open()`'s reply, a navigation note, a snapshot's `url`
@@ -270,7 +294,7 @@ const urlForms = (v: string): string[] => {
  */
 export function urlScrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = []): (url: string) => string {
   const expand = (xs: Iterable<string | undefined>): string[] => [...xs].flatMap((x) => (x ? urlForms(x) : []));
-  const scrub = scrubber(expand(values), expand(whole));
+  const scrub = scrubber(expand(values), expand(whole), URL_GAP);
   return (url) => {
     let u: URL;
     try { u = new URL(url); } catch { return scrub(url); }

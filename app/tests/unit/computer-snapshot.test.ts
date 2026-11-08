@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { domText, formatSnapshot, indexDom, mergeFrames, REDACTED, scrubber, secretsOf, urlScrubber, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
+import { domText, formatSnapshot, indexDom, inUrl, mergeFrames, REDACTED, scrubber, secretsOf, urlScrubber, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
 
 const ax = (nodeId: string, role: string, name: string, childIds: string[] = [], extra: Partial<AxNode> = {}): AxNode =>
   ({ nodeId, role, name, ignored: false, childIds, backendDOMNodeId: Number(nodeId), ...extra });
@@ -366,4 +366,26 @@ test("urlScrubber keeps the scheme, host and port, scrubs every URL form of a va
   assert.equal(u("not a url hunter2pass"), "not a url ••••••", "a string that is not a URL is scrubbed whole");
   assert.equal(u("https://a.test/done?a=1"), "https://a.test/done?a=1", "a clean URL is returned as it came");
   assert.equal(urlScrubber([], [])("https://a.test/x?y=1"), "https://a.test/x?y=1");
+});
+
+test("urlScrubber builds the encoded forms from the raw value too: a run of spaces survives a GET submit (R38)", () => {
+  const u = urlScrubber(["a  b c", " lead", "xx\tyy"], ["12  3456"]);
+  assert.equal(u("https://a.test/done?pw=a++b+c&q=a%20%20b%20c&r=a  b c&s=a+b+c"), "https://a.test/done?pw=••••••&q=••••••&r=••••••&s=••••••", "form-encoded, percent-encoded, as typed, and collapsed");
+  assert.equal(u("https://a.test/?p=+lead&q=%20lead&r=lead"), "https://a.test/?p=••••••&q=••••••&r=••••••", "a leading space is part of the value in the URL");
+  assert.equal(u("https://a.test/?p=xx%09yy&q=xx+yy"), "https://a.test/?p=••••••&q=••••••", "a tab is encoded as %09 and matched collapsed as a space");
+  assert.equal(u("https://a.test/?code=12++3456&c=12%20%203456"), "https://a.test/?code=••••••&c=••••••", "a one-time code with a run of spaces");
+  assert.equal(urlScrubber(["   ", "••••"], [])("https://a.test/?q=%20%20%20&b=%E2%80%A2"), "https://a.test/?q=%20%20%20&b=%E2%80%A2", "blank and bullet-only values have no forms");
+  const m = urlScrubber(["a b c"]);
+  assert.equal(m("https://a.test/?p=a++b+c&q=a%20%20b%20c&r=a+%20b%0ac&s=a%C2%A0b%09c"), "https://a.test/?p=••••••&q=••••••&r=••••••&s=••••••", "a value the memory kept collapsed still matches every run of URL whitespace");
+  assert.equal(m("https://a.test/?p=abc&q=a-b-c"), "https://a.test/?p=abc&q=a-b-c", "but not the parts run together or joined by other characters");
+  assert.equal(scrubber(["a b c"])("x a++b+c y a  b c"), "x a++b+c y •••••• z".replace(" z", ""), "in prose a space is only whitespace");
+});
+
+test("inUrl finds a value in a URL however the URL encodes its whitespace, and keeps kinds (R35, R37, R38)", () => {
+  const s = { values: ["a  b c", "hunter2pass", "absent"], whole: ["k9z", "12  3456", "999"] };
+  assert.deepEqual(inUrl("https://a.test/done?pw=a++b+c&code=k9z", s), { values: ["a  b c"], whole: ["k9z"] }, "form-encoded run of spaces");
+  assert.deepEqual(inUrl("https://a.test/done#a%20%20b%20c", s), { values: ["a  b c"], whole: [] }, "percent-encoded run of spaces");
+  assert.deepEqual(inUrl("https://a.test/done?pw=a+b+c&c=12+3456", s), { values: ["a  b c"], whole: ["12  3456"] }, "collapsed in the URL, matched collapsed");
+  assert.deepEqual(inUrl("https://a.test/x?y=hunter2pass%", s), { values: ["hunter2pass"], whole: [] }, "an undecodable URL is matched as given");
+  assert.deepEqual(inUrl("https://a.test/clean", s), { values: [], whole: [] });
 });

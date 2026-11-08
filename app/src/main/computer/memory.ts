@@ -1,15 +1,18 @@
-// What a tab remembers of the secrets it has read (agent-computer D9, R32, R35, R37). Every sensitive field's value read in
-// a tab is kept, scoped to the site (origin) it was read on, so text about a page the tab has since left is still
+// What a tab remembers of the secrets it has read (agent-computer D9, R32, R35, R37, R38). Every sensitive field's value read
+// in a tab is kept, scoped to the site (origin) it was read on, so text about a page the tab has since left is still
 // scrubbed, while a site that plants words as "codes" cannot blank another site's titles: a site's pool scrubs names and
 // text only while the tab is on that site. A value another site carried into this one's URL (a GET submit, a redirect, an
 // error page's address, a popup's address) never enters this site's pool: it goes into the tab's "carried" set, which
 // scrubs URL strings only (R35), each value keeping its kind (R37: a short one-time code scrubs as a whole word there too).
-// Bounds per tab: at most SITES (16) sites, the least recently used evicted whole first (never the site being kept);
-// values past MEMORY (256) evicted oldest first, but never a site's RESERVE (64) most recent one-time codes or 64 most
-// recent passwords, so at most SITES x 2 x RESERVE (2,048) values in all; and at most CARRIED (64) carried values. The
-// guarantee: filler read in LATER reads cannot push a real code out of its site's reserve. One read that returns more than
-// RESERVE values of a kind keeps only the last RESERVE of them (`remember` says so, and the browser then hides that
-// document's URL query and fragment, failing closed, R37). Pure: no Electron.
+// Bounds per tab: at most SITES (16) sites, the least recently used evicted whole first (never the site being kept); at
+// most CARRIED (64) carried values; and values past MEMORY (256) in all evicted oldest first, except that a site's RESERVE
+// (64) most recently read one-time codes and its 64 most recently read passwords are never evicted (so at most
+// SITES x 2 x RESERVE, 2,048, values in all). That is the whole guarantee (R38): under the cap nothing is evicted; past
+// it a value stays only while it is among the 64 most recently read of its kind on its site, so a code read once and
+// followed, on the same site, by enough later reads of other values of that kind is forgotten once the cap is passed.
+// `remember` returns true when one read held more distinct values of a kind than RESERVE: all of them are kept while the
+// cap allows, but only the last 64 are protected, so one of that read's values may be gone already, and the browser then
+// hides that document's URL query and fragment, failing closed (R37). Pure: no Electron.
 
 /** What the scrub removes: `values` (short ones only when all digits) and `whole` (one-time codes: short ones as words). */
 export interface Secrets { values: string[]; whole: string[] }

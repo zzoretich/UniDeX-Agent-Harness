@@ -17,7 +17,7 @@ import type { Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
 import { SecretMemory, type Secrets } from "./memory";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
-import { domText, formatSnapshot, indexDom, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
+import { domText, formatSnapshot, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf } from "../policy/computer-url";
 
 export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean }
@@ -111,8 +111,14 @@ interface Tab {
   /** The main frame's id (from `Page.frameNavigated`) and the frames of the last DOM read: where a leaving read runs (G2). */
   frame: string; frames: string[];
   /** A page-started navigation under way: the site being left and the read of its document's values (G2), consumed at
-   *  commit (R35: what the committed URL carries from the old site goes to the carried set). */
-  leaving: { from: string; read: Promise<Secrets | null> } | null;
+   *  the commit of that navigation (R35: what the committed URL carries from the old site goes to the carried set). R38:
+   *  the record is keyed by its navigation's URL (`did-start-navigation`, re-keyed on `did-redirect-navigation` while it is
+   *  the `latest` navigation started), so an agent load racing it neither discards it nor consumes it: the record goes
+   *  only with its own commit, or when a later navigation commits or loading stops without it (it never committed). */
+  leaving: { url: string; from: string; read: Promise<Secrets | null>; latest: boolean } | null;
+  /** R38: set on a popup tab before its first load: the opener's site and the read of the opener's fields, which become the
+   *  `leaving` record of that first navigation when it starts (the popup's URL may carry a code typed into the opener). */
+  opened: { from: string; read: Promise<Secrets | null> } | null;
   /** D9 (F1): the current document arrived through a navigation whose leaving read is pending or failed, so its URL may
    *  carry a code no one read: the URL goes out without its query and fragment while this document is current. */
   urlHidden: boolean;
@@ -244,9 +250,9 @@ export class ComputerBrowser {
     const href = new URL(url).href;
     const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by);
     t.refused = null;
-    // R37 (N4): an agent-chosen URL carries nothing from the page, so a page-started navigation still pending (or one that
-    // never committed) leaves no record to be consumed at this load's commit.
-    t.leaving = null;
+    // R38: a page-started navigation's leaving record is left alone here: that navigation may be past the point where this
+    // load can cancel it and commit first, and its record then goes with its own commit (`committed` matches the URL); this
+    // load's commit never consumes it, so an agent-chosen URL still carries nothing from the page (R37 N4).
     let timer: ReturnType<typeof setTimeout> | undefined;
     const failed = await Promise.race([
       t.wc.loadURL(href).then(() => null, (e: unknown) => e as { code?: string; message?: string }),
@@ -529,7 +535,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
-      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], leaving: null, urlHidden: false, flooded: false, doc: 0,
+      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], leaving: null, opened: null, urlHidden: false, flooded: false, doc: 0,
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -638,7 +644,17 @@ export class ComputerBrowser {
     // scrubbed from the note, once the leaving document's values have been read (or that read has failed). This event is
     // the earliest the main process hears of a page-started navigation (before will-frame-navigate; the probe showed the
     // old document gone about 5 ms later on a local server), so the leaving read starts here.
-    wc.on("did-start-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument && e.initiator && navAllowed(e.url)) this.noteNavigation(t, e.url); });
+    wc.on("did-start-navigation", (e) => {
+      if (!e.isMainFrame || e.isSameDocument) return;
+      // R38: from now on a redirect belongs to this navigation, not to an earlier one still waiting to commit.
+      if (t.leaving) t.leaving.latest = false;
+      if (!navAllowed(e.url)) return;
+      if (e.initiator) this.noteNavigation(t, e.url);
+      // R38: a popup's first load (from main, so no initiator) is one its opener started, with the opener's read.
+      else if (t.opened) { t.leaving = { url: e.url, latest: true, ...t.opened }; t.opened = null; }
+    });
+    // R38: a redirect moves the pending navigation to another URL (the one its commit will report): the record follows it.
+    wc.on("did-redirect-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument && t.leaving?.latest) t.leaving.url = e.url; });
     wc.on("did-navigate", (_e, url) => this.commit(t, url));
     // R37 (N1): a main-frame error page (the site refused the connection, the name did not resolve) commits too, with the
     // failed URL as the tab's URL (a GET-submitted code is in it), but Electron emits no did-navigate for it: it emits one
@@ -646,8 +662,8 @@ export class ComputerBrowser {
     wc.on("did-fail-provisional-load", (_e, code, _d, url, isMainFrame) => { if (isMainFrame && code !== ABORTED) this.commit(t, url); });
     wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => { if (isMainFrame) { t.seq++; this.o.hooks.changed(); } });
     // R37 (N4): loading stops after every main-frame navigation ends; one that committed consumed its leaving record at
-    // the commit, so a record still here belongs to a navigation that never committed (a 204, a download, a cancel) and
-    // would otherwise carry the old page's values into whatever URL commits next.
+    // the commit, so a record still here belongs to a navigation that never committed (a 204, a download, a cancel: Electron
+    // 44 emits no did-fail-provisional-load for either, probed) and would otherwise wait for a URL that never commits.
     wc.on("did-stop-loading", () => { t.leaving = null; });
     wc.on("page-title-updated", () => this.o.hooks.changed());
     wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.urlOut(t))} stopped (${d.reason}).`));
@@ -711,24 +727,38 @@ export class ComputerBrowser {
   }
 
   private async popup(t: Tab, d: Electron.HandlerDetails): Promise<void> {
-    const from = this.site(t);
-    const out = this.urlScrub(t, [from, siteOf(d.url) ?? "null"]);
-    if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${clipUrl(out(d.url))} in a new tab; ${MAX_TABS} tabs are open.`); return; }
+    const from = this.site(t), to = siteOf(d.url) ?? "null", doc = t.doc;
+    // R38 (D9): the popup's URL may carry a code typed into the opener that the agent never read (a target=_blank GET form,
+    // window.open with the field's value). The opener document is still alive here, so its sensitive values are read now,
+    // in G2's one-command read (the usual command timeout), and remembered for the opener's site before the URL goes out.
+    const read = this.leavingValues(t, from);
+    const got = await read;
+    if (got) this.remember(t, from, got, this.site(t), doc);
+    // The note is scrubbed with the values just read as well as the pools (a flood may have evicted one already); a URL
+    // whose read failed loses its query and fragment, as a navigation note does.
+    const out = this.urlScrub(t, [from, to], got ?? { values: [], whole: [] });
+    const shown = clipUrl(out(got ? d.url : stripQuery(d.url)));
+    if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${shown} in a new tab; ${MAX_TABS} tabs are open.`); return; }
     const nt = await this.addTab(t.openedBy);
     // R32: the new tab inherits the opener's secrets for the opener's site only. R35: a value the opener put in the new
     // tab's URL is carried for that URL string only, never into the new tab's site pool. R37 (N2): the opener's own
-    // carried set comes along (a code carried into the opener's URL and forwarded to the popup's), kinds kept.
+    // carried set comes along (a code carried into the opener's URL and forwarded to the popup's), kinds kept. R38: the
+    // values read from the opener's live fields are matched against the URL too, and the popup's first navigation gets
+    // them as its leaving record, so the URL it commits at (after redirects) is matched again and, when the read failed,
+    // goes out without its query and fragment for that document's life (as for a failed leaving read, F1).
     nt.memory.inherit(t.memory, from);
     nt.memory.carry(t.memory.carried());
-    nt.memory.carry(this.inUrl(d.url, t.memory.pool([from])));
-    this.o.hooks.note(`The page opened ${clipUrl(out(d.url))} in a new tab.`);
+    const known = t.memory.pool([from]);
+    nt.memory.carry(inUrl(d.url, { values: [...known.values, ...(got?.values ?? [])], whole: [...known.whole, ...(got?.whole ?? [])] }));
+    nt.opened = { from, read };
+    this.o.hooks.note(`The page opened ${shown} in a new tab.`);
     const post = d.postBody;
     // A form posted into a new tab keeps its fields, never a file from this Mac (only raw data is passed on).
     const raw = post?.data.filter((x): x is Electron.UploadRawData => x.type === "rawData") ?? [];
     await nt.wc.loadURL(new URL(d.url).href, {
       httpReferrer: d.referrer,
       ...(post && raw.length ? { postData: raw, extraHeaders: `Content-Type: ${post.contentType}${post.boundary ? `; boundary=${post.boundary}` : ""}` } : {}),
-    }).catch(() => undefined);
+    }).catch(() => { if (nt.opened?.read === read) nt.opened = null; });
   }
 
   private askPermission(permission: string, url: string): Promise<boolean> {
@@ -1006,16 +1036,6 @@ export class ComputerBrowser {
     return this.urlScrub(t, [this.site(t)])(this.hidden(t) ? stripQuery(url) : url);
   }
 
-  /** The secrets among `s` that appear in `url` (as given, percent-decoded, or form-decoded with `+` as a space), each
-   *  keeping its kind (R37): a code carried by a GET submit. */
-  private inUrl(url: string, s: Secrets): Secrets {
-    const forms = [url];
-    try { forms.push(decodeURIComponent(url)); } catch { /* left as given */ }
-    forms.push(forms[forms.length - 1].replace(/\+/g, " "));
-    const has = (v: string): boolean => { const c = v.replace(/\s+/g, " ").trim(); return !!c && forms.some((f) => f.includes(c)); };
-    return { values: s.values.filter(has), whole: s.whole.filter(has) };
-  }
-
   /** G2: the document being left may hold a code the person typed that the agent never read (a GET submit carries it into
    *  the next URL). Its sensitive values are read now in one command per frame (`LEAVING_VALUES`, in the frame's isolated
    *  world; the usual command timeout applies). Best effort: null when the document went before the read answered. */
@@ -1049,7 +1069,7 @@ export class ComputerBrowser {
   private noteNavigation(t: Tab, url: string): void {
     const from = this.site(t), to = siteOf(url) ?? "null";
     const read = this.leavingValues(t, from);
-    t.leaving = { from, read };
+    t.leaving = { url, from, read, latest: true };
     void read.then((got) => {
       if (got) this.remember(t, from, got, this.site(t));
       // The values just read scrub the note directly (a flood on the leaving page may have evicted one of them from the
@@ -1072,18 +1092,21 @@ export class ComputerBrowser {
    *  leaving read) go to the tab's carried set, which scrubs URL strings only, each by kind (R37); the URL is held back
    *  (query and fragment) while the leaving read is pending and for the document's life when it failed (F1). An
    *  agent-started navigation (`open()`) has no leaving read and carries nothing. The flood flag starts clear for the
-   *  new document. */
+   *  new document. R38: the record is this navigation's only when the committed URL is the one the record followed
+   *  (Electron reports the same handle's URL at start, redirect and commit); a record left by another navigation is
+   *  dropped here with nothing carried, since that navigation can no longer commit once this one has. */
   private committed(t: Tab, url: string): void {
     const leaving = t.leaving;
     t.leaving = null;
-    t.urlHidden = leaving !== null;
+    const mine = leaving !== null && leaving.url === url;
+    t.urlHidden = mine;
     t.flooded = false;
-    if (!leaving) return;
+    if (!leaving || !mine) return;
     const doc = t.doc;
     void leaving.read.then((got) => {
       if (t.doc !== doc) return;
       const known = t.memory.pool([leaving.from]);
-      t.memory.carry(this.inUrl(url, { values: [...known.values, ...(got?.values ?? [])], whole: [...known.whole, ...(got?.whole ?? [])] }));
+      t.memory.carry(inUrl(url, { values: [...known.values, ...(got?.values ?? [])], whole: [...known.whole, ...(got?.whole ?? [])] }));
       t.urlHidden = got === null;
       this.o.hooks.changed();
     });
