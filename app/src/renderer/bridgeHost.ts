@@ -3,7 +3,7 @@
 // recorded in the guard log and answered as Node would answer a refusal: an EROFS error, or for a spawn a child that
 // prints why and exits 1 (as the page's write guards did before main took the checks over).
 
-import type { HostChild, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
+import type { HostChild, HostComputer, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
 import { refuse } from "../../obsidian-compat/src/guard";
 import { callError } from "../../obsidian-compat/src/bridge";
 import * as path from "./shims/path";
@@ -227,6 +227,20 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
   // fails on the way (the bridge itself) answers the same way, so the HUD shows it rather than throws ──
   const settle = <T>(p: Promise<Result<T>>): Promise<Result<T>> =>
     p.catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err), code: "EIO" }));
+  // The Computer pane's calls (agent-computer D5, D32). The bridge's answers are plain; a call that fails on the way
+  // (the bridge itself) answers as a refusal, or null for select.
+  const computer: HostComputer = {
+    select: (place) => aos.computer.select(place).catch(() => null),
+    show: (bounds) => aos.computer.show(bounds),
+    navigate: (url) => settle(aos.computer.navigate(url)),
+    tab: (op) => aos.computer.tab(op),
+    takeOver: () => aos.computer.takeOver(),
+    handBack: () => aos.computer.handBack(),
+    answer: (askId, a) => aos.computer.answer(askId, a),
+    mark: (origin, on) => aos.computer.mark(origin, on),
+    popOut: () => aos.computer.popOut(),
+    onEvent: (cb) => aos.computer.onEvent(cb),
+  };
   const sessions: HostSessions = {
     start: (req) => settle(aos.sessions.start(req)),
     send: (req) => settle(aos.sessions.send(req)),
@@ -254,6 +268,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     fs,
     spawn,
     sessions,
+    computer,
     git,
     proposals,
     execFileSync: (file, args, opts) => {

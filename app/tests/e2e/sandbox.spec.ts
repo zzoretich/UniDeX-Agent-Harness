@@ -46,10 +46,10 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
     return { top: keys(aos), fs: keys(aos.fs as Record<string, unknown>), proc: keys(aos.proc as Record<string, unknown>), pty: keys(aos.pty as Record<string, unknown>),
       shell: keys(aos.shell as Record<string, unknown>), plugin: keys(aos.plugin as Record<string, unknown>),
       setup: keys(aos.setup as Record<string, unknown>), update: keys(aos.update as Record<string, unknown>), theme: keys(aos.theme as Record<string, unknown>),
-      sessions: keys(aos.sessions as Record<string, unknown>), git: keys(aos.git as Record<string, unknown>),
+      sessions: keys(aos.sessions as Record<string, unknown>), computer: keys(aos.computer as Record<string, unknown>), git: keys(aos.git as Record<string, unknown>),
       proposals: keys(aos.proposals as Record<string, unknown>) };
   });
-  expect(shape.top).toEqual(["boot", "fs", "git", "onCommand", "onProtocol", "onVaultChanges", "plugin", "proc", "proposals", "pty", "ready", "sessions", "setup", "shell", "theme", "update"]);
+  expect(shape.top).toEqual(["boot", "computer", "fs", "git", "onCommand", "onProtocol", "onVaultChanges", "plugin", "proc", "proposals", "pty", "ready", "sessions", "setup", "shell", "theme", "update"]);
   expect(shape.proposals).toEqual(["apply", "preview", "reject", "undo", "undos"]);
   expect(shape.fs).toEqual(["appendText", "copy", "exists", "mkdir", "readBytes", "readText", "readdir", "remove", "rename", "stat", "trash", "walk", "writeText"]);
   expect(shape.proc).toEqual(["execSync", "kill", "onEvent", "spawn"]);
@@ -60,6 +60,7 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.update).toEqual(["check", "install", "onState", "state"]);
   expect(shape.theme).toEqual(["onChange", "set", "state"]);
   expect(shape.sessions).toEqual(["catalog", "list", "onEvent", "read", "send", "start", "stop"]);
+  expect(shape.computer).toEqual(["answer", "handBack", "mark", "navigate", "onEvent", "popOut", "select", "show", "tab", "takeOver"]);
   expect(shape.git).toEqual(["commit", "diff", "status"]);
 });
 

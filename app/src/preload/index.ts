@@ -3,7 +3,7 @@
 // an event object. Main checks every call's sender and arguments; this file only carries them.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import { CH, type AosBridge, type BootInfo, type ProcEvent, type ProtocolRequest, type PtyEvent, type Result, type SessionEvent, type SetupEvent, type ThemeState, type UpdateState } from "../shared/ipc";
+import { CH, type AosBridge, type BootInfo, type ComputerEvent, type ComputerState, type ProcEvent, type ProtocolRequest, type PtyEvent, type Result, type SessionEvent, type SetupEvent, type ThemeState, type UpdateState } from "../shared/ipc";
 
 /** What the page sees when main does not answer an update query: updates off. */
 const OFF: UpdateState = { status: "off", reason: "no answer from the app", version: null, percent: null, error: null };
@@ -96,6 +96,18 @@ const api: AosBridge = {
     state: () => { const r = sync<ThemeState>(CH.themeState, {}); return r.ok ? r.data : systemTheme(); },
     set: (source) => sync(CH.themeSet, { source }),
     onChange: (cb) => listen<ThemeState>(CH.themeEvent, cb),
+  },
+  computer: {
+    select: async (place) => { const r = await invoke<ComputerState | null>(CH.computerSelect, { place }); return r.ok ? r.data : null; },
+    show: (bounds) => ipcRenderer.send(CH.computerShow, { bounds }),
+    navigate: (url) => invoke<null>(CH.computerNavigate, { url }),
+    tab: (op) => ipcRenderer.send(CH.computerTab, { op }),
+    takeOver: () => ipcRenderer.send(CH.computerTakeOver, {}),
+    handBack: () => ipcRenderer.send(CH.computerHandBack, {}),
+    answer: (askId, a) => ipcRenderer.send(CH.computerAnswer, { askId, a }),
+    mark: (origin, on) => ipcRenderer.send(CH.computerMark, { origin, on }),
+    popOut: () => ipcRenderer.send(CH.computerPopOut, {}),
+    onEvent: (cb) => listen<ComputerEvent>(CH.computerEvent, cb),
   },
   sessions: {
     start: (req) => invoke(CH.sessionStart, req),

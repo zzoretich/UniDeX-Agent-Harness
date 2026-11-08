@@ -31,6 +31,7 @@ import { registerProposalsIpc } from "./ipc/proposals";
 import { registerSessionIpc } from "./ipc/sessions";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
 import { openExternalSafe, registerShellIpc } from "./ipc/shell";
+import { registerComputerIpc } from "./ipc/computer";
 import { registerThemeIpc } from "./ipc/theme";
 import { trustMainWindow } from "./ipc/trust";
 import { buildAppMenu } from "./menu";
@@ -586,6 +587,7 @@ registerUpdateIpc(trust, {
   check: () => updates.check(),
   install: () => { installRequests += 1; updates.install(); },
 });
+registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, vaultRoot: () => vault.root });
 registerThemeIpc(trust, { state: () => themeState(), set: (source) => setTheme(source) });
 
 /** The page went (closed, crashed, reloaded, or quitting): its terminals go with it, and the children it was waiting on.
