@@ -8,7 +8,7 @@
 
 **Tech Stack:** Electron 44 (`WebContentsView`, DevTools Protocol), TypeScript (app, HUD), a Node-API Objective-C++ addon built with node-gyp, the Node ≥ 20 CommonJS runtime with `@modelcontextprotocol/sdk` and zod, `node:test`, Playwright Electron.
 
-**Spec:** `docs/design/specs/2026-11-06-agent-computer-design.md` (approved 2026-11-07). Release 1 covers D3–D9, D17–D21, D23, D25–D27, D29–D35, D39, D43, §4.1–§4.4 and §6 "Release 1". Releases 2 (Sandbox) and 3 (Your Mac) get their own plans; the mode switch and the Sandbox tab are not built here.
+**Spec:** `docs/design/specs/2026-11-06-agent-computer-design.md` (approved 2026-11-07). Release 1 covers D3–D9, D17–D21, D23, D25–D27, D29–D35, D39, D43, §4.1–§4.4 and §6 "Release 1". Release 2 (Your Mac, with the Browser · Your Mac switch) gets its own plan. The owner dropped the Sandbox release on 2026-11-07, so nothing here prepares for it.
 
 ## Delivery
 
