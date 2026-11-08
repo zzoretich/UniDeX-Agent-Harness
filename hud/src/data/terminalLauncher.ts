@@ -6,7 +6,7 @@
 // code path a session on either host uses too; with that surface off, through HostFs as before (the Files surface).
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
-import { env, fs } from "../host";
+import { env, fs, pty } from "../host";
 import { claudeConfigDir as envClaudeConfigDir, readAgenticosJson, readProviderState } from "./aosConfig";
 import { modelArg, workspaceNames } from "./agentSessions";
 import { envPrefix } from "./teams";
@@ -50,7 +50,54 @@ export interface Launched {
 export interface LaunchNote { id: string; text: string; why: PlaceWhy; host: TermHost }
 
 export class TerminalLauncher {
-  constructor(private plugin: AgenticOSPlugin) {}
+  /** What main last said a Codex launch adds (agent-computer R70): `--no-daemon` while `on`, for the binary `bin` it
+   *  probed. A new line's answer and a resume line's apart (R77: a resume line's flag is `codex resume`'s); null until
+   *  main has said (no flag meanwhile). */
+  private codexNoDaemon: Record<"new" | "resume", { on: boolean; bin: string | null } | null> = { new: null, resume: null };
+  /** Each ask on its way to main, which a launch waits for instead of asking again (R77). */
+  private asking: Partial<Record<"new" | "resume", Promise<boolean>>> = {};
+
+  constructor(private plugin: AgenticOSPlugin) {
+    // Asked now, so the New menu's first preview is already the line that runs (main caches its answer per binary).
+    void this.refreshAgentFlags();
+  }
+
+  /**
+   * Asks main whether a Codex launch carries `--no-daemon` (HostPty.agentFlags, R70): a new line's, or with "resume" a
+   * resume line's (R77); true when the answer changed, so the menu redraws its preview. An ask already on its way is
+   * shared. The launcher asks when it is made, the menu for both keys each time it opens (`refreshAll`), and every Codex
+   * launch for its own key (R79). An ask that fails leaves no answer (null, no flag shown), never a no: main's spawn
+   * check then gives the answer.
+   */
+  refreshAgentFlags(sub?: "resume"): Promise<boolean> {
+    const k = sub ?? "new";
+    const on = this.asking[k];
+    if (on) return on;
+    const run = (async (): Promise<boolean> => {
+      let next: { on: boolean; bin: string | null } | null = null;
+      try {
+        const r = await pty.agentFlags("codex", sub);
+        next = { on: r.noDaemon === true, bin: typeof r.bin === "string" ? r.bin : null };
+      } catch { /* the bridge failed on the way: no answer */ }
+      const changed = (next?.on ?? false) !== (this.codexNoDaemon[k]?.on ?? false);
+      this.codexNoDaemon[k] = next;
+      return changed;
+    })();
+    this.asking[k] = run;
+    void run.finally(() => { if (this.asking[k] === run) delete this.asking[k]; });
+    return run;
+  }
+
+  /** The New menu's ask on open (R79): both keys, the new line's and the resume line's; true when either changed. */
+  async refreshAll(): Promise<boolean> {
+    const [a, b] = await Promise.all([this.refreshAgentFlags(), this.refreshAgentFlags("resume")]);
+    return a || b;
+  }
+
+  /** Main's answer from a spawn it refused (R79): kept for its key, so the next preview and line follow it. */
+  private takeFlags(k: "new" | "resume", flags: { noDaemon: boolean; bin: string | null }): void {
+    this.codexNoDaemon[k] = { on: flags.noDaemon, bin: flags.bin };
+  }
 
   private vault(): string { return this.plugin.vaultRoot(); }
   private home(): string { return env.homedir(); }
@@ -135,8 +182,14 @@ export class TerminalLauncher {
       : envPrefix("CODEX_HOME", dir, envCodex);
     return {
       host, bin, model, access, resume: opts.resume ?? null, gitInit: opts.gitInit, sessionId: opts.sessionId ?? null, cwd: opts.cwd ?? null,
-      envPrefix: prefix, configDir: prefix ? dir : null,
+      envPrefix: prefix, configDir: prefix ? dir : null, ...this.noDaemonOf(host, opts.resume ? "resume" : "new"),
     };
+  }
+
+  /** A Codex spec's `noDaemon` and the binary main probed for it (R70, R77), when main said the line carries it. */
+  private noDaemonOf(host: "claude" | "codex", k: "new" | "resume"): Pick<LaunchSpec, "noDaemon" | "probedBin"> {
+    const f = this.codexNoDaemon[k];
+    return host === "codex" && f?.on ? { noDaemon: true, probedBin: f.bin } : {};
   }
 
   /** What the menu previews for a launch of `host`: the short command, or a shell's note. */
@@ -193,6 +246,9 @@ export class TerminalLauncher {
    * back. A terminal main refused says why in itself and ends, with no note.
    */
   async launch(req: LaunchRequest): Promise<Launched> {
+    // R79: every Codex launch asks main for its key's answer now (sharing an ask on its way); main checks it again at
+    // the spawn, and a line it refuses is rebuilt from its answer (`start`'s respec).
+    if (req.host === "codex") await this.refreshAgentFlags(req.resume ? "resume" : undefined);
     let { place, why } = this.resolve(req.host, req.picked, req.context);
     let gitInit = !!req.gitInit;
     let aside: string | null = null;
@@ -342,8 +398,11 @@ export class TerminalLauncher {
       return { session, ready: Promise.resolve(null) };
     }
     const spec = this.spec(host, { resume: o.resume, gitInit: o.gitInit, sessionId: ids.fresh, cwd: place.dir });
+    // R79, R80: a line main refuses for its --no-daemon is relaunched by the pool with main's answer (the same spec, only
+    // that changed); the launcher keeps the answer for its preview.
+    const onFlags = host === "codex" ? (flags: { noDaemon: boolean; bin: string | null }): void => { this.takeFlags(o.resume ? "resume" : "new", flags); } : undefined;
     const { session, ready } = pool.createAgent({
-      spec, place, shell,
+      spec, place, shell, ...(onFlags ? { onFlags } : {}),
       meta: { host, place, origin: o.origin, label: null, model: spec.model, access: spec.access, sessionId, startedAt: Date.now() },
     });
     pool.select(session.id);

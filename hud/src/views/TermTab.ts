@@ -28,6 +28,8 @@ export class TermTab {
   reveal(target: { workspace?: string | null }): void { this.panel?.reveal(target); }
   async refresh(): Promise<void> { this.panel?.focus(); }
   unmount(): void { this.panel?.unmount(); this.panel = null; this.host = null; }
+  /** Another tab is shown (WorkbenchView.setTab): the Computer pane lets its view go (agent-computer ruling R51). */
+  leave(): void { this.panel?.leave(); }
   newSession(): void { void this.panel?.createNewSession(); }
   showSession(id: string): void { this.panel?.activate(id); }
   /** The next or previous terminal (⇧⌘] / ⇧⌘[), and closing the selected one (⇧⌘W). */

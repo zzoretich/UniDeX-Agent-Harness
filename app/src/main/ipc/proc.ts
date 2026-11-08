@@ -3,7 +3,7 @@
 import { CH } from "../../shared/ipc";
 import type { ProcService } from "../services/proc";
 import type { PtyService } from "../services/pty";
-import { ExecRequestSchema, KillArgs, NoArgs, PtyAgentRequestSchema, PtyResizeArgs, PtySpawnRequestSchema, PtyWriteArgs, SpawnRequestSchema } from "./schemas";
+import { ExecRequestSchema, KillArgs, NoArgs, PtyAgentFlagsArgs, PtyAgentRequestSchema, PtyResizeArgs, PtySpawnRequestSchema, PtyWriteArgs, SpawnRequestSchema } from "./schemas";
 import { onInvoke, onSend, onSync, type Trust } from "./trust";
 
 export function registerProcIpc(trust: Trust, proc: ProcService, pty: PtyService): void {
@@ -27,6 +27,8 @@ export function registerProcIpc(trust: Trust, proc: ProcService, pty: PtyService
     if (!r.ok && r.code === "EROFS") console.warn(`[main] refused agent terminal ${req.host} (${r.error})`);
     return r;
   });
+  // What main adds to that launch's line (agent-computer R70: Codex's --no-daemon), so the page shows the argv that runs.
+  onInvoke(CH.ptyAgentFlags, trust, PtyAgentFlagsArgs, ({ host, sub }) => pty.agentFlags(host, sub));
   onSend(CH.ptyWrite, trust, PtyWriteArgs, ({ id, data }) => pty.write(id, data));
   onSend(CH.ptyResize, trust, PtyResizeArgs, ({ id, cols, rows }) => pty.resize(id, cols, rows));
   onSend(CH.ptyKill, trust, KillArgs, ({ id, signal }) => pty.kill(id, signal));

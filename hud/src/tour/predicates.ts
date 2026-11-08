@@ -1,7 +1,8 @@
 // What a step's `when` may name, and the words its text fills in (tour C5, C8). A step whose `when` fails is skipped,
 // so a Codex-only, a no-host or a Sessions-hidden install sees only what it has. The context is built by the plugin from
 // sessionHosts() (agenticos.json's hosts), chatAvailable() (an enabled host signed in, by provider-state.json's login
-// caches) and sessionsShown() (that, or a past session for History); this module only reads it. Pure, so node:test can load it.
+// caches), sessionsShown() (that, or a past session for History) and the app's Computer surface; this module only reads
+// it. Pure, so node:test can load it.
 
 export type TourHost = "claude" | "codex";
 
@@ -15,12 +16,15 @@ export interface TourContext {
   sessions?: boolean;
   /** The Getting started item is on the rail (not put away, not finished). */
   checklist: boolean;
+  /** The app runs the Computer pane (its surface is on, agent-computer D26): off, the pane is only a collapsed strip,
+   *  so a step on its view would find nothing. Absent: off (outside the app, or an app that does not say). */
+  computer?: boolean;
   /** How the user types an in-session command on their hosts (aosConfig invocationHint): "/todo", "$agenticos:todo"… */
   cmd?: (name: string) => string;
 }
 
 /** Every predicate a step may name in `when`; `!` before one negates it. */
-export const PREDICATES = ["hasHost:claude", "hasHost:codex", "chatAvailable", "sessionsShown", "codexOnly", "noHost", "checklistShown"] as const;
+export const PREDICATES = ["hasHost:claude", "hasHost:codex", "chatAvailable", "sessionsShown", "codexOnly", "noHost", "checklistShown", "computerOn"] as const;
 export type Predicate = typeof PREDICATES[number];
 
 const HOST_NAME: Record<TourHost, string> = { claude: "Claude Code", codex: "Codex" };
@@ -39,6 +43,7 @@ function test(p: Predicate, ctx: TourContext): boolean {
     case "codexOnly": return ctx.hosts.length === 1 && ctx.hosts[0] === "codex";
     case "noHost": return ctx.hosts.length === 0;
     case "checklistShown": return ctx.checklist;
+    case "computerOn": return ctx.computer === true;
   }
 }
 

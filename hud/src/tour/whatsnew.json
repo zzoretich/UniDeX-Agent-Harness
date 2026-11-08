@@ -2,6 +2,17 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.5.0",
+      "entries": [
+        {
+          "id": "computer-pane",
+          "title": "The Computer pane",
+          "body": "A browser beside the terminal on Code and beside the reader on Sessions, which a session's agent drives through its computer tools on Claude Code and Codex. It reads pages freely, asks you before clicking or typing on a site you haven't marked and before anything irreversible, and Take over stops it at once. Settings ▸ Computer turns it off.",
+          "steps": ["code.computer", "sessions.computer"]
+        }
+      ]
+    },
+    {
       "version": "2.4.0",
       "entries": [
         {

@@ -3,6 +3,7 @@
 // HUD sends and small enough that one call cannot exhaust main.
 
 import { z } from "zod";
+import { navAllowed, siteOf } from "../policy/computer-url";
 import type { ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
 
 const MB = 1024 * 1024;
@@ -33,6 +34,29 @@ export const ProposalDecisionArgs = ProposalNameArgs.extend({ digest: z.string()
 export const ProposalUndoArgs = z.object({ undoId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,60}-\d{4}-\d{2}-\d{2}T[0-9-]+Z$/) }).strict();
 /** The theme choice: one of the three, nothing else. */
 export const ThemeSetArgs = z.object({ source: z.enum(["system", "light", "dark"]) satisfies z.ZodType<ThemeSource> }).strict();
+
+// The Computer pane's calls (agent-computer D5, D32). `select`'s place is checked against the vault in ipc/computer.ts
+// (placeAllowed), which needs the vault; here it is only bounded and free of NUL and `..` segments.
+export const ComputerSelectArgs = z.object({
+  place: z.string().min(1).max(512).refine((p) => !p.includes("\0") && !p.split(/[/\\:]/).includes(".."), "a place").nullable(),
+}).strict();
+// Finite only: main clamps to 0-10000 (policy/computer.ts clampBounds), so a briefly off-screen layout still lands.
+const Coord = z.number().finite();
+export const ComputerShowArgs = z.object({
+  bounds: z.object({ x: Coord, y: Coord, width: Coord, height: Coord }).strict().nullable(),
+}).strict();
+export const ComputerNavigateArgs = z.object({ url: z.string().min(1).max(8192).refine(navAllowed, "an http or https page, or about:blank") }).strict();
+export const ComputerTabArgs = z.object({
+  op: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("new") }).strict(),
+    z.object({ kind: z.enum(["close", "select"]), index: z.number().int().min(0).max(1000) }).strict(),
+  ]),
+}).strict();
+export const ComputerAnswerArgs = z.object({ askId: z.string().min(1).max(64), a: z.enum(["once", "always", "deny"]) }).strict();
+export const ComputerMarkArgs = z.object({
+  origin: z.string().min(1).max(2048).refine((o) => siteOf(o) === o, "an origin"),
+  on: z.boolean(),
+}).strict();
 
 export const SpawnRequestSchema: z.ZodType<SpawnRequest> = z.object({
   id: Id,
@@ -65,6 +89,9 @@ export const PtySpawnRequestSchema: z.ZodType<PtySpawnRequest> = z.object({
 });
 
 /** A Code launch's agent (agent-computer D18): the host and its words; main resolves the binary and checks the words. */
+/** pty:agent-flags: which host's Code launch (agent-computer R70), and `sub: "resume"` for a resume line (R77). */
+export const PtyAgentFlagsArgs = z.object({ host: z.enum(["claude", "codex"]), sub: z.literal("resume").optional() }).strict();
+
 export const PtyAgentRequestSchema: z.ZodType<PtyAgentRequest> = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,127}$/),
   host: z.enum(["claude", "codex"]),

@@ -9,10 +9,10 @@ import { VIEW_TYPE_WORKBENCH, WorkbenchView } from "../views/WorkbenchView";
 import { invocationHint, readAgenticosJson, sessionHosts } from "../data/aosConfig";
 import type { BrainMode } from "../data/brainModel";
 import type { SpacesPane } from "../data/statusline";
-import { shell } from "../host";
+import { hudHost, shell } from "../host";
 import { TourEngine, type ProbeResult, type TourEnd, type TourItem } from "./engine";
 import { fillText, holds, type TourContext } from "./predicates";
-import { BOOK, chapterById, chapterForTab, resolveRefs, type TourChapter, type TourStep } from "./steps";
+import { BOOK, chapterById, chapterForTab, resolveRefs, showable, type TourChapter, type TourStep } from "./steps";
 import {
   markCompleted, markDismissed, markDone, markLaunched, markOffered, markSeen, sanitizeTourState, setChecklistDismissed, type TourState,
 } from "./state";
@@ -73,7 +73,9 @@ export class TourController {
     try { chat = this.plugin.chatAvailable(); } catch { /* no provider state */ }
     let sessions = chat;
     try { sessions = this.plugin.sessionsShown(); } catch { /* as chat */ }
-    const base: TourContext = { hosts: sessionHosts(cfg), chat, sessions, checklist: false, cmd: (name) => invocationHint(name, cfg) };
+    // The Computer pane's steps need its surface on (agent-computer D26): the app says so at boot.
+    const computer = hudHost().computer?.enabled === true;
+    const base: TourContext = { hosts: sessionHosts(cfg), chat, sessions, checklist: false, computer, cmd: (name) => invocationHint(name, cfg) };
     base.checklist = buildChecklist(BOOK, this.state(), base).shown;
     this.ctxCache = { at: now, ctx: base };
     return base;
@@ -394,7 +396,7 @@ export class TourController {
           const card = root.createDiv({ cls: "aos-tour-wn-entry", attr: { "data-entry": e.id } });
           card.createDiv({ cls: "aos-tour-wn-title", text: e.title });
           card.createDiv({ cls: "aos-tour-wn-body", text: e.body });
-          if (e.steps.length) {
+          if (showable(BOOK, e.steps, this.context())) {
             const b = card.createEl("button", { cls: "aos-tour-wn-show", text: "Show me", attr: { type: "button" } });
             b.addEventListener("click", () => this.showMe(e.steps));
           }

@@ -11,10 +11,11 @@
 // the app left running would otherwise go on writing into the fixture while the next spec file restores it.
 
 import { _electron as electron, expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
-import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
@@ -465,6 +466,322 @@ export function providerState(name: string, logins: { claude: boolean; codex: bo
   fs.writeFileSync(file, `${JSON.stringify(j, null, 2)}\n`);
 }
 
+// ── the Computer pane's stand-in agents (agent-computer D18, D39) ────
+
+/**
+ * Agent CLIs for the Computer pane's spec. The app spawns one as it spawns Claude Code or Codex (a Chat turn's CLI, a
+ * Code launch's terminal process), so the bridge admits it by spawn ownership, as it admits the real ones. Each starts
+ * the plugin launcher's MCP server (`sh <launcher> mcp-server`, which execs the vault's mcp-server.js, so the server is
+ * the CLI's own child) and calls the computer_* tools when the spec asks, over a port on 127.0.0.1 it records in
+ * `runs/<pid>.json`. They run on `node`, a copy of the fixture's Node that nothing else runs: the test switch
+ * AOS_E2E_TRUSTED_CLI names it (admission judges the running process, whose executable is a script's interpreter) and
+ * the two scripts (a Code launch's install check judges the file it starts), never the Node every runtime script uses.
+ */
+export const AGENT = {
+  dir: path.join(ROOT, "computer-agent"),
+  node: path.join(ROOT, "computer-agent", "bin", "node"),
+  bin: { claude: path.join(ROOT, "computer-agent", "claude"), codex: path.join(ROOT, "computer-agent", "codex") },
+  runs: path.join(ROOT, "computer-agent", "runs"),
+};
+/**
+ * The app's data folder (USER_DATA) through a short link in the temp folder, for the Computer pane's spec: the bridge's
+ * socket lives in it (computer/bridge.sock), and a Unix socket's path holds at most 103 bytes, which the fixture's
+ * folder alone nearly fills.
+ */
+export const USER_DATA_LINK = path.join(os.tmpdir(), `aos-e2e-${crypto.createHash("sha256").update(ROOT).digest("hex").slice(0, 8)}`);
+
+/** The plugin launcher an agent's MCP server starts through: the vault's copy of plugin/bin/aos. */
+const LAUNCHER = path.join(ROOT, "vault", "brain", "scripts", "bin", "aos");
+
+/** A path with its existing part resolved (the fixture may not exist yet when a spec file loads). */
+function resolvedPath(p: string): string {
+  const rest: string[] = [];
+  for (let at = p; ; at = path.dirname(at)) {
+    try { return path.join(fs.realpathSync(at), ...rest.reverse()); } catch { /* not there yet */ }
+    if (path.dirname(at) === at) return p;
+    rest.push(path.basename(at));
+  }
+}
+
+/** The test-build switches the Computer pane's spec launches with (computer/notify.ts testSwitches), both CLIs found, and
+ *  the app's data folder through its short link (installComputerAgents makes it). */
+export function computerEnv(): Record<string, string | undefined> {
+  return {
+    AOS_E2E_TRUSTED_CLI: [AGENT.node, AGENT.bin.claude, AGENT.bin.codex].map(resolvedPath).join(","),
+    // Every *.test site the spec opens is the fixture server on 127.0.0.1, at its own unmarked origin.
+    AOS_E2E_HOST_RULES: "MAP *.test 127.0.0.1",
+    AOS_APP_USER_DATA: USER_DATA_LINK,
+    AOS_NO_CLAUDE: undefined,
+    AOS_NO_CODEX: undefined,
+  };
+}
+
+/** What a stand-in agent recorded when it started. `mode`: a Chat turn, a Code launch, or started by the spec itself.
+ *  `rc`: its $AOS_E2E_RC_ONLY, which only the fixture's shell rc file sets when a spec adds it (RC_ONLY). */
+export interface AgentRun { pid: number; port: number; host: "claude" | "codex"; mode: "chat" | "code" | "outsider"; argv: string[]; cwd: string; prompt: string; at: number; rc: string | null }
+
+/** A variable only the fixture HOME's .zshrc exports, once a spec calls addRcOnly (agent-computer C1: a Code launch's
+ *  agent sees what the login shell's rc files export, as a launch typed into a shell did). */
+export const RC_ONLY = { name: "AOS_E2E_RC_ONLY", value: "set by the fixture HOME zshrc" };
+/** Appends RC_ONLY's export to the fixture HOME's .zshrc (restored from the pristine copy before each spec file). */
+export function addRcOnly(): void {
+  fs.appendFileSync(path.join(FX.home, ".zshrc"), `export ${RC_ONLY.name}='${RC_ONLY.value}'\n`);
+}
+/** A tool's result as the MCP server returned it; `at` is when the agent had it (its clock, Date.now()). */
+export interface AgentReply { text: string; isError: boolean; image: string | null; at: number }
+/** Which MCP server answers: the agent's own, a second one it starts as its child, or one behind a shell (a grandchild). */
+export type AgentServer = "main" | "second" | "grandchild";
+
+/**
+ * Writes the two stand-ins and records them as the hosts' binaries, where the runtime looks first (the vault config's
+ * hosts.<host>.bin and agenticos.json's legacy <host>.bin), so a Chat turn's plan and a Code launch's `sessions.js bin`
+ * both name them.
+ */
+export function installComputerAgents(): void {
+  fs.mkdirSync(USER_DATA, { recursive: true });
+  fs.rmSync(USER_DATA_LINK, { force: true });
+  fs.symlinkSync(USER_DATA, USER_DATA_LINK);
+  fs.mkdirSync(AGENT.dir, { recursive: true });
+  fs.rmSync(AGENT.runs, { recursive: true, force: true });
+  fs.mkdirSync(AGENT.runs, { recursive: true });
+  const real = fs.realpathSync(path.join(ROOT, "bin", "node"));
+  if (!fs.existsSync(AGENT.node) || fs.statSync(AGENT.node).size !== fs.statSync(real).size) {
+    fs.mkdirSync(path.dirname(AGENT.node), { recursive: true });
+    fs.rmSync(AGENT.node, { force: true });
+    fs.copyFileSync(real, AGENT.node, fs.constants.COPYFILE_FICLONE);
+    fs.chmodSync(AGENT.node, 0o755);
+  }
+  // A Node linked against its own libnode (Homebrew's) finds it at @executable_path/../lib: the copy's lib is the original's.
+  const lib = path.join(path.dirname(path.dirname(real)), "lib");
+  const libLink = path.join(path.dirname(path.dirname(AGENT.node)), "lib");
+  fs.rmSync(libLink, { recursive: true, force: true });
+  if (fs.existsSync(lib)) fs.symlinkSync(lib, libLink);
+  for (const host of ["claude", "codex"] as const) fs.writeFileSync(AGENT.bin[host], agentScript(host), { mode: 0o755 });
+  const edit = (file: string, fn: (j: Record<string, any>) => void) => {
+    const j = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    fn(j);
+    fs.writeFileSync(file, `${JSON.stringify(j, null, 2)}\n`);
+  };
+  edit(FX.v("brain/config.json"), (j) => {
+    j.hosts = { ...(j.hosts ?? {}) };
+    for (const h of ["claude", "codex"]) j.hosts[h] = { ...(j.hosts[h] ?? {}), bin: AGENT.bin[h as "claude" | "codex"] };
+  });
+  edit(path.join(FX.claude, "agenticos.json"), (j) => {
+    j.claude = { ...(j.claude ?? {}), bin: AGENT.bin.claude };
+    j.codex = { ...(j.codex ?? {}), bin: AGENT.bin.codex };
+  });
+}
+
+/** One stand-in's script: the host catalog's questions answered from a one-model list; else a turn, a Code session or
+ *  (with FIXTURE_AGENT_OUTSIDER=1, started by the spec) an outsider, each serving the spec's calls until it is told to
+ *  finish or its time is up. */
+function agentScript(host: "claude" | "codex"): string {
+  return `#!${AGENT.node}
+// fixture stub: never reaches the real ${host}. The Computer pane's spec drives it (tests/e2e/harness.ts AGENT).
+"use strict";
+const fs = require("fs");
+const path = require("path");
+const http = require("http");
+const { spawn } = require("child_process");
+const HOST = ${JSON.stringify(host)};
+const RUNS = ${JSON.stringify(AGENT.runs)};
+const LAUNCHER = ${JSON.stringify(LAUNCHER)};
+const argv = process.argv.slice(2);
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+
+function catalog() {
+  if (argv[0] === "--version") { process.stdout.write(HOST === "claude" ? "2.1.318 (Claude Code)\\n" : "codex-cli 0.167.0\\n"); return true; }
+  // Main asks a Codex CLI's help whether it takes --no-daemon (agent-computer R70), as codex-cli 0.167.0's lists it, and
+  // for a resume line the resume subcommand's (R77), which lists it too.
+  if (argv[0] === "resume" && argv[1] === "--help" && HOST === "codex") {
+    process.stdout.write("Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]\\n\\nOptions:\\n      --last\\n      --no-daemon\\n");
+    return true;
+  }
+  if (argv[0] === "--help") {
+    process.stdout.write(HOST === "codex"
+      ? "Usage: codex [OPTIONS] [PROMPT]\\n\\nOptions:\\n      --no-daemon\\n          Run without the shared background server, even if it is already running\\n"
+      : "Usage: claude [options] [command] [prompt]\\n");
+    return true;
+  }
+  if (HOST === "claude" && argv.includes("--input-format")) {
+    let buf = "", answered = false;
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (d) => {
+      buf += d;
+      const i = buf.indexOf("\\n");
+      if (answered || i < 0) return;
+      answered = true;
+      const req = JSON.parse(buf.slice(0, i));
+      out({ type: "control_response", response: { subtype: "success", request_id: req.request_id, response: { models: [{ value: "default", displayName: "Default", description: "The fixture's model", supportedEffortLevels: [] }], commands: [] } } });
+    });
+    setInterval(() => {}, 1000);
+    return true;
+  }
+  if (HOST === "codex" && argv[0] === "debug") {
+    if (argv[1] === "models") out({ models: [{ slug: "gpt-tide-3", display_name: "GPT-Tide-3", description: "The fixture's model.", visibility: "list", priority: 1, supported_reasoning_levels: [{ effort: "low", description: "low" }] }] });
+    else if (argv[1] === "prompt-input") out([]);
+    else process.exitCode = 2;
+    return true;
+  }
+  return false;
+}
+
+/** An MCP client over the stdio of a server it starts: the plugin launcher, as the host starts it (direct), or behind a
+ *  shell that runs one more command after it, so the server is a grandchild (indirect). */
+function mcp(indirect) {
+  const env = { ...process.env, AOS_HOST: HOST };
+  const child = indirect
+    ? spawn("/bin/sh", ["-c", '"$0" "$1" mcp-server; :', "/bin/sh", LAUNCHER], { env, stdio: ["pipe", "pipe", "ignore"] })
+    : spawn("/bin/sh", [LAUNCHER, "mcp-server"], { env, stdio: ["pipe", "pipe", "ignore"] });
+  const pending = new Map();
+  let buf = "", id = 0, gone = false;
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (d) => {
+    buf += d;
+    for (let i = buf.indexOf("\\n"); i >= 0; i = buf.indexOf("\\n")) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      let m;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m && m.id !== undefined && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+    }
+  });
+  const end = () => { gone = true; for (const r of pending.values()) r({ error: { message: "the MCP server exited" } }); pending.clear(); };
+  child.on("exit", end);
+  child.on("error", end);
+  const rpc = (method, params) => new Promise((resolve) => {
+    if (gone) return resolve({ error: { message: "the MCP server exited" } });
+    const n = ++id;
+    pending.set(n, resolve);
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\\n");
+  });
+  const ready = rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fixture-agent", version: "1.0.0" } })
+    .then(() => { if (!gone) child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\\n"); });
+  return {
+    child,
+    async call(name, args) {
+      await ready;
+      const m = await rpc("tools/call", { name, arguments: args || {} });
+      const at = Date.now();
+      if (m.error) return { text: String(m.error.message || "error"), isError: true, image: null, at };
+      const content = (m.result && m.result.content) || [];
+      const text = content.filter((c) => c.type === "text").map((c) => c.text).join("\\n");
+      const img = content.find((c) => c.type === "image");
+      return { text, isError: m.result.isError === true, image: img ? img.data : null, at };
+    },
+    stop() { try { child.stdin.end(); } catch {} },
+  };
+}
+
+function main() {
+  if (catalog()) return;
+  const mode = process.env.FIXTURE_AGENT_OUTSIDER === "1" ? "outsider" : (HOST === "claude" ? argv[0] === "-p" : argv[0] === "exec") ? "chat" : "code";
+  const prompt = mode === "chat" ? argv[argv.length - 1] : "";
+  const at = (f) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : null);
+  const sessionId = at("--session-id") || at("--resume");
+  if (mode === "chat") out(HOST === "claude" ? { type: "system", subtype: "init", session_id: sessionId } : { type: "thread.started", thread_id: "fixture-computer" });
+  else if (mode === "code") process.stdout.write("[fixture " + HOST + " agent] ready\\r\\n");
+  // The CLI starts its MCP servers before it runs any tool (D18: the first connection wins).
+  const servers = { main: mcp(false) };
+  const server = (which) => {
+    if (which === "second") return (servers.second = servers.second || mcp(false));
+    if (which === "grandchild") return (servers.grandchild = servers.grandchild || mcp(true));
+    return servers.main;
+  };
+  const finish = () => {
+    for (const s of Object.values(servers)) s.stop();
+    const done = () => process.exit(0);
+    if (mode !== "chat") return done();
+    const text = "Done with the computer.";
+    if (HOST === "claude") {
+      out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "text", text }] } });
+      process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: sessionId, total_cost_usd: 0, usage: { input_tokens: 10, output_tokens: 5 } }) + "\\n", done);
+    } else {
+      out({ type: "item.completed", item: { id: "m1", type: "agent_message", text } });
+      process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } }) + "\\n", done);
+    }
+  };
+  const httpd = http.createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (d) => { body += d; });
+    req.on("end", async () => {
+      const send = (o) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
+      try {
+        const j = body ? JSON.parse(body) : {};
+        if (req.url === "/finish") { send({ ok: true }); setTimeout(finish, 10); return; }
+        if (req.url !== "/call") { res.writeHead(404).end(); return; }
+        const s = server(j.server);
+        const first = await s.call(j.tool, j.args);
+        // The next call goes the moment the first answers, for a spec timing what follows it.
+        if (j.then) send({ first, then: await s.call(j.then.tool, j.then.args) });
+        else send(first);
+      } catch (e) { send({ text: String(e && e.message || e), isError: true, image: null, at: Date.now() }); }
+    });
+  });
+  httpd.listen(0, "127.0.0.1", () => {
+    const run = { pid: process.pid, port: httpd.address().port, host: HOST, mode, argv, cwd: process.cwd(), prompt, at: Date.now(), rc: process.env.${RC_ONLY.name} ?? null };
+    const file = path.join(RUNS, process.pid + ".json");
+    fs.writeFileSync(file + ".tmp", JSON.stringify(run));
+    fs.renameSync(file + ".tmp", file);
+  });
+  // Nothing outlives a spec: a stand-in nobody finished ends on its own.
+  setTimeout(finish, 5 * 60_000).unref();
+}
+main();
+`;
+}
+
+/** A running stand-in agent, called over its port. */
+export class Agent {
+  constructor(readonly run: AgentRun) {}
+
+  private async post<T>(route: string, body: unknown): Promise<T> {
+    const r = await fetch(`http://127.0.0.1:${this.run.port}${route}`, { method: "POST", body: JSON.stringify(body) });
+    return (await r.json()) as T;
+  }
+
+  /** Calls a tool and waits for its result. */
+  call(tool: string, args: Record<string, unknown> = {}, server: AgentServer = "main"): Promise<AgentReply> {
+    return this.post<AgentReply>("/call", { tool, args, server });
+  }
+
+  /** Calls a tool, then another the moment the first answers; both results. */
+  chain(first: { tool: string; args?: Record<string, unknown> }, then: { tool: string; args?: Record<string, unknown> }): Promise<{ first: AgentReply; then: AgentReply }> {
+    return this.post("/call", { tool: first.tool, args: first.args ?? {}, then: { tool: then.tool, args: then.args ?? {} } });
+  }
+
+  /** Ends the turn (a Chat turn prints its last text and result) or the session; resolves once the process has gone. */
+  async finish(): Promise<void> {
+    try { await this.post("/finish", {}); } catch { /* already gone */ }
+    for (const until = Date.now() + 10_000; Date.now() < until; await sleep(50)) {
+      try { process.kill(this.run.pid, 0); } catch { return; }
+    }
+  }
+}
+
+const taken = new Set<number>();
+/** The newest stand-in that started after `after` and matches, once it has recorded its port. */
+export async function agentRun(match: (r: AgentRun) => boolean, after: number, timeoutMs = 30_000): Promise<Agent> {
+  for (const until = Date.now() + timeoutMs; Date.now() < until; await sleep(100)) {
+    let names: string[] = [];
+    try { names = fs.readdirSync(AGENT.runs).filter((n) => n.endsWith(".json")); } catch { /* none yet */ }
+    const runs = names.map((n) => { try { return JSON.parse(fs.readFileSync(path.join(AGENT.runs, n), "utf8")) as AgentRun; } catch { return null; } })
+      .filter((r): r is AgentRun => !!r && r.at >= after && !taken.has(r.pid) && match(r))
+      .sort((a, b) => b.at - a.at);
+    if (runs[0]) { taken.add(runs[0].pid); return new Agent(runs[0]); }
+  }
+  throw new Error(`no stand-in agent started within ${timeoutMs} ms`);
+}
+
+/** A stand-in started by the spec, not by the app: a process outside the app, as a CLI typed by hand would be (D17, D18). */
+export async function startOutsider(host: "claude" | "codex" = "claude"): Promise<{ agent: Agent; kill(): void }> {
+  const after = Date.now();
+  const child = spawn(AGENT.bin[host], [], { env: appEnv({ FIXTURE_AGENT_OUTSIDER: "1", AOS_HEADLESS: undefined }), stdio: "ignore", detached: false });
+  const agent = await agentRun((r) => r.pid === child.pid, after - 1, 15_000);
+  return { agent, kill: () => { try { child.kill("SIGKILL"); } catch { /* gone */ } } };
+}
+
 // ── the app's processes ──────────────────────────────────────────────
 
 const run = promisify(execFile);
@@ -569,10 +886,14 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<AppHandle> {
 
   // Nothing the specs click may reach the desktop: record the OS hand-offs instead. The page has no Node (phase 4), so
   // every one of them happens in main, behind the bridge. The Trash is the fixture's, not the desktop's: the file leaves
-  // the vault as it would, into <home>/.Trash.
-  await app.evaluate(({ shell }, trashDir) => {
-    const g = globalThis as unknown as { __aosOpened: Array<{ via: string; fn: string; arg: string }> };
+  // the vault as it would, into <home>/.Trash. Notifications are kept, not shown.
+  await app.evaluate(({ shell, Notification }, trashDir) => {
+    const g = globalThis as unknown as { __aosOpened: Array<{ via: string; fn: string; arg: string }>; __aosNotified: unknown[] };
     g.__aosOpened = [];
+    // The Computer pane's desktop notifications (agent-computer D27) are kept here, never shown: a spec emits a kept
+    // one's "click" to stand in for the person clicking it.
+    g.__aosNotified = [];
+    Notification.prototype.show = function show(this: unknown) { g.__aosNotified.push(this); };
     const s = shell as unknown as Record<string, unknown>;
     s.openExternal = async (url: string) => { g.__aosOpened.push({ via: "main", fn: "openExternal", arg: String(url) }); };
     s.openPath = async (p: string) => { g.__aosOpened.push({ via: "main", fn: "openPath", arg: String(p) }); return ""; };
@@ -587,12 +908,17 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<AppHandle> {
   }, path.join(FX.home, ".Trash"));
   await win.waitForSelector(opts.ready ?? ".aos-wb-railbtn", { timeout: 30_000 });
 
+  // Taken now: once the app has quit and Playwright has let its handle go, app.process() throws (R73: the R46 spec quits
+  // the app itself, before useApp's close).
+  const appProc = app.process();
   const handle: AppHandle = {
     app, win, errors, notices,
     guard: () => win.evaluate(() => (window as unknown as { aosHost: { guard: { log: GuardEntry[] } } }).aosHost.guard.log.map((e) => ({ ...e }))),
     opened: () => app.evaluate(() => (globalThis as unknown as { __aosOpened: Opened[] }).__aosOpened.map((e) => ({ ...e }))),
     close: async ({ graceMs = 10_000 } = {}) => {
-      const proc = app.process();
+      const proc = appProc;
+      // Already gone (it quit by itself, and its test waited for that): nothing left to close.
+      if (proc.exitCode !== null || proc.signalCode !== null) return;
       const started = new AppProcesses(proc.pid!);
       await started.update();
       // Followed while the app quits as well: what it starts on the way out is its too.

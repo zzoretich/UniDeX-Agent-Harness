@@ -31,6 +31,10 @@ test("⌘T with nothing picked starts Claude Code in the vault, and makes no Scr
   expect(selected?.cwd).toBe(FX.vault);
   expect(fs.existsSync(FX.v("workspaces/scratch"))).toBe(false);
   await expect(C().locator(".aos-term-started")).toContainText("Started Claude Code in Vault");
+  // C1 (R65a): the computer surface is off, so main checked nothing and said nothing: the line was typed into the
+  // shell, as before the computer (its echo is on screen), with no "the computer is off" aside.
+  await expect(C().locator(".aos-term-started > span")).toHaveText("Started Claude Code in Vault");
+  expect((await terminalText(win)).replace(/\s+/g, "")).toContain("command-v");
   await expect(C().locator(".aos-term-tab.aos-term-tab-active")).toHaveAttribute("data-host", "claude");
 });
 

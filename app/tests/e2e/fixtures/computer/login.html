@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- The Computer pane's spec: a sign-in form on the marked origin. The password field's value never reaches the agent:
+     redacted in snapshots and painted over in screenshots, also after Show password turns it into a text field
+     (agent-computer D9). The fields are large and white so the spec can tell the mask from the field by pixel. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harbour sign-in</title>
+<style>
+  body { font: 16px -apple-system, system-ui, sans-serif; margin: 24px; background: #fff; color: #111; }
+  label { display: block; margin: 12px 0 4px; }
+  input { display: block; width: 280px; height: 40px; box-sizing: border-box; border: 1px solid #222; background: #fff; color: #111; font: 18px ui-monospace, monospace; }
+  button { display: block; margin: 12px 0; font: inherit; }
+</style>
+</head>
+<body>
+<h1>Sign in to the harbour</h1>
+<label for="user">Username</label>
+<input id="user" type="text" name="user" value="harbourmaster">
+<label for="pw">Password</label>
+<input id="pw" type="password" name="pw" value="ebbtide-harbour-42">
+<button id="reveal" type="button">Show password</button>
+<script>
+  document.getElementById("reveal").addEventListener("click", () => { document.getElementById("pw").type = "text"; });
+</script>
+</body>
+</html>

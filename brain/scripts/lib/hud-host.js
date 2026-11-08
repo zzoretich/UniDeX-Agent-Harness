@@ -32,8 +32,12 @@ function readMarker(vault) {
     version: m.version,
     at: typeof m.at === 'string' ? m.at : null,
   };
-  // agent-computer D26: where the app's computer bridge listens, when it does.
+  // The app's main process, so a reader can tell a marker that a crash left behind (alive() below).
+  if (Number.isInteger(m.pid) && m.pid > 0) marker.pid = m.pid;
+  // agent-computer D26: where the app's computer bridge listens, when it does…
   if (typeof m.computerSocket === 'string' && m.computerSocket) marker.computerSocket = m.computerSocket;
+  // …or that it runs with the Computer surface off, or on with a bridge that did not start: no bridge listens.
+  else if (m.computer === 'off' || m.computer === 'failed') marker.computer = m.computer;
   return marker;
 }
 
@@ -45,4 +49,11 @@ function links() {
   };
 }
 
-module.exports = { MARKER_REL, SCHEMA, readMarker, links };
+/** Whether the app that wrote a marker still runs: true without a pid (an older app), else whether that process is
+ *  there (another user's process counts, EPERM). */
+function alive(marker, kill = process.kill) {
+  if (!marker || marker.pid === undefined) return true;
+  try { kill(marker.pid, 0); return true; } catch (e) { return !!e && e.code === 'EPERM'; }
+}
+
+module.exports = { MARKER_REL, SCHEMA, readMarker, alive, links };

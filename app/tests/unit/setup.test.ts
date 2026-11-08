@@ -14,7 +14,7 @@ import { createRequire } from "node:module";
 import type { SetupEvent } from "../../src/shared/ipc";
 import { CHIEF_MODELS } from "../../src/shared/ipc";
 import { chiefSummary } from "../../src/renderer/setup/chief";
-import { PATH_MARKER, findOnPath, installDirs, loginPath, mergePath, parseLoginPath, shellPath } from "../../src/main/setup/env";
+import { PATH_MARKER, findOnPath, installDirs, loginPath, loginShellEnv, mergePath, parseLoginPath, parseShellEnv, shellPath } from "../../src/main/setup/env";
 import { cmpVersion, findPayload, readPayload } from "../../src/main/setup/payload";
 import { parseTags, parseVersion, runPreflight, type PreflightDeps, type ProbeResult } from "../../src/main/setup/preflight";
 import { FIXES, FIX_IDS, PATH_LINE, fixBlocked, fixCommandLine, importJobArgs, importScanArgs, installArgs, personaJson, requestHosts, resolveVaultPath, stepRefusal, unwireArgs, zprofilePath, type SetupState } from "../../src/main/policy/setup";
@@ -41,6 +41,58 @@ test("the login PATH comes from after the marker, whatever the shell printed bef
   assert.equal(parseLoginPath(`Welcome!\n${PATH_MARKER}/opt/homebrew/bin:/usr/bin\n`), "/opt/homebrew/bin:/usr/bin");
   assert.equal(parseLoginPath("no marker here"), null);
   assert.equal(parseLoginPath(`${PATH_MARKER}\n`), null);
+});
+
+test("a shell's environment comes from after its marker: NUL-separated entries, values with = and line breaks kept (C1)", () => {
+  const out = `Welcome!\n__M__ printed by an rc\n\n__M__\nA=1\0B=x=y\0C=two\nlines\0=odd\0\0`;
+  assert.deepEqual(parseShellEnv(out, "__M__"), { A: "1", B: "x=y", C: "two\nlines" });
+  assert.equal(parseShellEnv("A=1\0", "__M__"), null, "no marker: nothing");
+  assert.equal(parseShellEnv("\n__M__\n", "__M__"), null, "nothing after it: nothing");
+});
+
+test("a shell's environment cut off part way is none, so the launch falls back to the typed one (C1, R69)", () => {
+  assert.equal(parseShellEnv("\n__M__\nA=1\0B=2", "__M__"), null, "the last entry has no NUL: the stream was cut off");
+  assert.equal(parseShellEnv("\n__M__\nA=1\0B=", "__M__"), null, "cut off inside a value");
+  assert.deepEqual(parseShellEnv("\n__M__\nA=1\0B=2\0", "__M__"), { A: "1", B: "2" }, "whole: every entry ends in NUL");
+});
+
+test("loginShellEnv: a real login, interactive zsh gives its rc files' exports, in the folder asked; a startup file that exits, execs something else or hangs gives none (C1)", async () => {
+  const dot = fs.mkdtempSync(path.join(os.tmpdir(), "aos-zdot-"));
+  const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aos-cwd-")));
+  try {
+    const base = { HOME: dot, ZDOTDIR: dot, PATH: "/usr/bin:/bin", TERM: "xterm-256color", FROM_MAIN: "kept" };
+    const rc = (text: string) => fs.writeFileSync(path.join(dot, ".zshrc"), text);
+    fs.writeFileSync(path.join(dot, ".zprofile"), "export FROM_PROFILE=login\n");
+    // A greeting, a daemon that keeps the pipe open, and the exports a typed launch saw.
+    rc("echo 'Welcome back'\nexport FROM_RC='an rc value'\n(sleep 5) &!\n");
+    const t0 = Date.now();
+    const env = await loginShellEnv("/bin/zsh", cwd, base);
+    assert.ok(env, "an environment");
+    assert.deepEqual([env.FROM_RC, env.FROM_PROFILE, env.FROM_MAIN, env.PWD], ["an rc value", "login", "kept", cwd]);
+    assert.equal(env._, undefined, "the capture's own last command is dropped");
+    assert.ok(Date.now() - t0 < 4000, "read at the shell's exit, not when the daemon lets the pipe go");
+    for (const bad of ["exit 3\n", "exec /usr/bin/true\n"]) {
+      rc(bad);
+      assert.equal(await loginShellEnv("/bin/zsh", cwd, base), null, bad);
+    }
+    rc("sleep 5\n");
+    const t1 = Date.now();
+    assert.equal(await loginShellEnv("/bin/zsh", cwd, base, 300), null, "a hang is cut off");
+    assert.ok(Date.now() - t1 < 3000);
+    assert.equal(await loginShellEnv(path.join(dot, "no-such-shell"), cwd, base), null, "no shell");
+    // R69: more than 1 MiB of output is none, at once, with the group killed as on a timeout.
+    const pidFile = path.join(dot, "rc.pid");
+    rc(`echo $$ > '${pidFile}'\nhead -c 1100000 /dev/zero | tr '\\0' x\nsleep 5\n`);
+    const t2 = Date.now();
+    assert.equal(await loginShellEnv("/bin/zsh", cwd, base), null, "over the cap: nothing");
+    assert.ok(Date.now() - t2 < 4000, "cut off at the cap, not at the shell's end or the timeout");
+    const rcPid = Number(fs.readFileSync(pidFile, "utf8"));
+    await new Promise((r) => setTimeout(r, 100));
+    assert.throws(() => process.kill(rcPid, 0), "the shell's group is killed");
+  } finally {
+    fs.rmSync(dot, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("PATH lists merge in order, each folder once, without relative entries", () => {

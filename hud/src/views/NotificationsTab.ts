@@ -9,6 +9,7 @@ import {
 } from "../data/notifications";
 import { adapterOf, setFlags, appendReaction } from "../data/notificationWriter";
 import { readAgenticosJson, sessionHosts, invocationHint } from "../data/aosConfig";
+import { hudHost } from "../host";
 
 const LEVEL_PILL: Record<Level, string> = { breaking: "aos-pill-rose", alert: "aos-pill-amber", edition: "aos-pill-cyan", info: "aos-pill-dim" };
 const HOST_LABEL = { claude: "Claude Code", codex: "Codex" } as const;
@@ -185,6 +186,13 @@ export class NotificationsTab {
       if (s.anchor !== null) this.renderActions(d, r, actionsFor(r.actions, s.anchor, anchors));
     }
     this.renderActions(d, r, actionsFor(r.actions, null, anchors));
+    // An ask posted by the Computer (agent-computer D27, ruling R50): one way back to the pane, worked out here from the
+    // sender, not from an action in the file.
+    if (r.from === "computer" && hudHost().computer) {
+      const bar = d.createDiv({ cls: "aos-nt-actions" });
+      const open = bar.createEl("button", { cls: "aos-ws-action", text: "Open the Computer pane", attr: { title: "Shows the Computer pane on the page whose session is asking" } });
+      open.addEventListener("click", (e) => { e.stopPropagation(); this.wb.openComputerPane(); });
+    }
 
     const links = d.createDiv({ cls: "aos-rt-rowactions aos-nt-links" });
     const toggleRead = links.createEl("a", { text: r.read ? "Mark unread" : "Mark read", cls: "aos-link", href: "#" });

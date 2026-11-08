@@ -3,11 +3,11 @@
 // recorded in the guard log and answered as Node would answer a refusal: an EROFS error, or for a spawn a child that
 // prints why and exits 1 (as the page's write guards did before main took the checks over).
 
-import type { HostChild, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
+import type { HostChild, HostComputer, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
 import { refuse } from "../../obsidian-compat/src/guard";
 import { callError } from "../../obsidian-compat/src/bridge";
 import * as path from "./shims/path";
-import type { AosBridge, BootInfo, DirEntryInfo, ProcEvent, PtyEvent, Result, StatInfo } from "../shared/ipc";
+import type { AosBridge, BootInfo, DirEntryInfo, ProcEvent, PtyAgentResult, PtyEvent, Result, StatInfo } from "../shared/ipc";
 
 type Failure = Extract<Result<unknown>, { ok: false }>;
 
@@ -184,6 +184,9 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
   const newTerm = (): Term => ({ data: [], exit: [], early: [], ended: null });
   const termProcess = (id: string, t: Term, pid: number): HostPtyProcess => ({
     pid,
+    // The bridge's id names a Code launch's agent to the computer (`code:<id>`, agent-computer D35): the HUD's rows find
+    // their computer's asks and holder by it.
+    id,
     write: (data) => aos.pty.write(id, data),
     resize: (cols, rows) => aos.pty.resize(id, cols, rows),
     kill: (signal) => aos.pty.kill(id, signal),
@@ -211,7 +214,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
       const id = `t${++seq}`;
       const t = newTerm();
       terminals.set(id, t);
-      let r: Result<{ pid: number }>;
+      let r: PtyAgentResult;
       try { r = await aos.pty.spawnAgent({ ...req, id }); }
       catch (err) { r = { ok: false, error: err instanceof Error ? err.message : String(err), code: "fallback" }; }
       if (!r.ok) {
@@ -221,12 +224,35 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
       }
       return { ok: true, data: termProcess(id, t, r.data.pid) };
     },
+    // What main adds to a Code launch's line (agent-computer R70). A call that fails on the way, or a refusal, rejects:
+    // the page then has no answer, which is not a no (R79).
+    agentFlags: async (host, sub) => {
+      const r = await aos.pty.agentFlags({ host, ...(sub ? { sub } : {}) });
+      if (!r.ok) throw new Error(r.error);
+      return { noDaemon: r.data.noDaemon === true, bin: typeof r.data.bin === "string" ? r.data.bin : null };
+    },
   };
 
   // ── agent sessions and their repositories: main answers every call with a Result, refusals included; a call that
   // fails on the way (the bridge itself) answers the same way, so the HUD shows it rather than throws ──
   const settle = <T>(p: Promise<Result<T>>): Promise<Result<T>> =>
     p.catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err), code: "EIO" }));
+  // The Computer pane's calls (agent-computer D5, D32). The bridge's answers are plain; a call that fails on the way
+  // (the bridge itself) answers as a refusal, or null for select.
+  const computer: HostComputer = {
+    // The surfaces are fixed when the app starts (write-settings.ts), so the page knows at boot whether main runs it.
+    enabled: info.writeSurfaces.includes("computer"),
+    select: (place) => aos.computer.select(place).catch(() => null),
+    show: (bounds) => aos.computer.show(bounds),
+    navigate: (url) => settle(aos.computer.navigate(url)),
+    tab: (op) => aos.computer.tab(op),
+    takeOver: () => aos.computer.takeOver(),
+    handBack: () => aos.computer.handBack(),
+    answer: (askId, a) => aos.computer.answer(askId, a),
+    mark: (origin, on) => aos.computer.mark(origin, on),
+    popOut: () => aos.computer.popOut(),
+    onEvent: (cb) => aos.computer.onEvent(cb),
+  };
   const sessions: HostSessions = {
     start: (req) => settle(aos.sessions.start(req)),
     send: (req) => settle(aos.sessions.send(req)),
@@ -254,6 +280,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     fs,
     spawn,
     sessions,
+    computer,
     git,
     proposals,
     execFileSync: (file, args, opts) => {

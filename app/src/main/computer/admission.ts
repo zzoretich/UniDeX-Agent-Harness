@@ -115,11 +115,14 @@ export function admit(peerPid: number, o: { reg: AgentRegistry; sys: Sys; server
 
     if (!agent) {
       // The npm Codex shim: node runs the package, which launches the signed native binary that launches the server.
+      // M13: registration first; a signature is read only for a chain whose grandparent the app registered as Codex.
       const grand = sys.procInfo(parent.ppid);
       const g = grand ? reg.get(grand.pid) : undefined;
-      const rp = real(sys, parent.path);
-      const nativeChild = rp !== null && (trusted.includes(rp) || sys.processTeamId(parent.pid) === VENDOR.codex.team);
-      if (grand && g && g.host === "codex" && nativeChild && installForm("codex", grand, sys, trusted) === "npm") agent = g;
+      if (grand && g && g.host === "codex") {
+        const rp = real(sys, parent.path);
+        const nativeChild = rp !== null && (trusted.includes(rp) || sys.processTeamId(parent.pid) === VENDOR.codex.team);
+        if (nativeChild && installForm("codex", grand, sys, trusted) === "npm") agent = g;
+      }
     }
     if (!agent) return refuse(NOT_STARTED);
     if (!reg.claim(agent.pid)) return refuse(ALREADY_OPEN);

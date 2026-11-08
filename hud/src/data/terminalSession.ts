@@ -65,6 +65,8 @@ export class TerminalSession {
   private disposed = false;
   /** The agent ended and the login shell took over (D18): titles are the shell prompt's business again. */
   private agentEnded = false;
+  /** The computer's name for the agent main runs here (agent-computer D35), kept after it ends. */
+  private agentKey: string | null = null;
   private scrollback: string = "";
   private dataListeners = new Set<DataListener>();
   private exitListeners = new Set<ExitListener>();
@@ -158,8 +160,14 @@ export class TerminalSession {
    *  Killed at once if the terminal has gone. */
   attachAgent(p: HostPtyProcess, spawned: { cols: number; rows: number }): void {
     if (this.disposed || this.exited || this.pty) { try { p.kill(); } catch { /* gone */ } return; }
+    if (p.id) this.agentKey = `code:${p.id}`;
     this.attach(p, true, spawned);
   }
+
+  /** The key the computer names this terminal's agent by (agent-computer D31, D35): `code:<the app's terminal id>`, once
+   *  main runs the agent as the terminal's own process; null for a shell, a fallback, or a host without the app's ids.
+   *  The Code rows' dot and "waiting" read a computer's holder and asks by it. */
+  get computerKey(): string | null { return this.agentKey; }
 
   /** A deferred terminal's shell, when main fell back (D18), with `first` (the launch line) typed into it before what
    *  was typed while it started, so that typeahead reaches the agent and never the line. Throws as a new terminal's

@@ -3,8 +3,10 @@
  * computer-client.js — the agenticos MCP server's side of the UniDeX app's computer bridge (agent-computer D19, D21).
  *
  * One Unix-socket connection per MCP server process, opened by start() before the MCP transport connects and never
- * awaited. The app publishes the socket path in the vault marker (hud-host.json `computerSocket`). Protocol, one JSON
- * object per "\n"-terminated UTF-8 line:
+ * awaited. The app publishes the socket path in the vault marker (hud-host.json `computerSocket`), `computer: "off"`
+ * when it runs with the Computer surface off, or `computer: "failed"` when its bridge did not start, so a call says which
+ * rather than that the app is missing; a marker whose app process is gone (a crash, `pid`) counts as no app.
+ * Protocol, one JSON object per "\n"-terminated UTF-8 line:
  *   client → {"hello":1}                                   server → {"admitted":true,"session":"…"} | {"admitted":false,"reason":"…"}
  *   client → {"id":n,"tool":"computer_open","args":{…}}    server → {"id":n,"text":"…","image"?:{data,mimeType},"isError"?:true}
  * The bridge admits the first connection per CLI and closes on any protocol breach, so a closed socket is final: this
@@ -12,12 +14,19 @@
  */
 
 const NO_APP = 'The Computer pane needs the UniDeX app running, with this session started from it (the Code page\'s New menu or a Chat thread).';
+// The app's marker says it runs with the Computer surface off (agent-computer D26): a run whose write surfaces leave it
+// out, so no bridge listens, by design. (The person's own switch, computer.enabled, answers from the bridge itself.)
+const OFF = 'The Computer pane is turned off in this UniDeX run, so this session cannot use the computer tools.';
+// The marker says the surface is on but the bridge did not start (no peer addon, no socket path, a failed listen).
+const FAILED = 'The Computer pane couldn\'t start in UniDeX. Quit and reopen the app; the app\'s log has the reason.';
 const CLOSED = 'The UniDeX app closed: the computer is unavailable for the rest of this session.';
 const TIMEOUT = 'The UniDeX app didn\'t answer in time.';
 
 function failure(text) { return { text, isError: true }; }
 
-function createComputerClient({ vault, net = require('net'), readMarker = require('../../lib/hud-host.js').readMarker, timeoutMs = 50000 }) {
+const hudHost = require('../../lib/hud-host.js');
+
+function createComputerClient({ vault, net = require('net'), readMarker = hudHost.readMarker, alive = hudHost.alive, timeoutMs = 50000 }) {
   // 'idle' → 'connecting' → 'ready' | 'failed' (terminal; `failure` holds the result every call then gets).
   let state = 'idle';
   let failed = null;
@@ -62,7 +71,11 @@ function createComputerClient({ vault, net = require('net'), readMarker = requir
     if (state !== 'idle') return;
     let marker = null;
     try { marker = readMarker(vault); } catch { /* no marker */ }
-    if (!marker || !marker.computerSocket) { settle('failed', failure(NO_APP)); return; }
+    try { if (marker && !alive(marker)) marker = null; } catch { /* keep it */ }
+    if (!marker || !marker.computerSocket) {
+      settle('failed', failure(marker && marker.computer === 'off' ? OFF : marker && marker.computer === 'failed' ? FAILED : NO_APP));
+      return;
+    }
     state = 'connecting';
     try {
       sock = net.createConnection(marker.computerSocket);
@@ -117,4 +130,4 @@ function createComputerClient({ vault, net = require('net'), readMarker = requir
   return { start, call, stop };
 }
 
-module.exports = { createComputerClient, NO_APP, CLOSED, TIMEOUT };
+module.exports = { createComputerClient, NO_APP, OFF, FAILED, CLOSED, TIMEOUT };

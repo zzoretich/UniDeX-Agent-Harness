@@ -87,6 +87,9 @@ export interface HostPtyOptions {
 /** One terminal: node-pty's IPty, as far as the HUD uses it. */
 export interface HostPtyProcess {
   readonly pid: number;
+  /** The app's id for this terminal, which names a Code launch's agent to the computer as `code:<id>` (agent-computer
+   *  D35); absent outside the app. */
+  readonly id?: string;
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(signal?: string): void;
@@ -121,7 +124,12 @@ export interface HostPty {
   loadError(): string | null;
   /** Starts a Code launch's agent as the terminal's own process (the app only). `code: "fallback"`: start the shell and
    *  type the launch line instead, `error` says why; any other failure is a refusal. */
-  spawnAgent?(req: HostPtyAgentRequest): Promise<HostResult<HostPtyProcess>>;
+  spawnAgent?(req: HostPtyAgentRequest): Promise<HostPtyAgentResult>;
+  /** The words main adds to a Code launch of `host` (the app only; agent-computer R70): `noDaemon`, a Codex launch
+   *  carries `--no-daemon`. `sub: "resume"`: for a resume line, whose flag is `codex resume`'s; `bin`: the binary main
+   *  probed, which a typed fallback must name to carry the flag (R77). Rejects when the bridge fails on the way: the
+   *  page then has no answer, never a no (R79). */
+  agentFlags?(host: "claude" | "codex", sub?: "resume"): Promise<HostAgentFlags>;
 }
 
 export interface HostShell {
@@ -146,6 +154,11 @@ export interface HostEnv {
 
 /** A call's answer: the data, or why not (`code` EROFS when a policy or a switch refused it). Never thrown. */
 export type HostResult<T> = { ok: true; data: T } | { ok: false; error: string; code: string };
+/** What main says a Codex launch's line carries (agent-computer R70, R77): `noDaemon`, and the binary it probed. */
+export interface HostAgentFlags { noDaemon: boolean; bin?: string | null }
+/** spawnAgent's answer. `code: "flags"` (R79): the line's `--no-daemon` disagrees with main's answer now, which `flags`
+ *  carries; the page rebuilds the line from it and asks once more. */
+export type HostPtyAgentResult = HostResult<HostPtyProcess> | { ok: false; error: string; code: "flags"; flags: { noDaemon: boolean; bin: string | null } };
 
 export type HostSessionHost = "claude" | "codex";
 
@@ -153,10 +166,11 @@ export type HostSessionHost = "claude" | "codex";
 export type HostSessionAccess = "read" | "edit" | "run";
 
 /** One event of a thread: prompt (with its model, effort and access), session, text, tool, tool_result, patch, plan,
- *  usage, error or done, and its turn. */
+ *  usage, error or done, and its turn. `computer` (with `text`) is a Computer pane line, sent live and never stored
+ *  (agent-computer D35). */
 export interface HostSessionEvent {
   t: string;
-  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done";
+  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done" | "computer";
   turn: number;
   [field: string]: unknown;
 }
@@ -191,6 +205,46 @@ export interface HostCatalogHost {
 }
 
 export interface HostCatalog { schema: 1; fetchedAt: string; hosts: Partial<Record<HostSessionHost, HostCatalogHost>> }
+
+// ── the Computer pane (agent-computer D5, D32); mirrors app/src/shared/ipc.ts ComputerState and the calls of
+// AosBridge.computer, plain shapes the app's typecheck holds together ──
+
+export interface HostComputerRect { x: number; y: number; width: number; height: number }
+export interface HostComputerTab { index: number; url: string; title: string; openedBy: string | null; active: boolean }
+export type HostComputerHolder =
+  | { kind: "agent"; session: string; label: string }
+  | { kind: "user"; resume: { session: string; label: string } | null }
+  | null;
+export interface HostComputerAsk {
+  id: string; at: number; computer: string; session: string; sessionLabel: string; why: string;
+  title: string; detail: string; site: string | null; always?: boolean;
+}
+export interface HostComputerLogLine { at: number; session: string; text: string }
+export type HostComputerAnswer = "once" | "always" | "deny";
+export interface HostComputerState {
+  place: string; tabs: HostComputerTab[]; holder: HostComputerHolder; asks: readonly HostComputerAsk[];
+  log: readonly HostComputerLogLine[]; marked: boolean; poppedOut: boolean;
+}
+export type HostComputerEvent = { type: "state"; state: HostComputerState } | { type: "reveal"; askId: string };
+
+/** The pane's calls. A place is `ws:<workspace>`, `vault`, `home` or `dir:<absolute path>`. */
+export interface HostComputer {
+  /** Whether the Computer surface is on for this run of the app (agent-computer D26; it cannot change while the app
+   *  runs). Off, or absent (fail closed; the app always sets it): the pane is only its collapsed strip, whatever its page
+   *  shows (ruling R54), and the tour's Computer steps are skipped. */
+  readonly enabled?: boolean;
+  /** Null when the Computer surface is off or the place is refused. */
+  select(place: string | null): Promise<HostComputerState | null>;
+  show(bounds: HostComputerRect | null): void;
+  navigate(url: string): Promise<HostResult<null>>;
+  tab(op: { kind: "new" } | { kind: "close" | "select"; index: number }): void;
+  takeOver(): void;
+  handBack(): void;
+  answer(askId: string, a: HostComputerAnswer): void;
+  mark(origin: string, on: boolean): void;
+  popOut(): void;
+  onEvent(cb: (ev: HostComputerEvent) => void): () => void;
+}
 
 export interface HostSessions {
   /** Opens a thread in a workspace and starts its first turn; events follow on onEvent. */
@@ -243,6 +297,8 @@ export interface HudHost {
   env: HostEnv;
   /** Agent sessions and their repositories: only the app has them (its main runs the turns); undefined elsewhere. */
   sessions?: HostSessions;
+  /** The Computer pane's calls: only the app has them; undefined elsewhere. */
+  computer?: HostComputer;
   git?: HostGit;
   proposals?: HostProposals;
 }
@@ -294,6 +350,11 @@ export const pty: Required<HostPty> = {
   spawnAgent: (req) => {
     const p = hudHost().pty;
     return p.spawnAgent ? p.spawnAgent(req) : Promise.resolve(NO_AGENT_SPAWN);
+  },
+  // A host without agent terminals adds nothing to a launch line.
+  agentFlags: (host, sub) => {
+    const p = hudHost().pty;
+    return p.agentFlags ? p.agentFlags(host, sub) : Promise.resolve({ noDaemon: false });
   },
 };
 

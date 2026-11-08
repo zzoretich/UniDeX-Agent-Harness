@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ComputerBridge, type ToolCall, type ToolReply } from "../../src/main/computer/bridge";
+import { BridgeKeeper, ComputerBridge, MAX_PATH_BYTES, bridgeSocketPath, type ToolCall, type ToolReply } from "../../src/main/computer/bridge";
 import type { Admit } from "../../src/main/computer/admission";
 import type { AgentRef } from "../../src/main/computer/registry";
 import type { PeerAddon } from "../../src/main/computer/peer";
@@ -23,7 +23,7 @@ function tmpSock(): string {
   return path.join(d, "computer", "bridge.sock");
 }
 
-interface Opts { peer?: PeerAddon; helloMs?: number; admit?: (pid: number) => Admit; handle?: (a: AgentRef, c: ToolCall) => Promise<Omit<ToolReply, "id">>; onClose?: (a: AgentRef) => void }
+interface Opts { peer?: PeerAddon; helloMs?: number; admit?: (pid: number) => Admit; handle?: (a: AgentRef, c: ToolCall) => Promise<Omit<ToolReply, "id">>; onClose?: (a: AgentRef) => void; live?: (a: AgentRef) => boolean }
 async function boot(o: Opts = {}) {
   const socketPath = tmpSock();
   const calls: Array<{ agent: AgentRef; call: ToolCall }> = [];
@@ -32,6 +32,7 @@ async function boot(o: Opts = {}) {
     admit: o.admit ?? (() => ({ ok: true, agent: AGENT })),
     handle: o.handle ?? (async (agent, call) => { calls.push({ agent, call }); return { text: `done ${call.tool}` }; }),
     onClose: o.onClose ?? (() => {}),
+    ...(o.live ? { live: o.live } : {}),
   });
   await bridge.start();
   return { bridge, socketPath, calls };
@@ -276,4 +277,176 @@ test("a connection that never says hello is closed after the deadline", async ()
   const c = client(socketPath);
   await c.closed();
   await bridge.stop();
+});
+
+test("a fifth call in flight on one connection is answered at once and never reaches handle; a finished call frees a slot", async () => {
+  const gates = new Map<number, () => void>();
+  const seen: number[] = [];
+  const { bridge, socketPath } = await boot({
+    handle: (_a, call) => { seen.push(call.id); return new Promise((res) => gates.set(call.id, () => res({ text: `r${call.id}` }))); },
+  });
+  const c = client(socketPath);
+  const other = client(socketPath);
+  try {
+    c.send({ hello: 1 });
+    await c.line(1);
+    for (let id = 1; id <= 5; id++) c.send({ id, tool: "computer_wait", args: {} });
+    assert.deepEqual(await c.line(2), { id: 5, text: "Too many computer calls at once: wait for one to finish.", isError: true });
+    assert.deepEqual(seen, [1, 2, 3, 4]);
+    gates.get(2)!();
+    assert.deepEqual(await c.line(3), { id: 2, text: "r2" });
+    c.send({ id: 6, tool: "computer_wait", args: {} });
+    for (let i = 0; i < 50 && !seen.includes(6); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(seen, [1, 2, 3, 4, 6], "the freed slot takes the next call");
+    // The cap is per connection.
+    other.send({ hello: 1 });
+    await other.line(1);
+    other.send({ id: 1, tool: "computer_status", args: {} });
+    for (let i = 0; i < 50 && seen.length < 6; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(seen.length, 6, "another connection's call reaches handle");
+  } finally {
+    for (const g of gates.values()) g();
+    c.sock.destroy();
+    other.sock.destroy();
+    await bridge.stop();
+  }
+});
+
+test("a call that throws frees its slot", async () => {
+  let n = 0;
+  const { bridge, socketPath } = await boot({ handle: async () => { n++; throw new Error("boom"); } });
+  const c = client(socketPath);
+  try {
+    c.send({ hello: 1 });
+    await c.line(1);
+    for (let id = 1; id <= 6; id++) {
+      c.send({ id, tool: "computer_status", args: {} });
+      const r = await c.line(id + 1);
+      assert.equal(r.isError, true);
+      assert.match(r.text, /boom/);
+    }
+    assert.equal(n, 6, "every call reached handle: none was held by a slot a thrown call kept");
+  } finally {
+    c.sock.destroy();
+    await bridge.stop();
+  }
+});
+
+test("BridgeKeeper: one bridge for the vault it should serve; the same vault keeps it, another replaces it, null stops it", async () => {
+  const log: string[] = [];
+  const k = new BridgeKeeper({
+    make: async (root) => { log.push(`start ${root}`); return { stop: async () => { log.push(`stop ${root}`); } }; },
+    log: (m) => log.push(`warn ${m}`),
+  });
+  await k.sync(null);
+  assert.deepEqual(log, [], "the computer surface off (or no vault): nothing starts");
+  void k.sync("/v/a");
+  await k.sync("/v/a");
+  assert.deepEqual(log, ["start /v/a"], "the same vault again keeps the running bridge (its CLIs cannot reconnect)");
+  assert.equal(k.root, "/v/a");
+  await k.sync("/v/b");
+  assert.deepEqual(log, ["start /v/a", "stop /v/a", "start /v/b"]);
+  await k.sync(null);
+  assert.deepEqual(log.slice(3), ["stop /v/b"], "the surface turned off: the bridge stops");
+  assert.equal(k.root, null);
+  await k.sync("/v/b");
+  assert.equal(log.at(-1), "start /v/b", "and turned on again: it starts");
+});
+
+test("BridgeKeeper: a bridge that fails to start is logged and leaves none running; the next sync tries again", async () => {
+  const log: string[] = [];
+  let fail = true;
+  const k = new BridgeKeeper({
+    make: async (root) => { if (fail) throw new Error("the socket path is too long"); log.push(`start ${root}`); return { stop: async () => {} }; },
+    log: (m) => log.push(`warn ${m}`),
+  });
+  await k.sync("/v/a");
+  assert.deepEqual(log, ["warn the computer bridge did not start: the socket path is too long"]);
+  assert.equal(k.root, null);
+  fail = false;
+  await k.sync("/v/a");
+  assert.equal(log.at(-1), "start /v/a");
+});
+
+test("the socket path: the data folder's own, else a short one of its own in the user's temp folder, else none (agent-computer D18)", () => {
+  const tmp = "/var/folders/ab/cdefghijklmnopqrstuvwxyz0000gn/T";
+  assert.equal(bridgeSocketPath("/Volumes/Data/Library/Application Support/UniDeX", tmp), "/Volumes/Data/Library/Application Support/UniDeX/computer/bridge.sock");
+  const long = `/Volumes/${"s".repeat(40)}/Library/Application Support/AgenticOS Workbench`;
+  assert.ok(Buffer.byteLength(path.join(long, "computer", "bridge.sock")) > MAX_PATH_BYTES);
+  const short = bridgeSocketPath(long, tmp)!;
+  assert.match(short, /^\/var\/folders\/ab\/cdefghijklmnopqrstuvwxyz0000gn\/T\/unidex-computer-[0-9a-f]{12}\/bridge\.sock$/);
+  assert.ok(Buffer.byteLength(short) <= MAX_PATH_BYTES);
+  assert.equal(bridgeSocketPath(long, tmp), short, "the same data folder, the same path");
+  assert.notEqual(bridgeSocketPath(`${long}-2`, tmp), short, "another data folder (a dev run beside the app), another path");
+  assert.equal(bridgeSocketPath(long, `/${"t".repeat(100)}`), null, "nothing short enough: the bridge does not start");
+});
+
+test("the temp-folder path listens like the default one, in a 0700 folder of this user's; a link there is refused", async () => {
+  // The system temp folder itself, as the app passes it (a folder inside it would make the path too long again).
+  const tmp = os.tmpdir();
+  const data = fs.mkdtempSync(path.join(tmp, "aos-brt-"));
+  made.push(data);
+  const long = path.join(data, "x".repeat(110));
+  const socketPath = bridgeSocketPath(long, tmp)!;
+  assert.ok(socketPath, "a short path exists");
+  assert.equal(path.dirname(path.dirname(socketPath)), tmp);
+  made.push(path.dirname(socketPath));
+  const bridge = new ComputerBridge({ socketPath, peer, admit: () => ({ ok: true, agent: AGENT }), handle: async () => ({ text: "" }), onClose: () => {} });
+  await bridge.start();
+  assert.equal(fs.statSync(path.dirname(socketPath)).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(socketPath).mode & 0o777, 0o600);
+  await bridge.stop();
+  // A link where the folder goes (someone else's folder, or anything): the bridge will not listen through it.
+  const other = path.join(data, "elsewhere");
+  fs.mkdirSync(other);
+  fs.rmSync(path.dirname(socketPath), { recursive: true, force: true });
+  fs.symlinkSync(other, path.dirname(socketPath));
+  const again = new ComputerBridge({ socketPath, peer, admit: () => ({ ok: true, agent: AGENT }), handle: async () => ({ text: "" }), onClose: () => {} });
+  await assert.rejects(again.start(), /is not a folder of this user's/);
+  assert.deepEqual(fs.readdirSync(other), [], "nothing was made in the link's target");
+});
+
+test("BridgeKeeper: a bridge that fails to start is reported to onFail with its vault, so the app can record it", async () => {
+  const failed: string[] = [];
+  const k = new BridgeKeeper({
+    make: async () => { throw new Error("the peer addon did not load"); },
+    log: () => {},
+    onFail: (root, e) => failed.push(`${root}: ${(e as Error).message}`),
+  });
+  await k.sync("/vault-a");
+  assert.deepEqual(failed, ["/vault-a: the peer addon did not load"]);
+  assert.equal(k.root, null);
+  await k.sync(null);
+  assert.deepEqual(failed, ["/vault-a: the peer addon did not load"], "stopping is not a failure");
+});
+
+test("M12: an agent that leaves the registry loses its connection (drop), and a call from one no longer live is refused and closes it", async () => {
+  const closed: AgentRef[] = [];
+  let live = true;
+  const { bridge, socketPath, calls } = await boot({ onClose: (a) => closed.push(a), live: () => live });
+  try {
+  const c = client(socketPath);
+  c.send({ hello: 1 });
+  await c.line(1);
+  c.send({ id: 1, tool: "computer_status", args: {} });
+  assert.deepEqual(await c.line(2), { id: 1, text: "done computer_status" });
+  // Gone from the registry, a call is answered with the refusal and never reaches the computer.
+  live = false;
+  c.send({ id: 2, tool: "computer_open", args: { url: "https://a.test/" } });
+  assert.deepEqual(await c.line(3), { id: 2, text: "This session has ended, so its computer connection is closed.", isError: true });
+  await c.closed();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(closed, [AGENT]);
+  // drop(pid): the bridge closes that agent's connection at once.
+  live = true;
+  const d = client(socketPath);
+  d.send({ hello: 1 });
+  await d.line(1);
+  bridge.drop(4242);
+  await d.closed();
+  assert.deepEqual(closed, [AGENT, AGENT]);
+  bridge.drop(4242);
+  bridge.drop(7);
+  assert.equal(closed.length, 2, "nothing more to close");
+  } finally { await bridge.stop(); }
 });

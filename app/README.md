@@ -53,8 +53,17 @@ npm start
 Every Workbench surface writes to the vault, as the HUD always has; writes outside the surfaces in
 `src/shared/surfaces.ts` are refused and logged. `AOS_APP_WRITE` narrows a run: `""` is read-only, `todo,chat` turns
 on only those. The Code tab is a real shell: what you run there, or what a ❯_ button types for you, runs for real. Its New button,
-⌘T and ⌥⌘1–3 start Claude Code, Codex or a shell by typing the command into a fresh shell, in the vault, a workspace
-(or its linked code folder) or Scratch (`data/terminalLaunch.ts`); terminals start with the login shell's `PATH`.
+⌘T and ⌥⌘1–3 start Claude Code or Codex as the terminal's own process (the binary the runtime resolves, its install form
+checked; else by typing the command into a fresh shell, as before) or a shell, in the vault, a workspace (or its linked
+code folder) or Scratch (`data/terminalLaunch.ts`); terminals start with the login shell's `PATH`.
+
+The Computer pane (agent-computer, release 1) docks right of a Code terminal and of a Sessions thread: a browser in its
+own partition that a session's agent drives through the agenticos MCP server's nine `computer_*` tools and the person
+answers and takes over (`src/main/computer/`, the HUD's `ui/ComputerPane.ts`). Main admits only the MCP server of an
+agent CLI it spawned, over a Unix socket in its data folder (or, when that path is too long for a socket, in a 0700
+folder of the data folder's own in the user's system temp folder, published in the vault marker's `computerSocket`),
+through the `native/peer` addon. The pane runs while the `computer` surface is on: on by default since its live check on
+each host (2026-11-08); an `AOS_APP_WRITE` that leaves it out turns it off for a run. `../SECURITY.md` has its section; the e2e suite drives it through stand-in agents (`tests/e2e/computer.spec.ts`).
 
 The page runs sandboxed, with context isolation and no Node. Every file it reads or writes, every process and terminal
 it starts and everything it hands to the OS is a call over the preload's bridge (`window.aos`), which main checks
@@ -83,6 +92,8 @@ src/main/policy/ what the page may read, write, run and open (read scope, write 
 src/main/setup/  the wizard and attach mode: login PATH, preflight, the toolchain's pinned downloads, aos init/upgrade from the payload, CLAUDE.md, the PATH line
 src/main/updater.ts the app's own updates (electron-updater)
 src/main/services/ the page's files, processes and terminals (node-pty), as main runs them
+src/main/computer/ the Computer pane's browser, ask gate, wheel, bridge and admission (agent-computer)
+native/peer/     the Node-API addon admission reads peers with: the socket's peer pid, a process's parent and argv, code signatures
 src/preload/     window.aos: the contextBridge of named functions, the page's only way into main
 src/renderer/    boot, the HUD's host over the bridge, the POSIX path shim, host chrome, the setup wizard (setup/)
 src/shared/      the IPC contract (no imports) and the write surfaces

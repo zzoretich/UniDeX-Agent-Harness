@@ -6,7 +6,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Module from "node:module";
 import type * as PoolModule from "./terminalPool";
-import { setHudHost, type HostPtyAgentRequest, type HostPtyOptions, type HostPtyProcess, type HostResult, type HudHost } from "../host";
+import type * as LauncherModule from "./terminalLauncher";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as nodePath from "node:path";
+import { setHudHost, type HostPtyAgentRequest, type HostPtyAgentResult, type HostPtyOptions, type HostPtyProcess, type HostResult, type HudHost } from "../host";
 import { createNodeHost } from "../nodeHost";
 import { launchArgs, launchLine, type LaunchSpec, type Place } from "./terminalLaunch";
 
@@ -24,6 +28,7 @@ M._resolveFilename = function (request: string, ...rest: unknown[]) {
 };
 require.cache[STUB] = { id: STUB, filename: STUB, loaded: true, exports: { Events: FakeEvents } } as unknown as NodeJS.Module;
 const { TerminalPool } = require("./terminalPool") as typeof PoolModule;
+const { TerminalLauncher } = require("./terminalLauncher") as typeof LauncherModule;
 
 type Proc = HostPtyProcess & { written: string[]; killed: number; data(d: string): void; exit(code?: number): void };
 function proc(pid: number): Proc {
@@ -43,7 +48,7 @@ function proc(pid: number): Proc {
 }
 
 /** A host whose terminals are fakes: spawn records the shells, spawnAgent answers what the test hands it. */
-function fakeHost(agentAnswer?: () => Promise<HostResult<HostPtyProcess>>) {
+function fakeHost(agentAnswer?: () => Promise<HostPtyAgentResult>) {
   const shells: Array<{ file: string; opts: HostPtyOptions; p: Proc }> = [];
   const requests: HostPtyAgentRequest[] = [];
   let pid = 100;
@@ -104,6 +109,24 @@ test("the terminal shows at once; main's agent becomes its process; when the age
   assert.equal(session.isExited, true);
   assert.equal(session.exitCode, 2);
   assert.deepEqual(exits, [session]);
+});
+
+test("an agent main runs knows its computer key, code:<the app's terminal id>; a shell, a fallback or a host without ids has none", async () => {
+  fakeHost(async () => ({ ok: true, data: { ...proc(4250), id: "t7" } }));
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  assert.equal(session.computerKey, null, "none while it starts");
+  await ready;
+  assert.equal(session.computerKey, "code:t7", "the key the computer names this agent by (agent-computer D35)");
+  assert.equal(pool.create().computerKey, null, "a plain shell");
+  fakeHost(async () => ({ ok: true, data: proc(4251) }));
+  const bare = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  await bare.ready;
+  assert.equal(bare.session.computerKey, null, "a process without the app's id");
+  fakeHost(async () => ({ ok: false, error: "unsigned", code: "fallback" }));
+  const fb = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  await fb.ready;
+  assert.equal(fb.session.computerKey, null);
 });
 
 test("a fallback starts the shell and types the launch line, and hands back main's reason for the note; a host without agents falls back silently", async () => {
@@ -189,4 +212,71 @@ test("a terminal closed while it starts kills the agent when it arrives, opens n
   pool2.remove(c.session.id);
   await assert.rejects(c.ready, /closed/);
   assert.equal(fb.shells.length, 0);
+});
+
+test("R79: a line main refuses for its --no-daemon is rebuilt from main's answer and asked once more; a second refusal ends it", async () => {
+  const CODEX: LaunchSpec = { host: "codex", bin: "/opt/homebrew/bin/codex", model: "gpt-6-luna", access: "host", cwd: PLACE.dir };
+  const answers: HostPtyAgentResult[] = [
+    { ok: false, error: "this Codex launch needs --no-daemon now: the page builds it again", code: "flags", flags: { noDaemon: true, bin: "/opt/homebrew/bin/codex" } },
+    { ok: true, data: proc(4400) },
+  ];
+  const { requests, shells } = fakeHost(async () => answers.shift()!);
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const seen: unknown[] = [];
+  const onFlags = (f: { noDaemon: boolean; bin: string | null }): void => { seen.push(f); };
+  const { ready } = pool.createAgent({ spec: CODEX, place: PLACE, meta: { ...META, host: "codex" }, onFlags });
+  assert.deepEqual(await ready, { agent: true, reason: null });
+  assert.deepEqual(seen, [{ noDaemon: true, bin: "/opt/homebrew/bin/codex" }]);
+  assert.deepEqual(requests.map((r) => r.argv), [["-m", "gpt-6-luna"], ["--no-daemon", "-m", "gpt-6-luna"]], "the same terminal, asked once more with main's answer");
+  assert.equal(shells.length, 0);
+  // Refused again (the answer changed once more): the terminal ends with the reason; no third ask.
+  const again: HostPtyAgentResult = { ok: false, error: "this Codex launch must go without --no-daemon now: the page builds it again", code: "flags", flags: { noDaemon: false, bin: "/opt/homebrew/bin/codex" } };
+  const twice = fakeHost(async () => again);
+  const b = pool.createAgent({ spec: CODEX, place: PLACE, meta: { ...META, host: "codex" }, onFlags });
+  await assert.rejects(b.ready, /Codex did not start: this Codex launch must go without --no-daemon now/);
+  assert.equal(twice.requests.length, 2);
+  // A fallback after the retry types the rebuilt line.
+  const fb = fakeHost(async () => (fb.requests.length === 1 ? answers0() : { ok: false, error: "unsigned", code: "fallback" }));
+  function answers0(): HostPtyAgentResult { return { ok: false, error: "needs it", code: "flags", flags: { noDaemon: true, bin: "/opt/homebrew/bin/codex" } }; }
+  const c = pool.createAgent({ spec: CODEX, place: PLACE, meta: { ...META, host: "codex" }, onFlags });
+  assert.deepEqual(await c.ready, { agent: false, reason: "unsigned" });
+  assert.deepEqual(fb.shells[0].p.written, [`${launchLine({ ...CODEX, noDaemon: true, probedBin: "/opt/homebrew/bin/codex" })}\r`]);
+  assert.match(fb.shells[0].p.written[0], /--no-daemon/, "the typed line is the rebuilt one");
+});
+
+test("R80: the flags retry relaunches the same spec with only main's answer changed: a setting changed between the tries does not reach it", async () => {
+  const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "aos-retry-"));
+  const vault = nodePath.join(root, "Vault");
+  fs.mkdirSync(nodePath.join(vault, "workspaces"), { recursive: true });
+  fs.mkdirSync(nodePath.join(root, "cfg"));
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: vault });
+  const settings: Record<string, unknown> = {
+    terminalChoice: { access: "edit" }, sessionChoice: { models: { codex: "gpt-6-luna" } }, terminalShell: "/bin/sh",
+  };
+  const plugin = {
+    vaultRoot: () => vault, claudeConfigDir: () => nodePath.join(root, "cfg"), settings, saveSettings: async () => {},
+    runBrainScript: () => {}, terminalPool: pool,
+  };
+  const answers: HostPtyAgentResult[] = [
+    { ok: false, error: "this Codex launch needs --no-daemon now: the page builds it again", code: "flags", flags: { noDaemon: true, bin: "/opt/homebrew/bin/codex" } },
+    { ok: true, data: proc(4500) },
+  ];
+  const { requests } = fakeHost(async () => {
+    // The person changes the model and the access level while the first try is on its way.
+    if (requests.length === 1) {
+      settings.sessionChoice = { models: { codex: "gpt-6-sol" } };
+      settings.terminalChoice = { access: "read" };
+    }
+    return answers.shift()!;
+  });
+  const launcher = new TerminalLauncher(plugin as never);
+  const { session } = await launcher.launch({ host: "codex", picked: { kind: "vault", label: "Vault", dir: vault } });
+  for (let i = 0; i < 50 && requests.length < 2; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(requests.map((r) => r.argv), [
+    ["-m", "gpt-6-luna", "-s", "workspace-write", "-a", "on-request"],
+    ["--no-daemon", "-m", "gpt-6-luna", "-s", "workspace-write", "-a", "on-request"],
+  ], "the retry is the first line with main's answer, not a line rebuilt from the settings now");
+  assert.deepEqual(requests.map((r) => r.access), ["edit", "edit"]);
+  assert.equal(session.meta.model, "gpt-6-luna");
+  assert.match(launcher.preview("codex"), /^exec codex --no-daemon\b/, "the launcher keeps main's answer for its preview");
 });

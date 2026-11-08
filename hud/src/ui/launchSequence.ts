@@ -16,6 +16,7 @@ import type AgenticOSPlugin from "../../main";
 import { readMigrations } from "../data/goLocal";
 import { goLocalDue, goLocalId, importDue, importId, welcomeStep, whatsNewId, type LaunchInfo, type LaunchStep, type Welcome } from "../tour/launch";
 import { boldRuns, fillText, type TourContext } from "../tour/predicates";
+import { BOOK, showable } from "../tour/steps";
 import { VIEW_TYPE_WORKBENCH, WorkbenchView } from "../views/WorkbenchView";
 import { GoLocalCard } from "./GoLocalCard";
 import { ImportSheet } from "./ImportSheet";
@@ -130,7 +131,7 @@ export class WhatsNewCard extends Modal {
           if (run.bold) body.createEl("strong", { text: run.text });
           else body.appendText(run.text);
         }
-        if (e.steps.length) {
+        if (showable(BOOK, e.steps, this.ctx)) {
           const b = row.createEl("button", { cls: "aos-whatsnew-show", text: "Show me", attr: { type: "button" } });
           b.addEventListener("click", () => { this.choice = { kind: "show-me", steps: [...e.steps] }; this.close(); });
         }

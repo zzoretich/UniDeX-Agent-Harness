@@ -33,6 +33,7 @@ import { currentTheme, onThemeChange } from "../ui/theme";
 import type { NewTerminalActions } from "../ui/NewTerminalMenu";
 import { TERM_HOST_LABEL, isContextPlace, placeOf, workspacePlace, type Place, type TermHost } from "../data/terminalLaunch";
 import type { SpacesPane } from "../data/statusline";
+import { computerStore } from "../data/computerStore";
 
 export const VIEW_TYPE_WORKBENCH = "agentic-os-workbench";
 
@@ -138,6 +139,8 @@ export class WorkbenchView extends ItemView {
   private brainPending = new Map<string, boolean>();
   /** Bumped by every event on a brain path: an answer read across one is not kept. */
   private brainEpoch = 0;
+  /** The Computer store's subscriptions (badges and reveals), let go in onClose. */
+  private computerOff: Array<() => void> = [];
 
   constructor(leaf: WorkspaceLeaf, plugin: AgenticOSPlugin) { super(leaf); this.plugin = plugin; }
   getViewType(): string { return VIEW_TYPE_WORKBENCH; }
@@ -227,6 +230,13 @@ export class WorkbenchView extends ItemView {
     // A vault root outside Obsidian sends no vault events, so the gate badge is also recounted once a minute.
     // Connectors' badge goes once its check is a day old (D5), which no vault event marks: recounted on the same clock.
     this.registerInterval(window.setInterval(() => { void this.refreshTeamsBadge(); void this.refreshConnectorsBadge(); }, 60_000));
+    // The Computer's asks badge Code and Sessions, and a notification's click opens the pane on its ask (agent-computer
+    // D27): main tells the one store, whichever tab is shown.
+    const store = computerStore();
+    if (store) {
+      this.computerOff.push(store.subscribe(() => this.refreshComputerBadges()));
+      this.computerOff.push(store.onReveal((askId) => this.revealAsk(askId)));
+    }
     void this.refreshBadges();
   }
 
@@ -326,6 +336,44 @@ export class WorkbenchView extends ItemView {
     await this.refreshPulseBadge();
     await this.refreshBrainBadge();
     await this.refreshConnectorsBadge();
+    this.refreshComputerBadges();
+  }
+
+  /** Code's and Sessions' badges (agent-computer D27, ruling R51): their sessions' pending Computer asks, wherever the
+   *  computer is, rose (main denies an ask nobody answers in time). */
+  private refreshComputerBadges(): void {
+    const store = computerStore();
+    if (!store) return;
+    this.setBadge("term", store.badge("code"), true);
+    this.setBadge("chat", store.badge("chat"), true);
+  }
+
+  /**
+   * Opens the Computer pane on an ask (agent-computer D27): its page, its session there (the thread, or the terminal
+   * whose agent the computer names `code:<id>`), and the pane, which scrolls to the card. Select only.
+   */
+  revealAsk(askId: string): void {
+    const store = computerStore();
+    const ask = store?.ask(askId);
+    // M5: by its route, so a page's own ask (no agent at the wheel) goes where its computer was driven or is shown.
+    const route = ask ? store?.route(ask) : null;
+    if (!route) return;
+    const { page, session } = route;
+    if (page === "chat") { this.open(session ? { tab: "chat", thread: session.slice("chat:".length) } : { tab: "chat" }); return; }
+    const s = session ? this.plugin.terminalPool.list().find((x) => x.computerKey === session) : undefined;
+    if (this.activeTab !== "term") this.setTab("term");
+    if (s) (this.tabs.term as TermTab | undefined)?.showSession(s.id);
+  }
+
+  /** A Computer notification's Open the Computer pane (ruling R50): the page whose sessions wait on an ask, on its oldest
+   *  ask; else the page that last showed the pane; else Sessions (Code when Sessions is not on the rail). */
+  openComputerPane(): void {
+    const store = computerStore();
+    const page = store?.pageToOpen() ?? "chat";
+    const oldest = store?.asks(page)[0];
+    if (store && oldest) { store.revealAsk(oldest.id); return; }
+    if (page === "chat" && this.open({ tab: "chat" })) return;
+    this.setTab("term");
   }
 
   /** Connectors' badge (spec 2026-10-23-connectors-tab D5): what needs attention after the last check, rose, for the
@@ -579,6 +627,7 @@ export class WorkbenchView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    for (const off of this.computerOff.splice(0)) off();
     this.plugin.tour.unmountRail();
     this.unwatchTheme?.();
     this.unwatchTheme = null;

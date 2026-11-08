@@ -57,7 +57,14 @@ output. The design treats the page that shows them as untrusted (design D7,
     `PATH` or `DYLD_*`, and a Claude or Codex folder only when it is one main trusts.
   - *Terminals:* a shell listed in `/etc/shells` (or your `$SHELL`), with no arguments. Main starts it with its own
     environment, `PATH` replaced by your login shell's (asked once, as the setup wizard does) and `CLAUDECODE` removed;
-    the page still cannot set `PATH`. The Code tab starts an agent by typing its command into that shell. Spaces and
+    the page still cannot set `PATH`. While the `computer` surface is on, the Code tab starts an agent as the terminal's
+    own process instead (agent-computer D18; *The Computer pane* below): the binary the runtime resolves on that `PATH`,
+    whose install form main checks, with only the words `launchArgs` emits after it (`policy/agent-launch.ts`), in a
+    folder a shell could start in, and with the environment your `$SHELL` gives a typed command (main runs it as a login,
+    interactive shell for each launch and reads its exports, so your profile and rc files' variables reach the agent as
+    they did a typed line; `CLAUDECODE` still goes). With the surface off main checks nothing and the page types the
+    line into a shell, as before the computer; when main cannot vouch for the binary, or the shell gives no environment
+    (a startup file that exits, hangs or execs something else), it says why and the page does the same. Spaces and
     Sessions ▸ History type a Resume line only with a lowercase UUID from the scan (History's also the one in its
     transcript's file name) and, for Codex, `-C <folder>`, the folder the scan recorded, quoted; a line whose model, id
     or folder starts with `-` or holds a control character (C0 or DEL, such as ^U, which would act on the shell's line)
@@ -125,11 +132,136 @@ output. The design treats the page that shows them as untrusted (design D7,
   only if its code signature satisfies the running app's designated requirement (same Developer ID team). A dev run
   and the smoke build never update; `updates.check: false` turns updates off.
 
+## The Computer pane
+
+Release 1 of the agent computer (`docs/design/specs/2026-11-06-agent-computer-design.md`) is a browser in the app that a
+session's agent drives through nine `computer_*` tools in the agenticos MCP server and the person watches, answers and
+takes over in a pane on the Code and Sessions pages. It runs only while its `computer` surface is on
+(`app/src/shared/surfaces.ts`): on by default since its live check on each host (2026-11-08), and with it off (a run whose
+`AOS_APP_WRITE` leaves it out) main
+starts no bridge, answers the pane's calls with a refusal and records `computer: "off"` in the vault marker, so the tools
+say the pane is off; with it on but no bridge started (no peer addon, no socket path, a failed listen) the marker says
+`computer: "failed"` and the tools say that instead. The marker also holds main's pid, and at quit it loses its Computer
+state, so after a quit or a crash the tools say the app is not running. `computer.enabled` in Settings switches it off
+inside the surface.
+
+- **The view is its own locked-down browser** (`app/src/main/computer/browser.ts`). Each tab is a `WebContentsView` in
+  the shared `persist:computer` partition (the person signs in once and it remembers, D9), with Chromium's sandbox,
+  context isolation and no preload: nothing of the app's bridge reaches a page. Navigation allows only `http:` and
+  `https:` (and an empty `about:blank`) for the agent's opens, redirects, a page's own navigations and new windows;
+  `javascript:`, `data:`, `blob:`, `file:`, the app's own schemes and browser-internal pages are refused, and an
+  external app's scheme is never opened. Every permission is denied unless the person allows it on an ask card, and
+  the camera, the microphone and the location are denied without one (the app has no access to them on the Mac, so an
+  Allow would do nothing), with a line in the activity log saying so.
+  Downloads and file choosers always ask; a file chooser gives a file only to the tab that asked, still on the same page
+  after the Allow and after the system dialog closes; a download's bytes go to a private folder of their own (0700) in the user's
+  system temp folder and move into Downloads only after Allow, never over a file (Chromium may have the whole file
+  before anyone answers); Deny deletes them, and so does the browser going or the app quitting, and a folder a crash
+  left behind is swept at the next start. A page's own dialogs are off in these tabs (`alert`, `confirm`, `prompt`; `confirm()` answers false):
+  a native dialog from a tab parked off-screen would sit on the desktop, where a page could also use it to look like
+  the app. Main drives the views through each one's own `webContents.debugger` (the DevTools protocol in process): no
+  debugging port is opened and the HUD page is never attached. Page text that reaches the model is wrapped as untrusted
+  data with its origin, and a navigation a page starts on its own is noted in the computer's activity log and the agent's
+  Chat thread (D21).
+- **Password values never reach the agent** (D9). A field is sensitive once it was ever `type=password` or carried a
+  password or one-time-code `autocomplete`, and stays so after a Show password reveal. Snapshots print `••••••` for its
+  value and drop it from every other line; screenshots are painted over its box before the image leaves main; typing
+  into one is refused, and so is any key into one but Return (which asks) and the navigation keys. A frame from another
+  site cannot be read through the view's debugger session, so it fails closed: its box is painted over in screenshots,
+  input into it asks on every site, and typing into it is refused. To scrub values from text a tab shows later (a URL
+  a form submitted, a page that echoes one), each tab remembers the sensitive values it read, by site, in the main
+  process's memory for the tab's life, never on disk: up to 256 values, or 2,048 when a site's most recent one-time codes
+  and passwords are all kept.
+- **Only an agent the app itself started is admitted** (D18; `bridge.ts`, `admission.ts`, `app/native/peer`). The
+  bridge is a Unix socket (0600, in a 0700 folder of the user's own that is not a link: in the app's data, or, when that
+  path is too long for a socket, a folder of that data folder's own in the user's system temp folder) whose path main
+  writes into the vault marker `brain/_index/hud-host.json`. Main knows each agent CLI's process because it spawned it: a Chat turn's directly, and a
+  Code launch's as the terminal's own process (above). When an MCP server connects, the app's own Node-API addon reads
+  the peer's pid (`LOCAL_PEERPID`), its executable and argv: its script must be the vault's `mcp-server.js` and its
+  parent a CLI the app registered while it runs, whose running code is the vendor's (an Apple-anchored signature with
+  Anthropic's or OpenAI's team ID, checked on the process, so a file renamed over its path does not count) or an npm
+  install (Node running a script inside `@anthropic-ai/claude-code` or `@openai/codex`, with Codex's npm launcher
+  allowed between them and its signed binary). The first connection per CLI wins; a second, a server further down (an
+  npm script, the agent's own shell commands), a CLI typed by hand into a shell and anything outside the app are refused
+  with one line. A Codex Code launch starts with `--no-daemon` while Settings ▸ Computer is on and its CLI's help lists
+  it (R70; the help is read with the launch's environment, and a resume line's from `codex resume --help`; main decides
+  it again right before it starts the CLI and refuses a line that disagrees, R79, R81): Codex 0.167's TUI
+  otherwise runs its MCP servers in a shared background server it keeps running, which the app did not start, so the
+  agenticos server there would be refused like any other. The e2e suite's switches (`AOS_E2E_TRUSTED_CLI` naming its stand-in CLIs, `AOS_E2E_HOST_RULES`
+  mapping its `*.test` sites to 127.0.0.1) are read only by an unpackaged build (`computer/notify.ts`).
+- **The gate holds every input until it may go** (D6, D17, D31, D34, D39, D43; `gate.ts`, `service.ts`, `asks.ts`). One
+  session drives a computer at a time; another's actions get "busy", its look tools still work. A Read only session can
+  look but not act. Opening a page, scrolling, snapshots, screenshots and navigation keys (arrows, Page Up and Down,
+  Home, End, Tab, Esc) go freely. On a site the person has not marked, any click, any other key (Space and Return
+  included) and any typing asks before the input is delivered; on a marked site the agent acts freely and only the ask
+  vocabulary's categories ask (submit, purchase, send, delete, merge, sign-in, download), judged by the control a click
+  would actually hit (a key by the focused control, named the same way: its accessible name, markup hint and text).
+  Return, or a newline in typed text, asks on every site unless the focus is a plain text area with no key listener;
+  downloads, file inputs and permission prompts always ask. A held call returns within 45 s of its start
+  (`waiting_for_user`, then `computer_wait`, which also picks up an action the person allowed just before then); no
+  answer within `computer.askTimeoutSec` is a Deny. An approved action is checked again just before it runs (the same
+  session holds the wheel, the same page, tab and element, a focused one by its DOM node and frame, so a same-named
+  control does not pass). "Always on <site>" is saved only once that action has been delivered, so an action refused
+  then, or one that fails, saves nothing. A key or typing goes only to the tab and page whose focus the gate judged, and
+  only while that element still has focus: the tab and page are checked before every key event and every chunk of
+  typing, and the focus is read again before every chunk, before every event of a newline's Enter and before every key
+  event except the key-up of a free navigation key (Tab, an arrow, Home, End, Page Up, Page Down, Esc), whose own
+  key-down moves focus by design. Any other key-up (Space, Enter, a letter) whose key-down moved the focus is withheld and
+  the key is reported as moved, and typing stops at the chunk whose input sends the page elsewhere. Every click, key
+  event and chunk of typing goes only while its call is still current, checked just before it is sent and after every
+  read of the page on the way (opening a page and scrolling, which never ask, are checked when the call starts, so one
+  can still land just after a Take over), and a call that is no longer current raises no ask: the session still holds
+  the wheel, from the process the app registered for it (a thread's next Chat CLI under the same key is another caller),
+  and no Take over, Hand back or end of the turn has come since the call began (each starts a new generation of the
+  computer, so a call that waited through a Take over and Hand back sends nothing, though the same session drives
+  again). A press's release and a chord's modifier key-ups complete what was already sent: they go when only the page
+  moved within its document (a mousedown handler's pushState), when a check stopped the chord on that document, and when
+  a key failed to send (letting Shift go activates nothing), but only to the document that got the press and only while
+  the call is current. After a cross-document commit, a Take over or a Stop they are withheld. The trade: the page may
+  see a press without its release (a mousedown with no mouseup until the person's next click), and a page that tracks
+  modifiers may think Shift, Control, Alt or Meta is still held until the person's next key; in exchange, a click or
+  chord the person stopped never completes. "The document" is the main frame's: a release can still reach a document
+  another site's frame committed after the press, or a main document in the instant before the app learns of its commit;
+  a release alone activates nothing there, though a page script listening for it could act. Take over, a
+  change of driver, the end of the turn or a Chat turn's Stop (at once, not when its CLI exits) cancels the asks. A
+  card's title leads with its category in app-written words, so the control's name (page text, scrubbed of secrets)
+  cannot hide what the action is. That name stays on the person's side (the card, the activity log, a Chat thread's live
+  lines): what leaves for an agent or the vault names an ask in app-written words only, its labels, the action's kind
+  and the site's host. An ask the pane does not show raises a desktop notification and one Notifications item
+  (`notify.js post --from computer`, level info) with that notice and the asking session's name only, never the card's
+  title or detail, which can quote the page and what the agent types, and at most one such notice per session waits
+  unanswered (its later asks reach the pane only until it settles); a denied or cancelled action's reply names it the
+  same way, and `computer_status` lists only the calling session's own asks (another session's as a count and their
+  labels).
+- **Both hosts leave the gate to the app** (D33). Workbench sessions pre-approve the computer tools so the host never
+  asks a second time: Claude Code through `--allowedTools` on a Chat turn and a Code launch; Codex through
+  `tools.<tool>.approval_mode = "approve"` for the five action tools in the plugin's `.mcp.json` and in the direct-mode
+  registration, which a Codex 0.167 check showed lets an action tool run under `approval_policy = "never"` (a
+  launch-time `-c` override cannot reach a plugin's server). A CLI started by hand may still prompt, and is not
+  admitted anyway.
+
+What the gate accepts, and why:
+
+| Risk | Why it stays | What limits it |
+|---|---|---|
+| A URL the agent opens can cause an effect on its own (a GET that unsubscribes or confirms) | Opening pages is what the agent is for; asking for every page would make it useless (D39) | Only `http:` and `https:`; every open is in the agent's own tool result and the computer's activity log, shown in the Code page's pane and as a line in the agent's Chat thread, and the page it reaches is then held by the gate like any other |
+| A secret a page shows as ordinary text (an API key on a settings page, a recovery code) reaches the agent | Only fields are known to hold secrets (D9) | Password and one-time-code fields, revealed or not, never do; the person sees what the agent sees in the pane |
+| Other browser and computer-use tools act without the pane's guards | Codex's built-in tools, Claude in Chrome, Playwright and computer-use servers are the user's own (D29) | The pane's help says so; none of them is given the computer's partition, socket or tools |
+| On a marked site only the ask vocabulary's labels ask | The person chose to let agents act freely there (D39, D43); a control's label is what can be read beforehand | Best effort by design: names are matched case-insensitively on the accessible name, role and form, a click is judged by the element it would actually hit, and anything inside another site's frame asks; between press and release only the call and the document are checked, not the target under the release, so a menu a mousedown opens could act on the mouseup unjudged. An unmarked site asks for every input |
+| Resolving a click moves the pointer onto its target before any ask | The click is judged by the element under the pointer after hover effects, so a menu revealed on hover is judged as what it is | On an unmarked site a page's hover handlers run before the person answers; no click or key is delivered before Allow |
+| The password scrub reads fields as a page leaves them | Values are read at navigation time (D9) | A page that clears, removes or replaces a field before navigating defeats that read; legacy-charset form encodings and mixed URL encodings, and a short code beside percent escapes, are not recognised; when a read of a frame known to hold a sensitive field fails, the URL's query and fragment are hidden but its path is not |
+| An agent-opened URL can test guesses against remembered values | The scrub replaces any remembered value it finds in a URL, so a URL built from a guess comes back scrubbed when the guess is right | Remembered values stay in a tab's memory for its life, scoped to their site; a page cannot read them, and an agent learns at most whether a guess matched |
+| The admission check reads the peer's pid and its parent's | Node has no peer-credential API; `LOCAL_PEERPID` and a parent walk are what macOS offers without audit tokens | A pid reused between the check and the read could be judged as another process; the parent must also be a CLI the app registered that is still running, and each CLI connects once |
+| `bash -c` and `zsh -c` run their last command in place | A shell given one command execs it instead of forking | An agent's own `node …/mcp-server.js` run that way can become a direct child of the CLI; only first-connection-wins refuses it, once the CLI's real server has connected (it connects at start, before any tool runs) |
+| A session's access is fixed when it starts | The app reads a session's access level from how it started it (D17) | A mode changed inside a running host is not seen: Shift+Tab into plan mode in Claude Code leaves the computer acting as the session started (Edit files or Edit and run commands), still behind the gate's asks; only a session started Read only is look-only. `docs/app-smoke.md` checks it by hand |
+| A one-time code split into one-character boxes reaches the agent | A field is known to hold a secret only by `type=password` or a password or one-time-code `autocomplete` (D9) | Boxes that are plain text fields, each holding one digit, are not sensitive: snapshots print their values and typing into them is not refused. A box marked `autocomplete="one-time-code"` is redacted; the person sees what the agent sees in the pane |
+| A compromised page could answer an ask, take over, hand back or mark a site | They are the pane's buttons, which are the person's | The page must first be compromised (above); the agent's own calls cannot answer or mark, and each answer is logged |
+
 ## What the design accepts
 
 | Risk | Why it stays | What limits it |
 |---|---|---|
-| The Code tab is a shell | It is the feature: what you type runs as you. A compromised page could type into a terminal it opens | Nothing in the page can run code (CSP, sanitized Markdown, no remote content), so a page must first be compromised; the terminal starts only a listed shell |
+| The Code tab is a shell | It is the feature: what you type runs as you. A compromised page could type into a terminal it opens, an agent's included | Nothing in the page can run code (CSP, sanitized Markdown, no remote content), so a page must first be compromised; a terminal starts only a listed shell, or a Code launch's agent CLI (`pty:spawnAgent`): the binary the runtime resolves, with only the words `launchArgs` emits. That CLI's install form gates the computer, not whether it runs: one main cannot vouch for is typed into a shell as before, and gets no computer. Typing into an agent the app started is a page's way to steer an agent the bridge admits, which is what a Code session is (agent-computer D18) |
 | The page can do what the Workbench's buttons do | Routines run agent prompts, Settings changes settings, Agent Teams approves gates | Each is a named command with an argument rule; nothing outside the surfaces runs |
 | The page can make the Chief of Staff write a briefing now | Pulse's ↻ (spec 2026-10-08-pulse-cockpit-design P13) | One rule on the Pulse surface: `persona/briefing.js --force` and nothing else. It makes one model call through `provider.js`, under the daily duty cap (`persona.perDayUsd`), and writes only `brain/_index/briefing.json`; nothing runs while the persona is off |
 | The page can create, move and rename workspaces and set workspace.md fields | Spaces' New, Adopt, Archive, Restore, Rename, Pin and Set status (spec 2026-10-09-spaces-redesign D15–D18) | Named `aos workspace` verbs, each with an argument rule; the runtime checks every name and path, writes only `workspaces/**` and `brain/_index/**` plus a project note's status tag, moves folders only between `workspaces/` and `workspaces/_archive/`, deletes nothing, follows no symlink, refuses a linked `workspaces/`, `workspaces/_archive`, map, thread or project-note folder (each must be a plain folder inside the vault), never writes a map over another, matches a name to its folder exactly, refuses headless runs, and asks before every move. On by default since 1.7.0, after a live check on each host |

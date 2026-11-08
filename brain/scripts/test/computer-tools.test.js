@@ -9,7 +9,8 @@ const path = require('path');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const { COMPUTER_TOOLS, COMPUTER_LOOK } = require('../sdk/computer-tools.js');
-const { NO_APP, CLOSED, TIMEOUT } = require('../sdk/lib/computer-client.js');
+const { NO_APP, OFF, FAILED, CLOSED, TIMEOUT } = require('../sdk/lib/computer-client.js');
+const { spawnSync } = require('child_process');
 
 const SERVER = path.join(__dirname, '..', 'sdk', 'mcp-server.js');
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'cpt-'));
@@ -133,6 +134,51 @@ test('a marker without computerSocket, or a dead socket, is also the no-app text
     assert.equal(r.isError, true);
     assert.equal(text(r), NO_APP);
   });
+});
+
+test('a marker that says the app runs with the Computer surface off gives the off text, not the no-app one (agent-computer D26)', async () => {
+  const vault = makeVault('');
+  const file = path.join(vault, 'brain', '_index', 'hud-host.json');
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), computer: 'off' }));
+  await withClient(vault, async (client) => {
+    for (const name of ['computer_status', 'computer_open']) {
+      const r = await client.callTool({ name, arguments: name === 'computer_open' ? { url: 'https://example.com' } : {} });
+      assert.equal(r.isError, true);
+      assert.equal(text(r), OFF);
+    }
+  });
+  assert.notEqual(OFF, NO_APP);
+});
+
+/** A vault whose marker carries `extra` over the plain one (and a socket when given). */
+function markedVault(extra, socket = '') {
+  const vault = makeVault(socket);
+  const file = path.join(vault, 'brain', '_index', 'hud-host.json');
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), ...extra }));
+  return vault;
+}
+const status = async (client) => client.callTool({ name: 'computer_status', arguments: {} });
+
+test('a marker that says the bridge did not start gives the failed text (agent-computer D26)', async () => {
+  await withClient(markedVault({ computer: 'failed', pid: process.pid }), async (client) => {
+    const r = await status(client);
+    assert.equal(r.isError, true);
+    assert.equal(text(r), FAILED);
+  });
+  assert.ok(![NO_APP, OFF].includes(FAILED));
+});
+
+test('a marker whose app process is gone counts as no app, whatever it says; a live one is believed', async () => {
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  for (const extra of [{ computer: 'off' }, { computer: 'failed' }]) {
+    await withClient(markedVault({ ...extra, pid: dead }), async (client) => { assert.equal(text(await status(client)), NO_APP, extra.computer); });
+  }
+  const b = await fakeBridge({ onCall: (msg, reply) => reply({ text: 'should not be asked' }) });
+  try {
+    await withClient(markedVault({ pid: dead }, b.sock), async (client) => { assert.equal(text(await status(client)), NO_APP); });
+    assert.equal(b.seen.hello, 0, "a dead app's socket is not even tried");
+  } finally { b.close(); }
+  await withClient(markedVault({ computer: 'off', pid: process.pid }), async (client) => { assert.equal(text(await status(client)), OFF); });
 });
 
 test("a refused hello surfaces the bridge's reason, and the client does not reconnect", async () => {

@@ -1,9 +1,12 @@
 // The computer bridge (agent-computer D18, D26): a Unix socket in the app's userData that the agenticos MCP servers of
 // agent CLIs connect to. Newline-delimited JSON. The first line must be {"hello":1}; the peer is then judged by `admit`
 // (which also claims the agent's one connection) and answered {"admitted":true,"session":<label>} or
-// {"admitted":false,"reason":…} and closed. After that ToolCall lines flow and replies match by id, overlapping freely.
-// Anything unexpected closes that one connection without a reply; no connection's failure reaches another or main.
+// {"admitted":false,"reason":…} and closed. After that ToolCall lines flow and replies match by id, overlapping up to four
+// at a time per connection (a fifth is answered at once with an error).
+// Anything unexpected closes that one connection without a reply; no connection's failure reaches another or main. An
+// agent that leaves the app's registry loses its connection (`drop`), and a call from one no longer live is refused (M12).
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -17,9 +20,27 @@ export interface ToolReply { id: number; text: string; image?: { data: string; m
 
 const TOOLS: ReadonlySet<string> = new Set<ComputerTool>(["computer_status", "computer_open", "computer_snapshot", "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_wait"]);
 /** sockaddr_un.sun_path holds 104 bytes on macOS, the last for the terminator. */
-const MAX_PATH_BYTES = 103;
+export const MAX_PATH_BYTES = 103;
 const MAX_LINE_BYTES = 1024 * 1024;
+/** Calls in flight per connection (agent-computer D18, backpressure): another is answered at once and never reaches the
+ *  service, so one agent cannot queue unbounded work behind the wheel. */
+const MAX_IN_FLIGHT = 4;
+const TOO_MANY = "Too many computer calls at once: wait for one to finish.";
 const REFUSED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
+const ENDED = "This session has ended, so its computer connection is closed.";
+
+/**
+ * Where the bridge listens: `<userData>/computer/bridge.sock`, or, when that is too long for a Unix socket (a long home
+ * folder), a short path of this data folder's own in the user's system temp folder (`tmp`: macOS's per-user 0700
+ * `$TMPDIR`), which the bridge creates and checks as it does the default one. Null when even that does not fit.
+ */
+export function bridgeSocketPath(userData: string, tmp: string): string | null {
+  const own = path.join(userData, "computer", "bridge.sock");
+  if (Buffer.byteLength(own) <= MAX_PATH_BYTES) return own;
+  const id = createHash("sha256").update(path.resolve(userData)).digest("hex").slice(0, 12);
+  const short = path.join(tmp, `unidex-computer-${id}`, "bridge.sock");
+  return Buffer.byteLength(short) <= MAX_PATH_BYTES ? short : null;
+}
 
 export interface BridgeOptions {
   socketPath: string;
@@ -27,6 +48,9 @@ export interface BridgeOptions {
   peer: PeerAddon;
   handle: (agent: AgentRef, call: ToolCall) => Promise<Omit<ToolReply, "id">>;
   onClose: (agent: AgentRef) => void;
+  /** Whether an admitted agent is still the one the app registered (M12): a call from one that is not is refused and
+   *  closes its connection. Absent, every admitted agent counts as live. */
+  live?: (agent: AgentRef) => boolean;
   /** How long a connection may stay silent before its hello is answered (5 s; tests shorten it). */
   helloMs?: number;
 }
@@ -35,14 +59,22 @@ export class ComputerBridge {
   private server: net.Server | null = null;
   private bound: { dev: number; ino: number } | null = null;
   private readonly conns = new Set<net.Socket>();
+  /** Each admitted connection's close, by its agent's pid (M12: `drop`). */
+  private readonly admitted = new Map<number, () => void>();
 
   constructor(private readonly o: BridgeOptions) {}
+
+  /** Closes the connection admitted for `pid`: its agent left the registry (M12). Its onClose fires as for any close. */
+  drop(pid: number): void { this.admitted.get(pid)?.(); }
 
   async start(): Promise<void> {
     const { socketPath } = this.o;
     if (Buffer.byteLength(socketPath) > MAX_PATH_BYTES) throw new Error(`the bridge socket path is longer than ${MAX_PATH_BYTES} bytes: ${socketPath}`);
     const dir = path.dirname(socketPath);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // The folder must be a real folder of this user's, never a link: then 0700 (the default and the temp-folder path alike).
+    const d = fs.lstatSync(dir);
+    if (!d.isDirectory() || (typeof process.getuid === "function" && d.uid !== process.getuid())) throw new Error(`${dir} is not a folder of this user's, so the bridge will not listen in it`);
     fs.chmodSync(dir, 0o700);
     // Only a leftover socket is replaced; a file, link or folder at the path is somebody's, so refuse.
     let st: fs.Stats | null = null;
@@ -88,6 +120,7 @@ export class ComputerBridge {
     let hello = false;
     let buf = "";
     let done = false;
+    let inFlight = 0;
     sock.setEncoding("utf8");   // a StringDecoder: a character split across reads is kept whole
     const timer = setTimeout(() => end(), this.o.helloMs ?? 5000);
     const end = (): void => {
@@ -95,6 +128,7 @@ export class ComputerBridge {
       done = true;
       clearTimeout(timer);
       this.conns.delete(sock);
+      if (agent && this.admitted.get(agent.pid) === end) this.admitted.delete(agent.pid);
       sock.destroy();
       if (agent) { try { this.o.onClose(agent); } catch { /* a later task's cleanup must not break the bridge */ } }
     };
@@ -112,17 +146,26 @@ export class ComputerBridge {
         catch { verdict = { ok: false, reason: REFUSED }; }
         if (!verdict.ok) { write({ admitted: false, reason: verdict.reason }); sock.end(); return; }
         agent = verdict.agent;
+        this.admitted.set(agent.pid, end);
         write({ admitted: true, session: agent.label });
         return;
       }
       if (!agent || typeof msg.id !== "number" || !Number.isFinite(msg.id) || typeof msg.tool !== "string" || !TOOLS.has(msg.tool)) return end();
       const who = agent;
       const call: ToolCall = { id: msg.id, tool: msg.tool as ComputerTool, args: msg.args !== null && typeof msg.args === "object" && !Array.isArray(msg.args) ? msg.args : {} };
+      // M12: an agent that has left the registry (its CLI exited, its terminal closed) gets no more of the computer.
+      let alive = true;
+      try { alive = this.o.live ? this.o.live(who) : true; } catch { alive = false; }
+      if (!alive) { write({ id: call.id, text: ENDED, isError: true } satisfies ToolReply); sock.end(); end(); return; }
+      if (inFlight >= MAX_IN_FLIGHT) { write({ id: call.id, text: TOO_MANY, isError: true } satisfies ToolReply); return; }
+      inFlight++;
       void (async () => {
         try {
           write({ id: call.id, ...(await this.o.handle(who, call)) } as ToolReply);
         } catch (err) {
           try { write({ id: call.id, text: `The computer failed: ${err instanceof Error ? err.message : String(err)}`, isError: true }); } catch { end(); }
+        } finally {
+          inFlight--;
         }
       })();
     };
@@ -141,5 +184,41 @@ export class ComputerBridge {
         if (!done && Buffer.byteLength(buf) > MAX_LINE_BYTES) end();
       } catch { end(); }
     });
+  }
+}
+
+/**
+ * Keeps at most one bridge running, for the vault it should serve (agent-computer D18, D26). `sync(root)` starts one for
+ * `root`; keeps a running one for the same vault (each CLI connects once and cannot reconnect, so a restart would drop
+ * them); replaces one for another vault; and stops it for null (no vault, the `computer` surface off, or no peer addon).
+ * One change at a time, in order; a bridge that fails to start is logged and the next sync tries again.
+ */
+export class BridgeKeeper {
+  private running: { root: string; bridge: { stop(): Promise<void> } } | null = null;
+  private chain: Promise<void> = Promise.resolve();
+  private readonly log: (m: string) => void;
+
+  /** `onFail`: the bridge for `root` did not start (the app records it, so the agents' tools can say so). */
+  constructor(private readonly o: { make: (root: string) => Promise<{ stop(): Promise<void> }>; log?: (message: string) => void; onFail?: (root: string, error: unknown) => void }) {
+    this.log = o.log ?? ((m) => console.warn(`[main] ${m}`));
+  }
+
+  /** The vault the running bridge serves, or null. */
+  get root(): string | null { return this.running?.root ?? null; }
+
+  sync(root: string | null): Promise<void> {
+    this.chain = this.chain.then(async () => {
+      if (this.running && this.running.root === root) return;
+      const old = this.running;
+      this.running = null;
+      try { await old?.bridge.stop(); } catch (e) { this.log(`the computer bridge did not stop cleanly: ${e instanceof Error ? e.message : String(e)}`); }
+      if (root === null) return;
+      try { this.running = { root, bridge: await this.o.make(root) }; }
+      catch (e) {
+        this.log(`the computer bridge did not start: ${e instanceof Error ? e.message : String(e)}`);
+        try { this.o.onFail?.(root, e); } catch { /* the record is best effort */ }
+      }
+    });
+    return this.chain;
   }
 }

@@ -10,7 +10,7 @@ import {
   termHostChoices, quickHost, launchLine, launchArgs, launchIds, previewLine, SCRATCH, menuRows, firstActionable, placeKey,
   COMPUTER_TOOLS, COMPUTER_LOOK, TERM_ACCESS, TERM_ACCESS_NOTE,
 } from "./terminalLaunch";
-import type { PlaceWorld } from "./terminalLaunch";
+import type { LaunchSpec, PlaceWorld } from "./terminalLaunch";
 import type { AgenticosJson, ProviderState } from "./aosConfig";
 
 const req = createRequire(__filename);
@@ -287,6 +287,42 @@ test("the HUD's computer tools are the runtime's, and each Claude Code launch pr
     for (const resume of [null, "last" as const, { id: "019a-thread" }]) {
       assert.ok(!launchArgs({ host: "codex", bin: null, model: "gpt-6-sol", access, resume }).includes("-c"), access);
     }
+  }
+});
+
+test("R70: a Codex launch runs without Codex's shared background server when main says its CLI takes --no-daemon; the preview and the typed line show exactly that argv", () => {
+  const id = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
+  const dir = "/srv/code/tide";
+  const nd: LaunchSpec[] = [
+    { host: "codex", bin: null, model: "gpt-6-luna", access: "edit", noDaemon: true },
+    { host: "codex", bin: null, model: null, access: "host", noDaemon: true },
+    { host: "codex", bin: null, model: null, access: "host", noDaemon: true, resume: "last" },
+    { host: "codex", bin: "/opt/homebrew/bin/codex", model: null, access: "read", noDaemon: true, resume: { id }, cwd: dir },
+  ];
+  assert.deepEqual(nd.map(launchArgs), [
+    ["--no-daemon", "-m", "gpt-6-luna", "-s", "workspace-write", "-a", "on-request"],
+    ["--no-daemon"],
+    ["resume", "--no-daemon", "--last"],
+    ["resume", "--no-daemon", "-C", dir, id],
+  ]);
+  // Not listed (or the surface off): main says false, and the line is as before.
+  assert.deepEqual(launchArgs({ host: "codex", bin: null, model: "gpt-6-luna", access: "edit", noDaemon: false }), ["-m", "gpt-6-luna", "-s", "workspace-write", "-a", "on-request"]);
+  assert.deepEqual(launchArgs({ host: "codex", bin: null, model: null, access: "host" }), []);
+  // Claude Code has no such server: the flag never reaches its line.
+  assert.ok(!launchArgs({ host: "claude", bin: null, model: null, access: "host", noDaemon: true }).includes("--no-daemon"));
+  // The menu's preview carries the same words as the argv main runs.
+  for (const s of nd) assert.equal(previewLine(s), `exec codex ${launchArgs(s).join(" ")}`, JSON.stringify(s));
+});
+
+test("R77: the typed fallback line carries --no-daemon only when it types the binary main probed", () => {
+  const probed = "/opt/homebrew/bin/codex";
+  const base: LaunchSpec = { host: "codex", bin: probed, model: "gpt-6-luna", access: "edit", noDaemon: true, probedBin: probed };
+  assert.match(launchLine(base), /exec '\/opt\/homebrew\/bin\/codex' --no-daemon -m gpt-6-luna /, "the same binary: the flag main vouched for");
+  assert.match(launchLine({ ...base, resume: "last" }), /exec '\/opt\/homebrew\/bin\/codex' resume --no-daemon --last /);
+  for (const other of [{ bin: "/usr/local/bin/codex" }, { bin: null }, { probedBin: null }, { probedBin: undefined }] as Partial<LaunchSpec>[]) {
+    const s = { ...base, ...other };
+    assert.ok(!launchLine(s).includes("--no-daemon"), `another binary, or the bare name, types no flag: ${launchLine(s)}`);
+    assert.deepEqual(launchArgs(s).slice(0, 1), ["--no-daemon"], "the argv main runs keeps it (main runs the binary it probed)");
   }
 });
 

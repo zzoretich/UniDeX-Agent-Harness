@@ -4,7 +4,10 @@
 // prompt, a `-c` override, a value that reads as a flag) is refused: the page chooses the words, never the program, and
 // cannot widen what the agent may do through them. Claude's `--allowedTools` takes one comma-joined value of Bash and the
 // computer tools (agent-computer D33: they are pre-approved, the app's ask gate is their gate) and nothing else. Every
-// `-c` key stays refused: Codex's per-tool approvals ship in its MCP registration, never on the launch line.
+// `-c` key stays refused: Codex's per-tool approvals ship in its MCP registration, never on the launch line. Codex's
+// `--no-daemon` (R70: the TUI runs its app server in its own process, so the MCP server stays the CLI's child) comes
+// among a new session's flags and right after `resume` on a resume's; it widens nothing, and it is accepted only when
+// main's spawn check says this launch carries it (R79: `allow.noDaemon`).
 
 import type { ComputerTool } from "../computer/bridge";
 
@@ -45,6 +48,7 @@ const CLAUDE_FLAGS: Readonly<Record<string, Rule>> = {
 };
 
 const CODEX_FLAGS: Readonly<Record<string, Rule>> = {
+  "--no-daemon": null,
   "-m": free,
   "-s": oneOf("read-only", "workspace-write"),
   "-a": oneOf("on-request"),
@@ -70,12 +74,15 @@ function flagsRefusal(argv: readonly string[], rules: Readonly<Record<string, Ru
   return null;
 }
 
-/** Why a Code launch's argv is refused, or null when it is one launchArgs builds. One line. */
-export function agentArgvRefusal(host: Host, argv: readonly string[]): string | null {
+/** Why a Code launch's argv is refused, or null when it is one launchArgs builds. One line. `allow.noDaemon`: main's
+ *  answer for this launch (R79); without it a Codex `--no-daemon` is refused. */
+export function agentArgvRefusal(host: Host, argv: readonly string[], allow: { noDaemon: boolean } = { noDaemon: false }): string | null {
   if (host === "claude") return flagsRefusal(argv, CLAUDE_FLAGS);
+  if (!allow.noDaemon && argv.includes("--no-daemon")) return "--no-daemon, which main did not choose for this launch";
   if (argv[0] !== "resume") return flagsRefusal(argv, CODEX_FLAGS);
-  // `codex resume --last`, or `codex resume [-C <absolute folder>] <id>`.
-  const rest = argv.slice(1);
+  // `codex resume [--no-daemon] --last`, or `codex resume [--no-daemon] [-C <absolute folder>] <id>`.
+  const rest = argv[1] === "--no-daemon" ? argv.slice(2) : argv.slice(1);
+  if (rest.includes("--no-daemon")) return "--no-daemon where a resume does not take it";
   if (rest.length === 1 && rest[0] === "--last") return null;
   if (rest.length === 1 && free(rest[0])) return null;
   if (rest.length === 3 && rest[0] === "-C") {
