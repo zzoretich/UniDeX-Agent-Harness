@@ -37,8 +37,7 @@ test("every surface cites its HUD module and names at least one write or command
   for (const s of SURFACES) {
     assert.match(s.id, /^[a-z]+(?:-[a-z]+)*$/, s.id);
     assert.ok(s.label && s.source, s.id);
-    // The computer surface writes nothing and spawns nothing until the ask notice (agent-computer D26, Task 13).
-    assert.ok(s.writes.length + s.spawns.length > 0 || s.id === "computer", s.id);
+    assert.ok(s.writes.length + s.spawns.length > 0, s.id);
     for (const r of s.spawns) assert.ok(!!r.script !== !!r.bin, `${s.id}: a rule names a script or a program, not both`);
     for (const w of [...s.writes, ...(s.except ?? [])]) assert.ok(!w.startsWith("/") && !w.split("/").includes(".."), `${s.id}: ${w} is vault-relative`);
     if (s.scope === "editor") assert.equal(s.spawns.length, 0, `${s.id}: the editor runs nothing`);

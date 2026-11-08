@@ -33,13 +33,19 @@ const phrase = (name: string): string =>
  *  too ("Deleted messages" does not cover "Delete"; "Delete item" does). */
 export const covers = (name: string, part: string): boolean => phrase(name).includes(phrase(part));
 
-/** The category a control asks under, or null when the agent may act without asking. */
-export function categoryOf(t: Target): AskCategory | null {
-  if (!ASK_ROLES.has(t.role)) return null;
+/** Every category a control's name matches, in vocabulary order, with a form-only "submit" last: what "Always on
+ *  <site>" allows for the origin, so a later ask is skipped only when all of its categories are allowed (agent-computer
+ *  D6, D39). Empty when the agent may act without asking. */
+export function categoriesOf(t: Target): AskCategory[] {
+  if (!ASK_ROLES.has(t.role)) return [];
   const text = phrase(t.name);
-  for (const [category, labels] of Object.entries(VOCABULARY) as [AskCategory, readonly string[]][]) {
-    if (labels.some((l) => text.includes(` ${l} `))) return category;
-  }
-  if (t.inForm && FORM_ONLY.some((l) => text.includes(` ${l} `))) return "submit";
-  return null;
+  const has = (l: string): boolean => text.includes(` ${l} `);
+  const out = (Object.entries(VOCABULARY) as [AskCategory, readonly string[]][]).filter(([, labels]) => labels.some(has)).map(([c]) => c);
+  if (t.inForm && !out.includes("submit") && FORM_ONLY.some(has)) out.push("submit");
+  return out;
+}
+
+/** The category a control asks under (the first of `categoriesOf`), or null when the agent may act without asking. */
+export function categoryOf(t: Target): AskCategory | null {
+  return categoriesOf(t)[0] ?? null;
 }

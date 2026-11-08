@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ComputerBridge, type ToolCall, type ToolReply } from "../../src/main/computer/bridge";
+import { BridgeKeeper, ComputerBridge, type ToolCall, type ToolReply } from "../../src/main/computer/bridge";
 import type { Admit } from "../../src/main/computer/admission";
 import type { AgentRef } from "../../src/main/computer/registry";
 import type { PeerAddon } from "../../src/main/computer/peer";
@@ -276,4 +276,93 @@ test("a connection that never says hello is closed after the deadline", async ()
   const c = client(socketPath);
   await c.closed();
   await bridge.stop();
+});
+
+test("a fifth call in flight on one connection is answered at once and never reaches handle; a finished call frees a slot", async () => {
+  const gates = new Map<number, () => void>();
+  const seen: number[] = [];
+  const { bridge, socketPath } = await boot({
+    handle: (_a, call) => { seen.push(call.id); return new Promise((res) => gates.set(call.id, () => res({ text: `r${call.id}` }))); },
+  });
+  const c = client(socketPath);
+  const other = client(socketPath);
+  try {
+    c.send({ hello: 1 });
+    await c.line(1);
+    for (let id = 1; id <= 5; id++) c.send({ id, tool: "computer_wait", args: {} });
+    assert.deepEqual(await c.line(2), { id: 5, text: "Too many computer calls at once: wait for one to finish.", isError: true });
+    assert.deepEqual(seen, [1, 2, 3, 4]);
+    gates.get(2)!();
+    assert.deepEqual(await c.line(3), { id: 2, text: "r2" });
+    c.send({ id: 6, tool: "computer_wait", args: {} });
+    for (let i = 0; i < 50 && !seen.includes(6); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(seen, [1, 2, 3, 4, 6], "the freed slot takes the next call");
+    // The cap is per connection.
+    other.send({ hello: 1 });
+    await other.line(1);
+    other.send({ id: 1, tool: "computer_status", args: {} });
+    for (let i = 0; i < 50 && seen.length < 6; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(seen.length, 6, "another connection's call reaches handle");
+  } finally {
+    for (const g of gates.values()) g();
+    c.sock.destroy();
+    other.sock.destroy();
+    await bridge.stop();
+  }
+});
+
+test("a call that throws frees its slot", async () => {
+  let n = 0;
+  const { bridge, socketPath } = await boot({ handle: async () => { n++; throw new Error("boom"); } });
+  const c = client(socketPath);
+  try {
+    c.send({ hello: 1 });
+    await c.line(1);
+    for (let id = 1; id <= 6; id++) {
+      c.send({ id, tool: "computer_status", args: {} });
+      const r = await c.line(id + 1);
+      assert.equal(r.isError, true);
+      assert.match(r.text, /boom/);
+    }
+    assert.equal(n, 6, "every call reached handle: none was held by a slot a thrown call kept");
+  } finally {
+    c.sock.destroy();
+    await bridge.stop();
+  }
+});
+
+test("BridgeKeeper: one bridge for the vault it should serve; the same vault keeps it, another replaces it, null stops it", async () => {
+  const log: string[] = [];
+  const k = new BridgeKeeper({
+    make: async (root) => { log.push(`start ${root}`); return { stop: async () => { log.push(`stop ${root}`); } }; },
+    log: (m) => log.push(`warn ${m}`),
+  });
+  await k.sync(null);
+  assert.deepEqual(log, [], "the computer surface off (or no vault): nothing starts");
+  void k.sync("/v/a");
+  await k.sync("/v/a");
+  assert.deepEqual(log, ["start /v/a"], "the same vault again keeps the running bridge (its CLIs cannot reconnect)");
+  assert.equal(k.root, "/v/a");
+  await k.sync("/v/b");
+  assert.deepEqual(log, ["start /v/a", "stop /v/a", "start /v/b"]);
+  await k.sync(null);
+  assert.deepEqual(log.slice(3), ["stop /v/b"], "the surface turned off: the bridge stops");
+  assert.equal(k.root, null);
+  await k.sync("/v/b");
+  assert.equal(log.at(-1), "start /v/b", "and turned on again: it starts");
+});
+
+test("BridgeKeeper: a bridge that fails to start is logged and leaves none running; the next sync tries again", async () => {
+  const log: string[] = [];
+  let fail = true;
+  const k = new BridgeKeeper({
+    make: async (root) => { if (fail) throw new Error("the socket path is too long"); log.push(`start ${root}`); return { stop: async () => {} }; },
+    log: (m) => log.push(`warn ${m}`),
+  });
+  await k.sync("/v/a");
+  assert.deepEqual(log, ["warn the computer bridge did not start: the socket path is too long"]);
+  assert.equal(k.root, null);
+  fail = false;
+  await k.sync("/v/a");
+  assert.equal(log.at(-1), "start /v/a");
 });

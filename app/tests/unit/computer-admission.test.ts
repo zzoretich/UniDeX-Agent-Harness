@@ -130,6 +130,19 @@ test("registry: get, claim once per registration, unknown pids", () => {
   assert.equal(reg.get(1), undefined);
 });
 
+test("registry: byKey finds the live agent of a session key, the newest registration first", () => {
+  const reg = new AgentRegistry();
+  assert.equal(reg.byKey("code:1"), undefined);
+  reg.add(agent(1));
+  assert.equal(reg.byKey("code:1")?.pid, 1);
+  reg.add({ ...agent(2), key: "code:1" });
+  assert.equal(reg.byKey("code:1")?.pid, 2);
+  reg.remove(2);
+  assert.equal(reg.byKey("code:1")?.pid, 1);
+  reg.remove(1);
+  assert.equal(reg.byKey("code:1"), undefined);
+});
+
 test("trusted realpaths count as native in admission and installForm", () => {
   const w: World = { procs: [server(20, 10), proc(10, 1, "/build/fake-claude")], running: {}, links: { "/build/fake-claude": "/real/fake-claude" } };
   assert.equal(run(w, 20, [agent(10)]).ok, false);

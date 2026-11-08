@@ -9,7 +9,9 @@
 // while the Sessions surface is off. The page names a workspace, a host and a prompt, and each turn's model, effort and
 // access (spec 2026-10-07-sessions-ux U6, U7); never a program, an argument or a path. `catalog` asks the runtime for
 // each host's models and commands (`sessions.js catalog`, U3), which never calls a model. `onAgent` tells main which
-// CLI each turn runs while it runs (agent-computer D18), and `resolveBin` names the binary a Code launch runs.
+// CLI each turn runs while it runs (agent-computer D18), and `resolveBin` names the binary a Code launch runs. The
+// Computer pane's lines reach a Chat thread live (`noteEvent`, never stored), and its ask notices go to the Notifications
+// tab through the runtime's notify.js (`postComputerNotice`, agent-computer D27).
 
 import * as childProcess from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -18,6 +20,7 @@ import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { HostCatalog, Result, SessionAccess, SessionEvent, SessionEventRecord, SessionHost, SessionSendRequest, SessionStartRequest, SessionThread } from "../../shared/ipc";
 import { programRefusal, spawnEnv, type ProgramContext } from "../policy/programs";
+import { SURFACES } from "../../shared/surfaces";
 import { refused } from "./fs";
 import type { WorkspaceDir } from "./git";
 
@@ -68,6 +71,8 @@ export interface SessionServiceOptions {
   terminalPATH?: () => string | null;
   /** How long `resolveBin` waits for the runtime before it gives up (BIN_TIMEOUT_MS; the tests pass a short one). */
   binTimeoutMs?: number;
+  /** Whether the Computer surface is on (agent-computer D26): its notices run only then. Off when absent. */
+  computerOn?: () => boolean;
 }
 
 /** A Code launch's binary, or why the runtime named none (one line, for the launch note). */
@@ -104,9 +109,17 @@ function lastOptions(meta: Meta, lines: Array<Record<string, unknown>>): TurnOpt
 const accessOf = (req: { access?: SessionAccess; allowCommands?: boolean }, fallback: SessionAccess): SessionAccess =>
   req.access ?? (req.allowCommands === true ? "run" : req.allowCommands === false ? "edit" : fallback);
 
-interface Running { agent: childProcess.ChildProcess | null; stopped: boolean; timer: NodeJS.Timeout | null }
+interface Running { agent: childProcess.ChildProcess | null; stopped: boolean; timer: NodeJS.Timeout | null; turn?: number }
 
 type Event = Omit<SessionEventRecord, "turn">;
+
+/** How long a computer notice waits for the runtime before it gives up (it kills it then). */
+const NOTICE_TIMEOUT_MS = 15_000;
+/** The `computer` surface's rule for its notice (shared/surfaces.ts): main runs no notify.js command the table does not
+ *  list, so a title that could read as a flag, or that notify.js would refuse, never reaches it. */
+const NOTICE_RULE = SURFACES.find((x) => x.id === "computer")?.spawns.find((r) => r.script === "notify.js")?.args;
+const noticeAllowed = (args: readonly string[]): boolean =>
+  typeof NOTICE_RULE === "function" ? NOTICE_RULE(args) : NOTICE_RULE ? NOTICE_RULE.test(args.join(" ")) : false;
 
 const titleOf = (text: string): string => {
   const line = text.trim().split("\n")[0].replace(/\s+/g, " ");
@@ -322,6 +335,55 @@ export class SessionService {
     return { reason: r.code === -1 && said ? said : `the runtime named no ${HOST_LABEL[host]} binary (${said || `exit ${r.code}`})` };
   }
 
+  /**
+   * agent-computer D35: a Computer pane line for a Chat thread's timeline (an ask, its answer, a page's own navigation),
+   * sent to the page as a live `computer` event of the thread's current (or last) turn. Never written to the thread's
+   * file: the pane's activity log keeps it. Nothing for a thread main does not know.
+   */
+  noteEvent(thread: string, text: string): void {
+    let turn = this.running.get(thread)?.turn;
+    if (turn === undefined) {
+      const file = this.find(thread);
+      if (!file) return;
+      turn = readLines(file).filter((r) => r.kind === "prompt").length;
+    }
+    this.o.emit({ thread, event: { t: this.now().toISOString(), kind: "computer", turn, text } });
+  }
+
+  /**
+   * agent-computer D27: one Notifications item for an ask raised off-screen, `notify.js post --from computer --level
+   * info --title <title> --body-file -` with the body on stdin. Level info: the app shows its own desktop notification,
+   * so the runtime raises none. Behind the Computer surface (D26), not the Sessions one. Rejects with the runtime's last
+   * line, a title it would refuse, no vault, or the surface off.
+   */
+  postComputerNotice(title: string, body: string): Promise<void> {
+    if (!this.o.computerOn?.()) return Promise.reject(new Error("the Computer surface is off"));
+    const args = ["post", "--from", "computer", "--level", "info", "--title", title, "--body-file", "-"];
+    if (!noticeAllowed(args)) return Promise.reject(new Error("a notice title must be one line of 1–160 characters, not starting with a dash"));
+    const s = this.runtimeSpawn(args, ["pipe", "ignore", "pipe"], this.o.env, "notify.js");
+    if ("refusal" in s) return Promise.reject(new Error(s.refusal));
+    const { child } = s;
+    return new Promise<void>((resolve, reject) => {
+      let stderr = "";
+      let settled = false;
+      const done = (err: Error | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) reject(err); else resolve();
+      };
+      const timer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch { /* gone */ }
+        done(new Error("the runtime didn't answer"));
+      }, NOTICE_TIMEOUT_MS);
+      child.stderr?.on("data", (b: Buffer) => { stderr = (stderr + b.toString("utf8")).slice(-STDERR_TAIL); });
+      child.on("error", (err) => done(new Error((err as NodeJS.ErrnoException).code ?? err.message)));
+      child.on("close", (code) => done(code === 0 ? null : new Error(stderr.trim().split("\n").pop() || `notify.js exited ${code ?? "on a signal"}`)));
+      child.stdin?.on("error", () => { /* it went first: its exit says why */ });
+      child.stdin?.end(body);
+    });
+  }
+
   private agentEvent(ev: AgentEvent): void {
     try { this.o.onAgent?.(ev); } catch (err) { console.error("[main] onAgent failed", err); }
   }
@@ -333,8 +395,8 @@ export class SessionService {
 
   get runningCount(): number { return this.running.size; }
 
-  /** `node <vault>/brain/scripts/lib/sessions.js <args>` from the vault, or why it cannot run. */
-  private runtimeSpawn(args: readonly string[], stdio: childProcess.StdioOptions, base: NodeJS.ProcessEnv = this.o.env): { child: childProcess.ChildProcess } | { refusal: string } {
+  /** `node <vault>/brain/scripts/<script> <args>` from the vault (lib/sessions.js unless named), or why it cannot run. */
+  private runtimeSpawn(args: readonly string[], stdio: childProcess.StdioOptions, base: NodeJS.ProcessEnv = this.o.env, rel: "lib/sessions.js" | "notify.js" = "lib/sessions.js"): { child: childProcess.ChildProcess } | { refusal: string } {
     const vault = this.o.vaultRoot();
     if (!vault) return { refusal: "no vault is open" };
     const node = this.o.node();
@@ -342,8 +404,8 @@ export class SessionService {
     const ctx = this.o.context();
     const bad = programRefusal(node, ctx);
     if (bad) return { refusal: `node: ${bad}` };
-    const script = path.join(vault, "brain", "scripts", "lib", "sessions.js");
-    if (!fs.existsSync(script)) return { refusal: "this vault's runtime has no sessions yet: run aos upgrade" };
+    const script = path.join(vault, "brain", "scripts", ...rel.split("/"));
+    if (!fs.existsSync(script)) return { refusal: rel === "notify.js" ? "this vault's runtime has no notifications yet: run aos upgrade" : "this vault's runtime has no sessions yet: run aos upgrade" };
     const env = spawnEnv(base, { AOS_VAULT: vault, AOS_HOST: "" }, [], ctx);
     if ("refusal" in env) return { refusal: env.refusal };
     try {
@@ -394,7 +456,8 @@ export class SessionService {
     let toolCount = 0;
     let reply = "";
     let failure: string | null = null;
-    const state = this.running.get(meta.thread) ?? { agent: null, stopped: false, timer: null };
+    const state: Running = this.running.get(meta.thread) ?? { agent: null, stopped: false, timer: null };
+    state.turn = n;
     this.running.set(meta.thread, state);
     append({ t: iso(), kind: "prompt", text, model: opts.model, effort: opts.effort, access: opts.access });
     try {

@@ -117,7 +117,49 @@ export const CH = {
   gitStatus: "git:status",
   gitDiff: "git:diff",
   gitCommit: "git:commit",
+
+  /**
+   * main → page: the Computer pane (agent-computer D27, D32). `{ type: "state", state }` after a computer changes, and
+   * `{ type: "reveal", askId }` when the person clicks an ask's desktop notification (open the pane on that ask). The
+   * page's own calls and its listener come with the pane's calls (D5, D32).
+   */
+  computerEvent: "computer:event",
+  // The page's calls (agent-computer D5, D32).
+  computerSelect: "computer:select",
+  computerShow: "computer:show",
+  computerNavigate: "computer:navigate",
+  computerTab: "computer:tab",
+  computerTakeOver: "computer:take-over",
+  computerHandBack: "computer:hand-back",
+  computerAnswer: "computer:answer",
+  computerMark: "computer:mark",
+  computerPopOut: "computer:pop-out",
 } as const;
+
+// ── the Computer pane's shapes (agent-computer D5, D32): plain declarations, so the HUD can mirror them ──
+
+/** A rectangle in the window's coordinates (the pane's area for the view). */
+export interface ComputerRect { x: number; y: number; width: number; height: number }
+export interface ComputerTab { index: number; url: string; title: string; openedBy: string | null; active: boolean }
+/** Who drives a computer: an agent session, the user (with the agent to resume, if any), or nobody. */
+export type ComputerHolder =
+  | { kind: "agent"; session: string; label: string }
+  | { kind: "user"; resume: { session: string; label: string } | null }
+  | null;
+/** An action an agent asked the person to approve. */
+export interface ComputerAsk {
+  id: string; at: number; computer: string; session: string; sessionLabel: string; why: string;
+  title: string; detail: string; site: string | null; always?: boolean;
+}
+export interface ComputerLogLine { at: number; session: string; text: string }
+export type ComputerAnswer = "once" | "always" | "deny";
+export interface ComputerState {
+  place: string; tabs: ComputerTab[]; holder: ComputerHolder; asks: readonly ComputerAsk[]; log: readonly ComputerLogLine[];
+  marked: boolean; poppedOut: boolean;
+}
+export type ComputerTabOp = { kind: "new" } | { kind: "close" | "select"; index: number };
+/** What main sends the page on `CH.computerEvent`. */
+export type ComputerEvent = { type: "state"; state: ComputerState } | { type: "reveal"; askId: string };
 
 /** Where the app's own pages come from (main/app-scheme.ts): the main window loads `${APP_ORIGIN}/index.html`. */
 export const APP_ORIGIN = "app://hud";
@@ -363,11 +405,12 @@ export type SessionAccess = "read" | "edit" | "run";
 /**
  * One event of a thread: the runtime's lib/session-events.js shape (session, text, tool, tool_result, patch, plan, usage,
  * error, done), plus `prompt` (what the user sent, with the turn's model, effort and access) and `turn`, the turn it
- * belongs to.
+ * belongs to. `computer` (with `text`) is a Computer pane line for the thread's timeline (agent-computer D35): sent live,
+ * never stored in the thread's file.
  */
 export interface SessionEventRecord {
   t: string;
-  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done";
+  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done" | "computer";
   turn: number;
   [field: string]: unknown;
 }
@@ -618,6 +661,25 @@ export interface AosBridge {
     state(): ThemeState;
     set(source: ThemeSource): Result<ThemeState>;
     onChange(cb: (s: ThemeState) => void): () => void;
+  };
+  /**
+   * The Computer pane's calls (agent-computer D5, D32), answered while the Computer surface is on. Places are keyed
+   * `ws:<workspace>`, `vault`, `home` or `dir:<absolute path>`. A call while the surface is off is refused
+   * (`select` answers null; `navigate` answers EPERM).
+   */
+  computer: {
+    /** The pane shows this place's computer (null: none); its state, or null when refused. */
+    select(place: string | null): Promise<ComputerState | null>;
+    /** The pane's rectangle for the view, or null (hidden). */
+    show(bounds: ComputerRect | null): void;
+    navigate(url: string): Promise<Result<null>>;
+    tab(op: ComputerTabOp): void;
+    takeOver(): void;
+    handBack(): void;
+    answer(askId: string, a: ComputerAnswer): void;
+    mark(origin: string, on: boolean): void;
+    popOut(): void;
+    onEvent(cb: (ev: ComputerEvent) => void): () => void;
   };
   /** Agent sessions in a workspace (spec 2026-10-07-unidex-sessions), run by main while the Sessions surface is on. */
   sessions: {

@@ -14,7 +14,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { PtyAgentRequest, PtyEvent, PtySpawnRequest, Result } from "../../shared/ipc";
 import { launchForm, VENDOR, type Sys } from "../computer/admission";
-import type { AgentRegistry } from "../computer/registry";
+import type { AgentRef, AgentRegistry } from "../computer/registry";
 import { agentArgvRefusal } from "../policy/agent-launch";
 import { programRefusal, ptyEnv, shellRefusal, type ProgramContext } from "../policy/programs";
 import { failure, refused } from "./fs";
@@ -62,6 +62,11 @@ export interface PtyServiceOptions {
   registry?: AgentRegistry;
   /** The peer addon's checks, or null when it did not load (every Code launch then falls back). */
   sys?: Sys | null;
+  /** Real paths a test build treats as a vendor-signed CLI (agent-computer D18: AOS_E2E_TRUSTED_CLI, never packaged). */
+  trusted?: readonly string[];
+  /** A Code launch's agent left the registry: it exited, its terminal closed, or its page went (agent-computer D31: the
+   *  computer frees its wheel and cancels its asks). */
+  onAgentGone?: (agent: AgentRef) => void;
   /** Runs `git init -q` in a folder (the tests pass a fake). */
   gitInit?: (cwd: string, env: NodeJS.ProcessEnv) => Promise<void>;
 }
@@ -176,7 +181,7 @@ export class PtyService {
     const ctx = this.o.context();
     const program = programRefusal(bin, ctx);
     if (program) return fallback(`${label} at ${bin}: ${program}`);
-    if (launchForm(req.host, bin, sys) === null) {
+    if (launchForm(req.host, bin, sys, this.o.trusted) === null) {
       return fallback(`${label} at ${bin} isn't a supported install: it is neither signed by ${VENDOR_NAME[req.host]} nor the ${VENDOR[req.host].pkg} npm package`);
     }
     const set = { ...TERM_VARS, ...(req.configDir ? { [req.host === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"]: req.configDir } : {}) };
@@ -211,11 +216,14 @@ export class PtyService {
     return { ok: true, data: { pid } };
   }
 
-  /** Takes a terminal's agent out of the registry, unless that pid has been registered again by something else since. */
+  /** Takes a terminal's agent out of the registry, unless that pid has been registered again by something else since,
+   *  and says it is gone (once: a later exit finds it already forgotten). */
   private forget(id: string, pid: number): void {
     if (this.agents.get(id) === pid) this.agents.delete(id);
     const ref = this.o.registry?.get(pid);
-    if (ref && ref.key === `code:${id}`) this.o.registry?.remove(pid);
+    if (!ref || ref.key !== `code:${id}`) return;
+    this.o.registry?.remove(pid);
+    try { this.o.onAgentGone?.(ref); } catch (err) { console.error("[main] onAgentGone failed", err); }
   }
 
   write(id: string, data: string): void { this.sessions.get(id)?.write(data); }

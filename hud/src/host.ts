@@ -153,10 +153,11 @@ export type HostSessionHost = "claude" | "codex";
 export type HostSessionAccess = "read" | "edit" | "run";
 
 /** One event of a thread: prompt (with its model, effort and access), session, text, tool, tool_result, patch, plan,
- *  usage, error or done, and its turn. */
+ *  usage, error or done, and its turn. `computer` (with `text`) is a Computer pane line, sent live and never stored
+ *  (agent-computer D35). */
 export interface HostSessionEvent {
   t: string;
-  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done";
+  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done" | "computer";
   turn: number;
   [field: string]: unknown;
 }
@@ -191,6 +192,42 @@ export interface HostCatalogHost {
 }
 
 export interface HostCatalog { schema: 1; fetchedAt: string; hosts: Partial<Record<HostSessionHost, HostCatalogHost>> }
+
+// ── the Computer pane (agent-computer D5, D32); mirrors app/src/shared/ipc.ts ComputerState and the calls of
+// AosBridge.computer, plain shapes the app's typecheck holds together ──
+
+export interface HostComputerRect { x: number; y: number; width: number; height: number }
+export interface HostComputerTab { index: number; url: string; title: string; openedBy: string | null; active: boolean }
+export type HostComputerHolder =
+  | { kind: "agent"; session: string; label: string }
+  | { kind: "user"; resume: { session: string; label: string } | null }
+  | null;
+export interface HostComputerAsk {
+  id: string; at: number; computer: string; session: string; sessionLabel: string; why: string;
+  title: string; detail: string; site: string | null; always?: boolean;
+}
+export interface HostComputerLogLine { at: number; session: string; text: string }
+export type HostComputerAnswer = "once" | "always" | "deny";
+export interface HostComputerState {
+  place: string; tabs: HostComputerTab[]; holder: HostComputerHolder; asks: readonly HostComputerAsk[];
+  log: readonly HostComputerLogLine[]; marked: boolean; poppedOut: boolean;
+}
+export type HostComputerEvent = { type: "state"; state: HostComputerState } | { type: "reveal"; askId: string };
+
+/** The pane's calls. A place is `ws:<workspace>`, `vault`, `home` or `dir:<absolute path>`. */
+export interface HostComputer {
+  /** Null when the Computer surface is off or the place is refused. */
+  select(place: string | null): Promise<HostComputerState | null>;
+  show(bounds: HostComputerRect | null): void;
+  navigate(url: string): Promise<HostResult<null>>;
+  tab(op: { kind: "new" } | { kind: "close" | "select"; index: number }): void;
+  takeOver(): void;
+  handBack(): void;
+  answer(askId: string, a: HostComputerAnswer): void;
+  mark(origin: string, on: boolean): void;
+  popOut(): void;
+  onEvent(cb: (ev: HostComputerEvent) => void): () => void;
+}
 
 export interface HostSessions {
   /** Opens a thread in a workspace and starts its first turn; events follow on onEvent. */
@@ -243,6 +280,8 @@ export interface HudHost {
   env: HostEnv;
   /** Agent sessions and their repositories: only the app has them (its main runs the turns); undefined elsewhere. */
   sessions?: HostSessions;
+  /** The Computer pane's calls: only the app has them; undefined elsewhere. */
+  computer?: HostComputer;
   git?: HostGit;
   proposals?: HostProposals;
 }
