@@ -10,7 +10,7 @@ import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, Notifi
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { APP_ORIGIN, CH, POPOVER, type AttachInfo, type BootInfo, type CommandInfo, type ProtocolRequest, type ReadyInfo, type ThemeSource, type ThemeState } from "../shared/ipc";
+import { APP_ORIGIN, CH, POPOVER, type AttachInfo, type BootInfo, type CommandInfo, type ComputerEvent, type ProtocolRequest, type ReadyInfo, type ThemeSource, type ThemeState } from "../shared/ipc";
 import { registerAppScheme, serveAppScheme } from "./app-scheme";
 import { BRAND } from "../shared/brand";
 import type { Sys } from "./computer/admission";
@@ -199,7 +199,7 @@ const askNotifier = new AskNotifier({
     return () => n.close();
   },
   post: (title, body) => sessionService.postComputerNotice(title, body),
-  reveal: (askId) => { show(); send(CH.computerEvent, { type: "reveal", askId }); },
+  reveal: (askId) => { show(); sendComputerEvent({ type: "reveal", askId }); },
 });
 const askBroker = new AskBroker({
   timeoutMs: () => computerSettings().askTimeoutSec * 1000,
@@ -218,7 +218,7 @@ const computerService: ComputerService = new ComputerService({
   wheel: computerWheel,
   sites: new SiteMarks(path.join(app.getPath("userData"), "computer", "sites.json")),
   config: computerSettings,
-  emit: (state) => send(CH.computerEvent, { type: "state", state }),
+  emit: (state) => sendComputerEvent({ type: "state", state }),
   // D35: a Chat agent's line joins its thread's timeline, live; a Code agent's stays in the pane's activity log (the
   // service keeps it there) and its tool results. The app never writes into a terminal.
   note: (agent, line) => {
@@ -289,6 +289,9 @@ let installRequests = 0;
 
 /** Only our own page, in our own window's main frame, may talk to main. */
 const trust = trustMainWindow(() => win);
+
+/** The only way `computer:event` is sent: the payload is a ComputerEvent. */
+function sendComputerEvent(ev: ComputerEvent): void { send(CH.computerEvent, ev); }
 
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);

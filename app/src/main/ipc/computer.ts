@@ -8,15 +8,15 @@ import { onInvoke, onSend, type Trust } from "./trust";
 
 /** The part of the service the page drives (main/computer/service.ts). */
 export interface ComputerPageService {
-  select(place: string | null): ComputerState | null;
-  show(bounds: { x: number; y: number; width: number; height: number } | null): void;
-  navigate(url: string): Promise<Result<null>>;
-  tab(op: { kind: "new" } | { kind: "close" | "select"; index: number }): void;
-  takeOver(): void;
-  handBack(): void;
-  answer(askId: string, a: "once" | "always" | "deny"): void;
-  mark(origin: string, on: boolean): void;
-  popOut(): void;
+  select: (place: string | null) => ComputerState | null;
+  show: (bounds: { x: number; y: number; width: number; height: number } | null) => void;
+  navigate: (url: string) => Promise<Result<null>>;
+  tab: (op: { kind: "new" } | { kind: "close" | "select"; index: number }) => void;
+  takeOver: () => void;
+  handBack: () => void;
+  answer: (askId: string, a: "once" | "always" | "deny") => void;
+  mark: (origin: string, on: boolean) => void;
+  popOut: () => void;
 }
 
 export interface ComputerIpc {
@@ -35,7 +35,7 @@ export function registerComputerIpc(trust: Trust, c: ComputerIpc): void {
     fn(c.service());
   };
   onInvoke(CH.computerSelect, trust, ComputerSelectArgs, async ({ place }) => {
-    if (!c.enabled()) return { ok: true, data: null };
+    if (!c.enabled()) { console.warn(`[main] ${CH.computerSelect}: ${OFF.error}`); return OFF; }
     if (place !== null && !placeAllowed(place, c.vaultRoot())) return { ok: false, error: "That place is not allowed", code: "EINVAL" };
     return { ok: true, data: c.service().select(place) };
   });

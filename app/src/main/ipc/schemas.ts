@@ -40,11 +40,12 @@ export const ThemeSetArgs = z.object({ source: z.enum(["system", "light", "dark"
 export const ComputerSelectArgs = z.object({
   place: z.string().min(1).max(512).refine((p) => !p.includes("\0") && !p.split(/[/\\:]/).includes(".."), "a place").nullable(),
 }).strict();
-const Coord = z.number().finite().min(0).max(10_000);
+// Finite only: main clamps to 0-10000 (policy/computer.ts clampBounds), so a briefly off-screen layout still lands.
+const Coord = z.number().finite();
 export const ComputerShowArgs = z.object({
   bounds: z.object({ x: Coord, y: Coord, width: Coord, height: Coord }).strict().nullable(),
 }).strict();
-export const ComputerNavigateArgs = z.object({ url: z.string().min(1).max(8192).refine(navAllowed, "an http or https page") }).strict();
+export const ComputerNavigateArgs = z.object({ url: z.string().min(1).max(8192).refine(navAllowed, "an http or https page, or about:blank") }).strict();
 export const ComputerTabArgs = z.object({
   op: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("new") }).strict(),

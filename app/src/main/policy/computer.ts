@@ -11,15 +11,21 @@ const MAX_BOUND = 10_000;
 /** Whether `place` names a computer the pane may show. `vault` is the vault root (null when none is attached). */
 export function placeAllowed(place: string, vault: string | null): boolean {
   if (place.length === 0 || place.length > 512 || place.includes("\0")) return false;
-  if (place === "vault" || place === "home") return true;
+  if (place === "home") return true;
+  if (place === "vault") return vault !== null;
   if (place.startsWith("ws:")) {
     const name = place.slice(3);
     if (!vault || !name || name === "." || name === ".." || /[/\\]/.test(name) || name.includes("..")) return false;
-    try { return fs.statSync(path.join(vault, "workspaces", name)).isDirectory(); } catch { return false; }
+    // The name must be an entry of the folder exactly as spelled (case-sensitive), as the HUD's placeKey writes it.
+    try {
+      const root = path.join(vault, "workspaces");
+      return fs.readdirSync(root).includes(name) && fs.statSync(path.join(root, name)).isDirectory();
+    } catch { return false; }
   }
   if (place.startsWith("dir:")) {
     const dir = place.slice(4);
-    if (!path.isAbsolute(dir) || dir.split(/[/\\]/).includes("..")) return false;
+    // Canonical only (the HUD's placeKey is path.resolve): no `.`, `..`, doubled or trailing slash.
+    if (!path.isAbsolute(dir) || path.normalize(dir) !== dir || (dir.length > 1 && dir.endsWith("/"))) return false;
     try { return fs.statSync(dir).isDirectory(); } catch { return false; }
   }
   return false;
