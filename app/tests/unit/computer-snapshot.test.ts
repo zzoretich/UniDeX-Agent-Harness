@@ -381,6 +381,33 @@ test("urlScrubber builds the encoded forms from the raw value too: a run of spac
   assert.equal(scrubber(["a b c"])("x a++b+c y a  b c"), "x a++b+c y •••••• z".replace(" z", ""), "in prose a space is only whitespace");
 });
 
+test("urlScrubber matches every Unicode space JavaScript collapses in its UTF-8 percent-escape, either case, and nothing near them (R39)", () => {
+  // The memory keeps `pass<U+2003>word` collapsed as `pass word`, while a UTF-8 page's GET submit writes `pass%E2%80%83word`.
+  const spaces = [0x1680, ...Array.from({ length: 11 }, (_, i) => 0x2000 + i), 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff];
+  const m = urlScrubber(["pass word"]);
+  const lower = (s: string): string => s.replace(/%[0-9A-F]{2}/g, (x) => x.toLowerCase());
+  for (const c of spaces) {
+    const v = `pass${String.fromCodePoint(c)}word`, hex = c.toString(16);
+    assert.equal(v.replace(/\s+/g, " "), "pass word", `U+${hex} is one JavaScript collapses`);
+    const enc = encodeURIComponent(v);
+    assert.equal(m(`https://a.test/done?pw=${enc}`), "https://a.test/done?pw=••••••", `U+${hex} upper-case escape`);
+    assert.equal(m(`https://a.test/done#${lower(enc)}`), "https://a.test/done#••••••", `U+${hex} lower-case escape`);
+    assert.equal(m(`https://a.test/done?${new URLSearchParams([["pw", v]])}`), "https://a.test/done?pw=••••••", `U+${hex} form-encoded`);
+  }
+  assert.equal(m("https://a.test/?pw=pass%E2%80%83+%E3%80%80%20word"), "https://a.test/?pw=••••••", "a mixed run of URL whitespace");
+  // Neighbours that are not whitespace in JavaScript stay: zero-width space, U+2027, U+205E, U+3001, U+FEFE, a lone lead byte.
+  for (const x of ["%E2%80%8B", "%E2%80%A7", "%E2%81%9E", "%E3%80%81", "%EF%BB%BE", "%E2%80", "%E3"]) {
+    assert.equal(m(`https://a.test/?pw=pass${x}word`), `https://a.test/?pw=pass${x}word`, `${x} is not a space`);
+  }
+  assert.equal(urlScrubber(["ab cd"], ["12 3456"])("https://a.test/?p=ab%E3%80%80cd&c=12%E2%80%AF3456"), "https://a.test/?p=••••••&c=••••••", "a one-time code too");
+  assert.equal(scrubber(["pass word"])("pass%E2%80%83word"), "pass%E2%80%83word", "prose is unchanged: an escape is not whitespace there");
+  // Linear: a long run of gap escapes that never reaches the value's last word.
+  const big = `https://a.test/?q=pass${"%E2%80%83+%20%E3%80%80".repeat(20_000)}x`;
+  const t0 = Date.now();
+  assert.equal(urlScrubber(["pass word", "pass word more"])(big), big);
+  assert.ok(Date.now() - t0 < 2_000, `scrub of a 400 kB gap run took ${Date.now() - t0} ms`);
+});
+
 test("inUrl finds a value in a URL however the URL encodes its whitespace, and keeps kinds (R35, R37, R38)", () => {
   const s = { values: ["a  b c", "hunter2pass", "absent"], whole: ["k9z", "12  3456", "999"] };
   assert.deepEqual(inUrl("https://a.test/done?pw=a++b+c&code=k9z", s), { values: ["a  b c"], whole: ["k9z"] }, "form-encoded run of spaces");
@@ -388,4 +415,5 @@ test("inUrl finds a value in a URL however the URL encodes its whitespace, and k
   assert.deepEqual(inUrl("https://a.test/done?pw=a+b+c&c=12+3456", s), { values: ["a  b c"], whole: ["12  3456"] }, "collapsed in the URL, matched collapsed");
   assert.deepEqual(inUrl("https://a.test/x?y=hunter2pass%", s), { values: ["hunter2pass"], whole: [] }, "an undecodable URL is matched as given");
   assert.deepEqual(inUrl("https://a.test/clean", s), { values: [], whole: [] });
+  assert.deepEqual(inUrl("https://a.test/done?pw=pass%E2%80%83word&c=12%E3%80%803456", { values: ["pass word"], whole: ["12 3456"] }), { values: ["pass word"], whole: ["12 3456"] }, "a Unicode space, decoded and collapsed (R39)");
 });

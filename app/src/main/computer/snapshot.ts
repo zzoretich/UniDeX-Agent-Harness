@@ -256,8 +256,12 @@ export function scrubber(values: Iterable<string | undefined>, whole: Iterable<s
 }
 
 /** R38: in a URL a space of a value may be written as any run of a literal space, `+` (a GET submit), or the percent-escape
- *  of a space, tab, newline, vertical tab, form feed, carriage return or no-break space (either case). */
-const URL_GAP = "(?:\\s|\\+|%20|%09|%0[aAbBcCdD]|%[cC]2%[aA]0)+";
+ *  of a space, tab, newline, vertical tab, form feed, carriage return or no-break space (either case). agent-computer D9
+ *  (R39): and the UTF-8 percent-escape of every other space JavaScript's `\s` collapses (a UTF-8 page's GET submit writes
+ *  `pass%E2%80%83word`, while the memory keeps the value collapsed): U+1680 `E1 9A 80`, U+2000-200A `E2 80 80-8A`,
+ *  U+2028/2029/202F `E2 80 A8/A9/AF`, U+205F `E2 81 9F`, U+3000 `E3 80 80`, U+FEFF `EF BB BF`. Written as a trie, so the
+ *  branches of every alternation start with different characters and a run matches without backtracking. */
+const URL_GAP = "(?:\\s|\\+|%(?:20|0(?:9|[aAbBcCdD])|[cC]2%[aA]0|[eE](?:1%9[aA]%80|2%8(?:0%(?:8[0-9aA]|[aA][89fF])|1%9[fF])|3%80%80|[fF]%[bB][bB]%[bB][fF])))+";
 
 /** The forms a value takes inside a URL (R37): as typed, percent-encoded (a path or a fragment: `p%40ss`,
  *  `correct%20horse`) and form-encoded as a GET submit writes it (spaces as `+`: `correct+horse`). R38: the encoded forms
