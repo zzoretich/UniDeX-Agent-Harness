@@ -4,7 +4,7 @@ import { judge, parseKey, NAV_KEYS, type Action, type Focus, type Access } from 
 import type { Target } from "../../src/main/computer/categories";
 
 const btn = (name: string, extra: Partial<Target> = {}): Target => ({ role: "button", name, inForm: false, fileInput: false, ...extra });
-const field: Focus = { target: { role: "textbox", name: "Email", inForm: true, fileInput: false }, sensitive: false, plainTextarea: false };
+const field: Focus = { target: { role: "textbox", name: "Email", inForm: true, fileInput: false }, shown: "Email", sensitive: false, plainTextarea: false };
 const edit = (marked: boolean) => ({ access: "edit" as Access, marked });
 const READ_ONLY = { refuse: "Read only: this session can look but not act (D17)." };
 
@@ -66,7 +66,7 @@ test("a click into a cross-site frame asks frame on every site", () => {
 });
 
 test("a key into a cross-site frame asks frame on every site, except navigation keys", () => {
-  const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, sensitive: false, plainTextarea: false };
+  const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, shown: "Card", sensitive: false, plainTextarea: false };
   for (const marked of [true, false]) {
     for (const k of ["a", "Backspace", " ", "Control+v"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { ask: "frame" }, `${marked} ${k}`);
     for (const k of ["Tab", "Shift+Tab", "Escape", "ArrowDown"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { go: true }, `${marked} ${k}`);
@@ -79,7 +79,7 @@ test("a key into a cross-site frame asks frame on every site, except navigation 
 });
 
 test("typing into a cross-site frame is refused, sensitive or not", () => {
-  const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, sensitive: false, plainTextarea: false };
+  const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, shown: "Card", sensitive: false, plainTextarea: false };
   for (const marked of [true, false]) {
     assert.deepEqual(judge({ kind: "type", text: "4242", focus: inFrame }, edit(marked)), { refuse: "Typing into a frame from another site is refused (D9)." });
     assert.deepEqual(judge({ kind: "type", text: "4242", focus: { ...inFrame, sensitive: true } }, edit(marked)), D9);
@@ -87,7 +87,7 @@ test("typing into a cross-site frame is refused, sensitive or not", () => {
 });
 
 test("a non-navigation key into a password field is refused (D9)", () => {
-  const pw: Focus = { target: { role: "textbox", name: "Password", inForm: true, fileInput: false }, sensitive: true, plainTextarea: false };
+  const pw: Focus = { target: { role: "textbox", name: "Password", inForm: true, fileInput: false }, shown: "Password", sensitive: true, plainTextarea: false };
   for (const marked of [true, false]) {
     for (const k of ["a", "Shift+a", "1", " ", "Backspace", "Control+v", "Meta+a"]) assert.deepEqual(judge({ kind: "key", key: k, focus: pw }, edit(marked)), D9, `${marked} ${k}`);
     for (const k of NAV_KEYS) assert.deepEqual(judge({ kind: "key", key: k, focus: pw }, edit(marked)), { go: true }, `${marked} ${k}`);

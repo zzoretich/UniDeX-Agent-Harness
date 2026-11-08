@@ -8,9 +8,9 @@ import { navAllowed } from "../policy/computer-url";
 export type Access = "read" | "edit" | "run" | "host";
 
 /** What has keyboard focus. `plainTextarea`: a native <textarea> with no key listener on it or an ancestor. `shown`: the
- *  target's name scrubbed of every sensitive field's value as read in the same call (D9): the only name to put in text
- *  that leaves the main process (an ask title, a note, a reply); `target.name` is raw, for the gate alone. */
-export interface Focus { target: Target | null; sensitive: boolean; plainTextarea: boolean; shown?: string }
+ *  target's name scrubbed of every sensitive field's value as read in the same call (D9), "" with no target: the only
+ *  name to put in text that leaves the main process (an ask title, a note, a reply); `target.name` is raw, for the gate. */
+export interface Focus { target: Target | null; shown: string; sensitive: boolean; plainTextarea: boolean }
 
 export type Action =
   | { kind: "status" | "snapshot" | "screenshot" | "wait" | "scroll" }
