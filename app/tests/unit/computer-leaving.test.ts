@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { framesHolding, LEAVING, LOST_SITES, LOST_VALUES, LeavingRecords, mergeDepartures, mergeFrameReads, PendingReads, type Departure } from "../../src/main/computer/leaving";
+import { framesHolding, LEAVING, leavingFrames, LOST_SITES, LOST_VALUES, LeavingRecords, mergeDepartures, mergeFrameReads, PendingReads, type Departure } from "../../src/main/computer/leaving";
 import type { Secrets } from "../../src/main/computer/memory";
 
 const A = "http://localhost:1/done?code=975310", B = "http://127.0.0.1:1/start?b=1", C = "http://localhost:1/later?code=975310";
@@ -212,4 +212,38 @@ test("the frames known to hold sensitive fields come from where the last DOM rea
   assert.deepEqual(framesHolding([11, 12, 13], where), { frames: new Set(["MAIN", "F1"]), unplaced: false });
   assert.deepEqual(framesHolding([12, 14], where), { frames: new Set(["F1"]), unplaced: true }, "14 was added (an attribute turned it sensitive) before a DOM read placed it");
   assert.deepEqual(framesHolding([], where), { frames: new Set(), unplaced: false }, "only the fields in the current set count");
+  // R47: a field whose frame went away (pruned by a DOM read after the frame detached) is placed nowhere: neither a frame
+  // that must answer nor unplaced.
+  assert.deepEqual(framesHolding([11, 21], new Map<number, string | null>([[11, "MAIN"], [21, null]])), { frames: new Set(["MAIN"]), unplaced: false });
+});
+
+test("the leaving read's frame list: every frame listed or with a world, and a known sensitive frame no longer listed counts as failed (agent-computer D9, R47)", () => {
+  const worlds = new Set(["MAIN", "F1", "F2"]);
+  const none = { frames: new Set<string>(), unplaced: false };
+  // link.js: no fields; frames read where a world exists, the main frame first, duplicates once.
+  assert.deepEqual(leavingFrames("MAIN", ["MAIN", "F1", "F1", "F2", "F3"], worlds, none, true), [
+    { frame: "MAIN", main: true, sensitive: false, read: true },
+    { frame: "F1", main: false, sensitive: false, read: true },
+    { frame: "F2", main: false, sensitive: false, read: true },
+    { frame: "F3", main: false, sensitive: false, read: false },
+  ]);
+  // review d1: the iframe holding the code detached before the read (gone from the frames and the worlds), but the
+  // document's sensitive set still places a field in it: it is a failed, sensitive frame, so the read fails.
+  const d1 = leavingFrames("MAIN", ["MAIN"], new Set(["MAIN"]), { frames: new Set(["MAIN", "GONE"]), unplaced: false }, true);
+  assert.deepEqual(d1, [{ frame: "MAIN", main: true, sensitive: true, read: true }, { frame: "GONE", main: false, sensitive: true, read: false }]);
+  const s = (values: string[], whole: string[] = []) => ({ values, whole });
+  assert.equal(mergeFrameReads(d1.map((f) => ({ main: f.main, sensitive: f.sensitive, read: f.read ? s([], ["975310"]) : null }))).read, null, "and the merge fails it");
+  // A field placed nowhere yet while no DOM read has completed since the commit (a restored document's set): it may be in a
+  // frame nothing lists, so a frame nothing can read stands for it and the read fails. Once a DOM read has completed, an
+  // unplaced field (an attribute changed since) makes every listed frame count instead.
+  assert.deepEqual(leavingFrames("MAIN", [], new Set(["MAIN"]), { frames: new Set(), unplaced: true }, false), [
+    { frame: "MAIN", main: true, sensitive: true, read: true },
+    { frame: "", main: false, sensitive: true, read: false },
+  ]);
+  assert.deepEqual(leavingFrames("MAIN", ["F1"], new Set(["MAIN", "F1"]), { frames: new Set(), unplaced: true }, true), [
+    { frame: "MAIN", main: true, sensitive: true, read: true },
+    { frame: "F1", main: false, sensitive: true, read: true },
+  ]);
+  // No main frame known: none is listed as main (the merge then fails the read).
+  assert.deepEqual(leavingFrames("", ["F1"], worlds, none, true), [{ frame: "F1", main: false, sensitive: false, read: true }]);
 });

@@ -107,16 +107,40 @@ export function mergeFrameReads(reads: FrameRead[]): { read: Secrets | null; got
 
 /** agent-computer D9 (R41): the frames that hold one of the fields `ids` (the document's sensitive set), from where the last
  *  DOM read placed each field (`frameOf`); `unplaced` when a field is not placed yet (an attribute made it sensitive since),
- *  so it may be in any frame and every frame counts. */
-export function framesHolding(ids: Iterable<number>, frameOf: ReadonlyMap<number, string>): { frames: Set<string>; unplaced: boolean } {
+ *  so it may be in any frame and every frame counts. R47: null for a field whose frame went away (a DOM read after the frame
+ *  detached found it gone): it is placed nowhere. */
+export function framesHolding(ids: Iterable<number>, frameOf: ReadonlyMap<number, string | null>): { frames: Set<string>; unplaced: boolean } {
   const frames = new Set<string>();
   let unplaced = false;
   for (const b of ids) {
     const f = frameOf.get(b);
     if (f === undefined) unplaced = true;
-    else frames.add(f);
+    else if (f !== null) frames.add(f);
   }
   return { frames, unplaced };
+}
+
+/** One frame in a leaving read's list: whether it is the main frame, whether it is known to hold sensitive fields, and
+ *  whether it can be read (a world was made for it ahead; R41: the read never makes one). */
+export interface LeavingFrame { frame: string; main: boolean; sensitive: boolean; read: boolean }
+
+/** agent-computer D9 (R41, R47): the frames a leaving read asks, and which of them must answer. Listed: the main frame, the
+ *  frames of the last DOM read still attached and every frame with a world (`listed`), each read where `worlds` has it.
+ *  R47: a frame the document's sensitive set places a field in that is no longer listed (it detached: a page can take the
+ *  code, remove the frame and navigate) cannot be read, so it is a failed, sensitive frame and the read fails. And while no
+ *  DOM read has completed since the commit (`placed` false), a field placed nowhere (a restored document's set) may be in a
+ *  frame nothing lists: a frame no read reaches (id "") stands for it, so the read fails too. */
+export function leavingFrames(main: string, listed: Iterable<string>, worlds: { has(frame: string): boolean }, holding: { frames: ReadonlySet<string>; unplaced: boolean }, placed: boolean): LeavingFrame[] {
+  const out: LeavingFrame[] = [];
+  const seen = new Set<string>();
+  for (const f of [main, ...listed]) {
+    if (!f || seen.has(f)) continue;
+    seen.add(f);
+    out.push({ frame: f, main: f === main, sensitive: holding.unplaced || holding.frames.has(f), read: worlds.has(f) });
+  }
+  for (const f of holding.frames) if (!seen.has(f)) out.push({ frame: f, main: false, sensitive: true, read: false });
+  if (holding.unplaced && !placed) out.push({ frame: "", main: false, sensitive: true, read: false });
+  return out;
 }
 
 export class LeavingRecords {

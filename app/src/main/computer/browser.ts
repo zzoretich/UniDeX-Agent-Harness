@@ -15,7 +15,7 @@ import { ASK_ROLES, covers, type Target } from "./categories";
 import { cdp, CdpTimeout, isGone, keyEvents, unlessGone } from "./cdp";
 import type { Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
-import { framesHolding, LeavingRecords, mergeFrameReads, PendingReads, type Departure } from "./leaving";
+import { framesHolding, leavingFrames, LeavingRecords, mergeFrameReads, PendingReads, type Departure } from "./leaving";
 import { SecretMemory, type Secrets } from "./memory";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
 import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
@@ -115,8 +115,15 @@ interface Tab {
    *  read runs (G2), with every frame that has a world. */
   frame: string; frames: string[];
   /** agent-computer D9 (R41): the frame each field of the current document's sensitive set was in when a DOM read last saw
-   *  it, so a leaving read knows which frames must answer (./leaving `framesHolding`). */
-  fieldFrames: Map<number, string>;
+   *  it, so a leaving read knows which frames must answer (./leaving `framesHolding`); R47: null once that frame detached
+   *  and a later DOM read found it gone. */
+  fieldFrames: Map<number, string | null>;
+  /** agent-computer D9 (R47): frames detached since the last completed DOM read. Until that read prunes them, a field placed
+   *  in one still makes the leaving read fail (the page may have taken its code and removed the frame). */
+  detached: Set<string>;
+  /** agent-computer D9 (R47): whether a DOM read has completed since the last main-frame commit (until then a restored
+   *  document's fields are placed nowhere), and that commit's count, so a read that spans a commit places nothing. */
+  placed: boolean; mainDocs: number;
   /** The main-frame navigations under way (./leaving), each keyed by its URL: a page-started one with its leaving record
    *  (the site being left and the read of its document's values, G2), consumed at the commit of that navigation (R35: what
    *  the committed URL carries from the old site goes to the carried set); one from main (the agent's `open()`) with none.
@@ -551,7 +558,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
-      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], fieldFrames: new Map(), leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
+      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -698,7 +705,12 @@ export class ComputerBrowser {
       case "Page.frameNavigated": {
         const frame = p.frame as { id: string; parentId?: string; loaderId: string };
         // agent-computer D9 (R41): a main-frame commit takes the old document's frames with it; the new ones attach after.
-        if (!frame.parentId) { t.worlds.clear(); t.frames = []; t.fieldFrames = new Map(); }
+        // R47: the new document's fields are placed by its first DOM read, started now (a restored document's frames
+        // attach no new ones, and its fields count as placed nowhere until then).
+        if (!frame.parentId) {
+          t.worlds.clear(); t.frames = []; t.fieldFrames = new Map(); t.detached.clear(); t.placed = false; t.mainDocs++;
+          this.requery(t);
+        }
         t.worlds.delete(frame.id);
         // G2 (R41): the frame's new document gets its isolated world now, so a leaving read later is one command per frame,
         // sent to every frame at once (the old document can be gone about 5 ms after a navigation starts against a fast
@@ -729,10 +741,14 @@ export class ComputerBrowser {
       case "Page.frameAttached":
         void this.world(t, String(p.frameId)).catch(() => undefined);
         break;
+      // R47: a detached frame stays known to hold its fields until the next completed DOM read, started now, prunes it
+      // (about 100 ms): a page that takes a code and removes its frame before navigating still fails the leaving read.
       case "Page.frameDetached": {
         const id = String(p.frameId);
         t.worlds.delete(id);
         t.frames = t.frames.filter((f) => f !== id);
+        t.detached.add(id);
+        this.requery(t);
         break;
       }
       case "DOM.documentUpdated":
@@ -870,6 +886,7 @@ export class ComputerBrowser {
 
   /** The pierced DOM, and the sensitive fields in it added to the document's set (D9). Call inside `locked`. */
   private async readDom(t: Tab): Promise<DomIndex> {
+    const docs = t.mainDocs, gone = [...t.detached];
     const { root } = await this.send<{ root: CdpDomNode }>(t, "DOM.getDocument", { depth: -1, pierce: true });
     const dom = indexDom(root);
     t.frames = [...new Set(dom.roots.map((r) => r.frameId).filter((f): f is string => !!f))];
@@ -882,8 +899,18 @@ export class ComputerBrowser {
       }
     }
     // agent-computer D9 (R41): where each sensitive field is, for the leaving read's failure rule; and a world for any frame
-    // this read found without one (a restored document's frames attach no new ones).
-    for (const b of t.sensitive) { const f = dom.frameOf.get(b); if (f !== undefined) t.fieldFrames.set(b, f); }
+    // this read found without one (a restored document's frames attach no new ones). R47: the frames that detached before
+    // this read began and are not in it are pruned (their fields are placed nowhere now), so a removed login frame does not
+    // fail every later read of the document. A read that spans a main-frame commit places nothing.
+    if (t.mainDocs === docs) {
+      for (const b of t.sensitive) { const f = dom.frameOf.get(b); if (f !== undefined) t.fieldFrames.set(b, f); }
+      const here = new Set(t.frames);
+      for (const id of gone) {
+        t.detached.delete(id);
+        if (!here.has(id)) for (const [b, f] of t.fieldFrames) if (f === id) t.fieldFrames.set(b, null);
+      }
+      t.placed = true;
+    }
     for (const f of t.frames) if (!t.worlds.has(f)) void this.world(t, f).catch(() => undefined);
     return dom;
   }
@@ -1087,12 +1114,11 @@ export class ComputerBrowser {
    *  renderer, where a stale numeric context id can name a context of the new document (review rv5), so such an answer may
    *  not be the old document's. R41: the frames are read all at once, each in the world made for it ahead (a world made now
    *  would be held until the commit), and each on its own (./leaving `mergeFrameReads`): the read fails only when the main
-   *  frame, or a frame the document's sensitive set places a field in, gives no answer; what the others answered is
-   *  remembered for `from`, the site being left, all the same. */
+   *  frame, or a frame the document's sensitive set places a field in, gives no answer (R47: a detached one included,
+   *  ./leaving `leavingFrames`); what the others answered is remembered for `from`, the site being left, all the same. */
   private leavingValues(t: Tab, from: string): Promise<Secrets | null> {
-    const doc = t.doc, main = t.frame;
-    const frames = [...new Set([main, ...t.frames, ...t.worlds.keys()].filter(Boolean))];
-    const holding = framesHolding(t.sensitive, t.fieldFrames);
+    const doc = t.doc;
+    const frames = leavingFrames(t.frame, [...t.frames, ...t.worlds.keys()], t.worlds, framesHolding(t.sensitive, t.fieldFrames), t.placed);
     const one = async (frameId: string): Promise<Secrets | null> => {
       const world = t.worlds.get(frameId);
       if (!world) return null;
@@ -1107,8 +1133,8 @@ export class ComputerBrowser {
         return null;
       }
     };
-    return Promise.all(frames.map((f) => t.reads.track(one(f)))).then((reads) => {
-      const m = mergeFrameReads(frames.map((f, i) => ({ main: f === main, sensitive: holding.unplaced || holding.frames.has(f), read: reads[i] })));
+    return Promise.all(frames.map((f) => (f.read ? t.reads.track(one(f.frame)) : Promise.resolve(null)))).then((reads) => {
+      const m = mergeFrameReads(frames.map((f, i) => ({ main: f.main, sensitive: f.sensitive, read: reads[i] })));
       // R41: a failed read still keeps what the frames that answered held (each answered before the commit, so it is the
       // old document's): remembered for the site being left, so the carry at commit and the note's scrub take it from that
       // site's pool, as they do a whole read's values.

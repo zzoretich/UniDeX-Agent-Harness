@@ -335,25 +335,24 @@ export function inUrl(url: string, s: { values: string[]; whole: string[] }): { 
  */
 export function urlScrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = []): (url: string) => string {
   // Each form as written (`raw`) and folded (`folded`, untrimmed, so a leading or trailing space of the value takes its run
-  // in the URL), each literal to whether it goes only as a whole word: one of fewer than 4 characters (a short code, or a
-  // form folding made that short) does; a literal that may go anywhere wins over the same one as a word. A form is kept
-  // when its value is a short code or all digits, when it is 4 characters or more folded, or when the value is as typed
-  // (R41: `+abc` folds to ` abc`, still a word of it).
-  const raw = new Map<string, boolean>(), folded = new Map<string, boolean>();
-  const put = (m: Map<string, boolean>, x: string): void => { m.set(x, (m.get(x) ?? true) && x.trim().length < SHORT_SECRET); };
+  // in the URL). A form is kept when its value is a short code or all digits, when it is 4 characters or more folded, or
+  // when the value is as typed (R41: `+abc` folds to ` abc`). Each literal goes as a whole word when it is shorter than 4
+  // characters (a short code, or a form folding made that short). R47: the two are checked apart, so a form that folds to
+  // nothing (`%20%20`, `++++`) is still matched as written.
+  const raw = new Set<string>(), folded = new Set<string>();
+  const usable = (x: string): boolean => { const t = x.trim(); return !!t && !/^[•●* ]+$/.test(t); };
   const add = (v: string, f: string, short: boolean): void => {
-    const g = gapped(f).text, t = g.trim();
-    if (!t || /^[•●* ]+$/.test(t)) return;
-    if (!short && t.length < SHORT_SECRET && v.trim().length < SHORT_SECRET) return;
-    put(raw, f);
-    put(folded, g);
+    const g = gapped(f).text;
+    if (!short && g.trim().length < SHORT_SECRET && v.trim().length < SHORT_SECRET) return;
+    if (usable(f)) raw.add(f);
+    if (usable(g)) folded.add(g);
   };
   for (const v of values) if (v) { const short = /^\d+$/.test(v.trim()); for (const f of urlForms(v)) add(v, f, short); }
   for (const v of whole) if (v) for (const f of urlForms(v)) add(v, f, true);
-  const compile = (m: Map<string, boolean>): RegExp[] => [...m].map(([x, word]) => patternOf(literal(x), word ? 0 : SHORT_SECRET));
+  const compile = (m: Set<string>): RegExp[] => [...m].map((x) => patternOf(literal(x), x.trim().length));
   const rawRes = compile(raw), foldedRes = compile(folded);
   const scrub = (s: string): string => {
-    if (!rawRes.length) return s;
+    if (!rawRes.length && !foldedRes.length) return s;
     // Coverage counts per character (as a difference array) and how many matches start at each one: a character is hidden
     // when a match covers it, and a new mark begins where no match runs on from before. Each pattern's matches do not
     // overlap each other, so this stays linear in the matches and the string.

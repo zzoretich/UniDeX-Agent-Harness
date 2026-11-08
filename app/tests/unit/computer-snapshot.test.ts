@@ -463,6 +463,10 @@ test("urlScrubber matches each form as written as well as with URL whitespace fo
   assert.equal(urlScrubber(["%20ab"])("https://a.test/%20ab/?q=%2520ab"), "https://a.test/••••••/?q=••••••", "a typed escape that folds to a short word");
   assert.equal(urlScrubber(["+abc"])("https://a.test/?p=%2Babc&q=%20abc&r=abc"), "https://a.test/?p=••••••&q=••••••&r=abc", "a leading + folds to a space: the folded form goes as a word");
   assert.equal(urlScrubber(["ab +"])("https://a.test/?p=ab%20%2B&q=ab%20+&r=ab++zz"), "https://a.test/?p=••••••&q=••••••&r=ab++zz", "a trailing +: ab followed by letters is not the value");
+  // R47: a form that folds to nothing at all is still matched as written.
+  assert.equal(urlScrubber(["%20%20"])("https://a.test/x/%20%20/y"), "https://a.test/x/••••••/y", "a value made of escapes of spaces");
+  assert.equal(urlScrubber(["++++"])("https://a.test/x/++++/y?q=%2B%2B%2B%2B"), "https://a.test/x/••••••/y?q=••••••", "a value made of plus signs, as written and encoded");
+  assert.equal(urlScrubber(["+++"])("https://a.test/x/+++/y"), "https://a.test/x/+++/y", "a short one stays");
   // A short password stays short: its encoded forms do not make it a secret, as in text.
   assert.equal(urlScrubber(["a b", "abc"])("https://a.test/?p=a+b&q=a%20b&r=abc"), "https://a.test/?p=a+b&q=a%20b&r=abc");
   assert.equal(urlScrubber([], ["123"])("https://a.test/?c=%09123&d=1234&e=123"), "https://a.test/?c=%09••••••&d=1234&e=••••••", "a short code as a whole word in either form");
