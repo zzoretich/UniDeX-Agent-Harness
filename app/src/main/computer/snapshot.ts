@@ -253,6 +253,33 @@ export function scrubber(values: Iterable<string | undefined>, whole: Iterable<s
   return (s) => patterns.reduce((acc, re) => acc.replace(re, () => REDACTED), s);
 }
 
+/** The forms a value takes inside a URL (R37): as typed, percent-encoded (a path or a fragment: `p%40ss`,
+ *  `correct%20horse`) and form-encoded as a GET submit writes it (spaces as `+`: `correct+horse`). */
+const urlForms = (v: string): string[] => {
+  const t = v.replace(/\s+/g, " ").trim();
+  if (!t) return [];
+  return [...new Set([t, encodeURIComponent(t), new URLSearchParams([["k", t]]).toString().slice(2)])];
+};
+
+/**
+ * D9 with R35 and R37: the scrub for a URL string (a tab's URL, `open()`'s reply, a navigation note, a snapshot's `url`
+ * attribute). Every value goes in each form it takes in a URL (`urlForms`), `whole` ones as whole words however short;
+ * only the part after the origin is scrubbed (path, query, fragment, and any credentials): the scheme, host and port
+ * stay, so a planted "localhost" cannot blank the address the agent is at (E6). A string that is not an http(s) URL is
+ * scrubbed whole.
+ */
+export function urlScrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = []): (url: string) => string {
+  const expand = (xs: Iterable<string | undefined>): string[] => [...xs].flatMap((x) => (x ? urlForms(x) : []));
+  const scrub = scrubber(expand(values), expand(whole));
+  return (url) => {
+    let u: URL;
+    try { u = new URL(url); } catch { return scrub(url); }
+    if (u.protocol !== "http:" && u.protocol !== "https:") return scrub(url);
+    const auth = u.username || u.password ? `${scrub(u.username)}${u.password ? `:${scrub(u.password)}` : ""}@` : "";
+    return `${u.protocol}//${auth}${u.host}${scrub(`${u.pathname}${u.search}${u.hash}`)}`;
+  };
+}
+
 /** The values the sensitive nodes among `nodes` hold: each one's own value and the names and values under it (its inner
  *  text), from the protocol's accessibility nodes. */
 export function secretsOf(nodes: CdpAxNode[], sensitive: ReadonlySet<number>): string[] {
@@ -295,8 +322,9 @@ export function formatSnapshot(nodes: AxNode[], o: {
   values?: Iterable<string | undefined>; whole?: Iterable<string | undefined>;
   /** The sensitive nodes that are one-time-code fields: their accessibility values go into `whole` too. */
   otp?: ReadonlySet<number>;
-  /** Values another site carried into this page's URL (R35): scrubbed from the `url` and `origin` attributes only. */
-  urlValues?: Iterable<string | undefined>;
+  /** Values another site carried into this page's URL (R35), by kind (R37): scrubbed from the `url` attribute only,
+   *  after the origin (the `origin` attribute, scheme, host and port, is never scrubbed). */
+  urlValues?: Iterable<string | undefined>; urlWhole?: Iterable<string | undefined>;
 }): Snapshot {
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const isSensitive = (n: AxNode): boolean => n.backendDOMNodeId !== undefined && o.sensitive.has(n.backendDOMNodeId);
@@ -321,10 +349,10 @@ export function formatSnapshot(nodes: AxNode[], o: {
     }
   }
   const scrub = scrubber(secrets, whole);
-  const scrubUrl = scrubber([...secrets, ...(o.urlValues ?? [])], whole);
+  const scrubUrl = urlScrubber([...secrets, ...(o.urlValues ?? [])], [...whole, ...(o.urlWhole ?? [])]);
 
   const url = scrubUrl(o.url);
-  const open = `<untrusted-page origin="${attrValue(scrubUrl(o.origin))}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;
+  const open = `<untrusted-page origin="${attrValue(o.origin)}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;
   const close = "</untrusted-page>";
   const lines = [open, `title ${quote(clip(scrub(o.title)))}`];
   const reserve = `\n[truncated: ${nodes.length} more nodes]`.length + 1 + close.length;

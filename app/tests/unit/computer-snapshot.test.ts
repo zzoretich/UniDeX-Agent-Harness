@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { domText, formatSnapshot, indexDom, mergeFrames, REDACTED, scrubber, secretsOf, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
+import { domText, formatSnapshot, indexDom, mergeFrames, REDACTED, scrubber, secretsOf, urlScrubber, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
 
 const ax = (nodeId: string, role: string, name: string, childIds: string[] = [], extra: Partial<AxNode> = {}): AxNode =>
   ({ nodeId, role, name, ignored: false, childIds, backendDOMNodeId: Number(nodeId), ...extra });
@@ -337,14 +337,33 @@ test("formatSnapshot scrubs the DOM values it is given too, and a ref keeps its 
   assert.match(formatSnapshot(k9z, opts([3])).text, /button "Enter k9z now"/, "not digits, not known as a one-time-code field: kept");
   assert.match(formatSnapshot(k9z, { ...opts([3]), otp: new Set([3]) }).text, /button "Enter •••••• now"/, "a one-time-code field's short value goes");
   assert.match(formatSnapshot(k9z, { ...opts([3]), whole: ["k9z"] }).text, /button "Enter •••••• now"/, "so does one given as `whole`");
-  // R35: values carried from another site scrub the URL (and origin) only, never names or text.
-  const carried = formatSnapshot([ax("1", "RootWebArea", "", ["2"]), ax("2", "button", "Delete account")], { ...opts([]), url: "https://login.test/v1?ref=Delete+account&code=888888", urlValues: ["Delete", "account", "888888"] });
-  assert.ok(carried.text.includes('url="https://login.test/v1?ref=••••••+••••••&amp;code=••••••"'), carried.text);
+  // R35: values carried from another site scrub the URL only, never names or text; R37: a short carried one-time code
+  // goes as a whole word, and the origin attribute is never scrubbed, even by a value equal to the host.
+  const carried = formatSnapshot([ax("1", "RootWebArea", "", ["2"]), ax("2", "button", "Delete account")], { ...opts([]), url: "https://login.test/v1?ref=Delete+account&code=888888&otp=k9z&h=login.test", urlValues: ["Delete", "account", "888888", "login.test"], urlWhole: ["k9z"] });
+  assert.ok(carried.text.includes('<untrusted-page origin="https://login.test" url="https://login.test/v1?ref=••••••+••••••&amp;code=••••••&amp;otp=••••••&amp;h=••••••"'), carried.text);
   assert.match(carried.text, /button "Delete account"/, "the page's own words stay");
   assert.equal(carried.refs.get("e1")!.target.name, "Delete account");
+  const hostPw = formatSnapshot([ax("1", "RootWebArea", "", ["2"]), ax("2", "textbox", "Password", [], { value: "login.test" })], { ...opts([2]), url: "https://login.test/v1?u=login.test" });
+  assert.ok(hostPw.text.includes('<untrusted-page origin="https://login.test" url="https://login.test/v1?u=••••••"'), hostPw.text);
   assert.equal(refFor(s, 2)![1].target.name, "Keep 000123", "the ref's target is what the gate judges: raw, scrubbed only on its way out");
   // A planted value equal to a label: the line is scrubbed, the ref's target is not, so the gate still asks.
   const planted = formatSnapshot([ax("1", "RootWebArea", "", ["2", "3"]), ax("2", "textbox", "Code", [], { value: "Delete" }), ax("3", "button", "Delete branch")], opts([2]));
   assert.match(planted.text, /button "•••••• branch"/);
   assert.equal(refFor(planted, 3)![1].target.name, "Delete branch");
+});
+
+test("urlScrubber keeps the scheme, host and port, scrubs every URL form of a value after them, and short one-time codes as words (R37)", () => {
+  const u = urlScrubber(["localhost", "correct horse", "p@ss", "hunter2pass", "ab"], ["k9z"]);
+  assert.equal(u("http://localhost:50045/v1"), "http://localhost:50045/v1", "a planted host name blanks nothing of the address (E6)");
+  assert.equal(u("http://localhost:50045/localhost/x?h=localhost#localhost"), "http://localhost:50045/••••••/x?h=••••••#••••••", "but goes from the path, query and fragment");
+  assert.equal(u("https://a.test/done?p=correct+horse&q=correct%20horse&r=correct horse"), "https://a.test/done?p=••••••&q=••••••&r=••••••", "form-encoded, percent-encoded and as typed");
+  assert.equal(u("https://a.test/p%40ss/?pw=p%40ss&raw=p@ss"), "https://a.test/••••••/?pw=••••••&raw=••••••", "an encoded reserved character");
+  assert.equal(u("https://a.test/done?code=k9z&x=k9zebra"), "https://a.test/done?code=••••••&x=k9zebra", "a short one-time code as a whole word only");
+  assert.equal(u("https://a.test/?s=ab&t=abc"), "https://a.test/?s=ab&t=abc", "a short password stays, as in text");
+  assert.equal(u("https://user:hunter2pass@a.test/x?k=hunter2pass"), "https://user:••••••@a.test/x?k=••••••", "credentials in the URL are scrubbed, the host is not");
+  assert.equal(u("https://hunter2pass.test/"), "https://hunter2pass.test/", "a host equal to a password stays: the agent is there already");
+  assert.equal(u("about:blank"), "about:blank");
+  assert.equal(u("not a url hunter2pass"), "not a url ••••••", "a string that is not a URL is scrubbed whole");
+  assert.equal(u("https://a.test/done?a=1"), "https://a.test/done?a=1", "a clean URL is returned as it came");
+  assert.equal(urlScrubber([], [])("https://a.test/x?y=1"), "https://a.test/x?y=1");
 });

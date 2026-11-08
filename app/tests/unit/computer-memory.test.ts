@@ -34,20 +34,39 @@ test("eviction keeps the most recent 64 one-time-code and 64 password values per
   assert.ok(m.pool([A]).values.includes("realpass"), "site A still intact");
 });
 
-test("values carried from another site scrub URL strings only, never a site's pool (R35)", () => {
+test("values carried from another site scrub URL strings only, never a site's pool, and keep their kind (R35, R37)", () => {
   // T1: an attacker site plants "Delete" and "account" and navigates to the victim with them in the query.
   const m = new SecretMemory();
   m.remember(A, { values: ["account"], whole: ["Delete"] });
-  m.carry(["Delete", "account", " ", "••••"]);
+  m.carry({ values: ["account", " ", "••••"], whole: ["Delete", "k9z"] });
   assert.deepEqual(m.pool([B]), { values: [], whole: [] }, "nothing of the attacker's reaches the victim site's pool");
-  assert.deepEqual(m.carried(), ["Delete", "account"], "the carried set, for URLs only");
-  m.carry(codes(100, "u"));
-  assert.equal(m.carried().length, CARRIED, "the carried set is capped");
-  assert.deepEqual(m.carried().slice(-3), codes(100, "u").slice(-3), "oldest carried values go first");
-  assert.ok(!m.carried().includes("Delete"));
-  m.carry(["u0099"]);
-  assert.equal(m.carried().length, CARRIED, "re-carrying a value keeps one copy");
-  assert.equal(m.carried().at(-1), "u0099", "and makes it the most recent");
+  assert.deepEqual(m.carried(), { values: ["account"], whole: ["Delete", "k9z"] }, "the carried set, for URLs only, by kind (a short one-time code stays a whole-word secret)");
+  m.carry({ values: ["Delete"], whole: [] });
+  assert.deepEqual(m.carried().whole, ["k9z", "Delete"], "a value once carried as a one-time code stays one, and is the most recent again");
+  m.carry({ values: codes(100, "u"), whole: [] });
+  const all = [...m.carried().values, ...m.carried().whole];
+  assert.equal(all.length, CARRIED, "the carried set is capped");
+  assert.deepEqual(m.carried().values.slice(-3), codes(100, "u").slice(-3), "oldest carried values go first");
+  assert.ok(!all.includes("Delete") && !all.includes("k9z"));
+  m.carry({ values: ["u0099"], whole: [] });
+  assert.equal(m.carried().values.length, CARRIED, "re-carrying a value keeps one copy");
+  assert.equal(m.carried().values.at(-1), "u0099", "and makes it the most recent");
+  // A popup copies its opener's carried set whole (N2): kinds survive the copy.
+  const n = new SecretMemory();
+  n.carry(m.carried());
+  assert.deepEqual(n.carried(), m.carried());
+});
+
+test("remember reports a read that floods a kind's reserve, so the browser can fail closed (R37)", () => {
+  const m = new SecretMemory();
+  assert.equal(m.remember(A, { values: codes(RESERVE, "pw"), whole: codes(RESERVE, "ot") }), false, "exactly the reserve of each kind is kept whole");
+  assert.deepEqual(m.pool([A]).whole, codes(RESERVE, "ot"));
+  assert.equal(m.remember(A, { values: [], whole: ["123456", ...codes(RESERVE, "f")] }), true, "one more one-time code than the reserve in one read");
+  assert.ok(m.pool([A]).whole.includes("123456"), "under the cap it is still there, but the reserve no longer vouches for it");
+  assert.equal(m.remember(A, { values: [], whole: ["654321", ...codes(300, "g")] }), true);
+  assert.ok(!m.pool([A]).whole.includes("654321"), "past the cap the real code in front of the flood is gone from the pool: the caller hides the URL");
+  assert.equal(m.remember(A, { values: ["a", "a", "  a ", "", "••••"], whole: [] }), false, "duplicates, blanks and bullets do not count");
+  assert.equal(m.remember(B, { values: codes(RESERVE + 1, "pw"), whole: [] }), true, "and passwords flood on their own");
 });
 
 test("a popup inherits its opener's entries for the opener's site only", () => {

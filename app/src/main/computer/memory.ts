@@ -1,12 +1,15 @@
-// What a tab remembers of the secrets it has read (agent-computer D9, R32, R35). Every sensitive field's value read in a
-// tab is kept, scoped to the site (origin) it was read on, so text about a page the tab has since left is still scrubbed,
-// while a site that plants words as "codes" cannot blank another site's titles: a site's pool scrubs names and text only
-// while the tab is on that site. A value another site carried into this one's URL (a GET submit, a redirect, a popup's
-// address) never enters this site's pool: it goes into the tab's "carried" set, which scrubs URL strings only (R35).
+// What a tab remembers of the secrets it has read (agent-computer D9, R32, R35, R37). Every sensitive field's value read in
+// a tab is kept, scoped to the site (origin) it was read on, so text about a page the tab has since left is still
+// scrubbed, while a site that plants words as "codes" cannot blank another site's titles: a site's pool scrubs names and
+// text only while the tab is on that site. A value another site carried into this one's URL (a GET submit, a redirect, an
+// error page's address, a popup's address) never enters this site's pool: it goes into the tab's "carried" set, which
+// scrubs URL strings only (R35), each value keeping its kind (R37: a short one-time code scrubs as a whole word there too).
 // Bounds per tab: at most SITES (16) sites, the least recently used evicted whole first (never the site being kept);
 // values past MEMORY (256) evicted oldest first, but never a site's RESERVE (64) most recent one-time codes or 64 most
-// recent passwords (a flood of filler cannot push the real code out), so at most SITES x 2 x RESERVE (2,048) values in
-// all; and at most CARRIED (64) carried values. Pure: no Electron.
+// recent passwords, so at most SITES x 2 x RESERVE (2,048) values in all; and at most CARRIED (64) carried values. The
+// guarantee: filler read in LATER reads cannot push a real code out of its site's reserve. One read that returns more than
+// RESERVE values of a kind keeps only the last RESERVE of them (`remember` says so, and the browser then hides that
+// document's URL query and fragment, failing closed, R37). Pure: no Electron.
 
 /** What the scrub removes: `values` (short ones only when all digits) and `whole` (one-time codes: short ones as words). */
 export interface Secrets { values: string[]; whole: string[] }
@@ -25,39 +28,53 @@ const secret = (v: string): boolean => v !== "" && !/^[•●* ]+$/.test(v);
 export class SecretMemory {
   /** Site to its values, each to its kind, in insertion order (oldest first); sites in order of last use. */
   private sites_ = new Map<string, Map<string, Kind>>();
-  /** Values carried into a URL from another site, oldest first (R35: for URL strings only). */
-  private carried_ = new Set<string>();
+  /** Values carried into a URL from another site, each to its kind, oldest first (R35: for URL strings only). */
+  private carried_ = new Map<string, Kind>();
 
   /** Adds the secrets just read on `site`, which becomes the most recently used; `keep` (the current site, `site` by
-   *  default) is never evicted. A value once seen as a one-time code stays one. */
-  remember(site: string, s: Secrets, keep: string = site): void {
+   *  default) is never evicted. A value once seen as a one-time code stays one. Returns true when the read held more
+   *  distinct values of one kind than `RESERVE`: the oldest of them may be gone already (R37: the caller fails closed). */
+  remember(site: string, s: Secrets, keep: string = site): boolean {
     const m = this.touch(site);
+    let flooded = false;
     for (const [list, kind] of [[s.values, "pw"], [s.whole, "otp"]] as const) {
+      const distinct = new Set<string>();
       for (const raw of list) {
         const v = collapse(raw);
         if (!secret(v)) continue;
+        distinct.add(v);
         const was = m.get(v);
         m.delete(v);
         m.set(v, was === "otp" ? "otp" : kind);
       }
+      if (distinct.size > RESERVE) flooded = true;
     }
     this.evictSites(keep);
     this.evictValues();
+    return flooded;
   }
 
-  /** Remembers values another site carried into a URL of this tab: they scrub URL strings only, at most `CARRIED`. */
-  carry(values: string[]): void {
-    for (const raw of values) {
-      const v = collapse(raw);
-      if (!secret(v)) continue;
-      this.carried_.delete(v);
-      this.carried_.add(v);
+  /** Remembers values another site carried into a URL of this tab, with their kinds: they scrub URL strings only, at
+   *  most `CARRIED`. A value once carried as a one-time code stays one. */
+  carry(s: Secrets): void {
+    for (const [list, kind] of [[s.values, "pw"], [s.whole, "otp"]] as const) {
+      for (const raw of list) {
+        const v = collapse(raw);
+        if (!secret(v)) continue;
+        const was = this.carried_.get(v);
+        this.carried_.delete(v);
+        this.carried_.set(v, was === "otp" ? "otp" : kind);
+      }
     }
     while (this.carried_.size > CARRIED) this.carried_.delete(this.carried_.keys().next().value!);
   }
 
-  /** The carried values, oldest first. */
-  carried(): string[] { return [...this.carried_]; }
+  /** The carried values by kind, oldest first within each. */
+  carried(): Secrets {
+    const out: Secrets = { values: [], whole: [] };
+    for (const [v, k] of this.carried_) (k === "pw" ? out.values : out.whole).push(v);
+    return out;
+  }
 
   /** The remembered secrets of `sites`, for the scrub of names and text. */
   pool(sites: string[]): Secrets {
