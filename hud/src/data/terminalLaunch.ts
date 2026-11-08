@@ -11,7 +11,8 @@ import { shq } from "./skills";
 
 /** What a terminal runs: an agent's own terminal app, or a plain shell. */
 export type TermHost = "claude" | "codex" | "shell";
-/** What an agent may do (T11). "host" passes no flag: the agent behaves as if you typed `claude` or `codex` yourself. */
+/** What an agent may do (T11). "host" passes no access flag: the agent behaves as if you typed `claude` or `codex` yourself,
+ *  except that Claude Code is told the computer tools are pre-approved (agent-computer D33; launchArgs). */
 export type TermAccess = "host" | "read" | "edit" | "run";
 
 export const TERM_HOSTS: readonly TermHost[] = ["claude", "codex", "shell"];
@@ -20,7 +21,7 @@ export const TERM_ACCESS: readonly TermAccess[] = ["host", "read", "edit", "run"
 export const TERM_ACCESS_LABEL: Record<TermAccess, string> = { host: "Host default", read: "Read only", edit: "Edit files", run: "Edit and run commands" };
 /** What each level means in a terminal, where the agent can still ask you (unlike a headless session). */
 export const TERM_ACCESS_NOTE: Record<TermAccess, string> = {
-  host: "As if you typed it yourself: the agent's own settings decide, and it asks you.",
+  host: "As if you typed it yourself: the agent's own settings decide, and it asks you. The computer tools are pre-approved: the Computer pane asks before anything irreversible instead.",
   read: "Reads and plans; asks before changing anything.",
   edit: "Edits files without asking; asks before running commands.",
   run: "Edits files and runs commands; Codex still asks outside its sandbox.",
@@ -212,6 +213,18 @@ export function placeOf(dir: string, w: PlaceWorld): Place {
   return { kind: "other", label: path.basename(abs) || abs, dir: abs };
 }
 
+/**
+ * The computer a place shares (agent-computer D30, D3): `ws:<name>` for a workspace (Scratch too), which a Chat thread
+ * in that workspace shares; `vault`, `home`, and `dir:<absolute folder>` for any other folder. The prefixes keep a
+ * workspace named "vault" or "home" apart from those places.
+ */
+export function placeKey(p: Place): string {
+  if ((p.kind === "workspace" || p.kind === "scratch") && p.workspace) return `ws:${p.workspace}`;
+  if (p.kind === "vault") return "vault";
+  if (p.kind === "home") return "home";
+  return `dir:${path.resolve(p.dir)}`;
+}
+
 /** Whether a place counts as context for a launch: only a workspace, never Scratch, the vault, home or elsewhere. */
 export function isContextPlace(p: Place | null | undefined): p is Place {
   return !!p && p.kind === "workspace";
@@ -371,14 +384,39 @@ export interface LaunchSpec {
   gitInit?: boolean;
   /** `NAME='value' ` prefixes for a non-default config folder (teams.ts envPrefix). */
   envPrefix?: string;
+  /** The folder that prefix names (CLAUDE_CONFIG_DIR or CODEX_HOME), or null when there is none: main sets it in the
+   *  environment of an agent it runs as the terminal's own process (agent-computer D18). */
+  configDir?: string | null;
 }
+
+/**
+ * The nine computer_* MCP tools, and the four of them that only look (agent-computer D19, D34): a copy of COMPUTER_TOOLS
+ * and COMPUTER_LOOK in brain/scripts/sdk/computer-tools.js, pinned to it by terminalLaunch.test.ts.
+ */
+export const COMPUTER_TOOLS: readonly string[] = Object.freeze(["computer_open", "computer_snapshot", "computer_screenshot", "computer_click",
+  "computer_type", "computer_key", "computer_scroll", "computer_wait", "computer_status"]);
+export const COMPUTER_LOOK: readonly string[] = Object.freeze(["computer_status", "computer_snapshot", "computer_screenshot", "computer_wait"]);
+/** How Claude Code names a tool of the agenticos plugin's MCP server. */
+const CLAUDE_PLUGIN_TOOL = "mcp__plugin_agenticos_agenticos__";
 
 const CLAUDE_ACCESS: Record<TermAccess, string[]> = {
   host: [],
   read: ["--permission-mode", "plan"],
   edit: ["--permission-mode", "acceptEdits"],
-  run: ["--permission-mode", "acceptEdits", "--allowedTools", "Bash"],
+  run: ["--permission-mode", "acceptEdits"],
 };
+
+/**
+ * The one `--allowedTools` value of a Claude Code launch (agent-computer D33: the app's ask gate is the computer tools'
+ * only gate, as lib/headless.js sessionAllowedTools does it for a Chat turn): Read only pre-approves the four look tools,
+ * Edit files and Host default all nine, Edit and run commands Bash and all nine. Codex launches carry nothing: its
+ * approvals ship in the registration (cli/codex-host.js), since a `-c mcp_servers…` override breaks a plugin-mode session.
+ */
+function claudeAllowedTools(access: TermAccess): string {
+  const tools = (access === "read" ? COMPUTER_LOOK : COMPUTER_TOOLS).map((t) => CLAUDE_PLUGIN_TOOL + t);
+  return (access === "run" ? ["Bash", ...tools] : tools).join(",");
+}
+
 const CODEX_ACCESS: Record<TermAccess, string[]> = {
   host: [],
   read: ["-s", "read-only", "-a", "on-request"],
@@ -425,7 +463,8 @@ export function launchArgs(s: LaunchSpec): string[] {
     const tail = resume === "last" ? ["--continue"]
       : resume ? ["--resume", resume.id]
       : s.sessionId ? ["--session-id", free("session id", s.sessionId)] : [];
-    return [...(model ? ["--model", model] : []), ...CLAUDE_ACCESS[s.access], ...tail];
+    // `--allowedTools` is variadic, so it comes last: nothing after it can be read as a tool name.
+    return [...(model ? ["--model", model] : []), ...CLAUDE_ACCESS[s.access], ...tail, "--allowedTools", claudeAllowedTools(s.access)];
   }
   // A Codex resume takes the conversation's own settings: flags beside `resume` are not verified (spec §5 gaps). By id,
   // `-C <folder>` comes first and names this terminal's folder, so Codex resumes there without asking (LaunchSpec.cwd);
@@ -436,9 +475,10 @@ export function launchArgs(s: LaunchSpec): string[] {
 }
 
 /**
- * The line typed into the fresh shell. The leading space keeps it out of a history that ignores spaced lines. `exec`
- * hands the terminal to the agent, so the row ends with the agent's own exit code; when the binary is not there the
- * shell stays open and says so instead.
+ * The line typed into the fresh shell, when the app's main process cannot run the agent as the terminal's own process
+ * (agent-computer D18: a fallback) and for Spaces' resume hint. The leading space keeps it out of a history that ignores
+ * spaced lines. `exec` hands the terminal to the agent, so the row ends with the agent's own exit code; when the binary
+ * is not there the shell stays open and says so instead.
  */
 export function launchLine(s: LaunchSpec): string {
   const bin = shq(s.bin || s.host);
@@ -448,9 +488,18 @@ export function launchLine(s: LaunchSpec): string {
   return ` ${git}command -v ${bin} >/dev/null 2>&1 && ${s.envPrefix ?? ""}exec ${argv} || echo ${shq(`${label} was not found: run aos doctor`)}`;
 }
 
-/** The short form the menu previews: `exec claude --model opus --session-id 3f2c…`. */
+/** An `--allowedTools` value as the menu and the Spaces hint show it: the names without their prefix, all nine computer
+ *  tools as `computer_*` (the full line stays where it is kept: the terminal, a hint's title). */
+export function shortAllowedTools(value: string): string {
+  const names = value.split(",").map((t) => (t.startsWith(CLAUDE_PLUGIN_TOOL) ? t.slice(CLAUDE_PLUGIN_TOOL.length) : t));
+  const all = COMPUTER_TOOLS.every((t) => names.includes(t));
+  return [...names.filter((t) => !(all && COMPUTER_TOOLS.includes(t))), ...(all ? ["computer_*"] : [])].join(",");
+}
+
+/** The short form the menu previews: `exec claude --model opus --session-id 3f2c… --allowedTools computer_*`. */
 export function previewLine(s: LaunchSpec): string {
-  const words = launchArgs(s).map((a) => (s.sessionId && a === s.sessionId ? `${a.slice(0, 4)}…` : a));
+  const args = launchArgs(s);
+  const words = args.map((a, i) => (s.sessionId && a === s.sessionId ? `${a.slice(0, 4)}…` : args[i - 1] === "--allowedTools" ? shortAllowedTools(a) : a));
   return `${s.gitInit ? "git init -q; " : ""}exec ${s.host} ${words.join(" ")}`.trim();
 }
 

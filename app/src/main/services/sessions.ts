@@ -8,7 +8,8 @@
 // When the turn ends, `sessions.js record` ledgers its spend and writes its row in agent-runs/runs.jsonl. Nothing runs
 // while the Sessions surface is off. The page names a workspace, a host and a prompt, and each turn's model, effort and
 // access (spec 2026-10-07-sessions-ux U6, U7); never a program, an argument or a path. `catalog` asks the runtime for
-// each host's models and commands (`sessions.js catalog`, U3), which never calls a model.
+// each host's models and commands (`sessions.js catalog`, U3), which never calls a model. `onAgent` tells main which
+// CLI each turn runs while it runs (agent-computer D18), and `resolveBin` names the binary a Code launch runs.
 
 import * as childProcess from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -60,7 +61,26 @@ export interface SessionServiceOptions {
   spawnImpl?: typeof childProcess.spawn;
   now?: () => Date;
   graceMs?: number;
+  /** agent-computer D18: a turn's CLI started (its pid, right after the spawn) and exited, for the agent registry. */
+  onAgent?: (ev: AgentEvent) => void;
+  /** The PATH a Code terminal starts with (pty.ts terminalBaseEnv), which `resolveBin` searches: the CLI the typed
+   *  launch line would find is the one main runs. */
+  terminalPATH?: () => string | null;
+  /** How long `resolveBin` waits for the runtime before it gives up (BIN_TIMEOUT_MS; the tests pass a short one). */
+  binTimeoutMs?: number;
 }
+
+/** A Code launch's binary, or why the runtime named none (one line, for the launch note). */
+export type BinResolution = { bin: string } | { reason: string };
+
+/** How long a Code launch waits for the runtime to name its binary: the terminal is starting meanwhile. */
+export const BIN_TIMEOUT_MS = 10_000;
+
+const HOST_LABEL: Record<SessionHost, string> = { claude: "Claude Code", codex: "Codex" };
+
+export type AgentEvent =
+  | { kind: "start"; pid: number; thread: string; workspace: string; host: SessionHost; access: SessionAccess; title: string }
+  | { kind: "end"; pid: number; thread: string };
 
 interface Meta { schema: 1; kind: "meta"; thread: string; workspace: string; host: SessionHost; model: string | null; effort: string | null; access?: SessionAccess; title: string; created: string }
 
@@ -283,6 +303,29 @@ export class SessionService {
     return run;
   }
 
+  /**
+   * The binary a Code launch runs (`sessions.js bin <host>`), resolved as a turn's is but on a Code terminal's PATH, or
+   * why there is none: the runtime cannot run (no vault, no node), is older than the verb, found no binary, or did not
+   * answer within binTimeoutMs (then it is killed). Not behind the Sessions surface: Code needs none.
+   */
+  async resolveBin(host: SessionHost): Promise<BinResolution> {
+    const PATH = this.o.terminalPATH?.();
+    const r = await this.runtime(["bin", host], PATH ? { ...this.o.env, PATH } : this.o.env, this.o.binTimeoutMs ?? BIN_TIMEOUT_MS);
+    if (r.timedOut) return { reason: "the runtime didn't answer" };
+    let out: { ok?: unknown; bin?: unknown } | null = null;
+    try { out = JSON.parse(r.stdout.trim().split("\n").pop() || "null") as { ok?: unknown; bin?: unknown } | null; } catch { out = null; }
+    if (r.code === 0 && out?.ok === true && typeof out.bin === "string" && path.isAbsolute(out.bin)) return { bin: out.bin };
+    if (r.code === 3 && out?.ok === false) return { reason: `the runtime found no ${HOST_LABEL[host]} binary: run aos doctor` };
+    // A runtime without the verb prints its usage and exits 2.
+    if (r.code === 2 && /\busage:/.test(r.stderr)) return { reason: "the runtime is older than this app: run aos upgrade" };
+    const said = r.stderr.trim().split("\n").pop();
+    return { reason: r.code === -1 && said ? said : `the runtime named no ${HOST_LABEL[host]} binary (${said || `exit ${r.code}`})` };
+  }
+
+  private agentEvent(ev: AgentEvent): void {
+    try { this.o.onAgent?.(ev); } catch (err) { console.error("[main] onAgent failed", err); }
+  }
+
   /** On quit: every running turn is stopped (its file says so the next time it is read). */
   killAll(): void {
     for (const id of [...this.running.keys()]) this.stop(id);
@@ -291,7 +334,7 @@ export class SessionService {
   get runningCount(): number { return this.running.size; }
 
   /** `node <vault>/brain/scripts/lib/sessions.js <args>` from the vault, or why it cannot run. */
-  private runtimeSpawn(args: readonly string[], stdio: childProcess.StdioOptions): { child: childProcess.ChildProcess } | { refusal: string } {
+  private runtimeSpawn(args: readonly string[], stdio: childProcess.StdioOptions, base: NodeJS.ProcessEnv = this.o.env): { child: childProcess.ChildProcess } | { refusal: string } {
     const vault = this.o.vaultRoot();
     if (!vault) return { refusal: "no vault is open" };
     const node = this.o.node();
@@ -301,24 +344,36 @@ export class SessionService {
     if (bad) return { refusal: `node: ${bad}` };
     const script = path.join(vault, "brain", "scripts", "lib", "sessions.js");
     if (!fs.existsSync(script)) return { refusal: "this vault's runtime has no sessions yet: run aos upgrade" };
-    const env = spawnEnv(this.o.env, { AOS_VAULT: vault, AOS_HOST: "" }, [], ctx);
+    const env = spawnEnv(base, { AOS_VAULT: vault, AOS_HOST: "" }, [], ctx);
     if ("refusal" in env) return { refusal: env.refusal };
     try {
       return { child: (this.o.spawnImpl ?? childProcess.spawn)(node, [script, ...args], { cwd: vault, env: env.env, shell: false, stdio, windowsHide: true }) };
     } catch (err) { return { refusal: (err as NodeJS.ErrnoException).code ?? "the runtime did not start" }; }
   }
 
-  /** One short runtime command's output. */
-  private runtime(args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-    const s = this.runtimeSpawn(args, ["ignore", "pipe", "pipe"]);
+  /** One short runtime command's output; with `timeoutMs`, a command still running then is killed and `timedOut`. */
+  private runtime(args: readonly string[], base?: NodeJS.ProcessEnv, timeoutMs?: number): Promise<{ code: number; stdout: string; stderr: string; timedOut?: boolean }> {
+    const s = this.runtimeSpawn(args, ["ignore", "pipe", "pipe"], base);
     if ("refusal" in s) return Promise.resolve({ code: -1, stdout: "", stderr: s.refusal });
     return new Promise((resolve) => {
       let stdout = "";
       let stderr = "";
+      let timer: NodeJS.Timeout | null = null;
+      const done = (r: { code: number; stdout: string; stderr: string; timedOut?: boolean }): void => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        resolve(r);
+      };
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          timer = null;
+          try { s.child.kill("SIGKILL"); } catch { /* gone */ }
+          resolve({ code: -1, stdout, stderr, timedOut: true });
+        }, timeoutMs);
+      }
       s.child.stdout?.on("data", (b: Buffer) => { if (stdout.length < RUNTIME_OUT_MAX) stdout += b.toString("utf8"); });
       s.child.stderr?.on("data", (b: Buffer) => { stderr = (stderr + b.toString("utf8")).slice(-STDERR_TAIL); });
-      s.child.on("error", (err) => resolve({ code: -1, stdout, stderr: (err as NodeJS.ErrnoException).code ?? err.message }));
-      s.child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
+      s.child.on("error", (err) => done({ code: -1, stdout, stderr: (err as NodeJS.ErrnoException).code ?? err.message }));
+      s.child.on("close", (code) => done({ code: code ?? -1, stdout, stderr }));
     });
   }
 
@@ -383,6 +438,14 @@ export class SessionService {
         return;
       }
       state.agent = agent;
+      const pid = agent.pid;
+      if (typeof pid === "number") {
+        this.agentEvent({ kind: "start", pid, thread: meta.thread, workspace: meta.workspace, host: meta.host, access: opts.access, title: meta.title });
+        let ended = false;
+        const end = (): void => { if (!ended) { ended = true; this.agentEvent({ kind: "end", pid, thread: meta.thread }); } };
+        agent.once("exit", end);
+        agent.once("close", end);
+      }
       let stderrTail = "";
       agent.stderr?.on("data", (b: Buffer) => { stderrTail = (stderrTail + b.toString("utf8")).slice(-STDERR_TAIL); });
       if (agent.stdout && filter.child.stdin) agent.stdout.pipe(filter.child.stdin);

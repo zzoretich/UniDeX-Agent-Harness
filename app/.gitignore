@@ -14,3 +14,5 @@ tests/.fixture/
 tests/.cache/
 # the payload the packaged app carries (scripts/make-payload.mjs): rebuilt from this checkout for every dist
 payload/
+# the peer addon scripts/build-native.mjs builds at install (agent-computer D18)
+native/peer/build/

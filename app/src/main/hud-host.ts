@@ -8,15 +8,17 @@ import * as path from "node:path";
 
 export const HUD_HOST_REL = "brain/_index/hud-host.json";
 
-export interface HudHostMarker { schema: 1; host: "app"; name: string; version: string; at: string }
+export interface HudHostMarker { schema: 1; host: "app"; name: string; version: string; at: string; computerSocket?: string }
 
 /**
  * Writes the marker atomically: a temp file in the same folder, then a rename, so a reader (a hook, doctor) sees the
  * whole old file or the whole new one, never a partial write. Returns the marker's path.
  */
-export function writeHudHostMarker(vault: string, info: { name: string; version: string }, now: Date = new Date()): string {
+export function writeHudHostMarker(vault: string, info: { name: string; version: string; computerSocket?: string }, now: Date = new Date()): string {
   const file = path.join(vault, HUD_HOST_REL);
   const marker: HudHostMarker = { schema: 1, host: "app", name: info.name, version: info.version, at: now.toISOString() };
+  // agent-computer D26: where the computer bridge listens, once it does; the agenticos MCP server reads it back.
+  if (info.computerSocket) marker.computerSocket = info.computerSocket;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   try {

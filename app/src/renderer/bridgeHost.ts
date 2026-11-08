@@ -161,33 +161,65 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
   };
 
   // ── terminals ──
-  const terminals = new Map<string, { data: Array<(d: string) => void>; exit: Array<(e: { exitCode: number; signal?: number }) => void> }>();
+  type Exit = { exitCode: number; signal?: number };
+  /** A terminal's listeners. What arrives before the first listener waits for it: an agent's terminal (spawnAgent) gets
+   *  its listeners only once main's answer is in, and its first output may come as soon. */
+  interface Term { data: Array<(d: string) => void>; exit: Array<(e: Exit) => void>; early: string[]; ended: Exit | null }
+  const terminals = new Map<string, Term>();
   let ptySub: (() => void) | null = null;
+  const subscribe = (): void => {
+    ptySub ??= aos.pty.onEvent((ev: PtyEvent) => {
+      const t = terminals.get(ev.id);
+      if (!t) return;
+      if (ev.type === "data") {
+        if (t.data.length) for (const l of t.data) l(ev.data);
+        else t.early.push(ev.data);
+      } else {
+        terminals.delete(ev.id);
+        t.ended = { exitCode: ev.exitCode, signal: ev.signal };
+        for (const l of t.exit) l(t.ended);
+      }
+    });
+  };
+  const newTerm = (): Term => ({ data: [], exit: [], early: [], ended: null });
+  const termProcess = (id: string, t: Term, pid: number): HostPtyProcess => ({
+    pid,
+    write: (data) => aos.pty.write(id, data),
+    resize: (cols, rows) => aos.pty.resize(id, cols, rows),
+    kill: (signal) => aos.pty.kill(id, signal),
+    onData: (cb) => { t.data.push(cb); for (const d of t.early.splice(0)) cb(d); },
+    onExit: (cb) => { t.exit.push(cb); if (t.ended) cb(t.ended); },
+  });
   const pty: HostPty = {
     loadError: () => { const r = aos.pty.available(); return r.ok ? null : r.error; },
     spawn: (file, args, opts): HostPtyProcess => {
-      ptySub ??= aos.pty.onEvent((ev: PtyEvent) => {
-        const t = terminals.get(ev.id);
-        if (!t) return;
-        if (ev.type === "data") for (const l of t.data) l(ev.data);
-        else { terminals.delete(ev.id); for (const l of t.exit) l({ exitCode: ev.exitCode, signal: ev.signal }); }
-      });
+      subscribe();
       const id = `t${++seq}`;
-      const t = { data: [] as Array<(d: string) => void>, exit: [] as Array<(e: { exitCode: number; signal?: number }) => void> };
+      const t = newTerm();
       terminals.set(id, t);
       const r = aos.pty.spawn({ id, file, args, cwd: opts.cwd, name: opts.name, cols: opts.cols, rows: opts.rows, env: opts.env });
       if (!r.ok) {
         terminals.delete(id);
         throw r.code === "EROFS" ? refuse("spawn", describe(file, args)) : callError(r, `terminal ${file}`);
       }
-      return {
-        pid: r.data.pid,
-        write: (data) => aos.pty.write(id, data),
-        resize: (cols, rows) => aos.pty.resize(id, cols, rows),
-        kill: (signal) => aos.pty.kill(id, signal),
-        onData: (cb) => { t.data.push(cb); },
-        onExit: (cb) => { t.exit.push(cb); },
-      };
+      return termProcess(id, t, r.data.pid);
+    },
+    // A Code launch's agent as the terminal's own process (agent-computer D18). main's answer is the HUD's to act on: a
+    // fallback (or a bridge that failed on the way) types the launch line into a shell instead; a refusal is logged.
+    spawnAgent: async (req) => {
+      subscribe();
+      const id = `t${++seq}`;
+      const t = newTerm();
+      terminals.set(id, t);
+      let r: Result<{ pid: number }>;
+      try { r = await aos.pty.spawnAgent({ ...req, id }); }
+      catch (err) { r = { ok: false, error: err instanceof Error ? err.message : String(err), code: "fallback" }; }
+      if (!r.ok) {
+        terminals.delete(id);
+        if (r.code === "EROFS") refuse("spawn", describe(req.host, req.argv));
+        return r;
+      }
+      return { ok: true, data: termProcess(id, t, r.data.pid) };
     },
   };
 

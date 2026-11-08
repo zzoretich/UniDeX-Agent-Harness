@@ -4,6 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as childProcess from "node:child_process";
 import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -12,6 +13,7 @@ import type { SessionEvent, SessionEventRecord } from "../../src/shared/ipc";
 import type { ProgramContext } from "../../src/main/policy/programs";
 import { DIFF_SAFE, GIT_GUARD, GitService, filterOverrides, parseNumstat, parseStatus, untrackedLines } from "../../src/main/services/git";
 import { SessionService, workspaceDir } from "../../src/main/services/sessions";
+import { COMPUTER_LOOK, COMPUTER_TOOLS } from "../../../hud/src/data/terminalLaunch";
 
 const REPO = path.resolve(process.cwd(), "..");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aos-sessions-app-"));
@@ -131,6 +133,89 @@ test("the runtime's refusal (the day cap) is the turn's error; Stop ends a runni
   assert.deepEqual(kinds(stopped.data).slice(-2), ["error", "done"]);
   assert.equal(stopped.data.at(-2)?.message, "stopped");
   assert.equal(runs().at(-1)?.status, "stopped");
+});
+
+test("onAgent: the turn's CLI is announced with its pid, workspace, host, access and title right after it starts, and again when it exits (agent-computer D18)", async () => {
+  const spawned: Array<{ cmd: string; pid: number | undefined }> = [];
+  const agents: Array<Record<string, unknown>> = [];
+  const spawnImpl = ((cmd: string, args: string[], opts: object) => {
+    const c = childProcess.spawn(cmd, args, opts);
+    spawned.push({ cmd, pid: c.pid });
+    return c;
+  }) as unknown as typeof childProcess.spawn;
+  const s = new SessionService({
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500, spawnImpl,
+    onAgent: (ev) => {
+      agents.push({ ...ev });
+      // The CLI is still running when it is announced: its pid is the agent's, not a runtime command's.
+      if (ev.kind === "start") assert.equal(spawned.at(-1)?.cmd, CLAUDE);
+    },
+  });
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "fix the parser\nand the tests", access: "read" });
+  assert.ok(r.ok);
+  await idle(s);
+  const pid = spawned.find((x) => x.cmd === CLAUDE)?.pid;
+  assert.equal(typeof pid, "number");
+  assert.deepEqual(agents, [
+    { kind: "start", pid, thread: r.data.id, workspace: "harbor-map", host: "claude", access: "read", title: "fix the parser" },
+    { kind: "end", pid, thread: r.data.id },
+  ]);
+  // A turn the runtime refuses starts no CLI and announces nothing.
+  config({ sessions: { perDayUsd: 0 } });
+  await s.send({ thread: r.data.id, text: "again" });
+  await idle(s);
+  config();
+  assert.equal(agents.length, 2);
+});
+
+test("resolveBin: the binary the runtime resolves for a Code launch (sessions.js bin), or why not", async () => {
+  const { s } = service();
+  assert.deepEqual(await s.resolveBin("claude"), { bin: CLAUDE });
+  assert.deepEqual(await s.resolveBin("codex"), { bin: CODEX });
+  const noNode = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => null, emit: () => {} });
+  assert.deepEqual(await noNode.resolveBin("claude"), { reason: "no node: run aos doctor" });
+  // Not behind the Sessions surface: a Code launch needs no Sessions.
+  assert.deepEqual(await service(false).s.resolveBin("claude"), { bin: CLAUDE });
+  const noVault = new SessionService({ vaultRoot: () => null, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
+  assert.deepEqual(await noVault.resolveBin("claude"), { reason: "no vault is open" });
+  // With no binary recorded, the one a Code terminal's PATH finds: the CLI its typed line would have run.
+  const termBin = path.join(tmp, "term-bin");
+  fs.mkdirSync(termBin, { recursive: true });
+  const termCodex = path.join(termBin, "codex");
+  fs.writeFileSync(termCodex, "#!/bin/sh\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(vault, "brain", "config.json"), JSON.stringify({ hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: true } } }));
+  try {
+    const onPath = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, terminalPATH: () => `${termBin}:/usr/bin:/bin` });
+    assert.deepEqual(await onPath.resolveBin("codex"), { bin: termCodex });
+    assert.deepEqual(await onPath.resolveBin("claude"), { bin: CLAUDE }, "a recorded binary still comes first");
+    // The runtime found none (AOS_NO_CODEX hides every Codex, the usual install folders included).
+    const hidden = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env: { ...env, AOS_NO_CODEX: "1" }, node: () => process.execPath, emit: () => {} });
+    assert.deepEqual(await hidden.resolveBin("codex"), { reason: "the runtime found no Codex binary: run aos doctor" });
+  } finally { config(); }
+});
+
+/** A SessionService whose `sessions.js bin` is replaced by `code` (node -e): an old runtime, or one that never answers. */
+function binStandIn(code: string, extra: Partial<ConstructorParameters<typeof SessionService>[0]> = {}) {
+  const children: childProcess.ChildProcess[] = [];
+  const spawnImpl = ((cmd: string, args: string[], opts: object) => {
+    const c = args[1] === "bin" ? childProcess.spawn(process.execPath, ["-e", code], opts) : childProcess.spawn(cmd, args, opts);
+    if (args[1] === "bin") children.push(c);
+    return c;
+  }) as unknown as typeof childProcess.spawn;
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl, ...extra });
+  return { s, children };
+}
+
+test("resolveBin: a runtime older than the bin verb says to upgrade; one that never answers is given up on and killed", async () => {
+  const old = binStandIn("process.stderr.write('usage: sessions.js args <json> | events --host claude|codex [--model m] | catalog [--refresh] [--host h] | record <json>\\n'); process.exit(2);");
+  assert.deepEqual(await old.s.resolveBin("claude"), { reason: "the runtime is older than this app: run aos upgrade" });
+  const hung = binStandIn("setInterval(() => {}, 1000);", { binTimeoutMs: 300 });
+  const started = Date.now();
+  assert.deepEqual(await hung.s.resolveBin("claude"), { reason: "the runtime didn't answer" });
+  assert.ok(Date.now() - started < 5000);
+  const child = hung.children[0];
+  if (child.exitCode === null && child.signalCode === null) await new Promise((r) => child.once("exit", r));
+  assert.ok(child.signalCode !== null, "the runtime child was killed");
 });
 
 test("nothing runs while the Sessions surface is off, and a thread that is not there is ENOENT", async () => {
@@ -348,6 +433,9 @@ test("each turn runs with its own model, effort and access; a send that names no
   const calls = (): string[][] => fs.readFileSync(log, "utf8").trim().split("\n").map((l) => (JSON.parse(l) as { argv: string[] }).argv);
   const seen = calls().length;
   const flag = (argv: string[], name: string) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
+  // Every turn pre-approves the computer tools by access (agent-computer D33): the look tools, all nine, or Bash and all nine.
+  const plug = (t: string) => `mcp__plugin_agenticos_agenticos__${t}`;
+  const NINE = COMPUTER_TOOLS.map(plug).join(",");
   const r = await s.start({ workspace: "harbor-map", host: "claude", text: "plan it", model: "sonnet", effort: "high", access: "read" });
   assert.ok(r.ok);
   assert.deepEqual([r.data.model, r.data.effort, r.data.access], ["sonnet", "high", "read"]);
@@ -358,9 +446,9 @@ test("each turn runs with its own model, effort and access; a send that names no
   assert.ok((await s.send({ thread: r.data.id, text: "and again" })).ok);
   await idle(s);
   const [first, second, third] = calls().slice(seen);
-  assert.deepEqual([flag(first, "--permission-mode"), flag(first, "--model"), flag(first, "--effort"), first.includes("Bash")], ["plan", "sonnet", "high", false]);
-  assert.deepEqual([flag(second, "--permission-mode"), flag(second, "--model"), flag(second, "--effort"), flag(second, "--allowedTools")], ["acceptEdits", "opus", "high", "Bash"]);
-  assert.deepEqual([flag(third, "--model"), flag(third, "--allowedTools")], ["opus", "Bash"], "the last turn's choices carry on");
+  assert.deepEqual([flag(first, "--permission-mode"), flag(first, "--model"), flag(first, "--effort"), flag(first, "--allowedTools")], ["plan", "sonnet", "high", COMPUTER_LOOK.map(plug).join(",")]);
+  assert.deepEqual([flag(second, "--permission-mode"), flag(second, "--model"), flag(second, "--effort"), flag(second, "--allowedTools")], ["acceptEdits", "opus", "high", `Bash,${NINE}`]);
+  assert.deepEqual([flag(third, "--model"), flag(third, "--allowedTools")], ["opus", `Bash,${NINE}`], "the last turn's choices carry on");
   const read = await s.read(r.data.id);
   assert.ok(read.ok);
   assert.deepEqual(read.data.filter((e) => e.kind === "prompt").map((e) => [e.model, e.effort, e.access]), [["sonnet", "high", "read"], ["opus", "high", "run"], ["opus", "high", "run"]]);
@@ -371,7 +459,7 @@ test("each turn runs with its own model, effort and access; a send that names no
   const old = await s.send({ thread: r.data.id, text: "older page", allowCommands: false });
   assert.ok(old.ok);
   await idle(s);
-  assert.equal(flag(calls().at(-1) as string[], "--allowedTools"), null, "allowCommands false still reads as edit");
+  assert.equal(flag(calls().at(-1) as string[], "--allowedTools"), NINE, "allowCommands false still reads as edit");
 });
 
 test("catalog: the runtime's answer for each host; a host that does not answer keeps its aliases; refused while Sessions is off", async () => {

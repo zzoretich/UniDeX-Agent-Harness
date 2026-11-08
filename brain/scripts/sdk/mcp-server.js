@@ -21,7 +21,9 @@
  *   - graph_query     — notes matching a phrase and the link neighbourhood around them
  *   - graph_neighbors — one note's direct links
  *   - graph_path      — the shortest chain of links between two notes
- *   - wrap_session    — the ONLY write tool: apply an in-session extraction (memories, SESSION.md, drafts)
+ *   - wrap_session    — the ONLY tool that writes the vault: apply an in-session extraction (memories, SESSION.md, drafts)
+ *   - computer_open, computer_snapshot, computer_screenshot, computer_click, computer_type, computer_key, computer_scroll,
+ *     computer_wait, computer_status — the UniDeX app's Computer pane, through its bridge socket (agent-computer D19); they never touch the vault
  */
 
 const path = require('path');
@@ -39,7 +41,7 @@ const server = new McpServer(
 
 // Tool annotations (MCP spec). Codex CLI elicits approval for any MCP tool inside a sandboxed
 // session unless the tool advertises readOnlyHint; Claude Code ignores them. wrap_session is
-// the one write tool: it only ever appends under the vault, never destroys.
+// the one tool that writes the vault: it only ever appends under the vault, never destroys.
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const WRITES_VAULT = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
@@ -373,7 +375,7 @@ server.registerTool(
   {
     title: 'Write session knowledge into the vault',
     annotations: WRITES_VAULT,
-    description: 'The only write tool. Applies an extraction exactly as auto-wrap would: candidates pass the noise gate and ' +
+    description: 'The only tool that writes the vault. Applies an extraction exactly as auto-wrap would: candidates pass the noise gate and ' +
       'become memories (+ MEMORY.md lines + promote trail), facts/decisions/feedback fill SESSION.md "Key Context This Session", ' +
       'threads fill "Open Threads", corrections become draft feedback rules under brain/memory/feedback/_drafts/. ' +
       'Prefer zero candidates over weak ones; bodies for feedback carry **Why:** and **How to apply:**.',
@@ -410,7 +412,20 @@ server.registerTool(
   }
 );
 
+// The Computer pane's tools (agent-computer D19): started before the transport connects, never awaited.
+const { createComputerClient } = require('./lib/computer-client.js');
+const { registerComputerTools } = require('./computer-tools.js');
+// AOS_COMPUTER_TIMEOUT_MS is a test seam (the tests need a short timeout); clamped to [50, 50000] ms.
+const timeoutMs = Math.min(50000, Math.max(50, Number(process.env.AOS_COMPUTER_TIMEOUT_MS) || 50000));
+const computer = createComputerClient({ vault: brain.PATHS.VAULT, timeoutMs });
+registerComputerTools(server, z, computer);
+
 async function main() {
+  computer.start();
+  // The host closing stdin ends the session: release the bridge socket (and its admission slot) and exit.
+  const bye = () => { computer.stop(); process.exit(0); };
+  process.stdin.once('end', bye);
+  process.stdin.once('close', bye);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

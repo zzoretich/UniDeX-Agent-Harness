@@ -9,7 +9,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "postinstall": "node scripts/fix-pty.mjs",
+    "postinstall": "node scripts/fix-pty.mjs && node scripts/build-native.mjs",
     "build": "node scripts/build.mjs",
     "start": "node scripts/build.mjs && electron .",
     "check:compat": "node scripts/check-compat.mjs",
@@ -55,6 +55,7 @@
     "esbuild": "^0.28.2",
     "lucide": "^1.48.0",
     "markdown-it": "^15.0.2",
+    "node-gyp": "12.4.0",
     "playwright": "^1.63.0",
     "typescript": "~5.9",
     "zod": "^4.6.7"

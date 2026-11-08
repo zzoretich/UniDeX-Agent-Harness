@@ -6,7 +6,7 @@
 import * as path from "path";
 import type { Snapshot, WorkspaceEntry } from "../../data/snapshot";
 import type { Place, PlaceWorld, TermHostChoice } from "../../data/terminalLaunch";
-import { workspacePlace } from "../../data/terminalLaunch";
+import { shortAllowedTools, workspacePlace } from "../../data/terminalLaunch";
 import type { LinkedCounts, Linked, LiveState, ManifestStatus, ResumeRef, ResumeTarget, HistoryFilter, SpaceGroupKey, StatusPill } from "../../data/spacesModel";
 import { lastThread } from "../../data/hostSessions";
 import type { OutsideListRow } from "../../data/hostSessions";
@@ -302,7 +302,9 @@ export function typedCommand(line: string, home?: string | null): string {
   const at = line.indexOf(" exec ");
   const end = line.lastIndexOf(" || echo ");
   const words = at >= 0 ? line.slice(at + 6, end > at ? end : undefined).trim() : line.trim();
-  const shown = words.replace(/^'([A-Za-z0-9._:/=-]+)'(?= |$)/, "$1");
+  // The computer tools' approval (agent-computer D33) reads short; the hint's title keeps the whole line.
+  const shown = words.replace(/^'([A-Za-z0-9._:/=-]+)'(?= |$)/, "$1")
+    .replace(/(^| )--allowedTools (?:'([^']*)'|(\S+))/, (_m, pre: string, q?: string, bare?: string) => `${pre}--allowedTools ${shortAllowedTools(q ?? bare ?? "")}`);
   if (!home || home === "/") return shown;
   const h = home.replace(/\/+$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return shown.replace(new RegExp(`(^|[\\s'"])${h}(?=/|$|[\\s'"])`, "g"), "$1~");

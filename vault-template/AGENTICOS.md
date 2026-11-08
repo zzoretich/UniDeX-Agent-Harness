@@ -1,6 +1,6 @@
 # AgenticOS — memory conventions for Claude Code and Codex CLI
 
-> Under Claude Code this file is referenced from your CLAUDE.md as `@<vault>/AGENTICOS.md` (the installer prints the exact line); under Codex CLI a SessionStart hook injects it. This vault is plain Markdown: the agent's second brain, shown by the UniDeX app. Paths below are relative to the vault root; `aos <name>` is the launcher installed by `aos init` (fallback: `sh "${CLAUDE_PLUGIN_ROOT}/bin/aos" <name>` under Claude Code, `sh <vault>/brain/scripts/bin/aos <name>` anywhere).
+> Under Claude Code this file is referenced from your CLAUDE.md as `@<vault>/AGENTICOS.md`; under Codex CLI a SessionStart hook injects it. This vault is plain Markdown: the agent's second brain, shown by the UniDeX app. Paths below are relative to the vault root; `aos <name>` is the launcher installed by `aos init` (fallback: `sh <vault>/brain/scripts/bin/aos <name>`).
 
 ## Memory System (3-file rule)
 
@@ -13,7 +13,7 @@
 Working memory: `brain/_index/SESSION.md` (≤400 tokens; reset by `/wrap`). Patterns: `brain/patterns/`. Reflections: `brain/reflections/`. Daily notes: `dailyNote.layout` in `brain/config.json` (default `<year>/<year>-<month>-<Month>/<date>.md`). Dashboard caches: `brain/_index/`.
 
 How it runs (automatic, via the `agenticos` plugin on both hosts, or the same pieces written into an older Codex CLI's config):
-- **First prompt** — the `UserPromptSubmit` hook injects `BRAIN.md` + `SESSION.md` as `<brain-context>` (plus a `<persona>` block when `persona/IDENTITY.md` exists and `persona/DISABLED` does not). The `agenticos` MCP server exposes `recall`, `memory_search`, `memory_read`, `memory_list`, `pattern_list`, `session_list`, `session_recall`, `feedback_rules`, `snapshot_read`, `brief_read`, `routine_list`, the graph tools `graph_overview`, `graph_query`, `graph_neighbors`, `graph_path` (structure; `recall` is for content), and the one write tool `wrap_session`.
+- **First prompt** — the `UserPromptSubmit` hook injects `BRAIN.md` + `SESSION.md` as `<brain-context>` (plus a `<persona>` block when `persona/IDENTITY.md` exists and `persona/DISABLED` does not). The `agenticos` MCP server exposes `recall`, `memory_search`, `memory_read`, `memory_list`, `pattern_list`, `session_list`, `session_recall`, `feedback_rules`, `snapshot_read`, `brief_read`, `routine_list`, the graph tools `graph_overview`, `graph_query`, `graph_neighbors`, `graph_path` (structure; `recall` is for content), the Computer pane's `computer_*` tools (app only), and the one vault write tool `wrap_session`.
 - **During** — a `Stop` hook writes the last-active marker and, every ~5 turns, a working-memory summary into `BRAIN.md` `## Last Session` (model-written when a provider is available, heuristic otherwise).
 - **Session end** — telemetry finalizes under `brain/_index/agent-runs/`; `auto-wrap` extracts memories when a provider is available (queued while the local model is down; with no provider `SESSION.md` shows "not wrapped — run /wrap"); `scan-vault` refreshes the dashboard caches and the recall index.
 

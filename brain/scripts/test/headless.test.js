@@ -6,6 +6,12 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const H = require('../lib/headless.js');
+const { COMPUTER_TOOLS, COMPUTER_LOOK } = require('../sdk/computer-tools.js');
+
+// The computer tools a Claude turn pre-approves (agent-computer D33), in the plugin form Claude Code names them.
+const plug = (t) => `mcp__plugin_agenticos_agenticos__${t}`;
+const NINE = COMPUTER_TOOLS.map(plug).join(',');
+const LOOK = COMPUTER_LOOK.map(plug).join(',');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-headless-'));
 const exe = (name) => { const p = path.join(dir, name); fs.writeFileSync(p, '#!/bin/sh\n', { mode: 0o755 }); return p; };
@@ -185,10 +191,10 @@ test('sessionArgs: a claude turn streams JSON, edits without prompts, and runs u
   const first = H.sessionArgs('claude', { prompt: 'fix the parser', sessionId: 'a1b2', model: 'sonnet', effort: 'high', budget: 1 });
   assert.equal(first.stdin, null, 'nothing on stdin: spawns from the app have none');
   assert.deepEqual(first.argv, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
-    '--session-id', 'a1b2', '--max-budget-usd', '1.00', '--model', 'sonnet', '--effort', 'high', '--', 'fix the parser']);
+    '--session-id', 'a1b2', '--allowedTools', NINE, '--max-budget-usd', '1.00', '--model', 'sonnet', '--effort', 'high', '--', 'fix the parser']);
   const next = H.sessionArgs('claude', { prompt: '-v is a flag here', resume: 'a1b2', allowCommands: true });
-  assert.deepEqual(next.argv.slice(8), ['--resume', 'a1b2', '--allowedTools', 'Bash', '--', '-v is a flag here'], 'a prompt that looks like a flag stays the prompt');
-  assert.ok(!first.argv.includes('--allowedTools'), 'Bash only when commands are allowed');
+  assert.deepEqual(next.argv.slice(8), ['--resume', 'a1b2', '--allowedTools', `Bash,${NINE}`, '--', '-v is a flag here'], 'a prompt that looks like a flag stays the prompt');
+  assert.ok(!first.argv[first.argv.indexOf('--allowedTools') + 1].split(',').includes('Bash'), 'Bash only when commands are allowed');
   assert.throws(() => H.sessionArgs('claude', { prompt: 'x' }), /sessionId/);
   assert.throws(() => H.sessionArgs('claude', { prompt: '  ', sessionId: 'a' }), /prompt/);
 });
@@ -196,20 +202,47 @@ test('sessionArgs: a claude turn streams JSON, edits without prompts, and runs u
 test('sessionArgs: access levels per host, on every turn (sessions-ux U7)', () => {
   const claude = (o) => H.sessionArgs('claude', { prompt: 'p', resume: 'a1b2', ...o }).argv;
   const mode = (argv) => argv[argv.indexOf('--permission-mode') + 1];
+  const tools = (argv) => argv[argv.indexOf('--allowedTools') + 1].split(',');
   assert.equal(mode(claude({ access: 'read' })), 'plan');
-  assert.ok(!claude({ access: 'read' }).includes('--allowedTools'));
+  assert.ok(!tools(claude({ access: 'read' })).includes('Bash'));
   assert.equal(mode(claude({ access: 'edit' })), 'acceptEdits');
-  assert.ok(!claude({ access: 'edit' }).includes('--allowedTools'));
-  assert.deepEqual(claude({ access: 'run' }).slice(claude({ access: 'run' }).indexOf('--allowedTools'), claude({ access: 'run' }).indexOf('--allowedTools') + 2), ['--allowedTools', 'Bash']);
-  assert.ok(claude({ allowCommands: true }).includes('Bash'), 'allowCommands still reads as run');
+  assert.ok(!tools(claude({ access: 'edit' })).includes('Bash'));
+  assert.equal(tools(claude({ access: 'run' }))[0], 'Bash');
+  assert.ok(tools(claude({ allowCommands: true })).includes('Bash'), 'allowCommands still reads as run');
   assert.equal(mode(claude({ access: 'read', allowCommands: true })), 'plan', 'the level wins over the older flag');
-  assert.ok(!claude({ access: 'read', allowCommands: true }).includes('Bash'));
+  assert.ok(!tools(claude({ access: 'read', allowCommands: true })).includes('Bash'));
   assert.equal(mode(claude({})), 'acceptEdits', 'edit is the default');
   const codex = (o) => H.sessionArgs('codex', { prompt: 'p', ...o }).argv;
   assert.ok(codex({ access: 'read' }).includes('sandbox_mode="read-only"'));
   assert.ok(codex({ access: 'edit' }).includes('sandbox_mode="workspace-write"'));
   assert.ok(codex({ access: 'run' }).includes('sandbox_mode="workspace-write"'));
   assert.throws(() => codex({ access: 'admin' }), /no such access level/);
+});
+
+test('sessionArgs: a claude turn pre-approves the computer tools by access, as one --allowedTools value in the plugin form (agent-computer D33)', () => {
+  const claude = (o) => H.sessionArgs('claude', { prompt: 'p', resume: 'a1b2', ...o }).argv;
+  const value = (argv) => {
+    assert.equal(argv.filter((a) => a === '--allowedTools').length, 1, 'one flag');
+    return argv[argv.indexOf('--allowedTools') + 1];
+  };
+  assert.equal(value(claude({ access: 'read' })), 'mcp__plugin_agenticos_agenticos__computer_status,mcp__plugin_agenticos_agenticos__computer_snapshot,'
+    + 'mcp__plugin_agenticos_agenticos__computer_screenshot,mcp__plugin_agenticos_agenticos__computer_wait', 'read: the four look tools');
+  assert.equal(value(claude({ access: 'read' })), LOOK);
+  assert.equal(value(claude({ access: 'edit' })), NINE, 'edit: all nine');
+  assert.equal(value(claude({})), NINE, 'edit is the default');
+  assert.equal(value(claude({ access: 'run' })), `Bash,${NINE}`, 'run: Bash and all nine');
+  assert.equal(NINE.split(',').length, 9);
+  // The variadic flag sits before the next flag, never before the prompt's `--`.
+  const first = H.sessionArgs('claude', { prompt: 'p', sessionId: 's1' }).argv;
+  assert.equal(first[first.indexOf('--allowedTools') + 2], '--');
+  // Codex takes no launch-time approval: a `-c mcp_servers…` override breaks a plugin-mode session, so the per-tool
+  // approvals ship in the registration (cli/codex-host.js) and no turn carries one.
+  for (const access of H.SESSION_ACCESS) {
+    for (const resume of [undefined, '0199-thread']) {
+      const argv = H.sessionArgs('codex', { prompt: 'p', access, resume }).argv;
+      assert.ok(!argv.some((a) => a.includes('mcp_servers') || a.includes('approval_mode')), `${access} ${resume || 'first'}: ${argv.join(' ')}`);
+    }
+  }
 });
 
 test('sessionArgs: each host gets the efforts its CLI takes; claude `default` passes no model', () => {

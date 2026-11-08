@@ -25,6 +25,11 @@ test('readMarker: the app\'s record, with exactly the five fields', () => {
   assert.deepEqual(H.readMarker(vault({ schema: 1, host: 'app', version: '1.0.0' })), { schema: 1, host: 'app', name: null, version: '1.0.0', at: null });
 });
 
+test('readMarker: computerSocket comes back when it is a string and is otherwise left out (agent-computer D26)', () => {
+  assert.deepEqual(H.readMarker(vault({ ...APP, computerSocket: '/tmp/x/bridge.sock' })), { ...APP, computerSocket: '/tmp/x/bridge.sock' });
+  for (const computerSocket of ['', 1, null, {}]) assert.deepEqual(H.readMarker(vault({ ...APP, computerSocket })), APP, String(computerSocket));
+});
+
 test('readMarker: null for no vault, no file, a torn file, another schema or host, or a version it cannot order', () => {
   assert.equal(H.readMarker(null), null);
   assert.equal(H.readMarker(vault()), null);

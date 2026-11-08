@@ -53,7 +53,7 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.proposals).toEqual(["apply", "preview", "reject", "undo", "undos"]);
   expect(shape.fs).toEqual(["appendText", "copy", "exists", "mkdir", "readBytes", "readText", "readdir", "remove", "rename", "stat", "trash", "walk", "writeText"]);
   expect(shape.proc).toEqual(["execSync", "kill", "onEvent", "spawn"]);
-  expect(shape.pty).toEqual(["available", "kill", "onEvent", "resize", "spawn", "write"]);
+  expect(shape.pty).toEqual(["available", "kill", "onEvent", "resize", "spawn", "spawnAgent", "write"]);
   expect(shape.shell).toEqual(["openExternal", "openPath", "showItemInFolder"]);
   expect(shape.plugin).toEqual(["loadData", "saveData"]);
   expect(shape.setup).toEqual(["addToPath", "applyClaudeMd", "cancel", "chooseVault", "claudeMd", "finish", "fix", "importHistory", "importScan", "input", "install", "noted", "onEvent", "pathLine", "preflight", "resize", "unwire", "upgrade"]);

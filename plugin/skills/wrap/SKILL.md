@@ -7,7 +7,7 @@ description: In-session memory extraction at the end of a Claude Code session �
 
 The background `auto-wrap` hook extracts memories with the configured provider. When
 there is no provider (or the user prefers it), this skill does the same extraction in
-the session and hands the result to the one write tool of the `agenticos` MCP server:
+the session and hands the result to the one vault write tool of the `agenticos` MCP server:
 `wrap_session` (`mcp__plugin_agenticos_agenticos__wrap_session`). Everything downstream — noise gate,
 memory writer, `MEMORY.md` index line, promote trail, `SESSION.md` sections, feedback
 drafts — is identical to the hook path.

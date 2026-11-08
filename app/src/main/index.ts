@@ -13,6 +13,9 @@ import * as path from "node:path";
 import { APP_ORIGIN, CH, POPOVER, type AttachInfo, type BootInfo, type CommandInfo, type ProtocolRequest, type ReadyInfo, type ThemeSource, type ThemeState } from "../shared/ipc";
 import { registerAppScheme, serveAppScheme } from "./app-scheme";
 import { BRAND } from "../shared/brand";
+import type { Sys } from "./computer/admission";
+import { loadPeer, type PeerAddon } from "./computer/peer";
+import { AgentRegistry } from "./computer/registry";
 import { writeHudHostMarker } from "./hud-host";
 import { registerFsIpc } from "./ipc/fs";
 import { registerHostIpc } from "./ipc/host";
@@ -29,6 +32,8 @@ import { parseShells, type ProgramContext } from "./policy/programs";
 import { ReadScope, type AgenticosPaths } from "./policy/read-scope";
 import { WritePolicy } from "./policy/write-policy";
 import { SCHEME, parseAgenticosUrl, urlFromArgv } from "./protocol";
+import { admit } from "./computer/admission";
+import { ComputerBridge } from "./computer/bridge";
 import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
 import { GitService } from "./services/git";
@@ -97,9 +102,30 @@ let scope = new ReadScope(context);
 let fsService = vault.root ? new FsService({ vaultRoot: vault.root, userData: context.userData, scope: () => scope, policy: () => policy }) : null;
 let attached: AttachInfo | null = null;
 const procService = new ProcService({ policy: () => policy, context: () => context, env: process.env, emit: (ev) => send(CH.procEvent, ev) });
+// agent-computer D18: the agent CLIs this app spawned (a Chat turn's, a Code launch's), which the computer bridge admits
+// from, and the peer addon's checks behind it: one registry and one Sys for the app's life (launchForm caches per Sys).
+// Without the addon every Code launch falls back to the typed line in a shell, and says so.
+const agentRegistry = new AgentRegistry();
+let computerPeer: PeerAddon | null = null;
+const computerSys: Sys | null = (() => {
+  try {
+    const peer = (computerPeer = loadPeer());
+    return {
+      procInfo: (pid) => peer.procInfo(pid), teamId: (p) => peer.teamId(p), processTeamId: (pid) => peer.processTeamId(pid),
+      realpath: (p) => fs.realpathSync(p), stat: (p) => fs.statSync(p),
+    };
+  } catch (err) {
+    console.warn(`[main] the peer addon did not load, so agents run without the computer: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+    return null;
+  }
+})();
 // The app's own node-pty: in a packaged build its JavaScript is in the archive and its native parts are unpacked beside it.
-// Its terminals start with the login shell's PATH (T14), worked out once and shared with sessionNode.
-const ptyService = new PtyService({ context: () => context, env: () => terminalBaseEnv(process.env, termPATH()), emit: (ev) => send(CH.ptyEvent, ev), load: () => require("node-pty") as PtyLib });
+// Its terminals start with the login shell's PATH (T14), worked out once and shared with sessionNode. A Code launch's
+// agent runs as its terminal's own process, from the binary the runtime resolves (D18).
+const ptyService = new PtyService({
+  context: () => context, env: () => terminalBaseEnv(process.env, termPATH()), emit: (ev) => send(CH.ptyEvent, ev), load: () => require("node-pty") as PtyLib,
+  resolveBin: (host) => sessionService.resolveBin(host), registry: agentRegistry, sys: computerSys,
+});
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
 // surface. A turn outlives a page reload; quitting stops every one.
 const sessionsOn = (): boolean => policy.ids.includes("sessions");
@@ -115,7 +141,17 @@ function sessionNode(): string | null {
   if (typeof recorded === "string" && isExecutable(recorded)) return recorded;
   return findOnPath("node", termPATH());
 }
-const sessionService = new SessionService({ vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, context: () => context, env: process.env, node: sessionNode, emit: (ev) => send(CH.sessionEvent, ev) });
+const sessionService = new SessionService({
+  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, context: () => context, env: process.env, node: sessionNode, emit: (ev) => send(CH.sessionEvent, ev),
+  // A Code launch's binary is the one its terminal's PATH finds, as the typed line's was (agent-computer D18).
+  terminalPATH: () => termPATH(),
+  // A Chat turn's CLI is registered while it runs, in its thread's workspace: the computer a Code launch there shares
+  // (the HUD's placeKey, `ws:<name>`; agent-computer D18, D3, D30).
+  onAgent: (ev) => {
+    if (ev.kind === "start") agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access });
+    else if (agentRegistry.get(ev.pid)?.key === `chat:${ev.thread}`) agentRegistry.remove(ev.pid);
+  },
+});
 const gitService = new GitService({ workspace: (name) => workspaceDir(context.vaultRoot ?? null, name), enabled: sessionsOn, env: process.env });
 
 /** The variables the HUD reads (HudHost.env), from main's environment; nothing else of it reaches the page. */
@@ -255,6 +291,49 @@ function setTheme(source: ThemeSource): ThemeState {
   return themeState();
 }
 
+// agent-computer D18, D26: the bridge socket the agent CLIs' MCP servers connect to. One per attached vault, only when the
+// peer addon loaded. The handler is a stub until the computer service arrives: status answers, every other tool says so.
+let bridge: ComputerBridge | null = null;
+let bridgeRoot: string | null = null;
+let bridgeChain: Promise<void> = Promise.resolve();
+/** Starts the bridge for a vault, one at a time. The same vault again keeps the running one: restarting would drop admitted
+ * connections whose CLIs cannot reconnect (each connects once). */
+function startBridge(root: string): void {
+  bridgeChain = bridgeChain.then(async () => {
+    try {
+      if (!computerSys || !computerPeer) return;
+      if (bridge && bridgeRoot === root) return;
+      const old = bridge;
+      bridge = null;
+      bridgeRoot = null;
+      await old?.stop();
+      const sys = computerSys;
+      const socketPath = path.join(app.getPath("userData"), "computer", "bridge.sock");
+      const next = new ComputerBridge({
+        socketPath,
+        peer: computerPeer,
+        admit: (pid) => {
+          let server: string;
+          try { server = fs.realpathSync(path.join(root, "brain/scripts/sdk/mcp-server.js")); }
+          catch { return { ok: false, reason: "The agenticos MCP server is not in this vault." }; }
+          return admit(pid, { reg: agentRegistry, sys, server });
+        },
+        handle: async (agent, call) => call.tool === "computer_status"
+          ? { text: `${agent.label} in ${agent.place}, access: ${agent.access}.` }
+          : { text: "The browser arrives with the next part of release 1." },
+        onClose: () => {},
+      });
+      await next.start();
+      bridge = next;
+      bridgeRoot = root;
+      try { writeHudHostMarker(root, { name: app.getName(), version: app.getVersion(), computerSocket: socketPath }); }
+      catch (err) { console.warn(`[main] could not record the computer socket in ${root}: ${err instanceof Error ? err.message : String(err)}`); }
+    } catch (err) {
+      console.warn(`[main] the computer bridge did not start: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+}
+
 /**
  * Attaches a vault: the services the page's calls go through, the app's record in the vault, the menubar item and the
  * watcher. At launch for an existing install; after the wizard's install, then the page reloads into the Workbench.
@@ -271,6 +350,7 @@ function attachVault(root: string, source: string): void {
   // vault the app cannot write to still opens: the record is informational.
   try { writeHudHostMarker(root, { name: app.getName(), version: app.getVersion() }); }
   catch (err) { console.warn(`[main] could not record the app in ${root}: ${err instanceof Error ? err.message : String(err)}`); }
+  startBridge(root);
   tray?.destroy();
   tray = new StatusTray(root, {
     openTab: (tab) => runCommand(tab === "pulse" ? "agentic-os:open-workbench" : `agentic-os:open-workbench-${tab}`),
@@ -427,7 +507,7 @@ if (!app.requestSingleInstanceLock()) {
   // Any quitAndInstall, not only Restart to Update's: Squirrel's own signal comes before the windows are asked to close.
   autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-  app.on("will-quit", () => { watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); });
+  app.on("will-quit", () => { void bridge?.stop(); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); });
 
   void app.whenReady().then(() => {
     // Only a packaged, signed app claims the scheme; a dev run must not re-point the system's agenticos:// handler.

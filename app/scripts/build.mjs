@@ -62,7 +62,8 @@ await esbuild.build({
   format: "cjs",
   target: "node22",
   // node-pty is native: main loads it at run time from the app's node_modules (unpacked from the archive when packaged).
-  external: ["electron", "node-pty"],
+  // So is the peer addon (agent-computer D18), which src/main/computer/peer.ts loads from a path it computes at run time.
+  external: ["electron", "node-pty", "*.node"],
   define: { __AOS_TEST_BUILD__: JSON.stringify(testBuild) },
   nodePaths,
   sourcemap: "linked",
