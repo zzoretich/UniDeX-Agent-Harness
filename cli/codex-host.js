@@ -10,10 +10,11 @@
  *            entries and unknown top-level keys survive a merge and a removal. SessionEnd entries carry the
  *            3 s cap Codex enforces; every one of those handlers detaches its real work.
  *   mcp      `codex mcp add agenticos --env AOS_CONFIG=<config> --env AOS_HOST=codex -- sh <launcher> mcp-server`,
- *            skipped when `codex mcp get agenticos --json` already names that launcher with that env and config.toml
- *            approves the acting computer tools; after each add, `[mcp_servers.agenticos.tools.<tool>]` tables with
- *            `approval_mode = "approve"` go into config.toml (agent-computer D33: `codex mcp add` takes no per-tool
- *            approval, and the app's own ask gate is those tools' only gate).
+ *            skipped when `codex mcp get agenticos --json` already names that launcher with that env; then
+ *            `[mcp_servers.agenticos.tools.<tool>]` tables with `approval_mode = "approve"` go into config.toml for the
+ *            acting computer tools, in place, keeping every other key of the server (agent-computer D33: `codex mcp add`
+ *            takes no per-tool approval, and the app's own ask gate is those tools' only gate). Every `codex mcp` call
+ *            runs with CODEX_HOME set to the home aos resolves, so the registration and the approvals share one file.
  *   skills   <skillsDir>/<name>/SKILL.md carries GENERATED_MARKER right under its frontmatter; only
  *            directories with that marker are ever removed or overwritten.
  *
@@ -72,6 +73,9 @@ function runtime(rel) {
 
 // ── locations ─────────────────────────────────────────────────────────────────
 function codexHome(cfg, env = process.env) { return require('./host-dirs.js').codexHome(cfg, env); }
+/** A `codex mcp` call's options: CODEX_HOME is the home aos resolves (hosts.codex.home, else CODEX_HOME, else ~/.codex),
+ *  so the registration, its approvals in config.toml and the read-back all use one file (agent-computer D33). */
+function mcpRunOpts(cfg, env) { return { capture: true, allowFail: true, env: { ...process.env, CODEX_HOME: codexHome(cfg, env) } }; }
 function hooksFile(cfg, env) { return path.join(codexHome(cfg, env), 'hooks.json'); }
 /** Codex scans ~/.agents/skills (canonical). HOME-based, so sandboxed tests never touch the real one. */
 function skillsDir() { return path.join(os.homedir(), '.agents', 'skills'); }
@@ -162,11 +166,12 @@ function mcpAddArgs({ config, launcher }) {
 /**
  * 'ok' | 'stale' (names the launcher but its env lacks AOS_HOST=codex — a 0.5.0 registration) | 'unapproved' (right, but
  * config.toml lacks the acting computer tools' approvals — a registration from before agent-computer D33) | 'missing' |
- * 'no-binary'. Either of the first two is replaced by registerMcp, so `aos upgrade` repairs it.
+ * 'no-binary'. registerMcp replaces a stale registration and approves an unapproved one in place, so `aos upgrade`
+ * repairs either; mcpApprovalProblem says why one is unapproved.
  */
 function mcpState({ bin, run = defaultRun, launcher, cfg = null, env = process.env }) {
   if (!bin) return 'no-binary';
-  const r = run(bin, ['mcp', 'get', 'agenticos', '--json'], { capture: true, allowFail: true });
+  const r = run(bin, ['mcp', 'get', 'agenticos', '--json'], mcpRunOpts(cfg, env));
   if (r.status !== 0) return 'missing';
   const j = safeParse(r.stdout);
   const t = j && j.transport && typeof j.transport === 'object' ? j.transport : {};
@@ -178,14 +183,18 @@ function mcpState({ bin, run = defaultRun, launcher, cfg = null, env = process.e
 }
 function mcpRegistered(o) { return mcpState(o) === 'ok'; }
 /**
- * 'present' | 'added' | 'unapproved' (added, but the approvals could not be written: a warning says why) | 'failed'. A
- * stale or unapproved registration (another launcher path, one without AOS_HOST, one without the approvals) is replaced.
+ * 'present' | 'added' | 'approved' (the registration was right; its approvals were written in place) | 'unapproved' (the
+ * approvals could not be written: a warning says why) | 'failed'. A missing or stale registration (another launcher
+ * path, one without AOS_HOST) is replaced; an unapproved one is never removed and re-added, which would drop every other
+ * key of the server (enabled, enabled_tools/disabled_tools, timeouts, other tools' modes).
  */
 function registerMcp({ bin, run = defaultRun, launcher, config, io, cfg = null, env = process.env }) {
-  if (mcpRegistered({ bin, run, launcher, cfg, env })) return 'present';
-  run(bin, ['mcp', 'remove', 'agenticos'], { capture: true, allowFail: true });
+  const state = mcpState({ bin, run, launcher, cfg, env });
+  if (state === 'ok') return 'present';
+  if (state === 'unapproved') return approveMcp({ bin, run, cfg, env, io }) ? 'approved' : 'unapproved';
+  run(bin, ['mcp', 'remove', 'agenticos'], mcpRunOpts(cfg, env));
   const addArgs = mcpAddArgs({ config, launcher });
-  const r = run(bin, addArgs, { capture: true, allowFail: true });
+  const r = run(bin, addArgs, mcpRunOpts(cfg, env));
   if (r.status !== 0) {
     if (io) io.warn(`codex mcp add failed (${(r.stderr || r.stdout).trim() || 'exit ' + r.status}); run: codex ${addArgs.join(' ')}`);
     return 'failed';
@@ -249,20 +258,34 @@ function mcpApproved(cfg, env) {
 }
 
 /**
- * Pure: config.toml with `approval_mode = "approve"` for every acting computer tool, as { text, changed }. A tool table
- * already there gets the key set in place (or added under its header); the missing tables follow the server's last
- * table, in Codex's own form. Every other line stays as it was, CRLF endings included. Throws (and the caller writes
- * nothing) when the file does not parse, has no [mcp_servers.agenticos] table (a tool table alone would declare a server
- * with no transport, which Codex refuses), or sets the server's tools some other way (inline or dotted), where added
- * tables would define them twice.
+ * Pure: config.toml with `approval_mode = "approve"` for every acting computer tool, as { text, changed, replaced }. A
+ * tool table already there gets the key set in place (or added under its header); the missing tables follow the
+ * server's last table, in Codex's own form. Every other line stays as it was with its own line ending; the lines added
+ * take the file's (CRLF when it has any), and a last line without one gets it only when lines follow. `replaced` lists
+ * the tools whose approval_mode said something else ({ tool, was }). Throws (and the caller writes nothing) when the file
+ * does not parse, has no [mcp_servers.agenticos] table (a tool table alone would declare a server with no transport,
+ * which Codex refuses), has an [[array]] table of the server, or sets the server's tools some other way (inline or
+ * dotted), where added tables would define them twice.
  */
 function withMcpApprovals(text) {
   const src = String(text);
-  const lines = src.split('\n');
+  const eol = src.includes('\r\n') ? '\r\n' : '\n';
+  // Each line without its ending, and the ending it had ('' for a last line without one).
+  const lines = [];
+  const ends = [];
+  for (let i = 0; i < src.length;) {
+    const j = src.indexOf('\n', i);
+    const raw = j < 0 ? src.slice(i) : src.slice(i, j);
+    const cr = j >= 0 && raw.endsWith('\r');
+    lines.push(cr ? raw.slice(0, -1) : raw);
+    ends.push(j < 0 ? '' : cr ? '\r\n' : '\n');
+    i = j < 0 ? src.length : j + 1;
+  }
   let tables;
   try { tables = tomlTables(lines); } catch (e) { throw new Error(`it does not parse: ${e.message}`); }
   const mine = tables.filter((t) => t.table === SERVER_TABLE || (t.table || '').startsWith(`${SERVER_TABLE}.`));
-  const own = mine.find((t) => t.table === SERVER_TABLE && !t.array);
+  if (mine.some((t) => t.array)) throw new Error('it has an [[array]] table of the agenticos server, which this edit does not write');
+  const own = mine.find((t) => t.table === SERVER_TABLE);
   if (!own) throw new Error(`it has no [${SERVER_TABLE}] table`);
   const acting = approvedComputerTools();
   const head = (d) => d.split('.')[0];
@@ -272,33 +295,51 @@ function withMcpApprovals(text) {
     || tables[0].dotted.some((d) => d.startsWith(`${SERVER_TABLE}.tools`))) {
     throw new Error('it has the agenticos server\'s tools set in a form this edit does not write');
   }
-  const cr = src.includes('\r\n') ? '\r' : '';
-  const line = (l) => l + cr;
   const replace = new Map();
   const after = new Map();
   const insert = (n, more) => after.set(n, [...(after.get(n) || []), ...more]);
   const missing = [];
+  const replaced = [];
   for (const tool of acting) {
     const tab = toolTable(tables, tool);
     if (!tab) { missing.push(tool); continue; }
     if (tab.top.approval_mode === 'approve') continue;
     const at = tab.body.find((n) => APPROVAL_KEY.test(lines[n]));
-    if (at !== undefined) replace.set(at, line(`${lines[at].match(/^\s*/)[0]}approval_mode = "approve"`));
-    else if ('approval_mode' in tab.top) throw new Error('it has the agenticos server\'s tools set in a form this edit does not write');
-    else insert(tab.header, [line('approval_mode = "approve"')]);
+    if (at !== undefined) {
+      replace.set(at, `${lines[at].match(/^\s*/)[0]}approval_mode = "approve"`);
+      replaced.push({ tool, was: tab.top.approval_mode });
+    } else if ('approval_mode' in tab.top) throw new Error('it has the agenticos server\'s tools set in a form this edit does not write');
+    else insert(tab.header, ['approval_mode = "approve"']);
   }
   if (missing.length) {
     const last = mine[mine.length - 1];
     const end = [last.header, ...last.body].filter((n) => lines[n].trim()).pop();
-    const block = missing.flatMap((tool) => [line(''), line(`[${SERVER_TABLE}.tools.${tool}]`), line('approval_mode = "approve"')]);
-    if (end === lines.length - 1) block.push('');
-    else if (lines[end + 1].trim()) block.push(line(''));
+    const block = missing.flatMap((tool) => ['', `[${SERVER_TABLE}.tools.${tool}]`, 'approval_mode = "approve"']);
+    if (end < lines.length - 1 && lines[end + 1].trim()) block.push('');
     insert(end, block);
   }
-  if (!replace.size && !after.size) return { text: src, changed: false };
-  const out = lines.flatMap((l, n) => [replace.has(n) ? replace.get(n) : l, ...(after.get(n) || [])]).join('\n');
-  if (mcpApprovalsIn(out).length !== acting.length) throw new Error('the edit did not read back');
-  return { text: out, changed: true };
+  if (!replace.size && !after.size) return { text: src, changed: false, replaced };
+  const out = lines.map((l, n) => {
+    const more = after.get(n) || [];
+    return (replace.has(n) ? replace.get(n) : l) + (ends[n] || (more.length ? eol : '')) + more.map((m) => m + eol).join('');
+  }).join('');
+  let back;
+  try { back = mcpApprovalsIn(out); } catch (e) { throw new Error(`the edit did not read back: ${e.message}`); }
+  if (back.length !== acting.length) throw new Error('the edit did not read back');
+  return { text: out, changed: true, replaced };
+}
+
+/**
+ * Why the Codex home's config.toml does not approve every acting computer tool, or null when it does: { file, why, fix },
+ * fix 'upgrade' when `aos upgrade` can write them in place, 'by-hand' when this edit refuses the file (doctor).
+ */
+function mcpApprovalProblem(cfg, env = process.env) {
+  const file = path.join(codexHome(cfg, env), 'config.toml');
+  let next;
+  try { next = withMcpApprovals(fs.readFileSync(file, 'utf8')); } catch (e) {
+    return { file, why: e.code === 'ENOENT' ? 'there is no such file' : e.message, fix: 'by-hand' };
+  }
+  return next.changed ? { file, why: 'the approvals are missing', fix: 'upgrade' } : null;
 }
 
 /** Replace a file's text atomically (a temp file beside it, then a rename), keeping its mode; a symlink's target is the file. */
@@ -326,6 +367,7 @@ function approveMcp({ bin, run, cfg, env, io }) {
   const list = approvedComputerTools().join(', ');
   const consequence = `Codex refuses ${list} in a Workbench session until each has approval_mode = "approve" under [${SERVER_TABLE}.tools.<tool>] there`;
   const warn = (m) => { if (io) io.warn(m); };
+  const say = (m) => { if (io) (io.log || io.warn)(m); };
   let before;
   let next;
   try {
@@ -337,8 +379,12 @@ function approveMcp({ bin, run, cfg, env, io }) {
     warn(`the computer tools' approvals were not written to ${file} (${e.code === 'ENOENT' ? 'there is no such file' : e.message}); ${consequence}`);
     return false;
   }
-  const check = run(bin, ['mcp', 'get', 'agenticos', '--json'], { capture: true, allowFail: true });
-  if (check.status === 0) return true;
+  const check = run(bin, ['mcp', 'get', 'agenticos', '--json'], mcpRunOpts(cfg, env));
+  if (check.status === 0) {
+    // D33 needs them approved; a user who chose otherwise still sees what changed.
+    for (const { tool, was } of next.replaced) say(`${tool}: approval_mode was ${JSON.stringify(was)} in ${file}; now "approve" (the UniDeX Computer pane asks before irreversible actions instead, agent-computer D33)`);
+    return true;
+  }
   let back = 'is back as it was';
   try { replaceFile(file, before); } catch (e) { back = `could not be put back (${e.message})`; }
   warn(`the computer tools' approvals were taken out of ${file} again: the Codex CLI refused config.toml with them (${(check.stderr || check.stdout).trim() || 'exit ' + check.status}), and the file ${back}; ${consequence}`);
@@ -538,7 +584,7 @@ function removeCodexHost({ cfg, bin, run = defaultRun, env = process.env, dir = 
   }
   let mcp = 'no-binary';
   if (bin) {
-    const r = run(bin, ['mcp', 'remove', 'agenticos'], { capture: true, allowFail: true });
+    const r = run(bin, ['mcp', 'remove', 'agenticos'], mcpRunOpts(cfg, env));
     mcp = r.status === 0 ? 'removed' : 'failed';
     if (r.status !== 0 && io) io.warn(`codex mcp remove agenticos failed (${(r.stderr || r.stdout).trim() || 'exit ' + r.status}); run it yourself`);
   }
@@ -550,13 +596,16 @@ function removeCodexHost({ cfg, bin, run = defaultRun, env = process.env, dir = 
 function codexHostStatus({ cfg, launcher, run = defaultRun, env = process.env, dir = skillsDir() }) {
   const bin = codexBin(cfg, { env });
   const file = hooksFile(cfg, env);
+  const mcp = launcher ? mcpState({ bin, run, launcher, cfg, env }) : 'missing';
   return {
     bin,
     loggedIn: bin ? codexLoggedIn(bin, run) : false,
     hooksFile: file,
     hookEvents: countOurEvents(readJson(file, null)),
     hookEventsTotal: HOOKS.length,
-    mcp: launcher ? mcpState({ bin, run, launcher, cfg, env }) : 'missing',
+    mcp,
+    // Why an unapproved registration is so, and whether `aos upgrade` can fix it (mcpApprovalProblem).
+    mcpProblem: mcp === 'unapproved' ? mcpApprovalProblem(cfg, env) : null,
     skillsDir: dir,
     skills: countGenerated(dir),
     memories: memoriesEnabled(cfg, env),
@@ -673,7 +722,7 @@ function removeDirectWiring({ cfg, bin, run = defaultRun, env = process.env, dir
   }
   let mcp = false;
   if (bin) {
-    const r = run(bin, ['mcp', 'remove', 'agenticos'], { capture: true, allowFail: true });
+    const r = run(bin, ['mcp', 'remove', 'agenticos'], mcpRunOpts(cfg, env));
     mcp = r.status === 0 && !/no mcp server/i.test(r.stdout + r.stderr);
   }
   return { hooks, mcp, skills: removeSkills({ dir }).length };
@@ -732,7 +781,7 @@ module.exports = {
   removeDirectWiring, trustedPluginHooks, codexPluginStatus,
   codexHome, hooksFile, skillsDir, codexBin, codexLoggedIn, memoriesEnabled,
   hookCommand, isOurs, mergeHooks, stripHooks, countOurEvents,
-  mcpAddArgs, mcpState, mcpRegistered, registerMcp, approvedComputerTools, mcpApprovalsIn, withMcpApprovals,
+  mcpAddArgs, mcpState, mcpRegistered, registerMcp, approvedComputerTools, mcpApprovalsIn, withMcpApprovals, mcpApprovalProblem,
   parseFrontmatter, rewriteBody, commandToSkill, skillToCodex, generateSkills, removeSkills, countGenerated,
   installCodexHost, removeCodexHost, codexHostStatus,
 };

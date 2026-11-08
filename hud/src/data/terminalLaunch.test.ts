@@ -8,7 +8,7 @@ import {
   slugify, isReserved, workspaceStubs, scratchStubs, stubWrites, workspaceNameProblem, gitInitWanted, TEMPLATE_TEXT, isTemplateText,
   workspacePlace, placeOf, resolvePlace, isContextPlace, vaultPlace, homePlace, parseRepoLink, withRepoLink, repoValue,
   termHostChoices, quickHost, launchLine, launchArgs, launchIds, previewLine, SCRATCH, menuRows, firstActionable, placeKey,
-  COMPUTER_TOOLS, COMPUTER_LOOK, TERM_ACCESS,
+  COMPUTER_TOOLS, COMPUTER_LOOK, TERM_ACCESS, TERM_ACCESS_NOTE,
 } from "./terminalLaunch";
 import type { PlaceWorld } from "./terminalLaunch";
 import type { AgenticosJson, ProviderState } from "./aosConfig";
@@ -269,6 +269,7 @@ test("launchArgs per host and access level; Host default passes only the compute
 test("the HUD's computer tools are the runtime's, and each Claude Code launch pre-approves them by access as one value (agent-computer D33)", () => {
   assert.deepEqual([...COMPUTER_TOOLS], runtimeTools.COMPUTER_TOOLS, "the nine tools, in the runtime's order");
   assert.deepEqual([...COMPUTER_LOOK], runtimeTools.COMPUTER_LOOK, "the four look tools");
+  assert.match(TERM_ACCESS_NOTE.host, /computer tools are pre-approved/, "Host default says the pane asks instead");
   const want: Record<string, string> = { host: NINE, read: LOOK, edit: NINE, run: `Bash,${NINE}` };
   for (const access of TERM_ACCESS) {
     for (const resume of [null, "last" as const, { id: "u2" }]) {

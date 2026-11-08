@@ -21,7 +21,7 @@ export const TERM_ACCESS: readonly TermAccess[] = ["host", "read", "edit", "run"
 export const TERM_ACCESS_LABEL: Record<TermAccess, string> = { host: "Host default", read: "Read only", edit: "Edit files", run: "Edit and run commands" };
 /** What each level means in a terminal, where the agent can still ask you (unlike a headless session). */
 export const TERM_ACCESS_NOTE: Record<TermAccess, string> = {
-  host: "As if you typed it yourself: the agent's own settings decide, and it asks you.",
+  host: "As if you typed it yourself: the agent's own settings decide, and it asks you. The computer tools are pre-approved: the Computer pane asks before anything irreversible instead.",
   read: "Reads and plans; asks before changing anything.",
   edit: "Edits files without asking; asks before running commands.",
   run: "Edits files and runs commands; Codex still asks outside its sandbox.",

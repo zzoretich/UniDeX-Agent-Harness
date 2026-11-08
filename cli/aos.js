@@ -391,6 +391,17 @@ function mcpProbe({ vault, tool = null, args = {}, timeoutMs = 20000 }) {
 }
 
 // ── doctor ────────────────────────────────────────────────────────────────────
+/**
+ * The doctor's line for a direct Codex registration whose config.toml does not approve the acting computer tools
+ * (agent-computer D33): why, and the fix — `aos upgrade` writes them in place; a file it refuses is fixed by hand.
+ */
+function codexApprovalRow(p) {
+  const tools = CH.approvedComputerTools().join(', ');
+  if (!p) return `registered, but config.toml does not approve ${tools} — run: aos upgrade`;
+  if (p.fix === 'upgrade') return `registered, but ${p.file} does not approve ${tools} — run: aos upgrade (it writes them in place, and says so if this Codex refuses them)`;
+  return `registered, but ${p.file} does not approve ${tools}, and aos cannot add them there (${p.why}) — add approval_mode = "approve" under [mcp_servers.agenticos.tools.<tool>] for each yourself`;
+}
+
 async function doctor() {
   const checks = [];
   const add = (name, ok, detail, level = 'fail') => checks.push({ name, ok, detail, level });
@@ -478,7 +489,7 @@ async function doctor() {
       `${cx.hookEvents} of ${cx.hookEventsTotal} events in ${cx.hooksFile}${cx.hookEvents < cx.hookEventsTotal ? ' — run: aos upgrade' : ' (trust them once under /hooks in codex)'}`);
     if (cx.bin) add('codex MCP declared', cx.mcp === 'ok', cx.mcp === 'ok' ? 'codex mcp get agenticos names the vault launcher with AOS_HOST=codex'
       : cx.mcp === 'stale' ? 'registered without AOS_HOST=codex (a 0.5.0 registration) — run: aos upgrade'
-        : cx.mcp === 'unapproved' ? `registered, but ${path.join(CH.codexHome(cfg), 'config.toml')} does not approve the computer tools (agent-computer D33) — run: aos upgrade`
+        : cx.mcp === 'unapproved' ? codexApprovalRow(cx.mcpProblem)
           : 'run: aos upgrade');
     add('codex skills', cx.skills > 0, `${cx.skills} generated under ${cx.skillsDir}${cx.skills ? '' : ' — run: aos upgrade'}`);
     if (cx.memories) add('codex memories', true, 'Codex\'s built-in memories are on (separate from the vault; aos never touches them)', 'info');

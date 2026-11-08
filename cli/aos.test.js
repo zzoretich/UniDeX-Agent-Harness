@@ -1357,6 +1357,24 @@ test('direct wiring (a Codex CLI without plugins): init --host both wires the pl
   assert.match(st.stdout, /^hosts\s+claude, codex$/m);
   assert.match(st.stdout, /^codex\s+bin=/m);
 
+  // agent-computer D33: the registration approves the acting computer tools in config.toml; one without them (an older
+  // install, with a setting of the user's) reads as unapproved with its reason, and upgrade approves it in place.
+  const toml = path.join(sb.codexHome, 'config.toml');
+  const approved = fs.readFileSync(toml, 'utf8');
+  assert.match(approved, /^\[mcp_servers\.agenticos\.tools\.computer_scroll\]\napproval_mode = "approve"$/m);
+  const cut = approved.indexOf('\n[mcp_servers.agenticos.tools.');
+  const older = approved.slice(0, cut).replace('command = "sh"', 'command = "sh"\nstartup_timeout_sec = 30');
+  fs.writeFileSync(toml, older);
+  const dr2 = aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') });
+  assert.match(dr2.stdout, /FAIL\s+codex MCP declared\s+registered, but .*config\.toml does not approve computer_open, computer_click, computer_type, computer_key, computer_scroll — run: aos upgrade \(it writes them in place/);
+  const fixLog = fs.readFileSync(path.join(sb.dir, 'codex.log'), 'utf8').split('\n').length;
+  const up0 = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(up0.status, 0, up0.stderr + up0.stdout);
+  assert.match(up0.stdout, /hooks unchanged · MCP approved · skills 28 regenerated/);
+  assert.doesNotMatch(fs.readFileSync(path.join(sb.dir, 'codex.log'), 'utf8').split('\n').slice(fixLog - 1).join('\n'), /^mcp (remove|add) /m, 'no remove, no add');
+  assert.equal(fs.readFileSync(toml, 'utf8'), older + approved.slice(cut), 'the user\'s setting stays; the approvals follow');
+  assert.match(aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') }).stdout, /ok\s+codex MCP declared/);
+
   // partial uninstall: the Codex wiring goes, the plugin, config, launcher and vault stay
   const part = aos(sb, ['uninstall', '--host', 'codex', '--yes']);
   assert.equal(part.status, 0, part.stderr + part.stdout);
