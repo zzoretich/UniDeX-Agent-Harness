@@ -21,8 +21,28 @@ const ok = (stdout = '') => ({ status: 0, stdout, stderr: '' });
 const err = (stderr, status = 1) => ({ status, stdout: '', stderr });
 const PLUGIN_SERVER = { name: 'agenticos', transport: { type: 'stdio', command: 'sh', args: ['./bin/aos', 'mcp-server'], env: { AOS_HOST: 'codex' }, cwd: '/cache/agenticos/1.0.0/.' } };
 
+/** What codex-cli 0.167 does to config.toml, checked in a scratch CODEX_HOME: `mcp remove` drops every table of the
+ *  server (its per-tool approvals too); `mcp add` writes the server's own tables in place of any it had. */
+const SERVER_TABLE = /^\s*\[\s*mcp_servers\s*\.\s*agenticos\s*[.\]]/;
+function dropServer(text) {
+  let skip = false;
+  return text.split('\n').filter((l) => { if (/^\s*\[/.test(l)) skip = SERVER_TABLE.test(l); return !skip; }).join('\n');
+}
+function codexAdd(home, launcher, envs) {
+  const file = path.join(home, 'config.toml');
+  const before = fs.existsSync(file) ? dropServer(fs.readFileSync(file, 'utf8')) : '';
+  const env = envs.map((e) => { const i = e.indexOf('='); return `${e.slice(0, i)} = ${JSON.stringify(e.slice(i + 1))}`; });
+  fs.writeFileSync(file, `${before}${before && !before.endsWith('\n') ? '\n' : ''}${before ? '\n' : ''}[mcp_servers.agenticos]\ncommand = "sh"\nargs = [${JSON.stringify(launcher)}, "mcp-server"]\n${env.length ? `\n[mcp_servers.agenticos.env]\n${env.join('\n')}\n` : ''}`);
+}
+function codexRemove(home) {
+  const file = path.join(home, 'config.toml');
+  if (fs.existsSync(file)) fs.writeFileSync(file, dropServer(fs.readFileSync(file, 'utf8')));
+}
+
 /**
  * A fake `run`: records calls. `mcp get` answers from `state.registered`, `mcp add` sets it, `mcp remove` clears it.
+ * With `state.home` (a Codex home), `mcp add` and `mcp remove` also write its config.toml the way the real CLI does, and
+ * `state.rejectApprovals` makes `mcp get` fail once config.toml holds an approval (a Codex that refuses the file).
  * The `plugin` verbs answer the way Codex 0.155.1 did in the design spike: a marketplace added again from the same
  * source reports alreadyAdded, from another source is refused; `marketplace upgrade` refuses a local source;
  * `state.noPlugins` makes the CLI predate plugins. `mcp list` shows the plugin's server and a direct registration.
@@ -33,9 +53,17 @@ function fakeRun(state = {}) {
     calls.push([cmd, ...args]);
     const key = args.slice(0, 2).join(' ');
     if (key === 'login status') return state.loggedOut ? { status: 1, stdout: 'Not logged in\n', stderr: '' } : { status: 0, stdout: 'Logged in using ChatGPT\n', stderr: '' };
+    const toml = state.home && fs.existsSync(path.join(state.home, 'config.toml')) ? fs.readFileSync(path.join(state.home, 'config.toml'), 'utf8') : '';
+    if (key === 'mcp get' && state.rejectApprovals && /approval_mode/.test(toml)) return err('Error: failed to load configuration');
     if (key === 'mcp get') return state.registered ? { status: 0, stdout: JSON.stringify({ name: 'agenticos', transport: { type: 'stdio', command: 'sh', args: [state.registered, 'mcp-server'], env: state.hostEnv ? { AOS_CONFIG: CONFIG, AOS_HOST: 'codex' } : { AOS_CONFIG: CONFIG } } }), stderr: '' } : { status: 1, stdout: '', stderr: 'no such server' };
-    if (key === 'mcp add') { if (state.failAdd) return { status: 1, stdout: '', stderr: 'boom' }; state.registered = args[args.indexOf('--') + 2]; state.hostEnv = args.includes('AOS_HOST=codex'); return { status: 0, stdout: '', stderr: '' }; }
+    if (key === 'mcp add') {
+      if (state.failAdd) return { status: 1, stdout: '', stderr: 'boom' };
+      state.registered = args[args.indexOf('--') + 2]; state.hostEnv = args.includes('AOS_HOST=codex');
+      if (state.home) codexAdd(state.home, state.registered, args.slice(0, args.indexOf('--')).filter((a, i, all) => all[i - 1] === '--env'));
+      return { status: 0, stdout: '', stderr: '' };
+    }
     if (key === 'mcp remove') {
+      if (state.home) codexRemove(state.home);
       const had = !!state.registered;
       state.registered = null; state.hostEnv = false;
       return ok(had ? "Removed global MCP server 'agenticos'.\n" : "No MCP server named 'agenticos' found.\n");
@@ -207,7 +235,7 @@ test('installCodexHost writes hooks.json, registers the MCP server once, generat
   const home = tmp('aos-codex-home-');
   const dir = tmp('aos-skills2-');
   const env = { CODEX_HOME: home };
-  const { run, calls, state } = fakeRun();
+  const { run, calls, state } = fakeRun({ home });
   const r = CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
   assert.equal(r.hooksFile, path.join(home, 'hooks.json'));
   assert.equal(r.hooksChanged, true);
@@ -287,17 +315,18 @@ test('a 0.5.0 MCP registration (launcher right, no AOS_HOST env) reads as stale 
   const home = tmp('aos-codex-home3-');
   const dir = tmp('aos-skills4-');
   const env = { CODEX_HOME: home };
-  const { run, calls, state } = fakeRun({ registered: LAUNCHER, hostEnv: false });
-  assert.equal(CH.mcpState({ bin: '/x/codex', run, launcher: LAUNCHER }), 'stale');
-  assert.equal(CH.mcpRegistered({ bin: '/x/codex', run, launcher: LAUNCHER }), false);
+  const { run, calls, state } = fakeRun({ registered: LAUNCHER, hostEnv: false, home });
+  const at = { bin: '/x/codex', run, launcher: LAUNCHER, cfg: {}, env };
+  assert.equal(CH.mcpState(at), 'stale');
+  assert.equal(CH.mcpRegistered(at), false);
   assert.equal(CH.codexHostStatus({ cfg: {}, launcher: LAUNCHER, run, env: { ...env, AOS_CODEX_BIN: '/x/codex' }, dir }).mcp, 'stale');
   const r = CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
   assert.equal(r.mcp, 'added');
   assert.equal(state.hostEnv, true);
   assert.ok(calls.some((c) => c[1] === 'mcp' && c[2] === 'remove'), 'the stale entry is removed before the add');
-  assert.equal(CH.mcpState({ bin: '/x/codex', run, launcher: LAUNCHER }), 'ok');
-  assert.equal(CH.mcpState({ bin: null, run, launcher: LAUNCHER }), 'no-binary');
-  assert.equal(CH.mcpState({ bin: '/x/codex', run, launcher: '/elsewhere/aos' }), 'missing');
+  assert.equal(CH.mcpState(at), 'ok');
+  assert.equal(CH.mcpState({ ...at, bin: null }), 'no-binary');
+  assert.equal(CH.mcpState({ ...at, launcher: '/elsewhere/aos' }), 'missing');
   assert.deepEqual(CH.mcpAddArgs({ config: CONFIG, launcher: LAUNCHER }).slice(0, 7), ['mcp', 'add', 'agenticos', '--env', `AOS_CONFIG=${CONFIG}`, '--env', 'AOS_HOST=codex']);
 });
 
@@ -315,6 +344,139 @@ test('the plugin wiring names nothing on this machine: ${PLUGIN_ROOT} in hooks, 
   assert.deepEqual(CH.pluginMcpServers().mcpServers.agenticos.args, ['./bin/aos', 'mcp-server']);
   assert.equal(CH.pluginMcpServers().mcpServers.agenticos.cwd, '.');
   assert.equal(CH.pluginHookCount(), 17);
+});
+
+// ── the computer tools' approvals (agent-computer D33) ───────────────────────
+const ACTING = ['computer_open', 'computer_click', 'computer_type', 'computer_key', 'computer_scroll'];
+const block = (eol = '\n') => ACTING.map((t) => `${eol}[mcp_servers.agenticos.tools.${t}]${eol}approval_mode = "approve"${eol}`).join('');
+const codexServer = `[mcp_servers.agenticos]\ncommand = "sh"\nargs = ["${LAUNCHER}", "mcp-server"]\n\n[mcp_servers.agenticos.env]\nAOS_CONFIG = "${CONFIG}"\nAOS_HOST = "codex"\n`;
+
+test('the acting computer tools are the runtime\'s, and the plugin\'s server entry approves exactly those five (agent-computer D33)', () => {
+  const { COMPUTER_TOOLS, COMPUTER_LOOK } = require('../brain/scripts/sdk/computer-tools.js');
+  assert.deepEqual(CH.approvedComputerTools(), COMPUTER_TOOLS.filter((t) => !COMPUTER_LOOK.includes(t)));
+  assert.deepEqual(CH.approvedComputerTools(), ACTING);
+  const server = CH.pluginMcpServers().mcpServers.agenticos;
+  assert.deepEqual(server.tools, Object.fromEntries(ACTING.map((t) => [t, { approval_mode: 'approve' }])), 'the look tools need none: they are read-only');
+  // What the plugin build commits (`npm run build:codex-plugin`): the same entry, so a plugin-mode session runs them.
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ROOT, 'codex-plugin', '.mcp.json'), 'utf8')), CH.pluginMcpServers());
+});
+
+test('direct mode: after `codex mcp add` the five approvals land in config.toml once, in its own mode, and nothing else changes (agent-computer D33)', () => {
+  const home = tmp('aos-codex-approve-');
+  const dir = tmp('aos-skills-approve-');
+  const env = { CODEX_HOME: home };
+  const file = path.join(home, 'config.toml');
+  const mine = 'model = "gpt-6-astra"\n\n[projects."/srv/code"]\ntrust_level = "trusted"\n\n[mcp_servers.other]\ncommand = "echo"\nargs = ["[mcp_servers.agenticos.tools.computer_open]"]\n';
+  fs.writeFileSync(file, mine, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+  const { run, calls } = fakeRun({ home });
+  const r = CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
+  assert.equal(r.mcp, 'added');
+  const text = fs.readFileSync(file, 'utf8');
+  assert.equal(text, `${mine}\n${codexServer}${block()}`, 'the approvals follow the server Codex wrote; every other line is as it was');
+  assert.ok(!/computer_(status|snapshot|screenshot|wait)\]/.test(text), 'no table for a look tool');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'the file keeps its mode');
+  assert.deepEqual(fs.readdirSync(home).filter((f) => f.includes('.tmp')), [], 'no temp file left');
+  assert.equal(CH.mcpState({ bin: '/x/codex', run, launcher: LAUNCHER, cfg: {}, env }), 'ok');
+  // A second run (aos upgrade): present, the file byte for byte, no table twice.
+  const again = CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
+  assert.equal(again.mcp, 'present');
+  assert.equal(fs.readFileSync(file, 'utf8'), text);
+  assert.equal(calls.filter((c) => c[1] === 'mcp' && c[2] === 'add').length, 1);
+  assert.equal(CH.codexHostStatus({ cfg: {}, launcher: LAUNCHER, run, env: { ...env, AOS_CODEX_BIN: '/x/codex' }, dir }).mcp, 'ok');
+});
+
+test('direct mode: a registration without the approvals reads as unapproved, and aos upgrade re-adds the server with them (agent-computer D33)', () => {
+  const home = tmp('aos-codex-unapproved-');
+  const dir = tmp('aos-skills-unapproved-');
+  const env = { CODEX_HOME: home };
+  const file = path.join(home, 'config.toml');
+  // What a release before this one left: Codex's own tables for the server, and no approvals.
+  fs.writeFileSync(file, `model = "x"\n\n${codexServer}`);
+  const { run, calls } = fakeRun({ home, registered: LAUNCHER, hostEnv: true });
+  const at = { bin: '/x/codex', run, launcher: LAUNCHER, cfg: {}, env };
+  assert.equal(CH.mcpState(at), 'unapproved');
+  assert.equal(CH.mcpRegistered(at), false);
+  assert.equal(CH.codexHostStatus({ cfg: {}, launcher: LAUNCHER, run, env: { ...env, AOS_CODEX_BIN: '/x/codex' }, dir }).mcp, 'unapproved');
+  assert.equal(CH.codexPluginStatus({ cfg: {}, launcher: LAUNCHER, run, env: { ...env, AOS_CODEX_BIN: '/x/codex' }, dir }).direct.mcp, true, 'still a direct registration beside a plugin');
+  const r = CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
+  assert.equal(r.mcp, 'added');
+  assert.deepEqual(argvOf(calls).filter((c) => /^mcp (remove|add)/.test(c)).map((c) => c.split(' ').slice(0, 2).join(' ')), ['mcp remove', 'mcp add']);
+  assert.equal(fs.readFileSync(file, 'utf8'), `model = "x"\n\n${codexServer}${block()}`);
+  assert.equal(CH.mcpState(at), 'ok');
+  // Only one approval missing (a hand edit): the same repair.
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('[mcp_servers.agenticos.tools.computer_key]\napproval_mode = "approve"\n', '[mcp_servers.agenticos.tools.computer_key]\napproval_mode = "prompt"\n'));
+  assert.equal(CH.mcpState(at), 'unapproved');
+  assert.equal(CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir }).mcp, 'added');
+  assert.equal(CH.mcpState(at), 'ok');
+});
+
+test('direct mode: approvals that cannot be written, or that the Codex CLI then refuses, leave config.toml as it was and say so', () => {
+  const dir = tmp('aos-skills-refused-');
+  // `codex mcp add` wrote somewhere else: no server table in this home, so no tool table for a server Codex would not know.
+  const home = tmp('aos-codex-elsewhere-');
+  fs.writeFileSync(path.join(home, 'config.toml'), 'model = "x"\n');
+  const warnings = [];
+  const io = { warn: (m) => warnings.push(m) };
+  const a = fakeRun();
+  assert.equal(CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run: a.run, env: { CODEX_HOME: home }, dir, io }).mcp, 'unapproved');
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), 'model = "x"\n');
+  assert.match(warnings.at(-1), /approvals were not written to .*config\.toml \(it has no \[mcp_servers\.agenticos\] table\)/);
+  assert.match(warnings.at(-1), /computer_open, computer_click, computer_type, computer_key, computer_scroll/);
+  // The Codex CLI refuses the file once the approvals are in: it is put back as `codex mcp add` left it.
+  const home2 = tmp('aos-codex-rejects-');
+  const b = fakeRun({ home: home2, rejectApprovals: true });
+  assert.equal(CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run: b.run, env: { CODEX_HOME: home2 }, dir, io }).mcp, 'unapproved');
+  assert.equal(fs.readFileSync(path.join(home2, 'config.toml'), 'utf8'), codexServer, 'put back');
+  assert.match(warnings.at(-1), /refused config\.toml with them/);
+});
+
+test('withMcpApprovals edits only what it must: a wrong mode in place, a missing key under its header, CRLF kept; it refuses what it cannot edit safely', () => {
+  const ok = (text) => CH.withMcpApprovals(text);
+  // Idempotent on its own output.
+  const once = ok(codexServer);
+  assert.equal(once.changed, true);
+  assert.deepEqual(ok(once.text), { text: once.text, changed: false });
+  assert.deepEqual(CH.mcpApprovalsIn(once.text), ACTING);
+  assert.deepEqual(CH.mcpApprovalsIn(codexServer), []);
+  // A table already there: its approval_mode is set in place, its other keys and comments stay; a table with no key gets
+  // the key right under its header; the rest are added after the server's last table, before the next one.
+  const partial = `${codexServer}\n[mcp_servers.agenticos.tools.computer_type]\napproval_mode = "prompt" # mine\nenabled = true\n\n[mcp_servers.agenticos.tools.computer_key]\n# a note\n\n[mcp_servers.zeta]\ncommand = "z"\n`;
+  assert.equal(ok(partial).text, `${codexServer}\n[mcp_servers.agenticos.tools.computer_type]\napproval_mode = "approve"\nenabled = true\n\n[mcp_servers.agenticos.tools.computer_key]\napproval_mode = "approve"\n# a note\n`
+    + '\n[mcp_servers.agenticos.tools.computer_open]\napproval_mode = "approve"\n\n[mcp_servers.agenticos.tools.computer_click]\napproval_mode = "approve"\n'
+    + '\n[mcp_servers.agenticos.tools.computer_scroll]\napproval_mode = "approve"\n\n[mcp_servers.zeta]\ncommand = "z"\n');
+  assert.deepEqual(CH.mcpApprovalsIn(ok(partial).text), ACTING);
+  // Already approved in single quotes counts; a quoted header counts.
+  const quoted = `${codexServer}${block().replace(/"approve"/g, "'approve'").replace(/tools\.computer_open\]/, 'tools."computer_open"]')}`;
+  assert.deepEqual(ok(quoted), { text: quoted, changed: false });
+  // CRLF in, CRLF out; a file with no final newline gets one.
+  const crlf = codexServer.replace(/\n/g, '\r\n');
+  assert.equal(ok(crlf).text, `${crlf}${block('\r\n')}`);
+  assert.equal(ok(codexServer.trimEnd()).text, `${codexServer}${block()}`);
+  // A header-looking line inside a multi-line string is not a table.
+  const multi = `notes = """\n[mcp_servers.agenticos.tools.computer_open]\napproval_mode = "approve"\n"""\n\n${codexServer}`;
+  assert.equal(ok(multi).text, `${multi}${block()}`);
+  // Refusals: no server table (a tool table alone would declare a server with no transport), a file that does not parse,
+  // and tools set in a form this edit does not write (adding tables would declare them twice).
+  assert.throws(() => ok('model = "x"\n'), /no \[mcp_servers\.agenticos\] table/);
+  assert.throws(() => ok(`${codexServer}oops = \n`), /does not parse/);
+  assert.throws(() => ok(codexServer.replace('command = "sh"', 'command = "sh"\ntools = { computer_open = { approval_mode = "approve" } }')), /tools set in a form/);
+  assert.throws(() => ok(codexServer.replace('command = "sh"', 'command = "sh"\ntools.computer_open.approval_mode = "approve"')), /tools set in a form/);
+  assert.throws(() => ok(`${codexServer}\n[mcp_servers.agenticos.tools]\ncomputer_click = { approval_mode = "approve" }\n`), /tools set in a form/);
+});
+
+test('the approvals are written through a symlinked config.toml to its target, which keeps its mode', () => {
+  const home = tmp('aos-codex-link-');
+  const dots = tmp('aos-dotfiles-');
+  const real = path.join(dots, 'codex.toml');
+  fs.writeFileSync(real, codexServer, { mode: 0o640 });
+  fs.chmodSync(real, 0o640);
+  fs.symlinkSync(real, path.join(home, 'config.toml'));
+  const { run } = fakeRun({ registered: LAUNCHER, hostEnv: true });
+  assert.equal(CH.registerMcp({ bin: '/x/codex', run, launcher: LAUNCHER, config: CONFIG, cfg: {}, env: { CODEX_HOME: home } }), 'added');
+  assert.ok(fs.lstatSync(path.join(home, 'config.toml')).isSymbolicLink(), 'still a link');
+  assert.equal(fs.readFileSync(real, 'utf8'), `${codexServer}${block()}`);
+  assert.equal(fs.statSync(real).mode & 0o777, 0o640);
 });
 
 test('installCodexPlugin: a fresh install adds the marketplace and the plugin; a re-run refreshes a git marketplace first', () => {
@@ -383,12 +545,13 @@ test('removeDirectWiring takes out what a direct install wrote (hooks, MCP regis
   const env = { CODEX_HOME: home };
   const foreign = { hooks: [{ type: 'command', command: 'say done' }] };
   fs.writeFileSync(path.join(home, 'hooks.json'), JSON.stringify({ hooks: { Stop: [foreign] } }));
-  const { run, state } = fakeRun();
+  const { run, state } = fakeRun({ home });
   CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
   CH.installCodexPlugin({ bin: '/x/codex', source: 'owner/repo', run });
   assert.deepEqual(CH.removeDirectWiring({ cfg: {}, bin: '/x/codex', run, env, dir }), { hooks: 6, mcp: true, skills: 28 });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8')), { hooks: { Stop: [foreign] } });
   assert.equal(state.registered, null);
+  assert.ok(!/agenticos/.test(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')), 'the registration goes with its approvals');
   assert.equal(state.installed, true, 'the plugin stays');
   assert.deepEqual(CH.removeDirectWiring({ cfg: {}, bin: '/x/codex', run, env, dir }), { hooks: 0, mcp: false, skills: 0 });
   // a hooks.json that held only our entries is deleted
@@ -425,7 +588,7 @@ test('codexPluginStatus reports the plugin, its MCP server and any direct wiring
   const home = tmp('aos-codex-home7-');
   const dir = tmp('aos-skills7-');
   const env = { CODEX_HOME: home, AOS_CODEX_BIN: '/x/codex' };
-  const { run } = fakeRun();
+  const { run } = fakeRun({ home });
   const before = CH.codexPluginStatus({ cfg: {}, launcher: LAUNCHER, run, env, dir });
   assert.equal(before.installed, false);
   assert.equal(before.mcp, 'missing');

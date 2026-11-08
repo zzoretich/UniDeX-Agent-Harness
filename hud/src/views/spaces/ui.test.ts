@@ -297,12 +297,14 @@ test("sessionsFooter counts this workspace's app threads, is off with the reason
 
 test("typedCommand shows what a resume line types after exec: the configured binary, and Codex's -C folder (D7)", () => {
   const spec = (s: Partial<LaunchSpec>): LaunchSpec => ({ host: "claude", bin: null, model: null, access: "host", ...s });
-  assert.equal(typedCommand(launchLine(spec({ resume: { id: ID1 } }))), `claude --resume ${ID1}`);
+  // A Claude Code line pre-approves the computer tools (agent-computer D33): the hint shows that short.
+  assert.equal(typedCommand(launchLine(spec({ resume: { id: ID1 } }))), `claude --resume ${ID1} --allowedTools computer_*`);
+  assert.equal(typedCommand(launchLine(spec({ access: "run", resume: { id: ID1 } }))), `claude --permission-mode acceptEdits --resume ${ID1} --allowedTools Bash,computer_*`);
   assert.equal(typedCommand(launchLine(spec({ host: "codex", resume: { id: ID2 }, cwd: `${VAULT}/workspaces/site` }))), `codex resume -C ${VAULT}/workspaces/site ${ID2}`);
-  assert.equal(typedCommand(launchLine(spec({ bin: "/opt/bin/claude", envPrefix: "CLAUDE_CONFIG_DIR='/x' ", resume: { id: ID1 } }))), `/opt/bin/claude --resume ${ID1}`);
+  assert.equal(typedCommand(launchLine(spec({ bin: "/opt/bin/claude", envPrefix: "CLAUDE_CONFIG_DIR='/x' ", resume: { id: ID1 } }))), `/opt/bin/claude --resume ${ID1} --allowedTools computer_*`);
   // On screen a path under home reads ~/… (the hint; its title keeps the full line); a shared prefix is not home.
   assert.equal(typedCommand(launchLine(spec({ host: "codex", resume: { id: ID2 }, cwd: `${VAULT}/workspaces/site` })), HOME), `codex resume -C ~/vault/workspaces/site ${ID2}`);
-  assert.equal(typedCommand(launchLine(spec({ bin: `${HOME}/.local/bin/claude`, resume: { id: ID1 } })), HOME), `~/.local/bin/claude --resume ${ID1}`);
+  assert.equal(typedCommand(launchLine(spec({ bin: `${HOME}/.local/bin/claude`, resume: { id: ID1 } })), HOME), `~/.local/bin/claude --resume ${ID1} --allowedTools computer_*`);
   assert.equal(typedCommand(launchLine(spec({ host: "codex", resume: { id: ID2 }, cwd: `${HOME}ed/x` })), HOME), `codex resume -C ${HOME}ed/x ${ID2}`);
   assert.equal(tilde(`${HOME}/code/site`, HOME), "~/code/site");
   assert.equal(entryAbs({ path: "workspaces/site" }, VAULT), `${VAULT}/workspaces/site`);

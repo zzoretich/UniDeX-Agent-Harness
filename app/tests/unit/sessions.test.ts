@@ -13,6 +13,7 @@ import type { SessionEvent, SessionEventRecord } from "../../src/shared/ipc";
 import type { ProgramContext } from "../../src/main/policy/programs";
 import { DIFF_SAFE, GIT_GUARD, GitService, filterOverrides, parseNumstat, parseStatus, untrackedLines } from "../../src/main/services/git";
 import { SessionService, workspaceDir } from "../../src/main/services/sessions";
+import { COMPUTER_LOOK, COMPUTER_TOOLS } from "../../../hud/src/data/terminalLaunch";
 
 const REPO = path.resolve(process.cwd(), "..");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aos-sessions-app-"));
@@ -432,6 +433,9 @@ test("each turn runs with its own model, effort and access; a send that names no
   const calls = (): string[][] => fs.readFileSync(log, "utf8").trim().split("\n").map((l) => (JSON.parse(l) as { argv: string[] }).argv);
   const seen = calls().length;
   const flag = (argv: string[], name: string) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
+  // Every turn pre-approves the computer tools by access (agent-computer D33): the look tools, all nine, or Bash and all nine.
+  const plug = (t: string) => `mcp__plugin_agenticos_agenticos__${t}`;
+  const NINE = COMPUTER_TOOLS.map(plug).join(",");
   const r = await s.start({ workspace: "harbor-map", host: "claude", text: "plan it", model: "sonnet", effort: "high", access: "read" });
   assert.ok(r.ok);
   assert.deepEqual([r.data.model, r.data.effort, r.data.access], ["sonnet", "high", "read"]);
@@ -442,9 +446,9 @@ test("each turn runs with its own model, effort and access; a send that names no
   assert.ok((await s.send({ thread: r.data.id, text: "and again" })).ok);
   await idle(s);
   const [first, second, third] = calls().slice(seen);
-  assert.deepEqual([flag(first, "--permission-mode"), flag(first, "--model"), flag(first, "--effort"), first.includes("Bash")], ["plan", "sonnet", "high", false]);
-  assert.deepEqual([flag(second, "--permission-mode"), flag(second, "--model"), flag(second, "--effort"), flag(second, "--allowedTools")], ["acceptEdits", "opus", "high", "Bash"]);
-  assert.deepEqual([flag(third, "--model"), flag(third, "--allowedTools")], ["opus", "Bash"], "the last turn's choices carry on");
+  assert.deepEqual([flag(first, "--permission-mode"), flag(first, "--model"), flag(first, "--effort"), flag(first, "--allowedTools")], ["plan", "sonnet", "high", COMPUTER_LOOK.map(plug).join(",")]);
+  assert.deepEqual([flag(second, "--permission-mode"), flag(second, "--model"), flag(second, "--effort"), flag(second, "--allowedTools")], ["acceptEdits", "opus", "high", `Bash,${NINE}`]);
+  assert.deepEqual([flag(third, "--model"), flag(third, "--allowedTools")], ["opus", `Bash,${NINE}`], "the last turn's choices carry on");
   const read = await s.read(r.data.id);
   assert.ok(read.ok);
   assert.deepEqual(read.data.filter((e) => e.kind === "prompt").map((e) => [e.model, e.effort, e.access]), [["sonnet", "high", "read"], ["opus", "high", "run"], ["opus", "high", "run"]]);
@@ -455,7 +459,7 @@ test("each turn runs with its own model, effort and access; a send that names no
   const old = await s.send({ thread: r.data.id, text: "older page", allowCommands: false });
   assert.ok(old.ok);
   await idle(s);
-  assert.equal(flag(calls().at(-1) as string[], "--allowedTools"), null, "allowCommands false still reads as edit");
+  assert.equal(flag(calls().at(-1) as string[], "--allowedTools"), NINE, "allowCommands false still reads as edit");
 });
 
 test("catalog: the runtime's answer for each host; a host that does not answer keeps its aliases; refused while Sessions is off", async () => {
