@@ -34,7 +34,7 @@ class FakeClock implements Clock {
   }
 }
 
-interface Spot { target: Target; shown?: string; sensitive?: boolean; focuses?: boolean }
+interface Spot { target: Target; shown?: string; sensitive?: boolean; focuses?: boolean; node?: number; judged?: number[] }
 const btn = (name: string, more: Partial<Target> = {}): Target => ({ role: "button", name, inForm: false, fileInput: false, ...more });
 const box = (name: string, more: Partial<Target> = {}): Target => ({ role: "textbox", name, inForm: false, fileInput: false, ...more });
 
@@ -48,6 +48,11 @@ class FakeBrowser implements BrowserLike {
   clicks: Resolved[] = []; typed: string[] = []; keys: string[] = []; scrolls: { dx: number; dy: number; at: number | null }[] = [];
   shows: (Rect | null)[] = []; scrubs: [string, number | undefined][] = []; order: string[] = [];
   between: (() => void) | null = null;
+  /** One-shot: runs inside the next focus() read (a navigation landing while focus is read). */
+  onFocus: (() => void) | null = null;
+  scrubFails = false;
+  /** While set, click() waits on it (an action still running). */
+  clickGate: Promise<void> | null = null;
   constructor(public place: string, public hooks: BrowserHooks) {}
   tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.url, title: "", openedBy: p.openedBy, active: index === this.current })); }
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
@@ -69,12 +74,23 @@ class FakeBrowser implements BrowserLike {
     const key = "ref" in by ? by.ref : `${by.x},${by.y}`;
     const s = this.spots.get(key);
     if (!s) throw new Error(`There is no ${key} on this page now: take a new snapshot.`);
-    return { target: { ...s.target }, shown: s.shown ?? s.target.name, sensitive: !!s.sensitive, backendNodeId: 7, judged: [7], point: "ref" in by ? { x: 5, y: 5 } : by, pageToken: this.pageToken(), tab: this.current };
+    const node = s.node ?? 7;
+    return { target: { ...s.target }, shown: s.shown ?? s.target.name, sensitive: !!s.sensitive, backendNodeId: node, judged: s.judged ?? [node], point: "ref" in by ? { x: 5, y: 5 } : by, pageToken: this.pageToken(), tab: this.current };
   }
-  async focus(): Promise<Focus> { this.need(); this.order.push("focus"); return { ...this.focused }; }
-  async scrub(text: string, tab?: number) { this.scrubs.push([text, tab]); return text.replaceAll("hunter2", "•••••••"); }
+  async focus(): Promise<Focus> {
+    this.need(); this.order.push("focus");
+    const f = { ...this.focused };
+    const hook = this.onFocus; this.onFocus = null; hook?.();
+    return f;
+  }
+  async scrub(text: string, tab?: number) {
+    this.scrubs.push([text, tab]);
+    if (this.scrubFails) throw new Error("Could not read a password field's value to scrub it.");
+    return text.replaceAll("hunter2", "•••••••");
+  }
   async click(r: Resolved) {
     if (r.pageToken !== this.pageToken()) throw new Error("The page changed: look again.");
+    if (this.clickGate) await this.clickGate;
     this.order.push("click"); this.clicks.push(r);
     const s = [...this.spots.values()].find((x) => x.target.name === r.target.name);
     if (s?.focuses) this.focused = { target: { ...s.target }, shown: s.shown ?? s.target.name, sensitive: !!s.sensitive, plainTextarea: false };
@@ -99,7 +115,7 @@ const agent = (key: string, label: string, access: Access = "edit", place = "ws:
 const A = agent("chat:a", "Alpha");
 const B = agent("chat:b", "Beta");
 
-function make(o: { enabled?: boolean } = {}) {
+function make(o: { enabled?: boolean; popOut?: (place: string) => void } = {}) {
   const clock = new FakeClock();
   const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-service-")), "computer", "sites.json"));
   const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120 };
@@ -112,6 +128,7 @@ function make(o: { enabled?: boolean } = {}) {
   svc = new ComputerService({
     browser: (place, hooks) => { const b = new FakeBrowser(place, hooks); browsers.set(place, b); return b; },
     broker, wheel, sites, config: () => cfg, emit: (s) => states.push(s), note: (a, line) => notes.push([a.key, line]), clock,
+    ...(o.popOut ? { popOut: o.popOut } : {}),
   });
   const s = svc;
   let id = 0;
@@ -120,7 +137,9 @@ function make(o: { enabled?: boolean } = {}) {
   const open = async (who: AgentRef, url: string) => { const r = await call(who, "computer_open", { url }); assert.ok(!r.isError, r.text); return b(who.place); };
   const asked = async (n = 1) => { for (let i = 0; i < 200 && broker.pending().length < n; i++) await flush(); assert.equal(broker.pending().length, n); return broker.pending()[n - 1]; };
   const lastState = (place = "ws:alpha") => [...states].reverse().find((x) => x.place === place)!;
-  return { clock, sites, cfg, states, notes, broker, wheel, svc: s, call, b, open, asked, lastState };
+  /** Every text that left the service: ask titles and details, notes and log lines (replies are added by the test). */
+  const outgoing = () => [...states.flatMap((x) => [...x.asks.flatMap((a) => [a.title, a.detail]), ...x.log.map((l) => l.text)]), ...notes.map(([, l]) => l)];
+  return { clock, sites, cfg, states, notes, broker, wheel, svc: s, call, b, open, asked, lastState, outgoing };
 }
 
 // ---- the brief's tests
@@ -221,7 +240,7 @@ test("allowed action is dropped when the page changed", async () => {
     else { b.pages.push({ url: "https://a.test/other", openedBy: null }); b.current = 1; }
     h.svc.answer(ask.id, "once");
     const r = await p;
-    assert.equal(r.text, "The page changed while you waited: look again.", change);
+    assert.match(r.text, /^The page changed while you waited: look again\. Page: https:\/\/a\.test\//, change);
     assert.equal(b.clicks.length, 0, change);
   }
 });
@@ -303,6 +322,7 @@ test("a page-started navigation writes a note", async () => {
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.hooks.note("The page went to https://b.test/next");
+  await flush();
   assert.deepEqual(h.notes.at(-1), ["chat:a", "The page went to https://b.test/next"]);
   const line = h.lastState().log.at(-1)!;
   assert.equal(line.session, "the page"); assert.equal(line.text, "The page went to https://b.test/next");
@@ -596,7 +616,7 @@ test("the pane's calls: select, show, navigate, tabs, mark and state", async () 
   h.svc.mark("https://a.test", false);
   assert.equal(h.lastState().marked, false);
   h.svc.popOut();
-  assert.equal(h.lastState().poppedOut, true);
+  assert.equal(h.lastState().poppedOut, false, "no window to pop out into");
   h.svc.select("ws:beta");
   assert.equal(b.shows.at(-1), null, "the computer no longer selected is parked");
 });
@@ -631,4 +651,156 @@ test("an unmarked ask on a Download-labelled control still offers Always, which 
   const ask2 = await h.asked();
   assert.equal(ask2.why, "download"); assert.equal(ask2.always, false);
   h.svc.answer(ask2.id, "deny"); await p2;
+});
+
+// ---- fix round 1
+
+test("revalidation refuses a same-name control in another row after a re-snapshot, and a changed judged set", async () => {
+  for (const change of ["ref rebound", "judged", "point"] as const) {
+    const h = make();
+    h.sites.mark("https://github.com");
+    const b = await h.open(A, "https://github.com/o/r/branches");
+    const key = change === "point" ? "40,80" : "e12";
+    b.spots.set(key, { target: btn("Delete"), node: 12 });
+    const p = h.call(A, "computer_click", change === "point" ? { x: 40, y: 80 } : { ref: "e12" });
+    const ask = await h.asked();
+    assert.equal(ask.why, "delete");
+    // A snapshot of the same document rebinds e12 (or the layout shifts under the point) to the Delete of another row.
+    if (change === "judged") b.spots.set(key, { target: btn("Delete"), node: 12, judged: [12, 30] });
+    else b.spots.set(key, { target: btn("Delete"), node: 22 });
+    h.svc.answer(ask.id, "once");
+    assert.match((await p).text, /^The page changed while you waited: look again\. Page: /, change);
+    assert.equal(b.clicks.length, 0, change);
+  }
+});
+
+test("a changed focus during a type ask or a key ask drops the action", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.focused = { target: box("Message"), shown: "Message", sensitive: false, plainTextarea: false };
+  const pt = h.call(A, "computer_type", { text: "a\nb" });
+  const at = await h.asked();
+  b.focused = { target: box("Other"), shown: "Other", sensitive: false, plainTextarea: false };
+  h.svc.answer(at.id, "once");
+  assert.match((await pt).text, /^The page changed while you waited: look again\. Page: https:\/\/a\.test\/$/);
+  assert.deepEqual(b.typed, []);
+  b.focused = { target: box("Search"), shown: "Search", sensitive: false, plainTextarea: false };
+  const pk = h.call(A, "computer_key", { key: "a" });
+  const ak = await h.asked();
+  b.focused = { target: box("Other"), shown: "Other", sensitive: false, plainTextarea: false };
+  h.svc.answer(ak.id, "once");
+  assert.match((await pk).text, /^The page changed while you waited/);
+  assert.deepEqual(b.keys, []);
+});
+
+test("the page token is read before the focus, so a navigation during the focus read drops the action", async () => {
+  for (const tool of ["computer_type", "computer_key"] as const) {
+    const h = make();
+    const b = await h.open(A, "https://a.test/");
+    b.focused = { target: box("Search"), shown: "Search", sensitive: false, plainTextarea: false };
+    b.onFocus = () => { b.seq++; };
+    const p = h.call(A, tool, tool === "computer_type" ? { text: "x" } : { key: "a" });
+    h.svc.answer((await h.asked()).id, "once");
+    assert.match((await p).text, /^The page changed while you waited/, tool);
+    assert.deepEqual([b.typed, b.keys], [[], []], tool);
+  }
+});
+
+test("type and key asks carry only the scrubbed names (D9)", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.focused = { target: box("Card hunter2"), shown: "Card •••••••", sensitive: false, plainTextarea: false };
+  const replies: string[] = [];
+  const pt = h.call(A, "computer_type", { text: "x" });
+  const at = await h.asked();
+  assert.equal(at.title, "Act on a site you haven't marked: Type 1 character into “Card •••••••” on a.test?");
+  h.svc.answer(at.id, "deny");
+  replies.push((await pt).text);
+  const pk = h.call(A, "computer_key", { key: "a" });
+  const ak = await h.asked();
+  assert.equal(ak.title, "Act on a site you haven't marked: Press a with “Card •••••••” focused on a.test?");
+  h.svc.answer(ak.id, "deny");
+  replies.push((await pk).text);
+  for (const t of [...h.outgoing(), ...replies]) assert.ok(!t.includes("hunter2"), `raw name leaked into: ${t}`);
+});
+
+test("page notes are scrubbed, with an app-written line when the scrub cannot run (D9)", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.hooks.note("Downloaded hunter2.pdf to Downloads/hunter2.pdf");
+  await flush();
+  assert.deepEqual(h.notes.at(-1), ["chat:a", "Downloaded •••••••.pdf to Downloads/•••••••.pdf"]);
+  b.scrubFails = true;
+  b.hooks.note("Downloaded hunter2.pdf to Downloads/hunter2.pdf");
+  await flush();
+  assert.match(h.notes.at(-1)![1], /^The page acted on its own/);
+  assert.match(h.lastState().log.at(-1)!.text, /^The page acted on its own/);
+  for (const t of h.outgoing()) assert.ok(!t.includes("hunter2"), `leaked into: ${t}`);
+});
+
+test("an ask for several reasons names every label in its title", async () => {
+  const h = make();
+  h.sites.mark("https://a.test");
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e7", { target: btn("Delete draft"), focuses: true });
+  const p = h.call(A, "computer_type", { text: "a\nb", ref: "e7" });
+  const ask = await h.asked();
+  assert.equal(ask.why, "return");
+  assert.equal(ask.title, "Press Return · Delete: Type 3 characters on 2 lines into “Delete draft” on a.test?");
+  assert.equal(ask.always, false);
+  h.svc.answer(ask.id, "deny");
+  await p;
+});
+
+test("a failed Always write still runs the approved action and leaks no path", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  h.sites.mark = () => { throw new Error("EACCES: permission denied, open '/private/secret/computer/sites.json'"); };
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  h.svc.answer((await h.asked()).id, "always");
+  const r = await p;
+  assert.equal(r.text, "Clicked e1. Page: https://a.test/");
+  assert.equal(b.clicks.length, 1);
+  assert.ok(h.lastState().log.some((l) => /^Could not remember Always for a\.test/.test(l.text)));
+  for (const t of [...h.outgoing(), r.text]) assert.ok(!t.includes("/private/secret"), `path leaked into: ${t}`);
+});
+
+test("computer_wait on an answered ask whose action is still running says it is running", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  const ask = await h.asked();
+  await h.clock.advance(45_000);
+  assert.match((await p).text, /^waiting_for_user/);
+  let release!: () => void;
+  b.clickGate = new Promise<void>((r) => { release = r; });
+  const w = h.call(A, "computer_wait", { askId: ask.id, timeoutSec: 2 });
+  h.svc.answer(ask.id, "once");
+  await h.clock.advance(2_000);
+  assert.equal((await w).text, `running: the user allowed it and the action is still running; call computer_wait with askId "${ask.id}" again`);
+  release();
+  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, "Clicked e1. Page: https://a.test/");
+});
+
+test("a session that only looked gets no page notes", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  h.svc.agentGone(A);
+  await h.call(B, "computer_snapshot");
+  await h.call(B, "computer_status");
+  b.hooks.note("The page went to https://a.test/x");
+  await flush();
+  assert.ok(!h.notes.some(([k]) => k === "chat:b"));
+  assert.equal(h.lastState().log.at(-1)!.text, "The page went to https://a.test/x");
+});
+
+test("popOut marks the pane popped out only when the app can open its window", async () => {
+  const popped: string[] = [];
+  const h = make({ popOut: (place) => popped.push(place) });
+  h.svc.select("ws:alpha");
+  h.svc.popOut();
+  assert.deepEqual(popped, ["ws:alpha"]);
+  assert.equal(h.lastState().poppedOut, true);
 });

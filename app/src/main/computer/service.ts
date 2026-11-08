@@ -94,6 +94,8 @@ interface AskSpec {
   run: () => Promise<Reply>;
 }
 type Step = { reply: Reply } | { ask: AskSpec };
+/** An asked action: the session that asked, whether its ask has settled, and its reply once it has run. */
+interface Job { session: string; answered: boolean; done: Promise<Reply> }
 
 type By = { ref: string } | { x: number; y: number };
 type Parsed =
@@ -107,13 +109,14 @@ const fail = (text: string): Reply => ({ text, isError: true });
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const waiting = (id: string): string => `waiting_for_user: call computer_wait with askId "${id}"`;
+const running = (id: string): string => `running: the user allowed it and the action is still running; call computer_wait with askId "${id}" again`;
 const pageLine = (url: string | null): string => (url ? `Page: ${url}` : "No page is open.");
 const bare = (title: string): string => title.replace(/\?$/, "");
 
 /** Text for an app-written sentence (already scrubbed when it came from the page): no control or bidirectional
  *  characters, so it cannot read differently in a card than on the page; whitespace collapsed; clipped. */
 function clean(s: string, max = 120): string {
-  const t = s.replace(/[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/g, " ").replace(/\s+/g, " ").trim();
+  const t = s.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, " ").replace(/\s+/g, " ").trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 const quoted = (shown: string): string => `“${clean(shown)}”`;
@@ -125,6 +128,10 @@ function hostOf(site: string | null): string {
 
 const same = (x: Target | null, y: Target | null): boolean =>
   x === y || (!!x && !!y && x.role === y.role && x.name === y.name && x.inForm === y.inForm && x.fileInput === y.fileInput && !!x.opaque === !!y.opaque);
+const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
+  const x = new Set(a), y = new Set(b);
+  return x.size === y.size && [...x].every((n) => y.has(n));
+};
 const sameFocus = (a: Focus, b: Focus): boolean => same(a.target, b.target) && a.sensitive === b.sensitive && a.plainTextarea === b.plainTextarea;
 
 function typeAction(text: string, shown: string): string {
@@ -174,7 +181,7 @@ function deniedText(o: Outcome, title: string): string {
 export class ComputerService {
   private readonly places = new Map<string, Place>();
   /** Each asked action's reply by ask id, for `computer_wait`; the session that asked. */
-  private readonly jobs = new Map<string, { session: string; done: Promise<Reply> }>();
+  private readonly jobs = new Map<string, Job>();
   /** The latest ref of each session that called, by session key. */
   private readonly agents = new Map<string, AgentRef>();
   private selected: string | null = null;
@@ -193,7 +200,6 @@ export class ComputerService {
     // agent-computer D3, D30: the session's place is its computer.
     const p = this.placeOf(agent.place);
     this.agents.set(agent.key, agent);
-    p.last = agent;
     try {
       return LOOK.has(call.tool) ? await this.look(agent, p, call) : await this.act(agent, p, call);
     } catch (e) {
@@ -228,6 +234,8 @@ export class ComputerService {
     }
     const took = this.o.wheel.take(p.key, agent.key, agent.label);
     if (!took.ok) return fail(this.busy(p.key, took.busy));
+    // Only a session that acted gets the page's own notes when no one holds the wheel (a look never does).
+    p.last = agent;
     try {
       const step = await this.serial(p, () => this.step(agent, p, parsed));
       return "reply" in step ? step.reply : await this.ask(agent, p, step.ask);
@@ -296,9 +304,11 @@ export class ComputerService {
   /** D39: typing into a ref is a click on it and the typing, under one ask; after the click the focus is judged again. */
   private async typeStep(agent: AgentRef, p: Place, b: BrowserLike, text: string, ref: string | null): Promise<Step> {
     const r = ref ? await b.resolve({ ref }) : null;
+    // The page token and tab are read before the focus, so a navigation during the read fails the revalidation.
+    const token = r ? r.pageToken : b.pageToken();
+    const tab = r ? r.tab : this.active(b);
     // A ref's field stands in for the focus until the click lands; plainTextarea false asks Return (fails closed).
     const f: Focus = r ? { target: r.target, shown: r.shown, sensitive: r.sensitive, plainTextarea: false } : await b.focus();
-    const tab = r ? r.tab : this.active(b);
     const site = this.siteAt(b, tab);
     const ctx = { access: agent.access, marked: this.markedAt(b, tab) };
     const whys: AskWhy[] = [];
@@ -310,7 +320,6 @@ export class ComputerService {
       if (cv && typeof cv === "object") return { reply: fail(cv.refuse) };
       if (cv && !whys.includes(cv)) whys.push(cv);
     }
-    const token = b.pageToken();
     let fresh = r;
     const run = async (approved: readonly AskWhy[]): Promise<Reply> => {
       const late = this.notDriving(p, agent);
@@ -320,7 +329,7 @@ export class ComputerService {
         const now = await b.focus();
         const v = this.need(judge({ kind: "type", text, focus: now }, { access: agent.access, marked: this.markedAt(b, fresh.tab) }), now.target, this.siteAt(b, fresh.tab));
         if (v && typeof v === "object") return fail(v.refuse);
-        if (v && !approved.includes(v)) return fail("The click moved the focus somewhere that asks first: call computer_type again without ref.");
+        if (v && !approved.includes(v)) return fail(`The click moved the focus somewhere that asks first: call computer_type again without ref. ${pageLine(this.url(b))}`);
       }
       return this.typeInto(agent, p, b, text);
     };
@@ -347,8 +356,10 @@ export class ComputerService {
   }
 
   private async keyStep(agent: AgentRef, p: Place, b: BrowserLike, key: string): Promise<Step> {
-    const f = await b.focus();
+    // Read before the focus, so a navigation during the read fails the revalidation.
+    const token = b.pageToken();
     const tab = this.active(b);
+    const f = await b.focus();
     const site = this.siteAt(b, tab);
     const need = this.need(judge({ kind: "key", key, focus: f }, { access: agent.access, marked: this.markedAt(b, tab) }), f.target, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
@@ -361,7 +372,6 @@ export class ComputerService {
       return { text: `Pressed ${shownKey}. ${pageLine(this.url(b))}` };
     };
     if (!need) return { reply: await run() };
-    const token = b.pageToken();
     return {
       ask: {
         whys: [need], site, target: f.target,
@@ -403,12 +413,16 @@ export class ComputerService {
     return v.ask;
   }
 
-  /** agent-computer D31 (controller 5): the approved target is still there, on the same page and tab, with the same role
-   *  and raw name (the browser's click refuses a changed page too). */
+  /** agent-computer D31 (controller 5, review fix): the approved control is still the one there: the same page and tab,
+   *  the same DOM node with the same set of judged controls, and the same role, raw name and flags. A snapshot of the same
+   *  document rebinds refs (another session's look, the agent's own, a text wait) and a layout shift moves what is under a
+   *  point, so a same-name control in another row, or a re-rendered node, fails closed. The browser's click refuses a
+   *  changed page too. */
   private async reresolve(b: BrowserLike, by: By, r: Resolved): Promise<Resolved | null> {
     if (b.pageToken() !== r.pageToken || this.active(b) !== r.tab) return null;
     const r2 = await b.resolve(by).catch(() => null);
-    return r2 && r2.pageToken === r.pageToken && r2.tab === r.tab && same(r2.target, r.target) ? r2 : null;
+    return r2 && r2.pageToken === r.pageToken && r2.tab === r.tab && r2.backendNodeId === r.backendNodeId
+      && sameSet(r2.judged, r.judged) && same(r2.target, r.target) ? r2 : null;
   }
 
   /** "the button “Name”" for a card's detail: the role through the scrub of the action's tab (D9), the name as shown. */
@@ -425,35 +439,34 @@ export class ComputerService {
     // A category ask on a name that also says Download is asked every time too; an unmarked ask there still marks the site.
     const always = s.site !== null && s.whys.every(offersAlways)
       && !(s.whys.some(isCategory) && s.target !== null && categoriesOf(s.target).includes("download"));
-    const title = `${ASK_LABELS[why]}: ${s.action} on ${hostOf(s.site)}?`;
-    const also = s.whys.slice(1).map((w) => ASK_LABELS[w]);
-    const input: AskInput = {
-      computer: p.key, session: agent.key, sessionLabel: agent.label, why, title, site: s.site, always,
-      detail: also.length ? `${s.detail} Also: ${also.join(", ")}.` : s.detail,
-    };
+    // Every reason's label heads the card (controller 2, R43): one ask can cover Return and a Delete click.
+    const title = `${s.whys.map((w) => ASK_LABELS[w]).join(" · ")}: ${s.action} on ${hostOf(s.site)}?`;
+    const input: AskInput = { computer: p.key, session: agent.key, sessionLabel: agent.label, why, title, detail: s.detail, site: s.site, always };
     const held = this.o.broker.hold(input);
     this.line(p, agent.label, `Asked the user: ${title}`, agent);
     const first = await held;
-    const done = this.settle(agent, p, s, input, first);
-    this.jobs.set(first.askId, { session: agent.key, done });
-    void done.then(() => { this.clock.setTimeout(() => this.jobs.delete(first.askId), KEEP_MS); });
+    const job: Job = { session: agent.key, answered: false, done: Promise.resolve(fail(CHANGED)) };
+    job.done = this.settle(agent, p, s, input, first, job);
+    this.jobs.set(first.askId, job);
+    void job.done.then(() => { this.clock.setTimeout(() => this.jobs.delete(first.askId), KEEP_MS); });
     // D34: the call returns within the broker's hold; computer_wait picks the result up.
-    return first.state === "waiting_for_user" ? { text: waiting(first.askId) } : done;
+    return first.state === "waiting_for_user" ? { text: waiting(first.askId) } : job.done;
   }
 
   /** Waits for the ask to settle, then (allowed) revalidates and runs the action. Never rejects. */
-  private async settle(agent: AgentRef, p: Place, s: AskSpec, input: AskInput, first: Outcome): Promise<Reply> {
+  private async settle(agent: AgentRef, p: Place, s: AskSpec, input: AskInput, first: Outcome, job: Job): Promise<Reply> {
     try {
       let o = first;
       while (o.state === "waiting_for_user") o = await this.o.broker.wait(o.askId);
+      job.answered = true;
       // Controller 4 (D31): the wheel's idle timer restarts at the answer, so it cannot free before the revalidation.
       this.o.wheel.touch(p.key, agent.key);
       this.line(p, agent.label, outcomeLine(o, input), agent);
       if (o.state !== "allowed") return fail(deniedText(o, input.title));
-      if (o.answer === "always" && input.always && input.site) this.always(s, input.site);
+      if (o.answer === "always" && input.always && input.site) this.always(p, s, input.site);
       return await this.serial(p, async () => {
         try {
-          if (!this.holds(p.key, agent.key) || !(await s.revalidate())) return fail(CHANGED);
+          if (!this.holds(p.key, agent.key) || !(await s.revalidate())) return fail(`${CHANGED} ${pageLine(p.browser ? this.url(p.browser) : null)}`);
           return await s.run();
         } finally {
           this.o.wheel.touch(p.key, agent.key);
@@ -464,11 +477,16 @@ export class ComputerService {
     }
   }
 
-  /** D39 (controller 3): an unmarked ask marks the site; a category ask allows every category of the control's name. */
-  private always(s: AskSpec, site: string): void {
-    for (const w of s.whys) {
-      if (w === "unmarked") this.o.sites.mark(site);
-      else if (isCategory(w) && s.target) for (const c of categoriesOf(s.target)) this.o.sites.allowCategory(site, c);
+  /** D39 (controller 3): an unmarked ask marks the site; a category ask allows every category of the control's name. A
+   *  write that fails never stops the action the person approved, and its error (which names a file) stays in main. */
+  private always(p: Place, s: AskSpec, site: string): void {
+    try {
+      for (const w of s.whys) {
+        if (w === "unmarked") this.o.sites.mark(site);
+        else if (isCategory(w) && s.target) for (const c of categoriesOf(s.target)) this.o.sites.allowCategory(site, c);
+      }
+    } catch {
+      this.line(p, USER, `Could not remember Always for ${hostOf(site)}: this action goes ahead, and the next one asks again.`, null);
     }
     this.refresh();
   }
@@ -504,11 +522,21 @@ export class ComputerService {
     }
   }
 
-  /** D21: a page's own navigation, new tab, download or blocked dialog (the browser has scrubbed the text). */
-  private pageNote(place: string, text: string): void {
+  /** D21: a page's own navigation, new tab, download or blocked dialog. D9 (review fix): some notes carry page-chosen text
+   *  the browser did not scrub (a download's file name), so each is scrubbed here like a page ask, with an app-written line
+   *  when the scrub cannot run. */
+  private async pageNote(place: string, text: string): Promise<void> {
     const p = this.placeOf(place);
     const h = this.o.wheel.holder(place);
-    this.line(p, PAGE.label, text, h?.kind === "agent" ? this.agents.get(h.session) ?? p.last : p.last);
+    const to = h?.kind === "agent" ? this.agents.get(h.session) ?? p.last : p.last;
+    let out: string;
+    try {
+      if (!p.browser) throw new Error("no browser");
+      out = clean(await p.browser.scrub(text), 2_400);
+    } catch {
+      out = "The page acted on its own; the details are held back because they could not be checked for password values.";
+    }
+    this.line(p, PAGE.label, out, to);
   }
 
   private async wait(agent: AgentRef, p: Place, a: Record<string, unknown>): Promise<Reply> {
@@ -536,7 +564,8 @@ export class ComputerService {
       return o.reason === "unknown ask" ? fail(`There is no ask "${clean(id, 64)}".`) : fail(o.answer === "deny" ? "The user denied it." : `Denied: ${o.reason ?? "cancelled"}.`);
     });
     return new Promise<Reply>((resolve) => {
-      const timer = this.clock.setTimeout(() => resolve({ text: waiting(id) }), ms);
+      // An answered ask whose action has not finished (it may be queued behind another) says so, not waiting_for_user.
+      const timer = this.clock.setTimeout(() => resolve({ text: job?.answered ? running(id) : waiting(id) }), ms);
       void result.then((r) => { this.clock.clearTimeout(timer); resolve(r); }, (e: unknown) => { this.clock.clearTimeout(timer); resolve(fail(message(e))); });
     });
   }
@@ -656,15 +685,19 @@ export class ComputerService {
   }
 
   mark(origin: string, on: boolean): void {
-    if (on) this.o.sites.mark(origin); else this.o.sites.unmark(origin);
+    try {
+      if (on) this.o.sites.mark(origin); else this.o.sites.unmark(origin);
+    } catch {
+      if (this.selected) this.line(this.placeOf(this.selected), USER, `Could not save the mark for ${hostOf(origin)}.`, null);
+    }
     this.refresh();
   }
 
   popOut(): void {
-    if (!this.selected) return;
+    if (!this.selected || !this.o.popOut) return;
     this.browserOf(this.placeOf(this.selected));
     this.popped = true;
-    this.o.popOut?.(this.selected);
+    this.o.popOut(this.selected);
     this.refresh(this.selected);
   }
 
@@ -717,7 +750,7 @@ export class ComputerService {
       const key = p.key;
       p.browser = this.o.browser(key, {
         ask: (i) => this.pageAsk(key, i),
-        note: (text) => this.pageNote(key, text),
+        note: (text) => { void this.pageNote(key, text); },
         changed: () => this.refresh(key),
       });
       if (key === this.selected) p.browser.show(this.bounds);
