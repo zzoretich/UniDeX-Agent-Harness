@@ -15,7 +15,7 @@ import { ASK_ROLES, covers, type Target } from "./categories";
 import { cdp, CdpTimeout, isGone, keyEvents, unlessGone } from "./cdp";
 import type { Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
-import { LeavingRecords, PendingReads, type Departure } from "./leaving";
+import { framesHolding, LeavingRecords, mergeFrameReads, PendingReads, type Departure } from "./leaving";
 import { SecretMemory, type Secrets } from "./memory";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
 import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
@@ -103,14 +103,20 @@ interface Tab {
   refused: string | null;
   /** Set while the tab is being closed, so its own debugger detach is not noted. */
   closing: boolean;
-  /** The isolated world made in each frame (by frame id) for reading field values and the focused element; dropped when
-   *  the frame navigates or goes. */
-  worlds: Map<string, number>;
+  /** The isolated world made in each frame (by frame id) for reading field values and the focused element, as the command
+   *  that makes it (so a world still being made is never asked for twice); dropped when the frame navigates or goes.
+   *  agent-computer D9 (R41): made ahead for every frame, when it attaches and at each of its commits, so a leaving read
+   *  only evaluates: DevTools held a world made mid-navigation until the commit, and the read then failed. */
+  worlds: Map<string, Promise<number>>;
   /** D9 (R32): every secret value read in this tab, scoped to the site it was read on, kept across the tab's navigations,
    *  so text about a page the tab has since left is still scrubbed (./memory). */
   memory: SecretMemory;
-  /** The main frame's id (from `Page.frameNavigated`) and the frames of the last DOM read: where a leaving read runs (G2). */
+  /** The main frame's id (from `Page.frameNavigated`) and the frames of the last DOM read still attached: where a leaving
+   *  read runs (G2), with every frame that has a world. */
   frame: string; frames: string[];
+  /** agent-computer D9 (R41): the frame each field of the current document's sensitive set was in when a DOM read last saw
+   *  it, so a leaving read knows which frames must answer (./leaving `framesHolding`). */
+  fieldFrames: Map<number, string>;
   /** The main-frame navigations under way (./leaving), each keyed by its URL: a page-started one with its leaving record
    *  (the site being left and the read of its document's values, G2), consumed at the commit of that navigation (R35: what
    *  the committed URL carries from the old site goes to the carried set); one from main (the agent's `open()`) with none.
@@ -545,7 +551,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
-      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
+      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], fieldFrames: new Map(), leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -691,12 +697,15 @@ export class ComputerBrowser {
     switch (method) {
       case "Page.frameNavigated": {
         const frame = p.frame as { id: string; parentId?: string; loaderId: string };
+        // agent-computer D9 (R41): a main-frame commit takes the old document's frames with it; the new ones attach after.
+        if (!frame.parentId) { t.worlds.clear(); t.frames = []; t.fieldFrames = new Map(); }
         t.worlds.delete(frame.id);
+        // G2 (R41): the frame's new document gets its isolated world now, so a leaving read later is one command per frame,
+        // sent to every frame at once (the old document can be gone about 5 ms after a navigation starts against a fast
+        // server, and DevTools holds a world made after that until the commit).
+        void this.world(t, frame.id).catch(() => undefined);
         if (frame.parentId) break;
         t.frame = frame.id;
-        // G2: the new document's isolated world is made now, so a leaving read later is one command, not two (the old
-        // document can be gone about 5 ms after a navigation starts against a fast server).
-        void this.world(t, frame.id).catch(() => undefined);
         // D9: a document keeps its sensitive set for its life (a back/forward-cache restore brings its set back).
         t.sensitive = t.documents.get(frame.loaderId) ?? new Set();
         t.documents.delete(frame.loaderId);
@@ -715,9 +724,17 @@ export class ComputerBrowser {
         this.requery(t);
         break;
       }
-      case "Page.frameDetached":
-        t.worlds.delete(String(p.frameId));
+      // agent-computer D9 (R41): a frame's world is made as soon as it attaches (a frame that never navigates, filled by its
+      // parent, can hold a field too) and dropped when it goes.
+      case "Page.frameAttached":
+        void this.world(t, String(p.frameId)).catch(() => undefined);
         break;
+      case "Page.frameDetached": {
+        const id = String(p.frameId);
+        t.worlds.delete(id);
+        t.frames = t.frames.filter((f) => f !== id);
+        break;
+      }
       case "DOM.documentUpdated":
       case "DOM.childNodeInserted":
       case "Page.loadEventFired":
@@ -864,6 +881,10 @@ export class ComputerBrowser {
         if (b !== undefined) t.sensitive.add(b);
       }
     }
+    // agent-computer D9 (R41): where each sensitive field is, for the leaving read's failure rule; and a world for any frame
+    // this read found without one (a restored document's frames attach no new ones).
+    for (const b of t.sensitive) { const f = dom.frameOf.get(b); if (f !== undefined) t.fieldFrames.set(b, f); }
+    for (const f of t.frames) if (!t.worlds.has(f)) void this.world(t, f).catch(() => undefined);
     return dom;
   }
 
@@ -982,14 +1003,15 @@ export class ComputerBrowser {
     return undefined;
   }
 
-  /** The isolated world of frame `frameId`, made once per document (page scripts cannot reach it). */
-  private async world(t: Tab, frameId: string): Promise<number> {
-    let contextId = t.worlds.get(frameId);
-    if (contextId === undefined) {
-      ({ executionContextId: contextId } = await this.send<{ executionContextId: number }>(t, "Page.createIsolatedWorld", { frameId, worldName: WORLD }));
-      t.worlds.set(frameId, contextId);
-    }
-    return contextId;
+  /** The isolated world of frame `frameId`, made once per document (page scripts cannot reach it). A world that could not
+   *  be made is forgotten, so the next caller tries again; one dropped meanwhile (the frame navigated) is never put back. */
+  private world(t: Tab, frameId: string): Promise<number> {
+    const known = t.worlds.get(frameId);
+    if (known) return known;
+    const made = this.send<{ executionContextId: number }>(t, "Page.createIsolatedWorld", { frameId, worldName: WORLD }).then((r) => r.executionContextId);
+    t.worlds.set(frameId, made);
+    made.catch(() => { if (t.worlds.get(frameId) === made) t.worlds.delete(frameId); });
+    return made;
   }
 
   /** D9: every sensitive field's current value, as the field holds it (`fieldValues`) and as the accessibility tree shows
@@ -1060,24 +1082,39 @@ export class ComputerBrowser {
   /** G2: the document being left may hold a code the person typed that the agent never read (a GET submit carries it into
    *  the next URL). Its sensitive values are read now in one command per frame (`LEAVING_VALUES`, in the frame's isolated
    *  world; the usual command timeout applies). Best effort: null when the document went before the read answered.
-   *  agent-computer D9 (R40): also null when the tab commits before it answers (`PendingReads`): DevTools holds commands
-   *  while a cross-process navigation commits and then sends them to the new renderer, where a stale numeric context id can
-   *  name a context of the new document (review rv5), so such an answer may not be the old document's. */
+   *  agent-computer D9 (R40): a frame's answer counts only while the tab has not committed (`PendingReads`, and the
+   *  document counter): DevTools holds commands while a cross-process navigation commits and then sends them to the new
+   *  renderer, where a stale numeric context id can name a context of the new document (review rv5), so such an answer may
+   *  not be the old document's. R41: the frames are read all at once, each in the world made for it ahead (a world made now
+   *  would be held until the commit), and each on its own (./leaving `mergeFrameReads`): the read fails only when the main
+   *  frame, or a frame the document's sensitive set places a field in, gives no answer; what the others answered is
+   *  remembered for `from`, the site being left, all the same. */
   private leavingValues(t: Tab, from: string): Promise<Secrets | null> {
-    const doc = t.doc;
-    return t.reads.track((async (): Promise<Secrets | null> => {
+    const doc = t.doc, main = t.frame;
+    const frames = [...new Set([main, ...t.frames, ...t.worlds.keys()].filter(Boolean))];
+    const holding = framesHolding(t.sensitive, t.fieldFrames);
+    const one = async (frameId: string): Promise<Secrets | null> => {
+      const world = t.worlds.get(frameId);
+      if (!world) return null;
       try {
+        const contextId = await world;
+        const { result } = await this.send<{ result: { value?: { v?: unknown; otp?: unknown }[] } }>(t, "Runtime.evaluate", { contextId, returnByValue: true, expression: LEAVING_VALUES });
+        if (t.doc !== doc) return null;
         const out: Secrets = { values: [], whole: [] };
-        for (const frameId of new Set([t.frame, ...t.frames].filter(Boolean))) {
-          const contextId = await this.world(t, frameId);
-          const { result } = await this.send<{ result: { value?: { v?: unknown; otp?: unknown }[] } }>(t, "Runtime.evaluate", { contextId, returnByValue: true, expression: LEAVING_VALUES });
-          for (const x of result.value ?? []) (x.otp === true ? out.whole : out.values).push(typeof x.v === "string" ? x.v : "");
-        }
-        return t.doc === doc ? out : null;
+        for (const x of result.value ?? []) (x.otp === true ? out.whole : out.values).push(typeof x.v === "string" ? x.v : "");
+        return out;
       } catch {
         return null;
       }
-    })());
+    };
+    return Promise.all(frames.map((f) => t.reads.track(one(f)))).then((reads) => {
+      const m = mergeFrameReads(frames.map((f, i) => ({ main: f === main, sensitive: holding.unplaced || holding.frames.has(f), read: reads[i] })));
+      // R41: a failed read still keeps what the frames that answered held (each answered before the commit, so it is the
+      // old document's): remembered for the site being left, so the carry at commit and the note's scrub take it from that
+      // site's pool, as they do a whole read's values.
+      if (!m.read && (m.got.values.length || m.got.whole.length)) this.remember(t, from, m.got, this.site(t));
+      return m.read;
+    });
   }
 
   /**

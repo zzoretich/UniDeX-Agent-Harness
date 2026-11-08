@@ -327,37 +327,53 @@ export function inUrl(url: string, s: { values: string[]; whole: string[] }): { 
  * stay, so a planted "localhost" cannot blank the address the agent is at (E6). A string that is not an http(s) URL is
  * scrubbed whole. R40: the string and the values are matched with every run of URL whitespace as one space (`gapped`), so
  * a value's space matches any such run and the cost stays linear in the URL; a URL past URL_CAP is hidden after its origin.
+ * agent-computer D9 (R41): each form is also matched as written against the URL as written, since folding reads `%20` or
+ * `%09` as a space and so loses a value that touches or holds one (`?c=%2034xyz9` for `2034xyz9`, `?c=%091234` for the code
+ * `091234`, `pass%20` for `pass%2`); a value that qualifies as typed (4 characters or more) keeps every form even when
+ * folding makes one shorter (as a whole word then). Every match of every form is hidden: matches that overlap go as one,
+ * so no part of either value is left between them; adjacent ones stay two.
  */
 export function urlScrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = []): (url: string) => string {
-  const secrets = new Set<string>();
-  // The value's forms in gapped form; untrimmed, so a leading or trailing space of the value takes its run in the URL.
-  const add = (v: string, short: boolean): void => {
-    const g = gapped(v).text, t = g.trim();
-    if (t && !/^[•●* ]+$/.test(t) && (t.length >= SHORT_SECRET || short)) secrets.add(g);
+  // Each form as written (`raw`) and folded (`folded`, untrimmed, so a leading or trailing space of the value takes its run
+  // in the URL), each literal to whether it goes only as a whole word: one of fewer than 4 characters (a short code, or a
+  // form folding made that short) does; a literal that may go anywhere wins over the same one as a word. A form is kept
+  // when its value is a short code or all digits, when it is 4 characters or more folded, or when the value is as typed
+  // (R41: `+abc` folds to ` abc`, still a word of it).
+  const raw = new Map<string, boolean>(), folded = new Map<string, boolean>();
+  const put = (m: Map<string, boolean>, x: string): void => { m.set(x, (m.get(x) ?? true) && x.trim().length < SHORT_SECRET); };
+  const add = (v: string, f: string, short: boolean): void => {
+    const g = gapped(f).text, t = g.trim();
+    if (!t || /^[•●* ]+$/.test(t)) return;
+    if (!short && t.length < SHORT_SECRET && v.trim().length < SHORT_SECRET) return;
+    put(raw, f);
+    put(folded, g);
   };
-  for (const v of values) if (v) { const short = /^\d+$/.test(v.trim()); for (const f of urlForms(v)) add(f, short); }
-  for (const v of whole) if (v) for (const f of urlForms(v)) add(f, true);
-  const patterns = [...secrets].sort((a, b) => b.length - a.length).map((x) => patternOf(literal(x), x.trim().length));
+  for (const v of values) if (v) { const short = /^\d+$/.test(v.trim()); for (const f of urlForms(v)) add(v, f, short); }
+  for (const v of whole) if (v) for (const f of urlForms(v)) add(v, f, true);
+  const compile = (m: Map<string, boolean>): RegExp[] => [...m].map(([x, word]) => patternOf(literal(x), word ? 0 : SHORT_SECRET));
+  const rawRes = compile(raw), foldedRes = compile(folded);
   const scrub = (s: string): string => {
-    if (!patterns.length) return s;
+    if (!rawRes.length) return s;
+    // Coverage counts per character (as a difference array) and how many matches start at each one: a character is hidden
+    // when a match covers it, and a new mark begins where no match runs on from before. Each pattern's matches do not
+    // overlap each other, so this stays linear in the matches and the string.
+    const n = s.length;
+    const delta = new Int32Array(n + 1), starts = new Int32Array(n + 1);
+    let any = false;
+    const span = (a: number, b: number): void => { if (b > a) { delta[a]++; delta[b]--; starts[a]++; any = true; } };
+    for (const re of rawRes) for (const m of s.matchAll(re)) span(m.index, m.index + m[0].length);
     const g = gapped(s);
-    // Longest first, and a match overlapping one already taken is left: a secret inside another goes with it. A mask of
-    // the characters taken keeps that check as cheap as the matching (each pattern's matches do not overlap each other).
-    const spans: [number, number][] = [];
-    const taken = new Uint8Array(g.text.length);
-    for (const re of patterns) {
-      for (const m of g.text.matchAll(re)) {
-        const a = m.index, b = a + m[0].length;
-        if (b === a || taken.subarray(a, b).includes(1)) continue;
-        taken.fill(1, a, b);
-        spans.push([a, b]);
-      }
+    for (const re of foldedRes) for (const m of g.text.matchAll(re)) if (m[0].length) span(g.start[m.index], g.end[m.index + m[0].length - 1]);
+    if (!any) return s;
+    // `from`: where the text not yet copied begins (just past the last hidden character).
+    let out = "", depth = 0, from = 0;
+    for (let i = 0; i < n; i++) {
+      depth += delta[i];
+      if (depth === 0) continue;
+      if (depth === starts[i]) out += s.slice(from, i) + REDACTED;
+      from = i + 1;
     }
-    if (!spans.length) return s;
-    spans.sort((p, q) => p[0] - q[0]);
-    let out = "", at = 0;
-    for (const [a, b] of spans) { out += s.slice(at, g.start[a]) + REDACTED; at = g.end[b - 1]; }
-    return out + s.slice(at);
+    return out + s.slice(from);
   };
   return (url) => {
     if (url.length > URL_CAP) return hideAfterOrigin(url);

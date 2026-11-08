@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LEAVING, LOST_SITES, LOST_VALUES, LeavingRecords, mergeDepartures, PendingReads, type Departure } from "../../src/main/computer/leaving";
+import { framesHolding, LEAVING, LOST_SITES, LOST_VALUES, LeavingRecords, mergeDepartures, mergeFrameReads, PendingReads, type Departure } from "../../src/main/computer/leaving";
 import type { Secrets } from "../../src/main/computer/memory";
 
 const A = "http://localhost:1/done?code=975310", B = "http://127.0.0.1:1/start?b=1", C = "http://localhost:1/later?code=975310";
@@ -175,4 +175,41 @@ test("a commit ends every pending leaving read of the tab with null, and a read 
   await new Promise((r) => setImmediate(r));
   q.endAll();
   assert.deepEqual(await merged.read, { values: ["975310"], whole: [] });
+});
+
+test("a merged lost record caps each kind on its own: password-field values never crowd out one-time codes (agent-computer D9, R41)", async () => {
+  const many = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+  const pw = mergeDepartures(dep(many("pw", LOST_VALUES)), { from: ["https://a.test"], read: Promise.resolve({ values: ["late-pw"], whole: ["123456"] }) });
+  const a = (await pw.read)!;
+  assert.equal(a.values.length, LOST_VALUES); assert.ok(!a.values.includes("late-pw"), "the password kind is full: its newest value is the one not kept");
+  assert.deepEqual(a.whole, ["123456"], "the code read after them is kept: its kind has its own cap");
+  const otp = mergeDepartures({ from: ["https://a.test"], read: Promise.resolve({ values: [], whole: many("c", LOST_VALUES) }) }, dep(["hunter2pass"]));
+  const b = (await otp.read)!;
+  assert.equal(b.whole.length, LOST_VALUES); assert.deepEqual(b.values, ["hunter2pass"], "and the other way round");
+});
+
+test("a leaving read keeps the main frame's values and every frame that answered; it fails only when the main frame or a frame known to hold sensitive fields did not answer (agent-computer D9, R41)", () => {
+  const s = (values: string[], whole: string[] = []) => ({ values, whole });
+  // link.js: a page with iframes and no fields. A frame that did not answer (DevTools held it past the commit) fails nothing.
+  assert.deepEqual(mergeFrameReads([{ main: true, sensitive: false, read: s([]) }, { main: false, sensitive: false, read: null }, { main: false, sensitive: false, read: null }]), { read: s([]), got: s([]) });
+  // Values from the main frame and from every frame that answered, kinds kept.
+  const all = mergeFrameReads([
+    { main: true, sensitive: true, read: s(["hunter2pass"], ["975310"]) },
+    { main: false, sensitive: true, read: s(["innersecret"]) },
+    { main: false, sensitive: false, read: null },
+    { main: false, sensitive: false, read: s([], ["424242"]) },
+  ]);
+  assert.deepEqual(all, { read: s(["hunter2pass", "innersecret"], ["975310", "424242"]), got: s(["hunter2pass", "innersecret"], ["975310", "424242"]) });
+  // Failed: the read is null (the URL loses its query and fragment), and what did answer is still handed back to be kept.
+  assert.deepEqual(mergeFrameReads([{ main: true, sensitive: false, read: null }, { main: false, sensitive: false, read: s(["x1234"]) }]), { read: null, got: s(["x1234"]) }, "the main frame did not answer");
+  assert.deepEqual(mergeFrameReads([{ main: true, sensitive: false, read: s([], ["975310"]) }, { main: false, sensitive: true, read: null }]), { read: null, got: s([], ["975310"]) }, "a frame known to hold sensitive fields did not answer; the main frame's code is kept");
+  assert.deepEqual(mergeFrameReads([{ main: false, sensitive: false, read: s(["x1234"]) }]), { read: null, got: s(["x1234"]) }, "no main frame known: nothing says the document was read");
+  assert.deepEqual(mergeFrameReads([]), { read: null, got: s([]) });
+});
+
+test("the frames known to hold sensitive fields come from where the last DOM read placed each field; a field not placed yet makes every frame count (agent-computer D9, R41)", () => {
+  const where = new Map<number, string>([[11, "MAIN"], [12, "F1"], [13, "F1"], [99, "GONE"]]);
+  assert.deepEqual(framesHolding([11, 12, 13], where), { frames: new Set(["MAIN", "F1"]), unplaced: false });
+  assert.deepEqual(framesHolding([12, 14], where), { frames: new Set(["F1"]), unplaced: true }, "14 was added (an attribute turned it sensitive) before a DOM read placed it");
+  assert.deepEqual(framesHolding([], where), { frames: new Set(), unplaced: false }, "only the fields in the current set count");
 });

@@ -450,6 +450,33 @@ test("URL scrubbing stays linear when a word of a value is itself URL whitespace
   assert.equal(urlScrubber([])(`not a url ${"y".repeat(URL_CAP)}`), REDACTED);
 });
 
+test("urlScrubber matches each form as written as well as with URL whitespace folded, so a value touching or holding an escape goes (agent-computer D9, R41)", () => {
+  // Folding alone reads `%20` / `%09` as a space and loses the digits a value shares with the escape.
+  assert.equal(urlScrubber(["2034xyz9"])("https://a.test/done?c=%2034xyz9"), "https://a.test/done?c=%••••••", "a value right after %20 begins with its digits");
+  assert.equal(urlScrubber([], ["091234"])("https://a.test/done?c=%091234"), "https://a.test/done?c=%••••••", "a code that begins with the digits of %09");
+  assert.equal(urlScrubber(["pass%2"])("https://a.test/x/pass%20/y"), "https://a.test/x/••••••0/y", "a value ending in part of an escape");
+  assert.equal(urlScrubber(["2034xyz9"])("https://a.test/?a=2034xyz9&b=%252034xyz9"), "https://a.test/?a=••••••&b=%25••••••", "plain and after an encoded percent sign");
+  // Folding still covers every other spelling of a value's spaces.
+  assert.equal(urlScrubber(["ab cd"])("https://a.test/?p=ab%09%20cd&q=ab++cd"), "https://a.test/?p=••••••&q=••••••");
+  // A value that qualifies as typed keeps its forms when folding makes them shorter than 4 characters.
+  assert.equal(urlScrubber(["a  b"])("https://a.test/?p=a++b&q=a%20%20b&r=a%09b"), "https://a.test/?p=••••••&q=••••••&r=••••••", "a password of four characters with a run of spaces");
+  assert.equal(urlScrubber(["%20ab"])("https://a.test/%20ab/?q=%2520ab"), "https://a.test/••••••/?q=••••••", "a typed escape that folds to a short word");
+  assert.equal(urlScrubber(["+abc"])("https://a.test/?p=%2Babc&q=%20abc&r=abc"), "https://a.test/?p=••••••&q=••••••&r=abc", "a leading + folds to a space: the folded form goes as a word");
+  assert.equal(urlScrubber(["ab +"])("https://a.test/?p=ab%20%2B&q=ab%20+&r=ab++zz"), "https://a.test/?p=••••••&q=••••••&r=ab++zz", "a trailing +: ab followed by letters is not the value");
+  // A short password stays short: its encoded forms do not make it a secret, as in text.
+  assert.equal(urlScrubber(["a b", "abc"])("https://a.test/?p=a+b&q=a%20b&r=abc"), "https://a.test/?p=a+b&q=a%20b&r=abc");
+  assert.equal(urlScrubber([], ["123"])("https://a.test/?c=%09123&d=1234&e=123"), "https://a.test/?c=%09••••••&d=1234&e=••••••", "a short code as a whole word in either form");
+  // The matches of every form and value are joined: overlapping ones go together, adjacent ones stay apart.
+  assert.equal(urlScrubber(["xyz9", "9abc"])("https://a.test/?q=xyz9abc"), "https://a.test/?q=••••••", "two values overlapping: nothing of either is left");
+  assert.equal(urlScrubber(["xx 12"], ["091234"])("https://a.test/?q=xx%091234"), "https://a.test/?q=••••••", "a folded match (xx%0912) and an unfolded one (091234) overlapping");
+  assert.equal(urlScrubber(["abcd", "efgh"])("https://a.test/?q=abcdefgh"), `https://a.test/?q=${REDACTED}${REDACTED}`);
+  // Still linear: the unfolded forms are literals too.
+  const run = (unit: string, bytes: number) => unit.repeat(Math.floor(bytes / unit.length));
+  const t0 = Date.now();
+  for (const [v, unit] of [["ab + cd", "+"], ["2034 %20", "%20"], ["%20%20ab", "%20"]]) urlScrubber([v])(`https://a.test/?q=ab${run(unit, URL_CAP - 64)}zz`);
+  assert.ok(Date.now() - t0 < 300, `three values against runs just under the cap took ${Date.now() - t0} ms`);
+});
+
 test("inUrl finds a value in a URL however the URL encodes its whitespace, and keeps kinds (R35, R37, R38)", () => {
   const s = { values: ["a  b c", "hunter2pass", "absent"], whole: ["k9z", "12  3456", "999"] };
   assert.deepEqual(inUrl("https://a.test/done?pw=a++b+c&code=k9z", s), { values: ["a  b c"], whole: ["k9z"] }, "form-encoded run of spaces");
