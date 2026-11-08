@@ -13,7 +13,9 @@ export const realClock: Clock = {
   clearTimeout: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
 };
 
-export interface AskInput { computer: string; session: string; sessionLabel: string; why: AskWhy; title: string; detail: string; site: string | null }
+/** `always`: the card offers "Always on <site>" (agent-computer D6, D39); absent or false, an "always" answer counts as
+ *  once. */
+export interface AskInput { computer: string; session: string; sessionLabel: string; why: AskWhy; title: string; detail: string; site: string | null; always?: boolean }
 export interface Ask extends AskInput { id: string; at: number }
 export type Answer = "once" | "always" | "deny";
 export type Outcome =
