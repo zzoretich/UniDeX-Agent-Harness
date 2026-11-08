@@ -12,7 +12,7 @@ test("formatSnapshot redacts sensitive values, keeps refs and wraps with the ori
   const nodes = [
     ax("1", "RootWebArea", "Sign in", ["2"]),
     ax("2", "form", "", ["3", "4", "6"]),
-    ax("3", "textbox", "Email", [], { value: "a@b.test", inForm: true }),
+    ax("3", "textbox", "Email", [], { value: "a@example.com", inForm: true }),
     // A revealed password field: its value and the inner text node both carry the secret.
     ax("4", "textbox", "Password", ["5"], { value: "hunter2pass", inForm: true }),
     ax("5", "StaticText", "hunter2pass"),
@@ -23,7 +23,7 @@ test("formatSnapshot redacts sensitive values, keeps refs and wraps with the ori
   assert.ok(s.text.endsWith("\n</untrusted-page>"));
   assert.ok(!s.text.includes("hunter2pass"), s.text);
   assert.match(s.text, /\[e\d+\] textbox "Password" value="••••••"/);
-  assert.match(s.text, /\[e\d+\] textbox "Email" value="a@b.test"/);
+  assert.match(s.text, /\[e\d+\] textbox "Email" value="a@example.com"/);
   assert.match(s.text, /\[e\d+\] button "Sign in"/);
   const [ref, entry] = refFor(s, 6)!;
   assert.match(ref, /^e\d+$/);
@@ -360,7 +360,7 @@ test("urlScrubber keeps the scheme, host and port, scrubs every URL form of a va
   assert.equal(u("https://a.test/p%40ss/?pw=p%40ss&raw=p@ss"), "https://a.test/••••••/?pw=••••••&raw=••••••", "an encoded reserved character");
   assert.equal(u("https://a.test/done?code=k9z&x=k9zebra"), "https://a.test/done?code=••••••&x=k9zebra", "a short one-time code as a whole word only");
   assert.equal(u("https://a.test/?s=ab&t=abc"), "https://a.test/?s=ab&t=abc", "a short password stays, as in text");
-  assert.equal(u("https://user:hunter2pass@a.test/x?k=hunter2pass"), "https://user:••••••@a.test/x?k=••••••", "credentials in the URL are scrubbed, the host is not");
+  assert.equal(u("https://user:hunter2pass@example.com/x?k=hunter2pass"), "https://user:••••••@example.com/x?k=••••••", "credentials in the URL are scrubbed, the host is not");
   assert.equal(u("https://hunter2pass.test/"), "https://hunter2pass.test/", "a host equal to a password stays: the agent is there already");
   assert.equal(u("about:blank"), "about:blank");
   assert.equal(u("not a url hunter2pass"), "not a url ••••••", "a string that is not a URL is scrubbed whole");
@@ -443,8 +443,8 @@ test("URL scrubbing stays linear when a word of a value is itself URL whitespace
   const g = urlScrubber(["ab + cd"]);
   assert.equal(g("https://a.test/?p=ab+%2B+cd&q=ab%20%2B%20cd"), "https://a.test/?p=••••••&q=••••••", "form-encoded and percent-encoded");
   // Past the cap the part after the origin goes out hidden, whatever it holds (fail closed); credentials go with it.
-  const long = `https://user:pw@a.test:8443/p?q=${"x".repeat(URL_CAP)}#f`;
-  assert.equal(urlScrubber([])(long), `https://a.test:8443/${REDACTED}`);
+  const long = `https://user:pw@example.com:8443/p?q=${"x".repeat(URL_CAP)}#f`;
+  assert.equal(urlScrubber([])(long), `https://example.com:8443/${REDACTED}`);
   assert.equal(hideAfterOrigin("https://a.test/done?code=1#x"), `https://a.test/${REDACTED}`);
   assert.equal(hideAfterOrigin("not a url"), REDACTED);
   assert.equal(urlScrubber([])(`not a url ${"y".repeat(URL_CAP)}`), REDACTED);
