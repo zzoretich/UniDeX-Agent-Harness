@@ -115,7 +115,7 @@ const agent = (key: string, label: string, access: Access = "edit", place = "ws:
 const A = agent("chat:a", "Alpha");
 const B = agent("chat:b", "Beta");
 
-function make(o: { enabled?: boolean; popOut?: (place: string) => void } = {}) {
+function make(o: { enabled?: boolean; popOut?: (place: string) => void; liveAgent?: (key: string) => AgentRef | undefined } = {}) {
   const clock = new FakeClock();
   const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-service-")), "computer", "sites.json"));
   const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120 };
@@ -129,6 +129,7 @@ function make(o: { enabled?: boolean; popOut?: (place: string) => void } = {}) {
     browser: (place, hooks) => { const b = new FakeBrowser(place, hooks); browsers.set(place, b); return b; },
     broker, wheel, sites, config: () => cfg, emit: (s) => states.push(s), note: (a, line) => notes.push([a.key, line]), clock,
     ...(o.popOut ? { popOut: o.popOut } : {}),
+    ...(o.liveAgent ? { liveAgent: o.liveAgent } : {}),
   });
   const s = svc;
   let id = 0;
@@ -844,4 +845,37 @@ test("popped out, the pane's bounds stay with the pane; popping in puts the comp
   h.svc.popIn();
   assert.deepEqual(a.shows.at(-1), { x: 9, y: 9, width: 90, height: 90 }, "back in the pane at its latest rectangle");
   assert.equal(h.lastState().poppedOut, false);
+});
+
+test("a late agentGone from a session's previous process leaves the live one's wheel and asks alone", async () => {
+  const live = new Map<string, AgentRef>();
+  const h = make({ liveAgent: (key) => live.get(key) });
+  const next = { ...A, pid: 2 };
+  live.set(A.key, next);
+  const b = await h.open(next, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  const pending = h.call(next, "computer_click", { ref: "e1" });
+  const asked = await h.asked(1);
+  h.svc.agentGone({ ...A, pid: 1 });
+  assert.deepEqual(h.broker.pending().map((x) => x.id), [asked.id], "the old process's close cancels nothing");
+  assert.deepEqual(h.wheel.holder("ws:alpha"), { kind: "agent", session: A.key, label: A.label });
+  h.svc.agentGone(next);
+  assert.match((await pending).text, /turn ended/, "the live process's own end still counts");
+  assert.equal(h.wheel.holder("ws:alpha"), null);
+  // Once the registry no longer holds the key, any agentGone for it counts.
+  live.delete(A.key);
+  await h.open(A, "https://a.test/");
+  assert.equal(h.wheel.holder("ws:alpha")?.kind, "agent");
+  h.svc.agentGone({ ...A, pid: 9 });
+  assert.equal(h.wheel.holder("ws:alpha"), null);
+});
+
+test("forgetBrowsers: after the app destroyed every browser (a quit), the next use makes a new one", async () => {
+  const h = make();
+  await h.open(A, "https://a.test/");
+  const first = h.b();
+  h.svc.forgetBrowsers();
+  await h.open(A, "https://b.test/");
+  assert.notEqual(h.b(), first, "a new browser");
+  assert.deepEqual(h.b().pages.map((p) => p.url), ["https://b.test/"]);
 });

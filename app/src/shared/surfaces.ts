@@ -654,10 +654,12 @@ export const SURFACES: readonly Surface[] = [
     id: "computer",
     label: "Computer",
     source: "main/computer (the bridge socket; notify.ts's ask notices, posted by main/services/sessions.ts postComputerNotice)",
-    // agent-computer D26, D27: an ask raised while the pane does not show its computer posts one Notifications item,
-    // `notify.js post` from computer at level info (the app shows its own desktop notification, so the runtime raises
-    // none). The title is the ask's app-written title (D9: page names already scrubbed), the body is app-written and
-    // comes on stdin; the ask's detail is never posted. The page writes nothing itself.
+    // agent-computer D26: main runs the computer only while this surface is on: the bridge (D18) starts with it and stops
+    // without it, and so do the ask notices' posts. `computer.enabled` is the person's switch inside it (D25). Off by
+    // default until a live check per host marks it verified. D27: an ask raised while the pane does not show its
+    // computer posts one Notifications item, `notify.js post` from computer at level info (the app shows its own desktop
+    // notification, so the runtime raises none). The title is the ask's app-written title (D9: page names already
+    // scrubbed), the body is app-written and comes on stdin; the ask's detail is never posted. The page writes nothing.
     writes: ["brain/notifications/*/*.md"],
     folders: ["brain/notifications", "brain/notifications/*"],
     scope: "main",

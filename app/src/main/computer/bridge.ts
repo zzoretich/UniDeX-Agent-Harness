@@ -153,3 +153,35 @@ export class ComputerBridge {
     });
   }
 }
+
+/**
+ * Keeps at most one bridge running, for the vault it should serve (agent-computer D18, D26). `sync(root)` starts one for
+ * `root`; keeps a running one for the same vault (each CLI connects once and cannot reconnect, so a restart would drop
+ * them); replaces one for another vault; and stops it for null (no vault, the `computer` surface off, or no peer addon).
+ * One change at a time, in order; a bridge that fails to start is logged and the next sync tries again.
+ */
+export class BridgeKeeper {
+  private running: { root: string; bridge: { stop(): Promise<void> } } | null = null;
+  private chain: Promise<void> = Promise.resolve();
+  private readonly log: (m: string) => void;
+
+  constructor(private readonly o: { make: (root: string) => Promise<{ stop(): Promise<void> }>; log?: (message: string) => void }) {
+    this.log = o.log ?? ((m) => console.warn(`[main] ${m}`));
+  }
+
+  /** The vault the running bridge serves, or null. */
+  get root(): string | null { return this.running?.root ?? null; }
+
+  sync(root: string | null): Promise<void> {
+    this.chain = this.chain.then(async () => {
+      if (this.running && this.running.root === root) return;
+      const old = this.running;
+      this.running = null;
+      try { await old?.bridge.stop(); } catch (e) { this.log(`the computer bridge did not stop cleanly: ${e instanceof Error ? e.message : String(e)}`); }
+      if (root === null) return;
+      try { this.running = { root, bridge: await this.o.make(root) }; }
+      catch (e) { this.log(`the computer bridge did not start: ${e instanceof Error ? e.message : String(e)}`); }
+    });
+    return this.chain;
+  }
+}

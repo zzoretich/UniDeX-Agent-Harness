@@ -322,7 +322,7 @@ test("spawnAgent: a refused argv or folder, a taken id and no node-pty are error
   assert.equal(!r.ok && r.code, "ENOSYS");
 });
 
-test("spawnAgent: a CLI the test build trusts by its real path runs without a signature (agent-computer Task 13)", async () => {
+test("spawnAgent: a CLI the test build trusts by its real path runs without a signature (agent-computer D18)", async () => {
   const plain = service({ sys: sysOf(null) });
   assert.equal((await plain.t.spawnAgent(req())).ok, false, "unsigned and not trusted: falls back");
   const trusted = service({ sys: sysOf(null), extra: { trusted: [fs.realpathSync(CLAUDE)] } });

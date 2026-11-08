@@ -62,7 +62,7 @@ export interface PtyServiceOptions {
   registry?: AgentRegistry;
   /** The peer addon's checks, or null when it did not load (every Code launch then falls back). */
   sys?: Sys | null;
-  /** Real paths a test build treats as a vendor-signed CLI (agent-computer Task 13's AOS_E2E_TRUSTED_CLI; never packaged). */
+  /** Real paths a test build treats as a vendor-signed CLI (agent-computer D18: AOS_E2E_TRUSTED_CLI, never packaged). */
   trusted?: readonly string[];
   /** A Code launch's agent left the registry: it exited, its terminal closed, or its page went (agent-computer D31: the
    *  computer frees its wheel and cancels its asks). */

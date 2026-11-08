@@ -71,6 +71,8 @@ export interface SessionServiceOptions {
   terminalPATH?: () => string | null;
   /** How long `resolveBin` waits for the runtime before it gives up (BIN_TIMEOUT_MS; the tests pass a short one). */
   binTimeoutMs?: number;
+  /** Whether the Computer surface is on (agent-computer D26): its notices run only then. Off when absent. */
+  computerOn?: () => boolean;
 }
 
 /** A Code launch's binary, or why the runtime named none (one line, for the launch note). */
@@ -351,10 +353,11 @@ export class SessionService {
   /**
    * agent-computer D27: one Notifications item for an ask raised off-screen, `notify.js post --from computer --level
    * info --title <title> --body-file -` with the body on stdin. Level info: the app shows its own desktop notification,
-   * so the runtime raises none. Not behind the Sessions surface (the computer needs none). Rejects with the runtime's
-   * last line, a title it would refuse, or no vault.
+   * so the runtime raises none. Behind the Computer surface (D26), not the Sessions one. Rejects with the runtime's last
+   * line, a title it would refuse, no vault, or the surface off.
    */
   postComputerNotice(title: string, body: string): Promise<void> {
+    if (!this.o.computerOn?.()) return Promise.reject(new Error("the Computer surface is off"));
     const args = ["post", "--from", "computer", "--level", "info", "--title", title, "--body-file", "-"];
     if (!noticeAllowed(args)) return Promise.reject(new Error("a notice title must be one line of 1–160 characters, not starting with a dash"));
     const s = this.runtimeSpawn(args, ["pipe", "ignore", "pipe"], this.o.env, "notify.js");

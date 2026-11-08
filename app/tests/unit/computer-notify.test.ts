@@ -4,7 +4,7 @@ import { AskNotifier, noticeTitle, testSwitches } from "../../src/main/computer/
 import type { Ask } from "../../src/main/computer/asks";
 
 // agent-computer D27, D26: an ask raised while the pane does not show it gets a desktop notification and a Notifications
-// item, and clicking the notification reveals the pane on it. Task 13's test-build switches never reach a packaged app.
+// item, and clicking the notification reveals the pane on it. The test-build switches (D18, D39) never reach a packaged app.
 
 const ask = (id: string, more: Partial<Ask> = {}): Ask => ({
   id, at: 0, computer: "ws:alpha", session: "chat:a", sessionLabel: "Alpha", why: "unmarked",
@@ -66,6 +66,26 @@ test("sync notices each new ask once and withdraws a settled ask's desktop notif
   assert.deepEqual(h.desktops.map((d) => d.closed), [true, true]);
   h.n.sync([ask("a2")]);
   assert.equal(h.desktops.length, 2, "an id seen before never notices again");
+});
+
+test("an ask raised on screen is noticed once, when it goes off-screen while still pending (the window blurs or hides)", async () => {
+  let shown = true;
+  const h = make({ visible: () => shown });
+  h.n.sync([ask("a1")]);
+  h.n.sync([ask("a1")]);
+  await flush();
+  assert.equal(h.desktops.length, 0, "on screen: nothing");
+  shown = false;
+  h.n.sync([ask("a1")]);
+  h.n.sync([ask("a1")]);
+  await flush();
+  assert.equal(h.desktops.length, 1, "off screen now: noticed once");
+  assert.equal(h.posts.length, 1);
+  shown = true;
+  h.n.sync([]);
+  shown = false;
+  h.n.sync([]);
+  assert.equal(h.desktops.length, 1, "an ask that settled before it went off-screen is never noticed");
 });
 
 test("a failed post is logged, never thrown, and the desktop notification still shows", async () => {

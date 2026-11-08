@@ -32,6 +32,13 @@ export class AgentRegistry {
     return this.agents.get(pid);
   }
 
+  /** The live agent registered under a session key (chat:<thread>, code:<terminal id>), the newest first. */
+  byKey(key: string): AgentRef | undefined {
+    let found: AgentRef | undefined;
+    for (const a of this.agents.values()) if (a.key === key) found = a;
+    return found;
+  }
+
   /** True once per registered pid: the first connection wins, a second is refused. */
   claim(pid: number): boolean {
     if (!this.agents.has(pid) || this.claimed.has(pid)) return false;

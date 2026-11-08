@@ -550,7 +550,7 @@ test("noteEvent: a Computer pane line reaches the page as a live computer event 
 });
 
 test("postComputerNotice: one Notifications item from computer at level info, through the runtime's notify.js, the body on stdin (agent-computer D27)", async () => {
-  const { s } = service();
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
   const dir = path.join(vault, "brain", "notifications");
   fs.rmSync(dir, { recursive: true, force: true });
   await s.postComputerNotice("Submit: Click “Pay” on a.test?", "Alpha is waiting for your answer in the Computer pane.\n--json is just text here");
@@ -568,12 +568,24 @@ test("postComputerNotice: one Notifications item from computer at level info, th
 test("postComputerNotice: a title the runtime would refuse, or no vault, rejects without running anything", async () => {
   let spawned = 0;
   const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
-  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
   for (const bad of ["", "  ", "two\nlines", "-flag", "--json", "x".repeat(161)]) {
     await assert.rejects(s.postComputerNotice(bad, "body"), /title/, JSON.stringify(bad));
   }
   assert.equal(spawned, 0);
-  const none = new SessionService({ vaultRoot: () => null, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  const none = new SessionService({ vaultRoot: () => null, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
   await assert.rejects(none.postComputerNotice("Submit: x?", "body"), /no vault is open/);
   assert.equal(spawned, 0);
+});
+
+test("postComputerNotice: nothing runs while the Computer surface is off (agent-computer D26)", async () => {
+  let spawned = 0;
+  const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
+  let on = false;
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => on, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  await assert.rejects(s.postComputerNotice("Submit: x?", "body"), /the Computer surface is off/);
+  assert.equal(spawned, 0);
+  on = true;
+  await s.postComputerNotice("Submit: x?", "body");
+  assert.equal(spawned, 1);
 });

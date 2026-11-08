@@ -121,7 +121,7 @@ export const CH = {
   /**
    * main → page: the Computer pane (agent-computer D27, D32). `{ type: "state", state }` after a computer changes, and
    * `{ type: "reveal", askId }` when the person clicks an ask's desktop notification (open the pane on that ask). The
-   * page's calls and its listener arrive with the pane (Task 14).
+   * page's own calls and its listener come with the pane's calls (D5, D32).
    */
   computerEvent: "computer:event",
 } as const;

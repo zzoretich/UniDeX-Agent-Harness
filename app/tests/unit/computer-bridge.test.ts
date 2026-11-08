@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ComputerBridge, type ToolCall, type ToolReply } from "../../src/main/computer/bridge";
+import { BridgeKeeper, ComputerBridge, type ToolCall, type ToolReply } from "../../src/main/computer/bridge";
 import type { Admit } from "../../src/main/computer/admission";
 import type { AgentRef } from "../../src/main/computer/registry";
 import type { PeerAddon } from "../../src/main/computer/peer";
@@ -329,4 +329,40 @@ test("a call that throws frees its slot", async () => {
     c.sock.destroy();
     await bridge.stop();
   }
+});
+
+test("BridgeKeeper: one bridge for the vault it should serve; the same vault keeps it, another replaces it, null stops it", async () => {
+  const log: string[] = [];
+  const k = new BridgeKeeper({
+    make: async (root) => { log.push(`start ${root}`); return { stop: async () => { log.push(`stop ${root}`); } }; },
+    log: (m) => log.push(`warn ${m}`),
+  });
+  await k.sync(null);
+  assert.deepEqual(log, [], "the computer surface off (or no vault): nothing starts");
+  void k.sync("/v/a");
+  await k.sync("/v/a");
+  assert.deepEqual(log, ["start /v/a"], "the same vault again keeps the running bridge (its CLIs cannot reconnect)");
+  assert.equal(k.root, "/v/a");
+  await k.sync("/v/b");
+  assert.deepEqual(log, ["start /v/a", "stop /v/a", "start /v/b"]);
+  await k.sync(null);
+  assert.deepEqual(log.slice(3), ["stop /v/b"], "the surface turned off: the bridge stops");
+  assert.equal(k.root, null);
+  await k.sync("/v/b");
+  assert.equal(log.at(-1), "start /v/b", "and turned on again: it starts");
+});
+
+test("BridgeKeeper: a bridge that fails to start is logged and leaves none running; the next sync tries again", async () => {
+  const log: string[] = [];
+  let fail = true;
+  const k = new BridgeKeeper({
+    make: async (root) => { if (fail) throw new Error("the socket path is too long"); log.push(`start ${root}`); return { stop: async () => {} }; },
+    log: (m) => log.push(`warn ${m}`),
+  });
+  await k.sync("/v/a");
+  assert.deepEqual(log, ["warn the computer bridge did not start: the socket path is too long"]);
+  assert.equal(k.root, null);
+  fail = false;
+  await k.sync("/v/a");
+  assert.equal(log.at(-1), "start /v/a");
 });

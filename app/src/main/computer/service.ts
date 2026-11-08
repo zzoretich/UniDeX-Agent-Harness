@@ -38,6 +38,9 @@ export interface ServiceOptions {
   note: (agent: AgentRef, line: string) => void;
   /** Moves the place's computer into the pop-out window (the app's window code). */
   popOut?: (place: string) => void;
+  /** The live agent the app's registry holds for a session key (AgentRegistry.byKey), so a late `agentGone` from a
+   *  session's previous process is ignored. */
+  liveAgent?: (key: string) => AgentRef | undefined;
   clock?: Clock;
 }
 
@@ -718,13 +721,23 @@ export class ComputerService {
     this.refresh();
   }
 
-  /** The session's turn ended or its CLI exited (agent-computer D31, controller 7). */
+  /** The session's turn ended or its CLI exited (agent-computer D31, controller 7). A late call for a process the
+   *  session has since replaced (the registry holds the same key under another pid: a late bridge close from the last
+   *  turn's CLI) is ignored, so it never frees the next turn's wheel or cancels its asks. */
   agentGone(agent: AgentRef): void {
+    const live = this.o.liveAgent?.(agent.key);
+    if (live && live.pid !== agent.pid) return;
     this.o.wheel.turnEnded(agent.key);
     this.o.broker.cancel((a) => a.session === agent.key, "the turn ended");
     this.agents.delete(agent.key);
     for (const p of this.places.values()) if (p.last?.key === agent.key) p.last = null;
     this.refresh();
+  }
+
+  /** The app destroyed every browser (it is quitting): a later call makes a new one, should the app go on after all (an
+   *  update's quit that failed). */
+  forgetBrowsers(): void {
+    for (const p of this.places.values()) p.browser = null;
   }
 
   /** For the wheel: a computer is reserved while an action runs or its holder has an ask pending (D31). A page's ask
