@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { domText, formatSnapshot, indexDom, inUrl, mergeFrames, REDACTED, scrubber, secretsOf, urlScrubber, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
+import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, REDACTED, scrubber, secretsOf, URL_CAP, urlScrubber, type AxNode, type CdpAxNode, type CdpDomNode } from "../../src/main/computer/snapshot";
 
 const ax = (nodeId: string, role: string, name: string, childIds: string[] = [], extra: Partial<AxNode> = {}): AxNode =>
   ({ nodeId, role, name, ignored: false, childIds, backendDOMNodeId: Number(nodeId), ...extra });
@@ -401,11 +401,53 @@ test("urlScrubber matches every Unicode space JavaScript collapses in its UTF-8 
   }
   assert.equal(urlScrubber(["ab cd"], ["12 3456"])("https://a.test/?p=ab%E3%80%80cd&c=12%E2%80%AF3456"), "https://a.test/?p=••••••&c=••••••", "a one-time code too");
   assert.equal(scrubber(["pass word"])("pass%E2%80%83word"), "pass%E2%80%83word", "prose is unchanged: an escape is not whitespace there");
-  // Linear: a long run of gap escapes that never reaches the value's last word.
-  const big = `https://a.test/?q=pass${"%E2%80%83+%20%E3%80%80".repeat(20_000)}x`;
+  // Linear: a long run of gap escapes (under URL_CAP) that never reaches the value's last word.
+  const big = `https://a.test/?q=pass${"%E2%80%83+%20%E3%80%80".repeat(700)}x`;
   const t0 = Date.now();
   assert.equal(urlScrubber(["pass word", "pass word more"])(big), big);
-  assert.ok(Date.now() - t0 < 2_000, `scrub of a 400 kB gap run took ${Date.now() - t0} ms`);
+  assert.ok(Date.now() - t0 < 2_000, `scrub of a ${big.length}-character gap run took ${Date.now() - t0} ms`);
+});
+
+test("URL scrubbing stays linear when a word of a value is itself URL whitespace, and a URL past the cap is hidden after its origin (R40)", () => {
+  // The review's hang: "ab + cd" against "ab" and a long run of "+" was quadratic (20,000 took 0.6 s; doubling quadrupled).
+  // Under the cap (the round-1 scrub took about 0.4 s for each of these, so 2 s for the five; doubling quadrupled).
+  const run = (unit: string, bytes: number) => unit.repeat(Math.floor(bytes / unit.length));
+  const t0 = Date.now();
+  for (const [v, unit] of [["ab + cd", "+"], ["ab %20 cd", "%20"], ["ab %E2%80%83 cd", "%E2%80%83"], ["+ ab", "+"], ["ab +", "+"]]) {
+    const u = `https://a.test/?q=ab${run(unit, URL_CAP - 64)}zz`;
+    assert.ok(u.length <= URL_CAP);
+    assert.equal(urlScrubber([v])(u), u, `${JSON.stringify(v)} is not in a run of ${unit} followed by zz`);
+  }
+  assert.ok(Date.now() - t0 < 300, `five values against runs just under the cap took ${Date.now() - t0} ms`);
+  assert.equal(urlScrubber(["ab + cd"])(`https://a.test/?q=ab${run("+", 8_000)}cd`), "https://a.test/?q=••••••", "a long run still matches the value's space");
+  // A 200 kB URL comes back at once, hidden after its origin.
+  const t2 = Date.now();
+  assert.equal(urlScrubber(["ab + cd"])(`https://a.test/?q=ab${run("+", 200_000)}zz`), `https://a.test/${REDACTED}`);
+  assert.ok(Date.now() - t2 < 100, `a 200 kB URL took ${Date.now() - t2} ms`);
+  // A page can plant many such values; a URL just under the cap still scrubs in time.
+  const planted = Array.from({ length: 300 }, (_, i) => `a + b${i}`);
+  const t1 = Date.now();
+  const u = `https://a.test/?q=a${run("+", URL_CAP - 64)}zz`;
+  urlScrubber(planted)(u);
+  assert.ok(Date.now() - t1 < 2_000, `300 planted values against a ${u.length}-character URL took ${Date.now() - t1} ms`);
+  // Many matches stay cheap too: a short code that is in the URL thousands of times.
+  const t3 = Date.now();
+  const many = `https://a.test/?q=${"1+".repeat(Math.floor((URL_CAP - 64) / 2))}`;
+  assert.ok(!urlScrubber([], ["1", "11"])(many).includes("=1+"), "every standalone 1 scrubbed");
+  assert.ok(Date.now() - t3 < 300, `a short code matched ${Math.floor((URL_CAP - 64) / 2)} times took ${Date.now() - t3} ms`);
+  // A URL already hidden after its origin goes through a URL scrub as it is (not re-encoded by the URL parser).
+  const hidden = hideAfterOrigin("http://localhost:5000/v/975310?x=1");
+  assert.equal(hidden, `http://localhost:5000/${REDACTED}`);
+  assert.equal(urlScrubber(["975310", "localhost"])(hidden), hidden);
+  // A gap-token word still scrubs in every URL form of its value.
+  const g = urlScrubber(["ab + cd"]);
+  assert.equal(g("https://a.test/?p=ab+%2B+cd&q=ab%20%2B%20cd"), "https://a.test/?p=••••••&q=••••••", "form-encoded and percent-encoded");
+  // Past the cap the part after the origin goes out hidden, whatever it holds (fail closed); credentials go with it.
+  const long = `https://user:pw@a.test:8443/p?q=${"x".repeat(URL_CAP)}#f`;
+  assert.equal(urlScrubber([])(long), `https://a.test:8443/${REDACTED}`);
+  assert.equal(hideAfterOrigin("https://a.test/done?code=1#x"), `https://a.test/${REDACTED}`);
+  assert.equal(hideAfterOrigin("not a url"), REDACTED);
+  assert.equal(urlScrubber([])(`not a url ${"y".repeat(URL_CAP)}`), REDACTED);
 });
 
 test("inUrl finds a value in a URL however the URL encodes its whitespace, and keeps kinds (R35, R37, R38)", () => {

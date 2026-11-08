@@ -15,10 +15,10 @@ import { ASK_ROLES, covers, type Target } from "./categories";
 import { cdp, CdpTimeout, isGone, keyEvents, unlessGone } from "./cdp";
 import type { Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
-import { LeavingRecords } from "./leaving";
+import { LeavingRecords, PendingReads, type Departure } from "./leaving";
 import { SecretMemory, type Secrets } from "./memory";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
-import { domText, formatSnapshot, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
+import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf } from "../policy/computer-url";
 
 export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean }
@@ -115,21 +115,24 @@ interface Tab {
    *  (the site being left and the read of its document's values, G2), consumed at the commit of that navigation (R35: what
    *  the committed URL carries from the old site goes to the carried set); one from main (the agent's `open()`) with none.
    *  agent-computer D9 (R39): one entry per navigation, so a second navigation started before the first commits never
-   *  overwrites the first's record; a commit no entry matches fails closed while a page record could be its. */
-  leaving: LeavingRecords<Departure>;
+   *  overwrites the first's record; a commit no entry matches fails closed while a page record could be its. R40: a record
+   *  the bound drops folds into one merged lost record, carried from at every commit until loading stops. */
+  leaving: LeavingRecords;
+  /** agent-computer D9 (R40): the tab's leaving reads still waiting for an answer, ended with null by every commit. */
+  reads: PendingReads;
   /** R38: set on a popup tab before its first load: the opener's site and the read of the opener's fields, which become the
    *  leaving record of that first navigation when it starts (the popup's URL may carry a code typed into the opener). */
   opened: Departure | null;
   /** D9 (F1): the current document arrived through a navigation whose leaving read is pending or failed, so its URL may
    *  carry a code no one read: the URL goes out without its query and fragment while this document is current. */
   urlHidden: boolean;
+  /** agent-computer D9 (R40): the current document's commit is carrying from records whose reads have not all answered, so
+   *  a value its URL holds may not scrub yet: the URL goes out with everything after its origin hidden until they answer. */
+  pathHidden: boolean;
   /** D9 (R37): a read on the current document returned more values of one kind than the memory's reserve, so one of them
    *  may already be forgotten: the URL goes out without its query and fragment for this document's life too. */
   flooded: boolean;
 }
-
-/** A page-started navigation's leaving record: the site being left and the read of its document's values (G2). */
-interface Departure { from: string; read: Promise<Secrets | null> }
 
 /** A sensitive field's current value and whether the field is a one-time-code field. */
 interface FieldValue { b: number; value: string; otp: boolean }
@@ -256,8 +259,10 @@ export class ComputerBrowser {
     t.refused = null;
     // R38: a page-started navigation's leaving record is left alone here: that navigation may be past the point where this
     // load can cancel it and commit first, and its record then goes with its own commit (`committed` matches the URL). R39:
-    // this load gets its own entry when it starts (no record), so its commit consumes that entry, never the page's, and an
-    // agent-chosen URL still carries nothing from the page and is not held back for it (R37 N4).
+    // this load gets its own entry when it starts (no record) and its commit normally consumes that entry; but a page
+    // record keyed at the same URL goes first (carrying is the safe side), so the agent's commit can consume it and carry
+    // what this URL holds from that page's read. R40: the agent's commit also carries what its URL holds from page
+    // records still pending; it is never held back for them once their reads have answered (R37 N4).
     let timer: ReturnType<typeof setTimeout> | undefined;
     const failed = await Promise.race([
       t.wc.loadURL(href).then(() => null, (e: unknown) => e as { code?: string; message?: string }),
@@ -315,9 +320,9 @@ export class ComputerBrowser {
     if (t.doc === doc) this.remember(t, site, read, site, doc);
     // R32: the values just read and the site's remembered secrets scrub the text; what other sites carried into the URL
     // scrubs the URL only (R35, by kind R37); a URL whose leaving read failed or whose document was flooded loses its
-    // query and fragment (F1, R37).
+    // query and fragment (F1, R37), and one whose commit is still carrying loses everything after its origin (R40).
     const pool = t.memory.pool([site]), carried = t.memory.carried();
-    const url = this.hidden(t) ? stripQuery(t.wc.getURL()) : t.wc.getURL();
+    const url = this.shownUrl(t);
     const snap = formatSnapshot(mergeFrames(trees, dom), {
       origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP,
       values: [...read.values, ...pool.values], whole: [...read.whole, ...pool.whole], otp, urlValues: carried.values, urlWhole: carried.whole,
@@ -540,7 +545,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refsToken: "", refused: null, closing: false,
-      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], leaving: new LeavingRecords(), opened: null, urlHidden: false, flooded: false, doc: 0,
+      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -760,7 +765,7 @@ export class ComputerBrowser {
     nt.memory.carry(t.memory.carried());
     const known = t.memory.pool([from]);
     nt.memory.carry(inUrl(d.url, { values: [...known.values, ...(got?.values ?? [])], whole: [...known.whole, ...(got?.whole ?? [])] }));
-    nt.opened = { from, read };
+    nt.opened = { from: [from], read };
     this.o.hooks.note(`The page opened ${shown} in a new tab.`);
     const post = d.postBody;
     // A form posted into a new tab keeps its fields, never a file from this Mac (only raw data is passed on).
@@ -1039,28 +1044,40 @@ export class ComputerBrowser {
     return urlScrubber([...s.values, ...mem.values, ...carried.values], [...s.whole, ...mem.whole, ...carried.whole]);
   }
 
-  /** The tab's current URL as it may leave: scrubbed for the current site, and without its query and fragment while the
-   *  document arrived through a navigation whose leaving read failed or a read of it flooded the memory (F1, R37). */
-  private urlOut(t: Tab): string {
+  /** The tab's current URL before its scrub: everything after the origin hidden while its commit is still carrying (R40),
+   *  the query and fragment hidden while the document arrived through a navigation whose leaving read failed, a commit no
+   *  entry matched, or a read of it flooded the memory (F1, R37, R39). */
+  private shownUrl(t: Tab): string {
     const url = t.wc.getURL();
-    return this.urlScrub(t, [this.site(t)])(this.hidden(t) ? stripQuery(url) : url);
+    return t.pathHidden ? hideAfterOrigin(url) : this.hidden(t) ? stripQuery(url) : url;
+  }
+
+  /** The tab's current URL as it may leave: `shownUrl`, scrubbed for the current site. */
+  private urlOut(t: Tab): string {
+    return this.urlScrub(t, [this.site(t)])(this.shownUrl(t));
   }
 
   /** G2: the document being left may hold a code the person typed that the agent never read (a GET submit carries it into
    *  the next URL). Its sensitive values are read now in one command per frame (`LEAVING_VALUES`, in the frame's isolated
-   *  world; the usual command timeout applies). Best effort: null when the document went before the read answered. */
-  private async leavingValues(t: Tab, from: string): Promise<Secrets | null> {
-    try {
-      const out: Secrets = { values: [], whole: [] };
-      for (const frameId of new Set([t.frame, ...t.frames].filter(Boolean))) {
-        const contextId = await this.world(t, frameId);
-        const { result } = await this.send<{ result: { value?: { v?: unknown; otp?: unknown }[] } }>(t, "Runtime.evaluate", { contextId, returnByValue: true, expression: LEAVING_VALUES });
-        for (const x of result.value ?? []) (x.otp === true ? out.whole : out.values).push(typeof x.v === "string" ? x.v : "");
+   *  world; the usual command timeout applies). Best effort: null when the document went before the read answered.
+   *  agent-computer D9 (R40): also null when the tab commits before it answers (`PendingReads`): DevTools holds commands
+   *  while a cross-process navigation commits and then sends them to the new renderer, where a stale numeric context id can
+   *  name a context of the new document (review rv5), so such an answer may not be the old document's. */
+  private leavingValues(t: Tab, from: string): Promise<Secrets | null> {
+    const doc = t.doc;
+    return t.reads.track((async (): Promise<Secrets | null> => {
+      try {
+        const out: Secrets = { values: [], whole: [] };
+        for (const frameId of new Set([t.frame, ...t.frames].filter(Boolean))) {
+          const contextId = await this.world(t, frameId);
+          const { result } = await this.send<{ result: { value?: { v?: unknown; otp?: unknown }[] } }>(t, "Runtime.evaluate", { contextId, returnByValue: true, expression: LEAVING_VALUES });
+          for (const x of result.value ?? []) (x.otp === true ? out.whole : out.values).push(typeof x.v === "string" ? x.v : "");
+        }
+        return t.doc === doc ? out : null;
+      } catch {
+        return null;
       }
-      return out;
-    } catch {
-      return null;
-    }
+    })());
   }
 
   /**
@@ -1079,7 +1096,7 @@ export class ComputerBrowser {
   private noteNavigation(t: Tab, url: string): void {
     const from = this.site(t), to = siteOf(url) ?? "null";
     const read = this.leavingValues(t, from);
-    t.leaving.start(url, { from, read });
+    t.leaving.start(url, { from: [from], read });
     void read.then((got) => {
       if (got) this.remember(t, from, got, this.site(t));
       // The values just read scrub the note directly (a flood on the leaving page may have evicted one of them from the
@@ -1094,6 +1111,9 @@ export class ComputerBrowser {
   private commit(t: Tab, url: string): void {
     t.seq++;
     t.doc++;
+    // R40: a leaving read still pending can no longer count (an answer now may be the new document's): it fails now, so
+    // this commit's carry never waits on it.
+    t.reads.endAll();
     this.committed(t, url);
     this.o.hooks.changed();
   }
@@ -1106,21 +1126,27 @@ export class ComputerBrowser {
    *  (Electron reports the same handle's URL at start, redirect and commit). agent-computer D9 (R39): the commit consumes
    *  only its own entry and leaves the others (a navigation started before this commit can still commit after it: r40b
    *  q1'); when no entry matches but a page record could be this navigation's (a redirect not seen, a record lost to the
-   *  bound), it fails closed: what the URL carries from every pending record goes to the carried set and the document's
-   *  query and fragment stay hidden for its life. */
+   *  bound), it fails closed: the document's query and fragment stay hidden for its life. R40: the carry takes what the URL
+   *  holds from every record the commit yields (./leaving: the page records keyed at the URL, the merged record of those
+   *  the bound dropped, and for the agent's commit or an unmatched one every pending page record), so it scrubs the path
+   *  too; until all their reads have answered, everything after the origin is hidden (`pathHidden`). The agent's own commit
+   *  is never held back once they have. A page commit stays hidden when the read of the record it consumed (the oldest
+   *  keyed at its URL: the one that commits first) failed; the others keyed there are carried from all the same. */
   private committed(t: Tab, url: string): void {
     const got = t.leaving.commit(url);
+    const records = [...got.own, ...got.others];
     t.urlHidden = got.kind === "page" || got.kind === "unknown";
+    t.pathHidden = records.length > 0;
     t.flooded = false;
-    const records = got.kind === "page" ? [got.record] : got.kind === "unknown" ? got.records : [];
     if (!records.length) return;
     const doc = t.doc;
     void Promise.all(records.map((r) => r.read)).then((reads) => {
       if (t.doc !== doc) return;
-      const known = t.memory.pool([...new Set(records.map((r) => r.from))]);
+      const known = t.memory.pool([...new Set(records.flatMap((r) => r.from))]);
       const s: Secrets = { values: [...known.values], whole: [...known.whole] };
       for (const read of reads) { s.values.push(...(read?.values ?? [])); s.whole.push(...(read?.whole ?? [])); }
       t.memory.carry(inUrl(url, s));
+      t.pathHidden = false;
       if (got.kind === "page") t.urlHidden = reads[0] === null;
       this.o.hooks.changed();
     });

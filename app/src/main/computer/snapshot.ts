@@ -229,18 +229,21 @@ export function mergeFrames(frames: { frameId: string; nodes: CdpAxNode[] }[], d
 const SHORT_SECRET = 4;
 const literal = (s: string): string => s.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
 
+/** A secret's pattern from its escaped body: one of fewer than SHORT_SECRET characters only as a whole word. */
+const patternOf = (body: string, length: number): RegExp =>
+  length >= SHORT_SECRET ? new RegExp(body, "gu") : new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "gu");
+
 /**
  * D9: the scrub for secrets, the current values of sensitive fields, from any text that leaves the main process: a
- * snapshot line, a title, a URL, an ask title, a note or a tool reply (R27: Chrome names a label's checkbox or an
+ * snapshot line, a title, an ask title, a note or a tool reply (R27: Chrome names a label's checkbox or an
  * aria-labelledby button from an embedded one-time-code field's value). Whitespace is collapsed on both sides (a name
  * carries "12 3456" for a value "12  3456" or "12\t3456"); longest first, so a secret inside another goes with it.
  * A secret of fewer than 4 characters goes only as a whole word, and only when it is all digits (a one-time code typed
  * so far) or in `whole` (the value of a one-time-code field): a short password stays, so prose keeps its "a". Bullet-only
  * strings are not secrets. The gate never sees the result: it judges raw names (Task 11b), and this runs on the way out.
- * `gap` is what a space of a value may match in the text (R38): a run of whitespace in prose; in a URL also `+` and the
- * percent-escapes of whitespace (`URL_GAP`), since the memory keeps values collapsed while a URL keeps every space.
+ * URL strings go through `urlScrubber`, which also matches a value's spaces as a URL writes them.
  */
-export function scrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = [], gap = "\\s+"): (s: string) => string {
+export function scrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = []): (s: string) => string {
   const secrets = new Set<string>();
   const add = (v: string | undefined, short: boolean): void => {
     const t = v?.replace(/\s+/g, " ").trim();
@@ -248,10 +251,7 @@ export function scrubber(values: Iterable<string | undefined>, whole: Iterable<s
   };
   for (const v of values) add(v, /^\d+$/.test(v?.trim() ?? ""));
   for (const v of whole) add(v, true);
-  const patterns = [...secrets].sort((a, b) => b.length - a.length).map((x) => {
-    const body = x.split(" ").map(literal).join(gap);
-    return x.length >= SHORT_SECRET ? new RegExp(body, "gu") : new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "gu");
-  });
+  const patterns = [...secrets].sort((a, b) => b.length - a.length).map((x) => patternOf(x.split(" ").map(literal).join("\\s+"), x.length));
   return (s) => patterns.reduce((acc, re) => acc.replace(re, () => REDACTED), s);
 }
 
@@ -261,7 +261,38 @@ export function scrubber(values: Iterable<string | undefined>, whole: Iterable<s
  *  `pass%E2%80%83word`, while the memory keeps the value collapsed): U+1680 `E1 9A 80`, U+2000-200A `E2 80 80-8A`,
  *  U+2028/2029/202F `E2 80 A8/A9/AF`, U+205F `E2 81 9F`, U+3000 `E3 80 80`, U+FEFF `EF BB BF`. Written as a trie, so the
  *  branches of every alternation start with different characters and a run matches without backtracking. */
-const URL_GAP = "(?:\\s|\\+|%(?:20|0(?:9|[aAbBcCdD])|[cC]2%[aA]0|[eE](?:1%9[aA]%80|2%8(?:0%(?:8[0-9aA]|[aA][89fF])|1%9[fF])|3%80%80|[fF]%[bB][bB]%[bB][fF])))+";
+const URL_SPACE = "(?:\\s|\\+|%(?:20|0(?:9|[aAbBcCdD])|[cC]2%[aA]0|[eE](?:1%9[aA]%80|2%8(?:0%(?:8[0-9aA]|[aA][89fF])|1%9[fF])|3%80%80|[fF]%[bB][bB]%[bB][fF])))";
+const URL_GAP = new RegExp(`${URL_SPACE}+`, "gu");
+
+/** agent-computer D9 (R40): `s` with every run of URL whitespace written as one space, and for each code unit of the result
+ *  the span of `s` it stands for. URL strings are matched in this form, the URL and the value alike, so a value's word that
+ *  is itself URL whitespace (`ab + cd`) cannot make a long run of `+` quadratic: the run is one character here. */
+const gapped = (s: string): { text: string; start: number[]; end: number[] } => {
+  const parts: string[] = [], start: number[] = [], end: number[] = [];
+  let at = 0;
+  const keep = (to: number): void => { for (; at < to; at++) { parts.push(s[at]); start.push(at); end.push(at + 1); } };
+  for (const m of s.matchAll(URL_GAP)) {
+    keep(m.index);
+    parts.push(" "); start.push(m.index); end.push(m.index + m[0].length);
+    at = m.index + m[0].length;
+  }
+  keep(s.length);
+  return { text: parts.join(""), start, end };
+};
+
+/** R40: a URL string longer than this is not scrubbed: everything after its origin goes out hidden (fail closed), which
+ *  bounds the scrub's cost for any URL a page can make. */
+export const URL_CAP = 16_384;
+
+/** The URL with everything after the origin (credentials, path, query, fragment) hidden; a string that is not an http(s)
+ *  URL is hidden whole (R40). */
+export function hideAfterOrigin(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "http:" || u.protocol === "https:") return `${u.protocol}//${u.host}/${REDACTED}`;
+  } catch { /* not a URL */ }
+  return REDACTED;
+}
 
 /** The forms a value takes inside a URL (R37): as typed, percent-encoded (a path or a fragment: `p%40ss`,
  *  `correct%20horse`) and form-encoded as a GET submit writes it (spaces as `+`: `correct+horse`). R38: the encoded forms
@@ -294,12 +325,44 @@ export function inUrl(url: string, s: { values: string[]; whole: string[] }): { 
  * attribute). Every value goes in each form it takes in a URL (`urlForms`), `whole` ones as whole words however short;
  * only the part after the origin is scrubbed (path, query, fragment, and any credentials): the scheme, host and port
  * stay, so a planted "localhost" cannot blank the address the agent is at (E6). A string that is not an http(s) URL is
- * scrubbed whole.
+ * scrubbed whole. R40: the string and the values are matched with every run of URL whitespace as one space (`gapped`), so
+ * a value's space matches any such run and the cost stays linear in the URL; a URL past URL_CAP is hidden after its origin.
  */
 export function urlScrubber(values: Iterable<string | undefined>, whole: Iterable<string | undefined> = []): (url: string) => string {
-  const expand = (xs: Iterable<string | undefined>): string[] => [...xs].flatMap((x) => (x ? urlForms(x) : []));
-  const scrub = scrubber(expand(values), expand(whole), URL_GAP);
+  const secrets = new Set<string>();
+  // The value's forms in gapped form; untrimmed, so a leading or trailing space of the value takes its run in the URL.
+  const add = (v: string, short: boolean): void => {
+    const g = gapped(v).text, t = g.trim();
+    if (t && !/^[•●* ]+$/.test(t) && (t.length >= SHORT_SECRET || short)) secrets.add(g);
+  };
+  for (const v of values) if (v) { const short = /^\d+$/.test(v.trim()); for (const f of urlForms(v)) add(f, short); }
+  for (const v of whole) if (v) for (const f of urlForms(v)) add(f, true);
+  const patterns = [...secrets].sort((a, b) => b.length - a.length).map((x) => patternOf(literal(x), x.trim().length));
+  const scrub = (s: string): string => {
+    if (!patterns.length) return s;
+    const g = gapped(s);
+    // Longest first, and a match overlapping one already taken is left: a secret inside another goes with it. A mask of
+    // the characters taken keeps that check as cheap as the matching (each pattern's matches do not overlap each other).
+    const spans: [number, number][] = [];
+    const taken = new Uint8Array(g.text.length);
+    for (const re of patterns) {
+      for (const m of g.text.matchAll(re)) {
+        const a = m.index, b = a + m[0].length;
+        if (b === a || taken.subarray(a, b).includes(1)) continue;
+        taken.fill(1, a, b);
+        spans.push([a, b]);
+      }
+    }
+    if (!spans.length) return s;
+    spans.sort((p, q) => p[0] - q[0]);
+    let out = "", at = 0;
+    for (const [a, b] of spans) { out += s.slice(at, g.start[a]) + REDACTED; at = g.end[b - 1]; }
+    return out + s.slice(at);
+  };
   return (url) => {
+    if (url.length > URL_CAP) return hideAfterOrigin(url);
+    // A URL already hidden after its origin goes out as it is (the URL parser would percent-encode the bullets).
+    if (url.endsWith(`/${REDACTED}`) && url === hideAfterOrigin(url)) return url;
     let u: URL;
     try { u = new URL(url); } catch { return scrub(url); }
     if (u.protocol !== "http:" && u.protocol !== "https:") return scrub(url);
