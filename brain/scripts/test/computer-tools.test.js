@@ -80,11 +80,13 @@ test('the server lists the nine computer tools with look tools read-only and act
   });
 });
 
-test("computer_open's description says how to search the web: DuckDuckGo's ?q=, a result opened by its link's URL, and what asks", async () => {
+test("computer_open's description says how to search the web: DuckDuckGo's ?q=, how to open a result, and what asks", async () => {
   await withClient(makeVault(), async (client) => {
     const open = (await client.listTools()).tools.find((t) => t.name === 'computer_open');
     assert.ok(open.description.includes('To search the web, open https://duckduckgo.com/?q=<the words, URL-encoded>'), open.description);
-    assert.ok(open.description.includes("then open a result by its link's URL"), open.description);
+    // A snapshot carries a link's name, not its URL (the accessibility tree has no href), so the description says what
+    // the agent can see: the address DuckDuckGo prints with each result.
+    assert.ok(open.description.includes("A snapshot shows each result's title and its address (site and path), not the link's URL: open a result with this tool at that address, or click it."), open.description);
     assert.ok(open.description.includes('Opening a page never asks the user; clicking or typing on a site the user has not marked does.'), open.description);
   });
 });
