@@ -79,3 +79,26 @@ test("turnEnded clears a user holder's resume that points at that session", () =
   assert.deepEqual(w.holder("c"), { kind: "user", resume: null });
   w.handBack("c"); assert.equal(w.holder("c"), null);
 });
+
+test("R81: Take over, Hand back and the end of a turn bump the computer's generation; taking, touching and idling do not", () => {
+  const { w, clock } = make();
+  assert.equal(w.gen("c"), 0);
+  w.take("c", "s1", "A"); w.touch("c", "s1");
+  assert.equal(w.gen("c"), 0, "taking and touching keep it");
+  w.takeOver("c");
+  assert.equal(w.gen("c"), 1);
+  w.handBack("c");
+  assert.equal(w.gen("c"), 2, "the same session holds the wheel again, under a new generation");
+  w.handBack("c");
+  assert.equal(w.gen("c"), 2, "a Hand back that hands nothing back changes nothing");
+  w.take("d", "s2", "B");
+  w.turnEnded("s1");
+  assert.deepEqual([w.gen("c"), w.gen("d")], [3, 0], "only the computers the session held or would resume");
+  w.take("c", "s2", "B"); w.takeOver("c"); w.turnEnded("s2");
+  assert.equal(w.gen("c"), 5, "a turn whose computer the user took over still ends under a new generation");
+  w.handBack("c"); w.take("c", "s3", "C");
+  const before = w.gen("c");
+  clock.advance(30_000);
+  assert.equal(w.holder("c"), null);
+  assert.equal(w.gen("c"), before, "the idle free is not a cancellation (nothing runs then)");
+});

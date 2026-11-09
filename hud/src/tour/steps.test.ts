@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { BOOK, TOUR_TABS, chapterById, chapterForTab, resolveRefs, stepRef, validateBook } from "./steps";
+import { BOOK, TOUR_TABS, chapterById, chapterForTab, resolveRefs, showable, stepRef, validateBook } from "./steps";
+import { WHATS_NEW } from "./whatsnew";
+import type { TourContext } from "./predicates";
 import { BRAIN_MODES } from "../data/brainModel";
 
 const VIEW = fs.readFileSync(path.join(__dirname, "..", "views", "WorkbenchView.ts"), "utf8");
@@ -94,4 +96,16 @@ test("a What's new entry's refs resolve to steps: a chapter id is all of it, cha
   const core = chapterById(BOOK, "core")!;
   assert.equal(resolveRefs(BOOK, ["core"]).length, core.steps.length);
   assert.deepEqual(resolveRefs(BOOK, ["pulse.needs", "nope.x", "core.help"]).map((i) => stepRef(i.chapter.id, i.step.id)), ["pulse.needs", "core.help"]);
+});
+
+test("a What's new entry offers Show me only when one of its steps holds here (Task 16 minor 9)", () => {
+  const both: TourContext = { hosts: ["claude", "codex"], chat: true, checklist: true };
+  const computer = WHATS_NEW.releases.find((r) => r.version === "2.5.0")!.entries.find((e) => e.id === "computer-pane")!;
+  assert.equal(showable(BOOK, computer.steps, { ...both, computer: false }), false, "the Computer pane's steps are all gated while its surface is off");
+  assert.equal(showable(BOOK, computer.steps, both), false, "unsaid is off");
+  assert.equal(showable(BOOK, computer.steps, { ...both, computer: true }), true);
+  assert.equal(showable(BOOK, ["sessions.computer"], { ...both, chat: false, sessions: false, computer: true }), false, "a step whose chapter is gated");
+  assert.equal(showable(BOOK, ["code.computer", "core.rail"], { ...both, computer: false }), true, "one step that holds is enough");
+  assert.equal(showable(BOOK, [], both), false);
+  assert.equal(showable(BOOK, ["no-such.step"], both), false);
 });

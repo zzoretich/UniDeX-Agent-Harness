@@ -261,13 +261,19 @@ test('status: a sign-in check that hangs is stopped and reported as unknown, nev
   const hang = path.join(sb.dir, 'hang-claude.sh');
   // `claude auth status` that never answers (and ignores SIGTERM): the probe is killed after AOS_HOSTS_PROBE_MS.
   fs.writeFileSync(hang, '#!/bin/sh\ntrap "" TERM\nsleep 30\n', { mode: 0o755 });
+  // A Codex that answers, but slowly, as a CLI on a busy machine does: each check has its own cap, so only the hung one
+  // is stopped. The cap stays far above a slow answer and far below the hang (a 300 ms cap timed out the healthy fake
+  // Codex on a loaded CI runner).
+  const slow = path.join(sb.dir, 'slow-codex.sh');
+  fs.writeFileSync(slow, `#!/bin/sh\nsleep 0.5\nexec "${F('fake-codex.sh')}" "$@"\n`, { mode: 0o755 });
+  const env = { AOS_CLAUDE_BIN: hang, AOS_CODEX_BIN: slow, AOS_HOSTS_PROBE_MS: '2000' };
   const t0 = Date.now();
-  const r = sb.aos(['hosts', 'status', '--json'], { AOS_CLAUDE_BIN: hang, AOS_HOSTS_PROBE_MS: '300' });
+  const r = sb.aos(['hosts', 'status', '--json'], env);
   assert.equal(r.status, 0, r.stderr);
   assert.ok(Date.now() - t0 < 10_000, 'it did not wait for the hung CLI');
   const s = JSON.parse(r.stdout);
   assert.deepEqual(s.hosts.claude, { enabled: false, installed: true, bin: hang, signedIn: null, probe: 'timed out' });
   assert.equal(s.hosts.codex.signedIn, true, 'the other host is checked as usual');
-  const text = sb.aos(['hosts', 'status'], { AOS_CLAUDE_BIN: hang, AOS_HOSTS_PROBE_MS: '300' });
+  const text = sb.aos(['hosts', 'status'], env);
   assert.match(text.stdout, /^Claude Code off · .*hang-claude\.sh · sign-in unknown \(timed out\) {2}→ check again: aos hosts status$/m);
 });

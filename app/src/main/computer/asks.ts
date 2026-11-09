@@ -13,7 +13,11 @@ export const realClock: Clock = {
   clearTimeout: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
 };
 
-export interface AskInput { computer: string; session: string; sessionLabel: string; why: AskWhy; title: string; detail: string; site: string | null }
+/** `always`: the card offers "Always on <site>" (agent-computer D6, D39); absent or false, an "always" answer counts as
+ *  once. `title` heads the person's card and may quote the page's (scrubbed) name for the control; `notice` is wholly
+ *  app-written (the ask's labels, the action's kind, the site's host) and is all that leaves for a desktop notification,
+ *  the vault's Notifications item or an agent's reply (I1). */
+export interface AskInput { computer: string; session: string; sessionLabel: string; why: AskWhy; title: string; notice: string; detail: string; site: string | null; always?: boolean }
 export interface Ask extends AskInput { id: string; at: number }
 export type Answer = "once" | "always" | "deny";
 export type Outcome =
@@ -30,7 +34,8 @@ export class AskBroker {
   private entries = new Map<string, Entry>();
   // Outcomes kept after an ask settles, so a wait that comes after the answer still sees it.
   private settled = new Map<string, Settled>();
-  private readonly holdMs: number;
+  /** How long a tool call holds for an answer (D34's 45 s): a caller with an earlier deadline passes less to `hold`. */
+  readonly holdMs: number;
   private readonly clock: Clock;
 
   constructor(private o: { timeoutMs: () => number; holdMs?: number; clock?: Clock; onChange: (pending: readonly Ask[]) => void }) {
@@ -38,22 +43,23 @@ export class AskBroker {
     this.clock = o.clock ?? realClock;
   }
 
-  hold(input: AskInput): Promise<Outcome> {
+  /** Raises the ask and waits up to `ms` (the hold, by default) for its answer. */
+  hold(input: AskInput, ms: number = this.holdMs): Promise<Outcome> {
     const ask: Ask = { ...input, id: randomUUID(), at: this.clock.now() };
     const entry: Entry = { ask, expiry: null, waiters: new Set() };
     entry.expiry = this.clock.setTimeout(() => this.settle(ask.id, { state: "denied", askId: ask.id, reason: "timed out" }), Math.max(0, this.o.timeoutMs()));
     this.entries.set(ask.id, entry);
     this.o.onChange(this.pending());
-    return this.wait(ask.id);
+    return this.wait(ask.id, ms);
   }
 
-  wait(askId: string): Promise<Outcome> {
+  wait(askId: string, ms: number = this.holdMs): Promise<Outcome> {
     const kept = this.settled.get(askId);
     if (kept) return Promise.resolve(kept.outcome);
     const entry = this.entries.get(askId);
     if (!entry) return Promise.resolve({ state: "denied", askId, reason: "unknown ask" });
     return new Promise<Outcome>((resolve) => {
-      const timer = this.clock.setTimeout(() => { entry.waiters.delete(done); resolve({ state: "waiting_for_user", askId }); }, this.holdMs);
+      const timer = this.clock.setTimeout(() => { entry.waiters.delete(done); resolve({ state: "waiting_for_user", askId }); }, Math.max(0, ms));
       const done = (o: Outcome): void => { this.clock.clearTimeout(timer); resolve(o); };
       entry.waiters.add(done);
     });

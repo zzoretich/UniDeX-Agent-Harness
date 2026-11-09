@@ -90,6 +90,9 @@ const SLUG = /[a-z0-9][a-z0-9-]{1,40}/;     // RoutinesTab's routine slug
 const ASK_HOST = /--host=(?:claude|codex)/;
 const ASK_MODEL = new RegExp(`--model=${WORD.source}`);
 const ASK_EFFORT = /--effort=(?:minimal|low|medium|high|xhigh|max)/;
+// A computer ask notice's title (agent-computer D27; lib/notifications.js validate), which main/services/sessions.ts checks
+// against this rule before it runs notify.js: one line of 1-160 characters, not dash-led, so it can never read as a flag.
+const NOTICE_TITLE = /[^\s-][^\r\n\u2028\u2029]{0,159}/;
 // An MCP server's name as both host CLIs take it (cli/mcp.js NAME_RE, hud/src/data/mcpServers.ts MCP_NAME_RE).
 const MCP_NAME = /[A-Za-z0-9_][A-Za-z0-9_-]{0,63}/;
 // `aos mcp add`'s values (connectors-tab D18; cli/mcp.js parseMcpArgs checks each again). A secret is a variable's name,
@@ -650,11 +653,22 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "computer",
     label: "Computer",
-    source: "main/computer (bridge socket, ask notices)",
-    writes: [],
+    source: "main/computer (the bridge socket; notify.ts's ask notices, posted by main/services/sessions.ts postComputerNotice)",
+    // agent-computer D26: main runs the computer only while this surface is on: the bridge (D18) starts with it and stops
+    // without it, and so do the ask notices' posts. `computer.enabled` is the person's switch inside it (D25). On by
+    // default since its live check per host (2026-11-08: a Chat turn and a Code session each on Claude Code 2.1.318 and
+    // Codex 0.167.0 opened a page, snapshotted it, met the ask card, and Deny and Allow once held). D27: an ask raised while the pane does not show its
+    // computer posts one Notifications item, `notify.js post` from computer at level info (the app shows its own desktop
+    // notification, so the runtime raises none). The title is the ask's notice, wholly app-written (its labels, the
+    // action's kind, the site's host: I1), never the card's title, which can quote the page's name for the control; the
+    // body is app-written and comes on stdin; the ask's detail is never posted. The page writes nothing.
+    writes: ["brain/notifications/*/*.md"],
+    folders: ["brain/notifications", "brain/notifications/*"],
     scope: "main",
-    spawns: [],
-    verified: false,
+    spawns: [
+      { script: "notify.js", args: argv("post", "--from", "computer", "--level", "info", "--title", NOTICE_TITLE, "--body-file", "-") },
+    ],
+    verified: true,
   },
 ];
 

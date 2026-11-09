@@ -2,7 +2,7 @@
 // Getting started actions. Content is data so tools/ (CommonJS) can check it; this module types it and says what is
 // wrong with it (steps.test.ts runs validateBook over the shipped file). Pure, so node:test can load it.
 import raw from "./steps.json";
-import { isPredicate } from "./predicates";
+import { holds, isPredicate, type TourContext } from "./predicates";
 import { BRAIN_MODES } from "../data/brainModel";
 import { SPACES_PANES } from "../data/statusline";
 
@@ -167,6 +167,13 @@ export function resolveRefs(book: TourBook, refs: readonly string[]): Array<{ ch
     for (const step of chapter.steps) if (!sid || step.id === sid) out.push({ chapter, step });
   }
   return out;
+}
+
+/** Whether a What's new entry's Show me would show anything on this Mac: one of its steps holds in `ctx`, its chapter's
+ *  `when` and its own (agent-computer Task 16 minor 9: an entry whose every step is gated, such as the Computer pane's
+ *  while its surface is off, offers no Show me). */
+export function showable(book: TourBook, refs: readonly string[], ctx: TourContext): boolean {
+  return resolveRefs(book, refs).some(({ chapter, step }) => holds(chapter.when, ctx) && holds(step.when, ctx));
 }
 
 /**

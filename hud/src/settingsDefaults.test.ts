@@ -5,6 +5,7 @@ import {
   sanitizeSessionChoice, sanitizeVaultChoice, rememberSessionChoice, rememberVaultChoice,
   sanitizeTerminalChoice, rememberTerminalChoice, TERM_RECENT_MAX,
   sanitizeFilesChoice, rememberFilesChoice, FILES_FAVORITES_MAX, FILES_RECENTS_MAX,
+  sanitizeComputerPane, computerPaneStart, rememberComputerPane, COMPUTER_PANE_NARROW,
 } from "./settingsDefaults";
 
 test("the contract §5 settings exist with their defaults", () => {
@@ -188,4 +189,46 @@ test("Update links (files-finder D17) stays on until it is turned off, and only 
   assert.equal(off.updateLinks, false);
   assert.equal(rememberFilesChoice(off, { view: "list" }).updateLinks, false, "another change keeps it");
   assert.equal(rememberFilesChoice(off, { updateLinks: true }).updateLinks, true);
+});
+
+// ── the Computer pane (agent-computer D4): its width and whether it is collapsed, per page ──
+
+const OPEN = { width: 440, collapsed: false };
+
+test("the Computer pane is 440 px wide and open on both pages until it is changed; junk reads as that", () => {
+  assert.deepEqual(DEFAULT_SETTINGS.computerPane, {}, "nothing stored: each page starts from the defaults");
+  for (const raw of [undefined, null, 7, "x", [], {}, { code: "wide" }, { chat: [] }, { code: null }]) {
+    assert.deepEqual(sanitizeComputerPane(raw), { code: OPEN, chat: OPEN }, JSON.stringify(raw) ?? String(raw));
+  }
+});
+
+test("sanitizeComputerPane keeps a width inside 320–900 in whole pixels and a real boolean, and drops the rest", () => {
+  const got = sanitizeComputerPane({ code: { width: 100, collapsed: true }, chat: { width: 5000, collapsed: "yes" }, other: { width: 500 } });
+  assert.deepEqual(got, { code: { width: 320, collapsed: true }, chat: { width: 900, collapsed: false } });
+  assert.equal("other" in got, false);
+  for (const w of [NaN, Infinity, -Infinity, "600", null, {}, true]) {
+    assert.equal(sanitizeComputerPane({ code: { width: w } }).code.width, 440, String(w));
+  }
+  assert.equal(sanitizeComputerPane({ chat: { width: 512.6 } }).chat.width, 513);
+  const fresh = sanitizeComputerPane(undefined);
+  fresh.code.width = 600;
+  assert.equal(sanitizeComputerPane(undefined).code.width, 440, "a fresh copy each time");
+});
+
+test(`under ${COMPUTER_PANE_NARROW} px a page with nothing saved starts collapsed; a saved choice wins at any width`, () => {
+  assert.equal(COMPUTER_PANE_NARROW, 760);
+  assert.deepEqual(computerPaneStart({}, "code", 700), { width: 440, collapsed: true });
+  assert.deepEqual(computerPaneStart(undefined, "chat", 759), { width: 440, collapsed: true });
+  assert.deepEqual(computerPaneStart({}, "code", 760), OPEN);
+  assert.deepEqual(computerPaneStart({ code: { width: 500, collapsed: false } }, "code", 700), { width: 500, collapsed: false }, "the user's toggle wins");
+  assert.deepEqual(computerPaneStart({ code: { width: 500, collapsed: false } }, "chat", 700), { width: 440, collapsed: true });
+  assert.deepEqual(computerPaneStart({ chat: "junk" }, "chat", 700), { width: 440, collapsed: true }, "junk is nothing saved");
+});
+
+test("remembering one page's pane keeps the other page as it was stored, nothing saved included", () => {
+  const once = rememberComputerPane({}, "chat", { width: 610, collapsed: true });
+  assert.deepEqual(once, { chat: { width: 610, collapsed: true } });
+  assert.deepEqual(rememberComputerPane(once, "code", { width: 9999, collapsed: false }), { chat: { width: 610, collapsed: true }, code: { width: 900, collapsed: false } });
+  assert.deepEqual(rememberComputerPane("junk", "code", { width: 300, collapsed: false }), { code: { width: 320, collapsed: false } });
+  assert.deepEqual(rememberComputerPane({ code: 4, chat: { width: 700, collapsed: false } }, "chat", { width: 701, collapsed: true }), { chat: { width: 701, collapsed: true } });
 });

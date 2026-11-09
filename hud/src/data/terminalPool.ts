@@ -1,5 +1,5 @@
 import { Events } from "obsidian";
-import { pty as hostPty } from "../host";
+import { pty as hostPty, type HostPtyAgentResult } from "../host";
 import { TerminalSession, TerminalSessionOptions, type TerminalMeta } from "./terminalSession";
 import { TERM_HOST_LABEL, launchArgs, launchLine, placeKey, type LaunchSpec, type Place } from "./terminalLaunch";
 
@@ -64,23 +64,34 @@ export class TerminalPool extends Events {
    * and `ready` carries main's reason. A refusal (the folder, the words), or no shell to fall back to, ends the terminal
    * with the reason in it and rejects `ready`, as does a terminal closed before it started. What main's schema would
    * refuse never blocks the launch: the label is cut to fit, and a place key too long for it falls back without asking.
-   * Throws before any terminal opens when the spec holds a value launchArgs refuses.
+   * Throws before any terminal opens when the spec holds a value launchArgs refuses. R79, R80: with `onFlags`, when main
+   * refuses the line because its `--no-daemon` disagrees with main's answer now, `onFlags` gets that answer (the launcher
+   * keeps it, so its preview follows) and main is asked once more for the same terminal with the same spec, only its
+   * `noDaemon` and `probedBin` changed; a second refusal ends it.
    */
-  createAgent(o: { spec: LaunchSpec; place: Place; meta: Partial<TerminalMeta>; shell?: string }): { session: TerminalSession; ready: Promise<AgentStart> } {
-    const argv = launchArgs(o.spec);
-    const line = launchLine(o.spec);
+  createAgent(o: { spec: LaunchSpec; place: Place; meta: Partial<TerminalMeta>; shell?: string; onFlags?: (flags: { noDaemon: boolean; bin: string | null }) => void }): { session: TerminalSession; ready: Promise<AgentStart> } {
+    // A value launchArgs refuses throws here, before any terminal opens.
+    launchArgs(o.spec);
+    let spec = o.spec;
     const label = TERM_HOST_LABEL[o.spec.host];
     const session = this.create({ shell: o.shell, cwd: o.place.dir, meta: o.meta, deferred: true });
     const fit = (n: number): number => Math.min(Math.max(1, Math.floor(n) || 1), SIZE_MAX);
     const size = { cols: fit(session.dimensions.cols), rows: fit(session.dimensions.rows) };
     const place = placeKey(o.place);
-    const asked = place.length > PLACE_MAX
+    const ask = (s: LaunchSpec): Promise<HostPtyAgentResult> => (place.length > PLACE_MAX
       ? Promise.resolve({ ok: false as const, error: "this folder's path is too long for the computer", code: "fallback" })
       : hostPty.spawnAgent({
-        host: o.spec.host, argv, cwd: o.place.dir, configDir: o.spec.configDir ?? null, gitInit: !!o.spec.gitInit,
-        cols: size.cols, rows: size.rows, place, label: `${label} in ${o.place.label}`.slice(0, LABEL_MAX), access: o.spec.access,
-      });
+        host: s.host, argv: launchArgs(s), cwd: o.place.dir, configDir: s.configDir ?? null, gitInit: !!s.gitInit,
+        cols: size.cols, rows: size.rows, place, label: `${label} in ${o.place.label}`.slice(0, LABEL_MAX), access: s.access,
+      }));
+    const asked = ask(spec).then(async (r) => {
+      if (r.ok || r.code !== "flags" || !("flags" in r) || !o.onFlags || session.isClosed) return r;
+      o.onFlags(r.flags);
+      spec = { ...spec, noDaemon: r.flags.noDaemon, probedBin: r.flags.bin };
+      return ask(spec);
+    });
     const ready = asked.then((r): AgentStart => {
+      const line = launchLine(spec);
       if (session.isClosed) {
         if (r.ok) { try { r.data.kill(); } catch { /* gone */ } }
         throw new Error(`${label} did not start: the terminal was closed`);

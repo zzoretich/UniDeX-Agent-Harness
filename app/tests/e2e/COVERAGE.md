@@ -7,6 +7,8 @@ is listed below with the spec that covers it, or why it is not covered here.
 - **covered in part**: part of the item is asserted; the rest needs something named in the reason.
 - **N/A in the app**: the item is about the runtime CLI or a host session (Claude Code or Codex).
 - **not covered**: read-only, but not automated yet, with the reason.
+- **manual**: a live check by hand on a real host, which a surface still off by default waits for; the suite runs the
+  same flow through stand-ins, named in the reason.
 
 Specs live in `tests/e2e/`; a reference is `file › test` (titles shortened). Run the suite with `npm run test:e2e`
 (builds the app, generates the fixture with `scripts/make-fixture-vault.mjs`, runs every spec). The "Release procedure"
@@ -17,13 +19,14 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 | Status | Items |
 |---|---|
 | covered | 158 |
-| covered in part | 85 |
+| covered in part | 89 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| **total** | **298** |
+| manual | 0 |
+| **total** | **302** |
 
-Of the 249 items about the app (298 minus the 49 N/A), 243 are asserted (158 fully, 85 in part); the other 6 are not
-covered, for the reasons below. Every write surface is enabled and tested. The
+Of the 253 items about the app (302 minus the 49 N/A), 247 are asserted (158 fully, 89 in part), and the other 6 are
+not covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
 a live host session, Ollama's embeddings, the look in both themes). The writes, each surface on through `AOS_APP_WRITE`:
@@ -43,7 +46,23 @@ a live host session, Ollama's embeddings, the look in both themes). The writes, 
 - Sessions (SE1–SE13) in `sessions.spec.ts` (SE13, Vault chat's host and model menu, in `chat-writes.spec.ts`), against stand-in `claude` and `codex` CLIs that print recorded-shape streams and answer the host catalog's questions (Claude's `initialize`, Codex's `debug models` and `debug prompt-input`) from synthetic lists, the vault's own runtime, and git repositories the spec makes in workspaces;
 - Files (F14–F16, F19–F22) in `files-writes.spec.ts`;
 - the note editor, the app's own Notes surface (beyond the checklist), in `notes-writes.spec.ts`;
-- the settings window (I3, S1, S11) in `settings-window.spec.ts`.
+- the settings window (I3, S1, S11) in `settings-window.spec.ts`;
+- the Computer pane (CP1–CP4's flows) in `computer.spec.ts`, with `AOS_APP_WRITE=computer,sessions` and the test
+  build's switches (`AOS_E2E_TRUSTED_CLI` names its stand-in agent CLIs, `AOS_E2E_HOST_RULES` maps its `*.test` sites
+  to the fixture server): agents the app spawns for a Chat turn and as a Code terminal's own process, each starting the
+  plugin launcher's MCP server and calling the `computer_*` tools. Beyond the rows: the asks on an unmarked site (a
+  click, a fetch POST behind Continue that the server never sees on Deny, Tab then Space, `computer_type`) and what goes
+  freely (opening, scrolling, Tab), the ask-first categories on a marked site (Merge, Sign in, a held download that
+  reaches Downloads only on Allow, Return in a form field), refused `javascript:`, `data:` and redirect-to-`data:` URLs,
+  password fields redacted in snapshots and painted over in screenshots by pixel (also after Show password), Read only,
+  busy, Take over (the next action refused in milliseconds), refusals at hello (a process the app did not start, a
+  second connection, a server behind a shell), the tour steps' anchors, quitting with a pop-out open, the pane's
+  collapsed strip and the tools' "off" line with the surface off, a Codex-only machine, a Code terminal's agent seeing
+  what only the login shell's rc file exports (C1), each session's own snapshot refs (I2), Space on a button whose
+  label hides "Delete" (I3a), typing that stops at the chunk whose input navigates (I3b), an Allow refused when focus
+  moved to a same-named button while the card waited (R76), and camera, microphone and
+  location requests denied without a card (M10); with the surface off, a Code launch is typed into a shell with no
+  computer aside (`term-writes.spec.ts`).
 
 The 6 not covered: the To-Do midnight roll-over (needs a controllable clock), a duty run recorded outside the runtime
 (needs a real duty run), a killed dispatcher (needs a dispatched seat), the vault-root picker's Notices (need a
@@ -100,7 +119,7 @@ again (`brain-ai`).
 | APP3 | An existing install: no note about moving off Obsidian; the runtime offer, Update now and Later; then the launch sequence | covered | `attach › a vault opened for the first time is noted at once…`, `› a runtime older than the app's offers aos upgrade, and runs it only when asked`, `launch › an install from before 2.0…` (the runtime dialog first) |
 | APP4 | Obsidian-era settings in effect on first start, and copied into the app's data before any change (with the Brain badge's `brainReviewSeenAt` beside them) | covered | `variants › a vault whose HUD ran in Obsidian first › the app starts with Obsidian's plugin settings…` (the copy's settings kept; its `brainReviewSeenAt` written by the badge's first count, brain-hub D16, and `terminalEmbedHeight`, a key the HUD no longer has, dropped with that save) |
 | APP5 | Check for Updates… (greyed out with the reason when off); Restart to update once downloaded | covered in part | `attach › the app's own update: off in a dev run, and Restart to update asks main…`. A real update needs a published release: the acceptance run's §8. |
-| APP6 | The menubar popover; closing hides the window, ⌘Q quits; doctor's `workbench app` row | covered in part | `shell › tray popover…`, `shell › the app records itself in the vault…` (what the doctor row reads). Closing and quitting are the OS's; the row itself is the runtime's. |
+| APP6 | The menubar popover; closing hides the window, ⌘Q quits; doctor's `workbench app` row | covered in part | `shell › tray popover…`, `shell › the app records itself in the vault…` (what the doctor row reads), `quit › quitting with terminals running…` and `› a terminal that ignores its hangup…` (the quit's own path with terminals open, ended and reported before will-quit, the app exiting 0; a second quit while it waits joins it). The ⌘Q key and the window's close button are the OS's; the row itself is the runtime's. |
 | APP7 | Light and dark: follows macOS under Match macOS; the toggle, the palette, View ▸ Appearance and App settings switch it; it survives a restart; the windows and terminals follow | covered in part | `theme › with no choice saved, the page draws in the appearance macOS reports`, `› the ribbon's toggle switches to the opposite…`, `› the palette's command flips it back, and the menu shows the choice`, `› App settings ▸ Appearance goes back to Match macOS`, `› the choice outlives a restart…`. A spec cannot switch macOS's own appearance, and the popover's and terminals' repaint is not asserted (`tests/unit/theme.test.ts` covers the terminal colours' source). |
 | APP8 | Both themes read well: no unreadable text, status colours keep their meaning, Inter and JetBrains Mono | covered in part | `hud/src/ui/tokens.test.ts` holds every text, status and terminal colour to 4.5:1 in both themes; `theme › the ribbon's toggle switches…` checks the tokens reach the page. Looking at each tab is by eye. |
 | APP9 | The name and the mark: Dock, app menu, About, window title, menubar tooltip; the icon; the menubar mark follows the menu bar | covered in part | `shell › the app records itself in the vault…` (the running name is `productName`), `shell › tray popover…` (the menubar item carries the mark, from `out/main`), `app/tests/unit/brand.test.ts` (one name in both trees); `verify-dist.mjs` checks the packaged `UniDeX.app` and its tray images. The Dock, About and the template image's tint are the OS's. |
@@ -466,6 +485,15 @@ again (`brain-ai`).
 | TM9 | After a visit to Code (and Agent Teams), every tab keeps its layout | covered | `tab-layout › after Code and Agent Teams, the content area carries none of their classes`, `› after a visit to Code, the tabs keep their layout…` (Notifications, Proposals, Files, To-Do, Agent Teams by position); the rest by eye. |
 | TM10 | Code never scrolls the page, at full size and at 960×600: the composer's send and the list's foot inside the window, a wheel scrolls the terminal only; the composer twice its 1.5.0 height with 15px text | covered | `term-deck › Code fits its pane…` (no element from the content area up overflows or scrolls at 1480×920 and 960×600; the composer's box ≥ 192px at 15px; the terminal keeps > 200px; a wheel moves xterm's viewport and nothing else). The text scrolling past six lines and the 320px drag limit are read by eye. |
 | TM5 | A Finder-launched app finds npm-installed CLIs | not covered | The login-shell PATH is unit-tested (`main-services › terminals start with the login shell's PATH`); e2e stands in for it with `$AOS_SETUP_PATH`. |
+
+## Computer pane (per host; each turn spends)
+
+| # | Item | Status | Covered by / reason |
+|---|---|---|---|
+| CP1 | Claude Code, a Chat turn: open a page in the pane, read it, click; the card asks on an unmarked site, Deny leaves the page, Allow once clicks; no host prompt | covered in part | `computer.spec.ts` runs the flow through a stand-in the app spawns as the turn's CLI (`› a Chat turn opens a page in the pane…`, `› an unmarked site: a click asks first…`). The live check (2026-11-08, Claude Code 2.1.318): a real turn called the tools, pre-approved by `--allowedTools`, with no permission prompt; the card asked, Deny left the page and the server untouched, Allow once clicked. Each release's run by hand: app-smoke. |
+| CP2 | Codex, a Chat turn: the same, in plugin and direct mode, with no Codex prompt | covered in part | As CP1: `computer.spec.ts › a Codex-only machine…` and `› a second session…` drive a Codex turn's stand-in. The live check (2026-11-08, Codex 0.167.0 in plugin mode, the plugin's approvals installed): a `codex exec` turn under `approval_policy = "never"` ran every computer tool with no refusal, and the card, Deny and Allow once held as on Claude Code. Direct mode with the real CLI: by hand. |
+| CP3 | Claude Code, a Code session: the pane follows the terminal, the activity log, Take over cancels a waiting ask, Hand back | covered in part | As CP1: on a Claude Code terminal's stand-in, `computer.spec.ts › a marked site…` and `› off screen…`; Take over and Hand back run on a Chat turn's stand-in (`› Take over cancels a pending ask…`, Chat). The live check (2026-11-08): the real CLI started from the New menu as the terminal's own process, the card, Deny and Allow once, and the activity log's lines. Take over on the Code page with the real CLI: by hand. |
+| CP4 | Codex, a Code session: an ask off screen badges Code, marks the row waiting, notifies, and the notification and the Notifications item open the pane on it | covered in part | As CP1: a Codex terminal's stand-in in `computer.spec.ts › a Code session opens a page…` (its `--no-daemon` line and the menu's preview, the pane following it, its log); the off-screen ask runs on a Claude Code terminal's stand-in (`› off screen…`, Claude Code). The live check (2026-11-08): the real Codex TUI started with `--no-daemon` (R70), its MCP server the CLI's own child with Codex's background server running and not; the card, Deny and Allow once. The off-screen notice with the real CLI: by hand. |
 
 ## Launch sequence
 

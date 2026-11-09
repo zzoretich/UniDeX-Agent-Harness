@@ -11,6 +11,9 @@ export interface TermListActions {
   openWorkspace?(name: string): void;
   /** Show every group again after the list was scoped to one workspace (reveal). */
   clearScope?(): void;
+  /** A row's Computer marks (agent-computer D32, D35): a dot while its agent drives a computer off-screen or waits on an
+   *  ask, and "waiting" while it waits. */
+  mark?(id: string): { dot: boolean; waiting: boolean };
 }
 
 /** Each group's icon, in the table form the compat scanner reads. */
@@ -81,6 +84,12 @@ export class TermList {
         const text = row.createSpan({ cls: "aos-tl-text" });
         text.createSpan({ cls: "aos-term-tab-label", text: r.title });
         if (r.origin) text.createSpan({ cls: "aos-tl-origin", text: `from ${r.origin}` });
+        const m = this.actions.mark?.(r.id);
+        if (m?.waiting) row.createSpan({ cls: "aos-tl-waiting", text: "waiting", attr: { title: "Waiting for your answer in the Computer pane" } });
+        if (m?.dot) {
+          const why = m.waiting ? "Asking in the Computer pane" : "Working in the Computer pane, off-screen";
+          row.createSpan({ cls: `aos-tl-cdot${m.waiting ? " is-waiting" : ""}`, attr: { role: "img", "aria-label": why, title: why } });
+        }
         if (r.endText) row.createSpan({ cls: `aos-tl-end is-${r.end}`, text: r.end === "done" ? `✓ ${r.endText}` : r.endText });
         const close = row.createEl("button", { cls: "aos-tl-close", text: "×", attr: { type: "button", "aria-label": `Close ${r.title}`, title: "Close (⇧⌘W)" } });
         close.addEventListener("click", (e) => { e.stopPropagation(); this.actions.close(r.id); });

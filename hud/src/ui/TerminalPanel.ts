@@ -2,6 +2,8 @@
 // Renders the panel chrome (header with tabs and the New button, body with xterm, optional drag handle) inside a host
 // element. Each session gets its own xterm; only the active one is visible. The pool keeps which one is selected, so a
 // tab switch, a launch from another tab or the Pulse strip all show the same terminal (spec 2026-10-08-term-agent-deck).
+// The deck docks the Computer pane right of the terminal, following the selected terminal's place (agent-computer D4,
+// D32); its rows show the Computer's dot and "waiting" (D35).
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -18,11 +20,14 @@ import { TermList } from "./TermList";
 import { TermComposer } from "./TermComposer";
 import { TermFind } from "./TermFind";
 import { FIND_LIMIT } from "../data/termFind";
-import { shell } from "../host";
+import { hudHost, shell } from "../host";
 import { ConfirmModal } from "./ConfirmModal";
 import { LinkRepoModal } from "./LinkRepoModal";
 import { groupKey, groupTerminals, scopeOf, stepRow, type TermGroup, type TermRowInput, type TermScope } from "../data/termGroups";
-import { TERM_ACCESS_LABEL, TERM_HOST_LABEL, placeOf, workspacePlace, type Place, type PlaceWorld } from "../data/terminalLaunch";
+import { TERM_ACCESS_LABEL, TERM_HOST_LABEL, placeKey, placeOf, workspacePlace, type Place, type PlaceWorld } from "../data/terminalLaunch";
+import { ComputerPane } from "./ComputerPane";
+import { storeFor, type ComputerStore, type RowMarks } from "../data/computerStore";
+import { computerPaneStart, rememberComputerPane } from "../settingsDefaults";
 
 interface XtermBinding {
   term: Terminal;
@@ -72,6 +77,12 @@ export class TerminalPanel {
    *  elsewhere (spaces-redesign D12). */
   private scope: TermScope | null = null;
   private worldCache: { at: number; w: PlaceWorld } | null = null;
+  /** The deck's Computer pane (agent-computer D4), in the app only; its store gives the rows their marks (D32, D35). */
+  private computer: ComputerPane | null = null;
+  private computerStore: ComputerStore | null = null;
+  private unwatchComputer: (() => void) | null = null;
+  /** The rows' marks as last drawn, so a computer's state that changes none of them redraws nothing. */
+  private marksShown = "";
 
   private bindings = new Map<string, XtermBinding>();
   private activeId: string | null = null;
@@ -110,6 +121,7 @@ export class TerminalPanel {
         clearEnded: () => { for (const s of this.plugin.terminalPool.list()) if (s.isExited) this.plugin.terminalPool.remove(s.id); },
         openWorkspace: this.opts.openWorkspace ? (name) => this.opts.openWorkspace?.(name) : undefined,
         clearScope: () => { this.scope = null; this.renderTabs(); },
+        mark: (id) => this.marks(id),
       }, () => this.renderTabs());
       frame = host.createDiv({ cls: "aos-term-main", attr: { "data-tour": "code-main" } });
     }
@@ -138,6 +150,7 @@ export class TerminalPanel {
     if (this.opts.deck) {
       this.composer = new TermComposer(frame, this.plugin, () => this.focus(), () => this.bracketedPaste());
       this.finder = new TermFind(this.bodyEl, () => this.focus());
+      this.mountComputer(host);
     }
 
     // drag handle
@@ -211,6 +224,12 @@ export class TerminalPanel {
   unmount(): void {
     // The host is shared (the Workbench's content area): take back the classes mount() put on it.
     this.host?.removeClass("aos-term", "aos-term-fullpane", "aos-term-deck");
+    this.computer?.destroy();
+    this.computer = null;
+    this.unwatchComputer?.();
+    this.unwatchComputer = null;
+    this.computerStore = null;
+    this.marksShown = "";
     this.disposePool?.();
     this.disposePool = null;
     this.disposeTheme?.();
@@ -234,6 +253,9 @@ export class TerminalPanel {
     this.resizeObs = null;
     this.host = null;
   }
+
+  /** Another rail tab is in front: the Computer pane lets its view go and selects nothing (ruling R51). */
+  leave(): void { this.computer?.hide(); }
 
   focus(): void {
     if (!this.activeId) return;
@@ -320,6 +342,7 @@ export class TerminalPanel {
 
   private renderTabs(): void {
     if (this.opts.deck && this.list) {
+      this.marksShown = this.marksSig();
       this.groups = groupTerminals(this.rowInputs(), this.list.query(), this.scope);
       this.list.render(this.groups, this.activeId, this.plugin.terminalPool.list().filter((s) => !s.isExited).length, this.scope);
       this.renderHead();
@@ -404,8 +427,10 @@ export class TerminalPanel {
     this.placeMenu = null;
     const s = this.activeId ? this.plugin.terminalPool.get(this.activeId) : undefined;
     this.composer?.setSession(s ?? null);
-    if (!s) return;
+    if (!s) { this.computer?.follow(null); return; }
     const place = this.placeOfSession(s);
+    // The pane shows the computer this terminal's place shares (agent-computer D30, D32), shell or agent.
+    this.computer?.follow({ place: placeKey(place), label: place.label });
     const wrap = el.createDiv({ cls: "aos-term-placewrap" });
     const chip = wrap.createEl("button", { cls: "aos-term-place", attr: { type: "button", "aria-haspopup": "menu", title: place.dir } });
     const placeIcon = chip.createSpan({ cls: "aos-term-placeicon" });
@@ -442,6 +467,36 @@ export class TerminalPanel {
       }
       btn("Open a shell here", () => this.startIn(place, "shell"));
     }
+  }
+
+  /** The Computer pane, third in the deck after the terminal (agent-computer D4): only in the app, which has a computer. */
+  private mountComputer(host: HTMLElement): void {
+    const computer = hudHost().computer;
+    if (!computer) return;
+    this.computer = new ComputerPane({
+      host: computer,
+      page: "code",
+      settings: () => computerPaneStart(this.plugin.settings.computerPane, "code", window.innerWidth),
+      save: (pane) => {
+        this.plugin.settings.computerPane = rememberComputerPane(this.plugin.settings.computerPane, "code", pane);
+        void this.plugin.saveSettings();
+      },
+    });
+    this.computer.mount(host);
+    this.computerStore = storeFor(computer);
+    this.unwatchComputer = this.computerStore.subscribe(() => {
+      if (this.host && this.list && this.marksSig() !== this.marksShown) this.renderTabs();
+    });
+  }
+
+  /** A row's Computer marks: its agent's, by the key the computer names it by (D35); none for a shell. */
+  private marks(id: string): RowMarks {
+    return this.computerStore?.marks(this.plugin.terminalPool.get(id)?.computerKey ?? null) ?? { dot: false, waiting: false };
+  }
+
+  private marksSig(): string {
+    if (!this.computerStore) return "";
+    return this.plugin.terminalPool.list().map((s) => { const m = this.marks(s.id); return `${s.id}:${m.dot ? 1 : 0}${m.waiting ? 1 : 0}`; }).join(",");
   }
 
   private togglePlaceMenu(wrap: HTMLElement, s: TerminalSession, place: Place): void {

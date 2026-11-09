@@ -36,8 +36,10 @@ test("the app records itself in the vault for doctor and the update check (brain
   const running = await h.app.evaluate(({ app: a }) => ({ name: a.getName(), version: a.getVersion() }));
   const pkg = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")) as { productName: string; version: string };
   expect(running).toEqual({ name: pkg.productName, version: pkg.version });
-  const marker = readVaultJson<{ schema: number; host: string; name: string; version: string; at: string }>("brain/_index/hud-host.json");
-  expect(marker).toEqual({ schema: 1, host: "app", name: running.name, version: running.version, at: marker.at });
+  const marker = readVaultJson<{ schema: number; host: string; name: string; version: string; at: string; pid?: number; computer?: string }>("brain/_index/hud-host.json");
+  // Main's pid, so a reader can tell a marker a crash left behind; the Computer surface is off here, as by default
+  // (agent-computer D26): no bridge socket, and the marker says why.
+  expect(marker).toEqual({ schema: 1, host: "app", name: running.name, version: running.version, at: marker.at, pid: h.app.process().pid, computer: "off" });
   expect(Date.now() - Date.parse(marker.at)).toBeLessThan(10 * 60_000);
   // Written by main, atomically: no temp file is left beside it.
   expect(fs.readdirSync(FX.v("brain/_index")).filter((n) => n.startsWith("hud-host.json."))).toEqual([]);

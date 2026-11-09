@@ -545,3 +545,27 @@ test("sessionSpendToday and spendLine: today's session:* rows against the cap", 
   assert.deepEqual(spendLine(0, 2.5), { text: "$0.00 of $2.50", ratio: 0 });
   assert.equal(spendLine(0, 0).ratio, 1);
 });
+
+test("a Computer pane line is a row of its turn, in order, with the activity log's text; live only, never a timeline row (agent-computer D6, D21, D35)", () => {
+  const events = [
+    ev("prompt", 1, { text: "Open the shop" }),
+    ev("computer", 1, { text: "Opened https://shop.test/" }),
+    ev("computer", 1, { text: "Asked the user: Act on a site you haven't marked: Click “Add to basket” on shop.test?" }),
+    ev("computer", 1, { text: "Denied: Act on a site you haven't marked: Click “Add to basket” on shop.test?" }),
+    ev("computer", 1, { text: "You: Took over" }),
+    ev("computer", 1, { text: "   " }),
+    ev("text", 1, { text: "The user denied the click." }),
+    ev("done", 1, { ok: true }),
+  ];
+  const rows = threadRows(events);
+  assert.deepEqual(rows.filter((r) => r.kind === "computer"), [
+    { kind: "computer", turn: 1, text: "Opened https://shop.test/" },
+    { kind: "computer", turn: 1, text: "Asked the user: Act on a site you haven't marked: Click “Add to basket” on shop.test?" },
+    { kind: "computer", turn: 1, text: "Denied: Act on a site you haven't marked: Click “Add to basket” on shop.test?" },
+    { kind: "computer", turn: 1, text: "You: Took over" },
+  ], "an empty line is dropped");
+  assert.deepEqual(rows.map((r) => r.kind), ["prompt", "computer", "computer", "computer", "computer", "text", "done"], "where they came, before the agent's reply");
+  assert.ok(!timelineRows(events).some((r) => (r.kind as string) === "computer"), "the first timeline's kinds stay as they were");
+  const long = threadRows([ev("computer", 2, { text: `Opened ${"x".repeat(600)}\nnext` })])[0];
+  assert.ok(long.kind === "computer" && long.text.length === 400 && !long.text.includes("\n"), "one line, clipped");
+});

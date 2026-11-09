@@ -19,6 +19,8 @@ test("each predicate on each kind of install (tour C8)", () => {
     ["codexOnly", CODEX, true], ["codexOnly", BOTH, false], ["codexOnly", NONE, false],
     ["noHost", NONE, true], ["noHost", CLAUDE, false],
     ["checklistShown", BOTH, true], ["checklistShown", CLAUDE, false],
+    // The Computer pane's steps: only while the app runs its surface; unset (outside the app) is off.
+    ["computerOn", { ...BOTH, computer: true }, true], ["computerOn", { ...BOTH, computer: false }, false], ["computerOn", BOTH, false],
   ];
   for (const [when, c, want] of table) assert.equal(holds(when, c), want, `${when} on ${c.hosts.join("+") || "none"}`);
 });

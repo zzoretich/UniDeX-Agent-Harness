@@ -387,6 +387,17 @@ export interface LaunchSpec {
   /** The folder that prefix names (CLAUDE_CONFIG_DIR or CODEX_HOME), or null when there is none: main sets it in the
    *  environment of an agent it runs as the terminal's own process (agent-computer D18). */
   configDir?: string | null;
+  /**
+   * Codex only: start with `--no-daemon`, so the TUI runs its app server in its own process instead of Codex's shared
+   * background server, and the agenticos MCP server stays the CLI's own child, the process the bridge admits
+   * (agent-computer R70, D18). Main says when (HostPty.agentFlags: the computer surface on, and the resolved CLI's
+   * `--help` lists the flag, as codex-cli 0.167.0's does); the line then carries it, so the menu's preview and a typed
+   * fallback show the argv that runs.
+   */
+  noDaemon?: boolean;
+  /** The binary main probed for `noDaemon` (its resolved path), or null. A typed fallback line carries the flag only when
+   *  it names that same binary (R77): the HUD's recorded binary may be another install that does not take it. */
+  probedBin?: string | null;
 }
 
 /**
@@ -469,9 +480,11 @@ export function launchArgs(s: LaunchSpec): string[] {
   // A Codex resume takes the conversation's own settings: flags beside `resume` are not verified (spec §5 gaps). By id,
   // `-C <folder>` comes first and names this terminal's folder, so Codex resumes there without asking (LaunchSpec.cwd);
   // `--last` already looks only at threads recorded in this folder.
-  if (resume === "last") return ["resume", "--last"];
-  if (resume) return ["resume", ...(s.cwd ? [CODEX_RESUME_CD.flag, free("folder", s.cwd)] : []), resume.id];
-  return [...(model ? ["-m", model] : []), ...CODEX_ACCESS[s.access]];
+  // `--no-daemon` (R70) leads a new session's line and follows `resume` (`codex resume --help` lists it too).
+  const nd = s.noDaemon ? ["--no-daemon"] : [];
+  if (resume === "last") return ["resume", ...nd, "--last"];
+  if (resume) return ["resume", ...nd, ...(s.cwd ? [CODEX_RESUME_CD.flag, free("folder", s.cwd)] : []), resume.id];
+  return [...nd, ...(model ? ["-m", model] : []), ...CODEX_ACCESS[s.access]];
 }
 
 /**
@@ -482,7 +495,9 @@ export function launchArgs(s: LaunchSpec): string[] {
  */
 export function launchLine(s: LaunchSpec): string {
   const bin = shq(s.bin || s.host);
-  const argv = [bin, ...launchArgs(s).map((a) => (/^[A-Za-z0-9._:/=-]+$/.test(a) ? a : shq(a)))].join(" ");
+  // R77: `--no-daemon` is typed only for the binary main probed; any other (the bare name included) types none.
+  const typed = s.noDaemon && !(s.bin && s.bin === s.probedBin) ? { ...s, noDaemon: false } : s;
+  const argv = [bin, ...launchArgs(typed).map((a) => (/^[A-Za-z0-9._:/=-]+$/.test(a) ? a : shq(a)))].join(" ");
   const label = TERM_HOST_LABEL[s.host];
   const git = s.gitInit ? "[ -e .git ] || git init -q; " : "";
   return ` ${git}command -v ${bin} >/dev/null 2>&1 && ${s.envPrefix ?? ""}exec ${argv} || echo ${shq(`${label} was not found: run aos doctor`)}`;

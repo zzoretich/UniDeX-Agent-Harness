@@ -87,12 +87,23 @@ export class NewTerminalMenu {
     this.host = quick.host ?? this.launcher.choice().host ?? ready[0] ?? "shell";
     if (!ready.includes(this.host)) this.host = ready[0] ?? "shell";
     this.renderPop();
+    // R70, R79: main may add --no-daemon to a Codex line; the preview shows the line that will run once main has said
+    // (both keys are asked, the new line's and the resume line's).
+    void this.launcher.refreshAll().then((changed) => {
+      if (!changed || !this.pop) return;
+      this.renderPop();
+      if (this.mode === "menu") this.focusFilter();
+      else (this.pop?.querySelector(".aos-ntm-name-input") as HTMLInputElement | null)?.focus();
+    });
   }
 
   close(focusButton = true): void {
     if (!this.pop) return;
-    this.pop.detach();
+    // Forgotten before it leaves the page: detaching it blurs the focused filter, and that focusout must find the menu
+    // already closed, or it closes it again inside the detach (a removeChild error in the page).
+    const pop = this.pop;
     this.pop = null;
+    pop.detach();
     this.el.removeClass("is-open");
     this.el.querySelector(".aos-ntm-caret")?.setAttr("aria-expanded", "false");
     if (focusButton) (this.el.querySelector(".aos-ntm-main") as HTMLElement | null)?.focus();

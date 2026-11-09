@@ -23,7 +23,7 @@ function fakeAos(answer: (req: PtyAgentRequest) => Promise<Result<{ pid: number 
   return { aos, asked, killed, emit: (ev: PtyEvent) => emit(ev) };
 }
 
-const INFO = { vaultRoot: "/vault", env: {}, home: "/home", platform: "darwin" } as unknown as BootInfo;
+const INFO = { vaultRoot: "/vault", env: {}, home: "/home", platform: "darwin", writeSurfaces: [] } as unknown as BootInfo;
 const REQ: HostPtyAgentRequest = {
   host: "claude", argv: ["--session-id", "3f2c9a1e"], cwd: "/vault", configDir: null, gitInit: false, cols: 80, rows: 24,
   place: "vault", label: "Claude Code in Vault", access: "edit",
@@ -40,6 +40,7 @@ test("an agent's terminal: main's pid, output that came before the HUD listened,
   assert.ok(r.ok);
   assert.deepEqual(f.asked, [{ ...REQ, id: "t1" }], "the bridge names the terminal");
   assert.equal(r.data.pid, 4242);
+  assert.equal(r.data.id, "t1", "the id the computer names the agent by (code:t1)");
   const seen: string[] = [];
   const exits: number[] = [];
   r.data.onData((d) => seen.push(d));
@@ -67,4 +68,11 @@ test("main's fallback and refusals come back as they are; a bridge that fails on
   assert.equal(warned.length, 1);
   const broke = await createBridgeHost(fakeAos(async () => { throw new Error("reply was never sent"); }).aos, INFO).host.pty.spawnAgent!(REQ);
   assert.deepEqual(broke, { ok: false, error: "reply was never sent", code: "fallback" });
+});
+
+test("the Computer pane's host says whether the computer surface is on for this run (agent-computer D26, ruling R54)", () => {
+  const on = (writeSurfaces: string[]) => createBridgeHost(fakeAos(async () => ({ ok: true, data: { pid: 1 } })).aos, { ...INFO, writeSurfaces } as BootInfo).host.computer?.enabled;
+  assert.equal(on([]), false);
+  assert.equal(on(["sessions", "todo"]), false);
+  assert.equal(on(["sessions", "computer"]), true);
 });

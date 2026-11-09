@@ -6,17 +6,24 @@
 // check it against the read scope, the write surfaces and the program rules (./policy). Main itself writes one file
 // outside its userData: the app's record in the vault's runtime cache (hud-host.ts). The app updates itself (./updater).
 
-import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, screen, type Rectangle } from "electron";
+import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, Notification, screen, type Rectangle } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { APP_ORIGIN, CH, POPOVER, type AttachInfo, type BootInfo, type CommandInfo, type ProtocolRequest, type ReadyInfo, type ThemeSource, type ThemeState } from "../shared/ipc";
+import { APP_ORIGIN, CH, POPOVER, type AttachInfo, type BootInfo, type CommandInfo, type ComputerEvent, type ProtocolRequest, type ReadyInfo, type ThemeSource, type ThemeState } from "../shared/ipc";
 import { registerAppScheme, serveAppScheme } from "./app-scheme";
 import { BRAND } from "../shared/brand";
 import type { Sys } from "./computer/admission";
+import { AskBroker } from "./computer/asks";
+import { ComputerBrowser } from "./computer/browser";
+import { computerConfig, type ComputerConfig } from "./computer/config";
+import { AskNotifier, testSwitches } from "./computer/notify";
 import { loadPeer, type PeerAddon } from "./computer/peer";
 import { AgentRegistry } from "./computer/registry";
-import { writeHudHostMarker } from "./hud-host";
+import { ComputerService } from "./computer/service";
+import { SiteMarks } from "./computer/sites";
+import { Wheel } from "./computer/wheel";
+import { writeHudHostMarker, type HudHostInfo } from "./hud-host";
 import { registerFsIpc } from "./ipc/fs";
 import { registerHostIpc } from "./ipc/host";
 import { registerProcIpc } from "./ipc/proc";
@@ -24,6 +31,7 @@ import { registerProposalsIpc } from "./ipc/proposals";
 import { registerSessionIpc } from "./ipc/sessions";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
 import { openExternalSafe, registerShellIpc } from "./ipc/shell";
+import { registerComputerIpc } from "./ipc/computer";
 import { registerThemeIpc } from "./ipc/theme";
 import { trustMainWindow } from "./ipc/trust";
 import { buildAppMenu } from "./menu";
@@ -32,16 +40,19 @@ import { parseShells, type ProgramContext } from "./policy/programs";
 import { ReadScope, type AgenticosPaths } from "./policy/read-scope";
 import { WritePolicy } from "./policy/write-policy";
 import { SCHEME, parseAgenticosUrl, urlFromArgv } from "./protocol";
+import { quitGate } from "./quit-gate";
 import { admit } from "./computer/admission";
-import { ComputerBridge } from "./computer/bridge";
+import { BridgeKeeper, ComputerBridge, bridgeSocketPath } from "./computer/bridge";
+import { sweepHeld } from "./computer/downloads";
 import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
 import { GitService } from "./services/git";
 import { PtyService, terminalBaseEnv, type PtyLib } from "./services/pty";
 import { SessionService, workspaceDir } from "./services/sessions";
-import { attachInfo } from "./setup/attach";
+import { attachInfo, hostsOf } from "./setup/attach";
 import { SetupController, type AgenticosJson } from "./setup/controller";
-import { defaultLoginPathDeps, findOnPath, isExecutable, loginPath } from "./setup/env";
+import { defaultLoginPathDeps, findOnPath, isExecutable, loginPath, loginShellEnv } from "./setup/env";
+import { FlagProbe } from "./services/cli-flags";
 import { findPayload } from "./setup/payload";
 import { loadThemeSource, saveThemeSource, windowBackground } from "./theme";
 import { STATUSLINE_PATH, StatusTray } from "./tray";
@@ -60,6 +71,11 @@ if (debugging.length && app.isPackaged && !__AOS_TEST_BUILD__) {
   console.error(`[main] refusing to start with ${debugging.join(", ")}: this build cannot be debugged from outside`);
   process.exit(1);
 }
+
+// agent-computer D18, D39: the e2e suite's switches, which a packaged build ignores (computer/notify.ts testSwitches).
+// Chromium reads its switches before `ready`: the host rules give the suite's fixture sites unmarked *.test origins.
+const e2e = testSwitches(process.env, app.isPackaged);
+if (e2e.hostRules) app.commandLine.appendSwitch("host-resolver-rules", e2e.hostRules);
 
 /** The install's agenticos.json (the launcher's lookup): its path, and what `aos init` / `aos upgrade` wrote there. */
 const agenticosFile = process.env.AOS_CONFIG || path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "agenticos.json");
@@ -120,15 +136,32 @@ const computerSys: Sys | null = (() => {
   }
 })();
 // The app's own node-pty: in a packaged build its JavaScript is in the archive and its native parts are unpacked beside it.
-// Its terminals start with the login shell's PATH (T14), worked out once and shared with sessionNode. A Code launch's
-// agent runs as its terminal's own process, from the binary the runtime resolves (D18).
+// Its terminals start with the login shell's PATH (T14), worked out once and shared with sessionNode. While the computer
+// surface is on, a Code launch's agent runs as its terminal's own process, from the binary the runtime resolves (D18),
+// with the environment the login shell gives a typed command (C1); off, the launch is typed into a shell as before.
+const noDaemonProbe = new FlagProbe("--no-daemon");
 const ptyService = new PtyService({
   context: () => context, env: () => terminalBaseEnv(process.env, termPATH()), emit: (ev) => send(CH.ptyEvent, ev), load: () => require("node-pty") as PtyLib,
-  resolveBin: (host) => sessionService.resolveBin(host), registry: agentRegistry, sys: computerSys,
+  computerOn: () => computerOn(), shellEnv: (shell, cwd, base) => loginShellEnv(shell, cwd, base),
+  resolveBin: (host) => sessionService.resolveBin(host), registry: agentRegistry, sys: computerSys, trusted: e2e.trustedCli,
+  // agent-computer R70: a Codex launch runs without Codex's shared background server when its CLI's help lists the flag
+  // (the help read with the launch's environment, R77).
+  noDaemon: (bin, env, sub) => noDaemonProbe.lists(bin, { env, sub }),
+  // ...and only while Settings ▸ Computer is on as well as the surface (R77).
+  computerEnabled: () => computerSettings().enabled,
+  // Nothing is resolved or probed for Codex while agenticos.json has it off (R77), read fresh as a host change lands.
+  hostOn: (host) => hostsOf(readAgenticos())[host],
+  // agent-computer D31: a Code agent that exits (or whose terminal closes) frees its computer's wheel and cancels its asks.
+  onAgentGone: (agent) => computerService.agentGone(agent),
+  // R86: no terminal starts while the app quits (quit-gate.ts), so the quit's wait for their exits is the last one.
+  quitting: () => quitting,
 });
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
 // surface. A turn outlives a page reload; quitting stops every one.
 const sessionsOn = (): boolean => policy.ids.includes("sessions");
+// agent-computer D26: the computer runs only while its surface is on (the bridge and the ask notices' post); on by
+// default since its live check on each host. `computer.enabled` is the person's switch inside it (D25).
+const computerOn = (): boolean => policy.ids.includes("computer");
 let loginPATH: string | null = null;
 /** The login shell's PATH, asked once (setup/env.ts loginPath; $AOS_SETUP_PATH stands in for it under e2e). */
 function termPATH(): string {
@@ -142,17 +175,74 @@ function sessionNode(): string | null {
   return findOnPath("node", termPATH());
 }
 const sessionService = new SessionService({
-  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, context: () => context, env: process.env, node: sessionNode, emit: (ev) => send(CH.sessionEvent, ev),
+  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, computerOn, context: () => context, env: process.env, node: sessionNode, emit: (ev) => send(CH.sessionEvent, ev),
   // A Code launch's binary is the one its terminal's PATH finds, as the typed line's was (agent-computer D18).
   terminalPATH: () => termPATH(),
   // A Chat turn's CLI is registered while it runs, in its thread's workspace: the computer a Code launch there shares
   // (the HUD's placeKey, `ws:<name>`; agent-computer D18, D3, D30).
+  // Its exit ends the turn on the computer too: the wheel frees and its asks are cancelled (D31).
   onAgent: (ev) => {
-    if (ev.kind === "start") agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access });
-    else if (agentRegistry.get(ev.pid)?.key === `chat:${ev.thread}`) agentRegistry.remove(ev.pid);
+    if (ev.kind === "start") { agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access }); return; }
+    const ref = agentRegistry.get(ev.pid);
+    if (ref?.key !== `chat:${ev.thread}`) return;
+    agentRegistry.remove(ev.pid);
+    computerService.agentGone(ref);
   },
 });
 const gitService = new GitService({ workspace: (name) => workspaceDir(context.vaultRoot ?? null, name), enabled: sessionsOn, env: process.env });
+
+// agent-computer D3, D7, D27, D31, D34, D35: the computer behind the bridge. One ask broker, one wheel, the marked sites
+// (<userData>/computer/sites.json), and a browser per place, made on its first use (after ready: the bridge starts only
+// then). Its state, and the reveal a notification's click asks for, reach the page on `computer:event`; a Chat agent's
+// lines reach its thread live. An ask the pane does not show raises a desktop notification and a Notifications item.
+const computerSettings = (): ComputerConfig => computerConfig(vault.root, agenticosFile);
+const computerBrowsers = new Map<string, ComputerBrowser>();
+/** The notices raised off-screen, newest last, for the e2e suite (`__aosMain.computerNotices`). */
+const computerNotices: Array<{ title: string; body: string }> = [];
+const askNotifier = new AskNotifier({
+  visible: (ask) => computerService.onScreen(ask.computer) && computerWindowShown(),
+  desktop: (title, body, onClick) => {
+    if (!app.isPackaged || __AOS_TEST_BUILD__) {
+      computerNotices.push({ title, body });
+      if (computerNotices.length > 50) computerNotices.shift();
+    }
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title, body });
+    n.on("click", onClick);
+    n.show();
+    // Held until the ask settles (the notifier withdraws it then), so its click handler stays alive.
+    return () => n.close();
+  },
+  post: (title, body) => sessionService.postComputerNotice(title, body),
+  reveal: (askId) => { show(); sendComputerEvent({ type: "reveal", askId }); },
+});
+const askBroker = new AskBroker({
+  timeoutMs: () => computerSettings().askTimeoutSec * 1000,
+  onChange: (pending) => { computerService.refresh(); askNotifier.sync(pending); },
+});
+const computerWheel = new Wheel({ reserved: (c) => computerService.reserved(c), onChange: () => computerService.refresh() });
+/** An ask the person could see when it came is noticed if the app's window blurs, hides or minimizes while it is pending. */
+const recheckAsks = (): void => { setTimeout(() => askNotifier.sync(askBroker.pending()), 0); };
+const computerService: ComputerService = new ComputerService({
+  browser: (place, hooks) => {
+    const b = new ComputerBrowser({ key: place, window: () => win, hooks });
+    computerBrowsers.set(place, b);
+    return b;
+  },
+  broker: askBroker,
+  wheel: computerWheel,
+  sites: new SiteMarks(path.join(app.getPath("userData"), "computer", "sites.json")),
+  config: computerSettings,
+  emit: (state) => sendComputerEvent({ type: "state", state }),
+  // D35: a Chat agent's line joins its thread's timeline, live; a Code agent's stays in the pane's activity log (the
+  // service keeps it there) and its tool results. The app never writes into a terminal.
+  note: (agent, line) => {
+    if (agent.page === "chat" && agent.key.startsWith("chat:")) sessionService.noteEvent(agent.key.slice("chat:".length), line);
+  },
+  popOut: (place) => popOutComputer(place),
+  // D31: a late bridge close from a session's previous process must not end the turn that replaced it.
+  liveAgent: (key) => agentRegistry.byKey(key),
+});
 
 /** The variables the HUD reads (HudHost.env), from main's environment; nothing else of it reaches the page. */
 const PAGE_ENV = ["SHELL", "CLAUDE_CONFIG_DIR", "AOS_CONFIG", "AOS_VAULT", "CODEX_HOME"];
@@ -207,13 +297,20 @@ const updates = new UpdateService({
     setMenu();
   },
   // The window hides on close until the app quits; an update's quit closes the windows before `before-quit`, so it says so first.
-  beforeInstall: () => { quitting = true; quittingForUpdate = true; },
+  beforeInstall: () => { quitting = true; quittingForUpdate = true; shutdownComputer(); },
+  // R86: the terminals end, and node-pty reports each exit, before quitAndInstall starts the quit (quit-gate.ts).
+  settle: () => (ptyService.busy ? ptyService.settle() : null),
 });
+/** R86: a quit with a terminal running waits until node-pty has reported every terminal's exit, about a second at most. */
+const gate = quitGate({ busy: () => ptyService.busy, settle: () => ptyService.settle(), quit: () => app.quit() });
 /** How many times the page asked to restart into an update (the e2e suite reads it: a dev run has no update to install). */
 let installRequests = 0;
 
 /** Only our own page, in our own window's main frame, may talk to main. */
 const trust = trustMainWindow(() => win);
+
+/** The only way `computer:event` is sent: the payload is a ComputerEvent. */
+function sendComputerEvent(ev: ComputerEvent): void { send(CH.computerEvent, ev); }
 
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -243,8 +340,102 @@ function togglePopover(anchor: Rectangle): boolean {
   return true;
 }
 
+// ── the computer's pop-out window ────────────────────────────────────
+
+/** The pop-out window and the place whose computer it holds (agent-computer D5: the pane's Pop out). */
+let computerPop: { win: BrowserWindow; place: string } | null = null;
+
+const popBounds = (w: BrowserWindow): Rectangle => { const [width, height] = w.getContentSize(); return { x: 0, y: 0, width, height }; };
+
+/** A computer back in the main window, or parked when there is none (it keeps painting off-screen, D27). */
+function moveHome(b: ComputerBrowser | undefined): void {
+  if (!b) return;
+  if (win && !win.isDestroyed()) b.moveTo(win); else b.show(null);
+}
+
+/** The pop-out window is closing: its computer goes back first, since a view has no host once its window is gone. */
+function popBack(): void {
+  const pop = computerPop;
+  if (!pop) return;
+  computerPop = null;
+  moveHome(computerBrowsers.get(pop.place));
+  computerService.popIn();
+}
+
+/** Closes the pop-out window, its computer moved back first (the page went: nothing would show it). */
+function closeComputerPop(): void {
+  const w = computerPop?.win;
+  popBack();
+  if (w && !w.isDestroyed()) w.destroy();
+}
+
+/**
+ * Moves a place's computer into the pop-out window, made on first use, and the one it held before back to the main
+ * window. The window loads nothing and has no preload: it only holds the computer's view, with the main window's
+ * hardening. Closing it moves the view back to the main window first.
+ */
+function popOutComputer(place: string): void {
+  const b = computerBrowsers.get(place);
+  if (!b) return;
+  let pop = computerPop && !computerPop.win.isDestroyed() ? computerPop : null;
+  if (pop?.place === place) { pop.win.show(); pop.win.focus(); return; }
+  if (pop) {
+    moveHome(computerBrowsers.get(pop.place));
+    pop.place = place;
+  } else {
+    const w = new BrowserWindow({
+      width: 1100, height: 760, minWidth: 480, minHeight: 360, show: false, title: `${BRAND.name} Computer`,
+      backgroundColor: windowBackground(nativeTheme.shouldUseDarkColors),
+      webPreferences: {
+        nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true, webSecurity: true,
+        allowRunningInsecureContent: false, webviewTag: false, spellcheck: false, backgroundThrottling: false,
+      },
+    });
+    w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    w.webContents.on("will-navigate", (e) => e.preventDefault());
+    w.on("resize", () => { if (computerPop?.win === w) computerBrowsers.get(computerPop.place)?.show(popBounds(w)); });
+    w.on("close", () => { if (computerPop?.win === w) popBack(); });
+    w.on("blur", recheckAsks);
+    w.on("hide", recheckAsks);
+    w.on("minimize", recheckAsks);
+    pop = computerPop = { win: w, place };
+  }
+  b.moveTo(pop.win);
+  pop.win.show();
+  b.show(popBounds(pop.win));
+}
+
+/**
+ * Whether the person can see the pane's computer now (agent-computer D27): the window holding it (the pop-out while
+ * there is one, else the main one) is shown and not minimized, and one of the app's windows has focus (the main one,
+ * where the ask's card is, or the pop-out).
+ */
+function computerWindowShown(): boolean {
+  const pop = computerPop && !computerPop.win.isDestroyed() ? computerPop.win : null;
+  const holder = pop ?? win;
+  if (!holder || holder.isDestroyed() || !holder.isVisible() || holder.isMinimized()) return false;
+  return [win, pop].some((w) => !!w && !w.isDestroyed() && w.isFocused());
+}
+
+/**
+ * As soon as the app starts quitting (before-quit, before-quit-for-update, an update's install): every computer's views
+ * and the park window go (ComputerBrowser.destroy also drops its window watchers, so nothing re-places a view), and the
+ * pop-out window. Nothing may create a window once quitting starts: a window made while the others close (a park window,
+ * for a view whose window went) keeps will-quit from ever firing. The service makes new browsers if the app goes on (an
+ * update's quit that failed).
+ */
+function shutdownComputer(): void {
+  for (const b of computerBrowsers.values()) { try { b.destroy(); } catch { /* already gone */ } }
+  computerBrowsers.clear();
+  computerService.forgetBrowsers();
+  const pop = computerPop;
+  computerPop = null;
+  if (pop && !pop.win.isDestroyed()) pop.win.destroy();
+}
+
 function show(): void {
-  if (!win) createWindow();
+  // Nothing may create a window once quitting starts (shutdownComputer): a held quit (R86) can find the windows gone.
+  if (!win) { if (!quitting) createWindow(); }
   else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 }
 
@@ -278,7 +469,7 @@ function themeState(): ThemeState {
 /** Tells the page, repaints the windows' backgrounds and re-checks the menu's Appearance item. */
 function broadcastTheme(): void {
   const s = themeState();
-  for (const w of [win, popover]) if (w && !w.isDestroyed()) w.setBackgroundColor(windowBackground(s.dark));
+  for (const w of [win, popover, computerPop?.win]) if (w && !w.isDestroyed()) w.setBackgroundColor(windowBackground(s.dark));
   send(CH.themeEvent, s);
   setMenu();
 }
@@ -291,47 +482,53 @@ function setTheme(source: ThemeSource): ThemeState {
   return themeState();
 }
 
-// agent-computer D18, D26: the bridge socket the agent CLIs' MCP servers connect to. One per attached vault, only when the
-// peer addon loaded. The handler is a stub until the computer service arrives: status answers, every other tool says so.
-let bridge: ComputerBridge | null = null;
-let bridgeRoot: string | null = null;
-let bridgeChain: Promise<void> = Promise.resolve();
-/** Starts the bridge for a vault, one at a time. The same vault again keeps the running one: restarting would drop admitted
- * connections whose CLIs cannot reconnect (each connects once). */
-function startBridge(root: string): void {
-  bridgeChain = bridgeChain.then(async () => {
-    try {
-      if (!computerSys || !computerPeer) return;
-      if (bridge && bridgeRoot === root) return;
-      const old = bridge;
-      bridge = null;
-      bridgeRoot = null;
-      await old?.stop();
-      const sys = computerSys;
-      const socketPath = path.join(app.getPath("userData"), "computer", "bridge.sock");
-      const next = new ComputerBridge({
-        socketPath,
-        peer: computerPeer,
-        admit: (pid) => {
-          let server: string;
-          try { server = fs.realpathSync(path.join(root, "brain/scripts/sdk/mcp-server.js")); }
-          catch { return { ok: false, reason: "The agenticos MCP server is not in this vault." }; }
-          return admit(pid, { reg: agentRegistry, sys, server });
-        },
-        handle: async (agent, call) => call.tool === "computer_status"
-          ? { text: `${agent.label} in ${agent.place}, access: ${agent.access}.` }
-          : { text: "The browser arrives with the next part of release 1." },
-        onClose: () => {},
-      });
-      await next.start();
-      bridge = next;
-      bridgeRoot = root;
-      try { writeHudHostMarker(root, { name: app.getName(), version: app.getVersion(), computerSocket: socketPath }); }
-      catch (err) { console.warn(`[main] could not record the computer socket in ${root}: ${err instanceof Error ? err.message : String(err)}`); }
-    } catch (err) {
-      console.warn(`[main] the computer bridge did not start: ${err instanceof Error ? err.message : String(err)}`);
-    }
+// agent-computer D18, D26: the bridge socket the agent CLIs' MCP servers connect to. One for the attached vault, only when
+// the peer addon loaded and while the computer surface is on. Every admitted call goes to the computer service; a closed
+// connection ends its agent's hold (D31).
+const bridges = new BridgeKeeper({
+  make: (root) => makeBridge(root),
+  // The surface is on but no bridge listens: the vault's marker says so, so the agents' tools say so too.
+  onFail: (root) => recordApp(root, { computerFailed: true }),
+});
+
+/** The app's record in a vault (D11) with main's pid and the Computer pane's state (agent-computer D26). Informational:
+ *  a vault the app cannot write to still opens. */
+function recordApp(root: string, computer: Pick<HudHostInfo, "computerSocket" | "computerOff" | "computerFailed"> = {}): void {
+  try { writeHudHostMarker(root, { name: app.getName(), version: app.getVersion(), pid: process.pid, ...computer }); }
+  catch (err) { console.warn(`[main] could not record the app in ${root}: ${err instanceof Error ? err.message : String(err)}`); }
+}
+
+/** Starts, keeps or stops the bridge to match the vault, the peer addon and the computer surface; called wherever the
+ *  vault or the write policy changes. */
+function syncBridge(): void {
+  void bridges.sync(computerSys && computerPeer && computerOn() && vault.root ? vault.root : null);
+}
+
+async function makeBridge(root: string): Promise<{ stop(): Promise<void> }> {
+  const sys = computerSys, peer = computerPeer;
+  if (!sys || !peer) throw new Error("the peer addon did not load");
+  // The data folder's own socket, or a short one in the user's temp folder when that path is too long (agent-computer D18).
+  const socketPath = bridgeSocketPath(app.getPath("userData"), app.getPath("temp"));
+  if (!socketPath) throw new Error("no socket path is short enough for this data folder");
+  const next = new ComputerBridge({
+    socketPath,
+    peer,
+    admit: (pid) => {
+      let server: string;
+      try { server = fs.realpathSync(path.join(root, "brain/scripts/sdk/mcp-server.js")); }
+      catch { return { ok: false, reason: "The agenticos MCP server is not in this vault." }; }
+      return admit(pid, { reg: agentRegistry, sys, server, trusted: e2e.trustedCli });
+    },
+    handle: (agent, call) => computerService.call(agent, call),
+    onClose: (agent) => computerService.agentGone(agent),
+    // M12: an agent the registry no longer holds (its CLI exited, its terminal closed) gets no more calls, and its
+    // connection closes the moment it leaves.
+    live: (agent) => agentRegistry.get(agent.pid)?.key === agent.key,
   });
+  await next.start();
+  const off = agentRegistry.onRemove((agent) => next.drop(agent.pid));
+  recordApp(root, { computerSocket: socketPath });
+  return { stop: async () => { off(); await next.stop(); } };
 }
 
 /**
@@ -348,9 +545,8 @@ function attachVault(root: string, source: string): void {
   attached = attachInfo(context.userData, root, agenticos, payload?.version ?? null);
   // D11: tell the runtime which app this vault is used with (doctor's `workbench app` row, the update check). A
   // vault the app cannot write to still opens: the record is informational.
-  try { writeHudHostMarker(root, { name: app.getName(), version: app.getVersion() }); }
-  catch (err) { console.warn(`[main] could not record the app in ${root}: ${err instanceof Error ? err.message : String(err)}`); }
-  startBridge(root);
+  recordApp(root, { computerOff: !computerOn(), computerFailed: computerOn() && !(computerSys && computerPeer) });
+  syncBridge();
   tray?.destroy();
   tray = new StatusTray(root, {
     openTab: (tab) => runCommand(tab === "pulse" ? "agentic-os:open-workbench" : `agentic-os:open-workbench-${tab}`),
@@ -429,6 +625,7 @@ registerUpdateIpc(trust, {
   check: () => updates.check(),
   install: () => { installRequests += 1; updates.install(); },
 });
+registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, vaultRoot: () => vault.root });
 registerThemeIpc(trust, { state: () => themeState(), set: (source) => setTheme(source) });
 
 /** The page went (closed, crashed, reloaded, or quitting): its terminals go with it, and the children it was waiting on.
@@ -437,6 +634,14 @@ function endPageWork(): void {
   ptyService.killAll();
   procService.killAttached();
   setup.cancel();
+  // agent-computer D7, D27: the page's asks go with it (each agent hears it was cancelled), the pop-out closes, and no
+  // computer is on screen until the page selects one again. Quitting, the computer is already shut down (before-quit):
+  // placing a view now could make a park window, and a window made while quitting keeps will-quit from firing.
+  askBroker.cancel(() => true, "the app's window closed or reloaded");
+  if (quitting) return;
+  closeComputerPop();
+  computerService.show(null);
+  computerService.select(null);
 }
 
 function createWindow(): void {
@@ -492,6 +697,10 @@ function createWindow(): void {
   // Closing the window hides it, as closing Obsidian's window would not stop a HUD you left running; ⌘Q quits.
   win.on("close", (e) => { if (!quitting && process.platform === "darwin") { e.preventDefault(); win?.hide(); } });
   win.on("closed", () => { win = null; rendererReady = false; endPageWork(); });
+  // agent-computer D27: an ask the person could see becomes off-screen when the window loses focus, hides or minimizes.
+  win.on("blur", recheckAsks);
+  win.on("hide", recheckAsks);
+  win.on("minimize", recheckAsks);
   win.once("ready-to-show", () => win?.show());
   void win.loadURL(`${APP_ORIGIN}/index.html`);
 }
@@ -503,13 +712,18 @@ if (!app.requestSingleInstanceLock()) {
   app.on("open-url", (e, url) => { e.preventDefault(); openLink(url); });
   app.on("second-instance", (_e, argv) => { const url = urlFromArgv(argv); if (url) openLink(url); else show(); });
   app.on("activate", () => show());
-  app.on("before-quit", () => { quitting = true; quittingForUpdate = false; });
+  // R86: with a terminal running, the quit waits for every terminal's exit, then is asked again (quit-gate.ts).
+  app.on("before-quit", (e) => { quitting = true; quittingForUpdate = false; shutdownComputer(); gate.hold(e); });
   // Any quitAndInstall, not only Restart to Update's: Squirrel's own signal comes before the windows are asked to close.
-  autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; });
+  // The terminals end now; `before-quit`, which follows the windows' closing, waits for what is left of them.
+  autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; shutdownComputer(); ptyService.killAll(); });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-  app.on("will-quit", () => { void bridge?.stop(); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); });
+  // The marker keeps no Computer state past the app: an agent asking now hears that the app is not running.
+  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); shutdownComputer(); });
 
   void app.whenReady().then(() => {
+    // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay).
+    sweepHeld(app.getPath("temp"));
     // Only a packaged, signed app claims the scheme; a dev run must not re-point the system's agenticos:// handler.
     if (app.isPackaged) app.setAsDefaultProtocolClient(SCHEME);
     serveAppScheme(path.join(__dirname, "../renderer"));
@@ -536,4 +750,6 @@ if (!app.requestSingleInstanceLock()) {
   // Light and dark as the theme spec drives them (it cannot switch macOS's own appearance).
   theme: () => themeState(),
   setTheme: (source: ThemeSource) => setTheme(source),
+  // The computer's ask notices raised off-screen (agent-computer D27), as the notifier passed them to the desktop.
+  computerNotices: () => computerNotices.map((n) => ({ ...n })),
 };

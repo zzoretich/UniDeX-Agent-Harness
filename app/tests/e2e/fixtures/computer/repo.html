@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- The Computer pane's spec: a page on the origin the spec marks, where agents act freely and only the ask-first
+     categories ask (agent-computer D39, D43): Merge pull request, Sign in, a download behind a plain label, and Return
+     in an ordinary form field. Show details is an ordinary control. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harbour repo</title>
+<style>
+  body { font: 16px -apple-system, system-ui, sans-serif; margin: 24px; background: #fff; color: #111; }
+  button, input, a { display: block; margin: 8px 0; font: inherit; }
+</style>
+</head>
+<body>
+<h1>Pull request 7: tide overlays</h1>
+<button id="details" type="button">Show details</button>
+<p id="shown">Details hidden</p>
+<button id="merge" type="button">Merge pull request</button>
+<p id="merged">Open</p>
+<button id="signin" type="button">Sign in</button>
+<a id="report" href="/download/tides.csv">Tide table (CSV)</a>
+<form action="/note" method="get"><label>Note <input id="note" type="text" name="note"></label></form>
+<script>
+  document.getElementById("details").addEventListener("click", () => { document.getElementById("shown").textContent = "Details shown"; });
+  document.getElementById("merge").addEventListener("click", () => { document.getElementById("merged").textContent = "Merged"; });
+</script>
+</body>
+</html>

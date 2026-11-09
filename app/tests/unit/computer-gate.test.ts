@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { judge, parseKey, NAV_KEYS, type Action, type Focus, type Access } from "../../src/main/computer/gate";
+import { judge, parseKey, permissionVerdict, NAV_KEYS, type Action, type Focus, type Access } from "../../src/main/computer/gate";
 import type { Target } from "../../src/main/computer/categories";
 
 const btn = (name: string, extra: Partial<Target> = {}): Target => ({ role: "button", name, inForm: false, fileInput: false, ...extra });
-const field: Focus = { target: { role: "textbox", name: "Email", inForm: true, fileInput: false }, sensitive: false, plainTextarea: false };
+const field: Focus = { target: { role: "textbox", name: "Email", inForm: true, fileInput: false }, shown: "Email", sensitive: false, plainTextarea: false, node: 1, frame: "F1" };
 const edit = (marked: boolean) => ({ access: "edit" as Access, marked });
 const READ_ONLY = { refuse: "Read only: this session can look but not act (D17)." };
 
@@ -31,8 +31,9 @@ test("status, snapshot, screenshot, wait and scroll go", () => {
 });
 
 test("click rows", () => {
-  assert.deepEqual(judge({ kind: "click", target: btn("Upload", { fileInput: true }) }, edit(true)), { ask: "file" });
-  assert.deepEqual(judge({ kind: "click", target: btn("Upload", { fileInput: true }) }, edit(false)), { ask: "file" });
+  // A file input no longer asks on click: the browser asks "file" when the chooser opens (also for script-opened ones).
+  assert.deepEqual(judge({ kind: "click", target: btn("Upload", { fileInput: true }) }, edit(true)), { go: true });
+  assert.deepEqual(judge({ kind: "click", target: btn("Upload", { fileInput: true }) }, edit(false)), { ask: "unmarked" });
   assert.deepEqual(judge({ kind: "click", target: btn("Next") }, edit(false)), { ask: "unmarked" });
   assert.deepEqual(judge({ kind: "click", target: btn("Merge pull request") }, edit(true)), { ask: "merge" });
   assert.deepEqual(judge({ kind: "click", target: btn("Next") }, edit(true)), { go: true });
@@ -51,7 +52,47 @@ test("key rows", () => {
   assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Delete") } }, edit(true)), { ask: "delete" });
   assert.deepEqual(judge({ kind: "key", key: "Space", focus: { ...field, target: btn("Next") } }, edit(true)), { go: true });
   assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: null } }, edit(true)), { go: true });
-  assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Up", { fileInput: true }) } }, edit(true)), { ask: "file" });
+  assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Up", { fileInput: true }) } }, edit(true)), { go: true });
+});
+
+const D9 = { refuse: "Typing into a password field is refused (D9)." };
+
+test("a click into a cross-site frame asks frame on every site", () => {
+  for (const marked of [true, false]) {
+    assert.deepEqual(judge({ kind: "click", target: btn("", { role: "Iframe", opaque: true }) }, edit(marked)), { ask: "frame" }, String(marked));
+    assert.deepEqual(judge({ kind: "click", target: btn("Pay now", { opaque: true }) }, edit(marked)), { ask: "frame" }, String(marked));
+  }
+  assert.deepEqual(judge({ kind: "click", target: btn("Next", { opaque: false }) }, edit(true)), { go: true });
+});
+
+test("a key into a cross-site frame asks frame on every site, except navigation keys", () => {
+  const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, shown: "Card", sensitive: false, plainTextarea: false, node: 1, frame: "F1" };
+  for (const marked of [true, false]) {
+    for (const k of ["a", "Backspace", " ", "Control+v"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { ask: "frame" }, `${marked} ${k}`);
+    for (const k of ["Tab", "Shift+Tab", "Escape", "ArrowDown"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { go: true }, `${marked} ${k}`);
+    // Enter too: the frame's own form is out of sight, so frame is asked before the return rule.
+    for (const k of ["Enter", "Shift+Enter"]) assert.deepEqual(judge({ kind: "key", key: k, focus: inFrame }, edit(marked)), { ask: "frame" }, `${marked} ${k}`);
+    assert.deepEqual(judge({ kind: "key", key: "Enter", focus: { ...inFrame, plainTextarea: true } }, edit(marked)), { ask: "frame" });
+  }
+  // As the browser reports it: focus in a cross-site frame also counts as sensitive, so a printable key is refused.
+  assert.deepEqual(judge({ kind: "key", key: "a", focus: { ...inFrame, sensitive: true } }, edit(true)), D9);
+});
+
+test("typing into a cross-site frame is refused, sensitive or not", () => {
+  const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, shown: "Card", sensitive: false, plainTextarea: false, node: 1, frame: "F1" };
+  for (const marked of [true, false]) {
+    assert.deepEqual(judge({ kind: "type", text: "4242", focus: inFrame }, edit(marked)), { refuse: "Typing into a frame from another site is refused (D9)." });
+    assert.deepEqual(judge({ kind: "type", text: "4242", focus: { ...inFrame, sensitive: true } }, edit(marked)), D9);
+  }
+});
+
+test("a non-navigation key into a password field is refused (D9)", () => {
+  const pw: Focus = { target: { role: "textbox", name: "Password", inForm: true, fileInput: false }, shown: "Password", sensitive: true, plainTextarea: false, node: 1, frame: "F1" };
+  for (const marked of [true, false]) {
+    for (const k of ["a", "Shift+a", "1", " ", "Backspace", "Control+v", "Meta+a"]) assert.deepEqual(judge({ kind: "key", key: k, focus: pw }, edit(marked)), D9, `${marked} ${k}`);
+    for (const k of NAV_KEYS) assert.deepEqual(judge({ kind: "key", key: k, focus: pw }, edit(marked)), { go: true }, `${marked} ${k}`);
+    assert.deepEqual(judge({ kind: "key", key: "Enter", focus: pw }, edit(marked)), { ask: "return" });
+  }
 });
 
 test("NAV_KEYS is exactly the listed keys", () => {
@@ -108,4 +149,21 @@ test("run and host access judge like edit", () => {
 
 test("a newline in a plain textarea on an unmarked site asks unmarked", () => {
   assert.deepEqual(judge({ kind: "type", text: "a\nb", focus: { ...field, plainTextarea: true } }, edit(false)), { ask: "unmarked" });
+});
+
+test("the gate judges the raw name: a planted sensitive value that matches a label does not hide it (D9, R26, Task 11b)", () => {
+  // N1/N1b: a page plants a one-time-code field holding "Delete" (or "elet"). The browser hands the gate the raw name; the
+  // scrub runs only on text that leaves the main process. Had the name been scrubbed first, the click would have gone through.
+  assert.deepEqual(judge({ kind: "click", target: btn("Delete branch") }, edit(true)), { ask: "delete" });
+  assert.deepEqual(judge({ kind: "click", target: btn("Delete") }, edit(true)), { ask: "delete" });
+  assert.deepEqual(judge({ kind: "click", target: { role: "link", name: "Item 3 (Delete item 3)", inForm: false, fileInput: false } }, edit(true)), { ask: "delete" });
+  assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Delete branch") } }, edit(true)), { ask: "delete" });
+  assert.deepEqual(judge({ kind: "click", target: btn("•••••• branch") }, edit(true)), { go: true }, "what a scrubbed name would do: why judge must never see one");
+  assert.deepEqual(judge({ kind: "click", target: btn("D••••••e branch") }, edit(true)), { go: true });
+});
+
+test("M10: a permission this app cannot grant (camera, microphone, location) is denied without asking, with the line why; others ask", () => {
+  assert.deepEqual(permissionVerdict("media", "maps.example.com"), { deny: "Denied maps.example.com the camera or microphone without asking: this app has no access to them on this Mac, so allowing would do nothing." });
+  assert.deepEqual(permissionVerdict("geolocation", "maps.example.com"), { deny: "Denied maps.example.com your location without asking: this app has no access to it on this Mac, so allowing would do nothing." });
+  for (const p of ["notifications", "clipboard-read", "fullscreen", "midi", "unknown"]) assert.equal(permissionVerdict(p, "a.test"), "ask", p);
 });

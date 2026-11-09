@@ -130,6 +130,19 @@ test("registry: get, claim once per registration, unknown pids", () => {
   assert.equal(reg.get(1), undefined);
 });
 
+test("registry: byKey finds the live agent of a session key, the newest registration first", () => {
+  const reg = new AgentRegistry();
+  assert.equal(reg.byKey("code:1"), undefined);
+  reg.add(agent(1));
+  assert.equal(reg.byKey("code:1")?.pid, 1);
+  reg.add({ ...agent(2), key: "code:1" });
+  assert.equal(reg.byKey("code:1")?.pid, 2);
+  reg.remove(2);
+  assert.equal(reg.byKey("code:1")?.pid, 1);
+  reg.remove(1);
+  assert.equal(reg.byKey("code:1"), undefined);
+});
+
 test("trusted realpaths count as native in admission and installForm", () => {
   const w: World = { procs: [server(20, 10), proc(10, 1, "/build/fake-claude")], running: {}, links: { "/build/fake-claude": "/real/fake-claude" } };
   assert.equal(run(w, 20, [agent(10)]).ok, false);
@@ -218,4 +231,41 @@ test("launchForm does not cache a result when the file changed during the check"
   launchForm("claude", "/opt/racy", sys);
   launchForm("claude", "/opt/racy", sys);
   assert.equal(sys.teamCalls, 2);
+});
+
+test("M12: the registry tells its listeners when an agent leaves it, with the agent, once", () => {
+  const reg = new AgentRegistry();
+  const left: number[] = [];
+  const off = reg.onRemove((a) => left.push(a.pid));
+  reg.add({ pid: 31, host: "claude", page: "code", key: "code:t1", label: "x", place: "vault", access: "edit" });
+  reg.remove(31);
+  reg.remove(31);
+  reg.remove(99);
+  assert.deepEqual(left, [31]);
+  off();
+  reg.add({ pid: 32, host: "claude", page: "code", key: "code:t2", label: "x", place: "vault", access: "edit" });
+  reg.remove(32);
+  assert.deepEqual(left, [31]);
+});
+
+test("M13: a peer whose parent and grandparent are not registered is refused before any signature check runs", () => {
+  const reg = new AgentRegistry();
+  let signed = 0;
+  const procs = new Map<number, ProcInfo>([
+    [500, { pid: 500, ppid: 400, path: "/usr/local/bin/node", argv: ["node", SERVER] }],
+    [400, { pid: 400, ppid: 300, path: "/opt/codex/codex", argv: ["codex"] }],
+    [300, { pid: 300, ppid: 1, path: "/usr/local/bin/node", argv: ["node", "/x/node_modules/@openai/codex/bin/codex.js"] }],
+  ]);
+  const sys: Sys = {
+    procInfo: (pid) => procs.get(pid) ?? null,
+    teamId: () => { signed++; return VENDOR.codex.team; },
+    processTeamId: (pid) => { signed++; return pid === 400 ? VENDOR.codex.team : null; },
+    realpath: (p) => p,
+  };
+  assert.deepEqual(admit(500, { reg, sys, server: SERVER }), { ok: false, reason: "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread." });
+  assert.equal(signed, 0, "no signature check for a chain the app never registered");
+  // The npm Codex shim registered as the grandparent: then its native child is checked, and admitted.
+  reg.add({ pid: 300, host: "codex", page: "code", key: "code:t1", label: "Codex", place: "vault", access: "edit" });
+  assert.equal(admit(500, { reg, sys, server: SERVER }).ok, true);
+  assert.ok(signed > 0);
 });

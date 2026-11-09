@@ -60,3 +60,17 @@ test("close() kills what is still running after the grace, with its children", a
   h = null;
   expect(groupRuns(pid)).toBe(false);
 });
+
+test("close() after the app quit by itself returns without an error, as the R46 spec leaves it (R73)", async () => {
+  restoreFixture();
+  h = await launchApp();
+  const proc = h.app.process();
+  const exited = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+  const closed = h.app.waitForEvent("close");
+  await h.app.evaluate(({ app }) => { setTimeout(() => app.quit(), 0); });
+  await exited;
+  // Playwright has let the app's handle go once it saw the app close: what useApp's afterAll then meets.
+  await closed;
+  await h.close();
+  await h.close();
+});

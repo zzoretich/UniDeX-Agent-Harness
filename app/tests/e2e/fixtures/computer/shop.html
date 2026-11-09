@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- The Computer pane's spec (tests/e2e/computer.spec.ts): an unmarked shop. Add to basket changes the page, Continue
+     posts to the fixture server with a same-origin fetch, and the page is tall enough to scroll. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harbour shop</title>
+<style>
+  body { font: 16px -apple-system, system-ui, sans-serif; margin: 24px; background: #fff; color: #111; }
+  button, input { display: block; margin: 8px 0; font: inherit; }
+  .tall { height: 2400px; }
+</style>
+</head>
+<body>
+<h1>Harbour shop</h1>
+<button id="add" type="button">Add to basket</button>
+<p id="basket">Basket: empty</p>
+<button id="continue" type="button">Continue</button>
+<p id="status">Not continued</p>
+<label>Search <input id="search" type="text" name="q"></label>
+<div class="tall"></div>
+<p id="bottom">End of the shop</p>
+<script>
+  let items = 0;
+  document.getElementById("add").addEventListener("click", () => {
+    items += 1;
+    document.getElementById("basket").textContent = `Basket: ${items} item${items === 1 ? "" : "s"}`;
+  });
+  document.getElementById("continue").addEventListener("click", async () => {
+    const r = await fetch("/continue", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ step: "checkout" }) });
+    document.getElementById("status").textContent = r.ok ? "Continued" : "Not continued";
+  });
+</script>
+</body>
+</html>

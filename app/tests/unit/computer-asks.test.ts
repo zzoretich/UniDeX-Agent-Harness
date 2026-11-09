@@ -20,7 +20,7 @@ class FakeClock implements Clock {
   }
 }
 
-const input: AskInput = { computer: "c1", session: "s1", sessionLabel: "Agent", why: "submit", title: "Submit", detail: "d", site: "https://a.test" };
+const input: AskInput = { computer: "c1", session: "s1", sessionLabel: "Agent", why: "submit", title: "Submit", notice: "Submit on a.test?", detail: "d", site: "https://a.test" };
 function make() {
   const clock = new FakeClock(); const changes: Ask[][] = [];
   const b = new AskBroker({ timeoutMs: () => 120_000, clock, onChange: (p) => changes.push([...p]) });

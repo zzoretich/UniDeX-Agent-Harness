@@ -56,6 +56,14 @@ export interface FilesChoice {
   updateLinks: boolean;
 }
 
+/** The Computer pane's width and whether it is collapsed (agent-computer D4), remembered per page. */
+export interface ComputerPaneSettings { width: number; collapsed: boolean }
+/** The pages with a Computer pane: Code (the deck) and Sessions (its tab id stays "chat"). */
+export type ComputerPaneId = "code" | "chat";
+/** What data.json keeps: only the pages whose pane was changed, so a page never changed still starts collapsed in a
+ *  narrow window (computerPaneStart). */
+export type ComputerPaneChoice = Partial<Record<ComputerPaneId, ComputerPaneSettings>>;
+
 export interface AgenticOSSettings {
   statusBarEnabled: boolean;
   autoOpenSidebarOnStart: boolean;
@@ -86,6 +94,8 @@ export interface AgenticOSSettings {
   tour: TourState;
   // Files (spec 2026-10-17-files-finder D21): read through sanitizeFilesChoice
   files: FilesChoice;
+  // The Computer pane (agent-computer D4): read through computerPaneStart, written through rememberComputerPane
+  computerPane: ComputerPaneChoice;
 }
 
 /** Keys data.json may still hold from earlier versions; loadSettings prunes them (the two HUD-only toggles, D10). */
@@ -114,6 +124,7 @@ export const DEFAULT_SETTINGS: AgenticOSSettings = {
   brainReviewSeenAt: null,
   tour: DEFAULT_TOUR_STATE,
   files: { view: "icons", sort: { key: "name", desc: false }, preview: false, favorites: null, recents: [], updateLinks: true },
+  computerPane: {},
 };
 
 // ── remembered choices (U12) ──
@@ -300,4 +311,55 @@ export function rememberFilesChoice(
     c.recents = c.recents.map(follow);
   }
   return sanitizeFilesChoice(c);
+}
+
+// ── the Computer pane (agent-computer D4) ──
+
+/** The pane's width bounds and default, in CSS pixels. */
+export const COMPUTER_PANE_WIDTH = { min: 320, max: 900, default: 440 } as const;
+/** Under this window width a page whose pane was never changed starts with it collapsed. */
+export const COMPUTER_PANE_NARROW = 760;
+const COMPUTER_PAGES: readonly ComputerPaneId[] = ["code", "chat"];
+
+function paneWidth(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return COMPUTER_PANE_WIDTH.default;
+  return Math.round(Math.min(COMPUTER_PANE_WIDTH.max, Math.max(COMPUTER_PANE_WIDTH.min, v)));
+}
+
+function paneOf(v: Record<string, unknown>): ComputerPaneSettings {
+  return { width: paneWidth(v.width), collapsed: v.collapsed === true };
+}
+
+/** The pages data.json holds a pane for, each cleaned; a page with junk is a page never changed. */
+function storedPanes(raw: unknown): ComputerPaneChoice {
+  const r = isRecord(raw) ? raw : {};
+  const out: ComputerPaneChoice = {};
+  for (const page of COMPUTER_PAGES) {
+    const v = r[page];
+    if (isRecord(v)) out[page] = paneOf(v);
+  }
+  return out;
+}
+
+/** A clean copy of the stored Computer pane for both pages; anything missing or malformed reads as 440 px and open. */
+export function sanitizeComputerPane(v: unknown): Record<ComputerPaneId, ComputerPaneSettings> {
+  const stored = storedPanes(v);
+  return {
+    code: stored.code ?? { width: COMPUTER_PANE_WIDTH.default, collapsed: false },
+    chat: stored.chat ?? { width: COMPUTER_PANE_WIDTH.default, collapsed: false },
+  };
+}
+
+/** How a page's pane starts: as it was left, or, never changed, collapsed when the window is under 760 px wide (the
+ *  user's toggle then wins and is saved). */
+export function computerPaneStart(raw: unknown, page: ComputerPaneId, windowWidth: number): ComputerPaneSettings {
+  const stored = storedPanes(raw)[page];
+  if (stored) return stored;
+  return { width: COMPUTER_PANE_WIDTH.default, collapsed: windowWidth < COMPUTER_PANE_NARROW };
+}
+
+/** The stored Computer pane after a page's pane changed: that page's settings, cleaned, and the other page as it was
+ *  stored (not saved stays not saved). Returns a new object to store. */
+export function rememberComputerPane(current: unknown, page: ComputerPaneId, pane: ComputerPaneSettings): ComputerPaneChoice {
+  return { ...storedPanes(current), [page]: paneOf(pane as unknown as Record<string, unknown>) };
 }

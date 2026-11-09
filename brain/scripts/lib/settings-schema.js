@@ -288,7 +288,7 @@ const SETTINGS = [
 
   // ── Computer pane (agent-computer D25) ──────────────────────────────────
   { key: 'computer.enabled', section: 'computer', label: 'Computer pane', type: 'bool', applies: 'next-call',
-    help: 'The in-app browser agents can drive on the Code and Chat pages.' },
+    help: 'The in-app browser agents can drive beside Code terminals and Sessions chats (the Code and Chat pages). Off, its agents\' computer tools say the pane is off.' },
   { key: 'computer.askTimeoutSec', section: 'computer', label: 'Ask timeout', type: 'number', int: true, min: 30, applies: 'next-call',
     help: 'Seconds an ask waits before it counts as Deny.' },
 

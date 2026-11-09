@@ -4,7 +4,7 @@ import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import { ChatTab } from "./ChatTab";
 import {
-  env, fs, sessionsHost, type HostCatalog, type HostCatalogHost, type HostGitStatus, type HostResult, type HostSessionAccess,
+  env, fs, hudHost, sessionsHost, type HostCatalog, type HostCatalogHost, type HostGitStatus, type HostResult, type HostSessionAccess,
   type HostSessionEvent, type HostSessionThread,
 } from "../host";
 import { readAgenticosJson, readProviderState, type SessionHost } from "../data/aosConfig";
@@ -16,7 +16,9 @@ import {
 } from "../data/agentSessions";
 import { SPEND_LEDGER_PATH } from "../data/claudeAsk";
 import { ago } from "../data/notifications";
-import { rememberSessionChoice, sanitizeSessionChoice } from "../settingsDefaults";
+import { computerPaneStart, rememberComputerPane, rememberSessionChoice, sanitizeSessionChoice } from "../settingsDefaults";
+import { chatSession, storeFor, type RowMarks } from "../data/computerStore";
+import { ComputerPane } from "../ui/ComputerPane";
 import {
   HISTORY_PAGE, SESSION_DIGESTS_PATH, SESSION_INDEX_PATH, dayLabel, filterHistory, groupByDay, historyCount, historyRows, parseDigests,
   parseSessionIndex, type Digest, type HistoryRow, type IndexedSession,
@@ -93,7 +95,9 @@ interface RowContext {
  * plan, model changes and a footer per turn; the composer below it with the workspace, access and host-and-model menus,
  * `/` for the host's commands, and a status line. The app's main process runs every turn and keeps every thread; this
  * tab only names a workspace, a host, a prompt and the turn's model, effort and access (host.ts sessions and git).
- * Without them, Vault alone works.
+ * Without them, Vault alone works. In the app the Computer pane docks right of the reader and shows the computer of the
+ * open thread's workspace (agent-computer D4, D32); a thread's row has a dot while its agent drives a computer off-screen
+ * or waits on an ask there.
  */
 export class SessionsTab {
   private host: HTMLElement | null = null;
@@ -164,6 +168,11 @@ export class SessionsTab {
   /** The two caches as parsed, and their size and time when read: parsed again only when either changed. */
   private histData: { sessions: IndexedSession[]; digests: Map<string, Digest>; stamp: string } | null = null;
   private histEl: { count: HTMLElement; list: HTMLElement } | null = null;
+  /** The Computer pane beside the reader (agent-computer D4), in the app only. */
+  private pane: ComputerPane | null = null;
+  private unwatchComputer: (() => void) | null = null;
+  /** The thread rows' dots as last drawn, so a computer's state that changes none redraws nothing. */
+  private dotsShown = "";
 
   constructor(private plugin: AgenticOSPlugin, private wb: WorkbenchView) {
     this.chat = new ChatTab(plugin, wb, () => this.selected === VAULT);
@@ -177,6 +186,10 @@ export class SessionsTab {
     this.host = host;
     const sh = sessionsHost();
     if (sh && !this.unsubscribe) this.unsubscribe = sh.sessions.onEvent((ev) => this.onEvent(ev.thread, ev.event));
+    const computer = hudHost().computer;
+    if (computer && !this.unwatchComputer) {
+      this.unwatchComputer = storeFor(computer).subscribe(() => { if (this.active() && this.dotsSig() !== this.dotsShown) this.renderList(); });
+    }
     this.render();
     if (this.isThread(this.selected)) void this.openThread(this.selected);
     if (this.selected === HISTORY) void this.loadHistory();
@@ -192,6 +205,10 @@ export class SessionsTab {
   unmount(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.unwatchComputer?.();
+    this.unwatchComputer = null;
+    this.pane?.destroy();
+    this.pane = null;
     for (const t of this.timers) window.clearTimeout(t);
     this.timers.clear();
     this.stopTick();
@@ -205,6 +222,9 @@ export class SessionsTab {
     this.host?.empty();
     this.host = null;
   }
+
+  /** Another rail tab is in front: the Computer pane lets its view go and selects nothing (agent-computer ruling R51). */
+  leave(): void { this.pane?.hide(); }
 
   /**
    * Sessions on a workspace (spaces-redesign D12, WorkbenchView.open): the list shows only that workspace's threads,
@@ -277,7 +297,7 @@ export class SessionsTab {
     this.renderList();
     this.renderStatus();
     // A thread opened before the list knew it (just started elsewhere) gets its header and menus now.
-    if (found) { this.renderHead(); this.renderTimeline(); this.syncMenus(); this.syncComposer(); }
+    if (found) { this.renderHead(); this.renderTimeline(); this.syncMenus(); this.syncComposer(); this.followPane(); }
   }
 
   /** Today's `session:*` rows of the spend ledger, as the runtime counts them against sessions.perDayUsd (spec §4.3). */
@@ -736,8 +756,45 @@ export class SessionsTab {
     const list = root.createEl("aside", { cls: "aos-ss-list", attr: { "aria-label": "Sessions" } });
     const reader = root.createDiv({ cls: "aos-ss-reader" });
     this.el = { list, reader };
+    this.mountPane(root);
     this.renderList();
     this.renderReader();
+  }
+
+  /** The Computer pane after the reader (agent-computer D4): only in the app, which has a computer. */
+  private mountPane(root: HTMLElement): void {
+    this.pane?.destroy();
+    this.pane = null;
+    const computer = hudHost().computer;
+    if (!computer) return;
+    this.pane = new ComputerPane({
+      host: computer,
+      page: "chat",
+      settings: () => computerPaneStart(this.plugin.settings.computerPane, "chat", window.innerWidth),
+      save: (pane) => {
+        this.plugin.settings.computerPane = rememberComputerPane(this.plugin.settings.computerPane, "chat", pane);
+        void this.plugin.saveSettings();
+      },
+    });
+    this.pane.mount(root);
+  }
+
+  /** The pane shows the computer of the open thread's workspace, or of the new session's (D32, D3); Vault chat and
+   *  History have none. */
+  private followPane(): void {
+    if (!this.pane) return;
+    const ws = this.isThread(this.selected) ? this.thread?.workspace ?? null : this.selected === NEW ? this.workspace || null : null;
+    this.pane.follow(ws ? { place: `ws:${ws}`, label: ws } : null);
+  }
+
+  /** A thread row's Computer marks (D32): a dot while its agent drives a computer no pane shows, or waits on an ask. */
+  private computerMarks(thread: string): RowMarks {
+    const computer = hudHost().computer;
+    return computer ? storeFor(computer).marks(chatSession(thread)) : { dot: false, waiting: false };
+  }
+
+  private dotsSig(): string {
+    return this.threads.map((t) => { const m = this.computerMarks(t.id); return `${t.id}:${m.dot ? 1 : 0}${m.waiting ? 1 : 0}`; }).join(",");
   }
 
   private clickable(el: HTMLElement, go: () => void): void {
@@ -762,6 +819,7 @@ export class SessionsTab {
   private renderList(): void {
     const list = this.el?.list;
     if (!list || !this.active()) return;
+    this.dotsShown = this.dotsSig();
     this.keepFocus(list, () => {
       list.empty();
       const sh = sessionsHost();
@@ -842,6 +900,11 @@ export class SessionsTab {
     });
     row.createSpan({ cls: `aos-ss-hostdot is-${t.host}`, attr: { role: "img", title: HOST_LABEL[t.host], "aria-label": HOST_LABEL[t.host] } });
     row.createSpan({ cls: "aos-ss-title", text: t.title || "Untitled" });
+    const m = this.computerMarks(t.id);
+    if (m.dot) {
+      const why = m.waiting ? "Asking in the Computer pane" : "Working in the Computer pane, off-screen";
+      row.createSpan({ cls: `aos-ss-cdot${m.waiting ? " is-waiting" : ""}`, attr: { role: "img", title: why, "aria-label": why } });
+    }
     if (running) row.createSpan({ cls: "aos-ss-runmark", text: "●", attr: { role: "img", title: "Working", "aria-label": "Working" } });
     else row.createSpan({ cls: "aos-ss-age", text: threadAge(t.updated, new Date()) });
     this.clickable(row, () => this.select(t.id));
@@ -877,11 +940,12 @@ export class SessionsTab {
     if (this.selected === VAULT) {
       reader.addClass("is-vault");
       this.chat.mount(reader.createDiv({ cls: "aos-ss-vaultchat" }));
+      this.followPane();
       return;
     }
     reader.removeClass("is-vault");
     this.histEl = null;
-    if (this.selected === HISTORY) { this.renderHistory(reader); return; }
+    if (this.selected === HISTORY) { this.renderHistory(reader); this.followPane(); return; }
     const top = reader.createDiv({ cls: "aos-ss-head aos-ss-top" });
     const body = reader.createDiv({ cls: "aos-ss-body" });
     const scroll = body.createDiv({ cls: "aos-ss-scroll" });
@@ -899,6 +963,7 @@ export class SessionsTab {
     this.renderTimeline(true);
     this.renderDrawer();
     this.syncComposer();
+    this.followPane();
   }
 
   /**
@@ -1102,6 +1167,11 @@ export class SessionsTab {
       }
     } else if (r.kind === "change") {
       el.createDiv({ cls: "aos-ss-turnchange", attr: { "data-turn": String(r.turn) } }).createSpan({ cls: "aos-ss-turnchangetext", text: r.text });
+    } else if (r.kind === "computer") {
+      // agent-computer D6, D21, D35: what the Computer pane's activity log says, for this thread's agent.
+      const line = el.createDiv({ cls: "aos-ss-computer", attr: { "data-turn": String(r.turn) } });
+      line.createSpan({ cls: "aos-ss-computerlabel", text: "Computer" });
+      line.createSpan({ cls: "aos-ss-computertext", text: r.text });
     } else if (r.kind === "error") {
       el.createDiv({ cls: "aos-ss-error", text: r.message });
     } else {
@@ -1313,7 +1383,7 @@ export class SessionsTab {
     const sel = chip.createEl("select", { cls: "dropdown aos-ss-workspace", attr: { "aria-label": "Workspace" } });
     for (const n of names) sel.createEl("option", { text: n, value: n });
     sel.value = this.workspace;
-    sel.addEventListener("change", () => { this.workspace = sel.value; this.syncComposer(); });
+    sel.addEventListener("change", () => { this.workspace = sel.value; this.syncComposer(); this.followPane(); });
   }
 
   /** Hands the menus the catalog, the remembered choices and the value they start from. */

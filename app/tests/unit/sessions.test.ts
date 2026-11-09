@@ -14,6 +14,11 @@ import type { ProgramContext } from "../../src/main/policy/programs";
 import { DIFF_SAFE, GIT_GUARD, GitService, filterOverrides, parseNumstat, parseStatus, untrackedLines } from "../../src/main/services/git";
 import { SessionService, workspaceDir } from "../../src/main/services/sessions";
 import { COMPUTER_LOOK, COMPUTER_TOOLS } from "../../../hud/src/data/terminalLaunch";
+import { AskBroker } from "../../src/main/computer/asks";
+import { AgentRegistry } from "../../src/main/computer/registry";
+import { ComputerService, type BrowserLike } from "../../src/main/computer/service";
+import { SiteMarks } from "../../src/main/computer/sites";
+import { Wheel } from "../../src/main/computer/wheel";
 
 const REPO = path.resolve(process.cwd(), "..");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aos-sessions-app-"));
@@ -34,6 +39,7 @@ function fakeHost(name: string, lines: object[]): string {
 const fs = require("fs");
 fs.appendFileSync(${JSON.stringify(path.join(tmp, `${name}.argv`))}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), headless: process.env.AOS_HEADLESS }) + "\\n");
 if (process.argv.includes("--sleep")) setTimeout(() => {}, 60000);
+else if (process.argv.includes("--stubborn")) { process.on("SIGTERM", () => {}); setTimeout(() => {}, 60000); }
 else process.stdout.write(${JSON.stringify(out)} + "\\n");
 `, { mode: 0o755 });
   return p;
@@ -133,6 +139,71 @@ test("the runtime's refusal (the day cap) is the turn's error; Stop ends a runni
   assert.deepEqual(kinds(stopped.data).slice(-2), ["error", "done"]);
   assert.equal(stopped.data.at(-2)?.message, "stopped");
   assert.equal(runs().at(-1)?.status, "stopped");
+});
+
+/** A one-page computer for the Stop test: a button "Next" at e1 that counts its clicks. */
+function onePage(): { browser: BrowserLike; clicks: () => number } {
+  let url = "about:blank";
+  let clicks = 0;
+  const no = (): never => { throw new Error("not in this test"); };
+  const browser: BrowserLike = {
+    tabs: () => [{ index: 0, url, title: "", openedBy: null, active: true }],
+    pageToken: () => "1.0",
+    open: async (u) => { url = new URL(u).href; return { url, title: "" }; },
+    select: no, close: no, snapshot: no, screenshot: no, focus: no, type: no, key: no, scroll: no, show: () => {},
+    scrub: async (t) => t,
+    resolve: async () => ({ target: { role: "button", name: "Next", inForm: false, fileInput: false }, shown: "Next", sensitive: false, backendNodeId: 7, judged: [7], point: { x: 1, y: 1 }, pageToken: "1.0", tab: 0 }),
+    click: async (_r, valid) => { if (valid()) clicks++; },
+  };
+  return { browser, clicks: () => clicks };
+}
+
+test("R76: Stop during a pending ask ends the turn's computer side at once (its ask cancelled, its wheel freed), before the CLI exits; Allow then runs nothing, and the later exit adds nothing", async () => {
+  const registry = new AgentRegistry();
+  const page = onePage();
+  // Real time, with timers that never keep the test process alive (an ask's expiry, a settled reply's keep).
+  const clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms).unref(), clearTimeout: (t: unknown) => clearTimeout(t as NodeJS.Timeout) };
+  let computer: ComputerService | null = null;
+  const broker = new AskBroker({ timeoutMs: () => 120_000, clock, onChange: () => computer?.refresh() });
+  const wheel = new Wheel({ clock, reserved: (c) => computer?.reserved(c) ?? false, onChange: (c) => computer?.refresh(c) });
+  const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(tmp, "computer-")), "sites.json"));
+  computer = new ComputerService({ browser: () => page.browser, broker, wheel, sites, clock, config: () => ({ enabled: true, askTimeoutSec: 120 }), emit: () => {}, note: () => {}, liveAgent: (k) => registry.byKey(k) });
+  const c = computer;
+  const ends: number[] = [];
+  // As main wires it (index.ts): a Chat turn's CLI is registered while it runs, and its end ends its computer side.
+  const s = new SessionService({
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500,
+    onAgent: (ev) => {
+      if (ev.kind === "start") { registry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access }); return; }
+      ends.push(ev.pid);
+      const ref = registry.get(ev.pid);
+      if (ref?.key !== `chat:${ev.thread}`) return;
+      registry.remove(ev.pid);
+      c.agentGone(ref);
+    },
+  });
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "--stubborn" });
+  assert.ok(r.ok);
+  const key = `chat:${r.data.id}`;
+  for (let i = 0; i < 200 && !registry.byKey(key); i++) await new Promise((res) => setTimeout(res, 25));
+  const agent = registry.byKey(key);
+  assert.ok(agent, "the turn's CLI is registered");
+  assert.ok(!(await c.call(agent, { id: 1, tool: "computer_open", args: { url: "https://a.test/" } })).isError);
+  const held = c.call(agent, { id: 2, tool: "computer_click", args: { ref: "e1" } });
+  for (let i = 0; i < 200 && !broker.pending().length; i++) await new Promise((res) => setTimeout(res, 5));
+  const [ask] = broker.pending();
+  assert.ok(ask, "the click asks first (an unmarked site)");
+
+  s.stop(r.data.id);
+  assert.deepEqual(broker.pending(), [], "its ask is cancelled at once");
+  assert.equal(wheel.holder("ws:harbor-map"), null, "its wheel is freed at once");
+  assert.doesNotThrow(() => process.kill(agent.pid, 0), "the CLI (which ignores SIGTERM) is still running");
+  c.answer(ask.id, "once");
+  assert.match((await held).text, /^Cancelled because the turn ended/);
+  assert.equal(page.clicks(), 0, "Allow ran nothing");
+  assert.deepEqual(ends, [agent.pid]);
+  await idle(s);
+  assert.deepEqual(ends, [agent.pid], "the exit after the grace adds no second end");
 });
 
 test("onAgent: the turn's CLI is announced with its pid, workspace, host, access and title right after it starts, and again when it exits (agent-computer D18)", async () => {
@@ -518,4 +589,74 @@ test("an archived workspace's threads stay listed and readable, and refuse a tur
   assert.ok(next.ok, JSON.stringify(next));
   await idle(s);
   assert.equal(calls(), seen + 1, "the host ran once");
+});
+
+test("noteEvent: a Computer pane line reaches the page as a live computer event of the thread's turn and is never stored (agent-computer D35)", async () => {
+  const events: SessionEvent[] = [];
+  let during: SessionEvent[] = [];
+  const s: SessionService = new SessionService({
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: (e) => events.push(e), graceMs: 500,
+    onAgent: (ev) => {
+      if (ev.kind !== "start") return;
+      s.noteEvent(ev.thread, "Asked the user: Submit: Click “Pay” on a.test?");
+      during = events.filter((e) => e.event.kind === "computer");
+    },
+  });
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "buy it" });
+  assert.ok(r.ok);
+  await idle(s);
+  assert.equal(during.length, 1);
+  assert.equal(during[0].thread, r.data.id);
+  assert.deepEqual({ ...during[0].event, t: "" }, { t: "", kind: "computer", turn: 1, text: "Asked the user: Submit: Click “Pay” on a.test?" });
+  const read = await s.read(r.data.id);
+  assert.ok(read.ok);
+  assert.ok(!read.data.some((e) => e.kind === ("computer" as string)), "not in the thread's file");
+  // After the turn (an ask cancelled as it ended), the line still reaches the thread, under its last turn.
+  s.noteEvent(r.data.id, "Cancelled because the turn ended: Submit: Click “Pay” on a.test?");
+  assert.equal(events.at(-1)?.event.kind, "computer");
+  assert.equal(events.at(-1)?.event.turn, 1);
+  const n = events.length;
+  s.noteEvent("no-such-thread", "x");
+  assert.equal(events.length, n, "a thread main does not know gets nothing");
+});
+
+test("postComputerNotice: one Notifications item from computer at level info, through the runtime's notify.js, the body on stdin (agent-computer D27)", async () => {
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
+  const dir = path.join(vault, "brain", "notifications");
+  fs.rmSync(dir, { recursive: true, force: true });
+  await s.postComputerNotice("Submit: Click “Pay” on a.test?", "Alpha is waiting for your answer in the Computer pane.\n--json is just text here");
+  const years = fs.readdirSync(dir).filter((d) => /^\d{4}$/.test(d));
+  assert.equal(years.length, 1);
+  const files = fs.readdirSync(path.join(dir, years[0]));
+  assert.equal(files.length, 1);
+  const text = fs.readFileSync(path.join(dir, years[0], files[0]), "utf8");
+  assert.match(text, /^from: "computer"$/m);
+  assert.match(text, /^level: "info"$/m);
+  assert.match(text, /^title: "Submit: Click “Pay” on a\.test\?"$/m);
+  assert.match(text, /Alpha is waiting for your answer in the Computer pane\.\n--json is just text here\n$/);
+});
+
+test("postComputerNotice: a title the runtime would refuse, or no vault, rejects without running anything", async () => {
+  let spawned = 0;
+  const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  for (const bad of ["", "  ", "two\nlines", "-flag", "--json", "x".repeat(161)]) {
+    await assert.rejects(s.postComputerNotice(bad, "body"), /title/, JSON.stringify(bad));
+  }
+  assert.equal(spawned, 0);
+  const none = new SessionService({ vaultRoot: () => null, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  await assert.rejects(none.postComputerNotice("Submit: x?", "body"), /no vault is open/);
+  assert.equal(spawned, 0);
+});
+
+test("postComputerNotice: nothing runs while the Computer surface is off (agent-computer D26)", async () => {
+  let spawned = 0;
+  const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
+  let on = false;
+  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => on, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  await assert.rejects(s.postComputerNotice("Submit: x?", "body"), /the Computer surface is off/);
+  assert.equal(spawned, 0);
+  on = true;
+  await s.postComputerNotice("Submit: x?", "body");
+  assert.equal(spawned, 1);
 });

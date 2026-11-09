@@ -4,7 +4,18 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- **Computer pane.** A browser beside the terminal on Code and beside the reader on Sessions that a session's agent drives through nine `computer_*` tools on Claude Code or Codex while you watch: it opens and reads pages freely, asks you before it clicks or types on a site you haven't marked and before anything irreversible, and Take over stops it at once; Settings ▸ Computer turns it off. Code launches on both hosts now run the CLI as the terminal's own process while the Computer surface is on (with it off, they are typed into a shell as before), with your login shell's environment, and your login shell takes over in that terminal when the CLI exits. A Codex terminal the Code page starts runs with `--no-daemon` while Settings ▸ Computer is on (and the CLI takes it), so its computer tools reach the pane instead of Codex's shared background server. <!-- tour: code.computer, sessions.computer -->
+
+### Upgrading
+- **Codex users: run `aos upgrade`** so Codex gets the agenticos plugin's approvals for the computer tools; until then Codex refuses the Computer pane's actions (opening, clicking, typing) in a Chat turn and asks for them in a Code session.
+
+### Fixed
+- **Quitting with a Code terminal open no longer crashes the app.** A terminal on Code (a shell, or an agent's terminal, while its CLI runs or after it exits) could make the app end with a crash report instead of quitting cleanly. Quitting now ends every Code terminal first and waits for each to finish, a second at most, before the app exits; a terminal that ignores the hangup is stopped.
+- **What's new offers Show me only for a change it can show on this Mac.** An entry whose every tour step is hidden here (a step on Sessions with no host signed in, or the Computer pane while it is off) no longer offers a Show me that would show nothing; Help ▸ What's new and the launch card both follow this.
+
 ### Security
+- **The Computer pane has its own section in SECURITY.md**: its locked-down browser view (its own partition, no preload, only http and https), password fields kept from the agent, the bridge that admits only agent CLIs the app itself started, the ask gate, and what the gate accepts.
 - **Patched proxy-address handling in runtime dependencies.** Root and independently installed runtimes now enforce proxy-addr 2.0.8 or later on 2.x, with a regression for mapped-IPv6 trust subnet handling and matching install-root policy. UniDeX does not enable the affected trust-proxy configuration.
 - **Patched Zod across the runtime and app.** The MCP runtime now validates with native Zod 4, and both runtime installs and the app's bundled validator require Zod 4.6.7 or later on 4.x. Tool schema, error handling and IPC collection checks are covered without a Zod 3 compatibility escape.
 - **MCP dependency security update.** Runtime installs require MCP SDK 1.32.2 or later on 1.x. Connector checks keep same-origin redirects working and refuse cross-origin redirects without forwarding custom headers, sessions or request bodies. The copied runtime manifest also refreshes packaged dependency caches.

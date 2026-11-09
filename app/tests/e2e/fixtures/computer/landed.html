@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- The Computer pane's spec: where typing.html sends the page. Its field takes focus at once, so a chunk typed after the
+     navigation lands here and says so (I3b). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harbour landed</title>
+<style> body { font: 16px -apple-system, system-ui, sans-serif; margin: 24px; background: #fff; color: #111; } </style>
+</head>
+<body>
+<h1>Landed</h1>
+<label>Caught <input id="caught" type="text" autofocus></label>
+<p id="got">Nothing typed here</p>
+<script>
+  document.getElementById("caught").addEventListener("input", (e) => { document.getElementById("got").textContent = `Typed here: ${e.target.value.length}`; });
+</script>
+</body>
+</html>

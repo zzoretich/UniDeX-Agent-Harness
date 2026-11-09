@@ -9,6 +9,7 @@ import type { RunsTab } from "./src/views/RunsTab";
 import type { FilesTab } from "./src/views/files/FilesTab";
 import { QuickOpenModal } from "./src/ui/QuickOpenModal";
 import { TerminalPool } from "./src/data/terminalPool";
+import { closeComputerStores } from "./src/data/computerStore";
 import { TerminalLauncher } from "./src/data/terminalLauncher";
 import type { TermTab } from "./src/views/TermTab";
 import { loginsUnknown, sessionHosts, signedInHosts } from "./src/data/aosConfig";
@@ -206,6 +207,7 @@ export default class AgenticOSPlugin extends Plugin {
     if (this.liveRuns) { this.liveRuns.stop(); this.liveRuns = null; }
     this.hb?.stop();
     this.terminalPool?.disposeAll();
+    closeComputerStores();
     console.log("[agentic-os] unloaded");
   }
 

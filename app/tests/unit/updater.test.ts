@@ -188,3 +188,42 @@ test("Restart to Update marks the app as quitting before quitAndInstall closes i
   assert.deepEqual(order, ["beforeInstall", "quitAndInstall"]);
   svc.stop();
 });
+
+test("Restart to Update with terminals running: quitAndInstall waits until they have ended, and a second ask installs once (R86)", async () => {
+  const order: string[] = [];
+  const u = new FakeUpdater();
+  const quit = u.quitAndInstall.bind(u);
+  u.quitAndInstall = (a?: boolean, b?: boolean) => { order.push("quitAndInstall"); quit(a, b); };
+  let finish: () => void = () => {};
+  let running = true;
+  const svc = new UpdateService({
+    on: true, reason: null, intervalHours: 24, load: () => u, emit: () => {}, firstCheckMs: 60_000,
+    beforeInstall: () => order.push("beforeInstall"),
+    settle: () => (running ? new Promise<void>((resolve) => { order.push("settle"); finish = () => { running = false; order.push("ended"); resolve(); }; }) : null),
+  });
+  svc.start();
+  u.emit("update-downloaded", { version: "1.3.1" });
+  assert.equal(svc.install(), true);
+  assert.equal(svc.install(), true, "asked again while it waits");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(order, ["beforeInstall", "settle"], "the app is marked as quitting at once; nothing installs yet");
+  finish();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(order, ["beforeInstall", "settle", "ended", "quitAndInstall"]);
+  assert.deepEqual(u.installs, [[false, true]]);
+  // Nothing left running: quitAndInstall at once, as before.
+  assert.equal(svc.install(), true);
+  assert.deepEqual(order.slice(4), ["beforeInstall", "quitAndInstall"]);
+  svc.stop();
+});
+
+test("Restart to Update installs even when the wait for the terminals fails (R86)", async () => {
+  const u = new FakeUpdater();
+  const svc = new UpdateService({ on: true, reason: null, intervalHours: 24, load: () => u, emit: () => {}, firstCheckMs: 60_000, settle: () => Promise.reject(new Error("boom")) });
+  svc.start();
+  u.emit("update-downloaded", { version: "1.3.1" });
+  assert.equal(svc.install(), true);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(u.installs, [[false, true]]);
+  svc.stop();
+});

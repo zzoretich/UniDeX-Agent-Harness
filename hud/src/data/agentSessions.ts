@@ -63,13 +63,15 @@ export type PlanStatus = "pending" | "active" | "done";
 export interface PlanItem { text: string; status: PlanStatus }
 
 /** The reader's rows (spec 2026-10-07-sessions-ux U1, U6, U10): TimelineRow's, a tool with its `⏺ Verb(target)` line,
- *  a finished turn with its length, the turn's plan, and a marker where the next turn's model, effort or access changed. */
+ *  a finished turn with its length, the turn's plan, a marker where the next turn's model, effort or access changed, and
+ *  a Computer pane line (agent-computer D6, D21, D35: the activity log's text, live only, never in the thread's file). */
 export type ThreadRow =
   | Extract<TimelineRow, { kind: "prompt" | "text" | "patch" | "error" }>
   | (Extract<TimelineRow, { kind: "tool" }> & { verb: string; target: string })
   | (Extract<TimelineRow, { kind: "done" }> & { ms: number | null })
   | { kind: "plan"; turn: number; items: PlanItem[] }
-  | { kind: "change"; turn: number; model: string | null; effort: string | null; access: HostSessionAccess | null; text: string };
+  | { kind: "change"; turn: number; model: string | null; effort: string | null; access: HostSessionAccess | null; text: string }
+  | { kind: "computer"; turn: number; text: string };
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -266,6 +268,9 @@ export function threadRows(events: HostSessionEvent[], opts: ThreadRowOptions = 
       rows.push({ kind: "patch", turn, files });
     } else if (e.kind === "usage") usage.set(turn, e);
     else if (e.kind === "error") rows.push({ kind: "error", turn, message: str(e.message) || str(e.error) || "error" });
+    // The Computer pane's line for this thread's agent: an open or an action, an ask and its answer, your Take over or
+    // Hand back, a page's own navigation. Main sends it live and keeps it out of the thread's file.
+    else if (e.kind === "computer") { const text = oneLine(str(e.text), 400); if (text) rows.push({ kind: "computer", turn, text }); }
     else if (e.kind === "done") {
       const from = Date.parse(started.get(turn) ?? "");
       const to = Date.parse(e.t);
@@ -289,12 +294,12 @@ function planItems(v: unknown): PlanItem[] {
 }
 
 /**
- * A thread's events as the rows the first timeline drew: threadRows without its plan and change rows. Kept for the
+ * A thread's events as the rows the first timeline drew: threadRows without its plan, change and Computer rows. Kept for the
  * views that switch over TimelineRow's kinds.
  */
 export function timelineRows(events: HostSessionEvent[]): TimelineRow[] {
   const out: TimelineRow[] = [];
-  for (const r of threadRows(events)) if (r.kind !== "plan" && r.kind !== "change") out.push(r);
+  for (const r of threadRows(events)) if (r.kind !== "plan" && r.kind !== "change" && r.kind !== "computer") out.push(r);
   return out;
 }
 

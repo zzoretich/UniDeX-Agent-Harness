@@ -30,6 +30,24 @@ test('readMarker: computerSocket comes back when it is a string and is otherwise
   for (const computerSocket of ['', 1, null, {}]) assert.deepEqual(H.readMarker(vault({ ...APP, computerSocket })), APP, String(computerSocket));
 });
 
+test('readMarker: computer "off" or "failed" comes back without a socket, and nothing else does (agent-computer D26)', () => {
+  assert.deepEqual(H.readMarker(vault({ ...APP, computer: 'off' })), { ...APP, computer: 'off' });
+  assert.deepEqual(H.readMarker(vault({ ...APP, computer: 'failed' })), { ...APP, computer: 'failed' });
+  for (const computer of ['on', '', 1, true, null, {}]) assert.deepEqual(H.readMarker(vault({ ...APP, computer })), APP, String(computer));
+  assert.deepEqual(H.readMarker(vault({ ...APP, computerSocket: '/tmp/x/bridge.sock', computer: 'off' })), { ...APP, computerSocket: '/tmp/x/bridge.sock' }, 'a socket wins');
+});
+
+test("readMarker: the app's pid when it is a positive integer; alive() believes a marker without one, or a pid that answers", () => {
+  assert.deepEqual(H.readMarker(vault({ ...APP, pid: 4242 })), { ...APP, pid: 4242 });
+  for (const pid of [0, -1, 1.5, '4242', null]) assert.deepEqual(H.readMarker(vault({ ...APP, pid })), APP, String(pid));
+  const kill = (code) => () => { if (code) { const e = new Error(code); e.code = code; throw e; } };
+  assert.equal(H.alive({ ...APP }, kill('ESRCH')), true, 'an older app wrote no pid');
+  assert.equal(H.alive({ ...APP, pid: 4242 }, kill(null)), true);
+  assert.equal(H.alive({ ...APP, pid: 4242 }, kill('ESRCH')), false, 'gone: a crash left the marker');
+  assert.equal(H.alive({ ...APP, pid: 4242 }, kill('EPERM')), true, "another user's process is there");
+  assert.equal(H.alive(null), true);
+});
+
 test('readMarker: null for no vault, no file, a torn file, another schema or host, or a version it cannot order', () => {
   assert.equal(H.readMarker(null), null);
   assert.equal(H.readMarker(vault()), null);

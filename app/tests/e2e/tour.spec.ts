@@ -1,7 +1,8 @@
 // The guided tour (spec 2026-10-14-guided-tour-design, PR 8): the welcome tour driven by real clicks on a Mac that has
 // never seen it, the spotlight's keys and its manners around modals, a tab's first-visit chip, Getting started, Help in
 // the rail and in the app's Help menu, and every chapter's anchors, which resolve or are gated by `when` on the default
-// fixture (Claude Code, no provider) and on a Codex-only machine (app-smoke: Guided tour).
+// fixture (Claude Code, no provider) and on a Codex-only machine (app-smoke: Guided tour). The Computer pane's steps are
+// gated on both, its surface off; computer.spec.ts resolves them with it on.
 
 import { expect, test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
@@ -9,6 +10,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { FX, HUD_SETTINGS, HUD_VERSION, TOUR_BOOK, appEnv, command, content, drawer, expectNoErrors, openTab, rail, useApp } from "./harness";
 import { WHATS_NEW, whatsNewHistory } from "../../../hud/src/tour/whatsnew";
+import { BOOK, showable } from "../../../hud/src/tour/steps";
+import type { TourContext } from "../../../hud/src/tour/predicates";
 
 const pop = (win: Page) => win.locator(".aos-tour-pop");
 const overlay = (win: Page) => win.locator(".aos-tour");
@@ -192,7 +195,7 @@ test.describe("a Mac that has not seen the tour (Claude Code, no provider)", () 
     } finally { await win.emulateMedia({ reducedMotion: null }); }
   });
 
-  test("What's new lists every release up to this one, newest first, with Show me where an entry has steps; Documentation opens the README in the browser", async () => {
+  test("What's new lists every release up to this one, newest first, with Show me where one of an entry's steps can show here; Documentation opens the README in the browser", async () => {
     const h = app();
     const { win } = h;
     await helpMenu(win, "whats-new");
@@ -202,7 +205,12 @@ test.describe("a Mac that has not seen the tour (Claude Code, no provider)", () 
     await expect(drawer(win).locator(".aos-tour-wn-version")).toHaveText(releases.map((r) => `What's new in ${r.version}`));
     const entries = releases.flatMap((r) => r.entries);
     await expect(drawer(win).locator(".aos-tour-wn-entry")).toHaveCount(entries.length);
-    await expect(drawer(win).locator(".aos-tour-wn-show")).toHaveCount(entries.filter((e) => e.steps.length > 0).length);
+    // Show me only where a step holds on this Mac (Task 16 minor 9): the Computer pane's, whose surface is off here, has none.
+    const ctx = await win.evaluate(() => (window as unknown as { aosHost: { plugin: { tour: { context(): TourContext } } } }).aosHost.plugin.tour.context());
+    await expect(drawer(win).locator(".aos-tour-wn-show")).toHaveCount(entries.filter((e) => showable(BOOK, e.steps, ctx)).length);
+    if (entries.some((e) => e.id === "computer-pane")) {
+      await expect(drawer(win).locator('.aos-tour-wn-entry[data-entry="computer-pane"] .aos-tour-wn-show')).toHaveCount(0);
+    }
     await expect(drawer(win).locator(".aos-tour-wn-empty")).toHaveCount(0);
     await helpMenu(win, "docs");
     await expect.poll(async () => (await h.opened()).map((o) => o.arg)).toContain("https://github.com/zzoretich/UniDeX-Agent-Harness#readme");
@@ -241,9 +249,10 @@ test.describe("a Mac that has not seen the tour (Claude Code, no provider)", () 
       expect(r.filter((x) => x.status === "missing" || x.status === "unrouted"), `chapter ${c.id}`).toEqual([]);
       gated.push(...r.filter((x) => x.status === "gated").map((x) => x.ref));
     }
-    // What this machine lacks, and only that: Sessions (no provider), Codex's own steps, and the checklist put away.
+    // What this machine lacks, and only that: Sessions (no provider), Codex's own steps, the checklist put away, and the
+    // Computer pane, whose surface this run leaves out (AOS_APP_WRITE=""; computer.spec.ts finds its anchors with it on).
     expect(gated.filter((r) => r.startsWith("sessions."))).toHaveLength(TOUR_BOOK.chapters.find((c) => c.id === "sessions")!.steps.length);
-    expect(gated).toEqual(expect.arrayContaining(["core.sessions", "code.start-codex", "routines.codex", "settings.claude-off"]));
+    expect(gated).toEqual(expect.arrayContaining(["core.sessions", "code.start-codex", "routines.codex", "settings.claude-off", "code.computer"]));
     expect(gated).not.toContain("code.start-claude");
     expectNoErrors(h);
   });
@@ -298,8 +307,9 @@ test.describe("a Codex-only machine (variants.spec.ts's)", () => {
       expect(r.filter((x) => x.status === "missing" || x.status === "unrouted"), `chapter ${c.id}`).toEqual([]);
       gated.push(...r.filter((x) => x.status === "gated").map((x) => x.ref));
     }
-    expect(gated).toEqual(expect.arrayContaining(["code.start-claude", "routines.cloud", "settings.codex-off"]));
-    expect(gated.filter((r) => r.startsWith("sessions.") || r === "core.sessions")).toEqual([]);
+    expect(gated).toEqual(expect.arrayContaining(["code.start-claude", "routines.cloud", "settings.codex-off", "code.computer"]));
+    // Sessions runs here: of its steps only the Computer pane's is gated, its surface off.
+    expect(gated.filter((r) => r.startsWith("sessions.") || r === "core.sessions")).toEqual(["sessions.computer"]);
     expectNoErrors(h);
   });
 

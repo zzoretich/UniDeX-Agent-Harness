@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- The Computer pane's spec: on the marked origin, a field whose first input event sends the page elsewhere (I3b). Typing
+     that goes on after that chunk would land in the next page's autofocused field (landed.html). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harbour log</title>
+<style> body { font: 16px -apple-system, system-ui, sans-serif; margin: 24px; background: #fff; color: #111; } </style>
+</head>
+<body>
+<h1>Harbour log</h1>
+<label>Log entry <input id="log" type="text"></label>
+<script>
+  let gone = false;
+  document.getElementById("log").addEventListener("input", () => {
+    if (gone) return;
+    gone = true;
+    location.href = "/landed.html";
+  });
+</script>
+</body>
+</html>
