@@ -18,6 +18,7 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { extender } from "./budget";
 
 export const REPO = path.resolve(__dirname, "..", "..");
 /** The HUD's version as the app reads it (boot.ts: ../hud/package.json), so a version bump needs no test edit. */
@@ -192,10 +193,6 @@ export function buildFixture(env: NodeJS.ProcessEnv = process.env): void {
 const localYmd = (d: Date): string => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 /** How near local midnight a spec file may start: none runs this long, so none straddles midnight. */
 const MIDNIGHT_MARGIN_MS = 3 * 60_000;
-/** Gives the running test or hook `ms` more, when called from one (a spec file's beforeAll restores the fixture). */
-function moreTime(ms: number): void {
-  try { test.setTimeout(test.info().timeout + ms); } catch { /* outside a test or hook: no budget to extend */ }
-}
 
 /**
  * The fixture's dates are relative to the day it was built ("today", "3d late", the to-do badge, Review's "today HH:MM"),
@@ -204,6 +201,9 @@ function moreTime(ms: number): void {
  * start in the last MIDNIGHT_MARGIN_MS of a day waits for the next one first, so none straddles midnight.
  */
 function fixtureForToday(): void {
+  // The running test's or hook's budget (a spec file's beforeAll restores the fixture), extended by the wait and the
+  // rebuild together: each extension adds to the last (budget.ts says why a second setTimeout replaced the first).
+  const moreTime = extender(test);
   const now = new Date();
   const left = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
   if (left < MIDNIGHT_MARGIN_MS) {
