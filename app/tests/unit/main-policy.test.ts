@@ -11,7 +11,7 @@ import { cwdRefusal, parseShells, programRefusal, ptyEnv, shellRefusal, spawnEnv
 import { folderId, relUnder } from "../../src/main/policy/identity";
 import { ReadScope, claudeDirs, codexHomes } from "../../src/main/policy/read-scope";
 import { externalAllowed, openPathAction } from "../../src/main/policy/shell";
-import { PathArgs, PtySpawnRequestSchema, SpawnRequestSchema, WriteArgs } from "../../src/main/ipc/schemas";
+import { CodeFollowArgs, CodeViewArgs, PathArgs, PtySpawnRequestSchema, SpawnRequestSchema, WriteArgs } from "../../src/main/ipc/schemas";
 
 const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aos-policy-")));
 process.on("exit", () => fs.rmSync(ROOT, { recursive: true, force: true }));
@@ -383,4 +383,28 @@ test("the schemas refuse what the contract does not allow", () => {
     assert.equal(SpawnRequestSchema.safeParse(bad).success, false, JSON.stringify(bad).slice(0, 80));
   assert.equal(PtySpawnRequestSchema.safeParse({ id: "t1", file: "/bin/zsh", args: [], cwd: "/v", name: "xterm-256color", cols: 80, rows: 24 }).success, true);
   assert.equal(PtySpawnRequestSchema.safeParse({ id: "t1", file: "zsh", args: [], cwd: "/v", name: "xterm-256color", cols: 80, rows: 24 }).success, false);
+});
+
+const KEY = "aaaaaaaa-0000-4000-8000-000000000001";
+
+test("AOS_TERMINAL is an agent terminal's key: a v4 UUID, set on a terminal and never on a plain spawn", () => {
+  const r = ptyEnv({ PATH: "/usr/bin" }, { TERM: "xterm-256color", AOS_TERMINAL: KEY }, ctx());
+  assert.ok("env" in r && r.env.AOS_TERMINAL === KEY);
+  for (const bad of ["x", "../a", "", `${KEY}x`, KEY.replace("-4", "-1"), KEY.toUpperCase()]) assert.ok("refusal" in ptyEnv({}, { AOS_TERMINAL: bad }, ctx()), bad);
+  assert.ok("refusal" in spawnEnv({}, { AOS_TERMINAL: KEY }, [], ctx()));
+});
+
+test("code:follow and code:view arguments: a v4 terminal key, a plain session id, no extra key", () => {
+  const ok = { pty: "t1", host: "codex", terminal: KEY };
+  assert.ok(CodeFollowArgs.safeParse(ok).success);
+  assert.ok(CodeFollowArgs.safeParse({ ...ok, id: "rollout-2026.11_09" }).success);
+  assert.ok(CodeFollowArgs.safeParse({ ...ok, id: null }).success);
+  assert.ok(!CodeFollowArgs.safeParse({ ...ok, extra: 1 }).success);
+  assert.ok(!CodeFollowArgs.safeParse({ ...ok, terminal: "x" }).success);
+  assert.ok(!CodeFollowArgs.safeParse({ ...ok, terminal: "../a" }).success);
+  assert.ok(!CodeFollowArgs.safeParse({ ...ok, host: "sh" }).success);
+  for (const id of ["..", "a..b", "-x", "a/b", "", "x".repeat(129)]) assert.ok(!CodeFollowArgs.safeParse({ ...ok, id }).success, id);
+  assert.ok(CodeViewArgs.safeParse({ host: "claude", id: "abc-123" }).success);
+  assert.ok(!CodeViewArgs.safeParse({ host: "claude", id: "../x" }).success);
+  assert.ok(!CodeViewArgs.safeParse({ host: "claude", id: "abc", extra: true }).success);
 });

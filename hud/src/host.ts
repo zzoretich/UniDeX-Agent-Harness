@@ -115,6 +115,8 @@ export interface HostPtyAgentRequest {
   place: string;
   label: string;
   access: "host" | "read" | "edit" | "run";
+  /** The terminal's key, set as AOS_TERMINAL in the agent's environment (code-chat R15). */
+  terminal?: string;
 }
 
 export interface HostPty {
@@ -249,6 +251,16 @@ export interface HostComputer {
   onEvent(cb: (ev: HostComputerEvent) => void): () => void;
 }
 
+/** The Code chat view's transcript mirror (app/src/shared/ipc.ts AosBridge.code); only the app has it. `cache` is a
+ *  vault-relative path (code-chat R14). */
+export interface HostCode {
+  /** Follows an agent terminal's conversation; again for the same terminal returns the running follower's cache. */
+  follow(req: { pty: string; host: "claude" | "codex"; terminal: string; id?: string | null }): Promise<HostResult<{ cache: string }>>;
+  unfollow(pty: string): void;
+  /** Mirrors a past conversation once. */
+  view(req: { host: "claude" | "codex"; id: string }): Promise<HostResult<{ cache: string }>>;
+}
+
 export interface HostSessions {
   /** Opens a thread in a workspace and starts its first turn; events follow on onEvent. */
   start(req: { workspace: string; host: HostSessionHost; text: string; model?: string | null; effort?: string | null; access?: HostSessionAccess; allowCommands?: boolean }): Promise<HostResult<HostSessionThread>>;
@@ -302,6 +314,8 @@ export interface HudHost {
   sessions?: HostSessions;
   /** The Computer pane's calls: only the app has them; undefined elsewhere. */
   computer?: HostComputer;
+  /** The Code chat view's transcript mirror: only the app has it; undefined elsewhere. */
+  code?: HostCode;
   git?: HostGit;
   proposals?: HostProposals;
 }

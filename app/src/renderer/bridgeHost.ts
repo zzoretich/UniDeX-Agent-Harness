@@ -3,7 +3,7 @@
 // recorded in the guard log and answered as Node would answer a refusal: an EROFS error, or for a spawn a child that
 // prints why and exits 1 (as the page's write guards did before main took the checks over).
 
-import type { HostChild, HostComputer, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
+import type { HostChild, HostCode, HostComputer, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
 import { refuse } from "../../obsidian-compat/src/guard";
 import { callError } from "../../obsidian-compat/src/bridge";
 import * as path from "./shims/path";
@@ -264,6 +264,12 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     catalog: (refresh) => settle(aos.sessions.catalog(refresh)),
     onEvent: (cb) => aos.sessions.onEvent(cb),
   };
+  // The Code chat view's transcript mirror (spec 2026-11-09-code-chat): main answers a refusal while its surface is off.
+  const code: HostCode = {
+    follow: (req) => settle(aos.code.follow(req)),
+    unfollow: (p) => aos.code.unfollow(p),
+    view: (req) => settle(aos.code.view(req)),
+  };
   const git: HostGit = {
     status: (workspace) => settle(aos.git.status(workspace)),
     diff: (workspace, file) => settle(aos.git.diff(workspace, file)),
@@ -283,6 +289,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     spawn,
     sessions,
     computer,
+    code,
     git,
     proposals,
     execFileSync: (file, args, opts) => {

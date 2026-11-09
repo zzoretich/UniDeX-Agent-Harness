@@ -83,6 +83,7 @@ export class TerminalPool extends Events {
       : hostPty.spawnAgent({
         host: s.host, argv: launchArgs(s), cwd: o.place.dir, configDir: s.configDir ?? null, gitInit: !!s.gitInit,
         cols: size.cols, rows: size.rows, place, label: `${label} in ${o.place.label}`.slice(0, LABEL_MAX), access: s.access,
+        terminal: session.meta.terminalKey,
       }));
     const asked = ask(spec).then(async (r) => {
       if (r.ok || r.code !== "flags" || !("flags" in r) || !o.onFlags || session.isClosed) return r;

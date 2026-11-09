@@ -112,11 +112,11 @@ test("normalizePath matches Obsidian's", () => {
 test("write surfaces: every verified surface by default; AOS_APP_WRITE narrows or widens a run", () => {
   const verified = SURFACES.filter((s) => s.verified).map((s) => s.id);
   assert.deepEqual(loadWriteSettings({}), { surfaces: verified, source: "default" });
-  // One surface is unverified today: Hosts waits for a host added live through it (install-import B2). Everything else is
+  // Two surfaces are unverified today: Hosts waits for a host added live through it (install-import B2), and Code chat for its live check on each host (code-chat R13). Everything else is
   // verified, including MCP server changes (connectors-tab D21) and the Computer pane since its live check on each host
   // (agent-computer D26, 2026-11-08).
-  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["hosts"]);
-  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 1);
+  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id), ["hosts", "code"]);
+  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 2);
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo,chat" }), { surfaces: ["todo", "chat"], source: "AOS_APP_WRITE" });
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "" }), { surfaces: [], source: "AOS_APP_WRITE" });
   // A surface not verified yet (a new one starts this way) stays off by default; AOS_APP_WRITE can still turn it on

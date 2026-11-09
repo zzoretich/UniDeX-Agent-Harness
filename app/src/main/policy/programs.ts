@@ -75,6 +75,9 @@ const SPAWN_VARS: Record<string, ValueRule> = {
   CLAUDE_PROJECT_DIR: (v) => v === "",
 };
 
+/** A v4 UUID, as an agent terminal's key is (hud/src/data/terminalSession.ts; lib/code-mirror.js validTerminal). */
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 /** And a terminal's, on top: what TerminalSession always sets. */
 const PTY_VARS: Record<string, ValueRule> = {
   ...SPAWN_VARS,
@@ -83,6 +86,8 @@ const PTY_VARS: Record<string, ValueRule> = {
   AGENTIC_OS: (v) => v === "1",
   // So Claude Code keeps the links its status line prints (it drops them when it cannot tell the terminal shows them).
   FORCE_HYPERLINK: (v) => v === "1",
+  // An agent terminal's key (code-chat R15): the v4 UUID the Code chat's followers and the status line's copy are named by.
+  AOS_TERMINAL: (v) => UUID_RE.test(v),
 };
 
 /** The variables a spawn may remove: CLAUDECODE, so a headless claude never re-enters the user's hooks. */

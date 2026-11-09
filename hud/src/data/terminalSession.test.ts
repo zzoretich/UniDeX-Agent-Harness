@@ -81,8 +81,9 @@ test("the terminal shows at once; main's agent becomes its process; when the age
   assert.equal(session.isExited, false);
   assert.deepEqual(requests, [{
     host: "claude", argv: launchArgs(SPEC), cwd: PLACE.dir, configDir: "/cfg/claude", gitInit: true, cols: 80, rows: 24,
-    place: "ws:harbor-map", label: "Claude Code in harbor-map", access: "edit",
+    place: "ws:harbor-map", label: "Claude Code in harbor-map", access: "edit", terminal: session.meta.terminalKey,
   }]);
+  assert.match(session.meta.terminalKey, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "a v4 UUID (code-chat R15)");
   session.write("typed early");
   session.resize(132, 50);
   answer({ ok: true, data: agent });
@@ -279,4 +280,18 @@ test("R80: the flags retry relaunches the same spec with only main's answer chan
   assert.deepEqual(requests.map((r) => r.access), ["edit", "edit"]);
   assert.equal(session.meta.model, "gpt-6-luna");
   assert.match(launcher.preview("codex"), /^exec codex --no-daemon\b/, "the launcher keeps main's answer for its preview");
+});
+
+test("code-chat R15: AOS_TERMINAL is the terminal's key on an agent terminal's shell and on none else; a restored meta without a key gets a fresh one", async () => {
+  const { shells } = fakeHost(async () => ({ ok: false, error: "", code: "fallback" }));
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  await ready;
+  assert.equal(shells[0].opts.env?.AOS_TERMINAL, session.meta.terminalKey, "the fallback shell carries it, so the typed agent inherits it");
+  const plain = pool.create();
+  assert.equal(shells[1].opts.env?.AOS_TERMINAL, undefined, "a plain shell has none");
+  assert.notEqual(plain.meta.terminalKey, session.meta.terminalKey, "each terminal has its own key");
+  const kept = pool.create({ meta: { host: "codex", terminalKey: "aaaaaaaa-0000-4000-8000-000000000001" } });
+  assert.equal(shells[2].opts.env?.AOS_TERMINAL, "aaaaaaaa-0000-4000-8000-000000000001");
+  assert.equal(kept.meta.terminalKey, "aaaaaaaa-0000-4000-8000-000000000001");
 });
