@@ -76,3 +76,10 @@ test("the Computer pane's host says whether the computer surface is on for this 
   assert.equal(on(["sessions", "todo"]), false);
   assert.equal(on(["sessions", "computer"]), true);
 });
+
+test("the Computer pane's host carries main's start page, fixed at boot (DuckDuckGo, or the e2e suite's fixture in its runs)", () => {
+  const start = (computerStartPage?: string) => createBridgeHost(fakeAos(async () => ({ ok: true, data: { pid: 1 } })).aos, { ...INFO, ...(computerStartPage === undefined ? {} : { computerStartPage }) } as BootInfo).host.computer?.startPage;
+  assert.equal(start("https://duckduckgo.com/"), "https://duckduckgo.com/");
+  assert.equal(start("http://search.test:4100/"), "http://search.test:4100/");
+  assert.equal(start(), undefined, "a boot without one leaves the HUD's own copy in charge");
+});

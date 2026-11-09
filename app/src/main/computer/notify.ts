@@ -117,15 +117,29 @@ export class AskNotifier {
 }
 
 /**
- * The e2e suite's switches, both ignored by a packaged build:
+ * The e2e suite's switches, all three ignored by a packaged build:
  * - `AOS_E2E_HOST_RULES`: Chromium's `host-resolver-rules`, applied before ready, so the suite's fixture sites get
  *   unmarked `*.test` origins served on 127.0.0.1 (agent-computer D39). One line, or nothing.
  * - `AOS_E2E_TRUSTED_CLI`: comma-separated real paths that admission (and a Code launch's install check) treats as a
  *   vendor-signed CLI, so a stub agent can reach the bridge (D18). Absolute paths only.
+ * - `AOS_E2E_START_PAGE`: a test seam for the start page a tab the person opens starts on, whose search the address bar
+ *   uses for words (hud/src/data/computerStart.ts; DuckDuckGo otherwise), so the suite's new tabs and searches reach its
+ *   local fixture, never the real search engine. An http or https page with no query or fragment (the search adds
+ *   `?q=`), as the browser loads it, or nothing.
  */
-export function testSwitches(env: NodeJS.ProcessEnv, packaged: boolean): { hostRules: string | null; trustedCli: string[] } {
-  if (packaged) return { hostRules: null, trustedCli: [] };
+export function testSwitches(env: NodeJS.ProcessEnv, packaged: boolean): { hostRules: string | null; trustedCli: string[]; startPage: string | null } {
+  if (packaged) return { hostRules: null, trustedCli: [], startPage: null };
   const rules = (env.AOS_E2E_HOST_RULES ?? "").trim();
   const trustedCli = (env.AOS_E2E_TRUSTED_CLI ?? "").split(",").map((p) => p.trim()).filter((p) => p && path.isAbsolute(p));
-  return { hostRules: rules && !/[\r\n]/.test(rules) ? rules : null, trustedCli };
+  return { hostRules: rules && !/[\r\n]/.test(rules) ? rules : null, trustedCli, startPage: startSwitch(env.AOS_E2E_START_PAGE) };
+}
+
+/** `AOS_E2E_START_PAGE` as the browser loads it, or null for anything but an http or https page with no query or fragment. */
+function startSwitch(raw: string | undefined): string | null {
+  const v = (raw ?? "").trim();
+  if (!v || /[\s?#]/.test(v)) return null;
+  try {
+    const u = new URL(v);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
+  } catch { return null; }
 }

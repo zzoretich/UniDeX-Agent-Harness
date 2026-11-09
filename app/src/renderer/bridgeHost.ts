@@ -242,6 +242,8 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
   const computer: HostComputer = {
     // The surfaces are fixed when the app starts (write-settings.ts), so the page knows at boot whether main runs it.
     enabled: info.writeSurfaces.includes("computer"),
+    // Fixed when the app starts too: main's start page, which + opens and the address bar searches.
+    ...(info.computerStartPage ? { startPage: info.computerStartPage } : {}),
     select: (place) => aos.computer.select(place).catch(() => null),
     show: (bounds) => aos.computer.show(bounds),
     navigate: (url) => settle(aos.computer.navigate(url)),

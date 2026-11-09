@@ -154,13 +154,23 @@ test("noticeTitle: one line the runtime accepts, at most 160 characters, never s
 
 test("testSwitches: a dev or e2e run reads the host rules and the trusted CLIs (absolute paths only)", () => {
   assert.deepEqual(testSwitches({ AOS_E2E_HOST_RULES: "MAP *.test 127.0.0.1", AOS_E2E_TRUSTED_CLI: "/tmp/e2e/claude, relative/codex,,/tmp/e2e/codex" }, false), {
-    hostRules: "MAP *.test 127.0.0.1", trustedCli: ["/tmp/e2e/claude", "/tmp/e2e/codex"],
+    hostRules: "MAP *.test 127.0.0.1", trustedCli: ["/tmp/e2e/claude", "/tmp/e2e/codex"], startPage: null,
   });
-  assert.deepEqual(testSwitches({}, false), { hostRules: null, trustedCli: [] });
-  assert.deepEqual(testSwitches({ AOS_E2E_HOST_RULES: "  " }, false), { hostRules: null, trustedCli: [] });
+  assert.deepEqual(testSwitches({}, false), { hostRules: null, trustedCli: [], startPage: null });
+  assert.deepEqual(testSwitches({ AOS_E2E_HOST_RULES: "  " }, false), { hostRules: null, trustedCli: [], startPage: null });
   assert.deepEqual(testSwitches({ AOS_E2E_HOST_RULES: "MAP *.test 127.0.0.1\nMAP * 10.0.0.1" }, false).hostRules, null, "one line or nothing");
 });
 
-test("testSwitches: a packaged build ignores both", () => {
-  assert.deepEqual(testSwitches({ AOS_E2E_HOST_RULES: "MAP *.test 127.0.0.1", AOS_E2E_TRUSTED_CLI: "/tmp/e2e/claude" }, true), { hostRules: null, trustedCli: [] });
+test("testSwitches: a dev or e2e run reads the start page, so the suite's new tabs and searches stay on its fixture (an http or https page, no query or fragment)", () => {
+  const start = (v?: string): string | null => testSwitches(v === undefined ? {} : { AOS_E2E_START_PAGE: v }, false).startPage;
+  assert.equal(start("http://search.test:4100/"), "http://search.test:4100/");
+  assert.equal(start(" http://127.0.0.1 "), "http://127.0.0.1/", "trimmed, and normalised as the browser loads it");
+  assert.equal(start("https://start.test/home"), "https://start.test/home");
+  const bad = [undefined, "", "  ", "search.test", "/start", "file:///tmp/start.html", "about:blank", "javascript:alert(1)", "data:text/html,x",
+    "http://search.test/?q=x", "http://search.test/?", "http://search.test/#top", "http://a.test/\nhttp://b.test/", "http://a.test/ b"];
+  for (const v of bad) assert.equal(start(v), null, JSON.stringify(v));
+});
+
+test("testSwitches: a packaged build ignores all three", () => {
+  assert.deepEqual(testSwitches({ AOS_E2E_HOST_RULES: "MAP *.test 127.0.0.1", AOS_E2E_TRUSTED_CLI: "/tmp/e2e/claude", AOS_E2E_START_PAGE: "http://search.test:4100/" }, true), { hostRules: null, trustedCli: [], startPage: null });
 });
