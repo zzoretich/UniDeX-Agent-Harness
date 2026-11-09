@@ -146,7 +146,7 @@ const agent = (key: string, label: string, access: Access = "edit", place = "ws:
 const A = agent("chat:a", "Alpha");
 const B = agent("chat:b", "Beta");
 
-function make(o: { enabled?: boolean; popOut?: (place: string) => void; liveAgent?: (key: string) => AgentRef | undefined } = {}) {
+function make(o: { enabled?: boolean; popOut?: (place: string) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string } = {}) {
   const clock = new FakeClock();
   const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-service-")), "computer", "sites.json"));
   const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120 };
@@ -161,6 +161,7 @@ function make(o: { enabled?: boolean; popOut?: (place: string) => void; liveAgen
     broker, wheel, sites, config: () => cfg, emit: (s) => states.push(s), note: (a, line) => notes.push([a.key, line]), clock,
     ...(o.popOut ? { popOut: o.popOut } : {}),
     ...(o.liveAgent ? { liveAgent: o.liveAgent } : {}),
+    ...(o.startPage ? { startPage: o.startPage } : {}),
   });
   const s = svc;
   let id = 0;
@@ -890,6 +891,8 @@ test("the pane's calls: select, show, navigate, tabs, mark and state", async () 
   h.svc.tab({ kind: "new" });
   await flush();
   assert.equal(b.pages.length, 2);
+  assert.deepEqual(b.pages[1], { url: "https://duckduckgo.com/", openedBy: null }, "+ opens the start page, DuckDuckGo, as the person's tab");
+  assert.equal(b.current, 1);
   h.svc.tab({ kind: "select", index: 0 });
   assert.equal(b.current, 0);
   h.svc.tab({ kind: "close", index: 9 });
@@ -901,6 +904,22 @@ test("the pane's calls: select, show, navigate, tabs, mark and state", async () 
   assert.equal(h.lastState().poppedOut, false, "no window to pop out into");
   h.svc.select("ws:beta");
   assert.equal(b.shows.at(-1), null, "the computer no longer selected is parked");
+});
+
+test("+ opens the start page main was given (the e2e suite's fixture); an agent's new tab loads its own URL, never the start page", async () => {
+  const h = make({ startPage: "http://search.test:4100/" });
+  h.svc.select("ws:alpha");
+  h.svc.tab({ kind: "new" });
+  await flush();
+  const b = h.b();
+  assert.deepEqual(b.pages, [{ url: "http://search.test:4100/", openedBy: null }]);
+  const opened: string[] = [];
+  const open = b.open.bind(b);
+  b.open = async (url, o) => { opened.push(url); return open(url, o); };
+  const r = await h.call(A, "computer_open", { url: "https://a.test/", newTab: true });
+  assert.ok(!r.isError, r.text);
+  assert.deepEqual(opened, ["https://a.test/"], "one load, the agent's URL");
+  assert.deepEqual(b.pages[1], { url: "https://a.test/", openedBy: "Alpha" });
 });
 
 test("an action queued behind another is not delivered once the user has taken over", async () => {

@@ -353,6 +353,9 @@ export function appEnv(extra: Record<string, string | undefined> = {}): Record<s
     // Read-only unless a spec turns surfaces on with its own AOS_APP_WRITE. The app's own default (every verified
     // surface) is what a spec gets with `AOS_APP_WRITE: undefined` (variants.spec.ts covers it).
     AOS_APP_WRITE: "",
+    // The Computer pane's start page and its search (the test seam in computer/notify.ts testSwitches): a loopback
+    // address, so no run's new tab or search reaches the real search engine; computer.spec.ts serves its own.
+    AOS_E2E_START_PAGE: "http://127.0.0.1/",
   });
   // The runtime runs above used AOS_HEADLESS=1; an app launched from Finder has no such variable, and under it the
   // runtime refreshes the app is allowed to start (scan-vault, reconcile-sessions) would exit without doing anything.

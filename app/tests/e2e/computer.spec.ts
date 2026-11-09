@@ -3,8 +3,9 @@
 // and Codex, for a Chat turn and as a Code launch's terminal process, so the bridge admits them by spawn ownership; each
 // starts the plugin launcher's MCP server and calls the computer_* tools when a test asks. The sites are the fixture
 // pages in fixtures/computer, served on 127.0.0.1 and reached as *.test hosts (the test switch AOS_E2E_HOST_RULES):
-// shop.test is unmarked, marked.test is marked before launch. The `computer` surface is on by default since its live
-// checks (verified: true); these files name it in AOS_APP_WRITE, but for the one that runs with it left out.
+// shop.test is unmarked, marked.test is marked before launch; search.test stands in for DuckDuckGo, the start page and its
+// search (the test seam AOS_E2E_START_PAGE). The `computer` surface is on by default since its live checks (verified:
+// true); these files name it in AOS_APP_WRITE, but for the one that runs with it left out.
 
 import { expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs";
@@ -20,11 +21,15 @@ import {
 interface Seen { method: string; url: string; body: string }
 interface Site { port: number; seen: Seen[]; close(): Promise<void> }
 
+const escHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);
+
 /** Serves fixtures/computer/<name>.html at /<name>.html for any host, plus a same-origin POST, a redirect to a data: URL,
- *  a download and a form's GET; every request is recorded. */
+ *  a download, a form's GET, and a start page at / with its search at /?q= (DuckDuckGo's shape: the words, and a result
+ *  that shows its address as its link's text, a page at /result no other test opens); every request is recorded. */
 async function startSite(): Promise<Site> {
   const dir = path.join(__dirname, "fixtures", "computer");
   const seen: Seen[] = [];
+  const html = { "content-type": "text/html; charset=utf-8" };
   const server = http.createServer((req, res) => {
     let body = "";
     req.setEncoding("utf8");
@@ -43,6 +48,14 @@ async function startSite(): Promise<Site> {
         res.writeHead(200, { "content-type": "text/csv", "content-disposition": 'attachment; filename="tides.csv"' }).end("time,height\n06:00,1.2\n");
       } else if (url.startsWith("/note?")) {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<!doctype html><title>Noted</title><p>Noted</p>");
+      } else if (url === "/") {
+        res.writeHead(200, html).end("<!doctype html><title>Start</title><p>Start page</p>");
+      } else if (url.startsWith("/?q=")) {
+        const q = new URLSearchParams(url.slice(2)).get("q") ?? "";
+        const result = `http://result.test:${(server.address() as { port: number }).port}/result`;
+        res.writeHead(200, html).end(`<!doctype html><title>Results</title><p>Results for ${escHtml(q)}</p><a href="${result}">${result}</a>`);
+      } else if (url === "/result") {
+        res.writeHead(200, html).end("<!doctype html><title>Tide table</title><p>Tide table</p>");
       } else res.writeHead(404).end();
     });
   });
@@ -59,6 +72,9 @@ const repoUrl = () => `http://marked.test:${site.port}/repo.html`;
 const loginUrl = () => `http://marked.test:${site.port}/login.html`;
 const shopHost = () => `shop.test:${site.port}`;
 const markedHost = () => `marked.test:${site.port}`;
+/** The start page, standing in for DuckDuckGo's (the app's AOS_E2E_START_PAGE in the files that serve it). */
+const startUrl = () => `http://search.test:${site.port}/`;
+const searchHost = () => `search.test:${site.port}`;
 
 /** marked.test as the person marked it (agent-computer D39), in the app's own data. */
 function markSite(origin: string): void {
@@ -189,10 +205,13 @@ const notices = (app: ElectronApplication) => app.evaluate(() => (globalThis as 
 // ── both hosts, the Computer surface on ──────────────────────────────
 
 test.describe("both hosts, the Computer surface on", () => {
-  test.beforeAll(async () => { site = await startSite(); });
+  // The start page and its search are the fixture site's (the test seam AOS_E2E_START_PAGE), once it has its port: this
+  // hook runs before useApp's launch.
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
   test.afterAll(async () => { await site?.close(); });
   const app = useApp({
-    env: { AOS_APP_WRITE: "computer,sessions", ...computerEnv() },
+    env,
     prepare: () => { prepare({ claude: true, codex: true }); markSite(`http://marked.test:${site.port}`); },
   });
 
@@ -266,6 +285,50 @@ test.describe("both hosts, the Computer surface on", () => {
       await expect.poll(async () => (await a.call("computer_status")).text).toContain("Pane: off screen");
       await openTab(win, "term");
       await expect.poll(async () => (await a.call("computer_status")).text).toContain("Pane: on screen");
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
+  test("+ opens the start page and words typed in the address bar search it (the fixture standing in for DuckDuckGo); an agent opens a result by its address without an ask (D39)", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    const a = await codeAgent(win, "claude");
+    try {
+      const p = pane(win, "code");
+      await expect(p.locator(".aos-cp-place")).toHaveText("Vault");
+      const before = site.seen.length;
+      const tabs = await p.locator(".aos-cp-tab").count();
+      await p.locator(".aos-cp-tabnew").click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(tabs + 1);
+      // A tab the person opens starts on the start page: the tab reads "New tab" and the address bar is empty, as on
+      // about:blank, while the site switch names the page it is on.
+      await expect(p.locator(".aos-cp-trust")).toHaveText(`Asks first on ${searchHost()}`);
+      await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText("New tab");
+      await expect(p.locator(".aos-cp-url")).toHaveValue("");
+      await expect(p.locator(".aos-cp-url")).toHaveAttribute("placeholder", "Search DuckDuckGo or type an address");
+      expect(await inPage<string>(electron, startUrl(), "document.title")).toBe("Start");
+      expect(site.seen.slice(before).some((s) => s.method === "GET" && s.url === "/")).toBe(true);
+      // Words typed in the address bar search the start page.
+      const words = "tide times near the harbor?";
+      const search = `${startUrl()}?q=${encodeURIComponent(words)}`;
+      await p.locator(".aos-cp-url").fill(words);
+      await p.locator(".aos-cp-url").press("Enter");
+      await expect(p.locator(".aos-cp-url")).toHaveValue(search);
+      await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText("Results");
+      expect(site.seen.slice(before).map((s) => s.url)).toContain(`/?q=${encodeURIComponent(words)}`);
+      await expect(p.locator(".aos-cp-log .aos-cp-logtext").filter({ hasText: `Opened ${search}` })).toHaveCount(1);
+      // The agent reads the results and opens one by the address it shows: opening a page never asks, here on a site no
+      // one has marked.
+      const result = `http://result.test:${site.port}/result`;
+      const snap = (await a.call("computer_snapshot")).text;
+      expect(snap).toContain(`Results for ${words}`);
+      expect(snap).toContain(`link "${result}"`);
+      expectReply(await a.call("computer_open", { url: result }), { isError: false, text: `Opened the page. Page: ${wrapped(result)}` });
+      await expect(cards(p)).toHaveCount(0);
+      await expect(p.locator(".aos-cp-url")).toHaveValue(result);
+      // The tab goes, so the Vault's computer is as the tests before left it.
+      await p.locator(".aos-cp-tab.is-active .aos-cp-tabclose").click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(tabs);
     } finally { await a.finish(); }
     expectNoErrors(h);
   });

@@ -202,6 +202,9 @@ export interface BootInfo {
   update: UpdateState;
   /** The theme to draw in before anything paints. */
   theme: ThemeState;
+  /** The Computer pane's start page (hud/src/data/computerStart.ts): DuckDuckGo, or the e2e suite's fixture in its runs
+   *  (computer/notify.ts testSwitches). The page searches it for words typed in the address bar. */
+  computerStartPage: string;
 }
 
 // ── setup and updates (phase 5) ──────────────────────────────────────

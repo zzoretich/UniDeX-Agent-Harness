@@ -150,9 +150,15 @@ inside the surface.
   context isolation and no preload: nothing of the app's bridge reaches a page. Navigation allows only `http:` and
   `https:` (and an empty `about:blank`) for the agent's opens, redirects, a page's own navigations and new windows;
   `javascript:`, `data:`, `blob:`, `file:`, the app's own schemes and browser-internal pages are refused, and an
-  external app's scheme is never opened. Every permission is denied unless the person allows it on an ask card, and
-  the camera, the microphone and the location are denied without one (the app has no access to them on the Mac, so an
-  Allow would do nothing), with a line in the activity log saying so.
+  external app's scheme is never opened. The view's start page is DuckDuckGo (`hud/src/data/computerStart.ts`): a new
+  tab the person opens with the pane's **+** loads `https://duckduckgo.com/`, and words typed in the address bar that are
+  not an address (spaces, one word with no dot, a question) are sent to DuckDuckGo as a search,
+  `https://duckduckgo.com/?q=<the words>`; an address or a URL opens as typed. A tab an agent opens loads the agent's
+  URL with no DuckDuckGo load first, and the agent's tool description points it at the same search. These are ordinary
+  page loads in the shared partition (DuckDuckGo's cookies and settings stay there like any site's) under the same http
+  and https rule; nothing in the gate changes for them. Every permission is denied unless the person allows it on an
+  ask card, and the camera, the microphone and the location are denied without one (the app has no access to them on
+  the Mac, so an Allow would do nothing), with a line in the activity log saying so.
   Downloads and file choosers always ask; a file chooser gives a file only to the tab that asked, still on the same page
   after the Allow and after the system dialog closes; a download's bytes go to a private folder of their own (0700) in the user's
   system temp folder and move into Downloads only after Allow, never over a file (Chromium may have the whole file
@@ -188,7 +194,8 @@ inside the surface.
   it again right before it starts the CLI and refuses a line that disagrees, R79, R81): Codex 0.167's TUI
   otherwise runs its MCP servers in a shared background server it keeps running, which the app did not start, so the
   agenticos server there would be refused like any other. The e2e suite's switches (`AOS_E2E_TRUSTED_CLI` naming its stand-in CLIs, `AOS_E2E_HOST_RULES`
-  mapping its `*.test` sites to 127.0.0.1) are read only by an unpackaged build (`computer/notify.ts`).
+  mapping its `*.test` sites to 127.0.0.1, `AOS_E2E_START_PAGE` pointing the start page and its search at a local
+  fixture, so no run reaches the real DuckDuckGo) are read only by an unpackaged build (`computer/notify.ts`).
 - **The gate holds every input until it may go** (D6, D17, D31, D34, D39, D43; `gate.ts`, `service.ts`, `asks.ts`). One
   session drives a computer at a time; another's actions get "busy", its look tools still work. A Read only session can
   look but not act. Opening a page, scrolling, snapshots, screenshots and navigation keys (arrows, Page Up and Down,

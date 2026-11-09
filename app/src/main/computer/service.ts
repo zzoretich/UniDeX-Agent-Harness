@@ -21,6 +21,7 @@ import type { SiteMarks } from "./sites";
 import type { Holder, Wheel } from "./wheel";
 import { navAllowed, siteOf } from "../policy/computer-url";
 import type { Result } from "../../shared/ipc";
+import { START_PAGE } from "../../../../hud/src/data/computerStart";
 
 export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { place: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean }
@@ -45,6 +46,9 @@ export interface ServiceOptions {
   /** The live agent the app's registry holds for a session key (AgentRegistry.byKey), so a late `agentGone` from a
    *  session's previous process is ignored. */
   liveAgent?: (key: string) => AgentRef | undefined;
+  /** Where a tab the person opens (the pane's +) starts: START_PAGE (hud/src/data/computerStart.ts, DuckDuckGo) unless
+   *  main was given the e2e suite's fixture (computer/notify.ts testSwitches). */
+  startPage?: string;
   clock?: Clock;
 }
 
@@ -805,7 +809,9 @@ export class ComputerService {
     const p = this.placeOf(this.selected);
     const b = this.browserOf(p);
     try {
-      if (op.kind === "new") void b.open("about:blank", { newTab: true, by: null }).catch((e: unknown) => this.line(p, USER, `The new tab did not open: ${message(e)}`, null));
+      // A tab the person opens starts on the start page, the person's own load (nothing asks). An agent's new tab loads
+      // its own URL instead, with no start page first (computer_open's newTab).
+      if (op.kind === "new") void b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: null }).catch((e: unknown) => this.line(p, USER, `The new tab did not open: ${message(e)}`, null));
       else if (op.kind === "close") b.close(op.index);
       else b.select(op.index);
     } catch { /* a stale index: the next state shows the tabs as they are */ }

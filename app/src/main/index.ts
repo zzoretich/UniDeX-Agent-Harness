@@ -23,6 +23,7 @@ import { AgentRegistry } from "./computer/registry";
 import { ComputerService } from "./computer/service";
 import { SiteMarks } from "./computer/sites";
 import { Wheel } from "./computer/wheel";
+import { START_PAGE } from "../../../hud/src/data/computerStart";
 import { writeHudHostMarker, type HudHostInfo } from "./hud-host";
 import { registerFsIpc } from "./ipc/fs";
 import { registerHostIpc } from "./ipc/host";
@@ -76,6 +77,9 @@ if (debugging.length && app.isPackaged && !__AOS_TEST_BUILD__) {
 // Chromium reads its switches before `ready`: the host rules give the suite's fixture sites unmarked *.test origins.
 const e2e = testSwitches(process.env, app.isPackaged);
 if (e2e.hostRules) app.commandLine.appendSwitch("host-resolver-rules", e2e.hostRules);
+/** The Computer pane's start page: DuckDuckGo, or the e2e suite's fixture (a test seam: AOS_E2E_START_PAGE). Main opens it
+ *  for the pane's + and hands it to the page, whose address bar searches it. */
+const computerStartPage = e2e.startPage ?? START_PAGE;
 
 /** The install's agenticos.json (the launcher's lookup): its path, and what `aos init` / `aos upgrade` wrote there. */
 const agenticosFile = process.env.AOS_CONFIG || path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "agenticos.json");
@@ -242,6 +246,7 @@ const computerService: ComputerService = new ComputerService({
   popOut: (place) => popOutComputer(place),
   // D31: a late bridge close from a session's previous process must not end the turn that replaced it.
   liveAgent: (key) => agentRegistry.byKey(key),
+  startPage: computerStartPage,
 });
 
 /** The variables the HUD reads (HudHost.env), from main's environment; nothing else of it reaches the page. */
@@ -272,6 +277,7 @@ function bootInfo(): BootInfo {
     attach: attached,
     update: updates.state,
     theme: themeState(),
+    computerStartPage,
   };
 }
 

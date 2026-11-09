@@ -233,6 +233,9 @@ export interface HostComputer {
    *  runs). Off, or absent (fail closed; the app always sets it): the pane is only its collapsed strip, whatever its page
    *  shows (ruling R54), and the tour's Computer steps are skipped. */
   readonly enabled?: boolean;
+  /** The start page a tab the person opens starts on, whose search the address bar uses for words (data/computerStart.ts):
+   *  main's, fixed at boot, which is the e2e suite's fixture in its runs. Absent: START_PAGE, DuckDuckGo. */
+  readonly startPage?: string;
   /** Null when the Computer surface is off or the place is refused. */
   select(place: string | null): Promise<HostComputerState | null>;
   show(bounds: HostComputerRect | null): void;

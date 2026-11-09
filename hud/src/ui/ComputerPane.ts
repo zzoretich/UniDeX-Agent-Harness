@@ -14,6 +14,7 @@
 
 import { setIcon } from "obsidian";
 import type { HostComputer, HostComputerHolder, HostComputerRect, HostComputerState, HostComputerTab } from "../host";
+import { START_PAGE, searchUrl } from "../data/computerStart";
 import { storeFor, type ComputerPage, type ComputerStore } from "../data/computerStore";
 import { COMPUTER_PANE_WIDTH, type ComputerPaneSettings } from "../settingsDefaults";
 import { bindColumnResize } from "./columnResize";
@@ -44,15 +45,19 @@ const HELP_TEXT = "Agents use this browser through the Computer tools: it asks y
 /** How many activity lines the Code page shows; main keeps the rest. */
 const LOG_SHOWN = 50;
 
-/** What the address bar opens for what was typed: a scheme is kept (main refuses anything but http and https and says
- *  why), the Mac's own servers get http, and anything else https. */
-export function addressUrl(typed: string): string {
+/** What the address bar opens for what was typed, trimmed: a scheme followed by `//` or by no spaces is kept (main
+ *  refuses anything but http and https and says why); the Mac's own servers (localhost, 127.0.0.1, [::1]) get http; an
+ *  address (a host with a dot or a port, or an IPv6 address, and no spaces before its path) gets https; and anything else
+ *  (words, a question, one word with no dot) is a search on the start page `start` (data/computerStart.ts searchUrl). */
+export function addressUrl(typed: string, start: string = START_PAGE): string {
   const t = typed.trim();
   if (!t) return "";
   const hostPort = /^[a-z0-9.-]+:\d+(?:[/?#]|$)/i.test(t);
-  if (!hostPort && /^[a-z][a-z0-9+.-]*:/i.test(t)) return t;
-  const local = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(t);
-  return `${local ? "http" : "https"}://${t}`;
+  if (!hostPort && /^[a-z][a-z0-9+.-]*:(?:\/\/|\S*$)/i.test(t)) return t;
+  if (/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(t)) return `http://${t}`;
+  const host = t.split(/[/?#]/, 1)[0];
+  const address = hostPort || (!/\s/.test(host) && (/[^.]\.[^.]/.test(host) || /^\[[0-9a-f:.]+\](?::\d+)?$/i.test(host)));
+  return address ? `https://${t}` : searchUrl(t, start);
 }
 
 /** The driving bar for a holder (D5, D31): violet while an agent drives, with Take over; grey while you do, with Hand
@@ -68,10 +73,14 @@ export function drivingText(holder: HostComputerHolder): { kind: "agent" | "user
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const LOCAL_LINE = "Local addresses always act freely";
 
-function tabTitle(t: HostComputerTab): string {
-  if (t.title) return t.title;
-  if (!t.url || t.url === "about:blank") return "New tab";
-  return siteHost(t.url);
+/** A tab with nothing of its own on it yet: no page, about:blank, or the bare start page, as + opens it. */
+function blankTab(url: string | undefined, start: string): boolean {
+  return !url || url === "about:blank" || url === start;
+}
+
+function tabTitle(t: HostComputerTab, start: string): string {
+  if (blankTab(t.url, start)) return "New tab";
+  return t.title || siteHost(t.url);
 }
 
 /** An http or https page's origin, which a site mark names; null for anything else (a blank tab). */
@@ -149,10 +158,13 @@ export class ComputerPane {
   /** M7: when each pending ask's card was drawn where it is now, and its place in the list, by ask id. */
   private readonly shownAt = new Map<string, { at: number; index: number }>();
   private readonly clock: { now(): number; setTimeout(fn: () => void, ms: number): unknown };
+  /** The start page main opens for +, whose search gets words typed in the address bar (HostComputer.startPage). */
+  private readonly start: string;
 
   constructor(private readonly o: ComputerPaneOptions) {
     this.store = storeFor(o.host);
     this.clock = o.clock ?? { now: () => Date.now(), setTimeout: (fn, ms) => setTimeout(fn, ms) };
+    this.start = o.host.startPage ?? START_PAGE;
     const s = o.settings();
     this.width = s.width;
     this.collapsed = s.collapsed;
@@ -194,7 +206,7 @@ export class ComputerPane {
     const form = body.createEl("form", { cls: "aos-cp-address" });
     form.createSpan({ cls: "aos-cp-web", text: "web", attr: { title: "A web page, in the Computer's browser" } });
     const input = form.createEl("input", {
-      cls: "aos-cp-url", attr: { type: "text", "aria-label": "Address", placeholder: "Type an address", spellcheck: "false", autocomplete: "off" },
+      cls: "aos-cp-url", attr: { type: "text", "aria-label": "Address or search", placeholder: "Search DuckDuckGo or type an address", spellcheck: "false", autocomplete: "off" },
     });
     const trust = form.createEl("button", { cls: "aos-cp-trust", attr: { type: "button" } });
     form.addEventListener("submit", (e) => { e.preventDefault(); void this.go(input.value); });
@@ -400,7 +412,7 @@ export class ComputerPane {
   }
 
   private async go(typed: string): Promise<void> {
-    const url = addressUrl(typed);
+    const url = addressUrl(typed, this.start);
     if (!url || !this.live()) return;
     const r = await this.o.host.navigate(url);
     if (this.destroyed) return;
@@ -416,10 +428,10 @@ export class ComputerPane {
     if (st && origin && !LOCAL_HOSTS.has(new URL(origin).hostname)) this.o.host.mark(origin, !st.marked);
   }
 
-  /** The active tab's address, or nothing for a blank tab. */
+  /** The active tab's address, or nothing for a blank tab (about:blank or the bare start page). */
   private address(): string {
     const url = this.live()?.tabs.find((t) => t.active)?.url ?? "";
-    return url === "about:blank" ? "" : url;
+    return blankTab(url, this.start) ? "" : url;
   }
 
   // ── render ──
@@ -495,7 +507,7 @@ export class ComputerPane {
     el.empty();
     if (!st) return;
     for (const t of st.tabs) {
-      const name = tabTitle(t);
+      const name = tabTitle(t, this.start);
       const item = el.createDiv({
         cls: `aos-cp-tab${t.active ? " is-active" : ""}`,
         attr: { role: "tab", "aria-selected": String(t.active), tabindex: "0", title: t.openedBy ? `${name} · opened by ${t.openedBy}` : name },

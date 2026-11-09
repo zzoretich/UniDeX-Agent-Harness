@@ -197,13 +197,14 @@ function fakeClock() {
   return c;
 }
 
-function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent" } = {}) {
+function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string } = {}) {
   const doc = makeDoc();
   const parent = doc.body.createDiv({ cls: "aos-term-deck" });
   const fake = fakeComputer(o.answer ?? ((place) => state(place)));
   const { f } = fake;
   const { enabled: _on, ...unsaid } = fake.host;
-  const host: HostComputer = o.enabled === undefined ? fake.host : o.enabled === "absent" ? unsaid : { ...fake.host, enabled: o.enabled };
+  const shown: HostComputer = o.enabled === undefined ? fake.host : o.enabled === "absent" ? unsaid : { ...fake.host, enabled: o.enabled };
+  const host: HostComputer = o.startPage === undefined ? shown : { ...shown, startPage: o.startPage };
   const saved: ComputerPaneSettings[] = [];
   const clock = fakeClock();
   const pane = new ComputerPane({ host, page: o.page ?? "code", settings: () => o.settings ?? { width: 440, collapsed: false }, save: (s) => saved.push(s), clock });
@@ -565,18 +566,56 @@ test("popped out: the rectangle says where the browser went and that closing tha
   assert.deepEqual(last(s.f.shows), RECT, "the docked rectangle is kept for when it comes back");
 });
 
+test("the address bar: a scheme is kept, the Mac's servers get http, an address https, and anything else searches the start page", () => {
+  const search = (q: string): string => `https://duckduckgo.com/?q=${q}`;
+  const table: Array<[string, string, string]> = [
+    // A scheme followed by // or by no spaces is kept: main refuses anything but http and https, and says why.
+    ["http://example.com", "http://example.com", "http is kept"],
+    ["https://example.com/a b", "https://example.com/a b", "a scheme and // keep the rest, spaces and all"],
+    ["javascript:alert(1)", "javascript:alert(1)", "main refuses it and says why"],
+    ["about:blank", "about:blank", "about:blank is kept"],
+    ["file:///etc/hosts", "file:///etc/hosts", "main refuses it and says why"],
+    // The Mac's own servers get http.
+    ["  localhost:5173/app ", "http://localhost:5173/app", "trimmed, localhost with a port"],
+    ["localhost", "http://localhost", "localhost alone"],
+    ["127.0.0.1:8080", "http://127.0.0.1:8080", "the IPv4 loopback"],
+    ["[::1]:3000/x", "http://[::1]:3000/x", "the IPv6 loopback"],
+    ["localhost:3000/a b", "http://localhost:3000/a b", "spaces after the path start are the page's"],
+    // An address (a host with a dot or a port, no spaces before its path) gets https.
+    ["example.com", "https://example.com", "a host with a dot"],
+    ["example.com/docs", "https://example.com/docs", "a host and a path"],
+    ["docs.example.org/x?y=1#z", "https://docs.example.org/x?y=1#z", "a query and a fragment"],
+    ["example.com/search?q=a b", "https://example.com/search?q=a b", "spaces after the host are the page's"],
+    ["example.com:8443/admin", "https://example.com:8443/admin", "a host with a port"],
+    ["dev-box:3000", "https://dev-box:3000", "a port makes one word an address"],
+    ["192.168.1.10/admin", "https://192.168.1.10/admin", "an IPv4 address"],
+    ["[2001:db8::1]:8080/x", "https://[2001:db8::1]:8080/x", "an IPv6 address"],
+    // Anything else is a search: words, a question, one word with no dot.
+    ["weather", search("weather"), "one word with no dot"],
+    ["weather?", search("weather%3F"), "one word and a question mark"],
+    ["what is the weather?", search("what%20is%20the%20weather%3F"), "a question"],
+    ["how to use example.com", search("how%20to%20use%20example.com"), "words before an address"],
+    ["example.com is down", search("example.com%20is%20down"), "an address before words"],
+    ["note: buy milk", search("note%3A%20buy%20milk"), "a word and a colon, then words, is no scheme"],
+    ["localhost docs", search("localhost%20docs"), "localhost and a word"],
+    ["C++ & Rust", search("C%2B%2B%20%26%20Rust"), "every character is encoded"],
+    ["/etc/hosts", search("%2Fetc%2Fhosts"), "a path with no host"],
+    ["   ", "", "nothing typed opens nothing"],
+  ];
+  for (const [typed, want, why] of table) assert.equal(addressUrl(typed), want, `${JSON.stringify(typed)}: ${why}`);
+  // Another start page (the e2e suite's fixture, host.startPage) gets the words instead.
+  assert.equal(addressUrl("tide times", "http://search.test:4100/"), "http://search.test:4100/?q=tide%20times");
+  assert.equal(addressUrl("example.com", "http://search.test:4100/"), "https://example.com", "an address is never a search");
+});
+
 test("the address bar opens what you type through navigate and shows a refusal inline", async () => {
-  assert.equal(addressUrl("example.com/docs"), "https://example.com/docs");
-  assert.equal(addressUrl("  localhost:5173/app "), "http://localhost:5173/app");
-  assert.equal(addressUrl("127.0.0.1:8080"), "http://127.0.0.1:8080");
-  assert.equal(addressUrl("http://example.com"), "http://example.com");
-  assert.equal(addressUrl("javascript:alert(1)"), "javascript:alert(1)", "main refuses it and says why");
-  assert.equal(addressUrl("   "), "");
   const s = setup();
   s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
   await flush();
   const input = s.q(".aos-cp-url");
   assert.equal(input.value, "https://example.com/checkout", "the active tab's address");
+  assert.equal(input.getAttribute("placeholder"), "Search DuckDuckGo or type an address");
+  assert.equal(input.getAttribute("aria-label"), "Address or search");
   assert.equal(s.root.querySelector(".aos-cp-web")!.textContent, "web");
   s.f.navResult = { ok: false, error: "The Computer pane is off.", code: "ENOENT" };
   input.value = "example.com/docs";
@@ -605,6 +644,49 @@ test("the tabs: + opens one, × closes one, a click selects one", async () => {
   tabs[1].querySelector(".aos-cp-tabclose")!.click();
   s.q(".aos-cp-tabnew").click();
   assert.deepEqual(s.f.tabs, [{ kind: "select", index: 0 }, { kind: "close", index: 1 }, { kind: "new" }]);
+});
+
+test("a new tab on the bare start page reads as one: the address bar is empty and the tab says New tab, whatever its title", async () => {
+  const s = setup();
+  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  await flush();
+  const tab = (url: string, title: string, active = true) => ({ index: 0, url, title, openedBy: null, active });
+  const titles = (): string[] => s.root.querySelectorAll(".aos-cp-tabtitle").map((t) => t.textContent);
+  const input = s.q(".aos-cp-url");
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("https://duckduckgo.com/", "DuckDuckGo - Protection. Privacy. Peace of mind.")] }) });
+  assert.equal(input.value, "", "the start page, as about:blank");
+  assert.deepEqual(titles(), ["New tab"]);
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("about:blank", "about:blank")] }) });
+  assert.equal(input.value, "");
+  assert.deepEqual(titles(), ["New tab"], "about:blank whatever main calls its title");
+  // A search on it, or any other page of the site, is a page like any other.
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("https://duckduckgo.com/?q=weather&ia=web", "weather at DuckDuckGo")] }) });
+  assert.equal(input.value, "https://duckduckgo.com/?q=weather&ia=web");
+  assert.deepEqual(titles(), ["weather at DuckDuckGo"]);
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("https://duckduckgo.com/about", "")] }) });
+  assert.deepEqual(titles(), ["duckduckgo.com"]);
+  // Words typed there search the start page through navigate.
+  input.focus();
+  input.value = "what is the weather?";
+  s.q(".aos-cp-address").fire("submit");
+  await flush();
+  assert.deepEqual(s.f.navs, ["https://duckduckgo.com/?q=what%20is%20the%20weather%3F"]);
+});
+
+test("with another start page from the host (the e2e suite's fixture), a new tab on it reads as one and words search it", async () => {
+  const s = setup({ startPage: "http://search.test:4100/" });
+  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  await flush();
+  const input = s.q(".aos-cp-url");
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "http://search.test:4100/", title: "Start", openedBy: null, active: true }] }) });
+  assert.equal(input.value, "");
+  assert.deepEqual(s.root.querySelectorAll(".aos-cp-tabtitle").map((t) => t.textContent), ["New tab"]);
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://duckduckgo.com/", title: "DuckDuckGo", openedBy: null, active: true }] }) });
+  assert.equal(input.value, "https://duckduckgo.com/", "DuckDuckGo is a page like any other here");
+  input.value = "tide times";
+  s.q(".aos-cp-address").fire("submit");
+  await flush();
+  assert.deepEqual(s.f.navs, ["http://search.test:4100/?q=tide%20times"]);
 });
 
 test("the Code page keeps an activity log (D35); the Chat page has none (its thread shows the lines)", async () => {
