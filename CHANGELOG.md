@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-11-09
+
 ### Added
 - **Computer pane.** A browser beside the terminal on Code and beside the reader on Sessions that a session's agent drives through nine `computer_*` tools on Claude Code or Codex while you watch: it opens and reads pages freely, asks you before it clicks or types on a site you haven't marked and before anything irreversible, and Take over stops it at once; Settings ▸ Computer turns it off. New tabs open DuckDuckGo, and words typed in the address bar search it there (an address still opens as typed); agents are told to search the web the same way. Code launches on both hosts now run the CLI as the terminal's own process while the Computer surface is on (with it off, they are typed into a shell as before), with your login shell's environment, and your login shell takes over in that terminal when the CLI exits. A Codex terminal the Code page starts runs with `--no-daemon` while Settings ▸ Computer is on (and the CLI takes it), so its computer tools reach the pane instead of Codex's shared background server. <!-- tour: code.computer, sessions.computer -->
 
@@ -725,7 +727,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.5.0
 [2.4.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.4.0
 [2.3.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.3.0
 [2.2.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.2.0
