@@ -80,6 +80,15 @@ test('the server lists the nine computer tools with look tools read-only and act
   });
 });
 
+test("computer_open's description says how to search the web: DuckDuckGo's ?q=, a result opened by its link's URL, and what asks", async () => {
+  await withClient(makeVault(), async (client) => {
+    const open = (await client.listTools()).tools.find((t) => t.name === 'computer_open');
+    assert.ok(open.description.includes('To search the web, open https://duckduckgo.com/?q=<the words, URL-encoded>'), open.description);
+    assert.ok(open.description.includes("then open a result by its link's URL"), open.description);
+    assert.ok(open.description.includes('Opening a page never asks the user; clicking or typing on a site the user has not marked does.'), open.description);
+  });
+});
+
 test('computer_open forwards the tool and args and returns the bridge text', async () => {
   const b = await fakeBridge({ onCall: (req, reply) => reply({ text: `opened ${req.args.url} — é€😀` }) });
   try {

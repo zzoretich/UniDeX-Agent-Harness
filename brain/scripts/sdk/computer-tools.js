@@ -20,7 +20,9 @@ function registerComputerTools(server, z, client) {
   const tab = z.number().int().min(0).optional().describe('Tab index; the active tab when omitted');
   const defs = {
     computer_open: ['Open a page in the Computer pane',
-      'Open a URL in the Computer pane (the browser the user watches beside the chat).' + SAFETY,
+      'Open a URL in the Computer pane (the browser the user watches beside the chat). To search the web, open '
+        + 'https://duckduckgo.com/?q=<the words, URL-encoded>, then open a result by its link\'s URL. Opening a page never '
+        + 'asks the user; clicking or typing on a site the user has not marked does.' + SAFETY,
       { url: z.string().max(8192).describe('The URL to open'), newTab: z.boolean().optional().describe('Open in a new tab') }],
     computer_snapshot: ['Read the page as text with element refs',
       'Return the page as a text outline with element refs for computer_click, computer_type and computer_scroll.' + SAFETY,
