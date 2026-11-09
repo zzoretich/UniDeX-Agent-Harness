@@ -40,6 +40,7 @@ import { parseShells, type ProgramContext } from "./policy/programs";
 import { ReadScope, type AgenticosPaths } from "./policy/read-scope";
 import { WritePolicy } from "./policy/write-policy";
 import { SCHEME, parseAgenticosUrl, urlFromArgv } from "./protocol";
+import { quitGate } from "./quit-gate";
 import { admit } from "./computer/admission";
 import { BridgeKeeper, ComputerBridge, bridgeSocketPath } from "./computer/bridge";
 import { sweepHeld } from "./computer/downloads";
@@ -152,6 +153,8 @@ const ptyService = new PtyService({
   hostOn: (host) => hostsOf(readAgenticos())[host],
   // agent-computer D31: a Code agent that exits (or whose terminal closes) frees its computer's wheel and cancels its asks.
   onAgentGone: (agent) => computerService.agentGone(agent),
+  // R86: no terminal starts while the app quits (quit-gate.ts), so the quit's wait for their exits is the last one.
+  quitting: () => quitting,
 });
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
 // surface. A turn outlives a page reload; quitting stops every one.
@@ -295,7 +298,11 @@ const updates = new UpdateService({
   },
   // The window hides on close until the app quits; an update's quit closes the windows before `before-quit`, so it says so first.
   beforeInstall: () => { quitting = true; quittingForUpdate = true; shutdownComputer(); },
+  // R86: the terminals end, and node-pty reports each exit, before quitAndInstall starts the quit (quit-gate.ts).
+  settle: () => (ptyService.busy ? ptyService.settle() : null),
 });
+/** R86: a quit with a terminal running waits until node-pty has reported every terminal's exit, about a second at most. */
+const gate = quitGate({ busy: () => ptyService.busy, settle: () => ptyService.settle(), quit: () => app.quit() });
 /** How many times the page asked to restart into an update (the e2e suite reads it: a dev run has no update to install). */
 let installRequests = 0;
 
@@ -427,7 +434,8 @@ function shutdownComputer(): void {
 }
 
 function show(): void {
-  if (!win) createWindow();
+  // Nothing may create a window once quitting starts (shutdownComputer): a held quit (R86) can find the windows gone.
+  if (!win) { if (!quitting) createWindow(); }
   else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 }
 
@@ -704,9 +712,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on("open-url", (e, url) => { e.preventDefault(); openLink(url); });
   app.on("second-instance", (_e, argv) => { const url = urlFromArgv(argv); if (url) openLink(url); else show(); });
   app.on("activate", () => show());
-  app.on("before-quit", () => { quitting = true; quittingForUpdate = false; shutdownComputer(); });
+  // R86: with a terminal running, the quit waits for every terminal's exit, then is asked again (quit-gate.ts).
+  app.on("before-quit", (e) => { quitting = true; quittingForUpdate = false; shutdownComputer(); gate.hold(e); });
   // Any quitAndInstall, not only Restart to Update's: Squirrel's own signal comes before the windows are asked to close.
-  autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; shutdownComputer(); });
+  // The terminals end now; `before-quit`, which follows the windows' closing, waits for what is left of them.
+  autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; shutdownComputer(); ptyService.killAll(); });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
   // The marker keeps no Computer state past the app: an agent asking now hears that the app is not running.
   app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); shutdownComputer(); });

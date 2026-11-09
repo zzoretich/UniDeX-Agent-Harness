@@ -89,7 +89,20 @@ export interface PtyServiceOptions {
   /** Whether a host is on in agenticos.json (setup/attach.ts hostsOf). With Codex off nothing is resolved or probed for
    *  its flags (R77: a Claude-only Mac runs no `codex --help`). Absent, counted as on. */
   hostOn?: (host: "claude" | "codex") => boolean;
+  /** Whether the app is quitting (R86): no terminal starts then, so none is left running into Electron's teardown (an
+   *  agent's exit makes the page start a shell in its terminal). Absent, counted as not. */
+  quitting?: () => boolean;
 }
+
+/**
+ * How long the app's quit waits for its terminals (R86, `settle`): SIGHUP at once, SIGKILL at KILL_AFTER_MS to whatever
+ * has not exited, and at SETTLE_MS the quit goes on whatever is left.
+ */
+export const SETTLE_MS = 1000;
+export const KILL_AFTER_MS = 600;
+
+/** A terminal asked for while the app quits (R86). */
+const quittingRefusal: Result<never> = { ok: false, error: "the app is quitting", code: "ECANCELED" };
 
 const SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGHUP", "SIGINT"]);
 
@@ -130,6 +143,10 @@ export class PtyService {
   private readonly agents = new Map<string, number>();
   /** Bumped by killAll: an agent still being resolved when its page went is not started. */
   private epoch = 0;
+  /** Terminals killAll ended whose exit node-pty has not reported yet (R86: the quit waits for them). */
+  private readonly dying = new Set<PtyProcess>();
+  /** The settle() calls waiting for `dying` to empty. */
+  private readonly settled = new Set<() => void>();
 
   constructor(private readonly o: PtyServiceOptions) {}
 
@@ -146,6 +163,7 @@ export class PtyService {
   spawn(req: PtySpawnRequest): Result<{ pid: number }> {
     const lib = this.loadLib();
     if (!lib) return { ok: false, error: `node-pty failed to load: ${this.loadError}`, code: "ENOSYS" };
+    if (this.o.quitting?.()) return quittingRefusal;
     if (this.sessions.has(req.id)) return { ok: false, error: "a terminal with this id is open", code: "EEXIST" };
     if (this.sessions.size >= MAX_TERMINALS) return { ok: false, error: "too many terminals", code: "EAGAIN" };
     const why = shellRefusal(req.file, req.args, this.o.context());
@@ -162,6 +180,7 @@ export class PtyService {
     this.sessions.set(id, p);
     p.onData((data) => this.o.emit({ id, type: "data", data }));
     p.onExit((e) => {
+      this.reaped(p);
       this.sessions.delete(id);
       this.o.emit({ id, type: "exit", exitCode: e.exitCode, ...(e.signal !== undefined ? { signal: e.signal } : {}) });
     });
@@ -234,6 +253,7 @@ export class PtyService {
     if (!this.o.computerOn?.()) return fallback("");
     const lib = this.loadLib();
     if (!lib) return { ok: false, error: `node-pty failed to load: ${this.loadError}`, code: "ENOSYS" };
+    if (this.o.quitting?.()) return quittingRefusal;
     const slot = this.slotRefusal(req.id);
     if (slot) return slot;
     // The words launchArgs builds, `--no-daemon` where it puts it; whether this launch carries it is decided below.
@@ -279,6 +299,7 @@ export class PtyService {
     const now = req.host === "codex" ? await this.noDaemonNow(bin, sub) : false;
     // The awaits above let the page go, or another terminal in.
     if (epoch !== this.epoch) return { ok: false, error: "the page that asked for it is gone", code: "ECANCELED" };
+    if (this.o.quitting?.()) return quittingRefusal;
     const again = this.slotRefusal(req.id);
     if (again) return again;
     if (req.host === "codex") {
@@ -296,6 +317,7 @@ export class PtyService {
     registry.add({ pid, host: req.host, page: "code", key: `code:${id}`, label: req.label, place: req.place, access: req.access });
     p.onData((data) => this.o.emit({ id, type: "data", data }));
     p.onExit((e) => {
+      this.reaped(p);
       this.forget(id, pid);
       // A stale agent (its page went, its id taken again since) says nothing to the terminal that has the id now.
       if (this.sessions.get(id) !== p) return;
@@ -351,13 +373,52 @@ export class PtyService {
     if (pid !== undefined) this.forget(id, pid);
   }
 
-  /** Every terminal ends with the page that opened it, and on quit. */
+  /** Every terminal ends with the page that opened it, and on quit. Each stays in `dying` until node-pty reports its
+   *  exit. */
   killAll(): void {
-    for (const p of this.sessions.values()) { try { p.kill(); } catch { /* gone */ } }
+    for (const p of this.sessions.values()) {
+      this.dying.add(p);
+      try { p.kill(); } catch { /* gone */ }
+    }
     this.sessions.clear();
     this.epoch++;
     for (const [id, pid] of [...this.agents]) this.forget(id, pid);
   }
 
   get open(): number { return this.sessions.size; }
+
+  /** Whether a terminal runs, or one was ended and node-pty has not reported its exit yet (R86). */
+  get busy(): boolean { return this.sessions.size > 0 || this.dying.size > 0; }
+
+  /**
+   * The app's quit (R86): ends every terminal and resolves once node-pty has reported each one's exit, those killAll
+   * ended earlier included. node-pty reports an exit from a thread of its own through the event loop: one that lands
+   * while Electron tears Node down calls into an environment that can no longer run JavaScript, and the app aborts
+   * (SIGABRT). So the quit goes on only after this. SIGHUP first, SIGKILL at `killAfterMs` to whatever still runs (a
+   * shell that traps or ignores its hangup), and at `capMs` it resolves whatever is left, forgetting it, so a stuck
+   * child never keeps the app from quitting. Every call waits for the same exits.
+   */
+  settle(capMs = SETTLE_MS, killAfterMs = KILL_AFTER_MS): Promise<void> {
+    this.killAll();
+    if (!this.dying.size) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const hard = setTimeout(() => {
+        for (const p of this.dying) { try { p.kill("SIGKILL"); } catch { /* gone */ } }
+      }, killAfterMs);
+      const cap = setTimeout(() => { this.dying.clear(); this.wake(); }, capMs);
+      const done = (): void => { clearTimeout(hard); clearTimeout(cap); this.settled.delete(done); resolve(); };
+      this.settled.add(done);
+    });
+  }
+
+  /** node-pty reported `p`'s exit. */
+  private reaped(p: PtyProcess): void {
+    if (this.dying.delete(p)) this.wake();
+  }
+
+  /** Resolves the waiting settle() calls once no ended terminal's exit is still to come. */
+  private wake(): void {
+    if (this.dying.size) return;
+    for (const done of [...this.settled]) done();
+  }
 }

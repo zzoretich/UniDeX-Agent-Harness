@@ -270,6 +270,23 @@ test("spawnAgent: an agent still being resolved when every terminal ends with it
   assert.equal(t.open, 0);
 });
 
+test("spawnAgent: an agent still being resolved when the app starts quitting is never started (R86)", async () => {
+  const { lib, spawned } = fakePty();
+  let quitting = false;
+  let answer: (r: { bin: string }) => void = () => {};
+  const t = new PtyService({
+    context, env: { PATH: "/usr/bin" }, emit: () => {}, load: () => lib, registry: new AgentRegistry(), sys: sysOf(VENDOR.claude.team), computerOn: () => true,
+    resolveBin: () => new Promise((r) => { answer = r; }), quitting: () => quitting,
+  });
+  const pending = t.spawnAgent(req());
+  await new Promise((r) => setImmediate(r));
+  quitting = true;
+  answer({ bin: CLAUDE });
+  assert.deepEqual(await pending, { ok: false, error: "the app is quitting", code: "ECANCELED" });
+  assert.equal(spawned.length, 0);
+  assert.equal(t.busy, false);
+});
+
 test("spawnAgent: a stale agent's late exit (its page reloaded, its id taken again) is not sent as the new terminal's", async () => {
   const { t, spawned, events, registry } = service();
   assert.ok((await t.spawnAgent(req({ id: "t1" }))).ok);

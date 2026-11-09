@@ -66,12 +66,20 @@ export interface UpdateServiceOptions {
    * exits.
    */
   beforeInstall?: () => void;
+  /**
+   * Runs after beforeInstall: what must end while the app still runs JavaScript (its terminals, R86), as a promise that
+   * resolves once it has, or null when nothing runs. quitAndInstall waits for it, so the update's quit finds nothing
+   * left to wait for.
+   */
+  settle?: () => Promise<void> | null;
 }
 
 export class UpdateService {
   private updater: UpdaterLike | null = null;
   private timers: NodeJS.Timeout[] = [];
   private s: UpdateState;
+  /** Restart to Update waits for `settle`: a second ask meanwhile installs once. */
+  private installing = false;
 
   constructor(private readonly o: UpdateServiceOptions) {
     this.s = { status: o.on ? "idle" : "off", reason: o.reason, version: null, percent: null, error: null };
@@ -120,11 +128,16 @@ export class UpdateService {
     u.checkForUpdates().catch((err: unknown) => this.set({ status: "error", error: shortError(err) }));
   }
 
-  /** Restart to Update: only with an update downloaded. */
+  /** Restart to Update: only with an update downloaded. With something to settle first, quitAndInstall follows it. */
   install(): boolean {
-    if (!this.updater || this.s.status !== "downloaded") return false;
+    const u = this.updater;
+    if (!u || this.s.status !== "downloaded") return false;
+    if (this.installing) return true;
     this.o.beforeInstall?.();
-    this.updater.quitAndInstall(false, true);
+    const pending = this.o.settle?.() ?? null;
+    if (!pending) { u.quitAndInstall(false, true); return true; }
+    this.installing = true;
+    void pending.catch(() => undefined).then(() => { this.installing = false; u.quitAndInstall(false, true); });
     return true;
   }
 

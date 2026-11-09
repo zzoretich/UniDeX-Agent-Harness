@@ -11,6 +11,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **Codex users: run `aos upgrade`** so Codex gets the agenticos plugin's approvals for the computer tools; until then Codex refuses the Computer pane's actions (opening, clicking, typing) in a Chat turn and asks for them in a Code session.
 
 ### Fixed
+- **Quitting with a Code terminal open no longer crashes the app.** A terminal on Code (a shell, or an agent's terminal, while its CLI runs or after it exits) could make the app end with a crash report instead of quitting cleanly. Quitting now ends every Code terminal first and waits for each to finish, a second at most, before the app exits; a terminal that ignores the hangup is stopped.
 - **What's new offers Show me only for a change it can show on this Mac.** An entry whose every tour step is hidden here (a step on Sessions with no host signed in, or the Computer pane while it is off) no longer offers a Show me that would show nothing; Help ▸ What's new and the launch card both follow this.
 
 ### Security
