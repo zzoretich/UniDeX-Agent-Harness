@@ -471,6 +471,57 @@ test.describe("both hosts, the Computer surface on", () => {
     expectNoErrors(h);
   });
 
+  test("a scrolled page: a ref the agent saw at the top is hit-tested where it now shows, and its click asks (D39)", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    const a = await chatAgent(win, { text: "computer: scrolled ref" });
+    // Its own address (a fragment), so the spec's look finds this tab and not another computer's on the same page.
+    const url = `${shopUrl()}#scrolled-ref`;
+    try {
+      expectReply(await a.call("computer_open", { url }), { isError: false });
+      const search = refOf((await a.call("computer_snapshot")).text, "textbox", "Search");
+      // The page scrolls itself until the field shows near the top: the field is still in view (no scroll into view),
+      // and DOM.getNodeForLocation, which reads document coordinates, finds nothing at its viewport point.
+      const scrolled = await inPage<number>(electron, url, `(() => { window.scrollTo(0, document.getElementById("search").getBoundingClientRect().top + window.scrollY - 40); return window.scrollY; })()`);
+      expect(scrolled).toBeGreaterThan(100);
+      const p = pane(win, "chat");
+      const ask = await asked(p, a.call("computer_click", { ref: search }), `Act on a site you haven't marked: Click “Search” on ${shopHost()}?`);
+      await ask.card.locator('[data-answer="deny"]').click();
+      expectReply(await ask.reply, { isError: true, text: `The user denied: Act on a site you haven't marked: Click on ${shopHost()}.` });
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
+  test("a scrolled page: an x, y click is judged on the control under that point of the view, so Merge asks though a plain block shows a scroll's height above it (D43)", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    const a = await chatAgent(win, { text: "computer: scrolled point" });
+    const url = `${repoUrl()}#scrolled-point`;
+    try {
+      expectReply(await a.call("computer_open", { url }), { isError: false });
+      // A plain block above the page's content and room below it; the page then scrolls so the Merge button's centre
+      // shows 20 px above the block's foot in the view. At that point of the document (a scroll's height above the press,
+      // where a hit test without the scroll lands) is the block, which asks nothing on a marked site.
+      const at = await inPage<{ x: number; y: number; scrollY: number; under: string | undefined; above: string | undefined }>(electron, url, `(() => {
+        const top = document.createElement("div"); top.id = "block"; top.style.height = "300px"; document.body.prepend(top);
+        const foot = document.createElement("div"); foot.style.height = "1500px"; document.body.append(foot);
+        const m = document.getElementById("merge").getBoundingClientRect(), block = top.getBoundingClientRect();
+        window.scrollTo(0, m.top + m.height / 2 - (block.bottom - 20));
+        const now = document.getElementById("merge").getBoundingClientRect();
+        const x = Math.round(now.left + now.width / 2), y = Math.round(now.top + now.height / 2);
+        return { x, y, scrollY: window.scrollY, under: document.elementFromPoint(x, y)?.id, above: document.elementFromPoint(x, y - window.scrollY)?.id };
+      })()`);
+      expect(at.scrollY).toBeGreaterThan(0);
+      expect([at.under, at.above]).toEqual(["merge", "block"]);
+      const p = pane(win, "chat");
+      const merge = await asked(p, a.call("computer_click", { x: at.x, y: at.y }), `Merge: Click “Merge pull request” on ${markedHost()}?`);
+      await merge.card.locator('[data-answer="deny"]').click();
+      expectReply(await merge.reply, { isError: true });
+      expect(await inPage<string>(electron, url, 'document.getElementById("merged").textContent')).toBe("Open");
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
   test("typing stops at the chunk whose input event sends the page elsewhere; nothing reaches the next page (I3b)", async () => {
     const h = app();
     const { win } = h;

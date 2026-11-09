@@ -1450,15 +1450,31 @@ export class ComputerBrowser {
     }
   }
 
-  /** The node a click at `p` would hit. */
+  /** The node a press at viewport point `p` reaches. Every point here is the viewport's (a ref's content quad, the
+   *  agent's x and y off a screenshot, Input.dispatchMouseEvent's), but DOM.getNodeForLocation reads its x and y as the
+   *  document's (Blink converts them with DocumentToFrame), so the hit test is at `p` plus the page's scroll: without
+   *  it, a scrolled page was judged on whatever it shows a scroll's height above the press, or on nothing. The scroll is
+   *  read before and after the hit test, and one that moved between refuses: the node hit then belongs to neither. */
   private async hitAt(t: Tab, p: Point): Promise<number> {
+    const before = await this.scrolledBy(t);
+    let hit: number;
     try {
-      const { backendNodeId } = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { x: p.x, y: p.y, includeUserAgentShadowDOM: false, ignorePointerEventsNone: false });
-      return backendNodeId;
+      const at = { x: Math.round(p.x + before.x), y: Math.round(p.y + before.y) };
+      ({ backendNodeId: hit } = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { ...at, includeUserAgentShadowDOM: false, ignorePointerEventsNone: false }));
     } catch (e) {
       if (e instanceof Error && /^No node found at given location/.test(e.message)) throw new Error("There is nothing at that point on the page.");
       throw e;
     }
+    const after = await this.scrolledBy(t);
+    if (after.x !== before.x || after.y !== before.y) throw new Error("The page changed: look again.");
+    return hit;
+  }
+
+  /** Where the viewport's top left is in the document, in CSS pixels: the page's scroll (and, pinch-zoomed, the visual
+   *  viewport's offset within it). */
+  private async scrolledBy(t: Tab): Promise<Point> {
+    const { cssVisualViewport: v } = await this.send<{ cssVisualViewport: { pageX: number; pageY: number } }>(t, "Page.getLayoutMetrics");
+    return { x: v.pageX, y: v.pageY };
   }
 
   /** Moves the pointer to `p` and gives hover styles and handlers a moment to apply; `before` runs just before the move

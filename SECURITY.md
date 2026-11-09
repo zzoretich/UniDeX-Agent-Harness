@@ -195,7 +195,9 @@ inside the surface.
   Home, End, Tab, Esc) go freely. On a site the person has not marked, any click, any other key (Space and Return
   included) and any typing asks before the input is delivered; on a marked site the agent acts freely and only the ask
   vocabulary's categories ask (submit, purchase, send, delete, merge, sign-in, download), judged by the control a click
-  would actually hit (a key by the focused control, named the same way: its accessible name, markup hint and text).
+  would actually hit (a key by the focused control, named the same way: its accessible name, markup hint and text). The
+  hit test is at the point the press goes to on a scrolled page too: the page's scroll is added to the viewport point
+  and read again after the test, and a scroll in between refuses the action.
   Return, or a newline in typed text, asks on every site unless the focus is a plain text area with no key listener;
   downloads, file inputs and permission prompts always ask. A held call returns within 45 s of its start
   (`waiting_for_user`, then `computer_wait`, which also picks up an action the person allowed just before then); no

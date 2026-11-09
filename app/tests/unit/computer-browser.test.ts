@@ -32,6 +32,12 @@ class FakePage {
   /** Nodes the page has taken out of its document (a re-render), by their number within it. */
   removed = new Set<number>();
   sent: { method: string; params: Record<string, unknown> }[] = [];
+  /** A layout, when a test gives one: each node's box in the document's coordinates, and how far the page is scrolled.
+   *  DOM.getContentQuads then answers in the viewport's coordinates, and DOM.getNodeForLocation reads its x and y as the
+   *  document's, as Blink does (InspectorDOMAgent::getNodeForLocation converts them with DocumentToFrame): a point
+   *  that falls above or left of the frame hits nothing, and one on no box hits the body. */
+  boxes: Map<number, { x: number; y: number; width: number; height: number }> | null = null;
+  scroll = { x: 0, y: 0 };
   /** Runs when the page receives `method`, before it answers (a Take over or a focus move landing mid-read); one that
    *  throws makes that command fail. */
   on = new Map<string, (params: Record<string, unknown>) => void>();
@@ -56,7 +62,23 @@ class FakePage {
       case "DOM.getDocument": return { root: this.root() };
       case "DOM.querySelectorAll": return { nodeIds: params.selector === ":focus" && this.focused !== null ? [this.focused] : [] };
       case "Page.createIsolatedWorld": return { executionContextId: 1 };
-      case "DOM.getNodeForLocation": return { backendNodeId: this.hit };
+      case "DOM.getNodeForLocation": {
+        if (!this.boxes) return { backendNodeId: this.hit };
+        const x = params.x as number, y = params.y as number;
+        if (x - this.scroll.x < 0 || y - this.scroll.y < 0) throw new Error("No node found at given location");
+        const on = [...this.boxes].reverse().find(([, r]) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+        return { backendNodeId: on ? on[0] + this.doc * 1000 : 3 + this.doc * 1000 };
+      }
+      case "DOM.getContentQuads": {
+        const r = this.boxes?.get((params.backendNodeId as number) - this.doc * 1000);
+        if (!r) return { quads: [] };
+        const x = r.x - this.scroll.x, y = r.y - this.scroll.y;
+        return { quads: [[x, y, x + r.width, y, x + r.width, y + r.height, x, y + r.height]] };
+      }
+      case "Page.getLayoutMetrics": {
+        const view = { pageX: this.scroll.x, pageY: this.scroll.y, clientWidth: 400, clientHeight: 300 };
+        return { cssLayoutViewport: view, cssVisualViewport: { ...view, offsetX: 0, offsetY: 0, scale: 1, zoom: 1 } };
+      }
       case "Accessibility.getPartialAXTree": {
         const b = params.backendNodeId as number;
         const role = b === 12 ? "textbox" : b === 10 || b === 11 ? "button" : "generic";
@@ -447,4 +469,48 @@ test("R82: a commit that lands between the focus read's DOM read and its :focus 
   assert.equal(await refusal(b.type("a".repeat(450), () => true, at(tab), { node: 12, frame: "F1" })), "The page changed: look again.");
   assert.deepEqual([tab.seq, tab.navs, tab.doc], [0, 0, 0]);
   assert.equal(page.inputs().length, 1, "nothing more was typed");
+});
+
+// ---- CI fix: DOM.getNodeForLocation takes document coordinates, every point here is the viewport's
+
+/** The page laid out as a column (button Go 10, button Go 11 at `second`, the field Search 12 at document y 300–320) and
+ *  scrolled down by `scrollY`, with session s1's snapshot naming the field e3. */
+function scrolled(scrollY: number, second = { x: 0, y: 40, width: 100, height: 40 }) {
+  const m = make();
+  m.page.boxes = new Map([[10, { x: 0, y: 0, width: 100, height: 20 }], [11, second], [12, { x: 0, y: 300, width: 100, height: 20 }]]);
+  m.page.scroll = { x: 0, y: scrollY };
+  const target = { role: "textbox", name: "Search", inForm: false, fileInput: false };
+  (m.tab.refs as Map<string, unknown>).set("s1", { refs: new Map([["e3", { backendNodeId: 12, frameId: "F1", target }]]), token: "1.0" });
+  return m;
+}
+const hits = (page: FakePage) => page.sent.filter((s) => s.method === "DOM.getNodeForLocation").map((s) => [s.params.x, s.params.y]);
+
+test("a ref the page has scrolled into view is hit-tested where it is: the scroll is added to the viewport point", async () => {
+  // Scrolled by 250, the field's box is at 50–70 in the viewport; at document y 60 (no scroll added) is the second button.
+  const { b, page } = scrolled(250);
+  const r = await b.resolve({ ref: "e3" }, "s1");
+  assert.deepEqual([r.backendNodeId, r.target.role, r.target.name, r.point], [12, "textbox", "Search", { x: 50, y: 60 }]);
+  assert.deepEqual(hits(page), [[50, 310]]);
+});
+
+test("an x, y click on a scrolled page is judged on the control under that point of the viewport, the one its press reaches", async () => {
+  // Scrolled by 30, the press at viewport (50, 280) lands on the field (document y 310). Document y 280, shown a scroll's
+  // height above the press, is the second button: the gate would judge it while the press went to the field.
+  const { b, page } = scrolled(30, { x: 0, y: 260, width: 100, height: 40 });
+  const r = await b.resolve({ x: 50, y: 280 }, "s1");
+  assert.deepEqual([r.backendNodeId, r.target.role, r.target.name], [12, "textbox", "Search"]);
+  await b.click(r, () => true);
+  assert.deepEqual(hits(page), [[50, 310], [50, 310]], "the click's own check hit-tests the same document point");
+  assert.deepEqual(page.inputs().slice(-2), ["Input.dispatchMouseEvent:mousePressed", "Input.dispatchMouseEvent:mouseReleased"]);
+});
+
+test("a scroll between the offset's read and the hit test refuses: the node hit belongs to neither position", async () => {
+  const { b, page } = scrolled(250);
+  page.on.set("DOM.getNodeForLocation", () => { page.scroll.y += 30; });
+  assert.equal(await refusal(b.resolve({ ref: "e3" }, "s1")), "The page changed: look again.");
+  const r = resolved({ target: { role: "textbox", name: "Search", inForm: false, fileInput: false }, backendNodeId: 12, judged: [12], point: { x: 50, y: 60 } });
+  page.sent.length = 0;
+  page.scroll.y = 250;
+  assert.equal(await refusal(b.click(r, () => true)), "The page changed: look again.");
+  assert.deepEqual(page.inputs(), ["Input.dispatchMouseEvent:mouseMoved"], "no press");
 });
