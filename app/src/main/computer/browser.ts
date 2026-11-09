@@ -246,6 +246,9 @@ const rootOf = (dom: DomIndex | null): number | null => {
   return r ? dom!.backendOf.get(r.nodeId) ?? null : null;
 };
 const centre = (r: Rect): Point => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+/** R87: the viewport point a hit test judged, its document point less the scroll it used (`hitAt`). Input.dispatchMouseEvent
+ *  takes fractional x and y, so a press there reaches exactly the document point judged, on a scroll that is not whole too. */
+const judgedAt = (h: { at: Point; off: Point }): Point => ({ x: h.at.x - h.off.x, y: h.at.y - h.off.y });
 
 export class ComputerBrowser {
   private list: Tab[] = [];
@@ -407,7 +410,7 @@ export class ComputerBrowser {
     // both (a page that clears a code on mouseenter would otherwise leave it in the name read after the hover).
     const pre = await this.secrets(t);
     await this.hover(t, p);
-    const { hit, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
+    const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
       if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error("Something else covers that element now: take a new snapshot.");
     });
     const target = await this.judgeReach(t, reached, dom, own);
@@ -415,8 +418,9 @@ export class ComputerBrowser {
     // D9: the name for outgoing text is scrubbed with the values read now, in this call, before the page can change.
     const post = await this.secrets(t, { dom });
     const shown = this.scrubWith(t, { values: [...pre.values, ...post.values], whole: [...pre.whole, ...post.whole] })(target.name);
-    // D9: `hit` is the node the hit test returned, so a sensitive host hit on its padding or its slotted text counts.
-    return { target, shown, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: p, ...where };
+    // D9: `hit` is the node the hit test returned, so a sensitive host hit on its padding or its slotted text counts. R87:
+    // the point is the one the hit test judged, so the click's hover, its own hit test and its press are made there.
+    return { target, shown, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: judgedAt({ at, off }), ...where };
   }
 
   /** What has keyboard focus (D39), and whether it is a password field (D9). `target.name` is raw, for the gate; `shown`
@@ -460,7 +464,9 @@ export class ComputerBrowser {
    *  hover and the hit test too; otherwise PageChanged, and nothing more is sent. R81 (AC-R3-02, replacing R79's rule):
    *  once the press went, its release goes only to the document that got it (an in-page navigation, such as a mousedown
    *  handler's pushState, keeps the document; a cross-document commit does not) and only while `valid()` still holds;
-   *  otherwise it is withheld (PageChanged), so a new document, or a click the person stopped, never gets a mouseup. */
+   *  otherwise it is withheld (PageChanged), so a new document, or a click the person stopped, never gets a mouseup. R87:
+   *  the press and its release go to exactly the point the click's own hit test judged, and the press only while the page
+   *  is scrolled as it was for that test, read again just before it. */
   async click(r: Resolved, valid: () => boolean): Promise<void> {
     const t = this.where(r);
     if (typeof r.backendNodeId !== "number") throw new Error("The page changed: look again.");
@@ -473,11 +479,16 @@ export class ComputerBrowser {
     if (!now) throw new Error("The page changed: look again.");
     const ok = now.dom.remoteFrames.has(now.hit) ? now.hit === r.backendNodeId : accepted(now.dom, now.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
     if (!ok) throw new Error("The page changed: look again.");
+    // R87: a scroll since the hit test (a smooth scroll still running, the page's script, the person) moves what the
+    // point shows, so it refuses. It is read before the checks below, so nothing is awaited between them and the press.
+    const off = await this.scrolledBy(t);
+    if (off.x !== now.off.x || off.y !== now.off.y) throw new Error("The page changed: look again.");
+    const at = judgedAt(now);
     live();
     const doc = t.doc;
-    await this.mouse(t, "mousePressed", p);
+    await this.mouse(t, "mousePressed", at);
     if (!valid() || !this.list.includes(t) || t.doc !== doc) throw new PageChanged();
-    await this.mouse(t, "mouseReleased", p);
+    await this.mouse(t, "mouseReleased", at);
   }
 
   /** Types into the focused element: Input.insertText in 200-character chunks, each newline as Enter. R76: each chunk and
@@ -1450,24 +1461,26 @@ export class ComputerBrowser {
     }
   }
 
-  /** The node a press at viewport point `p` reaches. Every point here is the viewport's (a ref's content quad, the
-   *  agent's x and y off a screenshot, Input.dispatchMouseEvent's), but DOM.getNodeForLocation reads its x and y as the
-   *  document's (Blink converts them with DocumentToFrame), so the hit test is at `p` plus the page's scroll: without
-   *  it, a scrolled page was judged on whatever it shows a scroll's height above the press, or on nothing. The scroll is
-   *  read before and after the hit test, and one that moved between refuses: the node hit then belongs to neither. */
-  private async hitAt(t: Tab, p: Point): Promise<number> {
-    const before = await this.scrolledBy(t);
+  /** The node a press at viewport point `p` reaches, with the document point `at` the hit test was made at and the scroll
+   *  `off` it used. Every point here is the viewport's (a ref's content quad, the agent's x and y off a screenshot,
+   *  Input.dispatchMouseEvent's), but DOM.getNodeForLocation reads its x and y as the document's, whole numbers (Blink
+   *  converts them with DocumentToFrame), so the hit test is at `p` plus the page's scroll, rounded: without the scroll,
+   *  a scrolled page was judged on whatever it shows a scroll's height above the press, or on nothing. The scroll is read
+   *  before and after the hit test, and one that moved between refuses: the node hit then belongs to neither. R87: a
+   *  scroll that is not whole leaves `at` up to half a pixel from `p + off`, so a press goes to `judgedAt`, not `p`. */
+  private async hitAt(t: Tab, p: Point): Promise<{ hit: number; at: Point; off: Point }> {
+    const off = await this.scrolledBy(t);
+    const at = { x: Math.round(p.x + off.x), y: Math.round(p.y + off.y) };
     let hit: number;
     try {
-      const at = { x: Math.round(p.x + before.x), y: Math.round(p.y + before.y) };
       ({ backendNodeId: hit } = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { ...at, includeUserAgentShadowDOM: false, ignorePointerEventsNone: false }));
     } catch (e) {
       if (e instanceof Error && /^No node found at given location/.test(e.message)) throw new Error("There is nothing at that point on the page.");
       throw e;
     }
     const after = await this.scrolledBy(t);
-    if (after.x !== before.x || after.y !== before.y) throw new Error("The page changed: look again.");
-    return hit;
+    if (after.x !== off.x || after.y !== off.y) throw new Error("The page changed: look again.");
+    return { hit, at, off };
   }
 
   /** Where the viewport's top left is in the document, in CSS pixels: the page's scroll (and, pinch-zoomed, the visual
@@ -1493,15 +1506,15 @@ export class ComputerBrowser {
    * bubbles to a light-DOM ancestor. So when a slotted text holds the point (`slottedText`), both walks (./reach) start
    * from the text and from the host, and the gate judges the union (Task 11b). A hit inside a shadow tree (the text
    * hidden, the wrapper hit) also starts at each host above it, where the click bubbles (`hostsAbove`). `hit` stays
-   * the node the hit test returned.
+   * the node the hit test returned; `at` and `off` are the hit test's (`hitAt`), and a press goes to `judgedAt` of them.
    */
-  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; dom: DomIndex; reached: Reach; own: number }> {
-    const hit = await this.hitAt(t, p);
+  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; at: Point; off: Point; dom: DomIndex; reached: Reach; own: number }> {
+    const { hit, at, off } = await this.hitAt(t, p);
     const dom = await this.locked(t, () => this.readDom(t));
     if (!dom.names.has(hit)) throw new Error("The page changed: look again.");
     check?.(hit, dom);
-    if (dom.remoteFrames.has(hit)) return { hit, dom, reached: { hit, controls: [hit] }, own: 1 };
-    const text = await this.slottedText(t, hit, p, dom);
+    if (dom.remoteFrames.has(hit)) return { hit, at, off, dom, reached: { hit, controls: [hit] }, own: 1 };
+    const text = await this.slottedText(t, hit, judgedAt({ at, off }), dom);
     // The hit's own starts first (the text and the host, or the hit), then the hosts the click bubbles to, each once.
     const ownFrom = text === null ? [hit] : [text, hit];
     const froms = [...ownFrom, ...hostsAbove(dom, hit).filter((h) => !ownFrom.includes(h))];
@@ -1511,7 +1524,7 @@ export class ComputerBrowser {
       starts.push({ from, ax: nodes });
     }
     // The controls the own starts found come first in the union; `own` says how many, for `judgeReach`.
-    return { hit, dom, reached: reach(dom, hit, starts), own: reach(dom, hit, starts.slice(0, ownFrom.length)).controls.length };
+    return { hit, at, off, dom, reached: reach(dom, hit, starts), own: reach(dom, hit, starts.slice(0, ownFrom.length)).controls.length };
   }
 
   /** On a hit on a shadow host: the host's light-DOM text node whose own box holds the point (`DOM.getContentQuads` works

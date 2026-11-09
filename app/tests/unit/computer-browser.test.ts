@@ -66,8 +66,7 @@ class FakePage {
         if (!this.boxes) return { backendNodeId: this.hit };
         const x = params.x as number, y = params.y as number;
         if (x - this.scroll.x < 0 || y - this.scroll.y < 0) throw new Error("No node found at given location");
-        const on = [...this.boxes].reverse().find(([, r]) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
-        return { backendNodeId: on ? on[0] + this.doc * 1000 : 3 + this.doc * 1000 };
+        return { backendNodeId: this.nodeAt(x, y) };
       }
       case "DOM.getContentQuads": {
         const r = this.boxes?.get((params.backendNodeId as number) - this.doc * 1000);
@@ -87,8 +86,17 @@ class FakePage {
       default: return {};
     }
   }
+  /** With a layout: the node at document point (x, y), the topmost box holding it, else the body. */
+  nodeAt(x: number, y: number): number {
+    const on = [...(this.boxes ?? [])].reverse().find(([, r]) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+    return on ? on[0] + this.doc * 1000 : 3 + this.doc * 1000;
+  }
   inputs(): string[] {
     return this.sent.filter((s) => s.method.startsWith("Input.")).map((s) => `${s.method}:${String(s.params.type ?? s.params.text ?? "")}`);
+  }
+  /** The mouse events sent, as [type, x, y], x and y in the viewport's coordinates as Input.dispatchMouseEvent takes them. */
+  mice(): [string, number, number][] {
+    return this.sent.filter((s) => s.method === "Input.dispatchMouseEvent").map((s) => [String(s.params.type), s.params.x as number, s.params.y as number]);
   }
   /** The key events sent, as `type key` ("rawKeyDown Shift"). */
   keys(): string[] {
@@ -484,6 +492,13 @@ function scrolled(scrollY: number, second = { x: 0, y: 40, width: 100, height: 4
   return m;
 }
 const hits = (page: FakePage) => page.sent.filter((s) => s.method === "DOM.getNodeForLocation").map((s) => [s.params.x, s.params.y]);
+/** The press and the release sent, as [type, x, y] in the viewport's coordinates. */
+const pressed = (page: FakePage) => page.mice().filter(([type]) => type !== "mouseMoved");
+/** The node the press reached: the one at its viewport point plus the page's scroll at the time of the check. */
+const landed = (page: FakePage) => {
+  const [, x, y] = page.mice().find(([type]) => type === "mousePressed") ?? ["", NaN, NaN];
+  return page.nodeAt(x + page.scroll.x, y + page.scroll.y);
+};
 
 test("a ref the page has scrolled into view is hit-tested where it is: the scroll is added to the viewport point", async () => {
   // Scrolled by 250, the field's box is at 50–70 in the viewport; at document y 60 (no scroll added) is the second button.
@@ -491,6 +506,9 @@ test("a ref the page has scrolled into view is hit-tested where it is: the scrol
   const r = await b.resolve({ ref: "e3" }, "s1");
   assert.deepEqual([r.backendNodeId, r.target.role, r.target.name, r.point], [12, "textbox", "Search", { x: 50, y: 60 }]);
   assert.deepEqual(hits(page), [[50, 310]]);
+  await b.click(r, () => true);
+  assert.deepEqual(pressed(page), [["mousePressed", 50, 60], ["mouseReleased", 50, 60]], "the press goes to the viewport point, not the document's");
+  assert.equal(landed(page), 12);
 });
 
 test("an x, y click on a scrolled page is judged on the control under that point of the viewport, the one its press reaches", async () => {
@@ -502,6 +520,8 @@ test("an x, y click on a scrolled page is judged on the control under that point
   await b.click(r, () => true);
   assert.deepEqual(hits(page), [[50, 310], [50, 310]], "the click's own check hit-tests the same document point");
   assert.deepEqual(page.inputs().slice(-2), ["Input.dispatchMouseEvent:mousePressed", "Input.dispatchMouseEvent:mouseReleased"]);
+  assert.deepEqual(pressed(page), [["mousePressed", 50, 280], ["mouseReleased", 50, 280]], "the press goes to the viewport point, not the document's");
+  assert.equal(landed(page), 12, "and reaches the field the gate judged");
 });
 
 test("a scroll between the offset's read and the hit test refuses: the node hit belongs to neither position", async () => {
@@ -512,5 +532,40 @@ test("a scroll between the offset's read and the hit test refuses: the node hit 
   page.sent.length = 0;
   page.scroll.y = 250;
   assert.equal(await refusal(b.click(r, () => true)), "The page changed: look again.");
+  assert.deepEqual(page.inputs(), ["Input.dispatchMouseEvent:mouseMoved"], "no press");
+});
+
+// ---- R87: the press goes to exactly the point the last hit test judged, at the scroll that test used
+
+test("R87: a fractional scroll: the press goes to exactly the document point the hit test judged, not half a pixel off it", async () => {
+  // Scrolled by 0.5 (one device pixel at a device scale of 2), the field ends at document y 320, where the second button
+  // starts. Viewport (50, 319) is document y 319.5, on the field; the hit test takes whole numbers, so it is made at y 320,
+  // on the button. Pressed at (50, 319), the press reached the field while the gate judged the button.
+  const { b, page } = scrolled(0.5, { x: 0, y: 320, width: 100, height: 40 });
+  const r = await b.resolve({ x: 50, y: 319 }, "s1");
+  assert.deepEqual([r.backendNodeId, r.target.role, r.target.name], [11, "button", "Go"]);
+  const n = page.mice().length;
+  await b.click(r, () => true);
+  assert.deepEqual(hits(page), [[50, 320], [50, 320]]);
+  assert.deepEqual([landed(page), r.backendNodeId], [11, 11], "the press lands on the button the gate judged");
+  assert.deepEqual(page.mice().slice(n), [["mouseMoved", 50, 319.5], ["mousePressed", 50, 319.5], ["mouseReleased", 50, 319.5]], "the hover, the press and the release at the judged document point less the scroll");
+  // The click's own hit test decides where its press goes, whatever point it was given (one resolved before the page
+  // scrolled by a fraction): given (50, 319), it judges document y 320, so it presses at 319.5, not 319.
+  page.sent.length = 0;
+  await b.click(resolved({ backendNodeId: 11, judged: [11], point: { x: 50, y: 319 } }), () => true);
+  assert.deepEqual(hits(page), [[50, 320]]);
+  assert.deepEqual([landed(page), pressed(page)], [11, [["mousePressed", 50, 319.5], ["mouseReleased", 50, 319.5]]], "pressed where the click's own hit test judged");
+});
+
+test("R87: a scroll between the click's last hit test and its press refuses, and no press is sent", async () => {
+  // A smooth scroll still running, the page's own script or the person: the scroll moves after the click's hit test (here
+  // while the click reads the DOM) and before the press, so the point no longer shows the node judged.
+  const { b, page } = scrolled(250);
+  const r = await b.resolve({ ref: "e3" }, "s1");
+  page.sent.length = 0;
+  let moved = false;
+  page.on.set("DOM.getDocument", () => { if (!moved) { moved = true; page.scroll.y += 40; } });
+  assert.equal(await refusal(b.click(r, () => true)), "The page changed: look again.");
+  assert.deepEqual([moved, hits(page)], [true, [[50, 310]]], "the hit test was made at the old scroll; the scroll moved after it");
   assert.deepEqual(page.inputs(), ["Input.dispatchMouseEvent:mouseMoved"], "no press");
 });
