@@ -12,7 +12,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import {
   FX, RC_ONLY, TOUR_BOOK, USER_DATA, addRcOnly, agentRun, badge, command, computerEnv, content, expectNoErrors, installComputerAgents, openTab,
-  USER_DATA_LINK, providerState, rail, startOutsider, useApp, type Agent, type AgentReply,
+  USER_DATA_LINK, providerState, rail, resizeHud, startOutsider, useApp, type Agent, type AgentReply,
 } from "./harness";
 
 // ── the fixture sites ────────────────────────────────────────────────
@@ -799,6 +799,37 @@ test.describe("both hosts, the Computer surface on", () => {
       expect(r.filter((x) => x.status === "missing" || x.status === "unrouted"), `chapter ${id}`).toEqual([]);
     }
     expect(TOUR_BOOK.chapters.find((c) => c.id === "code")?.steps.find((s) => s.id === "computer")?.anchor).toBe('[data-tour="computer-view"]');
+    expectNoErrors(h);
+  });
+
+  test("in a 1024 px window (CI's screen) with the pane open, the composer's host and access menus open inside Sessions' narrow reader, so either host can be picked", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    await resizeHud(electron, { width: 1024, height: 740 });
+    try {
+      await openTab(win, "chat");
+      await content(win).locator(".aos-ss-newbtn").click();
+      await expect(reader(win).locator(".aos-ss-toptitle")).toHaveText("New session");
+      await expect(pane(win, "chat")).toBeVisible();
+      // The reader clips what overflows it: a menu that ran past its edge had that part under the list or the pane.
+      const inside = async (menu: Locator): Promise<void> => {
+        const [box, pop] = await Promise.all([reader(win).boundingBox(), menu.boundingBox()]);
+        expect(!!box && !!pop && pop.x >= box.x && pop.x + pop.width <= box.x + box.width, JSON.stringify({ reader: box, menu: pop })).toBe(true);
+      };
+      const hm = reader(win).locator(".aos-ss-toolbar .aos-hm");
+      for (const host of ["codex", "claude"] as const) {
+        await hm.locator(".aos-hm-trigger").click();
+        await inside(hm.locator(".aos-hm-pop"));
+        await hm.locator(`.aos-hm-pop .aos-hm-host[data-host="${host}"]`).click();
+        await hm.locator(".aos-hm-pop .aos-hm-search").press("Escape");
+        await expect(hm.locator(".aos-hm-trigger")).toHaveAttribute("data-host", host);
+      }
+      const am = reader(win).locator(".aos-ss-toolbar .aos-am");
+      await am.locator(".aos-am-trigger").click();
+      await inside(am.locator(".aos-am-menu"));
+      await am.locator('.aos-am-item[data-level="edit"]').click();
+      await expect(am).toHaveAttribute("data-access", "edit");
+    } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
     expectNoErrors(h);
   });
 

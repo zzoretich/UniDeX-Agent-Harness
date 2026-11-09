@@ -2,6 +2,7 @@ import { setIcon } from "obsidian";
 import type { SessionHost } from "../data/aosConfig";
 import { ACCESS_LEVELS, CODEX_ACCESS_NOTE, accessHostLine, accessLabel, type AccessLevel } from "../data/agentSessions";
 import type { HostSessionAccess } from "../host";
+import { keepInside } from "./popoverFit";
 
 /** Each level's icon, in the table form the compat scanner reads. */
 const LEVEL_ICONS: { id: HostSessionAccess; icon: string }[] = [
@@ -78,6 +79,8 @@ export class AccessMenu {
     menu.createDiv({ cls: "aos-am-head", text: "What the agent may do", attr: { "aria-hidden": "true" } });
     for (const level of ACCESS_LEVELS) this.renderItem(menu, level);
     if (this.opts.host === "codex") menu.createDiv({ cls: "aos-am-note", text: CODEX_ACCESS_NOTE });
+    // Anchored at the chip's left edge, it can run past a narrow reader that clips it: kept inside, as the host menu is.
+    keepInside(menu, "left");
     menu.addEventListener("keydown", (e) => this.onMenuKey(e));
     this.trigger.setAttr("aria-expanded", "true");
     this.el.addClass("is-open");

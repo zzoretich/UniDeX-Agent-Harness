@@ -13,6 +13,7 @@ import {
   modelName, searchModels, splitModels, type HostChoice, type RememberedChoice,
 } from "../data/agentSessions";
 import { sanitizeSessionChoice } from "../settingsDefaults";
+import { keepInside } from "./popoverFit";
 
 /** new: a session about to start (any ready host); thread: its next turn (the host is fixed); vault: a Vault question. */
 export type HostModelMode = "new" | "thread" | "vault";
@@ -339,6 +340,9 @@ export class HostModelMenu {
     else if (!host && this.opts.local) {
       pop.createDiv({ cls: "aos-hm-caption", text: this.opts.local.down ?? `Answers on ${this.opts.local.model ?? "the local model"} on this Mac; nothing is spent.` });
     }
+    // Anchored at the chip's right edge, it can run past a narrow reader that clips it (the Computer pane open in a small
+    // window), leaving its first host under the list beside it: kept inside, narrowed if need be.
+    keepInside(pop, "right");
     if (!key) return;
     const el = Array.from(pop.querySelectorAll<HTMLElement>("[data-hm-key]")).find((x) => x.getAttribute("data-hm-key") === key);
     if (el && !(el as HTMLButtonElement).disabled) el.focus();
