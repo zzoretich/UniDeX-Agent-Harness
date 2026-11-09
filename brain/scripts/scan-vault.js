@@ -572,6 +572,12 @@ async function main(report) {
   writeDailyRecord(snapshot);
   const pruned = prune();
   try {
+    const cp = require('./lib/code-mirror.js').pruneCodeCaches(VAULT, { now: new Date() });
+    if (report) report.counts.codeCachesPruned = cp.pruned;
+  } catch (e) {
+    console.error('[scan-vault] code cache prune failed:', e.message);
+  }
+  try {
     const { pruneAgentRuns } = require('./lib/telemetry-retention.js');
     const tr = pruneAgentRuns({ runsDir: path.join(VAULT, 'brain', '_index', 'agent-runs'), retentionDays: cfg.telemetry.retentionDays });
     if (report) { report.counts.telemetryPrunedDirs = tr.removedDirs; report.counts.telemetryPrunedRows = tr.droppedRows; }
