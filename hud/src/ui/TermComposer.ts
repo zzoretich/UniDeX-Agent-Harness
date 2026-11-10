@@ -462,7 +462,8 @@ export class TermComposer {
     const phases = sendPhases(text, paths, undefined, this.bracketed());
     const feeds = this.plugin.codeFeeds;
     const before = phases.images.length ? feeds?.imageMarks(s.id) ?? null : null;
-    if (before === null || !feeds) {
+    const waits = before !== null && !!feeds;
+    if (!waits) {
       for (const w of [...phases.images, ...phases.rest]) s.write(w);
     } else {
       // Claude Code inserts a pasted image only once it has read it: the text and ⏎ wait until the screen shows the
@@ -473,16 +474,19 @@ export class TermComposer {
       void feeds.imagesShown(s.id, before, paths.length).then((r) => {
         // A card came up meanwhile (D1, R49), or the agent ended or another process took the terminal over (C1): nothing
         // more is written, no ⏎ above all. The images are already in the TUI's input, which is acceptable; the text comes
-        // back to the box, with why.
+        // back to the box, with why, and the focus stays with it.
         if (r === "gone" || processKey(s) !== proc) { this.waitEnded(s, text, "gone", true); return; }
         if (r === "held") { this.waitEnded(s, text, "held", true); return; }
         for (const w of phases.rest) s.write(w);
+        // Only now does the focus go to the terminal (M3): a key typed during the wait stayed in the composer instead of
+        // joining the TUI's input this ⏎ submitted. Something typed in the box meanwhile keeps the focus there.
+        if (this.session === s && this.isFocused() && !this.input.value) this.focusTerminal();
       }).finally(() => { this.sending = false; });
     }
     this.input.value = "";
     this.clearShots();
     this.closeSuggest();
-    this.focusTerminal();
+    if (!waits) this.focusTerminal();
   }
 
   /**

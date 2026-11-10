@@ -1,7 +1,7 @@
-// The Term composer's drafts per terminal (code-chat D5; final review I1, I2): what the one composer keeps for each
-// terminal as the panel shows, closes and restarts them, and what a Send's wait leaves behind. "obsidian" resolves to a
-// stub under node:test, the composer's elements to a stand-in that takes every call and keeps what is set on it (the
-// textarea's value), and the plugin's codeFeeds to a fake whose waits the test ends.
+// The Term composer's drafts per terminal (code-chat D5; final review I1, I2) and the focus after a Send with images (M3):
+// what the one composer keeps for each terminal as the panel shows, closes and restarts them, and what a Send's wait
+// leaves behind. "obsidian" resolves to a stub under node:test, the composer's elements to a stand-in that takes every
+// call and keeps what is set on it (the textarea's value), and the plugin's codeFeeds to a fake whose waits the test ends.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Module from "node:module";
@@ -172,4 +172,43 @@ test("I2: a wait that ends on a terminal not shown keeps what is left as its dra
   await flush();
   assert.equal(inside.drafts.has("a"), false);
   assert.deepEqual(a.writes, []);
+});
+
+test("M3: with images the focus moves to the terminal only after the text and ⏎ went; a held wait and typing since keep it in the composer", async () => {
+  let focused = 0;
+  const { c, f, inside } = composer({ focusTerminal: () => { focused += 1; } });
+  const a = term("a");
+  const shot = () => ({ el: el(), path: "/work/demo/one.png", saved: Promise.resolve(true), gone: false });
+  c.setSession(a.s);
+  inside.input.value = "look at this";
+  inside.shots.push(shot());
+  inside.send();
+  f.reads[0](false);
+  await flush();
+  assert.equal(a.writes.join(""), "\x1b[200~/work/demo/one.png\x1b[201~", "the image's paste, then the wait");
+  assert.equal(focused, 0, "keys typed during the wait stay in the composer");
+  f.shows[0]("attached");
+  await flush();
+  assert.equal(a.writes.join("").endsWith("\x1b[200~ look at this\x1b[201~\r"), true);
+  assert.equal(focused, 1);
+  // A card came up during the wait: the text comes back to the box, and the focus stays with it.
+  inside.input.value = "and this";
+  inside.shots.push(shot());
+  inside.send();
+  f.reads[1](false);
+  await flush();
+  f.shows[1]("held");
+  await flush();
+  assert.equal(inside.input.value, "and this");
+  assert.equal(focused, 1);
+  // Typed into the box during the wait: the focus stays where the typing is.
+  inside.input.value = "one more";
+  inside.shots.push(shot());
+  inside.send();
+  f.reads[2](false);
+  await flush();
+  inside.input.value = "the next message";
+  f.shows[2]("attached");
+  await flush();
+  assert.equal(focused, 1);
 });
