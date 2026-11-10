@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, appEnv, command, content, expectNoErrors, openTab, terminalText, useApp } from "./harness";
+import { FX, appEnv, command, content, emulateViewport, expectNoErrors, openTab, terminalText, useApp } from "./harness";
 
 // The Code tab's chat view (spec 2026-11-09-code-chat C1, C3, C5, C13; rulings R3, R28, R32): an agent terminal opens in a
 // chat drawn from the cache its follower writes; ⌘J flips the middle to the same live PTY and back, nothing restarts; a
@@ -113,18 +113,26 @@ test.describe("the Code chat surface on", () => {
       return s?.dimensions ?? null;
     }, agent);
     await expect(chat(win)).toBeVisible();
-    const before = await size();
-    // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over.
-    expect(before!.cols).toBeGreaterThan(80);
-    expect(before!.rows).toBeGreaterThan(24);
-    await win.keyboard.press("Meta+j");
-    await expect(body(win)).toBeVisible();
-    // Give a refit its frames: the flip itself must not resize the PTY.
-    await win.waitForTimeout(500);
-    expect(await size()).toEqual(before);
-    await win.keyboard.press("Meta+j");
-    await expect(chat(win)).toBeVisible();
-    expect(await size()).toEqual(before);
+    // Lay the page out at 1480 x 920 whatever the screen (CI's runners are 1024 px wide): the stage is then wide and
+    // tall enough that a fit cannot give 80 x 24.
+    const restore = await emulateViewport(win, { width: 1480, height: 920 });
+    try {
+      // The refit runs from a ResizeObserver, a frame after the layout: wait for it, then read.
+      await expect.poll(async () => (await size())?.cols ?? 0).toBeGreaterThan(80);
+      const before = await size();
+      // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over.
+      expect(before!.rows).toBeGreaterThan(24);
+      await win.keyboard.press("Meta+j");
+      await expect(body(win)).toBeVisible();
+      // Give a refit its frames: the flip itself must not resize the PTY.
+      await win.waitForTimeout(500);
+      expect(await size()).toEqual(before);
+      await win.keyboard.press("Meta+j");
+      await expect(chat(win)).toBeVisible();
+      expect(await size()).toEqual(before);
+    } finally {
+      await restore();
+    }
   });
 
   test("Stop writes Esc to the agent's terminal while its turn runs", async () => {
