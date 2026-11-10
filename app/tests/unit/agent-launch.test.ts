@@ -13,7 +13,7 @@ import * as path from "node:path";
 import type { PtyEvent } from "../../src/shared/ipc";
 import type { ProgramContext } from "../../src/main/policy/programs";
 import { agentArgvRefusal } from "../../src/main/policy/agent-launch";
-import { PtyService, type PtyAgentRequest, type PtyLib, type PtyProcess, type PtyServiceOptions } from "../../src/main/services/pty";
+import { PtyService, terminalBaseEnv, type PtyAgentRequest, type PtyLib, type PtyProcess, type PtyServiceOptions } from "../../src/main/services/pty";
 import { AgentRegistry, type AgentRef } from "../../src/main/computer/registry";
 import { VENDOR, type Sys } from "../../src/main/computer/admission";
 import { FlagProbe, cliHelp } from "../../src/main/services/cli-flags";
@@ -442,6 +442,27 @@ test("spawnAgent: with it on, the agent starts from what the login shell gives a
   assert.deepEqual([env.TERM, env.COLORTERM, env.CLAUDE_CONFIG_DIR], ["xterm-256color", "truecolor", path.join(HOME, ".claude")], "main's variables still win");
   assert.equal(spawned[0].file, CLAUDE, "the binary main judged, as the terminal's own process");
   assert.equal(registry.get(spawned[0].p.pid)?.key, "code:t1");
+});
+
+test("spawnAgent (code-chat R64): the login shell starts without the launching session's markers, and a CLAUDE_CODE_* its rc files export reaches the agent", async () => {
+  const calls: NodeJS.ProcessEnv[] = [];
+  const { t, spawned } = service({
+    extra: {
+      context: shellContext,
+      // main's own environment, as an app started from a Claude Code session's shell has it
+      env: () => terminalBaseEnv({ PATH: "/usr/bin:/bin", HOME, CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_PID: "4242", CODEX_THREAD_ID: "019a-thread" }, null),
+      shellEnv: async (_shell, _cwd, base) => {
+        calls.push(base);
+        return { ...base, CLAUDE_CODE_USE_BEDROCK: "1", CLAUDECODE: "1" };
+      },
+    },
+  });
+  const r = await t.spawnAgent(req());
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual([calls[0].CLAUDECODE, calls[0].CLAUDE_CODE_ENTRYPOINT, calls[0].CLAUDE_PID, calls[0].CODEX_THREAD_ID], [undefined, undefined, undefined, undefined], "the shell never sees the launching session's markers");
+  const env = spawned[0].opts.env as Record<string, string>;
+  assert.equal(env.CLAUDE_CODE_USE_BEDROCK, "1", "the user's own rc export reaches the agent, as it reaches a typed launch");
+  assert.deepEqual([env.CLAUDECODE, env.CLAUDE_CODE_ENTRYPOINT, env.CODEX_THREAD_ID], [undefined, undefined, undefined]);
 });
 
 test("spawnAgent: a login shell that gives no environment, or none to ask, falls back and nothing starts (C1, fails closed)", async () => {

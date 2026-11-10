@@ -56,13 +56,15 @@ output. The design treats the page that shows them as untrusted (design D7,
     The child's environment is main's, plus a few named variables with fixed or trusted values: never `NODE_OPTIONS`,
     `PATH` or `DYLD_*`, and a Claude or Codex folder only when it is one main trusts.
   - *Terminals:* a shell listed in `/etc/shells` (or your `$SHELL`), with no arguments. Main starts it with its own
-    environment, `PATH` replaced by your login shell's (asked once, as the setup wizard does) and `CLAUDECODE` removed;
-    the page still cannot set `PATH`. While the `computer` surface is on, the Code tab starts an agent as the terminal's
+    environment, `PATH` replaced by your login shell's (asked once, as the setup wizard does), and without the markers a
+    Claude Code or Codex session that launched the app leaves in it (`CLAUDECODE`, every `CLAUDE_CODE_*` and
+    `CLAUDE_AGENT_SDK_*`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
+    `CODEX_THREAD_ID`, `CODEX_SESSION_ID`; code-chat R64); the page still cannot set `PATH`. While the `computer` surface is on, the Code tab starts an agent as the terminal's
     own process instead (agent-computer D18; *The Computer pane* below): the binary the runtime resolves on that `PATH`,
     whose install form main checks, with only the words `launchArgs` emits after it (`policy/agent-launch.ts`), in a
     folder a shell could start in, and with the environment your `$SHELL` gives a typed command (main runs it as a login,
     interactive shell for each launch and reads its exports, so your profile and rc files' variables reach the agent as
-    they did a typed line; `CLAUDECODE` still goes). With the surface off main checks nothing and the page types the
+    they did a typed line; the shell starts without those markers, and `CLAUDECODE` still goes). With the surface off main checks nothing and the page types the
     line into a shell, as before the computer; when main cannot vouch for the binary, or the shell gives no environment
     (a startup file that exits, hangs or execs something else), it says why and the page does the same. Spaces and
     Sessions ▸ History type a Resume line only with a lowercase UUID from the scan (History's also the one in its
