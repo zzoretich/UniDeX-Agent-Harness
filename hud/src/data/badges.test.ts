@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { proposalBadge, todoBadge, badgeText, touchesBadges } from "./badges";
+import { proposalBadge, todoBadge, badgeText, touchesBadges, needsYouBadge } from "./badges";
 
 test("proposalBadge counts proposal files and skips the README and non-Markdown", () => {
   assert.equal(proposalBadge([]), 0);
@@ -42,4 +42,16 @@ test("touchesBadges matches the three Connectors caches (connectors-tab D5), not
   for (const p of ["brain/_index/connectors.json", "brain/_index/connectors-live.json", "brain/_index/connectors-usage.json"]) assert.equal(touchesBadges(p), true, p);
   assert.equal(touchesBadges("brain/_index/connectors-usage-index.json"), false);
   assert.equal(touchesBadges("brain/_index/mcp-servers.json"), false);
+});
+
+test("needsYouBadge: Code's count is the agent terminals whose row reads Needs you (code-chat C10), not one that exited", () => {
+  const row = { exited: false, exitCode: null, turnOpen: false, printing: false, needsYou: false };
+  assert.equal(needsYouBadge([]), 0);
+  assert.equal(needsYouBadge([row, { ...row, turnOpen: true, printing: true }]), 0, "working and idle need nothing");
+  assert.equal(needsYouBadge([
+    { ...row, needsYou: true },
+    { ...row, needsYou: true, turnOpen: true, printing: true },
+    { ...row, needsYou: true, exited: true, exitCode: 0 },
+    { ...row, turnOpen: true },
+  ]), 2);
 });

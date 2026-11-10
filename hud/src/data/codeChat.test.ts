@@ -166,6 +166,22 @@ test("CacheTail: a shrunk file restarts at 0 and says so; reset() rewinds", () =
   assert.equal(tail.read().length, 1);
 });
 
+test("CacheTail skips a line longer than its read window and carries on with the next", () => {
+  const { fs, state } = fakeFs();
+  const tail = new CacheTail(fs, "/cache/a.jsonl");
+  const big = Buffer.alloc(9 * 1024 * 1024, 0x61);
+  state.bytes = Buffer.concat([Buffer.from('{"kind":"text","turn":1}\n'), big]);
+  // the first window holds one good line and then the start of the oversized one
+  assert.deepEqual(tail.read().map((e) => e.kind), ["text"]);
+  // windows with no newline at all are dropped, never stalled on (the line is still growing)
+  for (let i = 0; i < 3; i++) tail.read();
+  state.bytes = Buffer.concat([state.bytes, Buffer.from('\n{"kind":"done","turn":1}\n')]);
+  const got: string[] = [];
+  for (let i = 0; i < 4; i++) got.push(...tail.read().map((e) => e.kind));
+  assert.deepEqual(got, ["done"]);
+  assert.equal(tail.skippedLines, 1);
+});
+
 test("rowStatus: exited > needs > working > idle", () => {
   const base = { exited: false, exitCode: null, turnOpen: false, printing: false, needsYou: false };
   assert.deepEqual(rowStatus(base), { status: "idle", text: "Idle" });

@@ -1,7 +1,8 @@
 // CodeChat — the Code tab's chat view of an agent terminal (spec 2026-11-09-code-chat C1, C4, C5; §4 "Layout of record").
 // It draws the conversation the terminal's follower mirrors (data/codeFeeds.ts), in a 760 px column: your prompts as
 // bubbles, the agent's text, tool rows that open (one ThreadView for the chat's life, Sessions' renderer), Show earlier
-// over the 400-row cap, a working line with Stop while a turn runs, and a card for the TUI's prompt (Task 12 fills it).
+// over the 400-row cap, a working line with Stop while a turn runs, and a card for the TUI's prompt, read from the
+// terminal's screen (data/codeFeeds.ts): its question with numbered choices, or "Waiting on you in the terminal".
 // Under the column sit the composer (TerminalPanel moves its element into `composerSlot` while the chat shows) and the
 // status line, drawn from spans exactly as the terminal draws it (C5), or the hint when there is none. The live PTY is
 // one key away: every "Terminal ⌘J" here calls `toTerminal`. When the agent has exited and the login shell runs in its
@@ -11,13 +12,10 @@ import { Component, MarkdownRenderer } from "obsidian";
 import type { SessionHost } from "../data/aosConfig";
 import type { ChatState } from "../data/codeChat";
 import type { Span } from "../data/ansiSpans";
+import type { ChatCard } from "../data/termScreen";
 import { ThreadView, type ThreadViewContext } from "./ThreadView";
 
-/** What the TUI asks for, as Task 12 reads it from the terminal's screen (C4): its question with numbered choices, or a
- *  generic card when the screen shows something the chat cannot draw. */
-export type ChatCard =
-  | { kind: "approval"; title: string; detail: string | null; choices: { key: string; label: string }[] }
-  | { kind: "waiting" };
+export type { ChatCard } from "../data/termScreen";
 
 export interface CodeChatOptions {
   /** The same terminal (⌘J). */
@@ -26,8 +24,9 @@ export interface CodeChatOptions {
   stop(): void;
   /** Show earlier: the rows before the cap. */
   showEarlier(): void;
-  /** A card's choice: the key its TUI takes. */
-  answer?(key: string): void;
+  /** A card's choice: the key its TUI takes; true (or a promise of it) when it was written (the choices then wait for the
+   *  next card). */
+  answer?(key: string, card: ChatCard): boolean | Promise<boolean>;
   /** A status line link (https:// or agenticos://), opened as a link clicked in the terminal is (R32). */
   openLink(href: string): void;
   /** The terminal's host and folder: models and file paths are named by them. */
@@ -40,6 +39,8 @@ export interface CodeChatOptions {
 const AT_END_PX = 48;
 const NO_CHAT = "No chat for this session yet";
 const HINT = "Status line in the terminal ⌘J";
+const WAITING = "Waiting on you in the terminal";
+const ANSWER = "Answer in the terminal ⌘J";
 
 export class CodeChat {
   readonly el: HTMLElement;
@@ -73,7 +74,7 @@ export class CodeChat {
     this.rowsEl = col.createDiv({ cls: "aos-cc-rows" });
     this.noteEl = col.createDiv({ cls: "aos-cc-note" });
     this.workingEl = col.createDiv({ cls: "aos-cc-working" });
-    this.cardEl = col.createDiv({ cls: "aos-cc-card" });
+    this.cardEl = col.createDiv({ cls: "aos-cc-card", attr: { "aria-live": "polite" } });
     // A read-only chat has no foot: its slot and status line are never in the page.
     const footCol = o.readOnly ? this.el.ownerDocument.createElement("div") : this.el.createDiv({ cls: "aos-cc-foot" }).createDiv({ cls: "aos-cc-footcol" });
     this.endedEl = footCol.appendChild(this.el.ownerDocument.createElement("div"));
@@ -136,29 +137,41 @@ export class CodeChat {
     if (this.state) this.render();
   }
 
-  /** The TUI's prompt as a card after the last row, or none (Task 12). */
+  /** The TUI's prompt as a card after the last row, or none (C4). Nothing here flips the view: the card waits in the
+   *  chat, and its "Answer in the terminal ⌘J" goes there when you choose to. */
   setCard(card: ChatCard | null): void {
     const el = this.cardEl;
     el.empty();
     el.toggleClass("is-on", !!card);
     if (!card) return;
     if (card.kind === "waiting") {
-      const box = el.createDiv({ cls: "aos-cc-gate is-waiting" });
-      box.createSpan({ cls: "aos-cc-gatetitle", text: "Waiting on you in the terminal" });
-      this.jump(box, "⌘J");
+      const box = el.createDiv({ cls: "aos-cc-gate is-waiting", attr: { role: "group", "aria-label": WAITING } });
+      box.createSpan({ cls: "aos-cc-gatetitle", text: WAITING });
+      this.jump(box, ANSWER);
       return;
     }
     const box = el.createDiv({ cls: "aos-cc-gate", attr: { role: "group", "aria-label": card.title } });
     box.createDiv({ cls: "aos-cc-gatetitle", text: card.title });
     if (card.detail) box.createDiv({ cls: "aos-cc-gatedetail", text: card.detail });
     const row = box.createDiv({ cls: "aos-cc-gatechoices" });
+    const buttons: HTMLButtonElement[] = [];
     card.choices.forEach((c, i) => {
-      const b = row.createEl("button", { cls: `aos-cc-choice${i === 0 ? " is-first" : ""}`, attr: { type: "button" } });
+      const b = row.createEl("button", { cls: `aos-cc-choice${i === 0 ? " is-first" : ""}`, attr: { type: "button", title: `${c.label} (${c.key} in the terminal)` } });
       b.createSpan({ text: c.label });
       b.createSpan({ cls: "aos-cc-choicekey", text: c.key });
-      b.addEventListener("click", () => this.o.answer?.(c.key));
+      buttons.push(b);
+      b.addEventListener("click", () => {
+        if (b.disabled) return;
+        // One answer per prompt: the choices wait for the TUI to move on (the next card), or come back when nothing was
+        // written (the prompt changed under the click, or the agent ended).
+        for (const x of buttons) x.disabled = true;
+        const back = (ok: boolean | undefined) => { if (ok !== true) for (const x of buttons) x.disabled = false; };
+        const r = this.o.answer?.(c.key, card);
+        if (r instanceof Promise) void r.then(back, () => back(false));
+        else back(r);
+      });
     });
-    this.jump(row, "Answer in the terminal ⌘J");
+    this.jump(row, ANSWER);
   }
 
   /** The status line's rows (C5), or the hint when there is none to show. Links keep their target as an attribute and

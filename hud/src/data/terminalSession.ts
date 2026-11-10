@@ -214,6 +214,10 @@ export class TerminalSession {
    *  life, after a login shell took over too. Null while a Code launch starts, and on a host without the app's ids. */
   get originPty(): string | null { return this.firstPty; }
 
+  /** The app's id for the process running in the terminal now (the agent, or the login shell after it): what code:git names
+   *  so main reads git where that process started (code-chat C8). Null with no process, and on a host without the app's ids. */
+  get ptyId(): string | null { return typeof this.pty?.id === "string" ? this.pty.id : null; }
+
   /** A deferred terminal's shell, when main fell back (D18), with `first` (the launch line) typed into it before what
    *  was typed while it started, so that typeahead reaches the agent and never the line. Throws as a new terminal's
    *  shell would. */

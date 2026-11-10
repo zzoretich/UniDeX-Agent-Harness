@@ -261,6 +261,12 @@ export class FilesTab {
     if (this.colRoot && !this.isFolder(this.colRoot)) this.colRoot = "";
   }
 
+  /** Code's Files button (code-chat C8): a vault workspace's folder in view and at the root of the columns, as a favorite
+   *  opens one. Nothing for a path that is not a folder. */
+  showFolder(folder: string): void {
+    if (this.isFolder(folder)) this.pickFavorite(folder);
+  }
+
   /** Search vault…: shows the tab with the cursor in the search box. */
   focusSearch(): void {
     this.searchInput?.focus();

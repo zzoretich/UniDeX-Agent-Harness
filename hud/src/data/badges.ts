@@ -5,6 +5,7 @@ import { TODO_PATH, todoBadgeCount } from "./todos";
 import { NOTIFICATIONS_DIR } from "./notifications";
 import { touchesTeams } from "./teams";
 import { CONNECTOR_FILES } from "./connectorsModel";
+import { rowStatus, type RowStatusInput } from "./codeChat";
 
 /** Pending proposals among a listing of persona/proposals (vault paths or bare names). */
 export function proposalBadge(paths: string[]): number {
@@ -14,6 +15,12 @@ export function proposalBadge(paths: string[]): number {
 /** Open todos overdue or due today (`today` is the local YYYY-MM-DD); a missing TODO.md counts 0. */
 export function todoBadge(text: string | null, today: string): number {
   return todoBadgeCount(text, today);
+}
+
+/** Code's count (spec 2026-11-09-code-chat C10): the agent terminals whose row reads Needs you, read from their screens
+ *  for every terminal, not only the one in view (termGroups.statusInput gives each one's inputs). */
+export function needsYouBadge(rows: RowStatusInput[]): number {
+  return rows.filter((r) => rowStatus(r).status === "needs").length;
 }
 
 /** Rail text for a count: "" hides the badge; anything past 99 reads "99+". */

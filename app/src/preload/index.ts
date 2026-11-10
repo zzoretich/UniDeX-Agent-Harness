@@ -123,6 +123,7 @@ const api: AosBridge = {
     follow: (req) => invoke(CH.codeFollow, req),
     unfollow: (pty) => ipcRenderer.send(CH.codeUnfollow, { pty }),
     view: (req) => invoke(CH.codeView, req),
+    git: (req) => invoke(CH.codeGit, req),
   },
   proposals: {
     preview: (name) => invoke(CH.proposalPreview, { name }),

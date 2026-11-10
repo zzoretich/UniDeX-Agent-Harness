@@ -9,7 +9,8 @@
 // PTY at once and nothing restarts. Each terminal remembers its view (CodeFeeds); a shell has no chat and no switch; with
 // the Code chat surface off an agent opens in its terminal and the switch says so. When an agent exits and the login shell
 // takes its terminal over (D18), its chat keeps the history and says so, with no composer; its terminal view's composer is
-// a shell's (code-chat R39).
+// a shell's (code-chat R39). The top bar's Diff, Files and Computer buttons open their panes (CodePanes, C8): Diff docks
+// after the terminal, closed by default.
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -21,31 +22,25 @@ import type { LaunchNote } from "../data/terminalLauncher";
 import { listen } from "../data/listen";
 import { TERMINAL_FONT, currentTheme, onThemeChange, xtermTheme } from "./theme";
 import { NewTerminalMenu, type NewTerminalActions } from "./NewTerminalMenu";
-import { Notice, setIcon } from "obsidian";
+import { Notice } from "obsidian";
 import { TermList } from "./TermList";
 import { TermComposer } from "./TermComposer";
 import { TermFind } from "./TermFind";
 import { FIND_LIMIT } from "../data/termFind";
 import { hudHost, shell } from "../host";
 import { ConfirmModal } from "./ConfirmModal";
-import { LinkRepoModal } from "./LinkRepoModal";
-import { groupKey, groupSidebar, rowInput, scopeOf, sidebarOrder, stepRow, type SidebarGroup, type TermRow, type TermRowInput, type TermScope } from "../data/termGroups";
+import { groupKey, scopeOf, stepRow } from "../data/termGroups";
 import { restartKeepingOld } from "../data/terminalRestart";
-import { HistoryCache } from "../data/historyCache";
-import type { HistoryResume, HistoryRow } from "../data/sessionHistory";
-import { pastEarlier, pastState, pastView, type PastView } from "../data/pastChat";
-import { TERM_HOST_LABEL, placeKey, placeOf, vaultPlace, workspacePlace, type Place, type PlaceWorld, type TermAccess } from "../data/terminalLaunch";
+import { CodeSidebarModel } from "../data/codeSidebarModel";
+import { vaultPlace, workspacePlace, type Place, type TermAccess } from "../data/terminalLaunch";
 import { ComputerPane } from "./ComputerPane";
 import { storeFor, type ComputerStore, type RowMarks } from "../data/computerStore";
 import { computerPaneStart, rememberComputerPane } from "../settingsDefaults";
-import { CodeChat } from "./CodeChat";
+import { CodeStage } from "./CodeStage";
+import { CodeTopBar } from "./CodeTopBar";
+import { CodePanes } from "./CodePanes";
 import type { CodeView } from "../data/codeFeeds";
-import { rowStatus, type ChatState } from "../data/codeChat";
-import type { Span } from "../data/ansiSpans";
-import { HOST_APP_SETTINGS, runHostCommand } from "./hostCommands";
-
-/** A chat with nothing in it yet. */
-const NO_CHAT: ChatState = { sessionId: null, rows: [], hiddenEarlier: 0, turnOpen: false, error: null, model: null };
+import { fitKey, frameUnsized } from "../data/termFit";
 
 /** Fits a terminal repeats at most this often before taking the last answer (refit). */
 const FIT_PASSES = 4;
@@ -76,16 +71,14 @@ export interface TerminalPanelOptions {
   openWorkspace?: (name: string) => void;
   /** The sidebar's All history: Sessions ▸ History. */
   openHistory?: () => void;
+  /** The top bar's Files button: the Files tab at a vault workspace's folder (vault-relative; code-chat C8). */
+  openFiles?: (folder: string) => void;
 }
 
 /** How long the "Started … · Change" note stays after a launch. */
 const STARTED_MS = 6000;
 /** The terminal view's composer height (px) until one is measured: a rough figure, the first ⌘J corrects it. */
 const TERM_COMPOSER_H = 200;
-const NO_REASON = "The conversation could not be loaded";
-
-/** A past conversation open read-only in the stage (code-chat C6): a History row, or one closed in this app. */
-interface PastSel { key: string; host: "claude" | "codex"; id: string; title: string; place: Place; resume: HistoryResume }
 
 export class TerminalPanel {
   private plugin: AgenticOSPlugin;
@@ -103,22 +96,12 @@ export class TerminalPanel {
   /** Terminals whose chip pick is restarting them now (a second pick waits). */
   private restarting = new Set<string>();
   private finder: TermFind | null = null;
-  private headMainEl: HTMLElement | null = null;
-  private placeMenu: HTMLElement | null = null;
-  private sidebar: SidebarGroup[] = [];
-  /** The past conversations (the index, digests), the ones closed in this app, and the "Show more" counts by group. */
-  private hist: HistoryCache | null = null;
-  private lastInputs = new Map<string, TermRowInput>();
-  private extra: Record<string, number> = {};
-  /** The past conversation shown read-only instead of a terminal, its chat, and what it shows now. */
-  private past: PastSel | null = null;
-  private pastChat: CodeChat | null = null;
-  private pastData: PastView | null = null;
-  private pastSeq = 0;
-  /** The workspace another tab opened Code on (reveal): the deck lists only its group until Show all or a launch
-   *  elsewhere (spaces-redesign D12). */
-  private scope: TermScope | null = null;
-  private worldCache: { at: number; w: PlaceWorld } | null = null;
+  /** The sidebar's groups and what rows and the top bar read of a terminal; the top bar; the stage with the chats. */
+  private model: CodeSidebarModel;
+  private topBar: CodeTopBar;
+  private stage: CodeStage;
+  /** The panes behind the top bar's buttons: Diff (code:git), Files, Computer (code-chat C8). */
+  private panes: CodePanes;
   /** The deck's Computer pane (agent-computer D4), in the app only; its store gives the rows their marks (D32, D35). */
   private computer: ComputerPane | null = null;
   private computerStore: ComputerStore | null = null;
@@ -127,21 +110,7 @@ export class TerminalPanel {
   private marksShown = "";
   /** The rows' status and conversation as last drawn, so a chat that changes neither redraws no list (I2). */
   private rowsShown = "";
-  /** The deck's main column, and the stage that holds the terminal's body under the chat (code-chat C1). */
-  private frameEl: HTMLElement | null = null;
-  private stageEl: HTMLElement | null = null;
-  private chat: CodeChat | null = null;
-  /** The top bar's Chat | Terminal switch, and the place Task 13's pane buttons go. */
-  private viewEl: HTMLElement | null = null;
-  private hostChipEl: HTMLElement | null = null;
   private unwatchFeeds: (() => void) | null = null;
-  /** The terminal whose chat the CodeChat shows now, and what it drew of it (the feed's objects, which CodeFeeds replaces
-   *  on every change, so the same ones mean nothing new to draw: I3). */
-  private chatFor: string | null = null;
-  private drawn: { state: ChatState; why: string | null; status: Span[][] | null } | null = null;
-  /** What the top bar's switch shows (the terminal, its view, the surface; a past conversation's Resume), so a terminal's
-   *  update that changes none of it leaves the switch and its focus alone (I3). */
-  private switchShown: string | null = null;
 
   private bindings = new Map<string, XtermBinding>();
   private activeId: string | null = null;
@@ -154,6 +123,35 @@ export class TerminalPanel {
     this.plugin = plugin;
     this.opts = opts;
     this.height = opts.initialHeight ?? 280;
+    this.model = new CodeSidebarModel(plugin, {
+      filter: () => this.list?.query() ?? "",
+      changed: () => { if (this.host) this.renderTabs(); },
+    });
+    this.stage = new CodeStage(plugin, {
+      activeId: () => this.activeId,
+      activeSession: () => this.activeSession(),
+      composer: () => this.composer,
+      setView: (v) => this.setView(v),
+      openLink: (href) => this.openLink(href),
+      renderTabs: () => this.renderTabs(),
+    });
+    this.panes = new CodePanes({
+      activeSession: () => (this.stage.past ? undefined : this.activeSession()),
+      placeOf: (s) => this.model.placeOfSession(s),
+      computer: () => this.computer,
+      openFiles: opts.openFiles,
+      changed: () => { if (this.host) this.topBar.renderStatus(); },
+    });
+    this.topBar = new CodeTopBar(plugin, this.model, this.stage, {
+      activeSession: () => this.activeSession(),
+      composer: () => this.composer,
+      computer: () => this.computer,
+      startIn: (place, host, resume) => this.startIn(place, host, resume),
+      setView: (v) => this.setView(v),
+      makeWorkspace: (named) => this.newMenu?.open("create", null, named),
+      restartWith: (id, patch) => this.restartWith(id, patch),
+      renderTabs: () => this.renderTabs(),
+    }, this.panes);
   }
 
   mount(host: HTMLElement): void {
@@ -176,28 +174,31 @@ export class TerminalPanel {
       this.list = new TermList(aside, {
         select: (id) => this.activate(id),
         close: (id) => this.closeSession(id),
-        startIn: (g) => this.startIn(g.place ?? vaultPlace(this.world()), "quick"),
+        startIn: (g) => this.startIn(g.place ?? vaultPlace(this.model.world()), "quick"),
         clearEnded: () => { for (const s of this.plugin.terminalPool.list()) if (s.isExited) this.plugin.terminalPool.remove(s.id); },
         openWorkspace: this.opts.openWorkspace ? (name) => this.opts.openWorkspace?.(name) : undefined,
-        clearScope: () => { this.scope = null; this.renderTabs(); },
+        clearScope: () => { this.model.scope = null; this.renderTabs(); },
         mark: (id) => this.marks(id),
-        openPast: (h) => this.showPast({ key: h.key, host: h.host, id: h.id, title: h.title, place: h.place, resume: h.resume }),
-        openClosed: (r) => { if (r.sessionId && r.host !== "shell") this.showPast({ key: `closed:${r.host}:${r.sessionId}`, host: r.host, id: r.sessionId, title: r.title, place: r.place, resume: { state: "on", place: r.place, hint: "" } }); },
-        showMore: (key) => { this.extra[key] = (this.extra[key] ?? 0) + 10; this.renderTabs(); },
+        openPast: (h) => this.stage.showPast({ key: h.key, host: h.host, id: h.id, title: h.title, place: h.place, resume: h.resume }),
+        openClosed: (r) => { if (r.sessionId && r.host !== "shell") this.stage.showPast({ key: `closed:${r.host}:${r.sessionId}`, host: r.host, id: r.sessionId, title: r.title, place: r.place, resume: { state: "on", place: r.place, hint: "" } }); },
+        showMore: (key) => { this.model.extra[key] = (this.model.extra[key] ?? 0) + 10; this.renderTabs(); },
         allHistory: this.opts.openHistory ? () => this.opts.openHistory?.() : undefined,
       }, () => this.renderTabs());
-      this.hist = new HistoryCache({ vault: () => this.plugin.vaultRoot(), hosts: () => ({ choices: this.plugin.termLauncher.choices(), world: this.world() }) }, () => { if (this.host) this.renderTabs(); });
+      this.model.start();
       frame = host.createDiv({ cls: "aos-term-main", attr: { "data-tour": "code-main" } });
     }
     this.headerEl = frame.createDiv({ cls: "aos-term-header", attr: { "data-tour": "code-header" } });
     const left = this.headerEl.createDiv({ cls: "aos-term-header-left" });
-    if (this.opts.deck) this.headMainEl = left.createDiv({ cls: "aos-term-head" });
+    if (this.opts.deck) this.topBar.headMainEl = left.createDiv({ cls: "aos-term-head" });
     else left.createSpan({ cls: "aos-term-title", text: "Terminal" });
     this.tabsEl = this.headerEl.createDiv({ cls: "aos-term-tabs" });
 
     const right = this.headerEl.createDiv({ cls: "aos-term-header-right" });
     if (this.opts.launch && !this.opts.deck) this.newMenu = new NewTerminalMenu(right, this.plugin.termLauncher, this.opts.launch);
-    if (this.opts.deck) this.viewEl = right.createDiv({ cls: "aos-term-view" });
+    if (this.opts.deck) {
+      this.topBar.viewEl = right.createDiv({ cls: "aos-term-view" });
+      this.topBar.panesEl = right.createDiv({ cls: "aos-term-panes" });
+    }
 
     if (this.opts.showMaximize && this.opts.onMaximize) {
       const max = right.createEl("button", { cls: "aos-term-btn", text: "⛶" });
@@ -212,38 +213,21 @@ export class TerminalPanel {
 
     // body (the deck: on a stage the chat lies over, so the terminal keeps its size while the chat shows)
     if (this.opts.deck) {
-      this.frameEl = frame;
-      this.stageEl = frame.createDiv({ cls: "aos-term-stage" });
-      this.bodyEl = this.stageEl.createDiv({ cls: "aos-term-body" });
-      this.chat = new CodeChat(this.stageEl, {
-        toTerminal: () => this.setView("terminal"),
-        stop: () => { const s = this.activeSession(); if (s && !s.isExited && !s.agentEnded) s.write("\x1b"); },
-        showEarlier: () => { if (this.activeId) this.plugin.codeFeeds?.showEarlier(this.activeId); },
-        openLink: (href) => this.openLink(href),
-        context: () => {
-          const s = this.activeSession();
-          return { host: s?.meta.host === "codex" ? "codex" : "claude", root: s ? s.meta.place?.dir ?? s.cwd : null };
-        },
-      });
-      this.pastChat = new CodeChat(this.stageEl, {
-        readOnly: true,
-        toTerminal: () => {}, stop: () => {},
-        showEarlier: () => { if (this.pastData && this.past) { this.pastData = pastEarlier(this.pastData); this.drawPast(); } },
-        openLink: (href) => this.openLink(href),
-        context: () => ({ host: this.past?.host ?? "claude", root: this.past?.place.dir ?? null }),
-      });
+      this.bodyEl = this.stage.mount(frame);
       this.composer = new TermComposer(frame, this.plugin, () => this.focus(), () => this.bracketedPaste());
-      this.composer.onCatalog = () => { if (this.host) this.renderHostChip(); };
+      this.composer.onCatalog = () => { if (this.host) this.topBar.renderHostChip(); };
       this.finder = new TermFind(this.bodyEl, () => this.focus());
+      // The Diff pane docks after the terminal, before the Computer pane (closed by default).
+      this.panes.mount(host);
       this.mountComputer(host);
       this.unwatchFeeds = this.plugin.codeFeeds?.subscribe((id) => {
         if (!this.host) return;
         // Any terminal's chat moves its row (Working, Idle) and the conversation it is in: the list redraws when a row
         // would read differently, the selected one or not.
-        if (this.list && this.rowsSig() !== this.rowsShown) this.renderTabs();
+        if (this.list && this.model.rowsSig() !== this.rowsShown) this.renderTabs();
         if (id !== this.activeId) return;
-        this.renderChat();
-        this.renderHostChip();
+        this.stage.renderChat();
+        this.topBar.renderHostChip();
       }) ?? null;
     } else {
       this.bodyEl = frame.createDiv({ cls: "aos-term-body" });
@@ -288,12 +272,12 @@ export class TerminalPanel {
         if (!this.host) return;
         // A terminal that starts outside the scoped workspace (⌘T in the vault, a skill's button) ends the scope, so the
         // new row is never hidden.
-        if (this.scope && s && groupKey(this.placeOfSession(s)) !== this.scope.key) this.scope = null;
+        if (this.model.scope && s && groupKey(this.model.placeOfSession(s)) !== this.model.scope.key) this.model.scope = null;
         this.renderTabs();
       },
       "session-remove": (id: string) => {
         if (!this.host) return;
-        this.rememberClosed(id);
+        this.model.rememberClosed(id);
         const b = this.bindings.get(id);
         if (b) { b.detachData(); try { b.term.dispose(); } catch {} this.bindings.delete(id); }
         if (this.activeId === id) {
@@ -307,7 +291,7 @@ export class TerminalPanel {
       "session-update": () => { if (this.host) { this.renderTabs(); this.newMenu?.refresh(); } },
       "session-select": (id: string | null) => {
         if (!this.host || !id || id === this.activeId) return;
-        this.clearPast();
+        this.stage.clearPast();
         this.activeId = id;
         this.renderTabs();
         this.ensureBindingForActive();
@@ -330,23 +314,10 @@ export class TerminalPanel {
     this.marksShown = "";
     this.unwatchFeeds?.();
     this.unwatchFeeds = null;
-    this.chat?.destroy();
-    this.chat = null;
-    this.pastChat?.destroy();
-    this.pastChat = null;
-    this.past = null;
-    this.pastData = null;
-    this.pastSeq++;
-    this.hist?.dispose();
-    this.hist = null;
-    this.lastInputs.clear();
-    this.chatFor = null;
-    this.drawn = null;
-    this.switchShown = null;
-    this.frameEl = null;
-    this.stageEl = null;
-    this.viewEl = null;
-    this.hostChipEl = null;
+    this.stage.destroy();
+    this.model.dispose();
+    this.topBar.destroy();
+    this.panes.destroy();
     this.disposePool?.();
     this.disposePool = null;
     this.disposeTheme?.();
@@ -358,8 +329,6 @@ export class TerminalPanel {
     this.composer = null;
     this.finder?.close(false);
     this.finder = null;
-    this.headMainEl = null;
-    this.placeMenu = null;
     // dispose xterm instances but DON'T touch PTYs in the pool
     for (const b of this.bindings.values()) {
       try { b.detachData(); } catch { /* ignore */ }
@@ -372,14 +341,18 @@ export class TerminalPanel {
   }
 
   /** The Code tab was shown again: the past conversations are looked up again (the scan may have indexed more). */
-  refreshSidebar(): void { if (this.host && this.list) { this.hist?.refresh(true); this.renderTabs(); } }
+  refreshSidebar(): void { if (this.host && this.list) { this.model.refreshHistory(true); this.renderTabs(); } }
 
-  /** Another rail tab is in front: the Computer pane lets its view go and selects nothing (ruling R51). */
-  leave(): void { this.computer?.hide(); }
+  /** Another rail tab is in front: the Computer pane lets its view go and selects nothing (ruling R51); the Diff reads no
+   *  status until the tab is back (R55). */
+  leave(): void { this.computer?.hide(); this.panes.hide(); }
+
+  /** The Code tab is in front again: the Diff follows the selected terminal with one read (R55). */
+  enter(): void { this.panes.show(); }
 
   /** Keys to the selected terminal; in its chat view the terminal is hidden, so nothing takes them. */
   focus(): void {
-    if (!this.activeId || this.past || this.chatShown()) return;
+    if (!this.activeId || this.stage.past || this.stage.chatShown()) return;
     const b = this.bindings.get(this.activeId);
     b?.term.focus();
   }
@@ -388,14 +361,14 @@ export class TerminalPanel {
   toggleView(): void {
     const s = this.activeSession();
     const feeds = this.plugin.codeFeeds;
-    if (this.past || !s || !feeds || !this.chat || !hasChat(s.meta) || !feeds.on()) return;
+    if (this.stage.past || !s || !feeds || !this.stage.chat || !hasChat(s.meta) || !feeds.on()) return;
     this.setView(feeds.view(s.id) === "chat" ? "terminal" : "chat");
   }
 
   /** Makes a pool session the visible one — also for a session created outside the panel (WorkbenchView.runInTerm). */
   activate(id: string): void {
     if (!this.plugin.terminalPool.get(id)) return;
-    this.clearPast();
+    this.stage.clearPast();
     this.activeId = id;
     this.plugin.terminalPool.select(id);
     this.renderTabs();
@@ -410,10 +383,10 @@ export class TerminalPanel {
   reveal(target: { workspace?: string | null }): void {
     const w = this.plugin.termLauncher.world();
     const name = target.workspace ?? null;
-    this.scope = name && w.workspaces.includes(name) ? scopeOf(workspacePlace(name, w)) : null;
+    this.model.scope = name && w.workspaces.includes(name) ? scopeOf(workspacePlace(name, w)) : null;
     this.renderTabs();
-    if (!this.scope) return;
-    const rows = this.openRows();
+    if (!this.model.scope) return;
+    const rows = this.model.openRows();
     if (!rows.length || rows.some((r) => r.id === this.activeId)) return;
     this.activate((rows.find((r) => r.end === "running") ?? rows[0]).id);
   }
@@ -425,7 +398,7 @@ export class TerminalPanel {
 
   /** The next or previous terminal in the list (⇧⌘] / ⇧⌘[). */
   step(dir: 1 | -1): void {
-    const next = stepRow(sidebarOrder(this.sidebar.length ? this.sidebar : this.buildSidebar()), this.activeId, dir);
+    const next = stepRow(this.model.order(), this.activeId, dir);
     if (next) this.activate(next);
   }
 
@@ -441,14 +414,14 @@ export class TerminalPanel {
   /** Opens the find bar on the selected terminal (⌘F); false when there is no terminal to find in. */
   openFind(): boolean {
     const b = this.activeId ? this.bindings.get(this.activeId) : undefined;
-    if (!this.finder || !b || this.past || this.chatShown()) return false;
+    if (!this.finder || !b || this.stage.past || this.stage.chatShown()) return false;
     this.finder.open(b.search);
     return true;
   }
 
   /** Closes the selected terminal (⇧⌘W), asking first while an agent runs in it. A past conversation shown read-only is
    *  not a terminal: the one hidden under it stays. */
-  closeActive(): void { if (this.activeId && !this.past) this.closeSession(this.activeId); }
+  closeActive(): void { if (this.activeId && !this.stage.past) this.closeSession(this.activeId); }
 
   /** A plain shell in the default place (the old "+ new"). */
   async createNewSession(): Promise<void> {
@@ -474,14 +447,13 @@ export class TerminalPanel {
   private renderTabs(): void {
     if (this.opts.deck && this.list) {
       this.marksShown = this.marksSig();
-      this.rowsShown = this.rowsSig();
+      this.rowsShown = this.model.rowsSig();
       // At most every two seconds (the caches' stats are synchronous IPC; a busy agent's title renders this often).
-      this.hist?.refresh();
-      this.sidebar = this.buildSidebar();
-      const open = this.openRows();
-      const counts = { open: open.filter((r) => r.end === "running").length, needs: this.sidebar.reduce((n, g) => n + g.rows.filter((r) => r.kind === "open" && !r.closed && r.status.status === "needs").length, 0), ended: open.filter((r) => r.end !== "running").length };
-      this.list.render(this.sidebar, this.activeId, counts, this.scope, this.past?.key ?? null);
-      this.renderHead();
+      this.model.refreshHistory();
+      const sidebar = this.model.rebuild();
+      const counts = this.model.counts();
+      this.list.render(sidebar, this.activeId, counts, this.model.scope, this.stage.past?.key ?? null);
+      this.topBar.renderHead();
       return;
     }
     this.tabsEl.empty();
@@ -525,62 +497,6 @@ export class TerminalPanel {
     this.noteTimer = window.setTimeout(() => { el.detach(); this.noteTimer = null; }, STARTED_MS);
   }
 
-  /** The workspaces and links, read at most every two seconds: rows without a recorded place need them. */
-  private world(): PlaceWorld {
-    const now = Date.now();
-    if (!this.worldCache || now - this.worldCache.at > 2000) this.worldCache = { at: now, w: this.plugin.termLauncher.world() };
-    return this.worldCache.w;
-  }
-
-  private placeOfSession(s: TerminalSession): Place { return s.meta.place ?? placeOf(s.cwd, this.world()); }
-
-  /** Each terminal's row (rowInput): its conversation and turn as its chat has them, the source the chat and chips read. */
-  private rowInputs(): TermRowInput[] {
-    const feeds = this.plugin.codeFeeds;
-    return this.plugin.terminalPool.list().map((s) => rowInput(s, this.placeOfSession(s), feeds?.get(s.id) ?? null));
-  }
-
-  /** The terminal's conversation: its chat's (a /clear, a new Codex thread), else the one its launch named. */
-  private conversationOf(s: TerminalSession): string | null {
-    return this.plugin.codeFeeds?.get(s.id)?.state.sessionId ?? s.meta.sessionId ?? null;
-  }
-
-  /** What the rows show of each chat: its status and its conversation (which hides its History row). */
-  private rowsSig(): string {
-    const feeds = this.plugin.codeFeeds;
-    if (!feeds) return "";
-    return this.plugin.terminalPool.list().map((s) => {
-      const f = feeds.get(s.id);
-      return f ? `${s.id}:${f.follow}:${f.state.turnOpen ? 1 : 0}:${this.conversationOf(s) ?? ""}` : s.id;
-    }).join(",");
-  }
-
-  /** The sidebar's groups now: the terminals, and (with the Code chat on) the conversations closed here and past ones. */
-  private buildSidebar(): SidebarGroup[] {
-    const inputs = this.rowInputs();
-    this.lastInputs = new Map(inputs.map((r) => [r.id, r]));
-    const on = this.plugin.codeFeeds?.on() ?? false;
-    const groups = groupSidebar(inputs, on ? this.hist?.rows() ?? [] : [], { now: Date.now(), filter: this.list?.query() ?? "", closed: on ? this.plugin.codeFeeds?.closedConvs.list() ?? [] : [], extra: this.extra });
-    const scope = this.scope;
-    if (!scope) return groups;
-    const only = groups.filter((g) => g.key === scope.key);
-    // A scoped workspace with nothing running keeps its group, so its + and Open workspace still show.
-    if (!only.length && !(this.list?.query() ?? "").trim()) only.push({ key: scope.key, label: scope.label, place: scope.place, rows: [], more: 0 });
-    return only;
-  }
-
-  /** The terminals in the list, in order (past and closed conversations are not terminals). */
-  private openRows(): TermRow[] {
-    return this.sidebar.flatMap((g) => g.rows.flatMap((r) => (r.kind === "open" && !r.closed ? [r.row] : [])));
-  }
-
-  /** A terminal closed here keeps a row (when it knew its conversation) until the index lists that conversation (C6). */
-  private rememberClosed(id: string): void {
-    const r = this.lastInputs.get(id);
-    this.lastInputs.delete(id);
-    if (r) this.plugin.codeFeeds?.closedConvs.add(r);
-  }
-
   private closeSession(id: string): void {
     const s = this.plugin.terminalPool.get(id);
     if (!s) return;
@@ -592,155 +508,6 @@ export class TerminalPanel {
 
   private startIn(place: Place, host: "quick" | "shell" | "claude" | "codex", resume: "last" | { id: string } | null = null): void {
     this.opts.launch?.start({ host, picked: place, resume }).catch((e) => new Notice(`Terminal: ${e instanceof Error ? e.message : String(e)}`));
-  }
-
-  /** The deck's top bar for the selected terminal (code-chat §4): its title, its place (with a menu; Task 13 adds the
-   *  branch), "Host · Model", and at the right the Chat | Terminal switch; when it has ended, how it ended and how to go
-   *  on. The switch also sets which view shows. */
-  private renderHead(): void {
-    const el = this.headMainEl;
-    if (!el) return;
-    el.empty();
-    this.placeMenu = null;
-    this.hostChipEl = null;
-    const past = this.past;
-    const s = past ? undefined : this.activeId ? this.plugin.terminalPool.get(this.activeId) : undefined;
-    this.composer?.setSession(s ?? null);
-    this.renderSwitch(s);
-    this.applyView();
-    if (past) { this.renderPastHead(el, past); return; }
-    if (!s) { this.computer?.follow(null); return; }
-    const place = this.placeOfSession(s);
-    // The pane shows the computer this terminal's place shares (agent-computer D30, D32), shell or agent.
-    this.computer?.follow({ place: placeKey(place), label: place.label });
-    el.createSpan({ cls: "aos-term-headtitle", text: s.getTitle() });
-    const wrap = el.createDiv({ cls: "aos-term-placewrap" });
-    const chip = wrap.createEl("button", { cls: "aos-term-place", attr: { type: "button", "aria-haspopup": "menu", title: place.dir } });
-    const placeIcon = chip.createSpan({ cls: "aos-term-placeicon" });
-    setIcon(placeIcon, "folder");
-    chip.createSpan({ text: place.linked ? `${place.label} (code)` : place.label });
-    const caret = chip.createSpan({ cls: "aos-term-placecaret" });
-    setIcon(caret, "chevron-down");
-    chip.addEventListener("click", () => this.togglePlaceMenu(wrap, s, place));
-    const chips = el.createDiv({ cls: "aos-term-chips" });
-    this.hostChipEl = chips.createSpan({ cls: "aos-term-chip" });
-    this.renderHostChip();
-    if (s.isExited) {
-      const end = el.createDiv({ cls: "aos-term-endbar", attr: { role: "status" } });
-      end.createSpan({ text: s.exitCode ? `Ended · Exited ${s.exitCode}` : "Ended" });
-      const btn = (label: string, fn: () => void, title?: string) => {
-        const b = end.createEl("button", { cls: "aos-term-endbtn", text: label, attr: { type: "button", ...(title ? { title } : {}) } });
-        b.addEventListener("click", fn);
-      };
-      if (s.meta.host !== "shell") {
-        const host = s.meta.host;
-        btn("Restart", () => this.startIn(place, host));
-        // By id on either host when the terminal knows its conversation (a new Claude Code one, or any resume by id);
-        // otherwise the latest one in this folder (spaces-redesign D7).
-        const id = this.conversationOf(s);
-        if (id) btn("Resume", () => this.startIn(place, host, { id }), `Resume this conversation (${id.slice(0, 8)}…)`);
-        else btn("Resume latest", () => this.startIn(place, host, "last"), "Resume the latest conversation in this folder");
-      }
-      btn("Open a shell here", () => this.startIn(place, "shell"));
-    }
-  }
-
-  // ── a past conversation, read-only (code-chat C6) ──
-
-  /** Its title, where it ran and its host (renderPastView puts Resume at the right). */
-  private renderPastHead(el: HTMLElement, p: PastSel): void {
-    el.createSpan({ cls: "aos-term-headtitle", text: p.title });
-    const where = el.createSpan({ cls: "aos-term-place is-static", attr: { title: p.place.dir } });
-    const icon = where.createSpan({ cls: "aos-term-placeicon" });
-    setIcon(icon, "folder");
-    where.createSpan({ text: p.place.linked ? `${p.place.label} (code)` : p.place.label });
-    const chips = el.createDiv({ cls: "aos-term-chips" });
-    const chip = chips.createSpan({ cls: "aos-term-chip" });
-    chip.createSpan({ cls: `aos-term-dot is-${p.host}` });
-    chip.createSpan({ text: `${TERM_HOST_LABEL[p.host]} · Past conversation` });
-  }
-
-  /** At the top bar's right, a past conversation's Resume (the row's resume line, D7/D31) or why there is none. */
-  private renderPastView(view: HTMLElement, p: PastSel): void {
-    const r = p.resume;
-    if (r.state === "on") {
-      const b = view.createEl("button", { cls: "aos-cv-resume", text: "Resume", attr: { type: "button", title: r.hint || `Resume this conversation in ${p.place.label}` } });
-      b.addEventListener("click", () => this.startIn(r.place, p.host, { id: p.id }));
-    } else if (r.state === "off") {
-      view.createSpan({ cls: "aos-cv-noresume", text: r.reason, attr: { title: r.reason } });
-    }
-  }
-
-  /** Opens a past conversation: main mirrors it once (`code.view`), then the cache is read whole into the read-only chat. */
-  private showPast(sel: PastSel): void {
-    const chat = this.pastChat;
-    if (!chat) return;
-    const seq = ++this.pastSeq;
-    this.past = sel;
-    this.pastData = null;
-    chat.reset();
-    chat.show(NO_CHAT, "Loading…");
-    this.renderTabs();
-    const code = hudHost().code;
-    if (!code) { chat.show({ ...NO_CHAT, error: "Past conversations open in the app" }); return; }
-    void code.view({ host: sel.host, id: sel.id }).then((r) => {
-      if (seq !== this.pastSeq || !this.past) return;
-      if (!r.ok) { chat.show({ ...NO_CHAT, error: r.error || NO_REASON }); return; }
-      this.pastData = pastView(this.plugin.codeFeeds?.readCache(r.data.cache) ?? []);
-      this.drawPast();
-    }, (e: unknown) => {
-      if (seq === this.pastSeq) chat.show({ ...NO_CHAT, error: e instanceof Error ? e.message : NO_REASON });
-    });
-  }
-
-  private drawPast(): void {
-    if (!this.pastChat || !this.past || !this.pastData) return;
-    this.pastChat.show(pastState(this.pastData, this.past.host, this.past.place.dir));
-  }
-
-  /** A terminal is selected (or none): the past conversation goes. */
-  private clearPast(): void {
-    if (!this.past) return;
-    this.past = null;
-    this.pastData = null;
-    this.pastSeq++;
-  }
-
-  // ── the chat view (spec 2026-11-09-code-chat C1, C3, C5, C13) ──
-
-  private activeSession(): TerminalSession | undefined {
-    return this.activeId ? this.plugin.terminalPool.get(this.activeId) : undefined;
-  }
-
-  /** Which view the selected terminal shows: always its terminal outside the deck. */
-  private viewOf(s: TerminalSession | undefined): CodeView {
-    if (!s || !this.chat) return "terminal";
-    return this.plugin.codeFeeds?.view(s.id) ?? "terminal";
-  }
-
-  /** Whether the selected terminal shows its chat now. */
-  private chatShown(): boolean { return this.viewOf(this.activeSession()) === "chat"; }
-
-  /** The conversation's newest model (the cache's), else the launch's. */
-  private modelOf(s: TerminalSession): string | null {
-    return this.plugin.codeFeeds?.get(s.id)?.state.model ?? s.meta.model ?? null;
-  }
-
-  /** "Host · Model" in the top bar (the model by its name, not the transcript's full id: M4), and the composer's chips. */
-  private renderHostChip(): void {
-    const s = this.activeSession();
-    const el = this.hostChipEl;
-    if (!s || !el) return;
-    el.empty();
-    el.createSpan({ cls: `aos-term-dot is-${s.meta.host}` });
-    const model = s.meta.host === "shell" ? null : this.modelOf(s);
-    const name = s.meta.host === "shell" ? "" : this.composer?.modelLabel(s.meta.host, model) ?? model ?? "Default";
-    el.createSpan({ text: s.meta.host === "shell" ? "Shell" : `${TERM_HOST_LABEL[s.meta.host]} · ${name}` });
-    if (s.meta.host !== "shell") {
-      const feed = this.plugin.codeFeeds?.get(s.id)?.state;
-      const working = rowStatus({ exited: s.isExited, exitCode: s.exitCode, turnOpen: feed?.turnOpen ?? false, printing: false, needsYou: false }).status === "working";
-      this.composer?.setChips({ conversation: feed?.sessionId ?? null, working, model, restart: (patch) => this.restartWith(s.id, patch) });
-    }
   }
 
   /**
@@ -759,93 +526,18 @@ export class TerminalPanel {
     const host = s.meta.host;
     // What the chips show is what runs (R37): the shown model (null: the host's default) and the shown access ("host":
     // the host's default), never the settings'. Only the picked one is passed to a Codex resume.
-    const model = "model" in patch ? patch.model ?? null : this.modelOf(s);
+    const model = "model" in patch ? patch.model ?? null : this.model.modelOf(s);
     const access = patch.access ?? s.meta.access ?? "host";
     const chosen = { model: "model" in patch, access: "access" in patch };
     return restartKeepingOld(pool, id, () => this.plugin.termLauncher.launch({
-      host, picked: this.placeOfSession(s), resume: { id: conv }, origin: s.meta.origin, model, access, chosen,
+      host, picked: this.model.placeOfSession(s), resume: { id: conv }, origin: s.meta.origin, model, access, chosen,
     })).then((why) => { if (why) new Notice(`Terminal: ${why}`); }).finally(() => { this.restarting.delete(id); });
   }
 
-  /** The top bar's Chat | Terminal ⌘J switch for an agent terminal; with the surface off, a note that sends you to the
-   *  app's settings; nothing for a shell (C3); a past conversation's Resume. It carries the tour's anchor. Drawn again only
-   *  when what it shows changed (I3), so a busy agent's title never takes the keyboard's focus from it. */
-  private renderSwitch(s: TerminalSession | undefined): void {
-    const el = this.viewEl;
-    if (!el) return;
-    const feeds = this.plugin.codeFeeds;
-    const past = this.past;
-    const sig = past ? `past:${past.key}` : `${s?.id ?? ""}:${s?.meta.host ?? ""}:${feeds?.on() ? 1 : 0}:${s && feeds ? feeds.view(s.id) : ""}`;
-    if (sig === this.switchShown) return;
-    this.switchShown = sig;
-    el.empty();
-    if (past) { this.renderPastView(el, past); return; }
-    if (!s || !hasChat(s.meta) || !feeds || !this.chat) return;
-    if (!feeds.on()) {
-      const off = el.createDiv({ cls: "aos-cv is-off", attr: { "data-tour": "code-view" } });
-      off.createSpan({ text: "Chat view is off · " });
-      const go = off.createEl("button", { cls: "aos-cv-settings", text: "Settings", attr: { type: "button", title: "The chat view needs the Code chat write surface; App settings ▸ Write access shows whether it is on" } });
-      go.addEventListener("click", () => { runHostCommand(this.plugin.app, HOST_APP_SETTINGS); });
-      return;
-    }
-    const view = feeds.view(s.id);
-    const group = el.createDiv({ cls: "aos-cv", attr: { role: "group", "aria-label": "View", "data-tour": "code-view" } });
-    const btn = (v: CodeView, label: string, kbd: string | null) => {
-      const b = group.createEl("button", { cls: `aos-cv-btn${view === v ? " is-on" : ""}`, attr: { type: "button", "aria-pressed": String(view === v) } });
-      b.createSpan({ text: label });
-      if (kbd) b.createSpan({ cls: "aos-cv-kbd", text: kbd });
-      b.addEventListener("click", () => this.setView(v));
-    };
-    btn("chat", "Chat", null);
-    btn("terminal", "Terminal", "⌘J");
-  }
+  // ── the chat view (spec 2026-11-09-code-chat C1, C3, C5, C13) ──
 
-  /** Shows the selected terminal's view: the chat over its hidden terminal, with the composer in the chat's column, or
-   *  the terminal with the composer under it. */
-  private applyView(): void {
-    const chat = this.chat;
-    const stage = this.stageEl;
-    const composer = this.composer;
-    const frame = this.frameEl;
-    if (!chat || !stage || !composer || !frame) return;
-    // A past conversation lies over the stage like the chat does, with no composer under it.
-    const past = !!this.past;
-    stage.toggleClass("is-past", past);
-    this.pastChat?.setVisible(past);
-    if (past) { chat.setVisible(false); return; }
-    const on = this.chatShown();
-    const was = stage.hasClass("is-chat");
-    stage.toggleClass("is-chat", on);
-    composer.setMode(on ? "chat" : "terminal");
-    // An agent that exited left the login shell in its terminal (R39): the chat says so, and its composer never writes to
-    // that shell (the terminal view's composer does, as a shell's).
-    const s = this.activeSession();
-    const ended = !!s && s.meta.host !== "shell" && s.agentEnded;
-    composer.block(on && ended);
-    if (on && composer.el.parentElement !== chat.composerSlot) chat.composerSlot.appendChild(composer.el);
-    if (!on && composer.el.parentElement !== frame) stage.after(composer.el);
-    chat.setVisible(on);
-    // A title or a model changing redraws the top bar, not the chat: the feed's own changes redraw that.
-    if (on && (!was || this.chatFor !== this.activeId)) this.renderChat(true);
-    // After renderChat, whose reset() for another terminal clears it.
-    chat.setEnded(ended && s ? TERM_HOST_LABEL[s.meta.host] : null);
-  }
-
-  /** The selected terminal's chat, as its feed has it now. Only what changed is drawn again (I3): a status line that moved
-   *  redraws the status line, not 400 rows (and your selection in them); `force` draws it all (the chat shown again). */
-  private renderChat(force = false): void {
-    const chat = this.chat;
-    const s = this.activeSession();
-    if (!chat || !s || this.past || !this.chatShown()) return;
-    const feed = this.plugin.codeFeeds?.get(s.id) ?? null;
-    if (this.chatFor !== s.id) { chat.reset(); this.chatFor = s.id; this.drawn = null; }
-    const state = feed?.state ?? NO_CHAT;
-    const why = feed?.follow === "failed" ? feed.error : null;
-    const status = feed?.status ?? null;
-    const was = force ? null : this.drawn;
-    if (!was || was.state !== state || was.why !== why) chat.show(state, why);
-    if (!was || was.status !== status) chat.setStatus(status);
-    this.drawn = { state, why, status };
+  private activeSession(): TerminalSession | undefined {
+    return this.activeId ? this.plugin.terminalPool.get(this.activeId) : undefined;
   }
 
   /** Flips the selected agent terminal to `v` and remembers it; the keys go to what shows. */
@@ -854,8 +546,8 @@ export class TerminalPanel {
     const feeds = this.plugin.codeFeeds;
     if (!s || !feeds || !hasChat(s.meta) || !feeds.on()) return;
     feeds.setView(s.id, v);
-    this.renderSwitch(s);
-    this.applyView();
+    this.topBar.renderSwitch(s);
+    this.stage.applyView();
     if (v === "terminal") {
       this.ensureBindingForActive();
     } else {
@@ -875,6 +567,8 @@ export class TerminalPanel {
       save: (pane) => {
         this.plugin.settings.computerPane = rememberComputerPane(this.plugin.settings.computerPane, "code", pane);
         void this.plugin.saveSettings();
+        // Opened or collapsed by its own button: the top bar's Computer button says so.
+        if (this.host) this.topBar.renderPanes();
       },
     });
     this.computer.mount(host);
@@ -894,38 +588,6 @@ export class TerminalPanel {
     return this.plugin.terminalPool.list().map((s) => { const m = this.marks(s.id); return `${s.id}:${m.dot ? 1 : 0}${m.waiting ? 1 : 0}`; }).join(",");
   }
 
-  private togglePlaceMenu(wrap: HTMLElement, s: TerminalSession, place: Place): void {
-    if (this.placeMenu) { this.placeMenu.detach(); this.placeMenu = null; return; }
-    const menu = wrap.createDiv({ cls: "aos-term-placemenu", attr: { role: "menu" } });
-    this.placeMenu = menu;
-    const item = (label: string, fn: () => void) => {
-      const b = menu.createEl("button", { cls: "aos-term-placeitem", text: label, attr: { type: "button", role: "menuitem" } });
-      b.addEventListener("click", () => { menu.detach(); this.placeMenu = null; fn(); });
-    };
-    const quick = this.plugin.termLauncher.quickHost().host;
-    if (quick && quick !== "shell") item(`Start ${TERM_HOST_LABEL[quick]} here`, () => this.startIn(place, quick));
-    item("Open a shell here", () => this.startIn(place, "shell"));
-    if (place.kind === "scratch") {
-      const named = s.getTitle() !== TERM_HOST_LABEL[s.meta.host] ? s.getTitle() : "";
-      item("Make this a workspace…", () => this.newMenu?.open("create", null, named));
-    }
-    if (place.kind === "workspace" && place.workspace) {
-      const name = place.workspace;
-      item(place.linked ? "Change the code folder…" : "Link a code folder…", () => {
-        new LinkRepoModal(this.plugin.app, name, this.plugin.termLauncher.world().links[name] ?? null, async (typed) => {
-          const abs = await this.plugin.termLauncher.linkRepo(name, typed);
-          this.worldCache = null;
-          new Notice(abs ? `${name} is linked to ${abs}` : `${name} is no longer linked`);
-          this.renderTabs();
-          return abs;
-        }).open();
-      });
-    }
-    item("Copy path", () => { void navigator.clipboard?.writeText(place.dir).then(() => new Notice(`Copied ${place.dir}`)); });
-    (menu.querySelector("button") as HTMLElement | null)?.focus();
-    menu.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); menu.detach(); this.placeMenu = null; } });
-  }
-
   private ensureBindingForActive(): void {
     if (!this.activeId) return;
     const sess = this.plugin.terminalPool.get(this.activeId);
@@ -943,8 +605,8 @@ export class TerminalPanel {
     requestAnimationFrame(() => {
       this.refit();
       if (this.newMenu?.isOpen() || this.typingElsewhere()) return;
-      if (this.past) return;
-      if (this.chatShown()) { if (this.activeId === sess.id) this.composer?.focus(); return; }
+      if (this.stage.past) return;
+      if (this.stage.chatShown()) { if (this.activeId === sess.id) this.composer?.focus(); return; }
       b?.term.focus();
     });
   }
@@ -1042,10 +704,11 @@ export class TerminalPanel {
       // The deck's frame holds the stage and, in the terminal view, the composer under it: flipping the view moves the
       // composer into or out of the stage's height and leaves the frame's size alone. A frame with no size (a tab hidden)
       // keeps the last.
-      const frame = this.frameEl;
-      if (frame && !frame.clientWidth) return;
-      const at = frame ? `${frame.clientWidth}x${frame.clientHeight}` : undefined;
-      if (!this.chatShown()) {
+      const frame = this.stage.frameEl;
+      if (frameUnsized(frame)) return;
+      // The frame's size and the cell's: a font size or zoom change refits a chat-hidden terminal too.
+      const at = fitKey(frame, b.term.options, window.devicePixelRatio);
+      if (!this.stage.chatShown()) {
         // The cell width xterm reports is the canvas width over the columns it has now, rounded to a pixel: one fit can
         // land a column off the next. Fit again until it holds, so the next fit (each later flip) changes nothing.
         let d: { cols: number; rows: number } | undefined;

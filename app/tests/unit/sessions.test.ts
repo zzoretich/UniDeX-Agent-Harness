@@ -328,6 +328,23 @@ test("git: status, a new file's diff, and a commit only with a message, on a bra
   assert.deepEqual(await off.status("tide"), { ok: false, error: "the Sessions surface is off", code: "EROFS" });
 });
 
+test("git: Sessions' diff of a new file never follows a link to a folder out of the workspace (R54)", async () => {
+  const repo = path.join(vault, "workspaces", "reef");
+  fs.mkdirSync(repo);
+  const g = (...a: string[]) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+  g("init", "-q", "-b", "main");
+  const away = fs.mkdtempSync(path.join(os.tmpdir(), "aos-sessions-away-"));
+  fs.writeFileSync(path.join(away, "null"), "away-null-text\n");
+  fs.symlinkSync(away, path.join(repo, "lnk"));
+  const git = new GitService({ workspace: (n) => workspaceDir(vault, n), enabled: () => true, env: process.env });
+  for (const file of ["lnk", "lnk/."]) {
+    const r = await git.diff("reef", file);
+    assert.equal(r.ok, false, `${file}: ${JSON.stringify(r)}`);
+    assert.ok(!r.ok && !/away-null-text/.test(r.error));
+  }
+  fs.rmSync(away, { recursive: true, force: true });
+});
+
 test("parseStatus reads branch, detached HEAD, changed, renamed, unmerged and new files", () => {
   const out = ["# branch.head (detached)", "1 .M N... 100644 100644 100644 a b src/a b.js", "2 R. N... 100644 100644 100644 a b R100 new.js\told.js", "u UU N... 1 2 3 4 a b c conflict.js", "? notes.md"].join("\n");
   const f = (status: string, p: string) => ({ status, path: p, added: null, removed: null });
@@ -462,12 +479,75 @@ test("git: status and diff run no filter driver, external diff or textconv the r
   fs.rmSync(outer, { recursive: true, force: true });
 });
 
+test("git: status and diff run nothing a submodule's own config names: no status inside it, no diff inside it (R54)", async () => {
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), "aos-sessions-submodule-"));
+  const v = path.join(outer, "vault");
+  const sup = path.join(v, "workspaces", "harbor");
+  const origin = path.join(outer, "sub-origin");
+  fs.mkdirSync(sup, { recursive: true });
+  fs.mkdirSync(origin);
+  const gi = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", `user.email=${["test", "example.invalid"].join("@")}`, "-c", "user.name=Test", "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", ...a], { cwd, stdio: "ignore" });
+  gi(origin, "init", "-q", "-b", "main");
+  fs.writeFileSync(path.join(origin, "f.txt"), "one\n");
+  fs.writeFileSync(path.join(origin, "g.txt"), "g\n");
+  gi(origin, "add", "-A");
+  gi(origin, "commit", "-q", "-m", "first");
+  gi(sup, "init", "-q", "-b", "main");
+  fs.writeFileSync(path.join(sup, "a.txt"), "one\n");
+  gi(sup, "add", "-A");
+  gi(sup, "commit", "-q", "-m", "first");
+  gi(sup, "submodule", "add", "-q", origin, "sub");
+  gi(sup, "commit", "-q", "-m", "add sub");
+  const sub = path.join(sup, "sub");
+  // The submodule moves to a commit the superproject has not recorded, and one of its files changes in its work tree.
+  fs.writeFileSync(path.join(sub, "g.txt"), "g2\n");
+  gi(sub, "commit", "-q", "-a", "-m", "second");
+  const log = path.join(outer, "ran.log");
+  const script = (name: string, body: string) => {
+    const p = path.join(outer, `${name}.sh`);
+    fs.writeFileSync(p, `#!/bin/sh\necho ${name} >> "${log}"\n${body}\n`, { mode: 0o755 });
+    return p;
+  };
+  // The submodule's own config (.git/modules/sub/config): one the superproject's filter overrides never read.
+  execFileSync("git", ["config", "filter.evil.clean", script("clean", "cat")], { cwd: sub });
+  execFileSync("git", ["config", "diff.external", script("external", "exit 0")], { cwd: sub });
+  execFileSync("git", ["config", "diff.tc.textconv", script("textconv", "cat \"$1\"")], { cwd: sub });
+  const info = execFileSync("git", ["rev-parse", "--git-path", "info"], { cwd: sub, encoding: "utf8" }).trim();
+  fs.mkdirSync(path.resolve(sub, info), { recursive: true });
+  fs.writeFileSync(path.join(path.resolve(sub, info), "attributes"), "* filter=evil diff=tc\n");
+  fs.writeFileSync(path.join(sub, "f.txt"), "two\n");
+  // The superproject asks for a submodule's change as a diff run inside it.
+  execFileSync("git", ["config", "diff.submodule", "diff"], { cwd: sup });
+  const ran = () => (fs.existsSync(log) ? [...new Set(fs.readFileSync(log, "utf8").trim().split("\n"))].sort() : []);
+  // Control: plain git runs the submodule's filter on status, and its external diff on a guarded diff.
+  execFileSync("git", ["status", "--porcelain=v2"], { cwd: sup, stdio: "ignore" });
+  assert.deepEqual(ran(), ["clean"], "the control ran the submodule's filter");
+  fs.rmSync(log);
+  execFileSync("git", ["-c", "core.fsmonitor=false", "diff", ...DIFF_SAFE, "--ignore-submodules=dirty", "HEAD"], { cwd: sup, stdio: "ignore" });
+  assert.deepEqual(ran(), ["external"], "the control ran the submodule's external diff");
+  fs.rmSync(log);
+  const git = new GitService({ workspace: (n) => workspaceDir(v, n), enabled: () => true, env: process.env });
+  const st = await git.status("harbor");
+  const whole = await git.diff("harbor");
+  const one = await git.diff("harbor", "sub");
+  const at = [await git.statusAt(sup), await git.diffAt(sup), await git.diffAt(sup, "sub")];
+  assert.deepEqual(ran(), [], "nothing the submodule's config names ran");
+  assert.ok(st.ok && st.data.repo, JSON.stringify(st));
+  assert.deepEqual(st.data.files.map((f) => f.path), ["sub"], "a submodule on a new commit is still listed");
+  // Its change as git's short form: the two commits.
+  assert.ok(whole.ok && /^\+Subproject commit [0-9a-f]{40}$/m.test(whole.data.text), JSON.stringify(whole));
+  assert.ok(one.ok && /Subproject commit/.test(one.data.text), JSON.stringify(one));
+  for (const r of at) assert.ok(r.ok, JSON.stringify(r));
+  fs.rmSync(outer, { recursive: true, force: true });
+});
+
 test("git: every diff passes --no-ext-diff --no-textconv; a read gets no lazy fetch and no transport; commit runs as in a terminal", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-git-spy-"));
   const seen: { args: string[]; env: NodeJS.ProcessEnv }[] = [];
   const fake = ((_file: string, args: readonly string[], opts: { env: NodeJS.ProcessEnv }, cb: (e: null, out: string, err: string) => void) => {
     seen.push({ args: [...args], env: opts.env });
-    const a = args.slice(GIT_GUARD.length).filter((x) => !x.startsWith("--config-env="));
+    // The command after its global options: GIT_GUARD, filterOverrides' --config-env, and a `-c key=value` (status's quotePath).
+    const a = args.slice(GIT_GUARD.length).filter((x) => !x.startsWith("--config-env=")).filter((x, i, all) => x !== "-c" && all[i - 1] !== "-c");
     if (a[0] === "rev-parse" && a[1] === "--show-toplevel") return cb(null, `${dir}\n`, "");
     if (a[0] === "rev-parse" && a[1] === "--git-path") return cb(null, ".git/MERGE_HEAD\n", "");
     if (a[0] === "status") return cb(null, "# branch.head main\n1 .M N... 100644 100644 100644 a b a.txt\n", "");
@@ -482,6 +562,11 @@ test("git: every diff passes --no-ext-diff --no-textconv; a read gets no lazy fe
   const diffs = seen.filter((c) => c.args.includes("diff"));
   assert.ok(diffs.length >= 5, String(diffs.length));
   for (const c of diffs) { const i = c.args.indexOf("diff"); assert.deepEqual(c.args.slice(i + 1, i + 3), [...DIFF_SAFE], c.args.join(" ")); }
+  // Nothing runs inside a submodule (R54): no status in it, and its change shown as two commits, never a diff run in it.
+  for (const c of seen.filter((x) => x.args.includes("status") || (x.args.includes("diff") && !x.args.includes("--no-index")))) {
+    assert.ok(c.args.includes("--ignore-submodules=dirty"), c.args.join(" "));
+    if (c.args.includes("diff")) assert.ok(c.args.includes("--submodule=short"), c.args.join(" "));
+  }
   for (const c of seen.filter((x) => x.args.includes("status") || x.args.includes("diff"))) {
     assert.ok(c.args.includes("--config-env=filter.evil.clean=AOS_GIT_EMPTY"), c.args.join(" "));
   }

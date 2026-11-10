@@ -78,6 +78,8 @@ export class TermComposer {
   onCatalog: (() => void) | null = null;
   /** The panel keeps the composer away (the chat of an agent that ended, R39): hidden, and Send writes nothing. */
   private blocked = false;
+  /** The one line under the box when Send is refused because the TUI's prompt is up (R49). */
+  private note: HTMLElement;
 
   constructor(parent: HTMLElement, private plugin: AgenticOSPlugin, private focusTerminal: () => void, private bracketed: () => boolean = () => true) {
     this.el = parent.createDiv({ cls: "aos-tc is-hidden" });
@@ -109,8 +111,9 @@ export class TermComposer {
     setIcon(sendIcon, "arrow-up");
     send.addEventListener("click", () => this.send());
     this.slash = new SlashMenu(this.input, box, { commands: [], host: "claude" });
-    this.input.addEventListener("input", () => this.onInput());
+    this.input.addEventListener("input", () => { this.note.addClass("is-hidden"); this.onInput(); });
     this.input.addEventListener("keydown", (e) => this.onKey(e));
+    this.note = this.el.createDiv({ cls: "aos-tc-note is-hidden", attr: { role: "status" } });
   }
 
   /** Shows the composer under a terminal that runs (an agent or a shell), else hides it. */
@@ -147,6 +150,10 @@ export class TermComposer {
     this.blocked = on;
     this.el.toggleClass("is-hidden", on || !this.session);
   }
+
+  /** Whether the composer is kept away now (block): nothing from the chat may reach the terminal then, a card's key
+   *  included (R39). */
+  get isBlocked(): boolean { return this.blocked; }
 
   /** The agent the composer writes to, or null for a shell, or a terminal whose agent ended (R39). */
   private agent(): "claude" | "codex" | null {
@@ -272,6 +279,26 @@ export class TermComposer {
     const s = this.session;
     const text = this.input.value;
     if (!s || this.blocked || !text.trim()) return;
+    // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
+    // written and the draft stays (R49). The screen is read fresh first, since the poll can be a tick behind a prompt
+    // that just printed (bounded: R56).
+    const feeds = this.plugin.codeFeeds;
+    const known = feeds?.get(s.id)?.card;
+    if (known || !feeds?.get(s.id)) { this.finishSend(s, text, !!known); return; }
+    void feeds.cardNow(s.id).then((held) => {
+      // The draft or the terminal changed while the screen was read: this send is no longer the one asked for.
+      if (this.session !== s || this.blocked || this.input.value !== text) return;
+      this.finishSend(s, text, held);
+    });
+  }
+
+  private finishSend(s: TerminalSession, text: string, held: boolean): void {
+    if (held) {
+      this.note.setText(this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first");
+      this.note.removeClass("is-hidden");
+      return;
+    }
+    this.note.addClass("is-hidden");
     for (const w of composerWrites(text, undefined, this.bracketed())) s.write(w);
     this.input.value = "";
     this.closeSuggest();

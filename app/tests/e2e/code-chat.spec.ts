@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, appEnv, command, content, emulateViewport, expectNoErrors, openTab, terminalText, useApp } from "./harness";
+import { FX, REPO, appEnv, badge, command, content, emulateViewport, expectNoErrors, openTab, rail, terminalText, useApp } from "./harness";
 
 // The Code tab's chat view (spec 2026-11-09-code-chat C1, C3, C5, C13; rulings R3, R28, R32): an agent terminal opens in a
 // chat drawn from the cache its follower writes; ⌘J flips the middle to the same live PTY and back, nothing restarts; a
@@ -131,19 +131,20 @@ test.describe("the Code chat surface on", () => {
       }, { intervals: [100] }).toBeGreaterThanOrEqual(4);
       return (await size())!;
     };
-    // Every size the panel gives the agent's PTY, read and cleared by resizes(); the session's own resize is back below.
-    await win.evaluate((i) => {
-      const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { resize(c: number, r: number): void } } } } }).aosHost.plugin.terminalPool.get(i);
-      const w = window as unknown as { __resizes: string[] };
-      w.__resizes = [];
-      const orig = s.resize.bind(s);
-      s.resize = (c: number, r: number) => { w.__resizes.push(`${c}x${r}`); orig(c, r); };
-    }, agent);
     const resizes = () => win.evaluate(() => (window as unknown as { __resizes: string[] }).__resizes.splice(0));
     // Classic always-visible scrollbars, as on CI's macOS runners (this Mac's overlay ones take no width). Added here and
     // removed below, so no other test sees it.
     const style = await win.addStyleTag({ content: "::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; border-radius: 6px; }" });
     try {
+      // Every size the panel gives the agent's PTY, read and cleared by resizes(); the session's own resize is put back below.
+      await win.evaluate((i) => {
+        const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { resize(c: number, r: number): void } } } } }).aosHost.plugin.terminalPool.get(i);
+        const w = window as unknown as { __resizes: string[]; __resizeOrig?: (c: number, r: number) => void };
+        w.__resizes = [];
+        w.__resizeOrig = s.resize;
+        const orig = s.resize.bind(s);
+        s.resize = (c: number, r: number) => { w.__resizes.push(`${c}x${r}`); orig(c, r); };
+      }, agent);
       // A 1x screen, as CI's: xterm's cell width is the rounded canvas over the columns it has, so the chat's fit and the
       // terminal view's can land a column apart. 1480 x 920 first, whatever the screen (CI's runners are 1024 px wide),
       // then a few widths near it, then heights where the composer's share of the stage ends part-way through a line (the
@@ -182,8 +183,47 @@ test.describe("the Code chat surface on", () => {
       await style.evaluate((n) => (n as Element).remove());
       await win.evaluate((i) => {
         const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { resize?: unknown } } } } }).aosHost.plugin.terminalPool.get(i);
-        delete s.resize;
+        const w = window as unknown as { __resizeOrig?: unknown };
+        if (w.__resizeOrig) s.resize = w.__resizeOrig;
+        delete w.__resizeOrig;
       }, agent);
+    }
+  });
+
+  test("at 960x600 an agent's chat keeps its composer whole: the send button and every chip inside the window, nothing scrolls", async () => {
+    const { win } = app();
+    if (!agent) {
+      writeCache(KEY, conversation(SID, FX.v("workspaces/harbor-map/src/tide.ts")));
+      await openTab(win, "term");
+      agent = await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID, label: "Tide parser" });
+    }
+    await select(win, agent);
+    await expect(chat(win)).toBeVisible();
+    const restore = await emulateViewport(win, { width: 960, height: 600, scale: 1 });
+    try {
+      const layout = () => win.evaluate(() => {
+        const inside = (el: Element) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight;
+        };
+        const c = document.querySelector(".aos-wb-content") as HTMLElement;
+        const scrolled: string[] = [];
+        for (let el: HTMLElement | null = c; el; el = el.parentElement) {
+          if (el.scrollHeight > el.clientHeight + 1 || el.scrollTop > 0) scrolled.push(`${el.className} ${el.scrollHeight}>${el.clientHeight}`);
+        }
+        const tc = document.querySelector(".aos-cc .aos-tc:not(.is-hidden)");
+        const send = tc?.querySelector(".aos-tc-send");
+        const chips = Array.from(tc?.querySelectorAll(".aos-tc-chip") ?? []).filter((e) => (e as HTMLElement).offsetParent !== null);
+        return { scrolled, send: send ? inside(send) : null, chips: chips.map((e) => `${e.textContent}:${inside(e)}`), box: tc ? inside(tc) : null };
+      });
+      await expect.poll(async () => (await layout()).scrolled).toEqual([]);
+      const l = await layout();
+      expect(l.box).toBe(true);
+      expect(l.send, JSON.stringify(l)).toBe(true);
+      expect(l.chips.length).toBeGreaterThan(0);
+      expect(l.chips.filter((c) => !c.endsWith(":true"))).toEqual([]);
+    } finally {
+      await restore();
     }
   });
 
@@ -577,6 +617,199 @@ test.describe("the Code chat surface on", () => {
   });
 });
 
+// Approval cards, Needs you and Codex's status line (C4, C5, C10; Task 12). Each agent terminal's raw stream feeds a headless
+// screen; the TUI's prompt on it is the chat's card, its row's Needs you and the rail badge's count, and Codex's footer
+// rows are its status line. The stand-in agent here is a fake process attached as the terminal's agent, in the page: what
+// the test emits is what its TUI printed (real captured screens, hud/src/data/fixtures/screens), what the terminal writes
+// to it is kept. Nothing ever flips the view by itself.
+
+const SCREENS = path.join(REPO, "..", "hud", "src", "data", "fixtures", "screens");
+const screenFile = (name: string) => fs.readFileSync(path.join(SCREENS, name), "utf8");
+/** A rendered fixture screen as a stream that draws it from the top (the captures kept the raw stream of two only). */
+const drawn = (name: string) => `\u001b[H\u001b[2J${screenFile(`${name}.txt`).split("\n").join("\r\n")}`;
+type FakeW = { aosHost: { plugin: { terminalPool: { create(o: object): { id: string; dimensions: object; attachAgent(p: unknown, size: object): void; resize(c: number, r: number): void }; select(id: string): void; get(id: string): { resize(c: number, r: number): void } | undefined; remove(id: string): void }; codeFeeds: { screened(id: string): boolean } } }; __fakes?: Record<string, { emit(d: string): void; exit(code: number): void; writes: string[] }> };
+/** A terminal whose agent is a fake process in the page, selected; its pool id. */
+const fakeAgent = (win: Page, meta: Meta): Promise<string> => win.evaluate((m) => {
+  const w = window as unknown as FakeW;
+  const pool = w.aosHost.plugin.terminalPool;
+  const t = pool.create({ deferred: true, cols: 120, rows: 40, meta: m });
+  const data: Array<(d: string) => void> = [];
+  const exits: Array<(e: { exitCode: number }) => void> = [];
+  const writes: string[] = [];
+  const fake = {
+    pid: 0, write: (d: string) => { writes.push(d); }, resize: () => {}, kill: () => {},
+    onData: (cb: (d: string) => void) => { data.push(cb); }, onExit: (cb: (e: { exitCode: number }) => void) => { exits.push(cb); },
+  };
+  t.attachAgent(fake, t.dimensions);
+  (w.__fakes ??= {})[t.id] = { emit: (d: string) => { for (const cb of data) cb(d); }, exit: (code: number) => { for (const cb of exits) cb({ exitCode: code }); }, writes };
+  pool.select(t.id);
+  return t.id;
+}, meta);
+/** The fake's TUI prints `d`; the captures are 120×40, so the terminal is sized so first (after the visible terminal's
+ *  own fit, two frames after the selection, which sizes it to the stage). */
+const replay = async (win: Page, id: string, d: string): Promise<void> => {
+  await win.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+  await win.evaluate(({ i, d }) => {
+    const w = window as unknown as FakeW;
+    w.aosHost.plugin.terminalPool.get(i)?.resize(120, 40);
+    w.__fakes?.[i].emit(d);
+  }, { i: id, d });
+};
+/** What the terminal wrote to the fake since the last call. */
+const written = (win: Page, id: string): Promise<string[]> => win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].writes.splice(0) ?? [], id);
+const removeTerminal = (win: Page, id: string) => win.evaluate((i) => (window as unknown as FakeW).aosHost.plugin.terminalPool.remove(i), id);
+
+test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)", () => {
+  test.describe.configure({ mode: "serial" });
+  const app = useApp({ env: { AOS_APP_WRITE: "code" } });
+  const card = (win: Page) => chat(win).locator(".aos-cc-card .aos-cc-gate");
+
+  test("an approval on the agent's screen is a card with the TUI's own question, command and choices; Yes writes 1 and nothing else; the view stays (C4)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000021", sessionId: "a1a1a1a1-0000-4000-8000-000000000022", label: "Approval" });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, screenFile("claude-2.1.318-bash.ansi"));
+    await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    await expect(card(win).locator(".aos-cc-gatedetail")).toHaveText("touch hi.txt");
+    // Claude Code 2.1.318 draws four numbered choices (an earlier version drew Yes, Yes and don't ask again, No).
+    const choices = card(win).locator("button.aos-cc-choice");
+    await expect(choices.locator("span:first-child")).toHaveText(["Yes", "Yes, and always allow access to /work/demo from this project", "Yes, and switch to auto mode · auto mode handles these prompts for you", "No"]);
+    await expect(choices.locator(".aos-cc-choicekey")).toHaveText(["1", "2", "3", "4"]);
+    await expect(card(win).locator("button.aos-cc-jump")).toHaveText("Answer in the terminal ⌘J");
+    // The card came up; the view did not move.
+    await expect(sw(win).locator("button[aria-pressed='true']")).toHaveText("Chat");
+    await expect(body(win)).toBeHidden();
+    // What the visible terminal answered to the stream's own queries is not the card's.
+    await written(win, id);
+    await choices.first().click();
+    expect(await written(win, id)).toEqual(["1"]);
+    // One answer per prompt: the buttons wait for the TUI to move on, and a second click writes nothing.
+    await expect(choices.first()).toBeDisabled();
+    await choices.first().click({ force: true });
+    expect(await written(win, id)).toEqual([]);
+    // The TUI moved on: the card goes.
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await expect(sw(win).locator("button[aria-pressed='true']")).toHaveText("Chat");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("with a card up the composer's Send (button and ⏎) writes nothing and keeps the draft; after the card clears it sends (R49)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000029", sessionId: "a1a1a1a1-0000-4000-8000-00000000002a", label: "Composer under a card" });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, screenFile("claude-2.1.318-bash.ansi"));
+    await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    const input = C(win).locator(".aos-tc-input:visible");
+    const note = C(win).locator(".aos-tc-note:visible");
+    await written(win, id);
+    await input.fill("hello there");
+    await C(win).locator(".aos-tc-send:visible").click();
+    await expect(note).toHaveText("Answer the card above first · Terminal ⌘J");
+    await input.press("Enter");
+    expect(await written(win, id)).toEqual([]);
+    await expect(input).toHaveValue("hello there");
+    // The TUI moved on: Send works again, and the note is gone.
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await input.press("Enter");
+    expect((await written(win, id)).join("")).toContain("hello there");
+    await expect(input).toHaveValue("");
+    await expect(note).toHaveCount(0);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a /model dialog is a Needs you on its row, in the footer and on the rail, and the waiting card in its chat; nothing flips the view (C4, C10)", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000023", sessionId: "a1a1a1a1-0000-4000-8000-000000000024", label: "Model picker" });
+    await expect(chat(win)).toBeVisible();
+    // In its terminal view when the dialog comes up.
+    expect(await command(win, "agentic-os:toggle-code-view")).toBe(true);
+    await expect(body(win)).toBeVisible();
+    const sub = C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-sub`);
+    await expect(sub).not.toContainText("Needs you");
+    await expect(badge(win, "term")).toHaveText("");
+    await replay(win, id, drawn("claude-2.1.318-model"));
+    await expect(sub).toContainText("Needs you");
+    await expect(sub).toHaveClass(/is-needs/);
+    await expect(C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-glyph`)).toHaveClass(/is-needs/);
+    await expect(C(win).locator(".aos-tl-needs")).toHaveText("1 need you");
+    await expect(badge(win, "term")).toHaveText("1");
+    // Still its terminal: the card waits in the chat.
+    await expect(body(win)).toBeVisible();
+    await expect(chat(win)).toBeHidden();
+    expect(await command(win, "agentic-os:toggle-code-view")).toBe(true);
+    await expect(chat(win)).toBeVisible();
+    const waiting = chat(win).locator(".aos-cc-gate.is-waiting");
+    await expect(waiting.locator(".aos-cc-gatetitle")).toHaveText("Waiting on you in the terminal");
+    await expect(waiting.locator("button.aos-cc-choice")).toHaveCount(0);
+    await waiting.locator("button.aos-cc-jump", { hasText: "Answer in the terminal ⌘J" }).click();
+    await expect(body(win)).toBeVisible();
+    // The badge counts Needs you wherever you are.
+    await openTab(win, "pulse");
+    await expect(badge(win, "term")).toHaveText("1");
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
+    await expect(badge(win, "term")).toHaveText("");
+    await openTab(win, "term");
+    await expect(sub).not.toContainText("Needs you");
+    // Closed with a dialog up: the count drops with it.
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-model") });
+    await expect(badge(win, "term")).toHaveText("1");
+    await removeTerminal(win, id);
+    await expect(badge(win, "term")).toHaveText("");
+  });
+
+  test("an agent that ends with its prompt up takes the card with it: nothing on the login shell's screen is the agent's to answer (R39)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000027", sessionId: "a1a1a1a1-0000-4000-8000-000000000028", label: "Ending with a prompt" });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, screenFile("claude-2.1.318-bash.ansi"));
+    await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    const sub = C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-sub`);
+    await expect(sub).toContainText("Needs you");
+    await expect(badge(win, "term")).toHaveText("1");
+    // The agent exits and the login shell takes its terminal over (D18).
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].exit(0), id);
+    await expect(chat(win).locator(".aos-cc-ended")).toHaveText("Claude Code ended · Terminal ⌘J");
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await expect(chat(win).locator("button.aos-cc-choice")).toHaveCount(0);
+    await expect(sub).not.toContainText("Needs you");
+    await expect(badge(win, "term")).toHaveText("");
+    expect(await win.evaluate((i) => (window as unknown as FakeW).aosHost.plugin.codeFeeds.screened(i), id)).toBe(false);
+    expect(await written(win, id)).not.toContain("1");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a Codex terminal's footer is its status line under the composer, colours kept; the hint before there is one (C5)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "codex", terminalKey: "a1a1a1a1-0000-4000-8000-000000000025", sessionId: "a1a1a1a1-0000-4000-8000-000000000026", label: "Codex footer" });
+    await expect(chat(win)).toBeVisible();
+    const status = chat(win).locator(".aos-cc-status");
+    await expect(status).toHaveText("Status line in the terminal ⌘J");
+    await replay(win, id, screenFile("codex-0.167.0-idle.ansi"));
+    const lines = status.locator(".aos-cc-statusline");
+    await expect(lines).toHaveCount(2);
+    await expect(lines.first()).toHaveText("GPT-6-Luna low · Context 0% used · weekly limit ok");
+    await expect(lines.nth(1)).toHaveText(/^← for agents · \? for shortcuts\s+⚠ 1 warning · f2 to view$/);
+    await expect(status.locator("span", { hasText: "GPT-6-Luna low" })).toHaveAttribute("style", /color: rgb\(/);
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+});
+
 // The sidebar (C6): the fixture vault's session index lists real past conversations (its claude transcripts are in the
 // fixture home), so `code.view` runs the real runtime on them. History rows sit under their place, newest activity first;
 // one opens read-only with Resume; Resume types the resume line in a new terminal.
@@ -734,6 +967,183 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     await C(win).locator(".aos-tl-allhistory").click();
     await expect(win.locator(".aos-wb-railbtn[data-tab='chat']")).toHaveClass(/is-active/);
     await expect(C(win).locator(".aos-ss-hresume").first()).toBeVisible({ timeout: 10_000 });
+  });
+});
+
+// The Diff and Files panes (C8) need no write surface: this run has none on. code:git names the terminal; main reads git in
+// the folder that terminal started in, only for a vault workspace (or a workspace's linked code folder).
+test.describe("the Diff and Files panes, whichever write surfaces are on (C8)", () => {
+  test.describe.configure({ mode: "serial" });
+  const app = useApp();
+  /** A shell in `cwd`, selected; its pool id. */
+  const startShell = (win: Page, cwd: string): Promise<string> => win.evaluate((dir) => {
+    const p = (window as unknown as { aosHost: { plugin: { terminalPool: { create(o: object): { id: string }; select(id: string): void } } } }).aosHost.plugin.terminalPool;
+    const s = p.create({ cwd: dir, meta: { host: "shell" } });
+    p.select(s.id);
+    return s.id;
+  }, cwd);
+  const panes = (win: Page) => C(win).locator(".aos-term-panes");
+  const pane = (win: Page) => C(win).locator(".aos-cdp");
+  let inRepo = "";
+
+  test("a workspace that is a repository: ⎇ branch and +n −n in the top bar; Diff lists its changes and shows one's diff; Files opens the workspace", async () => {
+    const h = app();
+    const { win } = h;
+    const dir = FX.v("workspaces/kelp-watch");
+    const git = (...a: string[]) => {
+      const r = spawnSync("git", ["-c", `user.email=${["test", "example.invalid"].join("@")}`, "-c", "user.name=Test", ...a], { cwd: dir, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr}`);
+    };
+    git("init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(dir, "notes.md"), "kelp\nurchins\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Start the survey notes");
+    fs.writeFileSync(path.join(dir, "notes.md"), "kelp forest\nurchins\notters\n");
+    fs.writeFileSync(path.join(dir, "sightings.csv"), "date,count\n");
+    await openTab(win, "term");
+    inRepo = await startShell(win, dir);
+    await expect(C(win).locator(".aos-term-head .aos-term-place .aos-term-branch")).toHaveText("⎇ main");
+    // Closed by default; the counts are every changed file's against HEAD.
+    await expect(pane(win)).toBeHidden();
+    await expect(panes(win).locator(".aos-cdp-total")).toHaveText("+3 −1");
+    await panes(win).locator(".aos-cdp-btn.is-diff").click();
+    await expect(pane(win)).toBeVisible();
+    await expect(panes(win).locator(".aos-cdp-btn.is-diff")).toHaveAttribute("aria-pressed", "true");
+    await expect(pane(win).locator(".aos-cdp-branch")).toHaveText("⎇ main");
+    await expect(pane(win).locator(".aos-cdp-file")).toHaveCount(2);
+    await expect(pane(win).locator(".aos-cdp-file[data-path='notes.md'] .aos-cdp-counts")).toHaveText("+2 −1");
+    await expect(pane(win).locator(".aos-cdp-file[data-path='sightings.csv'] .aos-cdp-change")).toHaveText("new");
+    await pane(win).locator(".aos-cdp-file[data-path='notes.md']").click();
+    await expect(pane(win).locator(".aos-cdp-diffpath")).toHaveText("notes.md");
+    await expect(pane(win).locator(".aos-ss-diffline.is-add")).toHaveText(["+kelp forest", "+otters"]);
+    await expect(pane(win).locator(".aos-ss-diffline.is-del")).toHaveText(["-kelp"]);
+    // A change made meanwhile shows on Refresh.
+    fs.writeFileSync(path.join(dir, "sightings.csv"), "date,count\n2026-11-09,4\n");
+    await pane(win).locator(".aos-cdp-icon.is-refresh").click();
+    await expect(pane(win).locator(".aos-cdp-file[data-path='sightings.csv'] .aos-cdp-counts")).toHaveText("+2 −0");
+    await pane(win).locator(".aos-cdp-icon.is-close").click();
+    await expect(pane(win)).toBeHidden();
+    // Files: the Files tab at the workspace's folder.
+    await panes(win).locator(".aos-cdp-btn.is-files").click();
+    await expect(rail(win, "files")).toHaveClass(/is-active/);
+    await expect(C(win).locator('.aos-fx-crumb.is-last[data-path="workspaces/kelp-watch"]')).toBeVisible();
+    expectNoErrors(h);
+  });
+
+  test("a terminal at the vault root has no Diff or Files button, no branch and no counts", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const root = await startShell(win, FX.vault);
+    await expect(C(win).locator(".aos-term-head .aos-term-place")).toContainText("Vault");
+    // The status is read when a terminal is selected: the repository's terminal shows its Diff again (reads work in this
+    // run), then this one is selected again and its read (a refusal, which runs no git) is given the time to land.
+    await select(win, inRepo);
+    await expect(panes(win).locator(".aos-cdp-btn.is-diff")).toBeVisible();
+    await select(win, root);
+    await expect(C(win).locator(".aos-term-head .aos-term-place")).toContainText("Vault");
+    await win.waitForTimeout(500);
+    await expect(panes(win).locator(".aos-cdp-btn.is-diff")).toHaveCount(0);
+    await expect(panes(win).locator(".aos-cdp-btn.is-files")).toHaveCount(0);
+    await expect(panes(win).locator(".aos-cdp-total")).toHaveCount(0);
+    await expect(C(win).locator(".aos-term-head .aos-term-branch")).toHaveCount(0);
+    await expect(pane(win)).toBeHidden();
+    // main refuses it too, whatever the page would ask.
+    const r = await win.evaluate(async () => {
+      const w = window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { ptyId: string | null } | undefined; selectedId(): string | null } } }; aos: { code: { git(r: object): Promise<{ ok: boolean; code?: string }> } } };
+      const s = w.aosHost.plugin.terminalPool.get(w.aosHost.plugin.terminalPool.selectedId() ?? "");
+      return w.aos.code.git({ pty: s?.ptyId ?? "none", op: "status" });
+    });
+    expect(r).toMatchObject({ ok: false, code: "EROFS" });
+    expectNoErrors(h);
+  });
+
+  test("a status that changes while the agent works keeps the Diff pane's place: the list's and the diff's scroll and the focused file", async () => {
+    const h = app();
+    const { win } = h;
+    const dir = FX.v("workspaces/kelp-watch");
+    const logs = Array.from({ length: 40 }, (_, i) => `log-${String(i).padStart(2, "0")}.md`);
+    const notes = fs.readFileSync(path.join(dir, "notes.md"), "utf8");
+    try {
+      // Enough for both to scroll: forty new files and a long edit.
+      for (const f of logs) fs.writeFileSync(path.join(dir, f), "entry\n");
+      fs.writeFileSync(path.join(dir, "notes.md"), `${Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\n")}\n`);
+      await openTab(win, "term");
+      await select(win, inRepo);
+      await panes(win).locator(".aos-cdp-btn.is-diff").click();
+      await expect(pane(win).locator(".aos-cdp-file")).toHaveCount(42);
+      await pane(win).locator(".aos-cdp-file[data-path='notes.md']").click();
+      await expect(pane(win).locator(".aos-ss-diffline.is-add")).toHaveCount(300);
+      // The diff's lines scroll in its own box (.aos-ss-diff) inside the diff area.
+      const place = () => pane(win).evaluate((p) => ({
+        files: Math.round((p.querySelector(".aos-cdp-files") as HTMLElement).scrollTop),
+        diff: Math.round((p.querySelector(".aos-cdp-diff .aos-ss-diff") as HTMLElement).scrollTop),
+        focus: (document.activeElement as HTMLElement | null)?.dataset.path ?? null,
+      }));
+      await pane(win).evaluate((p) => {
+        (p.querySelector(".aos-cdp-files") as HTMLElement).scrollTop = 120;
+        (p.querySelector(".aos-cdp-diff .aos-ss-diff") as HTMLElement).scrollTop = 600;
+        (p.querySelector(".aos-cdp-file[data-path='log-30.md']") as HTMLElement).focus();
+      });
+      const before = await place();
+      expect(before.files).toBeGreaterThan(0);
+      expect(before.diff).toBeGreaterThan(0);
+      expect(before.focus).toBe("log-30.md");
+      // Another file changes and the terminal prints: the status is read again once its output settles.
+      fs.writeFileSync(path.join(dir, "log-05.md"), "entry\nmore\nlines\n");
+      await win.evaluate((i) => (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { write(d: string): void } } } } }).aosHost.plugin.terminalPool.get(i).write("echo\r"), inRepo);
+      await expect(pane(win).locator(".aos-cdp-file[data-path='log-05.md'] .aos-cdp-counts")).toHaveText("+3 −0", { timeout: 15_000 });
+      // The diff shown is read again with the status (and is the same text): give it the time to land.
+      await win.waitForTimeout(1000);
+      expect(await place()).toEqual(before);
+      await pane(win).locator(".aos-cdp-icon.is-close").click();
+      expectNoErrors(h);
+    } finally {
+      for (const f of logs) fs.rmSync(path.join(dir, f), { force: true });
+      fs.writeFileSync(path.join(dir, "notes.md"), notes);
+    }
+  });
+
+  test("with Diff and a Computer pane open the terminal keeps 480 px and the panes give way, at 1280 and 1470 px", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    await select(win, inRepo);
+    await panes(win).locator(".aos-cdp-btn.is-diff").click();
+    await expect(pane(win)).toBeVisible();
+    // This run has the Computer surface off (its pane drawn collapsed): a stand-in open pane of its default 440 px, docked
+    // where the real one docks, after the Diff pane.
+    await pane(win).evaluate((p) => {
+      const cp = document.createElement("aside");
+      cp.className = "aos-cp";
+      cp.dataset.standin = "1";
+      cp.style.width = "440px";
+      p.after(cp);
+    });
+    try {
+      for (const width of [1280, 1470]) {
+        const restore = await emulateViewport(win, { width, height: 800, scale: 1 });
+        try {
+          const m = await C(win).evaluate((c) => {
+            const w = (sel: string) => Math.round((c.querySelector(sel) as HTMLElement).getBoundingClientRect().width);
+            const right = Math.max(...Array.from(c.children).map((e) => e.getBoundingClientRect().right));
+            return { main: w(".aos-term-main"), diff: w(".aos-cdp"), cp: w(".aos-cp[data-standin]"), right, inner: window.innerWidth, scroll: c.scrollWidth - c.clientWidth };
+          });
+          const at = `${width}: ${JSON.stringify(m)}`;
+          expect(m.main, at).toBeGreaterThanOrEqual(480);
+          expect(m.diff, at).toBeGreaterThan(0);
+          expect(m.cp, at).toBeGreaterThan(0);
+          expect(m.right, at).toBeLessThanOrEqual(m.inner);
+          expect(m.scroll, at).toBe(0);
+        } finally {
+          await restore();
+        }
+      }
+    } finally {
+      await C(win).evaluate((c) => c.querySelector(".aos-cp[data-standin]")?.remove());
+      await pane(win).locator(".aos-cdp-icon.is-close").click();
+    }
+    expectNoErrors(h);
   });
 });
 

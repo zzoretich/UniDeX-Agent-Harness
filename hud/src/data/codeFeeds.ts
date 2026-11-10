@@ -5,8 +5,15 @@
 // (vault-relative) is read on each vault change of its path into a bounded buffer (the newest EVENT_CAP events, cut at a
 // prompt), and the chat is worked out again only when something new arrived; Show earlier reads the whole cache once.
 // A Claude Code terminal's status line is its copy of `aos statusline render`, brain/_index/statusline/<key>.json, read
-// on each change of that file and shown whenever it is there (R3; Codex's comes from its screen, Task 12). Which view
-// each terminal shows is kept here too, so it survives the Code tab's remounts. No DOM: the HudHost is all it touches.
+// on each change of that file and shown whenever it is there (R3). Which view each terminal shows is kept here too, so it
+// survives the Code tab's remounts. No DOM: the HudHost is all it touches.
+//
+// While the surface is on, each agent terminal also feeds a headless screen (C4, C5, C10), made with its feed and let go
+// when the terminal closes, its agent ends or it exits; it lives as long as the terminal, not the Code tab. Screens are
+// read every POLL_MS, and only while their PTY printed in the last PRINT_MS or a card is up, never in the tick the data
+// came in (a chunk xterm has not parsed yet waits for the next read): the TUI's prompt is the chat's card and the row's
+// Needs you, and a Codex terminal's footer rows are its status line. A card's key reaches the agent only through
+// `answer`, which reads the screen again first; Send asks `cardNow`, which reads it too (the poll can be a tick behind).
 
 import * as path from "path";
 import { readCacheAll } from "./pastChat";
@@ -17,6 +24,10 @@ import type { TerminalPool } from "./terminalPool";
 import { hasChat, type TerminalSession } from "./terminalSession";
 import { listen } from "./listen";
 import { ClosedRecord } from "./closedRecord";
+import { HeadlessScreen } from "./headlessScreen";
+import { approvalPrompt, choiceInput, codexFooterRows, screenCard, type ChatCard } from "./termScreen";
+import { rowStatus } from "./codeChat";
+import { statusInput } from "./termGroups";
 
 /** Rows a chat shows, and how many more each Show earlier adds. */
 export const ROW_CAP = 400;
@@ -26,6 +37,34 @@ export const EVENT_CAP = 4000;
 const TRIM_SLACK = 1000;
 /** Reads of one change at most (each reads up to 4 MB): a cache that keeps growing is read again at its next change. */
 const MAX_READS = 64;
+/** How often agent terminals' screens are read (C4, C10)… */
+export const POLL_MS = 500;
+/** …and for how long after their PTY last printed. */
+export const PRINT_MS = 2000;
+/** How long Send and a card's click wait for a screen's pending chunks to parse before they read what is there. */
+export const SEND_SETTLE_MS = 100;
+
+/** Whether a terminal's screen is read on this tick: its PTY printed in the last PRINT_MS, or a card is up (it may be
+ *  answered in the terminal). `lastData` is when it last printed, -Infinity before it ever did. */
+export function screenDue(now: number, lastData: number, cardUp: boolean): boolean {
+  return cardUp || now - lastData < PRINT_MS;
+}
+
+/** The poll's clock; tests pass one they move by hand. */
+export interface FeedsClock {
+  now(): number;
+  /** Calls `fn` every `ms` until the returned function runs. */
+  every(ms: number, fn: () => void): () => void;
+}
+const REAL_CLOCK: FeedsClock = {
+  now: () => Date.now(),
+  every: (ms, fn) => {
+    const h = setInterval(fn, ms);
+    // Under Node (the HUD's tests) a poll never holds the process open.
+    (h as unknown as { unref?: () => void }).unref?.();
+    return () => clearInterval(h);
+  },
+};
 
 export type CodeView = "chat" | "terminal";
 /** pending: no answer yet (or no process to follow yet); on: following; off: the Code chat surface is off; failed: main
@@ -42,8 +81,16 @@ export interface CodeFeed {
   cache: string | null;
   /** The chat so far. `hiddenEarlier` also counts the events the buffer dropped, so Show earlier is offered for them. */
   state: ChatState;
-  /** The status line's rows, or null when there is none to show (the composer's hint). */
+  /** The status line's rows, or null when there is none to show (the composer's hint): a Claude Code terminal's copy of
+   *  its status line, a Codex terminal's footer rows from its screen. */
   status: Span[][] | null;
+  /** What the TUI waits on, read from its screen (C4): the approval with its choices, a dialog the chat can't draw, or
+   *  none. The same prompt keeps the same object. */
+  card: ChatCard | null;
+  /** A C4 prompt is on its screen: the row's Needs you and the rail badge's count (C10). */
+  needsYou: boolean;
+  /** Its PTY printed in the last PRINT_MS. */
+  printing: boolean;
 }
 
 interface Entry {
@@ -61,7 +108,17 @@ interface Entry {
   maxRows: number;
   /** brain/_index/statusline/<key>.json, for a Claude Code terminal. */
   statusRel: string | null;
+  /** What the status line shows, as text (the copy's ANSI, or Codex's footer spans), so the same keeps the same rows. */
   statusText: string | null;
+  /** Its headless screen while the surface is on and its agent runs (C10), and the listener that times its output. */
+  screen: HeadlessScreen | null;
+  offData: (() => void) | null;
+  /** When its PTY last printed (the clock's ms); -Infinity before it did. */
+  lastData: number;
+  /** The card as text: a poll that reads the same prompt keeps the card it had. */
+  cardSig: string;
+  /** The card a key was written for from here: one answer per prompt. */
+  answered: string | null;
 }
 
 const EMPTY: ChatState = { sessionId: null, rows: [], hiddenEarlier: 0, turnOpen: false, error: null, model: null };
@@ -72,6 +129,8 @@ export interface CodeFeedsOptions {
   /** The host's Code calls (absent outside the app); default: the installed HudHost's. */
   code?: () => HostCode | undefined;
   fs?: HostFs;
+  /** The screens' poll clock; default: the real one. */
+  clock?: FeedsClock;
 }
 
 export class CodeFeeds {
@@ -83,6 +142,8 @@ export class CodeFeeds {
   private listeners = new Set<(id: string) => void>();
   private unlisten: (() => void) | null;
   private disposed = false;
+  /** Stops the screens' poll; null while it is not running. */
+  private stopPoll: (() => void) | null = null;
   /** Conversations closed in this app, for the Code sidebar; it lives as long as the plugin, not the Code tab (C6). */
   readonly closedConvs = new ClosedRecord();
 
@@ -97,6 +158,7 @@ export class CodeFeeds {
 
   private code(): HostCode | undefined { return this.o.code ? this.o.code() : hudHost().code; }
   private get fs(): HostFs { return this.o.fs ?? hostFs; }
+  private get clock(): FeedsClock { return this.o.clock ?? REAL_CLOCK; }
   private abs(rel: string): string { return path.join(this.o.vaultRoot(), rel); }
 
   /** Whether the Code chat surface is on for this run of the app (C13). */
@@ -107,6 +169,66 @@ export class CodeFeeds {
 
   /** How many events a chat holds in memory (R31's bound, until Show earlier). */
   buffered(id: string): number { return this.entries.get(id)?.events.length ?? 0; }
+
+  /** Whether the terminal has a headless screen now (an agent's, while the surface is on and its agent runs). */
+  screened(id: string): boolean { return !!this.entries.get(id)?.screen; }
+
+  /**
+   * A card's choice (C4): writes the key as the TUI takes it (choiceInput: the digit or letter alone, Esc as the escape
+   * byte) and nothing else, and only while the agent runs (R39: once it ended, the login shell would take it), its screen
+   * still shows the prompt the card shows with that choice (read again now, not taken from the last poll), and that
+   * prompt was not answered from here already; `card`, the one the click was drawn on, must still be the live one. A
+   * screen with a chunk still to parse is waited for (SEND_SETTLE_MS at most) and checked again; still unparsed, nothing
+   * is written. True when it wrote. The panel also refuses while the composer is blocked.
+   */
+  async answer(id: string, key: string, card?: ChatCard): Promise<boolean> {
+    const e = this.entries.get(id);
+    const screen = e?.screen;
+    if (e && screen?.busy) {
+      await screen.settled(SEND_SETTLE_MS);
+      if (this.disposed || this.entries.get(id) !== e || e.screen !== screen) return false;
+    }
+    return this.answerNow(id, key, card);
+  }
+
+  private answerNow(id: string, key: string, card?: ChatCard): boolean {
+    const e = this.entries.get(id);
+    const s = this.pool.get(id);
+    if (!e || !s || !e.screen || s.agentEnded || s.isExited || e.screen.busy) return false;
+    const shown = e.feed.card;
+    if (!shown || shown.kind !== "approval" || e.answered === e.cardSig) return false;
+    // The card the user saw, not whatever is latest: a click on a card that was replaced writes nothing.
+    if (card !== undefined && JSON.stringify(card) !== e.cardSig) return false;
+    const choice = shown.choices.find((c) => c.key === key);
+    const input = choice ? choiceInput(key) : null;
+    if (!choice || input === null) return false;
+    const now = approvalPrompt(e.screen.snapshot(), e.feed.host);
+    if (!now || now.title !== shown.title || now.detail !== shown.detail || !now.choices.some((c) => c.key === key && c.label === choice.label)) return false;
+    e.answered = e.cardSig;
+    s.write(input);
+    return true;
+  }
+
+  /**
+   * Whether Send must hold: a card is up. The poll can see a prompt a tick or more after it printed (POLL_MS, and a tick
+   * skipped while a chunk parses), so with no card known the screen is always read now (a snapshot and a parse, well under
+   * a millisecond), after its pending chunks are parsed when there are any (waited for at most SEND_SETTLE_MS: after that,
+   * whatever is parsed is read). Busy alone never holds (R56); only a card the read finds does, and it is the feed's from
+   * then on.
+   */
+  async cardNow(id: string): Promise<boolean> {
+    const e = this.entries.get(id);
+    if (!e) return false;
+    if (e.feed.card) return true;
+    const screen = e.screen;
+    if (!screen) return false;
+    if (screen.busy) {
+      await screen.settled(SEND_SETTLE_MS);
+      if (this.disposed || this.entries.get(id) !== e || e.screen !== screen) return e.feed.card !== null;
+    }
+    if (this.readScreen(e, true)) this.notify(id);
+    return e.feed.card !== null;
+  }
 
   /** What the terminal shows: its chat by default, an agent's only and only while the surface is on (C1, C3, C13). */
   view(id: string): CodeView {
@@ -170,6 +292,9 @@ export class CodeFeeds {
     this.disposed = true;
     this.unlisten?.();
     this.unlisten = null;
+    this.stopPoll?.();
+    this.stopPoll = null;
+    for (const e of this.entries.values()) this.dropScreen(e);
     this.listeners.clear();
     this.entries.clear();
     this.byPath.clear();
@@ -191,9 +316,10 @@ export class CodeFeeds {
       const host = s.meta.host;
       const on = this.on() && !!this.code();
       e = {
-        feed: { id: s.id, host, follow: on ? "pending" : "off", error: null, cache: null, state: EMPTY, status: null },
+        feed: { id: s.id, host, follow: on ? "pending" : "off", error: null, cache: null, state: EMPTY, status: null, card: null, needsYou: false, printing: false },
         pty: null, asked: false, root: s.meta.place?.dir ?? s.cwd, tail: null, events: [], dropped: 0, full: false,
         maxRows: ROW_CAP, statusRel: null, statusText: null,
+        screen: null, offData: null, lastData: Number.NEGATIVE_INFINITY, cardSig: "", answered: null,
       };
       this.entries.set(s.id, e);
       // Only a terminal that carries its key (the surface on) has a status line copy of its own.
@@ -202,6 +328,18 @@ export class CodeFeeds {
         this.byPath.set(e.statusRel, s.id);
         this.readStatus(e);
       }
+      // Its screen, while the surface is on (with it off there is no chat to show a card in); a terminal made late still
+      // shows its TUI, from what it printed.
+      if (on && !s.agentEnded && !s.isExited) {
+        const entry = e;
+        entry.screen = new HeadlessScreen(s);
+        entry.offData = s.onData(() => this.printed(entry));
+      }
+    }
+    // Its agent ended (the login shell runs in its terminal, D18) or it exited: nothing on that screen is the agent's.
+    if (e.screen && (s.agentEnded || s.isExited)) {
+      if (this.dropScreen(e)) this.notify(s.id);
+      this.pollIfLive();
     }
     if (e.feed.follow === "pending" && !e.asked && s.originPty) {
       e.asked = true;
@@ -280,15 +418,132 @@ export class CodeFeeds {
     return true;
   }
 
-  /** The terminal was closed: its follower stops (main ends it with the terminal too), and its feed goes. */
+  // ── each agent terminal's screen (C4, C5, C10) ──
+
+  /** Its PTY printed: the screen is read on the next ticks, never in this one (xterm parses the chunk on a timer). */
+  private printed(e: Entry): void {
+    if (this.disposed || !e.screen) return;
+    e.lastData = this.clock.now();
+    if (!e.feed.printing && this.setPrinting(e, true)) this.notify(e.feed.id);
+    if (!this.stopPoll) this.stopPoll = this.clock.every(POLL_MS, () => this.poll());
+  }
+
+  /** Sets `printing`; true when that changes what the terminal's row says (rowStatus). */
+  private setPrinting(e: Entry, on: boolean): boolean {
+    const s = this.pool.get(e.feed.id);
+    const word = (): string => (s ? rowStatus(statusInput(s, e.feed)).status : "");
+    const before = word();
+    e.feed.printing = on;
+    return word() !== before;
+  }
+
+  /** One tick: every screen that is due is read; when none is (all quiet, no card up) the poll stops until one prints. */
+  private poll(): void {
+    if (this.disposed) return;
+    const now = this.clock.now();
+    for (const e of this.entries.values()) {
+      if (!e.screen) continue;
+      const printing = now - e.lastData < PRINT_MS;
+      const quieted = e.feed.printing && !printing;
+      let changed = quieted && this.setPrinting(e, false);
+      // The tick it went quiet reads it once more, so its last screen is the one shown.
+      if ((screenDue(now, e.lastData, e.feed.card !== null) || quieted) && this.readScreen(e)) changed = true;
+      if (changed) this.notify(e.feed.id);
+    }
+    this.pollIfLive();
+  }
+
+  /** Stops the poll when no screen is due. */
+  private pollIfLive(): void {
+    if (!this.stopPoll) return;
+    const now = this.clock.now();
+    for (const e of this.entries.values()) if (e.screen && screenDue(now, e.lastData, e.feed.card !== null)) return;
+    this.stopPoll();
+    this.stopPoll = null;
+  }
+
+  /** Reads the screen into the card, Needs you and (Codex) the status line; true when any changed. A screen with a chunk
+   *  still to parse is read on the next tick. */
+  private readScreen(e: Entry, force = false): boolean {
+    const screen = e.screen;
+    if (!screen || (screen.busy && !force)) return false;
+    const snap = screen.snapshot();
+    let changed = false;
+    const card = screenCard(snap, e.feed.host);
+    const sig = card ? JSON.stringify(card) : "";
+    if (sig !== e.cardSig) {
+      e.cardSig = sig;
+      e.answered = null;
+      e.feed.card = card;
+      e.feed.needsYou = card !== null;
+      changed = true;
+    }
+    // Codex's status line is its footer, as the terminal draws it (C5); covered by a prompt, or not found, the hint.
+    if (e.feed.host === "codex") {
+      const rows = codexFooterRows(snap);
+      const lines = rows ? dedent(rows.map((y) => screen.rowSpans(y))) : null;
+      const text = lines ? JSON.stringify(lines) : null;
+      if (text !== e.statusText) { e.statusText = text; e.feed.status = lines; changed = true; }
+    }
+    return changed;
+  }
+
+  /** Lets the terminal's screen go, and what it read; true when the feed showed any of it. */
+  private dropScreen(e: Entry): boolean {
+    if (!e.screen) return false;
+    e.screen.dispose();
+    e.screen = null;
+    e.offData?.();
+    e.offData = null;
+    const codex = e.feed.host === "codex";
+    const had = e.feed.card !== null || e.feed.printing || (codex && e.feed.status !== null);
+    e.feed.card = null;
+    e.feed.needsYou = false;
+    e.feed.printing = false;
+    e.cardSig = "";
+    e.answered = null;
+    if (codex) { e.feed.status = null; e.statusText = null; }
+    return had;
+  }
+
+  /** The terminal was closed: its follower stops (main ends it with the terminal too), and its feed and screen go. */
   private closed(id: string): void {
     const e = this.entries.get(id);
     this.views.delete(id);
     if (!e) return;
     this.entries.delete(id);
+    this.dropScreen(e);
+    this.pollIfLive();
     for (const [p, owner] of [...this.byPath]) if (owner === id) this.byPath.delete(p);
     if (e.pty && e.feed.follow !== "off") {
       try { this.code()?.unfollow(e.pty); } catch { /* the bridge is gone */ }
     }
   }
+}
+
+/** Rows without the indent they all share (Codex draws its footer two columns in), so the status line starts where the
+ *  composer does, as Claude Code's does. */
+function dedent(rows: Span[][]): Span[][] {
+  const lead = (r: Span[]): number => {
+    let n = 0;
+    for (const sp of r) {
+      const m = /^ */.exec(sp.text)?.[0].length ?? 0;
+      n += m;
+      if (m < sp.text.length) return n;
+    }
+    return Number.POSITIVE_INFINITY;
+  };
+  const cut = Math.min(...rows.map(lead));
+  if (!Number.isFinite(cut) || cut <= 0) return rows;
+  return rows.map((r) => {
+    let left = cut;
+    const out: Span[] = [];
+    for (const sp of r) {
+      if (left <= 0) { out.push(sp); continue; }
+      const take = Math.min(left, sp.text.length);
+      left -= take;
+      if (sp.text.length > take) out.push({ ...sp, text: sp.text.slice(take) });
+    }
+    return out;
+  });
 }

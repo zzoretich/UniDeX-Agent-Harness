@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { navAllowed, siteOf } from "../policy/computer-url";
 import { UUID_RE } from "../policy/programs";
-import type { CodeFollowRequest, CodeUnfollowRequest, CodeViewRequest, ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
+import type { CodeFollowRequest, CodeGitRequest, CodeUnfollowRequest, CodeViewRequest, ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
 
 const MB = 1024 * 1024;
 
@@ -103,6 +103,12 @@ export const CodeFollowArgs: z.ZodType<CodeFollowRequest> = z.object({
 }).strict();
 export const CodeViewArgs: z.ZodType<CodeViewRequest> = z.object({ host: z.enum(["claude", "codex"]), id: MirrorId }).strict();
 export const CodeUnfollowArgs: z.ZodType<CodeUnfollowRequest> = z.object({ pty: Id }).strict();
+/** code:git (code-chat C8): a terminal, never a folder; `file` relative to the folder main resolves (git.ts fileRefusal). */
+export const CodeGitArgs: z.ZodType<CodeGitRequest> = z.object({
+  pty: Id,
+  op: z.enum(["status", "diff"]),
+  file: Text(4096).refine((f) => f.length > 0, "a file").optional(),
+}).strict();
 
 /** A Code launch's agent (agent-computer D18): the host and its words; main resolves the binary and checks the words. */
 /** pty:agent-flags: which host's Code launch (agent-computer R70), and `sub: "resume"` for a resume line (R77). */

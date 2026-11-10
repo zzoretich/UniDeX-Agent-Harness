@@ -1,6 +1,7 @@
 import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import { TerminalPanel } from "../ui/TerminalPanel";
+import type { FilesTab } from "./files/FilesTab";
 
 export class TermTab {
   private host: HTMLElement | null = null;
@@ -23,14 +24,17 @@ export class TermTab {
       openWorkspace: (name) => { this.view.open({ tab: "spaces", workspace: name }); },
       // All history: Sessions ▸ History (install-import B11), as the tour opens it.
       openHistory: () => { this.view.open({ tab: "chat", pane: "history" }); },
+      // The top bar's Files: the Files tab at the terminal's workspace folder (code-chat C8).
+      openFiles: (folder) => { this.view.setTab("files"); (this.view.getTab("files") as FilesTab | null)?.showFolder(folder); },
     });
     this.panel.mount(host);
   }
   /** Code scoped to a workspace's group (spaces-redesign D12): WorkbenchView.open({tab: "term", workspace}). Select only. */
   reveal(target: { workspace?: string | null }): void { this.panel?.reveal(target); }
-  async refresh(): Promise<void> { this.panel?.focus(); this.panel?.refreshSidebar(); }
+  async refresh(): Promise<void> { this.panel?.focus(); this.panel?.refreshSidebar(); this.panel?.enter(); }
   unmount(): void { this.panel?.unmount(); this.panel = null; this.host = null; }
-  /** Another tab is shown (WorkbenchView.setTab): the Computer pane lets its view go (agent-computer ruling R51). */
+  /** Another tab is shown (WorkbenchView.setTab): the Computer pane lets its view go (agent-computer ruling R51) and the
+   *  Diff stops reading the status (code-chat R55). */
   leave(): void { this.panel?.leave(); }
   newSession(): void { void this.panel?.createNewSession(); }
   showSession(id: string): void { this.panel?.activate(id); }

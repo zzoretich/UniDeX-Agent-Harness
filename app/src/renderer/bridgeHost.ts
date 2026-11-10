@@ -271,6 +271,8 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     follow: (req) => settle(aos.code.follow(req)),
     unfollow: (p) => aos.code.unfollow(p),
     view: (req) => settle(aos.code.view(req)),
+    // The Diff pane (code-chat C8): main reads git in the terminal's own workspace or linked folder, any surfaces on or off.
+    git: (req) => settle(aos.code.git(req)),
   };
   const git: HostGit = {
     status: (workspace) => settle(aos.git.status(workspace)),

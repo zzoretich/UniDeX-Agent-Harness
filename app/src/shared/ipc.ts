@@ -112,6 +112,8 @@ export const CH = {
   codeFollow: "code:follow",
   codeUnfollow: "code:unfollow",
   codeView: "code:view",
+  /** The Diff pane's read-only git (C8): the page names a terminal, main picks the folder from its cwd. Invoke. */
+  codeGit: "code:git",
   /** main → page: one event of a running turn. */
   sessionEvent: "session:event",
   // The workspace's repository: what changed, a file's diff, and the commit the user asks for.
@@ -579,6 +581,9 @@ export interface CodeFollowRequest { pty: string; host: "claude" | "codex"; term
 export interface CodeViewRequest { host: "claude" | "codex"; id: string }
 /** code:unfollow: any pty of the terminal whose follower stops. */
 export interface CodeUnfollowRequest { pty: string }
+/** code:git (code-chat C8): read-only git for the terminal `pty`, in the folder main resolves from that terminal's cwd (a
+ *  vault workspace, or a workspace's linked code folder); `file` is relative to that folder, for one file's diff. */
+export interface CodeGitRequest { pty: string; op: "status" | "diff"; file?: string }
 /** A mirror's cache, as a vault-relative path (brain/_index/code/<key>.jsonl). */
 export interface CodeCache { cache: string }
 /** A follower's cache, and whether this call started it (code-chat R16b): a fresh follower writes its cache from the start,
@@ -728,7 +733,8 @@ export interface AosBridge {
     catalog(refresh?: boolean): Promise<Result<HostCatalog>>;
     onEvent(cb: (ev: SessionEvent) => void): () => void;
   };
-  /** The Code chat view's transcript mirror (spec 2026-11-09-code-chat), run by main while the Code chat surface is on. */
+  /** The Code chat view's transcript mirror (spec 2026-11-09-code-chat), run by main while the Code chat surface is on, and
+   *  its Diff pane's read-only git. */
   code: {
     /** Follows an agent terminal's conversation; `cache` is the vault-relative file the page reads. Calling it again with the
      *  same pty, terminal, host and id returns the running follower's cache with `fresh: false`. */
@@ -737,6 +743,9 @@ export interface AosBridge {
     unfollow(pty: string): void;
     /** Mirrors a past conversation once and returns its cache. */
     view(req: CodeViewRequest): Promise<Result<CodeCache>>;
+    /** The Diff pane's read-only git status or diff for a terminal's workspace or linked code folder (C8); a refusal for
+     *  any other place. Needs no write surface. */
+    git(req: CodeGitRequest): Promise<Result<GitStatus | GitDiff>>;
   };
   /** The app-owned instruction proposal transaction. Decisions come from the trusted main window. */
   proposals: {
