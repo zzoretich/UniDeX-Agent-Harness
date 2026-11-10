@@ -3,7 +3,7 @@
 // WebP), the size (10 MB at most, from the base64's length before anything is decoded) and the content's magic bytes,
 // which must agree with that type; it picks the path and creates the file exclusively. The page never names a path. The
 // Code chat surface owns it: off, every call is refused. The folder holds at most 2 GiB or 5,000 files (R59), and month
-// folders are removed about three months after their month ended.
+// folders are removed about three months after their month ended, checked at start and once a day after (M2).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CodeSaveImageArgs } from "../../src/main/ipc/schemas";
-import { CodeImageService, IMAGE_QUOTA_BYTES, IMAGE_QUOTA_FILES, MAX_IMAGE_BYTES, pruneImages, saveImage, sniffImage } from "../../src/main/services/code-images";
+import { CodeImageService, IMAGE_QUOTA_BYTES, IMAGE_QUOTA_FILES, MAX_IMAGE_BYTES, PRUNE_EVERY_MS, pruneImages, saveImage, sniffImage } from "../../src/main/services/code-images";
 
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aos-code-images-")));
 let n = 0;
@@ -278,6 +278,36 @@ test("the service's prune frees the quota: the tally is counted again after it",
   assert.equal(((await svc.save({ mime: "image/png", data: b64(PNG) })) as { code?: string }).code, "ENOSPC");
   await svc.prune(NOV);
   assert.ok((await svc.save({ mime: "image/png", data: b64(PNG) })).ok);
+});
+
+test("retention runs at start and again once a day while the app stays open, by the service's clock; stop ends it (M2)", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const ud = userData();
+  const img = (dir: string, name: string) => { fs.mkdirSync(path.join(ud, "code-images", dir), { recursive: true }); fs.writeFileSync(path.join(ud, "code-images", dir, name), PNG); };
+  // On 10 November 2026, June ended more than 90 days ago; August (ended 1 September) did not.
+  img("2026-06", "aaaaaaaa-0000-4000-8000-000000000001.png");
+  img("2026-08", "aaaaaaaa-0000-4000-8000-000000000002.png");
+  let now = NOV;
+  const runs: number[] = [];
+  const svc = new CodeImageService({ userData: () => ud, enabled: () => true, now: () => now, log: () => {} });
+  const settled = async (count: number) => { for (let i = 0; i < 200 && runs.length < count; i++) await new Promise((r) => setImmediate(r)); };
+  const stop = svc.keepPruned((n) => runs.push(n), (err) => { throw err; });
+  await settled(1);
+  assert.deepEqual(runs, [1], "the run at start");
+  assert.deepEqual(fs.readdirSync(path.join(ud, "code-images")), ["2026-08"]);
+  // The app stays open into December: on 1 December August ended 91 days ago, and the next day's run lets it go.
+  now = new Date(2026, 11, 1, 9, 30);
+  t.mock.timers.tick(PRUNE_EVERY_MS - 1);
+  await settled(2);
+  assert.deepEqual(runs, [1], "not before a day");
+  t.mock.timers.tick(1);
+  await settled(2);
+  assert.deepEqual(runs, [1, 1]);
+  assert.deepEqual(fs.readdirSync(path.join(ud, "code-images")), []);
+  stop();
+  t.mock.timers.tick(PRUNE_EVERY_MS * 3);
+  await settled(3);
+  assert.deepEqual(runs, [1, 1], "stopped: no more runs");
 });
 
 test("refusals are logged at most once a minute per reason", async () => {

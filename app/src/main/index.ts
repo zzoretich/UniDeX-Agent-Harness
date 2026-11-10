@@ -750,9 +750,10 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(() => {
     // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay).
     sweepHeld(app.getPath("temp"));
-    // code-chat R59: the Code composer's images go about three months after their month ended. Asynchronous, so nothing
-    // here waits for it; the surface being off does not keep old images.
-    void codeImages.prune().then((n) => { if (n) console.log(`[main] code-images: removed ${n} old image(s)`); }, (err) => console.warn("[main] code-images: retention failed", err));
+    // code-chat R59: the Code composer's images go about three months after their month ended, checked now and once a day
+    // while the app stays open (M2). Asynchronous, so nothing here waits for it; the surface being off does not keep old
+    // images.
+    codeImages.keepPruned((n) => { if (n) console.log(`[main] code-images: removed ${n} old image(s)`); }, (err) => console.warn("[main] code-images: retention failed", err));
     // Only a packaged, signed app claims the scheme; a dev run must not re-point the system's agenticos:// handler.
     if (app.isPackaged) app.setAsDefaultProtocolClient(SCHEME);
     serveAppScheme(path.join(__dirname, "../renderer"));

@@ -55,6 +55,8 @@ export const IMAGE_KEEP_DAYS = 90;
 /** One refusal reason is logged at most this often (R60). */
 const LOG_EVERY_MS = 60_000;
 const DAY_MS = 86_400_000;
+/** How often retention runs again while the app stays open (M2): an app left open for weeks still lets old images go. */
+export const PRUNE_EVERY_MS = DAY_MS;
 /** The names main gives a month's folder and an image: anything else in the folder is not the app's to remove. */
 const MONTH_NAME = /^\d{4}-\d{2}$/;
 const IMAGE_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(png|jpg|gif|webp)$/;
@@ -192,7 +194,7 @@ export interface CodeImageOptions {
   maxBytes?: number;
   maxFiles?: number;
   keepDays?: number;
-  /** For tests: the month an image is filed under, and its name. */
+  /** For tests: the clock (the month an image is filed under, and what retention counts from), and an image's name. */
   now?: () => Date;
   uuid?: () => string;
   /** Where a refusal is logged (default console.warn), and the clock its once-a-minute limit reads. */
@@ -203,7 +205,8 @@ export interface CodeImageOptions {
 /**
  * code:save-image behind the Code chat surface (C13), with the images folder's quota (R59): a running tally, counted once
  * from the folder on the first save, grows as each write is admitted (so saves at once are counted before they land) and
- * gives back a write that fails. prune() is the retention, run once after the app is ready.
+ * gives back a write that fails. prune() is the retention; keepPruned() runs it once the app is ready and once a day
+ * after (M2).
  */
 export class CodeImageService {
   private tally: Promise<ImageTally> | null = null;
@@ -244,9 +247,21 @@ export class CodeImageService {
 
   /** Retention: removes month folders whose month ended more than about three months ago; the tally is counted again on
    *  the next save. Answers how many images went. */
-  async prune(now: Date = new Date()): Promise<number> {
+  async prune(now: Date = this.o.now?.() ?? new Date()): Promise<number> {
     const removed = await pruneImages(this.o.userData(), { now, keepDays: this.o.keepDays });
     this.tally = null;
     return removed;
+  }
+
+  /**
+   * Retention while the app runs (R59, M2): prune() now, then every PRUNE_EVERY_MS on a timer that never keeps the app
+   * alive (unref'd), each run's count to `removed` and a failure to `failed`. Answers a stop.
+   */
+  keepPruned(removed: (n: number) => void, failed: (err: unknown) => void): () => void {
+    const run = (): void => { void this.prune().then(removed, failed); };
+    run();
+    const timer = setInterval(run, PRUNE_EVERY_MS);
+    timer.unref?.();
+    return () => clearInterval(timer);
   }
 }
