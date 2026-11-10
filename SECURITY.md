@@ -70,7 +70,9 @@ output. The design treats the page that shows them as untrusted (design D7,
     or folder starts with `-` or holds a control character (C0 or DEL, such as ^U, which would act on the shell's line)
     is refused, not typed. A Clone line is typed only for a URL matching the GitHub rule (a
     `https://github.com/<owner>/<repo>` URL or GitHub's SSH form of it, quoted).
-  - Code's Diff runs read-only git in a vault workspace or its linked repo, chosen in main from the terminal's own folder.
+  - *Code's Diff (code-chat C8):* read-only git in a vault workspace or the code folder linked to one, chosen in main from
+    the terminal's own starting folder (`code:git` names a terminal, never a folder). It needs no write surface; it refuses
+    the vault root, home and the hosts' config folders, and any folder that is neither a workspace nor a linked one.
   - *Appearance:* the page may set the theme to `system`, `light` or `dark` and nothing else; main saves the choice in
     the app's data (`app-settings.json`), never in the vault, and hands it to macOS's `nativeTheme`.
   - *Setup (phase 5; install-import B1, B2, B13, B14):* the wizard names a fix by id; what it does is main's
