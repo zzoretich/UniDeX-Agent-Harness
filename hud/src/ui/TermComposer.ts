@@ -476,11 +476,12 @@ export class TermComposer {
   private waitEnded(s: TerminalSession, text: string, r: "held" | "gone", cleared: boolean): void {
     const mine = this.session === s;
     const box = mine ? this.input.value : this.drafts.get(s.id) ?? "";
-    const end = sendWaitEnd(r, { blocked: this.blocked, cleared, box, text });
+    const end = sendWaitEnd(r, { blocked: this.blocked, cleared, box, text, ended: s.agentEnded || s.isExited });
     if (!mine) { if (end.box) this.drafts.set(s.id, end.box); return; }
     if (end.box !== box) this.input.value = end.box;
     if (end.note === "held") { this.say(this.heldText()); this.held = true; }
     else if (end.note === "changed") this.say(CHANGED);
+    else if (end.note === "ended") this.say(`${TERM_HOST_LABEL[s.meta.host]} ended before this was sent`);
   }
 
   /** Why Send holds, in the words of the view it shows in (R49). */

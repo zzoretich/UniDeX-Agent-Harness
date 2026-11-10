@@ -111,6 +111,15 @@ test("sendWaitEnd (D1, D2): only a clear wait writes; held says why, gone says t
   assert.deepEqual(sendWaitEnd("clear", after), { write: true, note: null, box: "" });
 });
 
+test("sendWaitEnd (R73): the agent ended during the wait — its text leaves the shell's box and never comes back, and the note says it ended", () => {
+  const after = { blocked: false, cleared: true, box: "", text: "look at this", ended: true };
+  assert.deepEqual(sendWaitEnd("gone", after), { write: false, note: "ended", box: "" });
+  assert.deepEqual(sendWaitEnd("gone", { ...after, cleared: false, box: "look at this" }), { write: false, note: "ended", box: "" }, "the agent's draft still in the box leaves it (one more ⏎ would run it in the shell)");
+  assert.deepEqual(sendWaitEnd("gone", { ...after, cleared: false, box: "ls" }), { write: false, note: "ended", box: "ls" }, "something typed since stays");
+  assert.deepEqual(sendWaitEnd("gone", { ...after, blocked: true }), { write: false, note: null, box: "" }, "an ended agent's chat says it itself");
+  assert.deepEqual(sendWaitEnd("held", after), { write: false, note: "held", box: "look at this" }, "ended only changes gone");
+});
+
 /** `s` in pieces of `n`. */
 function chunks(s: string, n: number): string[] {
   const out: string[] = [];

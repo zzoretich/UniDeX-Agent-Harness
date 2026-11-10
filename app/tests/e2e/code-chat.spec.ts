@@ -829,7 +829,7 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     });
   }
 
-  test("C1: an agent that ends while Send waits takes nothing of the draft with it: the login shell that takes its terminal over runs none of it, and the draft stays", async () => {
+  test("C1: an agent that ends while Send waits takes nothing of the draft with it: the login shell that takes its terminal over runs none of it, and the draft leaves the shell's box (R73)", async () => {
     const h = app();
     const { win } = h;
     await openTab(win, "term");
@@ -849,9 +849,10 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("This is your shell, in the same folder.");
     await win.waitForTimeout(1500);
     expect(await terminalText(win)).not.toContain("leaked-42");
-    await expect(input).toHaveValue(draft);
-    // D2: it says why nothing went, under what is now the shell's composer.
-    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-note")).toHaveText("The terminal changed while Send waited · Send again");
+    // R73: the draft written for the agent leaves what is now the shell's composer (one more ⏎ would run it there), and
+    // the note says the agent ended instead of inviting another Send.
+    await expect(input).toHaveValue("");
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-note")).toHaveText("Claude Code ended before this was sent");
     expect((await written(win, id)).join("")).not.toContain("leaked");
     await removeTerminal(win, id);
     expectNoErrors(h);

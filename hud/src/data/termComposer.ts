@@ -68,9 +68,13 @@ export type SendWaitEnd = "clear" | "held" | "gone";
  * (the held note). Gone: write nothing more, and say that the terminal changed (D2) unless the composer is kept away (an
  * ended agent's chat, R39), where nothing is said. `cleared`: the box was emptied when the images went (R70's wait), so
  * on held or gone the text comes back, if the box is still empty: the images are in the TUI's input, the text is not.
+ * `ended`: the agent itself ended (R73) — the box now writes to the shell that took over (D18), so the text written for
+ * the agent leaves it (when the box still holds exactly that text: one more ⏎ would run it in the shell) and never comes
+ * back into it, and the note says the agent ended instead of inviting another Send. Something typed since stays.
  */
-export function sendWaitEnd(r: SendWaitEnd, o: { blocked: boolean; cleared: boolean; box: string; text: string }): { write: boolean; note: "held" | "changed" | null; box: string } {
+export function sendWaitEnd(r: SendWaitEnd, o: { blocked: boolean; cleared: boolean; box: string; text: string; ended?: boolean }): { write: boolean; note: "held" | "changed" | "ended" | null; box: string } {
   if (r === "clear") return { write: true, note: null, box: o.box };
+  if (r === "gone" && o.ended) return { write: false, note: o.blocked ? null : "ended", box: o.box === o.text ? "" : o.box };
   const box = o.cleared && !o.box ? o.text : o.box;
   return { write: false, note: r === "held" ? "held" : o.blocked ? null : "changed", box };
 }
