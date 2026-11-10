@@ -118,6 +118,9 @@ New setup offers the [Superpowers](https://github.com/obra/superpowers) third-pa
   </tr>
 </table>
 
+<a name="code-chat"></a>
+On the app's Code tab, a Claude Code or Codex session opens as a chat over the live terminal: your prompts, the agent's replies and its tool calls, drawn from the session's own transcript, with the status line under the composer. ⌘J flips to the terminal itself, the same process and nothing restarted. When the agent asks before it runs a command or edits a file, its question shows as an approval card you answer with a click, and a row that needs you says so. The sidebar keeps recent conversations with Resume, the top bar has Diff and Files for the workspace, and you can paste, drop or attach images in the composer. It is on by default from 2.6.0.
+
 <a name="screenshots"></a>
 ### Screenshots
 
