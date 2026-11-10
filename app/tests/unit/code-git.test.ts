@@ -135,6 +135,38 @@ test("diffAt refuses a file outside the folder: climbing out, absolute, or throu
   fs.unlinkSync(path.join(tide, "out"));
 });
 
+test("diffAt shows a new file only when status lists it as new and it is a file: never a link to a folder, an ignored file, .git or a pipe (R54)", async () => {
+  const reef = mk(tmp, "reef");
+  repo(reef);
+  const away = mk(tmp, "away");
+  // `git diff --no-index -- /dev/null lnk` takes a linked folder as a folder and reads `<folder>/null`.
+  fs.writeFileSync(path.join(away, "null"), "away-null-text\n");
+  fs.writeFileSync(path.join(away, "s.txt"), "away-secret-text\n");
+  execFileSync("mkfifo", [path.join(away, "fifo")]);
+  fs.symlinkSync(away, path.join(reef, "lnk"));
+  fs.writeFileSync(path.join(reef, ".gitignore"), "local.ignored\n");
+  fs.writeFileSync(path.join(reef, "local.ignored"), "ignored-text\n");
+  execFileSync("mkfifo", [path.join(reef, "pipe")]);
+  // A link to a pipe is listed as new (git lists links), and `--no-index` would read the pipe and wait on it.
+  fs.symlinkSync(path.join(away, "fifo"), path.join(reef, "lfifo"));
+  fs.symlinkSync("a.txt", path.join(reef, "alias"));
+  fs.symlinkSync(path.join(away, "s.txt"), path.join(reef, "lfile"));
+  for (const file of ["lnk", "lnk/.", "lnk/null", "local.ignored", ".git/HEAD", ".git/config", "pipe", "lfifo"]) {
+    const r = await git.diffAt(reef, file);
+    assert.equal(r.ok, false, `${file}: ${JSON.stringify(r)}`);
+    assert.ok(!r.ok && !/away-|ignored-text|\[core\]/.test(r.error), `${file}: nothing of the file comes back`);
+  }
+  // A leaf link is shown as git shows a link: its target as text, never what it points at.
+  const alias = await git.diffAt(reef, "alias");
+  assert.ok(alias.ok && /^\+a\.txt$/m.test(alias.data.text), JSON.stringify(alias));
+  const lfile = await git.diffAt(reef, "lfile");
+  assert.ok(lfile.ok && /new file mode 120000/.test(lfile.data.text) && !/away-secret-text/.test(lfile.data.text), JSON.stringify(lfile));
+  // A new plain file still shows its text.
+  fs.writeFileSync(path.join(reef, "new.txt"), "fresh\n");
+  const fresh = await git.diffAt(reef, "new.txt");
+  assert.ok(fresh.ok && /\+fresh/.test(fresh.data.text), JSON.stringify(fresh));
+});
+
 type Info = { cwd: string; startedAt: number; terminal: string | null };
 function service(cwds: Record<string, string>, vaultRoot: string | null = vault) {
   return new CodeGitService({

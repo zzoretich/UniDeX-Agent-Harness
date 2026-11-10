@@ -24,6 +24,8 @@ const TIMEOUT_MS = 30_000;
  *   filter.<driver>.clean/smudge/process (status and diff re-hash a changed file through them): every driver defined
  *     below global and system scope is turned off (filterOverrides), so the user's own (git-lfs) still work;
  *   diff.external, diff.<driver>.command and textconv: every diff passes DIFF_SAFE;
+ *   a submodule's own config, which neither of the above reads (its filter drivers on the status git runs inside it, its
+ *     external diff on the diff diff.submodule=diff runs inside it): status and every diff pass SUBMODULE_SAFE;
  *   a lazy fetch in a partial clone (core.sshCommand, remote helpers): READ_ENV, which allows no transport at all.
  * Commit is the user's own act on the Commit button: `add -A` and `commit` run the repository's filters, hooks
  * (core.hooksPath) and signing (commit.gpgsign, gpg.program) as they would in a terminal (SECURITY.md). --no-optional-locks
@@ -32,6 +34,13 @@ const TIMEOUT_MS = 30_000;
 export const GIT_GUARD: readonly string[] = ["-c", "core.fsmonitor=false", "-c", "log.showSignature=false", "-c", "core.untrackedCache=false", "--no-optional-locks"];
 /** After `diff`: no external diff program and no textconv driver. */
 export const DIFF_SAFE: readonly string[] = ["--no-ext-diff", "--no-textconv"];
+/**
+ * After `status` and `diff`: a submodule counts as changed only when its commit moved, so git never runs `status` inside it
+ * (code-chat R54). The command line beats diff.ignoreSubmodules, submodule.<name>.ignore and .gitmodules.
+ */
+export const SUBMODULE_SAFE: readonly string[] = ["--ignore-submodules=dirty"];
+/** After a `diff`'s DIFF_SAFE: SUBMODULE_SAFE, and a moved submodule shown as its two commits, never as a diff run inside it. */
+const DIFF_SUBMODULE_SAFE: readonly string[] = [...SUBMODULE_SAFE, "--submodule=short"];
 /** A read's environment on top of the rest: no lazy fetch, and an empty transport allow-list the repo cannot widen. */
 export const READ_ENV: Readonly<Record<string, string>> = { GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "" };
 // filterOverrides' --config-env values: an empty command and required=false turn a driver off without failing a read.
@@ -201,7 +210,7 @@ export class GitService {
     // When git cannot say which filter drivers the repository defines, nothing that could run one is read.
     const filters = known === undefined ? await this.filters(dir) : known;
     if (!filters) return NOT_REPO;
-    const s = await this.run(dir, [...filters, "status", "--porcelain=v2", "--branch", "--untracked-files=all"]);
+    const s = await this.run(dir, [...filters, "status", ...SUBMODULE_SAFE, "--porcelain=v2", "--branch", "--untracked-files=all"]);
     const mergeHead = await this.run(dir, ["rev-parse", "--git-path", "MERGE_HEAD"]);
     const merging = mergeHead.code === 0 && fs.existsSync(path.resolve(dir, mergeHead.stdout.trim()));
     const st = parseStatus(s.stdout);
@@ -209,7 +218,7 @@ export class GitService {
       // +/- per file (spec 2026-10-07-sessions-ux U11): tracked changes against HEAD, staged or not; untracked files count
       // their lines.
       const head = await this.run(dir, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-      const n = await this.run(dir, [...filters, "diff", ...DIFF_SAFE, "--numstat", "-z", head.code === 0 ? "HEAD" : EMPTY_TREE]);
+      const n = await this.run(dir, [...filters, "diff", ...DIFF_SAFE, ...DIFF_SUBMODULE_SAFE, "--numstat", "-z", head.code === 0 ? "HEAD" : EMPTY_TREE]);
       const counts = n.code === 0 ? parseNumstat(n.stdout) : new Map<string, [number | null, number | null]>();
       let untracked = 0;
       for (const f of st.files) {
@@ -235,15 +244,19 @@ export class GitService {
     const st = await this.statusOf(dir, filters);
     if (!st.repo || !filters) return refused("not a git repository");
     const hasHead = (await this.run(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])).code === 0;
-    const base = [...filters, "diff", ...DIFF_SAFE, ...(hasHead ? ["HEAD"] : [])];
+    const base = [...filters, "diff", ...DIFF_SAFE, ...DIFF_SUBMODULE_SAFE, ...(hasHead ? ["HEAD"] : [])];
     const stat = await this.run(dir, [...base, "--stat"]);
     let text: Run;
     if (file === undefined) text = await this.run(dir, base, { maxBuffer: DIFF_MAX });
     else if ((await this.run(dir, ["ls-files", "--error-unmatch", "--", file])).code === 0) text = await this.run(dir, [...base, "--", file], { maxBuffer: DIFF_MAX });
     // A new file git does not track yet: its whole text as an addition (exit 1 means "they differ"). `--no-index` opens
     // the path as the file system has it, so a folder link inside the repository must not lead it out (git's own pathspecs
-    // stop at a link; this one would not).
+    // stop at a link; this one would not). Only a path the status just listed as new qualifies, so an ignored file and
+    // anything under .git (whose config can hold a remote's token) never do, and only a file: `--no-index` reads a linked
+    // folder as a folder (`<folder>/null`) and waits on a pipe it is given, a linked one too (R54).
     else if (leadsOut(dir, file)) return refused("a file outside the workspace");
+    else if (!st.files.some((f) => f.status === "??" && f.path === file)) return refused("not a new file in the workspace");
+    else if (!plainNewFile(path.join(dir, file))) return refused("not a file: nothing to show");
     else text = await this.run(dir, [...filters, "diff", ...DIFF_SAFE, "--no-index", "--", "/dev/null", file], { maxBuffer: DIFF_MAX });
     return { ok: true, data: { stat: stat.stdout, text: text.stdout, truncated: text.truncated } };
   }
@@ -280,6 +293,19 @@ function leadsOut(dir: string, file: string): boolean {
   try { parent = fs.realpathSync(path.dirname(path.join(dir, file))); } catch { return false; }
   const rel = path.relative(root, parent);
   return rel !== "" && (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
+}
+
+/**
+ * Whether `file` is what `git diff --no-index` may be given: a regular file, or a link (git shows its target as text) to a
+ * regular file or to nothing. Never a folder, a pipe, a socket or a device, nor a link to one.
+ */
+function plainNewFile(file: string): boolean {
+  try {
+    const st = fs.lstatSync(file);
+    if (st.isFile()) return true;
+    if (!st.isSymbolicLink()) return false;
+  } catch { return false; }
+  try { return fs.statSync(file).isFile(); } catch (e) { return (e as NodeJS.ErrnoException).code === "ENOENT"; }
 }
 
 /** Whether two paths are one folder, links resolved (git prints the top level's real path). */
