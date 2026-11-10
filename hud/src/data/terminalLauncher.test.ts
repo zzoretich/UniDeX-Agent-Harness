@@ -9,6 +9,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { TerminalLauncher } from "./terminalLauncher";
+import { launchArgs } from "./terminalLaunch";
 import { setHudHost, type HudHost } from "../host";
 import { createNodeHost } from "../nodeHost";
 import type { AosJsonResult } from "./aosRun";
@@ -369,4 +370,19 @@ test("R70: main answering false, or a host that cannot say, leaves the Codex lin
   await v.launcher.launch({ host: "codex", picked: { kind: "vault", label: "Vault", dir: v.vault } });
   assert.ok(!(v.agents[0].spec as { noDaemon?: boolean }).noDaemon);
   setHudHost(createNodeHost());
+});
+
+test("spec: a model or access picked for one launch overrides the settings, on both hosts, through the existing flag builders (code-chat C12)", () => {
+  const w = world([]);
+  const id = "u2";
+  const claude = w.launcher.spec("claude", { resume: { id }, model: "sonnet", access: "read" });
+  assert.deepEqual([claude.model, claude.access], ["sonnet", "read"]);
+  const a = launchArgs(claude);
+  assert.deepEqual(a.slice(0, 4), ["--model", "sonnet", "--permission-mode", "plan"]);
+  assert.deepEqual(a.slice(4, 6), ["--resume", id]);
+  const codex = w.launcher.spec("codex", { resume: { id }, cwd: "/work/demo", model: "gpt-x", access: "edit" });
+  assert.deepEqual(launchArgs(codex), ["resume", "-C", "/work/demo", id, "-m", "gpt-x", "-s", "workspace-write", "-a", "on-request"]);
+  // No override: the settings' model and access, and a Codex resume passes neither (the thread keeps its own).
+  assert.deepEqual(launchArgs(w.launcher.spec("codex", { resume: { id }, cwd: "/work/demo" })), ["resume", "-C", "/work/demo", id]);
+  assert.equal(w.launcher.spec("claude", { resume: { id } }).model, null);
 });

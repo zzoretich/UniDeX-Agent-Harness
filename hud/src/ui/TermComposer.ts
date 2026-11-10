@@ -3,16 +3,33 @@ import * as path from "path";
 import type AgenticOSPlugin from "../../main";
 import { fs, sessionsHost, type HostCatalog } from "../host";
 import { aliasCatalog } from "../data/claudeAsk";
-import { catalogHost } from "../data/agentSessions";
+import { catalogHost, hostChoices } from "../data/agentSessions";
+import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import type { TerminalSession } from "../data/terminalSession";
-import { TERM_ACCESS_LABEL, TERM_HOST_LABEL } from "../data/terminalLaunch";
+import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
 import { composerWrites, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
+import { HostModelMenu } from "./HostModelMenu";
 
 /** How many files the @ list reads from a place, and how deep: enough for a project, cheap on every open. */
 const FILE_LIMIT = 3000;
 const FILE_DEPTH = 6;
 const SKIP = new Set(["node_modules", ".git", "dist", "build", ".next", "target", "__pycache__"]);
+
+/**
+ * What the access and model chips need from the panel (code-chat C12): the conversation they would restart, whether a
+ * turn is open, the model to show, and the restart itself.
+ */
+export interface ChipState {
+  /** The conversation's id (the chat's), or null while there is none. */
+  conversation: string | null;
+  /** A turn is open (rowStatus "working"): the chips wait. */
+  working: boolean;
+  /** The conversation's newest model, else the launch's. */
+  model: string | null;
+  /** Starts the same conversation again with the pick, then closes this terminal. */
+  restart(patch: { model?: string | null; access?: TermAccess | null }): Promise<void>;
+}
 
 /**
  * The Term composer (spec 2026-10-08-term-agent-deck T12): a box under an agent's terminal for longer messages. Enter
@@ -21,7 +38,7 @@ const SKIP = new Set(["node_modules", ".git", "dist", "build", ".next", "target"
  * Snippets keeps prompts you reuse. Escape goes back to the terminal. A shell or an ended terminal has none.
  *
  * Its row of chips (spec 2026-11-09-code-chat §4): @ file and / commands start a mention or a command, Snippets, then an
- * agent's access and model (labels until Task 10 makes them controls); `attachSlot` is where Task 14's + chip goes. In
+ * agent's access and model (controls: a pick restarts the same conversation with it, C12); `attachSlot` is where Task 14's + chip goes. In
  * the chat view (`setMode("chat")`) TerminalPanel moves the whole element into the chat's 760 px column.
  */
 export class TermComposer {
@@ -40,8 +57,11 @@ export class TermComposer {
   private hint: HTMLElement;
   private shownHost: string | null = null;
   private commandsChip: HTMLElement;
-  private permChip: HTMLElement;
-  private modelChip: HTMLElement;
+  private permChip: HTMLButtonElement;
+  private accessMenu: HTMLElement | null = null;
+  private modelWrap: HTMLElement;
+  private modelMenu: HostModelMenu;
+  private chips: ChipState | null = null;
 
   constructor(parent: HTMLElement, private plugin: AgenticOSPlugin, private focusTerminal: () => void, private bracketed: () => boolean = () => true) {
     this.el = parent.createDiv({ cls: "aos-tc is-hidden" });
@@ -60,8 +80,13 @@ export class TermComposer {
     snip.createSpan({ text: "Snippets" });
     snip.addEventListener("click", () => this.toggleSnippets(bar));
     this.hint = bar.createSpan({ cls: "aos-tc-hint", text: "⏎ send · ⇧⏎ new line · @ file · / commands · esc terminal" });
-    this.permChip = bar.createSpan({ cls: "aos-tc-chip is-label", attr: { title: "What the agent may do" } });
-    this.modelChip = bar.createSpan({ cls: "aos-tc-chip is-label", attr: { title: "The conversation's model" } });
+    this.permChip = bar.createEl("button", { cls: "aos-tc-chip aos-tc-access is-hidden", attr: { type: "button", "aria-haspopup": "menu" } });
+    this.permChip.addEventListener("click", () => this.toggleAccess(bar));
+    this.modelWrap = bar.createSpan({ cls: "aos-tc-modelwrap is-hidden" });
+    this.modelMenu = new HostModelMenu(this.modelWrap, {
+      mode: "thread", catalog: null, choices: [], value: { host: "claude", model: null, effort: null },
+      onChange: (v) => this.pickModel(v.model),
+    });
     const send = bar.createEl("button", { cls: "aos-tc-send", attr: { type: "button", "aria-label": "Send to the terminal" } });
     const sendIcon = send.createSpan({ cls: "aos-tc-icon" });
     setIcon(sendIcon, "arrow-up");
@@ -85,9 +110,10 @@ export class TermComposer {
     this.input.setAttr("placeholder", shell ? "Write a command…" : `Write to ${TERM_HOST_LABEL[s.meta.host]}…`);
     this.hint.setText(shell ? "⏎ run · ⇧⏎ new line · @ file · esc terminal" : "⏎ send · ⇧⏎ new line · @ file · / commands · esc terminal");
     this.commandsChip.toggleClass("is-hidden", shell);
-    this.permChip.setText(!shell && s.meta.access ? TERM_ACCESS_LABEL[s.meta.access] : "");
-    this.permChip.toggleClass("is-hidden", shell || !s.meta.access);
-    this.modelChip.toggleClass("is-hidden", shell);
+    this.closeAccess();
+    this.permChip.toggleClass("is-hidden", shell);
+    this.modelWrap.toggleClass("is-hidden", shell);
+    this.syncChips();
     // A shell has no / commands: the list stays empty, so / is just a character.
     if (shell) this.slash.update([], "claude");
     else void this.loadCommands(s.meta.host as "claude" | "codex");
@@ -96,8 +122,69 @@ export class TermComposer {
   /** The chat view's column (smaller box, chips only) or under the terminal, as before. */
   setMode(mode: "chat" | "terminal"): void { this.el.toggleClass("is-chat", mode === "chat"); }
 
-  /** The model chip: the conversation's newest model, else the launch's, else the host's default. */
-  setModel(model: string | null): void { this.modelChip.setText(model || "default model"); }
+  /** What the access and model chips restart (the panel calls it as the chat's state changes); null: nothing to restart. */
+  setChips(c: ChipState | null): void {
+    this.chips = c;
+    this.syncChips();
+  }
+
+  /** Why the chips do nothing now, or null: no conversation yet, or a turn is open (C12). */
+  private chipReason(): string | null {
+    const c = this.chips;
+    if (!c || !c.conversation) return "Nothing to restart yet: this session has no chat conversation";
+    if (c.working) return "Wait for the turn to finish, then change it";
+    return null;
+  }
+
+  /** The access chip says the terminal's launch access; the model chip the conversation's newest model, else the launch's. */
+  private syncChips(): void {
+    const s = this.session;
+    if (!s || s.meta.host === "shell") return;
+    const reason = this.chipReason();
+    const access = s.meta.access ?? "host";
+    this.permChip.setText(TERM_ACCESS_LABEL[access]);
+    this.permChip.disabled = !!reason;
+    this.permChip.setAttr("title", reason ?? `What the agent may do: ${TERM_ACCESS_NOTE[access]}`);
+    this.modelWrap.setAttr("title", reason ?? "");
+    this.modelMenu.update({
+      catalog: this.catalog, choices: hostChoices(readAgenticosJson(this.plugin.claudeConfigDir()), readProviderState(this.plugin.vaultRoot())),
+      value: { host: s.meta.host as "claude" | "codex", model: this.chips?.model ?? s.meta.model ?? null, effort: null }, disabled: !!reason,
+    });
+    if (reason) this.closeAccess();
+  }
+
+  private restart(patch: { model?: string | null; access?: TermAccess | null }): void {
+    const c = this.chips;
+    if (!c || this.chipReason()) return;
+    void c.restart(patch).finally(() => this.syncChips());
+  }
+
+  private pickModel(model: string | null): void {
+    const host = this.session?.meta.host;
+    if (!host || host === "shell") return;
+    const next = model ?? (host === "claude" ? "default" : null);
+    const cur = this.chips?.model ?? this.session?.meta.model ?? null;
+    if ((next ?? "default") === (cur ?? "default")) return;
+    this.restart({ model: next });
+  }
+
+  private toggleAccess(bar: HTMLElement): void {
+    if (this.accessMenu) { this.closeAccess(); return; }
+    if (this.chipReason()) return;
+    const menu = bar.createDiv({ cls: "aos-tc-snippets aos-tc-accessmenu", attr: { role: "menu", "aria-label": "What the agent may do" } });
+    this.accessMenu = menu;
+    const cur = this.session?.meta.access ?? "host";
+    for (const a of TERM_ACCESS) {
+      const b = menu.createEl("button", { cls: "aos-tc-snip", text: TERM_ACCESS_LABEL[a], attr: { type: "button", role: "menuitemradio", "aria-checked": String(a === cur), "data-access": a, title: TERM_ACCESS_NOTE[a] } });
+      b.addEventListener("click", () => {
+        this.closeAccess();
+        if (a !== cur) this.restart({ access: a });
+      });
+    }
+    menu.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); this.closeAccess(); this.permChip.focus(); } });
+  }
+
+  private closeAccess(): void { this.accessMenu?.detach(); this.accessMenu = null; }
 
   focus(): boolean {
     if (this.el.hasClass("is-hidden")) return false;
@@ -116,6 +203,7 @@ export class TermComposer {
       } catch { this.catalog = aliasCatalog(new Date()); }
     }
     this.slash.update(catalogHost(this.catalog, host)?.commands ?? [], host);
+    this.syncChips();
   }
 
   private send(): void {

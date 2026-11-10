@@ -5605,3 +5605,9 @@ button.aos-cv-resume:not(.clickable-icon) { height: 28px; padding: 0 14px; borde
 button.aos-cv-resume:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
 .aos-cv-noresume { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--udx-text-3); }
 .aos-cc.is-readonly .aos-cc-note { color: var(--udx-text-3); }
+/* The model chip is the composer's HostModelMenu in thread mode (code-chat C12); the access chip opens the snippets' popover style. */
+.aos-tc-modelwrap { display: inline-flex; flex: none; position: relative; }
+.aos-tc-modelwrap.is-hidden { display: none; }
+.aos-tc-modelwrap .aos-hm-trigger { height: 28px; font-size: 12px; }
+button.aos-tc-access:not(.clickable-icon):disabled, .aos-tc-modelwrap:has(.aos-hm-trigger:disabled) { cursor: not-allowed; opacity: 0.6; }
+button.aos-tc-snip[aria-checked="true"]:not(.clickable-icon) { background: var(--udx-raised); }

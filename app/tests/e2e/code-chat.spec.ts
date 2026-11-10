@@ -88,8 +88,9 @@ test.describe("the Code chat surface on", () => {
     await expect(sw(win).locator("button[aria-pressed='true']")).toHaveText("Chat");
     // The composer sits in the chat's column with its chips; the second turn still runs, so Stop is offered.
     await expect(chat(win).locator(".aos-tc")).toBeVisible();
-    // No access was chosen for this terminal, so no access chip; the model is the conversation's.
-    await expect(chat(win).locator(".aos-tc-chip:visible")).toHaveText(["@ file", "/ commands", "Snippets", "fixture-model"]);
+    // No access was chosen for this terminal (Host default); the model is the conversation's, in the model menu's chip.
+    await expect(chat(win).locator(".aos-tc-chip:visible")).toHaveText(["@ file", "/ commands", "Snippets", "Host default"]);
+    await expect(chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger")).toContainText("fixture-model");
     await expect(chat(win).locator(".aos-cc-stop")).toBeVisible();
   });
 
@@ -148,6 +149,64 @@ test.describe("the Code chat surface on", () => {
     await expect(chat(win)).toBeVisible();
     await expect(chat(win).locator(".aos-ss-prompt .aos-ss-bubble").first()).toHaveText("Make the tide parser read the new station format");
     expect(await pidOf(win, agent)).toBe(pid);
+  });
+
+  test("the access and model chips restart the same conversation with the pick; they wait while a turn is open (C12)", async () => {
+    const { win } = app();
+    const sid = "abababab-0000-4000-8000-000000000008";
+    const key = "abababab-0000-4000-8000-000000000009";
+    const pool = <T>(f: string, arg?: unknown) => win.evaluate(({ f, arg }) => {
+      const p = (window as unknown as { aosHost: { plugin: { terminalPool: Record<string, (a?: unknown) => unknown> } } }).aosHost.plugin.terminalPool;
+      return p[f](arg);
+    }, { f, arg }) as Promise<T>;
+    const ids = async () => (await pool<Array<{ id: string }>>("list")).map((x) => x.id);
+    const selected = () => pool<string | null>("selectedId");
+    const metaOf = (id: string) => win.evaluate((i) => {
+      const p = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { meta: { terminalKey: string; sessionId: string | null; access: string | null } } | undefined } } } }).aosHost.plugin.terminalPool;
+      return p.get(i)?.meta ?? null;
+    }, id);
+    const model = chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger");
+    const access = chat(win).locator(".aos-tc-access");
+    // The conversation of the first test has a turn open: both chips wait, and say why.
+    await select(win, agent);
+    await expect(model).toBeDisabled();
+    await expect(access).toBeDisabled();
+    await expect(access).toHaveAttribute("title", /Wait for the turn to finish/);
+    // A conversation with its turn closed.
+    const done = conversation(sid, FX.v("workspaces/harbor-map/src/tide.ts")).slice(0, 6);
+    writeCache(key, done);
+    const old = await startAgent(win, { host: "claude", terminalKey: key, sessionId: sid, label: "Tide chart" });
+    await expect(chat(win)).toBeVisible();
+    await expect(model).toBeEnabled();
+    await expect(access).toBeEnabled();
+    // Choosing the current access does nothing.
+    const count = (await ids()).length;
+    await access.click();
+    await chat(win).locator("button[data-access='host']").click();
+    await win.waitForTimeout(300);
+    expect((await ids()).length).toBe(count);
+    expect(await selected()).toBe(old);
+    // A model from the custom id field: a new terminal resumes the same conversation on it, and the old one is gone.
+    await model.click();
+    await chat(win).locator("[data-hm-key='custom']").click();
+    await chat(win).locator("[data-hm-key='custom-input']").fill("sonnet");
+    await chat(win).locator("[data-hm-key='custom-use']").click();
+    await expect.poll(async () => (await selected()) !== old).toBe(true);
+    const second = (await selected()) ?? "";
+    expect(await ids()).not.toContain(old);
+    expect((await metaOf(second))?.sessionId).toBe(sid);
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toMatch(new RegExp(`\\[fixture claude stub\\] .*--model sonnet .*--resume ${sid}`));
+    // The access chip: another conversation (the fixture's agent exits at once, so the restarted one cannot be picked on again).
+    const sid2 = "abababab-0000-4000-8000-00000000000a";
+    const key2 = "abababab-0000-4000-8000-00000000000b";
+    writeCache(key2, conversation(sid2, FX.v("workspaces/harbor-map/src/tide.ts")).slice(0, 6).map((e) => ({ ...e, model: "sonnet" })));
+    const old2 = await startAgent(win, { host: "claude", terminalKey: key2, sessionId: sid2, label: "Tide chart 2" });
+    await expect(access).toBeEnabled();
+    await access.click();
+    await chat(win).locator("button[data-access='read']").click();
+    await expect.poll(async () => (await selected()) !== old2).toBe(true);
+    expect(await ids()).not.toContain(old2);
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toMatch(new RegExp(`--model sonnet --permission-mode plan --resume ${sid2}`));
   });
 
   test("a shell has no chat and no switch (C3)", async () => {

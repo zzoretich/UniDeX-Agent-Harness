@@ -31,13 +31,13 @@ import { groupKey, groupSidebar, scopeOf, sidebarOrder, stepRow, type SidebarGro
 import { HistoryCache } from "../data/historyCache";
 import type { HistoryResume, HistoryRow } from "../data/sessionHistory";
 import { pastEarlier, pastState, pastView, type PastView } from "../data/pastChat";
-import { TERM_HOST_LABEL, placeKey, placeOf, vaultPlace, workspacePlace, type Place, type PlaceWorld } from "../data/terminalLaunch";
+import { TERM_HOST_LABEL, placeKey, placeOf, vaultPlace, workspacePlace, type Place, type PlaceWorld, type TermAccess } from "../data/terminalLaunch";
 import { ComputerPane } from "./ComputerPane";
 import { storeFor, type ComputerStore, type RowMarks } from "../data/computerStore";
 import { computerPaneStart, rememberComputerPane } from "../settingsDefaults";
 import { CodeChat } from "./CodeChat";
 import type { CodeView } from "../data/codeFeeds";
-import type { ChatState } from "../data/codeChat";
+import { rowStatus, type ChatState } from "../data/codeChat";
 import { HOST_APP_SETTINGS, runHostCommand } from "./hostCommands";
 
 /** A chat with nothing in it yet. */
@@ -91,6 +91,8 @@ export class TerminalPanel {
   private newMenu: NewTerminalMenu | null = null;
   private list: TermList | null = null;
   private composer: TermComposer | null = null;
+  /** Terminals whose chip pick is restarting them now (a second pick waits). */
+  private restarting = new Set<string>();
   private finder: TermFind | null = null;
   private headMainEl: HTMLElement | null = null;
   private placeMenu: HTMLElement | null = null;
@@ -693,7 +695,33 @@ export class TerminalPanel {
     el.createSpan({ cls: `aos-term-dot is-${s.meta.host}` });
     const model = s.meta.host === "shell" ? null : this.modelOf(s);
     el.createSpan({ text: s.meta.host === "shell" ? "Shell" : `${TERM_HOST_LABEL[s.meta.host]} · ${model ?? "default model"}` });
-    if (s.meta.host !== "shell") this.composer?.setModel(model);
+    if (s.meta.host !== "shell") {
+      const feed = this.plugin.codeFeeds?.get(s.id)?.state;
+      const working = rowStatus({ exited: s.isExited, exitCode: s.exitCode, turnOpen: feed?.turnOpen ?? false, printing: false, needsYou: false }).status === "working";
+      this.composer?.setChips({ conversation: feed?.sessionId ?? null, working, model, restart: (patch) => this.restartWith(s.id, patch) });
+    }
+  }
+
+  /**
+   * The model or access chip's pick (code-chat C12): starts the same host at the same place on the same conversation
+   * (`resume` by the chat's id) with the pick, then closes the old terminal, whose follower ends with it; the new one gets
+   * its own. With no conversation known there is nothing to resume, and nothing happens. The other chip's value rides
+   * along, so a model changed in the TUI is not lost by an access pick.
+   */
+  restartWith(id: string, patch: { model?: string | null; access?: TermAccess | null }): Promise<void> {
+    const pool = this.plugin.terminalPool;
+    const s = pool.get(id);
+    const conv = this.plugin.codeFeeds?.get(id)?.state.sessionId ?? null;
+    if (!s || s.meta.host === "shell" || !conv || this.restarting.has(id)) return Promise.resolve();
+    this.restarting.add(id);
+    const host = s.meta.host;
+    return this.plugin.termLauncher.launch({
+      host, picked: this.placeOfSession(s), resume: { id: conv }, origin: s.meta.origin,
+      model: patch.model ?? this.modelOf(s), access: patch.access ?? s.meta.access,
+    }).then((l) => {
+      pool.remove(id);
+      pool.select(l.session.id);
+    }, (e: unknown) => { new Notice(`Terminal: ${e instanceof Error ? e.message : String(e)}`); }).finally(() => { this.restarting.delete(id); });
   }
 
   /** The top bar's Chat | Terminal ⌘J switch for an agent terminal; with the surface off, a note that sends you to the

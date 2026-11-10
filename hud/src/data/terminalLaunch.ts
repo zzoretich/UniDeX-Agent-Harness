@@ -373,6 +373,9 @@ export interface LaunchSpec {
   /** Continue a conversation instead of starting one: by id (either host), or the latest one (Claude --continue,
    *  `codex resume --last`). */
   resume?: { id: string } | "last" | null;
+  /** The model or access was picked for this launch (a chip restarting the conversation, code-chat C12): a Codex resume
+   *  by id then passes them after the id, where otherwise the thread keeps its own settings. */
+  picked?: boolean;
   /**
    * The folder the terminal starts in. A Codex resume by id names it with `-C`: Codex otherwise asks which folder to use
    * when the thread was recorded in another one, and an explicit `--cd` answers that question with this folder
@@ -483,8 +486,9 @@ export function launchArgs(s: LaunchSpec): string[] {
   // `--no-daemon` (R70) leads a new session's line and follows `resume` (`codex resume --help` lists it too).
   const nd = s.noDaemon ? ["--no-daemon"] : [];
   if (resume === "last") return ["resume", ...nd, "--last"];
-  if (resume) return ["resume", ...nd, ...(s.cwd ? [CODEX_RESUME_CD.flag, free("folder", s.cwd)] : []), resume.id];
-  return [...nd, ...(model ? ["-m", model] : []), ...CODEX_ACCESS[s.access]];
+  const picks = [...(model ? ["-m", model] : []), ...CODEX_ACCESS[s.access]];
+  if (resume) return ["resume", ...nd, ...(s.cwd ? [CODEX_RESUME_CD.flag, free("folder", s.cwd)] : []), resume.id, ...(s.picked ? picks : [])];
+  return [...nd, ...picks];
 }
 
 /**
