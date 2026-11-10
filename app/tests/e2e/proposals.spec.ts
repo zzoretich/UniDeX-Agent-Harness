@@ -166,7 +166,7 @@ test("Review in Claude ❯_ opens Code with a new session in the vault running t
   await expect(win.locator(".aos-wb-content .aos-term-tab.aos-term-tab-active")).toHaveAttribute("data-session", after[after.length - 1]);
   // It is a Claude Code row, started from Proposals (spec 2026-10-08-term-agent-deck).
   await expect(win.locator(".aos-wb-content .aos-term-tab.aos-term-tab-active")).toHaveAttribute("data-host", "claude");
-  await expect(win.locator(".aos-wb-content .aos-tl-group[data-group='vault']")).toHaveCount(1);
+  await expect(win.locator(".aos-wb-content .aos-tl-group[data-group='other']")).toHaveCount(1);
   await expect(win.locator(".aos-wb-content .aos-term-tab.aos-term-tab-active .aos-tl-origin")).toHaveText("from Proposals");
 });
 

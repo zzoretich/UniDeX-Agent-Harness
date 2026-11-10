@@ -31,7 +31,7 @@ import { CaptureModal } from "../ui/CaptureModal";
 import { HOST_APP_SETTINGS, HOST_TOGGLE_THEME, runHostCommand } from "../ui/hostCommands";
 import { currentTheme, onThemeChange } from "../ui/theme";
 import type { NewTerminalActions } from "../ui/NewTerminalMenu";
-import { TERM_HOST_LABEL, isContextPlace, placeOf, workspacePlace, type Place, type TermHost } from "../data/terminalLaunch";
+import { TERM_HOST_LABEL, isContextPlace, placeOf, termRunLine, workspacePlace, type Place, type TermHost } from "../data/terminalLaunch";
 import type { SpacesPane } from "../data/statusline";
 import { computerStore } from "../data/computerStore";
 
@@ -478,16 +478,18 @@ export class WorkbenchView extends ItemView {
   /** Runs `command` in a new Term session in the vault and shows it (Skills, Agents, Proposals, Notifications, Agent
    *  Teams, Settings). `host` is the agent the command starts, for its dot in the list; `origin` is the row's subtitle.
    *  False when no session could start (the Term tab then shows its install hint), so a caller whose command must not
-   *  be lost can say so. */
-  runInTerm(command: string, o: { host?: TermHost; origin?: string } = {}): boolean {
+   *  be lost can say so. An agent's command is typed as `exec <agent>` (R40): the terminal ends with the agent, never
+   *  leaving a login shell behind the chat's composer. `chat: false` marks a command that is not a conversation
+   *  (Connectors' `codex mcp login`): it is typed as it is, and its terminal has no chat view. */
+  runInTerm(command: string, o: { host?: TermHost; origin?: string; chat?: boolean } = {}): boolean {
     let id: string | null = null;
     try {
       const vault = this.plugin.vaultRoot();
       const sess = this.plugin.terminalPool.create({
         cwd: vault,
-        meta: { host: o.host ?? "shell", origin: o.origin ?? null, place: placeOf(vault, this.plugin.termLauncher.world()), label: o.host && o.host !== "shell" ? null : command },
+        meta: { host: o.host ?? "shell", origin: o.origin ?? null, place: placeOf(vault, this.plugin.termLauncher.world()), label: o.host && o.host !== "shell" ? null : command, ...(o.chat === false ? { chat: false } : {}) },
       });
-      sess.write(`${command}\r`);
+      sess.write(`${termRunLine(o, command)}\r`);
       id = sess.id;
       this.plugin.terminalPool.select(id);
     } catch { /* no terminal support: the Term tab renders its install hint */ }

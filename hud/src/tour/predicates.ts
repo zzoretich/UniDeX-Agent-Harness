@@ -19,12 +19,15 @@ export interface TourContext {
   /** The app runs the Computer pane (its surface is on, agent-computer D26): off, the pane is only a collapsed strip,
    *  so a step on its view would find nothing. Absent: off (outside the app, or an app that does not say). */
   computer?: boolean;
+  /** The app runs the Code chat view (its `code` surface is on, code-chat C13): off, an agent terminal opens in its terminal
+   *  and the top bar's switch is only a note, so a step about the chat would show nothing it names. Absent: off. */
+  code?: boolean;
   /** How the user types an in-session command on their hosts (aosConfig invocationHint): "/todo", "$agenticos:todo"… */
   cmd?: (name: string) => string;
 }
 
 /** Every predicate a step may name in `when`; `!` before one negates it. */
-export const PREDICATES = ["hasHost:claude", "hasHost:codex", "chatAvailable", "sessionsShown", "codexOnly", "noHost", "checklistShown", "computerOn"] as const;
+export const PREDICATES = ["hasHost:claude", "hasHost:codex", "chatAvailable", "sessionsShown", "codexOnly", "noHost", "checklistShown", "computerOn", "codeChatOn"] as const;
 export type Predicate = typeof PREDICATES[number];
 
 const HOST_NAME: Record<TourHost, string> = { claude: "Claude Code", codex: "Codex" };
@@ -44,6 +47,7 @@ function test(p: Predicate, ctx: TourContext): boolean {
     case "noHost": return ctx.hosts.length === 0;
     case "checklistShown": return ctx.checklist;
     case "computerOn": return ctx.computer === true;
+    case "codeChatOn": return ctx.code === true;
   }
 }
 

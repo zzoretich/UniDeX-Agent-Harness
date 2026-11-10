@@ -29,6 +29,7 @@ class FakeChild extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   signals: string[] = [];
   stderr = new EventEmitter();
+  stdout = new EventEmitter();
   kill(sig: string): boolean {
     this.signals.push(sig);
     this.signalCode = sig as NodeJS.Signals;
@@ -254,6 +255,28 @@ test("view: a non-zero exit is an error with the runtime's last line; a bad id n
   c.spawned[0].child.kill = (sig: string) => { c.spawned[0].child.signals.push(sig); queueMicrotask(() => c.spawned[0].child.finish(137)); return true; };
   assert.deepEqual(await slow, { ok: false, error: "the conversation took too long to load", code: "ETIMEDOUT" });
   assert.deepEqual(c.spawned[0].child.signals, ["SIGKILL"]);
+});
+
+test("view: the runtime's own refusal on stdout is the reason", async () => {
+  const { s, spawned } = rig();
+  const p = s.view({ host: "claude", id: "abc" });
+  spawned[0].child.stdout.emit("data", Buffer.from('{"ok":false,"reason":"no transcript found"}\n'));
+  spawned[0].child.finish(3);
+  assert.deepEqual(await p, { ok: false, error: "no transcript found", code: "EIO" });
+});
+
+test("view: at most four run at once; the fifth answers EAGAIN, and a finished one frees a slot", async () => {
+  const { s, spawned } = rig();
+  const runs = [1, 2, 3, 4].map((n) => s.view({ host: "claude", id: `s${n}` }));
+  assert.equal(spawned.length, 4);
+  assert.deepEqual(await s.view({ host: "claude", id: "s5" }), { ok: false, error: "too many conversations are loading: try again in a moment", code: "EAGAIN" });
+  assert.equal(spawned.length, 4, "the fifth never spawned");
+  spawned[0].child.finish(0);
+  await runs[0];
+  const again = s.view({ host: "claude", id: "s6" });
+  assert.equal(spawned.length, 5);
+  for (const sp of spawned.slice(1)) sp.child.finish(0);
+  await Promise.all([...runs.slice(1), again]);
 });
 
 test("R16: a follower lives as long as its terminal — the PTY's own exit keeps it; kill (even after the exit) and killAll end it", () => {

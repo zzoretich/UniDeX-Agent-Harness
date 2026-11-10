@@ -75,7 +75,9 @@ export class TourController {
     try { sessions = this.plugin.sessionsShown(); } catch { /* as chat */ }
     // The Computer pane's steps need its surface on (agent-computer D26): the app says so at boot.
     const computer = hudHost().computer?.enabled === true;
-    const base: TourContext = { hosts: sessionHosts(cfg), chat, sessions, checklist: false, computer, cmd: (name) => invocationHint(name, cfg) };
+    // The Code chat's steps need its surface on (code-chat C13), fixed at boot as the Computer's is.
+    const code = hudHost().code?.enabled === true;
+    const base: TourContext = { hosts: sessionHosts(cfg), chat, sessions, checklist: false, computer, code, cmd: (name) => invocationHint(name, cfg) };
     base.checklist = buildChecklist(BOOK, this.state(), base).shown;
     this.ctxCache = { at: now, ctx: base };
     return base;

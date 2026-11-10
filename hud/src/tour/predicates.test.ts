@@ -21,6 +21,8 @@ test("each predicate on each kind of install (tour C8)", () => {
     ["checklistShown", BOTH, true], ["checklistShown", CLAUDE, false],
     // The Computer pane's steps: only while the app runs its surface; unset (outside the app) is off.
     ["computerOn", { ...BOTH, computer: true }, true], ["computerOn", { ...BOTH, computer: false }, false], ["computerOn", BOTH, false],
+    // The Code chat's step: only while the app runs its `code` surface (code-chat C13); unset is off.
+    ["codeChatOn", { ...BOTH, code: true }, true], ["codeChatOn", { ...BOTH, code: false }, false], ["codeChatOn", BOTH, false],
   ];
   for (const [when, c, want] of table) assert.equal(holds(when, c), want, `${when} on ${c.hosts.join("+") || "none"}`);
 });

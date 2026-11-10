@@ -29,7 +29,7 @@ test("Spaces' Resume in Code types `claude --resume <id>` in the workspace's pla
   expect(s).toEqual({ cwd: FX.v("workspaces/harbor-map"), host: "claude", origin: "Spaces", sessionId: "c1a0de00-0000-4000-8000-000000000001", workspace: "harbor-map" });
   const groups = C().locator(".aos-tl-group");
   await expect(groups.first()).toHaveAttribute("data-group", "ws:harbor-map");
-  await expect(C().locator(".aos-tl-group[data-group='vault']")).toHaveCount(1);
+  await expect(C().locator(".aos-tl-group[data-group='other']")).toHaveCount(1);
   await expect(C().locator(".aos-tl-row.aos-term-tab-active .aos-tl-origin")).toHaveText("from Spaces");
   await expect(C().locator(".aos-term-head .aos-term-place")).toContainText("harbor-map");
   await expect(C().locator(".aos-term-head .aos-term-chip").first()).toContainText("Claude Code");
@@ -47,6 +47,8 @@ test("an agent that ends shows Done, and Restart starts it again in the same pla
   // The fixture's claude stub echoes and exits 0, so the exec'd agent ends at once.
   const row = C().locator(".aos-tl-row.aos-term-tab-active");
   await expect(row.locator(".aos-tl-end")).toHaveText("✓ Done", { timeout: 10_000 });
+  // Said once: the row's line under its title has the host and the age, not Done again.
+  await expect(row.locator(".aos-tl-sub")).toHaveText(/^Claude Code · (now|\d+[mhd])$/);
   // A terminal that knows its conversation (here the thread Spaces resumed) offers Resume by that id, not the latest.
   await expect(C().locator(".aos-term-endbar button")).toHaveText(["Restart", "Resume", "Open a shell here"]);
   await expect(C().locator(".aos-term-endbar button", { hasText: /^Resume$/ })).toHaveAttribute("title", "Resume this conversation (c1a0de00…)");
@@ -70,7 +72,7 @@ test("the selection survives a tab switch; ⇧⌘[ and ⇧⌘] walk the list; �
   expect(await command(win, "agentic-os:term-previous")).toBe(true);
   expect(await selected()).toBe(first);
   // Select the vault shell and close it: a shell needs no confirmation.
-  await C().locator(".aos-tl-group[data-group='vault'] ~ .aos-tl-row[data-host='shell']").first().click();
+  await C().locator(".aos-tl-group[data-group='other'] ~ .aos-tl-row[data-host='shell']").first().click();
   const shells = await C().locator(".aos-tl-row[data-host='shell']").count();
   expect(await command(win, "agentic-os:term-close")).toBe(true);
   await expect(C().locator(".aos-tl-row[data-host='shell']")).toHaveCount(shells - 1);
@@ -80,7 +82,7 @@ test("Clear ended removes the agents that ended; the filter narrows the list", a
   const { win } = app();
   await openTab(win, "term");
   await C().locator(".aos-tl-filter").fill("zzz-nothing");
-  await expect(C().locator(".aos-tl-empty")).toHaveText("No terminal matches.");
+  await expect(C().locator(".aos-tl-empty")).toHaveText("No session matches.");
   await C().locator(".aos-tl-filter").fill("");
   await expect(C().locator(".aos-tl-clear")).toBeVisible({ timeout: 10_000 });
   await C().locator(".aos-tl-clear").click();
@@ -254,7 +256,7 @@ test("opening Code defers nothing that takes the focus: the list filter keeps it
       delete w.__heldRaf;
     });
   }
-  await expect(C().locator(".aos-tl-empty")).toHaveText("No terminal matches.");
+  await expect(C().locator(".aos-tl-empty")).toHaveText("No session matches.");
   await filter.fill("");
 });
 

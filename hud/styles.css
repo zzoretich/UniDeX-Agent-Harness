@@ -2973,14 +2973,14 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-ss-tool, .aos-ss-patch { display: flex; flex-direction: column; gap: 3px; font-family: var(--udx-mono); font-size: 12.5px; line-height: 1.55; }
 .aos-ss-patch { gap: 8px; }
 .aos-ss-patchfile { display: flex; flex-direction: column; gap: 3px; }
-.aos-ss button.aos-ss-toolline {
+.aos-ss button.aos-ss-toolline, .aos-cc button.aos-ss-toolline {
   display: flex; align-items: baseline; width: 100%; height: auto; margin: 0; padding: 0; border: none; border-radius: 4px;
   background: none; color: var(--udx-text); font-family: var(--udx-mono); font-size: 12.5px; font-weight: 400;
   line-height: 1.55; text-align: left; overflow: hidden; cursor: pointer;
 }
-.aos-ss button.aos-ss-toolline:hover:not(:disabled) { background: none; }
-.aos-ss button.aos-ss-toolline:hover .aos-ss-target { text-decoration: underline; text-underline-offset: 2px; }
-.aos-ss button.aos-ss-toolline:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
+.aos-ss button.aos-ss-toolline:hover:not(:disabled), .aos-cc button.aos-ss-toolline:hover:not(:disabled) { background: none; }
+.aos-ss button.aos-ss-toolline:hover .aos-ss-target, .aos-cc button.aos-ss-toolline:hover .aos-ss-target { text-decoration: underline; text-underline-offset: 2px; }
+.aos-ss button.aos-ss-toolline:focus-visible, .aos-cc button.aos-ss-toolline:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
 /* The glyphs are decoration: the `/ ""` alt text keeps them out of the accessible name (the first `content` is the fallback). */
 .aos-ss-toolline::before { content: "⏺"; content: "⏺" / ""; flex: none; margin-right: 0.6em; color: var(--udx-text-3); }
 .aos-ss-tool.is-ok > .aos-ss-toolline::before, .aos-ss-patchfile > .aos-ss-toolline::before { color: var(--udx-ok-dot); }
@@ -3270,12 +3270,15 @@ button.aos-term-started-change:not(.clickable-icon) { height: 22px; padding: 0 8
    100% height: the page scrolled 50px and the composer's foot hid under the window's edge. Only the terminal, the
    list and the composer's text scroll. */
 .aos-wb-content.aos-term-deck { box-sizing: border-box; padding: 0; border: 0; border-radius: 0; overflow: hidden; }
-.aos-tl { flex: 0 0 248px; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 8px; box-sizing: border-box; background: var(--udx-surface); border-right: 1px solid var(--udx-line); }
+.aos-tl { flex: 0 0 264px; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 8px; box-sizing: border-box; background: var(--udx-surface); border-right: 1px solid var(--udx-line); }
 .aos-tl-head { padding: 0 4px; }
 .aos-tl-new .aos-ntm, .aos-tl-new .aos-ntm-split { display: flex; width: 100%; }
 .aos-tl-new button.aos-ntm-main:not(.clickable-icon) { flex: 1; min-width: 0; }
 .aos-ntm.is-left .aos-ntm-pop { left: 0; right: auto; }
-.aos-tl input.aos-tl-filter { width: 100%; box-sizing: border-box; height: 28px; padding: 0 9px; border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-bg); font-size: 12.5px; color: var(--udx-text); }
+.aos-tl-search { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 9px; border-radius: 8px; background: var(--udx-raised); color: var(--udx-text-3); }
+.aos-tl-searchicon svg { width: 13px; height: 13px; }
+.aos-tl input.aos-tl-filter { flex: 1; min-width: 0; height: 28px; padding: 0; border: 0; background: transparent; box-shadow: none; outline: none; font-size: 12.5px; color: var(--udx-text); }
+.aos-tl-search:focus-within { box-shadow: 0 0 0 2px var(--udx-focus); }
 .aos-tl-groups { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
 .aos-tl-group { display: flex; align-items: center; gap: 6px; padding: 10px 6px 3px; font-size: 12px; font-weight: 500; color: var(--udx-text-2); }
 .aos-tl-groupicon svg { width: 13px; height: 13px; }
@@ -3298,7 +3301,7 @@ button.aos-tl-close:not(.clickable-icon) { flex: none; width: 20px; height: 20px
 .aos-tl-row:hover button.aos-tl-close, button.aos-tl-close:focus-visible { opacity: 1; }
 .aos-tl-empty { padding: 10px 8px; font-size: 12.5px; color: var(--udx-text-3); }
 .aos-tl-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 4px 0; border-top: 1px solid var(--udx-line); font-size: 11.5px; color: var(--udx-text-3); }
-button.aos-tl-clear:not(.clickable-icon) { height: 22px; padding: 0 8px; border: 1px solid var(--udx-line-2); border-radius: 6px; background: var(--udx-bg); box-shadow: none; font-size: 11.5px; }
+button.aos-tl-clear:not(.clickable-icon), button.aos-tl-allhistory:not(.clickable-icon) { height: 22px; padding: 0 8px; border: 1px solid var(--udx-line-2); border-radius: 6px; background: var(--udx-bg); box-shadow: none; font-size: 11.5px; }
 /* Code scoped to one workspace by another tab (spaces-redesign D12): "Showing <workspace> only" and Show all. */
 .aos-tl-scope:not(.is-on) { display: none; }
 .aos-tl-scope.is-on { display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; font-size: 12px; color: var(--udx-text-2); }
@@ -3345,6 +3348,106 @@ button.aos-tc-snip:not(.clickable-icon) { height: auto; padding: 6px 9px; border
 button.aos-tc-snip:not(.clickable-icon):hover { background: var(--udx-raised-2); }
 button.aos-tc-snip.is-save:not(.clickable-icon) { border-top: 1px solid var(--udx-line); border-radius: 0 0 7px 7px; color: var(--udx-text-2); }
 .aos-tc-snipnote { padding: 6px 9px; font-size: 12px; color: var(--udx-text-3); }
+/* The composer's chips (spec 2026-11-09-code-chat §4): @ file, / commands, Snippets, then the agent's access and model. */
+.aos-tc-attach:empty { display: none; }
+button.aos-tc-chip:not(.clickable-icon), .aos-tc-chip.is-label {
+  display: inline-flex; flex: none; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px solid var(--udx-line);
+  border-radius: 999px; background: transparent; box-shadow: none; font-size: 12px; color: var(--udx-text-2); white-space: nowrap;
+}
+button.aos-tc-chip:not(.clickable-icon):hover { background: var(--udx-raised); color: var(--udx-text); }
+.aos-tc-chip.is-label { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+button.aos-tc-chip.is-hidden:not(.clickable-icon), .aos-tc-chip.is-hidden { display: none; }
+
+/* ══ Code: the chat view (spec 2026-11-09-code-chat C1, C3, C5, C9; §4 layout of record) ══════════════════════════════
+   The stage holds the terminal's body, laid out and hidden at its size while the chat lies over it (⌘J flips at once).
+   The chat is a 760 px column: prompts as right-aligned bubbles, agent text at 14.5 px, tool rows, the working line and
+   the TUI's card; under it the composer (moved in by TerminalPanel) and the status line in mono. */
+.aos-term-stage { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.aos-term-stage.is-chat .aos-term-body, .aos-term-stage.is-past .aos-term-body { visibility: hidden; }
+.aos-cc { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; background: var(--udx-bg); color: var(--udx-text); }
+.aos-cc.is-hidden { display: none; }
+.aos-cc button { font-family: var(--udx-sans); }
+.aos-cc-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 22px 24px 8px; }
+.aos-cc-col { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.aos-cc-rows { display: flex; flex-direction: column; gap: 14px; }
+.aos-cc-rows:empty { display: none; }
+.aos-cc .aos-ss-prompt { display: flex; justify-content: flex-end; }
+.aos-cc .aos-ss-bubble { max-width: 78%; border-radius: 14px; font-size: 14.5px; line-height: 1.55; }
+.aos-cc .aos-ss-text { font-size: 14.5px; }
+.aos-cc-earlier:not(.is-on) { display: none; }
+.aos-cc-earlier { display: flex; justify-content: center; }
+.aos-cc button.aos-cc-earlierbtn {
+  height: 26px; margin: 0; padding: 0 12px; border: 1px solid var(--udx-line-2); border-radius: 999px; background: var(--udx-bg);
+  box-shadow: none; font-size: 12px; color: var(--udx-text-2);
+}
+.aos-cc button.aos-cc-earlierbtn:hover { background: var(--udx-raised); color: var(--udx-text); }
+.aos-cc-note:empty { display: none; }
+.aos-cc-note { padding: 18px 0; font-size: 13px; color: var(--udx-text-3); text-align: center; }
+.aos-cc button.aos-cc-jump, .aos-cc button.aos-cc-hint {
+  display: inline; height: auto; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; font: inherit;
+  color: var(--udx-text-2); text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px; cursor: pointer;
+}
+.aos-cc button.aos-cc-jump:hover, .aos-cc button.aos-cc-hint:hover { color: var(--udx-text); text-decoration-color: currentColor; }
+.aos-cc button.aos-cc-jump:focus-visible, .aos-cc button.aos-cc-hint:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
+.aos-cc-working:empty { display: none; }
+.aos-cc-working { display: flex; align-items: center; gap: 10px; font-family: var(--udx-mono); font-size: 12.5px; color: var(--udx-text-2); }
+.aos-cc-workingtext::before { content: "✻"; content: "✻" / ""; display: inline-block; margin-right: 0.5em; color: var(--udx-warn); animation: aos-ss-spin 2.4s linear infinite; }
+.aos-cc button.aos-cc-stop {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; margin: 0; padding: 0 10px; border: 1px solid var(--udx-line-2);
+  border-radius: 8px; background: var(--udx-bg); box-shadow: none; font-size: 12px; color: var(--udx-text);
+}
+.aos-cc button.aos-cc-stop:hover { background: var(--udx-raised); }
+.aos-cc-kbd { font-family: var(--udx-mono); font-size: 11px; color: var(--udx-text-3); }
+@media (prefers-reduced-motion: reduce) { .aos-cc-workingtext::before { animation: none; } }
+/* The TUI's prompt (C4, Task 12), last, in the gate colour. */
+.aos-cc-card:not(.is-on) { display: none; }
+.aos-cc-gate { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--udx-gate); border-radius: 12px; background: var(--udx-gate-bg); }
+.aos-cc-gate.is-waiting { flex-direction: row; align-items: center; justify-content: space-between; }
+.aos-cc-gatetitle { font-size: 13px; font-weight: 600; color: var(--udx-gate); }
+.aos-cc-gatedetail { padding: 8px 10px; border-radius: 8px; background: var(--udx-bg); font-family: var(--udx-mono); font-size: 12.5px; color: var(--udx-text); white-space: pre-wrap; word-break: break-word; }
+.aos-cc-gatechoices { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.aos-cc button.aos-cc-choice {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; margin: 0; padding: 0 12px; border: 1px solid var(--udx-line-2);
+  border-radius: 8px; background: var(--udx-bg); box-shadow: none; font-size: 12.5px; color: var(--udx-text);
+}
+.aos-cc button.aos-cc-choice.is-first { border-color: var(--udx-inv); background: var(--udx-inv); color: var(--udx-inv-text); }
+.aos-cc-choicekey { font-family: var(--udx-mono); font-size: 11px; opacity: 0.7; }
+.aos-cc-gatechoices .aos-cc-jump { margin-left: auto; font-size: 12.5px; }
+.aos-cc-foot { flex: none; padding: 6px 24px 10px; }
+.aos-cc-footcol { max-width: 760px; margin: 0 auto; }
+.aos-cc .aos-tc { padding: 0; }
+/* The agent ended and the login shell runs in its terminal (R39): a notice where the composer was. */
+.aos-cc-ended:empty { display: none; }
+.aos-cc-ended { padding: 12px 14px; border: 1px solid var(--udx-line-2); border-radius: 14px; background: var(--udx-raised); font-size: 13px; color: var(--udx-text-2); }
+.aos-cc.is-ended .aos-cc-composer { display: none; }
+/* Three lines in the chat's column (its corner still drags it taller). */
+.aos-tc.is-chat textarea.aos-tc-input { min-height: 46px; height: 72px; }
+.aos-tc.is-chat .aos-tc-hint { visibility: hidden; }
+/* The status line exactly as the terminal draws it (C5): its rows, colours (the xterm tokens) and links. */
+.aos-cc-status { display: flex; flex-direction: column; padding: 7px 6px 0; font-family: var(--udx-mono); font-size: 11.5px; line-height: 1.6; color: var(--udx-term-foreground); }
+.aos-cc-status.is-hint { align-items: flex-start; font-family: var(--udx-sans); font-size: 12px; color: var(--udx-text-3); }
+.aos-cc-statusline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.aos-cc a.aos-cc-statuslink { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.aos-cc a.aos-cc-statuslink:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
+/* The top bar (48 px): title, place, "Host · Model", then the Chat | Terminal ⌘J switch at the right. */
+.aos-term-deck .aos-term-header { min-height: 48px; box-sizing: border-box; padding: 6px 12px 6px 20px; }
+.aos-term-deck .aos-term-headtitle { font-size: 14.5px; font-weight: 600; }
+.aos-term-view { display: flex; align-items: center; gap: 8px; }
+.aos-term-view:empty { display: none; }
+.aos-cv { display: flex; align-items: center; padding: 2px; border-radius: 8px; background: var(--udx-raised); }
+button.aos-cv-btn:not(.clickable-icon) {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; margin: 0; padding: 0 11px; border: 0; border-radius: 6px;
+  background: transparent; box-shadow: none; font-size: 12.5px; color: var(--udx-text-2);
+}
+button.aos-cv-btn.is-on:not(.clickable-icon) { background: var(--udx-bg); color: var(--udx-text); font-weight: 500; box-shadow: 0 0 0 1px var(--udx-line); }
+button.aos-cv-btn:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
+.aos-cv-kbd { font-family: var(--udx-mono); font-size: 10.5px; color: var(--udx-text-3); }
+.aos-cv.is-off { padding: 0 4px; background: transparent; font-size: 12px; color: var(--udx-text-3); }
+button.aos-cv-settings:not(.clickable-icon) {
+  height: auto; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; font-size: 12px; color: var(--udx-text-2);
+  text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px; cursor: pointer;
+}
+button.aos-cv-settings:not(.clickable-icon):hover { color: var(--udx-text); text-decoration-color: currentColor; }
 
 /* ══ Term: find (⌘F, spec 2026-10-08-term-agent-deck §4) — a small bar over the card's top right ═══════════════════ */
 .aos-tf { position: absolute; top: 8px; right: 12px; z-index: 20; display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 10px; border: 1px solid var(--udx-line-2); border-radius: 10px; background: var(--udx-bg); box-shadow: var(--udx-shadow); }
@@ -5476,3 +5579,41 @@ button.aos-cp-helpbtn:not(.clickable-icon) { flex: none; height: auto; padding: 
   .aos-ss > .aos-cp.is-collapsed { flex: 0 0 auto; height: auto; }
   .aos-ss > .aos-cp.is-collapsed .aos-cp-head { flex-direction: row; justify-content: flex-end; padding: 0 8px; }
 }
+
+/* The Code sidebar (code-chat C6): a status glyph, the title, "Host · status · age"; past and closed conversations open read-only. */
+.aos-tl-glyph { flex: none; width: 14px; height: 14px; box-sizing: border-box; margin-top: 2px; border-radius: 50%; }
+.aos-tl-glyph.is-idle, .aos-tl-glyph.is-past { width: 8px; height: 8px; margin: 5px 3px 0; border: 2px solid var(--udx-text-3); background: transparent; }
+.aos-tl-glyph.is-past { opacity: 0.6; }
+.aos-tl-glyph.is-exited { width: 8px; height: 8px; margin: 5px 3px 0; background: var(--udx-text-3); }
+.aos-tl-glyph.is-shell { border-radius: 3px; width: 12px; height: 9px; margin: 4px 1px 0; border: 2px solid var(--udx-text-3); }
+.aos-tl-glyph.is-working { border: 2px solid var(--udx-line-2); border-top-color: var(--udx-info); animation: aos-tl-spin 0.9s linear infinite; }
+.aos-tl-glyph.is-needs { background: var(--udx-gate-bg); border: 2px solid var(--udx-gate); }
+@keyframes aos-tl-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .aos-tl-glyph.is-working { animation: none; } }
+.aos-tl-row.aos-term-tab, .aos-tl-past { align-items: flex-start; }
+.aos-tl-past { display: flex; gap: 8px; padding: 6px 8px 6px 14px; border-radius: 8px; font-size: 13px; color: var(--udx-text); cursor: pointer; }
+.aos-tl-past:hover { background: var(--udx-raised); }
+.aos-tl-past.is-active { background: var(--udx-raised-2); }
+.aos-tl-past:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: -2px; }
+.aos-tl-title, .aos-term-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.aos-tl-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--udx-text-3); }
+.aos-tl-sub.is-needs { color: var(--udx-gate); }
+button.aos-tl-more:not(.clickable-icon) { align-self: flex-start; height: 24px; margin: 2px 0 0 14px; padding: 0 8px; border: 0; background: transparent; box-shadow: none; font-size: 12px; color: var(--udx-text-3); }
+button.aos-tl-more:not(.clickable-icon):hover { color: var(--udx-text); }
+.aos-tl-foot { flex-wrap: wrap; row-gap: 6px; }
+.aos-tl-count { flex: 1; min-width: 0; }
+.aos-tl-needs.is-on { color: var(--udx-gate); }
+/* A past conversation's top bar: where it ran, and Resume (or why there is none). */
+.aos-term-place.is-static { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; font-size: 12.5px; color: var(--udx-text-2); }
+button.aos-cv-resume:not(.clickable-icon) { height: 28px; padding: 0 14px; border: 0; border-radius: 8px; background: var(--udx-inv); color: var(--udx-inv-text); box-shadow: none; font-size: 12.5px; font-weight: 500; }
+button.aos-cv-resume:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
+.aos-cv-noresume { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--udx-text-3); }
+.aos-cc.is-readonly .aos-cc-note { color: var(--udx-text-3); }
+/* The model chip is the composer's HostModelMenu in thread mode (code-chat C12); the access chip opens the snippets' popover style. */
+.aos-tc-modelwrap { display: inline-flex; flex: none; position: relative; }
+.aos-tc-modelwrap.is-hidden { display: none; }
+.aos-tc-modelwrap .aos-hm-trigger { height: 28px; font-size: 12px; }
+button.aos-tc-access:not(.clickable-icon)[aria-disabled="true"], .aos-tc-modelwrap:has(.aos-hm-trigger:disabled) { cursor: not-allowed; opacity: 0.6; }
+/* Why the access and model chips wait, for screen readers (M5); sighted users read it on hover. */
+.aos-tc-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+button.aos-tc-snip[aria-checked="true"]:not(.clickable-icon) { background: var(--udx-raised); }

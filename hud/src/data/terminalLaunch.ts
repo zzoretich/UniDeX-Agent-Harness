@@ -373,6 +373,9 @@ export interface LaunchSpec {
   /** Continue a conversation instead of starting one: by id (either host), or the latest one (Claude --continue,
    *  `codex resume --last`). */
   resume?: { id: string } | "last" | null;
+  /** Which of the two was picked for this launch (a chip restarting the conversation, code-chat C12): a Codex resume by
+   *  id then passes just those after the id, where otherwise the thread keeps its own settings. */
+  picked?: { model?: boolean; access?: boolean };
   /**
    * The folder the terminal starts in. A Codex resume by id names it with `-C`: Codex otherwise asks which folder to use
    * when the thread was recorded in another one, and an explicit `--cd` answers that question with this folder
@@ -483,15 +486,20 @@ export function launchArgs(s: LaunchSpec): string[] {
   // `--no-daemon` (R70) leads a new session's line and follows `resume` (`codex resume --help` lists it too).
   const nd = s.noDaemon ? ["--no-daemon"] : [];
   if (resume === "last") return ["resume", ...nd, "--last"];
-  if (resume) return ["resume", ...nd, ...(s.cwd ? [CODEX_RESUME_CD.flag, free("folder", s.cwd)] : []), resume.id];
-  return [...nd, ...(model ? ["-m", model] : []), ...CODEX_ACCESS[s.access]];
+  const picks = [...(model ? ["-m", model] : []), ...CODEX_ACCESS[s.access]];
+  if (resume) {
+    const p = s.picked;
+    const after = [...(p?.model && model ? ["-m", model] : []), ...(p?.access ? CODEX_ACCESS[s.access] : [])];
+    return ["resume", ...nd, ...(s.cwd ? [CODEX_RESUME_CD.flag, free("folder", s.cwd)] : []), resume.id, ...after];
+  }
+  return [...nd, ...picks];
 }
 
 /**
  * The line typed into the fresh shell, when the app's main process cannot run the agent as the terminal's own process
  * (agent-computer D18: a fallback) and for Spaces' resume hint. The leading space keeps it out of a history that ignores
  * spaced lines. `exec` hands the terminal to the agent, so the row ends with the agent's own exit code; when the binary
- * is not there the shell stays open and says so instead.
+ * is not there the line says so and ends the shell too (R40).
  */
 export function launchLine(s: LaunchSpec): string {
   const bin = shq(s.bin || s.host);
@@ -500,8 +508,47 @@ export function launchLine(s: LaunchSpec): string {
   const argv = [bin, ...launchArgs(typed).map((a) => (/^[A-Za-z0-9._:/=-]+$/.test(a) ? a : shq(a)))].join(" ");
   const label = TERM_HOST_LABEL[s.host];
   const git = s.gitInit ? "[ -e .git ] || git init -q; " : "";
-  return ` ${git}command -v ${bin} >/dev/null 2>&1 && ${s.envPrefix ?? ""}exec ${argv} || echo ${shq(`${label} was not found: run aos doctor`)}`;
+  return ` ${git}${execOrSay(bin, `${s.envPrefix ?? ""}exec ${argv}`, label)}`;
 }
+
+/**
+ * `command -v <bin> && <run> || { say it; exit 127; }`: the one shape every typed agent line has. The run is `exec`ed, so
+ * the shell ends with the agent and the terminal with it; a missing binary says so and ends the shell too (R40), never
+ * leaving a login shell behind a terminal that is tagged as an agent. `bin` is already quoted.
+ */
+function execOrSay(bin: string, run: string, label: string): string {
+  return `command -v ${bin} >/dev/null 2>&1 && ${run} || { printf '%s\\n' ${shq(`${label} was not found: run aos doctor`)}; exit 127; }`;
+}
+
+/**
+ * What `WorkbenchView.runInTerm` types for `command`: an agent command is `typedAgentLine`, anything else (a shell
+ * command, or an agent command that is not a conversation: `chat: false`, e.g. `codex mcp login`) is typed as it is.
+ */
+export function termRunLine(o: { host?: TermHost; chat?: boolean }, command: string): string {
+  return o.chat === false || !o.host ? command : typedAgentLine(o.host, command);
+}
+
+/**
+ * What an app button's agent command (`claude "…"`, `codex '…'`, the prompt already quoted by its caller) is typed as:
+ * the same line `launchLine` types, with the command's own words unchanged after `exec` (R40). Agent Teams types the
+ * command behind its config folder, `CODEX_HOME='…' codex '…'`: the leading `NAME='…' ` assignments stay in front of
+ * `exec`, as `launchLine`'s envPrefix does (R42). A command that does not start with the host's CLI (after such a
+ * prefix) is returned as it is: it is not ours to reshape, and what it types still runs; only the shell outlives it.
+ */
+export function typedAgentLine(host: TermHost, command: string): string {
+  if (host === "shell") return command;
+  const prefix = /^(?:[A-Z_][A-Z0-9_]*='[^']*(?:'\\''[^']*)*' )*/.exec(command)?.[0] ?? "";
+  const rest = command.slice(prefix.length);
+  if (!(rest === host || rest.startsWith(`${host} `))) return command;
+  const line = execOrSay(shq(host), `${prefix}exec ${rest}`, TERM_HOST_LABEL[host]);
+  // The line is typed before the shell reads it in raw mode, and the tty's input line holds 1024 BYTES (not UTF-16
+  // units): a long prompt (a team gate's redirect carries a board entry) keeps to the short form, whose failed exec
+  // still ends the shell.
+  return new TextEncoder().encode(line).length < TYPED_LINE_MAX ? line : `${prefix}exec ${rest} || exit 127`;
+}
+
+/** The longest typed line that keeps the full guard: the tty's 1024-byte input line, less the return and some room. */
+const TYPED_LINE_MAX = 1000;
 
 /** An `--allowedTools` value as the menu and the Spaces hint show it: the names without their prefix, all nine computer
  *  tools as `computer_*` (the full line stays where it is kept: the terminal, a hint's title). */

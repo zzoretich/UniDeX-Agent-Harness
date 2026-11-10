@@ -368,7 +368,7 @@ test("listener leak: switching Pulse → Brain → Pulse → Code → Pulse does
   const once = await count();
   for (let i = 0; i < 4; i++) await cycle();
   expect(await count()).toBe(once);
-  expect(once).toBeLessThanOrEqual(1);   // the Term tab's panel, kept for its next visit (Pulse has none)
+  expect(once).toBeLessThanOrEqual(2);   // the Term tab's panel, kept for its next visit, and the app's Code chat feeds (CodeFeeds, one for the app); Pulse has none
   await expect(content(win)).toContainText("Needs you");
   await expect(rail(win, "pulse")).toHaveClass(/is-active/);
 });

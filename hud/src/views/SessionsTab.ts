@@ -9,10 +9,10 @@ import {
 } from "../host";
 import { readAgenticosJson, readProviderState, type SessionHost } from "../data/aosConfig";
 import {
-  DEFAULT_ACCESS, HOST_LABEL, accessLabel, catalogHost, choiceText, countsText, diffTotals, doneLine, fileCounts, fileStatusLabel,
+  DEFAULT_ACCESS, HOST_LABEL, accessLabel, catalogHost, choiceText, diffTotals, fileCounts, fileStatusLabel,
   groupThreads, hostChoices, lastTurnUsd, mergeEvents, modelArg, relPath, sessionSpendToday, spendLine, statusSummary,
-  threadAge, threadMeta, threadRows, toolResultText, turnChoices, turnElapsed, turnOpen, usdText, workingText, workspaceNames,
-  type CatalogCommand, type PlanItem, type RememberedChoice, type ThreadRow,
+  threadAge, threadMeta, threadRows, turnChoices, turnElapsed, turnOpen, usdText, workingText, workspaceNames,
+  type CatalogCommand, type RememberedChoice,
 } from "../data/agentSessions";
 import { SPEND_LEDGER_PATH } from "../data/claudeAsk";
 import { ago } from "../data/notifications";
@@ -27,6 +27,7 @@ import type { PlaceWorld, TermHostChoice } from "../data/terminalLaunch";
 import { AccessMenu } from "../ui/AccessMenu";
 import { HostModelMenu, type HostModelValue } from "../ui/HostModelMenu";
 import { SlashMenu } from "../ui/SlashMenu";
+import { ThreadView, renderDiff, type FileDiff, type ThreadViewContext } from "../ui/ThreadView";
 
 /** The list's first row: today's Q&A chat about the vault (ChatTab). */
 const VAULT = "vault";
@@ -41,12 +42,6 @@ const BUSY_RETRY_MS = 300;
 const BUSY_RETRIES = 10;
 /** The working line's clock. */
 const TICK_MS = 1000;
-/** A file's diff in the reader shows this many lines; the review drawer's shows them all. */
-const DIFF_LINES = 400;
-/** Claude Code's word for each change a Codex patch reports. */
-const PATCH_VERB: Record<string, string> = { add: "Write", delete: "Delete", update: "Update" };
-/** What a screen reader hears before each plan item: the box alone says it only by sight. */
-const PLAN_STATE: Record<PlanItem["status"], string> = { done: "Done: ", active: "In progress: ", pending: "To do: " };
 
 interface RepoCard {
   workspace: string;
@@ -61,9 +56,6 @@ interface RepoCard {
   committing: boolean;
 }
 
-/** A file's current diff opened from a tool or patch line; null while it is read. */
-type FileDiff = { text: string; truncated: boolean; error: string | null } | null;
-
 /** The reader's parts that change after it is drawn. */
 interface ReaderEls {
   top: HTMLElement;
@@ -76,14 +68,6 @@ interface ReaderEls {
   status: HTMLElement;
   /** The running turn's `✻ Working…` line, which the clock updates in place. */
   working: HTMLElement | null;
-}
-
-/** What the timeline's rows need to know of their thread. */
-interface RowContext {
-  host: SessionHost;
-  entry: HostCatalogHost | null;
-  root: string | null;
-  choices: Map<number, { model: string | null; effort: string | null }>;
 }
 
 /**
@@ -1110,12 +1094,30 @@ export class SessionsTab {
       if (this.selected === NEW) { this.renderIntro(el); return; }
       if (this.loading) { el.createDiv({ cls: "aos-ss-note", text: "Reading the thread…" }); return; }
       const host = this.thread?.host ?? "claude";
-      const ctx: RowContext = { host, entry: catalogHost(this.catalog, host), root: this.workspaceRoot(), choices: turnChoices(this.events) };
-      for (const row of threadRows(this.events, { host, catalog: ctx.entry, root: ctx.root })) this.renderRow(el, row, ctx);
+      const ctx: ThreadViewContext = { host, entry: catalogHost(this.catalog, host), root: this.workspaceRoot(), choices: turnChoices(this.events) };
+      this.threadView(el).render(threadRows(this.events, { host, catalog: ctx.entry, root: ctx.root }), ctx);
       if (turnOpen(this.events)) r.working = el.createDiv({ cls: "aos-ss-working", text: this.workingLine() });
     });
     this.syncTick();
     if (atEnd) scroll.scrollTop = scroll.scrollHeight;
+  }
+
+  /** The rows are drawn by a ThreadView over the timeline; the expanded set and the diff cache stay with this tab. */
+  private threadView(el: HTMLElement): ThreadView {
+    return new ThreadView(el, {
+      md: (body, text) => {
+        if (this.md) void MarkdownRenderer.renderMarkdown(text, body, `workspaces/${this.thread?.workspace ?? ""}`, this.md);
+      },
+      expanded: this.expanded,
+      diffPath: (file) => this.diffPath(file),
+      fileCounts: (file) => fileCounts(this.repoStatus(), file),
+      fileDiff: (file) => {
+        const d = this.diffs.get(file);
+        if (d === undefined) void this.loadDiff(file);   // read again after a turn or a commit
+        return d;
+      },
+      onToggle: (key, file) => this.toggleTool(key, file),
+    });
   }
 
   private renderIntro(el: HTMLElement): void {
@@ -1142,118 +1144,6 @@ export class SessionsTab {
   private stopTick(): void {
     if (this.tick !== null) window.clearInterval(this.tick);
     this.tick = null;
-  }
-
-  private renderRow(el: HTMLElement, r: ThreadRow, ctx: RowContext): void {
-    if (r.kind === "prompt") {
-      el.createDiv({ cls: "aos-ss-prompt" }).createDiv({ cls: "aos-ss-bubble", text: r.text });
-    } else if (r.kind === "text") {
-      const body = el.createDiv({ cls: "aos-ss-text" });
-      if (this.md) void MarkdownRenderer.renderMarkdown(r.text, body, `workspaces/${this.thread?.workspace ?? ""}`, this.md);
-    } else if (r.kind === "tool") {
-      this.renderTool(el, r);
-    } else if (r.kind === "patch") {
-      this.renderPatch(el, r, ctx);
-    } else if (r.kind === "plan") {
-      const card = el.createDiv({ cls: "aos-ss-plan" });
-      card.createDiv({ cls: "aos-ss-planhead", text: "Plan" });
-      const list = card.createEl("ul", { cls: "aos-ss-planlist" });
-      for (const item of r.items) {
-        const li = list.createEl("li", { cls: `aos-ss-planitem is-${item.status}`, attr: { "data-status": item.status } });
-        li.createSpan({ cls: "aos-ss-planbox", text: item.status === "done" ? "☒" : "☐", attr: { "aria-hidden": "true" } });
-        const text = li.createSpan({ cls: "aos-ss-plantext" });
-        text.createSpan({ cls: "aos-ss-sronly", text: PLAN_STATE[item.status] });
-        text.appendText(item.text);
-      }
-    } else if (r.kind === "change") {
-      el.createDiv({ cls: "aos-ss-turnchange", attr: { "data-turn": String(r.turn) } }).createSpan({ cls: "aos-ss-turnchangetext", text: r.text });
-    } else if (r.kind === "computer") {
-      // agent-computer D6, D21, D35: what the Computer pane's activity log says, for this thread's agent.
-      const line = el.createDiv({ cls: "aos-ss-computer", attr: { "data-turn": String(r.turn) } });
-      line.createSpan({ cls: "aos-ss-computerlabel", text: "Computer" });
-      line.createSpan({ cls: "aos-ss-computertext", text: r.text });
-    } else if (r.kind === "error") {
-      el.createDiv({ cls: "aos-ss-error", text: r.message });
-    } else {
-      const c = ctx.choices.get(r.turn);
-      const choice = c ? choiceText(ctx.host, ctx.entry, c.model, c.effort) : null;
-      el.createDiv({ cls: `aos-ss-done${r.ok ? "" : " is-failed"}`, text: doneLine(r, choice) });
-    }
-  }
-
-  /** `⏺ Verb(target)` and its `⎿` result; open, the full input and result and, for an edit, the file's diff (U10). */
-  private renderTool(el: HTMLElement, r: Extract<ThreadRow, { kind: "tool" }>): void {
-    const tone = r.result === null ? "is-pending" : r.result.ok ? "is-ok" : "is-failed";
-    const open = this.expanded.has(r.key);
-    const box = el.createDiv({ cls: `aos-ss-tool ${tone}${open ? " is-open" : ""}`, attr: { "data-kind": r.tool.toolKind || "other", "data-verb": r.verb } });
-    const file = r.tool.toolKind === "edit" && r.tool.filePath ? this.diffPath(r.tool.filePath) : null;
-    this.renderLine(box, r.verb, r.target, open, `tool:${r.key}`, () => this.toggleTool(r.key, file));
-    const result = toolResultText(r, file ? fileCounts(this.repoStatus(), file) : null);
-    if (result !== null) this.renderResult(box, result, r.result?.ok === false);
-    if (!open) return;
-    const body = box.createDiv({ cls: "aos-ss-toolbody" });
-    if (r.tool.summary) body.createEl("pre", { cls: "aos-ss-toolin", text: r.tool.summary });
-    if (r.result) {
-      body.createDiv({ cls: "aos-ss-toolstate", text: r.result.ok ? "Result" : "Failed" });
-      if (r.result.summary) body.createEl("pre", { cls: "aos-ss-toolout", text: r.result.summary });
-    } else body.createDiv({ cls: "aos-ss-toolstate", text: "No result yet" });
-    if (file) this.renderFileDiff(body, file);
-  }
-
-  /** A Codex patch as Claude Code shows edits: a line per file with its +/−, each opening to the file's diff. */
-  private renderPatch(el: HTMLElement, r: Extract<ThreadRow, { kind: "patch" }>, ctx: RowContext): void {
-    const box = el.createDiv({ cls: "aos-ss-patch" });
-    r.files.forEach((f, i) => {
-      const key = `patch:${r.turn}:${i}:${f.path}`;
-      const open = this.expanded.has(key);
-      const file = f.path ? this.diffPath(f.path) : null;
-      const item = box.createDiv({ cls: `aos-ss-patchfile is-ok${open ? " is-open" : ""}`, attr: { "data-file": file ?? f.path, "data-change": f.change } });
-      this.renderLine(item, PATCH_VERB[f.change] ?? "Update", relPath(f.path, ctx.root), open, key, () => this.toggleTool(key, file));
-      const counts = file ? fileCounts(this.repoStatus(), file) : null;
-      const c = counts ? countsText(counts) : "";
-      this.renderResult(item, c ? `${c} · open to see the file's diff` : "Done", false);
-      if (open && file) this.renderFileDiff(item.createDiv({ cls: "aos-ss-toolbody" }), file);
-    });
-  }
-
-  private renderLine(box: HTMLElement, verb: string, target: string, open: boolean, key: string, toggle: () => void): void {
-    const line = box.createEl("button", { cls: "aos-ss-toolline", attr: { type: "button", "aria-expanded": String(open), "data-focus": key } });
-    line.createSpan({ cls: "aos-ss-verb", text: verb });
-    if (target) line.createSpan({ cls: "aos-ss-target", text: `(${target})` });
-    line.addEventListener("click", toggle);
-  }
-
-  /** The `⎿` line; an edit's `+a −b` in their colours. */
-  private renderResult(box: HTMLElement, text: string, failed: boolean): void {
-    const out = box.createDiv({ cls: `aos-ss-toolresult${failed ? " is-failed" : ""}` });
-    const m = /^(\+\d+) (−\d+)( · .*)$/.exec(text);
-    if (!m) { out.setText(text); return; }
-    out.createSpan({ cls: "aos-ss-plus", text: m[1] });
-    out.appendText(" ");
-    out.createSpan({ cls: "aos-ss-minus", text: m[2] });
-    out.appendText(m[3]);
-  }
-
-  /** The file's diff against HEAD now (git:diff), the same for both hosts: Codex names only the files it changed. */
-  private renderFileDiff(parent: HTMLElement, file: string): void {
-    const wrap = parent.createDiv({ cls: "aos-ss-filediff" });
-    const d = this.diffs.get(file);
-    if (d === undefined) void this.loadDiff(file);   // read again after a turn or a commit
-    if (!d) { wrap.createDiv({ cls: "aos-ss-note", text: "Reading the file's diff…" }); return; }
-    if (d.error) { wrap.createDiv({ cls: "aos-ss-error", text: d.error }); return; }
-    if (!d.text.trim()) { wrap.createDiv({ cls: "aos-ss-note", text: "The file has no changes against HEAD." }); return; }
-    this.renderDiff(wrap, d.text, d.truncated, DIFF_LINES);
-  }
-
-  private renderDiff(parent: HTMLElement, text: string, truncated: boolean, max = Infinity): void {
-    const lines = text.replace(/\n$/, "").split("\n");
-    const pre = parent.createEl("pre", { cls: "aos-ss-diff" });
-    for (const line of lines.slice(0, max)) {
-      const kind = /^(diff |index |--- |\+\+\+ )/.test(line) ? " is-meta" : line.startsWith("@@") ? " is-hunk" : line.startsWith("+") ? " is-add" : line.startsWith("-") ? " is-del" : "";
-      pre.createSpan({ cls: `aos-ss-diffline${kind}`, text: line || " " });
-    }
-    if (lines.length > max) parent.createDiv({ cls: "aos-ss-note", text: `The first ${max} of ${lines.length} lines; Review changes shows them all.` });
-    if (truncated) parent.createDiv({ cls: "aos-ss-note", text: "The diff is longer than this; only its first 2 MB are shown." });
   }
 
   /** The Review changes drawer: the repository card (what changed, each file's +/− and diff, the commit). */
@@ -1303,7 +1193,7 @@ export class SessionsTab {
       const pane = card.createDiv({ cls: "aos-ss-diffwrap" });
       if (r.review.error) pane.createDiv({ cls: "aos-ss-error", text: r.review.error });
       else if (!r.review.text) pane.createDiv({ cls: "aos-dim", text: "Reading the diff…" });
-      else this.renderDiff(pane, r.review.text, r.review.truncated);
+      else renderDiff(pane, r.review.text, r.review.truncated);
     }
     if (running) { card.createDiv({ cls: "aos-ss-note", text: "The agent is still working: commit once the turn ends." }); return; }
     const form = card.createDiv({ cls: "aos-ss-commit" });

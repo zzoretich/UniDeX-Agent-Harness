@@ -22,6 +22,17 @@ export const VIEW_TIMEOUT_MS = 15_000;
 /** A follower that ignores SIGTERM is killed after this long. */
 const KILL_AFTER_MS = 3000;
 const STDERR_TAIL = 2000;
+/** One-shot `view` runs at once; the next answers EAGAIN. */
+export const MAX_VIEWS = 4;
+
+/** The runtime's own refusal on stdout (`{"ok":false,"reason":"no transcript found"}`), or null. */
+function runtimeReason(stdout: string): string | null {
+  const last = stdout.trim().split("\n").pop() ?? "";
+  try {
+    const j = JSON.parse(last) as { ok?: unknown; reason?: unknown };
+    return j && j.ok === false && typeof j.reason === "string" && j.reason.trim() ? j.reason.trim().slice(0, 200) : null;
+  } catch { return null; }
+}
 
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
 const validId = (id: unknown): id is string => typeof id === "string" && SESSION_ID.test(id) && !id.includes("..") && !id.startsWith("-");
@@ -72,7 +83,7 @@ export class CodeMirrorService {
     return null;
   }
 
-  private spawn(args: readonly string[]): { child: childProcess.ChildProcess } | { refusal: string } {
+  private spawn(args: readonly string[], stdout: "ignore" | "pipe" = "ignore"): { child: childProcess.ChildProcess } | { refusal: string } {
     if (!mirrorAllowed(args)) return { refusal: "that mirror command is not allowed" };
     const vault = this.o.vaultRoot();
     if (!vault) return { refusal: "no vault is open" };
@@ -88,7 +99,7 @@ export class CodeMirrorService {
     const env = spawnEnv(this.o.env, { AOS_VAULT: vault, AOS_HOST: "" }, [], ctx);
     if ("refusal" in env) return { refusal: env.refusal };
     try {
-      return { child: (this.o.spawnImpl ?? childProcess.spawn)(node, [script, ...args], { cwd: vault, env: env.env, shell: false, stdio: ["ignore", "ignore", "pipe"], windowsHide: true }) };
+      return { child: (this.o.spawnImpl ?? childProcess.spawn)(node, [script, ...args], { cwd: vault, env: env.env, shell: false, stdio: ["ignore", stdout, "pipe"], windowsHide: true }) };
     } catch (err) { return { refusal: (err as NodeJS.ErrnoException).code ?? "the runtime did not start" }; }
   }
 
@@ -180,12 +191,14 @@ export class CodeMirrorService {
     if (why) { console.warn(`[main] code:view: ${why}`); return refused(why); }
     if (req.host !== "claude" && req.host !== "codex") return fail("a host", "EINVAL");
     if (!validId(req.id)) return fail("a session id", "EINVAL");
-    const s = this.spawn(["mirror", "--host", req.host, "--id", req.id, "--once"]);
+    if (this.views.size >= MAX_VIEWS) return fail("too many conversations are loading: try again in a moment", "EAGAIN");
+    const s = this.spawn(["mirror", "--host", req.host, "--id", req.id, "--once"], "pipe");
     if ("refusal" in s) return fail(s.refusal, "EIO");
     const { child } = s;
     this.views.add(child);
     return new Promise<Result<CodeCache>>((resolve) => {
       let stderr = "";
+      let stdout = "";
       let timedOut = false;
       let settled = false;
       const timer = setTimeout(() => { timedOut = true; try { child.kill("SIGKILL"); } catch { /* gone */ } }, this.o.viewTimeoutMs ?? VIEW_TIMEOUT_MS);
@@ -197,11 +210,14 @@ export class CodeMirrorService {
         resolve(r);
       };
       child.stderr?.on("data", (b: Buffer) => { stderr = (stderr + b.toString("utf8")).slice(-STDERR_TAIL); });
+      child.stdout?.on("data", (b: Buffer) => { stdout = (stdout + b.toString("utf8")).slice(-STDERR_TAIL); });
       child.on("error", (err) => done(fail((err as NodeJS.ErrnoException).code ?? err.message, "EIO")));
       child.on("close", (code) => {
         if (timedOut) return done(fail("the conversation took too long to load", "ETIMEDOUT"));
         if (code === 0) return done({ ok: true, data: { cache: `brain/_index/code/${req.host}-${req.id}.jsonl` } });
         if (code === 2 && /\busage:/.test(stderr)) return done(fail(OLD_RUNTIME, "EIO"));
+        const said = runtimeReason(stdout);
+        if (said) return done(fail(said, "EIO"));
         done(fail(stderr.trim().split("\n").pop() || `the runtime stopped (exit ${code})`, "EIO"));
       });
     });

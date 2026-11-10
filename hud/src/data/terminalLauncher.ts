@@ -38,10 +38,17 @@ export interface LaunchRequest {
   /** What started it when it was not the deck (a skill's button, Spaces…): the row's "from …" subtitle. Such launches
    *  never change the remembered host. */
   origin?: string | null;
+  /** A model or access picked for this one launch (a chip restarting a conversation, code-chat C12); the settings keep theirs. */
+  model?: string | null;
+  access?: TermAccess;
+  /** Which of the two the user picked (the other rides along as shown); a Codex resume passes only those. */
+  chosen?: { model?: boolean; access?: boolean };
 }
 
 export interface Launched {
   session: TerminalSession;
+  /** Settles when the agent has started (null, or the reason the typed line is used instead); rejects when it did not. */
+  ready: Promise<string | null>;
   place: Place;
   why: PlaceWhy;
 }
@@ -169,11 +176,13 @@ export class TerminalLauncher {
    * (Spaces' hint: `launchLine(spec(host, { resume: { id }, cwd }))`). `cwd` is the folder the terminal starts in; a
    * Codex resume by id needs it, or Codex asks which folder to use (LaunchSpec.cwd).
    */
-  spec(host: "claude" | "codex", opts: { resume?: "last" | { id: string } | null; gitInit?: boolean; sessionId?: string | null; cwd?: string | null } = {}): LaunchSpec {
+  spec(host: "claude" | "codex", opts: { resume?: "last" | { id: string } | null; gitInit?: boolean; sessionId?: string | null; cwd?: string | null; model?: string | null; access?: TermAccess; chosen?: { model?: boolean; access?: boolean } } = {}): LaunchSpec {
     const cfg = readAgenticosJson(this.plugin.claudeConfigDir());
     const bin = this.choices().find((c) => c.host === host)?.bin ?? null;
-    const model = modelArg(host, sanitizeSessionChoice(this.plugin.settings.sessionChoice).models[host]);
-    const access = sanitizeTerminalChoice(this.plugin.settings.terminalChoice).access as TermAccess;
+    // A model or access given for this one launch (a chip restarting the conversation, code-chat C12) is what runs, and
+    // null is the host's own default: only an absent one falls back to the settings.
+    const model = modelArg(host, opts.model !== undefined ? opts.model : sanitizeSessionChoice(this.plugin.settings.sessionChoice).models[host]);
+    const access = opts.access ?? sanitizeTerminalChoice(this.plugin.settings.terminalChoice).access as TermAccess;
     // The folder each host uses, set on the line only when a new terminal would find another (AgentTeamsTab.hostEnv).
     const envCodex = path.resolve(env.get("CODEX_HOME") || path.join(this.home(), ".codex"));
     const dir = host === "claude" ? this.plugin.claudeConfigDir() : cfg?.hosts?.codex?.home || envCodex;
@@ -181,7 +190,7 @@ export class TerminalLauncher {
       ? envPrefix("CLAUDE_CONFIG_DIR", dir, envClaudeConfigDir())
       : envPrefix("CODEX_HOME", dir, envCodex);
     return {
-      host, bin, model, access, resume: opts.resume ?? null, gitInit: opts.gitInit, sessionId: opts.sessionId ?? null, cwd: opts.cwd ?? null,
+      host, bin, model, access, resume: opts.resume ?? null, ...(opts.model !== undefined || opts.access ? { picked: opts.chosen ?? { model: opts.model !== undefined, access: !!opts.access } } : {}), gitInit: opts.gitInit, sessionId: opts.sessionId ?? null, cwd: opts.cwd ?? null,
       envPrefix: prefix, configDir: prefix ? dir : null, ...this.noDaemonOf(host, opts.resume ? "resume" : "new"),
     };
   }
@@ -259,7 +268,7 @@ export class TerminalLauncher {
         if (!fs.existsSync(place.dir)) { place = vaultPlace(this.world()); why = "default"; aside = "Scratch needs file writes"; }
       }
     }
-    const { session, ready } = this.start(req.host, place, { resume: req.resume ?? null, gitInit, origin: req.origin ?? null });
+    const { session, ready } = this.start(req.host, place, { resume: req.resume ?? null, gitInit, origin: req.origin ?? null, model: req.model, access: req.access, chosen: req.chosen });
     if (!req.origin) {
       this.plugin.settings.terminalChoice = rememberTerminalChoice(this.plugin.settings.terminalChoice, { host: req.host, workspace: place.workspace ?? null });
       void this.plugin.saveSettings();
@@ -269,7 +278,7 @@ export class TerminalLauncher {
       const asides = [aside, off ? `the computer is off for this session: ${off}` : null].filter((a): a is string => !!a);
       this.announce(session, place, why, req.host, asides.length ? asides.join("; ") : null);
     }, () => { /* the terminal says why it did not start */ });
-    return { session, place, why };
+    return { session, place, why, ready };
   }
 
   /**
@@ -381,7 +390,7 @@ export class TerminalLauncher {
    * null, or the reason main fell back to the typed line; it rejects when main refused it (the terminal then says why).
    * Throws before any terminal opens when the line would carry a value that starts with `-` (launchArgs).
    */
-  private start(host: TermHost, place: Place, o: { resume: "last" | { id: string } | null; gitInit: boolean; origin: string | null }): { session: TerminalSession; ready: Promise<string | null> } {
+  private start(host: TermHost, place: Place, o: { resume: "last" | { id: string } | null; gitInit: boolean; origin: string | null; model?: string | null; access?: TermAccess; chosen?: { model?: boolean; access?: boolean } }): { session: TerminalSession; ready: Promise<string | null> } {
     const pool = this.plugin.terminalPool;
     const shell = this.plugin.settings.terminalShell || pool.defaults.shell;
     // The deck names a new Claude Code conversation; a resume by id names the thread on either host. Either way the
@@ -397,7 +406,7 @@ export class TerminalLauncher {
       pool.select(session.id);
       return { session, ready: Promise.resolve(null) };
     }
-    const spec = this.spec(host, { resume: o.resume, gitInit: o.gitInit, sessionId: ids.fresh, cwd: place.dir });
+    const spec = this.spec(host, { resume: o.resume, gitInit: o.gitInit, sessionId: ids.fresh, cwd: place.dir, model: o.model, access: o.access, chosen: o.chosen });
     // R79, R80: a line main refuses for its --no-daemon is relaunched by the pool with main's answer (the same spec, only
     // that changed); the launcher keeps the answer for its preview.
     const onFlags = host === "codex" ? (flags: { noDaemon: boolean; bin: string | null }): void => { this.takeFlags(o.resume ? "resume" : "new", flags); } : undefined;

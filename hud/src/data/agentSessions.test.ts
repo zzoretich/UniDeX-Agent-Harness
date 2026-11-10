@@ -5,6 +5,7 @@ import {
   catalogHost, catalogSource, chipText, choiceText, commandQuery, commandTyping, countsText, defaultChoice, diffTotals,
   doneFooter, doneLine, durationText, effortLabel, effortsFor, fileCounts, fileStatusLabel, filterCommands, findModel, groupThreads,
   hostChoices, isAccess, lastTurnUsd, mergeEvents, modelArg, modelName, relPath, searchModels, sessionSpendToday, spendLine, splitModels, statusSummary, threadAge,
+  catalogModelId, sameModel, transcriptModelName,
   threadMeta, threadRows, timelineRows, toolCallLine, toolLine, toolResultText, turnChoices, turnElapsed, turnOpen, usdText,
   workingText, workspaceNames, type CatalogCommand, type ThreadRow, type ToolCall,
 } from "./agentSessions";
@@ -152,6 +153,41 @@ const codexDown: HostCatalogHost = { ok: false, reason: "Codex listed no models"
 /** A Claude that did not answer: its aliases, all current. */
 const claudeDown: HostCatalogHost = { ...claudeCat, ok: false, reason: "Claude Code did not answer in 20 s", version: null, models: claudeCat.models.slice(0, 3).map((m) => ({ ...m, name: m.id === "default" ? "Default" : m.name.split(" ")[0] })) };
 const NOW = new Date("2026-10-07T10:00:00.000Z");
+
+test("transcriptModelName (code-chat M4): a transcript's full model id by the catalog's name, else its family and version", () => {
+  assert.equal(transcriptModelName("claude", claudeCat, "claude-haiku-4-5-20251001"), "Haiku 4.5", "listed as it is");
+  assert.equal(transcriptModelName("claude", claudeCat, "claude-opus-4-6-20260101"), "Opus 4.6", "listed without its release date");
+  assert.equal(transcriptModelName("claude", claudeCat, "claude-opus-5-5-20261101"), "Opus 5.5", "not listed: its family and version");
+  assert.equal(transcriptModelName("claude", claudeCat, "claude-opus-5-5[1m]"), "Opus 5.5", "the context suffix set aside");
+  assert.equal(transcriptModelName("claude", null, "claude-3-5-sonnet-20241022"), "Sonnet 3.5", "the old id form");
+  assert.equal(transcriptModelName("claude", claudeCat, "opus"), "Opus 5.5", "an alias by the catalog's name");
+  assert.equal(transcriptModelName("claude", null, "fixture-model"), "fixture-model");
+  assert.equal(transcriptModelName("claude", claudeCat, null), "Default");
+  assert.equal(transcriptModelName("codex", codexCat, "GPT-6-Sol"), "GPT-6-Sol");
+  assert.equal(transcriptModelName("codex", codexCat, null), "Codex default");
+});
+
+test("catalogModelId (M4): the menu's row for a transcript's model, by id or by the catalog's name; else the id as it is", () => {
+  assert.equal(catalogModelId("claude", claudeCat, "claude-opus-4-6-20260101"), "claude-opus-4-6");
+  assert.equal(catalogModelId("claude", claudeCat, "claude-opus-5-5-20261101"), "opus", "the alias the catalog names Opus 5.5");
+  assert.equal(catalogModelId("claude", claudeDown, "claude-opus-5-5-20261101"), "claude-opus-5-5-20261101", "an alias with no version in its name is not guessed");
+  assert.equal(catalogModelId("codex", codexCat, "GPT-6-SOL"), "gpt-6-sol");
+  assert.equal(catalogModelId("claude", claudeCat, null), null);
+});
+
+test("sameModel (M4): a pick that runs what the conversation runs already restarts nothing; another version does", () => {
+  assert.equal(sameModel("claude", claudeCat, "opus", "claude-opus-5-5-20261101"), true, "the catalog names opus Opus 5.5");
+  assert.equal(sameModel("claude", claudeCat, "opus", "claude-opus-4-6-20260101"), false, "opus is 5.5 here; 4.6 is listed apart");
+  assert.equal(sameModel("claude", claudeDown, "opus", "claude-opus-5-5-20261101"), true, "aliases with no version: the family");
+  assert.equal(sameModel("claude", claudeCat, "claude-opus-4-6", "claude-opus-4-6-20260101"), true);
+  assert.equal(sameModel("claude", claudeCat, "haiku", "claude-opus-5-5"), false);
+  assert.equal(sameModel("claude", claudeCat, "default", null), true);
+  assert.equal(sameModel("claude", claudeCat, null, "default"), true);
+  assert.equal(sameModel("claude", claudeCat, "default", "claude-opus-5-5"), false);
+  assert.equal(sameModel("claude", null, "Sonnet", "sonnet"), true);
+  assert.equal(sameModel("codex", codexCat, "gpt-6-sol", "GPT-6-Sol"), true);
+  assert.equal(sameModel("codex", codexCat, null, "gpt-6-sol"), false);
+});
 
 test("effortLabel and the effort lists: every level in words; Vault's levels are the one-shot paths'", () => {
   assert.deepEqual(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map(effortLabel), ["Minimal", "Low", "Medium", "High", "XHigh", "Max", "Ultra"]);
