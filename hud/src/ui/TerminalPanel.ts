@@ -28,6 +28,7 @@ import { hudHost, shell } from "../host";
 import { ConfirmModal } from "./ConfirmModal";
 import { LinkRepoModal } from "./LinkRepoModal";
 import { groupKey, groupSidebar, scopeOf, sidebarOrder, stepRow, type SidebarGroup, type TermRow, type TermRowInput, type TermScope } from "../data/termGroups";
+import { restartKeepingOld } from "../data/terminalRestart";
 import { HistoryCache } from "../data/historyCache";
 import type { HistoryResume, HistoryRow } from "../data/sessionHistory";
 import { pastEarlier, pastState, pastView, type PastView } from "../data/pastChat";
@@ -704,9 +705,10 @@ export class TerminalPanel {
 
   /**
    * The model or access chip's pick (code-chat C12): starts the same host at the same place on the same conversation
-   * (`resume` by the chat's id) with the pick, then closes the old terminal, whose follower ends with it; the new one gets
-   * its own. With no conversation known there is nothing to resume, and nothing happens. The other chip's value rides
-   * along, so a model changed in the TUI is not lost by an access pick.
+   * (`resume` by the chat's id) with the pick; once the new agent has started it closes the old terminal, whose follower
+   * ends with it (a failed start keeps the old one and says why: restartKeepingOld); the new one gets its own. With no
+   * conversation known there is nothing to resume, and nothing happens. The other chip's value rides along as shown, so
+   * a model changed in the TUI is not lost by an access pick.
    */
   restartWith(id: string, patch: { model?: string | null; access?: TermAccess | null }): Promise<void> {
     const pool = this.plugin.terminalPool;
@@ -715,13 +717,14 @@ export class TerminalPanel {
     if (!s || s.meta.host === "shell" || !conv || this.restarting.has(id)) return Promise.resolve();
     this.restarting.add(id);
     const host = s.meta.host;
-    return this.plugin.termLauncher.launch({
-      host, picked: this.placeOfSession(s), resume: { id: conv }, origin: s.meta.origin,
-      model: patch.model ?? this.modelOf(s), access: patch.access ?? s.meta.access,
-    }).then((l) => {
-      pool.remove(id);
-      pool.select(l.session.id);
-    }, (e: unknown) => { new Notice(`Terminal: ${e instanceof Error ? e.message : String(e)}`); }).finally(() => { this.restarting.delete(id); });
+    // What the chips show is what runs (R37): the shown model (null: the host's default) and the shown access ("host":
+    // the host's default), never the settings'. Only the picked one is passed to a Codex resume.
+    const model = "model" in patch ? patch.model ?? null : this.modelOf(s);
+    const access = patch.access ?? s.meta.access ?? "host";
+    const chosen = { model: "model" in patch, access: "access" in patch };
+    return restartKeepingOld(pool, id, () => this.plugin.termLauncher.launch({
+      host, picked: this.placeOfSession(s), resume: { id: conv }, origin: s.meta.origin, model, access, chosen,
+    })).then((why) => { if (why) new Notice(`Terminal: ${why}`); }).finally(() => { this.restarting.delete(id); });
   }
 
   /** The top bar's Chat | Terminal ⌘J switch for an agent terminal; with the surface off, a note that sends you to the

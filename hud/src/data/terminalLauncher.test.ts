@@ -386,3 +386,23 @@ test("spec: a model or access picked for one launch overrides the settings, on b
   assert.deepEqual(launchArgs(w.launcher.spec("codex", { resume: { id }, cwd: "/work/demo" })), ["resume", "-C", "/work/demo", id]);
   assert.equal(w.launcher.spec("claude", { resume: { id } }).model, null);
 });
+
+test("spec: the chips' restart carries the values they show, never the settings' (code-chat C12, R37)", () => {
+  const w = world([]);
+  const id = "u2";
+  const has = (a: string[], ...f: string[]) => f.some((x) => a.includes(x));
+  // Model-only pick on a terminal with no recorded access: the shown access is Host default, so no access flag on either host.
+  const c = launchArgs(w.launcher.spec("claude", { resume: { id }, model: "sonnet", access: "host", chosen: { model: true } }));
+  assert.ok(!has(c, "--permission-mode"));
+  assert.deepEqual(c.slice(0, 2), ["--model", "sonnet"]);
+  const x = launchArgs(w.launcher.spec("codex", { resume: { id }, cwd: "/work/demo", model: "gpt-x", access: "host", chosen: { model: true } }));
+  assert.deepEqual(x, ["resume", "-C", "/work/demo", id, "-m", "gpt-x"]);
+  // Codex moved back to the host's default model: no -m (null is a value, not "unset").
+  const d = launchArgs(w.launcher.spec("codex", { resume: { id }, cwd: "/work/demo", model: null, access: "host", chosen: { model: true } }));
+  assert.ok(!has(d, "-m"));
+  // Access-only pick keeps the shown model on Claude, and a Codex resume passes only the access.
+  const a = launchArgs(w.launcher.spec("claude", { resume: { id }, model: "sonnet", access: "edit", chosen: { access: true } }));
+  assert.deepEqual(a.slice(0, 4), ["--model", "sonnet", "--permission-mode", "acceptEdits"]);
+  const b = launchArgs(w.launcher.spec("codex", { resume: { id }, cwd: "/work/demo", model: "gpt-x", access: "edit", chosen: { access: true } }));
+  assert.deepEqual(b, ["resume", "-C", "/work/demo", id, "-s", "workspace-write", "-a", "on-request"]);
+});
