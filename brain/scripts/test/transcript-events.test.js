@@ -11,27 +11,28 @@ const E = require('../lib/session-events.js');
 const fx = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', 'code-chat', name), 'utf8');
 const kinds = (events) => events.map((e) => e.kind);
 
-test('claude: four turns in order — tools and a plan, an interrupt, a thinking>text final message, an API error', () => {
+test('claude: five turns in order — tools and a plan, an interrupt, a thinking>text final message, an API error, one still open', () => {
   const ev = M.eventsOfText(fx('claude-2.1.318.jsonl'), 'claude');
   assert.deepEqual(kinds(ev), [
     'session', 'prompt', 'session', 'text', 'tool', 'tool_result', 'plan', 'tool', 'tool_result', 'text', 'done',
     'prompt', 'tool', 'tool_result', 'done',
     'prompt', 'text', 'done',
     'prompt', 'error', 'done',
+    'prompt',
   ]);
   assert.equal(ev.find((e) => e.kind === 'tool').toolKind, 'read');
   assert.equal(ev[1].text, 'Add a greeting to hello.js');
   assert.deepEqual(ev.find((e) => e.kind === 'plan').items.map((i) => i.status), ['active', 'pending']);
   assert.deepEqual(ev[10], { t: '2026-11-09T15:00:36.000Z', kind: 'done', ok: true, usd: null, estimated: false, model: 'claude-sonnet-5', turn: 1 });
   assert.match(ev[0].t, /^2026-11-09T15:00:\d\d\.000Z$/);
-  assert.deepEqual(ev.filter((e) => e.kind === 'prompt').map((e) => e.text), ['Add a greeting to hello.js', 'Now print a goodbye too', 'Print a goodbye after the greeting', 'Run it once more']);
+  assert.deepEqual(ev.filter((e) => e.kind === 'prompt').map((e) => e.text), ['Add a greeting to hello.js', 'Now print a goodbye too', 'Print a goodbye after the greeting', 'Run it once more', 'What does hello.js print now?']);
 });
 
 test('claude (F3): every event carries its turn — 0 before the first prompt, +1 per prompt; done carries the model', () => {
   const ev = M.eventsOfText(fx('claude-2.1.318.jsonl'), 'claude');
   assert.ok(ev.every((e) => Number.isInteger(e.turn)), 'a turn on every event');
   assert.equal(ev[0].turn, 0, 'the session event comes before the first prompt');
-  assert.deepEqual(ev.filter((e) => e.kind === 'prompt').map((e) => e.turn), [1, 2, 3, 4]);
+  assert.deepEqual(ev.filter((e) => e.kind === 'prompt').map((e) => e.turn), [1, 2, 3, 4, 5]);
   const dones = ev.filter((e) => e.kind === 'done');
   assert.deepEqual(dones.map((e) => [e.turn, e.ok, e.model]), [[1, true, 'claude-sonnet-5'], [2, false, 'claude-sonnet-5'], [3, true, 'claude-sonnet-5'], [4, false, 'claude-sonnet-5']], 'one done per turn');
   for (const e of ev) { if (e.kind !== 'session' && e.kind !== 'prompt') assert.equal(e.turn, ev.slice(0, ev.indexOf(e)).filter((x) => x.kind === 'prompt').length, `${e.kind} carries the current turn`); }
@@ -73,9 +74,10 @@ test('claude (F1): an interrupt closes the turn not ok and is no prompt', () => 
 
 test('claude (F1): an API error is an error then a done not ok, and never the model', () => {
   const ev = M.eventsOfText(fx('claude-2.1.318.jsonl'), 'claude');
-  assert.deepEqual(ev.slice(-2).map((e) => e.kind), ['error', 'done']);
-  assert.equal(ev.at(-2).message, 'API Error: Request rejected (429) · an invented rate limit message');
-  assert.deepEqual([ev.at(-1).ok, ev.at(-1).model], [false, 'claude-sonnet-5']);
+  const at = ev.findIndex((e) => e.kind === 'error');
+  assert.deepEqual(ev.slice(at, at + 2).map((e) => e.kind), ['error', 'done']);
+  assert.equal(ev[at].message, 'API Error: Request rejected (429) · an invented rate limit message');
+  assert.deepEqual([ev[at + 1].ok, ev[at + 1].model], [false, 'claude-sonnet-5']);
   assert.equal(ev.filter((e) => e.kind === 'session').at(-1).model, 'claude-sonnet-5', 'no session event for <synthetic>');
   const m = M.createTranscriptMapper('claude', { model: 'claude-x' });
   const long = 'API Error: '.padEnd(1000, 'x');
@@ -103,6 +105,18 @@ test('claude (F2): only the human words are prompts — task notifications, bash
   assert.deepEqual(user([{ type: 'text', text: '<system-reminder>\nbe brief\n</system-reminder>' }], { origin: { kind: 'human' }, promptSource: 'sdk' }), []);
   assert.deepEqual(user('<system-reminder>x</system-reminder>\nwhat about this?', { origin: { kind: 'human' }, promptSource: 'queued' }).map((e) => [e.kind, e.turn]), [['prompt', 2]], 'other words beside a block keep it a prompt');
   assert.deepEqual(user('a queued one', { origin: { kind: 'human' }, promptSource: 'queued' }).map((e) => e.turn), [3]);
+});
+
+test('claude (R21): leading and trailing <system-reminder> blocks leave a prompt\'s text; one with nothing else is no prompt', () => {
+  const ev = M.eventsOfText(fx('claude-2.1.318.jsonl'), 'claude');
+  assert.equal(ev.at(-1).text, 'What does hello.js print now?', 'the fixture\'s text+text+text entry');
+  const m = M.createTranscriptMapper('claude');
+  const prompt = (content) => m.push({ type: 'user', sessionId: 's1', message: { role: 'user', content }, origin: { kind: 'human' }, promptSource: 'sdk' }).filter((e) => e.kind === 'prompt').map((e) => e.text);
+  assert.deepEqual(prompt('<system-reminder>\nx\n</system-reminder>\n\n  fix the test  \n<system-reminder>y</system-reminder>\n'), ['fix the test']);
+  assert.deepEqual(prompt('<system-reminder>a</system-reminder><system-reminder>b</system-reminder>\nwords'), ['words'], 'several leading blocks');
+  assert.deepEqual(prompt('before <system-reminder>kept</system-reminder> after\n<system-reminder>gone</system-reminder>'), ['before <system-reminder>kept</system-reminder> after'], 'a block between words stays');
+  assert.deepEqual(prompt('<system-reminder>a</system-reminder>\n<system-reminder>b</system-reminder>'), [], 'nothing else: no prompt');
+  assert.deepEqual(prompt('<system-reminder>a</system-reminder>\n<command-name>/clear</command-name>'), [], 'what is left is a slash-command envelope');
 });
 
 test('claude: slash-command envelopes, isMeta and sidechain entries make no events', () => {

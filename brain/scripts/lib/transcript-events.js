@@ -17,7 +17,8 @@
  *
  *   claude: user (a string, or text and image blocks) → prompt, when a person typed it: no `origin` or origin human,
  *           promptSource not system, and not only <bash-input|bash-stdout|bash-stderr|system-reminder> blocks or a
- *           slash-command envelope (transcript.js isRealPrompt). [Request interrupted by user…] → done not ok.
+ *           slash-command envelope (transcript.js isRealPrompt). Its text loses leading and trailing <system-reminder>
+ *           blocks (R21). [Request interrupted by user…] → done not ok.
  *           tool_result blocks → tool_result (a TodoWrite's is dropped, its plan event says it all). assistant →
  *           claudeBlocks; stop_reason end_turn → done, once per message.id and only from an entry with a block event
  *           (Claude Code 2.1.318 writes a final message's thinking and its text as two end_turn entries); max_tokens or
@@ -40,6 +41,17 @@ const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 // What a Claude user entry can hold that is not the person's words: Claude Code's ! command blocks and reminders.
 const CLAUDE_BLOCK_RE = /<(bash-input|bash-stdout|bash-stderr|system-reminder)>[\s\S]*?<\/\1>/g;
 const INTERRUPT_RE = /^\[Request interrupted by user/;
+// R21: reminders Claude Code puts before or after the person's words; a block between words stays.
+const LEADING_REMINDER_RE = /^\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*/;
+const TRAILING_REMINDER_RE = /\s*<system-reminder>(?:(?!<system-reminder>)[\s\S])*?<\/system-reminder>\s*$/;
+
+/** A prompt's text without its leading and trailing <system-reminder> blocks (R21). */
+function withoutReminders(text) {
+  let s = text;
+  for (let prev = null; prev !== s;) { prev = s; s = s.replace(LEADING_REMINDER_RE, ''); }
+  for (let prev = null; prev !== s;) { prev = s; s = s.replace(TRAILING_REMINDER_RE, ''); }
+  return s.trim();
+}
 const SYNTHETIC = '<synthetic>';
 
 const done = (st, t, ok, estimated) => ({ t, kind: 'done', ok, usd: null, estimated, model: st.model });
@@ -73,7 +85,7 @@ function claudeUser(e, st, t) {
       else if (b.type === 'image') parts.push('[image]');
     }
   }
-  const text = parts.join('\n').trim();
+  const text = withoutReminders(parts.join('\n'));
   if (INTERRUPT_RE.test(text)) out.push(done(st, t, false, false));
   else if (claudePrompt(e, text)) out.push({ t, kind: 'prompt', text });
   return out;
