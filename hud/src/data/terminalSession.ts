@@ -44,6 +44,13 @@ export function hasChat(meta: Pick<TerminalMeta, "host" | "chat">): boolean {
   return meta.host !== "shell" && meta.chat !== false;
 }
 
+/** A terminal's process as a draft sees it (code-chat C1): whether its agent ended, it exited or was closed, and the app's
+ *  id for what runs in it. A draft goes only to the process it was written for: one that changed while Send waited (the
+ *  agent exited and the login shell took over, R39) gets nothing. "" for no terminal. */
+export function processKey(s: Pick<TerminalSession, "agentEnded" | "isExited" | "isClosed" | "ptyId"> | null | undefined): string {
+  return s ? `${s.agentEnded ? 1 : 0}|${s.isExited ? 1 : 0}|${s.isClosed ? 1 : 0}|${s.ptyId ?? ""}` : "";
+}
+
 export interface TerminalSessionOptions {
   id: string;
   shell: string;
@@ -105,6 +112,8 @@ export class TerminalSession {
   /** When input last went to the terminal's process (Date.now()), from anywhere: the composer, a card's key, the visible
    *  terminal's keys and its replies to the program's queries. -Infinity before any. */
   private inputAt = Number.NEGATIVE_INFINITY;
+  /** When the composer last sent a slash command here (Date.now()); -Infinity before any. */
+  private commandStamp = Number.NEGATIVE_INFINITY;
 
   constructor(opts: TerminalSessionOptions) {
     this.id = opts.id;
@@ -266,6 +275,13 @@ export class TerminalSession {
   /** When input last went to the terminal's process (Date.now() ms), whoever wrote it; -Infinity before any. The
    *  composer's Send waits a moment after it (code-chat R62): a TUI opens a prompt in answer to input it has not drawn. */
   get lastInputAt(): number { return this.inputAt; }
+
+  /** When the composer last sent a slash command here (Date.now() ms; -Infinity before any): a later Send waits longer for
+   *  the prompt it may open (code-chat R69), since a TUI can draw a picker well after SEND_QUIET_MS. */
+  get commandAt(): number { return this.commandStamp; }
+
+  /** The composer is sending a slash command (`/model`) now. */
+  noteCommand(): void { if (!this.exited && !this.disposed) this.commandStamp = Date.now(); }
 
   write(data: string): void {
     if (this.exited || this.disposed) return;

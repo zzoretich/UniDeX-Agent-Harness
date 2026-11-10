@@ -5,9 +5,9 @@ import { codeChatOn, fs, hudHost, sessionsHost, type HostCatalog } from "../host
 import { aliasCatalog } from "../data/claudeAsk";
 import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
-import { hasChat, type TerminalSession } from "../data/terminalSession";
+import { hasChat, processKey, type TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
-import { IMAGE_TYPES, dataUrlBase64, imageReason, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, sendWrites, type Snippet } from "../data/termComposer";
+import { IMAGE_TYPES, dataUrlBase64, imageReason, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, sendPhases, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
 import { HostModelMenu } from "./HostModelMenu";
 
@@ -78,10 +78,11 @@ export interface ChipState {
  * Images (C7): an agent terminal's composer, while the Code chat surface is on, takes PNG, JPEG, GIF and WebP images up to
  * 10 MB, 8 to a message, by paste, drop or + attach. Each becomes a chip with its thumbnail and ×, and main saves it at
  * once into the app's own data folder (code:save-image, which checks it again by content and names the path). Send pastes
- * each image's path as a bracketed paste of its own (which Claude Code and Codex attach as an image, R63), then the text,
- * through the same guarded Send (a card holds it, the screen is read first); a program that takes no bracketed paste gets
- * the text with the paths after it, typed. A refused image says why under the box, in plain words. A shell, a command run in an agent's name that is
- * no conversation (`chat: false`, such as a login), an ended agent and a run with the surface off have no + chip and take
+ * each image's path as a bracketed paste of its own (which Claude Code and Codex attach as an image, R63), waits for the
+ * screen to show their placeholders (R70: at most IMAGE_ATTACH_MS), then the text, through the same guarded Send (a card
+ * holds it, the screen is read first); a program that takes no bracketed paste gets the text with the paths after it,
+ * typed. A refused image says why under the box, in plain words. A shell, a command run in an agent's name that is no
+ * conversation (`chat: false`, such as a login), an ended agent and a run with the surface off have no + chip and take
  * no image. The chips belong to the terminal they were added on: another terminal starts with none.
  */
 export class TermComposer {
@@ -95,6 +96,8 @@ export class TermComposer {
   private picker: HTMLInputElement;
   /** Send waits for an image main is still saving (once). */
   private awaitingShots = false;
+  /** A Send's images are pasted and it waits for the TUI to show them before its text (R70): no other Send starts. */
+  private sending = false;
   private input: HTMLTextAreaElement;
   private suggest: HTMLElement;
   private snippetsMenu: HTMLElement | null = null;
@@ -362,11 +365,16 @@ export class TermComposer {
     this.syncChips();
   }
 
-  private send(): void {
+  /** `pressed`: the terminal's process when ⏎ was pressed (processKey), for a Send that starts again after a wait. */
+  private send(pressed?: string): void {
     const s = this.session;
     const text = this.input.value;
     const shots = this.shots.slice();
-    if (!s || this.blocked || (!text.trim() && !shots.length)) return;
+    if (!s || this.blocked || this.sending || (!text.trim() && !shots.length)) return;
+    // The process the draft was written for (C1): one that changed during any wait below (the agent exited and the login
+    // shell took the terminal over, R39) gets nothing, and the draft stays.
+    const proc = pressed ?? processKey(s);
+    if (processKey(s) !== proc) return;
     // An image main is still saving: Send waits for it, once, then starts again from the top, so every check below runs on
     // what is there then. It goes only if the draft is still the one ⏎ was pressed on (R60): the same text and images. A
     // refused or removed image, or an edit meanwhile, sends nothing and keeps the draft.
@@ -376,18 +384,21 @@ export class TermComposer {
       void Promise.all(shots.map((x) => x.saved)).then((ok) => {
         this.awaitingShots = false;
         const same = this.shots.length === shots.length && this.shots.every((x, i) => x === shots[i]);
-        if (this.session === s && ok.every(Boolean) && same && this.input.value === text) this.send();
+        if (this.session === s && ok.every(Boolean) && same && this.input.value === text) this.send(proc);
       });
       return;
     }
     // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
     // written and the draft (its images included) stays (R49). The screen is read fresh first, since the poll can be a
     // tick behind a prompt that just printed (bounded: R56), and only once the terminal's last input (a Send a moment
-    // ago, a key typed in the terminal) has had time to open the prompt it opens (R62: SEND_QUIET_MS).
+    // ago, a key typed in the terminal) has had time to open the prompt it opens (R62: SEND_QUIET_MS), or a slash command
+    // the composer sent until its prompt shows or SLASH_SETTLE_MS passed (R69).
     const feeds = this.plugin.codeFeeds;
     const known = feeds?.get(s.id)?.card;
     if (known || !feeds?.get(s.id)) { this.finishSend(s, text, shots, !!known); return; }
     void feeds.cardNow(s.id).then((held) => {
+      // The agent did not outlast the wait (C1): nothing goes to what runs there now, and the draft stays.
+      if (held === "gone" || processKey(s) !== proc) return;
       // The draft, its images or the terminal changed while the screen was read: this send is no longer the one asked for.
       const same = this.shots.length === shots.length && this.shots.every((x, i) => x === shots[i]);
       if (this.session !== s || this.blocked || this.input.value !== text || !same) return;
@@ -402,9 +413,29 @@ export class TermComposer {
       return;
     }
     this.hideNote();
+    // A slash command may open a prompt late: the next Send waits for it longer (R69).
+    if (text.trim().startsWith("/")) s.noteCommand();
     // Each image's path as a paste of its own, which the TUI attaches as an image, then the text, then Enter (C7, R63).
     const paths = shots.map((x) => x.path).filter((p): p is string => p !== null);
-    for (const w of sendWrites(text, paths, undefined, this.bracketed())) s.write(w);
+    const phases = sendPhases(text, paths, undefined, this.bracketed());
+    const feeds = this.plugin.codeFeeds;
+    const before = phases.images.length ? feeds?.imageMarks(s.id) ?? null : null;
+    if (before === null || !feeds) {
+      for (const w of [...phases.images, ...phases.rest]) s.write(w);
+    } else {
+      // Claude Code inserts a pasted image only once it has read it: the text and ⏎ wait until the screen shows the
+      // images' placeholders, or IMAGE_ATTACH_MS (R70). No other Send starts meanwhile.
+      const proc = processKey(s);
+      for (const w of phases.images) s.write(w);
+      this.sending = true;
+      void feeds.imagesShown(s.id, before, paths.length).then((r) => {
+        this.sending = false;
+        // The agent ended or another process took the terminal over meanwhile (C1): nothing more is written. Its images
+        // are already in the TUI's input, which is acceptable; the draft went with them.
+        if (r === "gone" || processKey(s) !== proc) return;
+        for (const w of phases.rest) s.write(w);
+      });
+    }
     this.input.value = "";
     this.clearShots();
     this.closeSuggest();

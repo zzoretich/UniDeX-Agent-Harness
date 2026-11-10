@@ -34,7 +34,7 @@ M._resolveFilename = function (request: string, ...rest: unknown[]) {
 };
 require.cache[STUB] = { id: STUB, filename: STUB, loaded: true, exports: { Events: FakeEvents } } as unknown as NodeJS.Module;
 const { TerminalPool } = require("./terminalPool") as typeof PoolModule;
-const { CodeFeeds, EVENT_CAP, ROW_CAP, POLL_MS, PRINT_MS, SEND_QUIET_MS, SEND_SETTLE_MS, screenDue, sendQuietWait } = require("./codeFeeds") as typeof FeedsModule;
+const { CodeFeeds, EVENT_CAP, IMAGE_ATTACH_MS, ROW_CAP, POLL_MS, PRINT_MS, SEND_POLL_MS, SEND_QUIET_MS, SEND_SETTLE_MS, SLASH_SETTLE_MS, imageMarks, screenDue, sendQuietWait, sendWait } = require("./codeFeeds") as typeof FeedsModule;
 
 const KEY = "aaaaaaaa-0000-4000-8000-000000000001";
 const SID = "cccccccc-0000-4000-8000-000000000003";
@@ -482,7 +482,8 @@ test("R62: Send 20 ms after input whose prompt the TUI draws 200 ms after it is 
   const t0 = Date.now();
   assert.equal(await h.feeds.cardNow(s.id), true, "held: the draft's ⏎ would confirm the picker's highlighted model");
   const took = Date.now() - t0;
-  assert.ok(Date.now() - wrote >= SEND_QUIET_MS - 10, `read ${Date.now() - wrote} ms after the input`);
+  // Read every SEND_POLL_MS while it waits: held once the picker is drawn, never past the bound.
+  assert.ok(Date.now() - wrote >= 190, `held ${Date.now() - wrote} ms after the input, before the picker was drawn`);
   assert.ok(took <= SEND_QUIET_MS + SEND_SETTLE_MS + 50, `took ${took} ms`);
   assert.deepEqual(feed().card, { kind: "waiting" });
   clearTimeout(picker);
@@ -495,6 +496,132 @@ test("R62: Send 20 ms after input whose prompt the TUI draws 200 ms after it is 
   assert.equal(await h.feeds.cardNow(s.id), false);
   assert.ok(Date.now() - t1 <= 50, `took ${Date.now() - t1} ms`);
   assert.deepEqual(p.writes, ["/model\r", "\u001b"], "cardNow writes nothing");
+});
+
+test("R69: how long Send may wait: SEND_QUIET_MS after any input, SLASH_SETTLE_MS after a slash command the composer sent, the longer of the two", () => {
+  assert.equal(SLASH_SETTLE_MS, 2000);
+  assert.equal(SEND_POLL_MS, 100);
+  const none = Number.NEGATIVE_INFINITY;
+  assert.equal(sendWait(none, none, 10_000), 0);
+  assert.equal(sendWait(10_000, none, 10_050), 450, "no command: R62's quiet time");
+  assert.equal(sendWait(10_000, 10_000, 10_050), 1950, "a command: its settle time");
+  assert.equal(sendWait(11_900, 10_000, 11_950), 450, "input after the command, near its end: the quiet time is longer");
+  assert.equal(sendWait(10_000, 10_000, 12_100), 0);
+  assert.equal(sendWait(none, 10_000, 9_000), SLASH_SETTLE_MS, "a clock that moved back waits no longer than the bound");
+});
+
+test("R69: a Send 50 ms after a slash command waits for the prompt it opens however late (1200 ms here), at most SLASH_SETTLE_MS; after other input, SEND_QUIET_MS", async () => {
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  const feed = () => h.feeds.get(s.id)!;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  p.emit(drawn("claude-2.1.318-idle"));
+  await sleep(50);
+  // The composer sends `/model` (it notes the command, then writes it); the TUI draws its picker 1200 ms later.
+  s.noteCommand();
+  s.write("/model\r");
+  const sent = Date.now();
+  const picker = setTimeout(() => p.emit(drawn("claude-2.1.318-model")), 1200);
+  await sleep(50);
+  let t0 = Date.now();
+  assert.equal(await h.feeds.cardNow(s.id), true, "held: past SEND_QUIET_MS, the picker still came");
+  assert.ok(Date.now() - sent >= 1190, `held ${Date.now() - sent} ms after the command`);
+  assert.ok(Date.now() - t0 <= SLASH_SETTLE_MS + SEND_SETTLE_MS + 50, `took ${Date.now() - t0} ms`);
+  clearTimeout(picker);
+  p.emit(drawn("claude-2.1.318-idle"));
+  s.write("\u001b");
+  await until(clock, () => feed().card === null);
+  // A command that opens nothing: the Send goes once SLASH_SETTLE_MS has passed since it.
+  s.noteCommand();
+  s.write("/status\r");
+  const quiet = Date.now();
+  await sleep(50);
+  t0 = Date.now();
+  assert.equal(await h.feeds.cardNow(s.id), false);
+  const after = Date.now() - quiet;
+  assert.ok(after >= SLASH_SETTLE_MS - 20 && after <= SLASH_SETTLE_MS + SEND_SETTLE_MS + 80, `went ${after} ms after the command`);
+  // Text that is no command (a reply, a key): R62's SEND_QUIET_MS alone.
+  s.write("thanks\r");
+  const typed = Date.now();
+  await sleep(50);
+  assert.equal(await h.feeds.cardNow(s.id), false);
+  const waited = Date.now() - typed;
+  assert.ok(waited >= SEND_QUIET_MS - 20 && waited <= SEND_QUIET_MS + SEND_SETTLE_MS + 80, `went ${waited} ms after the input`);
+});
+
+test("C1: the agent ending while Send waits is \"gone\", not clear: nothing may go to the login shell that took its terminal over", async () => {
+  const clock = manualClock();
+  const agentProc = proc();
+  const h = setup({ clock, agent: async () => ({ ok: true, data: agentProc }) });
+  const place: Place = { kind: "vault", label: "Vault", dir: h.vault };
+  const spec: LaunchSpec = { host: "claude", bin: null, model: null, access: "edit", cwd: h.vault };
+  const { session, ready } = h.pool.createAgent({ spec, place, meta: { host: "claude", place, terminalKey: KEY } });
+  await ready;
+  session.resize(120, 40);
+  agentProc.emit(drawn("claude-2.1.318-idle"));
+  await new Promise((r) => setTimeout(r, 50));
+  // `/exit` from the composer: a Send right after it waits, and the agent ends meanwhile.
+  session.noteCommand();
+  session.write("/exit\r");
+  const asked = h.feeds.cardNow(session.id);
+  await new Promise((r) => setTimeout(r, 150));
+  agentProc.exit(0);
+  assert.equal(session.agentEnded, true, "the login shell took over");
+  assert.equal(await asked, "gone");
+  assert.deepEqual(h.shells[h.shells.length - 1].writes, [], "nothing reached the shell");
+  // During the settle after the wait too: a screen whose chunk never parses, and the agent ends in that window.
+  const agent2 = proc();
+  const h2 = setup({ clock: manualClock(), agent: async () => ({ ok: true, data: agent2 }) });
+  const two = h2.pool.createAgent({ spec, place, meta: { host: "claude", place, terminalKey: KEY2 } });
+  await two.ready;
+  agent2.emit(drawn("claude-2.1.318-idle"));
+  await new Promise((r) => setTimeout(r, 50));
+  const screen = (h2.feeds as unknown as { entries: Map<string, { screen: object }> }).entries.get(two.session.id)!.screen;
+  Object.defineProperty(screen, "busy", { get: () => true });
+  const settling = h2.feeds.cardNow(two.session.id);
+  setTimeout(() => agent2.exit(0), 40);
+  assert.equal(await settling, "gone");
+});
+
+test("R70: after Send pasted images, imagesShown waits for that many more placeholders on the screen (read every 50 ms), at most IMAGE_ATTACH_MS; gone if the agent ends", async () => {
+  assert.equal(IMAGE_ATTACH_MS, 3000);
+  assert.equal(imageMarks(["❯ [Image #1] [Image #2] look", "[Image #3]", "no image"]), 3);
+  assert.equal(imageMarks([]), 0);
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  p.emit(drawn("claude-2.1.318-idle"));
+  await new Promise((r) => setTimeout(r, 50));
+  const before = h.feeds.imageMarks(s.id);
+  assert.equal(before, 0);
+  // Claude Code inserts the placeholder 300 ms after the paste.
+  setTimeout(() => p.emit("\r\n❯ [Image #1] "), 300);
+  let t0 = Date.now();
+  assert.equal(await h.feeds.imagesShown(s.id, before!, 1), "attached");
+  assert.ok(Date.now() - t0 >= 290 && Date.now() - t0 <= 300 + 150, `attached after ${Date.now() - t0} ms`);
+  // Two more images, of which only one shows: the cap, then the text goes anyway.
+  setTimeout(() => p.emit("[Image #2] "), 100);
+  t0 = Date.now();
+  assert.equal(await h.feeds.imagesShown(s.id, 1, 2), "timeout");
+  assert.ok(Date.now() - t0 >= IMAGE_ATTACH_MS - 20 && Date.now() - t0 <= IMAGE_ATTACH_MS + 150, `gave up after ${Date.now() - t0} ms`);
+  assert.equal(h.feeds.imageMarks("no-such-terminal"), null);
+  assert.equal(await h.feeds.imagesShown("no-such-terminal", 0, 1), "gone");
+  // The agent ends while Send waits for its images: gone, and nothing more may be written.
+  const agentProc = proc();
+  const h2 = setup({ clock: manualClock(), agent: async () => ({ ok: true, data: agentProc }) });
+  const place: Place = { kind: "vault", label: "Vault", dir: h2.vault };
+  const two = h2.pool.createAgent({ spec: { host: "claude", bin: null, model: null, access: "edit", cwd: h2.vault }, place, meta: { host: "claude", place, terminalKey: KEY2 } });
+  await two.ready;
+  agentProc.emit(drawn("claude-2.1.318-idle"));
+  await new Promise((r) => setTimeout(r, 50));
+  const waiting = h2.feeds.imagesShown(two.session.id, 0, 1);
+  setTimeout(() => agentProc.exit(0), 120);
+  assert.equal(await waiting, "gone");
 });
 
 test("a click answers the card the user saw: a card that was replaced meanwhile writes nothing (R49)", async () => {

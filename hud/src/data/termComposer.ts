@@ -18,7 +18,9 @@ export function composerWrites(text: string, chunk = COMPOSER_CHUNK, bracketed =
   return bracketed ? ["\x1b[200~", ...parts, "\x1b[201~", "\r"] : [...parts, "\r"];
 }
 
-/** A path as a prompt takes it: quoted when it holds a space (or other whitespace), as an @file mention is. */
+/** A path as a prompt takes it: quoted when it holds a space (or other whitespace), as an @file mention is. No `"` to
+ *  escape: an image's path is main's `<userData>/code-images/<yyyy-mm>/<uuid>.<ext>` (no account name holds one), and an
+ *  @file one goes into the agent's prompt, never a shell. */
 const promptPath = (p: string): string => (/\s/.test(p) ? `"${p}"` : p);
 
 /**
@@ -41,9 +43,19 @@ export function composeSend(text: string, images: string[]): string {
  * Codex attach as an image (`[Image #1]`); a path pasted with text stays text. With it off: composeSend's one text, typed.
  */
 export function sendWrites(text: string, images: string[], chunk = COMPOSER_CHUNK, bracketed = true): string[] {
-  if (!bracketed || !images.length) return composerWrites(composeSend(text, images), chunk, bracketed);
+  const p = sendPhases(text, images, chunk, bracketed);
+  return [...p.images, ...p.rest];
+}
+
+/**
+ * sendWrites in its two parts (R70): `images`, the image pastes (none without images or bracketed paste), and `rest`, the
+ * text and Enter. Send writes `images`, waits for the TUI to show their placeholders (Claude Code inserts a pasted image
+ * after it has read the file), then writes `rest`.
+ */
+export function sendPhases(text: string, images: string[], chunk = COMPOSER_CHUNK, bracketed = true): { images: string[]; rest: string[] } {
+  if (!bracketed || !images.length) return { images: [], rest: composerWrites(composeSend(text, images), chunk, bracketed) };
   const paste = (s: string): string[] => composerWrites(s, chunk, true).slice(0, -1);
-  return [...images.flatMap((p) => paste(promptPath(p))), ...(text.trim() ? paste(text) : []), "\r"];
+  return { images: images.flatMap((p) => paste(promptPath(p))), rest: [...(text.trim() ? paste(text) : []), "\r"] };
 }
 
 /** The images the composer takes (code-chat C7), as main checks them again by content (services/code-images.ts). */

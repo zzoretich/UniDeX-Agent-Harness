@@ -14,7 +14,8 @@
 // came in (a chunk xterm has not parsed yet waits for the next read): the TUI's prompt is the chat's card and the row's
 // Needs you, and a Codex terminal's footer rows are its status line. A card's key reaches the agent only through
 // `answer`, which reads the screen again first; Send asks `cardNow`, which reads it too (the poll can be a tick behind),
-// once the terminal's last input has had SEND_QUIET_MS to open whatever prompt it opens (R62).
+// once the terminal's last input has had SEND_QUIET_MS (a slash command SLASH_SETTLE_MS) to open whatever prompt it opens
+// (R62, R69), and after it pasted images waits on `imagesShown` for their placeholders before its text and ⏎ (R70).
 
 import * as path from "path";
 import { readCacheAll } from "./pastChat";
@@ -22,7 +23,7 @@ import { codeChatOn, fs as hostFs, hudHost, type HostCode, type HostFs, type Hos
 import { CacheTail, chatFromEvents, trimEvents, type ChatState } from "./codeChat";
 import { allowCodeHref, ansiLines, type Span } from "./ansiSpans";
 import type { TerminalPool } from "./terminalPool";
-import { hasChat, type TerminalSession } from "./terminalSession";
+import { hasChat, processKey, type TerminalSession } from "./terminalSession";
 import { listen } from "./listen";
 import { ClosedRecord } from "./closedRecord";
 import { HeadlessScreen } from "./headlessScreen";
@@ -48,12 +49,45 @@ export const SEND_SETTLE_MS = 100;
  *  the screen (R62): a TUI opens a prompt in answer to input it has not drawn yet (a `/model` sent a moment ago, its
  *  picker not up), and the ⏎ that ends a send would answer it. Send waits at most SEND_QUIET_MS + SEND_SETTLE_MS. */
 export const SEND_QUIET_MS = 500;
+/** How long after a slash command the composer sent (`/model`) a later Send may still wait for the prompt it opens (R69):
+ *  a TUI can draw that picker well after SEND_QUIET_MS (Codex 0.167's first `/model` did, live), and the ⏎ that ends the
+ *  next send would answer it. Send stops waiting as soon as a card shows, so it waits at most SLASH_SETTLE_MS +
+ *  SEND_SETTLE_MS. */
+export const SLASH_SETTLE_MS = 2000;
+/** How often the screen is read while Send waits (R69): a card read holds at once. */
+export const SEND_POLL_MS = 100;
+/** How long Send waits, after it pasted its images' paths, for the TUI to show their placeholders (`[Image #1]`) before it
+ *  writes the text and ⏎ (R70): Claude Code reads and inserts a pasted image asynchronously, and a ⏎ that comes first
+ *  submits the text without it. Past it the text goes anyway. */
+export const IMAGE_ATTACH_MS = 3000;
+/** How often the screen is read for those placeholders. */
+export const IMAGE_POLL_MS = 50;
 
 /** How long Send still waits for the terminal's last input at `lastInput` (Date.now() ms; -Infinity: none) to settle at
  *  `now`: 0 once SEND_QUIET_MS has passed, never more than SEND_QUIET_MS (a clock that moved back included). */
 export function sendQuietWait(lastInput: number, now: number): number {
   return Math.min(SEND_QUIET_MS, Math.max(0, lastInput + SEND_QUIET_MS - now));
 }
+
+/** How long Send may wait at `now` (R62, R69): what is left of SEND_QUIET_MS since the terminal's last input, or of
+ *  SLASH_SETTLE_MS since the slash command the composer last sent (`command`, -Infinity: none), whichever is longer;
+ *  never more than SLASH_SETTLE_MS. */
+export function sendWait(lastInput: number, command: number, now: number): number {
+  return Math.max(sendQuietWait(lastInput, now), Math.min(SLASH_SETTLE_MS, Math.max(0, command + SLASH_SETTLE_MS - now)));
+}
+
+/** How many image placeholders (`[Image #…`) a screen shows, over all its rows (R70). */
+export function imageMarks(rows: readonly string[]): number {
+  let n = 0;
+  for (const r of rows) for (let at = r.indexOf("[Image #"); at >= 0; at = r.indexOf("[Image #", at + 1)) n++;
+  return n;
+}
+
+/** What Send's wait answers (cardNow): a card is up (hold, keep the draft), none is (send), or the agent the draft was
+ *  written for is gone: it ended, the terminal exited or closed, or another process took it over (R39's login shell).
+ *  Gone sends nothing and keeps the draft, as `answer` writes nothing then. */
+export type SendHold = boolean | "gone";
+
 
 /** Whether a terminal's screen is read on this tick: its PTY printed in the last PRINT_MS, or a card is up (it may be
  *  answered in the terminal). `lastData` is when it last printed, -Infinity before it ever did. */
@@ -226,26 +260,61 @@ export class CodeFeeds {
    * a millisecond), after its pending chunks are parsed when there are any (waited for at most SEND_SETTLE_MS: after that,
    * whatever is parsed is read). Busy alone never holds (R56); only a card the read finds does, and it is the feed's from
    * then on. Input written to the terminal less than SEND_QUIET_MS ago may still open a prompt the screen does not show
-   * yet (R62): the read waits until it has had that long, so Send waits at most SEND_QUIET_MS + SEND_SETTLE_MS.
+   * yet (R62), and a slash command the composer sent less than SLASH_SETTLE_MS ago may open one later still (R69): the
+   * read waits that long (sendWait), reading the screen every SEND_POLL_MS meanwhile and holding as soon as a card shows,
+   * so Send waits at most SLASH_SETTLE_MS + SEND_SETTLE_MS. "gone" when the agent did not outlast the wait (it ended, the
+   * terminal closed, another process took it over: C1): the draft must not go to whatever runs there now.
    */
-  async cardNow(id: string): Promise<boolean> {
+  async cardNow(id: string): Promise<SendHold> {
     const e = this.entries.get(id);
     if (!e) return false;
     if (e.feed.card) return true;
     const screen = e.screen;
     if (!screen) return false;
-    // Date.now(), as TerminalSession stamps its input with (the poll's clock is the screens' own).
-    const quiet = sendQuietWait(this.pool.get(id)?.lastInputAt ?? Number.NEGATIVE_INFINITY, Date.now());
-    if (quiet > 0) {
-      await new Promise<void>((r) => setTimeout(r, quiet));
-      if (this.disposed || this.entries.get(id) !== e || e.screen !== screen || e.feed.card) return e.feed.card !== null;
+    const s = this.pool.get(id);
+    const proc = processKey(s);
+    const gone = (): boolean => this.disposed || this.entries.get(id) !== e || e.screen !== screen || processKey(this.pool.get(id)) !== proc;
+    // Date.now(), as TerminalSession stamps its input and commands with (the poll's clock is the screens' own).
+    const until = Date.now() + sendWait(s?.lastInputAt ?? Number.NEGATIVE_INFINITY, s?.commandAt ?? Number.NEGATIVE_INFINITY, Date.now());
+    for (let left = until - Date.now(); left > 0; left = until - Date.now()) {
+      await new Promise<void>((r) => setTimeout(r, Math.min(SEND_POLL_MS, left)));
+      if (gone()) return "gone";
+      if (!e.feed.card && this.readScreen(e)) this.notify(id);
+      if (e.feed.card) return true;
     }
     if (screen.busy) {
       await screen.settled(SEND_SETTLE_MS);
-      if (this.disposed || this.entries.get(id) !== e || e.screen !== screen) return e.feed.card !== null;
+      if (gone()) return "gone";
     }
     if (this.readScreen(e, true)) this.notify(id);
     return e.feed.card !== null;
+  }
+
+  /** How many image placeholders the terminal's screen shows now (R70), or null when it has no screen to read. */
+  imageMarks(id: string): number | null {
+    const screen = this.entries.get(id)?.screen;
+    return screen ? imageMarks(screen.snapshot().rows) : null;
+  }
+
+  /**
+   * Waits after Send pasted `count` images' paths (R70) until the screen shows `count` more image placeholders than
+   * `before` (read every IMAGE_POLL_MS), or IMAGE_ATTACH_MS passed: "attached" or "timeout", and the text and ⏎ may go.
+   * "gone" when the agent did not outlast the wait (C1): nothing more may be written to that terminal.
+   */
+  async imagesShown(id: string, before: number, count: number): Promise<"attached" | "timeout" | "gone"> {
+    const e = this.entries.get(id);
+    const screen = e?.screen;
+    if (!e || !screen) return "gone";
+    const proc = processKey(this.pool.get(id));
+    const gone = (): boolean => this.disposed || this.entries.get(id) !== e || e.screen !== screen || processKey(this.pool.get(id)) !== proc;
+    const until = Date.now() + IMAGE_ATTACH_MS;
+    for (let left = until - Date.now(); left > 0; left = until - Date.now()) {
+      await new Promise<void>((r) => setTimeout(r, Math.min(IMAGE_POLL_MS, left)));
+      if (gone()) return "gone";
+      // What is parsed is enough: a placeholder still in a pending chunk is counted on the next read.
+      if (imageMarks(screen.snapshot().rows) >= before + count) return "attached";
+    }
+    return gone() ? "gone" : "timeout";
   }
 
   /** What the terminal shows: its chat by default, an agent's only and only while the surface is on (C1, C3, C13). */

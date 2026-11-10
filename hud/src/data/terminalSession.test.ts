@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import Module from "node:module";
 import type * as PoolModule from "./terminalPool";
 import type * as LauncherModule from "./terminalLauncher";
+import type * as SessionModule from "./terminalSession";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
@@ -28,6 +29,7 @@ M._resolveFilename = function (request: string, ...rest: unknown[]) {
 };
 require.cache[STUB] = { id: STUB, filename: STUB, loaded: true, exports: { Events: FakeEvents } } as unknown as NodeJS.Module;
 const { TerminalPool } = require("./terminalPool") as typeof PoolModule;
+const { processKey } = require("./terminalSession") as typeof SessionModule;
 const { TerminalLauncher } = require("./terminalLauncher") as typeof LauncherModule;
 
 type Proc = HostPtyProcess & { written: string[]; killed: number; data(d: string): void; exit(code?: number): void };
@@ -204,6 +206,28 @@ test("code-chat R62: lastInputAt is when input last went to the terminal, whoeve
   const ended = shell.lastInputAt;
   shell.write("late\r");
   assert.equal(shell.lastInputAt, ended, "a closed terminal takes no input");
+});
+
+test("code-chat R69, C1: commandAt is when the composer last sent a slash command here; processKey changes when the agent ends and the login shell takes over", async () => {
+  const agentProc = proc(4500);
+  (agentProc as unknown as { id: string }).id = "pty-agent";
+  fakeHost(async () => ({ ok: true, data: agentProc }));
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  await ready;
+  assert.equal(session.commandAt, Number.NEGATIVE_INFINITY);
+  const before = Date.now();
+  session.noteCommand();
+  assert.ok(session.commandAt >= before && session.commandAt <= Date.now());
+  const agentKey = processKey(session);
+  assert.equal(agentKey, processKey(session), "the same process, the same key");
+  agentProc.exit(0);
+  assert.equal(session.agentEnded, true);
+  assert.notEqual(processKey(session), agentKey, "the login shell is another process");
+  const shellKey = processKey(session);
+  session.dispose();
+  assert.notEqual(processKey(session), shellKey, "closed");
+  assert.equal(processKey(null), "");
 });
 
 test("what main's schema would refuse never blocks the launch: a long label is cut to 200 characters, a place key over 512 falls back without asking main", async () => {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composerWrites, composeSend, dataUrlBase64, imageReason, imageRefusal, IMAGE_MAX_BYTES, IMAGE_MAX_COUNT, mentionAt, matchFiles, insertMention, sanitizeSnippets, sendWrites } from "./termComposer";
+import { composerWrites, composeSend, dataUrlBase64, imageReason, imageRefusal, IMAGE_MAX_BYTES, IMAGE_MAX_COUNT, mentionAt, matchFiles, insertMention, sanitizeSnippets, sendPhases, sendWrites } from "./termComposer";
 
 test("a message is one bracketed paste with CR line ends, then Enter, in pieces under the pty cap", () => {
   assert.deepEqual(composerWrites("fix it\nand test"), ["\x1b[200~", "fix it\rand test", "\x1b[201~", "\r"]);
@@ -78,6 +78,19 @@ test("sendWrites (R63): each image's path as a bracketed paste of its own, in or
   assert.deepEqual(sendWrites("ls", [], undefined, false), ["ls", "\r"]);
   // Without bracketed paste the paths follow the text in one typed line (the TUI can still read the path).
   assert.deepEqual(sendWrites("look at this", [a, b], undefined, false), [`look at this "${a}" ${b}`, "\r"]);
+});
+
+test("sendPhases (R70): the image pastes apart from the text and Enter, which wait for the TUI to show the images", () => {
+  const b = "/work/demo/data/code-images/2026-11/bbbbbbbb-0000-4000-8000-000000000002.jpg";
+  const [S, E] = ["\x1b[200~", "\x1b[201~"];
+  assert.deepEqual(sendPhases("look", [b]), { images: [S, b, E], rest: [S, "look", E, "\r"] });
+  assert.deepEqual(sendPhases("", [b, b]), { images: [S, b, E, S, b, E], rest: ["\r"] });
+  // No image, or no bracketed paste: nothing to wait for, everything is the rest.
+  assert.deepEqual(sendPhases("hi", []), { images: [], rest: composerWrites("hi") });
+  assert.deepEqual(sendPhases("hi", [b], undefined, false), { images: [], rest: [`hi ${b}`, "\r"] });
+  // sendWrites is the two, in order.
+  const p = sendPhases("look", [b]);
+  assert.deepEqual(sendWrites("look", [b]), [...p.images, ...p.rest]);
 });
 
 /** `s` in pieces of `n`. */
