@@ -39,6 +39,9 @@ import { CodeStage } from "./CodeStage";
 import { CodeTopBar } from "./CodeTopBar";
 import type { CodeView } from "../data/codeFeeds";
 
+/** Fits a terminal repeats at most this often before taking the last answer (refit). */
+const FIT_PASSES = 4;
+
 interface XtermBinding {
   term: Terminal;
   fit: FitAddon;
@@ -665,16 +668,27 @@ export class TerminalPanel {
     if (!b) return;
     try {
       if (!this.stage.chatShown()) {
-        b.fit.fit();
+        // The cell width xterm reports is the canvas width over the columns it has now, rounded to a pixel: one fit can
+        // land a column off the next. Fit again until it holds, so the answer does not depend on where it started.
+        for (let i = 0; i < FIT_PASSES; i++) {
+          b.fit.fit();
+          const d = b.fit.proposeDimensions();
+          if (!d || (d.cols === b.term.cols && d.rows === b.term.rows)) break;
+        }
         if (this.composer?.el.isConnected && this.composer.el.offsetHeight) this.termComposerH = this.composer.el.offsetHeight;
         return;
       }
       // While the chat shows, the terminal lies hidden under it, laid out at the stage's size: the agent's TUI is sized to
       // what the terminal view will give it, so ⌘J redraws nothing (C1). A stage with no size (a tab hidden) keeps the last.
-      const d = b.fit.proposeDimensions();
-      if (!d || !Number.isFinite(d.cols) || !Number.isFinite(d.rows)) return;
-      const rows = Math.max(2, d.rows - this.composerRows(b));
-      if (d.cols !== b.term.cols || rows !== b.term.rows) b.term.resize(d.cols, rows);
+      // The same settling as above, so both views reach the same columns (classic scrollbars and a 1x screen, as on CI,
+      // sit on a rounding edge).
+      for (let i = 0; i < FIT_PASSES; i++) {
+        const d = b.fit.proposeDimensions();
+        if (!d || !Number.isFinite(d.cols) || !Number.isFinite(d.rows)) return;
+        const rows = Math.max(2, d.rows - this.composerRows(b));
+        if (d.cols === b.term.cols && rows === b.term.rows) break;
+        b.term.resize(d.cols, rows);
+      }
     } catch { /* container not laid out yet */ }
   }
 
