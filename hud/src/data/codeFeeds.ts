@@ -43,6 +43,8 @@ export const POLL_MS = 500;
 export const PRINT_MS = 2000;
 /** Send reads the screen fresh when the PTY printed in this many ms and no card is known yet. */
 export const SEND_FRESH_MS = 300;
+/** How long Send waits for a screen's pending chunks to parse before it reads what is there. */
+export const SEND_SETTLE_MS = 100;
 
 /** Whether a terminal's screen is read on this tick: its PTY printed in the last PRINT_MS, or a card is up (it may be
  *  answered in the terminal). `lastData` is when it last printed, -Infinity before it ever did. */
@@ -199,16 +201,19 @@ export class CodeFeeds {
 
   /**
    * Whether Send must hold: a card is up. The poll sees a prompt up to POLL_MS after it prints, so for SEND_FRESH_MS after
-   * the PTY printed with no card known the screen is read now (a chunk not yet parsed counts as a prompt: Send tries again
-   * a moment later), and the card it finds is the feed's from then on.
+   * the PTY printed with no card known the screen is read now, once its pending chunks are parsed (waited for at most
+   * SEND_SETTLE_MS: after that, whatever is parsed is read). Busy alone never holds (R56); only a card the read finds does,
+   * and it is the feed's from then on.
    */
-  cardNow(id: string): boolean {
+  async cardNow(id: string): Promise<boolean> {
     const e = this.entries.get(id);
     if (!e) return false;
     if (e.feed.card) return true;
     if (!e.screen || this.clock.now() - e.lastData >= SEND_FRESH_MS) return false;
-    if (e.screen.busy) return true;
-    if (this.readScreen(e)) this.notify(id);
+    const screen = e.screen;
+    await screen.settled(SEND_SETTLE_MS);
+    if (this.disposed || this.entries.get(id) !== e || e.screen !== screen) return e.feed.card !== null;
+    if (this.readScreen(e, true)) this.notify(id);
     return e.feed.card !== null;
   }
 
@@ -446,9 +451,9 @@ export class CodeFeeds {
 
   /** Reads the screen into the card, Needs you and (Codex) the status line; true when any changed. A screen with a chunk
    *  still to parse is read on the next tick. */
-  private readScreen(e: Entry): boolean {
+  private readScreen(e: Entry, force = false): boolean {
     const screen = e.screen;
-    if (!screen || screen.busy) return false;
+    if (!screen || (screen.busy && !force)) return false;
     const snap = screen.snapshot();
     let changed = false;
     const card = screenCard(snap, e.feed.host);

@@ -280,8 +280,19 @@ export class TermComposer {
     const text = this.input.value;
     if (!s || this.blocked || !text.trim()) return;
     // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
-    // written and the draft stays (R49).
-    if (this.plugin.codeFeeds?.cardNow(s.id)) {
+    // written and the draft stays (R49). A prompt that just printed is read fresh first (bounded: R56).
+    const feeds = this.plugin.codeFeeds;
+    const known = feeds?.get(s.id)?.card;
+    if (known || !feeds?.get(s.id)) { this.finishSend(s, text, !!known); return; }
+    void feeds.cardNow(s.id).then((held) => {
+      // The draft or the terminal changed while the screen was read: this send is no longer the one asked for.
+      if (this.session !== s || this.blocked || this.input.value !== text) return;
+      this.finishSend(s, text, held);
+    });
+  }
+
+  private finishSend(s: TerminalSession, text: string, held: boolean): void {
+    if (held) {
       this.note.setText(this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first");
       this.note.removeClass("is-hidden");
       return;

@@ -34,7 +34,7 @@ M._resolveFilename = function (request: string, ...rest: unknown[]) {
 };
 require.cache[STUB] = { id: STUB, filename: STUB, loaded: true, exports: { Events: FakeEvents } } as unknown as NodeJS.Module;
 const { TerminalPool } = require("./terminalPool") as typeof PoolModule;
-const { CodeFeeds, EVENT_CAP, ROW_CAP, POLL_MS, PRINT_MS, screenDue } = require("./codeFeeds") as typeof FeedsModule;
+const { CodeFeeds, EVENT_CAP, ROW_CAP, POLL_MS, PRINT_MS, SEND_SETTLE_MS, screenDue } = require("./codeFeeds") as typeof FeedsModule;
 
 const KEY = "aaaaaaaa-0000-4000-8000-000000000001";
 const SID = "cccccccc-0000-4000-8000-000000000003";
@@ -359,36 +359,50 @@ test("an approval on an agent's screen is its card, read by the poll and never i
   assert.equal(clock.running, false, "quiet with no card: not polled");
 });
 
-test("Send asks cardNow: a prompt that printed in the last 300 ms is read fresh, before the poll has seen it (R49)", async () => {
+test("Send asks cardNow: a prompt that just printed is read fresh, once parsed and within a bound; busy alone never holds (R49, R56)", async () => {
   const clock = manualClock();
   const h = setup({ clock });
   const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
   await tick();
   const p = h.shells[h.shells.length - 1];
   const feed = () => h.feeds.get(s.id)!;
-  assert.equal(h.feeds.cardNow(s.id), false, "a quiet terminal with no card: no hold");
-  assert.equal(h.feeds.cardNow("nope"), false);
+  assert.equal(await h.feeds.cardNow(s.id), false, "a quiet terminal with no card: no hold");
+  assert.equal(await h.feeds.cardNow("nope"), false);
+  // (a) output streaming (a chunk pending), no card: Send goes through, within the bound.
+  p.emit(drawn("claude-2.1.318-idle"));
+  let t0 = Date.now();
+  assert.equal(await h.feeds.cardNow(s.id), false, "busy with no card is not a hold");
+  assert.ok(Date.now() - t0 <= SEND_SETTLE_MS + 50);
+  // (b) the card is in the chunk just printed, the poll has not run: held, and the feed has it.
   p.emit(fixture("claude-2.1.318-bash.ansi"));
-  // The chunk is still to parse: the screen can't say, so Send holds rather than guess.
-  assert.equal(h.feeds.cardNow(s.id), true, "just printed, not parsed yet");
-  // Parsed, but the poll has not run: the card is not known to the feed, yet Send is held and the feed has it.
-  await new Promise((r) => setTimeout(r, 50));
   assert.equal(feed().card, null, "the poll has not read it");
-  clock.advance(100);
-  assert.equal(h.feeds.cardNow(s.id), true, "a fresh read finds the card");
+  assert.equal(await h.feeds.cardNow(s.id), true);
   assert.equal(feed().card?.kind, "approval");
   assert.equal(feed().needsYou, true);
   // A card already known holds without a read, however long ago it printed.
   clock.advance(PRINT_MS * 2);
-  assert.equal(h.feeds.cardNow(s.id), true);
-  // Printing that is not a prompt, in the last 300 ms: read fresh, no hold.
+  assert.equal(await h.feeds.cardNow(s.id), true);
   p.emit(drawn("claude-2.1.318-idle"));
   await until(clock, () => feed().card === null);
-  assert.equal(h.feeds.cardNow(s.id), false);
-  // Quiet for over 300 ms with no card known: no read at all.
+  // Quiet for over SEND_FRESH_MS with no card known: no read at all.
   clock.advance(1000);
-  p.writes.length = 0;
-  assert.equal(h.feeds.cardNow(s.id), false);
+  assert.equal(await h.feeds.cardNow(s.id), false);
+});
+
+test("Send never waits past SEND_SETTLE_MS on a screen that never settles (R56)", async () => {
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  p.emit(drawn("claude-2.1.318-idle"));
+  const screen = (h.feeds as unknown as { entries: Map<string, { screen: object }> }).entries.get(s.id)!.screen;
+  await new Promise((r) => setTimeout(r, 50)); // the real parse finishes; its callback is spent
+  Object.defineProperty(screen, "busy", { get: () => true }); // and now a chunk that never parses
+  const t0 = Date.now();
+  assert.equal(await h.feeds.cardNow(s.id), false);
+  const took = Date.now() - t0;
+  assert.ok(took >= SEND_SETTLE_MS - 10 && took <= SEND_SETTLE_MS + 150, `took ${took} ms`);
 });
 
 test("a click answers the card the user saw: a card that was replaced meanwhile writes nothing (R49)", async () => {

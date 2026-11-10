@@ -35,6 +35,7 @@ export class HeadlessScreen {
   private disposed = false;
   /** Chunks written and not yet parsed (xterm parses on a timer). */
   private pending = 0;
+  private waiters: Array<() => void> = [];
 
   constructor(session: TerminalSession | ScreenSource) {
     this.session = session;
@@ -48,6 +49,17 @@ export class HeadlessScreen {
 
   /** Whether a chunk waits to be parsed: a snapshot now could miss it, so nothing should be decided from one. */
   get busy(): boolean { return !this.disposed && this.pending > 0; }
+
+  /** Resolves when every chunk written so far is parsed, or after `maxMs`, whichever is first (a screen that never settles
+   *  must not hold a caller). */
+  settled(maxMs: number): Promise<void> {
+    if (!this.busy) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => { clearTimeout(t); resolve(); };
+      const t = setTimeout(() => { this.waiters = this.waiters.filter((w) => w !== done); resolve(); }, maxMs);
+      this.waiters.push(done);
+    });
+  }
 
   /** The rows on screen now; none once the agent ended, the terminal exited, or this was disposed. */
   snapshot(): ScreenSnapshot {
@@ -105,7 +117,10 @@ export class HeadlessScreen {
 
   private write(d: string): void {
     this.pending++;
-    this.term.write(d, () => { this.pending--; });
+    this.term.write(d, () => {
+      this.pending--;
+      if (this.pending <= 0) { const w = this.waiters; this.waiters = []; for (const f of w) f(); }
+    });
   }
 
   /** The session resized since: the screen takes its size before it parses more. */

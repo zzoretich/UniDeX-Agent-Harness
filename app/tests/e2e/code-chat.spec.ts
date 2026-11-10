@@ -131,19 +131,20 @@ test.describe("the Code chat surface on", () => {
       }, { intervals: [100] }).toBeGreaterThanOrEqual(4);
       return (await size())!;
     };
-    // Every size the panel gives the agent's PTY, read and cleared by resizes(); the session's own resize is back below.
-    await win.evaluate((i) => {
-      const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { resize(c: number, r: number): void } } } } }).aosHost.plugin.terminalPool.get(i);
-      const w = window as unknown as { __resizes: string[] };
-      w.__resizes = [];
-      const orig = s.resize.bind(s);
-      s.resize = (c: number, r: number) => { w.__resizes.push(`${c}x${r}`); orig(c, r); };
-    }, agent);
     const resizes = () => win.evaluate(() => (window as unknown as { __resizes: string[] }).__resizes.splice(0));
     // Classic always-visible scrollbars, as on CI's macOS runners (this Mac's overlay ones take no width). Added here and
     // removed below, so no other test sees it.
     const style = await win.addStyleTag({ content: "::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; border-radius: 6px; }" });
     try {
+      // Every size the panel gives the agent's PTY, read and cleared by resizes(); the session's own resize is put back below.
+      await win.evaluate((i) => {
+        const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { resize(c: number, r: number): void } } } } }).aosHost.plugin.terminalPool.get(i);
+        const w = window as unknown as { __resizes: string[]; __resizeOrig?: (c: number, r: number) => void };
+        w.__resizes = [];
+        w.__resizeOrig = s.resize;
+        const orig = s.resize.bind(s);
+        s.resize = (c: number, r: number) => { w.__resizes.push(`${c}x${r}`); orig(c, r); };
+      }, agent);
       // A 1x screen, as CI's: xterm's cell width is the rounded canvas over the columns it has, so the chat's fit and the
       // terminal view's can land a column apart. 1480 x 920 first, whatever the screen (CI's runners are 1024 px wide),
       // then a few widths near it, then heights where the composer's share of the stage ends part-way through a line (the
@@ -182,7 +183,9 @@ test.describe("the Code chat surface on", () => {
       await style.evaluate((n) => (n as Element).remove());
       await win.evaluate((i) => {
         const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { resize?: unknown } } } } }).aosHost.plugin.terminalPool.get(i);
-        delete s.resize;
+        const w = window as unknown as { __resizeOrig?: unknown };
+        if (w.__resizeOrig) s.resize = w.__resizeOrig;
+        delete w.__resizeOrig;
       }, agent);
     }
   });
