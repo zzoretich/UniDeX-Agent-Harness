@@ -172,7 +172,7 @@ test.describe("the Code chat surface on", () => {
         await restore();
       }
     } finally {
-      await style.evaluate((n) => n.remove());
+      await style.evaluate((n) => (n as Element).remove());
     }
   });
 
