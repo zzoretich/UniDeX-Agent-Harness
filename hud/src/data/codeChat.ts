@@ -18,21 +18,37 @@ const MAX_READ = 4 * 1024 * 1024;
 export class CacheTail {
   private offset = 0;
   truncated = false;
+  /** Lines dropped for being longer than the read window. */
+  skippedLines = 0;
+  /** Inside such a line: its bytes are dropped up to the next newline. */
+  private skipping = false;
 
   constructor(private readonly fs: HostFs, private readonly path: string) {}
 
-  reset(): void { this.offset = 0; this.truncated = false; }
+  reset(): void { this.offset = 0; this.truncated = false; this.skipping = false; }
 
   read(): HostSessionEvent[] {
     this.truncated = false;
     let size: number;
     try { size = this.fs.statSync(this.path).size; } catch { return []; }
-    if (size < this.offset) { this.offset = 0; this.truncated = true; }
+    if (size < this.offset) { this.offset = 0; this.truncated = true; this.skipping = false; }
     if (size === this.offset) return [];
     let bytes: Uint8Array;
     try { bytes = this.fs.readBytesSync(this.path, this.offset, Math.min(size - this.offset, MAX_READ)); } catch { return []; }
+    if (this.skipping) {
+      const nl = bytes.indexOf(NL);
+      if (nl < 0) { this.offset += bytes.length; return []; }
+      this.offset += nl + 1;
+      this.skipping = false;
+      this.skippedLines++;
+      return this.read();
+    }
     const end = bytes.lastIndexOf(NL);
-    if (end < 0) return [];
+    if (end < 0) {
+      // A full window with no newline is one oversized line: drop it up to its next newline rather than wait on it forever.
+      if (bytes.length >= MAX_READ) { this.offset += bytes.length; this.skipping = true; }
+      return [];
+    }
     this.offset += end + 1;
     const out: HostSessionEvent[] = [];
     for (const line of new TextDecoder().decode(bytes.subarray(0, end)).split("\n")) {
