@@ -56,6 +56,8 @@ interface XtermBinding {
   search: SearchAddon;
   container: HTMLElement;
   detachData: () => void;
+  /** The deck's frame size ("width x height") this terminal was last fitted at (refit). */
+  fittedAt?: string;
 }
 
 export interface TerminalPanelOptions {
@@ -1031,28 +1033,35 @@ export class TerminalPanel {
     const b = this.bindings.get(this.activeId);
     if (!b) return;
     try {
+      // The deck's frame holds the stage and, in the terminal view, the composer under it: flipping the view moves the
+      // composer into or out of the stage's height and leaves the frame's size alone. A frame with no size (a tab hidden)
+      // keeps the last.
+      const frame = this.frameEl;
+      if (frame && !frame.clientWidth) return;
+      const at = frame ? `${frame.clientWidth}x${frame.clientHeight}` : undefined;
       if (!this.chatShown()) {
         // The cell width xterm reports is the canvas width over the columns it has now, rounded to a pixel: one fit can
-        // land a column off the next. Fit again until it holds, so the answer does not depend on where it started.
+        // land a column off the next. Fit again until it holds, so the next fit (each later flip) changes nothing.
+        let d: { cols: number; rows: number } | undefined;
         for (let i = 0; i < FIT_PASSES; i++) {
           b.fit.fit();
-          const d = b.fit.proposeDimensions();
+          d = b.fit.proposeDimensions();
           if (!d || (d.cols === b.term.cols && d.rows === b.term.rows)) break;
         }
+        if (d) b.fittedAt = at;
         if (this.composer?.el.isConnected && this.composer.el.offsetHeight) this.termComposerH = this.composer.el.offsetHeight;
         return;
       }
-      // While the chat shows, the terminal lies hidden under it, laid out at the stage's size: the agent's TUI is sized to
-      // what the terminal view will give it, so ⌘J redraws nothing (C1). A stage with no size (a tab hidden) keeps the last.
-      // The same settling as above, so both views reach the same columns (classic scrollbars and a 1x screen, as on CI,
-      // sit on a rounding edge).
-      for (let i = 0; i < FIT_PASSES; i++) {
-        const d = b.fit.proposeDimensions();
-        if (!d || !Number.isFinite(d.cols) || !Number.isFinite(d.rows)) return;
-        const rows = Math.max(2, d.rows - this.composerRows(b));
-        if (d.cols === b.term.cols && rows === b.term.rows) break;
-        b.term.resize(d.cols, rows);
-      }
+      // While the chat shows, the terminal lies hidden under it at the size the terminal view last gave it, so ⌘J redraws
+      // nothing and flipping back and forth never resizes the PTY (C1, R51). Only a terminal not fitted yet, or a frame
+      // whose size changed since its last fit, is fitted here: to the stage, less the rows the terminal view's composer
+      // takes. Its columns can land one off the terminal view's (the cell width rounds from the columns each starts at).
+      if (at && at === b.fittedAt) return;
+      const d = b.fit.proposeDimensions();
+      if (!d || !Number.isFinite(d.cols) || !Number.isFinite(d.rows)) return;
+      const rows = Math.max(2, d.rows - this.composerRows(b));
+      if (d.cols !== b.term.cols || rows !== b.term.rows) b.term.resize(d.cols, rows);
+      b.fittedAt = at;
     } catch { /* container not laid out yet */ }
   }
 
