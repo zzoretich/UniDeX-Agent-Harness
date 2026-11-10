@@ -307,7 +307,10 @@ test.describe("the Code chat surface on", () => {
     await win.waitForTimeout(300);
     expect((await ids()).length).toBe(count);
     expect(await selected()).toBe(old);
-    // A model from the custom id field: a new terminal resumes the same conversation on it, and the old one is gone.
+    // A model from the custom id field: a new terminal resumes the same conversation on it, and the old one is gone. A
+    // draft in the composer goes with it (I1).
+    const draft = "and now with the other model";
+    await chat(win).locator(".aos-tc-input").fill(draft);
     await model.click();
     await chat(win).locator("[data-hm-key='custom']").click();
     await chat(win).locator("[data-hm-key='custom-input']").fill("sonnet");
@@ -317,6 +320,7 @@ test.describe("the Code chat surface on", () => {
     expect(await ids()).not.toContain(old);
     expect((await metaOf(second))?.sessionId).toBe(sid);
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toMatch(new RegExp(`\\[fixture claude stub\\] .*--model sonnet .*--resume ${sid}`));
+    await expect(C(win).locator(".aos-tc-input")).toHaveValue(draft);
     // The access chip: another conversation (the fixture's agent exits at once, so the restarted one cannot be picked on again).
     const sid2 = "abababab-0000-4000-8000-00000000000a";
     const key2 = "abababab-0000-4000-8000-00000000000b";
@@ -858,6 +862,45 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     expectNoErrors(h);
   });
 
+  test("I2: an agent that ends while Send waits and another terminal shows: back on it, the shell's box is empty and the shell ran nothing (R73)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const other = await fakeAgent(win, { host: "codex", terminalKey: "a1a1a1a1-0000-4000-8000-00000000004c", sessionId: "a1a1a1a1-0000-4000-8000-00000000004d", label: "Shown meanwhile" });
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000004e", sessionId: "a1a1a1a1-0000-4000-8000-00000000004f", label: "Ends unseen" });
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Ends unseen");
+    await replay(win, id, drawn("claude-2.1.318-idle"));
+    await win.keyboard.press("Meta+j");
+    await expect(body(win)).toBeVisible();
+    const input = C(win).locator(".aos-term-main > .aos-tc .aos-tc-input");
+    const draft = "echo leaked-$((6*7))";
+    await input.fill(draft);
+    // Send waits SEND_QUIET_MS after the last input; meanwhile the other terminal is selected and this agent ends.
+    await win.evaluate((i) => (window as unknown as FakeW).aosHost.plugin.terminalPool.get(i)?.write(" "), id);
+    await input.press("Enter");
+    await win.evaluate(({ i, o }) => {
+      const w = window as unknown as FakeW;
+      w.aosHost.plugin.terminalPool.select(o);
+      w.__fakes?.[i].exit(0);
+    }, { i: id, o: other });
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Shown meanwhile");
+    await expect.poll(() => win.evaluate((i) => (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { agentEnded: boolean } | undefined } } } }).aosHost.plugin.terminalPool.get(i)?.agentEnded ?? null, id), { timeout: 10_000 }).toBe(true);
+    await win.waitForTimeout(1500);
+    // Back on it, in its terminal view: the agent's draft did not come back into what is now the shell's composer.
+    await select(win, id);
+    await expect(body(win)).toBeVisible();
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("This is your shell, in the same folder.");
+    await expect(input).toHaveAttribute("placeholder", "Write a command…");
+    await expect(input).toHaveValue("");
+    await win.waitForTimeout(500);
+    expect(await terminalText(win)).not.toContain("leaked-42");
+    expect((await written(win, id)).join("")).not.toContain("leaked");
+    expect((await written(win, other)).join("")).not.toContain("leaked");
+    await removeTerminal(win, id);
+    await removeTerminal(win, other);
+    expectNoErrors(h);
+  });
+
   test("a card that comes under the fold of a long chat is scrolled into view, and a long choice wraps inside it, never wider than the card", async () => {
     const h = app();
     const { win } = h;
@@ -1224,8 +1267,8 @@ test.describe("the composer's images (C7, C13)", () => {
     expectNoErrors(h);
   });
 
-  // Last in this app: main's code:save-image is replaced by one the test answers by hand, so an image stays "saving" as
-  // long as the test wants.
+  // The last two in this app: main's code:save-image is replaced by one the test answers by hand, so an image stays
+  // "saving" as long as the test wants.
   test("⏎ while an image saves sends once it is saved, only if the draft is unchanged; a bare errno reads as words; 8 images at most (R60)", async () => {
     const h = app();
     const { win } = h;
@@ -1274,6 +1317,42 @@ test.describe("the composer's images (C7, C13)", () => {
     expect(await deliver(win, "paste", nine)).toBe(true);
     await expect(shots(win)).toHaveCount(8);
     await expect(note(win)).toHaveText("Image not added: 8 images at most in one message");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("I2: an agent that ends while ⏎ waits for an image to save sends nothing: the draft leaves the shell's box and the note says the agent ended (R73)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000050", sessionId: "a1a1a1a1-0000-4000-8000-000000000051", label: "Ends while saving" }, { images: true });
+    await expect(chat(win)).toBeVisible();
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].emit("\u001b[?2004h"), id);
+    // Its terminal view, whose composer becomes the shell's when the agent ends.
+    await win.keyboard.press("Meta+j");
+    await expect(body(win)).toBeVisible();
+    await h.app.evaluate(({ ipcMain }) => {
+      const g = globalThis as unknown as { __saves: Array<(r: unknown) => void> };
+      g.__saves = [];
+      ipcMain.removeHandler("code:save-image");
+      ipcMain.handle("code:save-image", () => new Promise((r) => { g.__saves.push(r); }));
+    });
+    const answer = (r: object) => h.app.evaluate((_e, a) => (globalThis as unknown as { __saves: Array<(r: unknown) => void> }).__saves.shift()?.(a), r);
+    const box = C(win).locator(".aos-term-main > .aos-tc .aos-tc-input");
+    expect(await deliver(win, "paste", [{ name: "one.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(C(win).locator(".aos-tc-shot.is-saving:visible")).toHaveCount(1);
+    const draft = "echo leaked-$((6*7))";
+    await box.fill(draft);
+    await written(win, id);
+    await box.press("Enter");
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].exit(0), id);
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("This is your shell, in the same folder.");
+    await answer({ ok: true, data: { path: "/work/demo/one.png" } });
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-note")).toHaveText("Claude Code ended before this was sent");
+    await expect(box).toHaveValue("");
+    await win.waitForTimeout(500);
+    expect(await terminalText(win)).not.toContain("leaked-42");
+    expect((await written(win, id)).join("")).not.toContain("leaked");
     await removeTerminal(win, id);
     expectNoErrors(h);
   });

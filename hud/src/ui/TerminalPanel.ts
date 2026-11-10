@@ -520,7 +520,7 @@ export class TerminalPanel {
    * (`resume` by the chat's id) with the pick; once the new agent has started it closes the old terminal, whose follower
    * ends with it (a failed start keeps the old one and says why: restartKeepingOld); the new one gets its own. With no
    * conversation known there is nothing to resume, and nothing happens. The other chip's value rides along as shown, so
-   * a model changed in the TUI is not lost by an access pick.
+   * a model changed in the TUI is not lost by an access pick, and so does the composer's draft (I1).
    */
   restartWith(id: string, patch: { model?: string | null; access?: TermAccess | null }): Promise<void> {
     const pool = this.plugin.terminalPool;
@@ -536,7 +536,8 @@ export class TerminalPanel {
     const chosen = { model: "model" in patch, access: "access" in patch };
     return restartKeepingOld(pool, id, () => this.plugin.termLauncher.launch({
       host, picked: this.model.placeOfSession(s), resume: { id: conv }, origin: s.meta.origin, model, access, chosen,
-    })).then((why) => { if (why) new Notice(`Terminal: ${why}`); }).finally(() => { this.restarting.delete(id); });
+    }), (from, to) => this.composer?.carryDraft(from, to))
+      .then((why) => { if (why) new Notice(`Terminal: ${why}`); }).finally(() => { this.restarting.delete(id); });
   }
 
   // ── the chat view (spec 2026-11-09-code-chat C1, C3, C5, C13) ──

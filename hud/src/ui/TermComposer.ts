@@ -239,16 +239,31 @@ export class TermComposer {
     else void this.loadCommands(s.meta.host as "claude" | "codex");
   }
 
-  /** The terminal shown now leaves the composer: its draft is kept for it (D5). */
+  /** The terminal shown now leaves the composer: its draft is kept for it (D5). A closed one keeps none (I1): the pool
+   *  disposes a terminal before it says it was removed, so the selected one, closed, leaves no draft behind. */
   private stashDraft(): void {
     const s = this.session;
     if (!s) return;
-    if (this.input.value) this.drafts.set(s.id, this.input.value);
+    if (this.input.value && !s.isClosed) this.drafts.set(s.id, this.input.value);
     else this.drafts.delete(s.id);
   }
 
   /** A terminal was closed: its draft goes with it (D5). */
   forgetDraft(id: string): void { this.drafts.delete(id); }
+
+  /**
+   * A chip restart replaces terminal `from` with `to` (C12, I1), before `from` is removed: the draft goes with it. The
+   * launch selected `to` at once, so its box gets the draft while it is still empty; otherwise the draft is kept for
+   * `to`, as a terminal not shown keeps its own.
+   */
+  carryDraft(from: string, to: string): void {
+    const shown = this.session?.id ?? null;
+    const text = shown === from ? this.input.value : this.drafts.get(from) ?? "";
+    this.drafts.delete(from);
+    if (!text) return;
+    if (shown === to) { if (!this.input.value) this.input.value = text; }
+    else if (!this.drafts.has(to)) this.drafts.set(to, text);
+  }
 
   /** Keeps the composer away while `on` (the chat of an agent that ended, R39): hidden, ⌘L finds nothing, Send writes
    *  nothing. */
@@ -401,12 +416,14 @@ export class TermComposer {
     if (processKey(s) !== proc) return;
     // An image main is still saving: Send waits for it, once, then starts again from the top, so every check below runs on
     // what is there then. It goes only if the draft is still the one ⏎ was pressed on (R60): the same text and images. A
-    // refused or removed image, or an edit meanwhile, sends nothing and keeps the draft.
+    // refused or removed image, or an edit meanwhile, sends nothing and keeps the draft. A process that changed meanwhile
+    // (the agent ended, which takes the images away) ends it as any wait does (C1, R73, I2): nothing goes, and the note.
     if (shots.some((x) => x.path === null)) {
       if (this.awaitingShots) return;
       this.awaitingShots = true;
       void Promise.all(shots.map((x) => x.saved)).then((ok) => {
         this.awaitingShots = false;
+        if (processKey(s) !== proc) { this.waitEnded(s, text, "gone", false); return; }
         const same = this.shots.length === shots.length && this.shots.every((x, i) => x === shots[i]);
         if (this.session === s && ok.every(Boolean) && same && this.input.value === text) this.send(proc);
       });
@@ -470,14 +487,19 @@ export class TermComposer {
 
   /**
    * A Send's wait ended with nothing (more) written (D1, D2): the text back where it belongs when the images took the box
-   * (`cleared`), and the note, on the composer of the terminal it was for (another terminal shown now keeps it as that
-   * terminal's draft, D5).
+   * (`cleared`), and the note, on the composer of the terminal it was for. Another terminal shown now keeps what is left
+   * as that terminal's draft (D5), and drops it when nothing is left or the terminal closed (I1, I2): the text an ended
+   * agent's wait took out of the box (R73) never comes back into its shell's composer.
    */
   private waitEnded(s: TerminalSession, text: string, r: "held" | "gone", cleared: boolean): void {
     const mine = this.session === s;
     const box = mine ? this.input.value : this.drafts.get(s.id) ?? "";
     const end = sendWaitEnd(r, { blocked: this.blocked, cleared, box, text, ended: s.agentEnded || s.isExited });
-    if (!mine) { if (end.box) this.drafts.set(s.id, end.box); return; }
+    if (!mine) {
+      if (end.box && !s.isClosed) this.drafts.set(s.id, end.box);
+      else this.drafts.delete(s.id);
+      return;
+    }
     if (end.box !== box) this.input.value = end.box;
     if (end.note === "held") { this.say(this.heldText()); this.held = true; }
     else if (end.note === "changed") this.say(CHANGED);
