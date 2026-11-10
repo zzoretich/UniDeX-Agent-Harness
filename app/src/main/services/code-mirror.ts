@@ -124,7 +124,12 @@ export class CodeMirrorService {
     const info = this.o.ptyInfo(req.pty);
     if (!info) return fail("no such terminal", "ENOENT");
     if (info.terminal !== req.terminal) return fail("that terminal key is not this terminal's", "EINVAL");
+    const replaced = [...this.followers.values()].some((f) => f.terminal === req.terminal || f.pty === req.pty);
     this.stop((f) => f.terminal === req.terminal || f.pty === req.pty);
+    // The page tails the new cache from 0: the replaced follower's lines must not be there to read (its own cleanup never
+    // removes a file another follower wrote since).
+    const vault = this.o.vaultRoot();
+    if (replaced && vault) { try { fs.unlinkSync(path.join(vault, "brain", "_index", "code", `${req.terminal}.jsonl`)); } catch { /* none yet */ } }
     const since = String(Math.max(0, Math.floor(info.startedAt)));
     const args = id === null
       ? ["mirror", "--host", req.host, "--cwd", info.cwd, "--since", since, "--terminal", req.terminal, "--follow"]

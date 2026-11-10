@@ -121,6 +121,21 @@ test("follow is idempotent per pty, terminal, host and id (R2); fresh says wheth
   assert.equal(s.running, 1);
 });
 
+test("follow (F): replacing a terminal's follower removes the old cache first; a first follow and an idempotent one leave it", () => {
+  const { s, spawned } = rig();
+  const cache = path.join(vault, "brain", "_index", "code", `${KEY}.jsonl`);
+  fs.mkdirSync(path.dirname(cache), { recursive: true });
+  fs.writeFileSync(cache, '{"kind":"prompt","text":"old"}\n');
+  s.follow({ pty: "t1", host: "claude", terminal: KEY });
+  assert.ok(fs.existsSync(cache), "no follower was replaced: a cache already there is left to the new follower");
+  s.follow({ pty: "t1", host: "claude", terminal: KEY });
+  assert.ok(fs.existsSync(cache), "an idempotent follow replaces nothing");
+  s.follow({ pty: "t1", host: "claude", terminal: KEY, id: "sess-1" });
+  assert.equal(fs.existsSync(cache), false, "the replaced follower's lines are gone before the new one starts");
+  assert.equal(spawned.length, 2);
+  fs.rmSync(cache, { force: true });
+});
+
 test("follow refuses a terminal key that is not the one the pty started with (M6)", () => {
   const { s, spawned } = rig();
   assert.deepEqual(s.follow({ pty: "t1", host: "claude", terminal: KEY2 }), { ok: false, error: "that terminal key is not this terminal's", code: "EINVAL" });
