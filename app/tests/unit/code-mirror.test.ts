@@ -54,10 +54,10 @@ function rig(opts: { on?: boolean; info?: Info | null | ((pty: string) => Info |
 }
 const script = path.join(vault, "brain", "scripts", "lib", "sessions.js");
 
-test("the surface lists four mirror argv shapes, off by default, writing only the caches", () => {
+test("the surface lists four mirror argv shapes, on by default since its live check on each host, writing only the caches", () => {
   const code = SURFACES.find((x) => x.id === "code");
   assert.ok(code);
-  assert.equal(code.verified, false);
+  assert.equal(code.verified, true);
   assert.equal(code.scope, "main");
   assert.deepEqual(code.writes, ["brain/_index/code/*.jsonl", "brain/_index/code/*.claim.json"]);
   assert.deepEqual(code.folders, ["brain/_index/code"]);
