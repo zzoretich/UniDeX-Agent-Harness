@@ -281,7 +281,7 @@ export class TermComposer {
     if (!s || this.blocked || !text.trim()) return;
     // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
     // written and the draft stays (R49).
-    if (this.plugin.codeFeeds?.get(s.id)?.card) {
+    if (this.plugin.codeFeeds?.cardNow(s.id)) {
       this.note.setText(this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first");
       this.note.removeClass("is-hidden");
       return;

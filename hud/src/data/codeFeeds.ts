@@ -41,6 +41,8 @@ const MAX_READS = 64;
 export const POLL_MS = 500;
 /** …and for how long after their PTY last printed. */
 export const PRINT_MS = 2000;
+/** Send reads the screen fresh when the PTY printed in this many ms and no card is known yet. */
+export const SEND_FRESH_MS = 300;
 
 /** Whether a terminal's screen is read on this tick: its PTY printed in the last PRINT_MS, or a card is up (it may be
  *  answered in the terminal). `lastData` is when it last printed, -Infinity before it ever did. */
@@ -193,6 +195,21 @@ export class CodeFeeds {
     e.answered = e.cardSig;
     s.write(input);
     return true;
+  }
+
+  /**
+   * Whether Send must hold: a card is up. The poll sees a prompt up to POLL_MS after it prints, so for SEND_FRESH_MS after
+   * the PTY printed with no card known the screen is read now (a chunk not yet parsed counts as a prompt: Send tries again
+   * a moment later), and the card it finds is the feed's from then on.
+   */
+  cardNow(id: string): boolean {
+    const e = this.entries.get(id);
+    if (!e) return false;
+    if (e.feed.card) return true;
+    if (!e.screen || this.clock.now() - e.lastData >= SEND_FRESH_MS) return false;
+    if (e.screen.busy) return true;
+    if (this.readScreen(e)) this.notify(id);
+    return e.feed.card !== null;
   }
 
   /** What the terminal shows: its chat by default, an agent's only and only while the surface is on (C1, C3, C13). */

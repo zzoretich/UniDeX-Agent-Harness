@@ -359,6 +359,38 @@ test("an approval on an agent's screen is its card, read by the poll and never i
   assert.equal(clock.running, false, "quiet with no card: not polled");
 });
 
+test("Send asks cardNow: a prompt that printed in the last 300 ms is read fresh, before the poll has seen it (R49)", async () => {
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  const feed = () => h.feeds.get(s.id)!;
+  assert.equal(h.feeds.cardNow(s.id), false, "a quiet terminal with no card: no hold");
+  assert.equal(h.feeds.cardNow("nope"), false);
+  p.emit(fixture("claude-2.1.318-bash.ansi"));
+  // The chunk is still to parse: the screen can't say, so Send holds rather than guess.
+  assert.equal(h.feeds.cardNow(s.id), true, "just printed, not parsed yet");
+  // Parsed, but the poll has not run: the card is not known to the feed, yet Send is held and the feed has it.
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(feed().card, null, "the poll has not read it");
+  clock.advance(100);
+  assert.equal(h.feeds.cardNow(s.id), true, "a fresh read finds the card");
+  assert.equal(feed().card?.kind, "approval");
+  assert.equal(feed().needsYou, true);
+  // A card already known holds without a read, however long ago it printed.
+  clock.advance(PRINT_MS * 2);
+  assert.equal(h.feeds.cardNow(s.id), true);
+  // Printing that is not a prompt, in the last 300 ms: read fresh, no hold.
+  p.emit(drawn("claude-2.1.318-idle"));
+  await until(clock, () => feed().card === null);
+  assert.equal(h.feeds.cardNow(s.id), false);
+  // Quiet for over 300 ms with no card known: no read at all.
+  clock.advance(1000);
+  p.writes.length = 0;
+  assert.equal(h.feeds.cardNow(s.id), false);
+});
+
 test("a click answers the card the user saw: a card that was replaced meanwhile writes nothing (R49)", async () => {
   const clock = manualClock();
   const h = setup({ clock });
