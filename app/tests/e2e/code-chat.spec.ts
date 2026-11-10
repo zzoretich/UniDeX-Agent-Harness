@@ -59,6 +59,18 @@ const chat = (win: Page) => C(win).locator(".aos-cc:not(.is-readonly)");
 const past = (win: Page) => C(win).locator(".aos-cc.is-readonly");
 const body = (win: Page) => C(win).locator(".aos-term-body");
 const sw = (win: Page) => C(win).locator(".aos-cv");
+/** Holds back the pool's session-update events until the returned function runs: what moves then moved without one. */
+const holdUpdates = async (win: Page): Promise<() => Promise<void>> => {
+  await win.evaluate(() => {
+    const p = (window as unknown as { aosHost: { plugin: { terminalPool: { trigger(name: string, ...a: unknown[]): void } } } }).aosHost.plugin.terminalPool;
+    const orig = p.trigger.bind(p);
+    const w = window as unknown as { __release?: () => void };
+    p.trigger = (name: string, ...a: unknown[]) => { if (name !== "session-update") orig(name, ...a); };
+    w.__release = () => { p.trigger = orig; };
+  });
+  return async () => { await win.evaluate(() => (window as unknown as { __release?: () => void }).__release?.()); };
+};
+const appendCache = (key: string, events: object[]) => fs.appendFileSync(FX.v(`brain/_index/code/${key}.jsonl`), events.map((e) => `${JSON.stringify(e)}\n`).join(""));
 
 test.describe("the Code chat surface on", () => {
   test.describe.configure({ mode: "serial" });
@@ -291,6 +303,25 @@ test.describe("the Code chat surface on", () => {
     await expect(last).toBeInViewport();
   });
 
+  test("a chat that moves in a terminal you are not looking at updates its row in the sidebar, with no other change (I2)", async () => {
+    const { win } = app();
+    const key = "adadadad-0000-4000-8000-00000000000e";
+    const sid = "adadadad-0000-4000-8000-00000000000f";
+    writeCache(key, conversation(sid, FX.v("workspaces/harbor-map/src/tide.ts")).slice(0, 6));
+    await openTab(win, "term");
+    const other = await startAgent(win, { host: "claude", terminalKey: key, sessionId: sid, label: "Chart legend" });
+    const sub = C(win).locator(`.aos-tl-row[data-session="${other}"] .aos-tl-sub`);
+    await expect(sub).toContainText("Idle");
+    // Another terminal is selected: this row's chat is not the one on screen.
+    expect(await command(win, "agentic-os:new-terminal-shell")).toBe(true);
+    await expect(C(win).locator(`.aos-tl-row[data-session="${other}"]`)).toHaveAttribute("aria-selected", "false");
+    const release = await holdUpdates(win);
+    try {
+      appendCache(key, [{ t, kind: "prompt", text: "Now the chart legend", turn: 2 }]);
+      await expect(sub).toContainText("Working");
+    } finally { await release(); }
+  });
+
   test("an agent that exits hands its terminal to the login shell: the chat says so and takes no typing; the terminal's composer is a shell's (R39)", async () => {
     const { win } = app();
     const key = "acacacac-0000-4000-8000-00000000000c";
@@ -443,6 +474,30 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     await expect(row(win, mine).locator(".aos-tl-title")).toHaveText("Closed here, then indexed");
   });
 
+  test("a Codex terminal that knew its conversation only from its chat stays listed when closed, and opens read-only (I2, C6)", async () => {
+    const { win } = app();
+    const key = "aeaeaeae-0000-4000-8000-000000000010";
+    const thread = "aeaeaeae-0000-4000-8000-000000000011";
+    writeCache(key, conversation(thread, FX.v("workspaces/harbor-map/src/tide.ts")).slice(0, 6));
+    await openTab(win, "term");
+    // A new Codex terminal: its launch names no conversation; only its chat's session line does.
+    const id = await win.evaluate((k) => {
+      const p = (window as unknown as { aosHost: { plugin: { terminalPool: { create(o: object): { id: string }; select(id: string): void } } } }).aosHost.plugin.terminalPool;
+      const s = p.create({ meta: { host: "codex", terminalKey: k, label: "Codex thread" } });
+      p.select(s.id);
+      return s.id;
+    }, key);
+    await expect.poll(() => win.evaluate((i) => (window as unknown as { aosHost: { plugin: { codeFeeds: { get(id: string): { state: { sessionId: string | null } } | null } } } }).aosHost.plugin.codeFeeds.get(i)?.state.sessionId ?? null, id)).toBe(thread);
+    await win.evaluate((i) => (window as unknown as { aosHost: { plugin: { terminalPool: { remove(id: string): void } } } }).aosHost.plugin.terminalPool.remove(i), id);
+    const closedRow = C(win).locator(`.aos-tl-past[data-history="closed:codex:${thread}"]`);
+    await expect(closedRow).toBeVisible();
+    await expect(closedRow.locator(".aos-tl-sub")).toContainText("Codex · Closed");
+    await closedRow.click();
+    await expect(past(win)).toBeVisible();
+    await expect(C(win).locator(".aos-term-head .aos-term-chip").first()).toContainText("Codex · Past conversation");
+    await expect(C(win).locator(".aos-tc:visible, .aos-tc-input:visible")).toHaveCount(0);
+  });
+
   test("a conversation with no transcript says why in the read-only chat (the runtime's reason, not an exit code)", async () => {
     const { win } = app();
     const gone = "c1a0de00-0000-4000-8000-0000000000ff";
@@ -475,10 +530,12 @@ test.describe("the Code chat surface off (a run whose AOS_APP_WRITE leaves it ou
     const { win } = h;
     writeCache(KEY, conversation(SID, FX.v("workspaces/harbor-map/src/tide.ts")));
     await openTab(win, "term");
-    await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID });
+    const id = await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID });
     await expect(body(win)).toBeVisible();
     await expect(chat(win)).toBeHidden();
     await expect(sw(win)).toHaveText("Chat view is off · Settings");
+    // No chat says whether a turn runs: its row reads Running, not Idle (M1).
+    await expect(C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-sub`)).toHaveText(/^Claude Code · Running · /);
     await expect(sw(win)).toHaveAttribute("data-tour", "code-view");
     await win.keyboard.press("Meta+j");
     await expect(body(win)).toBeVisible();

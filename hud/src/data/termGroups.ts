@@ -20,6 +20,38 @@ export interface TermRowInput {
   /** The chat's open turn and the TUI's wait for you (rowStatus); absent is false. */
   turnOpen?: boolean;
   needsYou?: boolean;
+  /** An agent whose chat is not followed (the Code chat surface off, refused, not yet started): nothing says whether a
+   *  turn runs, so its row reads Running rather than Idle (M1). Absent is false. */
+  noChat?: boolean;
+}
+
+/** What rowInput reads of a pool terminal (TerminalSession). */
+export interface RowSession {
+  id: string;
+  meta: { host: TermHost; origin: string | null; startedAt: number; sessionId: string | null };
+  getTitle(): string;
+  isExited: boolean;
+  exitCode: number | null;
+  agentEnded: boolean;
+}
+/** What rowInput reads of its chat (CodeFeeds' feed), or null for none. */
+export interface RowFeed { follow: "pending" | "on" | "off" | "failed"; state: { sessionId: string | null; turnOpen: boolean } }
+
+/**
+ * A terminal's sidebar row from what the pool and its chat know, the one source the chat and the chips read too (code-chat
+ * C6): its conversation is the chat's (which follows a /clear, and is the only id a new Codex terminal has), else the one
+ * its launch named; no turn is open once its agent ended and the login shell runs (R39); an agent whose chat is not
+ * followed reads Running.
+ */
+export function rowInput(s: RowSession, place: Place, feed: RowFeed | null): TermRowInput {
+  const agent = s.meta.host !== "shell";
+  return {
+    id: s.id, host: s.meta.host, title: s.getTitle(), place, origin: s.meta.origin, startedAt: s.meta.startedAt,
+    exited: s.isExited, exitCode: s.exitCode, sessionId: feed?.state.sessionId ?? s.meta.sessionId ?? null,
+    // Task 12 reads "Needs you" from the screen and sets needsYou here.
+    turnOpen: agent && !s.agentEnded && (feed?.state.turnOpen ?? false), needsYou: false,
+    noChat: agent && feed?.follow !== "on",
+  };
 }
 
 export type RowEnd = "running" | "done" | "failed";
@@ -156,7 +188,8 @@ export function groupSidebar(open: TermRowInput[], history: HistoryRow[], o: Sid
 
   for (const r of open) {
     if (!hit(r.title, r.host, TERM_HOST_LABEL[r.host])) continue;
-    const status = rowStatus({ exited: r.exited, exitCode: r.exitCode, turnOpen: !!r.turnOpen, printing: false, needsYou: !!r.needsYou });
+    const known = rowStatus({ exited: r.exited, exitCode: r.exitCode, turnOpen: !!r.turnOpen, printing: false, needsYou: !!r.needsYou });
+    const status: SidebarStatus = r.noChat && known.status === "idle" ? { status: "idle", text: "Running" } : known;
     add(r.place, r.startedAt, true, { kind: "open", row: { ...r, ...rowEnd(r) }, status });
   }
   for (const r of o.closed) {

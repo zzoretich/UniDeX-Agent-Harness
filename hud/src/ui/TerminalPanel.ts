@@ -29,7 +29,7 @@ import { FIND_LIMIT } from "../data/termFind";
 import { hudHost, shell } from "../host";
 import { ConfirmModal } from "./ConfirmModal";
 import { LinkRepoModal } from "./LinkRepoModal";
-import { groupKey, groupSidebar, scopeOf, sidebarOrder, stepRow, type SidebarGroup, type TermRow, type TermRowInput, type TermScope } from "../data/termGroups";
+import { groupKey, groupSidebar, rowInput, scopeOf, sidebarOrder, stepRow, type SidebarGroup, type TermRow, type TermRowInput, type TermScope } from "../data/termGroups";
 import { restartKeepingOld } from "../data/terminalRestart";
 import { HistoryCache } from "../data/historyCache";
 import type { HistoryResume, HistoryRow } from "../data/sessionHistory";
@@ -119,6 +119,8 @@ export class TerminalPanel {
   private unwatchComputer: (() => void) | null = null;
   /** The rows' marks as last drawn, so a computer's state that changes none of them redraws nothing. */
   private marksShown = "";
+  /** The rows' status and conversation as last drawn, so a chat that changes neither redraws no list (I2). */
+  private rowsShown = "";
   /** The deck's main column, and the stage that holds the terminal's body under the chat (code-chat C1). */
   private frameEl: HTMLElement | null = null;
   private stageEl: HTMLElement | null = null;
@@ -223,7 +225,11 @@ export class TerminalPanel {
       this.finder = new TermFind(this.bodyEl, () => this.focus());
       this.mountComputer(host);
       this.unwatchFeeds = this.plugin.codeFeeds?.subscribe((id) => {
-        if (!this.host || id !== this.activeId) return;
+        if (!this.host) return;
+        // Any terminal's chat moves its row (Working, Idle) and the conversation it is in: the list redraws when a row
+        // would read differently, the selected one or not.
+        if (this.list && this.rowsSig() !== this.rowsShown) this.renderTabs();
+        if (id !== this.activeId) return;
         this.renderChat();
         this.renderHostChip();
       }) ?? null;
@@ -452,6 +458,7 @@ export class TerminalPanel {
   private renderTabs(): void {
     if (this.opts.deck && this.list) {
       this.marksShown = this.marksSig();
+      this.rowsShown = this.rowsSig();
       this.hist?.refresh();
       this.sidebar = this.buildSidebar();
       const open = this.openRows();
@@ -510,15 +517,25 @@ export class TerminalPanel {
 
   private placeOfSession(s: TerminalSession): Place { return s.meta.place ?? placeOf(s.cwd, this.world()); }
 
+  /** Each terminal's row (rowInput): its conversation and turn as its chat has them, the source the chat and chips read. */
   private rowInputs(): TermRowInput[] {
     const feeds = this.plugin.codeFeeds;
-    return this.plugin.terminalPool.list().map((s) => ({
-      id: s.id, host: s.meta.host, title: s.getTitle(), place: this.placeOfSession(s), origin: s.meta.origin,
-      startedAt: s.meta.startedAt, exited: s.isExited, exitCode: s.exitCode, sessionId: s.meta.sessionId ?? null,
-      // Task 12 reads "Needs you" from the screen and sets needsYou here; the chat knows whether a turn is open (no turn is
-      // open once the agent has ended and its shell runs, R39).
-      turnOpen: !s.agentEnded && (feeds?.get(s.id)?.state.turnOpen ?? false), needsYou: false,
-    }));
+    return this.plugin.terminalPool.list().map((s) => rowInput(s, this.placeOfSession(s), feeds?.get(s.id) ?? null));
+  }
+
+  /** The terminal's conversation: its chat's (a /clear, a new Codex thread), else the one its launch named. */
+  private conversationOf(s: TerminalSession): string | null {
+    return this.plugin.codeFeeds?.get(s.id)?.state.sessionId ?? s.meta.sessionId ?? null;
+  }
+
+  /** What the rows show of each chat: its status and its conversation (which hides its History row). */
+  private rowsSig(): string {
+    const feeds = this.plugin.codeFeeds;
+    if (!feeds) return "";
+    return this.plugin.terminalPool.list().map((s) => {
+      const f = feeds.get(s.id);
+      return f ? `${s.id}:${f.follow}:${f.state.turnOpen ? 1 : 0}:${this.conversationOf(s) ?? ""}` : s.id;
+    }).join(",");
   }
 
   /** The sidebar's groups now: the terminals, and (with the Code chat on) the conversations closed here and past ones. */
@@ -603,7 +620,7 @@ export class TerminalPanel {
         btn("Restart", () => this.startIn(place, host));
         // By id on either host when the terminal knows its conversation (a new Claude Code one, or any resume by id);
         // otherwise the latest one in this folder (spaces-redesign D7).
-        const id = s.meta.sessionId;
+        const id = this.conversationOf(s);
         if (id) btn("Resume", () => this.startIn(place, host, { id }), `Resume this conversation (${id.slice(0, 8)}…)`);
         else btn("Resume latest", () => this.startIn(place, host, "last"), "Resume the latest conversation in this folder");
       }

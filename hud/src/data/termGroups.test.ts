@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupTerminals, rowEnd, stepRow, groupKey, scopeOf, groupSidebar, ageText, sidebarOrder } from "./termGroups";
+import { groupTerminals, rowEnd, stepRow, groupKey, scopeOf, groupSidebar, ageText, sidebarOrder, rowInput } from "./termGroups";
+import { ClosedRecord } from "./closedRecord";
 import type { HistoryRow } from "./sessionHistory";
 import type { Place } from "./terminalLaunch";
 
@@ -147,4 +148,44 @@ test("sidebar: an open row's status comes from rowStatus; the order and age text
   assert.equal(ageText(NOW, NOW - 3 * 3_600_000), "3h");
   assert.equal(ageText(NOW, NOW - 2 * DAY), "2d");
   assert.equal(ageText(NOW, NOW + 1000), "now");
+});
+
+// ── a terminal's row from what the pool and its chat know (code-chat C6, I2, R39) ──
+
+const sess = (o: { host?: "claude" | "codex" | "shell"; sessionId?: string | null; ended?: boolean; exited?: boolean } = {}) => ({
+  id: "7", meta: { host: o.host ?? "codex", origin: null, startedAt: NOW - 60_000, sessionId: o.sessionId ?? null },
+  getTitle: () => "Tide chart", isExited: !!o.exited, exitCode: o.exited ? 0 : null, agentEnded: !!o.ended,
+});
+const feed = (sessionId: string | null, turnOpen = false, follow: "pending" | "on" | "off" | "failed" = "on") => ({ follow, state: { sessionId, turnOpen } });
+
+test("rowInput: the conversation is the chat's (a new Codex thread, a /clear), else the launch's", () => {
+  assert.equal(rowInput(sess(), ws("kite"), feed("019a-codex-thread")).sessionId, "019a-codex-thread", "a Codex terminal knows its id only from its chat");
+  assert.equal(rowInput(sess({ host: "claude", sessionId: "before-clear" }), ws("kite"), feed("after-clear")).sessionId, "after-clear");
+  assert.equal(rowInput(sess({ host: "claude", sessionId: "launched" }), ws("kite"), feed(null)).sessionId, "launched");
+  assert.equal(rowInput(sess({ host: "claude", sessionId: "launched" }), ws("kite"), null).sessionId, "launched");
+  assert.equal(rowInput(sess(), ws("kite"), null).sessionId, null);
+});
+
+test("rowInput: a Codex terminal with no launch id, closed, is kept and listed as a closed row by its chat's id", () => {
+  const closed = new ClosedRecord();
+  closed.add(rowInput(sess(), ws("kite"), feed("019a-codex-thread")));
+  const g = sb([], [], { closed: closed.list() });
+  assert.equal(g.length, 1);
+  const r = g[0].rows[0];
+  assert.equal(r.kind === "open" && r.closed, true);
+  assert.equal(r.kind === "open" ? r.row.sessionId : null, "019a-codex-thread");
+  assert.equal(r.kind === "open" ? r.status.text : null, "Closed");
+});
+
+test("rowInput: no turn is open once the agent ended; an agent whose chat is not followed reads Running, not Idle (M1)", () => {
+  assert.equal(rowInput(sess({ ended: true }), ws("kite"), feed("x", true)).turnOpen, false);
+  assert.equal(rowInput(sess(), ws("kite"), feed("x", true)).turnOpen, true);
+  const status = (r: ReturnType<typeof rowInput>) => { const x = sb([r], [])[0].rows[0]; return x.kind === "open" ? x.status.text : null; };
+  assert.equal(status(rowInput(sess(), ws("kite"), feed(null, false, "off"))), "Running", "the surface off: nothing says whether a turn runs");
+  assert.equal(status(rowInput(sess(), ws("kite"), null)), "Running");
+  assert.equal(status(rowInput(sess(), ws("kite"), feed(null, false, "pending"))), "Running");
+  assert.equal(status(rowInput(sess(), ws("kite"), feed("x", false))), "Idle", "a followed chat with no open turn");
+  assert.equal(status(rowInput(sess(), ws("kite"), feed("x", true))), "Working");
+  assert.equal(status(rowInput(sess({ exited: true }), ws("kite"), null)), "Exited 0");
+  assert.equal(status(rowInput(sess({ host: "shell" }), ws("kite"), null)), "Idle", "a shell's row shows no status");
 });
