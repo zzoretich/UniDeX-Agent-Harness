@@ -573,5 +573,5 @@ function readSessionIndex(file) {
 
 module.exports = {
   parseJsonl, textOf, kindOf, detectFormat, isRealPrompt, CODEX_ENVELOPE_RE, parseEntries, readTurns, readTranscriptFile, flattenTurns, sessionModel, sessionModelFile, FILE_TOOLS,
-  sessionHead, sessionTail, fileTouches, mcpCalls, readSessionIndex,
+  sessionHead, sessionTail, codexKind, fileTouches, mcpCalls, readSessionIndex,
 };

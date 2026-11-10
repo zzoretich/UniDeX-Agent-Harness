@@ -28,6 +28,7 @@ const path = require('path');
 const H = require('./host.js');
 const { writeAtomic } = require('./fsx.js');
 const { createTranscriptMapper } = require('./transcript-events.js');
+const { codexKind } = require('./transcript.js');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -80,8 +81,9 @@ function readTee(vault, terminal) {
  *   beginOf(cand, from) → ms | null                 a rollout's activity start: its first entry at or after `from`
  * A rollout's activity start (R17a, R17b) is its start when it began after my reference point, else its first growth at
  * or after it: my file's last append when I have a file (a /resume in the TUI), since − 1 s when I have none (resume
- * --last). A follower X is a contender for a rollout whose activity started at b when X has no file and
- * X.since ≤ b + 1 s, or X's file was last appended before b (X went quiet before it: a /new or a resume there). I adopt
+ * --last). A follower X is a contender for a rollout whose activity started at b when X has no file and could adopt it
+ * itself (R25: it started in [X.since − 1 s, X.since + 15 s], or is older and first grew at or after X.since − 1 s), or
+ * X's file was last appended before b (X went quiet before it: a /new or a resume there). I adopt
  * only when I am the one contender. With a file, only a rollout whose activity started after its last append counts, so
  * I never switch while mine is appended after that. With none, a new rollout must have started in [since − 1 s,
  * since + 15 s], and a peer with no file that started within 5 s of me makes it ambiguous. More than one candidate, or a
@@ -104,8 +106,17 @@ function pickCodexRollout(cands, { me, peers = [], beginOf = () => null }) {
   }
   if (!considered.length) return null;
   if (!me.file && peers.some((p) => !p.file && Math.abs(p.since - me.since) < SAME_START_MS)) return { ambiguous: true };
-  const contends = (x, begin) => (x.file ? x.mtimeMs < begin : x.since <= begin + START_SLACK_MS);
-  if (considered.length === 1 && !peers.some((p) => contends(p, considered[0].begin))) {
+  // R25: a follower with no file contends for a rollout only when it could adopt it itself (the same window as mine).
+  const contends = (x, c, begin) => {
+    if (x.file) return x.mtimeMs < begin;
+    if (c.mtimeMs < x.since) return false;
+    const from = x.since - START_SLACK_MS;
+    if (c.startedAt > from) return c.startedAt <= x.since + START_WINDOW_MS;
+    if (c.mtimeMs <= from) return false;
+    const b = beginOf(c, from);
+    return typeof b === 'number' && b >= from;
+  };
+  if (considered.length === 1 && !peers.some((p) => contends(p, considered[0].c, considered[0].begin))) {
     const { c } = considered[0];
     return { file: c.file, id: c.id ?? null };
   }
@@ -202,7 +213,7 @@ function readMeta(file) {
     if (!p || typeof p.cwd !== 'string') return null;
     const startedAt = Date.parse(p.timestamp || e.timestamp);
     const id = p.id || p.session_id;
-    return { id: validId(id) ? id : null, cwd: realDir(p.cwd), startedAt: Number.isNaN(startedAt) ? 0 : startedAt };
+    return { id: validId(id) ? id : null, cwd: realDir(p.cwd), startedAt: Number.isNaN(startedAt) ? 0 : startedAt, interactive: codexKind(p).kind === 'interactive' };
   } catch { return null; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* closed */ } }
 }
 
@@ -283,7 +294,7 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
   const ac = signal || new AbortController().signal;
   const parent = parentPid();
 
-  let cur = null; // { tail, file, id, missing }
+  let cur = null; // { tail, file, id, missing, mtimeMs }
   let fresh = true; // the cache holds nothing yet
   let cacheIno = null;
   let claimIno = null;
@@ -323,7 +334,9 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
   };
   const start = (file, sessionId) => {
     if (sessionId && !(announced && announced.id === sessionId)) announce(sessionId);
-    cur = { tail: makeTail(file, host, readCap), file, id: sessionId, missing: 0 };
+    let mtimeMs = Number.MAX_SAFE_INTEGER; // unknown: nothing counts as newer
+    try { mtimeMs = fs.statSync(file).mtimeMs; } catch { /* the poll counts it */ }
+    cur = { tail: makeTail(file, host, readCap), file, id: sessionId, missing: 0, mtimeMs };
     claim(file);
   };
   const lookup = (n, sessionId) => {
@@ -338,10 +351,12 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
       if (f.mtimeMs < since) continue;
       let m = metaCache.get(f.file);
       if (!m) { m = readMeta(f.file); if (m) metaCache.set(f.file, m); }
-      if (m) cands.push({ file: f.file, id: m.id, cwd: m.cwd, startedAt: m.startedAt, mtimeMs: f.mtimeMs });
+      // R26: a subagent thread or an exec run shares the folder but is no terminal's conversation.
+      if (m && m.interactive) cands.push({ file: f.file, id: m.id, cwd: m.cwd, startedAt: m.startedAt, mtimeMs: f.mtimeMs });
     }
-    let mtimeMs = 0;
-    if (cur) { try { mtimeMs = fs.statSync(cur.file).mtimeMs; } catch { /* gone: the poll counts it */ } }
+    // D: a rollout that can't be stat'ed keeps its last known append, so a gone file unlocks no new candidates.
+    if (cur) { try { cur.mtimeMs = fs.statSync(cur.file).mtimeMs; } catch { /* gone: the poll counts it */ } }
+    const mtimeMs = cur ? cur.mtimeMs : 0;
     const pick = pickCodexRollout(cands, {
       me: { cwd: myCwd, since, file: cur ? cur.file : null, mtimeMs },
       peers: peerClaims(vault, terminal, myCwd),

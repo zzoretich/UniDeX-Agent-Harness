@@ -574,3 +574,92 @@ test('pruneCodeCaches: removes code caches over 14 days and tees over 24 h, keep
   assert.deepEqual(fs.readdirSync(sl), ['new.json']);
   assert.deepEqual(M.pruneCodeCaches(path.join(env.root, 'none'), { now }), { pruned: 0 });
 });
+
+// ── Fix round 2 ──
+
+test('pickCodexRollout (R25): a no-file peer contends only for a rollout it could adopt itself', () => {
+  const t2 = me({ since: 160000 });
+  const n = [cand('new', 161000, 170000)];
+  assert.deepEqual(M.pickCodexRollout(n, { me: t2, peers: [{ since: 100000, file: null, mtimeMs: 0 }] }), { file: 'new', id: 'id-new' }, 'T1 (since 100 s, no file) cannot adopt a rollout started at 161 s');
+  assert.equal(M.pickCodexRollout(n, { me: me({ since: 100000 }), peers: [{ since: 160000, file: null, mtimeMs: 0 }] }), null, 'and T1 does not see it either');
+  assert.deepEqual(M.pickCodexRollout(n, { me: t2, peers: [{ since: 150000, file: null, mtimeMs: 0 }] }), { ambiguous: true }, 'a peer at 150 s could adopt it (window to 165 s)');
+  // an older rollout first grown at or after the peer's since − 1 s
+  const old = [cand('old', 5000, 170000)];
+  const beginOf = (c, from) => (from === 159000 ? 162000 : from === 99000 ? 120000 : null);
+  assert.deepEqual(M.pickCodexRollout(old, { me: t2, beginOf, peers: [{ since: 100000, file: null, mtimeMs: 0 }] }), { ambiguous: true }, 'a peer for which it is a resume of an older rollout contends');
+  assert.deepEqual(M.pickCodexRollout(old, { me: t2, beginOf: (c, from) => (from === 159000 ? 162000 : null), peers: [{ since: 100000, file: null, mtimeMs: 0 }] }), { file: 'old', id: 'id-old' }, 'but not when it has no growth after the peer\'s since');
+});
+
+test('follow codex (R25): a third terminal beside two stuck 5 s twins adopts its own fresh rollout', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const r3 = codexFile(env, `t3-${ID_C}`);
+  fs.mkdirSync(path.join(env.vault, 'brain', '_index', 'code'), { recursive: true });
+  for (const [term, since] of [[TERM, now - 200000], [TERM2, now - 197000]]) {
+    fs.writeFileSync(claimPath(env, term), JSON.stringify({ pid: process.pid, cwd: env.work, since, file: null }));
+  }
+  fs.writeFileSync(r3, metaLine(ID_C, env.work, iso(now - 59500)));
+  const f3 = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM3, vault: env.vault, dirs: env.dirs.codex });
+  try {
+    assert.ok(await waitFor(() => readClaim(env, TERM3)?.file === r3, 2000), 'the third adopts its own rollout');
+    assert.equal(readEvents(M.cachePath(env.vault, TERM3)).some((e) => e.kind === 'error'), false);
+  } finally { await f3.stop(); }
+});
+
+test('follow codex (R25): a --id follower whose rollout is missing does not block a neighbour', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const mine = codexFile(env, `mine-${ID_B}`);
+  fs.writeFileSync(mine, metaLine(ID_B, env.work, iso(now - 29500)));
+  const lost = run({ host: 'codex', id: ID_A, cwd: env.work, since: now - 90000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  assert.ok(await waitFor(() => readClaim(env, TERM) !== null, 2000));
+  const f2 = run({ host: 'codex', cwd: env.work, since: now - 30000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
+  try {
+    assert.ok(await waitFor(() => readClaim(env, TERM2)?.file === mine, 2000), 'the neighbour adopts its rollout');
+  } finally { await f2.stop(); await lost.stop(); }
+});
+
+test('follow codex (R26): subagent and exec rollouts in the folder are never adopted, though they grow after the parent\'s last append', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const src = (id, source, ts) => `${JSON.stringify({ timestamp: ts, type: 'session_meta', payload: { id, cwd: env.work, timestamp: ts, source } })}\n`;
+  const cur = codexFile(env, `cur-${ID_A}`);
+  const sub = codexFile(env, `sub-${ID_B}`);
+  const exe = codexFile(env, `exec-${ID_C}`);
+  fs.writeFileSync(cur, src(ID_A, 'cli', iso(now - 119500)) + codexUser('in the current one', now - 119000));
+  fs.writeFileSync(sub, src(ID_B, { subagent: { thread_spawn: { parent_thread_id: ID_A, depth: 1 } } }, iso(now - 600000)) + codexUser('delegated', now - 599000));
+  setMtime(sub, now - 590000);
+  const r = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const cache = M.cachePath(env.vault, TERM);
+  try {
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === cur, 2000));
+    setMtime(cur, now - 30000);
+    await sleep(100);
+    fs.appendFileSync(sub, codexUser('the subagent works on'));
+    fs.writeFileSync(exe, src(ID_C, 'exec', iso(now - 10000)) + codexUser('a headless run', now - 9000));
+    await sleep(500);
+    assert.deepEqual(sessionIds(cache), [ID_A]);
+    assert.equal(readEvents(cache).some((e) => e.kind === 'error'), false, 'and nothing is ambiguous');
+    assert.equal(readClaim(env, TERM).file, cur);
+  } finally { await r.stop(); }
+});
+
+test('follow codex (D): a rollout that cannot be stat\'ed keeps its last known append, so no older rollout becomes a candidate', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const cur = codexFile(env, `cur-${ID_A}`);
+  const other = codexFile(env, `other-${ID_B}`);
+  fs.writeFileSync(cur, metaLine(ID_A, env.work, iso(now - 119500)) + codexUser('in the current one', now - 119000));
+  fs.writeFileSync(other, metaLine(ID_B, env.work, iso(now - 60000)) + codexUser('another', now - 59000));
+  setMtime(other, now - 40000);
+  const r = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const cache = M.cachePath(env.vault, TERM);
+  try {
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === cur, 2000));
+    fs.unlinkSync(cur);
+    // ten missing polls end it, and the scans in them saw no file
+    const ended = await Promise.race([r.done.then(() => true), sleep(3000).then(() => false)]);
+    assert.deepEqual(sessionIds(cache), [ID_A], 'the chat it had; the other rollout was never taken');
+    assert.ok(ended, 'the follower ended when its rollout stayed gone');
+  } finally { await r.stop(); }
+});
