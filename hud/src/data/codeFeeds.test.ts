@@ -624,6 +624,33 @@ test("R70: after Send pasted images, imagesShown waits for that many more placeh
   assert.equal(await waiting, "gone");
 });
 
+test("D1: a card drawn while Send waits for its images is \"held\" (no ⏎ while a card is up), at once; once more, settled, before the cap", async () => {
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  p.emit(drawn("claude-2.1.318-idle"));
+  await sleep(50);
+  p.writes.length = 0;
+  // A dialog takes the input 100 ms after the paste (it eats the paste: no placeholder will come).
+  setTimeout(() => p.emit(drawn("claude-2.1.318-model")), 100);
+  let t0 = Date.now();
+  assert.equal(await h.feeds.imagesShown(s.id, 0, 1), "held");
+  assert.ok(Date.now() - t0 >= 90 && Date.now() - t0 <= 100 + 150, `held after ${Date.now() - t0} ms`);
+  assert.deepEqual(h.feeds.get(s.id)!.card, { kind: "waiting" }, "the feed has the card");
+  assert.deepEqual(p.writes, [], "imagesShown writes nothing");
+  // The card goes; then a prompt drawn in the last moment of the wait, still a chunk to parse when the cap comes, is
+  // found by the settled look before "timeout".
+  p.emit(drawn("claude-2.1.318-idle"));
+  await until(clock, () => h.feeds.get(s.id)!.card === null);
+  setTimeout(() => p.emit(fixture("claude-2.1.318-bash.ansi")), IMAGE_ATTACH_MS - 5);
+  t0 = Date.now();
+  assert.equal(await h.feeds.imagesShown(s.id, 0, 1), "held");
+  assert.ok(Date.now() - t0 >= IMAGE_ATTACH_MS - 20, `held after ${Date.now() - t0} ms`);
+});
+
 test("a click answers the card the user saw: a card that was replaced meanwhile writes nothing (R49)", async () => {
   const clock = manualClock();
   const h = setup({ clock });

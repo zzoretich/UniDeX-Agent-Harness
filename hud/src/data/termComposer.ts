@@ -50,12 +50,29 @@ export function sendWrites(text: string, images: string[], chunk = COMPOSER_CHUN
 /**
  * sendWrites in its two parts (R70): `images`, the image pastes (none without images or bracketed paste), and `rest`, the
  * text and Enter. Send writes `images`, waits for the TUI to show their placeholders (Claude Code inserts a pasted image
- * after it has read the file), then writes `rest`.
+ * after it has read the file), then writes `rest`. Text after images starts with a space (D4): Claude Code's placeholder
+ * has none after it (`[Image #1]What…`); Codex's does, and a second space there is harmless.
  */
 export function sendPhases(text: string, images: string[], chunk = COMPOSER_CHUNK, bracketed = true): { images: string[]; rest: string[] } {
   if (!bracketed || !images.length) return { images: [], rest: composerWrites(composeSend(text, images), chunk, bracketed) };
   const paste = (s: string): string[] => composerWrites(s, chunk, true).slice(0, -1);
-  return { images: images.flatMap((p) => paste(promptPath(p))), rest: [...(text.trim() ? paste(text) : []), "\r"] };
+  const spaced = /^\s/.test(text) ? text : ` ${text}`;
+  return { images: images.flatMap((p) => paste(promptPath(p))), rest: [...(text.trim() ? paste(spaced) : []), "\r"] };
+}
+
+/** How a Send's wait ended: nothing up (the rest may go), a card is up (R49), or the terminal's process changed (C1). */
+export type SendWaitEnd = "clear" | "held" | "gone";
+
+/**
+ * What the composer does when a Send's wait ends (D1, D2). Clear: write the rest. Held: write nothing more and say why
+ * (the held note). Gone: write nothing more, and say that the terminal changed (D2) unless the composer is kept away (an
+ * ended agent's chat, R39), where nothing is said. `cleared`: the box was emptied when the images went (R70's wait), so
+ * on held or gone the text comes back, if the box is still empty: the images are in the TUI's input, the text is not.
+ */
+export function sendWaitEnd(r: SendWaitEnd, o: { blocked: boolean; cleared: boolean; box: string; text: string }): { write: boolean; note: "held" | "changed" | null; box: string } {
+  if (r === "clear") return { write: true, note: null, box: o.box };
+  const box = o.cleared && !o.box ? o.text : o.box;
+  return { write: false, note: r === "held" ? "held" : o.blocked ? null : "changed", box };
 }
 
 /** The images the composer takes (code-chat C7), as main checks them again by content (services/code-images.ts). */

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composerWrites, composeSend, dataUrlBase64, imageReason, imageRefusal, IMAGE_MAX_BYTES, IMAGE_MAX_COUNT, mentionAt, matchFiles, insertMention, sanitizeSnippets, sendPhases, sendWrites } from "./termComposer";
+import { composerWrites, composeSend, dataUrlBase64, imageReason, imageRefusal, IMAGE_MAX_BYTES, IMAGE_MAX_COUNT, mentionAt, matchFiles, insertMention, sanitizeSnippets, sendPhases, sendWaitEnd, sendWrites } from "./termComposer";
 
 test("a message is one bracketed paste with CR line ends, then Enter, in pieces under the pty cap", () => {
   assert.deepEqual(composerWrites("fix it\nand test"), ["\x1b[200~", "fix it\rand test", "\x1b[201~", "\r"]);
@@ -66,13 +66,17 @@ test("sendWrites (R63): each image's path as a bracketed paste of its own, in or
   const a = "/work/demo/App Data/code-images/2026-11/aaaaaaaa-0000-4000-8000-000000000001.png";
   const b = "/work/demo/data/code-images/2026-11/bbbbbbbb-0000-4000-8000-000000000002.jpg";
   const [S, E] = ["\x1b[200~", "\x1b[201~"];
-  assert.deepEqual(sendWrites("look at this", [a]), [S, `"${a}"`, E, S, "look at this", E, "\r"]);
-  assert.deepEqual(sendWrites("both", [a, b]), [S, `"${a}"`, E, S, b, E, S, "both", E, "\r"]);
+  // The text after images starts with a space (D4: Claude Code's placeholder has none after it).
+  assert.deepEqual(sendWrites("look at this", [a]), [S, `"${a}"`, E, S, " look at this", E, "\r"]);
+  assert.deepEqual(sendWrites("both", [a, b]), [S, `"${a}"`, E, S, b, E, S, " both", E, "\r"]);
+  // …unless it already starts with whitespace.
+  assert.deepEqual(sendWrites(" spaced", [b]), [S, b, E, S, " spaced", E, "\r"]);
+  assert.deepEqual(sendWrites("\nnext line", [b]), [S, b, E, S, "\rnext line", E, "\r"]);
   // An image alone: its paste, then Enter; text of only whitespace adds no paste.
   assert.deepEqual(sendWrites("", [b]), [S, b, E, "\r"]);
   assert.deepEqual(sendWrites("  \n", [b, a]), [S, b, E, S, `"${a}"`, E, "\r"]);
   // The text's paste is cut into pieces and keeps its line ends as carriage returns, as composerWrites does.
-  assert.deepEqual(sendWrites("abc\ndef", [b], 4), [S, ...chunks(b, 4), E, S, "abc\r", "def", E, "\r"]);
+  assert.deepEqual(sendWrites("abc\ndef", [b], 4), [S, ...chunks(b, 4), E, S, " abc", "\rdef", E, "\r"]);
   // No image: exactly composerWrites, pasted or typed.
   assert.deepEqual(sendWrites("fix it\nand test", []), composerWrites("fix it\nand test"));
   assert.deepEqual(sendWrites("ls", [], undefined, false), ["ls", "\r"]);
@@ -83,7 +87,7 @@ test("sendWrites (R63): each image's path as a bracketed paste of its own, in or
 test("sendPhases (R70): the image pastes apart from the text and Enter, which wait for the TUI to show the images", () => {
   const b = "/work/demo/data/code-images/2026-11/bbbbbbbb-0000-4000-8000-000000000002.jpg";
   const [S, E] = ["\x1b[200~", "\x1b[201~"];
-  assert.deepEqual(sendPhases("look", [b]), { images: [S, b, E], rest: [S, "look", E, "\r"] });
+  assert.deepEqual(sendPhases("look", [b]), { images: [S, b, E], rest: [S, " look", E, "\r"] });
   assert.deepEqual(sendPhases("", [b, b]), { images: [S, b, E, S, b, E], rest: ["\r"] });
   // No image, or no bracketed paste: nothing to wait for, everything is the rest.
   assert.deepEqual(sendPhases("hi", []), { images: [], rest: composerWrites("hi") });
@@ -91,6 +95,20 @@ test("sendPhases (R70): the image pastes apart from the text and Enter, which wa
   // sendWrites is the two, in order.
   const p = sendPhases("look", [b]);
   assert.deepEqual(sendWrites("look", [b]), [...p.images, ...p.rest]);
+});
+
+test("sendWaitEnd (D1, D2): only a clear wait writes; held says why, gone says the terminal changed (not where the composer is kept away); text the images took comes back to an empty box", () => {
+  const o = { blocked: false, cleared: false, box: "look", text: "look" };
+  assert.deepEqual(sendWaitEnd("clear", o), { write: true, note: null, box: "look" });
+  assert.deepEqual(sendWaitEnd("held", o), { write: false, note: "held", box: "look" });
+  assert.deepEqual(sendWaitEnd("gone", o), { write: false, note: "changed", box: "look" });
+  assert.deepEqual(sendWaitEnd("gone", { ...o, blocked: true }), { write: false, note: null, box: "look" }, "an ended agent's chat says it itself");
+  // After the image pastes the box was emptied: the text comes back, unless something was typed there since.
+  const after = { blocked: false, cleared: true, box: "", text: "look at this" };
+  assert.deepEqual(sendWaitEnd("held", after), { write: false, note: "held", box: "look at this" });
+  assert.deepEqual(sendWaitEnd("gone", after), { write: false, note: "changed", box: "look at this" });
+  assert.deepEqual(sendWaitEnd("held", { ...after, box: "a new draft" }), { write: false, note: "held", box: "a new draft" });
+  assert.deepEqual(sendWaitEnd("clear", after), { write: true, note: null, box: "" });
 });
 
 /** `s` in pieces of `n`. */

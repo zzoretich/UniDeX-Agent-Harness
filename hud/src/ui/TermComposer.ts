@@ -7,12 +7,15 @@ import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transc
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import { hasChat, processKey, type TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
-import { IMAGE_TYPES, dataUrlBase64, imageReason, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, sendPhases, type Snippet } from "../data/termComposer";
+import { IMAGE_TYPES, dataUrlBase64, imageReason, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, sendPhases, sendWaitEnd, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
 import { HostModelMenu } from "./HostModelMenu";
 
 /** The ids that tie the chips to their reason (M5). */
 let whyIds = 0;
+
+/** The note when a waiting Send went nowhere because the terminal's process changed meanwhile (D2). */
+const CHANGED = "The terminal changed while Send waited · Send again";
 
 /** How many files the @ list reads from a place, and how deep: enough for a project, cheap on every open. */
 const FILE_LIMIT = 3000;
@@ -98,6 +101,8 @@ export class TermComposer {
   private awaitingShots = false;
   /** A Send's images are pasted and it waits for the TUI to show them before its text (R70): no other Send starts. */
   private sending = false;
+  /** The drafts of the terminals not shown now, by terminal id (D5): the composer is shared, a draft is not. */
+  private drafts = new Map<string, string>();
   private input: HTMLTextAreaElement;
   private suggest: HTMLElement;
   private snippetsMenu: HTMLElement | null = null;
@@ -196,13 +201,21 @@ export class TermComposer {
   setSession(s: TerminalSession | null): void {
     const live = !!s && !s.isExited;
     this.el.toggleClass("is-hidden", !live || this.blocked);
-    if (!live || !s) { this.session = null; this.clearShots(); return; }
+    if (!live || !s) { this.stashDraft(); this.session = null; this.clearShots(); return; }
     // What runs decides: an agent terminal whose agent ended is a shell now (R39).
     const kind = s.agentEnded ? "shell" : s.meta.host;
     if (this.session?.id === s.id && this.shownHost === kind) return;
     // The images were for the agent they were added on (C7); so was a prompt that held Send.
     this.clearShots();
     if (this.held) this.hideNote();
+    // Another terminal: its own draft (D5), and none of the last one's notes. The same terminal whose agent ended keeps it.
+    if (this.session?.id !== s.id) {
+      this.stashDraft();
+      this.input.value = this.drafts.get(s.id) ?? "";
+      this.drafts.delete(s.id);
+      this.slash.close();
+      this.hideNote();
+    }
     this.session = s;
     this.shownHost = kind;
     this.files = null;
@@ -225,6 +238,17 @@ export class TermComposer {
     if (shell) this.slash.update([], "claude");
     else void this.loadCommands(s.meta.host as "claude" | "codex");
   }
+
+  /** The terminal shown now leaves the composer: its draft is kept for it (D5). */
+  private stashDraft(): void {
+    const s = this.session;
+    if (!s) return;
+    if (this.input.value) this.drafts.set(s.id, this.input.value);
+    else this.drafts.delete(s.id);
+  }
+
+  /** A terminal was closed: its draft goes with it (D5). */
+  forgetDraft(id: string): void { this.drafts.delete(id); }
 
   /** Keeps the composer away while `on` (the chat of an agent that ended, R39): hidden, ⌘L finds nothing, Send writes
    *  nothing. */
@@ -397,8 +421,9 @@ export class TermComposer {
     const known = feeds?.get(s.id)?.card;
     if (known || !feeds?.get(s.id)) { this.finishSend(s, text, shots, !!known); return; }
     void feeds.cardNow(s.id).then((held) => {
-      // The agent did not outlast the wait (C1): nothing goes to what runs there now, and the draft stays.
-      if (held === "gone" || processKey(s) !== proc) return;
+      // The agent did not outlast the wait (C1): nothing goes to what runs there now, the draft stays, and the composer
+      // says so (D2).
+      if (held === "gone" || processKey(s) !== proc) { this.waitEnded(s, text, "gone", false); return; }
       // The draft, its images or the terminal changed while the screen was read: this send is no longer the one asked for.
       const same = this.shots.length === shots.length && this.shots.every((x, i) => x === shots[i]);
       if (this.session !== s || this.blocked || this.input.value !== text || !same) return;
@@ -429,17 +454,33 @@ export class TermComposer {
       for (const w of phases.images) s.write(w);
       this.sending = true;
       void feeds.imagesShown(s.id, before, paths.length).then((r) => {
-        this.sending = false;
-        // The agent ended or another process took the terminal over meanwhile (C1): nothing more is written. Its images
-        // are already in the TUI's input, which is acceptable; the draft went with them.
-        if (r === "gone" || processKey(s) !== proc) return;
+        // A card came up meanwhile (D1, R49), or the agent ended or another process took the terminal over (C1): nothing
+        // more is written, no ⏎ above all. The images are already in the TUI's input, which is acceptable; the text comes
+        // back to the box, with why.
+        if (r === "gone" || processKey(s) !== proc) { this.waitEnded(s, text, "gone", true); return; }
+        if (r === "held") { this.waitEnded(s, text, "held", true); return; }
         for (const w of phases.rest) s.write(w);
-      });
+      }).finally(() => { this.sending = false; });
     }
     this.input.value = "";
     this.clearShots();
     this.closeSuggest();
     this.focusTerminal();
+  }
+
+  /**
+   * A Send's wait ended with nothing (more) written (D1, D2): the text back where it belongs when the images took the box
+   * (`cleared`), and the note, on the composer of the terminal it was for (another terminal shown now keeps it as that
+   * terminal's draft, D5).
+   */
+  private waitEnded(s: TerminalSession, text: string, r: "held" | "gone", cleared: boolean): void {
+    const mine = this.session === s;
+    const box = mine ? this.input.value : this.drafts.get(s.id) ?? "";
+    const end = sendWaitEnd(r, { blocked: this.blocked, cleared, box, text });
+    if (!mine) { if (end.box) this.drafts.set(s.id, end.box); return; }
+    if (end.box !== box) this.input.value = end.box;
+    if (end.note === "held") { this.say(this.heldText()); this.held = true; }
+    else if (end.note === "changed") this.say(CHANGED);
   }
 
   /** Why Send holds, in the words of the view it shows in (R49). */

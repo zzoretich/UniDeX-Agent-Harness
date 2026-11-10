@@ -639,9 +639,10 @@ type FakeW = { aosHost: { plugin: { terminalPool: { create(o: object): { id: str
  * receives that starts with "/menu" (pastes' markers left out) by printing `menu` `menuDelay` ms later (150 by default),
  * as a TUI opens a picker in answer to a command. With `images`, it answers a bracketed paste that holds only an image's
  * path (quoted or not) by printing "[Image #N] " 300 ms later, as Claude Code inserts a pasted image once it has read it
- * (R70). Its `log` keeps what it received and printed, in order, with when.
+ * (R70); with `imagePrompt` as well, it prints that screen 100 ms after such a paste instead (a dialog that takes the
+ * input and eats the paste: D1). Its `log` keeps what it received and printed, in order, with when.
  */
-const fakeAgent = (win: Page, meta: Meta, o: { menu?: string; menuDelay?: number; images?: boolean } = {}): Promise<string> => win.evaluate(({ m, menu, menuDelay, images }) => {
+const fakeAgent = (win: Page, meta: Meta, o: { menu?: string; menuDelay?: number; images?: boolean; imagePrompt?: string } = {}): Promise<string> => win.evaluate(({ m, menu, menuDelay, images, imagePrompt }) => {
   const w = window as unknown as FakeW;
   const pool = w.aosHost.plugin.terminalPool;
   const t = pool.create({ deferred: true, cols: 120, rows: 40, meta: m });
@@ -661,7 +662,10 @@ const fakeAgent = (win: Page, meta: Meta, o: { menu?: string; menuDelay?: number
       if (images) {
         stream += d;
         for (let m2 = /\u001b\[200~([\s\S]*?)\u001b\[201~/.exec(stream); m2; m2 = /\u001b\[200~([\s\S]*?)\u001b\[201~/.exec(stream)) {
-          if (/^"?\/[^"\r\n]*\.(png|jpe?g|gif|webp)"?$/.test(m2[1])) { const n = ++shown; setTimeout(() => emit(`[Image #${n}] `), 300); }
+          if (/^"?\/[^"\r\n]*\.(png|jpe?g|gif|webp)"?$/.test(m2[1])) {
+            if (imagePrompt !== undefined) setTimeout(() => emit(imagePrompt), 100);
+            else { const n = ++shown; setTimeout(() => emit(`[Image #${n}] `), 300); }
+          }
           stream = stream.slice(m2.index + m2[0].length);
         }
       }
@@ -678,7 +682,7 @@ const fakeAgent = (win: Page, meta: Meta, o: { menu?: string; menuDelay?: number
   (w.__fakes ??= {})[t.id] = { emit, exit: (code: number) => { for (const cb of exits) cb({ exitCode: code }); }, writes, log };
   pool.select(t.id);
   return t.id;
-}, { m: meta, menu: o.menu, menuDelay: o.menuDelay ?? 150, images: o.images ?? false });
+}, { m: meta, menu: o.menu, menuDelay: o.menuDelay ?? 150, images: o.images ?? false, imagePrompt: o.imagePrompt });
 /**
  * Hands a fake agent's chat the events a follower would read (the fake has no follower), through CodeFeeds' internals:
  * `entries` (the terminal's Entry, whose `events` are the buffer), `compute` (works the chat out again) and `notify`
@@ -846,6 +850,8 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     await win.waitForTimeout(1500);
     expect(await terminalText(win)).not.toContain("leaked-42");
     await expect(input).toHaveValue(draft);
+    // D2: it says why nothing went, under what is now the shell's composer.
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-note")).toHaveText("The terminal changed while Send waited · Send again");
     expect((await written(win, id)).join("")).not.toContain("leaked");
     await removeTerminal(win, id);
     expectNoErrors(h);
@@ -1087,14 +1093,15 @@ test.describe("the composer's images (C7, C13)", () => {
     const from = await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].log.length ?? 0, id);
     await input(win).press("Enter");
     const sent = await writesUntil(win, id, /\r$/);
-    const m = new RegExp(`^\u001b\\[200~${imagePath("png").source}\u001b\\[201~\u001b\\[200~look at this\u001b\\[201~\r$`).exec(sent);
+    // The text after the image starts with a space (D4): Claude Code's placeholder has none after it.
+    const m = new RegExp(`^\u001b\\[200~${imagePath("png").source}\u001b\\[201~\u001b\\[200~ look at this\u001b\\[201~\r$`).exec(sent);
     expect(m, sent).not.toBeNull();
     // In this order (R70): the image's paste, then its placeholder on the screen, and only then the text's paste and ⏎.
     const log = (await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].log ?? [], id)).slice(from);
     const at = (pred: (e: { write?: string; print?: string }) => boolean) => log.findIndex(pred);
     const pathAt = at((e) => !!e.write && /code-images/.test(e.write));
     const shownAt = at((e) => e.print === "[Image #1] ");
-    const textAt = at((e) => e.write === "look at this");
+    const textAt = at((e) => e.write === " look at this");
     expect([pathAt >= 0, shownAt > pathAt, textAt > shownAt], JSON.stringify(log)).toEqual([true, true, true]);
     expect(log[textAt].at - log[shownAt].at).toBeGreaterThanOrEqual(0);
     // The file is where the path says, in the app's data folder, with the bytes pasted.
@@ -1162,6 +1169,60 @@ test.describe("the composer's images (C7, C13)", () => {
     await expect(shots(win)).toHaveCount(0);
   });
 
+  test("D1: a prompt that comes up while Send waits for its image gets no ⏎: the text never goes, it comes back to the box, and the note says why", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    // After the image's paste the fake draws a numbered prompt (a captured Claude Code approval) instead of the placeholder.
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000003e", sessionId: "a1a1a1a1-0000-4000-8000-00000000003f", label: "Prompt during the image wait" }, { images: true, imagePrompt: screenFile("claude-2.1.318-bash.ansi") });
+    await expect(chat(win)).toBeVisible();
+    // The TUI's idle screen, with bracketed paste on (as Claude Code turns it on).
+    await replay(win, id, `\u001b[?2004h${drawn("claude-2.1.318-idle")}`);
+    expect(await deliver(win, "paste", [{ name: "image.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(C(win).locator(".aos-tc-shot.is-saving")).toHaveCount(0);
+    await expect(shots(win)).toHaveCount(1);
+    await input(win).fill("look at this");
+    await written(win, id);
+    const from = await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].log.length ?? 0, id);
+    await input(win).press("Enter");
+    await expect(chat(win).locator(".aos-cc-card .aos-cc-gate .aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    await expect(note(win)).toHaveText("Answer the card above first · Terminal ⌘J");
+    await expect(input(win)).toHaveValue("look at this");
+    await win.waitForTimeout(500);
+    // What the fake received after ⏎: the image's paste only; never the text, never a ⏎ (beside the visible terminal's
+    // replies to the stream's queries, which hold neither).
+    const got = (await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].log ?? [], id)).slice(from).map((e) => e.write ?? "").join("");
+    expect(got, JSON.stringify(got)).toMatch(/code-images/);
+    expect(got, JSON.stringify(got)).not.toContain("look at this");
+    expect(got, JSON.stringify(got)).not.toContain("\r");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("D5: a draft belongs to its terminal: switching to another shows that one's (empty), and back shows the first's again", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const a = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000040", sessionId: "a1a1a1a1-0000-4000-8000-000000000041", label: "Draft A" });
+    await expect(chat(win)).toBeVisible();
+    await input(win).fill("for Claude only");
+    const b = await fakeAgent(win, { host: "codex", terminalKey: "a1a1a1a1-0000-4000-8000-000000000042", sessionId: "a1a1a1a1-0000-4000-8000-000000000043", label: "Draft B" });
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Draft B");
+    await expect(input(win)).toHaveValue("");
+    await input(win).fill("for Codex");
+    await select(win, a);
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Draft A");
+    await expect(input(win)).toHaveValue("for Claude only");
+    await select(win, b);
+    await expect(input(win)).toHaveValue("for Codex");
+    // Nothing of either went anywhere.
+    expect((await written(win, a)).join("")).not.toContain("for ");
+    expect((await written(win, b)).join("")).not.toContain("for ");
+    await removeTerminal(win, b);
+    await removeTerminal(win, a);
+    expectNoErrors(h);
+  });
+
   // Last in this app: main's code:save-image is replaced by one the test answers by hand, so an image stays "saving" as
   // long as the test wants.
   test("⏎ while an image saves sends once it is saved, only if the draft is unchanged; a bare errno reads as words; 8 images at most (R60)", async () => {
@@ -1199,7 +1260,7 @@ test.describe("the composer's images (C7, C13)", () => {
     await expect(saving()).toHaveCount(1);
     await answer({ ok: true, data: { path: "/work/demo/two.png" } });
     // Each path a paste of its own, in the order the images came, then the text.
-    expect(await writesUntil(win, id, /\r$/)).toBe("\u001b[200~/work/demo/one.png\u001b[201~\u001b[200~/work/demo/two.png\u001b[201~\u001b[200~changed my mind\u001b[201~\r");
+    expect(await writesUntil(win, id, /\r$/)).toBe("\u001b[200~/work/demo/one.png\u001b[201~\u001b[200~/work/demo/two.png\u001b[201~\u001b[200~ changed my mind\u001b[201~\r");
     await expect(shots(win)).toHaveCount(0);
     // Main's fs code alone reads as words.
     expect(await deliver(win, "paste", [{ name: "three.png", type: "image/png", b64: PNG }])).toBe(true);

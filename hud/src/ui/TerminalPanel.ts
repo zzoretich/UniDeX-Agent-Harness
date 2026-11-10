@@ -281,6 +281,7 @@ export class TerminalPanel {
         if (!this.host) return;
         this.model.rememberClosed(id);
         this.panes.forget(id);
+        this.composer?.forgetDraft(id);
         const b = this.bindings.get(id);
         if (b) { b.detachData(); try { b.term.dispose(); } catch {} this.bindings.delete(id); }
         if (this.activeId === id) {

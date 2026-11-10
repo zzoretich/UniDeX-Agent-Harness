@@ -299,22 +299,35 @@ export class CodeFeeds {
   /**
    * Waits after Send pasted `count` images' paths (R70) until the screen shows `count` more image placeholders than
    * `before` (read every IMAGE_POLL_MS), or IMAGE_ATTACH_MS passed: "attached" or "timeout", and the text and ⏎ may go.
-   * "gone" when the agent did not outlast the wait (C1): nothing more may be written to that terminal.
+   * "held" as soon as a card shows (D1, R49): a prompt drawn meanwhile (a dialog that took the input, eating the paste, so
+   * no placeholder comes) would take the ⏎ as its answer; the screen is read each step as `cardNow` reads it, and once
+   * more, settled, before "attached" or "timeout". "gone" when the agent did not outlast the wait (C1). Neither "held"
+   * nor "gone" lets anything more be written.
    */
-  async imagesShown(id: string, before: number, count: number): Promise<"attached" | "timeout" | "gone"> {
+  async imagesShown(id: string, before: number, count: number): Promise<"attached" | "timeout" | "held" | "gone"> {
     const e = this.entries.get(id);
     const screen = e?.screen;
     if (!e || !screen) return "gone";
     const proc = processKey(this.pool.get(id));
     const gone = (): boolean => this.disposed || this.entries.get(id) !== e || e.screen !== screen || processKey(this.pool.get(id)) !== proc;
+    const carded = (force: boolean): boolean => {
+      if (!e.feed.card && this.readScreen(e, force)) this.notify(id);
+      return e.feed.card !== null;
+    };
+    let shown = false;
     const until = Date.now() + IMAGE_ATTACH_MS;
-    for (let left = until - Date.now(); left > 0; left = until - Date.now()) {
+    for (let left = until - Date.now(); left > 0 && !shown; left = until - Date.now()) {
       await new Promise<void>((r) => setTimeout(r, Math.min(IMAGE_POLL_MS, left)));
       if (gone()) return "gone";
+      if (carded(false)) return "held";
       // What is parsed is enough: a placeholder still in a pending chunk is counted on the next read.
-      if (imageMarks(screen.snapshot().rows) >= before + count) return "attached";
+      shown = imageMarks(screen.snapshot().rows) >= before + count;
     }
-    return gone() ? "gone" : "timeout";
+    // One more look, every chunk parsed (SEND_SETTLE_MS at most), before the text and its ⏎ go.
+    if (screen.busy) await screen.settled(SEND_SETTLE_MS);
+    if (gone()) return "gone";
+    if (carded(true)) return "held";
+    return shown ? "attached" : "timeout";
   }
 
   /** What the terminal shows: its chat by default, an agent's only and only while the surface is on (C1, C3, C13). */
