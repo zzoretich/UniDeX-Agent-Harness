@@ -745,12 +745,12 @@ test("code-chat R22: an agent's own exit keeps its terminal's follower; closing 
   assert.ok(mirror.follow({ pty: "t1", host: "claude", terminal: KEY }).ok);
   spawned[0].p.exit(0);
   assert.deepEqual(children[0].signals, [], "the agent exited: the follower stays for the login shell that takes over");
-  assert.deepEqual(ended, []);
+  assert.deepEqual([...ended], []);
   assert.equal(mirror.running, 1);
   // The page's takeover shell: a new pty in the same terminal, carrying its key. Closing the terminal kills that pty.
   assert.ok(t.spawn({ id: "t2", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 120, rows: 40, env: { AOS_TERMINAL: KEY } }).ok);
   t.kill("t2");
-  assert.deepEqual(ended, [["t2", KEY]]);
+  assert.deepEqual([...ended], [["t2", KEY]]);
   assert.deepEqual(children[0].signals, ["SIGTERM"], "the terminal closed: its follower ends");
   assert.equal(mirror.running, 0);
   assert.ok((await t.spawnAgent(req({ id: "t3", terminal: KEY2 }))).ok);
