@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, appEnv, command, content, expectNoErrors, openTab, useApp } from "./harness";
+import { FX, appEnv, command, content, expectNoErrors, openTab, terminalText, useApp } from "./harness";
 
 // The Code tab's chat view (spec 2026-11-09-code-chat C1, C3, C5, C13; rulings R3, R28, R32): an agent terminal opens in a
 // chat drawn from the cache its follower writes; ⌘J flips the middle to the same live PTY and back, nothing restarts; a
@@ -279,7 +279,9 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     await expect(past(win).locator(".aos-ss-prompt .aos-ss-bubble").first()).toBeVisible({ timeout: 15_000 });
     await expect(past(win).locator(".aos-tc, .aos-cc-stop, .aos-cc-status")).toHaveCount(0);
     await expect(C(win).locator(".aos-cv-btn")).toHaveCount(0);
-    await expect(C(win).locator(".aos-term-stage > .aos-tc:visible, .aos-term-frame > .aos-tc:visible")).toHaveCount(0);
+    // The composer is one element kept in the frame (hidden for a past conversation), not inside the read-only chat, so
+    // look for a visible one anywhere in the Code view.
+    await expect(C(win).locator(".aos-tc:visible, .aos-tc-input:visible")).toHaveCount(0);
     const resume = C(win).locator("button.aos-cv-resume");
     await expect(resume).toHaveText("Resume");
     await expect(resume).toHaveAttribute("title", /Resumes in workspaces\/harbor-map/);
@@ -296,6 +298,38 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     })).toBe(`claude:${TIDE}`);
     // The open terminal is that conversation now, so the index row is not listed twice.
     await expect(row(win, TIDE)).toHaveCount(0);
+    // And the resume line really ran (the fixture's claude stub echoes its arguments).
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toMatch(new RegExp(`\\[fixture claude stub\\] .*--resume ${TIDE}`));
+  });
+
+  test("a terminal closed here stays listed across a tab switch, opens read-only, and is listed once when the index has it (C6)", async () => {
+    const { win } = app();
+    const mine = "c1a0de00-0000-4000-8000-0000000000aa";
+    await openTab(win, "term");
+    const closedRow = C(win).locator(`.aos-tl-past[data-history="closed:claude:${mine}"]`);
+    const id = await startAgent(win, { host: "claude", terminalKey: KEY2, sessionId: mine });
+    await expect(C(win).locator(`.aos-tl-row[data-session="${id}"]`)).toHaveCount(1);
+    // What the close confirmation does on Close, with the Code tab showing.
+    await win.evaluate((i) => (window as unknown as { aosHost: { plugin: { terminalPool: { remove(id: string): void } } } }).aosHost.plugin.terminalPool.remove(i), id);
+    await expect(closedRow).toBeVisible();
+    // Away from the Code tab and back: the panel is rebuilt, the record is not lost.
+    await openTab(win, "pulse");
+    await openTab(win, "term");
+    await expect(closedRow).toBeVisible();
+    await expect(closedRow.locator(".aos-tl-sub")).toContainText("Closed");
+    await closedRow.click();
+    await expect(past(win)).toBeVisible();
+    await expect(C(win).locator(".aos-tc:visible, .aos-tc-input:visible")).toHaveCount(0);
+    // The index lists it now: one row (the index's), not two.
+    const idx = FX.v("brain/_index/session-index.json");
+    const j = JSON.parse(fs.readFileSync(idx, "utf8")) as { files: Record<string, unknown> };
+    j.files["spaces-harbor-map/closed-here.jsonl"] = { host: "claude", head: { id: mine, kind: "interactive", startCwd: FX.v("workspaces/harbor-map"), startedAt: new Date().toISOString(), firstPrompt: "Closed here, then indexed" }, lastAt: new Date().toISOString() };
+    fs.writeFileSync(idx, JSON.stringify(j));
+    await openTab(win, "pulse");
+    await openTab(win, "term");
+    await expect(C(win).locator(`.aos-tl-past[data-history$=":${mine}"]`)).toHaveCount(1, { timeout: 10_000 });
+    await expect(closedRow).toHaveCount(0);
+    await expect(row(win, mine).locator(".aos-tl-title")).toHaveText("Closed here, then indexed");
   });
 
   test("a conversation with no transcript says why in the read-only chat (the runtime's reason, not an exit code)", async () => {
