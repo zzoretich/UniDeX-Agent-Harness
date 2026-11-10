@@ -745,7 +745,9 @@ if (!app.requestSingleInstanceLock()) {
   autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; shutdownComputer(); codeMirror.stopAll(); ptyService.killAll(); });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
   // The marker keeps no Computer state past the app: an agent asking now hears that the app is not running.
-  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); codeMirror.stopAll(); shutdownComputer(); });
+  // The daily image prune started once the app is ready (code-chat M2); stopped at quit like the other services.
+  let stopImagePrune: () => void = () => {};
+  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); codeMirror.stopAll(); shutdownComputer(); stopImagePrune(); });
 
   void app.whenReady().then(() => {
     // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay).
@@ -753,7 +755,7 @@ if (!app.requestSingleInstanceLock()) {
     // code-chat R59: the Code composer's images go about three months after their month ended, checked now and once a day
     // while the app stays open (M2). Asynchronous, so nothing here waits for it; the surface being off does not keep old
     // images.
-    codeImages.keepPruned((n) => { if (n) console.log(`[main] code-images: removed ${n} old image(s)`); }, (err) => console.warn("[main] code-images: retention failed", err));
+    stopImagePrune = codeImages.keepPruned((n) => { if (n) console.log(`[main] code-images: removed ${n} old image(s)`); }, (err) => console.warn("[main] code-images: retention failed", err));
     // Only a packaged, signed app claims the scheme; a dev run must not re-point the system's agenticos:// handler.
     if (app.isPackaged) app.setAsDefaultProtocolClient(SCHEME);
     serveAppScheme(path.join(__dirname, "../renderer"));
