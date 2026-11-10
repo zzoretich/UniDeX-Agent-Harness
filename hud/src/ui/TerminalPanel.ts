@@ -7,7 +7,9 @@
 // An agent terminal opens in its chat (spec 2026-11-09-code-chat C1, C3, C13): the CodeChat lies over the terminal's body,
 // which stays laid out, hidden, at its last size, so ⌘J (or the top bar's Chat | Terminal switch) flips to the same live
 // PTY at once and nothing restarts. Each terminal remembers its view (CodeFeeds); a shell has no chat and no switch; with
-// the Code chat surface off an agent opens in its terminal and the switch says so.
+// the Code chat surface off an agent opens in its terminal and the switch says so. When an agent exits and the login shell
+// takes its terminal over (D18), its chat keeps the history and says so, with no composer; its terminal view's composer is
+// a shell's (code-chat R39).
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -202,7 +204,7 @@ export class TerminalPanel {
       this.bodyEl = this.stageEl.createDiv({ cls: "aos-term-body" });
       this.chat = new CodeChat(this.stageEl, {
         toTerminal: () => this.setView("terminal"),
-        stop: () => { const s = this.activeSession(); if (s && !s.isExited) s.write("\x1b"); },
+        stop: () => { const s = this.activeSession(); if (s && !s.isExited && !s.agentEnded) s.write("\x1b"); },
         showEarlier: () => { if (this.activeId) this.plugin.codeFeeds?.showEarlier(this.activeId); },
         openLink: (href) => this.openLink(href),
         context: () => {
@@ -513,8 +515,9 @@ export class TerminalPanel {
     return this.plugin.terminalPool.list().map((s) => ({
       id: s.id, host: s.meta.host, title: s.getTitle(), place: this.placeOfSession(s), origin: s.meta.origin,
       startedAt: s.meta.startedAt, exited: s.isExited, exitCode: s.exitCode, sessionId: s.meta.sessionId ?? null,
-      // Task 12 reads "Needs you" from the screen and sets needsYou here; the chat knows whether a turn is open.
-      turnOpen: feeds?.get(s.id)?.state.turnOpen ?? false, needsYou: false,
+      // Task 12 reads "Needs you" from the screen and sets needsYou here; the chat knows whether a turn is open (no turn is
+      // open once the agent has ended and its shell runs, R39).
+      turnOpen: !s.agentEnded && (feeds?.get(s.id)?.state.turnOpen ?? false), needsYou: false,
     }));
   }
 
@@ -771,11 +774,18 @@ export class TerminalPanel {
     const was = stage.hasClass("is-chat");
     stage.toggleClass("is-chat", on);
     composer.setMode(on ? "chat" : "terminal");
+    // An agent that exited left the login shell in its terminal (R39): the chat says so, and its composer never writes to
+    // that shell (the terminal view's composer does, as a shell's).
+    const s = this.activeSession();
+    const ended = !!s && s.meta.host !== "shell" && s.agentEnded;
+    composer.block(on && ended);
     if (on && composer.el.parentElement !== chat.composerSlot) chat.composerSlot.appendChild(composer.el);
     if (!on && composer.el.parentElement !== frame) stage.after(composer.el);
     chat.setVisible(on);
     // A title or a model changing redraws the top bar, not the chat: the feed's own changes redraw that.
     if (on && (!was || this.chatFor !== this.activeId)) this.renderChat();
+    // After renderChat, whose reset() for another terminal clears it.
+    chat.setEnded(ended && s ? TERM_HOST_LABEL[s.meta.host] : null);
   }
 
   /** The selected terminal's chat, as its feed has it now. */

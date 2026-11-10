@@ -35,7 +35,9 @@ export interface ChipState {
  * The Term composer (spec 2026-10-08-term-agent-deck T12): a box under an agent's terminal for longer messages. Enter
  * sends it as one bracketed paste and Enter; ⇧Enter adds a line; @ lists the place's files (inside the vault, where the
  * page may read; elsewhere the typed path goes as it is); / lists the host's commands (Claude `/name`, Codex `$skill`);
- * Snippets keeps prompts you reuse. Escape goes back to the terminal. A shell or an ended terminal has none.
+ * Snippets keeps prompts you reuse. Escape goes back to the terminal. A shell or an ended terminal has none. An agent
+ * terminal whose agent exited runs the login shell now (D18, code-chat R39): its composer is a shell's (no / commands,
+ * access or model), and while its chat shows the panel blocks the composer, so nothing reaches that shell from there.
  *
  * Its row of chips (spec 2026-11-09-code-chat §4): @ file and / commands start a mention or a command, Snippets, then an
  * agent's access and model (controls: a pick restarts the same conversation with it, C12); `attachSlot` is where Task 14's + chip goes. In
@@ -62,6 +64,8 @@ export class TermComposer {
   private modelWrap: HTMLElement;
   private modelMenu: HostModelMenu;
   private chips: ChipState | null = null;
+  /** The panel keeps the composer away (the chat of an agent that ended, R39): hidden, and Send writes nothing. */
+  private blocked = false;
 
   constructor(parent: HTMLElement, private plugin: AgenticOSPlugin, private focusTerminal: () => void, private bracketed: () => boolean = () => true) {
     this.el = parent.createDiv({ cls: "aos-tc is-hidden" });
@@ -99,14 +103,16 @@ export class TermComposer {
   /** Shows the composer under a terminal that runs (an agent or a shell), else hides it. */
   setSession(s: TerminalSession | null): void {
     const live = !!s && !s.isExited;
-    this.el.toggleClass("is-hidden", !live);
+    this.el.toggleClass("is-hidden", !live || this.blocked);
     if (!live || !s) { this.session = null; return; }
-    if (this.session?.id === s.id && this.shownHost === s.meta.host) return;
+    // What runs decides: an agent terminal whose agent ended is a shell now (R39).
+    const kind = s.agentEnded ? "shell" : s.meta.host;
+    if (this.session?.id === s.id && this.shownHost === kind) return;
     this.session = s;
-    this.shownHost = s.meta.host;
+    this.shownHost = kind;
     this.files = null;
     this.closeSuggest();
-    const shell = s.meta.host === "shell";
+    const shell = kind === "shell";
     this.input.setAttr("placeholder", shell ? "Write a command…" : `Write to ${TERM_HOST_LABEL[s.meta.host]}…`);
     this.hint.setText(shell ? "⏎ run · ⇧⏎ new line · @ file · esc terminal" : "⏎ send · ⇧⏎ new line · @ file · / commands · esc terminal");
     this.commandsChip.toggleClass("is-hidden", shell);
@@ -117,6 +123,19 @@ export class TermComposer {
     // A shell has no / commands: the list stays empty, so / is just a character.
     if (shell) this.slash.update([], "claude");
     else void this.loadCommands(s.meta.host as "claude" | "codex");
+  }
+
+  /** Keeps the composer away while `on` (the chat of an agent that ended, R39): hidden, ⌘L finds nothing, Send writes
+   *  nothing. */
+  block(on: boolean): void {
+    this.blocked = on;
+    this.el.toggleClass("is-hidden", on || !this.session);
+  }
+
+  /** The agent the composer writes to, or null for a shell, or a terminal whose agent ended (R39). */
+  private agent(): "claude" | "codex" | null {
+    const s = this.session;
+    return s && s.meta.host !== "shell" && !s.agentEnded ? s.meta.host : null;
   }
 
   /** The chat view's column (smaller box, chips only) or under the terminal, as before. */
@@ -139,7 +158,7 @@ export class TermComposer {
   /** The access chip says the terminal's launch access; the model chip the conversation's newest model, else the launch's. */
   private syncChips(): void {
     const s = this.session;
-    if (!s || s.meta.host === "shell") return;
+    if (!s || !this.agent()) return;
     const reason = this.chipReason();
     const access = s.meta.access ?? "host";
     this.permChip.setText(TERM_ACCESS_LABEL[access]);
@@ -160,8 +179,8 @@ export class TermComposer {
   }
 
   private pickModel(model: string | null): void {
-    const host = this.session?.meta.host;
-    if (!host || host === "shell") return;
+    const host = this.agent();
+    if (!host) return;
     const next = model ?? (host === "claude" ? "default" : null);
     const cur = this.chips?.model ?? this.session?.meta.model ?? null;
     if ((next ?? "default") === (cur ?? "default")) return;
@@ -170,7 +189,7 @@ export class TermComposer {
 
   private toggleAccess(bar: HTMLElement): void {
     if (this.accessMenu) { this.closeAccess(); return; }
-    if (this.chipReason()) return;
+    if (this.chipReason() || !this.agent()) return;
     const menu = bar.createDiv({ cls: "aos-tc-snippets aos-tc-accessmenu", attr: { role: "menu", "aria-label": "What the agent may do" } });
     this.accessMenu = menu;
     const cur = this.session?.meta.access ?? "host";
@@ -209,7 +228,7 @@ export class TermComposer {
   private send(): void {
     const s = this.session;
     const text = this.input.value;
-    if (!s || !text.trim()) return;
+    if (!s || this.blocked || !text.trim()) return;
     for (const w of composerWrites(text, undefined, this.bracketed())) s.write(w);
     this.input.value = "";
     this.closeSuggest();
@@ -233,8 +252,8 @@ export class TermComposer {
 
   /** / commands: in an empty composer, the host's command mark (Codex's skills start with $) and its menu. */
   private startCommand(): void {
-    const host = this.session?.meta.host;
-    if (!host || host === "shell") return;
+    const host = this.agent();
+    if (!host) return;
     if (!this.input.value.trim()) this.input.value = host === "codex" ? "$" : "/";
     this.input.focus();
     const end = this.input.value.length;
@@ -325,7 +344,7 @@ export class TermComposer {
     if (this.snippetsMenu) { this.snippetsMenu.detach(); this.snippetsMenu = null; return; }
     const menu = bar.createDiv({ cls: "aos-tc-snippets", attr: { role: "menu" } });
     this.snippetsMenu = menu;
-    const host = this.session?.meta.host;
+    const host = this.agent() ?? "shell";
     const list = this.snippets().filter((s) => !s.host || s.host === host);
     const close = () => { menu.detach(); this.snippetsMenu = null; };
     if (!list.length) menu.createDiv({ cls: "aos-tc-snipnote", text: "No snippets yet: write a prompt, then Save as snippet." });

@@ -4,7 +4,8 @@
 // over the 400-row cap, a working line with Stop while a turn runs, and a card for the TUI's prompt (Task 12 fills it).
 // Under the column sit the composer (TerminalPanel moves its element into `composerSlot` while the chat shows) and the
 // status line, drawn from spans exactly as the terminal draws it (C5), or the hint when there is none. The live PTY is
-// one key away: every "Terminal ⌘J" here calls `toTerminal`.
+// one key away: every "Terminal ⌘J" here calls `toTerminal`. When the agent has exited and the login shell runs in its
+// terminal (R39), the history stays, Stop and the working line go, and a notice takes the composer's place.
 
 import { Component, MarkdownRenderer } from "obsidian";
 import type { SessionHost } from "../data/aosConfig";
@@ -51,11 +52,14 @@ export class CodeChat {
   private workingEl: HTMLElement;
   private cardEl: HTMLElement;
   private statusEl: HTMLElement;
+  private endedEl: HTMLElement;
   private thread: ThreadView;
   private md = new Component();
   private expanded = new Set<string>();
   private state: ChatState | null = null;
   private why: string | null = null;
+  /** The host whose agent ended in this terminal (R39), or null while it runs. */
+  private ended: string | null = null;
   private toEnd = true;
 
   constructor(parent: HTMLElement, private readonly o: CodeChatOptions) {
@@ -72,6 +76,9 @@ export class CodeChat {
     this.cardEl = col.createDiv({ cls: "aos-cc-card" });
     // A read-only chat has no foot: its slot and status line are never in the page.
     const footCol = o.readOnly ? this.el.ownerDocument.createElement("div") : this.el.createDiv({ cls: "aos-cc-foot" }).createDiv({ cls: "aos-cc-footcol" });
+    this.endedEl = footCol.appendChild(this.el.ownerDocument.createElement("div"));
+    this.endedEl.className = "aos-cc-ended";
+    this.endedEl.setAttribute("role", "status");
     this.composerSlot = footCol.appendChild(this.el.ownerDocument.createElement("div"));
     this.composerSlot.className = "aos-cc-composer";
     this.statusEl = footCol.appendChild(this.el.ownerDocument.createElement("div"));
@@ -102,6 +109,7 @@ export class CodeChat {
     this.why = null;
     this.toEnd = true;
     this.setCard(null);
+    this.setEnded(null);
   }
 
   /** The chat as it is now; `why`: the reason it has none (main's answer to follow), shown on the empty line's hover. */
@@ -109,6 +117,23 @@ export class CodeChat {
     this.state = state;
     this.why = why;
     this.render();
+  }
+
+  /**
+   * The agent ended and the login shell took over its terminal (R39): `host` names it ("Claude Code"), null while it runs.
+   * The rows stay readable; Stop and the working line go; "<Host> ended · Terminal ⌘J" stands where the composer was (the
+   * panel keeps the composer out, so nothing typed here reaches the shell).
+   */
+  setEnded(host: string | null): void {
+    if (host === this.ended) return;
+    this.ended = host;
+    this.el.toggleClass("is-ended", !!host);
+    this.endedEl.empty();
+    if (host) {
+      this.endedEl.appendText(`${host} ended · `);
+      this.jump(this.endedEl, "Terminal ⌘J");
+    }
+    if (this.state) this.render();
   }
 
   /** The TUI's prompt as a card after the last row, or none (Task 12). */
@@ -197,7 +222,7 @@ export class CodeChat {
       this.note(`${NO_CHAT} · Terminal ⌘J`);
       if (this.why) this.noteEl.setAttr("title", this.why);
     }
-    if (s?.turnOpen && !this.o.readOnly) {
+    if (s?.turnOpen && !this.o.readOnly && !this.ended) {
       this.workingEl.createSpan({ cls: "aos-cc-workingtext", text: "Working…" });
       const stop = this.workingEl.createEl("button", { cls: "aos-cc-stop", attr: { type: "button", title: "Stop this turn (Esc in the terminal)" } });
       stop.createSpan({ text: "Stop" });

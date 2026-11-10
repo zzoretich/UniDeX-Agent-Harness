@@ -3416,6 +3416,10 @@ button.aos-tc-chip.is-hidden:not(.clickable-icon), .aos-tc-chip.is-hidden { disp
 .aos-cc-foot { flex: none; padding: 6px 24px 10px; }
 .aos-cc-footcol { max-width: 760px; margin: 0 auto; }
 .aos-cc .aos-tc { padding: 0; }
+/* The agent ended and the login shell runs in its terminal (R39): a notice where the composer was. */
+.aos-cc-ended:empty { display: none; }
+.aos-cc-ended { padding: 12px 14px; border: 1px solid var(--udx-line-2); border-radius: 14px; background: var(--udx-raised); font-size: 13px; color: var(--udx-text-2); }
+.aos-cc.is-ended .aos-cc-composer { display: none; }
 /* Three lines in the chat's column (its corner still drags it taller). */
 .aos-tc.is-chat textarea.aos-tc-input { min-height: 46px; height: 72px; }
 .aos-tc.is-chat .aos-tc-hint { visibility: hidden; }

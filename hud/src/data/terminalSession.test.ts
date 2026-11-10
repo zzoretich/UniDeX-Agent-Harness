@@ -121,6 +121,22 @@ test("the terminal shows at once; main's agent becomes its process; when the age
   assert.deepEqual(exits, [session]);
 });
 
+test("code-chat R39: agentEnded flips when the agent exits and the login shell takes over, and the deck hears it", async () => {
+  const agent = proc(4260);
+  fakeHost(async () => ({ ok: true, data: agent }), { code: true });
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  await ready;
+  assert.equal(session.agentEnded, false, "the agent runs");
+  let updates = 0;
+  session.onUpdate(() => { updates++; });
+  agent.exit(0);
+  assert.equal(session.agentEnded, true, "the login shell runs in its place");
+  assert.equal(session.isExited, false);
+  assert.ok(updates >= 1, "the deck is told, so the chat can say so");
+  assert.equal(pool.create().agentEnded, false, "a plain shell never had an agent");
+});
+
 test("an agent main runs knows its computer key, code:<the app's terminal id>; a shell, a fallback or a host without ids has none", async () => {
   fakeHost(async () => ({ ok: true, data: { ...proc(4250), id: "t7" } }));
   const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });

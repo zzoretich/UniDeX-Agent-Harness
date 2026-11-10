@@ -290,6 +290,58 @@ test.describe("the Code chat surface on", () => {
     await select(win, long);
     await expect(last).toBeInViewport();
   });
+
+  test("an agent that exits hands its terminal to the login shell: the chat says so and takes no typing; the terminal's composer is a shell's (R39)", async () => {
+    const { win } = app();
+    const key = "acacacac-0000-4000-8000-00000000000c";
+    const sid = "acacacac-0000-4000-8000-00000000000d";
+    // Its last turn never closed: before the fix the chat kept Working and Stop, and its composer typed into zsh.
+    writeCache(key, conversation(sid, FX.v("workspaces/harbor-map/src/tide.ts")));
+    await openTab(win, "term");
+    const id = await win.evaluate(({ k, s }) => {
+      type Sess = { id: string; shell: string; cwd: string; dimensions: { cols: number; rows: number }; meta: object; attachAgent(p: unknown, size: object): void; write(d: string): void };
+      const p = (window as unknown as { aosHost: { plugin: { terminalPool: { create(o: object): Sess; select(id: string): void } } } }).aosHost.plugin.terminalPool;
+      const t = p.create({ deferred: true, meta: { host: "claude", terminalKey: k, sessionId: s, label: "Ending agent" } });
+      p.select(t.id);
+      // A process attached as the terminal's agent (what main starts for a Code launch, D18; the page may spawn only the
+      // login shell), which execs the fixture's claude stub: it prints its line and exits, and the login shell takes over.
+      const spawn = (Object.getPrototypeOf(t) as { spawnShell(this: unknown): unknown }).spawnShell;
+      t.attachAgent(spawn.call({ shell: t.shell, cwd: t.cwd, env: undefined, size: t.dimensions, meta: t.meta }), t.dimensions);
+      t.write("exec claude\r");
+      return t.id;
+    }, { k: key, s: sid });
+    await expect.poll(() => win.evaluate((i) => (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { agentEnded: boolean } | undefined } } } }).aosHost.plugin.terminalPool.get(i)?.agentEnded ?? null, id), { timeout: 10_000 }).toBe(true);
+    // The chat keeps its history, says the agent ended, and offers the terminal; no Working, no Stop, no composer.
+    await expect(chat(win)).toBeVisible();
+    await expect(chat(win).locator(".aos-ss-prompt .aos-ss-bubble").first()).toHaveText("Make the tide parser read the new station format");
+    await expect(chat(win).locator(".aos-cc-ended")).toHaveText("Claude Code ended · Terminal ⌘J");
+    await expect(chat(win).locator(".aos-cc-stop")).toHaveCount(0);
+    await expect(chat(win).locator(".aos-cc-workingtext")).toHaveCount(0);
+    await expect(C(win).locator(".aos-tc-input:visible")).toHaveCount(0);
+    // Nothing typed while the chat shows reaches the shell: ⌘L finds no composer, and keys go nowhere.
+    await win.evaluate((i) => {
+      const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { write(d: string): void } } } } }).aosHost.plugin.terminalPool.get(i);
+      const w = (window as unknown as { __shellWrites: string[] });
+      w.__shellWrites = [];
+      const orig = s.write.bind(s);
+      s.write = (d: string) => { w.__shellWrites.push(d); orig(d); };
+    }, id);
+    expect(await command(win, "agentic-os:term-composer")).toBe(true);
+    await win.keyboard.type("echo leaked");
+    await win.keyboard.press("Enter");
+    await win.waitForTimeout(300);
+    expect(await win.evaluate(() => (window as unknown as { __shellWrites: string[] }).__shellWrites)).toEqual([]);
+    // Its button flips to the terminal, where the composer is a shell's: "Write a command…", no / commands, model or access.
+    await chat(win).locator(".aos-cc-ended .aos-cc-jump").click();
+    await expect(body(win)).toBeVisible();
+    const composer = C(win).locator(".aos-term-main > .aos-tc");
+    await expect(composer.locator(".aos-tc-input")).toHaveAttribute("placeholder", "Write a command…");
+    await expect(composer.locator(".aos-tc-chip:visible")).toHaveText(["@ file", "Snippets"]);
+    await expect(composer.locator(".aos-tc-modelwrap")).toBeHidden();
+    await composer.locator(".aos-tc-input").fill("echo ended-$((6*7))");
+    await composer.locator(".aos-tc-input").press("Enter");
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("ended-42");
+  });
 });
 
 // The sidebar (C6): the fixture vault's session index lists real past conversations (its claude transcripts are in the
