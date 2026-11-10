@@ -370,7 +370,8 @@ export class TermComposer {
     }
     // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
     // written and the draft (its images included) stays (R49). The screen is read fresh first, since the poll can be a
-    // tick behind a prompt that just printed (bounded: R56).
+    // tick behind a prompt that just printed (bounded: R56), and only once the terminal's last input (a Send a moment
+    // ago, a key typed in the terminal) has had time to open the prompt it opens (R62: SEND_QUIET_MS).
     const feeds = this.plugin.codeFeeds;
     const known = feeds?.get(s.id)?.card;
     if (known || !feeds?.get(s.id)) { this.finishSend(s, text, shots, !!known); return; }

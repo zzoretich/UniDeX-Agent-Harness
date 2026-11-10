@@ -184,6 +184,28 @@ test("a fallback types the launch line before what was typed while the terminal 
   assert.equal(shells[0].p.written.join(""), `${launchLine(SPEC)}\rfix the parser\r`);
 });
 
+test("code-chat R62: lastInputAt is when input last went to the terminal, whoever wrote it; a starting terminal's typeahead counts when it reaches the process", async () => {
+  let answer: (r: HostResult<HostPtyProcess>) => void = () => {};
+  fakeHost(() => new Promise((r) => { answer = r; }));
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  const shell = pool.create();
+  assert.equal(shell.lastInputAt, Number.NEGATIVE_INFINITY, "nothing written yet");
+  const before = Date.now();
+  shell.write("ls\r");
+  assert.ok(shell.lastInputAt >= before && shell.lastInputAt <= Date.now());
+  const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+  session.write("fix the parser");
+  const typed = session.lastInputAt;
+  await new Promise((r) => setTimeout(r, 15));
+  answer({ ok: true, data: proc(4400) });
+  await ready;
+  assert.ok(session.lastInputAt >= typed + 10, "stamped again when the typeahead went to the agent");
+  shell.dispose();
+  const ended = shell.lastInputAt;
+  shell.write("late\r");
+  assert.equal(shell.lastInputAt, ended, "a closed terminal takes no input");
+});
+
 test("what main's schema would refuse never blocks the launch: a long label is cut to 200 characters, a place key over 512 falls back without asking main", async () => {
   const { shells, requests } = fakeHost(async () => ({ ok: true, data: proc(4300) }));
   const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });

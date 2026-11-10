@@ -34,7 +34,7 @@ M._resolveFilename = function (request: string, ...rest: unknown[]) {
 };
 require.cache[STUB] = { id: STUB, filename: STUB, loaded: true, exports: { Events: FakeEvents } } as unknown as NodeJS.Module;
 const { TerminalPool } = require("./terminalPool") as typeof PoolModule;
-const { CodeFeeds, EVENT_CAP, ROW_CAP, POLL_MS, PRINT_MS, SEND_SETTLE_MS, screenDue } = require("./codeFeeds") as typeof FeedsModule;
+const { CodeFeeds, EVENT_CAP, ROW_CAP, POLL_MS, PRINT_MS, SEND_QUIET_MS, SEND_SETTLE_MS, screenDue, sendQuietWait } = require("./codeFeeds") as typeof FeedsModule;
 
 const KEY = "aaaaaaaa-0000-4000-8000-000000000001";
 const SID = "cccccccc-0000-4000-8000-000000000003";
@@ -451,6 +451,50 @@ test("Send never waits past SEND_SETTLE_MS on a screen that never settles (R56)"
   assert.equal(await h.feeds.cardNow(s.id), false);
   const took = Date.now() - t0;
   assert.ok(took >= SEND_SETTLE_MS - 10 && took <= SEND_SETTLE_MS + 150, `took ${took} ms`);
+});
+
+test("R62: how long Send still waits for the terminal's last input: what is left of SEND_QUIET_MS, never more", () => {
+  assert.equal(SEND_QUIET_MS, 500);
+  assert.equal(sendQuietWait(Number.NEGATIVE_INFINITY, 10_000), 0, "no input yet");
+  assert.equal(sendQuietWait(10_000, 10_020), 480);
+  assert.equal(sendQuietWait(10_000, 10_500), 0);
+  assert.equal(sendQuietWait(10_000, 10_600), 0);
+  assert.equal(sendQuietWait(10_000, 9_000), SEND_QUIET_MS, "a clock that moved back waits no longer than the bound");
+});
+
+test("R62: Send 20 ms after input whose prompt the TUI draws 200 ms after it is held; 600 ms after the last input, with no prompt, it goes at once", async () => {
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  const feed = () => h.feeds.get(s.id)!;
+  p.emit(drawn("claude-2.1.318-idle"));
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  await sleep(50);
+  assert.equal(await h.feeds.cardNow(s.id), false, "no input yet, no prompt: no hold");
+  // `/model` and its ⏎ reach the TUI (Send, a card or the terminal: all go through write); its picker comes 200 ms later.
+  s.write("/model\r");
+  const wrote = Date.now();
+  const picker = setTimeout(() => p.emit(drawn("claude-2.1.318-model")), 200);
+  await sleep(20);
+  assert.equal(feed().card, null, "nothing on its screen yet");
+  const t0 = Date.now();
+  assert.equal(await h.feeds.cardNow(s.id), true, "held: the draft's ⏎ would confirm the picker's highlighted model");
+  const took = Date.now() - t0;
+  assert.ok(Date.now() - wrote >= SEND_QUIET_MS - 10, `read ${Date.now() - wrote} ms after the input`);
+  assert.ok(took <= SEND_QUIET_MS + SEND_SETTLE_MS + 50, `took ${took} ms`);
+  assert.deepEqual(feed().card, { kind: "waiting" });
+  clearTimeout(picker);
+  // The picker closed in the terminal; 600 ms after that last input, with nothing up, Send goes at once.
+  p.emit(drawn("claude-2.1.318-idle"));
+  s.write("\u001b");
+  await until(clock, () => feed().card === null);
+  await sleep(600);
+  const t1 = Date.now();
+  assert.equal(await h.feeds.cardNow(s.id), false);
+  assert.ok(Date.now() - t1 <= 50, `took ${Date.now() - t1} ms`);
+  assert.deepEqual(p.writes, ["/model\r", "\u001b"], "cardNow writes nothing");
 });
 
 test("a click answers the card the user saw: a card that was replaced meanwhile writes nothing (R49)", async () => {

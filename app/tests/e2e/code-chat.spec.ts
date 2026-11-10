@@ -632,23 +632,36 @@ const screenFile = (name: string) => fs.readFileSync(path.join(SCREENS, name), "
 /** A rendered fixture screen as a stream that draws it from the top (the captures kept the raw stream of two only). */
 const drawn = (name: string) => `\u001b[H\u001b[2J${screenFile(`${name}.txt`).split("\n").join("\r\n")}`;
 type FakeW = { aosHost: { plugin: { terminalPool: { create(o: object): { id: string; dimensions: object; attachAgent(p: unknown, size: object): void; resize(c: number, r: number): void }; select(id: string): void; get(id: string): { resize(c: number, r: number): void } | undefined; remove(id: string): void }; codeFeeds: { screened(id: string): boolean } } }; __fakes?: Record<string, { emit(d: string): void; exit(code: number): void; writes: string[] }> };
-/** A terminal whose agent is a fake process in the page, selected; its pool id. */
-const fakeAgent = (win: Page, meta: Meta): Promise<string> => win.evaluate((m) => {
+/** A terminal whose agent is a fake process in the page, selected; its pool id. With `menu`, the fake answers a line it
+ *  receives that starts with "/menu" (pastes' markers left out) by printing `menu` 150 ms later, as a TUI opens a picker
+ *  in answer to a command. */
+const fakeAgent = (win: Page, meta: Meta, o: { menu?: string } = {}): Promise<string> => win.evaluate(({ m, menu }) => {
   const w = window as unknown as FakeW;
   const pool = w.aosHost.plugin.terminalPool;
   const t = pool.create({ deferred: true, cols: 120, rows: 40, meta: m });
   const data: Array<(d: string) => void> = [];
   const exits: Array<(e: { exitCode: number }) => void> = [];
   const writes: string[] = [];
+  const emit = (d: string) => { for (const cb of data) cb(d); };
+  let line = "";
   const fake = {
-    pid: 0, write: (d: string) => { writes.push(d); }, resize: () => {}, kill: () => {},
+    pid: 0, resize: () => {}, kill: () => {},
+    write: (d: string) => {
+      writes.push(d);
+      if (menu === undefined) return;
+      line += d.replace(/\u001b\[20[01]~/g, "");
+      for (let cr = line.indexOf("\r"); cr >= 0; cr = line.indexOf("\r")) {
+        if (line.startsWith("/menu")) setTimeout(() => emit(menu), 150);
+        line = line.slice(cr + 1);
+      }
+    },
     onData: (cb: (d: string) => void) => { data.push(cb); }, onExit: (cb: (e: { exitCode: number }) => void) => { exits.push(cb); },
   };
   t.attachAgent(fake, t.dimensions);
-  (w.__fakes ??= {})[t.id] = { emit: (d: string) => { for (const cb of data) cb(d); }, exit: (code: number) => { for (const cb of exits) cb({ exitCode: code }); }, writes };
+  (w.__fakes ??= {})[t.id] = { emit, exit: (code: number) => { for (const cb of exits) cb({ exitCode: code }); }, writes };
   pool.select(t.id);
   return t.id;
-}, meta);
+}, { m: meta, menu: o.menu });
 /** The fake's TUI prints `d`; the captures are 120×40, so the terminal is sized so first (after the visible terminal's
  *  own fit, two frames after the selection, which sizes it to the stage). */
 const replay = async (win: Page, id: string, d: string): Promise<void> => {
@@ -722,9 +735,46 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
     await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
     await input.press("Enter");
-    expect((await written(win, id)).join("")).toContain("hello there");
+    // Within SEND_QUIET_MS of the terminal's last input (R62) Send waits that long before it reads the screen and goes.
+    let sent = "";
+    await expect.poll(async () => (sent += (await written(win, id)).join(""))).toContain("hello there");
     await expect(input).toHaveValue("");
     await expect(note).toHaveCount(0);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("R62: Send right after input waits for the TUI to draw what it opens: a draft sent just after /menu stays, held by the prompt /menu opened, and nothing of it reaches that prompt", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    // The fake opens a numbered prompt (a captured Claude Code approval) 150 ms after it receives a line starting /menu.
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000002b", sessionId: "a1a1a1a1-0000-4000-8000-00000000002c", label: "Composer after a command" }, { menu: screenFile("claude-2.1.318-bash.ansi") });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, drawn("claude-2.1.318-idle"));
+    const input = C(win).locator(".aos-tc-input:visible");
+    const note = C(win).locator(".aos-tc-note:visible");
+    let log = "";
+    const take = async () => (log += (await written(win, id)).join(""));
+    await take();
+    log = "";
+    // /menu goes (nothing is up), then at once a draft and ⏎, before the prompt /menu opens is on the screen.
+    await input.fill("/menu");
+    await C(win).locator(".aos-tc-send:visible").click();
+    await expect(input).toHaveValue("");
+    await input.fill("z");
+    await input.press("Enter");
+    // The draft waited for the TUI, found its prompt, and stayed.
+    await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    await expect(note).toHaveText("Answer the card above first · Terminal ⌘J");
+    await expect(input).toHaveValue("z");
+    await win.waitForTimeout(800);
+    await take();
+    // What the fake received: /menu and its one ⏎; never the draft's text nor a second ⏎ (the visible terminal's replies
+    // to the stream's queries hold neither).
+    expect(log).toContain("/menu");
+    expect(log, JSON.stringify(log)).not.toContain("z");
+    expect(log.split("\r").length - 1, JSON.stringify(log)).toBe(1);
     await removeTerminal(win, id);
     expectNoErrors(h);
   });

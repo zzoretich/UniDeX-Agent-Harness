@@ -16,6 +16,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ### Fixed
 - The Code tab's chat follows a Codex session that starts after its startup dialogs (folder trust, hook review), however long they take; before, a dialog answered after 15 seconds left that terminal with no chat. <!-- no-tour: a fix with no new control -->
+- Send in a Code chat waits for the agent to draw what your last input opens. A command sent a moment before (such as `/model`) opens a picker the screen does not show yet, and a message sent right after it used to land in that picker, its ⏎ confirming the highlighted choice. Send now waits up to half a second after the terminal's last input, from the composer, a card or the terminal itself, then holds while the prompt is up and keeps your message. <!-- no-tour: a fix with no new control -->
 
 ### Security
 - Sessions' and Code's diffs read only files git lists: a link inside the repository can't reach a file outside it, and ignored files and `.git/` aren't readable. Git reads no longer run a program that a submodule's own config names.

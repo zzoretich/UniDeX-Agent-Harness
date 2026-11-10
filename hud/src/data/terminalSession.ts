@@ -102,6 +102,9 @@ export class TerminalSession {
   private scanner = new TermStreamScanner();
   /** Whether the program last said its prompt takes bracketed pastes (the composer sends one then). */
   pasteMode = false;
+  /** When input last went to the terminal's process (Date.now()), from anywhere: the composer, a card's key, the visible
+   *  terminal's keys and its replies to the program's queries. -Infinity before any. */
+  private inputAt = Number.NEGATIVE_INFINITY;
 
   constructor(opts: TerminalSessionOptions) {
     this.id = opts.id;
@@ -155,7 +158,7 @@ export class TerminalSession {
     if (spawned.cols !== this.size.cols || spawned.rows !== this.size.rows) {
       try { p.resize(this.size.cols, this.size.rows); } catch { /* race on exit */ }
     }
-    if (this.pending) { const w = this.pending; this.pending = ""; p.write(w); }
+    if (this.pending) { const w = this.pending; this.pending = ""; this.inputAt = Date.now(); p.write(w); }
     // A deferred terminal's first process came after the deck listed it: say so, so its chat can follow it now.
     if (first) this.changed();
   }
@@ -260,8 +263,13 @@ export class TerminalSession {
 
   getScrollback(): string { return this.scrollback; }
 
+  /** When input last went to the terminal's process (Date.now() ms), whoever wrote it; -Infinity before any. The
+   *  composer's Send waits a moment after it (code-chat R62): a TUI opens a prompt in answer to input it has not drawn. */
+  get lastInputAt(): number { return this.inputAt; }
+
   write(data: string): void {
     if (this.exited || this.disposed) return;
+    this.inputAt = Date.now();
     if (this.pty) this.pty.write(data);
     else this.pending = (this.pending + data).slice(-PENDING_CAP);
   }

@@ -13,7 +13,8 @@
 // read every POLL_MS, and only while their PTY printed in the last PRINT_MS or a card is up, never in the tick the data
 // came in (a chunk xterm has not parsed yet waits for the next read): the TUI's prompt is the chat's card and the row's
 // Needs you, and a Codex terminal's footer rows are its status line. A card's key reaches the agent only through
-// `answer`, which reads the screen again first; Send asks `cardNow`, which reads it too (the poll can be a tick behind).
+// `answer`, which reads the screen again first; Send asks `cardNow`, which reads it too (the poll can be a tick behind),
+// once the terminal's last input has had SEND_QUIET_MS to open whatever prompt it opens (R62).
 
 import * as path from "path";
 import { readCacheAll } from "./pastChat";
@@ -43,6 +44,16 @@ export const POLL_MS = 500;
 export const PRINT_MS = 2000;
 /** How long Send and a card's click wait for a screen's pending chunks to parse before they read what is there. */
 export const SEND_SETTLE_MS = 100;
+/** How long after the terminal's last input (from the composer, a card or the terminal itself) Send waits before it reads
+ *  the screen (R62): a TUI opens a prompt in answer to input it has not drawn yet (a `/model` sent a moment ago, its
+ *  picker not up), and the ⏎ that ends a send would answer it. Send waits at most SEND_QUIET_MS + SEND_SETTLE_MS. */
+export const SEND_QUIET_MS = 500;
+
+/** How long Send still waits for the terminal's last input at `lastInput` (Date.now() ms; -Infinity: none) to settle at
+ *  `now`: 0 once SEND_QUIET_MS has passed, never more than SEND_QUIET_MS (a clock that moved back included). */
+export function sendQuietWait(lastInput: number, now: number): number {
+  return Math.min(SEND_QUIET_MS, Math.max(0, lastInput + SEND_QUIET_MS - now));
+}
 
 /** Whether a terminal's screen is read on this tick: its PTY printed in the last PRINT_MS, or a card is up (it may be
  *  answered in the terminal). `lastData` is when it last printed, -Infinity before it ever did. */
@@ -214,7 +225,8 @@ export class CodeFeeds {
    * skipped while a chunk parses), so with no card known the screen is always read now (a snapshot and a parse, well under
    * a millisecond), after its pending chunks are parsed when there are any (waited for at most SEND_SETTLE_MS: after that,
    * whatever is parsed is read). Busy alone never holds (R56); only a card the read finds does, and it is the feed's from
-   * then on.
+   * then on. Input written to the terminal less than SEND_QUIET_MS ago may still open a prompt the screen does not show
+   * yet (R62): the read waits until it has had that long, so Send waits at most SEND_QUIET_MS + SEND_SETTLE_MS.
    */
   async cardNow(id: string): Promise<boolean> {
     const e = this.entries.get(id);
@@ -222,6 +234,12 @@ export class CodeFeeds {
     if (e.feed.card) return true;
     const screen = e.screen;
     if (!screen) return false;
+    // Date.now(), as TerminalSession stamps its input with (the poll's clock is the screens' own).
+    const quiet = sendQuietWait(this.pool.get(id)?.lastInputAt ?? Number.NEGATIVE_INFINITY, Date.now());
+    if (quiet > 0) {
+      await new Promise<void>((r) => setTimeout(r, quiet));
+      if (this.disposed || this.entries.get(id) !== e || e.screen !== screen || e.feed.card) return e.feed.card !== null;
+    }
     if (screen.busy) {
       await screen.settled(SEND_SETTLE_MS);
       if (this.disposed || this.entries.get(id) !== e || e.screen !== screen) return e.feed.card !== null;
