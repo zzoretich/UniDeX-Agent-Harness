@@ -1,8 +1,9 @@
 // The arguments a Code launch may pass the agent CLI that main starts as a terminal's own process (agent-computer D18).
 // Only what the Code page's launchArgs emits (hud/src/data/terminalLaunch.ts): the model, the access level's flags, a
-// conversation id, and for a Codex resume by id the folder (`-C`). Anything else (a skip-permission or MCP flag, a
-// prompt, a `-c` override, a value that reads as a flag) is refused: the page chooses the words, never the program, and
-// cannot widen what the agent may do through them. Claude's `--allowedTools` takes one comma-joined value of Bash and the
+// conversation id, and for a Codex resume by id the folder (`-C`) and, after the id, a chip restart's picks (`-m`, `-s`,
+// `-a`, each at most once: the words a new Codex session may carry, so they widen nothing; code-chat R66). Anything else
+// (a skip-permission or MCP flag, a prompt, a `-c` override, a value that reads as a flag) is refused: the page chooses
+// the words, never the program, and cannot widen what the agent may do through them. Claude's `--allowedTools` takes one comma-joined value of Bash and the
 // computer tools (agent-computer D33: they are pre-approved, the app's ask gate is their gate) and nothing else. Every
 // `-c` key stays refused: Codex's per-tool approvals ship in its MCP registration, never on the launch line. Codex's
 // `--no-daemon` (R70: the TUI runs its app server in its own process, so the MCP server stays the CLI's child) comes
@@ -54,6 +55,9 @@ const CODEX_FLAGS: Readonly<Record<string, Rule>> = {
   "-a": oneOf("on-request"),
 };
 
+/** What may follow a Codex resume's id (a chip's pick, R66): a new session's flags with their rules, but `--no-daemon`. */
+const CODEX_RESUME_PICKS: Readonly<Record<string, Rule>> = { "-m": CODEX_FLAGS["-m"], "-s": CODEX_FLAGS["-s"], "-a": CODEX_FLAGS["-a"] };
+
 /** Why `argv` (flags and values only, no positional word) is refused, or null. Each flag at most once. */
 function flagsRefusal(argv: readonly string[], rules: Readonly<Record<string, Rule>>): string | null {
   const seen = new Set<string>();
@@ -80,16 +84,19 @@ export function agentArgvRefusal(host: Host, argv: readonly string[], allow: { n
   if (host === "claude") return flagsRefusal(argv, CLAUDE_FLAGS);
   if (!allow.noDaemon && argv.includes("--no-daemon")) return "--no-daemon, which main did not choose for this launch";
   if (argv[0] !== "resume") return flagsRefusal(argv, CODEX_FLAGS);
-  // `codex resume [--no-daemon] --last`, or `codex resume [--no-daemon] [-C <absolute folder>] <id>`.
+  // `codex resume [--no-daemon] --last`, or `codex resume [--no-daemon] [-C <absolute folder>] <id> [-m <model>] [-s …]
+  // [-a …]` (a chip restart's picks, R66: `codex resume --help` takes options after the id).
   const rest = argv[1] === "--no-daemon" ? argv.slice(2) : argv.slice(1);
   if (rest.includes("--no-daemon")) return "--no-daemon where a resume does not take it";
   if (rest.length === 1 && rest[0] === "--last") return null;
-  if (rest.length === 1 && free(rest[0])) return null;
-  if (rest.length === 3 && rest[0] === "-C") {
+  let at = 0;
+  if (rest[0] === "-C") {
     const dir = rest[1];
-    if (!dir.startsWith("/") || CONTROL_RE.test(dir)) return "-C with a folder that is not an absolute path";
-    return free(rest[2]) ? null : `the resume id ${JSON.stringify(rest[2].slice(0, 40))}`;
+    if (dir === undefined || !dir.startsWith("/") || CONTROL_RE.test(dir)) return "-C with a folder that is not an absolute path";
+    at = 2;
   }
-  if (rest.includes("-c") || rest.includes("--config")) return "a -c override";
-  return "a resume this app does not launch";
+  const id = rest[at];
+  if (id === "-c" || id === "--config") return "a -c override";
+  if (!free(id)) return at ? `the resume id ${JSON.stringify((id ?? "").slice(0, 40))}` : "a resume this app does not launch";
+  return flagsRefusal(rest.slice(at + 1), CODEX_RESUME_PICKS);
 }

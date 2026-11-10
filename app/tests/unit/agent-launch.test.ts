@@ -34,12 +34,22 @@ test("agentArgvRefusal accepts every argv the Code page's launchArgs builds, on 
       specs.push({ host: "codex", bin: null, model, access, resume: "last" });
       specs.push({ host: "codex", bin: null, model, access, resume: { id: "019a-thread" }, cwd: "/srv/code/tide chart" });
       specs.push({ host: "codex", bin: null, model, access, resume: { id: "019a-thread" } });
+      // A chip restart (code-chat C12): the same conversation by id with the pick, on either host (R66).
+      for (const picked of [{ model: true }, { access: true }, { model: true, access: true }]) {
+        for (const cwd of [undefined, "/srv/code/tide chart"]) {
+          specs.push({ host: "claude", bin: null, model, access, resume: { id: "c1a0de00-0000-4000-8000-000000000001" }, picked, cwd });
+          specs.push({ host: "codex", bin: null, model: model && "gpt-6-luna", access, resume: { id: "019a-thread" }, picked, cwd });
+        }
+      }
     }
   }
   for (const s of specs) {
     const argv = launchArgs(s);
     assert.equal(agentArgvRefusal(s.host, argv), null, `${s.host} ${JSON.stringify(argv)}`);
   }
+  // The picks do ride on a Codex resume's line, after the id (what the live check's restart was refused for).
+  assert.deepEqual(launchArgs({ host: "codex", bin: null, model: "gpt-6-luna", access: "read", resume: { id: "019a-thread" }, picked: { model: true, access: true }, cwd: "/srv/code" }),
+    ["resume", "-C", "/srv/code", "019a-thread", "-m", "gpt-6-luna", "-s", "read-only", "-a", "on-request"]);
 });
 
 test("agentArgvRefusal refuses what launchArgs never emits: skip-permission and MCP flags, unknown flags, odd values, -c keys", () => {
@@ -81,6 +91,22 @@ test("agentArgvRefusal refuses what launchArgs never emits: skip-permission and 
   no("codex", ["resume", "019a-thread", "-c", "x=y"]);
   no("codex", ["resume"]);
   no("codex", ["-s", "read-only", "-s", "workspace-write"]);
+  // After a resume's id only a chip's picks, each once, with a new session's value rules (R66).
+  no("codex", ["resume", "019a-thread", "-m", "gpt-6-luna", "-m", "gpt-6-sol"]);
+  no("codex", ["resume", "-C", "/abs", "019a-thread", "-s", "read-only", "-s", "read-only"]);
+  no("codex", ["resume", "019a-thread", "--frobnicate"]);
+  no("codex", ["resume", "-C", "/abs", "019a-thread", "--dangerously-bypass-approvals-and-sandbox"]);
+  no("codex", ["resume", "-C", "/abs", "019a-thread", "-m", "gpt-6-luna", "-c", "approval_policy=never"]);
+  no("codex", ["resume", "019a-thread", "--config", "x=y"]);
+  no("codex", ["resume", "019a-thread", "-s", "danger-full-access"]);
+  no("codex", ["resume", "019a-thread", "-a", "never"]);
+  no("codex", ["resume", "019a-thread", "-m", "-x"]);
+  no("codex", ["resume", "019a-thread", "-m"]);
+  no("codex", ["resume", "019a-thread", "-C", "/abs"]);
+  no("codex", ["resume", "019a-thread", "-m", "gpt-6-luna", "say hello"]);
+  no("codex", ["resume", "--last", "-m", "gpt-6-luna"]);
+  assert.match(agentArgvRefusal("codex", ["resume", "019a-thread", "-c", "x=y"]) ?? "", /-c override/);
+  assert.match(agentArgvRefusal("codex", ["resume", "019a-thread", "-m", "a", "-m", "b"]) ?? "", /-m twice/);
 });
 
 test("R70: agentArgvRefusal accepts --no-daemon where launchArgs puts it on a Codex line, and nowhere else", () => {
@@ -91,6 +117,8 @@ test("R70: agentArgvRefusal accepts --no-daemon where launchArgs puts it on a Co
       { host: "codex", bin: null, model: null, access, noDaemon: true, resume: "last" },
       { host: "codex", bin: null, model: null, access, noDaemon: true, resume: { id: "019a-thread" }, cwd: "/srv/code/tide chart" },
       { host: "codex", bin: null, model: null, access, noDaemon: true, resume: { id: "019a-thread" } },
+      { host: "codex", bin: null, model: "gpt-6-luna", access, noDaemon: true, resume: { id: "019a-thread" }, cwd: "/srv/code/tide chart", picked: { model: true, access: true } },
+      { host: "codex", bin: null, model: "gpt-6-luna", access, noDaemon: true, resume: { id: "019a-thread" }, picked: { model: true } },
     ] as LaunchSpec[]) {
       assert.equal(agentArgvRefusal("codex", launchArgs(s), { noDaemon: true }), null, JSON.stringify(launchArgs(s)));
       // R79: only as main's spawn check allows: when main's answer is no, the flag is refused.

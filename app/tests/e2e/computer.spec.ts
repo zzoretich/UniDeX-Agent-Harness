@@ -289,6 +289,34 @@ test.describe("both hosts, the Computer surface on", () => {
     expectNoErrors(h);
   });
 
+  test("a Codex chip restart (code-chat C12, R66): main runs `codex resume … <id>` with the picks after the id as the terminal's own process, on the same conversation", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const sid = "019a0000-0000-4000-8000-0000000000c1";
+    const after = Date.now();
+    // What a model and access pick runs (TerminalPanel.restartWith): the same host and place, a resume by the chat's id,
+    // the picks. Before R66 main refused anything after the id, and the restart said "Codex did not start".
+    type L = { launch(r: object): Promise<{ session: { id: string; meta: { sessionId: string | null } }; ready: Promise<string | null> }> };
+    const started = await win.evaluate(async (s) => {
+      const p = (window as unknown as { aosHost: { plugin: { termLauncher: L } } }).aosHost.plugin;
+      const l = await p.termLauncher.launch({ host: "codex", resume: { id: s }, model: "gpt-6-luna", access: "read", chosen: { model: true, access: true } });
+      let why: string | null;
+      try { why = await l.ready; } catch (e) { why = `rejected: ${e instanceof Error ? e.message : String(e)}`; }
+      return { id: l.session.id, why, conversation: l.session.meta.sessionId };
+    }, sid);
+    expect(started.why, "main started the agent itself: no fallback, no refusal").toBeNull();
+    expect(started.conversation).toBe(sid);
+    const a = await agentRun((r) => r.mode === "code" && r.host === "codex", after);
+    try {
+      expect(a.run.argv[0]).toBe("resume");
+      expect(a.run.argv).toContain("-C");
+      expect(a.run.argv.slice(-7), JSON.stringify(a.run.argv)).toEqual([sid, "-m", "gpt-6-luna", "-s", "read-only", "-a", "on-request"]);
+    } finally { await a.finish(); }
+    await win.evaluate((i) => (window as unknown as { aosHost: { plugin: { terminalPool: { remove(id: string): void } } } }).aosHost.plugin.terminalPool.remove(i), started.id);
+    expectNoErrors(h);
+  });
+
   test("+ opens the start page and words typed in the address bar search it (the fixture standing in for DuckDuckGo); an agent opens a result by its address without an ask (D39)", async () => {
     const h = app();
     const { win, app: electron } = h;
