@@ -1,7 +1,7 @@
 // The Code sidebar's past conversations (code-chat C6, I3): the index and digests are checked at most every CHECK_MS
 // (two stats, which are synchronous IPC in the app), unless the Code tab was shown again (a forced check), and parsed
 // again only when one of them changed. A counting HudHost over a temp vault stands in for the app's.
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -19,14 +19,30 @@ function setup() {
   setHudHost({ ...node, fs: { ...node.fs, statSync: (p) => { counts.stat++; return node.fs.statSync(p); } } });
   let now = 1_000_000;
   let changes = 0;
+  // A fake timer queue: nothing fires until the test says so, and the clock is the test's own.
+  const timers = new Map<number, { fn: () => void; at: number }>();
+  let timerId = 0;
   const cache = new HistoryCache({
     vault: () => vault,
     hosts: () => { counts.hosts++; return { choices: [], world: { vault, home: os.tmpdir(), workspaces: [], links: {} } }; },
     now: () => now,
+    setTimer: (fn, ms) => { const id = ++timerId; timers.set(id, { fn, at: now + ms }); return id; },
+    clearTimer: (h) => { timers.delete(h as number); },
   }, () => { changes++; });
-  return { vault, counts, cache, tick: (ms: number) => { now += ms; }, changes: () => changes };
+  return {
+    vault, counts, cache, changes: () => changes,
+    tick: (ms: number) => { now += ms; },
+    /** Moves the fake clock on and fires the timers that fall due, in order. */
+    advance: (ms: number) => {
+      now += ms;
+      for (const [id, t] of [...timers].sort((a, b) => a[1].at - b[1].at)) if (t.at <= now) { timers.delete(id); t.fn(); }
+    },
+    pending: () => timers.size,
+  };
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
+/** Waits (real time) for the cache's async file reads, which go through the thread pool, to land. */
+async function until(cond: () => boolean): Promise<void> { for (let n = 0; n < 200 && !cond(); n++) await new Promise((r) => setTimeout(r, 5)); }
 
 test("refresh checks the two caches at most every CHECK_MS; a forced refresh (the tab shown again) checks at once", async () => {
   const h = setup();
@@ -62,12 +78,10 @@ test("a change to the index shows at the next check", async () => {
 });
 
 test("a change skipped by the throttle is picked up by one trailing check, with no further render (E)", async () => {
-  mock.timers.enable({ apis: ["setTimeout"] });
-  try {
+  {
     const h = setup();
     h.cache.refresh();
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
+    await settle();
     assert.equal(h.cache.rows().length, 0);
     const before = h.changes();
     fs.writeFileSync(nodePath.join(h.vault, SESSION_INDEX_PATH), JSON.stringify({
@@ -78,14 +92,14 @@ test("a change skipped by the throttle is picked up by one trailing check, with 
     h.cache.refresh();
     assert.equal(h.counts.stat, 2, "skipped: inside CHECK_MS");
     // The timer is armed once, for what is left of the window; the fake clock moves with it.
-    h.tick(CHECK_MS - 500);
-    mock.timers.tick(CHECK_MS - 500);
+    assert.equal(h.pending(), 1, "armed once");
+    h.advance(CHECK_MS - 500);
     assert.equal(h.counts.stat, 4, "the trailing check looked at the caches");
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
+    await until(() => h.cache.rows().length === 1);
     assert.equal(h.cache.rows().length, 1, "and the row shows without another render");
     assert.equal(h.changes(), before + 1);
-    mock.timers.tick(CHECK_MS * 3);
-    assert.equal(h.counts.stat, 4, "one shot: no timer left after it");
-  } finally { mock.timers.reset(); }
+    assert.equal(h.pending(), 0, "one shot: no timer left after it");
+    h.advance(CHECK_MS * 3);
+    assert.equal(h.counts.stat, 4);
+  }
 });
