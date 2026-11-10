@@ -24,8 +24,9 @@ export interface CodeChatOptions {
   stop(): void;
   /** Show earlier: the rows before the cap. */
   showEarlier(): void;
-  /** A card's choice: the key its TUI takes; true when it was written (the choices then wait for the next card). */
-  answer?(key: string, card: ChatCard): boolean;
+  /** A card's choice: the key its TUI takes; true (or a promise of it) when it was written (the choices then wait for the
+   *  next card). */
+  answer?(key: string, card: ChatCard): boolean | Promise<boolean>;
   /** A status line link (https:// or agenticos://), opened as a link clicked in the terminal is (R32). */
   openLink(href: string): void;
   /** The terminal's host and folder: models and file paths are named by them. */
@@ -164,7 +165,10 @@ export class CodeChat {
         // One answer per prompt: the choices wait for the TUI to move on (the next card), or come back when nothing was
         // written (the prompt changed under the click, or the agent ended).
         for (const x of buttons) x.disabled = true;
-        if (this.o.answer?.(c.key, card) !== true) for (const x of buttons) x.disabled = false;
+        const back = (ok: boolean | undefined) => { if (ok !== true) for (const x of buttons) x.disabled = false; };
+        const r = this.o.answer?.(c.key, card);
+        if (r instanceof Promise) void r.then(back, () => back(false));
+        else back(r);
       });
     });
     this.jump(row, ANSWER);

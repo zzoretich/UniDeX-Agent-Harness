@@ -67,6 +67,8 @@ function manualClock() {
     get ms() { return every; },
     fire() { run?.(); },
     advance(ms: number) { now += ms; run?.(); },
+    /** Moves time without running the poll (a tick that has not come yet). */
+    move(ms: number) { now += ms; },
   };
 }
 type Clock = ReturnType<typeof manualClock>;
@@ -346,10 +348,10 @@ test("an approval on an agent's screen is its card, read by the poll and never i
   assert.equal(feed().card, card);
   // The click writes exactly the choice's key, once per prompt.
   p.writes.length = 0;
-  assert.equal(h.feeds.answer(s.id, "1"), true);
+  assert.equal(await h.feeds.answer(s.id, "1"), true);
   assert.deepEqual(p.writes, ["1"]);
-  assert.equal(h.feeds.answer(s.id, "1"), false, "a second click on the same prompt writes nothing");
-  assert.equal(h.feeds.answer(s.id, "9"), false, "nor a key it does not offer");
+  assert.equal(await h.feeds.answer(s.id, "1"), false, "a second click on the same prompt writes nothing");
+  assert.equal(await h.feeds.answer(s.id, "9"), false, "nor a key it does not offer");
   assert.deepEqual(p.writes, ["1"]);
   // The TUI moved on: the card goes, and with the PTY quiet and no card the poll stops.
   p.emit(drawn("claude-2.1.318-idle"));
@@ -384,9 +386,55 @@ test("Send asks cardNow: a prompt that just printed is read fresh, once parsed a
   assert.equal(await h.feeds.cardNow(s.id), true);
   p.emit(drawn("claude-2.1.318-idle"));
   await until(clock, () => feed().card === null);
-  // Quiet for over SEND_FRESH_MS with no card known: no read at all.
-  clock.advance(1000);
+});
+
+test("a prompt printed 400 ms ago that no poll has read holds Send (the poll may take POLL_MS and more to see it)", async () => {
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  const feed = () => h.feeds.get(s.id)!;
+  p.emit(fixture("claude-2.1.318-bash.ansi"));
+  const screen = (h.feeds as unknown as { entries: Map<string, { screen: { settled(ms: number): Promise<void> } }> }).entries.get(s.id)!.screen;
+  await screen.settled(2000);
+  clock.move(400);
+  assert.equal(feed().card, null, "no poll has read it");
+  p.writes.length = 0;
+  assert.equal(await h.feeds.cardNow(s.id), true, "Send holds: its ⏎ would answer the prompt");
+  assert.equal(feed().card?.kind, "approval");
+  assert.equal(feed().needsYou, true);
+  // The prompt answered in the terminal; quiet for long with an idle screen: read again, and nothing holds.
+  p.emit(drawn("claude-2.1.318-idle"));
+  await until(clock, () => feed().card === null);
+  clock.move(PRINT_MS * 3);
   assert.equal(await h.feeds.cardNow(s.id), false);
+  assert.equal(feed().card, null);
+  assert.deepEqual(p.writes, [], "cardNow writes nothing");
+});
+
+test("a click while a chunk is still parsing waits for it (at most SEND_SETTLE_MS), then answers the prompt still up; one that went writes nothing", async () => {
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  p.emit(fixture("claude-2.1.318-bash.ansi"));
+  await until(clock, () => h.feeds.get(s.id)!.card !== null);
+  p.writes.length = 0;
+  // A chunk that leaves the prompt as it was (the cursor hidden), still unparsed when the click lands.
+  p.emit("\u001b[?25l");
+  const t0 = Date.now();
+  assert.equal(await h.feeds.answer(s.id, "1"), true);
+  assert.ok(Date.now() - t0 <= SEND_SETTLE_MS + 50);
+  assert.deepEqual(p.writes, ["1"]);
+  // The next prompt, then a chunk that takes it away, unparsed when the click lands: after the wait it is gone.
+  p.emit(drawn("claude-2.1.318-edit"));
+  await until(clock, () => { const c = h.feeds.get(s.id)!.card; return c?.kind === "approval" && c.title !== "Do you want to proceed?"; });
+  p.writes.length = 0;
+  p.emit(drawn("claude-2.1.318-idle"));
+  assert.equal(await h.feeds.answer(s.id, "1"), false);
+  assert.deepEqual(p.writes, []);
 });
 
 test("Send never waits past SEND_SETTLE_MS on a screen that never settles (R56)", async () => {
@@ -418,9 +466,9 @@ test("a click answers the card the user saw: a card that was replaced meanwhile 
   // The live card is another prompt (an edit approval): the click was drawn on the bash card.
   p.emit(drawn("claude-2.1.318-edit"));
   await until(clock, () => h.feeds.get(s.id)!.card !== seen);
-  assert.equal(h.feeds.answer(s.id, "1", seen), false);
+  assert.equal(await h.feeds.answer(s.id, "1", seen), false);
   assert.deepEqual(p.writes, []);
-  assert.equal(h.feeds.answer(s.id, "1", h.feeds.get(s.id)!.card!), true, "the live card is answered");
+  assert.equal(await h.feeds.answer(s.id, "1", h.feeds.get(s.id)!.card!), true, "the live card is answered");
   assert.deepEqual(p.writes, ["1"]);
 });
 
@@ -433,7 +481,7 @@ test("a dialog the chat can't draw (/model) is the waiting card, and Needs you",
   await until(clock, () => h.feeds.get(s.id)!.card !== null);
   assert.deepEqual(h.feeds.get(s.id)!.card, { kind: "waiting" });
   assert.equal(h.feeds.get(s.id)!.needsYou, true);
-  assert.equal(h.feeds.answer(s.id, "1"), false, "a waiting card has no key to send");
+  assert.equal(await h.feeds.answer(s.id, "1"), false, "a waiting card has no key to send");
 });
 
 test("a key is written only while its prompt is still on the screen and the agent runs (R39): a gone prompt, an unknown terminal or an ended agent write nothing", async () => {
@@ -454,16 +502,16 @@ test("a key is written only while its prompt is still on the screen and the agen
     { key: "p", label: "Yes, and don't ask again for commands that start with `touch hi.txt`" },
     { key: "esc", label: "No, and tell Codex what to do differently" },
   ] });
-  assert.equal(h.feeds.answer("no-such-terminal", "y"), false);
-  assert.equal(h.feeds.answer(session.id, "a"), false, "a key this prompt does not offer");
+  assert.equal(await h.feeds.answer("no-such-terminal", "y"), false);
+  assert.equal(await h.feeds.answer(session.id, "a"), false, "a key this prompt does not offer");
   // Esc is the escape byte.
-  assert.equal(h.feeds.answer(session.id, "esc"), true);
+  assert.equal(await h.feeds.answer(session.id, "esc"), true);
   assert.deepEqual(agentProc.writes, ["\u001b"]);
   // The TUI's screen changed and the poll has not run yet: the card is stale, the click re-reads the screen.
   agentProc.emit(drawn("codex-0.167.0-edit"));
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(title(), "Would you like to run the following command?", "not polled yet");
-  assert.equal(h.feeds.answer(session.id, "p"), false, "the prompt it answered is gone");
+  assert.equal(await h.feeds.answer(session.id, "p"), false, "the prompt it answered is gone");
   assert.deepEqual(agentProc.writes, ["\u001b"]);
   clock.fire();
   assert.equal(title(), "Would you like to make the following edits?");
@@ -473,7 +521,7 @@ test("a key is written only while its prompt is still on the screen and the agen
   assert.equal(feed().card, null, "the card goes with the agent");
   assert.equal(feed().needsYou, false);
   assert.equal(h.feeds.screened(session.id), false, "its screen is let go");
-  assert.equal(h.feeds.answer(session.id, "y"), false);
+  assert.equal(await h.feeds.answer(session.id, "y"), false);
   assert.deepEqual(agentProc.writes, ["\u001b"]);
   assert.deepEqual(h.shells[h.shells.length - 1].writes, [], "nothing reaches the shell");
 });

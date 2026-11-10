@@ -280,7 +280,8 @@ export class TermComposer {
     const text = this.input.value;
     if (!s || this.blocked || !text.trim()) return;
     // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
-    // written and the draft stays (R49). A prompt that just printed is read fresh first (bounded: R56).
+    // written and the draft stays (R49). The screen is read fresh first, since the poll can be a tick behind a prompt
+    // that just printed (bounded: R56).
     const feeds = this.plugin.codeFeeds;
     const known = feeds?.get(s.id)?.card;
     if (known || !feeds?.get(s.id)) { this.finishSend(s, text, !!known); return; }

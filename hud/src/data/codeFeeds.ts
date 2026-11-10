@@ -13,7 +13,7 @@
 // read every POLL_MS, and only while their PTY printed in the last PRINT_MS or a card is up, never in the tick the data
 // came in (a chunk xterm has not parsed yet waits for the next read): the TUI's prompt is the chat's card and the row's
 // Needs you, and a Codex terminal's footer rows are its status line. A card's key reaches the agent only through
-// `answer`, which reads the screen again first.
+// `answer`, which reads the screen again first; Send asks `cardNow`, which reads it too (the poll can be a tick behind).
 
 import * as path from "path";
 import { readCacheAll } from "./pastChat";
@@ -41,9 +41,7 @@ const MAX_READS = 64;
 export const POLL_MS = 500;
 /** …and for how long after their PTY last printed. */
 export const PRINT_MS = 2000;
-/** Send reads the screen fresh when the PTY printed in this many ms and no card is known yet. */
-export const SEND_FRESH_MS = 300;
-/** How long Send waits for a screen's pending chunks to parse before it reads what is there. */
+/** How long Send and a card's click wait for a screen's pending chunks to parse before they read what is there. */
 export const SEND_SETTLE_MS = 100;
 
 /** Whether a terminal's screen is read on this tick: its PTY printed in the last PRINT_MS, or a card is up (it may be
@@ -179,9 +177,21 @@ export class CodeFeeds {
    * A card's choice (C4): writes the key as the TUI takes it (choiceInput: the digit or letter alone, Esc as the escape
    * byte) and nothing else, and only while the agent runs (R39: once it ended, the login shell would take it), its screen
    * still shows the prompt the card shows with that choice (read again now, not taken from the last poll), and that
-   * prompt was not answered from here already; `card`, the one the click was drawn on, must still be the live one. True when it wrote. The panel also refuses while the composer is blocked.
+   * prompt was not answered from here already; `card`, the one the click was drawn on, must still be the live one. A
+   * screen with a chunk still to parse is waited for (SEND_SETTLE_MS at most) and checked again; still unparsed, nothing
+   * is written. True when it wrote. The panel also refuses while the composer is blocked.
    */
-  answer(id: string, key: string, card?: ChatCard): boolean {
+  async answer(id: string, key: string, card?: ChatCard): Promise<boolean> {
+    const e = this.entries.get(id);
+    const screen = e?.screen;
+    if (e && screen?.busy) {
+      await screen.settled(SEND_SETTLE_MS);
+      if (this.disposed || this.entries.get(id) !== e || e.screen !== screen) return false;
+    }
+    return this.answerNow(id, key, card);
+  }
+
+  private answerNow(id: string, key: string, card?: ChatCard): boolean {
     const e = this.entries.get(id);
     const s = this.pool.get(id);
     if (!e || !s || !e.screen || s.agentEnded || s.isExited || e.screen.busy) return false;
@@ -200,19 +210,22 @@ export class CodeFeeds {
   }
 
   /**
-   * Whether Send must hold: a card is up. The poll sees a prompt up to POLL_MS after it prints, so for SEND_FRESH_MS after
-   * the PTY printed with no card known the screen is read now, once its pending chunks are parsed (waited for at most
-   * SEND_SETTLE_MS: after that, whatever is parsed is read). Busy alone never holds (R56); only a card the read finds does,
-   * and it is the feed's from then on.
+   * Whether Send must hold: a card is up. The poll can see a prompt a tick or more after it printed (POLL_MS, and a tick
+   * skipped while a chunk parses), so with no card known the screen is always read now (a snapshot and a parse, well under
+   * a millisecond), after its pending chunks are parsed when there are any (waited for at most SEND_SETTLE_MS: after that,
+   * whatever is parsed is read). Busy alone never holds (R56); only a card the read finds does, and it is the feed's from
+   * then on.
    */
   async cardNow(id: string): Promise<boolean> {
     const e = this.entries.get(id);
     if (!e) return false;
     if (e.feed.card) return true;
-    if (!e.screen || this.clock.now() - e.lastData >= SEND_FRESH_MS) return false;
     const screen = e.screen;
-    await screen.settled(SEND_SETTLE_MS);
-    if (this.disposed || this.entries.get(id) !== e || e.screen !== screen) return e.feed.card !== null;
+    if (!screen) return false;
+    if (screen.busy) {
+      await screen.settled(SEND_SETTLE_MS);
+      if (this.disposed || this.entries.get(id) !== e || e.screen !== screen) return e.feed.card !== null;
+    }
     if (this.readScreen(e, true)) this.notify(id);
     return e.feed.card !== null;
   }
