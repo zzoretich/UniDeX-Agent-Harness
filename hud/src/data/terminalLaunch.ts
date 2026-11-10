@@ -530,15 +530,21 @@ export function termRunLine(o: { host?: TermHost; chat?: boolean }, command: str
 
 /**
  * What an app button's agent command (`claude "…"`, `codex '…'`, the prompt already quoted by its caller) is typed as:
- * the same line `launchLine` types, with the command's own words unchanged after `exec` (R40). A command that does not
- * start with the host's CLI is returned as it is.
+ * the same line `launchLine` types, with the command's own words unchanged after `exec` (R40). Agent Teams types the
+ * command behind its config folder, `CODEX_HOME='…' codex '…'`: the leading `NAME='…' ` assignments stay in front of
+ * `exec`, as `launchLine`'s envPrefix does (R42). A command that does not start with the host's CLI (after such a
+ * prefix) is returned as it is: it is not ours to reshape, and what it types still runs; only the shell outlives it.
  */
 export function typedAgentLine(host: TermHost, command: string): string {
-  if (host === "shell" || !(command === host || command.startsWith(`${host} `))) return command;
-  const line = execOrSay(shq(host), `exec ${command}`, TERM_HOST_LABEL[host]);
-  // The line is typed before the shell reads it in raw mode, and the tty's input line holds 1024 bytes: a long prompt (a
-  // team gate's redirect carries a board entry) keeps to the short form, whose failed exec still ends the shell.
-  return line.length < TYPED_LINE_MAX ? line : `exec ${command} || exit 127`;
+  if (host === "shell") return command;
+  const prefix = /^(?:[A-Z_][A-Z0-9_]*='[^']*(?:'\\''[^']*)*' )*/.exec(command)?.[0] ?? "";
+  const rest = command.slice(prefix.length);
+  if (!(rest === host || rest.startsWith(`${host} `))) return command;
+  const line = execOrSay(shq(host), `${prefix}exec ${rest}`, TERM_HOST_LABEL[host]);
+  // The line is typed before the shell reads it in raw mode, and the tty's input line holds 1024 BYTES (not UTF-16
+  // units): a long prompt (a team gate's redirect carries a board entry) keeps to the short form, whose failed exec
+  // still ends the shell.
+  return new TextEncoder().encode(line).length < TYPED_LINE_MAX ? line : `${prefix}exec ${rest} || exit 127`;
 }
 
 /** The longest typed line that keeps the full guard: the tty's 1024-byte input line, less the return and some room. */

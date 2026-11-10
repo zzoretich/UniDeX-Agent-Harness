@@ -486,3 +486,45 @@ test("typedAgentLine keeps a long prompt's line inside the tty's 1024-byte input
   assert.ok(line.length < 1023);
   assert.ok(typedAgentLine("claude", `claude "${"x".repeat(100)}"`).startsWith("command -v 'claude'"));
 });
+
+test("typedAgentLine (R42): an env-prefixed agent line (Agent Teams' config folder) is exec'ed too, the prefix before exec and the prompt untouched", () => {
+  const codex = `codex '$agenticos:x it'\\''s'`;
+  assert.equal(
+    typedAgentLine("codex", `CODEX_HOME='/work/demo/.codex' ${codex}`),
+    `command -v 'codex' >/dev/null 2>&1 && CODEX_HOME='/work/demo/.codex' exec ${codex} || { printf '%s\\n' 'Codex was not found: run aos doctor'; exit 127; }`,
+  );
+  const claude = `claude "review it"`;
+  assert.equal(
+    typedAgentLine("claude", `CLAUDE_CONFIG_DIR='/work/demo/.c' A_B1='x y' ${claude}`),
+    `command -v 'claude' >/dev/null 2>&1 && CLAUDE_CONFIG_DIR='/work/demo/.c' A_B1='x y' exec ${claude} || { printf '%s\\n' 'Claude Code was not found: run aos doctor'; exit 127; }`,
+  );
+  // A prefix that does not parse, or one on another CLI, is typed as it is.
+  assert.equal(typedAgentLine("claude", "foo=1 claude hi"), "foo=1 claude hi");
+  assert.equal(typedAgentLine("claude", "X='1' codex hi"), "X='1' codex hi");
+});
+
+test("typedAgentLine (R42), run by sh: an env-prefixed agent replaces the shell and sees the variable; a missing CLI exits 127", () => {
+  const { spawnSync } = req("node:child_process") as typeof import("node:child_process");
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "aos-typed-"));
+  fs.writeFileSync(path.join(bin, "codex"), "#!/bin/sh\necho \"agent $CODEX_HOME $1\"; exit 4\n", { mode: 0o755 });
+  const env = { PATH: `${bin}:/usr/bin:/bin` };
+  const ran = spawnSync("sh", ["-c", `${typedAgentLine("codex", `CODEX_HOME='/work/demo/h' codex 'go now'`)}; echo shell-still-here`], { encoding: "utf8", env });
+  assert.equal(ran.stdout, "agent /work/demo/h go now\n");
+  assert.equal(ran.status, 4);
+  const missing = spawnSync("sh", ["-c", `${typedAgentLine("claude", `CLAUDE_CONFIG_DIR='/work/demo/c' claude 'x'`)}; echo shell-still-here`], { encoding: "utf8", env });
+  assert.equal(missing.stdout, "Claude Code was not found: run aos doctor\n");
+  assert.equal(missing.status, 127);
+});
+
+test("typedAgentLine (R42): the long-line fallback keeps the env prefix before exec", () => {
+  const cmd = `codex '${"x".repeat(960)}'`;
+  assert.equal(typedAgentLine("codex", `CODEX_HOME='/work/demo/h' ${cmd}`), `CODEX_HOME='/work/demo/h' exec ${cmd} || exit 127`);
+});
+
+test("typedAgentLine (R42): the long-line limit counts UTF-8 bytes, not UTF-16 units", () => {
+  const cmd = `claude "${"é".repeat(480)}"`; // 489 units, 969 bytes: the full guard (~170 bytes more) passes 1000 bytes
+  assert.ok(cmd.length < 1000);
+  assert.equal(typedAgentLine("claude", cmd), `exec ${cmd} || exit 127`);
+  const line = typedAgentLine("claude", `claude "${"é".repeat(100)}"`);
+  assert.ok(line.startsWith("command -v 'claude'"));
+});
