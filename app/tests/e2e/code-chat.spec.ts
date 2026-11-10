@@ -80,9 +80,6 @@ test.describe("the Code chat surface on", () => {
   test("an agent terminal opens in its chat: your prompt as a bubble, the edit as a tool row that opens; the top bar names it (C1)", async () => {
     const { win } = app();
     writeCache(KEY, conversation(SID, FX.v("workspaces/harbor-map/src/tide.ts")));
-    // Classic always-visible scrollbars, as on CI's macOS runners (this Mac's overlay ones take no width): the two
-    // states must measure the same terminal width either way.
-    await win.addStyleTag({ content: "::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; border-radius: 6px; }" });
     await openTab(win, "term");
     agent = await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID, label: "Tide parser" });
     await expect(chat(win)).toBeVisible();
@@ -115,39 +112,67 @@ test.describe("the Code chat surface on", () => {
       const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { dimensions: { cols: number; rows: number } } | undefined } } } }).aosHost.plugin.terminalPool.get(i);
       return s?.dimensions ?? null;
     }, agent);
+    // Run alone (--grep) the first test has not started the agent: start it here.
+    if (!agent) {
+      writeCache(KEY, conversation(SID, FX.v("workspaces/harbor-map/src/tide.ts")));
+      await openTab(win, "term");
+      agent = await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID, label: "Tide parser" });
+    }
     await expect(chat(win)).toBeVisible();
-    // Lay the page out at 1480 x 920 whatever the screen (CI's runners are 1024 px wide): the stage is then wide and
-    // tall enough that a fit cannot give 80 x 24.
-    const restore = await emulateViewport(win, { width: 1480, height: 920, scale: 1 });
+    // The size once it has stopped moving: the refit runs from a ResizeObserver, a frame after the layout.
+    const settled = async () => {
+      let last = "";
+      let same = 0;
+      await expect.poll(async () => {
+        const now = JSON.stringify(await size());
+        same = now === last ? same + 1 : 0;
+        last = now;
+        return same;
+      }, { intervals: [100] }).toBeGreaterThanOrEqual(4);
+      return size();
+    };
+    // Classic always-visible scrollbars, as on CI's macOS runners (this Mac's overlay ones take no width): the two
+    // states must measure the same terminal width either way. Added here and removed below, so no other test sees it.
+    const style = await win.addStyleTag({ content: "::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; border-radius: 6px; }" });
     try {
       // A 1x screen, as CI's: xterm's cell width is the rounded canvas over the columns it has, so a fit can land a
-      // column off the next one at some widths. Sweep a few so each view must settle on the same columns.
+      // column off the next one at some widths. Sweep a few so each view must settle on the same columns. Each width
+      // has its own emulation, cleared before the next (a second session's clear would drop the first's override).
       for (const w of [1469, 1472, 1475, 1478]) {
         const r = await emulateViewport(win, { width: w, height: 920, scale: 1 });
-        await win.waitForTimeout(250);
-        const chatSize = await size();
+        try {
+          const chatSize = await settled();
+          await win.keyboard.press("Meta+j");
+          await expect(body(win)).toBeVisible();
+          expect(await settled(), `${w} px`).toEqual(chatSize);
+          await win.keyboard.press("Meta+j");
+          await expect(chat(win)).toBeVisible();
+        } finally {
+          await r();
+        }
+      }
+      // Lay the page out at 1480 x 920 whatever the screen (CI's runners are 1024 px wide): the stage is then wide and
+      // tall enough that a fit cannot give 80 x 24.
+      const restore = await emulateViewport(win, { width: 1480, height: 920, scale: 1 });
+      try {
+        expect(await win.evaluate(() => window.innerWidth)).toBe(1480);
+        // The refit runs from a ResizeObserver, a frame after the layout: wait for it, then read.
+        await expect.poll(async () => (await size())?.cols ?? 0).toBeGreaterThan(80);
+        const before = await size();
+        // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over.
+        expect(before!.rows).toBeGreaterThan(24);
         await win.keyboard.press("Meta+j");
-        await win.waitForTimeout(300);
-        expect(await size(), `${w} px`).toEqual(chatSize);
+        await expect(body(win)).toBeVisible();
+        // Give a refit its frames: the flip itself must not resize the PTY.
+        expect(await settled()).toEqual(before);
         await win.keyboard.press("Meta+j");
         await expect(chat(win)).toBeVisible();
-        await r();
+        expect(await settled()).toEqual(before);
+      } finally {
+        await restore();
       }
-      // The refit runs from a ResizeObserver, a frame after the layout: wait for it, then read.
-      await expect.poll(async () => (await size())?.cols ?? 0).toBeGreaterThan(80);
-      const before = await size();
-      // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over.
-      expect(before!.rows).toBeGreaterThan(24);
-      await win.keyboard.press("Meta+j");
-      await expect(body(win)).toBeVisible();
-      // Give a refit its frames: the flip itself must not resize the PTY.
-      await win.waitForTimeout(500);
-      expect(await size()).toEqual(before);
-      await win.keyboard.press("Meta+j");
-      await expect(chat(win)).toBeVisible();
-      expect(await size()).toEqual(before);
     } finally {
-      await restore();
+      await style.evaluate((n) => n.remove());
     }
   });
 
