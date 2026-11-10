@@ -1,6 +1,7 @@
 // termComposer.ts — the Term composer (spec 2026-10-08-term-agent-deck T12). Pure: what a message becomes on the wire
-// (one bracketed paste, then Enter), with the paths of its images after the text (code-chat C7), which images it takes,
-// the @file token under the caret and the files that match it, and the saved snippets. ui/TermComposer.ts draws it.
+// (a bracketed paste, then Enter), with each of its images' paths as a paste of its own before the text (code-chat C7,
+// R63), which images it takes, the @file token under the caret and the files that match it, and the saved snippets.
+// ui/TermComposer.ts draws it.
 
 /** One pty write is capped at 1 MiB: a long message goes in pieces well under that. */
 export const COMPOSER_CHUNK = 64 * 1024;
@@ -21,15 +22,28 @@ export function composerWrites(text: string, chunk = COMPOSER_CHUNK, bracketed =
 const promptPath = (p: string): string => (/\s/.test(p) ? `"${p}"` : p);
 
 /**
- * The message Send pastes (code-chat C7): the text, then each image's path (the absolute path main saved it at), separated
- * by spaces, each quoted when it holds a space. Both TUIs take a pasted image path as an attachment. Text with no image
- * goes exactly as written; the text's trailing whitespace gives way to the one space before the paths.
+ * The message as one text (code-chat C7): the text, then each image's path (the absolute path main saved it at), separated
+ * by spaces, each quoted when it holds a space. Send types it this way only where the program takes no bracketed paste
+ * (sendWrites): the TUI can still read the path. Text with no image goes exactly as written; the text's trailing
+ * whitespace gives way to the one space before the paths.
  */
 export function composeSend(text: string, images: string[]): string {
   if (!images.length) return text;
   const paths = images.map(promptPath).join(" ");
   const body = text.replace(/\s+$/, "");
   return body ? `${body} ${paths}` : paths;
+}
+
+/**
+ * The writes Send makes (code-chat C7, R63). With bracketed paste on: each image's path as a bracketed paste of its own
+ * (quoted as composeSend quotes it), in order, then the text as its own paste (in pieces, as composerWrites cuts it; none
+ * for text that is only whitespace), then Enter. A paste that holds nothing but an image's path is what Claude Code and
+ * Codex attach as an image (`[Image #1]`); a path pasted with text stays text. With it off: composeSend's one text, typed.
+ */
+export function sendWrites(text: string, images: string[], chunk = COMPOSER_CHUNK, bracketed = true): string[] {
+  if (!bracketed || !images.length) return composerWrites(composeSend(text, images), chunk, bracketed);
+  const paste = (s: string): string[] => composerWrites(s, chunk, true).slice(0, -1);
+  return [...images.flatMap((p) => paste(promptPath(p))), ...(text.trim() ? paste(text) : []), "\r"];
 }
 
 /** The images the composer takes (code-chat C7), as main checks them again by content (services/code-images.ts). */

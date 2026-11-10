@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composerWrites, composeSend, dataUrlBase64, imageReason, imageRefusal, IMAGE_MAX_BYTES, IMAGE_MAX_COUNT, mentionAt, matchFiles, insertMention, sanitizeSnippets } from "./termComposer";
+import { composerWrites, composeSend, dataUrlBase64, imageReason, imageRefusal, IMAGE_MAX_BYTES, IMAGE_MAX_COUNT, mentionAt, matchFiles, insertMention, sanitizeSnippets, sendWrites } from "./termComposer";
 
 test("a message is one bracketed paste with CR line ends, then Enter, in pieces under the pty cap", () => {
   assert.deepEqual(composerWrites("fix it\nand test"), ["\x1b[200~", "fix it\rand test", "\x1b[201~", "\r"]);
@@ -58,9 +58,34 @@ test("composeSend: the image paths after the text, separated by spaces, each quo
   assert.equal(composeSend("two lines\nhere\n", [b]), `two lines\nhere ${b}`);
   // A tab is whitespace too: that path is quoted.
   assert.equal(composeSend("x", ["/a\tb/c.png"]), 'x "/a\tb/c.png"');
-  // It goes as one bracketed paste, then Enter.
-  assert.deepEqual(composerWrites(composeSend("see", [a])), ["\x1b[200~", `see "${a}"`, "\x1b[201~", "\r"]);
+  // Typed as one text where the program takes no bracketed paste.
+  assert.deepEqual(sendWrites("see", [a], undefined, false), [`see "${a}"`, "\r"]);
 });
+
+test("sendWrites (R63): each image's path as a bracketed paste of its own, in order, then the text as its own paste, then one Enter", () => {
+  const a = "/work/demo/App Data/code-images/2026-11/aaaaaaaa-0000-4000-8000-000000000001.png";
+  const b = "/work/demo/data/code-images/2026-11/bbbbbbbb-0000-4000-8000-000000000002.jpg";
+  const [S, E] = ["\x1b[200~", "\x1b[201~"];
+  assert.deepEqual(sendWrites("look at this", [a]), [S, `"${a}"`, E, S, "look at this", E, "\r"]);
+  assert.deepEqual(sendWrites("both", [a, b]), [S, `"${a}"`, E, S, b, E, S, "both", E, "\r"]);
+  // An image alone: its paste, then Enter; text of only whitespace adds no paste.
+  assert.deepEqual(sendWrites("", [b]), [S, b, E, "\r"]);
+  assert.deepEqual(sendWrites("  \n", [b, a]), [S, b, E, S, `"${a}"`, E, "\r"]);
+  // The text's paste is cut into pieces and keeps its line ends as carriage returns, as composerWrites does.
+  assert.deepEqual(sendWrites("abc\ndef", [b], 4), [S, ...chunks(b, 4), E, S, "abc\r", "def", E, "\r"]);
+  // No image: exactly composerWrites, pasted or typed.
+  assert.deepEqual(sendWrites("fix it\nand test", []), composerWrites("fix it\nand test"));
+  assert.deepEqual(sendWrites("ls", [], undefined, false), ["ls", "\r"]);
+  // Without bracketed paste the paths follow the text in one typed line (the TUI can still read the path).
+  assert.deepEqual(sendWrites("look at this", [a, b], undefined, false), [`look at this "${a}" ${b}`, "\r"]);
+});
+
+/** `s` in pieces of `n`. */
+function chunks(s: string, n: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < s.length; i += n) out.push(s.slice(i, i + n));
+  return out;
+}
 
 test("imageRefusal: PNG, JPEG, GIF or WebP up to 10 MB; anything else says why, in main's words", () => {
   assert.equal(IMAGE_MAX_BYTES, 10 * 1024 * 1024);

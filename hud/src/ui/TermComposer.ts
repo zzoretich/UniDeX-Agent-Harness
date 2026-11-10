@@ -7,7 +7,7 @@ import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transc
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import { hasChat, type TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
-import { IMAGE_TYPES, composeSend, composerWrites, dataUrlBase64, imageReason, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
+import { IMAGE_TYPES, dataUrlBase64, imageReason, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, sendWrites, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
 import { HostModelMenu } from "./HostModelMenu";
 
@@ -78,8 +78,9 @@ export interface ChipState {
  * Images (C7): an agent terminal's composer, while the Code chat surface is on, takes PNG, JPEG, GIF and WebP images up to
  * 10 MB, 8 to a message, by paste, drop or + attach. Each becomes a chip with its thumbnail and ×, and main saves it at
  * once into the app's own data folder (code:save-image, which checks it again by content and names the path). Send pastes
- * the text, then the images' paths, in one bracketed paste through the same guarded Send (a card holds it, the screen is
- * read first). A refused image says why under the box, in plain words. A shell, a command run in an agent's name that is
+ * each image's path as a bracketed paste of its own (which Claude Code and Codex attach as an image, R63), then the text,
+ * through the same guarded Send (a card holds it, the screen is read first); a program that takes no bracketed paste gets
+ * the text with the paths after it, typed. A refused image says why under the box, in plain words. A shell, a command run in an agent's name that is
  * no conversation (`chat: false`, such as a login), an ended agent and a run with the surface off have no + chip and take
  * no image. The chips belong to the terminal they were added on: another terminal starts with none.
  */
@@ -389,9 +390,9 @@ export class TermComposer {
       return;
     }
     this.note.addClass("is-hidden");
-    // One bracketed paste: the text, then the images' paths (C7).
+    // Each image's path as a paste of its own, which the TUI attaches as an image, then the text, then Enter (C7, R63).
     const paths = shots.map((x) => x.path).filter((p): p is string => p !== null);
-    for (const w of composerWrites(composeSend(text, paths), undefined, this.bracketed())) s.write(w);
+    for (const w of sendWrites(text, paths, undefined, this.bracketed())) s.write(w);
     this.input.value = "";
     this.clearShots();
     this.closeSuggest();

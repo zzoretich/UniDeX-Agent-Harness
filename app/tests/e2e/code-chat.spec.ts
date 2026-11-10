@@ -865,9 +865,10 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
 });
 
 // The composer's images (C7, C13): paste, drop and + attach each add a chip with its thumbnail and ×; main saves the image
-// into the app's own data folder at once (code:save-image) and names the path; Send pastes the text, then the path, in one
-// bracketed paste through the same guarded Send (a card holds it). A refused image says why under the box. The stand-in
-// agent is the fake process above, so what Send writes is what the TUI would read.
+// into the app's own data folder at once (code:save-image) and names the path; Send pastes each path as a bracketed paste
+// of its own, which the TUI attaches as an image (R63), then the text, through the same guarded Send (a card holds it). A
+// refused image says why under the box. The stand-in agent is the fake process above, so what Send writes is what the TUI
+// would read.
 
 /** A real 2×2 PNG. */
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGPQiDoBRAwQCgAhpgUpG+5kRAAAAABJRU5ErkJggg==";
@@ -899,7 +900,7 @@ test.describe("the composer's images (C7, C13)", () => {
     return got;
   };
 
-  test("pasting a PNG makes a chip with its thumbnail; Send pastes the text, then the saved image's path, in one bracketed paste; a card holds it", async () => {
+  test("pasting a PNG makes a chip with its thumbnail; Send pastes the saved image's path as a paste of its own, then the text; a card holds it", async () => {
     const h = app();
     const { win } = h;
     await openTab(win, "term");
@@ -922,14 +923,14 @@ test.describe("the composer's images (C7, C13)", () => {
     expect(await written(win, id)).toEqual([]);
     await expect(shots(win)).toHaveCount(1);
     await expect(input(win)).toHaveValue("look at this");
-    // The TUI moved on: Send pastes the text and the quoted path in one bracketed paste, then Enter.
+    // The TUI moved on: Send pastes the quoted path alone (what the TUI attaches as an image), then the text, then Enter.
     await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
     await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
     // What the terminal answered to the stream's own queries is not Send's.
     await written(win, id);
     await input(win).press("Enter");
     const sent = await writesUntil(win, id, /\r$/);
-    const m = new RegExp(`^\u001b\\[200~look at this ${imagePath("png").source}\u001b\\[201~\r$`).exec(sent);
+    const m = new RegExp(`^\u001b\\[200~${imagePath("png").source}\u001b\\[201~\u001b\\[200~look at this\u001b\\[201~\r$`).exec(sent);
     expect(m, sent).not.toBeNull();
     // The file is where the path says, in the app's data folder, with the bytes pasted.
     expect(fs.readFileSync(m![1]).equals(Buffer.from(PNG, "base64"))).toBe(true);
@@ -1032,7 +1033,8 @@ test.describe("the composer's images (C7, C13)", () => {
     await input(win).press("Enter");
     await expect(saving()).toHaveCount(1);
     await answer({ ok: true, data: { path: "/work/demo/two.png" } });
-    expect(await writesUntil(win, id, /\r$/)).toBe("\u001b[200~changed my mind /work/demo/one.png /work/demo/two.png\u001b[201~\r");
+    // Each path a paste of its own, in the order the images came, then the text.
+    expect(await writesUntil(win, id, /\r$/)).toBe("\u001b[200~/work/demo/one.png\u001b[201~\u001b[200~/work/demo/two.png\u001b[201~\u001b[200~changed my mind\u001b[201~\r");
     await expect(shots(win)).toHaveCount(0);
     // Main's fs code alone reads as words.
     expect(await deliver(win, "paste", [{ name: "three.png", type: "image/png", b64: PNG }])).toBe(true);
