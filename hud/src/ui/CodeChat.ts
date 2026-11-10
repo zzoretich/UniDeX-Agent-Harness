@@ -31,6 +31,8 @@ export interface CodeChatOptions {
   openLink(href: string): void;
   /** The terminal's host and folder: models and file paths are named by them. */
   context(): { host: SessionHost; root: string | null };
+  /** A past conversation (C6): rows and Show earlier only, with no composer, status line, Stop or way to a terminal. */
+  readOnly?: boolean;
 }
 
 /** How near the bottom counts as "at the end", where new rows keep the view. */
@@ -58,7 +60,7 @@ export class CodeChat {
 
   constructor(parent: HTMLElement, private readonly o: CodeChatOptions) {
     this.md.load();
-    this.el = parent.createDiv({ cls: "aos-cc is-hidden", attr: { role: "region", "aria-label": "Conversation" } });
+    this.el = parent.createDiv({ cls: `aos-cc is-hidden${o.readOnly ? " is-readonly" : ""}`, attr: { role: "region", "aria-label": "Conversation" } });
     this.scroll = this.el.createDiv({ cls: "aos-cc-scroll" });
     const col = this.scroll.createDiv({ cls: "aos-cc-col" });
     this.earlierEl = col.createDiv({ cls: "aos-cc-earlier" });
@@ -68,10 +70,13 @@ export class CodeChat {
     this.noteEl = col.createDiv({ cls: "aos-cc-note" });
     this.workingEl = col.createDiv({ cls: "aos-cc-working" });
     this.cardEl = col.createDiv({ cls: "aos-cc-card" });
-    const foot = this.el.createDiv({ cls: "aos-cc-foot" });
-    const footCol = foot.createDiv({ cls: "aos-cc-footcol" });
-    this.composerSlot = footCol.createDiv({ cls: "aos-cc-composer" });
-    this.statusEl = footCol.createDiv({ cls: "aos-cc-status", attr: { title: "Your status line, as the terminal draws it" } });
+    // A read-only chat has no foot: its slot and status line are never in the page.
+    const footCol = o.readOnly ? this.el.ownerDocument.createElement("div") : this.el.createDiv({ cls: "aos-cc-foot" }).createDiv({ cls: "aos-cc-footcol" });
+    this.composerSlot = footCol.appendChild(this.el.ownerDocument.createElement("div"));
+    this.composerSlot.className = "aos-cc-composer";
+    this.statusEl = footCol.appendChild(this.el.ownerDocument.createElement("div"));
+    this.statusEl.className = "aos-cc-status";
+    this.statusEl.title = "Your status line, as the terminal draws it";
     this.thread = new ThreadView(this.rowsEl, {
       md: (el, text) => { void MarkdownRenderer.renderMarkdown(text, el, "", this.md); },
       expanded: this.expanded,
@@ -186,11 +191,13 @@ export class CodeChat {
     }
     this.noteEl.removeAttribute("title");
     if (s?.error) this.note(s.error);
-    else if (!s || !s.rows.length) {
+    else if (this.o.readOnly) {
+      if (!s || !s.rows.length) this.noteEl.setText(this.why ?? "Loading…");
+    } else if (!s || !s.rows.length) {
       this.note(`${NO_CHAT} · Terminal ⌘J`);
       if (this.why) this.noteEl.setAttr("title", this.why);
     }
-    if (s?.turnOpen) {
+    if (s?.turnOpen && !this.o.readOnly) {
       this.workingEl.createSpan({ cls: "aos-cc-workingtext", text: "Working…" });
       const stop = this.workingEl.createEl("button", { cls: "aos-cc-stop", attr: { type: "button", title: "Stop this turn (Esc in the terminal)" } });
       stop.createSpan({ text: "Stop" });
@@ -205,6 +212,7 @@ export class CodeChat {
 
   /** A line that ends in "Terminal ⌘J" gets that part as a button to the terminal. */
   private note(text: string): void {
+    if (this.o.readOnly) { this.noteEl.setText(text); return; }
     const m = /^(.*?)(?: · )?(Terminal ⌘J)$/.exec(text);
     if (!m) { this.noteEl.setText(text); return; }
     this.noteEl.appendText(m[1] ? `${m[1]} · ` : "");

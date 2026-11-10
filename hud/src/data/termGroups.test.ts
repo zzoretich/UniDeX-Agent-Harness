@@ -123,6 +123,8 @@ test("sidebar: a conversation closed in this app stays until the index has its i
   assert.deepEqual(ids(once[0]), ["sid-1"], "the index has it (ids fold case): only the past row");
   const live = { ...row("o", ws("kite"), NOW - 1000), sessionId: "sid-2" };
   assert.deepEqual(ids(sb([live], [hist("sid-2", ws("kite"), 5000)])[0]), ["o"]);
+  const resumed = { ...row("r", ws("kite"), NOW - 500), sessionId: "SID-1" };
+  assert.deepEqual(ids(sb([resumed], [], { closed: [closed] })[0]), ["r"], "a closed conversation resumed in a terminal shows as that terminal");
   const codexRow = { ...row("o2", ws("kite"), NOW - 1000, { host: "codex" as const }), sessionId: "sid-3" };
   assert.deepEqual(ids(sb([codexRow], [hist("sid-3", ws("kite"), 5000)])[0]), ["o2", "sid-3"], "another host's id is another conversation");
 });

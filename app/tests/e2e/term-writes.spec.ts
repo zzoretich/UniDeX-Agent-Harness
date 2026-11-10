@@ -57,7 +57,7 @@ test("Scratch, picked in the New menu, is made on first use with its stubs; a Sc
 test("the New button names what ⌘T starts and where; Codex is off, so it has no row and no ⌥⌘2 (T2, T3)", async () => {
   const { win } = app();
   await openTab(win, "term");
-  await expect(C().locator(".aos-ntm-name")).toHaveText("New Claude Code");
+  await expect(C().locator(".aos-ntm-name")).toHaveText("New session");
   await C().locator(".aos-ntm-caret").click();
   await expect(C().locator(".aos-ntm-row[data-key='now-claude']")).toBeVisible();
   await expect(C().locator(".aos-ntm-row[data-key='now-codex']")).toHaveCount(0);

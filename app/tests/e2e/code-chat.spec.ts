@@ -55,7 +55,8 @@ const pidOf = (win: Page, id: string) => win.evaluate((i) => {
   return s?.pty?.pid ?? null;
 }, id);
 
-const chat = (win: Page) => C(win).locator(".aos-cc");
+const chat = (win: Page) => C(win).locator(".aos-cc:not(.is-readonly)");
+const past = (win: Page) => C(win).locator(".aos-cc.is-readonly");
 const body = (win: Page) => C(win).locator(".aos-term-body");
 const sw = (win: Page) => C(win).locator(".aos-cv");
 
@@ -229,6 +230,95 @@ test.describe("the Code chat surface on", () => {
     await expect(chat(win).locator(".aos-ss-bubble").first()).toHaveText("Make the tide parser read the new station format");
     await select(win, long);
     await expect(last).toBeInViewport();
+  });
+});
+
+// The sidebar (C6): the fixture vault's session index lists real past conversations (its claude transcripts are in the
+// fixture home), so `code.view` runs the real runtime on them. History rows sit under their place, newest activity first;
+// one opens read-only with Resume; Resume types the resume line in a new terminal.
+test.describe("the Code sidebar lists recent conversations (C6)", () => {
+  test.describe.configure({ mode: "serial" });
+  const app = useApp({ env: { AOS_APP_WRITE: "code" } });
+  const TIDE = "c1a0de00-0000-4000-8000-000000000001";
+  const row = (win: Page, id: string) => C(win).locator(`.aos-tl-past[data-history="claude:${id}"]`);
+
+  test("past conversations of the last 14 days sit in their group, with Host · age; the footer counts and links to History", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    await expect(C(win).locator(".aos-tl-filter")).toHaveAttribute("placeholder", "Search sessions");
+    await expect(C(win).locator(".aos-ntm-name")).toHaveText("New session");
+    await expect(C(win).locator(".aos-ntm-sub")).toContainText("Claude Code ·");
+    const tide = row(win, TIDE);
+    await expect(tide).toBeVisible();
+    await expect(tide.locator(".aos-tl-title")).toHaveText("Tide parser in the chart view");
+    await expect(tide.locator(".aos-tl-sub")).toHaveText(/^Claude Code · \d+[mhd]$|^Claude Code · now$/);
+    // Under its workspace's head (the heads and rows are flat siblings), the head carrying Open workspace.
+    expect(await tide.evaluate((el) => {
+      let n = el.previousElementSibling;
+      while (n && !n.matches(".aos-tl-group")) n = n.previousElementSibling;
+      return n?.getAttribute("data-group") ?? null;
+    })).toBe("ws:harbor-map");
+    // A conversation in the vault root or a folder outside the workspaces is in Other folders.
+    await expect(C(win).locator(".aos-tl-group[data-group='other'] .aos-tl-grouplabel")).toHaveText("Other folders");
+    await expect(C(win).locator(".aos-tl-foot .aos-tl-count")).toHaveText(/^\d+ open · \d+ need you$/);
+    await C(win).locator(".aos-tl-filter").fill("tide parser");
+    await expect(C(win).locator(".aos-tl-past")).toHaveCount(1);
+    await C(win).locator(".aos-tl-filter").fill("codex");
+    await expect(C(win).locator(".aos-tl-past").first()).toHaveAttribute("data-host", "codex");
+    await C(win).locator(".aos-tl-filter").fill("");
+  });
+
+  test("a past row opens read-only: the conversation, no composer, no Stop, no view switch; Resume starts the resume line in a new terminal", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    await row(win, TIDE).click();
+    await expect(past(win)).toBeVisible();
+    await expect(row(win, TIDE)).toHaveAttribute("aria-selected", "true");
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Tide parser in the chart view");
+    await expect(C(win).locator(".aos-term-head .aos-term-chip").first()).toContainText("Claude Code");
+    await expect(past(win).locator(".aos-ss-prompt .aos-ss-bubble").first()).toBeVisible({ timeout: 15_000 });
+    await expect(past(win).locator(".aos-tc, .aos-cc-stop, .aos-cc-status")).toHaveCount(0);
+    await expect(C(win).locator(".aos-cv-btn")).toHaveCount(0);
+    await expect(C(win).locator(".aos-term-stage > .aos-tc:visible, .aos-term-frame > .aos-tc:visible")).toHaveCount(0);
+    const resume = C(win).locator("button.aos-cv-resume");
+    await expect(resume).toHaveText("Resume");
+    await expect(resume).toHaveAttribute("title", /Resumes in workspaces\/harbor-map/);
+    const before = await win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { list(): unknown[] } } } }).aosHost.plugin.terminalPool.list().length);
+    await resume.click();
+    await expect.poll(async () => win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { list(): unknown[] } } } }).aosHost.plugin.terminalPool.list().length)).toBe(before + 1);
+    // The new terminal is selected, so the read-only chat is gone; it ran the resume line (the fixture's claude stub echoes it).
+    await expect(past(win)).toBeHidden();
+    await expect(C(win).locator(".aos-tl-row.aos-term-tab-active")).toHaveCount(1);
+    await expect.poll(async () => win.evaluate(() => {
+      const p = (window as unknown as { aosHost: { plugin: { terminalPool: { selectedId(): string | null; get(id: string): { meta: { sessionId: string | null; host: string } } | undefined } } } }).aosHost.plugin.terminalPool;
+      const t = p.get(p.selectedId() ?? "");
+      return t ? `${t.meta.host}:${t.meta.sessionId}` : null;
+    })).toBe(`claude:${TIDE}`);
+    // The open terminal is that conversation now, so the index row is not listed twice.
+    await expect(row(win, TIDE)).toHaveCount(0);
+  });
+
+  test("a conversation with no transcript says why in the read-only chat (the runtime's reason, not an exit code)", async () => {
+    const { win } = app();
+    const gone = "c1a0de00-0000-4000-8000-0000000000ff";
+    // The index names it; its transcript file does not exist.
+    const idx = FX.v("brain/_index/session-index.json");
+    const j = JSON.parse(fs.readFileSync(idx, "utf8")) as { files: Record<string, unknown> };
+    j.files["spaces-reef-survey/gone.jsonl"] = { host: "claude", head: { id: gone, kind: "interactive", startCwd: FX.v("workspaces/reef-survey"), startedAt: new Date().toISOString(), firstPrompt: "A chat whose file is gone" }, lastAt: new Date().toISOString() };
+    fs.writeFileSync(idx, JSON.stringify(j));
+    await openTab(win, "pulse");
+    await openTab(win, "term");
+    await expect(row(win, gone)).toBeVisible({ timeout: 10_000 });
+    await row(win, gone).click();
+    await expect(past(win).locator(".aos-cc-note")).toHaveText("no transcript found", { timeout: 15_000 });
+  });
+
+  test("All history opens Sessions on History", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    await C(win).locator(".aos-tl-allhistory").click();
+    await expect(win.locator(".aos-wb-railbtn[data-tab='chat']")).toHaveClass(/is-active/);
+    await expect(C(win).locator(".aos-ss-hresume").first()).toBeVisible({ timeout: 10_000 });
   });
 });
 

@@ -21,12 +21,14 @@ export class TermTab {
     this.panel = new TerminalPanel(this.plugin, {
       resizable: false, fullPane: true, launch: this.view.termActions(), deck: true,
       openWorkspace: (name) => { this.view.open({ tab: "spaces", workspace: name }); },
+      // All history: Sessions ▸ History (install-import B11), as the tour opens it.
+      openHistory: () => { this.view.open({ tab: "chat", pane: "history" }); },
     });
     this.panel.mount(host);
   }
   /** Code scoped to a workspace's group (spaces-redesign D12): WorkbenchView.open({tab: "term", workspace}). Select only. */
   reveal(target: { workspace?: string | null }): void { this.panel?.reveal(target); }
-  async refresh(): Promise<void> { this.panel?.focus(); }
+  async refresh(): Promise<void> { this.panel?.focus(); this.panel?.refreshSidebar(); }
   unmount(): void { this.panel?.unmount(); this.panel = null; this.host = null; }
   /** Another tab is shown (WorkbenchView.setTab): the Computer pane lets its view go (agent-computer ruling R51). */
   leave(): void { this.panel?.leave(); }

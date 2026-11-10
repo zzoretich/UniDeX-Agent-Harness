@@ -27,8 +27,11 @@ import { FIND_LIMIT } from "../data/termFind";
 import { hudHost, shell } from "../host";
 import { ConfirmModal } from "./ConfirmModal";
 import { LinkRepoModal } from "./LinkRepoModal";
-import { groupKey, groupTerminals, scopeOf, stepRow, type TermGroup, type TermRowInput, type TermScope } from "../data/termGroups";
-import { TERM_HOST_LABEL, placeKey, placeOf, workspacePlace, type Place, type PlaceWorld } from "../data/terminalLaunch";
+import { groupKey, groupSidebar, scopeOf, sidebarOrder, stepRow, type SidebarGroup, type TermRow, type TermRowInput, type TermScope } from "../data/termGroups";
+import { HistoryCache } from "../data/historyCache";
+import type { HistoryResume, HistoryRow } from "../data/sessionHistory";
+import { pastEarlier, pastState, pastView, type PastView } from "../data/pastChat";
+import { TERM_HOST_LABEL, placeKey, placeOf, vaultPlace, workspacePlace, type Place, type PlaceWorld } from "../data/terminalLaunch";
 import { ComputerPane } from "./ComputerPane";
 import { storeFor, type ComputerStore, type RowMarks } from "../data/computerStore";
 import { computerPaneStart, rememberComputerPane } from "../settingsDefaults";
@@ -62,12 +65,20 @@ export interface TerminalPanelOptions {
   deck?: boolean;
   /** The deck's Open workspace on a workspace group: Spaces on that workspace (spaces-redesign D12). */
   openWorkspace?: (name: string) => void;
+  /** The sidebar's All history: Sessions ▸ History. */
+  openHistory?: () => void;
 }
 
 /** How long the "Started … · Change" note stays after a launch. */
 const STARTED_MS = 6000;
 /** The terminal view's composer height (px) until one is measured: a rough figure, the first ⌘J corrects it. */
 const TERM_COMPOSER_H = 200;
+/** Closed conversations the sidebar remembers until the index lists them. */
+const CLOSED_CAP = 20;
+const NO_REASON = "The conversation could not be loaded";
+
+/** A past conversation open read-only in the stage (code-chat C6): a History row, or one closed in this app. */
+interface PastSel { key: string; host: "claude" | "codex"; id: string; title: string; place: Place; resume: HistoryResume }
 
 export class TerminalPanel {
   private plugin: AgenticOSPlugin;
@@ -85,7 +96,17 @@ export class TerminalPanel {
   private finder: TermFind | null = null;
   private headMainEl: HTMLElement | null = null;
   private placeMenu: HTMLElement | null = null;
-  private groups: TermGroup[] = [];
+  private sidebar: SidebarGroup[] = [];
+  /** The past conversations (the index, digests), the ones closed in this app, and the "Show more" counts by group. */
+  private hist: HistoryCache | null = null;
+  private closed: TermRowInput[] = [];
+  private lastInputs = new Map<string, TermRowInput>();
+  private extra: Record<string, number> = {};
+  /** The past conversation shown read-only instead of a terminal, its chat, and what it shows now. */
+  private past: PastSel | null = null;
+  private pastChat: CodeChat | null = null;
+  private pastData: PastView | null = null;
+  private pastSeq = 0;
   /** The workspace another tab opened Code on (reveal): the deck lists only its group until Show all or a launch
    *  elsewhere (spaces-redesign D12). */
   private scope: TermScope | null = null;
@@ -134,18 +155,23 @@ export class TerminalPanel {
       const aside = host.createDiv({ cls: "aos-tl" });
       aside.createDiv({ cls: "aos-tl-head" }).createSpan({ cls: "aos-term-title", text: "Code" });
       if (this.opts.launch) {
-        this.newMenu = new NewTerminalMenu(aside.createDiv({ cls: "aos-tl-new" }), this.plugin.termLauncher, this.opts.launch);
+        this.newMenu = new NewTerminalMenu(aside.createDiv({ cls: "aos-tl-new" }), this.plugin.termLauncher, this.opts.launch, true);
         this.newMenu.el.addClass("is-left");
       }
       this.list = new TermList(aside, {
         select: (id) => this.activate(id),
         close: (id) => this.closeSession(id),
-        startIn: (g) => this.startIn(g.place, "quick"),
+        startIn: (g) => this.startIn(g.place ?? vaultPlace(this.world()), "quick"),
         clearEnded: () => { for (const s of this.plugin.terminalPool.list()) if (s.isExited) this.plugin.terminalPool.remove(s.id); },
         openWorkspace: this.opts.openWorkspace ? (name) => this.opts.openWorkspace?.(name) : undefined,
         clearScope: () => { this.scope = null; this.renderTabs(); },
         mark: (id) => this.marks(id),
+        openPast: (h) => this.showPast({ key: h.key, host: h.host, id: h.id, title: h.title, place: h.place, resume: h.resume }),
+        openClosed: (r) => { if (r.sessionId && r.host !== "shell") this.showPast({ key: `closed:${r.host}:${r.sessionId}`, host: r.host, id: r.sessionId, title: r.title, place: r.place, resume: { state: "on", place: r.place, hint: "" } }); },
+        showMore: (key) => { this.extra[key] = (this.extra[key] ?? 0) + 10; this.renderTabs(); },
+        allHistory: this.opts.openHistory ? () => this.opts.openHistory?.() : undefined,
       }, () => this.renderTabs());
+      this.hist = new HistoryCache({ vault: () => this.plugin.vaultRoot(), hosts: () => ({ choices: this.plugin.termLauncher.choices(), world: this.world() }) }, () => { if (this.host) this.renderTabs(); });
       frame = host.createDiv({ cls: "aos-term-main", attr: { "data-tour": "code-main" } });
     }
     this.headerEl = frame.createDiv({ cls: "aos-term-header", attr: { "data-tour": "code-header" } });
@@ -183,6 +209,13 @@ export class TerminalPanel {
           const s = this.activeSession();
           return { host: s?.meta.host === "codex" ? "codex" : "claude", root: s ? s.meta.place?.dir ?? s.cwd : null };
         },
+      });
+      this.pastChat = new CodeChat(this.stageEl, {
+        readOnly: true,
+        toTerminal: () => {}, stop: () => {},
+        showEarlier: () => { if (this.pastData && this.past) { this.pastData = pastEarlier(this.pastData); this.drawPast(); } },
+        openLink: (href) => this.openLink(href),
+        context: () => ({ host: this.past?.host ?? "claude", root: this.past?.place.dir ?? null }),
       });
       this.composer = new TermComposer(frame, this.plugin, () => this.focus(), () => this.bracketedPaste());
       this.finder = new TermFind(this.bodyEl, () => this.focus());
@@ -240,6 +273,7 @@ export class TerminalPanel {
       },
       "session-remove": (id: string) => {
         if (!this.host) return;
+        this.rememberClosed(id);
         const b = this.bindings.get(id);
         if (b) { b.detachData(); try { b.term.dispose(); } catch {} this.bindings.delete(id); }
         if (this.activeId === id) {
@@ -253,6 +287,7 @@ export class TerminalPanel {
       "session-update": () => { if (this.host) { this.renderTabs(); this.newMenu?.refresh(); } },
       "session-select": (id: string | null) => {
         if (!this.host || !id || id === this.activeId) return;
+        this.clearPast();
         this.activeId = id;
         this.renderTabs();
         this.ensureBindingForActive();
@@ -277,6 +312,14 @@ export class TerminalPanel {
     this.unwatchFeeds = null;
     this.chat?.destroy();
     this.chat = null;
+    this.pastChat?.destroy();
+    this.pastChat = null;
+    this.past = null;
+    this.pastData = null;
+    this.pastSeq++;
+    this.hist = null;
+    this.closed = [];
+    this.lastInputs.clear();
     this.chatFor = null;
     this.frameEl = null;
     this.stageEl = null;
@@ -306,12 +349,15 @@ export class TerminalPanel {
     this.host = null;
   }
 
+  /** The Code tab was shown again: the past conversations are looked up again (the scan may have indexed more). */
+  refreshSidebar(): void { if (this.host && this.list) this.renderTabs(); }
+
   /** Another rail tab is in front: the Computer pane lets its view go and selects nothing (ruling R51). */
   leave(): void { this.computer?.hide(); }
 
   /** Keys to the selected terminal; in its chat view the terminal is hidden, so nothing takes them. */
   focus(): void {
-    if (!this.activeId || this.chatShown()) return;
+    if (!this.activeId || this.past || this.chatShown()) return;
     const b = this.bindings.get(this.activeId);
     b?.term.focus();
   }
@@ -320,13 +366,14 @@ export class TerminalPanel {
   toggleView(): void {
     const s = this.activeSession();
     const feeds = this.plugin.codeFeeds;
-    if (!s || !feeds || !this.chat || s.meta.host === "shell" || !feeds.on()) return;
+    if (this.past || !s || !feeds || !this.chat || s.meta.host === "shell" || !feeds.on()) return;
     this.setView(feeds.view(s.id) === "chat" ? "terminal" : "chat");
   }
 
   /** Makes a pool session the visible one — also for a session created outside the panel (WorkbenchView.runInTerm). */
   activate(id: string): void {
     if (!this.plugin.terminalPool.get(id)) return;
+    this.clearPast();
     this.activeId = id;
     this.plugin.terminalPool.select(id);
     this.renderTabs();
@@ -344,7 +391,7 @@ export class TerminalPanel {
     this.scope = name && w.workspaces.includes(name) ? scopeOf(workspacePlace(name, w)) : null;
     this.renderTabs();
     if (!this.scope) return;
-    const rows = this.groups.flatMap((g) => g.rows);
+    const rows = this.openRows();
     if (!rows.length || rows.some((r) => r.id === this.activeId)) return;
     this.activate((rows.find((r) => r.end === "running") ?? rows[0]).id);
   }
@@ -356,7 +403,7 @@ export class TerminalPanel {
 
   /** The next or previous terminal in the list (⇧⌘] / ⇧⌘[). */
   step(dir: 1 | -1): void {
-    const next = stepRow(this.groups.length ? this.groups : groupTerminals(this.rowInputs()), this.activeId, dir);
+    const next = stepRow(sidebarOrder(this.sidebar.length ? this.sidebar : this.buildSidebar()), this.activeId, dir);
     if (next) this.activate(next);
   }
 
@@ -372,7 +419,7 @@ export class TerminalPanel {
   /** Opens the find bar on the selected terminal (⌘F); false when there is no terminal to find in. */
   openFind(): boolean {
     const b = this.activeId ? this.bindings.get(this.activeId) : undefined;
-    if (!this.finder || !b || this.chatShown()) return false;
+    if (!this.finder || !b || this.past || this.chatShown()) return false;
     this.finder.open(b.search);
     return true;
   }
@@ -404,8 +451,11 @@ export class TerminalPanel {
   private renderTabs(): void {
     if (this.opts.deck && this.list) {
       this.marksShown = this.marksSig();
-      this.groups = groupTerminals(this.rowInputs(), this.list.query(), this.scope);
-      this.list.render(this.groups, this.activeId, this.plugin.terminalPool.list().filter((s) => !s.isExited).length, this.scope);
+      this.hist?.refresh();
+      this.sidebar = this.buildSidebar();
+      const open = this.openRows();
+      const counts = { open: open.filter((r) => r.end === "running").length, needs: this.sidebar.reduce((n, g) => n + g.rows.filter((r) => r.kind === "open" && !r.closed && r.status.status === "needs").length, 0), ended: open.filter((r) => r.end !== "running").length };
+      this.list.render(this.sidebar, this.activeId, counts, this.scope, this.past?.key ?? null);
       this.renderHead();
       return;
     }
@@ -460,10 +510,40 @@ export class TerminalPanel {
   private placeOfSession(s: TerminalSession): Place { return s.meta.place ?? placeOf(s.cwd, this.world()); }
 
   private rowInputs(): TermRowInput[] {
+    const feeds = this.plugin.codeFeeds;
     return this.plugin.terminalPool.list().map((s) => ({
       id: s.id, host: s.meta.host, title: s.getTitle(), place: this.placeOfSession(s), origin: s.meta.origin,
-      startedAt: s.meta.startedAt, exited: s.isExited, exitCode: s.exitCode,
+      startedAt: s.meta.startedAt, exited: s.isExited, exitCode: s.exitCode, sessionId: s.meta.sessionId ?? null,
+      // Task 12 reads "Needs you" from the screen and sets needsYou here; the chat knows whether a turn is open.
+      turnOpen: feeds?.get(s.id)?.state.turnOpen ?? false, needsYou: false,
     }));
+  }
+
+  /** The sidebar's groups now: the terminals, and (with the Code chat on) the conversations closed here and past ones. */
+  private buildSidebar(): SidebarGroup[] {
+    const inputs = this.rowInputs();
+    this.lastInputs = new Map(inputs.map((r) => [r.id, r]));
+    const on = this.plugin.codeFeeds?.on() ?? false;
+    const groups = groupSidebar(inputs, on ? this.hist?.rows() ?? [] : [], { now: Date.now(), filter: this.list?.query() ?? "", closed: on ? this.closed : [], extra: this.extra });
+    const scope = this.scope;
+    if (!scope) return groups;
+    const only = groups.filter((g) => g.key === scope.key);
+    // A scoped workspace with nothing running keeps its group, so its + and Open workspace still show.
+    if (!only.length && !(this.list?.query() ?? "").trim()) only.push({ key: scope.key, label: scope.label, place: scope.place, rows: [], more: 0 });
+    return only;
+  }
+
+  /** The terminals in the list, in order (past and closed conversations are not terminals). */
+  private openRows(): TermRow[] {
+    return this.sidebar.flatMap((g) => g.rows.flatMap((r) => (r.kind === "open" && !r.closed ? [r.row] : [])));
+  }
+
+  /** A terminal closed here keeps a row (when it knew its conversation) until the index lists that conversation (C6). */
+  private rememberClosed(id: string): void {
+    const r = this.lastInputs.get(id);
+    this.lastInputs.delete(id);
+    if (!r || r.host === "shell" || !r.sessionId) return;
+    this.closed = [{ ...r, exited: true, turnOpen: false, needsYou: false }, ...this.closed.filter((c) => c.sessionId !== r.sessionId || c.host !== r.host)].slice(0, CLOSED_CAP);
   }
 
   private closeSession(id: string): void {
@@ -488,10 +568,12 @@ export class TerminalPanel {
     el.empty();
     this.placeMenu = null;
     this.hostChipEl = null;
-    const s = this.activeId ? this.plugin.terminalPool.get(this.activeId) : undefined;
+    const past = this.past;
+    const s = past ? undefined : this.activeId ? this.plugin.terminalPool.get(this.activeId) : undefined;
     this.composer?.setSession(s ?? null);
     this.renderSwitch(s);
     this.applyView();
+    if (past) { this.renderPastHead(el, past); return; }
     if (!s) { this.computer?.follow(null); return; }
     const place = this.placeOfSession(s);
     // The pane shows the computer this terminal's place shares (agent-computer D30, D32), shell or agent.
@@ -526,6 +608,65 @@ export class TerminalPanel {
       }
       btn("Open a shell here", () => this.startIn(place, "shell"));
     }
+  }
+
+  // ── a past conversation, read-only (code-chat C6) ──
+
+  /** Its title, where it ran, its host, and at the right Resume (the row's resume line, D7/D31) or why there is none. */
+  private renderPastHead(el: HTMLElement, p: PastSel): void {
+    el.createSpan({ cls: "aos-term-headtitle", text: p.title });
+    const where = el.createSpan({ cls: "aos-term-place is-static", attr: { title: p.place.dir } });
+    const icon = where.createSpan({ cls: "aos-term-placeicon" });
+    setIcon(icon, "folder");
+    where.createSpan({ text: p.place.linked ? `${p.place.label} (code)` : p.place.label });
+    const chips = el.createDiv({ cls: "aos-term-chips" });
+    const chip = chips.createSpan({ cls: "aos-term-chip" });
+    chip.createSpan({ cls: `aos-term-dot is-${p.host}` });
+    chip.createSpan({ text: `${TERM_HOST_LABEL[p.host]} · Past conversation` });
+    const view = this.viewEl;
+    if (!view) return;
+    const r = p.resume;
+    if (r.state === "on") {
+      const b = view.createEl("button", { cls: "aos-cv-resume", text: "Resume", attr: { type: "button", title: r.hint || `Resume this conversation in ${p.place.label}` } });
+      b.addEventListener("click", () => this.startIn(r.place, p.host, { id: p.id }));
+    } else if (r.state === "off") {
+      view.createSpan({ cls: "aos-cv-noresume", text: r.reason, attr: { title: r.reason } });
+    }
+  }
+
+  /** Opens a past conversation: main mirrors it once (`code.view`), then the cache is read whole into the read-only chat. */
+  private showPast(sel: PastSel): void {
+    const chat = this.pastChat;
+    if (!chat) return;
+    const seq = ++this.pastSeq;
+    this.past = sel;
+    this.pastData = null;
+    chat.reset();
+    chat.show(NO_CHAT, "Loading…");
+    this.renderTabs();
+    const code = hudHost().code;
+    if (!code) { chat.show({ ...NO_CHAT, error: "Past conversations open in the app" }); return; }
+    void code.view({ host: sel.host, id: sel.id }).then((r) => {
+      if (seq !== this.pastSeq || !this.past) return;
+      if (!r.ok) { chat.show({ ...NO_CHAT, error: r.error || NO_REASON }); return; }
+      this.pastData = pastView(this.plugin.codeFeeds?.readCache(r.data.cache) ?? []);
+      this.drawPast();
+    }, (e: unknown) => {
+      if (seq === this.pastSeq) chat.show({ ...NO_CHAT, error: e instanceof Error ? e.message : NO_REASON });
+    });
+  }
+
+  private drawPast(): void {
+    if (!this.pastChat || !this.past || !this.pastData) return;
+    this.pastChat.show(pastState(this.pastData, this.past.host, this.past.place.dir));
+  }
+
+  /** A terminal is selected (or none): the past conversation goes. */
+  private clearPast(): void {
+    if (!this.past) return;
+    this.past = null;
+    this.pastData = null;
+    this.pastSeq++;
   }
 
   // ── the chat view (spec 2026-11-09-code-chat C1, C3, C5, C13) ──
@@ -595,6 +736,11 @@ export class TerminalPanel {
     const composer = this.composer;
     const frame = this.frameEl;
     if (!chat || !stage || !composer || !frame) return;
+    // A past conversation lies over the stage like the chat does, with no composer under it.
+    const past = !!this.past;
+    stage.toggleClass("is-past", past);
+    this.pastChat?.setVisible(past);
+    if (past) { chat.setVisible(false); return; }
     const on = this.chatShown();
     const was = stage.hasClass("is-chat");
     stage.toggleClass("is-chat", on);
@@ -610,7 +756,7 @@ export class TerminalPanel {
   private renderChat(): void {
     const chat = this.chat;
     const s = this.activeSession();
-    if (!chat || !s || !this.chatShown()) return;
+    if (!chat || !s || this.past || !this.chatShown()) return;
     const feed = this.plugin.codeFeeds?.get(s.id) ?? null;
     if (this.chatFor !== s.id) { chat.reset(); this.chatFor = s.id; }
     chat.show(feed?.state ?? NO_CHAT, feed?.follow === "failed" ? feed.error : null);
@@ -712,6 +858,7 @@ export class TerminalPanel {
     requestAnimationFrame(() => {
       this.refit();
       if (this.newMenu?.isOpen() || this.typingElsewhere()) return;
+      if (this.past) return;
       if (this.chatShown()) { if (this.activeId === sess.id) this.composer?.focus(); return; }
       b?.term.focus();
     });

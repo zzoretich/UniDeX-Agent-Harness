@@ -3270,12 +3270,15 @@ button.aos-term-started-change:not(.clickable-icon) { height: 22px; padding: 0 8
    100% height: the page scrolled 50px and the composer's foot hid under the window's edge. Only the terminal, the
    list and the composer's text scroll. */
 .aos-wb-content.aos-term-deck { box-sizing: border-box; padding: 0; border: 0; border-radius: 0; overflow: hidden; }
-.aos-tl { flex: 0 0 248px; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 8px; box-sizing: border-box; background: var(--udx-surface); border-right: 1px solid var(--udx-line); }
+.aos-tl { flex: 0 0 264px; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 8px; box-sizing: border-box; background: var(--udx-surface); border-right: 1px solid var(--udx-line); }
 .aos-tl-head { padding: 0 4px; }
 .aos-tl-new .aos-ntm, .aos-tl-new .aos-ntm-split { display: flex; width: 100%; }
 .aos-tl-new button.aos-ntm-main:not(.clickable-icon) { flex: 1; min-width: 0; }
 .aos-ntm.is-left .aos-ntm-pop { left: 0; right: auto; }
-.aos-tl input.aos-tl-filter { width: 100%; box-sizing: border-box; height: 28px; padding: 0 9px; border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-bg); font-size: 12.5px; color: var(--udx-text); }
+.aos-tl-search { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 9px; border-radius: 8px; background: var(--udx-raised); color: var(--udx-text-3); }
+.aos-tl-searchicon svg { width: 13px; height: 13px; }
+.aos-tl input.aos-tl-filter { flex: 1; min-width: 0; height: 28px; padding: 0; border: 0; background: transparent; box-shadow: none; outline: none; font-size: 12.5px; color: var(--udx-text); }
+.aos-tl-search:focus-within { box-shadow: 0 0 0 2px var(--udx-focus); }
 .aos-tl-groups { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
 .aos-tl-group { display: flex; align-items: center; gap: 6px; padding: 10px 6px 3px; font-size: 12px; font-weight: 500; color: var(--udx-text-2); }
 .aos-tl-groupicon svg { width: 13px; height: 13px; }
@@ -3298,7 +3301,7 @@ button.aos-tl-close:not(.clickable-icon) { flex: none; width: 20px; height: 20px
 .aos-tl-row:hover button.aos-tl-close, button.aos-tl-close:focus-visible { opacity: 1; }
 .aos-tl-empty { padding: 10px 8px; font-size: 12.5px; color: var(--udx-text-3); }
 .aos-tl-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 4px 0; border-top: 1px solid var(--udx-line); font-size: 11.5px; color: var(--udx-text-3); }
-button.aos-tl-clear:not(.clickable-icon) { height: 22px; padding: 0 8px; border: 1px solid var(--udx-line-2); border-radius: 6px; background: var(--udx-bg); box-shadow: none; font-size: 11.5px; }
+button.aos-tl-clear:not(.clickable-icon), button.aos-tl-allhistory:not(.clickable-icon) { height: 22px; padding: 0 8px; border: 1px solid var(--udx-line-2); border-radius: 6px; background: var(--udx-bg); box-shadow: none; font-size: 11.5px; }
 /* Code scoped to one workspace by another tab (spaces-redesign D12): "Showing <workspace> only" and Show all. */
 .aos-tl-scope:not(.is-on) { display: none; }
 .aos-tl-scope.is-on { display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; font-size: 12px; color: var(--udx-text-2); }
@@ -3360,7 +3363,7 @@ button.aos-tc-chip.is-hidden:not(.clickable-icon), .aos-tc-chip.is-hidden { disp
    The chat is a 760 px column: prompts as right-aligned bubbles, agent text at 14.5 px, tool rows, the working line and
    the TUI's card; under it the composer (moved in by TerminalPanel) and the status line in mono. */
 .aos-term-stage { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
-.aos-term-stage.is-chat .aos-term-body { visibility: hidden; }
+.aos-term-stage.is-chat .aos-term-body, .aos-term-stage.is-past .aos-term-body { visibility: hidden; }
 .aos-cc { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; background: var(--udx-bg); color: var(--udx-text); }
 .aos-cc.is-hidden { display: none; }
 .aos-cc button { font-family: var(--udx-sans); }
@@ -5572,3 +5575,33 @@ button.aos-cp-helpbtn:not(.clickable-icon) { flex: none; height: auto; padding: 
   .aos-ss > .aos-cp.is-collapsed { flex: 0 0 auto; height: auto; }
   .aos-ss > .aos-cp.is-collapsed .aos-cp-head { flex-direction: row; justify-content: flex-end; padding: 0 8px; }
 }
+
+/* The Code sidebar (code-chat C6): a status glyph, the title, "Host · status · age"; past and closed conversations open read-only. */
+.aos-tl-glyph { flex: none; width: 14px; height: 14px; box-sizing: border-box; margin-top: 2px; border-radius: 50%; }
+.aos-tl-glyph.is-idle, .aos-tl-glyph.is-past { width: 8px; height: 8px; margin: 5px 3px 0; border: 2px solid var(--udx-text-3); background: transparent; }
+.aos-tl-glyph.is-past { opacity: 0.6; }
+.aos-tl-glyph.is-exited { width: 8px; height: 8px; margin: 5px 3px 0; background: var(--udx-text-3); }
+.aos-tl-glyph.is-shell { border-radius: 3px; width: 12px; height: 9px; margin: 4px 1px 0; border: 2px solid var(--udx-text-3); }
+.aos-tl-glyph.is-working { border: 2px solid var(--udx-line-2); border-top-color: var(--udx-info); animation: aos-tl-spin 0.9s linear infinite; }
+.aos-tl-glyph.is-needs { background: var(--udx-gate-bg); border: 2px solid var(--udx-gate); }
+@keyframes aos-tl-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .aos-tl-glyph.is-working { animation: none; } }
+.aos-tl-row.aos-term-tab, .aos-tl-past { align-items: flex-start; }
+.aos-tl-past { display: flex; gap: 8px; padding: 6px 8px 6px 14px; border-radius: 8px; font-size: 13px; color: var(--udx-text); cursor: pointer; }
+.aos-tl-past:hover { background: var(--udx-raised); }
+.aos-tl-past.is-active { background: var(--udx-raised-2); }
+.aos-tl-past:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: -2px; }
+.aos-tl-title, .aos-term-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.aos-tl-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--udx-text-3); }
+.aos-tl-sub.is-needs { color: var(--udx-gate); }
+button.aos-tl-more:not(.clickable-icon) { align-self: flex-start; height: 24px; margin: 2px 0 0 14px; padding: 0 8px; border: 0; background: transparent; box-shadow: none; font-size: 12px; color: var(--udx-text-3); }
+button.aos-tl-more:not(.clickable-icon):hover { color: var(--udx-text); }
+.aos-tl-foot { flex-wrap: wrap; row-gap: 6px; }
+.aos-tl-count { flex: 1; min-width: 0; }
+.aos-tl-needs.is-on { color: var(--udx-gate); }
+/* A past conversation's top bar: where it ran, and Resume (or why there is none). */
+.aos-term-place.is-static { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; font-size: 12.5px; color: var(--udx-text-2); }
+button.aos-cv-resume:not(.clickable-icon) { height: 28px; padding: 0 14px; border: 0; border-radius: 8px; background: var(--udx-inv); color: var(--udx-inv-text); box-shadow: none; font-size: 12.5px; font-weight: 500; }
+button.aos-cv-resume:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
+.aos-cv-noresume { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--udx-text-3); }
+.aos-cc.is-readonly .aos-cc-note { color: var(--udx-text-3); }

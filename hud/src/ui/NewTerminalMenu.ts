@@ -50,7 +50,8 @@ export class NewTerminalMenu {
   private redrawing = false;
   private error: string | null = null;
 
-  constructor(parent: HTMLElement, private launcher: TerminalLauncher, private actions: NewTerminalActions) {
+  /** `session`: the Code sidebar's wording (code-chat C6), "+ New session ⌘T" over "host · place". */
+  constructor(parent: HTMLElement, private launcher: TerminalLauncher, private actions: NewTerminalActions, private session = false) {
     this.el = parent.createDiv({ cls: "aos-ntm" });
     this.el.addEventListener("focusout", (e) => {
       if (this.redrawing) return;
@@ -123,10 +124,12 @@ export class NewTerminalMenu {
     const main = split.createEl("button", { cls: "aos-ntm-main", attr: { type: "button", "data-tour": "code-new" } });
     const top = main.createSpan({ cls: "aos-ntm-top" });
     top.createSpan({ cls: `aos-ntm-dot is-${host ?? "shell"}` });
-    top.createSpan({ cls: "aos-ntm-name", text: host ? `New ${host === "shell" ? "shell" : TERM_HOST_LABEL[host]}` : "New terminal" });
+    if (this.session) top.createSpan({ cls: "aos-ntm-plus", text: "+", attr: { "aria-hidden": "true" } });
+    top.createSpan({ cls: "aos-ntm-name", text: this.session ? "New session" : host ? `New ${host === "shell" ? "shell" : TERM_HOST_LABEL[host]}` : "New terminal" });
     top.createSpan({ cls: "aos-ntm-kbd", text: "⌘T" });
     const where = host ? this.launcher.resolve(host, null, this.actions.context()).place.label : null;
     const sub = !host ? (quick.reason ?? "Pick a host")
+      : this.session ? `${TERM_HOST_LABEL[host]} · ${where}`
       : host === "shell" ? `in ${where}`
       : `in ${where} · ${this.launcher.modelLabel(host)} · ${TERM_ACCESS_LABEL[this.launcher.choice().access as TermAccess]}`;
     main.createSpan({ cls: "aos-ntm-sub", text: sub });

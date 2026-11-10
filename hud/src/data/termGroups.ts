@@ -160,7 +160,7 @@ export function groupSidebar(open: TermRowInput[], history: HistoryRow[], o: Sid
     add(r.place, r.startedAt, true, { kind: "open", row: { ...r, ...rowEnd(r) }, status });
   }
   for (const r of o.closed) {
-    if (r.sessionId && indexed.has(convoKey(r.host, r.sessionId))) continue;
+    if (r.sessionId && (indexed.has(convoKey(r.host, r.sessionId)) || taken.has(convoKey(r.host, r.sessionId)))) continue;
     if (!hit(r.title, r.host, TERM_HOST_LABEL[r.host])) continue;
     add(r.place, r.startedAt, false, { kind: "open", closed: true, row: { ...r, ...rowEnd(r) }, status: { status: "exited", text: "Closed" } });
   }

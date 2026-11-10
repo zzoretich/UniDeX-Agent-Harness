@@ -9,6 +9,7 @@
 // each terminal shows is kept here too, so it survives the Code tab's remounts. No DOM: the HudHost is all it touches.
 
 import * as path from "path";
+import { readCacheAll } from "./pastChat";
 import { codeChatOn, fs as hostFs, hudHost, type HostCode, type HostFs, type HostResult, type HostSessionEvent } from "../host";
 import { CacheTail, chatFromEvents, trimEvents, type ChatState } from "./codeChat";
 import { allowCodeHref, ansiLines, type Span } from "./ansiSpans";
@@ -154,6 +155,12 @@ export class CodeFeeds {
     e.maxRows += ROW_CAP;
     this.compute(e);
     this.notify(id);
+  }
+
+  /** A cache `code.view` wrote, read whole (the Code sidebar's past conversations): the vault-relative path it answered. */
+  readCache(rel: string): HostSessionEvent[] {
+    if (!rel.startsWith("brain/_index/code/") || rel.includes("..")) return [];
+    return readCacheAll(this.fs, this.abs(rel));
   }
 
   dispose(): void {
