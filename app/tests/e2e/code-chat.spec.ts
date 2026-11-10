@@ -80,6 +80,9 @@ test.describe("the Code chat surface on", () => {
   test("an agent terminal opens in its chat: your prompt as a bubble, the edit as a tool row that opens; the top bar names it (C1)", async () => {
     const { win } = app();
     writeCache(KEY, conversation(SID, FX.v("workspaces/harbor-map/src/tide.ts")));
+    // Classic always-visible scrollbars, as on CI's macOS runners (this Mac's overlay ones take no width): the two
+    // states must measure the same terminal width either way.
+    await win.addStyleTag({ content: "::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; border-radius: 6px; }" });
     await openTab(win, "term");
     agent = await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID, label: "Tide parser" });
     await expect(chat(win)).toBeVisible();
@@ -115,8 +118,21 @@ test.describe("the Code chat surface on", () => {
     await expect(chat(win)).toBeVisible();
     // Lay the page out at 1480 x 920 whatever the screen (CI's runners are 1024 px wide): the stage is then wide and
     // tall enough that a fit cannot give 80 x 24.
-    const restore = await emulateViewport(win, { width: 1480, height: 920 });
+    const restore = await emulateViewport(win, { width: 1480, height: 920, scale: 1 });
     try {
+      // A 1x screen, as CI's: xterm's cell width is the rounded canvas over the columns it has, so a fit can land a
+      // column off the next one at some widths. Sweep a few so each view must settle on the same columns.
+      for (const w of [1469, 1472, 1475, 1478]) {
+        const r = await emulateViewport(win, { width: w, height: 920, scale: 1 });
+        await win.waitForTimeout(250);
+        const chatSize = await size();
+        await win.keyboard.press("Meta+j");
+        await win.waitForTimeout(300);
+        expect(await size(), `${w} px`).toEqual(chatSize);
+        await win.keyboard.press("Meta+j");
+        await expect(chat(win)).toBeVisible();
+        await r();
+      }
       // The refit runs from a ResizeObserver, a frame after the layout: wait for it, then read.
       await expect.poll(async () => (await size())?.cols ?? 0).toBeGreaterThan(80);
       const before = await size();

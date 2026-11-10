@@ -1001,9 +1001,9 @@ export async function resizeHud(app: ElectronApplication, size: { width: number;
  * (setContentSize clamps unless the window was made larger-than-screen), and CI's macOS runners have a 1024 px one, so
  * launchApp's 1480 × 920 is 1024 wide there: a test that needs a layout wider than the screen emulates the viewport.
  */
-export async function emulateViewport(win: Page, size: { width: number; height: number }): Promise<() => Promise<void>> {
+export async function emulateViewport(win: Page, size: { width: number; height: number; scale?: number }): Promise<() => Promise<void>> {
   const cdp = await win.context().newCDPSession(win);
-  await cdp.send("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: 0, mobile: false });
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale ?? 0, mobile: false });
   await expect.poll(() => win.evaluate(() => window.innerWidth)).toBe(size.width);
   return async () => {
     await cdp.send("Emulation.clearDeviceMetricsOverride");
