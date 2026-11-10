@@ -5,6 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type * as childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -15,6 +17,7 @@ import { PtyService, type PtyAgentRequest, type PtyLib, type PtyProcess, type Pt
 import { AgentRegistry, type AgentRef } from "../../src/main/computer/registry";
 import { VENDOR, type Sys } from "../../src/main/computer/admission";
 import { FlagProbe, cliHelp } from "../../src/main/services/cli-flags";
+import { CodeMirrorService } from "../../src/main/services/code-mirror";
 import { COMPUTER_LOOK, COMPUTER_TOOLS, TERM_ACCESS, launchArgs, type LaunchSpec } from "../../../hud/src/data/terminalLaunch";
 
 // ── agentArgvRefusal ─────────────────────────────────────────────────
@@ -711,4 +714,49 @@ test("R81: spawnAgent checks --no-daemon again right before the spawn: Settings 
   const r = await steady.t.spawnAgent(codex(withIt));
   assert.ok(r.ok, JSON.stringify(r));
   assert.deepEqual(steady.spawned.map((x) => x.args), [withIt]);
+});
+
+// ── code-chat R16, R22: a terminal's Code chat follower ends with the terminal, not with its agent ──
+
+test("code-chat R22: an agent's own exit keeps its terminal's follower; closing the terminal through the login shell's pty, or killAll, ends it", async () => {
+  const KEY = "aaaaaaaa-0000-4000-8000-000000000001";
+  const KEY2 = "bbbbbbbb-0000-4000-8000-000000000002";
+  const mirrorVault = fs.mkdtempSync(path.join(os.tmpdir(), "aos-agent-mirror-"));
+  fs.mkdirSync(path.join(mirrorVault, "brain", "scripts", "lib"), { recursive: true });
+  for (const n of ["sessions.js", "code-mirror.js"]) fs.writeFileSync(path.join(mirrorVault, "brain", "scripts", "lib", n), "// stand-in\n");
+  class FakeChild extends EventEmitter {
+    exitCode: number | null = null;
+    signalCode: NodeJS.Signals | null = null;
+    signals: string[] = [];
+    stderr = new EventEmitter();
+    kill(sig: string): boolean { this.signals.push(sig); this.signalCode = sig as NodeJS.Signals; queueMicrotask(() => this.emit("exit", null, sig)); return true; }
+  }
+  const children: FakeChild[] = [];
+  const ended: Array<[string, string | null]> = [];
+  let mirror: CodeMirrorService | null = null;
+  const { t, spawned } = service({ extra: { onEnd: (id, terminal) => { ended.push([id, terminal]); mirror?.end(id, terminal); } } });
+  mirror = new CodeMirrorService({
+    vaultRoot: () => mirrorVault, enabled: () => true, context: () => ({ ...context(), vaultRoot: mirrorVault }), env: {}, node: () => process.execPath,
+    ptyInfo: (id) => t.info(id), spawnImpl: (() => { const c = new FakeChild(); children.push(c); return c; }) as unknown as typeof childProcess.spawn,
+  });
+  assert.ok((await t.spawnAgent(req({ id: "t1", terminal: KEY }))).ok);
+  assert.equal((spawned[0].opts.env as Record<string, string>).AOS_TERMINAL, KEY);
+  assert.equal(t.info("t1")?.terminal, KEY, "main records the key the agent started with");
+  assert.ok(mirror.follow({ pty: "t1", host: "claude", terminal: KEY }).ok);
+  spawned[0].p.exit(0);
+  assert.deepEqual(children[0].signals, [], "the agent exited: the follower stays for the login shell that takes over");
+  assert.deepEqual(ended, []);
+  assert.equal(mirror.running, 1);
+  // The page's takeover shell: a new pty in the same terminal, carrying its key. Closing the terminal kills that pty.
+  assert.ok(t.spawn({ id: "t2", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 120, rows: 40, env: { AOS_TERMINAL: KEY } }).ok);
+  t.kill("t2");
+  assert.deepEqual(ended, [["t2", KEY]]);
+  assert.deepEqual(children[0].signals, ["SIGTERM"], "the terminal closed: its follower ends");
+  assert.equal(mirror.running, 0);
+  assert.ok((await t.spawnAgent(req({ id: "t3", terminal: KEY2 }))).ok);
+  assert.ok(mirror.follow({ pty: "t3", host: "claude", terminal: KEY2 }).ok);
+  t.killAll();
+  assert.deepEqual(children[1].signals, ["SIGTERM"], "every terminal ends with the page");
+  assert.equal(mirror.running, 0);
+  assert.ok(ended.some(([id, key]) => id === "t3" && key === KEY2));
 });
