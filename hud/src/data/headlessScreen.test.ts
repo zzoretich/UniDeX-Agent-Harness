@@ -148,6 +148,18 @@ test("once the agent ended or the terminal exited, the screen reads as empty", a
   screen.dispose();
 });
 
+test("busy while a chunk waits to be parsed, so nothing is decided from a read in the data's own tick (Task 12)", async () => {
+  const sess = new FakeSession();
+  const screen = new HeadlessScreen(sess);
+  assert.equal(screen.busy, false);
+  sess.emit("hello");
+  assert.equal(screen.busy, true, "xterm parses writes on a timer");
+  await until(screen, (x) => x.rows[0] === "hello" && !screen.busy);
+  sess.emit(" world");
+  screen.dispose();
+  assert.equal(screen.busy, false, "a disposed screen waits on nothing");
+});
+
 test("dispose stops listening, and the screen reads as empty after it", () => {
   const sess = new FakeSession();
   const screen = new HeadlessScreen(sess);

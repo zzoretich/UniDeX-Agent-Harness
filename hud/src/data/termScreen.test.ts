@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { approvalPrompt, codexFooterRows, dialogOpen } from "./termScreen";
+import { approvalPrompt, choiceInput, codexFooterRows, dialogOpen, screenCard } from "./termScreen";
 import type { ScreenSnapshot } from "./headlessScreen";
 
 const DIR = path.join(__dirname, "fixtures", "screens");
@@ -123,6 +123,46 @@ test("idle and working give no approval and no dialog", () => {
     assert.equal(approvalPrompt(screen(name), host), null, name);
     assert.equal(dialogOpen(screen(name), host), false, name);
   }
+});
+
+test("a composer's own key hint is no dialog: only the keys a dialog offers count (Task 12; \"esc to clear\" and the like)", () => {
+  const idle = rowsOf(`${C}-idle`);
+  const last = (hint: string) => { const r = [...idle]; r[39] = `   ⏸ manual mode on · ${hint} · ← 1 agent `; return snap(r); };
+  for (const hint of ["esc to clear", "Esc to clear input", "esc to undo", "Esc to edit queued messages", "enter to send", "esc to interrupt", "esc to stop"]) {
+    assert.equal(dialogOpen(last(hint), "claude"), false, hint);
+    assert.equal(screenCard(last(hint), "claude"), null, hint);
+  }
+  // The dialogs' own hints still count: the fixtures', and the other verbs a Claude Code dialog closes with.
+  for (const hint of ["Esc to cancel · Tab to amend", "Enter to confirm · Esc to cancel", "Enter to set as default · s to use this session only · Esc to cancel", "Enter to select · Esc to go back", "Esc to exit", "Esc to close"]) {
+    const r = rowsOf(`${C}-model`);
+    r[39] = `   ${hint}`;
+    assert.equal(dialogOpen(snap(r), "claude"), true, hint);
+  }
+});
+
+test("screenCard: an approval is a card with its choices (read before the dialog it also is); any other dialog, or an approval that can't be read, waits on you; idle and working are none", () => {
+  const bash = screenCard(screen(`${C}-bash`), "claude");
+  assert.deepEqual(bash, { kind: "approval", ...approvalPrompt(screen(`${C}-bash`), "claude")! });
+  assert.equal(bash?.kind === "approval" && bash.choices.length, 4);
+  assert.deepEqual(screenCard(screen(`${X}-edit`), "codex"), { kind: "approval", ...approvalPrompt(screen(`${X}-edit`), "codex")! });
+  for (const [name, host] of [[`${C}-model`, "claude"], [`${C}-inline-model`, "claude"], [`${C}-trust`, "claude"], [`${X}-model`, "codex"]]) {
+    assert.deepEqual(screenCard(screen(name), host), { kind: "waiting" }, name);
+  }
+  const unreadable = rowsOf(`${C}-bash`).map((r) => r.replace(/^(\s*)2\. /, "$15. "));
+  assert.deepEqual(screenCard(snap(unreadable), "claude"), { kind: "waiting" }, "options that don't run 1, 2, 3: the TUI still waits");
+  for (const [name, host] of [[`${C}-idle`, "claude"], [`${C}-working`, "claude"], [`${X}-idle`, "codex"], [`${X}-working`, "codex"]]) {
+    assert.equal(screenCard(screen(name), host), null, name);
+  }
+  assert.equal(screenCard(screen(`${C}-bash`), "shell"), null);
+  assert.equal(screenCard(null as unknown as ScreenSnapshot, "claude"), null);
+});
+
+test("choiceInput: what a choice's key writes to the TUI: the key alone, Esc as the escape byte", () => {
+  assert.equal(choiceInput("1"), "1");
+  assert.equal(choiceInput("y"), "y");
+  assert.equal(choiceInput("esc"), "\x1b");
+  assert.equal(choiceInput("ESC"), "\x1b");
+  for (const bad of ["", "12", "yes", "\r", "1\r", "\x1b[A", " "]) assert.equal(choiceInput(bad), null, JSON.stringify(bad));
 });
 
 test("a prompt read under the other host, or a shell, is not read", () => {

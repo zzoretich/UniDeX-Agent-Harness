@@ -33,6 +33,8 @@ export class HeadlessScreen {
   private readonly off: () => void;
   private size: { cols: number; rows: number };
   private disposed = false;
+  /** Chunks written and not yet parsed (xterm parses on a timer). */
+  private pending = 0;
 
   constructor(session: TerminalSession | ScreenSource) {
     this.session = session;
@@ -40,9 +42,12 @@ export class HeadlessScreen {
     // allowProposedApi: xterm 5 marks the buffer API this reads as experimental.
     this.term = new Terminal({ cols: this.size.cols, rows: this.size.rows, scrollback: 0, allowProposedApi: true });
     const back = session.getScrollback();
-    if (back) this.term.write(back);
+    if (back) this.write(back);
     this.off = session.onData((d) => this.feed(d));
   }
+
+  /** Whether a chunk waits to be parsed: a snapshot now could miss it, so nothing should be decided from one. */
+  get busy(): boolean { return !this.disposed && this.pending > 0; }
 
   /** The rows on screen now; none once the agent ended, the terminal exited, or this was disposed. */
   snapshot(): ScreenSnapshot {
@@ -95,7 +100,12 @@ export class HeadlessScreen {
   private feed(d: string): void {
     if (this.gone()) return;
     this.follow();
-    this.term.write(d);
+    this.write(d);
+  }
+
+  private write(d: string): void {
+    this.pending++;
+    this.term.write(d, () => { this.pending--; });
   }
 
   /** The session resized since: the screen takes its size before it parses more. */

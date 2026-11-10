@@ -1,6 +1,7 @@
 // termScreen.ts — what an agent terminal's TUI is waiting on, read from a snapshot of its headless screen (spec
 // 2026-11-09 code-chat, C4, C5, C10): the approval prompt with its choices, whether a dialog is open (the trust
-// question, `/model`, a picker, an approval), and which rows are Codex's footer. Pure.
+// question, `/model`, a picker, an approval), the chat's card for either, what a choice's key writes, and which rows are
+// Codex's footer. Pure.
 //
 // Anchored on each prompt's own lines, never on a column: the key hint a dialog draws as its last row ("Esc to cancel",
 // "enter select · esc back"); for an approval, the question line ("Do you want to proceed?", "Would you like to run the
@@ -14,6 +15,9 @@ import type { ScreenSnapshot } from "./headlessScreen";
 
 export interface ApprovalChoice { key: string; label: string }
 export interface ApprovalPrompt { title: string; detail: string | null; choices: ApprovalChoice[] }
+/** What the chat shows for the TUI's prompt (C4): the approval with its numbered choices, or a card that sends you to the
+ *  terminal when the screen shows a dialog the chat can't draw (`/model`, the trust question, a picker). */
+export type ChatCard = ({ kind: "approval" } & ApprovalPrompt) | { kind: "waiting" };
 
 type Host = "claude" | "codex";
 const isHost = (h: unknown): h is Host => h === "claude" || h === "codex";
@@ -23,9 +27,10 @@ const QUESTION: Record<Host, RegExp> = {
   claude: /^Do you want\b.*\?$/,
   codex: /^Would you like\b.*\?$/,
 };
-/** A dialog's key hint, the last row it draws. Claude Code's working footer says "esc to interrupt": not a dialog. */
+/** A dialog's key hint, the last row it draws: only the verbs a dialog closes with, so a composer's own hint ("esc to
+ *  interrupt" while it works, "esc to clear" a draft) is not one. */
 const HINT: Record<Host, RegExp> = {
-  claude: /\b(?:esc|enter) to (?!interrupt\b)[a-z]/i,
+  claude: /\b(?:esc|enter) to (?:cancel|confirm|select|go back|close|exit|dismiss|continue|submit)\b/i,
   codex: /\b(?:esc|enter)(?: to)? (?:select|confirm|cancel|back|go back|close|exit|dismiss|continue)\b/i,
 };
 /** A numbered option, with or without the selection cursor in front. */
@@ -128,6 +133,22 @@ export function approvalPrompt(s: ScreenSnapshot, host: string): ApprovalPrompt 
   } catch {
     return null;
   }
+}
+
+/** The chat's card for what the screen shows (C4): the approval when one can be read (it is a dialog too, so it is asked
+ *  first), else the waiting card while any other dialog is open, else none. */
+export function screenCard(s: ScreenSnapshot, host: string): ChatCard | null {
+  const a = approvalPrompt(s, host);
+  if (a) return { kind: "approval", title: a.title, detail: a.detail, choices: a.choices };
+  return dialogOpen(s, host) ? { kind: "waiting" } : null;
+}
+
+/** What a choice's key writes to the TUI: the key alone (Claude Code's numbered choices take the digit with no Enter;
+ *  Codex's take its letter), Esc as the escape byte; null for anything that is not one key. */
+export function choiceInput(key: string): string | null {
+  if (typeof key !== "string") return null;
+  if (key.toLowerCase() === "esc") return "\x1b";
+  return /^[a-z0-9]$/i.test(key) ? key : null;
 }
 
 /** Claude Code: under the panel's top rule (or box), its header ("Bash command", "Create file"); a command's text is
