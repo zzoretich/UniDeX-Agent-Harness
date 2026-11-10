@@ -14,6 +14,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **The Code sidebar lists recent conversations.** Each place on Code (a workspace, Scratch, and Other folders for the vault, home and any other folder) now lists its open terminals first, then conversations from the last two weeks, newest activity first, ten to a place with Show more. A status glyph, the title and "Host · status · age" make each row; one you closed here stays until the scan indexes it. Click a past conversation to read it, read-only; Resume starts it again in a new terminal. Search sessions finds rows by title, host or place, the footer says how many are open and how many need you, and All history opens Sessions ▸ History. The grouping, the rows, search and the footer apply always; the past and closed conversations need the Code chat write surface. <!-- tour: code.list -->
 - **Uncommitted submodule edits are not listed as changes.** A submodule whose only changes are edits in its work tree or untracked files no longer appears in Sessions' Changes list or Code's Diff pane, since Commit could not record that change anyway. <!-- no-tour: a list that now leaves out what Commit could not record -->
 
+### Fixed
+- The Code tab's chat follows a Codex session that starts after its startup dialogs (folder trust, hook review), however long they take; before, a dialog answered after 15 seconds left that terminal with no chat. <!-- no-tour: a fix with no new control -->
+
 ### Security
 - Sessions' and Code's diffs read only files git lists: a link inside the repository can't reach a file outside it, and ignored files and `.git/` aren't readable. Git reads no longer run a program that a submodule's own config names.
 
