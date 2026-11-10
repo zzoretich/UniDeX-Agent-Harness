@@ -41,6 +41,7 @@ import { computerPaneStart, rememberComputerPane } from "../settingsDefaults";
 import { CodeChat } from "./CodeChat";
 import type { CodeView } from "../data/codeFeeds";
 import { rowStatus, type ChatState } from "../data/codeChat";
+import type { Span } from "../data/ansiSpans";
 import { HOST_APP_SETTINGS, runHostCommand } from "./hostCommands";
 
 /** A chat with nothing in it yet. */
@@ -129,8 +130,13 @@ export class TerminalPanel {
   private viewEl: HTMLElement | null = null;
   private hostChipEl: HTMLElement | null = null;
   private unwatchFeeds: (() => void) | null = null;
-  /** The terminal whose chat the CodeChat shows now. */
+  /** The terminal whose chat the CodeChat shows now, and what it drew of it (the feed's objects, which CodeFeeds replaces
+   *  on every change, so the same ones mean nothing new to draw: I3). */
   private chatFor: string | null = null;
+  private drawn: { state: ChatState; why: string | null; status: Span[][] | null } | null = null;
+  /** What the top bar's switch shows (the terminal, its view, the surface; a past conversation's Resume), so a terminal's
+   *  update that changes none of it leaves the switch and its focus alone (I3). */
+  private switchShown: string | null = null;
 
   private bindings = new Map<string, XtermBinding>();
   private activeId: string | null = null;
@@ -328,6 +334,8 @@ export class TerminalPanel {
     this.hist = null;
     this.lastInputs.clear();
     this.chatFor = null;
+    this.drawn = null;
+    this.switchShown = null;
     this.frameEl = null;
     this.stageEl = null;
     this.viewEl = null;
@@ -357,7 +365,7 @@ export class TerminalPanel {
   }
 
   /** The Code tab was shown again: the past conversations are looked up again (the scan may have indexed more). */
-  refreshSidebar(): void { if (this.host && this.list) this.renderTabs(); }
+  refreshSidebar(): void { if (this.host && this.list) { this.hist?.refresh(true); this.renderTabs(); } }
 
   /** Another rail tab is in front: the Computer pane lets its view go and selects nothing (ruling R51). */
   leave(): void { this.computer?.hide(); }
@@ -459,6 +467,7 @@ export class TerminalPanel {
     if (this.opts.deck && this.list) {
       this.marksShown = this.marksSig();
       this.rowsShown = this.rowsSig();
+      // At most every two seconds (the caches' stats are synchronous IPC; a busy agent's title renders this often).
       this.hist?.refresh();
       this.sidebar = this.buildSidebar();
       const open = this.openRows();
@@ -630,7 +639,7 @@ export class TerminalPanel {
 
   // ── a past conversation, read-only (code-chat C6) ──
 
-  /** Its title, where it ran, its host, and at the right Resume (the row's resume line, D7/D31) or why there is none. */
+  /** Its title, where it ran and its host (renderPastView puts Resume at the right). */
   private renderPastHead(el: HTMLElement, p: PastSel): void {
     el.createSpan({ cls: "aos-term-headtitle", text: p.title });
     const where = el.createSpan({ cls: "aos-term-place is-static", attr: { title: p.place.dir } });
@@ -641,8 +650,10 @@ export class TerminalPanel {
     const chip = chips.createSpan({ cls: "aos-term-chip" });
     chip.createSpan({ cls: `aos-term-dot is-${p.host}` });
     chip.createSpan({ text: `${TERM_HOST_LABEL[p.host]} · Past conversation` });
-    const view = this.viewEl;
-    if (!view) return;
+  }
+
+  /** At the top bar's right, a past conversation's Resume (the row's resume line, D7/D31) or why there is none. */
+  private renderPastView(view: HTMLElement, p: PastSel): void {
     const r = p.resume;
     if (r.state === "on") {
       const b = view.createEl("button", { cls: "aos-cv-resume", text: "Resume", attr: { type: "button", title: r.hint || `Resume this conversation in ${p.place.label}` } });
@@ -748,12 +759,18 @@ export class TerminalPanel {
   }
 
   /** The top bar's Chat | Terminal ⌘J switch for an agent terminal; with the surface off, a note that sends you to the
-   *  app's settings; nothing for a shell (C3). It carries the tour's anchor. */
+   *  app's settings; nothing for a shell (C3); a past conversation's Resume. It carries the tour's anchor. Drawn again only
+   *  when what it shows changed (I3), so a busy agent's title never takes the keyboard's focus from it. */
   private renderSwitch(s: TerminalSession | undefined): void {
     const el = this.viewEl;
     if (!el) return;
-    el.empty();
     const feeds = this.plugin.codeFeeds;
+    const past = this.past;
+    const sig = past ? `past:${past.key}` : `${s?.id ?? ""}:${s?.meta.host ?? ""}:${feeds?.on() ? 1 : 0}:${s && feeds ? feeds.view(s.id) : ""}`;
+    if (sig === this.switchShown) return;
+    this.switchShown = sig;
+    el.empty();
+    if (past) { this.renderPastView(el, past); return; }
     if (!s || s.meta.host === "shell" || !feeds || !this.chat) return;
     if (!feeds.on()) {
       const off = el.createDiv({ cls: "aos-cv is-off", attr: { "data-tour": "code-view" } });
@@ -800,20 +817,26 @@ export class TerminalPanel {
     if (!on && composer.el.parentElement !== frame) stage.after(composer.el);
     chat.setVisible(on);
     // A title or a model changing redraws the top bar, not the chat: the feed's own changes redraw that.
-    if (on && (!was || this.chatFor !== this.activeId)) this.renderChat();
+    if (on && (!was || this.chatFor !== this.activeId)) this.renderChat(true);
     // After renderChat, whose reset() for another terminal clears it.
     chat.setEnded(ended && s ? TERM_HOST_LABEL[s.meta.host] : null);
   }
 
-  /** The selected terminal's chat, as its feed has it now. */
-  private renderChat(): void {
+  /** The selected terminal's chat, as its feed has it now. Only what changed is drawn again (I3): a status line that moved
+   *  redraws the status line, not 400 rows (and your selection in them); `force` draws it all (the chat shown again). */
+  private renderChat(force = false): void {
     const chat = this.chat;
     const s = this.activeSession();
     if (!chat || !s || this.past || !this.chatShown()) return;
     const feed = this.plugin.codeFeeds?.get(s.id) ?? null;
-    if (this.chatFor !== s.id) { chat.reset(); this.chatFor = s.id; }
-    chat.show(feed?.state ?? NO_CHAT, feed?.follow === "failed" ? feed.error : null);
-    chat.setStatus(feed?.status ?? null);
+    if (this.chatFor !== s.id) { chat.reset(); this.chatFor = s.id; this.drawn = null; }
+    const state = feed?.state ?? NO_CHAT;
+    const why = feed?.follow === "failed" ? feed.error : null;
+    const status = feed?.status ?? null;
+    const was = force ? null : this.drawn;
+    if (!was || was.state !== state || was.why !== why) chat.show(state, why);
+    if (!was || was.status !== status) chat.setStatus(status);
+    this.drawn = { state, why, status };
   }
 
   /** Flips the selected agent terminal to `v` and remembers it; the keys go to what shows. */

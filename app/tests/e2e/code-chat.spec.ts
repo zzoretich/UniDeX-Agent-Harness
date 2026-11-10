@@ -322,6 +322,62 @@ test.describe("the Code chat surface on", () => {
     } finally { await release(); }
   });
 
+  test("a busy terminal's updates redraw neither its chat, its switch nor an open model menu; a status line change keeps your selection (I3)", async () => {
+    const { win } = app();
+    const key = "afafafaf-0000-4000-8000-000000000012";
+    const sid = "afafafaf-0000-4000-8000-000000000013";
+    writeCache(key, conversation(sid, FX.v("workspaces/harbor-map/src/tide.ts")).slice(0, 6));
+    await openTab(win, "term");
+    const id = await startAgent(win, { host: "claude", terminalKey: key, sessionId: sid, label: "Busy agent" });
+    const bubble = chat(win).locator(".aos-ss-prompt .aos-ss-bubble").first();
+    await expect(bubble).toHaveText("Make the tide parser read the new station format");
+    await expect(chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger")).toBeEnabled();
+    // Marks on what must survive: the bubble, the switch's focused button, and the open model menu's search.
+    await chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger").click();
+    await chat(win).locator(".aos-hm-search").fill("son");
+    await win.evaluate(() => {
+      const w = window as unknown as Record<string, Element | null>;
+      w.__bubble = document.querySelector(".aos-wb-content .aos-cc:not(.is-readonly) .aos-ss-bubble");
+      w.__search = document.querySelector(".aos-wb-content .aos-hm-search");
+    });
+    // An animated title: every frame is a session-update.
+    const frames = (n: number) => win.evaluate(({ i, n }) => {
+      const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { setTitle(t: string): void } } } } }).aosHost.plugin.terminalPool.get(i);
+      for (let k = 0; k < n; k++) s.setTitle(`${k % 2 ? "⠋" : "⠙"} Busy agent`);
+    }, { i: id, n });
+    await frames(10);
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("⠋ Busy agent");
+    const same = () => win.evaluate(() => {
+      const w = window as unknown as Record<string, Element | null>;
+      return {
+        bubble: w.__bubble === document.querySelector(".aos-wb-content .aos-cc:not(.is-readonly) .aos-ss-bubble"),
+        search: w.__search === document.querySelector(".aos-wb-content .aos-hm-search") && document.activeElement === w.__search,
+      };
+    });
+    expect(await same()).toEqual({ bubble: true, search: true });
+    await win.keyboard.press("Escape");
+    // The switch keeps the keyboard's focus through more frames.
+    await sw(win).locator("button[aria-pressed='true']").focus();
+    await frames(10);
+    await expect(sw(win).locator("button[aria-pressed='true']")).toBeFocused();
+    // Select the bubble's text; a status line copy arrives (a feed change that leaves the chat as it was).
+    await win.evaluate(() => {
+      const el = (window as unknown as Record<string, Element>).__bubble;
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(r);
+    });
+    const file = FX.v(`brain/_index/statusline/${key}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), session_id: sid, transcript_path: null, ansi: "fixture-model │ Vault\n" }));
+    await expect(chat(win).locator(".aos-cc-statusline")).toHaveCount(1);
+    expect(await win.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("Make the tide parser read the new station format");
+    expect((await same()).bubble).toBe(true);
+    fs.rmSync(file);
+  });
+
   test("an agent that exits hands its terminal to the login shell: the chat says so and takes no typing; the terminal's composer is a shell's (R39)", async () => {
     const { win } = app();
     const key = "acacacac-0000-4000-8000-00000000000c";

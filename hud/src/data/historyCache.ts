@@ -1,6 +1,9 @@
 // historyCache.ts — the Code sidebar's past conversations (spec 2026-11-09 code-chat C6): the same rows as Sessions ▸
 // History (sessionHistory.ts), from the runtime's two caches, parsed again only when one of them changed. Never a
-// transcript. `refresh()` is cheap (two stats) and calls `onChange` when the rows differ; reads are asynchronous.
+// transcript. `refresh()` stats the two files and calls `onChange` when the rows differ. In the app every fs call here is
+// synchronous IPC to main (`fs.promises` too, behind its promise), and the sidebar renders on every terminal update (an
+// animated title sends several a second), so a refresh checks at most every CHECK_MS unless forced (the Code tab shown
+// again, I3).
 import { fs } from "../host";
 import * as path from "path";
 import {
@@ -9,10 +12,15 @@ import {
 } from "./sessionHistory";
 import type { PlaceWorld, TermHostChoice } from "./terminalLaunch";
 
+/** How often a refresh looks at the caches (and the hosts) at most, unless forced. */
+export const CHECK_MS = 2000;
+
 export interface HistorySources {
   vault(): string;
   /** The hosts and places as they are now: a login or a new workspace changes a row's Resume. */
   hosts(): { choices: TermHostChoice[]; world: PlaceWorld };
+  /** The clock (tests); default Date.now. */
+  now?(): number;
 }
 
 export class HistoryCache {
@@ -20,12 +28,18 @@ export class HistoryCache {
   private built = "";
   private current: HistoryRow[] = [];
   private seq = 0;
+  /** When refresh last looked, or null before the first look. */
+  private checkedAt: number | null = null;
 
   constructor(private readonly src: HistorySources, private readonly onChange: () => void) {}
 
   rows(): HistoryRow[] { return this.current; }
 
-  refresh(): void {
+  /** Looks at the caches again when CHECK_MS passed since the last look, or at once when `force`d. */
+  refresh(force = false): void {
+    const now = this.src.now ? this.src.now() : Date.now();
+    if (!force && this.checkedAt !== null && now - this.checkedAt < CHECK_MS) return;
+    this.checkedAt = now;
     const vault = this.src.vault();
     const files = [SESSION_INDEX_PATH, SESSION_DIGESTS_PATH].map((rel) => path.join(vault, rel));
     const stamp = files.map((f) => { try { const st = fs.statSync(f); return `${st.mtimeMs}:${st.size}`; } catch { return "-"; } }).join("|");

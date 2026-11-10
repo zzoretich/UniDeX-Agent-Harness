@@ -3,7 +3,7 @@ import * as path from "path";
 import type AgenticOSPlugin from "../../main";
 import { fs, sessionsHost, type HostCatalog } from "../host";
 import { aliasCatalog } from "../data/claudeAsk";
-import { catalogHost, hostChoices } from "../data/agentSessions";
+import { catalogHost, hostChoices, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import type { TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
@@ -64,6 +64,11 @@ export class TermComposer {
   private modelWrap: HTMLElement;
   private modelMenu: HostModelMenu;
   private chips: ChipState | null = null;
+  /** The hosts as the model menu lists them, read once per terminal and catalog (two file reads, synchronous IPC in the
+   *  app), and what the menu was last handed: it is updated only when that changes (I3), so an open menu stays as it is
+   *  through a busy agent's updates. */
+  private hostList: HostChoice[] | null = null;
+  private menuShown = "";
   /** The panel keeps the composer away (the chat of an agent that ended, R39): hidden, and Send writes nothing. */
   private blocked = false;
 
@@ -111,6 +116,7 @@ export class TermComposer {
     this.session = s;
     this.shownHost = kind;
     this.files = null;
+    this.hostList = null;
     this.closeSuggest();
     const shell = kind === "shell";
     this.input.setAttr("placeholder", shell ? "Write a command…" : `Write to ${TERM_HOST_LABEL[s.meta.host]}…`);
@@ -165,10 +171,14 @@ export class TermComposer {
     this.permChip.disabled = !!reason;
     this.permChip.setAttr("title", reason ?? `What the agent may do: ${TERM_ACCESS_NOTE[access]}`);
     this.modelWrap.setAttr("title", reason ?? "");
-    this.modelMenu.update({
-      catalog: this.catalog, choices: hostChoices(readAgenticosJson(this.plugin.claudeConfigDir()), readProviderState(this.plugin.vaultRoot())),
-      value: { host: s.meta.host as "claude" | "codex", model: this.chips?.model ?? s.meta.model ?? null, effort: null }, disabled: !!reason,
-    });
+    const host = s.meta.host as "claude" | "codex";
+    const model = this.chips?.model ?? s.meta.model ?? null;
+    const sig = `${s.id}|${host}|${model ?? ""}|${reason ? 1 : 0}|${this.catalog?.fetchedAt ?? ""}`;
+    if (sig !== this.menuShown) {
+      this.menuShown = sig;
+      this.hostList ??= hostChoices(readAgenticosJson(this.plugin.claudeConfigDir()), readProviderState(this.plugin.vaultRoot()));
+      this.modelMenu.update({ catalog: this.catalog, choices: this.hostList, value: { host, model, effort: null }, disabled: !!reason });
+    }
     if (reason) this.closeAccess();
   }
 
@@ -220,6 +230,8 @@ export class TermComposer {
         const r = sh ? await sh.sessions.catalog() : null;
         this.catalog = r && r.ok ? r.data : aliasCatalog(new Date());
       } catch { this.catalog = aliasCatalog(new Date()); }
+      // The hosts are read again with the catalog (a login since may have changed them).
+      this.hostList = null;
     }
     this.slash.update(catalogHost(this.catalog, host)?.commands ?? [], host);
     this.syncChips();
