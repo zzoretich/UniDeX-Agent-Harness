@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { HostFs, HostSessionEvent } from "../host";
-import { CacheTail, chatFromEvents, rowStatus } from "./codeChat";
+import { CacheTail, chatFromEvents, rowStatus, trimEvents } from "./codeChat";
 
 const ev = (kind: string, turn: number, rest: Record<string, unknown> = {}): HostSessionEvent =>
   ({ t: "2026-11-09T10:00:00.000Z", kind, turn, ...rest }) as HostSessionEvent;
@@ -30,6 +30,60 @@ test("the cut falls on a turn boundary, not through a turn", () => {
   const big = chatFromEvents([ev("prompt", 1, { text: "p" }), ev("text", 1), ev("text", 1), ev("text", 1)], { maxRows: 2 });
   assert.equal(big.rows.length, 2);
   assert.equal(big.hiddenEarlier, 2);
+});
+
+test("a cut on a turn boundary that would keep fewer than half the cap falls back to a hard cut at the cap", () => {
+  // turn 1: 2 rows, turn 2: 9 rows, turn 3: 2 rows; maxRows 10 → the first boundary after the excess (3) is turn 3's, which
+  // would keep 2 rows: cut hard instead, keeping the newest 10.
+  const evs = [ev("prompt", 1, { text: "p1" }), ev("text", 1, { text: "a" }), ev("prompt", 2, { text: "p2" })];
+  for (let i = 0; i < 8; i++) evs.push(ev("text", 2, { text: `t${i}` }));
+  evs.push(ev("prompt", 3, { text: "p3" }), ev("text", 3, { text: "z" }));
+  const s = chatFromEvents(evs, { maxRows: 10 });
+  assert.equal(s.rows.length, 10);
+  assert.equal(s.hiddenEarlier, 3);
+  assert.deepEqual(s.rows.map((r) => r.turn), [2, 2, 2, 2, 2, 2, 2, 2, 3, 3]);
+});
+
+test("host and root reach the rows: relative paths under the terminal's folder, the host's default model name", () => {
+  const evs = [
+    ev("prompt", 1, { text: "p", model: "gpt-5.5" }),
+    ev("tool", 1, { id: "t1", name: "Edit", toolKind: "edit", filePath: "/work/demo/src/a.ts", summary: "{}" }),
+    ev("done", 1, { ok: true }),
+    ev("prompt", 2, { text: "q", model: null }),
+  ];
+  const s = chatFromEvents(evs, { host: "codex", root: "/work/demo" });
+  const tool = s.rows.find((r) => r.kind === "tool") as { target: string };
+  assert.equal(tool.target, "src/a.ts");
+  const change = s.rows.find((r) => r.kind === "change") as { text: string };
+  assert.equal(change.text, "Next turn on Codex default");
+  // without them, the path stays absolute and Claude Code's default is named
+  const plain = chatFromEvents(evs);
+  assert.equal((plain.rows.find((r) => r.kind === "tool") as { target: string }).target, "/work/demo/src/a.ts");
+  assert.equal((plain.rows.find((r) => r.kind === "change") as { text: string }).text, "Next turn on Default");
+});
+
+test("trimEvents keeps the newest events from a prompt, and the last session event it dropped", () => {
+  const evs: HostSessionEvent[] = [ev("session", 0, { id: "s1", model: "m1" }), ...turns(10)];
+  // 21 events; keep at most 8: the first prompt at or after index 13 is turn 7's (index 13)
+  const t = trimEvents(evs, 8);
+  assert.equal(t.dropped, 13);
+  assert.equal(t.events[0].kind, "session");
+  assert.equal(t.events[0].id, "s1");
+  assert.deepEqual(t.events.slice(1).map((e) => e.turn), [7, 7, 8, 8, 9, 9, 10, 10]);
+  // under the bound nothing changes
+  assert.deepEqual(trimEvents(evs, 100), { events: evs, dropped: 0 });
+  // no prompt in the window: a hard cut at the bound
+  const texts = Array.from({ length: 12 }, (_, i) => ev("text", 1, { text: `x${i}` }));
+  const h = trimEvents(texts, 5);
+  assert.equal(h.dropped, 7);
+  assert.deepEqual(h.events.map((e) => e.text), ["x7", "x8", "x9", "x10", "x11"]);
+  // a session kept in the window needs no copy
+  const late = [...turns(5), ev("session", 5, { id: "s2" }), ...turns(2, 6)];
+  const k = trimEvents(late, 7);
+  assert.equal(k.dropped, 8);
+  assert.equal(k.events[0].kind, "prompt");
+  assert.equal(k.events.filter((e) => e.kind === "session").length, 1);
+  assert.equal(chatFromEvents(k.events).sessionId, "s2");
 });
 
 test("a session event with a new id resets; the same id only updates the model", () => {

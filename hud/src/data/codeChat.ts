@@ -2,6 +2,7 @@
 // HostSessionEvent per line to a vault cache (brain/_index/code/<terminal>.jsonl); CacheTail reads what is new,
 // chatFromEvents draws it as Sessions' rows, rowStatus words a terminal's state for the rail.
 import type { HostFs, HostSessionEvent } from "../host";
+import type { SessionHost } from "./aosConfig";
 import type { ThreadRow } from "./agentSessions";
 import { threadRows, turnOpen } from "./agentSessions";
 
@@ -57,12 +58,22 @@ export interface ChatState {
   model: string | null;
 }
 
+export interface ChatOptions {
+  /** Rows kept (the chat's cap, 400); "Show earlier" asks for more. */
+  maxRows?: number;
+  /** The terminal's host: it names a default model in a change marker ("Codex default"). */
+  host?: SessionHost;
+  /** The terminal's folder: file paths under it show relative. */
+  root?: string | null;
+}
+
 /**
  * The events as a chat. A `session` event with a new id starts the conversation over (rows, error and model are those
  * after it); the same id only updates the model. The cap is on rows: a cut lands on the first turn boundary that
- * brings the rows under it, so a turn is not half-shown; one turn longer than the cap is cut hard.
+ * brings the rows under it, so a turn is not half-shown; one turn longer than the cap is cut hard, and so is a cut whose
+ * boundary would keep fewer than half the cap (a long turn just after the excess).
  */
-export function chatFromEvents(events: HostSessionEvent[], o: { maxRows?: number } = {}): ChatState {
+export function chatFromEvents(events: HostSessionEvent[], o: ChatOptions = {}): ChatState {
   const maxRows = Math.max(1, o.maxRows ?? 400);
   let sessionId: string | null = null;
   let from = 0;
@@ -79,7 +90,7 @@ export function chatFromEvents(events: HostSessionEvent[], o: { maxRows?: number
     if (e.kind === "error") error = typeof e.message === "string" && e.message ? e.message : "error";
     else error = null;
   }
-  const all = threadRows(live);
+  const all = threadRows(live, { host: o.host, root: o.root ?? null });
   let cut = 0;
   if (all.length > maxRows) {
     const excess = all.length - maxRows;
@@ -87,8 +98,30 @@ export function chatFromEvents(events: HostSessionEvent[], o: { maxRows?: number
     for (let i = excess; i < all.length; i++) {
       if (all[i].turn !== all[i - 1].turn) { cut = i; break; }
     }
+    if (all.length - cut < maxRows / 2) cut = excess;
   }
   return { sessionId, rows: all.slice(cut), hiddenEarlier: cut, turnOpen: turnOpen(live), error, model };
+}
+
+/**
+ * The newest events of a long chat, at most `max` (R31: the HUD keeps a bounded buffer per terminal): from the first
+ * prompt in the last `max`, so no turn starts half-way, or a hard cut when that window holds no prompt. The last session
+ * event among the dropped ones is kept at the front, so the conversation's id and model survive the trim. `dropped`
+ * counts the events left out.
+ */
+export function trimEvents(events: HostSessionEvent[], max: number): { events: HostSessionEvent[]; dropped: number } {
+  if (events.length <= max) return { events, dropped: 0 };
+  const from = events.length - Math.max(1, max);
+  let start = from;
+  for (let i = from; i < events.length; i++) {
+    if (events[i].kind === "prompt") { start = i; break; }
+  }
+  let session: HostSessionEvent | null = null;
+  for (let i = start - 1; i >= 0; i--) {
+    if (events[i].kind === "session") { session = events[i]; break; }
+  }
+  const kept = events.slice(start);
+  return { events: session ? [session, ...kept] : kept, dropped: start };
 }
 
 export interface RowStatusInput { exited: boolean; exitCode: number | null; turnOpen: boolean; printing: boolean; needsYou: boolean }
