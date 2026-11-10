@@ -81,6 +81,9 @@ export class TerminalSession {
   private agentEnded = false;
   /** The computer's name for the agent main runs here (agent-computer D35), kept after it ends. */
   private agentKey: string | null = null;
+  /** The app's id for the terminal's first process (the agent main runs, or the shell it fell back to), kept for the
+   *  terminal's life: the Code chat's follower is named by it, never by a takeover shell's (code-chat R28). */
+  private firstPty: string | null = null;
   private scrollback: string = "";
   private dataListeners = new Set<DataListener>();
   private exitListeners = new Set<ExitListener>();
@@ -131,6 +134,8 @@ export class TerminalSession {
   /** Makes `p` the terminal's process; `spawned` is the size it started with, corrected if the terminal resized since. */
   private attach(p: HostPtyProcess, agent: boolean, spawned: { cols: number; rows: number } = this.size): void {
     this.pty = p;
+    const first = this.firstPty === null && typeof p.id === "string";
+    if (first) this.firstPty = p.id as string;
     p.onData((d: string) => { if (this.pty === p) this.output(d, true); });
     p.onExit((info: { exitCode: number; signal?: number }) => {
       if (this.pty !== p) return;
@@ -142,6 +147,8 @@ export class TerminalSession {
       try { p.resize(this.size.cols, this.size.rows); } catch { /* race on exit */ }
     }
     if (this.pending) { const w = this.pending; this.pending = ""; p.write(w); }
+    // A deferred terminal's first process came after the deck listed it: say so, so its chat can follow it now.
+    if (first) this.changed();
   }
 
   /** The agent ended: the login shell takes over in the same folder (D18), or the terminal ends if it cannot start. */
@@ -188,6 +195,10 @@ export class TerminalSession {
    *  main runs the agent as the terminal's own process; null for a shell, a fallback, or a host without the app's ids.
    *  The Code rows' dot and "waiting" read a computer's holder and asks by it. */
   get computerKey(): string | null { return this.agentKey; }
+
+  /** The app's id for the terminal's first process (code-chat R28): what its Code chat follows for the terminal's whole
+   *  life, after a login shell took over too. Null while a Code launch starts, and on a host without the app's ids. */
+  get originPty(): string | null { return this.firstPty; }
 
   /** A deferred terminal's shell, when main fell back (D18), with `first` (the launch line) typed into it before what
    *  was typed while it started, so that typeahead reaches the agent and never the line. Throws as a new terminal's
