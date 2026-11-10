@@ -300,7 +300,7 @@ export function targetFor(ctx: Pick<SpacesCtx, "snapshot" | "choices" | "world" 
  *  installed under home): the hint is on screen and in screenshots, the full line stays in its title. */
 export function typedCommand(line: string, home?: string | null): string {
   const at = line.indexOf(" exec ");
-  const end = line.lastIndexOf(" || echo ");
+  const end = Math.max(line.lastIndexOf(" || echo "), line.lastIndexOf(" || { printf "));
   const words = at >= 0 ? line.slice(at + 6, end > at ? end : undefined).trim() : line.trim();
   // The computer tools' approval (agent-computer D33) reads short; the hint's title keeps the whole line.
   const shown = words.replace(/^'([A-Za-z0-9._:/=-]+)'(?= |$)/, "$1")

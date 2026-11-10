@@ -173,7 +173,7 @@ export class ConnectorsTab {
     if (f.fix === "claude.ai") { void shell.openExternal(CLAUDE_AI_CONNECTORS); return; }
     if (f.fix === "login") {
       if (!MCP_NAME_RE.test(f.side.name)) { new Notice(`Sign in to ${f.side.name} from a Codex session: its name is not one codex mcp login takes`); return; }
-      this.view.runInTerm(`codex mcp login ${f.side.name}`, { host: "codex", origin: "Connectors" });
+      this.view.runInTerm(`codex mcp login ${f.side.name}`, { host: "codex", origin: "Connectors", chat: false });
       return;
     }
     void this.check(true);

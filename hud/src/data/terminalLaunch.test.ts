@@ -7,7 +7,7 @@ import { createRequire } from "module";
 import {
   slugify, isReserved, workspaceStubs, scratchStubs, stubWrites, workspaceNameProblem, gitInitWanted, TEMPLATE_TEXT, isTemplateText,
   workspacePlace, placeOf, resolvePlace, isContextPlace, vaultPlace, homePlace, parseRepoLink, withRepoLink, repoValue,
-  termHostChoices, quickHost, launchLine, launchArgs, launchIds, previewLine, SCRATCH, menuRows, firstActionable, placeKey,
+  termHostChoices, quickHost, launchLine, typedAgentLine, termRunLine, launchArgs, launchIds, previewLine, SCRATCH, menuRows, firstActionable, placeKey,
   COMPUTER_TOOLS, COMPUTER_LOOK, TERM_ACCESS, TERM_ACCESS_NOTE,
 } from "./terminalLaunch";
 import type { LaunchSpec, PlaceWorld } from "./terminalLaunch";
@@ -334,7 +334,7 @@ test("a Spaces resume by id: codex resume <id> names the terminal's folder first
   assert.deepEqual(launchArgs({ host: "codex", bin: null, model: "gpt-6-sol", access: "edit", resume: { id }, cwd: dir }), ["resume", "-C", dir, id]);
   assert.equal(
     launchLine({ host: "codex", bin: null, model: null, access: "host", resume: { id }, cwd: dir }),
-    ` command -v 'codex' >/dev/null 2>&1 && exec 'codex' resume -C ${dir} ${id} || echo 'Codex was not found: run aos doctor'`,
+    ` command -v 'codex' >/dev/null 2>&1 && exec 'codex' resume -C ${dir} ${id} || { printf '%s\\n' 'Codex was not found: run aos doctor'; exit 127; }`,
   );
   // A folder with a space is quoted; with no folder the line is the plain resume (Codex then asks which folder).
   assert.match(launchLine({ host: "codex", bin: null, model: null, access: "host", resume: { id }, cwd: path.join(home, "My Code", "app") }), /resume -C '[^']*My Code[^']*' [0-9a-f-]+ \|\|/);
@@ -401,9 +401,9 @@ test("launchArgs refuses a free value holding a control character: a scanned fol
 
 test("launchLine: leading space, the not-found guard, exec, quoting of the binary and of glob-like ids", () => {
   const line = launchLine({ host: "claude", bin: "/opt/my apps/claude", model: "claude-opus-5[1m]", access: "host", sessionId: "3f2c-1" });
-  assert.equal(line, ` command -v '/opt/my apps/claude' >/dev/null 2>&1 && exec '/opt/my apps/claude' --model 'claude-opus-5[1m]' --session-id 3f2c-1 --allowedTools '${NINE}' || echo 'Claude Code was not found: run aos doctor'`);
+  assert.equal(line, ` command -v '/opt/my apps/claude' >/dev/null 2>&1 && exec '/opt/my apps/claude' --model 'claude-opus-5[1m]' --session-id 3f2c-1 --allowedTools '${NINE}' || { printf '%s\\n' 'Claude Code was not found: run aos doctor'; exit 127; }`);
   const codex = launchLine({ host: "codex", bin: null, model: null, access: "host", gitInit: true, envPrefix: "CODEX_HOME='/x' " });
-  assert.equal(codex, " [ -e .git ] || git init -q; command -v 'codex' >/dev/null 2>&1 && CODEX_HOME='/x' exec 'codex' || echo 'Codex was not found: run aos doctor'");
+  assert.equal(codex, " [ -e .git ] || git init -q; command -v 'codex' >/dev/null 2>&1 && CODEX_HOME='/x' exec 'codex' || { printf '%s\\n' 'Codex was not found: run aos doctor'; exit 127; }");
 });
 
 test("previewLine is the short form the menu shows", () => {
@@ -444,4 +444,45 @@ test("menuRows with a query: an exact name starts there; anything else creates f
   const reserved = menuRows({ ...base, query: "research" });
   assert.deepEqual([reserved[0].kind, reserved[0].disabled], ["create", true]);
   assert.equal(menuRows({ ...base, host: "shell", query: "kite" })[0].label, "Create workspaces/kite and open a shell");
+});
+
+test("typedAgentLine (R40): an app button's agent command is exec'ed, its quoted prompt untouched; a missing CLI ends the shell", () => {
+  const claude = `claude "review persona flags"`;
+  assert.equal(typedAgentLine("claude", claude), `command -v 'claude' >/dev/null 2>&1 && exec ${claude} || { printf '%s\\n' 'Claude Code was not found: run aos doctor'; exit 127; }`);
+  const codex = `codex '$agenticos:persona-flag-closer it'\\''s'`;
+  assert.equal(typedAgentLine("codex", codex), `command -v 'codex' >/dev/null 2>&1 && exec ${codex} || { printf '%s\\n' 'Codex was not found: run aos doctor'; exit 127; }`);
+  // Not an agent line (a shell terminal, or words that do not start with the host's CLI): typed as it is.
+  assert.equal(typedAgentLine("shell", "aos doctor"), "aos doctor");
+  assert.equal(typedAgentLine("claude", "aos doctor"), "aos doctor");
+  assert.equal(typedAgentLine("codex", "codexx foo"), "codexx foo");
+});
+
+test("typedAgentLine, run by sh: the agent replaces the shell; a missing CLI prints its message and the shell exits 127", () => {
+  const { spawnSync } = req("node:child_process") as typeof import("node:child_process");
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "aos-typed-"));
+  fs.writeFileSync(path.join(bin, "claude"), "#!/bin/sh\necho \"agent $1\"; exit 3\n", { mode: 0o755 });
+  const env = { PATH: `${bin}:/usr/bin:/bin` };
+  const ran = spawnSync("sh", ["-c", `${typedAgentLine("claude", `claude "hi there"`)}; echo shell-still-here`], { encoding: "utf8", env });
+  assert.equal(ran.stdout, "agent hi there\n", "nothing after the line runs: exec replaced the shell");
+  assert.equal(ran.status, 3);
+  const missing = spawnSync("sh", ["-c", `${typedAgentLine("codex", "codex 'x'")}; echo shell-still-here`], { encoding: "utf8", env });
+  assert.equal(missing.stdout, "Codex was not found: run aos doctor\n");
+  assert.equal(missing.status, 127);
+});
+
+test("termRunLine (what runInTerm types): an agent's command is the exec line; a shell command and a non-conversation (chat: false) are typed as they are", () => {
+  const login = "codex mcp login fixture-server";
+  assert.equal(termRunLine({ host: "claude" }, 'claude "Fix it: $HOME `x`"'), typedAgentLine("claude", 'claude "Fix it: $HOME `x`"'));
+  assert.match(termRunLine({ host: "codex" }, "codex 'a'"), /^command -v 'codex' >\/dev\/null 2>&1 && exec codex 'a' \|\| /);
+  assert.equal(termRunLine({ host: "codex", chat: false }, login), login, "a login is not wrapped");
+  assert.equal(termRunLine({}, "aos doctor"), "aos doctor");
+  assert.equal(termRunLine({ host: "shell" }, "aos upgrade"), "aos upgrade");
+});
+
+test("typedAgentLine keeps a long prompt's line inside the tty's 1024-byte input line: the short form still ends the shell on a failed exec", () => {
+  const long = `claude "${"x".repeat(960)}"`;
+  const line = typedAgentLine("claude", long);
+  assert.equal(line, `exec ${long} || exit 127`);
+  assert.ok(line.length < 1023);
+  assert.ok(typedAgentLine("claude", `claude "${"x".repeat(100)}"`).startsWith("command -v 'claude'"));
 });

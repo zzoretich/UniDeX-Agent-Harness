@@ -34,6 +34,14 @@ export interface TerminalMeta {
    *  surface is on (F9), so the status line's copy and the Code chat's follower are named by it. A terminal made without
    *  one, or with one that is not a v4 UUID, gets a fresh key (F14). */
   terminalKey: string;
+  /** False for a command an app button ran in an agent's name that is not a conversation (Connectors' `codex mcp
+   *  login`): no chat view, no follower, no chat composer (R40). Absent: an agent terminal has its chat. */
+  chat?: false;
+}
+
+/** Whether a terminal is a conversation with an agent: the chat view, its follower and its composer are for these. */
+export function hasChat(meta: Pick<TerminalMeta, "host" | "chat">): boolean {
+  return meta.host !== "shell" && meta.chat !== false;
 }
 
 export interface TerminalSessionOptions {
@@ -109,6 +117,7 @@ export class TerminalSession {
       sessionId: opts.meta?.sessionId ?? null,
       startedAt: opts.meta?.startedAt ?? Date.now(),
       terminalKey: typeof opts.meta?.terminalKey === "string" && TERMINAL_KEY.test(opts.meta.terminalKey) ? opts.meta.terminalKey : newTerminalKey(),
+      ...(opts.meta?.chat === false ? { chat: false as const } : {}),
     };
     this.env = opts.env;
     this.size = { cols: opts.cols || 80, rows: opts.rows || 24 };

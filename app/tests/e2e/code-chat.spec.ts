@@ -480,6 +480,41 @@ test.describe("the Code chat surface on", () => {
     await composer.locator(".aos-tc-input").press("Enter");
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("ended-42");
   });
+
+  /** WorkbenchView.runInTerm as an app button calls it; the new terminal's pool id. */
+  const runInTerm = (win: Page, command: string, o: object): Promise<string> => win.evaluate(({ c, o }) => {
+    type W = { aosHost: { app: { workspace: { getLeavesOfType(t: string): Array<{ view: { runInTerm(c: string, o: object): boolean } }> } }; plugin: { terminalPool: { selectedId(): string } } } };
+    const h = (window as unknown as W).aosHost;
+    h.app.workspace.getLeavesOfType("agentic-os-workbench")[0].view.runInTerm(c, o);
+    return h.plugin.terminalPool.selectedId();
+  }, { c: command, o });
+  const poolInfo = (win: Page, id: string) => win.evaluate((i) => {
+    const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { isExited: boolean; exitCode: number | null; agentEnded: boolean } | undefined } } } }).aosHost.plugin.terminalPool.get(i);
+    return s ? { exited: s.isExited, code: s.exitCode, agentEnded: s.agentEnded } : null;
+  }, id);
+
+  test("an agent an app button starts is exec'ed: when it exits the terminal ends with it, and the chat has no composer to type into a shell (R40)", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    const id = await runInTerm(win, 'claude "review persona flags"', { host: "claude", origin: "Proposals" });
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("[fixture claude stub] review persona flags");
+    // The fixture's claude stub exits at once; before the fix zsh was back in the same PTY and the terminal went on.
+    await expect.poll(async () => (await poolInfo(win, id))?.exited, { timeout: 10_000 }).toBe(true);
+    await expect(C(win).locator(".aos-term-tab-active .aos-term-tab-exited, .aos-term-tab-exited.aos-term-tab-active")).toHaveCount(1);
+    await expect(C(win).locator(".aos-term-endbar")).toBeVisible();
+    await expect(C(win).locator(".aos-tc-input:visible")).toHaveCount(0);
+  });
+
+  test("a login command run in the agent's name is not a conversation: its terminal view, no switch (R40)", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    const login = await runInTerm(win, "codex mcp login fixture-server", { host: "codex", origin: "Connectors", chat: false });
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("mcp login fixture-server");
+    await expect(body(win)).toBeVisible();
+    await expect(C(win).locator(".aos-cv")).toHaveCount(0);
+    await expect(chat(win)).toBeHidden();
+    expect((await poolInfo(win, login))?.agentEnded).toBe(false);
+  });
 });
 
 // The sidebar (C6): the fixture vault's session index lists real past conversations (its claude transcripts are in the

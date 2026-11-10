@@ -30,15 +30,24 @@ export class HistoryCache {
   private seq = 0;
   /** When refresh last looked, or null before the first look. */
   private checkedAt: number | null = null;
+  /** The one trailing check a throttled refresh arms, so a change skipped by the throttle shows without another render. */
+  private trailing: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly src: HistorySources, private readonly onChange: () => void) {}
 
   rows(): HistoryRow[] { return this.current; }
 
+  /** Stops the trailing check (the panel closing). */
+  dispose(): void { if (this.trailing) { clearTimeout(this.trailing); this.trailing = null; } }
+
   /** Looks at the caches again when CHECK_MS passed since the last look, or at once when `force`d. */
   refresh(force = false): void {
     const now = this.src.now ? this.src.now() : Date.now();
-    if (!force && this.checkedAt !== null && now - this.checkedAt < CHECK_MS) return;
+    if (!force && this.checkedAt !== null && now - this.checkedAt < CHECK_MS) {
+      if (!this.trailing) this.trailing = setTimeout(() => { this.trailing = null; this.refresh(); }, CHECK_MS - (now - this.checkedAt));
+      return;
+    }
+    if (this.trailing) { clearTimeout(this.trailing); this.trailing = null; }
     this.checkedAt = now;
     const vault = this.src.vault();
     const files = [SESSION_INDEX_PATH, SESSION_DIGESTS_PATH].map((rel) => path.join(vault, rel));

@@ -239,3 +239,14 @@ test("each terminal remembers its view; a shell is always its terminal", async (
   h.pool.remove(a.id);
   assert.equal(h.feeds.view(a.id), "terminal", "gone with its terminal");
 });
+
+test("a command that is not a conversation (chat: false, e.g. codex mcp login) has no feed, no follow and is always its terminal (R40 C)", async () => {
+  const h = setup();
+  const login = h.pool.create({ meta: { host: "codex", chat: false, terminalKey: KEY } });
+  await tick();
+  assert.equal(h.feeds.get(login.id), null, "no chat");
+  assert.deepEqual(h.follows, [], "nothing followed");
+  assert.equal(h.feeds.view(login.id), "terminal");
+  h.feeds.setView(login.id, "chat");
+  assert.equal(h.feeds.view(login.id), "terminal");
+});

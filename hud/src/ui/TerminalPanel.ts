@@ -16,7 +16,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
 import type AgenticOSPlugin from "../../main";
-import { TerminalSession } from "../data/terminalSession";
+import { TerminalSession, hasChat } from "../data/terminalSession";
 import type { LaunchNote } from "../data/terminalLauncher";
 import { listen } from "../data/listen";
 import { TERMINAL_FONT, currentTheme, onThemeChange, xtermTheme } from "./theme";
@@ -332,6 +332,7 @@ export class TerminalPanel {
     this.past = null;
     this.pastData = null;
     this.pastSeq++;
+    this.hist?.dispose();
     this.hist = null;
     this.lastInputs.clear();
     this.chatFor = null;
@@ -382,7 +383,7 @@ export class TerminalPanel {
   toggleView(): void {
     const s = this.activeSession();
     const feeds = this.plugin.codeFeeds;
-    if (this.past || !s || !feeds || !this.chat || s.meta.host === "shell" || !feeds.on()) return;
+    if (this.past || !s || !feeds || !this.chat || !hasChat(s.meta) || !feeds.on()) return;
     this.setView(feeds.view(s.id) === "chat" ? "terminal" : "chat");
   }
 
@@ -748,7 +749,7 @@ export class TerminalPanel {
     const pool = this.plugin.terminalPool;
     const s = pool.get(id);
     const conv = this.plugin.codeFeeds?.get(id)?.state.sessionId ?? null;
-    if (!s || s.meta.host === "shell" || !conv || this.restarting.has(id)) return Promise.resolve();
+    if (!s || !hasChat(s.meta) || !conv || this.restarting.has(id)) return Promise.resolve();
     this.restarting.add(id);
     const host = s.meta.host;
     // What the chips show is what runs (R37): the shown model (null: the host's default) and the shown access ("host":
@@ -774,7 +775,7 @@ export class TerminalPanel {
     this.switchShown = sig;
     el.empty();
     if (past) { this.renderPastView(el, past); return; }
-    if (!s || s.meta.host === "shell" || !feeds || !this.chat) return;
+    if (!s || !hasChat(s.meta) || !feeds || !this.chat) return;
     if (!feeds.on()) {
       const off = el.createDiv({ cls: "aos-cv is-off", attr: { "data-tour": "code-view" } });
       off.createSpan({ text: "Chat view is off · " });
@@ -846,7 +847,7 @@ export class TerminalPanel {
   private setView(v: CodeView): void {
     const s = this.activeSession();
     const feeds = this.plugin.codeFeeds;
-    if (!s || !feeds || s.meta.host === "shell" || !feeds.on()) return;
+    if (!s || !feeds || !hasChat(s.meta) || !feeds.on()) return;
     feeds.setView(s.id, v);
     this.renderSwitch(s);
     this.applyView();

@@ -5,7 +5,7 @@ import { codeChatOn, fs, sessionsHost, type HostCatalog } from "../host";
 import { aliasCatalog } from "../data/claudeAsk";
 import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
-import type { TerminalSession } from "../data/terminalSession";
+import { hasChat, type TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
 import { composerWrites, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
@@ -151,7 +151,7 @@ export class TermComposer {
   /** The agent the composer writes to, or null for a shell, or a terminal whose agent ended (R39). */
   private agent(): "claude" | "codex" | null {
     const s = this.session;
-    return s && s.meta.host !== "shell" && !s.agentEnded ? s.meta.host : null;
+    return s && hasChat(s.meta) && !s.agentEnded && s.meta.host !== "shell" ? s.meta.host : null;
   }
 
   /** The chat view's column (smaller box, chips only) or under the terminal, as before. */

@@ -1,7 +1,7 @@
 // The Code sidebar's past conversations (code-chat C6, I3): the index and digests are checked at most every CHECK_MS
 // (two stats, which are synchronous IPC in the app), unless the Code tab was shown again (a forced check), and parsed
 // again only when one of them changed. A counting HudHost over a temp vault stands in for the app's.
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -59,4 +59,33 @@ test("a change to the index shows at the next check", async () => {
   await settle();
   assert.equal(h.cache.rows().length, 1);
   assert.ok(h.changes() >= 2);
+});
+
+test("a change skipped by the throttle is picked up by one trailing check, with no further render (E)", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const h = setup();
+    h.cache.refresh();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.cache.rows().length, 0);
+    const before = h.changes();
+    fs.writeFileSync(nodePath.join(h.vault, SESSION_INDEX_PATH), JSON.stringify({
+      files: { "/work/demo/a.jsonl": { host: "claude", head: { id: "a1", kind: "interactive", startCwd: "/work/demo", startedAt: "2026-11-09T10:00:00Z" }, lastAt: "2026-11-09T11:00:00Z" } },
+    }));
+    h.tick(500);
+    h.cache.refresh();
+    h.cache.refresh();
+    assert.equal(h.counts.stat, 2, "skipped: inside CHECK_MS");
+    // The timer is armed once, for what is left of the window; the fake clock moves with it.
+    h.tick(CHECK_MS - 500);
+    mock.timers.tick(CHECK_MS - 500);
+    assert.equal(h.counts.stat, 4, "the trailing check looked at the caches");
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.cache.rows().length, 1, "and the row shows without another render");
+    assert.equal(h.changes(), before + 1);
+    mock.timers.tick(CHECK_MS * 3);
+    assert.equal(h.counts.stat, 4, "one shot: no timer left after it");
+  } finally { mock.timers.reset(); }
 });

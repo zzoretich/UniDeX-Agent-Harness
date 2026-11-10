@@ -14,7 +14,7 @@ import { codeChatOn, fs as hostFs, hudHost, type HostCode, type HostFs, type Hos
 import { CacheTail, chatFromEvents, trimEvents, type ChatState } from "./codeChat";
 import { allowCodeHref, ansiLines, type Span } from "./ansiSpans";
 import type { TerminalPool } from "./terminalPool";
-import type { TerminalSession } from "./terminalSession";
+import { hasChat, type TerminalSession } from "./terminalSession";
 import { listen } from "./listen";
 import { ClosedRecord } from "./closedRecord";
 
@@ -111,7 +111,7 @@ export class CodeFeeds {
   /** What the terminal shows: its chat by default, an agent's only and only while the surface is on (C1, C3, C13). */
   view(id: string): CodeView {
     const s = this.pool.get(id);
-    if (!s || s.meta.host === "shell" || !this.on()) return "terminal";
+    if (!s || !hasChat(s.meta) || !this.on()) return "terminal";
     return this.views.get(id) ?? "chat";
   }
 
@@ -185,7 +185,7 @@ export class CodeFeeds {
 
   /** A terminal was added or changed: an agent gets its feed, and its follow once it has a process (R28). */
   private ensure(s: TerminalSession): void {
-    if (this.disposed || !s || s.meta.host === "shell") return;
+    if (this.disposed || !s || s.meta.host === "shell" || !hasChat(s.meta)) return;
     let e = this.entries.get(s.id);
     if (!e) {
       const host = s.meta.host;
