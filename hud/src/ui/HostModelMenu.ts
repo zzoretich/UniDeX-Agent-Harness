@@ -53,11 +53,14 @@ export interface HostModelMenuOptions {
   usedModel?: string | null;
   /** Vault mode: the local engine as the first choice, which a null host means (local-first A2). */
   local?: LocalChoice | null;
+  /** What the chip names the value's model, when its owner knows better than the catalog (Code's chip names a
+   *  transcript's full id "Opus 5.5", code-chat M4); a pick in the menu drops it. */
+  label?: string | null;
   now?: () => Date;
 }
 
 /** What update() may change: everything but the callbacks. */
-export type HostModelMenuState = Partial<Pick<HostModelMenuOptions, "mode" | "catalog" | "choices" | "value" | "remembered" | "refreshing" | "disabled" | "usedModel" | "local">>;
+export type HostModelMenuState = Partial<Pick<HostModelMenuOptions, "mode" | "catalog" | "choices" | "value" | "remembered" | "refreshing" | "disabled" | "usedModel" | "local" | "label">>;
 
 type ValueInputs = Pick<HostModelMenuOptions, "mode" | "catalog" | "choices" | "value" | "remembered" | "local">;
 
@@ -279,7 +282,7 @@ export class HostModelMenu {
 
   /** A pick: the chip and the popover redraw, then the owner hears it. */
   private emit(next: HostModelValue, focus?: string): void {
-    this.opts = { ...this.opts, value: next };
+    this.opts = { ...this.opts, value: next, label: null };
     this.renderTrigger();
     if (this.pop) this.renderPop(focus);
     this.opts.onChange(next);
@@ -310,7 +313,7 @@ export class HostModelMenu {
     } else if (!v.host) t.createSpan({ cls: "aos-hm-chiphost", text: "No host ready" });
     else {
       t.createSpan({ cls: "aos-hm-chiphost", text: HOST_LABEL[v.host] });
-      t.createSpan({ cls: "aos-hm-chiprest", text: `· ${choiceText(v.host, this.entry(v.host), v.model, v.effort, this.vault())}` });
+      t.createSpan({ cls: "aos-hm-chiprest", text: `· ${this.opts.label ?? choiceText(v.host, this.entry(v.host), v.model, v.effort, this.vault())}` });
     }
     const chev = t.createSpan({ cls: "aos-hm-chev" });
     setIcon(chev, "chevron-down");

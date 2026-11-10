@@ -1,15 +1,18 @@
 import { Notice, setIcon } from "obsidian";
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
-import { fs, sessionsHost, type HostCatalog } from "../host";
+import { codeChatOn, fs, sessionsHost, type HostCatalog } from "../host";
 import { aliasCatalog } from "../data/claudeAsk";
-import { catalogHost, hostChoices, type HostChoice } from "../data/agentSessions";
+import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import type { TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
 import { composerWrites, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
 import { HostModelMenu } from "./HostModelMenu";
+
+/** The ids that tie the chips to their reason (M5). */
+let whyIds = 0;
 
 /** How many files the @ list reads from a place, and how deep: enough for a project, cheap on every open. */
 const FILE_LIMIT = 3000;
@@ -69,6 +72,10 @@ export class TermComposer {
    *  through a busy agent's updates. */
   private hostList: HostChoice[] | null = null;
   private menuShown = "";
+  /** Why the chips wait, for screen readers (aria-describedby, M5). */
+  private whyEl: HTMLElement;
+  /** Called once the catalog is in: the panel names the top bar's model by it (M4). */
+  onCatalog: (() => void) | null = null;
   /** The panel keeps the composer away (the chat of an agent that ended, R39): hidden, and Send writes nothing. */
   private blocked = false;
 
@@ -96,6 +103,7 @@ export class TermComposer {
       mode: "thread", catalog: null, choices: [], value: { host: "claude", model: null, effort: null },
       onChange: (v) => this.pickModel(v.model),
     });
+    this.whyEl = bar.createSpan({ cls: "aos-tc-sr", attr: { id: `aos-tc-why-${++whyIds}` } });
     const send = bar.createEl("button", { cls: "aos-tc-send", attr: { type: "button", "aria-label": "Send to the terminal" } });
     const sendIcon = send.createSpan({ cls: "aos-tc-icon" });
     setIcon(sendIcon, "arrow-up");
@@ -123,8 +131,10 @@ export class TermComposer {
     this.hint.setText(shell ? "⏎ run · ⇧⏎ new line · @ file · esc terminal" : "⏎ send · ⇧⏎ new line · @ file · / commands · esc terminal");
     this.commandsChip.toggleClass("is-hidden", shell);
     this.closeAccess();
-    this.permChip.toggleClass("is-hidden", shell);
-    this.modelWrap.toggleClass("is-hidden", shell);
+    // The chips restart the chat's conversation: with the Code chat surface off there is none to restart (M1).
+    const chips = !shell && codeChatOn();
+    this.permChip.toggleClass("is-hidden", !chips);
+    this.modelWrap.toggleClass("is-hidden", !chips);
     this.syncChips();
     // A shell has no / commands: the list stays empty, so / is just a character.
     if (shell) this.slash.update([], "claude");
@@ -161,31 +171,50 @@ export class TermComposer {
     return null;
   }
 
-  /** The access chip says the terminal's launch access; the model chip the conversation's newest model, else the launch's. */
+  /** The model's name as the top bar and the model chip show it: the catalog's, else the full id's family and version (M4). */
+  modelLabel(host: "claude" | "codex", model: string | null): string {
+    return transcriptModelName(host, catalogHost(this.catalog, host), model);
+  }
+
+  /** The access chip says the terminal's launch access; the model chip the conversation's newest model, else the launch's.
+   *  Their names say which chip is which, and a waiting chip's reason is read out with it (M5): the access chip stays
+   *  focusable (aria-disabled), the model chip's trigger is disabled by its menu. */
   private syncChips(): void {
     const s = this.session;
-    if (!s || !this.agent()) return;
+    if (!s || !this.agent() || !codeChatOn()) return;
     const reason = this.chipReason();
     const access = s.meta.access ?? "host";
+    this.whyEl.setText(reason ?? "");
+    const why = reason ? this.whyEl.id : null;
     this.permChip.setText(TERM_ACCESS_LABEL[access]);
-    this.permChip.disabled = !!reason;
+    this.permChip.setAttr("aria-disabled", reason ? "true" : null);
+    this.permChip.setAttr("aria-describedby", why);
+    this.permChip.setAttr("aria-label", `Access: ${TERM_ACCESS_LABEL[access]}`);
     this.permChip.setAttr("title", reason ?? `What the agent may do: ${TERM_ACCESS_NOTE[access]}`);
     this.modelWrap.setAttr("title", reason ?? "");
     const host = s.meta.host as "claude" | "codex";
     const model = this.chips?.model ?? s.meta.model ?? null;
+    const entry = catalogHost(this.catalog, host);
+    const label = transcriptModelName(host, entry, model);
     const sig = `${s.id}|${host}|${model ?? ""}|${reason ? 1 : 0}|${this.catalog?.fetchedAt ?? ""}`;
     if (sig !== this.menuShown) {
       this.menuShown = sig;
       this.hostList ??= hostChoices(readAgenticosJson(this.plugin.claudeConfigDir()), readProviderState(this.plugin.vaultRoot()));
-      this.modelMenu.update({ catalog: this.catalog, choices: this.hostList, value: { host, model, effort: null }, disabled: !!reason });
+      // The menu ticks the catalog's row for the transcript's id; the chip names it as the top bar does.
+      this.modelMenu.update({ catalog: this.catalog, choices: this.hostList, value: { host, model: catalogModelId(host, entry, model), effort: null }, label, disabled: !!reason });
     }
+    const trigger = this.modelWrap.querySelector(".aos-hm-trigger");
+    trigger?.setAttribute("aria-label", `Model: ${HOST_LABEL[host]} · ${label}`);
+    if (why) trigger?.setAttribute("aria-describedby", why);
+    else trigger?.removeAttribute("aria-describedby");
     if (reason) this.closeAccess();
   }
 
   private restart(patch: { model?: string | null; access?: TermAccess | null }): void {
     const c = this.chips;
     if (!c || this.chipReason()) return;
-    void c.restart(patch).finally(() => this.syncChips());
+    // The menu shows the pick until then; what runs is drawn again after (the old terminal, if the restart failed).
+    void c.restart(patch).finally(() => { this.menuShown = ""; this.syncChips(); });
   }
 
   private pickModel(model: string | null): void {
@@ -193,7 +222,8 @@ export class TermComposer {
     if (!host) return;
     const next = model ?? (host === "claude" ? "default" : null);
     const cur = this.chips?.model ?? this.session?.meta.model ?? null;
-    if ((next ?? "default") === (cur ?? "default")) return;
+    // The catalog's alias and the transcript's full id of one model are the same pick (M4): nothing restarts.
+    if (sameModel(host, catalogHost(this.catalog, host), next, cur)) { this.menuShown = ""; this.syncChips(); return; }
     this.restart({ model: next });
   }
 
@@ -232,6 +262,7 @@ export class TermComposer {
       } catch { this.catalog = aliasCatalog(new Date()); }
       // The hosts are read again with the catalog (a login since may have changed them).
       this.hostList = null;
+      this.onCatalog?.();
     }
     this.slash.update(catalogHost(this.catalog, host)?.commands ?? [], host);
     this.syncChips();

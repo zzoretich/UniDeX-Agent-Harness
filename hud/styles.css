@@ -5613,5 +5613,7 @@ button.aos-cv-resume:not(.clickable-icon):focus-visible { outline: 2px solid var
 .aos-tc-modelwrap { display: inline-flex; flex: none; position: relative; }
 .aos-tc-modelwrap.is-hidden { display: none; }
 .aos-tc-modelwrap .aos-hm-trigger { height: 28px; font-size: 12px; }
-button.aos-tc-access:not(.clickable-icon):disabled, .aos-tc-modelwrap:has(.aos-hm-trigger:disabled) { cursor: not-allowed; opacity: 0.6; }
+button.aos-tc-access:not(.clickable-icon)[aria-disabled="true"], .aos-tc-modelwrap:has(.aos-hm-trigger:disabled) { cursor: not-allowed; opacity: 0.6; }
+/* Why the access and model chips wait, for screen readers (M5); sighted users read it on hover. */
+.aos-tc-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 button.aos-tc-snip[aria-checked="true"]:not(.clickable-icon) { background: var(--udx-raised); }

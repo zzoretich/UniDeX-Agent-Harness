@@ -228,6 +228,7 @@ export class TerminalPanel {
         context: () => ({ host: this.past?.host ?? "claude", root: this.past?.place.dir ?? null }),
       });
       this.composer = new TermComposer(frame, this.plugin, () => this.focus(), () => this.bracketedPaste());
+      this.composer.onCatalog = () => { if (this.host) this.renderHostChip(); };
       this.finder = new TermFind(this.bodyEl, () => this.focus());
       this.mountComputer(host);
       this.unwatchFeeds = this.plugin.codeFeeds?.subscribe((id) => {
@@ -718,7 +719,7 @@ export class TerminalPanel {
     return this.plugin.codeFeeds?.get(s.id)?.state.model ?? s.meta.model ?? null;
   }
 
-  /** "Host · Model" in the top bar, and the composer's model chip. */
+  /** "Host · Model" in the top bar (the model by its name, not the transcript's full id: M4), and the composer's chips. */
   private renderHostChip(): void {
     const s = this.activeSession();
     const el = this.hostChipEl;
@@ -726,7 +727,8 @@ export class TerminalPanel {
     el.empty();
     el.createSpan({ cls: `aos-term-dot is-${s.meta.host}` });
     const model = s.meta.host === "shell" ? null : this.modelOf(s);
-    el.createSpan({ text: s.meta.host === "shell" ? "Shell" : `${TERM_HOST_LABEL[s.meta.host]} · ${model ?? "default model"}` });
+    const name = s.meta.host === "shell" ? "" : this.composer?.modelLabel(s.meta.host, model) ?? model ?? "Default";
+    el.createSpan({ text: s.meta.host === "shell" ? "Shell" : `${TERM_HOST_LABEL[s.meta.host]} · ${name}` });
     if (s.meta.host !== "shell") {
       const feed = this.plugin.codeFeeds?.get(s.id)?.state;
       const working = rowStatus({ exited: s.isExited, exitCode: s.exitCode, turnOpen: feed?.turnOpen ?? false, printing: false, needsYou: false }).status === "working";

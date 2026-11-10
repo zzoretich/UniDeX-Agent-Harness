@@ -528,6 +528,77 @@ export function modelName(host: SessionHost, entry: HostCatalogHost | null, id: 
   return id;
 }
 
+/** A model id with what never names another model set aside: case, a context suffix ("[1m]") and a release date. */
+function bareModel(id: string): string {
+  return id.trim().toLowerCase().replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "");
+}
+
+/** A Claude id's family and version: claude-opus-5-5 → opus, 5.5; the old form claude-3-5-sonnet → sonnet, 3.5. */
+function claudeFamily(id: string): { family: string; version: string | null } | null {
+  const b = bareModel(id);
+  const m = /^claude-([a-z]+)(?:-(\d+(?:-\d+)*))?$/.exec(b) ?? null;
+  if (m) return { family: m[1], version: m[2] ? m[2].replace(/-/g, ".") : null };
+  const old = /^claude-(\d+(?:-\d+)*)-([a-z]+)$/.exec(b);
+  return old ? { family: old[2], version: old[1].replace(/-/g, ".") } : null;
+}
+
+/** "Opus 5.5" from claude-opus-5-5-20261101; null for an id that is not a Claude one. */
+function claudeDerivedName(id: string): string | null {
+  const f = claudeFamily(id);
+  if (!f) return null;
+  const name = f.family.charAt(0).toUpperCase() + f.family.slice(1);
+  return f.version ? `${name} ${f.version}` : name;
+}
+
+const listedName = (m: { id: string; name: string }): string => m.name.replace(/\s*\(recommended\)\s*$/i, "") || m.id;
+
+/**
+ * The catalog's id for the model a transcript names (code-chat M4), so the model menu ticks its row: the listed model
+ * whose id is the same once case, a context suffix and a release date are set aside, else (Claude) the one whose name is
+ * the id's family and version ("opus", when the catalog names it "Opus 5.5"); else the id as it is.
+ */
+export function catalogModelId(host: SessionHost, entry: HostCatalogHost | null, id: string | null): string | null {
+  if (!id) return null;
+  const models = entry?.models ?? [];
+  const bare = bareModel(id);
+  const same = models.find((m) => bareModel(m.id) === bare);
+  if (same) return same.id;
+  const derived = host === "claude" ? claudeDerivedName(id) : null;
+  const named = derived ? models.find((m) => listedName(m).toLowerCase() === derived.toLowerCase()) : undefined;
+  return named ? named.id : id;
+}
+
+/**
+ * The model a conversation runs on, as Code's top bar and model chip name it (code-chat M4). Transcripts carry the full id
+ * (claude-opus-5-5-20261101); a model the catalog lists (catalogModelId) is its name, a Claude id it does not list reads
+ * its family and version ("Opus 5.5"), and anything else is modelName's (Default, Codex default, a custom id).
+ */
+export function transcriptModelName(host: SessionHost, entry: HostCatalogHost | null, id: string | null): string {
+  if (!id) return modelName(host, entry, null);
+  const listed = findModel(entry, catalogModelId(host, entry, id));
+  if (listed) return listedName(listed);
+  return (host === "claude" ? claudeDerivedName(id) : null) ?? modelName(host, entry, id);
+}
+
+/**
+ * Whether picking `pick` runs what the conversation runs already (`current`, the transcript's model), so the chip restarts
+ * nothing (M4): the same id once case, a context suffix and a release date are set aside; on Claude, its default alias and
+ * no model alike; the catalog's row for `current` (catalogModelId); or a Claude family alias whose catalog name carries no
+ * version ("Opus", the aliases' fallback) and an id of that family. Two versions of one family differ.
+ */
+export function sameModel(host: SessionHost, entry: HostCatalogHost | null, pick: string | null, current: string | null): boolean {
+  const norm = (m: string | null): string | null => (m ? bareModel(m) : host === "claude" ? "default" : null);
+  const a = norm(pick);
+  const b = norm(current);
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const row = catalogModelId(host, entry, current);
+  if (row && bareModel(row) === a) return true;
+  if (host !== "claude" || !/^[a-z]+$/.test(a) || a === "default") return false;
+  const alias = findModel(entry, pick);
+  return claudeFamily(b)?.family === a && (!alias || !/\d/.test(alias.name));
+}
+
 /**
  * The effort levels the menu offers for a model: the ones the catalog lists for it. No model is the host's default
  * (Claude's `default` alias, Codex's configured model); a model the catalog does not know takes the host's session

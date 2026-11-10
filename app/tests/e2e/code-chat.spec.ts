@@ -184,6 +184,14 @@ test.describe("the Code chat surface on", () => {
     await expect(model).toBeDisabled();
     await expect(access).toBeDisabled();
     await expect(access).toHaveAttribute("title", /Wait for the turn to finish/);
+    // Each chip's name says what it sets, and the reason it waits is read with it, not only on hover (M5).
+    await expect(access).toHaveAttribute("aria-disabled", "true");
+    await expect(access).toHaveAttribute("aria-label", "Access: Host default");
+    await expect(model).toHaveAttribute("aria-label", "Model: Claude Code · fixture-model");
+    const why = (await access.getAttribute("aria-describedby")) ?? "";
+    expect(why).not.toBe("");
+    await expect(model).toHaveAttribute("aria-describedby", why);
+    await expect(chat(win).locator(`[id="${why}"]`)).toHaveText("Wait for the turn to finish, then change it");
     // A conversation with its turn closed.
     const done = conversation(sid, FX.v("workspaces/harbor-map/src/tide.ts")).slice(0, 6);
     writeCache(key, done);
@@ -191,6 +199,7 @@ test.describe("the Code chat surface on", () => {
     await expect(chat(win)).toBeVisible();
     await expect(model).toBeEnabled();
     await expect(access).toBeEnabled();
+    await expect(model).not.toHaveAttribute("aria-describedby", /./);
     // Choosing the current access does nothing.
     const count = (await ids()).length;
     await access.click();
@@ -219,6 +228,28 @@ test.describe("the Code chat surface on", () => {
     await expect.poll(async () => (await selected()) !== old2).toBe(true);
     expect(await ids()).not.toContain(old2);
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toMatch(new RegExp(`--model sonnet --permission-mode plan --resume ${sid2}`));
+  });
+
+  test("the top bar and the model chip name a transcript's full model id; picking that model again restarts nothing (M4)", async () => {
+    const { win } = app();
+    const key = "babababa-0000-4000-8000-000000000014";
+    const sid = "babababa-0000-4000-8000-000000000015";
+    writeCache(key, conversation(sid, FX.v("workspaces/harbor-map/src/tide.ts")).slice(0, 6).map((e) => ("model" in e ? { ...e, model: "claude-opus-5-5-20261101" } : e)));
+    await openTab(win, "term");
+    const id = await startAgent(win, { host: "claude", terminalKey: key, sessionId: sid, label: "Full id" });
+    const model = chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger");
+    await expect(C(win).locator(".aos-term-head .aos-term-chip").first()).toHaveText("Claude Code · Opus 5.5");
+    await expect(model).toContainText("Opus 5.5");
+    await expect(model).toBeEnabled();
+    const count = () => win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { list(): unknown[] } } } }).aosHost.plugin.terminalPool.list().length);
+    const before = await count();
+    // The catalog's opus alias is that model (its family; the fixture's aliases carry no version).
+    await model.click();
+    await chat(win).locator(".aos-hm-model[data-model='opus']").click();
+    await win.waitForTimeout(300);
+    expect(await count()).toBe(before);
+    expect(await win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { selectedId(): string | null } } } }).aosHost.plugin.terminalPool.selectedId())).toBe(id);
+    await expect(model).toContainText("Opus 5.5");
   });
 
   test("a shell has no chat and no switch (C3)", async () => {
@@ -594,8 +625,11 @@ test.describe("the Code chat surface off (a run whose AOS_APP_WRITE leaves it ou
     await expect(body(win)).toBeVisible();
     await expect(chat(win)).toBeHidden();
     await expect(sw(win)).toHaveText("Chat view is off · Settings");
-    // No chat says whether a turn runs: its row reads Running, not Idle (M1).
+    // No chat says whether a turn runs: its row reads Running, not Idle; and there is no conversation to restart, so the
+    // composer has no access or model chip (M1).
     await expect(C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-sub`)).toHaveText(/^Claude Code · Running · /);
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-chip:visible")).toHaveText(["@ file", "/ commands", "Snippets"]);
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-modelwrap")).toBeHidden();
     await expect(sw(win)).toHaveAttribute("data-tour", "code-view");
     await win.keyboard.press("Meta+j");
     await expect(body(win)).toBeVisible();
