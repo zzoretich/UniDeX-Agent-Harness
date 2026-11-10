@@ -3336,6 +3336,8 @@ button.aos-term-endbtn:not(.clickable-icon) { height: 24px; padding: 0 9px; bord
 button.aos-tc-btn:not(.clickable-icon) { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--udx-line); border-radius: 999px; background: transparent; box-shadow: none; font-size: 12px; color: var(--udx-text-2); }
 .aos-tc-icon { display: inline-flex; }
 .aos-tc-icon svg { width: 13px; height: 13px; }
+.aos-tc-note { padding: 5px 4px 0; font-size: 11.5px; color: var(--udx-text-3); }
+.aos-tc-note.is-hidden { display: none; }
 .aos-tc-hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--udx-text-3); }
 button.aos-tc-send:not(.clickable-icon) { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: var(--udx-inv); color: var(--udx-inv-text); box-shadow: none; }
 button.aos-tc-send:not(.clickable-icon):hover { background: var(--udx-inv-hover); }

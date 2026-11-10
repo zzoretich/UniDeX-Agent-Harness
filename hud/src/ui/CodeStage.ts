@@ -61,10 +61,11 @@ export class CodeStage {
       stop: () => { const s = this.host.activeSession(); if (s && !s.isExited && !s.agentEnded) s.write("\x1b"); },
       // A card's choice (C4): never into the login shell of an agent that ended, nor while the composer is kept away
       // (R39); CodeFeeds writes the key only if the screen still shows that prompt.
-      answer: (key) => {
+      // It goes to the terminal whose card was drawn, and only while that card is still the live one.
+      answer: (key, card) => {
         const s = this.host.activeSession();
-        if (!s || this.past || s.isExited || s.agentEnded || this.host.composer()?.isBlocked) return false;
-        return this.plugin.codeFeeds?.answer(s.id, key) ?? false;
+        if (!s || this.past || s.id !== this.chatFor || s.isExited || s.agentEnded || this.host.composer()?.isBlocked) return false;
+        return this.plugin.codeFeeds?.answer(s.id, key, card) ?? false;
       },
       showEarlier: () => { const id = this.host.activeId(); if (id) this.plugin.codeFeeds?.showEarlier(id); },
       openLink: (href) => this.host.openLink(href),

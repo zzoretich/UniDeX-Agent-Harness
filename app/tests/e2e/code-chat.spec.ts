@@ -172,7 +172,7 @@ test.describe("the Code chat surface on", () => {
         await restore();
       }
     } finally {
-      await style.evaluate((n) => n.remove());
+      await style.evaluate((n) => (n as Element).remove());
     }
   });
 
@@ -642,6 +642,34 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
     await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
     await expect(sw(win).locator("button[aria-pressed='true']")).toHaveText("Chat");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("with a card up the composer's Send (button and ⏎) writes nothing and keeps the draft; after the card clears it sends (R49)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000029", sessionId: "a1a1a1a1-0000-4000-8000-00000000002a", label: "Composer under a card" });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, screenFile("claude-2.1.318-bash.ansi"));
+    await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    const input = C(win).locator(".aos-tc-input:visible");
+    const note = C(win).locator(".aos-tc-note:visible");
+    await written(win, id);
+    await input.fill("hello there");
+    await C(win).locator(".aos-tc-send:visible").click();
+    await expect(note).toHaveText("Answer the card above first · Terminal ⌘J");
+    await input.press("Enter");
+    expect(await written(win, id)).toEqual([]);
+    await expect(input).toHaveValue("hello there");
+    // The TUI moved on: Send works again, and the note is gone.
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await input.press("Enter");
+    expect((await written(win, id)).join("")).toContain("hello there");
+    await expect(input).toHaveValue("");
+    await expect(note).toHaveCount(0);
     await removeTerminal(win, id);
     expectNoErrors(h);
   });

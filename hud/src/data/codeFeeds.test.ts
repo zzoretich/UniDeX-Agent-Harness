@@ -359,6 +359,25 @@ test("an approval on an agent's screen is its card, read by the poll and never i
   assert.equal(clock.running, false, "quiet with no card: not polled");
 });
 
+test("a click answers the card the user saw: a card that was replaced meanwhile writes nothing (R49)", async () => {
+  const clock = manualClock();
+  const h = setup({ clock });
+  const s = h.pool.create({ cols: 120, rows: 40, meta: { host: "claude", terminalKey: KEY } });
+  await tick();
+  const p = h.shells[h.shells.length - 1];
+  p.emit(fixture("claude-2.1.318-bash.ansi"));
+  await until(clock, () => h.feeds.get(s.id)!.card !== null);
+  const seen = h.feeds.get(s.id)!.card!;
+  p.writes.length = 0;
+  // The live card is another prompt (an edit approval): the click was drawn on the bash card.
+  p.emit(drawn("claude-2.1.318-edit"));
+  await until(clock, () => h.feeds.get(s.id)!.card !== seen);
+  assert.equal(h.feeds.answer(s.id, "1", seen), false);
+  assert.deepEqual(p.writes, []);
+  assert.equal(h.feeds.answer(s.id, "1", h.feeds.get(s.id)!.card!), true, "the live card is answered");
+  assert.deepEqual(p.writes, ["1"]);
+});
+
 test("a dialog the chat can't draw (/model) is the waiting card, and Needs you", async () => {
   const clock = manualClock();
   const h = setup({ clock });

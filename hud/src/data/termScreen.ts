@@ -123,11 +123,12 @@ export function approvalPrompt(s: ScreenSnapshot, host: string): ApprovalPrompt 
     const seen = new Set<string>();
     const choices = opts.map((o, k): ApprovalChoice => {
       const text = o.label.replace(/\s+/g, " ").trim();
+      // Claude's keys are its option digits (a label may end in "(x)": a path, a command); only its "(esc)" is a key.
       const m = KEY.exec(text);
-      const own = m ? (m[2].toLowerCase() === "esc" ? "esc" : m[2]) : null;
+      const own = m && (host === "codex" || m[2].toLowerCase() === "esc") ? (m[2].toLowerCase() === "esc" ? "esc" : m[2]) : null;
       const key = own && !seen.has(own) ? own : String(k + 1);
       seen.add(key);
-      return { key, label: m && key === own ? m[1] : text };
+      return { key, label: own && key === own ? m![1] : text };
     });
     return { title: rows[q].trim(), detail: host === "claude" ? claudeDetail(rows, q) : codexDetail(rows, q, first), choices };
   } catch {

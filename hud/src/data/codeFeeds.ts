@@ -175,14 +175,16 @@ export class CodeFeeds {
    * A card's choice (C4): writes the key as the TUI takes it (choiceInput: the digit or letter alone, Esc as the escape
    * byte) and nothing else, and only while the agent runs (R39: once it ended, the login shell would take it), its screen
    * still shows the prompt the card shows with that choice (read again now, not taken from the last poll), and that
-   * prompt was not answered from here already. True when it wrote. The panel also refuses while the composer is blocked.
+   * prompt was not answered from here already; `card`, the one the click was drawn on, must still be the live one. True when it wrote. The panel also refuses while the composer is blocked.
    */
-  answer(id: string, key: string): boolean {
+  answer(id: string, key: string, card?: ChatCard): boolean {
     const e = this.entries.get(id);
     const s = this.pool.get(id);
     if (!e || !s || !e.screen || s.agentEnded || s.isExited || e.screen.busy) return false;
     const shown = e.feed.card;
     if (!shown || shown.kind !== "approval" || e.answered === e.cardSig) return false;
+    // The card the user saw, not whatever is latest: a click on a card that was replaced writes nothing.
+    if (card !== undefined && JSON.stringify(card) !== e.cardSig) return false;
     const choice = shown.choices.find((c) => c.key === key);
     const input = choice ? choiceInput(key) : null;
     if (!choice || input === null) return false;

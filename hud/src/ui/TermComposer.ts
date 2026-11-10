@@ -78,6 +78,8 @@ export class TermComposer {
   onCatalog: (() => void) | null = null;
   /** The panel keeps the composer away (the chat of an agent that ended, R39): hidden, and Send writes nothing. */
   private blocked = false;
+  /** The one line under the box when Send is refused because the TUI's prompt is up (R49). */
+  private note: HTMLElement;
 
   constructor(parent: HTMLElement, private plugin: AgenticOSPlugin, private focusTerminal: () => void, private bracketed: () => boolean = () => true) {
     this.el = parent.createDiv({ cls: "aos-tc is-hidden" });
@@ -109,8 +111,9 @@ export class TermComposer {
     setIcon(sendIcon, "arrow-up");
     send.addEventListener("click", () => this.send());
     this.slash = new SlashMenu(this.input, box, { commands: [], host: "claude" });
-    this.input.addEventListener("input", () => this.onInput());
+    this.input.addEventListener("input", () => { this.note.addClass("is-hidden"); this.onInput(); });
     this.input.addEventListener("keydown", (e) => this.onKey(e));
+    this.note = this.el.createDiv({ cls: "aos-tc-note is-hidden", attr: { role: "status" } });
   }
 
   /** Shows the composer under a terminal that runs (an agent or a shell), else hides it. */
@@ -276,6 +279,14 @@ export class TermComposer {
     const s = this.session;
     const text = this.input.value;
     if (!s || this.blocked || !text.trim()) return;
+    // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
+    // written and the draft stays (R49).
+    if (this.plugin.codeFeeds?.get(s.id)?.card) {
+      this.note.setText(this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first");
+      this.note.removeClass("is-hidden");
+      return;
+    }
+    this.note.addClass("is-hidden");
     for (const w of composerWrites(text, undefined, this.bracketed())) s.write(w);
     this.input.value = "";
     this.closeSuggest();

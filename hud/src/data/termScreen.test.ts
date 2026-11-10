@@ -80,6 +80,32 @@ test("a boxed prompt in the shape earlier Claude Code versions drew: box charact
   assert.equal(dialogOpen(snap(rows), "claude"), true);
 });
 
+test("Claude's keys are its option digits: a label ending in (y) is a label, (esc) stays its cancel key (R49)", () => {
+  const rows = [
+    ...Array(20).fill(""),
+    "─".repeat(40),
+    " Bash command",
+    "",
+    "   rm notes.txt",
+    "",
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and don't ask again for rm (y)",
+    "   3. No (esc)",
+    "",
+    " Esc to cancel",
+  ];
+  const a = approvalPrompt(snap(rows), "claude")!;
+  assert.deepEqual(a.choices, [
+    { key: "1", label: "Yes" },
+    { key: "2", label: "Yes, and don't ask again for rm (y)" },
+    { key: "esc", label: "No" },
+  ]);
+  // Codex keeps reading its own letters.
+  const x = approvalPrompt(snap(["Would you like to run the following command?", "$ ls", "", "› 1. Yes, proceed (y)", "  2. No (esc)", "", "Press enter to confirm or esc to cancel"]), "codex")!;
+  assert.deepEqual(x.choices.map((c) => c.key), ["y", "esc"]);
+});
+
 test("Codex's approvals give its own keys: y, p or a, and esc", () => {
   assert.deepEqual(approvalPrompt(screen(`${X}-bash`), "codex"), {
     title: "Would you like to run the following command?",
