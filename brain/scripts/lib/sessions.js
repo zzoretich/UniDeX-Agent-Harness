@@ -15,10 +15,12 @@
  *     stdout: the host catalog (host-catalog.js), one JSON line. Served from brain/_index/host-catalog.json while it is
  *     fresh (a day, every host answered or off); --refresh asks the hosts again, --host only that one (merged into the
  *     cache, which keeps its older date). Never calls a model (spec 2026-10-07-sessions-ux U3).
- *   node lib/sessions.js mirror --host claude|codex (--id <id> | --cwd <abs> --since <ms>) [--terminal <uuid>] (--once|--follow)
+ *   node lib/sessions.js mirror --host claude|codex (--id <id> [--cwd <abs> --since <ms>] | --cwd <abs> --since <ms>)
+ *                               [--terminal <uuid>] (--once|--follow)
  *     Copies a host transcript into brain/_index/code as session events (code-mirror.js; spec 2026-11-09-code-chat).
  *     --once writes <host>-<id>.jsonl whole and prints { ok, cache } (exit 0 / 3); --follow keeps <terminal>.jsonl (or
- *     <host>-<id>.jsonl without --terminal) current until SIGTERM. Bad arguments exit 2.
+ *     <host>-<id>.jsonl without --terminal) current until SIGTERM. --id with --cwd and --since is Codex's --follow with
+ *     --terminal only: that rollout first, then the terminal's folder (R18). Bad arguments exit 2.
  *   node lib/sessions.js bin claude|codex
  *     out: { ok: true, bin }  or  { ok: false, reason }  (exit 0 / 3). The binary a Code launch runs: the app's main
  *     process spawns it as the terminal's own process (agent-computer D18), resolved as `args` resolves a turn's.
@@ -129,13 +131,14 @@ async function main(argv) {
     const bad = (why) => { process.stderr.write(`sessions: mirror ${why}\n`); return 2; };
     if (!H.HOSTS.includes(host)) return bad('--host takes claude or codex');
     if (once === argv.includes('--follow')) return bad('takes exactly one of --once, --follow');
-    if ((id !== undefined) === (cwd !== undefined)) return bad('takes --id, or --cwd with --since');
+    if (id === undefined && cwd === undefined) return bad('takes --id, or --cwd with --since');
     if (id !== undefined && !M.validId(id)) return bad('--id is not a session id');
     if (terminal !== undefined && !M.UUID_RE.test(terminal)) return bad('--terminal is not a terminal id');
     const since = Number(sinceArg);
     if (cwd !== undefined && (!path.isAbsolute(cwd) || sinceArg === undefined || !Number.isFinite(since))) return bad('--cwd takes an absolute folder and --since milliseconds');
-    if (once && id === undefined) return bad('--once takes --id');
-    if (!once && id === undefined && !terminal) return bad('--cwd takes --terminal');
+    if (once && (id === undefined || cwd !== undefined)) return bad('--once takes --id alone');
+    if (!once && cwd !== undefined && !terminal) return bad('--cwd takes --terminal');
+    if (id !== undefined && cwd !== undefined && host !== 'codex') return bad('--id with --cwd is codex\'s folder mode');
     const { VAULT } = require('./paths.js');
     if (once) {
       const r = M.mirrorOnce({ host, id, vault: VAULT });
@@ -146,7 +149,7 @@ async function main(argv) {
     const stop = () => ac.abort();
     process.once('SIGTERM', stop);
     process.once('SIGINT', stop);
-    try { await M.follow({ host, terminal, id, cwd, since, vault: VAULT, signal: ac.signal }); } catch (e) { return bad(e.message); }
+    try { await M.follow({ host, terminal, id, cwd, since: cwd !== undefined ? since : 0, vault: VAULT, signal: ac.signal }); } catch (e) { return bad(e.message); }
     return 0;
   }
   if (verb === 'bin') {
@@ -179,7 +182,7 @@ async function main(argv) {
     });
     return 0;
   }
-  process.stderr.write('usage: sessions.js args <json> | events --host claude|codex [--model m] | catalog [--refresh] [--host h] | mirror --host h (--id i | --cwd d --since ms) [--terminal t] (--once|--follow) | bin claude|codex | record <json>\n');
+  process.stderr.write('usage: sessions.js args <json> | events --host claude|codex [--model m] | catalog [--refresh] [--host h] | mirror --host h (--id i [--cwd d --since ms] | --cwd d --since ms) [--terminal t] (--once|--follow) | bin claude|codex | record <json>\n');
   return 2;
 }
 
