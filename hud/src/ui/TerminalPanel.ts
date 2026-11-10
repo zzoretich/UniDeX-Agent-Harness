@@ -40,6 +40,7 @@ import { CodeStage } from "./CodeStage";
 import { CodeTopBar } from "./CodeTopBar";
 import { CodePanes } from "./CodePanes";
 import type { CodeView } from "../data/codeFeeds";
+import { fitKey, frameUnsized } from "../data/termFit";
 
 /** Fits a terminal repeats at most this often before taking the last answer (refit). */
 const FIT_PASSES = 4;
@@ -704,8 +705,9 @@ export class TerminalPanel {
       // composer into or out of the stage's height and leaves the frame's size alone. A frame with no size (a tab hidden)
       // keeps the last.
       const frame = this.stage.frameEl;
-      if (frame && !frame.clientWidth) return;
-      const at = frame ? `${frame.clientWidth}x${frame.clientHeight}` : undefined;
+      if (frameUnsized(frame)) return;
+      // The frame's size and the cell's: a font size or zoom change refits a chat-hidden terminal too.
+      const at = fitKey(frame, b.term.options, window.devicePixelRatio);
       if (!this.stage.chatShown()) {
         // The cell width xterm reports is the canvas width over the columns it has now, rounded to a pixel: one fit can
         // land a column off the next. Fit again until it holds, so the next fit (each later flip) changes nothing.
