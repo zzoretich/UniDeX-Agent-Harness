@@ -1,0 +1,39 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude    
+ ▝▝   ▝▝   /work/demo
+
+
+❯ /model 
+  ⎿  Kept model as Haiku 5.5
+
+❯ Run the shell command: echo hi                                                                                        
+
+  Ran 1 shell command 
+
+⏺ The command echo hi ran and printed hi.
+
+✻ Cogitated for 3s · done 1:16 AM
+
+❯ Run the shell command: touch hi.txt                                                                                   
+
+  Creating empty hi.txt file in current directory
+  ⎿  $ touch hi.txt
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Create empty hi.txt file in current directory
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ touch hi.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to /work/demo
+      from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+                                                                               
+ Esc to cancel · Tab to amend
+
+

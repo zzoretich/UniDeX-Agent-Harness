@@ -12,12 +12,14 @@ export interface Span { text: string; fg: string | null; bold: boolean; dim: boo
 
 const BASIC = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
 const basic = (i: number): string => `var(--udx-term-${i < 8 ? "" : "bright-"}${BASIC[i % 8]})`;
-const rgb = (r: number, g: number, b: number): string => {
+/** A colour as `rgb(r, g, b)`, each part clamped to 0-255 (headlessScreen.ts colours its cells with it too). */
+export const rgb = (r: number, g: number, b: number): string => {
   const c = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
   return `rgb(${c(r)}, ${c(g)}, ${c(b)})`;
 };
 
-function color256(n: number): string | null {
+/** A 256-colour index as a colour: 0-15 the xterm tokens, the rest `rgb()`; null outside 0-255. */
+export function color256(n: number): string | null {
   if (!Number.isInteger(n) || n < 0 || n > 255) return null;
   if (n < 16) return basic(n);
   if (n >= 232) { const v = 8 + 10 * (n - 232); return rgb(v, v, v); }

@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude    
+ ▝▝   ▝▝   /work/demo
+
+
+❯ /model 
+  ⎿  Kept model as Haiku 5.5
+
+❯ Run the shell command: echo hi                                                                                        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+✶ Crunching… 
+  ⎿  Tip: Get pinged on your phone when long tasks finish · enable push notifications in /config
+                                                                                ✔ Update installed · /restart to apply
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← 1 agent 

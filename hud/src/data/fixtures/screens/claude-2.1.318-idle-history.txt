@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude    
+ ▝▝   ▝▝   /work/demo
+
+
+❯ /model 
+  ⎿  Kept model as Haiku 5.5
+
+❯ Run the shell command: echo hi                                                                                        
+
+  Ran 1 shell command 
+
+⏺ The command echo hi ran and printed hi.
+
+✻ Cogitated for 3s · done 1:16 AM
+
+❯ Run the shell command: touch hi.txt                                                                                   
+
+  Ran 1 shell command 
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Cooked for 2s · done 1:18 AM
+
+❯ Create a file hello.txt containing hi                                                                                 
+
+⏺ Write(hello.txt)
+  ⎿  User rejected write to hello.txt
+      1 hi
+
+✻ Crunched for 2s · done 1:19 AM
+
+
+
+ 
+                                                           ◐ medium · /effort · ✔ Update installed · /restart to apply
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← 1 agent 
