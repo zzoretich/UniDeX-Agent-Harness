@@ -35,13 +35,33 @@ export function composeSend(text: string, images: string[]): string {
 /** The images the composer takes (code-chat C7), as main checks them again by content (services/code-images.ts). */
 export const IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+/** The most images one message carries (code-chat R60). */
+export const IMAGE_MAX_COUNT = 8;
 
-/** Why an image of this type and size is not taken, in main's words, or null when it may go to main. */
-export function imageRefusal(type: string, size: number): string | null {
+/** Why an image of this type and size is not taken, after `count` already in the message, in main's words, or null when
+ *  it may go to main. */
+export function imageRefusal(type: string, size: number, count = 0): string | null {
+  if (count >= IMAGE_MAX_COUNT) return `${IMAGE_MAX_COUNT} images at most in one message`;
   if (!IMAGE_TYPES.includes(type)) return "only PNG, JPEG, GIF or WebP images";
   if (size > IMAGE_MAX_BYTES) return "larger than 10 MB";
   if (size <= 0) return "an empty file";
   return null;
+}
+
+/** Plain words for a bare errno code main passes on from the file system (R60). */
+const ERRNO_WORDS: Record<string, string> = {
+  ENOSPC: "the disk is full",
+  EEXIST: "it could not be saved: try again",
+  EACCES: "the app can't write to its data folder",
+  EPERM: "the app can't write to its data folder",
+  EROFS: "the app can't write to its data folder",
+};
+
+/** Why main refused an image, as the note under the composer says it: main's own reasons as they are, and a bare errno
+ *  code (`ENOSPC`, `EEXIST` …) in plain words, never the code. */
+export function imageReason(error: string): string {
+  if (error && !/^E[A-Z0-9]+$/.test(error)) return error;
+  return Object.prototype.hasOwnProperty.call(ERRNO_WORDS, error) ? ERRNO_WORDS[error] : "it could not be saved";
 }
 
 /** The base64 of a `data:…;base64,` URL (FileReader's readAsDataURL), or null for any other text. */

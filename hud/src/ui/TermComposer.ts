@@ -7,7 +7,7 @@ import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transc
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import { hasChat, type TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
-import { IMAGE_TYPES, composeSend, composerWrites, dataUrlBase64, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
+import { IMAGE_TYPES, composeSend, composerWrites, dataUrlBase64, imageReason, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
 import { HostModelMenu } from "./HostModelMenu";
 
@@ -76,11 +76,12 @@ export interface ChipState {
  * the chat view (`setMode("chat")`) TerminalPanel moves the whole element into the chat's 760 px column.
  *
  * Images (C7): an agent terminal's composer, while the Code chat surface is on, takes PNG, JPEG, GIF and WebP images up to
- * 10 MB by paste, drop or + attach. Each becomes a chip with its thumbnail and ×, and main saves it at once into the app's
- * own data folder (code:save-image, which checks it again by content and names the path). Send pastes the text, then the
- * images' paths, in one bracketed paste through the same guarded Send (a card holds it, the screen is read first). A
- * refused image says why under the box. A shell, an ended agent and a run with the surface off have no + chip and take no
- * image. The chips belong to the terminal they were added on: another terminal starts with none.
+ * 10 MB, 8 to a message, by paste, drop or + attach. Each becomes a chip with its thumbnail and ×, and main saves it at
+ * once into the app's own data folder (code:save-image, which checks it again by content and names the path). Send pastes
+ * the text, then the images' paths, in one bracketed paste through the same guarded Send (a card holds it, the screen is
+ * read first). A refused image says why under the box, in plain words. A shell, a command run in an agent's name that is
+ * no conversation (`chat: false`, such as a login), an ended agent and a run with the surface off have no + chip and take
+ * no image. The chips belong to the terminal they were added on: another terminal starts with none.
  */
 export class TermComposer {
   readonly el: HTMLElement;
@@ -209,8 +210,9 @@ export class TermComposer {
     const chips = !shell && codeChatOn();
     this.permChip.toggleClass("is-hidden", !chips);
     this.modelWrap.toggleClass("is-hidden", !chips);
-    // Images go to an agent, through main's code:save-image, which the Code chat surface owns (C7, C13).
-    this.attachSlot.toggleClass("is-hidden", !(chips && !!hudHost().code?.saveImage));
+    // Images go to a conversation's agent (not a `chat: false` command such as a login), through main's code:save-image,
+    // which the Code chat surface owns (C7, C13): the rule takesImages() applies.
+    this.attachSlot.toggleClass("is-hidden", !(!!this.agent() && codeChatOn() && !!hudHost().code?.saveImage));
     this.syncChips();
     // A shell has no / commands: the list stays empty, so / is just a character.
     if (shell) this.slash.update([], "claude");
@@ -354,13 +356,15 @@ export class TermComposer {
     const shots = this.shots.slice();
     if (!s || this.blocked || (!text.trim() && !shots.length)) return;
     // An image main is still saving: Send waits for it, once, then starts again from the top, so every check below runs on
-    // what is there then. A refused or removed image sends nothing: its reason is under the box, the draft stays.
+    // what is there then. It goes only if the draft is still the one ⏎ was pressed on (R60): the same text and images. A
+    // refused or removed image, or an edit meanwhile, sends nothing and keeps the draft.
     if (shots.some((x) => x.path === null)) {
       if (this.awaitingShots) return;
       this.awaitingShots = true;
       void Promise.all(shots.map((x) => x.saved)).then((ok) => {
         this.awaitingShots = false;
-        if (this.session === s && ok.every(Boolean)) this.send();
+        const same = this.shots.length === shots.length && this.shots.every((x, i) => x === shots[i]);
+        if (this.session === s && ok.every(Boolean) && same && this.input.value === text) this.send();
       });
       return;
     }
@@ -424,7 +428,7 @@ export class TermComposer {
 
   /** Adds `file`'s chip (its thumbnail and ×) and has main save it; a refusal takes the chip away and says why. */
   private addImage(file: File): void {
-    const why = imageRefusal(file.type, file.size);
+    const why = imageRefusal(file.type, file.size, this.shots.length);
     if (why) { this.say(`Image not added: ${why}`); return; }
     const code = hudHost().code;
     const save = code?.saveImage?.bind(code);
@@ -450,7 +454,7 @@ export class TermComposer {
       if (data === null) return refuse("it could not be read");
       const r = await save({ mime: file.type, data });
       if (shot.gone) return false;
-      if (!r.ok) return refuse(r.error);
+      if (!r.ok) return refuse(imageReason(r.error));
       shot.path = r.data.path;
       el.removeClass("is-saving");
       return true;

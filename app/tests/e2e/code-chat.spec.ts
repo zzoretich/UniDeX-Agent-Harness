@@ -614,6 +614,10 @@ test.describe("the Code chat surface on", () => {
     await expect(C(win).locator(".aos-cv")).toHaveCount(0);
     await expect(chat(win)).toBeHidden();
     expect((await poolInfo(win, login))?.agentEnded).toBe(false);
+    // Not a conversation, so no images either: its composer has no + attach (C7).
+    await expect(C(win).locator(".aos-term-main > .aos-tc")).toBeVisible();
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-chip", { hasText: "@ file" })).toBeVisible();
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-attach")).toBeHidden();
   });
 });
 
@@ -940,6 +944,59 @@ test.describe("the composer's images (C7, C13)", () => {
     await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-attach")).toBeHidden();
     expect(await deliver(win, "paste", [{ name: "image.png", type: "image/png", b64: PNG }])).toBe(false);
     await expect(shots(win)).toHaveCount(0);
+  });
+
+  // Last in this app: main's code:save-image is replaced by one the test answers by hand, so an image stays "saving" as
+  // long as the test wants.
+  test("⏎ while an image saves sends once it is saved, only if the draft is unchanged; a bare errno reads as words; 8 images at most (R60)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000035", sessionId: "a1a1a1a1-0000-4000-8000-000000000036", label: "Images held" });
+    await expect(chat(win)).toBeVisible();
+    // The TUI turns bracketed paste on.
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].emit("\u001b[?2004h"), id);
+    await h.app.evaluate(({ ipcMain }) => {
+      const g = globalThis as unknown as { __saves: Array<(r: unknown) => void> };
+      g.__saves = [];
+      ipcMain.removeHandler("code:save-image");
+      ipcMain.handle("code:save-image", () => new Promise((r) => { g.__saves.push(r); }));
+    });
+    const answer = (r: object) => h.app.evaluate((_e, a) => (globalThis as unknown as { __saves: Array<(r: unknown) => void> }).__saves.shift()?.(a), r);
+    const saving = () => C(win).locator(".aos-tc-shot.is-saving:visible");
+    // ⏎ while it saves, then the draft changes before the save lands: nothing is sent, the new draft stays.
+    expect(await deliver(win, "paste", [{ name: "one.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(saving()).toHaveCount(1);
+    await input(win).fill("first try");
+    await written(win, id);
+    await input(win).press("Enter");
+    await input(win).fill("changed my mind");
+    await answer({ ok: true, data: { path: "/work/demo/one.png" } });
+    await expect(saving()).toHaveCount(0);
+    await win.waitForTimeout(500);
+    expect(await written(win, id)).toEqual([]);
+    await expect(input(win)).toHaveValue("changed my mind");
+    await expect(shots(win)).toHaveCount(1);
+    // Unchanged while it saves: the ⏎ sends once the save lands.
+    expect(await deliver(win, "paste", [{ name: "two.png", type: "image/png", b64: PNG }])).toBe(true);
+    await input(win).press("Enter");
+    await expect(saving()).toHaveCount(1);
+    await answer({ ok: true, data: { path: "/work/demo/two.png" } });
+    expect(await writesUntil(win, id, /\r$/)).toBe("\u001b[200~changed my mind /work/demo/one.png /work/demo/two.png\u001b[201~\r");
+    await expect(shots(win)).toHaveCount(0);
+    // Main's fs code alone reads as words.
+    expect(await deliver(win, "paste", [{ name: "three.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(saving()).toHaveCount(1);
+    await answer({ ok: false, error: "EEXIST", code: "EEXIST" });
+    await expect(note(win)).toHaveText("Image not added: it could not be saved: try again");
+    await expect(shots(win)).toHaveCount(0);
+    // Nine at once: eight chips, and the ninth says why.
+    const nine = Array.from({ length: 9 }, (_, i) => ({ name: `shot-${i + 1}.png`, type: "image/png", b64: PNG }));
+    expect(await deliver(win, "paste", nine)).toBe(true);
+    await expect(shots(win)).toHaveCount(8);
+    await expect(note(win)).toHaveText("Image not added: 8 images at most in one message");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
   });
 });
 

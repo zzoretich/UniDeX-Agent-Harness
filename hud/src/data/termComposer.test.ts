@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composerWrites, composeSend, dataUrlBase64, imageRefusal, IMAGE_MAX_BYTES, mentionAt, matchFiles, insertMention, sanitizeSnippets } from "./termComposer";
+import { composerWrites, composeSend, dataUrlBase64, imageReason, imageRefusal, IMAGE_MAX_BYTES, IMAGE_MAX_COUNT, mentionAt, matchFiles, insertMention, sanitizeSnippets } from "./termComposer";
 
 test("a message is one bracketed paste with CR line ends, then Enter, in pieces under the pty cap", () => {
   assert.deepEqual(composerWrites("fix it\nand test"), ["\x1b[200~", "fix it\rand test", "\x1b[201~", "\r"]);
@@ -77,4 +77,23 @@ test("dataUrlBase64: the base64 of a data: URL, or null for anything else", () =
   assert.equal(dataUrlBase64("data:text/plain,hello"), null);
   assert.equal(dataUrlBase64("blob:app://hud/1"), null);
   assert.equal(dataUrlBase64(""), null);
+});
+
+test("imageRefusal: at most 8 images in one message; a 9th says so, whatever it is", () => {
+  assert.equal(IMAGE_MAX_COUNT, 8);
+  assert.equal(imageRefusal("image/png", 1000, 7), null);
+  assert.equal(imageRefusal("image/png", 1000, 8), "8 images at most in one message");
+  assert.equal(imageRefusal("image/tiff", 1000, 8), "8 images at most in one message");
+});
+
+test("imageReason: main's plain reasons as they are; a bare errno code in plain words, never the code", () => {
+  assert.equal(imageReason("the images folder is full"), "the images folder is full");
+  assert.equal(imageReason("its content is GIF, not PNG"), "its content is GIF, not PNG");
+  assert.equal(imageReason("ENOSPC"), "the disk is full");
+  assert.equal(imageReason("EEXIST"), "it could not be saved: try again");
+  assert.equal(imageReason("EACCES"), "the app can't write to its data folder");
+  assert.equal(imageReason("EPERM"), "the app can't write to its data folder");
+  assert.equal(imageReason("EROFS"), "the app can't write to its data folder");
+  for (const code of ["EIO", "EMFILE", "ENAMETOOLONG", "EBADF"]) assert.equal(imageReason(code), "it could not be saved", code);
+  assert.equal(imageReason(""), "it could not be saved");
 });
