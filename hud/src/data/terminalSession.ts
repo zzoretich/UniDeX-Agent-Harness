@@ -9,7 +9,7 @@
 // meanwhile waits. When the agent exits, the user's login shell takes over in the same terminal and folder; the
 // terminal ends only when that shell does.
 import * as path from "path";
-import { pty as hostPty, type HostPtyProcess } from "../host";
+import { codeChatOn, pty as hostPty, type HostPtyProcess } from "../host";
 import { TermStreamScanner } from "./termStream";
 import type { Place, TermAccess, TermHost } from "./terminalLaunch";
 import { TERM_HOST_LABEL } from "./terminalLaunch";
@@ -30,6 +30,10 @@ export interface TerminalMeta {
    *  (spaces-redesign D7). Nothing persists it. */
   sessionId: string | null;
   startedAt: number;
+  /** The terminal's key, a v4 UUID (code-chat R15): an agent terminal's PTY carries it as AOS_TERMINAL while the Code chat
+   *  surface is on (F9), so the status line's copy and the Code chat's follower are named by it. A terminal made without
+   *  one, or with one that is not a v4 UUID, gets a fresh key (F14). */
+  terminalKey: string;
 }
 
 export interface TerminalSessionOptions {
@@ -47,6 +51,16 @@ export interface TerminalSessionOptions {
 type DataListener = (data: string) => void;
 type ExitListener = (info: { exitCode: number; signal?: number }) => void;
 type UpdateListener = () => void;
+
+const TERMINAL_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** A new terminal key: a v4 UUID (Web Crypto, the page's and Node's). */
+function newTerminalKey(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  const hex = (n: number) => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  return `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`;
+}
 
 const SCROLLBACK_CAP = 200_000;
 /** What may wait for a starting terminal's process (keys typed while main starts the agent). */
@@ -91,6 +105,7 @@ export class TerminalSession {
       access: opts.meta?.access ?? null,
       sessionId: opts.meta?.sessionId ?? null,
       startedAt: opts.meta?.startedAt ?? Date.now(),
+      terminalKey: typeof opts.meta?.terminalKey === "string" && TERMINAL_KEY.test(opts.meta.terminalKey) ? opts.meta.terminalKey : newTerminalKey(),
     };
     this.env = opts.env;
     this.size = { cols: opts.cols || 80, rows: opts.rows || 24 };
@@ -104,7 +119,12 @@ export class TerminalSession {
       cols: this.size.cols,
       rows: this.size.rows,
       cwd: this.cwd,
-      env: { ...(this.env || {}), TERM: "xterm-256color", COLORTERM: "truecolor", AGENTIC_OS: "1", FORCE_HYPERLINK: "1" },
+      env: {
+        ...(this.env || {}), TERM: "xterm-256color", COLORTERM: "truecolor", AGENTIC_OS: "1", FORCE_HYPERLINK: "1",
+        // An agent terminal's shell (the launch line typed into it) hands its key to the agent it starts (code-chat R15),
+        // while the Code chat surface is on (F9): off, the status line writes no per-terminal copy.
+        ...(this.meta.host === "shell" || !codeChatOn() ? {} : { AOS_TERMINAL: this.meta.terminalKey }),
+      },
     });
   }
 

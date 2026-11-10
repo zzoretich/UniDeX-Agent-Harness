@@ -29,6 +29,7 @@ import { registerFsIpc } from "./ipc/fs";
 import { registerHostIpc } from "./ipc/host";
 import { registerProcIpc } from "./ipc/proc";
 import { registerProposalsIpc } from "./ipc/proposals";
+import { registerCodeIpc } from "./ipc/code";
 import { registerSessionIpc } from "./ipc/sessions";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
 import { openExternalSafe, registerShellIpc } from "./ipc/shell";
@@ -48,6 +49,7 @@ import { sweepHeld } from "./computer/downloads";
 import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
 import { GitService } from "./services/git";
+import { CodeMirrorService } from "./services/code-mirror";
 import { PtyService, terminalBaseEnv, type PtyLib } from "./services/pty";
 import { SessionService, workspaceDir } from "./services/sessions";
 import { attachInfo, hostsOf } from "./setup/attach";
@@ -159,6 +161,8 @@ const ptyService = new PtyService({
   onAgentGone: (agent) => computerService.agentGone(agent),
   // R86: no terminal starts while the app quits (quit-gate.ts), so the quit's wait for their exits is the last one.
   quitting: () => quitting,
+  // code-chat R16: a terminal's transcript follower ends when the terminal is closed, not when its agent exits.
+  onEnd: (id, terminal) => codeMirror.end(id, terminal),
 });
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
 // surface. A turn outlives a page reload; quitting stops every one.
@@ -192,6 +196,13 @@ const sessionService = new SessionService({
     agentRegistry.remove(ev.pid);
     computerService.agentGone(ref);
   },
+});
+// The Code chat view's transcript followers (spec 2026-11-09-code-chat), behind the Code chat surface: one per agent
+// terminal, ended with it; quitting stops every one.
+const codeChatOn = (): boolean => policy.ids.includes("code");
+const codeMirror = new CodeMirrorService({
+  vaultRoot: () => context.vaultRoot ?? null, enabled: codeChatOn, context: () => context, env: process.env, node: sessionNode,
+  ptyInfo: (id) => ptyService.info(id),
 });
 const gitService = new GitService({ workspace: (name) => workspaceDir(context.vaultRoot ?? null, name), enabled: sessionsOn, env: process.env });
 
@@ -623,6 +634,7 @@ registerHostIpc(trust, {
 registerFsIpc(trust, () => fsService);
 registerProcIpc(trust, procService, ptyService);
 registerSessionIpc(trust, sessionService, gitService);
+registerCodeIpc(trust, codeMirror);
 registerShellIpc(trust, () => (vault.root ? scope : null), () => vault.root);
 registerSetupIpc(trust, setup);
 registerProposalsIpc(trust, () => vault.root, () => path.join(app.getPath("userData"), "proposal-undo"), () => policy.ids.includes("proposals"));
@@ -719,13 +731,13 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", (_e, argv) => { const url = urlFromArgv(argv); if (url) openLink(url); else show(); });
   app.on("activate", () => show());
   // R86: with a terminal running, the quit waits for every terminal's exit, then is asked again (quit-gate.ts).
-  app.on("before-quit", (e) => { quitting = true; quittingForUpdate = false; shutdownComputer(); gate.hold(e); });
+  app.on("before-quit", (e) => { quitting = true; quittingForUpdate = false; shutdownComputer(); codeMirror.stopAll(); gate.hold(e); });
   // Any quitAndInstall, not only Restart to Update's: Squirrel's own signal comes before the windows are asked to close.
   // The terminals end now; `before-quit`, which follows the windows' closing, waits for what is left of them.
-  autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; shutdownComputer(); ptyService.killAll(); });
+  autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; shutdownComputer(); codeMirror.stopAll(); ptyService.killAll(); });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
   // The marker keeps no Computer state past the app: an agent asking now hears that the app is not running.
-  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); shutdownComputer(); });
+  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); codeMirror.stopAll(); shutdownComputer(); });
 
   void app.whenReady().then(() => {
     // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay).

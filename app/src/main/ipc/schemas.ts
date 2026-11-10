@@ -4,7 +4,8 @@
 
 import { z } from "zod";
 import { navAllowed, siteOf } from "../policy/computer-url";
-import type { ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
+import { UUID_RE } from "../policy/programs";
+import type { CodeFollowRequest, CodeUnfollowRequest, CodeViewRequest, ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
 
 const MB = 1024 * 1024;
 
@@ -88,6 +89,21 @@ export const PtySpawnRequestSchema: z.ZodType<PtySpawnRequest> = z.object({
   env: EnvSet.optional(),
 });
 
+/** An agent terminal's key (code-chat R15): a v4 UUID. */
+const TerminalKey = z.string().regex(UUID_RE);
+/** A host session's id (code-chat R13): not dash-led, no "..". */
+const MirrorId = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((s) => !s.includes("..") && !s.startsWith("-"), "a session id");
+
+/** code:follow / code:view / code:unfollow (code-chat R2, R4, R10). */
+export const CodeFollowArgs: z.ZodType<CodeFollowRequest> = z.object({
+  pty: Id,
+  host: z.enum(["claude", "codex"]),
+  terminal: TerminalKey,
+  id: MirrorId.nullable().optional(),
+}).strict();
+export const CodeViewArgs: z.ZodType<CodeViewRequest> = z.object({ host: z.enum(["claude", "codex"]), id: MirrorId }).strict();
+export const CodeUnfollowArgs: z.ZodType<CodeUnfollowRequest> = z.object({ pty: Id }).strict();
+
 /** A Code launch's agent (agent-computer D18): the host and its words; main resolves the binary and checks the words. */
 /** pty:agent-flags: which host's Code launch (agent-computer R70), and `sub: "resume"` for a resume line (R77). */
 export const PtyAgentFlagsArgs = z.object({ host: z.enum(["claude", "codex"]), sub: z.literal("resume").optional() }).strict();
@@ -104,6 +120,7 @@ export const PtyAgentRequestSchema: z.ZodType<PtyAgentRequest> = z.object({
   place: Text(512),
   label: Text(200),
   access: z.enum(["host", "read", "edit", "run"]),
+  terminal: TerminalKey.optional(),
 });
 
 export const PtyWriteArgs = z.object({ id: Id, data: z.string().max(MB) });

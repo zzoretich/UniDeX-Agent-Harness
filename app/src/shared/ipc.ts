@@ -108,6 +108,10 @@ export const CH = {
   sessionList: "session:list",
   sessionCatalog: "session:catalog",
   sessionRead: "session:read",
+  // The Code chat view (spec 2026-11-09-code-chat): main follows an agent terminal's transcript into a cache the page reads.
+  codeFollow: "code:follow",
+  codeUnfollow: "code:unfollow",
+  codeView: "code:view",
   /** main → page: one event of a running turn. */
   sessionEvent: "session:event",
   // The workspace's repository: what changed, a file's diff, and the commit the user asks for.
@@ -566,7 +570,20 @@ export interface PtyAgentRequest {
   place: string;
   label: string;
   access: "host" | "read" | "edit" | "run";
+  /** The terminal's key, set as AOS_TERMINAL in the agent's environment (code-chat R15): a v4 UUID. */
+  terminal?: string;
 }
+
+/** code:follow: the terminal's pty id, its host, its key (AOS_TERMINAL), and the conversation's id when the deck knows it. */
+export interface CodeFollowRequest { pty: string; host: "claude" | "codex"; terminal: string; id?: string | null }
+export interface CodeViewRequest { host: "claude" | "codex"; id: string }
+/** code:unfollow: any pty of the terminal whose follower stops. */
+export interface CodeUnfollowRequest { pty: string }
+/** A mirror's cache, as a vault-relative path (brain/_index/code/<key>.jsonl). */
+export interface CodeCache { cache: string }
+/** A follower's cache, and whether this call started it (code-chat R16b): a fresh follower writes its cache from the start,
+ *  so a reader starts its tail over. */
+export interface CodeFollow extends CodeCache { fresh: boolean }
 
 export type PtyEvent =
   | { id: string; type: "data"; data: string }
@@ -710,6 +727,16 @@ export interface AosBridge {
     /** Each host's models and commands (cached by the runtime for a day; `refresh` asks the hosts again). */
     catalog(refresh?: boolean): Promise<Result<HostCatalog>>;
     onEvent(cb: (ev: SessionEvent) => void): () => void;
+  };
+  /** The Code chat view's transcript mirror (spec 2026-11-09-code-chat), run by main while the Code chat surface is on. */
+  code: {
+    /** Follows an agent terminal's conversation; `cache` is the vault-relative file the page reads. Calling it again with the
+     *  same pty, terminal, host and id returns the running follower's cache with `fresh: false`. */
+    follow(req: CodeFollowRequest): Promise<Result<CodeFollow>>;
+    /** Stops the follower of the terminal `pty` belongs to (one-way; nothing when none runs). */
+    unfollow(pty: string): void;
+    /** Mirrors a past conversation once and returns its cache. */
+    view(req: CodeViewRequest): Promise<Result<CodeCache>>;
   };
   /** The app-owned instruction proposal transaction. Decisions come from the trusted main window. */
   proposals: {

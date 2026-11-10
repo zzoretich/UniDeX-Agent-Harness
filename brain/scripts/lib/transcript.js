@@ -44,8 +44,8 @@ const fs = require('fs');
 const path = require('path');
 
 const FILE_TOOLS = { Edit: 'edit', Write: 'edit', MultiEdit: 'edit', NotebookEdit: 'edit', Read: 'read' };
-// Codex injects these as user-role messages; they are not the user's words.
-const CODEX_ENVELOPE_RE = /^<(environment_context|permissions instructions|user_instructions|app_instructions|skill|turn_aborted)\b/;
+// Codex injects these as user-role messages; they are not the user's words. The last three are Codex Desktop's.
+const CODEX_ENVELOPE_RE = /^<(environment_context|permissions instructions|user_instructions|app_instructions|skill|turn_aborted|realtime_delegation|in-app-browser-context|send_user_message_question_reply)\b/;
 
 function parseJsonl(text) {
   const out = [];
@@ -572,6 +572,6 @@ function readSessionIndex(file) {
 }
 
 module.exports = {
-  parseJsonl, textOf, kindOf, detectFormat, isRealPrompt, parseEntries, readTurns, readTranscriptFile, flattenTurns, sessionModel, sessionModelFile, FILE_TOOLS,
-  sessionHead, sessionTail, fileTouches, mcpCalls, readSessionIndex,
+  parseJsonl, textOf, kindOf, detectFormat, isRealPrompt, CODEX_ENVELOPE_RE, parseEntries, readTurns, readTranscriptFile, flattenTurns, sessionModel, sessionModelFile, FILE_TOOLS,
+  sessionHead, sessionTail, codexKind, fileTouches, mcpCalls, readSessionIndex,
 };

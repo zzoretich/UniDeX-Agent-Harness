@@ -115,6 +115,8 @@ export interface HostPtyAgentRequest {
   place: string;
   label: string;
   access: "host" | "read" | "edit" | "run";
+  /** The terminal's key, set as AOS_TERMINAL in the agent's environment (code-chat R15). */
+  terminal?: string;
 }
 
 export interface HostPty {
@@ -249,6 +251,21 @@ export interface HostComputer {
   onEvent(cb: (ev: HostComputerEvent) => void): () => void;
 }
 
+/** The Code chat view's transcript mirror (app/src/shared/ipc.ts AosBridge.code); only the app has it. `cache` is a
+ *  vault-relative path (code-chat R14). */
+export interface HostCode {
+  /** Whether the Code chat surface is on for this run of the app (fixed at boot, as the Computer's is). Off, or absent
+   *  (fail closed), no terminal carries AOS_TERMINAL, so the status line writes no per-terminal copy (code-chat F9). */
+  readonly enabled?: boolean;
+  /** Follows an agent terminal's conversation; again with the same pty, terminal, host and id returns the running
+   *  follower's cache with `fresh: false`. `fresh: true`: a new follower writes its cache from the start (R16b). */
+  follow(req: { pty: string; host: "claude" | "codex"; terminal: string; id?: string | null }): Promise<HostResult<{ cache: string; fresh: boolean }>>;
+  /** Stops the follower of the terminal `pty` belongs to. */
+  unfollow(pty: string): void;
+  /** Mirrors a past conversation once. */
+  view(req: { host: "claude" | "codex"; id: string }): Promise<HostResult<{ cache: string }>>;
+}
+
 export interface HostSessions {
   /** Opens a thread in a workspace and starts its first turn; events follow on onEvent. */
   start(req: { workspace: string; host: HostSessionHost; text: string; model?: string | null; effort?: string | null; access?: HostSessionAccess; allowCommands?: boolean }): Promise<HostResult<HostSessionThread>>;
@@ -302,6 +319,8 @@ export interface HudHost {
   sessions?: HostSessions;
   /** The Computer pane's calls: only the app has them; undefined elsewhere. */
   computer?: HostComputer;
+  /** The Code chat view's transcript mirror: only the app has it; undefined elsewhere. */
+  code?: HostCode;
   git?: HostGit;
   proposals?: HostProposals;
 }
@@ -366,6 +385,10 @@ export const shell: HostShell = {
   openExternal: (url) => hudHost().shell.openExternal(url),
   showItemInFolder: (p) => hudHost().shell.showItemInFolder(p),
 };
+
+/** Whether the installed host runs the Code chat's followers now (its surface is on): only then does a terminal carry
+ *  AOS_TERMINAL (code-chat F9). */
+export function codeChatOn(): boolean { return hudHost().code?.enabled === true; }
 
 /** The installed host's sessions and git, or null when it has none (plain Node). */
 export function sessionsHost(): { sessions: HostSessions; git: HostGit } | null {

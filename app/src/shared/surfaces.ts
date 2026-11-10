@@ -83,6 +83,13 @@ const PATH = /(?:\/|~\/)[^\0\n\r\u2028\u2029]+/;
 // dash ("- what is due?"), as it may in Obsidian; `--` never, which keeps out `--warm` and ask.js's `--write=<file>`.
 const QUESTION = /(?!--)[\s\S]+/;
 const ANY = /[\s\S]*/;                      // a value the runtime parses itself (aos config set)
+// The Code chat's mirror (code-chat R13): a host session id as lib/sessions.js takes it (not dash-led, no ".."), a terminal's
+// key (a v4 UUID, the AOS_TERMINAL a Code launch's agent carries), the epoch milliseconds a terminal started, and an
+// absolute folder. lib/code-mirror.js checks each again.
+const MIRROR_ID = /(?!-)(?!.*\.\.)[A-Za-z0-9._-]{1,128}/;
+const TERMINAL_KEY = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/;
+const MIRROR_SINCE = /\d{1,16}/;
+const MIRROR_CWD = /\/[^\0\n\r\u2028\u2029]*/;
 const USD = /\d+(\.\d+)?/;
 const JSON_OBJ = /\{[\s\S]*\}/;
 const SLUG = /[a-z0-9][a-z0-9-]{1,40}/;     // RoutinesTab's routine slug
@@ -669,6 +676,25 @@ export const SURFACES: readonly Surface[] = [
       { script: "notify.js", args: argv("post", "--from", "computer", "--level", "info", "--title", NOTICE_TITLE, "--body-file", "-") },
     ],
     verified: true,
+  },
+  {
+    id: "code",
+    label: "Code chat",
+    source: "main/services/code-mirror.ts (the code:* calls, for the Code tab's chat view; spec 2026-11-09-code-chat): main runs the runtime's lib/sessions.js mirror, one follower per agent terminal and one run for a past conversation the person opens; the page names a host, a session id and a terminal key, never a path or an argument",
+    // code-chat R13: main runs the mirror only while this surface is on (followers start with a terminal and die with it,
+    // at unfollow and at quit); the page reads the caches it writes through the vault's read scope and writes nothing.
+    // Off by default until its live check on each host.
+    scope: "main",
+    writes: ["brain/_index/code/*.jsonl", "brain/_index/code/*.claim.json"],
+    folders: ["brain/_index/code"],
+    spawns: [
+      { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--id", MIRROR_ID, "--terminal", TERMINAL_KEY, "--follow") },
+      { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--cwd", MIRROR_CWD, "--since", MIRROR_SINCE, "--terminal", TERMINAL_KEY, "--follow") },
+      // R18: a Codex terminal whose conversation the deck knows starts on that rollout, then follows its folder.
+      { script: "lib/sessions.js", args: argv("mirror", "--host", /codex/, "--id", MIRROR_ID, "--cwd", MIRROR_CWD, "--since", MIRROR_SINCE, "--terminal", TERMINAL_KEY, "--follow") },
+      { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--id", MIRROR_ID, "--once") },
+    ],
+    verified: false,
   },
 ];
 

@@ -43,13 +43,13 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   const shape = await app().win.evaluate(() => {
     const aos = (window as unknown as { aos: Record<string, unknown> }).aos;
     const keys = (o: Record<string, unknown>) => Object.keys(o).sort();
-    return { top: keys(aos), fs: keys(aos.fs as Record<string, unknown>), proc: keys(aos.proc as Record<string, unknown>), pty: keys(aos.pty as Record<string, unknown>),
+    return { top: keys(aos), code: keys(aos.code as Record<string, unknown>), fs: keys(aos.fs as Record<string, unknown>), proc: keys(aos.proc as Record<string, unknown>), pty: keys(aos.pty as Record<string, unknown>),
       shell: keys(aos.shell as Record<string, unknown>), plugin: keys(aos.plugin as Record<string, unknown>),
       setup: keys(aos.setup as Record<string, unknown>), update: keys(aos.update as Record<string, unknown>), theme: keys(aos.theme as Record<string, unknown>),
       sessions: keys(aos.sessions as Record<string, unknown>), computer: keys(aos.computer as Record<string, unknown>), git: keys(aos.git as Record<string, unknown>),
       proposals: keys(aos.proposals as Record<string, unknown>) };
   });
-  expect(shape.top).toEqual(["boot", "computer", "fs", "git", "onCommand", "onProtocol", "onVaultChanges", "plugin", "proc", "proposals", "pty", "ready", "sessions", "setup", "shell", "theme", "update"]);
+  expect(shape.top).toEqual(["boot", "code", "computer", "fs", "git", "onCommand", "onProtocol", "onVaultChanges", "plugin", "proc", "proposals", "pty", "ready", "sessions", "setup", "shell", "theme", "update"]);
   expect(shape.proposals).toEqual(["apply", "preview", "reject", "undo", "undos"]);
   expect(shape.fs).toEqual(["appendText", "copy", "exists", "mkdir", "readBytes", "readText", "readdir", "remove", "rename", "stat", "trash", "walk", "writeText"]);
   expect(shape.proc).toEqual(["execSync", "kill", "onEvent", "spawn"]);
@@ -62,6 +62,7 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.sessions).toEqual(["catalog", "list", "onEvent", "read", "send", "start", "stop"]);
   expect(shape.computer).toEqual(["answer", "handBack", "mark", "navigate", "onEvent", "popOut", "select", "show", "tab", "takeOver"]);
   expect(shape.git).toEqual(["commit", "diff", "status"]);
+  expect(shape.code).toEqual(["follow", "unfollow", "view"]);
 });
 
 test("proposal decisions reject paths, malformed hashes and unknown undo records", async () => {
@@ -130,6 +131,12 @@ test("setup names a fix by id only, and refuses each step outside its state", as
   expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "claude", text: "hi", access: "root" }))).toMatchObject({ ok: false, code: "EINVAL" });
   expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "codex", text: "hi", effort: "turbo" }))).toMatchObject({ ok: false, code: "EINVAL" });
   expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "claude", text: "hi", model: "--dangerously-skip-permissions" }))).toMatchObject({ ok: false, code: "EINVAL" });
+  // The Code chat's mirror is off by default (code-chat R13): a well-formed call is refused, a malformed one never reaches main.
+  type Code = { follow(r: unknown): Promise<unknown>; view(r: unknown): Promise<unknown> };
+  expect(await call((aos) => (aos.code as unknown as Code).follow({ pty: "t1", host: "claude", terminal: "aaaaaaaa-0000-4000-8000-000000000001" }))).toMatchObject({ ok: false, code: "EROFS" });
+  expect(await call((aos) => (aos.code as unknown as Code).view({ host: "codex", id: "abc" }))).toMatchObject({ ok: false, code: "EROFS" });
+  expect(await call((aos) => (aos.code as unknown as Code).follow({ pty: "t1", host: "claude", terminal: "../a" }))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.code as unknown as Code).view({ host: "codex", id: "../x" }))).toMatchObject({ ok: false, code: "EINVAL" });
 });
 
 test("reads stay inside the vault and the hosts' folders, and never return a credential", async () => {

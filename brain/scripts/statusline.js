@@ -97,6 +97,19 @@ function gsdPhase(text) {
   return [`Phase ${phase}${name ? ` ${name}` : ''}`, get('status'), total ? `${done || 0}/${total}` : ''].filter(Boolean).join(' · ');
 }
 
+/** The Code chat's copy of what render printed, per terminal: <vault>/brain/_index/statusline/<AOS_TERMINAL>.json. */
+function teeStatus({ env, vault, payload, out, now }) {
+  const terminal = env && env.AOS_TERMINAL;
+  if (typeof terminal !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(terminal)) return;
+  const p = payload || {};
+  const sid = typeof p.session_id === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(p.session_id) && !p.session_id.includes('..') ? p.session_id : null;
+  const dir = path.join(vault, 'brain', '_index', 'statusline');
+  fs.mkdirSync(dir, { recursive: true });
+  require('./lib/fsx.js').writeAtomic(path.join(dir, `${terminal}.json`), JSON.stringify({
+    at: now.toISOString(), session_id: sid, transcript_path: typeof p.transcript_path === 'string' ? p.transcript_path : null, ansi: out,
+  }));
+}
+
 /** The work segment (D12): this session's in-progress task, else the project's GSD phase. */
 function workOf(payload, claudeDir) {
   const p = payload || {};
@@ -284,7 +297,9 @@ async function main(argv, {
         columns: parseInt(env.COLUMNS || '0', 10) || 0, links: sl.links !== false, segments: sl.segments, env, now: at.getTime(),
       });
       const out = (sl.chainPosition === 'bottom' ? [...lines, chained] : [chained, ...lines]).filter(Boolean);
-      if (out.length) stdout(`${out.join('\n')}\n`);
+      const printed = out.length ? `${out.join('\n')}\n` : '';
+      if (printed) stdout(printed);
+      try { teeStatus({ env, vault: V, payload, out: printed, now: at }); } catch { /* the tee never changes render */ }
       return 0;
     }
 
@@ -367,4 +382,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, () => { process.exitCode = 0; });
 }
 
-module.exports = { main, parseArgs, readStdin, gsdPhase, workOf, parseGitStatus, gitOf, readGitCache, refreshGit, gitForRender, fireChain, chainFirstLine, samplePayload, USAGE };
+module.exports = { main, teeStatus, parseArgs, readStdin, gsdPhase, workOf, parseGitStatus, gitOf, readGitCache, refreshGit, gitForRender, fireChain, chainFirstLine, samplePayload, USAGE };

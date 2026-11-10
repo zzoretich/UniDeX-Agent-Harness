@@ -64,19 +64,26 @@ function codexPlan(item) {
 const filePathOf = (input) => (input && typeof input === 'object' && (input.file_path || input.notebook_path || input.path)) || null;
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
+/** Claude assistant content blocks → events (text, plan, tool); shared by the stream-json and transcript mappers. */
+function claudeBlocks(content, t) {
+  const out = [];
+  for (const b of Array.isArray(content) ? content : []) {
+    if (!b) continue;
+    const plan = b.type === 'tool_use' && b.name === 'TodoWrite' ? claudePlan(b.input) : null;
+    if (b.type === 'text' && b.text) out.push({ t, kind: 'text', text: String(b.text) });
+    else if (plan) out.push({ t, kind: 'plan', items: plan });
+    else if (b.type === 'tool_use') out.push({ t, kind: 'tool', id: b.id || null, name: String(b.name || ''), toolKind: kindOf(b.name), summary: summary(b.input), filePath: filePathOf(b.input) });
+  }
+  return out;
+}
+
 /** Claude stream-json: one parsed line → events. */
 function mapClaude(msg, st, t) {
   const out = [];
   const sid = msg.session_id;
   if (sid && !st.hostSessionId) { st.hostSessionId = String(sid); out.push({ t, kind: 'session', id: st.hostSessionId }); }
   if (msg.type === 'assistant' && msg.message && Array.isArray(msg.message.content)) {
-    for (const b of msg.message.content) {
-      if (!b) continue;
-      const plan = b.type === 'tool_use' && b.name === 'TodoWrite' ? claudePlan(b.input) : null;
-      if (b.type === 'text' && b.text) out.push({ t, kind: 'text', text: String(b.text) });
-      else if (plan) out.push({ t, kind: 'plan', items: plan });
-      else if (b.type === 'tool_use') out.push({ t, kind: 'tool', id: b.id || null, name: String(b.name || ''), toolKind: kindOf(b.name), summary: summary(b.input), filePath: filePathOf(b.input) });
-    }
+    out.push(...claudeBlocks(msg.message.content, t));
   } else if (msg.type === 'user' && msg.message && Array.isArray(msg.message.content)) {
     for (const b of msg.message.content) {
       if (b && b.type === 'tool_result') out.push({ t, kind: 'tool_result', id: b.tool_use_id || null, ok: !b.is_error, summary: summary(b.content) });
@@ -159,4 +166,4 @@ function createParser(host, { model = null, now = () => new Date() } = {}) {
   };
 }
 
-module.exports = { createParser, summary, SUMMARY_MAX };
+module.exports = { createParser, summary, claudeBlocks, PLAN_STATUS, SUMMARY_MAX };

@@ -119,6 +119,11 @@ const api: AosBridge = {
     catalog: (refresh) => invoke(CH.sessionCatalog, refresh ? { refresh: true } : {}),
     onEvent: (cb) => listen<SessionEvent>(CH.sessionEvent, cb),
   },
+  code: {
+    follow: (req) => invoke(CH.codeFollow, req),
+    unfollow: (pty) => ipcRenderer.send(CH.codeUnfollow, { pty }),
+    view: (req) => invoke(CH.codeView, req),
+  },
   proposals: {
     preview: (name) => invoke(CH.proposalPreview, { name }),
     apply: (name, digest, token) => invoke(CH.proposalApply, { name, digest, token }),

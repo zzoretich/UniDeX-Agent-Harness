@@ -525,8 +525,10 @@ test("without node-pty, terminals say why and nothing starts", () => {
   assert.equal(t.spawn({ id: "t", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok, false);
 });
 
-test("terminals start with the login shell's PATH and without CLAUDECODE (spec 2026-10-08-term-agent-deck T14)", () => {
+test("terminals start with the login shell's PATH and without CLAUDECODE or AOS_TERMINAL (spec 2026-10-08-term-agent-deck T14, code-chat F8)", () => {
   assert.deepEqual(terminalBaseEnv({ PATH: "/usr/bin", HOME: "/h", CLAUDECODE: "1" }, "/opt/homebrew/bin:/usr/bin"), { PATH: "/opt/homebrew/bin:/usr/bin", HOME: "/h" });
+  // An app started inside an agent terminal must not hand that terminal's key to its own terminals.
+  assert.deepEqual(terminalBaseEnv({ PATH: "/usr/bin", AOS_TERMINAL: "aaaaaaaa-0000-4000-8000-000000000001" }, null), { PATH: "/usr/bin" });
   assert.deepEqual(terminalBaseEnv({ PATH: "/usr/bin" }, null), { PATH: "/usr/bin" });
   reset([]);
   const { lib, spawned } = fakePty();
