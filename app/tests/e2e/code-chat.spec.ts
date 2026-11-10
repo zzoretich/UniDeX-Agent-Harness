@@ -106,7 +106,7 @@ test.describe("the Code chat surface on", () => {
     await expect(chat(win).locator(".aos-cc-stop")).toBeVisible();
   });
 
-  test("an agent terminal that opens in its chat has the size the terminal view gives it, before any flip (C1)", async () => {
+  test("an agent terminal that opens in its chat has the size the terminal view gives it, within a column; flipping never resizes it again (C1, R51)", async () => {
     const { win } = app();
     const size = () => win.evaluate((i) => {
       const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { dimensions: { cols: number; rows: number } } | undefined } } } }).aosHost.plugin.terminalPool.get(i);
@@ -129,50 +129,61 @@ test.describe("the Code chat surface on", () => {
         last = now;
         return same;
       }, { intervals: [100] }).toBeGreaterThanOrEqual(4);
-      return size();
+      return (await size())!;
     };
-    // Classic always-visible scrollbars, as on CI's macOS runners (this Mac's overlay ones take no width): the two
-    // states must measure the same terminal width either way. Added here and removed below, so no other test sees it.
+    // Every size the panel gives the agent's PTY, read and cleared by resizes(); the session's own resize is back below.
+    await win.evaluate((i) => {
+      const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { resize(c: number, r: number): void } } } } }).aosHost.plugin.terminalPool.get(i);
+      const w = window as unknown as { __resizes: string[] };
+      w.__resizes = [];
+      const orig = s.resize.bind(s);
+      s.resize = (c: number, r: number) => { w.__resizes.push(`${c}x${r}`); orig(c, r); };
+    }, agent);
+    const resizes = () => win.evaluate(() => (window as unknown as { __resizes: string[] }).__resizes.splice(0));
+    // Classic always-visible scrollbars, as on CI's macOS runners (this Mac's overlay ones take no width). Added here and
+    // removed below, so no other test sees it.
     const style = await win.addStyleTag({ content: "::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; border-radius: 6px; }" });
     try {
-      // A 1x screen, as CI's: xterm's cell width is the rounded canvas over the columns it has, so a fit can land a
-      // column off the next one at some widths. Sweep a few so each view must settle on the same columns. Each width
-      // has its own emulation, cleared before the next (a second session's clear would drop the first's override).
-      for (const w of [1469, 1472, 1475, 1478]) {
-        const r = await emulateViewport(win, { width: w, height: 920, scale: 1 });
+      // A 1x screen, as CI's: xterm's cell width is the rounded canvas over the columns it has, so the chat's fit and the
+      // terminal view's can land a column apart. 1480 x 920 first, whatever the screen (CI's runners are 1024 px wide),
+      // then a few widths near it, then heights where the composer's share of the stage ends part-way through a line (the
+      // rows must still match: R52). Each size has its own emulation, cleared before the next (a second session's clear
+      // would drop the first's override).
+      const sizes = [[1480, 920], [1469, 920], [1472, 920], [1475, 920], [1478, 920], [1480, 900], [1480, 914], [1480, 931]];
+      for (const [w, h] of sizes) {
+        const at = `${w} x ${h}`;
+        const r = await emulateViewport(win, { width: w, height: h, scale: 1 });
         try {
+          // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over (at 1480 x 920, before any flip).
+          await expect.poll(async () => (await size())?.cols ?? 0).toBeGreaterThan(80);
           const chatSize = await settled();
+          expect(chatSize.rows, at).toBeGreaterThan(24);
+          await resizes();
+          // The first flip: a column at most, the same rows.
           await win.keyboard.press("Meta+j");
           await expect(body(win)).toBeVisible();
-          expect(await settled(), `${w} px`).toEqual(chatSize);
-          await win.keyboard.press("Meta+j");
-          await expect(chat(win)).toBeVisible();
+          const termSize = await settled();
+          const moved = `${at}: ${JSON.stringify(chatSize)} then ${JSON.stringify(termSize)}`;
+          expect(Math.abs(termSize.cols - chatSize.cols), moved).toBeLessThanOrEqual(1);
+          expect(termSize.rows, moved).toBe(chatSize.rows);
+          await resizes();
+          // Then back, again and back: the PTY is never resized.
+          for (const shown of [chat, body, chat]) {
+            await win.keyboard.press("Meta+j");
+            await expect(shown(win)).toBeVisible();
+            expect(await settled(), at).toEqual(termSize);
+          }
+          expect(await resizes(), at).toEqual([]);
         } finally {
           await r();
         }
       }
-      // Lay the page out at 1480 x 920 whatever the screen (CI's runners are 1024 px wide): the stage is then wide and
-      // tall enough that a fit cannot give 80 x 24.
-      const restore = await emulateViewport(win, { width: 1480, height: 920, scale: 1 });
-      try {
-        expect(await win.evaluate(() => window.innerWidth)).toBe(1480);
-        // The refit runs from a ResizeObserver, a frame after the layout: wait for it, then read.
-        await expect.poll(async () => (await size())?.cols ?? 0).toBeGreaterThan(80);
-        const before = await size();
-        // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over.
-        expect(before!.rows).toBeGreaterThan(24);
-        await win.keyboard.press("Meta+j");
-        await expect(body(win)).toBeVisible();
-        // Give a refit its frames: the flip itself must not resize the PTY.
-        expect(await settled()).toEqual(before);
-        await win.keyboard.press("Meta+j");
-        await expect(chat(win)).toBeVisible();
-        expect(await settled()).toEqual(before);
-      } finally {
-        await restore();
-      }
     } finally {
       await style.evaluate((n) => (n as Element).remove());
+      await win.evaluate((i) => {
+        const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { resize?: unknown } } } } }).aosHost.plugin.terminalPool.get(i);
+        delete s.resize;
+      }, agent);
     }
   });
 
