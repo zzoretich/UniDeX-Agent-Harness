@@ -73,8 +73,6 @@ export interface TerminalPanelOptions {
 const STARTED_MS = 6000;
 /** The terminal view's composer height (px) until one is measured: a rough figure, the first ⌘J corrects it. */
 const TERM_COMPOSER_H = 200;
-/** Closed conversations the sidebar remembers until the index lists them. */
-const CLOSED_CAP = 20;
 const NO_REASON = "The conversation could not be loaded";
 
 /** A past conversation open read-only in the stage (code-chat C6): a History row, or one closed in this app. */
@@ -99,7 +97,6 @@ export class TerminalPanel {
   private sidebar: SidebarGroup[] = [];
   /** The past conversations (the index, digests), the ones closed in this app, and the "Show more" counts by group. */
   private hist: HistoryCache | null = null;
-  private closed: TermRowInput[] = [];
   private lastInputs = new Map<string, TermRowInput>();
   private extra: Record<string, number> = {};
   /** The past conversation shown read-only instead of a terminal, its chat, and what it shows now. */
@@ -318,7 +315,6 @@ export class TerminalPanel {
     this.pastData = null;
     this.pastSeq++;
     this.hist = null;
-    this.closed = [];
     this.lastInputs.clear();
     this.chatFor = null;
     this.frameEl = null;
@@ -524,7 +520,7 @@ export class TerminalPanel {
     const inputs = this.rowInputs();
     this.lastInputs = new Map(inputs.map((r) => [r.id, r]));
     const on = this.plugin.codeFeeds?.on() ?? false;
-    const groups = groupSidebar(inputs, on ? this.hist?.rows() ?? [] : [], { now: Date.now(), filter: this.list?.query() ?? "", closed: on ? this.closed : [], extra: this.extra });
+    const groups = groupSidebar(inputs, on ? this.hist?.rows() ?? [] : [], { now: Date.now(), filter: this.list?.query() ?? "", closed: on ? this.plugin.codeFeeds?.closedConvs.list() ?? [] : [], extra: this.extra });
     const scope = this.scope;
     if (!scope) return groups;
     const only = groups.filter((g) => g.key === scope.key);
@@ -542,8 +538,7 @@ export class TerminalPanel {
   private rememberClosed(id: string): void {
     const r = this.lastInputs.get(id);
     this.lastInputs.delete(id);
-    if (!r || r.host === "shell" || !r.sessionId) return;
-    this.closed = [{ ...r, exited: true, turnOpen: false, needsYou: false }, ...this.closed.filter((c) => c.sessionId !== r.sessionId || c.host !== r.host)].slice(0, CLOSED_CAP);
+    if (r) this.plugin.codeFeeds?.closedConvs.add(r);
   }
 
   private closeSession(id: string): void {

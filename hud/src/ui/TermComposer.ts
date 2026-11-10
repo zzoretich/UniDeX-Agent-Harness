@@ -40,7 +40,7 @@ export class TermComposer {
   private hint: HTMLElement;
   private shownHost: string | null = null;
   private commandsChip: HTMLElement;
-  private accessChip: HTMLElement;
+  private permChip: HTMLElement;
   private modelChip: HTMLElement;
 
   constructor(parent: HTMLElement, private plugin: AgenticOSPlugin, private focusTerminal: () => void, private bracketed: () => boolean = () => true) {
@@ -60,7 +60,7 @@ export class TermComposer {
     snip.createSpan({ text: "Snippets" });
     snip.addEventListener("click", () => this.toggleSnippets(bar));
     this.hint = bar.createSpan({ cls: "aos-tc-hint", text: "⏎ send · ⇧⏎ new line · @ file · / commands · esc terminal" });
-    this.accessChip = bar.createSpan({ cls: "aos-tc-chip is-label", attr: { title: "What the agent may do" } });
+    this.permChip = bar.createSpan({ cls: "aos-tc-chip is-label", attr: { title: "What the agent may do" } });
     this.modelChip = bar.createSpan({ cls: "aos-tc-chip is-label", attr: { title: "The conversation's model" } });
     const send = bar.createEl("button", { cls: "aos-tc-send", attr: { type: "button", "aria-label": "Send to the terminal" } });
     const sendIcon = send.createSpan({ cls: "aos-tc-icon" });
@@ -85,8 +85,8 @@ export class TermComposer {
     this.input.setAttr("placeholder", shell ? "Write a command…" : `Write to ${TERM_HOST_LABEL[s.meta.host]}…`);
     this.hint.setText(shell ? "⏎ run · ⇧⏎ new line · @ file · esc terminal" : "⏎ send · ⇧⏎ new line · @ file · / commands · esc terminal");
     this.commandsChip.toggleClass("is-hidden", shell);
-    this.accessChip.setText(!shell && s.meta.access ? TERM_ACCESS_LABEL[s.meta.access] : "");
-    this.accessChip.toggleClass("is-hidden", shell || !s.meta.access);
+    this.permChip.setText(!shell && s.meta.access ? TERM_ACCESS_LABEL[s.meta.access] : "");
+    this.permChip.toggleClass("is-hidden", shell || !s.meta.access);
     this.modelChip.toggleClass("is-hidden", shell);
     // A shell has no / commands: the list stays empty, so / is just a character.
     if (shell) this.slash.update([], "claude");

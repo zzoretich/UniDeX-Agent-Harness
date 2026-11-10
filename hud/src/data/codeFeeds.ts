@@ -16,6 +16,7 @@ import { allowCodeHref, ansiLines, type Span } from "./ansiSpans";
 import type { TerminalPool } from "./terminalPool";
 import type { TerminalSession } from "./terminalSession";
 import { listen } from "./listen";
+import { ClosedRecord } from "./closedRecord";
 
 /** Rows a chat shows, and how many more each Show earlier adds. */
 export const ROW_CAP = 400;
@@ -82,6 +83,8 @@ export class CodeFeeds {
   private listeners = new Set<(id: string) => void>();
   private unlisten: (() => void) | null;
   private disposed = false;
+  /** Conversations closed in this app, for the Code sidebar; it lives as long as the plugin, not the Code tab (C6). */
+  readonly closedConvs = new ClosedRecord();
 
   constructor(private readonly pool: TerminalPool, private readonly o: CodeFeedsOptions) {
     this.unlisten = listen(pool, {
