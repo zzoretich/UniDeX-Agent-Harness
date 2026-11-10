@@ -210,7 +210,8 @@ const gitService = new GitService({ workspace: (name) => workspaceDir(context.va
 // The Code tab's Diff (code-chat C8): read-only git in the folder main picks from the terminal's own cwd, whichever write
 // surfaces are on.
 const codeGit = new CodeGitService({ vaultRoot: () => context.vaultRoot ?? null, ptyInfo: (id) => ptyService.info(id), git: gitService });
-// The Code composer's images (code-chat C7, C13): saved into the app's own data folder, behind the Code chat surface.
+// The Code composer's images (code-chat C7, C13, R59): saved into the app's own data folder, behind the Code chat surface,
+// within its quota; retention runs once the app is ready.
 const codeImages = new CodeImageService({ userData: () => context.userData, enabled: codeChatOn });
 
 // agent-computer D3, D7, D27, D31, D34, D35: the computer behind the bridge. One ask broker, one wheel, the marked sites
@@ -749,6 +750,9 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(() => {
     // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay).
     sweepHeld(app.getPath("temp"));
+    // code-chat R59: the Code composer's images go about three months after their month ended. Asynchronous, so nothing
+    // here waits for it; the surface being off does not keep old images.
+    void codeImages.prune().then((n) => { if (n) console.log(`[main] code-images: removed ${n} old image(s)`); }, (err) => console.warn("[main] code-images: retention failed", err));
     // Only a packaged, signed app claims the scheme; a dev run must not re-point the system's agenticos:// handler.
     if (app.isPackaged) app.setAsDefaultProtocolClient(SCHEME);
     serveAppScheme(path.join(__dirname, "../renderer"));
