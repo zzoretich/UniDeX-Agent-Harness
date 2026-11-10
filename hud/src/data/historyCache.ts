@@ -21,6 +21,9 @@ export interface HistorySources {
   hosts(): { choices: TermHostChoice[]; world: PlaceWorld };
   /** The clock (tests); default Date.now. */
   now?(): number;
+  /** The timer for the trailing check (tests); default setTimeout / clearTimeout. */
+  setTimer?(fn: () => void, ms: number): unknown;
+  clearTimer?(handle: unknown): void;
 }
 
 export class HistoryCache {
@@ -31,23 +34,33 @@ export class HistoryCache {
   /** When refresh last looked, or null before the first look. */
   private checkedAt: number | null = null;
   /** The one trailing check a throttled refresh arms, so a change skipped by the throttle shows without another render. */
-  private trailing: ReturnType<typeof setTimeout> | null = null;
+  private trailing: unknown = null;
 
   constructor(private readonly src: HistorySources, private readonly onChange: () => void) {}
 
   rows(): HistoryRow[] { return this.current; }
 
   /** Stops the trailing check (the panel closing). */
-  dispose(): void { if (this.trailing) { clearTimeout(this.trailing); this.trailing = null; } }
+  dispose(): void { this.clearTrailing(); }
+
+  private clearTrailing(): void {
+    if (!this.trailing) return;
+    if (this.src.clearTimer) this.src.clearTimer(this.trailing); else clearTimeout(this.trailing as ReturnType<typeof setTimeout>);
+    this.trailing = null;
+  }
 
   /** Looks at the caches again when CHECK_MS passed since the last look, or at once when `force`d. */
   refresh(force = false): void {
     const now = this.src.now ? this.src.now() : Date.now();
     if (!force && this.checkedAt !== null && now - this.checkedAt < CHECK_MS) {
-      if (!this.trailing) this.trailing = setTimeout(() => { this.trailing = null; this.refresh(); }, CHECK_MS - (now - this.checkedAt));
+      if (!this.trailing) {
+        const fire = (): void => { this.trailing = null; this.refresh(); };
+        const wait = CHECK_MS - (now - this.checkedAt);
+        this.trailing = this.src.setTimer ? this.src.setTimer(fire, wait) : setTimeout(fire, wait);
+      }
       return;
     }
-    if (this.trailing) { clearTimeout(this.trailing); this.trailing = null; }
+    this.clearTrailing();
     this.checkedAt = now;
     const vault = this.src.vault();
     const files = [SESSION_INDEX_PATH, SESSION_DIGESTS_PATH].map((rel) => path.join(vault, rel));
