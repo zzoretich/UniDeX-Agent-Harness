@@ -50,6 +50,7 @@ import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
 import { GitService } from "./services/git";
 import { CodeGitService } from "./services/code-git";
+import { CodeImageService } from "./services/code-images";
 import { CodeMirrorService } from "./services/code-mirror";
 import { PtyService, terminalBaseEnv, type PtyLib } from "./services/pty";
 import { SessionService, workspaceDir } from "./services/sessions";
@@ -209,6 +210,8 @@ const gitService = new GitService({ workspace: (name) => workspaceDir(context.va
 // The Code tab's Diff (code-chat C8): read-only git in the folder main picks from the terminal's own cwd, whichever write
 // surfaces are on.
 const codeGit = new CodeGitService({ vaultRoot: () => context.vaultRoot ?? null, ptyInfo: (id) => ptyService.info(id), git: gitService });
+// The Code composer's images (code-chat C7, C13): saved into the app's own data folder, behind the Code chat surface.
+const codeImages = new CodeImageService({ userData: () => context.userData, enabled: codeChatOn });
 
 // agent-computer D3, D7, D27, D31, D34, D35: the computer behind the bridge. One ask broker, one wheel, the marked sites
 // (<userData>/computer/sites.json), and a browser per place, made on its first use (after ready: the bridge starts only
@@ -638,7 +641,7 @@ registerHostIpc(trust, {
 registerFsIpc(trust, () => fsService);
 registerProcIpc(trust, procService, ptyService);
 registerSessionIpc(trust, sessionService, gitService);
-registerCodeIpc(trust, codeMirror, codeGit);
+registerCodeIpc(trust, codeMirror, codeGit, codeImages);
 registerShellIpc(trust, () => (vault.root ? scope : null), () => vault.root);
 registerSetupIpc(trust, setup);
 registerProposalsIpc(trust, () => vault.root, () => path.join(app.getPath("userData"), "proposal-undo"), () => policy.ids.includes("proposals"));

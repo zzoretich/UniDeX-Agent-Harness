@@ -251,8 +251,8 @@ export interface HostComputer {
   onEvent(cb: (ev: HostComputerEvent) => void): () => void;
 }
 
-/** The Code chat view's transcript mirror (app/src/shared/ipc.ts AosBridge.code); only the app has it. `cache` is a
- *  vault-relative path (code-chat R14). */
+/** The Code chat view's transcript mirror, its Diff pane's git and its composer's images (app/src/shared/ipc.ts
+ *  AosBridge.code); only the app has it. `cache` is a vault-relative path (code-chat R14). */
 export interface HostCode {
   /** Whether the Code chat surface is on for this run of the app (fixed at boot, as the Computer's is). Off, or absent
    *  (fail closed), no terminal carries AOS_TERMINAL, so the status line writes no per-terminal copy (code-chat F9). */
@@ -267,6 +267,10 @@ export interface HostCode {
   /** The Diff pane's read-only git (code-chat C8) for the terminal `pty`: main picks the folder from that terminal's cwd (a
    *  vault workspace or a workspace's linked code folder) and refuses any other place. Needs no write surface. */
   git?(req: { pty: string; op: "status" | "diff"; file?: string }): Promise<HostResult<HostGitStatus | HostGitDiff>>;
+  /** The composer's image (code-chat C7): main checks its type (PNG, JPEG, GIF or WebP), its size (10 MB at most) and its
+   *  content, saves it into the app's own data folder and answers with the absolute path it chose; the page never names
+   *  one. Refused (EROFS) while the Code chat surface is off. */
+  saveImage?(req: { mime: string; data: string }): Promise<HostResult<{ path: string }>>;
 }
 
 export interface HostSessions {

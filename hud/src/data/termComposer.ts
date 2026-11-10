@@ -1,6 +1,6 @@
 // termComposer.ts — the Term composer (spec 2026-10-08-term-agent-deck T12). Pure: what a message becomes on the wire
-// (one bracketed paste, then Enter), the @file token under the caret and the files that match it, and the saved
-// snippets. ui/TermComposer.ts draws it.
+// (one bracketed paste, then Enter), with the paths of its images after the text (code-chat C7), which images it takes,
+// the @file token under the caret and the files that match it, and the saved snippets. ui/TermComposer.ts draws it.
 
 /** One pty write is capped at 1 MiB: a long message goes in pieces well under that. */
 export const COMPOSER_CHUNK = 64 * 1024;
@@ -15,6 +15,39 @@ export function composerWrites(text: string, chunk = COMPOSER_CHUNK, bracketed =
   for (let i = 0; i < body.length; i += chunk) parts.push(body.slice(i, i + chunk));
   // A program that has not turned bracketed paste on (a REPL in a shell, say) would print the markers: type the lines.
   return bracketed ? ["\x1b[200~", ...parts, "\x1b[201~", "\r"] : [...parts, "\r"];
+}
+
+/** A path as a prompt takes it: quoted when it holds a space (or other whitespace), as an @file mention is. */
+const promptPath = (p: string): string => (/\s/.test(p) ? `"${p}"` : p);
+
+/**
+ * The message Send pastes (code-chat C7): the text, then each image's path (the absolute path main saved it at), separated
+ * by spaces, each quoted when it holds a space. Both TUIs take a pasted image path as an attachment. Text with no image
+ * goes exactly as written; the text's trailing whitespace gives way to the one space before the paths.
+ */
+export function composeSend(text: string, images: string[]): string {
+  if (!images.length) return text;
+  const paths = images.map(promptPath).join(" ");
+  const body = text.replace(/\s+$/, "");
+  return body ? `${body} ${paths}` : paths;
+}
+
+/** The images the composer takes (code-chat C7), as main checks them again by content (services/code-images.ts). */
+export const IMAGE_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Why an image of this type and size is not taken, in main's words, or null when it may go to main. */
+export function imageRefusal(type: string, size: number): string | null {
+  if (!IMAGE_TYPES.includes(type)) return "only PNG, JPEG, GIF or WebP images";
+  if (size > IMAGE_MAX_BYTES) return "larger than 10 MB";
+  if (size <= 0) return "an empty file";
+  return null;
+}
+
+/** The base64 of a `data:…;base64,` URL (FileReader's readAsDataURL), or null for any other text. */
+export function dataUrlBase64(url: string): string | null {
+  const m = /^data:[^,]*;base64,/.exec(url);
+  return m ? url.slice(m[0].length) : null;
 }
 
 /** The @token the caret is in (after `@`, up to the caret), with where it starts, or null. */
@@ -41,7 +74,7 @@ export function matchFiles(paths: string[], query: string, limit = 8): string[] 
 
 /** `text` with the @token at `start` replaced by `@path ` (a path with a space is quoted). */
 export function insertMention(text: string, start: number, caret: number, path: string): { text: string; caret: number } {
-  const token = `@${/\s/.test(path) ? `"${path}"` : path} `;
+  const token = `@${promptPath(path)} `;
   const out = text.slice(0, start) + token + text.slice(caret);
   return { text: out, caret: start + token.length };
 }

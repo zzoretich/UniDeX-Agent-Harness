@@ -1,13 +1,13 @@
 import { Notice, setIcon } from "obsidian";
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
-import { codeChatOn, fs, sessionsHost, type HostCatalog } from "../host";
+import { codeChatOn, fs, hudHost, sessionsHost, type HostCatalog } from "../host";
 import { aliasCatalog } from "../data/claudeAsk";
 import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import { hasChat, type TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
-import { composerWrites, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
+import { IMAGE_TYPES, composeSend, composerWrites, dataUrlBase64, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
 import { HostModelMenu } from "./HostModelMenu";
 
@@ -18,6 +18,35 @@ let whyIds = 0;
 const FILE_LIMIT = 3000;
 const FILE_DEPTH = 6;
 const SKIP = new Set(["node_modules", ".git", "dist", "build", ".next", "target", "__pycache__"]);
+
+/** An image in the composer (code-chat C7): its chip, and main's path for it once saved. */
+interface Shot {
+  el: HTMLElement;
+  /** Where main saved it, or null while it is saving. */
+  path: string | null;
+  /** Settles when main has answered: true when it saved the image and the chip is still there. */
+  saved: Promise<boolean>;
+  /** Removed (×, a refusal, Send, another terminal). */
+  gone: boolean;
+}
+
+/** The files a paste or a drop carries (Chromium lists them in `files`; `items` as a fallback). */
+function filesOf(dt: DataTransfer | null): File[] {
+  if (!dt) return [];
+  const files = Array.from(dt.files ?? []);
+  if (files.length) return files;
+  return Array.from(dt.items ?? []).filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter((f): f is File => !!f);
+}
+
+/** A file's contents as a `data:` URL. */
+function readDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => (typeof r.result === "string" ? resolve(r.result) : reject(new Error("unreadable")));
+    r.onerror = () => reject(r.error ?? new Error("unreadable"));
+    r.readAsDataURL(file);
+  });
+}
 
 /**
  * What the access and model chips need from the panel (code-chat C12): the conversation they would restart, whether a
@@ -42,14 +71,28 @@ export interface ChipState {
  * terminal whose agent exited runs the login shell now (D18, code-chat R39): its composer is a shell's (no / commands,
  * access or model), and while its chat shows the panel blocks the composer, so nothing reaches that shell from there.
  *
- * Its row of chips (spec 2026-11-09-code-chat §4): @ file and / commands start a mention or a command, Snippets, then an
- * agent's access and model (controls: a pick restarts the same conversation with it, C12); `attachSlot` is where Task 14's + chip goes. In
+ * Its row of chips (spec 2026-11-09-code-chat §4): + attach adds an image, @ file and / commands start a mention or a
+ * command, Snippets, then an agent's access and model (controls: a pick restarts the same conversation with it, C12). In
  * the chat view (`setMode("chat")`) TerminalPanel moves the whole element into the chat's 760 px column.
+ *
+ * Images (C7): an agent terminal's composer, while the Code chat surface is on, takes PNG, JPEG, GIF and WebP images up to
+ * 10 MB by paste, drop or + attach. Each becomes a chip with its thumbnail and ×, and main saves it at once into the app's
+ * own data folder (code:save-image, which checks it again by content and names the path). Send pastes the text, then the
+ * images' paths, in one bracketed paste through the same guarded Send (a card holds it, the screen is read first). A
+ * refused image says why under the box. A shell, an ended agent and a run with the surface off have no + chip and take no
+ * image. The chips belong to the terminal they were added on: another terminal starts with none.
  */
 export class TermComposer {
   readonly el: HTMLElement;
-  /** The image chip's place, first in the row (Task 14). */
+  /** The + attach chip's place, first in the row (C7). */
   readonly attachSlot: HTMLElement;
+  /** The images to send, in the order they came (C7), and their chips' row above the text. */
+  private shots: Shot[] = [];
+  private shotsEl: HTMLElement;
+  /** The + attach chip's file picker. */
+  private picker: HTMLInputElement;
+  /** Send waits for an image main is still saving (once). */
+  private awaitingShots = false;
   private input: HTMLTextAreaElement;
   private suggest: HTMLElement;
   private snippetsMenu: HTMLElement | null = null;
@@ -85,9 +128,19 @@ export class TermComposer {
     this.el = parent.createDiv({ cls: "aos-tc is-hidden" });
     const box = this.el.createDiv({ cls: "aos-tc-box" });
     this.suggest = box.createDiv({ cls: "aos-tc-suggest", attr: { role: "listbox", "aria-label": "Files" } });
+    this.shotsEl = box.createDiv({ cls: "aos-tc-shots", attr: { role: "list", "aria-label": "Images to send" } });
     this.input = box.createEl("textarea", { cls: "aos-tc-input", attr: { rows: "6", "aria-label": "Message to the agent", spellcheck: "true" } });
     const bar = box.createDiv({ cls: "aos-tc-bar" });
-    this.attachSlot = bar.createSpan({ cls: "aos-tc-attach" });
+    this.attachSlot = bar.createSpan({ cls: "aos-tc-attach is-hidden" });
+    const attach = this.attachSlot.createEl("button", { cls: "aos-tc-chip", text: "+ attach", attr: { type: "button", title: "Attach an image: PNG, JPEG, GIF or WebP up to 10 MB (or paste or drop one)" } });
+    this.picker = this.attachSlot.createEl("input", { cls: "aos-tc-picker", attr: { type: "file", accept: IMAGE_TYPES.join(","), multiple: "", tabindex: "-1", "aria-hidden": "true" } });
+    attach.addEventListener("click", () => { if (this.takesImages()) this.picker.click(); });
+    this.picker.addEventListener("change", () => {
+      const files = Array.from(this.picker.files ?? []);
+      this.picker.value = "";
+      this.takeFiles(files);
+      this.input.focus();
+    });
     const file = bar.createEl("button", { cls: "aos-tc-chip", text: "@ file", attr: { type: "button", title: "Mention a file" } });
     file.addEventListener("click", () => this.startMention());
     this.commandsChip = bar.createEl("button", { cls: "aos-tc-chip", text: "/ commands", attr: { type: "button", title: "The agent's commands" } });
@@ -113,6 +166,22 @@ export class TermComposer {
     this.slash = new SlashMenu(this.input, box, { commands: [], host: "claude" });
     this.input.addEventListener("input", () => { this.note.addClass("is-hidden"); this.onInput(); });
     this.input.addEventListener("keydown", (e) => this.onKey(e));
+    this.input.addEventListener("paste", (e) => this.onPaste(e));
+    box.addEventListener("dragover", (e) => {
+      if (!this.takesImages() || !Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      box.addClass("is-drop");
+    });
+    box.addEventListener("dragleave", (e) => { if (!box.contains(e.relatedTarget as Node | null)) box.removeClass("is-drop"); });
+    box.addEventListener("drop", (e) => {
+      box.removeClass("is-drop");
+      if (!this.takesImages()) return;
+      const files = filesOf(e.dataTransfer);
+      if (!files.length) return;
+      e.preventDefault();
+      this.takeFiles(files);
+    });
     this.note = this.el.createDiv({ cls: "aos-tc-note is-hidden", attr: { role: "status" } });
   }
 
@@ -120,10 +189,12 @@ export class TermComposer {
   setSession(s: TerminalSession | null): void {
     const live = !!s && !s.isExited;
     this.el.toggleClass("is-hidden", !live || this.blocked);
-    if (!live || !s) { this.session = null; return; }
+    if (!live || !s) { this.session = null; this.clearShots(); return; }
     // What runs decides: an agent terminal whose agent ended is a shell now (R39).
     const kind = s.agentEnded ? "shell" : s.meta.host;
     if (this.session?.id === s.id && this.shownHost === kind) return;
+    // The images were for the agent they were added on (C7).
+    this.clearShots();
     this.session = s;
     this.shownHost = kind;
     this.files = null;
@@ -138,6 +209,8 @@ export class TermComposer {
     const chips = !shell && codeChatOn();
     this.permChip.toggleClass("is-hidden", !chips);
     this.modelWrap.toggleClass("is-hidden", !chips);
+    // Images go to an agent, through main's code:save-image, which the Code chat surface owns (C7, C13).
+    this.attachSlot.toggleClass("is-hidden", !(chips && !!hudHost().code?.saveImage));
     this.syncChips();
     // A shell has no / commands: the list stays empty, so / is just a character.
     if (shell) this.slash.update([], "claude");
@@ -278,31 +351,121 @@ export class TermComposer {
   private send(): void {
     const s = this.session;
     const text = this.input.value;
-    if (!s || this.blocked || !text.trim()) return;
+    const shots = this.shots.slice();
+    if (!s || this.blocked || (!text.trim() && !shots.length)) return;
+    // An image main is still saving: Send waits for it, once, then starts again from the top, so every check below runs on
+    // what is there then. A refused or removed image sends nothing: its reason is under the box, the draft stays.
+    if (shots.some((x) => x.path === null)) {
+      if (this.awaitingShots) return;
+      this.awaitingShots = true;
+      void Promise.all(shots.map((x) => x.saved)).then((ok) => {
+        this.awaitingShots = false;
+        if (this.session === s && ok.every(Boolean)) this.send();
+      });
+      return;
+    }
     // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
-    // written and the draft stays (R49). The screen is read fresh first, since the poll can be a tick behind a prompt
-    // that just printed (bounded: R56).
+    // written and the draft (its images included) stays (R49). The screen is read fresh first, since the poll can be a
+    // tick behind a prompt that just printed (bounded: R56).
     const feeds = this.plugin.codeFeeds;
     const known = feeds?.get(s.id)?.card;
-    if (known || !feeds?.get(s.id)) { this.finishSend(s, text, !!known); return; }
+    if (known || !feeds?.get(s.id)) { this.finishSend(s, text, shots, !!known); return; }
     void feeds.cardNow(s.id).then((held) => {
-      // The draft or the terminal changed while the screen was read: this send is no longer the one asked for.
-      if (this.session !== s || this.blocked || this.input.value !== text) return;
-      this.finishSend(s, text, held);
+      // The draft, its images or the terminal changed while the screen was read: this send is no longer the one asked for.
+      const same = this.shots.length === shots.length && this.shots.every((x, i) => x === shots[i]);
+      if (this.session !== s || this.blocked || this.input.value !== text || !same) return;
+      this.finishSend(s, text, shots, held);
     });
   }
 
-  private finishSend(s: TerminalSession, text: string, held: boolean): void {
+  private finishSend(s: TerminalSession, text: string, shots: Shot[], held: boolean): void {
     if (held) {
-      this.note.setText(this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first");
-      this.note.removeClass("is-hidden");
+      this.say(this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first");
       return;
     }
     this.note.addClass("is-hidden");
-    for (const w of composerWrites(text, undefined, this.bracketed())) s.write(w);
+    // One bracketed paste: the text, then the images' paths (C7).
+    const paths = shots.map((x) => x.path).filter((p): p is string => p !== null);
+    for (const w of composerWrites(composeSend(text, paths), undefined, this.bracketed())) s.write(w);
     this.input.value = "";
+    this.clearShots();
     this.closeSuggest();
     this.focusTerminal();
+  }
+
+  /** The one line under the box: why Send waits, or why an image was not added. */
+  private say(text: string): void {
+    this.note.setText(text);
+    this.note.removeClass("is-hidden");
+  }
+
+  // ── images (C7) ──
+
+  /** Whether this composer takes an image now: an agent's, unblocked, with main's code:save-image (the surface on). */
+  private takesImages(): boolean {
+    return !!this.agent() && !this.blocked && codeChatOn() && !!hudHost().code?.saveImage;
+  }
+
+  /** A paste that carries an image adds its chip instead of text; any other paste is the textarea's own. */
+  private onPaste(e: ClipboardEvent): void {
+    if (!this.takesImages()) return;
+    const files = filesOf(e.clipboardData).filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    e.preventDefault();
+    this.takeFiles(files);
+  }
+
+  /** The files a paste, a drop or the picker brought: each a chip, or the reason it is not. */
+  private takeFiles(files: File[]): void {
+    if (!files.length || !this.takesImages()) return;
+    this.note.addClass("is-hidden");
+    for (const f of files) this.addImage(f);
+  }
+
+  /** Adds `file`'s chip (its thumbnail and ×) and has main save it; a refusal takes the chip away and says why. */
+  private addImage(file: File): void {
+    const why = imageRefusal(file.type, file.size);
+    if (why) { this.say(`Image not added: ${why}`); return; }
+    const code = hudHost().code;
+    const save = code?.saveImage?.bind(code);
+    if (!save) return;
+    const name = file.name || "Pasted image";
+    const el = this.shotsEl.createDiv({ cls: "aos-tc-shot is-saving", attr: { role: "listitem", title: name } });
+    const img = el.createEl("img", { cls: "aos-tc-thumb", attr: { alt: name } });
+    const x = el.createEl("button", { cls: "aos-tc-shotx", attr: { type: "button", "aria-label": `Remove ${name}`, title: "Remove" } });
+    setIcon(x, "x");
+    const shot: Shot = { el, path: null, saved: Promise.resolve(false), gone: false };
+    x.addEventListener("click", () => { this.dropShot(shot); this.input.focus(); });
+    this.shots.push(shot);
+    const refuse = (reason: string): false => {
+      if (!shot.gone) { this.dropShot(shot); this.say(`Image not added: ${reason}`); }
+      return false;
+    };
+    shot.saved = readDataUrl(file).then(async (url) => {
+      if (shot.gone) return false;
+      // The thumbnail is the image itself as a data: URL (the page's CSP allows data: images, not blob:); it goes with
+      // its chip.
+      img.src = url;
+      const data = dataUrlBase64(url);
+      if (data === null) return refuse("it could not be read");
+      const r = await save({ mime: file.type, data });
+      if (shot.gone) return false;
+      if (!r.ok) return refuse(r.error);
+      shot.path = r.data.path;
+      el.removeClass("is-saving");
+      return true;
+    }).catch(() => refuse("it could not be read"));
+  }
+
+  private dropShot(shot: Shot): void {
+    shot.gone = true;
+    shot.el.detach();
+    this.shots = this.shots.filter((x) => x !== shot);
+  }
+
+  private clearShots(): void {
+    for (const x of this.shots) { x.gone = true; x.el.detach(); }
+    this.shots = [];
   }
 
   // ── the chips ──

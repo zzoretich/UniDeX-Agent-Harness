@@ -73,6 +73,8 @@ output. The design treats the page that shows them as untrusted (design D7,
   - *Code's Diff (code-chat C8):* read-only git in a vault workspace or the code folder linked to one, chosen in main from
     the terminal's own starting folder (`code:git` names a terminal, never a folder). It needs no write surface; it refuses
     the vault root, home and the hosts' config folders, and any folder that is neither a workspace nor a linked one.
+  - *Code's images (code-chat C7; the `code` surface):* The Code composer can save a pasted image (PNG, JPEG, GIF,
+    WebP ≤ 10 MB, checked by content) into the app's own data folder; the page never names the path.
   - *Appearance:* the page may set the theme to `system`, `light` or `dark` and nothing else; main saves the choice in
     the app's data (`app-settings.json`), never in the vault, and hands it to macOS's `nativeTheme`.
   - *Setup (phase 5; install-import B1, B2, B13, B14):* the wizard names a fix by id; what it does is main's

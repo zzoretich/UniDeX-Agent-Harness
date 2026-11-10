@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composerWrites, mentionAt, matchFiles, insertMention, sanitizeSnippets } from "./termComposer";
+import { composerWrites, composeSend, dataUrlBase64, imageRefusal, IMAGE_MAX_BYTES, mentionAt, matchFiles, insertMention, sanitizeSnippets } from "./termComposer";
 
 test("a message is one bracketed paste with CR line ends, then Enter, in pieces under the pty cap", () => {
   assert.deepEqual(composerWrites("fix it\nand test"), ["\x1b[200~", "fix it\rand test", "\x1b[201~", "\r"]);
@@ -42,4 +42,39 @@ test("snippets keep a title (the first line when none), drop empty ones, cap at 
     [{ title: "Run the tests", text: "Run the tests\nand fix failures", host: null }, { title: "Review", text: "Review the diff", host: "codex" }]);
   assert.equal(sanitizeSnippets(Array.from({ length: 60 }, (_, i) => ({ text: `s${i}` }))).length, 50);
   assert.deepEqual(sanitizeSnippets("nope"), []);
+});
+
+test("composeSend: the image paths after the text, separated by spaces, each quoted when it holds a space", () => {
+  const a = "/work/demo/App Data/code-images/2026-11/aaaaaaaa-0000-4000-8000-000000000001.png";
+  const b = "/work/demo/data/code-images/2026-11/bbbbbbbb-0000-4000-8000-000000000002.jpg";
+  assert.equal(composeSend("look at this", [a]), `look at this "${a}"`);
+  assert.equal(composeSend("look at this", [b]), `look at this ${b}`);
+  assert.equal(composeSend("both", [a, b]), `both "${a}" ${b}`);
+  // No text: the paths alone. No image: the text exactly as written.
+  assert.equal(composeSend("", [b, a]), `${b} "${a}"`);
+  assert.equal(composeSend("  \n", [b]), b);
+  assert.equal(composeSend("fix it\nand test\n", []), "fix it\nand test\n");
+  // Text that ends in a new line or spaces is followed by one space, then the paths.
+  assert.equal(composeSend("two lines\nhere\n", [b]), `two lines\nhere ${b}`);
+  // A tab is whitespace too: that path is quoted.
+  assert.equal(composeSend("x", ["/a\tb/c.png"]), 'x "/a\tb/c.png"');
+  // It goes as one bracketed paste, then Enter.
+  assert.deepEqual(composerWrites(composeSend("see", [a])), ["\x1b[200~", `see "${a}"`, "\x1b[201~", "\r"]);
+});
+
+test("imageRefusal: PNG, JPEG, GIF or WebP up to 10 MB; anything else says why, in main's words", () => {
+  assert.equal(IMAGE_MAX_BYTES, 10 * 1024 * 1024);
+  for (const t of ["image/png", "image/jpeg", "image/gif", "image/webp"]) assert.equal(imageRefusal(t, 1000), null, t);
+  assert.equal(imageRefusal("image/png", IMAGE_MAX_BYTES), null);
+  assert.equal(imageRefusal("image/png", IMAGE_MAX_BYTES + 1), "larger than 10 MB");
+  for (const t of ["image/tiff", "image/heic", "image/svg+xml", "application/pdf", ""]) assert.equal(imageRefusal(t, 1000), "only PNG, JPEG, GIF or WebP images", t);
+  assert.equal(imageRefusal("image/png", 0), "an empty file");
+});
+
+test("dataUrlBase64: the base64 of a data: URL, or null for anything else", () => {
+  assert.equal(dataUrlBase64("data:image/png;base64,iVBORw0KGgo="), "iVBORw0KGgo=");
+  assert.equal(dataUrlBase64("data:application/octet-stream;base64,"), "");
+  assert.equal(dataUrlBase64("data:text/plain,hello"), null);
+  assert.equal(dataUrlBase64("blob:app://hud/1"), null);
+  assert.equal(dataUrlBase64(""), null);
 });

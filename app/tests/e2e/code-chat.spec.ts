@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, REPO, appEnv, badge, command, content, emulateViewport, expectNoErrors, openTab, rail, terminalText, useApp } from "./harness";
+import { FX, REPO, USER_DATA, appEnv, badge, command, content, emulateViewport, expectNoErrors, openTab, rail, terminalText, useApp } from "./harness";
 
 // The Code tab's chat view (spec 2026-11-09-code-chat C1, C3, C5, C13; rulings R3, R28, R32): an agent terminal opens in a
 // chat drawn from the cache its follower writes; ⌘J flips the middle to the same live PTY and back, nothing restarts; a
@@ -101,7 +101,7 @@ test.describe("the Code chat surface on", () => {
     // The composer sits in the chat's column with its chips; the second turn still runs, so Stop is offered.
     await expect(chat(win).locator(".aos-tc")).toBeVisible();
     // No access was chosen for this terminal (Host default); the model is the conversation's, in the model menu's chip.
-    await expect(chat(win).locator(".aos-tc-chip:visible")).toHaveText(["@ file", "/ commands", "Snippets", "Host default"]);
+    await expect(chat(win).locator(".aos-tc-chip:visible")).toHaveText(["+ attach", "@ file", "/ commands", "Snippets", "Host default"]);
     await expect(chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger")).toContainText("fixture-model");
     await expect(chat(win).locator(".aos-cc-stop")).toBeVisible();
   });
@@ -358,7 +358,7 @@ test.describe("the Code chat surface on", () => {
     await expect(body(win)).toBeVisible();
     await expect(chat(win)).toBeHidden();
     await expect(sw(win)).toHaveCount(0);
-    // Its composer stays under the terminal, with no / commands, access or model.
+    // Its composer stays under the terminal, with no + attach, / commands, access or model.
     await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-chip:visible")).toHaveText(["@ file", "Snippets"]);
     // ⌘J leaves a shell as it is.
     await win.keyboard.press("Meta+j");
@@ -810,6 +810,139 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
   });
 });
 
+// The composer's images (C7, C13): paste, drop and + attach each add a chip with its thumbnail and ×; main saves the image
+// into the app's own data folder at once (code:save-image) and names the path; Send pastes the text, then the path, in one
+// bracketed paste through the same guarded Send (a card holds it). A refused image says why under the box. The stand-in
+// agent is the fake process above, so what Send writes is what the TUI would read.
+
+/** A real 2×2 PNG. */
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGPQiDoBRAwQCgAhpgUpG+5kRAAAAABJRU5ErkJggg==";
+/** GIF bytes: a header is enough for main's check. */
+const GIF = Buffer.from("GIF89a\u0002\u0000\u0002\u0000", "latin1").toString("base64");
+type Pasted = { name: string; type: string; b64: string };
+/** Dispatches what a paste (or a drop on the box) of these files would; whether the page took it (preventDefault). */
+const deliver = (win: Page, kind: "paste" | "drop", files: Pasted[]): Promise<boolean> => content(win).locator(".aos-tc-input:visible").evaluate((input, { kind, files }) => {
+  const dt = new DataTransfer();
+  for (const f of files) dt.items.add(new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name, { type: f.type }));
+  if (kind === "paste") return !input.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  const box = input.closest(".aos-tc-box") as HTMLElement;
+  box.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+  return !box.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+}, { kind, files });
+/** The paths in what Send wrote: quoted (the app's data folder has spaces), under code-images/<yyyy-mm>/<uuid>.<ext>. */
+const imagePath = (ext: string) => new RegExp(`"(${USER_DATA.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/code-images/\\d{4}-\\d{2}/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.${ext})"`);
+
+test.describe("the composer's images (C7, C13)", () => {
+  test.describe.configure({ mode: "serial" });
+  const app = useApp({ env: { AOS_APP_WRITE: "code" } });
+  const shots = (win: Page) => C(win).locator(".aos-tc-shot:visible");
+  const input = (win: Page) => C(win).locator(".aos-tc-input:visible");
+  const note = (win: Page) => C(win).locator(".aos-tc-note:visible");
+  /** Everything the terminal writes to the fake from now until `want` matches it. */
+  const writesUntil = async (win: Page, id: string, want: RegExp): Promise<string> => {
+    let got = "";
+    await expect.poll(async () => (got += (await written(win, id)).join(""))).toMatch(want);
+    return got;
+  };
+
+  test("pasting a PNG makes a chip with its thumbnail; Send pastes the text, then the saved image's path, in one bracketed paste; a card holds it", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000031", sessionId: "a1a1a1a1-0000-4000-8000-000000000032", label: "Images" });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, drawn("claude-2.1.318-idle"));
+    expect(await deliver(win, "paste", [{ name: "image.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(shots(win)).toHaveCount(1);
+    await expect(shots(win).locator("img.aos-tc-thumb")).toHaveAttribute("src", /^data:image\/png;base64,/);
+    await expect(shots(win).locator("button.aos-tc-shotx")).toHaveAttribute("aria-label", "Remove image.png");
+    // Saved by main as soon as it was pasted: the chip is no longer waiting.
+    await expect(shots(win)).not.toHaveClass(/is-saving/);
+    // A card is up: Send (⏎) writes nothing and keeps the text and the chip (R49 holds for images too).
+    await replay(win, id, screenFile("claude-2.1.318-bash.ansi"));
+    await expect(chat(win).locator(".aos-cc-card .aos-cc-gate .aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    await input(win).fill("look at this");
+    await written(win, id);
+    await input(win).press("Enter");
+    await expect(note(win)).toHaveText("Answer the card above first · Terminal ⌘J");
+    expect(await written(win, id)).toEqual([]);
+    await expect(shots(win)).toHaveCount(1);
+    await expect(input(win)).toHaveValue("look at this");
+    // The TUI moved on: Send pastes the text and the quoted path in one bracketed paste, then Enter.
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    // What the terminal answered to the stream's own queries is not Send's.
+    await written(win, id);
+    await input(win).press("Enter");
+    const sent = await writesUntil(win, id, /\r$/);
+    const m = new RegExp(`^\u001b\\[200~look at this ${imagePath("png").source}\u001b\\[201~\r$`).exec(sent);
+    expect(m, sent).not.toBeNull();
+    // The file is where the path says, in the app's data folder, with the bytes pasted.
+    expect(fs.readFileSync(m![1]).equals(Buffer.from(PNG, "base64"))).toBe(true);
+    await expect(shots(win)).toHaveCount(0);
+    await expect(input(win)).toHaveValue("");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a drop and + attach add chips too; × takes one away; an image alone sends its path; a refused image says why and makes no chip", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "codex", terminalKey: "a1a1a1a1-0000-4000-8000-000000000033", sessionId: "a1a1a1a1-0000-4000-8000-000000000034", label: "Images by drop" });
+    await expect(chat(win)).toBeVisible();
+    // The TUI's own stream: it turns bracketed paste on, as Codex does.
+    await replay(win, id, screenFile("codex-0.167.0-idle.ansi"));
+    // A drop on the box.
+    expect(await deliver(win, "drop", [{ name: "drop.gif", type: "image/gif", b64: GIF }])).toBe(true);
+    await expect(shots(win)).toHaveCount(1);
+    // + attach opens the picker; picking files adds them.
+    const attach = chat(win).locator(".aos-tc-attach button.aos-tc-chip");
+    await expect(attach).toHaveText("+ attach");
+    await chat(win).locator(".aos-tc-attach input.aos-tc-picker").setInputFiles([{ name: "picked.png", mimeType: "image/png", buffer: Buffer.from(PNG, "base64") }]);
+    await expect(shots(win)).toHaveCount(2);
+    await expect(shots(win).nth(1)).toHaveAttribute("title", "picked.png");
+    await expect(C(win).locator(".aos-tc-shot.is-saving")).toHaveCount(0);
+    // × takes the dropped one away.
+    await shots(win).first().locator("button.aos-tc-shotx").click();
+    await expect(shots(win)).toHaveCount(1);
+    await expect(shots(win).first()).toHaveAttribute("title", "picked.png");
+    // An image alone (no text) sends its path.
+    await written(win, id);
+    await input(win).press("Enter");
+    const sent = await writesUntil(win, id, /\r$/);
+    expect(sent, JSON.stringify(sent)).toMatch(new RegExp(`^\u001b\\[200~${imagePath("png").source}\u001b\\[201~\r$`));
+    await expect(shots(win)).toHaveCount(0);
+    // Refused: a type the composer does not take (said before anything is sent to main), and a PNG whose content is a
+    // GIF (main's own check). Neither leaves a chip; each says why under the box.
+    expect(await deliver(win, "paste", [{ name: "scan.tiff", type: "image/tiff", b64: PNG }])).toBe(true);
+    await expect(note(win)).toHaveText("Image not added: only PNG, JPEG, GIF or WebP images");
+    await expect(shots(win)).toHaveCount(0);
+    expect(await deliver(win, "paste", [{ name: "fake.png", type: "image/png", b64: GIF }])).toBe(true);
+    await expect(note(win)).toHaveText("Image not added: its content is GIF, not PNG");
+    await expect(shots(win)).toHaveCount(0);
+    // A paste of plain text is still the textarea's own.
+    expect(await input(win).evaluate((el) => {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", "words");
+      return !el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    })).toBe(false);
+    expect(await written(win, id)).toEqual([]);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a shell takes no image: no + attach, and a pasted image is not a chip", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    expect(await command(win, "agentic-os:new-terminal-shell")).toBe(true);
+    await expect(body(win)).toBeVisible();
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-attach")).toBeHidden();
+    expect(await deliver(win, "paste", [{ name: "image.png", type: "image/png", b64: PNG }])).toBe(false);
+    await expect(shots(win)).toHaveCount(0);
+  });
+});
+
 // The sidebar (C6): the fixture vault's session index lists real past conversations (its claude transcripts are in the
 // fixture home), so `code.view` runs the real runtime on them. History rows sit under their place, newest activity first;
 // one opens read-only with Resume; Resume types the resume line in a new terminal.
@@ -1160,7 +1293,7 @@ test.describe("the Code chat surface off (a run whose AOS_APP_WRITE leaves it ou
     await expect(chat(win)).toBeHidden();
     await expect(sw(win)).toHaveText("Chat view is off · Settings");
     // No chat says whether a turn runs: its row reads Running, not Idle; and there is no conversation to restart, so the
-    // composer has no access or model chip (M1).
+    // composer has no access or model chip (M1). code:save-image is the surface's too (C13): no + attach either.
     await expect(C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-sub`)).toHaveText(/^Claude Code · Running · /);
     await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-chip:visible")).toHaveText(["@ file", "/ commands", "Snippets"]);
     await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-modelwrap")).toBeHidden();
