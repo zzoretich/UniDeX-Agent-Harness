@@ -1057,6 +1057,94 @@ test.describe("the Diff and Files panes, whichever write surfaces are on (C8)", 
     expect(r).toMatchObject({ ok: false, code: "EROFS" });
     expectNoErrors(h);
   });
+
+  test("a status that changes while the agent works keeps the Diff pane's place: the list's and the diff's scroll and the focused file", async () => {
+    const h = app();
+    const { win } = h;
+    const dir = FX.v("workspaces/kelp-watch");
+    const logs = Array.from({ length: 40 }, (_, i) => `log-${String(i).padStart(2, "0")}.md`);
+    const notes = fs.readFileSync(path.join(dir, "notes.md"), "utf8");
+    try {
+      // Enough for both to scroll: forty new files and a long edit.
+      for (const f of logs) fs.writeFileSync(path.join(dir, f), "entry\n");
+      fs.writeFileSync(path.join(dir, "notes.md"), `${Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\n")}\n`);
+      await openTab(win, "term");
+      await select(win, inRepo);
+      await panes(win).locator(".aos-cdp-btn.is-diff").click();
+      await expect(pane(win).locator(".aos-cdp-file")).toHaveCount(42);
+      await pane(win).locator(".aos-cdp-file[data-path='notes.md']").click();
+      await expect(pane(win).locator(".aos-ss-diffline.is-add")).toHaveCount(300);
+      // The diff's lines scroll in its own box (.aos-ss-diff) inside the diff area.
+      const place = () => pane(win).evaluate((p) => ({
+        files: Math.round((p.querySelector(".aos-cdp-files") as HTMLElement).scrollTop),
+        diff: Math.round((p.querySelector(".aos-cdp-diff .aos-ss-diff") as HTMLElement).scrollTop),
+        focus: (document.activeElement as HTMLElement | null)?.dataset.path ?? null,
+      }));
+      await pane(win).evaluate((p) => {
+        (p.querySelector(".aos-cdp-files") as HTMLElement).scrollTop = 120;
+        (p.querySelector(".aos-cdp-diff .aos-ss-diff") as HTMLElement).scrollTop = 600;
+        (p.querySelector(".aos-cdp-file[data-path='log-30.md']") as HTMLElement).focus();
+      });
+      const before = await place();
+      expect(before.files).toBeGreaterThan(0);
+      expect(before.diff).toBeGreaterThan(0);
+      expect(before.focus).toBe("log-30.md");
+      // Another file changes and the terminal prints: the status is read again once its output settles.
+      fs.writeFileSync(path.join(dir, "log-05.md"), "entry\nmore\nlines\n");
+      await win.evaluate((i) => (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { write(d: string): void } } } } }).aosHost.plugin.terminalPool.get(i).write("echo\r"), inRepo);
+      await expect(pane(win).locator(".aos-cdp-file[data-path='log-05.md'] .aos-cdp-counts")).toHaveText("+3 −0", { timeout: 15_000 });
+      // The diff shown is read again with the status (and is the same text): give it the time to land.
+      await win.waitForTimeout(1000);
+      expect(await place()).toEqual(before);
+      await pane(win).locator(".aos-cdp-icon.is-close").click();
+      expectNoErrors(h);
+    } finally {
+      for (const f of logs) fs.rmSync(path.join(dir, f), { force: true });
+      fs.writeFileSync(path.join(dir, "notes.md"), notes);
+    }
+  });
+
+  test("with Diff and a Computer pane open the terminal keeps 480 px and the panes give way, at 1280 and 1470 px", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    await select(win, inRepo);
+    await panes(win).locator(".aos-cdp-btn.is-diff").click();
+    await expect(pane(win)).toBeVisible();
+    // This run has the Computer surface off (its pane drawn collapsed): a stand-in open pane of its default 440 px, docked
+    // where the real one docks, after the Diff pane.
+    await pane(win).evaluate((p) => {
+      const cp = document.createElement("aside");
+      cp.className = "aos-cp";
+      cp.dataset.standin = "1";
+      cp.style.width = "440px";
+      p.after(cp);
+    });
+    try {
+      for (const width of [1280, 1470]) {
+        const restore = await emulateViewport(win, { width, height: 800, scale: 1 });
+        try {
+          const m = await C(win).evaluate((c) => {
+            const w = (sel: string) => Math.round((c.querySelector(sel) as HTMLElement).getBoundingClientRect().width);
+            const right = Math.max(...Array.from(c.children).map((e) => e.getBoundingClientRect().right));
+            return { main: w(".aos-term-main"), diff: w(".aos-cdp"), cp: w(".aos-cp[data-standin]"), right, inner: window.innerWidth, scroll: c.scrollWidth - c.clientWidth };
+          });
+          const at = `${width}: ${JSON.stringify(m)}`;
+          expect(m.main, at).toBeGreaterThanOrEqual(480);
+          expect(m.diff, at).toBeGreaterThan(0);
+          expect(m.cp, at).toBeGreaterThan(0);
+          expect(m.right, at).toBeLessThanOrEqual(m.inner);
+          expect(m.scroll, at).toBe(0);
+        } finally {
+          await restore();
+        }
+      }
+    } finally {
+      await C(win).evaluate((c) => c.querySelector(".aos-cp[data-standin]")?.remove());
+      await pane(win).locator(".aos-cdp-icon.is-close").click();
+    }
+    expectNoErrors(h);
+  });
 });
 
 test.describe("the Code chat surface off (a run whose AOS_APP_WRITE leaves it out)", () => {

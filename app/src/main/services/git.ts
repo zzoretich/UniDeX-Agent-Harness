@@ -85,7 +85,8 @@ interface Run { code: number; stdout: string; stderr: string; truncated: boolean
 /** A file the page names: relative to the workspace, inside it, and plain text. */
 export function fileRefusal(file: string): string | null {
   if (!file || file.length > 4096 || file.includes("\0")) return "a file name";
-  // Status writes an odd name C-quoted ("\303\251.txt"): that text, quotes and all, never names a file.
+  // Status writes a name it still quotes (one with a quote, a backslash or a control character) C-quoted: that text,
+  // quotes and all, never names a file.
   if (file.startsWith('"')) return "a file name";
   if (path.isAbsolute(file) || file.split(/[\\/]/).includes("..")) return "a file outside the workspace";
   return null;
@@ -212,7 +213,9 @@ export class GitService {
     // When git cannot say which filter drivers the repository defines, nothing that could run one is read.
     const filters = known === undefined ? await this.filters(dir) : known;
     if (!filters) return NOT_REPO;
-    const s = await this.run(dir, [...filters, "status", ...SUBMODULE_SAFE, "--porcelain=v2", "--branch", "--untracked-files=all"]);
+    // core.quotePath=false: a non-ASCII name comes back as it is, the name numstat -z (never quoted) keys its counts by;
+    // a name with a quote, a backslash or a control character is still C-quoted, and fileRefusal refuses that text.
+    const s = await this.run(dir, [...filters, "-c", "core.quotePath=false", "status", ...SUBMODULE_SAFE, "--porcelain=v2", "--branch", "--untracked-files=all"]);
     const mergeHead = await this.run(dir, ["rev-parse", "--git-path", "MERGE_HEAD"]);
     const merging = mergeHead.code === 0 && fs.existsSync(path.resolve(dir, mergeHead.stdout.trim()));
     const st = parseStatus(s.stdout);

@@ -182,16 +182,43 @@ test("diffAt reads a file name literally: a glob or pathspec magic matches nothi
 test("diffAt refuses a name in git's quoted form, which is never a file's literal name", async () => {
   const bay = mk(tmp, "bay");
   repo(bay);
-  // `\303\251.txt` is how status writes a file named with an accent; a file whose name is that text, quotes and all, must
-  // not stand in for it.
+  // `\303\251.txt` is how git quotes a file named with an accent (core.quotePath's default); a file whose name is that
+  // text, quotes and all, must not stand in for it. Status names the accent file as it is, and the planted one, whose name
+  // holds a quote and backslashes, still quoted.
   fs.writeFileSync(path.join(bay, "\u00e9.txt"), "accent\n");
   const quoted = '"\\303\\251.txt"';
   fs.writeFileSync(path.join(bay, quoted), "planted\n");
   const st = await git.statusAt(bay);
-  assert.ok(st.ok && st.data.files.some((f) => f.path === quoted), "status lists the accent name in its quoted form");
-  const r = await git.diffAt(bay, quoted);
-  assert.equal(r.ok, false, JSON.stringify(r));
-  assert.ok(!r.ok && !/planted/.test(r.error));
+  assert.ok(st.ok && st.data.files.some((f) => f.path === "\u00e9.txt"), JSON.stringify(st));
+  const listed = st.ok ? st.data.files.find((f) => f.path !== "\u00e9.txt")?.path ?? "" : "";
+  assert.ok(listed.startsWith('"'), `still quoted: ${listed}`);
+  for (const name of [quoted, listed]) {
+    const r = await git.diffAt(bay, name);
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.ok(!r.ok && !/planted/.test(r.error));
+  }
+  const accent = await git.diffAt(bay, "\u00e9.txt");
+  assert.ok(accent.ok && /\+accent/.test(accent.data.text), JSON.stringify(accent));
+});
+
+test("status names a non-ASCII file as it is (core.quotePath=false), so its +n \u2212n from numstat match: caf\u00e9.md", async () => {
+  const cove = mk(tmp, "cove");
+  repo(cove);
+  fs.writeFileSync(path.join(cove, "caf\u00e9.md"), "one\n");
+  g(cove, "add", "-A");
+  g(cove, "commit", "-q", "-m", "add");
+  fs.writeFileSync(path.join(cove, "caf\u00e9.md"), "uno\ntwo\n");
+  fs.writeFileSync(path.join(cove, "na\u00efve.txt"), "a\nb\nc\n");
+  const st = await git.statusAt(cove);
+  assert.ok(st.ok);
+  assert.deepEqual(st.data.files, [
+    { status: ".M", path: "caf\u00e9.md", added: 2, removed: 1 },
+    { status: "??", path: "na\u00efve.txt", added: 3, removed: 0 },
+  ]);
+  const d = await git.diffAt(cove, "caf\u00e9.md");
+  assert.ok(d.ok && /\+uno/.test(d.data.text) && /-one/.test(d.data.text), JSON.stringify(d));
+  const n = await git.diffAt(cove, "na\u00efve.txt");
+  assert.ok(n.ok && /\+c/.test(n.data.text), JSON.stringify(n));
 });
 
 type Info = { cwd: string; startedAt: number; terminal: string | null };

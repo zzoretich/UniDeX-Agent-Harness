@@ -7,6 +7,7 @@ import Module from "node:module";
 import { setHudHost, type HostCode, type HostGitDiff, type HostGitStatus, type HostResult } from "../host";
 import { createNodeHost } from "../nodeHost";
 import type { TerminalSession } from "../data/terminalSession";
+import type { Place } from "../data/terminalLaunch";
 import type * as Panes from "./CodePanes";
 
 const STUB = "obsidian-stub-code-panes";
@@ -49,24 +50,24 @@ test("Files opens a vault workspace's folder (Scratch and a linked one too), nev
 const el = (): HTMLElement => new Proxy({}, { get: (_t, k) => (k === "childElementCount" ? 0 : () => el()) }) as HTMLElement;
 const flush = () => new Promise<void>((r) => setImmediate(r));
 
-/** code:git standing in for main: each call waits until the test answers it. */
+/** code:git standing in for main: each call waits until the test answers it (a status by default, or `r`). */
 function fakeGit() {
-  const calls: Array<{ req: { pty: string; op: string }; answer: () => void }> = [];
+  const calls: Array<{ req: { pty: string; op: string }; answer: (r?: HostResult<HostGitStatus | HostGitDiff>) => void }> = [];
   const git = (req: { pty: string; op: "status" | "diff"; file?: string }) =>
-    new Promise<HostResult<HostGitStatus | HostGitDiff>>((resolve) => calls.push({ req, answer: () => resolve({ ok: true, data: st({}) }) }));
+    new Promise<HostResult<HostGitStatus | HostGitDiff>>((resolve) => calls.push({ req, answer: (r) => resolve(r ?? { ok: true, data: st({}) }) }));
   setHudHost({ ...createNodeHost(), code: { git } as unknown as HostCode });
   return calls;
 }
 
-/** A terminal whose output the test prints. */
+/** A terminal whose output the test prints; `ptyId` changes when another process takes it over. */
 function terminal(id: string, pty: string) {
   const listeners = new Set<() => void>();
   const s = { id, ptyId: pty, onData: (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; } } as unknown as TerminalSession;
   return { s, listeners, print: () => { for (const l of [...listeners]) l(); } };
 }
 
-function panesFor(active: () => TerminalSession | undefined) {
-  const panes = new CodePanes({ activeSession: active, placeOf: () => ({ kind: "other", label: "", dir: "/work/demo" }), computer: () => null, changed: () => {} });
+function panesFor(active: () => TerminalSession | undefined, place: () => Place = () => ({ kind: "other", label: "", dir: "/work/demo" })) {
+  const panes = new CodePanes({ activeSession: active, placeOf: place, computer: () => null, changed: () => {} });
   panes.mount(el());
   return panes;
 }
@@ -126,6 +127,53 @@ test("behind another rail tab nothing is read: not on output, a draw or Refresh;
   t.mock.timers.tick(1500);
   assert.equal(calls.length, 4, "its output reads it again");
   calls[3].answer();
+  await flush();
+  panes.destroy();
+});
+
+test("a terminal main refused is not read again on its output or a selection; a forced read, a new process or a new place asks again", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const calls = fakeGit();
+  const term = terminal("t1", "p1");
+  let place: Place = { kind: "vault", label: "Vault", dir: "/work/demo/vault" };
+  const panes = panesFor(() => term.s, () => place);
+  const refusal = { ok: false as const, error: "the vault, outside its workspaces", code: "EROFS" };
+  panes.follow(term.s);
+  assert.equal(calls.length, 1, "selected: one read");
+  calls[0].answer(refusal);
+  await flush();
+  term.print();
+  t.mock.timers.tick(10_000);
+  term.print();
+  t.mock.timers.tick(10_000);
+  assert.equal(calls.length, 1, "its output reads nothing: the answer can't change for this process in this place");
+  // Selected again, long after: still nothing.
+  panes.follow(undefined);
+  panes.follow(term.s);
+  assert.equal(calls.length, 1, "a selection reads nothing");
+  // The Code tab shown again (a forced read) asks once more.
+  panes.hide();
+  panes.show();
+  assert.equal(calls.length, 2, "a forced read asks again");
+  calls[1].answer(refusal);
+  await flush();
+  // A code folder linked since makes the same process a workspace's: its output reads again.
+  place = { kind: "workspace", label: "tide", dir: "/work/demo/code", workspace: "tide", linked: true };
+  term.print();
+  t.mock.timers.tick(1500);
+  assert.equal(calls.length, 3, "a new place reads again");
+  calls[2].answer(refusal);
+  await flush();
+  // Another process in the terminal (the login shell after the agent): read again.
+  (term.s as unknown as { ptyId: string }).ptyId = "p2";
+  panes.follow(term.s);
+  assert.equal(calls.length, 4, "a new process reads again");
+  calls[3].answer();
+  await flush();
+  term.print();
+  t.mock.timers.tick(1500);
+  assert.equal(calls.length, 5, "an answered terminal's output reads again");
+  calls[4].answer();
   await flush();
   panes.destroy();
 });

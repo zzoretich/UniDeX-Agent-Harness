@@ -6,7 +6,9 @@
 // home, any other folder, a workspace that is not a repository of its own) the Diff button, the branch and `+n −n` are
 // hidden; Files shows only for a vault workspace. The status is read when a terminal is selected, when its output has
 // settled, and when the Diff pane opens or is refreshed: never on a draw, one read at a time, and never while another rail
-// tab is in front (ruling R55).
+// tab is in front (ruling R55). A terminal main refused (the vault root, home, another folder) is not read again on its
+// output or a selection: the answer can't change while the same process runs in the same place. A status that changed
+// redraws the file list keeping its scroll and focus, and the open diff only when its text changed.
 
 import { setIcon } from "obsidian";
 import { hudHost, type HostGitDiff, type HostGitStatus } from "../host";
@@ -32,7 +34,8 @@ export interface CodePanesHost {
   changed(): void;
 }
 
-interface Read { key: string; st: HostGitStatus | null; at: number }
+/** A terminal's last status; `refused`: main refused it (EROFS), with the place it was refused in, else null. */
+interface Read { key: string; st: HostGitStatus | null; at: number; refused: string | null }
 type Shown = { file: string; state: "loading" } | { file: string; state: "ok"; diff: HostGitDiff } | { file: string; state: "error"; error: string };
 
 /** A status's branch as the top bar writes it: `⎇ main`, `⎇ detached`; null when it is not a repository. */
@@ -77,6 +80,8 @@ export class CodePanes {
   /** What the bar and the pane last drew, so a draw that changes nothing leaves them (and their focus) alone. */
   private barSig = "";
   private paneSig = "";
+  /** What the diff area last drew: a status that changed leaves an unchanged diff (and its scroll) alone. */
+  private diffDrawn: { file: string | null; state: string; text: string; truncated: boolean; files: boolean } | null = null;
 
   constructor(private host: CodePanesHost) {}
 
@@ -98,6 +103,7 @@ export class CodePanes {
     this.diffOpen = false;
     this.shown = null;
     this.barSig = this.paneSig = "";
+    this.diffDrawn = null;
     this.seq++;
     this.diffSeq++;
   }
@@ -119,7 +125,7 @@ export class CodePanes {
     this.followed = { id: s.id, key };
     this.offData = s.onData(() => this.poke());
     const r = this.reads.get(s.id);
-    if (force || !r || r.key !== key || Date.now() - r.at > FRESH_MS) void this.refresh();
+    if (force || (!this.refused(s) && (!r || r.key !== key || Date.now() - r.at > FRESH_MS))) void this.refresh();
     this.shown = null;
     this.drawPane();
   }
@@ -199,15 +205,17 @@ export class CodePanes {
     const pty = s.ptyId;
     const seq = ++this.seq;
     let st: HostGitStatus | null = null;
+    let refused = false;
     if (pty) {
       try {
         const r = await git({ pty, op: "status" });
         st = r.ok && "files" in r.data ? r.data : null;
+        refused = !r.ok && r.code === "EROFS";
       } catch { st = null; }
     }
     if (seq !== this.seq || !this.paneEl) return;
     const before = this.reads.get(s.id);
-    this.reads.set(s.id, { key, st, at: Date.now() });
+    this.reads.set(s.id, { key, st, at: Date.now(), refused: refused ? this.placeKey(s) : null });
     const sig = (x: HostGitStatus | null | undefined) => (x ? JSON.stringify(x) : "");
     if (before?.key === key && sig(before.st) === sig(st)) return;
     // The file shown may have changed too: read it again.
@@ -219,6 +227,18 @@ export class CodePanes {
   /** A terminal and the process in it now: a read for the agent is not the login shell's after it. */
   private keyOf(s: TerminalSession): string { return `${s.id}:${s.ptyId ?? ""}`; }
 
+  /** Where the terminal runs, as the page places it (a code folder linked since makes it a workspace's). */
+  private placeKey(s: TerminalSession): string {
+    const p = this.host.placeOf(s);
+    return `${p.kind}|${p.dir}|${p.workspace ?? ""}|${p.linked ? 1 : 0}`;
+  }
+
+  /** Main refused this terminal's process in this place: its output and a selection read nothing more. */
+  private refused(s: TerminalSession): boolean {
+    const r = this.reads.get(s.id);
+    return !!r && r.key === this.keyOf(s) && r.refused !== null && r.refused === this.placeKey(s);
+  }
+
   private unfollow(): void {
     this.offData?.();
     this.offData = null;
@@ -229,6 +249,8 @@ export class CodePanes {
 
   /** The followed terminal printed: read the status once its output settles, and at least every MAX_WAIT_MS meanwhile. */
   private poke(): void {
+    const s = this.host.activeSession();
+    if (s && this.followed?.id === s.id && this.refused(s)) return;
     const now = Date.now();
     this.dirtySince ??= now;
     if (this.timer !== null) clearTimeout(this.timer);
@@ -251,7 +273,6 @@ export class CodePanes {
     } catch (e) { next = { file, state: "error", error: e instanceof Error ? e.message : String(e) }; }
     if (seq !== this.diffSeq || this.shown?.file !== file) return;
     this.shown = next;
-    this.paneSig = "";
     this.drawPane();
   }
 
@@ -262,15 +283,42 @@ export class CodePanes {
     const st = this.statusOf(s);
     const open = this.diffOpen && !!st?.repo;
     pane.toggleClass("is-hidden", !open);
-    const shownSig = this.shown ? `${this.shown.file}:${this.shown.state}` : "";
-    const sig = open ? `${s?.id}|${JSON.stringify(st)}|${shownSig}` : "closed";
-    if (sig === this.paneSig) return;
-    this.paneSig = sig;
-    this.headEl.empty();
-    this.listEl.empty();
-    this.diffEl.empty();
-    if (!open || !st) return;
-    const head = this.headEl;
+    if (!open || !st) {
+      if (this.paneSig === "closed") return;
+      this.paneSig = "closed";
+      this.diffDrawn = null;
+      this.headEl.empty();
+      this.listEl.empty();
+      this.diffEl.empty();
+      return;
+    }
+    const shown = this.shown;
+    // The head and the list: drawn again when the status or the open file changed, keeping the list's scroll and the focus.
+    const sig = `${s?.id}|${JSON.stringify(st)}|${shown?.file ?? ""}`;
+    if (sig !== this.paneSig) {
+      this.paneSig = sig;
+      const list = this.listEl;
+      const top = list.scrollTop;
+      const focus = focusedIn(pane);
+      this.drawHead(this.headEl, st);
+      list.empty();
+      for (const f of st.files) {
+        const item = list.createDiv({ cls: "aos-cdp-item", attr: { role: "listitem" } });
+        const row = item.createEl("button", { cls: `aos-cdp-file${shown?.file === f.path ? " is-open" : ""}`, attr: { type: "button", "data-path": f.path, title: f.path } });
+        row.createSpan({ cls: "aos-cdp-change", text: fileStatusLabel(f.status) });
+        row.createSpan({ cls: "aos-cdp-path", text: f.path });
+        const c = countsText(f);
+        row.createSpan({ cls: `aos-cdp-counts${c ? "" : " is-binary"}`, text: c || "binary" });
+        row.addEventListener("click", () => { void this.showFile(f.path); });
+      }
+      list.scrollTop = top;
+      if (focus) refocus(pane, focus);
+    }
+    this.drawDiff(this.diffEl, shown, st.files.length > 0);
+  }
+
+  private drawHead(head: HTMLElement, st: HostGitStatus): void {
+    head.empty();
     head.createSpan({ cls: "aos-cdp-title", text: "Diff" });
     const branch = branchText(st);
     if (branch) head.createSpan({ cls: "aos-cdp-branch", text: branch });
@@ -283,23 +331,53 @@ export class CodePanes {
     };
     icon("is-refresh", "refresh-cw", "Read the status again", () => { void this.refresh(); });
     icon("is-close", "x", "Close the Diff pane", () => this.toggleDiff());
-    for (const f of st.files) {
-      const row = this.listEl.createEl("button", { cls: `aos-cdp-file${this.shown?.file === f.path ? " is-open" : ""}`, attr: { type: "button", role: "listitem", "data-path": f.path, title: f.path } });
-      row.createSpan({ cls: "aos-cdp-change", text: fileStatusLabel(f.status) });
-      row.createSpan({ cls: "aos-cdp-path", text: f.path });
-      const c = countsText(f);
-      row.createSpan({ cls: `aos-cdp-counts${c ? "" : " is-binary"}`, text: c || "binary" });
-      row.addEventListener("click", () => { void this.showFile(f.path); });
-    }
-    const shown = this.shown;
+  }
+
+  /** The open file's diff, drawn again only when what it shows changed; the same file keeps its scroll. */
+  private drawDiff(el: HTMLElement, shown: Shown | null, files: boolean): void {
+    const now = {
+      file: shown?.file ?? null,
+      state: shown ? (shown.state === "error" ? `error:${shown.error}` : shown.state) : "none",
+      text: shown?.state === "ok" ? shown.diff.text : "",
+      truncated: shown?.state === "ok" ? shown.diff.truncated : false,
+      files,
+    };
+    const was = this.diffDrawn;
+    if (was && was.file === now.file && was.state === now.state && was.text === now.text && was.truncated === now.truncated && was.files === now.files) return;
+    // The same file drawn again (its text changed) keeps where it was scrolled: the area, and the diff's own box.
+    const same = !!was && was.file === now.file;
+    const box = el.querySelector<HTMLElement>(".aos-ss-diff");
+    const keep = { top: el.scrollTop, boxTop: box?.scrollTop ?? 0, boxLeft: box?.scrollLeft ?? 0 };
+    this.diffDrawn = now;
+    el.empty();
     if (!shown) {
-      if (st.files.length) this.diffEl.createDiv({ cls: "aos-cdp-note", text: "Pick a file to see its diff." });
+      if (files) el.createDiv({ cls: "aos-cdp-note", text: "Pick a file to see its diff." });
       return;
     }
-    this.diffEl.createDiv({ cls: "aos-cdp-diffpath", text: shown.file });
-    if (shown.state === "loading") this.diffEl.createDiv({ cls: "aos-cdp-note", text: "Reading the diff…" });
-    else if (shown.state === "error") this.diffEl.createDiv({ cls: "aos-cdp-note is-error", text: shown.error });
-    else if (!shown.diff.text.trim()) this.diffEl.createDiv({ cls: "aos-cdp-note", text: "No changes in this file against HEAD." });
-    else renderDiff(this.diffEl, shown.diff.text, shown.diff.truncated);
+    el.createDiv({ cls: "aos-cdp-diffpath", text: shown.file });
+    if (shown.state === "loading") el.createDiv({ cls: "aos-cdp-note", text: "Reading the diff…" });
+    else if (shown.state === "error") el.createDiv({ cls: "aos-cdp-note is-error", text: shown.error });
+    else if (!shown.diff.text.trim()) el.createDiv({ cls: "aos-cdp-note", text: "No changes in this file against HEAD." });
+    else renderDiff(el, shown.diff.text, shown.diff.truncated);
+    if (!same) return;
+    el.scrollTop = keep.top;
+    const drawn = el.querySelector<HTMLElement>(".aos-ss-diff");
+    if (drawn) { drawn.scrollTop = keep.boxTop; drawn.scrollLeft = keep.boxLeft; }
+  }
+}
+
+/** What has the focus in the pane, as something a redraw can find again: a file row by its path, a head button by its
+ *  class; null when the focus is elsewhere. */
+function focusedIn(pane: HTMLElement): { path: string } | { cls: string } | null {
+  const a = pane.ownerDocument?.activeElement;
+  if (!(a instanceof HTMLElement) || !pane.contains(a)) return null;
+  if (a.dataset.path !== undefined) return { path: a.dataset.path };
+  for (const cls of ["is-refresh", "is-close"]) if (a.classList.contains(cls)) return { cls };
+  return null;
+}
+
+function refocus(pane: HTMLElement, f: { path: string } | { cls: string }): void {
+  for (const el of Array.from(pane.querySelectorAll<HTMLElement>("button"))) {
+    if ("path" in f ? el.dataset.path === f.path : el.classList.contains(f.cls)) { el.focus({ preventScroll: true }); return; }
   }
 }

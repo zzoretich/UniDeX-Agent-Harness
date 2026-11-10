@@ -546,7 +546,8 @@ test("git: every diff passes --no-ext-diff --no-textconv; a read gets no lazy fe
   const seen: { args: string[]; env: NodeJS.ProcessEnv }[] = [];
   const fake = ((_file: string, args: readonly string[], opts: { env: NodeJS.ProcessEnv }, cb: (e: null, out: string, err: string) => void) => {
     seen.push({ args: [...args], env: opts.env });
-    const a = args.slice(GIT_GUARD.length).filter((x) => !x.startsWith("--config-env="));
+    // The command after its global options: GIT_GUARD, filterOverrides' --config-env, and a `-c key=value` (status's quotePath).
+    const a = args.slice(GIT_GUARD.length).filter((x) => !x.startsWith("--config-env=")).filter((x, i, all) => x !== "-c" && all[i - 1] !== "-c");
     if (a[0] === "rev-parse" && a[1] === "--show-toplevel") return cb(null, `${dir}\n`, "");
     if (a[0] === "rev-parse" && a[1] === "--git-path") return cb(null, ".git/MERGE_HEAD\n", "");
     if (a[0] === "status") return cb(null, "# branch.head main\n1 .M N... 100644 100644 100644 a b a.txt\n", "");
