@@ -20,7 +20,9 @@ import { PROPOSALS_DIR } from "../data/proposals";
 import { gatherPulseInputs, pulseFacts } from "../data/pulseFacts";
 import { touchesPulse } from "./pulse/meta";
 import { NOTIFICATIONS_DIR, STATE_PATH, notificationId, parseNotification, parseState, unreadBadge, Level } from "../data/notifications";
-import { badgeText, proposalBadge, todoBadge, touchesBadges } from "../data/badges";
+import { badgeText, needsYouBadge, proposalBadge, todoBadge, touchesBadges } from "../data/badges";
+import { statusInput } from "../data/termGroups";
+import { listen } from "../data/listen";
 import { TODO_PATH, localDay } from "../data/todos";
 import { readTeams, diskAdapter, gateBadge } from "../data/teams";
 import { TRAIL_PATH } from "../data/promoteTrail";
@@ -139,7 +141,8 @@ export class WorkbenchView extends ItemView {
   private brainPending = new Map<string, boolean>();
   /** Bumped by every event on a brain path: an answer read across one is not kept. */
   private brainEpoch = 0;
-  /** The Computer store's subscriptions (badges and reveals), let go in onClose. */
+  /** The Computer store's subscriptions (badges and reveals), and the Code chats' and terminals' (Code's badge), let go
+   *  in onClose. */
   private computerOff: Array<() => void> = [];
 
   constructor(leaf: WorkspaceLeaf, plugin: AgenticOSPlugin) { super(leaf); this.plugin = plugin; }
@@ -237,6 +240,11 @@ export class WorkbenchView extends ItemView {
       this.computerOff.push(store.subscribe(() => this.refreshComputerBadges()));
       this.computerOff.push(store.onReveal((askId) => this.revealAsk(askId)));
     }
+    // Code's badge also counts the agent terminals whose TUI waits on you (code-chat C10), whichever tab is shown: their
+    // chats say when a card comes or goes, the pool when a terminal closes.
+    const feeds = this.plugin.codeFeeds;
+    if (feeds) this.computerOff.push(feeds.subscribe(() => this.refreshComputerBadges()));
+    this.computerOff.push(listen(this.plugin.terminalPool, { "session-remove": () => this.refreshComputerBadges() }));
     void this.refreshBadges();
   }
 
@@ -340,12 +348,15 @@ export class WorkbenchView extends ItemView {
   }
 
   /** Code's and Sessions' badges (agent-computer D27, ruling R51): their sessions' pending Computer asks, wherever the
-   *  computer is, rose (main denies an ask nobody answers in time). */
+   *  computer is, rose (main denies an ask nobody answers in time). Code's also counts its agent terminals whose row
+   *  reads Needs you (code-chat C10: a prompt on the TUI's screen), rose only while a Computer ask is among them. */
   private refreshComputerBadges(): void {
     const store = computerStore();
-    if (!store) return;
-    this.setBadge("term", store.badge("code"), true);
-    this.setBadge("chat", store.badge("chat"), true);
+    const asks = store?.badge("code") ?? 0;
+    const feeds = this.plugin.codeFeeds;
+    const needs = feeds ? needsYouBadge(this.plugin.terminalPool.list().map((s) => statusInput(s, feeds.get(s.id)))) : 0;
+    this.setBadge("term", asks + needs, asks > 0);
+    if (store) this.setBadge("chat", store.badge("chat"), true);
   }
 
   /**

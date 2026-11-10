@@ -4,7 +4,7 @@
 import { TERM_HOST_LABEL } from "./terminalLaunch";
 import type { Place, TermHost } from "./terminalLaunch";
 import type { HistoryRow } from "./sessionHistory";
-import { rowStatus } from "./codeChat";
+import { rowStatus, type RowStatusInput } from "./codeChat";
 
 export interface TermRowInput {
   id: string;
@@ -17,9 +17,10 @@ export interface TermRowInput {
   exitCode: number | null;
   /** The conversation the terminal is in, when it knows it (C6: the index lists it once the app's row is not needed). */
   sessionId?: string | null;
-  /** The chat's open turn and the TUI's wait for you (rowStatus); absent is false. */
+  /** The chat's open turn, the TUI's wait for you on its screen, and output in the last 2 s (rowStatus); absent is false. */
   turnOpen?: boolean;
   needsYou?: boolean;
+  printing?: boolean;
   /** An agent whose chat is not followed (the Code chat surface off, refused, not yet started): nothing says whether a
    *  turn runs, so its row reads Running rather than Idle (M1). Absent is false. */
   noChat?: boolean;
@@ -34,8 +35,27 @@ export interface RowSession {
   exitCode: number | null;
   agentEnded: boolean;
 }
-/** What rowInput reads of its chat (CodeFeeds' feed), or null for none. */
-export interface RowFeed { follow: "pending" | "on" | "off" | "failed"; state: { sessionId: string | null; turnOpen: boolean } }
+/** What rowInput reads of its chat (CodeFeeds' feed), or null for none: `needsYou` and `printing` come from the
+ *  terminal's screen (code-chat C10); absent is false. */
+export interface RowFeed {
+  follow: "pending" | "on" | "off" | "failed";
+  state: { sessionId: string | null; turnOpen: boolean };
+  needsYou?: boolean;
+  printing?: boolean;
+}
+
+/**
+ * What a terminal's status word is worked out from (rowStatus), the one source its row and the rail badge read: no turn
+ * is open, nothing waits on you and nothing prints once its agent ended and the login shell runs (R39: that screen is
+ * not the agent's), nor for a shell.
+ */
+export function statusInput(s: Pick<RowSession, "meta" | "isExited" | "exitCode" | "agentEnded">, feed: RowFeed | null): RowStatusInput {
+  const live = s.meta.host !== "shell" && !s.agentEnded;
+  return {
+    exited: s.isExited, exitCode: s.exitCode,
+    turnOpen: live && (feed?.state.turnOpen ?? false), printing: live && !!feed?.printing, needsYou: live && !!feed?.needsYou,
+  };
+}
 
 /**
  * A terminal's sidebar row from what the pool and its chat know, the one source the chat and the chips read too (code-chat
@@ -45,11 +65,11 @@ export interface RowFeed { follow: "pending" | "on" | "off" | "failed"; state: {
  */
 export function rowInput(s: RowSession, place: Place, feed: RowFeed | null): TermRowInput {
   const agent = s.meta.host !== "shell";
+  const st = statusInput(s, feed);
   return {
     id: s.id, host: s.meta.host, title: s.getTitle(), place, origin: s.meta.origin, startedAt: s.meta.startedAt,
     exited: s.isExited, exitCode: s.exitCode, sessionId: feed?.state.sessionId ?? s.meta.sessionId ?? null,
-    // Task 12 reads "Needs you" from the screen and sets needsYou here.
-    turnOpen: agent && !s.agentEnded && (feed?.state.turnOpen ?? false), needsYou: false,
+    turnOpen: st.turnOpen, needsYou: st.needsYou, printing: st.printing,
     noChat: agent && feed?.follow !== "on",
   };
 }
@@ -158,7 +178,7 @@ export function groupSidebar(open: TermRowInput[], history: HistoryRow[], o: Sid
 
   for (const r of open) {
     if (!hit(r.title, r.host, TERM_HOST_LABEL[r.host], r.place.label, r.origin)) continue;
-    const known = rowStatus({ exited: r.exited, exitCode: r.exitCode, turnOpen: !!r.turnOpen, printing: false, needsYou: !!r.needsYou });
+    const known = rowStatus({ exited: r.exited, exitCode: r.exitCode, turnOpen: !!r.turnOpen, printing: !!r.printing, needsYou: !!r.needsYou });
     const status: SidebarStatus = r.noChat && known.status === "idle" ? { status: "idle", text: "Running" } : known;
     add(r.place, r.startedAt, true, { kind: "open", row: { ...r, ...rowEnd(r) }, status });
   }

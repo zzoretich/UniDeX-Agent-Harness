@@ -6,7 +6,8 @@
 import type AgenticOSPlugin from "../../main";
 import type { TerminalSession } from "./terminalSession";
 import { HistoryCache } from "./historyCache";
-import { groupSidebar, rowInput, sidebarOrder, type SidebarGroup, type TermRow, type TermRowInput, type TermScope } from "./termGroups";
+import { groupSidebar, rowInput, sidebarOrder, statusInput, type SidebarGroup, type TermRow, type TermRowInput, type TermScope } from "./termGroups";
+import { rowStatus } from "./codeChat";
 import { placeOf, type Place, type PlaceWorld } from "./terminalLaunch";
 
 export interface SidebarModelHost {
@@ -73,13 +74,14 @@ export class CodeSidebarModel {
     return this.plugin.codeFeeds?.get(s.id)?.state.model ?? s.meta.model ?? null;
   }
 
-  /** What the rows show of each chat: its status and its conversation (which hides its History row). */
+  /** What the rows show of each chat: its status word (from the open turn, and Needs you and printing from its screen,
+   *  code-chat C10), whether it is followed, and its conversation (which hides its History row). */
   rowsSig(): string {
     const feeds = this.plugin.codeFeeds;
     if (!feeds) return "";
     return this.plugin.terminalPool.list().map((s) => {
       const f = feeds.get(s.id);
-      return f ? `${s.id}:${f.follow}:${f.state.turnOpen ? 1 : 0}:${this.conversationOf(s) ?? ""}` : s.id;
+      return f ? `${s.id}:${f.follow}:${rowStatus(statusInput(s, f)).status}:${this.conversationOf(s) ?? ""}` : s.id;
     }).join(",");
   }
 

@@ -12,6 +12,7 @@ import { pastEarlier, pastState, pastView, type PastView } from "../data/pastCha
 import type { CodeView } from "../data/codeFeeds";
 import type { ChatState } from "../data/codeChat";
 import type { Span } from "../data/ansiSpans";
+import type { ChatCard } from "../data/termScreen";
 import { CodeChat } from "./CodeChat";
 import type { TermComposer } from "./TermComposer";
 
@@ -46,7 +47,7 @@ export class CodeStage {
   /** The terminal whose chat the CodeChat shows now, and what it drew of it (the feed's objects, which CodeFeeds replaces
    *  on every change, so the same ones mean nothing new to draw: I3). */
   private chatFor: string | null = null;
-  private drawn: { state: ChatState; why: string | null; status: Span[][] | null } | null = null;
+  private drawn: { state: ChatState; why: string | null; status: Span[][] | null; card: ChatCard | null } | null = null;
 
   constructor(private plugin: AgenticOSPlugin, private host: CodeStageHost) {}
 
@@ -58,6 +59,13 @@ export class CodeStage {
     this.chat = new CodeChat(this.stageEl, {
       toTerminal: () => this.host.setView("terminal"),
       stop: () => { const s = this.host.activeSession(); if (s && !s.isExited && !s.agentEnded) s.write("\x1b"); },
+      // A card's choice (C4): never into the login shell of an agent that ended, nor while the composer is kept away
+      // (R39); CodeFeeds writes the key only if the screen still shows that prompt.
+      answer: (key) => {
+        const s = this.host.activeSession();
+        if (!s || this.past || s.isExited || s.agentEnded || this.host.composer()?.isBlocked) return false;
+        return this.plugin.codeFeeds?.answer(s.id, key) ?? false;
+      },
       showEarlier: () => { const id = this.host.activeId(); if (id) this.plugin.codeFeeds?.showEarlier(id); },
       openLink: (href) => this.host.openLink(href),
       context: () => {
@@ -169,7 +177,8 @@ export class CodeStage {
   }
 
   /** The selected terminal's chat, as its feed has it now. Only what changed is drawn again (I3): a status line that moved
-   *  redraws the status line, not 400 rows (and your selection in them); `force` draws it all (the chat shown again). */
+   *  redraws the status line, not 400 rows (and your selection in them); `force` draws it all (the chat shown again). The
+   *  card is the TUI's prompt on its screen (C4), none once the agent ended (R39). */
   renderChat(force = false): void {
     const chat = this.chat;
     const s = this.host.activeSession();
@@ -179,9 +188,11 @@ export class CodeStage {
     const state = feed?.state ?? NO_CHAT;
     const why = feed?.follow === "failed" ? feed.error : null;
     const status = feed?.status ?? null;
+    const card = s.agentEnded || s.isExited ? null : feed?.card ?? null;
     const was = force ? null : this.drawn;
     if (!was || was.state !== state || was.why !== why) chat.show(state, why);
     if (!was || was.status !== status) chat.setStatus(status);
-    this.drawn = { state, why, status };
+    if (!was || was.card !== card) chat.setCard(card);
+    this.drawn = { state, why, status, card };
   }
 }

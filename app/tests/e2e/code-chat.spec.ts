@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, appEnv, command, content, emulateViewport, expectNoErrors, openTab, terminalText, useApp } from "./harness";
+import { FX, REPO, appEnv, badge, command, content, emulateViewport, expectNoErrors, openTab, terminalText, useApp } from "./harness";
 
 // The Code tab's chat view (spec 2026-11-09-code-chat C1, C3, C5, C13; rulings R3, R28, R32): an agent terminal opens in a
 // chat drawn from the cache its follower writes; ⌘J flips the middle to the same live PTY and back, nothing restarts; a
@@ -522,6 +522,171 @@ test.describe("the Code chat surface on", () => {
     await expect(C(win).locator(".aos-cv")).toHaveCount(0);
     await expect(chat(win)).toBeHidden();
     expect((await poolInfo(win, login))?.agentEnded).toBe(false);
+  });
+});
+
+// Approval cards, Needs you and Codex's status line (C4, C5, C10; Task 12). Each agent terminal's raw stream feeds a headless
+// screen; the TUI's prompt on it is the chat's card, its row's Needs you and the rail badge's count, and Codex's footer
+// rows are its status line. The stand-in agent here is a fake process attached as the terminal's agent, in the page: what
+// the test emits is what its TUI printed (real captured screens, hud/src/data/fixtures/screens), what the terminal writes
+// to it is kept. Nothing ever flips the view by itself.
+
+const SCREENS = path.join(REPO, "..", "hud", "src", "data", "fixtures", "screens");
+const screenFile = (name: string) => fs.readFileSync(path.join(SCREENS, name), "utf8");
+/** A rendered fixture screen as a stream that draws it from the top (the captures kept the raw stream of two only). */
+const drawn = (name: string) => `\u001b[H\u001b[2J${screenFile(`${name}.txt`).split("\n").join("\r\n")}`;
+type FakeW = { aosHost: { plugin: { terminalPool: { create(o: object): { id: string; dimensions: object; attachAgent(p: unknown, size: object): void; resize(c: number, r: number): void }; select(id: string): void; get(id: string): { resize(c: number, r: number): void } | undefined; remove(id: string): void }; codeFeeds: { screened(id: string): boolean } } }; __fakes?: Record<string, { emit(d: string): void; exit(code: number): void; writes: string[] }> };
+/** A terminal whose agent is a fake process in the page, selected; its pool id. */
+const fakeAgent = (win: Page, meta: Meta): Promise<string> => win.evaluate((m) => {
+  const w = window as unknown as FakeW;
+  const pool = w.aosHost.plugin.terminalPool;
+  const t = pool.create({ deferred: true, cols: 120, rows: 40, meta: m });
+  const data: Array<(d: string) => void> = [];
+  const exits: Array<(e: { exitCode: number }) => void> = [];
+  const writes: string[] = [];
+  const fake = {
+    pid: 0, write: (d: string) => { writes.push(d); }, resize: () => {}, kill: () => {},
+    onData: (cb: (d: string) => void) => { data.push(cb); }, onExit: (cb: (e: { exitCode: number }) => void) => { exits.push(cb); },
+  };
+  t.attachAgent(fake, t.dimensions);
+  (w.__fakes ??= {})[t.id] = { emit: (d: string) => { for (const cb of data) cb(d); }, exit: (code: number) => { for (const cb of exits) cb({ exitCode: code }); }, writes };
+  pool.select(t.id);
+  return t.id;
+}, meta);
+/** The fake's TUI prints `d`; the captures are 120×40, so the terminal is sized so first (after the visible terminal's
+ *  own fit, two frames after the selection, which sizes it to the stage). */
+const replay = async (win: Page, id: string, d: string): Promise<void> => {
+  await win.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+  await win.evaluate(({ i, d }) => {
+    const w = window as unknown as FakeW;
+    w.aosHost.plugin.terminalPool.get(i)?.resize(120, 40);
+    w.__fakes?.[i].emit(d);
+  }, { i: id, d });
+};
+/** What the terminal wrote to the fake since the last call. */
+const written = (win: Page, id: string): Promise<string[]> => win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].writes.splice(0) ?? [], id);
+const removeTerminal = (win: Page, id: string) => win.evaluate((i) => (window as unknown as FakeW).aosHost.plugin.terminalPool.remove(i), id);
+
+test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)", () => {
+  test.describe.configure({ mode: "serial" });
+  const app = useApp({ env: { AOS_APP_WRITE: "code" } });
+  const card = (win: Page) => chat(win).locator(".aos-cc-card .aos-cc-gate");
+
+  test("an approval on the agent's screen is a card with the TUI's own question, command and choices; Yes writes 1 and nothing else; the view stays (C4)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000021", sessionId: "a1a1a1a1-0000-4000-8000-000000000022", label: "Approval" });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, screenFile("claude-2.1.318-bash.ansi"));
+    await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    await expect(card(win).locator(".aos-cc-gatedetail")).toHaveText("touch hi.txt");
+    // Claude Code 2.1.318 draws four numbered choices (an earlier version drew Yes, Yes and don't ask again, No).
+    const choices = card(win).locator("button.aos-cc-choice");
+    await expect(choices.locator("span:first-child")).toHaveText(["Yes", "Yes, and always allow access to /work/demo from this project", "Yes, and switch to auto mode · auto mode handles these prompts for you", "No"]);
+    await expect(choices.locator(".aos-cc-choicekey")).toHaveText(["1", "2", "3", "4"]);
+    await expect(card(win).locator("button.aos-cc-jump")).toHaveText("Answer in the terminal ⌘J");
+    // The card came up; the view did not move.
+    await expect(sw(win).locator("button[aria-pressed='true']")).toHaveText("Chat");
+    await expect(body(win)).toBeHidden();
+    // What the visible terminal answered to the stream's own queries is not the card's.
+    await written(win, id);
+    await choices.first().click();
+    expect(await written(win, id)).toEqual(["1"]);
+    // One answer per prompt: the buttons wait for the TUI to move on, and a second click writes nothing.
+    await expect(choices.first()).toBeDisabled();
+    await choices.first().click({ force: true });
+    expect(await written(win, id)).toEqual([]);
+    // The TUI moved on: the card goes.
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await expect(sw(win).locator("button[aria-pressed='true']")).toHaveText("Chat");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a /model dialog is a Needs you on its row, in the footer and on the rail, and the waiting card in its chat; nothing flips the view (C4, C10)", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000023", sessionId: "a1a1a1a1-0000-4000-8000-000000000024", label: "Model picker" });
+    await expect(chat(win)).toBeVisible();
+    // In its terminal view when the dialog comes up.
+    expect(await command(win, "agentic-os:toggle-code-view")).toBe(true);
+    await expect(body(win)).toBeVisible();
+    const sub = C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-sub`);
+    await expect(sub).not.toContainText("Needs you");
+    await expect(badge(win, "term")).toHaveText("");
+    await replay(win, id, drawn("claude-2.1.318-model"));
+    await expect(sub).toContainText("Needs you");
+    await expect(sub).toHaveClass(/is-needs/);
+    await expect(C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-glyph`)).toHaveClass(/is-needs/);
+    await expect(C(win).locator(".aos-tl-needs")).toHaveText("1 need you");
+    await expect(badge(win, "term")).toHaveText("1");
+    // Still its terminal: the card waits in the chat.
+    await expect(body(win)).toBeVisible();
+    await expect(chat(win)).toBeHidden();
+    expect(await command(win, "agentic-os:toggle-code-view")).toBe(true);
+    await expect(chat(win)).toBeVisible();
+    const waiting = chat(win).locator(".aos-cc-gate.is-waiting");
+    await expect(waiting.locator(".aos-cc-gatetitle")).toHaveText("Waiting on you in the terminal");
+    await expect(waiting.locator("button.aos-cc-choice")).toHaveCount(0);
+    await waiting.locator("button.aos-cc-jump", { hasText: "Answer in the terminal ⌘J" }).click();
+    await expect(body(win)).toBeVisible();
+    // The badge counts Needs you wherever you are.
+    await openTab(win, "pulse");
+    await expect(badge(win, "term")).toHaveText("1");
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
+    await expect(badge(win, "term")).toHaveText("");
+    await openTab(win, "term");
+    await expect(sub).not.toContainText("Needs you");
+    // Closed with a dialog up: the count drops with it.
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-model") });
+    await expect(badge(win, "term")).toHaveText("1");
+    await removeTerminal(win, id);
+    await expect(badge(win, "term")).toHaveText("");
+  });
+
+  test("an agent that ends with its prompt up takes the card with it: nothing on the login shell's screen is the agent's to answer (R39)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000027", sessionId: "a1a1a1a1-0000-4000-8000-000000000028", label: "Ending with a prompt" });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, screenFile("claude-2.1.318-bash.ansi"));
+    await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    const sub = C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-sub`);
+    await expect(sub).toContainText("Needs you");
+    await expect(badge(win, "term")).toHaveText("1");
+    // The agent exits and the login shell takes its terminal over (D18).
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].exit(0), id);
+    await expect(chat(win).locator(".aos-cc-ended")).toHaveText("Claude Code ended · Terminal ⌘J");
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await expect(chat(win).locator("button.aos-cc-choice")).toHaveCount(0);
+    await expect(sub).not.toContainText("Needs you");
+    await expect(badge(win, "term")).toHaveText("");
+    expect(await win.evaluate((i) => (window as unknown as FakeW).aosHost.plugin.codeFeeds.screened(i), id)).toBe(false);
+    expect(await written(win, id)).not.toContain("1");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a Codex terminal's footer is its status line under the composer, colours kept; the hint before there is one (C5)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "codex", terminalKey: "a1a1a1a1-0000-4000-8000-000000000025", sessionId: "a1a1a1a1-0000-4000-8000-000000000026", label: "Codex footer" });
+    await expect(chat(win)).toBeVisible();
+    const status = chat(win).locator(".aos-cc-status");
+    await expect(status).toHaveText("Status line in the terminal ⌘J");
+    await replay(win, id, screenFile("codex-0.167.0-idle.ansi"));
+    const lines = status.locator(".aos-cc-statusline");
+    await expect(lines).toHaveCount(2);
+    await expect(lines.first()).toHaveText("GPT-6-Luna low · Context 0% used · weekly limit ok");
+    await expect(lines.nth(1)).toHaveText(/^← for agents · \? for shortcuts\s+⚠ 1 warning · f2 to view$/);
+    await expect(status.locator("span", { hasText: "GPT-6-Luna low" })).toHaveAttribute("style", /color: rgb\(/);
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
   });
 });
 

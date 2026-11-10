@@ -13,7 +13,7 @@ export class ClosedRecord {
   /** Remembers a closed terminal's row, newest first; a shell or a terminal with no known conversation is not kept. */
   add(r: TermRowInput): void {
     if (r.host === "shell" || !r.sessionId) return;
-    const keep = { ...r, exited: true, turnOpen: false, needsYou: false };
+    const keep = { ...r, exited: true, turnOpen: false, needsYou: false, printing: false };
     this.rows = [keep, ...this.rows.filter((c) => c.sessionId !== r.sessionId || c.host !== r.host)].slice(0, CLOSED_CAP);
   }
 

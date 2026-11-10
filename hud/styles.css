@@ -3411,6 +3411,8 @@ button.aos-tc-chip.is-hidden:not(.clickable-icon), .aos-tc-chip.is-hidden { disp
   border-radius: 8px; background: var(--udx-bg); box-shadow: none; font-size: 12.5px; color: var(--udx-text);
 }
 .aos-cc button.aos-cc-choice.is-first { border-color: var(--udx-inv); background: var(--udx-inv); color: var(--udx-inv-text); }
+.aos-cc button.aos-cc-choice:disabled { opacity: 0.55; cursor: default; }
+.aos-cc button.aos-cc-choice:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
 .aos-cc-choicekey { font-family: var(--udx-mono); font-size: 11px; opacity: 0.7; }
 .aos-cc-gatechoices .aos-cc-jump { margin-left: auto; font-size: 12.5px; }
 .aos-cc-foot { flex: none; padding: 6px 24px 10px; }

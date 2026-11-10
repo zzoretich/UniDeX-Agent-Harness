@@ -148,6 +148,10 @@ export class TermComposer {
     this.el.toggleClass("is-hidden", on || !this.session);
   }
 
+  /** Whether the composer is kept away now (block): nothing from the chat may reach the terminal then, a card's key
+   *  included (R39). */
+  get isBlocked(): boolean { return this.blocked; }
+
   /** The agent the composer writes to, or null for a shell, or a terminal whose agent ended (R39). */
   private agent(): "claude" | "codex" | null {
     const s = this.session;
