@@ -146,30 +146,34 @@ test.describe("the Code chat surface on", () => {
     try {
       // A 1x screen, as CI's: xterm's cell width is the rounded canvas over the columns it has, so the chat's fit and the
       // terminal view's can land a column apart. 1480 x 920 first, whatever the screen (CI's runners are 1024 px wide),
-      // then a few widths near it. Each width has its own emulation, cleared before the next (a second session's clear
+      // then a few widths near it, then heights where the composer's share of the stage ends part-way through a line (the
+      // rows must still match: R52). Each size has its own emulation, cleared before the next (a second session's clear
       // would drop the first's override).
-      for (const w of [1480, 1469, 1472, 1475, 1478]) {
-        const r = await emulateViewport(win, { width: w, height: 920, scale: 1 });
+      const sizes = [[1480, 920], [1469, 920], [1472, 920], [1475, 920], [1478, 920], [1480, 900], [1480, 914], [1480, 931]];
+      for (const [w, h] of sizes) {
+        const at = `${w} x ${h}`;
+        const r = await emulateViewport(win, { width: w, height: h, scale: 1 });
         try {
-          // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over (at 1480, before any flip).
+          // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over (at 1480 x 920, before any flip).
           await expect.poll(async () => (await size())?.cols ?? 0).toBeGreaterThan(80);
           const chatSize = await settled();
-          expect(chatSize.rows, `${w} px`).toBeGreaterThan(24);
+          expect(chatSize.rows, at).toBeGreaterThan(24);
           await resizes();
           // The first flip: a column at most, the same rows.
           await win.keyboard.press("Meta+j");
           await expect(body(win)).toBeVisible();
           const termSize = await settled();
-          expect(Math.abs(termSize.cols - chatSize.cols), `${w} px: ${JSON.stringify(chatSize)} then ${JSON.stringify(termSize)}`).toBeLessThanOrEqual(1);
-          expect(termSize.rows, `${w} px`).toBe(chatSize.rows);
+          const moved = `${at}: ${JSON.stringify(chatSize)} then ${JSON.stringify(termSize)}`;
+          expect(Math.abs(termSize.cols - chatSize.cols), moved).toBeLessThanOrEqual(1);
+          expect(termSize.rows, moved).toBe(chatSize.rows);
           await resizes();
           // Then back, again and back: the PTY is never resized.
           for (const shown of [chat, body, chat]) {
             await win.keyboard.press("Meta+j");
             await expect(shown(win)).toBeVisible();
-            expect(await settled(), `${w} px`).toEqual(termSize);
+            expect(await settled(), at).toEqual(termSize);
           }
-          expect(await resizes(), `${w} px`).toEqual([]);
+          expect(await resizes(), at).toEqual([]);
         } finally {
           await r();
         }

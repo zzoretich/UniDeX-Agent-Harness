@@ -1018,14 +1018,20 @@ export class TerminalPanel {
     }
   }
 
-  /** The composer's height under the terminal view, kept while the chat shows (it sits inside the chat then, off the stage). */
+  /** The composer's height under the terminal view, as laid out (a fraction of a pixel too), kept while the chat shows (it
+   *  sits inside the chat then, off the stage). */
   private termComposerH = TERM_COMPOSER_H;
 
-  /** The rows the terminal view's composer takes from the stage, in this terminal's lines. */
-  private composerRows(b: XtermBinding): number {
+  /** The rows the terminal view will give this terminal, counted while the chat shows: the stage's height less the
+   *  composer's, in this terminal's lines, as the fit addon counts them (whole pixels, then whole lines: R52). */
+  private termViewRows(b: XtermBinding): number {
+    const el = b.term.element;
     const screen = b.container.querySelector<HTMLElement>(".xterm-screen");
     const line = screen && b.term.rows ? screen.clientHeight / b.term.rows : 0;
-    return line > 0 ? Math.ceil(this.termComposerH / line) : 0;
+    if (!el?.parentElement || !(line > 0)) return NaN;
+    const style = getComputedStyle(el);
+    const height = Math.floor(parseFloat(getComputedStyle(el.parentElement).height) - this.termComposerH);
+    return Math.floor((height - parseInt(style.paddingTop) - parseInt(style.paddingBottom)) / line);
   }
 
   private refit(): void {
@@ -1049,17 +1055,19 @@ export class TerminalPanel {
           if (!d || (d.cols === b.term.cols && d.rows === b.term.rows)) break;
         }
         if (d) b.fittedAt = at;
-        if (this.composer?.el.isConnected && this.composer.el.offsetHeight) this.termComposerH = this.composer.el.offsetHeight;
+        if (this.composer?.el.isConnected && this.composer.el.offsetHeight) this.termComposerH = this.composer.el.getBoundingClientRect().height;
         return;
       }
       // While the chat shows, the terminal lies hidden under it at the size the terminal view last gave it, so ⌘J redraws
       // nothing and flipping back and forth never resizes the PTY (C1, R51). Only a terminal not fitted yet, or a frame
-      // whose size changed since its last fit, is fitted here: to the stage, less the rows the terminal view's composer
-      // takes. Its columns can land one off the terminal view's (the cell width rounds from the columns each starts at).
+      // whose size changed since its last fit, is fitted here: to the stage less the terminal view's composer, the rows
+      // exactly what the terminal view gives. Its columns can land one off the terminal view's (the cell width rounds from
+      // the columns each starts at).
       if (at && at === b.fittedAt) return;
       const d = b.fit.proposeDimensions();
-      if (!d || !Number.isFinite(d.cols) || !Number.isFinite(d.rows)) return;
-      const rows = Math.max(2, d.rows - this.composerRows(b));
+      const viewRows = this.termViewRows(b);
+      if (!d || !Number.isFinite(d.cols) || !Number.isFinite(viewRows)) return;
+      const rows = Math.max(2, viewRows);
       if (d.cols !== b.term.cols || rows !== b.term.rows) b.term.resize(d.cols, rows);
       b.fittedAt = at;
     } catch { /* container not laid out yet */ }
