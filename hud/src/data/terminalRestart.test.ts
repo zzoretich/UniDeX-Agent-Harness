@@ -41,3 +41,12 @@ test("restartKeepingOld: a launch that throws before any terminal opens touches 
   assert.equal(r, "bad id");
   assert.deepEqual(log, []);
 });
+
+test("restartKeepingOld (I1): onReplace runs once the agent has started, before the old terminal is removed; never on a failed start", async () => {
+  const ok = fake(Promise.resolve(null));
+  assert.equal(await restartKeepingOld(ok.pool, "old", ok.launch, (o, n) => { ok.log.push(`replace ${o} ${n}`); }), null);
+  assert.deepEqual(ok.log, ["launch", "replace old new", "remove old", "select new"]);
+  const bad = fake(Promise.reject(new Error("not found")));
+  assert.equal(await restartKeepingOld(bad.pool, "old", bad.launch, (o, n) => { bad.log.push(`replace ${o} ${n}`); }), "not found");
+  assert.deepEqual(bad.log, ["launch", "remove new", "select old"]);
+});

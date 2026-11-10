@@ -226,6 +226,8 @@ export class TerminalPanel {
         // would read differently, the selected one or not.
         if (this.list && this.model.rowsSig() !== this.rowsShown) this.renderTabs();
         if (id !== this.activeId) return;
+        // The prompt that held Send cleared (answered here or in the terminal): its note goes, whichever view shows.
+        this.composer?.cardShown(!!this.plugin.codeFeeds?.get(id)?.card);
         this.stage.renderChat();
         this.topBar.renderHostChip();
       }) ?? null;
@@ -278,6 +280,8 @@ export class TerminalPanel {
       "session-remove": (id: string) => {
         if (!this.host) return;
         this.model.rememberClosed(id);
+        this.panes.forget(id);
+        this.composer?.forgetDraft(id);
         const b = this.bindings.get(id);
         if (b) { b.detachData(); try { b.term.dispose(); } catch {} this.bindings.delete(id); }
         if (this.activeId === id) {
@@ -483,9 +487,10 @@ export class TerminalPanel {
   private showStarted(note: LaunchNote): void {
     if (this.noteTimer !== null) window.clearTimeout(this.noteTimer);
     this.noteEl?.detach();
-    const el = this.headerEl.createDiv({ cls: "aos-term-started", attr: { role: "status" } });
+    const el = this.headerEl.createDiv({ cls: "aos-term-started", attr: { role: "status", title: note.text } });
     this.tabsEl.after(el);
-    el.createSpan({ text: note.text });
+    // One line, ellipsized in a narrow bar (the whole note in its title).
+    el.createSpan({ cls: "aos-term-started-text", text: note.text });
     if (this.opts.launch && note.why !== "picked") {
       const change = el.createEl("button", { cls: "aos-term-started-change", text: "Change", attr: { type: "button" } });
       change.addEventListener("click", () => {
@@ -515,7 +520,7 @@ export class TerminalPanel {
    * (`resume` by the chat's id) with the pick; once the new agent has started it closes the old terminal, whose follower
    * ends with it (a failed start keeps the old one and says why: restartKeepingOld); the new one gets its own. With no
    * conversation known there is nothing to resume, and nothing happens. The other chip's value rides along as shown, so
-   * a model changed in the TUI is not lost by an access pick.
+   * a model changed in the TUI is not lost by an access pick, and so does the composer's draft (I1).
    */
   restartWith(id: string, patch: { model?: string | null; access?: TermAccess | null }): Promise<void> {
     const pool = this.plugin.terminalPool;
@@ -531,7 +536,8 @@ export class TerminalPanel {
     const chosen = { model: "model" in patch, access: "access" in patch };
     return restartKeepingOld(pool, id, () => this.plugin.termLauncher.launch({
       host, picked: this.model.placeOfSession(s), resume: { id: conv }, origin: s.meta.origin, model, access, chosen,
-    })).then((why) => { if (why) new Notice(`Terminal: ${why}`); }).finally(() => { this.restarting.delete(id); });
+    }), (from, to) => this.composer?.carryDraft(from, to))
+      .then((why) => { if (why) new Notice(`Terminal: ${why}`); }).finally(() => { this.restarting.delete(id); });
   }
 
   // ── the chat view (spec 2026-11-09-code-chat C1, C3, C5, C13) ──

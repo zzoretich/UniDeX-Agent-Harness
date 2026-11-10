@@ -1,23 +1,55 @@
 import { Notice, setIcon } from "obsidian";
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
-import { codeChatOn, fs, sessionsHost, type HostCatalog } from "../host";
+import { codeChatOn, fs, hudHost, sessionsHost, type HostCatalog } from "../host";
 import { aliasCatalog } from "../data/claudeAsk";
 import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
-import { hasChat, type TerminalSession } from "../data/terminalSession";
+import { hasChat, processKey, type TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
-import { composerWrites, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
+import { IMAGE_TYPES, dataUrlBase64, imageReason, imageRefusal, insertMention, matchFiles, mentionAt, sanitizeSnippets, sendPhases, sendWaitEnd, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
 import { HostModelMenu } from "./HostModelMenu";
 
 /** The ids that tie the chips to their reason (M5). */
 let whyIds = 0;
 
+/** The note when a waiting Send went nowhere because the terminal's process changed meanwhile (D2). */
+const CHANGED = "The terminal changed while Send waited · Send again";
+
 /** How many files the @ list reads from a place, and how deep: enough for a project, cheap on every open. */
 const FILE_LIMIT = 3000;
 const FILE_DEPTH = 6;
 const SKIP = new Set(["node_modules", ".git", "dist", "build", ".next", "target", "__pycache__"]);
+
+/** An image in the composer (code-chat C7): its chip, and main's path for it once saved. */
+interface Shot {
+  el: HTMLElement;
+  /** Where main saved it, or null while it is saving. */
+  path: string | null;
+  /** Settles when main has answered: true when it saved the image and the chip is still there. */
+  saved: Promise<boolean>;
+  /** Removed (×, a refusal, Send, another terminal). */
+  gone: boolean;
+}
+
+/** The files a paste or a drop carries (Chromium lists them in `files`; `items` as a fallback). */
+function filesOf(dt: DataTransfer | null): File[] {
+  if (!dt) return [];
+  const files = Array.from(dt.files ?? []);
+  if (files.length) return files;
+  return Array.from(dt.items ?? []).filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter((f): f is File => !!f);
+}
+
+/** A file's contents as a `data:` URL. */
+function readDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => (typeof r.result === "string" ? resolve(r.result) : reject(new Error("unreadable")));
+    r.onerror = () => reject(r.error ?? new Error("unreadable"));
+    r.readAsDataURL(file);
+  });
+}
 
 /**
  * What the access and model chips need from the panel (code-chat C12): the conversation they would restart, whether a
@@ -42,14 +74,35 @@ export interface ChipState {
  * terminal whose agent exited runs the login shell now (D18, code-chat R39): its composer is a shell's (no / commands,
  * access or model), and while its chat shows the panel blocks the composer, so nothing reaches that shell from there.
  *
- * Its row of chips (spec 2026-11-09-code-chat §4): @ file and / commands start a mention or a command, Snippets, then an
- * agent's access and model (controls: a pick restarts the same conversation with it, C12); `attachSlot` is where Task 14's + chip goes. In
+ * Its row of chips (spec 2026-11-09-code-chat §4): + attach adds an image, @ file and / commands start a mention or a
+ * command, Snippets, then an agent's access and model (controls: a pick restarts the same conversation with it, C12). In
  * the chat view (`setMode("chat")`) TerminalPanel moves the whole element into the chat's 760 px column.
+ *
+ * Images (C7): an agent terminal's composer, while the Code chat surface is on, takes PNG, JPEG, GIF and WebP images up to
+ * 10 MB, 8 to a message, by paste, drop or + attach. Each becomes a chip with its thumbnail and ×, and main saves it at
+ * once into the app's own data folder (code:save-image, which checks it again by content and names the path). Send pastes
+ * each image's path as a bracketed paste of its own (which Claude Code and Codex attach as an image, R63), waits for the
+ * screen to show their placeholders (R70: at most IMAGE_ATTACH_MS), then the text, through the same guarded Send (a card
+ * holds it, the screen is read first); a program that takes no bracketed paste gets the text with the paths after it,
+ * typed. A refused image says why under the box, in plain words. A shell, a command run in an agent's name that is no
+ * conversation (`chat: false`, such as a login), an ended agent and a run with the surface off have no + chip and take
+ * no image. The chips belong to the terminal they were added on: another terminal starts with none.
  */
 export class TermComposer {
   readonly el: HTMLElement;
-  /** The image chip's place, first in the row (Task 14). */
+  /** The + attach chip's place, first in the row (C7). */
   readonly attachSlot: HTMLElement;
+  /** The images to send, in the order they came (C7), and their chips' row above the text. */
+  private shots: Shot[] = [];
+  private shotsEl: HTMLElement;
+  /** The + attach chip's file picker. */
+  private picker: HTMLInputElement;
+  /** Send waits for an image main is still saving (once). */
+  private awaitingShots = false;
+  /** A Send's images are pasted and it waits for the TUI to show them before its text (R70): no other Send starts. */
+  private sending = false;
+  /** The drafts of the terminals not shown now, by terminal id (D5): the composer is shared, a draft is not. */
+  private drafts = new Map<string, string>();
   private input: HTMLTextAreaElement;
   private suggest: HTMLElement;
   private snippetsMenu: HTMLElement | null = null;
@@ -80,14 +133,26 @@ export class TermComposer {
   private blocked = false;
   /** The one line under the box when Send is refused because the TUI's prompt is up (R49). */
   private note: HTMLElement;
+  /** The note says why Send held: it goes when the card clears, and follows the view's wording. */
+  private held = false;
 
   constructor(parent: HTMLElement, private plugin: AgenticOSPlugin, private focusTerminal: () => void, private bracketed: () => boolean = () => true) {
     this.el = parent.createDiv({ cls: "aos-tc is-hidden" });
     const box = this.el.createDiv({ cls: "aos-tc-box" });
     this.suggest = box.createDiv({ cls: "aos-tc-suggest", attr: { role: "listbox", "aria-label": "Files" } });
+    this.shotsEl = box.createDiv({ cls: "aos-tc-shots", attr: { role: "list", "aria-label": "Images to send" } });
     this.input = box.createEl("textarea", { cls: "aos-tc-input", attr: { rows: "6", "aria-label": "Message to the agent", spellcheck: "true" } });
     const bar = box.createDiv({ cls: "aos-tc-bar" });
-    this.attachSlot = bar.createSpan({ cls: "aos-tc-attach" });
+    this.attachSlot = bar.createSpan({ cls: "aos-tc-attach is-hidden" });
+    const attach = this.attachSlot.createEl("button", { cls: "aos-tc-chip", text: "+ attach", attr: { type: "button", title: "Attach an image: PNG, JPEG, GIF or WebP up to 10 MB (or paste or drop one)" } });
+    this.picker = this.attachSlot.createEl("input", { cls: "aos-tc-picker", attr: { type: "file", accept: IMAGE_TYPES.join(","), multiple: "", tabindex: "-1", "aria-hidden": "true" } });
+    attach.addEventListener("click", () => { if (this.takesImages()) this.picker.click(); });
+    this.picker.addEventListener("change", () => {
+      const files = Array.from(this.picker.files ?? []);
+      this.picker.value = "";
+      this.takeFiles(files);
+      this.input.focus();
+    });
     const file = bar.createEl("button", { cls: "aos-tc-chip", text: "@ file", attr: { type: "button", title: "Mention a file" } });
     file.addEventListener("click", () => this.startMention());
     this.commandsChip = bar.createEl("button", { cls: "aos-tc-chip", text: "/ commands", attr: { type: "button", title: "The agent's commands" } });
@@ -111,8 +176,24 @@ export class TermComposer {
     setIcon(sendIcon, "arrow-up");
     send.addEventListener("click", () => this.send());
     this.slash = new SlashMenu(this.input, box, { commands: [], host: "claude" });
-    this.input.addEventListener("input", () => { this.note.addClass("is-hidden"); this.onInput(); });
+    this.input.addEventListener("input", () => { this.hideNote(); this.onInput(); });
     this.input.addEventListener("keydown", (e) => this.onKey(e));
+    this.input.addEventListener("paste", (e) => this.onPaste(e));
+    box.addEventListener("dragover", (e) => {
+      if (!this.takesImages() || !Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      box.addClass("is-drop");
+    });
+    box.addEventListener("dragleave", (e) => { if (!box.contains(e.relatedTarget as Node | null)) box.removeClass("is-drop"); });
+    box.addEventListener("drop", (e) => {
+      box.removeClass("is-drop");
+      if (!this.takesImages()) return;
+      const files = filesOf(e.dataTransfer);
+      if (!files.length) return;
+      e.preventDefault();
+      this.takeFiles(files);
+    });
     this.note = this.el.createDiv({ cls: "aos-tc-note is-hidden", attr: { role: "status" } });
   }
 
@@ -120,10 +201,21 @@ export class TermComposer {
   setSession(s: TerminalSession | null): void {
     const live = !!s && !s.isExited;
     this.el.toggleClass("is-hidden", !live || this.blocked);
-    if (!live || !s) { this.session = null; return; }
+    if (!live || !s) { this.stashDraft(); this.session = null; this.clearShots(); return; }
     // What runs decides: an agent terminal whose agent ended is a shell now (R39).
     const kind = s.agentEnded ? "shell" : s.meta.host;
     if (this.session?.id === s.id && this.shownHost === kind) return;
+    // The images were for the agent they were added on (C7); so was a prompt that held Send.
+    this.clearShots();
+    if (this.held) this.hideNote();
+    // Another terminal: its own draft (D5), and none of the last one's notes. The same terminal whose agent ended keeps it.
+    if (this.session?.id !== s.id) {
+      this.stashDraft();
+      this.input.value = this.drafts.get(s.id) ?? "";
+      this.drafts.delete(s.id);
+      this.slash.close();
+      this.hideNote();
+    }
     this.session = s;
     this.shownHost = kind;
     this.files = null;
@@ -138,10 +230,39 @@ export class TermComposer {
     const chips = !shell && codeChatOn();
     this.permChip.toggleClass("is-hidden", !chips);
     this.modelWrap.toggleClass("is-hidden", !chips);
+    // Images go to a conversation's agent (not a `chat: false` command such as a login), through main's code:save-image,
+    // which the Code chat surface owns (C7, C13): the rule takesImages() applies.
+    this.attachSlot.toggleClass("is-hidden", !(!!this.agent() && codeChatOn() && !!hudHost().code?.saveImage));
     this.syncChips();
     // A shell has no / commands: the list stays empty, so / is just a character.
     if (shell) this.slash.update([], "claude");
     else void this.loadCommands(s.meta.host as "claude" | "codex");
+  }
+
+  /** The terminal shown now leaves the composer: its draft is kept for it (D5). A closed one keeps none (I1): the pool
+   *  disposes a terminal before it says it was removed, so the selected one, closed, leaves no draft behind. */
+  private stashDraft(): void {
+    const s = this.session;
+    if (!s) return;
+    if (this.input.value && !s.isClosed) this.drafts.set(s.id, this.input.value);
+    else this.drafts.delete(s.id);
+  }
+
+  /** A terminal was closed: its draft goes with it (D5). */
+  forgetDraft(id: string): void { this.drafts.delete(id); }
+
+  /**
+   * A chip restart replaces terminal `from` with `to` (C12, I1), before `from` is removed: the draft goes with it. The
+   * launch selected `to` at once, so its box gets the draft while it is still empty; otherwise the draft is kept for
+   * `to`, as a terminal not shown keeps its own.
+   */
+  carryDraft(from: string, to: string): void {
+    const shown = this.session?.id ?? null;
+    const text = shown === from ? this.input.value : this.drafts.get(from) ?? "";
+    this.drafts.delete(from);
+    if (!text) return;
+    if (shown === to) { if (!this.input.value) this.input.value = text; }
+    else if (!this.drafts.has(to)) this.drafts.set(to, text);
   }
 
   /** Keeps the composer away while `on` (the chat of an agent that ended, R39): hidden, ⌘L finds nothing, Send writes
@@ -162,7 +283,15 @@ export class TermComposer {
   }
 
   /** The chat view's column (smaller box, chips only) or under the terminal, as before. */
-  setMode(mode: "chat" | "terminal"): void { this.el.toggleClass("is-chat", mode === "chat"); }
+  setMode(mode: "chat" | "terminal"): void {
+    this.el.toggleClass("is-chat", mode === "chat");
+    // Why Send held, said again in this view's words (the card above, or the terminal's prompt).
+    if (this.held && this.note.textContent !== this.heldText()) this.note.setText(this.heldText());
+  }
+
+  /** Whether the TUI's prompt is up in the selected terminal now (the panel calls it as its feed changes): once it clears,
+   *  the note that Send held goes with it. */
+  cardShown(up: boolean): void { if (!up && this.held) this.hideNote(); }
 
   /** What the access and model chips restart (the panel calls it as the chat's state changes); null: nothing to restart. */
   setChips(c: ChipState | null): void {
@@ -275,34 +404,196 @@ export class TermComposer {
     this.syncChips();
   }
 
-  private send(): void {
+  /** `pressed`: the terminal's process when ⏎ was pressed (processKey), for a Send that starts again after a wait. */
+  private send(pressed?: string): void {
     const s = this.session;
     const text = this.input.value;
-    if (!s || this.blocked || !text.trim()) return;
+    const shots = this.shots.slice();
+    if (!s || this.blocked || this.sending || (!text.trim() && !shots.length)) return;
+    // The process the draft was written for (C1): one that changed during any wait below (the agent exited and the login
+    // shell took the terminal over, R39) gets nothing, and the draft stays.
+    const proc = pressed ?? processKey(s);
+    if (processKey(s) !== proc) return;
+    // An image main is still saving: Send waits for it, once, then starts again from the top, so every check below runs on
+    // what is there then. It goes only if the draft is still the one ⏎ was pressed on (R60): the same text and images. A
+    // refused or removed image, or an edit meanwhile, sends nothing and keeps the draft. A process that changed meanwhile
+    // (the agent ended, which takes the images away) ends it as any wait does (C1, R73, I2): nothing goes, and the note.
+    if (shots.some((x) => x.path === null)) {
+      if (this.awaitingShots) return;
+      this.awaitingShots = true;
+      void Promise.all(shots.map((x) => x.saved)).then((ok) => {
+        this.awaitingShots = false;
+        if (processKey(s) !== proc) { this.waitEnded(s, text, "gone", false); return; }
+        const same = this.shots.length === shots.length && this.shots.every((x, i) => x === shots[i]);
+        if (this.session === s && ok.every(Boolean) && same && this.input.value === text) this.send(proc);
+      });
+      return;
+    }
     // The ⏎ that ends a send would answer the TUI's prompt (the highlighted choice): while a card is up, nothing is
-    // written and the draft stays (R49). The screen is read fresh first, since the poll can be a tick behind a prompt
-    // that just printed (bounded: R56).
+    // written and the draft (its images included) stays (R49). The screen is read fresh first, since the poll can be a
+    // tick behind a prompt that just printed (bounded: R56), and only once the terminal's last input (a Send a moment
+    // ago, a key typed in the terminal) has had time to open the prompt it opens (R62: SEND_QUIET_MS), or a slash command
+    // the composer sent until its prompt shows or SLASH_SETTLE_MS passed (R69).
     const feeds = this.plugin.codeFeeds;
     const known = feeds?.get(s.id)?.card;
-    if (known || !feeds?.get(s.id)) { this.finishSend(s, text, !!known); return; }
+    if (known || !feeds?.get(s.id)) { this.finishSend(s, text, shots, !!known); return; }
     void feeds.cardNow(s.id).then((held) => {
-      // The draft or the terminal changed while the screen was read: this send is no longer the one asked for.
-      if (this.session !== s || this.blocked || this.input.value !== text) return;
-      this.finishSend(s, text, held);
+      // The agent did not outlast the wait (C1): nothing goes to what runs there now, the draft stays, and the composer
+      // says so (D2).
+      if (held === "gone" || processKey(s) !== proc) { this.waitEnded(s, text, "gone", false); return; }
+      // The draft, its images or the terminal changed while the screen was read: this send is no longer the one asked for.
+      const same = this.shots.length === shots.length && this.shots.every((x, i) => x === shots[i]);
+      if (this.session !== s || this.blocked || this.input.value !== text || !same) return;
+      this.finishSend(s, text, shots, held);
     });
   }
 
-  private finishSend(s: TerminalSession, text: string, held: boolean): void {
+  private finishSend(s: TerminalSession, text: string, shots: Shot[], held: boolean): void {
     if (held) {
-      this.note.setText(this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first");
-      this.note.removeClass("is-hidden");
+      this.say(this.heldText());
+      this.held = true;
       return;
     }
-    this.note.addClass("is-hidden");
-    for (const w of composerWrites(text, undefined, this.bracketed())) s.write(w);
+    this.hideNote();
+    // A slash command may open a prompt late: the next Send waits for it longer (R69).
+    if (text.trim().startsWith("/")) s.noteCommand();
+    // Each image's path as a paste of its own, which the TUI attaches as an image, then the text, then Enter (C7, R63).
+    const paths = shots.map((x) => x.path).filter((p): p is string => p !== null);
+    const phases = sendPhases(text, paths, undefined, this.bracketed());
+    const feeds = this.plugin.codeFeeds;
+    const before = phases.images.length ? feeds?.imageMarks(s.id) ?? null : null;
+    const waits = before !== null && !!feeds;
+    if (!waits) {
+      for (const w of [...phases.images, ...phases.rest]) s.write(w);
+    } else {
+      // Claude Code inserts a pasted image only once it has read it: the text and ⏎ wait until the screen shows the
+      // images' placeholders, or IMAGE_ATTACH_MS (R70). No other Send starts meanwhile.
+      const proc = processKey(s);
+      for (const w of phases.images) s.write(w);
+      this.sending = true;
+      void feeds.imagesShown(s.id, before, paths.length).then((r) => {
+        // A card came up meanwhile (D1, R49), or the agent ended or another process took the terminal over (C1): nothing
+        // more is written, no ⏎ above all. The images are already in the TUI's input, which is acceptable; the text comes
+        // back to the box, with why, and the focus stays with it.
+        if (r === "gone" || processKey(s) !== proc) { this.waitEnded(s, text, "gone", true); return; }
+        if (r === "held") { this.waitEnded(s, text, "held", true); return; }
+        for (const w of phases.rest) s.write(w);
+        // Only now does the focus go to the terminal (M3): a key typed during the wait stayed in the composer instead of
+        // joining the TUI's input this ⏎ submitted. Something typed in the box meanwhile keeps the focus there.
+        if (this.session === s && this.isFocused() && !this.input.value) this.focusTerminal();
+      }).finally(() => { this.sending = false; });
+    }
     this.input.value = "";
+    this.clearShots();
     this.closeSuggest();
-    this.focusTerminal();
+    if (!waits) this.focusTerminal();
+  }
+
+  /**
+   * A Send's wait ended with nothing (more) written (D1, D2): the text back where it belongs when the images took the box
+   * (`cleared`), and the note, on the composer of the terminal it was for. Another terminal shown now keeps what is left
+   * as that terminal's draft (D5), and drops it when nothing is left or the terminal closed (I1, I2): the text an ended
+   * agent's wait took out of the box (R73) never comes back into its shell's composer.
+   */
+  private waitEnded(s: TerminalSession, text: string, r: "held" | "gone", cleared: boolean): void {
+    const mine = this.session === s;
+    const box = mine ? this.input.value : this.drafts.get(s.id) ?? "";
+    const end = sendWaitEnd(r, { blocked: this.blocked, cleared, box, text, ended: s.agentEnded || s.isExited });
+    if (!mine) {
+      if (end.box && !s.isClosed) this.drafts.set(s.id, end.box);
+      else this.drafts.delete(s.id);
+      return;
+    }
+    if (end.box !== box) this.input.value = end.box;
+    if (end.note === "held") { this.say(this.heldText()); this.held = true; }
+    else if (end.note === "changed") this.say(CHANGED);
+    else if (end.note === "ended") this.say(`${TERM_HOST_LABEL[s.meta.host]} ended before this was sent`);
+  }
+
+  /** Why Send holds, in the words of the view it shows in (R49). */
+  private heldText(): string {
+    return this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first";
+  }
+
+  private hideNote(): void {
+    this.note.addClass("is-hidden");
+    this.held = false;
+  }
+
+  /** The one line under the box: why Send waits, or why an image was not added. */
+  private say(text: string): void {
+    this.held = false;
+    this.note.setText(text);
+    this.note.removeClass("is-hidden");
+  }
+
+  // ── images (C7) ──
+
+  /** Whether this composer takes an image now: an agent's, unblocked, with main's code:save-image (the surface on). */
+  private takesImages(): boolean {
+    return !!this.agent() && !this.blocked && codeChatOn() && !!hudHost().code?.saveImage;
+  }
+
+  /** A paste that carries an image adds its chip instead of text; any other paste is the textarea's own. */
+  private onPaste(e: ClipboardEvent): void {
+    if (!this.takesImages()) return;
+    const files = filesOf(e.clipboardData).filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    e.preventDefault();
+    this.takeFiles(files);
+  }
+
+  /** The files a paste, a drop or the picker brought: each a chip, or the reason it is not. */
+  private takeFiles(files: File[]): void {
+    if (!files.length || !this.takesImages()) return;
+    this.hideNote();
+    for (const f of files) this.addImage(f);
+  }
+
+  /** Adds `file`'s chip (its thumbnail and ×) and has main save it; a refusal takes the chip away and says why. */
+  private addImage(file: File): void {
+    const why = imageRefusal(file.type, file.size, this.shots.length);
+    if (why) { this.say(`Image not added: ${why}`); return; }
+    const code = hudHost().code;
+    const save = code?.saveImage?.bind(code);
+    if (!save) return;
+    const name = file.name || "Pasted image";
+    const el = this.shotsEl.createDiv({ cls: "aos-tc-shot is-saving", attr: { role: "listitem", title: name } });
+    const img = el.createEl("img", { cls: "aos-tc-thumb", attr: { alt: name } });
+    const x = el.createEl("button", { cls: "aos-tc-shotx", attr: { type: "button", "aria-label": `Remove ${name}`, title: "Remove" } });
+    setIcon(x, "x");
+    const shot: Shot = { el, path: null, saved: Promise.resolve(false), gone: false };
+    x.addEventListener("click", () => { this.dropShot(shot); this.input.focus(); });
+    this.shots.push(shot);
+    const refuse = (reason: string): false => {
+      if (!shot.gone) { this.dropShot(shot); this.say(`Image not added: ${reason}`); }
+      return false;
+    };
+    shot.saved = readDataUrl(file).then(async (url) => {
+      if (shot.gone) return false;
+      // The thumbnail is the image itself as a data: URL (the page's CSP allows data: images, not blob:); it goes with
+      // its chip.
+      img.src = url;
+      const data = dataUrlBase64(url);
+      if (data === null) return refuse("it could not be read");
+      const r = await save({ mime: file.type, data });
+      if (shot.gone) return false;
+      if (!r.ok) return refuse(imageReason(r.error));
+      shot.path = r.data.path;
+      el.removeClass("is-saving");
+      return true;
+    }).catch(() => refuse("it could not be read"));
+  }
+
+  private dropShot(shot: Shot): void {
+    shot.gone = true;
+    shot.el.detach();
+    this.shots = this.shots.filter((x) => x !== shot);
+  }
+
+  private clearShots(): void {
+    for (const x of this.shots) { x.gone = true; x.el.detach(); }
+    this.shots = [];
   }
 
   // ── the chips ──

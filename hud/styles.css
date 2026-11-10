@@ -3260,8 +3260,12 @@ button.aos-ntm-row.is-create:disabled { color: var(--udx-danger); }
 .aos-term-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aos-term-tab-place { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--udx-text-3); }
 .aos-term-tab-exit { flex: none; color: var(--udx-danger); }
-.aos-term-started { display: inline-flex; align-items: center; gap: 8px; margin: 0 8px; padding: 2px 4px 2px 10px; border-radius: 8px; background: var(--udx-ok-bg); font-size: 12px; color: var(--udx-text); }
-button.aos-term-started-change:not(.clickable-icon) { height: 22px; padding: 0 8px; border: 1px solid var(--udx-line-2); border-radius: 6px; background: var(--udx-bg); box-shadow: none; font-size: 11.5px; }
+/* "Started … · Change": one line however narrow the bar, the words ellipsized (the whole note in its title). It takes only
+   the room the bar's own items leave (a basis of 0, growing to its content at most), so it never makes them wrap and the
+   bar taller. */
+.aos-term-started { display: inline-flex; flex: 1 1 0; max-width: max-content; min-width: 0; align-items: center; gap: 8px; margin: 0 8px; padding: 2px 4px 2px 10px; border-radius: 8px; background: var(--udx-ok-bg); font-size: 12px; color: var(--udx-text); white-space: nowrap; overflow: hidden; }
+.aos-term-started-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+button.aos-term-started-change:not(.clickable-icon) { flex: none; height: 22px; padding: 0 8px; border: 1px solid var(--udx-line-2); border-radius: 6px; background: var(--udx-bg); box-shadow: none; font-size: 11.5px; }
 
 /* ══ Term: the deck (spec 2026-10-08-term-agent-deck T1) — the list beside the selected terminal ══════════════════════ */
 .aos-term.aos-term-deck { flex-direction: row; }
@@ -3353,8 +3357,22 @@ button.aos-tc-snip:not(.clickable-icon) { height: auto; padding: 6px 9px; border
 button.aos-tc-snip:not(.clickable-icon):hover { background: var(--udx-raised-2); }
 button.aos-tc-snip.is-save:not(.clickable-icon) { border-top: 1px solid var(--udx-line); border-radius: 0 0 7px 7px; color: var(--udx-text-2); }
 .aos-tc-snipnote { padding: 6px 9px; font-size: 12px; color: var(--udx-text-3); }
-/* The composer's chips (spec 2026-11-09-code-chat §4): @ file, / commands, Snippets, then the agent's access and model. */
-.aos-tc-attach:empty { display: none; }
+/* The composer's chips (spec 2026-11-09-code-chat §4): + attach, @ file, / commands, Snippets, then the agent's access and
+   model. */
+.aos-tc-attach { display: inline-flex; flex: none; }
+.aos-tc-attach:empty, .aos-tc-attach.is-hidden { display: none; }
+.aos-tc-picker { display: none; }
+/* The images to send (C7): a thumbnail chip each, with ×, above the text; the box outlines while a file is dragged over. */
+.aos-tc-shots { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px; }
+.aos-tc-shots:empty { display: none; }
+.aos-tc-shot { position: relative; flex: none; width: 52px; height: 52px; overflow: hidden; border: 1px solid var(--udx-line); border-radius: 9px; background: var(--udx-raised); }
+.aos-tc-shot.is-saving { opacity: 0.55; }
+.aos-tc-thumb { display: block; width: 100%; height: 100%; object-fit: cover; }
+button.aos-tc-shotx:not(.clickable-icon) { position: absolute; top: 3px; right: 3px; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: var(--udx-inv); color: var(--udx-inv-text); box-shadow: none; }
+button.aos-tc-shotx:not(.clickable-icon):hover { background: var(--udx-inv-hover); }
+button.aos-tc-shotx:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
+button.aos-tc-shotx svg { width: 11px; height: 11px; }
+.aos-tc-box.is-drop { border-color: var(--udx-focus); }
 button.aos-tc-chip:not(.clickable-icon), .aos-tc-chip.is-label {
   display: inline-flex; flex: none; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px solid var(--udx-line);
   border-radius: 999px; background: transparent; box-shadow: none; font-size: 12px; color: var(--udx-text-2); white-space: nowrap;
@@ -3411,14 +3429,17 @@ button.aos-tc-chip.is-hidden:not(.clickable-icon), .aos-tc-chip.is-hidden { disp
 .aos-cc-gatetitle { font-size: 13px; font-weight: 600; color: var(--udx-gate); }
 .aos-cc-gatedetail { padding: 8px 10px; border-radius: 8px; background: var(--udx-bg); font-family: var(--udx-mono); font-size: 12.5px; color: var(--udx-text); white-space: pre-wrap; word-break: break-word; }
 .aos-cc-gatechoices { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* A long choice ("Yes, allow reading from <a long path> during this session") wraps inside the card, never wider than it. */
 .aos-cc button.aos-cc-choice {
-  display: inline-flex; align-items: center; gap: 6px; height: 30px; margin: 0; padding: 0 12px; border: 1px solid var(--udx-line-2);
-  border-radius: 8px; background: var(--udx-bg); box-shadow: none; font-size: 12.5px; color: var(--udx-text);
+  display: inline-flex; align-items: center; gap: 6px; box-sizing: border-box; height: auto; min-height: 30px; max-width: 100%;
+  margin: 0; padding: 5px 12px; border: 1px solid var(--udx-line-2); border-radius: 8px; background: var(--udx-bg); box-shadow: none;
+  font-size: 12.5px; color: var(--udx-text); text-align: left; white-space: normal;
 }
 .aos-cc button.aos-cc-choice.is-first { border-color: var(--udx-inv); background: var(--udx-inv); color: var(--udx-inv-text); }
 .aos-cc button.aos-cc-choice:disabled { opacity: 0.55; cursor: default; }
 .aos-cc button.aos-cc-choice:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
-.aos-cc-choicekey { font-family: var(--udx-mono); font-size: 11px; opacity: 0.7; }
+.aos-cc-choicelabel { min-width: 0; overflow-wrap: anywhere; }
+.aos-cc-choicekey { flex: none; font-family: var(--udx-mono); font-size: 11px; opacity: 0.7; }
 .aos-cc-gatechoices .aos-cc-jump { margin-left: auto; font-size: 12.5px; }
 .aos-cc-foot { flex: none; padding: 6px 24px 10px; }
 .aos-cc-footcol { max-width: 760px; margin: 0 auto; }

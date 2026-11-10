@@ -56,23 +56,31 @@ output. The design treats the page that shows them as untrusted (design D7,
     The child's environment is main's, plus a few named variables with fixed or trusted values: never `NODE_OPTIONS`,
     `PATH` or `DYLD_*`, and a Claude or Codex folder only when it is one main trusts.
   - *Terminals:* a shell listed in `/etc/shells` (or your `$SHELL`), with no arguments. Main starts it with its own
-    environment, `PATH` replaced by your login shell's (asked once, as the setup wizard does) and `CLAUDECODE` removed;
-    the page still cannot set `PATH`. While the `computer` surface is on, the Code tab starts an agent as the terminal's
-    own process instead (agent-computer D18; *The Computer pane* below): the binary the runtime resolves on that `PATH`,
-    whose install form main checks, with only the words `launchArgs` emits after it (`policy/agent-launch.ts`), in a
-    folder a shell could start in, and with the environment your `$SHELL` gives a typed command (main runs it as a login,
-    interactive shell for each launch and reads its exports, so your profile and rc files' variables reach the agent as
-    they did a typed line; `CLAUDECODE` still goes). With the surface off main checks nothing and the page types the
-    line into a shell, as before the computer; when main cannot vouch for the binary, or the shell gives no environment
-    (a startup file that exits, hangs or execs something else), it says why and the page does the same. Spaces and
-    Sessions ▸ History type a Resume line only with a lowercase UUID from the scan (History's also the one in its
-    transcript's file name) and, for Codex, `-C <folder>`, the folder the scan recorded, quoted; a line whose model, id
-    or folder starts with `-` or holds a control character (C0 or DEL, such as ^U, which would act on the shell's line)
-    is refused, not typed. A Clone line is typed only for a URL matching the GitHub rule (a
+    environment, `PATH` replaced by your login shell's (asked once, as the setup wizard does), and without the markers a
+    Claude Code or Codex session that launched the app leaves in it (`CLAUDECODE`, every `CLAUDE_CODE_*` and
+    `CLAUDE_AGENT_SDK_*`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
+    `CODEX_THREAD_ID`, `CODEX_SESSION_ID`; code-chat R64). A `CLAUDE_CODE_*` setting given to the app's environment with
+    `launchctl setenv` (or a launchd plist) goes with them (code-chat R74): set it in Claude Code's settings (`env`) or
+    a shell startup file instead, which still reach the agent. The page still cannot set `PATH`. While the `computer`
+    surface is on, the Code tab starts an agent as the terminal's own process instead (agent-computer D18; *The Computer
+    pane* below): the binary the runtime resolves on that `PATH`, whose install form main checks, with only the words
+    `launchArgs` emits after it (`policy/agent-launch.ts`), in a folder a shell could start in, and with the environment
+    your `$SHELL` gives a typed command (main runs it as a login, interactive shell for each launch and reads its
+    exports, so your profile and rc files' variables reach the agent as they did a typed line; the shell starts without
+    those markers, and `CLAUDECODE` still goes). With the surface off main checks nothing and the page types the line
+    into a shell, as before the computer; when main cannot vouch for the binary, or the shell gives no environment (a
+    startup file that exits, hangs or execs something else), it says why and the page does the same. Spaces and Sessions
+    ▸ History type a Resume line only with a lowercase UUID from the scan (History's also the one in its transcript's
+    file name) and, for Codex, `-C <folder>`, the folder the scan recorded, quoted; a line whose model, id or folder
+    starts with `-` or holds a control character (C0 or DEL, such as ^U, which would act on the shell's line) is
+    refused, not typed. A Clone line is typed only for a URL matching the GitHub rule (a
     `https://github.com/<owner>/<repo>` URL or GitHub's SSH form of it, quoted).
   - *Code's Diff (code-chat C8):* read-only git in a vault workspace or the code folder linked to one, chosen in main from
     the terminal's own starting folder (`code:git` names a terminal, never a folder). It needs no write surface; it refuses
     the vault root, home and the hosts' config folders, and any folder that is neither a workspace nor a linked one.
+  - *Code's images (code-chat C7; the `code` surface):* The Code composer can save a pasted image (PNG, JPEG, GIF,
+    WebP ≤ 10 MB, checked by content) into the app's own data folder; the page never names the path. Images are kept
+    about three months, and the folder holds at most 2 GiB or 5,000 files (R59).
   - *Appearance:* the page may set the theme to `system`, `light` or `dark` and nothing else; main saves the choice in
     the app's data (`app-settings.json`), never in the vault, and hands it to macOS's `nativeTheme`.
   - *Setup (phase 5; install-import B1, B2, B13, B14):* the wizard names a fix by id; what it does is main's
@@ -296,6 +304,7 @@ What the gate accepts, and why:
 | A login runs in a terminal (`claude auth login`, `codex login`) | Each prints a code to type | The commands are fixed in main and shown before they run, in a terminal the user watches and can stop; the page can only pick one, and only while setup shows |
 | A compromised page could start a download, a login, the install or an upgrade, or write the PATH line | They are the wizard's and attach mode's buttons | Each is fixed, allowed only in its state (no install over an attached vault, no PATH line once a vault is attached), and visible as it runs; the page names no URL, command or file |
 | An agent session edits a workspace repository and runs commands there (Claude at the **Edit and run commands** level; Codex always, inside its sandbox) | It is the feature: Sessions (spec 2026-10-07-unidex-sessions) | On by default since 1.2.0, after a live turn on each host; `AOS_APP_WRITE` narrows it like any surface (the `sessions` surface, scope `main`: the page never gets its writes). The page sends only a workspace name, a host, a prompt, a thread id, a file or a commit message, each zod-checked. Main asks the runtime (`lib/sessions.js`) for the program, its arguments and its environment, and runs it only as an installed program (`programRefusal`), in `<vault>/workspaces/<name>`, with the allowed variables (`spawnEnv`). The page names a turn's access level (read, edit or run, zod-checked): Claude runs in plan mode for read and in `acceptEdits` otherwise, with no one to answer prompts and Bash only at run; Codex runs in its read-only sandbox for read and its workspace-write sandbox otherwise, without network. The model must not read as a flag. The host catalog (`session:catalog`) runs only `lib/sessions.js catalog` from the runtime, which asks each host for its models without calling one and stores no account details. Each turn is capped (`sessions.perTurnUsd`, `sessions.perDayUsd`), stopped on request and recorded. git commits only on the Commit button with the message shown, and never pushes. Its reads (status, diffs) run no program the repository's own config names, nor one a submodule's own config names: no fsmonitor, signature check, filter driver, external diff, textconv or lazy fetch (spaces-redesign §6, code-chat R54, `services/git.ts`). A new file's diff reads only a file or link the status lists as new: never an ignored file, anything under `.git`, a linked folder or a pipe. The commit itself runs the repository's hooks, filters and signing (`core.hooksPath`, `commit.gpgsign`), as a commit in a terminal does: that is accepted, since the user asked for it |
+| The page can have main follow each agent terminal's conversation, answer an agent's prompt from its card, and save an image it is handed | Code's chat view, its approval cards and the composer's images (spec 2026-11-09-code-chat C1, C4, C7, C13) | The `code` surface (scope `main`: the page gets none of its writes). Main runs only the runtime's `lib/sessions.js mirror` with the surface's rules; the page names a host, a session id and a terminal key, never a path or an argument (the folder and start time are the terminal's, from main). It runs one follower per agent terminal, which ends with the terminal and at quit, and one `--once` read for a past conversation the person opens. The followers write only `brain/_index/code/*.jsonl` and `*.claim.json`, which the page reads. A card's click writes one key, the TUI's own for that choice, and only while the agent runs and its screen, read again first, still shows that prompt; nothing from an ended agent's chat reaches the shell that took over. `code:save-image` takes a type and base64 only: main checks the type, the size (10 MB) and the magic bytes, picks the path under `<userData>/code-images`, creates the file exclusively with mode 0600, and keeps at most 2 GiB or 5,000 files for about three months. On by default since its live check on each host on 2026-11-10 |
 
 ## Review: phase 4 (Electron hardening checklist)
 

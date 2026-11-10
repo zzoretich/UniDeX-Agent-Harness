@@ -5,7 +5,8 @@
 import { z } from "zod";
 import { navAllowed, siteOf } from "../policy/computer-url";
 import { UUID_RE } from "../policy/programs";
-import type { CodeFollowRequest, CodeGitRequest, CodeUnfollowRequest, CodeViewRequest, ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
+import { MAX_IMAGE_BASE64 } from "../services/code-images";
+import type { CodeFollowRequest, CodeGitRequest, CodeSaveImageRequest, CodeUnfollowRequest, CodeViewRequest, ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
 
 const MB = 1024 * 1024;
 
@@ -108,6 +109,12 @@ export const CodeGitArgs: z.ZodType<CodeGitRequest> = z.object({
   pty: Id,
   op: z.enum(["status", "diff"]),
   file: Text(4096).refine((f) => f.length > 0, "a file").optional(),
+}).strict();
+/** code:save-image (code-chat C7): an image's type and its bytes as base64, at most the base64 of 10 MB; never a path or a
+ *  name. The type, the exact size and the content are checked in services/code-images.ts. */
+export const CodeSaveImageArgs: z.ZodType<CodeSaveImageRequest> = z.object({
+  mime: Text(100),
+  data: z.string().max(MAX_IMAGE_BASE64),
 }).strict();
 
 /** A Code launch's agent (agent-computer D18): the host and its words; main resolves the binary and checks the words. */

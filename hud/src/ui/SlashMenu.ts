@@ -37,6 +37,16 @@ export function stepIndex(i: number, delta: number, n: number): number {
   return (((i + delta) % n) + n) % n;
 }
 
+/**
+ * Whether ⏎ inserts the highlighted command (code-chat R65): only when its name starts with what was typed after the
+ * mark (`/mod` and `model`), or the user moved the highlight with ↑/↓ (`moved`). Otherwise ⏎ closes the menu and the
+ * draft goes as typed: a built-in the catalog does not list (`/model`) must not become a command whose description
+ * merely mentions it. Tab always inserts.
+ */
+export function enterInserts(query: string, name: string, moved: boolean): boolean {
+  return moved || name.toLowerCase().startsWith(query.trim().toLowerCase());
+}
+
 let menuSeq = 0;
 
 export interface SlashMenuOptions {
@@ -49,8 +59,10 @@ export interface SlashMenuOptions {
 /**
  * The composer's `/` menu (spec 2026-10-07-sessions-ux U8). It watches the textarea: while the text is a command being
  * typed (`/` or, on Codex, `$` and no space yet) it shows the host's matching commands above the composer, the first
- * one selected. ↑↓ move, Enter or Tab inserts the command's text in place of the typed token, Escape closes and keeps
- * the text, a click inserts. Focus stays in the textarea throughout (aria-activedescendant), and ⌘↵ still sends.
+ * one selected. ↑↓ move, Tab inserts the command's text in place of the typed token, and so does Enter when the command's
+ * name starts with what was typed or the highlight was moved (enterInserts, R65); any other Enter closes the menu and is
+ * the composer's own (Send in Code). Escape closes and keeps the text, a click inserts. Focus stays in the textarea
+ * throughout (aria-activedescendant), and ⌘↵ still sends.
  */
 export class SlashMenu {
   private opts: SlashMenuOptions;
@@ -62,6 +74,8 @@ export class SlashMenu {
   private query: string | null = null;
   /** While an insert fires the textarea's input event, which must not reopen the menu on the inserted text. */
   private inserting = false;
+  /** ↑/↓ moved the highlight since the query last changed: Enter inserts it whatever its name (R65). */
+  private moved = false;
   private readonly id = `aos-sm-${++menuSeq}`;
   private readonly onInput = (): void => {
     if (!this.inserting) this.dismissed = null;
@@ -100,7 +114,10 @@ export class SlashMenu {
     const keep = this.menu && q === this.query ? this.items[this.index]?.name : undefined;
     this.query = q;
     this.items = filterCommands(this.opts.commands, q).items;
-    this.index = Math.max(0, keep ? this.items.findIndex((c) => c.name === keep) : 0);
+    const kept = keep ? this.items.findIndex((c) => c.name === keep) : -1;
+    this.index = Math.max(0, kept);
+    // A new query, or a highlighted command that is gone, starts with the highlight unmoved.
+    if (kept < 0) this.moved = false;
     this.render(text.charAt(0) + q);
   }
 
@@ -109,6 +126,7 @@ export class SlashMenu {
     if (!menu) return;
     this.menu = null;
     this.query = null;
+    this.moved = false;
     menu.detach();
     this.input.removeAttribute("aria-activedescendant");
     this.input.removeAttribute("aria-controls");
@@ -177,7 +195,14 @@ export class SlashMenu {
       this.dismissed = this.input.value;
       this.close();
     } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && n) {
+      this.moved = true;
       this.select(stepIndex(this.index, e.key === "ArrowDown" ? 1 : -1, n));
+    } else if (e.key === "Enter" && !e.shiftKey && !(n && enterInserts(this.query ?? "", this.items[this.index]?.name ?? "", this.moved))) {
+      // R65: what was typed does not name the highlighted command (or none matched): this ⏎ is the composer's. The menu
+      // closes, and stays closed on this text, and the draft goes as typed.
+      this.dismissed = this.input.value;
+      this.close();
+      return;
     } else if (((e.key === "Enter" && !e.shiftKey) || (e.key === "Tab" && !e.shiftKey)) && n) {
       this.insert(this.index);
     } else return;

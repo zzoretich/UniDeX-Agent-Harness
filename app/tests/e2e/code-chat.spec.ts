@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, REPO, appEnv, badge, command, content, emulateViewport, expectNoErrors, openTab, rail, terminalText, useApp } from "./harness";
+import { FX, REPO, USER_DATA, appEnv, badge, command, content, emulateViewport, expectNoErrors, openTab, rail, terminalText, useApp } from "./harness";
 
 // The Code tab's chat view (spec 2026-11-09-code-chat C1, C3, C5, C13; rulings R3, R28, R32): an agent terminal opens in a
 // chat drawn from the cache its follower writes; ⌘J flips the middle to the same live PTY and back, nothing restarts; a
@@ -101,7 +101,7 @@ test.describe("the Code chat surface on", () => {
     // The composer sits in the chat's column with its chips; the second turn still runs, so Stop is offered.
     await expect(chat(win).locator(".aos-tc")).toBeVisible();
     // No access was chosen for this terminal (Host default); the model is the conversation's, in the model menu's chip.
-    await expect(chat(win).locator(".aos-tc-chip:visible")).toHaveText(["@ file", "/ commands", "Snippets", "Host default"]);
+    await expect(chat(win).locator(".aos-tc-chip:visible")).toHaveText(["+ attach", "@ file", "/ commands", "Snippets", "Host default"]);
     await expect(chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger")).toContainText("fixture-model");
     await expect(chat(win).locator(".aos-cc-stop")).toBeVisible();
   });
@@ -307,7 +307,10 @@ test.describe("the Code chat surface on", () => {
     await win.waitForTimeout(300);
     expect((await ids()).length).toBe(count);
     expect(await selected()).toBe(old);
-    // A model from the custom id field: a new terminal resumes the same conversation on it, and the old one is gone.
+    // A model from the custom id field: a new terminal resumes the same conversation on it, and the old one is gone. A
+    // draft in the composer goes with it (I1).
+    const draft = "and now with the other model";
+    await chat(win).locator(".aos-tc-input").fill(draft);
     await model.click();
     await chat(win).locator("[data-hm-key='custom']").click();
     await chat(win).locator("[data-hm-key='custom-input']").fill("sonnet");
@@ -317,6 +320,7 @@ test.describe("the Code chat surface on", () => {
     expect(await ids()).not.toContain(old);
     expect((await metaOf(second))?.sessionId).toBe(sid);
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toMatch(new RegExp(`\\[fixture claude stub\\] .*--model sonnet .*--resume ${sid}`));
+    await expect(C(win).locator(".aos-tc-input")).toHaveValue(draft);
     // The access chip: another conversation (the fixture's agent exits at once, so the restarted one cannot be picked on again).
     const sid2 = "abababab-0000-4000-8000-00000000000a";
     const key2 = "abababab-0000-4000-8000-00000000000b";
@@ -358,7 +362,7 @@ test.describe("the Code chat surface on", () => {
     await expect(body(win)).toBeVisible();
     await expect(chat(win)).toBeHidden();
     await expect(sw(win)).toHaveCount(0);
-    // Its composer stays under the terminal, with no / commands, access or model.
+    // Its composer stays under the terminal, with no + attach, / commands, access or model.
     await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-chip:visible")).toHaveText(["@ file", "Snippets"]);
     // ⌘J leaves a shell as it is.
     await win.keyboard.press("Meta+j");
@@ -614,6 +618,10 @@ test.describe("the Code chat surface on", () => {
     await expect(C(win).locator(".aos-cv")).toHaveCount(0);
     await expect(chat(win)).toBeHidden();
     expect((await poolInfo(win, login))?.agentEnded).toBe(false);
+    // Not a conversation, so no images either: its composer has no + attach (C7).
+    await expect(C(win).locator(".aos-term-main > .aos-tc")).toBeVisible();
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-chip", { hasText: "@ file" })).toBeVisible();
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-attach")).toBeHidden();
   });
 });
 
@@ -627,24 +635,72 @@ const SCREENS = path.join(REPO, "..", "hud", "src", "data", "fixtures", "screens
 const screenFile = (name: string) => fs.readFileSync(path.join(SCREENS, name), "utf8");
 /** A rendered fixture screen as a stream that draws it from the top (the captures kept the raw stream of two only). */
 const drawn = (name: string) => `\u001b[H\u001b[2J${screenFile(`${name}.txt`).split("\n").join("\r\n")}`;
-type FakeW = { aosHost: { plugin: { terminalPool: { create(o: object): { id: string; dimensions: object; attachAgent(p: unknown, size: object): void; resize(c: number, r: number): void }; select(id: string): void; get(id: string): { resize(c: number, r: number): void } | undefined; remove(id: string): void }; codeFeeds: { screened(id: string): boolean } } }; __fakes?: Record<string, { emit(d: string): void; exit(code: number): void; writes: string[] }> };
-/** A terminal whose agent is a fake process in the page, selected; its pool id. */
-const fakeAgent = (win: Page, meta: Meta): Promise<string> => win.evaluate((m) => {
+/** What a fake agent received and printed, in order, with when (the page's Date.now()). */
+type FakeLog = Array<{ at: number; write?: string; print?: string }>;
+type FakeW = { aosHost: { plugin: { terminalPool: { create(o: object): { id: string; dimensions: object; attachAgent(p: unknown, size: object): void; resize(c: number, r: number): void }; select(id: string): void; get(id: string): { resize(c: number, r: number): void; write(d: string): void } | undefined; remove(id: string): void }; codeFeeds: { screened(id: string): boolean } } }; __fakes?: Record<string, { emit(d: string): void; exit(code: number): void; writes: string[]; log: FakeLog }> };
+/**
+ * A terminal whose agent is a fake process in the page, selected; its pool id. With `menu`, the fake answers a line it
+ * receives that starts with "/menu" (pastes' markers left out) by printing `menu` `menuDelay` ms later (150 by default),
+ * as a TUI opens a picker in answer to a command. With `images`, it answers a bracketed paste that holds only an image's
+ * path (quoted or not) by printing "[Image #N] " 300 ms later, as Claude Code inserts a pasted image once it has read it
+ * (R70); with `imagePrompt` as well, it prints that screen 100 ms after such a paste instead (a dialog that takes the
+ * input and eats the paste: D1). Its `log` keeps what it received and printed, in order, with when.
+ */
+const fakeAgent = (win: Page, meta: Meta, o: { menu?: string; menuDelay?: number; images?: boolean; imagePrompt?: string } = {}): Promise<string> => win.evaluate(({ m, menu, menuDelay, images, imagePrompt }) => {
   const w = window as unknown as FakeW;
   const pool = w.aosHost.plugin.terminalPool;
   const t = pool.create({ deferred: true, cols: 120, rows: 40, meta: m });
   const data: Array<(d: string) => void> = [];
   const exits: Array<(e: { exitCode: number }) => void> = [];
   const writes: string[] = [];
+  const log: FakeLog = [];
+  const emit = (d: string) => { log.push({ at: Date.now(), print: d }); for (const cb of data) cb(d); };
+  let line = "";
+  let stream = "";
+  let shown = 0;
   const fake = {
-    pid: 0, write: (d: string) => { writes.push(d); }, resize: () => {}, kill: () => {},
+    pid: 0, resize: () => {}, kill: () => {},
+    write: (d: string) => {
+      writes.push(d);
+      log.push({ at: Date.now(), write: d });
+      if (images) {
+        stream += d;
+        for (let m2 = /\u001b\[200~([\s\S]*?)\u001b\[201~/.exec(stream); m2; m2 = /\u001b\[200~([\s\S]*?)\u001b\[201~/.exec(stream)) {
+          if (/^"?\/[^"\r\n]*\.(png|jpe?g|gif|webp)"?$/.test(m2[1])) {
+            if (imagePrompt !== undefined) setTimeout(() => emit(imagePrompt), 100);
+            else { const n = ++shown; setTimeout(() => emit(`[Image #${n}] `), 300); }
+          }
+          stream = stream.slice(m2.index + m2[0].length);
+        }
+      }
+      if (menu === undefined) return;
+      line += d.replace(/\u001b\[20[01]~/g, "");
+      for (let cr = line.indexOf("\r"); cr >= 0; cr = line.indexOf("\r")) {
+        if (line.startsWith("/menu")) setTimeout(() => emit(menu), menuDelay);
+        line = line.slice(cr + 1);
+      }
+    },
     onData: (cb: (d: string) => void) => { data.push(cb); }, onExit: (cb: (e: { exitCode: number }) => void) => { exits.push(cb); },
   };
   t.attachAgent(fake, t.dimensions);
-  (w.__fakes ??= {})[t.id] = { emit: (d: string) => { for (const cb of data) cb(d); }, exit: (code: number) => { for (const cb of exits) cb({ exitCode: code }); }, writes };
+  (w.__fakes ??= {})[t.id] = { emit, exit: (code: number) => { for (const cb of exits) cb({ exitCode: code }); }, writes, log };
   pool.select(t.id);
   return t.id;
-}, meta);
+}, { m: meta, menu: o.menu, menuDelay: o.menuDelay ?? 150, images: o.images ?? false, imagePrompt: o.imagePrompt });
+/**
+ * Hands a fake agent's chat the events a follower would read (the fake has no follower), through CodeFeeds' internals:
+ * `entries` (the terminal's Entry, whose `events` are the buffer), `compute` (works the chat out again) and `notify`
+ * (tells the panel). A rename there is a fix here only.
+ */
+const feedEvents = (win: Page, id: string, events: object[]): Promise<void> => win.evaluate(({ i, ev }) => {
+  type F = { entries: Map<string, { events: unknown[] }>; compute(e: unknown): void; notify(id: string): void };
+  const f = (window as unknown as { aosHost: { plugin: { codeFeeds: F } } }).aosHost.plugin.codeFeeds;
+  const e = f.entries.get(i);
+  if (!e) throw new Error("no feed");
+  e.events = ev;
+  f.compute(e);
+  f.notify(i);
+}, { i: id, ev: events });
 /** The fake's TUI prints `d`; the captures are 120×40, so the terminal is sized so first (after the visible terminal's
  *  own fit, two frames after the selection, which sizes it to the stage). */
 const replay = async (win: Page, id: string, d: string): Promise<void> => {
@@ -714,13 +770,216 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     await input.press("Enter");
     expect(await written(win, id)).toEqual([]);
     await expect(input).toHaveValue("hello there");
-    // The TUI moved on: Send works again, and the note is gone.
+    // The note follows the view's words: the terminal's prompt there, the card above back in the chat.
+    await win.keyboard.press("Meta+j");
+    await expect(body(win)).toBeVisible();
+    await expect(note).toHaveText("Answer the prompt in the terminal first");
+    await win.keyboard.press("Meta+j");
+    await expect(chat(win)).toBeVisible();
+    await expect(note).toHaveText("Answer the card above first · Terminal ⌘J");
+    // The TUI moved on: the note goes with the card, before anything is sent, and Send works again.
     await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
     await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await expect(note).toHaveCount(0);
+    await expect(input).toHaveValue("hello there");
     await input.press("Enter");
-    expect((await written(win, id)).join("")).toContain("hello there");
+    // Within SEND_QUIET_MS of the terminal's last input (R62) Send waits that long before it reads the screen and goes.
+    let sent = "";
+    await expect.poll(async () => (sent += (await written(win, id)).join(""))).toContain("hello there");
     await expect(input).toHaveValue("");
     await expect(note).toHaveCount(0);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  // The prompt /menu opens comes 150 ms after it (R62: within SEND_QUIET_MS), or 900 ms after it (R69: past SEND_QUIET_MS,
+  // as Codex's first /model did live; a Send after a slash command waits up to SLASH_SETTLE_MS for it).
+  for (const [delay, n] of [[150, "2b"], [900, "3a"]] as const) {
+    test(`R62, R69: a draft sent right after /menu stays, held by the prompt /menu opens ${delay} ms later, and nothing of it reaches that prompt`, async () => {
+      const h = app();
+      const { win } = h;
+      await openTab(win, "term");
+      // The fake opens a numbered prompt (a captured Claude Code approval) `delay` ms after it receives a line starting /menu.
+      const key = `a1a1a1a1-0000-4000-8000-0000000000${n}`;
+      const sid = `a1a1a1a1-0000-4000-8000-0000000000${n === "2b" ? "2c" : "3b"}`;
+      const id = await fakeAgent(win, { host: "claude", terminalKey: key, sessionId: sid, label: "Composer after a command" }, { menu: screenFile("claude-2.1.318-bash.ansi"), menuDelay: delay });
+      await expect(chat(win)).toBeVisible();
+      await replay(win, id, drawn("claude-2.1.318-idle"));
+      const input = C(win).locator(".aos-tc-input:visible");
+      const note = C(win).locator(".aos-tc-note:visible");
+      let log = "";
+      const take = async () => (log += (await written(win, id)).join(""));
+      await take();
+      log = "";
+      // /menu goes (nothing is up), then at once a draft and ⏎, before the prompt /menu opens is on the screen.
+      await input.fill("/menu");
+      await C(win).locator(".aos-tc-send:visible").click();
+      await expect(input).toHaveValue("");
+      await input.fill("z");
+      await input.press("Enter");
+      // The draft waited for the TUI, found its prompt, and stayed.
+      await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+      await expect(note).toHaveText("Answer the card above first · Terminal ⌘J");
+      await expect(input).toHaveValue("z");
+      await win.waitForTimeout(800);
+      await take();
+      // What the fake received: /menu and its one ⏎; never the draft's text nor a second ⏎ (the visible terminal's
+      // replies to the stream's queries hold neither).
+      expect(log).toContain("/menu");
+      expect(log, JSON.stringify(log)).not.toContain("z");
+      expect(log.split("\r").length - 1, JSON.stringify(log)).toBe(1);
+      await removeTerminal(win, id);
+      expectNoErrors(h);
+    });
+  }
+
+  test("C1: an agent that ends while Send waits takes nothing of the draft with it: the login shell that takes its terminal over runs none of it, and the draft leaves the shell's box (R73)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000003c", sessionId: "a1a1a1a1-0000-4000-8000-00000000003d", label: "Ends while Send waits" });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, drawn("claude-2.1.318-idle"));
+    // Its terminal view, whose composer is not kept away when the agent ends (it becomes the shell's).
+    await win.keyboard.press("Meta+j");
+    await expect(body(win)).toBeVisible();
+    const input = C(win).locator(".aos-term-main > .aos-tc .aos-tc-input");
+    const draft = "echo leaked-$((6*7))";
+    await input.fill(draft);
+    // Input a moment ago (a key typed in the terminal): Send waits SEND_QUIET_MS, and the agent ends meanwhile.
+    await win.evaluate((i) => (window as unknown as FakeW).aosHost.plugin.terminalPool.get(i)?.write(" "), id);
+    await input.press("Enter");
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].exit(0), id);
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("This is your shell, in the same folder.");
+    await win.waitForTimeout(1500);
+    expect(await terminalText(win)).not.toContain("leaked-42");
+    // R73: the draft written for the agent leaves what is now the shell's composer (one more ⏎ would run it there), and
+    // the note says the agent ended instead of inviting another Send.
+    await expect(input).toHaveValue("");
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-note")).toHaveText("Claude Code ended before this was sent");
+    expect((await written(win, id)).join("")).not.toContain("leaked");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("I2: an agent that ends while Send waits and another terminal shows: back on it, the shell's box is empty and the shell ran nothing (R73)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const other = await fakeAgent(win, { host: "codex", terminalKey: "a1a1a1a1-0000-4000-8000-00000000004c", sessionId: "a1a1a1a1-0000-4000-8000-00000000004d", label: "Shown meanwhile" });
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000004e", sessionId: "a1a1a1a1-0000-4000-8000-00000000004f", label: "Ends unseen" });
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Ends unseen");
+    await replay(win, id, drawn("claude-2.1.318-idle"));
+    await win.keyboard.press("Meta+j");
+    await expect(body(win)).toBeVisible();
+    const input = C(win).locator(".aos-term-main > .aos-tc .aos-tc-input");
+    const draft = "echo leaked-$((6*7))";
+    await input.fill(draft);
+    // Send waits SEND_QUIET_MS after the last input; meanwhile the other terminal is selected and this agent ends.
+    await win.evaluate((i) => (window as unknown as FakeW).aosHost.plugin.terminalPool.get(i)?.write(" "), id);
+    await input.press("Enter");
+    await win.evaluate(({ i, o }) => {
+      const w = window as unknown as FakeW;
+      w.aosHost.plugin.terminalPool.select(o);
+      w.__fakes?.[i].exit(0);
+    }, { i: id, o: other });
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Shown meanwhile");
+    await expect.poll(() => win.evaluate((i) => (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { agentEnded: boolean } | undefined } } } }).aosHost.plugin.terminalPool.get(i)?.agentEnded ?? null, id), { timeout: 10_000 }).toBe(true);
+    await win.waitForTimeout(1500);
+    // Back on it, in its terminal view: the agent's draft did not come back into what is now the shell's composer.
+    await select(win, id);
+    await expect(body(win)).toBeVisible();
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("This is your shell, in the same folder.");
+    await expect(input).toHaveAttribute("placeholder", "Write a command…");
+    await expect(input).toHaveValue("");
+    await win.waitForTimeout(500);
+    expect(await terminalText(win)).not.toContain("leaked-42");
+    expect((await written(win, id)).join("")).not.toContain("leaked");
+    expect((await written(win, other)).join("")).not.toContain("leaked");
+    await removeTerminal(win, id);
+    await removeTerminal(win, other);
+    expectNoErrors(h);
+  });
+
+  test("a card that comes under the fold of a long chat is scrolled into view, and a long choice wraps inside it, never wider than the card", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const sid = "a1a1a1a1-0000-4000-8000-00000000002e";
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000002d", sessionId: sid, label: "Long chat, long choice" });
+    await expect(chat(win)).toBeVisible();
+    const restore = await emulateViewport(win, { width: 960, height: 600, scale: 1 });
+    try {
+      // A long conversation, shown at its end. The fake has no follower, so its feed is handed the events one would read.
+      const events: object[] = [{ t, kind: "session", id: sid, model: "fixture-model", turn: 0 }];
+      for (let n = 1; n <= 30; n++) {
+        events.push({ t, kind: "prompt", text: `Question ${n} about the tide tables`, turn: n }, { t, kind: "text", text: `Answer ${n}: the readings are in.`, turn: n },
+          { t, kind: "done", ok: true, usd: null, estimated: false, model: "fixture-model", turn: n });
+      }
+      await feedEvents(win, id, events);
+      await expect(chat(win).locator(".aos-ss-prompt")).toHaveCount(30);
+      // The TUI asks, a long path in its second choice; the card comes after the last row, below what shows.
+      const long = "/work/demo/workspaces/harbor-map/src/tide-tables/station-format/readings-2026-11";
+      const screen = screenFile("claude-2.1.318-bash.txt").replace("access to /work/demo", `access to ${long}`);
+      await replay(win, id, `\u001b[H\u001b[2J${screen.split("\n").join("\r\n")}`);
+      const gate = card(win);
+      await expect(gate.locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+      const second = gate.locator("button.aos-cc-choice").nth(1);
+      await expect(second.locator(".aos-cc-choicelabel")).toHaveText(`Yes, and always allow access to ${long} from this project`);
+      // In view: wholly, or from its top when it is taller than the chat (the scroll is smooth: wait for it to land).
+      const scroll = chat(win).locator(".aos-cc-scroll");
+      await expect.poll(async () => {
+        const [c, s] = [await gate.boundingBox(), await scroll.boundingBox()];
+        if (!c || !s) return false;
+        return c.y >= s.y - 1 && (c.y + c.height <= s.y + s.height + 1 || Math.abs(c.y - s.y) <= 1);
+      }).toBe(true);
+      // The long choice wraps inside the card: no button wider than it, nothing overflowing it.
+      const fit = await gate.evaluate((g) => {
+        const box = g.getBoundingClientRect();
+        return { overflow: g.scrollWidth > g.clientWidth, outside: Array.from(g.querySelectorAll("button.aos-cc-choice")).filter((b) => b.getBoundingClientRect().right > box.right + 0.5).length };
+      });
+      expect(fit).toEqual({ overflow: false, outside: 0 });
+      expect((await second.boundingBox())?.height ?? 0, "on more than one line").toBeGreaterThan(32);
+    } finally {
+      await restore();
+    }
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("the top bar's Started … · Change note keeps to one line in a narrow window, ellipsized, and the bar keeps its height", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000002f", sessionId: "a1a1a1a1-0000-4000-8000-000000000030", label: "Started note" });
+    await expect(chat(win)).toBeVisible();
+    // Narrow enough that the note cannot show whole beside the bar's own items, wide enough that some of it shows.
+    const restore = await emulateViewport(win, { width: 1100, height: 700, scale: 1 });
+    try {
+      const header = C(win).locator(".aos-term-main > .aos-term-header");
+      const before = (await header.boundingBox())?.height ?? 0;
+      const text = "Started Claude Code in workspaces/harbor-map/src/tide-tables/station-format, the folder its last conversation ran in";
+      await win.evaluate(({ i, text }) => {
+        const p = (window as unknown as { aosHost: { plugin: { terminalPool: { trigger(name: string, ...a: unknown[]): void } } } }).aosHost.plugin.terminalPool;
+        p.trigger("session-launched", { id: i, text, why: "default", host: "claude" });
+      }, { i: id, text });
+      const note = C(win).locator(".aos-term-started");
+      await expect(note.locator(".aos-term-started-text")).toHaveText(text);
+      await expect(note).toHaveAttribute("title", text);
+      await expect(note.locator(".aos-term-started-change")).toBeVisible();
+      const m = await note.evaluate((n) => {
+        const s = n.querySelector(".aos-term-started-text") as HTMLElement;
+        const b = n.querySelector(".aos-term-started-change") as HTMLElement;
+        return { height: n.getBoundingClientRect().height, shown: s.clientWidth, cut: s.scrollWidth > s.clientWidth, change: b.getBoundingClientRect().right <= n.getBoundingClientRect().right + 0.5 };
+      });
+      expect(m.height, "one line").toBeLessThanOrEqual(30);
+      expect(m.cut, "ellipsized").toBe(true);
+      expect(m.shown, "some of it shows").toBeGreaterThan(40);
+      expect(m.change, "Change whole").toBe(true);
+      expect((await header.boundingBox())?.height).toBe(before);
+    } finally {
+      await restore();
+    }
     await removeTerminal(win, id);
     expectNoErrors(h);
   });
@@ -805,6 +1064,295 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     await expect(lines.nth(1)).toHaveText(/^← for agents · \? for shortcuts\s+⚠ 1 warning · f2 to view$/);
     await expect(status.locator("span", { hasText: "GPT-6-Luna low" })).toHaveAttribute("style", /color: rgb\(/);
     await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+});
+
+// The composer's images (C7, C13): paste, drop and + attach each add a chip with its thumbnail and ×; main saves the image
+// into the app's own data folder at once (code:save-image) and names the path; Send pastes each path as a bracketed paste
+// of its own, which the TUI attaches as an image (R63), then the text, through the same guarded Send (a card holds it). A
+// refused image says why under the box. The stand-in agent is the fake process above, so what Send writes is what the TUI
+// would read.
+
+/** A real 2×2 PNG. */
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGPQiDoBRAwQCgAhpgUpG+5kRAAAAABJRU5ErkJggg==";
+/** GIF bytes: a header is enough for main's check. */
+const GIF = Buffer.from("GIF89a\u0002\u0000\u0002\u0000", "latin1").toString("base64");
+type Pasted = { name: string; type: string; b64: string };
+/** Dispatches what a paste (or a drop on the box) of these files would; whether the page took it (preventDefault). */
+const deliver = (win: Page, kind: "paste" | "drop", files: Pasted[]): Promise<boolean> => content(win).locator(".aos-tc-input:visible").evaluate((input, { kind, files }) => {
+  const dt = new DataTransfer();
+  for (const f of files) dt.items.add(new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name, { type: f.type }));
+  if (kind === "paste") return !input.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  const box = input.closest(".aos-tc-box") as HTMLElement;
+  box.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+  return !box.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+}, { kind, files });
+/** The paths in what Send wrote: quoted (the app's data folder has spaces), under code-images/<yyyy-mm>/<uuid>.<ext>. */
+const imagePath = (ext: string) => new RegExp(`"(${USER_DATA.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/code-images/\\d{4}-\\d{2}/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.${ext})"`);
+
+test.describe("the composer's images (C7, C13)", () => {
+  test.describe.configure({ mode: "serial" });
+  const app = useApp({ env: { AOS_APP_WRITE: "code" } });
+  const shots = (win: Page) => C(win).locator(".aos-tc-shot:visible");
+  const input = (win: Page) => C(win).locator(".aos-tc-input:visible");
+  const note = (win: Page) => C(win).locator(".aos-tc-note:visible");
+  /** Everything the terminal writes to the fake from now until `want` matches it. */
+  const writesUntil = async (win: Page, id: string, want: RegExp): Promise<string> => {
+    let got = "";
+    await expect.poll(async () => (got += (await written(win, id)).join(""))).toMatch(want);
+    return got;
+  };
+
+  test("pasting a PNG makes a chip with its thumbnail; Send pastes the saved image's path as a paste of its own, then the text once the TUI shows the image; a card holds it", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    // The fake prints "[Image #N]" 300 ms after a paste of only an image's path, as Claude Code inserts it once read (R70).
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000031", sessionId: "a1a1a1a1-0000-4000-8000-000000000032", label: "Images" }, { images: true });
+    await expect(chat(win)).toBeVisible();
+    await replay(win, id, drawn("claude-2.1.318-idle"));
+    expect(await deliver(win, "paste", [{ name: "image.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(shots(win)).toHaveCount(1);
+    await expect(shots(win).locator("img.aos-tc-thumb")).toHaveAttribute("src", /^data:image\/png;base64,/);
+    await expect(shots(win).locator("button.aos-tc-shotx")).toHaveAttribute("aria-label", "Remove image.png");
+    // Saved by main as soon as it was pasted: the chip is no longer waiting.
+    await expect(shots(win)).not.toHaveClass(/is-saving/);
+    // A card is up: Send (⏎) writes nothing and keeps the text and the chip (R49 holds for images too).
+    await replay(win, id, screenFile("claude-2.1.318-bash.ansi"));
+    await expect(chat(win).locator(".aos-cc-card .aos-cc-gate .aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    await input(win).fill("look at this");
+    await written(win, id);
+    await input(win).press("Enter");
+    await expect(note(win)).toHaveText("Answer the card above first · Terminal ⌘J");
+    expect(await written(win, id)).toEqual([]);
+    await expect(shots(win)).toHaveCount(1);
+    await expect(input(win)).toHaveValue("look at this");
+    // The TUI moved on: Send pastes the quoted path alone (what the TUI attaches as an image), then the text, then Enter.
+    await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
+    await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    // What the terminal answered to the stream's own queries is not Send's.
+    await written(win, id);
+    const from = await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].log.length ?? 0, id);
+    await input(win).press("Enter");
+    const sent = await writesUntil(win, id, /\r$/);
+    // The text after the image starts with a space (D4): Claude Code's placeholder has none after it.
+    const m = new RegExp(`^\u001b\\[200~${imagePath("png").source}\u001b\\[201~\u001b\\[200~ look at this\u001b\\[201~\r$`).exec(sent);
+    expect(m, sent).not.toBeNull();
+    // In this order (R70): the image's paste, then its placeholder on the screen, and only then the text's paste and ⏎.
+    const log = (await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].log ?? [], id)).slice(from);
+    const at = (pred: (e: { write?: string; print?: string }) => boolean) => log.findIndex(pred);
+    const pathAt = at((e) => !!e.write && /code-images/.test(e.write));
+    const shownAt = at((e) => e.print === "[Image #1] ");
+    const textAt = at((e) => e.write === " look at this");
+    expect([pathAt >= 0, shownAt > pathAt, textAt > shownAt], JSON.stringify(log)).toEqual([true, true, true]);
+    expect(log[textAt].at - log[shownAt].at).toBeGreaterThanOrEqual(0);
+    // The file is where the path says, in the app's data folder, with the bytes pasted.
+    expect(fs.readFileSync(m![1]).equals(Buffer.from(PNG, "base64"))).toBe(true);
+    await expect(shots(win)).toHaveCount(0);
+    await expect(input(win)).toHaveValue("");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a drop and + attach add chips too; × takes one away; an image alone sends its path; a refused image says why and makes no chip", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "codex", terminalKey: "a1a1a1a1-0000-4000-8000-000000000033", sessionId: "a1a1a1a1-0000-4000-8000-000000000034", label: "Images by drop" }, { images: true });
+    await expect(chat(win)).toBeVisible();
+    // The TUI's own stream: it turns bracketed paste on, as Codex does.
+    await replay(win, id, screenFile("codex-0.167.0-idle.ansi"));
+    // A drop on the box.
+    expect(await deliver(win, "drop", [{ name: "drop.gif", type: "image/gif", b64: GIF }])).toBe(true);
+    await expect(shots(win)).toHaveCount(1);
+    // + attach opens the picker; picking files adds them.
+    const attach = chat(win).locator(".aos-tc-attach button.aos-tc-chip");
+    await expect(attach).toHaveText("+ attach");
+    await chat(win).locator(".aos-tc-attach input.aos-tc-picker").setInputFiles([{ name: "picked.png", mimeType: "image/png", buffer: Buffer.from(PNG, "base64") }]);
+    await expect(shots(win)).toHaveCount(2);
+    await expect(shots(win).nth(1)).toHaveAttribute("title", "picked.png");
+    await expect(C(win).locator(".aos-tc-shot.is-saving")).toHaveCount(0);
+    // × takes the dropped one away.
+    await shots(win).first().locator("button.aos-tc-shotx").click();
+    await expect(shots(win)).toHaveCount(1);
+    await expect(shots(win).first()).toHaveAttribute("title", "picked.png");
+    // An image alone (no text) sends its path.
+    await written(win, id);
+    await input(win).press("Enter");
+    const sent = await writesUntil(win, id, /\r$/);
+    expect(sent, JSON.stringify(sent)).toMatch(new RegExp(`^\u001b\\[200~${imagePath("png").source}\u001b\\[201~\r$`));
+    await expect(shots(win)).toHaveCount(0);
+    // Refused: a type the composer does not take (said before anything is sent to main), and a PNG whose content is a
+    // GIF (main's own check). Neither leaves a chip; each says why under the box.
+    expect(await deliver(win, "paste", [{ name: "scan.tiff", type: "image/tiff", b64: PNG }])).toBe(true);
+    await expect(note(win)).toHaveText("Image not added: only PNG, JPEG, GIF or WebP images");
+    await expect(shots(win)).toHaveCount(0);
+    expect(await deliver(win, "paste", [{ name: "fake.png", type: "image/png", b64: GIF }])).toBe(true);
+    await expect(note(win)).toHaveText("Image not added: its content is GIF, not PNG");
+    await expect(shots(win)).toHaveCount(0);
+    // A paste of plain text is still the textarea's own.
+    expect(await input(win).evaluate((el) => {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", "words");
+      return !el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    })).toBe(false);
+    expect(await written(win, id)).toEqual([]);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a shell takes no image: no + attach, and a pasted image is not a chip", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    expect(await command(win, "agentic-os:new-terminal-shell")).toBe(true);
+    await expect(body(win)).toBeVisible();
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-attach")).toBeHidden();
+    expect(await deliver(win, "paste", [{ name: "image.png", type: "image/png", b64: PNG }])).toBe(false);
+    await expect(shots(win)).toHaveCount(0);
+  });
+
+  test("D1: a prompt that comes up while Send waits for its image gets no ⏎: the text never goes, it comes back to the box, and the note says why", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    // After the image's paste the fake draws a numbered prompt (a captured Claude Code approval) instead of the placeholder.
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000003e", sessionId: "a1a1a1a1-0000-4000-8000-00000000003f", label: "Prompt during the image wait" }, { images: true, imagePrompt: screenFile("claude-2.1.318-bash.ansi") });
+    await expect(chat(win)).toBeVisible();
+    // The TUI's idle screen, with bracketed paste on (as Claude Code turns it on).
+    await replay(win, id, `\u001b[?2004h${drawn("claude-2.1.318-idle")}`);
+    expect(await deliver(win, "paste", [{ name: "image.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(C(win).locator(".aos-tc-shot.is-saving")).toHaveCount(0);
+    await expect(shots(win)).toHaveCount(1);
+    await input(win).fill("look at this");
+    await written(win, id);
+    const from = await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].log.length ?? 0, id);
+    await input(win).press("Enter");
+    await expect(chat(win).locator(".aos-cc-card .aos-cc-gate .aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+    await expect(note(win)).toHaveText("Answer the card above first · Terminal ⌘J");
+    await expect(input(win)).toHaveValue("look at this");
+    await win.waitForTimeout(500);
+    // What the fake received after ⏎: the image's paste only; never the text, never a ⏎ (beside the visible terminal's
+    // replies to the stream's queries, which hold neither).
+    const got = (await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].log ?? [], id)).slice(from).map((e) => e.write ?? "").join("");
+    expect(got, JSON.stringify(got)).toMatch(/code-images/);
+    expect(got, JSON.stringify(got)).not.toContain("look at this");
+    expect(got, JSON.stringify(got)).not.toContain("\r");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("D5: a draft belongs to its terminal: switching to another shows that one's (empty), and back shows the first's again", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const a = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000040", sessionId: "a1a1a1a1-0000-4000-8000-000000000041", label: "Draft A" });
+    await expect(chat(win)).toBeVisible();
+    await input(win).fill("for Claude only");
+    const b = await fakeAgent(win, { host: "codex", terminalKey: "a1a1a1a1-0000-4000-8000-000000000042", sessionId: "a1a1a1a1-0000-4000-8000-000000000043", label: "Draft B" });
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Draft B");
+    await expect(input(win)).toHaveValue("");
+    await input(win).fill("for Codex");
+    await select(win, a);
+    await expect(C(win).locator(".aos-term-headtitle")).toHaveText("Draft A");
+    await expect(input(win)).toHaveValue("for Claude only");
+    await select(win, b);
+    await expect(input(win)).toHaveValue("for Codex");
+    // Nothing of either went anywhere.
+    expect((await written(win, a)).join("")).not.toContain("for ");
+    expect((await written(win, b)).join("")).not.toContain("for ");
+    await removeTerminal(win, b);
+    await removeTerminal(win, a);
+    expectNoErrors(h);
+  });
+
+  // The last two in this app: main's code:save-image is replaced by one the test answers by hand, so an image stays
+  // "saving" as long as the test wants.
+  test("⏎ while an image saves sends once it is saved, only if the draft is unchanged; a bare errno reads as words; 8 images at most (R60)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000035", sessionId: "a1a1a1a1-0000-4000-8000-000000000036", label: "Images held" }, { images: true });
+    await expect(chat(win)).toBeVisible();
+    // The TUI turns bracketed paste on.
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].emit("\u001b[?2004h"), id);
+    await h.app.evaluate(({ ipcMain }) => {
+      const g = globalThis as unknown as { __saves: Array<(r: unknown) => void> };
+      g.__saves = [];
+      ipcMain.removeHandler("code:save-image");
+      ipcMain.handle("code:save-image", () => new Promise((r) => { g.__saves.push(r); }));
+    });
+    const answer = (r: object) => h.app.evaluate((_e, a) => (globalThis as unknown as { __saves: Array<(r: unknown) => void> }).__saves.shift()?.(a), r);
+    const saving = () => C(win).locator(".aos-tc-shot.is-saving:visible");
+    // ⏎ while it saves, then the draft changes before the save lands: nothing is sent, the new draft stays.
+    expect(await deliver(win, "paste", [{ name: "one.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(saving()).toHaveCount(1);
+    await input(win).fill("first try");
+    await written(win, id);
+    await input(win).press("Enter");
+    await input(win).fill("changed my mind");
+    await answer({ ok: true, data: { path: "/work/demo/one.png" } });
+    await expect(saving()).toHaveCount(0);
+    await win.waitForTimeout(500);
+    expect(await written(win, id)).toEqual([]);
+    await expect(input(win)).toHaveValue("changed my mind");
+    await expect(shots(win)).toHaveCount(1);
+    // Unchanged while it saves: the ⏎ sends once the save lands.
+    expect(await deliver(win, "paste", [{ name: "two.png", type: "image/png", b64: PNG }])).toBe(true);
+    await input(win).press("Enter");
+    await expect(saving()).toHaveCount(1);
+    await answer({ ok: true, data: { path: "/work/demo/two.png" } });
+    // Each path a paste of its own, in the order the images came, then the text.
+    expect(await writesUntil(win, id, /\r$/)).toBe("\u001b[200~/work/demo/one.png\u001b[201~\u001b[200~/work/demo/two.png\u001b[201~\u001b[200~ changed my mind\u001b[201~\r");
+    await expect(shots(win)).toHaveCount(0);
+    // Main's fs code alone reads as words.
+    expect(await deliver(win, "paste", [{ name: "three.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(saving()).toHaveCount(1);
+    await answer({ ok: false, error: "EEXIST", code: "EEXIST" });
+    await expect(note(win)).toHaveText("Image not added: it could not be saved: try again");
+    await expect(shots(win)).toHaveCount(0);
+    // Nine at once: eight chips, and the ninth says why.
+    const nine = Array.from({ length: 9 }, (_, i) => ({ name: `shot-${i + 1}.png`, type: "image/png", b64: PNG }));
+    expect(await deliver(win, "paste", nine)).toBe(true);
+    await expect(shots(win)).toHaveCount(8);
+    await expect(note(win)).toHaveText("Image not added: 8 images at most in one message");
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("I2: an agent that ends while ⏎ waits for an image to save sends nothing: the draft leaves the shell's box and the note says the agent ended (R73)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-000000000050", sessionId: "a1a1a1a1-0000-4000-8000-000000000051", label: "Ends while saving" }, { images: true });
+    await expect(chat(win)).toBeVisible();
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].emit("\u001b[?2004h"), id);
+    // Its terminal view, whose composer becomes the shell's when the agent ends.
+    await win.keyboard.press("Meta+j");
+    await expect(body(win)).toBeVisible();
+    await h.app.evaluate(({ ipcMain }) => {
+      const g = globalThis as unknown as { __saves: Array<(r: unknown) => void> };
+      g.__saves = [];
+      ipcMain.removeHandler("code:save-image");
+      ipcMain.handle("code:save-image", () => new Promise((r) => { g.__saves.push(r); }));
+    });
+    const answer = (r: object) => h.app.evaluate((_e, a) => (globalThis as unknown as { __saves: Array<(r: unknown) => void> }).__saves.shift()?.(a), r);
+    const box = C(win).locator(".aos-term-main > .aos-tc .aos-tc-input");
+    expect(await deliver(win, "paste", [{ name: "one.png", type: "image/png", b64: PNG }])).toBe(true);
+    await expect(C(win).locator(".aos-tc-shot.is-saving:visible")).toHaveCount(1);
+    const draft = "echo leaked-$((6*7))";
+    await box.fill(draft);
+    await written(win, id);
+    await box.press("Enter");
+    await win.evaluate((i) => (window as unknown as FakeW).__fakes?.[i].exit(0), id);
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("This is your shell, in the same folder.");
+    await answer({ ok: true, data: { path: "/work/demo/one.png" } });
+    await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-note")).toHaveText("Claude Code ended before this was sent");
+    await expect(box).toHaveValue("");
+    await win.waitForTimeout(500);
+    expect(await terminalText(win)).not.toContain("leaked-42");
+    expect((await written(win, id)).join("")).not.toContain("leaked");
     await removeTerminal(win, id);
     expectNoErrors(h);
   });
@@ -1160,7 +1708,7 @@ test.describe("the Code chat surface off (a run whose AOS_APP_WRITE leaves it ou
     await expect(chat(win)).toBeHidden();
     await expect(sw(win)).toHaveText("Chat view is off · Settings");
     // No chat says whether a turn runs: its row reads Running, not Idle; and there is no conversation to restart, so the
-    // composer has no access or model chip (M1).
+    // composer has no access or model chip (M1). code:save-image is the surface's too (C13): no + attach either.
     await expect(C(win).locator(`.aos-tl-row[data-session="${id}"] .aos-tl-sub`)).toHaveText(/^Claude Code · Running · /);
     await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-chip:visible")).toHaveText(["@ file", "/ commands", "Snippets"]);
     await expect(C(win).locator(".aos-term-main > .aos-tc .aos-tc-modelwrap")).toBeHidden();

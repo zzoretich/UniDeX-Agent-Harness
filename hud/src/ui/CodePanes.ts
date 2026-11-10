@@ -76,6 +76,9 @@ export class CodePanes {
   /** Another rail tab is in front: nothing is followed or read until show(). */
   private hidden = false;
   private shown: Shown | null = null;
+  /** The file the person opened in each terminal's Diff, by terminal id: selected again when they come back to it, while
+   *  that file is still in its list. */
+  private picked = new Map<string, string>();
   private diffSeq = 0;
   /** What the bar and the pane last drew, so a draw that changes nothing leaves them (and their focus) alone. */
   private barSig = "";
@@ -101,6 +104,7 @@ export class CodePanes {
     this.paneEl?.detach();
     this.paneEl = this.listEl = this.diffEl = this.headEl = null;
     this.diffOpen = false;
+    this.picked.clear();
     this.shown = null;
     this.barSig = this.paneSig = "";
     this.diffDrawn = null;
@@ -125,8 +129,11 @@ export class CodePanes {
     this.followed = { id: s.id, key };
     this.offData = s.onData(() => this.poke());
     const r = this.reads.get(s.id);
-    if (force || (!this.refused(s) && (!r || r.key !== key || Date.now() - r.at > FRESH_MS))) void this.refresh();
+    const read = force || (!this.refused(s) && (!r || r.key !== key || Date.now() - r.at > FRESH_MS));
+    if (read) void this.refresh();
     this.shown = null;
+    // The file opened in this terminal before: now, from a fresh status; else once the read answers.
+    if (!read) this.restorePick(s);
     this.drawPane();
   }
 
@@ -174,13 +181,26 @@ export class CodePanes {
     }
   }
 
-  /** Opens or closes the Diff pane; opening reads the status again. */
+  /** Opens or closes the Diff pane; opening reads the status again. Closing it forgets the files opened in it, in every
+   *  terminal. */
   toggleDiff(): void {
     this.diffOpen = !this.diffOpen;
+    if (!this.diffOpen) this.picked.clear();
     this.shown = null;
     this.drawPane();
     this.host.changed();
     if (this.diffOpen) void this.refresh();
+  }
+
+  /** A terminal was closed: the file opened in its Diff is forgotten. */
+  forget(id: string): void { this.picked.delete(id); }
+
+  /** The person opened `file` in the selected terminal's Diff (a row's click): shown, and remembered for that terminal,
+   *  so switching to another terminal and back opens it again while it is still listed. */
+  open(file: string): void {
+    const s = this.host.activeSession();
+    if (s) this.picked.set(s.id, file);
+    void this.showFile(file);
   }
 
   /** Reads the followed terminal's status (code:git status) and draws what changed. One read at a time: asked for while
@@ -217,11 +237,24 @@ export class CodePanes {
     const before = this.reads.get(s.id);
     this.reads.set(s.id, { key, st, at: Date.now(), refused: refused ? this.placeKey(s) : null });
     const sig = (x: HostGitStatus | null | undefined) => (x ? JSON.stringify(x) : "");
-    if (before?.key === key && sig(before.st) === sig(st)) return;
+    // None shown yet (a terminal come back to, its status read again): the file opened there before, if still listed.
+    if (before?.key === key && sig(before.st) === sig(st)) { this.restorePick(s); return; }
     // The file shown may have changed too: read it again.
     if (!this.hidden && this.shown && this.diffOpen) void this.showFile(this.shown.file);
+    else this.restorePick(s);
     this.drawPane();
     this.host.changed();
+  }
+
+  /** Opens the file the person last opened in `s`'s Diff again, while the pane is open, nothing is shown yet and its
+   *  status still lists that file; a file no longer listed is forgotten. */
+  private restorePick(s: TerminalSession): void {
+    const file = this.picked.get(s.id);
+    if (file === undefined || this.shown || !this.diffOpen || this.hidden || this.host.activeSession()?.id !== s.id) return;
+    const st = this.statusOf(s);
+    if (!st) return;
+    if (!st.files.some((f) => f.path === file)) { this.picked.delete(s.id); return; }
+    void this.showFile(file);
   }
 
   /** A terminal and the process in it now: a read for the agent is not the login shell's after it. */
@@ -309,7 +342,7 @@ export class CodePanes {
         row.createSpan({ cls: "aos-cdp-path", text: f.path });
         const c = countsText(f);
         row.createSpan({ cls: `aos-cdp-counts${c ? "" : " is-binary"}`, text: c || "binary" });
-        row.addEventListener("click", () => { void this.showFile(f.path); });
+        row.addEventListener("click", () => { this.open(f.path); });
       }
       list.scrollTop = top;
       if (focus) refocus(pane, focus);

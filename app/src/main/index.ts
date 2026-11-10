@@ -50,6 +50,7 @@ import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
 import { GitService } from "./services/git";
 import { CodeGitService } from "./services/code-git";
+import { CodeImageService } from "./services/code-images";
 import { CodeMirrorService } from "./services/code-mirror";
 import { PtyService, terminalBaseEnv, type PtyLib } from "./services/pty";
 import { SessionService, workspaceDir } from "./services/sessions";
@@ -209,6 +210,9 @@ const gitService = new GitService({ workspace: (name) => workspaceDir(context.va
 // The Code tab's Diff (code-chat C8): read-only git in the folder main picks from the terminal's own cwd, whichever write
 // surfaces are on.
 const codeGit = new CodeGitService({ vaultRoot: () => context.vaultRoot ?? null, ptyInfo: (id) => ptyService.info(id), git: gitService });
+// The Code composer's images (code-chat C7, C13, R59): saved into the app's own data folder, behind the Code chat surface,
+// within its quota; retention runs once the app is ready.
+const codeImages = new CodeImageService({ userData: () => context.userData, enabled: codeChatOn });
 
 // agent-computer D3, D7, D27, D31, D34, D35: the computer behind the bridge. One ask broker, one wheel, the marked sites
 // (<userData>/computer/sites.json), and a browser per place, made on its first use (after ready: the bridge starts only
@@ -638,7 +642,7 @@ registerHostIpc(trust, {
 registerFsIpc(trust, () => fsService);
 registerProcIpc(trust, procService, ptyService);
 registerSessionIpc(trust, sessionService, gitService);
-registerCodeIpc(trust, codeMirror, codeGit);
+registerCodeIpc(trust, codeMirror, codeGit, codeImages);
 registerShellIpc(trust, () => (vault.root ? scope : null), () => vault.root);
 registerSetupIpc(trust, setup);
 registerProposalsIpc(trust, () => vault.root, () => path.join(app.getPath("userData"), "proposal-undo"), () => policy.ids.includes("proposals"));
@@ -741,11 +745,17 @@ if (!app.requestSingleInstanceLock()) {
   autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; shutdownComputer(); codeMirror.stopAll(); ptyService.killAll(); });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
   // The marker keeps no Computer state past the app: an agent asking now hears that the app is not running.
-  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); codeMirror.stopAll(); shutdownComputer(); });
+  // The daily image prune started once the app is ready (code-chat M2); stopped at quit like the other services.
+  let stopImagePrune: () => void = () => {};
+  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); codeMirror.stopAll(); shutdownComputer(); stopImagePrune(); });
 
   void app.whenReady().then(() => {
     // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay).
     sweepHeld(app.getPath("temp"));
+    // code-chat R59: the Code composer's images go about three months after their month ended, checked now and once a day
+    // while the app stays open (M2). Asynchronous, so nothing here waits for it; the surface being off does not keep old
+    // images.
+    stopImagePrune = codeImages.keepPruned((n) => { if (n) console.log(`[main] code-images: removed ${n} old image(s)`); }, (err) => console.warn("[main] code-images: retention failed", err));
     // Only a packaged, signed app claims the scheme; a dev run must not re-point the system's agenticos:// handler.
     if (app.isPackaged) app.setAsDefaultProtocolClient(SCHEME);
     serveAppScheme(path.join(__dirname, "../renderer"));

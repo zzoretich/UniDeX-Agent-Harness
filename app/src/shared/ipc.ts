@@ -114,6 +114,8 @@ export const CH = {
   codeView: "code:view",
   /** The Diff pane's read-only git (C8): the page names a terminal, main picks the folder from its cwd. Invoke. */
   codeGit: "code:git",
+  /** The composer's image (C7): the page sends a type and base64, main checks and saves it and names the path. Invoke. */
+  codeSaveImage: "code:save-image",
   /** main → page: one event of a running turn. */
   sessionEvent: "session:event",
   // The workspace's repository: what changed, a file's diff, and the commit the user asks for.
@@ -584,6 +586,10 @@ export interface CodeUnfollowRequest { pty: string }
 /** code:git (code-chat C8): read-only git for the terminal `pty`, in the folder main resolves from that terminal's cwd (a
  *  vault workspace, or a workspace's linked code folder); `file` is relative to that folder, for one file's diff. */
 export interface CodeGitRequest { pty: string; op: "status" | "diff"; file?: string }
+/** code:save-image (code-chat C7): an image's type (PNG, JPEG, GIF or WebP) and its bytes as base64; never a path. */
+export interface CodeSaveImageRequest { mime: string; data: string }
+/** Where main saved it: an absolute path under the app's data folder (`code-images/<yyyy-mm>/<uuid>.<ext>`). */
+export interface CodeImage { path: string }
 /** A mirror's cache, as a vault-relative path (brain/_index/code/<key>.jsonl). */
 export interface CodeCache { cache: string }
 /** A follower's cache, and whether this call started it (code-chat R16b): a fresh follower writes its cache from the start,
@@ -733,8 +739,8 @@ export interface AosBridge {
     catalog(refresh?: boolean): Promise<Result<HostCatalog>>;
     onEvent(cb: (ev: SessionEvent) => void): () => void;
   };
-  /** The Code chat view's transcript mirror (spec 2026-11-09-code-chat), run by main while the Code chat surface is on, and
-   *  its Diff pane's read-only git. */
+  /** The Code chat view's transcript mirror (spec 2026-11-09-code-chat), run by main while the Code chat surface is on, its
+   *  Diff pane's read-only git, and its composer's images. */
   code: {
     /** Follows an agent terminal's conversation; `cache` is the vault-relative file the page reads. Calling it again with the
      *  same pty, terminal, host and id returns the running follower's cache with `fresh: false`. */
@@ -746,6 +752,9 @@ export interface AosBridge {
     /** The Diff pane's read-only git status or diff for a terminal's workspace or linked code folder (C8); a refusal for
      *  any other place. Needs no write surface. */
     git(req: CodeGitRequest): Promise<Result<GitStatus | GitDiff>>;
+    /** Saves the composer's pasted, dropped or picked image into the app's own data folder after checking its type, size
+     *  (10 MB at most) and content, and returns the path main chose (C7). Refused while the Code chat surface is off. */
+    saveImage(req: CodeSaveImageRequest): Promise<Result<CodeImage>>;
   };
   /** The app-owned instruction proposal transaction. Decisions come from the trusted main window. */
   proposals: {

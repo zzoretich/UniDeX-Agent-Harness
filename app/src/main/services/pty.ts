@@ -41,17 +41,25 @@ export interface PtyProcess {
 
 export interface PtyLib { spawn(file: string, args: string[], opts: Record<string, unknown>): PtyProcess }
 
+/** The variables a host session (Claude Code, Codex) sets for itself and its children (terminalBaseEnv, R64). */
+const HOST_SESSION_VAR = /^(?:CLAUDECODE|CLAUDE_CODE_.*|CLAUDE_AGENT_SDK_.*|CLAUDE_PID|CLAUDE_EFFORT|CODEX_SANDBOX|CODEX_SANDBOX_NETWORK_DISABLED|CODEX_THREAD_ID|CODEX_SESSION_ID)$/;
+
 /**
  * The environment a terminal starts from (spec 2026-10-08-term-agent-deck T14): main's own, with the login shell's PATH
  * when it is known, since an app opened from Finder has launchd's PATH and the terminal's zsh is not a login shell
  * (no /etc/zprofile, no ~/.zprofile), so `claude` or `codex` — or the node an npm-installed one runs on — would not be
- * found. CLAUDECODE goes: an app started from a Claude Code session must not make its terminals look like one. So does
- * AOS_TERMINAL (code-chat F8): an app started inside an agent terminal must not hand that terminal's key to its own.
+ * found. CLAUDECODE goes: an app started from a Claude Code session must not make its terminals look like one. So do
+ * that session's other markers (code-chat R64): every CLAUDE_CODE_* and CLAUDE_AGENT_SDK_* variable, CLAUDE_PID and
+ * CLAUDE_EFFORT, and Codex's per-session CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, CODEX_THREAD_ID and
+ * CODEX_SESSION_ID. They describe the session that launched the app (one is a messaging token), not your settings, and an
+ * app launchd starts has none; your settings live in the host's own settings and the rc files the terminal's zsh reads.
+ * CODEX_HOME, CLAUDE_CONFIG_DIR and everything else stay. AOS_TERMINAL goes too (code-chat F8): an app started inside an
+ * agent terminal must not hand that terminal's key to its own.
  */
 export function terminalBaseEnv(env: NodeJS.ProcessEnv, loginPATH: string | null): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   if (loginPATH) out.PATH = loginPATH;
-  delete out.CLAUDECODE;
+  for (const k of Object.keys(out)) if (HOST_SESSION_VAR.test(k)) delete out[k];
   delete out.AOS_TERMINAL;
   return out;
 }
@@ -365,7 +373,9 @@ export class PtyService {
    * interactive shell, gives a command typed into it, so the agent sees the exports of the user's profile and rc files
    * (API keys, proxies, certificates) as the typed launch did, while main still starts it, so its pid is the one the
    * bridge admits. A shell that gives none (a startup file exits, hangs or execs something else) falls back to the
-   * typed launch, which runs those files itself. CLAUDECODE never passes.
+   * typed launch, which runs those files itself. The shell starts from the terminal's base, without the markers of a
+   * session that launched the app (R64), so what it gives is the user's own: a CLAUDE_CODE_* an rc file exports reaches
+   * the agent as it reaches a typed launch. CLAUDECODE and AOS_TERMINAL never pass.
    */
   private async agentBase(cwd: string, ctx: ProgramContext): Promise<{ env: NodeJS.ProcessEnv } | { reason: string }> {
     const plain = this.baseEnv();
@@ -377,8 +387,11 @@ export class PtyService {
       env = await this.o.shellEnv(shell as string, cwd, { ...plain, ...TERM_VARS });
       if (!env) return { reason: `${shell} gave no environment: a startup file failed, waited, or started something else` };
     }
-    // A copy with its own PATH kept and CLAUDECODE dropped, as every terminal's base is.
-    return { env: terminalBaseEnv(env, null) };
+    // A copy with its own PATH kept and CLAUDECODE and AOS_TERMINAL dropped; the rest is the base's or the rc files'.
+    const out: NodeJS.ProcessEnv = { ...env };
+    delete out.CLAUDECODE;
+    delete out.AOS_TERMINAL;
+    return { env: out };
   }
 
   /** Takes a terminal's agent out of the registry, unless that pid has been registered again by something else since,

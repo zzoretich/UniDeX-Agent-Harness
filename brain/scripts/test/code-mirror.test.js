@@ -253,11 +253,18 @@ const me = (o) => ({ cwd: '/w', since: 100000, file: null, mtimeMs: 0, ...o });
 const cand = (file, startedAt, mtimeMs, extra = {}) => ({ file, id: `id-${file}`, cwd: '/w', startedAt, mtimeMs, ...extra });
 
 test('pickCodexRollout: a new terminal adopts the rollout that started with it; another folder, an old or a claimed one never', () => {
-  const c = [cand('mine', 101000, 200000), cand('other', 101000, 300000, { cwd: '/elsewhere' }), cand('stale', 2000, 99000), cand('late', 140000, 200000)];
+  const c = [cand('mine', 101000, 200000), cand('other', 101000, 300000, { cwd: '/elsewhere' }), cand('stale', 2000, 99000)];
   assert.deepEqual(M.pickCodexRollout(c, { me: me() }), { file: 'mine', id: 'id-mine' });
   assert.equal(M.pickCodexRollout(c, { me: me({ cwd: '/nowhere' }) }), null);
   assert.equal(M.pickCodexRollout(c, { me: me(), peers: [{ since: 50000, file: 'mine', mtimeMs: 200000 }] }), null, 'a peer\'s file');
   assert.equal(M.pickCodexRollout([cand('slow', 99500, 200000)], { me: me() }).file, 'slow', 'a start up to 1 s before the terminal\'s');
+  assert.deepEqual(M.pickCodexRollout([cand('mine', 101000, 200000), cand('late', 140000, 200000)], { me: me() }), { ambiguous: true }, 'two new candidates are ambiguous');
+});
+
+test('pickCodexRollout (R61): a rollout that starts minutes after the terminal (its startup dialogs first) is adopted', () => {
+  assert.deepEqual(M.pickCodexRollout([cand('dialogs', 100000 + 24600, 200000)], { me: me() }), { file: 'dialogs', id: 'id-dialogs' });
+  const hours = 2 * 3600000 + 14 * 60000;
+  assert.deepEqual(M.pickCodexRollout([cand('away', 100000 + hours, 100000 + hours + 5000)], { me: me() }), { file: 'away', id: 'id-away' });
 });
 
 test('pickCodexRollout: with a current file, a rollout that started after its last append; never away while it is appended', () => {
@@ -373,9 +380,10 @@ test('follow codex: two terminals started 60 s apart each keep their own rollout
   const r1 = codexFile(env, `t1-${ID_A}`);
   const r2 = codexFile(env, `t2-${ID_B}`);
   fs.writeFileSync(r1, metaLine(ID_A, env.work, iso(now - 119500)) + codexUser('one'));
-  fs.writeFileSync(r2, metaLine(ID_B, env.work, iso(now - 59500)) + codexUser('two'));
   const f1 = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
   assert.ok(await waitFor(() => readClaim(env, TERM)?.file === r1));
+  // R61: T2's rollout does not exist until T2 prompts, so T1 has already adopted its own by then.
+  fs.writeFileSync(r2, metaLine(ID_B, env.work, iso(now - 59500)) + codexUser('two'));
   const f2 = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
   assert.ok(await waitFor(() => readClaim(env, TERM2)?.file === r2));
   for (let i = 0; i < 8; i++) { fs.appendFileSync(r1, codexUser(`one ${i}`)); fs.appendFileSync(r2, codexUser(`two ${i}`)); await sleep(60); }
@@ -410,9 +418,10 @@ test('follow codex: a /new in one terminal while the other is idle is ambiguous 
   const r1 = codexFile(env, `t1-${ID_A}`);
   const r2 = codexFile(env, `t2-${ID_B}`);
   fs.writeFileSync(r1, metaLine(ID_A, env.work, iso(now - 119500)));
-  fs.writeFileSync(r2, metaLine(ID_B, env.work, iso(now - 59500)));
   const f1 = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
   assert.ok(await waitFor(() => readClaim(env, TERM)?.file === r1));
+  // R61: the second terminal's rollout does not exist until it prompts, so the first has already adopted its own.
+  fs.writeFileSync(r2, metaLine(ID_B, env.work, iso(now - 59500)));
   const f2 = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
   assert.ok(await waitFor(() => readClaim(env, TERM2)?.file === r2));
   setMtime(r1, now - 30000);
@@ -481,11 +490,12 @@ test('follow codex (R17b): the same /resume with an idle live peer is ambiguous 
   const r2 = codexFile(env, `t2-${ID_C}`);
   const old = codexFile(env, `old-${ID_B}`);
   fs.writeFileSync(r1, metaLine(ID_A, env.work, iso(now - 119500)));
-  fs.writeFileSync(r2, metaLine(ID_C, env.work, iso(now - 59500)));
   fs.writeFileSync(old, metaLine(ID_B, env.work, iso(now - 600000)) + codexUser('from long ago', now - 599000));
   setMtime(old, now - 590000);
   const f1 = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
   assert.ok(await waitFor(() => readClaim(env, TERM)?.file === r1));
+  // R61: the second terminal's rollout does not exist until it prompts, so the first has already adopted its own.
+  fs.writeFileSync(r2, metaLine(ID_C, env.work, iso(now - 59500)));
   const f2 = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
   assert.ok(await waitFor(() => readClaim(env, TERM2)?.file === r2));
   setMtime(r1, now - 30000);
@@ -580,9 +590,10 @@ test('pruneCodeCaches: removes code caches over 14 days and tees over 24 h, keep
 test('pickCodexRollout (R25): a no-file peer contends only for a rollout it could adopt itself', () => {
   const t2 = me({ since: 160000 });
   const n = [cand('new', 161000, 170000)];
-  assert.deepEqual(M.pickCodexRollout(n, { me: t2, peers: [{ since: 100000, file: null, mtimeMs: 0 }] }), { file: 'new', id: 'id-new' }, 'T1 (since 100 s, no file) cannot adopt a rollout started at 161 s');
-  assert.equal(M.pickCodexRollout(n, { me: me({ since: 100000 }), peers: [{ since: 160000, file: null, mtimeMs: 0 }] }), null, 'and T1 does not see it either');
-  assert.deepEqual(M.pickCodexRollout(n, { me: t2, peers: [{ since: 150000, file: null, mtimeMs: 0 }] }), { ambiguous: true }, 'a peer at 150 s could adopt it (window to 165 s)');
+  assert.deepEqual(M.pickCodexRollout(n, { me: t2, peers: [{ since: 100000, file: null, mtimeMs: 0 }] }), { ambiguous: true }, 'R61: T1 (since 100 s, no file) could adopt a rollout started at 161 s, however long after');
+  assert.deepEqual(M.pickCodexRollout(n, { me: t2, peers: [{ since: 171000, file: null, mtimeMs: 0 }] }), { file: 'new', id: 'id-new' }, 'a peer whose since is after the rollout\'s start + 1 s does not contend');
+  assert.deepEqual(M.pickCodexRollout(n, { me: t2, peers: [{ since: 150000, file: null, mtimeMs: 0 }] }), { ambiguous: true }, 'a peer at 150 s could adopt it');
+  assert.deepEqual(M.pickCodexRollout(n, { me: t2, peers: [{ since: 161000 - 600000, file: null, mtimeMs: 0 }] }), { ambiguous: true }, 'a peer 10 minutes earlier still contends');
   // an older rollout first grown at or after the peer's since − 1 s
   const old = [cand('old', 5000, 170000)];
   const beginOf = (c, from) => (from === 159000 ? 162000 : from === 99000 ? 120000 : null);
@@ -590,7 +601,7 @@ test('pickCodexRollout (R25): a no-file peer contends only for a rollout it coul
   assert.deepEqual(M.pickCodexRollout(old, { me: t2, beginOf: (c, from) => (from === 159000 ? 162000 : null), peers: [{ since: 100000, file: null, mtimeMs: 0 }] }), { file: 'old', id: 'id-old' }, 'but not when it has no growth after the peer\'s since');
 });
 
-test('follow codex (R25): a third terminal beside two stuck 5 s twins adopts its own fresh rollout', async () => {
+test('follow codex (R25, R61): a third terminal beside two stuck no-file twins is ambiguous, since the twins could still adopt its rollout', async () => {
   const env = fresh();
   const now = Date.now();
   const r3 = codexFile(env, `t3-${ID_C}`);
@@ -601,12 +612,12 @@ test('follow codex (R25): a third terminal beside two stuck 5 s twins adopts its
   fs.writeFileSync(r3, metaLine(ID_C, env.work, iso(now - 59500)));
   const f3 = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM3, vault: env.vault, dirs: env.dirs.codex });
   try {
-    assert.ok(await waitFor(() => readClaim(env, TERM3)?.file === r3, 2000), 'the third adopts its own rollout');
-    assert.equal(readEvents(M.cachePath(env.vault, TERM3)).some((e) => e.kind === 'error'), false);
+    assert.ok(await waitFor(() => readEvents(M.cachePath(env.vault, TERM3)).some((e) => e.kind === 'error'), 2000), 'no chat, one error: the safe failure');
+    assert.equal(readClaim(env, TERM3)?.file ?? null, null);
   } finally { await f3.stop(); }
 });
 
-test('follow codex (R25): a --id follower whose rollout is missing does not block a neighbour', async () => {
+test('follow codex (R25, R61): a --id follower whose rollout is missing makes a neighbour\'s new rollout ambiguous', async () => {
   const env = fresh();
   const now = Date.now();
   const mine = codexFile(env, `mine-${ID_B}`);
@@ -615,7 +626,8 @@ test('follow codex (R25): a --id follower whose rollout is missing does not bloc
   assert.ok(await waitFor(() => readClaim(env, TERM) !== null, 2000));
   const f2 = run({ host: 'codex', cwd: env.work, since: now - 30000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
   try {
-    assert.ok(await waitFor(() => readClaim(env, TERM2)?.file === mine, 2000), 'the neighbour adopts its rollout');
+    assert.ok(await waitFor(() => readEvents(M.cachePath(env.vault, TERM2)).some((e) => e.kind === 'error'), 2000), 'it could adopt that rollout, so the neighbour shows no chat');
+    assert.equal(readClaim(env, TERM2)?.file ?? null, null);
   } finally { await f2.stop(); await lost.stop(); }
 });
 
@@ -650,12 +662,13 @@ test('follow codex (D): a rollout that cannot be stat\'ed keeps its last known a
   const cur = codexFile(env, `cur-${ID_A}`);
   const other = codexFile(env, `other-${ID_B}`);
   fs.writeFileSync(cur, metaLine(ID_A, env.work, iso(now - 119500)) + codexUser('in the current one', now - 119000));
-  fs.writeFileSync(other, metaLine(ID_B, env.work, iso(now - 60000)) + codexUser('another', now - 59000));
-  setMtime(other, now - 40000);
   const r = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
   const cache = M.cachePath(env.vault, TERM);
   try {
     assert.ok(await waitFor(() => readClaim(env, TERM)?.file === cur, 2000));
+    // R61: another session's rollout appears only after this one has adopted its own.
+    fs.writeFileSync(other, metaLine(ID_B, env.work, iso(now - 60000)) + codexUser('another', now - 59000));
+    setMtime(other, now - 40000);
     fs.unlinkSync(cur);
     // ten missing polls end it, and the scans in them saw no file
     const ended = await Promise.race([r.done.then(() => true), sleep(3000).then(() => false)]);

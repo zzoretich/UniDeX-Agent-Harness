@@ -680,10 +680,16 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "code",
     label: "Code chat",
-    source: "main/services/code-mirror.ts (the code:* calls, for the Code tab's chat view; spec 2026-11-09-code-chat): main runs the runtime's lib/sessions.js mirror, one follower per agent terminal and one run for a past conversation the person opens; the page names a host, a session id and a terminal key, never a path or an argument",
+    source: "main/services/code-mirror.ts and code-images.ts (the code:* calls, for the Code tab's chat view; spec 2026-11-09-code-chat): main runs the runtime's lib/sessions.js mirror, one follower per agent terminal and one run for a past conversation the person opens; the page names a host, a session id and a terminal key, never a path or an argument. The composer's images (code:save-image, C7) are saved by main into the app's own data folder, at a path main picks",
     // code-chat R13: main runs the mirror only while this surface is on (followers start with a terminal and die with it,
     // at unfollow and at quit); the page reads the caches it writes through the vault's read scope and writes nothing.
-    // Off by default until its live check on each host.
+    // C13: code:save-image is this surface's too; it writes outside the vault (<userData>/code-images), so no vault write
+    // is listed for it. On by default since its live check on each host, 2026-11-10, with Claude Code 2.1.322 and
+    // codex-cli 0.167.0 in the dev app: the chat followed turns (a Codex session that starts after its startup dialogs
+    // too), /clear and /new re-targeted it, approval cards answered No and Yes, Send held under a card and after a /model
+    // sent a moment before, the status line matched the terminal, Resume reopened a closed conversation, ⌘J kept the
+    // process, the model chip restarted the same conversation, Diff showed the branch and kept its scroll, and pasted images
+    // reached each TUI as [Image #N]. The fixes it found are in the same release (code-chat R61–R73).
     scope: "main",
     writes: ["brain/_index/code/*.jsonl", "brain/_index/code/*.claim.json"],
     folders: ["brain/_index/code"],
@@ -694,7 +700,7 @@ export const SURFACES: readonly Surface[] = [
       { script: "lib/sessions.js", args: argv("mirror", "--host", /codex/, "--id", MIRROR_ID, "--cwd", MIRROR_CWD, "--since", MIRROR_SINCE, "--terminal", TERMINAL_KEY, "--follow") },
       { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--id", MIRROR_ID, "--once") },
     ],
-    verified: false,
+    verified: true,
   },
 ];
 

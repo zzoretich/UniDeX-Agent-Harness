@@ -97,10 +97,13 @@ export class CodeChat {
     this.setStatus(null);
   }
 
-  /** Shown or hidden (TerminalPanel's view switch). */
+  /** Shown or hidden (TerminalPanel's view switch). Shown again, a card up (one that came while it was hidden) is brought
+   *  into view. */
   setVisible(on: boolean): void {
+    const was = !this.el.hasClass("is-hidden");
     this.el.toggleClass("is-hidden", !on);
     if (on && this.toEnd) this.scroll.scrollTop = this.scroll.scrollHeight;
+    if (on && !was) this.revealCard();
   }
 
   /** Another terminal's chat from now on: its rows start closed and its view at the end. */
@@ -138,7 +141,8 @@ export class CodeChat {
   }
 
   /** The TUI's prompt as a card after the last row, or none (C4). Nothing here flips the view: the card waits in the
-   *  chat, and its "Answer in the terminal ⌘J" goes there when you choose to. */
+   *  chat, and its "Answer in the terminal ⌘J" goes there when you choose to. A card that appears or changes is scrolled
+   *  into view (it is last, often under the fold). */
   setCard(card: ChatCard | null): void {
     const el = this.cardEl;
     el.empty();
@@ -148,6 +152,7 @@ export class CodeChat {
       const box = el.createDiv({ cls: "aos-cc-gate is-waiting", attr: { role: "group", "aria-label": WAITING } });
       box.createSpan({ cls: "aos-cc-gatetitle", text: WAITING });
       this.jump(box, ANSWER);
+      this.revealCard();
       return;
     }
     const box = el.createDiv({ cls: "aos-cc-gate", attr: { role: "group", "aria-label": card.title } });
@@ -157,7 +162,8 @@ export class CodeChat {
     const buttons: HTMLButtonElement[] = [];
     card.choices.forEach((c, i) => {
       const b = row.createEl("button", { cls: `aos-cc-choice${i === 0 ? " is-first" : ""}`, attr: { type: "button", title: `${c.label} (${c.key} in the terminal)` } });
-      b.createSpan({ text: c.label });
+      // A long label (a path in it) wraps inside the card, never wider than it.
+      b.createSpan({ cls: "aos-cc-choicelabel", text: c.label });
       b.createSpan({ cls: "aos-cc-choicekey", text: c.key });
       buttons.push(b);
       b.addEventListener("click", () => {
@@ -172,6 +178,21 @@ export class CodeChat {
       });
     });
     this.jump(row, ANSWER);
+    this.revealCard();
+  }
+
+  /** Scrolls the chat so the card is in view: its bottom at the view's bottom, or its top at the view's top when it is
+   *  taller than the view. Smooth unless the person asked for reduced motion (as the tour scrolls); nothing while hidden. */
+  private revealCard(): void {
+    if (!this.cardEl.hasClass("is-on") || this.el.hasClass("is-hidden")) return;
+    const sc = this.scroll;
+    const view = sc.getBoundingClientRect();
+    const box = this.cardEl.getBoundingClientRect();
+    let by = box.bottom > view.bottom ? box.bottom - view.bottom : 0;
+    if (box.top - by < view.top) by = box.top - view.top;
+    if (Math.abs(by) < 1) return;
+    const reduce = this.el.ownerDocument.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    sc.scrollTo({ top: sc.scrollTop + by, behavior: reduce ? "auto" : "smooth" });
   }
 
   /** The status line's rows (C5), or the hint when there is none to show. Links keep their target as an attribute and

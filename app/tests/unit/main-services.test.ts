@@ -541,3 +541,18 @@ test("terminals start with the login shell's PATH and without CLAUDECODE or AOS_
   assert.equal(asked, 1);
   t.killAll();
 });
+
+test("code-chat R64: an app started from a host session's shell hands its terminals none of that session's markers; the config folders and the rest stay", () => {
+  const launching = {
+    CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CODE_SSE_PORT: "4100", CLAUDE_CODE_DISABLE_TRANSCRIPTS: "1",
+    CLAUDE_AGENT_SDK_VERSION: "0.1.0", CLAUDE_PID: "4242", CLAUDE_EFFORT: "high",
+    CODEX_SANDBOX: "seatbelt", CODEX_SANDBOX_NETWORK_DISABLED: "1", CODEX_THREAD_ID: "019a-thread", CODEX_SESSION_ID: "019a-session",
+  };
+  const kept = {
+    PATH: "/usr/bin", HOME: "/h", CODEX_HOME: "/h/.codex", CLAUDE_CONFIG_DIR: "/h/.claude", ANTHROPIC_BASE_URL: "https://llm.example.com",
+    // Names that only start like a marker are not one.
+    CLAUDE_PIDFILE: "/h/run", CODEX_SANDBOXED: "x", CLAUDE_CODEX: "x",
+  };
+  assert.deepEqual(terminalBaseEnv({ ...kept, ...launching, AOS_TERMINAL: "aaaaaaaa-0000-4000-8000-000000000001" }, null), kept);
+  assert.deepEqual(terminalBaseEnv({ ...launching, PATH: "/usr/bin" }, "/login/bin:/usr/bin"), { PATH: "/login/bin:/usr/bin" });
+});

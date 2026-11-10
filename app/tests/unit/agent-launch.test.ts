@@ -13,7 +13,7 @@ import * as path from "node:path";
 import type { PtyEvent } from "../../src/shared/ipc";
 import type { ProgramContext } from "../../src/main/policy/programs";
 import { agentArgvRefusal } from "../../src/main/policy/agent-launch";
-import { PtyService, type PtyAgentRequest, type PtyLib, type PtyProcess, type PtyServiceOptions } from "../../src/main/services/pty";
+import { PtyService, terminalBaseEnv, type PtyAgentRequest, type PtyLib, type PtyProcess, type PtyServiceOptions } from "../../src/main/services/pty";
 import { AgentRegistry, type AgentRef } from "../../src/main/computer/registry";
 import { VENDOR, type Sys } from "../../src/main/computer/admission";
 import { FlagProbe, cliHelp } from "../../src/main/services/cli-flags";
@@ -34,12 +34,22 @@ test("agentArgvRefusal accepts every argv the Code page's launchArgs builds, on 
       specs.push({ host: "codex", bin: null, model, access, resume: "last" });
       specs.push({ host: "codex", bin: null, model, access, resume: { id: "019a-thread" }, cwd: "/srv/code/tide chart" });
       specs.push({ host: "codex", bin: null, model, access, resume: { id: "019a-thread" } });
+      // A chip restart (code-chat C12): the same conversation by id with the pick, on either host (R66).
+      for (const picked of [{ model: true }, { access: true }, { model: true, access: true }]) {
+        for (const cwd of [undefined, "/srv/code/tide chart"]) {
+          specs.push({ host: "claude", bin: null, model, access, resume: { id: "c1a0de00-0000-4000-8000-000000000001" }, picked, cwd });
+          specs.push({ host: "codex", bin: null, model: model && "gpt-6-luna", access, resume: { id: "019a-thread" }, picked, cwd });
+        }
+      }
     }
   }
   for (const s of specs) {
     const argv = launchArgs(s);
     assert.equal(agentArgvRefusal(s.host, argv), null, `${s.host} ${JSON.stringify(argv)}`);
   }
+  // The picks do ride on a Codex resume's line, after the id (what the live check's restart was refused for).
+  assert.deepEqual(launchArgs({ host: "codex", bin: null, model: "gpt-6-luna", access: "read", resume: { id: "019a-thread" }, picked: { model: true, access: true }, cwd: "/srv/code" }),
+    ["resume", "-C", "/srv/code", "019a-thread", "-m", "gpt-6-luna", "-s", "read-only", "-a", "on-request"]);
 });
 
 test("agentArgvRefusal refuses what launchArgs never emits: skip-permission and MCP flags, unknown flags, odd values, -c keys", () => {
@@ -81,6 +91,22 @@ test("agentArgvRefusal refuses what launchArgs never emits: skip-permission and 
   no("codex", ["resume", "019a-thread", "-c", "x=y"]);
   no("codex", ["resume"]);
   no("codex", ["-s", "read-only", "-s", "workspace-write"]);
+  // After a resume's id only a chip's picks, each once, with a new session's value rules (R66).
+  no("codex", ["resume", "019a-thread", "-m", "gpt-6-luna", "-m", "gpt-6-sol"]);
+  no("codex", ["resume", "-C", "/abs", "019a-thread", "-s", "read-only", "-s", "read-only"]);
+  no("codex", ["resume", "019a-thread", "--frobnicate"]);
+  no("codex", ["resume", "-C", "/abs", "019a-thread", "--dangerously-bypass-approvals-and-sandbox"]);
+  no("codex", ["resume", "-C", "/abs", "019a-thread", "-m", "gpt-6-luna", "-c", "approval_policy=never"]);
+  no("codex", ["resume", "019a-thread", "--config", "x=y"]);
+  no("codex", ["resume", "019a-thread", "-s", "danger-full-access"]);
+  no("codex", ["resume", "019a-thread", "-a", "never"]);
+  no("codex", ["resume", "019a-thread", "-m", "-x"]);
+  no("codex", ["resume", "019a-thread", "-m"]);
+  no("codex", ["resume", "019a-thread", "-C", "/abs"]);
+  no("codex", ["resume", "019a-thread", "-m", "gpt-6-luna", "say hello"]);
+  no("codex", ["resume", "--last", "-m", "gpt-6-luna"]);
+  assert.match(agentArgvRefusal("codex", ["resume", "019a-thread", "-c", "x=y"]) ?? "", /-c override/);
+  assert.match(agentArgvRefusal("codex", ["resume", "019a-thread", "-m", "a", "-m", "b"]) ?? "", /-m twice/);
 });
 
 test("R70: agentArgvRefusal accepts --no-daemon where launchArgs puts it on a Codex line, and nowhere else", () => {
@@ -91,6 +117,8 @@ test("R70: agentArgvRefusal accepts --no-daemon where launchArgs puts it on a Co
       { host: "codex", bin: null, model: null, access, noDaemon: true, resume: "last" },
       { host: "codex", bin: null, model: null, access, noDaemon: true, resume: { id: "019a-thread" }, cwd: "/srv/code/tide chart" },
       { host: "codex", bin: null, model: null, access, noDaemon: true, resume: { id: "019a-thread" } },
+      { host: "codex", bin: null, model: "gpt-6-luna", access, noDaemon: true, resume: { id: "019a-thread" }, cwd: "/srv/code/tide chart", picked: { model: true, access: true } },
+      { host: "codex", bin: null, model: "gpt-6-luna", access, noDaemon: true, resume: { id: "019a-thread" }, picked: { model: true } },
     ] as LaunchSpec[]) {
       assert.equal(agentArgvRefusal("codex", launchArgs(s), { noDaemon: true }), null, JSON.stringify(launchArgs(s)));
       // R79: only as main's spawn check allows: when main's answer is no, the flag is refused.
@@ -442,6 +470,27 @@ test("spawnAgent: with it on, the agent starts from what the login shell gives a
   assert.deepEqual([env.TERM, env.COLORTERM, env.CLAUDE_CONFIG_DIR], ["xterm-256color", "truecolor", path.join(HOME, ".claude")], "main's variables still win");
   assert.equal(spawned[0].file, CLAUDE, "the binary main judged, as the terminal's own process");
   assert.equal(registry.get(spawned[0].p.pid)?.key, "code:t1");
+});
+
+test("spawnAgent (code-chat R64): the login shell starts without the launching session's markers, and a CLAUDE_CODE_* its rc files export reaches the agent", async () => {
+  const calls: NodeJS.ProcessEnv[] = [];
+  const { t, spawned } = service({
+    extra: {
+      context: shellContext,
+      // main's own environment, as an app started from a Claude Code session's shell has it
+      env: () => terminalBaseEnv({ PATH: "/usr/bin:/bin", HOME, CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_PID: "4242", CODEX_THREAD_ID: "019a-thread" }, null),
+      shellEnv: async (_shell, _cwd, base) => {
+        calls.push(base);
+        return { ...base, CLAUDE_CODE_USE_BEDROCK: "1", CLAUDECODE: "1" };
+      },
+    },
+  });
+  const r = await t.spawnAgent(req());
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual([calls[0].CLAUDECODE, calls[0].CLAUDE_CODE_ENTRYPOINT, calls[0].CLAUDE_PID, calls[0].CODEX_THREAD_ID], [undefined, undefined, undefined, undefined], "the shell never sees the launching session's markers");
+  const env = spawned[0].opts.env as Record<string, string>;
+  assert.equal(env.CLAUDE_CODE_USE_BEDROCK, "1", "the user's own rc export reaches the agent, as it reaches a typed launch");
+  assert.deepEqual([env.CLAUDECODE, env.CLAUDE_CODE_ENTRYPOINT, env.CODEX_THREAD_ID], [undefined, undefined, undefined]);
 });
 
 test("spawnAgent: a login shell that gives no environment, or none to ask, falls back and nothing starts (C1, fails closed)", async () => {

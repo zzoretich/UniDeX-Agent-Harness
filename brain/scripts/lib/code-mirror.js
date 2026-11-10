@@ -37,8 +37,6 @@ const AMBIGUOUS_MESSAGE = "Can't tell which conversation · Terminal ⌘J";
 const SAME_START_MS = 5000;
 /** A rollout may name a start up to this long before its terminal's. */
 const START_SLACK_MS = 1000;
-/** A new terminal's own rollout starts within this long of it. */
-const START_WINDOW_MS = 15000;
 /** Folder scans and transcript lookups: every this many polls (2 s at 250 ms). */
 const RESCAN_EVERY = 8;
 const GONE_POLLS = 10;
@@ -82,11 +80,12 @@ function readTee(vault, terminal) {
  * A rollout's activity start (R17a, R17b) is its start when it began after my reference point, else its first growth at
  * or after it: my file's last append when I have a file (a /resume in the TUI), since − 1 s when I have none (resume
  * --last). A follower X is a contender for a rollout whose activity started at b when X has no file and could adopt it
- * itself (R25: it started in [X.since − 1 s, X.since + 15 s], or is older and first grew at or after X.since − 1 s), or
+ * itself (R25/R61: it started at or after X.since − 1 s, however long after, or is older and first grew at or after X.since − 1 s), or
  * X's file was last appended before b (X went quiet before it: a /new or a resume there). I adopt
  * only when I am the one contender. With a file, only a rollout whose activity started after its last append counts, so
- * I never switch while mine is appended after that. With none, a new rollout must have started in [since − 1 s,
- * since + 15 s], and a peer with no file that started within 5 s of me makes it ambiguous. More than one candidate, or a
+ * I never switch while mine is appended after that. With none, a new rollout must have started at or after
+ * since − 1 s, with no upper bound (R61: Codex starts its session only after its startup dialogs, folder trust and hook
+ * review, which can take any time), and a peer with no file that started within 5 s of me makes it ambiguous. More than one candidate, or a
  * candidate with another contender, is ambiguous.
  */
 function pickCodexRollout(cands, { me, peers = [], beginOf = () => null }) {
@@ -96,7 +95,6 @@ function pickCodexRollout(cands, { me, peers = [], beginOf = () => null }) {
   for (const c of cands || []) {
     if (c.cwd !== me.cwd || c.mtimeMs < me.since || c.file === me.file || claimed.has(c.file)) continue;
     if (c.startedAt > after) {
-      if (!me.file && c.startedAt > me.since + START_WINDOW_MS) continue;
       considered.push({ c, begin: c.startedAt });
     } else if (c.mtimeMs > after) {
       // An older rollout appended again: resume --last (no file), or a /resume in the TUI (R17b).
@@ -106,12 +104,12 @@ function pickCodexRollout(cands, { me, peers = [], beginOf = () => null }) {
   }
   if (!considered.length) return null;
   if (!me.file && peers.some((p) => !p.file && Math.abs(p.since - me.since) < SAME_START_MS)) return { ambiguous: true };
-  // R25: a follower with no file contends for a rollout only when it could adopt it itself (the same window as mine).
+  // R25: a follower with no file contends for a rollout only when it could adopt it itself (the same rule as mine).
   const contends = (x, c, begin) => {
     if (x.file) return x.mtimeMs < begin;
     if (c.mtimeMs < x.since) return false;
     const from = x.since - START_SLACK_MS;
-    if (c.startedAt > from) return c.startedAt <= x.since + START_WINDOW_MS;
+    if (c.startedAt > from) return true;
     if (c.mtimeMs <= from) return false;
     const b = beginOf(c, from);
     return typeof b === 'number' && b >= from;
