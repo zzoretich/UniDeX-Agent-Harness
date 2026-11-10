@@ -211,7 +211,7 @@ export class CodePanes {
     const sig = (x: HostGitStatus | null | undefined) => (x ? JSON.stringify(x) : "");
     if (before?.key === key && sig(before.st) === sig(st)) return;
     // The file shown may have changed too: read it again.
-    if (this.shown && this.diffOpen) void this.showFile(this.shown.file);
+    if (!this.hidden && this.shown && this.diffOpen) void this.showFile(this.shown.file);
     this.drawPane();
     this.host.changed();
   }
@@ -237,6 +237,7 @@ export class CodePanes {
   }
 
   private async showFile(file: string): Promise<void> {
+    if (this.hidden) return;
     const s = this.host.activeSession();
     const git = hudHost().code?.git;
     const pty = s?.ptyId;

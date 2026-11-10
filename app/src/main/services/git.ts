@@ -42,7 +42,7 @@ export const SUBMODULE_SAFE: readonly string[] = ["--ignore-submodules=dirty"];
 /** After a `diff`'s DIFF_SAFE: SUBMODULE_SAFE, and a moved submodule shown as its two commits, never as a diff run inside it. */
 const DIFF_SUBMODULE_SAFE: readonly string[] = [...SUBMODULE_SAFE, "--submodule=short"];
 /** A read's environment on top of the rest: no lazy fetch, and an empty transport allow-list the repo cannot widen. */
-export const READ_ENV: Readonly<Record<string, string>> = { GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "" };
+export const READ_ENV: Readonly<Record<string, string>> = { GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "", GIT_LITERAL_PATHSPECS: "1" };
 // filterOverrides' --config-env values: an empty command and required=false turn a driver off without failing a read.
 const EMPTY_ENV = "AOS_GIT_EMPTY";
 const FALSE_ENV = "AOS_GIT_FALSE";
@@ -85,6 +85,8 @@ interface Run { code: number; stdout: string; stderr: string; truncated: boolean
 /** A file the page names: relative to the workspace, inside it, and plain text. */
 export function fileRefusal(file: string): string | null {
   if (!file || file.length > 4096 || file.includes("\0")) return "a file name";
+  // Status writes an odd name C-quoted ("\303\251.txt"): that text, quotes and all, never names a file.
+  if (file.startsWith('"')) return "a file name";
   if (path.isAbsolute(file) || file.split(/[\\/]/).includes("..")) return "a file outside the workspace";
   return null;
 }

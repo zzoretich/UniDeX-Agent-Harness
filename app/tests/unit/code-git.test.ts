@@ -167,6 +167,33 @@ test("diffAt shows a new file only when status lists it as new and it is a file:
   assert.ok(fresh.ok && /\+fresh/.test(fresh.data.text), JSON.stringify(fresh));
 });
 
+test("diffAt reads a file name literally: a glob or pathspec magic matches nothing", async () => {
+  const sand = mk(tmp, "sand");
+  repo(sand);
+  fs.writeFileSync(path.join(sand, "a.txt"), "changed\n");
+  for (const file of ["*", "*.txt", ":(glob)*.txt", ":/a.txt", "a.tx[t]"]) {
+    const r = await git.diffAt(sand, file);
+    assert.equal(r.ok, false, `${file}: ${JSON.stringify(r)}`);
+  }
+  const ok = await git.diffAt(sand, "a.txt");
+  assert.ok(ok.ok && /\+changed/.test(ok.data.text));
+});
+
+test("diffAt refuses a name in git's quoted form, which is never a file's literal name", async () => {
+  const bay = mk(tmp, "bay");
+  repo(bay);
+  // `\303\251.txt` is how status writes a file named with an accent; a file whose name is that text, quotes and all, must
+  // not stand in for it.
+  fs.writeFileSync(path.join(bay, "\u00e9.txt"), "accent\n");
+  const quoted = '"\\303\\251.txt"';
+  fs.writeFileSync(path.join(bay, quoted), "planted\n");
+  const st = await git.statusAt(bay);
+  assert.ok(st.ok && st.data.files.some((f) => f.path === quoted), "status lists the accent name in its quoted form");
+  const r = await git.diffAt(bay, quoted);
+  assert.equal(r.ok, false, JSON.stringify(r));
+  assert.ok(!r.ok && !/planted/.test(r.error));
+});
+
 type Info = { cwd: string; startedAt: number; terminal: string | null };
 function service(cwds: Record<string, string>, vaultRoot: string | null = vault) {
   return new CodeGitService({
