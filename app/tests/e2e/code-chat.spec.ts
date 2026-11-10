@@ -92,6 +92,27 @@ test.describe("the Code chat surface on", () => {
     await expect(chat(win).locator(".aos-cc-stop")).toBeVisible();
   });
 
+  test("an agent terminal that opens in its chat has the size the terminal view gives it, before any flip (C1)", async () => {
+    const { win } = app();
+    const size = () => win.evaluate((i) => {
+      const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { dimensions: { cols: number; rows: number } } | undefined } } } }).aosHost.plugin.terminalPool.get(i);
+      return s?.dimensions ?? null;
+    }, agent);
+    await expect(chat(win)).toBeVisible();
+    const before = await size();
+    // Not the 80 x 24 a terminal starts at: fitted to the stage the chat lies over.
+    expect(before!.cols).toBeGreaterThan(80);
+    expect(before!.rows).toBeGreaterThan(24);
+    await win.keyboard.press("Meta+j");
+    await expect(body(win)).toBeVisible();
+    // Give a refit its frames: the flip itself must not resize the PTY.
+    await win.waitForTimeout(500);
+    expect(await size()).toEqual(before);
+    await win.keyboard.press("Meta+j");
+    await expect(chat(win)).toBeVisible();
+    expect(await size()).toEqual(before);
+  });
+
   test("Stop writes Esc to the agent's terminal while its turn runs", async () => {
     const { win } = app();
     await win.evaluate((i) => {

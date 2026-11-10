@@ -66,6 +66,8 @@ export interface TerminalPanelOptions {
 
 /** How long the "Started … · Change" note stays after a launch. */
 const STARTED_MS = 6000;
+/** The terminal view's composer height (px) until one is measured: a rough figure, the first ⌘J corrects it. */
+const TERM_COMPOSER_H = 200;
 
 export class TerminalPanel {
   private plugin: AgenticOSPlugin;
@@ -784,13 +786,32 @@ export class TerminalPanel {
     }
   }
 
+  /** The composer's height under the terminal view, kept while the chat shows (it sits inside the chat then, off the stage). */
+  private termComposerH = TERM_COMPOSER_H;
+
+  /** The rows the terminal view's composer takes from the stage, in this terminal's lines. */
+  private composerRows(b: XtermBinding): number {
+    const screen = b.container.querySelector<HTMLElement>(".xterm-screen");
+    const line = screen && b.term.rows ? screen.clientHeight / b.term.rows : 0;
+    return line > 0 ? Math.ceil(this.termComposerH / line) : 0;
+  }
+
   private refit(): void {
-    // While the chat shows, the hidden terminal stays at its last size: the agent's TUI is not resized under it (C1).
-    if (!this.activeId || this.chatShown()) return;
+    if (!this.activeId) return;
     const b = this.bindings.get(this.activeId);
     if (!b) return;
     try {
-      b.fit.fit();
+      if (!this.chatShown()) {
+        b.fit.fit();
+        if (this.composer?.el.isConnected && this.composer.el.offsetHeight) this.termComposerH = this.composer.el.offsetHeight;
+        return;
+      }
+      // While the chat shows, the terminal lies hidden under it, laid out at the stage's size: the agent's TUI is sized to
+      // what the terminal view will give it, so ⌘J redraws nothing (C1). A stage with no size (a tab hidden) keeps the last.
+      const d = b.fit.proposeDimensions();
+      if (!d || !Number.isFinite(d.cols) || !Number.isFinite(d.rows)) return;
+      const rows = Math.max(2, d.rows - this.composerRows(b));
+      if (d.cols !== b.term.cols || rows !== b.term.rows) b.term.resize(d.cols, rows);
     } catch { /* container not laid out yet */ }
   }
 
