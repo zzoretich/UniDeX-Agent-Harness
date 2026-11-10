@@ -133,7 +133,9 @@ export class NewTerminalMenu {
       : host === "shell" ? `in ${where}`
       : `in ${where} · ${this.launcher.modelLabel(host)} · ${TERM_ACCESS_LABEL[this.launcher.choice().access as TermAccess]}`;
     main.createSpan({ cls: "aos-ntm-sub", text: sub });
-    main.setAttr("title", host ? `Start ${TERM_HOST_LABEL[host]} ${sub} (⌘T). ▾ for another host, another place or a new workspace.` : sub);
+    // The session form's second line already names the host: the title says where instead.
+    const how = this.session ? `in ${where}` : sub;
+    main.setAttr("title", host ? `Start ${TERM_HOST_LABEL[host]} ${how} (⌘T). ▾ for another host, another place or a new workspace.` : sub);
     main.addEventListener("click", () => { this.actions.start({ host: "quick" }).catch((e) => new Notice(`Terminal: ${e instanceof Error ? e.message : String(e)}`)); });
     const caret = split.createEl("button", {
       cls: "aos-ntm-caret", attr: { type: "button", "aria-haspopup": "menu", "aria-expanded": this.pop ? "true" : "false", "aria-label": "New terminal: another host, another place, or a new workspace (⇧⌘T)" },

@@ -87,7 +87,9 @@ export class TermList {
         setIcon(open, "arrow-up-right");
         open.addEventListener("click", () => this.actions.openWorkspace?.(ws));
       }
-      const plus = head.createEl("button", { cls: "aos-tl-plus", attr: { type: "button", "aria-label": `New terminal in ${g.label}`, title: `New terminal in ${g.label}` } });
+      // Other folders has no place of its own: its + starts in the vault.
+      const where = g.place ? g.label : "the vault";
+      const plus = head.createEl("button", { cls: "aos-tl-plus", attr: { type: "button", "aria-label": `New terminal in ${where}`, title: `New terminal in ${where}` } });
       setIcon(plus, "plus");
       plus.addEventListener("click", () => this.actions.startIn(g));
       if (!g.rows.length) this.groupsEl.createDiv({ cls: "aos-tl-empty", text: `No terminal in ${g.label} yet: + starts one.` });
@@ -115,8 +117,10 @@ export class TermList {
     el.createSpan({ cls: `aos-tl-glyph is-${row.host === "shell" ? "shell" : r.status.status}`, attr: { "aria-hidden": "true" } });
     const text = el.createSpan({ cls: "aos-tl-text" });
     text.createSpan({ cls: "aos-term-tab-label", text: row.title });
-    const status = row.end === "done" ? "Done" : r.status.text;
-    const sub = row.host === "shell" ? `Shell · ${row.place.label}` : `${TERM_HOST_LABEL[row.host]} · ${status} · ${ageText(this.now, row.startedAt)}`;
+    // An ended row says how it ended once, in its end mark (✓ Done, Exited n), not again in this line.
+    const sub = row.host === "shell" ? `Shell · ${row.place.label}`
+      : row.endText ? `${TERM_HOST_LABEL[row.host]} · ${ageText(this.now, row.startedAt)}`
+      : `${TERM_HOST_LABEL[row.host]} · ${r.status.text} · ${ageText(this.now, row.startedAt)}`;
     text.createSpan({ cls: `aos-tl-sub${r.status.status === "needs" ? " is-needs" : ""}`, text: sub });
     if (row.origin) text.createSpan({ cls: "aos-tl-origin", text: `from ${row.origin}` });
     const m = this.actions.mark?.(row.id);

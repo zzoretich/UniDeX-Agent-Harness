@@ -8,7 +8,7 @@ import { CacheTail, chatFromEvents, type ChatState } from "./codeChat";
 /** The chat row cap and Show earlier's step (the live chat's, codeFeeds ROW_CAP). */
 const ROW_CAP = 400;
 
-/** Reads at most this many times (4 MB each): a transcript larger than that shows its newest part. */
+/** Reads at most this many times (4 MB each): a cache larger than that shows only its oldest 64 MB (its start). */
 const MAX_READS = 16;
 
 /** Every event in a cache file; none when it is missing. */

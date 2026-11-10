@@ -47,6 +47,8 @@ test("an agent that ends shows Done, and Restart starts it again in the same pla
   // The fixture's claude stub echoes and exits 0, so the exec'd agent ends at once.
   const row = C().locator(".aos-tl-row.aos-term-tab-active");
   await expect(row.locator(".aos-tl-end")).toHaveText("✓ Done", { timeout: 10_000 });
+  // Said once: the row's line under its title has the host and the age, not Done again.
+  await expect(row.locator(".aos-tl-sub")).toHaveText(/^Claude Code · (now|\d+[mhd])$/);
   // A terminal that knows its conversation (here the thread Spaces resumed) offers Resume by that id, not the latest.
   await expect(C().locator(".aos-term-endbar button")).toHaveText(["Restart", "Resume", "Open a shell here"]);
   await expect(C().locator(".aos-term-endbar button", { hasText: /^Resume$/ })).toHaveAttribute("title", "Resume this conversation (c1a0de00…)");

@@ -353,6 +353,26 @@ test.describe("the Code chat surface on", () => {
     } finally { await release(); }
   });
 
+  test("a chat with nothing yet says so, and so does one whose follower can't tell the conversation; each line's Terminal ⌘J flips to the terminal (TM14)", async () => {
+    const { win } = app();
+    await openTab(win, "term");
+    const key = "bcbcbcbc-0000-4000-8000-000000000016";
+    fs.rmSync(FX.v(`brain/_index/code/${key}.jsonl`), { force: true });
+    await startAgent(win, { host: "claude", terminalKey: key, sessionId: "bcbcbcbc-0000-4000-8000-000000000017", label: "Nothing yet" });
+    const note = chat(win).locator(".aos-cc-note");
+    await expect(note).toHaveText("No chat for this session yet · Terminal ⌘J");
+    await note.locator("button.aos-cc-jump").click();
+    await expect(body(win)).toBeVisible();
+    await expect(sw(win).locator("button[aria-pressed='true']")).toContainText("Terminal");
+    // The follower writes this line when two Codex terminals in one folder can't be told apart (C2a).
+    const key2 = "bcbcbcbc-0000-4000-8000-000000000018";
+    writeCache(key2, [{ t, kind: "error", message: "Can't tell which conversation · Terminal ⌘J", turn: 0 }]);
+    await startAgent(win, { host: "codex", terminalKey: key2, sessionId: "bcbcbcbc-0000-4000-8000-000000000019", label: "Two in one folder" });
+    await expect(note).toHaveText("Can't tell which conversation · Terminal ⌘J");
+    await note.locator("button.aos-cc-jump").click();
+    await expect(body(win)).toBeVisible();
+  });
+
   test("a busy terminal's updates redraw neither its chat, its switch nor an open model menu; a status line change keeps your selection (I3)", async () => {
     const { win } = app();
     const key = "afafafaf-0000-4000-8000-000000000012";
@@ -477,6 +497,8 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     await expect(C(win).locator(".aos-tl-filter")).toHaveAttribute("placeholder", "Search sessions");
     await expect(C(win).locator(".aos-ntm-name")).toHaveText("New session");
     await expect(C(win).locator(".aos-ntm-sub")).toContainText("Claude Code ·");
+    // Its hover names the host once, then where it starts.
+    await expect(C(win).locator(".aos-ntm-main")).toHaveAttribute("title", /^Start Claude Code in [^·]+ \(⌘T\)/);
     const tide = row(win, TIDE);
     await expect(tide).toBeVisible();
     await expect(tide.locator(".aos-tl-title")).toHaveText("Tide parser in the chart view");
@@ -489,6 +511,8 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     })).toBe("ws:harbor-map");
     // A conversation in the vault root or a folder outside the workspaces is in Other folders.
     await expect(C(win).locator(".aos-tl-group[data-group='other'] .aos-tl-grouplabel")).toHaveText("Other folders");
+    // Other folders is no place to start in: its + starts in the vault, and says so.
+    await expect(C(win).locator(".aos-tl-group[data-group='other'] .aos-tl-plus:not(.aos-tl-openws)")).toHaveAttribute("aria-label", "New terminal in the vault");
     await expect(C(win).locator(".aos-tl-foot .aos-tl-count")).toHaveText(/^\d+ open · \d+ need you$/);
     await C(win).locator(".aos-tl-filter").fill("tide parser");
     await expect(C(win).locator(".aos-tl-past")).toHaveCount(1);
@@ -519,6 +543,11 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     await expect(resume).toHaveText("Resume");
     await expect(resume).toHaveAttribute("title", /Resumes in workspaces\/harbor-map/);
     const before = await win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { list(): unknown[] } } } }).aosHost.plugin.terminalPool.list().length);
+    // ⇧⌘W closes terminals: a past conversation is not one, and the terminal hidden under it stays.
+    expect(await command(win, "agentic-os:term-close")).toBe(true);
+    await win.waitForTimeout(200);
+    expect(await win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { list(): unknown[] } } } }).aosHost.plugin.terminalPool.list().length)).toBe(before);
+    await expect(past(win)).toBeVisible();
     await resume.click();
     await expect.poll(async () => win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { list(): unknown[] } } } }).aosHost.plugin.terminalPool.list().length)).toBe(before + 1);
     // The new terminal is selected, so the read-only chat is gone; it ran the resume line (the fixture's claude stub echoes it).

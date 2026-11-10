@@ -440,8 +440,9 @@ export class TerminalPanel {
     return true;
   }
 
-  /** Closes the selected terminal (⇧⌘W), asking first while an agent runs in it. */
-  closeActive(): void { if (this.activeId) this.closeSession(this.activeId); }
+  /** Closes the selected terminal (⇧⌘W), asking first while an agent runs in it. A past conversation shown read-only is
+   *  not a terminal: the one hidden under it stays. */
+  closeActive(): void { if (this.activeId && !this.past) this.closeSession(this.activeId); }
 
   /** A plain shell in the default place (the old "+ new"). */
   async createNewSession(): Promise<void> {
@@ -777,7 +778,7 @@ export class TerminalPanel {
     if (!feeds.on()) {
       const off = el.createDiv({ cls: "aos-cv is-off", attr: { "data-tour": "code-view" } });
       off.createSpan({ text: "Chat view is off · " });
-      const go = off.createEl("button", { cls: "aos-cv-settings", text: "Settings", attr: { type: "button", title: "App settings: turn on the Code chat write surface" } });
+      const go = off.createEl("button", { cls: "aos-cv-settings", text: "Settings", attr: { type: "button", title: "The chat view needs the Code chat write surface; App settings ▸ Write access shows whether it is on" } });
       go.addEventListener("click", () => { runHostCommand(this.plugin.app, HOST_APP_SETTINGS); });
       return;
     }
