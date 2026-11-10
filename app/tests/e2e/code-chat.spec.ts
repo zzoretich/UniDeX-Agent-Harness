@@ -187,6 +187,43 @@ test.describe("the Code chat surface on", () => {
     }
   });
 
+  test("at 960x600 an agent's chat keeps its composer whole: the send button and every chip inside the window, nothing scrolls", async () => {
+    const { win } = app();
+    if (!agent) {
+      writeCache(KEY, conversation(SID, FX.v("workspaces/harbor-map/src/tide.ts")));
+      await openTab(win, "term");
+      agent = await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID, label: "Tide parser" });
+    }
+    await select(win, agent);
+    await expect(chat(win)).toBeVisible();
+    const restore = await emulateViewport(win, { width: 960, height: 600, scale: 1 });
+    try {
+      const layout = () => win.evaluate(() => {
+        const inside = (el: Element) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight;
+        };
+        const c = document.querySelector(".aos-wb-content") as HTMLElement;
+        const scrolled: string[] = [];
+        for (let el: HTMLElement | null = c; el; el = el.parentElement) {
+          if (el.scrollHeight > el.clientHeight + 1 || el.scrollTop > 0) scrolled.push(`${el.className} ${el.scrollHeight}>${el.clientHeight}`);
+        }
+        const tc = document.querySelector(".aos-cc .aos-tc:not(.is-hidden)");
+        const send = tc?.querySelector(".aos-tc-send");
+        const chips = Array.from(tc?.querySelectorAll(".aos-tc-chip") ?? []).filter((e) => (e as HTMLElement).offsetParent !== null);
+        return { scrolled, send: send ? inside(send) : null, chips: chips.map((e) => `${e.textContent}:${inside(e)}`), box: tc ? inside(tc) : null };
+      });
+      await expect.poll(async () => (await layout()).scrolled).toEqual([]);
+      const l = await layout();
+      expect(l.box).toBe(true);
+      expect(l.send, JSON.stringify(l)).toBe(true);
+      expect(l.chips.length).toBeGreaterThan(0);
+      expect(l.chips.filter((c) => !c.endsWith(":true"))).toEqual([]);
+    } finally {
+      await restore();
+    }
+  });
+
   test("Stop writes Esc to the agent's terminal while its turn runs", async () => {
     const { win } = app();
     await win.evaluate((i) => {
