@@ -12,6 +12,7 @@ import type { CodeSidebarModel } from "../data/codeSidebarModel";
 import { LinkRepoModal } from "./LinkRepoModal";
 import { HOST_APP_SETTINGS, runHostCommand } from "./hostCommands";
 import type { CodeStage, PastSel } from "./CodeStage";
+import { branchText, type CodePanes } from "./CodePanes";
 import type { TermComposer } from "./TermComposer";
 import type { ComputerPane } from "./ComputerPane";
 
@@ -32,36 +33,45 @@ export class CodeTopBar {
   /** The deck's header: the terminal's title, place and chips (left), the view switch (right). */
   headMainEl: HTMLElement | null = null;
   viewEl: HTMLElement | null = null;
+  /** The top bar's right after the switch: `+n −n` and the Diff, Files and Computer buttons (code-chat C8). */
+  panesEl: HTMLElement | null = null;
   private hostChipEl: HTMLElement | null = null;
+  /** The place chip as last drawn, which carries the ⎇ branch (renderStatus). */
+  private placeChipEl: HTMLElement | null = null;
   private placeMenu: HTMLElement | null = null;
   /** What the top bar's switch shows (the terminal, its view, the surface; a past conversation's Resume), so a terminal's
    *  update that changes none of it leaves the switch and its focus alone (I3). */
   private switchShown: string | null = null;
 
-  constructor(private plugin: AgenticOSPlugin, private model: CodeSidebarModel, private stage: CodeStage, private host: CodeTopBarHost) {}
+  constructor(private plugin: AgenticOSPlugin, private model: CodeSidebarModel, private stage: CodeStage, private host: CodeTopBarHost, private panes: CodePanes) {}
 
   destroy(): void {
     this.switchShown = null;
     this.viewEl = null;
+    this.panesEl = null;
     this.hostChipEl = null;
+    this.placeChipEl = null;
     this.headMainEl = null;
     this.placeMenu = null;
   }
 
-  /** The deck's top bar for the selected terminal (code-chat §4): its title, its place (with a menu; Task 13 adds the
-   *  branch), "Host · Model", and at the right the Chat | Terminal switch; when it has ended, how it ended and how to go
-   *  on. The switch also sets which view shows. */
+  /** The deck's top bar for the selected terminal (code-chat §4): its title, its place (with a menu) and ⎇ branch,
+   *  "Host · Model", and at the right the Chat | Terminal switch, `+n −n` and the pane buttons (C8); when it has ended, how
+   *  it ended and how to go on. The switch also sets which view shows. */
   renderHead(): void {
     const el = this.headMainEl;
     if (!el) return;
     el.empty();
     this.placeMenu = null;
     this.hostChipEl = null;
+    this.placeChipEl = null;
     const past = this.stage.past;
     const s = past ? undefined : this.host.activeSession();
     this.host.composer()?.setSession(s ?? null);
     this.renderSwitch(s);
     this.stage.applyView();
+    this.panes.follow(s);
+    this.panes.renderBar(this.panesEl, s, s ? this.model.placeOfSession(s) : null);
     if (past) { this.renderPastHead(el, past); return; }
     if (!s) { this.host.computer()?.follow(null); return; }
     const place = this.model.placeOfSession(s);
@@ -70,9 +80,13 @@ export class CodeTopBar {
     el.createSpan({ cls: "aos-term-headtitle", text: s.getTitle() });
     const wrap = el.createDiv({ cls: "aos-term-placewrap" });
     const chip = wrap.createEl("button", { cls: "aos-term-place", attr: { type: "button", "aria-haspopup": "menu", title: place.dir } });
+    this.placeChipEl = chip;
     const placeIcon = chip.createSpan({ cls: "aos-term-placeicon" });
     setIcon(placeIcon, "folder");
     chip.createSpan({ text: place.linked ? `${place.label} (code)` : place.label });
+    // ⎇ branch where main found a repository (C8), as last read: never a call on a draw.
+    const branch = branchText(this.panes.statusOf(s));
+    if (branch) chip.createSpan({ cls: "aos-term-branch", text: branch });
     const caret = chip.createSpan({ cls: "aos-term-placecaret" });
     setIcon(caret, "chevron-down");
     chip.addEventListener("click", () => this.togglePlaceMenu(wrap, s, place));
@@ -97,6 +111,28 @@ export class CodeTopBar {
       }
       btn("Open a shell here", () => this.host.startIn(place, "shell"));
     }
+  }
+
+  /** The pane buttons alone, when only they changed (the Computer pane opened or collapsed by its own button). */
+  renderPanes(): void {
+    const s = this.stage.past ? undefined : this.host.activeSession();
+    this.panes.renderBar(this.panesEl, s, s ? this.model.placeOfSession(s) : null);
+  }
+
+  /** A git status read landed, or the Diff pane opened or closed: the place chip's ⎇ branch and the pane buttons only, so
+   *  an open place menu and the rest of the bar stay as they are. */
+  renderStatus(): void {
+    const s = this.stage.past ? undefined : this.host.activeSession();
+    const chip = this.placeChipEl;
+    if (chip?.isConnected && s) {
+      chip.querySelector(".aos-term-branch")?.remove();
+      const branch = branchText(this.panes.statusOf(s));
+      if (branch) {
+        const span = chip.createSpan({ cls: "aos-term-branch", text: branch });
+        chip.querySelector(".aos-term-placecaret")?.before(span);
+      }
+    }
+    this.renderPanes();
   }
 
   /** Its title, where it ran and its host (renderPastView puts Resume at the right). */

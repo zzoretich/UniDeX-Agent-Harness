@@ -3452,6 +3452,46 @@ button.aos-cv-settings:not(.clickable-icon) {
   text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px; cursor: pointer;
 }
 button.aos-cv-settings:not(.clickable-icon):hover { color: var(--udx-text); text-decoration-color: currentColor; }
+/* The top bar's ⎇ branch, `+n −n` and the Diff, Files and Computer buttons (code-chat C8, §4). */
+.aos-term-branch { font-family: var(--udx-mono); font-size: 11.5px; color: var(--udx-text-3); }
+.aos-term-panes { display: flex; align-items: center; gap: 2px; }
+.aos-term-panes:empty { display: none; }
+.aos-cdp-total { margin-right: 4px; font-family: var(--udx-mono); font-size: 11.5px; color: var(--udx-text-2); white-space: nowrap; }
+button.aos-cdp-btn:not(.clickable-icon), button.aos-cdp-icon:not(.clickable-icon) {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin: 0; padding: 0; border: 0;
+  border-radius: 7px; background: transparent; box-shadow: none; color: var(--udx-text-2);
+}
+button.aos-cdp-btn:not(.clickable-icon):hover:not(:disabled), button.aos-cdp-icon:not(.clickable-icon):hover { background: var(--udx-raised-2); color: var(--udx-text); }
+button.aos-cdp-btn[aria-pressed="true"]:not(.clickable-icon) { background: var(--udx-raised); color: var(--udx-text); box-shadow: inset 0 0 0 1px var(--udx-line); }
+button.aos-cdp-btn:disabled { opacity: 0.45; cursor: default; }
+button.aos-cdp-btn:not(.clickable-icon):focus-visible, button.aos-cdp-icon:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
+.aos-cdp-btn svg, .aos-cdp-icon svg { width: 15px; height: 15px; }
+/* The Diff pane: docked after the terminal, before the Computer pane; the files, then the picked file's diff. */
+.aos-cdp { flex: 0 0 400px; max-width: 45%; min-width: 0; min-height: 0; display: flex; flex-direction: column; box-sizing: border-box; border-left: 1px solid var(--udx-line); background: var(--udx-surface); color: var(--udx-text); font-size: 12.5px; }
+.aos-cdp.is-hidden { display: none; }
+.aos-cdp-head { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--udx-line); }
+.aos-cdp-title { font-size: 13px; font-weight: 600; }
+.aos-cdp-branch { font-family: var(--udx-mono); font-size: 11.5px; color: var(--udx-text-3); }
+.aos-cdp-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--udx-text-2); }
+.aos-cdp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; }
+.aos-cdp-files { flex: none; max-height: 40%; overflow: auto; display: flex; flex-direction: column; gap: 1px; }
+.aos-cdp-files:empty { display: none; }
+button.aos-cdp-file:not(.clickable-icon) {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: auto; margin: 0; padding: 4px 6px; border: 0; border-radius: 6px;
+  background: transparent; box-shadow: none; font-family: var(--udx-mono); font-size: 12px; text-align: left; color: var(--udx-text);
+}
+button.aos-cdp-file:not(.clickable-icon):hover { background: var(--udx-raised); }
+button.aos-cdp-file.is-open:not(.clickable-icon) { background: var(--udx-raised-2); }
+button.aos-cdp-file:not(.clickable-icon):focus-visible { outline: 2px solid var(--udx-focus); outline-offset: -2px; }
+.aos-cdp-change { flex: none; min-width: 58px; font-family: var(--udx-sans); font-size: 11.5px; color: var(--udx-text-3); }
+.aos-cdp-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-cdp-counts { flex: none; font-size: 11.5px; color: var(--udx-text-2); }
+.aos-cdp-counts.is-binary { color: var(--udx-text-3); }
+.aos-cdp-diff { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.aos-cdp-diffpath { font-family: var(--udx-mono); font-size: 11.5px; color: var(--udx-text-2); overflow-wrap: anywhere; }
+.aos-cdp .aos-ss-diff { max-height: none; }
+.aos-cdp-note, .aos-cdp .aos-ss-note { font-size: 12px; color: var(--udx-text-3); }
+.aos-cdp-note.is-error { color: var(--udx-danger); }
 
 /* ══ Term: find (⌘F, spec 2026-10-08-term-agent-deck §4) — a small bar over the card's top right ═══════════════════ */
 .aos-tf { position: absolute; top: 8px; right: 12px; z-index: 20; display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 10px; border: 1px solid var(--udx-line-2); border-radius: 10px; background: var(--udx-bg); box-shadow: var(--udx-shadow); }

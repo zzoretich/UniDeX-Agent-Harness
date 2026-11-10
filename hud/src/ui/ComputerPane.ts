@@ -294,6 +294,12 @@ export class ComputerPane {
     this.select();
   }
 
+  /** How the pane shows now, for the Code top bar's Computer button (code-chat §4): open, collapsed, or off (the surface). */
+  paneState(): "open" | "collapsed" | "off" { return this.off ? "off" : this.collapsed ? "collapsed" : "open"; }
+
+  /** The Code top bar's Computer button: opens or collapses the pane as its own collapse button does; nothing while off. */
+  toggle(): void { if (!this.off && !this.destroyed) this.setCollapsed(!this.collapsed); }
+
   /** Its page went behind another rail tab: the view goes, and the pane selects nothing until it is mounted again. */
   hide(): void {
     if (this.destroyed || !this.visible) return;

@@ -9,7 +9,8 @@
 // PTY at once and nothing restarts. Each terminal remembers its view (CodeFeeds); a shell has no chat and no switch; with
 // the Code chat surface off an agent opens in its terminal and the switch says so. When an agent exits and the login shell
 // takes its terminal over (D18), its chat keeps the history and says so, with no composer; its terminal view's composer is
-// a shell's (code-chat R39).
+// a shell's (code-chat R39). The top bar's Diff, Files and Computer buttons open their panes (CodePanes, C8): Diff docks
+// after the terminal, closed by default.
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -37,6 +38,7 @@ import { storeFor, type ComputerStore, type RowMarks } from "../data/computerSto
 import { computerPaneStart, rememberComputerPane } from "../settingsDefaults";
 import { CodeStage } from "./CodeStage";
 import { CodeTopBar } from "./CodeTopBar";
+import { CodePanes } from "./CodePanes";
 import type { CodeView } from "../data/codeFeeds";
 
 /** Fits a terminal repeats at most this often before taking the last answer (refit). */
@@ -68,6 +70,8 @@ export interface TerminalPanelOptions {
   openWorkspace?: (name: string) => void;
   /** The sidebar's All history: Sessions ▸ History. */
   openHistory?: () => void;
+  /** The top bar's Files button: the Files tab at a vault workspace's folder (vault-relative; code-chat C8). */
+  openFiles?: (folder: string) => void;
 }
 
 /** How long the "Started … · Change" note stays after a launch. */
@@ -95,6 +99,8 @@ export class TerminalPanel {
   private model: CodeSidebarModel;
   private topBar: CodeTopBar;
   private stage: CodeStage;
+  /** The panes behind the top bar's buttons: Diff (code:git), Files, Computer (code-chat C8). */
+  private panes: CodePanes;
   /** The deck's Computer pane (agent-computer D4), in the app only; its store gives the rows their marks (D32, D35). */
   private computer: ComputerPane | null = null;
   private computerStore: ComputerStore | null = null;
@@ -128,6 +134,13 @@ export class TerminalPanel {
       openLink: (href) => this.openLink(href),
       renderTabs: () => this.renderTabs(),
     });
+    this.panes = new CodePanes({
+      activeSession: () => (this.stage.past ? undefined : this.activeSession()),
+      placeOf: (s) => this.model.placeOfSession(s),
+      computer: () => this.computer,
+      openFiles: opts.openFiles,
+      changed: () => { if (this.host) this.topBar.renderStatus(); },
+    });
     this.topBar = new CodeTopBar(plugin, this.model, this.stage, {
       activeSession: () => this.activeSession(),
       composer: () => this.composer,
@@ -137,7 +150,7 @@ export class TerminalPanel {
       makeWorkspace: (named) => this.newMenu?.open("create", null, named),
       restartWith: (id, patch) => this.restartWith(id, patch),
       renderTabs: () => this.renderTabs(),
-    });
+    }, this.panes);
   }
 
   mount(host: HTMLElement): void {
@@ -181,7 +194,10 @@ export class TerminalPanel {
 
     const right = this.headerEl.createDiv({ cls: "aos-term-header-right" });
     if (this.opts.launch && !this.opts.deck) this.newMenu = new NewTerminalMenu(right, this.plugin.termLauncher, this.opts.launch);
-    if (this.opts.deck) this.topBar.viewEl = right.createDiv({ cls: "aos-term-view" });
+    if (this.opts.deck) {
+      this.topBar.viewEl = right.createDiv({ cls: "aos-term-view" });
+      this.topBar.panesEl = right.createDiv({ cls: "aos-term-panes" });
+    }
 
     if (this.opts.showMaximize && this.opts.onMaximize) {
       const max = right.createEl("button", { cls: "aos-term-btn", text: "⛶" });
@@ -200,6 +216,8 @@ export class TerminalPanel {
       this.composer = new TermComposer(frame, this.plugin, () => this.focus(), () => this.bracketedPaste());
       this.composer.onCatalog = () => { if (this.host) this.topBar.renderHostChip(); };
       this.finder = new TermFind(this.bodyEl, () => this.focus());
+      // The Diff pane docks after the terminal, before the Computer pane (closed by default).
+      this.panes.mount(host);
       this.mountComputer(host);
       this.unwatchFeeds = this.plugin.codeFeeds?.subscribe((id) => {
         if (!this.host) return;
@@ -298,6 +316,7 @@ export class TerminalPanel {
     this.stage.destroy();
     this.model.dispose();
     this.topBar.destroy();
+    this.panes.destroy();
     this.disposePool?.();
     this.disposePool = null;
     this.disposeTheme?.();
@@ -543,6 +562,8 @@ export class TerminalPanel {
       save: (pane) => {
         this.plugin.settings.computerPane = rememberComputerPane(this.plugin.settings.computerPane, "code", pane);
         void this.plugin.saveSettings();
+        // Opened or collapsed by its own button: the top bar's Computer button says so.
+        if (this.host) this.topBar.renderPanes();
       },
     });
     this.computer.mount(host);

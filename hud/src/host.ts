@@ -264,6 +264,9 @@ export interface HostCode {
   unfollow(pty: string): void;
   /** Mirrors a past conversation once. */
   view(req: { host: "claude" | "codex"; id: string }): Promise<HostResult<{ cache: string }>>;
+  /** The Diff pane's read-only git (code-chat C8) for the terminal `pty`: main picks the folder from that terminal's cwd (a
+   *  vault workspace or a workspace's linked code folder) and refuses any other place. Needs no write surface. */
+  git?(req: { pty: string; op: "status" | "diff"; file?: string }): Promise<HostResult<HostGitStatus | HostGitDiff>>;
 }
 
 export interface HostSessions {
@@ -289,9 +292,11 @@ export interface HostGitStatus {
   files: { path: string; status: string; added: number | null; removed: number | null }[];
 }
 
+export interface HostGitDiff { stat: string; text: string; truncated: boolean }
+
 export interface HostGit {
   status(workspace: string): Promise<HostResult<HostGitStatus>>;
-  diff(workspace: string, file?: string): Promise<HostResult<{ stat: string; text: string; truncated: boolean }>>;
+  diff(workspace: string, file?: string): Promise<HostResult<HostGitDiff>>;
   commit(workspace: string, message: string): Promise<HostResult<{ commit: string }>>;
 }
 

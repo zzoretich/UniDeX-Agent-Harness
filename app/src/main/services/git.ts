@@ -2,7 +2,9 @@
 // commit the user asks for. Everything but commit only reads. Commit runs `git add -A` and `git commit -m <message>`
 // only on the Commit button, with the message the user saw; nothing is ever pushed. git is the user's own (a bare
 // name main's PATH finds), run without a shell in the workspace folder with a timeout. A file the page names must stay
-// inside the workspace and follows `--`, so it is never read as an option.
+// inside the workspace and follows `--`, so it is never read as an option. statusAt and diffAt read a folder main chose
+// itself: a workspace's, or for the Code tab's Diff (code-chat C8) a workspace's or its linked code folder's
+// (services/code-git.ts), with the same guards.
 
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
@@ -183,7 +185,12 @@ export class GitService {
   async status(workspace: string): Promise<Result<GitStatus>> {
     const w = this.dir(workspace);
     if ("refusal" in w) return refused(w.refusal);
-    return { ok: true, data: await this.statusOf(w.dir) };
+    return this.statusAt(w.dir);
+  }
+
+  /** The status of the repository whose top level is `dir` (a folder main chose: a workspace, or code-chat's code:git). */
+  async statusAt(dir: string): Promise<Result<GitStatus>> {
+    return { ok: true, data: await this.statusOf(dir) };
   }
 
   private async statusOf(dir: string, known?: readonly string[] | null): Promise<GitStatus> {
@@ -218,18 +225,26 @@ export class GitService {
   async diff(workspace: string, file?: string): Promise<Result<GitDiff>> {
     const w = this.dir(workspace);
     if ("refusal" in w) return refused(w.refusal);
+    return this.diffAt(w.dir, file);
+  }
+
+  /** The diff of the repository whose top level is `dir`, or of one file in it; a file that leads out of `dir` is refused. */
+  async diffAt(dir: string, file?: string): Promise<Result<GitDiff>> {
     if (file !== undefined) { const why = fileRefusal(file); if (why) return refused(why); }
-    const filters = await this.filters(w.dir);
-    const st = await this.statusOf(w.dir, filters);
+    const filters = await this.filters(dir);
+    const st = await this.statusOf(dir, filters);
     if (!st.repo || !filters) return refused("not a git repository");
-    const hasHead = (await this.run(w.dir, ["rev-parse", "--verify", "--quiet", "HEAD"])).code === 0;
+    const hasHead = (await this.run(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])).code === 0;
     const base = [...filters, "diff", ...DIFF_SAFE, ...(hasHead ? ["HEAD"] : [])];
-    const stat = await this.run(w.dir, [...base, "--stat"]);
+    const stat = await this.run(dir, [...base, "--stat"]);
     let text: Run;
-    if (file === undefined) text = await this.run(w.dir, base, { maxBuffer: DIFF_MAX });
-    else if ((await this.run(w.dir, ["ls-files", "--error-unmatch", "--", file])).code === 0) text = await this.run(w.dir, [...base, "--", file], { maxBuffer: DIFF_MAX });
-    // A new file git does not track yet: its whole text as an addition (exit 1 means "they differ").
-    else text = await this.run(w.dir, [...filters, "diff", ...DIFF_SAFE, "--no-index", "--", "/dev/null", file], { maxBuffer: DIFF_MAX });
+    if (file === undefined) text = await this.run(dir, base, { maxBuffer: DIFF_MAX });
+    else if ((await this.run(dir, ["ls-files", "--error-unmatch", "--", file])).code === 0) text = await this.run(dir, [...base, "--", file], { maxBuffer: DIFF_MAX });
+    // A new file git does not track yet: its whole text as an addition (exit 1 means "they differ"). `--no-index` opens
+    // the path as the file system has it, so a folder link inside the repository must not lead it out (git's own pathspecs
+    // stop at a link; this one would not).
+    else if (leadsOut(dir, file)) return refused("a file outside the workspace");
+    else text = await this.run(dir, [...filters, "diff", ...DIFF_SAFE, "--no-index", "--", "/dev/null", file], { maxBuffer: DIFF_MAX });
     return { ok: true, data: { stat: stat.stdout, text: text.stdout, truncated: text.truncated } };
   }
 
@@ -251,6 +266,20 @@ export class GitService {
     const head = await this.run(w.dir, ["rev-parse", "HEAD"]);
     return { ok: true, data: { commit: head.stdout.trim() } };
   }
+}
+
+/**
+ * Whether `file` (relative, no `..`: fileRefusal) names a path whose folder, links resolved, is outside `dir`'s: a link to
+ * a folder elsewhere. The file itself may be a link (git shows a link's target as its text, never what it points at). A
+ * folder that is not there leads nowhere: git finds no file in it.
+ */
+function leadsOut(dir: string, file: string): boolean {
+  let root: string;
+  try { root = fs.realpathSync(dir); } catch { return true; }
+  let parent: string;
+  try { parent = fs.realpathSync(path.dirname(path.join(dir, file))); } catch { return false; }
+  const rel = path.relative(root, parent);
+  return rel !== "" && (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
 }
 
 /** Whether two paths are one folder, links resolved (git prints the top level's real path). */

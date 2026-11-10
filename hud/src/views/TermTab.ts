@@ -1,6 +1,7 @@
 import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import { TerminalPanel } from "../ui/TerminalPanel";
+import type { FilesTab } from "./files/FilesTab";
 
 export class TermTab {
   private host: HTMLElement | null = null;
@@ -23,6 +24,8 @@ export class TermTab {
       openWorkspace: (name) => { this.view.open({ tab: "spaces", workspace: name }); },
       // All history: Sessions ▸ History (install-import B11), as the tour opens it.
       openHistory: () => { this.view.open({ tab: "chat", pane: "history" }); },
+      // The top bar's Files: the Files tab at the terminal's workspace folder (code-chat C8).
+      openFiles: (folder) => { this.view.setTab("files"); (this.view.getTab("files") as FilesTab | null)?.showFolder(folder); },
     });
     this.panel.mount(host);
   }

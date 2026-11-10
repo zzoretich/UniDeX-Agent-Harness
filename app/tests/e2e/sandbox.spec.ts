@@ -62,7 +62,7 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.sessions).toEqual(["catalog", "list", "onEvent", "read", "send", "start", "stop"]);
   expect(shape.computer).toEqual(["answer", "handBack", "mark", "navigate", "onEvent", "popOut", "select", "show", "tab", "takeOver"]);
   expect(shape.git).toEqual(["commit", "diff", "status"]);
-  expect(shape.code).toEqual(["follow", "unfollow", "view"]);
+  expect(shape.code).toEqual(["follow", "git", "unfollow", "view"]);
 });
 
 test("proposal decisions reject paths, malformed hashes and unknown undo records", async () => {
@@ -132,11 +132,17 @@ test("setup names a fix by id only, and refuses each step outside its state", as
   expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "codex", text: "hi", effort: "turbo" }))).toMatchObject({ ok: false, code: "EINVAL" });
   expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "claude", text: "hi", model: "--dangerously-skip-permissions" }))).toMatchObject({ ok: false, code: "EINVAL" });
   // The Code chat's mirror is off by default (code-chat R13): a well-formed call is refused, a malformed one never reaches main.
-  type Code = { follow(r: unknown): Promise<unknown>; view(r: unknown): Promise<unknown> };
+  type Code = { follow(r: unknown): Promise<unknown>; view(r: unknown): Promise<unknown>; git(r: unknown): Promise<unknown> };
   expect(await call((aos) => (aos.code as unknown as Code).follow({ pty: "t1", host: "claude", terminal: "aaaaaaaa-0000-4000-8000-000000000001" }))).toMatchObject({ ok: false, code: "EROFS" });
   expect(await call((aos) => (aos.code as unknown as Code).view({ host: "codex", id: "abc" }))).toMatchObject({ ok: false, code: "EROFS" });
   expect(await call((aos) => (aos.code as unknown as Code).follow({ pty: "t1", host: "claude", terminal: "../a" }))).toMatchObject({ ok: false, code: "EINVAL" });
   expect(await call((aos) => (aos.code as unknown as Code).view({ host: "codex", id: "../x" }))).toMatchObject({ ok: false, code: "EINVAL" });
+  // code:git (code-chat C8) names a terminal, never a folder: one main does not know is refused; a folder, an op that writes
+  // or a NUL in a file never reaches main.
+  expect(await call((aos) => (aos.code as unknown as Code).git({ pty: "t1", op: "status" }))).toMatchObject({ ok: false, code: "EROFS" });
+  expect(await call((aos) => (aos.code as unknown as Code).git({ pty: "t1", op: "status", dir: "/work/demo" }))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.code as unknown as Code).git({ pty: "t1", op: "commit" }))).toMatchObject({ ok: false, code: "EINVAL" });
+  expect(await call((aos) => (aos.code as unknown as Code).git({ pty: "t1", op: "diff", file: "a\u0000b" }))).toMatchObject({ ok: false, code: "EINVAL" });
 });
 
 test("reads stay inside the vault and the hosts' folders, and never return a credential", async () => {

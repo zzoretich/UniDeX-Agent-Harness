@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, REPO, appEnv, badge, command, content, emulateViewport, expectNoErrors, openTab, terminalText, useApp } from "./harness";
+import { FX, REPO, appEnv, badge, command, content, emulateViewport, expectNoErrors, openTab, rail, terminalText, useApp } from "./harness";
 
 // The Code tab's chat view (spec 2026-11-09-code-chat C1, C3, C5, C13; rulings R3, R28, R32): an agent terminal opens in a
 // chat drawn from the cache its follower writes; ⌘J flips the middle to the same live PTY and back, nothing restarts; a
@@ -927,6 +927,95 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     await C(win).locator(".aos-tl-allhistory").click();
     await expect(win.locator(".aos-wb-railbtn[data-tab='chat']")).toHaveClass(/is-active/);
     await expect(C(win).locator(".aos-ss-hresume").first()).toBeVisible({ timeout: 10_000 });
+  });
+});
+
+// The Diff and Files panes (C8) need no write surface: this run has none on. code:git names the terminal; main reads git in
+// the folder that terminal started in, only for a vault workspace (or a workspace's linked code folder).
+test.describe("the Diff and Files panes, whichever write surfaces are on (C8)", () => {
+  test.describe.configure({ mode: "serial" });
+  const app = useApp();
+  /** A shell in `cwd`, selected; its pool id. */
+  const startShell = (win: Page, cwd: string): Promise<string> => win.evaluate((dir) => {
+    const p = (window as unknown as { aosHost: { plugin: { terminalPool: { create(o: object): { id: string }; select(id: string): void } } } }).aosHost.plugin.terminalPool;
+    const s = p.create({ cwd: dir, meta: { host: "shell" } });
+    p.select(s.id);
+    return s.id;
+  }, cwd);
+  const panes = (win: Page) => C(win).locator(".aos-term-panes");
+  const pane = (win: Page) => C(win).locator(".aos-cdp");
+  let inRepo = "";
+
+  test("a workspace that is a repository: ⎇ branch and +n −n in the top bar; Diff lists its changes and shows one's diff; Files opens the workspace", async () => {
+    const h = app();
+    const { win } = h;
+    const dir = FX.v("workspaces/kelp-watch");
+    const git = (...a: string[]) => {
+      const r = spawnSync("git", ["-c", `user.email=${["test", "example.invalid"].join("@")}`, "-c", "user.name=Test", ...a], { cwd: dir, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr}`);
+    };
+    git("init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(dir, "notes.md"), "kelp\nurchins\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "Start the survey notes");
+    fs.writeFileSync(path.join(dir, "notes.md"), "kelp forest\nurchins\notters\n");
+    fs.writeFileSync(path.join(dir, "sightings.csv"), "date,count\n");
+    await openTab(win, "term");
+    inRepo = await startShell(win, dir);
+    await expect(C(win).locator(".aos-term-head .aos-term-place .aos-term-branch")).toHaveText("⎇ main");
+    // Closed by default; the counts are every changed file's against HEAD.
+    await expect(pane(win)).toBeHidden();
+    await expect(panes(win).locator(".aos-cdp-total")).toHaveText("+3 −1");
+    await panes(win).locator(".aos-cdp-btn.is-diff").click();
+    await expect(pane(win)).toBeVisible();
+    await expect(panes(win).locator(".aos-cdp-btn.is-diff")).toHaveAttribute("aria-pressed", "true");
+    await expect(pane(win).locator(".aos-cdp-branch")).toHaveText("⎇ main");
+    await expect(pane(win).locator(".aos-cdp-file")).toHaveCount(2);
+    await expect(pane(win).locator(".aos-cdp-file[data-path='notes.md'] .aos-cdp-counts")).toHaveText("+2 −1");
+    await expect(pane(win).locator(".aos-cdp-file[data-path='sightings.csv'] .aos-cdp-change")).toHaveText("new");
+    await pane(win).locator(".aos-cdp-file[data-path='notes.md']").click();
+    await expect(pane(win).locator(".aos-cdp-diffpath")).toHaveText("notes.md");
+    await expect(pane(win).locator(".aos-ss-diffline.is-add")).toHaveText(["+kelp forest", "+otters"]);
+    await expect(pane(win).locator(".aos-ss-diffline.is-del")).toHaveText(["-kelp"]);
+    // A change made meanwhile shows on Refresh.
+    fs.writeFileSync(path.join(dir, "sightings.csv"), "date,count\n2026-11-09,4\n");
+    await pane(win).locator(".aos-cdp-icon.is-refresh").click();
+    await expect(pane(win).locator(".aos-cdp-file[data-path='sightings.csv'] .aos-cdp-counts")).toHaveText("+2 −0");
+    await pane(win).locator(".aos-cdp-icon.is-close").click();
+    await expect(pane(win)).toBeHidden();
+    // Files: the Files tab at the workspace's folder.
+    await panes(win).locator(".aos-cdp-btn.is-files").click();
+    await expect(rail(win, "files")).toHaveClass(/is-active/);
+    await expect(C(win).locator('.aos-fx-crumb.is-last[data-path="workspaces/kelp-watch"]')).toBeVisible();
+    expectNoErrors(h);
+  });
+
+  test("a terminal at the vault root has no Diff or Files button, no branch and no counts", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const root = await startShell(win, FX.vault);
+    await expect(C(win).locator(".aos-term-head .aos-term-place")).toContainText("Vault");
+    // The status is read when a terminal is selected: the repository's terminal shows its Diff again (reads work in this
+    // run), then this one is selected again and its read (a refusal, which runs no git) is given the time to land.
+    await select(win, inRepo);
+    await expect(panes(win).locator(".aos-cdp-btn.is-diff")).toBeVisible();
+    await select(win, root);
+    await expect(C(win).locator(".aos-term-head .aos-term-place")).toContainText("Vault");
+    await win.waitForTimeout(500);
+    await expect(panes(win).locator(".aos-cdp-btn.is-diff")).toHaveCount(0);
+    await expect(panes(win).locator(".aos-cdp-btn.is-files")).toHaveCount(0);
+    await expect(panes(win).locator(".aos-cdp-total")).toHaveCount(0);
+    await expect(C(win).locator(".aos-term-head .aos-term-branch")).toHaveCount(0);
+    await expect(pane(win)).toBeHidden();
+    // main refuses it too, whatever the page would ask.
+    const r = await win.evaluate(async () => {
+      const w = window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { ptyId: string | null } | undefined; selectedId(): string | null } } }; aos: { code: { git(r: object): Promise<{ ok: boolean; code?: string }> } } };
+      const s = w.aosHost.plugin.terminalPool.get(w.aosHost.plugin.terminalPool.selectedId() ?? "");
+      return w.aos.code.git({ pty: s?.ptyId ?? "none", op: "status" });
+    });
+    expect(r).toMatchObject({ ok: false, code: "EROFS" });
+    expectNoErrors(h);
   });
 });
 
