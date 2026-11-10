@@ -342,8 +342,12 @@ export class TerminalPanel {
   /** The Code tab was shown again: the past conversations are looked up again (the scan may have indexed more). */
   refreshSidebar(): void { if (this.host && this.list) { this.model.refreshHistory(true); this.renderTabs(); } }
 
-  /** Another rail tab is in front: the Computer pane lets its view go and selects nothing (ruling R51). */
-  leave(): void { this.computer?.hide(); }
+  /** Another rail tab is in front: the Computer pane lets its view go and selects nothing (ruling R51); the Diff reads no
+   *  status until the tab is back (R55). */
+  leave(): void { this.computer?.hide(); this.panes.hide(); }
+
+  /** The Code tab is in front again: the Diff follows the selected terminal with one read (R55). */
+  enter(): void { this.panes.show(); }
 
   /** Keys to the selected terminal; in its chat view the terminal is hidden, so nothing takes them. */
   focus(): void {

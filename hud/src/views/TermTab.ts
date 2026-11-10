@@ -31,9 +31,10 @@ export class TermTab {
   }
   /** Code scoped to a workspace's group (spaces-redesign D12): WorkbenchView.open({tab: "term", workspace}). Select only. */
   reveal(target: { workspace?: string | null }): void { this.panel?.reveal(target); }
-  async refresh(): Promise<void> { this.panel?.focus(); this.panel?.refreshSidebar(); }
+  async refresh(): Promise<void> { this.panel?.focus(); this.panel?.refreshSidebar(); this.panel?.enter(); }
   unmount(): void { this.panel?.unmount(); this.panel = null; this.host = null; }
-  /** Another tab is shown (WorkbenchView.setTab): the Computer pane lets its view go (agent-computer ruling R51). */
+  /** Another tab is shown (WorkbenchView.setTab): the Computer pane lets its view go (agent-computer ruling R51) and the
+   *  Diff stops reading the status (code-chat R55). */
   leave(): void { this.panel?.leave(); }
   newSession(): void { void this.panel?.createNewSession(); }
   showSession(id: string): void { this.panel?.activate(id); }

@@ -5,7 +5,8 @@
 // than in a pane); Computer, today's Computer pane, opened or collapsed. Where main finds no repository (the vault root,
 // home, any other folder, a workspace that is not a repository of its own) the Diff button, the branch and `+n −n` are
 // hidden; Files shows only for a vault workspace. The status is read when a terminal is selected, when its output has
-// settled, and when the Diff pane opens or is refreshed: never on a draw.
+// settled, and when the Diff pane opens or is refreshed: never on a draw, one read at a time, and never while another rail
+// tab is in front (ruling R55).
 
 import { setIcon } from "obsidian";
 import { hudHost, type HostGitDiff, type HostGitStatus } from "../host";
@@ -66,6 +67,11 @@ export class CodePanes {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private dirtySince: number | null = null;
   private seq = 0;
+  /** A status read is running; `again`: one more was asked for meanwhile (at most one waits). */
+  private reading = false;
+  private again = false;
+  /** Another rail tab is in front: nothing is followed or read until show(). */
+  private hidden = false;
   private shown: Shown | null = null;
   private diffSeq = 0;
   /** What the bar and the pane last drew, so a draw that changes nothing leaves them (and their focus) alone. */
@@ -86,6 +92,7 @@ export class CodePanes {
 
   destroy(): void {
     this.unfollow();
+    this.again = false;
     this.paneEl?.detach();
     this.paneEl = this.listEl = this.diffEl = this.headEl = null;
     this.diffOpen = false;
@@ -102,8 +109,9 @@ export class CodePanes {
   }
 
   /** Called on each top-bar draw for the selected terminal: follows it (its output, a first read). Cheap when it is the
-   *  terminal already followed. */
-  follow(s: TerminalSession | undefined): void {
+   *  terminal already followed; nothing while hidden. `force` reads it even when its last read is fresh. */
+  follow(s: TerminalSession | undefined, force = false): void {
+    if (this.hidden) return;
     const key = s ? this.keyOf(s) : "";
     if (s && this.followed?.id === s.id && this.followed.key === key) return;
     this.unfollow();
@@ -111,9 +119,24 @@ export class CodePanes {
     this.followed = { id: s.id, key };
     this.offData = s.onData(() => this.poke());
     const r = this.reads.get(s.id);
-    if (!r || r.key !== key || Date.now() - r.at > FRESH_MS) void this.refresh();
+    if (force || !r || r.key !== key || Date.now() - r.at > FRESH_MS) void this.refresh();
     this.shown = null;
     this.drawPane();
+  }
+
+  /** Another rail tab is in front (TerminalPanel.leave): stop following the terminal's output and drop a read that waits. */
+  hide(): void {
+    if (this.hidden) return;
+    this.hidden = true;
+    this.unfollow();
+    this.again = false;
+  }
+
+  /** The Code tab is in front again: follow the selected terminal with one read. */
+  show(): void {
+    if (!this.hidden) return;
+    this.hidden = false;
+    this.follow(this.host.activeSession(), true);
   }
 
   /** The top bar's right: `+n −n`, then the Diff, Files and Computer buttons; drawn again only when what it shows changed. */
@@ -154,10 +177,21 @@ export class CodePanes {
     if (this.diffOpen) void this.refresh();
   }
 
-  /** Reads the followed terminal's status (code:git status) and draws what changed. */
+  /** Reads the followed terminal's status (code:git status) and draws what changed. One read at a time: asked for while
+   *  one runs, it reads once after it, however often it was asked; nothing while hidden or unmounted. */
   async refresh(): Promise<void> {
     if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; }
     this.dirtySince = null;
+    if (this.hidden || !this.paneEl) return;
+    if (this.reading) { this.again = true; return; }
+    this.reading = true;
+    try { await this.read(); } finally { this.reading = false; }
+    if (this.again) { this.again = false; void this.refresh(); }
+  }
+
+  // ── private ──
+
+  private async read(): Promise<void> {
     const s = this.host.activeSession();
     const git = hudHost().code?.git;
     if (!s || !git) return;
@@ -181,8 +215,6 @@ export class CodePanes {
     this.drawPane();
     this.host.changed();
   }
-
-  // ── private ──
 
   /** A terminal and the process in it now: a read for the agent is not the login shell's after it. */
   private keyOf(s: TerminalSession): string { return `${s.id}:${s.ptyId ?? ""}`; }
