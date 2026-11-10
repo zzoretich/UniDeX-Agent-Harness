@@ -258,5 +258,10 @@ test("the Diff keeps the file opened in each terminal: switching to another term
   active = one.s;
   panes.follow(one.s);
   assert.deepEqual(diffs().slice(5), [], "nothing opens again after forget");
+  // Unmounted (another rail tab), the pane is closed: it forgets every file opened in it.
+  panes.open("src/a.ts");
+  calls[calls.length - 1].answer(diff("src/a.ts"));
+  await flush();
   panes.destroy();
+  assert.equal((panes as unknown as { picked: Map<string, string> }).picked.size, 0);
 });

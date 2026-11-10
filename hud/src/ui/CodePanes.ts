@@ -104,6 +104,7 @@ export class CodePanes {
     this.paneEl?.detach();
     this.paneEl = this.listEl = this.diffEl = this.headEl = null;
     this.diffOpen = false;
+    this.picked.clear();
     this.shown = null;
     this.barSig = this.paneSig = "";
     this.diffDrawn = null;

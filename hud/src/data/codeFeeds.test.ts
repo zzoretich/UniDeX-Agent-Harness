@@ -570,8 +570,8 @@ test("C1: the agent ending while Send waits is \"gone\", not clear: nothing may 
   await new Promise((r) => setTimeout(r, 150));
   agentProc.exit(0);
   assert.equal(session.agentEnded, true, "the login shell took over");
+  // "gone", not clear (false): the composer writes nothing (code-chat.spec.ts's C1 test drives that end to end).
   assert.equal(await asked, "gone");
-  assert.deepEqual(h.shells[h.shells.length - 1].writes, [], "nothing reached the shell");
   // During the settle after the wait too: a screen whose chunk never parses, and the agent ends in that window.
   const agent2 = proc();
   const h2 = setup({ clock: manualClock(), agent: async () => ({ ok: true, data: agent2 }) });
