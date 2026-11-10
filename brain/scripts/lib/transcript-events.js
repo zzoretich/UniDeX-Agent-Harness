@@ -6,18 +6,29 @@
  *
  *   createTranscriptMapper(host, { model })  →  { push(entry) → events[], state: { sessionId, model } }
  *     push takes one parsed JSONL entry at a time and keeps what it needs between entries (the first session id, codex
- *     exec/MCP pairing by call_id, the last token total); an unknown or malformed entry makes no events, never throws.
+ *     exec/MCP pairing by call_id, the last token total, the turn); an unknown or malformed entry makes no events, never
+ *     throws.
  *   eventsOfText(text, host)  →  events[]     a whole transcript at once
  *
  *   Events are session-events.js's, plus  prompt  { text }  what the user typed. `t` is the entry's timestamp, else null.
+ *   Every event carries `turn`: 0 before the first prompt, then the number of prompts so far. `session` and `done` carry
+ *   `model` (null while none is known); when the model changes, a new `session` event with the same id names it (a
+ *   reader treats a session event with the id it has as a model update, not a new conversation).
  *
- *   claude: user (a string, or text and image blocks) → prompt; tool_result blocks → tool_result (a TodoWrite's is dropped,
- *           its plan event says it all); assistant → claudeBlocks, then done on stop_reason end_turn. isSidechain, isMeta
- *           and summary entries are skipped, as are slash-command envelopes (transcript.js isRealPrompt).
+ *   claude: user (a string, or text and image blocks) → prompt, when a person typed it: no `origin` or origin human,
+ *           promptSource not system, and not only <bash-input|bash-stdout|bash-stderr|system-reminder> blocks or a
+ *           slash-command envelope (transcript.js isRealPrompt). [Request interrupted by user…] → done not ok.
+ *           tool_result blocks → tool_result (a TodoWrite's is dropped, its plan event says it all). assistant →
+ *           claudeBlocks; stop_reason end_turn → done, once per message.id and only from an entry with a block event
+ *           (Claude Code 2.1.318 writes a final message's thinking and its text as two end_turn entries); max_tokens or
+ *           refusal → done not ok. An API error (isApiErrorMessage, model <synthetic>) → error, then done not ok; a
+ *           <synthetic> model is never the model. isSidechain, isMeta, isCompactSummary, isVisibleInTranscriptOnly and
+ *           summary entries are skipped.
  *   codex:  session_meta → session (the first only). Codex 0.165+ writes event_msg item_completed with an item
  *           (UserMessage, AgentMessage, CommandExecution, McpToolCall, FileChange); older rollouts wrote user_message,
- *           agent_message and exec_command / patch_apply / mcp_tool_call begin and end. Both map. A function_call
- *           update_plan → plan, token_count → usage (estimated), task_complete → done, turn_aborted → done not ok.
+ *           agent_message and exec_command / patch_apply / mcp_tool_call begin and end. Both map. turn_context names the
+ *           model; token_count → usage (estimated), task_complete → done, turn_aborted → done not ok. A function_call
+ *           update_plan → plan is a legacy fallback: no codex 0.163–0.167 rollout on record has one.
  */
 const { parseJsonl, textOf, isRealPrompt, CODEX_ENVELOPE_RE } = require('./transcript.js');
 const { summary, claudeBlocks, PLAN_STATUS } = require('./session-events.js');
@@ -25,6 +36,28 @@ const { priceUsd } = require('../sdk/lib/codex-pricing.js');
 
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+// What a Claude user entry can hold that is not the person's words: Claude Code's ! command blocks and reminders.
+const CLAUDE_BLOCK_RE = /<(bash-input|bash-stdout|bash-stderr|system-reminder)>[\s\S]*?<\/\1>/g;
+const INTERRUPT_RE = /^\[Request interrupted by user/;
+const SYNTHETIC = '<synthetic>';
+
+const done = (st, t, ok, estimated) => ({ t, kind: 'done', ok, usd: null, estimated, model: st.model });
+
+/** A model the transcript names: a session event with the same id when it is new and the session is known. */
+function setModel(st, model, t, out) {
+  if (typeof model !== 'string' || !model || model === SYNTHETIC || model === st.model) return;
+  st.model = model;
+  if (st.sessionId) out.push({ t, kind: 'session', id: st.sessionId, model });
+}
+
+/** A Claude user entry's words are a prompt only when a person typed them (module comment). */
+function claudePrompt(e, text) {
+  if (isObj(e.origin) && e.origin.kind !== 'human') return false;
+  if (e.promptSource === 'system') return false;
+  if (!text.replace(CLAUDE_BLOCK_RE, '').trim()) return false;
+  return isRealPrompt({ role: 'user', text, meta: false });
+}
 
 function claudeUser(e, st, t) {
   const content = e.message && e.message.content;
@@ -41,21 +74,50 @@ function claudeUser(e, st, t) {
     }
   }
   const text = parts.join('\n').trim();
-  if (isRealPrompt({ role: 'user', text, meta: false })) out.push({ t, kind: 'prompt', text });
+  if (INTERRUPT_RE.test(text)) out.push(done(st, t, false, false));
+  else if (claudePrompt(e, text)) out.push({ t, kind: 'prompt', text });
   return out;
+}
+
+const thinkingOnly = (content) => content.length > 0 && content.every((b) => b && (b.type === 'thinking' || b.type === 'redacted_thinking'));
+
+/** Whether an assistant entry closes its turn, once per message.id (module comment): done's ok, or null. */
+function closes(m, blocks, st) {
+  const sr = m.stop_reason;
+  let ok;
+  if (sr === 'end_turn') { if (!blocks.length) return null; ok = true; }
+  else if (sr === 'max_tokens' || sr === 'refusal') { if (thinkingOnly(m.content)) return null; ok = false; }
+  else return null;
+  if (typeof m.id === 'string' && m.id) {
+    if (st.closedId === m.id) return null;
+    st.closedId = m.id;
+  }
+  return ok;
 }
 
 function claudeEntry(e, st, t) {
   if (e.type !== 'user' && e.type !== 'assistant') return [];
   const out = [];
-  if (typeof e.sessionId === 'string' && e.sessionId && !st.sessionId) { st.sessionId = e.sessionId; out.push({ t, kind: 'session', id: st.sessionId }); }
+  const m = isObj(e.message) ? e.message : null;
+  const apiError = e.type === 'assistant' && e.isApiErrorMessage === true;
+  // The first session event names the model the entry carries, so it is not followed by an update at once.
+  const model = e.type === 'assistant' && m && !apiError ? m.model : null;
+  if (typeof e.sessionId === 'string' && e.sessionId && !st.sessionId) {
+    st.sessionId = e.sessionId;
+    if (typeof model === 'string' && model && model !== SYNTHETIC) st.model = model;
+    out.push({ t, kind: 'session', id: st.sessionId, model: st.model });
+  } else setModel(st, model, t, out);
   if (e.type === 'user') return out.concat(claudeUser(e, st, t));
-  const m = e.message;
-  if (!isObj(m) || !Array.isArray(m.content)) return out;
-  if (typeof m.model === 'string' && m.model) st.model = m.model;
+  if (!m || !Array.isArray(m.content)) return out;
+  if (apiError) {
+    out.push({ t, kind: 'error', message: summary(textOf(m.content)) || 'API error' }, done(st, t, false, false));
+    return out;
+  }
   for (const b of m.content) if (b && b.type === 'tool_use' && b.name === 'TodoWrite' && b.id) st.planIds.add(b.id);
-  out.push(...claudeBlocks(m.content, t));
-  if (m.stop_reason === 'end_turn') out.push({ t, kind: 'done', ok: true, usd: null, estimated: false });
+  const blocks = claudeBlocks(m.content, t);
+  out.push(...blocks);
+  const ok = closes(m, blocks, st);
+  if (ok !== null) out.push(done(st, t, ok, false));
   return out;
 }
 
@@ -161,13 +223,14 @@ function codexEvent(p, st, t) {
       return out;
     }
     case 'token_count': return codexUsage(p.info, st, t);
-    case 'task_complete': return [{ t, kind: 'done', ok: true, usd: null, estimated: true }];
-    case 'turn_aborted': return [{ t, kind: 'done', ok: false, usd: null, estimated: true }];
+    case 'task_complete': return [done(st, t, true, true)];
+    case 'turn_aborted': return [done(st, t, false, true)];
     default: return [];
   }
 }
 
-/** A function_call update_plan → a plan event (arguments is a JSON string: { plan: [{ step, status }] }). */
+/** A function_call update_plan → a plan event (arguments is a JSON string: { plan: [{ step, status }] }). A legacy
+ *  fallback: none of the codex 0.163–0.167 rollouts on record has one. */
 function codexPlan(p, t) {
   let args = p.arguments;
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { return []; } }
@@ -184,9 +247,10 @@ function codexEntry(e, st, t) {
     const id = p.id || p.session_id;
     if (st.sessionId || !id) return [];
     st.sessionId = String(id);
-    return [{ t, kind: 'session', id: st.sessionId }];
+    if (typeof p.model === 'string' && p.model) st.model = p.model;
+    return [{ t, kind: 'session', id: st.sessionId, model: st.model }];
   }
-  if (e.type === 'turn_context') { if (!st.model && typeof p.model === 'string') st.model = p.model; return []; }
+  if (e.type === 'turn_context') { const out = []; setModel(st, p.model, t, out); return out; }
   if (e.type === 'event_msg') return codexEvent(p, st, t);
   if (e.type === 'response_item' && p.type === 'function_call' && p.name === 'update_plan') return codexPlan(p, t);
   return [];
@@ -195,16 +259,21 @@ function codexEntry(e, st, t) {
 function createTranscriptMapper(host, { model = null } = {}) {
   if (host !== 'claude' && host !== 'codex') throw new Error(`transcript-events: no such host ${host}`);
   // sessionId and model are the public state; the rest is the mapper's own bookkeeping between entries.
-  const state = { sessionId: null, model: model || null, planIds: new Set(), open: new Set(), lastTotal: 0 };
+  const state = { sessionId: null, model: model || null, turn: 0, planIds: new Set(), open: new Set(), lastTotal: 0, closedId: null };
+  const map = (entry) => {
+    const t = typeof entry.timestamp === 'string' && entry.timestamp ? entry.timestamp : null;
+    if (host === 'codex') return codexEntry(entry, state, t);
+    if (entry.isSidechain || entry.isMeta || entry.isCompactSummary || entry.isVisibleInTranscriptOnly || entry.type === 'summary') return [];
+    return claudeEntry(entry, state, t);
+  };
   return {
     state,
     push(entry) {
       try {
         if (!isObj(entry)) return [];
-        const t = typeof entry.timestamp === 'string' && entry.timestamp ? entry.timestamp : null;
-        if (host === 'codex') return codexEntry(entry, state, t);
-        if (entry.isSidechain || entry.isMeta || entry.type === 'summary') return [];
-        return claudeEntry(entry, state, t);
+        const events = map(entry);
+        for (const ev of events) { if (ev.kind === 'prompt') state.turn++; ev.turn = state.turn; }
+        return events;
       } catch { return []; }
     },
   };
