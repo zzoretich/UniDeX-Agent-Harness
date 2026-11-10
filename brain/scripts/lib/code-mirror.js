@@ -13,7 +13,8 @@
  *
  * Claude: the tee names the terminal's session_id; a change (/clear, /resume) writes the new session event at once and
  * switches to its transcript when it exists (looked for every 2 s). Codex: folder mode for the terminal's whole life
- * (R17); with an id, that rollout is the first adoption (R18). Each Codex follower keeps <terminal>.claim.json
+ * (R17); with an id, that rollout is the first adoption (R18). An older rollout appended again is followed too (resume
+ * --last, a /resume in the TUI: R17a, R17b), judged by when that growth began. Each Codex follower keeps <terminal>.claim.json
  * ({ pid, cwd, since, file }) from its start, so the others in the folder never take its rollout and can tell whose a new
  * one may be; when they can't, the cache gets "Can't tell which conversation". Folders compare by real path.
  *
@@ -76,13 +77,15 @@ function readTee(vault, terminal) {
  *   me     { cwd, since, file, mtimeMs }            this follower: its terminal's start, its rollout (or null) and that
  *                                                   rollout's last append
  *   peers  [{ since, file, mtimeMs }]                the other live followers in this folder, from their claims
- *   beginOf(cand, after) → ms | null                when a rollout that started before `after` was first appended after it
- * A follower X is a contender for a rollout that began at b when X has no file and X.since ≤ b + 1 s, or X's file was
- * last appended before b (X went quiet before it: a /new or a resume there). I adopt only when I am the one contender.
- * With a file, only rollouts that started after its last append count, so I never switch while mine is appended. With
- * none, only a rollout that started in [since − 1 s, since + 15 s], or an older one appended since (resume --last), and a
- * peer with no file that started within 5 s of me makes it ambiguous. More than one candidate, or a candidate with
- * another contender, is ambiguous.
+ *   beginOf(cand, from) → ms | null                 a rollout's activity start: its first entry at or after `from`
+ * A rollout's activity start (R17a, R17b) is its start when it began after my reference point, else its first growth at
+ * or after it: my file's last append when I have a file (a /resume in the TUI), since − 1 s when I have none (resume
+ * --last). A follower X is a contender for a rollout whose activity started at b when X has no file and
+ * X.since ≤ b + 1 s, or X's file was last appended before b (X went quiet before it: a /new or a resume there). I adopt
+ * only when I am the one contender. With a file, only a rollout whose activity started after its last append counts, so
+ * I never switch while mine is appended after that. With none, a new rollout must have started in [since − 1 s,
+ * since + 15 s], and a peer with no file that started within 5 s of me makes it ambiguous. More than one candidate, or a
+ * candidate with another contender, is ambiguous.
  */
 function pickCodexRollout(cands, { me, peers = [], beginOf = () => null }) {
   const claimed = new Set(peers.map((p) => p.file).filter(Boolean));
@@ -93,9 +96,10 @@ function pickCodexRollout(cands, { me, peers = [], beginOf = () => null }) {
     if (c.startedAt > after) {
       if (!me.file && c.startedAt > me.since + START_WINDOW_MS) continue;
       considered.push({ c, begin: c.startedAt });
-    } else if (!me.file && c.mtimeMs > after) {
+    } else if (c.mtimeMs > after) {
+      // An older rollout appended again: resume --last (no file), or a /resume in the TUI (R17b).
       const begin = beginOf(c, after);
-      if (typeof begin === 'number' && begin > after) considered.push({ c, begin });
+      if (typeof begin === 'number' && (me.file ? begin > after : begin >= after)) considered.push({ c, begin });
     }
   }
   if (!considered.length) return null;
@@ -202,8 +206,9 @@ function readMeta(file) {
   } catch { return null; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* closed */ } }
 }
 
-/** The earliest entry timestamp after `after` at a rollout's end (read backwards, at most READ_CAP), or null. */
-function firstAppendAfter(file, after) {
+/** A rollout's activity start from `from` (R17a, R17b): the earliest entry timestamp at or after it, read backwards from
+ *  the end (at most READ_CAP), or null when it has none. */
+function activityStart(file, from) {
   let fd;
   try {
     fd = fs.openSync(file, 'r');
@@ -226,7 +231,7 @@ function firstAppendAfter(file, after) {
         let ts = NaN;
         try { ts = Date.parse(JSON.parse(lines[i]).timestamp); } catch { continue; }
         if (Number.isNaN(ts)) continue;
-        if (ts <= after) return first;
+        if (ts < from) return first;
         first = ts;
       }
     }
@@ -287,6 +292,7 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
   let target = id ?? null; // claude: the session the terminal shows
   let lookupAt = 0; // the poll of the next transcript lookup
   const metaCache = new Map();
+  const starts = new Map(); // rollout → { from, at }: its activity start from `from`
 
   const writeCache = (text) => {
     if (!fresh) { fs.appendFileSync(cache, text); return; }
@@ -339,7 +345,14 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
     const pick = pickCodexRollout(cands, {
       me: { cwd: myCwd, since, file: cur ? cur.file : null, mtimeMs },
       peers: peerClaims(vault, terminal, myCwd),
-      beginOf: (c, after) => firstAppendAfter(c.file, after),
+      beginOf: (c, from) => {
+        // A found start does not move while `from` stays (the file only grows); none found is asked again next scan.
+        const known = starts.get(c.file);
+        if (known && known.from === from) return known.at;
+        const at = activityStart(c.file, from);
+        if (at !== null) starts.set(c.file, { from, at });
+        return at;
+      },
     });
     if (pick && pick.ambiguous) {
       if (!ambiguous) write([{ t: new Date().toISOString(), kind: 'error', message: AMBIGUOUS_MESSAGE, turn: cur ? cur.tail.turn : 0 }]);

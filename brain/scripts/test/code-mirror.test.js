@@ -260,10 +260,10 @@ test('pickCodexRollout: a new terminal adopts the rollout that started with it; 
   assert.equal(M.pickCodexRollout([cand('slow', 99500, 200000)], { me: me() }).file, 'slow', 'a start up to 1 s before the terminal\'s');
 });
 
-test('pickCodexRollout: with a current file, only a rollout that started after its last append; never away while it is appended', () => {
+test('pickCodexRollout: with a current file, a rollout that started after its last append; never away while it is appended', () => {
   const mine = me({ file: 'cur', mtimeMs: 150000 });
   assert.deepEqual(M.pickCodexRollout([cand('new', 160000, 170000)], { me: mine }), { file: 'new', id: 'id-new' }, 'a /new after it went quiet');
-  assert.equal(M.pickCodexRollout([cand('new', 140000, 170000)], { me: mine }), null, 'it was still appended after the new one began');
+  assert.equal(M.pickCodexRollout([cand('new', 140000, 170000)], { me: mine, beginOf: () => null }), null, 'it was still appended after the new one began');
   assert.equal(M.pickCodexRollout([cand('cur', 100500, 150000)], { me: mine }), null, 'its own file');
 });
 
@@ -290,6 +290,22 @@ test('pickCodexRollout: resume --last — an older rollout appended since the te
   assert.deepEqual(M.pickCodexRollout(old, { me: me(), beginOf }), { file: 'old', id: 'id-old' });
   assert.deepEqual(M.pickCodexRollout(old, { me: me(), beginOf, peers: [{ since: 50000, file: 'p', mtimeMs: 90000 }] }), { ambiguous: true }, 'a quiet peer could have resumed it');
   assert.equal(M.pickCodexRollout(old, { me: me(), beginOf: () => null }), null, 'no append since');
+});
+
+test('pickCodexRollout (R17b): with a current file, an older rollout that grows after its last append is a /resume, judged by that growth', () => {
+  const mine = me({ file: 'cur', mtimeMs: 150000 });
+  const old = [cand('old', 5000, 170000)];
+  const asked = [];
+  const beginOf = (c, after) => { asked.push([c.file, after]); return after === 150000 ? 160000 : null; };
+  assert.deepEqual(M.pickCodexRollout(old, { me: mine, beginOf }), { file: 'old', id: 'id-old' });
+  assert.deepEqual(asked, [['old', 150000]], 'its activity start: its first growth after the current file\'s last append');
+  assert.deepEqual(M.pickCodexRollout(old, { me: mine, beginOf, peers: [{ since: 50000, file: 'p', mtimeMs: 155000 }] }), { ambiguous: true }, 'a peer quiet before it could have resumed it');
+  assert.deepEqual(M.pickCodexRollout(old, { me: mine, beginOf, peers: [{ since: 50000, file: 'p', mtimeMs: 165000 }] }), { file: 'old', id: 'id-old' }, 'a peer busy after it began');
+  assert.equal(M.pickCodexRollout(old, { me: mine, beginOf: () => 150000 }), null, 'growth no later than the current file\'s last append');
+  assert.equal(M.pickCodexRollout(old, { me: mine, beginOf: () => null }), null);
+  asked.length = 0;
+  assert.equal(M.pickCodexRollout([cand('old', 5000, 140000)], { me: mine, beginOf }), null, 'not grown since');
+  assert.deepEqual(asked, [], 'and not read');
 });
 
 test('follow codex: folder mode claims at start, follows the matching rollout, and releases the claim on exit', async () => {
@@ -433,6 +449,62 @@ test('follow codex (R18): with --id, that rollout is the first adoption, then th
   assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_D));
   assert.deepEqual(sessionIds(cache), [ID_A, ID_D]);
   await r.stop();
+});
+
+test('follow codex (R17b): a /resume of an older rollout after the current one went quiet is followed, from its start', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const cur = codexFile(env, `cur-${ID_A}`);
+  const old = codexFile(env, `old-${ID_B}`);
+  fs.writeFileSync(cur, metaLine(ID_A, env.work, iso(now - 119500)) + codexUser('in the current one', now - 119000));
+  fs.writeFileSync(old, metaLine(ID_B, env.work, iso(now - 600000)) + codexUser('from long ago', now - 599000));
+  setMtime(old, now - 590000);
+  const cache = M.cachePath(env.vault, TERM);
+  const r = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  assert.ok(await waitFor(() => readClaim(env, TERM)?.file === cur));
+  setMtime(cur, now - 30000);
+  await sleep(200);
+  assert.deepEqual(sessionIds(cache), [ID_A]);
+  fs.appendFileSync(old, codexUser('resumed here'));
+  assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_B));
+  assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'resumed here')));
+  const after = readEvents(cache).slice(readEvents(cache).findIndex((e) => e.kind === 'session' && e.id === ID_B));
+  assert.deepEqual(after.filter((e) => e.kind === 'prompt').map((e) => e.text), ['from long ago', 'resumed here'], 'the resumed rollout from its start');
+  assert.equal(readClaim(env, TERM).file, old);
+  await r.stop();
+});
+
+test('follow codex (R17b): the same /resume with an idle live peer is ambiguous on both until the peer appends', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const r1 = codexFile(env, `t1-${ID_A}`);
+  const r2 = codexFile(env, `t2-${ID_C}`);
+  const old = codexFile(env, `old-${ID_B}`);
+  fs.writeFileSync(r1, metaLine(ID_A, env.work, iso(now - 119500)));
+  fs.writeFileSync(r2, metaLine(ID_C, env.work, iso(now - 59500)));
+  fs.writeFileSync(old, metaLine(ID_B, env.work, iso(now - 600000)) + codexUser('from long ago', now - 599000));
+  setMtime(old, now - 590000);
+  const f1 = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  assert.ok(await waitFor(() => readClaim(env, TERM)?.file === r1));
+  const f2 = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
+  assert.ok(await waitFor(() => readClaim(env, TERM2)?.file === r2));
+  setMtime(r1, now - 30000);
+  setMtime(r2, now - 30000);
+  fs.appendFileSync(old, codexUser('resumed somewhere'));
+  const c1 = M.cachePath(env.vault, TERM);
+  const c2 = M.cachePath(env.vault, TERM2);
+  assert.ok(await waitFor(() => readEvents(c1).some((e) => e.kind === 'error') && readEvents(c2).some((e) => e.kind === 'error')));
+  await sleep(300);
+  assert.equal(sessionIds(c1).includes(ID_B) || sessionIds(c2).includes(ID_B), false, 'neither while both are quiet');
+  await sleep(20);
+  fs.appendFileSync(r2, codexUser('T2 is typing'));
+  assert.ok(await waitFor(() => sessionIds(c1).at(-1) === ID_B));
+  assert.ok(await waitFor(() => readEvents(c2).some((e) => e.text === 'T2 is typing')));
+  await sleep(300);
+  assert.deepEqual(sessionIds(c2), [ID_C]);
+  assert.equal(readEvents(c1).filter((e) => e.kind === 'error').length, 1, 'one error per episode');
+  await f1.stop();
+  await f2.stop();
 });
 
 test('follow codex: an archived rollout is never a candidate', async () => {
