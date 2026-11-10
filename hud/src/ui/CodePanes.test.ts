@@ -228,14 +228,35 @@ test("the Diff keeps the file opened in each terminal: switching to another term
   calls[calls.length - 1].answer({ ok: true, data: st({ files: [f("src/a.ts", 1, 0)] }) });
   await flush();
   assert.equal(diffs().length, 2, "b.ts is no longer listed: nothing opens");
-  // Closing the pane forgets the file open in it.
+  // Closing the pane forgets the files opened in it, in every terminal: a.ts here, c.ts in the second terminal (whose
+  // status is stale by now, so it is read first).
   panes.open("src/a.ts");
   calls[calls.length - 1].answer(diff("src/a.ts"));
   await flush();
-  panes.toggleDiff();
-  panes.toggleDiff();
-  calls[calls.length - 1].answer({ ok: true, data: st({ files: [f("src/a.ts", 1, 0)] }) });
+  active = two.s;
+  panes.follow(two.s);
+  assert.deepEqual(calls[calls.length - 1].req, { pty: "p2", op: "status" });
+  calls[calls.length - 1].answer({ ok: true, data: st({ files: [f("src/c.ts", 1, 0)] }) });
   await flush();
-  assert.deepEqual(diffs().slice(2), ["p1:src/a.ts"], "reopened, the pane opens no file by itself");
+  panes.open("src/c.ts");
+  calls[calls.length - 1].answer(diff("src/c.ts"));
+  await flush();
+  panes.toggleDiff();
+  panes.toggleDiff();
+  calls[calls.length - 1].answer({ ok: true, data: st({ files: [f("src/c.ts", 1, 0)] }) });
+  await flush();
+  active = one.s;
+  panes.follow(one.s);
+  assert.deepEqual(diffs().slice(2), ["p1:src/a.ts", "p2:src/c.ts"], "reopened, the pane opens no file by itself in either terminal");
+  // A closed terminal's file is forgotten with it.
+  panes.open("src/a.ts");
+  calls[calls.length - 1].answer(diff("src/a.ts"));
+  await flush();
+  panes.forget("t1");
+  active = two.s;
+  panes.follow(two.s);
+  active = one.s;
+  panes.follow(one.s);
+  assert.deepEqual(diffs().slice(5), [], "nothing opens again after forget");
   panes.destroy();
 });

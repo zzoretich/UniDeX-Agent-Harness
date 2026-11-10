@@ -180,16 +180,19 @@ export class CodePanes {
     }
   }
 
-  /** Opens or closes the Diff pane; opening reads the status again. Closing it forgets the file open in it. */
+  /** Opens or closes the Diff pane; opening reads the status again. Closing it forgets the files opened in it, in every
+   *  terminal. */
   toggleDiff(): void {
     this.diffOpen = !this.diffOpen;
-    const s = this.host.activeSession();
-    if (!this.diffOpen && s) this.picked.delete(s.id);
+    if (!this.diffOpen) this.picked.clear();
     this.shown = null;
     this.drawPane();
     this.host.changed();
     if (this.diffOpen) void this.refresh();
   }
+
+  /** A terminal was closed: the file opened in its Diff is forgotten. */
+  forget(id: string): void { this.picked.delete(id); }
 
   /** The person opened `file` in the selected terminal's Diff (a row's click): shown, and remembered for that terminal,
    *  so switching to another terminal and back opens it again while it is still listed. */
