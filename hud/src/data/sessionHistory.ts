@@ -65,6 +65,8 @@ export interface HistoryRow {
   day: string;
   time: string;
   resume: HistoryResume;
+  /** Where it ran, as Code groups it: its workspace's place, else its folder's, else the vault. */
+  place: Place;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -193,6 +195,7 @@ export function historyRows(sessions: readonly IndexedSession[], digests: Readon
         summary: dg?.summary ?? null,
         workspace, where: workspace ?? (s.cwd ? shortenCwd(s.cwd, world.home) : null),
         at, day, time, resume: resumeFor(s, workspace, choices, world), sort: ms(at),
+        place: workspace ? workspacePlace(workspace, world) : cwdPlace ?? vaultPlace(world),
       };
     })
     .sort((a, b) => b.sort - a.sort || (a.key < b.key ? -1 : 1))
