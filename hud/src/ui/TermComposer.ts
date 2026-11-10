@@ -5,7 +5,7 @@ import { fs, sessionsHost, type HostCatalog } from "../host";
 import { aliasCatalog } from "../data/claudeAsk";
 import { catalogHost } from "../data/agentSessions";
 import type { TerminalSession } from "../data/terminalSession";
-import { TERM_HOST_LABEL } from "../data/terminalLaunch";
+import { TERM_ACCESS_LABEL, TERM_HOST_LABEL } from "../data/terminalLaunch";
 import { composerWrites, insertMention, matchFiles, mentionAt, sanitizeSnippets, type Snippet } from "../data/termComposer";
 import { SlashMenu } from "./SlashMenu";
 
@@ -19,9 +19,15 @@ const SKIP = new Set(["node_modules", ".git", "dist", "build", ".next", "target"
  * sends it as one bracketed paste and Enter; ⇧Enter adds a line; @ lists the place's files (inside the vault, where the
  * page may read; elsewhere the typed path goes as it is); / lists the host's commands (Claude `/name`, Codex `$skill`);
  * Snippets keeps prompts you reuse. Escape goes back to the terminal. A shell or an ended terminal has none.
+ *
+ * Its row of chips (spec 2026-11-09-code-chat §4): @ file and / commands start a mention or a command, Snippets, then an
+ * agent's access and model (labels until Task 10 makes them controls); `attachSlot` is where Task 14's + chip goes. In
+ * the chat view (`setMode("chat")`) TerminalPanel moves the whole element into the chat's 760 px column.
  */
 export class TermComposer {
   readonly el: HTMLElement;
+  /** The image chip's place, first in the row (Task 14). */
+  readonly attachSlot: HTMLElement;
   private input: HTMLTextAreaElement;
   private suggest: HTMLElement;
   private snippetsMenu: HTMLElement | null = null;
@@ -33,6 +39,9 @@ export class TermComposer {
   private catalog: HostCatalog | null = null;
   private hint: HTMLElement;
   private shownHost: string | null = null;
+  private commandsChip: HTMLElement;
+  private accessChip: HTMLElement;
+  private modelChip: HTMLElement;
 
   constructor(parent: HTMLElement, private plugin: AgenticOSPlugin, private focusTerminal: () => void, private bracketed: () => boolean = () => true) {
     this.el = parent.createDiv({ cls: "aos-tc is-hidden" });
@@ -40,12 +49,19 @@ export class TermComposer {
     this.suggest = box.createDiv({ cls: "aos-tc-suggest", attr: { role: "listbox", "aria-label": "Files" } });
     this.input = box.createEl("textarea", { cls: "aos-tc-input", attr: { rows: "6", "aria-label": "Message to the agent", spellcheck: "true" } });
     const bar = box.createDiv({ cls: "aos-tc-bar" });
-    const snip = bar.createEl("button", { cls: "aos-tc-btn", attr: { type: "button", "aria-haspopup": "menu" } });
+    this.attachSlot = bar.createSpan({ cls: "aos-tc-attach" });
+    const file = bar.createEl("button", { cls: "aos-tc-chip", text: "@ file", attr: { type: "button", title: "Mention a file" } });
+    file.addEventListener("click", () => this.startMention());
+    this.commandsChip = bar.createEl("button", { cls: "aos-tc-chip", text: "/ commands", attr: { type: "button", title: "The agent's commands" } });
+    this.commandsChip.addEventListener("click", () => this.startCommand());
+    const snip = bar.createEl("button", { cls: "aos-tc-btn aos-tc-chip", attr: { type: "button", "aria-haspopup": "menu" } });
     const snipIcon = snip.createSpan({ cls: "aos-tc-icon" });
     setIcon(snipIcon, "bookmark");
     snip.createSpan({ text: "Snippets" });
     snip.addEventListener("click", () => this.toggleSnippets(bar));
     this.hint = bar.createSpan({ cls: "aos-tc-hint", text: "⏎ send · ⇧⏎ new line · @ file · / commands · esc terminal" });
+    this.accessChip = bar.createSpan({ cls: "aos-tc-chip is-label", attr: { title: "What the agent may do" } });
+    this.modelChip = bar.createSpan({ cls: "aos-tc-chip is-label", attr: { title: "The conversation's model" } });
     const send = bar.createEl("button", { cls: "aos-tc-send", attr: { type: "button", "aria-label": "Send to the terminal" } });
     const sendIcon = send.createSpan({ cls: "aos-tc-icon" });
     setIcon(sendIcon, "arrow-up");
@@ -68,10 +84,20 @@ export class TermComposer {
     const shell = s.meta.host === "shell";
     this.input.setAttr("placeholder", shell ? "Write a command…" : `Write to ${TERM_HOST_LABEL[s.meta.host]}…`);
     this.hint.setText(shell ? "⏎ run · ⇧⏎ new line · @ file · esc terminal" : "⏎ send · ⇧⏎ new line · @ file · / commands · esc terminal");
+    this.commandsChip.toggleClass("is-hidden", shell);
+    this.accessChip.setText(!shell && s.meta.access ? TERM_ACCESS_LABEL[s.meta.access] : "");
+    this.accessChip.toggleClass("is-hidden", shell || !s.meta.access);
+    this.modelChip.toggleClass("is-hidden", shell);
     // A shell has no / commands: the list stays empty, so / is just a character.
     if (shell) this.slash.update([], "claude");
     else void this.loadCommands(s.meta.host as "claude" | "codex");
   }
+
+  /** The chat view's column (smaller box, chips only) or under the terminal, as before. */
+  setMode(mode: "chat" | "terminal"): void { this.el.toggleClass("is-chat", mode === "chat"); }
+
+  /** The model chip: the conversation's newest model, else the launch's, else the host's default. */
+  setModel(model: string | null): void { this.modelChip.setText(model || "default model"); }
 
   focus(): boolean {
     if (this.el.hasClass("is-hidden")) return false;
@@ -100,6 +126,32 @@ export class TermComposer {
     this.input.value = "";
     this.closeSuggest();
     this.focusTerminal();
+  }
+
+  // ── the chips ──
+
+  /** @ file: an @ at the caret (after a space), and the place's files listed for it. */
+  private startMention(): void {
+    const v = this.input.value;
+    const at = this.input.selectionStart ?? v.length;
+    const before = v.slice(0, at);
+    const sep = before && !/\s$/.test(before) ? " " : "";
+    this.input.value = `${before}${sep}@${v.slice(at)}`;
+    const caret = at + sep.length + 1;
+    this.input.focus();
+    this.input.setSelectionRange(caret, caret);
+    this.onInput();
+  }
+
+  /** / commands: in an empty composer, the host's command mark (Codex's skills start with $) and its menu. */
+  private startCommand(): void {
+    const host = this.session?.meta.host;
+    if (!host || host === "shell") return;
+    if (!this.input.value.trim()) this.input.value = host === "codex" ? "$" : "/";
+    this.input.focus();
+    const end = this.input.value.length;
+    this.input.setSelectionRange(end, end);
+    this.slash.refresh();
   }
 
   // ── @ files ──

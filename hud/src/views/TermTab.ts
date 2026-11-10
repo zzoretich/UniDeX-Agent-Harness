@@ -37,6 +37,8 @@ export class TermTab {
   closeActive(): void { this.panel?.closeActive(); }
   focusComposer(): boolean { return this.panel?.focusComposer() ?? false; }
   openFind(): boolean { return this.panel?.openFind() ?? false; }
+  /** ⌘J: the selected agent terminal's chat or its live terminal (spec 2026-11-09-code-chat C1). */
+  toggleView(): void { this.panel?.toggleView(); }
   /** The New menu (⇧⌘T) or its New workspace sheet (⇧⌘N); `reason` says why ⌘T could not start at once. */
   openNewMenu(mode: "menu" | "create", reason: string | null = null): void { this.panel?.openNewMenu(mode, reason); }
 }

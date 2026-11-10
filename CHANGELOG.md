@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- **Code sessions as a chat.** A Claude Code or Codex terminal on Code opens as a chat drawn from the session's own transcript: your prompts as bubbles, the agent's replies, its tool calls (an edit opens to its input and result), Show earlier past the last 400 rows, and Stop while a turn runs. ⌘J, or the Chat · Terminal switch in the new top bar, flips to the same running terminal and back; nothing restarts, so every slash command, picker and the TUI's own prompts keep working there, and each terminal remembers its view. The composer sits in the chat's column with @ file, / commands, Snippets, access and model, and a Claude Code terminal's status line shows under it exactly as the terminal draws it, links included (elsewhere, "Status line in the terminal ⌘J"). Shells stay terminals. While the Code chat write surface is off, agent terminals open in the terminal and the switch says so. <!-- tour: code.chat-view -->
+
 ## [2.5.0] — 2026-11-09
 
 ### Added

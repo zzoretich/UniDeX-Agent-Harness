@@ -2,6 +2,17 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.6.0",
+      "entries": [
+        {
+          "id": "code-chat",
+          "title": "Code sessions as a chat",
+          "body": "A Claude Code or Codex terminal on Code opens as a chat: your prompts, the agent's replies and its tool calls, with the composer and your status line under it. ⌘J, or the Chat · Terminal switch, flips to the same running terminal and back; nothing restarts, so every slash command and picker still works there. Shells stay terminals.",
+          "steps": ["code.chat-view"]
+        }
+      ]
+    },
+    {
       "version": "2.5.0",
       "entries": [
         {

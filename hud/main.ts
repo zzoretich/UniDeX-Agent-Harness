@@ -11,6 +11,7 @@ import { QuickOpenModal } from "./src/ui/QuickOpenModal";
 import { TerminalPool } from "./src/data/terminalPool";
 import { closeComputerStores } from "./src/data/computerStore";
 import { TerminalLauncher } from "./src/data/terminalLauncher";
+import { CodeFeeds } from "./src/data/codeFeeds";
 import type { TermTab } from "./src/views/TermTab";
 import { loginsUnknown, sessionHosts, signedInHosts } from "./src/data/aosConfig";
 import type { TermHost } from "./src/data/terminalLaunch";
@@ -66,6 +67,8 @@ export default class AgenticOSPlugin extends Plugin {
   bus: Events = new Events();    // intra-plugin event bus for live-run fan-out
   terminalPool!: TerminalPool;
   termLauncher!: TerminalLauncher;
+  /** Each agent terminal's chat, followed for the terminal's life (spec 2026-11-09-code-chat); null before onload. */
+  codeFeeds: CodeFeeds | null = null;
   /** The guided tour, Help and Getting started (spec 2026-10-14-guided-tour-design). */
   tour!: TourController;
 
@@ -90,6 +93,13 @@ export default class AgenticOSPlugin extends Plugin {
       get cwd() { return settings().terminalCwd || vaultPath; },
     });
     this.termLauncher = new TerminalLauncher(this);
+    // The Code chat (spec 2026-11-09-code-chat): each agent terminal's follower and its cache, whichever tab started it.
+    // The cache and the vault's change events are both relative to this vault's own folder.
+    this.codeFeeds = new CodeFeeds(this.terminalPool, { vaultRoot: () => this.obsidianVaultPath() });
+    const codeChanged = (file: TAbstractFile) => { this.codeFeeds?.vaultChanged(file.path); };
+    this.registerEvent(this.app.vault.on("create", codeChanged));
+    this.registerEvent(this.app.vault.on("modify", codeChanged));
+    this.registerEvent(this.app.vault.on("delete", codeChanged));
     this.tour = new TourController(this);
 
     // views
@@ -140,6 +150,8 @@ export default class AgenticOSPlugin extends Plugin {
     this.addCommand({ id: "term-composer", name: "Write to the agent (composer)", hotkeys: [{ modifiers: ["Mod"], key: "l" }], callback: onTerm((t) => { t.focusComposer(); }) });
     this.addCommand({ id: "term-close", name: "Close terminal", hotkeys: [{ modifiers: ["Mod", "Shift"], key: "w" }], callback: onTerm((t) => t.closeActive()) });
     this.addCommand({ id: "term-find", name: "Find in the terminal", hotkeys: [{ modifiers: ["Mod"], key: "f" }], callback: onTerm((t) => { t.openFind(); }) });
+    // ⌘J: an agent terminal's chat or the same live terminal (spec 2026-11-09-code-chat C1).
+    this.addCommand({ id: "toggle-code-view", name: "Chat or terminal", hotkeys: [{ modifiers: ["Mod"], key: "J" }], callback: onTerm((t) => t.toggleView()) });
     this.addCommand({ id: "new-workspace", name: "New workspace…", hotkeys: [{ modifiers: ["Mod", "Shift"], key: "n" }],
       callback: () => { void this.termCommand(async (v) => v.openTermMenu("create")); } });
     this.addCommand({
@@ -206,6 +218,8 @@ export default class AgenticOSPlugin extends Plugin {
     if (this.runsWatcher) { try { this.runsWatcher.close(); } catch { /* ignore */ } this.runsWatcher = null; }
     if (this.liveRuns) { this.liveRuns.stop(); this.liveRuns = null; }
     this.hb?.stop();
+    this.codeFeeds?.dispose();
+    this.codeFeeds = null;
     this.terminalPool?.disposeAll();
     closeComputerStores();
     console.log("[agentic-os] unloaded");
