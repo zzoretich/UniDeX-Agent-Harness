@@ -1,7 +1,7 @@
 # UniDeX Code: a chat view over the live terminal
 
 **Date:** 2026-11-09
-**Status:** draft, waiting for approval. The mockups (today; options A, B and C; B's terminal view in dark; two B + A
+**Status:** approved 2026-11-09. The mockups (today; options A, B and C; B's terminal view in dark; two B + A
 hybrids that were set aside) are on a private design canvas, not in the repo. The user picked **B**.
 **Scope:** the Code tab (rail id `term`). An agent terminal shows a chat laid out like the Claude Code app, while the
 real `claude` or `codex` process keeps running in its PTY one keystroke away. The same release adds past conversations
