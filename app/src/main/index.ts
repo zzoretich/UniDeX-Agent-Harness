@@ -161,8 +161,8 @@ const ptyService = new PtyService({
   onAgentGone: (agent) => computerService.agentGone(agent),
   // R86: no terminal starts while the app quits (quit-gate.ts), so the quit's wait for their exits is the last one.
   quitting: () => quitting,
-  // code-chat R2: a terminal's transcript follower dies with it.
-  onEnd: (id) => codeMirror.unfollow(id),
+  // code-chat R16: a terminal's transcript follower ends when the terminal is closed, not when its agent exits.
+  onEnd: (id, terminal) => codeMirror.end(id, terminal),
 });
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
 // surface. A turn outlives a page reload; quitting stops every one.

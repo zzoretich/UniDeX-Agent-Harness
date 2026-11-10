@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { navAllowed, siteOf } from "../policy/computer-url";
 import { UUID_RE } from "../policy/programs";
-import type { ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
+import type { CodeFollowRequest, CodeUnfollowRequest, CodeViewRequest, ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
 
 const MB = 1024 * 1024;
 
@@ -95,14 +95,14 @@ const TerminalKey = z.string().regex(UUID_RE);
 const MirrorId = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((s) => !s.includes("..") && !s.startsWith("-"), "a session id");
 
 /** code:follow / code:view / code:unfollow (code-chat R2, R4, R10). */
-export const CodeFollowArgs = z.object({
+export const CodeFollowArgs: z.ZodType<CodeFollowRequest> = z.object({
   pty: Id,
   host: z.enum(["claude", "codex"]),
   terminal: TerminalKey,
   id: MirrorId.nullable().optional(),
 }).strict();
-export const CodeViewArgs = z.object({ host: z.enum(["claude", "codex"]), id: MirrorId }).strict();
-export const CodeUnfollowArgs = z.object({ pty: Id }).strict();
+export const CodeViewArgs: z.ZodType<CodeViewRequest> = z.object({ host: z.enum(["claude", "codex"]), id: MirrorId }).strict();
+export const CodeUnfollowArgs: z.ZodType<CodeUnfollowRequest> = z.object({ pty: Id }).strict();
 
 /** A Code launch's agent (agent-computer D18): the host and its words; main resolves the binary and checks the words. */
 /** pty:agent-flags: which host's Code launch (agent-computer R70), and `sub: "resume"` for a resume line (R77). */

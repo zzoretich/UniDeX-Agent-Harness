@@ -1,15 +1,18 @@
-// The Code chat view's transcript mirror, in main (spec 2026-11-09-code-chat, R2, R4, R10, R13–R15). One follower per agent
-// terminal: `node <vault>/brain/scripts/lib/sessions.js mirror …`, which writes the conversation as events into
-// <vault>/brain/_index/code/<terminal>.jsonl for the page to read, and a one-shot run for a past conversation the person
-// opens. Nothing runs while the Code chat surface is off. The page names a pty, a host, a session id and a terminal key;
-// never a path or an argument. Every argv is checked against the surface's spawn rules (shared/surfaces.ts) before it
-// runs, and the cache goes back as a vault-relative path. A follower dies with its terminal (onEnd), at unfollow and at
-// stopAll (the app's quit), by SIGTERM.
+// The Code chat view's transcript mirror, in main (spec 2026-11-09-code-chat, R2, R4, R10, R13–R18). One follower per agent
+// terminal (its key, AOS_TERMINAL): `node <vault>/brain/scripts/lib/sessions.js mirror …`, which writes the conversation as
+// events into <vault>/brain/_index/code/<terminal>.jsonl for the page to read, and a one-shot run for a past conversation
+// the person opens. Nothing runs while the Code chat surface is off. The page names a pty, a host, a session id and a
+// terminal key, never a path or an argument, and the key must be the one that pty started with (M6). Every argv is
+// checked against the surface's spawn rules (shared/surfaces.ts) before it runs, and the cache goes back as a
+// vault-relative path. A follower lives as long as its terminal (R16), not its PTY: an agent that exits hands the terminal
+// to the login shell, a new PTY with the same key, and the follower goes on. It stops when the terminal is closed (end,
+// from PtyService's kill and killAll), at unfollow and at stopAll (the app's quit), by SIGTERM. A follower that fails
+// says so once in main's log.
 
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { CodeCache, CodeFollowRequest, CodeViewRequest, Result } from "../../shared/ipc";
+import type { CodeCache, CodeFollow, CodeFollowRequest, CodeViewRequest, Result } from "../../shared/ipc";
 import { SURFACES } from "../../shared/surfaces";
 import { programRefusal, spawnEnv, UUID_RE, type ProgramContext } from "../policy/programs";
 import { refused } from "./fs";
@@ -37,18 +40,27 @@ export interface CodeMirrorOptions {
   env: NodeJS.ProcessEnv;
   /** The user's node, for the runtime's scripts. */
   node: () => string | null;
-  /** A running terminal's folder and start time (PtyService.info). */
-  ptyInfo: (pty: string) => { cwd: string; startedAt: number } | null;
+  /** A terminal's folder, start time and key (PtyService.info). */
+  ptyInfo: (pty: string) => { cwd: string; startedAt: number; terminal: string | null } | null;
   spawnImpl?: typeof childProcess.spawn;
   viewTimeoutMs?: number;
   killAfterMs?: number;
 }
 
-interface Follower { terminal: string; cache: string; child: childProcess.ChildProcess }
+interface Follower { pty: string; terminal: string; host: "claude" | "codex"; id: string | null; cache: string; child: childProcess.ChildProcess }
 
 const fail = (error: string, code: string): Result<never> => ({ ok: false, error, code });
+const OLD_RUNTIME = "the runtime is older than this app: run aos upgrade";
+const alive = (c: childProcess.ChildProcess): boolean => c.exitCode === null && c.signalCode === null;
+/** Why a run of the runtime ended with `code`: a usage exit is a runtime older than the mirror verb (M1). */
+const exitWhy = (code: number | null, stderr: string): string => {
+  if (code === 2 && /\busage:/.test(stderr)) return OLD_RUNTIME;
+  const said = stderr.trim().split("\n").pop();
+  return `the runtime stopped (exit ${code})${said ? `: ${said}` : ""}`;
+};
 
 export class CodeMirrorService {
+  /** By terminal key. */
   private readonly followers = new Map<string, Follower>();
   private readonly views = new Set<childProcess.ChildProcess>();
 
@@ -69,8 +81,10 @@ export class CodeMirrorService {
     const ctx = this.o.context();
     const bad = programRefusal(node, ctx);
     if (bad) return { refusal: `node: ${bad}` };
-    const script = path.join(vault, "brain", "scripts", "lib", "sessions.js");
-    if (!fs.existsSync(script)) return { refusal: "this vault's runtime has no chat view yet: run aos upgrade" };
+    const lib = path.join(vault, "brain", "scripts", "lib");
+    const script = path.join(lib, "sessions.js");
+    // M1: the mirror verb came with lib/code-mirror.js; a runtime without it would only print its usage.
+    if (!fs.existsSync(path.join(lib, "code-mirror.js")) || !fs.existsSync(script)) return { refusal: "this vault's runtime has no chat view yet: run aos upgrade" };
     const env = spawnEnv(this.o.env, { AOS_VAULT: vault, AOS_HOST: "" }, [], ctx);
     if ("refusal" in env) return { refusal: env.refusal };
     try {
@@ -90,42 +104,69 @@ export class CodeMirrorService {
   }
 
   /**
-   * Follows `pty`'s conversation into brain/_index/code/<terminal>.jsonl. With an `id` the follower names that session
-   * (`--id`); without one it names the terminal's folder and start time (`--cwd`, `--since`, R10). Idempotent per pty and
-   * terminal (R2): a second call returns the running follower's cache. Another terminal key for the same pty replaces it.
+   * Follows `pty`'s conversation into brain/_index/code/<terminal>.jsonl. With an `id` Claude's follower names that session
+   * (`--id`); Codex's names it and keeps the terminal's folder (`--id`, `--cwd`, `--since`: R18). Without one it names the
+   * folder and start time (`--cwd`, `--since`, R10). Idempotent per pty, terminal, host and id (R2): the running follower's
+   * cache with `fresh: false`. Anything else for the terminal replaces its follower, `fresh: true` (R16b). The key must be
+   * the one the pty started with (M6).
    */
-  follow(req: CodeFollowRequest): Result<CodeCache> {
+  follow(req: CodeFollowRequest): Result<CodeFollow> {
     const why = this.refusal();
     if (why) { console.warn(`[main] code:follow: ${why}`); return refused(why); }
     if (req.host !== "claude" && req.host !== "codex") return fail("a host", "EINVAL");
     if (typeof req.terminal !== "string" || !UUID_RE.test(req.terminal)) return fail("a terminal key", "EINVAL");
     if (req.id != null && !validId(req.id)) return fail("a session id", "EINVAL");
-    const running = this.followers.get(req.pty);
-    if (running && running.terminal === req.terminal && running.child.exitCode === null && running.child.signalCode === null) return { ok: true, data: { cache: running.cache } };
+    const id = req.id ?? null;
+    const running = this.followers.get(req.terminal);
+    if (running && running.pty === req.pty && running.host === req.host && running.id === id && alive(running.child)) {
+      return { ok: true, data: { cache: running.cache, fresh: false } };
+    }
     const info = this.o.ptyInfo(req.pty);
     if (!info) return fail("no such terminal", "ENOENT");
-    this.unfollow(req.pty);
-    const args = req.id != null
-      ? ["mirror", "--host", req.host, "--id", req.id, "--terminal", req.terminal, "--follow"]
-      : ["mirror", "--host", req.host, "--cwd", info.cwd, "--since", String(Math.max(0, Math.floor(info.startedAt))), "--terminal", req.terminal, "--follow"];
+    if (info.terminal !== req.terminal) return fail("that terminal key is not this terminal's", "EINVAL");
+    this.stop((f) => f.terminal === req.terminal || f.pty === req.pty);
+    const since = String(Math.max(0, Math.floor(info.startedAt)));
+    const args = id === null
+      ? ["mirror", "--host", req.host, "--cwd", info.cwd, "--since", since, "--terminal", req.terminal, "--follow"]
+      : req.host === "codex"
+        ? ["mirror", "--host", req.host, "--id", id, "--cwd", info.cwd, "--since", since, "--terminal", req.terminal, "--follow"]
+        : ["mirror", "--host", req.host, "--id", id, "--terminal", req.terminal, "--follow"];
     const s = this.spawn(args);
     if ("refusal" in s) return fail(s.refusal, "EIO");
     const cache = `brain/_index/code/${req.terminal}.jsonl`;
-    const f: Follower = { terminal: req.terminal, cache, child: s.child };
-    this.followers.set(req.pty, f);
-    const gone = (): void => { if (this.followers.get(req.pty) === f) this.followers.delete(req.pty); };
+    const f: Follower = { pty: req.pty, terminal: req.terminal, host: req.host, id, cache, child: s.child };
+    this.followers.set(req.terminal, f);
+    let stderr = "";
+    let warned = false;
+    // F10: a follower that fails says so once (a SIGTERM's exit has no code, and says nothing).
+    const warn = (what: string): void => { if (!warned) { warned = true; console.warn(`[main] code:follow: the follower for ${req.terminal}: ${what}`); } };
+    const gone = (): void => { if (this.followers.get(req.terminal) === f) this.followers.delete(req.terminal); };
     s.child.on("exit", gone);
-    s.child.on("error", gone);
-    s.child.stderr?.on("data", () => { /* drained; the follower reports its state in its cache */ });
-    return { ok: true, data: { cache } };
+    s.child.on("error", (err) => { gone(); warn(`it did not start (${(err as NodeJS.ErrnoException).code ?? err.message})`); });
+    s.child.stderr?.on("data", (b: Buffer) => { stderr = (stderr + b.toString("utf8")).slice(-STDERR_TAIL); });
+    s.child.on("close", (code: number | null) => { if (code !== null && code !== 0) warn(exitWhy(code, stderr)); });
+    return { ok: true, data: { cache, fresh: true } };
   }
 
-  /** Stops the pty's follower (SIGTERM); nothing when none runs. */
+  /** SIGTERMs the followers `which` picks. */
+  private stop(which: (f: Follower) => boolean): void {
+    for (const [key, f] of [...this.followers]) {
+      if (!which(f)) continue;
+      this.followers.delete(key);
+      this.stopChild(f.child);
+    }
+  }
+
+  /** Stops the follower of the terminal `pty` belongs to: started for it, or for another PTY with its key (the agent the
+   *  login shell took over from). Nothing when none runs. */
   unfollow(pty: string): void {
-    const f = this.followers.get(pty);
-    if (!f) return;
-    this.followers.delete(pty);
-    this.stopChild(f.child);
+    const key = this.o.ptyInfo(pty)?.terminal ?? null;
+    this.stop((f) => f.pty === pty || (key !== null && f.terminal === key));
+  }
+
+  /** The terminal `pty` was closed (PtyService's onEnd: kill, killAll); `terminal` is its key. */
+  end(pty: string, terminal: string | null): void {
+    this.stop((f) => f.pty === pty || (terminal !== null && f.terminal === terminal));
   }
 
   /** Mirrors a past conversation once and answers with its cache, or why it could not (exit not 0, or over the timeout). */
@@ -155,6 +196,7 @@ export class CodeMirrorService {
       child.on("close", (code) => {
         if (timedOut) return done(fail("the conversation took too long to load", "ETIMEDOUT"));
         if (code === 0) return done({ ok: true, data: { cache: `brain/_index/code/${req.host}-${req.id}.jsonl` } });
+        if (code === 2 && /\busage:/.test(stderr)) return done(fail(OLD_RUNTIME, "EIO"));
         done(fail(stderr.trim().split("\n").pop() || `the runtime stopped (exit ${code})`, "EIO"));
       });
     });
@@ -162,7 +204,7 @@ export class CodeMirrorService {
 
   /** On quit: every follower and every one-shot run is stopped. */
   stopAll(): void {
-    for (const pty of [...this.followers.keys()]) this.unfollow(pty);
+    this.stop(() => true);
     for (const c of [...this.views]) this.stopChild(c);
     this.views.clear();
   }

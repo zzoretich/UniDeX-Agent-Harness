@@ -577,8 +577,13 @@ export interface PtyAgentRequest {
 /** code:follow: the terminal's pty id, its host, its key (AOS_TERMINAL), and the conversation's id when the deck knows it. */
 export interface CodeFollowRequest { pty: string; host: "claude" | "codex"; terminal: string; id?: string | null }
 export interface CodeViewRequest { host: "claude" | "codex"; id: string }
+/** code:unfollow: any pty of the terminal whose follower stops. */
+export interface CodeUnfollowRequest { pty: string }
 /** A mirror's cache, as a vault-relative path (brain/_index/code/<key>.jsonl). */
 export interface CodeCache { cache: string }
+/** A follower's cache, and whether this call started it (code-chat R16b): a fresh follower writes its cache from the start,
+ *  so a reader starts its tail over. */
+export interface CodeFollow extends CodeCache { fresh: boolean }
 
 export type PtyEvent =
   | { id: string; type: "data"; data: string }
@@ -725,10 +730,10 @@ export interface AosBridge {
   };
   /** The Code chat view's transcript mirror (spec 2026-11-09-code-chat), run by main while the Code chat surface is on. */
   code: {
-    /** Follows an agent terminal's conversation; `cache` is the vault-relative file the page reads. Calling it again for the
-     *  same terminal returns the running follower's cache. */
-    follow(req: CodeFollowRequest): Promise<Result<CodeCache>>;
-    /** Stops the terminal's follower (one-way; nothing when none runs). */
+    /** Follows an agent terminal's conversation; `cache` is the vault-relative file the page reads. Calling it again with the
+     *  same pty, terminal, host and id returns the running follower's cache with `fresh: false`. */
+    follow(req: CodeFollowRequest): Promise<Result<CodeFollow>>;
+    /** Stops the follower of the terminal `pty` belongs to (one-way; nothing when none runs). */
     unfollow(pty: string): void;
     /** Mirrors a past conversation once and returns its cache. */
     view(req: CodeViewRequest): Promise<Result<CodeCache>>;

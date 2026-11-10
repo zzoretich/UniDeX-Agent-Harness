@@ -1,5 +1,5 @@
 import { Events } from "obsidian";
-import { pty as hostPty, type HostPtyAgentResult } from "../host";
+import { codeChatOn, pty as hostPty, type HostPtyAgentResult } from "../host";
 import { TerminalSession, TerminalSessionOptions, type TerminalMeta } from "./terminalSession";
 import { TERM_HOST_LABEL, launchArgs, launchLine, placeKey, type LaunchSpec, type Place } from "./terminalLaunch";
 
@@ -83,7 +83,8 @@ export class TerminalPool extends Events {
       : hostPty.spawnAgent({
         host: s.host, argv: launchArgs(s), cwd: o.place.dir, configDir: s.configDir ?? null, gitInit: !!s.gitInit,
         cols: size.cols, rows: size.rows, place, label: `${label} in ${o.place.label}`.slice(0, LABEL_MAX), access: s.access,
-        terminal: session.meta.terminalKey,
+        // code-chat F9: the key only while the Code chat surface is on.
+        ...(codeChatOn() ? { terminal: session.meta.terminalKey } : {}),
       }));
     const asked = ask(spec).then(async (r) => {
       if (r.ok || r.code !== "flags" || !("flags" in r) || !o.onFlags || session.isClosed) return r;

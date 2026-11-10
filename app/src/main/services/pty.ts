@@ -21,7 +21,7 @@ import type { AgentFlags, PtyAgentRequest, PtyAgentResult, PtyEvent, PtySpawnReq
 import { launchForm, VENDOR, type Sys } from "../computer/admission";
 import type { AgentRef, AgentRegistry } from "../computer/registry";
 import { agentArgvRefusal } from "../policy/agent-launch";
-import { programRefusal, ptyEnv, shellRefusal, type ProgramContext } from "../policy/programs";
+import { programRefusal, ptyEnv, shellRefusal, UUID_RE, type ProgramContext } from "../policy/programs";
 import { failure, refused } from "./fs";
 import type { BinResolution } from "./sessions";
 
@@ -45,12 +45,14 @@ export interface PtyLib { spawn(file: string, args: string[], opts: Record<strin
  * The environment a terminal starts from (spec 2026-10-08-term-agent-deck T14): main's own, with the login shell's PATH
  * when it is known, since an app opened from Finder has launchd's PATH and the terminal's zsh is not a login shell
  * (no /etc/zprofile, no ~/.zprofile), so `claude` or `codex` — or the node an npm-installed one runs on — would not be
- * found. CLAUDECODE goes: an app started from a Claude Code session must not make its terminals look like one.
+ * found. CLAUDECODE goes: an app started from a Claude Code session must not make its terminals look like one. So does
+ * AOS_TERMINAL (code-chat F8): an app started inside an agent terminal must not hand that terminal's key to its own.
  */
 export function terminalBaseEnv(env: NodeJS.ProcessEnv, loginPATH: string | null): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   if (loginPATH) out.PATH = loginPATH;
   delete out.CLAUDECODE;
+  delete out.AOS_TERMINAL;
   return out;
 }
 
@@ -92,8 +94,10 @@ export interface PtyServiceOptions {
   /** Whether the app is quitting (R86): no terminal starts then, so none is left running into Electron's teardown (an
    *  agent's exit makes the page start a shell in its terminal). Absent, counted as not. */
   quitting?: () => boolean;
-  /** A terminal ended (its process exited, or killAll ended it): the Code chat's follower for it stops (code-chat R2). */
-  onEnd?: (id: string) => void;
+  /** A terminal was closed: `kill(id)` (even after its process exited) or killAll, never the process's own exit (an agent
+   *  that exits hands its terminal to the login shell). `terminal` is the key the PTY started with (AOS_TERMINAL), or null.
+   *  The Code chat's follower for that terminal stops (code-chat R16). */
+  onEnd?: (id: string, terminal: string | null) => void;
   now?: () => number;
 }
 
@@ -142,8 +146,9 @@ export class PtyService {
   private lib: PtyLib | null = null;
   private loadError: string | null = null;
   private readonly sessions = new Map<string, PtyProcess>();
-  /** Terminal id → its folder and when it started, while it runs (info, for the Code chat's followers: code-chat R10). */
-  private readonly started = new Map<string, { cwd: string; startedAt: number }>();
+  /** Terminal id → its folder, when it started and the key it carries (AOS_TERMINAL), until it is closed (kill, killAll):
+   *  info, for the Code chat's followers (code-chat R10, M6). It outlives the process's own exit, as the follower does. */
+  private readonly started = new Map<string, { cwd: string; startedAt: number; terminal: string | null }>();
   /** Terminal id → the pid of the agent it runs (spawnAgent), while it is registered. */
   private readonly agents = new Map<string, number>();
   /** Bumped by killAll: an agent still being resolved when its page went is not started. */
@@ -165,17 +170,21 @@ export class PtyService {
     return this.loadLib() ? { ok: true, data: null } : { ok: false, error: `node-pty failed to load: ${this.loadError}`, code: "ENOSYS" };
   }
 
-  /** A running terminal's folder and start time (epoch ms), or null for one main does not know. */
-  info(id: string): { cwd: string; startedAt: number } | null {
+  /** A terminal's folder, start time (epoch ms) and key, from its start until it is closed; null for one main does not know. */
+  info(id: string): { cwd: string; startedAt: number; terminal: string | null } | null {
     const i = this.started.get(id);
     return i ? { ...i } : null;
   }
 
-  private begin(id: string, cwd: string): void { this.started.set(id, { cwd, startedAt: (this.o.now ?? Date.now)() }); }
+  private begin(id: string, cwd: string, terminal: string | undefined): void {
+    this.started.set(id, { cwd, startedAt: (this.o.now ?? Date.now)(), terminal: typeof terminal === "string" && UUID_RE.test(terminal) ? terminal : null });
+  }
 
+  /** The terminal was closed (kill, killAll): its follower stops (code-chat R16). */
   private end(id: string): void {
+    const terminal = this.started.get(id)?.terminal ?? null;
     this.started.delete(id);
-    try { this.o.onEnd?.(id); } catch { /* a follower's stop never blocks a terminal's exit */ }
+    try { this.o.onEnd?.(id, terminal); } catch { /* a follower's stop never blocks a terminal's close */ }
   }
 
   spawn(req: PtySpawnRequest): Result<{ pid: number }> {
@@ -196,12 +205,15 @@ export class PtyService {
     } catch (err) { return failure(err); }
     const { id } = req;
     this.sessions.set(id, p);
-    this.begin(id, req.cwd);
+    this.begin(id, req.cwd, req.env?.AOS_TERMINAL);
     p.onData((data) => this.o.emit({ id, type: "data", data }));
     p.onExit((e) => {
       this.reaped(p);
-      this.sessions.delete(id);
-      this.end(id);
+      // A stale shell (its page went, its id taken again since) neither ends nor speaks for the terminal that has the id
+      // now; one killAll ended whose id is free still reports its exit.
+      const now = this.sessions.get(id);
+      if (now !== undefined && now !== p) return;
+      if (now === p) this.sessions.delete(id);
       this.o.emit({ id, type: "exit", exitCode: e.exitCode, ...(e.signal !== undefined ? { signal: e.signal } : {}) });
     });
     return { ok: true, data: { pid: p.pid } };
@@ -334,7 +346,7 @@ export class PtyService {
     const pid = p.pid;
     this.sessions.set(id, p);
     this.agents.set(id, pid);
-    this.begin(id, req.cwd);
+    this.begin(id, req.cwd, req.terminal);
     registry.add({ pid, host: req.host, page: "code", key: `code:${id}`, label: req.label, place: req.place, access: req.access });
     p.onData((data) => this.o.emit({ id, type: "data", data }));
     p.onExit((e) => {
@@ -343,7 +355,6 @@ export class PtyService {
       // A stale agent (its page went, its id taken again since) says nothing to the terminal that has the id now.
       if (this.sessions.get(id) !== p) return;
       this.sessions.delete(id);
-      this.end(id);
       this.o.emit({ id, type: "exit", exitCode: e.exitCode, ...(e.signal !== undefined ? { signal: e.signal } : {}) });
     });
     return { ok: true, data: { pid } };
@@ -386,13 +397,16 @@ export class PtyService {
     try { this.sessions.get(id)?.resize(cols, rows); } catch { /* a race with its exit */ }
   }
 
+  /** The page closes a terminal (its pty:kill). Its Code chat follower stops too, even when the process exited already. */
   kill(id: string, signal?: string): void {
     const p = this.sessions.get(id);
-    if (!p) return;
-    try { p.kill(signal && SIGNALS.has(signal) ? signal : undefined); } catch { /* gone */ }
-    // A closed terminal's agent is forgotten at once, not when its exit arrives (agent-computer D18).
-    const pid = this.agents.get(id);
-    if (pid !== undefined) this.forget(id, pid);
+    if (p) {
+      try { p.kill(signal && SIGNALS.has(signal) ? signal : undefined); } catch { /* gone */ }
+      // A closed terminal's agent is forgotten at once, not when its exit arrives (agent-computer D18).
+      const pid = this.agents.get(id);
+      if (pid !== undefined) this.forget(id, pid);
+    }
+    this.end(id);
   }
 
   /** Every terminal ends with the page that opened it, and on quit. Each stays in `dying` until node-pty reports its
@@ -402,7 +416,7 @@ export class PtyService {
       this.dying.add(p);
       try { p.kill(); } catch { /* gone */ }
     }
-    for (const id of [...this.sessions.keys()]) this.end(id);
+    for (const id of new Set([...this.sessions.keys(), ...this.started.keys()])) this.end(id);
     this.sessions.clear();
     this.epoch++;
     for (const [id, pid] of [...this.agents]) this.forget(id, pid);

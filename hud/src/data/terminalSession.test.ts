@@ -47,8 +47,9 @@ function proc(pid: number): Proc {
   return p;
 }
 
-/** A host whose terminals are fakes: spawn records the shells, spawnAgent answers what the test hands it. */
-function fakeHost(agentAnswer?: () => Promise<HostPtyAgentResult>) {
+/** A host whose terminals are fakes: spawn records the shells, spawnAgent answers what the test hands it. `code` is
+ *  whether the Code chat surface is on (absent: a host without it, as plain Node). */
+function fakeHost(agentAnswer?: () => Promise<HostPtyAgentResult>, opts: { code?: boolean } = {}) {
   const shells: Array<{ file: string; opts: HostPtyOptions; p: Proc }> = [];
   const requests: HostPtyAgentRequest[] = [];
   let pid = 100;
@@ -60,6 +61,14 @@ function fakeHost(agentAnswer?: () => Promise<HostPtyAgentResult>) {
       spawn: (file, _args, opts) => { const p = proc(++pid); shells.push({ file, opts, p }); return p; },
       ...(agentAnswer ? { spawnAgent: (req: HostPtyAgentRequest) => { requests.push(req); return agentAnswer(); } } : {}),
     },
+    ...(opts.code !== undefined ? {
+      code: {
+        enabled: opts.code,
+        follow: async () => ({ ok: false as const, error: "", code: "EROFS" }),
+        unfollow: () => {},
+        view: async () => ({ ok: false as const, error: "", code: "EROFS" }),
+      },
+    } : {}),
   };
   setHudHost(host);
   return { shells, requests };
@@ -72,7 +81,7 @@ const META = { host: "claude" as const, place: PLACE, origin: null, label: null,
 test("the terminal shows at once; main's agent becomes its process; when the agent exits the login shell takes over, and the terminal ends only with that shell", async () => {
   const agent = proc(4242);
   let answer: (r: HostResult<HostPtyProcess>) => void = () => {};
-  const { shells, requests } = fakeHost(() => new Promise((r) => { answer = r; }));
+  const { shells, requests } = fakeHost(() => new Promise((r) => { answer = r; }), { code: true });
   const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
   const exits: unknown[] = [];
   pool.on("session-exit", (s: unknown) => exits.push(s));
@@ -283,7 +292,7 @@ test("R80: the flags retry relaunches the same spec with only main's answer chan
 });
 
 test("code-chat R15: AOS_TERMINAL is the terminal's key on an agent terminal's shell and on none else; a restored meta without a key gets a fresh one", async () => {
-  const { shells } = fakeHost(async () => ({ ok: false, error: "", code: "fallback" }));
+  const { shells } = fakeHost(async () => ({ ok: false, error: "", code: "fallback" }), { code: true });
   const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
   const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
   await ready;
@@ -294,4 +303,26 @@ test("code-chat R15: AOS_TERMINAL is the terminal's key on an agent terminal's s
   const kept = pool.create({ meta: { host: "codex", terminalKey: "aaaaaaaa-0000-4000-8000-000000000001" } });
   assert.equal(shells[2].opts.env?.AOS_TERMINAL, "aaaaaaaa-0000-4000-8000-000000000001");
   assert.equal(kept.meta.terminalKey, "aaaaaaaa-0000-4000-8000-000000000001");
+});
+
+test("code-chat F9: with the Code chat surface off (or a host without it) no terminal carries AOS_TERMINAL and main is not asked to set it", async () => {
+  for (const code of [false, undefined]) {
+    const { shells, requests } = fakeHost(async () => ({ ok: false, error: "", code: "fallback" }), code === undefined ? {} : { code });
+    const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+    const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
+    await ready;
+    assert.equal(requests[0].terminal, undefined, `spawnAgent (code ${code})`);
+    assert.equal(shells[0].opts.env?.AOS_TERMINAL, undefined, `the fallback shell (code ${code})`);
+    assert.match(session.meta.terminalKey, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "the key exists all the same");
+  }
+});
+
+test("code-chat F14: a restored meta whose key is not a v4 UUID gets a fresh one", () => {
+  fakeHost(undefined, { code: true });
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  for (const bad of ["x", "../a", "0B9F3C7E-5A1D-4C8E-9F2A-7D6E5C4B3A21", "0b9f3c7e-5a1d-1c8e-9f2a-7d6e5c4b3a21", ""]) {
+    const t = pool.create({ meta: { host: "codex", terminalKey: bad } });
+    assert.notEqual(t.meta.terminalKey, bad, bad);
+    assert.match(t.meta.terminalKey, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  }
 });

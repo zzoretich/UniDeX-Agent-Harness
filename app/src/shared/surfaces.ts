@@ -690,6 +690,8 @@ export const SURFACES: readonly Surface[] = [
     spawns: [
       { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--id", MIRROR_ID, "--terminal", TERMINAL_KEY, "--follow") },
       { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--cwd", MIRROR_CWD, "--since", MIRROR_SINCE, "--terminal", TERMINAL_KEY, "--follow") },
+      // R18: a Codex terminal whose conversation the deck knows starts on that rollout, then follows its folder.
+      { script: "lib/sessions.js", args: argv("mirror", "--host", /codex/, "--id", MIRROR_ID, "--cwd", MIRROR_CWD, "--since", MIRROR_SINCE, "--terminal", TERMINAL_KEY, "--follow") },
       { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--id", MIRROR_ID, "--once") },
     ],
     verified: false,

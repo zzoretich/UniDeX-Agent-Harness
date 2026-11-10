@@ -266,6 +266,8 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
   };
   // The Code chat view's transcript mirror (spec 2026-11-09-code-chat): main answers a refusal while its surface is off.
   const code: HostCode = {
+    // The surfaces are fixed when the app starts: off, no terminal carries AOS_TERMINAL (code-chat F9).
+    enabled: info.writeSurfaces.includes("code"),
     follow: (req) => settle(aos.code.follow(req)),
     unfollow: (p) => aos.code.unfollow(p),
     view: (req) => settle(aos.code.view(req)),
