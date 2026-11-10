@@ -62,6 +62,8 @@ export interface HistoryRow {
   where: string | null;
   /** When it started (else last moved), local day and time. */
   at: string | null;
+  /** When it last moved (the index's lastAt), or null: Code's sidebar windows and orders by it (C6). */
+  lastAt: string | null;
   day: string;
   time: string;
   resume: HistoryResume;
@@ -194,7 +196,7 @@ export function historyRows(sessions: readonly IndexedSession[], digests: Readon
         title: (dg?.title ?? s.title ?? "").replace(/\s+/g, " ").trim() || "Untitled session",
         summary: dg?.summary ?? null,
         workspace, where: workspace ?? (s.cwd ? shortenCwd(s.cwd, world.home) : null),
-        at, day, time, resume: resumeFor(s, workspace, choices, world), sort: ms(at),
+        at, lastAt: s.lastAt, day, time, resume: resumeFor(s, workspace, choices, world), sort: ms(at),
         place: workspace ? workspacePlace(workspace, world) : cwdPlace ?? vaultPlace(world),
       };
     })

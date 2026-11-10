@@ -67,6 +67,8 @@ test("rows newest first, with the digest's line, the workspace (the digest's, el
     ["codex", "Old spike", null, "/opt/sample/spike", null],
   ]);
   assert.equal(rows[0].day, localDayTime("2026-10-14T09:59:00.000Z").day);
+  // The index's last activity rides along (Code's sidebar windows and orders by it, C6).
+  assert.deepEqual(rows.map((r) => r.lastAt), ["2026-10-14T10:30:00.000Z", "2026-10-13T08:20:00.000Z", "2026-09-01T08:00:00.000Z"]);
   assert.equal(historyCount(rows), "3 past sessions · Claude Code 1 · Codex 2 · 1 summarised");
   assert.equal(historyCount([]), "No past sessions on this Mac yet");
   assert.ok(HISTORY_PAGE >= 50);

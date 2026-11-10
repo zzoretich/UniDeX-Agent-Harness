@@ -463,6 +463,10 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     await expect(C(win).locator(".aos-tl-past")).toHaveCount(1);
     await C(win).locator(".aos-tl-filter").fill("codex");
     await expect(C(win).locator(".aos-tl-past").first()).toHaveAttribute("data-host", "codex");
+    // A workspace's name finds its conversations too (I6).
+    await C(win).locator(".aos-tl-filter").fill("harbor-map");
+    await expect(tide).toBeVisible();
+    await expect(C(win).locator(".aos-tl-group")).toHaveCount(1);
     await C(win).locator(".aos-tl-filter").fill("");
   });
 

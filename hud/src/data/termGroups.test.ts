@@ -71,7 +71,7 @@ const NOW = Date.parse("2026-11-09T12:00:00Z");
 const DAY = 86_400_000;
 const hist = (id: string, place: Place, ago: number, extra: Partial<HistoryRow> = {}): HistoryRow => ({
   key: `claude:${id}`, id, host: "claude", hostLabel: "Claude Code", title: `h${id}`, summary: null, workspace: place.workspace ?? null, where: place.label,
-  at: new Date(NOW - ago).toISOString(), day: "", time: "", resume: { state: "on", place, hint: "" }, place, ...extra,
+  at: new Date(NOW - ago).toISOString(), lastAt: null, day: "", time: "", resume: { state: "on", place, hint: "" }, place, ...extra,
 });
 const sb = (open: ReturnType<typeof row>[], history: HistoryRow[], o: Partial<Parameters<typeof groupSidebar>[2]> = {}) =>
   groupSidebar(open, history, { now: NOW, filter: "", closed: [], ...o });
@@ -137,6 +137,28 @@ test("sidebar: the filter matches the title and the host, in open, closed and pa
   assert.deepEqual(sb(open, hs, { filter: " CODEX " }).flatMap(ids), ["2", "b"]);
   assert.deepEqual(sb(open, hs, { filter: "claude" }).flatMap(ids), ["1", "a"]);
   assert.equal(sb(open, hs, { filter: "zzz" }).length, 0);
+});
+
+test("sidebar: a past conversation counts by its last activity, not its start: started weeks ago, resumed today, it stays (I5)", () => {
+  // Started 20 days ago, last moved an hour ago: inside the window, and newer than one started and last moved 2 days ago.
+  const resumed = hist("old-start", ws("kite"), 20 * DAY, { lastAt: new Date(NOW - 3_600_000).toISOString() });
+  const recent = hist("recent", ws("kite"), 2 * DAY, { lastAt: new Date(NOW - 2 * DAY).toISOString() });
+  const reef = hist("reef", ws("reef"), 3 * 3_600_000, { lastAt: new Date(NOW - 3 * 3_600_000).toISOString() });
+  const g = sb([], [recent, reef, resumed]);
+  assert.deepEqual(g.map((x) => x.key), ["ws:kite", "ws:reef"], "the group ordered by its newest activity");
+  assert.deepEqual(ids(g[0]), ["old-start", "recent"], "rows newest activity first");
+  // With no lastAt the start still counts.
+  assert.equal(sb([], [hist("plain", ws("kite"), 20 * DAY)]).length, 0);
+});
+
+test("sidebar: the filter also matches the place and where a row came from, in open, closed and past rows (I6)", () => {
+  const open = [row("1", ws("harbor-map"), NOW, { title: "Fix the race" }), row("2", vault, NOW - 1, { title: "Docs", origin: "Skills" })];
+  const closed = [{ ...row("c", ws("harbor-map"), NOW - 5, { exited: true, exitCode: 0, title: "Closed one" }), sessionId: "s-c" }];
+  const hs = [hist("a", ws("harbor-map"), 1000, { title: "Race in tests" }), hist("b", ws("reef"), 1000, { title: "Other", where: "~/code/reef-app" })];
+  assert.deepEqual(sb(open, hs, { filter: "harbor", closed }).flatMap(ids), ["1", "c", "a"], "a workspace's name finds its terminals and past rows");
+  assert.deepEqual(sb(open, hs, { filter: "skills", closed }).flatMap(ids), ["2"], "what started it");
+  assert.deepEqual(sb(open, hs, { filter: "vault", closed }).flatMap(ids), ["2"], "the vault's place");
+  assert.deepEqual(sb(open, hs, { filter: "reef-app", closed }).flatMap(ids), ["b"], "where a past one ran");
 });
 
 test("sidebar: an open row's status comes from rowStatus; the order and age text for stepping and rows", () => {

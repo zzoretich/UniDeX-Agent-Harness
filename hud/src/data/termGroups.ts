@@ -162,14 +162,15 @@ export interface SidebarOptions {
  * past conversation is within the window; workspaces and Scratch keep their own group, the vault, home and every other
  * folder share "Other folders". Groups are ordered by their newest activity; a group lists its open terminals first (they
  * never count against the cut), then the closed and past conversations newest first, `perGroup` of them and `more` left.
- * A conversation an open terminal is in, or a closed one the index already lists, shows once. The filter matches title and
- * host.
+ * A past conversation's activity is when it last moved (the index's lastAt), else its start. A conversation an open
+ * terminal is in, or a closed one the index already lists, shows once. The filter matches the title, the host, the place
+ * and what started a terminal or where a past one ran.
  */
 export function groupSidebar(open: TermRowInput[], history: HistoryRow[], o: SidebarOptions): SidebarGroup[] {
   const q = o.filter.trim().toLowerCase();
   const per = o.perGroup ?? 10;
   const windowMs = (o.windowDays ?? 14) * DAY_MS;
-  const hit = (title: string, host: string, hostLabel: string): boolean => !q || `${title}\n${host}\n${hostLabel}`.toLowerCase().includes(q);
+  const hit = (...fields: Array<string | null | undefined>): boolean => !q || fields.filter(Boolean).join("\n").toLowerCase().includes(q);
 
   const taken = new Set<string>();
   for (const r of open) if (r.sessionId) taken.add(convoKey(r.host, r.sessionId));
@@ -187,20 +188,20 @@ export function groupSidebar(open: TermRowInput[], history: HistoryRow[], o: Sid
   };
 
   for (const r of open) {
-    if (!hit(r.title, r.host, TERM_HOST_LABEL[r.host])) continue;
+    if (!hit(r.title, r.host, TERM_HOST_LABEL[r.host], r.place.label, r.origin)) continue;
     const known = rowStatus({ exited: r.exited, exitCode: r.exitCode, turnOpen: !!r.turnOpen, printing: false, needsYou: !!r.needsYou });
     const status: SidebarStatus = r.noChat && known.status === "idle" ? { status: "idle", text: "Running" } : known;
     add(r.place, r.startedAt, true, { kind: "open", row: { ...r, ...rowEnd(r) }, status });
   }
   for (const r of o.closed) {
     if (r.sessionId && (indexed.has(convoKey(r.host, r.sessionId)) || taken.has(convoKey(r.host, r.sessionId)))) continue;
-    if (!hit(r.title, r.host, TERM_HOST_LABEL[r.host])) continue;
+    if (!hit(r.title, r.host, TERM_HOST_LABEL[r.host], r.place.label, r.origin)) continue;
     add(r.place, r.startedAt, false, { kind: "open", closed: true, row: { ...r, ...rowEnd(r) }, status: { status: "exited", text: "Closed" } });
   }
   for (const h of history) {
-    const at = stamp(h.at);
+    const at = stamp(h.lastAt ?? h.at);
     if (o.now - at > windowMs || taken.has(convoKey(h.host, h.id))) continue;
-    if (!hit(h.title, h.host, h.hostLabel)) continue;
+    if (!hit(h.title, h.host, h.hostLabel, h.place.label, h.where)) continue;
     add(h.place, at, false, { kind: "past", history: h });
   }
 

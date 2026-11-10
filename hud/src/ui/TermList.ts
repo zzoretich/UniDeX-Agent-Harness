@@ -143,7 +143,8 @@ export class TermList {
 
   private pastRow(h: HistoryRow): void {
     const where = h.where ? ` · ${h.where}` : "";
-    const el = this.pastEl(h.key, h.title, `${h.title}${where}`, `${h.hostLabel} · ${h.at ? ageText(this.now, Date.parse(h.at)) : "undated"}`);
+    const last = h.lastAt ?? h.at;
+    const el = this.pastEl(h.key, h.title, `${h.title}${where}`, `${h.hostLabel} · ${last ? ageText(this.now, Date.parse(last)) : "undated"}`);
     el.setAttr("data-host", h.host);
     this.activate(el, () => this.actions.openPast?.(h));
   }
