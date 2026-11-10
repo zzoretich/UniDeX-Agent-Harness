@@ -226,6 +226,8 @@ export class TerminalPanel {
         // would read differently, the selected one or not.
         if (this.list && this.model.rowsSig() !== this.rowsShown) this.renderTabs();
         if (id !== this.activeId) return;
+        // The prompt that held Send cleared (answered here or in the terminal): its note goes, whichever view shows.
+        this.composer?.cardShown(!!this.plugin.codeFeeds?.get(id)?.card);
         this.stage.renderChat();
         this.topBar.renderHostChip();
       }) ?? null;
@@ -483,9 +485,10 @@ export class TerminalPanel {
   private showStarted(note: LaunchNote): void {
     if (this.noteTimer !== null) window.clearTimeout(this.noteTimer);
     this.noteEl?.detach();
-    const el = this.headerEl.createDiv({ cls: "aos-term-started", attr: { role: "status" } });
+    const el = this.headerEl.createDiv({ cls: "aos-term-started", attr: { role: "status", title: note.text } });
     this.tabsEl.after(el);
-    el.createSpan({ text: note.text });
+    // One line, ellipsized in a narrow bar (the whole note in its title).
+    el.createSpan({ cls: "aos-term-started-text", text: note.text });
     if (this.opts.launch && note.why !== "picked") {
       const change = el.createEl("button", { cls: "aos-term-started-change", text: "Change", attr: { type: "button" } });
       change.addEventListener("click", () => {

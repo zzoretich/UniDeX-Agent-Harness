@@ -177,3 +177,65 @@ test("a terminal main refused is not read again on its output or a selection; a 
   await flush();
   panes.destroy();
 });
+
+test("the Diff keeps the file opened in each terminal: switching to another terminal and back opens it again while it is still listed", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  // The open pane asks what has the focus (an HTMLElement under the page); under node:test nothing does.
+  const g = globalThis as { HTMLElement?: unknown };
+  const hadElement = "HTMLElement" in g;
+  if (!hadElement) { g.HTMLElement = class {}; t.after(() => { delete g.HTMLElement; }); }
+  const calls = fakeGit();
+  const one = terminal("t1", "p1");
+  const two = terminal("t2", "p2");
+  let active = one.s;
+  const panes = panesFor(() => active);
+  const diff = (file: string) => ({ ok: true as const, data: { file, text: `--- a/${file}\n+++ b/${file}\n`, truncated: false } as unknown as HostGitDiff });
+  const diffs = () => calls.filter((c) => c.req.op === "diff").map((c) => `${c.req.pty}:${(c.req as { file?: string }).file}`);
+  const listed = st({ files: [f("src/a.ts", 1, 0), f("src/b.ts", 2, 1)] });
+  panes.follow(one.s);
+  calls[0].answer({ ok: true, data: listed });
+  await flush();
+  panes.toggleDiff();
+  calls[1].answer({ ok: true, data: listed });
+  await flush();
+  // The person opens b.ts in the first terminal's Diff.
+  panes.open("src/b.ts");
+  calls[2].answer(diff("src/b.ts"));
+  await flush();
+  assert.deepEqual(diffs(), ["p1:src/b.ts"]);
+  // Another terminal: nothing was opened there, so nothing opens.
+  active = two.s;
+  panes.follow(two.s);
+  calls[3].answer({ ok: true, data: st({ files: [f("src/c.ts", 1, 0)] }) });
+  await flush();
+  assert.deepEqual(diffs(), ["p1:src/b.ts"]);
+  // Back to the first, its status still fresh: b.ts opens again.
+  active = one.s;
+  panes.follow(one.s);
+  assert.deepEqual(diffs(), ["p1:src/b.ts", "p1:src/b.ts"]);
+  calls[calls.length - 1].answer(diff("src/b.ts"));
+  await flush();
+  // Away long enough that its status is read again, and b.ts is no longer changed there: nothing opens, and it is forgotten.
+  active = two.s;
+  const before = calls.length;
+  panes.follow(two.s);
+  t.mock.timers.tick(5000);
+  assert.equal(calls.length, before, "the second terminal's status was fresh: not read again");
+  active = one.s;
+  panes.follow(one.s);
+  assert.deepEqual(calls[calls.length - 1].req, { pty: "p1", op: "status" }, "a stale status is read again");
+  assert.equal(diffs().length, 2, "nothing opens before it answers");
+  calls[calls.length - 1].answer({ ok: true, data: st({ files: [f("src/a.ts", 1, 0)] }) });
+  await flush();
+  assert.equal(diffs().length, 2, "b.ts is no longer listed: nothing opens");
+  // Closing the pane forgets the file open in it.
+  panes.open("src/a.ts");
+  calls[calls.length - 1].answer(diff("src/a.ts"));
+  await flush();
+  panes.toggleDiff();
+  panes.toggleDiff();
+  calls[calls.length - 1].answer({ ok: true, data: st({ files: [f("src/a.ts", 1, 0)] }) });
+  await flush();
+  assert.deepEqual(diffs().slice(2), ["p1:src/a.ts"], "reopened, the pane opens no file by itself");
+  panes.destroy();
+});

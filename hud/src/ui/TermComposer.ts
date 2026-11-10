@@ -125,6 +125,8 @@ export class TermComposer {
   private blocked = false;
   /** The one line under the box when Send is refused because the TUI's prompt is up (R49). */
   private note: HTMLElement;
+  /** The note says why Send held: it goes when the card clears, and follows the view's wording. */
+  private held = false;
 
   constructor(parent: HTMLElement, private plugin: AgenticOSPlugin, private focusTerminal: () => void, private bracketed: () => boolean = () => true) {
     this.el = parent.createDiv({ cls: "aos-tc is-hidden" });
@@ -166,7 +168,7 @@ export class TermComposer {
     setIcon(sendIcon, "arrow-up");
     send.addEventListener("click", () => this.send());
     this.slash = new SlashMenu(this.input, box, { commands: [], host: "claude" });
-    this.input.addEventListener("input", () => { this.note.addClass("is-hidden"); this.onInput(); });
+    this.input.addEventListener("input", () => { this.hideNote(); this.onInput(); });
     this.input.addEventListener("keydown", (e) => this.onKey(e));
     this.input.addEventListener("paste", (e) => this.onPaste(e));
     box.addEventListener("dragover", (e) => {
@@ -195,8 +197,9 @@ export class TermComposer {
     // What runs decides: an agent terminal whose agent ended is a shell now (R39).
     const kind = s.agentEnded ? "shell" : s.meta.host;
     if (this.session?.id === s.id && this.shownHost === kind) return;
-    // The images were for the agent they were added on (C7).
+    // The images were for the agent they were added on (C7); so was a prompt that held Send.
     this.clearShots();
+    if (this.held) this.hideNote();
     this.session = s;
     this.shownHost = kind;
     this.files = null;
@@ -238,7 +241,15 @@ export class TermComposer {
   }
 
   /** The chat view's column (smaller box, chips only) or under the terminal, as before. */
-  setMode(mode: "chat" | "terminal"): void { this.el.toggleClass("is-chat", mode === "chat"); }
+  setMode(mode: "chat" | "terminal"): void {
+    this.el.toggleClass("is-chat", mode === "chat");
+    // Why Send held, said again in this view's words (the card above, or the terminal's prompt).
+    if (this.held && this.note.textContent !== this.heldText()) this.note.setText(this.heldText());
+  }
+
+  /** Whether the TUI's prompt is up in the selected terminal now (the panel calls it as its feed changes): once it clears,
+   *  the note that Send held goes with it. */
+  cardShown(up: boolean): void { if (!up && this.held) this.hideNote(); }
 
   /** What the access and model chips restart (the panel calls it as the chat's state changes); null: nothing to restart. */
   setChips(c: ChipState | null): void {
@@ -386,10 +397,11 @@ export class TermComposer {
 
   private finishSend(s: TerminalSession, text: string, shots: Shot[], held: boolean): void {
     if (held) {
-      this.say(this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first");
+      this.say(this.heldText());
+      this.held = true;
       return;
     }
-    this.note.addClass("is-hidden");
+    this.hideNote();
     // Each image's path as a paste of its own, which the TUI attaches as an image, then the text, then Enter (C7, R63).
     const paths = shots.map((x) => x.path).filter((p): p is string => p !== null);
     for (const w of sendWrites(text, paths, undefined, this.bracketed())) s.write(w);
@@ -399,8 +411,19 @@ export class TermComposer {
     this.focusTerminal();
   }
 
+  /** Why Send holds, in the words of the view it shows in (R49). */
+  private heldText(): string {
+    return this.el.hasClass("is-chat") ? "Answer the card above first · Terminal ⌘J" : "Answer the prompt in the terminal first";
+  }
+
+  private hideNote(): void {
+    this.note.addClass("is-hidden");
+    this.held = false;
+  }
+
   /** The one line under the box: why Send waits, or why an image was not added. */
   private say(text: string): void {
+    this.held = false;
     this.note.setText(text);
     this.note.removeClass("is-hidden");
   }
@@ -424,7 +447,7 @@ export class TermComposer {
   /** The files a paste, a drop or the picker brought: each a chip, or the reason it is not. */
   private takeFiles(files: File[]): void {
     if (!files.length || !this.takesImages()) return;
-    this.note.addClass("is-hidden");
+    this.hideNote();
     for (const f of files) this.addImage(f);
   }
 

@@ -731,9 +731,18 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     await input.press("Enter");
     expect(await written(win, id)).toEqual([]);
     await expect(input).toHaveValue("hello there");
-    // The TUI moved on: Send works again, and the note is gone.
+    // The note follows the view's words: the terminal's prompt there, the card above back in the chat.
+    await win.keyboard.press("Meta+j");
+    await expect(body(win)).toBeVisible();
+    await expect(note).toHaveText("Answer the prompt in the terminal first");
+    await win.keyboard.press("Meta+j");
+    await expect(chat(win)).toBeVisible();
+    await expect(note).toHaveText("Answer the card above first · Terminal ⌘J");
+    // The TUI moved on: the note goes with the card, before anything is sent, and Send works again.
     await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
     await expect(chat(win).locator(".aos-cc-card")).not.toHaveClass(/is-on/);
+    await expect(note).toHaveCount(0);
+    await expect(input).toHaveValue("hello there");
     await input.press("Enter");
     // Within SEND_QUIET_MS of the terminal's last input (R62) Send waits that long before it reads the screen and goes.
     let sent = "";
@@ -775,6 +784,97 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     expect(log).toContain("/menu");
     expect(log, JSON.stringify(log)).not.toContain("z");
     expect(log.split("\r").length - 1, JSON.stringify(log)).toBe(1);
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("a card that comes under the fold of a long chat is scrolled into view, and a long choice wraps inside it, never wider than the card", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const sid = "a1a1a1a1-0000-4000-8000-00000000002e";
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000002d", sessionId: sid, label: "Long chat, long choice" });
+    await expect(chat(win)).toBeVisible();
+    const restore = await emulateViewport(win, { width: 960, height: 600, scale: 1 });
+    try {
+      // A long conversation, shown at its end. The fake has no follower, so its feed is handed the events one would read.
+      const events: object[] = [{ t, kind: "session", id: sid, model: "fixture-model", turn: 0 }];
+      for (let n = 1; n <= 30; n++) {
+        events.push({ t, kind: "prompt", text: `Question ${n} about the tide tables`, turn: n }, { t, kind: "text", text: `Answer ${n}: the readings are in.`, turn: n },
+          { t, kind: "done", ok: true, usd: null, estimated: false, model: "fixture-model", turn: n });
+      }
+      await win.evaluate(({ i, ev }) => {
+        type F = { entries: Map<string, { events: unknown[] }>; compute(e: unknown): void; notify(id: string): void };
+        const f = (window as unknown as { aosHost: { plugin: { codeFeeds: F } } }).aosHost.plugin.codeFeeds;
+        const e = f.entries.get(i);
+        if (!e) throw new Error("no feed");
+        e.events = ev;
+        f.compute(e);
+        f.notify(i);
+      }, { i: id, ev: events });
+      await expect(chat(win).locator(".aos-ss-prompt")).toHaveCount(30);
+      // The TUI asks, a long path in its second choice; the card comes after the last row, below what shows.
+      const long = "/work/demo/workspaces/harbor-map/src/tide-tables/station-format/readings-2026-11";
+      const screen = screenFile("claude-2.1.318-bash.txt").replace("access to /work/demo", `access to ${long}`);
+      await replay(win, id, `\u001b[H\u001b[2J${screen.split("\n").join("\r\n")}`);
+      const gate = card(win);
+      await expect(gate.locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
+      const second = gate.locator("button.aos-cc-choice").nth(1);
+      await expect(second.locator(".aos-cc-choicelabel")).toHaveText(`Yes, and always allow access to ${long} from this project`);
+      // In view: wholly, or from its top when it is taller than the chat (the scroll is smooth: wait for it to land).
+      const scroll = chat(win).locator(".aos-cc-scroll");
+      await expect.poll(async () => {
+        const [c, s] = [await gate.boundingBox(), await scroll.boundingBox()];
+        if (!c || !s) return false;
+        return c.y >= s.y - 1 && (c.y + c.height <= s.y + s.height + 1 || Math.abs(c.y - s.y) <= 1);
+      }).toBe(true);
+      // The long choice wraps inside the card: no button wider than it, nothing overflowing it.
+      const fit = await gate.evaluate((g) => {
+        const box = g.getBoundingClientRect();
+        return { overflow: g.scrollWidth > g.clientWidth, outside: Array.from(g.querySelectorAll("button.aos-cc-choice")).filter((b) => b.getBoundingClientRect().right > box.right + 0.5).length };
+      });
+      expect(fit).toEqual({ overflow: false, outside: 0 });
+      expect((await second.boundingBox())?.height ?? 0, "on more than one line").toBeGreaterThan(32);
+    } finally {
+      await restore();
+    }
+    await removeTerminal(win, id);
+    expectNoErrors(h);
+  });
+
+  test("the top bar's Started … · Change note keeps to one line in a narrow window, ellipsized, and the bar keeps its height", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    const id = await fakeAgent(win, { host: "claude", terminalKey: "a1a1a1a1-0000-4000-8000-00000000002f", sessionId: "a1a1a1a1-0000-4000-8000-000000000030", label: "Started note" });
+    await expect(chat(win)).toBeVisible();
+    // Narrow enough that the note cannot show whole beside the bar's own items, wide enough that some of it shows.
+    const restore = await emulateViewport(win, { width: 1100, height: 700, scale: 1 });
+    try {
+      const header = C(win).locator(".aos-term-main > .aos-term-header");
+      const before = (await header.boundingBox())?.height ?? 0;
+      const text = "Started Claude Code in workspaces/harbor-map/src/tide-tables/station-format, the folder its last conversation ran in";
+      await win.evaluate(({ i, text }) => {
+        const p = (window as unknown as { aosHost: { plugin: { terminalPool: { trigger(name: string, ...a: unknown[]): void } } } }).aosHost.plugin.terminalPool;
+        p.trigger("session-launched", { id: i, text, why: "default", host: "claude" });
+      }, { i: id, text });
+      const note = C(win).locator(".aos-term-started");
+      await expect(note.locator(".aos-term-started-text")).toHaveText(text);
+      await expect(note).toHaveAttribute("title", text);
+      await expect(note.locator(".aos-term-started-change")).toBeVisible();
+      const m = await note.evaluate((n) => {
+        const s = n.querySelector(".aos-term-started-text") as HTMLElement;
+        const b = n.querySelector(".aos-term-started-change") as HTMLElement;
+        return { height: n.getBoundingClientRect().height, shown: s.clientWidth, cut: s.scrollWidth > s.clientWidth, change: b.getBoundingClientRect().right <= n.getBoundingClientRect().right + 0.5 };
+      });
+      expect(m.height, "one line").toBeLessThanOrEqual(30);
+      expect(m.cut, "ellipsized").toBe(true);
+      expect(m.shown, "some of it shows").toBeGreaterThan(40);
+      expect(m.change, "Change whole").toBe(true);
+      expect((await header.boundingBox())?.height).toBe(before);
+    } finally {
+      await restore();
+    }
     await removeTerminal(win, id);
     expectNoErrors(h);
   });
