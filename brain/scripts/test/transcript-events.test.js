@@ -227,3 +227,34 @@ test('session-events: mapClaude output is unchanged after the claudeBlocks refac
   ]);
   assert.deepEqual(E.claudeBlocks([{ type: 'text', text: 'hi' }, null, { type: 'thinking' }], T), [{ t: T, kind: 'text', text: 'hi' }]);
 });
+
+test('claude (E): a max_tokens or refusal stop on a thinking-only entry closes the turn not ok, once per message.id', () => {
+  const m = M.createTranscriptMapper('claude');
+  const asst = (content, stop, id) => m.push({ type: 'assistant', sessionId: 's1', message: { model: 'claude-x', id, content, stop_reason: stop } });
+  const think = [{ type: 'thinking', thinking: 'hmm', signature: 's' }];
+  m.push({ type: 'user', sessionId: 's1', message: { content: 'go' } });
+  assert.deepEqual(asst(think, 'max_tokens', 'msg_1').filter((e) => e.kind === 'done').map((e) => e.ok), [false], 'max_tokens on thinking only');
+  assert.deepEqual(asst(think, 'max_tokens', 'msg_1').filter((e) => e.kind === 'done'), [], 'once per message.id');
+  assert.deepEqual(asst([{ type: 'redacted_thinking', data: 'x' }], 'refusal', 'msg_2').filter((e) => e.kind === 'done').map((e) => e.ok), [false], 'a refusal on redacted thinking');
+  assert.deepEqual(asst(think, 'end_turn', 'msg_3').filter((e) => e.kind === 'done'), [], 'end_turn still needs a block event');
+});
+
+test('claude (C): a 200k whitespace run and 20k unclosed openers map in linear time', () => {
+  const m = () => M.createTranscriptMapper('claude');
+  const user = (text) => ({ type: 'user', sessionId: 's1', message: { content: [{ type: 'text', text }] } });
+  const time = (entry) => { const t = process.hrtime.bigint(); const out = m().push(entry); return { ms: Number(process.hrtime.bigint() - t) / 1e6, out }; };
+  const ws = time(user(`hello${' '.repeat(200000)}`));
+  assert.ok(ws.ms < 100, `whitespace run took ${ws.ms} ms`);
+  assert.deepEqual(ws.out.filter((e) => e.kind === 'prompt').map((e) => e.text), ['hello']);
+  const lead = time(user(`${' '.repeat(200000)}<system-reminder>x</system-reminder> hi`));
+  assert.ok(lead.ms < 100, `leading whitespace took ${lead.ms} ms`);
+  assert.deepEqual(lead.out.filter((e) => e.kind === 'prompt').map((e) => e.text), ['hi']);
+  const open = time(user('<bash-stdout>'.repeat(20000)));
+  assert.ok(open.ms < 100, `unclosed openers took ${open.ms} ms`);
+  const many = time(user(`${'<system-reminder>r</system-reminder>'.repeat(20000)} done`));
+  assert.ok(many.ms < 100, `many reminders took ${many.ms} ms`);
+  assert.deepEqual(many.out.filter((e) => e.kind === 'prompt').map((e) => e.text), ['done']);
+  const blocks = time(user(`${'<bash-stdout>o</bash-stdout>'.repeat(20000)}`));
+  assert.ok(blocks.ms < 100, `many closed blocks took ${blocks.ms} ms`);
+  assert.deepEqual(blocks.out.filter((e) => e.kind === 'prompt'), [], 'blocks alone are no prompt');
+});

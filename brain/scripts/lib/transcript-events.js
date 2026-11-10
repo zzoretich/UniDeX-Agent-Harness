@@ -39,18 +39,45 @@ const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
 // What a Claude user entry can hold that is not the person's words: Claude Code's ! command blocks and reminders.
-const CLAUDE_BLOCK_RE = /<(bash-input|bash-stdout|bash-stderr|system-reminder)>[\s\S]*?<\/\1>/g;
+const CLAUDE_OPEN_RE = /<(bash-input|bash-stdout|bash-stderr|system-reminder)>/g;
 const INTERRUPT_RE = /^\[Request interrupted by user/;
-// R21: reminders Claude Code puts before or after the person's words; a block between words stays.
-const LEADING_REMINDER_RE = /^\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*/;
-const TRAILING_REMINDER_RE = /\s*<system-reminder>(?:(?!<system-reminder>)[\s\S])*?<\/system-reminder>\s*$/;
+const REMINDER_OPEN = '<system-reminder>';
+const REMINDER_CLOSE = '</system-reminder>';
 
-/** A prompt's text without its leading and trailing <system-reminder> blocks (R21). */
+/** Whether `text` holds anything but whitespace outside Claude's blocks; one linear scan (an opener with no closer is text). */
+function hasTextOutsideBlocks(text) {
+  let pos = 0;
+  CLAUDE_OPEN_RE.lastIndex = 0;
+  for (let m = CLAUDE_OPEN_RE.exec(text); m; m = CLAUDE_OPEN_RE.exec(text)) {
+    if (/\S/.test(text.slice(pos, m.index))) return true;
+    const close = text.indexOf(`</${m[1]}>`, m.index + m[0].length);
+    if (close === -1) return true;
+    pos = close + m[1].length + 3;
+    CLAUDE_OPEN_RE.lastIndex = pos;
+  }
+  return /\S/.test(text.slice(pos));
+}
+
+/** R21: a prompt's text without the <system-reminder> blocks Claude Code puts before or after the person's words (a block
+ *  between words stays), found by index. */
 function withoutReminders(text) {
-  let s = text;
-  for (let prev = null; prev !== s;) { prev = s; s = s.replace(LEADING_REMINDER_RE, ''); }
-  for (let prev = null; prev !== s;) { prev = s; s = s.replace(TRAILING_REMINDER_RE, ''); }
-  return s.trim();
+  let start = 0;
+  let end = text.length;
+  for (;;) {
+    while (start < end && /\s/.test(text[start])) start++;
+    if (!text.startsWith(REMINDER_OPEN, start)) break;
+    const close = text.indexOf(REMINDER_CLOSE, start + REMINDER_OPEN.length);
+    if (close === -1 || close + REMINDER_CLOSE.length > end) break;
+    start = close + REMINDER_CLOSE.length;
+  }
+  for (;;) {
+    while (end > start && /\s/.test(text[end - 1])) end--;
+    if (!text.slice(Math.max(start, end - REMINDER_CLOSE.length), end).endsWith(REMINDER_CLOSE) || end - start < REMINDER_CLOSE.length) break;
+    const open = text.lastIndexOf(REMINDER_OPEN, end - REMINDER_CLOSE.length);
+    if (open < start) break;
+    end = open;
+  }
+  return text.slice(start, end).trim();
 }
 const SYNTHETIC = '<synthetic>';
 
@@ -67,7 +94,7 @@ function setModel(st, model, t, out) {
 function claudePrompt(e, text) {
   if (isObj(e.origin) && e.origin.kind !== 'human') return false;
   if (e.promptSource === 'system') return false;
-  if (!text.replace(CLAUDE_BLOCK_RE, '').trim()) return false;
+  if (!hasTextOutsideBlocks(text)) return false;
   return isRealPrompt({ role: 'user', text, meta: false });
 }
 
@@ -91,14 +118,13 @@ function claudeUser(e, st, t) {
   return out;
 }
 
-const thinkingOnly = (content) => content.length > 0 && content.every((b) => b && (b.type === 'thinking' || b.type === 'redacted_thinking'));
 
 /** Whether an assistant entry closes its turn, once per message.id (module comment): done's ok, or null. */
 function closes(m, blocks, st) {
   const sr = m.stop_reason;
   let ok;
   if (sr === 'end_turn') { if (!blocks.length) return null; ok = true; }
-  else if (sr === 'max_tokens' || sr === 'refusal') { if (thinkingOnly(m.content)) return null; ok = false; }
+  else if (sr === 'max_tokens' || sr === 'refusal') ok = false;
   else return null;
   if (typeof m.id === 'string' && m.id) {
     if (st.closedId === m.id) return null;
