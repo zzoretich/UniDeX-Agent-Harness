@@ -53,6 +53,8 @@ jobs:
         run: npm run typecheck
       - name: CHANGELOG.md has a section for package.json's version, and every [Unreleased] Added/Changed line a tour marker
         run: node tools/changelog.js check current
+      - name: roadmap/roadmap.md is well formed (spec 2026-11-11-roadmap-design D9)
+        run: node tools/roadmap.js check
   tz-env:
     # The whole suite in the two extreme time zones, with a developer's host variables exported: no test may assume
     # UTC or the machine's zone, and tools/test-env.js must clear every host variable (spec
