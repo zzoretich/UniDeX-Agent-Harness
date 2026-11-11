@@ -49,8 +49,8 @@ function registerComputerTools(server, z, client) {
       { askId: z.string().max(64).optional().describe('An ask the user was shown'), text: z.string().max(200).optional().describe('Text to wait for'),
         timeoutSec: z.number().int().min(1).max(40).optional().describe('Seconds to wait (1-40)') }],
     computer_status: ['UniDeX browser status',
-      IN + 'report its state: its tabs, the active page and any pending asks. Call this first: when it says the app is not reachable, '
-        + 'this session was not started from UniDeX, so use another browser tool.' + SAFETY,
+      IN + 'report the browser\'s state: who is driving, its tabs, the active page and any pending asks. Call this first: when it says the UniDeX browser is not reachable, '
+        + 'is turned off or could not start, follow the next step it gives and use another browser tool.' + SAFETY,
       {}],
   };
   for (const name of COMPUTER_TOOLS) {

@@ -14,7 +14,7 @@ test('a session inside the app is told about its browser', () => {
 });
 
 test('a session outside the app is told nothing', () => {
-  for (const marker of [null, {}, { computer: 'off' }, { computer: 'failed' }]) {
+  for (const marker of [null, {}, { computerSocket: '/s', computer: 'off' }, { computerSocket: '/s', computer: 'failed' }]) {
     assert.equal(browserInstructions({ vault: '/v', readMarker: () => marker, alive: () => true }), undefined);
   }
   assert.equal(browserInstructions({ vault: '/v', readMarker: live.readMarker, alive: () => false }), undefined);

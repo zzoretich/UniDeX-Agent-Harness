@@ -9,6 +9,7 @@ const path = require('path');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const { COMPUTER_TOOLS, COMPUTER_LOOK } = require('../sdk/computer-tools.js');
+const { BROWSER_INSTRUCTIONS } = require('../sdk/lib/browser-instructions.js');
 const { NO_APP, OFF, FAILED, CLOSED, TIMEOUT } = require('../sdk/lib/computer-client.js');
 const { spawnSync } = require('child_process');
 
@@ -98,12 +99,16 @@ test('status says what to do outside the app, open says what the browser is for'
   const defs = await toolDefs();
   assert.match(defs.get('computer_status').description, /Call this first/);
   assert.match(defs.get('computer_status').description, /another browser tool/);
+  assert.match(defs.get('computer_status').description, /turned off/);
+  assert.match(defs.get('computer_status').description, /could not start/);
+  assert.match(defs.get('computer_status').description, /who is driving/);
   for (const word of ['web page', 'localhost', 'preview']) assert.ok(defs.get('computer_open').description.includes(word), word);
 });
 
 test('each client refusal is one sentence with a next step', () => {
   for (const s of [NO_APP, OFF, FAILED, CLOSED, TIMEOUT]) {
-    assert.equal((s.match(/\.(\s|$)/g) || []).length, 1, s);
+    assert.equal((s.match(/[.!?](\s|$)/g) || []).length, 1, s);
+    assert.ok(!s.includes(';') && !s.includes('e.g.'), s);
     assert.match(s, /: (use|ask|quit|call) /, s);
   }
 });
@@ -160,6 +165,15 @@ test('with no marker the server sends no instructions (session-browser S15)', as
   await withClient(makeVault(), async (client) => {
     assert.equal(client.getInstructions(), undefined);
   });
+});
+
+test('a live marker with a bridge socket makes the server send the browser paragraph (session-browser S15)', async () => {
+  const b = await fakeBridge({});
+  try {
+    await withClient(markedVault({ pid: process.pid }, b.sock), async (client) => {
+      assert.equal(client.getInstructions(), BROWSER_INSTRUCTIONS);
+    });
+  } finally { b.close(); }
 });
 
 test('with no marker a call gets the no-app text as an error', async () => {

@@ -14,8 +14,8 @@
  */
 
 const NO_APP = 'The UniDeX browser is not reachable because this session was not started from the UniDeX app: use another browser tool, or ask the user to start the session from UniDeX\'s Code page or a Chat thread.';
-// The app's marker says it runs with the Computer surface off (agent-computer D26): a run whose write surfaces leave it
-// out, so no bridge listens, by design. (The person's own switch, computer.enabled, answers from the bridge itself.)
+// The app's marker says the UniDeX browser is turned off for this run of the app (agent-computer D26): a run whose write
+// surfaces leave it out, so no bridge listens, by design. (The person's own switch, computer.enabled, answers from the bridge itself.)
 const OFF = 'The UniDeX browser is turned off in Settings for this run of the app: use another browser tool, or ask the user to turn the Computer pane on and restart UniDeX.';
 // The marker says the surface is on but the bridge did not start (no peer addon, no socket path, a failed listen).
 const FAILED = 'The UniDeX browser could not start in this run of the app: ask the user to quit and reopen UniDeX, whose log has the reason.';

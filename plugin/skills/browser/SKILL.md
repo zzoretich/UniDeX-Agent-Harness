@@ -12,8 +12,9 @@ use; there is nothing to set up.
 
 ## Check where you are
 
-Call `mcp__plugin_agenticos_agenticos__computer_status` first. If it answers that the app is not reachable, this
-session is outside UniDeX and has no UniDeX browser: stop here and use whatever other browser tools the session has.
+Call `mcp__plugin_agenticos_agenticos__computer_status` first. When it answers that the app is not reachable, or
+that the browser is turned off or could not start, stop here: follow the next step that answer gives and use whatever
+other browser tools this session has.
 
 ## When to use it
 
