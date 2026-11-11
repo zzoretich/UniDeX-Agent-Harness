@@ -10,7 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { CH, type ComputerState } from "../../src/shared/ipc";
 import { OFF, registerComputerIpc, type ComputerPageService } from "../../src/main/ipc/computer";
-import { ComputerAnswerArgs, ComputerMarkArgs, ComputerNavigateArgs, ComputerSelectArgs, ComputerShowArgs, ComputerTabArgs } from "../../src/main/ipc/schemas";
+import { ComputerAnswerArgs, ComputerMarkArgs, ComputerNavArgs, ComputerNavigateArgs, ComputerSelectArgs, ComputerShowArgs, ComputerTabArgs } from "../../src/main/ipc/schemas";
 import { clampBounds, placeAllowed } from "../../src/main/policy/computer";
 
 const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aos-computer-ipc-")));
@@ -27,6 +27,7 @@ const service: ComputerPageService = {
   show: (b) => { calls.push(`show ${JSON.stringify(b)}`); seen.push(b); },
   navigate: async (u) => { calls.push(`navigate ${u}`); return { ok: true, data: null }; },
   tab: (op) => { calls.push(`tab ${JSON.stringify(op)}`); seen.push(op); },
+  nav: (go) => { calls.push(`nav ${go}`); seen.push(go); },
   takeOver: () => { calls.push("takeOver"); },
   handBack: () => { calls.push("handBack"); },
   answer: (id, a) => { calls.push(`answer ${id} ${a}`); seen.push([id, a]); },
@@ -42,6 +43,7 @@ const invoke = async (ch: string, raw: unknown): Promise<unknown> => { calls.len
 const SENDS: Array<[string, unknown, string]> = [
   [CH.computerShow, { bounds: { x: 1, y: 2, width: 3, height: 4 } }, "show"],
   [CH.computerTab, { op: { kind: "new" } }, "tab"],
+  [CH.computerNav, { go: "back" }, "nav"],
   [CH.computerTakeOver, {}, "takeOver"],
   [CH.computerHandBack, {}, "handBack"],
   [CH.computerAnswer, { askId: "a1", a: "once" }, "answer"],
@@ -110,6 +112,18 @@ test("schemas reject bad input", () => {
   assert.equal(ComputerTabArgs.safeParse({ op: { kind: "select", index: 1.5 } }).success, false);
   assert.equal(ComputerTabArgs.safeParse({ op: { kind: "other" } }).success, false);
   assert.equal(ComputerTabArgs.safeParse({ op: { kind: "close", index: 2 } }).success, true);
+});
+
+test("computer:nav takes only back, forward and reload", () => {
+  for (const go of ["back", "forward", "reload"]) assert.equal(ComputerNavArgs.safeParse({ go }).success, true, go);
+  assert.equal(ComputerNavArgs.safeParse({ go: "home" }).success, false);
+  assert.equal(ComputerNavArgs.safeParse({ go: "back", x: 1 }).success, false);
+  assert.equal(ComputerNavArgs.safeParse({ go: "back", url: "https://example.com" }).success, false);
+  assert.equal(ComputerNavArgs.safeParse({}).success, false);
+  send(CH.computerNav, { go: "home" });
+  assert.deepEqual(calls, []);
+  send(CH.computerNav, { go: "reload" });
+  assert.deepEqual(seen, ["reload"]);
 });
 
 test("invalid arguments never reach the service", async () => {

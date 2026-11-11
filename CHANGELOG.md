@@ -5,6 +5,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 ## [Unreleased]
 
 ### Added
+- The browser pane has a visible drag bar, Side, Half and Wide sizes, and it can now grow until the session is 360 px wide. <!-- tour: code.computer-size, sessions.computer-size -->
+- Back, Forward and Reload in the browser pane. <!-- no-tour: standard browser buttons -->
 - A session started from UniDeX is told about its browser three ways: a browser skill, a paragraph the agenticos server sends at connect, and tool descriptions that name the UniDeX browser. <!-- no-tour: nothing new on screen -->
 
 ## [2.6.0] — 2026-11-11

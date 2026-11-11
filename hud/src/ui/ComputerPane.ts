@@ -13,7 +13,7 @@
 // holds every computer's state for both pages' panes, the rail badges and the row dots.
 
 import { setIcon } from "obsidian";
-import type { HostComputer, HostComputerHolder, HostComputerRect, HostComputerState, HostComputerTab } from "../host";
+import type { HostComputer, HostComputerHolder, HostComputerNavGo, HostComputerRect, HostComputerState, HostComputerTab } from "../host";
 import { START_PAGE, searchUrl } from "../data/computerStart";
 import { storeFor, type ComputerPage, type ComputerStore } from "../data/computerStore";
 import { COMPUTER_PANE_WIDTH, paneMax, paneSizeOf, paneSizeWidth, type ComputerPaneSettings, type PaneSize } from "../settingsDefaults";
@@ -123,6 +123,12 @@ function coveredIn(body: HTMLElement | null): boolean {
   return Array.from(body.children).some((el) => COVERS.some((c) => el.classList.contains(c)));
 }
 
+const NAV_BUTTONS: ReadonlyArray<{ go: HostComputerNavGo; label: string; icon: string }> = [
+  { go: "back", label: "Back", icon: "arrow-left" },
+  { go: "forward", label: "Forward", icon: "arrow-right" },
+  { go: "reload", label: "Reload", icon: "rotate-cw" },
+];
+
 interface PaneEls {
   root: HTMLElement;
   handle: HTMLElement;
@@ -133,6 +139,9 @@ interface PaneEls {
   collapse: HTMLButtonElement;
   tabs: HTMLElement;
   input: HTMLInputElement;
+  back: HTMLButtonElement;
+  forward: HTMLButtonElement;
+  reload: HTMLButtonElement;
   trust: HTMLButtonElement;
   navMsg: HTMLElement;
   asks: HTMLElement;
@@ -224,6 +233,13 @@ export class ComputerPane {
     const body = root.createDiv({ cls: "aos-cp-body" });
     const tabs = body.createDiv({ cls: "aos-cp-tabs", attr: { role: "tablist", "aria-label": "Browser tabs" } });
     const form = body.createEl("form", { cls: "aos-cp-address" });
+    const nav = {} as Record<HostComputerNavGo, HTMLButtonElement>;
+    for (const n of NAV_BUTTONS) {
+      const b = form.createEl("button", { cls: `aos-cp-icon aos-cp-${n.go}`, attr: { type: "button", "aria-label": n.label, title: n.label } });
+      setIcon(b, n.icon);
+      b.addEventListener("click", () => { if (!b.disabled) this.o.host.nav(n.go); });
+      nav[n.go] = b;
+    }
     form.createSpan({ cls: "aos-cp-web", text: "web", attr: { title: "A web page, in the Computer's browser" } });
     const input = form.createEl("input", {
       cls: "aos-cp-url", attr: { type: "text", "aria-label": "Address or search", placeholder: "Search DuckDuckGo or type an address", spellcheck: "false", autocomplete: "off" },
@@ -253,7 +269,7 @@ export class ComputerPane {
       helpBtn.setAttr("aria-expanded", String(open));
       help.toggleClass("is-open", open);
     });
-    this.el = { root, handle, place, count, sizes, pop, collapse, tabs, input, trust, navMsg, asks, view, drive, log, acting };
+    this.el = { root, handle, place, count, sizes, pop, collapse, tabs, input, back: nav.back, forward: nav.forward, reload: nav.reload, trust, navMsg, asks, view, drive, log, acting };
 
     // The rectangle moves with the view's own size, the page around the pane (a drawer opening shifts it), the window,
     // and a modal opening over it. The same two watchers keep the width inside the row: the row's size is what they see.
@@ -548,6 +564,7 @@ export class ComputerPane {
     this.renderTabs(st);
     e.input.disabled = !st;
     if (e.input.ownerDocument.activeElement !== e.input) e.input.value = this.address();
+    this.renderNav(st);
     this.renderTrust(st);
     e.navMsg.setText(this.navError ?? "");
 
@@ -589,6 +606,17 @@ export class ComputerPane {
     const plus = el.createEl("button", { cls: "aos-cp-tabnew", attr: { type: "button", "aria-label": "New tab", title: "New tab" } });
     setIcon(plus, "plus");
     plus.addEventListener("click", () => this.o.host.tab({ kind: "new" }));
+  }
+
+  /** Back and Forward follow the active tab's history; all three wait for a tab (session-browser S13). A disabled
+   *  button is set from state each time, which redraws nothing else. */
+  private renderNav(st: HostComputerState | null): void {
+    const e = this.el;
+    if (!e) return;
+    const t = st?.tabs.find((x) => x.active);
+    e.back.disabled = !t?.canBack;
+    e.forward.disabled = !t?.canForward;
+    e.reload.disabled = !t;
   }
 
   private renderTrust(st: HostComputerState | null): void {

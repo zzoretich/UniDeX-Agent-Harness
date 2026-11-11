@@ -61,7 +61,8 @@ The Computer pane (agent-computer, release 1) docks right of a Code terminal and
 own partition that a session's agent drives through the agenticos MCP server's nine `computer_*` tools and the person
 answers and takes over (`src/main/computer/`, the HUD's `ui/ComputerPane.ts`). A tab the person opens with **+** starts
 on DuckDuckGo, and words typed in the address bar search it (the HUD's `data/computerStart.ts`, which main imports too;
-the e2e suite points both at a local fixture with `AOS_E2E_START_PAGE`, a switch only an unpackaged build reads). Main
+the e2e suite points both at a local fixture with `AOS_E2E_START_PAGE`, a switch only an unpackaged build reads). Back, Forward and Reload sit left of the address bar and are the person's own (`computer:nav`,
+three words and no address). Main
 admits only the MCP server of an agent CLI it spawned, over a Unix socket in its data folder (or, when that path is too
 long for a socket, in a 0700 folder of the data folder's own in the user's system temp folder, published in the vault
 marker's `computerSocket`), through the `native/peer` addon. The pane runs while the `computer` surface is on: on by default since its live check on

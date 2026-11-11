@@ -212,7 +212,8 @@ export interface HostCatalog { schema: 1; fetchedAt: string; hosts: Partial<Reco
 // AosBridge.computer, plain shapes the app's typecheck holds together ──
 
 export interface HostComputerRect { x: number; y: number; width: number; height: number }
-export interface HostComputerTab { index: number; url: string; title: string; openedBy: string | null; active: boolean }
+export interface HostComputerTab { index: number; url: string; title: string; openedBy: string | null; active: boolean; canBack: boolean; canForward: boolean }
+export type HostComputerNavGo = "back" | "forward" | "reload";
 export type HostComputerHolder =
   | { kind: "agent"; session: string; label: string }
   | { kind: "user"; resume: { session: string; label: string } | null }
@@ -243,6 +244,8 @@ export interface HostComputer {
   show(bounds: HostComputerRect | null): void;
   navigate(url: string): Promise<HostResult<null>>;
   tab(op: { kind: "new" } | { kind: "close" | "select"; index: number }): void;
+  /** The person's Back, Forward or Reload on the active tab (session-browser S13). */
+  nav(go: HostComputerNavGo): void;
   takeOver(): void;
   handBack(): void;
   answer(askId: string, a: HostComputerAnswer): void;

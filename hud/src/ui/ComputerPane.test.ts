@@ -143,6 +143,7 @@ function fakeComputer(answer: (place: string) => HostComputerState | null) {
     shows: [] as Array<HostComputerRect | null>,
     navs: [] as string[],
     tabs: [] as unknown[],
+    goes: [] as string[],
     answers: [] as Array<[string, HostComputerAnswer]>,
     marks: [] as Array<[string, boolean]>,
     takeOvers: 0, handBacks: 0, popOuts: 0,
@@ -156,6 +157,7 @@ function fakeComputer(answer: (place: string) => HostComputerState | null) {
     show: (b) => { f.shows.push(b); },
     navigate: async (url) => { f.navs.push(url); return f.navResult; },
     tab: (op) => { f.tabs.push(op); },
+    nav: (go) => { f.goes.push(go); },
     takeOver: () => { f.takeOvers++; },
     handBack: () => { f.handBacks++; },
     answer: (id, a) => { f.answers.push([id, a]); },
@@ -171,7 +173,7 @@ const ask = (id: string, why: string, o: Partial<HostComputerAsk> = {}): HostCom
   title: "Click: Continue on example.com?", detail: "The button “Continue”. Page: https://example.com/checkout", site: "https://example.com", always: true, ...o,
 });
 const state = (place: string, o: Partial<HostComputerState> = {}): HostComputerState => ({
-  place, tabs: [{ index: 0, url: "https://example.com/checkout", title: "Checkout", openedBy: "Claude Code in harbor-map", active: true }],
+  place, tabs: [{ index: 0, url: "https://example.com/checkout", title: "Checkout", openedBy: "Claude Code in harbor-map", active: true, canBack: false, canForward: false }],
   holder: null, asks: [], log: [], marked: false, poppedOut: false, ...o,
 });
 const RECT = { x: 900, y: 120, width: 440, height: 500 };
@@ -492,15 +494,40 @@ test("the address bar's site switch names the site, sends mark only on a click, 
   assert.deepEqual(s.f.marks, [["https://example.com", true]], "a state event never marks");
   trust.click();
   assert.deepEqual(s.f.marks, [["https://example.com", true], ["https://example.com", false]]);
-  const blank = [{ index: 0, url: "about:blank", title: "", openedBy: null, active: true }];
+  const blank = [{ index: 0, url: "about:blank", title: "", openedBy: null, active: true, canBack: false, canForward: false }];
   s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: blank }) });
   assert.ok(trust.classes.has("is-hidden") && trust.disabled, "about:blank has no site");
   s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [] }) });
   assert.ok(trust.classes.has("is-hidden"), "no tab");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false }] }) });
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false, canBack: false, canForward: false }] }) });
   assert.ok(trust.classes.has("is-hidden"), "no active tab");
   trust.click();
   assert.equal(s.f.marks.length, 2);
+});
+
+test("Back is disabled until the active tab can go back; Forward likewise; Reload needs a tab (session-browser S13)", async () => {
+  const s = setup();
+  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  await flush();
+  const back = s.q(".aos-cp-back"), fwd = s.q(".aos-cp-forward"), reload = s.q(".aos-cp-reload");
+  assert.equal(back.getAttribute("aria-label"), "Back");
+  assert.equal(fwd.getAttribute("aria-label"), "Forward");
+  assert.equal(reload.getAttribute("aria-label"), "Reload");
+  assert.equal(back.getAttribute("type"), "button", "none of the three submits the address form");
+  assert.ok(back.disabled && fwd.disabled && !reload.disabled, "a tab that cannot move");
+  const one = (o: { canBack: boolean; canForward: boolean }) => [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: true, ...o }];
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: one({ canBack: true, canForward: false }) }) });
+  assert.ok(!back.disabled && fwd.disabled);
+  back.click();
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: one({ canBack: false, canForward: true }) }) });
+  assert.ok(back.disabled && !fwd.disabled);
+  fwd.click();
+  reload.click();
+  assert.deepEqual(s.f.goes, ["back", "forward", "reload"]);
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [] }) });
+  assert.ok(back.disabled && fwd.disabled && reload.disabled, "no tab");
+  const form = s.q(".aos-cp-address");
+  assert.deepEqual(form.children.slice(0, 4).map((c) => c.getAttribute("aria-label") ?? [...c.classes][0]), ["Back", "Forward", "Reload", "aos-cp-web"], "before the web chip");
 });
 
 test("M3: on a local address the site switch is disabled and says why: local addresses always act freely", async () => {
@@ -509,7 +536,7 @@ test("M3: on a local address the site switch is disabled and says why: local add
   await flush();
   const trust = s.q(".aos-cp-trust");
   for (const url of ["http://localhost:5173/", "http://127.0.0.1:8080/app", "http://[::1]:3000/"]) {
-    s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true, tabs: [{ index: 0, url, title: "Dev", openedBy: null, active: true }] }) });
+    s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true, tabs: [{ index: 0, url, title: "Dev", openedBy: null, active: true, canBack: false, canForward: false }] }) });
     assert.ok(trust.disabled && !trust.classes.has("is-hidden"), url);
     assert.equal(trust.getAttribute("title"), "Local addresses always act freely");
     assert.match(trust.getAttribute("aria-label") ?? "", /Local addresses always act freely/);
@@ -643,8 +670,8 @@ test("the tabs: + opens one, × closes one, a click selects one", async () => {
   s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
   await flush();
   s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [
-    { index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false },
-    { index: 1, url: "about:blank", title: "", openedBy: null, active: true },
+    { index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false, canBack: false, canForward: false },
+    { index: 1, url: "about:blank", title: "", openedBy: null, active: true, canBack: false, canForward: false },
   ] }) });
   const tabs = s.root.querySelectorAll(".aos-cp-tab");
   assert.deepEqual(tabs.map((t) => t.querySelector(".aos-cp-tabtitle")!.textContent), ["Example", "New tab"]);
@@ -659,7 +686,7 @@ test("a new tab on the bare start page reads as one: the address bar is empty an
   const s = setup();
   s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
   await flush();
-  const tab = (url: string, title: string, active = true) => ({ index: 0, url, title, openedBy: null, active });
+  const tab = (url: string, title: string, active = true) => ({ index: 0, url, title, openedBy: null, active, canBack: false, canForward: false });
   const titles = (): string[] => s.root.querySelectorAll(".aos-cp-tabtitle").map((t) => t.textContent);
   const input = s.q(".aos-cp-url");
   s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("https://duckduckgo.com/", "DuckDuckGo - Protection. Privacy. Peace of mind.")] }) });
@@ -687,10 +714,10 @@ test("with another start page from the host (the e2e suite's fixture), a new tab
   s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
   await flush();
   const input = s.q(".aos-cp-url");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "http://search.test:4100/", title: "Start", openedBy: null, active: true }] }) });
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "http://search.test:4100/", title: "Start", openedBy: null, active: true, canBack: false, canForward: false }] }) });
   assert.equal(input.value, "");
   assert.deepEqual(s.root.querySelectorAll(".aos-cp-tabtitle").map((t) => t.textContent), ["New tab"]);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://duckduckgo.com/", title: "DuckDuckGo", openedBy: null, active: true }] }) });
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://duckduckgo.com/", title: "DuckDuckGo", openedBy: null, active: true, canBack: false, canForward: false }] }) });
   assert.equal(input.value, "https://duckduckgo.com/", "DuckDuckGo is a page like any other here");
   input.value = "tide times";
   s.q(".aos-cp-address").fire("submit");

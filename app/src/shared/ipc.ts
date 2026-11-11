@@ -139,6 +139,7 @@ export const CH = {
   computerShow: "computer:show",
   computerNavigate: "computer:navigate",
   computerTab: "computer:tab",
+  computerNav: "computer:nav",
   computerTakeOver: "computer:take-over",
   computerHandBack: "computer:hand-back",
   computerAnswer: "computer:answer",
@@ -150,7 +151,8 @@ export const CH = {
 
 /** A rectangle in the window's coordinates (the pane's area for the view). */
 export interface ComputerRect { x: number; y: number; width: number; height: number }
-export interface ComputerTab { index: number; url: string; title: string; openedBy: string | null; active: boolean }
+/** `canBack` and `canForward`: whether the tab's own history has a page before or after this one (session-browser S13). */
+export interface ComputerTab { index: number; url: string; title: string; openedBy: string | null; active: boolean; canBack: boolean; canForward: boolean }
 /** Who drives a computer: an agent session, the user (with the agent to resume, if any), or nobody. */
 export type ComputerHolder =
   | { kind: "agent"; session: string; label: string }
@@ -167,6 +169,8 @@ export interface ComputerState {
   place: string; tabs: ComputerTab[]; holder: ComputerHolder; asks: readonly ComputerAsk[]; log: readonly ComputerLogLine[];
   marked: boolean; poppedOut: boolean;
 }
+/** The user's Back, Forward and Reload on the selected computer's active tab (session-browser S13). */
+export type ComputerNavGo = "back" | "forward" | "reload";
 export type ComputerTabOp = { kind: "new" } | { kind: "close" | "select"; index: number };
 /** What main sends the page on `CH.computerEvent`. */
 export type ComputerEvent = { type: "state"; state: ComputerState } | { type: "reveal"; askId: string };
@@ -718,6 +722,8 @@ export interface AosBridge {
     show(bounds: ComputerRect | null): void;
     navigate(url: string): Promise<Result<null>>;
     tab(op: ComputerTabOp): void;
+    /** Back, Forward or Reload the active tab. One-way; dropped while the surface is off. */
+    nav(go: ComputerNavGo): void;
     takeOver(): void;
     handBack(): void;
     answer(askId: string, a: ComputerAnswer): void;

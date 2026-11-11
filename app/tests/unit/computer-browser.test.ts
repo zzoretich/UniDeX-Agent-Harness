@@ -110,7 +110,14 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
   const asked: string[] = [];
   const hooks: BrowserHooks = { ask: async (i) => { asked.push(i.title); return answer(); }, note: (s) => notes.push(s), changed: () => {} };
   const b = new ComputerBrowser({ key: "ws:alpha", window: () => null, hooks });
+  // Electron's navigation history and reload, recorded (session-browser S13).
+  const nav = { back: false, forward: false, moves: [] as string[] };
   const wc = {
+    navigationHistory: {
+      canGoBack: () => nav.back, canGoForward: () => nav.forward,
+      goBack: () => { nav.moves.push("back"); }, goForward: () => { nav.moves.push("forward"); },
+    },
+    reload: () => { nav.moves.push("reload"); },
     id: 1, isDestroyed: () => false, isDevToolsOpened: () => false, getURL: () => page.url, getTitle: () => "", getZoomFactor: () => 1,
     mainFrame: { processId: 1 }, focusedFrame: null,
     debugger: { isAttached: () => true, sendCommand: (m: string, p?: Record<string, unknown>) => page.send(m, p) },
@@ -125,7 +132,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
   const inner = b as unknown as { list: unknown[]; current: number };
   inner.list.push(tab);
   inner.current = 0;
-  return { b, page, tab, notes, asked };
+  return { b, page, tab, notes, asked, nav };
 }
 
 const at = (tab: { seq: number }) => ({ tab: 0, pageToken: `1.${tab.seq}` });
@@ -568,4 +575,28 @@ test("R87: a scroll between the click's last hit test and its press refuses, and
   assert.equal(await refusal(b.click(r, () => true)), "The page changed: look again.");
   assert.deepEqual([moved, hits(page)], [true, [[50, 310]]], "the hit test was made at the old scroll; the scroll moved after it");
   assert.deepEqual(page.inputs(), ["Input.dispatchMouseEvent:mouseMoved"], "no press");
+});
+
+test("session-browser S13: tabs() reports whether the page can go back and forward", () => {
+  const { b, nav } = make();
+  assert.deepEqual(b.tabs().map((t) => [t.canBack, t.canForward]), [[false, false]]);
+  nav.back = true;
+  assert.deepEqual(b.tabs().map((t) => [t.canBack, t.canForward]), [[true, false]]);
+  nav.forward = true;
+  assert.deepEqual(b.tabs().map((t) => [t.canBack, t.canForward]), [[true, true]]);
+});
+
+test("session-browser S13: nav goes back, forward or reloads the active tab; a move that cannot happen does nothing", () => {
+  const { b, nav } = make();
+  b.nav("back");
+  b.nav("forward");
+  assert.deepEqual(nav.moves, [], "nothing to go back or forward to");
+  nav.back = true; nav.forward = true;
+  b.nav("back");
+  b.nav("forward");
+  b.nav("reload");
+  assert.deepEqual(nav.moves, ["back", "forward", "reload"]);
+  const none = new ComputerBrowser({ key: "ws:none", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  none.nav("reload");
+  none.nav("back", 4);
 });

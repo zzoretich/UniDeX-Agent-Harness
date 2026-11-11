@@ -361,6 +361,43 @@ test.describe("both hosts, the Computer surface on", () => {
     expectNoErrors(h);
   });
 
+  test("Back, Forward and Reload work for the user (session-browser S13)", async () => {
+    const h = app();
+    const { win } = h;
+    const a = await codeAgent(win, "claude");
+    try {
+      const p = pane(win, "code");
+      const tabs = await p.locator(".aos-cp-tab").count();
+      await p.locator(".aos-cp-tabnew").click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(tabs + 1);
+      // The start page has loaded before the person types an address over it.
+      await expect(p.locator(".aos-cp-trust")).toHaveText(`Asks first on ${searchHost()}`);
+      const back = p.locator(".aos-cp-back"), forward = p.locator(".aos-cp-forward"), reload = p.locator(".aos-cp-reload");
+      const go = async (url: string, title: string): Promise<void> => { await p.locator(".aos-cp-url").fill(url); await p.locator(".aos-cp-url").press("Enter"); await expect(p.locator(".aos-cp-log .aos-cp-logtext").filter({ hasText: `Opened ${url}` })).toHaveCount(1); await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText(title); };
+      const hits = (urlPath: string): number => site.seen.filter((x) => x.method === "GET" && x.url === urlPath).length;
+      const pageA = shopUrl(), pageB = repoUrl();
+      await go(pageA, "Harbour shop");
+      await go(pageB, "Harbour repo");
+      await expect(back).toBeEnabled();
+      await expect(forward).toBeDisabled();
+      await back.click();
+      await expect(p.locator(".aos-cp-url")).toHaveValue(pageA);
+      await expect(forward).toBeEnabled();
+      await forward.click();
+      await expect(p.locator(".aos-cp-url")).toHaveValue(pageB);
+      await expect(forward).toBeDisabled();
+      const before = hits("/repo.html");
+      await reload.click();
+      await expect.poll(() => hits("/repo.html")).toBeGreaterThan(before);
+      await expect(p.locator(".aos-cp-url")).toHaveValue(pageB);
+      await expect(p.locator(".aos-cp-log .aos-cp-logtext").filter({ hasText: /^Went back$/ })).toHaveCount(1);
+      await expect(p.locator(".aos-cp-log .aos-cp-logtext").filter({ hasText: /^Reloaded$/ })).toHaveCount(1);
+      await p.locator(".aos-cp-tab.is-active .aos-cp-tabclose").click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(tabs);
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
   test("an unmarked site: a click asks first; Deny leaves the page as it was and Allow once clicks (D39, D6)", async () => {
     const h = app();
     const { win } = h;
@@ -931,17 +968,26 @@ test.describe("both hosts, the Computer surface on", () => {
       await openTab(win, "chat");
       await content(win).locator(".aos-ss-newbtn").click();
       await expect(pane(win, "chat")).toBeVisible();
+      const measured: Record<number, { reader: number; pane: number; overflow: number }> = {};
       for (const width of [1100, 900]) {
         await resizeHud(electron, { width, height: 740 });
+        // The window may be held to its screen: wait until the page itself has the width asked for (or the screen's, when
+        // narrower), so the layout read below is the resized one.
+        // The window also has a minimum width of its own; the page cannot be narrower than that.
+        const floor = await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith("app://hud/"))?.getMinimumSize()[0] ?? 0);
+        const want = Math.max(await win.evaluate((w) => Math.min(w, window.screen.availWidth), width), floor);
+        await expect.poll(() => win.evaluate(() => window.innerWidth), { message: `the page is ${want} px wide` }).toBe(want);
         const m = await content(win).locator(".aos-ss").evaluate((root) => {
           const w = (sel: string) => Math.round((root.querySelector(sel) as HTMLElement).getBoundingClientRect().width);
-          return { reader: w(".aos-ss-reader"), pane: w(".aos-cp"), overflow: root.scrollWidth - root.clientWidth };
+          return { reader: w(".aos-ss-reader"), pane: w(".aos-cp"), overflow: Math.max(root.scrollWidth - root.clientWidth, root.ownerDocument.documentElement.scrollWidth - root.ownerDocument.documentElement.clientWidth) };
         });
-        const at = `${width}: ${JSON.stringify(m)}`;
+        measured[width] = m;
+        const at = `${width} (page ${want}): ${JSON.stringify(m)}`;
         expect(m.reader, at).toBeGreaterThanOrEqual(360);
-        expect(m.pane, at).toBeGreaterThan(0);
         expect(m.overflow, at).toBeLessThanOrEqual(0);
       }
+      console.log(`Sessions pane as the window narrows: ${JSON.stringify(measured)}`);
+      expect(measured[900].pane, `the pane at 900 is no wider than at 1100: ${JSON.stringify(measured)}`).toBeLessThanOrEqual(measured[1100].pane);
     } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
     expectNoErrors(h);
   });

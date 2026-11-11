@@ -54,6 +54,7 @@ export const ComputerTabArgs = z.object({
     z.object({ kind: z.enum(["close", "select"]), index: z.number().int().min(0).max(1000) }).strict(),
   ]),
 }).strict();
+export const ComputerNavArgs = z.object({ go: z.enum(["back", "forward", "reload"]) }).strict();
 export const ComputerAnswerArgs = z.object({ askId: z.string().min(1).max(64), a: z.enum(["once", "always", "deny"]) }).strict();
 export const ComputerMarkArgs = z.object({
   origin: z.string().min(1).max(2048).refine((o) => siteOf(o) === o, "an origin"),
