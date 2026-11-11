@@ -114,7 +114,7 @@ test('mergeHooks writes the six events through the launcher with AOS_HOST=codex,
   const doc = CH.mergeHooks(null, CTX);
   assert.deepEqual(Object.keys(doc.hooks), ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']);
   const names = (ev) => doc.hooks[ev].flatMap((g) => g.hooks.map((h) => h.command.replace(/^env AOS_HOST=codex AOS_CONFIG='[^']*' sh '[^']*' /, '')));
-  assert.deepEqual(names('SessionStart'), ['telemetry-hook', 'update-notice', 'persona-watchdog', 'reconcile-sessions', 'inject-conventions']);
+  assert.deepEqual(names('SessionStart'), ['telemetry-hook', 'update-notice', 'persona-watchdog', 'reconcile-sessions', 'inject-conventions', 'code-session']);
   assert.deepEqual(names('UserPromptSubmit'), ['inject-context']);
   assert.deepEqual(names('PreToolUse'), ['instruction-guard']);
   assert.match(doc.hooks.PreToolUse[0].matcher, /apply_patch/);
@@ -348,7 +348,7 @@ test('the plugin wiring names nothing on this machine: ${PLUGIN_ROOT} in hooks, 
   assert.ok(CH.isOurs(CH.pluginHookCommand('x')), 'the same AOS_HOST prefix as direct entries');
   assert.deepEqual(CH.pluginMcpServers().mcpServers.agenticos.args, ['./bin/aos', 'mcp-server']);
   assert.equal(CH.pluginMcpServers().mcpServers.agenticos.cwd, '.');
-  assert.equal(CH.pluginHookCount(), 17);
+  assert.equal(CH.pluginHookCount(), 18);
 });
 
 // ── the computer tools' approvals (agent-computer D33) ───────────────────────
@@ -663,7 +663,7 @@ test('codexPluginStatus reports the plugin, its MCP server and any direct wiring
   const before = CH.codexPluginStatus({ cfg: {}, launcher: LAUNCHER, run, env, dir });
   assert.equal(before.installed, false);
   assert.equal(before.mcp, 'missing');
-  assert.equal(before.hooksTotal, 17);
+  assert.equal(before.hooksTotal, 18);
   CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run, env, dir });
   CH.installCodexPlugin({ bin: '/x/codex', source: 'owner/repo', run });
   const both = CH.codexPluginStatus({ cfg: {}, launcher: LAUNCHER, run, env, dir });

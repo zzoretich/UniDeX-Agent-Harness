@@ -33,9 +33,10 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-/** Event → [command name, timeout seconds]. Mirrors plugin/hooks/hooks.json plus inject-conventions (D5). */
+/** Event → [command name, timeout seconds]. Mirrors plugin/hooks/hooks.json plus inject-conventions (D5) and code-session
+ *  (Codex only: names a Code terminal's session, spec 2026-11-10-codex-session-claim). */
 const HOOKS = [
-  ['SessionStart', [['telemetry-hook', 10], ['update-notice', 10], ['persona-watchdog', 10], ['reconcile-sessions', 10], ['inject-conventions', 10]]],
+  ['SessionStart', [['telemetry-hook', 10], ['update-notice', 10], ['persona-watchdog', 10], ['reconcile-sessions', 10], ['inject-conventions', 10], ['code-session', 10]]],
   ['UserPromptSubmit', [['inject-context', 10]]],
   ['PreToolUse', [['instruction-guard', 10]], 'Write|Edit|MultiEdit|NotebookEdit|Bash|apply_patch|mcp__.*'],
   ['PostToolUse', [['telemetry-hook', 10]]],
@@ -124,7 +125,7 @@ function hookCommand({ launcher, config }, name) {
 function isOurs(command) { return OURS_RE.test(String(command || '')); }
 function isOurGroup(g) { return !!(g && Array.isArray(g.hooks) && g.hooks.length && g.hooks.every((h) => isOurs(h && h.command))); }
 
-/** existing hooks.json document (or null) → the same document with our five entries present exactly once. */
+/** existing hooks.json document (or null) → the same document with our HOOKS entries present exactly once. */
 function mergeHooks(existing, ctx) {
   const doc = existing && typeof existing === 'object' && !Array.isArray(existing) ? { ...existing } : {};
   const hooks = { ...(doc.hooks && typeof doc.hooks === 'object' ? doc.hooks : {}) };

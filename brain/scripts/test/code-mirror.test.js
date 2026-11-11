@@ -322,11 +322,11 @@ test('follow codex: folder mode claims at start, follows the matching rollout, a
   const mine = codexFile(env, `y-${ID_B}`);
   const cache = M.cachePath(env.vault, TERM);
   const r = run({ host: 'codex', cwd: env.work, since: now - 1000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
-  assert.deepEqual(readClaim(env, TERM), { pid: process.pid, cwd: env.work, since: now - 1000, file: null }, 'claimed before any rollout');
+  assert.deepEqual(readClaim(env, TERM), { pid: process.pid, cwd: env.work, since: now - 1000, file: null, session: null, held: [] }, 'claimed before any rollout');
   fs.writeFileSync(mine, metaLine(ID_B, env.work, iso(now)) + codexUser('hello'));
   assert.ok(await waitFor(() => sessionIds(cache).includes(ID_B)));
   assert.ok(await waitFor(() => readClaim(env, TERM)?.file === mine));
-  assert.deepEqual(readClaim(env, TERM), { pid: process.pid, cwd: env.work, since: now - 1000, file: mine });
+  assert.deepEqual(readClaim(env, TERM), { pid: process.pid, cwd: env.work, since: now - 1000, file: mine, session: ID_B, held: [mine] });
   assert.ok(await waitFor(() => readEvents(cache).some((e) => e.kind === 'prompt')));
   await r.stop();
   assert.equal(fs.existsSync(claimPath(env, TERM)), false);
@@ -566,7 +566,7 @@ test('mirror CLI: a --follow child exits 0 on SIGTERM and removes its claim and 
   assert.equal(fs.existsSync(cache), false);
 });
 
-test('pruneCodeCaches: removes code caches over 14 days and tees over 24 h, keeps fresher', () => {
+test('pruneCodeCaches: removes code caches and session reports over 14 days and tees over 24 h, keeps fresher', () => {
   const env = fresh();
   const code = path.join(env.vault, 'brain', '_index', 'code');
   const sl = path.join(env.vault, 'brain', '_index', 'statusline');
@@ -579,8 +579,10 @@ test('pruneCodeCaches: removes code caches over 14 days and tees over 24 h, keep
   put(path.join(code, 'new.jsonl'), 13 * 24 * HOUR);
   put(path.join(sl, 'old.json'), 25 * HOUR);
   put(path.join(sl, 'new.json'), 23 * HOUR);
-  assert.deepEqual(M.pruneCodeCaches(env.vault, { now }), { pruned: 2 });
-  assert.deepEqual(fs.readdirSync(code), ['new.jsonl']);
+  put(path.join(code, `${TERM}.session.json`), 15 * 24 * HOUR);
+  put(path.join(code, `${TERM2}.session.json`), 13 * 24 * HOUR);
+  assert.deepEqual(M.pruneCodeCaches(env.vault, { now }), { pruned: 3 });
+  assert.deepEqual(fs.readdirSync(code).sort(), [`${TERM2}.session.json`, 'new.jsonl']);
   assert.deepEqual(fs.readdirSync(sl), ['new.json']);
   assert.deepEqual(M.pruneCodeCaches(path.join(env.root, 'none'), { now }), { pruned: 0 });
 });
@@ -675,4 +677,321 @@ test('follow codex (D): a rollout that cannot be stat\'ed keeps its last known a
     assert.deepEqual(sessionIds(cache), [ID_A], 'the chat it had; the other rollout was never taken');
     assert.ok(ended, 'the follower ended when its rollout stayed gone');
   } finally { await r.stop(); }
+});
+
+// ── Session reports from the code-session hook (spec 2026-11-10-codex-session-claim) ──
+
+const report = (env, term, id, atMs) => M.writeSessionReport(env.vault, { terminal: term, host: 'codex', sessionId: id, source: 'startup', now: new Date(atMs) });
+const errors = (file) => readEvents(file).filter((e) => e.kind === 'error');
+
+test('session reports: written with only the id, read back; anything not a valid report reads as none', () => {
+  const env = fresh();
+  assert.equal(M.writeSessionReport(env.vault, { terminal: 'nope', host: 'codex', sessionId: ID_A }), null);
+  assert.equal(M.writeSessionReport(env.vault, { terminal: TERM, host: 'codex', sessionId: '../x' }), null);
+  assert.equal(M.writeSessionReport(env.vault, { terminal: TERM, host: 'other', sessionId: ID_A }), null);
+  assert.equal(M.readSessionReport(env.vault, TERM), null, 'none written');
+  const file = report(env, TERM, ID_A, 1700000000000);
+  assert.deepEqual(M.readSessionReport(env.vault, TERM), { atMs: 1700000000000, host: 'codex', sessionId: ID_A });
+  for (const bad of ['{', JSON.stringify({ at: 'x', host: 'codex', session_id: ID_A }), JSON.stringify({ at: iso(1), host: 'codex', session_id: 'a/b' }), JSON.stringify({ at: iso(1), host: 'x', session_id: ID_A })]) {
+    fs.writeFileSync(file, bad);
+    assert.equal(M.readSessionReport(env.vault, TERM), null, bad);
+  }
+});
+
+test('pickCodexRollout: a peer\'s session is claimed like its file; a peer waiting for its reported session neither contends nor counts for the 5 s rule', () => {
+  const t = me({ since: 100000 });
+  const c = [cand('x', 101000, 110000)];
+  assert.deepEqual(M.pickCodexRollout(c, { me: t, peers: [{ since: 100500, file: null, mtimeMs: 0 }] }), { ambiguous: true }, 'without a report: the 5 s rule');
+  assert.equal(M.pickCodexRollout(c, { me: t, peers: [{ since: 100500, file: null, mtimeMs: 0, session: 'id-x' }] }), null, 'the peer\'s reported session');
+  assert.deepEqual(M.pickCodexRollout(c, { me: t, peers: [{ since: 100500, file: null, mtimeMs: 0, session: 'id-other' }] }), { file: 'x', id: 'id-x' }, 'a peer that waits for its own session');
+  assert.deepEqual(M.pickCodexRollout(c, { me: t, peers: [{ since: 50000, file: null, mtimeMs: 0, session: 'id-other' }] }), { file: 'x', id: 'id-x' }, 'and does not contend (R25) either');
+  assert.equal(M.pickCodexRollout(c, { me: t, peers: [{ since: 50000, file: 'now', mtimeMs: 200000, session: 'id-now', held: ['x'] }] }), null, 'a rollout a peer followed before');
+});
+
+test('follow codex (R75): two terminals started within 5 s, each named by its report, follow their own rollouts with no error', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const f1 = run({ host: 'codex', cwd: env.work, since: now - 10000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const f2 = run({ host: 'codex', cwd: env.work, since: now - 7000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
+  const c1 = M.cachePath(env.vault, TERM);
+  const c2 = M.cachePath(env.vault, TERM2);
+  try {
+    report(env, TERM, ID_A, now - 9000);
+    report(env, TERM2, ID_B, now - 6000);
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_A && readClaim(env, TERM2)?.session === ID_B), 'each claims its session at once');
+    assert.equal(readClaim(env, TERM).file, null, 'no rollout yet: Codex writes it at the first prompt');
+    // R61: each rollout appears at its terminal's first prompt.
+    fs.writeFileSync(codexFile(env, `a-${ID_A}`), metaLine(ID_A, env.work, iso(now - 9000)) + codexUser('one'));
+    fs.writeFileSync(codexFile(env, `b-${ID_B}`), metaLine(ID_B, env.work, iso(now - 6000)) + codexUser('two'));
+    assert.ok(await waitFor(() => readEvents(c1).some((e) => e.text === 'one') && readEvents(c2).some((e) => e.text === 'two')));
+    await sleep(400);
+    assert.deepEqual(sessionIds(c1), [ID_A]);
+    assert.deepEqual(sessionIds(c2), [ID_B]);
+    assert.deepEqual([...errors(c1), ...errors(c2)], [], 'no "Can\'t tell which conversation"');
+    assert.ok(readEvents(c1).every((e) => e.text !== 'two') && readEvents(c2).every((e) => e.text !== 'one'));
+  } finally { await f1.stop(); await f2.stop(); }
+});
+
+test('follow codex (D3): while a reported rollout is not there yet there is no folder guess, then it is followed from its start', async () => {
+  const env = fresh();
+  const now = Date.now();
+  // a no-file peer started with it: the folder guess alone would be ambiguous
+  fs.mkdirSync(path.dirname(claimPath(env, TERM2)), { recursive: true });
+  fs.writeFileSync(claimPath(env, TERM2), JSON.stringify({ pid: process.pid, cwd: env.work, since: now - 1000, file: null }));
+  const r = run({ host: 'codex', cwd: env.work, since: now - 1000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const cache = M.cachePath(env.vault, TERM);
+  try {
+    report(env, TERM, ID_A, now);
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_A));
+    fs.writeFileSync(codexFile(env, `b-${ID_B}`), metaLine(ID_B, env.work, iso(now)) + codexUser('not mine'));
+    await sleep(600);
+    assert.deepEqual(errors(cache), [], 'no guess while it waits');
+    assert.equal(sessionIds(cache).includes(ID_B), false);
+    fs.writeFileSync(codexFile(env, `a-${ID_A}`), metaLine(ID_A, env.work, iso(now)) + codexUser('mine', now));
+    assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'mine')));
+    assert.equal(readClaim(env, TERM).file, codexFile(env, `a-${ID_A}`));
+    assert.deepEqual(sessionIds(cache), [ID_A]);
+  } finally { await r.stop(); }
+});
+
+test('follow codex (D3): a /new reported in the TUI claims the new session at once and follows its rollout once it exists', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const a = codexFile(env, `a-${ID_A}`);
+  fs.writeFileSync(a, metaLine(ID_A, env.work, iso(now - 59000)) + codexUser('first', now - 58000));
+  const r = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const cache = M.cachePath(env.vault, TERM);
+  try {
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === a), 'the folder guess, with no report');
+    report(env, TERM, ID_C, now);
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_C));
+    assert.deepEqual(readClaim(env, TERM), { pid: process.pid, cwd: env.work, since: now - 60000, file: a, session: ID_C, held: [a] }, 'the old rollout stays claimed');
+    assert.deepEqual(sessionIds(cache), [ID_A], 'the chat stays on what it shows until the new rollout exists');
+    const c = codexFile(env, `c-${ID_C}`);
+    fs.writeFileSync(c, metaLine(ID_C, env.work, iso(now)) + codexUser('after new', now));
+    assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'after new')));
+    await sleep(300);
+    assert.deepEqual(sessionIds(cache), [ID_A, ID_C]);
+    assert.deepEqual(readClaim(env, TERM).held, [a, c]);
+  } finally { await r.stop(); }
+});
+
+test('follow codex (D3): a /resume the folder guess finds after a report is followed, and the same report never pulls it back', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const r = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const cache = M.cachePath(env.vault, TERM);
+  try {
+    report(env, TERM, ID_A, now - 110000);
+    const a = codexFile(env, `a-${ID_A}`);
+    fs.writeFileSync(a, metaLine(ID_A, env.work, iso(now - 110000)) + codexUser('a1', now - 109000));
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === a));
+    setMtime(a, now - 30000);
+    const b = codexFile(env, `b-${ID_B}`);
+    fs.writeFileSync(b, metaLine(ID_B, env.work, iso(now - 3600000)) + codexUser('b old', now - 3590000) + codexUser('b resumed', now));
+    assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_B), 'R17b: the /resume');
+    report(env, TERM, ID_A, now - 110000); // the same report written again: a new mtime, the same report
+    await sleep(500);
+    assert.deepEqual(sessionIds(cache), [ID_A, ID_B]);
+    assert.equal(readClaim(env, TERM).file, b);
+  } finally { await r.stop(); }
+});
+
+test('follow codex (D4): a report from before the terminal, or before a follower given an id, is ignored; a later one is not', async () => {
+  const env = fresh();
+  const now = Date.now();
+  // before the terminal started
+  report(env, TERM, ID_A, now - 5000);
+  fs.writeFileSync(codexFile(env, `a-${ID_A}`), metaLine(ID_A, env.work, iso(now - 5000)));
+  const f1 = run({ host: 'codex', cwd: env.work, since: now, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  // after the terminal started but before this follower (Resume with an id)
+  const b = codexFile(env, `b-${ID_B}`);
+  const c = codexFile(env, `c-${ID_C}`);
+  fs.writeFileSync(b, metaLine(ID_B, env.work, iso(now - 59000)) + codexUser('the resumed one', now - 58000));
+  fs.writeFileSync(c, metaLine(ID_C, env.work, iso(now - 30000)) + codexUser('the reported one', now - 29000));
+  setMtime(b, now - 1000);
+  setMtime(c, now - 20000);
+  report(env, TERM2, ID_C, now - 30000);
+  const f2 = run({ host: 'codex', id: ID_B, cwd: env.work, since: now - 60000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
+  const c1 = M.cachePath(env.vault, TERM);
+  const c2 = M.cachePath(env.vault, TERM2);
+  try {
+    assert.ok(await waitFor(() => sessionIds(c2).includes(ID_B)));
+    await sleep(500);
+    assert.deepEqual(sessionIds(c1), [], 'the report from before the terminal');
+    assert.deepEqual(sessionIds(c2), [ID_B], 'the report from before the follower');
+    report(env, TERM2, ID_C, Date.now());
+    assert.ok(await waitFor(() => readEvents(c2).some((e) => e.text === 'the reported one')), 'a report after it');
+    assert.equal(sessionIds(c2).at(-1), ID_C);
+  } finally { await f1.stop(); await f2.stop(); }
+});
+
+test('follow codex (D5): a report is looked up by id; a transcript_path in it is never read', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const decoy = path.join(env.root, 'decoy.jsonl');
+  fs.writeFileSync(decoy, metaLine(ID_A, env.work, iso(now)) + codexUser('decoy'));
+  fs.mkdirSync(path.join(env.vault, 'brain', '_index', 'code'), { recursive: true });
+  fs.writeFileSync(path.join(env.vault, 'brain', '_index', 'code', `${TERM}.session.json`), JSON.stringify({ at: iso(now), host: 'codex', session_id: ID_A, transcript_path: decoy }));
+  const r = run({ host: 'codex', cwd: env.work, since: now - 1000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const cache = M.cachePath(env.vault, TERM);
+  try {
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_A));
+    await sleep(400);
+    assert.equal(readEvents(cache).some((e) => e.text === 'decoy'), false);
+    fs.writeFileSync(codexFile(env, `a-${ID_A}`), metaLine(ID_A, env.work, iso(now)) + codexUser('real'));
+    assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'real')));
+  } finally { await r.stop(); }
+});
+
+test('follow codex (C1): a /new in one terminal never hands its old rollout to a quiet neighbour', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const f1 = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const f2 = run({ host: 'codex', cwd: env.work, since: now - 117000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
+  const c1 = M.cachePath(env.vault, TERM);
+  const c2 = M.cachePath(env.vault, TERM2);
+  const a = codexFile(env, `a-${ID_A}`);
+  const b = codexFile(env, `b-${ID_B}`);
+  try {
+    report(env, TERM, ID_A, now - 110000);
+    report(env, TERM2, ID_B, now - 108000);
+    fs.writeFileSync(a, metaLine(ID_A, env.work, iso(now - 110000)) + codexUser('a1', now - 109000));
+    fs.writeFileSync(b, metaLine(ID_B, env.work, iso(now - 108000)) + codexUser('b1', now - 107000));
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === a && readClaim(env, TERM2)?.file === b));
+    setMtime(b, now - 50000); // T2 has been quiet
+    fs.appendFileSync(a, codexUser('a2', now - 10000)); // T1 works on
+    assert.ok(await waitFor(() => readEvents(c1).some((e) => e.text === 'a2')));
+    report(env, TERM, ID_C, now);
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_C));
+    await sleep(600);
+    assert.deepEqual(sessionIds(c2), [ID_B], 'T2 stays on its own conversation');
+    fs.writeFileSync(codexFile(env, `c-${ID_C}`), metaLine(ID_C, env.work, iso(now)) + codexUser('c1', now));
+    assert.ok(await waitFor(() => readEvents(c1).some((e) => e.text === 'c1')));
+    await sleep(600);
+    assert.deepEqual(sessionIds(c2), [ID_B], 'and after T1 follows its new one');
+    assert.equal(readClaim(env, TERM2).file, b);
+    assert.deepEqual([...errors(c1), ...errors(c2)], []);
+  } finally { await f1.stop(); await f2.stop(); }
+});
+
+test('follow codex (I1): a nested codex exec\'s report is dropped — its rollout is not interactive, or a new prompt shows the agent stayed', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const r = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const cache = M.cachePath(env.vault, TERM);
+  const a = codexFile(env, `a-${ID_A}`);
+  try {
+    report(env, TERM, ID_A, now - 50000);
+    fs.writeFileSync(a, metaLine(ID_A, env.work, iso(now - 50000)) + codexUser('main', now - 49000));
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === a));
+    // the agent runs `codex exec …` through its shell: that run's SessionStart overwrites the report
+    report(env, TERM, ID_D, now - 1000);
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_D));
+    const execLine = (id, ts) => `${JSON.stringify({ timestamp: ts, type: 'session_meta', payload: { id, cwd: env.work, timestamp: ts, source: 'exec' } })}\n`;
+    fs.writeFileSync(codexFile(env, `d-${ID_D}`), execLine(ID_D, iso(now - 1000)) + codexUser('the exec prompt', now - 900));
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_A), 'dropped: not a terminal\'s own conversation');
+    // an exec that writes no rollout (--ephemeral): pending until the main conversation gets a new prompt
+    report(env, TERM, ID_C, Date.now());
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_C));
+    fs.appendFileSync(a, codexUser('next prompt in main'));
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_A), 'dropped on the new prompt');
+    assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'next prompt in main')));
+    assert.deepEqual(sessionIds(cache), [ID_A]);
+    assert.equal(readEvents(cache).some((e) => e.text === 'the exec prompt'), false);
+  } finally { await r.stop(); }
+});
+
+test('follow codex: a report naming the session a follower given an id already shows (Resume, a chip restart) adds nothing', async () => {
+  const env = fresh();
+  const now = Date.now();
+  fs.writeFileSync(codexFile(env, `a-${ID_A}`), metaLine(ID_A, env.work, iso(now - 3600000)) + codexUser('hello', now - 3590000));
+  const r = run({ host: 'codex', id: ID_A, cwd: env.work, since: now - 1000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const cache = M.cachePath(env.vault, TERM);
+  try {
+    assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'hello')));
+    report(env, TERM, ID_A, Date.now());
+    await sleep(500);
+    assert.equal(readEvents(cache).filter((e) => e.text === 'hello').length, 1, 'the transcript is not read again');
+    assert.deepEqual(sessionIds(cache), [ID_A]);
+  } finally { await r.stop(); }
+});
+
+test('follow codex: a terminal with no report never takes, nor is unsure of, the rollout a neighbour\'s report named', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const f1 = run({ host: 'codex', cwd: env.work, since: now - 10000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const f2 = run({ host: 'codex', cwd: env.work, since: now - 8000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
+  const c1 = M.cachePath(env.vault, TERM);
+  const c2 = M.cachePath(env.vault, TERM2);
+  try {
+    report(env, TERM, ID_A, now - 9000);
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.session === ID_A));
+    await sleep(100); // T2's next scan reads T1's claim
+    fs.writeFileSync(codexFile(env, `a-${ID_A}`), metaLine(ID_A, env.work, iso(now - 9000)) + codexUser('one'));
+    assert.ok(await waitFor(() => readEvents(c1).some((e) => e.text === 'one')));
+    await sleep(500);
+    assert.deepEqual(sessionIds(c2), []);
+    assert.deepEqual(errors(c2), [], 'no "Can\'t tell" either');
+  } finally { await f1.stop(); await f2.stop(); }
+});
+
+test('pickCodexRollout (D9): a closed terminal\'s rollouts stay claimed until one grows after its close', () => {
+  const t = me({ since: 100000, file: 'b', mtimeMs: 150000 });
+  const beginOf = () => 160000;
+  const a = [cand('a', 50000, 170000)]; // an older rollout last appended at 170 s, after my last append
+  assert.deepEqual(M.pickCodexRollout(a, { me: t, beginOf }), { file: 'a', id: 'id-a' }, 'without the hold: R17b takes it');
+  assert.equal(M.pickCodexRollout(a, { me: t, beginOf, closed: [{ held: ['a'], closedAt: 175000 }] }), null, 'held by the closed terminal');
+  assert.deepEqual(M.pickCodexRollout([cand('a', 50000, 190000)], { me: t, beginOf, closed: [{ held: ['a'], closedAt: 175000 }] }), { file: 'a', id: 'id-a' }, 'grown after the close: resumed somewhere');
+});
+
+test('follow codex (D9): closing a terminal leaves its conversation to no quiet neighbour', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const f1 = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const f2 = run({ host: 'codex', cwd: env.work, since: now - 117000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
+  const c2 = M.cachePath(env.vault, TERM2);
+  const a = codexFile(env, `a-${ID_A}`);
+  const b = codexFile(env, `b-${ID_B}`);
+  let stopped1 = false;
+  try {
+    report(env, TERM, ID_A, now - 110000);
+    report(env, TERM2, ID_B, now - 108000);
+    fs.writeFileSync(a, metaLine(ID_A, env.work, iso(now - 110000)) + codexUser('a1', now - 109000));
+    fs.writeFileSync(b, metaLine(ID_B, env.work, iso(now - 108000)) + codexUser('b1', now - 107000));
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === a && readClaim(env, TERM2)?.file === b));
+    setMtime(b, now - 50000); // T2 has been quiet
+    fs.appendFileSync(a, codexUser('a2', now - 10000)); // T1 worked until it closed
+    await sleep(100);
+    await f1.stop();
+    stopped1 = true;
+    const closed = JSON.parse(fs.readFileSync(path.join(env.vault, 'brain', '_index', 'code', `${TERM}.closed.json`), 'utf8'));
+    assert.deepEqual([closed.cwd, closed.held], [env.work, [a]]);
+    await sleep(600);
+    assert.deepEqual(sessionIds(c2), [ID_B], 'T2 stays on its own conversation');
+    assert.deepEqual(errors(c2), []);
+  } finally { if (!stopped1) await f1.stop(); await f2.stop(); }
+});
+
+test('follow codex: a rollout that shows a moment before its terminal\'s report writes no "Can\'t tell" on either side', async () => {
+  const env = fresh();
+  const now = Date.now();
+  const a = codexFile(env, `a-${ID_A}`);
+  fs.writeFileSync(a, metaLine(ID_A, env.work, iso(now - 59000)) + codexUser('a1', now - 58000));
+  setMtime(a, now - 30000);
+  const f1 = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
+  const f2 = run({ host: 'codex', cwd: env.work, since: now - 1000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
+  const c1 = M.cachePath(env.vault, TERM);
+  const c2 = M.cachePath(env.vault, TERM2);
+  try {
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === a));
+    // Codex writes T2's rollout at its first prompt; its SessionStart hook reports it a moment later.
+    fs.writeFileSync(codexFile(env, `b-${ID_B}`), metaLine(ID_B, env.work, iso(now)) + codexUser('b1', now));
+    await sleep(200); // a scan or two on each side sees the rollout unclaimed
+    report(env, TERM2, ID_B, Date.now());
+    assert.ok(await waitFor(() => readEvents(c2).some((e) => e.text === 'b1')));
+    await sleep(600);
+    assert.deepEqual([...errors(c1), ...errors(c2)], []);
+    assert.deepEqual(sessionIds(c1), [ID_A]);
+  } finally { await f1.stop(); await f2.stop(); }
 });
