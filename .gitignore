@@ -10,3 +10,6 @@ __pycache__/
 # The owner's private privacy-gate terms and vault export table (tools/privacy-terms.js, tools/export-scrubs.example.js).
 # The gate fails if either is ever tracked.
 tools/*.local.*
+
+# The roadmap page built locally (node tools/roadmap.js build --out _site); CI builds its own.
+/_site/
