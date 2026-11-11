@@ -821,3 +821,20 @@ test("a collapsed or hidden pane never leaves the column narrowable", () => {
   t.pane.destroy();
   assert.equal(t.column.classes.has("is-narrowable"), false);
 });
+
+test("on a narrowing row the pane follows the layout down and comes back", () => {
+  const s = setup({ settings: { width: 600, collapsed: false }, column: 760, pane: 600 });
+  assert.equal(s.root.style.width, "600px");
+  // The window narrows: the column sits at its floor and the flex layout shrinks the pane (360 + 450 = 810).
+  s.column.offsetWidth = 360;
+  s.root.offsetWidth = 450;
+  relayout();
+  assert.equal(s.root.style.width, "450px", "the shown width follows the shrunk pane");
+  assert.equal(s.q(".aos-cp-handle").getAttribute("aria-valuemax"), "450");
+  assert.deepEqual(s.saved, [], "the saved 600 is not rewritten");
+  // The window grows again: the column takes the room (the pane keeps its drawn 450), and the width returns to 600.
+  s.column.offsetWidth = 760;
+  relayout();
+  assert.equal(s.root.style.width, "600px");
+  assert.deepEqual(s.saved, []);
+});

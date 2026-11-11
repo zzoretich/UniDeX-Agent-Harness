@@ -5561,8 +5561,9 @@ button.aos-pulse-waiting-go:not(.clickable-icon) { padding: 2px 10px; font-size:
 .aos-cp.is-collapsed { width: 40px; flex-basis: 40px; }
 /* Once the user has sized the pane it may squeeze the session's column down to 360px (session-browser S11). */
 .aos-term-main.is-narrowable { min-width: 360px; }
-/* On Code an open pane gives way to the terminal's 480px (.aos-term-main) rather than squeezing it. */
-.aos-term-deck > .aos-cp:not(.is-collapsed) { flex-shrink: 1; }
+/* An open pane gives way to its session column's floor rather than squeezing it, on both pages: the terminal's 480px on
+   Code (360px once the user has sized the pane), the reader's 360px on Sessions (session-browser S11). */
+.aos-cp:not(.is-collapsed) { flex-shrink: 1; }
 /* The bar is always drawn: a centred grip, brighter under the pointer and on focus (session-browser S11). */
 .aos-cp-handle { position: absolute; left: -6px; top: 0; bottom: 0; z-index: 5; width: 11px; cursor: col-resize; }
 .aos-cp-handle::after { content: ""; position: absolute; left: 4px; top: 50%; width: 3px; height: 28px; margin-top: -14px; border-radius: 2px; background: var(--udx-line-2); }

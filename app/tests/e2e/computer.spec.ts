@@ -924,6 +924,28 @@ test.describe("both hosts, the Computer surface on", () => {
     expectNoErrors(h);
   });
 
+  test("on Sessions an open pane gives way as the window narrows: the reader keeps 360 px and nothing overflows", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    try {
+      await openTab(win, "chat");
+      await content(win).locator(".aos-ss-newbtn").click();
+      await expect(pane(win, "chat")).toBeVisible();
+      for (const width of [1100, 900]) {
+        await resizeHud(electron, { width, height: 740 });
+        const m = await content(win).locator(".aos-ss").evaluate((root) => {
+          const w = (sel: string) => Math.round((root.querySelector(sel) as HTMLElement).getBoundingClientRect().width);
+          return { reader: w(".aos-ss-reader"), pane: w(".aos-cp"), overflow: root.scrollWidth - root.clientWidth };
+        });
+        const at = `${width}: ${JSON.stringify(m)}`;
+        expect(m.reader, at).toBeGreaterThanOrEqual(360);
+        expect(m.pane, at).toBeGreaterThan(0);
+        expect(m.overflow, at).toBeLessThanOrEqual(0);
+      }
+    } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
+    expectNoErrors(h);
+  });
+
   test("quitting with a computer open and the pane popped out ends the app at once (R46)", async () => {
     const h = app();
     const { win, app: electron } = h;
