@@ -171,3 +171,17 @@ test('build refuses to write when check fails', () => {
   assert.equal(r.errors.length, 1);
   assert.equal(fs.existsSync(out), false);
 });
+
+// ---- the release stamp (D5) ------------------------------------------------------------------------------------------
+
+test('stampRelease: only shipped items without a release, once', () => {
+  const text = doc('### UDX-001 · A\nstatus: shipped · type: feature · area: app\n\nA.', '### UDX-002 · B\nstatus: shipped · type: feature · area: app · release: v2.6.0\n\nB.', '### UDX-003 · C\nstatus: building · type: feature · area: app\n\nC.');
+  const out = R.stampRelease(text, '2.7.0');
+  assert.deepEqual(out.stamped, ['UDX-001']);
+  assert.match(out.text, /status: shipped · type: feature · area: app · release: v2\.7\.0\n/);
+  assert.match(out.text, /release: v2\.6\.0/);
+  assert.match(out.text, /status: building · type: feature · area: app\n/);
+  assert.deepEqual(R.parse(out.text).errors, []);
+  assert.deepEqual(R.stampRelease(out.text, '2.7.0').stamped, []);
+  assert.deepEqual(R.stampRelease(text, '2.7.0-rc.1').stamped, []);
+});

@@ -104,6 +104,7 @@ function readItem(head, lines, seen, errors) {
     errors.push({ line: metaLine ? metaLine.n : head.n, message: 'missing the metadata line under the heading (status: … · type: … · area: …)' });
   } else {
     rest = lines.slice(k + 1);
+    item.metaLine = metaLine.n;
     const meta = readMeta(metaLine, errors);
     const status = (meta.status || '').toLowerCase();
     const type = (meta.type || '').toLowerCase();
@@ -172,6 +173,21 @@ function parse(text) {
   finish();
   errors.sort((a, b) => a.line - b.line);
   return { intro: join(intro), items, errors };
+}
+
+/**
+ * The release stamp (D5): `· release: v<version>` on the metadata line of every shipped item that has no release yet.
+ * tools/bump-version.js runs it after the CHANGELOG roll. A pre-release (x.y.z-rc.1) stamps nothing, so those items stay
+ * under "Next release" until the release itself. Running it twice changes nothing the second time.
+ */
+function stampRelease(text, version) {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return { text, stamped: [] };
+  const targets = parse(text).items.filter((i) => i.status === 'shipped' && !i.release && i.metaLine);
+  if (!targets.length) return { text, stamped: [] };
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  for (const i of targets) lines[i.metaLine - 1] = `${lines[i.metaLine - 1].replace(/\s+$/, '')} · release: v${version}`;
+  return { text: lines.join(eol), stamped: targets.map((i) => i.id) };
 }
 
 // ---- the page ---------------------------------------------------------------------------------------------------------
@@ -319,4 +335,4 @@ function main(argv = process.argv.slice(2), { root = ROOT, log = console.log, er
 }
 
 if (require.main === module) process.exit(main());
-module.exports = { parse, slug, escapeHtml, renderMarkdown, buildPage, build, main, STATUSES, TYPES };
+module.exports = { parse, slug, stampRelease, escapeHtml, renderMarkdown, buildPage, build, main, STATUSES, TYPES };
