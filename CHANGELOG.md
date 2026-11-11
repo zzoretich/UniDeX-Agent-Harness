@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-11-11
+
 ### Added
 - **Code sessions as a chat.** A Claude Code or Codex terminal on Code opens as a chat drawn from the session's own transcript: your prompts as bubbles, the agent's replies, its tool calls (an edit opens to its input and result), Show earlier past the last 400 rows, and Stop while a turn runs. ⌘J, or the Chat · Terminal switch in the new top bar, flips to the same running terminal and back; nothing restarts, so every slash command, picker and the TUI's own prompts keep working there, and each terminal remembers its view. The composer sits in the chat's column with @ file, / commands, Snippets, access and model, and a Claude Code terminal's status line shows under it exactly as the terminal draws it, links included (elsewhere, "Status line in the terminal ⌘J"). Picking another model or access level there restarts the agent on the same conversation; the old terminal closes once the new agent has started, and picking the model it already runs does nothing. When an agent exits, its chat keeps the conversation and says so where the composer was; for an agent the app runs directly the terminal's composer then writes to your shell, and for one started by a launch line or a Skills, Agents, Proposals or Pulse button the terminal ends with the agent and has no composer. Shells stay terminals. On by default since its live check on each host (2026-11-10); while the Code chat write surface is off, agent terminals open in the terminal, the composer has no access or model chip, and the switch says so. <!-- tour: code.chat-view -->
 - **Approval cards and Needs you on Code.** When a Claude Code or Codex terminal asks before it runs a command or edits a file, its chat shows the question, the command or file, and the TUI's own numbered choices as buttons; a click sends that choice's key to the terminal, once, and only while that prompt is still on its screen and the agent still runs. A prompt the chat can't draw (`/model`, the trust question, a picker) reads "Waiting on you in the terminal" with "Answer in the terminal ⌘J". Either way the terminal's row reads Needs you, the sidebar's foot counts it, and Code's rail badge counts every terminal waiting on you, whichever one or whichever tab you are looking at; the view never switches by itself. A Codex terminal's footer now shows under its composer as the terminal draws it. Each agent terminal's screen is read only while it prints or a card is up, and only while the Code chat write surface is on. <!-- tour: code.chat-view -->
@@ -753,7 +755,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.6.0
 [2.5.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.5.0
 [2.4.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.4.0
 [2.3.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.3.0
