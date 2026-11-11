@@ -325,6 +325,7 @@ export class ComputerPane {
   hide(): void {
     if (this.destroyed || !this.visible) return;
     this.visible = false;
+    this.markColumn(false);
     this.seq++;
     this.switching = false;
     this.push();
@@ -336,6 +337,7 @@ export class ComputerPane {
     if (this.sent) this.o.host.show(null);
     this.sent = null;
     this.destroyed = true;
+    this.markColumn(false);
     this.store.setOnScreen(this.o.page, null);
     for (const fn of this.cleanups.splice(0)) {
       try { fn(); } catch { /* already gone */ }
@@ -496,6 +498,13 @@ export class ComputerPane {
       b.setAttr("aria-pressed", String(on === z.size));
       b.disabled = z.size !== "side" && row < SIZES_MIN_ROW;
     }
+    this.markColumn(this.visible && !this.drawnCollapsed() && this.width !== COMPUTER_PANE_WIDTH.default);
+  }
+
+  /** Once the user has sized the pane (and it is drawn open) the session's column may narrow to 360 px; at the usual
+   *  width it keeps its own floor (session-browser S11). Never left on a column without a pane. */
+  private markColumn(on: boolean): void {
+    this.o.column()?.toggleClass("is-narrowable", on);
   }
 
   /** Collapsed as drawn: the user's collapse, or the surface being off (R54), which is never saved. */

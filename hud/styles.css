@@ -3310,9 +3310,9 @@ button.aos-tl-clear:not(.clickable-icon), button.aos-tl-allhistory:not(.clickabl
 .aos-tl-scope:not(.is-on) { display: none; }
 .aos-tl-scope.is-on { display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; font-size: 12px; color: var(--udx-text-2); }
 .aos-tl-scopetext { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The terminal or chat keeps 360px however many panes are open beside it (code-chat C8, session-browser S11): the Diff and
-   Computer panes give way instead. */
-.aos-term-main { flex: 1; min-width: 360px; display: flex; flex-direction: column; }
+/* The terminal or chat keeps 480px however many panes are open beside it (code-chat C8): the Diff and Computer panes give
+   way instead. */
+.aos-term-main { flex: 1; min-width: 480px; display: flex; flex-direction: column; }
 .aos-term-deck .aos-term-tabs:empty { display: none; }
 .aos-term-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
 .aos-term-placewrap { position: relative; }
@@ -5559,6 +5559,8 @@ button.aos-pulse-waiting-go:not(.clickable-icon) { padding: 2px 10px; font-size:
    above it, and a menu or a modal takes the view away while it is open. */
 .aos-cp { position: relative; flex: 0 0 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; box-sizing: border-box; border-left: 1px solid var(--udx-line); background: var(--udx-surface); color: var(--udx-text); font-size: 12.5px; }
 .aos-cp.is-collapsed { width: 40px; flex-basis: 40px; }
+/* Once the user has sized the pane it may squeeze the session's column down to 360px (session-browser S11). */
+.aos-term-main.is-narrowable { min-width: 360px; }
 /* On Code an open pane gives way to the terminal's 480px (.aos-term-main) rather than squeezing it. */
 .aos-term-deck > .aos-cp:not(.is-collapsed) { flex-shrink: 1; }
 /* The bar is always drawn: a centred grip, brighter under the pointer and on focus (session-browser S11). */

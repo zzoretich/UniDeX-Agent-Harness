@@ -1652,7 +1652,7 @@ test.describe("the Diff and Files panes, whichever write surfaces are on (C8)", 
     }
   });
 
-  test("with Diff and a Computer pane open the terminal keeps 360 px and the panes give way, at 1280 and 1470 px", async () => {
+  test("with Diff and a Computer pane open the terminal keeps 480 px and the panes give way, at 1280 and 1470 px", async () => {
     const h = app();
     const { win } = h;
     await openTab(win, "term");
@@ -1678,7 +1678,7 @@ test.describe("the Diff and Files panes, whichever write surfaces are on (C8)", 
             return { main: w(".aos-term-main"), diff: w(".aos-cdp"), cp: w(".aos-cp[data-standin]"), right, inner: window.innerWidth, scroll: c.scrollWidth - c.clientWidth };
           });
           const at = `${width}: ${JSON.stringify(m)}`;
-          expect(m.main, at).toBeGreaterThanOrEqual(360);
+          expect(m.main, at).toBeGreaterThanOrEqual(480);
           expect(m.diff, at).toBeGreaterThan(0);
           expect(m.cp, at).toBeGreaterThan(0);
           expect(m.right, at).toBeLessThanOrEqual(m.inner);

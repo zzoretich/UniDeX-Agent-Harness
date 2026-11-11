@@ -792,3 +792,32 @@ test("a double click on the bar goes back to Side", () => {
   assert.deepEqual(last(s.saved), { width: 440, collapsed: false });
   assert.equal(s.root.style.width, "440px");
 });
+
+test("at the default width the session column keeps its own floor", () => {
+  const s = setup();
+  assert.equal(s.column.classes.has("is-narrowable"), false);
+});
+
+test("a pane the user sized lets the session column narrow", () => {
+  const s = setup();
+  sizeBtn(s, "half").click();
+  assert.equal(s.column.classes.has("is-narrowable"), true);
+  sizeBtn(s, "side").click();
+  assert.equal(s.column.classes.has("is-narrowable"), false);
+});
+
+test("a collapsed or hidden pane never leaves the column narrowable", () => {
+  const s = setup({ settings: { width: 600, collapsed: false } });
+  assert.equal(s.column.classes.has("is-narrowable"), true);
+  s.q(".aos-cp-collapse").click();
+  assert.equal(s.column.classes.has("is-narrowable"), false);
+  s.q(".aos-cp-collapse").click();
+  assert.equal(s.column.classes.has("is-narrowable"), true);
+  s.pane.hide();
+  assert.equal(s.column.classes.has("is-narrowable"), false);
+  relayout();
+  assert.equal(s.column.classes.has("is-narrowable"), false, "a relayout does not bring it back");
+  const t = setup({ settings: { width: 600, collapsed: false } });
+  t.pane.destroy();
+  assert.equal(t.column.classes.has("is-narrowable"), false);
+});
