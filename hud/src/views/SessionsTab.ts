@@ -755,6 +755,8 @@ export class SessionsTab {
       host: computer,
       page: "chat",
       settings: () => computerPaneStart(this.plugin.settings.computerPane, "chat", window.innerWidth),
+      // The reader beside it (session-browser S11): the pane grows until it is 360 px wide.
+      column: () => root.querySelector<HTMLElement>(".aos-ss-reader"),
       save: (pane) => {
         this.plugin.settings.computerPane = rememberComputerPane(this.plugin.settings.computerPane, "chat", pane);
         void this.plugin.saveSettings();

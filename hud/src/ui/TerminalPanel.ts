@@ -570,6 +570,8 @@ export class TerminalPanel {
       host: computer,
       page: "code",
       settings: () => computerPaneStart(this.plugin.settings.computerPane, "code", window.innerWidth),
+      // The terminal's column in this deck (session-browser S11): the pane grows until it is 360 px wide.
+      column: () => host.querySelector<HTMLElement>(".aos-term-main"),
       save: (pane) => {
         this.plugin.settings.computerPane = rememberComputerPane(this.plugin.settings.computerPane, "code", pane);
         void this.plugin.saveSettings();

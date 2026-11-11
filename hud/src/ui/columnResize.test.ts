@@ -1,5 +1,5 @@
 // The Computer pane's left edge (agent-computer D4: resizable). Dragging it left widens the pane, inside the bounds the
-// caller gives (320–900); the width follows the pointer and is saved once, on release; the keyboard moves it too.
+// caller gives (320 to a limit it is asked for at every move); the width follows the pointer and is saved once, on release; the keyboard moves it too.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RESIZE_STEP, bindColumnResize } from "./columnResize";
@@ -16,7 +16,7 @@ class FakeTarget {
   count(type: string): number { return this.listeners.get(type)?.size ?? 0; }
 }
 
-function setup(width = 440) {
+function setup(width = 440, limit = { max: 900 }) {
   const classes = new Set<string>();
   const doc = Object.assign(new FakeTarget(), {
     body: { toggleClass: (c: string, on: boolean) => { if (on) classes.add(c); else classes.delete(c); } },
@@ -26,13 +26,14 @@ function setup(width = 440) {
   const sets: number[] = [];
   const dones: number[] = [];
   let starts = 0;
+  let resets = 0;
   const off = bindColumnResize(handle as unknown as HTMLElement, {
-    min: 320, max: 900, get: () => w, set: (n) => { w = n; sets.push(n); }, done: (n) => { dones.push(n); }, start: () => { starts++; },
+    min: 320, max: () => limit.max, reset: () => { resets++; }, get: () => w, set: (n) => { w = n; sets.push(n); }, done: (n) => { dones.push(n); }, start: () => { starts++; },
   });
-  return { doc, handle, sets, dones, off, classes, starts: () => starts };
+  return { doc, handle, sets, dones, off, classes, starts: () => starts, resets: () => resets };
 }
 
-test("dragging the pane's left edge widens it to the left, clamped to 320–900; done fires once, on release", () => {
+test("dragging the pane's left edge widens it to the left, clamped to 320 and the limit; done fires once, on release", () => {
   const s = setup(440);
   s.handle.fire("mousedown", { clientX: 1000 });
   assert.equal(s.starts(), 1);
@@ -79,4 +80,25 @@ test("the returned function unbinds the edge and ends a drag in progress with it
   s.off();
   assert.deepEqual(s.dones, [480]);
   assert.equal(s.handle.count("mousedown") + s.handle.count("keydown") + s.doc.count("mousemove"), 0);
+});
+
+test("max is read as the drag moves", () => {
+  const limit = { max: 700 };
+  const s = setup(440, limit);
+  s.handle.fire("mousedown", { clientX: 1000 });
+  s.doc.fire("mousemove", { clientX: 500 });    // 500 px left: 940, held at 700
+  limit.max = 800;                               // the row grew mid-drag
+  s.doc.fire("mousemove", { clientX: 400 });    // 600 px left: 1040, held at the new 800
+  s.doc.fire("mouseup");
+  assert.deepEqual(s.sets, [700, 800]);
+  assert.deepEqual(s.dones, [800]);
+});
+
+test("a double click resets", () => {
+  const s = setup(440);
+  s.handle.fire("dblclick");
+  assert.equal(s.resets(), 1);
+  s.off();
+  s.handle.fire("dblclick");
+  assert.equal(s.resets(), 1, "unbound");
 });

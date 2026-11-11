@@ -38,6 +38,9 @@ class FakeEl {
   style: Record<string, string> = {};
   value = "";
   disabled = false;
+  /** The laid-out width: a column's or the pane's own (the test sets them; an aside gets FakeEl.asideWidth). */
+  offsetWidth = 0;
+  static asideWidth = 0;
   scrollTop = 0;
   scrollHeight = 0;
   scrolled = 0;
@@ -51,6 +54,7 @@ class FakeEl {
     for (const c of (o.cls ?? "").split(/\s+/).filter(Boolean)) el.classes.add(c);
     if (o.text !== undefined) el.kids.push(o.text);
     for (const [k, v] of Object.entries(o.attr ?? {})) el.attrs.set(k, String(v));
+    if (tag === "aside") el.offsetWidth = FakeEl.asideWidth;
     el.parent = this;
     this.kids.push(el);
     return el;
@@ -197,9 +201,13 @@ function fakeClock() {
   return c;
 }
 
-function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string } = {}) {
+function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string; column?: number; pane?: number } = {}) {
   const doc = makeDoc();
   const parent = doc.body.createDiv({ cls: "aos-term-deck" });
+  // The row is the session's column and the pane together: 760 + 440 = 1200 unless a test says otherwise.
+  const column = parent.createDiv({ cls: "aos-term-main" });
+  column.offsetWidth = o.column ?? 760;
+  FakeEl.asideWidth = o.pane ?? 440;
   const fake = fakeComputer(o.answer ?? ((place) => state(place)));
   const { f } = fake;
   const { enabled: _on, ...unsaid } = fake.host;
@@ -207,12 +215,13 @@ function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComp
   const host: HostComputer = o.startPage === undefined ? shown : { ...shown, startPage: o.startPage };
   const saved: ComputerPaneSettings[] = [];
   const clock = fakeClock();
-  const pane = new ComputerPane({ host, page: o.page ?? "code", settings: () => o.settings ?? { width: 440, collapsed: false }, save: (s) => saved.push(s), clock });
+  const pane = new ComputerPane({ host, page: o.page ?? "code", settings: () => o.settings ?? { width: 440, collapsed: false }, save: (s) => saved.push(s), clock,
+    column: () => column as unknown as HTMLElement });
   pane.mount(parent as unknown as HTMLElement);
   const root = parent.querySelector(".aos-cp")!;
   const view = root.querySelector(".aos-cp-view")!;
   view.rect = { left: 900, top: 120, width: 440, height: 500 };
-  return { doc, parent, host, f, pane, saved, root, view, clock, q: (sel: string) => root.querySelector(sel)! };
+  return { doc, parent, column, host, f, pane, saved, root, view, clock, q: (sel: string) => root.querySelector(sel)! };
 }
 
 test("follow() selects the place and gives the view its rectangle; collapsing sends show(null) and saves; collapsed it still follows", async () => {
@@ -733,4 +742,53 @@ test("a notification's reveal opens the collapsed pane on its ask and scrolls th
   assert.deepEqual(s.saved, [], "opened for the ask only: the saved collapse stays");
   assert.deepEqual(last(s.f.shows), RECT);
   assert.equal(s.root.querySelector(".aos-cp-ask")!.scrolled, 1);
+});
+
+// ── session-browser S11: the bar, Side · Half · Wide ──
+
+const sizeBtn = (s: ReturnType<typeof setup>, size: string): FakeEl => s.q(`[data-size="${size}"]`);
+
+test("Half saves 600 and is marked pressed", () => {
+  const s = setup();
+  assert.equal(sizeBtn(s, "side").getAttribute("aria-pressed"), "true", "440 is Side");
+  assert.equal(sizeBtn(s, "half").getAttribute("aria-pressed"), "false");
+  assert.equal(s.q(".aos-cp-sizes").getAttribute("data-tour"), "computer-size");
+  assert.deepEqual(["side", "half", "wide"].map((z) => sizeBtn(s, z).textContent), ["Side", "Half", "Wide"]);
+  sizeBtn(s, "half").click();
+  assert.deepEqual(last(s.saved), { width: 600, collapsed: false });
+  assert.equal(s.root.style.width, "600px");
+  assert.equal(sizeBtn(s, "half").getAttribute("aria-pressed"), "true");
+  assert.equal(sizeBtn(s, "side").getAttribute("aria-pressed"), "false");
+  sizeBtn(s, "wide").click();
+  assert.deepEqual(last(s.saved), { width: 840, collapsed: false });
+  assert.equal(s.q(".aos-cp-handle").getAttribute("aria-valuemax"), "840");
+});
+
+test("a row under 680 disables Half and Wide", () => {
+  const s = setup({ column: 280, pane: 320, settings: { width: 320, collapsed: false } });
+  assert.equal(sizeBtn(s, "half").disabled, true);
+  assert.equal(sizeBtn(s, "wide").disabled, true);
+  assert.equal(sizeBtn(s, "side").disabled, false);
+  s.column.offsetWidth = 760;
+  s.root.offsetWidth = 440;
+  relayout();
+  assert.equal(sizeBtn(s, "half").disabled, false, "the row grew: the existing observer redraws the buttons");
+  assert.equal(sizeBtn(s, "wide").disabled, false);
+});
+
+test("a shown width never passes the row's maximum", () => {
+  const s = setup({ settings: { width: 1400, collapsed: false } });
+  assert.equal(s.root.style.width, "840px");
+  assert.equal(s.q(".aos-cp-handle").getAttribute("aria-valuenow"), "840");
+  assert.deepEqual(s.saved, [], "the stored 1400 is not rewritten");
+  s.column.offsetWidth = 500;
+  relayout();
+  assert.equal(s.root.style.width, "580px", "the row shrank to 940: the pane follows it down (940 less 360)");
+});
+
+test("a double click on the bar goes back to Side", () => {
+  const s = setup({ settings: { width: 700, collapsed: false } });
+  s.q(".aos-cp-handle").fire("dblclick");
+  assert.deepEqual(last(s.saved), { width: 440, collapsed: false });
+  assert.equal(s.root.style.width, "440px");
 });

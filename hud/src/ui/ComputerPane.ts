@@ -16,7 +16,7 @@ import { setIcon } from "obsidian";
 import type { HostComputer, HostComputerHolder, HostComputerRect, HostComputerState, HostComputerTab } from "../host";
 import { START_PAGE, searchUrl } from "../data/computerStart";
 import { storeFor, type ComputerPage, type ComputerStore } from "../data/computerStore";
-import { COMPUTER_PANE_WIDTH, type ComputerPaneSettings } from "../settingsDefaults";
+import { COMPUTER_PANE_WIDTH, paneMax, paneSizeOf, paneSizeWidth, type ComputerPaneSettings, type PaneSize } from "../settingsDefaults";
 import { bindColumnResize } from "./columnResize";
 import { ARM_MS, arm, renderAsk, siteHost } from "./ComputerAsk";
 
@@ -29,6 +29,9 @@ export interface ComputerPaneOptions {
   settings: () => ComputerPaneSettings;
   /** Saves a changed width or collapse. */
   save: (s: ComputerPaneSettings) => void;
+  /** The session's own column beside the pane (the terminal's, the reader): the pane may grow until it is 360 px wide
+   *  (session-browser S11). Null while it is not on the page. */
+  column: () => HTMLElement | null;
   /** The clock a new card's wait runs on (M7); the window's own by default (the tests pass a fake). */
   clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown };
 }
@@ -42,6 +45,15 @@ const NONE_LINE: Record<ComputerPage, string> = {
 const HELP_TEXT = "Agents use this browser through the Computer tools: it asks you before anything irreversible, and Take over "
   + "stops them at once. Other browser and computer-use tools (Codex's built-in ones, Claude in Chrome, Playwright, "
   + "computer-use servers) act without these guards.";
+const SIZES: ReadonlyArray<{ size: PaneSize; label: string; title: string }> = [
+  { size: "side", label: "Side", title: "The usual width" },
+  { size: "half", label: "Half", title: "Half the window" },
+  { size: "wide", label: "Wide", title: "As wide as it can be" },
+];
+/** Under this row width the pane is already as wide as it may be, so Half and Wide have nothing to give. */
+const SIZES_MIN_ROW = 680;
+/** The row's width while it cannot be read (not on the page yet): wide enough that nothing is cut. */
+const ROW_UNKNOWN = 10_000;
 /** How many activity lines the Code page shows; main keeps the rest. */
 const LOG_SHOWN = 50;
 
@@ -116,6 +128,7 @@ interface PaneEls {
   handle: HTMLElement;
   place: HTMLElement;
   count: HTMLElement;
+  sizes: Record<PaneSize, HTMLButtonElement>;
   pop: HTMLButtonElement;
   collapse: HTMLButtonElement;
   tabs: HTMLElement;
@@ -181,7 +194,7 @@ export class ComputerPane {
       cls: "aos-cp-handle",
       attr: {
         role: "separator", "aria-orientation": "vertical", "aria-label": "Resize the Computer pane", tabindex: "0",
-        "aria-valuemin": String(COMPUTER_PANE_WIDTH.min), "aria-valuemax": String(COMPUTER_PANE_WIDTH.max),
+        "aria-valuemin": String(COMPUTER_PANE_WIDTH.min),
       },
     });
 
@@ -192,6 +205,13 @@ export class ComputerPane {
     mode.createSpan({ cls: "aos-cp-modelabel", text: "Browser" });
     const place = head.createSpan({ cls: "aos-cp-place" });
     const count = head.createSpan({ cls: "aos-cp-count" });
+    const group = head.createDiv({ cls: "aos-cp-sizes", attr: { role: "group", "aria-label": "Pane size", "data-tour": "computer-size" } });
+    const sizes = {} as Record<PaneSize, HTMLButtonElement>;
+    for (const z of SIZES) {
+      const b = group.createEl("button", { cls: "aos-cp-size", text: z.label, attr: { type: "button", "data-size": z.size, title: z.title, "aria-pressed": "false" } });
+      b.addEventListener("click", () => this.setSize(z.size));
+      sizes[z.size] = b;
+    }
     const pop = head.createEl("button", { cls: "aos-cp-icon aos-cp-popout", attr: { type: "button" } });
     setIcon(pop, "picture-in-picture-2");
     pop.addEventListener("click", () => {
@@ -233,21 +253,21 @@ export class ComputerPane {
       helpBtn.setAttr("aria-expanded", String(open));
       help.toggleClass("is-open", open);
     });
-    this.el = { root, handle, place, count, pop, collapse, tabs, input, trust, navMsg, asks, view, drive, log, acting };
+    this.el = { root, handle, place, count, sizes, pop, collapse, tabs, input, trust, navMsg, asks, view, drive, log, acting };
 
     // The rectangle moves with the view's own size, the page around the pane (a drawer opening shifts it), the window,
-    // and a modal opening over it.
+    // and a modal opening over it. The same two watchers keep the width inside the row: the row's size is what they see.
     const doc = parent.ownerDocument;
     const RO = (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
     if (RO) {
-      const ro = new RO(() => this.push());
+      const ro = new RO(() => { this.applyWidth(); this.push(); });
       ro.observe(view);
       ro.observe(parent);
       this.cleanups.push(() => ro.disconnect());
     }
     const win = doc.defaultView;
     if (win) {
-      const onResize = (): void => this.push();
+      const onResize = (): void => { this.applyWidth(); this.push(); };
       win.addEventListener("resize", onResize);
       this.cleanups.push(() => win.removeEventListener("resize", onResize));
     }
@@ -260,8 +280,9 @@ export class ComputerPane {
     }
     this.cleanups.push(bindColumnResize(handle, {
       min: COMPUTER_PANE_WIDTH.min,
-      max: COMPUTER_PANE_WIDTH.max,
-      get: () => this.width,
+      max: () => paneMax(this.row()),
+      reset: () => this.setSize("side"),
+      get: () => this.shownWidth(),
       set: (w) => { this.width = w; this.applyWidth(); },
       start: () => { this.dragging = true; this.push(); },
       done: (w) => {
@@ -417,6 +438,16 @@ export class ComputerPane {
     this.push();
   }
 
+  /** A size button (or a double click on the bar: Side): the width is saved, and the pane opens if it was collapsed. */
+  private setSize(size: PaneSize): void {
+    if (!this.el) return;
+    this.width = paneSizeWidth(size, this.row());
+    this.collapsed = false;
+    this.o.save({ width: this.width, collapsed: false });
+    this.render();
+    this.push();
+  }
+
   private async go(typed: string): Promise<void> {
     const url = addressUrl(typed, this.start);
     if (!url || !this.live()) return;
@@ -442,11 +473,29 @@ export class ComputerPane {
 
   // ── render ──
 
+  /** The row the pane sits in: the session's column and the pane together (they fill it; the window sets it). */
+  private row(): number {
+    const n = (this.o.column()?.offsetWidth ?? 0) + (this.el?.root.offsetWidth ?? 0);
+    return n > 0 ? n : ROW_UNKNOWN;
+  }
+
+  /** The width drawn: the saved one, held to what the row allows now. The saved width is not rewritten. */
+  private shownWidth(): number { return Math.min(this.width, paneMax(this.row())); }
+
   private applyWidth(): void {
     const e = this.el;
     if (!e) return;
-    e.root.style.width = this.drawnCollapsed() ? "" : `${this.width}px`;
-    e.handle.setAttr("aria-valuenow", String(this.width));
+    const row = this.row();
+    const w = Math.min(this.width, paneMax(row));
+    e.root.style.width = this.drawnCollapsed() ? "" : `${w}px`;
+    e.handle.setAttr("aria-valuenow", String(w));
+    e.handle.setAttr("aria-valuemax", String(paneMax(row)));
+    const on = paneSizeOf(w, row);
+    for (const z of SIZES) {
+      const b = e.sizes[z.size];
+      b.setAttr("aria-pressed", String(on === z.size));
+      b.disabled = z.size !== "side" && row < SIZES_MIN_ROW;
+    }
   }
 
   /** Collapsed as drawn: the user's collapse, or the surface being off (R54), which is never saved. */
