@@ -1244,8 +1244,8 @@ test("the pointer shows the session's name at a click, in the main window and th
 
 Written by the probe steps, one numbered line each, in the commit of the task that ran the probe.
 
-- F1 (Task 1): whether Codex gives a server's `instructions` to the model.
-- F2 (Task 1): whether a Codex Chat turn lists plugin skills.
+- F1 (Task 1): not determined offline. Checked `codex --help`, `codex mcp --help` (list/get/add/remove/login/logout, no instructions option), `grep -rn instructions cli/codex-host.js docs/` (only unrelated host-instruction text) and strings in the installed codex-cli 0.167.0 binary (internal names such as `namespace_instructions_prefix` and `usage_instructions` exist, but nothing that shows an MCP server's `instructions` reaching the model). open: for PR 1's live check.
+- F2 (Task 1): not determined offline. The codex-cli 0.167.0 binary has `skills_instructions` and `include_skills_usage_instructions` config strings, but whether a Chat turn lists plugin skills cannot be told without running a turn. open: for PR 1's live check.
 - F3 (Task 9): whether a tab's secret memory outlives its view.
 - F4 (Task 16): whether a variable main sets reaches a command the agent runs, per host and session kind.
 - F5 (Task 16): how `BRAINSTORM_OPEN_CMD` and `BROWSER` are run and split.

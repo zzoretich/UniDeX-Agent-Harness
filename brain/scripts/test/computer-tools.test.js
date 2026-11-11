@@ -128,6 +128,12 @@ test("the bridge's isError passes through", async () => {
   } finally { b.close(); }
 });
 
+test('with no marker the server sends no instructions (session-browser S15)', async () => {
+  await withClient(makeVault(), async (client) => {
+    assert.equal(client.getInstructions(), undefined);
+  });
+});
+
 test('with no marker a call gets the no-app text as an error', async () => {
   await withClient(makeVault(), async (client) => {
     const r = await client.callTool({ name: 'computer_status', arguments: {} });
