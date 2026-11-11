@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- **A public roadmap.** What's coming to UniDeX, from idea to release, at https://zzoretich.github.io/UniDeX-Agent-Harness/, built from roadmap/roadmap.md on every change. <!-- no-tour: a page on GitHub, not in the app -->
+
 ## [2.6.0] — 2026-11-11
 
 ### Added
