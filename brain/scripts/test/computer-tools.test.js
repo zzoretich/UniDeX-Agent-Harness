@@ -80,6 +80,34 @@ test('the server lists the nine computer tools with look tools read-only and act
   });
 });
 
+async function toolDefs() {
+  return withClient(makeVault(), async (client) => new Map((await client.listTools()).tools.filter((t) => t.name.startsWith('computer_')).map((t) => [t.name, t])));
+}
+
+test('every tool names the UniDeX browser', async () => {
+  const defs = await toolDefs();
+  assert.equal(defs.size, 9);
+  for (const [name, def] of defs) {
+    assert.match(def.title, /UniDeX browser/, name);
+    assert.match(def.description, /^In the UniDeX browser \(the browser inside the UniDeX app, which the user watches beside this session\), /, name);
+    assert.doesNotMatch(def.title + def.description, /Computer pane/, name);
+  }
+});
+
+test('status says what to do outside the app, open says what the browser is for', async () => {
+  const defs = await toolDefs();
+  assert.match(defs.get('computer_status').description, /Call this first/);
+  assert.match(defs.get('computer_status').description, /another browser tool/);
+  for (const word of ['web page', 'localhost', 'preview']) assert.ok(defs.get('computer_open').description.includes(word), word);
+});
+
+test('each client refusal is one sentence with a next step', () => {
+  for (const s of [NO_APP, OFF, FAILED, CLOSED, TIMEOUT]) {
+    assert.equal((s.match(/\.(\s|$)/g) || []).length, 1, s);
+    assert.match(s, /: (use|ask|quit|call) /, s);
+  }
+});
+
 test("computer_open's description says how to search the web: DuckDuckGo's ?q=, how to open a result, and what asks", async () => {
   await withClient(makeVault(), async (client) => {
     const open = (await client.listTools()).tools.find((t) => t.name === 'computer_open');

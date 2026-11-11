@@ -981,7 +981,7 @@ test.describe("the Computer surface off (a run whose AOS_APP_WRITE leaves it out
     const a = await chatAgent(h.win, { text: "computer: surface off" });
     try {
       const r = await a.call("computer_status");
-      expectReply(r, { isError: true, text: "The Computer pane is turned off in this UniDeX run, so this session cannot use the computer tools." });
+      expectReply(r, { isError: true, text: "The UniDeX browser is turned off in Settings for this run of the app: use another browser tool, or ask the user to turn the Computer pane on and restart UniDeX." });
     } finally { await a.finish(); }
     expectNoErrors(h);
   });
