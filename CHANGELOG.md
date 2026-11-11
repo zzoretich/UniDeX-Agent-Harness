@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- A session started from UniDeX is told about its browser three ways: a browser skill, a paragraph the agenticos server sends at connect, and tool descriptions that name the UniDeX browser. <!-- no-tour: nothing new on screen -->
+
 ## [2.6.0] — 2026-11-11
 
 ### Added

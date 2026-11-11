@@ -91,7 +91,7 @@ function hooks() {
   return doc;
 }
 
-/** The 21 commands and 9 skills of plugin/ as Codex plugin skills, read back from a scratch directory. */
+/** The 21 commands and 10 skills of plugin/ as Codex plugin skills, read back from a scratch directory. */
 function skills() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-codex-plugin-'));
   try {

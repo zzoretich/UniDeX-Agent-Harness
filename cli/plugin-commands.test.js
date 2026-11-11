@@ -79,15 +79,15 @@ test('MCP tools use the plugin-prefixed names Claude Code exposes for a plugin-d
   }
 });
 
-test('the nine plugin skills exist with frontmatter and are free of owner paths', () => {   // execution amendment 2026-09-15 (A32)
+test('the ten plugin skills exist with frontmatter and are free of owner paths', () => {   // execution amendment 2026-09-15 (A32)
   const SK = path.resolve(__dirname, '..', 'plugin', 'skills');
   // final review Minor 18 (tests-12): iterating the names never catches an extra skill directory shipping
   // by accident — pin the directory listing itself.
   assert.deepEqual(
     fs.readdirSync(SK, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(),
-    ['cost', 'cross-review', 'feedback-review', 'graph', 'handoff', 'persona-flag-closer', 'persona-sitrep', 'recall', 'wrap'],
-    'exactly nine plugin skills ship');
-  for (const name of ['recall', 'wrap', 'feedback-review', 'cost', 'persona-flag-closer', 'persona-sitrep', 'graph', 'cross-review', 'handoff']) {
+    ['browser', 'cost', 'cross-review', 'feedback-review', 'graph', 'handoff', 'persona-flag-closer', 'persona-sitrep', 'recall', 'wrap'],
+    'exactly ten plugin skills ship');
+  for (const name of ['browser', 'recall', 'wrap', 'feedback-review', 'cost', 'persona-flag-closer', 'persona-sitrep', 'graph', 'cross-review', 'handoff']) {
     const text = fs.readFileSync(path.join(SK, name, 'SKILL.md'), 'utf8');
     const fm = /^---\n([\s\S]*?)\n---\n/.exec(text);
     assert.ok(fm, `${name}: frontmatter`);
@@ -103,7 +103,7 @@ test('the nine plugin skills exist with frontmatter and are free of owner paths'
     assert.match(fs.readFileSync(path.join(SK, 'graph', 'SKILL.md'), 'utf8'), new RegExp(`mcp__plugin_agenticos_agenticos__${tool}`));
   }
   // MCP tools are named as Claude Code exposes them for a plugin-declared server (contract §0).
-  for (const name of ['recall', 'wrap', 'feedback-review']) {
+  for (const name of ['browser', 'recall', 'wrap', 'feedback-review']) {
     const text = fs.readFileSync(path.join(SK, name, 'SKILL.md'), 'utf8');
     assert.match(text, /mcp__plugin_agenticos_agenticos__/, `${name}: prefixed MCP tool name`);
     assert.ok(!/mcp__agenticos__/.test(text), `${name}: unprefixed MCP name`);

@@ -93,7 +93,7 @@ echo "$DOC" | grep -q 'all checks passed'
 echo "== 2. the Codex CLI now installs plugins: aos upgrade moves the host to the agenticos plugin"
 UP=$(node "$ROOT/cli/aos.js" upgrade --from-local "$ROOT")
 echo "$UP"
-echo "$UP" | grep -q 'direct wiring removed (6 hook entries, the MCP registration, 28 skills)'
+echo "$UP" | grep -q 'direct wiring removed (6 hook entries, the MCP registration, 29 skills)'
 echo "$UP" | grep -q 'open codex, run /hooks'
 grep -q "^plugin marketplace add $ROOT --json\$" "$FAKE_CODEX_LOG"
 grep -q '^plugin add agenticos@agenticos-workbench --json$' "$FAKE_CODEX_LOG"
