@@ -64,6 +64,7 @@ NAME="${1:-}"
 case "$NAME" in
   inject-context) SCRIPT=inject-context.js ;;
   inject-conventions) SCRIPT=inject-conventions.js ;;
+  code-session) SCRIPT=code-session.js ;;
   update-session) SCRIPT=update-session.js ;;
   telemetry-hook) SCRIPT=telemetry-hook.js ;;
   instruction-guard) SCRIPT=instruction-guard.js ;;

@@ -135,7 +135,7 @@ echo "== doctor (plugin rows)"
 DOC=$(node "$ROOT/cli/aos.js" doctor)
 echo "$DOC"
 echo "$DOC" | grep -q '^ok    codex plugin *agenticos@agenticos-workbench'
-echo "$DOC" | grep -q '^warn  codex hooks trusted *0 of 17'
+echo "$DOC" | grep -q '^warn  codex hooks trusted *0 of 18'
 echo "$DOC" | grep -q '^ok    codex MCP declared *agenticos from the plugin'
 echo "$DOC" | grep -q '^ok    persona runner *codex'
 echo "$DOC" | grep -q '^ok    routines runner *codex'

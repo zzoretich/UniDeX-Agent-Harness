@@ -28,6 +28,11 @@
             "type": "command",
             "command": "env AOS_HOST=codex sh \"${PLUGIN_ROOT}/bin/aos\" inject-conventions",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "env AOS_HOST=codex sh \"${PLUGIN_ROOT}/bin/aos\" code-session",
+            "timeout": 10
           }
         ]
       }

@@ -9,14 +9,22 @@
  *   follow({ host, terminal, ... })  the transcript so far, then each complete new line, until the signal aborts
  *   pickCodexRollout(cands, opts)    which rollout in a folder is this terminal's (R17)
  *   readTee(vault, terminal)         the status-line copy `aos statusline render` keeps per terminal
- *   pruneCodeCaches(vault, opts)     caches over 14 days, tees over 24 h
+ *   writeSessionReport / readSessionReport   <terminal>.session.json, the session a terminal's agent just started
+ *   pruneCodeCaches(vault, opts)     caches, claims, closed claims and session reports over 14 days, tees over 24 h
  *
  * Claude: the tee names the terminal's session_id; a change (/clear, /resume) writes the new session event at once and
  * switches to its transcript when it exists (looked for every 2 s). Codex: folder mode for the terminal's whole life
  * (R17); with an id, that rollout is the first adoption (R18). An older rollout appended again is followed too (resume
  * --last, a /resume in the TUI: R17a, R17b), judged by when that growth began. Each Codex follower keeps <terminal>.claim.json
- * ({ pid, cwd, since, file }) from its start, so the others in the folder never take its rollout and can tell whose a new
- * one may be; when they can't, the cache gets "Can't tell which conversation". Folders compare by real path.
+ * ({ pid, cwd, since, file, session, held }) from its start, so the others in the folder never take its rollout, nor one it
+ * followed before (held), and can tell whose a new one may be; when they can't, the cache gets "Can't tell which
+ * conversation". Folders compare by real path. A follower that stops leaves <terminal>.closed.json ({ cwd, held, closedAt }):
+ * those rollouts stay claimed until one grows after the close.
+ * The `code-session` SessionStart hook names each session the terminal's Codex starts (spec 2026-11-10-codex-session-claim):
+ * a new report is acted on once, ahead of the folder guess. Its session is claimed at once; the chat stays on what it
+ * shows until that session's rollout exists (found by id) and is an interactive one, then follows it. A new turn in the
+ * current conversation meanwhile drops the report (a nested `codex exec`, or a session left before its first prompt). The
+ * guess goes on after it for what no report names.
  *
  * A follower lives as long as its terminal (R16): stopped (SIGTERM, the signal) or orphaned (its parent changed: the app
  * crashed), it removes its terminal cache and its claim; when its transcript is gone it keeps the cache (the chat it had)
@@ -37,6 +45,11 @@ const AMBIGUOUS_MESSAGE = "Can't tell which conversation · Terminal ⌘J";
 const SAME_START_MS = 5000;
 /** A rollout may name a start up to this long before its terminal's. */
 const START_SLACK_MS = 1000;
+/** "Can't tell" is written once a folder guess has been ambiguous this many scans in a row (4–6 s): a new rollout shows a
+ *  moment before its terminal's session report claims it, and that moment is no episode. */
+const AMBIGUOUS_SCANS = 3;
+/** A follower's claim keeps this many rollouts it followed before, so no peer takes them after it moves on. */
+const HELD_MAX = 20;
 /** Folder scans and transcript lookups: every this many polls (2 s at 250 ms). */
 const RESCAN_EVERY = 8;
 const GONE_POLLS = 10;
@@ -70,13 +83,43 @@ function readTee(vault, terminal) {
   } catch { return null; }
 }
 
+const reportPath = (vault, terminal) => path.join(codeDir(vault), `${terminal}.session.json`);
+
+/**
+ * The `code-session` hook's write (D1): the session `host`'s agent in `terminal` just started. Only the id is kept, never
+ * the payload's transcript_path (D5): the follower finds the transcript by id in the host's own folders. Returns the file,
+ * or null when the terminal or id is not valid.
+ */
+function writeSessionReport(vault, { terminal, host, sessionId, source = null, now = new Date() }) {
+  if (!validTerminal(terminal) || !validId(sessionId) || !H.HOSTS.includes(host)) return null;
+  const file = reportPath(vault, terminal);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeAtomic(file, JSON.stringify({ at: now.toISOString(), host, session_id: sessionId, source: typeof source === 'string' ? source : null }));
+  return file;
+}
+
+/** { atMs, host, sessionId } from <terminal>.session.json, or null when it is missing or not a valid report. */
+function readSessionReport(vault, terminal) {
+  if (!validTerminal(terminal)) return null;
+  try {
+    const r = JSON.parse(fs.readFileSync(reportPath(vault, terminal), 'utf8'));
+    const atMs = Date.parse(r && r.at);
+    if (Number.isNaN(atMs) || !H.HOSTS.includes(r.host) || !validId(r.session_id)) return null;
+    return { atMs, host: r.host, sessionId: r.session_id };
+  } catch { return null; }
+}
+
 /**
  * Which rollout a Codex follower in folder mode adopts now (R17): { file, id }, { ambiguous: true }, or null.
  *   cands  [{ file, id, cwd, startedAt, mtimeMs }]  the folder's rollouts, cwd a real path
  *   me     { cwd, since, file, mtimeMs }            this follower: its terminal's start, its rollout (or null) and that
  *                                                   rollout's last append
- *   peers  [{ since, file, mtimeMs }]                the other live followers in this folder, from their claims
+ *   peers  [{ since, file, mtimeMs, session, held }]  the other live followers in this folder, from their claims
+ *   closed [{ held, closedAt }]                     the followers of terminals closed in this folder (D9)
  *   beginOf(cand, from) → ms | null                 a rollout's activity start: its first entry at or after `from`
+ * A peer's `session` (the one it follows or a report told it to wait for) and the rollouts it `held` before are claimed
+ * like its file, and a peer that waits for a reported session with no file yet never contends for another rollout, nor
+ * counts for the 5 s rule.
  * A rollout's activity start (R17a, R17b) is its start when it began after my reference point, else its first growth at
  * or after it: my file's last append when I have a file (a /resume in the TUI), since − 1 s when I have none (resume
  * --last). A follower X is a contender for a rollout whose activity started at b when X has no file and could adopt it
@@ -88,12 +131,17 @@ function readTee(vault, terminal) {
  * review, which can take any time), and a peer with no file that started within 5 s of me makes it ambiguous. More than one candidate, or a
  * candidate with another contender, is ambiguous.
  */
-function pickCodexRollout(cands, { me, peers = [], beginOf = () => null }) {
-  const claimed = new Set(peers.map((p) => p.file).filter(Boolean));
+function pickCodexRollout(cands, { me, peers = [], closed = [], beginOf = () => null }) {
+  const claimed = new Set(peers.flatMap((p) => [p.file, ...(p.held || [])]).filter(Boolean));
+  // D9: a closed terminal's rollouts stay claimed until one grows after its close (a resume somewhere).
+  const heldAt = new Map();
+  for (const x of closed) for (const f of x.held || []) heldAt.set(f, Math.max(heldAt.get(f) ?? 0, x.closedAt));
+  const claimedIds = new Set(peers.map((p) => p.session).filter(Boolean));
   const after = me.file ? me.mtimeMs : me.since - START_SLACK_MS;
   const considered = [];
   for (const c of cands || []) {
-    if (c.cwd !== me.cwd || c.mtimeMs < me.since || c.file === me.file || claimed.has(c.file)) continue;
+    if (c.cwd !== me.cwd || c.mtimeMs < me.since || c.file === me.file || claimed.has(c.file) || (c.id && claimedIds.has(c.id))) continue;
+    if (heldAt.has(c.file) && c.mtimeMs <= heldAt.get(c.file) + START_SLACK_MS) continue;
     if (c.startedAt > after) {
       considered.push({ c, begin: c.startedAt });
     } else if (c.mtimeMs > after) {
@@ -103,10 +151,11 @@ function pickCodexRollout(cands, { me, peers = [], beginOf = () => null }) {
     }
   }
   if (!considered.length) return null;
-  if (!me.file && peers.some((p) => !p.file && Math.abs(p.since - me.since) < SAME_START_MS)) return { ambiguous: true };
+  if (!me.file && peers.some((p) => !p.file && !p.session && Math.abs(p.since - me.since) < SAME_START_MS)) return { ambiguous: true };
   // R25: a follower with no file contends for a rollout only when it could adopt it itself (the same rule as mine).
   const contends = (x, c, begin) => {
     if (x.file) return x.mtimeMs < begin;
+    if (x.session) return false; // it waits for the session its report named
     if (c.mtimeMs < x.since) return false;
     const from = x.since - START_SLACK_MS;
     if (c.startedAt > from) return true;
@@ -253,7 +302,7 @@ const pidAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (e) { return !!e && e.code === 'EPERM'; }
 };
 
-/** The other live followers in `cwd` (a real path), from their claims: { since, file, mtimeMs }. */
+/** The other live followers in `cwd` (a real path), from their claims: { since, file, mtimeMs, session, held }. */
 function peerClaims(vault, terminal, cwd) {
   const out = [];
   let names = [];
@@ -266,8 +315,25 @@ function peerClaims(vault, terminal, cwd) {
       const file = typeof c.file === 'string' ? c.file : null;
       let mtimeMs = 0;
       if (file) { try { mtimeMs = fs.statSync(file).mtimeMs; } catch { /* gone: counted as quiet */ } }
-      out.push({ since: Number.isFinite(c.since) ? c.since : 0, file, mtimeMs });
+      const held = Array.isArray(c.held) ? c.held.filter((f) => typeof f === 'string') : [];
+      out.push({ since: Number.isFinite(c.since) ? c.since : 0, file, mtimeMs, session: validId(c.session) ? c.session : null, held });
     } catch { /* unreadable claim */ }
+  }
+  return out;
+}
+
+/** The closed terminals in `cwd` (a real path), other than `terminal`: { held, closedAt } from <terminal>.closed.json (D9). */
+function closedClaims(vault, terminal, cwd) {
+  const out = [];
+  let names = [];
+  try { names = fs.readdirSync(codeDir(vault)); } catch { return out; }
+  for (const n of names) {
+    if (!n.endsWith('.closed.json') || n === `${terminal}.closed.json`) continue;
+    try {
+      const c = JSON.parse(fs.readFileSync(path.join(codeDir(vault), n), 'utf8'));
+      if (!c || typeof c.cwd !== 'string' || realDir(c.cwd) !== cwd || !Number.isFinite(c.closedAt) || !Array.isArray(c.held)) continue;
+      out.push({ held: c.held.filter((f) => typeof f === 'string'), closedAt: c.closedAt });
+    } catch { /* unreadable */ }
   }
   return out;
 }
@@ -291,6 +357,12 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
   const myCwd = cwd ? realDir(cwd) : null;
   const ac = signal || new AbortController().signal;
   const parent = parentPid();
+  const startedAt = Date.now();
+  const reportFile = folder ? reportPath(vault, terminal) : null;
+  let reportStamp = null; // the session report's inode and mtime when last read
+  let actedKey = null; // the last report acted on: `${atMs}|${sessionId}`
+  let pending = null; // { id, key, turn }: a reported session whose interactive rollout is not found yet
+  const held = []; // the rollouts this follower followed, the last HELD_MAX, kept claimed after it moves on
 
   let cur = null; // { tail, file, id, missing, mtimeMs }
   let fresh = true; // the cache holds nothing yet
@@ -298,6 +370,7 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
   let claimIno = null;
   let announced = null; // { id, model } of the last session event written
   let ambiguous = false; // a "can't tell" episode is on; its error is written once
+  let ambiguousScans = 0; // folder guesses in a row that were ambiguous
   let target = id ?? null; // claude: the session the terminal shows
   let lookupAt = 0; // the poll of the next transcript lookup
   const metaCache = new Map();
@@ -326,7 +399,8 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
   const claim = (file) => {
     if (!claimFile) return;
     try {
-      writeAtomic(claimFile, JSON.stringify({ pid: process.pid, cwd: myCwd, since, file }));
+      const session = pending ? pending.id : cur ? cur.id : null;
+      writeAtomic(claimFile, JSON.stringify({ pid: process.pid, cwd: myCwd, since, file, session, held }));
       claimIno = fs.statSync(claimFile).ino;
     } catch { /* a claim is best effort */ }
   };
@@ -335,6 +409,7 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
     let mtimeMs = Number.MAX_SAFE_INTEGER; // unknown: nothing counts as newer
     try { mtimeMs = fs.statSync(file).mtimeMs; } catch { /* the poll counts it */ }
     cur = { tail: makeTail(file, host, readCap), file, id: sessionId, missing: 0, mtimeMs };
+    if (claimFile && !held.includes(file)) { held.push(file); if (held.length > HELD_MAX) held.shift(); }
     claim(file);
   };
   const lookup = (n, sessionId) => {
@@ -358,6 +433,7 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
     const pick = pickCodexRollout(cands, {
       me: { cwd: myCwd, since, file: cur ? cur.file : null, mtimeMs },
       peers: peerClaims(vault, terminal, myCwd),
+      closed: closedClaims(vault, terminal, myCwd),
       beginOf: (c, from) => {
         // A found start does not move while `from` stays (the file only grows); none found is asked again next scan.
         const known = starts.get(c.file);
@@ -368,12 +444,59 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
       },
     });
     if (pick && pick.ambiguous) {
-      if (!ambiguous) write([{ t: new Date().toISOString(), kind: 'error', message: AMBIGUOUS_MESSAGE, turn: cur ? cur.tail.turn : 0 }]);
-      ambiguous = true;
+      ambiguousScans++;
+      if (!ambiguous && ambiguousScans >= AMBIGUOUS_SCANS) {
+        write([{ t: new Date().toISOString(), kind: 'error', message: AMBIGUOUS_MESSAGE, turn: cur ? cur.tail.turn : 0 }]);
+        ambiguous = true;
+      }
       return;
     }
     ambiguous = false;
+    ambiguousScans = 0;
     if (pick && pick.file) start(pick.file, pick.id);
+  };
+  /**
+   * D3, D4: a new session report from this terminal's life (since its start; since this follower's own start when it was
+   * given an id) is acted on once. The claim names its session at once, so no peer takes its rollout, while the chat stays
+   * on what it shows; the rollout is looked up by id (D5) until it exists, with no folder guess meanwhile.
+   */
+  const checkReport = (n) => {
+    let stamp;
+    try { const st = fs.statSync(reportFile); stamp = `${st.ino}:${st.mtimeMs}`; } catch { return; }
+    if (stamp === reportStamp) return;
+    reportStamp = stamp;
+    const r = readSessionReport(vault, terminal);
+    if (!r || r.host !== 'codex') return;
+    const key = `${r.atMs}|${r.sessionId}`;
+    if (key === actedKey || (pending && pending.key === key)) return;
+    if (r.atMs < since - START_SLACK_MS || (id !== undefined && r.atMs < startedAt - START_SLACK_MS)) return;
+    if (cur && cur.id === r.sessionId) { dropReport(key); return; } // a resume or compact of what it shows
+    pending = { id: r.sessionId, key, turn: cur ? cur.tail.turn : 0 };
+    claim(cur ? cur.file : null);
+    lookupAt = n;
+  };
+  /** The report is done with, adopted or not: the claim goes back to naming what the chat shows. */
+  const dropReport = (key) => {
+    actedKey = key;
+    pending = null;
+    claim(cur ? cur.file : null);
+  };
+  /** Adopts the reported rollout once it exists and is a terminal's own conversation (R26: not an exec or a subagent). */
+  const resolveReport = (n) => {
+    if (n < lookupAt) return;
+    lookupAt = n + RESCAN_EVERY;
+    const file = H.findTranscript('codex', pending.id, dirs);
+    if (!file) return;
+    let m = metaCache.get(file);
+    if (!m) { m = readMeta(file); if (m) metaCache.set(file, m); }
+    if (!m) return; // its first line is not written yet
+    if (!m.interactive) { dropReport(pending.key); return; }
+    const sessionId = pending.id;
+    actedKey = pending.key;
+    pending = null;
+    ambiguous = false;
+    ambiguousScans = 0;
+    start(file, sessionId);
   };
 
   /** One poll; true when the transcript is gone. */
@@ -388,11 +511,17 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
         announce(target);
       }
       if (target && !cur) lookup(n, target);
-    } else if (!cur && id !== undefined) lookup(n, id);
-    else if (folder && n % RESCAN_EVERY === 0) scanCodex();
+    } else {
+      if (folder) checkReport(n);
+      if (pending) resolveReport(n);
+      else if (!cur && id !== undefined) lookup(n, id);
+      else if (folder && n % RESCAN_EVERY === 0) scanCodex();
+    }
     if (!cur) return false;
     if (!cur.tail.read(write)) return ++cur.missing >= GONE_POLLS;
     cur.missing = 0;
+    // A new prompt in the conversation it shows: the terminal's agent is still there, so the report was not its own.
+    if (pending && cur.tail.turn > pending.turn) dropReport(pending.key);
     return false;
   };
 
@@ -411,6 +540,10 @@ async function follow({ host, terminal, id, cwd, since = 0, vault, dirs, pollMs 
       await sleep(pollMs);
     }
   } finally {
+    // D9: what this terminal followed stays claimed after it closes, so a quiet neighbour doesn't take its conversation.
+    if (claimFile && held.length) {
+      try { writeAtomic(path.join(codeDir(vault), `${terminal}.closed.json`), JSON.stringify({ cwd: myCwd, held, closedAt: Date.now() })); } catch { /* best effort */ }
+    }
     removeOwn(claimFile, claimIno);
     if (!gone && terminal) removeOwn(cache, cacheIno);
   }
@@ -435,8 +568,12 @@ function pruneCodeCaches(vault, { now = new Date(), codeDays = 14, statusHours =
   };
   sweep(codeDir(vault), '.jsonl', codeDays * 86400000);
   sweep(codeDir(vault), '.claim.json', codeDays * 86400000);
+  sweep(codeDir(vault), '.session.json', codeDays * 86400000);
+  sweep(codeDir(vault), '.closed.json', codeDays * 86400000);
   sweep(path.join(vault, 'brain', '_index', 'statusline'), '.json', statusHours * 3600000);
   return { pruned };
 }
 
-module.exports = { cachePath, readTee, pickCodexRollout, mirrorOnce, follow, pruneCodeCaches, UUID_RE, validId };
+module.exports = {
+  cachePath, readTee, writeSessionReport, readSessionReport, pickCodexRollout, mirrorOnce, follow, pruneCodeCaches, UUID_RE, validId,
+};

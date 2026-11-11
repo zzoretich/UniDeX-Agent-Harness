@@ -1445,11 +1445,11 @@ test('plugin mode: init --host both installs the agenticos Codex plugin and writ
   const dr = aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') });
   assert.equal(dr.status, 0, dr.stdout + dr.stderr);
   assert.match(dr.stdout, /ok\s+codex plugin\s+agenticos@agenticos-workbench 0\.0\.0-fake/);
-  assert.match(dr.stdout, /warn\s+codex hooks trusted\s+0 of 17 — open codex, run \/hooks/);
+  assert.match(dr.stdout, /warn\s+codex hooks trusted\s+0 of 18 — open codex, run \/hooks/);
   assert.match(dr.stdout, /ok\s+codex MCP declared\s+agenticos from the plugin/);
   assert.doesNotMatch(dr.stdout, /codex direct wiring|codex skills|codex hooks\s+\d/);
   trustAllPluginHooks(sb.codexHome);
-  assert.match(aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') }).stdout, /ok\s+codex hooks trusted\s+17 of 17$/m);
+  assert.match(aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') }).stdout, /ok\s+codex hooks trusted\s+18 of 18$/m);
   assert.match(aos(sb, ['status']).stdout, /^codex\s+bin=.* install=plugin$/m);
 
   // upgrade --from-local switches the marketplace to this checkout and reinstalls its version
