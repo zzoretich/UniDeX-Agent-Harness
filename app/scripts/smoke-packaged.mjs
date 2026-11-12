@@ -232,6 +232,27 @@ if (LIVE) {
   await page.keyboard.type("echo aos-smoke-$((6*7))");
   await page.keyboard.press("Enter");
   check("a command typed in the Term tab runs in the shell", await until(async () => (await scrollback()).includes("aos-smoke-42"), 15_000));
+  // session-browser S23: the opener ships under Resources/opener (process.resourcesPath), which no other test reads. With the
+  // Computer surface on (the default run) the shell gets BROWSER and BRAINSTORM_OPEN_CMD as that script and the session
+  // variable; run with no address it exits 2 and starts nothing. Each marker is computed by the shell ($((6*7)), $?), so the
+  // typed line itself, which the terminal echoes, can never contain it. With the surface off main adds none of the variables.
+  const opener = path.join(APP, "Contents", "Resources", "opener", "unidex-open.js");
+  const plain = /^[A-Za-z0-9._/@%+=:,-]+$/.test(opener);
+  const typed = async (line, marker) => {
+    await page.keyboard.type(line);
+    await page.keyboard.press("Enter");
+    return until(async () => (await scrollback()).includes(marker), 15_000);
+  };
+  if (info.info?.writeSurfaces?.includes("computer")) {
+    // The path is the packaged script itself, unless it is not one word to a shell (then main runs a copy from the temp folder).
+    const same = plain ? `[ "$BROWSER" = '${opener}' ]` : `case "$BROWSER" in */unidex-open.js) true;; *) false;; esac`;
+    check("the shell's BROWSER and BRAINSTORM_OPEN_CMD are the packaged opener, and the session variable is set",
+      await typed(`${same} && [ "$BROWSER" = "$BRAINSTORM_OPEN_CMD" ] && [ -x "$BROWSER" ] && [ -n "$AOS_BROWSER_SESSION" ] && echo aos-opener-$((6*7))`, "aos-opener-42"), opener);
+    check("the opener run with no address exits 2 and opens nothing", await typed(`"$BROWSER"; echo aos-opener-exit-$?`, "aos-opener-exit-2"));
+  } else {
+    check("with the Computer surface off the shell has no opener variables",
+      await typed(`[ -z "$BROWSER$BRAINSTORM_OPEN_CMD$AOS_BROWSER_SESSION" ] && echo aos-opener-off-$((6*7))`, "aos-opener-off-42"));
+  }
 }
 
 // ── the tray popover ─────────────────────────────────────────────────

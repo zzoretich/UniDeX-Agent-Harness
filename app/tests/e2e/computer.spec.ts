@@ -1694,13 +1694,14 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
     // 1. A Code agent's command: its environment is the session's. It goes first because it asserts that the opener's fallback
     // is the recording stand-in (every session's `prev` comes from the app's one environment), before any page is opened.
     const code = await codeAgent(h, "claude", { surfaceOff: true });
+    let codeKey = "";
     try {
       const v = await sessionVar(code);
       expect(v.prev, "the stand-in is the BROWSER the opener falls back to").toBe(recorder);
       const codePage = pageUrl(2);
       expect((await code.exec(AGENT.node, [OPEN_PAGE, codePage])).status).toBe(0);
       await turnOn(pane(win, "code"), codePage);
-      const codeKey = (await selectedOf(h)) as string;
+      codeKey = (await selectedOf(h)) as string;
       expect(codeKey).toMatch(/^code:t\d+$/);
       expect(await titleOf(h, codePage, codeKey)).toBe("Harbour landed");
     } finally { await code.finish(); }
@@ -1708,7 +1709,8 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
     // 2. A shell terminal, no agent in it: the person's own program. The command is typed into the terminal.
     expect(await command(win, "agentic-os:new-terminal-shell")).toBe(true);
     await expect(rail(win, "term")).toHaveClass(/is-active/);
-    await expect.poll(() => selectedOf(h), { message: "the pane followed to the shell" }).toMatch(/^code:t\d+$/);
+    // The agent's terminal is still the selected one until the pane follows the new shell: wait for a key that is not its own.
+    await expect.poll(async () => { const k = await selectedOf(h); return k !== null && k !== codeKey && /^code:t\d+$/.test(k); }, { message: "the pane followed to the NEW shell" }).toBe(true);
     const shellKey = (await selectedOf(h)) as string;
     const shellPage = pageUrl(1);
     await win.evaluate((cmd) => {
