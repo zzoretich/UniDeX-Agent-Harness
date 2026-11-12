@@ -28,6 +28,17 @@ export function shortDirIn(userData: string, tmp: string): string {
 }
 
 /**
+ * Makes `dir` a private folder: it must be a real folder of this user's, never a link, and is made 0700 (the default and
+ * the temp-folder path alike). Throws; `refusal` finishes the message ("<dir> is not a folder of this user's, so <refusal>").
+ */
+export function privateDir(dir: string, refusal: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const d = fs.lstatSync(dir);
+  if (!d.isDirectory() || (typeof process.getuid === "function" && d.uid !== process.getuid())) throw new Error(`${dir} is not a folder of this user's, so ${refusal}`);
+  fs.chmodSync(dir, 0o700);
+}
+
+/**
  * Makes `server` listen at `socketPath` for this user only, and returns the socket's identity. The folder must be a real
  * folder of this user's, never a link, and is made 0700; only a leftover socket at the path is replaced; the socket is
  * chmod 0600 after listen (the server is closed if that fails). Throws; `what` ("the bridge", "the door") names the
@@ -35,12 +46,7 @@ export function shortDirIn(userData: string, tmp: string): string {
  */
 export async function listenPrivate(server: net.Server, socketPath: string, what: string): Promise<{ dev: number; ino: number }> {
   if (Buffer.byteLength(socketPath) > MAX_PATH_BYTES) throw new Error(`${what} socket path is longer than ${MAX_PATH_BYTES} bytes: ${socketPath}`);
-  const dir = path.dirname(socketPath);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // The folder must be a real folder of this user's, never a link: then 0700 (the default and the temp-folder path alike).
-  const d = fs.lstatSync(dir);
-  if (!d.isDirectory() || (typeof process.getuid === "function" && d.uid !== process.getuid())) throw new Error(`${dir} is not a folder of this user's, so ${what} will not listen in it`);
-  fs.chmodSync(dir, 0o700);
+  privateDir(path.dirname(socketPath), `${what} will not listen in it`);
   // Only a leftover socket is replaced; a file, link or folder at the path is somebody's, so refuse.
   let st: fs.Stats | null = null;
   try { st = fs.lstatSync(socketPath); } catch { /* nothing there */ }

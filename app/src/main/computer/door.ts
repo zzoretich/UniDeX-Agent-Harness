@@ -10,7 +10,7 @@ import net from "node:net";
 import path from "node:path";
 import { linkUrl } from "../policy/computer-url";
 import { realClock, type Clock } from "./asks";
-import { listenPrivate, shortDirIn, socketPathIn, unlinkIfBound } from "./unix-socket";
+import { listenPrivate, privateDir, shortDirIn, socketPathIn, unlinkIfBound } from "./unix-socket";
 
 export const DOOR_PER_MINUTE = 6;
 export const DOOR_LINE_MAX = 16 * 1024;
@@ -21,6 +21,8 @@ const ID = /^[0-9a-f]{32}$/;
 /** The variable that carries a session's id to its opener. No KEY, SECRET or TOKEN in the name: a host's shell filter drops those. */
 export const SESSION_VAR = "AOS_BROWSER_SESSION";
 const OPENER = "unidex-open.js";
+/** Characters a shell reads as part of one word, whatever the shell. */
+const SHELL_WORD = /^[A-Za-z0-9._/@%+=:,-]+$/;
 
 /** As `bridgeSocketPath`, with the file name door.sock. */
 export function doorSocketPath(userData: string, tmp: string): string | null {
@@ -28,23 +30,20 @@ export function doorSocketPath(userData: string, tmp: string): string | null {
 }
 
 /**
- * `<resources>/opener/unidex-open.js`, the command a session's BROWSER points at; null when it is not there. A path with
- * whitespace cannot be a BROWSER or BRAINSTORM_OPEN_CMD (hosts split those words), so a 0700 copy goes in the door's own
- * short folder in `tmp`, made again at every start; null when that path holds whitespace too, or the copy fails.
+ * `<resources>/opener/unidex-open.js`, the command a session's BROWSER points at; null when it is not there. A host reads
+ * BROWSER and BRAINSTORM_OPEN_CMD as a shell line, so the path is used as it is only when a shell reads it as one word
+ * (SHELL_WORD); otherwise a 0700 copy goes in the door's own short folder in `tmp`, made again at every start; null when
+ * that path is not one word either, or the copy fails.
  */
 export function openerPath(o: { resources: string; tmp: string; userData: string }): string | null {
   const own = path.join(o.resources, "opener", OPENER);
   try { if (!fs.statSync(own).isFile()) return null; } catch { return null; }
-  if (!/\s/.test(own)) return own;
+  if (SHELL_WORD.test(own)) return own;
   const dir = shortDirIn(o.userData, o.tmp);
   const copy = path.join(dir, OPENER);
-  if (/\s/.test(copy)) return null;
+  if (!SHELL_WORD.test(copy)) return null;
   try {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // As the socket's folder: a real folder of this user's, never a link.
-    const d = fs.lstatSync(dir);
-    if (!d.isDirectory() || (typeof process.getuid === "function" && d.uid !== process.getuid())) return null;
-    fs.chmodSync(dir, 0o700);
+    privateDir(dir, "the opener will not be copied into it");
     fs.rmSync(copy, { force: true });
     fs.copyFileSync(own, copy);
     fs.chmodSync(copy, 0o700);
@@ -54,7 +53,9 @@ export function openerPath(o: { resources: string; tmp: string; userData: string
 
 export interface DoorOptions { path: string;
   /** The opener's path (openerPath); absent or null, no session gets the three variables. */
-  opener?: string | null; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock;
+  opener?: string | null;
+  /** Whether the Computer surface is on (default: always); off, `envFor` gives no session anything. */
+  enabled?: () => boolean; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock;
   /** How long a connection may stay silent (2 s; tests shorten it). */
   idleMs?: number }
 
@@ -113,11 +114,11 @@ export class ComputerDoor {
   /**
    * The three variables a session's processes get (session-browser S23): BROWSER and BRAINSTORM_OPEN_CMD, both the opener,
    * and AOS_BROWSER_SESSION, which carries the session's id, the door's socket and the BROWSER that was set before
-   * (`base`'s, unless it is the opener itself). None while the door is down or there is no opener.
+   * (`base`'s, unless it is the opener itself). None while the door is down, there is no opener, or the Computer surface is off.
    */
   envFor(session: string, base: NodeJS.ProcessEnv): Record<string, string> {
     const opener = this.o.opener;
-    if (!this.server || !opener) return {};
+    if (!this.server || !opener || this.o.enabled?.() === false) return {};
     const prev = base.BROWSER && base.BROWSER !== opener ? base.BROWSER : null;
     const carried = JSON.stringify({ id: this.issue(session), door: this.o.path, prev });
     return { BROWSER: opener, BRAINSTORM_OPEN_CMD: opener, [SESSION_VAR]: Buffer.from(carried, "utf8").toString("base64url") };

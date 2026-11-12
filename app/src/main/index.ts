@@ -122,6 +122,7 @@ const payload = findPayload({ packaged: app.isPackaged, resourcesPath: process.r
 const doorPath = doorSocketPath(app.getPath("userData"), app.getPath("temp"));
 const computerDoor = doorPath ? new ComputerDoor({
   path: doorPath,
+  enabled: () => computerOn(),
   opener: openerPath({ resources: app.isPackaged ? process.resourcesPath : path.join(__dirname, "../../resources"), tmp: app.getPath("temp"), userData: app.getPath("userData") }),
   // Task 18 opens the page; until then a program's request is only noted (never its address). While the app quits nothing
   // is noted or opened: a quit that is called off leaves the door up, serving until the bridge stops (session-browser S23).
@@ -131,8 +132,8 @@ const computerDoor = doorPath ? new ComputerDoor({
   },
   log: (line) => console.warn(`[main] ${line}`),
 }) : null;
-/** The opener variables of a session's processes: none while the Computer surface is off or there is no door. */
-const browserEnv = (session: string, base: NodeJS.ProcessEnv): Record<string, string> => (computerOn() ? computerDoor?.envFor(session, base) ?? {} : {});
+/** The opener variables of a session's processes: none while the Computer surface is off (the door's `enabled`) or there is no door. */
+const browserEnv = (session: string, base: NodeJS.ProcessEnv): Record<string, string> => computerDoor?.envFor(session, base) ?? {};
 
 let shells: string[] = [];
 try { shells = parseShells(fs.readFileSync("/etc/shells", "utf8")); } catch { /* no /etc/shells: only $SHELL */ }

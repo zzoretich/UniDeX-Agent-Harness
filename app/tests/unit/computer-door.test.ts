@@ -6,6 +6,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ComputerDoor, DOOR_CONNECTIONS, DOOR_IDLE_MS, SESSION_VAR, doorSocketPath, openerPath } from "../../src/main/computer/door";
+import { shortDirIn } from "../../src/main/computer/unix-socket";
 import type { Clock } from "../../src/main/computer/asks";
 
 // session-browser S23: the door a session's programs knock on to ask for one page. Ids are opaque to the door; the
@@ -355,16 +356,60 @@ test("envFor gives the three variables, and none while the door is down", async 
     const opened: string[] = [];
     const live = new ComputerDoor({ path: path.join(dir, "e.sock"), open: (s) => opened.push(s), log: () => {}, opener });
     assert.equal(await live.start(), true);
-    const id = JSON.parse(Buffer.from(live.envFor("chat:x", {})[SESSION_VAR], "base64url").toString("utf8")).id as string;
-    assert.equal(live.accept(JSON.stringify({ id, url: "http://localhost/" })), true);
-    assert.deepEqual(opened, ["chat:x"]);
-    live.stop();
+    try {
+      const id = JSON.parse(Buffer.from(live.envFor("chat:x", {})[SESSION_VAR], "base64url").toString("utf8")).id as string;
+      assert.equal(live.accept(JSON.stringify({ id, url: "http://localhost/" })), true);
+      assert.deepEqual(opened, ["chat:x"]);
+    } finally { live.stop(); }
   } finally { door.stop(); }
   assert.deepEqual(door.envFor("code:t1", {}), {}, "stopped");
   const bare = new ComputerDoor({ path: path.join(dir, "f.sock"), open: () => {}, log: () => {} });
   assert.equal(await bare.start(), true);
-  assert.deepEqual(bare.envFor("code:t1", {}), {}, "no opener to point at");
-  bare.stop();
+  try { assert.deepEqual(bare.envFor("code:t1", {}), {}, "no opener to point at"); } finally { bare.stop(); }
+});
+
+test("envFor gives none while the Computer surface is off", async () => {
+  const dir = shortDir();
+  let on = false;
+  const door = new ComputerDoor({ path: path.join(dir, "d.sock"), open: () => {}, log: () => {}, opener: path.join(dir, "unidex-open.js"), enabled: () => on });
+  assert.equal(await door.start(), true);
+  try {
+    assert.deepEqual(door.envFor("code:t1", {}), {});
+    on = true;
+    assert.equal(Object.keys(door.envFor("code:t1", {})).length, 3);
+    on = false;
+    assert.deepEqual(door.envFor("code:t1", {}), {}, "off again");
+  } finally { door.stop(); }
+});
+
+test("openerPath uses the path as it is only when a shell would read it as one word", () => {
+  const tmp = shortDir();
+  const userData = path.join(shortDir(), "ud");
+  for (const name of ["a(b)", "it's", "a$b", "a;b", "a&b", "a`b", "a\"b", "a*b", "a#b"]) {
+    const res = path.join(shortDir(), name);
+    fs.mkdirSync(path.join(res, "opener"), { recursive: true });
+    fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), `// ${name}\n`);
+    const got = openerPath({ resources: res, tmp, userData });
+    assert.ok(got && got !== path.join(res, "opener", "unidex-open.js") && got.startsWith(tmp), name);
+    assert.ok(/^[A-Za-z0-9._/@%+=:,-]+$/.test(got), `${name} -> ${got}`);
+    assert.equal(fs.readFileSync(got, "utf8"), `// ${name}\n`, "a stale copy is replaced");
+  }
+  const safe = path.join(shortDir(), "Res-1.0_x+y@z,w:v=%");
+  fs.mkdirSync(path.join(safe, "opener"), { recursive: true });
+  fs.writeFileSync(path.join(safe, "opener", "unidex-open.js"), "x\n");
+  assert.equal(openerPath({ resources: safe, tmp, userData }), path.join(safe, "opener", "unidex-open.js"));
+});
+
+test("openerPath makes no copy in a folder that is a link", () => {
+  const res = path.join(shortDir(), "has space");
+  fs.mkdirSync(path.join(res, "opener"), { recursive: true });
+  fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), "x\n");
+  const tmp = shortDir();
+  const userData = path.join(shortDir(), "ud");
+  const elsewhere = shortDir();
+  fs.symlinkSync(elsewhere, shortDirIn(userData, tmp));
+  assert.equal(openerPath({ resources: res, tmp, userData }), null);
+  assert.deepEqual(fs.readdirSync(elsewhere), [], "nothing was written through the link");
 });
 
 test("openerPath uses a copy when its own path holds whitespace", () => {
