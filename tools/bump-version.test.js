@@ -189,3 +189,15 @@ test('--check (release.yml, against the tag) also needs the What\'s new release;
   assert.equal(run(r, ['v1.3']).code, 2);
   assert.equal(run(r, []).code, 2);
 });
+
+// ---- the roadmap's release stamp (spec 2026-11-11-roadmap-design D5) ---------------------------------------------------
+
+test('a bump stamps the release onto shipped roadmap items', () => {
+  const r = releaseRepo([{ version: '1.3.0', entries: [] }]);
+  fs.mkdirSync(path.join(r, 'roadmap'));
+  fs.writeFileSync(path.join(r, 'roadmap/roadmap.md'), '# Roadmap\n\n### UDX-001 · A\nstatus: shipped · type: feature · area: app\n\nA.\n');
+  const res = run(r, ['1.3.0']);
+  assert.equal(res.code, 0, res.err);
+  assert.match(fs.readFileSync(path.join(r, 'roadmap/roadmap.md'), 'utf8'), /area: app · release: v1\.3\.0\n/);
+  assert.match(res.out, /roadmap: stamped v1\.3\.0 on UDX-001/);
+});
