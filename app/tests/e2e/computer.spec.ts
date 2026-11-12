@@ -105,6 +105,23 @@ type Access = "read" | "edit" | "run";
 const WS = "harbor-map";
 const NOT_STARTED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
 
+/** The HUD window's own content width, as main reports it (the OS may not clamp it to the screen). */
+const windowWidth = (app: ElectronApplication): Promise<number> =>
+  app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith("app://hud/"))?.getContentSize()[0] ?? 0);
+
+/** Resizes the window, then waits until the page's innerWidth is the window's real content width and has stopped changing. Returns that width. */
+async function resizeAndSettle(app: ElectronApplication, win: Page, size: { width: number; height: number }): Promise<number> {
+  await resizeHud(app, size);
+  let last = -1;
+  await expect.poll(async () => {
+    const [inner, real] = await Promise.all([win.evaluate(() => window.innerWidth), windowWidth(app)]);
+    const settled = inner === real && inner === last;
+    last = inner;
+    return settled;
+  }, { message: "the page has the window's real width and has stopped changing" }).toBe(true);
+  return win.evaluate(() => window.innerWidth);
+}
+
 const reader = (win: Page) => content(win).locator(".aos-ss-reader");
 const pane = (win: Page, page: "chat" | "code"): Locator => content(win).locator(`.aos-cp[data-page="${page}"]`);
 const cards = (p: Locator) => p.locator(".aos-cp-ask");
@@ -970,13 +987,8 @@ test.describe("both hosts, the Computer surface on", () => {
       await expect(pane(win, "chat")).toBeVisible();
       const measured: Record<number, { reader: number; pane: number; overflow: number }> = {};
       for (const width of [1100, 900]) {
-        await resizeHud(electron, { width, height: 740 });
-        // The window may be held to its screen: wait until the page itself has the width asked for (or the screen's, when
-        // narrower), so the layout read below is the resized one.
-        // The window also has a minimum width of its own; the page cannot be narrower than that.
-        const floor = await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith("app://hud/"))?.getMinimumSize()[0] ?? 0);
-        const want = Math.max(await win.evaluate((w) => Math.min(w, window.screen.availWidth), width), floor);
-        await expect.poll(() => win.evaluate(() => window.innerWidth), { message: `the page is ${want} px wide` }).toBe(want);
+        // The window may be held wider than asked (a minimum width, or no clamp to the screen): measure at its real width.
+        const want = await resizeAndSettle(electron, win, { width, height: 740 });
         const m = await content(win).locator(".aos-ss").evaluate((root) => {
           const w = (sel: string) => Math.round((root.querySelector(sel) as HTMLElement).getBoundingClientRect().width);
           return { reader: w(".aos-ss-reader"), pane: w(".aos-cp"), overflow: Math.max(root.scrollWidth - root.clientWidth, root.ownerDocument.documentElement.scrollWidth - root.ownerDocument.documentElement.clientWidth) };
@@ -1015,13 +1027,8 @@ test.describe("both hosts, the Computer surface on", () => {
       expect(m.url, `${at}: the address input is ${m.url} px`).toBeGreaterThanOrEqual(96);
       expect(m.place, `${at}: the place label is ${m.place} px`).toBeGreaterThanOrEqual(24);
     };
-    // The page may be held wider than asked (the window has a minimum width, and a screen of its own): wait for the page itself.
-    const narrowTo = async (width: number): Promise<void> => {
-      await resizeHud(electron, { width, height: 740 });
-      const floor = await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith("app://hud/"))?.getMinimumSize()[0] ?? 0);
-      const want = Math.max(await win.evaluate((v) => Math.min(v, window.screen.availWidth), width), floor);
-      await expect.poll(() => win.evaluate(() => window.innerWidth), { message: `the page is ${want} px wide` }).toBe(want);
-    };
+    // The page may be held wider than asked (a minimum width, or no clamp to the screen): wait for its real width.
+    const narrowTo = async (width: number): Promise<void> => { await resizeAndSettle(electron, win, { width, height: 740 }); };
     const a = await codeAgent(win, "claude");
     const code = pane(win, "code");
     const bar = code.locator(".aos-cp-handle");
