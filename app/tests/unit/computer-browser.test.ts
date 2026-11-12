@@ -934,6 +934,33 @@ test("activeAddress is the active tab's real address, cleaned, or null with none
   assert.throws(() => fresh.activeAddress(), /gone/);
 });
 
+test("activeAddress on an awake browser: the live tab's real address without a user name or password; a tab not yet committed gives its kept one; none for a destroyed view or a non-web scheme (session-browser S24)", async () => {
+  const awake = makeSleeper("https://user:pw@example.com/p?code=abc");
+  assert.equal(awake.b.activeAddress(), "https://example.com/p?code=abc", "real query kept, user name and password gone");
+  awake.page.url = "about:blank";
+  assert.equal(awake.b.activeAddress(), null, "no address yet");
+  awake.page.url = "file:///etc/hosts";
+  assert.equal(awake.b.activeAddress(), null, "a scheme the browser does not open");
+  awake.page.url = "https://a.test/";
+  (awake.tab.wc as unknown as { isDestroyed: () => boolean }).isDestroyed = () => true;
+  assert.equal(awake.b.activeAddress(), null, "a destroyed view");
+  // A woken tab that has not committed yet answers its kept address, not the blank page it still shows.
+  const { b } = makeSleeper("https://a.test/");
+  const inner = b as unknown as { kept: unknown[] | null };
+  b.sleep();
+  inner.kept = [
+    { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+    { url: "https://slow.test/p?code=S", shown: "https://slow.test/p", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: true },
+  ];
+  (b as unknown as { keptActive: number }).keptActive = 1;
+  let release!: () => void;
+  FakeView.hold.set("https://slow.test/p?code=S", new Promise<void>((r) => { release = r; }));
+  try {
+    await b.wake();
+    assert.equal(b.activeAddress(), "https://slow.test/p?code=S");
+  } finally { release(); FakeView.hold.clear(); }
+});
+
 test("a restored tab's address shows no user name or password", () => {
   makeSleeper();
   const fresh = new ComputerBrowser({ key: "ws:cred", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });

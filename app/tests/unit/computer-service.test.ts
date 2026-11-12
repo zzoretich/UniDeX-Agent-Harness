@@ -3804,9 +3804,11 @@ test("a program's Not now on a thread lasts until the turn ends", async () => {
   h.svc.answer((await h.asked()).id, "deny");
   await flush();
   await h.clock.advance(61_000);
-  const r = await h.call(A, "computer_open", OPEN);
-  assert.equal(r.text, DECLINED, "the same turn's open, 61 s later");
-  assert.equal(h.broker.pending().length, 0);
+  const call = h.call(A, "computer_open", OPEN);
+  // Looked at before the call's result is awaited: a regression raises a card and the call waits on a clock that never moves.
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "no card, the same turn's open 61 s later");
+  assert.equal((await call).text, DECLINED);
   await h.svc.openFromProgram("chat:a", PAGE_A);
   assert.equal(h.broker.pending().length, 0, "and a program's");
   h.svc.agentGone(A);
@@ -3834,9 +3836,10 @@ test("after a program's Not now the agent's open raises no card", async () => {
   await h.svc.openFromProgram("code:t1", PAGE_A);
   h.svc.answer((await h.asked()).id, "deny");
   await flush();
-  const r = await h.call(C, "computer_open", OPEN);
-  assert.equal(r.text, DECLINED);
-  assert.equal(h.broker.pending().length, 0);
+  const call = h.call(C, "computer_open", OPEN);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "no card");
+  assert.equal((await call).text, DECLINED);
 });
 
 test("Off between turns does not silence the next turn's program", async () => {
@@ -3884,4 +3887,107 @@ test("a terminal handed over takes no program's held pages with it, and the log 
   assert.equal(h.logs.length, 1);
   assert.match(h.logs[0], /code:t1/);
   noSecrets(h.logs);
+});
+
+// ---- Task 18, fix round 2: a program's held pages survive a turn-on by hand and the agent's card ending
+
+/** An agent's Turn on card is up with one program page riding it. */
+async function agentCardWithProgramPage(h: ReturnType<typeof make>, who: AgentRef = A): Promise<{ first: ReturnType<typeof h.call>; card: { id: string } }> {
+  const first = h.call(who, "computer_open", OPEN);
+  const card = await h.asked();
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, [PAGE_A]);
+  return { first, card };
+}
+
+test("turned on by hand while an agent's card carries a program's pages: every page opens once and none is replaced", async () => {
+  const h = prog();
+  const { first } = await agentCardWithProgramPage(h);
+  h.svc.power("chat:a", true);
+  assert.match((await first).text, /^Opened the page\./);
+  await flush();
+  // The start page the switch opened is the tab the agent's open navigated; the program's page is its own tab.
+  assert.deepEqual(h.b().pages.map((x) => x.url), ["https://example.com/x", PAGE_A]);
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, []);
+  assert.equal(powerCards(h).length, 0);
+});
+
+test("a link clicked while an agent's card carries a program's pages: the agent's page, the program's and the link each open once", async () => {
+  const h = prog();
+  const { first } = await agentCardWithProgramPage(h);
+  const click = h.svc.openLink("chat:a", "https://a.test/l");
+  await h.clock.advance(1);
+  assert.deepEqual(await click, { ok: true, data: null });
+  assert.match((await first).text, /^Opened the page\./);
+  await flush();
+  assert.deepEqual(h.b().pages.map((x) => x.url).sort(), ["https://a.test/l", "https://example.com/x", PAGE_A].sort());
+});
+
+test("turned on by hand with only a program's card: its pages open", async () => {
+  const h = prog();
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  await h.asked();
+  h.svc.power("chat:a", true);
+  await flush();
+  assert.equal(sameCount(h, PAGE_A), 1);
+  assert.equal(h.b().pages.length, 2, "the start page and the program's page");
+  assert.equal(powerCards(h).length, 0);
+});
+
+test("the agent's turn ends while its card carries a program's pages: the program's card comes back for them", async () => {
+  const h = prog();
+  const { first } = await agentCardWithProgramPage(h);
+  h.svc.agentGone(A);
+  assert.match((await first).text, /turn ended/);
+  await cardsUp(h, 1);
+  assert.equal(powerCards(h)[0].session, "program");
+  assert.equal(h.logs.length, 0, "nothing was dropped");
+  h.svc.answer(powerCards(h)[0].id, "once");
+  await flush();
+  assert.equal(sameCount(h, PAGE_A), 1);
+  assert.equal(powerCards(h).length, 0);
+});
+
+test("an allowed card whose run cannot go on leaves no page held without a card", async () => {
+  let live: AgentRef | undefined = A;
+  const h = prog({ liveAgent: () => live });
+  const { first, card } = await agentCardWithProgramPage(h);
+  live = { ...A, pid: 2 };
+  h.svc.answer(card.id, "once");
+  await first;
+  await flush();
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, [], "not held");
+  assert.equal(powerCards(h).length, 0);
+  assert.equal(h.logs.length, 1, "one line says they were dropped");
+  assert.match(h.logs[0], /chat:a/);
+  noSecrets(h.logs);
+  assert.equal(h.lastState().power, "off");
+});
+
+test("quitting drops a program's held pages with one line", async () => {
+  const h = prog();
+  await agentCardWithProgramPage(h);
+  h.svc.flushForQuit();
+  h.broker.cancel(() => true, "the app is quitting");
+  await flush();
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, []);
+  assert.equal(h.logs.length, 1);
+  noSecrets(h.logs);
+  assert.equal(powerCards(h).length, 0);
+});
+
+test("every program card the log shows asking also shows its ending, and a Not now says how many pages it dropped", async () => {
+  const h = prog();
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  await h.svc.openFromProgram("chat:a", "https://example.com/2");
+  const first = h.call(A, "computer_open", OPEN);
+  for (let i = 0; i < 200 && !powerCards(h).some((c) => c.session === "chat:a"); i++) await flush();
+  h.svc.answer(powerCards(h)[0].id, "deny");
+  await first;
+  await flush();
+  const lines = h.lastState().log.map((l) => l.text);
+  assert.equal(lines.filter((t) => t.startsWith("Asked the user:")).length >= 1, true);
+  assert.ok(lines.some((t) => /Turn on card .*gave way/i.test(t)), "the program's card says it gave way");
+  assert.ok(lines.some((t) => /^2 pages a program opened were not opened$/.test(t)), JSON.stringify(lines));
+  noSecrets(lines.filter((t) => /not opened$/.test(t)));
 });
