@@ -1726,6 +1726,7 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
     const chat = await chatAgent(h, { text: "computer: a program opens a page", surfaceOff: true });
     try {
       const chatPage = pageUrl(3);
+      expect((await sessionVar(chat)).prev, "the stand-in is the BROWSER the opener falls back to").toBe(recorder);
       expect((await chat.exec(AGENT.node, [OPEN_PAGE, chatPage])).status).toBe(0);
       await turnOn(pane(win, "chat"), chatPage);
       const chatKey = (await selectedOf(h)) as string;
@@ -1770,6 +1771,47 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
     expectNoErrors(h);
   });
 
+  test("after Take over a program's page opens behind the tab the person is on", async () => {
+    const h = app();
+    const { win } = h;
+    const externalBefore = (await externalOf(h)).length;
+    const a = await codeAgent(h, "claude");
+    let p: Locator | null = null;
+    try {
+      p = pane(win, "code");
+      const key = (await selectedOf(h)) as string;
+      expect((await sessionVar(a)).prev, "the stand-in is the BROWSER the opener falls back to").toBe(recorder);
+      // The browser was turned on by hand: the start page is its one tab, and the person is on it.
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(1);
+      await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText("Start");
+      expect(await titleOf(h, startUrl(), key)).toBe("Start");
+      await p.locator(".aos-cp-drivebtn", { hasText: "Take over" }).click();
+      await expect(p.locator(".aos-cp-drive")).toHaveClass(/is-user/);
+      // The agent's program opens a page while the person holds the wheel.
+      const behind = pageUrl(20);
+      expect((await a.exec(AGENT.node, [OPEN_PAGE, behind])).status).toBe(0);
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(2);
+      // The person's tab stays in front: the strip's marker and the browser's own active page are unchanged.
+      await expect(p.locator(".aos-cp-tab.is-active")).toHaveCount(1);
+      await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText("Start");
+      expect(await titleOf(h, startUrl(), key), "the active page is still the start page").toBe("Start");
+      // The new page really loaded in its tab behind: read it through the tab's own web contents, which the active-tab helper cannot reach.
+      await expect.poll(() => h.app.evaluate(async ({ webContents }, u) => {
+        const wc = webContents.getAllWebContents().find((w) => w.getURL().startsWith(u));
+        return wc ? (wc.executeJavaScript("document.title") as Promise<string>) : null;
+      }, behind), { message: "the background tab loaded the program's page" }).toBe("Harbour landed");
+      await expect(cards(p)).toHaveCount(0);
+      expect(fell(), "the BROWSER stand-in recorded nothing").toEqual([]);
+      expect((await externalOf(h)).length, "main opened nothing outside").toBe(externalBefore);
+    } finally {
+      // Hand back, so the next test starts clean.
+      if (p) await p.locator(".aos-cp-drivebtn", { hasText: "Hand back" }).click().catch(() => undefined);
+      await a.finish();
+    }
+    expect((await h.opened()).filter((o) => o.fn === "openExternal")).toEqual([]);
+    expectNoErrors(h);
+  });
+
   test("Open in my browser waits for an https page, sends it out keeping the tab, and refuses an http page", async () => {
     const h = app();
     const { win } = h;
@@ -1804,6 +1846,59 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
     await expect.poll(() => h.errors.some((e) => e.includes(warning)), { message: "the one load warning" }).toBe(true);
     const late = h.errors.splice(0).filter((e) => !e.includes(warning));
     expect(late, "renderer/main errors").toEqual([]);
+    expectNoErrors(h);
+  });
+});
+
+// ── the Computer setting off: a program's page goes where it went before (session-browser S23) ─────
+
+test.describe("session browser: with the Computer setting off a program's page goes where it went before (session-browser S23)", () => {
+  // The vault's config says computer.enabled is false, so main adds no variables to a new session and the program's BROWSER is
+  // the app's own: the recording stand-in (never the Mac's default browser). The test asserts the recorder holds exactly the
+  // one address and that main opened nothing outside.
+  let rec = "", recorded = "";
+  const fell = (): string[] => (fs.existsSync(recorded) ? fs.readFileSync(recorded, "utf8").split("\n").filter(Boolean) : []);
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  test.beforeAll(async () => {
+    site = await startSite();
+    rec = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "aos-bro-"));
+    const recorder = path.join(rec, "browser.sh");
+    recorded = path.join(rec, "opened.txt");
+    fs.writeFileSync(recorder, `#!/bin/sh\nprintf '%s\\n' "$1" >> '${recorded}'\n`, { mode: 0o755 });
+    env.BROWSER = recorder;
+  });
+  test.afterAll(async () => { await site?.close(); if (rec) fs.rmSync(rec, { recursive: true, force: true }); });
+  const app = useApp({
+    env,
+    prepare: () => {
+      prepare({ claude: true, codex: true });
+      editJson(path.join(FX.claude, "agenticos.json"), (j) => { j.computer = { ...(j.computer ?? {}), enabled: false }; });
+    },
+  });
+  const OPEN_PAGE = path.join(__dirname, "fixtures", "computer", "open-page.js");
+  const externalOf = (h: { app: ElectronApplication }) =>
+    h.app.evaluate(() => (globalThis as unknown as { __aosMain: { externalOpens(): Array<{ url: string; opened: boolean }> } }).__aosMain.externalOpens());
+
+  test("a shell's program opens its page in the recording stand-in: no card, no tab, nothing opened by main", async () => {
+    const h = app();
+    const { win } = h;
+    const externalBefore = (await externalOf(h)).length;
+    expect(await command(win, "agentic-os:new-terminal-shell")).toBe(true);
+    await expect(rail(win, "term")).toHaveClass(/is-active/);
+    const page = `http://prog30.test:${site.port}/landed.html`;
+    await win.evaluate((cmd) => {
+      const pool = (window as unknown as { aosHost: { plugin: { terminalPool: { selectedId(): string | null; get(id: string): { write(d: string): void } | undefined } } } }).aosHost.plugin.terminalPool;
+      pool.get(pool.selectedId() ?? "")?.write(cmd);
+    }, `'${AGENT.node}' '${OPEN_PAGE}' '${page}'\r`);
+    await expect.poll(() => fell(), { message: "the stand-in got the program's address" }).toEqual([page]);
+    // Nothing else follows: no second copy, no card, no tab made.
+    await new Promise((r) => setTimeout(r, 750));
+    expect(fell(), "exactly the one address").toEqual([page]);
+    const p = pane(win, "code");
+    await expect(cards(p)).toHaveCount(0);
+    await expect(p.locator(".aos-cp-tab")).toHaveCount(0);
+    expect((await externalOf(h)).length, "main opened nothing outside").toBe(externalBefore);
+    expect((await h.opened()).filter((o) => o.fn === "openExternal")).toEqual([]);
     expectNoErrors(h);
   });
 });
