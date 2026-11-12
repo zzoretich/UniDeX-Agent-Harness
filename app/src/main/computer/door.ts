@@ -1,0 +1,187 @@
+// The door (session-browser S4): a Unix socket in the app's userData where a program running inside a session (a
+// BROWSER opener, `gh`, a dev server) asks for ONE page to open in that session's browser. A client connects, writes one
+// line {"id":"<32 hex>","url":"<address>"}, reads {"ok":true} or {"ok":false}, and the door ends the connection.
+// The id is a secret that main puts in the session's environment, so it names a session without a process lookup. The
+// door never reads, clicks or types: a page is opened, nothing else. No id is ever written to a log.
+
+import { createHash, randomBytes } from "node:crypto";
+import fs from "node:fs";
+import net from "node:net";
+import path from "node:path";
+import { linkUrl } from "../policy/computer-url";
+import { realClock, type Clock } from "./asks";
+import { MAX_PATH_BYTES } from "./bridge";
+
+export const DOOR_PER_MINUTE = 6;
+export const DOOR_LINE_MAX = 16 * 1024;
+export const DOOR_IDLE_MS = 2000;
+export const DOOR_CONNECTIONS = 16;
+const MINUTE_MS = 60_000;
+const ID = /^[0-9a-f]{32}$/;
+
+/** As `bridgeSocketPath`: `<userData>/computer/door.sock`, or a short path in the user's temp folder when that is too long. */
+export function doorSocketPath(userData: string, tmp: string): string | null {
+  const own = path.join(userData, "computer", "door.sock");
+  if (Buffer.byteLength(own) <= MAX_PATH_BYTES) return own;
+  const id = createHash("sha256").update(path.resolve(userData)).digest("hex").slice(0, 12);
+  const short = path.join(tmp, `unidex-computer-${id}`, "door.sock");
+  return Buffer.byteLength(short) <= MAX_PATH_BYTES ? short : null;
+}
+
+export interface DoorOptions { path: string; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock }
+
+export class ComputerDoor {
+  private server: net.Server | null = null;
+  private bound: { dev: number; ino: number } | null = null;
+  private readonly conns = new Set<net.Socket>();
+  /** Every live id and the session it names. */
+  private readonly ids = new Map<string, string>();
+  /** The ids a session made for itself, in order; `issue` answers the first. Ids that arrived by `move` are not here. */
+  private readonly own = new Map<string, string[]>();
+  /** Times of a session's accepted opens in the last minute (the limit is per session, not per id). */
+  private readonly opens = new Map<string, number[]>();
+  private readonly clock: Clock;
+
+  constructor(private readonly o: DoorOptions) { this.clock = o.clock ?? realClock; }
+
+  listening(): boolean { return this.server !== null; }
+
+  async start(): Promise<boolean> {
+    const { path: sockPath } = this.o;
+    try {
+      if (Buffer.byteLength(sockPath) > MAX_PATH_BYTES) throw new Error("the socket path is too long");
+      const dir = path.dirname(sockPath);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      // The folder must be a real folder of this user's, never a link (as the bridge's), then 0700.
+      const d = fs.lstatSync(dir);
+      if (!d.isDirectory() || (typeof process.getuid === "function" && d.uid !== process.getuid())) throw new Error("the folder is not a folder of this user's");
+      fs.chmodSync(dir, 0o700);
+      // Only a leftover socket is replaced; a file, link or folder at the path is somebody's.
+      let st: fs.Stats | null = null;
+      try { st = fs.lstatSync(sockPath); } catch { /* nothing there */ }
+      if (st) {
+        if (!st.isSocket()) throw new Error("something that is not a socket is at the socket path");
+        fs.unlinkSync(sockPath);
+      }
+      const server = net.createServer((s) => this.connection(s));
+      server.on("error", () => {});
+      await new Promise<void>((res, rej) => {
+        server.once("error", rej);
+        server.listen(sockPath, () => { server.off("error", rej); res(); });
+      });
+      try {
+        fs.chmodSync(sockPath, 0o600);
+        const b = fs.lstatSync(sockPath);
+        this.bound = { dev: b.dev, ino: b.ino };
+      } catch (err) {
+        await new Promise<void>((res) => server.close(() => res()));
+        throw err;
+      }
+      this.server = server;
+      return true;
+    } catch (err) {
+      this.o.log(`door: not listening (${err instanceof Error ? err.message : "unknown error"})`);
+      return false;
+    }
+  }
+
+  stop(): void {
+    const server = this.server;
+    this.server = null;
+    for (const s of this.conns) s.destroy();
+    this.conns.clear();
+    server?.close();
+    // Unlink only if the path is still the socket this door bound.
+    const bound = this.bound;
+    this.bound = null;
+    try {
+      const now = fs.lstatSync(this.o.path);
+      if (bound && now.dev === bound.dev && now.ino === bound.ino) fs.unlinkSync(this.o.path);
+    } catch { /* already gone */ }
+  }
+
+  issue(session: string): string {
+    const mine = this.own.get(session);
+    if (mine && mine.length) return mine[0];
+    const id = randomBytes(16).toString("hex");
+    this.ids.set(id, session);
+    this.own.set(session, [id]);
+    return id;
+  }
+
+  /** Every id of `from` now names `to`, beside the ids `to` has; `to`'s own first id stays its first. */
+  move(from: string, to: string): void {
+    if (from === to) return;
+    for (const [id, s] of this.ids) if (s === from) this.ids.set(id, to);
+    this.own.delete(from);
+    const times = this.opens.get(from);
+    if (times) {
+      this.opens.set(to, [...(this.opens.get(to) ?? []), ...times]);
+      this.opens.delete(from);
+    }
+  }
+
+  revoke(session: string): void {
+    for (const [id, s] of this.ids) if (s === session) this.ids.delete(id);
+    this.own.delete(session);
+  }
+
+  revokeAll(prefix: string): void {
+    for (const s of new Set(this.ids.values())) if (s.startsWith(prefix)) this.revoke(s);
+  }
+
+  accept(line: string): boolean {
+    try {
+      const msg: unknown = JSON.parse(line);
+      if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return false;
+      const { id, url } = msg as { id?: unknown; url?: unknown };
+      if (typeof id !== "string" || !ID.test(id)) return false;
+      const session = this.ids.get(id);
+      if (session === undefined) return false;
+      const target = linkUrl(url);
+      if (target === null) return false;
+      const now = this.clock.now();
+      const recent = (this.opens.get(session) ?? []).filter((t) => now - t < MINUTE_MS);
+      if (recent.length >= DOOR_PER_MINUTE) {
+        this.opens.set(session, recent);
+        this.o.log(`door: ${session} asked for more than ${DOOR_PER_MINUTE} pages in a minute`);
+        return false;
+      }
+      recent.push(now);
+      this.opens.set(session, recent);
+      this.o.open(session, target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private connection(sock: net.Socket): void {
+    if (this.conns.size >= DOOR_CONNECTIONS) { sock.destroy(); return; }
+    this.conns.add(sock);
+    let buf = "";
+    let done = false;
+    sock.setEncoding("utf8");
+    const end = (): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      this.conns.delete(sock);
+      sock.destroy();
+    };
+    const timer = setTimeout(end, DOOR_IDLE_MS);
+    sock.on("error", end);
+    sock.on("close", end);
+    sock.on("data", (chunk: string) => {
+      if (done) return;
+      buf += chunk;
+      const nl = buf.indexOf("\n");
+      const len = Buffer.byteLength(nl < 0 ? buf : buf.slice(0, nl));
+      if (len > DOOR_LINE_MAX) return end();
+      if (nl < 0) return;
+      clearTimeout(timer);
+      const ok = this.accept(buf.slice(0, nl));
+      sock.end(`${JSON.stringify({ ok })}\n`, () => end());
+    });
+  }
+}
