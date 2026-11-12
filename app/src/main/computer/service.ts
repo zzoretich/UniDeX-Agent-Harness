@@ -75,9 +75,9 @@ export interface ServiceOptions {
   /** Whether the app holds this session (a terminal or a thread): the check the page's calls use. A program's open for any
    *  other session is dropped and makes no slot (session-browser S23). Absent: no session is held. */
   held?: (session: string) => boolean;
-  /** Sends an address to the Mac's own browser (index.ts: `openExternalSafe`) and says whether it went; false for anything
-   *  but https (session-browser S24). */
-  outside: (url: string) => boolean;
+  /** Sends an address to the Mac's own browser (index.ts) and says, once the system has taken it, whether it went: true only
+   *  when the hand-off resolved, false for anything but https (session-browser S24, X4). It may reject. */
+  outside: (url: string) => Promise<boolean>;
   /** A line for main's log. Never an address or an id (session-browser S23). */
   log?: (line: string) => void;
   clock?: Clock;
@@ -1271,8 +1271,9 @@ export class ComputerService {
   }
 
   /** Open in my browser (session-browser S24): the selected browser's active tab goes to the Mac's own browser by its real
-   *  address (main only: the page never names it), https only. The tab stays open. The log line names no address. */
-  openOutside(): Result<null> {
+   *  address (main only: the page never names it), https only. The tab stays open. The answer waits for the system to take
+   *  the page (X4); the log line names no address. */
+  async openOutside(): Promise<Result<null>> {
     if (this.quitting) return { ok: false, error: QUITTING, code: "ENOENT" };
     if (!this.selected) return { ok: false, error: "No computer is selected.", code: "ENOENT" };
     const p = this.slots.get(this.selected);
@@ -1285,7 +1286,10 @@ export class ComputerService {
     // https is decided here, so `outside` (main's external-open path, which logs a refusal with its address) only ever gets an
     // https address and a refusal leaves no log line at all.
     if (!externalAllowed(url)) return { ok: false, error: "Only https pages open in your browser.", code: "EROFS" };
-    if (!this.o.outside(url)) return { ok: false, error: "Only https pages open in your browser.", code: "EROFS" };
+    // A rejection's text may carry the address: it is never kept or logged, only the fixed sentence is.
+    let opened = false;
+    try { opened = await this.o.outside(url); } catch { opened = false; }
+    if (!opened) return { ok: false, error: "Your browser did not open the page.", code: "EIO" };
     this.line(p, USER, "Opened the page in your browser", null);
     return { ok: true, data: null };
   }

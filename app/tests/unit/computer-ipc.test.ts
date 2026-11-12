@@ -11,7 +11,7 @@ import { ComputerAnswerArgs, ComputerMarkArgs, ComputerNavArgs, ComputerNavigate
 import { clampBounds, sessionAllowed } from "../../src/main/policy/computer";
 
 const T = "0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f";
-const HAS = { terminal: (id: string) => id === "t3", thread: (id: string) => id === T };
+const HAS = { terminal: (id: string) => ["t3", "t5", "t6", "t7"].includes(id), thread: (id: string) => id === T };
 
 const STATE = { session: "code:t3", label: "", tabs: [], holder: null, asks: [], log: [], marked: false, poppedOut: false, power: "off" } as ComputerState;
 const calls: string[] = [];
@@ -21,7 +21,7 @@ const service: ComputerPageService = {
   show: (b) => { calls.push(`show ${JSON.stringify(b)}`); seen.push(b); },
   navigate: async (u) => { calls.push(`navigate ${u}`); return { ok: true, data: null }; },
   openLink: async (s, u) => { calls.push(`openLink ${s} ${u}`); return { ok: true, data: null }; },
-  openOutside: () => { calls.push("openOutside"); return { ok: true, data: null }; },
+  openOutside: async () => { calls.push("openOutside"); return { ok: true, data: null }; },
   tab: (op) => { calls.push(`tab ${JSON.stringify(op)}`); seen.push(op); },
   nav: (go) => { calls.push(`nav ${go}`); seen.push(go); },
   takeOver: () => { calls.push("takeOver"); },
@@ -31,11 +31,11 @@ const service: ComputerPageService = {
   popOut: () => { calls.push("popOut"); },
   power: (s, on) => { calls.push(`power ${s} ${on}`); seen.push([s, on]); },
   describe: (s, d) => { calls.push(`describe ${s} ${JSON.stringify(d)}`); seen.push([s, d]); },
-  move: (f, t) => { calls.push(`move ${f} ${t}`); return f !== "code:t9"; },
+  move: (f, t) => { calls.push(`move ${f} ${t}`); if (f === "code:t7") throw new Error("boom"); return f !== "code:t6"; },
 };
 let trusted = true;
 let enabled = true;
-registerComputerIpc(() => trusted, { enabled: () => enabled, service: () => service, sessions: HAS });
+registerComputerIpc(() => trusted, { enabled: () => enabled, service: () => service, sessions: HAS, moved: (f, t) => { calls.push(`moved ${f} ${t}`); } });
 const send = (ch: string, raw: unknown): void => { calls.length = 0; seen.length = 0; on.get(ch)!({}, raw); };
 const invoke = async (ch: string, raw: unknown): Promise<unknown> => { calls.length = 0; return handle.get(ch)!({}, raw); };
 
@@ -206,6 +206,22 @@ test("computer:describe takes Code keys the app holds, a bounded title and a pla
   trusted = false;
   assert.deepEqual(await invoke(CH.computerMove, { from: "code:t3", to: "code:t3" }), { ok: false, error: "untrusted sender", code: "EPERM" });
   trusted = true;
+});
+
+test("computer:move tells the app the ids moved whenever the call completed for two keys it holds, whether the service answered true or false (session-browser A8)", async () => {
+  assert.deepEqual(await invoke(CH.computerMove, { from: "code:t3", to: "code:t5" }), { ok: true, data: true });
+  assert.deepEqual(calls, ["move code:t3 code:t5", "moved code:t3 code:t5"], "answered true");
+  assert.deepEqual(await invoke(CH.computerMove, { from: "code:t6", to: "code:t5" }), { ok: true, data: false });
+  assert.deepEqual(calls, ["move code:t6 code:t5", "moved code:t6 code:t5"], "answered false: the ids still follow the terminal row");
+  assert.deepEqual(await invoke(CH.computerMove, { from: "code:t3", to: "code:t9" }), { ok: true, data: false }, "a key main does not hold");
+  assert.deepEqual(calls, [], "refused: neither the service nor the ids");
+  const error = console.error;
+  console.error = () => {};
+  try { assert.equal(((await invoke(CH.computerMove, { from: "code:t7", to: "code:t5" })) as { ok: boolean }).ok, false, "the wrapper answers a failure"); } finally { console.error = error; }
+  assert.deepEqual(calls, ["move code:t7 code:t5"], "the service threw: the ids did not move");
+  enabled = false;
+  try { assert.deepEqual(await invoke(CH.computerMove, { from: "code:t3", to: "code:t5" }), { ok: true, data: false }); } finally { enabled = true; }
+  assert.deepEqual(calls, [], "the surface is off");
 });
 
 test("computer:open-link takes a session and an address, and refuses a session main does not hold", async () => {

@@ -82,7 +82,7 @@ class FakeBrowser implements BrowserLike {
   restore(tabs: readonly string[], active: number) { if (restoreFails.has(this.session)) throw new Error("cannot restore"); this.restored++; this.pages = tabs.map((url) => ({ url, openedBy: null, hidden: true })); this.current = active; this.sleeping = true; }
   restored = 0;
   /** Main only: the active tab's real address, or null when it has none to give (as ComputerBrowser.activeAddress). */
-  activeAddress() { if (this.destroyed > 0) throw new Error("the browser is gone"); const u = this.pages[this.current]?.url; return u && u !== "about:blank" ? u : null; }
+  activeAddress() { if (this.destroyed > 0) throw new Error("the browser is gone"); const u = this.pages[this.current]?.url; return u && /^https?:\/\//i.test(u) ? u : null; }
   /** Main only (the real address of every tab). */
   realAddresses() { if (this.destroyed > 0) throw new Error("the browser is gone"); return { urls: this.pages.map((p) => p.url), active: Math.max(0, this.current) }; }
   constructor(public session: string, public hooks: BrowserHooks) {}
@@ -182,7 +182,7 @@ const made: string[] = [];
 const tmp = (prefix: string): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); made.push(d); return d; };
 afterEach(() => { for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
 
-function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined; held?: (session: string) => boolean; outside?: (url: string) => boolean } = {}) {
+function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined; held?: (session: string) => boolean; outside?: (url: string) => Promise<boolean> } = {}) {
   const clock = new FakeClock();
   const sites = new SiteMarks(path.join(tmp("aos-service-"), "computer", "sites.json"));
   const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120, awake: 4 };
@@ -201,7 +201,7 @@ function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) =
     records,
     ...(o.threadExists ? { threadExists: o.threadExists } : {}),
     held: o.held ?? (() => true),
-    outside: o.outside ?? ((url) => { if (!url.startsWith("https:")) return false; outsides.push(url); return true; }),
+    outside: o.outside ?? (async (url) => { if (!url.startsWith("https:")) return false; outsides.push(url); return true; }),
     log: (line) => logs.push(line),
     browser: (session, hooks) => { const b = new FakeBrowser(session, hooks); browsers.set(session, b); return b; },
     broker, wheel, sites, config: () => cfg, emit: (s) => states.push(s), note: (a, line) => notes.push([a.key, line]), clock,
@@ -3640,14 +3640,14 @@ test("Open in my browser sends the real address and keeps the tab", async () => 
   b.pages[0].hidden = true;
   assert.doesNotMatch(b.tabs()[0].url, /s3cret/, "the agent-facing form is scrubbed");
   h.svc.select("chat:a");
-  assert.deepEqual(h.svc.openOutside(), { ok: true, data: null });
+  assert.deepEqual(await h.svc.openOutside(), { ok: true, data: null });
   assert.deepEqual(h.outsides, [PAGE_A], "the unscrubbed https address");
   assert.equal(b.pages.length, 1, "the tab stays open");
   assert.equal(b.current, 0);
   assert.equal(h.lastState().tabs.length, 1);
   // It sends the ACTIVE tab, not the first.
   await h.call(A, "computer_open", { url: "https://example.org/second", newTab: true });
-  assert.deepEqual(h.svc.openOutside(), { ok: true, data: null });
+  assert.deepEqual(await h.svc.openOutside(), { ok: true, data: null });
   assert.equal(h.outsides.at(-1), "https://example.org/second");
   // The log line names no address.
   noSecrets(h.states.flatMap((s) => s.log.filter((l) => /your browser/i.test(l.text)).map((l) => l.text)));
@@ -3658,22 +3658,22 @@ test("an http page is not sent out", async () => {
   const b = await onBrowser(h);
   await h.open(A, "http://localhost:3000/x");
   h.svc.select("chat:a");
-  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
+  assert.deepEqual(await h.svc.openOutside(), { ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
   assert.deepEqual(h.outsides, []);
   assert.equal(b.pages.length, 1, "the tab stays open");
 });
 
 test("Open in my browser needs a selected, on browser with a tab", async () => {
   const h = make();
-  assert.equal(h.svc.openOutside().ok, false);
-  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No computer is selected.", code: "ENOENT" });
+  assert.equal((await h.svc.openOutside()).ok, false);
+  assert.deepEqual(await h.svc.openOutside(), { ok: false, error: "No computer is selected.", code: "ENOENT" });
   const b = await onBrowser(h);
   h.svc.select("chat:a");
-  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" }, "on, with no tab");
+  assert.deepEqual(await h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" }, "on, with no tab");
   void b;
   const g = prog();
   g.svc.select("chat:a");
-  assert.deepEqual(g.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" }, "off");
+  assert.deepEqual(await g.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" }, "off");
   assert.deepEqual(g.outsides, []);
 });
 
@@ -3684,39 +3684,39 @@ test("Open in my browser sends the active tab's own address, never another tab's
   await h.call(A, "computer_open", { url: "https://example.com/p?tab=two", newTab: true });
   b.pages.forEach((x) => { x.hidden = true; });
   h.svc.select("chat:a");
-  assert.deepEqual(h.svc.openOutside(), { ok: true, data: null });
+  assert.deepEqual(await h.svc.openOutside(), { ok: true, data: null });
   assert.deepEqual(h.outsides, ["https://example.com/p?tab=two"]);
   // A blank active tab has no address to give: nothing is sent, and the other tab's page is not taken instead.
   b.pages.push({ url: "about:blank", openedBy: null });
   b.current = 2;
-  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" });
+  assert.deepEqual(await h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" });
   assert.equal(h.outsides.length, 1);
 });
 
 test("Open in my browser decides https itself: an http page never reaches outside or the log", async () => {
   const calls: string[] = [];
-  const h = make({ outside: (u) => { calls.push(u); return true; } });
+  const h = make({ outside: async (u) => { calls.push(u); return true; } });
   const b = await onBrowser(h);
   await h.open(A, "http://localhost:3000/x");
   h.svc.select("chat:a");
-  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
+  assert.deepEqual(await h.svc.openOutside(), { ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
   assert.deepEqual(calls, [], "outside was not called");
   assert.deepEqual(h.logs, [], "nothing logged");
   assert.equal(b.pages.length, 1);
   await h.call(A, "computer_open", { url: "https://example.com/ok", newTab: true });
-  assert.deepEqual(h.svc.openOutside(), { ok: true, data: null });
+  assert.deepEqual(await h.svc.openOutside(), { ok: true, data: null });
   assert.deepEqual(calls, ["https://example.com/ok"], "outside is only ever given an https address");
 });
 
 test("an asleep browser sends nothing", async () => {
   const calls: string[] = [];
-  const h = make({ outside: (u) => { calls.push(u); return true; } });
+  const h = make({ outside: async (u) => { calls.push(u); return true; } });
   const b = await onBrowser(h);
   await h.open(A, "https://example.com/ok");
   h.svc.select("chat:a");
   b.sleeping = true;
   (h.svc as unknown as { slot(k: string): { power: string } }).slot("chat:a").power = "asleep";
-  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" });
+  assert.deepEqual(await h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" });
   assert.deepEqual(calls, []);
 });
 
@@ -4114,4 +4114,31 @@ test("turned on by hand cancels the agent's card and its run then cannot go on: 
   assert.deepEqual(slotOf(h).slot("chat:a").programOpens, [], "nothing stays held");
   assert.equal(powerCards(h).length, 0);
   assert.equal(h.logs.length, 0, "nothing was dropped");
+});
+
+test("Open in my browser answers only after the system took the page; a refusal or a rejection is EIO with no Opened line and no address (session-browser X4)", async () => {
+  const EIO = { ok: false, error: "Your browser did not open the page.", code: "EIO" };
+  const cases: [string, () => Promise<boolean>][] = [["false", async () => false], ["rejects", async () => { throw new Error("no handler for https://example.com/secret"); }]];
+  for (const [name, outside] of cases) {
+    const h = make({ outside });
+    await onBrowser(h);
+    await h.open(A, "https://example.com/secret");
+    h.svc.select("chat:a");
+    assert.deepEqual(await h.svc.openOutside(), EIO, name);
+    assert.equal(actLines(h).some((t) => /Opened the page in your browser/.test(t)), false, `${name}: no Opened line`);
+    for (const l of [...h.logs, ...actLines(h).filter((t) => /your browser/.test(t))]) assert.doesNotMatch(l, /example\.com|secret/, name);
+    assert.deepEqual(h.logs, [], `${name}: main's log says nothing`);
+  }
+  // It waits: no line while the system has not answered, then ok and the line.
+  let release!: (v: boolean) => void;
+  const h = make({ outside: () => new Promise<boolean>((r) => { release = r; }) });
+  await onBrowser(h);
+  await h.open(A, "https://example.com/ok");
+  h.svc.select("chat:a");
+  const pending = h.svc.openOutside();
+  await flush();
+  assert.equal(actLines(h).some((t) => /Opened the page in your browser/.test(t)), false, "not yet");
+  release(true);
+  assert.deepEqual(await pending, { ok: true, data: null });
+  assert.equal(actLines(h).filter((t) => /Opened the page in your browser/.test(t)).length, 1);
 });

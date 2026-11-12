@@ -33,7 +33,7 @@ import { registerProposalsIpc } from "./ipc/proposals";
 import { registerCodeIpc } from "./ipc/code";
 import { registerSessionIpc } from "./ipc/sessions";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
-import { externalOpens, openExternalSafe, registerShellIpc } from "./ipc/shell";
+import { externalOpens, openExternalAwaited, openExternalSafe, registerShellIpc } from "./ipc/shell";
 import { registerComputerIpc } from "./ipc/computer";
 import { registerThemeIpc } from "./ipc/theme";
 import { trustMainWindow } from "./ipc/trust";
@@ -298,9 +298,9 @@ const heldSessions = { terminal: (id: string): boolean => ptyService.holdsOrigin
 const computerService: ComputerService = new ComputerService({
   records: computerRecords,
   threadExists: (session) => session.startsWith("chat:") ? sessionService.exists(session.slice("chat:".length)) : false,
-  // `moved` fires only for a move that answered true (service.ts move): the replacement terminal's own id stays valid and
-  // the old terminal's ids now name it too.
-  moved: (from, to) => { const b = computerBrowsers.get(from); if (b) { computerBrowsers.delete(from); computerBrowsers.set(to, b); } computerDoor?.move(from, to); },
+  // `moved` fires only for a move that answered true (service.ts move). The door's ids follow the terminal, not the browser,
+  // so they move in the computer IPC's `moved` (registerComputerIpc below), whichever way the service answered.
+  moved: (from, to) => { const b = computerBrowsers.get(from); if (b) { computerBrowsers.delete(from); computerBrowsers.set(to, b); } },
   label: (session) => (session.startsWith("chat:") ? sessionService.titleOf(session.slice("chat:".length)) : undefined),
   browser: (session, hooks) => {
     const b = new ComputerBrowser({ key: session, window: () => win, hooks });
@@ -324,10 +324,10 @@ const computerService: ComputerService = new ComputerService({
     if (agent.page === "chat" && agent.key.startsWith("chat:")) sessionService.noteEvent(agent.key.slice("chat:".length), line);
   },
   popOut: (session, show) => popOutComputer(session, show),
-  // session-browser S23: the check the page's calls use (registerComputerIpc below), for a program's open; S24: the one
-  // external-open path, so the e2e seam records Open in my browser as it records links.
+  // session-browser S23: the check the page's calls use (registerComputerIpc below), for a program's open; S24, X4: the
+  // external-open rule, so the e2e seam records Open in my browser as it records links, but waiting for the system's answer.
   held: (session) => sessionAllowed(session, heldSessions),
-  outside: (url) => openExternalSafe(url),
+  outside: (url) => openExternalAwaited(url),
   log: (line) => console.warn(`[main] ${line}`),
   // D31: a late bridge close from a session's previous process must not end the turn that replaced it.
   liveAgent: (key) => agentRegistry.byKey(key),
@@ -383,6 +383,8 @@ let win: BrowserWindow | null = null;
 let tray: StatusTray | null = null;
 let watcher: VaultWatcher | null = null;
 let quitting = false;
+/** Whether the page went (`endPageWork`) while a quit was under way: if that quit is called off, the Code slots end as at any reload. */
+let pageWentWhileQuitting = false;
 let rendererReady = false;
 let commands: CommandInfo[] = [];
 const pendingLinks: ProtocolRequest[] = [];
@@ -394,7 +396,13 @@ const updates = new UpdateService({
   intervalHours: updateConfig.intervalHours,
   load: () => (require("electron-updater") as { autoUpdater: UpdaterLike }).autoUpdater,
   emit: (s) => {
-    if (quitCalledOff({ quitting, updateStatus: s.status })) { quitting = false; computerService.quitCancelled(); }
+    if (quitCalledOff({ quitting, updateStatus: s.status })) {
+      quitting = false;
+      computerService.quitCancelled();
+      // session-browser A6: the page went while the quit was under way (endPageWork returned before `pageGone`), so the Code
+      // slots `quitCancelled` just brought back belong to terminals that no longer exist; the next page counts from t1 again.
+      if (pageWentWhileQuitting) { pageWentWhileQuitting = false; computerService.pageGone(); }
+    }
     send(CH.updateEvent, s);
     setMenu();
   },
@@ -744,7 +752,9 @@ registerUpdateIpc(trust, {
   check: () => updates.check(),
   install: () => { installRequests += 1; updates.install(); },
 });
-registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, sessions: heldSessions });
+// session-browser A8: the door's ids belong to the terminal row, so they follow it once the page's move completed for two
+// terminals main holds, also when the service kept the replacement's own browser (it answered false).
+registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, sessions: heldSessions, moved: (from, to) => computerDoor?.move(from, to) });
 registerThemeIpc(trust, { state: () => themeState(), set: (source) => setTheme(source) });
 
 /** The page went (closed, crashed, reloaded, or quitting): its terminals go with it, and the children it was waiting on.
@@ -761,7 +771,7 @@ function endPageWork(): void {
   // that reuses its key (a detached program keeps its environment). Bookkeeping, no window: it runs whenever the page
   // goes, quitting or not (a quit that is called off keeps the app, the door and the next page).
   computerDoor?.revokeAll("code:");
-  if (quitting) return;
+  if (quitting) { pageWentWhileQuitting = true; return; }
   closeComputerPop();
   // session-browser S1: the next page counts its terminals from the start, so the Code sessions' browsers go too.
   computerService.pageGone();

@@ -745,7 +745,7 @@ export class ComputerBrowser {
     const urls: string[] = [];
     let active = 0;
     for (const [i, t] of this.list.entries()) {
-      const url = t.pending ? withoutUserinfo(t.pending.url) : t.wc.isDestroyed() ? "" : withoutUserinfo(t.wc.getURL());
+      const url = this.addressOf(t);
       if (!navAllowed(url)) continue;
       if (i === this.current) active = urls.length;
       urls.push(url);
@@ -765,8 +765,14 @@ export class ComputerBrowser {
     }
     const t = this.list[this.current];
     if (!t) return null;
-    const url = t.pending ? withoutUserinfo(t.pending.url) : t.wc.isDestroyed() ? "" : withoutUserinfo(t.wc.getURL());
+    const url = this.addressOf(t);
     return /^https?:\/\//i.test(url) ? url : null;
+  }
+
+  /** A live tab's real address without a user name or password: a tab not yet committed answers the kept one it was woken
+   *  with, a destroyed view none (empty). The one expression `realAddresses` and `activeAddress` share. */
+  private addressOf(t: Tab): string {
+    return t.pending ? withoutUserinfo(t.pending.url) : t.wc.isDestroyed() ? "" : withoutUserinfo(t.wc.getURL());
   }
 
   /** S9: a view per kept tab, made as `addTab` makes one (so every guard of a new tab applies), loading its address, the

@@ -17,6 +17,16 @@ export function openExternalSafe(url: string): boolean {
   return allowed;
 }
 
+/** Open in my browser (session-browser S24, X4): the same rule and the same e2e record as `openExternalSafe`, but the answer
+ *  waits for `shell.openExternal`: true only when it resolved, false when the address is not allowed or the hand-off
+ *  rejected. No line names the address (a rejection's text may carry it). */
+export async function openExternalAwaited(url: string): Promise<boolean> {
+  const allowed = externalAllowed(url);
+  if (testRecord) recordExternalOpen(url, allowed);
+  if (!allowed) { console.warn("[main] refused to open an address"); return false; }
+  try { await shell.openExternal(url); return true; } catch { return false; }
+}
+
 /** Whether this is a dev run or a test build: it records what it opens outside (`__aosMain.externalOpens`). */
 const testRecord = !app.isPackaged || __AOS_TEST_BUILD__;
 const externalOpenLog: Array<{ url: string; opened: boolean }> = [];

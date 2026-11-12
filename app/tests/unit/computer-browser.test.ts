@@ -956,8 +956,13 @@ test("activeAddress on an awake browser: the live tab's real address without a u
   let release!: () => void;
   FakeView.hold.set("https://slow.test/p?code=S", new Promise<void>((r) => { release = r; }));
   try {
-    await b.wake();
+    // The active tab's load is held, and a wake waits for it up to LOAD_WAIT_MS: start it, look once the tab exists, release, then await.
+    const waking = b.wake();
+    const inner2 = b as unknown as { list: { pending: unknown }[] };
+    for (let i = 0; i < 200 && !inner2.list.some((t) => t.pending); i++) await new Promise((r) => setImmediate(r));
     assert.equal(b.activeAddress(), "https://slow.test/p?code=S");
+    release();
+    await waking;
   } finally { release(); FakeView.hold.clear(); }
 });
 

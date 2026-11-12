@@ -194,7 +194,7 @@ test("R76: Stop during a pending ask ends the turn's computer side at once (its 
   const broker = new AskBroker({ timeoutMs: () => 120_000, clock, onChange: () => computer?.refresh() });
   const wheel = new Wheel({ clock, reserved: (c) => computer?.reserved(c) ?? false, onChange: (c) => computer?.refresh(c) });
   const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(tmp, "computer-")), "sites.json"));
-  computer = new ComputerService({ records: new BrowserRecords({ file: path.join(tmp, "browsers.json") }), browser: () => page.browser, broker, wheel, sites, clock, config: () => ({ enabled: true, askTimeoutSec: 120, awake: 4 }), emit: () => {}, note: () => {}, liveAgent: (k) => registry.byKey(k), held: () => true, outside: () => false, log: () => {} });
+  computer = new ComputerService({ records: new BrowserRecords({ file: path.join(tmp, "browsers.json") }), browser: () => page.browser, broker, wheel, sites, clock, config: () => ({ enabled: true, askTimeoutSec: 120, awake: 4 }), emit: () => {}, note: () => {}, liveAgent: (k) => registry.byKey(k), held: () => true, outside: async () => false, log: () => {} });
   const c = computer;
   const ends: number[] = [];
   // As main wires it (index.ts): a Chat turn's CLI is registered while it runs, and its end ends its computer side.
