@@ -961,6 +961,21 @@ test("activeAddress on an awake browser: the live tab's real address without a u
   } finally { release(); FakeView.hold.clear(); }
 });
 
+test("open with background adds a tab without taking the selection; without it the new tab is selected (session-browser X2)", async () => {
+  const { b } = makeSleeper("https://a.test/");
+  await b.open("https://b.test/", { newTab: true, background: true, by: "A program" });
+  assert.deepEqual(b.tabs().map((t) => [t.url, t.active, t.openedBy]), [["https://a.test/", true, null], ["https://b.test/", false, "A program"]], "there, and the active tab is as it was");
+  assert.equal(b.activeAddress(), "https://a.test/");
+  await b.open("https://c.test/", { newTab: true, by: null });
+  assert.deepEqual(b.tabs().map((t) => t.active), [false, false, true], "a tab opened as before takes the selection");
+  // With no tab yet the first one is the active one, background or not.
+  const fresh = new ComputerBrowser({ key: "ws:bg", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  const inner = fresh as unknown as { place: () => void; attach: () => Promise<void> };
+  inner.place = () => {}; inner.attach = async () => {};
+  await fresh.open("https://d.test/", { newTab: true, background: true, by: null });
+  assert.deepEqual(fresh.tabs().map((t) => t.active), [true]);
+});
+
 test("a restored tab's address shows no user name or password", () => {
   makeSleeper();
   const fresh = new ComputerBrowser({ key: "ws:cred", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });

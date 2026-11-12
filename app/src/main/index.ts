@@ -21,7 +21,7 @@ import { AskNotifier, testSwitches } from "./computer/notify";
 import { loadPeer, type PeerAddon } from "./computer/peer";
 import { AgentRegistry } from "./computer/registry";
 import { BrowserRecords } from "./computer/records";
-import { ComputerService } from "./computer/service";
+import { ComputerService, PAGE_GONE } from "./computer/service";
 import { SiteMarks } from "./computer/sites";
 import { Wheel } from "./computer/wheel";
 import { START_PAGE } from "../../../hud/src/data/computerStart";
@@ -756,7 +756,7 @@ function endPageWork(): void {
   // agent-computer D7, D27: the page's asks go with it (each agent hears it was cancelled), the pop-out closes, and no
   // computer is on screen until the page selects one again. Quitting, the computer is already shut down (before-quit):
   // placing a view now could make a park window, and a window made while quitting keeps will-quit from firing.
-  askBroker.cancel(() => true, "the app's window closed or reloaded");
+  askBroker.cancel(() => true, PAGE_GONE);
   // session-browser S23: the next page's Code keys start again at t1, so an id issued before must not reach the terminal
   // that reuses its key (a detached program keeps its environment). Bookkeeping, no window: it runs whenever the page
   // goes, quitting or not (a quit that is called off keeps the app, the door and the next page).

@@ -120,6 +120,11 @@ const PROGRAM = "program";
 const PROGRAM_YIELD = "an agent's Turn on card replaces it";
 /** The cancel reason of a power ask the person answered by turning the browser on by hand: the held open then runs. */
 const ON_BY_HAND = "the user turned the browser on";
+/** The cancel reason main gives every ask when the page goes (index.ts `endPageWork`): the pages a program held for a card
+ *  that ended so are dropped with a line, never given a new card for a page that has gone (session-browser A2). */
+export const PAGE_GONE = "the app's window closed or reloaded";
+/** Why a program's open or its held pages are dropped while the Computer setting is off (main's log line, never an address). */
+const SETTING_OFF = "the computer is off in Settings";
 const CHANGED = "The page changed while you waited: look again.";
 /** D34 (R78): the call's 45 s ran out before it took the computer (queued behind another action, or a slow read). R80:
  *  the action did not run, though a read already under way (a ref scrolled into view, the pointer moved) may have. */
@@ -449,21 +454,23 @@ export class ComputerService {
    *  A Chat period belongs to the turn (the process) it started in; a Code period to the clock. */
   private quietReply(p: Slot, agent: AgentRef): Reply | null {
     const q = p.quiet;
-    if (q && (q.until === null ? q.pid !== null && q.pid === agent.pid : this.clock.now() < q.until)) return fail(q.sentence);
+    return this.quietOn(p, agent.pid) && q ? fail(q.sentence) : null;
+  }
+
+  /** Whether the quiet period of S3 is on for a caller whose turn is `pid`; an ended period is cleared. */
+  private quietOn(p: Slot, pid: number | undefined): boolean {
+    const q = p.quiet;
+    if (q && (q.until === null ? q.pid !== null && q.pid === pid : this.clock.now() < q.until)) return true;
     p.quiet = null;
-    return null;
+    return false;
   }
 
   /** Whether the quiet period of S3 is on for a program's open (it has no process of its own: a Chat period lasts until the
    *  turn it started in ends); an ended period is cleared. */
   private quietNow(p: Slot): boolean {
-    const q = p.quiet;
     // A period with no end time lasts while the turn it started in is the session's live one; with no turn (the person's Off
     // between turns made it) it is over at once, for a program as for an agent.
-    const turn = (this.o.liveAgent?.(p.key) ?? this.agents.get(p.key))?.pid;
-    if (q && (q.until === null ? q.pid !== null && q.pid === turn : this.clock.now() < q.until)) return true;
-    p.quiet = null;
-    return false;
+    return this.quietOn(p, (this.o.liveAgent?.(p.key) ?? this.agents.get(p.key))?.pid);
   }
 
   /** D34 (R76, R78): `work`'s reply, bound to the call's deadline until it takes the computer. `take()`, called just
@@ -1129,7 +1136,7 @@ export class ComputerService {
   async openFromProgram(session: string, raw: string): Promise<void> {
     if (this.quitting) return;
     const drop = (why: string): void => { this.o.log?.(`door: an open for ${clean(session, 64)} was dropped (${why})`); };
-    if (!this.o.config().enabled) return drop("the computer is off in Settings");
+    if (!this.o.config().enabled) return drop(SETTING_OFF);
     if (!this.o.held?.(session)) return drop("not a session the app holds");
     if (this.o.liveAgent?.(session)?.access === "read") return drop("read only");
     const url = linkUrl(raw);
@@ -1163,11 +1170,11 @@ export class ComputerService {
   }
 
   /** The held pages of a card that ended without the person's answer: the program's card comes back for them when it can
-   *  (the app is not quitting, the slot is still the session's and off, no other power card is up), else they are dropped
-   *  with a line. Never leaves pages held with no card. */
+   *  (the app is not quitting, the page has not gone, the slot is still the session's and off, no other power card is up),
+   *  else they are dropped with a line. Never leaves pages held with no card. */
   private keepOrDrop(p: Slot, reason: string): void {
     if (!p.programOpens.length) return;
-    const back = !this.quitting && this.slots.get(p.key) === p && p.power === "off" && !this.o.broker.pending(p.key).some((a) => a.why === "power");
+    const back = reason !== PAGE_GONE && !this.quitting && this.slots.get(p.key) === p && p.power === "off" && !this.o.broker.pending(p.key).some((a) => a.why === "power");
     if (back) this.raiseProgramCard(p);
     else this.dropHeld(p, reason);
   }
@@ -1196,6 +1203,8 @@ export class ComputerService {
       }
       this.line(p, this.programName(p.key), outcomeLine(o, input), null);
       if (o.state === "allowed" && this.slots.get(p.key) === p) {
+        // The setting was switched off while the card was up: it turns nothing on and opens nothing (session-browser A3).
+        if (!this.o.config().enabled) { this.dropHeld(p, SETTING_OFF); return; }
         // A browser never comes on with no tab to show (A4): nothing held (dropped meanwhile) leaves it off.
         if (p.power === "off" && !p.programOpens.length) return;
         if (p.power === "off") this.turnOn(p);
@@ -1215,7 +1224,7 @@ export class ComputerService {
         else p.quiet = { sentence: DECLINED, until: this.clock.now() + QUIET_MS, pid: null };
       }
     } catch {
-      p.programOpens = [];
+      this.dropHeld(p, "the card could not be settled");
     }
   }
 
@@ -1228,6 +1237,8 @@ export class ComputerService {
   /** The addresses held for a Turn on card open now, in the order they came, each in the slot's queue (behind a wake or the
    *  agent's own open that the same card was for). Called wherever the browser has just been turned on. */
   private flushProgramOpens(p: Slot): void {
+    // Turned on by a card or by hand after the setting went off: nothing a program asked for opens (session-browser A3).
+    if (!this.o.config().enabled) { this.dropHeld(p, SETTING_OFF); return; }
     const urls = p.programOpens.splice(0);
     if (!urls.length || p.power === "off" || this.quitting) return;
     let b: BrowserLike;
@@ -1235,8 +1246,9 @@ export class ComputerService {
     for (const url of urls) void this.programTab(p, b, url).catch(() => undefined);
   }
 
-  /** A program's page as a new tab, opened by the session's name. The tab is added before the page loads, so an open that
-   *  throws may still have made one; a browser switched off meanwhile is not the open's concern. */
+  /** A program's page as a new tab, opened by the session's name; in the background while the person holds the wheel. The tab
+   *  is added before the page loads, so an open that throws may still have made one; a browser switched off meanwhile is not
+   *  the open's concern. */
   private async programTab(p: Slot, b: BrowserLike, url: string): Promise<void> {
     const by = this.programName(p.key);
     let made = false;
@@ -1244,7 +1256,10 @@ export class ComputerService {
       await this.serial(p, async () => {
         if (p.browser !== b) return;
         const before = b.tabs().length;
-        try { await b.open(url, { newTab: true, by }); } finally { made = b.tabs().length > before; }
+        // One driver at a time (S10): while the person holds the wheel the page is added behind the tab they are on, not
+        // in front of it (session-browser X2). Read inside the queue, so a hand back that came meanwhile counts.
+        const background = this.o.wheel.holder(p.key)?.kind === "user";
+        try { await b.open(url, { newTab: true, background, by }); } finally { made = b.tabs().length > before; }
       });
     } catch {
       if (p.browser !== b) return;
@@ -1421,7 +1436,7 @@ export class ComputerService {
       // as `flush` does, since a save is pending only for a change it has already seen.
       this.track(p);
       this.flushSlot(p);
-      this.endSlot(p, "the app's window closed or reloaded");
+      this.endSlot(p, PAGE_GONE);
     }
     for (const k of [...this.agents.keys()]) if (k.startsWith("code:")) this.agents.delete(k);
     for (const [id, j] of [...this.jobs]) if (j.session.startsWith("code:")) this.jobs.delete(id);
@@ -1663,7 +1678,7 @@ export class ComputerService {
       // An agent's card carries the program's pages: its run queues them behind its own open, so they are not flushed here
       // (the agent's open would navigate the last of them).
       const agentCard = this.o.broker.pending(session).some((a) => a.why === "power" && a.session !== PROGRAM);
-      const flush = (): void => { if (!agentCard) this.flushProgramOpens(p); };
+      const flushHeld = (): void => { if (!agentCard) this.flushProgramOpens(p); };
       // A held Turn on card is answered by this (S4); its open runs on the browser that is now on.
       this.o.broker.cancel((a) => a.computer === session && a.why === "power", ON_BY_HAND);
       this.refresh(session);
@@ -1678,15 +1693,15 @@ export class ComputerService {
         const w: Promise<void> = this.serial(p, () => b.wake()).catch(() => this.line(p, USER, "The tabs did not open.", null)).finally(() => { if (p.waking === w) p.waking = null; done(); });
         p.waking = w;
         this.refresh(session);
-        flush();
+        flushHeld();
         return;
       }
-      if (noStart) { this.refresh(session); flush(); return; }
+      if (noStart) { this.refresh(session); flushHeld(); return; }
       void this.serial(p, async () => {
         try { await b.open(this.o.startPage ?? START_PAGE, { by: null }); } catch { if (p.browser === b) this.line(p, USER, `The page did not open: ${(this.o.startPage ?? START_PAGE).replace(/[?#].*$/, "")}`, null); }
       }).finally(done);
       // Pages a program opened while the browser was off follow the tabs the person's switch opens (session-browser S23).
-      flush();
+      flushHeld();
       return;
     } else if (p.power !== "off") this.switchOff(p, true, true, "the user switched the browser off", SWITCHED_OFF);
     this.refresh(session);
@@ -1752,7 +1767,8 @@ export class ComputerService {
     // A copy: On's `done` compares `reopening` by identity, and an earlier On finishing must not clear a later one's (A8).
     p.remembered = remember && p.reopening ? { urls: [...p.reopening.urls], active: p.reopening.active } : remember && real && real.urls.length ? real : null;
     p.power = "off";
-    p.programOpens = [];
+    // The pages a card was holding go with a line, as a Not now's do (session-browser A7); the person's own act, so main's log says nothing.
+    this.dropHeld(p, null);
     this.dropBrowser(p);
     this.o.broker.cancel((a) => a.computer === p.key, reason);
     this.o.wheel.interrupt(p.key, true);

@@ -354,11 +354,14 @@ export class ComputerBrowser {
     return t ? `${t.uid}.${t.seq}` : "none";
   }
 
-  async open(url: string, o: { newTab?: boolean; by: string | null }): Promise<{ url: string; title: string }> {
+  /** Opens `url`: in the active tab, or (`newTab`, or no tab yet) in a new one that takes the selection. `background` (only
+   *  with `newTab`) adds the tab behind the active one and leaves the selection where it was, for a page the person did not
+   *  ask for while they work in another (session-browser X2); with no active tab the new one is the active one anyway. */
+  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }): Promise<{ url: string; title: string }> {
     if (!navAllowed(url)) throw new Error("Only http and https pages open.");
     // §4.2: load the normalised form navAllowed judged, never the raw string.
     const href = new URL(url).href;
-    const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by);
+    const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true);
     t.refused = null;
     // R38: a page-started navigation's leaving record is left alone here: that navigation may be past the point where this
     // load can cancel it and commit first, and its record then goes with its own commit (`committed` matches the URL). R39:
@@ -887,7 +890,7 @@ export class ComputerBrowser {
     return t;
   }
 
-  private async addTab(by: string | null, keep?: Kept): Promise<Tab> {
+  private async addTab(by: string | null, keep?: Kept, background = false): Promise<Tab> {
     if (this.gone) throw new Error("This computer was closed.");
     if (this.list.length >= MAX_TABS) throw new Error(`${MAX_TABS} tabs are open: close one first.`);
     const view = new WebContentsView({
@@ -906,9 +909,11 @@ export class ComputerBrowser {
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
     };
     owners.set(t.wc.id, this.handlers);
+    // A background tab leaves the selection on the tab already in front; with none in front it is the one.
+    const behind = background && !!this.list[this.current];
     this.list.push(t);
     this.wire(t);
-    this.current = this.list.length - 1;
+    if (!behind) this.current = this.list.length - 1;
     this.place();
     // The debugger's domains answer only once the page has a renderer.
     await t.wc.loadURL("about:blank");

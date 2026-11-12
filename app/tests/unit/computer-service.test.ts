@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -89,8 +89,9 @@ class FakeBrowser implements BrowserLike {
   tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.hidden ? p.url.replace(/[?#].*$/, "") : p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: false, canForward: false })); }
   activeWebContentsId(): number | null { return this.current < 0 ? null : 100 + this.current; }
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
-  async open(url: string, o: { newTab?: boolean; by: string | null }) {
-    if (o.newTab || this.current < 0) { this.pages.push({ url: new URL(url).href, openedBy: o.by }); this.current = this.pages.length - 1; }
+  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }) {
+    // As the real browser does (session-browser X2): a background tab is added without taking the selection, unless it is the first.
+    if (o.newTab || this.current < 0) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by }); if (!keep) this.current = this.pages.length - 1; }
     else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy };
     this.seq++;
     return { url: this.pages[this.current].url, title: "" };
@@ -176,9 +177,14 @@ const agent = (key: string, label: string, access: Access = "edit", place = "ws:
 const A = agent("chat:a", "Alpha");
 const B = agent("chat:b", "Beta");
 
+/** Temp folders `make` made, removed after each test (session-browser A12: two a call used to be left behind). */
+const made: string[] = [];
+const tmp = (prefix: string): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); made.push(d); return d; };
+afterEach(() => { for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+
 function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined; held?: (session: string) => boolean; outside?: (url: string) => boolean } = {}) {
   const clock = new FakeClock();
-  const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-service-")), "computer", "sites.json"));
+  const sites = new SiteMarks(path.join(tmp("aos-service-"), "computer", "sites.json"));
   const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120, awake: 4 };
   const states: ComputerState[] = [];
   const notes: [string, string][] = [];
@@ -190,7 +196,7 @@ function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) =
   let svc: ComputerService | null = null;
   const broker = new AskBroker({ timeoutMs: () => cfg.askTimeoutSec * 1000, clock, onChange: () => svc?.refresh() });
   const wheel = new Wheel({ clock, reserved: (c) => svc?.reserved(c) ?? false, onChange: (c) => svc?.refresh(c) });
-  const records = o.records ?? new BrowserRecords({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-records-")), "browsers.json") });
+  const records = o.records ?? new BrowserRecords({ file: path.join(tmp("aos-records-"), "browsers.json") });
   svc = new ComputerService({
     records,
     ...(o.threadExists ? { threadExists: o.threadExists } : {}),
@@ -3990,4 +3996,122 @@ test("every program card the log shows asking also shows its ending, and a Not n
   assert.ok(lines.some((t) => /Turn on card .*gave way/i.test(t)), "the program's card says it gave way");
   assert.ok(lines.some((t) => /^2 pages a program opened were not opened$/.test(t)), JSON.stringify(lines));
   noSecrets(lines.filter((t) => /not opened$/.test(t)));
+});
+
+// ---- PR 4 fix wave W2: the wheel, the setting, the page going, and the system's answer
+
+/** What main's ask cancel says when the page goes (index.ts endPageWork). */
+const PAGE_GONE_REASON = "the app's window closed or reloaded";
+const actLines = (h: ReturnType<typeof make>, key = "chat:a"): string[] => h.lastState(key).log.map((l) => l.text);
+
+test("while the person holds the wheel a program's page opens in the background; with the wheel free it is selected (session-browser X2, S10)", async () => {
+  const h = make({ label: (k) => (k === "chat:a" ? PROGRAM_LABEL : undefined) });
+  const b = await onBrowser(h);
+  b.pages.push({ url: "https://keep.example.org/", openedBy: null });
+  b.current = 0;
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  assert.equal(h.wheel.holder("chat:a")?.kind, "user");
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  assert.deepEqual(b.pages.map((p) => p.url), ["https://keep.example.org/", PAGE_A], "the page is there");
+  assert.equal(b.current, 0, "the tab the person is on stays in front");
+  assert.equal(b.pages[1].openedBy, PROGRAM_LABEL);
+  h.svc.handBack();
+  await h.svc.openFromProgram("chat:a", "https://example.com/b");
+  assert.equal(b.pages.length, 3);
+  assert.equal(b.current, 2, "with the wheel free the page is selected, as before");
+});
+
+test("the page going drops a program's own card's pages with one line, and raises no card (session-browser A2)", async () => {
+  const h = prog();
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  await h.asked();
+  h.broker.cancel(() => true, PAGE_GONE_REASON);
+  await flush();
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, []);
+  assert.equal(powerCards(h).length, 0, "no card for a page that has gone");
+  assert.equal(h.logs.length, 1, "one line");
+  assert.match(h.logs[0], /chat:a/);
+  assert.match(h.logs[0], /window closed or reloaded/);
+  noSecrets(h.logs);
+});
+
+test("the page going drops the pages riding an agent's card with one line, and raises no new program card (session-browser A2)", async () => {
+  const h = prog();
+  const { first } = await agentCardWithProgramPage(h);
+  h.broker.cancel(() => true, PAGE_GONE_REASON);
+  await first;
+  await flush();
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, []);
+  assert.equal(powerCards(h).length, 0, "no new card for a page that has gone");
+  assert.equal(h.logs.length, 1, "one line");
+  assert.match(h.logs[0], /window closed or reloaded/);
+  noSecrets(h.logs);
+  assert.ok(actLines(h).some((t) => /^1 page a program opened was not opened$/.test(t)));
+});
+
+test("a card up when the setting is switched off turns the browser on for nothing: its pages are dropped (session-browser A3)", async () => {
+  const h = prog();
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  const a = await h.asked();
+  h.cfg.enabled = false;
+  h.svc.answer(a.id, "once");
+  await flush();
+  assert.equal(h.lastState().power, "off", "the browser stays off");
+  assert.equal(h.browsers.size, 0, "no browser was made");
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, []);
+  assert.equal(h.logs.length, 1, "one line");
+  assert.match(h.logs[0], /chat:a/);
+  noSecrets(h.logs);
+});
+
+test("turned on by hand after the setting went off, a program's held pages are dropped, not opened (session-browser A3)", async () => {
+  const h = prog();
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  await h.asked();
+  h.cfg.enabled = false;
+  h.svc.power("chat:a", true);
+  await flush();
+  assert.equal(h.b().pages.some((x) => x.url === PAGE_A), false, "the page did not open");
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, []);
+  assert.equal(h.logs.length, 1, "one line");
+  noSecrets(h.logs);
+});
+
+test("a program's card that cannot be settled drops its pages with one line (session-browser A7)", async () => {
+  const h = prog();
+  (h.broker as unknown as { wait: () => Promise<never> }).wait = () => Promise.reject(new Error("boom"));
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  for (let i = 0; i < 20; i++) await flush();
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, []);
+  assert.equal(h.logs.length, 1, "one line");
+  assert.match(h.logs[0], /chat:a/);
+  noSecrets(h.logs);
+  assert.ok(actLines(h).some((t) => /^1 page a program opened was not opened$/.test(t)), JSON.stringify(actLines(h)));
+});
+
+test("switching the browser off drops the pages held for a card, and the activity log says so (session-browser A7)", async () => {
+  const h = prog();
+  await agentCardWithProgramPage(h);
+  // Turned on by hand, then off again before the agent's open has run: the pages are still held.
+  h.svc.power("chat:a", true);
+  h.svc.power("chat:a", false);
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, []);
+  assert.ok(actLines(h).some((t) => /^1 page a program opened was not opened$/.test(t)), JSON.stringify(actLines(h)));
+  await flush();
+  assert.equal(actLines(h).filter((t) => /a program opened/.test(t)).length, 1, "said once");
+  assert.equal(sameCount(h, PAGE_A), 0, "nothing opened");
+});
+
+test("turned on by hand cancels the agent's card and its run then cannot go on: the program's pages still open once and nothing stays held (session-browser A12)", async () => {
+  let live: AgentRef | undefined = A;
+  const h = prog({ liveAgent: () => live });
+  await agentCardWithProgramPage(h);
+  live = { ...A, pid: 2 };
+  h.svc.power("chat:a", true);
+  for (let i = 0; i < 20; i++) await flush();
+  assert.equal(sameCount(h, PAGE_A), 1, "the program's page opened once");
+  assert.deepEqual(slotOf(h).slot("chat:a").programOpens, [], "nothing stays held");
+  assert.equal(powerCards(h).length, 0);
+  assert.equal(h.logs.length, 0, "nothing was dropped");
 });
