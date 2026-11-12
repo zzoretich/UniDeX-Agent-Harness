@@ -443,3 +443,16 @@ test("an id issued before the page went opens nothing after it, though its key i
   assert.equal(door.accept(msg(after, "http://localhost/")), true);
   assert.deepEqual(opened, [["code:t1", "http://localhost/"]]);
 });
+
+test("openerPath gives null, and writes nothing, when the copy's own path is not shell-safe either", () => {
+  const res = path.join(shortDir(), "has space");
+  fs.mkdirSync(path.join(res, "opener"), { recursive: true });
+  fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), "x\n");
+  const userData = path.join(shortDir(), "ud");
+  for (const name of ["with space", "with(paren"]) {
+    const tmp = path.join(shortDir(), name);
+    fs.mkdirSync(tmp);
+    assert.equal(openerPath({ resources: res, tmp, userData }), null, name);
+    assert.deepEqual(fs.readdirSync(tmp), [], `${name}: nothing was written`);
+  }
+});

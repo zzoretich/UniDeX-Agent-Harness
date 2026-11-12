@@ -77,10 +77,21 @@ function openStandIn(dir: string): { cmd: string; rec: string } {
   fs.writeFileSync(cmd, `#!/bin/sh\nprintf '%s %s\\n' "$1" "${"$"}{AOS_BROWSER_SESSION:-unset}" >> ${rec}\n`, { mode: 0o755 });
   return { cmd, rec };
 }
-/** A program that is the opener, with the system's opener replaced by `open` (the only way to do that: an argument). */
-function openerWith(dir: string, name: string, open: string): string {
+/** A program that is the opener, with the system's opener replaced by `open` (the only way to do that: an argument). It
+ *  counts its depth in OPENER_TEST_DEPTH (the test's own variable, not the shipped script's) and past 3 it records a hit in
+ *  `guard` and exits 99 without starting anything, so a regressed opener cannot run away. */
+function openerWith(dir: string, name: string, open: string, guard: string): string {
   const file = path.join(dir, name);
-  fs.writeFileSync(file, `#!/usr/bin/env node\nconst o = require(${JSON.stringify(SCRIPT)});\no.act(o.route(process.argv.slice(2), process.env), process.env, { open: ${JSON.stringify(open)} });\n`, { mode: 0o755 });
+  const body = [
+    "#!/usr/bin/env node",
+    `const o = require(${JSON.stringify(SCRIPT)});`,
+    "const depth = Number(process.env.OPENER_TEST_DEPTH || 0);",
+    `if (depth > 3) { require("node:fs").appendFileSync(${JSON.stringify(guard)}, "x"); process.exit(99); }`,
+    "const env = { ...process.env, OPENER_TEST_DEPTH: String(depth + 1) };",
+    `o.act(o.route(process.argv.slice(2), env), env, { open: ${JSON.stringify(open)} });`,
+    "",
+  ].join("\n");
+  fs.writeFileSync(file, body, { mode: 0o755 });
   return file;
 }
 
@@ -169,10 +180,12 @@ test("what the opener starts never inherits the session variable", async () => {
 test("an opener run as the previous BROWSER does not start itself again", async () => {
   const dir = folder();
   const open = openStandIn(dir);
-  const inner = openerWith(dir, "inner.js", open.cmd);
-  const outer = openerWith(dir, "outer.js", open.cmd);
+  const guard = path.join(dir, "guard.out");
+  const inner = openerWith(dir, "inner.js", open.cmd, guard);
+  const outer = openerWith(dir, "outer.js", open.cmd, guard);
   const session = enc({ id: ID, door: path.join(dir, "gone.sock"), prev: inner });
   const r = await run(["file:///tmp/x.html"], { AOS_BROWSER_SESSION: session }, outer);
+  assert.equal(fs.existsSync(guard), false, "the depth guard was never hit: the chain did not run away");
   assert.deepEqual([r.code, r.stdout, r.stderr], [0, "", ""]);
   assert.deepEqual(fs.readFileSync(open.rec, "utf8").trim().split("\n"), ["file:///tmp/x.html unset"], "the chain ended at the system's opener, once, with no session");
 });
