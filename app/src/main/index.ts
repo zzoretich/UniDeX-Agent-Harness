@@ -47,7 +47,7 @@ import { SCHEME, parseAgenticosUrl, urlFromArgv } from "./protocol";
 import { quitGate, quitCalledOff } from "./quit-gate";
 import { admit } from "./computer/admission";
 import { BridgeKeeper, ComputerBridge, bridgeSocketPath } from "./computer/bridge";
-import { ComputerDoor, doorSocketPath, openerPath } from "./computer/door";
+import { ComputerDoor, SESSION_VAR, doorSocketPath, openerPath } from "./computer/door";
 import { sweepHeld } from "./computer/downloads";
 import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
@@ -79,6 +79,11 @@ if (debugging.length && app.isPackaged && !__AOS_TEST_BUILD__) {
   console.error(`[main] refusing to start with ${debugging.join(", ")}: this build cannot be debugged from outside`);
   process.exit(1);
 }
+
+// session-browser S23: an app started inside another UniDeX session inherits that session's door id. The three session
+// bases drop it, but main's other children (setup jobs, runtime spawns, the proc service) copy process.env, and their
+// pages would open in the outer app's session. Dropped once, before anything spawns; BROWSER stays (it becomes `prev`).
+delete process.env[SESSION_VAR];
 
 // agent-computer D18, D39: the e2e suite's switches, which a packaged build ignores (computer/notify.ts testSwitches).
 // Chromium reads its switches before `ready`: the host rules give the suite's fixture sites unmarked *.test origins.
@@ -123,7 +128,7 @@ const payload = findPayload({ packaged: app.isPackaged, resourcesPath: process.r
 const doorPath = doorSocketPath(app.getPath("userData"), app.getPath("temp"));
 const computerDoor = doorPath ? new ComputerDoor({
   path: doorPath,
-  enabled: () => computerOn(),
+  enabled: () => computerOn() && computerSettings().enabled,
   opener: openerPath({ resources: app.isPackaged ? process.resourcesPath : path.join(__dirname, "../../resources"), tmp: app.getPath("temp"), userData: app.getPath("userData") }),
   // A program's page opens in its session's browser (session-browser S23), with the tools' consent rules. While the app
   // quits nothing is opened: a quit that is called off leaves the door up, serving until the bridge stops. The log line
@@ -135,7 +140,7 @@ const computerDoor = doorPath ? new ComputerDoor({
   log: (line) => console.warn(`[main] ${line}`),
 }) : null;
 /** The opener variables of a session's processes: none while the Computer surface is off (the door's `enabled`) or there is no door. */
-const browserEnv = (session: string, base: NodeJS.ProcessEnv): Record<string, string> => computerDoor?.envFor(session, base) ?? {};
+const browserEnv = (session: string, base: NodeJS.ProcessEnv, o?: { readOnly: boolean }): Record<string, string> => computerDoor?.envFor(session, base, o) ?? {};
 
 let shells: string[] = [];
 try { shells = parseShells(fs.readFileSync("/etc/shells", "utf8")); } catch { /* no /etc/shells: only $SHELL */ }

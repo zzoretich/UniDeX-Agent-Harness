@@ -80,7 +80,7 @@ export interface SessionServiceOptions {
   onRemoved?: (thread: string) => void;
   /** The three opener variables of a thread's turn (session-browser S23), from `base`, the environment the allowlist let
    *  through; `session` is `chat:<thread>`. Absent, or {} (the Computer surface is off), the CLI's environment is unchanged. */
-  browserEnv?: (session: string, base: NodeJS.ProcessEnv) => Record<string, string>;
+  browserEnv?: (session: string, base: NodeJS.ProcessEnv, o?: { readOnly: boolean }) => Record<string, string>;
 }
 
 /** A Code launch's binary, or why the runtime named none (one line, for the launch note). */
@@ -563,7 +563,7 @@ export class SessionService {
       // An app started inside another session carries that session's browser id: never hand it on (session-browser S23).
       delete env.env[SESSION_VAR];
       let browser: Record<string, string> = {};
-      try { browser = this.o.browserEnv?.(`chat:${meta.thread}`, env.env) ?? {}; } catch { /* a turn starts without them */ }
+      try { browser = this.o.browserEnv?.(`chat:${meta.thread}`, env.env, { readOnly: opts.access === "read" }) ?? {}; } catch { /* a turn starts without them */ }
       let agent: childProcess.ChildProcess;
       try {
         agent = (this.o.spawnImpl ?? childProcess.spawn)(plan.bin, plan.argv, { cwd: dir, env: { ...env.env, ...browser }, shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });

@@ -132,13 +132,13 @@ test("doorSocketPath is bridge.sock's rule with door.sock", () => {
   assert.equal(doorSocketPath(`/${"x".repeat(120)}`, `/${"t".repeat(120)}`), null);
 });
 
-async function boot(idleMs?: number) {
+async function boot(idleMs?: number, enabled?: () => boolean) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "aos-dr-"));
   made.push(d);
   const sock = path.join(d, "computer", "door.sock");
   const opened: Array<[string, string]> = [];
   const logs: string[] = [];
-  const door = new ComputerDoor({ path: sock, open: (s, u) => opened.push([s, u]), log: (l) => logs.push(l), ...(idleMs ? { idleMs } : {}) });
+  const door = new ComputerDoor({ path: sock, open: (s, u) => opened.push([s, u]), log: (l) => logs.push(l), ...(idleMs ? { idleMs } : {}), ...(enabled ? { enabled } : {}) });
   assert.equal(await door.start(), true);
   assert.equal(door.listening(), true);
   return { door, sock, opened, logs };
@@ -388,22 +388,22 @@ test("openerPath uses the path as it is only when a shell would read it as one w
   for (const name of ["a(b)", "it's", "a$b", "a;b", "a&b", "a`b", "a\"b", "a*b", "a#b"]) {
     const res = path.join(shortDir(), name);
     fs.mkdirSync(path.join(res, "opener"), { recursive: true });
-    fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), `// ${name}\n`);
+    fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), `// ${name}\n`, { mode: 0o755 });
     const got = openerPath({ resources: res, tmp, userData });
     assert.ok(got && got !== path.join(res, "opener", "unidex-open.js") && got.startsWith(tmp), name);
     assert.ok(/^[A-Za-z0-9._/@%+=:,-]+$/.test(got), `${name} -> ${got}`);
     assert.equal(fs.readFileSync(got, "utf8"), `// ${name}\n`, "a stale copy is replaced");
   }
-  const safe = path.join(shortDir(), "Res-1.0_x+y@z,w:v=%");
+  const safe = path.join(shortDir(), "Res-1.0_x+y@z,w=%");
   fs.mkdirSync(path.join(safe, "opener"), { recursive: true });
-  fs.writeFileSync(path.join(safe, "opener", "unidex-open.js"), "x\n");
+  fs.writeFileSync(path.join(safe, "opener", "unidex-open.js"), "x\n", { mode: 0o755 });
   assert.equal(openerPath({ resources: safe, tmp, userData }), path.join(safe, "opener", "unidex-open.js"));
 });
 
 test("openerPath makes no copy in a folder that is a link", () => {
   const res = path.join(shortDir(), "has space");
   fs.mkdirSync(path.join(res, "opener"), { recursive: true });
-  fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), "x\n");
+  fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), "x\n", { mode: 0o755 });
   const tmp = shortDir();
   const userData = path.join(shortDir(), "ud");
   const elsewhere = shortDir();
@@ -415,14 +415,14 @@ test("openerPath makes no copy in a folder that is a link", () => {
 test("openerPath uses a copy when its own path holds whitespace", () => {
   const plain = shortDir();
   fs.mkdirSync(path.join(plain, "opener"));
-  fs.writeFileSync(path.join(plain, "opener", "unidex-open.js"), "#!/usr/bin/env node\n");
+  fs.writeFileSync(path.join(plain, "opener", "unidex-open.js"), "#!/usr/bin/env node\n", { mode: 0o755 });
   const tmp = shortDir();
   const userData = path.join(shortDir(), "ud");
   assert.equal(openerPath({ resources: plain, tmp, userData }), path.join(plain, "opener", "unidex-open.js"), "no whitespace: its own path");
 
   const spaced = path.join(shortDir(), "Application Support");
   fs.mkdirSync(path.join(spaced, "opener"), { recursive: true });
-  fs.writeFileSync(path.join(spaced, "opener", "unidex-open.js"), "#!/usr/bin/env node\nprocess.exit(0)\n");
+  fs.writeFileSync(path.join(spaced, "opener", "unidex-open.js"), "#!/usr/bin/env node\nprocess.exit(0)\n", { mode: 0o755 });
   const copy = openerPath({ resources: spaced, tmp, userData });
   assert.ok(copy && !/\s/.test(copy) && copy.startsWith(tmp), String(copy));
   assert.equal(fs.readFileSync(copy, "utf8"), "#!/usr/bin/env node\nprocess.exit(0)\n");
@@ -447,7 +447,7 @@ test("an id issued before the page went opens nothing after it, though its key i
 test("openerPath gives null, and writes nothing, when the copy's own path is not shell-safe either", () => {
   const res = path.join(shortDir(), "has space");
   fs.mkdirSync(path.join(res, "opener"), { recursive: true });
-  fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), "x\n");
+  fs.writeFileSync(path.join(res, "opener", "unidex-open.js"), "x\n", { mode: 0o755 });
   const userData = path.join(shortDir(), "ud");
   for (const name of ["with space", "with(paren"]) {
     const tmp = path.join(shortDir(), name);
@@ -455,4 +455,53 @@ test("openerPath gives null, and writes nothing, when the copy's own path is not
     assert.equal(openerPath({ resources: res, tmp, userData }), null, name);
     assert.deepEqual(fs.readdirSync(tmp), [], `${name}: nothing was written`);
   }
+});
+
+test("envFor gives none to a Read only spawn and the three to every other (session-browser S3)", async () => {
+  const dir = shortDir();
+  const door = new ComputerDoor({ path: path.join(dir, "d.sock"), open: () => {}, log: () => {}, opener: path.join(dir, "unidex-open.js") });
+  assert.equal(await door.start(), true);
+  try {
+    assert.deepEqual(door.envFor("chat:x", {}, { readOnly: true }), {}, "Read only: none");
+    assert.equal(Object.keys(door.envFor("chat:x", {}, { readOnly: false })).length, 3);
+    assert.equal(Object.keys(door.envFor("chat:x", {})).length, 3, "no level named: a shell, the person's own");
+  } finally { door.stop(); }
+});
+
+test("a knock while the door is not enabled is answered off and opens nothing, using none of the six", async () => {
+  let on = false;
+  const { door, sock, opened, logs } = await boot(undefined, () => on);
+  try {
+    const id = door.issue("code:t1");
+    const line = JSON.stringify({ id, url: "http://localhost/" }) + "\n";
+    assert.equal((await talk(sock, line)).data, '{"ok":false,"off":true}\n');
+    assert.deepEqual(opened, []);
+    on = true;
+    for (let i = 0; i < 6; i++) assert.equal((await talk(sock, line)).data, '{"ok":true}\n', `open ${i + 1} of 6: the off knock used none`);
+    assert.equal(opened.length, 6);
+    on = false;
+    assert.equal((await talk(sock, "junk\n")).data, '{"ok":false,"off":true}\n', "off whatever the line says");
+    assert.deepEqual(logs, []);
+  } finally { door.stop(); }
+});
+
+test("openerPath answers null for an opener that cannot be run, and takes the copy for a path with a colon", () => {
+  const tmp = shortDir();
+  const userData = path.join(shortDir(), "ud");
+  const res = shortDir();
+  fs.mkdirSync(path.join(res, "opener"));
+  const file = path.join(res, "opener", "unidex-open.js");
+  fs.writeFileSync(file, "x\n", { mode: 0o644 });
+  assert.equal(openerPath({ resources: res, tmp, userData }), null, "a file without the execute bit: no variables rather than a BROWSER that fails");
+  fs.chmodSync(file, 0o755);
+  assert.equal(openerPath({ resources: res, tmp, userData }), file);
+  // Python's webbrowser splits BROWSER on the path separator, so a colon is not one word: the copy.
+  const colon = path.join(shortDir(), "a:b");
+  fs.mkdirSync(path.join(colon, "opener"), { recursive: true });
+  fs.writeFileSync(path.join(colon, "opener", "unidex-open.js"), "x\n", { mode: 0o755 });
+  const got = openerPath({ resources: colon, tmp, userData });
+  assert.ok(got && !got.includes(":") && got.startsWith(tmp), String(got));
+  // A copy of a file that cannot be run is not made either.
+  fs.chmodSync(path.join(colon, "opener", "unidex-open.js"), 0o644);
+  assert.equal(openerPath({ resources: colon, tmp, userData }), null);
 });

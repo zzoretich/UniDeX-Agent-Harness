@@ -114,7 +114,7 @@ export interface PtyServiceOptions {
   /** The three opener variables of a Code session (session-browser S23), from `base`, the environment the allowlist let
    *  through; `session` is `code:<the terminal's first process id>`. Added after the allowlist, so it does not grow. Absent,
    *  or {} (the Computer surface is off, no door), the environment is exactly what it was. */
-  browserEnv?: (session: string, base: NodeJS.ProcessEnv) => Record<string, string>;
+  browserEnv?: (session: string, base: NodeJS.ProcessEnv, o?: { readOnly: boolean }) => Record<string, string>;
   now?: () => number;
 }
 
@@ -212,8 +212,8 @@ export class PtyService {
   }
 
   /** The opener variables for a Code session, or none: a failing callback never stops a terminal from starting. */
-  private browserVars(session: string, base: NodeJS.ProcessEnv): Record<string, string> {
-    try { return this.o.browserEnv?.(session, base) ?? {}; } catch { return {}; }
+  private browserVars(session: string, base: NodeJS.ProcessEnv, readOnly: boolean): Record<string, string> {
+    try { return this.o.browserEnv?.(session, base, { readOnly }) ?? {}; } catch { return {}; }
   }
 
   /** `origin` is the first process of the terminal this one takes over in (the login shell after the agent): taken only
@@ -245,7 +245,7 @@ export class PtyService {
     const env = ptyEnv(this.baseEnv(), req.env, this.o.context());
     if ("refusal" in env) return refused(env.refusal);
     // The session is named by the terminal's first process, the root `begin` will record for this one.
-    const vars = this.browserVars(`code:${this.rootOf(req.id, req.origin)}`, env.env);
+    const vars = this.browserVars(`code:${this.rootOf(req.id, req.origin)}`, env.env, false);
     let p: PtyProcess;
     try {
       p = lib.spawn(req.file, [], { name: req.name, cols: req.cols, rows: req.rows, cwd: req.cwd, env: { ...env.env, ...vars } });
@@ -386,7 +386,8 @@ export class PtyService {
       if (ready !== carries) return flagsRefusal(ready, bin);
     }
     // An agent is its terminal's first process: the session is its own id.
-    const vars = this.browserVars(`code:${req.id}`, env.env);
+    // A Read only agent gets none (session-browser S3): the same fact the registry answers Read only from.
+    const vars = this.browserVars(`code:${req.id}`, env.env, req.access === "read");
     let p: PtyProcess;
     try {
       p = lib.spawn(bin, [...req.argv], { name: "xterm-256color", cols: req.cols, rows: req.rows, cwd: req.cwd, env: { ...env.env, ...vars } });

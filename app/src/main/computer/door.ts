@@ -1,6 +1,8 @@
 // The door (session-browser S23): a Unix socket in the app's userData where a program running inside a session (a
 // BROWSER opener, `gh`, a dev server) asks for ONE page to open in that session's browser. A client connects, writes one
-// line {"id":"<32 hex>","url":"<address>"}, reads {"ok":true} or {"ok":false}, and the door ends the connection.
+// line {"id":"<32 hex>","url":"<address>"}, reads {"ok":true}, {"ok":false} or, when the door is not enabled at that
+// moment, {"ok":false,"off":true} (the opener then goes where the page would have gone without UniDeX), and the door ends
+// the connection.
 // The id is a secret that main puts in the session's environment, so it names a session without a process lookup. The
 // door never reads, clicks or types: a page is opened, nothing else. No id is ever written to a log.
 
@@ -21,8 +23,8 @@ const ID = /^[0-9a-f]{32}$/;
 /** The variable that carries a session's id to its opener. No KEY, SECRET or TOKEN in the name: a host's shell filter drops those. */
 export const SESSION_VAR = "AOS_BROWSER_SESSION";
 const OPENER = "unidex-open.js";
-/** Characters a shell reads as part of one word, whatever the shell. */
-const SHELL_WORD = /^[A-Za-z0-9._/@%+=:,-]+$/;
+/** Characters a shell reads as part of one word, whatever the shell. No colon: Python's `webbrowser` splits BROWSER on the path separator. */
+const SHELL_WORD = /^[A-Za-z0-9._/@%+=,-]+$/;
 
 /** As `bridgeSocketPath`, with the file name door.sock. */
 export function doorSocketPath(userData: string, tmp: string): string | null {
@@ -37,7 +39,8 @@ export function doorSocketPath(userData: string, tmp: string): string | null {
  */
 export function openerPath(o: { resources: string; tmp: string; userData: string }): string | null {
   const own = path.join(o.resources, "opener", OPENER);
-  try { if (!fs.statSync(own).isFile()) return null; } catch { return null; }
+  // A file that cannot be run would make a BROWSER that fails: no variables at all is better.
+  try { if (!fs.statSync(own).isFile()) return null; fs.accessSync(own, fs.constants.X_OK); } catch { return null; }
   if (SHELL_WORD.test(own)) return own;
   const dir = shortDirIn(o.userData, o.tmp);
   const copy = path.join(dir, OPENER);
@@ -54,7 +57,7 @@ export function openerPath(o: { resources: string; tmp: string; userData: string
 export interface DoorOptions { path: string;
   /** The opener's path (openerPath); absent or null, no session gets the three variables. */
   opener?: string | null;
-  /** Whether the Computer surface is on (default: always); off, `envFor` gives no session anything. */
+  /** Whether the Computer surface is on (default: always); off, `envFor` gives no session anything and a knock is answered off. */
   enabled?: () => boolean; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock;
   /** How long a connection may stay silent (2 s; tests shorten it). */
   idleMs?: number }
@@ -65,8 +68,8 @@ export class ComputerDoor {
   private readonly conns = new Set<net.Socket>();
   /** Every live id and the session it names. */
   private readonly ids = new Map<string, string>();
-  /** The ids a session made for itself, in order; `issue` answers the first. Ids that arrived by `move` are not here. */
-  private readonly own = new Map<string, string[]>();
+  /** The one id a session made for itself, which `issue` answers again. Ids that arrived by `move` are not here. */
+  private readonly own = new Map<string, string>();
   /** Times of a session's accepted opens in the last minute (the limit is per session, not per id). */
   private readonly opens = new Map<string, number[]>();
   /** When the "more than 6 pages" line was last written for a session: it is written once a minute at most. */
@@ -104,21 +107,23 @@ export class ComputerDoor {
 
   issue(session: string): string {
     const mine = this.own.get(session);
-    if (mine && mine.length) return mine[0];
+    if (mine) return mine;
     const id = randomBytes(16).toString("hex");
     this.ids.set(id, session);
-    this.own.set(session, [id]);
+    this.own.set(session, id);
     return id;
   }
 
   /**
    * The three variables a session's processes get (session-browser S23): BROWSER and BRAINSTORM_OPEN_CMD, both the opener,
    * and AOS_BROWSER_SESSION, which carries the session's id, the door's socket and the BROWSER that was set before
-   * (`base`'s, unless it is the opener itself). None while the door is down, there is no opener, or the Computer surface is off.
+   * (`base`'s, unless it is the opener itself). None while the door is down, there is no opener, the Computer surface is
+   * off, or what is being started is Read only: a Read only session cannot open a page (S3), and an id handed to its
+   * programs would outlive the turn.
    */
-  envFor(session: string, base: NodeJS.ProcessEnv): Record<string, string> {
+  envFor(session: string, base: NodeJS.ProcessEnv, o?: { readOnly: boolean }): Record<string, string> {
     const opener = this.o.opener;
-    if (!this.server || !opener || this.o.enabled?.() === false) return {};
+    if (!this.server || !opener || this.o.enabled?.() === false || o?.readOnly === true) return {};
     const prev = base.BROWSER && base.BROWSER !== opener ? base.BROWSER : null;
     const carried = JSON.stringify({ id: this.issue(session), door: this.o.path, prev });
     return { BROWSER: opener, BRAINSTORM_OPEN_CMD: opener, [SESSION_VAR]: Buffer.from(carried, "utf8").toString("base64url") };
@@ -211,8 +216,9 @@ export class ComputerDoor {
       if (nl < 0) return;
       handled = true;
       clearTimeout(timer);
-      const ok = this.accept(buf.slice(0, nl));
-      sock.end(`${JSON.stringify({ ok })}\n`, () => end());
+      // Off at this moment: nothing is counted or opened, and the opener is told so it can fall back.
+      const answer = this.o.enabled?.() === false ? { ok: false, off: true } : { ok: this.accept(buf.slice(0, nl)) };
+      sock.end(`${JSON.stringify(answer)}\n`, () => end());
     });
   }
 }

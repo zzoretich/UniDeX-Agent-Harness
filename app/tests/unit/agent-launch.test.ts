@@ -886,6 +886,24 @@ test("a shell and a Code agent start with their own session's three variables, a
   assert.ok(asked.every((a) => a[1] === "/usr/bin:/bin"), "the base is the environment the allowlist let through");
 });
 
+test("a Read only Code agent starts without the three variables; Edit and Run agents and a shell start with them (session-browser S3)", async () => {
+  const asked: Array<[string, boolean]> = [];
+  const browserEnv = (session: string, _base: NodeJS.ProcessEnv, o?: { readOnly: boolean }): Record<string, string> => {
+    asked.push([session, o?.readOnly === true]);
+    return o?.readOnly ? {} : { BROWSER: "/o/unidex-open.js", BRAINSTORM_OPEN_CMD: "/o/unidex-open.js", AOS_BROWSER_SESSION: `for-${session}` };
+  };
+  const { t, spawned } = service({ extra: { browserEnv } });
+  assert.ok((await t.spawnAgent({ ...req({ id: "t1" }), access: "read" })).ok);
+  assert.ok((await t.spawnAgent({ ...req({ id: "t2" }), access: "edit" })).ok);
+  assert.ok((await t.spawnAgent({ ...req({ id: "t3" }), access: "run" })).ok);
+  assert.ok((await t.spawnAgent({ ...req({ id: "t4" }), access: "host" })).ok);
+  assert.ok(t.spawn({ id: "t5", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok);
+  const has = (i: number): boolean => { const e = spawned[i].opts.env as Record<string, string>; return [e.BROWSER, e.BRAINSTORM_OPEN_CMD, e.AOS_BROWSER_SESSION].every((v) => v !== undefined); };
+  const none = (i: number): boolean => { const e = spawned[i].opts.env as Record<string, string>; return e.BRAINSTORM_OPEN_CMD === undefined && e.AOS_BROWSER_SESSION === undefined; };
+  assert.deepEqual([none(0), has(1), has(2), has(3), has(4)], [true, true, true, true, true]);
+  assert.deepEqual(asked.map((a) => a[1]), [true, false, false, false, false]);
+});
+
 test("with no variables to add (the Computer surface off) a terminal's environment is exactly what it was", async () => {
   const { t, spawned } = service({ extra: { browserEnv: () => ({}) } });
   assert.ok(t.spawn({ id: "t1", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok);
