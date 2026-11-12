@@ -9,7 +9,7 @@ import { ComputerStore, pageOfSession, pageToOpen, storeFor } from "./computerSt
 function fakeComputer() {
   const subs: Array<(ev: HostComputerEvent) => void> = [];
   const host: HostComputer = {
-    select: async () => null, show: () => {}, navigate: async () => ({ ok: true, data: null }), tab: () => {}, takeOver: () => {},
+    select: async () => null, show: () => {}, navigate: async () => ({ ok: true, data: null }), tab: () => {}, nav: () => {}, takeOver: () => {},
     handBack: () => {}, answer: () => {}, mark: () => {}, popOut: () => {},
     onEvent: (cb) => { subs.push(cb); return () => { subs.splice(subs.indexOf(cb), 1); }; },
   };

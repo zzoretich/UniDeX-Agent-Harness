@@ -315,15 +315,43 @@ export function rememberFilesChoice(
 
 // ── the Computer pane (agent-computer D4) ──
 
-/** The pane's width bounds and default, in CSS pixels. */
-export const COMPUTER_PANE_WIDTH = { min: 320, max: 900, default: 440 } as const;
+/** The pane's smallest width and its default, in CSS pixels. It has no fixed largest: that is the row less the session's
+ *  column (paneMax), so a bigger window gives a bigger browser (session-browser S11). */
+export const COMPUTER_PANE_WIDTH = { min: 320, default: 440 } as const;
+/** The least width the session's own column keeps while the pane grows. */
+export const SESSION_COLUMN_MIN = 360;
+/** What a stored width is held under; a window is never this wide, the real limit is paneMax of the row it is shown in. */
+const COMPUTER_PANE_STORED_MAX = 10_000;
+
+export type PaneSize = "side" | "half" | "wide";
+
+/** The widest the pane may be in a row of `row` px (the session column and the pane together). */
+export function paneMax(row: number): number {
+  return Math.max(COMPUTER_PANE_WIDTH.min, Math.floor(row) - SESSION_COLUMN_MIN);
+}
+
+/** The width a size button gives in a row of `row` px: Side is the default, Half is half the row, Wide is the most. */
+export function paneSizeWidth(size: PaneSize, row: number): number {
+  const max = paneMax(row);
+  const w = size === "side" ? COMPUTER_PANE_WIDTH.default : size === "half" ? Math.round(row / 2) : max;
+  return Math.min(max, Math.max(COMPUTER_PANE_WIDTH.min, w));
+}
+
+/** The size button `width` matches in a row of `row` px (within 1 px), or null; Wide before Half before Side. */
+export function paneSizeOf(width: number, row: number): PaneSize | null {
+  for (const size of ["wide", "half", "side"] as const) if (Math.abs(paneSizeWidth(size, row) - width) <= 1) return size;
+  return null;
+}
 /** Under this window width a page whose pane was never changed starts with it collapsed. */
 export const COMPUTER_PANE_NARROW = 760;
+/** Under this RENDERED width the pane drops what it can do without (session-browser S11). Not COMPUTER_PANE_NARROW,
+ *  which is a window width. */
+export const COMPUTER_PANE_COMPACT = 380;
 const COMPUTER_PAGES: readonly ComputerPaneId[] = ["code", "chat"];
 
 function paneWidth(v: unknown): number {
   if (typeof v !== "number" || !Number.isFinite(v)) return COMPUTER_PANE_WIDTH.default;
-  return Math.round(Math.min(COMPUTER_PANE_WIDTH.max, Math.max(COMPUTER_PANE_WIDTH.min, v)));
+  return Math.round(Math.min(COMPUTER_PANE_STORED_MAX, Math.max(COMPUTER_PANE_WIDTH.min, v)));
 }
 
 function paneOf(v: Record<string, unknown>): ComputerPaneSettings {

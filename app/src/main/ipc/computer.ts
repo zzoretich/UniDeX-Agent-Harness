@@ -3,7 +3,7 @@
 
 import { CH, type ComputerState, type Result } from "../../shared/ipc";
 import { clampBounds, placeAllowed } from "../policy/computer";
-import { ComputerAnswerArgs, ComputerMarkArgs, ComputerNavigateArgs, ComputerSelectArgs, ComputerShowArgs, ComputerTabArgs, NoArgs } from "./schemas";
+import { ComputerAnswerArgs, ComputerMarkArgs, ComputerNavArgs, ComputerNavigateArgs, ComputerSelectArgs, ComputerShowArgs, ComputerTabArgs, NoArgs } from "./schemas";
 import { onInvoke, onSend, type Trust } from "./trust";
 
 /** The part of the service the page drives (main/computer/service.ts). */
@@ -12,6 +12,7 @@ export interface ComputerPageService {
   show: (bounds: { x: number; y: number; width: number; height: number } | null) => void;
   navigate: (url: string) => Promise<Result<null>>;
   tab: (op: { kind: "new" } | { kind: "close" | "select"; index: number }) => void;
+  nav: (go: "back" | "forward" | "reload") => void;
   takeOver: () => void;
   handBack: () => void;
   answer: (askId: string, a: "once" | "always" | "deny") => void;
@@ -42,6 +43,7 @@ export function registerComputerIpc(trust: Trust, c: ComputerIpc): void {
   onInvoke(CH.computerNavigate, trust, ComputerNavigateArgs, async ({ url }) => (c.enabled() ? c.service().navigate(url) : OFF));
   onSend(CH.computerShow, trust, ComputerShowArgs, ({ bounds }) => when(CH.computerShow, (s) => s.show(bounds ? clampBounds(bounds) : null)));
   onSend(CH.computerTab, trust, ComputerTabArgs, ({ op }) => when(CH.computerTab, (s) => s.tab(op)));
+  onSend(CH.computerNav, trust, ComputerNavArgs, ({ go }) => when(CH.computerNav, (s) => s.nav(go)));
   onSend(CH.computerTakeOver, trust, NoArgs, () => when(CH.computerTakeOver, (s) => s.takeOver()));
   onSend(CH.computerHandBack, trust, NoArgs, () => when(CH.computerHandBack, (s) => s.handBack()));
   onSend(CH.computerAnswer, trust, ComputerAnswerArgs, ({ askId, a }) => when(CH.computerAnswer, (s) => s.answer(askId, a)));

@@ -105,6 +105,23 @@ type Access = "read" | "edit" | "run";
 const WS = "harbor-map";
 const NOT_STARTED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
 
+/** The HUD window's own content width, as main reports it (the OS may not clamp it to the screen). */
+const windowWidth = (app: ElectronApplication): Promise<number> =>
+  app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith("app://hud/"))?.getContentSize()[0] ?? 0);
+
+/** Resizes the window, then waits until the page's innerWidth is the window's real content width and has stopped changing. Returns that width. */
+async function resizeAndSettle(app: ElectronApplication, win: Page, size: { width: number; height: number }): Promise<number> {
+  await resizeHud(app, size);
+  let last = -1;
+  await expect.poll(async () => {
+    const [inner, real] = await Promise.all([win.evaluate(() => window.innerWidth), windowWidth(app)]);
+    const settled = inner === real && inner === last;
+    last = inner;
+    return settled;
+  }, { message: "the page has the window's real width and has stopped changing" }).toBe(true);
+  return win.evaluate(() => window.innerWidth);
+}
+
 const reader = (win: Page) => content(win).locator(".aos-ss-reader");
 const pane = (win: Page, page: "chat" | "code"): Locator => content(win).locator(`.aos-cp[data-page="${page}"]`);
 const cards = (p: Locator) => p.locator(".aos-cp-ask");
@@ -355,6 +372,43 @@ test.describe("both hosts, the Computer surface on", () => {
       await expect(cards(p)).toHaveCount(0);
       await expect(p.locator(".aos-cp-url")).toHaveValue(result);
       // The tab goes, so the Vault's computer is as the tests before left it.
+      await p.locator(".aos-cp-tab.is-active .aos-cp-tabclose").click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(tabs);
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
+  test("Back, Forward and Reload work for the user (session-browser S13)", async () => {
+    const h = app();
+    const { win } = h;
+    const a = await codeAgent(win, "claude");
+    try {
+      const p = pane(win, "code");
+      const tabs = await p.locator(".aos-cp-tab").count();
+      await p.locator(".aos-cp-tabnew").click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(tabs + 1);
+      // The start page has loaded before the person types an address over it.
+      await expect(p.locator(".aos-cp-trust")).toHaveText(`Asks first on ${searchHost()}`);
+      const back = p.locator(".aos-cp-back"), forward = p.locator(".aos-cp-forward"), reload = p.locator(".aos-cp-reload");
+      const go = async (url: string, title: string): Promise<void> => { await p.locator(".aos-cp-url").fill(url); await p.locator(".aos-cp-url").press("Enter"); await expect(p.locator(".aos-cp-log .aos-cp-logtext").filter({ hasText: `Opened ${url}` })).toHaveCount(1); await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText(title); };
+      const hits = (urlPath: string): number => site.seen.filter((x) => x.method === "GET" && x.url === urlPath).length;
+      const pageA = shopUrl(), pageB = repoUrl();
+      await go(pageA, "Harbour shop");
+      await go(pageB, "Harbour repo");
+      await expect(back).toBeEnabled();
+      await expect(forward).toBeDisabled();
+      await back.click();
+      await expect(p.locator(".aos-cp-url")).toHaveValue(pageA);
+      await expect(forward).toBeEnabled();
+      await forward.click();
+      await expect(p.locator(".aos-cp-url")).toHaveValue(pageB);
+      await expect(forward).toBeDisabled();
+      const before = hits("/repo.html");
+      await reload.click();
+      await expect.poll(() => hits("/repo.html")).toBeGreaterThan(before);
+      await expect(p.locator(".aos-cp-url")).toHaveValue(pageB);
+      await expect(p.locator(".aos-cp-log .aos-cp-logtext").filter({ hasText: /^Went back$/ })).toHaveCount(1);
+      await expect(p.locator(".aos-cp-log .aos-cp-logtext").filter({ hasText: /^Reloaded$/ })).toHaveCount(1);
       await p.locator(".aos-cp-tab.is-active .aos-cp-tabclose").click();
       await expect(p.locator(".aos-cp-tab")).toHaveCount(tabs);
     } finally { await a.finish(); }
@@ -920,6 +974,87 @@ test.describe("both hosts, the Computer surface on", () => {
       await inside(am.locator(".aos-am-menu"));
       await am.locator('.aos-am-item[data-level="edit"]').click();
       await expect(am).toHaveAttribute("data-access", "edit");
+    } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
+    expectNoErrors(h);
+  });
+
+  test("on Sessions an open pane gives way as the window narrows: the reader keeps 360 px and nothing overflows", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    try {
+      await openTab(win, "chat");
+      await content(win).locator(".aos-ss-newbtn").click();
+      await expect(pane(win, "chat")).toBeVisible();
+      const measured: Record<number, { reader: number; pane: number; overflow: number }> = {};
+      for (const width of [1100, 900]) {
+        // The window may be held wider than asked (a minimum width, or no clamp to the screen): measure at its real width.
+        const want = await resizeAndSettle(electron, win, { width, height: 740 });
+        const m = await content(win).locator(".aos-ss").evaluate((root) => {
+          const w = (sel: string) => Math.round((root.querySelector(sel) as HTMLElement).getBoundingClientRect().width);
+          return { reader: w(".aos-ss-reader"), pane: w(".aos-cp"), overflow: Math.max(root.scrollWidth - root.clientWidth, root.ownerDocument.documentElement.scrollWidth - root.ownerDocument.documentElement.clientWidth) };
+        });
+        measured[width] = m;
+        const at = `${width} (page ${want}): ${JSON.stringify(m)}`;
+        expect(m.reader, at).toBeGreaterThanOrEqual(360);
+        expect(m.overflow, at).toBeLessThanOrEqual(0);
+      }
+      expect(measured[900].pane, `the pane at 900 is no wider than at 1100: ${JSON.stringify(measured)}`).toBeLessThanOrEqual(measured[1100].pane);
+    } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
+    expectNoErrors(h);
+  });
+
+  test("at its narrowest the pane's header and address row still fit (session-browser S11)", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    /** Holds the pane compact, the address input at least 96 px, every displayed part of the header and of the address row
+     *  inside the pane's own edges, and the place label at least 24 px wide. */
+    const fits = async (p: Locator, at: string): Promise<void> => {
+      await expect(p, at).toHaveClass(/is-compact/);
+      await expect.poll(async () => p.evaluate((root) => {
+        const edge = root.getBoundingClientRect();
+        const shown = (el: Element): boolean => getComputedStyle(el).display !== "none";
+        const outside = (parent: Element | null): string[] => [...(parent?.children ?? [])].filter(shown).flatMap((el) => {
+          const r = el.getBoundingClientRect();
+          return r.left >= edge.left - 0.5 && r.right <= edge.right + 0.5 ? [] : [`${el.className || el.tagName}: ${Math.round(r.left)}..${Math.round(r.right)} outside ${Math.round(edge.left)}..${Math.round(edge.right)}`];
+        });
+        const w = (sel: string): number => Math.round(root.querySelector(sel)?.getBoundingClientRect().width ?? 0);
+        return JSON.stringify({ pane: Math.round(edge.width), url: w(".aos-cp-url"), place: w(".aos-cp-place"), outside: [...outside(root.querySelector(".aos-cp-head")), ...outside(root.querySelector("form.aos-cp-address"))] });
+      }), { message: at }).toEqual(expect.stringMatching(/"outside":\[\]/));
+      const m = JSON.parse(await p.evaluate((root) => {
+        const w = (sel: string): number => Math.round(root.querySelector(sel)?.getBoundingClientRect().width ?? 0);
+        return JSON.stringify({ url: w(".aos-cp-url"), place: w(".aos-cp-place") });
+      })) as { url: number; place: number };
+      expect(m.url, `${at}: the address input is ${m.url} px`).toBeGreaterThanOrEqual(96);
+      expect(m.place, `${at}: the place label is ${m.place} px`).toBeGreaterThanOrEqual(24);
+    };
+    // The page may be held wider than asked (a minimum width, or no clamp to the screen): wait for its real width.
+    const narrowTo = async (width: number): Promise<void> => { await resizeAndSettle(electron, win, { width, height: 740 }); };
+    const a = await codeAgent(win, "claude");
+    const code = pane(win, "code");
+    const bar = code.locator(".aos-cp-handle");
+    try {
+      await code.locator(".aos-cp-tabnew").click();
+      await expect(code.locator(".aos-cp-trust")).toHaveText(`Asks first on ${searchHost()}`);
+      // (a) Code: the person's way to the pane's least width, the bar's arrow key.
+      await bar.focus();
+      for (let i = 0; i < 40 && (await bar.getAttribute("aria-valuenow")) !== "320"; i++) await bar.press("ArrowRight");
+      await expect(bar).toHaveAttribute("aria-valuenow", "320");
+      await expect.poll(() => code.evaluate((root) => Math.round(root.getBoundingClientRect().width)), { message: "the pane is drawn 320 px wide" }).toBe(320);
+      await fits(code, "Code, pane at 320");
+    } finally {
+      await bar.dispatchEvent("dblclick");
+      await a.finish();
+    }
+    try {
+      // (b) Sessions at the window's least width, where the layout squeezes the pane below 320.
+      await openTab(win, "chat");
+      await content(win).locator(".aos-ss-newbtn").click();
+      const chat = pane(win, "chat");
+      await expect(chat).toBeVisible();
+      await chat.locator(".aos-cp-tabnew").click();
+      await expect(chat.locator(".aos-cp-trust")).toHaveText(`Asks first on ${searchHost()}`);
+      await narrowTo(100);
+      await fits(chat, "Sessions, the window at its least width");
     } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
     expectNoErrors(h);
   });

@@ -18,14 +18,14 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 161 |
+| covered | 162 |
 | covered in part | 103 |
 | N/A in the app | 49 |
 | not covered | 6 |
 | manual | 3 |
-| **total** | **322** |
+| **total** | **323** |
 
-Of the 273 items about the app (322 minus the 49 N/A), 264 are asserted (161 fully, 103 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
+Of the 274 items about the app (323 minus the 49 N/A), 265 are asserted (162 fully, 103 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
 not covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -515,6 +515,7 @@ again (`brain-ai`).
 | CP5 | Either host: + opens DuckDuckGo as "New tab" with an empty address bar; words typed in the address bar search it while an address still opens; an agent asked to search opens DuckDuckGo's results, then a result, with no card | covered in part | `computer.spec.ts › + opens the start page…`, against the fixture site standing in for DuckDuckGo (`AOS_E2E_START_PAGE`): + loads the start page, the tab reads "New tab" and the address bar is empty, words open its `?q=` search and the activity log has the line, and a stand-in agent opens a result by the address it shows, with no card; which typed text searches and which opens is unit-tested (`hud/src/ui/ComputerPane.test.ts`). The real DuckDuckGo, and a real host following `computer_open`'s description to search: by hand. |
 | CP6 | Claude Code: in a fresh session started from the app, "open example.com in the browser" leads to `computer_status` then `computer_open` with no tool named by the user; the `browser` skill is listed; outside the app the request ends at the model's other browser tools after one `computer_status` | manual | The suite asserts the tools' descriptions (`brain/scripts/test/computer-tools.test.js`), the paragraph the server sends at connect (`brain/scripts/test/browser-instructions.test.js`) and that the server sends it, or nothing, by the marker (`brain/scripts/test/computer-tools.test.js`) and that the skill is built (`tools/build-codex-plugin.test.js`); whether a real host reaches for the tools unprompted is the live check. |
 | CP7 | Codex: the same in plugin mode (`$agenticos:browser`) and in direct mode (`$browser`) | manual | As CP6: the build test pins the Codex tool names in the skill; a real Codex session choosing the tools is the live check. |
+| CP8 | Back, Forward and Reload in the pane: Back and Forward follow the tab's history and are greyed out when there is no page to go to, Reload loads the page again, all three are greyed out with no tab, the log says what happened | covered | `computer.spec.ts › Back, Forward and Reload work for the user…` (two pages on the fixture site, Back shows the first, Forward the second, Reload bumps the fixture's hit count, the log lines), `hud/src/ui/ComputerPane.test.ts` (the disabled states and the calls), `app/tests/unit/computer-browser.test.ts` and `computer-service.test.ts` (`nav`, the history flags, the log line), `computer-ipc.test.ts` (the schema takes three words and no address). |
 
 ## Launch sequence
 

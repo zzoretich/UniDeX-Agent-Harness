@@ -103,6 +103,7 @@ const api: AosBridge = {
     show: (bounds) => ipcRenderer.send(CH.computerShow, { bounds }),
     navigate: (url) => invoke<null>(CH.computerNavigate, { url }),
     tab: (op) => ipcRenderer.send(CH.computerTab, { op }),
+    nav: (go) => ipcRenderer.send(CH.computerNav, { go }),
     takeOver: () => ipcRenderer.send(CH.computerTakeOver, {}),
     handBack: () => ipcRenderer.send(CH.computerHandBack, {}),
     answer: (askId, a) => ipcRenderer.send(CH.computerAnswer, { askId, a }),

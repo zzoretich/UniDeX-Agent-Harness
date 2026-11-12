@@ -5,7 +5,7 @@ import {
   sanitizeSessionChoice, sanitizeVaultChoice, rememberSessionChoice, rememberVaultChoice,
   sanitizeTerminalChoice, rememberTerminalChoice, TERM_RECENT_MAX,
   sanitizeFilesChoice, rememberFilesChoice, FILES_FAVORITES_MAX, FILES_RECENTS_MAX,
-  sanitizeComputerPane, computerPaneStart, rememberComputerPane, COMPUTER_PANE_NARROW,
+  sanitizeComputerPane, paneMax, paneSizeWidth, paneSizeOf, computerPaneStart, rememberComputerPane, COMPUTER_PANE_NARROW,
 } from "./settingsDefaults";
 
 test("the contract §5 settings exist with their defaults", () => {
@@ -202,9 +202,9 @@ test("the Computer pane is 440 px wide and open on both pages until it is change
   }
 });
 
-test("sanitizeComputerPane keeps a width inside 320–900 in whole pixels and a real boolean, and drops the rest", () => {
+test("sanitizeComputerPane keeps a width from 320 up in whole pixels and a real boolean, and drops the rest", () => {
   const got = sanitizeComputerPane({ code: { width: 100, collapsed: true }, chat: { width: 5000, collapsed: "yes" }, other: { width: 500 } });
-  assert.deepEqual(got, { code: { width: 320, collapsed: true }, chat: { width: 900, collapsed: false } });
+  assert.deepEqual(got, { code: { width: 320, collapsed: true }, chat: { width: 5000, collapsed: false } });
   assert.equal("other" in got, false);
   for (const w of [NaN, Infinity, -Infinity, "600", null, {}, true]) {
     assert.equal(sanitizeComputerPane({ code: { width: w } }).code.width, 440, String(w));
@@ -228,7 +228,29 @@ test(`under ${COMPUTER_PANE_NARROW} px a page with nothing saved starts collapse
 test("remembering one page's pane keeps the other page as it was stored, nothing saved included", () => {
   const once = rememberComputerPane({}, "chat", { width: 610, collapsed: true });
   assert.deepEqual(once, { chat: { width: 610, collapsed: true } });
-  assert.deepEqual(rememberComputerPane(once, "code", { width: 9999, collapsed: false }), { chat: { width: 610, collapsed: true }, code: { width: 900, collapsed: false } });
+  assert.deepEqual(rememberComputerPane(once, "code", { width: 9999, collapsed: false }), { chat: { width: 610, collapsed: true }, code: { width: 9999, collapsed: false } });
   assert.deepEqual(rememberComputerPane("junk", "code", { width: 300, collapsed: false }), { code: { width: 320, collapsed: false } });
   assert.deepEqual(rememberComputerPane({ code: 4, chat: { width: 700, collapsed: false } }, "chat", { width: 701, collapsed: true }), { chat: { width: 701, collapsed: true } });
+});
+
+test("the maximum leaves the session 360 px", () => {
+  assert.equal(paneMax(1200), 840);
+  assert.equal(paneMax(700), 340);
+});
+
+test("a narrow row holds the minimum", () => {
+  assert.equal(paneMax(600), 320);
+  for (const size of ["side", "half", "wide"] as const) assert.equal(paneSizeWidth(size, 600), 320);
+});
+
+test("the three sizes", () => {
+  assert.equal(paneSizeWidth("side", 1200), 440);
+  assert.equal(paneSizeWidth("half", 1200), 600);
+  assert.equal(paneSizeWidth("wide", 1200), 840);
+  assert.equal(paneSizeOf(600, 1200), "half");
+  assert.equal(paneSizeOf(512, 1200), null);
+});
+
+test("a stored width is no longer cut at 900", () => {
+  assert.equal(sanitizeComputerPane({ code: { width: 1400 } }).code.width, 1400);
 });

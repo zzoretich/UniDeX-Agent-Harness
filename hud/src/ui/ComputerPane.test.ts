@@ -38,6 +38,9 @@ class FakeEl {
   style: Record<string, string> = {};
   value = "";
   disabled = false;
+  /** The laid-out width: a column's or the pane's own (the test sets them; an aside gets FakeEl.asideWidth). */
+  offsetWidth = 0;
+  static asideWidth = 0;
   scrollTop = 0;
   scrollHeight = 0;
   scrolled = 0;
@@ -51,6 +54,7 @@ class FakeEl {
     for (const c of (o.cls ?? "").split(/\s+/).filter(Boolean)) el.classes.add(c);
     if (o.text !== undefined) el.kids.push(o.text);
     for (const [k, v] of Object.entries(o.attr ?? {})) el.attrs.set(k, String(v));
+    if (tag === "aside") el.offsetWidth = FakeEl.asideWidth;
     el.parent = this;
     this.kids.push(el);
     return el;
@@ -139,6 +143,7 @@ function fakeComputer(answer: (place: string) => HostComputerState | null) {
     shows: [] as Array<HostComputerRect | null>,
     navs: [] as string[],
     tabs: [] as unknown[],
+    goes: [] as string[],
     answers: [] as Array<[string, HostComputerAnswer]>,
     marks: [] as Array<[string, boolean]>,
     takeOvers: 0, handBacks: 0, popOuts: 0,
@@ -152,6 +157,7 @@ function fakeComputer(answer: (place: string) => HostComputerState | null) {
     show: (b) => { f.shows.push(b); },
     navigate: async (url) => { f.navs.push(url); return f.navResult; },
     tab: (op) => { f.tabs.push(op); },
+    nav: (go) => { f.goes.push(go); },
     takeOver: () => { f.takeOvers++; },
     handBack: () => { f.handBacks++; },
     answer: (id, a) => { f.answers.push([id, a]); },
@@ -167,7 +173,7 @@ const ask = (id: string, why: string, o: Partial<HostComputerAsk> = {}): HostCom
   title: "Click: Continue on example.com?", detail: "The button “Continue”. Page: https://example.com/checkout", site: "https://example.com", always: true, ...o,
 });
 const state = (place: string, o: Partial<HostComputerState> = {}): HostComputerState => ({
-  place, tabs: [{ index: 0, url: "https://example.com/checkout", title: "Checkout", openedBy: "Claude Code in harbor-map", active: true }],
+  place, tabs: [{ index: 0, url: "https://example.com/checkout", title: "Checkout", openedBy: "Claude Code in harbor-map", active: true, canBack: false, canForward: false }],
   holder: null, asks: [], log: [], marked: false, poppedOut: false, ...o,
 });
 const RECT = { x: 900, y: 120, width: 440, height: 500 };
@@ -197,9 +203,13 @@ function fakeClock() {
   return c;
 }
 
-function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string } = {}) {
+function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string; column?: number; pane?: number } = {}) {
   const doc = makeDoc();
   const parent = doc.body.createDiv({ cls: "aos-term-deck" });
+  // The row is the session's column and the pane together: 760 + 440 = 1200 unless a test says otherwise.
+  const column = parent.createDiv({ cls: "aos-term-main" });
+  column.offsetWidth = o.column ?? 760;
+  FakeEl.asideWidth = o.pane ?? 440;
   const fake = fakeComputer(o.answer ?? ((place) => state(place)));
   const { f } = fake;
   const { enabled: _on, ...unsaid } = fake.host;
@@ -207,12 +217,13 @@ function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComp
   const host: HostComputer = o.startPage === undefined ? shown : { ...shown, startPage: o.startPage };
   const saved: ComputerPaneSettings[] = [];
   const clock = fakeClock();
-  const pane = new ComputerPane({ host, page: o.page ?? "code", settings: () => o.settings ?? { width: 440, collapsed: false }, save: (s) => saved.push(s), clock });
+  const pane = new ComputerPane({ host, page: o.page ?? "code", settings: () => o.settings ?? { width: 440, collapsed: false }, save: (s) => saved.push(s), clock,
+    column: () => column as unknown as HTMLElement });
   pane.mount(parent as unknown as HTMLElement);
   const root = parent.querySelector(".aos-cp")!;
   const view = root.querySelector(".aos-cp-view")!;
   view.rect = { left: 900, top: 120, width: 440, height: 500 };
-  return { doc, parent, host, f, pane, saved, root, view, clock, q: (sel: string) => root.querySelector(sel)! };
+  return { doc, parent, column, host, f, pane, saved, root, view, clock, q: (sel: string) => root.querySelector(sel)! };
 }
 
 test("follow() selects the place and gives the view its rectangle; collapsing sends show(null) and saves; collapsed it still follows", async () => {
@@ -483,15 +494,40 @@ test("the address bar's site switch names the site, sends mark only on a click, 
   assert.deepEqual(s.f.marks, [["https://example.com", true]], "a state event never marks");
   trust.click();
   assert.deepEqual(s.f.marks, [["https://example.com", true], ["https://example.com", false]]);
-  const blank = [{ index: 0, url: "about:blank", title: "", openedBy: null, active: true }];
+  const blank = [{ index: 0, url: "about:blank", title: "", openedBy: null, active: true, canBack: false, canForward: false }];
   s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: blank }) });
   assert.ok(trust.classes.has("is-hidden") && trust.disabled, "about:blank has no site");
   s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [] }) });
   assert.ok(trust.classes.has("is-hidden"), "no tab");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false }] }) });
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false, canBack: false, canForward: false }] }) });
   assert.ok(trust.classes.has("is-hidden"), "no active tab");
   trust.click();
   assert.equal(s.f.marks.length, 2);
+});
+
+test("Back is disabled until the active tab can go back; Forward likewise; Reload needs a tab (session-browser S13)", async () => {
+  const s = setup();
+  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  await flush();
+  const back = s.q(".aos-cp-back"), fwd = s.q(".aos-cp-forward"), reload = s.q(".aos-cp-reload");
+  assert.equal(back.getAttribute("aria-label"), "Back");
+  assert.equal(fwd.getAttribute("aria-label"), "Forward");
+  assert.equal(reload.getAttribute("aria-label"), "Reload");
+  assert.equal(back.getAttribute("type"), "button", "none of the three submits the address form");
+  assert.ok(back.disabled && fwd.disabled && !reload.disabled, "a tab that cannot move");
+  const one = (o: { canBack: boolean; canForward: boolean }) => [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: true, ...o }];
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: one({ canBack: true, canForward: false }) }) });
+  assert.ok(!back.disabled && fwd.disabled);
+  back.click();
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: one({ canBack: false, canForward: true }) }) });
+  assert.ok(back.disabled && !fwd.disabled);
+  fwd.click();
+  reload.click();
+  assert.deepEqual(s.f.goes, ["back", "forward", "reload"]);
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [] }) });
+  assert.ok(back.disabled && fwd.disabled && reload.disabled, "no tab");
+  const form = s.q(".aos-cp-address");
+  assert.deepEqual(form.children.slice(0, 4).map((c) => c.getAttribute("aria-label") ?? [...c.classes][0]), ["Back", "Forward", "Reload", "aos-cp-web"], "before the web chip");
 });
 
 test("M3: on a local address the site switch is disabled and says why: local addresses always act freely", async () => {
@@ -500,7 +536,7 @@ test("M3: on a local address the site switch is disabled and says why: local add
   await flush();
   const trust = s.q(".aos-cp-trust");
   for (const url of ["http://localhost:5173/", "http://127.0.0.1:8080/app", "http://[::1]:3000/"]) {
-    s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true, tabs: [{ index: 0, url, title: "Dev", openedBy: null, active: true }] }) });
+    s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true, tabs: [{ index: 0, url, title: "Dev", openedBy: null, active: true, canBack: false, canForward: false }] }) });
     assert.ok(trust.disabled && !trust.classes.has("is-hidden"), url);
     assert.equal(trust.getAttribute("title"), "Local addresses always act freely");
     assert.match(trust.getAttribute("aria-label") ?? "", /Local addresses always act freely/);
@@ -634,8 +670,8 @@ test("the tabs: + opens one, × closes one, a click selects one", async () => {
   s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
   await flush();
   s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [
-    { index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false },
-    { index: 1, url: "about:blank", title: "", openedBy: null, active: true },
+    { index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false, canBack: false, canForward: false },
+    { index: 1, url: "about:blank", title: "", openedBy: null, active: true, canBack: false, canForward: false },
   ] }) });
   const tabs = s.root.querySelectorAll(".aos-cp-tab");
   assert.deepEqual(tabs.map((t) => t.querySelector(".aos-cp-tabtitle")!.textContent), ["Example", "New tab"]);
@@ -650,7 +686,7 @@ test("a new tab on the bare start page reads as one: the address bar is empty an
   const s = setup();
   s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
   await flush();
-  const tab = (url: string, title: string, active = true) => ({ index: 0, url, title, openedBy: null, active });
+  const tab = (url: string, title: string, active = true) => ({ index: 0, url, title, openedBy: null, active, canBack: false, canForward: false });
   const titles = (): string[] => s.root.querySelectorAll(".aos-cp-tabtitle").map((t) => t.textContent);
   const input = s.q(".aos-cp-url");
   s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("https://duckduckgo.com/", "DuckDuckGo - Protection. Privacy. Peace of mind.")] }) });
@@ -678,10 +714,10 @@ test("with another start page from the host (the e2e suite's fixture), a new tab
   s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
   await flush();
   const input = s.q(".aos-cp-url");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "http://search.test:4100/", title: "Start", openedBy: null, active: true }] }) });
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "http://search.test:4100/", title: "Start", openedBy: null, active: true, canBack: false, canForward: false }] }) });
   assert.equal(input.value, "");
   assert.deepEqual(s.root.querySelectorAll(".aos-cp-tabtitle").map((t) => t.textContent), ["New tab"]);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://duckduckgo.com/", title: "DuckDuckGo", openedBy: null, active: true }] }) });
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://duckduckgo.com/", title: "DuckDuckGo", openedBy: null, active: true, canBack: false, canForward: false }] }) });
   assert.equal(input.value, "https://duckduckgo.com/", "DuckDuckGo is a page like any other here");
   input.value = "tide times";
   s.q(".aos-cp-address").fire("submit");
@@ -733,4 +769,138 @@ test("a notification's reveal opens the collapsed pane on its ask and scrolls th
   assert.deepEqual(s.saved, [], "opened for the ask only: the saved collapse stays");
   assert.deepEqual(last(s.f.shows), RECT);
   assert.equal(s.root.querySelector(".aos-cp-ask")!.scrolled, 1);
+});
+
+// ── session-browser S11: the bar, Side · Half · Wide ──
+
+const sizeBtn = (s: ReturnType<typeof setup>, size: string): FakeEl => s.q(`[data-size="${size}"]`);
+
+test("Half saves 600 and is marked pressed", () => {
+  const s = setup();
+  assert.equal(sizeBtn(s, "side").getAttribute("aria-pressed"), "true", "440 is Side");
+  assert.equal(sizeBtn(s, "half").getAttribute("aria-pressed"), "false");
+  assert.equal(s.q(".aos-cp-sizes").getAttribute("data-tour"), "computer-size");
+  assert.deepEqual(["side", "half", "wide"].map((z) => sizeBtn(s, z).textContent), ["Side", "Half", "Wide"]);
+  sizeBtn(s, "half").click();
+  assert.deepEqual(last(s.saved), { width: 600, collapsed: false });
+  assert.equal(s.root.style.width, "600px");
+  assert.equal(sizeBtn(s, "half").getAttribute("aria-pressed"), "true");
+  assert.equal(sizeBtn(s, "side").getAttribute("aria-pressed"), "false");
+  sizeBtn(s, "wide").click();
+  assert.deepEqual(last(s.saved), { width: 840, collapsed: false });
+  assert.equal(s.q(".aos-cp-handle").getAttribute("aria-valuemax"), "840");
+});
+
+test("a row under 680 disables Half and Wide", () => {
+  const s = setup({ column: 280, pane: 320, settings: { width: 320, collapsed: false } });
+  assert.equal(sizeBtn(s, "half").disabled, true);
+  assert.equal(sizeBtn(s, "wide").disabled, true);
+  assert.equal(sizeBtn(s, "side").disabled, false);
+  s.column.offsetWidth = 760;
+  s.root.offsetWidth = 440;
+  relayout();
+  assert.equal(sizeBtn(s, "half").disabled, false, "the row grew: the existing observer redraws the buttons");
+  assert.equal(sizeBtn(s, "wide").disabled, false);
+});
+
+test("a shown width never passes the row's maximum", () => {
+  const s = setup({ settings: { width: 1400, collapsed: false } });
+  assert.equal(s.root.style.width, "840px");
+  assert.equal(s.q(".aos-cp-handle").getAttribute("aria-valuenow"), "840");
+  assert.deepEqual(s.saved, [], "the stored 1400 is not rewritten");
+  s.column.offsetWidth = 500;
+  relayout();
+  assert.equal(s.root.style.width, "580px", "the row shrank to 940: the pane follows it down (940 less 360)");
+});
+
+test("a double click on the bar goes back to Side", () => {
+  const s = setup({ settings: { width: 700, collapsed: false } });
+  s.q(".aos-cp-handle").fire("dblclick");
+  assert.deepEqual(last(s.saved), { width: 440, collapsed: false });
+  assert.equal(s.root.style.width, "440px");
+});
+
+test("at the default width the session column keeps its own floor", () => {
+  const s = setup();
+  assert.equal(s.column.classes.has("is-narrowable"), false);
+});
+
+test("a pane the user sized lets the session column narrow", () => {
+  const s = setup();
+  sizeBtn(s, "half").click();
+  assert.equal(s.column.classes.has("is-narrowable"), true);
+  sizeBtn(s, "side").click();
+  assert.equal(s.column.classes.has("is-narrowable"), false);
+});
+
+test("a collapsed or hidden pane never leaves the column narrowable", () => {
+  const s = setup({ settings: { width: 600, collapsed: false } });
+  assert.equal(s.column.classes.has("is-narrowable"), true);
+  s.q(".aos-cp-collapse").click();
+  assert.equal(s.column.classes.has("is-narrowable"), false);
+  s.q(".aos-cp-collapse").click();
+  assert.equal(s.column.classes.has("is-narrowable"), true);
+  s.pane.hide();
+  assert.equal(s.column.classes.has("is-narrowable"), false);
+  relayout();
+  assert.equal(s.column.classes.has("is-narrowable"), false, "a relayout does not bring it back");
+  const t = setup({ settings: { width: 600, collapsed: false } });
+  t.pane.destroy();
+  assert.equal(t.column.classes.has("is-narrowable"), false);
+});
+
+test("on a narrowing row the pane follows the layout down and comes back", () => {
+  const s = setup({ settings: { width: 600, collapsed: false }, column: 760, pane: 600 });
+  assert.equal(s.root.style.width, "600px");
+  // The window narrows: the column sits at its floor and the flex layout shrinks the pane (360 + 450 = 810).
+  s.column.offsetWidth = 360;
+  s.root.offsetWidth = 450;
+  relayout();
+  assert.equal(s.root.style.width, "450px", "the shown width follows the shrunk pane");
+  assert.equal(s.q(".aos-cp-handle").getAttribute("aria-valuemax"), "450");
+  assert.deepEqual(s.saved, [], "the saved 600 is not rewritten");
+  // The window grows again: the column takes the room (the pane keeps its drawn 450), and the width returns to 600.
+  s.column.offsetWidth = 760;
+  relayout();
+  assert.equal(s.root.style.width, "600px");
+  assert.deepEqual(s.saved, []);
+});
+
+test("under 380 px the pane is compact", () => {
+  const narrow = setup({ column: 360, pane: 320, settings: { width: 320, collapsed: false } });
+  assert.equal(narrow.root.classes.has("is-compact"), true, "rendered 320");
+  const wide = setup({ pane: 440 });
+  assert.equal(wide.root.classes.has("is-compact"), false, "rendered 440");
+  const shrunk = setup({ column: 360, pane: 440, settings: { width: 440, collapsed: false } });
+  assert.equal(shrunk.root.classes.has("is-compact"), false);
+  shrunk.root.offsetWidth = 296; // the layout shrinks the pane below its inline width
+  relayout();
+  assert.equal(shrunk.root.classes.has("is-compact"), true, "the observer fired on a squeezed pane");
+  shrunk.root.offsetWidth = 440;
+  relayout();
+  assert.equal(shrunk.root.classes.has("is-compact"), false, "the row grew: the class goes");
+  shrunk.root.offsetWidth = 296;
+  relayout();
+  shrunk.pane.hide();
+  assert.equal(shrunk.root.classes.has("is-compact"), false, "hidden");
+  relayout();
+  assert.equal(shrunk.root.classes.has("is-compact"), false, "a relayout does not bring it back");
+  const collapsed = setup({ column: 360, pane: 320, settings: { width: 320, collapsed: true } });
+  assert.equal(collapsed.root.classes.has("is-compact"), false, "collapsed");
+  const open = setup({ column: 360, pane: 320, settings: { width: 320, collapsed: false } });
+  open.q(".aos-cp-collapse").click();
+  assert.equal(open.root.classes.has("is-compact"), false, "collapsed by the user");
+});
+
+test("the trust pill keeps its full text as its title", async () => {
+  const s = setup();
+  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  await flush();
+  const trust = s.q(".aos-cp-trust");
+  assert.equal(trust.textContent, "Asks first on example.com");
+  // The title already says more than the pill (the explanation); it names the site, so an ellipsized pill stays readable.
+  assert.match(trust.getAttribute("title") ?? "", /example\.com/);
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true }) });
+  assert.equal(trust.textContent, "Acts freely on example.com");
+  assert.match(trust.getAttribute("title") ?? "", /example\.com/);
 });

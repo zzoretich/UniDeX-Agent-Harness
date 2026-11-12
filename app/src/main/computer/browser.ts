@@ -21,8 +21,10 @@ import { SecretMemory, type Secrets } from "./memory";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
 import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf } from "../policy/computer-url";
+import type { ComputerNavGo } from "../../shared/ipc";
 
-export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean }
+/** `canBack` and `canForward` read the tab's own navigation history (session-browser S13). */
+export interface TabInfo { index: number; url: string; title: string; openedBy: string | null; active: boolean; canBack: boolean; canForward: boolean }
 /** `pageToken` and `tab` say where it was resolved: `click` and `scroll` refuse once either has changed. `judged` holds
  *  every control the gate judged (R26: `backendNodeId` and, when the walks disagreed, the others; none when the element
  *  is plain): the click is delivered only while a click at `point` reaches no other control. `target.name` is raw, for
@@ -271,7 +273,7 @@ export class ComputerBrowser {
 
   /** Each tab's URL and title scrubbed of the secrets the tab has read (D9: a code submitted by GET sits in the URL). */
   tabs(): TabInfo[] {
-    return this.list.map((t, index) => ({ index, url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current }));
+    return this.list.map((t, index) => ({ index, url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current, canBack: t.wc.navigationHistory.canGoBack(), canForward: t.wc.navigationHistory.canGoForward() }));
   }
 
   /** Changes on every main-frame navigation commit of the active tab (error pages and in-page navigations included), and
@@ -312,6 +314,19 @@ export class ComputerBrowser {
     this.current = index;
     this.place();
     this.o.hooks.changed();
+  }
+
+  /** The person's Back, Forward or Reload on a tab (the active one by default). A move that cannot happen, or no tab, does
+   *  nothing and returns false; true means the move or the reload was started (session-browser S13). The page's own
+   *  commit hooks report the result. */
+  nav(go: ComputerNavGo, tab?: number): boolean {
+    const t = this.list[tab ?? this.current];
+    if (!t || t.wc.isDestroyed()) return false;
+    const h = t.wc.navigationHistory;
+    if (go === "back") { if (!h.canGoBack()) return false; h.goBack(); }
+    else if (go === "forward") { if (!h.canGoForward()) return false; h.goForward(); }
+    else t.wc.reload();
+    return true;
   }
 
   /** Closes tab `index`; the next tab (or the last one) becomes active. */
@@ -810,7 +825,9 @@ export class ComputerBrowser {
     // so an entry still here belongs to a navigation that never committed (a 204, a download, a cancel: Electron 44 emits
     // no did-fail-provisional-load for either, probed) and would otherwise wait for a URL that never commits. R39: loading
     // stays on while any navigation is pending (r40b: no stop between A's commit and B's), so this drops them all.
-    wc.on("did-stop-loading", () => t.leaving.stop());
+    // session-browser S13: the history may not hold the new entry at did-navigate, so the pane's Back and Forward are
+    // read again once loading has stopped.
+    wc.on("did-stop-loading", () => { t.leaving.stop(); this.o.hooks.changed(); });
     wc.on("page-title-updated", () => this.o.hooks.changed());
     wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.urlOut(t))} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });

@@ -180,6 +180,7 @@ inside the surface.
   debugging port is opened and the HUD page is never attached. Page text that reaches the model is wrapped as untrusted
   data with its origin, and a navigation a page starts on its own is noted in the computer's activity log and the agent's
   Chat thread (D21).
+- **The pane's own navigation buttons are the person's.** `computer.nav` moves the selected browser's active tab back or forward in its own history, or reloads it; it takes one of three words and no address. Nothing asks, as for the address bar, and the page it reaches is held by the gate like any other.
 - **Password values never reach the agent** (D9). A field is sensitive once it was ever `type=password` or carried a
   password or one-time-code `autocomplete`, and stays so after a Show password reveal. Snapshots print `••••••` for its
   value and drop it from every other line; screenshots are painted over its box before the image leaves main; typing

@@ -66,13 +66,21 @@ class FakeBrowser implements BrowserLike {
   /** While set, resolve() waits on it (a slow read of the page: the first resolve, or a revalidation's). */
   resolveGate: Promise<void> | null = null;
   constructor(public place: string, public hooks: BrowserHooks) {}
-  tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.url, title: "", openedBy: p.openedBy, active: index === this.current })); }
+  tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: false, canForward: false })); }
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
   async open(url: string, o: { newTab?: boolean; by: string | null }) {
     if (o.newTab || this.current < 0) { this.pages.push({ url: new URL(url).href, openedBy: o.by }); this.current = this.pages.length - 1; }
     else this.pages[this.current].url = new URL(url).href;
     this.seq++;
     return { url: this.pages[this.current].url, title: "" };
+  }
+  navs: string[] = [];
+  /** False makes a move "that cannot happen" (a stale Back): nothing is recorded and nav returns false. */
+  navOk = true;
+  nav(go: string, tab?: number): boolean {
+    if (!this.navOk) return false;
+    this.navs.push(`${go}${tab === undefined ? "" : ` ${tab}`}`);
+    return true;
   }
   select(i: number) { this.need(i); this.current = i; this.seq++; }
   close(i: number) { this.need(i); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
@@ -904,6 +912,34 @@ test("the pane's calls: select, show, navigate, tabs, mark and state", async () 
   assert.equal(h.lastState().poppedOut, false, "no window to pop out into");
   h.svc.select("ws:beta");
   assert.equal(b.shows.at(-1), null, "the computer no longer selected is parked");
+});
+
+test("the user's Back reaches the selected browser and is logged (session-browser S13)", async () => {
+  const h = make();
+  h.svc.select("ws:alpha");
+  await h.svc.navigate("https://a.test/");
+  h.svc.nav("back");
+  h.svc.nav("forward");
+  h.svc.nav("reload");
+  assert.deepEqual(h.b().navs, ["back", "forward", "reload"]);
+  assert.deepEqual(h.lastState().log.slice(-3).map((l) => l.text), ["Went back", "Went forward", "Reloaded"]);
+});
+
+test("a Back that cannot happen logs nothing", async () => {
+  const h = make();
+  h.svc.select("ws:alpha");
+  await h.svc.navigate("https://a.test/");
+  const before = h.lastState().log.length;
+  h.b().navOk = false;
+  h.svc.nav("back");
+  assert.equal(h.lastState().log.length, before, "no line for a move that did not start");
+  assert.ok(!h.lastState().log.some((l) => l.text === "Went back"));
+});
+
+test("nav with nothing selected does nothing", () => {
+  const h = make();
+  h.svc.nav("back");
+  assert.equal(h.states.length, 0);
 });
 
 test("+ opens the start page main was given (the e2e suite's fixture); an agent's new tab loads its own URL, never the start page", async () => {

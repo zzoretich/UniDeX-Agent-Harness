@@ -20,14 +20,14 @@ import type { AgentRef } from "./registry";
 import type { SiteMarks } from "./sites";
 import type { Holder, Wheel } from "./wheel";
 import { navAllowed, siteOf } from "../policy/computer-url";
-import type { Result } from "../../shared/ipc";
+import type { ComputerNavGo, Result } from "../../shared/ipc";
 import { START_PAGE } from "../../../../hud/src/data/computerStart";
 
 export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { place: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "pageToken" | "open" | "select" | "close" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "type" | "key" | "scroll" | "show">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "type" | "key" | "scroll" | "show">;
 
 export interface ServiceOptions {
   /** Makes the computer of a place (once per place); its hooks route page asks, notes and changes back here. */
@@ -816,6 +816,16 @@ export class ComputerService {
       else b.select(op.index);
     } catch { /* a stale index: the next state shows the tabs as they are */ }
     this.refresh(p.key);
+  }
+
+  /** The person's Back, Forward or Reload on the selected computer's active tab: their own, so nothing asks
+   *  (session-browser S13). */
+  nav(go: ComputerNavGo): void {
+    if (!this.selected) return;
+    const p = this.placeOf(this.selected);
+    // Only a move that started is logged: a stale click on a Back that cannot happen says nothing.
+    if (!this.browserOf(p).nav(go)) return;
+    this.line(p, USER, go === "back" ? "Went back" : go === "forward" ? "Went forward" : "Reloaded", null);
   }
 
   /** Take over (agent-computer D5, D31): the person drives, the place's pending asks are cancelled, and any typing stops
