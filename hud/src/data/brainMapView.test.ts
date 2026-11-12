@@ -5,7 +5,7 @@ import {
   BUBBLE, LABEL_PX, NODE_MIN_PX, aroundLayout, aroundPicks, aroundRows, bubbleCaption, bubbleLabel, bubbleRadius, builtAgo,
   captionWidth, communityLine, communityViews, degrees, drawnRadius, everyNodeGraph, fitView, hashPath, isMapView, labelCap,
   labelFont, layoutBubbles, linkWidth, linkedCommunities, mapEmpty, mapEmptyText, mapFooter, memberRows, nodeRadius,
-  packBubbles, pickAround, pickCommunity, pickLabels, thousands, unreviewedShare, type BubbleAt, type BubbleIn,
+  packBubbles, pickAround, pickCommunity, pickLabels, thousands, unreviewedShare, type BubbleAt, type BubbleIn, type PackWork,
 } from "./brainMapView";
 import { SOFTEN, overlapDirection, settle, type SimParams } from "./forceSim";
 
@@ -201,16 +201,17 @@ test("packBubbles: deterministic, independent of input order, larger communities
   assert.ok(Math.hypot(c6.x, c6.y) <= Math.hypot(c7.x, c7.y) + 1e-6, "c6 (linked to c1) is no further from c1 than c7 (unlinked, placed after it)");
 });
 
-test("layoutBubbles stays quick with many communities (mapMin lowered): 35 with full-width captions in well under a frame budget", () => {
+test("layoutBubbles stays quick with many communities (mapMin lowered): 35 with full-width captions, its work counted rather than timed", () => {
   const many: BubbleIn[] = Array.from({ length: 35 }, (_, i) => ({ id: `c${i}`, n: 3 + ((i * 7) % 20), labelW: BUBBLE.labelMax }));
   const links = many.slice(1).map((c, i) => ({ a: many[i].id, b: c.id, n: 1 + (i % 4) }));
-  layoutBubbles(many, links, 640, 480);
-  const t = performance.now();
-  const at = layoutBubbles(many, links, 640, 480);
-  const ms = performance.now() - t;
+  const work: PackWork = { tried: 0, compared: 0 };
+  const at = layoutBubbles(many, links, 640, 480, work);
   assert.equal(at.length, 35);
-  // The checks against every placed bubble used to take most of a second here; boxes and a grid make it tens of ms.
-  assert.ok(ms < 250, `layoutBubbles took ${ms.toFixed(0)} ms for 35 communities`);
+  // Counted, not timed: the time moved with the machine's load (tens of ms idle, over 300 on a busy CI runner), the
+  // work does not. About 415,000 spiral places are tried. Checking each against every bubble already placed (what took
+  // most of a second here) compares about 4.5 footprints a place; the boxes and the grid compare about 1.2.
+  assert.ok(work.tried < 600_000, `layoutBubbles tried ${work.tried} places for 35 communities`);
+  assert.ok(work.compared < 2 * work.tried, `layoutBubbles compared ${work.compared} footprints over ${work.tried} places`);
 });
 
 test("layoutBubbles: fits a roomy and a tight canvas, centred, circles apart; the same input gives the same picture", () => {
