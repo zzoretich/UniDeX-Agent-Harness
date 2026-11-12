@@ -3,8 +3,8 @@
 // The command every UniDeX session's BROWSER points at (session-browser S23). A program in a session (a dev server, `gh`,
 // `open`-style helpers that honour $BROWSER) runs it with a web address; it asks the app's door to open that address in
 // the session's in-app browser. Anything it cannot hand to the door goes where it would have gone without UniDeX: the
-// BROWSER that was set before, or the system's opener. It prints nothing, and never the address or the id: an address
-// can carry a secret in its query.
+// BROWSER that was set before, or the system's opener. It prints only two fixed lines on standard error (the sandbox
+// one and the no-answer one), and never the address or the id: an address can carry a secret in its query.
 
 const net = require('node:net');
 const os = require('node:os');
@@ -12,6 +12,7 @@ const { spawn } = require('node:child_process');
 
 const ID = /^[0-9a-f]{32}$/;
 const CONNECT_MS = 3000;
+const NO_ANSWER = 'unidex-open: the UniDeX browser did not answer. Use the computer_open tool to open the address.\n';
 const SANDBOXED = "unidex-open: this session's sandbox blocks the UniDeX browser. Use the computer_open tool to open the address.\n";
 
 /** What AOS_BROWSER_SESSION says ({id, door, prev}), or null when it is missing or not that. */
@@ -67,21 +68,42 @@ function fallback(r, env, deps) {
   return runAndExit((deps && deps.open) || '/usr/bin/open', [r.url], env);
 }
 
+/**
+ * Sends the address to the door and reads its one answer line: {"ok":true} ends 0; {"ok":false} ends 0 with nothing
+ * opened anywhere (the door refused: the limit, Read only, the quiet period); {"ok":false,"off":true} (the door is not
+ * enabled) goes where a door that cannot be reached goes, silently. A connection that ends, errors or stays silent for
+ * 3 s without a whole answer line ends 1 with NO_ANSWER and no fallback: the door may have taken the address, and a
+ * fallback could open it twice. A connection that cannot be made is the unreachable-door fallback.
+ */
 function toDoor(r, env, deps) {
   const prev = readSession(env).prev;
   const back = () => fallback(prev ? { to: 'prev', cmd: prev, url: r.url } : { to: 'system', url: r.url }, env, deps);
   let connected = false;
   let settled = false;
+  let buf = '';
+  let timer = null;
   const sock = net.createConnection(r.door);
   const finish = (fn) => { if (settled) return; settled = true; clearTimeout(timer); sock.destroy(); fn(); };
-  // Connected, the line is written and then only read: an answer, a close or silence all end it with 0.
-  const timer = setTimeout(() => finish(() => (connected ? process.exit(0) : back())), CONNECT_MS);
-  sock.on('connect', () => { connected = true; sock.write(JSON.stringify({ id: r.id, url: r.url }) + '\n'); });
-  sock.on('data', () => {});
-  sock.on('end', () => finish(() => process.exit(0)));
-  sock.on('close', () => finish(() => (connected ? process.exit(0) : back())));
+  const unanswered = () => finish(() => { process.stderr.write(NO_ANSWER); process.exit(1); });
+  const arm = () => { clearTimeout(timer); timer = setTimeout(() => (connected ? unanswered() : finish(back)), CONNECT_MS); };
+  arm();
+  sock.setEncoding('utf8');
+  sock.on('connect', () => { connected = true; arm(); sock.write(JSON.stringify({ id: r.id, url: r.url }) + '\n'); });
+  sock.on('data', (chunk) => {
+    if (settled) return;
+    buf += chunk;
+    const nl = buf.indexOf('\n');
+    if (nl < 0) return;
+    let answer = null;
+    try { answer = JSON.parse(buf.slice(0, nl)); } catch { /* not an answer */ }
+    if (answer === null || typeof answer !== 'object' || typeof answer.ok !== 'boolean') return unanswered();
+    if (answer.ok === false && answer.off === true) return finish(back);
+    finish(() => process.exit(0));
+  });
+  sock.on('end', () => (connected ? unanswered() : finish(back)));
+  sock.on('close', () => (connected ? unanswered() : finish(back)));
   sock.on('error', (err) => {
-    if (connected) return finish(() => process.exit(0));
+    if (connected) return unanswered();
     finish(() => {
       // A host's command sandbox refuses the connection itself: say so once, so the agent can use computer_open.
       if (err && (err.code === 'EPERM' || err.code === 'EACCES')) process.stderr.write(SANDBOXED);

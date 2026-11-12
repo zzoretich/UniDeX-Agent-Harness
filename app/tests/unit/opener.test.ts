@@ -8,8 +8,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 // session-browser S23: the command every session's BROWSER points at. `route` is its decision; run as a program it acts
-// on it. The door is a fake socket in a short folder, the previous BROWSER a script that records its argument; nothing
-// here runs /usr/bin/open.
+// on it. The door is a fake socket in a short folder, the previous BROWSER a script that records its argument. Nothing
+// here can run /usr/bin/open: every case that can end in a fallback runs the opener through `runSafe`, which replaces the
+// system's opener with a stand-in, and the two cases that run the shipped script itself (a door that answers) are
+// refused by `run` unless the route is the door, whose fallback is the previous BROWSER.
 
 type Route = { to: "door"; door: string; id: string; url: string } | { to: "prev"; cmd: string; url: string } | { to: "system"; url: string };
 const SCRIPT = path.resolve(__dirname, "../resources/opener/unidex-open.js");
@@ -34,8 +36,9 @@ function prevProgram(dir: string, code = 0): { cmd: string; rec: string } {
   return { cmd, rec };
 }
 
-/** A door that answers `answer` to the first line of each connection and ends it; null answers nothing, ever. */
-async function fakeDoor(dir: string, answer: string | null): Promise<{ sock: string; lines: string[]; conns: () => number }> {
+/** A door that answers `answer` to the first line of each connection and ends it; null answers nothing, ever; "close" ends
+ *  the connection with no answer; a string with no newline at its end is written as it is and then the connection ends. */
+async function fakeDoor(dir: string, answer: string | null | "close"): Promise<{ sock: string; lines: string[]; conns: () => number }> {
   const sock = path.join(dir, "d.sock");
   const lines: string[] = [];
   let conns = 0;
@@ -48,7 +51,8 @@ async function fakeDoor(dir: string, answer: string | null): Promise<{ sock: str
       const nl = buf.indexOf("\n");
       if (nl < 0) return;
       lines.push(buf.slice(0, nl));
-      if (answer !== null) s.end(`${answer}\n`);
+      if (answer === "close") s.end();
+      else if (answer !== null) s.end(answer.endsWith("|") ? answer.slice(0, -1) : `${answer}\n`);
     });
   });
   servers.push(server);
@@ -77,6 +81,17 @@ function openStandIn(dir: string): { cmd: string; rec: string } {
   fs.writeFileSync(cmd, `#!/bin/sh\nprintf '%s %s\\n' "$1" "${"$"}{AOS_BROWSER_SESSION:-unset}" >> ${rec}\n`, { mode: 0o755 });
   return { cmd, rec };
 }
+/** Runs the opener with the system's opener replaced by a stand-in: for every case that can end in a fallback. `opened`
+ *  is what the stand-in recorded (nothing when it never ran). */
+async function runSafe(dir: string, args: string[], env: Record<string, string>): Promise<{ code: number | null; stdout: string; stderr: string; opened: string }> {
+  const open = openStandIn(dir);
+  const guard = path.join(dir, "guard.out");
+  const script = openerWith(dir, "safe.js", open.cmd, guard);
+  const r = await run(args, env, script);
+  assert.equal(fs.existsSync(guard), false, "the depth guard was never hit");
+  return { ...r, opened: fs.existsSync(open.rec) ? fs.readFileSync(open.rec, "utf8") : "" };
+}
+
 /** A program that is the opener, with the system's opener replaced by `open` (the only way to do that: an argument). It
  *  counts its depth in OPENER_TEST_DEPTH (the test's own variable, not the shipped script's) and past 3 it records a hit in
  *  `guard` and exits 99 without starting anything, so a regressed opener cannot run away. */
@@ -120,8 +135,8 @@ test("anything that is not a web address goes to the previous BROWSER", async ()
   const dir = folder();
   const door = await fakeDoor(dir, '{"ok":true}');
   const prev = prevProgram(dir);
-  const r = await run(["file:///tmp/x.html"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
-  assert.deepEqual([r.code, r.stdout, r.stderr], [0, "", ""]);
+  const r = await runSafe(dir, ["file:///tmp/x.html"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
+  assert.deepEqual([r.code, r.stdout, r.stderr, r.opened], [0, "", "", ""]);
   assert.equal(fs.readFileSync(prev.rec, "utf8"), "file:///tmp/x.html");
   assert.equal(door.conns(), 0, "no connection was made");
 });
@@ -129,9 +144,9 @@ test("anything that is not a web address goes to the previous BROWSER", async ()
 test("with no door it falls back to the previous BROWSER", async () => {
   const dir = folder();
   const prev = prevProgram(dir, 3);
-  const r = await run(["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: path.join(dir, "gone.sock"), prev: prev.cmd }) });
+  const r = await runSafe(dir, ["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: path.join(dir, "gone.sock"), prev: prev.cmd }) });
   assert.equal(fs.readFileSync(prev.rec, "utf8"), "http://localhost:5173");
-  assert.deepEqual([r.code, r.stdout, r.stderr], [3, "", ""], "the previous program's status, and nothing said about a door that is simply gone");
+  assert.deepEqual([r.code, r.stdout, r.stderr, r.opened], [3, "", "", ""], "the previous program's status, and nothing said about a door that is simply gone");
 });
 
 test("a door the sandbox blocks is named on standard error once, then it falls back", async () => {
@@ -139,9 +154,9 @@ test("a door the sandbox blocks is named on standard error once, then it falls b
   const door = await fakeDoor(dir, '{"ok":true}');
   fs.chmodSync(door.sock, 0o000);   // connect(2) answers EACCES, as a host's command sandbox does with EPERM
   const prev = prevProgram(dir);
-  const r = await run(["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
+  const r = await runSafe(dir, ["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
   assert.equal(r.stderr, "unidex-open: this session's sandbox blocks the UniDeX browser. Use the computer_open tool to open the address.\n");
-  assert.deepEqual([r.code, r.stdout], [0, ""]);
+  assert.deepEqual([r.code, r.stdout, r.opened], [0, "", ""]);
   assert.equal(fs.readFileSync(prev.rec, "utf8"), "http://localhost:5173");
   assert.equal(door.conns(), 0);
 });
@@ -171,8 +186,9 @@ test("what the opener starts never inherits the session variable", async () => {
   const session = enc({ id: ID, door: path.join(dir, "gone.sock"), prev: cmd });
   for (const url of ["file:///tmp/x.html", "http://localhost:5173"]) {
     fs.rmSync(rec, { force: true });
-    const r = await run([url], { AOS_BROWSER_SESSION: session });
+    const r = await runSafe(dir, [url], { AOS_BROWSER_SESSION: session });
     assert.equal(r.code, 0, url);
+    assert.equal(r.opened, "", url);
     assert.equal(fs.readFileSync(rec, "utf8"), "unset", url);
   }
 });
@@ -194,16 +210,52 @@ test("a previous BROWSER killed by a signal ends the opener as a shell would: 12
   const dir = folder();
   const cmd = path.join(dir, "killme.sh");
   fs.writeFileSync(cmd, "#!/bin/sh\nkill -TERM $$\nsleep 5\n", { mode: 0o755 });
-  const r = await run(["file:///tmp/x.html"], { AOS_BROWSER_SESSION: enc({ id: ID, door: path.join(dir, "gone.sock"), prev: cmd }) });
-  assert.equal(r.code, 143);
+  const r = await runSafe(dir, ["file:///tmp/x.html"], { AOS_BROWSER_SESSION: enc({ id: ID, door: path.join(dir, "gone.sock"), prev: cmd }) });
+  assert.deepEqual([r.code, r.opened], [143, ""]);
 });
 
-test("a door that accepts and never answers ends the opener with 0, and nothing else opens", async () => {
+const NO_ANSWER = "unidex-open: the UniDeX browser did not answer. Use the computer_open tool to open the address.\n";
+
+test("a door that accepts and never answers ends the opener with 1 after the wait, with its one line, and nothing else opens", async () => {
   const dir = folder();
   const door = await fakeDoor(dir, null);
   const prev = prevProgram(dir);
-  const r = await run(["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
-  assert.deepEqual([r.code, r.stdout, r.stderr], [0, "", ""]);
+  const t0 = Date.now();
+  const r = await runSafe(dir, ["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
+  assert.deepEqual([r.code, r.stdout, r.stderr, r.opened], [1, "", NO_ANSWER, ""]);
+  assert.ok(Date.now() - t0 >= 2500, "it waited for an answer");
+  assert.equal(door.lines.length, 1);
+  assert.equal(fs.existsSync(prev.rec), false, "the previous BROWSER did not run: the door may have taken the address");
+});
+
+test("a door that closes without answering ends the opener with 1 and its one line, and nothing else opens", async () => {
+  const dir = folder();
+  const door = await fakeDoor(dir, "close");
+  const prev = prevProgram(dir);
+  const r = await runSafe(dir, ["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
+  assert.deepEqual([r.code, r.stdout, r.stderr, r.opened], [1, "", NO_ANSWER, ""]);
   assert.equal(door.lines.length, 1);
   assert.equal(fs.existsSync(prev.rec), false);
+});
+
+test("half an answer line is no answer", async () => {
+  const dir = folder();
+  const door = await fakeDoor(dir, '{"ok":true}|');   // written without its newline, then the connection ends
+  const prev = prevProgram(dir);
+  const r = await runSafe(dir, ["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
+  assert.deepEqual([r.code, r.stdout, r.stderr, r.opened], [1, "", NO_ANSWER, ""]);
+  assert.equal(fs.existsSync(prev.rec), false);
+});
+
+test("a door that answers off is treated as a door that is gone: the previous BROWSER runs, silently", async () => {
+  const dir = folder();
+  const door = await fakeDoor(dir, '{"ok":false,"off":true}');
+  const prev = prevProgram(dir, 4);
+  const r = await runSafe(dir, ["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
+  assert.deepEqual([r.code, r.stdout, r.stderr, r.opened], [4, "", "", ""]);
+  assert.equal(fs.readFileSync(prev.rec, "utf8"), "http://localhost:5173");
+  assert.equal(door.lines.length, 1);
+  // With no previous BROWSER it is the system's opener (the stand-in here).
+  const r2 = await runSafe(dir, ["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: null }) });
+  assert.deepEqual([r2.code, r2.stderr, r2.opened], [0, "", "http://localhost:5173 unset\n"]);
 });
