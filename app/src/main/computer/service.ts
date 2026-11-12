@@ -823,7 +823,8 @@ export class ComputerService {
   nav(go: ComputerNavGo): void {
     if (!this.selected) return;
     const p = this.placeOf(this.selected);
-    this.browserOf(p).nav(go);
+    // Only a move that started is logged: a stale click on a Back that cannot happen says nothing.
+    if (!this.browserOf(p).nav(go)) return;
     this.line(p, USER, go === "back" ? "Went back" : go === "forward" ? "Went forward" : "Reloaded", null);
   }
 

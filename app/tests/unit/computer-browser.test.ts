@@ -588,15 +588,15 @@ test("session-browser S13: tabs() reports whether the page can go back and forwa
 
 test("session-browser S13: nav goes back, forward or reloads the active tab; a move that cannot happen does nothing", () => {
   const { b, nav } = make();
-  b.nav("back");
-  b.nav("forward");
+  assert.equal(b.nav("back"), false);
+  assert.equal(b.nav("forward"), false);
   assert.deepEqual(nav.moves, [], "nothing to go back or forward to");
   nav.back = true; nav.forward = true;
-  b.nav("back");
-  b.nav("forward");
-  b.nav("reload");
+  assert.equal(b.nav("back"), true);
+  assert.equal(b.nav("forward"), true);
+  assert.equal(b.nav("reload"), true);
   assert.deepEqual(nav.moves, ["back", "forward", "reload"]);
   const none = new ComputerBrowser({ key: "ws:none", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
-  none.nav("reload");
-  none.nav("back", 4);
+  assert.equal(none.nav("reload"), false, "no tab");
+  assert.equal(none.nav("back", 4), false, "no such tab");
 });

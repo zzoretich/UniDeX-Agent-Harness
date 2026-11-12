@@ -16,7 +16,7 @@ import { setIcon } from "obsidian";
 import type { HostComputer, HostComputerHolder, HostComputerNavGo, HostComputerRect, HostComputerState, HostComputerTab } from "../host";
 import { START_PAGE, searchUrl } from "../data/computerStart";
 import { storeFor, type ComputerPage, type ComputerStore } from "../data/computerStore";
-import { COMPUTER_PANE_WIDTH, paneMax, paneSizeOf, paneSizeWidth, type ComputerPaneSettings, type PaneSize } from "../settingsDefaults";
+import { COMPUTER_PANE_COMPACT, COMPUTER_PANE_WIDTH, paneMax, paneSizeOf, paneSizeWidth, type ComputerPaneSettings, type PaneSize } from "../settingsDefaults";
 import { bindColumnResize } from "./columnResize";
 import { ARM_MS, arm, renderAsk, siteHost } from "./ComputerAsk";
 
@@ -342,6 +342,7 @@ export class ComputerPane {
     if (this.destroyed || !this.visible) return;
     this.visible = false;
     this.markColumn(false);
+    this.el?.root.toggleClass("is-compact", false);
     this.seq++;
     this.switching = false;
     this.push();
@@ -358,6 +359,7 @@ export class ComputerPane {
     for (const fn of this.cleanups.splice(0)) {
       try { fn(); } catch { /* already gone */ }
     }
+    this.el?.root.toggleClass("is-compact", false);
     this.el?.root.detach();
     this.el = null;
   }
@@ -515,6 +517,9 @@ export class ComputerPane {
       b.disabled = z.size !== "side" && row < SIZES_MIN_ROW;
     }
     this.markColumn(this.visible && !this.drawnCollapsed() && this.width !== COMPUTER_PANE_WIDTH.default);
+    // The rendered width, which the layout may have shrunk below the inline one (session-browser S11).
+    const shown = e.root.offsetWidth;
+    e.root.toggleClass("is-compact", this.visible && !this.drawnCollapsed() && shown > 0 && shown < COMPUTER_PANE_COMPACT);
   }
 
   /** Once the user has sized the pane (and it is drawn open) the session's column may narrow to 360 px; at the usual

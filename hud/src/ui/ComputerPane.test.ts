@@ -865,3 +865,42 @@ test("on a narrowing row the pane follows the layout down and comes back", () =>
   assert.equal(s.root.style.width, "600px");
   assert.deepEqual(s.saved, []);
 });
+
+test("under 380 px the pane is compact", () => {
+  const narrow = setup({ column: 360, pane: 320, settings: { width: 320, collapsed: false } });
+  assert.equal(narrow.root.classes.has("is-compact"), true, "rendered 320");
+  const wide = setup({ pane: 440 });
+  assert.equal(wide.root.classes.has("is-compact"), false, "rendered 440");
+  const shrunk = setup({ column: 360, pane: 440, settings: { width: 440, collapsed: false } });
+  assert.equal(shrunk.root.classes.has("is-compact"), false);
+  shrunk.root.offsetWidth = 296; // the layout shrinks the pane below its inline width
+  relayout();
+  assert.equal(shrunk.root.classes.has("is-compact"), true, "the observer fired on a squeezed pane");
+  shrunk.root.offsetWidth = 440;
+  relayout();
+  assert.equal(shrunk.root.classes.has("is-compact"), false, "the row grew: the class goes");
+  shrunk.root.offsetWidth = 296;
+  relayout();
+  shrunk.pane.hide();
+  assert.equal(shrunk.root.classes.has("is-compact"), false, "hidden");
+  relayout();
+  assert.equal(shrunk.root.classes.has("is-compact"), false, "a relayout does not bring it back");
+  const collapsed = setup({ column: 360, pane: 320, settings: { width: 320, collapsed: true } });
+  assert.equal(collapsed.root.classes.has("is-compact"), false, "collapsed");
+  const open = setup({ column: 360, pane: 320, settings: { width: 320, collapsed: false } });
+  open.q(".aos-cp-collapse").click();
+  assert.equal(open.root.classes.has("is-compact"), false, "collapsed by the user");
+});
+
+test("the trust pill keeps its full text as its title", async () => {
+  const s = setup();
+  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  await flush();
+  const trust = s.q(".aos-cp-trust");
+  assert.equal(trust.textContent, "Asks first on example.com");
+  // The title already says more than the pill (the explanation); it names the site, so an ellipsized pill stays readable.
+  assert.match(trust.getAttribute("title") ?? "", /example\.com/);
+  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true }) });
+  assert.equal(trust.textContent, "Acts freely on example.com");
+  assert.match(trust.getAttribute("title") ?? "", /example\.com/);
+});

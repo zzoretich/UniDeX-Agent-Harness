@@ -344,6 +344,9 @@ export function paneSizeOf(width: number, row: number): PaneSize | null {
 }
 /** Under this window width a page whose pane was never changed starts with it collapsed. */
 export const COMPUTER_PANE_NARROW = 760;
+/** Under this RENDERED width the pane drops what it can do without (session-browser S11). Not COMPUTER_PANE_NARROW,
+ *  which is a window width. */
+export const COMPUTER_PANE_COMPACT = 380;
 const COMPUTER_PAGES: readonly ComputerPaneId[] = ["code", "chat"];
 
 function paneWidth(v: unknown): number {

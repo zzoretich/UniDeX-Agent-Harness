@@ -75,7 +75,13 @@ class FakeBrowser implements BrowserLike {
     return { url: this.pages[this.current].url, title: "" };
   }
   navs: string[] = [];
-  nav(go: string, tab?: number) { this.navs.push(`${go}${tab === undefined ? "" : ` ${tab}`}`); }
+  /** False makes a move "that cannot happen" (a stale Back): nothing is recorded and nav returns false. */
+  navOk = true;
+  nav(go: string, tab?: number): boolean {
+    if (!this.navOk) return false;
+    this.navs.push(`${go}${tab === undefined ? "" : ` ${tab}`}`);
+    return true;
+  }
   select(i: number) { this.need(i); this.current = i; this.seq++; }
   close(i: number) { this.need(i); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
   async snapshot(tab?: number, session?: string): Promise<Snapshot> {
@@ -917,6 +923,17 @@ test("the user's Back reaches the selected browser and is logged (session-browse
   h.svc.nav("reload");
   assert.deepEqual(h.b().navs, ["back", "forward", "reload"]);
   assert.deepEqual(h.lastState().log.slice(-3).map((l) => l.text), ["Went back", "Went forward", "Reloaded"]);
+});
+
+test("a Back that cannot happen logs nothing", async () => {
+  const h = make();
+  h.svc.select("ws:alpha");
+  await h.svc.navigate("https://a.test/");
+  const before = h.lastState().log.length;
+  h.b().navOk = false;
+  h.svc.nav("back");
+  assert.equal(h.lastState().log.length, before, "no line for a move that did not start");
+  assert.ok(!h.lastState().log.some((l) => l.text === "Went back"));
 });
 
 test("nav with nothing selected does nothing", () => {

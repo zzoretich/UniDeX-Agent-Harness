@@ -317,14 +317,16 @@ export class ComputerBrowser {
   }
 
   /** The person's Back, Forward or Reload on a tab (the active one by default). A move that cannot happen, or no tab, does
-   *  nothing (session-browser S13). The page's own commit hooks report the result. */
-  nav(go: ComputerNavGo, tab?: number): void {
+   *  nothing and returns false; true means the move or the reload was started (session-browser S13). The page's own
+   *  commit hooks report the result. */
+  nav(go: ComputerNavGo, tab?: number): boolean {
     const t = this.list[tab ?? this.current];
-    if (!t || t.wc.isDestroyed()) return;
+    if (!t || t.wc.isDestroyed()) return false;
     const h = t.wc.navigationHistory;
-    if (go === "back") { if (h.canGoBack()) h.goBack(); }
-    else if (go === "forward") { if (h.canGoForward()) h.goForward(); }
+    if (go === "back") { if (!h.canGoBack()) return false; h.goBack(); }
+    else if (go === "forward") { if (!h.canGoForward()) return false; h.goForward(); }
     else t.wc.reload();
+    return true;
   }
 
   /** Closes tab `index`; the next tab (or the last one) becomes active. */

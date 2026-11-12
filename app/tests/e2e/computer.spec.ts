@@ -986,8 +986,68 @@ test.describe("both hosts, the Computer surface on", () => {
         expect(m.reader, at).toBeGreaterThanOrEqual(360);
         expect(m.overflow, at).toBeLessThanOrEqual(0);
       }
-      console.log(`Sessions pane as the window narrows: ${JSON.stringify(measured)}`);
       expect(measured[900].pane, `the pane at 900 is no wider than at 1100: ${JSON.stringify(measured)}`).toBeLessThanOrEqual(measured[1100].pane);
+    } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
+    expectNoErrors(h);
+  });
+
+  test("at its narrowest the pane's header and address row still fit (session-browser S11)", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    /** Holds the pane compact, the address input at least 96 px, every displayed part of the header and of the address row
+     *  inside the pane's own edges, and the place label at least 24 px wide. */
+    const fits = async (p: Locator, at: string): Promise<void> => {
+      await expect(p, at).toHaveClass(/is-compact/);
+      await expect.poll(async () => p.evaluate((root) => {
+        const edge = root.getBoundingClientRect();
+        const shown = (el: Element): boolean => getComputedStyle(el).display !== "none";
+        const outside = (parent: Element | null): string[] => [...(parent?.children ?? [])].filter(shown).flatMap((el) => {
+          const r = el.getBoundingClientRect();
+          return r.left >= edge.left - 0.5 && r.right <= edge.right + 0.5 ? [] : [`${el.className || el.tagName}: ${Math.round(r.left)}..${Math.round(r.right)} outside ${Math.round(edge.left)}..${Math.round(edge.right)}`];
+        });
+        const w = (sel: string): number => Math.round(root.querySelector(sel)?.getBoundingClientRect().width ?? 0);
+        return JSON.stringify({ pane: Math.round(edge.width), url: w(".aos-cp-url"), place: w(".aos-cp-place"), outside: [...outside(root.querySelector(".aos-cp-head")), ...outside(root.querySelector("form.aos-cp-address"))] });
+      }), { message: at }).toEqual(expect.stringMatching(/"outside":\[\]/));
+      const m = JSON.parse(await p.evaluate((root) => {
+        const w = (sel: string): number => Math.round(root.querySelector(sel)?.getBoundingClientRect().width ?? 0);
+        return JSON.stringify({ url: w(".aos-cp-url"), place: w(".aos-cp-place") });
+      })) as { url: number; place: number };
+      expect(m.url, `${at}: the address input is ${m.url} px`).toBeGreaterThanOrEqual(96);
+      expect(m.place, `${at}: the place label is ${m.place} px`).toBeGreaterThanOrEqual(24);
+    };
+    // The page may be held wider than asked (the window has a minimum width, and a screen of its own): wait for the page itself.
+    const narrowTo = async (width: number): Promise<void> => {
+      await resizeHud(electron, { width, height: 740 });
+      const floor = await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith("app://hud/"))?.getMinimumSize()[0] ?? 0);
+      const want = Math.max(await win.evaluate((v) => Math.min(v, window.screen.availWidth), width), floor);
+      await expect.poll(() => win.evaluate(() => window.innerWidth), { message: `the page is ${want} px wide` }).toBe(want);
+    };
+    const a = await codeAgent(win, "claude");
+    const code = pane(win, "code");
+    const bar = code.locator(".aos-cp-handle");
+    try {
+      await code.locator(".aos-cp-tabnew").click();
+      await expect(code.locator(".aos-cp-trust")).toHaveText(`Asks first on ${searchHost()}`);
+      // (a) Code: the person's way to the pane's least width, the bar's arrow key.
+      await bar.focus();
+      for (let i = 0; i < 40 && (await bar.getAttribute("aria-valuenow")) !== "320"; i++) await bar.press("ArrowRight");
+      await expect(bar).toHaveAttribute("aria-valuenow", "320");
+      await expect.poll(() => code.evaluate((root) => Math.round(root.getBoundingClientRect().width)), { message: "the pane is drawn 320 px wide" }).toBe(320);
+      await fits(code, "Code, pane at 320");
+    } finally {
+      await bar.dispatchEvent("dblclick");
+      await a.finish();
+    }
+    try {
+      // (b) Sessions at the window's least width, where the layout squeezes the pane below 320.
+      await openTab(win, "chat");
+      await content(win).locator(".aos-ss-newbtn").click();
+      const chat = pane(win, "chat");
+      await expect(chat).toBeVisible();
+      await chat.locator(".aos-cp-tabnew").click();
+      await expect(chat.locator(".aos-cp-trust")).toHaveText(`Asks first on ${searchHost()}`);
+      await narrowTo(100);
+      await fits(chat, "Sessions, the window at its least width");
     } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
     expectNoErrors(h);
   });
