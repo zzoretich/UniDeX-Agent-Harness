@@ -13,14 +13,14 @@
  * client never reconnects (D21). call() never rejects; every failure is a result with isError.
  */
 
-const NO_APP = 'The Computer pane needs the UniDeX app running, with this session started from it (the Code page\'s New menu or a Chat thread).';
-// The app's marker says it runs with the Computer surface off (agent-computer D26): a run whose write surfaces leave it
-// out, so no bridge listens, by design. (The person's own switch, computer.enabled, answers from the bridge itself.)
-const OFF = 'The Computer pane is turned off in this UniDeX run, so this session cannot use the computer tools.';
+const NO_APP = 'The UniDeX browser is not reachable because this session was not started from the UniDeX app: use another browser tool, or ask the user to start the session from UniDeX\'s Code page or a Chat thread.';
+// The app's marker says the UniDeX browser is turned off for this run of the app (agent-computer D26): a run whose write
+// surfaces leave it out, so no bridge listens, by design. (The person's own switch, computer.enabled, answers from the bridge itself.)
+const OFF = 'The UniDeX browser is turned off in Settings for this run of the app: use another browser tool, or ask the user to turn the Computer pane on and restart UniDeX.';
 // The marker says the surface is on but the bridge did not start (no peer addon, no socket path, a failed listen).
-const FAILED = 'The Computer pane couldn\'t start in UniDeX. Quit and reopen the app; the app\'s log has the reason.';
-const CLOSED = 'The UniDeX app closed: the computer is unavailable for the rest of this session.';
-const TIMEOUT = 'The UniDeX app didn\'t answer in time.';
+const FAILED = 'The UniDeX browser could not start in this run of the app: ask the user to quit and reopen UniDeX, whose log has the reason.';
+const CLOSED = 'The UniDeX app closed, so its browser is gone for the rest of this session: use another browser tool.';
+const TIMEOUT = 'The UniDeX app did not answer in time: call computer_status to see whether the browser is still there.';
 
 function failure(text) { return { text, isError: true }; }
 

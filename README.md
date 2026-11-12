@@ -250,6 +250,7 @@ The ones you will use most. Every command, with every flag, is in [docs/commands
 | `/wrap` | End the session: keep what it learned as memories and summarise it into today's daily note. |
 | `/todo <text>` | Add a to-do, with "by Friday" as its due date and "urgent" as its priority. |
 | `/propose <idea>` | File a proposal for your Chief of Staff's review, with its own page. |
+| `/browser` | Open a page, search the web, check localhost or preview what you built in the UniDeX browser beside the session (inside the app). It also comes from asking: "open example.com in the browser". |
 | `/cross-review` · `/handoff` | Have the other provider review your plan or diff; send a scoped task to the model that suits it. |
 | `/team` | Your agent teams: boards, gates waiting on you, live runs. |
 | *sitrep* · *review persona flags* | Where your work stands; decide what your Chief of Staff has pending. |
@@ -349,8 +350,8 @@ Every hook, runner, provider rule and the graph pipeline in full: [docs/how-it-w
 ```
 brain/scripts      the runtime that gets vendored into your vault (hooks, collectors, recall, MCP server, persona)
 cli                the installer and the aos subcommands (persona, schedule, routines, cost, the Codex host) + two install rehearsals
-plugin             the Claude Code plugin: hooks.json, .mcp.json, bin/aos, 21 commands, 9 skills (also the source of codex-plugin)
-codex-plugin       the Codex plugin, generated from plugin/ by npm run build:codex-plugin: hooks.json, .mcp.json, bin/aos, 28 skills
+plugin             the Claude Code plugin: hooks.json, .mcp.json, bin/aos, 21 commands, 10 skills (also the source of codex-plugin)
+codex-plugin       the Codex plugin, generated from plugin/ by npm run build:codex-plugin: hooks.json, .mcp.json, bin/aos, 29 skills
 hud                the UniDeX app's interface (TypeScript), which the app compiles into its window
 app                the UniDeX macOS app: that interface in an Electron window (its own lockfile; see app/README.md)
 vault-template     the seed vault (AGENTICOS.md, MEMORY.md, brain/ incl. the duty routines, persona templates incl. the heartbeat watchdog, hourly tick and nightly reflect routines)

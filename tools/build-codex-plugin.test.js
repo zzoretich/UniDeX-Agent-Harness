@@ -39,10 +39,10 @@ test('the build is byte-stable, and check reports missing, edited, stale and non
   assert.deepEqual(check(a, dir), [], 'write replaces the tree, stale files included');
 });
 
-test('28 skills: the 21 commands and 9 skills of plugin/, cost and wrap merged, each named, described and marked', () => {
+test('29 skills: the 21 commands and 10 skills of plugin/, cost and wrap merged, each named, described and marked', () => {
   const files = build();
   const skills = [...files.keys()].filter((k) => /^skills\/[^/]+\/SKILL\.md$/.test(k));
-  assert.equal(skills.length, 28);
+  assert.equal(skills.length, 29);
   const expected = new Set([
     ...fs.readdirSync(path.join(ROOT, 'plugin', 'commands')).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3)),
     ...fs.readdirSync(path.join(ROOT, 'plugin', 'skills')),
@@ -78,4 +78,10 @@ test('no generated file names a path on the building machine', () => {
     assert.ok(!s.includes(ROOT), `${k} names the checkout`);
     assert.ok(!s.includes('aos-codex-plugin-'), `${k} names the build's scratch directory`);
   }
+});
+
+test('the browser skill is built for Codex with Codex tool names', () => {
+  const text = build().get('skills/browser/SKILL.md').toString('utf8');
+  assert.match(text, /mcp__agenticos__computer_status/);
+  assert.doesNotMatch(text, /mcp__plugin_agenticos_agenticos__/);
 });

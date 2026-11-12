@@ -23,7 +23,7 @@
  *   - graph_path      — the shortest chain of links between two notes
  *   - wrap_session    — the ONLY tool that writes the vault: apply an in-session extraction (memories, SESSION.md, drafts)
  *   - computer_open, computer_snapshot, computer_screenshot, computer_click, computer_type, computer_key, computer_scroll,
- *     computer_wait, computer_status — the UniDeX app's Computer pane, through its bridge socket (agent-computer D19); they never touch the vault
+ *     computer_wait, computer_status — the UniDeX app's browser, through its bridge socket (agent-computer D19); they never touch the vault
  */
 
 const path = require('path');
@@ -33,10 +33,11 @@ const { z } = require('zod');
 const brain = require('./lib/brain.js');
 const recall = require('./lib/recall.js');
 const { withReport } = require('../lib/pipeline-report.js');
+const { browserInstructions } = require('./lib/browser-instructions.js');
 
 const server = new McpServer(
   { name: 'agenticos', version: require('../package.json').version },
-  { capabilities: { tools: {} } }
+  { capabilities: { tools: {} }, instructions: browserInstructions({ vault: brain.PATHS.VAULT }) }
 );
 
 // Tool annotations (MCP spec). Codex CLI elicits approval for any MCP tool inside a sandboxed

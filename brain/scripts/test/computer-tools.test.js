@@ -9,6 +9,7 @@ const path = require('path');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const { COMPUTER_TOOLS, COMPUTER_LOOK } = require('../sdk/computer-tools.js');
+const { BROWSER_INSTRUCTIONS } = require('../sdk/lib/browser-instructions.js');
 const { NO_APP, OFF, FAILED, CLOSED, TIMEOUT } = require('../sdk/lib/computer-client.js');
 const { spawnSync } = require('child_process');
 
@@ -80,6 +81,38 @@ test('the server lists the nine computer tools with look tools read-only and act
   });
 });
 
+async function toolDefs() {
+  return withClient(makeVault(), async (client) => new Map((await client.listTools()).tools.filter((t) => t.name.startsWith('computer_')).map((t) => [t.name, t])));
+}
+
+test('every tool names the UniDeX browser', async () => {
+  const defs = await toolDefs();
+  assert.equal(defs.size, 9);
+  for (const [name, def] of defs) {
+    assert.match(def.title, /UniDeX browser/, name);
+    assert.match(def.description, /^In the UniDeX browser \(the browser inside the UniDeX app, which the user watches beside this session\), /, name);
+    assert.doesNotMatch(def.title + def.description, /Computer pane/, name);
+  }
+});
+
+test('status says what to do outside the app, open says what the browser is for', async () => {
+  const defs = await toolDefs();
+  assert.match(defs.get('computer_status').description, /Call this first/);
+  assert.match(defs.get('computer_status').description, /another browser tool/);
+  assert.match(defs.get('computer_status').description, /turned off/);
+  assert.match(defs.get('computer_status').description, /could not start/);
+  assert.match(defs.get('computer_status').description, /who is driving/);
+  for (const word of ['web page', 'localhost', 'preview']) assert.ok(defs.get('computer_open').description.includes(word), word);
+});
+
+test('each client refusal is one sentence with a next step', () => {
+  for (const s of [NO_APP, OFF, FAILED, CLOSED, TIMEOUT]) {
+    assert.equal((s.match(/[.!?](\s|$)/g) || []).length, 1, s);
+    assert.ok(!s.includes(';') && !s.includes('e.g.'), s);
+    assert.match(s, /: (use|ask|quit|call) /, s);
+  }
+});
+
 test("computer_open's description says how to search the web: DuckDuckGo's ?q=, how to open a result, and what asks", async () => {
   await withClient(makeVault(), async (client) => {
     const open = (await client.listTools()).tools.find((t) => t.name === 'computer_open');
@@ -124,6 +157,21 @@ test("the bridge's isError passes through", async () => {
       const r = await client.callTool({ name: 'computer_click', arguments: { ref: 'e9' } });
       assert.equal(r.isError, true);
       assert.equal(text(r), 'no such ref');
+    });
+  } finally { b.close(); }
+});
+
+test('with no marker the server sends no instructions (session-browser S15)', async () => {
+  await withClient(makeVault(), async (client) => {
+    assert.equal(client.getInstructions(), undefined);
+  });
+});
+
+test('a live marker with a bridge socket makes the server send the browser paragraph (session-browser S15)', async () => {
+  const b = await fakeBridge({});
+  try {
+    await withClient(markedVault({ pid: process.pid }, b.sock), async (client) => {
+      assert.equal(client.getInstructions(), BROWSER_INSTRUCTIONS);
     });
   } finally { b.close(); }
 });

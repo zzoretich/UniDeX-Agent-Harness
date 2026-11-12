@@ -22,10 +22,10 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 | covered in part | 103 |
 | N/A in the app | 49 |
 | not covered | 6 |
-| manual | 1 |
-| **total** | **320** |
+| manual | 3 |
+| **total** | **322** |
 
-Of the 271 items about the app (320 minus the 49 N/A), 264 are asserted (161 fully, 103 in part), 1 is manual (TM21), and the other 6 are
+Of the 273 items about the app (322 minus the 49 N/A), 264 are asserted (161 fully, 103 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
 not covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -513,6 +513,8 @@ again (`brain-ai`).
 | CP3 | Claude Code, a Code session: the pane follows the terminal, the activity log, Take over cancels a waiting ask, Hand back | covered in part | As CP1: on a Claude Code terminal's stand-in, `computer.spec.ts › a marked site…` and `› off screen…`; Take over and Hand back run on a Chat turn's stand-in (`› Take over cancels a pending ask…`, Chat). The live check (2026-11-08): the real CLI started from the New menu as the terminal's own process, the card, Deny and Allow once, and the activity log's lines. Take over on the Code page with the real CLI: by hand. |
 | CP4 | Codex, a Code session: an ask off screen badges Code, marks the row waiting, notifies, and the notification and the Notifications item open the pane on it | covered in part | As CP1: a Codex terminal's stand-in in `computer.spec.ts › a Code session opens a page…` (its `--no-daemon` line and the menu's preview, the pane following it, its log); the off-screen ask runs on a Claude Code terminal's stand-in (`› off screen…`, Claude Code). The live check (2026-11-08): the real Codex TUI started with `--no-daemon` (R70), its MCP server the CLI's own child with Codex's background server running and not; the card, Deny and Allow once. The off-screen notice with the real CLI: by hand. |
 | CP5 | Either host: + opens DuckDuckGo as "New tab" with an empty address bar; words typed in the address bar search it while an address still opens; an agent asked to search opens DuckDuckGo's results, then a result, with no card | covered in part | `computer.spec.ts › + opens the start page…`, against the fixture site standing in for DuckDuckGo (`AOS_E2E_START_PAGE`): + loads the start page, the tab reads "New tab" and the address bar is empty, words open its `?q=` search and the activity log has the line, and a stand-in agent opens a result by the address it shows, with no card; which typed text searches and which opens is unit-tested (`hud/src/ui/ComputerPane.test.ts`). The real DuckDuckGo, and a real host following `computer_open`'s description to search: by hand. |
+| CP6 | Claude Code: in a fresh session started from the app, "open example.com in the browser" leads to `computer_status` then `computer_open` with no tool named by the user; the `browser` skill is listed; outside the app the request ends at the model's other browser tools after one `computer_status` | manual | The suite asserts the tools' descriptions (`brain/scripts/test/computer-tools.test.js`), the paragraph the server sends at connect (`brain/scripts/test/browser-instructions.test.js`) and that the server sends it, or nothing, by the marker (`brain/scripts/test/computer-tools.test.js`) and that the skill is built (`tools/build-codex-plugin.test.js`); whether a real host reaches for the tools unprompted is the live check. |
+| CP7 | Codex: the same in plugin mode (`$agenticos:browser`) and in direct mode (`$browser`) | manual | As CP6: the build test pins the Codex tool names in the skill; a real Codex session choosing the tools is the live check. |
 
 ## Launch sequence
 
