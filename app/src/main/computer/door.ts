@@ -1,4 +1,4 @@
-// The door (session-browser S4): a Unix socket in the app's userData where a program running inside a session (a
+// The door (session-browser S23): a Unix socket in the app's userData where a program running inside a session (a
 // BROWSER opener, `gh`, a dev server) asks for ONE page to open in that session's browser. A client connects, writes one
 // line {"id":"<32 hex>","url":"<address>"}, reads {"ok":true} or {"ok":false}, and the door ends the connection.
 // The id is a secret that main puts in the session's environment, so it names a session without a process lookup. The
@@ -22,7 +22,9 @@ export function doorSocketPath(userData: string, tmp: string): string | null {
   return socketPathIn(userData, tmp, "door.sock");
 }
 
-export interface DoorOptions { path: string; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock }
+export interface DoorOptions { path: string; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock;
+  /** How long a connection may stay silent (2 s; tests shorten it). */
+  idleMs?: number }
 
 export class ComputerDoor {
   private server: net.Server | null = null;
@@ -34,6 +36,8 @@ export class ComputerDoor {
   private readonly own = new Map<string, string[]>();
   /** Times of a session's accepted opens in the last minute (the limit is per session, not per id). */
   private readonly opens = new Map<string, number[]>();
+  /** When the "more than 6 pages" line was last written for a session: it is written once a minute at most. */
+  private readonly warned = new Map<string, number>();
   private readonly clock: Clock;
 
   constructor(private readonly o: DoorOptions) { this.clock = o.clock ?? realClock; }
@@ -84,11 +88,14 @@ export class ComputerDoor {
       this.opens.set(to, [...(this.opens.get(to) ?? []), ...times]);
       this.opens.delete(from);
     }
+    this.warned.delete(from);
   }
 
   revoke(session: string): void {
     for (const [id, s] of this.ids) if (s === session) this.ids.delete(id);
     this.own.delete(session);
+    this.opens.delete(session);
+    this.warned.delete(session);
   }
 
   revokeAll(prefix: string): void {
@@ -106,15 +113,25 @@ export class ComputerDoor {
       const target = linkUrl(url);
       if (target === null) return false;
       const now = this.clock.now();
-      const recent = (this.opens.get(session) ?? []).filter((t) => now - t < MINUTE_MS);
+      // A time later than now (the clock moved back) counts as expired, so a jump cannot lock a session out.
+      const recent = (this.opens.get(session) ?? []).filter((t) => t <= now && now - t < MINUTE_MS);
       if (recent.length >= DOOR_PER_MINUTE) {
         this.opens.set(session, recent);
-        this.o.log(`door: ${session} asked for more than ${DOOR_PER_MINUTE} pages in a minute`);
+        const last = this.warned.get(session);
+        if (last === undefined || last > now || now - last >= MINUTE_MS) {
+          this.warned.set(session, now);
+          this.o.log(`door: ${session} asked for more than ${DOOR_PER_MINUTE} pages in a minute`);
+        }
         return false;
       }
       recent.push(now);
       this.opens.set(session, recent);
-      this.o.open(session, target);
+      try {
+        this.o.open(session, target);
+      } catch (err) {
+        this.o.log(`door: an open for ${session} failed (${err instanceof Error ? err.message : "unknown error"})`);
+        return false;
+      }
       return true;
     } catch {
       return false;
@@ -126,6 +143,7 @@ export class ComputerDoor {
     this.conns.add(sock);
     let buf = "";
     let done = false;
+    let handled = false;   // the first whole line is the only one: later bytes are ignored
     sock.setEncoding("utf8");
     const end = (): void => {
       if (done) return;
@@ -134,16 +152,17 @@ export class ComputerDoor {
       this.conns.delete(sock);
       sock.destroy();
     };
-    const timer = setTimeout(end, DOOR_IDLE_MS);
+    const timer = setTimeout(end, this.o.idleMs ?? DOOR_IDLE_MS);
     sock.on("error", end);
     sock.on("close", end);
     sock.on("data", (chunk: string) => {
-      if (done) return;
+      if (done || handled) return;
       buf += chunk;
       const nl = buf.indexOf("\n");
       const len = Buffer.byteLength(nl < 0 ? buf : buf.slice(0, nl));
       if (len > DOOR_LINE_MAX) return end();
       if (nl < 0) return;
+      handled = true;
       clearTimeout(timer);
       const ok = this.accept(buf.slice(0, nl));
       sock.end(`${JSON.stringify({ ok })}\n`, () => end());
