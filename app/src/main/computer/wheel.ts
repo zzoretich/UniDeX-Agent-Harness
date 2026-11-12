@@ -67,6 +67,34 @@ export class Wheel {
     if (h.resume) this.arm(computer);
   }
 
+  /** session-browser S5: the person ended whatever the agent was doing (the browser switched off, the active tab closed): a
+   *  new generation, so a call that started under the old one delivers nothing more. With `free`, nobody holds the wheel
+   *  afterwards (the browser is gone); without, the holder keeps it. */
+  interrupt(computer: string, free = false): void {
+    this.bump(computer);
+    if (free && this.holder(computer)) this.set(computer, null);
+  }
+
+  /** session-browser S22: a Code session's browser now has another key (its terminal was replaced): the hold, its idle
+   *  timer and the generation move with it, so a call that started under the old key still reads the same generation. */
+  rekey(from: string, to: string): void {
+    if (from === to) return;
+    this.disarm(from);
+    const h = this.holders.get(from);
+    const gen = this.gens.get(from);
+    this.holders.delete(from);
+    this.gens.delete(from);
+    this.disarm(to);
+    this.holders.delete(to);
+    if (gen !== undefined) this.gens.set(to, gen); else this.gens.delete(to);
+    // The holder names its session: renamed too, so the old terminal's late `turnEnded(from)` frees nothing here.
+    if (h) {
+      const moved: Holder = h.kind === "agent" ? { ...h, session: h.session === from ? to : h.session } : { kind: "user", resume: h.resume ? { ...h.resume, session: h.resume.session === from ? to : h.resume.session } : null };
+      this.holders.set(to, moved);
+      if (moved?.kind === "agent") this.arm(to);
+    }
+  }
+
   private bump(computer: string): void { this.gens.set(computer, this.gen(computer) + 1); }
 
   private set(computer: string, h: Holder): void {

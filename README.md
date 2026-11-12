@@ -250,7 +250,7 @@ The ones you will use most. Every command, with every flag, is in [docs/commands
 | `/wrap` | End the session: keep what it learned as memories and summarise it into today's daily note. |
 | `/todo <text>` | Add a to-do, with "by Friday" as its due date and "urgent" as its priority. |
 | `/propose <idea>` | File a proposal for your Chief of Staff's review, with its own page. |
-| `/browser` | Open a page, search the web, check localhost or preview what you built in the UniDeX browser beside the session (inside the app). It also comes from asking: "open example.com in the browser". |
+| `/browser` | Open a page, search the web, check localhost or preview what you built in the UniDeX browser beside the session (inside the app). It also comes from asking: "open example.com in the browser". Each session has its own browser, off until you turn it on (the power button on its pane, or **Turn on** when the agent asks); links you click in a session open there. |
 | `/cross-review` · `/handoff` | Have the other provider review your plan or diff; send a scoped task to the model that suits it. |
 | `/team` | Your agent teams: boards, gates waiting on you, live runs. |
 | *sitrep* · *review persona flags* | Where your work stands; decide what your Chief of Staff has pending. |

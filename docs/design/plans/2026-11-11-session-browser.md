@@ -37,6 +37,35 @@ Then the PR's live check on each host (spec §6, quoted in the task), the featur
 
 **Where a live check runs.** A live check needs this branch's runtime and plugin in a vault and its app build on screen, and the standing rule is that the owner's vault is re-vendored only from `main`. So at each checkpoint ask the owner which they want: the check in a scratch vault made for it from the worktree, or the check from `main` straight after the merge with any failure fixed forward before the next PR merges. Never re-vendor the owner's vault from a worktree without that answer.
 
+## Build status and rulings (2026-11-11)
+
+What is built, and where the build departed from the task text below. Where this section and a built task disagree, this section is what the code does. What is still to build (Tasks 13–24) is read against the code as it stands, not against the earlier tasks' text.
+
+| PR | Tasks | State |
+|---|---|---|
+| 1: told | 1–3 | merged to `main` |
+| 2: pane | 4–5 | merged to `main` |
+| 3: sessions | 6–15 | built on `feat/session-browser-sessions`; its checkpoint's reviews and fix wave are done |
+| 4–6 | 16–24 | to build |
+
+Rulings made while building, each one in the code:
+
+- **Keys (Task 7, F10).** A Code session's key is `code:<the id of the terminal's first process>` (`t<n>`, `TerminalSession.originPty`; `CODE_KEY = /^code:t[0-9]{1,9}$/`; in the HUD `codeSession(originPty)`), never the pool id and never the current process id. Where a later task says `code:<terminal id>`, `codeSession(sess.id)` or `code:${id}`, read it this way; Task 17's environment key is `code:<origin ?? id>`.
+- **Brought forward into Tasks 7–11.** `ComputerService.pageGone()`, `BrowserLike.destroy`, `ServiceOptions.destroyed`, the records' wiring (`BrowserRecords`, `boot()`, which also makes the Code records orphans), `label`, the terminal's `onEnd(id, terminal, why, origin)` forgetting `code:<origin>` only on "closed", the Sessions service's `trash` and `onRemoved`. Task 13 keeps only the pop-out and the power ask's notice.
+- **Power (Task 8).** `browserOf` is the only maker of a browser and throws while off; every maker, On's opens, "+" and navigate run in the slot's serial queue; state is always emitted; a pending power ask is one per session and agent; turning on by hand cancels the pending card and the held open then runs; the quiet period after Not now is a timestamp that belongs to the asking process (on Chat, the turn's).
+- **Sleep (Task 9).** A wake waits at most `LOAD_WAIT_MS`, for the active tab only; calls that only look are exempt while in flight; a restored tab's hidden address follows redirects; a failed reload or wake reports a fixed sentence with the hidden form of the address.
+- **Lifetime (Task 10).** A takeover shell carries its terminal's origin from the HUD's spawn through the schema and `PtyService` to `onEnd`. Real addresses leave a browser only through `ComputerBrowser.realAddresses()` (it throws once the browser is gone), read by `switchOff` and the record writer. Every reopen goes through `restore` and `wake`. `flushForQuit()` closes the records before the shutdown destroys anything; `quitCancelled()` reopens them and brings the browsers that were on back asleep (a failed update install: `quitCalledOff` in `quit-gate.ts`). `describe(session, { title?, conversation? })` and `move(from, to)` exist; a notification or ask names a session by its described title.
+- **Delete thread (Task 11).** `SessionService.remove(thread)` answers `EINVAL` (not a v4 id), `EBUSY` (a turn runs, or the thread is already being deleted), `ENOENT`, `EIO` (the Trash refused and the file is still there; nothing else changed). `send` refuses a thread that is being deleted.
+- **The pane (Task 12).** The pane is a strip when the surface is off, no session is followed, the followed browser is off with no power ask pending, or the user collapsed it; only the last is saved. A strip pushes no rectangle. The collapse button and the Code top bar's Computer button act only when the drawn state is the user's (surface on, a session followed, its browser on); `paneState()` answers `"off" | "browser-off" | "collapsed" | "open"`, and the pane's `changed` option tells the top bar when that answer changes. The top bar's button never turns a browser on (S2). The tour's `computer` and `computer-power` steps anchor on the strip while the pane is one; `computer-size` has no anchor there and is skipped. On Code the terminal keeps its 480 px floor until the user sizes the pane.
+- **A power ask's notice (Task 13, F11).** See F11: the page's `show` call says whether the pane is in view, and `paneShows(session)` replaces `selectedIs(session)`.
+- **After the plan's review by the other provider (round 1).** `move(from, to)`: the terminal being replaced wins when it has something to hand over (its browser is on, or it is off with remembered tabs). When the replacement already has a browser or remembered tabs (the user turned it on in the seconds before the handoff), that one is ended first and the old terminal's browser moves over with its tabs, not reloaded; when the old terminal has nothing to hand over, the replacement keeps its own and `move` is false. A call the handoff catches in flight on the ended slot answers that the session restarted and raises no ask (SB-01). A handoff while popped out is Task 13's. Every label main hands out goes through `cleanTitle` (no control or direction characters, 60 at most), a thread's title and an agent's launch label included, not only a described Code title (SB-04).
+- **After round 2.** The record file never outgrows what the next start will read: when the file to write would pass `FILE_MAX`, the oldest records go (orphans first) until it fits, and one line is logged; before, eleven sessions with fifty very long addresses wrote a file the next start discarded whole (SB-06).
+- **After round 3.** When the user closes a browser's last tab the browser switches off (S5), and an action that close interrupted answers the tab-closed sentence, not the switch's "go on without the browser": closing a tab starts no quiet period and is not a request to stay out (SB-09).
+- **After round 4.** A Code session's key is checked against the terminals' FIRST processes: a takeover shell's own process id is held by the terminal service but is not a session key, so the page calls refuse `code:<that id>` (`PtyService.holdsOrigin`), and no second browser can be made for one terminal (SB-11).
+- **After round 5 (the last).** The awake limit is applied again when an exemption ends (an agent's turn or hold, a pending ask), not only on a selection or a wake (SB-15). No address leaves main with a user name or password in it: a stored address loses them when the record is read and written, and a tab's shown address always does (SB-16). A record keeps as many tabs as a live browser can hold, 20, so waking the largest record loses none (SB-17).
+- **PR 3's checkpoint (four reviewers by area and the other provider's inspection of the diff).** The saved browsers are restored first thing once the app is ready (`restoreComputer()`), never at module load: a thread's browser that was on is restored through Electron's session API, which throws before `ready`; one record that fails to restore leaves the others alone, and an end-to-end test quits and relaunches the app. Whether a thread exists is yes, no or cannot tell (`SessionService.exists`): only a confirmed missing thread loses its record. A woken or reopened tab answers its kept address (`Tab.pending`) until its own first commit, so Off, a sleep, a quit or a Reload in that window loses nothing. A browser never comes back on with no tabs. A hand-over whose call fails keeps the old terminal and its browser, with a notice; one that answers false goes on as before. `refresh(key)` never makes a slot. A followed session whose state is not known yet draws a strip; `paneState()` also answers `"no-session"`. The strip's power button acts on the session followed when it is pressed. The user's own Pop out, pressed again while popped out, brings the window forward (`front`); a follow never does. `remove` waits for a turn that has written its done line and is only recording, instead of refusing. A terminal's origin is always the first process of its chain. A tool's title and description never say "Computer pane".
+- **End-to-end runs.** `computerWindowShown()` needs the test app's window to hold OS focus, and the harness does not manage focus: `computer.spec.ts` is run in its own invocation.
+
 ## Global Constraints
 
 - Electron `^44.5.1`, arm64 only; `app/` needs Node 22.12+; the runtime, `cli` and `tools` stay Node ≥ 20 CommonJS with no new runtime dependency.
@@ -62,7 +91,7 @@ Then the PR's live check on each host (spec §6, quoted in the task), the featur
 
 1. **A damaged record file.** `browsers.json` cut short by a crash, 10 MB, or hand-edited to hold a `file:` or `javascript:` tab: the app starts, the bad records are dropped, and a restored tab never opens anything but `http:` or `https:`. Test: Task 6, `a damaged file reads as empty` and `a record keeps only web addresses`.
 2. **Power changes under a pending ask.** The user answers Turn on after the session was closed or deleted, or switches Off while the allowed open is still loading: no browser comes back for a forgotten session, and an Off wins over an open in flight. Test: Task 8, `Off wins over an open in flight`; Task 10, `Turn on for a forgotten session opens nothing`.
-3. **Odd link and opener addresses.** `http://0.0.0.0:3000`, `HTTP://LOCALHOST`, an address with `user:pass@`, 8,193 characters, `[::1]`: each opens normalised or is refused, and an `http:` address never reaches the default browser. Test: Task 14, `linkUrl normalises or refuses`; Task 16, `the door refuses what linkUrl refuses`.
+3. **Odd link and opener addresses.** `http://0.0.0.0:3000`, `HTTP://LOCALHOST`, an address with `user:pass@`, 8,193 characters, `[::1]`: each opens normalised or is refused, and an `http:` address that the app receives (a link clicked in a session, a message the door accepts or refuses) never reaches the default browser. The opener's own fallback is a different case, stated in Task 17: with no door to reach there is no session browser left, and the address goes where it went before the app set `BROWSER`. Test: Task 14, `linkUrl normalises or refuses`; Task 16, `the door refuses what linkUrl refuses`.
 4. **A hostile session title.** Direction-override characters, new lines, 5,000 characters or only whitespace on the power card, its notification, the header and the pointer's tag: stripped, cut at 60, never empty, and the pointer's image keeps its size. Test: Task 10, `cleanTitle`; Task 23, `the tag is cut to fit`.
 5. **A window too narrow for both columns.** A row under 680 px (360 + 320): the pane stays at 320 px or collapsed, never a negative or zero width, and Half and Wide are disabled. Test: Task 4, `a narrow row holds the minimum`.
 
@@ -409,7 +438,7 @@ test("move re-keys; forget removes", …);
 
 ```ts
 // policy/computer.ts: placeAllowed is deleted
-export const CODE_KEY = /^code:[0-9]{1,9}$/;
+export const CODE_KEY = /^code:t[0-9]{1,9}$/;   // the id of the terminal's first process (Findings F10)
 export const CHAT_KEY = /^chat:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export function sessionAllowed(key: string, has: { terminal(id: string): boolean; thread(id: string): boolean }): boolean;
 PtyService.holds(id: string): boolean;         // a terminal begun and not yet closed (its `sessions` or `started` map)
@@ -423,7 +452,7 @@ ServiceOptions.browser: (session: string, hooks: BrowserHooks) => BrowserLike;
 ServiceOptions.label?: (session: string) => string | undefined;   // main's own name for a key: a thread's title
 ComputerService.select(session: string | null): ComputerState | null;
 // HUD
-export const codeSession = (terminalId: string): string => `code:${terminalId}`;   // computerStore.ts, beside chatSession
+export const codeSession = (ptyId: string): string => `code:${ptyId}`;   // takes TerminalSession.originPty (Findings F10)   // computerStore.ts, beside chatSession
 ComputerPane.follow(sel: { session: string; label: string } | null, none?: string): void;   // `none`: the line shown when there is no session
 ```
 
@@ -709,12 +738,15 @@ test("a power ask opens the strip to its card", …);                   // off w
 - Produces:
 
 ```ts
-ServiceOptions.popOut?: (session: string, show: { label: string; on: boolean }) => void;   // called when the selection, its power or its label changes while popped out
+ServiceOptions.popOut?: (session: string | null, show: { label: string; on: boolean }) => void;   // called when the selection, its power or its label changes while popped out; null: nothing is selected
 ServiceOptions.destroyed?: (session: string) => void;                                        // the service destroyed that session's browser
-ComputerService.selectedIs(session: string): boolean;                                        // the pane's selection, whatever its rectangle
+ComputerService.show(bounds: Rect | null, inView?: boolean): void;                           // inView: the page's pane is in view (not behind another rail tab); default: bounds !== null
+ComputerService.paneShows(session: string): boolean;                                         // the pane's selection while the pane is in view, whatever its rectangle (F11)
+window.aos.computer.show(bounds: ComputerRect | null, inView?: boolean): void;               // ComputerShowArgs gains inView: z.boolean().optional()
 ```
 
-- A `power` ask has no view to be on screen with, so the notifier's `visible` (`index.ts:226`) is `selectedIs(ask.computer)` for it and `onScreen(ask.computer)` for every other ask, each with `computerWindowShown()`: the card opens in the pane for the selected session, and any other session's power ask raises AC-D27's notification, badge and row dot (S12).
+- A `power` ask has no view to be on screen with, and main keeps its selection when the page goes behind another rail tab (the pane then only sends `show(null)`). So the pane's `push()` sends `show(bounds, inView)` with `inView` true while its page is the one in view, and the notifier's `visible` (`index.ts:234`) is `paneShows(ask.computer) && computerWindowShown(true)` for a `power` ask (the main window is the holder: the card is never in the pop-out) and `onScreen(ask.computer) && computerWindowShown()` for every other ask: the card opens in the pane for the selected session in view, and a power ask for any other session, or raised while the user is on another tab, raises AC-D27's notification, badge and row dot (S12).
+- The pop-out with nothing selected (Vault chat picked, the selected session closed) stays open and empty, titled `<brand> Browser`; a state change never gives the pop-out window the focus.
 
 - `index.ts`: `computerBrowsers` is keyed by session and loses an entry on `destroyed`; `records = new BrowserRecords({ file: <userData>/computer/browsers.json })`, `records.orphanCode()` and then `computerService.boot()` before the bridge starts; `label: (key) =>` the thread's title for a `chat:` key; `onEnd: (id, terminal, why) => { codeMirror.end(id, terminal); if (why === "closed") computerService.forget(`code:${id}`); }`; the Sessions service gets `trash` and `onRemoved`; where the page goes (`:655-671`) `computerService.pageGone()` runs when the app is not quitting; `shutdownComputer` calls `computerService.flush()` first. `popOutComputer(session, show)` moves the browser it held back home, takes the selected one when it is on, and titles the window `<brand> Browser: <label>` or `<brand> Browser: <label> (off)`; the window stays open and empty while the selection's browser is off (S21).
 
@@ -724,7 +756,8 @@ ComputerService.selectedIs(session: string): boolean;                           
 test("the pop-out follows the selected session", …);                  // popped out; select("code:2"): popOut("code:2", { label: "Write docs", on: true })
 test("popped out, an off browser leaves the window empty and says so", …);   // select("code:3"): popOut("code:3", { label, on: false })
 test("turning the selected browser on while popped out shows it there", …);
-test("selectedIs is true for the selection even with no rectangle", …);       // select("code:1"); show(null): selectedIs("code:1") is true and onScreen("code:1") is false
+test("the pane shows the selection while it is in view, with or without a rectangle", …);   // select("code:1"); show(null, true): paneShows("code:1") is true and onScreen("code:1") is false; show(null, false) and show(null): false
+test("popped out, selecting nothing empties the window", …);          // select(null): popOut(null, { label: "", on: false })
 ```
 
 - [ ] **Step 2: Run** `(cd app && npm run test:unit)`. Expected: FAIL.
@@ -751,13 +784,14 @@ CH.computerOpenLink = "computer:open-link";  ComputerOpenLinkArgs = z.object({ s
 window.aos.computer.openLink(session: string, url: string): Promise<Result<null>>;
 // hud/src/data/linkRoute.ts
 export const HTTP_NOTICE = "This link is http, not https, so it opens only in a session's browser.";
+export const REFUSED_NOTICE = "This link was not opened: its address holds a user name or password, or is too long.";
 export type LinkRoute = { to: "session"; session: string; url: string } | { to: "outside"; url: string } | { to: "notice"; text: string };
 export function linkRoute(url: URL, session: string | null, computerOn: boolean): LinkRoute | null;   // null: not http or https
 export function followLink(route: LinkRoute, host: { computer?: HostComputer; openExternal(url: string): Promise<void>; notice(text: string): void }): Promise<void>;
 ```
 
-- `linkRoute`: with a session and the Computer surface on, `session`; otherwise `https:` is `outside` and `http:` is the notice. `followLink` on a refused `openLink` falls back the same way.
-- Callers: the terminal's link handlers pass their own session (`codeSession(sess.id)`; a shell's terminal too); the Code chat passes the active session; the Sessions reader gets one delegated `click` listener on the message list that takes `a[href]`, parses it, and routes with `chatSession(thread.id)` for an open thread and `null` in Vault chat and History, calling `preventDefault()` whenever the route is not null. `agenticos:` links and vault paths go where they go today.
+- `linkRoute`: with a session and the Computer surface on, `session`; otherwise `https:` is `outside` and `http:` is the notice. `followLink` on an `openLink` that answers `EINVAL` (the address is one `linkUrl` refuses: it holds a user name or password, or is too long) shows `REFUSED_NOTICE` and opens nothing anywhere; on any other refusal (the surface went off, the session is gone) it falls back as a link outside a session does.
+- Callers: the terminal's link handlers pass their own session (`codeSession(sess.id)`; a shell's terminal too); the Code chat passes the active session, and the chat of a PAST conversation shown in the stage passes none (`CodeStage` gives `pastChat` its own callback: a past conversation has no browser, S1, even while a terminal is active behind it); the Sessions reader gets one delegated `click` listener on the message list that takes `a[href]`, parses it, and routes with `chatSession(thread.id)` for an open thread and `null` in Vault chat and History, calling `preventDefault()` whenever the route is not null. `agenticos:` links and vault paths go where they go today.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -772,6 +806,8 @@ test("a link clicked in an off session turns its browser on and opens a new tab"
 test("a clicked link wakes a sleeping browser and adds a tab", …);
 test("a link in a session goes to its browser, http or https", …);
 test("outside a session https goes out and http shows the notice; the same with Computer off", …);
+test("a link the session's browser refuses is opened nowhere", …);                     // openLink answers EINVAL for "https://user:pass@example.com/": REFUSED_NOTICE, openExternal not called; any other refusal: the outside route
+test("a link in a past conversation's chat goes outside, though a terminal is active", …);   // the stage showing a past conversation over an active session whose browser is on: an https link is routed with session null (outside), an http link shows HTTP_NOTICE; openLink was not called
 test("agenticos: and file links are not web links", …);                                 // linkRoute is null
 // sandbox.spec.ts: "openLink" joins the computer list
 ```
@@ -832,9 +868,10 @@ export class ComputerDoor {
   start(): Promise<boolean>;                 // listens at mode 0600 in a 0700 folder; false when it cannot
   stop(): void;
   listening(): boolean;
-  issue(session: string): string;            // 32 hex characters from randomBytes(16); the same id for as long as the session lives
-  move(from: string, to: string): void;
-  revoke(session: string): void;
+  issue(session: string): string;            // 32 hex characters from randomBytes(16); the same id for as long as the session lives. A session may hold several ids (see move): issue answers its own first one
+  move(from: string, to: string): void;      // every id of `from` now names `to`, beside the ids `to` already has; none is replaced or revoked; the two sessions' open counts for the last minute are added
+  revoke(session: string): void;             // every id the session holds
+  revokeAll(prefix: string): void;           // every id of a session whose key starts with prefix ("code:" when the page goes)
   accept(line: string): boolean;             // one message; what a connection's line is given to
 }
 ```
@@ -851,6 +888,8 @@ test("an unknown, a revoked and a malformed id open nothing", …);
 test("the door refuses what linkUrl refuses", …);                    // file:, javascript:, user:pass@, 8,193 characters → false; "http://0.0.0.0:3000" arrives as "http://localhost:3000/"
 test("a seventh open within a minute is dropped and logged", …);     // six true, the seventh false with one log line that holds no id; 60 s later true again
 test("issue is stable and move keeps the id under the new key", …);
+test("a replacement that already has its own id keeps it through the handoff", …);   // issue("code:t1") = a; issue("code:t2") = b (the replacement's CLI already has b in its environment); b opens under code:t2 before move; move("code:t1", "code:t2"): a and b both open under code:t2, issue("code:t2") is still b, nothing opens under code:t1; revoke("code:t2") ends both
+test("revokeAll drops every id under a prefix and leaves the others", …);   // ids for code:t1, code:t2 and chat:<uuid>; revokeAll("code:"): the two Code ids open nothing, the thread's still does; issue("code:t1") is a new id
 test("junk, an oversize line and a silent connection are closed", …);   // a real socket in a temp folder: mode 0o600; 17 KiB with no newline → closed; nothing for 2 s → closed
 ```
 
@@ -882,8 +921,8 @@ SessionServiceOptions.browserEnv?: (session: string, base: NodeJS.ProcessEnv) =>
 
 - `envFor` gives exactly three variables (spec §4.8): `BROWSER` and `BRAINSTORM_OPEN_CMD`, both the opener's path, and `AOS_BROWSER_SESSION`, the base64url of `JSON.stringify({ id: issue(session), door: <socket path>, prev: base.BROWSER ?? null })`.
 - Main adds them itself after the page's variables have passed the allowlist (`policy/programs.ts`), so the allowlist does not grow: a shell terminal (`pty.ts:208`) and a Code agent (`:331`) under `code:<id>`, a Chat turn (`sessions.ts:481`) under `chat:<thread>`; none when the Computer surface is off.
-- The opener is CommonJS with no dependency and starts `#!/usr/bin/env node`. It takes its last argument as the address. A `http:` or `https:` address with a readable `AOS_BROWSER_SESSION`: it connects to `door` (3 s at most), writes the line and exits 0 on either answer; a refused open opens nothing anywhere. Any other address, a missing or unreadable variable, or a door it cannot reach: it runs `prev` with the address as one argument (through `/bin/sh -c '<prev> "$1"' sh <address>`), or `/usr/bin/open <address>` when there is no `prev`, and exits with that program's status.
-- `index.ts`: the door starts beside the bridge with `open: (session, url) => void computerService.openFromProgram(session, url)` (Task 18; until then a logged no-op), `door.move` beside `computerService.move`, `door.revoke` beside every `forget`, and `door.stop()` at quit. `electron-builder.yml` ships `resources/opener` as `opener` under Resources; `verify-dist.mjs` checks the file is there and executable.
+- The opener is CommonJS with no dependency and starts `#!/usr/bin/env node`. It takes its last argument as the address. A `http:` or `https:` address with a readable `AOS_BROWSER_SESSION`: it connects to `door` (3 s at most), writes the line and exits 0 on either answer; a refused open opens nothing anywhere. With a readable variable, any other address or a door it cannot reach: it runs `prev` with the address as one argument (through `/bin/sh -c '<prev> "$1"' sh <address>`), or `/usr/bin/open <address>` when `prev` is null, and exits with that program's status. With the variable missing or unreadable (not base64url JSON holding a 32-hex `id` and a `door` path) the previous `BROWSER` is unknown, since it travels only inside that variable: the opener runs `/usr/bin/open <address>`, whatever `BROWSER` was before. The decision is a pure function the script exports, `route(argv: string[], env: NodeJS.ProcessEnv): { to: "door"; door: string; id: string; url: string } | { to: "prev"; cmd: string; url: string } | { to: "system"; url: string }`; run as a program (`require.main === module`) it acts on it. The fallback on a door it cannot reach is deliberate, for web addresses too: the door is gone only when the app that owns the session's browser has quit or lost its socket, a session started while the door was down never got the opener at all (`envFor` is `{}`), and the opener is no boundary (a program that wants the default browser can run `open`, or unset the variable, which already takes this path). A door that ANSWERS and refuses is the opposite case and opens nothing anywhere.
+- `index.ts`: the door starts beside the bridge with `open: (session, url) => void computerService.openFromProgram(session, url)` (Task 18; until then a logged no-op), `door.move` beside `computerService.move` (only when that move answered true; the replacement terminal was started before the handoff and its CLI already carries its own id, which must stay valid: `move` adds the old terminal's id to it, it never replaces it), `door.revoke` beside every `forget`, `door.revokeAll("code:")` beside `computerService.pageGone()` and before a new page can start a terminal (the page's Code keys start again at `t1`, so an id issued before the page went must never reach the terminal that reuses its key: a detached program keeps its environment), and `door.stop()` at quit. `electron-builder.yml` ships `resources/opener` as `opener` under Resources; `verify-dist.mjs` checks the file is there and executable.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -891,9 +930,11 @@ SessionServiceOptions.browserEnv?: (session: string, base: NodeJS.ProcessEnv) =>
 test("the opener sends a web address to the door and exits 0", …);        // a fake door answers ok and received { id, url }
 test("a refused open opens nothing", …);                                  // the door answers { ok: false }: exit 0; the fake prev program did not run
 test("anything that is not a web address goes to the previous BROWSER", …);   // "file:///tmp/x.html": prev ran with it; no connection was made
-test("with no door, or no variable, it falls back to the previous BROWSER", …);
+test("with no door it falls back to the previous BROWSER", …);   // http://localhost:5173 with the socket path gone: prev ran with it, exit status prev's
+test("with the variable missing or malformed it goes to the system's opener, whatever BROWSER was", …);   // route(["http://localhost:5173"], {}) and with AOS_BROWSER_SESSION "not-base64" (and a decodable one with no id): { to: "system" }; a readable variable with prev "firefox" and no door: { to: "prev", cmd: "firefox" }; with prev null: { to: "system" }
 test("envFor gives the three variables, and none while the door is down", …);  // BROWSER === BRAINSTORM_OPEN_CMD === the opener's path; the decoded variable has a 32-hex id, the socket path and prev "firefox"
 test("openerPath uses a copy when its own path holds whitespace", …);
+test("an id issued before the page went opens nothing after it, though its key is in use again", …);   // issue("code:t1"); revokeAll("code:"); issue("code:t1") again: the first id is refused, the second opens
 test("a shell, a Code agent and a Chat turn each start with their own session's three variables", …);   // PTY and Sessions tests; with Computer off, none
 ```
 
@@ -920,13 +961,14 @@ CH.computerOpenOutside = "computer:open-outside";                    // NoArgs
 window.aos.computer.openOutside(): Promise<Result<null>>;
 ```
 
-- `openFromProgram`: on a browser that is on, it wakes it and opens a new tab whose opener is the session's label. Off: one `power` ask with S3's wording, waited on by no tool call; Turn on switches on and opens; Not now opens nothing and starts the quiet period; opens that arrive while that ask is pending (6 at most) open together on Turn on; in the quiet period an open is dropped. A session with no slot yet (a shell that never had an agent) gets one.
+- `openFromProgram`: on a browser that is on, it wakes it and opens a new tab whose opener is the session's label. Off: one `power` ask with S3's wording, waited on by no tool call; Turn on switches on and opens; Not now opens nothing and starts the quiet period; opens that arrive while that ask is pending (6 at most) open together on Turn on; in the quiet period an open is dropped. A session with no slot yet (a shell that never had an agent) gets one, but only a session the app holds: `ServiceOptions.held: (session: string) => boolean` (index.ts: `sessionAllowed` with the held terminals and threads, the check the page calls use); an open for any other session is dropped and logged, and makes no slot. The tools' own rules apply to a program's open too: with `computer.enabled` off, or when the session's agent is Read only (S3: a Read only session cannot open, so it never asks), the open is dropped and logged, with no tab and no ask; a shell with no agent is the user's own and may open.
 - `openOutside`: `ENOENT` with nothing selected or no tab; `EROFS` (`Only https pages open in your browser.`) when `o.outside` refuses; the tab stays open. The pane's button is `button.aos-cp-icon.aos-cp-outside` (icon `external-link`, label `Open in my browser`) right of the trust button, disabled while the active tab is not `https:`.
 - The final computer list in `sandbox.spec.ts`: `["answer", "describe", "handBack", "mark", "move", "nav", "navigate", "onEvent", "openLink", "openOutside", "popOut", "power", "select", "show", "tab", "takeOver"]`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
+test("a program's open from a Read only session, or with the setting off, opens nothing and asks nothing", …);   // openFromProgram for a session whose live agent is Read only, on and off: no tab, no power ask, one log line; the same with computer.enabled false; a shell with no agent opens
 test("a program's open on an on browser adds a tab without an ask", …);
 test("a program's open on an off browser asks, and Not now opens nothing", …);
 test("opens that arrive while the ask is pending open together on Turn on", …);
@@ -1026,11 +1068,12 @@ export function isLoopback(url: string): boolean;    // localhost, *.localhost, 
 // browser.ts
 ComputerBrowser.entryMethod(go: ComputerNavGo, tab?: number): "GET" | "other" | "unknown";
 ComputerBrowser.hoverAt(r: Resolved, valid: () => boolean): Promise<void>;
-ComputerBrowser.click(r: Resolved, valid: () => boolean, o?: { double?: boolean }): Promise<void>;   // double: a second press and release with clickCount 2
+ComputerBrowser.click(r: Resolved, valid: () => boolean, o?: { double?: boolean }): Promise<void>;   // double: a second press and release with clickCount 2, sent only after the checks of the first press pass again
 BrowserLike gains "entryMethod" | "hoverAt"
 ```
 
 - Arguments: `computer_tab { index, close? }`, `computer_nav { go }`, `computer_hover { ref } | { x, y }`, `computer_click` gains `double?`. A bad argument's refusal says what to give.
+- A double click's second press is a second act on the page. Just before it the browser checks again what it checked before the first (R76): the document is still the one the first press went to, the judged control is still the one under the point, and `valid()` still holds. If any changed (the first click replaced a harmless button with another control at the same place), nothing more is sent and the call answers as a click does when the page changed under it.
 - The gate (S17): a tab switch, a hover, and Back, Forward or Reload onto a GET entry go without asking; onto an entry of another or an unknown method they ask `resend` (or, when F7 says a method is never readable, Reload goes free on a loopback address and asks elsewhere); closing a tab the user opened asks `closetab`; closing its own goes. All three are acting tools: a read only session is refused, and the wheel and the lease apply as to a click.
 - The agent's close of the last tab opens the start page first, so the browser stays on (S5).
 
@@ -1045,6 +1088,7 @@ test("a tab switch, a hover and Back onto a GET entry do not ask", …);
 test("Reload after a form POST asks; onto GET it does not; an unknown method asks", …);
 test("closing a tab the user opened asks; closing its own does not", …);
 test("the agent's close of the last tab leaves the browser on at the start page", …);
+test("a double click stops when its first click replaced the control under the pointer", …);   // the first click swaps the judged button for another control at the same point (same document): no second press or release is sent, and the reply is the page-changed refusal; the same when the document changed or valid() turned false between the two
 test("double sends one double click", …);                                 // two press and release pairs, clickCount 1 then 2
 test("a read only session cannot switch tabs, go back or hover", …);
 test("each of the three replies ends with the page's outline", …);
@@ -1072,18 +1116,21 @@ export const CONSOLE_MAX = 200;  export const CONSOLE_TEXT_MAX = 2000;
 export interface ConsoleEntry { at: number; kind: "error" | "warning" | "exception" | "request"; text: string }
 export class ConsoleLog { add(e: ConsoleEntry): void; clear(): void; list(): readonly ConsoleEntry[] }   // the newest 200, each text cut at 2,000 characters
 export const NO_ENTRIES = "No errors, warnings or failed requests since this page loaded.";
+export function plainAddresses(text: string, originOnly?: boolean): string;   // every http(s) address without its query and fragment; originOnly: without its path too
 export function consoleText(entries: readonly ConsoleEntry[], scrub: (s: string) => string): string;   // one line each, "[kind] text", scrubbed; NO_ENTRIES when empty
 // browser.ts
 ComputerBrowser.console(tab?: number): Promise<string>;
 BrowserLike gains "console"
 ```
 
-- An awake tab listens to `Runtime.consoleAPICalled` (types `error`, `warning`, `assert`), `Runtime.exceptionThrown`, `Network.loadingFailed` (not a cancelled one) and `Network.responseReceived` with a status of 400 or more (`request: <status> <method> <address>`); the log is cleared when the tab's main frame commits a navigation. The text is scrubbed with the tab's own scrubber and wrapped as untrusted page text exactly as a snapshot is. It is a look tool: it answers while the user or the session's own action holds the wheel, and a read only session may call it.
+- An awake tab listens to `Runtime.consoleAPICalled` (types `error`, `warning`, `assert`), `Runtime.exceptionThrown`, `Network.loadingFailed` (not a cancelled one) and `Network.responseReceived` with a status of 400 or more (`request: <status> <method> <address>`); the log is cleared when the tab's main frame commits a navigation. Before an entry is stored, every `http:` or `https:` address in its text, a request's own included, loses its query and fragment (`plainAddresses(text)`), and keeps only its origin while the tab's path is hidden (`pathHidden`): a tab restored from the record has no memory of the secrets in its own address, so the scrubber alone would let a failed request's query through. The text is then scrubbed with the tab's own scrubber and wrapped as untrusted page text exactly as a snapshot is. It is a look tool: it answers while the user or the session's own action holds the wheel, and a read only session may call it.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
 test("the log keeps the newest 200 and cuts long texts", …);
+test("plainAddresses drops every query and fragment, and the path when asked", …);
+test("a failed request on a restored tab does not give away its query", …);   // a tab restored at https://site.test/cb?code=SECRET whose request for that address answers 404: computer_console's text has no SECRET, and names https://site.test/cb
 test("consoleText scrubs and says so when there is nothing", …);          // a secret in an entry is gone from the text; [] → NO_ENTRIES
 test("an error, a warning, an exception and a 404 are kept; a log and a cancelled request are not", …);   // computer-browser.test.ts
 test("the log starts again at a navigation", …);
@@ -1246,10 +1293,12 @@ Written by the probe steps, one numbered line each, in the commit of the task th
 
 - F1 (Task 1): not determined offline. Checked `codex --help`, `codex mcp --help` (list/get/add/remove/login/logout, no instructions option), `grep -rn instructions cli/codex-host.js docs/` (only unrelated host-instruction text) and strings in the installed codex-cli 0.167.0 binary (internal names such as `namespace_instructions_prefix` and `usage_instructions` exist, but nothing that shows an MCP server's `instructions` reaching the model). open: for PR 1's live check.
 - F2 (Task 1): not determined offline. The codex-cli 0.167.0 binary has `skills_instructions` and `include_skills_usage_instructions` config strings, but whether a Chat turn lists plugin skills cannot be told without running a turn. open: for PR 1's live check.
-- F3 (Task 9): whether a tab's secret memory outlives its view.
+- F3 (Task 9): yes: a tab's `SecretMemory` is a plain in-process object held on the `Tab` record and read only through `t.memory` (never through the `WebContents`), so sleep keeps the object and wake hands the same one to the replacing view; no tab is exempt from sleep for holding a memory.
 - F4 (Task 16): whether a variable main sets reaches a command the agent runs, per host and session kind.
 - F5 (Task 16): how `BRAINSTORM_OPEN_CMD` and `BROWSER` are run and split.
 - F6 (Task 16): which sign-ins finish in the embedded browser.
 - F7 (Task 19): whether a history entry's method can be read.
 - F8 (Task 23): whether an `ImageView` works above a tab's view in both windows.
 - F9 (Task 23): whether the tag can be drawn by an offscreen page of main's own.
+- F10 (Task 7, a ruling during the build): the plan took main's terminal id for the page's pool id (`terminalPool.ts`). Main knows a terminal by its processes' ids (`t<n>`, counted by the page's bridge), and one terminal gets a new one each time its process changes. A Code session's key is therefore `code:<the id of the terminal's first process>` (`TerminalSession.originPty`), which is the key main already registers the terminal's agent under and is stable for the terminal's life. Tasks 10, 14 and 17 follow it: the takeover shell's spawn tells main its terminal's first process, so Close session forgets the right browser; links and the opener use the same key. Task 7 also brought forward `pageGone()`, `BrowserLike.destroy` and `ServiceOptions.destroyed` (planned for Tasks 10, 8 and 13), so a reloaded page's first terminal cannot inherit an earlier one's browser.
+- F11 (Task 13, a ruling before the build): the plan made a power ask visible whenever its session is the pane's selection (`selectedIs`). Main keeps the selection while the page is behind another rail tab (`ComputerPane.hide()` sends only `show(null)`), so a Turn on request raised while the user is on Pulse would raise no notification with its card on a page they are not looking at. The page's `show` call gains an optional `inView`, and the notifier uses `paneShows(session)`: selected and in view. No new channel.

@@ -291,6 +291,8 @@ const SETTINGS = [
     help: 'The in-app browser agents can drive beside Code terminals and Sessions chats (the Code and Chat pages). Off, its agents\' computer tools say the pane is off.' },
   { key: 'computer.askTimeoutSec', section: 'computer', label: 'Ask timeout', type: 'number', int: true, min: 30, applies: 'next-call',
     help: 'Seconds an ask waits before it counts as Deny.' },
+  { key: 'computer.awake', section: 'computer', label: 'Browsers kept awake', type: 'number', int: true, min: 1, max: 12, applies: 'next-call',
+    help: 'How many session browsers keep their pages loaded at once. Past this the one used longest ago goes to sleep: its tabs stay and reload when you come back.' },
 
   // ── Status line (spec 2026-09-28-statusline-design) ─────────────────────────
   { key: 'statusline.segments', section: 'statusline', label: 'Status line segments', type: 'list', applies: 'next-render',
@@ -381,6 +383,7 @@ const PICKS = {
   'telemetry.retentionDays': { choices: [7, 14, 30, 60, 90, 180, 365], unit: 'days' }, 'telemetry.staleAfterMinutes': { choices: [10, 15, 30, 60, 120], unit: 'min' },
   'updates.intervalHours': { choices: [6, 12, 24, 48, 168], unit: 'h' },
   'computer.askTimeoutSec': { choices: [60, 120, 300, 600], unit: 's' },
+  'computer.awake': { choices: [2, 4, 6, 8] },
   'notifications.retentionDays': { choices: [7, 14, 30, 60, 90, 180], unit: 'days' }, 'notifications.maxPerSenderPerHour': { choices: [0, 1, 3, 6, 10, 20] },
   'statusline.segments': { pick: 'many', strict: true, choices: ['needs-you', 'runs', 'spend', 'health'] },
   'statusline.refreshSeconds': { choices: [1, 2, 5, 10, 30], unit: 's' },

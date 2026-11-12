@@ -1,33 +1,21 @@
-// What the page may ask of the Computer pane (agent-computer D5, D32, R17). A place is `ws:<workspace>` (a folder of
-// <vault>/workspaces, which includes Scratch), `vault`, `home` or `dir:<absolute path>` (an existing directory).
-// Anything else is refused: no `..`, no slash in a workspace name, no relative path.
+// What the page may ask of the Computer pane (agent-computer D5, D32, R17; session-browser S1 supersedes D3, D30 and D32's
+// places). A computer belongs to a session: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`) for a Code terminal, `chat:<thread>` for a Sessions
+// thread. The page may select only a session the app holds; anything else is refused.
 
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { ComputerRect } from "../../shared/ipc";
 
 const MAX_BOUND = 10_000;
 
-/** Whether `place` names a computer the pane may show. `vault` is the vault root (null when none is attached). */
-export function placeAllowed(place: string, vault: string | null): boolean {
-  if (place.length === 0 || place.length > 512 || place.includes("\0")) return false;
-  if (place === "home") return true;
-  if (place === "vault") return vault !== null;
-  if (place.startsWith("ws:")) {
-    const name = place.slice(3);
-    if (!vault || !name || name === "." || name === ".." || /[/\\]/.test(name) || name.includes("..")) return false;
-    // The name must be an entry of the folder exactly as spelled (case-sensitive), as the HUD's placeKey writes it.
-    try {
-      const root = path.join(vault, "workspaces");
-      return fs.readdirSync(root).includes(name) && fs.statSync(path.join(root, name)).isDirectory();
-    } catch { return false; }
-  }
-  if (place.startsWith("dir:")) {
-    const dir = place.slice(4);
-    // Canonical only (the HUD's placeKey is path.resolve): no `.`, `..`, doubled or trailing slash.
-    if (!path.isAbsolute(dir) || path.normalize(dir) !== dir || (dir.length > 1 && dir.endsWith("/"))) return false;
-    try { return fs.statSync(dir).isDirectory(); } catch { return false; }
-  }
+/** A Code terminal's key: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`; the page's bridge counts these as t1, t2 … and starts again with each page load). */
+export const CODE_KEY = /^code:t[0-9]{1,9}$/;
+/** A Sessions thread's key: the thread is a v4 UUID, lower case (the session service makes it with randomUUID). */
+export const CHAT_KEY = /^chat:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** Whether `key` names a session the app holds: a key of the right shape whose terminal or thread `has` knows (S1). */
+export function sessionAllowed(key: string, has: { terminal(id: string): boolean; thread(id: string): boolean }): boolean {
+  if (key.length > 64) return false;
+  if (CODE_KEY.test(key)) return has.terminal(key.slice("code:".length)) /* a pty id, "t3" */;
+  if (CHAT_KEY.test(key)) return has.thread(key.slice("chat:".length));
   return false;
 }
 

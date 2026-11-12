@@ -308,8 +308,8 @@ test.describe("a Codex-only machine (variants.spec.ts's)", () => {
       gated.push(...r.filter((x) => x.status === "gated").map((x) => x.ref));
     }
     expect(gated).toEqual(expect.arrayContaining(["code.start-claude", "routines.cloud", "settings.codex-off", "code.computer"]));
-    // Sessions runs here: both of its Computer pane steps (the pane and its size buttons) are gated, its surface off.
-    expect(gated.filter((r) => r.startsWith("sessions.") || r === "core.sessions")).toEqual(["sessions.computer", "sessions.computer-size"]);
+    // Sessions runs here: its three Computer pane steps (the pane, its size buttons and its power switch) are gated, its surface off.
+    expect(gated.filter((r) => r.startsWith("sessions.") || r === "core.sessions")).toEqual(["sessions.computer", "sessions.computer-size", "sessions.computer-power"]);
     expectNoErrors(h);
   });
 

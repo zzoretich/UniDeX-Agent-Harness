@@ -32,7 +32,7 @@ export interface AgenticosJson {
   ai?: { chat?: AiEngine; ask?: AiEngine; reflectWeek?: AiEngine; consolidate?: AiEngine };
   telemetry?: { enabled?: boolean; redact?: boolean; retentionDays?: number; staleAfterMinutes?: number };
   updates?: { check?: boolean; intervalHours?: number };
-  computer?: { enabled?: boolean; askTimeoutSec?: number };
+  computer?: { enabled?: boolean; askTimeoutSec?: number; awake?: number };
   cost?: { enabled?: boolean; monthlyBudget?: number | null };
   integrations?: { superpowers?: { enabled?: boolean } };
   persona?: { enabled?: boolean };
@@ -61,7 +61,7 @@ export interface VaultConfig {
   ai: { chat: AiEngine; ask: AiEngine; reflectWeek: AiEngine; consolidate: AiEngine };
   telemetry: { enabled: boolean; redact: boolean; retentionDays: number; staleAfterMinutes: number };
   updates: { check: boolean; intervalHours: number };
-  computer: { enabled: boolean; askTimeoutSec: number };
+  computer: { enabled: boolean; askTimeoutSec: number; awake: number };
   cost: { enabled: boolean; monthlyBudget: number | null };
   integrations: { superpowers: { enabled: boolean } };
   graph: { enabled: boolean; out: string; timeoutSec: number; staleDays: number; semantic: { enabled: boolean | "auto"; runner: "auto" | "claude" | "codex"; everyHours: number; perCallUsd: number; perDayUsd: number; tokenBudget: number; timeoutSec: number } };
@@ -124,7 +124,7 @@ export const VAULT_CONFIG_DEFAULTS: VaultConfig = {
   ai: { chat: "local", ask: "local", reflectWeek: "local", consolidate: "local" },
   telemetry: { enabled: true, redact: true, retentionDays: 30, staleAfterMinutes: 30 },
   updates: { check: true, intervalHours: 24 },
-  computer: { enabled: true, askTimeoutSec: 120 },
+  computer: { enabled: true, askTimeoutSec: 120, awake: 4 },
   cost: { enabled: false, monthlyBudget: null },
   integrations: { superpowers: { enabled: false } },
   graph: { enabled: true, out: "brain/graphify-out", timeoutSec: 120, staleDays: 7, semantic: { enabled: "auto", runner: "auto", everyHours: 24, perCallUsd: 0.25, perDayUsd: 1.0, tokenBudget: 20000, timeoutSec: 1800 } },

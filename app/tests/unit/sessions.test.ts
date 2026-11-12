@@ -16,6 +16,7 @@ import { SessionService, workspaceDir } from "../../src/main/services/sessions";
 import { COMPUTER_LOOK, COMPUTER_TOOLS } from "../../../hud/src/data/terminalLaunch";
 import { AskBroker } from "../../src/main/computer/asks";
 import { AgentRegistry } from "../../src/main/computer/registry";
+import { BrowserRecords } from "../../src/main/computer/records";
 import { ComputerService, type BrowserLike } from "../../src/main/computer/service";
 import { SiteMarks } from "../../src/main/computer/sites";
 import { Wheel } from "../../src/main/computer/wheel";
@@ -58,7 +59,7 @@ const context: ProgramContext = { vaultRoot: vault, home: tmp, userData: path.jo
 const env = { ...process.env, CLAUDE_CONFIG_DIR: path.join(tmp, "claude-config"), AOS_CONFIG: path.join(tmp, "none.json") };
 function service(on = true): { s: SessionService; events: SessionEvent[] } {
   const events: SessionEvent[] = [];
-  const s = new SessionService({ vaultRoot: () => vault, enabled: () => on, context: () => context, env, node: () => process.execPath, emit: (e) => events.push(e), graceMs: 500 });
+  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => on, context: () => context, env, node: () => process.execPath, emit: (e) => events.push(e), graceMs: 500 });
   return { s, events };
 }
 async function idle(s: SessionService): Promise<void> {
@@ -104,6 +105,30 @@ test("a claude turn: planned by the runtime, run in the workspace, its events st
   assert.equal(list.data[0].usd, 0.04);
 });
 
+test("has: a thread is known once its file is in the vault's index (session-browser S1)", async () => {
+  const { s } = service();
+  const other = service().s;
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await idle(s);
+  assert.equal(s.has(r.data.id), true);
+  assert.equal(other.has(r.data.id), true, "a service that has not seen it finds the file");
+  assert.equal(s.has("0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f"), false);
+});
+
+test("exists: true or false only when it can tell, undefined when no vault is attached or the sessions folder cannot be read", async () => {
+  const { s } = service();
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await idle(s);
+  assert.equal(s.exists(r.data.id), true);
+  assert.equal(s.exists("0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f"), false, "the folder reads and the thread is not in it");
+  const mk = (root: string | null) => new SessionService({ trash: async () => {}, vaultRoot: () => root, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500 });
+  assert.equal(mk(null).exists(r.data.id), undefined, "no vault attached");
+  assert.equal(mk(path.join(os.tmpdir(), "aos-no-such-vault-" + process.pid)).exists(r.data.id), undefined, "the vault's sessions folder cannot be read");
+  assert.equal(mk(null).has(r.data.id), false, "has stays a plain yes or no");
+});
+
 test("a codex turn resumes by the thread id codex reported", async () => {
   const { s } = service();
   const r = await s.start({ workspace: "harbor-map", host: "codex", text: "go" });
@@ -147,7 +172,9 @@ function onePage(): { browser: BrowserLike; clicks: () => number } {
   let clicks = 0;
   const no = (): never => { throw new Error("not in this test"); };
   const browser: BrowserLike = {
+    destroy: no, sleep: no, wake: no, asleep: no, restore: no, realAddresses: () => ({ urls: [], active: 0 }),
     tabs: () => [{ index: 0, url, title: "", openedBy: null, active: true, canBack: false, canForward: false }],
+    activeWebContentsId: () => 1,
     pageToken: () => "1.0",
     open: async (u) => { url = new URL(u).href; return { url, title: "" }; },
     select: no, close: no, nav: no, snapshot: no, screenshot: no, focus: no, type: no, key: no, scroll: no, show: () => {},
@@ -167,11 +194,11 @@ test("R76: Stop during a pending ask ends the turn's computer side at once (its 
   const broker = new AskBroker({ timeoutMs: () => 120_000, clock, onChange: () => computer?.refresh() });
   const wheel = new Wheel({ clock, reserved: (c) => computer?.reserved(c) ?? false, onChange: (c) => computer?.refresh(c) });
   const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(tmp, "computer-")), "sites.json"));
-  computer = new ComputerService({ browser: () => page.browser, broker, wheel, sites, clock, config: () => ({ enabled: true, askTimeoutSec: 120 }), emit: () => {}, note: () => {}, liveAgent: (k) => registry.byKey(k) });
+  computer = new ComputerService({ records: new BrowserRecords({ file: path.join(tmp, "browsers.json") }), browser: () => page.browser, broker, wheel, sites, clock, config: () => ({ enabled: true, askTimeoutSec: 120, awake: 4 }), emit: () => {}, note: () => {}, liveAgent: (k) => registry.byKey(k) });
   const c = computer;
   const ends: number[] = [];
   // As main wires it (index.ts): a Chat turn's CLI is registered while it runs, and its end ends its computer side.
-  const s = new SessionService({
+  const s = new SessionService({ trash: async () => {},
     vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500,
     onAgent: (ev) => {
       if (ev.kind === "start") { registry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access }); return; }
@@ -188,6 +215,7 @@ test("R76: Stop during a pending ask ends the turn's computer side at once (its 
   for (let i = 0; i < 200 && !registry.byKey(key); i++) await new Promise((res) => setTimeout(res, 25));
   const agent = registry.byKey(key);
   assert.ok(agent, "the turn's CLI is registered");
+  c.power(key, true); // a browser starts off (session-browser S2)
   assert.ok(!(await c.call(agent, { id: 1, tool: "computer_open", args: { url: "https://a.test/" } })).isError);
   const held = c.call(agent, { id: 2, tool: "computer_click", args: { ref: "e1" } });
   for (let i = 0; i < 200 && !broker.pending().length; i++) await new Promise((res) => setTimeout(res, 5));
@@ -214,7 +242,7 @@ test("onAgent: the turn's CLI is announced with its pid, workspace, host, access
     spawned.push({ cmd, pid: c.pid });
     return c;
   }) as unknown as typeof childProcess.spawn;
-  const s = new SessionService({
+  const s = new SessionService({ trash: async () => {},
     vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500, spawnImpl,
     onAgent: (ev) => {
       agents.push({ ...ev });
@@ -243,11 +271,11 @@ test("resolveBin: the binary the runtime resolves for a Code launch (sessions.js
   const { s } = service();
   assert.deepEqual(await s.resolveBin("claude"), { bin: CLAUDE });
   assert.deepEqual(await s.resolveBin("codex"), { bin: CODEX });
-  const noNode = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => null, emit: () => {} });
+  const noNode = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => null, emit: () => {} });
   assert.deepEqual(await noNode.resolveBin("claude"), { reason: "no node: run aos doctor" });
   // Not behind the Sessions surface: a Code launch needs no Sessions.
   assert.deepEqual(await service(false).s.resolveBin("claude"), { bin: CLAUDE });
-  const noVault = new SessionService({ vaultRoot: () => null, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
+  const noVault = new SessionService({ trash: async () => {}, vaultRoot: () => null, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
   assert.deepEqual(await noVault.resolveBin("claude"), { reason: "no vault is open" });
   // With no binary recorded, the one a Code terminal's PATH finds: the CLI its typed line would have run.
   const termBin = path.join(tmp, "term-bin");
@@ -256,11 +284,11 @@ test("resolveBin: the binary the runtime resolves for a Code launch (sessions.js
   fs.writeFileSync(termCodex, "#!/bin/sh\n", { mode: 0o755 });
   fs.writeFileSync(path.join(vault, "brain", "config.json"), JSON.stringify({ hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: true } } }));
   try {
-    const onPath = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, terminalPATH: () => `${termBin}:/usr/bin:/bin` });
+    const onPath = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, terminalPATH: () => `${termBin}:/usr/bin:/bin` });
     assert.deepEqual(await onPath.resolveBin("codex"), { bin: termCodex });
     assert.deepEqual(await onPath.resolveBin("claude"), { bin: CLAUDE }, "a recorded binary still comes first");
     // The runtime found none (AOS_NO_CODEX hides every Codex, the usual install folders included).
-    const hidden = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env: { ...env, AOS_NO_CODEX: "1" }, node: () => process.execPath, emit: () => {} });
+    const hidden = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context, env: { ...env, AOS_NO_CODEX: "1" }, node: () => process.execPath, emit: () => {} });
     assert.deepEqual(await hidden.resolveBin("codex"), { reason: "the runtime found no Codex binary: run aos doctor" });
   } finally { config(); }
 });
@@ -273,7 +301,7 @@ function binStandIn(code: string, extra: Partial<ConstructorParameters<typeof Se
     if (args[1] === "bin") children.push(c);
     return c;
   }) as unknown as typeof childProcess.spawn;
-  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl, ...extra });
+  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl, ...extra });
   return { s, children };
 }
 
@@ -679,7 +707,7 @@ test("an archived workspace's threads stay listed and readable, and refuse a tur
 test("noteEvent: a Computer pane line reaches the page as a live computer event of the thread's turn and is never stored (agent-computer D35)", async () => {
   const events: SessionEvent[] = [];
   let during: SessionEvent[] = [];
-  const s: SessionService = new SessionService({
+  const s: SessionService = new SessionService({ trash: async () => {},
     vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: (e) => events.push(e), graceMs: 500,
     onAgent: (ev) => {
       if (ev.kind !== "start") return;
@@ -706,7 +734,7 @@ test("noteEvent: a Computer pane line reaches the page as a live computer event 
 });
 
 test("postComputerNotice: one Notifications item from computer at level info, through the runtime's notify.js, the body on stdin (agent-computer D27)", async () => {
-  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
+  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
   const dir = path.join(vault, "brain", "notifications");
   fs.rmSync(dir, { recursive: true, force: true });
   await s.postComputerNotice("Submit: Click “Pay” on a.test?", "Alpha is waiting for your answer in the Computer pane.\n--json is just text here");
@@ -724,12 +752,12 @@ test("postComputerNotice: one Notifications item from computer at level info, th
 test("postComputerNotice: a title the runtime would refuse, or no vault, rejects without running anything", async () => {
   let spawned = 0;
   const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
-  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
   for (const bad of ["", "  ", "two\nlines", "-flag", "--json", "x".repeat(161)]) {
     await assert.rejects(s.postComputerNotice(bad, "body"), /title/, JSON.stringify(bad));
   }
   assert.equal(spawned, 0);
-  const none = new SessionService({ vaultRoot: () => null, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  const none = new SessionService({ trash: async () => {}, vaultRoot: () => null, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
   await assert.rejects(none.postComputerNotice("Submit: x?", "body"), /no vault is open/);
   assert.equal(spawned, 0);
 });
@@ -738,10 +766,185 @@ test("postComputerNotice: nothing runs while the Computer surface is off (agent-
   let spawned = 0;
   const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
   let on = false;
-  const s = new SessionService({ vaultRoot: () => vault, enabled: () => true, computerOn: () => on, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
+  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, computerOn: () => on, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
   await assert.rejects(s.postComputerNotice("Submit: x?", "body"), /the Computer surface is off/);
   assert.equal(spawned, 0);
   on = true;
   await s.postComputerNotice("Submit: x?", "body");
   assert.equal(spawned, 1);
+});
+
+/** A service whose Trash records what it is given (or refuses), and whose removals are counted (session-browser S13, S6). */
+function trashing(refuse = false) {
+  const trashed: string[] = [];
+  const removed: string[] = [];
+  const s = new SessionService({
+    trash: async (f) => { if (refuse) throw new Error("no Trash"); trashed.push(f); fs.unlinkSync(f); },
+    onRemoved: (t) => removed.push(t),
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500,
+  });
+  return { s, trashed, removed };
+}
+
+test("remove trashes the thread's file and says so once", async () => {
+  const { s, trashed, removed } = trashing();
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await idle(s);
+  const out = await s.remove(r.data.id);
+  assert.deepEqual(out, { ok: true, data: null });
+  assert.equal(trashed.length, 1);
+  assert.ok(trashed[0].endsWith(`${r.data.id}.jsonl`));
+  assert.deepEqual(removed, [r.data.id]);
+  assert.equal(s.has(r.data.id), false);
+  const list = await s.list();
+  assert.ok(list.ok && !list.data.some((t) => t.id === r.data.id), "list() no longer has it");
+});
+
+test("remove is refused while a turn runs", async () => {
+  const { s, trashed, removed } = trashing();
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  const out = await s.remove(r.data.id);
+  assert.equal(out.ok, false);
+  assert.equal(!out.ok && out.code, "EBUSY");
+  assert.equal(trashed.length, 0);
+  assert.equal(removed.length, 0);
+  await idle(s);
+});
+
+/** A service whose Trash is counted and whose runtime's `record` call waits on a promise the test controls: the turn's done
+ *  line is stored and sent, and only its bookkeeping is left. The fake is the runtime call, never the service. */
+function heldRecord() {
+  const t = trashing();
+  const events: SessionEvent[] = [];
+  (t.s as unknown as { o: { emit: (e: SessionEvent) => void } }).o.emit = (e) => events.push(e);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const inner = t.s as unknown as { runtime: (args: readonly string[], ...rest: unknown[]) => Promise<unknown> };
+  const real = inner.runtime.bind(t.s);
+  inner.runtime = async (args, ...rest) => { if (args[0] === "record") await gate; return real(args, ...rest); };
+  const sawDone = async (): Promise<void> => {
+    for (let i = 0; i < 400 && !events.some((e) => e.event.kind === "done"); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(events.some((e) => e.event.kind === "done"), "the done line was sent");
+  };
+  return { ...t, release, sawDone };
+}
+
+test("Delete right after a turn's done line waits for the turn's bookkeeping", async () => {
+  const { s, trashed, removed, release, sawDone } = heldRecord();
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await sawDone();
+  let answered: unknown = null;
+  const out = s.remove(r.data.id).then((v) => { answered = v; return v; });
+  await new Promise((res) => setTimeout(res, 100));
+  assert.equal(answered, null, "not answered yet, and not EBUSY: it waits");
+  assert.equal(trashed.length, 0);
+  release();
+  assert.deepEqual(await out, { ok: true, data: null });
+  assert.equal(trashed.length, 1);
+  assert.deepEqual(removed, [r.data.id], "onRemoved ran once");
+});
+
+test("a second Delete while the first waits for the bookkeeping is refused", async () => {
+  const { s, removed, release, sawDone } = heldRecord();
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await sawDone();
+  const a = s.remove(r.data.id);
+  const b = await s.remove(r.data.id);
+  assert.equal(!b.ok && b.code, "EBUSY");
+  release();
+  assert.deepEqual(await a, { ok: true, data: null });
+  assert.deepEqual(removed, [r.data.id]);
+});
+
+test("Delete during a working turn is still refused, and nothing is trashed", async () => {
+  const { s, trashed, removed, release } = heldRecord();
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  const out = await s.remove(r.data.id); // the turn is just starting: its work is not over
+  assert.equal(!out.ok && out.code, "EBUSY");
+  assert.equal(!out.ok && out.error, "a turn is running: stop it first");
+  release();
+  await idle(s);
+  assert.equal(trashed.length, 0);
+  assert.equal(removed.length, 0);
+});
+
+test("an unknown thread is ENOENT; a bad id is EINVAL; a failed trash is EIO and the thread stays", async () => {
+  const { s, removed } = trashing();
+  const none = await s.remove("0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f");
+  assert.equal(!none.ok && none.code, "ENOENT");
+  const bad = await s.remove("../../etc/passwd");
+  assert.equal(!bad.ok && bad.code, "EINVAL");
+  const t = trashing(true);
+  const r = await t.s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await idle(t.s);
+  const out = await t.s.remove(r.data.id);
+  assert.equal(!out.ok && out.code, "EIO");
+  assert.equal(t.s.has(r.data.id), true);
+  assert.equal(t.removed.length, 0);
+  assert.equal(removed.length, 0);
+});
+
+/** A service whose Trash waits on a promise the test controls. */
+function heldTrash() {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const trashed: string[] = [];
+  const removed: string[] = [];
+  const s = new SessionService({
+    trash: async (f) => { trashed.push(f); await gate; fs.unlinkSync(f); },
+    onRemoved: (t) => removed.push(t),
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500,
+  });
+  return { s, trashed, removed, release };
+}
+
+test("two removes at once trash the file once", async () => {
+  const { s, trashed, removed, release } = heldTrash();
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await idle(s);
+  const a = s.remove(r.data.id);
+  const b = s.remove(r.data.id);
+  release();
+  const outs = await Promise.all([a, b]);
+  assert.equal(trashed.length, 1);
+  assert.equal(outs.filter((o) => o.ok).length, 1);
+  const bad = outs.find((o) => !o.ok);
+  assert.equal(bad && !bad.ok && bad.code, "EBUSY");
+  assert.deepEqual(removed, [r.data.id]);
+});
+
+test("a send while a thread is being deleted is refused", async () => {
+  const { s, trashed, release } = heldTrash();
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await idle(s);
+  const a = s.remove(r.data.id);
+  const out = await s.send({ thread: r.data.id, text: "more" });
+  assert.equal(out.ok, false);
+  assert.equal(!out.ok && out.code, "EBUSY");
+  release();
+  await a;
+  assert.equal(trashed.length, 1);
+  await idle(s);
+});
+
+test("a Trash that rejects after the file is gone still counts as removed", async () => {
+  const removed: string[] = [];
+  const s = new SessionService({
+    trash: async (f) => { fs.unlinkSync(f); throw new Error("late"); },
+    onRemoved: (t) => removed.push(t),
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, graceMs: 500,
+  });
+  const r = await s.start({ workspace: "harbor-map", host: "claude", text: "hello" });
+  assert.ok(r.ok);
+  await idle(s);
+  assert.deepEqual(await s.remove(r.data.id), { ok: true, data: null });
+  assert.deepEqual(removed, [r.data.id]);
 });

@@ -99,7 +99,8 @@ test('status says what to do outside the app, open says what the browser is for'
   const defs = await toolDefs();
   assert.match(defs.get('computer_status').description, /Call this first/);
   assert.match(defs.get('computer_status').description, /another browser tool/);
-  assert.match(defs.get('computer_status').description, /turned off/);
+  assert.match(defs.get('computer_status').description, /is turned off in Settings/);
+  assert.match(defs.get('computer_status').description, /"\(off: computer_open asks the user to turn it on\)" is not that: call computer_open/);
   assert.match(defs.get('computer_status').description, /could not start/);
   assert.match(defs.get('computer_status').description, /who is driving/);
   for (const word of ['web page', 'localhost', 'preview']) assert.ok(defs.get('computer_open').description.includes(word), word);
@@ -120,7 +121,9 @@ test("computer_open's description says how to search the web: DuckDuckGo's ?q=, 
     // A snapshot carries a link's name, not its URL (the accessibility tree has no href), so the description says what
     // the agent can see: the address DuckDuckGo prints with each result.
     assert.ok(open.description.includes("A snapshot shows each result's title and its address (site and path), not the link's URL: open a result with this tool at that address, or click it."), open.description);
-    assert.ok(open.description.includes('Opening a page never asks the user; clicking or typing on a site the user has not marked does.'), open.description);
+    // session-browser S3: the browser starts off, so only the first open asks (to turn it on); after that opening never asks.
+    assert.ok(open.description.includes('The browser starts off: the first open asks the user to turn it on.'), open.description);
+    assert.ok(open.description.includes('Once the browser is on, opening a page never asks the user; clicking or typing on a site the user has not marked does.'), open.description);
   });
 });
 

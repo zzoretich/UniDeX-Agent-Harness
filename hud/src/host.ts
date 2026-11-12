@@ -82,13 +82,18 @@ export interface HostPtyOptions {
   cwd: string;
   /** Variables set on top of the host's own environment. */
   env?: Record<string, string>;
+  /** The id of the terminal's first process, for a process that takes over in a terminal that has one (session-browser S1). */
+  origin?: string;
 }
+
+/** The conversation a Code session runs: its host and that host's id for it. */
+export interface HostConversation { host: "claude" | "codex"; id: string }
 
 /** One terminal: node-pty's IPty, as far as the HUD uses it. */
 export interface HostPtyProcess {
   readonly pid: number;
-  /** The app's id for this terminal, which names a Code launch's agent to the computer as `code:<id>` (agent-computer
-   *  D35); absent outside the app. */
+  /** The app's id for this process; absent outside the app. A Code session's browser key is `code:<the id of the
+   *  terminal's FIRST process>` (`codeSession(originPty)`), so this is the key only for a terminal's first process. */
   readonly id?: string;
   write(data: string): void;
   resize(cols: number, rows: number): void;
@@ -100,7 +105,7 @@ export interface HostPtyProcess {
 /**
  * A Code launch's agent, run by the app's main process as the terminal's own process so it knows the CLI's pid
  * (agent-computer D18). Mirrors app/src/shared/ipc.ts PtyAgentRequest without the id, which the bridge assigns. `place`
- * is the computer the agent shares (terminalLaunch.placeKey, D30); `label` names it.
+ * is only the folder's label (terminalLaunch.placeKey); `label` names the agent.
  */
 export interface HostPtyAgentRequest {
   host: "claude" | "codex";
@@ -225,12 +230,13 @@ export interface HostComputerAsk {
 export interface HostComputerLogLine { at: number; session: string; text: string }
 export type HostComputerAnswer = "once" | "always" | "deny";
 export interface HostComputerState {
-  place: string; tabs: HostComputerTab[]; holder: HostComputerHolder; asks: readonly HostComputerAsk[];
+  session: string; label: string; tabs: HostComputerTab[]; holder: HostComputerHolder; asks: readonly HostComputerAsk[];
   log: readonly HostComputerLogLine[]; marked: boolean; poppedOut: boolean;
+  power: "off" | "awake" | "asleep";
 }
 export type HostComputerEvent = { type: "state"; state: HostComputerState } | { type: "reveal"; askId: string };
 
-/** The pane's calls. A place is `ws:<workspace>`, `vault`, `home` or `dir:<absolute path>`. */
+/** The pane's calls. A browser belongs to a session: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`) or `chat:<thread>` (session-browser S1). */
 export interface HostComputer {
   /** Whether the Computer surface is on for this run of the app (agent-computer D26; it cannot change while the app
    *  runs). Off, or absent (fail closed; the app always sets it): the pane is only its collapsed strip, whatever its page
@@ -239,10 +245,13 @@ export interface HostComputer {
   /** The start page a tab the person opens starts on, whose search the address bar uses for words (data/computerStart.ts):
    *  main's, fixed at boot, which is the e2e suite's fixture in its runs. Absent: START_PAGE, DuckDuckGo. */
   readonly startPage?: string;
-  /** Null when the Computer surface is off or the place is refused. */
-  select(place: string | null): Promise<HostComputerState | null>;
-  show(bounds: HostComputerRect | null): void;
+  /** Null when the Computer surface is off or the session is refused. */
+  select(session: string | null): Promise<HostComputerState | null>;
+  /** `inView`: the page's pane is in view, with or without a rectangle (a Turn on ask's notice reads it). */
+  show(bounds: HostComputerRect | null, inView?: boolean): void;
   navigate(url: string): Promise<HostResult<null>>;
+  /** A web link the person clicked in a session: opens in that session's browser, turned on if need be (session-browser S14). Failures: the codes are EINVAL (the address is refused), EPERM (the session is not one the app holds, or the Computer surface is off), ENOENT (the app is quitting or the browser was switched off meanwhile), EIO (no tab could be made). A tab that was made but whose page failed to load is ok. */
+  openLink(session: string, url: string): Promise<HostResult<null>>;
   tab(op: { kind: "new" } | { kind: "close" | "select"; index: number }): void;
   /** The person's Back, Forward or Reload on the active tab (session-browser S13). */
   nav(go: HostComputerNavGo): void;
@@ -251,6 +260,12 @@ export interface HostComputer {
   answer(askId: string, a: HostComputerAnswer): void;
   mark(origin: string, on: boolean): void;
   popOut(): void;
+  /** Turns one session's browser on or off (session-browser S4, S5). */
+  power(session: string, on: boolean): void;
+  /** Names a Code session for the app's own cards, and the conversation it runs (session-browser S6, S7). */
+  describe(session: string, d: { title?: string; conversation?: HostConversation }): void;
+  /** Hands one Code terminal's browser to the terminal that replaces it (S22). False when refused or on a host without it. */
+  move(from: string, to: string): Promise<boolean>;
   onEvent(cb: (ev: HostComputerEvent) => void): () => void;
 }
 
@@ -282,6 +297,8 @@ export interface HostSessions {
   /** The thread's next turn; a field left out reuses the thread's last. */
   send(req: { thread: string; text: string; model?: string | null; effort?: string | null; access?: HostSessionAccess; allowCommands?: boolean }): Promise<HostResult<HostSessionThread>>;
   stop(thread: string): void;
+  /** Moves the thread's file to the Trash and forgets its browser (session-browser S13, S6). */
+  remove(thread: string): Promise<HostResult<null>>;
   list(): Promise<HostResult<HostSessionThread[]>>;
   read(thread: string): Promise<HostResult<HostSessionEvent[]>>;
   /** Each host's models and commands; `refresh` asks the hosts again. */

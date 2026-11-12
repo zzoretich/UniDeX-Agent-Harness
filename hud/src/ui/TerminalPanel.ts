@@ -27,14 +27,17 @@ import { TermList } from "./TermList";
 import { TermComposer } from "./TermComposer";
 import { TermFind } from "./TermFind";
 import { FIND_LIMIT } from "../data/termFind";
-import { hudHost, shell } from "../host";
+import { hudHost } from "../host";
+import { openWebLink } from "./openWebLink";
+import { sessionForLink } from "../data/linkRoute";
 import { ConfirmModal } from "./ConfirmModal";
 import { groupKey, scopeOf, stepRow } from "../data/termGroups";
-import { restartKeepingOld } from "../data/terminalRestart";
+import { restartKeepingOld, HandOverFailed, HAND_OVER_KEPT } from "../data/terminalRestart";
 import { CodeSidebarModel } from "../data/codeSidebarModel";
 import { vaultPlace, workspacePlace, type Place, type TermAccess } from "../data/terminalLaunch";
 import { ComputerPane } from "./ComputerPane";
-import { storeFor, type ComputerStore, type RowMarks } from "../data/computerStore";
+import { describeChanged, type Described } from "../data/describeSessions";
+import { codeSession, storeFor, type ComputerStore, type RowMarks } from "../data/computerStore";
 import { computerPaneStart, rememberComputerPane } from "../settingsDefaults";
 import { CodeStage } from "./CodeStage";
 import { CodeTopBar } from "./CodeTopBar";
@@ -132,7 +135,10 @@ export class TerminalPanel {
       activeSession: () => this.activeSession(),
       composer: () => this.composer,
       setView: (v) => this.setView(v),
-      openLink: (href) => this.openLink(href),
+      openLink: (href, view) => {
+        const o = this.activeSession()?.originPty;
+        this.openLink(href, sessionForLink(view, o ? codeSession(o) : null));
+      },
       renderTabs: () => this.renderTabs(),
     });
     this.panes = new CodePanes({
@@ -146,7 +152,7 @@ export class TerminalPanel {
       activeSession: () => this.activeSession(),
       composer: () => this.composer,
       computer: () => this.computer,
-      startIn: (place, host, resume) => this.startIn(place, host, resume),
+      startIn: (place, host, resume, replacing) => this.startIn(place, host, resume, replacing),
       setView: (v) => this.setView(v),
       makeWorkspace: (named) => this.newMenu?.open("create", null, named),
       restartWith: (id, patch) => this.restartWith(id, patch),
@@ -455,6 +461,7 @@ export class TerminalPanel {
       // At most every two seconds (the caches' stats are synchronous IPC; a busy agent's title renders this often).
       this.model.refreshHistory();
       const sidebar = this.model.rebuild();
+      this.describeRows();
       const counts = this.model.counts();
       this.list.render(sidebar, this.activeId, counts, this.model.scope, this.stage.past?.key ?? null);
       this.topBar.renderHead();
@@ -511,8 +518,50 @@ export class TerminalPanel {
     }).open();
   }
 
-  private startIn(place: Place, host: "quick" | "shell" | "claude" | "codex", resume: "last" | { id: string } | null = null): void {
-    this.opts.launch?.start({ host, picked: place, resume }).catch((e) => new Notice(`Terminal: ${e instanceof Error ? e.message : String(e)}`));
+  private startIn(place: Place, host: "quick" | "shell" | "claude" | "codex", resume: "last" | { id: string } | null = null, replacing?: string): void {
+    const before = new Set(this.plugin.terminalPool.list().map((s) => s.id));
+    this.opts.launch?.start({ host, picked: place, resume })
+      .then(async () => {
+        // An ended row's Restart or Resume: the new terminal takes the old one's browser (session-browser S22).
+        const fresh = replacing ? this.plugin.terminalPool.list().find((s) => !before.has(s.id) && s.meta.host !== "shell") : undefined;
+        if (replacing && fresh) {
+          // The old terminal has ended: nothing to keep, so a rejected hand-over is only said (best effort).
+          try { await this.moveBrowser(replacing, fresh.id, true); } catch { new Notice("The browser could not be handed over."); }
+        }
+      })
+      .catch((e) => new Notice(`Terminal: ${e instanceof Error ? e.message : String(e)}`));
+  }
+
+  /** What main was last told about each Code session (describeChanged). */
+  private readonly described = new Map<string, string>();
+
+  /** Tells main each Code session's title and conversation when they changed (session-browser S6, S7). */
+  private describeRows(): void {
+    const computer = hudHost().computer;
+    if (!computer) return;
+    const rows: Described[] = [];
+    for (const s of this.plugin.terminalPool.list()) {
+      const origin = s.originPty;
+      if (!origin) continue;
+      const conv = this.model.conversationOf(s);
+      const host = s.meta.host;
+      rows.push({ session: codeSession(origin), title: s.getTitle(), ...(conv && host !== "shell" ? { conversation: { host, id: conv } } : {}) });
+    }
+    for (const r of describeChanged(this.described, rows)) {
+      try { computer.describe(r.session, { title: r.title, ...(r.conversation ? { conversation: r.conversation } : {}) }); } catch { /* the page keeps working without names */ }
+    }
+  }
+
+  /** Hands the old terminal's browser to its replacement (session-browser S22). `wait`: the replacement's agent may not
+   *  have started yet, so its first process is waited for a few seconds. */
+  private async moveBrowser(oldId: string, newId: string, wait = false): Promise<void> {
+    const computer = hudHost().computer;
+    const pool = this.plugin.terminalPool;
+    if (!computer) return;
+    for (let i = 0; wait && i < 100 && !pool.get(newId)?.originPty && pool.get(newId); i++) await new Promise((r) => window.setTimeout(r, 100));
+    const from = pool.get(oldId)?.originPty, to = pool.get(newId)?.originPty;
+    // A rejected call (not a false answer) is a failed hand-over: both callers decide what that means.
+    try { if (from && to) await computer.move(codeSession(from), codeSession(to)); } catch (e) { throw new HandOverFailed(e); }
   }
 
   /**
@@ -536,8 +585,8 @@ export class TerminalPanel {
     const chosen = { model: "model" in patch, access: "access" in patch };
     return restartKeepingOld(pool, id, () => this.plugin.termLauncher.launch({
       host, picked: this.model.placeOfSession(s), resume: { id: conv }, origin: s.meta.origin, model, access, chosen,
-    }), (from, to) => this.composer?.carryDraft(from, to))
-      .then((why) => { if (why) new Notice(`Terminal: ${why}`); }).finally(() => { this.restarting.delete(id); });
+    }), async (from, to) => { this.composer?.carryDraft(from, to); await this.moveBrowser(from, to); })
+      .then((why) => { if (why) new Notice(why === HAND_OVER_KEPT ? why : `Terminal: ${why}`); }).finally(() => { this.restarting.delete(id); });
   }
 
   // ── the chat view (spec 2026-11-09-code-chat C1, C3, C5, C13) ──
@@ -572,6 +621,7 @@ export class TerminalPanel {
       settings: () => computerPaneStart(this.plugin.settings.computerPane, "code", window.innerWidth),
       // The terminal's column in this deck (session-browser S11): the pane grows until it is 360 px wide.
       column: () => host.querySelector<HTMLElement>(".aos-term-main"),
+      changed: () => { if (this.host) this.topBar.renderPanes(); },
       save: (pane) => {
         this.plugin.settings.computerPane = rememberComputerPane(this.plugin.settings.computerPane, "code", pane);
         void this.plugin.saveSettings();
@@ -586,9 +636,10 @@ export class TerminalPanel {
     });
   }
 
-  /** A row's Computer marks: its agent's, by the key the computer names it by (D35); none for a shell. */
+  /** A row's Computer marks: its terminal's own browser's, by its session key (S1); none while it has no process yet. */
   private marks(id: string): RowMarks {
-    return this.computerStore?.marks(this.plugin.terminalPool.get(id)?.computerKey ?? null) ?? { dot: false, waiting: false };
+    const origin = this.plugin.terminalPool.get(id)?.originPty ?? null;
+    return this.computerStore?.marks(origin ? codeSession(origin) : null) ?? { dot: false, waiting: false };
   }
 
   private marksSig(): string {
@@ -643,10 +694,12 @@ export class TerminalPanel {
     // ⌘F finds in this terminal, scrollback included (the find bar draws the highlights: proposed API, allowed above).
     const search = new SearchAddon({ highlightLimit: FIND_LIMIT });
     term.loadAddon(search);
-    // Links: https opens in the browser; agenticos:// (the agents' status lines) opens its Workbench tab (spec §4).
-    term.loadAddon(new WebLinksAddon((_e, uri) => this.openLink(uri)));
+    // A link clicked here belongs to THIS terminal's session (none before its process starts; session-browser S14).
+    const own = (): string | null => (sess.originPty ? codeSession(sess.originPty) : null);
+    // Links: a web link opens in this session's browser (outside one: https in the default browser); agenticos:// (the agents' status lines) opens its Workbench tab (spec §4).
+    term.loadAddon(new WebLinksAddon((_e, uri) => this.openLink(uri, own())));
     // Links an app prints (OSC 8, as Claude Code's status line does) may be agenticos:// ones: openLink checks each.
-    term.options.linkHandler = { activate: (_e, text) => this.openLink(text), allowNonHttpProtocols: true };
+    term.options.linkHandler = { activate: (_e, text) => this.openLink(text, own()), allowNonHttpProtocols: true };
     // Shift+Enter is a new line in Claude Code's prompt: Ctrl+J, which its docs say works in every terminal (T12).
     // Every event of that key stays from xterm: the keypress after the keydown would send ⏎ too, and submit the prompt.
     term.attachCustomKeyEventHandler((e) => {
@@ -673,10 +726,10 @@ export class TerminalPanel {
     return binding;
   }
 
-  private openLink(uri: string): void {
+  private openLink(uri: string, session: string | null): void {
     let u: URL;
     try { u = new URL(uri); } catch { return; }
-    if (u.protocol === "https:" || u.protocol === "http:") { void shell.openExternal(u.toString()); return; }
+    if (openWebLink(u, session)) return;
     if (u.protocol === "agenticos:" && u.hostname === "workbench") {
       const tab = u.searchParams.get("tab");
       if (tab && /^[a-z-]+$/.test(tab)) void this.plugin.openWorkbenchTab(tab);

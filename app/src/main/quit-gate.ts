@@ -43,3 +43,13 @@ export function quitGate(o: QuitGateOptions): QuitGate {
     get holding() { return held !== null; },
   };
 }
+
+/**
+ * Whether a quit the app had begun is now known not to be happening. An update's quit runs beforeInstall, then
+ * before-quit-for-update, then app.quit() (before-quit); Squirrel reports a failed install after all of those, so the
+ * updater's error arrives with `quitting` set, however the quit began. Only that error calls a begun quit
+ * off: a quit the gate holds completes, and an error with no quit under way has nothing to cancel.
+ */
+export function quitCalledOff(f: { quitting: boolean; updateStatus: string }): boolean {
+  return f.quitting && f.updateStatus === "error";
+}

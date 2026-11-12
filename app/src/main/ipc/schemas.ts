@@ -3,6 +3,7 @@
 // HUD sends and small enough that one call cannot exhaust main.
 
 import { z } from "zod";
+import { CHAT_KEY, CODE_KEY } from "../policy/computer";
 import { navAllowed, siteOf } from "../policy/computer-url";
 import { UUID_RE } from "../policy/programs";
 import { MAX_IMAGE_BASE64 } from "../services/code-images";
@@ -37,15 +38,15 @@ export const ProposalUndoArgs = z.object({ undoId: z.string().regex(/^[a-z0-9][a
 /** The theme choice: one of the three, nothing else. */
 export const ThemeSetArgs = z.object({ source: z.enum(["system", "light", "dark"]) satisfies z.ZodType<ThemeSource> }).strict();
 
-// The Computer pane's calls (agent-computer D5, D32). `select`'s place is checked against the vault in ipc/computer.ts
-// (placeAllowed), which needs the vault; here it is only bounded and free of NUL and `..` segments.
-export const ComputerSelectArgs = z.object({
-  place: z.string().min(1).max(512).refine((p) => !p.includes("\0") && !p.split(/[/\\:]/).includes(".."), "a place").nullable(),
-}).strict();
+// The Computer pane's calls (agent-computer D5, D32). `select`'s session must have the shape of a session key; that main
+// holds it is checked in ipc/computer.ts (sessionAllowed, session-browser S1).
+const SessionKey = z.string().max(64).refine((k) => CODE_KEY.test(k) || CHAT_KEY.test(k), "a session");
+export const ComputerSelectArgs = z.object({ session: SessionKey.nullable() }).strict();
 // Finite only: main clamps to 0-10000 (policy/computer.ts clampBounds), so a briefly off-screen layout still lands.
 const Coord = z.number().finite();
 export const ComputerShowArgs = z.object({
   bounds: z.object({ x: Coord, y: Coord, width: Coord, height: Coord }).strict().nullable(),
+  inView: z.boolean().optional(),
 }).strict();
 export const ComputerNavigateArgs = z.object({ url: z.string().min(1).max(8192).refine(navAllowed, "an http or https page, or about:blank") }).strict();
 export const ComputerTabArgs = z.object({
@@ -54,6 +55,8 @@ export const ComputerTabArgs = z.object({
     z.object({ kind: z.enum(["close", "select"]), index: z.number().int().min(0).max(1000) }).strict(),
   ]),
 }).strict();
+export const ComputerOpenLinkArgs = z.object({ session: SessionKey, url: z.string().min(1).max(8192) }).strict();
+export const ComputerPowerArgs = z.object({ session: SessionKey, on: z.boolean() }).strict();
 export const ComputerNavArgs = z.object({ go: z.enum(["back", "forward", "reload"]) }).strict();
 export const ComputerAnswerArgs = z.object({ askId: z.string().min(1).max(64), a: z.enum(["once", "always", "deny"]) }).strict();
 export const ComputerMarkArgs = z.object({
@@ -89,12 +92,20 @@ export const PtySpawnRequestSchema: z.ZodType<PtySpawnRequest> = z.object({
   cols: z.number().int().min(1).max(2000),
   rows: z.number().int().min(1).max(1000),
   env: EnvSet.optional(),
+  // session-browser S1: the first process of the terminal this one takes over in; main checks it began that id.
+  origin: z.string().regex(/^t[0-9]{1,9}$/).optional(),
 });
 
 /** An agent terminal's key (code-chat R15): a v4 UUID. */
 const TerminalKey = z.string().regex(UUID_RE);
 /** A host session's id (code-chat R13): not dash-led, no "..". */
 const MirrorId = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((s) => !s.includes("..") && !s.startsWith("-"), "a session id");
+const CodeKey = z.string().regex(CODE_KEY);
+export const ComputerDescribeArgs = z.object({
+  session: CodeKey, title: z.string().max(400).optional(),
+  conversation: z.object({ host: z.enum(["claude", "codex"]), id: MirrorId }).strict().optional(),
+}).strict();
+export const ComputerMoveArgs = z.object({ from: CodeKey, to: CodeKey }).strict();
 
 /** code:follow / code:view / code:unfollow (code-chat R2, R4, R10). */
 export const CodeFollowArgs: z.ZodType<CodeFollowRequest> = z.object({
@@ -230,6 +241,8 @@ export const SessionSendSchema: z.ZodType<SessionSendRequest> = z.object({
 }).strict();
 export const SessionCatalogArgs = z.object({ refresh: z.literal(true).optional() }).strict();
 export const ThreadArgs = z.object({ thread: ThreadId }).strict();
+/** session:remove takes the same shape as the stop call (a thread id, never a path). */
+export const SessionRemoveSchema = ThreadArgs;
 export const GitStatusArgs = z.object({ workspace: WorkspaceName }).strict();
 export const GitDiffArgs = z.object({ workspace: WorkspaceName, file: Text(4096).refine((f) => f.length > 0, "a file").optional() }).strict();
 export const GitCommitArgs = z.object({ workspace: WorkspaceName, message: Text(64 * 1024).refine((m) => m.trim().length > 0, "a message") }).strict();

@@ -9,7 +9,7 @@
 import type { HostComputerAnswer, HostComputerAsk } from "../host";
 
 /** The asks that never offer Always: they ask every time (D39). */
-export const ONCE_ONLY: readonly string[] = ["return", "file", "download", "permission"];
+export const ONCE_ONLY: readonly string[] = ["return", "file", "download", "permission", "power"];
 
 /** The host a site's origin names ("example.com", "localhost:5173"), or the text itself when it is not a URL. */
 export function siteHost(site: string): string {
@@ -46,10 +46,11 @@ export function renderAsk(parent: HTMLElement, ask: HostComputerAsk, answer: (a:
     b.disabled = waiting;
     b.addEventListener("click", () => { if (now() >= armedAt) answer(a); });
   };
-  button("Allow once", "once");
+  const power = ask.why === "power";
+  button(power ? "Turn on" : "Allow once", "once");
   const always = alwaysLabel(ask);
   if (always) button(always, "always");
-  button("Deny", "deny");
+  button(power ? "Not now" : "Deny", "deny");
   return card;
 }
 

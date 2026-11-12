@@ -17,6 +17,7 @@ import {
 import { SPEND_LEDGER_PATH } from "../data/claudeAsk";
 import { ago } from "../data/notifications";
 import { computerPaneStart, rememberComputerPane, rememberSessionChoice, sanitizeSessionChoice } from "../settingsDefaults";
+import { routeWebLinks } from "../ui/openWebLink";
 import { chatSession, storeFor, type RowMarks } from "../data/computerStore";
 import { ComputerPane } from "../ui/ComputerPane";
 import {
@@ -25,6 +26,7 @@ import {
 } from "../data/sessionHistory";
 import type { PlaceWorld, TermHostChoice } from "../data/terminalLaunch";
 import { AccessMenu } from "../ui/AccessMenu";
+import { ConfirmModal } from "../ui/ConfirmModal";
 import { HostModelMenu, type HostModelValue } from "../ui/HostModelMenu";
 import { SlashMenu } from "../ui/SlashMenu";
 import { ThreadView, renderDiff, type FileDiff, type ThreadViewContext } from "../ui/ThreadView";
@@ -103,6 +105,8 @@ export class SessionsTab {
   private loading = false;
   /** Tool and patch lines opened to their input, result and diff. */
   private expanded = new Set<string>();
+  /** Threads whose Delete is open or running: a second click is ignored (it would open a second confirmation). */
+  private deleting = new Set<string>();
   private diffs = new Map<string, FileDiff>();
   private repo: RepoCard | null = null;
   /** Each repository read; an older read that answers late is dropped. */
@@ -664,6 +668,22 @@ export class SessionsTab {
     this.r?.working?.setText(this.workingLine());
   }
 
+  /** Delete thread: ask first, then the host moves the thread's file to the Trash and the pane forgets its browser. */
+  private async deleteThread(): Promise<void> {
+    const sh = sessionsHost();
+    const t = this.thread;
+    if (!sh || !t || this.deleting.has(t.id)) return;
+    this.deleting.add(t.id);
+    try {
+      const ok = await ConfirmModal.ask(this.plugin.app, "Delete this thread?", `"${t.title}" goes to the Trash, and its browser's tabs are forgotten. The host's own transcript stays.`, "Delete");
+      if (!ok) return;
+      const res = await sh.sessions.remove(t.id);
+      if (!res.ok) { new Notice(`Delete failed: ${res.error}`); return; }
+      await this.loadList();
+      if (this.selected === t.id) this.select(NEW);
+    } finally { this.deleting.delete(t.id); }
+  }
+
   /** Esc stops a running turn while focus is in the tab; the menus and the drawer keep their own Esc. */
   private onKey(e: KeyboardEvent): void {
     if (e.key !== "Escape" || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
@@ -765,12 +785,12 @@ export class SessionsTab {
     this.pane.mount(root);
   }
 
-  /** The pane shows the computer of the open thread's workspace, or of the new session's (D32, D3); Vault chat and
-   *  History have none. */
+  /** The pane shows the browser of the open thread (session-browser S1); a new session has none until its first message,
+   *  and Vault chat and History never do. */
   private followPane(): void {
     if (!this.pane) return;
-    const ws = this.isThread(this.selected) ? this.thread?.workspace ?? null : this.selected === NEW ? this.workspace || null : null;
-    this.pane.follow(ws ? { place: `ws:${ws}`, label: ws } : null);
+    if (this.isThread(this.selected)) { this.pane.follow({ session: chatSession(this.selected), label: this.thread?.id === this.selected ? this.thread.title : "" }); return; }
+    this.pane.follow(null, this.selected === NEW ? "Send the first message to give this session its browser." : "Vault chat and History have no browser.");
   }
 
   /** A thread row's Computer marks (D32): a dot while its agent drives a computer no pane shows, or waits on an ask. */
@@ -936,6 +956,9 @@ export class SessionsTab {
     const body = reader.createDiv({ cls: "aos-ss-body" });
     const scroll = body.createDiv({ cls: "aos-ss-scroll" });
     const timeline = scroll.createDiv({ cls: "aos-ss-column aos-ss-timeline" });
+    // Every web link in the reader: one capture-phase router, so the renderer's own link listener never sees it
+    // (session-browser S14). An open thread's link opens in its browser.
+    routeWebLinks(timeline, () => (this.thread && this.isThread(this.selected) && this.thread.id === this.selected ? chatSession(this.thread.id) : null));
     const drawer = body.createDiv({ cls: "aos-ss-drawer", attr: { id: "aos-ss-drawer", role: "region", "aria-label": "Review changes" } });
     drawer.addEventListener("keydown", (e) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
@@ -964,6 +987,7 @@ export class SessionsTab {
     const body = reader.createDiv({ cls: "aos-ss-body" });
     const scroll = body.createDiv({ cls: "aos-ss-scroll" });
     const col = scroll.createDiv({ cls: "aos-ss-column aos-ss-history", attr: { "data-tour": "sessions-history" } });
+    routeWebLinks(col, () => null);
     const filter = col.createEl("input", {
       cls: "aos-ss-hfilter",
       attr: { type: "search", placeholder: "Filter by title, summary, workspace or host", "aria-label": "Filter past sessions", "data-focus": "history-filter" },
@@ -1074,7 +1098,12 @@ export class SessionsTab {
         review.createSpan({ cls: "aos-ss-minus", text: `−${totals.removed}` });
       }
       review.addEventListener("click", () => this.toggleDrawer());
-      if (turnOpen(this.events)) {
+      const running = turnOpen(this.events);
+      const del = top.createEl("button", { cls: "aos-ss-delete", attr: { type: "button", "aria-label": "Delete thread", title: running ? "Stop the turn first" : "Delete thread", "data-focus": "delete" } });
+      setIcon(del, "trash-2");
+      del.disabled = running || this.deleting.has(t.id);
+      del.addEventListener("click", () => { void this.deleteThread(); });
+      if (running) {
         const stopping = this.stopping === t.id;
         const stop = top.createEl("button", { cls: "aos-ss-stop", attr: { type: "button", title: "Stop this turn", "data-focus": "stop" } });
         stop.createSpan({ cls: "aos-ss-stoplabel", text: stopping ? "Stopping…" : "Stop" });

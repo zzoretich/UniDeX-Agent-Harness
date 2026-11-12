@@ -35,7 +35,7 @@ import { currentTheme, onThemeChange } from "../ui/theme";
 import type { NewTerminalActions } from "../ui/NewTerminalMenu";
 import { TERM_HOST_LABEL, isContextPlace, placeOf, termRunLine, workspacePlace, type Place, type TermHost } from "../data/terminalLaunch";
 import type { SpacesPane } from "../data/statusline";
-import { computerStore } from "../data/computerStore";
+import { codeSession, computerStore } from "../data/computerStore";
 
 export const VIEW_TYPE_WORKBENCH = "agentic-os-workbench";
 
@@ -371,7 +371,7 @@ export class WorkbenchView extends ItemView {
     if (!route) return;
     const { page, session } = route;
     if (page === "chat") { this.open(session ? { tab: "chat", thread: session.slice("chat:".length) } : { tab: "chat" }); return; }
-    const s = session ? this.plugin.terminalPool.list().find((x) => x.computerKey === session) : undefined;
+    const s = session ? this.plugin.terminalPool.list().find((x) => x.originPty !== null && codeSession(x.originPty) === session) : undefined;
     if (this.activeTab !== "term") this.setTab("term");
     if (s) (this.tabs.term as TermTab | undefined)?.showSession(s.id);
   }

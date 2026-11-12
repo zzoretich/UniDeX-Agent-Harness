@@ -1,3 +1,4 @@
+import { routeWebLinks } from "../ui/openWebLink";
 import { MarkdownRenderer, Component, EventRef } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
@@ -347,6 +348,7 @@ export class ChatTab {
 
     // history log
     const log = host.createDiv({ cls: "aos-asst-log" });
+    routeWebLinks(log, () => null);
     if (this.mdHost) { this.mdHost.unload(); this.mdHost = null; }
     this.mdHost = new Component();
     this.mdHost.load();

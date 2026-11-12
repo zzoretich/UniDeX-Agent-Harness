@@ -11,6 +11,7 @@ import { ComputerBrowser, type BrowserHooks, type Resolved } from "../../src/mai
 import { FocusMoved, PageChanged } from "../../src/main/computer/cdp";
 import { LeavingRecords, PendingReads } from "../../src/main/computer/leaving";
 import { SecretMemory } from "../../src/main/computer/memory";
+import { TABS_MAX } from "../../src/main/computer/records";
 import type { CdpDomNode } from "../../src/main/computer/snapshot";
 
 type Dialog = (...a: unknown[]) => Promise<{ canceled: boolean; filePaths: string[] }>;
@@ -599,4 +600,385 @@ test("session-browser S13: nav goes back, forward or reloads the active tab; a m
   const none = new ComputerBrowser({ key: "ws:none", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
   assert.equal(none.nav("reload"), false, "no tab");
   assert.equal(none.nav("back", 4), false, "no such tab");
+});
+
+test("activeWebContentsId: the active tab's id, or null with no tab or a destroyed one (e2e seam)", () => {
+  const { b, tab } = make();
+  assert.equal(b.activeWebContentsId(), 1);
+  const none = new ComputerBrowser({ key: "ws:none", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  assert.equal(none.activeWebContentsId(), null);
+  (tab.wc as { isDestroyed: () => boolean }).isDestroyed = () => true;
+  assert.equal(b.activeWebContentsId(), null);
+});
+
+// ---- one set of window listeners for every browser on a window (session-browser S1: one browser per session)
+
+/** A window that counts its listeners per event and can fire them. */
+function fakeWindow() {
+  const on = new Map<string, Array<() => void>>();
+  const win = {
+    on: (e: string, f: () => void) => { on.set(e, [...(on.get(e) ?? []), f]); },
+    // Like Node's emitter: a once-wrapper is removed by the function it wraps.
+    once(e: string, f: () => void) { const g = Object.assign((): void => { win.off(e, g); f(); }, { listener: f }); on.set(e, [...(on.get(e) ?? []), g]); },
+    off: (e: string, f: () => void) => { on.set(e, (on.get(e) ?? []).filter((x) => x !== f && (x as unknown as { listener?: unknown }).listener !== f)); },
+    isDestroyed: () => false,
+  };
+  const count = (e: string): number => (on.get(e) ?? []).length;
+  const fire = (e: string): void => { for (const f of [...(on.get(e) ?? [])]) f(); };
+  return { win: win as unknown as import("electron").BrowserWindow, count, fire };
+}
+
+test("twelve browsers on one window add one listener per event, and the last one to go removes them", () => {
+  const w = fakeWindow();
+  const bare = (): ComputerBrowser => new ComputerBrowser({ key: "chat:x", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  const bs = Array.from({ length: 12 }, bare);
+  for (const b of bs) (b as unknown as { watch(x: unknown): void }).watch(w.win);
+  for (const e of ["show", "hide", "minimize", "restore", "closed"]) assert.equal(w.count(e), 1, e);
+  for (const b of bs.slice(0, 11)) b.destroy();
+  assert.equal(w.count("hide"), 1, "still watched by the last");
+  bs[11].destroy();
+  for (const e of ["show", "hide", "minimize", "restore", "closed"]) assert.equal(w.count(e), 0, e);
+});
+
+test("a hidden window still reaches every watching browser, and a closed one lets each go", () => {
+  const w = fakeWindow();
+  const bs = Array.from({ length: 3 }, () => make().b);
+  const placed = bs.map(() => 0);
+  bs.forEach((b, i) => {
+    (b as unknown as { place(): void }).place = () => { placed[i]++; };
+    (b as unknown as { watch(x: unknown): void }).watch(w.win);
+  });
+  w.fire("hide");
+  assert.deepEqual(placed, [1, 1, 1]);
+  w.fire("closed");
+  assert.deepEqual(placed, [2, 2, 2]);
+
+});
+
+// ---- session-browser S9: sleep and wake
+
+let viewIds = 100;
+/** A stand-in WebContentsView whose webContents records its handlers and "commits" a main-frame load at once. */
+class FakeView {
+  static redirect: ((u: string) => string) | null = null;
+  static hang = new Set<string>();
+  /** Addresses whose load keeps the tab on its old URL until the promise settles, as a slow real load does. */
+  static hold = new Map<string, Promise<void>>();
+  static fail: ((u: string) => Error) | null = null;
+  webContents: Record<string, unknown>;
+  constructor() {
+    const handlers = new Map<string, ((...a: unknown[]) => void)[]>();
+    let url = "about:blank";
+    const base: Record<string, unknown> = {
+      id: ++viewIds, isDestroyed: () => false, getURL: () => url, getTitle: () => "", close: () => {},
+      on: (ev: string, fn: (...a: unknown[]) => void) => { handlers.set(ev, [...(handlers.get(ev) ?? []), fn]); },
+      loadURL: async (u: string) => {
+        if (!FakeView.hold.has(u)) url = u;
+        if (u === "about:blank") return;
+        if (FakeView.fail) throw FakeView.fail(u);
+        for (const f of handlers.get("did-start-navigation") ?? []) f({}, { isMainFrame: true, isSameDocument: false, url: u, initiator: undefined });
+        if (FakeView.redirect) {
+          url = FakeView.redirect(u);
+          for (const f of handlers.get("did-redirect-navigation") ?? []) f({ isMainFrame: true, isSameDocument: false, url });
+        }
+        if (FakeView.hang.has(u)) await new Promise<void>(() => {});
+        if (FakeView.hold.has(u)) { await FakeView.hold.get(u); url = u; }
+        for (const f of handlers.get("did-navigate") ?? []) f({}, url);
+      },
+      navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+      debugger: { isAttached: () => false, on: () => {}, detach: () => {} },
+    };
+    this.webContents = new Proxy(base, { get: (o, k: string) => (k in o ? o[k] : () => undefined) });
+  }
+}
+stub.WebContentsView = FakeView;
+
+/** `make()` with the window code out of the way (no real windows here) and a close on the tab's contents. */
+function makeSleeper(url = "https://a.test/") {
+  const m = make();
+  m.page.url = url;
+  (m.tab.wc as unknown as { close: () => void }).close = () => {};
+  const inner = m.b as unknown as { place: () => void; attach: () => Promise<void> };
+  inner.place = () => {};
+  inner.attach = async () => {};
+  return m;
+}
+
+test("sleep keeps a tab's secret memory: a value read before sleeping is still scrubbed after the wake (session-browser S9, F3)", async () => {
+  const { b, tab } = makeSleeper("https://a.test/?code=hunter22");
+  tab.memory.remember("https://a.test", { values: ["hunter22"], whole: [] });
+  assert.equal(b.tabs()[0].url.includes("hunter22"), false);
+  b.sleep();
+  assert.equal(b.tabs()[0].url.includes("hunter22"), false, "scrubbed while asleep too");
+  await b.wake();
+  assert.equal(b.asleep(), false);
+  const woken = (b as unknown as { list: { memory: unknown; uid: number }[] }).list[0];
+  assert.equal(woken.memory, tab.memory, "the same memory serves the new view");
+  assert.equal(b.tabs()[0].url.includes("hunter22"), false, "the woken view's address is scrubbed by the kept memory");
+  assert.equal(b.tabs()[0].url.includes("code="), true, "and its address really is the loaded one");
+});
+
+test("a sleeping browser still lists its tabs, and the page token changes on wake", async () => {
+  const { b, tab } = makeSleeper();
+  const before = b.pageToken();
+  b.sleep();
+  assert.equal(b.asleep(), true);
+  const [t] = b.tabs();
+  assert.equal(t.url, "https://a.test/");
+  assert.equal(t.active, true);
+  await b.wake();
+  assert.equal(b.tabs().length, 1);
+  assert.notEqual(b.pageToken(), before);
+  assert.notEqual(b.pageToken(), `${tab.uid}.${tab.seq}`);
+});
+
+test("a restored tab's address is hidden from the agent until it navigates, also through a redirect of its reload", async () => {
+  const { b } = makeSleeper();
+  const fresh = new ComputerBrowser({ key: "ws:beta", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  const inner = fresh as unknown as { place: () => void; attach: () => Promise<void>; shownUrl: (t: unknown) => string; list: unknown[] };
+  inner.place = () => {}; inner.attach = async () => {};
+  fresh.restore(["http://a.test/cb?q=secret#frag"], 0);
+  assert.equal(fresh.asleep(), true);
+  assert.equal(fresh.tabs()[0].url, "http://a.test/cb");
+  FakeView.redirect = (u) => u.replace("http:", "https:");
+  try {
+    await fresh.wake();
+    assert.equal(fresh.tabs()[0].url, "https://a.test/cb", "after the reload and its redirect, until the tab navigates");
+    assert.equal(inner.shownUrl(inner.list[0]), "https://a.test/cb", "the path a snapshot's Page: line uses");
+    // The tab then navigates on its own: the hold has ended and a redirect no longer extends it.
+    const t = inner.list[0] as { wc: { loadURL: (u: string) => Promise<void> }; holdUrl: string | null };
+    await t.wc.loadURL("http://a.test/other?x=1");
+    assert.equal(t.holdUrl, null);
+  } finally { FakeView.redirect = null; }
+  void b;
+});
+
+test("a slept tab's hidden address stays hidden through a redirect of its reload", async () => {
+  const { b, tab } = makeSleeper("http://a.test/cb?token=T");
+  (tab as { urlHidden: boolean }).urlHidden = true;
+  b.sleep();
+  FakeView.redirect = (u) => u.replace("http:", "https:");
+  try {
+    await b.wake();
+    assert.equal(b.tabs()[0].url, "https://a.test/cb");
+  } finally { FakeView.redirect = null; }
+});
+
+test("a wake waits only for the active tab: a background tab that never finishes does not delay it", async () => {
+  const { b } = makeSleeper("https://a.test/");
+  const inner = b as unknown as { list: { wc: { getURL: () => string } }[]; kept: unknown[] | null };
+  b.sleep();
+  inner.kept = [
+    { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+    { url: "https://slow.test/", shown: "https://slow.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+  ];
+  FakeView.hang.add("https://slow.test/");
+  try {
+    await b.wake();
+    assert.equal(b.asleep(), false);
+    assert.equal(b.tabs().length, 2);
+  } finally { FakeView.hang.clear(); }
+});
+
+test("a woken tab whose load has not committed keeps its kept address, then the live one takes over (session-browser X3, A1)", async () => {
+  const { b } = makeSleeper("https://a.test/");
+  const inner = b as unknown as { kept: unknown[] | null };
+  b.sleep();
+  inner.kept = [
+    { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+    { url: "https://slow.test/p?code=S", shown: "https://slow.test/p", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: true },
+  ];
+  let release!: () => void;
+  FakeView.hold.set("https://slow.test/p?code=S", new Promise<void>((r) => { release = r; }));
+  try {
+    await b.wake();
+    // The slow tab is still on about:blank: its record address and its shown form are the kept ones, never blank.
+    assert.deepEqual(b.realAddresses().urls, ["https://a.test/", "https://slow.test/p?code=S"]);
+    assert.equal(b.tabs()[1].url, "https://slow.test/p");
+    // Asleep again before it commits, it still remembers the address.
+    b.sleep();
+    assert.deepEqual(b.realAddresses().urls, ["https://a.test/", "https://slow.test/p?code=S"]);
+    assert.equal(b.tabs()[1].url, "https://slow.test/p");
+  } finally { release(); FakeView.hold.clear(); }
+});
+
+test("Reload on a woken tab that has not committed loads its kept address (session-browser X3, M2)", async () => {
+  const { b } = makeSleeper("https://a.test/");
+  const inner = b as unknown as { kept: unknown[] | null; list: { wc: { loadURL: (u: string) => Promise<void>; reload: () => void } }[] };
+  b.sleep();
+  inner.kept = [
+    { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+    { url: "https://slow.test/p?code=S", shown: "https://slow.test/p", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: true },
+  ];
+  let release!: () => void;
+  FakeView.hold.set("https://slow.test/p?code=S", new Promise<void>((r) => { release = r; }));
+  try {
+    await b.wake();
+    const wc = inner.list[1].wc;
+    const loads: string[] = [];
+    let reloads = 0;
+    const load = wc.loadURL;
+    wc.loadURL = (u: string) => { loads.push(u); return load(u); };
+    wc.reload = () => { reloads++; };
+    assert.equal(b.nav("reload", 1), true);
+    assert.equal(reloads, 0, "the view's own reload would load about:blank");
+    assert.deepEqual(loads, ["https://slow.test/p?code=S"]);
+    assert.deepEqual(b.realAddresses().urls, ["https://a.test/", "https://slow.test/p?code=S"]);
+  } finally { release(); FakeView.hold.clear(); }
+});
+
+test("a woken tab takes its live address at its first commit, even when it commits somewhere else (session-browser X3, A1)", async () => {
+  const { b } = makeSleeper("https://a.test/");
+  const inner = b as unknown as { kept: unknown[] | null; list: { wc: { loadURL: (u: string) => Promise<void> } }[] };
+  b.sleep();
+  inner.kept = [
+    { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+    { url: "https://slow.test/", shown: "https://slow.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+  ];
+  let release!: () => void;
+  FakeView.hold.set("https://slow.test/", new Promise<void>((r) => { release = r; }));
+  await b.wake();
+  assert.equal(b.realAddresses().urls[1], "https://slow.test/");
+  // The person types another address into that tab before the reload commits: that commit ends the kept address.
+  await inner.list[1].wc.loadURL("https://other.test/");
+  assert.deepEqual(b.realAddresses().urls, ["https://a.test/", "https://other.test/"]);
+  assert.equal(b.tabs()[1].url, "https://other.test/");
+  release(); FakeView.hold.clear();
+});
+
+test("a woken tab whose load failed for good keeps answering its kept address until a commit (session-browser X3, A1)", async () => {
+  const { b } = makeSleeper("https://a.test/");
+  const inner = b as unknown as { kept: unknown[] | null };
+  b.sleep();
+  inner.kept = [
+    { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+    { url: "https://down.test/", shown: "https://down.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+  ];
+  // The load rejects with a real failure (not an abort) and nothing commits: the tab still reads about:blank.
+  FakeView.hold.set("https://down.test/", Promise.reject(new Error("ERR_CONNECTION_REFUSED")));
+  FakeView.hold.get("https://down.test/")!.catch(() => {});
+  try {
+    await b.wake();
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(b.realAddresses().urls[1], "https://down.test/");
+    b.sleep();
+    assert.equal(b.realAddresses().urls[1], "https://down.test/");
+  } finally { FakeView.hold.clear(); }
+});
+
+test("a browser destroyed during a wake leaves the wake settled", async () => {
+  const { b } = makeSleeper("https://a.test/");
+  b.sleep();
+  FakeView.hang.add("https://a.test/");
+  try {
+    const w = b.wake();
+    b.destroy();
+    await w;
+  } finally { FakeView.hang.clear(); }
+});
+
+test("a restored tab whose reload fails never gives out its full address, in a note or the tab list", async () => {
+  const notes: string[] = [];
+  const fresh = new ComputerBrowser({ key: "ws:beta", window: () => null, hooks: { ask: async () => true, note: (s) => notes.push(s), changed: () => {} } });
+  const inner = fresh as unknown as { place: () => void; attach: () => Promise<void> };
+  inner.place = () => {}; inner.attach = async () => {};
+  fresh.restore(["http://x.test/cb?token=T"], 0);
+  FakeView.fail = (u) => new Error(`ERR_CONNECTION_REFUSED (-102) loading '${u}'`);
+  try {
+    await fresh.wake();
+  } finally { FakeView.fail = null; }
+  assert.ok(notes.some((n) => n.startsWith("A tab did not reload")), `a note says it: ${notes.join(" | ")}`);
+  assert.equal(JSON.stringify({ notes, tabs: fresh.tabs() }).includes("token=T"), false, "nothing given out carries the query");
+});
+
+function threeKept(): { fresh: ComputerBrowser; notes: string[]; inner: { addTab: (...a: unknown[]) => Promise<unknown> } } {
+  const notes: string[] = [];
+  const fresh = new ComputerBrowser({ key: "ws:beta", window: () => null, hooks: { ask: async () => true, note: (s) => notes.push(s), changed: () => {} } });
+  const inner = fresh as unknown as { place: () => void; attach: () => Promise<void>; addTab: (...a: unknown[]) => Promise<unknown> };
+  inner.place = () => {}; inner.attach = async () => {};
+  fresh.restore(["http://a.test/", "http://b.test/?k=SECRET", "http://c.test/"], 2);
+  return { fresh, notes, inner };
+}
+
+test("a kept tab that cannot be made is skipped, the others wake, and the remembered active tab is selected", async () => {
+  const { fresh, notes, inner } = threeKept();
+  const orig = inner.addTab.bind(fresh);
+  inner.addTab = (opener: unknown, k: unknown) => (String((k as { url: string }).url).includes("b.test") ? Promise.reject(new Error("boom http://b.test/?k=SECRET")) : orig(opener, k));
+  await fresh.wake();
+  const tabs = fresh.tabs();
+  assert.equal(tabs.length, 2, "the first and the third exist");
+  assert.ok(tabs[1].url.includes("c.test") && tabs[1].active, "the third, the remembered active one, is active");
+  assert.ok(notes.some((n) => n.startsWith("A tab did not wake")));
+  assert.equal(JSON.stringify({ notes, tabs }).includes("SECRET"), false, "neither the error text nor the query is given out");
+});
+
+test("a kept tab whose load fails does not stop the others", async () => {
+  const { fresh, notes } = threeKept();
+  FakeView.fail = (u) => (u.includes("b.test") ? new Error("ERR_CONNECTION_REFUSED") : null) as never;
+  try { await fresh.wake(); } finally { FakeView.fail = null; }
+  const tabs = fresh.tabs();
+  assert.equal(tabs.length, 3);
+  assert.ok(tabs[2].active && tabs[2].url.includes("c.test"));
+  assert.ok(notes.some((n) => n.startsWith("A tab did not reload")));
+});
+
+test("a restored tab's address shows no user name or password", () => {
+  makeSleeper();
+  const fresh = new ComputerBrowser({ key: "ws:cred", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  (fresh as unknown as { place: () => void }).place = () => {};
+  fresh.restore(["https://user:pass@example.com/x?code=1"], 0);
+  const u = fresh.tabs()[0].url;
+  assert.equal(u.includes("user"), false);
+  assert.equal(u.includes("pass"), false);
+  assert.equal(fresh.realAddresses().urls.join().includes("pass"), false);
+  assert.equal(fresh.realAddresses().urls.join().includes("user"), false);
+});
+
+test("a live tab at an address with credentials shows none", () => {
+  const { b } = makeSleeper("https://user:pass@example.com/x");
+  for (const w of ["user", "pass"]) {
+    assert.equal(JSON.stringify(b.tabs()).includes(w), false);
+    assert.equal(JSON.stringify(b.realAddresses()).includes(w), false);
+  }
+  b.sleep();
+  for (const w of ["user", "pass"]) {
+    assert.equal(JSON.stringify(b.tabs()).includes(w), false);
+    assert.equal(JSON.stringify(b.realAddresses()).includes(w), false);
+  }
+});
+
+test("a popup's note shows no user name or password", async () => {
+  const { b, tab, notes } = makeSleeper("https://user:pass@example.com/");
+  const inner = b as unknown as { leavingValues: () => Promise<null>; addTab: () => Promise<unknown> };
+  inner.leavingValues = async () => null;
+  inner.addTab = async () => ({ memory: new SecretMemory(), opened: null });
+  await (b as unknown as { popup: (t: unknown, d: unknown) => Promise<void> }).popup(tab, { url: "https://user:pass@example.com/x" }).catch(() => {});
+  const note = notes.find((n) => n.startsWith("The page opened")) ?? "";
+  assert.ok(note.includes("example.com"), note);
+  assert.equal(note.includes("user"), false, note);
+  assert.equal(note.includes("pass"), false, note);
+});
+
+test("a page-started navigation's note shows no user name or password", async () => {
+  const { b, tab, notes } = makeSleeper("https://user:pass@example.com/");
+  (b as unknown as { leavingValues: () => Promise<null> }).leavingValues = async () => null;
+  (b as unknown as { noteNavigation: (t: unknown, u: string) => void }).noteNavigation(tab, "https://user:pass@example.com/x");
+  await new Promise((r) => setImmediate(r));
+  const note = notes.find((n) => n.startsWith("The page went to")) ?? "";
+  assert.ok(note.includes("example.com"), note);
+  assert.equal(note.includes("user"), false, note);
+  assert.equal(note.includes("pass"), false, note);
+});
+
+test("waking the largest record keeps every tab", async () => {
+  const { b } = makeSleeper();
+  const notes: string[] = [];
+  const fresh = new ComputerBrowser({ key: "ws:full", window: () => null, hooks: { ask: async () => true, note: (n: string) => { notes.push(n); }, changed: () => {} } });
+  const inner = fresh as unknown as { place: () => void; attach: () => Promise<void> };
+  inner.place = () => {}; inner.attach = async () => {};
+  fresh.restore(Array.from({ length: TABS_MAX }, (_, i) => `https://a.test/${i}`), TABS_MAX - 1);
+  await fresh.wake();
+  assert.equal(fresh.tabs().length, TABS_MAX);
+  assert.deepEqual(notes, []);
+  void b;
 });

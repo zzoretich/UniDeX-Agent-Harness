@@ -2,7 +2,7 @@
 // new agent has started; a launch that fails leaves it selected and running and removes the new one.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { restartKeepingOld } from "./terminalRestart";
+import { restartKeepingOld, HandOverFailed, HAND_OVER_KEPT } from "./terminalRestart";
 
 function fake(ready: Promise<string | null>) {
   const log: string[] = [];
@@ -49,4 +49,30 @@ test("restartKeepingOld (I1): onReplace runs once the agent has started, before 
   const bad = fake(Promise.reject(new Error("not found")));
   assert.equal(await restartKeepingOld(bad.pool, "old", bad.launch, (o, n) => { bad.log.push(`replace ${o} ${n}`); }), "not found");
   assert.deepEqual(bad.log, ["launch", "remove new", "select old"]);
+});
+
+test("onReplace settles before the old terminal is removed", async () => {
+  const f = fake(Promise.resolve(null));
+  let finish: () => void = () => {};
+  const onReplace = (from: string, to: string): Promise<void> => new Promise<void>((r) => { f.log.push(`replace ${from} ${to}`); finish = r; });
+  const done = restartKeepingOld(f.pool, "old", f.launch, onReplace);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(f.log, ["launch", "replace old new"], "the old terminal waits for the hand-over");
+  finish();
+  assert.equal(await done, null);
+  assert.deepEqual(f.log, ["launch", "replace old new", "remove old", "select new"]);
+});
+
+test("onReplace that throws an ordinary error does not keep the old terminal (the draft carry-over is best effort)", async () => {
+  const f = fake(Promise.resolve(null));
+  assert.equal(await restartKeepingOld(f.pool, "old", f.launch, () => Promise.reject(new Error("no"))), null);
+  assert.deepEqual(f.log, ["launch", "remove old", "select new"]);
+});
+
+test("a failed hand-over (HandOverFailed) keeps the old terminal, leaves the new one selected and returns the Notice sentence", async () => {
+  const f = fake(Promise.resolve(null));
+  const why = await restartKeepingOld(f.pool, "old", f.launch, () => Promise.reject(new HandOverFailed(new Error("ipc down"))));
+  assert.equal(why, HAND_OVER_KEPT);
+  assert.equal(HAND_OVER_KEPT, "The browser could not be handed over: the old terminal was kept.");
+  assert.deepEqual(f.log, ["launch", "select new"], "the old terminal is not removed");
 });

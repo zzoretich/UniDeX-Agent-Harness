@@ -22,7 +22,7 @@ export type Action =
   | { kind: "type"; text: string; focus: Focus };
 
 /** `frame`: input into a frame from another site, which cannot be read or judged by label (asked on every site). */
-export type AskWhy = AskCategory | "unmarked" | "return" | "file" | "permission" | "frame";
+export type AskWhy = AskCategory | "unmarked" | "return" | "file" | "permission" | "frame" | "power";
 export type Verdict = { go: true } | { ask: AskWhy } | { refuse: string };
 
 /** Keys that move focus or dismiss without changing the page's data. */

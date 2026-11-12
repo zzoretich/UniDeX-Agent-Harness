@@ -57,9 +57,23 @@ on only those. The Code tab is a real shell: what you run there, or what a ❯_ 
 checked; else by typing the command into a fresh shell, as before) or a shell, in the vault, a workspace (or its linked
 code folder) or Scratch (`data/terminalLaunch.ts`); terminals start with the login shell's `PATH`.
 
-The Computer pane (agent-computer, release 1) docks right of a Code terminal and of a Sessions thread: a browser in its
+The Computer pane (agent-computer) docks right of a Code terminal and of a Sessions thread: a browser in its
 own partition that a session's agent drives through the agenticos MCP server's nine `computer_*` tools and the person
-answers and takes over (`src/main/computer/`, the HUD's `ui/ComputerPane.ts`). Back, Forward and Reload sit left of
+answers and takes over (`src/main/computer/`, the HUD's `ui/ComputerPane.ts`). Every session has its own browser, keyed
+by the session (`code:<the terminal's first process>` or `chat:<thread>`): two sessions in one folder keep separate tabs
+and never wait for each other; Vault chat, History and past conversations have none. A browser starts off: the pane is a
+narrow strip with a power button, and open, its header names the session and has an On/Off switch. Only the person turns
+it on or off, from the strip, the switch, or **Turn on** on the card that appears when the session's agent first asks to
+open a page (**Not now** declines, and the agent is told and does not ask again for the rest of its turn in Sessions, or
+for 60 seconds in Code). Off closes its tabs and stops the agent's action in flight; closing the last tab also switches
+it off; On brings the tabs back, reloaded. Quitting keeps the tabs (`<user data>/computer/browsers.json`): a thread's
+browser returns after a relaunch, asleep, and a resumed Code conversation gets its tabs back, off. At most
+`computer.awake` browsers (default 4) keep their pages loaded; the least recently used one sleeps, never the one on
+screen or one an agent is using. A browser lives as long as its session: closing a terminal or deleting a thread
+(Sessions' **Delete thread**, which moves the file to the Trash) forgets it, and a model or access pick on a Code
+session keeps it. A web link clicked in a session opens in that session's browser and turns it on (`data/linkRoute.ts`);
+outside a session `https` goes to the default browser and `http` opens nowhere, with a notice. The pop-out window
+follows the selected session. Back, Forward and Reload sit left of
 the address bar and are the person's own (`computer:nav`, three words and no address). A tab the person opens with **+** starts
 on DuckDuckGo, and words typed in the address bar search it (the HUD's `data/computerStart.ts`, which main imports too;
 the e2e suite points both at a local fixture with `AOS_E2E_START_PAGE`, a switch only an unpackaged build reads).

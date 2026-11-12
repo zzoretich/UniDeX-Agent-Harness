@@ -809,3 +809,57 @@ test("code-chat R22: an agent's own exit keeps its terminal's follower; closing 
   assert.equal(mirror.running, 0);
   assert.ok(ended.some(([id, key]) => id === "t3" && key === KEY2));
 });
+
+test("a takeover shell's own id is not a session key", async () => {
+  const KEY = "aaaaaaaa-0000-4000-8000-000000000012";
+  const { t, spawned } = service({});
+  assert.ok((await t.spawnAgent(req({ id: "t1", terminal: KEY }))).ok);
+  assert.ok(t.spawn({ id: "t2", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 120, rows: 40, env: { AOS_TERMINAL: KEY }, origin: "t1" }).ok);
+  assert.equal(t.holdsOrigin("t1"), true);
+  assert.equal(t.holdsOrigin("t2"), false);
+  assert.equal(t.holds("t2"), true);
+  spawned[0].p.exit(0);
+  assert.equal(t.holdsOrigin("t1"), true, "still the terminal's key after its first process exited");
+  t.kill("t2");
+  spawned[1].p.exit(0);
+  assert.equal(t.holdsOrigin("t1"), false);
+  assert.equal(t.holdsOrigin("t2"), false);
+  assert.equal(t.holds("t2"), false);
+});
+
+test("a terminal's origin is always the first process of its chain, even when the page names a takeover shell", async () => {
+  const KEY = "aaaaaaaa-0000-4000-8000-000000000013";
+  const { t } = service({});
+  assert.ok((await t.spawnAgent(req({ id: "t1", terminal: KEY }))).ok);
+  assert.ok(t.spawn({ id: "t2", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 120, rows: 40, env: { AOS_TERMINAL: KEY }, origin: "t1" }).ok);
+  // A page that names the takeover shell as the origin of a third process gets the chain's root, not t2.
+  assert.ok(t.spawn({ id: "t3", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 120, rows: 40, env: { AOS_TERMINAL: KEY }, origin: "t2" }).ok);
+  assert.equal(t.holdsOrigin("t2"), false, "a takeover shell's id never becomes a session key");
+  assert.equal(t.holdsOrigin("t1"), true);
+});
+
+test("kill reports closed and killAll reports all; a takeover shell's close reports its terminal's origin", async () => {
+  const KEY = "aaaaaaaa-0000-4000-8000-000000000011";
+  const ended: Array<[string, string | null, string, string]> = [];
+  const { t, spawned } = service({ extra: { onEnd: (id, terminal, why, origin) => { ended.push([id, terminal, why, origin]); } } });
+  assert.ok((await t.spawnAgent(req({ id: "t1", terminal: KEY }))).ok);
+  // The agent exits and the login shell takes over: a new pty that names the terminal's first process.
+  assert.ok(t.spawn({ id: "t2", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 120, rows: 40, env: { AOS_TERMINAL: KEY }, origin: "t1" }).ok);
+  t.kill("t2");
+  assert.deepEqual(ended[0], ["t2", KEY, "closed", "t1"], "the shell's close reports its terminal's first process");
+  assert.equal(spawned[0].p.killed.length, 1, "the origin's own process is ended with its terminal");
+  spawned[0].p.exit(0);
+  spawned[1].p.exit(0);
+  assert.equal(t.holds("t1"), false, "the origin is not held after its terminal closed");
+  assert.equal(t.holds("t2"), false);
+  // A spawn that names an origin main never began is its own origin.
+  assert.ok(t.spawn({ id: "t5", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 120, rows: 40, origin: "t77" }).ok);
+  ended.length = 0;
+  t.kill("t5");
+  assert.deepEqual(ended[0], ["t5", null, "closed", "t5"]);
+  spawned[2].p.exit(0);
+  assert.ok(t.spawn({ id: "t6", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 120, rows: 40 }).ok);
+  ended.length = 0;
+  t.killAll();
+  assert.deepEqual(ended.map((e) => [e[0], e[2]]), [["t6", "all"]]);
+});

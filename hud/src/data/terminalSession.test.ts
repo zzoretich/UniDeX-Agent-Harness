@@ -139,24 +139,6 @@ test("code-chat R39: agentEnded flips when the agent exits and the login shell t
   assert.equal(pool.create().agentEnded, false, "a plain shell never had an agent");
 });
 
-test("an agent main runs knows its computer key, code:<the app's terminal id>; a shell, a fallback or a host without ids has none", async () => {
-  fakeHost(async () => ({ ok: true, data: { ...proc(4250), id: "t7" } }));
-  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
-  const { session, ready } = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
-  assert.equal(session.computerKey, null, "none while it starts");
-  await ready;
-  assert.equal(session.computerKey, "code:t7", "the key the computer names this agent by (agent-computer D35)");
-  assert.equal(pool.create().computerKey, null, "a plain shell");
-  fakeHost(async () => ({ ok: true, data: proc(4251) }));
-  const bare = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
-  await bare.ready;
-  assert.equal(bare.session.computerKey, null, "a process without the app's id");
-  fakeHost(async () => ({ ok: false, error: "unsigned", code: "fallback" }));
-  const fb = pool.createAgent({ spec: SPEC, place: PLACE, meta: META });
-  await fb.ready;
-  assert.equal(fb.session.computerKey, null);
-});
-
 test("a fallback starts the shell and types the launch line, and hands back main's reason for the note; a host without agents falls back silently", async () => {
   const { shells } = fakeHost(async () => ({ ok: false, error: "Claude Code at /opt/claude isn't a supported install: unsigned", code: "fallback" }));
   const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });

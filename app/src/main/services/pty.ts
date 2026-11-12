@@ -104,8 +104,10 @@ export interface PtyServiceOptions {
   quitting?: () => boolean;
   /** A terminal was closed: `kill(id)` (even after its process exited) or killAll, never the process's own exit (an agent
    *  that exits hands its terminal to the login shell). `terminal` is the key the PTY started with (AOS_TERMINAL), or null.
-   *  The Code chat's follower for that terminal stops (code-chat R16). */
-  onEnd?: (id: string, terminal: string | null) => void;
+   *  The Code chat's follower for that terminal stops (code-chat R16). `why` is "closed" for `kill(id)` and "all" for
+   *  `killAll()` (the page going: nothing forgets a session then, session-browser S1). `origin` is the id of the terminal's
+   *  first process, which is `id` itself for a first process: the key a Code session's browser is named by. */
+  onEnd?: (id: string, terminal: string | null, why: "closed" | "all", origin: string) => void;
   now?: () => number;
 }
 
@@ -156,7 +158,7 @@ export class PtyService {
   private readonly sessions = new Map<string, PtyProcess>();
   /** Terminal id → its folder, when it started and the key it carries (AOS_TERMINAL), until it is closed (kill, killAll):
    *  info, for the Code chat's followers (code-chat R10, M6). It outlives the process's own exit, as the follower does. */
-  private readonly started = new Map<string, { cwd: string; startedAt: number; terminal: string | null }>();
+  private readonly started = new Map<string, { cwd: string; startedAt: number; terminal: string | null; origin: string }>();
   /** Terminal id → the pid of the agent it runs (spawnAgent), while it is registered. */
   private readonly agents = new Map<string, number>();
   /** Bumped by killAll: an agent still being resolved when its page went is not started. */
@@ -181,18 +183,36 @@ export class PtyService {
   /** A terminal's folder, start time (epoch ms) and key, from its start until it is closed; null for one main does not know. */
   info(id: string): { cwd: string; startedAt: number; terminal: string | null } | null {
     const i = this.started.get(id);
-    return i ? { ...i } : null;
+    return i ? { cwd: i.cwd, startedAt: i.startedAt, terminal: i.terminal } : null;
   }
 
-  private begin(id: string, cwd: string, terminal: string | undefined): void {
-    this.started.set(id, { cwd, startedAt: (this.o.now ?? Date.now)(), terminal: typeof terminal === "string" && UUID_RE.test(terminal) ? terminal : null });
+  /** Whether a terminal is begun and not yet closed: running, or exited with its row still open in the page (session-browser S1). */
+  holds(id: string): boolean { return this.sessions.has(id) || this.started.has(id); }
+
+  /** Whether `id` names a terminal's first process, the only id that keys its browser: true while any held process
+   *  has it as its origin, so a takeover shell's own id is false, and the first process's id stays true after it
+   *  exited, or was closed alone, while the shell it left behind still runs (session-browser S1). */
+  holdsOrigin(id: string): boolean {
+    for (const i of this.started.values()) if (i.origin === id) return true;
+    return false;
+  }
+
+  /** `origin` is the first process of the terminal this one takes over in (the login shell after the agent): taken only
+   *  when main began that id in this page, else the process is its own origin (session-browser S1). */
+  private begin(id: string, cwd: string, terminal: string | undefined, origin?: string): void {
+    const given = origin !== undefined && origin !== id ? this.started.get(origin) : undefined;
+    // The root of the chain: a page naming a takeover shell (itself an entry with another origin) gets that shell's origin.
+    const root = given ? given.origin : id;
+    this.started.set(id, { cwd, startedAt: (this.o.now ?? Date.now)(), terminal: typeof terminal === "string" && UUID_RE.test(terminal) ? terminal : null, origin: root });
   }
 
   /** The terminal was closed (kill, killAll): its follower stops (code-chat R16). */
-  private end(id: string): void {
-    const terminal = this.started.get(id)?.terminal ?? null;
+  private end(id: string, why: "closed" | "all"): void {
+    const i = this.started.get(id);
+    const terminal = i?.terminal ?? null;
+    const origin = i?.origin ?? id;
     this.started.delete(id);
-    try { this.o.onEnd?.(id, terminal); } catch { /* a follower's stop never blocks a terminal's close */ }
+    try { this.o.onEnd?.(id, terminal, why, origin); } catch { /* a follower's stop never blocks a terminal's close */ }
   }
 
   spawn(req: PtySpawnRequest): Result<{ pid: number }> {
@@ -213,7 +233,7 @@ export class PtyService {
     } catch (err) { return failure(err); }
     const { id } = req;
     this.sessions.set(id, p);
-    this.begin(id, req.cwd, req.env?.AOS_TERMINAL);
+    this.begin(id, req.cwd, req.env?.AOS_TERMINAL, req.origin);
     p.onData((data) => this.o.emit({ id, type: "data", data }));
     p.onExit((e) => {
       this.reaped(p);
@@ -419,7 +439,11 @@ export class PtyService {
       const pid = this.agents.get(id);
       if (pid !== undefined) this.forget(id, pid);
     }
-    this.end(id);
+    const origin = this.started.get(id)?.origin ?? id;
+    this.end(id, "closed");
+    // Closing a takeover shell closes its terminal's first process too, so the terminal's key is not held any more
+    // (session-browser S1); the origin's own end reports the same terminal key, and forgetting twice does nothing.
+    if (origin !== id && (this.started.has(origin) || this.sessions.has(origin))) this.kill(origin, signal);
   }
 
   /** Every terminal ends with the page that opened it, and on quit. Each stays in `dying` until node-pty reports its
@@ -429,7 +453,7 @@ export class PtyService {
       this.dying.add(p);
       try { p.kill(); } catch { /* gone */ }
     }
-    for (const id of new Set([...this.sessions.keys(), ...this.started.keys()])) this.end(id);
+    for (const id of new Set([...this.sessions.keys(), ...this.started.keys()])) this.end(id, "all");
     this.sessions.clear();
     this.epoch++;
     for (const [id, pid] of [...this.agents]) this.forget(id, pid);

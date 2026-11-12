@@ -18,9 +18,10 @@ import { permissionVerdict, type Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
 import { framesHolding, leavingFrames, LeavingRecords, mergeFrameReads, PendingReads, type Departure } from "./leaving";
 import { SecretMemory, type Secrets } from "./memory";
+import { TABS_MAX } from "./records";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
 import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
-import { navAllowed, siteOf } from "../policy/computer-url";
+import { navAllowed, siteOf, withoutUserinfo } from "../policy/computer-url";
 import type { ComputerNavGo } from "../../shared/ipc";
 
 /** `canBack` and `canForward` read the tab's own navigation history (session-browser S13). */
@@ -52,7 +53,7 @@ const ENABLE: [string, object?][] = [
 const CHUNK = 200;
 const LOAD_WAIT_MS = 15_000;
 const QUERY_MS = 100;
-const MAX_TABS = 20;
+const MAX_TABS = TABS_MAX;
 const KEPT_DOCUMENTS = 8;
 const DEFAULT_SIZE = { width: 1280, height: 800 };
 // R26: after the pointer moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
@@ -160,7 +161,25 @@ interface Tab {
   /** D9 (R37): a read on the current document returned more values of one kind than the memory's reserve, so one of them
    *  may already be forgotten: the URL goes out without its query and fragment for this document's life too. */
   flooded: boolean;
+  /** S9: the load a wake started, for the wake to wait on. */
+  loading: Promise<void> | null;
+  /** session-browser S9: the address a woken or restored tab was loaded from, whose commit keeps `urlHidden` (R37) until the
+   *  tab navigates somewhere else. */
+  holdUrl: string | null;
+  /** True from the reload that set `holdUrl` until its first commit: a redirect in that window is part of loading the held
+   *  address, so `holdUrl` follows it (fail closed); after the commit a navigation's redirect is not. */
+  holdOpen: boolean;
+  /** session-browser X3, A1: the kept tab a wake made this view for, answered as the tab's address (`realAddresses`, `sleep`,
+   *  `tabs`, in the hidden form) from the wake until the tab's first main-frame commit, because until then the view still
+   *  reads about:blank and a record, an Off or a quit would lose the address. Only a commit ends it, error pages included:
+   *  a load that failed for good with nothing committed keeps it, so the person can still reload the address. A navigation
+   *  started in the tab meanwhile does not replace it; its own commit does, with the live address. */
+  pending: Kept | null;
 }
+
+/** session-browser S9: what a sleeping browser keeps of a tab whose view is gone: its address (to reload), the address as
+ *  it may be shown (`shown`: `shownUrl` at sleep), its title, opener and secret memory (which outlives the view, F3). */
+interface Kept { url: string; shown: string; title: string; openedBy: string | null; memory: SecretMemory; urlHidden: boolean }
 
 /** A sensitive field's current value and whether the field is a one-time-code field. */
 interface FieldValue { b: number; value: string; otp: boolean }
@@ -252,6 +271,39 @@ const centre = (r: Rect): Point => ({ x: r.x + r.width / 2, y: r.y + r.height / 
  *  takes fractional x and y, so a press there reaches exactly the document point judged, on a scroll that is not whole too. */
 const judgedAt = (h: { at: Point; off: Point }): Point => ({ x: h.at.x - h.off.x, y: h.at.y - h.off.y });
 
+/** What every browser watching one window shares: its callbacks, and the one set of listeners on the window. The number of
+ *  listeners on a window must not grow with the number of browsers (Node warns past ten of one event). */
+interface SharedWatch { replace: Set<() => void>; closed: Set<() => void>; off: () => void }
+const sharedWatch = new WeakMap<BrowserWindow, SharedWatch>();
+
+/** Adds `replace` (the window was shown, hidden, minimized or restored) and `closed` to the window's shared listeners;
+ *  the first watcher adds them, the last to leave removes them. Returns the leave function. */
+function joinWindow(win: BrowserWindow, replace: () => void, closed: () => void): () => void {
+  let sh = sharedWatch.get(win);
+  if (!sh) {
+    const made: SharedWatch = { replace: new Set(), closed: new Set(), off: () => {} };
+    const onReplace = (): void => { for (const f of [...made.replace]) f(); };
+    const onClosed = (): void => {
+      const all = [...made.closed];
+      if (sharedWatch.get(win) === made) sharedWatch.delete(win);
+      for (const f of all) f();
+    };
+    win.on("show", onReplace); win.on("hide", onReplace); win.on("minimize", onReplace); win.on("restore", onReplace); win.once("closed", onClosed);
+    made.off = () => {
+      if (win.isDestroyed()) return;
+      win.off("show", onReplace); win.off("hide", onReplace); win.off("minimize", onReplace); win.off("restore", onReplace); win.off("closed", onClosed);
+    };
+    sharedWatch.set(win, made);
+    sh = made;
+  }
+  const mine = sh;
+  mine.replace.add(replace); mine.closed.add(closed);
+  return () => {
+    mine.replace.delete(replace); mine.closed.delete(closed);
+    if (mine.replace.size === 0 && sharedWatch.get(win) === mine) { sharedWatch.delete(win); mine.off(); }
+  };
+}
+
 export class ComputerBrowser {
   private list: Tab[] = [];
   /** The private folders this browser's downloads wait in until they are answered (agent-computer D39). */
@@ -262,6 +314,13 @@ export class ComputerBrowser {
   private popped: BrowserWindow | null = null;
   private watched = new Map<BrowserWindow, () => void>();
   private gone = false;
+  /** S9: the tabs a sleeping browser keeps while it holds no view (null when awake), and the active one's index. */
+  private kept: Kept[] | null = null;
+  private keptActive = 0;
+  private waking: Promise<void> | null = null;
+  /** Settles when the browser is destroyed, so a wake waiting on a load that will never settle ends with it (S9). */
+  private readonly destroyed: Promise<void>;
+  private signalDestroyed: () => void = () => undefined;
   private readonly handlers: Handlers = {
     permission: (p, url) => this.askPermission(p, url),
     download: (item, wc) => this.download(item, wc),
@@ -269,11 +328,23 @@ export class ComputerBrowser {
 
   constructor(private o: { key: string; window: () => BrowserWindow | null; hooks: BrowserHooks }) {
     computerSession();
+    this.destroyed = new Promise<void>((r) => { this.signalDestroyed = r; });
   }
 
   /** Each tab's URL and title scrubbed of the secrets the tab has read (D9: a code submitted by GET sits in the URL). */
   tabs(): TabInfo[] {
-    return this.list.map((t, index) => ({ index, url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current, canBack: t.wc.navigationHistory.canGoBack(), canForward: t.wc.navigationHistory.canGoForward() }));
+    // S9: asleep (or waking), the kept tabs, scrubbed by their own memory as an awake tab's are.
+    if (this.kept) {
+      return this.kept.map((k, index) => ({ index, url: this.keptUrl(k), title: this.keptScrub(k)(k.title), openedBy: k.openedBy, active: index === this.keptActive, canBack: false, canForward: false }));
+    }
+    return this.list.map((t, index) => t.pending ? { index, url: this.keptUrl(t.pending), title: this.keptScrub(t.pending)(t.pending.title), openedBy: t.openedBy, active: index === this.current, canBack: false, canForward: false } : ({ index, url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current, canBack: t.wc.navigationHistory.canGoBack(), canForward: t.wc.navigationHistory.canGoForward() }));
+  }
+
+  /** The `webContents.id` of the active tab, or null with no tab. Only the e2e seam (`__aosMain.computerPageId`) asks, so a
+   *  spec can find the page of one session among several browsers; an id, never the contents. */
+  activeWebContentsId(): number | null {
+    const t = this.list[this.current];
+    return t && !t.wc.isDestroyed() ? t.wc.id : null;
   }
 
   /** Changes on every main-frame navigation commit of the active tab (error pages and in-page navigations included), and
@@ -325,6 +396,11 @@ export class ComputerBrowser {
     const h = t.wc.navigationHistory;
     if (go === "back") { if (!h.canGoBack()) return false; h.goBack(); }
     else if (go === "forward") { if (!h.canGoForward()) return false; h.goForward(); }
+    // A tab still waking has not committed: its view is on about:blank, so its own reload would lose the kept address.
+    else if (t.pending) {
+      const k = t.pending;
+      void this.reload(t, k).catch(() => this.o.hooks.note(`A tab did not reload: ${clipUrl(this.keptUrl(k))}`));
+    }
     else t.wc.reload();
     return true;
   }
@@ -633,8 +709,128 @@ export class ComputerBrowser {
     this.place();
   }
 
+  /** S9: destroys every tab's view and debugger session, keeping each one's address, title, opener and secret memory (F3):
+   *  `tabs()` still lists them. A browser that is already asleep or waking is left as it is. */
+  sleep(): void {
+    if (this.gone || this.kept || this.waking) return;
+    const kept: Kept[] = [];
+    let active = 0;
+    for (const [i, t] of this.list.entries()) {
+      const url = withoutUserinfo(t.pending?.url ?? t.wc.getURL());
+      if (!navAllowed(url)) continue;
+      if (i === this.current) active = kept.length;
+      if (t.pending) { kept.push({ ...t.pending, url, openedBy: t.openedBy, memory: t.memory }); continue; }
+      kept.push({ url, shown: this.shownUrl(t), title: t.wc.getTitle(), openedBy: t.openedBy, memory: t.memory, urlHidden: this.hidden(t) || t.pathHidden });
+    }
+    for (const t of [...this.list]) this.drop(t);
+    this.kept = kept;
+    this.keptActive = active;
+    this.current = -1;
+    this.place();
+    this.o.hooks.changed();
+  }
+
+  asleep(): boolean { return this.kept !== null; }
+
+  /** Each tab's REAL address and the active tab's place among them, for the browser's record and for what Off remembers
+   *  (session-browser S6, S7). MAIN ONLY: never give this to the page or to an agent. It is not scrubbed, so a query
+   *  may hold a secret; `tabs()` is the only form that leaves main. */
+  realAddresses(): { urls: string[]; active: number } {
+    // A destroyed browser has no tabs to give: asking it must never read as "no tabs".
+    if (this.gone) throw new Error("the browser is gone");
+    if (this.kept) return { urls: this.kept.map((k) => withoutUserinfo(k.url)), active: this.keptActive };
+    const urls: string[] = [];
+    let active = 0;
+    for (const [i, t] of this.list.entries()) {
+      const url = t.pending ? withoutUserinfo(t.pending.url) : t.wc.isDestroyed() ? "" : withoutUserinfo(t.wc.getURL());
+      if (!navAllowed(url)) continue;
+      if (i === this.current) active = urls.length;
+      urls.push(url);
+    }
+    return { urls, active };
+  }
+
+  /** S9: a view per kept tab, made as `addTab` makes one (so every guard of a new tab applies), loading its address, the
+   *  active tab first. The tabs keep their order and their opener and memory; each view is a new tab uid, so every page
+   *  token changes. A load that fails leaves its tab on its address and is noted. */
+  wake(): Promise<void> {
+    if (!this.kept) return Promise.resolve();
+    this.waking ??= this.wakeUp(this.kept).finally(() => { this.waking = null; });
+    return this.waking;
+  }
+
+  private async wakeUp(ks: Kept[]): Promise<void> {
+    // Each kept tab is made on its own: one that cannot be made is skipped and the others still are. The note is the fixed
+    // sentence with the hidden-form address, never the error's text, which may carry the address in full (R37).
+    const made: { t: Tab; k: Kept; i: number }[] = [];
+    try {
+      for (const [i, k] of ks.entries()) {
+        if (this.gone) return;
+        try {
+          const t = await this.addTab(k.openedBy, k);
+          t.pending = k;
+          made.push({ t, k, i });
+        } catch { this.o.hooks.note(`A tab did not wake: ${clipUrl(this.keptUrl(k))}`); }
+      }
+    } finally {
+      if (!this.gone) {
+        this.kept = null;
+        // The remembered active tab if it was made, else the nearest made one before it, else the first.
+        let at = made.findIndex((m) => m.i === this.keptActive);
+        if (at < 0) { for (let n = made.length - 1; n >= 0; n--) if (made[n].i < this.keptActive) { at = n; break; } }
+        this.current = Math.max(0, at);
+        this.place();
+      }
+    }
+    if (this.gone) return;
+    const order = [...made].sort((x, y) => Number(y.i === this.keptActive) - Number(x.i === this.keptActive));
+    for (const [n, { t, k }] of order.entries()) {
+      // Only the active tab is waited for (up to LOAD_WAIT_MS); the others load on their own, so a background page with a
+      // subresource that never ends cannot hold the wake, and with it every call queued behind it.
+      const load = this.reload(t, k).catch(() => this.o.hooks.note(`A tab did not reload: ${clipUrl(t.pending ? this.keptUrl(t.pending) : this.urlOut(t))}`));
+      if (n === 0) await load; else void load;
+    }
+    this.o.hooks.changed();
+  }
+
+  /** The woken tab's own address loaded again: the person's earlier navigation, so nothing is asked and nothing is noted. */
+  private async reload(t: Tab, k: Kept): Promise<void> {
+    if (!navAllowed(k.url)) return;
+    const href = new URL(k.url).href;
+    t.holdUrl = k.urlHidden ? href : null;
+    t.holdOpen = k.urlHidden;
+    t.urlHidden = k.urlHidden;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const p = t.wc.loadURL(href).then(() => undefined, (e: unknown) => { if ((e as { code?: string }).code !== "ERR_ABORTED") throw e; });
+    t.loading = p.catch(() => undefined);
+    await Promise.race([p, this.destroyed, new Promise<void>((r) => { timer = setTimeout(r, LOAD_WAIT_MS); })]);
+    clearTimeout(timer);
+  }
+
+  /** S9: tabs from a record (after a relaunch), asleep: each shown without its query or fragment (`urlHidden`, R37) until
+   *  it next navigates. A browser that already has tabs is left alone. */
+  restore(tabs: readonly string[], active: number): void {
+    if (this.gone || this.kept || this.list.length) return;
+    const ok = tabs.filter((u) => navAllowed(u)).map(withoutUserinfo);
+    this.kept = ok.map((url) => ({ url, shown: stripQuery(url), title: "", openedBy: null, memory: new SecretMemory(), urlHidden: true }));
+    this.keptActive = Math.min(Math.max(0, tabs.slice(0, active + 1).filter((u) => navAllowed(u)).length - 1), Math.max(0, ok.length - 1));
+    this.o.hooks.changed();
+  }
+
+  /** A kept tab's address as it may leave: `shown`, scrubbed by the tab's memory for its own site. */
+  private keptUrl(k: Kept): string {
+    const mem = k.memory.pool([siteOf(k.url) ?? "null"]), carried = k.memory.carried();
+    return urlScrubber([...mem.values, ...carried.values], [...mem.whole, ...carried.whole])(withoutUserinfo(k.shown));
+  }
+
+  private keptScrub(k: Kept): (text: string) => string {
+    const mem = k.memory.pool([siteOf(k.url) ?? "null"]);
+    return scrubber(mem.values, mem.whole);
+  }
+
   destroy(): void {
     if (this.gone) return;
+    this.kept = null;
     for (const t of [...this.list]) this.drop(t);
     // Its held downloads go with it, answered or not (quitting destroys every browser).
     this.held.dropAll();
@@ -643,6 +839,7 @@ export class ComputerBrowser {
     this.watched.clear();
     leavePark(this);
     this.gone = true;
+    this.signalDestroyed();
   }
 
   // ---- tabs and placement
@@ -674,7 +871,7 @@ export class ComputerBrowser {
     return t;
   }
 
-  private async addTab(by: string | null): Promise<Tab> {
+  private async addTab(by: string | null, keep?: Kept): Promise<Tab> {
     if (this.gone) throw new Error("This computer was closed.");
     if (this.list.length >= MAX_TABS) throw new Error(`${MAX_TABS} tabs are open: close one first.`);
     const view = new WebContentsView({
@@ -690,7 +887,7 @@ export class ComputerBrowser {
     const t: Tab = {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
-      worlds: new Map(), memory: new SecretMemory(), frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
+      worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
     };
     owners.set(t.wc.id, this.handlers);
     this.list.push(t);
@@ -760,11 +957,8 @@ export class ComputerBrowser {
       if (this.popped === win) { this.popped = null; this.bounds = null; }
       this.place();
     };
-    win.on("show", replace); win.on("hide", replace); win.on("minimize", replace); win.on("restore", replace); win.once("closed", closed);
-    this.watched.set(win, () => {
-      if (win.isDestroyed()) return;
-      win.off("show", replace); win.off("hide", replace); win.off("minimize", replace); win.off("restore", replace); win.off("closed", closed);
-    });
+    // One set of listeners per window, shared by every browser that watches it (there is one browser per session).
+    this.watched.set(win, joinWindow(win, replace, closed));
   }
 
   // ---- page events
@@ -814,7 +1008,11 @@ export class ComputerBrowser {
     });
     // R38: a redirect moves the pending navigation to another URL (the one its commit will report): the latest entry
     // follows it (R39: only the latest navigation started can still be redirected).
-    wc.on("did-redirect-navigation", (e) => { if (e.isMainFrame && !e.isSameDocument) t.leaving.redirect(e.url); });
+    wc.on("did-redirect-navigation", (e) => {
+      if (!e.isMainFrame || e.isSameDocument) return;
+      if (t.holdOpen && t.holdUrl) t.holdUrl = e.url;
+      t.leaving.redirect(e.url);
+    });
     wc.on("did-navigate", (_e, url) => this.commit(t, url));
     // R37 (N1): a main-frame error page (the site refused the connection, the name did not resolve) commits too, with the
     // failed URL as the tab's URL (a GET-submitted code is in it), but Electron emits no did-navigate for it: it emits one
@@ -1309,14 +1507,15 @@ export class ComputerBrowser {
    *  pools and what other sites carried into this tab's URLs (R35), each by kind (R37). */
   private urlScrub(t: Tab, sites: string[], s: Secrets = { values: [], whole: [] }): (url: string) => string {
     const mem = t.memory.pool(sites), carried = t.memory.carried();
-    return urlScrubber([...s.values, ...mem.values, ...carried.values], [...s.whole, ...mem.whole, ...carried.whole]);
+    const scrub = urlScrubber([...s.values, ...mem.values, ...carried.values], [...s.whole, ...mem.whole, ...carried.whole]);
+    return (url) => scrub(withoutUserinfo(url));
   }
 
   /** The tab's current URL before its scrub: everything after the origin hidden while its commit is still carrying (R40),
    *  the query and fragment hidden while the document arrived through a navigation whose leaving read failed, a commit no
    *  entry matched, or a read of it flooded the memory (F1, R37, R39). */
   private shownUrl(t: Tab): string {
-    const url = t.wc.getURL();
+    const url = withoutUserinfo(t.wc.getURL());
     return t.pathHidden ? hideAfterOrigin(url) : this.hidden(t) ? stripQuery(url) : url;
   }
 
@@ -1393,6 +1592,7 @@ export class ComputerBrowser {
   private commit(t: Tab, url: string): void {
     t.seq++;
     t.doc++;
+    t.pending = null;
     // R40: a leaving read still pending can no longer count (an answer now may be the new document's): it fails now, so
     // this commit's carry never waits on it.
     t.reads.endAll();
@@ -1417,7 +1617,11 @@ export class ComputerBrowser {
   private committed(t: Tab, url: string): void {
     const got = t.leaving.commit(url);
     const records = [...got.own, ...got.others];
-    t.urlHidden = got.kind === "page" || got.kind === "unknown";
+    // S9: a woken or restored tab's own address stays hidden (R37) until the tab navigates somewhere else.
+    const held = !!t.holdUrl && url === t.holdUrl;
+    t.holdOpen = false;
+    if (!held) t.holdUrl = null;
+    t.urlHidden = held || got.kind === "page" || got.kind === "unknown";
     t.pathHidden = records.length > 0;
     t.flooded = false;
     if (!records.length) return;

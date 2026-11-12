@@ -19,7 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { HostCatalog, Result, SessionAccess, SessionEvent, SessionEventRecord, SessionHost, SessionSendRequest, SessionStartRequest, SessionThread } from "../../shared/ipc";
-import { programRefusal, spawnEnv, type ProgramContext } from "../policy/programs";
+import { programRefusal, spawnEnv, UUID_RE, type ProgramContext } from "../policy/programs";
 import { SURFACES } from "../../shared/surfaces";
 import { refused } from "./fs";
 import type { WorkspaceDir } from "./git";
@@ -73,6 +73,10 @@ export interface SessionServiceOptions {
   binTimeoutMs?: number;
   /** Whether the Computer surface is on (agent-computer D26): its notices run only then. Off when absent. */
   computerOn?: () => boolean;
+  /** Sends a thread's file to the Trash (index.ts passes shell.trashItem; session-browser S13). */
+  trash: (file: string) => Promise<void>;
+  /** A thread was deleted: index.ts forgets its browser and the browser's saved record (session-browser S6). */
+  onRemoved?: (thread: string) => void;
 }
 
 /** A Code launch's binary, or why the runtime named none (one line, for the launch note). */
@@ -110,7 +114,9 @@ const accessOf = (req: { access?: SessionAccess; allowCommands?: boolean }, fall
   req.access ?? (req.allowCommands === true ? "run" : req.allowCommands === false ? "edit" : fallback);
 
 /** `end`: tells onAgent the turn's CLI ended (once; a later call does nothing). Stop calls it at once (R76). */
-interface Running { agent: childProcess.ChildProcess | null; stopped: boolean; timer: NodeJS.Timeout | null; turn?: number; end?: () => void }
+/** `recording` is set once the turn's work is over and only its bookkeeping (the runtime's record call) is left: it settles
+ *  after the turn leaves `running`, so a Delete pressed when Done is drawn waits for it instead of being refused. */
+interface Running { agent: childProcess.ChildProcess | null; stopped: boolean; timer: NodeJS.Timeout | null; turn?: number; end?: () => void; recording?: Promise<void> }
 
 type Event = Omit<SessionEventRecord, "turn">;
 
@@ -160,6 +166,8 @@ function metaOf(lines: Array<Record<string, unknown>>): Meta | null {
 
 export class SessionService {
   private readonly running = new Map<string, Running>();
+  /** Threads whose file is being moved to the Trash: no second delete and no new turn meanwhile. */
+  private readonly removing = new Set<string>();
   /** thread id → its file, as threads are opened or listed. */
   private readonly files = new Map<string, string>();
 
@@ -174,6 +182,34 @@ export class SessionService {
   }
 
   private sessionsDir(vault: string): string { return path.join(vault, "brain", "_index", "sessions"); }
+
+  /** Whether a thread file is in the vault's index (session-browser S1). */
+  has(thread: string): boolean { return this.find(thread) !== null; }
+
+  /** Like `has`, but `undefined` when it cannot tell: no vault attached, or its sessions folder cannot be read (an unmounted
+   *  drive, a renamed folder). Only `false` is a confirmed missing thread (session-browser S6: `boot` deletes saved browsers by it). */
+  exists(thread: string): boolean | undefined {
+    if (this.find(thread)) return true;
+    const vault = this.o.vaultRoot();
+    if (!vault) return undefined;
+    try { fs.readdirSync(this.sessionsDir(vault)); } catch { return undefined; }
+    return false;
+  }
+
+  /** A thread's title, or undefined for one that is not in the index (the computer names a thread's browser by it, session-browser S6). */
+  titleOf(thread: string): string | undefined {
+    try {
+      const f = this.find(thread);
+      if (!f) return undefined;
+      // Only the head of the file: the meta line is first and short, and a state asks for this often.
+      const fd = fs.openSync(f, "r");
+      let head: string;
+      try { const buf = Buffer.alloc(4096); head = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString("utf8"); } finally { fs.closeSync(fd); }
+      const first = head.split("\n", 1)[0] ?? "";
+      const m = JSON.parse(first) as { kind?: unknown; title?: unknown };
+      return m.kind === "meta" && typeof m.title === "string" ? m.title : undefined;
+    } catch { return undefined; }
+  }
 
   private find(thread: string): string | null {
     const known = this.files.get(thread);
@@ -233,6 +269,7 @@ export class SessionService {
   async send(req: SessionSendRequest): Promise<Result<SessionThread>> {
     const why = this.refusal();
     if (why) return refused(why);
+    if (this.removing.has(req.thread)) return { ok: false, error: "this thread is being deleted", code: "EBUSY" };
     const file = this.find(req.thread);
     if (!file) return { ok: false, error: "no such thread", code: "ENOENT" };
     const lines = readLines(file);
@@ -252,6 +289,31 @@ export class SessionService {
     this.running.set(meta.thread, { agent: null, stopped: false, timer: null });
     void this.turn(meta, file, w.dir, req.text, opts);
     return { ok: true, data: this.threadOf(meta, lines, file) };
+  }
+
+  /** Delete thread (session-browser S13, S6): only the thread's own file goes to the Trash, never the host's transcript.
+   *  A failed Trash changes nothing; a throw from onRemoved does not undo the removal. */
+  async remove(thread: string): Promise<Result<null>> {
+    const why = this.refusal();
+    if (why) return refused(why);
+    if (typeof thread !== "string" || !UUID_RE.test(thread)) return { ok: false, error: "a thread id", code: "EINVAL" };
+    const turn = this.running.get(thread);
+    if (turn && !turn.recording) return { ok: false, error: "a turn is running: stop it first", code: "EBUSY" };
+    if (this.removing.has(thread)) return { ok: false, error: "this thread is being deleted", code: "EBUSY" };
+    this.removing.add(thread);
+    try {
+      // A turn whose work is over and that is only recording: wait for it to leave `running` (taken `removing` first, so a
+      // second Delete meanwhile is refused).
+      if (turn?.recording) await turn.recording;
+      const file = this.find(thread);
+      if (!file) return { ok: false, error: "no such thread", code: "ENOENT" };
+      try { await this.o.trash(file); } catch (err) {
+        if (fs.existsSync(file)) return { ok: false, error: `the Trash refused the thread's file: ${(err as Error).message}`, code: "EIO" };
+      }
+      this.files.delete(thread);
+      try { this.o.onRemoved?.(thread); } catch (err) { console.error("[main] onRemoved failed", err); }
+      return { ok: true, data: null };
+    } finally { this.removing.delete(thread); }
   }
 
   stop(thread: string): void {
@@ -554,14 +616,21 @@ export class SessionService {
       append(state.stopped ? { ...(done ?? { t: iso(), kind: "done", estimated: meta.host === "codex" }), ok: false, usd } : (done ?? { t: iso(), kind: "done", ok: false, usd, estimated: meta.host === "codex" }));
       if (!state.stopped && !(done && done.ok === true) && !failure) failure = "the turn failed";
     } finally {
-      // The turn's spend and its run row land before the thread reads as idle.
+      // The work is over: only the bookkeeping is left. A Delete from here on waits for it (`remove`).
+      let recorded!: () => void;
+      state.recording = new Promise<void>((r) => { recorded = r; });
+      // The spend and the run row land before the thread reads as idle.
       const status = state.stopped ? "stopped" : failure ? "error" : "ok";
-      await this.runtime(["record", JSON.stringify({
-        host: meta.host, model: opts.model, usd, inputTokens, outputTokens, ms: this.now().getTime() - startedAt.getTime(),
-        startedAt: startedAt.toISOString(), status, prompt: text, reply, toolCount, error: status === "ok" ? null : failure,
-        workspace: meta.workspace, thread: meta.thread,
-      })]);
-      this.running.delete(meta.thread);
+      try {
+        await this.runtime(["record", JSON.stringify({
+          host: meta.host, model: opts.model, usd, inputTokens, outputTokens, ms: this.now().getTime() - startedAt.getTime(),
+          startedAt: startedAt.toISOString(), status, prompt: text, reply, toolCount, error: status === "ok" ? null : failure,
+          workspace: meta.workspace, thread: meta.thread,
+        })]);
+      } finally {
+        this.running.delete(meta.thread);
+        recorded();
+      }
     }
   }
 }
