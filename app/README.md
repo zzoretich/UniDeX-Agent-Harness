@@ -74,10 +74,12 @@ screen or one an agent is using. A browser lives as long as its session: closing
 session keeps it. A web link clicked in a session opens in that session's browser and turns it on (`data/linkRoute.ts`);
 outside a session `https` goes to the default browser and `http` opens nowhere, with a notice. A page a program in a
 session opens (a dev server, `gh auth login --web`, Superpowers' companion) comes to that session's browser through the
-door (`src/main/computer/door.ts`, the opener in `resources/opener/`); an off browser asks first, as for an agent's open.
-**Open in my browser** (`computer:open-outside`) sends the active tab's page to the Mac's browser, for a sign-in that needs
-a passkey or a password manager; https only. The pop-out window follows the selected session. Back, Forward and Reload sit left of
-the address bar and are the person's own (`computer:nav`, three words and no address). A tab the person opens with **+** starts
+door (`src/main/computer/door.ts`, the opener in `resources/opener/`). An off browser asks first, as for an agent's open,
+and while the person holds the wheel after Take over the page opens in a background tab. With Settings › Computer off the
+program's page goes where it went before UniDeX. **Open in my browser** (`computer:open-outside`) sends the active tab's
+page to the Mac's browser, for a sign-in that needs a passkey or a password manager; https only, and it answers an error
+when the system does not take the page. The pop-out window follows the selected session. Back, Forward and Reload sit left
+of the address bar and are the person's own (`computer:nav`, three words and no address). A tab the person opens with **+** starts
 on DuckDuckGo, and words typed in the address bar search it (the HUD's `data/computerStart.ts`, which main imports too;
 the e2e suite points both at a local fixture with `AOS_E2E_START_PAGE`, a switch only an unpackaged build reads).
 Main admits only the MCP server of an agent CLI it spawned, over a Unix socket in its data folder (or, when that path is too

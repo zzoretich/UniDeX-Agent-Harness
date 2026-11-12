@@ -12,7 +12,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - Delete thread in Sessions moves a thread to the Trash. <!-- no-tour: one button with a confirmation -->
 - computer.awake (default 4): how many session browsers keep their pages loaded. <!-- no-tour: a setting -->
 - A page that a program in a session opens (a dev server, a sign-in, Superpowers' visual companion) comes to that session's browser. <!-- no-tour: it happens by itself -->
-- Open in my browser sends the page you are on to your Mac's browser, for a sign-in that needs a passkey or a password manager. <!-- tour: code.computer -->
+- Open in my browser sends the https page you are on to your Mac's browser, for a sign-in that needs a passkey or a password manager. <!-- tour: code.computer -->
 
 ### Changed
 - Every session has its own browser: two sessions in one folder no longer share tabs or wait for each other. <!-- tour: code.computer, sessions.computer -->
