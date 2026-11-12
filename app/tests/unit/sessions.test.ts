@@ -972,3 +972,17 @@ test("a Chat turn's CLI starts with its thread's three variables, added after th
   assert.equal(seen.length, 2);
   assert.deepEqual([seen[1].BROWSER, seen[1].BRAINSTORM_OPEN_CMD, seen[1].AOS_BROWSER_SESSION], ["firefox", undefined, undefined], "nothing added");
 });
+
+test("an outer app's session variable never reaches a Chat turn's CLI when main adds none (session-browser S23)", async () => {
+  const seen: Array<Record<string, string | undefined>> = [];
+  const spawnImpl = ((cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+    if (cmd === CLAUDE) seen.push({ ...(opts.env ?? {}) });
+    return childProcess.spawn(cmd, args, opts);
+  }) as unknown as typeof childProcess.spawn;
+  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context,
+    env: { ...env, AOS_BROWSER_SESSION: "b2b2" }, node: () => process.execPath, emit: () => {}, graceMs: 500, spawnImpl, browserEnv: () => ({}) });
+  assert.ok((await s.start({ workspace: "harbor-map", host: "claude", text: "hi", access: "read" })).ok);
+  await idle(s);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].AOS_BROWSER_SESSION, undefined);
+});

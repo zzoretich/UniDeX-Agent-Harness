@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { HostCatalog, Result, SessionAccess, SessionEvent, SessionEventRecord, SessionHost, SessionSendRequest, SessionStartRequest, SessionThread } from "../../shared/ipc";
+import { SESSION_VAR } from "../computer/door";
 import { programRefusal, spawnEnv, UUID_RE, type ProgramContext } from "../policy/programs";
 import { SURFACES } from "../../shared/surfaces";
 import { refused } from "./fs";
@@ -559,6 +560,8 @@ export class SessionService {
         append({ t: iso(), kind: "done", ok: false, usd: null, estimated: meta.host === "codex" });
         return;
       }
+      // An app started inside another session carries that session's browser id: never hand it on (session-browser S23).
+      delete env.env[SESSION_VAR];
       let browser: Record<string, string> = {};
       try { browser = this.o.browserEnv?.(`chat:${meta.thread}`, env.env) ?? {}; } catch { /* a turn starts without them */ }
       let agent: childProcess.ChildProcess;

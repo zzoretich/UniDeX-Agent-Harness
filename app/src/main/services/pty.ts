@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentFlags, PtyAgentRequest, PtyAgentResult, PtyEvent, PtySpawnRequest, Result } from "../../shared/ipc";
 import { launchForm, VENDOR, type Sys } from "../computer/admission";
+import { SESSION_VAR } from "../computer/door";
 import type { AgentRef, AgentRegistry } from "../computer/registry";
 import { agentArgvRefusal } from "../policy/agent-launch";
 import { programRefusal, ptyEnv, shellRefusal, UUID_RE, type ProgramContext } from "../policy/programs";
@@ -54,13 +55,15 @@ const HOST_SESSION_VAR = /^(?:CLAUDECODE|CLAUDE_CODE_.*|CLAUDE_AGENT_SDK_.*|CLAU
  * CODEX_SESSION_ID. They describe the session that launched the app (one is a messaging token), not your settings, and an
  * app launchd starts has none; your settings live in the host's own settings and the rc files the terminal's zsh reads.
  * CODEX_HOME, CLAUDE_CONFIG_DIR and everything else stay. AOS_TERMINAL goes too (code-chat F8): an app started inside an
- * agent terminal must not hand that terminal's key to its own.
+ * agent terminal must not hand that terminal's key to its own, and a UniDeX session's browser id likewise: its pages
+ * would open in the outer app's browser (session-browser S23).
  */
 export function terminalBaseEnv(env: NodeJS.ProcessEnv, loginPATH: string | null): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   if (loginPATH) out.PATH = loginPATH;
   for (const k of Object.keys(out)) if (HOST_SESSION_VAR.test(k)) delete out[k];
   delete out.AOS_TERMINAL;
+  delete out[SESSION_VAR];
   return out;
 }
 
@@ -413,7 +416,7 @@ export class PtyService {
    * bridge admits. A shell that gives none (a startup file exits, hangs or execs something else) falls back to the
    * typed launch, which runs those files itself. The shell starts from the terminal's base, without the markers of a
    * session that launched the app (R64), so what it gives is the user's own: a CLAUDE_CODE_* an rc file exports reaches
-   * the agent as it reaches a typed launch. CLAUDECODE and AOS_TERMINAL never pass.
+   * the agent as it reaches a typed launch. CLAUDECODE, AOS_TERMINAL and an outer session's browser id never pass.
    */
   private async agentBase(cwd: string, ctx: ProgramContext): Promise<{ env: NodeJS.ProcessEnv } | { reason: string }> {
     const plain = this.baseEnv();
@@ -429,6 +432,7 @@ export class PtyService {
     const out: NodeJS.ProcessEnv = { ...env };
     delete out.CLAUDECODE;
     delete out.AOS_TERMINAL;
+    delete out[SESSION_VAR];
     return { env: out };
   }
 

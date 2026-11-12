@@ -34,8 +34,8 @@ function prevProgram(dir: string, code = 0): { cmd: string; rec: string } {
   return { cmd, rec };
 }
 
-/** A door that answers `answer` to the first line of each connection and ends it. */
-async function fakeDoor(dir: string, answer: string): Promise<{ sock: string; lines: string[]; conns: () => number }> {
+/** A door that answers `answer` to the first line of each connection and ends it; null answers nothing, ever. */
+async function fakeDoor(dir: string, answer: string | null): Promise<{ sock: string; lines: string[]; conns: () => number }> {
   const sock = path.join(dir, "d.sock");
   const lines: string[] = [];
   let conns = 0;
@@ -48,7 +48,7 @@ async function fakeDoor(dir: string, answer: string): Promise<{ sock: string; li
       const nl = buf.indexOf("\n");
       if (nl < 0) return;
       lines.push(buf.slice(0, nl));
-      s.end(`${answer}\n`);
+      if (answer !== null) s.end(`${answer}\n`);
     });
   });
   servers.push(server);
@@ -56,14 +56,32 @@ async function fakeDoor(dir: string, answer: string): Promise<{ sock: string; li
   return { sock, lines, conns: () => conns };
 }
 
-function run(args: string[], env: Record<string, string>): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const c = spawn(process.execPath, [SCRIPT, ...args], { env: { PATH: process.env.PATH ?? "", ...env }, stdio: ["ignore", "pipe", "pipe"] });
+/** Runs `script` (the opener unless told) with `args`. Fails, never hangs, after 10 s; and refuses to start the real opener
+ *  on a route that would end at the system's opener (/usr/bin/open would open this machine's real browser). */
+function run(args: string[], env: Record<string, string>, script = SCRIPT): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  if (script === SCRIPT) assert.notEqual(route(args, env).to, "system", "this test would reach /usr/bin/open");
+  return new Promise((resolve, reject) => {
+    const c = spawn(process.execPath, [script, ...args], { env: { PATH: process.env.PATH ?? "", ...env }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
+    const timer = setTimeout(() => { c.kill("SIGKILL"); reject(new Error("the opener did not end in 10 s")); }, 10_000);
     c.stdout.on("data", (b) => { stdout += b.toString("utf8"); });
     c.stderr.on("data", (b) => { stderr += b.toString("utf8"); });
-    c.on("close", (code) => resolve({ code, stdout, stderr }));
+    c.on("close", (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
   });
+}
+
+/** A stand-in for /usr/bin/open: appends one line (the address, and whether the session variable reached it) to `rec`. */
+function openStandIn(dir: string): { cmd: string; rec: string } {
+  const cmd = path.join(dir, "open-standin.sh");
+  const rec = path.join(dir, "open.out");
+  fs.writeFileSync(cmd, `#!/bin/sh\nprintf '%s %s\\n' "$1" "${"$"}{AOS_BROWSER_SESSION:-unset}" >> ${rec}\n`, { mode: 0o755 });
+  return { cmd, rec };
+}
+/** A program that is the opener, with the system's opener replaced by `open` (the only way to do that: an argument). */
+function openerWith(dir: string, name: string, open: string): string {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, `#!/usr/bin/env node\nconst o = require(${JSON.stringify(SCRIPT)});\no.act(o.route(process.argv.slice(2), process.env), process.env, { open: ${JSON.stringify(open)} });\n`, { mode: 0o755 });
+  return file;
 }
 
 test("the opener sends a web address to the door and exits 0", async () => {
@@ -132,4 +150,47 @@ test("with the variable missing or malformed it goes to the system's opener, wha
   assert.deepEqual(route(["file:///tmp/x.html"], door("firefox")), { to: "prev", cmd: "firefox", url: "file:///tmp/x.html" });
   assert.deepEqual(route(["file:///tmp/x.html"], door(null)), { to: "system", url: "file:///tmp/x.html" });
   assert.deepEqual(route(["ftp://example.com/x"], door("firefox")), { to: "prev", cmd: "firefox", url: "ftp://example.com/x" });
+});
+
+test("what the opener starts never inherits the session variable", async () => {
+  const dir = folder();
+  const rec = path.join(dir, "env.out");
+  const cmd = path.join(dir, "envprev.sh");
+  fs.writeFileSync(cmd, `#!/bin/sh\nprintf '%s' "${"$"}{AOS_BROWSER_SESSION:-unset}" > ${rec}\n`, { mode: 0o755 });
+  const session = enc({ id: ID, door: path.join(dir, "gone.sock"), prev: cmd });
+  for (const url of ["file:///tmp/x.html", "http://localhost:5173"]) {
+    fs.rmSync(rec, { force: true });
+    const r = await run([url], { AOS_BROWSER_SESSION: session });
+    assert.equal(r.code, 0, url);
+    assert.equal(fs.readFileSync(rec, "utf8"), "unset", url);
+  }
+});
+
+test("an opener run as the previous BROWSER does not start itself again", async () => {
+  const dir = folder();
+  const open = openStandIn(dir);
+  const inner = openerWith(dir, "inner.js", open.cmd);
+  const outer = openerWith(dir, "outer.js", open.cmd);
+  const session = enc({ id: ID, door: path.join(dir, "gone.sock"), prev: inner });
+  const r = await run(["file:///tmp/x.html"], { AOS_BROWSER_SESSION: session }, outer);
+  assert.deepEqual([r.code, r.stdout, r.stderr], [0, "", ""]);
+  assert.deepEqual(fs.readFileSync(open.rec, "utf8").trim().split("\n"), ["file:///tmp/x.html unset"], "the chain ended at the system's opener, once, with no session");
+});
+
+test("a previous BROWSER killed by a signal ends the opener as a shell would: 128 plus the signal", async () => {
+  const dir = folder();
+  const cmd = path.join(dir, "killme.sh");
+  fs.writeFileSync(cmd, "#!/bin/sh\nkill -TERM $$\nsleep 5\n", { mode: 0o755 });
+  const r = await run(["file:///tmp/x.html"], { AOS_BROWSER_SESSION: enc({ id: ID, door: path.join(dir, "gone.sock"), prev: cmd }) });
+  assert.equal(r.code, 143);
+});
+
+test("a door that accepts and never answers ends the opener with 0, and nothing else opens", async () => {
+  const dir = folder();
+  const door = await fakeDoor(dir, null);
+  const prev = prevProgram(dir);
+  const r = await run(["http://localhost:5173"], { AOS_BROWSER_SESSION: enc({ id: ID, door: door.sock, prev: prev.cmd }) });
+  assert.deepEqual([r.code, r.stdout, r.stderr], [0, "", ""]);
+  assert.equal(door.lines.length, 1);
+  assert.equal(fs.existsSync(prev.rec), false);
 });

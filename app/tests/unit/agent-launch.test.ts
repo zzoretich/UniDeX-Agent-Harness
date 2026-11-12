@@ -896,3 +896,18 @@ test("with no variables to add (the Computer surface off) a terminal's environme
   assert.deepEqual(spawned[0].opts.env, before[0].opts.env);
   assert.deepEqual(spawned[1].opts.env, before[1].opts.env);
 });
+
+test("an outer app's session variable never reaches a shell or a Code agent when main adds none (session-browser S23)", async () => {
+  const outer = "b2b2";
+  // A shell: the base a terminal starts from is terminalBaseEnv's.
+  const base = terminalBaseEnv({ PATH: "/usr/bin:/bin", BROWSER: "firefox", AOS_BROWSER_SESSION: outer }, null);
+  assert.equal(base.AOS_BROWSER_SESSION, undefined);
+  assert.equal(base.BROWSER, "firefox", "BROWSER stays the user's: it becomes the previous one");
+  // A Code agent: neither the terminal base nor what the login shell gives carries it.
+  const { t, spawned } = service({ extra: { browserEnv: () => ({}), context: shellContext, shellEnv: async () => ({ PATH: "/usr/bin:/bin", HOME, AOS_BROWSER_SESSION: outer }) } });
+  assert.ok((await t.spawnAgent(req({ id: "t1" }))).ok);
+  assert.equal((spawned[0].opts.env as Record<string, string>).AOS_BROWSER_SESSION, undefined);
+  const plain = service({ extra: { browserEnv: () => ({}), env: { PATH: "/usr/bin:/bin", HOME, AOS_BROWSER_SESSION: outer } } });
+  assert.ok((await plain.t.spawnAgent(req({ id: "t1" }))).ok);
+  assert.equal((plain.spawned[0].opts.env as Record<string, string>).AOS_BROWSER_SESSION, undefined);
+});

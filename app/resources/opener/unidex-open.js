@@ -7,6 +7,7 @@
 // can carry a secret in its query.
 
 const net = require('node:net');
+const os = require('node:os');
 const { spawn } = require('node:child_process');
 
 const ID = /^[0-9a-f]{32}$/;
@@ -44,21 +45,31 @@ function route(argv, env) {
   return s.prev ? { to: 'prev', cmd: s.prev, url } : { to: 'system', url };
 }
 
-function runAndExit(file, args) {
-  const child = spawn(file, args, { stdio: 'inherit' });
+/** What every program the opener starts gets: the session variable stays behind, so an opener reached as the previous
+ *  BROWSER (an app started inside another session) has none to read and goes to the system's opener: two deep at most. */
+function childEnv(env) {
+  const out = { ...env };
+  delete out.AOS_BROWSER_SESSION;
+  return out;
+}
+
+function runAndExit(file, args, env) {
+  const child = spawn(file, args, { stdio: 'inherit', env: childEnv(env) });
   child.on('error', () => process.exit(127));
-  child.on('exit', (code, signal) => process.exit(code === null ? (signal ? 128 : 1) : code));
+  // A program killed by a signal ends us as a shell reports it: 128 plus the signal's number.
+  child.on('exit', (code, signal) => process.exit(code === null ? 128 + (os.constants.signals[signal] || 0) : code));
 }
 
-/** What a route that is not the door does: runs the previous BROWSER (through sh, so a command with arguments works) or the system's opener. */
-function fallback(r) {
-  if (r.to === 'prev') return runAndExit('/bin/sh', ['-c', r.cmd + ' "$1"', 'sh', r.url]);
-  return runAndExit('/usr/bin/open', [r.url]);
+/** What a route that is not the door does: runs the previous BROWSER (through sh, so a command with arguments works) or
+ *  the system's opener (`deps.open`, /usr/bin/open: replaceable only by an argument, so a test never opens a real browser). */
+function fallback(r, env, deps) {
+  if (r.to === 'prev') return runAndExit('/bin/sh', ['-c', r.cmd + ' "$1"', 'sh', r.url], env);
+  return runAndExit((deps && deps.open) || '/usr/bin/open', [r.url], env);
 }
 
-function toDoor(r, env) {
+function toDoor(r, env, deps) {
   const prev = readSession(env).prev;
-  const back = () => fallback(prev ? { to: 'prev', cmd: prev, url: r.url } : { to: 'system', url: r.url });
+  const back = () => fallback(prev ? { to: 'prev', cmd: prev, url: r.url } : { to: 'system', url: r.url }, env, deps);
   let connected = false;
   let settled = false;
   const sock = net.createConnection(r.door);
@@ -79,11 +90,13 @@ function toDoor(r, env) {
   });
 }
 
-if (require.main === module) {
-  const r = route(process.argv.slice(2), process.env);
+/** Does what `route` decided. */
+function act(r, env, deps) {
   if (!r.url) process.exit(2);
-  if (r.to === 'door') toDoor(r, process.env);
-  else fallback(r);
+  if (r.to === 'door') toDoor(r, env, deps);
+  else fallback(r, env, deps);
 }
 
-module.exports = { route };
+if (require.main === module) act(route(process.argv.slice(2), process.env), process.env);
+
+module.exports = { route, act };

@@ -123,8 +123,12 @@ const doorPath = doorSocketPath(app.getPath("userData"), app.getPath("temp"));
 const computerDoor = doorPath ? new ComputerDoor({
   path: doorPath,
   opener: openerPath({ resources: app.isPackaged ? process.resourcesPath : path.join(__dirname, "../../resources"), tmp: app.getPath("temp"), userData: app.getPath("userData") }),
-  // Task 18 opens the page; until then a program's request is only noted (never its address).
-  open: (session) => console.warn(`[main] door: ${session} asked for a page`),
+  // Task 18 opens the page; until then a program's request is only noted (never its address). While the app quits nothing
+  // is noted or opened: a quit that is called off leaves the door up, serving until the bridge stops (session-browser S23).
+  open: (session) => {
+    if (quitting) return;
+    console.warn(`[main] door: ${session} asked for a page`);
+  },
   log: (line) => console.warn(`[main] ${line}`),
 }) : null;
 /** The opener variables of a session's processes: none while the Computer surface is off or there is no door. */
@@ -522,8 +526,6 @@ function shutdownComputer(): void {
   // Closes the records: nothing the shutdown does next (destroying browsers, cancelling asks) may rewrite them, and it
   // may run twice (before-quit, will-quit). A quit that fails reopens them when a browser is next made.
   computerService.flushForQuit();
-  // The door goes with the browsers it opens pages in; stopping twice does nothing (the bridge's stop does it as well).
-  computerDoor?.stop();
   for (const b of computerBrowsers.values()) { try { b.destroy(); } catch { /* already gone */ } }
   computerBrowsers.clear();
   computerService.forgetBrowsers();
@@ -740,13 +742,14 @@ function endPageWork(): void {
   // computer is on screen until the page selects one again. Quitting, the computer is already shut down (before-quit):
   // placing a view now could make a park window, and a window made while quitting keeps will-quit from firing.
   askBroker.cancel(() => true, "the app's window closed or reloaded");
+  // session-browser S23: the next page's Code keys start again at t1, so an id issued before must not reach the terminal
+  // that reuses its key (a detached program keeps its environment). Bookkeeping, no window: it runs whenever the page
+  // goes, quitting or not (a quit that is called off keeps the app, the door and the next page).
+  computerDoor?.revokeAll("code:");
   if (quitting) return;
   closeComputerPop();
   // session-browser S1: the next page counts its terminals from the start, so the Code sessions' browsers go too.
   computerService.pageGone();
-  // The next page's Code keys start again at t1: an id issued before must not reach the terminal that reuses its key (a
-  // detached program keeps its environment), and this runs before the new page can start a terminal.
-  computerDoor?.revokeAll("code:");
   computerService.show(null);
   computerService.select(null);
 }
