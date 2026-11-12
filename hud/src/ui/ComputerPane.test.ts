@@ -586,6 +586,34 @@ test("Open in my browser sits right of the site switch, waits for an https page 
   assert.equal(s.q(".aos-cp-navmsg").textContent, "Only https pages open in your browser.");
 });
 
+test("Open in my browser follows the session switch and the pop-out, and a click dispatched on the disabled button sends nothing (session-browser S24)", async () => {
+  const tab = (url: string) => [{ index: 0, url, title: "", openedBy: null, active: true, canBack: false, canForward: false }];
+  const s = setup({ answer: (session) => state(session, { tabs: tab(session === "code:t5" ? "https://example.com/" : "http://localhost:3000/") }) });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
+  await flush();
+  const out = s.q(".aos-cp-icon.aos-cp-outside");
+  assert.ok(!out.disabled, "an https tab in the first session");
+  s.pane.follow({ session: "code:t9", label: "Vault" });
+  await flush();
+  assert.ok(out.disabled, "an http tab in the second session");
+  // The disabled button's click handler is fired directly, as a script or a stray event would: its guard holds.
+  out.click();
+  out.fire("click");
+  await flush();
+  assert.equal(s.f.outsides, 0, "a disabled button sends nothing even when the click reaches it");
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
+  await flush();
+  assert.ok(!out.disabled, "back to the https session");
+  // Popped out, the pane keeps the button and it still follows the tab.
+  s.f.emit({ type: "state", state: state("code:t5", { poppedOut: true, tabs: tab("https://example.com/") }) });
+  assert.ok(!out.disabled, "popped out on an https page");
+  s.f.emit({ type: "state", state: state("code:t5", { poppedOut: true, tabs: tab("http://localhost:3000/") }) });
+  assert.ok(out.disabled, "popped out on an http page");
+  out.click();
+  await flush();
+  assert.equal(s.f.outsides, 0);
+});
+
 test("Back is disabled until the active tab can go back; Forward likewise; Reload needs a tab (session-browser S13)", async () => {
   const s = setup();
   s.pane.follow({ session: "code:t5", label: "harbor-map" });
