@@ -108,7 +108,7 @@ test("rowSpans: basic colours are the xterm tokens, 256 and truecolor rgb(), lin
   screen.dispose();
 });
 
-test("follows the session's size, and keeps no scrollback", async () => {
+test("follows the session's size when the TUI prints next, and keeps no scrollback", async () => {
   const sess = new FakeSession();
   const screen = new HeadlessScreen(sess);
   sess.emit(Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\r\n"));
@@ -116,11 +116,35 @@ test("follows the session's size, and keeps no scrollback", async () => {
   assert.equal(s.rows.length, 40);
   assert.equal(s.rows[0], "line 60");
   sess.size = { cols: 80, rows: 24 };
-  const small = screen.snapshot();
+  // Nothing printed at the new size yet: a read shows the frame as it was drawn.
+  const kept = screen.snapshot();
+  assert.equal(kept.cols, 120);
+  assert.equal(kept.rows.length, 40);
+  assert.equal(kept.rows[39], "line 99");
+  sess.emit("\r\nmore");
+  const small = await until(screen, (x) => x.rows[23] === "more");
   assert.equal(small.cols, 80);
   assert.equal(small.rows.length, 24);
-  sess.emit("\r\nmore");
-  await until(screen, (x) => x.rows[23] === "more");
+  screen.dispose();
+});
+
+test("a resize the TUI has not drawn at yet keeps its prompt readable; its next output is drawn at the new size (R49)", async () => {
+  const sess = new FakeSession();
+  const screen = new HeadlessScreen(sess);
+  sess.emit(read("claude-2.1.318-bash.ansi"));
+  await until(screen, (x) => approvalPrompt(x, "claude") !== null);
+  // Fewer rows (the terminal view's fit, a pane opened): xterm would drop the rows under the cursor, which sits inside the
+  // dialog, and with them the choices and the key hint the prompt is read by.
+  sess.size = { cols: 135, rows: 32 };
+  const s = screen.snapshot();
+  assert.equal(s.rows.length, 40);
+  assert.equal(approvalPrompt(s, "claude")?.choices.length, 4);
+  // The TUI answers the resize with a frame drawn for it.
+  sess.emit(`${ESC}[H${ESC}[2Jredrawn`);
+  const after = await until(screen, (x) => x.rows[0] === "redrawn");
+  assert.equal(after.cols, 135);
+  assert.equal(after.rows.length, 32);
+  assert.equal(approvalPrompt(after, "claude"), null);
   screen.dispose();
 });
 
