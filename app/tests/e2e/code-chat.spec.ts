@@ -701,10 +701,12 @@ const feedEvents = (win: Page, id: string, events: object[]): Promise<void> => w
   f.compute(e);
   f.notify(i);
 }, { i: id, ev: events });
+/** Two frames: the visible terminal's fit (the frame after a selection or a view flip) has run. */
+const frames = (win: Page): Promise<void> => win.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
 /** The fake's TUI prints `d`; the captures are 120×40, so the terminal is sized so first (after the visible terminal's
  *  own fit, two frames after the selection, which sizes it to the stage). */
 const replay = async (win: Page, id: string, d: string): Promise<void> => {
-  await win.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+  await frames(win);
   await win.evaluate(({ i, d }) => {
     const w = window as unknown as FakeW;
     w.aosHost.plugin.terminalPool.get(i)?.resize(120, 40);
@@ -774,8 +776,15 @@ test.describe("approval cards, Needs you and the Codex status line (C4, C5, C10)
     await win.keyboard.press("Meta+j");
     await expect(body(win)).toBeVisible();
     await expect(note).toHaveText("Answer the prompt in the terminal first");
+    // The terminal view's fit lands (on a slow machine it always has by now) and moves the PTY to the stage's size (the
+    // note under its composer takes a row); this TUI never redraws for it.
+    await frames(win);
     await win.keyboard.press("Meta+j");
     await expect(chat(win)).toBeVisible();
+    // The screen poll (every POLL_MS while a card is up) reads the screen before the TUI drew at that size, as a slow
+    // machine's does before the next step: the frame the TUI drew is still its prompt, so the card and the note stay.
+    await win.evaluate(() => (window as unknown as { aosHost: { plugin: { codeFeeds: { poll(): void } } } }).aosHost.plugin.codeFeeds.poll());
+    await expect(card(win).locator(".aos-cc-gatetitle")).toHaveText("Do you want to proceed?");
     await expect(note).toHaveText("Answer the card above first · Terminal ⌘J");
     // The TUI moved on: the note goes with the card, before anything is sent, and Send works again.
     await win.evaluate(({ i, d }) => (window as unknown as FakeW).__fakes?.[i].emit(d), { i: id, d: drawn("claude-2.1.318-idle") });
