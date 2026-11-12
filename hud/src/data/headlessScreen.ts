@@ -4,9 +4,13 @@
 // looking at, and the Code chat can copy Codex's footer rows with their colours. One per agent terminal: made when the
 // terminal is made, disposed when it closes; none for shells or `chat: false` terminals (the caller's rule).
 //
-// It is fed from `session.onData` and follows the session's size on the next chunk or read. It starts from what the
-// terminal already printed, so one made late still shows the TUI's screen. Once the agent ended (the login shell took
-// over, D18) or the terminal exited, it reads as empty: nothing on the shell's screen is the agent's to answer.
+// It is fed from `session.onData` and takes the session's size when the next chunk comes, never on a read: what a TUI
+// prints after a resize is drawn for the new size, and until it prints, a read shows the frame it last drew, at the size
+// it drew it. Resized under it, that frame would lose the rows xterm drops below the cursor, which a TUI leaves inside
+// its dialog, and the prompt would read as gone while it is still up: no card, and a Send meanwhile would answer it (R49).
+// It starts from what the terminal already printed, so one made late still shows the TUI's screen. Once the agent ended
+// (the login shell took over, D18) or the terminal exited, it reads as empty: nothing on the shell's screen is the agent's
+// to answer.
 //
 // Spans come from the buffer's cells, never from re-parsing the raw text (charset escapes such as `ESC ( B` and cursor
 // moves are the parser's business): basic colours are the `var(--udx-term-*)` tokens ansiSpans uses, 256-colour and
@@ -61,10 +65,10 @@ export class HeadlessScreen {
     });
   }
 
-  /** The rows on screen now; none once the agent ended, the terminal exited, or this was disposed. */
+  /** The rows on screen now, at the size the TUI last drew at; none once the agent ended, the terminal exited, or this was
+   *  disposed. */
   snapshot(): ScreenSnapshot {
     if (this.gone()) return { rows: [], cols: this.size.cols };
-    this.follow();
     const b = this.term.buffer.active;
     const rows: string[] = [];
     for (let y = 0; y < this.term.rows; y++) rows.push(b.getLine(b.viewportY + y)?.translateToString(true) ?? "");
@@ -123,7 +127,8 @@ export class HeadlessScreen {
     });
   }
 
-  /** The session resized since: the screen takes its size before it parses more. */
+  /** The session resized since: the screen takes its size before it parses what the TUI printed next (only then: see the
+   *  header). */
   private follow(): void {
     const next = fit(this.session.dimensions);
     if (next.cols === this.size.cols && next.rows === this.size.rows) return;
