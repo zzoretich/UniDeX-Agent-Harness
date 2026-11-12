@@ -211,10 +211,16 @@ function clash(a: Foot, b: Foot, gap: number): boolean {
   return circleRect(a, b, gap) || circleRect(b, a, gap);
 }
 
+/**
+ * What a packing did, counted (a test holds the packing to these: unlike its time, they do not change with the machine's
+ * load): the spiral places tried and the footprint pairs compared.
+ */
+export interface PackWork { tried: number; compared: number }
+
 /** The footprints placed so far, by grid cell: each is filed under every cell its box, grown by `gap`, touches. */
 class FootGrid {
   private cells = new Map<string, Foot[]>();
-  constructor(private gap: number) {}
+  constructor(private gap: number, private work?: PackWork) {}
   private span(f: Foot, grow: number): [number, number, number, number] {
     return [Math.floor((f.bx0 - grow) / CELL), Math.floor((f.by0 - grow) / CELL), Math.floor((f.bx1 + grow) / CELL), Math.floor((f.by1 + grow) / CELL)];
   }
@@ -230,7 +236,10 @@ class FootGrid {
   clashes(f: Foot): boolean {
     const [x0, y0, x1, y1] = this.span(f, 0);
     for (let i = x0; i <= x1; i++) for (let j = y0; j <= y1; j++) {
-      for (const p of this.cells.get(`${i},${j}`) ?? []) if (clash(p, f, this.gap)) return true;
+      for (const p of this.cells.get(`${i},${j}`) ?? []) {
+        if (this.work) this.work.compared++;
+        if (clash(p, f, this.gap)) return true;
+      }
     }
     return false;
   }
@@ -240,13 +249,13 @@ class FootGrid {
  * Packs the bubbles around (0, 0), largest first (ties by id): each goes to the first free place on a sunflower spiral
  * that starts at the centre of the bubbles already placed that it links to (weighted by links), so linked communities sit
  * together. `aspect` (width / height) stretches the spiral to the canvas. Radii are bubbleRadius × `rScale`; captions keep
- * their size.
+ * their size. `work`, when given, is added to.
  */
-export function packBubbles(items: readonly BubbleIn[], links: ReadonlyArray<{ a: string; b: string; n: number }>, aspect = 1, rScale = 1): BubbleAt[] {
+export function packBubbles(items: readonly BubbleIn[], links: ReadonlyArray<{ a: string; b: string; n: number }>, aspect = 1, rScale = 1, work?: PackWork): BubbleAt[] {
   const order = [...items].sort((a, b) => b.n - a.n || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const sx = Math.sqrt(Math.min(2.2, Math.max(0.5, Number.isFinite(aspect) && aspect > 0 ? aspect : 1)));
   const placed: Foot[] = [];
-  const grid = new FootGrid(BUBBLE.gap);
+  const grid = new FootGrid(BUBBLE.gap, work);
   const at = new Map<string, Foot>();
   const out: BubbleAt[] = [];
   for (const it of order) {
@@ -263,6 +272,7 @@ export function packBubbles(items: readonly BubbleIn[], links: ReadonlyArray<{ a
     for (let i = 0; i < SPIRAL_STEPS && !f; i++) {
       const rho = 3 * Math.sqrt(i);
       const c = foot(tx + rho * Math.cos(i * GOLDEN) * sx, ty + rho * Math.sin(i * GOLDEN) / sx, r, it.labelW);
+      if (work) work.tried++;
       if (!grid.clashes(c)) f = c;
     }
     // Never reached for the few dozen communities a map holds; to the right of everything, which is always free.
@@ -291,8 +301,9 @@ function extent(bs: readonly BubbleAt[], widths: ReadonlyMap<string, number>): {
 /**
  * The bubbles laid out in a w × h canvas: packed, then fitted (centred, scaled up to BUBBLE.maxScale on a roomy canvas).
  * On a tight canvas the radii shrink and the packing runs again, since captions keep their size; at most four rounds.
+ * `work`, when given, counts every round's packing.
  */
-export function layoutBubbles(items: readonly BubbleIn[], links: ReadonlyArray<{ a: string; b: string; n: number }>, w: number, h: number): BubbleAt[] {
+export function layoutBubbles(items: readonly BubbleIn[], links: ReadonlyArray<{ a: string; b: string; n: number }>, w: number, h: number, work?: PackWork): BubbleAt[] {
   if (!items.length) return [];
   const widths = new Map(items.map((i) => [i.id, i.labelW]));
   const W = Math.max(80, w - 2 * BUBBLE.pad);
@@ -301,7 +312,7 @@ export function layoutBubbles(items: readonly BubbleIn[], links: ReadonlyArray<{
   let packed: BubbleAt[] = [];
   let s = 1;
   for (let round = 0; round < 4; round++) {
-    packed = packBubbles(items, links, W / H, rScale);
+    packed = packBubbles(items, links, W / H, rScale, work);
     const e = extent(packed, widths);
     s = Math.min(W / Math.max(1, e.x1 - e.x0), H / Math.max(1, e.y1 - e.y0));
     if (s >= 0.97 || rScale <= 0.35) break;

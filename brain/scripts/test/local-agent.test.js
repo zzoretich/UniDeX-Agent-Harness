@@ -336,6 +336,18 @@ test('the wall clock: a turn that outlives timeoutSec ends the run as a timeout'
   assert.equal(out.journal.at(-1), 'turn 1: the engine did not answer before the deadline');
 });
 
+test('the wall clock: the engine\'s own timeout never races the deadline into an engine error', async () => {
+  // The run's timer and the engine's own timeout used to watch the same instant. Their clocks round apart, so on a busy
+  // runner the engine's could fire first while Date.now() read a millisecond short of the deadline, and the run ended
+  // as 'error' (ci, tz-env). An engine whose timeout fires 50 ms early forces that order every time.
+  delayMs = 1500;
+  script = [answer('too late')];
+  const early = (o) => ollama.chatMessage({ ...o, timeoutMs: o.timeoutMs - 50 });
+  const { out } = await run(routine({ timeoutSec: 1 }), { deps: { ollamaChatMessage: early } });
+  assert.deepEqual([out.status, out.error], ['timeout', 'timed out after 1s']);
+  assert.equal(out.journal.at(-1), 'turn 1: the engine did not answer before the deadline');
+});
+
 test('an engine error ends the run with it; nothing is delivered', async () => {
   script = [{ status: 500, body: { error: 'model failed to load' } }];
   const { out, posts } = await run(routine({ output: 'notify' }));

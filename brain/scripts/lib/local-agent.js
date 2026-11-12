@@ -15,7 +15,8 @@
  *     routine's body; the loop runs until the model answers without a tool call, for at most `maxTurns` model turns
  *     (default 24) and the routine's wall clock. Each turn's tool calls run in order (MAX_CALLS_PER_TURN; arguments
  *     validated, a bad call answered with its error so the model can correct it). One timer bounds the whole run: at
- *     the deadline the request in flight is aborted and the run ends as a timeout, whatever it is waiting on. A turn's
+ *     the deadline the request in flight is aborted and the run ends as a timeout, whatever it is waiting on (the
+ *     engine's own timeout sits ENGINE_GRACE_MS past it, a backstop that cannot race it). A turn's
  *     results share TURN_RESULT_CHARS (each at most RESULT_CHARS), so the current turn always fits; the history is kept
  *     within CONTEXT_CHARS by eliding earlier turns' results, then long arguments of calls already made. Every call,
  *     refusal and failure is a journal line (run-routine.js writes them to the routine log). Each model turn counts one
@@ -48,6 +49,12 @@ const { vaultRel, writesEntry, localWritesRefusal, localPathRefusal } = require(
 
 const DEFAULT_MAX_TURNS = 24;
 const DEFAULT_TIMEOUT_SEC = 1800;
+/**
+ * How far past the run's deadline the engine's own timeout is set. The run's timer alone decides a timeout (it aborts the
+ * request); an engine timer aimed at the same instant could fire first, its clock rounding a millisecond apart, and end
+ * the run as an engine error. Timers fire in deadline order, so the run's always fires first; the engine's is a backstop.
+ */
+const ENGINE_GRACE_MS = 1000;
 const MAX_CALLS_PER_TURN = 8;
 /** The serving window: fixed, so every turn reuses the loaded model (ollama.js sizeContextWindow on why). */
 const NUM_CTX = 16384;
@@ -516,9 +523,9 @@ async function runLocalAgent({ routine, cfg = {}, vault, lc, model, timeoutMs, d
       let reply;
       const c0 = clock();
       try {
-        reply = await Promise.race([engine.turn({ model, messages, tools: defs, numPredict: NUM_PREDICT, timeoutMs: left, feature, signal: abort.signal }), expiry.then(() => EXPIRED)]);
+        reply = await Promise.race([engine.turn({ model, messages, tools: defs, numPredict: NUM_PREDICT, timeoutMs: left + ENGINE_GRACE_MS, feature, signal: abort.signal }), expiry.then(() => EXPIRED)]);
       } catch (e) {
-        if (expired || clock() >= deadline) { status = 'timeout'; error = timedOut(); note(`turn ${turns}: the engine did not answer before the deadline`); }
+        if (expired) { status = 'timeout'; error = timedOut(); note(`turn ${turns}: the engine did not answer before the deadline`); }
         else { status = 'error'; error = `${engine.name}: ${e.message}`; note(`turn ${turns}: the engine failed: ${e.message}`); }
         break;
       } finally {
