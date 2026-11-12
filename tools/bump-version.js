@@ -17,7 +17,9 @@
  *   app/package-lock.json           .version, .packages[""].version — checked, never written (the same install, in app/)
  * The Obsidian plugin's manifest.json and versions.json are gone with its packaging (1.0): the app owns the HUD's id.
  * A bump also rolls CHANGELOG.md's [Unreleased] into `## [x.y.z] — <today>` (tools/changelog.js roll; a no-op when that
- * section exists), and fails when [Unreleased] is empty: a release says what changed.
+ * section exists), and fails when [Unreleased] is empty: a release says what changed. Then it stamps `release: v<x.y.z>`
+ * onto every shipped item in roadmap/roadmap.md that has none yet (tools/roadmap.js stampRelease; spec
+ * 2026-11-11-roadmap-design D5); a pre-release stamps nothing.
  * What's new (tour C13): a bump to x.y.z first needs a `releases` entry for it in hud/src/tour/whatsnew.json
  * (the card the app shows on its first launch after the update), or it fails and writes nothing. So the entry is
  * written with the CHANGELOG, before `npm run version:bump` (docs/app-smoke.md, Release procedure). Every release needs
@@ -142,7 +144,13 @@ function main(args = process.argv.slice(2), { root = path.resolve(__dirname, '..
   for (const f of out.updated) log(`bumped ${f}`);
   for (const f of out.skipped) log(`skipped ${f} (missing)`);
   log('next: npm install --package-lock-only --ignore-scripts, and the same in app/');
-  return require('./changelog.js').main(['roll', version], { root, log, err }) === 0 ? 0 : 1;
+  if (require('./changelog.js').main(['roll', version], { root, log, err }) !== 0) return 1;
+  const roadmap = path.join(root, 'roadmap/roadmap.md');
+  if (fs.existsSync(roadmap)) {
+    const { text, stamped } = require('./roadmap.js').stampRelease(fs.readFileSync(roadmap, 'utf8'), version);
+    if (stamped.length) { fs.writeFileSync(roadmap, text); log(`roadmap: stamped v${version} on ${stamped.join(', ')}`); }
+  }
+  return 0;
 }
 
 if (require.main === module) process.exit(main());

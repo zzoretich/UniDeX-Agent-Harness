@@ -21,9 +21,13 @@ module.exports = [
   // TypeScript is checked by its own tsc (`npm run typecheck` in app/); its .js/.cjs/.mjs scripts are linted here.
   { ignores: ['**/node_modules/**', 'codex-plugin/**', 'hud/src/**', '**/*.local.*',
     // The app's build output, packages, test runs and generated fixture vault (app/.gitignore).
-    'app/out/**', 'app/out-test/**', 'app/dist/**', 'app/dist-test/**', 'app/test-results/**', 'app/playwright-report/**', 'app/tests/.fixture/**', 'app/tests/.cache/**', 'app/payload/**'] },
+    'app/out/**', 'app/out-test/**', 'app/dist/**', 'app/dist-test/**', 'app/test-results/**', 'app/playwright-report/**', 'app/tests/.fixture/**', 'app/tests/.cache/**', 'app/payload/**',
+    // The roadmap page built locally (node tools/roadmap.js build --out _site).
+    '_site/**'] },
   { files: ['**/*.js', '**/*.cjs'], languageOptions: languageOptions('commonjs'), rules },
   { files: ['**/*.mjs'], languageOptions: languageOptions('module'), rules },
+  // The roadmap page's script runs in the visitor's browser as a plain script (spec 2026-11-11-roadmap-design D7).
+  { files: ['roadmap/site/**/*.js'], languageOptions: { sourceType: 'script', globals: { ...globals.browser } } },
   // The app's Playwright drivers: the functions they hand to evaluate() run in the app's window.
   { files: ['app/scripts/smoke-packaged.mjs'], languageOptions: { globals: { ...globals.browser } } },
 ];

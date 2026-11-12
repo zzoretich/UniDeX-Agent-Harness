@@ -24,6 +24,7 @@
   <a href="#chief-of-staff">Chief of Staff</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#docs">Docs &amp; credits</a> ·
+  <a href="https://zzoretich.github.io/UniDeX-Agent-Harness/">Roadmap</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -370,6 +371,7 @@ Working on UniDeX itself? [CONTRIBUTING.md](CONTRIBUTING.md) has the checkout, t
 
 | | |
 |---|---|
+| [Roadmap](https://zzoretich.github.io/UniDeX-Agent-Harness/) · [roadmap/roadmap.md](roadmap/roadmap.md) | What's coming to UniDeX, from idea to release; how items are written is in [roadmap/README.md](roadmap/README.md). |
 | [docs/install.md](docs/install.md) | The setup wizard step by step, the terminal install, every installer step and flag, bringing in your history, hosts, providers and spend caps. |
 | [docs/commands.md](docs/commands.md) | Every `aos` command and in-session command, staying up to date, and the status line. |
 | [docs/how-it-works.md](docs/how-it-works.md) | Hosts, hooks, runners, the vault, providers and the graph, in full. |
