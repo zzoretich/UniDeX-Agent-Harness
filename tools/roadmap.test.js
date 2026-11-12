@@ -185,3 +185,34 @@ test('stampRelease: only shipped items without a release, once', () => {
   assert.deepEqual(R.stampRelease(out.text, '2.7.0').stamped, []);
   assert.deepEqual(R.stampRelease(text, '2.7.0-rc.1').stamped, []);
 });
+
+// ---- no silent losses: edits that would drop items from the page fail check instead (final review) -----------------
+
+test('check: an unclosed code fence is an error, in an item or in the intro', () => {
+  const inItem = R.parse(doc('### UDX-001 · A\nstatus: idea · type: feature · area: app\n\nText.\n\n#### Plan\n```\ncode', '### UDX-002 · B\nstatus: idea · type: feature · area: app\n\nB.'));
+  assert.match(inItem.errors[0]?.message ?? '', /code fence opened on line 11 is never closed/);
+  assert.equal(inItem.errors[0].line, 11);
+  const inIntro = R.parse('# Roadmap\n\n```\nnotes\n\n### UDX-001 · A\nstatus: idea · type: feature · area: app\n\nText.\n');
+  assert.match(inIntro.errors[0]?.message ?? '', /code fence opened on line 3 is never closed/);
+});
+
+test('check: an item heading at the wrong level is an error', () => {
+  for (const h of ['#', '##', '####', '#####']) {
+    const { errors } = R.parse(doc('### UDX-001 · A\nstatus: idea · type: feature · area: app\n\nText.', `${h} UDX-002 · B\nstatus: idea · type: feature · area: app\n\nB.`));
+    assert.match(errors[0]?.message ?? '', /item headings are "### UDX-NNN · Title"/, h);
+    assert.equal(errors[0].line, 10, h);
+  }
+});
+
+test('an item heading indented up to three spaces is still an item, as GitHub renders it', () => {
+  const p = R.parse(doc('### UDX-001 · A\nstatus: idea · type: feature · area: app\n\nText.', '   ### UDX-002 · B\nstatus: idea · type: feature · area: app\n\nB.\n\n  #### Must\n- M'));
+  assert.deepEqual(p.errors, []);
+  assert.deepEqual(p.items.map((i) => i.id), ['UDX-001', 'UDX-002']);
+  assert.deepEqual(p.items[1].sections.map((s) => s.title), ['Must']);
+});
+
+test('a byte-order mark before a first-line item is ignored', () => {
+  const p = R.parse('\uFEFF### UDX-001 · A\nstatus: idea · type: feature · area: app\n\nText.\n');
+  assert.deepEqual(p.errors, []);
+  assert.equal(p.items.length, 1);
+});

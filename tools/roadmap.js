@@ -129,7 +129,7 @@ function readItem(head, lines, seen, errors) {
   let body = [];
   let section = null;
   for (const l of rest) {
-    const s = !l.fenced && /^####(?!#)\s*(.*)$/.exec(l.text);
+    const s = !l.fenced && /^ {0,3}####(?!#)\s*(.*)$/.exec(l.text);
     if (s) { section = { title: s[1].trim(), lines: [] }; item.sections.push(section); continue; }
     (section ? section.lines : body).push(l);
   }
@@ -144,33 +144,44 @@ function readItem(head, lines, seen, errors) {
 
 /** roadmap.md → { intro, items, errors }. Errors carry 1-based line numbers, in file order. */
 function parse(text) {
-  const lines = String(text).replace(/\r\n?/g, '\n').split('\n').map((t, i) => ({ text: t.replace(/\s+$/, ''), n: i + 1, fenced: false }));
+  const lines = String(text).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n')
+    .map((t, i) => ({ text: t.replace(/\s+$/, ''), n: i + 1, fenced: false }));
   const errors = [];
   const items = [];
   const intro = [];
   const seen = new Map();
   let inFence = false;
+  let fenceStart = 0;
   let seenItem = false;
   let cur = null;
   const finish = () => { if (cur) items.push(readItem(cur.head, cur.lines, seen, errors)); cur = null; };
   for (const l of lines) {
-    if (FENCE.test(l.text)) { inFence = !inFence; l.fenced = true; } else if (inFence) l.fenced = true;
-    if (!l.fenced && /^###(?!#)/.test(l.text)) {
+    if (FENCE.test(l.text)) { inFence = !inFence; l.fenced = true; if (inFence) fenceStart = l.n; } else if (inFence) l.fenced = true;
+    // A heading may be indented up to three spaces, as GitHub renders it. An item heading at any other level would
+    // silently end, swallow or drop an item, so it is an error instead.
+    const t = l.fenced ? l.text : l.text.replace(/^ {1,3}(?=#)/, '');
+    const level = !l.fenced && /^(#{1,6})\s+(.*)$/.exec(t);
+    if (level && level[1].length !== 3 && /^UDX-?\d/i.test(level[2])) {
+      errors.push({ line: l.n, message: `item headings are "### UDX-NNN · Title" (this one has ${level[1].length} #)` });
+    }
+    if (!l.fenced && /^###(?!#)/.test(t)) {
       finish();
-      const m = HEADING.exec(l.text);
+      const m = HEADING.exec(t);
       if (m && /^UDX/i.test(m[1])) {
         seenItem = true;
-        cur = { head: { rawId: m[1], title: m[2].trim(), text: l.text.replace(/^###\s+/, ''), n: l.n }, lines: [] };
+        cur = { head: { rawId: m[1], title: m[2].trim(), text: t.replace(/^###\s+/, ''), n: l.n }, lines: [] };
       } else if (seenItem) {
-        errors.push({ line: l.n, message: `item heading must be "### UDX-NNN · Title", got "${l.text}"` });
+        errors.push({ line: l.n, message: `item heading must be "### UDX-NNN · Title", got "${t}"` });
       } else intro.push(l);
       continue;
     }
-    if (!l.fenced && /^##(?!#)/.test(l.text)) { finish(); if (!seenItem) intro.push(l); continue; }
+    if (!l.fenced && /^##(?!#)/.test(t)) { finish(); if (!seenItem) intro.push(l); continue; }
     if (cur) cur.lines.push(l);
     else if (!seenItem) intro.push(l);
   }
   finish();
+  // An unclosed fence turns everything after it into prose: items would vanish from the page with nothing reported.
+  if (inFence) errors.push({ line: fenceStart, message: `code fence opened on line ${fenceStart} is never closed` });
   errors.sort((a, b) => a.line - b.line);
   return { intro: join(intro), items, errors };
 }
