@@ -948,3 +948,27 @@ test("a Trash that rejects after the file is gone still counts as removed", asyn
   assert.deepEqual(await s.remove(r.data.id), { ok: true, data: null });
   assert.deepEqual(removed, [r.data.id]);
 });
+
+test("a Chat turn's CLI starts with its thread's three variables, added after the allowlist; none when there are none to add (session-browser S23)", async () => {
+  const seen: Array<Record<string, string | undefined>> = [];
+  const spawnImpl = ((cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+    if (cmd === CLAUDE) seen.push({ ...(opts.env ?? {}) });
+    return childProcess.spawn(cmd, args, opts);
+  }) as unknown as typeof childProcess.spawn;
+  const asked: Array<[string, string | undefined]> = [];
+  const mk = (extra: Partial<ConstructorParameters<typeof SessionService>[0]>) => new SessionService({ trash: async () => {},
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env: { ...env, BROWSER: "firefox" }, node: () => process.execPath, emit: () => {}, graceMs: 500, spawnImpl, ...extra });
+  const on = mk({ browserEnv: (session, base) => { asked.push([session, base.BROWSER]); return { BROWSER: "/o/open.js", BRAINSTORM_OPEN_CMD: "/o/open.js", AOS_BROWSER_SESSION: "x" }; } });
+  const r = await on.start({ workspace: "harbor-map", host: "claude", text: "hi", access: "read" });
+  assert.ok(r.ok);
+  await idle(on);
+  assert.equal(seen.length, 1);
+  assert.deepEqual([seen[0].BROWSER, seen[0].BRAINSTORM_OPEN_CMD, seen[0].AOS_BROWSER_SESSION], ["/o/open.js", "/o/open.js", "x"]);
+  assert.deepEqual(asked, [[`chat:${r.data.id}`, "firefox"]], "named by the thread; the base is the CLI's environment before the three are added, so the previous BROWSER is main's");
+  const off = mk({ browserEnv: () => ({}) });
+  const r2 = await off.start({ workspace: "harbor-map", host: "claude", text: "hi", access: "read" });
+  assert.ok(r2.ok);
+  await idle(off);
+  assert.equal(seen.length, 2);
+  assert.deepEqual([seen[1].BROWSER, seen[1].BRAINSTORM_OPEN_CMD, seen[1].AOS_BROWSER_SESSION], ["firefox", undefined, undefined], "nothing added");
+});

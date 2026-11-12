@@ -46,6 +46,7 @@ import { SCHEME, parseAgenticosUrl, urlFromArgv } from "./protocol";
 import { quitGate, quitCalledOff } from "./quit-gate";
 import { admit } from "./computer/admission";
 import { BridgeKeeper, ComputerBridge, bridgeSocketPath } from "./computer/bridge";
+import { ComputerDoor, doorSocketPath, openerPath } from "./computer/door";
 import { sweepHeld } from "./computer/downloads";
 import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
@@ -115,6 +116,20 @@ const writes = loadWriteSettings();
 // The runtime the app carries (phase 5, I1): what the wizard installs and attach mode upgrades from.
 const payload = findPayload({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, env: process.env });
 
+// session-browser S23: the door a program inside a session knocks on to open a page in that session's browser, and the
+// opener it knocks with. The opener ships under Resources when packaged; a development run reads it from app/resources.
+// No door when no socket path fits; no opener, and no session gets the variables. It starts with the bridge (makeBridge).
+const doorPath = doorSocketPath(app.getPath("userData"), app.getPath("temp"));
+const computerDoor = doorPath ? new ComputerDoor({
+  path: doorPath,
+  opener: openerPath({ resources: app.isPackaged ? process.resourcesPath : path.join(__dirname, "../../resources"), tmp: app.getPath("temp"), userData: app.getPath("userData") }),
+  // Task 18 opens the page; until then a program's request is only noted (never its address).
+  open: (session) => console.warn(`[main] door: ${session} asked for a page`),
+  log: (line) => console.warn(`[main] ${line}`),
+}) : null;
+/** The opener variables of a session's processes: none while the Computer surface is off or there is no door. */
+const browserEnv = (session: string, base: NodeJS.ProcessEnv): Record<string, string> => (computerOn() ? computerDoor?.envFor(session, base) ?? {} : {});
+
 let shells: string[] = [];
 try { shells = parseShells(fs.readFileSync("/etc/shells", "utf8")); } catch { /* no /etc/shells: only $SHELL */ }
 const context: ProgramContext = {
@@ -164,12 +179,17 @@ const ptyService = new PtyService({
   onAgentGone: (agent) => computerService.agentGone(agent),
   // R86: no terminal starts while the app quits (quit-gate.ts), so the quit's wait for their exits is the last one.
   quitting: () => quitting,
+  browserEnv,
   // code-chat R16: a terminal's transcript follower ends when the terminal is closed, not when its agent exits.
   // session-browser S22: closing a row forgets its browser, named by the terminal's FIRST process (a takeover shell's close
   // reports it); the page going ("all") forgets nothing here, `pageGone` handles that.
   onEnd: (id, terminal, why, origin) => {
     codeMirror.end(id, terminal);
-    if (why === "closed") computerService.forget(`code:${origin}`);
+    if (why === "closed") {
+      computerService.forget(`code:${origin}`);
+      // The session ended: its id stops working. Never tied to `destroyed`: turning a browser off keeps the id valid.
+      computerDoor?.revoke(`code:${origin}`);
+    }
   },
 });
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
@@ -192,7 +212,8 @@ function sessionNode(): string | null {
 }
 const sessionService = new SessionService({
   trash: (file) => shell.trashItem(file),
-  onRemoved: (thread) => computerService.forget(`chat:${thread}`),
+  onRemoved: (thread) => { computerService.forget(`chat:${thread}`); computerDoor?.revoke(`chat:${thread}`); },
+  browserEnv,
   vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, computerOn, context: () => context, env: process.env, node: sessionNode,
   // A turn's start and end are when a thread's title may have changed: the browser's label is read again then, not on every state.
   emit: (ev) => { send(CH.sessionEvent, ev); if (ev.event.kind === "prompt" || ev.event.kind === "done") computerService.retitled(`chat:${ev.thread}`); },
@@ -263,7 +284,9 @@ const computerRecords = new BrowserRecords({
 const computerService: ComputerService = new ComputerService({
   records: computerRecords,
   threadExists: (session) => session.startsWith("chat:") ? sessionService.exists(session.slice("chat:".length)) : false,
-  moved: (from, to) => { const b = computerBrowsers.get(from); if (b) { computerBrowsers.delete(from); computerBrowsers.set(to, b); } },
+  // `moved` fires only for a move that answered true (service.ts move): the replacement terminal's own id stays valid and
+  // the old terminal's ids now name it too.
+  moved: (from, to) => { const b = computerBrowsers.get(from); if (b) { computerBrowsers.delete(from); computerBrowsers.set(to, b); } computerDoor?.move(from, to); },
   label: (session) => (session.startsWith("chat:") ? sessionService.titleOf(session.slice("chat:".length)) : undefined),
   browser: (session, hooks) => {
     const b = new ComputerBrowser({ key: session, window: () => win, hooks });
@@ -499,6 +522,8 @@ function shutdownComputer(): void {
   // Closes the records: nothing the shutdown does next (destroying browsers, cancelling asks) may rewrite them, and it
   // may run twice (before-quit, will-quit). A quit that fails reopens them when a browser is next made.
   computerService.flushForQuit();
+  // The door goes with the browsers it opens pages in; stopping twice does nothing (the bridge's stop does it as well).
+  computerDoor?.stop();
   for (const b of computerBrowsers.values()) { try { b.destroy(); } catch { /* already gone */ } }
   computerBrowsers.clear();
   computerService.forgetBrowsers();
@@ -600,9 +625,11 @@ async function makeBridge(root: string): Promise<{ stop(): Promise<void> }> {
     live: (agent) => agentRegistry.get(agent.pid)?.key === agent.key,
   });
   await next.start();
+  // session-browser S23: the door starts where the bridge does; a session started while it is down gets no opener variables.
+  await computerDoor?.start();
   const off = agentRegistry.onRemove((agent) => next.drop(agent.pid));
   recordApp(root, { computerSocket: socketPath });
-  return { stop: async () => { off(); await next.stop(); } };
+  return { stop: async () => { off(); computerDoor?.stop(); await next.stop(); } };
 }
 
 /**
@@ -717,6 +744,9 @@ function endPageWork(): void {
   closeComputerPop();
   // session-browser S1: the next page counts its terminals from the start, so the Code sessions' browsers go too.
   computerService.pageGone();
+  // The next page's Code keys start again at t1: an id issued before must not reach the terminal that reuses its key (a
+  // detached program keeps its environment), and this runs before the new page can start a terminal.
+  computerDoor?.revokeAll("code:");
   computerService.show(null);
   computerService.select(null);
 }

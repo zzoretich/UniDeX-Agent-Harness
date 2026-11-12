@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ComputerDoor, DOOR_CONNECTIONS, DOOR_IDLE_MS, doorSocketPath } from "../../src/main/computer/door";
+import { ComputerDoor, DOOR_CONNECTIONS, DOOR_IDLE_MS, SESSION_VAR, doorSocketPath, openerPath } from "../../src/main/computer/door";
 import type { Clock } from "../../src/main/computer/asks";
 
 // session-browser S23: the door a session's programs knock on to ask for one page. Ids are opaque to the door; the
@@ -246,12 +246,12 @@ test("bytes after the first line never open a second page", () => {
   assert.deepEqual(s.ended, ['{"ok":true}\n']);
 });
 
-test("a failing open is logged once, without the id, and answers false", () => {
+test("a failing open is logged once, without the id or the error text, and answers false", () => {
   const logs: string[] = [];
   const door = new ComputerDoor({ path: "/unused", open: () => { throw new Error("no pane"); }, log: (l) => logs.push(l), clock: fakeClock() });
   const id = door.issue("code:t1");
   assert.equal(door.accept(JSON.stringify({ id, url: "http://localhost/" })), false);
-  assert.deepEqual(logs, ["door: an open for code:t1 failed (no pane)"]);
+  assert.deepEqual(logs, ["door: an open for code:t1 failed"]);
 });
 
 test("revoke clears the session's count: a new id for the same key starts clean", () => {
@@ -327,4 +327,74 @@ test("start answers false and logs one line when it cannot listen", async () => 
   assert.equal(logs.length, 1);
   assert.match(logs[0], /^door: /);
   assert.equal(fs.readFileSync(path.join(d, "computer", "door.sock"), "utf8"), "mine");
+});
+
+// ── the opener and the session's environment (Task 17) ────────────────────
+
+function shortDir(): string { const d = fs.mkdtempSync(path.join(os.tmpdir(), "ud-")); made.push(d); return d; }
+
+test("envFor gives the three variables, and none while the door is down", async () => {
+  const dir = shortDir();
+  const opener = path.join(dir, "unidex-open.js");
+  const sock = path.join(dir, "d.sock");
+  const door = new ComputerDoor({ path: sock, open: () => {}, log: () => {}, opener });
+  assert.deepEqual(door.envFor("code:t1", {}), {}, "not listening yet");
+  assert.equal(await door.start(), true);
+  try {
+    const env = door.envFor("code:t1", { BROWSER: "firefox", PATH: "/usr/bin" });
+    assert.deepEqual(Object.keys(env).sort(), ["AOS_BROWSER_SESSION", "BRAINSTORM_OPEN_CMD", "BROWSER"]);
+    assert.equal(SESSION_VAR, "AOS_BROWSER_SESSION");
+    assert.equal(env.BROWSER, opener);
+    assert.equal(env.BRAINSTORM_OPEN_CMD, opener);
+    const seen = JSON.parse(Buffer.from(env[SESSION_VAR], "base64url").toString("utf8")) as { id: string; door: string; prev: string | null };
+    assert.match(seen.id, /^[0-9a-f]{32}$/);
+    assert.deepEqual([seen.door, seen.prev], [sock, "firefox"]);
+    assert.equal(JSON.parse(Buffer.from(door.envFor("code:t2", {})[SESSION_VAR], "base64url").toString("utf8")).prev, null, "no BROWSER before: null");
+    assert.equal(JSON.parse(Buffer.from(door.envFor("code:t3", { BROWSER: opener })[SESSION_VAR], "base64url").toString("utf8")).prev, null, "never itself as the previous BROWSER");
+    // The id is the one the door accepts for that session.
+    const opened: string[] = [];
+    const live = new ComputerDoor({ path: path.join(dir, "e.sock"), open: (s) => opened.push(s), log: () => {}, opener });
+    assert.equal(await live.start(), true);
+    const id = JSON.parse(Buffer.from(live.envFor("chat:x", {})[SESSION_VAR], "base64url").toString("utf8")).id as string;
+    assert.equal(live.accept(JSON.stringify({ id, url: "http://localhost/" })), true);
+    assert.deepEqual(opened, ["chat:x"]);
+    live.stop();
+  } finally { door.stop(); }
+  assert.deepEqual(door.envFor("code:t1", {}), {}, "stopped");
+  const bare = new ComputerDoor({ path: path.join(dir, "f.sock"), open: () => {}, log: () => {} });
+  assert.equal(await bare.start(), true);
+  assert.deepEqual(bare.envFor("code:t1", {}), {}, "no opener to point at");
+  bare.stop();
+});
+
+test("openerPath uses a copy when its own path holds whitespace", () => {
+  const plain = shortDir();
+  fs.mkdirSync(path.join(plain, "opener"));
+  fs.writeFileSync(path.join(plain, "opener", "unidex-open.js"), "#!/usr/bin/env node\n");
+  const tmp = shortDir();
+  const userData = path.join(shortDir(), "ud");
+  assert.equal(openerPath({ resources: plain, tmp, userData }), path.join(plain, "opener", "unidex-open.js"), "no whitespace: its own path");
+
+  const spaced = path.join(shortDir(), "Application Support");
+  fs.mkdirSync(path.join(spaced, "opener"), { recursive: true });
+  fs.writeFileSync(path.join(spaced, "opener", "unidex-open.js"), "#!/usr/bin/env node\nprocess.exit(0)\n");
+  const copy = openerPath({ resources: spaced, tmp, userData });
+  assert.ok(copy && !/\s/.test(copy) && copy.startsWith(tmp), String(copy));
+  assert.equal(fs.readFileSync(copy, "utf8"), "#!/usr/bin/env node\nprocess.exit(0)\n");
+  assert.equal(fs.statSync(copy).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(path.dirname(copy)).mode & 0o777, 0o700);
+  assert.equal(openerPath({ resources: spaced, tmp: path.join(tmp, "with space"), userData }), null, "no whitespace-free place: none");
+  assert.equal(openerPath({ resources: path.join(plain, "missing"), tmp, userData }), null, "nothing to point at: none");
+});
+
+test("an id issued before the page went opens nothing after it, though its key is in use again", () => {
+  const { door, opened, msg } = rig();
+  const before = door.issue("code:t1");
+  door.issue("chat:" + "a".repeat(8));
+  door.revokeAll("code:");
+  const after = door.issue("code:t1");
+  assert.notEqual(before, after);
+  assert.equal(door.accept(msg(before, "http://localhost/")), false);
+  assert.equal(door.accept(msg(after, "http://localhost/")), true);
+  assert.deepEqual(opened, [["code:t1", "http://localhost/"]]);
 });

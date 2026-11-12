@@ -5,10 +5,12 @@
 // door never reads, clicks or types: a page is opened, nothing else. No id is ever written to a log.
 
 import { randomBytes } from "node:crypto";
+import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import { linkUrl } from "../policy/computer-url";
 import { realClock, type Clock } from "./asks";
-import { listenPrivate, socketPathIn, unlinkIfBound } from "./unix-socket";
+import { listenPrivate, shortDirIn, socketPathIn, unlinkIfBound } from "./unix-socket";
 
 export const DOOR_PER_MINUTE = 6;
 export const DOOR_LINE_MAX = 16 * 1024;
@@ -16,13 +18,43 @@ export const DOOR_IDLE_MS = 2000;
 export const DOOR_CONNECTIONS = 16;
 const MINUTE_MS = 60_000;
 const ID = /^[0-9a-f]{32}$/;
+/** The variable that carries a session's id to its opener. No KEY, SECRET or TOKEN in the name: a host's shell filter drops those. */
+export const SESSION_VAR = "AOS_BROWSER_SESSION";
+const OPENER = "unidex-open.js";
 
 /** As `bridgeSocketPath`, with the file name door.sock. */
 export function doorSocketPath(userData: string, tmp: string): string | null {
   return socketPathIn(userData, tmp, "door.sock");
 }
 
-export interface DoorOptions { path: string; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock;
+/**
+ * `<resources>/opener/unidex-open.js`, the command a session's BROWSER points at; null when it is not there. A path with
+ * whitespace cannot be a BROWSER or BRAINSTORM_OPEN_CMD (hosts split those words), so a 0700 copy goes in the door's own
+ * short folder in `tmp`, made again at every start; null when that path holds whitespace too, or the copy fails.
+ */
+export function openerPath(o: { resources: string; tmp: string; userData: string }): string | null {
+  const own = path.join(o.resources, "opener", OPENER);
+  try { if (!fs.statSync(own).isFile()) return null; } catch { return null; }
+  if (!/\s/.test(own)) return own;
+  const dir = shortDirIn(o.userData, o.tmp);
+  const copy = path.join(dir, OPENER);
+  if (/\s/.test(copy)) return null;
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // As the socket's folder: a real folder of this user's, never a link.
+    const d = fs.lstatSync(dir);
+    if (!d.isDirectory() || (typeof process.getuid === "function" && d.uid !== process.getuid())) return null;
+    fs.chmodSync(dir, 0o700);
+    fs.rmSync(copy, { force: true });
+    fs.copyFileSync(own, copy);
+    fs.chmodSync(copy, 0o700);
+    return copy;
+  } catch { return null; }
+}
+
+export interface DoorOptions { path: string;
+  /** The opener's path (openerPath); absent or null, no session gets the three variables. */
+  opener?: string | null; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock;
   /** How long a connection may stay silent (2 s; tests shorten it). */
   idleMs?: number }
 
@@ -78,6 +110,19 @@ export class ComputerDoor {
     return id;
   }
 
+  /**
+   * The three variables a session's processes get (session-browser S23): BROWSER and BRAINSTORM_OPEN_CMD, both the opener,
+   * and AOS_BROWSER_SESSION, which carries the session's id, the door's socket and the BROWSER that was set before
+   * (`base`'s, unless it is the opener itself). None while the door is down or there is no opener.
+   */
+  envFor(session: string, base: NodeJS.ProcessEnv): Record<string, string> {
+    const opener = this.o.opener;
+    if (!this.server || !opener) return {};
+    const prev = base.BROWSER && base.BROWSER !== opener ? base.BROWSER : null;
+    const carried = JSON.stringify({ id: this.issue(session), door: this.o.path, prev });
+    return { BROWSER: opener, BRAINSTORM_OPEN_CMD: opener, [SESSION_VAR]: Buffer.from(carried, "utf8").toString("base64url") };
+  }
+
   /** Every id of `from` now names `to`, beside the ids `to` has; `to`'s own first id stays its first. */
   move(from: string, to: string): void {
     if (from === to) return;
@@ -128,8 +173,9 @@ export class ComputerDoor {
       this.opens.set(session, recent);
       try {
         this.o.open(session, target);
-      } catch (err) {
-        this.o.log(`door: an open for ${session} failed (${err instanceof Error ? err.message : "unknown error"})`);
+      } catch {
+        // Main's error text could carry the address, so it is not logged.
+        this.o.log(`door: an open for ${session} failed`);
         return false;
       }
       return true;

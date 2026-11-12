@@ -108,6 +108,10 @@ export interface PtyServiceOptions {
    *  `killAll()` (the page going: nothing forgets a session then, session-browser S1). `origin` is the id of the terminal's
    *  first process, which is `id` itself for a first process: the key a Code session's browser is named by. */
   onEnd?: (id: string, terminal: string | null, why: "closed" | "all", origin: string) => void;
+  /** The three opener variables of a Code session (session-browser S23), from `base`, the environment the allowlist let
+   *  through; `session` is `code:<the terminal's first process id>`. Added after the allowlist, so it does not grow. Absent,
+   *  or {} (the Computer surface is off, no door), the environment is exactly what it was. */
+  browserEnv?: (session: string, base: NodeJS.ProcessEnv) => Record<string, string>;
   now?: () => number;
 }
 
@@ -197,12 +201,22 @@ export class PtyService {
     return false;
   }
 
+  /** The first process of the terminal `id` belongs to: `origin`'s own origin when main began it in this page, else `id`.
+   *  A page naming a takeover shell (itself an entry with another origin) gets that shell's origin. */
+  private rootOf(id: string, origin?: string): string {
+    const given = origin !== undefined && origin !== id ? this.started.get(origin) : undefined;
+    return given ? given.origin : id;
+  }
+
+  /** The opener variables for a Code session, or none: a failing callback never stops a terminal from starting. */
+  private browserVars(session: string, base: NodeJS.ProcessEnv): Record<string, string> {
+    try { return this.o.browserEnv?.(session, base) ?? {}; } catch { return {}; }
+  }
+
   /** `origin` is the first process of the terminal this one takes over in (the login shell after the agent): taken only
    *  when main began that id in this page, else the process is its own origin (session-browser S1). */
   private begin(id: string, cwd: string, terminal: string | undefined, origin?: string): void {
-    const given = origin !== undefined && origin !== id ? this.started.get(origin) : undefined;
-    // The root of the chain: a page naming a takeover shell (itself an entry with another origin) gets that shell's origin.
-    const root = given ? given.origin : id;
+    const root = this.rootOf(id, origin);
     this.started.set(id, { cwd, startedAt: (this.o.now ?? Date.now)(), terminal: typeof terminal === "string" && UUID_RE.test(terminal) ? terminal : null, origin: root });
   }
 
@@ -227,9 +241,11 @@ export class PtyService {
     if (folder) return folder;
     const env = ptyEnv(this.baseEnv(), req.env, this.o.context());
     if ("refusal" in env) return refused(env.refusal);
+    // The session is named by the terminal's first process, the root `begin` will record for this one.
+    const vars = this.browserVars(`code:${this.rootOf(req.id, req.origin)}`, env.env);
     let p: PtyProcess;
     try {
-      p = lib.spawn(req.file, [], { name: req.name, cols: req.cols, rows: req.rows, cwd: req.cwd, env: env.env });
+      p = lib.spawn(req.file, [], { name: req.name, cols: req.cols, rows: req.rows, cwd: req.cwd, env: { ...env.env, ...vars } });
     } catch (err) { return failure(err); }
     const { id } = req;
     this.sessions.set(id, p);
@@ -366,9 +382,11 @@ export class PtyService {
       const ready = now && this.switchesOn();
       if (ready !== carries) return flagsRefusal(ready, bin);
     }
+    // An agent is its terminal's first process: the session is its own id.
+    const vars = this.browserVars(`code:${req.id}`, env.env);
     let p: PtyProcess;
     try {
-      p = lib.spawn(bin, [...req.argv], { name: "xterm-256color", cols: req.cols, rows: req.rows, cwd: req.cwd, env: env.env });
+      p = lib.spawn(bin, [...req.argv], { name: "xterm-256color", cols: req.cols, rows: req.rows, cwd: req.cwd, env: { ...env.env, ...vars } });
     } catch (err) { return fallback(`${label} did not start (${(err as NodeJS.ErrnoException)?.code ?? "error"})`); }
     const { id } = req;
     const pid = p.pid;

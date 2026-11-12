@@ -863,3 +863,36 @@ test("kill reports closed and killAll reports all; a takeover shell's close repo
   t.killAll();
   assert.deepEqual(ended.map((e) => [e[0], e[2]]), [["t6", "all"]]);
 });
+
+// session-browser S23: each terminal's processes carry their own session's opener variables, added after the allowlist.
+test("a shell and a Code agent start with their own session's three variables, a takeover shell with its terminal's", async () => {
+  const asked: Array<[string, string | undefined]> = [];
+  const browserEnv = (session: string, base: NodeJS.ProcessEnv): Record<string, string> => {
+    asked.push([session, base.PATH]);
+    return { BROWSER: "/o/unidex-open.js", BRAINSTORM_OPEN_CMD: "/o/unidex-open.js", AOS_BROWSER_SESSION: `for-${session}` };
+  };
+  const KEY = "aaaaaaaa-0000-4000-8000-000000000013";
+  const { t, spawned } = service({ extra: { browserEnv } });
+  assert.ok(t.spawn({ id: "t1", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24, env: { AOS_TERMINAL: KEY } }).ok);
+  assert.ok((await t.spawnAgent(req({ id: "t2", terminal: KEY }))).ok);
+  assert.ok(t.spawn({ id: "t3", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24, env: { AOS_TERMINAL: KEY }, origin: "t2" }).ok);
+  assert.ok(t.spawn({ id: "t4", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24, env: { AOS_TERMINAL: KEY }, origin: "t3" }).ok);
+  const vars = (i: number): unknown[] => { const e = spawned[i].opts.env as Record<string, string>; return [e.BROWSER, e.BRAINSTORM_OPEN_CMD, e.AOS_BROWSER_SESSION, e.AOS_TERMINAL]; };
+  assert.deepEqual(vars(0), ["/o/unidex-open.js", "/o/unidex-open.js", "for-code:t1", KEY]);
+  assert.deepEqual(vars(1), ["/o/unidex-open.js", "/o/unidex-open.js", "for-code:t2", KEY]);
+  assert.deepEqual(vars(2), ["/o/unidex-open.js", "/o/unidex-open.js", "for-code:t2", KEY], "a takeover shell: the terminal's first process, never its own id");
+  assert.deepEqual(vars(3), ["/o/unidex-open.js", "/o/unidex-open.js", "for-code:t2", KEY], "a page naming a takeover shell gets the chain's root");
+  assert.deepEqual(asked.map((a) => a[0]), ["code:t1", "code:t2", "code:t2", "code:t2"]);
+  assert.ok(asked.every((a) => a[1] === "/usr/bin:/bin"), "the base is the environment the allowlist let through");
+});
+
+test("with no variables to add (the Computer surface off) a terminal's environment is exactly what it was", async () => {
+  const { t, spawned } = service({ extra: { browserEnv: () => ({}) } });
+  assert.ok(t.spawn({ id: "t1", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok);
+  assert.ok((await t.spawnAgent(req({ id: "t2" }))).ok);
+  const { t: plain, spawned: before } = service();
+  assert.ok(plain.spawn({ id: "t1", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok);
+  assert.ok((await plain.spawnAgent(req({ id: "t2" }))).ok);
+  assert.deepEqual(spawned[0].opts.env, before[0].opts.env);
+  assert.deepEqual(spawned[1].opts.env, before[1].opts.env);
+});

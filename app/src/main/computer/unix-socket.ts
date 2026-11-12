@@ -17,9 +17,14 @@ export const MAX_PATH_BYTES = 103;
 export function socketPathIn(userData: string, tmp: string, file: string): string | null {
   const own = path.join(userData, "computer", file);
   if (Buffer.byteLength(own) <= MAX_PATH_BYTES) return own;
-  const id = createHash("sha256").update(path.resolve(userData)).digest("hex").slice(0, 12);
-  const short = path.join(tmp, `unidex-computer-${id}`, file);
+  const short = path.join(shortDirIn(userData, tmp), file);
   return Buffer.byteLength(short) <= MAX_PATH_BYTES ? short : null;
+}
+
+/** This data folder's own short folder in the user's temp folder: where a socket goes when its path in userData is too long. */
+export function shortDirIn(userData: string, tmp: string): string {
+  const id = createHash("sha256").update(path.resolve(userData)).digest("hex").slice(0, 12);
+  return path.join(tmp, `unidex-computer-${id}`);
 }
 
 /**
