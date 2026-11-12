@@ -22,6 +22,7 @@ import type { SiteMarks } from "./sites";
 import type { Holder, Wheel } from "./wheel";
 import { CODE_KEY } from "../policy/computer";
 import { linkUrl, navAllowed, siteOf, withoutUserinfo } from "../policy/computer-url";
+import { externalAllowed } from "../policy/shell";
 import type { BrowserRecords, Conversation } from "./records";
 import type { ComputerNavGo, ComputerPower, Result } from "../../shared/ipc";
 import { START_PAGE } from "../../../../hud/src/data/computerStart";
@@ -30,7 +31,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -1212,19 +1213,14 @@ export class ComputerService {
     if (!this.selected) return { ok: false, error: "No computer is selected.", code: "ENOENT" };
     const p = this.slots.get(this.selected);
     const none: Result<null> = { ok: false, error: "No page is open.", code: "ENOENT" };
-    if (!p || p.power === "off" || !p.browser) return none;
-    let url: string | undefined;
-    try {
-      const at = p.browser.tabs().find((t) => t.active);
-      if (!at) return none;
-      // `realAddresses` leaves out a tab that is not a web page (a blank one) and then no longer lines up with the tabs, so
-      // its `active` could name another tab's page: with one address per tab the tab's own place is the index, else the
-      // address that matches the active tab's (without query and fragment, which `tabs` may hide) or none.
-      const r = p.browser.realAddresses();
-      const bare = (u: string): string => u.replace(/[?#].*$/, "");
-      url = r.urls.length === p.browser.tabs().length ? r.urls[at.index] : r.urls.find((u) => bare(u) === bare(at.url));
-    } catch { return none; }
+    // An asleep browser has no page in front: its kept tabs are not the person's to send from here.
+    if (!p || p.power !== "awake" || !p.browser) return none;
+    let url: string | null;
+    try { url = p.browser.activeAddress(); } catch { return none; }
     if (!url) return none;
+    // https is decided here, so `outside` (main's external-open path, which logs a refusal with its address) only ever gets an
+    // https address and a refusal leaves no log line at all.
+    if (!externalAllowed(url)) return { ok: false, error: "Only https pages open in your browser.", code: "EROFS" };
     if (!this.o.outside(url)) return { ok: false, error: "Only https pages open in your browser.", code: "EROFS" };
     this.line(p, USER, "Opened the page in your browser", null);
     return { ok: true, data: null };

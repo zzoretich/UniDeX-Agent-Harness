@@ -81,6 +81,8 @@ class FakeBrowser implements BrowserLike {
   asleep() { return this.sleeping; }
   restore(tabs: readonly string[], active: number) { if (restoreFails.has(this.session)) throw new Error("cannot restore"); this.restored++; this.pages = tabs.map((url) => ({ url, openedBy: null, hidden: true })); this.current = active; this.sleeping = true; }
   restored = 0;
+  /** Main only: the active tab's real address, or null when it has none to give (as ComputerBrowser.activeAddress). */
+  activeAddress() { if (this.destroyed > 0) throw new Error("the browser is gone"); const u = this.pages[this.current]?.url; return u && u !== "about:blank" ? u : null; }
   /** Main only (the real address of every tab). */
   realAddresses() { if (this.destroyed > 0) throw new Error("the browser is gone"); return { urls: this.pages.map((p) => p.url), active: Math.max(0, this.current) }; }
   constructor(public session: string, public hooks: BrowserHooks) {}
@@ -3488,7 +3490,7 @@ test("a program's open from a Read only session, or with the setting off, opens 
     await flush();
     assert.equal(h.broker.pending().length, 0, `${power}: no ask`);
     assert.deepEqual(x ? x.pages : [], [], `${power}: no tab`);
-    assert.equal(power === "off" ? h.browsers.size : 0, 0);
+    if (power === "on") assert.equal(h.lastState().power, "awake", "on: still on, still no tab"); else assert.equal(h.browsers.size, 0);
     assert.equal(h.logs.length, 1, `${power}: one log line`);
     assert.match(h.logs[0], /Settings/);
     noSecrets(h.logs);
@@ -3669,17 +3671,47 @@ test("Open in my browser needs a selected, on browser with a tab", async () => {
   assert.deepEqual(g.outsides, []);
 });
 
-test("Open in my browser never sends another tab's page when the active tab is not a web page", async () => {
+test("Open in my browser sends the active tab's own address, never another tab's of the same page", async () => {
   const h = make();
   const b = await onBrowser(h);
-  await h.open(A, PAGE_A);
-  b.pages.push({ url: "about:blank", openedBy: null });
-  b.current = 1;
-  // The real browser leaves a blank tab out of its addresses, so its `active` would name the first tab's page.
-  b.realAddresses = () => ({ urls: [PAGE_A], active: 0 });
+  await h.open(A, "https://example.com/p?tab=one");
+  await h.call(A, "computer_open", { url: "https://example.com/p?tab=two", newTab: true });
+  b.pages.forEach((x) => { x.hidden = true; });
   h.svc.select("chat:a");
+  assert.deepEqual(h.svc.openOutside(), { ok: true, data: null });
+  assert.deepEqual(h.outsides, ["https://example.com/p?tab=two"]);
+  // A blank active tab has no address to give: nothing is sent, and the other tab's page is not taken instead.
+  b.pages.push({ url: "about:blank", openedBy: null });
+  b.current = 2;
   assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" });
-  assert.deepEqual(h.outsides, []);
+  assert.equal(h.outsides.length, 1);
+});
+
+test("Open in my browser decides https itself: an http page never reaches outside or the log", async () => {
+  const calls: string[] = [];
+  const h = make({ outside: (u) => { calls.push(u); return true; } });
+  const b = await onBrowser(h);
+  await h.open(A, "http://localhost:3000/x");
+  h.svc.select("chat:a");
+  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
+  assert.deepEqual(calls, [], "outside was not called");
+  assert.deepEqual(h.logs, [], "nothing logged");
+  assert.equal(b.pages.length, 1);
+  await h.call(A, "computer_open", { url: "https://example.com/ok", newTab: true });
+  assert.deepEqual(h.svc.openOutside(), { ok: true, data: null });
+  assert.deepEqual(calls, ["https://example.com/ok"], "outside is only ever given an https address");
+});
+
+test("an asleep browser sends nothing", async () => {
+  const calls: string[] = [];
+  const h = make({ outside: (u) => { calls.push(u); return true; } });
+  const b = await onBrowser(h);
+  await h.open(A, "https://example.com/ok");
+  h.svc.select("chat:a");
+  b.sleeping = true;
+  (h.svc as unknown as { slot(k: string): { power: string } }).slot("chat:a").power = "asleep";
+  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" });
+  assert.deepEqual(calls, []);
 });
 
 // ---- Task 18, fix round 1: one Turn on card a session, and a program's quiet period is the session's

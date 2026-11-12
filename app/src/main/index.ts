@@ -288,6 +288,8 @@ const computerRecords = new BrowserRecords({
   file: path.join(app.getPath("userData"), "computer", "browsers.json"),
   log: (line) => console.warn(`[main] ${line}`),
 });
+/** The terminals and threads main holds: the one check the page's Computer calls and a program's open both use (policy/computer.ts sessionAllowed). */
+const heldSessions = { terminal: (id: string): boolean => ptyService.holdsOrigin(id), thread: (id: string): boolean => sessionService.has(id) };
 const computerService: ComputerService = new ComputerService({
   records: computerRecords,
   threadExists: (session) => session.startsWith("chat:") ? sessionService.exists(session.slice("chat:".length)) : false,
@@ -319,7 +321,7 @@ const computerService: ComputerService = new ComputerService({
   popOut: (session, show) => popOutComputer(session, show),
   // session-browser S23: the check the page's calls use (registerComputerIpc below), for a program's open; S24: the one
   // external-open path, so the e2e seam records Open in my browser as it records links.
-  held: (session) => sessionAllowed(session, { terminal: (id) => ptyService.holdsOrigin(id), thread: (id) => sessionService.has(id) }),
+  held: (session) => sessionAllowed(session, heldSessions),
   outside: (url) => openExternalSafe(url),
   log: (line) => console.warn(`[main] ${line}`),
   // D31: a late bridge close from a session's previous process must not end the turn that replaced it.
@@ -737,7 +739,7 @@ registerUpdateIpc(trust, {
   check: () => updates.check(),
   install: () => { installRequests += 1; updates.install(); },
 });
-registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, sessions: { terminal: (id) => ptyService.holdsOrigin(id), thread: (id) => sessionService.has(id) } });
+registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, sessions: heldSessions });
 registerThemeIpc(trust, { state: () => themeState(), set: (source) => setTheme(source) });
 
 /** The page went (closed, crashed, reloaded, or quitting): its terminals go with it, and the children it was waiting on.

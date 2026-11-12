@@ -1638,14 +1638,20 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
   // opener's "previous BROWSER" is then the stand-in, so a page that fell back (the door unreachable, a refused message) lands
   // in the file and never in the Mac's default browser. Every test asserts the file stayed empty and that main's own external
   // opens (`__aosMain.externalOpens`, the harness's recorded shell.openExternal) gained nothing but what the test expects.
-  const rec = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "aos-bro-"));
-  const recorder = path.join(rec, "browser.sh");
-  const recorded = path.join(rec, "opened.txt");
-  fs.writeFileSync(recorder, `#!/bin/sh\nprintf '%s\\n' "$1" >> '${recorded}'\n`, { mode: 0o755 });
+  // Made in beforeAll, so a worker that never runs this describe leaves no folder behind.
+  let rec = "", recorder = "", recorded = "";
   const fell = (): string[] => (fs.existsSync(recorded) ? fs.readFileSync(recorded, "utf8").split("\n").filter(Boolean) : []);
-  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv(), BROWSER: recorder };
-  test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
-  test.afterAll(async () => { await site?.close(); fs.rmSync(rec, { recursive: true, force: true }); });
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  test.beforeAll(async () => {
+    site = await startSite();
+    env.AOS_E2E_START_PAGE = startUrl();
+    rec = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "aos-bro-"));
+    recorder = path.join(rec, "browser.sh");
+    recorded = path.join(rec, "opened.txt");
+    fs.writeFileSync(recorder, `#!/bin/sh\nprintf '%s\\n' "$1" >> '${recorded}'\n`, { mode: 0o755 });
+    env.BROWSER = recorder;
+  });
+  test.afterAll(async () => { await site?.close(); if (rec) fs.rmSync(rec, { recursive: true, force: true }); });
   const app = useApp({ env, prepare: () => { prepare({ claude: true, codex: true }); } });
   const OPEN_PAGE = path.join(__dirname, "fixtures", "computer", "open-page.js");
   /** A page of the fixture site under its own host, so no two opens share an address. */
@@ -1685,7 +1691,21 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
     const h = app();
     const { win } = h;
     const externalBefore = (await externalOf(h)).length;
-    // 1. A shell terminal, no agent in it: the person's own program. The command is typed into the terminal.
+    // 1. A Code agent's command: its environment is the session's. It goes first because it asserts that the opener's fallback
+    // is the recording stand-in (every session's `prev` comes from the app's one environment), before any page is opened.
+    const code = await codeAgent(h, "claude", { surfaceOff: true });
+    try {
+      const v = await sessionVar(code);
+      expect(v.prev, "the stand-in is the BROWSER the opener falls back to").toBe(recorder);
+      const codePage = pageUrl(2);
+      expect((await code.exec(AGENT.node, [OPEN_PAGE, codePage])).status).toBe(0);
+      await turnOn(pane(win, "code"), codePage);
+      const codeKey = (await selectedOf(h)) as string;
+      expect(codeKey).toMatch(/^code:t\d+$/);
+      expect(await titleOf(h, codePage, codeKey)).toBe("Harbour landed");
+    } finally { await code.finish(); }
+
+    // 2. A shell terminal, no agent in it: the person's own program. The command is typed into the terminal.
     expect(await command(win, "agentic-os:new-terminal-shell")).toBe(true);
     await expect(rail(win, "term")).toHaveClass(/is-active/);
     await expect.poll(() => selectedOf(h), { message: "the pane followed to the shell" }).toMatch(/^code:t\d+$/);
@@ -1699,18 +1719,6 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
     expect(await titleOf(h, shellPage, shellKey)).toBe("Harbour landed");
     await expect(pane(win, "code").locator(".aos-cp-tab")).toHaveCount(1);
 
-    // 2. A Code agent's command: its environment is the session's.
-    const code = await codeAgent(h, "claude", { surfaceOff: true });
-    try {
-      const v = await sessionVar(code);
-      expect(v.prev, "the stand-in is the BROWSER the opener falls back to").toBe(recorder);
-      const codePage = pageUrl(2);
-      expect((await code.exec(AGENT.node, [OPEN_PAGE, codePage])).status).toBe(0);
-      await turnOn(pane(win, "code"), codePage);
-      const codeKey = (await selectedOf(h)) as string;
-      expect(codeKey).not.toBe(shellKey);
-      expect(await titleOf(h, codePage, codeKey)).toBe("Harbour landed");
-    } finally { await code.finish(); }
 
     // 3. A Chat turn's command, in the thread's browser.
     const chat = await chatAgent(h, { text: "computer: a program opens a page", surfaceOff: true });
@@ -1773,7 +1781,8 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
       await expect(outside).toBeDisabled();
       const call = () => win.evaluate(() => (window as unknown as { aos: { computer: { openOutside(): Promise<unknown> } } }).aos.computer.openOutside());
       expect(await call()).toEqual({ ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
-      expect((await externalOf(h)).slice(externalBefore), "refused, and recorded as refused").toEqual([{ url: expect.stringContaining("search.test"), opened: false }]);
+      // main decided on its own: the refused page never reached the external-open path, so nothing is recorded or logged.
+      expect((await externalOf(h)).slice(externalBefore), "a refused page records no external open").toEqual([]);
       await expect(p.locator(".aos-cp-tab")).toHaveCount(1);
       // An https page (the fixture site speaks only http, so its load fails, but the tab keeps the address): the button wakes,
       // the page goes to main's one external-open path (recorded, not opened), and the tab stays.
@@ -1787,6 +1796,12 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
       await expect(outside).toBeEnabled();
     } finally { await a.finish(); }
     expect(fell(), "the BROWSER stand-in recorded nothing").toEqual([]);
+    // Electron writes a warning to stderr whenever a page's load fails: here the https address the plain-http fixture server
+    // cannot serve, and only that one (as the redirect test above expects its own).
+    const warning = `electron: Failed to load URL: https://shop.test:${site.port}/shop.html with error: ERR_SSL_PROTOCOL_ERROR`;
+    await expect.poll(() => h.errors.some((e) => e.includes(warning)), { message: "the one load warning" }).toBe(true);
+    const late = h.errors.splice(0).filter((e) => !e.includes(warning));
+    expect(late, "renderer/main errors").toEqual([]);
     expectNoErrors(h);
   });
 });

@@ -922,6 +922,18 @@ test("a kept tab whose load fails does not stop the others", async () => {
   assert.ok(notes.some((n) => n.startsWith("A tab did not reload")));
 });
 
+test("activeAddress is the active tab's real address, cleaned, or null with none to give; it throws once the browser is gone (session-browser S24)", () => {
+  makeSleeper();
+  const fresh = new ComputerBrowser({ key: "ws:active", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  (fresh as unknown as { place: () => void }).place = () => {};
+  assert.equal(fresh.activeAddress(), null, "no tab");
+  fresh.restore(["https://example.com/p?x=1", "https://user:pass@example.com/p?x=2"], 1);
+  assert.equal(fresh.activeAddress(), "https://example.com/p?x=2", "the active tab's, with its query, without the user name or password");
+  assert.equal(fresh.realAddresses().urls[0], "https://example.com/p?x=1", "realAddresses answers as before");
+  fresh.destroy();
+  assert.throws(() => fresh.activeAddress(), /gone/);
+});
+
 test("a restored tab's address shows no user name or password", () => {
   makeSleeper();
   const fresh = new ComputerBrowser({ key: "ws:cred", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });

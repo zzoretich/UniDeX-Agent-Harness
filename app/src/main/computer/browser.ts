@@ -750,6 +750,22 @@ export class ComputerBrowser {
     return { urls, active };
   }
 
+  /** The ACTIVE tab's real address, cleaned as `realAddresses` cleans it (no user name or password), for Open in my browser
+   *  (session-browser S24). MAIN ONLY, like `realAddresses`. Null when the active tab has no address to give: none yet
+   *  (about:blank), a destroyed view or a scheme the browser does not open. Throws once the browser is gone. */
+  activeAddress(): string | null {
+    if (this.gone) throw new Error("the browser is gone");
+    if (this.kept) {
+      const k = this.kept[this.keptActive];
+      const url = k ? withoutUserinfo(k.url) : "";
+      return navAllowed(url) ? url : null;
+    }
+    const t = this.list[this.current];
+    if (!t) return null;
+    const url = t.pending ? withoutUserinfo(t.pending.url) : t.wc.isDestroyed() ? "" : withoutUserinfo(t.wc.getURL());
+    return navAllowed(url) ? url : null;
+  }
+
   /** S9: a view per kept tab, made as `addTab` makes one (so every guard of a new tab applies), loading its address, the
    *  active tab first. The tabs keep their order and their opener and memory; each view is a new tab uid, so every page
    *  token changes. A load that fails leaves its tab on its address and is noted. */
