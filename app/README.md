@@ -72,8 +72,11 @@ browser returns after a relaunch, asleep, and a resumed Code conversation gets i
 screen or one an agent is using. A browser lives as long as its session: closing a terminal or deleting a thread
 (Sessions' **Delete thread**, which moves the file to the Trash) forgets it, and a model or access pick on a Code
 session keeps it. A web link clicked in a session opens in that session's browser and turns it on (`data/linkRoute.ts`);
-outside a session `https` goes to the default browser and `http` opens nowhere, with a notice. The pop-out window
-follows the selected session. Back, Forward and Reload sit left of
+outside a session `https` goes to the default browser and `http` opens nowhere, with a notice. A page a program in a
+session opens (a dev server, `gh auth login --web`, Superpowers' companion) comes to that session's browser through the
+door (`src/main/computer/door.ts`, the opener in `resources/opener/`); an off browser asks first, as for an agent's open.
+**Open in my browser** (`computer:open-outside`) sends the active tab's page to the Mac's browser, for a sign-in that needs
+a passkey or a password manager; https only. The pop-out window follows the selected session. Back, Forward and Reload sit left of
 the address bar and are the person's own (`computer:nav`, three words and no address). A tab the person opens with **+** starts
 on DuckDuckGo, and words typed in the address bar search it (the HUD's `data/computerStart.ts`, which main imports too;
 the e2e suite points both at a local fixture with `AOS_E2E_START_PAGE`, a switch only an unpackaged build reads).
