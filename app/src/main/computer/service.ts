@@ -114,6 +114,9 @@ const PROGRAM_HOLD = 6;
 /** The `session` of a Turn on card a program's open raised: not an agent's, so a turn's end never cancels it and an agent's
  *  own open never mistakes it for its card. */
 const PROGRAM = "program";
+/** The cancel reason of a program's Turn on card that gives way to an agent's for the same session (one card a session): its
+ *  held addresses ride the agent's card, so `settleProgram` ignores this reason. */
+const PROGRAM_YIELD = "an agent's Turn on card replaces it";
 /** The cancel reason of a power ask the person answered by turning the browser on by hand: the held open then runs. */
 const ON_BY_HAND = "the user turned the browser on";
 const CHANGED = "The page changed while you waited: look again.";
@@ -450,11 +453,14 @@ export class ComputerService {
     return null;
   }
 
-  /** Whether the quiet period of S3 is on for a program's open (it has no turn or process of its own: a Chat period lasts
-   *  until some agent's turn ends); an ended period is cleared. */
+  /** Whether the quiet period of S3 is on for a program's open (it has no process of its own: a Chat period lasts until the
+   *  turn it started in ends); an ended period is cleared. */
   private quietNow(p: Slot): boolean {
     const q = p.quiet;
-    if (q && (q.until === null || this.clock.now() < q.until)) return true;
+    // A period with no end time lasts while the turn it started in is the session's live one; with no turn (the person's Off
+    // between turns made it) it is over at once, for a program as for an agent.
+    const turn = (this.o.liveAgent?.(p.key) ?? this.agents.get(p.key))?.pid;
+    if (q && (q.until === null ? q.pid !== null && q.pid === turn : this.clock.now() < q.until)) return true;
     p.quiet = null;
     return false;
   }
@@ -508,6 +514,9 @@ export class ComputerService {
       if (quiet) return { reply: quiet };
       const up = this.o.broker.pending(p.key).find((x) => x.why === "power" && x.session === agent.key);
       if (up) return { reply: { text: waiting(up.id) } };
+      // One Turn on card a session, whoever asked first: a program's card gives way to this one, and the addresses a program
+      // held ride it (session-browser S23).
+      this.o.broker.cancel((x) => x.computer === p.key && x.why === "power" && x.session === PROGRAM, PROGRAM_YIELD);
       const host = hostOf(siteOf(a.url));
       return { ask: {
         whys: ["power"], card: { title: `${p.title ?? agent.label} wants to turn its browser on and open ${host}`, notice: "turn the browser on" },
@@ -517,6 +526,8 @@ export class ComputerService {
           // A session forgotten while its card was up opens nothing (S22).
           if (this.slots.get(p.key) !== p) return fail(IS_OFF);
           if (p.power === "off") this.turnOn(p);
+          // Turn on through any card leaves no other Turn on card up, as turning on by hand does.
+          this.o.broker.cancel((x) => x.computer === p.key && x.why === "power", ON_BY_HAND);
           // What a program opened behind this card follows the agent's own page, in the slot's queue.
           this.flushProgramOpens(p);
           return this.doOpen(agent, p, a, lease);
@@ -806,8 +817,8 @@ export class ComputerService {
       this.line(p, agent.label, outcomeLine(o, input), agent);
       // S4: the person turned the browser on by hand while the Turn on card was up: the held open runs on it.
       if (o.state !== "allowed" && !(input.why === "power" && o.reason === ON_BY_HAND)) {
-        // Addresses a program opened behind this card (session-browser S23) go with it, unless a card of their own is up.
-        if (input.why === "power" && !this.o.broker.pending(p.key).some((x) => x.why === "power" && x.session === PROGRAM)) p.programOpens = [];
+        // Addresses a program opened behind this card (session-browser S23) go with it: it is the session's one card.
+        if (input.why === "power") p.programOpens = [];
         // S3: a Not now, or no answer in time, is told once and then left quiet (a switch off cancels, and says so).
         if (input.why === "power" && (o.answer === "deny" || o.reason === "timed out")) { this.startQuiet(p, DECLINED, agent); return fail(DECLINED); }
         return this.stopped(p, lease) ?? fail(deniedText(o, input.notice));
@@ -1117,7 +1128,7 @@ export class ComputerService {
     p.programOpens.push(url);
     // A Turn on card already up (an agent's or an earlier program's) carries this address too: allowing it opens them all.
     if (this.o.broker.pending(p.key).some((a) => a.why === "power")) return;
-    const label = this.labelOf(p.key) || "This session";
+    const label = this.programName(p.key);
     const title = `${label} wants to turn its browser on and open ${hostOf(siteOf(url))}`;
     const input: AskInput = { computer: p.key, session: PROGRAM, sessionLabel: label, why: "power", title, notice: "turn the browser on", detail: cardPage(withoutUserinfo(url)), site: null, always: false };
     const held = this.o.broker.hold(input);
@@ -1132,19 +1143,36 @@ export class ComputerService {
     try {
       let o = await first;
       while (o.state === "waiting_for_user") o = await this.o.broker.wait(o.askId);
-      this.line(p, this.labelOf(p.key), outcomeLine(o, input), null);
+      // An agent's card took the session's one place: the held addresses ride it, and this card's end says nothing.
+      if (o.state === "denied" && o.reason === PROGRAM_YIELD) return;
+      this.line(p, this.programName(p.key), outcomeLine(o, input), null);
       if (o.state === "allowed" && this.slots.get(p.key) === p) {
+        // A browser never comes on with no tab to show (A4): nothing held (dropped meanwhile) leaves it off.
+        if (p.power === "off" && !p.programOpens.length) return;
         if (p.power === "off") this.turnOn(p);
+        // Turn on through any card leaves no other Turn on card up, as turning on by hand does.
+        this.o.broker.cancel((x) => x.computer === p.key && x.why === "power", ON_BY_HAND);
         this.flushProgramOpens(p);
         this.refresh(p.key);
         return;
       }
       if (o.state === "denied" && o.reason === ON_BY_HAND) return;
       p.programOpens = [];
-      if (o.state === "denied" && (o.answer === "deny" || o.reason === "timed out")) p.quiet = { sentence: DECLINED, until: this.clock.now() + QUIET_MS, pid: null };
+      if (o.state === "denied" && (o.answer === "deny" || o.reason === "timed out")) {
+        // S3: on a thread the period lasts until the live turn ends; with no turn live, and on Code, it is timed.
+        const turn = p.key.startsWith("chat:") ? this.o.liveAgent?.(p.key) : undefined;
+        if (turn) this.startQuiet(p, DECLINED, turn);
+        else p.quiet = { sentence: DECLINED, until: this.clock.now() + QUIET_MS, pid: null };
+      }
     } catch {
       p.programOpens = [];
     }
+  }
+
+  /** How a program's page names its session: the way an agent's Turn on card does (the described title, S22, else the
+   *  agent's or main's name), and "A program" when the session has none. */
+  private programName(key: string): string {
+    return this.labelOf(key) || "A program";
   }
 
   /** The addresses held for a Turn on card open now, in the order they came, each in the slot's queue (behind a wake or the
@@ -1160,7 +1188,7 @@ export class ComputerService {
   /** A program's page as a new tab, opened by the session's name. The tab is added before the page loads, so an open that
    *  throws may still have made one; a browser switched off meanwhile is not the open's concern. */
   private async programTab(p: Slot, b: BrowserLike, url: string): Promise<void> {
-    const by = this.labelOf(p.key) || "A program";
+    const by = this.programName(p.key);
     let made = false;
     try {
       await this.serial(p, async () => {
@@ -1441,6 +1469,11 @@ export class ComputerService {
     if (!p) return false;
     const has = (q: Slot): boolean => q.power !== "off" || !!q.browser || !!q.remembered;
     if (t && has(t) && !has(p)) return false;
+    // A program's pages held for the old terminal's Turn on card are not the replacement's to open.
+    if (p.programOpens.length) {
+      p.programOpens = [];
+      this.o.log?.(`door: opens held for ${clean(from, 64)} were dropped (the session restarted)`);
+    }
     this.o.broker.cancel((a) => a.computer === from, "the session restarted");
     if (t) {
       // endSlot cancels the asks, frees the wheel, clears the save timer and destroys the browser (telling the app).
