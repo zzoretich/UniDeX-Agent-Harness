@@ -573,6 +573,9 @@ export interface PtySpawnRequest {
   /** session-browser S1: the id of the terminal's FIRST process, named by a process that takes over in a terminal that
    *  already has one (the login shell after the agent). Main takes it only when it began that id in this page. */
   origin?: string;
+  /** session-browser N4: the shell is the typed-line fallback of a Read only agent launch; it starts without the opener
+   *  variables. It can only take variables away, so the page is trusted with it. */
+  readOnly?: boolean;
 }
 
 /**

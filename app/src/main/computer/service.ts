@@ -1252,6 +1252,8 @@ export class ComputerService {
   private async programTab(p: Slot, b: BrowserLike, url: string): Promise<void> {
     const by = this.programName(p.key);
     let made = false;
+    // What `open` answered for the tab it opened: the active tab may be another (a background tab), so `url()` would name it.
+    let opened: string | null = null;
     try {
       await this.serial(p, async () => {
         if (p.browser !== b) return;
@@ -1259,7 +1261,7 @@ export class ComputerService {
         // One driver at a time (S10): while the person holds the wheel the page is added behind the tab they are on, not
         // in front of it (session-browser X2). Read inside the queue, so a hand back that came meanwhile counts.
         const background = this.o.wheel.holder(p.key)?.kind === "user";
-        try { await b.open(url, { newTab: true, background, by }); } finally { made = b.tabs().length > before; }
+        try { opened = (await b.open(url, { newTab: true, background, by })).url; } finally { made = b.tabs().length > before; }
       });
     } catch {
       if (p.browser !== b) return;
@@ -1267,7 +1269,7 @@ export class ComputerService {
       return;
     }
     if (p.browser !== b) return;
-    this.line(p, by, `Opened ${this.url(b) ?? "the page"}`, null);
+    this.line(p, by, `Opened ${opened ?? "the page"}`, null);
   }
 
   /** Open in my browser (session-browser S24): the selected browser's active tab goes to the Mac's own browser by its real
@@ -1440,6 +1442,9 @@ export class ComputerService {
       // as `flush` does, since a save is pending only for a change it has already seen.
       this.track(p);
       this.flushSlot(p);
+      // The pages a program held for a card go with a line before the slot ends (its asks are cancelled there, and the slot is
+      // gone by the time their settle continuations run).
+      this.dropHeld(p, PAGE_GONE);
       this.endSlot(p, PAGE_GONE);
     }
     for (const k of [...this.agents.keys()]) if (k.startsWith("code:")) this.agents.delete(k);

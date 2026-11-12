@@ -758,14 +758,15 @@ export class ComputerBrowser {
    *  (about:blank), a destroyed view or a scheme that is not a web page. Throws once the browser is gone. */
   activeAddress(): string | null {
     if (this.gone) throw new Error("the browser is gone");
+    let url: string;
     if (this.kept) {
       const k = this.kept[this.keptActive];
-      const url = k ? withoutUserinfo(k.url) : "";
-      return /^https?:\/\//i.test(url) ? url : null;
+      url = k ? withoutUserinfo(k.url) : "";
+    } else {
+      const t = this.list[this.current];
+      if (!t) return null;
+      url = this.addressOf(t);
     }
-    const t = this.list[this.current];
-    if (!t) return null;
-    const url = this.addressOf(t);
     return /^https?:\/\//i.test(url) ? url : null;
   }
 

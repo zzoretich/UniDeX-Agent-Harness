@@ -886,6 +886,19 @@ test("a shell and a Code agent start with their own session's three variables, a
   assert.ok(asked.every((a) => a[1] === "/usr/bin:/bin"), "the base is the environment the allowlist let through");
 });
 
+test("a shell spawned for a Read only launch's fallback starts without the three variables; any other shell starts with them (session-browser N4)", () => {
+  const browserEnv = (session: string, _base: NodeJS.ProcessEnv, o?: { readOnly: boolean }): Record<string, string> =>
+    (o?.readOnly ? {} : { BROWSER: "/o/unidex-open.js", BRAINSTORM_OPEN_CMD: "/o/unidex-open.js", AOS_BROWSER_SESSION: `for-${session}` });
+  const { t, spawned } = service({ extra: { browserEnv } });
+  const base = { file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 };
+  assert.ok(t.spawn({ ...base, id: "t1", readOnly: true }).ok);
+  assert.ok(t.spawn({ ...base, id: "t2", readOnly: false }).ok);
+  assert.ok(t.spawn({ ...base, id: "t3" }).ok);
+  const has = (i: number): boolean => { const e = spawned[i].opts.env as Record<string, string>; return [e.BROWSER, e.BRAINSTORM_OPEN_CMD, e.AOS_BROWSER_SESSION].every((v) => v !== undefined); };
+  const none = (i: number): boolean => { const e = spawned[i].opts.env as Record<string, string>; return e.BRAINSTORM_OPEN_CMD === undefined && e.AOS_BROWSER_SESSION === undefined; };
+  assert.deepEqual([none(0), has(1), has(2)], [true, true, true]);
+});
+
 test("a Read only Code agent starts without the three variables; Edit and Run agents and a shell start with them (session-browser S3)", async () => {
   const asked: Array<[string, boolean]> = [];
   const browserEnv = (session: string, _base: NodeJS.ProcessEnv, o?: { readOnly: boolean }): Record<string, string> => {

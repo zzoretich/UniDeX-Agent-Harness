@@ -84,6 +84,8 @@ export interface HostPtyOptions {
   env?: Record<string, string>;
   /** The id of the terminal's first process, for a process that takes over in a terminal that has one (session-browser S1). */
   origin?: string;
+  /** The shell is a Read only agent launch's typed-line fallback: main starts it without the opener variables (session-browser N4). */
+  readOnly?: boolean;
 }
 
 /** The conversation a Code session runs: its host and that host's id for it. */

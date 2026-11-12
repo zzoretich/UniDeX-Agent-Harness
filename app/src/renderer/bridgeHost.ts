@@ -200,7 +200,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
       const id = `t${++seq}`;
       const t = newTerm();
       terminals.set(id, t);
-      const r = aos.pty.spawn({ id, file, args, cwd: opts.cwd, name: opts.name, cols: opts.cols, rows: opts.rows, env: opts.env, ...(opts.origin ? { origin: opts.origin } : {}) });
+      const r = aos.pty.spawn({ id, file, args, cwd: opts.cwd, name: opts.name, cols: opts.cols, rows: opts.rows, env: opts.env, ...(opts.origin ? { origin: opts.origin } : {}), ...(opts.readOnly ? { readOnly: true } : {}) });
       if (!r.ok) {
         terminals.delete(id);
         throw r.code === "EROFS" ? refuse("spawn", describe(file, args)) : callError(r, `terminal ${file}`);

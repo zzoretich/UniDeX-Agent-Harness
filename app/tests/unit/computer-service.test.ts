@@ -91,10 +91,12 @@ class FakeBrowser implements BrowserLike {
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
   async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }) {
     // As the real browser does (session-browser X2): a background tab is added without taking the selection, unless it is the first.
-    if (o.newTab || this.current < 0) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by }); if (!keep) this.current = this.pages.length - 1; }
+    let at = this.current;
+    if (o.newTab || this.current < 0) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by }); at = this.pages.length - 1; if (!keep) this.current = at; }
     else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy };
     this.seq++;
-    return { url: this.pages[this.current].url, title: "" };
+    // The page this call opened, which is the active one unless it went to the background (as the real browser answers).
+    return { url: this.pages[at].url, title: "" };
   }
   navs: string[] = [];
   /** False makes a move "that cannot happen" (a stale Back): nothing is recorded and nav returns false. */
@@ -4141,4 +4143,32 @@ test("Open in my browser answers only after the system took the page; a refusal 
   release(true);
   assert.deepEqual(await pending, { ok: true, data: null });
   assert.equal(actLines(h).filter((t) => /Opened the page in your browser/.test(t)).length, 1);
+});
+
+// ---- PR 4 re-review round
+
+test("a background tab's activity line names the program's page, not the one in front (session-browser N1)", async () => {
+  const h = make({ label: (k) => (k === "chat:a" ? PROGRAM_LABEL : undefined) });
+  const b = await onBrowser(h);
+  b.pages.push({ url: "https://keep.example.org/", openedBy: null });
+  b.current = 0;
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  await h.svc.openFromProgram("chat:a", "https://example.com/theirs");
+  const lines = actLines(h).filter((t) => /^Opened /.test(t));
+  assert.deepEqual(lines, ["Opened https://example.com/theirs"]);
+});
+
+test("the page going on a Code session drops the held pages with one line and raises no card (session-browser N2)", async () => {
+  const h = prog();
+  await h.svc.openFromProgram("code:t1", PAGE_A);
+  await h.asked();
+  h.svc.pageGone();
+  h.broker.cancel(() => true, PAGE_GONE_REASON);
+  await flush();
+  assert.equal(h.logs.length, 1, JSON.stringify(h.logs));
+  assert.match(h.logs[0], /code:t1/);
+  assert.match(h.logs[0], /window closed or reloaded/);
+  noSecrets(h.logs);
+  assert.equal(powerCards(h, "code:t1").length, 0);
 });

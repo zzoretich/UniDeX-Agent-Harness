@@ -383,6 +383,11 @@ test("the schemas refuse what the contract does not allow", () => {
     assert.equal(SpawnRequestSchema.safeParse(bad).success, false, JSON.stringify(bad).slice(0, 80));
   assert.equal(PtySpawnRequestSchema.safeParse({ id: "t1", file: "/bin/zsh", args: [], cwd: "/v", name: "xterm-256color", cols: 80, rows: 24 }).success, true);
   assert.equal(PtySpawnRequestSchema.safeParse({ id: "t1", file: "zsh", args: [], cwd: "/v", name: "xterm-256color", cols: 80, rows: 24 }).success, false);
+  // session-browser N4: an optional readOnly flag (it can only take the opener variables away), a boolean and nothing else.
+  const shell = { id: "t1", file: "/bin/zsh", args: [], cwd: "/v", name: "xterm-256color", cols: 80, rows: 24 };
+  assert.deepEqual((PtySpawnRequestSchema.safeParse({ ...shell, readOnly: true }) as { data?: { readOnly?: boolean } }).data?.readOnly, true);
+  assert.equal(PtySpawnRequestSchema.safeParse({ ...shell, readOnly: false }).success, true);
+  for (const bad of ["yes", 1, null]) assert.equal(PtySpawnRequestSchema.safeParse({ ...shell, readOnly: bad }).success, false, String(bad));
 });
 
 const KEY = "aaaaaaaa-0000-4000-8000-000000000001";

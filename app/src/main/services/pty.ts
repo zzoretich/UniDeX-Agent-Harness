@@ -245,7 +245,7 @@ export class PtyService {
     const env = ptyEnv(this.baseEnv(), req.env, this.o.context());
     if ("refusal" in env) return refused(env.refusal);
     // The session is named by the terminal's first process, the root `begin` will record for this one.
-    const vars = this.browserVars(`code:${this.rootOf(req.id, req.origin)}`, env.env, false);
+    const vars = this.browserVars(`code:${this.rootOf(req.id, req.origin)}`, env.env, req.readOnly === true);
     let p: PtyProcess;
     try {
       p = lib.spawn(req.file, [], { name: req.name, cols: req.cols, rows: req.rows, cwd: req.cwd, env: { ...env.env, ...vars } });

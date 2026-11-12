@@ -100,7 +100,8 @@ export class TerminalPool extends Events {
       }
       if (r.ok) { session.attachAgent(r.data, size); return { agent: true, reason: null }; }
       if (r.code !== "fallback") throw new Error(`${label} did not start: ${r.error}`);
-      session.startShell(`${line}\r`);
+      // A Read only agent typed into this shell must not hold a working opener id (session-browser N4).
+      session.startShell(`${line}\r`, spec.access === "read");
       return { agent: false, reason: r.error || null };
     }).catch((err: unknown) => {
       session.fail(err instanceof Error ? err.message : String(err));
