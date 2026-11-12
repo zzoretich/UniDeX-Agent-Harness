@@ -713,6 +713,12 @@ function main() {
       try {
         const j = body ? JSON.parse(body) : {};
         if (req.url === "/finish") { send({ ok: true }); setTimeout(finish, 10); return; }
+        // A command the agent runs, as its own shell tool would: with the agent's environment (what the app gave this session).
+        if (req.url === "/run") {
+          const r = require("child_process").spawnSync(j.cmd, j.args || [], { env: process.env, encoding: "utf8", timeout: 20000 });
+          send({ status: r.status, out: String(r.stdout || ""), err: String(r.stderr || "") });
+          return;
+        }
         if (req.url !== "/call") { res.writeHead(404).end(); return; }
         const s = server(j.server);
         const first = await s.call(j.tool, j.args);
@@ -752,6 +758,11 @@ export class Agent {
   /** Calls a tool, then another the moment the first answers; both results. */
   chain(first: { tool: string; args?: Record<string, unknown> }, then: { tool: string; args?: Record<string, unknown> }): Promise<{ first: AgentReply; then: AgentReply }> {
     return this.post("/call", { tool: first.tool, args: first.args ?? {}, then: { tool: then.tool, args: then.args ?? {} } });
+  }
+
+  /** Runs a command as the agent's own (its environment, so the session's opener variables included); its exit status and output. */
+  exec(cmd: string, args: string[] = []): Promise<{ status: number | null; out: string; err: string }> {
+    return this.post("/run", { cmd, args });
   }
 
   /** Ends the turn (a Chat turn prints its last text and result) or the session; resolves once the process has gone. */

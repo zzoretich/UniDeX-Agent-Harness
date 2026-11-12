@@ -10,9 +10,11 @@
 import { expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 import {
-  FX, RC_ONLY, TOUR_BOOK, USER_DATA, addRcOnly, agentRun, badge, command, computerEnv, content, expectNoErrors, installComputerAgents, openTab,
+  AGENT, FX, RC_ONLY, TOUR_BOOK, USER_DATA, addRcOnly, agentRun, badge, command, computerEnv, content, expectNoErrors, installComputerAgents, openTab,
   USER_DATA_LINK, launchApp, providerState, rail, resizeHud, restoreFixture, startOutsider, useApp, type Agent, type AgentReply, type AppHandle,
 } from "./harness";
 
@@ -1626,5 +1628,165 @@ test.describe("a Codex-only machine, the Computer surface on", () => {
     // Electron itself writes a warning when a page's load fails: here the start page a manual On opens, which nothing
     // serves in this describe. Main handles the rejection (a log line in the pane); only that warning is allowed.
     expect(h.errors.filter((e) => !/electron: Failed to load URL: http:\/\/127\.0\.0\.1\/ with error: ERR_CONNECTION_REFUSED/.test(e)), "renderer/main errors").toEqual([]);
+  });
+});
+
+// ── a page a program opens, and the way out (session-browser S23, S24) ───────
+
+test.describe("session browser: pages a program opens, and Open in my browser (session-browser S23, S24)", () => {
+  // The app runs with BROWSER set to a stand-in that only appends its argument to a file in this spec's own temp folder: the
+  // opener's "previous BROWSER" is then the stand-in, so a page that fell back (the door unreachable, a refused message) lands
+  // in the file and never in the Mac's default browser. Every test asserts the file stayed empty and that main's own external
+  // opens (`__aosMain.externalOpens`, the harness's recorded shell.openExternal) gained nothing but what the test expects.
+  const rec = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "aos-bro-"));
+  const recorder = path.join(rec, "browser.sh");
+  const recorded = path.join(rec, "opened.txt");
+  fs.writeFileSync(recorder, `#!/bin/sh\nprintf '%s\\n' "$1" >> '${recorded}'\n`, { mode: 0o755 });
+  const fell = (): string[] => (fs.existsSync(recorded) ? fs.readFileSync(recorded, "utf8").split("\n").filter(Boolean) : []);
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv(), BROWSER: recorder };
+  test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
+  test.afterAll(async () => { await site?.close(); fs.rmSync(rec, { recursive: true, force: true }); });
+  const app = useApp({ env, prepare: () => { prepare({ claude: true, codex: true }); } });
+  const OPEN_PAGE = path.join(__dirname, "fixtures", "computer", "open-page.js");
+  /** A page of the fixture site under its own host, so no two opens share an address. */
+  const pageUrl = (n: string | number): string => `http://prog${n}.test:${site.port}/landed.html`;
+  const selectedOf = (h: { app: ElectronApplication }) => h.app.evaluate(() => (globalThis as unknown as { __aosMain: { computerSelected(): string | null } }).__aosMain.computerSelected());
+  const externalOf = (h: { app: ElectronApplication }) =>
+    h.app.evaluate(() => (globalThis as unknown as { __aosMain: { externalOpens(): Array<{ url: string; opened: boolean }> } }).__aosMain.externalOpens());
+  /** What the session's environment says (AOS_BROWSER_SESSION: the id, the door's socket and the BROWSER set before). */
+  async function sessionVar(a: Agent): Promise<{ id: string; door: string; prev: string | null }> {
+    const r = await a.exec(AGENT.node, ["-e", "process.stdout.write(process.env.AOS_BROWSER_SESSION || '')"]);
+    expect(r.out, "the session carries the opener's variable").not.toBe("");
+    return JSON.parse(Buffer.from(r.out, "base64url").toString("utf8")) as { id: string; door: string; prev: string | null };
+  }
+  /** One message to the door, as a program with no opener would send it; its answer. */
+  const knock = (door: string, line: string): Promise<string> => new Promise((resolve, reject) => {
+    const sock = net.createConnection(door);
+    let got = "";
+    sock.setEncoding("utf8");
+    sock.on("connect", () => sock.write(`${line}\n`));
+    sock.on("data", (d: string) => { got += d; });
+    sock.on("close", () => resolve(got));
+    sock.on("error", reject);
+    setTimeout(() => { sock.destroy(); resolve(got); }, 5000).unref();
+  });
+  /** Waits for the Turn on card a program's open raised, checks its words and answers Turn on. */
+  async function turnOn(p: Locator, url: string): Promise<void> {
+    await expect(cards(p)).toHaveCount(1);
+    await expect(cards(p).locator(".aos-cp-asktitle")).toContainText(`wants to turn its browser on and open ${new URL(url).host}`);
+    await expect(cards(p).locator('[data-answer="once"]')).toHaveText("Turn on");
+    await expect(cards(p).locator('[data-answer="deny"]')).toHaveText("Not now");
+    await cards(p).locator('[data-answer="once"]').click();
+    await expect(cards(p)).toHaveCount(0);
+  }
+  const titleOf = (h: { app: ElectronApplication }, url: string, session: string) => inPage<string>(h.app, url, "document.title", session);
+
+  test("a page a program opens shows in that session's browser after Turn on, and nothing reaches the default browser", async () => {
+    const h = app();
+    const { win } = h;
+    const externalBefore = (await externalOf(h)).length;
+    // 1. A shell terminal, no agent in it: the person's own program. The command is typed into the terminal.
+    expect(await command(win, "agentic-os:new-terminal-shell")).toBe(true);
+    await expect(rail(win, "term")).toHaveClass(/is-active/);
+    await expect.poll(() => selectedOf(h), { message: "the pane followed to the shell" }).toMatch(/^code:t\d+$/);
+    const shellKey = (await selectedOf(h)) as string;
+    const shellPage = pageUrl(1);
+    await win.evaluate((cmd) => {
+      const pool = (window as unknown as { aosHost: { plugin: { terminalPool: { selectedId(): string | null; get(id: string): { write(d: string): void } | undefined } } } }).aosHost.plugin.terminalPool;
+      pool.get(pool.selectedId() ?? "")?.write(cmd);
+    }, `'${AGENT.node}' '${OPEN_PAGE}' '${shellPage}'\r`);
+    await turnOn(pane(win, "code"), shellPage);
+    expect(await titleOf(h, shellPage, shellKey)).toBe("Harbour landed");
+    await expect(pane(win, "code").locator(".aos-cp-tab")).toHaveCount(1);
+
+    // 2. A Code agent's command: its environment is the session's.
+    const code = await codeAgent(h, "claude", { surfaceOff: true });
+    try {
+      const v = await sessionVar(code);
+      expect(v.prev, "the stand-in is the BROWSER the opener falls back to").toBe(recorder);
+      const codePage = pageUrl(2);
+      expect((await code.exec(AGENT.node, [OPEN_PAGE, codePage])).status).toBe(0);
+      await turnOn(pane(win, "code"), codePage);
+      const codeKey = (await selectedOf(h)) as string;
+      expect(codeKey).not.toBe(shellKey);
+      expect(await titleOf(h, codePage, codeKey)).toBe("Harbour landed");
+    } finally { await code.finish(); }
+
+    // 3. A Chat turn's command, in the thread's browser.
+    const chat = await chatAgent(h, { text: "computer: a program opens a page", surfaceOff: true });
+    try {
+      const chatPage = pageUrl(3);
+      expect((await chat.exec(AGENT.node, [OPEN_PAGE, chatPage])).status).toBe(0);
+      await turnOn(pane(win, "chat"), chatPage);
+      const chatKey = (await selectedOf(h)) as string;
+      expect(chatKey).toMatch(/^chat:/);
+      expect(await titleOf(h, chatPage, chatKey)).toBe("Harbour landed");
+    } finally { await chat.finish(); }
+
+    // The shell's page is still in the shell's browser, and no program reached the default browser.
+    expect(await titleOf(h, shellPage, shellKey)).toBe("Harbour landed");
+    expect(fell(), "the BROWSER stand-in recorded nothing").toEqual([]);
+    expect((await externalOf(h)).length, "main opened nothing outside").toBe(externalBefore);
+    expect((await h.opened()).filter((o) => o.fn === "openExternal")).toEqual([]);
+    expectNoErrors(h);
+  });
+
+  test("a seventh open within a minute is dropped; a message without a live id opens nothing", async () => {
+    const h = app();
+    const { win } = h;
+    const externalBefore = (await externalOf(h)).length;
+    const a = await codeAgent(h, "claude");
+    try {
+      const v = await sessionVar(a);
+      expect(v.prev, "the stand-in is the BROWSER the opener falls back to").toBe(recorder);
+      const p = pane(win, "code");
+      // The browser was turned on by hand (the start page is its one tab): a program's pages add to it without a card.
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(1);
+      for (let n = 10; n < 16; n++) expect((await a.exec(AGENT.node, [OPEN_PAGE, pageUrl(n)])).status, `open ${n}`).toBe(0);
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(7);
+      await expect(cards(p)).toHaveCount(0);
+      // The seventh in the minute: the door refuses it, the opener still exits 0, and no tab is made.
+      expect((await a.exec(AGENT.node, [OPEN_PAGE, pageUrl(16)])).status).toBe(0);
+      await new Promise((r) => setTimeout(r, 750));
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(7);
+      // A message that names no live session opens nothing, and gets no ok.
+      const answer = await knock(v.door, JSON.stringify({ id: "0".repeat(32), url: pageUrl(17) }));
+      expect(answer).not.toContain('"ok":true');
+      await new Promise((r) => setTimeout(r, 750));
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(7);
+    } finally { await a.finish(); }
+    expect(fell(), "the BROWSER stand-in recorded nothing").toEqual([]);
+    expect((await externalOf(h)).length, "main opened nothing outside").toBe(externalBefore);
+    expectNoErrors(h);
+  });
+
+  test("Open in my browser waits for an https page, sends it out keeping the tab, and refuses an http page", async () => {
+    const h = app();
+    const { win } = h;
+    const externalBefore = (await externalOf(h)).length;
+    const a = await codeAgent(h, "claude");
+    try {
+      const p = pane(win, "code");
+      const outside = p.locator("button.aos-cp-icon.aos-cp-outside");
+      await expect(outside).toHaveAttribute("aria-label", "Open in my browser");
+      // The start page is http (the fixture site): the button waits, and main refuses the page's own call as well.
+      await expect(outside).toBeDisabled();
+      const call = () => win.evaluate(() => (window as unknown as { aos: { computer: { openOutside(): Promise<unknown> } } }).aos.computer.openOutside());
+      expect(await call()).toEqual({ ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
+      expect((await externalOf(h)).slice(externalBefore), "refused, and recorded as refused").toEqual([{ url: expect.stringContaining("search.test"), opened: false }]);
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(1);
+      // An https page (the fixture site speaks only http, so its load fails, but the tab keeps the address): the button wakes,
+      // the page goes to main's one external-open path (recorded, not opened), and the tab stays.
+      const secure = `https://shop.test:${site.port}/shop.html`;
+      await win.evaluate((u) => (window as unknown as { aos: { computer: { navigate(u: string): Promise<unknown> } } }).aos.computer.navigate(u), secure);
+      await expect(outside).toBeEnabled();
+      await outside.click();
+      await expect.poll(async () => (await externalOf(h)).slice(externalBefore).at(-1), { message: "the https page went out" }).toEqual({ url: secure, opened: true });
+      expect((await h.opened()).filter((o) => o.fn === "openExternal").at(-1)?.arg).toBe(secure);
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(1);
+      await expect(outside).toBeEnabled();
+    } finally { await a.finish(); }
+    expect(fell(), "the BROWSER stand-in recorded nothing").toEqual([]);
+    expectNoErrors(h);
   });
 });

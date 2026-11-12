@@ -107,6 +107,14 @@ function originOf(url: string | undefined): string | null {
   } catch { return null; }
 }
 
+/** Whether an address is an https page: the only kind Open in my browser sends (main refuses the rest). */
+function isHttps(url: string | undefined): boolean {
+  if (!url) return false;
+  try { return new URL(url).protocol === "https:"; } catch { return false; }
+}
+
+const OUTSIDE_LABEL = "Open in my browser";
+
 function clock(at: number): string {
   const d = new Date(at);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -146,6 +154,8 @@ interface PaneEls {
   forward: HTMLButtonElement;
   reload: HTMLButtonElement;
   trust: HTMLButtonElement;
+  /** Open in my browser (session-browser S24), right of the site switch. */
+  outside: HTMLButtonElement;
   navMsg: HTMLElement;
   asks: HTMLElement;
   view: HTMLElement;
@@ -273,6 +283,9 @@ export class ComputerPane {
       cls: "aos-cp-url", attr: { type: "text", "aria-label": "Address or search", placeholder: "Search DuckDuckGo or type an address", spellcheck: "false", autocomplete: "off" },
     });
     const trust = form.createEl("button", { cls: "aos-cp-trust", attr: { type: "button" } });
+    const outside = form.createEl("button", { cls: "aos-cp-icon aos-cp-outside", attr: { type: "button", "aria-label": OUTSIDE_LABEL, title: OUTSIDE_LABEL } });
+    setIcon(outside, "external-link");
+    outside.addEventListener("click", () => { if (!outside.disabled) void this.openOutside(); });
     form.addEventListener("submit", (e) => { e.preventDefault(); void this.go(input.value); });
     input.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
@@ -297,7 +310,7 @@ export class ComputerPane {
       helpBtn.setAttr("aria-expanded", String(open));
       help.toggleClass("is-open", open);
     });
-    this.el = { root, handle, place, count, sizes, pop, collapse, strip, power, powerText, tabs, input, back: nav.back, forward: nav.forward, reload: nav.reload, trust, navMsg, asks, view, drive, log, acting };
+    this.el = { root, handle, place, count, sizes, pop, collapse, strip, power, powerText, tabs, input, back: nav.back, forward: nav.forward, reload: nav.reload, trust, outside, navMsg, asks, view, drive, log, acting };
 
     // The rectangle moves with the view's own size, the page around the pane (a drawer opening shifts it), the window,
     // and a modal opening over it. The same two watchers keep the width inside the row: the row's size is what they see.
@@ -514,6 +527,24 @@ export class ComputerPane {
     this.render();
   }
 
+  /** Open in my browser (session-browser S24): main sends the active tab's real address to the Mac's own browser; the page
+   *  names none. A refusal reads under the address bar, as an address that did not open does. */
+  private async openOutside(): Promise<void> {
+    if (!this.live()) return;
+    const r = await this.o.host.openOutside();
+    if (this.destroyed) return;
+    this.navError = r.ok ? null : r.error || "That page did not open in your browser.";
+    this.render();
+  }
+
+  /** The way out waits for an https page in an awake browser; main checks the address again. */
+  private renderOutside(st: HostComputerState | null): void {
+    const b = this.el?.outside;
+    if (!b) return;
+    const t = st && st.power === "awake" ? st.tabs.find((x) => x.active) : undefined;
+    b.disabled = !isHttps(t?.url);
+  }
+
   /** The address bar's site switch (D39): let agents act freely on the active tab's site, or make them ask first again. */
   private toggleTrust(): void {
     const st = this.live();
@@ -637,6 +668,7 @@ export class ComputerPane {
     if (e.input.ownerDocument.activeElement !== e.input) e.input.value = this.address();
     this.renderNav(st);
     this.renderTrust(st);
+    this.renderOutside(st);
     e.navMsg.setText(this.navError ?? "");
 
     const line = this.off ? OFF_LINE : !sel ? this.none : popped ? POPPED_LINE : "";

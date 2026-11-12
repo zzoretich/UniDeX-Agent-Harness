@@ -248,6 +248,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     show: (bounds, inView) => aos.computer.show(bounds, inView),
     navigate: (url) => settle(aos.computer.navigate(url)),
     openLink: (session, url) => settle(aos.computer.openLink(session, url)),
+    openOutside: () => settle(aos.computer.openOutside()),
     tab: (op) => aos.computer.tab(op),
     nav: (go) => aos.computer.nav(go),
     takeOver: () => aos.computer.takeOver(),

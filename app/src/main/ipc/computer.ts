@@ -12,6 +12,7 @@ export interface ComputerPageService {
   show: (bounds: { x: number; y: number; width: number; height: number } | null, inView?: boolean) => void;
   navigate: (url: string) => Promise<Result<null>>;
   openLink: (session: string, url: string) => Promise<Result<null>>;
+  openOutside: () => Result<null>;
   tab: (op: { kind: "new" } | { kind: "close" | "select"; index: number }) => void;
   nav: (go: "back" | "forward" | "reload") => void;
   takeOver: () => void;
@@ -51,6 +52,8 @@ export function registerComputerIpc(trust: Trust, c: ComputerIpc): void {
     if (!sessionAllowed(session, c.sessions)) return { ok: false, error: "That session is not allowed", code: "EPERM" };
     return c.service().openLink(session, url);
   });
+  // session-browser S24: no argument; main reads the active tab's real address, so the page cannot name what leaves.
+  onInvoke(CH.computerOpenOutside, trust, NoArgs, async () => (c.enabled() ? c.service().openOutside() : OFF));
   onSend(CH.computerShow, trust, ComputerShowArgs, ({ bounds, inView }) => when(CH.computerShow, (s) => s.show(bounds ? clampBounds(bounds) : null, inView)));
   onSend(CH.computerTab, trust, ComputerTabArgs, ({ op }) => when(CH.computerTab, (s) => s.tab(op)));
   onSend(CH.computerNav, trust, ComputerNavArgs, ({ go }) => when(CH.computerNav, (s) => s.nav(go)));

@@ -150,6 +150,7 @@ function fakeComputer(answer: (session: string) => HostComputerState | null) {
     powers: [] as Array<[string, boolean]>,
     takeOvers: 0, handBacks: 0, popOuts: 0,
     navResult: { ok: true, data: null } as HostResult<null>,
+    outsides: 0, outsideResult: { ok: true, data: null } as HostResult<null>,
     subs: [] as Array<(ev: HostComputerEvent) => void>,
     emit(ev: HostComputerEvent): void { for (const cb of [...f.subs]) cb(ev); },
   };
@@ -159,6 +160,7 @@ function fakeComputer(answer: (session: string) => HostComputerState | null) {
     show: (b, inView) => { f.shows.push(b); f.inViews.push(inView); },
     navigate: async (url) => { f.navs.push(url); return f.navResult; },
     openLink: async () => ({ ok: true, data: null }),
+    openOutside: async () => { f.outsides++; return f.outsideResult; },
     tab: (op) => { f.tabs.push(op); },
     nav: (go) => { f.goes.push(go); },
     takeOver: () => { f.takeOvers++; },
@@ -545,6 +547,43 @@ test("the address bar's site switch names the site, sends mark only on a click, 
   assert.ok(trust.classes.has("is-hidden"), "no active tab");
   trust.click();
   assert.equal(s.f.marks.length, 2);
+});
+
+test("Open in my browser sits right of the site switch, waits for an https page in an awake browser, and shows a refusal (session-browser S24)", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
+  await flush();
+  const out = s.q(".aos-cp-icon.aos-cp-outside");
+  assert.equal(out.getAttribute("aria-label"), "Open in my browser");
+  assert.equal(out.getAttribute("title"), "Open in my browser");
+  const form = s.q(".aos-cp-address");
+  const kids = form.children.map((c) => [...c.classes]);
+  assert.ok(kids.findIndex((c) => c.includes("aos-cp-outside")) === kids.findIndex((c) => c.includes("aos-cp-trust")) + 1, "right of the trust button");
+  assert.ok(!out.disabled, "an https page");
+  out.click();
+  await flush();
+  assert.equal(s.f.outsides, 1);
+  const tab = (url: string | null, active = true) => (url === null ? [] : [{ index: 0, url, title: "", openedBy: null, active, canBack: false, canForward: false }]);
+  for (const [why, st] of [
+    ["an http page", state("code:t5", { tabs: tab("http://localhost:3000/") })],
+    ["a blank tab", state("code:t5", { tabs: tab("about:blank") })],
+    ["no tab", state("code:t5", { tabs: [] })],
+    ["no active tab", state("code:t5", { tabs: tab("https://example.com/", false) })],
+    ["an asleep browser", state("code:t5", { power: "asleep" })],
+    ["an off browser", state("code:t5", { power: "off", tabs: [] })],
+  ] as const) {
+    s.f.emit({ type: "state", state: st });
+    assert.ok(out.disabled, why);
+    out.click();
+  }
+  await flush();
+  assert.equal(s.f.outsides, 1, "a disabled button sends nothing");
+  s.f.emit({ type: "state", state: state("code:t5") });
+  assert.ok(!out.disabled);
+  s.f.outsideResult = { ok: false, error: "Only https pages open in your browser.", code: "EROFS" };
+  out.click();
+  await flush();
+  assert.equal(s.q(".aos-cp-navmsg").textContent, "Only https pages open in your browser.");
 });
 
 test("Back is disabled until the active tab can go back; Forward likewise; Reload needs a tab (session-browser S13)", async () => {

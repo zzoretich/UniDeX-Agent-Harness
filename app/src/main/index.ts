@@ -38,6 +38,7 @@ import { registerComputerIpc } from "./ipc/computer";
 import { registerThemeIpc } from "./ipc/theme";
 import { trustMainWindow } from "./ipc/trust";
 import { buildAppMenu } from "./menu";
+import { sessionAllowed } from "./policy/computer";
 import { debugSwitches } from "./policy/debug";
 import { parseShells, type ProgramContext } from "./policy/programs";
 import { ReadScope, type AgenticosPaths } from "./policy/read-scope";
@@ -124,11 +125,12 @@ const computerDoor = doorPath ? new ComputerDoor({
   path: doorPath,
   enabled: () => computerOn(),
   opener: openerPath({ resources: app.isPackaged ? process.resourcesPath : path.join(__dirname, "../../resources"), tmp: app.getPath("temp"), userData: app.getPath("userData") }),
-  // Task 18 opens the page; until then a program's request is only noted (never its address). While the app quits nothing
-  // is noted or opened: a quit that is called off leaves the door up, serving until the bridge stops (session-browser S23).
-  open: (session) => {
+  // A program's page opens in its session's browser (session-browser S23), with the tools' consent rules. While the app
+  // quits nothing is opened: a quit that is called off leaves the door up, serving until the bridge stops. The log line
+  // names the session, never the address.
+  open: (session, url) => {
     if (quitting) return;
-    console.warn(`[main] door: ${session} asked for a page`);
+    void computerService.openFromProgram(session, url).catch(() => console.warn(`[main] door: an open for ${session} failed`));
   },
   log: (line) => console.warn(`[main] ${line}`),
 }) : null;
@@ -315,6 +317,11 @@ const computerService: ComputerService = new ComputerService({
     if (agent.page === "chat" && agent.key.startsWith("chat:")) sessionService.noteEvent(agent.key.slice("chat:".length), line);
   },
   popOut: (session, show) => popOutComputer(session, show),
+  // session-browser S23: the check the page's calls use (registerComputerIpc below), for a program's open; S24: the one
+  // external-open path, so the e2e seam records Open in my browser as it records links.
+  held: (session) => sessionAllowed(session, { terminal: (id) => ptyService.holdsOrigin(id), thread: (id) => sessionService.has(id) }),
+  outside: (url) => openExternalSafe(url),
+  log: (line) => console.warn(`[main] ${line}`),
   // D31: a late bridge close from a session's previous process must not end the turn that replaced it.
   liveAgent: (key) => agentRegistry.byKey(key),
   startPage: computerStartPage,

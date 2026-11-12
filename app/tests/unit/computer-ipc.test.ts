@@ -21,6 +21,7 @@ const service: ComputerPageService = {
   show: (b) => { calls.push(`show ${JSON.stringify(b)}`); seen.push(b); },
   navigate: async (u) => { calls.push(`navigate ${u}`); return { ok: true, data: null }; },
   openLink: async (s, u) => { calls.push(`openLink ${s} ${u}`); return { ok: true, data: null }; },
+  openOutside: () => { calls.push("openOutside"); return { ok: true, data: null }; },
   tab: (op) => { calls.push(`tab ${JSON.stringify(op)}`); seen.push(op); },
   nav: (go) => { calls.push(`nav ${go}`); seen.push(go); },
   takeOver: () => { calls.push("takeOver"); },
@@ -223,5 +224,19 @@ test("computer:open-link takes a session and an address, and refuses a session m
   assert.deepEqual(await invoke(CH.computerOpenLink, { session: "code:t3", url: "" }), { ok: false, error: "invalid arguments", code: "EINVAL" });
   enabled = false;
   try { assert.deepEqual(await invoke(CH.computerOpenLink, { session: "code:t3", url: "https://a.test/" }), OFF); } finally { enabled = true; }
+  assert.deepEqual(calls, []);
+});
+
+test("computer:open-outside takes no arguments, checks the sender and answers the service's result (session-browser S24)", async () => {
+  assert.deepEqual(await invoke(CH.computerOpenOutside, {}), { ok: true, data: null });
+  assert.deepEqual(calls, ["openOutside"]);
+  assert.deepEqual(await invoke(CH.computerOpenOutside, { url: "https://a.test/" }), { ok: false, error: "invalid arguments", code: "EINVAL" }, "the page never names the address");
+  assert.deepEqual(calls, []);
+  trusted = false;
+  assert.deepEqual(await invoke(CH.computerOpenOutside, {}), { ok: false, error: "untrusted sender", code: "EPERM" });
+  trusted = true;
+  assert.deepEqual(calls, []);
+  enabled = false;
+  try { assert.deepEqual(await invoke(CH.computerOpenOutside, {}), OFF); } finally { enabled = true; }
   assert.deepEqual(calls, []);
 });

@@ -7,12 +7,14 @@ import { externalAllowed, openPathAction } from "../policy/shell";
 import { PathArgs, UrlArgs } from "./schemas";
 import { onInvoke, onSend, type Trust } from "./trust";
 
-/** Opens a link in the browser when it is https; anything else is refused and logged. Main uses it too. */
-export function openExternalSafe(url: string): void {
+/** Opens a link in the browser when it is https; anything else is refused and logged. Main uses it too. Answers whether it
+ *  opened (Open in my browser reports a refusal, session-browser S24). */
+export function openExternalSafe(url: string): boolean {
   const allowed = externalAllowed(url);
   if (testRecord) recordExternalOpen(url, allowed);
   if (!allowed) console.warn(`[main] refused to open ${url.slice(0, 200)}`);
   else void shell.openExternal(url);
+  return allowed;
 }
 
 /** Whether this is a dev run or a test build: it records what it opens outside (`__aosMain.externalOpens`). */

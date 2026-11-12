@@ -174,13 +174,17 @@ const agent = (key: string, label: string, access: Access = "edit", place = "ws:
 const A = agent("chat:a", "Alpha");
 const B = agent("chat:b", "Beta");
 
-function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined } = {}) {
+function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined; held?: (session: string) => boolean; outside?: (url: string) => boolean } = {}) {
   const clock = new FakeClock();
   const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-service-")), "computer", "sites.json"));
   const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120, awake: 4 };
   const states: ComputerState[] = [];
   const notes: [string, string][] = [];
   const browsers = new Map<string, FakeBrowser>();
+  // session-browser S23, S24: what the service logged to main, and what it sent to the Mac's own browser (an https address
+  // goes, as main's external-open rule lets it).
+  const logs: string[] = [];
+  const outsides: string[] = [];
   let svc: ComputerService | null = null;
   const broker = new AskBroker({ timeoutMs: () => cfg.askTimeoutSec * 1000, clock, onChange: () => svc?.refresh() });
   const wheel = new Wheel({ clock, reserved: (c) => svc?.reserved(c) ?? false, onChange: (c) => svc?.refresh(c) });
@@ -188,6 +192,9 @@ function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) =
   svc = new ComputerService({
     records,
     ...(o.threadExists ? { threadExists: o.threadExists } : {}),
+    held: o.held ?? (() => true),
+    outside: o.outside ?? ((url) => { if (!url.startsWith("https:")) return false; outsides.push(url); return true; }),
+    log: (line) => logs.push(line),
     browser: (session, hooks) => { const b = new FakeBrowser(session, hooks); browsers.set(session, b); return b; },
     broker, wheel, sites, config: () => cfg, emit: (s) => states.push(s), note: (a, line) => notes.push([a.key, line]), clock,
     ...(o.popOut ? { popOut: o.popOut } : {}),
@@ -217,7 +224,7 @@ function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) =
   const lastState = (session = "chat:a") => [...states].reverse().find((x) => x.session === session)!;
   /** Every text that left the service: ask titles and details, notes and log lines (replies are added by the test). */
   const outgoing = () => [...states.flatMap((x) => [...x.asks.flatMap((a) => [a.title, a.detail]), ...x.log.map((l) => l.text)]), ...notes.map(([, l]) => l)];
-  return { records, clock, sites, cfg, states, notes, broker, wheel, svc: s, ensureOn, on, call, b, browsers, open, asked, lastState, outgoing };
+  return { records, clock, sites, cfg, states, notes, logs, outsides, broker, wheel, svc: s, ensureOn, on, call, b, browsers, open, asked, lastState, outgoing };
 }
 
 // ---- the brief's tests
@@ -3438,4 +3445,239 @@ test("the Turn on card names the page as a plain address: no wrapper markup, no 
   assert.ok(!a.detail.includes("<") && !a.detail.includes("user:pass@"), a.detail);
   h.svc.answer(a.id, "deny");
   await first;
+});
+
+// ---- Task 18: a program's open, and Open in my browser (session-browser S23, S24)
+
+const PROGRAM_LABEL = "Claude Code in Vault";
+const prog = (o: Parameters<typeof make>[0] = {}): ReturnType<typeof make> => make({ off: true, label: (k) => (k === "chat:a" || k === "code:t1" ? PROGRAM_LABEL : undefined), ...o });
+/** An on browser with no tab, as `make` leaves a session that has called. */
+const onBrowser = async (h: ReturnType<typeof make>, key = "chat:a"): Promise<FakeBrowser> => { await h.ensureOn(key); return h.b(key); };
+const PAGE_A = "https://example.com/a?token=s3cret";
+/** Nothing logged names an address or an id: a dropped open says the session and the reason only (S23). */
+const noSecrets = (lines: readonly string[]): void => { for (const l of lines) assert.doesNotMatch(l, /example\.com|s3cret|https?:/, l); };
+
+test("a program's open from a Read only session, or with the setting off, opens nothing and asks nothing", async () => {
+  const readOnly = agent("chat:a", PROGRAM_LABEL, "read");
+  const live = (k: string): AgentRef | undefined => (k === "chat:a" ? readOnly : undefined);
+  // An off browser: Read only never asks (S3), so there is no card and no browser.
+  const off1 = prog({ liveAgent: live });
+  await off1.svc.openFromProgram("chat:a", PAGE_A);
+  await flush();
+  assert.equal(off1.broker.pending().length, 0, "no ask");
+  assert.equal(off1.browsers.size, 0, "no browser");
+  assert.equal(off1.logs.length, 1, "one log line");
+  assert.match(off1.logs[0], /chat:a/);
+  assert.match(off1.logs[0], /read only/);
+  noSecrets(off1.logs);
+  // An on browser: no tab either.
+  const on1 = make({ liveAgent: live });
+  const b = await onBrowser(on1);
+  await on1.svc.openFromProgram("chat:a", PAGE_A);
+  await flush();
+  assert.deepEqual(b.pages, [], "no tab");
+  assert.equal(on1.broker.pending().length, 0);
+  assert.equal(on1.logs.length, 1);
+  noSecrets(on1.logs);
+  // The Computer setting off: the same.
+  for (const power of ["off", "on"] as const) {
+    const h = power === "off" ? prog() : make();
+    const x = power === "on" ? await onBrowser(h) : null;
+    h.cfg.enabled = false;
+    await h.svc.openFromProgram("chat:a", PAGE_A);
+    await flush();
+    assert.equal(h.broker.pending().length, 0, `${power}: no ask`);
+    assert.deepEqual(x ? x.pages : [], [], `${power}: no tab`);
+    assert.equal(power === "off" ? h.browsers.size : 0, 0);
+    assert.equal(h.logs.length, 1, `${power}: one log line`);
+    assert.match(h.logs[0], /Settings/);
+    noSecrets(h.logs);
+  }
+  // A shell with no agent is the user's own and may open.
+  const shell = make();
+  const sb = await onBrowser(shell, "code:t1");
+  await shell.svc.openFromProgram("code:t1", PAGE_A);
+  assert.deepEqual(sb.pages.map((p) => p.url), [PAGE_A]);
+  assert.equal(shell.logs.length, 0);
+});
+
+test("a program's open for a session the app does not hold makes no slot and is logged without its address", async () => {
+  const h = prog({ held: (k) => k === "chat:a" });
+  await h.svc.openFromProgram("code:t9", PAGE_A);
+  await flush();
+  assert.equal(h.broker.pending().length, 0);
+  assert.equal(h.browsers.size, 0);
+  assert.equal(h.logs.length, 1);
+  assert.match(h.logs[0], /code:t9/);
+  noSecrets(h.logs);
+  assert.equal(h.states.length, 0, "no slot, so no state");
+  // An address that does not open as a link (a user name in it) is dropped the same way.
+  const g = make();
+  const gb = await onBrowser(g);
+  await g.svc.openFromProgram("chat:a", "https://user:pw@example.com/");
+  assert.deepEqual(gb.pages, []);
+  assert.equal(g.logs.length, 1);
+  noSecrets(g.logs);
+});
+
+test("a program's open on an on browser adds a tab without an ask", async () => {
+  const h = make({ label: (k) => (k === "chat:a" ? PROGRAM_LABEL : undefined) });
+  const b = await onBrowser(h);
+  b.pages.push({ url: "https://keep.example.org/", openedBy: null });
+  b.current = 0;
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  assert.equal(h.broker.pending().length, 0, "no ask");
+  assert.deepEqual(b.pages.map((p) => [p.url, p.openedBy]), [["https://keep.example.org/", null], [PAGE_A, PROGRAM_LABEL]], "a new tab, opened by the session's label");
+  assert.equal(b.current, 1, "in front");
+  assert.equal(h.lastState().power, "awake");
+  // An asleep browser wakes first.
+  const s = make({ off: true });
+  s.svc.power("chat:s1", true);
+  await flush();
+  const sb = s.b("chat:s1");
+  sb.sleeping = true;
+  (s.svc as unknown as { slot(k: string): { power: string } }).slot("chat:s1").power = "asleep";
+  await s.svc.openFromProgram("chat:s1", PAGE_A);
+  assert.equal(sb.wakes, 1, "woken");
+  assert.equal(sb.pages.at(-1)?.url, PAGE_A);
+  assert.equal(s.logs.length, 0);
+});
+
+test("a program's open on an off browser asks, and Not now opens nothing", async () => {
+  const h = prog();
+  // Nothing waits on the open: the call settles while the card is up.
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  const a = await h.asked();
+  assert.equal(a.why, "power");
+  assert.equal(a.computer, "chat:a");
+  assert.equal(a.title, "Claude Code in Vault wants to turn its browser on and open example.com");
+  assert.equal(a.always, false);
+  assert.equal(a.site, null);
+  assert.doesNotMatch(a.notice, /example|s3cret/, "the notice is app-written only");
+  assert.equal(h.browsers.size, 0, "no browser is made before the answer");
+  h.svc.answer(a.id, "deny");
+  await flush();
+  assert.equal(h.browsers.size, 0, "Not now opens nothing");
+  assert.equal(h.lastState().power, "off");
+  assert.equal(h.broker.pending().length, 0);
+  assert.equal(h.logs.length, 0, "an answered ask is not a dropped open");
+  // Turn on: the same card, the page opens, and the browser is on.
+  const g = prog();
+  await g.svc.openFromProgram("chat:a", PAGE_A);
+  g.svc.answer((await g.asked()).id, "once");
+  await flush();
+  assert.equal(g.lastState().power, "awake");
+  assert.deepEqual(g.b().pages.map((p) => [p.url, p.openedBy]), [[PAGE_A, PROGRAM_LABEL]], "this address only, no start page");
+  noSecrets(g.logs);
+});
+
+test("opens that arrive while the ask is pending open together on Turn on, six at most", async () => {
+  const h = prog();
+  for (let i = 1; i <= 7; i++) await h.svc.openFromProgram("chat:a", `https://example.com/${i}`);
+  assert.equal(h.broker.pending().length, 1, "one card for the session");
+  const a = await h.asked();
+  assert.equal(h.logs.length, 1, "the seventh is dropped and logged");
+  assert.match(h.logs[0], /chat:a/);
+  noSecrets(h.logs);
+  h.svc.answer(a.id, "once");
+  await flush();
+  assert.deepEqual(h.b().pages.map((p) => p.url), [1, 2, 3, 4, 5, 6].map((i) => `https://example.com/${i}`), "in the order they came");
+  assert.ok(h.b().pages.every((p) => p.openedBy === PROGRAM_LABEL));
+  // Turning the browser on by hand answers the card too, and the held pages open.
+  const g = prog();
+  await g.svc.openFromProgram("chat:a", "https://example.com/x");
+  await g.svc.openFromProgram("chat:a", "https://example.com/y");
+  await g.asked();
+  g.svc.power("chat:a", true);
+  await flush();
+  assert.equal(g.broker.pending().length, 0);
+  assert.ok(g.b().pages.some((p) => p.url === "https://example.com/x") && g.b().pages.some((p) => p.url === "https://example.com/y"));
+});
+
+test("opens held behind an agent's own Turn on card open when it is allowed", async () => {
+  const h = prog();
+  const first = h.call(A, "computer_open", OPEN);
+  const a = await h.asked();
+  await h.svc.openFromProgram("chat:a", PAGE_A);
+  assert.equal(h.broker.pending().length, 1, "still one card");
+  h.svc.answer(a.id, "once");
+  assert.match((await first).text, /^Opened the page\./);
+  await flush();
+  assert.deepEqual(h.b().pages.map((p) => p.url).sort(), [PAGE_A, "https://example.com/x"].sort());
+});
+
+test("in the quiet period a program's open is dropped", async () => {
+  const h = prog();
+  await h.svc.openFromProgram("code:t1", PAGE_A);
+  h.svc.answer((await h.asked()).id, "deny");
+  await flush();
+  await h.svc.openFromProgram("code:t1", PAGE_A);
+  await h.clock.advance(59_000);
+  await h.svc.openFromProgram("code:t1", PAGE_A);
+  assert.equal(h.broker.pending().length, 0, "no new card");
+  assert.equal(h.browsers.size, 0);
+  assert.equal(h.logs.length, 2, "each dropped open is logged");
+  assert.match(h.logs[0], /quiet/);
+  noSecrets(h.logs);
+  // The period ends by the clock: the next program open asks again.
+  await h.clock.advance(QUIET_MS - 59_000 + 2_000);
+  await h.svc.openFromProgram("code:t1", PAGE_A);
+  assert.equal((await h.asked()).why, "power", "after the period a program asks again");
+});
+
+test("Open in my browser sends the real address and keeps the tab", async () => {
+  const h = make();
+  const b = await onBrowser(h);
+  await h.open(A, PAGE_A);
+  b.pages[0].hidden = true;
+  assert.doesNotMatch(b.tabs()[0].url, /s3cret/, "the agent-facing form is scrubbed");
+  h.svc.select("chat:a");
+  assert.deepEqual(h.svc.openOutside(), { ok: true, data: null });
+  assert.deepEqual(h.outsides, [PAGE_A], "the unscrubbed https address");
+  assert.equal(b.pages.length, 1, "the tab stays open");
+  assert.equal(b.current, 0);
+  assert.equal(h.lastState().tabs.length, 1);
+  // It sends the ACTIVE tab, not the first.
+  await h.call(A, "computer_open", { url: "https://example.org/second", newTab: true });
+  assert.deepEqual(h.svc.openOutside(), { ok: true, data: null });
+  assert.equal(h.outsides.at(-1), "https://example.org/second");
+  // The log line names no address.
+  noSecrets(h.states.flatMap((s) => s.log.filter((l) => /your browser/i.test(l.text)).map((l) => l.text)));
+});
+
+test("an http page is not sent out", async () => {
+  const h = make();
+  const b = await onBrowser(h);
+  await h.open(A, "http://localhost:3000/x");
+  h.svc.select("chat:a");
+  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
+  assert.deepEqual(h.outsides, []);
+  assert.equal(b.pages.length, 1, "the tab stays open");
+});
+
+test("Open in my browser needs a selected, on browser with a tab", async () => {
+  const h = make();
+  assert.equal(h.svc.openOutside().ok, false);
+  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No computer is selected.", code: "ENOENT" });
+  const b = await onBrowser(h);
+  h.svc.select("chat:a");
+  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" }, "on, with no tab");
+  void b;
+  const g = prog();
+  g.svc.select("chat:a");
+  assert.deepEqual(g.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" }, "off");
+  assert.deepEqual(g.outsides, []);
+});
+
+test("Open in my browser never sends another tab's page when the active tab is not a web page", async () => {
+  const h = make();
+  const b = await onBrowser(h);
+  await h.open(A, PAGE_A);
+  b.pages.push({ url: "about:blank", openedBy: null });
+  b.current = 1;
+  // The real browser leaves a blank tab out of its addresses, so its `active` would name the first tab's page.
+  b.realAddresses = () => ({ urls: [PAGE_A], active: 0 });
+  h.svc.select("chat:a");
+  assert.deepEqual(h.svc.openOutside(), { ok: false, error: "No page is open.", code: "ENOENT" });
+  assert.deepEqual(h.outsides, []);
 });
