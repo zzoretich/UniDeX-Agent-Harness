@@ -21,10 +21,10 @@ function registerComputerTools(server, z, client) {
   const tab = z.number().int().min(0).optional().describe('Tab index; the active tab when omitted');
   const defs = {
     computer_open: ['Open a page in the UniDeX browser',
-      IN + 'open a URL. Use it for any web page, a site, localhost, and a preview of what you built. To search the web, open '
+      IN + 'open a URL. Use it for any web page, a site, localhost, and a preview of what you built. The browser starts off: the first open asks the user to turn it on. To search the web, open '
         + 'https://duckduckgo.com/?q=<the words, URL-encoded>. A snapshot shows each result\'s title and its address '
-        + '(site and path), not the link\'s URL: open a result with this tool at that address, or click it. Opening a page '
-        + 'never asks the user; clicking or typing on a site the user has not marked does.' + SAFETY,
+        + '(site and path), not the link\'s URL: open a result with this tool at that address, or click it. Once the browser '
+        + 'is on, opening a page never asks the user; clicking or typing on a site the user has not marked does.' + SAFETY,
       { url: z.string().max(8192).describe('The URL to open'), newTab: z.boolean().optional().describe('Open in a new tab') }],
     computer_snapshot: ['Read the UniDeX browser\'s page as text',
       IN + 'return the page as a text outline with element refs for computer_click, computer_type and computer_scroll.' + SAFETY,
@@ -50,7 +50,8 @@ function registerComputerTools(server, z, client) {
         timeoutSec: z.number().int().min(1).max(40).optional().describe('Seconds to wait (1-40)') }],
     computer_status: ['UniDeX browser status',
       IN + 'report the browser\'s state: who is driving, its tabs, the active page and any pending asks. Call this first: when it says the UniDeX browser is not reachable, '
-        + 'is turned off or could not start, follow the next step it gives and use another browser tool.' + SAFETY,
+        + 'is turned off in Settings, or could not start, follow the next step it gives and use another browser tool. '
+        + 'A session\'s own browser shown as "(off: computer_open asks the user to turn it on)" is not that: call computer_open, which asks the user to turn it on.' + SAFETY,
       {}],
   };
   for (const name of COMPUTER_TOOLS) {

@@ -7,7 +7,7 @@
 //
 // The rectangle goes to main on every layout change, and null while the pane is collapsed, its page is not in front, a
 // modal or the tour is over the page, the edge is being dragged (the native view would sit over all of them), or main has
-// not yet answered for a newly followed place (its last computer would show for a moment). While the Computer surface is
+// not yet answered for a newly followed session (its last browser would show for a moment). While the Computer surface is
 // off the pane is only its collapsed strip, saying so (ruling R54). The pane follows the selected terminal or thread
 // (D32), collapsed or not; only the pane on the page in front selects (ruling R51), and one store (data/computerStore.ts)
 // holds every computer's state for both pages' panes, the rail badges and the row dots.
@@ -34,13 +34,16 @@ export interface ComputerPaneOptions {
   column: () => HTMLElement | null;
   /** The clock a new card's wait runs on (M7); the window's own by default (the tests pass a fake). */
   clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown };
+  /** The pane's state as the Code top bar's Computer button shows it changed (paneState()). */
+  changed?: () => void;
 }
 
 const OFF_LINE = "The Computer pane is off.";
 const POPPED_LINE = "Popped out to its own window. Closing that window brings the browser back here.";
+/** The line shown when no session is followed, unless the page says why (`follow`'s `none`). */
 const NONE_LINE: Record<ComputerPage, string> = {
-  code: "Select a terminal to see the computer of its place.",
-  chat: "Open a workspace session to see its computer.",
+  code: "Select a terminal to see its browser.",
+  chat: "Open a session to see its browser.",
 };
 const HELP_TEXT = "Agents use this browser through the Computer tools: it asks you before anything irreversible, and Take over "
   + "stops them at once. Other browser and computer-use tools (Codex's built-in ones, Claude in Chrome, Playwright, "
@@ -149,19 +152,31 @@ interface PaneEls {
   drive: HTMLElement;
   log: HTMLElement | null;
   acting: HTMLElement;
+  /** The strip's own marks (power button, none line, green dot), drawn only while the pane is its strip. */
+  strip: HTMLElement;
+  power: HTMLButtonElement;
+  /** The switch's visible On/Off, hidden from assistive tech: the switch is named `Browser` and aria-checked says the rest. */
+  powerText: HTMLElement;
 }
 
 export class ComputerPane {
   private readonly store: ComputerStore;
   private el: PaneEls | null = null;
-  /** What the page follows: undefined until it first says (follow), then a place or none. */
-  private sel: { place: string; label: string } | null | undefined = undefined;
+  /** What the page follows: undefined until it first says (follow), then a session or none. */
+  private sel: { session: string; label: string } | null | undefined = undefined;
+  /** The line shown while no session is followed. */
+  private none: string;
   private state: HostComputerState | null = null;
-  /** The Computer surface is off (the host says so), or select answered null: main refused the place (R53). */
+  /** The Computer surface is off (the host says so), or select answered null: main refused the session (R53). */
   private off: boolean;
   /** The page is in front; a hidden page's pane never selects and shows nothing (R51). */
   private visible = true;
   private destroyed = false;
+  /** Focus a power control had when it was pressed: once main's new state has drawn, it moves to the control that now
+   *  stands for that power (the pressed one may be hidden by then). Null when the pressed control had no focus. */
+  private refocus: { session: string; on: boolean; pressed: HTMLElement } | null = null;
+  /** The last paneState() reported through `changed`. */
+  private reported: string | null = null;
   /** The user's collapse, as saved (or opened by a reveal); while off the pane draws collapsed without changing it. */
   private collapsed: boolean;
   private width: number;
@@ -169,12 +184,14 @@ export class ComputerPane {
   private dragging = false;
   /** Each select; an answer to an older one is dropped. */
   private seq = 0;
-  /** A select for a newly followed place has not answered: main still shows the last place, so no rectangle yet. */
+  /** A select for a newly followed session has not answered: main still shows the last one, so no rectangle yet. */
   private switching = false;
   /** The rectangle last sent to main; undefined before the first, so the first is always sent. */
   private sent: HostComputerRect | null | undefined = undefined;
+  /** The in-view flag last sent beside it. */
+  private sentInView: boolean | undefined = undefined;
   /** What each part last drew, so a state that changes nothing there leaves it (and its focus) alone. */
-  private drawn = { tabs: "", asks: "", drive: "", log: "", icon: "" };
+  private drawn = { tabs: "", asks: "", drive: "", log: "", icon: "", strip: "" };
   private navError: string | null = null;
   private cleanups: Array<() => void> = [];
   /** M7: when each pending ask's card was drawn where it is now, and its place in the list, by ask id. */
@@ -191,6 +208,7 @@ export class ComputerPane {
     this.width = s.width;
     this.collapsed = s.collapsed;
     this.off = this.surfaceOff();
+    this.none = NONE_LINE[o.page];
   }
 
   mount(parent: HTMLElement): void {
@@ -221,14 +239,24 @@ export class ComputerPane {
       b.addEventListener("click", () => this.setSize(z.size));
       sizes[z.size] = b;
     }
+    const power = head.createEl("button", { cls: "aos-cp-power", attr: { type: "button", role: "switch", "aria-label": "Browser", "aria-checked": "false", "data-tour": "computer-power" } });
+    const powerText = power.createSpan({ attr: { "aria-hidden": "true" } });
+    power.addEventListener("click", () => {
+      const st = this.live();
+      if (!st) return;
+      this.noteFocus(power, st.session, st.power === "off");
+      this.o.host.power(st.session, st.power === "off");
+    });
     const pop = head.createEl("button", { cls: "aos-cp-icon aos-cp-popout", attr: { type: "button" } });
     setIcon(pop, "picture-in-picture-2");
     pop.addEventListener("click", () => {
       const st = this.live();
-      if (st && !st.poppedOut) this.o.host.popOut();
+      // session-browser B3: popped out, the press brings the window forward (main's popOut() tells the app with front: true).
+      if (st) this.o.host.popOut();
     });
+    const strip = head.createSpan({ cls: "aos-cp-strip" });
     const collapse = head.createEl("button", { cls: "aos-cp-icon aos-cp-collapse", attr: { type: "button" } });
-    collapse.addEventListener("click", () => { if (!this.off) this.setCollapsed(!this.collapsed); });
+    collapse.addEventListener("click", () => { if (this.collapsible()) this.setCollapsed(!this.collapsed); });
 
     const body = root.createDiv({ cls: "aos-cp-body" });
     const tabs = body.createDiv({ cls: "aos-cp-tabs", attr: { role: "tablist", "aria-label": "Browser tabs" } });
@@ -269,7 +297,7 @@ export class ComputerPane {
       helpBtn.setAttr("aria-expanded", String(open));
       help.toggleClass("is-open", open);
     });
-    this.el = { root, handle, place, count, sizes, pop, collapse, tabs, input, back: nav.back, forward: nav.forward, reload: nav.reload, trust, navMsg, asks, view, drive, log, acting };
+    this.el = { root, handle, place, count, sizes, pop, collapse, strip, power, powerText, tabs, input, back: nav.back, forward: nav.forward, reload: nav.reload, trust, navMsg, asks, view, drive, log, acting };
 
     // The rectangle moves with the view's own size, the page around the pane (a drawer opening shifts it), the window,
     // and a modal opening over it. The same two watchers keep the width inside the row: the row's size is what they see.
@@ -315,27 +343,33 @@ export class ComputerPane {
     this.render();
   }
 
-  /** Shows the computer of the selected terminal's place, or the thread's workspace (D32); null shows none. */
-  follow(sel: { place: string; label: string } | null): void {
+  /** Shows the browser of the selected terminal or open thread (D32, by session: session-browser S1); null shows none,
+   *  with the line `none` (a default per page) saying why. */
+  follow(sel: { session: string; label: string } | null, none?: string): void {
     if (this.destroyed) return;
-    const next = sel ? { place: sel.place, label: sel.label } : null;
-    const same = this.sel !== undefined && (this.sel?.place ?? null) === (next?.place ?? null);
+    const next = sel ? { session: sel.session, label: sel.label } : null;
+    const same = this.sel !== undefined && (this.sel?.session ?? null) === (next?.session ?? null);
     this.sel = next;
-    // M5: a page's own ask on this place can be routed to this page.
-    this.store.noteFollowed(this.o.page, next?.place ?? null);
+    this.none = none ?? NONE_LINE[this.o.page];
     if (same) { this.render(); return; }
+    this.refocus = null;
     this.off = this.surfaceOff();
     this.navError = null;
-    this.state = next ? this.store.state(next.place) : null;
+    this.state = next ? this.store.state(next.session) : null;
     this.render();
     this.select();
   }
 
   /** How the pane shows now, for the Code top bar's Computer button (code-chat §4): open, collapsed, or off (the surface). */
-  paneState(): "open" | "collapsed" | "off" { return this.off ? "off" : this.collapsed ? "collapsed" : "open"; }
+  paneState(): "open" | "collapsed" | "off" | "browser-off" | "no-session" {
+    if (this.off) return "off";
+    if (this.sel === null) return "no-session";
+    if (this.powerOff() || (this.sel && !this.live())) return "browser-off";
+    return this.collapsed ? "collapsed" : "open";
+  }
 
   /** The Code top bar's Computer button: opens or collapses the pane as its own collapse button does; nothing while off. */
-  toggle(): void { if (!this.off && !this.destroyed) this.setCollapsed(!this.collapsed); }
+  toggle(): void { if (!this.destroyed && this.collapsible()) this.setCollapsed(!this.collapsed); }
 
   /** Its page went behind another rail tab: the view goes, and the pane selects nothing until it is mounted again. */
   hide(): void {
@@ -351,7 +385,7 @@ export class ComputerPane {
   destroy(): void {
     if (this.destroyed) return;
     this.seq++;
-    if (this.sent) this.o.host.show(null);
+    if (this.sent || this.sentInView) this.o.host.show(null, false);
     this.sent = null;
     this.destroyed = true;
     this.markColumn(false);
@@ -378,14 +412,14 @@ export class ComputerPane {
     // Main answers nothing while the surface is off: the pane stays its collapsed strip and asks it nothing.
     if (this.surfaceOff()) { this.off = true; this.render(); this.push(); return; }
     const seq = ++this.seq;
-    const place = this.sel?.place ?? null;
+    const session = this.sel?.session ?? null;
     this.switching = true;
-    this.store.noteSelected(place);
+    this.store.noteSelected(session);
     this.push();
-    this.o.host.select(place).then((st) => {
+    this.o.host.select(session).then((st) => {
       if (seq !== this.seq || this.destroyed || !this.visible) return;
       this.switching = false;
-      this.off = place !== null && !st;
+      this.off = session !== null && !st;
       this.state = st;
       if (st) this.store.put(st);
       this.render();
@@ -394,7 +428,7 @@ export class ComputerPane {
     }, () => {
       if (seq !== this.seq || this.destroyed) return;
       this.switching = false;
-      this.off = place !== null;
+      this.off = session !== null;
       this.state = null;
       this.render();
       this.push();
@@ -404,7 +438,7 @@ export class ComputerPane {
   /** A state from main, for any computer: this pane redraws when it is the followed one's. */
   private onStore(): void {
     if (this.destroyed || !this.sel) return;
-    const s = this.store.state(this.sel.place);
+    const s = this.store.state(this.sel.session);
     if (!s || s === this.state) return;
     // Off, yet main sends this computer's state: the surface came on since. Selecting it again shows it.
     if (this.off) { this.select(); return; }
@@ -416,7 +450,7 @@ export class ComputerPane {
 
   /** The rectangle main should paint the view in, or null. */
   private bounds(): HostComputerRect | null {
-    if (!this.visible || this.destroyed || this.collapsed || this.covered || this.dragging || this.switching || !this.sel || !this.live()) return null;
+    if (!this.visible || this.destroyed || this.drawnCollapsed() || this.covered || this.dragging || this.switching || !this.sel || !this.live() || this.powerOff()) return null;
     const v = this.el?.view;
     if (!v || !v.isConnected) return null;
     const r = v.getBoundingClientRect();
@@ -428,12 +462,14 @@ export class ComputerPane {
   private push(): void {
     if (this.destroyed) return;
     const b = this.bounds();
-    if (this.sent === undefined || !sameRect(b, this.sent)) {
+    const inView = this.visible && !this.destroyed;
+    if (this.sent === undefined || !sameRect(b, this.sent) || inView !== this.sentInView) {
       this.sent = b;
-      this.o.host.show(b);
+      this.sentInView = inView;
+      this.o.host.show(b, inView);
     }
-    // A popped-out computer is on screen too: the store counts main's selected place while popped out (as main does).
-    this.store.setOnScreen(this.o.page, b !== null && this.sel ? this.sel.place : null);
+    // A popped-out computer is on screen too: the store counts main's selected session while popped out (as main does).
+    this.store.setOnScreen(this.o.page, b !== null && this.sel ? this.sel.session : null);
   }
 
   /** A notification's reveal (D27): the pane showing that ask opens, and its card comes into view. */
@@ -529,7 +565,25 @@ export class ComputerPane {
   }
 
   /** Collapsed as drawn: the user's collapse, or the surface being off (R54), which is never saved. */
-  private drawnCollapsed(): boolean { return this.collapsed || this.off; }
+  private drawnCollapsed(): boolean {
+    if (this.off || this.sel === null) return true;
+    // A followed session whose state main has not sent yet is a strip too: browsers start off (session-browser S2), and
+    // drawing it open first would flash the pane and refit the terminal beside it twice.
+    if (this.sel && !this.live()) return true;
+    // A browser that is off is only its strip, unless an ask to turn it on is waiting: then it opens to the card, with
+    // the saved collapse left alone.
+    if (this.powerOff()) return !this.powerAsk();
+    return this.collapsed;
+  }
+
+  /** The drawn state is the user's to change only with the surface on and a followed session whose browser is on. */
+  private collapsible(): boolean { return !this.off && this.sel !== null && (this.sel === undefined || !!this.live()) && !this.powerOff(); }
+
+  /** The followed browser is off (asleep counts as on). */
+  private powerOff(): boolean { return this.live()?.power === "off"; }
+
+  /** A power ask is pending for the followed session. */
+  private powerAsk(): boolean { return this.live()?.asks.some((a) => a.why === "power") === true; }
 
   private render(): void {
     const e = this.el;
@@ -539,23 +593,35 @@ export class ComputerPane {
     const collapsed = this.drawnCollapsed();
     e.root.toggleClass("is-collapsed", collapsed);
     e.root.toggleClass("is-off", this.off);
+    e.root.toggleClass("is-ruled", collapsed && !this.off && !(this.collapsible() && this.collapsed));
+    if (collapsed) e.root.setAttr("data-tour", "computer-view");
+    else e.root.removeAttribute("data-tour");
     e.root.setAttr("aria-label", this.off ? OFF_LINE : "Computer");
     e.root.setAttr("title", this.off ? OFF_LINE : null);
     e.root.toggleClass("is-popped", !!st?.poppedOut);
     this.applyWidth();
-    e.place.setText(sel?.label ?? "");
-    e.place.setAttr("title", sel ? `The computer of ${sel.label}` : null);
+    const name = st?.label || sel?.label || "";
+    e.place.setText(name);
+    e.place.setAttr("title", sel ? `The browser of ${name}` : null);
+    const on = !!st && st.power !== "off";
+    if (st) {
+      e.powerText.setText(on ? "On" : "Off");
+      e.power.setAttr("aria-checked", String(on));
+      e.power.setAttr("title", on ? "Turn this session's browser off" : "Turn this session's browser on");
+    }
+    e.power.disabled = !st;
+    this.renderStrip(st, collapsed);
     const waiting = st?.asks.length ?? 0;
     e.count.setText(waiting ? String(waiting) : "");
     e.count.setAttr("title", waiting ? `${waiting} waiting for your answer` : null);
 
     const popped = !!st?.poppedOut;
-    e.pop.disabled = !st || popped;
-    const popLabel = popped ? "Popped out: closing that window brings it back" : "Pop out to its own window";
+    e.pop.disabled = !st;
+    const popLabel = popped ? "Bring the browser window to the front" : "Pop out to its own window";
     e.pop.setAttr("aria-label", popLabel);
     e.pop.setAttr("title", popLabel);
-    const collapseLabel = this.off ? OFF_LINE : collapsed ? "Expand the Computer pane" : "Collapse the Computer pane";
-    e.collapse.disabled = this.off;
+    const collapseLabel = this.off ? OFF_LINE : this.powerOff() ? "The browser is off" : collapsed ? "Expand the Computer pane" : "Collapse the Computer pane";
+    e.collapse.disabled = !this.collapsible();
     e.collapse.setAttr("aria-expanded", String(!collapsed));
     e.collapse.setAttr("aria-label", collapseLabel);
     e.collapse.setAttr("title", collapseLabel);
@@ -573,7 +639,7 @@ export class ComputerPane {
     this.renderTrust(st);
     e.navMsg.setText(this.navError ?? "");
 
-    const line = this.off ? OFF_LINE : !sel ? NONE_LINE[this.o.page] : popped ? POPPED_LINE : "";
+    const line = this.off ? OFF_LINE : !sel ? this.none : popped ? POPPED_LINE : "";
     e.view.empty();
     if (line) e.view.createDiv({ cls: "aos-cp-viewline", text: line });
     e.view.toggleClass("has-line", !!line);
@@ -583,6 +649,71 @@ export class ComputerPane {
     this.renderLog(st);
     const h = st?.holder ?? null;
     e.acting.setText(h?.kind === "agent" ? `Acting: ${h.label}` : h?.kind === "user" ? "Acting: you" : "No session is acting");
+    this.settleFocus();
+    const ps = this.paneState();
+    if (!this.destroyed && ps !== this.reported) {
+      // The first render only records: the bar reads paneState() itself when it draws.
+      const first = this.reported === null;
+      this.reported = ps;
+      if (!first) this.o.changed?.();
+    }
+  }
+
+  /** Remembers that a pressed power control had focus, to move it once the new state has drawn (the pressed control may
+   *  be hidden then: Off hides the switch, On removes the strip's button). `on` is the power the press asks for. */
+  private noteFocus(pressed: HTMLElement, session: string, on: boolean): void {
+    this.refocus = pressed.ownerDocument.activeElement === pressed ? { session, on, pressed } : null;
+  }
+
+  /** Moves focus to the strip's power button after Off, or the header's switch after On, when the state asked for has
+   *  drawn; waits while it has not, and drops the move if another session is followed. */
+  private settleFocus(): void {
+    const r = this.refocus;
+    const e = this.el;
+    const st = this.live();
+    if (!r || !e || !st) return;
+    if (st.session !== r.session) { this.refocus = null; return; }
+    // The user may have moved on while main never acted on the press: a late state must not steal focus from what they
+    // are typing in. Focus is still ours only on the pressed control (or nowhere: it was hidden).
+    const active = r.pressed.ownerDocument.activeElement;
+    if (active && active !== r.pressed && active !== r.pressed.ownerDocument.body) { this.refocus = null; return; }
+    if ((st.power !== "off") !== r.on) return;
+    this.refocus = null;
+    const target = r.on ? e.power : e.strip.querySelector<HTMLElement>(".aos-cp-strip-power");
+    target?.focus();
+  }
+
+  /** What the strip shows: the none line (disabled) with no session, the power button while off, a green dot while on. */
+  private renderStrip(st: HostComputerState | null, collapsed: boolean): void {
+    const e = this.el;
+    if (!e) return;
+    const sel = this.sel ?? null;
+    const kind = !collapsed || this.off ? "" : sel === null ? "none" : st?.power === "off" ? "off" : st ? "dot" : "";
+    // The off strip is for one session (its button turns that one on), so the session is part of what was drawn.
+    const sig = kind === "none" ? `none:${this.none}` : kind === "off" ? `off:${sel?.session ?? ""}` : kind;
+    if (sig === this.drawn.strip) return;
+    this.drawn.strip = sig;
+    e.strip.empty();
+    if (kind === "none") {
+      const b = e.strip.createEl("button", { cls: "aos-cp-icon aos-cp-strip-none", attr: { type: "button", title: this.none, "aria-label": this.none, "data-tour": "computer-power" } });
+      b.disabled = true;
+      setIcon(b, "power");
+      // The disabled button cannot be focused, so the reason is also text a screen reader finds in the strip.
+      e.strip.createSpan({ cls: "aos-cp-sr", text: this.none });
+    } else if (kind === "off" && st) {
+      const b = e.strip.createEl("button", { cls: "aos-cp-icon aos-cp-strip-power", attr: { type: "button", title: "Turn the browser on", "aria-label": "Turn the browser on", "data-tour": "computer-power" } });
+      setIcon(b, "power");
+      b.addEventListener("click", () => {
+        // The session followed now, never the one this button was drawn for (the strip may be kept across sessions).
+        const now = this.live();
+        if (!now) return;
+        this.noteFocus(b, now.session, true);
+        this.o.host.power(now.session, true);
+        if (this.collapsed) this.setCollapsed(false);
+      });
+    } else if (kind === "dot") {
+      e.strip.createSpan({ cls: "aos-cp-strip-dot", attr: { role: "img", "aria-label": "The browser is on", title: "The browser is on", "data-tour": "computer-power" } });
+    }
   }
 
   private renderTabs(st: HostComputerState | null): void {

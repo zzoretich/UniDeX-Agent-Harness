@@ -176,8 +176,10 @@ export class CodePanes {
     if (st?.repo) btn("is-diff", "git-compare", this.diffOpen ? "Close the Diff pane" : "Diff: what changed in this repository", this.diffOpen, () => this.toggleDiff());
     if (folder && this.host.openFiles) btn("is-files", "folder-open", `Files: ${folder}`, null, () => this.host.openFiles?.(folder));
     if (computer && cpState) {
-      const label = cpState === "off" ? "The Computer pane is off" : cpState === "open" ? "Collapse the Computer pane" : "Open the Computer pane";
-      btn("is-computer", "monitor", label, cpState === "open", () => computer.toggle(), cpState === "off");
+      // Never turns a browser on (session-browser S2): only the strip's power button and the header's switch do.
+      const label = cpState === "off" ? "The Computer pane is off" : cpState === "no-session" ? "No session yet"
+        : cpState === "browser-off" ? "The browser is off: turn it on in the pane" : cpState === "open" ? "Collapse the Computer pane" : "Open the Computer pane";
+      btn("is-computer", "monitor", label, cpState === "open", () => computer.toggle(), cpState === "off" || cpState === "browser-off" || cpState === "no-session");
     }
   }
 

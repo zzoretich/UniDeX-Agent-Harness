@@ -518,6 +518,24 @@ test("a terminal is a listed shell in a real folder; its data and exit stream ba
   assert.equal(t.open, 0);
 });
 
+test("holds: a terminal is held from its start until it is closed, an exited one with its row still open included (session-browser S1)", () => {
+  reset([]);
+  const { lib, spawned } = fakePty();
+  const t = new PtyService({ context, env: { PATH: "/usr/bin" }, emit: () => {}, load: () => lib });
+  const req = { id: "7", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24, env: { TERM: "xterm-256color", AGENTIC_OS: "1" } };
+  assert.equal(t.holds("7"), false, "not begun");
+  assert.ok(t.spawn(req).ok);
+  assert.equal(t.holds("7"), true, "running");
+  spawned[0].p.exit();
+  assert.equal(t.open, 0, "the process is gone");
+  assert.equal(t.holds("7"), true, "exited, its row still open in the page");
+  t.kill("7");
+  assert.equal(t.holds("7"), false, "closed");
+  assert.ok(t.spawn({ ...req, id: "8" }).ok);
+  t.killAll();
+  assert.equal(t.holds("8"), false, "killAll closes every terminal");
+});
+
 test("without node-pty, terminals say why and nothing starts", () => {
   const t = new PtyService({ context, env: {}, emit: () => {}, load: () => { throw new Error("Cannot find module 'node-pty'\nRequire stack: …"); } });
   const r = t.available();

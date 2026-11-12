@@ -137,15 +137,17 @@ const { storeFor } = require("../data/computerStore") as typeof Store;
 
 // ── a fake main ──
 
-function fakeComputer(answer: (place: string) => HostComputerState | null) {
+function fakeComputer(answer: (session: string) => HostComputerState | null) {
   const f = {
     selects: [] as Array<string | null>,
     shows: [] as Array<HostComputerRect | null>,
+    inViews: [] as Array<boolean | undefined>,
     navs: [] as string[],
     tabs: [] as unknown[],
     goes: [] as string[],
     answers: [] as Array<[string, HostComputerAnswer]>,
     marks: [] as Array<[string, boolean]>,
+    powers: [] as Array<[string, boolean]>,
     takeOvers: 0, handBacks: 0, popOuts: 0,
     navResult: { ok: true, data: null } as HostResult<null>,
     subs: [] as Array<(ev: HostComputerEvent) => void>,
@@ -153,28 +155,29 @@ function fakeComputer(answer: (place: string) => HostComputerState | null) {
   };
   const host: HostComputer = {
     enabled: true,
-    select: async (place) => { f.selects.push(place); return place === null ? null : answer(place); },
-    show: (b) => { f.shows.push(b); },
+    select: async (session) => { f.selects.push(session); return session === null ? null : answer(session); },
+    show: (b, inView) => { f.shows.push(b); f.inViews.push(inView); },
     navigate: async (url) => { f.navs.push(url); return f.navResult; },
+    openLink: async () => ({ ok: true, data: null }),
     tab: (op) => { f.tabs.push(op); },
     nav: (go) => { f.goes.push(go); },
     takeOver: () => { f.takeOvers++; },
     handBack: () => { f.handBacks++; },
     answer: (id, a) => { f.answers.push([id, a]); },
     mark: (origin, on) => { f.marks.push([origin, on]); },
-    popOut: () => { f.popOuts++; },
+    popOut: () => { f.popOuts++; }, power: (session, on) => { f.powers.push([session, on]); }, describe: () => {}, move: () => Promise.resolve(false),
     onEvent: (cb) => { f.subs.push(cb); return () => { f.subs.splice(f.subs.indexOf(cb), 1); }; },
   };
   return { host, f };
 }
 
 const ask = (id: string, why: string, o: Partial<HostComputerAsk> = {}): HostComputerAsk => ({
-  id, at: 1000, computer: "ws:harbor-map", session: "code:t5", sessionLabel: "Claude Code in harbor-map", why,
+  id, at: 1000, computer: "code:t5", session: "code:t5", sessionLabel: "Claude Code in harbor-map", why,
   title: "Click: Continue on example.com?", detail: "The button “Continue”. Page: https://example.com/checkout", site: "https://example.com", always: true, ...o,
 });
-const state = (place: string, o: Partial<HostComputerState> = {}): HostComputerState => ({
-  place, tabs: [{ index: 0, url: "https://example.com/checkout", title: "Checkout", openedBy: "Claude Code in harbor-map", active: true, canBack: false, canForward: false }],
-  holder: null, asks: [], log: [], marked: false, poppedOut: false, ...o,
+const state = (session: string, o: Partial<HostComputerState> = {}): HostComputerState => ({
+  session, label: "", tabs: [{ index: 0, url: "https://example.com/checkout", title: "Checkout", openedBy: "Claude Code in harbor-map", active: true, canBack: false, canForward: false }],
+  holder: null, asks: [], log: [], marked: false, poppedOut: false, power: "awake", ...o,
 });
 const RECT = { x: 900, y: 120, width: 440, height: 500 };
 const last = <T>(a: T[]): T | undefined => a[a.length - 1];
@@ -203,21 +206,21 @@ function fakeClock() {
   return c;
 }
 
-function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string; column?: number; pane?: number } = {}) {
+function setup(o: { page?: "code" | "chat"; answer?: (session: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string; column?: number; pane?: number; changed?: () => void } = {}) {
   const doc = makeDoc();
   const parent = doc.body.createDiv({ cls: "aos-term-deck" });
   // The row is the session's column and the pane together: 760 + 440 = 1200 unless a test says otherwise.
   const column = parent.createDiv({ cls: "aos-term-main" });
   column.offsetWidth = o.column ?? 760;
   FakeEl.asideWidth = o.pane ?? 440;
-  const fake = fakeComputer(o.answer ?? ((place) => state(place)));
+  const fake = fakeComputer(o.answer ?? ((session) => state(session)));
   const { f } = fake;
   const { enabled: _on, ...unsaid } = fake.host;
   const shown: HostComputer = o.enabled === undefined ? fake.host : o.enabled === "absent" ? unsaid : { ...fake.host, enabled: o.enabled };
   const host: HostComputer = o.startPage === undefined ? shown : { ...shown, startPage: o.startPage };
   const saved: ComputerPaneSettings[] = [];
   const clock = fakeClock();
-  const pane = new ComputerPane({ host, page: o.page ?? "code", settings: () => o.settings ?? { width: 440, collapsed: false }, save: (s) => saved.push(s), clock,
+  const pane = new ComputerPane({ host, page: o.page ?? "code", settings: () => o.settings ?? { width: 440, collapsed: false }, save: (s) => saved.push(s), clock, changed: o.changed,
     column: () => column as unknown as HTMLElement });
   pane.mount(parent as unknown as HTMLElement);
   const root = parent.querySelector(".aos-cp")!;
@@ -226,19 +229,19 @@ function setup(o: { page?: "code" | "chat"; answer?: (place: string) => HostComp
   return { doc, parent, column, host, f, pane, saved, root, view, clock, q: (sel: string) => root.querySelector(sel)! };
 }
 
-test("follow() selects the place and gives the view its rectangle; collapsing sends show(null) and saves; collapsed it still follows", async () => {
+test("follow() selects the session and gives the view its rectangle; collapsing sends show(null) and saves; collapsed it still follows", async () => {
   const s = setup();
   assert.equal(s.root.getAttribute("data-page"), "code");
   assert.equal(s.view.getAttribute("data-tour"), "computer-view");
   assert.equal(s.root.style.width, "440px");
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
-  assert.deepEqual(s.f.selects, ["ws:harbor-map"]);
+  assert.deepEqual(s.f.selects, ["code:t5"]);
   assert.deepEqual(last(s.f.shows), RECT);
   assert.equal(s.q(".aos-cp-place").textContent, "harbor-map");
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
-  assert.equal(s.f.selects.length, 1, "the same place is not selected again");
+  assert.equal(s.f.selects.length, 1, "the same session is not selected again");
   const shown = s.f.shows.length;
   relayout();
   assert.equal(s.f.shows.length, shown, "an unchanged rectangle is not sent again");
@@ -251,9 +254,9 @@ test("follow() selects the place and gives the view its rectangle; collapsing se
   assert.deepEqual(last(s.saved), { width: 440, collapsed: true });
   assert.ok(s.root.classes.has("is-collapsed"));
   assert.equal(s.q(".aos-cp-collapse").getAttribute("aria-expanded"), "false");
-  s.pane.follow({ place: "vault", label: "Vault" });
+  s.pane.follow({ session: "code:t9", label: "Vault" });
   await flush();
-  assert.deepEqual(s.f.selects, ["ws:harbor-map", "vault"], "collapsed or not, it shows the selected session's computer (D32)");
+  assert.deepEqual(s.f.selects, ["code:t5", "code:t9"], "collapsed or not, it shows the selected session's computer (D32)");
   assert.equal(last(s.f.shows), null, "and gives it no rectangle");
   s.q(".aos-cp-collapse").click();
   assert.deepEqual(last(s.f.shows), { x: 860, y: 120, width: 480, height: 500 });
@@ -265,33 +268,72 @@ test("follow() selects the place and gives the view its rectangle; collapsing se
   assert.match(s.view.textContent, /Select a terminal/);
 });
 
+test("the pane follows a session and shows the reason when there is none", async () => {
+  const s = setup({ page: "chat" });
+  s.pane.follow(null, "Send the first message to give this session its browser.");
+  await flush();
+  assert.equal(last(s.f.selects), null);
+  assert.match(s.view.textContent, /Send the first message to give this session its browser\./);
+  s.pane.follow(null, "Vault chat and History have no browser.");
+  assert.match(s.view.textContent, /Vault chat and History have no browser\./);
+  s.pane.follow({ session: "chat:0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f", label: "Fix the parser" });
+  await flush();
+  assert.deepEqual(s.f.selects.at(-1), "chat:0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f");
+  assert.equal(s.q(".aos-cp-place").textContent, "Fix the parser");
+  s.pane.follow(null);
+  assert.match(s.view.textContent, /Open a session to see its browser/, "no reason given: the page's default");
+});
+
+test("a past conversation on Code lets the terminal's browser go and says it has none (session-browser S1)", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
+  await flush();
+  assert.deepEqual(last(s.f.shows), RECT);
+  s.pane.follow(null, "A past conversation has no browser.");
+  await flush();
+  assert.equal(last(s.f.selects), null, "main parks the terminal's browser");
+  assert.equal(last(s.f.shows), null);
+  assert.match(s.view.textContent, /A past conversation has no browser\./);
+});
+
+test("the pane says when it goes out of view", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
+  await flush();
+  assert.equal(last(s.f.shows), null);
+  assert.equal(last(s.f.inViews), true);
+  s.pane.hide();
+  assert.equal(last(s.f.shows), null);
+  assert.equal(last(s.f.inViews), false);
+});
+
 test("a pane on a hidden page shows nothing and selects nothing (R51); destroying it sends nothing more", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   s.pane.hide();
   assert.equal(last(s.f.shows), null);
-  s.pane.follow({ place: "vault", label: "Vault" });
+  s.pane.follow({ session: "code:t9", label: "Vault" });
   await flush();
-  assert.deepEqual(s.f.selects, ["ws:harbor-map"], "only the page in front selects");
+  assert.deepEqual(s.f.selects, ["code:t5"], "only the page in front selects");
   const n = s.f.shows.length;
   s.pane.destroy();
   assert.equal(s.f.shows.length, n, "already hidden: no second show(null)");
   assert.equal(s.parent.querySelector(".aos-cp"), null);
   const t = setup();
-  t.pane.follow({ place: "vault", label: "Vault" });
+  t.pane.follow({ session: "code:t9", label: "Vault" });
   await flush();
   t.pane.destroy();
   assert.equal(last(t.f.shows), null, "a pane that was showing lets the view go");
-  t.f.emit({ type: "state", state: state("vault", { asks: [ask("a1", "unmarked")] }) });
+  t.f.emit({ type: "state", state: state("code:t9", { asks: [ask("a1", "unmarked")] }) });
   assert.equal(t.f.subs.length, 1, "the store stays for the other readers; the pane no longer listens");
 });
 
 test("the ask cards answer once, always and deny; Always reads “Let it act freely” on an unmarked site and is hidden for Return (R52)", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: false, asks: [ask("a1", "unmarked"), ask("a2", "return", { title: "Press Return: submit on example.com?" })] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { marked: false, asks: [ask("a1", "unmarked"), ask("a2", "return", { title: "Press Return: submit on example.com?" })] }) });
   let cards = s.root.querySelectorAll(".aos-cp-ask");
   assert.equal(cards.length, 2);
   assert.equal(cards[0].querySelector(".aos-cp-asktitle")!.textContent, "Click: Continue on example.com?", "the app's title, verbatim");
@@ -302,16 +344,16 @@ test("the ask cards answer once, always and deny; Always reads “Let it act fre
   s.clock.advance(500);
   for (const b of cards[0].querySelectorAll("button")) b.click();
   assert.deepEqual(s.f.answers, [["a1", "once"], ["a1", "always"], ["a1", "deny"]]);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true, asks: [ask("a1", "delete")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { marked: true, asks: [ask("a1", "delete")] }) });
   cards = s.root.querySelectorAll(".aos-cp-ask");
   assert.deepEqual(buttons(cards[0]), ["Allow once", "Always on example.com", "Deny"]);
-  // Another place's state does not reach this pane.
-  s.f.emit({ type: "state", state: state("vault", { asks: [ask("a9", "unmarked", { computer: "vault" })] }) });
+  // Another session's state does not reach this pane.
+  s.f.emit({ type: "state", state: state("code:t9", { asks: [ask("a9", "unmarked", { computer: "code:t9" })] }) });
   assert.deepEqual(s.root.querySelectorAll(".aos-cp-ask").map((c) => c.getAttribute("data-ask")), ["a1"]);
 });
 
 test("Always is offered only when main offers it, never for Return, a file, a download or a permission, and only with a site", () => {
-  for (const why of ["return", "file", "download", "permission"]) assert.equal(alwaysLabel(ask("a", why)), null, why);
+  for (const why of ["return", "file", "download", "permission", "power"]) assert.equal(alwaysLabel(ask("a", why)), null, why);
   assert.equal(alwaysLabel(ask("a", "unmarked", { always: false })), null);
   assert.equal(alwaysLabel(ask("a", "unmarked", { always: undefined })), null, "absent fails closed");
   assert.equal(alwaysLabel(ask("a", "purchase", { site: null })), null);
@@ -321,27 +363,27 @@ test("Always is offered only when main offers it, never for Return, a file, a do
 
 test("M4: the Always button reads from the ask's own reason, not the computer's current mark, so a tab change cannot mislabel it", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   // The active tab is now a marked site, but the ask was raised on an unmarked one: Always marks that site.
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true, asks: [ask("a1", "unmarked")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { marked: true, asks: [ask("a1", "unmarked")] }) });
   assert.deepEqual(buttons(s.root.querySelectorAll(".aos-cp-ask")[0]), ["Allow once", "Let it act freely on example.com", "Deny"]);
   // And the other way: a category ask raised on a marked site, the active tab since unmarked.
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: false, asks: [ask("a2", "delete")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { marked: false, asks: [ask("a2", "delete")] }) });
   assert.deepEqual(buttons(s.root.querySelectorAll(".aos-cp-ask")[0]), ["Allow once", "Always on example.com", "Deny"]);
 });
 
 test("M7: a new card's buttons are disabled for 500 ms and ignore clicks meanwhile; a card already shown keeps its own start", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { asks: [ask("a1", "unmarked")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { asks: [ask("a1", "unmarked")] }) });
   const first = () => s.root.querySelectorAll(".aos-cp-ask")[0];
   assert.ok(first().querySelectorAll("button").every((b) => b.disabled), "visibly disabled");
   first().querySelector('[data-answer="deny"]')!.click();
   s.clock.advance(300);
   // A second ask arrives and the cards are drawn again: the first keeps the time it was first shown.
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { asks: [ask("a1", "unmarked"), ask("a2", "unmarked")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { asks: [ask("a1", "unmarked"), ask("a2", "unmarked")] }) });
   first().querySelector('[data-answer="deny"]')!.click();
   assert.deepEqual(s.f.answers, [], "clicks within 500 ms are ignored");
   s.clock.advance(199);
@@ -362,15 +404,15 @@ test("M7: a new card's buttons are disabled for 500 ms and ignore clicks meanwhi
 
 test("M7 (R69): a card that moves up because an earlier one left waits 500 ms again, so a double-click on the leaving card cannot answer it; a card that stays put keeps its wait", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { asks: [ask("a1", "unmarked"), ask("a2", "unmarked")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { asks: [ask("a1", "unmarked"), ask("a2", "unmarked")] }) });
   s.clock.advance(600);
   const cards = () => s.root.querySelectorAll(".aos-cp-ask");
   assert.ok(cards().every((c) => c.querySelectorAll("button").every((b) => !b.disabled)), "both armed");
   // The first click of a double-click answers a1; main drops it and a2 moves up into its place.
   cards()[0].querySelector('[data-answer="deny"]')!.click();
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { asks: [ask("a2", "unmarked")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { asks: [ask("a2", "unmarked")] }) });
   const moved = cards()[0];
   assert.equal(moved.getAttribute("data-ask"), "a2");
   assert.ok(moved.querySelectorAll("button").every((b) => b.disabled), "the card that moved up waits again");
@@ -384,7 +426,7 @@ test("M7 (R69): a card that moves up because an earlier one left waits 500 ms ag
   s.clock.advance(1);
   assert.ok(cards()[0].querySelectorAll("button").every((b) => !b.disabled));
   // A new card below leaves a2 where it is: a2 stays armed and answers at once.
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { asks: [ask("a2", "unmarked"), ask("a3", "unmarked")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { asks: [ask("a2", "unmarked"), ask("a3", "unmarked")] }) });
   assert.ok(cards()[0].querySelectorAll("button").every((b) => !b.disabled), "a card that did not move keeps its wait");
   assert.ok(cards()[1].querySelectorAll("button").every((b) => b.disabled), "the new card waits");
   cards()[0].querySelector('[data-answer="once"]')!.click();
@@ -393,7 +435,7 @@ test("M7 (R69): a card that moves up because an earlier one left waits 500 ms ag
 
 test("the driving bar names the holder: violet with Take over for an agent, grey with Hand back for you, Take over when idle (M6)", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const drive = s.q(".aos-cp-drive");
   // M6: idle, Take over is offered, so a person signing in is never interleaved by an agent's next action.
@@ -402,14 +444,14 @@ test("the driving bar names the holder: violet with Take over for an agent, grey
   assert.deepEqual(buttons(drive), ["Take over"]);
   drive.querySelector("button")!.click();
   assert.equal(s.f.takeOvers, 1);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { holder: { kind: "agent", session: "code:t5", label: "Claude Code in harbor-map" } }) });
+  s.f.emit({ type: "state", state: state("code:t5", { holder: { kind: "agent", session: "code:t5", label: "Claude Code in harbor-map" } }) });
   assert.ok(drive.classes.has("is-agent"));
   assert.match(drive.textContent, /^Claude Code in harbor-map is driving/);
   assert.deepEqual(buttons(drive), ["Take over"]);
   drive.querySelector("button")!.click();
   assert.equal(s.f.takeOvers, 2);
   assert.match(s.q(".aos-cp-foot").textContent, /Claude Code in harbor-map/, "the footer names the acting session");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { holder: { kind: "user", resume: { session: "code:t5", label: "Claude Code in harbor-map" } } }) });
+  s.f.emit({ type: "state", state: state("code:t5", { holder: { kind: "user", resume: { session: "code:t5", label: "Claude Code in harbor-map" } } }) });
   assert.ok(drive.classes.has("is-user") && !drive.classes.has("is-agent"));
   assert.match(drive.textContent, /^You're driving/);
   assert.deepEqual(buttons(drive), ["Hand back"]);
@@ -421,8 +463,8 @@ test("the driving bar names the holder: violet with Take over for an agent, grey
 });
 
 test("the surface off: the pane is only its collapsed strip, saying so, and that collapse is never saved (R53, R54)", async () => {
-  const s = setup({ answer: (place) => (place === "ws:off" ? null : state(place)), settings: { width: 520, collapsed: false } });
-  s.pane.follow({ place: "ws:off", label: "off" });
+  const s = setup({ answer: (session) => (session === "code:t8" ? null : state(session)), settings: { width: 520, collapsed: false } });
+  s.pane.follow({ session: "code:t8", label: "off" });
   await flush();
   assert.ok(s.root.classes.has("is-collapsed"), "the collapsed strip, never a 440 px dead pane");
   assert.ok(s.root.classes.has("is-off"));
@@ -438,7 +480,7 @@ test("the surface off: the pane is only its collapsed strip, saying so, and that
   assert.ok(s.f.shows.every((b) => b === null));
   assert.equal(s.q(".aos-cp-url").disabled, true);
   // A later select that answers a state: the user's own width and collapse come back.
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   assert.ok(!s.root.classes.has("is-collapsed") && !s.root.classes.has("is-off"));
   assert.equal(s.root.style.width, "520px");
@@ -457,31 +499,31 @@ test("the surface off for the run: the strip with nothing followed too, and main
     assert.ok(s.root.classes.has("is-collapsed") && s.root.classes.has("is-off"), `${page}: with nothing to show, still the strip`);
     assert.equal(s.root.style.width, "");
     assert.equal(s.view.textContent, "The Computer pane is off.");
-    s.pane.follow({ place: "vault", label: "Vault" });
+    s.pane.follow({ session: "code:t9", label: "Vault" });
     await flush();
-    assert.ok(s.root.classes.has("is-off"), `${page}: and with a place`);
+    assert.ok(s.root.classes.has("is-off"), `${page}: and with a session`);
     assert.deepEqual(s.f.selects, [], `${page}: no select reaches main while the surface is off`);
     assert.ok(s.f.shows.every((b) => b === null), `${page}: never a rectangle`);
     assert.deepEqual(s.saved, []);
   }
 });
 
-test("following another place takes the view away until main answers for it, so the last computer never flashes", async () => {
+test("following another session takes the view away until main answers for it, so the last computer never flashes", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   assert.deepEqual(last(s.f.shows), RECT);
-  s.pane.follow({ place: "vault", label: "Vault" });
+  s.pane.follow({ session: "code:t9", label: "Vault" });
   assert.equal(last(s.f.shows), null, "sent before main has switched");
   relayout();
   assert.equal(last(s.f.shows), null, "a relayout meanwhile sends no rectangle either");
   await flush();
-  assert.deepEqual(last(s.f.shows), RECT, "main answered for the new place");
+  assert.deepEqual(last(s.f.shows), RECT, "main answered for the new session");
 });
 
 test("the address bar's site switch names the site, sends mark only on a click, and hides without a web page (R55)", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const trust = s.q(".aos-cp-trust");
   assert.equal(trust.textContent, "Asks first on example.com");
@@ -489,17 +531,17 @@ test("the address bar's site switch names the site, sends mark only on a click, 
   assert.ok(!trust.classes.has("is-hidden"));
   trust.click();
   assert.deepEqual(s.f.marks, [["https://example.com", true]]);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true }) });
+  s.f.emit({ type: "state", state: state("code:t5", { marked: true }) });
   assert.equal(trust.textContent, "Acts freely on example.com");
   assert.deepEqual(s.f.marks, [["https://example.com", true]], "a state event never marks");
   trust.click();
   assert.deepEqual(s.f.marks, [["https://example.com", true], ["https://example.com", false]]);
   const blank = [{ index: 0, url: "about:blank", title: "", openedBy: null, active: true, canBack: false, canForward: false }];
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: blank }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: blank }) });
   assert.ok(trust.classes.has("is-hidden") && trust.disabled, "about:blank has no site");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [] }) });
   assert.ok(trust.classes.has("is-hidden"), "no tab");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false, canBack: false, canForward: false }] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false, canBack: false, canForward: false }] }) });
   assert.ok(trust.classes.has("is-hidden"), "no active tab");
   trust.click();
   assert.equal(s.f.marks.length, 2);
@@ -507,7 +549,7 @@ test("the address bar's site switch names the site, sends mark only on a click, 
 
 test("Back is disabled until the active tab can go back; Forward likewise; Reload needs a tab (session-browser S13)", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const back = s.q(".aos-cp-back"), fwd = s.q(".aos-cp-forward"), reload = s.q(".aos-cp-reload");
   assert.equal(back.getAttribute("aria-label"), "Back");
@@ -516,15 +558,15 @@ test("Back is disabled until the active tab can go back; Forward likewise; Reloa
   assert.equal(back.getAttribute("type"), "button", "none of the three submits the address form");
   assert.ok(back.disabled && fwd.disabled && !reload.disabled, "a tab that cannot move");
   const one = (o: { canBack: boolean; canForward: boolean }) => [{ index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: true, ...o }];
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: one({ canBack: true, canForward: false }) }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: one({ canBack: true, canForward: false }) }) });
   assert.ok(!back.disabled && fwd.disabled);
   back.click();
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: one({ canBack: false, canForward: true }) }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: one({ canBack: false, canForward: true }) }) });
   assert.ok(back.disabled && !fwd.disabled);
   fwd.click();
   reload.click();
   assert.deepEqual(s.f.goes, ["back", "forward", "reload"]);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [] }) });
   assert.ok(back.disabled && fwd.disabled && reload.disabled, "no tab");
   const form = s.q(".aos-cp-address");
   assert.deepEqual(form.children.slice(0, 4).map((c) => c.getAttribute("aria-label") ?? [...c.classes][0]), ["Back", "Forward", "Reload", "aos-cp-web"], "before the web chip");
@@ -532,11 +574,11 @@ test("Back is disabled until the active tab can go back; Forward likewise; Reloa
 
 test("M3: on a local address the site switch is disabled and says why: local addresses always act freely", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const trust = s.q(".aos-cp-trust");
   for (const url of ["http://localhost:5173/", "http://127.0.0.1:8080/app", "http://[::1]:3000/"]) {
-    s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true, tabs: [{ index: 0, url, title: "Dev", openedBy: null, active: true, canBack: false, canForward: false }] }) });
+    s.f.emit({ type: "state", state: state("code:t5", { marked: true, tabs: [{ index: 0, url, title: "Dev", openedBy: null, active: true, canBack: false, canForward: false }] }) });
     assert.ok(trust.disabled && !trust.classes.has("is-hidden"), url);
     assert.equal(trust.getAttribute("title"), "Local addresses always act freely");
     assert.match(trust.getAttribute("aria-label") ?? "", /Local addresses always act freely/);
@@ -544,7 +586,7 @@ test("M3: on a local address the site switch is disabled and says why: local add
   }
   assert.deepEqual(s.f.marks, [], "a click there marks nothing");
   // A web site's switch works again, and loses the local reason.
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: false }) });
+  s.f.emit({ type: "state", state: state("code:t5", { marked: false }) });
   assert.ok(!trust.disabled);
   assert.match(trust.getAttribute("title") ?? "", /^Agents ask before any click/);
   assert.equal(trust.getAttribute("aria-label"), null);
@@ -554,7 +596,7 @@ test("M3: on a local address the site switch is disabled and says why: local add
 
 test("Esc inside the pane stays in it; Esc in the address bar still puts the address back", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   let stopped = 0;
   const stop = { stopPropagation: () => { stopped++; } };
@@ -574,31 +616,31 @@ test("Esc inside the pane stays in it; Esc in the address bar still puts the add
 test("popped out, the followed computer counts as on screen for the row dots, as main counts it, whatever the pane shows", async () => {
   const s = setup();
   const store = storeFor(s.host);
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const holder = { kind: "agent" as const, session: "code:t5", label: "Claude Code in harbor-map" };
   s.q(".aos-cp-collapse").click();
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { holder }) });
+  s.f.emit({ type: "state", state: state("code:t5", { holder }) });
   assert.equal(store.marks("code:t5").dot, true, "collapsed and docked: off-screen");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { holder, poppedOut: true }) });
+  s.f.emit({ type: "state", state: state("code:t5", { holder, poppedOut: true }) });
   assert.equal(store.marks("code:t5").dot, false, "popped out: on screen in its own window");
   s.pane.hide();
   assert.equal(store.marks("code:t5").dot, false, "another rail tab in front: still in its window");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { holder, poppedOut: false }) });
+  s.f.emit({ type: "state", state: state("code:t5", { holder, poppedOut: false }) });
   assert.equal(store.marks("code:t5").dot, true, "back in the hidden pane: off-screen");
 });
 
 test("popped out: the rectangle says where the browser went and that closing that window brings it back; chrome and asks stay (R53)", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   s.q(".aos-cp-popout").click();
   assert.equal(s.f.popOuts, 1);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { poppedOut: true, asks: [ask("a1", "unmarked")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { poppedOut: true, asks: [ask("a1", "unmarked")] }) });
   assert.match(s.view.textContent, /Popped out/);
   assert.match(s.view.textContent, /clos/i);
   assert.equal(s.root.querySelectorAll(".aos-cp-ask").length, 1);
-  assert.equal(s.q(".aos-cp-popout").disabled, true);
+  assert.equal(s.q(".aos-cp-popout").disabled, false, "popped out, the button brings the window forward (M1)");
   assert.deepEqual(last(s.f.shows), RECT, "the docked rectangle is kept for when it comes back");
 });
 
@@ -646,7 +688,7 @@ test("the address bar: a scheme is kept, the Mac's servers get http, an address 
 
 test("the address bar opens what you type through navigate and shows a refusal inline", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const input = s.q(".aos-cp-url");
   assert.equal(input.value, "https://example.com/checkout", "the active tab's address");
@@ -667,9 +709,9 @@ test("the address bar opens what you type through navigate and shows a refusal i
 
 test("the tabs: + opens one, × closes one, a click selects one", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [
     { index: 0, url: "https://example.com/", title: "Example", openedBy: null, active: false, canBack: false, canForward: false },
     { index: 1, url: "about:blank", title: "", openedBy: null, active: true, canBack: false, canForward: false },
   ] }) });
@@ -684,22 +726,22 @@ test("the tabs: + opens one, × closes one, a click selects one", async () => {
 
 test("a new tab on the bare start page reads as one: the address bar is empty and the tab says New tab, whatever its title", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const tab = (url: string, title: string, active = true) => ({ index: 0, url, title, openedBy: null, active, canBack: false, canForward: false });
   const titles = (): string[] => s.root.querySelectorAll(".aos-cp-tabtitle").map((t) => t.textContent);
   const input = s.q(".aos-cp-url");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("https://duckduckgo.com/", "DuckDuckGo - Protection. Privacy. Peace of mind.")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [tab("https://duckduckgo.com/", "DuckDuckGo - Protection. Privacy. Peace of mind.")] }) });
   assert.equal(input.value, "", "the start page, as about:blank");
   assert.deepEqual(titles(), ["New tab"]);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("about:blank", "about:blank")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [tab("about:blank", "about:blank")] }) });
   assert.equal(input.value, "");
   assert.deepEqual(titles(), ["New tab"], "about:blank whatever main calls its title");
   // A search on it, or any other page of the site, is a page like any other.
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("https://duckduckgo.com/?q=weather&ia=web", "weather at DuckDuckGo")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [tab("https://duckduckgo.com/?q=weather&ia=web", "weather at DuckDuckGo")] }) });
   assert.equal(input.value, "https://duckduckgo.com/?q=weather&ia=web");
   assert.deepEqual(titles(), ["weather at DuckDuckGo"]);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [tab("https://duckduckgo.com/about", "")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [tab("https://duckduckgo.com/about", "")] }) });
   assert.deepEqual(titles(), ["duckduckgo.com"]);
   // Words typed there search the start page through navigate.
   input.focus();
@@ -711,13 +753,13 @@ test("a new tab on the bare start page reads as one: the address bar is empty an
 
 test("with another start page from the host (the e2e suite's fixture), a new tab on it reads as one and words search it", async () => {
   const s = setup({ startPage: "http://search.test:4100/" });
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const input = s.q(".aos-cp-url");
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "http://search.test:4100/", title: "Start", openedBy: null, active: true, canBack: false, canForward: false }] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [{ index: 0, url: "http://search.test:4100/", title: "Start", openedBy: null, active: true, canBack: false, canForward: false }] }) });
   assert.equal(input.value, "");
   assert.deepEqual(s.root.querySelectorAll(".aos-cp-tabtitle").map((t) => t.textContent), ["New tab"]);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { tabs: [{ index: 0, url: "https://duckduckgo.com/", title: "DuckDuckGo", openedBy: null, active: true, canBack: false, canForward: false }] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { tabs: [{ index: 0, url: "https://duckduckgo.com/", title: "DuckDuckGo", openedBy: null, active: true, canBack: false, canForward: false }] }) });
   assert.equal(input.value, "https://duckduckgo.com/", "DuckDuckGo is a page like any other here");
   input.value = "tide times";
   s.q(".aos-cp-address").fire("submit");
@@ -727,12 +769,12 @@ test("with another start page from the host (the e2e suite's fixture), a new tab
 
 test("the Code page keeps an activity log (D35); the Chat page has none (its thread shows the lines)", async () => {
   const code = setup({ page: "code" });
-  code.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  code.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
-  code.f.emit({ type: "state", state: state("ws:harbor-map", { log: [{ at: Date.UTC(2026, 10, 8, 9, 30), session: "Claude Code in harbor-map", text: "Clicked “Continue”" }] }) });
+  code.f.emit({ type: "state", state: state("code:t5", { log: [{ at: Date.UTC(2026, 10, 8, 9, 30), session: "Claude Code in harbor-map", text: "Clicked “Continue”" }] }) });
   assert.match(code.q(".aos-cp-log").textContent, /Claude Code in harbor-map.*Clicked “Continue”/);
   const chat = setup({ page: "chat" });
-  chat.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  chat.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   assert.equal(chat.root.querySelector(".aos-cp-log"), null);
   assert.match(chat.q(".aos-cp-foot").textContent, /Claude in Chrome/, "the help says which tools act without these guards (D29)");
@@ -740,7 +782,7 @@ test("the Code page keeps an activity log (D35); the Chat page has none (its thr
 
 test("a modal or the tour over the page takes the view away until it goes", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const modal = s.doc.body.createDiv({ cls: "modal-container mod-dim" });
   domChanged();
@@ -759,9 +801,9 @@ test("a modal or the tour over the page takes the view away until it goes", asyn
 test("a notification's reveal opens the collapsed pane on its ask and scrolls the card into view (D27)", async () => {
   const s = setup({ settings: { width: 500, collapsed: true } });
   assert.equal(s.root.style.width, "");
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { asks: [ask("a1", "unmarked")] }) });
+  s.f.emit({ type: "state", state: state("code:t5", { asks: [ask("a1", "unmarked")] }) });
   assert.equal(s.q(".aos-cp-count").textContent, "1", "collapsed, the pane counts its asks");
   assert.equal(last(s.f.shows), null);
   s.f.emit({ type: "reveal", askId: "a1" });
@@ -894,13 +936,350 @@ test("under 380 px the pane is compact", () => {
 
 test("the trust pill keeps its full text as its title", async () => {
   const s = setup();
-  s.pane.follow({ place: "ws:harbor-map", label: "harbor-map" });
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   const trust = s.q(".aos-cp-trust");
   assert.equal(trust.textContent, "Asks first on example.com");
   // The title already says more than the pill (the explanation); it names the site, so an ellipsized pill stays readable.
   assert.match(trust.getAttribute("title") ?? "", /example\.com/);
-  s.f.emit({ type: "state", state: state("ws:harbor-map", { marked: true }) });
+  s.f.emit({ type: "state", state: state("code:t5", { marked: true }) });
   assert.equal(trust.textContent, "Acts freely on example.com");
   assert.match(trust.getAttribute("title") ?? "", /example\.com/);
+});
+
+test("a sleeping browser (power asleep) lists its tabs like an awake one (session-browser S9)", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "asleep" }) });
+  s.pane.follow({ session: "chat:a", label: "a" });
+  await flush();
+  const tabs = s.root.querySelectorAll(".aos-cp-tab");
+  assert.equal(tabs.length, 1);
+  assert.match(tabs[0].textContent, /Checkout/);
+});
+
+test("off is a strip with a power button", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.ok(s.root.classes.has("is-collapsed"));
+  assert.ok(!s.root.classes.has("is-compact") && !s.column.classes.has("is-narrowable"));
+  assert.ok(s.f.shows.every((b) => b === null), "no rectangle while off");
+  const b = s.q(".aos-cp-strip-power");
+  assert.equal(b.getAttribute("aria-label"), "Turn the browser on");
+  b.click();
+  assert.deepEqual(s.f.powers, [["code:1", true]]);
+  assert.equal(s.root.querySelector(".aos-cp-strip-dot"), null);
+});
+
+test("the strip's power button turns on the session the pane follows now, not the one it was drawn for (X1)", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  s.pane.follow({ session: "code:2", label: "two" });
+  await flush();
+  // Both states are in the store now, so following back draws the off strip at once with the button kept.
+  s.pane.follow({ session: "code:1", label: "one" });
+  s.q(".aos-cp-strip-power").click();
+  assert.deepEqual(s.f.powers, [["code:1", true]], "the session shown now, never the one the button was drawn for");
+});
+
+test("a followed session whose state is not known yet draws a strip, then opens when it arrives awake (C1)", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:1", label: "one" });
+  // main has not answered: browsers start off, so the pane must not flash open (it would refit the terminal twice).
+  assert.ok(s.root.classes.has("is-collapsed"), "a strip while the state is unknown");
+  assert.equal(s.pane.paneState(), "browser-off");
+  assert.equal(s.q(".aos-cp-collapse").disabled, true, "the collapse control is inert until the state is the user's");
+  s.q(".aos-cp-collapse").click();
+  assert.deepEqual(s.saved, [], "and a click on it saves nothing");
+  assert.ok(s.f.shows.every((b) => b === null), "no rectangle sent");
+  await flush();
+  assert.ok(!s.root.classes.has("is-collapsed"), "open once the awake state arrives");
+  assert.deepEqual(last(s.f.shows), RECT);
+  assert.equal(s.pane.paneState(), "open");
+});
+
+test("a state that arrives off with a pending power ask opens the pane to the card (C1)", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [], asks: [ask("p1", "power")] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  assert.ok(s.root.classes.has("is-collapsed"));
+  await flush();
+  assert.ok(!s.root.classes.has("is-collapsed"));
+  assert.ok(s.root.querySelector(".aos-cp-ask"));
+});
+
+test("Off from the header switch moves focus to the strip's power button once the strip has drawn (C2)", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  const sw = s.q(".aos-cp-power");
+  sw.focus();
+  sw.click();
+  s.f.emit({ type: "state", state: state("code:1", { power: "off", tabs: [] }) });
+  assert.ok(s.root.classes.has("is-collapsed"));
+  assert.equal(s.doc.activeElement, s.q(".aos-cp-strip-power"), "the switch is hidden now: focus is on the strip's button");
+});
+
+test("On from the strip's button moves focus to the header's switch once the pane has opened (C2)", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  const b = s.q(".aos-cp-strip-power");
+  b.focus();
+  b.click();
+  assert.equal(s.doc.activeElement, b, "not before the new state has drawn");
+  s.f.emit({ type: "state", state: state("code:1", { power: "awake" }) });
+  assert.ok(!s.root.classes.has("is-collapsed"));
+  assert.equal(s.doc.activeElement, s.q(".aos-cp-power"));
+});
+
+test("focus is moved only when the pressed control had it (C2)", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  s.q(".aos-cp-power").click();
+  s.f.emit({ type: "state", state: state("code:1", { power: "off", tabs: [] }) });
+  assert.equal(s.doc.activeElement, null, "a click that did not focus the switch leaves focus alone");
+});
+
+test("a queued focus move is dropped when the user has moved on (M3)", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  const sw = s.q(".aos-cp-power");
+  sw.focus();
+  sw.click();
+  const elsewhere = s.doc.body.createEl("input");
+  elsewhere.focus();
+  s.f.emit({ type: "state", state: state("code:1", { power: "off", tabs: [] }) });
+  assert.equal(s.doc.activeElement, elsewhere, "the late state does not pull focus away from what the user is typing in");
+  s.f.emit({ type: "state", state: state("code:1", { power: "off", tabs: [], log: [] }) });
+  assert.equal(s.doc.activeElement, elsewhere, "and a later state does not either: the move is gone");
+});
+
+test("popped out, the Pop out button brings the window forward (M1)", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:t5", label: "harbor-map" });
+  await flush();
+  s.f.emit({ type: "state", state: state("code:t5", { poppedOut: true }) });
+  const pop = s.q(".aos-cp-popout");
+  assert.ok(!pop.disabled, "popped out: the button stays enabled");
+  assert.equal(pop.getAttribute("aria-label"), "Bring the browser window to the front");
+  assert.equal(pop.getAttribute("title"), "Bring the browser window to the front");
+  pop.click();
+  assert.equal(s.f.popOuts, 1);
+});
+
+test("the header switch has a stable name and its On/Off text is hidden from assistive tech (C3)", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  const sw = s.q(".aos-cp-power");
+  assert.equal(sw.getAttribute("aria-label"), "Browser");
+  assert.equal(sw.querySelector('[aria-hidden="true"]')!.textContent, "On");
+  s.f.emit({ type: "state", state: state("code:1", { power: "off", tabs: [] }) });
+  assert.equal(sw.getAttribute("aria-label"), "Browser", "the name does not follow the state");
+  assert.equal(sw.querySelector('[aria-hidden="true"]')!.textContent, "Off");
+});
+
+test("with no session the strip carries its reason as text, and the green dot is named (C4)", async () => {
+  const none = setup();
+  none.pane.follow(null, "Vault chat and History have no browser.");
+  await flush();
+  assert.equal(none.q(".aos-cp-sr").textContent, "Vault chat and History have no browser.");
+  const dot = setup({ settings: { width: 440, collapsed: true } });
+  dot.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  const d = dot.q(".aos-cp-strip-dot");
+  assert.equal(d.getAttribute("role"), "img");
+  assert.equal(d.getAttribute("aria-label"), "The browser is on");
+});
+
+test("paneState tells no session from an off browser (C5)", async () => {
+  const none = setup();
+  none.pane.follow(null, "No browser here.");
+  await flush();
+  assert.equal(none.pane.paneState(), "no-session");
+  const off = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  off.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.equal(off.pane.paneState(), "browser-off");
+});
+
+test("on but collapsed shows the green dot", async () => {
+  const s = setup({ settings: { width: 440, collapsed: true } });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.ok(s.root.classes.has("is-collapsed"));
+  assert.ok(s.root.querySelector(".aos-cp-strip-dot"));
+  assert.equal(s.root.querySelector(".aos-cp-strip-power"), null);
+});
+
+test("no session: the strip is disabled and says why", async () => {
+  const s = setup();
+  s.pane.follow(null, "Vault chat and History have no browser.");
+  await flush();
+  assert.ok(s.root.classes.has("is-collapsed"));
+  const b = s.q(".aos-cp-strip-none");
+  assert.equal(b.disabled, true);
+  assert.equal(b.getAttribute("title"), "Vault chat and History have no browser.");
+  assert.equal(s.root.querySelector(".aos-cp-strip-power"), null);
+});
+
+test("the header names the session and its switch turns the browser off", async () => {
+  const s = setup({ answer: (session) => state(session, { label: "Fix login" }) });
+  s.pane.follow({ session: "code:1", label: "followed" });
+  await flush();
+  assert.equal(s.q(".aos-cp-place").textContent, "Fix login");
+  const sw = s.q(".aos-cp-power");
+  assert.equal(sw.getAttribute("role"), "switch");
+  assert.equal(sw.getAttribute("aria-checked"), "true");
+  assert.equal(sw.textContent, "On");
+  sw.click();
+  assert.deepEqual(s.f.powers, [["code:1", false]]);
+});
+
+test("the header falls back to the label the page followed with", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:1", label: "followed" });
+  await flush();
+  assert.equal(s.q(".aos-cp-place").textContent, "followed");
+});
+
+test("a power ask opens the strip to its card, without touching the saved collapse", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [], asks: [ask("p1", "power", { always: true })] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.ok(!s.root.classes.has("is-collapsed"), "drawn open");
+  assert.deepEqual(buttons(s.root.querySelector(".aos-cp-ask")!), ["Turn on", "Not now"]);
+  assert.equal(s.root.querySelector('[data-answer="once"]')!.textContent, "Turn on");
+  assert.equal(s.root.querySelector('[data-answer="deny"]')!.textContent, "Not now");
+  assert.equal(s.root.querySelector('[data-answer="always"]'), null);
+  assert.deepEqual(s.saved, []);
+  assert.ok(s.f.shows.every((b) => b === null), "off: no rectangle even open");
+  s.f.emit({ type: "state", state: state("code:1", { power: "off", tabs: [], asks: [] }) });
+  assert.ok(s.root.classes.has("is-collapsed"), "back to the strip when the ask is gone");
+  assert.deepEqual(s.saved, []);
+});
+
+test("asleep is drawn as on", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "asleep" }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.ok(!s.root.classes.has("is-collapsed"));
+  assert.equal(s.q(".aos-cp-power").getAttribute("aria-checked"), "true");
+  assert.deepEqual(last(s.f.shows), RECT);
+});
+
+test("the collapse button and toggle do nothing while the browser is off", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.equal(s.q(".aos-cp-collapse").disabled, true);
+  s.q(".aos-cp-collapse").click();
+  s.pane.toggle();
+  assert.deepEqual(s.saved, []);
+  s.f.emit({ type: "state", state: state("code:1", { power: "awake" }) });
+  assert.ok(!s.root.classes.has("is-collapsed"), "the pane is open once the browser is on");
+  assert.equal(s.q(".aos-cp-collapse").disabled, false);
+});
+
+test("they do nothing while a power ask holds the pane open", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [], asks: [ask("p1", "power", { always: true })] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.ok(!s.root.classes.has("is-collapsed"));
+  s.q(".aos-cp-collapse").click();
+  s.pane.toggle();
+  assert.deepEqual(s.saved, []);
+  assert.ok(!s.root.classes.has("is-collapsed"));
+});
+
+test("paneState says browser-off for an off browser, no-session for none, open for an on one", async () => {
+  const off = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  off.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.equal(off.pane.paneState(), "browser-off");
+  const none = setup();
+  none.pane.follow(null, "No browser here.");
+  await flush();
+  assert.equal(none.pane.paneState(), "no-session");
+  const on = setup();
+  on.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.equal(on.pane.paneState(), "open");
+});
+
+test("the pane says when its state for the top bar changes", async () => {
+  let calls = 0;
+  const s = setup({ changed: () => { calls++; }, answer: (session) => state(session, { power: "off", tabs: [] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.equal(s.pane.paneState(), "browser-off");
+  assert.equal(calls, 1);
+  s.f.emit({ type: "state", state: state("code:1", { power: "off", tabs: [] }) });
+  assert.equal(calls, 1, "the same state says nothing");
+  s.f.emit({ type: "state", state: state("code:1", { power: "awake" }) });
+  assert.equal(s.pane.paneState(), "open");
+  assert.equal(calls, 2);
+  s.pane.toggle();
+  assert.equal(s.pane.paneState(), "collapsed");
+  assert.equal(calls, 3);
+  s.pane.follow(null, "No browser here.");
+  await flush();
+  assert.equal(s.pane.paneState(), "no-session");
+  assert.equal(calls, 4);
+});
+
+test("a pane held open by a power ask says why its collapse button is disabled", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [], asks: [ask("p1", "power")] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  const c = s.q(".aos-cp-collapse");
+  assert.equal(c.disabled, true);
+  assert.equal(c.getAttribute("aria-label"), "The browser is off");
+});
+
+test("the strip's power button opens a pane the user had collapsed", async () => {
+  const s = setup({ settings: { width: 440, collapsed: true }, answer: (session) => state(session, { power: "off", tabs: [] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  s.q(".aos-cp-strip-power").click();
+  assert.deepEqual(s.f.powers, [["code:1", true]]);
+  assert.deepEqual(last(s.saved), { width: 440, collapsed: false });
+});
+
+test("a strip carries the tour's pane anchor and an open pane does not", async () => {
+  const s = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.equal(s.root.getAttribute("data-tour"), "computer-view");
+  s.f.emit({ type: "state", state: state("code:1", { power: "awake" }) });
+  assert.equal(s.root.getAttribute("data-tour"), null);
+  assert.equal(s.view.getAttribute("data-tour"), "computer-view");
+});
+
+test("the strip's control carries the power step's anchor", async () => {
+  const off = setup({ answer: (session) => state(session, { power: "off", tabs: [] }) });
+  off.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.equal(off.q(".aos-cp-strip-power").getAttribute("data-tour"), "computer-power");
+  assert.ok(off.root.classes.has("is-ruled"));
+  const none = setup();
+  none.pane.follow(null, "No browser here.");
+  await flush();
+  assert.equal(none.q(".aos-cp-strip-none").getAttribute("data-tour"), "computer-power");
+  const dot = setup({ settings: { width: 440, collapsed: true } });
+  dot.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.equal(dot.q(".aos-cp-strip-dot").getAttribute("data-tour"), "computer-power");
+  assert.ok(!dot.root.classes.has("is-ruled"), "the user's own collapse keeps its expand button");
+});
+
+test("an open pane whose browser goes off hides its view", async () => {
+  const s = setup();
+  s.pane.follow({ session: "code:1", label: "one" });
+  await flush();
+  assert.deepEqual(last(s.f.shows), RECT);
+  s.f.emit({ type: "state", state: state("code:1", { power: "off", tabs: [] }) });
+  assert.equal(last(s.f.shows), null);
 });

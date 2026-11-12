@@ -102,3 +102,41 @@ test("R81: Take over, Hand back and the end of a turn bump the computer's genera
   assert.equal(w.holder("c"), null);
   assert.equal(w.gen("c"), before, "the idle free is not a cancellation (nothing runs then)");
 });
+
+test("interrupt bumps the generation; with free it clears the holder", () => {
+  const { w } = make();
+  w.take("c", "s1", "Alpha");
+  const g = w.gen("c");
+  w.interrupt("c");
+  assert.equal(w.gen("c"), g + 1);
+  assert.deepEqual(w.holder("c"), { kind: "agent", session: "s1", label: "Alpha" }, "the holder keeps the wheel");
+  w.interrupt("c", true);
+  assert.equal(w.gen("c"), g + 2);
+  assert.equal(w.holder("c"), null);
+});
+
+test("rekey moves the hold, its generation and its idle timer to the new key", () => {
+  const { w, clock, log } = make();
+  w.take("code:t1", "s1", "Alpha");
+  w.takeOver("code:t1");
+  const gen = w.gen("code:t1");
+  w.handBack("code:t1");
+  w.rekey("code:t1", "code:t2");
+  assert.equal(w.holder("code:t1"), null);
+  assert.deepEqual(w.holder("code:t2"), { kind: "agent", session: "s1", label: "Alpha" });
+  assert.equal(w.gen("code:t1"), 0);
+  assert.equal(w.gen("code:t2"), gen + 1);
+  log.length = 0;
+  clock.advance(31_000);
+  assert.equal(w.holder("code:t2"), null, "the idle timer follows the key");
+  assert.deepEqual(log.map(([c]) => c), ["code:t2"]);
+});
+
+test("rekey renames the holder's session, so the old terminal's turnEnded frees nothing", () => {
+  const { w } = make();
+  w.take("c1", "c1", "Old");
+  w.rekey("c1", "c2");
+  assert.deepEqual(w.holder("c2"), { kind: "agent", session: "c2", label: "Old" });
+  w.turnEnded("c1");
+  assert.deepEqual(w.holder("c2"), { kind: "agent", session: "c2", label: "Old" });
+});

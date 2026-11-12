@@ -14,6 +14,8 @@ import type { ChatState } from "../data/codeChat";
 import type { Span } from "../data/ansiSpans";
 import type { ChatCard } from "../data/termScreen";
 import { CodeChat } from "./CodeChat";
+import { codeSession } from "../data/computerStore";
+import { sessionForLink } from "../data/linkRoute";
 import type { TermComposer } from "./TermComposer";
 
 /** A chat with nothing in it yet. */
@@ -30,7 +32,8 @@ export interface CodeStageHost {
   composer(): TermComposer | null;
   /** Flips the selected agent terminal's view (the chat's "Terminal" link). */
   setView(v: CodeView): void;
-  openLink(href: string): void;
+  /** `view`: which chat the click came from; a past conversation's has no browser (session-browser S1). */
+  openLink(href: string, view: "live" | "past"): void;
   renderTabs(): void;
 }
 
@@ -68,7 +71,8 @@ export class CodeStage {
         return this.plugin.codeFeeds?.answer(s.id, key, card) ?? false;
       },
       showEarlier: () => { const id = this.host.activeId(); if (id) this.plugin.codeFeeds?.showEarlier(id); },
-      openLink: (href) => this.host.openLink(href),
+      openLink: (href) => this.host.openLink(href, "live"),
+      linkSession: () => { const o = this.host.activeSession()?.originPty; return sessionForLink("live", o ? codeSession(o) : null); },
       context: () => {
         const s = this.host.activeSession();
         return { host: s?.meta.host === "codex" ? "codex" : "claude", root: s ? s.meta.place?.dir ?? s.cwd : null };
@@ -78,7 +82,8 @@ export class CodeStage {
       readOnly: true,
       toTerminal: () => {}, stop: () => {},
       showEarlier: () => { if (this.pastData && this.past) { this.pastData = pastEarlier(this.pastData); this.drawPast(); } },
-      openLink: (href) => this.host.openLink(href),
+      openLink: (href) => this.host.openLink(href, "past"),
+      linkSession: () => sessionForLink("past", null),
       context: () => ({ host: this.past?.host ?? "claude", root: this.past?.place.dir ?? null }),
     });
     return body;

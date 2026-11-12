@@ -196,3 +196,13 @@ test("while the app quits no terminal starts: a shell, or an agent's (its exit m
   quitting = false;
   assert.ok(t.spawn(shell("t4")).ok);
 });
+
+// ── a quit called off ────────────────────────────────────────────────
+
+import { quitCalledOff } from "../../src/main/quit-gate";
+
+test("an updater error while quitting calls the quit off, whatever the update flag says; otherwise nothing is called off", () => {
+  assert.equal(quitCalledOff({ quitting: true, updateStatus: "error" }), true, "before-quit ran and cleared the update flag: still cancels");
+  assert.equal(quitCalledOff({ quitting: false, updateStatus: "error" }), false, "no quit under way");
+  for (const s of ["idle", "checking", "downloading", "ready"]) assert.equal(quitCalledOff({ quitting: true, updateStatus: s }), false, `a normal quit (${s}) never cancels`);
+});

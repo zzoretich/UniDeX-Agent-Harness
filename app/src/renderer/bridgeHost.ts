@@ -200,7 +200,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
       const id = `t${++seq}`;
       const t = newTerm();
       terminals.set(id, t);
-      const r = aos.pty.spawn({ id, file, args, cwd: opts.cwd, name: opts.name, cols: opts.cols, rows: opts.rows, env: opts.env });
+      const r = aos.pty.spawn({ id, file, args, cwd: opts.cwd, name: opts.name, cols: opts.cols, rows: opts.rows, env: opts.env, ...(opts.origin ? { origin: opts.origin } : {}) });
       if (!r.ok) {
         terminals.delete(id);
         throw r.code === "EROFS" ? refuse("spawn", describe(file, args)) : callError(r, `terminal ${file}`);
@@ -244,9 +244,10 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     enabled: info.writeSurfaces.includes("computer"),
     // Fixed when the app starts too: main's start page, which + opens and the address bar searches.
     ...(info.computerStartPage ? { startPage: info.computerStartPage } : {}),
-    select: (place) => aos.computer.select(place).catch(() => null),
-    show: (bounds) => aos.computer.show(bounds),
+    select: (session) => aos.computer.select(session).catch(() => null),
+    show: (bounds, inView) => aos.computer.show(bounds, inView),
     navigate: (url) => settle(aos.computer.navigate(url)),
+    openLink: (session, url) => settle(aos.computer.openLink(session, url)),
     tab: (op) => aos.computer.tab(op),
     nav: (go) => aos.computer.nav(go),
     takeOver: () => aos.computer.takeOver(),
@@ -254,12 +255,16 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     answer: (askId, a) => aos.computer.answer(askId, a),
     mark: (origin, on) => aos.computer.mark(origin, on),
     popOut: () => aos.computer.popOut(),
+    power: (session, on) => aos.computer.power(session, on),
+    describe: (session, d) => aos.computer.describe(session, d),
+    move: (from, to) => aos.computer.move(from, to),
     onEvent: (cb) => aos.computer.onEvent(cb),
   };
   const sessions: HostSessions = {
     start: (req) => settle(aos.sessions.start(req)),
     send: (req) => settle(aos.sessions.send(req)),
     stop: (thread) => aos.sessions.stop(thread),
+    remove: (thread) => settle(aos.sessions.remove(thread)),
     list: () => settle(aos.sessions.list()),
     read: (thread) => settle(aos.sessions.read(thread)),
     catalog: (refresh) => settle(aos.sessions.catalog(refresh)),

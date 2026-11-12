@@ -105,6 +105,7 @@ export const CH = {
   sessionStart: "session:start",
   sessionSend: "session:send",
   sessionStop: "session:stop",
+  sessionRemove: "session:remove",
   sessionList: "session:list",
   sessionCatalog: "session:catalog",
   sessionRead: "session:read",
@@ -138,6 +139,7 @@ export const CH = {
   computerSelect: "computer:select",
   computerShow: "computer:show",
   computerNavigate: "computer:navigate",
+  computerOpenLink: "computer:open-link",
   computerTab: "computer:tab",
   computerNav: "computer:nav",
   computerTakeOver: "computer:take-over",
@@ -145,6 +147,9 @@ export const CH = {
   computerAnswer: "computer:answer",
   computerMark: "computer:mark",
   computerPopOut: "computer:pop-out",
+  computerPower: "computer:power",
+  computerDescribe: "computer:describe",
+  computerMove: "computer:move",
 } as const;
 
 // ── the Computer pane's shapes (agent-computer D5, D32): plain declarations, so the HUD can mirror them ──
@@ -166,9 +171,13 @@ export interface ComputerAsk {
 export interface ComputerLogLine { at: number; session: string; text: string }
 export type ComputerAnswer = "once" | "always" | "deny";
 export interface ComputerState {
-  place: string; tabs: ComputerTab[]; holder: ComputerHolder; asks: readonly ComputerAsk[]; log: readonly ComputerLogLine[];
+  /** The session this browser belongs to: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`) or `chat:<thread>` (session-browser S1). */
+  session: string; label: string; tabs: ComputerTab[]; holder: ComputerHolder; asks: readonly ComputerAsk[]; log: readonly ComputerLogLine[];
   marked: boolean; poppedOut: boolean;
+  /** session-browser S2: a browser starts off (no view, no process); "asleep" is first set by the idle sleep. */
+  power: ComputerPower;
 }
+export type ComputerPower = "off" | "awake" | "asleep";
 /** The user's Back, Forward and Reload on the selected computer's active tab (session-browser S13). */
 export type ComputerNavGo = "back" | "forward" | "reload";
 export type ComputerTabOp = { kind: "new" } | { kind: "close" | "select"; index: number };
@@ -548,6 +557,9 @@ export type ProcEvent =
 
 export interface ExecRequest { file: string; args: string[]; timeoutMs: number }
 
+/** The conversation a Code session runs (session-browser S7): its host and the id that host gave it. */
+export interface ComputerConversation { host: "claude" | "codex"; id: string }
+
 export interface PtySpawnRequest {
   id: string;
   file: string;
@@ -557,12 +569,15 @@ export interface PtySpawnRequest {
   cols: number;
   rows: number;
   env?: Record<string, string>;
+  /** session-browser S1: the id of the terminal's FIRST process, named by a process that takes over in a terminal that
+   *  already has one (the login shell after the agent). Main takes it only when it began that id in this page. */
+  origin?: string;
 }
 
 /**
  * A Code launch's agent, which main starts as the terminal's own process so it holds the CLI's pid (agent-computer D18).
  * The page names the host and the words after the binary (only what the Code page's launch line carries); main resolves
- * the binary itself. `place` is the computer the agent shares (the HUD's placeKey, D30), `label` names it.
+ * the binary itself. `place` is only the folder's label (the HUD's placeKey), `label` names the agent.
  */
 export interface PtyAgentRequest {
   id: string;
@@ -711,16 +726,18 @@ export interface AosBridge {
     onChange(cb: (s: ThemeState) => void): () => void;
   };
   /**
-   * The Computer pane's calls (agent-computer D5, D32), answered while the Computer surface is on. Places are keyed
-   * `ws:<workspace>`, `vault`, `home` or `dir:<absolute path>`. A call while the surface is off is refused
+   * The Computer pane's calls (agent-computer D5, D32), answered while the Computer surface is on. A browser is keyed
+   * by its session: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`) or `chat:<thread>` (session-browser S1). A call while the surface is off is refused
    * (`select` answers null; `navigate` answers EPERM).
    */
   computer: {
-    /** The pane shows this place's computer (null: none); its state, or null when refused. */
-    select(place: string | null): Promise<ComputerState | null>;
-    /** The pane's rectangle for the view, or null (hidden). */
-    show(bounds: ComputerRect | null): void;
+    /** The pane shows this session's browser (null: none); its state, or null when refused. */
+    select(session: string | null): Promise<ComputerState | null>;
+    /** The pane's rectangle for the view, or null (hidden). `inView`: the page's pane is in view, with or without a rectangle (a Turn on ask's notice reads it). */
+    show(bounds: ComputerRect | null, inView?: boolean): void;
     navigate(url: string): Promise<Result<null>>;
+    /** A web link the person clicked in a session opens in that session's browser, turned on if need be (session-browser S14). Failures: the codes are EINVAL (the address is refused), EPERM (the session is not one the app holds, or the Computer surface is off), ENOENT (the app is quitting or the browser was switched off meanwhile), EIO (no tab could be made). A tab that was made but whose page failed to load is ok. */
+    openLink(session: string, url: string): Promise<Result<null>>;
     tab(op: ComputerTabOp): void;
     /** Back, Forward or Reload the active tab. One-way; dropped while the surface is off. */
     nav(go: ComputerNavGo): void;
@@ -729,6 +746,12 @@ export interface AosBridge {
     answer(askId: string, a: ComputerAnswer): void;
     mark(origin: string, on: boolean): void;
     popOut(): void;
+    /** Turns one session's browser on or off (session-browser S4, S5). One-way; refused for a key main does not hold. */
+    power(session: string, on: boolean): void;
+    /** Names a Code session for the app's own cards, and the conversation it runs (session-browser S6, S7). One-way; refused for a key main does not hold. */
+    describe(session: string, d: { title?: string; conversation?: ComputerConversation }): void;
+    /** Hands one Code terminal's browser to the terminal that replaces it (S22). False when refused. */
+    move(from: string, to: string): Promise<boolean>;
     onEvent(cb: (ev: ComputerEvent) => void): () => void;
   };
   /** Agent sessions in a workspace (spec 2026-10-07-unidex-sessions), run by main while the Sessions surface is on. */
@@ -739,6 +762,8 @@ export interface AosBridge {
     send(req: SessionSendRequest): Promise<Result<SessionThread>>;
     /** Stops the running turn (SIGTERM, then SIGKILL after 10 s). */
     stop(thread: string): void;
+    /** Moves the thread's file to the Trash and forgets its browser; EBUSY while its turn runs. */
+    remove(thread: string): Promise<Result<null>>;
     list(): Promise<Result<SessionThread[]>>;
     read(thread: string): Promise<Result<SessionEventRecord[]>>;
     /** Each host's models and commands (cached by the runtime for a day; `refresh` asks the hosts again). */

@@ -6,7 +6,7 @@
 // check it against the read scope, the write surfaces and the program rules (./policy). Main itself writes one file
 // outside its userData: the app's record in the vault's runtime cache (hud-host.ts). The app updates itself (./updater).
 
-import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, Notification, screen, type Rectangle } from "electron";
+import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, Notification, screen, shell, type Rectangle } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,6 +20,7 @@ import { computerConfig, type ComputerConfig } from "./computer/config";
 import { AskNotifier, testSwitches } from "./computer/notify";
 import { loadPeer, type PeerAddon } from "./computer/peer";
 import { AgentRegistry } from "./computer/registry";
+import { BrowserRecords } from "./computer/records";
 import { ComputerService } from "./computer/service";
 import { SiteMarks } from "./computer/sites";
 import { Wheel } from "./computer/wheel";
@@ -32,7 +33,7 @@ import { registerProposalsIpc } from "./ipc/proposals";
 import { registerCodeIpc } from "./ipc/code";
 import { registerSessionIpc } from "./ipc/sessions";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
-import { openExternalSafe, registerShellIpc } from "./ipc/shell";
+import { externalOpens, openExternalSafe, registerShellIpc } from "./ipc/shell";
 import { registerComputerIpc } from "./ipc/computer";
 import { registerThemeIpc } from "./ipc/theme";
 import { trustMainWindow } from "./ipc/trust";
@@ -42,7 +43,7 @@ import { parseShells, type ProgramContext } from "./policy/programs";
 import { ReadScope, type AgenticosPaths } from "./policy/read-scope";
 import { WritePolicy } from "./policy/write-policy";
 import { SCHEME, parseAgenticosUrl, urlFromArgv } from "./protocol";
-import { quitGate } from "./quit-gate";
+import { quitGate, quitCalledOff } from "./quit-gate";
 import { admit } from "./computer/admission";
 import { BridgeKeeper, ComputerBridge, bridgeSocketPath } from "./computer/bridge";
 import { sweepHeld } from "./computer/downloads";
@@ -164,7 +165,12 @@ const ptyService = new PtyService({
   // R86: no terminal starts while the app quits (quit-gate.ts), so the quit's wait for their exits is the last one.
   quitting: () => quitting,
   // code-chat R16: a terminal's transcript follower ends when the terminal is closed, not when its agent exits.
-  onEnd: (id, terminal) => codeMirror.end(id, terminal),
+  // session-browser S22: closing a row forgets its browser, named by the terminal's FIRST process (a takeover shell's close
+  // reports it); the page going ("all") forgets nothing here, `pageGone` handles that.
+  onEnd: (id, terminal, why, origin) => {
+    codeMirror.end(id, terminal);
+    if (why === "closed") computerService.forget(`code:${origin}`);
+  },
 });
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
 // surface. A turn outlives a page reload; quitting stops every one.
@@ -185,11 +191,15 @@ function sessionNode(): string | null {
   return findOnPath("node", termPATH());
 }
 const sessionService = new SessionService({
-  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, computerOn, context: () => context, env: process.env, node: sessionNode, emit: (ev) => send(CH.sessionEvent, ev),
+  trash: (file) => shell.trashItem(file),
+  onRemoved: (thread) => computerService.forget(`chat:${thread}`),
+  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, computerOn, context: () => context, env: process.env, node: sessionNode,
+  // A turn's start and end are when a thread's title may have changed: the browser's label is read again then, not on every state.
+  emit: (ev) => { send(CH.sessionEvent, ev); if (ev.event.kind === "prompt" || ev.event.kind === "done") computerService.retitled(`chat:${ev.thread}`); },
   // A Code launch's binary is the one its terminal's PATH finds, as the typed line's was (agent-computer D18).
   terminalPATH: () => termPATH(),
-  // A Chat turn's CLI is registered while it runs, in its thread's workspace: the computer a Code launch there shares
-  // (the HUD's placeKey, `ws:<name>`; agent-computer D18, D3, D30).
+  // A Chat turn's CLI is registered while it runs, under its thread's key (`chat:<thread>`: its own browser, session-browser
+  // S1, which supersedes the folder-wide computer of agent-computer D3 and D30); its place is only the folder's label.
   // Its exit ends the turn on the computer too: the wheel frees and its asks are cancelled (D31).
   onAgent: (ev) => {
     if (ev.kind === "start") { agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access }); return; }
@@ -215,15 +225,15 @@ const codeGit = new CodeGitService({ vaultRoot: () => context.vaultRoot ?? null,
 const codeImages = new CodeImageService({ userData: () => context.userData, enabled: codeChatOn });
 
 // agent-computer D3, D7, D27, D31, D34, D35: the computer behind the bridge. One ask broker, one wheel, the marked sites
-// (<userData>/computer/sites.json), and a browser per place, made on its first use (after ready: the bridge starts only
-// then). Its state, and the reveal a notification's click asks for, reach the page on `computer:event`; a Chat agent's
+// (<userData>/computer/sites.json), and a browser per session (session-browser S1), made on its first use (after ready:
+// the bridge starts only then). Its state, and the reveal a notification's click asks for, reach the page on `computer:event`; a Chat agent's
 // lines reach its thread live. An ask the pane does not show raises a desktop notification and a Notifications item.
 const computerSettings = (): ComputerConfig => computerConfig(vault.root, agenticosFile);
 const computerBrowsers = new Map<string, ComputerBrowser>();
 /** The notices raised off-screen, newest last, for the e2e suite (`__aosMain.computerNotices`). */
 const computerNotices: Array<{ title: string; body: string }> = [];
 const askNotifier = new AskNotifier({
-  visible: (ask) => computerService.onScreen(ask.computer) && computerWindowShown(),
+  visible: (ask) => (ask.why === "power" ? computerService.paneShows(ask.computer) && computerWindowShown(true) : computerService.onScreen(ask.computer) && computerWindowShown()),
   desktop: (title, body, onClick) => {
     if (!app.isPackaged || __AOS_TEST_BUILD__) {
       computerNotices.push({ title, body });
@@ -241,16 +251,30 @@ const askNotifier = new AskNotifier({
 });
 const askBroker = new AskBroker({
   timeoutMs: () => computerSettings().askTimeoutSec * 1000,
-  onChange: (pending) => { computerService.refresh(); askNotifier.sync(pending); },
+  onChange: (pending) => { computerService.refresh(); computerService.released(); askNotifier.sync(pending); },
 });
-const computerWheel = new Wheel({ reserved: (c) => computerService.reserved(c), onChange: () => computerService.refresh() });
+const computerWheel = new Wheel({ reserved: (c) => computerService.reserved(c), onChange: () => { computerService.refresh(); computerService.released(); } });
 /** An ask the person could see when it came is noticed if the app's window blurs, hides or minimizes while it is pending. */
 const recheckAsks = (): void => { setTimeout(() => askNotifier.sync(askBroker.pending()), 0); };
+const computerRecords = new BrowserRecords({
+  file: path.join(app.getPath("userData"), "computer", "browsers.json"),
+  log: (line) => console.warn(`[main] ${line}`),
+});
 const computerService: ComputerService = new ComputerService({
-  browser: (place, hooks) => {
-    const b = new ComputerBrowser({ key: place, window: () => win, hooks });
-    computerBrowsers.set(place, b);
+  records: computerRecords,
+  threadExists: (session) => session.startsWith("chat:") ? sessionService.exists(session.slice("chat:".length)) : false,
+  moved: (from, to) => { const b = computerBrowsers.get(from); if (b) { computerBrowsers.delete(from); computerBrowsers.set(to, b); } },
+  label: (session) => (session.startsWith("chat:") ? sessionService.titleOf(session.slice("chat:".length)) : undefined),
+  browser: (session, hooks) => {
+    const b = new ComputerBrowser({ key: session, window: () => win, hooks });
+    computerBrowsers.set(session, b);
     return b;
+  },
+  destroyed: (session) => {
+    // A destroyed browser is not moved home (session-browser S21): the pop-out forgets it and shows nothing until told.
+    const b = computerBrowsers.get(session);
+    computerBrowsers.delete(session);
+    if (b && computerPop?.view === b) computerPop.view = null;
   },
   broker: askBroker,
   wheel: computerWheel,
@@ -262,11 +286,24 @@ const computerService: ComputerService = new ComputerService({
   note: (agent, line) => {
     if (agent.page === "chat" && agent.key.startsWith("chat:")) sessionService.noteEvent(agent.key.slice("chat:".length), line);
   },
-  popOut: (place) => popOutComputer(place),
+  popOut: (session, show) => popOutComputer(session, show),
   // D31: a late bridge close from a session's previous process must not end the turn that replaced it.
   liveAgent: (key) => agentRegistry.byKey(key),
   startPage: computerStartPage,
 });
+// The records are read once the app is ready, not here: a thread's browser that was on is restored through Electron's
+// session API, which throws before `ready` (session-browser S6, S7). See `restoreComputer`, called first in `whenReady`.
+/** Once, independent of the bridge (no vault, a failed peer addon, the surface off at start) and before the window and
+ *  before any page call: the Code records become orphans before any new terminal can reuse a key, and the threads'
+ *  browsers come back asleep or off. One bad record must never stop the app from starting. */
+function restoreComputer(): void {
+  try {
+    computerRecords.orphanCode();
+    computerService.boot();
+  } catch (err) {
+    console.warn("[main] computer: saved browsers could not be restored", err);
+  }
+}
 
 /** The variables the HUD reads (HudHost.env), from main's environment; nothing else of it reaches the page. */
 const PAGE_ENV = ["SHELL", "CLAUDE_CONFIG_DIR", "AOS_CONFIG", "AOS_VAULT", "CODEX_HOME"];
@@ -304,8 +341,6 @@ let win: BrowserWindow | null = null;
 let tray: StatusTray | null = null;
 let watcher: VaultWatcher | null = null;
 let quitting = false;
-/** Set when the quit is an update's: an updater error before the app exits gives the window its hide-on-close back. */
-let quittingForUpdate = false;
 let rendererReady = false;
 let commands: CommandInfo[] = [];
 const pendingLinks: ProtocolRequest[] = [];
@@ -317,12 +352,12 @@ const updates = new UpdateService({
   intervalHours: updateConfig.intervalHours,
   load: () => (require("electron-updater") as { autoUpdater: UpdaterLike }).autoUpdater,
   emit: (s) => {
-    if (s.status === "error" && quittingForUpdate) { quittingForUpdate = false; quitting = false; }
+    if (quitCalledOff({ quitting, updateStatus: s.status })) { quitting = false; computerService.quitCancelled(); }
     send(CH.updateEvent, s);
     setMenu();
   },
   // The window hides on close until the app quits; an update's quit closes the windows before `before-quit`, so it says so first.
-  beforeInstall: () => { quitting = true; quittingForUpdate = true; shutdownComputer(); },
+  beforeInstall: () => { quitting = true; shutdownComputer(); },
   // R86: the terminals end, and node-pty reports each exit, before quitAndInstall starts the quit (quit-gate.ts).
   settle: () => (ptyService.busy ? ptyService.settle() : null),
 });
@@ -367,8 +402,9 @@ function togglePopover(anchor: Rectangle): boolean {
 
 // ── the computer's pop-out window ────────────────────────────────────
 
-/** The pop-out window and the place whose computer it holds (agent-computer D5: the pane's Pop out). */
-let computerPop: { win: BrowserWindow; place: string } | null = null;
+/** The pop-out window, the session it follows (session-browser S21: null when none is selected) and the browser object in
+ *  it (null while it is empty). Agent-computer D5: the pane's Pop out. */
+let computerPop: { win: BrowserWindow; session: string | null; view: ComputerBrowser | null } | null = null;
 
 const popBounds = (w: BrowserWindow): Rectangle => { const [width, height] = w.getContentSize(); return { x: 0, y: 0, width, height }; };
 
@@ -383,7 +419,7 @@ function popBack(): void {
   const pop = computerPop;
   if (!pop) return;
   computerPop = null;
-  moveHome(computerBrowsers.get(pop.place));
+  moveHome(pop.view ?? undefined);
   computerService.popIn();
 }
 
@@ -395,21 +431,20 @@ function closeComputerPop(): void {
 }
 
 /**
- * Moves a place's computer into the pop-out window, made on first use, and the one it held before back to the main
- * window. The window loads nothing and has no preload: it only holds the computer's view, with the main window's
- * hardening. Closing it moves the view back to the main window first.
+ * The pop-out window follows the selected session (session-browser S21). `on` with a browser: that browser goes into the
+ * window (made on first use; the one held before goes back to the main window; the same object only retitles it).
+ * Otherwise (the session's browser is off, or none is selected) the window stays open and empty and its title says so.
+ * The window loads nothing and has no preload: it only holds the view, with the main window's hardening. Later calls never
+ * show or focus the window, except the user's own Pop out press (`front`), which brings an existing window forward. Closing it moves the view back to the main window first.
  */
-function popOutComputer(place: string): void {
-  const b = computerBrowsers.get(place);
-  if (!b) return;
+function popOutComputer(session: string | null, show: { label: string; on: boolean; front?: boolean }): void {
+  const b = session && show.on ? computerBrowsers.get(session) : undefined;
   let pop = computerPop && !computerPop.win.isDestroyed() ? computerPop : null;
-  if (pop?.place === place) { pop.win.show(); pop.win.focus(); return; }
-  if (pop) {
-    moveHome(computerBrowsers.get(pop.place));
-    pop.place = place;
-  } else {
+  let created = false;
+  if (!pop) {
+    if (!b) return;
     const w = new BrowserWindow({
-      width: 1100, height: 760, minWidth: 480, minHeight: 360, show: false, title: `${BRAND.name} Computer`,
+      width: 1100, height: 760, minWidth: 480, minHeight: 360, show: false, title: `${BRAND.name} Browser`,
       backgroundColor: windowBackground(nativeTheme.shouldUseDarkColors),
       webPreferences: {
         nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true, webSecurity: true,
@@ -418,26 +453,36 @@ function popOutComputer(place: string): void {
     });
     w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     w.webContents.on("will-navigate", (e) => e.preventDefault());
-    w.on("resize", () => { if (computerPop?.win === w) computerBrowsers.get(computerPop.place)?.show(popBounds(w)); });
+    w.on("resize", () => { if (computerPop?.win === w) computerPop.view?.show(popBounds(w)); });
     w.on("close", () => { if (computerPop?.win === w) popBack(); });
     w.on("blur", recheckAsks);
     w.on("hide", recheckAsks);
     w.on("minimize", recheckAsks);
-    pop = computerPop = { win: w, place };
+    pop = computerPop = { win: w, session, view: null };
+    created = true;
   }
-  b.moveTo(pop.win);
-  pop.win.show();
-  b.show(popBounds(pop.win));
+  pop.session = session;
+  // Another session's browser, or this session's new one (turned off and on again): the one held goes home first.
+  if (pop.view && pop.view !== b) { moveHome(pop.view); pop.view = null; }
+  if (b && pop.view !== b) {
+    b.moveTo(pop.win);
+    pop.view = b;
+    b.show(popBounds(pop.win));
+  }
+  pop.win.setTitle(`${BRAND.name} Browser${session && show.label ? `: ${show.label}` : ""}${session && !show.on ? " (off)" : ""}`);
+  if (created) { pop.win.show(); pop.win.focus(); }
+  else if (show.front) { if (pop.win.isMinimized()) pop.win.restore(); pop.win.show(); pop.win.focus(); }
 }
 
 /**
  * Whether the person can see the pane's computer now (agent-computer D27): the window holding it (the pop-out while
  * there is one, else the main one) is shown and not minimized, and one of the app's windows has focus (the main one,
- * where the ask's card is, or the pop-out).
+ * where the ask's card is, or the pop-out). `inMain`: a power ask's card is always in the main window's pane, so the
+ * main window is the holder; either window's focus counts.
  */
-function computerWindowShown(): boolean {
+function computerWindowShown(inMain = false): boolean {
   const pop = computerPop && !computerPop.win.isDestroyed() ? computerPop.win : null;
-  const holder = pop ?? win;
+  const holder = inMain ? win : (pop ?? win);
   if (!holder || holder.isDestroyed() || !holder.isVisible() || holder.isMinimized()) return false;
   return [win, pop].some((w) => !!w && !w.isDestroyed() && w.isFocused());
 }
@@ -450,6 +495,10 @@ function computerWindowShown(): boolean {
  * update's quit that failed).
  */
 function shutdownComputer(): void {
+  // The records first: a write still waiting for its 500 ms goes out before the browsers are destroyed.
+  // Closes the records: nothing the shutdown does next (destroying browsers, cancelling asks) may rewrite them, and it
+  // may run twice (before-quit, will-quit). A quit that fails reopens them when a browser is next made.
+  computerService.flushForQuit();
   for (const b of computerBrowsers.values()) { try { b.destroy(); } catch { /* already gone */ } }
   computerBrowsers.clear();
   computerService.forgetBrowsers();
@@ -651,7 +700,7 @@ registerUpdateIpc(trust, {
   check: () => updates.check(),
   install: () => { installRequests += 1; updates.install(); },
 });
-registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, vaultRoot: () => vault.root });
+registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, sessions: { terminal: (id) => ptyService.holdsOrigin(id), thread: (id) => sessionService.has(id) } });
 registerThemeIpc(trust, { state: () => themeState(), set: (source) => setTheme(source) });
 
 /** The page went (closed, crashed, reloaded, or quitting): its terminals go with it, and the children it was waiting on.
@@ -666,6 +715,8 @@ function endPageWork(): void {
   askBroker.cancel(() => true, "the app's window closed or reloaded");
   if (quitting) return;
   closeComputerPop();
+  // session-browser S1: the next page counts its terminals from the start, so the Code sessions' browsers go too.
+  computerService.pageGone();
   computerService.show(null);
   computerService.select(null);
 }
@@ -739,10 +790,10 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", (_e, argv) => { const url = urlFromArgv(argv); if (url) openLink(url); else show(); });
   app.on("activate", () => show());
   // R86: with a terminal running, the quit waits for every terminal's exit, then is asked again (quit-gate.ts).
-  app.on("before-quit", (e) => { quitting = true; quittingForUpdate = false; shutdownComputer(); codeMirror.stopAll(); gate.hold(e); });
+  app.on("before-quit", (e) => { quitting = true; shutdownComputer(); codeMirror.stopAll(); gate.hold(e); });
   // Any quitAndInstall, not only Restart to Update's: Squirrel's own signal comes before the windows are asked to close.
   // The terminals end now; `before-quit`, which follows the windows' closing, waits for what is left of them.
-  autoUpdater.on("before-quit-for-update", () => { quitting = true; quittingForUpdate = true; shutdownComputer(); codeMirror.stopAll(); ptyService.killAll(); });
+  autoUpdater.on("before-quit-for-update", () => { quitting = true; shutdownComputer(); codeMirror.stopAll(); ptyService.killAll(); });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
   // The marker keeps no Computer state past the app: an agent asking now hears that the app is not running.
   // The daily image prune started once the app is ready (code-chat M2); stopped at quit like the other services.
@@ -750,6 +801,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); codeMirror.stopAll(); shutdownComputer(); stopImagePrune(); });
 
   void app.whenReady().then(() => {
+    restoreComputer();
     // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay).
     sweepHeld(app.getPath("temp"));
     // code-chat R59: the Code composer's images go about three months after their month ended, checked now and once a day
@@ -784,4 +836,10 @@ if (!app.requestSingleInstanceLock()) {
   setTheme: (source: ThemeSource) => setTheme(source),
   // The computer's ask notices raised off-screen (agent-computer D27), as the notifier passed them to the desktop.
   computerNotices: () => computerNotices.map((n) => ({ ...n })),
+  // The addresses main opened in the default browser (opened) or refused (not), newest last (dev runs and test builds only).
+  externalOpens: () => externalOpens(),
+  // The webContents id of the active tab of a session's browser (the selected session's by default), for the e2e specs' own look at a page.
+  computerPageId: (session?: string) => computerService.activeWebContentsId(session),
+  // The session the pane has selected, so a spec can turn its browser on (a browser starts off, session-browser S2).
+  computerSelected: () => computerService.selectedSession(),
 };

@@ -5,7 +5,8 @@
 import { Notice, setIcon } from "obsidian";
 import type AgenticOSPlugin from "../../main";
 import { hasChat, type TerminalSession } from "../data/terminalSession";
-import { TERM_HOST_LABEL, placeKey, type Place, type TermAccess } from "../data/terminalLaunch";
+import { TERM_HOST_LABEL, type Place, type TermAccess } from "../data/terminalLaunch";
+import { codeSession } from "../data/computerStore";
 import { rowStatus } from "../data/codeChat";
 import type { CodeView } from "../data/codeFeeds";
 import type { CodeSidebarModel } from "../data/codeSidebarModel";
@@ -21,7 +22,8 @@ export interface CodeTopBarHost {
   activeSession(): TerminalSession | undefined;
   composer(): TermComposer | null;
   computer(): ComputerPane | null;
-  startIn(place: Place, host: "quick" | "shell" | "claude" | "codex", resume?: "last" | { id: string } | null): void;
+  /** `replacing`: the ended terminal this one restarts or resumes, whose browser follows it (session-browser S22). */
+  startIn(place: Place, host: "quick" | "shell" | "claude" | "codex", resume?: "last" | { id: string } | null, replacing?: string): void;
   setView(v: CodeView): void;
   /** The New menu's New workspace sheet, named for a Scratch terminal. */
   makeWorkspace(named: string): void;
@@ -72,11 +74,13 @@ export class CodeTopBar {
     this.stage.applyView();
     this.panes.follow(s);
     this.panes.renderBar(this.panesEl, s, s ? this.model.placeOfSession(s) : null);
-    if (past) { this.renderPastHead(el, past); return; }
+    // A past conversation has no browser (session-browser S1): the pane must not keep the last terminal's.
+    if (past) { this.host.computer()?.follow(null, "A past conversation has no browser."); this.renderPastHead(el, past); return; }
     if (!s) { this.host.computer()?.follow(null); return; }
     const place = this.model.placeOfSession(s);
-    // The pane shows the computer this terminal's place shares (agent-computer D30, D32), shell or agent.
-    this.host.computer()?.follow({ place: placeKey(place), label: place.label });
+    // The pane shows this terminal's own browser, shell or agent (session-browser S1): `code:<the id of its first process>`.
+    // A terminal with no process yet (a Code launch still starting) has none.
+    this.host.computer()?.follow(s.originPty ? { session: codeSession(s.originPty), label: s.getTitle() } : null, "This terminal is still starting.");
     el.createSpan({ cls: "aos-term-headtitle", text: s.getTitle() });
     const wrap = el.createDiv({ cls: "aos-term-placewrap" });
     const chip = wrap.createEl("button", { cls: "aos-term-place", attr: { type: "button", "aria-haspopup": "menu", title: place.dir } });
@@ -102,12 +106,12 @@ export class CodeTopBar {
       };
       if (s.meta.host !== "shell") {
         const host = s.meta.host;
-        btn("Restart", () => this.host.startIn(place, host));
+        btn("Restart", () => this.host.startIn(place, host, null, s.id));
         // By id on either host when the terminal knows its conversation (a new Claude Code one, or any resume by id);
         // otherwise the latest one in this folder (spaces-redesign D7).
         const id = this.model.conversationOf(s);
-        if (id) btn("Resume", () => this.host.startIn(place, host, { id }), `Resume this conversation (${id.slice(0, 8)}…)`);
-        else btn("Resume latest", () => this.host.startIn(place, host, "last"), "Resume the latest conversation in this folder");
+        if (id) btn("Resume", () => this.host.startIn(place, host, { id }, s.id), `Resume this conversation (${id.slice(0, 8)}…)`);
+        else btn("Resume latest", () => this.host.startIn(place, host, "last", s.id), "Resume the latest conversation in this folder");
       }
       btn("Open a shell here", () => this.host.startIn(place, "shell"));
     }

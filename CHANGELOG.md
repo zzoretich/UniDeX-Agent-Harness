@@ -9,10 +9,22 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - The browser pane has a visible drag bar, Side, Half and Wide sizes, and it can now grow until the session is 360 px wide. <!-- tour: code.computer-size, sessions.computer-size -->
 - Back, Forward and Reload in the browser pane. <!-- no-tour: standard browser buttons -->
 - A session started from UniDeX is told about its browser three ways: a browser skill, a paragraph the agenticos server sends at connect, and tool descriptions that name the UniDeX browser. <!-- no-tour: nothing new on screen -->
+- Delete thread in Sessions moves a thread to the Trash. <!-- no-tour: one button with a confirmation -->
+- computer.awake (default 4): how many session browsers keep their pages loaded. <!-- no-tour: a setting -->
+
+### Changed
+- Every session has its own browser: two sessions in one folder no longer share tabs or wait for each other. <!-- tour: code.computer, sessions.computer -->
+- A session's browser starts off. Turn it on from the pane, or choose Turn on when the agent asks. Off closes its tabs and stops the agent in it; quitting keeps them. <!-- tour: code.computer-power, sessions.computer-power -->
+- A web link clicked in a session opens in that session's browser, localhost included. <!-- no-tour: a click behaves differently, nothing new to point at -->
+- The pop-out browser window follows the selected session, is titled with its name, and stays open and empty, saying "(off)", while that session's browser is off. <!-- no-tour: the window behaves differently, nothing new to point at -->
+- Picking another model or access level on a Code session restarts its terminal and keeps its browser, with its pages not reloaded. <!-- no-tour: nothing new on screen -->
 
 ### Fixed
 - An approval card in Code's chat stays up while its terminal resizes (switching to the terminal view with ⌘J, opening a pane, resizing the window) until the agent redraws its prompt at the new size. Before, the card and the "Answer the card above first" note could vanish for a moment, and a Send in that moment went to the terminal, where its ⏎ answered the prompt. <!-- no-tour: a fix with no new control -->
 - A local routine (`engine: local`) that runs past its `timeoutSec` is always logged as a timeout. Before, the engine's own timer could fire a moment before the routine's and log the run as an engine error ("ollama timeout"). <!-- no-tour: a fix with no new control -->
+
+### Security
+- No address is shown, reported to an agent or saved with a user name or password in it, and a web link with one in its address is not opened. <!-- no-tour: nothing to point at -->
 
 ## [2.6.0] — 2026-11-11
 

@@ -7,14 +7,14 @@ description: Use the UniDeX browser, the browser inside the UniDeX app that the 
 
 The UniDeX app has a browser that the user watches beside this session. Nine tools of the `agenticos` MCP server drive
 it: `mcp__plugin_agenticos_agenticos__computer_status`, `computer_open`, `computer_snapshot`, `computer_screenshot`,
-`computer_click`, `computer_type`, `computer_key`, `computer_scroll` and `computer_wait`. The browser is made on first
-use; there is nothing to set up.
+`computer_click`, `computer_type`, `computer_key`, `computer_scroll` and `computer_wait`. The browser starts off; the user turns it on.
 
 ## Check where you are
 
-Call `mcp__plugin_agenticos_agenticos__computer_status` first. When it answers that the app is not reachable, or
-that the browser is turned off or could not start, stop here: follow the next step that answer gives and use whatever
-other browser tools this session has.
+Call `mcp__plugin_agenticos_agenticos__computer_status` first. When it answers that the app is not reachable, that the
+UniDeX browser is turned off in Settings, or that the browser could not start, stop here: follow the next step that answer
+gives and use whatever other browser tools this session has. When it shows this session's own browser as
+`(off: computer_open asks the user to turn it on)`, do not stop: call `computer_open`, which asks the user to turn it on.
 
 ## When to use it
 
@@ -24,10 +24,11 @@ documentation, for localhost and for previewing what you built. The user sees ev
 ## The loop
 
 1. Check `computer_status`.
-2. Open the page with `computer_open`.
-3. Read it with `computer_snapshot`, which returns the page's text and a ref for each element you can act on.
-4. Act on an element by its ref with `computer_click`, `computer_type`, `computer_key` or `computer_scroll`.
-5. Read the page again with `computer_snapshot` to see what changed. Refs belong to one snapshot: take a new one
+2. The browser starts off. Your first `computer_open` asks the user to turn it on; if they choose Not now, go on without the browser and do not ask again this turn. When the user says they turned it on or opened it for you, call `computer_status` and carry on.
+3. Open the page with `computer_open`.
+4. Read it with `computer_snapshot`, which returns the page's text and a ref for each element you can act on.
+5. Act on an element by its ref with `computer_click`, `computer_type`, `computer_key` or `computer_scroll`.
+6. Read the page again with `computer_snapshot` to see what changed. Refs belong to one snapshot: take a new one
    after the page changes.
 
 Use `computer_screenshot` when the layout matters and the text does not tell you enough.

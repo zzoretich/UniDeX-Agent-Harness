@@ -641,7 +641,7 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "sessions",
     label: "Sessions",
-    source: "main/services/sessions.ts and main/services/git.ts, for views/SessionsTab.ts (spec 2026-10-07-unidex-sessions): main runs each turn through the runtime's lib/sessions.js in a workspace folder, keeps the thread, and diffs and commits the workspace repository; the page only names a workspace, a host and a prompt",
+    source: "main/services/sessions.ts and main/services/git.ts, for views/SessionsTab.ts (spec 2026-10-07-unidex-sessions): main runs each turn through the runtime's lib/sessions.js in a workspace folder, keeps the thread, and diffs and commits the workspace repository; Delete thread moves only the thread's own file to the Trash and leaves the host's own transcript alone; the page only names a workspace, a host and a prompt",
     scope: "main",
     writes: ["brain/_index/sessions/*/*.jsonl", "brain/_index/provider-spend.jsonl", "brain/_index/agent-runs/runs.jsonl", "brain/_index/host-catalog.json"],
     folders: ["brain/_index/sessions", "brain/_index/sessions/*", "brain/_index/agent-runs"],

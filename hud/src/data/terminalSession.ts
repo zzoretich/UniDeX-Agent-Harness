@@ -94,8 +94,6 @@ export class TerminalSession {
   private disposed = false;
   /** The agent ended and the login shell took over (D18): titles are the shell prompt's business again. */
   private endedAgent = false;
-  /** The computer's name for the agent main runs here (agent-computer D35), kept after it ends. */
-  private agentKey: string | null = null;
   /** The app's id for the terminal's first process (the agent main runs, or the shell it fell back to), kept for the
    *  terminal's life: the Code chat's follower is named by it, never by a takeover shell's (code-chat R28). */
   private firstPty: string | null = null;
@@ -143,6 +141,8 @@ export class TerminalSession {
       cols: this.size.cols,
       rows: this.size.rows,
       cwd: this.cwd,
+      // A process that takes over in a terminal that already has a first one names it, so main ties the two (session-browser S1).
+      ...(this.firstPty !== null ? { origin: this.firstPty } : {}),
       env: {
         ...(this.env || {}), TERM: "xterm-256color", COLORTERM: "truecolor", AGENTIC_OS: "1", FORCE_HYPERLINK: "1",
         // An agent terminal's shell (the launch line typed into it) hands its key to the agent it starts (code-chat R15),
@@ -208,14 +208,8 @@ export class TerminalSession {
    *  Killed at once if the terminal has gone. */
   attachAgent(p: HostPtyProcess, spawned: { cols: number; rows: number }): void {
     if (this.disposed || this.exited || this.pty) { try { p.kill(); } catch { /* gone */ } return; }
-    if (p.id) this.agentKey = `code:${p.id}`;
     this.attach(p, true, spawned);
   }
-
-  /** The key the computer names this terminal's agent by (agent-computer D31, D35): `code:<the app's terminal id>`, once
-   *  main runs the agent as the terminal's own process; null for a shell, a fallback, or a host without the app's ids.
-   *  The Code rows' dot and "waiting" read a computer's holder and asks by it. */
-  get computerKey(): string | null { return this.agentKey; }
 
   /** The agent exited and the login shell took over in its terminal (D18; code-chat R39): `meta.host` still names the
    *  agent (its end bar keeps Restart and Resume), but what runs and takes keys now is a shell, so the chat writes nothing

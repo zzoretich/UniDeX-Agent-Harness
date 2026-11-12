@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ASK_LABELS, ComputerService, type BrowserLike, type ComputerState } from "../../src/main/computer/service";
+import { ASK_LABELS, QUITTING, cleanTitle, ComputerService, type BrowserLike, type ComputerState } from "../../src/main/computer/service";
 import { AskBroker, type Clock } from "../../src/main/computer/asks";
 import { Wheel } from "../../src/main/computer/wheel";
+import { BrowserRecords } from "../../src/main/computer/records";
 import { SiteMarks } from "../../src/main/computer/sites";
-import type { AgentRef } from "../../src/main/computer/registry";
+import { AgentRegistry, type AgentRef } from "../../src/main/computer/registry";
 import type { BrowserHooks, Resolved, TabInfo } from "../../src/main/computer/browser";
 import type { Access, Focus } from "../../src/main/computer/gate";
 import type { Target } from "../../src/main/computer/categories";
@@ -42,9 +43,12 @@ interface Spot { target: Target; shown?: string; sensitive?: boolean; focuses?: 
 const btn = (name: string, more: Partial<Target> = {}): Target => ({ role: "button", name, inForm: false, fileInput: false, ...more });
 const box = (name: string, more: Partial<Target> = {}): Target => ({ role: "textbox", name, inForm: false, fileInput: false, ...more });
 
+/** Sessions whose fake browser throws from `restore` (a record that cannot be brought back). */
+const restoreFails = new Set<string>();
+
 /** The subset of ComputerBrowser the service drives, over an in-memory page. */
 class FakeBrowser implements BrowserLike {
-  pages: { url: string; openedBy: string | null }[] = [];
+  pages: { url: string; openedBy: string | null; hidden?: boolean }[] = [];
   current = -1; seq = 0;
   spots = new Map<string, Spot>();
   focused: Focus = { target: null, shown: "", sensitive: false, plainTextarea: false, node: null, frame: null };
@@ -65,12 +69,27 @@ class FakeBrowser implements BrowserLike {
   keyGate: Promise<void> | null = null;
   /** While set, resolve() waits on it (a slow read of the page: the first resolve, or a revalidation's). */
   resolveGate: Promise<void> | null = null;
-  constructor(public place: string, public hooks: BrowserHooks) {}
-  tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: false, canForward: false })); }
+  destroyed = 0;
+  destroy() { this.destroyed++; this.pages = []; this.current = -1; this.signalGone(); }
+  private signalGone: () => void = () => {};
+  private readonly goneP = new Promise<void>((r) => { this.signalGone = r; });
+  /** S9: sleep keeps the pages (the real browser keeps their addresses); wake records when it ran and can be held. */
+  sleeps = 0; wakes = 0; sleeping = false; wakeGate: Promise<void> | null = null;
+  sleepThrows = false; snapGate: Promise<void> | null = null;
+  sleep() { this.sleeps++; if (this.sleepThrows) throw new Error("no sleep"); this.sleeping = true; }
+  async wake() { this.wakes++; await Promise.race([this.wakeGate, this.goneP]); this.sleeping = false; }
+  asleep() { return this.sleeping; }
+  restore(tabs: readonly string[], active: number) { if (restoreFails.has(this.session)) throw new Error("cannot restore"); this.restored++; this.pages = tabs.map((url) => ({ url, openedBy: null, hidden: true })); this.current = active; this.sleeping = true; }
+  restored = 0;
+  /** Main only (the real address of every tab). */
+  realAddresses() { if (this.destroyed > 0) throw new Error("the browser is gone"); return { urls: this.pages.map((p) => p.url), active: Math.max(0, this.current) }; }
+  constructor(public session: string, public hooks: BrowserHooks) {}
+  tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.hidden ? p.url.replace(/[?#].*$/, "") : p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: false, canForward: false })); }
+  activeWebContentsId(): number | null { return this.current < 0 ? null : 100 + this.current; }
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
   async open(url: string, o: { newTab?: boolean; by: string | null }) {
     if (o.newTab || this.current < 0) { this.pages.push({ url: new URL(url).href, openedBy: o.by }); this.current = this.pages.length - 1; }
-    else this.pages[this.current].url = new URL(url).href;
+    else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy };
     this.seq++;
     return { url: this.pages[this.current].url, title: "" };
   }
@@ -86,6 +105,7 @@ class FakeBrowser implements BrowserLike {
   close(i: number) { this.need(i); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
   async snapshot(tab?: number, session?: string): Promise<Snapshot> {
     this.need(tab); this.snapshotsFor.push(session);
+    await this.snapGate;
     return { text: `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">\n${this.text}\n</untrusted-page>`, refs: new Map(), truncated: false };
   }
   async screenshot(tab?: number) { this.need(tab); return Buffer.from("PNGDATA"); }
@@ -154,33 +174,50 @@ const agent = (key: string, label: string, access: Access = "edit", place = "ws:
 const A = agent("chat:a", "Alpha");
 const B = agent("chat:b", "Beta");
 
-function make(o: { enabled?: boolean; popOut?: (place: string) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string } = {}) {
+function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined } = {}) {
   const clock = new FakeClock();
   const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-service-")), "computer", "sites.json"));
-  const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120 };
+  const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120, awake: 4 };
   const states: ComputerState[] = [];
   const notes: [string, string][] = [];
   const browsers = new Map<string, FakeBrowser>();
   let svc: ComputerService | null = null;
   const broker = new AskBroker({ timeoutMs: () => cfg.askTimeoutSec * 1000, clock, onChange: () => svc?.refresh() });
   const wheel = new Wheel({ clock, reserved: (c) => svc?.reserved(c) ?? false, onChange: (c) => svc?.refresh(c) });
+  const records = o.records ?? new BrowserRecords({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-records-")), "browsers.json") });
   svc = new ComputerService({
-    browser: (place, hooks) => { const b = new FakeBrowser(place, hooks); browsers.set(place, b); return b; },
+    records,
+    ...(o.threadExists ? { threadExists: o.threadExists } : {}),
+    browser: (session, hooks) => { const b = new FakeBrowser(session, hooks); browsers.set(session, b); return b; },
     broker, wheel, sites, config: () => cfg, emit: (s) => states.push(s), note: (a, line) => notes.push([a.key, line]), clock,
     ...(o.popOut ? { popOut: o.popOut } : {}),
+    ...(o.label ? { label: o.label } : {}),
+    ...(o.destroyed ? { destroyed: o.destroyed } : {}),
+    ...(o.moved ? { moved: o.moved } : {}),
     ...(o.liveAgent ? { liveAgent: o.liveAgent } : {}),
     ...(o.startPage ? { startPage: o.startPage } : {}),
   });
   const s = svc;
   let id = 0;
-  const call = (who: AgentRef, tool: ComputerTool, args: Record<string, unknown> = {}) => s.call(who, { id: ++id, tool, args });
-  const b = (place = "ws:alpha"): FakeBrowser => { const x = browsers.get(place); if (!x) throw new Error(`no browser for ${place}`); return x; };
-  const open = async (who: AgentRef, url: string) => { const r = await call(who, "computer_open", { url }); assert.ok(!r.isError, r.text); return b(who.place); };
+  // session-browser S2: a browser starts off. Unless a test is about that (`off`), a session is turned on, with no tab, the
+  // first time it calls, so the tests below keep driving a browser that is simply there.
+  const on = new Set<string>();
+  const ensureOn = async (key: string): Promise<void> => {
+    if (o.off || on.has(key)) return;
+    on.add(key);
+    s.power(key, true);
+    await flush();
+    const x = browsers.get(key);
+    if (x) { x.pages = []; x.current = -1; x.seq = 0; }
+  };
+  const call = async (who: AgentRef, tool: ComputerTool, args: Record<string, unknown> = {}) => { await ensureOn(who.key); return s.call(who, { id: ++id, tool, args }); };
+  const b = (session = "chat:a"): FakeBrowser => { const x = browsers.get(session); if (!x) throw new Error(`no browser for ${session}`); return x; };
+  const open = async (who: AgentRef, url: string) => { const r = await call(who, "computer_open", { url }); assert.ok(!r.isError, r.text); return b(who.key); };
   const asked = async (n = 1) => { for (let i = 0; i < 200 && broker.pending().length < n; i++) await flush(); assert.equal(broker.pending().length, n); return broker.pending()[n - 1]; };
-  const lastState = (place = "ws:alpha") => [...states].reverse().find((x) => x.place === place)!;
+  const lastState = (session = "chat:a") => [...states].reverse().find((x) => x.session === session)!;
   /** Every text that left the service: ask titles and details, notes and log lines (replies are added by the test). */
   const outgoing = () => [...states.flatMap((x) => [...x.asks.flatMap((a) => [a.title, a.detail]), ...x.log.map((l) => l.text)]), ...notes.map(([, l]) => l)];
-  return { clock, sites, cfg, states, notes, broker, wheel, svc: s, call, b, open, asked, lastState, outgoing };
+  return { records, clock, sites, cfg, states, notes, broker, wheel, svc: s, ensureOn, on, call, b, browsers, open, asked, lastState, outgoing };
 }
 
 // ---- the brief's tests
@@ -190,28 +227,150 @@ test("a Read only click is refused without taking the wheel, while a snapshot wo
   const b = await h.open(A, "https://a.test/");
   b.text = "hello";
   h.svc.agentGone(A);
-  const R = agent("chat:r", "Reader", "read");
+  const R = agent("chat:a", "Reader", "read");
   const r = await h.call(R, "computer_click", { ref: "e1" });
   assert.equal(r.text, "Read only: this session can look but not act (D17).");
   assert.equal(r.isError, true);
-  assert.equal(h.wheel.holder("ws:alpha"), null);
+  assert.equal(h.wheel.holder("chat:a"), null);
   assert.match((await h.call(R, "computer_snapshot")).text, /hello/);
 });
 
-test("a second session gets busy, and its look tools still answer", async () => {
+test("two sessions in one folder have separate tabs and neither is busy (session-browser S1)", async () => {
+  const h = make();
+  const one = agent("code:t1", "One", "edit", "vault");
+  const two = agent("code:t2", "Two", "edit", "vault");
+  const ra = await h.call(one, "computer_open", { url: "https://one.test/" });
+  const rb = await h.call(two, "computer_open", { url: "https://two.test/" });
+  for (const r of [ra, rb]) { assert.ok(!r.isError, r.text); assert.ok(!r.text.includes("busy"), r.text); }
+  assert.deepEqual([...h.browsers.keys()].sort(), ["code:t1", "code:t2"], "the browser factory saw each session, not the folder");
+  assert.deepEqual(h.b("code:t1").tabs().map((t) => t.url), ["https://one.test/"]);
+  assert.deepEqual(h.b("code:t2").tabs().map((t) => t.url), ["https://two.test/"]);
+  assert.deepEqual(h.wheel.holder("code:t1"), { kind: "agent", session: "code:t1", label: "One" });
+  assert.deepEqual(h.wheel.holder("code:t2"), { kind: "agent", session: "code:t2", label: "Two" });
+  // Each one's status names its own browser, tabs and driver.
+  const st = (await h.call(two, "computer_status")).text;
+  assert.match(st, /^Browser: Two$/m);
+  assert.match(st, /^Driving: this session \(Two\)$/m);
+  assert.ok(st.includes("two.test") && !st.includes("one.test"), st);
+});
+
+test("activeWebContentsId: the selected session's browser by default, or a named one's (e2e seam)", async () => {
+  const h = make();
+  assert.equal(h.svc.activeWebContentsId(), null, "nothing selected");
+  assert.equal(h.svc.activeWebContentsId("code:t1"), null, "no such session");
+  await h.call(agent("code:t1", "One", "edit", "vault"), "computer_open", { url: "https://one.test/" });
+  await h.call(agent("code:t2", "Two", "edit", "vault"), "computer_open", { url: "https://two.test/" });
+  await h.call(agent("code:t2", "Two", "edit", "vault"), "computer_open", { url: "https://two.test/b", newTab: true });
+  assert.equal(h.svc.activeWebContentsId("code:t1"), 100);
+  assert.equal(h.svc.activeWebContentsId("code:t2"), 101, "its active tab, the second");
+  h.svc.select("code:t2");
+  assert.equal(h.svc.activeWebContentsId(), 101, "the selected session's");
+});
+
+test("one session's status shows nothing of another session's asks or tabs", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/secret-path");
+  b.spots.set("e1", { target: btn("Next") });
+  await h.open(B, "https://b.test/");
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  const ask = await h.asked();
+  const other = (await h.call(B, "computer_status")).text;
+  assert.ok(!other.includes(ask.id) && !other.includes(ask.notice) && !other.includes("a.test"), other);
+  assert.match(other, /^Your pending asks: none$/m);
+  assert.ok(!/The page's pending asks/.test(other), "not even a count");
+  h.svc.answer(ask.id, "deny"); await p;
+});
+
+test("while the user drives, look tools still answer: a screenshot and a plain text wait", async () => {
   const h = make();
   const b = await h.open(A, "https://a.test/");
-  b.text = "page text"; b.spots.set("e1", { target: btn("Next") });
-  const r = await h.call(B, "computer_click", { ref: "e1" });
-  assert.equal(r.text, "busy: Alpha is driving");
-  assert.equal(r.isError, true);
-  assert.equal(b.clicks.length, 0);
-  assert.match((await h.call(B, "computer_snapshot")).text, /page text/);
-  assert.match((await h.call(B, "computer_status")).text, /Driving: Alpha/);
-  assert.equal((await h.call(B, "computer_screenshot")).image?.mimeType, "image/png");
-  const w = h.call(B, "computer_wait", { timeoutSec: 1 });
+  b.text = "Ready";
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  assert.equal((await h.call(A, "computer_screenshot")).image?.mimeType, "image/png");
+  assert.match((await h.call(A, "computer_wait", { text: "Ready" })).text, /^“Ready” is on the page now/);
+  const w = h.call(A, "computer_wait", { timeoutSec: 1 });
   await h.clock.advance(1_000);
   assert.equal((await w).text, `Waited 1 s. ${page("https://a.test/")}`);
+});
+
+test("when the page goes every Code session's browser is destroyed and forgotten", async () => {
+  const gone: string[] = [];
+  const h = make({ destroyed: (k) => gone.push(k) });
+  const c1 = agent("code:t1", "One", "edit", "vault");
+  const c2 = agent("code:t2", "Two", "edit", "vault");
+  const b1 = await h.open(c1, "https://one.test/");
+  const b2 = await h.open(c2, "https://two.test/");
+  const chat = await h.open(A, "https://a.test/");
+  h.svc.select("code:t1");
+  h.svc.pageGone();
+  h.on.delete("code:t1"); h.on.delete("code:t2"); // the next page's sessions start off again
+  assert.equal(b1.destroyed, 1); assert.equal(b2.destroyed, 1); assert.equal(chat.destroyed, 0);
+  assert.deepEqual(gone.sort(), ["code:t1", "code:t2"]);
+  assert.equal(h.wheel.holder("code:t1"), null);
+  assert.equal(h.svc.onScreen("code:t1"), false, "nothing is selected any more");
+  // The next page's first terminal is t1 again: it sees none of the old one's tabs or log, and gets a new browser.
+  const again = agent("code:t1", "Fresh", "edit", "vault");
+  const st = (await h.call(again, "computer_status")).text;
+  assert.match(st, /^Tabs: none/m);
+  assert.deepEqual(h.svc.select("code:t1")?.log, []);
+  const nb = await h.open(again, "https://fresh.test/");
+  assert.notEqual(nb, b1);
+  assert.deepEqual(nb.tabs().map((t) => t.url), ["https://fresh.test/"]);
+  assert.deepEqual(chat.tabs().map((t) => t.url), ["https://a.test/"], "a thread keeps its tabs");
+});
+
+test("the pane shows the selection while it is in view, with or without a rectangle", () => {
+  const h = make();
+  const rect = { x: 1, y: 2, width: 300, height: 200 };
+  h.svc.select("code:1");
+  h.svc.show(null, true);
+  assert.equal(h.svc.paneShows("code:1"), true);
+  assert.equal(h.svc.onScreen("code:1"), false);
+  h.svc.show(null, false);
+  assert.equal(h.svc.paneShows("code:1"), false);
+  h.svc.show(null);
+  assert.equal(h.svc.paneShows("code:1"), false);
+  h.svc.show(rect);
+  assert.equal(h.svc.paneShows("code:1"), true, "a rectangle means in view by default");
+  assert.equal(h.svc.paneShows("code:2"), false, "another session");
+  h.svc.show(null, true);
+  h.svc.pageGone();
+  assert.equal(h.svc.paneShows("code:1"), false);
+});
+
+test("pageGone twice, and with nothing, is harmless", async () => {
+  const h = make();
+  h.svc.pageGone();
+  await h.open(agent("code:t1", "One", "edit", "vault"), "https://one.test/");
+  h.svc.pageGone(); h.svc.pageGone();
+  assert.equal(h.wheel.holder("code:t1"), null);
+});
+
+test("a call in flight for a Code session when the page goes does not land", async () => {
+  const h = make();
+  const c1 = agent("code:t1", "One", "edit", "vault");
+  const b = await h.open(c1, "https://one.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  const p = h.call(c1, "computer_click", { ref: "e1" });
+  await h.asked();
+  h.svc.pageGone();
+  const r = await p;
+  assert.equal(r.isError, true, r.text);
+  assert.equal(b.clicks.length, 0, "nothing was delivered to the destroyed browser");
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("a session whose user holds the wheel is busy until Hand back", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.equal(r.text, "busy: the user is driving: wait for Hand back.");
+  assert.equal(b.clicks.length, 0);
+  assert.match((await h.call(A, "computer_snapshot")).text, /\S/, "look tools still answer");
 });
 
 test("an unmarked click asks; Deny leaves the page unclicked; Allow once clicks", async () => {
@@ -222,7 +381,7 @@ test("an unmarked click asks; Deny leaves the page unclicked; Allow once clicks"
   const ask = await h.asked();
   assert.equal(ask.why, "unmarked");
   assert.equal(ask.title, "Act on a site you haven't marked: Click “Next” on a.test?");
-  assert.equal(ask.session, "chat:a"); assert.equal(ask.sessionLabel, "Alpha"); assert.equal(ask.computer, "ws:alpha");
+  assert.equal(ask.session, "chat:a"); assert.equal(ask.sessionLabel, "Alpha"); assert.equal(ask.computer, "chat:a");
   assert.equal(ask.site, "https://a.test"); assert.equal(ask.always, true);
   assert.ok(h.notes.some(([k, l]) => k === "chat:a" && l.includes(ask.title)), "the ask is a line in the transcript (D6)");
   h.svc.answer(ask.id, "deny");
@@ -373,7 +532,7 @@ test("R76: Take over landing while a click is on its way to the page: the browse
   await flush();
   assert.equal(b.valids.length, 1, "the click carries the predicate");
   assert.equal(b.valids[0](), true, "true while this session holds the wheel");
-  h.svc.select("ws:alpha");
+  h.svc.select("chat:a");
   h.svc.takeOver();
   assert.equal(b.valids[0](), false, "false once the user takes over");
   release();
@@ -390,7 +549,7 @@ test("R76: a key: Take over landing while it is on its way stops it with the bus
   b.keyGate = new Promise<void>((r) => { release = r; });
   const p = h.call(A, "computer_key", { key: "a" });
   await flush();
-  h.svc.select("ws:alpha");
+  h.svc.select("chat:a");
   h.svc.takeOver();
   release();
   assert.equal((await p).text, "busy: the user is driving: wait for Hand back.");
@@ -408,7 +567,7 @@ test("Take over cancels a pending ask, and a late Allow does nothing", async () 
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.spots.set("e1", { target: btn("Next") });
-  h.svc.select("ws:alpha");
+  h.svc.select("chat:a");
   const p = h.call(A, "computer_click", { ref: "e1" });
   const ask = await h.asked();
   h.svc.takeOver();
@@ -418,7 +577,7 @@ test("Take over cancels a pending ask, and a late Allow does nothing", async () 
   h.svc.answer(ask.id, "once");
   await flush();
   assert.equal(b.clicks.length, 0);
-  assert.deepEqual(h.wheel.holder("ws:alpha"), { kind: "user", resume: { session: "chat:a", label: "Alpha" } });
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "user", resume: { session: "chat:a", label: "Alpha" } });
   assert.ok(h.notes.some(([k, l]) => k === "chat:a" && l === "You: Took over"), "the activity log's line, naming you, in the agent's thread (D35)");
 });
 
@@ -447,7 +606,7 @@ test("turn end cancels the pending ask", async () => {
   await h.asked();
   h.svc.agentGone(A);
   assert.match((await p).text, /^Cancelled because the turn ended: /);
-  assert.equal(h.wheel.holder("ws:alpha"), null);
+  assert.equal(h.wheel.holder("chat:a"), null);
   assert.equal(h.broker.pending().length, 0);
   assert.equal(b.clicks.length, 0);
 });
@@ -464,7 +623,7 @@ test("waiting_for_user arrives at 45 s, and computer_wait gets the result", asyn
   await h.clock.advance(1_000);
   assert.equal((await p).text, `waiting_for_user: call computer_wait with askId "${ask.id}"`);
   assert.equal((await p).isError, undefined);
-  assert.deepEqual(h.wheel.holder("ws:alpha"), { kind: "agent", session: "chat:a", label: "Alpha" }, "a pending ask reserves the wheel past 30 s idle");
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" }, "a pending ask reserves the wheel past 30 s idle");
   const w = h.call(A, "computer_wait", { askId: ask.id });
   await flush();
   assert.match((await h.call(B, "computer_wait", { askId: ask.id })).text, /another session/);
@@ -493,7 +652,7 @@ test("type stops between chunks after Take over, and after the turn ends", async
     const h = make();
     const b = await h.open(A, "http://localhost:5173/");
     b.focused = { target: box("Message"), shown: "Message", sensitive: false, plainTextarea: false, node: 50, frame: "F1" };
-    h.svc.select("ws:alpha");
+    h.svc.select("chat:a");
     b.between = () => { b.between = null; if (stop === "takeOver") h.svc.takeOver(); else h.svc.agentGone(A); };
     const r = await h.call(A, "computer_type", { text: "abcdef" });
     assert.deepEqual(b.typed, ["ab"], stop);
@@ -509,7 +668,7 @@ test("disabled config refuses with the Settings line", async () => {
     assert.equal(r.text, "The Computer pane is off (Settings › Computer).");
     assert.equal(r.isError, true);
   }
-  assert.equal(h.wheel.holder("ws:alpha"), null);
+  assert.equal(h.wheel.holder("chat:a"), null);
 });
 
 test("a page-started navigation writes a note", async () => {
@@ -544,7 +703,7 @@ test("the ask labels state each category in app-written text", () => {
   assert.deepEqual(ASK_LABELS, {
     submit: "Submit", purchase: "Purchase", send: "Send", delete: "Delete", merge: "Merge", signin: "Sign in", download: "Download",
     unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
-    frame: "Act inside a frame from another site",
+    frame: "Act inside a frame from another site", power: "Turn on the browser",
   });
 });
 
@@ -629,13 +788,13 @@ test("an ask that settles touches the wheel before the action is revalidated", a
     b.order.length = 0;
     h.svc.answer(ask.id, answer);
     await h.call(A, "computer_wait", { askId: ask.id });
-    assert.equal(b.order[0], "touch ws:alpha chat:a", answer);
+    assert.equal(b.order[0], "touch chat:a chat:a", answer);
     if (answer === "once") assert.deepEqual(b.order.slice(1, 3), ["resolve", "click"]);
     // Held from the settle (t = 100 s) for 30 s: still held at 125 s, though the idle timer last armed at 90 s.
     await h.clock.advance(25_000);
-    assert.notEqual(h.wheel.holder("ws:alpha"), null, answer);
+    assert.notEqual(h.wheel.holder("chat:a"), null, answer);
     await h.clock.advance(10_000);
-    assert.equal(h.wheel.holder("ws:alpha"), null, answer);
+    assert.equal(h.wheel.holder("chat:a"), null, answer);
   }
 });
 
@@ -655,18 +814,19 @@ test("page-event asks go to the session holding the wheel, or to the page, and n
   const ask2 = await h.asked();
   assert.equal(ask2.session, "page"); assert.equal(ask2.sessionLabel, "the page");
   assert.equal(ask2.title, "Grant a permission: Let a.test use camera?");
-  assert.equal(h.wheel.holder("ws:alpha"), null);
-  await h.open(B, "https://a.test/b");
-  assert.equal(h.svc.reserved("ws:alpha"), false);
+  assert.equal(h.wheel.holder("chat:a"), null);
+  // Another process of the same session (its next turn's CLI) acts on the same browser.
+  await h.open(agent("chat:a", "Beta"), "https://a.test/b");
+  assert.equal(h.svc.reserved("chat:a"), false);
   await h.clock.advance(31_000);
-  assert.equal(h.wheel.holder("ws:alpha"), null, "the page's ask does not hold the wheel for Beta");
+  assert.equal(h.wheel.holder("chat:a"), null, "the page's ask does not hold the wheel for Beta");
   h.svc.answer(ask2.id, "deny");
   assert.equal(await pr2, false);
 });
 
 test("agentGone ends the session's turn and cancels only its asks", async () => {
   const h = make();
-  const B2 = agent("chat:b", "Beta", "edit", "ws:beta");
+  const B2 = agent("chat:b", "Beta");
   const ba = await h.open(A, "https://a.test/");
   const bb = await h.open(B2, "https://b.test/");
   ba.spots.set("e1", { target: btn("Next") }); bb.spots.set("e1", { target: btn("Next") });
@@ -677,8 +837,8 @@ test("agentGone ends the session's turn and cancels only its asks", async () => 
   h.svc.agentGone(A);
   assert.match((await pa).text, /turn ended/);
   assert.deepEqual(h.broker.pending().map((x) => x.id), [askB.id]);
-  assert.equal(h.wheel.holder("ws:alpha"), null);
-  assert.deepEqual(h.wheel.holder("ws:beta"), { kind: "agent", session: "chat:b", label: "Beta" });
+  assert.equal(h.wheel.holder("chat:a"), null);
+  assert.deepEqual(h.wheel.holder("chat:b"), { kind: "agent", session: "chat:b", label: "Beta" });
   h.svc.answer(askB.id, "once");
   assert.match((await pb).text, /^Clicked e1\./);
 });
@@ -687,13 +847,13 @@ test("while the user drives, acting tools are busy and look tools work; Hand bac
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.text = "ok";
-  h.svc.select("ws:alpha");
+  h.svc.select("chat:a");
   h.svc.takeOver();
   const r = await h.call(A, "computer_scroll", { dy: 100 });
   assert.equal(r.text, "busy: the user is driving: wait for Hand back.");
   assert.match((await h.call(A, "computer_snapshot")).text, /ok/);
   h.svc.handBack();
-  assert.deepEqual(h.wheel.holder("ws:alpha"), { kind: "agent", session: "chat:a", label: "Alpha" });
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" });
   assert.ok(h.notes.some(([k, l]) => k === "chat:a" && l === "You: Handed back"));
   assert.equal((await h.call(A, "computer_scroll", { dy: 100 })).text, `Scrolled by (0, 100). ${page("https://a.test/")}`);
 });
@@ -753,16 +913,22 @@ test("I1: a page's instruction-shaped name reaches no notice, no denied or timed
   const ask = await h.asked();
   assert.ok(ask.title.includes(evil), "the card may name it: the person sees the page anyway");
   assert.equal(ask.notice, "Act on a site you haven't marked: Click on a.test?");
-  // Another session's status: how many, and which kinds; no title, no id.
-  const other = (await h.call(B, "computer_status")).text;
-  assert.ok(!other.includes("Ignore") && !other.includes(ask.id), other);
-  assert.match(other, /^Your pending asks: none$/m);
-  assert.match(other, /^Other sessions' pending asks: 1 \(Act on a site you haven't marked\)$/m);
   // The asking session's own: the id to wait on and the app-written notice.
   const own = (await h.call(A, "computer_status")).text;
   assert.ok(own.includes(`  ${ask.id} ${ask.notice}`) && !own.includes("Ignore"), own);
   h.svc.answer(ask.id, "deny");
   assert.deepEqual(await p, { text: "The user denied: Act on a site you haven't marked: Click on a.test.", isError: true });
+  // A page's own ask, attributed to no session (nobody holds the wheel): to the session's status it is another's, so only a
+  // count and its kind show; no title, no id.
+  h.svc.agentGone(A);
+  const pageAsk = b.hooks.ask({ why: "download", title: `Save “${evil}.csv” from a.test?`, detail: "From https://a.test/x", site: "https://a.test" });
+  const dl = await h.asked();
+  const other = (await h.call(A, "computer_status")).text;
+  assert.ok(!other.includes("Ignore") && !other.includes(dl.id), other);
+  assert.match(other, /^Your pending asks: none$/m);
+  assert.match(other, /^The page's pending asks: 1 \(Download\)$/m);
+  h.svc.answer(dl.id, "deny");
+  assert.equal(await pageAsk, false);
   // No answer in time: the reply picked up by computer_wait says the same, page text left out.
   h.cfg.askTimeoutSec = 60;
   const p2 = h.call(A, "computer_click", { ref: "e1" });
@@ -798,35 +964,34 @@ test("I1: a page's own ask (a download named by the page) gets an app-written no
   assert.equal(await allowed, false);
 });
 
-test("I2: a snapshot keeps its refs for the session that took it, every ref is looked up in the caller's, and a text wait keeps none", async () => {
+test("I2: a snapshot keeps its refs for the session that took it, every ref is looked up in the session's own, and a text wait keeps none", async () => {
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.text = "Ready"; b.spots.set("e1", { target: btn("Next") }); b.spots.set("e2", { target: box("Name"), focuses: true });
   h.sites.mark("https://a.test");
-  await h.call(B, "computer_snapshot");
   await h.call(A, "computer_snapshot");
   assert.ok(!(await h.call(A, "computer_click", { ref: "e1" })).isError);
   assert.ok(!(await h.call(A, "computer_scroll", { dy: 10, ref: "e1" })).isError);
   assert.ok(!(await h.call(A, "computer_type", { ref: "e2", text: "x" })).isError);
-  assert.ok(!(await h.call(B, "computer_wait", { text: "Ready" })).isError);
-  assert.deepEqual(b.snapshotsFor, ["chat:b", "chat:a", undefined]);
+  assert.ok(!(await h.call(A, "computer_wait", { text: "Ready" })).isError);
+  assert.deepEqual(b.snapshotsFor, ["chat:a", undefined]);
   assert.deepEqual(b.resolvesFor, ["chat:a", "chat:a", "chat:a"]);
 });
 
-test("computer_status reports the place, driver, access, pane, tabs and pending asks", async () => {
+test("computer_status reports the browser, driver, access, pane, tabs and pending asks", async () => {
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.spots.set("e1", { target: btn("Next") });
   const p = h.call(A, "computer_click", { ref: "e1" });
   const ask = await h.asked();
   let s = (await h.call(A, "computer_status")).text;
-  assert.match(s, /^Computer: ws:alpha$/m);
+  assert.match(s, /^Browser: Alpha$/m);
   assert.match(s, /^Driving: this session \(Alpha\)$/m);
   assert.match(s, /^Access: /m);
   assert.match(s, /^Pane: off screen$/m);
   assert.match(s, new RegExp(`^ {2}\\[0\\] \\(active\\) ${esc('<untrusted-page origin="https://a.test">https://a.test/</untrusted-page>')} opened by Alpha$`, "m"));
   assert.ok(s.includes(`${ask.id} ${ask.notice}`), s);
-  h.svc.select("ws:alpha"); h.svc.show({ x: 0, y: 0, width: 400, height: 300 });
+  h.svc.select("chat:a"); h.svc.show({ x: 0, y: 0, width: 400, height: 300 });
   s = (await h.call(A, "computer_status")).text;
   assert.match(s, /^Pane: on screen$/m);
   assert.match((await h.call(agent("chat:r", "Reader", "read"), "computer_status")).text, /Access: read only/);
@@ -837,15 +1002,15 @@ test("computer_wait with text re-reads the page every 500 ms until the text appe
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.text = "Loading";
-  const w = h.call(B, "computer_wait", { text: "Done", timeoutSec: 5 });
+  const w = h.call(A, "computer_wait", { text: "Done", timeoutSec: 5 });
   await h.clock.advance(1_000);
   b.text = "Done!";
   await h.clock.advance(500);
   assert.match((await w).text, /^“Done” is on the page now/);
-  const w2 = h.call(B, "computer_wait", { text: "Never", timeoutSec: 2 });
+  const w2 = h.call(A, "computer_wait", { text: "Never", timeoutSec: 2 });
   await h.clock.advance(2_000);
   assert.match((await w2).text, /^“Never” did not appear within 2 s\./);
-  const w3 = h.call(B, "computer_wait", { text: "a.test", timeoutSec: 1 });
+  const w3 = h.call(A, "computer_wait", { text: "a.test", timeoutSec: 1 });
   await h.clock.advance(1_000);
   assert.match((await w3).text, /did not appear/, "the wrapper's url attribute is not page text");
 });
@@ -881,15 +1046,30 @@ test("bad arguments and refused URLs are answered without taking the wheel", asy
   const h = make();
   assert.equal((await h.call(A, "computer_click", {})).text, "Give either ref, or both x and y.");
   assert.equal((await h.call(A, "computer_open", { url: "javascript:alert(1)" })).text, "Only http and https pages open.");
-  assert.equal(h.wheel.holder("ws:alpha"), null);
+  assert.equal(h.wheel.holder("chat:a"), null);
   assert.match((await h.call(A, "computer_snapshot")).text, /No page is open/);
+});
+
+test("select takes a session key and answers with it, and its label is the newest agent's, else main's own name, else none", async () => {
+  const h = make();
+  assert.equal(h.svc.select("code:t1")?.session, "code:t1");
+  assert.equal(h.svc.select("code:t1")?.label, "", "no agent and no name from main");
+  await h.open(agent("code:t1", "Gamma", "edit", "vault"), "https://g.test/");
+  assert.equal(h.svc.select("code:t1")?.label, "Gamma");
+  assert.equal(h.lastState("code:t1").session, "code:t1");
+  assert.equal(h.svc.select("chat:z")?.session, "chat:z");
+  assert.equal(h.svc.select(null), null);
+  const named = make({ label: (k) => (k === "chat:t" ? "A thread's title" : undefined) });
+  assert.equal(named.svc.select("chat:t")?.label, "A thread's title");
+  assert.equal(named.svc.select("chat:other")?.label, "");
 });
 
 test("the pane's calls: select, show, navigate, tabs, mark and state", async () => {
   const h = make();
+  await h.ensureOn("chat:a");
   assert.equal(h.svc.select(null), null);
-  const s0 = h.svc.select("ws:alpha")!;
-  assert.deepEqual({ place: s0.place, tabs: s0.tabs, holder: s0.holder, marked: s0.marked, poppedOut: s0.poppedOut }, { place: "ws:alpha", tabs: [], holder: null, marked: false, poppedOut: false });
+  const s0 = h.svc.select("chat:a")!;
+  assert.deepEqual({ session: s0.session, tabs: s0.tabs, holder: s0.holder, marked: s0.marked, poppedOut: s0.poppedOut }, { session: "chat:a", tabs: [], holder: null, marked: false, poppedOut: false });
   assert.deepEqual(await h.svc.navigate("file:///etc/passwd"), { ok: false, error: "Only http and https pages open.", code: "EROFS" });
   assert.deepEqual(await h.svc.navigate("https://a.test/"), { ok: true, data: null });
   const b = h.b();
@@ -910,13 +1090,14 @@ test("the pane's calls: select, show, navigate, tabs, mark and state", async () 
   assert.equal(h.lastState().marked, false);
   h.svc.popOut();
   assert.equal(h.lastState().poppedOut, false, "no window to pop out into");
-  h.svc.select("ws:beta");
+  h.svc.select("chat:b");
   assert.equal(b.shows.at(-1), null, "the computer no longer selected is parked");
 });
 
 test("the user's Back reaches the selected browser and is logged (session-browser S13)", async () => {
   const h = make();
-  h.svc.select("ws:alpha");
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
   await h.svc.navigate("https://a.test/");
   h.svc.nav("back");
   h.svc.nav("forward");
@@ -927,7 +1108,8 @@ test("the user's Back reaches the selected browser and is logged (session-browse
 
 test("a Back that cannot happen logs nothing", async () => {
   const h = make();
-  h.svc.select("ws:alpha");
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
   await h.svc.navigate("https://a.test/");
   const before = h.lastState().log.length;
   h.b().navOk = false;
@@ -944,7 +1126,8 @@ test("nav with nothing selected does nothing", () => {
 
 test("+ opens the start page main was given (the e2e suite's fixture); an agent's new tab loads its own URL, never the start page", async () => {
   const h = make({ startPage: "http://search.test:4100/" });
-  h.svc.select("ws:alpha");
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
   h.svc.tab({ kind: "new" });
   await flush();
   const b = h.b();
@@ -964,7 +1147,7 @@ test("an action queued behind another is not delivered once the user has taken o
   const b = await h.open(A, "https://a.test/");
   b.spots.set("e1", { target: btn("Next") });
   b.focused = { target: box("Search"), shown: "Search", sensitive: false, plainTextarea: false, node: 50, frame: "F1" };
-  h.svc.select("ws:alpha");
+  h.svc.select("chat:a");
   b.between = () => { b.between = null; h.svc.takeOver(); };
   const typing = h.call(A, "computer_type", { text: "abcd" });
   const click = h.call(A, "computer_click", { ref: "e1" });
@@ -1240,45 +1423,49 @@ test("a session that only looked gets no page notes", async () => {
   const h = make();
   const b = await h.open(A, "https://a.test/");
   h.svc.agentGone(A);
-  await h.call(B, "computer_snapshot");
-  await h.call(B, "computer_status");
+  const before = h.notes.length;
+  await h.call(A, "computer_snapshot");
+  await h.call(A, "computer_status");
   b.hooks.note("The page went to https://a.test/x");
   await flush();
-  assert.ok(!h.notes.some(([k]) => k === "chat:b"));
+  assert.deepEqual(h.notes.slice(before), []);
   assert.equal(h.lastState().log.at(-1)!.text, "The page went to https://a.test/x");
 });
 
 test("popOut marks the pane popped out only when the app can open its window", async () => {
-  const popped: string[] = [];
-  const h = make({ popOut: (place) => popped.push(place) });
-  h.svc.select("ws:alpha");
+  const popped: (string | null)[] = [];
+  const h = make({ popOut: (session) => popped.push(session) });
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
   h.svc.popOut();
-  assert.deepEqual(popped, ["ws:alpha"]);
+  assert.deepEqual(popped, ["chat:a"]);
   assert.equal(h.lastState().poppedOut, true);
 });
 
-test("onScreen: the pane shows the place with bounds, or popped out (what the ask notices check, agent-computer D27)", async () => {
+test("onScreen: the pane shows the session with bounds, or popped out (what the ask notices check, agent-computer D27)", async () => {
   const h = make({ popOut: () => {} });
-  assert.equal(h.svc.onScreen("ws:alpha"), false);
-  h.svc.select("ws:alpha");
-  assert.equal(h.svc.onScreen("ws:alpha"), false, "selected but collapsed or behind another tab: no bounds");
+  await h.ensureOn("chat:a");
+  assert.equal(h.svc.onScreen("chat:a"), false);
+  h.svc.select("chat:a");
+  assert.equal(h.svc.onScreen("chat:a"), false, "selected but collapsed or behind another tab: no bounds");
   h.svc.show({ x: 0, y: 0, width: 400, height: 300 });
-  assert.equal(h.svc.onScreen("ws:alpha"), true);
-  assert.equal(h.svc.onScreen("ws:beta"), false);
+  assert.equal(h.svc.onScreen("chat:a"), true);
+  assert.equal(h.svc.onScreen("chat:b"), false);
   h.svc.show(null);
-  assert.equal(h.svc.onScreen("ws:alpha"), false);
+  assert.equal(h.svc.onScreen("chat:a"), false);
   h.svc.popOut();
-  assert.equal(h.svc.onScreen("ws:alpha"), true, "popped out: its own window shows it");
+  assert.equal(h.svc.onScreen("chat:a"), true, "popped out: its own window shows it");
   h.svc.popIn();
-  assert.equal(h.svc.onScreen("ws:alpha"), false);
+  assert.equal(h.svc.onScreen("chat:a"), false);
 });
 
 test("popped out, the pane's bounds stay with the pane; popping in puts the computer back at them", async () => {
-  const popped: string[] = [];
-  const h = make({ popOut: (place) => popped.push(place) });
-  h.svc.select("ws:alpha");
+  const popped: (string | null)[] = [];
+  const h = make({ popOut: (session) => popped.push(session) });
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
   await h.svc.navigate("https://a.test/");
-  const a = h.b("ws:alpha");
+  const a = h.b("chat:a");
   h.svc.show({ x: 1, y: 2, width: 300, height: 200 });
   assert.deepEqual(a.shows.at(-1), { x: 1, y: 2, width: 300, height: 200 });
   h.svc.popOut();
@@ -1287,15 +1474,193 @@ test("popped out, the pane's bounds stay with the pane; popping in puts the comp
   h.svc.show(null);
   h.svc.show({ x: 9, y: 9, width: 90, height: 90 });
   assert.equal(a.shows.length, before, "the pop-out window places the view, not the docked placeholder's rectangle");
-  // Another place selected while popped out goes into the window too, and the one before is parked.
-  h.svc.select("ws:beta");
-  assert.deepEqual(popped, ["ws:alpha", "ws:beta"]);
+  // Another session selected while popped out goes into the window too, and the one before is parked.
+  await h.ensureOn("chat:b"); // an off session has no browser to move into the window
+  h.svc.select("chat:b");
+  assert.deepEqual(popped, ["chat:a", "chat:b"]);
   assert.equal(a.shows.at(-1), null);
-  h.svc.select("ws:alpha");
-  assert.deepEqual(popped, ["ws:alpha", "ws:beta", "ws:alpha"]);
+  h.svc.select("chat:a");
+  assert.deepEqual(popped, ["chat:a", "chat:b", "chat:a"]);
   h.svc.popIn();
   assert.deepEqual(a.shows.at(-1), { x: 9, y: 9, width: 90, height: 90 }, "back in the pane at its latest rectangle");
   assert.equal(h.lastState().poppedOut, false);
+});
+
+// ---- the pop-out follows the selected session (session-browser S21)
+
+type Told = [string | null, { label: string; on: boolean; front?: boolean }];
+function popHarness() {
+  const told: Told[] = [];
+  const h = make({ popOut: (session, show) => told.push([session, show]), label: (k) => ({ "chat:a": "Aye", "chat:b": "Bee", "chat:c": "Cee" } as Record<string, string>)[k] });
+  return { h, told };
+}
+
+test("the pop-out follows the selected session", async () => {
+  const { h, told } = popHarness();
+  await h.ensureOn("chat:a");
+  await h.ensureOn("chat:b");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  h.svc.select("chat:b");
+  h.svc.select("chat:a");
+  assert.deepEqual(told, [
+    ["chat:a", { label: "Aye", on: true, front: true }],
+    ["chat:b", { label: "Bee", on: true }],
+    ["chat:a", { label: "Aye", on: true }],
+  ]);
+});
+
+test("a thread's title is read once, not on every state", async () => {
+  let reads = 0;
+  const h = make({ label: (k) => { reads += 1; return k === "chat:a" ? "Aye" : undefined; } });
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  const n = reads;
+  for (let i = 0; i < 5; i++) h.svc.refresh("chat:a");
+  h.svc.describe("chat:a", { title: "" });
+  assert.equal(reads, n, "no emit read the thread again");
+  assert.equal(h.lastState("chat:a").label, "Aye");
+  assert.ok(n >= 1 && n <= 2, `read ${n} times before`);
+  h.svc.refresh("chat:zz");
+  assert.equal(h.states.some((x) => x.session === "chat:zz"), false, "a session with no slot makes none");
+});
+
+test("a retitled thread's label is read again", async () => {
+  let name = "First";
+  let reads = 0;
+  const h = make({ label: (k) => { reads += 1; return k === "chat:a" ? name : undefined; } });
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.refresh("chat:a");
+  assert.equal(h.lastState("chat:a").label, "First");
+  name = "Second";
+  h.svc.refresh("chat:a");
+  assert.equal(h.lastState("chat:a").label, "First", "cached until told");
+  const n = reads;
+  h.svc.retitled("chat:a");
+  assert.equal(h.lastState("chat:a").label, "Second");
+  assert.equal(reads, n + 1);
+  h.svc.retitled("chat:nobody");
+  assert.equal(h.states.some((x) => x.session === "chat:nobody"), false, "retitled never makes a slot");
+  name = "Third";
+  assert.equal(h.svc.select("chat:a")?.label, "Third", "select reads again");
+});
+
+test("the user's own Pop out asks for the window in front; a follow does not", async () => {
+  const { h, told } = popHarness();
+  await h.ensureOn("chat:a");
+  await h.ensureOn("chat:b");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  assert.equal(told.at(-1)?.[1].front, true, "the press asks for the window in front");
+  h.svc.popOut();
+  assert.equal(told.at(-1)?.[1].front, true, "pressed again, it asks again");
+  const n = told.length;
+  h.svc.select("chat:b");
+  h.svc.power("chat:b", false);
+  h.svc.power("chat:b", true);
+  await flush();
+  h.svc.describe("chat:b", { title: "Renamed" });
+  assert.ok(told.length > n);
+  for (const [, show] of told.slice(n)) assert.ok(!show.front, "a selection, power or title change never asks for the front");
+});
+
+test("popped out, an off browser leaves the window empty and says so", async () => {
+  const { h, told } = popHarness();
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  h.svc.select("chat:c");
+  assert.deepEqual(told.at(-1), ["chat:c", { label: "Cee", on: false }]);
+});
+
+test("turning the selected browser on while popped out shows it there", async () => {
+  const told: Told[] = [];
+  const existed: boolean[] = [];
+  const h: ReturnType<typeof make> = make({ popOut: (session, show) => { told.push([session, show]); existed.push(!!session && h.browsers.has(session)); }, label: (k) => ({ "chat:a": "Aye", "chat:b": "Bee", "chat:c": "Cee" } as Record<string, string>)[k] });
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  h.svc.select("chat:c");
+  const n = told.length;
+  h.svc.power("chat:c", true);
+  await flush();
+  assert.deepEqual(told.slice(n)[0], ["chat:c", { label: "Cee", on: true }]);
+  assert.equal(existed.at(-1), true, "the browser existed when the app was told");
+});
+
+test("turning the selected browser off while popped out empties the window", async () => {
+  const { h, told } = popHarness();
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  const n = told.length;
+  h.svc.power("chat:a", false);
+  assert.deepEqual(told.slice(n), [["chat:a", { label: "Aye", on: false }]]);
+});
+
+test("popped out, selecting nothing empties the window", async () => {
+  const { h, told } = popHarness();
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  h.svc.select(null);
+  assert.deepEqual(told.at(-1), [null, { label: "", on: false }]);
+});
+
+test("a new title while popped out retitles the window", async () => {
+  const { h, told } = popHarness();
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  h.svc.describe("chat:a", { title: "Renamed" });
+  assert.deepEqual(told.at(-1), ["chat:a", { label: "Renamed", on: true }]);
+});
+
+test("closing the selected session while popped out empties the window", async () => {
+  const { h, told } = popHarness();
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  h.svc.forget("chat:a");
+  assert.deepEqual(told.at(-1), [null, { label: "", on: false }]);
+});
+
+test("not popped out, none of this calls the app", async () => {
+  const { h, told } = popHarness();
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.select("chat:c");
+  h.svc.power("chat:c", true);
+  await flush();
+  h.svc.power("chat:c", false);
+  h.svc.describe("chat:c", { title: "T" });
+  h.svc.select(null);
+  h.svc.forget("chat:a");
+  assert.deepEqual(told, []);
+});
+
+test("a handoff while popped out shows the old terminal's browser in the window", async () => {
+  const events: string[] = [];
+  const h = make({ off: true, destroyed: (k) => events.push(`destroyed ${k}`), moved: (f, t) => events.push(`moved ${f} ${t}`), popOut: (s, show) => events.push(`popOut ${s} ${show.on}`) });
+  await codeOn(h, "code:t1", "https://a.test/one");
+  await codeOn(h, "code:t2", "https://b.test/x");
+  h.svc.select("code:t2");
+  h.svc.popOut();
+  events.length = 0;
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  assert.deepEqual(events, ["destroyed code:t2", "moved code:t1 code:t2", "popOut code:t2 true"]);
+});
+
+test("a handoff from the popped-out session keeps the window", async () => {
+  const events: string[] = [];
+  const h = make({ off: true, destroyed: (k) => events.push(`destroyed ${k}`), moved: (f, t) => events.push(`moved ${f} ${t}`), popOut: (s, show) => events.push(`popOut ${s} ${show.on}`) });
+  await codeOn(h, "code:t1", "https://a.test/one");
+  h.svc.select("code:t1");
+  h.svc.popOut();
+  events.length = 0;
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  assert.deepEqual(events, ["moved code:t1 code:t2", "popOut code:t2 true"]);
 });
 
 test("a late agentGone from a session's previous process leaves the live one's wheel and asks alone", async () => {
@@ -1309,18 +1674,18 @@ test("a late agentGone from a session's previous process leaves the live one's w
   const asked = await h.asked(1);
   h.svc.agentGone({ ...A, pid: 1 });
   assert.deepEqual(h.broker.pending().map((x) => x.id), [asked.id], "the old process's close cancels nothing");
-  assert.deepEqual(h.wheel.holder("ws:alpha"), { kind: "agent", session: A.key, label: A.label });
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: A.key, label: A.label });
   h.svc.agentGone(next);
   assert.match((await pending).text, /turn ended/, "the live process's own end still counts");
-  assert.equal(h.wheel.holder("ws:alpha"), null);
+  assert.equal(h.wheel.holder("chat:a"), null);
   // Once the registry no longer holds the key, any agentGone for it counts. (R81: only the registered process acts, so A
   // is registered for its open and leaves the registry before the stray close.)
   live.set(A.key, A);
   await h.open(A, "https://a.test/");
-  assert.equal(h.wheel.holder("ws:alpha")?.kind, "agent");
+  assert.equal(h.wheel.holder("chat:a")?.kind, "agent");
   live.delete(A.key);
   h.svc.agentGone({ ...A, pid: 9 });
-  assert.equal(h.wheel.holder("ws:alpha"), null);
+  assert.equal(h.wheel.holder("chat:a"), null);
 });
 
 test("forgetBrowsers: after the app destroyed every browser (a quit), the next use makes a new one", async () => {
@@ -1345,10 +1710,10 @@ test("R81: Take over then Hand back while a click waits in its target read: noth
     b.resolveGate = new Promise<void>((r) => { release = r; });
     const p = h.call(A, "computer_click", { ref: "e1" });
     await flush();
-    h.svc.select("ws:alpha");
+    h.svc.select("chat:a");
     h.svc.takeOver();
     h.svc.handBack();
-    assert.deepEqual(h.wheel.holder("ws:alpha"), { kind: "agent", session: "chat:a", label: "Alpha" }, "the same session holds the wheel again");
+    assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" }, "the same session holds the wheel again");
     b.resolveGate = null;
     release();
     await flush();
@@ -1366,7 +1731,7 @@ test("R81: Take over then Hand back while the card is written: the ask is never 
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.spots.set("e1", { target: btn("Next") });
-  h.svc.select("ws:alpha");
+  h.svc.select("chat:a");
   const real = b.scrub.bind(b);
   b.scrub = async (text, tab) => { h.svc.takeOver(); h.svc.handBack(); b.scrub = real; return real(text, tab); };
   const p = h.call(A, "computer_click", { ref: "e1" });
@@ -1384,7 +1749,7 @@ test("R81: Take over then Hand back while a click, a key or typing is on its way
   h.sites.mark("https://a.test");
   const b = await h.open(A, "https://a.test/");
   b.spots.set("e1", { target: btn("Next") });
-  h.svc.select("ws:alpha");
+  h.svc.select("chat:a");
   let release!: () => void;
   b.clickGate = new Promise<void>((r) => { release = r; });
   const click = h.call(A, "computer_click", { ref: "e1" });
@@ -1419,7 +1784,7 @@ test("R81: Take over then Hand back after Allow, while the action revalidates: n
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.spots.set("e1", { target: btn("Next") });
-  h.svc.select("ws:alpha");
+  h.svc.select("chat:a");
   const p = h.call(A, "computer_click", { ref: "e1" });
   const ask = await h.asked();
   let release!: () => void;
@@ -1489,4 +1854,1588 @@ test("R81: an ordinary call with no interruption still runs, asked or not", asyn
   assert.match((await h.call(A, "computer_type", { text: "rope" })).text, /^Typed 4 characters\./);
   assert.match((await h.call(A, "computer_key", { key: "a" })).text, /^Pressed a\./);
   assert.equal(b.clicks.length, 2);
+});
+
+// ---- Task 8: power (session-browser S2–S5)
+
+import { DECLINED, IS_OFF, OFF_READ_ONLY, QUIET_MS, SWITCHED_OFF, TAB_CLOSED } from "../../src/main/computer/service";
+
+const off = (): ReturnType<typeof make> => make({ off: true, label: (k) => (k === "chat:a" ? "Claude Code in Vault" : undefined) });
+const OPEN = { url: "https://example.com/x" };
+const OPEN_TITLE = "Claude Code in Vault wants to turn its browser on and open example.com";
+
+test("a new session's browser is off and computer_open asks", async () => {
+  const h = off();
+  const R = agent("chat:a", "Claude Code in Vault");
+  const first = h.call(R, "computer_open", OPEN);
+  const a = await h.asked();
+  await h.clock.advance(45_000);
+  assert.match((await first).text, /^waiting_for_user/);
+  assert.equal(h.browsers.size, 0, "no browser is made");
+  assert.equal(a.why, "power");
+  assert.equal(a.title, OPEN_TITLE);
+  assert.equal(a.always, false);
+  assert.equal(a.site, null);
+  assert.equal(h.lastState().power, "off");
+});
+
+test("Turn on runs the open", async () => {
+  const h = off();
+  const R = agent("chat:a", "Claude Code in Vault");
+  const first = h.call(R, "computer_open", OPEN);
+  const a = await h.asked();
+  h.svc.answer(a.id, "once");
+  const r = await first;
+  assert.equal(r.isError ?? false, false, r.text);
+  assert.match(r.text, /^Opened the page\./);
+  assert.equal(h.lastState().power, "awake");
+  assert.equal(h.b().pages[0].url, "https://example.com/x");
+});
+
+test("Not now is told once, then quiet for 60 s on Code", async () => {
+  const h = off();
+  const C = agent("code:t1", "Claude Code in Vault");
+  const first = h.call(C, "computer_open", OPEN);
+  h.svc.answer((await h.asked()).id, "deny");
+  assert.equal((await first).text, DECLINED);
+  await h.clock.advance(59_000);
+  const again = await h.call(C, "computer_open", OPEN);
+  assert.equal(again.text, DECLINED);
+  assert.equal(h.broker.pending().length, 0, "no new ask");
+  await h.clock.advance(QUIET_MS - 59_000 + 2_000);
+  const later = h.call(C, "computer_open", OPEN);
+  await h.asked();
+  h.svc.answer(h.broker.pending()[0].id, "deny");
+  assert.equal((await later).text, DECLINED);
+});
+
+test("a Chat session's quiet period ends with its turn", async () => {
+  const h = off();
+  const first = h.call(A, "computer_open", OPEN);
+  h.svc.answer((await h.asked()).id, "deny");
+  assert.equal((await first).text, DECLINED);
+  await h.clock.advance(61_000);
+  assert.equal((await h.call(A, "computer_open", OPEN)).text, DECLINED);
+  assert.equal(h.broker.pending().length, 0);
+  h.svc.agentGone(A);
+  const next = h.call(A, "computer_open", OPEN);
+  await h.asked();
+  h.svc.answer(h.broker.pending()[0].id, "deny");
+  await next;
+});
+
+test("no answer in askTimeoutSec is Not now", async () => {
+  const h = off();
+  const C = agent("code:t1", "Claude Code in Vault");
+  const first = h.call(C, "computer_open", OPEN);
+  const id = (await h.asked()).id;
+  await h.clock.advance(45_000);
+  assert.match((await first).text, /^waiting_for_user/);
+  await h.clock.advance(120_000);
+  const done = await h.call(C, "computer_wait", { askId: id });
+  assert.equal(done.text, DECLINED);
+  assert.equal((await h.call(C, "computer_open", OPEN)).text, DECLINED);
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("turned on by hand, the agent's next call needs no ask", async () => {
+  const h = off();
+  h.svc.power("chat:a", true);
+  await flush();
+  assert.equal(h.b().pages.length, 1, "the start page, opened by the user");
+  assert.equal(h.b().pages[0].openedBy, null);
+  const r = await h.call(A, "computer_open", OPEN);
+  assert.match(r.text, /^Opened the page\./);
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("every other tool on an off browser says how to turn it on", async () => {
+  const h = off();
+  const args: [ComputerTool, Record<string, unknown>][] = [["computer_snapshot", {}], ["computer_screenshot", {}], ["computer_click", { ref: "e1" }], ["computer_type", { text: "x" }], ["computer_key", { key: "Enter" }], ["computer_scroll", { dy: 10 }], ["computer_wait", { text: "x" }]];
+  for (const [tool, a] of args) {
+    const r = await h.call(A, tool, a);
+    assert.equal(r.text, IS_OFF, tool);
+    assert.equal(r.isError, true, tool);
+  }
+  assert.match((await h.call(A, "computer_status")).text, /\(off:/);
+  assert.equal(h.browsers.size, 0);
+});
+
+test("a read only session is told to ask the user and never asks", async () => {
+  const h = off();
+  const R = agent("chat:a", "Reader", "read");
+  assert.equal((await h.call(R, "computer_open", OPEN)).text, OFF_READ_ONLY);
+  assert.equal(h.broker.pending().length, 0);
+  h.svc.power("chat:a", true);
+  await flush();
+  assert.notEqual((await h.call(R, "computer_open", OPEN)).text, OFF_READ_ONLY, "on, the old refusal applies");
+});
+
+test("Off stops typing in flight, cancels the session's asks and starts the quiet period", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.focused = { target: box("Name"), shown: "Name", sensitive: false, plainTextarea: false, node: 9, frame: null };
+  h.svc.mark("https://a.test", true);
+  h.wheel.take("chat:a", "chat:a", "Alpha");
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  b.between = () => { b.between = null; h.svc.power("chat:a", false); };
+  void gate; void release;
+  b.spots.set("e1", { target: box("Name"), node: 9 });
+  const r = await h.call(A, "computer_type", { text: "abcdef", ref: "e1" });
+  assert.equal(r.text, SWITCHED_OFF);
+  assert.ok(b.destroyed >= 1, "destroyed");
+  assert.equal(h.broker.pending().length, 0);
+  assert.equal(h.lastState().power, "off");
+  const next = await h.call(A, "computer_open", OPEN);
+  assert.equal(next.text, SWITCHED_OFF);
+  assert.equal(h.broker.pending().length, 0, "no ask");
+});
+
+test("Off remembers the tabs and On reopens them", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/one");
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  h.svc.power("chat:a", false);
+  assert.equal(h.lastState().tabs.length, 0);
+  h.svc.power("chat:a", true);
+  await flush();
+  const nb = h.b();
+  assert.notEqual(nb, b);
+  assert.deepEqual(nb.pages.map((p) => p.url), ["https://a.test/one", "https://a.test/two"]);
+  assert.equal(nb.current, 1);
+  assert.ok(nb.pages.every((p) => p.openedBy === null));
+});
+
+test("Off wins over an open in flight", async () => {
+  const h = off();
+  const R = agent("chat:a", "Claude Code in Vault");
+  const first = h.call(R, "computer_open", OPEN);
+  const a = await h.asked();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const orig = FakeBrowser.prototype.open;
+  FakeBrowser.prototype.open = async function (this: FakeBrowser, ...args: Parameters<typeof orig>) { await gate; return orig.apply(this, args); };
+  try {
+    h.svc.answer(a.id, "once");
+    await flush();
+    h.svc.power("chat:a", false);
+    release();
+    const r = await first;
+    assert.equal(r.text, SWITCHED_OFF);
+  } finally { FakeBrowser.prototype.open = orig; }
+  assert.equal(h.lastState().power, "off");
+  assert.equal(h.b().destroyed, 1);
+  assert.equal(h.svc.activeWebContentsId("chat:a"), null, "no browser is left");
+});
+
+test("the user's close of the active tab ends the action and the asks, with no quiet period", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  await h.call(A, "computer_open", { url: "https://a.test/2", newTab: true });
+  h.svc.select("chat:a");
+  b.focused = { target: box("Name"), shown: "Name", sensitive: false, plainTextarea: false, node: 9, frame: null };
+  b.spots.set("e1", { target: box("Name"), node: 9 });
+  h.svc.mark("https://a.test", true);
+  b.between = () => { b.between = null; h.svc.tab({ kind: "close", index: b.current }); };
+  const r = await h.call(A, "computer_type", { text: "abcdef", ref: "e1" });
+  assert.equal(r.text, TAB_CLOSED);
+  assert.equal(h.lastState().power, "awake");
+  assert.equal(h.lastState().tabs.length, 1);
+});
+
+test("an action the user's closing of the last tab interrupts is told the tab was closed", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  h.svc.select("chat:a");
+  b.focused = { target: box("Name"), shown: "Name", sensitive: false, plainTextarea: false, node: 9, frame: null };
+  b.spots.set("e1", { target: box("Name"), node: 9 });
+  h.svc.mark("https://a.test", true);
+  b.between = () => { b.between = null; h.svc.tab({ kind: "close", index: b.current }); };
+  const r = await h.call(A, "computer_type", { text: "abcdef", ref: "e1" });
+  assert.equal(r.text, TAB_CLOSED);
+  assert.equal(h.lastState().power, "off");
+  // No quiet period: the next open raises the Turn on card instead of answering with a refusal.
+  const open = h.call(A, "computer_open", OPEN);
+  assert.equal((await h.asked()).why, "power");
+  await h.clock.advance(45_000);
+  assert.match((await open).text, /^waiting_for_user/);
+});
+
+test("closing another tab only closes it", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  await h.call(A, "computer_open", { url: "https://a.test/2", newTab: true });
+  h.svc.select("chat:a");
+  h.wheel.take("chat:a", "chat:a", "Alpha");
+  const gen = h.wheel.gen("chat:a");
+  h.svc.tab({ kind: "close", index: 0 });
+  assert.equal(b.pages.length, 1);
+  assert.equal(h.wheel.gen("chat:a"), gen, "no interruption");
+  assert.equal(h.lastState().power, "awake");
+});
+
+test("the user's close of the last tab switches the browser off", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  h.svc.select("chat:a");
+  h.svc.tab({ kind: "close", index: 0 });
+  assert.equal(h.lastState().power, "off");
+  assert.equal(b.destroyed, 1);
+  // No quiet period: while still off, an open raises the Turn on card instead of answering TAB_CLOSED.
+  const open = h.call(A, "computer_open", OPEN);
+  assert.equal((await h.asked()).why, "power");
+  await h.clock.advance(45_000);
+  assert.match((await open).text, /^waiting_for_user/);
+  h.svc.power("chat:a", true);
+  await flush();
+  assert.equal(h.b().pages.length >= 1, true);
+  assert.equal(h.b().pages.some((x) => x.url === "https://a.test/"), false, "nothing remembered");
+});
+
+test("the page's own calls never make a browser while it is off", async () => {
+  const h = off();
+  const st = h.svc.select("chat:a");
+  assert.equal(st?.power, "off");
+  assert.deepEqual(st?.tabs, []);
+  assert.deepEqual(await h.svc.navigate("https://example.com/"), { ok: false, error: "The browser is off.", code: "ENOENT" });
+  h.svc.tab({ kind: "new" });
+  h.svc.tab({ kind: "close", index: 0 });
+  h.svc.tab({ kind: "select", index: 0 });
+  h.svc.nav("back");
+  h.svc.takeOver();
+  h.svc.handBack();
+  h.svc.show({ x: 0, y: 0, width: 10, height: 10 });
+  h.svc.popOut();
+  assert.equal(h.browsers.size, 0);
+  assert.equal(h.wheel.holder("chat:a"), null);
+});
+
+test("a real browser destroyed mid-call answers the person's stop, not the browser's error", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  h.svc.mark("https://a.test", true);
+  b.focused = { target: box("Name"), shown: "Name", sensitive: false, plainTextarea: false, node: 9, frame: null };
+  b.spots.set("e1", { target: box("Name"), node: 9 });
+  b.type = async () => { h.svc.power("chat:a", false); throw new Error("Debugger is not attached to the target"); };
+  assert.equal((await h.call(A, "computer_type", { text: "abc", ref: "e1" })).text, SWITCHED_OFF);
+  const h2 = off();
+  const R = agent("chat:a", "Claude Code in Vault");
+  const first = h2.call(R, "computer_open", OPEN);
+  const a = await h2.asked();
+  const orig = FakeBrowser.prototype.open;
+  FakeBrowser.prototype.open = async function () { await flush(); throw new Error("Could not open the page"); };
+  try {
+    h2.svc.answer(a.id, "once");
+    await flush();
+    h2.svc.power("chat:a", false);
+    assert.equal((await first).text, SWITCHED_OFF);
+  } finally { FakeBrowser.prototype.open = orig; }
+});
+
+test("a Chat Off between turns does not silence the next turn; Not now silences the rest of its own turn", async () => {
+  const h = make({ off: true });
+  h.svc.power("chat:a", true); await flush();
+  h.svc.power("chat:a", false);
+  const next = h.call(A, "computer_open", OPEN);
+  await h.asked();
+  h.svc.answer(h.broker.pending()[0].id, "deny");
+  assert.equal((await next).text, DECLINED);
+  assert.equal((await h.call(A, "computer_open", OPEN)).text, DECLINED, "quiet for the rest of that turn");
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("a second open while the Turn on card is up raises no second card and names the same ask", async () => {
+  const h = off();
+  const first = h.call(A, "computer_open", OPEN);
+  const a = await h.asked();
+  const second = h.call(A, "computer_open", OPEN);
+  await flush();
+  assert.equal(h.broker.pending().length, 1);
+  await h.clock.advance(45_000);
+  const [r1, r2] = [await first, await second];
+  assert.match(r1.text, new RegExp(a.id));
+  assert.match(r2.text, new RegExp(a.id));
+});
+
+test("an open queued behind a denied one raises no card", async () => {
+  const h = off();
+  const C = agent("code:t1", "Claude Code in Vault");
+  const first = h.call(C, "computer_open", OPEN);
+  const a = await h.asked();
+  // Hold the slot's queue, so the second call really waits in it behind whatever runs first.
+  const inner = h.svc as unknown as { slot(k: string): unknown; serial(p: unknown, f: () => Promise<void>): Promise<void> };
+  let release!: () => void;
+  const held = inner.serial(inner.slot("code:t1"), () => new Promise<void>((r) => { release = r; }));
+  const second = h.call({ ...C, pid: 2 }, "computer_open", OPEN);
+  await flush();
+  h.svc.answer(a.id, "deny");
+  assert.equal((await first).text, DECLINED);
+  release(); await held;
+  assert.equal((await second).text, DECLINED, "the queued open is refused by the quiet period");
+  const powerAsks = new Set(h.states.flatMap((x) => x.asks.filter((k) => k.why === "power").map((k) => k.id)));
+  assert.equal(powerAsks.size, 1, "the broker saw exactly one power ask");
+});
+
+test("a manual On answers a held Turn on card: the open runs on the browser that is now on", async () => {
+  const h = off();
+  const first = h.call(A, "computer_open", OPEN);
+  await h.asked();
+  h.svc.power("chat:a", true);
+  const r = await first;
+  assert.match(r.text, /^Opened the page\./, r.text);
+  assert.equal(h.broker.pending().length, 0);
+  assert.equal(h.b().pages.some((x) => x.url === "https://example.com/x"), true);
+});
+
+test("Off from a closed last tab clears a quiet period that is still on the slot", async () => {
+  const h = off();
+  const C = agent("code:t1", "Claude Code in Vault");
+  const first = h.call(C, "computer_open", OPEN);
+  const a = await h.asked();
+  // The Not now settles after the person's On: the quiet period is then set on a browser that is on.
+  h.svc.answer(a.id, "deny");
+  h.svc.power("code:t1", true);
+  assert.equal((await first).text, DECLINED);
+  await flush();
+  h.svc.select("code:t1");
+  h.svc.tab({ kind: "close", index: 0 });
+  assert.equal(h.lastState("code:t1").power, "off");
+  const open = h.call(C, "computer_open", OPEN);
+  assert.equal((await h.asked()).why, "power", "only the close's own clearing can let this ask");
+  h.svc.answer(h.broker.pending()[0].id, "deny");
+  await open;
+});
+
+test("On reopens every remembered address through restore, and selects the remembered active tab", async () => {
+  // session-browser S6, S9: the addresses are real and reopen hidden; a tab that fails to load is the browser's to note.
+  const h = make();
+  await h.open(A, "https://a.test/1?k=1");
+  await h.call(A, "computer_open", { url: "https://a.test/2", newTab: true });
+  await h.call(A, "computer_open", { url: "https://a.test/3", newTab: true });
+  h.b().select(1);
+  h.svc.power("chat:a", false);
+  h.svc.power("chat:a", true);
+  await flush();
+  const nb = h.b();
+  assert.equal(nb.restored, 1, "restore, never a plain open");
+  assert.deepEqual(nb.pages.map((x) => x.url), ["https://a.test/1?k=1", "https://a.test/2", "https://a.test/3"], "the real addresses");
+  assert.equal(nb.current, 1);
+  assert.equal(nb.wakes, 1);
+  assert.deepEqual(h.lastState("chat:a").tabs.map((t) => t.url), ["https://a.test/1", "https://a.test/2", "https://a.test/3"], "given out hidden");
+});
+
+test("an agent's open that arrives while On is still opening its tabs runs after them and reports its own page", async () => {
+  const h = off();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const orig = FakeBrowser.prototype.open;
+  const order: string[] = [];
+  FakeBrowser.prototype.open = async function (this: FakeBrowser, url: string, o: { newTab?: boolean; by: string | null }) {
+    order.push(url);
+    if (o.by === null) await gate;
+    return orig.call(this, url, o);
+  };
+  try {
+    h.svc.power("chat:a", true);
+    await flush();
+    const agentOpen = h.call(A, "computer_open", { url: "https://a.test/mine" });
+    await flush();
+    assert.equal(order.length, 1, "the agent's open waits for On's");
+    release();
+    const r = await agentOpen;
+    assert.match(r.text, /^Opened the page\. Page: .*a\.test\/mine/, r.text);
+  } finally { FakeBrowser.prototype.open = orig; }
+  assert.equal(order.length, 2);
+});
+
+test("Off during On's opening is emitted at once, and so is an ask raised meanwhile", async () => {
+  const h = off();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const orig = FakeBrowser.prototype.open;
+  FakeBrowser.prototype.open = async function (this: FakeBrowser, url: string, o: { newTab?: boolean; by: string | null }) { await gate; return orig.call(this, url, o); };
+  try {
+    h.svc.power("chat:a", true);
+    await flush();
+    assert.equal(h.lastState("chat:a").power, "awake", "On is emitted at once");
+    void h.b().hooks.ask({ why: "download", title: "Download x?", detail: "", site: "https://a.test" });
+    await flush();
+    assert.equal(h.lastState("chat:a").asks.length, 1, "an ask during the opening is emitted at once");
+    h.svc.power("chat:a", false);
+    const st = h.lastState("chat:a");
+    assert.equal(st.power, "off");
+    assert.deepEqual(st.tabs, []);
+    release();
+  } finally { FakeBrowser.prototype.open = orig; }
+  await flush();
+});
+
+test("Off during On's reopening keeps the tabs On was reopening", async () => {
+  const h = make();
+  await h.open(A, "https://a.test/1");
+  await h.call(A, "computer_open", { url: "https://a.test/2", newTab: true });
+  h.svc.power("chat:a", false);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const orig = FakeBrowser.prototype.open;
+  FakeBrowser.prototype.open = async function (this: FakeBrowser, url: string, o: { newTab?: boolean; by: string | null }) { if (url.endsWith("/2")) await gate; return orig.call(this, url, o); };
+  try {
+    h.svc.power("chat:a", true);
+    await flush();
+    h.svc.power("chat:a", false); // only the first tab is open now
+    release();
+  } finally { FakeBrowser.prototype.open = orig; }
+  await flush();
+  h.svc.power("chat:a", true);
+  await flush();
+  assert.deepEqual(h.b().pages.map((x) => x.url), ["https://a.test/1", "https://a.test/2"]);
+});
+
+test("Off, On, Off in quick succession remembers the tabs (session-browser A8)", async () => {
+  const h = make();
+  await h.open(A, "https://a.test/1");
+  await h.call(A, "computer_open", { url: "https://a.test/2", newTab: true });
+  h.svc.power("chat:a", false);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const wake = FakeBrowser.prototype.wake, real = FakeBrowser.prototype.realAddresses;
+  // A reopening browser holds on its wake, and while it does it has made only its first tab.
+  FakeBrowser.prototype.wake = async function (this: FakeBrowser) { this.wakes++; await Promise.race([gate, (this as unknown as { goneP: Promise<void> }).goneP]); this.sleeping = false; };
+  FakeBrowser.prototype.realAddresses = function (this: FakeBrowser) { const r = real.call(this); return this.sleeping ? { urls: r.urls.slice(0, 1), active: 0 } : r; };
+  try {
+    h.svc.power("chat:a", true);
+    await flush();
+    h.svc.power("chat:a", false); // the first On's wake settles, and its `done` runs, after this
+    h.svc.power("chat:a", true);
+    await flush();
+    h.svc.power("chat:a", false); // the second On is still reopening: this Off must remember all its tabs
+    release();
+  } finally { FakeBrowser.prototype.wake = wake; FakeBrowser.prototype.realAddresses = real; }
+  await flush();
+  h.svc.power("chat:a", true);
+  await flush();
+  assert.deepEqual(h.b().pages.map((x) => x.url), ["https://a.test/1", "https://a.test/2"]);
+});
+
+test("a start page that fails to load when On opens it is logged in one line, with no throw", async () => {
+  const h = off();
+  const orig = FakeBrowser.prototype.open;
+  FakeBrowser.prototype.open = async function () { throw new Error("ERR_CONNECTION_REFUSED"); };
+  try {
+    h.svc.power("chat:a", true);
+    await flush();
+  } finally { FakeBrowser.prototype.open = orig; }
+  const st = h.lastState("chat:a");
+  assert.equal(st.power, "awake");
+  assert.equal(st.log.filter((l) => /^The page did not open: /.test(l.text)).length, 1);
+});
+
+// ---- session-browser S9: sleep, wake and computer.awake
+
+/** Sessions chat:s1 … chat:sN, each turned on in order (the user's switch), with `n` of them registered as agents. */
+async function turnedOn(h: ReturnType<typeof make>, n: number): Promise<void> {
+  for (let i = 1; i <= n; i++) { h.svc.power(`chat:s${i}`, true); await flush(); }
+}
+
+test("a fifth awake browser puts the least recently used to sleep", async () => {
+  const h = make({ off: true });
+  await turnedOn(h, 5);
+  h.svc.select("chat:s5");
+  await flush();
+  assert.equal(h.b("chat:s1").sleeping, true);
+  for (const i of [2, 3, 4, 5]) assert.equal(h.b(`chat:s${i}`).sleeping, false, `s${i}`);
+  assert.equal(h.lastState("chat:s1").power, "asleep");
+});
+
+test("the selected one, a driver and one with a pending ask never sleep", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  h.svc.select("chat:s1");
+  // The selected one stays awake though it is the only candidate and the limit is passed.
+  await turnedOn(h, 1);
+  h.svc.power("chat:s2", true); await flush();
+  assert.equal(h.b("chat:s1").sleeping, false, "selected");
+  assert.equal(h.b("chat:s2").sleeping, false, "the one just turned on");
+  // A driver: s3 holds the wheel; s4 has an ask. Neither goes when s5 is turned on.
+  h.svc.power("chat:s3", true); await flush();
+  h.wheel.take("chat:s3", "chat:s3", "Agent 3");
+  h.svc.power("chat:s4", true); await flush();
+  void h.broker.hold({ computer: "chat:s4", session: "chat:s4", sessionLabel: "A4", why: "unmarked", title: "t", notice: "n", detail: "d", site: null, always: false });
+  h.svc.power("chat:s5", true); await flush();
+  assert.equal(h.b("chat:s3").sleeping, false, "driver");
+  assert.equal(h.b("chat:s4").sleeping, false, "pending ask");
+});
+
+test("an agent's call wakes its browser before it runs, and waits for the wake", async () => {
+  const h = make({ off: true });
+  await turnedOn(h, 5);
+  const x = h.b("chat:s1");
+  assert.equal(x.sleeping, true);
+  let release = (): void => {};
+  x.wakeGate = new Promise<void>((r) => { release = r; });
+  const A1 = agent("chat:s1", "One");
+  const call = h.svc.call(A1, { id: 1, tool: "computer_open", args: { url: "https://a.test/" } });
+  await flush();
+  assert.equal(x.wakes, 1);
+  assert.equal(h.lastState("chat:s1").power, "awake", "asleep is not off: the state says awake while the tabs reload");
+  assert.equal(x.pages.at(-1)?.url === "https://a.test/", false, "the open waits behind the wake");
+  release();
+  const r = await call;
+  assert.ok(!r.isError, r.text);
+  assert.equal(x.pages.at(-1)?.url, "https://a.test/");
+  // Waking it put the least recently used other browser to sleep (the limit is 4).
+  assert.equal(h.b("chat:s2").sleeping, true);
+});
+
+type Inner = { slots: Map<string, { queue: unknown; reopening: unknown; waking: unknown }>; serial: (p: unknown, fn: () => Promise<void>) => Promise<void> };
+const inner = (h: ReturnType<typeof make>): Inner => h.svc as unknown as Inner;
+
+// The next three: s1 is the least recently used awake browser at the limit of 4 and nothing else protects it (not selected,
+// no wheel, no ask), so only the exemption under test can keep it awake. Each ends by showing it goes once the exemption does.
+test("a browser with queued work is not put to sleep", async () => {
+  const h = make({ off: true });
+  await turnedOn(h, 4);
+  let release = (): void => {};
+  const gate = new Promise<void>((r) => { release = r; });
+  void inner(h).serial(inner(h).slots.get("chat:s1"), () => gate);
+  await flush();
+  h.svc.power("chat:s5", true); await flush();
+  assert.equal(h.b("chat:s1").sleeping, false, "queued work: exempt");
+  assert.equal(h.b("chat:s2").sleeping, true, "the next least recently used went instead");
+  release(); await flush();
+  h.svc.power("chat:s6", true); await flush();
+  assert.equal(h.b("chat:s1").sleeping, true, "once its work is done it can sleep");
+});
+
+test("a browser that is waking is not put to sleep", async () => {
+  const h = make({ off: true });
+  await turnedOn(h, 5);
+  const x = h.b("chat:s1");
+  let release = (): void => {};
+  x.wakeGate = new Promise<void>((r) => { release = r; });
+  void h.svc.call(agent("chat:s1", "One"), { id: 1, tool: "computer_status", args: {} });
+  await flush();
+  for (const i of [3, 4, 5]) { h.svc.select(`chat:s${i}`); await flush(); }
+  // s1 (waking) is now the least recently used of the awake ones s1, s3, s4, s5.
+  h.svc.power("chat:s6", true); await flush();
+  assert.equal(x.sleeps, 1, "only its first sleep: not again while it wakes");
+  assert.equal(h.b("chat:s3").sleeping, true, "another one went instead");
+  release(); await flush();
+});
+
+test("a browser that is reopening is not put to sleep", async () => {
+  const h = make({ off: true });
+  await turnedOn(h, 4);
+  inner(h).slots.get("chat:s1")!.reopening = { urls: [], active: 0 };
+  h.svc.power("chat:s5", true); await flush();
+  assert.equal(h.b("chat:s1").sleeping, false, "reopening: exempt");
+  assert.equal(h.b("chat:s2").sleeping, true);
+  inner(h).slots.get("chat:s1")!.reopening = null;
+  h.svc.power("chat:s6", true); await flush();
+  assert.equal(h.b("chat:s1").sleeping, true);
+});
+
+test("a browser whose agent is mid-snapshot is not put to sleep", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  const x = h.b("chat:s1");
+  x.pages.push({ url: "https://a.test/", openedBy: null }); x.current = 0;
+  let release = (): void => {};
+  x.snapGate = new Promise<void>((r) => { release = r; });
+  const call = h.svc.call(agent("chat:s1", "One"), { id: 1, tool: "computer_snapshot", args: {} });
+  await flush();
+  h.svc.power("chat:s2", true); await flush();
+  assert.equal(x.sleeping, false, "a look in flight keeps its browser awake; the limit is passed");
+  release();
+  assert.ok(!(await call).isError);
+  h.svc.power("chat:s3", true); await flush();
+  assert.equal(x.sleeping, true, "after the read it can sleep");
+});
+
+test("when the last exemption ends the awake limit is applied again", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  assert.deepEqual(h.wheel.take("chat:s1", "chat:s1", "One"), { ok: true });
+  h.svc.power("chat:s2", true); await flush();
+  h.svc.select("chat:s2"); await flush();
+  assert.equal(h.b("chat:s1").sleeping, false, "held, so it stays awake over the limit");
+  h.svc.agentGone(agent("chat:s1", "One"));
+  await h.clock.advance(1);
+  assert.equal(h.b("chat:s1").sleeping, true, "its turn ended, so the limit applies again");
+  assert.equal(h.b("chat:s2").sleeping, false, "the selected one stays awake");
+});
+
+test("an answered ask lets the limit apply", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  const p = h.broker.hold({ computer: "chat:s1", session: "chat:s1", sessionLabel: "One", why: "unmarked", title: "t", notice: "n", detail: "d", site: null });
+  const ask = await h.asked();
+  h.svc.power("chat:s2", true); await flush();
+  h.svc.select("chat:s2"); await flush();
+  assert.equal(h.b("chat:s1").sleeping, false, "a pending ask keeps it awake");
+  h.svc.answer(ask.id, "deny"); await p;
+  h.svc.released(); // the app's ask-broker callback
+  await h.clock.advance(1);
+  assert.equal(h.b("chat:s1").sleeping, true);
+  assert.equal(h.b("chat:s2").sleeping, false);
+});
+
+test("released() while everything is still in use, or under the limit, changes nothing", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  h.wheel.take("chat:s1", "chat:s1", "One");
+  h.svc.power("chat:s2", true); await flush();
+  h.svc.select("chat:s2"); await flush();
+  h.svc.released(); await h.clock.advance(1);
+  assert.equal(h.b("chat:s1").sleeps, 0, "still held: exempt");
+  assert.equal(h.b("chat:s2").sleeps, 0);
+  h.cfg.awake = 4;
+  h.wheel.turnEnded("chat:s1");
+  h.svc.released(); await h.clock.advance(1);
+  assert.equal(h.b("chat:s1").sleeps, 0, "under the limit");
+});
+
+test("two releases in a row trim once", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  h.wheel.take("chat:s1", "chat:s1", "One");
+  h.svc.power("chat:s2", true); await flush();
+  h.svc.select("chat:s2"); await flush();
+  h.wheel.turnEnded("chat:s1");
+  h.svc.released(); h.svc.released();
+  await h.clock.advance(1);
+  assert.equal(h.b("chat:s1").sleeps, 1);
+  h.svc.released(); await h.clock.advance(1);
+  assert.equal(h.b("chat:s1").sleeps, 1, "already asleep");
+});
+
+test("selecting an asleep session at computer.awake 1 leaves one awake", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 2);
+  h.svc.select("chat:s2"); await flush();
+  assert.equal(h.b("chat:s1").sleeping, true);
+  h.svc.select("chat:s1"); await flush();
+  assert.equal(h.b("chat:s1").sleeping, false);
+  assert.equal(h.b("chat:s2").sleeping, true, "the browser left is no longer selected, so it sleeps");
+});
+
+test("Off right after a wake remembers every tab's address, loaded or not (session-browser A1)", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  // Two tabs set directly: an agent's call would take the wheel, and a driver never sleeps.
+  h.b("chat:s1").pages = [{ url: "https://a.test/1", openedBy: null }, { url: "https://a.test/2", openedBy: null }];
+  h.b("chat:s1").current = 0;
+  h.svc.power("chat:s2", true); await flush();
+  h.svc.select("chat:s2"); await flush();
+  assert.equal(h.b("chat:s1").sleeping, true);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const wake = FakeBrowser.prototype.wake;
+  // A waking browser holds on its wake (its real addresses, loaded or not, are still all answered).
+  FakeBrowser.prototype.wake = async function (this: FakeBrowser) { this.wakes++; await Promise.race([gate, (this as unknown as { goneP: Promise<void> }).goneP]); this.sleeping = false; };
+  try {
+    h.svc.select("chat:s1"); await flush();
+    assert.equal(h.b("chat:s1").wakes, 1, "the wake started");
+    h.svc.power("chat:s1", false); // before the wake ends
+    release();
+  } finally { FakeBrowser.prototype.wake = wake; }
+  await flush();
+  h.svc.flush();
+  assert.deepEqual(h.records.get("chat:s1")?.tabs, ["https://a.test/1", "https://a.test/2"], "the record holds both");
+  h.svc.power("chat:s1", true); await flush();
+  assert.deepEqual(h.b("chat:s1").pages.map((x) => x.url), ["https://a.test/1", "https://a.test/2"], "On reopened both");
+});
+
+test("a sleep that fails leaves the browser awake", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  h.b("chat:s1").sleepThrows = true;
+  h.svc.power("chat:s2", true); await flush();
+  assert.equal(h.b("chat:s1").sleeping, false);
+  assert.equal(h.b("chat:s1").sleeps, 1, "tried once");
+  assert.equal(h.lastState("chat:s1").power, "awake");
+});
+
+test("a call that arrives during a slow wake answers within its 45 s", async () => {
+  const h = make({ off: true });
+  await turnedOn(h, 5);
+  const x = h.b("chat:s1");
+  x.wakeGate = new Promise<void>(() => {});
+  let done = false;
+  const call = h.svc.call(agent("chat:s1", "One"), { id: 1, tool: "computer_status", args: {} }).then((r) => { done = true; return r; });
+  await flush();
+  await h.clock.advance(44_000);
+  assert.equal(done, false);
+  await h.clock.advance(1_000);
+  assert.equal(done, true);
+  assert.equal((await call).isError, true);
+});
+
+test("Off during a wake leaves no pending wake, and the next On works", async () => {
+  const h = make({ off: true });
+  await turnedOn(h, 5);
+  h.b("chat:s1").wakeGate = new Promise<void>(() => {});
+  void h.svc.call(agent("chat:s1", "One"), { id: 1, tool: "computer_status", args: {} });
+  await flush();
+  assert.notEqual(inner(h).slots.get("chat:s1")!.waking, null);
+  h.svc.power("chat:s1", false); await flush();
+  assert.equal(inner(h).slots.get("chat:s1")!.waking, null);
+  h.svc.power("chat:s1", true); await flush();
+  assert.equal(h.lastState("chat:s1").power, "awake");
+  const r = await h.svc.call(agent("chat:s1", "One"), { id: 2, tool: "computer_open", args: { url: "https://a.test/" } });
+  assert.ok(!r.isError, r.text);
+  assert.equal(h.b("chat:s1").pages.at(-1)?.url, "https://a.test/", "an action runs: the queue was not left blocked by the wake");
+});
+
+// ---- session-browser S6, S7, S22: records, names, move and forget
+
+const X = { host: "claude" as const, id: "conv-x" };
+const seeded = (): BrowserRecords => new BrowserRecords({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aos-records-")), "browsers.json") });
+
+test("cleanTitle", () => {
+  assert.equal(cleanTitle("  fix\u202e the\n\tbuild \u2066"), "fix the build");
+  assert.equal(cleanTitle("x".repeat(5000)).length, 60);
+  assert.equal(cleanTitle("a\u2028b\u2029c\vd\fe\u0085f"), "a b c d e f", "every line break becomes a space");
+  assert.equal(cleanTitle(`${"x".repeat(59)} tail`), "x".repeat(59), "no space is left at the cut");
+  assert.equal(cleanTitle(" \n\u200f "), "");
+  assert.equal(cleanTitle("a\u0007b\u009fc\u061cd"), "abcd", "other controls and direction marks go");
+});
+
+test("two Code sessions in one folder show different names on their power cards", async () => {
+  const h = off();
+  const C1 = agent("code:t1", "Claude Code in Vault"), C2 = { ...agent("code:t2", "Claude Code in Vault"), pid: 2 };
+  h.svc.describe("code:t1", { title: "Fix login" });
+  h.svc.describe("code:t2", { title: "Write docs" });
+  const r1 = h.call(C1, "computer_open", OPEN);
+  const r2 = h.call(C2, "computer_open", OPEN);
+  await h.asked(2);
+  const titles = new Map(h.broker.pending().map((a) => [a.computer, a.title]));
+  assert.ok(titles.get("code:t1")!.startsWith("Fix login "), titles.get("code:t1"));
+  assert.ok(titles.get("code:t2")!.startsWith("Write docs "), titles.get("code:t2"));
+  assert.equal(h.lastState("code:t1").label, "Fix login");
+  h.broker.cancel(() => true, "test");
+  await Promise.all([r1, r2]);
+});
+
+test("an empty title keeps the launch label", async () => {
+  const h = off();
+  const C = agent("code:t1", "Claude Code in Vault");
+  h.svc.describe("code:t1", { title: " \n\u200f " });
+  const r = h.call(C, "computer_open", OPEN);
+  assert.equal((await h.asked()).title, OPEN_TITLE);
+  h.broker.cancel(() => true, "test");
+  await r;
+});
+
+test("a record is written 500 ms after a change, and at once on flush", async () => {
+  const h = make({ off: true });
+  h.svc.power("chat:a", true);
+  await flush();
+  await h.clock.advance(499);
+  assert.equal(h.records.get("chat:a"), undefined, "not yet");
+  await h.clock.advance(1);
+  assert.deepEqual({ ...h.records.get("chat:a"), at: 0 }, { on: true, tabs: ["https://duckduckgo.com/"], active: 0, at: 0 }, "on, with the start page");
+  h.svc.select("chat:a");
+  await h.svc.navigate("https://a.test/p?q=1");
+  assert.deepEqual(h.records.get("chat:a")?.tabs, ["https://duckduckgo.com/"], "a change waits for its 500 ms");
+  h.svc.flush();
+  assert.deepEqual(h.records.get("chat:a")?.tabs, ["https://a.test/p?q=1"], "flush writes the real address at once");
+  h.svc.power("chat:a", false);
+  h.svc.flush();
+  assert.deepEqual({ on: h.records.get("chat:a")?.on, tabs: h.records.get("chat:a")?.tabs }, { on: false, tabs: ["https://a.test/p?q=1"] }, "off keeps its tabs");
+});
+
+test("after a relaunch a thread's browser returns asleep with its tabs", async () => {
+  const records = seeded();
+  records.put("chat:T", { on: true, tabs: ["https://a.test/", "https://b.test/"], active: 1 });
+  const h = make({ off: true, records });
+  h.svc.boot();
+  h.svc.refresh("chat:T");
+  const st = h.lastState("chat:T");
+  assert.equal(st.power, "asleep");
+  assert.equal(st.tabs.length, 2);
+  assert.equal(h.b("chat:T").wakes, 0);
+  h.svc.select("chat:T");
+  await flush();
+  assert.equal(h.lastState("chat:T").power, "awake");
+  assert.equal(h.b("chat:T").wakes, 1, "selecting wakes it");
+});
+
+test("a resumed Code conversation gets its tabs back, off", async () => {
+  const records = seeded();
+  records.put("code:t3", { on: true, tabs: ["https://a.test/", "https://b.test/"], active: 0, conversation: X });
+  records.orphanCode();
+  const h = make({ off: true, records });
+  h.svc.boot();
+  h.svc.select("code:t1");
+  h.svc.describe("code:t1", { conversation: X });
+  assert.equal(h.lastState("code:t1").power, "off");
+  h.svc.power("code:t1", true);
+  await flush();
+  assert.equal(h.b("code:t1").restored, 1);
+  assert.deepEqual(h.b("code:t1").pages.map((x) => x.url), ["https://a.test/", "https://b.test/"]);
+});
+
+test("a new terminal that reuses an old id gets nothing", async () => {
+  const records = seeded();
+  records.put("code:t3", { on: true, tabs: ["https://a.test/", "https://b.test/"], active: 0, conversation: X });
+  records.orphanCode();
+  const h = make({ off: true, records });
+  h.svc.boot();
+  assert.equal(h.svc.select("code:t3")?.power, "off");
+  h.svc.power("code:t3", true);
+  await flush();
+  assert.equal(h.b("code:t3").restored, 0);
+  assert.equal(h.b("code:t3").pages.length, 1, "the start page only");
+});
+
+async function codeOn(h: ReturnType<typeof make>, key: string, url?: string): Promise<FakeBrowser> {
+  h.svc.power(key, true);
+  await flush();
+  h.svc.select(key);
+  if (url) await h.svc.navigate(url);
+  return h.b(key);
+}
+
+test("move carries a browser that is on, its pages not reloaded", async () => {
+  const h = make({ off: true });
+  const fb = await codeOn(h, "code:t2", "https://a.test/page");
+  const before = { wakes: fb.wakes, sleeps: fb.sleeps, destroyed: fb.destroyed, restored: fb.restored, pages: fb.pages.length };
+  assert.equal(h.svc.move("code:t2", "code:t5"), true);
+  assert.deepEqual({ wakes: fb.wakes, sleeps: fb.sleeps, destroyed: fb.destroyed, restored: fb.restored, pages: fb.pages.length }, before, "no open, wake or destroy");
+  assert.equal(h.browsers.size, 1, "no new browser");
+  assert.equal(h.svc.selectedSession(), "code:t5", "the selection follows");
+  const st = h.lastState("code:t5");
+  assert.equal(st.power, "awake");
+  assert.equal(st.tabs.length, 1);
+  assert.equal(h.svc.activeWebContentsId("code:t5"), fb.activeWebContentsId());
+  fb.hooks.changed();
+  assert.equal(h.states.at(-1)?.session, "code:t5", "the browser's hooks follow the new key");
+  h.svc.flush();
+  assert.equal(h.records.get("code:t2"), undefined);
+  assert.deepEqual(h.records.get("code:t5")?.tabs, ["https://a.test/page"]);
+});
+
+test("after a move the old terminal's agent is not told about the page, and a conversation described for `to` wins", async () => {
+  const h = make({ off: true });
+  const old = agent("code:t2", "Old", "edit", "ws:alpha");
+  await codeOn(h, "code:t2", "https://a.test/page");
+  await h.svc.call(old, { id: 1, tool: "computer_open", args: { url: "https://a.test/page" } });
+  const conv = { id: "c-to" } as unknown as Parameters<typeof h.svc.describe>[1]["conversation"];
+  h.svc.describe("code:t5", { conversation: conv });
+  assert.equal(h.svc.move("code:t2", "code:t5"), true);
+  const before = h.notes.length;
+  await h.svc.navigate("https://a.test/other");
+  assert.deepEqual(h.notes.slice(before).filter(([k]) => k === "code:t2"), [], "a page note after the move does not reach the old terminal's agent");
+});
+
+test("the old terminal's close after a move forgets nothing", async () => {
+  const h = make({ off: true });
+  const fb = await codeOn(h, "code:t2", "https://a.test/page");
+  h.svc.move("code:t2", "code:t5");
+  h.svc.forget("code:t2");
+  assert.equal(fb.destroyed, 0);
+  assert.equal(h.lastState("code:t5").tabs.length, 1);
+});
+
+test("move is false, and nothing changes, for bad keys or when the old terminal has no browser slot", async () => {
+  const h = make({ off: true });
+  await codeOn(h, "code:t2", "https://a.test/page");
+  h.svc.power("chat:a", true);
+  await flush();
+  assert.equal(h.svc.move("code:t2", "chat:a"), false, "not a Code key");
+  assert.equal(h.svc.move("chat:a", "code:t7"), false, "not a Code key");
+  assert.equal(h.svc.move("code:t8", "code:t9"), false, "nothing to move");
+  assert.equal(h.svc.move("code:t2", "code:t2"), false);
+  assert.equal(h.svc.move("code:t2", "code:x"), false);
+  assert.equal(h.svc.selectedSession(), "code:t2");
+  assert.equal(h.lastState("code:t2").tabs.length, 1, "nothing changed");
+});
+
+test("the replacement turned its browser on before the handoff: the old terminal's browser replaces it", async () => {
+  const events: string[] = [];
+  const h = make({ off: true, destroyed: (k) => events.push(`destroyed ${k}`), moved: (f, t) => events.push(`moved ${f} ${t}`) });
+  const old = await codeOn(h, "code:t1", "https://a.test/one");
+  h.svc.select("code:t1");
+  h.svc.tab({ kind: "new" });
+  await h.svc.navigate("https://a.test/two");
+  const mine = old.pages.map((x) => x.url);
+  const fresh = await codeOn(h, "code:t2", "https://b.test/x");
+  const before = { restored: old.restored, destroyed: old.destroyed, pages: old.pages.length };
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  assert.deepEqual({ restored: old.restored, destroyed: old.destroyed, pages: old.pages.length }, before, "the old browser is not reloaded or closed");
+  assert.deepEqual(old.pages.map((x) => x.url), mine);
+  assert.equal(fresh.destroyed, 1, "the replacement's first browser was destroyed once");
+  assert.deepEqual(events, ["destroyed code:t2", "moved code:t1 code:t2"], "destroyed before moved");
+  assert.equal(h.lastState("code:t2").tabs.length, mine.length);
+  assert.equal(h.svc.activeWebContentsId("code:t2"), old.activeWebContentsId());
+  assert.equal(h.lastState("code:t1").tabs.length, 0, "nothing is left under the old key");
+  assert.equal(h.lastState("code:t1").power, "off");
+});
+
+test("an old terminal that never turned its browser on leaves the replacement's alone", async () => {
+  const events: string[] = [];
+  const h = make({ off: true, destroyed: (k) => events.push(`destroyed ${k}`), moved: (f, t) => events.push(`moved ${f} ${t}`) });
+  h.svc.describe("code:t1", { title: "Old" });
+  const fresh = await codeOn(h, "code:t2", "https://b.test/x");
+  const tabs = h.lastState("code:t2").tabs.length;
+  assert.equal(h.svc.move("code:t1", "code:t2"), false);
+  assert.equal(fresh.destroyed, 0, "the replacement's browser was not destroyed");
+  assert.equal(h.lastState("code:t2").tabs.length, tabs);
+  assert.equal(h.lastState("code:t2").power, "awake");
+  assert.deepEqual(events, [], "neither destroyed nor moved was called");
+  assert.equal(h.svc.activeWebContentsId("code:t2"), fresh.activeWebContentsId());
+  assert.equal(h.svc.move("code:t1", "code:t5"), true, "t1 still has its slot: a move to a free key finds it");
+});
+
+test("an old terminal that is off with remembered tabs still wins", async () => {
+  const h = make({ off: true });
+  await codeOn(h, "code:t1", "https://a.test/old");
+  h.svc.power("code:t1", false);
+  await flush();
+  assert.equal(h.lastState("code:t1").power, "off");
+  const fresh = await codeOn(h, "code:t2", "https://b.test/x");
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  h.svc.flush();
+  assert.equal(fresh.destroyed, 1);
+  assert.deepEqual(h.records.get("code:t2")?.tabs, ["https://a.test/old"], "the remembered tabs went over");
+});
+
+test("move(missing, to-with-a-browser) leaves the replacement intact", async () => {
+  const h = make({ off: true });
+  const fresh = await codeOn(h, "code:t2", "https://b.test/x");
+  assert.equal(h.svc.move("code:t9", "code:t2"), false);
+  assert.equal(fresh.destroyed, 0);
+  assert.equal(h.lastState("code:t2").tabs.length, 1);
+});
+
+test("a call the handoff caught in flight ends with the restart, and raises no card", async () => {
+  const h = make({ off: true });
+  const two = agent("code:t2", "Two", "edit", "vault");
+  await codeOn(h, "code:t1", "https://a.test/old");
+  const held = h.call(two, "computer_open", { url: "https://b.test/held" });
+  assert.equal((await h.asked()).why, "power");
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  const r = await held;
+  await flush();
+  assert.match(r.text, /restart/);
+  assert.equal(h.broker.pending().filter((a) => a.computer === "code:t2").length, 0, "no power ask for code:t2");
+  assert.equal(h.b("code:t1").pages.some((x) => x.url === "https://b.test/held"), false, "nothing opened on the moved browser");
+  assert.equal(h.lastState("code:t2").power, "awake");
+});
+
+test("a call held on the replacement's waking browser at the handoff ends with the restart and raises no card", async () => {
+  const h = make({ off: true });
+  const old = await codeOn(h, "code:t1", "https://a.test/old");
+  const fb2 = await codeOn(h, "code:t2", "https://b.test/x");
+  h.cfg.awake = 1;
+  h.svc.select("code:t1");
+  assert.equal(h.lastState("code:t2").power, "asleep", "trim put the replacement's browser to sleep");
+  fb2.wakeGate = new Promise<void>(() => {});
+  const held = h.call(agent("code:t2", "New", "edit", "vault"), "computer_open", { url: "https://c.test/" });
+  await flush();
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  await flush();
+  assert.equal(h.broker.pending("code:t2").some((a) => a.why === "power"), false, "no power ask for code:t2");
+  const st = h.lastState("code:t2");
+  assert.equal(st.power, "awake");
+  assert.equal(st.tabs.some((x) => x.url === "https://a.test/old"), true, "the old terminal's tab");
+  assert.equal(st.tabs.some((x) => x.url === "https://c.test/"), false, "the held call opened nothing");
+  await h.clock.advance(60_000);
+  await flush();
+  const r = await Promise.race([held, new Promise<string>((res) => setTimeout(() => res("HUNG"), 200))]);
+  assert.notEqual(r, "HUNG", "the held call settled");
+  assert.equal((r as { text: string }).text, "The session restarted: call computer_status and carry on.");
+  assert.equal(old.pages.some((x) => x.url.startsWith("https://c.test")), false, "nothing opened on the moved browser");
+  assert.equal(h.broker.pending("code:t2").some((a) => a.why === "power"), false);
+});
+
+test("the moved browser wakes when it lands on the selected session", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  const old = await codeOn(h, "code:t1", "https://a.test/old");
+  await codeOn(h, "code:t2", "https://b.test/x");
+  await flush();
+  assert.equal(h.lastState("code:t1").power, "asleep");
+  assert.equal(h.svc.selectedSession(), "code:t2");
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  await flush();
+  assert.equal(h.lastState("code:t2").power, "awake");
+  assert.equal(old.sleeping, false);
+});
+
+test("the replacement had remembered tabs: they go, and the old browser moves", async () => {
+  const h = make({ off: true });
+  const old = await codeOn(h, "code:t1", "https://a.test/old");
+  await codeOn(h, "code:t2", "https://b.test/remembered");
+  h.svc.power("code:t2", false);
+  await flush();
+  assert.equal(h.lastState("code:t2").power, "off");
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  h.svc.flush();
+  assert.equal(h.lastState("code:t2").power, "awake");
+  assert.deepEqual(h.records.get("code:t2")?.tabs, ["https://a.test/old"], "the remembered tabs are gone");
+  assert.equal(h.records.get("code:t1"), undefined);
+  assert.equal(old.destroyed, 0);
+});
+
+test("the replacement being selected stays selected, showing the moved browser", async () => {
+  const h = make({ off: true });
+  const old = await codeOn(h, "code:t1", "https://a.test/old");
+  await codeOn(h, "code:t2", "https://b.test/x");
+  h.svc.select("code:t2");
+  h.svc.show({ x: 1, y: 2, width: 30, height: 40 });
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  assert.equal(h.svc.selectedSession(), "code:t2");
+  assert.deepEqual(old.shows.at(-1), { x: 1, y: 2, width: 30, height: 40 }, "the moved browser fills the pane");
+  assert.equal(h.lastState("code:t2").tabs.length, 1);
+});
+
+test("a pending ask of the replacement is cancelled by the handoff", async () => {
+  const h = make({ off: true });
+  await codeOn(h, "code:t1", "https://a.test/old");
+  const fresh = await codeOn(h, "code:t2", "https://b.test/x");
+  void fresh.hooks.ask({ why: "download", title: "Download x?", detail: "", site: "https://b.test" });
+  await flush();
+  assert.equal(h.broker.pending().length, 1);
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  assert.equal(h.broker.pending().length, 0);
+  assert.equal(h.lastState("code:t2").asks.length, 0);
+});
+
+test("Close session forgets the browser and its tabs", async () => {
+  const h = make({ off: true });
+  const fb = await codeOn(h, "code:t2", "https://a.test/page");
+  h.svc.flush();
+  assert.ok(h.records.get("code:t2"));
+  h.svc.forget("code:t2");
+  assert.equal(fb.destroyed, 1);
+  assert.equal(h.records.get("code:t2"), undefined);
+  await h.clock.advance(1000);
+  assert.equal(h.records.get("code:t2"), undefined, "nothing writes it back");
+  assert.equal(h.svc.selectedSession(), null);
+  const again = h.svc.select("code:t2");
+  assert.deepEqual([again?.power, again?.tabs.length], ["off", 0], "a later session with the key starts empty");
+});
+
+test("Turn on for a forgotten session opens nothing", async () => {
+  const h = off();
+  const C = agent("code:t1", "Claude Code in Vault");
+  const call = h.call(C, "computer_open", OPEN);
+  const ask = await h.asked();
+  h.svc.forget("code:t1");
+  h.svc.answer(ask.id, "once");
+  await call;
+  await flush();
+  assert.equal(h.browsers.size, 0, "no browser is made");
+});
+
+test("a page reload orphans Code browsers and puts thread browsers to sleep", async () => {
+  const h = make({ off: true });
+  const cb = await codeOn(h, "code:t1", "https://a.test/code");
+  h.svc.describe("code:t1", { conversation: X });
+  h.svc.power("chat:a", true);
+  await flush();
+  h.svc.select("chat:a");
+  await h.svc.navigate("https://b.test/chat");
+  h.svc.pageGone();
+  assert.equal(cb.destroyed, 1);
+  assert.equal(h.b("chat:a").sleeps, 1);
+  assert.equal(h.lastState("chat:a").power, "asleep");
+  assert.equal(h.records.get("code:t1"), undefined);
+  assert.deepEqual(h.records.get("orphan:claude:conv-x")?.tabs, ["https://a.test/code"], "the orphan keeps the latest tabs");
+  assert.equal(h.records.get("orphan:claude:conv-x")?.on, false);
+});
+
+test("a real address from a record never leaves main unscrubbed", async () => {
+  const TOKEN = "token=T";
+  const records = seeded();
+  records.put("chat:T", { on: false, tabs: [`http://x.test/cb?${TOKEN}`], active: 0 });
+  const h = make({ off: true, records });
+  const replies: string[] = [];
+  h.svc.boot();
+  h.svc.select("chat:T");
+  const orig = FakeBrowser.prototype.wake;
+  FakeBrowser.prototype.wake = async function () { throw new Error(`net::ERR_FAILED http://x.test/cb?${TOKEN}`); };
+  try {
+    h.svc.power("chat:T", true);
+    await flush();
+  } finally { FakeBrowser.prototype.wake = orig; }
+  const T = agent("chat:T", "Tee");
+  replies.push((await h.call(T, "computer_status")).text);
+  h.svc.power("chat:T", false);
+  h.svc.power("chat:T", true);
+  await flush();
+  assert.equal(h.b("chat:T").restored, 1, "the second browser was reopened through restore too");
+  replies.push((await h.call(T, "computer_status")).text);
+  const out = JSON.stringify(h.states) + JSON.stringify(replies) + JSON.stringify(h.outgoing());
+  assert.ok(!out.includes(TOKEN), out);
+  assert.ok(out.includes("http://x.test/cb"), "the hidden form is shown");
+  h.svc.flush();
+  assert.equal(h.records.get("chat:T")?.tabs[0], `http://x.test/cb?${TOKEN}`, "the record keeps the real address");
+});
+
+test("a quit keeps every record", async () => {
+  const records = seeded();
+  records.put("chat:S", { on: true, tabs: ["https://s.test/1"], active: 0 });
+  const h = make({ off: true, records });
+  h.svc.boot();
+  for (const k of ["chat:a", "chat:b"]) {
+    h.svc.power(k, true);
+    await flush();
+    h.svc.select(k);
+    await h.svc.navigate(`https://${k.slice(5)}.test/p?q=1`);
+  }
+  await h.clock.advance(600);
+  const before = (k: string) => ({ ...records.get(k), at: 0 });
+  const want = { a: before("chat:a"), b: before("chat:b"), S: before("chat:S") };
+  assert.equal(want.a.tabs?.[0], "https://a.test/p?q=1");
+  // The app's shutdown order, twice for the second quit call: flush, forgetBrowsers, refresh, agentGone, ask cancel, flush again.
+  h.svc.flushForQuit();
+  for (const b of h.browsers.values()) b.destroy();
+  h.svc.forgetBrowsers();
+  h.svc.refresh();
+  h.svc.agentGone(A);
+  h.broker.cancel(() => true, "quit");
+  h.svc.flushForQuit();
+  await h.clock.advance(2000);
+  assert.deepEqual({ a: before("chat:a"), b: before("chat:b"), S: before("chat:S") }, want, "tabs, active tab and on survive every step");
+  assert.equal(records.get("chat:b")?.on, true);
+});
+
+test("after a quit that did not happen, records work again", async () => {
+  const h = make({ off: true });
+  h.svc.power("chat:a", true);
+  await flush();
+  h.svc.select("chat:a");
+  await h.svc.navigate("https://a.test/1");
+  h.svc.flushForQuit();
+  for (const b of h.browsers.values()) b.destroy();
+  h.svc.forgetBrowsers();
+  h.svc.quitCancelled();
+  // The app goes on: a call makes a new browser, which opens the records again.
+  h.svc.power("chat:b", true);
+  await flush();
+  h.svc.select("chat:b");
+  await h.svc.navigate("https://b.test/2");
+  await h.clock.advance(600);
+  assert.deepEqual(h.records.get("chat:b")?.tabs, ["https://b.test/2"]);
+  assert.deepEqual(h.records.get("chat:a")?.tabs, ["https://a.test/1"], "the first session kept its address meanwhile");
+});
+
+test("after a quit that was called off the browser is no longer popped out", async () => {
+  const told: string[] = [];
+  const h = make({ popOut: (session) => told.push(String(session)), label: (k) => k });
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.popOut();
+  assert.equal(h.lastState().poppedOut, true);
+  h.svc.flushForQuit();
+  h.svc.quitCancelled();
+  assert.equal(h.lastState().poppedOut, false);
+  const n = told.length;
+  h.svc.describe("chat:a", { title: "New title" });
+  assert.equal(told.length, n, "the window is not made again");
+});
+
+test("boot forgets the record of a thread that no longer exists", async () => {
+  const records = seeded();
+  records.put("chat:gone", { on: true, tabs: ["https://a.test/"], active: 0 });
+  records.put("chat:here", { on: true, tabs: ["https://b.test/"], active: 0 });
+  const h = make({ off: true, records, threadExists: (k) => k === "chat:here" });
+  h.svc.boot();
+  assert.equal(records.get("chat:gone"), undefined);
+  assert.ok(records.get("chat:here"));
+});
+
+test("boot: one record that cannot be restored does not stop the others or throw", async () => {
+  const records = seeded();
+  records.put("chat:bad", { on: true, tabs: ["https://a.test/"], active: 0 });
+  records.put("chat:good", { on: true, tabs: ["https://b.test/"], active: 0 });
+  restoreFails.add("chat:bad");
+  try {
+    const h = make({ off: true, records });
+    assert.doesNotThrow(() => h.svc.boot());
+    h.svc.refresh("chat:bad");
+    h.svc.refresh("chat:good");
+    assert.equal(h.lastState("chat:good").power, "asleep", "the other record came back");
+    const bad = h.lastState("chat:bad");
+    assert.equal(bad.power, "off", "the failed one stays off");
+    assert.deepEqual(bad.tabs.map((t) => t.url), [], "off shows no live tabs");
+    // The slot, not the records file (which holds the seeded record whatever the slot remembered), must hold the tabs: with
+    // the failure gone, turning its browser On reopens them.
+    restoreFails.delete("chat:bad");
+    h.svc.power("chat:bad", true);
+    await flush();
+    assert.deepEqual(h.b("chat:bad").pages.map((x) => x.url), ["https://a.test/"], "its tabs are remembered");
+  } finally { restoreFails.delete("chat:bad"); }
+});
+
+test("boot: a record that is on with no tabs comes back off (session-browser A4)", () => {
+  const records = seeded();
+  records.put("chat:empty", { on: true, tabs: [], active: 0 });
+  const h = make({ off: true, records });
+  h.svc.boot();
+  h.svc.refresh("chat:empty");
+  assert.equal(h.lastState("chat:empty").power, "off");
+});
+
+test("a quit that did not happen: a browser with no real tab returns off, and about:blank is not a tab to restore (session-browser A4)", async () => {
+  const h = make({ off: true });
+  await codeOn(h, "chat:a");
+  await codeOn(h, "chat:b", "https://b.test/1");
+  h.b("chat:a").pages = [{ url: "about:blank", openedBy: null }];
+  h.b("chat:a").current = 0;
+  h.b("chat:b").pages.push({ url: "about:blank", openedBy: null });
+  h.svc.flushForQuit();
+  for (const b of h.browsers.values()) b.destroy();
+  h.svc.forgetBrowsers();
+  h.svc.quitCancelled();
+  h.svc.refresh("chat:a");
+  h.svc.refresh("chat:b");
+  assert.equal(h.lastState("chat:a").power, "off", "only about:blank: nothing to restore");
+  assert.equal(h.lastState("chat:b").power, "asleep");
+  assert.deepEqual(h.b("chat:b").pages.map((x) => x.url), ["https://b.test/1"], "about:blank is left out");
+});
+
+test("boot keeps a thread's record when the app cannot tell whether the thread exists", () => {
+  const records = seeded();
+  records.put("chat:a", { on: true, tabs: ["https://a.test/"], active: 0 });
+  records.put("chat:b", { on: false, tabs: ["https://b.test/"], active: 0 });
+  records.put("chat:c", { on: true, tabs: ["https://c.test/"], active: 0 });
+  const h = make({ off: true, records, threadExists: (k) => { if (k === "chat:c") throw new Error("unreadable"); return undefined; } });
+  h.svc.boot();
+  assert.ok(records.get("chat:a"), "no vault attached: kept");
+  assert.ok(records.get("chat:b"), "kept");
+  assert.ok(records.get("chat:c"), "a throw from the check: kept");
+  h.svc.refresh("chat:a");
+  assert.equal(h.lastState("chat:a").power, "asleep", "as recorded");
+});
+
+test("a page reload keeps the views of a thread browser with work in flight", async () => {
+  const h = make({ off: true });
+  h.svc.power("chat:a", true);
+  await flush();
+  h.svc.power("chat:idle", true);
+  await flush();
+  h.svc.select("chat:idle");
+  (h.svc as unknown as { slots: Map<string, { running: number }> }).slots.get("chat:a")!.running = 1;
+  h.svc.pageGone();
+  assert.equal(h.lastState("chat:a").power, "awake", "an action under way keeps its views");
+  assert.equal(h.lastState("chat:idle").power, "asleep");
+});
+
+test("move leaves nothing of the old terminal behind", async () => {
+  const h = off();
+  h.svc.power("code:t1", true);
+  await flush();
+  h.svc.describe("code:t2", { title: "New name" });
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  const last = h.lastState("code:t1");
+  assert.deepEqual({ tabs: last.tabs.length, power: last.power, asks: last.asks.length }, { tabs: 0, power: "off", asks: 0 }, "a final state for the old key");
+  assert.equal(h.lastState("code:t2").label, "New name", "the title described for the new key wins");
+});
+
+test("a failed quit brings every on browser back asleep with its tabs", async () => {
+  const h = make({ off: true });
+  for (const k of ["chat:a", "chat:b"]) { h.svc.power(k, true); await flush(); h.svc.select(k); await h.svc.navigate(`https://${k.slice(5)}.test/p?q=1`); }
+  await h.clock.advance(600);
+  h.svc.flushForQuit();
+  for (const b of h.browsers.values()) b.destroy();
+  h.svc.forgetBrowsers();
+  h.svc.quitCancelled();
+  for (const k of ["chat:a", "chat:b"]) {
+    const st = h.lastState(k);
+    assert.equal(st.power, "asleep");
+    assert.equal(st.tabs.length, 1, "its tab is listed");
+    assert.deepEqual(h.records.get(k)?.tabs, [`https://${k.slice(5)}.test/p?q=1`], "the record keeps the real address");
+  }
+  h.svc.select("chat:a");
+  await flush();
+  assert.equal(h.lastState("chat:a").power, "awake");
+  assert.equal(h.b("chat:a").pages[0].url, "https://a.test/p?q=1", "a select wakes it with its tab");
+  h.svc.power("chat:a", false);
+  await h.clock.advance(600);
+  assert.deepEqual({ on: h.records.get("chat:a")?.on, tabs: h.records.get("chat:a")?.tabs }, { on: false, tabs: ["https://a.test/p?q=1"] }, "Off remembers it");
+});
+
+test("nothing makes a browser or writes a record while the app is quitting", async () => {
+  const h = make({ off: true });
+  h.svc.power("chat:a", true);
+  await flush();
+  h.svc.select("chat:a");
+  await h.svc.navigate("https://a.test/1");
+  await h.clock.advance(600);
+  const made = h.browsers.get("chat:a");
+  h.svc.flushForQuit();
+  for (const b of h.browsers.values()) b.destroy();
+  h.svc.forgetBrowsers();
+  const file = JSON.stringify(h.records.get("chat:a"));
+  const r = await h.svc.call(A, { id: 1, tool: "computer_open", args: { url: "https://a.test/2" } });
+  assert.equal(r.text, QUITTING);
+  h.svc.select("chat:a");
+  await h.svc.navigate("https://a.test/3");
+  h.svc.tab({ kind: "new" });
+  h.svc.power("chat:a", true);
+  h.svc.pageGone();
+  await flush();
+  await h.clock.advance(2000);
+  assert.equal(h.browsers.get("chat:a"), made, "the factory was not called again");
+  assert.equal(JSON.stringify(h.records.get("chat:a")), file, "the record is unchanged");
+});
+
+test("a late agentGone of the old terminal after a move leaves the moved slot as it was", async () => {
+  const h = off();
+  const old = agent("code:t1", "Old");
+  await codeOn(h, "code:t1", "https://a.test/");
+  h.svc.describe("code:t5", { conversation: X });
+  h.wheel.take("code:t1", "code:t1", "Old");
+  assert.equal(h.svc.move("code:t1", "code:t5"), true);
+  const holder = h.wheel.holder("code:t5");
+  assert.deepEqual(holder, { kind: "agent", session: "code:t5", label: "Old" });
+  h.svc.agentGone(old);
+  assert.deepEqual(h.wheel.holder("code:t5"), holder, "the wheel holder stays");
+  assert.equal(h.lastState("code:t5").power, "awake");
+});
+
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/;
+
+test("a thread's title is cleaned before the service names its session", async () => {
+  const evil = "‮evil‬ " + "x".repeat(90);
+  const h = make({ off: true, label: () => evil });
+  h.svc.power("chat:z", true);
+  await flush();
+  const label = h.lastState("chat:z").label;
+  assert.doesNotMatch(label, UNSAFE);
+  assert.ok(label.length > 0 && label.length <= 60, `label is ${label.length} long`);
+  // A chat agent whose label is that string: the power card and the ask's session label are clean too.
+  const h2 = make({ off: true });
+  const first = h2.call(agent("chat:a", evil), "computer_open", OPEN);
+  const a = await h2.asked();
+  assert.doesNotMatch(a.title, UNSAFE);
+  assert.doesNotMatch(a.sessionLabel, UNSAFE);
+  assert.ok(a.sessionLabel.length <= 60);
+  assert.ok(a.title.length <= 60 + 80, "the title holds the name only once, cut");
+  h2.svc.answer(a.id, "deny");
+  await first;
+});
+
+test("the registry cleans an agent's label", () => {
+  const r = new AgentRegistry();
+  r.add({ ...agent("chat:a", "‮evil‬ " + "y".repeat(90)), pid: 41 });
+  r.add({ ...agent("chat:b", "‮‬"), pid: 42 });
+  const a = r.get(41)!.label;
+  assert.doesNotMatch(a, UNSAFE);
+  assert.ok(a.length <= 60);
+  assert.equal(r.get(42)!.label, "Agent", "a label that cleans to nothing falls back");
+});
+
+test("a link clicked in an off session turns its browser on and opens a new tab", async () => {
+  const h = off();
+  const r = await h.svc.openLink("chat:a", "http://0.0.0.0:3000/x");
+  assert.deepEqual(r, { ok: true, data: null });
+  assert.equal(h.lastState().power, "awake");
+  assert.equal(h.broker.pending().length, 0, "no ask");
+  assert.deepEqual(h.b().pages.map((x) => [x.url, x.openedBy]), [["http://localhost:3000/x", null]], "this address only, no start page");
+});
+
+test("a clicked link wakes a sleeping browser and adds a tab", async () => {
+  const h = make({ off: true });
+  await turnedOn(h, 5);
+  const x = h.b("chat:s1");
+  assert.equal(x.sleeping, true);
+  const before = x.pages.length;
+  assert.deepEqual(await h.svc.openLink("chat:s1", "https://a.test/l"), { ok: true, data: null });
+  assert.equal(x.wakes, 1);
+  assert.equal(x.sleeping, false);
+  assert.equal(x.pages.length, before + 1);
+  assert.deepEqual([x.pages.at(-1)?.url, x.pages.at(-1)?.openedBy], ["https://a.test/l", null]);
+});
+
+test("a clicked link the policy refuses changes nothing", async () => {
+  const h = off();
+  assert.deepEqual(await h.svc.openLink("code:t1", "https://user:pass@example.com/"), { ok: false, error: "That address does not open.", code: "EINVAL" });
+  assert.equal(h.lastState("code:t1")?.power ?? "off", "off");
+  assert.equal(h.browsers.size, 0);
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("a clicked link cancels a pending Turn on card and ends the quiet period", async () => {
+  const h = off();
+  const first = h.call(A, "computer_open", OPEN);
+  await h.asked();
+  const click = h.svc.openLink("chat:a", "https://a.test/l");
+  await h.clock.advance(1);
+  assert.deepEqual(await click, { ok: true, data: null });
+  assert.match((await first).text, /^Opened the page\./);
+  assert.equal(h.broker.pending().length, 0);
+  // The quiet period after Not now: a click ends it, and the browser is on for it.
+  const C = agent("code:t1", "Claude Code in Vault");
+  const denied = h.call(C, "computer_open", OPEN);
+  h.svc.answer((await h.asked()).id, "deny");
+  assert.equal((await denied).text, DECLINED);
+  assert.deepEqual(await h.svc.openLink("code:t1", "https://a.test/l2"), { ok: true, data: null });
+  assert.equal(h.lastState("code:t1").power, "awake");
+  // The user closes the last tab: the browser goes off with no quiet period of its own. The old quiet period (Not now) must
+  // be gone, so the agent's next open raises a Turn on card instead of answering the declined sentence.
+  h.svc.select("code:t1");
+  const bc = h.b("code:t1");
+  h.svc.tab({ kind: "close", index: bc.current });
+  assert.equal(h.lastState("code:t1").power, "off");
+  const again = h.call(C, "computer_open", OPEN);
+  assert.equal((await h.asked()).why, "power");
+  await h.clock.advance(45_000);
+  assert.match((await again).text, /^waiting_for_user/);
+});
+
+test("a clicked link whose page fails to load still opened its tab", async () => {
+  const h = off();
+  const orig = FakeBrowser.prototype.open;
+  FakeBrowser.prototype.open = async function (this: FakeBrowser, url: string, o: { newTab?: boolean; by: string | null }) { await orig.call(this, url, o); throw new Error("Could not open: ERR_CONNECTION_REFUSED."); };
+  try {
+    assert.deepEqual(await h.svc.openLink("chat:a", "http://localhost:3000/"), { ok: true, data: null });
+  } finally { FakeBrowser.prototype.open = orig; }
+  assert.deepEqual(h.b().pages.map((x) => x.url), ["http://localhost:3000/"]);
+  assert.equal(h.lastState("chat:a").log.filter((l) => /^The page did not open: http:\/\/localhost:3000\/$/.test(l.text)).length, 1);
+});
+
+test("a clicked link with no room for a tab is refused", async () => {
+  const h = off();
+  const orig = FakeBrowser.prototype.open;
+  FakeBrowser.prototype.open = async function () { throw new Error("20 tabs are open: close one first."); };
+  try {
+    const r = await h.svc.openLink("chat:a", "http://localhost:3000/");
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.code, "EIO");
+  } finally { FakeBrowser.prototype.open = orig; }
+  assert.equal(h.b().pages.length, 0);
+});
+
+test("a click while a Turn on card waits keeps the clicked page in front", async () => {
+  const h = off();
+  const first = h.call(A, "computer_open", { url: "https://agent.test/" });
+  await h.asked();
+  const click = h.svc.openLink("chat:a", "https://clicked.test/");
+  await h.clock.advance(1_000);
+  assert.deepEqual(await click, { ok: true, data: null });
+  assert.match((await first).text, /^Opened the page\./);
+  const x = h.b();
+  assert.deepEqual(x.pages.map((q) => q.url), ["https://agent.test/", "https://clicked.test/"]);
+  assert.equal(x.pages[x.current].url, "https://clicked.test/");
+});
+
+test("a click on an off browser with remembered tabs reopens them and adds the clicked page, active", async () => {
+  const h = off();
+  h.svc.power("chat:a", true);
+  await flush();
+  const x = h.b();
+  await x.open("https://one.test/", { by: null });
+  await x.open("https://two.test/", { newTab: true, by: null });
+  h.svc.select("chat:a");
+  h.svc.power("chat:a", false);
+  await flush();
+  assert.equal(h.lastState("chat:a").power, "off");
+  assert.deepEqual(await h.svc.openLink("chat:a", "https://clicked.test/"), { ok: true, data: null });
+  const y = h.b();
+  assert.deepEqual(y.pages.map((q) => q.url), ["https://one.test/", "https://two.test/", "https://clicked.test/"]);
+  assert.equal(y.pages[y.current].url, "https://clicked.test/");
+});
+
+test("two quick clicks open two tabs", async () => {
+  const h = off();
+  const [a, b] = await Promise.all([h.svc.openLink("chat:a", "https://a.test/1"), h.svc.openLink("chat:a", "https://a.test/2")]);
+  assert.deepEqual([a, b], [{ ok: true, data: null }, { ok: true, data: null }]);
+  assert.deepEqual(h.b().pages.map((q) => q.url), ["https://a.test/1", "https://a.test/2"]);
+  assert.equal(h.b().current, 1);
+});
+
+test("a late refresh of a forgotten session makes no slot and emits nothing (session-browser A2)", async () => {
+  const h = make({ off: true });
+  await codeOn(h, "chat:a", "https://a.test/1");
+  h.svc.forget("chat:a");
+  const slots = (h.svc as unknown as { slots: Map<string, unknown> }).slots;
+  const n = h.states.length;
+  h.svc.refresh("chat:a");
+  assert.equal(slots.has("chat:a"), false, "no empty slot is re-created");
+  assert.equal(h.states.length, n, "no state is emitted for it");
+});
+
+test("a Turn on answered while the app quits leaves the browser off, not awake with no browser (session-browser A5)", async () => {
+  const h = off();
+  const R = agent("chat:a", "Claude Code in Vault");
+  const first = h.call(R, "computer_open", OPEN);
+  const a = await h.asked();
+  h.svc.flushForQuit();
+  h.svc.answer(a.id, "once");
+  await first;
+  await flush();
+  h.svc.refresh("chat:a");
+  assert.equal(h.lastState("chat:a").power, "off");
+});
+
+test("a quit that did not happen: a restore that throws drops the browser it made (session-browser A6)", async () => {
+  const h = make({ off: true });
+  await codeOn(h, "chat:a", "https://a.test/1");
+  h.svc.flushForQuit();
+  for (const b of h.browsers.values()) b.destroy();
+  h.svc.forgetBrowsers();
+  restoreFails.add("chat:a");
+  try {
+    h.svc.quitCancelled();
+    const made = h.b("chat:a");
+    assert.equal(made.destroyed, 1, "the half-made browser is destroyed");
+    h.svc.refresh("chat:a");
+    assert.equal(h.lastState("chat:a").power, "off");
+    assert.deepEqual(h.lastState("chat:a").tabs, [], "no stray browser shows tabs");
+  } finally { restoreFails.delete("chat:a"); }
+});
+
+test("a page reload saves a Code browser's latest tabs to its orphan record, even unseen by tracking (session-browser A7)", async () => {
+  const h = make({ off: true });
+  const cb = await codeOn(h, "code:t1", "https://a.test/code");
+  h.svc.describe("code:t1", { conversation: X });
+  await h.clock.advance(600);
+  cb.pages.push({ url: "https://a.test/two", openedBy: null });
+  h.svc.pageGone();
+  assert.deepEqual(h.records.get("orphan:claude:conv-x")?.tabs, ["https://a.test/code", "https://a.test/two"]);
+});
+
+test("a woken browser that finishes waking over the limit is put to sleep (session-browser A10)", async () => {
+  const records = seeded();
+  records.put("chat:s1", { on: true, tabs: ["https://a.test/"], active: 0 });
+  const h = make({ off: true, records });
+  h.cfg.awake = 1;
+  h.svc.boot();
+  let open!: () => void;
+  h.b("chat:s1").wakeGate = new Promise<void>((r) => { open = r; });
+  h.svc.select("chat:s1");
+  await flush();
+  h.svc.power("chat:s2", true); await flush();
+  h.svc.select("chat:s2"); await flush();
+  assert.equal(h.b("chat:s1").sleeps, 0, "still waking: exempt");
+  open();
+  await flush();
+  await h.clock.advance(1);
+  assert.equal(h.b("chat:s1").sleeps, 1, "its wake ended, so the limit is applied");
+});
+
+test("the Turn on card names the page as a plain address: no wrapper markup, no user name or password (session-browser A3)", async () => {
+  const h = off();
+  const R = agent("chat:a", "Claude Code in Vault");
+  const first = h.call(R, "computer_open", { url: "https://user:pass@example.com/x?y=1" });
+  const a = await h.asked();
+  assert.equal(a.detail, "Page: https://example.com/x?y=1");
+  assert.ok(!a.detail.includes("<") && !a.detail.includes("user:pass@"), a.detail);
+  h.svc.answer(a.id, "deny");
+  await first;
 });

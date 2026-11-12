@@ -13,7 +13,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import {
   FX, RC_ONLY, TOUR_BOOK, USER_DATA, addRcOnly, agentRun, badge, command, computerEnv, content, expectNoErrors, installComputerAgents, openTab,
-  USER_DATA_LINK, providerState, rail, resizeHud, startOutsider, useApp, type Agent, type AgentReply,
+  USER_DATA_LINK, launchApp, providerState, rail, resizeHud, restoreFixture, startOutsider, useApp, type Agent, type AgentReply, type AppHandle,
 } from "./harness";
 
 // ── the fixture sites ────────────────────────────────────────────────
@@ -38,6 +38,12 @@ async function startSite(): Promise<Site> {
       const url = req.url ?? "/";
       seen.push({ method: req.method ?? "GET", url, body });
       const page = /^\/([a-z]+)\.html$/.exec(url)?.[1];
+      if (page === "count") {
+        // A page that prints how many times the server has served it (the seen list holds this request already).
+        const n = seen.filter((x) => x.url === "/count.html").length;
+        res.writeHead(200, html).end(`<!doctype html><title>Loads</title><p id="loads">Loads: ${n}</p>`);
+        return;
+      }
       if (page && fs.existsSync(path.join(dir, `${page}.html`))) {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(fs.readFileSync(path.join(dir, `${page}.html`)));
       } else if (url === "/continue" && req.method === "POST") {
@@ -165,20 +171,39 @@ async function newSession(win: Page, o: { workspace: string; host: Host; text: s
   await reader(win).locator(".aos-ss-send").click();
 }
 
+/** session-browser S2: a browser starts off. Turns on the browser of the session the pane has selected, through the page's own
+ *  call (`window.aos.computer.power`), so a test that drives a browser finds one, as the person's switch would give it. */
+async function browserOn(h: { win: Page; app: ElectronApplication }, before: string | null): Promise<void> {
+  const selected = () => h.app.evaluate(() => (globalThis as unknown as { __aosMain: { computerSelected(): string | null } }).__aosMain.computerSelected());
+  // The app is shared by a describe's tests: wait until the pane has followed to the NEW session (not the last test's).
+  await expect.poll(async () => { const k = await selected(); return k !== null && k !== before; }, { message: "the pane selected the new session" }).toBe(true);
+  const key = await selected();
+  await h.win.evaluate((k) => (window as unknown as { aos: { computer: { power(s: string, on: boolean): void } } }).aos.computer.power(k as string, true), key);
+  // A browser turned on by hand opens the start page: wait for that tab, so a test's baseline and its first call see it.
+  await expect.poll(() => h.win.locator(".aos-cp-tab").count(), { message: "the start page tab" }).toBeGreaterThan(0);
+}
+
 /** A Chat turn's agent: a new session in harbor-map whose prompt names it. */
-async function chatAgent(win: Page, o: { host?: Host; text: string; access?: Access }): Promise<Agent> {
+async function chatAgent(h: { win: Page; app: ElectronApplication }, o: { host?: Host; text: string; access?: Access; surfaceOff?: boolean }): Promise<Agent> {
   const after = Date.now();
+  const before = await h.app.evaluate(() => (globalThis as unknown as { __aosMain: { computerSelected(): string | null } }).__aosMain.computerSelected());
   const host = o.host ?? "claude";
-  await newSession(win, { workspace: WS, host, text: o.text, access: o.access ?? "edit" });
-  return agentRun((r) => r.mode === "chat" && r.host === host && r.prompt === o.text, after);
+  await newSession(h.win, { workspace: WS, host, text: o.text, access: o.access ?? "edit" });
+  const run = await agentRun((r) => r.mode === "chat" && r.host === host && r.prompt === o.text, after);
+  if (!o.surfaceOff) await browserOn(h, before);
+  return run;
 }
 
 /** A Code launch's agent: ⌥⌘1 or ⌥⌘2, which starts the host in the vault as the terminal's own process. */
-async function codeAgent(win: Page, host: Host): Promise<Agent> {
+async function codeAgent(h: { win: Page; app: ElectronApplication }, host: Host, o: { surfaceOff?: boolean } = {}): Promise<Agent> {
+  const win = h.win;
   const after = Date.now();
+  const before = await h.app.evaluate(() => (globalThis as unknown as { __aosMain: { computerSelected(): string | null } }).__aosMain.computerSelected());
   expect(await command(win, `agentic-os:new-terminal-${host}`)).toBe(true);
   await expect(rail(win, "term")).toHaveClass(/is-active/);
-  return agentRun((r) => r.mode === "code" && r.host === host, after);
+  const run = await agentRun((r) => r.mode === "code" && r.host === host, after);
+  if (!o.surfaceOff) await browserOn(h, before);
+  return run;
 }
 
 /** Starts `call` and waits for its ask's card in `p`; returns the card and the call, still held. */
@@ -189,13 +214,29 @@ async function asked(p: Locator, call: Promise<AgentReply>, title: string | RegE
   return { card, reply: call };
 }
 
-/** Runs JavaScript in the computer's page whose address starts with `url` (the spec's own look; the agent cannot). */
-async function inPage<T>(app: ElectronApplication, url: string, js: string): Promise<T> {
+/** Runs JavaScript in the active tab of the browser of the session under test (the spec's own look; the agent cannot):
+ *  the session the pane has selected, or `session` (a key such as `chat:<uuid>`). Every session has its own browser
+ *  (session-browser S1), so several can show one address and the address alone does not name a page; main names the tab
+ *  by its id (`__aosMain.computerPageId`), and `url` only checks that it is the page the test means. */
+async function inPage<T>(app: ElectronApplication, url: string, js: string, session?: string): Promise<T> {
+  // A tab the person just opened (the + or a manual On) loads its page asynchronously: wait a few seconds for the address.
+  for (let i = 0; i < 50; i++) {
+    try { return await inPageOnce<T>(app, url, js, session); } catch (e) {
+      if (!/the active tab is at|no active tab/.test(String(e))) throw e;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  return inPageOnce<T>(app, url, js, session);
+}
+async function inPageOnce<T>(app: ElectronApplication, url: string, js: string, session?: string): Promise<T> {
   return app.evaluate(async ({ webContents }, o) => {
-    const wc = webContents.getAllWebContents().find((w) => w.getURL().startsWith(o.url));
-    if (!wc) throw new Error(`no page at ${o.url}`);
+    const main = (globalThis as unknown as { __aosMain: { computerPageId(session?: string): number | null } }).__aosMain;
+    const id = main.computerPageId(o.session);
+    const wc = id === null ? undefined : webContents.fromId(id);
+    if (!wc) throw new Error(`no active tab in the browser of ${o.session ?? "the selected session"} (wanted ${o.url})`);
+    if (!wc.getURL().startsWith(o.url)) throw new Error(`the active tab is at ${wc.getURL()}, not ${o.url}`);
     return wc.executeJavaScript(o.js) as Promise<T>;
-  }, { url, js });
+  }, { url, js, session });
 }
 
 type Box = { x: number; y: number; width: number; height: number };
@@ -235,15 +276,15 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a Chat turn opens a page in the pane, snapshots it and clicks; the pane shows its tab, address and driver (§6, D19, D32)", async () => {
     const h = app();
     const { win } = h;
-    const a = await chatAgent(win, { text: "computer: basic flow" });
+    const a = await chatAgent(h, { text: "computer: basic flow" });
     try {
       const status = await a.call("computer_status");
       expectReply(status, { isError: false });
-      expect(status.text).toContain(`Computer: ws:${WS}`);
+      expect(status.text).toMatch(/^Browser: \S/m);
       expect(status.text).toContain("Access: this session can act");
       expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: `Opened the page. Page: ${wrapped(shopUrl())}` });
       const p = pane(win, "chat");
-      await expect(p.locator(".aos-cp-place")).toHaveText(WS);
+      await expect(p.locator(".aos-cp-place")).not.toHaveText("");
       await expect(p.locator(".aos-cp-tab.is-active")).toContainText("Harbour shop");
       await expect(p.locator(".aos-cp-url")).toHaveValue(shopUrl());
       await expect(p.locator(".aos-cp-drive")).toHaveClass(/is-agent/);
@@ -272,7 +313,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a Code session opens a page and acts freely on a marked site; its pane follows the terminal and logs the actions (§6, D32, D35)", async () => {
     const h = app();
     const { win } = h;
-    const a = await codeAgent(win, "codex");
+    const a = await codeAgent(h, "codex");
     try {
       // C1 (R65b): main started it, with what the login shell's rc file exports, as a typed launch had.
       expect(a.run.rc).toBe(RC_ONLY.value);
@@ -283,10 +324,10 @@ test.describe("both hosts, the Computer surface on", () => {
       await content(win).locator('.aos-ntm-pop .aos-ntm-row[data-key="now-codex"]').hover();
       await expect(content(win).locator(".aos-ntm-pop .aos-ntm-preview")).toHaveText(`$ exec codex ${a.run.argv.join(" ")}`);
       await win.keyboard.press("Escape");
-      expect((await a.call("computer_status")).text).toContain("Computer: vault");
+      expect((await a.call("computer_status")).text).toMatch(/^Browser: \S/m);
       expectReply(await a.call("computer_open", { url: repoUrl() }), { isError: false });
       const p = pane(win, "code");
-      await expect(p.locator(".aos-cp-place")).toHaveText("Vault");
+      await expect(p.locator(".aos-cp-place")).not.toHaveText("");
       await expect(p.locator(".aos-cp-url")).toHaveValue(repoUrl());
       await expect(p.locator(".aos-cp-trust")).toHaveText(`Acts freely on ${markedHost()}`);
       const details = refOf((await a.call("computer_snapshot")).text, "button", "Show details");
@@ -337,10 +378,10 @@ test.describe("both hosts, the Computer surface on", () => {
   test("+ opens the start page and words typed in the address bar search it (the fixture standing in for DuckDuckGo); an agent opens a result by its address without an ask (D39)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await codeAgent(win, "claude");
+    const a = await codeAgent(h, "claude");
     try {
       const p = pane(win, "code");
-      await expect(p.locator(".aos-cp-place")).toHaveText("Vault");
+      await expect(p.locator(".aos-cp-place")).not.toHaveText("");
       const before = site.seen.length;
       const tabs = await p.locator(".aos-cp-tab").count();
       await p.locator(".aos-cp-tabnew").click();
@@ -381,7 +422,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("Back, Forward and Reload work for the user (session-browser S13)", async () => {
     const h = app();
     const { win } = h;
-    const a = await codeAgent(win, "claude");
+    const a = await codeAgent(h, "claude");
     try {
       const p = pane(win, "code");
       const tabs = await p.locator(".aos-cp-tab").count();
@@ -418,7 +459,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("an unmarked site: a click asks first; Deny leaves the page as it was and Allow once clicks (D39, D6)", async () => {
     const h = app();
     const { win } = h;
-    const a = await chatAgent(win, { text: "computer: unmarked click" });
+    const a = await chatAgent(h, { text: "computer: unmarked click" });
     try {
       await a.call("computer_open", { url: shopUrl() });
       const add = refOf((await a.call("computer_snapshot")).text, "button", "Add to basket");
@@ -449,7 +490,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("an unmarked site: Continue, whose click would post with fetch, asks before the POST; on Deny the server sees none (D39)", async () => {
     const h = app();
     const { win } = h;
-    const a = await chatAgent(win, { text: "computer: continue posts" });
+    const a = await chatAgent(h, { text: "computer: continue posts" });
     const posts = () => site.seen.filter((s) => s.method === "POST" && s.url === "/continue");
     try {
       await a.call("computer_open", { url: shopUrl() });
@@ -475,7 +516,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("an unmarked site: opening, scrolling and Tab go without asking; Tab then Space on a button asks (D39)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: tab then space" });
+    const a = await chatAgent(h, { text: "computer: tab then space" });
     try {
       const p = pane(win, "chat");
       expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
@@ -496,7 +537,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("an unmarked site: computer_type into a field asks first, apart from computer_key; Deny types nothing, Allow types (D39)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: type asks" });
+    const a = await chatAgent(h, { text: "computer: type asks" });
     try {
       await a.call("computer_open", { url: shopUrl() });
       const search = refOf((await a.call("computer_snapshot")).text, "textbox", "Search");
@@ -517,7 +558,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a marked site: Merge pull request, Sign in, a download behind a plain label and Return in an ordinary field each ask (D39, D43)", async () => {
     const h = app();
     const { win } = h;
-    const a = await codeAgent(win, "claude");
+    const a = await codeAgent(h, "claude");
     try {
       await a.call("computer_open", { url: repoUrl() });
       const snap = (await a.call("computer_snapshot")).text;
@@ -577,7 +618,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a marked site: Space on a button whose label hides its text (aria-label Close, Delete repository) asks, as its click would (I3a)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: hidden delete" });
+    const a = await chatAgent(h, { text: "computer: hidden delete" });
     // Its own address (a fragment), so the spec's look finds this tab and not another computer's on the same page.
     const url = `${repoUrl()}#i3a`;
     try {
@@ -598,7 +639,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("two same-named buttons: focus moving from one to the other while the card waits makes Allow refuse as changed (R76)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: same-named focus" });
+    const a = await chatAgent(h, { text: "computer: same-named focus" });
     // Its own address (a fragment), so the spec's look finds this tab and not another computer's on the same page.
     const url = `${shopUrl()}#r76`;
     try {
@@ -619,7 +660,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a scrolled page: a ref the agent saw at the top is hit-tested where it now shows, and its click asks (D39)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: scrolled ref" });
+    const a = await chatAgent(h, { text: "computer: scrolled ref" });
     // Its own address (a fragment), so the spec's look finds this tab and not another computer's on the same page.
     const url = `${shopUrl()}#scrolled-ref`;
     try {
@@ -640,7 +681,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a scrolled page: an x, y click is judged on the control under that point of the view, so Merge asks though a plain block shows a scroll's height above it (D43)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: scrolled point" });
+    const a = await chatAgent(h, { text: "computer: scrolled point" });
     const url = `${repoUrl()}#scrolled-point`;
     try {
       expectReply(await a.call("computer_open", { url }), { isError: false });
@@ -669,8 +710,7 @@ test.describe("both hosts, the Computer surface on", () => {
 
   test("typing stops at the chunk whose input event sends the page elsewhere; nothing reaches the next page (I3b)", async () => {
     const h = app();
-    const { win } = h;
-    const a = await chatAgent(win, { text: "computer: typing navigates" });
+    const a = await chatAgent(h, { text: "computer: typing navigates" });
     const typing = `http://marked.test:${site.port}/typing.html`;
     try {
       expectReply(await a.call("computer_open", { url: typing }), { isError: false });
@@ -686,7 +726,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a page's request for the microphone or the location, which the app cannot grant, is denied without a card and says so in the thread (M10)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: ungrantable permissions" });
+    const a = await chatAgent(h, { text: "computer: ungrantable permissions" });
     // 127.0.0.1 is a secure context (a *.test page over http may not even ask) and a local address (acts freely).
     const local = `http://127.0.0.1:${site.port}/shop.html`;
     const host = `127.0.0.1:${site.port}`;
@@ -706,8 +746,7 @@ test.describe("both hosts, the Computer surface on", () => {
 
   test("computer_open refuses javascript: and data: URLs, and a page that redirects to a data: URL (§4.2)", async () => {
     const h = app();
-    const { win } = h;
-    const a = await chatAgent(win, { text: "computer: schemes" });
+    const a = await chatAgent(h, { text: "computer: schemes" });
     try {
       expectReply(await a.call("computer_open", { url: "javascript:document.title='x'" }), { isError: true, text: "Only http and https pages open." });
       expectReply(await a.call("computer_open", { url: "data:text/html,<p>A data page</p>" }), { isError: true, text: "Only http and https pages open." });
@@ -730,8 +769,8 @@ test.describe("both hosts, the Computer surface on", () => {
 
   test("a password field is redacted in the snapshot and painted over in the screenshot, also after Show password (D9)", async () => {
     const h = app();
-    const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: passwords" });
+    const { app: electron } = h;
+    const a = await chatAgent(h, { text: "computer: passwords" });
     const SECRET = "ebbtide-harbour-42";
     try {
       await a.call("computer_open", { url: loginUrl() });
@@ -765,10 +804,16 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a Read only session can snapshot and screenshot but not open, click or type (D17)", async () => {
     const h = app();
     const { win } = h;
-    const opener = await chatAgent(win, { text: "computer: opener" });
-    try { expectReply(await opener.call("computer_open", { url: shopUrl() }), { isError: false }); } finally { await opener.finish(); }
-    const a = await chatAgent(win, { text: "computer: read only", access: "read" });
+    // A Read only session cannot open a page, and it has a browser of its own now: the person opens the page in it, through
+    // the pane's address bar, and the agent looks at it.
+    const a = await chatAgent(h, { text: "computer: read only", access: "read" });
     try {
+      const p = pane(win, "chat");
+      await expect(p.locator(".aos-cp-url")).toBeEnabled();
+      await p.locator(".aos-cp-tabnew").click();
+      await p.locator(".aos-cp-url").fill(shopUrl());
+      await p.locator(".aos-cp-url").press("Enter");
+      await expect(p.locator(".aos-cp-tab.is-active")).toContainText("Harbour shop");
       expect((await a.call("computer_status")).text).toContain("Access: read only: this session can look but not act (D17)");
       const snap = await a.call("computer_snapshot");
       expectReply(snap, { isError: false });
@@ -782,53 +827,60 @@ test.describe("both hosts, the Computer surface on", () => {
     expectNoErrors(h);
   });
 
-  test("a second session on the same computer gets busy while the first drives; its look calls still work, and it acts once the first ends (D31)", async () => {
+  test("two sessions in one workspace have separate browsers and neither is busy (session-browser S1)", async () => {
     const h = app();
-    const { win } = h;
-    const first = await chatAgent(win, { host: "claude", text: "computer: first driver" });
-    const second = await chatAgent(win, { host: "codex", text: "computer: second driver" });
+    const first = await chatAgent(h, { host: "claude", text: "computer: first driver" });
+    const second = await chatAgent(h, { host: "codex", text: "computer: second driver" });
     try {
       expectReply(await first.call("computer_open", { url: shopUrl() }), { isError: false });
-      const busy = await second.call("computer_open", { url: repoUrl() });
-      expectReply(busy, { isError: true });
-      expect(busy.text).toMatch(/^busy: .+ is driving$/);
-      expectReply(await second.call("computer_snapshot"), { isError: false });
-      expect((await second.call("computer_status")).text).toMatch(/Driving: .+ \(look tools still work; acting is busy\)/);
-      await first.finish();
       expectReply(await second.call("computer_open", { url: repoUrl() }), { isError: false });
+      const tabs = (r: { text: string }) => r.text.split("\n").filter((l) => /^ {2}\[\d+\]/.test(l));
+      expect(tabs(await first.call("computer_status")).join("\n")).toContain(shopHost());
+      expect(tabs(await first.call("computer_status")).join("\n")).not.toContain(markedHost());
+      expect(tabs(await second.call("computer_status")).join("\n")).toContain(markedHost());
+      expect((await second.call("computer_status")).text).toMatch(/^Driving: this session /m);
     } finally { await first.finish(); await second.finish(); }
     expectNoErrors(h);
   });
 
-  test("refs are each session's own: after the page inserts a control and another session snapshots, a click on the first session's ref hits what it saw (I2)", async () => {
+  test("a fifth awake browser puts the least recently used to sleep, never the selected one (session-browser S9)", async () => {
     const h = app();
-    const { win, app: electron } = h;
-    const first = await chatAgent(win, { host: "claude", text: "computer: refs first" });
-    const second = await chatAgent(win, { host: "codex", text: "computer: refs second" });
-    // Its own address (a fragment), so the spec's look finds this tab and not another computer's on the same page.
-    const url = `${repoUrl()}#i2`;
+    const { win } = h;
+    // computer.awake 2 instead of 4: three sessions show the limit (the same rule as the fifth browser with the default).
+    const file = path.join(FX.vault, "brain", "config.json");
+    const was = fs.readFileSync(file, "utf8");
+    const cfg = JSON.parse(was) as { computer?: Record<string, unknown> };
+    fs.writeFileSync(file, JSON.stringify({ ...cfg, computer: { ...(cfg.computer ?? {}), awake: 2 } }));
+    const agents: Agent[] = [];
     try {
-      expectReply(await first.call("computer_open", { url }), { isError: false });
-      const details = refOf((await first.call("computer_snapshot")).text, "button", "Show details");
-      // The page inserts a plain control just before it (no ask word, and marked.test acts freely), then the second
-      // session looks: its numbering gives that new control the first session's ref.
-      await inPage(electron, url, `(() => { const b = document.createElement("button"); b.type = "button"; b.textContent = "Wipe notes";
-        b.addEventListener("click", () => { document.getElementById("shown").textContent = "Notes wiped"; });
-        document.getElementById("details").before(b); return true; })()`);
-      const wipe = refOf((await second.call("computer_snapshot")).text, "button", "Wipe notes");
-      expect(wipe).toBe(details);
-      expectReply(await first.call("computer_click", { ref: details }), { isError: false, text: `Clicked ${details}. Page: ${wrapped(url)}` });
-      const after = (await first.call("computer_snapshot")).text;
-      expect(after).toContain("Details shown");
-      expect(after).not.toContain("Notes wiped");
-    } finally { await first.finish(); await second.finish(); }
-    expectNoErrors(h);
+      const selected = () => h.app.evaluate(() => (globalThis as unknown as { __aosMain: { computerSelected(): string | null } }).__aosMain.computerSelected());
+      const pageOf = (k: string) => h.app.evaluate((_a, key) => (globalThis as unknown as { __aosMain: { computerPageId(s?: string): number | null } }).__aosMain.computerPageId(key), k);
+      const keys: string[] = [];
+      for (const n of [1, 2, 3]) {
+        agents.push(await chatAgent(h, { text: `computer: sleep test ${n}` }));
+        keys.push((await selected())!);
+      }
+      // Browsers 1, 2 and 3 were turned on in order and 3 is selected: the one used longest ago (1) is asleep, with no view.
+      await expect.poll(() => pageOf(keys[0]), { message: "the least recently used browser has no page" }).toBeNull();
+      expect(await pageOf(keys[1])).not.toBeNull();
+      expect(await pageOf(keys[2]), "the selected browser never sleeps").not.toBeNull();
+      // Selecting the sleeper's thread wakes it (its tabs reload) and puts the next least recently used (2) to sleep.
+      await content(win).locator(`.aos-ss-row[data-thread="${keys[0].slice("chat:".length)}"]`).click();
+      await expect.poll(selected, { message: "the pane followed to the first session" }).toBe(keys[0]);
+      await expect.poll(() => pageOf(keys[0]), { message: "the woken browser has a page again" }).not.toBeNull();
+      await expect(pane(win, "chat").locator(".aos-cp-tab").first()).toBeVisible();
+      await expect.poll(() => pageOf(keys[1]), { message: "the next least recently used went to sleep" }).toBeNull();
+    } finally {
+      // The config goes back first: a finish that throws must not leave computer.awake at 2 for the next test.
+      fs.writeFileSync(file, was);
+      for (const a of agents) await a.finish();
+    }
   });
 
   test("off screen: a Code session's ask badges Code, marks its row waiting, notifies, and the notification and the Notifications item each open the pane on it (D27, D32, D35)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await codeAgent(win, "claude");
+    const a = await codeAgent(h, "claude");
     const title = `Act on a site you haven't marked: Click “Add to basket” on ${shopHost()}?`;
     // I1: the notification and the Notifications item carry the ask's app-written notice, never the page's name.
     const notice = `Act on a site you haven't marked: Click on ${shopHost()}?`;
@@ -841,7 +893,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const held = a.call("computer_click", { ref: add });
       await expect(badge(win, "term")).toHaveText("1");
       await expect.poll(async () => (await notices(electron)).slice(before)).toEqual([
-        { title: notice, body: "Claude Code in Vault is waiting for your answer in the Computer pane. Open the pane to allow or deny it; with no answer in time it is denied." },
+        { title: notice, body: "Claude Code is waiting for your answer in the Computer pane. Open the pane to allow or deny it; with no answer in time it is denied." },
       ]);
       // The desktop notification's click opens Code on that terminal, with the card in its pane.
       await openTab(win, "notifications");
@@ -872,7 +924,7 @@ test.describe("both hosts, the Computer surface on", () => {
   test("Take over cancels a pending ask and the next action is refused at once; Hand back gives the wheel back (D31, D23, D27)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: take over" });
+    const a = await chatAgent(h, { text: "computer: take over" });
     const title = `Act on a site you haven't marked: Click “Add to basket” on ${shopHost()}?`;
     try {
       await a.call("computer_open", { url: shopUrl() });
@@ -917,13 +969,12 @@ test.describe("both hosts, the Computer surface on", () => {
 
   test("a process the app did not start is refused at hello; so are a session's second connection and a server behind a shell (D18)", async () => {
     const h = app();
-    const { win } = h;
     const outsider = await startOutsider("claude");
     try {
       expectReply(await outsider.agent.call("computer_status"), { isError: true, text: NOT_STARTED });
       expectReply(await outsider.agent.call("computer_open", { url: shopUrl() }), { isError: true, text: NOT_STARTED });
     } finally { outsider.kill(); }
-    const a = await chatAgent(win, { text: "computer: outsiders" });
+    const a = await chatAgent(h, { text: "computer: outsiders" });
     try {
       expectReply(await a.call("computer_status"), { isError: false });
       expectReply(await a.call("computer_status", {}, "second"), { isError: true, text: "This session's computer connection is already open." });
@@ -941,7 +992,10 @@ test.describe("both hosts, the Computer surface on", () => {
     for (const id of ["code", "sessions"]) {
       const r = await h.win.evaluate((cid) => (window as unknown as { aosHost: { plugin: { tour: { probe(id: string, ms: number): Promise<Array<{ ref: string; status: string }>> } } } }).aosHost.plugin.tour.probe(cid, 10_000), id);
       expect(r.find((x) => x.ref === `${id}.computer`)?.status, `${id}.computer`).toBe("found");
-      expect(r.filter((x) => x.status === "missing" || x.status === "unrouted"), `chapter ${id}`).toEqual([]);
+      const lost = r.filter((x) => x.status === "missing" || x.status === "unrouted").map((x) => x.ref);
+      // Vault chat has no browser, so on Sessions the pane is its strip, which has no size buttons (session-browser S12).
+      expect(lost, `chapter ${id}`).toEqual(id === "sessions" ? ["sessions.computer-size"] : []);
+      if (id === "sessions") expect(r.find((x) => x.ref === "sessions.computer-power")?.status).toBe("found");
     }
     expect(TOUR_BOOK.chapters.find((c) => c.id === "code")?.steps.find((s) => s.id === "computer")?.anchor).toBe('[data-tour="computer-view"]');
     expectNoErrors(h);
@@ -981,13 +1035,15 @@ test.describe("both hosts, the Computer surface on", () => {
   test("on Sessions an open pane gives way as the window narrows: the reader keeps 360 px and nothing overflows", async () => {
     const h = app();
     const { win, app: electron } = h;
+    // A thread has a browser, so the pane measured is a followed one (a new, unsent session follows nothing).
+    const thread = await chatAgent(h, { text: "computer: gives way" });
     try {
       await openTab(win, "chat");
-      await content(win).locator(".aos-ss-newbtn").click();
       await expect(pane(win, "chat")).toBeVisible();
+      await expect(pane(win, "chat").locator(".aos-cp-tabnew")).toBeEnabled();
       const measured: Record<number, { reader: number; pane: number; overflow: number }> = {};
       for (const width of [1100, 900]) {
-        // The window may be held wider than asked (a minimum width, or no clamp to the screen): measure at its real width.
+        // The page's width once the window has settled: the window's own, which may be held above or below the one asked.
         const want = await resizeAndSettle(electron, win, { width, height: 740 });
         const m = await content(win).locator(".aos-ss").evaluate((root) => {
           const w = (sel: string) => Math.round((root.querySelector(sel) as HTMLElement).getBoundingClientRect().width);
@@ -999,7 +1055,7 @@ test.describe("both hosts, the Computer surface on", () => {
         expect(m.overflow, at).toBeLessThanOrEqual(0);
       }
       expect(measured[900].pane, `the pane at 900 is no wider than at 1100: ${JSON.stringify(measured)}`).toBeLessThanOrEqual(measured[1100].pane);
-    } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
+    } finally { await resizeHud(electron, { width: 1480, height: 920 }); await thread.finish(); }
     expectNoErrors(h);
   });
 
@@ -1027,9 +1083,8 @@ test.describe("both hosts, the Computer surface on", () => {
       expect(m.url, `${at}: the address input is ${m.url} px`).toBeGreaterThanOrEqual(96);
       expect(m.place, `${at}: the place label is ${m.place} px`).toBeGreaterThanOrEqual(24);
     };
-    // The page may be held wider than asked (a minimum width, or no clamp to the screen): wait for its real width.
     const narrowTo = async (width: number): Promise<void> => { await resizeAndSettle(electron, win, { width, height: 740 }); };
-    const a = await codeAgent(win, "claude");
+    const a = await codeAgent(h, "claude");
     const code = pane(win, "code");
     const bar = code.locator(".aos-cp-handle");
     try {
@@ -1045,29 +1100,35 @@ test.describe("both hosts, the Computer surface on", () => {
       await bar.dispatchEvent("dblclick");
       await a.finish();
     }
+    let thread: Agent | undefined;
     try {
       // (b) Sessions at the window's least width, where the layout squeezes the pane below 320.
+      // A thread has a browser (a new, unsent session has none): start one through the fake CLI.
+      thread = await chatAgent(h, { text: "computer: narrowest" });
       await openTab(win, "chat");
-      await content(win).locator(".aos-ss-newbtn").click();
       const chat = pane(win, "chat");
       await expect(chat).toBeVisible();
       await chat.locator(".aos-cp-tabnew").click();
       await expect(chat.locator(".aos-cp-trust")).toHaveText(`Asks first on ${searchHost()}`);
       await narrowTo(100);
       await fits(chat, "Sessions, the window at its least width");
-    } finally { await resizeHud(electron, { width: 1480, height: 920 }); }
+    } finally {
+      await resizeHud(electron, { width: 1480, height: 920 });
+      await thread?.finish();
+    }
     expectNoErrors(h);
   });
 
   test("quitting with a computer open and the pane popped out ends the app at once (R46)", async () => {
     const h = app();
     const { win, app: electron } = h;
-    const a = await chatAgent(win, { text: "computer: quit" });
+    const a = await chatAgent(h, { text: "computer: quit" });
     expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
     const p = pane(win, "chat");
     await p.locator(".aos-cp-popout").click();
     await expect(p).toHaveClass(/is-popped/);
-    await expect.poll(() => electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.getTitle() === "UniDeX Computer").length)).toBe(1);
+    // session-browser S21: the pop-out window is named for the session whose browser it holds (the thread's title).
+    await expect.poll(() => electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.getTitle() === "UniDeX Browser: computer: quit").length)).toBe(1);
     const proc = electron.process();
     const marker = () => JSON.parse(fs.readFileSync(FX.v("brain/_index/hud-host.json"), "utf8")) as Record<string, unknown>;
     expect(marker()).toMatchObject({ pid: proc.pid, computerSocket: expect.any(String) });
@@ -1082,6 +1143,424 @@ test.describe("both hosts, the Computer surface on", () => {
     await expect.poll(gone, { timeout: 10_000, message: "the agent's process ended" }).toBe(true);
     // The marker keeps no Computer state past the app, so an agent asking now hears the app is not running.
     expect(Object.keys(marker()).filter((k) => k.startsWith("computer"))).toEqual([]);
+  });
+});
+
+// ── one browser per session, off until the user turns it on ──────────
+
+test.describe("session browser: one per session, off until the user turns it on (session-browser §6, PR 3)", () => {
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
+  test.afterAll(async () => { await site?.close(); });
+  const app = useApp({
+    env,
+    prepare: () => { prepare({ claude: true, codex: true }); markSite(`http://marked.test:${site.port}`); },
+  });
+  const mainOf = (h: { app: ElectronApplication }) => ({
+    selected: () => h.app.evaluate(() => (globalThis as unknown as { __aosMain: { computerSelected(): string | null } }).__aosMain.computerSelected()),
+    pageId: (key: string) => h.app.evaluate((_e, k) => (globalThis as unknown as { __aosMain: { computerPageId(s?: string): number | null } }).__aosMain.computerPageId(k), key),
+  });
+  const tabLines = (r: { text: string }) => r.text.split("\n").filter((l) => /^ {2}\[\d+\]/.test(l)).join("\n");
+
+  test("two sessions in one folder have separate tabs and neither is busy", async () => {
+    const h = app();
+    const { win } = h;
+    const first = await codeAgent(h, "claude");
+    const firstTerminal = await win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { selectedId(): string | null } } } }).aosHost.plugin.terminalPool.selectedId());
+    const second = await codeAgent(h, "codex");
+    try {
+      expectReply(await first.call("computer_open", { url: shopUrl() }), { isError: false });
+      expectReply(await second.call("computer_open", { url: repoUrl() }), { isError: false });
+      expect(tabLines(await first.call("computer_status"))).toContain(shopHost());
+      expect(tabLines(await first.call("computer_status"))).not.toContain(markedHost());
+      expect(tabLines(await second.call("computer_status"))).toContain(markedHost());
+      expect(tabLines(await second.call("computer_status"))).not.toContain(shopHost());
+      // The pane follows the second session: hold an ask there (a click on an unmarked site), as it works the first is not refused as busy.
+      expectReply(await first.call("computer_open", { url: shopUrl() }), { isError: false });
+      const ref = refOf((await first.call("computer_snapshot")).text, "button", "Add to basket");
+      const p = pane(win, "code");
+      const noticesBefore = (await notices(h.app)).length;
+      const held = first.call("computer_click", { ref });
+      held.catch(() => undefined); // a failure below must not surface as an unhandled rejection
+      // The first session's ask is pending once main has noticed it off-screen (the pane shows the second session): the
+      // same desktop notice the test "off screen: a Code session's ask badges Code…" polls.
+      await expect.poll(async () => (await notices(h.app)).length, { message: "the first session's ask is pending (noticed off-screen)" }).toBeGreaterThan(noticesBefore);
+      await expect(cards(p)).toHaveCount(0); // the pane shows the second session; the first's card is not here
+      const other = await second.call("computer_status");
+      expectReply(other, { isError: false });
+      expect(other.text).not.toMatch(/busy/i);
+      expectReply(await second.call("computer_snapshot"), { isError: false });
+      // Settle the held ask before the agents finish: bring the first session back in front and deny its card.
+      await content(win).locator(`.aos-tl-row[data-session="${firstTerminal}"]`).click();
+      await expect(cards(p)).toHaveCount(1);
+      await cards(p).locator('[data-answer="deny"]').click();
+      expectReply(await held, { isError: true });
+    } finally { await first.finish(); await second.finish(); }
+    expectNoErrors(h);
+  });
+
+  test("a new session's open shows the Turn on card; Not now is reported and a retry shows no card; turned on by hand the next call works with no card", async () => {
+    const h = app();
+    const { win } = h;
+    const a = await codeAgent(h, "claude", { surfaceOff: true });
+    try {
+      const p = pane(win, "code");
+      const open = a.call("computer_open", { url: shopUrl() });
+      await expect(cards(p)).toHaveCount(1);
+      await expect(cards(p).locator('[data-answer="once"]')).toHaveText("Turn on");
+      await expect(cards(p).locator('[data-answer="deny"]')).toHaveText("Not now");
+      await cards(p).locator('[data-answer="deny"]').click();
+      expectReply(await open, { isError: true, text: /The user declined to turn the browser on/ });
+      await expect(cards(p)).toHaveCount(0);
+      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: true, text: /The user declined to turn the browser on/ });
+      await expect(cards(p)).toHaveCount(0);
+      // By hand: the strip's power button when the pane is a strip, else the header's switch.
+      const strip = p.locator("button.aos-cp-strip-power");
+      if (await strip.count()) await strip.click();
+      else await p.locator('button.aos-cp-power[role="switch"]').click();
+      await expect(p.locator('button.aos-cp-power[role="switch"]')).toHaveText("On");
+      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: `Opened the page. Page: ${wrapped(shopUrl())}` });
+      await expect(cards(p)).toHaveCount(0);
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
+  test("Off closes the tabs and stops typing in flight; closing the last tab switches off; On reopens them", async () => {
+    const h = app();
+    const { win } = h;
+    const a = await codeAgent(h, "claude");
+    try {
+      const p = pane(win, "code");
+      const sw = p.locator('button.aos-cp-power[role="switch"]');
+      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
+      const trust = p.locator(".aos-cp-trust");
+      await trust.click();
+      await expect(trust).toHaveText(`Acts freely on ${shopHost()}`);
+      await p.locator(".aos-cp-tabnew").click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(2);
+      await p.locator(".aos-cp-tab").first().click();
+      await expect(p.locator(".aos-cp-tab").first()).toHaveClass(/is-active/);
+      const field = refOf((await a.call("computer_snapshot")).text, "textbox", "Search");
+      const before = await a.call("computer_status");
+      expect(tabLines(before)).toContain(shopHost());
+      expect(tabLines(before)).toContain(searchHost()); // the + opens the start page
+      const typing = a.call("computer_type", { text: "rope ".repeat(800), ref: field });
+      await expect(p.locator(".aos-cp-acting")).toHaveText(/^Acting: /);
+      await sw.click();
+      expectReply(await typing, { isError: true, text: /The user switched the browser off/ });
+      await expect(p).toHaveClass(/is-collapsed/);
+      await expect(p.locator("button.aos-cp-strip-power")).toBeVisible();
+      expect((await a.call("computer_status")).text).toContain("(off:");
+      // On: the same two addresses come back.
+      await p.locator("button.aos-cp-strip-power").click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(2);
+      // A reopened tab reads about:blank until its page commits, so the addresses are polled for.
+      await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "both addresses are back" }).toContain(searchHost());
+      expect(tabLines(await a.call("computer_status"))).toContain(shopHost());
+      // Closing the tabs, to the last: the browser is off.
+      await p.locator(".aos-cp-tab .aos-cp-tabclose").first().click();
+      await expect(p.locator(".aos-cp-tab")).toHaveCount(1);
+      await p.locator(".aos-cp-tab .aos-cp-tabclose").first().click();
+      await expect(p.locator("button.aos-cp-strip-power")).toBeVisible();
+      expect((await a.call("computer_status")).text).toContain("(off:");
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
+  test("Close session and Delete thread forget the browser", async () => {
+    const h = app();
+    const { win } = h;
+    const m = mainOf(h);
+    const code = await codeAgent(h, "claude");
+    try {
+      expectReply(await code.call("computer_open", { url: shopUrl() }), { isError: false });
+      const key = (await m.selected()) as string;
+      expect(key).toMatch(/^code:/);
+      expect(await m.pageId(key)).not.toBeNull();
+      const row = content(win).locator(".aos-tl-row.aos-term-tab-active");
+      await row.hover();
+      await row.locator(".aos-tl-close").click();
+      // The agent is still running: closing asks first.
+      const modal = win.locator(".aos-confirm-modal");
+      await expect(modal.locator("h3")).toHaveText("Close this terminal?");
+      await modal.getByRole("button", { name: "Close" }).click();
+      await expect.poll(() => m.pageId(key), { message: "the closed terminal's browser is forgotten" }).toBeNull();
+    } finally { await code.finish(); }
+    const chatRun = await chatAgent(h, { text: "computer: delete thread forgets" });
+    try {
+      expectReply(await chatRun.call("computer_open", { url: shopUrl() }), { isError: false });
+      const key = (await m.selected()) as string;
+      expect(key).toMatch(/^chat:/);
+      expect(await m.pageId(key)).not.toBeNull();
+      await chatRun.finish();
+      await expect(doneLines(win)).toHaveCount(1);
+      await reader(win).locator(".aos-ss-delete").click();
+      await win.locator(".aos-confirm-modal").getByRole("button", { name: "Delete" }).click();
+      await expect.poll(() => m.pageId(key), { message: "the deleted thread's browser is forgotten" }).toBeNull();
+    } finally { await chatRun.finish().catch(() => undefined); }
+    expectNoErrors(h);
+  });
+
+  // The model chip's own flow (launch the replacement, wait for it, hand over, close the old one) is `restartKeepingOld`, covered by its
+  // unit tests and by code-chat.spec's chip test. This test covers what the handoff does to the browser in the real app: the page hands
+  // the old terminal's browser to the replacement (`aos.computer.move`), then the old terminal closes.
+  test("a hand-over to the replacement terminal keeps the browser on with its page not reloaded", async () => {
+    const h = app();
+    const { win } = h;
+    const m = mainOf(h);
+    const termId = () => win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { selectedId(): string | null } } } }).aosHost.plugin.terminalPool.selectedId());
+    const a = await codeAgent(h, "claude");
+    const keyA = (await m.selected()) as string;
+    const terminalA = await termId();
+    const b = await codeAgent(h, "claude", { surfaceOff: true });
+    try {
+      const url = `http://shop.test:${site.port}/count.html`;
+      expectReply(await a.call("computer_open", { url }), { isError: false });
+      const loads = () => site.seen.filter((x) => x.url === "/count.html").length;
+      expect(loads()).toBe(1);
+      expect(await inPage<string>(h.app, url, "document.body.innerText", keyA)).toContain("Loads: 1");
+      await expect.poll(async () => { const k = await m.selected(); return k !== null && k !== keyA; }, { message: "the pane selected the second agent" }).toBe(true);
+      const keyB = (await m.selected()) as string;
+      expect(keyB).toMatch(/^code:/);
+      // The handoff, as the page makes it (preload: move answers whether a browser moved).
+      const moved = await win.evaluate(([from, to]) => (window as unknown as { aos: { computer: { move(a: string, c: string): Promise<boolean> } } }).aos.computer.move(from, to), [keyA, keyB]);
+      expect(moved).toBe(true);
+      // Then the old terminal closes (its agent is running, so the close is confirmed).
+      const rowA = content(win).locator(`.aos-tl-row[data-session="${terminalA}"]`);
+      await rowA.hover();
+      await rowA.locator(".aos-tl-close").click();
+      const modal = win.locator(".aos-confirm-modal");
+      await expect(modal.locator("h3")).toHaveText("Close this terminal?");
+      await modal.getByRole("button", { name: "Close" }).click();
+      await expect(rowA).toHaveCount(0);
+      await expect.poll(() => m.selected(), { message: "the pane is on the replacement" }).toBe(keyB);
+      const p = pane(win, "code");
+      await expect(p.locator('button.aos-cp-power[role="switch"]')).toHaveText("On");
+      await expect(p.locator(".aos-cp-tab.is-active")).toContainText("Loads");
+      expect(tabLines(await b.call("computer_status"))).toContain("count.html");
+      expect(await inPage<string>(h.app, url, "document.body.innerText", keyB)).toContain("Loads: 1");
+      expect(loads(), "the page was loaded once: the hand-over does not reload it").toBe(1);
+    } finally { await a.finish(); await b.finish(); }
+    expectNoErrors(h);
+  });
+});
+
+// ── kept, limited, linked and popped out ─────────────────────────────
+
+test.describe("session browser: kept, limited, linked and popped out (session-browser §6, PR 3)", () => {
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
+  test.afterAll(async () => { await site?.close(); });
+  const app = useApp({
+    env,
+    prepare: () => { prepare({ claude: true, codex: true }); markSite(`http://marked.test:${site.port}`); seedLinkThread(); },
+  });
+  const LINK_THREAD = "5e5510f1-0a11-4b1e-8c1d-0123456789ab";
+  /** A Sessions thread on disk (no agent): one prompt and one reply whose text links to the shop fixture page. */
+  const seedLinkThread = (): void => {
+    const file = FX.v(`brain/_index/sessions/${WS}/${LINK_THREAD}.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const t = (n: number) => new Date(Date.UTC(2026, 0, 1, 12, 0, n)).toISOString();
+    const lines = [
+      { schema: 1, kind: "meta", thread: LINK_THREAD, workspace: WS, host: "claude", model: null, effort: null, access: "read", title: "Links in a thread", created: t(0) },
+      { t: t(1), kind: "prompt", text: "where is the shop", model: null, effort: null, access: "read" },
+      { t: t(2), kind: "text", text: `The shop is [open the shop](${shopUrl()}) today.` },
+      { t: t(3), kind: "done", ok: true, usd: null, estimated: false },
+    ];
+    fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  };
+  const externalOf = (electron: ElectronApplication) =>
+    electron.evaluate(() => (globalThis as unknown as { __aosMain: { externalOpens(): Array<{ url: string; opened: boolean }> } }).__aosMain.externalOpens());
+  const selectedOf = (h: { app: ElectronApplication }) => h.app.evaluate(() => (globalThis as unknown as { __aosMain: { computerSelected(): string | null } }).__aosMain.computerSelected());
+  const pageOf = (h: { app: ElectronApplication }, key: string) => h.app.evaluate((_e, k) => (globalThis as unknown as { __aosMain: { computerPageId(s?: string): number | null } }).__aosMain.computerPageId(k), key);
+  const tabLines = (r: { text: string }) => r.text.split("\n").filter((l) => /^ {2}\[\d+\]/.test(l)).join("\n");
+  const browserTitles = (electron: ElectronApplication) =>
+    electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")).map((w) => w.getTitle()));
+
+  test("after the page reloads, the pane follows back to the thread and shows its tabs", async () => {
+    const h = app();
+    const { win } = h;
+    const a = await chatAgent(h, { text: "computer: reload keeps tabs" });
+    try {
+      const key = (await selectedOf(h)) as string;
+      expect(key).toMatch(/^chat:/);
+      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
+      expectReply(await a.call("computer_open", { url: repoUrl(), newTab: true }), { isError: false });
+      await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "both addresses" }).toContain(markedHost());
+      const lines = tabLines(await a.call("computer_status"));
+      const count = lines.split("\n").length;
+      expect(lines).toContain(shopHost());
+      await win.reload();
+      await openTab(win, "chat");
+      await content(win).locator(`.aos-ss-row[data-thread="${key.slice("chat:".length)}"]`).click();
+      await expect.poll(() => selectedOf(h), { message: "the pane followed to the thread" }).toBe(key);
+      await expect(pane(win, "chat").locator(".aos-cp-tab")).toHaveCount(count);
+      await expect(pane(win, "chat").locator('button.aos-cp-power[role="switch"]')).toHaveText("On");
+      // win.reload() reloads only the page: main keeps the slot, so this does not read the record file back (the relaunch test below does).
+    } finally { await a.finish().catch(() => undefined); }
+    expectNoErrors(h);
+  });
+
+  test("browsers kept awake over the limit while their agents hold them go back under it when a hold ends (session-browser S9)", async () => {
+    const h = app();
+    // computer.awake 2 instead of 4. Each agent's open takes its browser's wheel, and a held browser is never put to sleep, so
+    // all three stay awake over the limit; when the first agent's turn ends its hold goes, and the limit applies again.
+    const file = path.join(FX.vault, "brain", "config.json");
+    const was = fs.readFileSync(file, "utf8");
+    const cfg = JSON.parse(was) as { computer?: Record<string, unknown> };
+    fs.writeFileSync(file, JSON.stringify({ ...cfg, computer: { ...(cfg.computer ?? {}), awake: 2 } }));
+    const agents: Agent[] = [];
+    try {
+      const keys: string[] = [];
+      for (const n of [1, 2, 3]) {
+        const a = await chatAgent(h, { text: `computer: limit with pages ${n}` });
+        agents.push(a);
+        keys.push((await selectedOf(h)) as string);
+        expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
+      }
+      for (const k of keys) expect(await pageOf(h, k), `${k} is awake while its agent holds it`).not.toBeNull();
+      await agents[0].finish();
+      await expect.poll(() => pageOf(h, keys[0]), { message: "the released, least recently used browser went to sleep" }).toBeNull();
+      expect(await pageOf(h, keys[2]), "the selected browser never sleeps").not.toBeNull();
+    } finally {
+      for (const a of agents) await a.finish().catch(() => undefined);
+      fs.writeFileSync(file, was);
+    }
+    expectNoErrors(h);
+  });
+
+  test("a link in a thread opens once, in that thread's browser, and nothing opens outside", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "chat");
+    await content(win).locator(`.aos-ss-row[data-thread="${LINK_THREAD}"]`).click();
+    await expect.poll(() => selectedOf(h), { message: "the pane followed to the thread" }).toBe(`chat:${LINK_THREAD}`);
+    const before = (await externalOf(h.app)).length;
+    const link = reader(win).locator(`a[href="${shopUrl()}"]`);
+    await link.click();
+    await expect(pane(win, "chat").locator('button.aos-cp-power[role="switch"]')).toHaveText("On");
+    await expect(pane(win, "chat").locator(".aos-cp-tab")).toHaveCount(1);
+    await expect(pane(win, "chat").locator(".aos-cp-url")).toHaveValue(shopUrl());
+    expect((await externalOf(h.app)).length).toBe(before);
+    await link.click();
+    await expect(pane(win, "chat").locator(".aos-cp-tab")).toHaveCount(2);
+    expect((await externalOf(h.app)).length).toBe(before);
+    expectNoErrors(h);
+  });
+
+  // The other plan test (https goes to the default browser once, http shows the notice, outside a session) is not written: History lists
+  // digests of past sessions, and Vault chat's log is filled only by its agent, whose stand-in reply is the fixed text "Done with the
+  // computer." (harness.ts agentScript finish), so neither can be made to show a link without more harness work.
+
+  test("the pop-out follows the selected session and stays open, empty, while its browser is off", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    const termId = () => win.evaluate(() => (window as unknown as { aosHost: { plugin: { terminalPool: { selectedId(): string | null } } } }).aosHost.plugin.terminalPool.selectedId());
+    const a = await codeAgent(h, "claude");
+    const keyA = (await selectedOf(h)) as string;
+    const termA = await termId();
+    const b = await codeAgent(h, "codex", { surfaceOff: true });
+    const termB = await termId();
+    try {
+      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
+      await content(win).locator(`.aos-tl-row[data-session="${termA}"]`).click();
+      await expect.poll(() => selectedOf(h)).toBe(keyA);
+      const p = pane(win, "code");
+      await p.locator(".aos-cp-popout").click();
+      await expect(p).toHaveClass(/is-popped/);
+      await expect.poll(async () => (await browserTitles(electron)).length, { message: "one pop-out window" }).toBe(1);
+      const titleA = (await browserTitles(electron))[0];
+      expect(titleA).toMatch(/^UniDeX Browser: .+/);
+      expect(titleA).not.toMatch(/\(off\)$/);
+      await content(win).locator(`.aos-tl-row[data-session="${termB}"]`).click();
+      await expect.poll(async () => (await browserTitles(electron)).join("|"), { message: "the window follows to B, whose browser is off" }).toMatch(/ \(off\)$/);
+      // Empty: B's browser has no view in the window (main's seam names the selected session's page, null for an off browser).
+      expect(await pageOf(h, (await selectedOf(h)) as string), "the off session has no view").toBeNull();
+      expect(await browserTitles(electron)).toHaveLength(1);
+      await content(win).locator(`.aos-tl-row[data-session="${termA}"]`).click();
+      await expect.poll(async () => (await browserTitles(electron)).join("|"), { message: "the window is A's again" }).toBe(titleA);
+      await electron.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")) w.close(); });
+      await expect(p).not.toHaveClass(/is-popped/);
+    } finally { await a.finish(); await b.finish(); }
+    expectNoErrors(h);
+  });
+
+  test("a Turn on request raised while the user is on another tab notifies", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    const a = await codeAgent(h, "claude", { surfaceOff: true });
+    try {
+      await openTab(win, "pulse");
+      const before = (await notices(electron)).length;
+      const held = a.call("computer_open", { url: shopUrl() });
+      held.catch(() => undefined);
+      await expect.poll(async () => (await notices(electron)).length, { message: "a desktop notice was raised" }).toBeGreaterThan(before);
+      // The Turn on ask's own notice (service.ts: card.notice "turn the browser on", shown as the title by notify.ts noticeTitle).
+      const raised = (await notices(electron)).slice(before);
+      expect(raised.map((n) => n.title)).toEqual(["turn the browser on"]);
+      expect(raised[0].body).toContain("is waiting for your answer in the Computer pane");
+      await openTab(win, "term");
+      const p = pane(win, "code");
+      await expect(cards(p)).toHaveCount(1);
+      await cards(p).locator('[data-answer="deny"]').click();
+      expectReply(await held, { isError: true, text: /The user declined to turn the browser on/ });
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+});
+
+// ── a relaunch ───────────────────────────────────────────────────────
+
+// Not useApp: this one launches the app twice, with no fixture reset between, as quit.spec.ts launches and quits its app.
+test.describe("session browser: a relaunch (session-browser S6, S7)", () => {
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
+  test.afterAll(async () => { await site?.close(); });
+  let live: AppHandle | null = null;
+  test.afterEach(async () => { await live?.close(); live = null; });
+  const options = () => ({ env, prepare: () => { prepare({ claude: true, codex: true }); markSite(`http://marked.test:${site.port}`); } });
+  const selectedOf = (h: AppHandle) => h.app.evaluate(() => (globalThis as unknown as { __aosMain: { computerSelected(): string | null } }).__aosMain.computerSelected());
+  const pageOf = (h: AppHandle, key: string) => h.app.evaluate((_e, k) => (globalThis as unknown as { __aosMain: { computerPageId(s?: string): number | null } }).__aosMain.computerPageId(k), key);
+  const tabLines = (r: { text: string }) => r.text.split("\n").filter((l) => /^ {2}\[\d+\]/.test(l)).join("\n");
+
+  test("a thread's browser that was on at quit is back, asleep with its tabs, after a relaunch, and the launch itself does not crash (B1)", async () => {
+    test.setTimeout(240_000);
+    restoreFixture();
+    live = await launchApp(options());
+    const a = await chatAgent(live, { text: "computer: relaunch keeps the browser" });
+    const key = (await selectedOf(live)) as string;
+    expect(key).toMatch(/^chat:/);
+    let count: number;
+    try {
+      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
+      await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "the shop is open" }).toContain(shopHost());
+      count = tabLines(await a.call("computer_status")).split("\n").length;
+      await expect(pane(live.win, "chat").locator(".aos-cp-tab")).toHaveCount(count);
+    } finally { await a.finish().catch(() => undefined); }
+    // A real quit: main flushes the browser records on the way out (close() waits for everything the app started).
+    await live.close();
+    live = null;
+    // The record file (BrowserRecords: { schema: 1, browsers: { <key>: { on, tabs, active, at } } }) names the thread, on, with the page.
+    const file = path.join(USER_DATA, "computer", "browsers.json");
+    expect(fs.existsSync(file), "the quit wrote the record file").toBe(true);
+    const rec = (JSON.parse(fs.readFileSync(file, "utf8")) as { browsers: Record<string, { on: boolean; tabs: string[] }> }).browsers[key];
+    expect(rec?.on, "the thread's record says the browser was on").toBe(true);
+    expect(rec?.tabs.some((t) => t.startsWith(shopUrl())), `the record holds the shop's address: ${JSON.stringify(rec?.tabs)}`).toBe(true);
+    // The second launch, with the fixture as the first left it: before the fix main died at startup on this record, so
+    // launchApp throwing is the failure.
+    live = await launchApp(options());
+    const h = live;
+    expect(h.errors.filter((e) => /computer|browser/i.test(e)), "nothing about the computer or a browser went wrong at startup").toEqual([]);
+    // Asleep: main restored the record but made no page for it, until the thread is selected.
+    expect(await pageOf(h, key), "asleep: the thread's browser has no page before it is selected").toBeNull();
+    await openTab(h.win, "chat");
+    await content(h.win).locator(`.aos-ss-row[data-thread="${key.slice("chat:".length)}"]`).click();
+    await expect.poll(() => selectedOf(h), { message: "the pane followed to the thread" }).toBe(key);
+    await expect(pane(h.win, "chat").locator(".aos-cp-tab")).toHaveCount(count);
+    await expect(pane(h.win, "chat").locator('button.aos-cp-power[role="switch"]')).toHaveText("On");
+    await expect(pane(h.win, "chat").locator(".aos-cp-url")).toHaveValue(shopUrl());
+    await expect.poll(() => pageOf(h, key), { message: "selecting the thread woke its browser" }).not.toBeNull();
+    expectNoErrors(h);
   });
 });
 
@@ -1113,7 +1592,7 @@ test.describe("the Computer surface off (a run whose AOS_APP_WRITE leaves it out
 
   test("an agent's computer tools say the pane is off in UniDeX, not that the app is missing (D26)", async () => {
     const h = app();
-    const a = await chatAgent(h.win, { text: "computer: surface off" });
+    const a = await chatAgent(h, { text: "computer: surface off", surfaceOff: true });
     try {
       const r = await a.call("computer_status");
       expectReply(r, { isError: true, text: "The UniDeX browser is turned off in Settings for this run of the app: use another browser tool, or ask the user to turn the Computer pane on and restart UniDeX." });
@@ -1132,7 +1611,7 @@ test.describe("a Codex-only machine, the Computer surface on", () => {
   test("a Codex turn's ask shows its card in the pane and badges Sessions, as on Claude Code (D27, D33)", async () => {
     const h = app();
     const { win } = h;
-    const a = await chatAgent(win, { host: "codex", text: "computer: codex only" });
+    const a = await chatAgent(h, { host: "codex", text: "computer: codex only" });
     try {
       await a.call("computer_open", { url: shopUrl() });
       const add = refOf((await a.call("computer_snapshot")).text, "button", "Add to basket");
@@ -1144,6 +1623,8 @@ test.describe("a Codex-only machine, the Computer surface on", () => {
       expectReply(await held.reply, { isError: false, text: `Clicked ${add}. Page: ${wrapped(shopUrl())}` });
       await expect(badge(win, "chat")).toHaveText("");
     } finally { await a.finish(); }
-    expectNoErrors(h);
+    // Electron itself writes a warning when a page's load fails: here the start page a manual On opens, which nothing
+    // serves in this describe. Main handles the rejection (a log line in the pane); only that warning is allowed.
+    expect(h.errors.filter((e) => !/electron: Failed to load URL: http:\/\/127\.0\.0\.1\/ with error: ERR_CONNECTION_REFUSED/.test(e)), "renderer/main errors").toEqual([]);
   });
 });

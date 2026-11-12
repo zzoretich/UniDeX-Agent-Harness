@@ -2,12 +2,13 @@
 // parent CLI is listed here. A CLI's computer connection can be claimed once; remove forgets the agent and its claim.
 
 import type { Access } from "./gate";
+import { cleanTitle } from "./title";
 
 export interface AgentRef {
   pid: number;
   host: "claude" | "codex";
   page: "chat" | "code";
-  /** chat:<thread> | code:<terminal id> */
+  /** chat:<thread> | code:<the id of the terminal's first process> */
   key: string;
   label: string;
   place: string;
@@ -21,7 +22,7 @@ export class AgentRegistry {
 
   /** Registers an agent, or replaces the fields of one already registered. A live claim survives a replace: only remove then add re-arms it. */
   add(a: AgentRef): void {
-    this.agents.set(a.pid, a);
+    this.agents.set(a.pid, { ...a, label: cleanTitle(a.label) || "Agent" });
   }
 
   remove(pid: number): void {
@@ -42,7 +43,7 @@ export class AgentRegistry {
     return this.agents.get(pid);
   }
 
-  /** The live agent registered under a session key (chat:<thread>, code:<terminal id>), the newest first. */
+  /** The live agent registered under a session key (chat:<thread>, code:<the id of the terminal's first process>), the newest first. */
   byKey(key: string): AgentRef | undefined {
     let found: AgentRef | undefined;
     for (const a of this.agents.values()) if (a.key === key) found = a;

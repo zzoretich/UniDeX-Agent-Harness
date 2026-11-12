@@ -524,6 +524,28 @@ test.describe("both hosts, the Sessions surface on", () => {
     });
   }
 
+  test("Delete thread asks first, removes the row and forgets the thread's browser", async () => {
+    const { win } = app();
+    await newSession(win, { workspace: "harbor-map", host: "claude", text: "Delete me later", model: "opus", effort: "high", access: "run" });
+    const r = reader(win);
+    await expect(r.locator(".aos-ss-done")).toHaveCount(1, { timeout: 30_000 });
+    const id = await openId(win);
+    expect(id).not.toBe("");
+    const row = list(win).locator(`.aos-ss-row[data-thread="${id}"]`);
+    await expect(row).toHaveCount(1);
+    await r.locator(".aos-ss-delete").click();
+    const modal = win.locator(".aos-confirm-modal");
+    await expect(modal.locator("h3")).toHaveText("Delete this thread?");
+    await expect(modal.locator("p")).toContainText(`"Delete me later" goes to the Trash, and its browser's tabs are forgotten. The host's own transcript stays.`);
+    await modal.getByRole("button", { name: "Cancel" }).click();
+    await expect(row).toHaveCount(1);
+    await r.locator(".aos-ss-delete").click();
+    await win.locator(".aos-confirm-modal").getByRole("button", { name: "Delete" }).click();
+    await expect(row).toHaveCount(0);
+    await expect(r.locator(".aos-reader-title")).toHaveText("New session");
+    expect(await app().app.evaluate(({}, tid) => (globalThis as any).__aosMain.computerPageId("chat:" + tid), id)).toBeNull();
+  });
+
   test("the repository card in Review changes: what changed, a file's diff on Review, a refusal inline, and Commit with the message as edited", async () => {
     const { win } = app();
     await newSession(win, { workspace: "tide-log", host: "claude", text: "Log the tides" });

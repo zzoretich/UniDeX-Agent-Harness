@@ -9,6 +9,7 @@
 // terminal (R39), the history stays, Stop and the working line go, and a notice takes the composer's place.
 
 import { Component, MarkdownRenderer } from "obsidian";
+import { routeWebLinks } from "./openWebLink";
 import type { SessionHost } from "../data/aosConfig";
 import type { ChatState } from "../data/codeChat";
 import type { Span } from "../data/ansiSpans";
@@ -29,6 +30,8 @@ export interface CodeChatOptions {
   answer?(key: string, card: ChatCard): boolean | Promise<boolean>;
   /** A status line link (https:// or agenticos://), opened as a link clicked in the terminal is (R32). */
   openLink(href: string): void;
+  /** The session a web link clicked in a message belongs to (its browser), or null: none (a past conversation's chat). */
+  linkSession(): string | null;
   /** The terminal's host and folder: models and file paths are named by them. */
   context(): { host: SessionHost; root: string | null };
   /** A past conversation (C6): rows and Show earlier only, with no composer, status line, Stop or way to a terminal. */
@@ -72,6 +75,8 @@ export class CodeChat {
     const earlier = this.earlierEl.createEl("button", { cls: "aos-cc-earlierbtn", text: "Show earlier", attr: { type: "button" } });
     earlier.addEventListener("click", () => this.o.showEarlier());
     this.rowsEl = col.createDiv({ cls: "aos-cc-rows" });
+    // The message bodies' web links; the status line (in the foot, outside the rows) keeps its own openLink.
+    routeWebLinks(this.rowsEl, () => o.linkSession());
     this.noteEl = col.createDiv({ cls: "aos-cc-note" });
     this.workingEl = col.createDiv({ cls: "aos-cc-working" });
     this.cardEl = col.createDiv({ cls: "aos-cc-card", attr: { "aria-live": "polite" } });
