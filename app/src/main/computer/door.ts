@@ -4,13 +4,11 @@
 // The id is a secret that main puts in the session's environment, so it names a session without a process lookup. The
 // door never reads, clicks or types: a page is opened, nothing else. No id is ever written to a log.
 
-import { createHash, randomBytes } from "node:crypto";
-import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import net from "node:net";
-import path from "node:path";
 import { linkUrl } from "../policy/computer-url";
 import { realClock, type Clock } from "./asks";
-import { MAX_PATH_BYTES } from "./bridge";
+import { listenPrivate, socketPathIn, unlinkIfBound } from "./unix-socket";
 
 export const DOOR_PER_MINUTE = 6;
 export const DOOR_LINE_MAX = 16 * 1024;
@@ -19,13 +17,9 @@ export const DOOR_CONNECTIONS = 16;
 const MINUTE_MS = 60_000;
 const ID = /^[0-9a-f]{32}$/;
 
-/** As `bridgeSocketPath`: `<userData>/computer/door.sock`, or a short path in the user's temp folder when that is too long. */
+/** As `bridgeSocketPath`, with the file name door.sock. */
 export function doorSocketPath(userData: string, tmp: string): string | null {
-  const own = path.join(userData, "computer", "door.sock");
-  if (Buffer.byteLength(own) <= MAX_PATH_BYTES) return own;
-  const id = createHash("sha256").update(path.resolve(userData)).digest("hex").slice(0, 12);
-  const short = path.join(tmp, `unidex-computer-${id}`, "door.sock");
-  return Buffer.byteLength(short) <= MAX_PATH_BYTES ? short : null;
+  return socketPathIn(userData, tmp, "door.sock");
 }
 
 export interface DoorOptions { path: string; open: (session: string, url: string) => void; log: (line: string) => void; clock?: Clock }
@@ -49,34 +43,9 @@ export class ComputerDoor {
   async start(): Promise<boolean> {
     const { path: sockPath } = this.o;
     try {
-      if (Buffer.byteLength(sockPath) > MAX_PATH_BYTES) throw new Error("the socket path is too long");
-      const dir = path.dirname(sockPath);
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      // The folder must be a real folder of this user's, never a link (as the bridge's), then 0700.
-      const d = fs.lstatSync(dir);
-      if (!d.isDirectory() || (typeof process.getuid === "function" && d.uid !== process.getuid())) throw new Error("the folder is not a folder of this user's");
-      fs.chmodSync(dir, 0o700);
-      // Only a leftover socket is replaced; a file, link or folder at the path is somebody's.
-      let st: fs.Stats | null = null;
-      try { st = fs.lstatSync(sockPath); } catch { /* nothing there */ }
-      if (st) {
-        if (!st.isSocket()) throw new Error("something that is not a socket is at the socket path");
-        fs.unlinkSync(sockPath);
-      }
       const server = net.createServer((s) => this.connection(s));
       server.on("error", () => {});
-      await new Promise<void>((res, rej) => {
-        server.once("error", rej);
-        server.listen(sockPath, () => { server.off("error", rej); res(); });
-      });
-      try {
-        fs.chmodSync(sockPath, 0o600);
-        const b = fs.lstatSync(sockPath);
-        this.bound = { dev: b.dev, ino: b.ino };
-      } catch (err) {
-        await new Promise<void>((res) => server.close(() => res()));
-        throw err;
-      }
+      this.bound = await listenPrivate(server, sockPath, "the door");
       this.server = server;
       return true;
     } catch (err) {
@@ -91,13 +60,9 @@ export class ComputerDoor {
     for (const s of this.conns) s.destroy();
     this.conns.clear();
     server?.close();
-    // Unlink only if the path is still the socket this door bound.
     const bound = this.bound;
     this.bound = null;
-    try {
-      const now = fs.lstatSync(this.o.path);
-      if (bound && now.dev === bound.dev && now.ino === bound.ino) fs.unlinkSync(this.o.path);
-    } catch { /* already gone */ }
+    unlinkIfBound(this.o.path, bound);
   }
 
   issue(session: string): string {
