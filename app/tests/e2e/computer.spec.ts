@@ -1806,7 +1806,7 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
       expect((await externalOf(h)).length, "main opened nothing outside").toBe(externalBefore);
     } finally {
       // Hand back, so the next test starts clean.
-      if (p) await p.locator(".aos-cp-drivebtn", { hasText: "Hand back" }).click().catch(() => undefined);
+      if (p) await p.locator(".aos-cp-drivebtn", { hasText: "Hand back" }).click({ timeout: 2000 }).catch(() => undefined);
       await a.finish();
     }
     expect((await h.opened()).filter((o) => o.fn === "openExternal")).toEqual([]);
