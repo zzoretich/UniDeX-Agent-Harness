@@ -9,6 +9,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ### Fixed
 - An approval card in Code's chat stays up while its terminal resizes (switching to the terminal view with ⌘J, opening a pane, resizing the window) until the agent redraws its prompt at the new size. Before, the card and the "Answer the card above first" note could vanish for a moment, and a Send in that moment went to the terminal, where its ⏎ answered the prompt. <!-- no-tour: a fix with no new control -->
+- A local routine (`engine: local`) that runs past its `timeoutSec` is always logged as a timeout. Before, the engine's own timer could fire a moment before the routine's and log the run as an engine error ("ollama timeout"). <!-- no-tour: a fix with no new control -->
 
 ## [2.6.0] — 2026-11-11
 
