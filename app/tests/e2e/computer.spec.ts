@@ -1783,7 +1783,8 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
       expect((await sessionVar(a)).prev, "the stand-in is the BROWSER the opener falls back to").toBe(recorder);
       // The browser was turned on by hand: the start page is its one tab, and the person is on it.
       await expect(p.locator(".aos-cp-tab")).toHaveCount(1);
-      await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText("Start");
+      // The pane names a tab on the start page "New tab" (the page's own title is "Start", read below through the browser).
+      await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText("New tab");
       expect(await titleOf(h, startUrl(), key)).toBe("Start");
       await p.locator(".aos-cp-drivebtn", { hasText: "Take over" }).click();
       await expect(p.locator(".aos-cp-drive")).toHaveClass(/is-user/);
@@ -1793,7 +1794,7 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
       await expect(p.locator(".aos-cp-tab")).toHaveCount(2);
       // The person's tab stays in front: the strip's marker and the browser's own active page are unchanged.
       await expect(p.locator(".aos-cp-tab.is-active")).toHaveCount(1);
-      await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText("Start");
+      await expect(p.locator(".aos-cp-tab.is-active .aos-cp-tabtitle")).toHaveText("New tab");
       expect(await titleOf(h, startUrl(), key), "the active page is still the start page").toBe("Start");
       // The new page really loaded in its tab behind: read it through the tab's own web contents, which the active-tab helper cannot reach.
       await expect.poll(() => h.app.evaluate(async ({ webContents }, u) => {
