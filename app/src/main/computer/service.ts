@@ -34,7 +34,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "openTab" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -125,8 +125,10 @@ const PAGE = { session: "page", label: "the page" } as const;
 /** The busy reply's sentence for a session whose hold is gone: freed, or (R81) its process no longer the registered one. */
 const NOT_HELD = "this session no longer holds the wheel";
 const USER = "You";
-/** What a double click says when its first click changed the page and the second was not sent (PR 5, A2): the end of both the
- *  agent's reply and the person's log line, after `Clicked <what> once: `. */
+/** What a double click says when the first click ran and the second press was not sent (PR 5, A2: the page changed under the
+ *  first, the call stopped being current, or a check before the second failed): the end of both the agent's reply and the
+ *  person's log line, after `Clicked <what> once: `. A change after the second press went is the ordinary double-click line
+ *  (the browser answers `once: false`), since that press was sent. */
 const DOUBLE_ONCE = "the second click was not sent";
 const LOG_MAX = 200;
 /** How long a settled ask's reply stays for `computer_wait`. */
@@ -677,40 +679,31 @@ export class ComputerService {
       if (where() < 0) return already();
       if (!same()) return refuseAt(REFUSAL.changed, this.url(b));
       if (b.tabs().length === 1) {
-        // The last tab: the browser stays on with one new tab (S5). The tab is made first, here, right after the checks above
-        // (nothing is awaited between them and the making), so the new tab does not depend on the start page loading: a load
-        // that fails leaves its tab in place and the close goes on. Only a failure to MAKE the tab refuses, and nothing is closed.
-        const had = new Set(b.tabs().map((_t, i) => b.tabUid(i)));
-        const ours = new Set<string>((Object.values(REFUSAL) as unknown[]).filter((v): v is string => typeof v === "string"));
-        const newUid = (): number | null => b.tabs().map((_t, i) => b.tabUid(i)).find((u): u is number => u !== null && !had.has(u)) ?? null;
-        // Not the agent's own tab (no `own`): the person's to keep, as the one "+" makes is (X2 sets it only for computer_open).
-        let threw: unknown = null;
+        // The last tab: the browser stays on with one new tab (S5), made first. Its making is the one await (milliseconds):
+        // `openTab` answers the tab's uid once it exists and never waits on the start page, whose load the reply's settle wait
+        // covers; a load that fails leaves the tab on its error page. Not the agent's own tab (no `own`): the person's to keep,
+        // as the one "+" makes is (X2 sets it only for computer_open).
+        let made: number;
         try {
-          await b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: agent.label });
-        } catch (e) {
-          threw = e;
+          made = await b.openTab(this.o.startPage ?? START_PAGE, { by: agent.label });
+        } catch {
+          // The tab could not be made: nothing is closed, and the reply is the person's stop or a sentence of ours, never the
+          // browser's text.
+          return this.stopped(p, lease) ?? (p.browser === b ? fail(REFUSAL.startTab) : fail(REFUSAL.isOff));
         }
-        if (p.browser !== b) return this.stopped(p, lease) ?? fail(REFUSAL.isOff);
-        // The start tab is looked up by its uid, whether the open returned or threw. A load that failed leaves its tab; a tab that
-        // could not be made closes nothing and answers a sentence of ours (never Electron's message).
-        const startUid = newUid();
-        if (startUid === null) {
-          if (threw === null) return fail(REFUSAL.tabClosed);
-          // A sentence of the table that the browser threw (the browser is gone) goes on as it is; anything else is ours.
-          if (threw instanceof Error && ours.has(threw.message)) return { text: threw.message, isError: true };
-          return fail(REFUSAL.startTab);
-        }
-        // When the call cannot go on, the start tab goes again only if it is not the tab in front (nobody can be looking at it); in
-        // front it is left where it is. The old tab is never closed in these cases.
+        // From here to the close nothing is awaited, so what is checked is what the close meets. The new tab is known by the uid
+        // `openTab` answered, never as "a tab not there before". When the call cannot go on, nothing of the person's is closed:
+        // the new tab goes again only if it is still there and not the tab in front (nobody can be looking at it).
         const undo = (): void => {
-          const i = b.tabIndex(startUid);
+          const i = b.tabIndex(made);
           if (i >= 0 && !b.tabs()[i].active && b.tabs().length > 1) b.close(i);
         };
         const interrupted = this.stale(p, agent, lease);
         if (interrupted) { undo(); return interrupted; }
-        // The person may have closed or moved the tab while the start page loaded.
+        if (p.browser !== b) return fail(REFUSAL.isOff);
         if (where() < 0) { undo(); return already(); }
         if (!same()) { undo(); return refuseAt(REFUSAL.changed, this.url(b)); }
+        if (b.tabIndex(made) < 0) return fail(REFUSAL.tabClosed);
       }
       const at = where();
       b.close(at);

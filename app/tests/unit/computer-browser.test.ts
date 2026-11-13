@@ -10,7 +10,7 @@ import os from "node:os";
 import v8 from "node:v8";
 import vm from "node:vm";
 import electron from "electron";
-import { ComputerBrowser, type BrowserHooks, type Resolved } from "../../src/main/computer/browser";
+import { ComputerBrowser, clipAddress, type BrowserHooks, type Resolved } from "../../src/main/computer/browser";
 import { FocusMoved, forPerson, PageChanged } from "../../src/main/computer/cdp";
 import { ConsoleLog } from "../../src/main/computer/console";
 import { LeavingRecords, PendingReads } from "../../src/main/computer/leaving";
@@ -154,7 +154,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
     query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false, worlds: new Map(),
     memory: new SecretMemory(), frame: "F1", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0,
     leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false,
-    loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0,
+    loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null,
     console: new ConsoleLog(), requests: new Map(), committedLoader: null as string | null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
   };
   const inner = b as unknown as { list: unknown[]; current: number };
@@ -1302,8 +1302,12 @@ const cdpEvent = (b: ComputerBrowser, tab: unknown, method: string, p: Record<st
 /** `Network.requestWillBeSent` for a main-frame document (a redirect hop is another event with the same loader). */
 const requested = (b: ComputerBrowser, tab: unknown, loaderId: string, method: string, more: Record<string, unknown> = {}, frameId = "F1", type = "Document"): void =>
   cdpEvent(b, tab, "Network.requestWillBeSent", { requestId: `${loaderId}.r`, loaderId, type, frameId, request: { method, url: "https://a.test/x", ...more } });
-/** The main frame committed a document the loader `loaderId` fetched. */
-const committedBy = (b: ComputerBrowser, tab: unknown, loaderId: string, url = "https://a.test/x"): void => cdpEvent(b, tab, "Page.frameNavigated", { frame: { id: "F1", loaderId, url } });
+/** The main frame committed a document the loader `loaderId` fetched: the protocol's event, then Electron's own `did-navigate` for
+ *  the tab (`navigated`), in the order Chromium sends them; an error page gets no did-navigate (R37). */
+const committedBy = (b: ComputerBrowser, tab: unknown, loaderId: string, url = "https://a.test/x"): void => {
+  cdpEvent(b, tab, "Page.frameNavigated", { frame: { id: "F1", loaderId, url } });
+  if (!url.startsWith("chrome-error:")) (b as unknown as { navigated(t: unknown): void }).navigated(tab);
+};
 const pushed = (b: ComputerBrowser, tab: unknown, url = "https://a.test/x#next"): void => cdpEvent(b, tab, "Page.navigatedWithinDocument", { frameId: "F1", url });
 const historyOf = (page: FakePage, ids: string[], current: number): void => { page.history = { currentIndex: current, entries: ids.map((id) => ({ id, url: id === "blank" ? "about:blank" : `https://a.test/${id}` })) }; };
 /** The tick after a commit, and the history read that follows it. */
@@ -1643,11 +1647,17 @@ test("a double click whose first click changed the page withholds the second pre
   slow.page.on.set("Page.getLayoutMetrics", () => { if (armed) throw new Error("timed out"); });
   assert.deepEqual(await slow.b.click(resolved(), () => true, { double: true }), { once: true });
   assert.deepEqual(pairs(slow.page), ["mousePressed 1", "mouseReleased 1"]);
-  // The call stops being current after the second press went.
+  // The call stops being current after the second press went: that press was sent, so it is a double click (its release is
+  // withheld), not "once".
   const after = make();
   let go = true;
   after.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mousePressed" && p.clickCount === 2) go = false; });
-  assert.deepEqual(await after.b.click(resolved(), () => go, { double: true }), { once: true });
+  assert.deepEqual(await after.b.click(resolved(), () => go, { double: true }), { once: false }, "the second press was sent");
+  assert.deepEqual(pairs(after.page), ["mousePressed 1", "mouseReleased 1", "mousePressed 2"], "its release was withheld");
+  // The second release's command fails after its press went: the same.
+  const lost = make();
+  lost.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased" && p.clickCount === 2) throw new Error("gone"); });
+  assert.deepEqual(await lost.b.click(resolved(), () => true, { double: true }), { once: false });
   // The page moved within its document (pushState): the same control is still there, so the second press goes.
   const same = make();
   same.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") same.tab.seq++; });
@@ -1846,7 +1856,8 @@ test("an answer to a read sent before the gap does not close it", async () => {
   pushed(b, tab);                              // read 1 is sent, and waits
   await new Promise((r) => setTimeout(r, 5));
   requested(b, tab, "L2", "POST");
-  committedBy(b, tab, "L2");                   // a commit whose bind is dropped by the next event: a gap
+  // A commit whose read, still waiting for Electron's commit event, is dropped by the next event: a gap.
+  cdpEvent(b, tab, "Page.frameNavigated", { frame: { id: "F1", loaderId: "L2", url: "https://a.test/x" } });
   pushed(b, tab, "https://a.test/x#r");        // read 2 is sent after the gap
   await new Promise((r) => setTimeout(r, 5));
   first(); await afterBind();                  // read 1 answers: it was sent before the gap
@@ -1896,7 +1907,7 @@ test("a history read that fails once still binds its commit", async () => {
   committedBy(b, tab, "L1");
   await later(200);
   assert.equal(await methodOf(b, "reload"), "GET", "the second try bound the entry");
-  assert.equal(tab.gap, null, "no gap was opened");
+  assert.equal(tab.gap, null, "the gap the failed first try opened was closed by the second try");
 });
 
 test("a read that keeps failing leaves the entry unknown and opens a gap", async () => {
@@ -1917,16 +1928,93 @@ test("a later commit during the retries binds nothing to the earlier entry", asy
   const { b, page, tab } = make();
   historyOf(page, ["e1"], 0);
   page.on.set("Page.getNavigationHistory", () => { throw new Error("Not attached to an active page"); });
-  requested(b, tab, "L1", "GET");
+  // The first loader POSTs and the second GETs, so a retry of the first that bound the second's entry would make it "other"
+  // (and the rule that a GET never makes a POST entry free would then keep it so): the pin can fail.
+  requested(b, tab, "L1", "POST");
   committedBy(b, tab, "L1");
   await later(20);
   page.on.clear();
   historyOf(page, ["e1", "e2"], 1);
-  requested(b, tab, "L2", "POST");
+  requested(b, tab, "L2", "GET");
   committedBy(b, tab, "L2");
   await later(200);
   assert.equal(tab.methods.has("e1"), false, "the first commit's entry got no record");
-  assert.equal(tab.methods.get("e2"), "other", "the second commit's entry is its own");
+  assert.equal(tab.methods.get("e2"), "GET", "the second commit's entry is its own, never given the first's method");
+});
+
+test("the first read is sent from the tab's own commit event", async () => {
+  const { b, page, tab } = make();
+  const handlers = wiredHandlers(b, tab);
+  historyOf(page, ["e1"], 0);
+  let reads = 0;
+  page.on.set("Page.getNavigationHistory", () => { reads++; });
+  requested(b, tab, "L1", "POST");
+  cdpEvent(b, tab, "Page.frameNavigated", { frame: { id: "F1", loaderId: "L1", url: "https://a.test/x" } });
+  await later(20);
+  assert.equal(reads, 0, "nothing is read from the protocol's event or the tick after it");
+  handlers.get("did-navigate")!({}, "https://a.test/x");
+  assert.equal(reads, 1, "the read is sent from Electron's own commit event, in it");
+  await afterBind();
+  assert.equal(await methodOf(b, "reload"), "other", "bound with the method of the loader the protocol's event named");
+});
+
+test("an error page's commit is still bound", async () => {
+  // Electron emits no did-navigate for an error page (R37): its read goes a tick after the protocol's event, as before.
+  const { b, page, tab } = make();
+  const handlers = wiredHandlers(b, tab);
+  historyOf(page, ["e1"], 0);
+  requested(b, tab, "L1", "POST");
+  cdpEvent(b, tab, "Page.frameNavigated", { frame: { id: "F1", loaderId: "L1", url: "chrome-error://chromewebdata/" } });
+  handlers.get("did-fail-provisional-load")!({}, -105, "", "https://a.test/x", true);
+  await afterBind();
+  assert.equal(tab.methods.get("e1"), "other", "a failed POST asks");
+});
+
+test("a document's read still waiting for its commit event when another navigation comes is dropped, with a gap", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  requested(b, tab, "L1", "POST");
+  cdpEvent(b, tab, "Page.frameNavigated", { frame: { id: "F1", loaderId: "L1", url: "https://a.test/x" } });
+  historyOf(page, ["e1", "e2"], 1);
+  pushed(b, tab);                                                       // before Electron's did-navigate of the first
+  (b as unknown as { navigated(t: unknown): void }).navigated(tab);    // that commit event, late: nothing is left to send
+  await afterBind();
+  assert.equal(tab.methods.has("e1"), false, "the commit's entry got no record");
+  assert.equal(tab.methods.has("e2"), false, "with the gap open, the same-document entry is in doubt, never called GET");
+});
+
+test("openTab answers the new tab's uid without waiting for its load, and the tab is in front and not the agent's own", async () => {
+  const { b } = makeSleeper();
+  FakeView.hang.add("https://start.test/");
+  try {
+    const uid = await b.openTab("https://start.test/", { by: "agent" });
+    const at = b.tabIndex(uid);
+    assert.ok(at >= 0, "the tab exists");
+    assert.equal(b.tabs()[at].active, true, "in front");
+    assert.equal(b.ownTab(uid), false, "not the agent's own");
+  } finally { FakeView.hang.clear(); }
+  // A load that fails leaves the tab where it is; the call does not throw for it.
+  FakeView.fail = () => Object.assign(new Error("net"), { code: "ERR_INTERNET_DISCONNECTED" });
+  try {
+    const uid = await b.openTab("https://start.test/", { by: null });
+    assert.ok(b.tabIndex(uid) >= 0);
+  } finally { FakeView.fail = null; }
+});
+
+test("a failed open's sentence cuts the address at 120 and the code at 60, never through a surrogate pair", async () => {
+  const long = `https://a.test/${"p".repeat(200)}`;
+  assert.equal(clipAddress(long).length, 120);
+  assert.ok(clipAddress(long).endsWith("…"));
+  assert.equal(clipAddress(`${"a".repeat(118)}😀${"b".repeat(10)}`), `${"a".repeat(118)}…`, "a pair across the cut is left out whole");
+  assert.equal(clipAddress(`https://a.test/${"q".repeat(105)}`).length, 120, "120 characters stay as they are");
+  // Through `open`: a code of 60 characters is kept; one of 61 becomes "failed".
+  for (const [code, why] of [[`E${"X".repeat(59)}`, `E${"X".repeat(59)}`], [`E${"X".repeat(60)}`, "failed"]]) {
+    const { b } = makeSleeper();
+    FakeView.fail = () => Object.assign(new Error("net"), { code });
+    try {
+      await assert.rejects(b.open(long, { newTab: true, by: null }), (e: Error) => e.message === REFUSAL.couldNotOpen(`${clipAddress(long)} (${why})`));
+    } finally { FakeView.fail = null; }
+  }
 });
 
 test("a router's pushState followed by replaceState in one task leaves the route's entry GET", async () => {

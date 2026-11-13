@@ -120,10 +120,23 @@ class FakeBrowser implements BrowserLike {
     else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy, ...(this.pages[this.current].own ? { own: true } : {}), commits: (this.pages[this.current].commits ?? 0) + 1 };
     this.seq++;
     const opened = { url: this.pages[at].url, title: "" };
-    { const hook = this.afterOpen; this.afterOpen = null; hook?.(); }
     if (this.loadFails?.(url)) throw new Error(REFUSAL.couldNotOpen(`${url} (ERR_FAILED)`));
     // The page this call opened, which is the active one unless it went to the background (as the real browser answers).
     return opened;
+  }
+  /** As ComputerBrowser.openTab: a tab in front, not the agent's own, whose uid is answered once it exists; its load is started
+   *  and never waited for, so a page that cannot load leaves the tab on its error page and nothing throws. `onOpen` runs before
+   *  the tab is made, `afterOpen` once it is (the person or a program acts while it is made). */
+  async openTab(url: string, o: { by: string | null }): Promise<number> {
+    this.trail.push(`open ${this.pages.length}`);
+    const hook = this.onOpen; this.onOpen = null; hook?.();
+    if (this.makeFails?.(url)) throw new Error(REFUSAL.browserGone);
+    this.pages.push({ url: new URL(url).href, openedBy: o.by });
+    this.current = this.pages.length - 1;
+    this.seq++;
+    const uid = this.tabUid(this.current)!;
+    { const after = this.afterOpen; this.afterOpen = null; after?.(); }
+    return uid;
   }
   /** Pages that cannot be loaded (their tab is made, then the open throws) and pages whose tab cannot be made at all. */
   loadFails: ((url: string) => boolean) | null = null; makeFails: ((url: string) => boolean) | null = null;
@@ -191,7 +204,7 @@ class FakeBrowser implements BrowserLike {
   /** Each open and close in order, with the number of tabs open when it was made (the last tab closes only after another opens). */
   trail: string[] = [];
   onOpen: (() => void) | null = null;
-  /** Runs after the tab of the next open is in place (the person acts while the page loads). */
+  /** Runs once the tab of the next `openTab` is in place (the person or a program acts while it is made). */
   afterOpen: (() => void) | null = null;
   close(i: number) { this.need(i); this.trail.push(`close ${this.pages.length}`); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
   /** The caps each snapshot was asked with (session-browser S16, I4: a reply asks for the outline's, a snapshot for none). */
@@ -5319,10 +5332,13 @@ test("each of the three replies ends with the page's outline", async () => {
   assert.deepEqual(b.capsFor.slice(-3), [OUTLINE_CAP, OUTLINE_CAP, OUTLINE_CAP], "each asked for the reply-sized outline");
 });
 
-test("the last tab closed by the person while the start page loads: nothing more is closed", async () => {
+// The agent's close of the last tab (S5): the start tab is made (its uid answered at once, its load not waited for), then the
+// checks and the close run with nothing awaited between them. `onOpen` acts before the tab is made, `afterOpen` while it is.
+
+test("the old tab is gone while the start tab is made: nothing more is closed", async () => {
   const h = make({ startPage: "https://start.test/" });
   const b = await h.open(A, "https://a.test/only");
-  b.onOpen = () => { b.pages.splice(0, 1); b.current = -1; };       // the person closed it during the open
+  b.onOpen = () => { b.pages.splice(0, 1); b.current = -1; };       // the old tab went just as the start tab was made
   const r = await h.call(A, "computer_tab", { index: 0, close: true });
   assert.ok(!r.isError, r.text);
   assert.match(r.text, /^That tab is already closed\./);
@@ -5331,10 +5347,10 @@ test("the last tab closed by the person while the start page loads: nothing more
   assert.ok(!b.trail.some((t) => t.startsWith("close")), "no close was made");
 });
 
-test("the old tab changes page while it loads: nothing is closed and the start tab in front is left", async () => {
+test("the old tab changes page while the start tab is made: nothing is closed and the start tab in front is left", async () => {
   const h = make({ startPage: "https://start.test/" });
   const b = await h.open(A, "https://a.test/only");
-  b.onOpen = () => b.commit(0, "https://a.test/elsewhere");          // the person (or the page) moved it during the open
+  b.onOpen = () => b.commit(0, "https://a.test/elsewhere");          // the page moved it on just then
   const r = await h.call(A, "computer_tab", { index: 0, close: true });
   assert.equal(r.isError, true);
   assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
@@ -5342,21 +5358,95 @@ test("the old tab changes page while it loads: nothing is closed and the start t
   assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere", "https://start.test/"], "the start tab is in front: it is left");
 });
 
-test("a Take over while the start page loads leaves both tabs and closes neither", async () => {
+test("the old tab is closed without waiting for the start page to load", async () => {
   const h = make({ startPage: "https://start.test/" });
   const b = await h.open(A, "https://a.test/only");
-  b.onOpen = () => { h.svc.select("chat:a"); h.svc.takeOver(); };
+  b.open = () => new Promise<never>(() => {});                       // a load of the start page that never ends
+  const r = await Promise.race([h.call(A, "computer_tab", { index: 0, close: true }), new Promise<null>((res) => setTimeout(() => res(null), 200))]);
+  assert.ok(r, "the call answered: its step did not wait on the start page");
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Closed the tab\./);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"], "the old tab is gone and one tab is open");
+  assert.equal(b.current, 0);
+  assert.equal(h.lastState().power, "awake", "the browser is on");
+});
+
+test("the start page fails to load: the old tab is closed all the same", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.loadFails = (u) => u === "https://start.test/";                   // the tab is made, then its load fails (offline)
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Closed the tab\./);
+  assert.ok(r.text.endsWith(now("https://start.test/")), `the page now in front: ${r.text}`);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.equal(b.current, 0);
+  assert.equal(h.lastState().power, "awake", "not switched off");
+  assert.deepEqual(b.trail.slice(-2), ["open 1", "close 2"], "the new tab was made first, so a tab was open all the while");
+  assert.equal(b.destroyed, 0);
+});
+
+test("a tab that cannot be made closes nothing and answers a sentence of ours", async () => {
+  // Whatever the browser threw: a sentence of the table (the browser is gone) or Electron's own text.
+  for (const thrown of [REFUSAL.browserGone, "Error invoking remote method: ERR_FAILED (-2) loading 'https://start.test/'"]) {
+    const h = make({ startPage: "https://start.test/" });
+    const b = await h.open(A, "https://a.test/only");
+    b.open = async () => { throw new Error(thrown); };
+    b.openTab = async () => { throw new Error(thrown); };
+    const r = await h.call(A, "computer_tab", { index: 0, close: true });
+    assert.deepEqual(r, { text: REFUSAL.startTab, isError: true }, thrown);
+    assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
+    assert.ok(!b.trail.some((t) => t.startsWith("close")));
+    assert.equal(h.lastState().power, "awake");
+  }
+});
+
+test("the tab just made is gone by the check: nothing is closed and the reply says the tab was closed", async () => {
+  // From behind (the person went back to the old tab and closed the new one: no stop) and in front (their × on it: a stop,
+  // whose sentence is the same). The start page's load failing after that changes nothing (it once made the reply untrue).
+  for (const front of [false, true]) {
+    const h = make({ startPage: "https://start.test/" });
+    const b = await h.open(A, "https://a.test/only");
+    b.loadFails = (u) => u === "https://start.test/";
+    h.svc.select("chat:a");
+    b.afterOpen = front ? () => h.svc.tab({ kind: "close", index: 1 }) : () => { b.pages.splice(1, 1); b.current = 0; };
+    const r = await h.call(A, "computer_tab", { index: 0, close: true });
+    assert.deepEqual(r, { text: REFUSAL.tabClosed, isError: true }, front ? "in front" : "behind");
+    assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"], "the old tab stays and the browser keeps a tab");
+    assert.equal(h.lastState().power, "awake");
+  }
+});
+
+test("another tab added in between is never the one undone", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.afterOpen = () => {
+    b.pages.splice(1, 1); b.current = 0;                               // the start tab is closed from behind,
+    b.pages.push({ url: "https://program.test/", openedBy: null });    // a program's page opens behind,
+    b.commit(0, "https://a.test/elsewhere");                           // and the old tab moves on
+  };
   const r = await h.call(A, "computer_tab", { index: 0, close: true });
   assert.equal(r.isError, true, r.text);
-  assert.match(r.text, /^busy: /);
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "https://start.test/"]);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere", "https://program.test/"], "the program's tab is never taken for the start tab");
   assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
 });
 
-test("the turn ends while it loads: the same", async () => {
+test("a Take over between the making and the close closes nothing", async () => {
   const h = make({ startPage: "https://start.test/" });
   const b = await h.open(A, "https://a.test/only");
-  b.onOpen = () => h.svc.agentGone(A);
+  b.afterOpen = () => { h.svc.select("chat:a"); h.svc.takeOver(); };
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true, r.text);
+  assert.match(r.text, /^busy: /);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "https://start.test/"], "the start tab in front is left");
+  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
+});
+
+test("the turn ends between the making and the close: the same", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.afterOpen = () => h.svc.agentGone(A);
   const r = await h.call(A, "computer_tab", { index: 0, close: true });
   assert.equal(r.isError, true, r.text);
   assert.match(r.text, /^busy: /);
@@ -5374,26 +5464,6 @@ test("the person goes back to the old tab and navigates it: the start tab behind
   assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere"]);
 });
 
-test("the person closes the loading start tab from behind: the old tab stays and the browser keeps a tab", async () => {
-  const h = make({ startPage: "https://start.test/" });
-  const b = await h.open(A, "https://a.test/only");
-  b.afterOpen = () => { b.pages.splice(1, 1); b.current = 0; };       // × on the start tab, which was not in front
-  const r = await h.call(A, "computer_tab", { index: 0, close: true });
-  assert.equal(r.isError, true, r.text);
-  assert.equal(r.text, REFUSAL.tabClosed);
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
-  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
-});
-
-test("a start tab that cannot be made answers a sentence of ours", async () => {
-  const h = make({ startPage: "https://start.test/" });
-  const b = await h.open(A, "https://a.test/only");
-  b.open = async () => { throw new Error("Error invoking remote method: ERR_FAILED (-2) loading 'https://start.test/'"); };
-  const r = await h.call(A, "computer_tab", { index: 0, close: true });
-  assert.deepEqual(r, { text: REFUSAL.startTab, isError: true });
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
-});
-
 test("the start tab left by the agent's close of the last tab asks before the agent closes it", async () => {
   const h = make({ startPage: "https://start.test/" });
   const b = await h.open(A, "https://a.test/only");
@@ -5405,35 +5475,11 @@ test("the start tab left by the agent's close of the last tab asks before the ag
   h.svc.answer((await h.asked()).id, "deny"); await p;
 });
 
-test("the agent closes the last tab while the start page cannot load: the tab is closed, one tab is open, the browser is on", async () => {
-  const h = make({ startPage: "https://start.test/" });
-  const b = await h.open(A, "https://a.test/only");
-  b.loadFails = (u) => u === "https://start.test/";                   // the tab is made, then the load fails (offline)
-  const r = await h.call(A, "computer_tab", { index: 0, close: true });
-  assert.ok(!r.isError, r.text);
-  assert.match(r.text, /^Closed the tab\./);
-  assert.ok(r.text.endsWith(now("https://start.test/")), `the page now in front: ${r.text}`);
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
-  assert.equal(b.current, 0);
-  assert.equal(h.lastState().power, "awake", "not switched off");
-  assert.deepEqual(b.trail.slice(-2), ["open 1", "close 2"], "the new tab was made first, so a tab was open all the while");
-  assert.equal(b.destroyed, 0);
-});
-
-test("a start tab that cannot be made refuses, and nothing is closed", async () => {
-  const h = make({ startPage: "https://start.test/" });
-  const b = await h.open(A, "https://a.test/only");
-  b.makeFails = (u) => u === "https://start.test/";
-  const r = await h.call(A, "computer_tab", { index: 0, close: true });
-  assert.deepEqual(r, { text: REFUSAL.browserGone, isError: true });
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
-  assert.ok(!b.trail.some((t) => t.startsWith("close")));
-});
-
-test("a call that is no longer current makes no start tab and closes nothing", async () => {
+test("the call was not current to begin with: nothing is made", async () => {
   const h = make({ startPage: "https://start.test/" });
   const b = await h.open(A, "https://a.test/only");
   b.pages[0].openedBy = null; b.pages[0].own = false;
+  const made = b.trail.length;
   const p = h.call(A, "computer_tab", { index: 0, close: true });
   const ask = await h.asked();
   h.svc.select("chat:a");
@@ -5441,8 +5487,8 @@ test("a call that is no longer current makes no start tab and closes nothing", a
   h.svc.answer(ask.id, "once");
   const r = await p;
   assert.equal(r.isError, true, r.text);
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"], "no start tab was made");
-  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), [], "nothing closed");
+  assert.deepEqual(b.trail.slice(made), [], "no start tab was made and nothing was closed");
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
 });
 
 test("an allowed close does not close another tab with the same address", async () => {

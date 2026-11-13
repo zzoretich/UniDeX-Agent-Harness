@@ -216,6 +216,8 @@ interface Tab {
   known: Set<string>; gap: number | null; sent: number; answered: number;
   /** Main-frame commits and same-document navigations so far: a bind (a tick after one) goes only when no later one came. */
   binds: number;
+  /** A document commit the protocol reported whose first history read waits for Electron's own commit event (`navigated`). */
+  commitRead: { n: number; how: { loader: LoadMethod | null } } | null;
   /** session-browser (computer_console): what the page said about itself since its document loaded (cleared at each
    *  main-frame commit but for the committing document's own failed requests), and the method, plain scrubbed address (cut at
    *  500) and loader of each request in flight, by request id: the protocol's failure events carry no address. Each is a
@@ -301,8 +303,9 @@ function leavePark(owner: ComputerBrowser): void {
 /** A commit's history read is tried this many times, this far apart (ms), while no later navigation came. */
 const BIND_TRIES = 3;
 const BIND_RETRY_MS = 50;
-/** An address cut for a sentence that ends with something that must survive (a failed open's error code). */
-const clipAddress = (url: string): string => (url.length > 120 ? `${cutAt(url, 119)}…` : url);
+/** An address cut for a sentence that ends with something that must survive (a failed open's error code): 120 characters at
+ *  most with its "…", never through a surrogate pair. Exported for its test. */
+export const clipAddress = (url: string): string => (url.length > 120 ? `${cutAt(url, 119)}…` : url);
 const clipUrl = (url: string): string => (url.length > URL_NOTE_MAX ? `${url.slice(0, URL_NOTE_MAX - 1)}…` : url);
 const schemeOf = (url: string): string => { try { return new URL(url).protocol; } catch { return "unreadable"; } };
 const hostOf = (site: string | null, url: string): string => { try { return new URL(site ?? url).host || url; } catch { return url; } };
@@ -457,6 +460,20 @@ export class ComputerBrowser {
     return { url: this.urlOut(t), title: this.logScrub(t)(t.wc.getTitle()) };
   }
 
+  /** Makes a new tab at `url`, in front as `open`'s new tab is and not the agent's own, and answers its uid as soon as the tab
+   *  exists: the load is started and never waited for, so a load that fails later leaves the tab on its error page as any tab's
+   *  does (session-browser S5: the start tab of the agent's close of the last tab, which must not wait on the start page). A
+   *  tab that cannot be made throws the table's `startTab`, never Electron's text. */
+  async openTab(url: string, o: { by: string | null }): Promise<number> {
+    if (!navAllowed(url)) throw new Told(REFUSAL.notWeb, "Only http and https pages open.");
+    // §4.2: load the normalised form navAllowed judged, never the raw string.
+    const href = new URL(url).href;
+    const t = await this.addTab(o.by).catch(() => { throw new Told(REFUSAL.startTab, "The new tab could not be made."); });
+    t.refused = null;
+    void t.wc.loadURL(href).catch(() => undefined);
+    return t.uid;
+  }
+
   /** session-browser S16: resolves 300 ms after `since` (a time on the caller's clock, `Date.now()` here: the moment an
    *  action's last input was sent), or, when a main-frame navigation of the active tab started within that window (or just
    *  before it, as a click's own does), when that navigation has stopped loading, and at `since` + 5 s at the latest. Never
@@ -584,13 +601,27 @@ export class ComputerBrowser {
   }
 
   /** A main-frame commit (`loader` is the method its loader's request had, null when none was seen) or a same-document
-   *  navigation ("same") happened: a tick later, after Electron's history has the entry (inside the commit's own event the
-   *  read fails), the current entry is bound to its method. The count says whether another commit or same-document
-   *  navigation came since, before the read or during it: then the entry is left without a record, never given the later
-   *  one's method. */
-  private bindLater(t: Tab, how: { loader: LoadMethod | null } | "same"): void {
+   *  navigation ("same") happened, as the protocol reports it: the current entry is to be bound to its method, but not from
+   *  inside the protocol's event, where the history read fails. A document's first read (`onCommit`) is sent from Electron's
+   *  own commit event for the tab (`navigated`, at did-navigate, which Chromium sends after the protocol's event), where the
+   *  probe found the read reliable; an error page's (Electron's event may not come for it) and a same-document navigation's go
+   *  a tick after the protocol's event. The count says whether another commit or same-document navigation came since, before
+   *  the read or during it: then the entry is left without a record, never given the later one's method. */
+  private bindLater(t: Tab, how: { loader: LoadMethod | null } | "same", onCommit = false): void {
+    // A document's read still waiting for its commit event is dropped by the next navigation, as `bind` drops a read the count
+    // has passed: its entry is left unrecorded, with the gap open.
+    if (t.commitRead) { t.commitRead = null; t.gap = t.sent; }
     const n = ++t.binds;
+    if (onCommit && how !== "same") { t.commitRead = { n, how }; return; }
     setTimeout(() => { void this.bind(t, n, how).catch(() => undefined); }, 0);
+  }
+
+  /** Electron's own commit event for the tab's document (did-navigate): the first read of the commit the protocol reported. */
+  private navigated(t: Tab): void {
+    const r = t.commitRead;
+    if (!r) return;
+    t.commitRead = null;
+    void this.bind(t, r.n, r.how).catch(() => undefined);
   }
 
   private async bind(t: Tab, n: number, how: { loader: LoadMethod | null } | "same"): Promise<void> {
@@ -601,8 +632,8 @@ export class ComputerBrowser {
     if (t.binds !== n) { if (how !== "same") t.gap = t.sent; return; }
     let seq = 0;
     let h: { currentIndex: number; entries: { id: number | string; url: string }[] };
-    // The first try goes a tick after the commit's event, which can come before Electron's history has the entry: a read that
-    // fails is tried again, up to three tries about 50 ms apart, for as long as no later commit or same-document navigation came
+    // The first try goes from Electron's commit event (a document) or a tick after the protocol's (an error page, a same-document
+    // navigation), and can still find the history not ready: a read that fails is tried again, up to three tries about 50 ms apart, for as long as no later commit or same-document navigation came
     // (the count `n` is checked before every try); only then is the entry left unrecorded and the gap opened (PR 5, R6).
     for (let tries = 1; ; tries++) {
       seq = ++t.sent;
@@ -838,19 +869,24 @@ export class ComputerBrowser {
     // more is sent. A page that changed under the first click is not a failure of the call (PR 5, A2): the first click ran, so
     // the answer is `once: true`, and so it is for every other way the second click does not finish.
     const withheld = (): boolean => this.list[this.current] !== t || t.doc !== doc || t.navs !== navs;
-    // The first click has been delivered: whatever stops the second (the call no longer current, a check that fails or times
-    // out, the page changing after the second press) leaves the first having run, and the answer says so (PR 5, P3).
+    // The first click has been delivered: whatever stops the second press (the call no longer current, a check that fails or
+    // times out) leaves the first having run, and the answer says so (PR 5, P3). Once the second press has gone (DevTools took
+    // the command), it is a double click whatever happens to its release, which is withheld as the first's would be: the
+    // answer is then `once: false`, and the reply the ordinary double-click line with the page as it is. A press whose command
+    // failed was not dispatched, so it counts as not sent.
+    let pressed = false;
     try {
       if (!valid() || withheld()) return { once: true };
       const again = await this.stillReaches(t, p, r);
       if (!valid() || withheld()) return { once: true };
       const second = judgedAt(again);
       await this.mouse(t, "mousePressed", second, 2);
-      if (!valid() || !this.list.includes(t) || t.doc !== doc) return { once: true };
+      pressed = true;
+      if (!valid() || !this.list.includes(t) || t.doc !== doc) return { once: false };
       await this.mouse(t, "mouseReleased", second, 2);
       return { once: false };
     } catch {
-      return { once: true };
+      return { once: !pressed };
     }
   }
 
@@ -1205,7 +1241,7 @@ export class ComputerBrowser {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, own: keep ? keep.own : own, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
-      loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, console: new ConsoleLog(), requests: new Map(), committedLoader: null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
+      loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null, console: new ConsoleLog(), requests: new Map(), committedLoader: null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
     };
     owners.set(t.wc.id, this.handlers);
     // A background tab leaves the selection on the tab already in front; with none in front it is the one.
@@ -1337,7 +1373,9 @@ export class ComputerBrowser {
       if (t.holdOpen && t.holdUrl) t.holdUrl = e.url;
       t.leaving.redirect(e.url);
     });
-    wc.on("did-navigate", (_e, url) => this.commit(t, url));
+    // session-browser S17 (PR 5, R6): Electron's own commit event is where the history has the new entry: the commit's first read
+    // of the history goes from here (`navigated`), after the commit is counted.
+    wc.on("did-navigate", (_e, url) => { this.commit(t, url); this.navigated(t); });
     // R37 (N1): a main-frame error page (the site refused the connection, the name did not resolve) commits too, with the
     // failed URL as the tab's URL (a GET-submitted code is in it), but Electron emits no did-navigate for it: it emits one
     // did-fail-provisional-load at that commit (probed on Electron 44), and nothing for an aborted navigation (-3).
@@ -1500,7 +1538,7 @@ export class ComputerBrowser {
         if (t.frame && p.frameId === t.frame) this.bindLater(t, "same");
         break;
       case "Page.frameNavigated": {
-        const frame = p.frame as { id: string; parentId?: string; loaderId: string };
+        const frame = p.frame as { id: string; parentId?: string; loaderId: string; url?: string; unreachableUrl?: string };
         // agent-computer D9 (R41): a main-frame commit takes the old document's frames with it; the new ones attach after.
         // R47: the new document's fields are placed by its first DOM read, started now (a restored document's frames
         // attach no new ones, and its fields count as placed nowhere until then).
@@ -1516,7 +1554,10 @@ export class ComputerBrowser {
         if (frame.parentId) break;
         t.frame = frame.id;
         t.committedLoader = typeof frame.loaderId === "string" ? frame.loaderId : null;
-        this.bindLater(t, { loader: t.loaders.get(frame.loaderId) ?? null });
+        // This event names the loader (so the method); an error page (Chromium's own document for a load that failed) gets no
+        // did-navigate, so its read keeps the tick after this event.
+        const errorPage = typeof frame.unreachableUrl === "string" || /^chrome-error:/i.test(String(frame.url ?? ""));
+        this.bindLater(t, { loader: t.loaders.get(frame.loaderId) ?? null }, !errorPage);
         t.loaders.delete(frame.loaderId);
         // D9: a document keeps its sensitive set for its life (a back/forward-cache restore brings its set back).
         t.sensitive = t.documents.get(frame.loaderId) ?? new Set();
