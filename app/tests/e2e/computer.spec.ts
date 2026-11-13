@@ -987,7 +987,7 @@ test.describe("both hosts, the Computer surface on", () => {
     const a = await chatAgent(h, { text: "computer: outsiders" });
     try {
       expectReply(await a.call("computer_status"), { isError: false });
-      expectReply(await a.call("computer_status", {}, "second"), { isError: true, text: "This session's computer connection is already open: use that connection, or end the other one first." });
+      expectReply(await a.call("computer_status", {}, "second"), { isError: true, text: "This process's browser tools are not connected because this session already has a computer connection: go on without the browser tools in this process, and tell the user." });
       expectReply(await a.call("computer_status", {}, "grandchild"), { isError: true, text: NOT_STARTED });
       expectReply(await a.call("computer_status"), { isError: false });
     } finally { await a.finish(); }

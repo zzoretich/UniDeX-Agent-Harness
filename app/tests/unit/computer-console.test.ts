@@ -13,8 +13,8 @@ test("the log keeps the newest 200 and cuts long texts", () => {
   assert.equal(log.list().at(-1)!.text.length, CONSOLE_TEXT_MAX, "cut at 2,000 characters");
   log.add({ at: 0, kind: "warning", text: "w".repeat(CONSOLE_TEXT_MAX) });
   assert.equal(log.list().at(-1)!.text, "w".repeat(CONSOLE_TEXT_MAX), "a text of exactly the limit is whole");
-  log.clear();
-  assert.deepEqual(log.list(), []);
+  log.keepOnly(null);
+  assert.deepEqual(log.list(), [], "a new document with no request of its own keeps nothing");
 });
 
 test("plainAddresses drops every query and fragment, and the path when asked", () => {

@@ -435,7 +435,12 @@ export class ComputerBrowser {
       new Promise<null>((r) => { timer = setTimeout(() => r(null), LOAD_WAIT_MS); }),
     ]);
     clearTimeout(timer);
-    if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") { const what = t.refused ? `a ${t.refused}` : "a non-web"; throw new Told(REFUSAL.redirectRefused(what), `The page redirected to ${what} URL, which is refused.`); };
+    if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") {
+      // The scheme is the page's choice: it goes into the sentence only in the plain form a scheme has, else as "non-web".
+      const scheme = (t.refused as string | null)?.replace(/:$/, "") ?? ""; // (the load set it, which the compiler cannot see)
+      const what = `a ${/^[a-z][a-z0-9+.-]{0,19}$/.test(scheme) ? scheme : "non-web"}`;
+      throw new Told(REFUSAL.redirectRefused(what), `The page redirected to ${what} URL, which is refused.`);
+    }
     // ERR_ABORTED: the page went somewhere else before it finished loading.
     if (failed && failed.code !== "ERR_ABORTED") {
       // The reason is the error's code, never its message (which carries the whole address); the address goes out as a tab's own
@@ -515,15 +520,11 @@ export class ComputerBrowser {
     return true;
   }
 
-  /** How the page Back, Forward or Reload would load was fetched (session-browser S17), for the gate: "GET" where it is
-   *  certainly one (`about:blank` is one too: it is not fetched), "other" for a POST or any other method, "unknown" where it
-   *  cannot be told (no record of that entry, no entry to go to, a history that cannot be read). The history is read at the
-   *  moment of the call, so the index is the one the move would use. A tab still waking reloads its kept address by GET. */
-  async entryMethod(go: ComputerNavGo, tab?: number): Promise<"GET" | "other" | "unknown"> {
-    return (await this.entry(go, tab))?.method ?? "unknown";
-  }
-
-  /** The entry a move would load, from one read of the history (null with no such tab): its tab by uid, itself by id. */
+  /** The entry a move would load, from one read of the history (null with no such tab): its tab by uid, itself by id, and how
+   *  it would load (session-browser S17, for the gate): "GET" where it is certainly one (`about:blank` is one too: it is not
+   *  fetched), "other" for a POST or any other method, "unknown" where it cannot be told (no record of that entry, no entry to
+   *  go to, a history that cannot be read). The history is read at the moment of the call, so the index is the one the move
+   *  would use. A tab still waking reloads its kept address by GET. */
   async entry(go: ComputerNavGo, tab?: number): Promise<Entry | null> {
     const t = this.list[tab ?? this.current];
     if (!t || t.wc.isDestroyed()) return null;
@@ -1422,13 +1423,12 @@ export class ComputerBrowser {
    *  frame is the main frame or one the snapshot reads (a request of any other frame, or one whose event names none, is not
    *  followed at all); a failure (not a cancel) and an answer of 400 or more are entries, taken in at the same rate as
    *  messages; a finished or failed request is forgotten. */
-  private onRequestEvent(t: Tab, method: string, p: Record<string, unknown>): void {
+  private onRequestEvent(t: Tab, method: string, p: Record<string, unknown>, req: { method?: unknown; url?: unknown } | undefined): void {
     const id = typeof p.requestId === "string" ? p.requestId : null;
     if (!id) return;
     const known = t.requests.get(id);
     switch (method) {
       case "Network.requestWillBeSent": {
-        const req = p.request as { method?: unknown; url?: unknown } | undefined;
         t.requests.delete(id);
         if (typeof req?.method !== "string" || typeof req.url !== "string") return;
         if (typeof p.frameId !== "string" || (p.frameId !== t.frame && !t.frames.includes(p.frameId))) return;
@@ -1462,7 +1462,9 @@ export class ComputerBrowser {
   }
 
   private onCdp(t: Tab, method: string, p: Record<string, unknown>): void {
-    if (method.startsWith("Network.")) this.onRequestEvent(t, method, p);
+    // A request is parsed once, here: the log (onRequestEvent) and the method table below both read it.
+    const request = method === "Network.requestWillBeSent" ? p.request as { method?: unknown; url?: unknown } | undefined : undefined;
+    if (method.startsWith("Network.")) this.onRequestEvent(t, method, p, request);
     switch (method) {
       // I3b: the page asked to go elsewhere in this tab (a script, a form, a link), before the browser starts the navigation.
       case "Page.frameRequestedNavigation":
@@ -1470,11 +1472,11 @@ export class ComputerBrowser {
         break;
       // session-browser S17 (R2): of a request only the method of a main-frame document is read, by its loader.
       case "Network.requestWillBeSent": {
-        const method = (p.request as { method?: unknown } | undefined)?.method;
-        if (p.type !== "Document" || typeof p.loaderId !== "string" || typeof method !== "string") break;
+        const verb = request?.method;
+        if (p.type !== "Document" || typeof p.loaderId !== "string" || typeof verb !== "string") break;
         if (t.frame && p.frameId !== t.frame) break;
         t.loaders.delete(p.loaderId);
-        t.loaders.set(p.loaderId, method === "GET" ? "GET" : "other");
+        t.loaders.set(p.loaderId, verb === "GET" ? "GET" : "other");
         while (t.loaders.size > LOADERS_KEPT) t.loaders.delete(t.loaders.keys().next().value!);
         break;
       }

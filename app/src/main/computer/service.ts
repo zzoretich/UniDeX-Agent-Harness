@@ -244,10 +244,7 @@ export const SAVE_MS = 500;
 
 const fail = (text: string): Reply => ({ text, isError: true });
 /** A refusal that also names the page where it stands (the sentence from the table, then the page line). */
-const refuseAt = (sentence: string, url: string | null): Reply => {
-  const text = `${sentence} ${pageLine(url)}`;
-  return fail(text);
-};
+const refuseAt = (sentence: string, url: string | null): Reply => fail(`${sentence} ${pageLine(url)}`);
 /** The reads `done` noted for the replies it made, finished once the queue is free (session-browser S16). */
 const deferred = new WeakMap<Reply, { run: () => Promise<Reply>; unread: () => Reply; late: () => boolean; lease: Lease }>();
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));

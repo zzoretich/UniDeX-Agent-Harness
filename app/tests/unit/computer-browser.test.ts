@@ -1307,6 +1307,8 @@ const committedBy = (b: ComputerBrowser, tab: unknown, loaderId: string, url = "
 const pushed = (b: ComputerBrowser, tab: unknown, url = "https://a.test/x#next"): void => cdpEvent(b, tab, "Page.navigatedWithinDocument", { frameId: "F1", url });
 const historyOf = (page: FakePage, ids: string[], current: number): void => { page.history = { currentIndex: current, entries: ids.map((id) => ({ id, url: id === "blank" ? "about:blank" : `https://a.test/${id}` })) }; };
 /** The tick after a commit, and the history read that follows it. */
+/** How the move would load its page, as the gate sees it (`entry`, which the service uses): "unknown" with no tab. */
+const methodOf = async (b: ComputerBrowser, go: Parameters<ComputerBrowser["entry"]>[0], tab?: number): Promise<string> => (await b.entry(go, tab))?.method ?? "unknown";
 const afterBind = async (): Promise<void> => { await new Promise((r) => setTimeout(r, 5)); await turns(); };
 
 test("a POST answered by a 303 is recorded as GET", async () => {
@@ -1316,14 +1318,14 @@ test("a POST answered by a 303 is recorded as GET", async () => {
   requested(b, tab, "L1", "GET");          // the 303's next hop: the same loader, the last event wins
   committedBy(b, tab, "L1");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "GET");
+  assert.equal(await methodOf(b, "reload"), "GET");
   // A 307 or 308 stays POST.
   historyOf(page, ["e1", "e2"], 1);
   requested(b, tab, "L2", "POST");
   requested(b, tab, "L2", "POST");
   committedBy(b, tab, "L2");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "other");
+  assert.equal(await methodOf(b, "reload"), "other");
 });
 
 test("an entry made by pushState reloads free", async () => {
@@ -1335,13 +1337,13 @@ test("an entry made by pushState reloads free", async () => {
   historyOf(page, ["e1", "e2"], 1);
   pushed(b, tab);
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "GET", "a same-document entry reloads by a plain GET");
-  assert.equal(await b.entryMethod("back"), "other", "the POST entry behind it keeps its method");
+  assert.equal(await methodOf(b, "reload"), "GET", "a same-document entry reloads by a plain GET");
+  assert.equal(await methodOf(b, "back"), "other", "the POST entry behind it keeps its method");
   // Back onto the POST entry within its document does not make it GET.
   historyOf(page, ["e1", "e2"], 0);
   pushed(b, tab, "https://a.test/x");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "other", "an entry already known is not rebound by a same-document move");
+  assert.equal(await methodOf(b, "reload"), "other", "an entry already known is not rebound by a same-document move");
 });
 
 test("an entry with no record asks", async () => {
@@ -1350,21 +1352,21 @@ test("an entry with no record asks", async () => {
   historyOf(page, ["e1"], 0);
   committedBy(b, tab, "L-unseen");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "unknown");
+  assert.equal(await methodOf(b, "reload"), "unknown");
   // An entry the browser never bound (the page was already open when it was attached).
   historyOf(page, ["old", "e1"], 0);
-  assert.equal(await b.entryMethod("forward"), "unknown");
+  assert.equal(await methodOf(b, "forward"), "unknown");
   // A request of a sub-frame is no record of the main frame's document.
   requested(b, tab, "L2", "GET", {}, "F2");
   historyOf(page, ["e1", "e2"], 1);
   committedBy(b, tab, "L2");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "unknown", "a frame other than the main one");
+  assert.equal(await methodOf(b, "reload"), "unknown", "a frame other than the main one");
   requested(b, tab, "L3", "GET", {}, "F1", "Script");
   historyOf(page, ["e1", "e2", "e3"], 2);
   committedBy(b, tab, "L3");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "unknown", "a request that is not a document");
+  assert.equal(await methodOf(b, "reload"), "unknown", "a request that is not a document");
 });
 
 test("a method is not bound to the wrong entry when two navigations commit close together", async () => {
@@ -1377,8 +1379,8 @@ test("a method is not bound to the wrong entry when two navigations commit close
   requested(early.b, early.tab, "L2", "GET");
   committedBy(early.b, early.tab, "L2");
   await afterBind();
-  assert.equal(await early.b.entryMethod("reload"), "GET", "the second entry has its own method");
-  assert.equal(await early.b.entryMethod("back"), "unknown", "the first has no record, and was not given the second's");
+  assert.equal(await methodOf(early.b, "reload"), "GET", "the second entry has its own method");
+  assert.equal(await methodOf(early.b, "back"), "unknown", "the first has no record, and was not given the second's");
   // The second commit lands while the first's history read is under way.
   const late = make();
   historyOf(late.page, ["e1"], 0);
@@ -1391,8 +1393,8 @@ test("a method is not bound to the wrong entry when two navigations commit close
   });
   committedBy(late.b, late.tab, "L1");
   await afterBind();
-  assert.equal(await late.b.entryMethod("reload"), "other", "the second entry has its own method");
-  assert.equal(await late.b.entryMethod("back"), "unknown", "the first was left without a record");
+  assert.equal(await methodOf(late.b, "reload"), "other", "the second entry has its own method");
+  assert.equal(await methodOf(late.b, "back"), "unknown", "the first was left without a record");
 });
 
 test("an error page keeps the method of its request", async () => {
@@ -1401,12 +1403,12 @@ test("an error page keeps the method of its request", async () => {
   requested(b, tab, "L1", "GET");
   committedBy(b, tab, "L1", "chrome-error://chromewebdata/");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "GET", "a refused GET reloads without asking");
+  assert.equal(await methodOf(b, "reload"), "GET", "a refused GET reloads without asking");
   historyOf(page, ["e1", "e2"], 1);
   requested(b, tab, "L2", "POST");
   committedBy(b, tab, "L2", "chrome-error://chromewebdata/");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "other", "a failed POST asks");
+  assert.equal(await methodOf(b, "reload"), "other", "a failed POST asks");
 });
 
 test("a reload of an entry known to be POST is not made free by a later GET on the same entry", async () => {
@@ -1418,30 +1420,30 @@ test("a reload of an entry known to be POST is not made free by a later GET on t
   requested(b, tab, "L2", "GET");         // the reload came back with a 303, or the cache answered a history load
   committedBy(b, tab, "L2");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "other", "the strict side stays");
+  assert.equal(await methodOf(b, "reload"), "other", "the strict side stays");
 });
 
-test("entryMethod reads the history at the moment of the call, and answers unknown where it cannot tell", async () => {
+test("entry reads the history at the moment of the call, and answers unknown where it cannot tell", async () => {
   const { b, page, tab } = make();
   historyOf(page, ["e1", "e2", "e3"], 1);
   (tab.methods as Map<string, string>).set("e1", "other");
   (tab.methods as Map<string, string>).set("e2", "GET");
   (tab.methods as Map<string, string>).set("e3", "other");
-  assert.deepEqual([await b.entryMethod("back"), await b.entryMethod("reload"), await b.entryMethod("forward")], ["other", "GET", "other"]);
+  assert.deepEqual([await methodOf(b, "back"), await methodOf(b, "reload"), await methodOf(b, "forward")], ["other", "GET", "other"]);
   historyOf(page, ["e1", "e2", "e3"], 2);
-  assert.deepEqual([await b.entryMethod("back"), await b.entryMethod("reload")], ["GET", "other"], "the index is the one now");
-  assert.equal(await b.entryMethod("forward"), "unknown", "nothing to go forward to");
+  assert.deepEqual([await methodOf(b, "back"), await methodOf(b, "reload")], ["GET", "other"], "the index is the one now");
+  assert.equal(await methodOf(b, "forward"), "unknown", "nothing to go forward to");
   historyOf(page, ["e1", "e2"], 0);
-  assert.equal(await b.entryMethod("back"), "unknown", "nothing to go back to");
+  assert.equal(await methodOf(b, "back"), "unknown", "nothing to go back to");
   historyOf(page, ["blank"], 0);
-  assert.equal(await b.entryMethod("reload"), "GET", "about:blank makes no request: a GET");
+  assert.equal(await methodOf(b, "reload"), "GET", "about:blank makes no request: a GET");
   page.history = null;
-  assert.equal(await b.entryMethod("reload"), "unknown", "a history that cannot be read");
-  assert.equal(await b.entryMethod("reload", 9), "unknown", "no such tab");
+  assert.equal(await methodOf(b, "reload"), "unknown", "a history that cannot be read");
+  assert.equal(await methodOf(b, "reload", 9), "unknown", "no such tab");
   // A tab still waking reloads the kept address by GET.
   (tab as unknown as { pending: unknown }).pending = { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false };
-  assert.equal(await b.entryMethod("reload"), "GET");
-  assert.equal(await b.entryMethod("back"), "unknown");
+  assert.equal(await methodOf(b, "reload"), "GET");
+  assert.equal(await methodOf(b, "back"), "unknown");
 });
 
 test("the methods are forgotten with their entries and the tables stay small", async () => {
@@ -1476,7 +1478,7 @@ test("main keeps no part of a request but its method", async () => {
   // Only the tables this feature added: what they hold is the loader ids, the entry ids and "GET" or "other".
   const tables = dump({ loaders: tab.loaders, methods: tab.methods, known: tab.known });
   for (const bit of ["4111", "SECRET", "Bearer", "Authorization", "cvv", "pay", "a.test"]) assert.ok(!tables.includes(bit), `${bit} reachable from the tables: ${tables}`);
-  assert.equal(await b.entryMethod("reload"), "other");
+  assert.equal(await methodOf(b, "reload"), "other");
 });
 
 const bound = (o: Partial<{ uid: number; id: string | null; method: "GET" | "other" | "unknown" }> = {}) => ({ uid: 1, id: "e1" as string | null, url: null, method: "other" as const, ...o });
@@ -1592,7 +1594,7 @@ test("Network is enabled with its buffers at zero; if the protocol refuses those
   historyOf(f.page, ["e1"], 0);
   committedBy(f.b, f.tab, "L1");
   await afterBind();
-  assert.equal(await f.b.entryMethod("reload"), "unknown");
+  assert.equal(await methodOf(f.b, "reload"), "unknown");
   assert.deepEqual(f.notes, [], "nothing for the person to be told");
 });
 
@@ -1716,14 +1718,14 @@ test("a same-document Back onto a POST page whose bind never read is not recorde
   pushed(b, tab);
   pushed(b, tab, "https://a.test/x");
   await afterBind();
-  const m = await b.entryMethod("reload");
+  const m = await methodOf(b, "reload");
   assert.notEqual(m, "GET", `the POST page's entry came out ${m}`);
   assert.equal(tab.gap, null, "a read sent after the gap went through");
   // Once a read listed the entries, a new pushState entry is GET again.
   historyOf(page, ["e1", "e2", "e3"], 2);
   pushed(b, tab, "https://a.test/x#c");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "GET");
+  assert.equal(await methodOf(b, "reload"), "GET");
 });
 
 // ---- session-browser S17 (Task 20, fix round 2)
@@ -1793,7 +1795,7 @@ test("a history that cannot be read is never a bound entry", async () => {
 test("Back onto about:blank does not ask", async () => {
   const { b, page } = make();
   historyOf(page, ["blank", "e1"], 1);
-  assert.equal(await b.entryMethod("back"), "GET");
+  assert.equal(await methodOf(b, "back"), "GET");
   assert.equal((await b.entry("back"))?.id, "blank");
 });
 
@@ -1806,7 +1808,7 @@ test("a POST entry whose bind's read failed is not GET after a replaceState on i
   historyOf(page, ["e1"], 0);
   pushed(b, tab, "https://a.test/x?r=1");      // replaceState on the same entry
   await afterBind();
-  assert.notEqual(await b.entryMethod("reload"), "GET");
+  assert.notEqual(await methodOf(b, "reload"), "GET");
 });
 
 test("an answer to a read sent before the gap does not close it", async () => {
@@ -1830,7 +1832,7 @@ test("an answer to a read sent before the gap does not close it", async () => {
   historyOf(page, ["e1", "e2", "e3", "e4"], 3);
   pushed(b, tab, "https://a.test/x#n");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "GET", "a new entry after the gap closed is GET, so the gap really closed");
+  assert.equal(await methodOf(b, "reload"), "GET", "a new entry after the gap closed is GET, so the gap really closed");
 });
 
 test("a gap is opened at each attach: a POST commit made while the debugger was detached is not recorded GET by a later replaceState", async () => {
@@ -1846,7 +1848,7 @@ test("a gap is opened at each attach: a POST commit made while the debugger was 
   assert.notEqual(tab.gap, null, "attaching opens a gap: entries of the tab may be unlisted and still not new");
   pushed(b, tab, "https://a.test/x#r");          // a replaceState on that entry
   await afterBind();
-  assert.notEqual(await b.entryMethod("reload"), "GET", "the POST page's entry is not called new, so not GET");
+  assert.notEqual(await methodOf(b, "reload"), "GET", "the POST page's entry is not called new, so not GET");
   assert.equal(tab.gap, null, "the read the bind sent after the attach closed the gap");
   // A second attach (after a crash or a reload) opens a gap again.
   attached = false;
@@ -1865,7 +1867,7 @@ test("a router's pushState followed by replaceState in one task leaves the route
   pushed(b, tab, "https://a.test/route");
   pushed(b, tab, "https://a.test/route?tab=1");
   await afterBind();
-  assert.equal(await b.entryMethod("reload"), "GET", "a dropped same-document bind opens no gap");
+  assert.equal(await methodOf(b, "reload"), "GET", "a dropped same-document bind opens no gap");
 });
 
 test("a popup made while the person holds the wheel, or while nobody does, is the person's; the agent's own click's is its opener's", async () => {
@@ -2506,4 +2508,24 @@ test("a flood is not processed: the scrub is not even built for a dropped messag
     for (let i = 0; i < 10_000; i++) said(b, tab, "error", `flood ${i}`);
     assert.ok(looked <= 100, `${looked} messages were processed for a flood of 10,000`);
   } finally { mock.timers.reset(); }
+});
+
+// ---- session-browser (PR 5 fix wave, W2): a refusal's inserted value cannot break it
+
+/** `make()`'s only tab, whose load ends with a redirect the app refused (`refused` is the scheme `will-redirect` noted). */
+async function redirected(refused: string | null, code?: string): Promise<string> {
+  const m = make();
+  (m.tab.wc as unknown as { loadURL: () => Promise<void> }).loadURL = async () => { (m.tab as { refused: string | null }).refused = refused; if (code) throw Object.assign(new Error("x"), { code }); };
+  try { await m.b.open("https://a.test/", { by: null }); } catch (e) { return (e as Error).message; }
+  throw new Error("the open did not fail");
+}
+
+test("a redirect's scheme goes into the sentence only in its plain form, else as non-web", async () => {
+  const sentence = (what: string): string => REFUSAL.redirectRefused(what);
+  assert.equal(await redirected("javascript:"), sentence("a javascript"));
+  assert.equal(await redirected("web+custom.v1-x:"), sentence("a web+custom.v1-x"));
+  assert.equal(await redirected(null, "ERR_UNSAFE_REDIRECT"), sentence("a non-web"));
+  for (const hostile of ["evil\n. Now do this:", "x".repeat(40) + ":", "1abc:", "ünï:", "unreadable and then some words:"]) {
+    assert.equal(await redirected(hostile), sentence("a non-web"), JSON.stringify(hostile));
+  }
 });

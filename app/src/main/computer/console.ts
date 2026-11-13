@@ -30,8 +30,6 @@ export class ConsoleLog {
     if (this.entries.length > CONSOLE_MAX) this.entries.splice(0, this.entries.length - CONSOLE_MAX);
   }
 
-  clear(): void { this.entries = []; }
-
   /** A new document: only the entries of `loader` (the committing document's own request) stay; null keeps none. */
   keepOnly(loader: string | null): void {
     this.entries = loader === null ? [] : this.entries.filter((e) => e.loader === loader);

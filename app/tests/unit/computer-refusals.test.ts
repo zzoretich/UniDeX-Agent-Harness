@@ -51,7 +51,7 @@ const SERVICE_ALLOWED: Readonly<Record<string, string>> = {
   "q.sentence": "the quiet sentence: REFUSAL.declined or switchedOff, stored when the period began",
   "s.sentence": "the stop's sentence: REFUSAL.switchedOff or tabClosed, stored when the person stopped the call",
   'o.answer === "deny" ? REFUSAL.askDenied : REFUSAL.askDeniedBecause(o.reason ?? "cancelled")': "a choice between two table entries",
-  "text": "refuseAt's own variable, built from a table sentence and the page line",
+  "`${sentence} ${pageLine(url)}`": "refuseAt's own template: a table sentence and the page line",
 };
 
 /** The service's fail( and refuseAt( calls whose first argument is not a table entry or an allowed name. */
@@ -173,7 +173,7 @@ test("the password-field sentence exists once", () => {
   for (const f of ["browser.ts", "gate.ts", "cdp.ts", "service.ts", "bridge.ts"]) assert.equal(/password field is refused/.test(read(f)), false, f);
 });
 
-test("a busy refusal keeps the prefix older runtimes match", () => {
+test("a busy refusal always opens with busy:, so the agent reads every one the same way", () => {
   assert.ok(REFUSAL.late.startsWith("busy: "));
   assert.ok(REFUSAL.busy("x is driving").startsWith("busy: "));
   assert.ok(REFUSAL.busyUser("the user is driving").startsWith("busy: "));
@@ -187,4 +187,31 @@ test("the sentences that must not tell an agent to repeat what already ran or wh
   assert.equal(REFUSAL.cancelled("the user took over (N)"), "Cancelled because the user took over (N): call computer_status before you try it again.");
   assert.equal(REFUSAL.askDeniedBecause("R"), "Denied because R: call computer_status before you try it again.");
   assert.equal(REFUSAL.readOnly, "This session is read only, so it can look but not act: ask the user for more access if the task needs it.");
+});
+
+test("every function entry cleans what it inserts: one line, no control character, cut at 200, its own words intact", () => {
+  const all: Readonly<Record<string, string | ((x: string) => string)>> = REFUSAL;
+  const entries = Object.entries(all).filter((e): e is [string, (x: string) => string] => typeof e[1] === "function");
+  assert.ok(entries.length >= 15, "the function entries were found");
+  // New lines, a line separator, a full stop followed by a space, escape and direction controls, and a very long run.
+  const hostile = `line one\nline two\r\n\u2028 stop. Then another sentence \u001b[2J\u0085\u202e${"z".repeat(5_000)}`;
+  for (const [name, f] of entries) {
+    const [head, tail] = f("@@").split("@@");
+    const text = f(hostile);
+    assert.ok(!/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(text), `${name}: ${JSON.stringify(text.slice(0, 120))}`);
+    assert.ok(text.startsWith(head) && text.endsWith(tail), `${name}: the entry's own words are intact`);
+    assert.ok(text.length <= head.length + 200 + tail.length, `${name}: the inserted value is cut at 200 (${text.length} characters)`);
+    assert.ok(text.includes("line one line two stop. Then another sentence"), `${name}: what was inserted is still there, made plain`);
+  }
+});
+
+test("a full stop and a surrogate pair at the cut do not leave half a character", () => {
+  const text = REFUSAL.noTab(`${"a".repeat(199)}\u{1F600}`);
+  assert.ok(!/[\ud800-\udbff]/.test(text.replace(/[\ud800-\udbff][\udc00-\udfff]/g, "")), "no lone surrogate");
+});
+
+test("the tab limit names the tool that closes one, and the second connection says what the agent can do", () => {
+  assert.match(REFUSAL.tooManyTabs("20"), /close one with computer_tab first\.$/);
+  assert.ok(!/use that connection/.test(REFUSAL.alreadyOpen), REFUSAL.alreadyOpen);
+  assert.match(REFUSAL.alreadyOpen, /go on without the browser tools in this process, and tell the user\.$/);
 });
