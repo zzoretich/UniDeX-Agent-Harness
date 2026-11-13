@@ -61,9 +61,9 @@ export interface PointerSurface {
   draw(kind: PointerKind, tag: string): Promise<Size>;
   place(at: Point): void;
   show(on: boolean): void;
-  /** The centre of the window's content area, in window coordinates: where the first move in a window starts. */
-  centre(): Point;
   ready(kind: PointerKind, tag: string): boolean;
+  /** True once the surface can show nothing more (disposed, or its window destroyed). */
+  gone(): boolean;
 }
 
 type Win = "main" | "pop";
@@ -78,6 +78,8 @@ export class Pointer {
   private on: OnScreen | null = null;
   private settled = false;
   private last: Partial<Record<Win, Point>> = {};
+  /** The bare mark's size per kind, once a draw without a tag has told it: a target where it cannot fit needs no drawing. */
+  private bare: Partial<Record<"arrow" | "caret", Size>> = {};
   private hideTimer: unknown = null;
   private pulseTimer: unknown = null;
 
@@ -131,25 +133,36 @@ export class Pointer {
     this.settled = false;
     const surface = this.o.surface(o.window);
     const { to, within } = o;
-    if (!surface || to.x < within.x || to.y < within.y || to.x >= within.x + within.width || to.y >= within.y + within.height) {
+    if (!surface || surface.gone() || to.x < within.x || to.y < within.y || to.x >= within.x + within.width || to.y >= within.y + within.height) {
       this.drop();
       return o.alive();
     }
     const fits = (s: Size) => to.x + s.width <= within.x + within.width && to.y + s.height <= within.y + within.height;
+    const known = this.bare[o.kind];
+    if (known && !fits(known)) { this.drop(); return o.alive(); }
     const until = this.clock.now() + DRAW_MAX_MS;
 
+    // What is on screen stays unless the image about to be drawn would replace it (a draw sets the view's image at once): then
+    // it goes first, so an image the edge rule refuses is never visible.
+    const draw = (t: string) => {
+      const c = this.on;
+      if (c && c.surface === surface && (c.kind !== o.kind || c.tag !== t)) { this.stopPulse(); this.settled = false; this.on = null; surface.show(false); }
+      return this.waitFor(g, o.alive, surface.draw(o.kind, t).then((sz) => { if (t === "") this.bare[o.kind] = sz; return sz; }), until);
+    };
     let tag = tagText(o.name);
-    let r = await this.waitFor(g, o.alive, surface.draw(o.kind, tag), until);
+    let r = await draw(tag);
     if (!r.ok) return r.r;
     if (!fits(r.v) && tag !== "") {
       tag = "";
-      r = await this.waitFor(g, o.alive, surface.draw(o.kind, tag), until);
+      r = await draw(tag);
       if (!r.ok) return r.r;
     }
     if (!fits(r.v)) { this.drop(); return o.alive(); }
 
     if (this.on && this.on.surface !== surface) { this.on.surface.show(false); this.on = null; }
-    const from = this.last[o.window] ?? surface.centre();
+    const kept = this.last[o.window];
+    const inside = (p: Point) => p.x >= within.x && p.y >= within.y && p.x < within.x + within.width && p.y < within.y + within.height;
+    const from = kept && inside(kept) ? kept : { x: Math.round(within.x + within.width / 2), y: Math.round(within.y + within.height / 2) };
     const path = travelPath(from, to, travelMs(from, to));
     surface.place(from);
     surface.show(true);
@@ -157,15 +170,18 @@ export class Pointer {
     this.on = on;
     this.settled = true;
     this.arm();
-    if (path.length === 0) { surface.place(to); this.last[o.window] = to; on.at = to; }
-    for (let i = 0; i < path.length; i++) {
+    // The travel reads the clock: each step places the point for the time that has passed (a late timer skips points instead
+    // of stretching the travel), and it ends on `to` once the last point's time has come.
+    const t0 = this.clock.now(); const endAt = (path.length - 1) * STEP_MS;
+    for (;;) {
       if (g !== this.gen) return o.alive();
       if (!o.alive()) { this.drop(); return false; }
-      surface.place(path[i]); this.last[o.window] = path[i]; on.at = path[i];
-      if (i < path.length - 1) await this.sleep(STEP_MS);   // none after the last point: the move ends when it is placed
+      const el = this.clock.now() - t0;
+      const p = path.length === 0 || el >= endAt ? to : path[Math.floor(el / STEP_MS)];
+      surface.place(p); this.last[o.window] = p; on.at = p;
+      if (p === to) break;
+      await this.sleep(Math.min(STEP_MS, endAt - el));
     }
-    if (g !== this.gen) return o.alive();
-    if (!o.alive()) { this.drop(); return false; }
     this.arm();
     return true;
   }
@@ -173,7 +189,7 @@ export class Pointer {
   /** What is on screen now (the e2e suite reads it through main). */
   state(): { shown: boolean; at: Point | null; tag: string; window: Win | null } {
     const c = this.on;
-    return c ? { shown: true, at: { ...c.at }, tag: c.tag, window: c.window } : { shown: false, at: null, tag: "", window: null };
+    return c && !c.surface.gone() ? { shown: true, at: { ...c.at }, tag: c.tag, window: c.window } : { shown: false, at: null, tag: "", window: null };
   }
 
   /** The press image for PULSE_MS, then the kind it had. Nothing unless the pointer is shown and its move has finished
@@ -263,8 +279,9 @@ const RENDER_MAX_MS = 2000;
  *  window's capture is as many pixels per DIP as the display it sits on, so the document is zoomed by wanted / that scale
  *  (CSS on its root, never the window's zoom) and the cropped bitmap is wrapped with the wanted scale. A render past
  *  `renderMs` rejects and the window is replaced. `dispose()` ends it for good. */
-export function tagDrawer(o: { renderMs?: number } = {}): { draw(kind: PointerKind, text: string, scale: number, dark: boolean): Promise<NativeImage>; has(kind: PointerKind, text: string, scale: number, dark: boolean): boolean; dispose(): void } {
+export function tagDrawer(o: { renderMs?: number; retryMs?: number } = {}): { draw(kind: PointerKind, text: string, scale: number, dark: boolean): Promise<NativeImage>; has(kind: PointerKind, text: string, scale: number, dark: boolean): boolean; dispose(): void } {
   const renderMs = o.renderMs ?? RENDER_MAX_MS;
+  const retryMs = o.retryMs ?? 100;
   let win: BrowserWindow | null = null;
   let disposed = false;
   /** Pixels per DIP in the window's capture, once measured. */
@@ -291,7 +308,7 @@ export function tagDrawer(o: { renderMs?: number } = {}): { draw(kind: PointerKi
 
   async function capture(w: BrowserWindow): Promise<NativeImage> {
     try { return await w.webContents.capturePage(); }
-    catch { await new Promise((r) => setTimeout(r, 100)); return await w.webContents.capturePage(); }   // F9: once, after a pause
+    catch { await new Promise((r) => setTimeout(r, retryMs)); return await w.webContents.capturePage(); }   // F9: once, after a pause
   }
 
   async function render(kind: PointerKind, text: string, scale: number, dark: boolean): Promise<NativeImage> {
@@ -386,7 +403,7 @@ export function imageSurface(o: {
   };
   return {
     async draw(kind, tag) {
-      if (gone()) return { width: 0, height: 0 };
+      if (gone()) throw new Error("the pointer's window is gone");
       const mine = ++seq;
       const image = await o.tag(kind, tag, scale(), dark());
       const got = image.getSize();
@@ -403,12 +420,8 @@ export function imageSurface(o: {
       try { view.setVisible(on); } catch { return; }
       if (on) raise();
     },
-    centre() {
-      if (gone()) return { x: 0, y: 0 };
-      const b = o.window.getContentBounds();
-      return { x: Math.round(b.width / 2), y: Math.round(b.height / 2) };
-    },
     ready(kind, tag) { return o.has(kind, tag, scale(), dark()); },
+    gone,
     raise,
     dispose() {
       if (disposed) return;
