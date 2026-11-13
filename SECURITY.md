@@ -146,7 +146,7 @@ output. The design treats the page that shows them as untrusted (design D7,
 ## The Computer pane
 
 Release 1 of the agent computer (`docs/design/specs/2026-11-06-agent-computer-design.md`) is a browser in the app that a
-session's agent drives through nine `computer_*` tools in the agenticos MCP server and the person watches, answers and
+session's agent drives through thirteen `computer_*` tools in the agenticos MCP server and the person watches, answers and
 takes over in a pane on the Code and Sessions pages. It runs only while its `computer` surface is on
 (`app/src/shared/surfaces.ts`): on by default since its live check on each host (2026-11-08), and with it off (a run whose
 `AOS_APP_WRITE` leaves it out) main
@@ -186,6 +186,7 @@ inside the surface.
 - `computer.openLink` opens a web link clicked in a session in that session's browser (session-browser S14; `hud/src/data/linkRoute.ts`): http and https only, no credentials in the address; the key must be a terminal or a thread the app holds. Outside a session nothing changes: https goes to the default browser and http opens nowhere.
 - `computer.openOutside` sends the selected browser's active tab to the Mac's own browser (session-browser S24, the pane's Open in my browser): it takes no argument, so the page cannot name an address; main reads the active tab's real address from the browser (an awake one only; an asleep or off browser, or a tab with no address, answers `ENOENT`), decides for itself that it is `https:` (anything else answers `EROFS` and goes no further, so no refused address reaches the log), and only then hands it to the app's external-open path and waits for the system to take it (`openExternalAwaited`; links keep the fire-and-forget `openExternalSafe`). When the system does not take the page it answers `EIO` ("Your browser did not open the page.") and writes no line saying it opened. The tab stays open either way, and the activity-log line names no address.
 - The browser also listens to a tab's console messages and to its Network protocol events for `computer_console`, and keeps a load method per history entry; it keeps no header and no body, and what it prints is scrubbed like page text. The protocol's Runtime domain is not enabled, so a page cannot tell from it that the browser is driven.
+- **What `computer_console` can show an agent.** The errors, warnings, uncaught exceptions and failed requests of the active tab since it loaded, from its main frame and from frames of its own site (the frames a snapshot reads) only: what a frame of another site, or a frame no snapshot has read yet, logs or requests is dropped unread, since nothing scrubs values the app cannot read. What is kept is cleaned (addresses made plain and scrubbed like page text, the text wrapped as page text), at most 200 entries of 2,000 characters, and the app takes in at most 100 messages and requests a second.
 - **Password values never reach the agent** (D9). A field is sensitive once it was ever `type=password` or carried a
   password or one-time-code `autocomplete`, and stays so after a Show password reveal. Snapshots print `••••••` for its
   value and drop it from every other line; screenshots are painted over its box before the image leaves main; typing
@@ -204,7 +205,7 @@ inside the surface.
   parent a CLI the app registered while it runs, whose running code is the vendor's (an Apple-anchored signature with
   Anthropic's or OpenAI's team ID, checked on the process, so a file renamed over its path does not count) or an npm
   install (Node running a script inside `@anthropic-ai/claude-code` or `@openai/codex`, with Codex's npm launcher
-  allowed between them and its signed binary). The first connection per CLI wins; a second, a server further down (an
+  allowed between them and its signed binary). The answer to an admitted server lists the names of the tools this app takes, and the runtime sends no other, so an older app is never sent a tool it does not know. The first connection per CLI wins; a second, a server further down (an
   npm script, the agent's own shell commands), a CLI typed by hand into a shell and anything outside the app are refused
   with one line. A Codex Code launch starts with `--no-daemon` while Settings ▸ Computer is on and its CLI's help lists
   it (R70; the help is read with the launch's environment, and a resume line's from `codex resume --help`; main decides
@@ -223,7 +224,7 @@ inside the surface.
   press goes to the point the hit test judged, on a scrolled page too: the page's scroll is read before and after the
   test and again just before the press, and a scroll in between refuses the action.
   Return, or a newline in typed text, asks on every site unless the focus is a plain text area with no key listener;
-  downloads, file inputs and permission prompts always ask. A held call returns within 45 s of its start
+  downloads, file inputs and permission prompts always ask. A tab is the agent's own only when the agent's own `computer_open` made it (or a popup made while the agent held the wheel from such a tab); closing any other tab (a page a program opened, a clicked link, the pane's **+**, a restored tab) asks first (`closetab`), and Back, Forward or Reload onto a page that a form loaded, or whose way of loading is not known, asks first (`resend`). An allowed close or move is bound to that tab and that history entry: if the tab shows another page by then, nothing is closed or moved. A held call returns within 45 s of its start
   (`waiting_for_user`, then `computer_wait`, which also picks up an action the person allowed just before then); no
   answer within `computer.askTimeoutSec` is a Deny. An approved action is checked again just before it runs (the same
   session holds the wheel, the same page, tab and element, a focused one by its DOM node and frame, so a same-named
@@ -262,7 +263,7 @@ inside the surface.
   request raises a notification.
 - **Both hosts leave the gate to the app** (D33). Workbench sessions pre-approve the computer tools so the host never
   asks a second time: Claude Code through `--allowedTools` on a Chat turn and a Code launch; Codex through
-  `tools.<tool>.approval_mode = "approve"` for the five action tools in the plugin's `.mcp.json` and in the direct-mode
+  `tools.<tool>.approval_mode = "approve"` for the eight tools that act in the plugin's `.mcp.json` and in the direct-mode
   registration, which a Codex 0.167 check showed lets an action tool run under `approval_policy = "never"` (a
   launch-time `-c` override cannot reach a plugin's server). A CLI started by hand may still prompt, and is not
   admitted anyway.

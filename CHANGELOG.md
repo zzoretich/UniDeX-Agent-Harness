@@ -23,7 +23,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - Picking another model or access level on a Code session restarts its terminal and keeps its browser, with its pages not reloaded. <!-- no-tour: nothing new on screen -->
 
 ### Upgrading
-- Codex: run aos upgrade (the app offers it after updating) so the new browser tools are approved. Until then Codex asks for them in a Code session and refuses them in a Chat turn; the nine it had still work.
+- **Codex users: run `aos upgrade`** (the app offers it after updating) so Codex approves the four new browser tools. Until then it asks for them in a Code session and refuses them in a Chat turn; the nine it had still work.
 
 ### Fixed
 - An approval card in Code's chat stays up while its terminal resizes (switching to the terminal view with ⌘J, opening a pane, resizing the window) until the agent redraws its prompt at the new size. Before, the card and the "Answer the card above first" note could vanish for a moment, and a Send in that moment went to the terminal, where its ⏎ answered the prompt. <!-- no-tour: a fix with no new control -->

@@ -58,7 +58,7 @@ checked; else by typing the command into a fresh shell, as before) or a shell, i
 code folder) or Scratch (`data/terminalLaunch.ts`); terminals start with the login shell's `PATH`.
 
 The Computer pane (agent-computer) docks right of a Code terminal and of a Sessions thread: a browser in its
-own partition that a session's agent drives through the agenticos MCP server's nine `computer_*` tools and the person
+own partition that a session's agent drives through the agenticos MCP server's thirteen `computer_*` tools and the person
 answers and takes over (`src/main/computer/`, the HUD's `ui/ComputerPane.ts`). Every session has its own browser, keyed
 by the session (`code:<the terminal's first process>` or `chat:<thread>`): two sessions in one folder keep separate tabs
 and never wait for each other; Vault chat, History and past conversations have none. A browser starts off: the pane is a
