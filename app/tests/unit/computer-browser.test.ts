@@ -12,6 +12,7 @@ import { ComputerBrowser, type BrowserHooks, type Resolved } from "../../src/mai
 import { FocusMoved, forPerson, PageChanged } from "../../src/main/computer/cdp";
 import { LeavingRecords, PendingReads } from "../../src/main/computer/leaving";
 import { SecretMemory } from "../../src/main/computer/memory";
+import { REFUSAL } from "../../src/main/computer/refusals";
 import { TABS_MAX } from "../../src/main/computer/records";
 import type { CdpDomNode } from "../../src/main/computer/snapshot";
 
@@ -40,6 +41,9 @@ class FakePage {
    *  that falls above or left of the frame hits nothing, and one on no box hits the body. */
   boxes: Map<number, { x: number; y: number; width: number; height: number }> | null = null;
   scroll = { x: 0, y: 0 };
+  /** The navigation history `Page.getNavigationHistory` answers with; null answers as DevTools does inside a commit's own
+   *  event ("Not attached to an active page"). */
+  history: { currentIndex: number; entries: { id: string; url: string }[] } | null = null;
   /** A list of buttons the accessibility tree prints, in order (`b` is the node, as in the DOM below), when a test reads the
    *  page as text; null leaves the tree empty. */
   ax: { b: number; name: string }[] | null = null;
@@ -68,6 +72,9 @@ class FakePage {
       case "DOM.getDocument": return { root: this.root() };
       case "DOM.querySelectorAll": return { nodeIds: params.selector === ":focus" && this.focused !== null ? [this.focused] : [] };
       case "Page.createIsolatedWorld": return { executionContextId: 1 };
+      case "Page.getNavigationHistory":
+        if (!this.history) throw new Error("Not attached to an active page");
+        return JSON.parse(JSON.stringify(this.history));
       case "Page.getFrameTree": return { frameTree: { frame: { id: "F1" } } };
       case "Accessibility.getFullAXTree": {
         const o = this.doc * 1000, list = this.ax ?? [];
@@ -142,6 +149,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
     query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false, worlds: new Map(),
     memory: new SecretMemory(), frame: "F1", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0,
     leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false,
+    loaders: new Map(), methods: new Map(), known: new Set(), binds: 0,
   };
   const inner = b as unknown as { list: unknown[]; current: number };
   inner.list.push(tab);
@@ -1278,4 +1286,301 @@ test("an enable command that times out reads, for the person, as the page not an
   } finally {
     mock.timers.reset();
   }
+});
+
+
+// ---- session-browser S17 (Task 20): the load method of a history entry, for the gate
+
+type Hook = { onCdp(t: unknown, method: string, p: Record<string, unknown>): void };
+const cdpEvent = (b: ComputerBrowser, tab: unknown, method: string, p: Record<string, unknown>): void => (b as unknown as Hook).onCdp(tab, method, p);
+/** `Network.requestWillBeSent` for a main-frame document (a redirect hop is another event with the same loader). */
+const requested = (b: ComputerBrowser, tab: unknown, loaderId: string, method: string, more: Record<string, unknown> = {}, frameId = "F1", type = "Document"): void =>
+  cdpEvent(b, tab, "Network.requestWillBeSent", { requestId: `${loaderId}.r`, loaderId, type, frameId, request: { method, url: "https://a.test/x", ...more } });
+/** The main frame committed a document the loader `loaderId` fetched. */
+const committedBy = (b: ComputerBrowser, tab: unknown, loaderId: string, url = "https://a.test/x"): void => cdpEvent(b, tab, "Page.frameNavigated", { frame: { id: "F1", loaderId, url } });
+const pushed = (b: ComputerBrowser, tab: unknown, url = "https://a.test/x#next"): void => cdpEvent(b, tab, "Page.navigatedWithinDocument", { frameId: "F1", url });
+const historyOf = (page: FakePage, ids: string[], current: number): void => { page.history = { currentIndex: current, entries: ids.map((id) => ({ id, url: id === "blank" ? "about:blank" : `https://a.test/${id}` })) }; };
+/** The tick after a commit, and the history read that follows it. */
+const afterBind = async (): Promise<void> => { await new Promise((r) => setTimeout(r, 5)); await turns(); };
+
+test("a POST answered by a 303 is recorded as GET", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  requested(b, tab, "L1", "POST");
+  requested(b, tab, "L1", "GET");          // the 303's next hop: the same loader, the last event wins
+  committedBy(b, tab, "L1");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "GET");
+  // A 307 or 308 stays POST.
+  historyOf(page, ["e1", "e2"], 1);
+  requested(b, tab, "L2", "POST");
+  requested(b, tab, "L2", "POST");
+  committedBy(b, tab, "L2");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "other");
+});
+
+test("an entry made by pushState reloads free", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  requested(b, tab, "L1", "POST");
+  committedBy(b, tab, "L1");
+  await afterBind();
+  historyOf(page, ["e1", "e2"], 1);
+  pushed(b, tab);
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "GET", "a same-document entry reloads by a plain GET");
+  assert.equal(await b.entryMethod("back"), "other", "the POST entry behind it keeps its method");
+  // Back onto the POST entry within its document does not make it GET.
+  historyOf(page, ["e1", "e2"], 0);
+  pushed(b, tab, "https://a.test/x");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "other", "an entry already known is not rebound by a same-document move");
+});
+
+test("an entry with no record asks", async () => {
+  const { b, page, tab } = make();
+  // A commit whose request was never seen (Network could not be enabled): no record, so unknown.
+  historyOf(page, ["e1"], 0);
+  committedBy(b, tab, "L-unseen");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "unknown");
+  // An entry the browser never bound (the page was already open when it was attached).
+  historyOf(page, ["old", "e1"], 0);
+  assert.equal(await b.entryMethod("forward"), "unknown");
+  // A request of a sub-frame is no record of the main frame's document.
+  requested(b, tab, "L2", "GET", {}, "F2");
+  historyOf(page, ["e1", "e2"], 1);
+  committedBy(b, tab, "L2");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "unknown", "a frame other than the main one");
+  requested(b, tab, "L3", "GET", {}, "F1", "Script");
+  historyOf(page, ["e1", "e2", "e3"], 2);
+  committedBy(b, tab, "L3");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "unknown", "a request that is not a document");
+});
+
+test("a method is not bound to the wrong entry when two navigations commit close together", async () => {
+  // The second commit lands before the first's tick: the history then shows the second entry as the current one.
+  const early = make();
+  historyOf(early.page, ["e1"], 0);
+  requested(early.b, early.tab, "L1", "POST");
+  committedBy(early.b, early.tab, "L1");
+  historyOf(early.page, ["e1", "e2"], 1);
+  requested(early.b, early.tab, "L2", "GET");
+  committedBy(early.b, early.tab, "L2");
+  await afterBind();
+  assert.equal(await early.b.entryMethod("reload"), "GET", "the second entry has its own method");
+  assert.equal(await early.b.entryMethod("back"), "unknown", "the first has no record, and was not given the second's");
+  // The second commit lands while the first's history read is under way.
+  const late = make();
+  historyOf(late.page, ["e1"], 0);
+  requested(late.b, late.tab, "L1", "POST");
+  late.page.on.set("Page.getNavigationHistory", () => {
+    late.page.on.clear();
+    historyOf(late.page, ["e1", "e2"], 1);
+    requested(late.b, late.tab, "L2", "POST");
+    committedBy(late.b, late.tab, "L2");
+  });
+  committedBy(late.b, late.tab, "L1");
+  await afterBind();
+  assert.equal(await late.b.entryMethod("reload"), "other", "the second entry has its own method");
+  assert.equal(await late.b.entryMethod("back"), "unknown", "the first was left without a record");
+});
+
+test("an error page keeps the method of its request", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  requested(b, tab, "L1", "GET");
+  committedBy(b, tab, "L1", "chrome-error://chromewebdata/");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "GET", "a refused GET reloads without asking");
+  historyOf(page, ["e1", "e2"], 1);
+  requested(b, tab, "L2", "POST");
+  committedBy(b, tab, "L2", "chrome-error://chromewebdata/");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "other", "a failed POST asks");
+});
+
+test("a reload of an entry known to be POST is not made free by a later GET on the same entry", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  requested(b, tab, "L1", "POST");
+  committedBy(b, tab, "L1");
+  await afterBind();
+  requested(b, tab, "L2", "GET");         // the reload came back with a 303, or the cache answered a history load
+  committedBy(b, tab, "L2");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "other", "the strict side stays");
+});
+
+test("entryMethod reads the history at the moment of the call, and answers unknown where it cannot tell", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1", "e2", "e3"], 1);
+  (tab.methods as Map<string, string>).set("e1", "other");
+  (tab.methods as Map<string, string>).set("e2", "GET");
+  (tab.methods as Map<string, string>).set("e3", "other");
+  assert.deepEqual([await b.entryMethod("back"), await b.entryMethod("reload"), await b.entryMethod("forward")], ["other", "GET", "other"]);
+  historyOf(page, ["e1", "e2", "e3"], 2);
+  assert.deepEqual([await b.entryMethod("back"), await b.entryMethod("reload")], ["GET", "other"], "the index is the one now");
+  assert.equal(await b.entryMethod("forward"), "unknown", "nothing to go forward to");
+  historyOf(page, ["e1", "e2"], 0);
+  assert.equal(await b.entryMethod("back"), "unknown", "nothing to go back to");
+  historyOf(page, ["blank"], 0);
+  assert.equal(await b.entryMethod("reload"), "unknown", "about:blank has no request");
+  page.history = null;
+  assert.equal(await b.entryMethod("reload"), "unknown", "a history that cannot be read");
+  assert.equal(await b.entryMethod("reload", 9), "unknown", "no such tab");
+  // A tab still waking reloads the kept address by GET.
+  (tab as unknown as { pending: unknown }).pending = { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false };
+  assert.equal(await b.entryMethod("reload"), "GET");
+  assert.equal(await b.entryMethod("back"), "unknown");
+});
+
+test("the methods are forgotten with their entries and the tables stay small", async () => {
+  const { b, page, tab } = make();
+  for (let i = 0; i < 200; i++) requested(b, tab, `never${i}`, "GET");     // navigations that never commit
+  assert.ok((tab.loaders as Map<string, string>).size <= 32, `${(tab.loaders as Map<string, string>).size} loaders kept`);
+  historyOf(page, ["e1", "e2", "e3"], 2);
+  for (const [i, id] of ["L1", "L2", "L3"].entries()) { requested(b, tab, id, "GET"); historyOf(page, ["e1", "e2", "e3"].slice(0, i + 1), i); committedBy(b, tab, id); await afterBind(); }
+  assert.equal((tab.methods as Map<string, string>).size, 3);
+  historyOf(page, ["e3", "e4"], 1);       // the older entries left the history
+  requested(b, tab, "L4", "GET");
+  committedBy(b, tab, "L4");
+  await afterBind();
+  assert.deepEqual([...(tab.methods as Map<string, string>).keys()].sort(), ["e3", "e4"]);
+  assert.equal((tab.loaders as Map<string, string>).has("L4"), false, "a committed loader is not kept");
+});
+
+test("main keeps no part of a request but its method", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  requested(b, tab, "L1", "POST", { url: "https://a.test/pay?card=4111111111111111", headers: { Authorization: "Bearer SECRET-TOKEN", Cookie: "sid=SECRET-COOKIE" }, postData: "card=4111111111111111&cvv=SECRET-CVV", hasPostData: true });
+  committedBy(b, tab, "L1", "https://a.test/pay?card=4111111111111111");
+  await afterBind();
+  const seen = new Set<unknown>();
+  const dump = (v: unknown, key = ""): string => {
+    if (v === null || typeof v !== "object" || seen.has(v) || key === "wc" || key === "view" || key === "in") return typeof v === "string" ? v : "";
+    seen.add(v);
+    if (v instanceof Map) return [...v].map(([k, x]) => `${String(k)}=${dump(x)}`).join(" ");
+    if (v instanceof Set) return [...v].map((x) => dump(x)).join(" ");
+    return Object.entries(v).map(([k, x]) => `${k}:${dump(x, k)}`).join(" ");
+  };
+  // Only the tables this feature added: what they hold is the loader ids, the entry ids and "GET" or "other".
+  const tables = dump({ loaders: tab.loaders, methods: tab.methods, known: tab.known });
+  for (const bit of ["4111", "SECRET", "Bearer", "Authorization", "cvv", "pay", "a.test"]) assert.ok(!tables.includes(bit), `${bit} reachable from the tables: ${tables}`);
+  assert.equal(await b.entryMethod("reload"), "other");
+});
+
+test("the allowed reload of a POST entry goes through the protocol, and a free reload does not", async () => {
+  const { b, page, nav } = make();
+  assert.equal(b.nav("reload", undefined, { repost: true }), true);
+  await turns();
+  assert.deepEqual(page.sent.filter((s) => s.method === "Page.reload").length, 1, "the protocol's reload was sent");
+  assert.deepEqual(nav.moves, [], "wc.reload() was not");
+  page.sent.length = 0;
+  assert.equal(b.nav("reload"), true);
+  await turns();
+  assert.deepEqual(nav.moves, ["reload"]);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+  // repost means nothing for Back and Forward, which stay Electron's.
+  nav.back = true; nav.forward = true; nav.moves.length = 0;
+  b.nav("back", undefined, { repost: true }); b.nav("forward", undefined, { repost: true });
+  assert.deepEqual(nav.moves, ["back", "forward"]);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("a reload sent through the protocol that fails is noted for the person, and never breaks the tab", async () => {
+  const { b, page, notes } = make();
+  page.on.set("Page.reload", () => { throw new Error("Not attached to an active page"); });
+  assert.equal(b.nav("reload", undefined, { repost: true }), true);
+  await turns();
+  assert.deepEqual(notes, ["A tab did not reload: the page did not take the reload."]);
+});
+
+test("Network is enabled with its buffers at zero; if the protocol refuses those it is enabled plainly; if it fails the tab still attaches", async () => {
+  const attachable = (page: FakePage, tab: { wc: { debugger: Record<string, unknown> }; attaching: unknown }) => {
+    Object.assign(tab.wc.debugger, { attach() {} });
+    tab.attaching = null;
+    return page;
+  };
+  // 1. accepted with the zero buffers
+  const a = make();
+  attachable(a.page, a.tab as never);
+  await (a.b as unknown as { attach(t: unknown): Promise<void> }).attach(a.tab);
+  assert.deepEqual(a.page.sent.filter((s) => s.method === "Network.enable").map((s) => s.params), [{ maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 }]);
+  // 2. refused with them: enabled plainly
+  const r = make();
+  attachable(r.page, r.tab as never);
+  r.page.on.set("Network.enable", (p) => { if (Object.keys(p).length) throw new Error("Invalid parameters"); });
+  await (r.b as unknown as { attach(t: unknown): Promise<void> }).attach(r.tab);
+  assert.deepEqual(r.page.sent.filter((s) => s.method === "Network.enable").map((s) => s.params), [{ maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 }, {}]);
+  // 3. refused altogether: the tab attaches all the same, and every entry is unknown
+  const f = make();
+  attachable(f.page, f.tab as never);
+  f.page.on.set("Network.enable", () => { throw new Error("Network is not available"); });
+  await (f.b as unknown as { attach(t: unknown): Promise<void> }).attach(f.tab);
+  historyOf(f.page, ["e1"], 0);
+  committedBy(f.b, f.tab, "L1");
+  await afterBind();
+  assert.equal(await f.b.entryMethod("reload"), "unknown");
+  assert.deepEqual(f.notes, [], "nothing for the person to be told");
+});
+
+// ---- session-browser S17 (Task 20): a double click, and a hover
+
+const pairs = (page: FakePage): string[] => page.sent.filter((s) => s.method === "Input.dispatchMouseEvent" && s.params.type !== "mouseMoved").map((s) => `${String(s.params.type)} ${String(s.params.clickCount)}`);
+
+test("double sends one double click", async () => {
+  const { b, page } = make();
+  await b.click(resolved(), () => true, { double: true });
+  assert.deepEqual(pairs(page), ["mousePressed 1", "mouseReleased 1", "mousePressed 2", "mouseReleased 2"], "two press and release pairs, clickCount 1 then 2");
+  page.sent.length = 0;
+  await b.click(resolved(), () => true);
+  assert.deepEqual(pairs(page), ["mousePressed 1", "mouseReleased 1"], "a plain click is one pair");
+  page.sent.length = 0;
+  await b.click(resolved(), () => true, { double: false });
+  assert.deepEqual(pairs(page), ["mousePressed 1", "mouseReleased 1"]);
+});
+
+test("a double click stops when its first click replaced the control under the pointer", async () => {
+  // The first click swaps the judged button for another control at the same point, in the same document.
+  const swap = make();
+  swap.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") swap.page.hit = 11; });
+  await assert.rejects(swap.b.click(resolved(), () => true, { double: true }), (e: Error) => e.message === REFUSAL.pageChanged);
+  assert.deepEqual(pairs(swap.page), ["mousePressed 1", "mouseReleased 1"], "no second press or release");
+  // The document changed between the two.
+  const doc = make();
+  doc.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") commitNewDocument(doc.tab); });
+  await assert.rejects(doc.b.click(resolved(), () => true, { double: true }), PageChanged);
+  assert.deepEqual(pairs(doc.page), ["mousePressed 1", "mouseReleased 1"]);
+  // A navigation the first click requested, not yet committed.
+  const nav = make();
+  nav.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") nav.tab.navs++; });
+  await assert.rejects(nav.b.click(resolved(), () => true, { double: true }), PageChanged);
+  assert.deepEqual(pairs(nav.page), ["mousePressed 1", "mouseReleased 1"]);
+  // valid() turned false between the two (a Take over).
+  const held = make();
+  let on = true;
+  held.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") on = false; });
+  await assert.rejects(held.b.click(resolved(), () => on, { double: true }), PageChanged);
+  assert.deepEqual(pairs(held.page), ["mousePressed 1", "mouseReleased 1"]);
+  // The page moved within its document (pushState): the same control is still there, so the second press goes.
+  const same = make();
+  same.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") same.tab.seq++; });
+  await same.b.click(resolved(), () => true, { double: true });
+  assert.deepEqual(pairs(same.page), ["mousePressed 1", "mouseReleased 1", "mousePressed 2", "mouseReleased 2"]);
+});
+
+test("hoverAt moves the pointer onto the point and presses nothing; it goes only while the call is current", async () => {
+  const { b, page, tab } = make();
+  await b.hoverAt(resolved({ point: { x: 30, y: 40 } }), () => true);
+  assert.deepEqual(page.mice(), [["mouseMoved", 30, 40]]);
+  page.sent.length = 0;
+  await assert.rejects(b.hoverAt(resolved(), () => false), PageChanged);
+  assert.deepEqual(page.inputs(), [], "a Take over: nothing sent");
+  tab.seq++;
+  await assert.rejects(b.hoverAt(resolved(), () => true), PageChanged);
+  assert.deepEqual(page.inputs(), [], "the page moved on: nothing sent");
 });

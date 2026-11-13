@@ -1,7 +1,7 @@
 // The computer bridge (agent-computer D18, D26): a Unix socket in the app's userData that the agenticos MCP servers of
 // agent CLIs connect to. Newline-delimited JSON. The first line must be {"hello":1}; the peer is then judged by `admit`
 // (which also claims the agent's one connection) and answered {"admitted":true,"session":<label>} or
-// {"admitted":false,"reason":…} and closed. After that ToolCall lines flow and replies match by id, overlapping up to four
+// {"admitted":false,"reason":…} and closed; the admitted answer also lists the tool names this app takes (`tools`). After that ToolCall lines flow and replies match by id, overlapping up to four
 // at a time per connection (a fifth is answered at once with an error).
 // Anything unexpected closes that one connection without a reply; no connection's failure reaches another or main. An
 // agent that leaves the app's registry loses its connection (`drop`), and a call from one no longer live is refused (M12).
@@ -13,11 +13,14 @@ import { socketFd, type PeerAddon } from "./peer";
 import type { AgentRef } from "./registry";
 import { REFUSAL } from "./refusals";
 
-export type ComputerTool = "computer_status" | "computer_open" | "computer_snapshot" | "computer_screenshot" | "computer_click" | "computer_type" | "computer_key" | "computer_scroll" | "computer_wait";
+export type ComputerTool = "computer_status" | "computer_open" | "computer_snapshot" | "computer_screenshot" | "computer_click" | "computer_type" | "computer_key" | "computer_scroll" | "computer_wait" | "computer_tab" | "computer_nav" | "computer_hover" | "computer_console";
 export interface ToolCall { id: number; tool: ComputerTool; args: Record<string, unknown> }
 export interface ToolReply { id: number; text: string; image?: { data: string; mimeType: "image/png" }; isError?: boolean }
 
-const TOOLS: ReadonlySet<string> = new Set<ComputerTool>(["computer_status", "computer_open", "computer_snapshot", "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_wait"]);
+/** The names this app takes, in the order the admission answer lists them (session-browser S16, Task 20: the runtime and the
+ *  app update separately, so the runtime sends a tool only when the app named it). */
+const TOOL_NAMES: readonly ComputerTool[] = ["computer_status", "computer_open", "computer_snapshot", "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_wait", "computer_tab", "computer_nav", "computer_hover", "computer_console"];
+const TOOLS: ReadonlySet<string> = new Set<string>(TOOL_NAMES);
 export { MAX_PATH_BYTES } from "./unix-socket";
 const MAX_LINE_BYTES = 1024 * 1024;
 /** Calls in flight per connection (agent-computer D18, backpressure): another is answered at once and never reaches the
@@ -108,7 +111,7 @@ export class ComputerBridge {
         if (!verdict.ok) { write({ admitted: false, reason: verdict.reason }); sock.end(); return; }
         agent = verdict.agent;
         this.admitted.set(agent.pid, end);
-        write({ admitted: true, session: agent.label });
+        write({ admitted: true, session: agent.label, tools: TOOL_NAMES });
         return;
       }
       if (!agent || typeof msg.id !== "number" || !Number.isFinite(msg.id) || typeof msg.tool !== "string" || !TOOLS.has(msg.tool)) return end();

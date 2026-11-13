@@ -61,6 +61,11 @@ const DEFAULT_SIZE = { width: 1280, height: 800 };
 // R26: after the pointer moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
 const HOVER_MS = 100;
 const URL_NOTE_MAX = 2_000;
+/** session-browser S17: the most main-frame document loaders whose method is kept while they are in flight. */
+const LOADERS_KEPT = 32;
+/** The buffers `Network` would keep for its own use, none of which this browser reads (it keeps a request's method only). */
+const NO_BUFFERS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 };
+type LoadMethod = "GET" | "other";
 // A field's current value through the native getter (an isolated world sees no page-defined one; "" for anything else)
 // and whether it is a one-time-code field (a short code typed so far is scrubbed as a whole word).
 const VALUE_OF = "function () { return { v: typeof this.value === 'string' ? this.value : '', otp: /(^|\\s)one-time-code(\\s|$)/i.test((this.getAttribute && this.getAttribute('autocomplete')) || '') }; }";
@@ -174,6 +179,16 @@ interface Tab {
    *  a load that failed for good with nothing committed keeps it, so the person can still reload the address. A navigation
    *  started in the tab meanwhile does not replace it; its own commit does, with the live address. */
   pending: Kept | null;
+  /** session-browser S17 (R1, R2): the method of each main-frame document request in flight, by its loader id: "GET", or
+   *  "other" for anything else (the last event of a redirect chain wins). Nothing else of a request is kept. */
+  loaders: Map<string, LoadMethod>;
+  /** The method each history entry was loaded by, by entry id, once its document committed; an entry with no record is
+   *  "unknown" to the gate. Entries that left the history are forgotten at each bind. */
+  methods: Map<string, LoadMethod>;
+  /** The entry ids the history held when the methods were last bound: a same-document entry is "GET" only if it is new. */
+  known: Set<string>;
+  /** Main-frame commits and same-document navigations so far: a bind (a tick after one) goes only when no later one came. */
+  binds: number;
 }
 
 /** session-browser S9: what a sleeping browser keeps of a tab whose view is gone: its address (to reload), the address as
@@ -437,7 +452,7 @@ export class ComputerBrowser {
   /** The person's Back, Forward or Reload on a tab (the active one by default). A move that cannot happen, or no tab, does
    *  nothing and returns false; true means the move or the reload was started (session-browser S13). The page's own
    *  commit hooks report the result. */
-  nav(go: ComputerNavGo, tab?: number): boolean {
+  nav(go: ComputerNavGo, tab?: number, o: { repost?: boolean } = {}): boolean {
     const t = this.list[tab ?? this.current];
     if (!t || t.wc.isDestroyed()) return false;
     const h = t.wc.navigationHistory;
@@ -448,8 +463,59 @@ export class ComputerBrowser {
       const k = t.pending;
       void this.reload(t, k).catch(() => this.o.hooks.note(`A tab did not reload: ${clipUrl(this.keptUrl(k))}`));
     }
+    // session-browser S17 (R5): a reload the person allowed for a page that was sent a form must send it again; Electron's
+    // own reload does nothing for a POST entry, the protocol's does it with no dialog.
+    else if (o.repost && go === "reload") void this.send(t, "Page.reload").catch(() => this.o.hooks.note("A tab did not reload: the page did not take the reload."));
     else t.wc.reload();
     return true;
+  }
+
+  /** How the page Back, Forward or Reload would load was fetched (session-browser S17), for the gate: "GET" where it is
+   *  certainly one, "other" for a POST or any other method, "unknown" where it cannot be told (no record of that entry, no
+   *  entry to go to, `about:blank`, a history that cannot be read). The history is read at the moment of the call, so the
+   *  index is the one the move would use. A tab still waking reloads its kept address by GET. */
+  async entryMethod(go: ComputerNavGo, tab?: number): Promise<"GET" | "other" | "unknown"> {
+    const t = this.list[tab ?? this.current];
+    if (!t || t.wc.isDestroyed()) return "unknown";
+    if (t.pending) return go === "reload" ? "GET" : "unknown";
+    const h = await this.history(t).catch(() => null);
+    const e = h?.entries[h.currentIndex + (go === "back" ? -1 : go === "forward" ? 1 : 0)];
+    if (!e || e.url === "about:blank") return "unknown";
+    return t.methods.get(String(e.id)) ?? "unknown";
+  }
+
+  private history(t: Tab): Promise<{ currentIndex: number; entries: { id: number | string; url: string }[] }> {
+    return this.send(t, "Page.getNavigationHistory");
+  }
+
+  /** A main-frame commit (`loader` is the method its loader's request had, null when none was seen) or a same-document
+   *  navigation ("same") happened: a tick later, after Electron's history has the entry (inside the commit's own event the
+   *  read fails), the current entry is bound to its method. The count says whether another commit or same-document
+   *  navigation came since, before the read or during it: then the entry is left without a record, never given the later
+   *  one's method. */
+  private bindLater(t: Tab, how: { loader: LoadMethod | null } | "same"): void {
+    const n = ++t.binds;
+    setTimeout(() => { void this.bind(t, n, how).catch(() => undefined); }, 0);
+  }
+
+  private async bind(t: Tab, n: number, how: { loader: LoadMethod | null } | "same"): Promise<void> {
+    if (t.binds !== n || t.closing || t.wc.isDestroyed()) return;
+    const h = await this.history(t);
+    if (t.binds !== n) return;
+    const cur = h.entries[h.currentIndex];
+    if (!cur) return;
+    const id = String(cur.id);
+    if (how === "same") {
+      // A same-document entry reloads by a plain GET, but only a NEW entry is known to be one: moving back within the document
+      // onto an entry seen before keeps whatever that entry had (a POST page's own entry, or none).
+      if (!t.known.has(id) && !t.methods.has(id)) t.methods.set(id, "GET");
+    } else if (how.loader && !(how.loader === "GET" && t.methods.get(id) === "other")) {
+      // A reload or a history load of an entry that was a POST never makes it free by showing GET (a redirect, a cache hit).
+      t.methods.set(id, how.loader);
+    }
+    const ids = new Set(h.entries.map((e) => String(e.id)));
+    for (const known of [...t.methods.keys()]) if (!ids.has(known)) t.methods.delete(known);
+    t.known = ids;
   }
 
   /** Closes tab `index`; the next tab (or the last one) becomes active. */
@@ -611,7 +677,7 @@ export class ComputerBrowser {
    *  otherwise it is withheld (PageChanged), so a new document, or a click the person stopped, never gets a mouseup. R87:
    *  the press and its release go to exactly the point the click's own hit test judged, and the press only while the page
    *  is scrolled as it was for that test, read again just before it. */
-  async click(r: Resolved, valid: () => boolean): Promise<void> {
+  async click(r: Resolved, valid: () => boolean, o: { double?: boolean } = {}): Promise<void> {
     const t = this.where(r);
     if (typeof r.backendNodeId !== "number") throw new Error(REFUSAL.pageChanged);
     const p = r.point;
@@ -629,10 +695,35 @@ export class ComputerBrowser {
     if (off.x !== now.off.x || off.y !== now.off.y) throw new Error(REFUSAL.pageChanged);
     const at = judgedAt(now);
     live();
-    const doc = t.doc;
+    const doc = t.doc, navs = t.navs;
     await this.mouse(t, "mousePressed", at);
     if (!valid() || !this.list.includes(t) || t.doc !== doc) throw new PageChanged();
     await this.mouse(t, "mouseReleased", at);
+    if (!o.double) return;
+    // R76 (session-browser S17, R7): the second press is a second act on the page, so what was checked before the first is
+    // checked again before it: the same document with no navigation asked of it, the call still current, and the control the
+    // click reaches at the point one that was judged (the first click may have put another in its place). Otherwise nothing
+    // more is sent.
+    const gone = (): boolean => !valid() || this.list[this.current] !== t || t.doc !== doc || t.navs !== navs;
+    if (gone()) throw new PageChanged();
+    const again = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
+    if (!again) throw new Error(REFUSAL.pageChanged);
+    const same = again.dom.remoteFrames.has(again.hit) ? again.hit === r.backendNodeId : accepted(again.dom, again.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
+    if (!same) throw new Error(REFUSAL.pageChanged);
+    const moved = await this.scrolledBy(t);
+    if (moved.x !== again.off.x || moved.y !== again.off.y) throw new Error(REFUSAL.pageChanged);
+    if (gone()) throw new PageChanged();
+    const second = judgedAt(again);
+    await this.mouse(t, "mousePressed", second, 2);
+    if (!valid() || !this.list.includes(t) || t.doc !== doc) throw new PageChanged();
+    await this.mouse(t, "mouseReleased", second, 2);
+  }
+
+  /** Moves the pointer onto where `r` was resolved and presses nothing (session-browser S17). Like a click's move, it goes only
+   *  while `valid()` (the call is current) and `r`'s tab and page are still in front; otherwise PageChanged. */
+  async hoverAt(r: Resolved, valid: () => boolean): Promise<void> {
+    const t = this.where(r);
+    await this.hover(t, r.point, () => this.live(valid, r));
   }
 
   /** Types into the focused element: Input.insertText in 200-character chunks, each newline as Enter. R76: each chunk and
@@ -965,6 +1056,7 @@ export class ComputerBrowser {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
+      loaders: new Map(), methods: new Map(), known: new Set(), binds: 0,
     };
     owners.set(t.wc.id, this.handlers);
     // A background tab leaves the selection on the tab already in front; with none in front it is the one.
@@ -1120,6 +1212,19 @@ export class ComputerBrowser {
       case "Page.frameRequestedNavigation":
         if ((!t.frame || p.frameId === t.frame) && (p.disposition === undefined || p.disposition === "currentTab")) t.navs++;
         break;
+      // session-browser S17 (R2): of a request only the method of a main-frame document is read, by its loader.
+      case "Network.requestWillBeSent": {
+        const method = (p.request as { method?: unknown } | undefined)?.method;
+        if (p.type !== "Document" || typeof p.loaderId !== "string" || typeof method !== "string") break;
+        if (t.frame && p.frameId !== t.frame) break;
+        t.loaders.delete(p.loaderId);
+        t.loaders.set(p.loaderId, method === "GET" ? "GET" : "other");
+        while (t.loaders.size > LOADERS_KEPT) t.loaders.delete(t.loaders.keys().next().value!);
+        break;
+      }
+      case "Page.navigatedWithinDocument":
+        if (t.frame && p.frameId === t.frame) this.bindLater(t, "same");
+        break;
       case "Page.frameNavigated": {
         const frame = p.frame as { id: string; parentId?: string; loaderId: string };
         // agent-computer D9 (R41): a main-frame commit takes the old document's frames with it; the new ones attach after.
@@ -1136,6 +1241,8 @@ export class ComputerBrowser {
         void this.world(t, frame.id).catch(() => undefined);
         if (frame.parentId) break;
         t.frame = frame.id;
+        this.bindLater(t, { loader: t.loaders.get(frame.loaderId) ?? null });
+        t.loaders.delete(frame.loaderId);
         // D9: a document keeps its sensitive set for its life (a back/forward-cache restore brings its set back).
         t.sensitive = t.documents.get(frame.loaderId) ?? new Set();
         t.documents.delete(frame.loaderId);
@@ -1322,8 +1429,21 @@ export class ComputerBrowser {
         throw new Told(REFUSAL.otherDebugger, "Another debugger is attached to this tab, so it cannot be driven (agent-computer D20).");
       }
       for (const [method, params] of ENABLE) await cdp(t.wc.debugger, method, params);
+      await this.watchRequests(t);
     })().finally(() => { t.attaching = null; });
     return t.attaching;
+  }
+
+  /** session-browser S17 (R2): `Network` is enabled only to hear which method each main-frame document was fetched by, with its
+   *  buffers at zero; if the protocol refuses those it is enabled plainly. A failure leaves the tab as it was: every entry is
+   *  then "unknown" to the gate, which asks. */
+  private async watchRequests(t: Tab): Promise<void> {
+    try {
+      await cdp(t.wc.debugger, "Network.enable", NO_BUFFERS);
+    } catch (e) {
+      if (e instanceof CdpTimeout) return;
+      await cdp(t.wc.debugger, "Network.enable").catch(() => undefined);
+    }
   }
 
   /** Every command goes through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). */
@@ -1911,9 +2031,9 @@ export class ComputerBrowser {
     }
   }
 
-  private async mouse(t: Tab, type: "mouseMoved" | "mousePressed" | "mouseReleased", p: Point): Promise<void> {
+  private async mouse(t: Tab, type: "mouseMoved" | "mousePressed" | "mouseReleased", p: Point, clickCount = 1): Promise<void> {
     await this.send(t, "Input.dispatchMouseEvent", {
-      type, x: p.x, y: p.y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1,
+      type, x: p.x, y: p.y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : clickCount,
     });
   }
 

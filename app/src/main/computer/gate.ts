@@ -5,6 +5,7 @@
 import { categoryOf, type AskCategory, type Target } from "./categories";
 import { REFUSAL } from "./refusals";
 import { navAllowed } from "../policy/computer-url";
+import type { ComputerNavGo } from "../../shared/ipc";
 
 export type Access = "read" | "edit" | "run" | "host";
 
@@ -20,10 +21,15 @@ export type Action =
   | { kind: "open"; url: string }
   | { kind: "click"; target: Target }
   | { kind: "key"; key: string; focus: Focus }
-  | { kind: "type"; text: string; focus: Focus };
+  | { kind: "type"; text: string; focus: Focus }
+  /** `byUser`: the tab was not opened by this session's agent under the label it opens tabs with now (a close of it asks). */
+  | { kind: "tab"; close: boolean; byUser: boolean }
+  /** `method`: how the entry Back, Forward or Reload would load was fetched; "unknown" where it could not be read. */
+  | { kind: "nav"; go: ComputerNavGo; method: "GET" | "other" | "unknown" }
+  | { kind: "hover" };
 
 /** `frame`: input into a frame from another site, which cannot be read or judged by label (asked on every site). */
-export type AskWhy = AskCategory | "unmarked" | "return" | "file" | "permission" | "frame" | "power";
+export type AskWhy = AskCategory | "unmarked" | "return" | "file" | "permission" | "frame" | "power" | "closetab" | "resend";
 export type Verdict = { go: true } | { ask: AskWhy } | { refuse: string };
 
 /** Keys that move focus or dismiss without changing the page's data. */
@@ -85,6 +91,14 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
       if (a.focus.target?.fileInput) return { ask: "file" };
       return GO;
     }
+    // session-browser S17: a hover and a tab switch change nothing the page keeps; closing a tab the agent did not open is
+    // the person's to allow; a load that may send a form again (any entry not known to be a GET) is asked every time.
+    case "hover":
+      return GO;
+    case "tab":
+      return a.close && a.byUser ? { ask: "closetab" } : GO;
+    case "nav":
+      return a.method === "GET" ? GO : { ask: "resend" };
     case "status":
     case "snapshot":
     case "screenshot":

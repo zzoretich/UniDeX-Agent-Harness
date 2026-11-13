@@ -6,7 +6,7 @@ import path from "node:path";
 import { ASK_LABELS, cleanTitle, ComputerService, type BrowserLike, type ComputerState } from "../../src/main/computer/service";
 import { AskBroker, type Clock } from "../../src/main/computer/asks";
 import { REFUSAL } from "../../src/main/computer/refusals";
-import { UNREAD } from "../../src/main/computer/reply";
+import { OUTLINE_MAX as OUTLINE_CAP, UNREAD } from "../../src/main/computer/reply";
 import { Wheel } from "../../src/main/computer/wheel";
 import { BrowserRecords } from "../../src/main/computer/records";
 import { SiteMarks } from "../../src/main/computer/sites";
@@ -98,7 +98,9 @@ class FakeBrowser implements BrowserLike {
   /** Main only (the real address of every tab). */
   realAddresses() { if (this.destroyed > 0) throw new Error("the browser is gone"); return { urls: this.pages.map((p) => p.url), active: Math.max(0, this.current) }; }
   constructor(public session: string, public hooks: BrowserHooks) {}
-  tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.hidden ? p.url.replace(/[?#].*$/, "") : p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: false, canForward: false })); }
+  /** Whether the active tab has a page to go back or forward to (session-browser S13). */
+  canBack = false; canForward = false;
+  tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.hidden ? p.url.replace(/[?#].*$/, "") : p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: index === this.current && this.canBack, canForward: index === this.current && this.canForward })); }
   activeWebContentsId(): number | null { return this.current < 0 ? null : 100 + this.current; }
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
   async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }) {
@@ -113,10 +115,28 @@ class FakeBrowser implements BrowserLike {
   navs: string[] = [];
   /** False makes a move "that cannot happen" (a stale Back): nothing is recorded and nav returns false. */
   navOk = true;
-  nav(go: string, tab?: number): boolean {
+  /** The `repost` each nav was given (session-browser S17). */
+  reposts: (boolean | undefined)[] = [];
+  nav(go: string, tab?: number, o?: { repost?: boolean }): boolean {
     if (!this.navOk) return false;
     this.navs.push(`${go}${tab === undefined ? "" : ` ${tab}`}`);
+    this.reposts.push(o?.repost);
     return true;
+  }
+  /** The load method of the entry each move would load (session-browser S17); "GET" unless a test sets it, and the moves asked about. */
+  methods: Record<string, "GET" | "other" | "unknown"> = {};
+  asked: string[] = [];
+  entryGate: Promise<void> | null = null;
+  async entryMethod(go: string, tab?: number) {
+    this.need(tab); this.asked.push(go);
+    await this.entryGate;
+    return this.methods[go] ?? "GET";
+  }
+  hovers: Resolved[] = [];
+  async hoverAt(r: Resolved, valid: () => boolean) {
+    if (r.pageToken !== this.pageToken()) throw new Error("The page changed: look again.");
+    if (!valid()) throw new PageChanged();
+    this.order.push("hover"); this.hovers.push(r);
   }
   select(i: number) { this.need(i); this.current = i; this.seq++; }
   close(i: number) { this.need(i); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
@@ -159,7 +179,10 @@ class FakeBrowser implements BrowserLike {
   }
   /** The validity predicate each click, key and type was given (R76), so a test can see what it says at delivery. */
   valids: (() => boolean)[] = [];
-  async click(r: Resolved, valid?: () => boolean) {
+  /** The options each click was given (session-browser S17: `double`). */
+  clickOpts: ({ double?: boolean } | undefined)[] = [];
+  async click(r: Resolved, valid?: () => boolean, o?: { double?: boolean }) {
+    this.clickOpts.push(o);
     if (r.pageToken !== this.pageToken()) throw new Error("The page changed: look again.");
     if (valid) this.valids.push(valid);
     if (this.clickGate) await this.clickGate;
@@ -744,6 +767,7 @@ test("the ask labels state each category in app-written text", () => {
     submit: "Submit", purchase: "Purchase", send: "Send", delete: "Delete", merge: "Merge", signin: "Sign in", download: "Download",
     unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
     frame: "Act inside a frame from another site", power: "Turn on the browser",
+    closetab: "Close a tab you opened", resend: "Load a page again, which may send a form again",
   });
 });
 
@@ -4688,4 +4712,244 @@ test("a read under way at the deadline is given to its call", async () => {
   snap();
   await flush();
   assert.equal(answered, `Clicked e1.${now("https://a.test/", "Late page")}`, "its text is given to the call, not UNREAD");
+});
+
+
+// ---- session-browser S17 (Task 20): computer_tab, computer_nav, computer_hover and double
+
+/** A session with two tabs by the agent's own label (the second active) and a spot e1 to click or hover. */
+async function twoTabs(h: ReturnType<typeof make>, who: AgentRef = A) {
+  const b = await h.open(who, "https://a.test/one");
+  await h.call(who, "computer_open", { url: "https://a.test/two", newTab: true });
+  b.spots.set("e1", { target: btn("Next") });
+  h.sites.mark("https://a.test");
+  return b;
+}
+
+test("a tab switch, a hover and Back onto a GET entry do not ask", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  const sw = await h.call(A, "computer_tab", { index: 0 });
+  assert.equal(sw.text, `Switched to tab 0.${now("https://a.test/one")}`);
+  assert.equal(b.current, 0);
+  const hv = await h.call(A, "computer_hover", { ref: "e1" });
+  assert.equal(hv.text, `Hovered e1.${now("https://a.test/one")}`);
+  assert.deepEqual(b.hovers.map((r) => r.backendNodeId), [7]);
+  const at = await h.call(A, "computer_hover", { x: 12, y: 34 });
+  assert.equal(at.isError, true, "no spot at that point in the fake page: the browser's own refusal");
+  b.spots.set("12,34", { target: btn("Menu") });
+  assert.equal((await h.call(A, "computer_hover", { x: 12, y: 34 })).text, `Hovered at (12, 34).${now("https://a.test/one")}`);
+  b.canBack = true;
+  const back = await h.call(A, "computer_nav", { go: "back" });
+  assert.equal(back.text, `Went back.${now("https://a.test/one")}`);
+  assert.deepEqual(b.navs, ["back 0"]);
+  assert.deepEqual(b.reposts, [false]);
+  assert.equal(h.broker.pending().length, 0, "nothing asked");
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" }, "the wheel was taken as a click takes it");
+});
+
+test("Reload after a form POST asks; onto GET it does not; an unknown method asks", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // GET: goes, by the browser's own reload.
+  assert.equal((await h.call(A, "computer_nav", { go: "reload" })).text, `Reloaded.${now("https://a.test/two")}`);
+  assert.deepEqual([b.navs, b.reposts], [["reload 1"], [false]]);
+  // POST: asks, and once allowed the reload goes through the protocol.
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  assert.equal(ask.why, "resend");
+  assert.equal(ask.title, "Load a page again, which may send a form again: Reload on a.test?");
+  assert.deepEqual(b.navs, ["reload 1"], "nothing moved yet");
+  h.svc.answer(ask.id, "once");
+  assert.equal((await p).text, `Reloaded.${now("https://a.test/two")}`);
+  assert.deepEqual([b.navs, b.reposts], [["reload 1", "reload 1"], [false, true]]);
+  // An unknown method asks as POST does; Back and Forward too; a denial moves nothing.
+  b.canBack = true; b.canForward = true;
+  for (const [go, method] of [["reload", "unknown"], ["back", "other"], ["forward", "unknown"]] as const) {
+    b.methods[go] = method;
+    const q = h.call(A, "computer_nav", { go });
+    const a = await h.asked();
+    assert.equal(a.why, "resend", go);
+    h.svc.answer(a.id, "deny");
+    const r = await q;
+    assert.equal(r.isError, true, go);
+    assert.match(r.text, /^The user denied it \(/, go);
+  }
+  assert.equal(b.navs.length, 2, "the three denied moves never ran");
+  // The card does not offer Always: a form sent again is asked every time.
+  b.methods.reload = "other";
+  const q = h.call(A, "computer_nav", { go: "reload" });
+  assert.equal((await h.asked()).always, false);
+  h.svc.answer((await h.asked()).id, "deny"); await q;
+});
+
+test("Back with nothing to go back to is a refusal with a next step, and raises no ask", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.back = "other"; b.methods.forward = "other";
+  const back = await h.call(A, "computer_nav", { go: "back" });
+  assert.equal(back.isError, true);
+  assert.equal(back.text, `${REFUSAL.noHistory("back")} ${page("https://a.test/two")}`);
+  const fwd = await h.call(A, "computer_nav", { go: "forward" });
+  assert.equal(fwd.text, `${REFUSAL.noHistory("forward")} ${page("https://a.test/two")}`);
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, []);
+  assert.deepEqual(b.asked, [], "the method was not even read");
+});
+
+test("closing a tab the user opened asks; closing its own does not", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = null;                              // the person's tab
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  assert.equal(ask.title, "Close a tab you opened: Close tab 0 on a.test?");
+  assert.equal(b.pages.length, 2, "not closed yet");
+  h.svc.answer(ask.id, "once");
+  assert.match((await p).text, /^Closed tab 0\./);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/two"]);
+  // Its own (the label this session opens tabs with now) goes without asking.
+  await h.call(A, "computer_open", { url: "https://a.test/three", newTab: true });
+  assert.equal(b.pages[1].openedBy, "Alpha");
+  const own = await h.call(A, "computer_tab", { index: 1, close: true });
+  assert.match(own.text, /^Closed tab 1\./);
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/two"]);
+});
+
+test("closing a tab a program opened asks", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = "A program";
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  h.svc.answer(ask.id, "deny");
+  assert.equal((await p).isError, true);
+  assert.equal(b.pages.length, 2);
+  // Another agent's tab (a label this session does not open with now) asks as well.
+  b.pages[0].openedBy = "Beta";
+  const q = h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal((await h.asked()).why, "closetab");
+  h.svc.answer((await h.asked()).id, "deny"); await q;
+});
+
+test("the agent's close of the last tab leaves the browser on at the start page", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  assert.equal(b.pages.length, 1);
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.equal(b.current, 0);
+  assert.equal(h.lastState().power, "awake", "not switched off");
+  assert.ok(r.text.endsWith(now("https://start.test/")), r.text);
+  // The person's last tab, once allowed, leaves the same.
+  b.pages[0].openedBy = null;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  h.svc.answer((await h.asked()).id, "once");
+  assert.ok(!(await p).isError);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.equal(h.lastState().power, "awake");
+});
+
+test("a bad tab, go, double or hover target says what to give; a tab that is not there says to look", async () => {
+  const h = make();
+  await twoTabs(h);
+  for (const index of [-1, 1.5, "0", null, undefined]) assert.deepEqual(await h.call(A, "computer_tab", { index }), { text: REFUSAL.badTab, isError: true }, String(index));
+  assert.deepEqual(await h.call(A, "computer_tab", { index: 0, close: "yes" }), { text: REFUSAL.badClose, isError: true });
+  assert.deepEqual(await h.call(A, "computer_tab", { index: 7 }), { text: REFUSAL.noTab("7"), isError: true });
+  assert.deepEqual(await h.call(A, "computer_tab", { index: 7, close: true }), { text: REFUSAL.noTab("7"), isError: true });
+  for (const go of ["sideways", "", 3, undefined]) assert.deepEqual(await h.call(A, "computer_nav", { go }), { text: REFUSAL.badGo, isError: true }, String(go));
+  assert.deepEqual(await h.call(A, "computer_hover", {}), { text: REFUSAL.noHover, isError: true });
+  assert.deepEqual(await h.call(A, "computer_hover", { x: 1 }), { text: REFUSAL.noHover, isError: true });
+  assert.deepEqual(await h.call(A, "computer_hover", { ref: 5 }), { text: REFUSAL.badRef, isError: true });
+  assert.deepEqual(await h.call(A, "computer_click", { ref: "e1", double: "yes" }), { text: REFUSAL.badDouble, isError: true });
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("computer_console is named and says it is not available yet", async () => {
+  const h = make();
+  await twoTabs(h);
+  assert.deepEqual(await h.call(A, "computer_console", {}), { text: REFUSAL.consoleSoon, isError: true });
+});
+
+test("a double click is passed to the browser and worded as one; a page that changed under it answers as a click does", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  const r = await h.call(A, "computer_click", { ref: "e1", double: true });
+  assert.equal(r.text, `Double-clicked e1.${now("https://a.test/two")}`);
+  assert.deepEqual(b.clickOpts, [{ double: true }]);
+  assert.ok(h.states.flatMap((s) => s.log.map((l) => l.text)).includes("Double-clicked “Next”"));
+  await h.call(A, "computer_click", { ref: "e1" });
+  assert.deepEqual(b.clickOpts.at(-1), { double: false });
+  // The browser stops after the first press: the reply is the page-changed sentence.
+  const swapped = b.click.bind(b);
+  b.click = async (x, valid, o) => { await swapped(x, valid, o); if (o?.double) throw new Error(REFUSAL.pageChanged); };
+  const stopped = await h.call(A, "computer_click", { ref: "e1", double: true });
+  assert.deepEqual(stopped, { text: REFUSAL.pageChanged, isError: true });
+});
+
+test("a double click on a control that asks says so on the card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.spots.set("e2", { target: btn("Delete") });
+  const p = h.call(A, "computer_click", { ref: "e2", double: true });
+  const ask = await h.asked();
+  assert.equal(ask.title, "Delete: Double-click “Delete” on a.test?");
+  h.svc.answer(ask.id, "deny"); await p;
+});
+
+test("a read only session cannot switch tabs, go back or hover", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  h.svc.agentGone(A);
+  const R = agent("chat:a", "Reader", "read");
+  for (const [tool, args] of [["computer_tab", { index: 0 }], ["computer_tab", { index: 0, close: true }], ["computer_nav", { go: "back" }], ["computer_nav", { go: "reload" }], ["computer_hover", { ref: "e1" }]] as const) {
+    const r = await h.call(R, tool, args);
+    assert.deepEqual(r, { text: REFUSAL.readOnly, isError: true }, `${tool} ${JSON.stringify(args)}`);
+  }
+  assert.equal(h.wheel.holder("chat:a"), null);
+  assert.deepEqual([b.navs, b.hovers.length, b.pages.length, b.current], [[], 0, 2, 1]);
+});
+
+test("the wheel and the lease apply to a tab, a nav and a hover as to a click", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  for (const [tool, args] of [["computer_tab", { index: 0 }], ["computer_nav", { go: "back" }], ["computer_hover", { ref: "e1" }]] as const) {
+    const r = await h.call(A, tool, args);
+    assert.equal(r.isError, true, tool);
+    assert.match(r.text, /^busy: /, tool);
+  }
+  assert.deepEqual([b.navs, b.hovers.length, b.current], [[], 0, 1]);
+  // A Take over while the nav waits for its method: the move never runs.
+  h.svc.handBack();
+  let release: () => void = () => {};
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_nav", { go: "back" });
+  await flush();
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.deepEqual(b.navs, [], "the Back never ran");
+});
+
+test("each of the three replies ends with the page's outline", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.text = "outline text";
+  b.canBack = true;
+  for (const [tool, args] of [["computer_tab", { index: 0 }], ["computer_hover", { ref: "e1" }], ["computer_nav", { go: "back" }]] as const) {
+    const r = await h.call(A, tool, args);
+    assert.ok(!r.isError, r.text);
+    assert.ok(r.text.endsWith(now("https://a.test/one", "outline text")), `${tool}: ${r.text}`);
+  }
+  assert.deepEqual(b.capsFor.slice(-3), [OUTLINE_CAP, OUTLINE_CAP, OUTLINE_CAP], "each asked for the reply-sized outline");
 });

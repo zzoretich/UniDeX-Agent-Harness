@@ -177,7 +177,7 @@ function onePage(): { browser: BrowserLike; clicks: () => number } {
     activeWebContentsId: () => 1,
     pageToken: () => "1.0",
     open: async (u) => { url = new URL(u).href; return { url, title: "" }; },
-    select: no, close: no, nav: no, snapshot: no, screenshot: no, focus: no, type: no, key: no, scroll: no, show: () => {},
+    select: no, close: no, nav: no, hoverAt: no, entryMethod: no, snapshot: no, screenshot: no, focus: no, type: no, key: no, scroll: no, show: () => {},
     scrub: async (t) => t,
     resolve: async () => ({ target: { role: "button", name: "Next", inForm: false, fileInput: false }, shown: "Next", sensitive: false, backendNodeId: 7, judged: [7], point: { x: 1, y: 1 }, pageToken: "1.0", tab: 0 }),
     click: async (_r, valid) => { if (valid()) clicks++; },

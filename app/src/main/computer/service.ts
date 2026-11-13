@@ -33,7 +33,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entryMethod" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -93,6 +93,7 @@ export const ASK_LABELS: Readonly<Record<AskWhy, string>> = Object.freeze({
   submit: "Submit", purchase: "Purchase", send: "Send", delete: "Delete", merge: "Merge", signin: "Sign in", download: "Download",
   unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
   frame: "Act inside a frame from another site", power: "Turn on the browser",
+  closetab: "Close a tab you opened", resend: "Load a page again, which may send a form again",
 });
 
 const CATEGORIES: ReadonlySet<string> = new Set<AskCategory>(["submit", "purchase", "send", "delete", "merge", "signin", "download"]);
@@ -221,10 +222,13 @@ interface Lease {
 type By = { ref: string } | { x: number; y: number };
 type Parsed =
   | { kind: "open"; url: string; newTab: boolean }
-  | { kind: "click"; by: By }
+  | { kind: "click"; by: By; double: boolean }
   | { kind: "type"; text: string; ref: string | null }
   | { kind: "key"; key: string }
-  | { kind: "scroll"; dx: number; dy: number; ref: string | null };
+  | { kind: "scroll"; dx: number; dy: number; ref: string | null }
+  | { kind: "tab"; index: number; close: boolean }
+  | { kind: "nav"; go: ComputerNavGo }
+  | { kind: "hover"; by: By };
 
 export { cleanTitle } from "./title";
 /** How long after a change a record is written (session-browser S6). */
@@ -293,9 +297,24 @@ function parse(call: ToolCall): Parsed | string {
   switch (call.tool) {
     case "computer_open":
       return typeof a.url === "string" && a.url && a.url.length <= 8192 ? { kind: "open", url: a.url, newTab: a.newTab === true } : REFUSAL.noUrl;
-    case "computer_click":
-      if (ref) return { kind: "click", by: { ref } };
-      return finite(a.x) && finite(a.y) ? { kind: "click", by: { x: a.x, y: a.y } } : REFUSAL.noTarget;
+    case "computer_click": {
+      if (a.double !== undefined && typeof a.double !== "boolean") return REFUSAL.badDouble;
+      const double = a.double === true;
+      if (ref) return { kind: "click", by: { ref }, double };
+      return finite(a.x) && finite(a.y) ? { kind: "click", by: { x: a.x, y: a.y }, double } : REFUSAL.noTarget;
+    }
+    case "computer_tab":
+      if (typeof a.index !== "number" || !Number.isInteger(a.index) || a.index < 0) return REFUSAL.badTab;
+      if (a.close !== undefined && typeof a.close !== "boolean") return REFUSAL.badClose;
+      return { kind: "tab", index: a.index, close: a.close === true };
+    case "computer_nav":
+      return a.go === "back" || a.go === "forward" || a.go === "reload" ? { kind: "nav", go: a.go } : REFUSAL.badGo;
+    case "computer_hover":
+      if (ref) return { kind: "hover", by: { ref } };
+      return finite(a.x) && finite(a.y) ? { kind: "hover", by: { x: a.x, y: a.y } } : REFUSAL.noHover;
+    // Named so the bridge's count is right; its reads come with the console task.
+    case "computer_console":
+      return REFUSAL.consoleSoon;
     case "computer_type":
       return typeof a.text === "string" && a.text && a.text.length <= 20_000 ? { kind: "type", text: a.text, ref } : REFUSAL.noText;
     case "computer_key":
@@ -557,7 +576,10 @@ export class ComputerService {
         if (!take()) return { reply: fail(REFUSAL.late) };
         return { reply: await this.doOpen(agent, p, a, lease) };
       }
-      case "click": return this.click(agent, p, b, a.by, take, lease);
+      case "click": return this.click(agent, p, b, a.by, a.double, take, lease);
+      case "tab": return this.tabStep(agent, p, b, a, take, lease);
+      case "nav": return this.navStep(agent, p, b, a.go, take, lease);
+      case "hover": return this.hoverStep(agent, p, b, a.by, take, lease);
       case "type": return this.typeStep(agent, p, b, a.text, a.ref, take, lease);
       case "key": return this.keyStep(agent, p, b, a.key, take, lease);
       case "scroll": {
@@ -571,7 +593,7 @@ export class ComputerService {
     }
   }
 
-  private async click(agent: AgentRef, p: Slot, b: BrowserLike, by: By, take: () => boolean, lease: Lease): Promise<Step> {
+  private async click(agent: AgentRef, p: Slot, b: BrowserLike, by: By, double: boolean, take: () => boolean, lease: Lease): Promise<Step> {
     const r = await b.resolve(by, agent.key);
     // R81: a Take over and Hand back (or the process's replacement) during the target read ends the call here.
     const read = this.stale(p, agent, lease);
@@ -580,21 +602,23 @@ export class ComputerService {
     const need = this.need(judge({ kind: "click", target: r.target }, { access: agent.access, marked: this.markedAt(b, r.tab) }), r.target, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
     const did = "ref" in by ? by.ref : `at (${by.x}, ${by.y})`;
+    // A double click is a second act on the page, so the card and the log say so (session-browser S17).
+    const verb = double ? "Double-click" : "Click", done = double ? "Double-clicked" : "Clicked";
     const run = async (x: Resolved): Promise<Reply> => {
       const late = this.stale(p, agent, lease);
       if (late) return late;
-      const lost = await this.deliver(p, agent, lease, (valid) => b.click(x, valid));
+      const lost = await this.deliver(p, agent, lease, (valid) => b.click(x, valid, { double }));
       if (lost) return lost;
       const since = this.clock.now();
-      this.line(p, agent.label, x.shown ? `Clicked ${quoted(x.shown)}` : "Clicked an unnamed control", agent);
-      return this.done(p, b, `Clicked ${did}.`, since, lease);
+      this.line(p, agent.label, x.shown ? `${done} ${quoted(x.shown)}` : `${done} an unnamed control`, agent);
+      return this.done(p, b, `${done} ${did}.`, since, lease);
     };
     if (!need) return { reply: take() ? await run(r) : fail(REFUSAL.late) };
     let fresh = r;
     return {
       ask: {
         whys: [need], site, target: r.target,
-        action: r.shown ? `Click ${quoted(r.shown)}` : "Click an unnamed control", kind: "Click",
+        action: r.shown ? `${verb} ${quoted(r.shown)}` : `${verb} an unnamed control`, kind: verb,
         detail: `${await this.described(b, r.target, r.shown, r.tab)}. ${cardPage(b.tabs()[r.tab]?.url ?? null)}`,
         revalidate: async () => {
           const r2 = await this.reresolve(b, by, r, agent.key);
@@ -605,6 +629,104 @@ export class ComputerService {
         run: () => run(fresh),
       },
     };
+  }
+
+  /** session-browser S17: switches to a tab, or closes one. R6: the agent closes without asking only a tab that was opened under
+   *  the label this session's agent opens tabs with now; every other (the person's, a program's, another agent's, one restored
+   *  from the record) asks `closetab`. Closing the last tab opens the start page first, so the browser stays on (S5). */
+  private async tabStep(agent: AgentRef, p: Slot, b: BrowserLike, a: { index: number; close: boolean }, take: () => boolean, lease: Lease): Promise<Step> {
+    const tab = b.tabs()[a.index];
+    if (!tab) return { reply: fail(REFUSAL.noTab(String(a.index))) };
+    const url = tab.url;
+    const site = this.siteAt(b, a.index);
+    const need = this.need(judge({ kind: "tab", close: a.close, byUser: a.close && tab.openedBy !== agent.label }, { access: agent.access, marked: this.markedAt(b, a.index) }), null, site);
+    if (need && typeof need === "object") return { reply: fail(need.refuse) };
+    const still = (): boolean => b.tabs()[a.index]?.url === url;
+    const run = async (): Promise<Reply> => {
+      const late = this.stale(p, agent, lease);
+      if (late) return late;
+      if (!a.close) {
+        b.select(a.index);
+        const since = this.clock.now();
+        this.line(p, agent.label, `Switched to tab ${a.index}`, agent);
+        return this.done(p, b, `Switched to tab ${a.index}.`, since, lease);
+      }
+      if (!still()) return refuseAt(REFUSAL.changed, this.url(b));
+      if (b.tabs().length === 1) await b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: agent.label });
+      const gone = this.stale(p, agent, lease);
+      if (gone) return gone;
+      b.close(a.index);
+      const since = this.clock.now();
+      this.line(p, agent.label, `Closed tab ${a.index}`, agent);
+      return this.done(p, b, `Closed tab ${a.index}.`, since, lease);
+    };
+    if (!need) return { reply: take() ? await run() : fail(REFUSAL.late) };
+    return {
+      ask: {
+        whys: [need], site, target: null,
+        action: `Close tab ${a.index}`, kind: "Close tab",
+        detail: `Tab ${a.index} was opened by ${tab.openedBy ?? "you"}, not by this session. ${cardPage(url)}`,
+        revalidate: () => Promise.resolve(still()),
+        run,
+      },
+    };
+  }
+
+  /** session-browser S17: Back, Forward or Reload of the active tab. The gate reads the method the entry would load by: a GET
+   *  goes, anything else asks `resend`. Nothing to go back or forward to is a refusal, not an ask. An allowed reload of an entry
+   *  that was not a GET goes through the protocol, which sends the form again (Electron's own reload does nothing for it). */
+  private async navStep(agent: AgentRef, p: Slot, b: BrowserLike, go: ComputerNavGo, take: () => boolean, lease: Lease): Promise<Step> {
+    const tab = this.active(b);
+    const here = b.tabs()[tab];
+    if (!here) return { reply: fail(REFUSAL.noPage) };
+    if ((go === "back" && !here.canBack) || (go === "forward" && !here.canForward)) return { reply: refuseAt(REFUSAL.noHistory(go), this.url(b)) };
+    const token = b.pageToken();
+    const method = await b.entryMethod(go, tab);
+    // The history was an await: the call must still be current, and the page the one the method was read for.
+    const read = this.stale(p, agent, lease);
+    if (read) return { reply: read };
+    if (b.pageToken() !== token || this.active(b) !== tab) return { reply: refuseAt(REFUSAL.moved, this.url(b)) };
+    const site = this.siteAt(b, tab);
+    const need = this.need(judge({ kind: "nav", go, method }, { access: agent.access, marked: this.markedAt(b, tab) }), null, site);
+    if (need && typeof need === "object") return { reply: fail(need.refuse) };
+    const verb = go === "back" ? "Go back" : go === "forward" ? "Go forward" : "Reload";
+    const went = go === "back" ? "Went back" : go === "forward" ? "Went forward" : "Reloaded";
+    const run = async (): Promise<Reply> => {
+      const late = this.stale(p, agent, lease);
+      if (late) return late;
+      // The move starts a load the page answers to; `repost` only for a reload of what was not a GET, which the person allowed.
+      if (!b.nav(go, tab, { repost: go === "reload" && method !== "GET" })) return refuseAt(REFUSAL.pageChanged, this.url(b));
+      const since = this.clock.now();
+      this.line(p, agent.label, went, agent);
+      return this.done(p, b, `${went}.`, since, lease);
+    };
+    if (!need) return { reply: take() ? await run() : fail(REFUSAL.late) };
+    return {
+      ask: {
+        whys: [need], site, target: null,
+        action: verb, kind: verb,
+        detail: `Loading this page again may send a form again. ${cardPage(b.tabs()[tab]?.url ?? null)}`,
+        revalidate: async () => b.pageToken() === token && this.active(b) === tab && (await b.entryMethod(go, tab).catch(() => null)) === method,
+        run,
+      },
+    };
+  }
+
+  /** session-browser S17: the pointer moved onto a ref or a point (hover styles and menus), nothing pressed. The target is
+   *  resolved as a click's is; the gate lets a hover go, but a Read only session never gets here. */
+  private async hoverStep(agent: AgentRef, p: Slot, b: BrowserLike, by: By, take: () => boolean, lease: Lease): Promise<Step> {
+    const r = await b.resolve(by, agent.key);
+    const read = this.stale(p, agent, lease);
+    if (read) return { reply: read };
+    const need = this.need(judge({ kind: "hover" }, { access: agent.access, marked: this.markedAt(b, r.tab) }), null, this.siteAt(b, r.tab));
+    if (need && typeof need === "object") return { reply: fail(need.refuse) };
+    const did = "ref" in by ? by.ref : `at (${by.x}, ${by.y})`;
+    if (!take()) return { reply: fail(REFUSAL.late) };
+    const lost = await this.deliver(p, agent, lease, (valid) => b.hoverAt(r, valid));
+    if (lost) return { reply: lost };
+    const since = this.clock.now();
+    this.line(p, agent.label, r.shown ? `Hovered ${quoted(r.shown)}` : "Hovered an unnamed control", agent);
+    return { reply: this.done(p, b, `Hovered ${did}.`, since, lease) };
   }
 
   /** D39: typing into a ref is a click on it and the typing, under one ask; after the click the focus is judged again. */

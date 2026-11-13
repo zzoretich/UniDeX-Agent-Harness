@@ -38,8 +38,14 @@ export const REFUSAL = {
   noKey: "No key: give key, such as Enter or Shift+Tab.",
   noDistance: "No distance: give dy in pixels (and dx if needed).",
   unknownTool: "Unknown tool: use one of the computer_* tools.",
+  /** computer_console is named so the bridge counts thirteen tools; its reads come with the console task (Task 21). */
+  consoleSoon: "The console is not available yet: use computer_snapshot to read the page.",
   badAskId: "Bad askId: give the id from a waiting_for_user reply.",
   badWaitText: "Bad text: give 1 to 200 characters.",
+  badClose: "Bad close: give true or false.",
+  badGo: "Bad go: give back, forward or reload.",
+  badDouble: "Bad double: give true or false.",
+  noHover: "Nothing to hover: give either ref, or both x and y.",
 
   // While acting.
   clickMovedFocus: "The click moved the focus somewhere that asks first: call computer_type again without ref.",
@@ -78,6 +84,8 @@ export const REFUSAL = {
   tooManyTabs: (max: string) => `${max} tabs are open: close one first.`,
   otherDebugger: "Another debugger is attached to this tab, so it cannot be driven: ask the user to close DevTools or the other debugger on that tab.",
   devToolsOpen: "DevTools is open on this tab, so it cannot be driven: ask the user to close it.",
+  /** Back or Forward with no entry to go to (session-browser S17); `go` is "back" or "forward". */
+  noHistory: (go: string) => `There is no page to go ${go} to: call computer_status to see the tabs, or open a page with computer_open.`,
   tabGone: "That tab was closed: call computer_status to see what is open.",
   sizeChanged: "The page changed size while the screenshot was taken, so it was not returned: try again.",
   notVisible: "That element is not visible on the page: take a new snapshot.",

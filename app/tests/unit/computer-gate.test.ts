@@ -168,3 +168,42 @@ test("M10: a permission this app cannot grant (camera, microphone, location) is 
   assert.deepEqual(permissionVerdict("geolocation", "maps.example.com"), { deny: "Denied maps.example.com your location without asking: this app has no access to it on this Mac, so allowing would do nothing." });
   for (const p of ["notifications", "clipboard-read", "fullscreen", "midi", "unknown"]) assert.equal(permissionVerdict(p, "a.test"), "ask", p);
 });
+
+// ---- session-browser S17: tab, navigation and hover
+
+test("a tab switch, a hover and Back, Forward or Reload onto a GET entry do not ask", () => {
+  for (const access of ["edit", "run", "host"] as const) {
+    for (const marked of [false, true]) {
+      const ctx = { access, marked };
+      assert.deepEqual(judge({ kind: "hover" }, ctx), { go: true }, `${access} hover`);
+      assert.deepEqual(judge({ kind: "tab", close: false, byUser: false }, ctx), { go: true }, `${access} switch`);
+      assert.deepEqual(judge({ kind: "tab", close: false, byUser: true }, ctx), { go: true }, `${access} switch to a tab the person opened`);
+      for (const go of ["back", "forward", "reload"] as const) assert.deepEqual(judge({ kind: "nav", go, method: "GET" }, ctx), { go: true }, `${access} ${go}`);
+    }
+  }
+});
+
+test("Reload after a form POST asks; onto GET it does not; an unknown method asks", () => {
+  for (const go of ["back", "forward", "reload"] as const) {
+    assert.deepEqual(judge({ kind: "nav", go, method: "other" }, edit(true)), { ask: "resend" }, `${go} onto another method`);
+    assert.deepEqual(judge({ kind: "nav", go, method: "unknown" }, edit(true)), { ask: "resend" }, `${go} onto an unknown method`);
+    assert.deepEqual(judge({ kind: "nav", go, method: "GET" }, edit(false)), { go: true }, `${go} onto GET`);
+  }
+  // The site's mark does not change it: a form sent again is the person's to allow.
+  assert.deepEqual(judge({ kind: "nav", go: "reload", method: "other" }, edit(false)), { ask: "resend" });
+});
+
+test("closing a tab the user opened asks; closing its own does not", () => {
+  assert.deepEqual(judge({ kind: "tab", close: true, byUser: true }, edit(true)), { ask: "closetab" });
+  assert.deepEqual(judge({ kind: "tab", close: true, byUser: true }, edit(false)), { ask: "closetab" });
+  assert.deepEqual(judge({ kind: "tab", close: true, byUser: false }, edit(false)), { go: true });
+});
+
+test("a read only session cannot switch tabs, go back or hover", () => {
+  const ctx = { access: "read" as Access, marked: true };
+  const acts: Action[] = [
+    { kind: "tab", close: false, byUser: false }, { kind: "tab", close: true, byUser: false }, { kind: "hover" },
+    { kind: "nav", go: "back", method: "GET" }, { kind: "nav", go: "forward", method: "GET" }, { kind: "nav", go: "reload", method: "GET" },
+  ];
+  for (const a of acts) assert.deepEqual(judge(a, ctx), READ_ONLY, a.kind);
+});
