@@ -4598,7 +4598,8 @@ test("a call waiting behind another call's read answers at its own deadline, unr
   release();
   await p1;
   await flush();
-  assert.equal(b.snapshotsFor.length, base + 1, "and none for call 2 when its turn came");
+  await h.clock.advance(10_000);
+  assert.equal(b.snapshotsFor.length, base + 1, "and none for call 2 when its turn came, nor later");
   assert.ok(h.clock.t > t0);
 });
 
@@ -4667,4 +4668,24 @@ test("the agent's hold is not freed by the idle release while its reply's page i
   assert.equal(h.wheel.holder("chat:a")?.kind, "agent", "still the agent's: a read is in progress");
   release();
   await p;
+});
+
+test("a read under way at the deadline is given to its call", async () => {
+  const { h, b } = await acting();
+  let settle!: () => void, snap!: () => void;
+  b.settleGate = new Promise<void>((r) => { settle = r; });
+  b.snapGate = new Promise<void>((r) => { snap = r; });
+  const base = b.snapshotsFor.length;
+  let answered: string | null = null;
+  void h.call(A, "computer_click", { ref: "e1" }).then((r) => { answered = r.text; });
+  await h.clock.advance(44_900);
+  settle();                                      // the turn and the settle come before the deadline: the snapshot starts
+  await flush();
+  assert.equal(b.snapshotsFor.length, base + 1, "the read is under way");
+  await h.clock.advance(300);                    // past the call's 45 s, the snapshot still running
+  assert.equal(answered, null, "a read under way is not abandoned");
+  b.text = "Late page";
+  snap();
+  await flush();
+  assert.equal(answered, `Clicked e1.${now("https://a.test/", "Late page")}`, "its text is given to the call, not UNREAD");
 });

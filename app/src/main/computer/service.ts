@@ -781,9 +781,22 @@ export class ComputerService {
     // A call that holds the reply stops waiting for its turn at its own 45 s: it answers with its line and UNREAD, and its
     // link stays in the chain, doing nothing when its turn comes (`late`), so the others keep their order.
     p.reading++;
-    const mine = p.replies.then(() => (read.late() ? read.unread() : read.run())).finally(() => { p.reading--; this.released(); });
+    let started = false, lost = false;
+    let timer: unknown = null;
+    const mine = p.replies.then(() => {
+      if (lost || read.late()) return read.unread();
+      started = true;
+      if (timer !== null) this.clock.clearTimeout(timer);
+      return read.run();
+    }).finally(() => { p.reading--; this.released(); });
     p.replies = mine.catch(() => undefined);
-    return read.lease.until === null ? mine : this.until(mine, read.lease.until, () => read.unread());
+    if (read.lease.until === null) return mine;
+    // The deadline races only the wait for the turn: a read that has started is awaited and given to its call, so no read
+    // ever runs whose text the call does not get (its refs are the ones the agent was shown).
+    return new Promise<Reply>((resolve) => {
+      timer = this.clock.setTimeout(() => { if (!started) { lost = true; resolve(read.unread()); } }, Math.max(0, read.lease.until! - this.clock.now()));
+      void mine.then(resolve, () => resolve(read.unread()));
+    });
   }
 
   /** The wait and the read of `done`. It waits for the page to settle after the action's last input (`since`, on the
