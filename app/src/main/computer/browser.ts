@@ -114,6 +114,10 @@ type Point = { x: number; y: number };
 
 interface Tab {
   uid: number; view: WebContentsView; wc: WebContents; openedBy: string | null;
+  /** Whether the agent's own `computer_open` made this tab, or a popup that open's page made while the agent held the wheel
+   *  (session-browser PR 5, X2). `openedBy` is only the name shown to the person, and a program's page carries the session's
+   *  label too, so the rule "the agent closes its own tab without asking" reads this instead. MAIN ONLY: never in `tabs()`. */
+  own: boolean;
   /** Main-frame commits and in-page navigations, for `pageToken()` (a ref or a Resolved is stale after either). */
   seq: number;
   /** I3b: main-frame navigations requested or started (renderer-requested ones arrive on the DevTools session in order with
@@ -224,7 +228,7 @@ interface Tab {
 
 /** session-browser S9: what a sleeping browser keeps of a tab whose view is gone: its address (to reload), the address as
  *  it may be shown (`shown`: `shownUrl` at sleep), its title, opener and secret memory (which outlives the view, F3). */
-interface Kept { url: string; shown: string; title: string; openedBy: string | null; memory: SecretMemory; urlHidden: boolean }
+interface Kept { url: string; shown: string; title: string; openedBy: string | null; own: boolean; memory: SecretMemory; urlHidden: boolean }
 
 /** A sensitive field's current value and whether the field is a one-time-code field. */
 interface FieldValue { b: number; value: string; otp: boolean }
@@ -407,11 +411,11 @@ export class ComputerBrowser {
   /** Opens `url`: in the active tab, or (`newTab`, or no tab yet) in a new one that takes the selection. `background` (only
    *  with `newTab`) adds the tab behind the active one and leaves the selection where it was, for a page the person did not
    *  ask for while they work in another (session-browser X2); with no active tab the new one is the active one anyway. */
-  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }): Promise<{ url: string; title: string }> {
+  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null; own?: boolean }): Promise<{ url: string; title: string }> {
     if (!navAllowed(url)) throw new Told(REFUSAL.notWeb, "Only http and https pages open.");
     // §4.2: load the normalised form navAllowed judged, never the raw string.
     const href = new URL(url).href;
-    const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true);
+    const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true, o.own === true);
     t.refused = null;
     // R38: a page-started navigation's leaving record is left alone here: that navigation may be past the point where this
     // load can cancel it and commit first, and its record then goes with its own commit (`committed` matches the URL). R39:
@@ -543,6 +547,16 @@ export class ComputerBrowser {
   /** A tab's uid, which never leaves main, so a card can name the tab it was raised for across an index shift. */
   tabUid(index: number): number | null { return this.list[index]?.uid ?? null; }
   tabIndex(uid: number): number { return this.list.findIndex((t) => t.uid === uid); }
+  /** Whether the agent's own open made the tab (session-browser PR 5, X2): false for a tab the person, a link, a program or a
+   *  record made, and for a tab that is not there. MAIN ONLY: it decides whether the agent may close the tab unasked. */
+  ownTab(uid: number): boolean { return this.list.find((t) => t.uid === uid)?.own === true; }
+  /** The tab's own page token, its uid with its commit counter (as `pageToken` forms the active tab's), or null when the tab is
+   *  gone: what a card is bound to, so that another page in the same tab, whatever address it shows, is not the card's page
+   *  (session-browser PR 5, D1). MAIN ONLY. */
+  tabToken(uid: number): string | null {
+    const t = this.list.find((x) => x.uid === uid);
+    return t ? this.tokenOf(t) : null;
+  }
 
   private history(t: Tab): Promise<{ currentIndex: number; entries: { id: number | string; url: string }[] }> {
     return this.send(t, "Page.getNavigationHistory");
@@ -950,8 +964,8 @@ export class ComputerBrowser {
       const url = withoutUserinfo(t.pending?.url ?? t.wc.getURL());
       if (!navAllowed(url)) continue;
       if (i === this.current) active = kept.length;
-      if (t.pending) { kept.push({ ...t.pending, url, openedBy: t.openedBy, memory: t.memory }); continue; }
-      kept.push({ url, shown: this.shownUrl(t), title: t.wc.getTitle(), openedBy: t.openedBy, memory: t.memory, urlHidden: this.hidden(t) || t.pathHidden });
+      if (t.pending) { kept.push({ ...t.pending, url, openedBy: t.openedBy, own: t.own, memory: t.memory }); continue; }
+      kept.push({ url, shown: this.shownUrl(t), title: t.wc.getTitle(), openedBy: t.openedBy, own: t.own, memory: t.memory, urlHidden: this.hidden(t) || t.pathHidden });
     }
     for (const t of [...this.list]) this.drop(t);
     this.kept = kept;
@@ -1066,7 +1080,7 @@ export class ComputerBrowser {
   restore(tabs: readonly string[], active: number): void {
     if (this.gone || this.kept || this.list.length) return;
     const ok = tabs.filter((u) => navAllowed(u)).map(withoutUserinfo);
-    this.kept = ok.map((url) => ({ url, shown: stripQuery(url), title: "", openedBy: null, memory: new SecretMemory(), urlHidden: true }));
+    this.kept = ok.map((url) => ({ url, shown: stripQuery(url), title: "", openedBy: null, own: false, memory: new SecretMemory(), urlHidden: true }));
     this.keptActive = Math.min(Math.max(0, tabs.slice(0, active + 1).filter((u) => navAllowed(u)).length - 1), Math.max(0, ok.length - 1));
     this.o.hooks.changed();
   }
@@ -1126,7 +1140,7 @@ export class ComputerBrowser {
     return t;
   }
 
-  private async addTab(by: string | null, keep?: Kept, background = false): Promise<Tab> {
+  private async addTab(by: string | null, keep?: Kept, background = false, own = false): Promise<Tab> {
     if (this.gone) throw new Told(REFUSAL.browserGone, "This computer was closed.");
     if (this.list.length >= MAX_TABS) throw new Error(REFUSAL.tooManyTabs(String(MAX_TABS)));
     const view = new WebContentsView({
@@ -1140,7 +1154,7 @@ export class ComputerBrowser {
     });
     const sensitive = new Set<number>();
     const t: Tab = {
-      uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
+      uid: nextUid++, view, wc: view.webContents, openedBy: by, own: keep ? keep.own : own, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
       loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, console: new ConsoleLog(), requests: new Map(), committedLoader: null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
@@ -1478,7 +1492,8 @@ export class ComputerBrowser {
     const from = this.site(t), to = siteOf(d.url) ?? "null", doc = t.doc;
     // A popup inherits its opener's label only while this session's agent holds the wheel (its own action opened it); made while
     // the person holds it, or nobody does, it is the person's, so the agent may not close it unasked.
-    const opener = this.o.hooks.agentDrives && !this.o.hooks.agentDrives() ? null : t.openedBy;
+    const agentic = !(this.o.hooks.agentDrives && !this.o.hooks.agentDrives());
+    const opener = agentic ? t.openedBy : null;
     // R38 (D9): the popup's URL may carry a code typed into the opener that the agent never read (a target=_blank GET form,
     // window.open with the field's value). The opener document is still alive here, so its sensitive values are read now,
     // in G2's one-command read (the usual command timeout), and remembered for the opener's site before the URL goes out.
@@ -1490,7 +1505,8 @@ export class ComputerBrowser {
     const out = this.urlScrub(t, [from, to], got ?? { values: [], whole: [] });
     const shown = clipUrl(out(got ? d.url : stripQuery(d.url)));
     if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${shown} in a new tab; ${MAX_TABS} tabs are open.`); return; }
-    const nt = await this.addTab(opener);
+    // The same rule for the fact the close rule reads: the agent's own only when its own tab was the opener while it drove.
+    const nt = await this.addTab(opener, undefined, false, agentic && t.own);
     // R32: the new tab inherits the opener's secrets for the opener's site only. R35: a value the opener put in the new
     // tab's URL is carried for that URL string only, never into the new tab's site pool. R37 (N2): the opener's own
     // carried set comes along (a code carried into the opener's URL and forwarded to the popup's), kinds kept. R38: the

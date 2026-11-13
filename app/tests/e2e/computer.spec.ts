@@ -1419,12 +1419,12 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
         expect(hits("/shop.html")).toBeGreaterThan(before);
         await expect(cards(p)).toHaveCount(0);
         // Closing the tab the agent opened (the second) asks nothing.
-        expectReply(await a.call("computer_tab", { index: second, close: true }), { isError: false, text: new RegExp(`^Closed tab ${second}\\.\\n\\nPage now:`) });
+        expectReply(await a.call("computer_tab", { index: second, close: true }), { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
         await expect(cards(p)).toHaveCount(0);
         // The first tab is the one the switch opened for the person (the agent only navigated it): closing it asks, and as the last tab it leaves the browser on.
         const held = await asked(p, a.call("computer_tab", { index: 0, close: true }), /^Close a tab it did not open: /);
         await held.card.locator('[data-answer="once"]').click();
-        expectReply(await held.reply, { isError: false, text: /^Closed tab 0\.\n\nPage now:/ });
+        expectReply(await held.reply, { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
         const after = await a.call("computer_status");
         expectReply(after, { isError: false });
         expect(after.text).not.toMatch(/off: computer_open asks/);

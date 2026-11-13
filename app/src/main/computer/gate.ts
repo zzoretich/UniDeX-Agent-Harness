@@ -22,7 +22,7 @@ export type Action =
   | { kind: "click"; target: Target }
   | { kind: "key"; key: string; focus: Focus }
   | { kind: "type"; text: string; focus: Focus }
-  /** `byUser`: the tab was not opened by this session's agent under the label it opens tabs with now (a close of it asks). */
+  /** `byUser`: the tab was not made by this session's agent's own `computer_open` (or a popup of its own click): a close of it asks. */
   | { kind: "tab"; close: boolean; byUser: boolean }
   /** `method`: how the entry Back, Forward or Reload would load was fetched; "unknown" where it could not be read. */
   | { kind: "nav"; go: ComputerNavGo; method: "GET" | "other" | "unknown" }

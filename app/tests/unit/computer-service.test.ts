@@ -53,7 +53,9 @@ const restoreFails = new Set<string>();
 
 /** The subset of ComputerBrowser the service drives, over an in-memory page. */
 class FakeBrowser implements BrowserLike {
-  pages: { url: string; openedBy: string | null; hidden?: boolean }[] = [];
+  /** `own`: the agent's own `computer_open` made the tab (the fact the close rule reads, which never leaves main);
+   *  `commits`: the tab's commit counter, which the page token carries (main-frame commits and in-page navigations). */
+  pages: { url: string; openedBy: string | null; hidden?: boolean; own?: boolean; commits?: number }[] = [];
   current = -1; seq = 0;
   spots = new Map<string, Spot>();
   focused: Focus = { target: null, shown: "", sensitive: false, plainTextarea: false, node: null, frame: null };
@@ -103,17 +105,22 @@ class FakeBrowser implements BrowserLike {
   tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.hidden ? p.url.replace(/[?#].*$/, "") : p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: index === this.current && this.canBack, canForward: index === this.current && this.canForward })); }
   activeWebContentsId(): number | null { return this.current < 0 ? null : 100 + this.current; }
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
-  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }) {
+  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null; own?: boolean }) {
     // As the real browser does (session-browser X2): a background tab is added without taking the selection, unless it is the first.
     this.trail.push(`open ${this.pages.length}`);
     const hook = this.onOpen; this.onOpen = null; hook?.();
     let at = this.current;
-    if (o.newTab || this.current < 0) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by }); at = this.pages.length - 1; if (!keep) this.current = at; }
-    else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy };
+    // As the real browser: a tab that cannot be MADE throws before any exists; a page that cannot LOAD throws after its tab is in place.
+    if (this.makeFails?.(url)) throw new Error(REFUSAL.browserGone);
+    if (o.newTab || this.current < 0) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by, ...(o.own ? { own: true } : {}) }); at = this.pages.length - 1; if (!keep) this.current = at; }
+    else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy, ...(this.pages[this.current].own ? { own: true } : {}), commits: (this.pages[this.current].commits ?? 0) + 1 };
     this.seq++;
+    if (this.loadFails?.(url)) throw new Error(REFUSAL.couldNotOpen(`${url} (ERR_FAILED)`));
     // The page this call opened, which is the active one unless it went to the background (as the real browser answers).
     return { url: this.pages[at].url, title: "" };
   }
+  /** Pages that cannot be loaded (their tab is made, then the open throws) and pages whose tab cannot be made at all. */
+  loadFails: ((url: string) => boolean) | null = null; makeFails: ((url: string) => boolean) | null = null;
   navs: string[] = [];
   /** False makes a move "that cannot happen" (a stale Back): nothing is recorded and nav returns false. */
   navOk = true;
@@ -134,6 +141,20 @@ class FakeBrowser implements BrowserLike {
   private uids = new WeakMap<object, number>(); private nextUid = 1;
   tabUid(i: number): number | null { const p = this.pages[i]; if (!p) return null; if (!this.uids.has(p)) this.uids.set(p, this.nextUid++); return this.uids.get(p)!; }
   tabIndex(uid: number): number { return this.pages.findIndex((_p, i) => this.tabUid(i) === uid); }
+  /** As the real browser: whether the agent's own open made the tab (main only), and the tab's page token (uid and commits). */
+  ownTab(uid: number): boolean { return this.pages[this.tabIndex(uid)]?.own === true; }
+  tabToken(uid: number): string | null { const i = this.tabIndex(uid); return i < 0 ? null : `${uid}.${this.pages[i].commits ?? 0}`; }
+  /** The person (or the page) moves tab `i` to another page, or to the same shown address with another hidden part. */
+  commit(i: number, url?: string): void { const p = this.pages[i]; if (url) p.url = url; p.commits = (p.commits ?? 0) + 1; }
+  /** The browser's popup rule (ComputerBrowser.popup, pinned in computer-browser.test.ts): the popup is the agent's own only while the
+   *  agent holds the wheel and the opener is the agent's own; it is opened by the opener's label under the same rule. */
+  popup(from: number, url: string): void {
+    const opener = this.pages[from];
+    const drives = (this.hooks as BrowserHooks & { agentDrives?: () => boolean }).agentDrives;
+    const inherits = !drives || drives();
+    this.pages.push({ url: new URL(url).href, openedBy: inherits ? opener.openedBy : null, own: inherits && opener.own === true });
+    this.current = this.pages.length - 1; this.seq++;
+  }
   async entry(go: string, tab?: number) {
     this.need(tab); this.asked.push(go);
     await this.entryGate;
@@ -1233,7 +1254,7 @@ test("+ opens the start page main was given (the e2e suite's fixture); an agent'
   const r = await h.call(A, "computer_open", { url: "https://a.test/", newTab: true });
   assert.ok(!r.isError, r.text);
   assert.deepEqual(opened, ["https://a.test/"], "one load, the agent's URL");
-  assert.deepEqual(b.pages[1], { url: "https://a.test/", openedBy: "Alpha" });
+  assert.deepEqual(b.pages[1], { url: "https://a.test/", openedBy: "Alpha", own: true }, "the agent's own open is the agent's own tab");
 });
 
 test("an action queued behind another is not delivered once the user has taken over", async () => {
@@ -4828,39 +4849,131 @@ test("Back with nothing to go back to is a refusal with a next step, and raises 
 test("closing a tab the user opened asks; closing its own does not", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.pages[0].openedBy = null;                              // the person's tab
+  b.pages[0].openedBy = null; b.pages[0].own = false;                              // the person's tab
   const p = h.call(A, "computer_tab", { index: 0, close: true });
   const ask = await h.asked();
   assert.equal(ask.why, "closetab");
   assert.equal(ask.title, "Close a tab it did not open: Close tab 0 on a.test?");
   assert.equal(b.pages.length, 2, "not closed yet");
   h.svc.answer(ask.id, "once");
-  assert.match((await p).text, /^Closed tab 0\./);
+  assert.match((await p).text, /^Closed the tab\./);
   assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/two"]);
   // Its own (the label this session opens tabs with now) goes without asking.
   await h.call(A, "computer_open", { url: "https://a.test/three", newTab: true });
   assert.equal(b.pages[1].openedBy, "Alpha");
   const own = await h.call(A, "computer_tab", { index: 1, close: true });
-  assert.match(own.text, /^Closed tab 1\./);
+  assert.match(own.text, /^Closed the tab\./);
   assert.equal(h.broker.pending().length, 0);
   assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/two"]);
 });
 
-test("closing a tab a program opened asks", async () => {
+test("a program's page asks before the agent closes it, on a thread and on Code", async () => {
+  for (const who of [A, agent("code:t1", "One", "edit", "vault")]) {
+    const h = make();
+    const b = await h.open(who, "https://a.test/one");                       // the agent's own tab
+    // The program's real path: a sign-in page, recorded under the session's own label, the one an agent's tab carries.
+    await h.svc.openFromProgram(who.key, "https://example.com/signin");
+    assert.deepEqual(b.pages.map((x) => x.openedBy), [who.label, who.label], "both read as the session's own, to the person");
+    const p = h.call(who, "computer_tab", { index: 1, close: true });
+    const ask = await h.asked();
+    assert.equal(ask.why, "closetab", who.key);
+    h.svc.answer(ask.id, "deny");
+    assert.equal((await p).isError, true);
+    assert.equal(b.pages.length, 2, "not closed");
+    // The agent's own tab still goes without a card.
+    const own = await h.call(who, "computer_tab", { index: 0, close: true });
+    assert.match(own.text, /^Closed the tab\./, who.key);
+    assert.equal(h.broker.pending().length, 0);
+    assert.deepEqual(b.pages.map((x) => x.url), ["https://example.com/signin"]);
+  }
+});
+
+test("a tab another agent opened asks", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.pages[0].openedBy = "A program";
-  const p = h.call(A, "computer_tab", { index: 0, close: true });
-  const ask = await h.asked();
-  assert.equal(ask.why, "closetab");
-  h.svc.answer(ask.id, "deny");
-  assert.equal((await p).isError, true);
-  assert.equal(b.pages.length, 2);
-  // Another agent's tab (a label this session does not open with now) asks as well.
-  b.pages[0].openedBy = "Beta";
+  b.pages[0].openedBy = "Beta"; b.pages[0].own = false;
   const q = h.call(A, "computer_tab", { index: 0, close: true });
   assert.equal((await h.asked()).why, "closetab");
   h.svc.answer((await h.asked()).id, "deny"); await q;
+  assert.equal(b.pages.length, 2);
+});
+
+test("a tab the agent opened still closes free after a sleep and wake", async () => {
+  const h = make();
+  h.cfg.awake = 1;
+  const b = await twoTabs(h);
+  h.svc.agentGone(A);                                    // the turn ended: the wheel is free, so the browser can be put to sleep
+  h.svc.power("chat:s2", true); await flush();
+  assert.equal(b.sleeping, true, "the awake limit put it to sleep");
+  // A wake brings the same tabs back as new views (a new uid each) and keeps who made each: the agent's own stays its own.
+  const r = await h.call(A, "computer_tab", { index: 1, close: true });
+  assert.equal(b.wakes, 1, "the call woke it");
+  assert.match(r.text, /^Closed the tab\./);
+  assert.equal(h.broker.pending().length, 0, "no card");
+});
+
+test("a restored tab asks", async () => {
+  const h = make();
+  await twoTabs(h);
+  h.svc.power("chat:a", false);
+  h.svc.power("chat:a", true);
+  await flush();
+  const nb = h.b();
+  assert.equal(nb.restored, 1, "the tabs came back from the record");
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab", "a record does not say who made a tab");
+  h.svc.answer(ask.id, "deny"); await p;
+});
+
+test("a popup made while the person holds the wheel asks before the agent closes it", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  b.popup(1, "https://pop.test/");
+  h.svc.handBack();
+  assert.equal(b.pages[2].own, false);
+  const p = h.call(A, "computer_tab", { index: 2, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  h.svc.answer(ask.id, "once");
+  assert.match((await p).text, /^Closed the tab\./);
+  assert.equal(b.pages.length, 2);
+});
+
+test("a popup made while nobody holds the wheel asks", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  h.svc.agentGone(A);                                      // the turn ended: nobody holds the wheel
+  assert.equal(h.wheel.holder("chat:a"), null);
+  b.popup(1, "https://pop.test/");
+  assert.equal(b.pages[2].own, false);
+  const p = h.call(A, "computer_tab", { index: 2, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  h.svc.answer(ask.id, "once");
+  assert.match((await p).text, /^Closed the tab\./);
+  assert.equal(b.pages.length, 2);
+});
+
+test("a popup the agent's own click opened closes free", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // The agent holds the wheel (its click is under way) and the opener is its own tab.
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" });
+  b.popup(1, "https://pop.test/");
+  assert.equal(b.pages[2].own, true);
+  const r = await h.call(A, "computer_tab", { index: 2, close: true });
+  assert.match(r.text, /^Closed the tab\./);
+  assert.equal(h.broker.pending().length, 0, "no card");
+  assert.equal(b.pages.length, 2);
+  // A popup of a tab the agent did not make is not its own, whoever holds the wheel.
+  b.pages[1].own = false;
+  b.popup(1, "https://pop2.test/");
+  const p = h.call(A, "computer_tab", { index: 2, close: true });
+  assert.equal((await h.asked()).why, "closetab");
+  h.svc.answer((await h.asked()).id, "deny"); await p;
 });
 
 test("the agent's close of the last tab leaves the browser on at the start page", async () => {
@@ -4875,7 +4988,7 @@ test("the agent's close of the last tab leaves the browser on at the start page"
   assert.equal(h.lastState().power, "awake", "not switched off");
   assert.ok(r.text.endsWith(now("https://start.test/")), r.text);
   // The person's last tab, once allowed, leaves the same.
-  b.pages[0].openedBy = null;
+  b.pages[0].openedBy = null; b.pages[0].own = false;
   const p = h.call(A, "computer_tab", { index: 0, close: true });
   h.svc.answer((await h.asked()).id, "once");
   assert.ok(!(await p).isError);
@@ -5014,35 +5127,104 @@ test("the last tab closed by the person while the start page loads: nothing more
   b.onOpen = () => { b.pages.splice(0, 1); b.current = -1; };       // the person closed it during the open
   const r = await h.call(A, "computer_tab", { index: 0, close: true });
   assert.ok(!r.isError, r.text);
-  assert.match(r.text, /^Tab 0 is already closed\./);
+  assert.match(r.text, /^That tab is already closed\./);
   assert.ok(r.text.endsWith(now("https://start.test/")), "carries the page now in front");
   assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
   assert.ok(!b.trail.some((t) => t.startsWith("close")), "no close was made");
+});
+
+test("the last tab moved to another page while the start page loads: it is not closed and the reply says the page changed", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.onOpen = () => b.commit(0, "https://a.test/elsewhere");          // the person (or the page) moved it during the open
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.ok(!/already closed/.test(r.text), r.text);
+  assert.ok(!b.trail.some((t) => t.startsWith("close")), "no close was made");
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere", "https://start.test/"], "the tab is still open, beside the start page");
+});
+
+test("the agent closes the last tab while the start page cannot load: the tab is closed, one tab is open, the browser is on", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.loadFails = (u) => u === "https://start.test/";                   // the tab is made, then the load fails (offline)
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Closed the tab\./);
+  assert.ok(r.text.endsWith(now("https://start.test/")), `the page now in front: ${r.text}`);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.equal(b.current, 0);
+  assert.equal(h.lastState().power, "awake", "not switched off");
+  assert.deepEqual(b.trail.slice(-2), ["open 1", "close 2"], "the new tab was made first, so a tab was open all the while");
+  assert.equal(b.destroyed, 0);
+});
+
+test("a start tab that cannot be made refuses, and nothing is closed", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.makeFails = (u) => u === "https://start.test/";
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.deepEqual(r, { text: REFUSAL.browserGone, isError: true });
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
+  assert.ok(!b.trail.some((t) => t.startsWith("close")));
+});
+
+test("a call that is no longer current makes no start tab and closes nothing", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.pages[0].openedBy = null; b.pages[0].own = false;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  h.svc.select("chat:a");
+  h.svc.takeOver();                                                   // the person takes the wheel while the card is up
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true, r.text);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"], "no start tab was made");
+  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), [], "nothing closed");
 });
 
 test("an allowed close does not close another tab with the same address", async () => {
   const h = make();
   const b = await h.open(A, "https://a.test/same");
   await h.call(A, "computer_open", { url: "https://a.test/same", newTab: true });
-  b.pages[0].openedBy = null;
+  b.pages[0].openedBy = null; b.pages[0].own = false;
   const p = h.call(A, "computer_tab", { index: 0, close: true });
   const ask = await h.asked();
-  // While the card is up the person closes tab 0 and a new tab opens in the same place with the same address.
+  // While the card is up the person closes tab 0 and a new tab opens in the same place with the same address: the tab on
+  // the card is gone, so nothing is closed and the answer says so (a tab that is gone, not a page that changed).
   b.pages[0] = { url: "https://a.test/same", openedBy: null };
   h.svc.answer(ask.id, "once");
   const r = await p;
-  assert.equal(r.isError, true);
-  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^That tab is already closed\./);
   assert.equal(b.pages.length, 2, "nothing was closed");
+  assert.ok(!b.trail.some((t) => t.startsWith("close")));
   // And after an index shift the card still closes the tab it named.
-  b.pages[0].openedBy = null;
+  b.pages[0].openedBy = null; b.pages[0].own = false;
   const q = h.call(A, "computer_tab", { index: 0, close: true });
   const ask2 = await h.asked();
   const named = b.pages[0];
   b.pages.unshift({ url: "https://a.test/new", openedBy: "Alpha" });   // a tab inserted before it: its index is now 1
   h.svc.answer(ask2.id, "once");
-  assert.match((await q).text, /^Closed tab 0\./);
+  assert.match((await q).text, /^Closed the tab\./);
   assert.ok(!b.pages.includes(named) && b.pages.length === 2, "the named tab went, not the one now at index 0");
+});
+
+test("an allowed close is for the exact page on the card: the same shown address after another commit closes nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = null; b.pages[0].own = false;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  b.commit(0);                                                       // the same tab, the same shown address, another document or a hidden part
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.equal(b.pages.length, 2, "nothing was closed");
+  assert.ok(!/already closed/.test(r.text), "the tab is there: it is not 'already closed'");
 });
 
 test("an allowed reload is bound to the entry on its card: a commit while the card was up sends nothing", async () => {
@@ -5142,10 +5324,10 @@ test("a failed read at the run sends nothing", async () => {
 test("the person navigates the tab while the close card is up: Allow closes nothing", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.pages[0].openedBy = null;
+  b.pages[0].openedBy = null; b.pages[0].own = false;
   const p = h.call(A, "computer_tab", { index: 0, close: true });
   const ask = await h.asked();
-  b.pages[0].url = "https://a.test/somewhere-else";                  // same tab, another page
+  b.commit(0, "https://a.test/somewhere-else");                       // same tab, another page
   h.svc.answer(ask.id, "once");
   const r = await p;
   assert.equal(r.isError, true);
@@ -5190,7 +5372,7 @@ test("the Back and Forward card says the way only when the destination is not a 
 test("the closetab card says what is known of the tab and not who opened it", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.pages[0].openedBy = "A program";
+  b.pages[0].openedBy = "A program"; b.pages[0].own = false;
   const p = h.call(A, "computer_tab", { index: 0, close: true });
   const ask = await h.asked();
   assert.ok(!/opened by|by you/i.test(ask.detail), ask.detail);

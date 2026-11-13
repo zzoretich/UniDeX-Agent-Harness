@@ -150,7 +150,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
   };
   const sensitive = new Set<number>();
   const tab = {
-    uid: 1, view: null, wc, openedBy: null, seq: 0, navs: 0, doc: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
+    uid: 1, view: null, wc, openedBy: null, own: false, seq: 0, navs: 0, doc: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
     query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false, worlds: new Map(),
     memory: new SecretMemory(), frame: "F1", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0,
     leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false,
@@ -1781,6 +1781,71 @@ test("a popup made while the person holds the wheel, or while nobody does, is th
   inner.addTab = async (x) => { by = x; return { memory: new SecretMemory(), opened: null, wc: { loadURL: async () => {} } }; };
   await (b as unknown as { popup(t: unknown, d: unknown): Promise<void> }).popup(tab, { url: "https://b.test/", referrer: {}, postBody: undefined });
   assert.equal(by, "Agent");
+});
+
+// ---- session-browser (PR 5, X2): who made a tab, and the page token a card is bound to
+
+/** A browser with the fake view of the sleep tests and `n` tabs more than its first, made as the app makes them. */
+async function withTabs() {
+  const m = makeSleeper();
+  const inner = m.b as unknown as { list: { uid: number; own: boolean }[]; leavingValues(): Promise<null> };
+  inner.leavingValues = async () => null;
+  return { ...m, inner };
+}
+const ownOf = (b: ComputerBrowser): boolean[] => b.tabs().map((_t, i) => b.ownTab(b.tabUid(i)!));
+
+test("only the agent's own open makes a tab the agent's own; it never shows in tabs(); a wake keeps it and a restore does not give it", async () => {
+  const { b } = await withTabs();
+  await b.open("https://a.test/mine", { newTab: true, by: "Agent", own: true });
+  await b.open("https://a.test/program", { newTab: true, by: "Agent" });           // a program's open: the same label, no own
+  await b.open("https://a.test/mine", { by: "Agent", own: true });                // the agent navigating the tab in front does not make it its own
+  assert.deepEqual(ownOf(b), [false, true, false]);
+  for (const t of b.tabs()) assert.ok(!("own" in t), "the fact never leaves main with the tabs");
+  b.sleep();
+  await b.wake();
+  assert.deepEqual(ownOf(b), [false, true, false], "a wake is the same tabs in new views: who made each stands");
+  const fresh = new ComputerBrowser({ key: "ws:beta", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  const inner = fresh as unknown as { place: () => void; attach: () => Promise<void> };
+  inner.place = () => {}; inner.attach = async () => {};
+  fresh.restore(["https://a.test/one", "https://a.test/two"], 0);
+  await fresh.wake();
+  assert.deepEqual(ownOf(fresh), [false, false], "a record does not say who made a tab");
+  assert.equal(fresh.ownTab(999_999), false, "no such tab");
+});
+
+test("a tab's page token is its uid with its commit counter, and none for a tab that is gone", async () => {
+  const { b, tab } = makeSleeper();
+  const uid = b.tabUid(0)!;
+  const first = b.tabToken(uid);
+  assert.equal(first, `${uid}.${tab.seq}`);
+  tab.seq++;                                    // a commit, or an in-page navigation, whatever the shown address says
+  assert.notEqual(b.tabToken(uid), first);
+  await b.open("https://a.test/two", { newTab: true, by: null });
+  assert.notEqual(b.tabToken(b.tabUid(1)!), b.tabToken(uid), "another tab has another token");
+  assert.equal(b.tabToken(999_999), null);
+  b.close(0);
+  assert.equal(b.tabToken(uid), null, "gone");
+});
+
+type Popper = { popup(t: unknown, d: unknown): Promise<void>; o: { hooks: BrowserHooks } };
+const pop = (b: ComputerBrowser, tab: unknown): Promise<void> => (b as unknown as Popper).popup(tab, { url: "https://b.test/", referrer: {}, postBody: undefined });
+
+test("a popup is the agent's own only while the agent holds the wheel and its opener is the agent's own", async () => {
+  for (const [drives, openerOwn, expected] of [[true, true, true], [false, true, false], [true, false, false], [false, false, false]] as const) {
+    const { b, tab, inner } = await withTabs();
+    (tab as { openedBy: string | null; own: boolean }).openedBy = "Agent";
+    (tab as { own: boolean }).own = openerOwn;
+    (b as unknown as Popper).o.hooks.agentDrives = () => drives;
+    await pop(b, tab);
+    assert.equal(b.tabs().length, 2);
+    assert.equal(b.ownTab(b.tabUid(1)!), expected, `agent holds the wheel: ${drives}, opener's own: ${openerOwn}`);
+    void inner;
+  }
+  // With no hook given a popup inherits, as before.
+  const { b, tab } = await withTabs();
+  (tab as { own: boolean }).own = true;
+  await pop(b, tab);
+  assert.equal(b.ownTab(b.tabUid(1)!), true);
 });
 
 // ---- session-browser (Task 21): computer_console

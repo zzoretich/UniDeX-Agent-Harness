@@ -34,7 +34,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -522,7 +522,8 @@ export class ComputerService {
   private async doOpen(agent: AgentRef, p: Slot, a: { url: string; newTab: boolean }, lease: Lease): Promise<Reply> {
     const b = this.browserOf(p);
     try {
-      await b.open(a.url, { newTab: a.newTab, by: agent.label });
+      // The agent's own open: the one place a tab becomes the agent's own (session-browser PR 5, X2).
+      await b.open(a.url, { newTab: a.newTab, by: agent.label, own: true });
     } catch (e) {
       // The person may switch the browser off or close the tab while it loads: the load then rejects (S5).
       return this.stopped(p, lease) ?? fail(message(e));
@@ -631,23 +632,24 @@ export class ComputerService {
     };
   }
 
-  /** session-browser S17: switches to a tab, or closes one. R6: the agent closes without asking only a tab that was opened under
-   *  the label this session's agent opens tabs with now; every other (the person's, a program's, another agent's, one restored
-   *  from the record) asks `closetab`. Closing the last tab opens the start page first, so the browser stays on (S5). */
+  /** session-browser S17: switches to a tab, or closes one. X2: the agent closes without asking only a tab that its own
+   *  `computer_open` made (or a popup its own click made: the tab's `own` fact, which never leaves main); every other (the
+   *  person's, a program's, another agent's, one restored from the record) asks `closetab`, whatever name it was opened under.
+   *  Closing the last tab makes a start tab first, so the browser stays on (S5). The tab is known by its uid from here on
+   *  and the page on the card by the tab's page token (D1): another page in the same tab is not the card's. */
   private async tabStep(agent: AgentRef, p: Slot, b: BrowserLike, a: { index: number; close: boolean }, take: () => boolean, lease: Lease): Promise<Step> {
     const tab = b.tabs()[a.index];
     if (!tab) return { reply: fail(REFUSAL.noTab(String(a.index))) };
     // The tab is known by its uid from here on: an index shifts when another tab closes while a card is up.
     const uid = b.tabUid(a.index);
+    const token = uid === null ? null : b.tabToken(uid);
     const url = tab.url;
     const site = this.siteAt(b, a.index);
-    const need = this.need(judge({ kind: "tab", close: a.close, byUser: a.close && tab.openedBy !== agent.label }, { access: agent.access, marked: this.markedAt(b, a.index) }), null, site);
+    const need = this.need(judge({ kind: "tab", close: a.close, byUser: a.close && !(uid !== null && b.ownTab(uid)) }, { access: agent.access, marked: this.markedAt(b, a.index) }), null, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
-    // The card is for this tab showing this page: a tab the person navigated elsewhere meanwhile is not closed on Allow.
-    const where = (): number => {
-      const i = uid === null ? -1 : b.tabIndex(uid);
-      return i >= 0 && b.tabs()[i]?.url === url ? i : -1;
-    };
+    // Where the tab is now (-1: it is gone), and whether it still shows the page the card was raised for.
+    const where = (): number => (uid === null ? -1 : b.tabIndex(uid));
+    const same = (): boolean => uid !== null && token !== null && b.tabToken(uid) === token;
     const run = async (): Promise<Reply> => {
       const late = this.stale(p, agent, lease);
       if (late) return late;
@@ -657,17 +659,29 @@ export class ComputerService {
         this.line(p, agent.label, `Switched to tab ${a.index}`, agent);
         return this.done(p, b, `Switched to tab ${a.index}.`, since, lease);
       }
-      if (where() < 0) return refuseAt(REFUSAL.changed, this.url(b));
-      // The start page is opened BEFORE the last tab is closed, so a tab is open all the while.
-      if (b.tabs().length === 1) await b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: agent.label });
-      const gone = this.stale(p, agent, lease);
-      if (gone) return gone;
-      // The person may have closed the tab while the start page loaded: then there is nothing more to close.
+      const already = (): Reply => this.done(p, b, "That tab is already closed.", this.clock.now(), lease);
+      if (where() < 0) return already();
+      if (!same()) return refuseAt(REFUSAL.changed, this.url(b));
+      if (b.tabs().length === 1) {
+        // The last tab: the browser stays on with one new tab (S5). The tab is made first, here, right after the checks above
+        // (nothing is awaited between them and the making), so the new tab does not depend on the start page loading: a load
+        // that fails leaves its tab in place and the close goes on. Only a failure to MAKE the tab refuses, and nothing is closed.
+        const had = new Set(b.tabs().map((_t, i) => b.tabUid(i)));
+        try {
+          await b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: agent.label, own: true });
+        } catch (e) {
+          if (!b.tabs().some((_t, i) => !had.has(b.tabUid(i)))) throw e;
+        }
+        if (p.browser !== b) return this.stopped(p, lease) ?? fail(REFUSAL.isOff);
+        // The person may have closed or moved the tab while the start page loaded.
+        if (where() < 0) return already();
+        if (!same()) return refuseAt(REFUSAL.changed, this.url(b));
+      }
       const at = where();
-      if (at >= 0) b.close(at);
+      b.close(at);
       const since = this.clock.now();
-      if (at >= 0) this.line(p, agent.label, `Closed tab ${a.index}`, agent);
-      return this.done(p, b, at >= 0 ? `Closed tab ${a.index}.` : `Tab ${a.index} is already closed.`, since, lease);
+      this.line(p, agent.label, `Closed tab ${at}`, agent);
+      return this.done(p, b, "Closed the tab.", since, lease);
     };
     if (!need) return { reply: take() ? await run() : fail(REFUSAL.late) };
     const title = clean(tab.title, 80);
@@ -676,7 +690,8 @@ export class ComputerService {
         whys: [need], site, target: null,
         action: `Close tab ${a.index}`, kind: "Close tab",
         detail: `${title ? `${quoted(title)}. ` : ""}${cardPage(url)}`,
-        revalidate: () => Promise.resolve(where() >= 0),
+        // A tab that is gone is for `run` to say ("already closed"); one still there on another page is not the card's.
+        revalidate: () => Promise.resolve(where() < 0 || same()),
         run,
       },
     };
