@@ -769,9 +769,11 @@ export class ComputerBrowser {
    * gate judges what the page shows); `shown` is the name for outgoing text, scrubbed with the values read in this call.
    * A ref is looked up in `session`'s own table (I2), so it names the node printed for that session or nothing. With `valid`
    * (PR 5, A4), the pointer's move onto the point is made only while it holds (otherwise PageChanged, and nothing moved); a
-   * click's resolve is not given one.
+   * click's resolve is not given one. With `onPoint` (a hover's, session-browser S18), the pointer's travel to the point is awaited
+   * after the box is read and before the mouse moves: false (the call stopped being current on the way) moves nothing and
+   * throws PageChanged. R81: `valid` is looked at again after the hook, with nothing awaited between that look and the move.
    */
-  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean): Promise<Resolved> {
+  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean, onPoint?: (p: Point) => Promise<boolean>): Promise<Resolved> {
     const t = this.tab();
     const where = { pageToken: this.tokenOf(t), tab: this.current };
     let named: number | null = null;
@@ -794,6 +796,9 @@ export class ComputerBrowser {
     // D9: the fields' values are read before the pointer arrives as well as after the walk, and `shown` is scrubbed with
     // both (a page that clears a code on mouseenter would otherwise leave it in the name read after the hover).
     const pre = await this.secrets(t);
+    // `onPoint` (a hover's): the pointer main draws arrives first. Nothing is awaited between the look at `valid` that `hover`
+    // makes (its `before`) and the move.
+    if (onPoint && !(await onPoint(p))) throw new PageChanged();
     // `valid` (a hover's, whose move is the act): the pointer goes onto the point only while the call is current.
     await this.hover(t, p, valid && (() => this.live(valid)));
     const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
@@ -1046,12 +1051,13 @@ export class ComputerBrowser {
   }
 
   /** session-browser S18: a point of the page (CSS pixels of the tab's viewport) in the host window's coordinates, where the
-   *  pointer is drawn; null when the view is not on screen (`viewBox`) or `tab` is not the tab in front. A tab has no zoom of
-   *  its own, so a page pixel is a window pixel and only the view's origin is added. */
+   *  pointer is drawn; null when the view is not on screen (`viewBox`) or `tab` is not the tab in front. The page's pixels are
+   *  scaled by the tab's own zoom (the app menu's zoom can reach a focused tab), then the view's origin is added. */
   windowPoint(p: Point, tab?: number): Point | null {
     const box = this.viewBox();
     if (!box || (tab !== undefined && tab !== this.current)) return null;
-    return { x: Math.round(box.x + p.x), y: Math.round(box.y + p.y) };
+    const z = this.list[this.current]?.wc.getZoomFactor() ?? 1;
+    return { x: Math.round(box.x + p.x * z), y: Math.round(box.y + p.y * z) };
   }
 
   /** session-browser S18: the top-left of the element that has focus, in the page's viewport (null when nothing has focus,

@@ -795,3 +795,31 @@ test("a render that never settles is cut at its limit: the draw rejects, the win
   assert.equal(FakeWin.made.length, 2, "a fresh window");
   d.dispose();
 });
+
+test("warm makes the images ready and shows nothing", async () => {
+  const { s, pointer } = make();
+  pointer.warm({ window: "main", name: "Fix login" });
+  await flush();
+  assert.deepEqual(s.drawn, [["arrow", "Fix login"], ["caret", "Fix login"]]);
+  assert.deepEqual(s.log.filter((l) => l === "show" || l === "place"), [], "nothing placed or shown");
+  assert.equal(pointer.state().shown, false);
+  // A failing draw, a missing surface and a gone surface are no-ops that throw nothing.
+  s.fail = true;
+  pointer.warm({ window: "main", name: "Other" });
+  await flush();
+  s.dead = true;
+  pointer.warm({ window: "main", name: "Gone" });
+  make({ surface: false }).pointer.warm({ window: "pop", name: "None" });
+  await flush();
+  assert.deepEqual(s.drawn.map(([, t]) => t), ["Fix login", "Fix login", "Other", "Other"]);
+});
+
+test("warm leaves a pointer that is on screen alone", async () => {
+  const { clock, s, pointer } = make();
+  void pointer.moveTo({ ...base, to: { x: 440, y: 300 }, alive: () => true });
+  await clock.advance(300);
+  s.drawn.length = 0;
+  pointer.warm({ window: "main", name: "Fix login" });
+  await flush();
+  assert.deepEqual(s.drawn, [], "no draw replaces the image of a shown pointer");
+});

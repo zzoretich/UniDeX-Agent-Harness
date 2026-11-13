@@ -186,6 +186,19 @@ export class Pointer {
     return true;
   }
 
+  /** Makes the arrow and caret images for `name` ready in the background, so a session's first action finds them cached (a
+   *  cold first draw takes about 140 ms, DRAW_MAX_MS is 200). Nothing is shown or placed, nothing is awaited, a failure is
+   *  swallowed, and a missing or gone surface is a no-op. While a pointer is on screen it does nothing at all: a draw sets the
+   *  view's image, which would replace the one shown. */
+  warm(o: { window: Win; name: string }): void {
+    try {
+      const surface = this.o.surface(o.window);
+      if (!surface || surface.gone() || this.on) return;
+      const tag = tagText(o.name);
+      for (const kind of ["arrow", "caret"] as const) surface.draw(kind, tag).catch(() => {});
+    } catch { /* a drawing that cannot start is not worth a failure */ }
+  }
+
   /** What is on screen now (the e2e suite reads it through main). */
   state(): { shown: boolean; at: Point | null; tag: string; window: Win | null } {
     const c = this.on;
