@@ -127,7 +127,7 @@ const NOT_HELD = "this session no longer holds the wheel";
 const USER = "You";
 /** What a double click says when its first click changed the page and the second was not sent (PR 5, A2): the end of both the
  *  agent's reply and the person's log line, after `Clicked <what> once: `. */
-const DOUBLE_ONCE = "the page changed before the second click, which was not sent";
+const DOUBLE_ONCE = "the second click was not sent";
 const LOG_MAX = 200;
 /** How long a settled ask's reply stays for `computer_wait`. */
 const KEEP_MS = 120_000;
@@ -681,20 +681,30 @@ export class ComputerService {
         // (nothing is awaited between them and the making), so the new tab does not depend on the start page loading: a load
         // that fails leaves its tab in place and the close goes on. Only a failure to MAKE the tab refuses, and nothing is closed.
         const had = new Set(b.tabs().map((_t, i) => b.tabUid(i)));
+        const ours = new Set<string>((Object.values(REFUSAL) as unknown[]).filter((v): v is string => typeof v === "string"));
+        const newUid = (): number | null => b.tabs().map((_t, i) => b.tabUid(i)).find((u): u is number => u !== null && !had.has(u)) ?? null;
         // Not the agent's own tab (no `own`): the person's to keep, as the one "+" makes is (X2 sets it only for computer_open).
+        let threw: unknown = null;
         try {
           await b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: agent.label });
         } catch (e) {
-          if (!b.tabs().some((_t, i) => !had.has(b.tabUid(i)))) throw e;
+          threw = e;
         }
         if (p.browser !== b) return this.stopped(p, lease) ?? fail(REFUSAL.isOff);
-        // The load took time: the call is checked again as a click's delivery is, and if it cannot go on nothing more is closed
-        // and the start tab this call made goes again (unless it is now the only tab; one the person has already used cannot be
-        // told from one they have not, so it is left when it is still there).
-        const startUid = [...b.tabs().keys()].map((i) => b.tabUid(i)).find((u): u is number => u !== null && !had.has(u)) ?? null;
+        // The start tab is looked up by its uid, whether the open returned or threw. A load that failed leaves its tab; a tab that
+        // could not be made closes nothing and answers a sentence of ours (never Electron's message).
+        const startUid = newUid();
+        if (startUid === null) {
+          if (threw === null) return fail(REFUSAL.tabClosed);
+          // A sentence of the table that the browser threw (the browser is gone) goes on as it is; anything else is ours.
+          if (threw instanceof Error && ours.has(threw.message)) return { text: threw.message, isError: true };
+          return fail(REFUSAL.startTab);
+        }
+        // When the call cannot go on, the start tab goes again only if it is not the tab in front (nobody can be looking at it); in
+        // front it is left where it is. The old tab is never closed in these cases.
         const undo = (): void => {
-          const i = startUid === null ? -1 : b.tabIndex(startUid);
-          if (i >= 0 && b.tabs().length > 1) b.close(i);
+          const i = b.tabIndex(startUid);
+          if (i >= 0 && !b.tabs()[i].active && b.tabs().length > 1) b.close(i);
         };
         const interrupted = this.stale(p, agent, lease);
         if (interrupted) { undo(); return interrupted; }

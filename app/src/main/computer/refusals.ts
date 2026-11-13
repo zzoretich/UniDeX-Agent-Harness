@@ -99,6 +99,7 @@ export const REFUSAL = {
   devToolsOpen: "DevTools is open on this tab, so it cannot be driven: ask the user to close it.",
   /** Back or Forward with no entry to go to (session-browser S17); `go` is "back" or "forward". */
   noHistory: takes((go) => `There is no page to go ${go} to: call computer_status to see the tabs, or open a page with computer_open.`),
+  startTab: "The new tab could not be made, so nothing was closed: call computer_status to see what is open, then try again.",
   tabGone: "That tab was closed: call computer_status to see what is open.",
   noHistoryRead: "The page's history could not be read, so the move was not made: call computer_snapshot to see where the page stands, then try again.",
   notReloaded: "The page did not reload: call computer_snapshot to see where it stands, then try again.",

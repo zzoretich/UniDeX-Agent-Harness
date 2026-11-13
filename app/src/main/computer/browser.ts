@@ -298,8 +298,11 @@ function leavePark(owner: ComputerBrowser): void {
   if (win && !win.isDestroyed()) win.destroy();
 }
 
+/** A commit's history read is tried this many times, this far apart (ms), while no later navigation came. */
+const BIND_TRIES = 3;
+const BIND_RETRY_MS = 50;
 /** An address cut for a sentence that ends with something that must survive (a failed open's error code). */
-const clipAddress = (url: string): string => (url.length > 150 ? `${url.slice(0, 149)}…` : url);
+const clipAddress = (url: string): string => (url.length > 120 ? `${cutAt(url, 119)}…` : url);
 const clipUrl = (url: string): string => (url.length > URL_NOTE_MAX ? `${url.slice(0, URL_NOTE_MAX - 1)}…` : url);
 const schemeOf = (url: string): string => { try { return new URL(url).protocol; } catch { return "unreadable"; } };
 const hostOf = (site: string | null, url: string): string => { try { return new URL(site ?? url).host || url; } catch { return url; } };
@@ -447,7 +450,7 @@ export class ComputerBrowser {
     if (failed && failed.code !== "ERR_ABORTED") {
       // The reason is the error's code, never its message (which carries the whole address); the address goes out as a tab's own
       // does: no user name or password, scrubbed, and without the query and fragment where the tab would hide them (PR 5, X1).
-      const why = typeof failed.code === "string" && /^[A-Z][A-Z0-9_]{0,60}$/.test(failed.code) ? failed.code : "failed";
+      const why = typeof failed.code === "string" && /^[A-Z][A-Z0-9_]{0,59}$/.test(failed.code) ? failed.code : "failed";
       const shown = clipAddress(this.urlOut(t, href));
       throw new Told(REFUSAL.couldNotOpen(`${shown} (${why})`), `Could not open ${shown}: ${why}.`);
     }
@@ -596,9 +599,22 @@ export class ComputerBrowser {
     // unlisted, so no same-document entry is called new until a read sent after the gap has gone through. A dropped
     // same-document bind leaves none: its entry is new to the next read.
     if (t.binds !== n) { if (how !== "same") t.gap = t.sent; return; }
-    const seq = ++t.sent;
+    let seq = 0;
     let h: { currentIndex: number; entries: { id: number | string; url: string }[] };
-    try { h = await this.history(t); } catch (e) { if (how !== "same") t.gap = t.sent; throw e; }
+    // The first try goes a tick after the commit's event, which can come before Electron's history has the entry: a read that
+    // fails is tried again, up to three tries about 50 ms apart, for as long as no later commit or same-document navigation came
+    // (the count `n` is checked before every try); only then is the entry left unrecorded and the gap opened (PR 5, R6).
+    for (let tries = 1; ; tries++) {
+      seq = ++t.sent;
+      try { h = await this.history(t); break; } catch (e) {
+        // The gap opens at the first failure, not after the last: a navigation during the retries must find it open. A try that
+        // goes through closes it (a read sent after it).
+        if (how !== "same") t.gap = t.sent;
+        if (tries >= BIND_TRIES || t.binds !== n) throw e;
+        await new Promise<void>((r) => { setTimeout(r, BIND_RETRY_MS); });
+        if (t.closing || t.wc.isDestroyed() || t.binds !== n) return;
+      }
+    }
     // Every read's answer lists the ids it saw, also when a later commit makes this bind give up: an entry listed once is
     // never new again. An older read answering after a newer one changes nothing.
     const ids = new Set(h.entries.map((e) => String(e.id)));

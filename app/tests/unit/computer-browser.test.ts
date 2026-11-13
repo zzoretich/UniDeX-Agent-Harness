@@ -1884,6 +1884,51 @@ test("a gap is opened at each attach: a POST commit made while the debugger was 
   assert.notEqual(tab.gap, null);
 });
 
+const later = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test("a history read that fails once still binds its commit", async () => {
+  const { b, page, tab, nav } = make();
+  historyOf(page, ["e0", "e1"], 1);
+  let fails = 1;
+  page.on.set("Page.getNavigationHistory", () => { if (fails-- > 0) throw new Error("Not attached to an active page"); });
+  nav.back = true;
+  requested(b, tab, "L1", "GET");
+  committedBy(b, tab, "L1");
+  await later(200);
+  assert.equal(await methodOf(b, "reload"), "GET", "the second try bound the entry");
+  assert.equal(tab.gap, null, "no gap was opened");
+});
+
+test("a read that keeps failing leaves the entry unknown and opens a gap", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  let reads = 0;
+  page.on.set("Page.getNavigationHistory", () => { reads++; throw new Error("Not attached to an active page"); });
+  requested(b, tab, "L1", "GET");
+  committedBy(b, tab, "L1");
+  await later(300);
+  assert.equal(reads, 3, "three tries, no more");
+  page.on.clear();
+  assert.notEqual(await methodOf(b, "reload"), "GET");
+  assert.notEqual(tab.gap, null);
+});
+
+test("a later commit during the retries binds nothing to the earlier entry", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  page.on.set("Page.getNavigationHistory", () => { throw new Error("Not attached to an active page"); });
+  requested(b, tab, "L1", "GET");
+  committedBy(b, tab, "L1");
+  await later(20);
+  page.on.clear();
+  historyOf(page, ["e1", "e2"], 1);
+  requested(b, tab, "L2", "POST");
+  committedBy(b, tab, "L2");
+  await later(200);
+  assert.equal(tab.methods.has("e1"), false, "the first commit's entry got no record");
+  assert.equal(tab.methods.get("e2"), "other", "the second commit's entry is its own");
+});
+
 test("a router's pushState followed by replaceState in one task leaves the route's entry GET", async () => {
   const { b, page, tab } = make();
   historyOf(page, ["e1"], 0);
