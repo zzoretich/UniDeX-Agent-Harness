@@ -43,6 +43,7 @@ class FakePage {
   scroll = { x: 0, y: 0 };
   /** The navigation history `Page.getNavigationHistory` answers with; null answers as DevTools does inside a commit's own
    *  event ("Not attached to an active page"). */
+  historyGates: Promise<void>[] = [];
   history: { currentIndex: number; entries: { id: string; url: string }[] } | null = null;
   /** A list of buttons the accessibility tree prints, in order (`b` is the node, as in the DOM below), when a test reads the
    *  page as text; null leaves the tree empty. */
@@ -73,6 +74,7 @@ class FakePage {
       case "DOM.querySelectorAll": return { nodeIds: params.selector === ":focus" && this.focused !== null ? [this.focused] : [] };
       case "Page.createIsolatedWorld": return { executionContextId: 1 };
       case "Page.getNavigationHistory":
+        { const gate = this.historyGates.shift(); if (gate) await gate; }
         if (!this.history) throw new Error("Not attached to an active page");
         return JSON.parse(JSON.stringify(this.history));
       case "Page.getFrameTree": return { frameTree: { frame: { id: "F1" } } };
@@ -149,7 +151,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
     query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false, worlds: new Map(),
     memory: new SecretMemory(), frame: "F1", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0,
     leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false,
-    loaders: new Map(), methods: new Map(), known: new Set(), unread: false, binds: 0,
+    loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0,
   };
   const inner = b as unknown as { list: unknown[]; current: number };
   inner.list.push(tab);
@@ -1428,7 +1430,7 @@ test("entryMethod reads the history at the moment of the call, and answers unkno
   historyOf(page, ["e1", "e2"], 0);
   assert.equal(await b.entryMethod("back"), "unknown", "nothing to go back to");
   historyOf(page, ["blank"], 0);
-  assert.equal(await b.entryMethod("reload"), "unknown", "about:blank has no request");
+  assert.equal(await b.entryMethod("reload"), "GET", "about:blank makes no request: a GET");
   page.history = null;
   assert.equal(await b.entryMethod("reload"), "unknown", "a history that cannot be read");
   assert.equal(await b.entryMethod("reload", 9), "unknown", "no such tab");
@@ -1479,7 +1481,7 @@ test("the allowed reload of a POST entry goes through the protocol, and a free r
   const { b, page, nav } = make();
   historyOf(page, ["e1"], 0);
   (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods.set("e1", "other");
-  assert.equal(await b.navEntry("reload", bound()), true);
+  assert.equal(await b.navEntry("reload", bound(), () => true), true);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 1, "the protocol's reload was sent");
   assert.deepEqual(nav.moves, [], "wc.reload() was not");
   page.sent.length = 0;
@@ -1491,9 +1493,9 @@ test("the allowed reload of a POST entry goes through the protocol, and a free r
   historyOf(page, ["e0", "e1", "e2"], 1);
   const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
   methods.set("e0", "other"); methods.set("e1", "GET"); methods.set("e2", "other");
-  assert.equal(await b.navEntry("reload", bound({ method: "GET" })), true);
-  assert.equal(await b.navEntry("back", bound({ id: "e0" })), true);
-  assert.equal(await b.navEntry("forward", bound({ id: "e2" })), true);
+  assert.equal(await b.navEntry("reload", bound({ method: "GET" }), () => true), true);
+  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), true);
+  assert.equal(await b.navEntry("forward", bound({ id: "e2" }), () => true), true);
   assert.deepEqual(nav.moves, ["reload", "back", "forward"]);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
 });
@@ -1503,7 +1505,7 @@ test("a reload sent through the protocol that fails answers with the table's sen
   historyOf(page, ["e1"], 0);
   (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods.set("e1", "other");
   page.on.set("Page.reload", () => { throw new Error("Not attached to an active page"); });
-  await assert.rejects(b.navEntry("reload", bound()), (e: Error) => e.message === REFUSAL.notReloaded);
+  await assert.rejects(b.navEntry("reload", bound(), () => true), (e: Error) => e.message === REFUSAL.notReloaded);
 });
 
 test("a commit while the allowed reload reads the history: nothing is sent again", async () => {
@@ -1512,25 +1514,34 @@ test("a commit while the allowed reload reads the history: nothing is sent again
   historyOf(page, ["e1"], 0);
   page.on.set("Page.getNavigationHistory", () => { page.on.clear(); historyOf(page, ["e1", "e2"], 1); });
   // The read answers the history as it is at the moment it is made: e2 is current.
-  assert.equal(await b.navEntry("reload", bound({ method: "unknown" })), false);
+  assert.equal(await b.navEntry("reload", bound({ method: "unknown" }), () => true), false);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
   // And the same, the page having moved on before the run starts.
   historyOf(page, ["e1", "e2"], 1);
-  assert.equal(await b.navEntry("reload", bound({ method: "unknown" })), false);
+  assert.equal(await b.navEntry("reload", bound({ method: "unknown" }), () => true), false);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
 });
 
-test("a tab closing during that read does not send the reload to its neighbour", async () => {
+test("a tab closing below the active one during that read: the reload goes to the card's tab, at its new index", async () => {
   const { b, page, tab } = make();
   historyOf(page, ["e1"], 0);
-  const inner = b as unknown as { list: unknown[]; current: number };
-  const other = { ...tab, uid: 2, wc: { ...tab.wc } };
-  inner.list.push(other);
-  inner.current = 1;                       // the card was raised for the second tab (uid 2)
-  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); inner.list.splice(1, 1); inner.current = 0; });   // it closed meanwhile
-  assert.equal(await b.navEntry("reload", bound({ uid: 2, method: "unknown" })), false);
-  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "the neighbour (uid 1) was not reloaded");
-  assert.deepEqual(inner.list, [tab]);
+  const page2 = new FakePage();
+  historyOf(page2, ["f1"], 0);
+  const inner = b as unknown as { list: { uid: number; methods: Map<string, string> }[]; current: number };
+  const second = { ...tab, uid: 2, methods: new Map([["f1", "other"]]), wc: { ...tab.wc, debugger: { ...tab.wc.debugger, sendCommand: (m: string, p?: Record<string, unknown>) => page2.send(m, p) } } };
+  inner.list.push(second as never);
+  inner.current = 1;                       // the card was raised for the second tab (uid 2, index 1)
+  page2.on.set("Page.getNavigationHistory", () => { page2.on.clear(); inner.list.splice(0, 1); inner.current = 0; });   // the tab below it closed
+  assert.equal(await b.navEntry("reload", bound({ uid: 2, id: "f1" }), () => true), true);
+  assert.equal(page2.sent.filter((s) => s.method === "Page.reload").length, 1, "the card's tab was reloaded");
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+  // And when the card's own tab closes during the read, the neighbour that takes its place is not reloaded.
+  const third = { ...tab, uid: 3, methods: new Map([["e1", "other"]]) };
+  inner.list.push(third as never);
+  inner.current = 1;
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); inner.list.splice(1, 1); inner.current = 0; });
+  assert.equal(await b.navEntry("reload", bound({ uid: 3 }), () => true), false);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "the neighbour was not reloaded");
 });
 
 test("an allowed Back onto a POST entry goes to that entry and no other", async () => {
@@ -1539,13 +1550,13 @@ test("an allowed Back onto a POST entry goes to that entry and no other", async 
   const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
   methods.set("e0", "other"); methods.set("e1", "other");
   historyOf(page, ["e0", "e1", "e2"], 1);
-  assert.equal(await b.navEntry("back", bound({ id: "e0" })), true);
+  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), true);
   assert.deepEqual(nav.moves, ["back"]);
   // The history changed while the card was up: Back would now load another entry.
   nav.moves.length = 0;
   historyOf(page, ["e0", "e1", "e2", "e3"], 2);
   methods.set("e2", "other");
-  assert.equal(await b.navEntry("back", bound({ id: "e0" })), false);
+  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), false);
   assert.deepEqual(nav.moves, [], "nothing sent");
 });
 
@@ -1648,7 +1659,7 @@ test("a same-document Back onto a POST page whose bind never read is not recorde
   await afterBind();
   const m = await b.entryMethod("reload");
   assert.notEqual(m, "GET", `the POST page's entry came out ${m}`);
-  assert.equal(tab.unread, false, "a read went through");
+  assert.equal(tab.gap, null, "a read sent after the gap went through");
   // Once a read listed the entries, a new pushState entry is GET again.
   historyOf(page, ["e1", "e2", "e3"], 2);
   pushed(b, tab, "https://a.test/x#c");
@@ -1656,16 +1667,114 @@ test("a same-document Back onto a POST page whose bind never read is not recorde
   assert.equal(await b.entryMethod("reload"), "GET");
 });
 
-test("a popup opened while the person holds the wheel is the person's; the agent's own click's is its opener's", async () => {
-  for (const [drives, expected] of [[true, null], [false, "Agent"]] as const) {
+// ---- session-browser S17 (Task 20, fix round 2)
+
+test("a Take over or a Stop during the allowed move's history read sends nothing", async () => {
+  const { b, page, nav } = make();
+  nav.back = true;
+  historyOf(page, ["e0", "e1"], 1);
+  const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
+  methods.set("e0", "other"); methods.set("e1", "other");
+  for (const [go, id] of [["reload", "e1"], ["back", "e0"]] as const) {
+    let live = true;
+    page.on.set("Page.getNavigationHistory", () => { page.on.clear(); live = false; });   // the person took over while it was read
+    await assert.rejects(b.navEntry(go, bound({ id }), () => live), PageChanged);
+    assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, go);
+    assert.deepEqual(nav.moves, [], go);
+  }
+});
+
+test("a history that cannot be read is never a bound entry", async () => {
+  const { b, page, nav } = make();
+  historyOf(page, ["e1"], 0);
+  const entry = await b.entry("reload");
+  assert.equal(entry?.id, "e1");
+  page.history = null;
+  assert.equal((await b.entry("reload"))?.id, null, "an unreadable history has no entry id");
+  // At the run: a null id sends nothing and says the history could not be read; an unequal id is false.
+  await assert.rejects(b.navEntry("reload", bound({ id: null }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
+  await assert.rejects(b.navEntry("reload", bound({ id: "e1" }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+  assert.deepEqual(nav.moves, []);
+  historyOf(page, ["e2"], 0);
+  assert.equal(await b.navEntry("reload", bound({ id: "e1" }), () => true), false);
+  // A tab still waking reloads its kept address by GET with no history involved.
+  const t = (b as unknown as { list: { pending: unknown }[] }).list[0];
+  t.pending = { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false };
+  page.history = null;
+  const waking = await b.entry("reload");
+  assert.deepEqual([waking?.id, waking?.method], [null, "GET"]);
+});
+
+test("Back onto about:blank does not ask", async () => {
+  const { b, page } = make();
+  historyOf(page, ["blank", "e1"], 1);
+  assert.equal(await b.entryMethod("back"), "GET");
+  assert.equal((await b.entry("back"))?.id, "blank");
+});
+
+test("a POST entry whose bind's read failed is not GET after a replaceState on it", async () => {
+  const { b, page, tab } = make();
+  requested(b, tab, "L1", "POST");
+  page.history = null;                         // the commit's history read fails
+  committedBy(b, tab, "L1");
+  await afterBind();
+  historyOf(page, ["e1"], 0);
+  pushed(b, tab, "https://a.test/x?r=1");      // replaceState on the same entry
+  await afterBind();
+  assert.notEqual(await b.entryMethod("reload"), "GET");
+});
+
+test("an answer to a read sent before the gap does not close it", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1", "e2", "e3"], 2);
+  let first: () => void = () => {}, second: () => void = () => {};
+  page.historyGates.push(new Promise<void>((r) => { first = r; }), new Promise<void>((r) => { second = r; }));
+  pushed(b, tab);                              // read 1 is sent, and waits
+  await new Promise((r) => setTimeout(r, 5));
+  requested(b, tab, "L2", "POST");
+  committedBy(b, tab, "L2");                   // a commit whose bind is dropped by the next event: a gap
+  pushed(b, tab, "https://a.test/x#r");        // read 2 is sent after the gap
+  await new Promise((r) => setTimeout(r, 5));
+  first(); await afterBind();                  // read 1 answers: it was sent before the gap
+  assert.notEqual(tab.gap, null, "the older read's answer did not close the gap");
+  second(); await afterBind();
+  assert.equal(tab.gap, null, "a read sent after it did");
+  assert.notEqual(await b.entryMethod("reload"), "GET", "the entry made around the gap is not called new");
+});
+
+test("a router's pushState followed by replaceState in one task leaves the route's entry GET", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  requested(b, tab, "L1", "GET");
+  committedBy(b, tab, "L1");
+  await afterBind();
+  historyOf(page, ["e1", "e2"], 1);
+  pushed(b, tab, "https://a.test/route");
+  pushed(b, tab, "https://a.test/route?tab=1");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "GET", "a dropped same-document bind opens no gap");
+});
+
+test("a popup made while the person holds the wheel, or while nobody does, is the person's; the agent's own click's is its opener's", async () => {
+  for (const [agentDrives, expected] of [[false, null], [true, "Agent"]] as const) {
     const { b, tab } = make();
     (tab as { openedBy: string | null }).openedBy = "Agent";
     let by: string | null | undefined;
     const inner = b as unknown as { addTab(by: string | null): Promise<unknown>; leavingValues(): Promise<null>; o: { hooks: BrowserHooks } };
-    inner.o.hooks.userDrives = () => drives;
+    inner.o.hooks.agentDrives = () => agentDrives;
     inner.leavingValues = async () => null;
     inner.addTab = async (x) => { by = x; return { memory: new SecretMemory(), opened: null, wc: { loadURL: async () => {} } }; };
     await (b as unknown as { popup(t: unknown, d: unknown): Promise<void> }).popup(tab, { url: "https://b.test/", referrer: {}, postBody: undefined });
-    assert.equal(by, expected, `person drives: ${drives}`);
+    assert.equal(by, expected, `agent holds the wheel: ${agentDrives}`);
   }
+  // With no hook given a popup inherits, as before.
+  const { b, tab } = make();
+  (tab as { openedBy: string | null }).openedBy = "Agent";
+  let by: string | null | undefined;
+  const inner = b as unknown as { addTab(by: string | null): Promise<unknown>; leavingValues(): Promise<null> };
+  inner.leavingValues = async () => null;
+  inner.addTab = async (x) => { by = x; return { memory: new SecretMemory(), opened: null, wc: { loadURL: async () => {} } }; };
+  await (b as unknown as { popup(t: unknown, d: unknown): Promise<void> }).popup(tab, { url: "https://b.test/", referrer: {}, postBody: undefined });
+  assert.equal(by, "Agent");
 });

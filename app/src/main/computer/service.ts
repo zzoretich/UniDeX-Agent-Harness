@@ -644,7 +644,11 @@ export class ComputerService {
     const site = this.siteAt(b, a.index);
     const need = this.need(judge({ kind: "tab", close: a.close, byUser: a.close && tab.openedBy !== agent.label }, { access: agent.access, marked: this.markedAt(b, a.index) }), null, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
-    const where = (): number => (uid === null ? -1 : b.tabIndex(uid));
+    // The card is for this tab showing this page: a tab the person navigated elsewhere meanwhile is not closed on Allow.
+    const where = (): number => {
+      const i = uid === null ? -1 : b.tabIndex(uid);
+      return i >= 0 && b.tabs()[i]?.url === url ? i : -1;
+    };
     const run = async (): Promise<Reply> => {
       const late = this.stale(p, agent, lease);
       if (late) return late;
@@ -693,6 +697,8 @@ export class ComputerService {
     const read = this.stale(p, agent, lease);
     if (read) return { reply: read };
     if (!entry || b.pageToken() !== token || this.active(b) !== tab) return { reply: refuseAt(REFUSAL.changed, this.url(b)) };
+    // An entry with no id cannot be bound to a card: only a tab still waking (its reload loads the kept address) has none.
+    if (entry.id === null && !(go === "reload" && entry.method === "GET")) return { reply: refuseAt(REFUSAL.noHistoryRead, this.url(b)) };
     const site = this.siteAt(b, tab);
     const need = this.need(judge({ kind: "nav", go, method: entry.method }, { access: agent.access, marked: this.markedAt(b, tab) }), null, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
@@ -710,19 +716,24 @@ export class ComputerService {
       return { reply: b.nav(go, tab) ? finish() : refuseAt(REFUSAL.pageChanged, this.url(b)) };
     }
     // Asked: what the person allows is this entry of this tab. The run reads the history again and moves only if it is still so.
-    const target = go === "reload" || !entry.url ? null : entry.url;
-    const verb = go === "reload" ? "Reload" : target ? `Go ${go} to ${hostOf(siteOf(target))}` : `Go ${go}`;
+    // The destination is named by its origin only; one that is not a web address is not named, only the way.
+    const target = go !== "reload" && entry.url && /^https?:\/\//i.test(entry.url) ? entry.url : null;
+    const verb = go === "reload" ? "Reload" : target ? `Go ${go} to ${hostOf(siteOf(target))}` : `Go ${go} one page`;
     const run = async (): Promise<Reply> => {
       const late = this.stale(p, agent, lease);
       if (late) return late;
-      if (!(await b.navEntry(go, entry))) return refuseAt(REFUSAL.changed, this.url(b));
+      // R81: the move is sent only while the call is still current after the history read (the same delivery path as a click).
+      let moved = false;
+      const lost = await this.deliver(p, agent, lease, async (valid) => { moved = await b.navEntry(go, entry, valid); });
+      if (lost) return lost;
+      if (!moved) return refuseAt(REFUSAL.changed, this.url(b));
       return finish();
     };
     return {
       ask: {
         whys: [need], site, target: null,
         action: verb, kind: go === "reload" ? "Reload" : `Go ${go}`,
-        detail: `${target ? `Going ${go} loads ${hideAfterOrigin(target)}, which may send a form again.` : "Loading this page again may send a form again."} ${cardPage(here.url)}`,
+        detail: `${go === "reload" ? "Loading this page again may send a form again." : target ? `Going ${go} loads ${hideAfterOrigin(target)}, which may send a form again.` : `Going ${go} one page may send a form again.`} ${cardPage(here.url)}`,
         revalidate: () => Promise.resolve(b.pageToken() === token && this.active(b) === tab),
         run,
       },
@@ -2099,7 +2110,7 @@ export class ComputerService {
         ask: (i) => this.pageAsk(p.key, i),
         note: (text) => { void this.pageNote(p.key, text); },
         changed: () => this.refresh(p.key),
-        userDrives: () => this.o.wheel.holder(p.key)?.kind === "user",
+        agentDrives: () => this.o.wheel.holder(p.key)?.kind === "agent",
       });
       if (p.key === this.selected && !this.popped) p.browser.show(this.bounds);
     }

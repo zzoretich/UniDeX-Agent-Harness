@@ -130,7 +130,7 @@ class FakeBrowser implements BrowserLike {
   asked: string[] = [];
   entryGate: Promise<void> | null = null;
   /** The id of the history entry a move would load, and the address each of Back and Forward would load. */
-  entryId = "e1"; entryUrls: Record<string, string> = {};
+  entryId: string | null = "e1"; entryUrls: Record<string, string> = {};
   private uids = new WeakMap<object, number>(); private nextUid = 1;
   tabUid(i: number): number | null { const p = this.pages[i]; if (!p) return null; if (!this.uids.has(p)) this.uids.set(p, this.nextUid++); return this.uids.get(p)!; }
   tabIndex(uid: number): number { return this.pages.findIndex((_p, i) => this.tabUid(i) === uid); }
@@ -140,8 +140,10 @@ class FakeBrowser implements BrowserLike {
     return { uid: this.tabUid(tab ?? this.current)!, id: this.entryId, url: this.entryUrls[go] ?? null, method: this.methods[go] ?? "GET" };
   }
   /** As the real one: moves only if the tab is the active one and the entry is the one the card named. */
-  async navEntry(go: string, bound: { uid: number; id: string | null; method: string }) {
+  async navEntry(go: string, bound: { uid: number; id: string | null; method: string }, valid: () => boolean = () => true) {
     const now = await this.entry(go, this.current);
+    if (!valid()) throw new PageChanged();
+    if (now.id === null) throw new Error(REFUSAL.noHistoryRead);
     if (now.uid !== bound.uid || now.id !== bound.id || now.method !== bound.method) return false;
     this.navs.push(`${go} ${this.current}`);
     this.reposts.push(go === "reload" && bound.method !== "GET");
@@ -5024,17 +5026,98 @@ test("an allowed reload is bound to the entry on its card: a commit while the ca
   assert.deepEqual([b.navs, b.reposts], [[], []], "no reload of the new page");
 });
 
-test("an allowed reload is bound to its tab: another tab in front sends nothing", async () => {
+test("an allowed reload is bound to its tab: a different tab in the same place sends nothing", async () => {
   const h = make();
   const b = await twoTabs(h);
   b.methods.reload = "other";
   const p = h.call(A, "computer_nav", { go: "reload" });
   const ask = await h.asked();
-  b.pages.splice(1, 1); b.current = 0;                       // the card's tab closed; the neighbour is in front
+  // The card's tab is replaced by another at the same index: the page token and the active index are the same.
+  const token = b.pageToken();
+  b.pages[1] = { url: "https://a.test/two", openedBy: null };
+  assert.equal(b.pageToken(), token);
   h.svc.answer(ask.id, "once");
   const r = await p;
   assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
   assert.deepEqual(b.navs, []);
+});
+
+test("a Take over during the allowed move's history read sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  let release: () => void = () => {};
+  b.entryGate = new Promise<void>((r) => { release = r; });         // the run's own read
+  h.svc.answer(ask.id, "once");
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+  assert.ok(!r.text.startsWith("Reloaded"), r.text);
+});
+
+test("a Stop during the allowed move's history read sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  let release: () => void = () => {};
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  h.svc.answer(ask.id, "once");
+  await flush();
+  h.svc.agentGone(A);                                                // the turn was stopped
+  release();
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+});
+
+test("a history that cannot be read is refused with no card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  b.entryId = null; b.methods.reload = "unknown"; b.methods.back = "unknown";
+  for (const go of ["reload", "back"] as const) {
+    const r = await h.call(A, "computer_nav", { go });
+    assert.equal(r.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`, go);
+    assert.equal(r.isError, true);
+  }
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, []);
+});
+
+test("a failed read at the run sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  b.entryId = null;                                                  // the run's read fails
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.deepEqual(r, { text: REFUSAL.noHistoryRead, isError: true });
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+});
+
+test("the person navigates the tab while the close card is up: Allow closes nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = null;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  b.pages[0].url = "https://a.test/somewhere-else";                  // same tab, another page
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.equal(b.pages.length, 2);
 });
 
 test("the Back card names where the move goes by its origin only, and the Reload card keeps the current page", async () => {
@@ -5053,6 +5136,22 @@ test("the Back card names where the move goes by its origin only, and the Reload
   assert.equal(ask2.title, "Load a page again, which may send a form again: Reload on a.test?");
   assert.match(ask2.detail, /^Loading this page again may send a form again\. Page: /);
   h.svc.answer(ask2.id, "deny"); await q;
+});
+
+test("the Back and Forward card says the way only when the destination is not a web address, and never says 'this page'", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true; b.canForward = true;
+  for (const [go, url] of [["back", "chrome-error://chromewebdata/"], ["forward", undefined]] as const) {
+    b.methods[go] = "other";
+    if (url) b.entryUrls[go] = url;
+    const p = h.call(A, "computer_nav", { go });
+    const ask = await h.asked();
+    assert.equal(ask.title, `Load a page again, which may send a form again: Go ${go} one page on a.test?`, go);
+    assert.equal(ask.detail, `Going ${go} one page may send a form again. Page: https://a.test/two`, go);
+    for (const bit of ["this page", "•", "chromewebdata"]) assert.ok(!ask.detail.includes(bit) && !ask.title.includes(bit), `${go}: ${bit}`);
+    h.svc.answer(ask.id, "deny"); await p;
+  }
 });
 
 test("the closetab card says what is known of the tab and not who opened it", async () => {
@@ -5081,14 +5180,18 @@ test("a nav whose page moved during the history read answers the changed sentenc
   assert.deepEqual(b.navs, []);
 });
 
-test("the browser is told when the person drives, for a popup it makes", async () => {
+test("the browser is told whether this session's agent holds the wheel, for a popup it makes", async () => {
   const h = make();
   const b = await twoTabs(h);
-  const hooks = b.hooks as BrowserHooks & { userDrives(): boolean };
-  assert.equal(hooks.userDrives(), false);
+  const hooks = b.hooks as BrowserHooks & { agentDrives(): boolean };
+  assert.equal(hooks.agentDrives(), true, "the agent's own call holds the wheel");
   h.svc.select("chat:a");
   h.svc.takeOver();
-  assert.equal(hooks.userDrives(), true);
-  h.svc.handBack();
-  assert.equal(hooks.userDrives(), false);
+  assert.equal(hooks.agentDrives(), false, "the person holds it");
+  // Nobody holds it between turns.
+  const g = make();
+  const gb = await twoTabs(g);
+  g.svc.agentGone(A);
+  assert.equal(g.wheel.holder("chat:a"), null);
+  assert.equal((gb.hooks as BrowserHooks & { agentDrives(): boolean }).agentDrives(), false, "nobody holds it: the turn ended");
 });
