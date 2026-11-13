@@ -2030,3 +2030,46 @@ test("a message is taken at 8,000 characters before anything else is done to it"
   assert.ok(!text.includes("late"), "the address past 8,000 characters was never taken");
 });
 
+test("a page that answers 404 shows its own 404 after it commits", () => {
+  const { b, tab } = make();
+  said(b, tab, "error", "old page error");
+  sent(b, tab, "o1", "GET", "https://a.test/old.js");
+  answered(b, tab, "o1", 500, "https://a.test/old.js", "L1");
+  requested(b, tab, "L2", "GET", { url: "https://a.test/gone" });
+  answered(b, tab, "L2.r", 404, "https://a.test/gone?x=1", "L2", "Document");
+  (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/gone");
+  assert.deepEqual(kinds(b), ["request: 404 GET https://a.test/gone"], "the earlier page's entries are gone, the new page's own 404 stays");
+  said(b, tab, "error", "new page error");
+  (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/other");
+  assert.deepEqual(kinds(b), [], "and the next commit clears it, with no request of its own to keep");
+});
+
+test("an error page shows the request that failed", () => {
+  const { b, tab } = make();
+  said(b, tab, "error", "old page error");
+  requested(b, tab, "L3", "POST", { url: "https://down.test/form?pw=SECRET" });
+  cdpEvent(b, tab, "Network.loadingFailed", { requestId: "L3.r", type: "Document", errorText: "net::ERR_CONNECTION_REFUSED", canceled: false });
+  (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://down.test/form");
+  assert.deepEqual(kinds(b), ["request: failed POST https://down.test/form (net::ERR_CONNECTION_REFUSED)"]);
+});
+
+test("the kept entry has no path while the new page's path is hidden", () => {
+  const { b, tab } = make();
+  requested(b, tab, "L2", "GET", { url: "https://a.test/cb/secretpath" });
+  answered(b, tab, "L2.r", 404, "https://a.test/cb/secretpath", "L2", "Document");
+  assert.deepEqual(kinds(b), ["request: 404 GET https://a.test/cb/secretpath"]);
+  tab.leaving.start("https://a.test/cb/secretpath", { from: ["https://old.test"], read: new Promise(() => {}) });
+  (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/cb/secretpath");
+  assert.equal(tab.pathHidden, true);
+  assert.deepEqual(kinds(b), ["request: 404 GET https://a.test"]);
+});
+
+test("Electron's own security warning is not kept; a page's warning with the same words is", () => {
+  const { b, tab } = make();
+  const handlers = wiredHandlers(b, tab);
+  const words = "Electron Security Warning (Insecure Content-Security-Policy) This renderer process has either no Content Security Policy";
+  handlers.get("console-message")!({ level: "warning", message: `%c${words}`, sourceId: "node:electron/js2c/sandbox_bundle", lineNumber: 2 });
+  assert.deepEqual(kinds(b), []);
+  handlers.get("console-message")!({ level: "warning", message: words, sourceId: "https://a.test/app.js", lineNumber: 2 });
+  assert.deepEqual(kinds(b), [`warning: ${words}`]);
+});

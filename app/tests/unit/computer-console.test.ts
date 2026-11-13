@@ -80,3 +80,16 @@ test("a cut never splits a surrogate pair", () => {
   assert.equal(cutAt("ab\u{1F600}", 3), "ab", "half a pair goes");
   assert.equal(cutAt("abc", 3), "abc");
 });
+
+test("a kept-only filter keeps one loader's entries", () => {
+  const log = new ConsoleLog();
+  log.add({ at: 0, kind: "error", text: "console" });
+  log.add({ at: 0, kind: "request", text: "a", loader: "L1" });
+  log.add({ at: 0, kind: "request", text: "b", loader: "L2" });
+  log.keepOnly("L2");
+  assert.deepEqual(log.list().map((e) => e.text), ["b"]);
+  log.remap((t) => t.toUpperCase());
+  assert.deepEqual(log.list().map((e) => [e.text, e.loader]), [["B", "L2"]], "remap keeps the loader");
+  log.keepOnly(null);
+  assert.deepEqual(log.list(), []);
+});

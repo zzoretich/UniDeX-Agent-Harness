@@ -8,7 +8,8 @@ import { oneLine } from "./title";
 export const CONSOLE_MAX = 200;
 export const CONSOLE_TEXT_MAX = 2000;
 
-export interface ConsoleEntry { at: number; kind: "error" | "warning" | "exception" | "request"; text: string }
+/** `loader`: a request entry carries the loader (document) it belongs to, so a page's own failed request survives its commit. */
+export interface ConsoleEntry { at: number; kind: "error" | "warning" | "exception" | "request"; text: string; loader?: string }
 
 /** `text` cut at `max` characters, never ending on half of a surrogate pair. */
 export function cutAt(text: string, max: number): string {
@@ -27,6 +28,16 @@ export class ConsoleLog {
   }
 
   clear(): void { this.entries = []; }
+
+  /** A new document: only the entries of `loader` (the committing document's own request) stay; null keeps none. */
+  keepOnly(loader: string | null): void {
+    this.entries = loader === null ? [] : this.entries.filter((e) => e.loader === loader);
+  }
+
+  /** Every entry's text through `fn`. */
+  remap(fn: (text: string) => string): void {
+    this.entries = this.entries.map((e) => ({ ...e, text: fn(e.text) }));
+  }
 
   list(): readonly ConsoleEntry[] { return this.entries; }
 }
