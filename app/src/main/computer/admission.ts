@@ -32,7 +32,7 @@ export const VENDOR: Readonly<Record<Host, { team: string; pkg: string }>> = {
 export type Admit = { ok: true; agent: AgentRef } | { ok: false; reason: string };
 
 const NOT_STARTED = REFUSAL.notStarted;
-const ALREADY_OPEN = "This session's computer connection is already open.";
+const ALREADY_OPEN = REFUSAL.alreadyOpen;
 
 function real(sys: Sys, p: string): string | null {
   try {

@@ -213,8 +213,8 @@ interface Job { session: string; answered: boolean; done: Promise<Reply> }
 interface Lease {
   gen: number;
   /** session-browser S16: the call's 45 s (a time on the service's clock) while it is the call that holds the reply: the
-   *  settle wait before its outline never runs past it. null once the call was turned into an ask, whose reply
-   *  `computer_wait` carries (it has its own limit). */
+   *  wait behind earlier reads, the settle wait and the start of the read never run past it. null once the call was turned
+   *  into an ask, whose reply `computer_wait` carries (it has its own limit). */
   until: number | null;
 }
 
@@ -237,7 +237,7 @@ const refuseAt = (sentence: string, url: string | null): Reply => {
   return fail(text);
 };
 /** The reads `done` noted for the replies it made, finished once the queue is free (session-browser S16). */
-const deferred = new WeakMap<Reply, () => Promise<Reply>>();
+const deferred = new WeakMap<Reply, { run: () => Promise<Reply>; unread: () => Reply; late: () => boolean; lease: Lease }>();
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const waiting = (id: string): string => `waiting_for_user: call computer_wait with askId "${id}"`;
@@ -765,7 +765,10 @@ export class ComputerService {
    *  caller of the queue finishes it with `finished` once the queue is free. */
   private done(p: Slot, b: BrowserLike, line: string, since: number, lease: Lease): Reply {
     const reply: Reply = { text: line };
-    deferred.set(reply, () => this.page(p, b, line, since, lease));
+    deferred.set(reply, {
+      run: () => this.page(p, b, line, since, lease), unread: () => ({ text: `${line} ${UNREAD}` }), lease,
+      late: () => lease.until !== null && this.clock.now() >= lease.until,
+    });
     return reply;
   }
 
@@ -775,17 +778,20 @@ export class ComputerService {
     if (!read) return reply;
     // One read after another per session, in the order the steps ended, so refs register in the order of the calls; the
     // chain is the agent's replies' only. The read counts as a look in flight (the browser is not put to sleep under it).
+    // A call that holds the reply stops waiting for its turn at its own 45 s: it answers with its line and UNREAD, and its
+    // link stays in the chain, doing nothing when its turn comes (`late`), so the others keep their order.
     p.reading++;
-    const run = p.replies.then(read, read).finally(() => { p.reading--; this.released(); });
-    p.replies = run.catch(() => undefined);
-    return run;
+    const mine = p.replies.then(() => (read.late() ? read.unread() : read.run())).finally(() => { p.reading--; this.released(); });
+    p.replies = mine.catch(() => undefined);
+    return read.lease.until === null ? mine : this.until(mine, read.lease.until, () => read.unread());
   }
 
   /** The wait and the read of `done`. It waits for the page to settle after the action's last input (`since`, on the
-   *  service's clock; never past the call's 45 s while the call holds the reply: a wait that the deadline cut short starts no
-   *  read at all), then tells what the person did meanwhile (the stop's own sentence when they switched the browser off or
+   *  service's clock), then tells what the person did meanwhile (the stop's own sentence when they switched the browser off or
    *  closed the tab the action ran in: no outline, for it would be another page's), else takes the outline `computer_snapshot`
-   *  would, cut by the browser (so its refs are the ones shown). The input has been sent: the action happened, so nothing here
+   *  would, cut by the browser (so its refs are the ones shown). While the call holds the reply (`lease.until`), nothing here
+   *  runs past its 45 s: a wait that the deadline cut short starts no read, and the clock is looked at once more just before
+   *  the snapshot; a read already under way is not abandoned. The input has been sent: the action happened, so nothing here
    *  turns it into a failure, throws or hangs: a page that cannot be read afterwards gives `line` and a sentence saying so. A
    *  Take over during the wait changes nothing: reading the outline is a look. The outline carries the page's address, so
    *  `line` does not. */
@@ -797,10 +803,16 @@ export class ComputerService {
       const stop = this.stoppedAfter(p, lease);
       if (stop) return { text: `${line} ${stop}` };
       if (p.browser !== b || p.power === "off") return { text: `${line} ${UNREAD}` };
+      if (lease.until !== null && this.clock.now() >= lease.until) return { text: `${line} ${UNREAD}` };
       const snap = await b.snapshot(undefined, p.key, { cap: OUTLINE_MAX });
+      // A stop during the read: the outline is of a browser the person switched off or a tab they closed.
+      const after = this.stoppedAfter(p, lease);
+      if (after) return { text: `${line} ${after}` };
       return { text: withPage(line, snap.text, { cut: snap.truncated }) };
     } catch {
-      return { text: `${line} ${UNREAD}` };
+      // A read that failed because the person switched the browser off or closed the tab says so.
+      const stop = this.stoppedAfter(p, lease);
+      return { text: `${line} ${stop ?? UNREAD}` };
     }
   }
 

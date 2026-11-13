@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import electron from "electron";
 import { ComputerBrowser, type BrowserHooks, type Resolved } from "../../src/main/computer/browser";
-import { FocusMoved, PageChanged } from "../../src/main/computer/cdp";
+import { FocusMoved, forPerson, PageChanged } from "../../src/main/computer/cdp";
 import { LeavingRecords, PendingReads } from "../../src/main/computer/leaving";
 import { SecretMemory } from "../../src/main/computer/memory";
 import { TABS_MAX } from "../../src/main/computer/records";
@@ -1260,4 +1260,22 @@ test("settled: the browser being destroyed ends the wait", async () => {
     const em = listen(b, tab);
     return { 100: () => navStart(em), 500: () => b.destroy() };
   }), 500);
+});
+
+test("an enable command that times out reads, for the person, as the page not answering it", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  try {
+    const { b, tab } = make();
+    const t = tab as { attaching: unknown; wc: { debugger: Record<string, unknown> } };
+    Object.assign(t.wc.debugger, { attach() {}, sendCommand: () => new Promise(() => {}) });
+    t.attaching = null;
+    const attached = (b as unknown as { attach(t: unknown): Promise<void> }).attach(tab);
+    const caught = attached.catch((e: unknown) => e);
+    mock.timers.tick(5000);
+    const e = await caught;
+    assert.equal(forPerson(e), "The page did not answer Page.enable within 5 s.");
+    assert.match((e as Error).message, /call computer_snapshot/, "the agent still gets the table's sentence");
+  } finally {
+    mock.timers.reset();
+  }
 });

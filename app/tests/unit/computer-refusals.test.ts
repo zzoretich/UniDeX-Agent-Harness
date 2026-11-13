@@ -41,7 +41,7 @@ function firstArgs(src: string, name: string): string[] {
 
 /** Arguments of fail( and refuseAt( that are not a table entry written in place: each with its reason. */
 const SERVICE_ALLOWED: Readonly<Record<string, string>> = {
-  "message(e)": "the .message of an error thrown by browser.ts, cdp.ts or the page: tabled where it is thrown (the next test checks each throw there)",
+  "message(e)": "the .message of an error thrown by browser.ts or cdp.ts (each throw there is checked below), by the service's own throws (REFUSAL.quitting, isOff: checked below) or by the page",
   "parsed": "what parse() returned when it was a string: its returns are REFUSAL.badRef, noUrl, noTarget, noText, noKey, noDistance and unknownTool",
   "ro.refuse": "the gate's verdict: every `refuse:` in gate.ts is a table entry (checked below)",
   "v.refuse": "the gate's verdict: every `refuse:` in gate.ts is a table entry (checked below)",
@@ -81,10 +81,37 @@ function wholeCalls(src: string, name: string): string[] {
 
 /** The error constructors of browser.ts and cdp.ts whose call holds a string literal outside a REFUSAL entry's own arguments. */
 function throwViolations(src: string): string[] {
-  const calls = ["new Error", "new CdpTimeout", "new PageChanged", "new FocusMoved"].flatMap((n) => wholeCalls(src, n));
-  // `new Told(table sentence, the person's own wording)`: only the first argument is the agent's.
-  calls.push(...firstArgs(src, "new Told"));
+  const calls = ["new Error", "new PageChanged", "new FocusMoved"].flatMap((n) => wholeCalls(src, n));
+  // `new Told(table sentence, the person's own wording)` and `new CdpTimeout(…, the person's wording)`: only the first
+  // argument is the agent's.
+  calls.push(...firstArgs(src, "new Told"), ...firstArgs(src, "new CdpTimeout"));
   return calls.filter((c) => /["'`]/.test(c.replace(/REFUSAL\.\w+(\((?:[^()]|\([^()]*\))*\))?/g, "")));
+}
+
+/** The value of every `text:` property in `src` (up to its comma or closing brace). */
+function textValues(src: string): string[] {
+  const out: string[] = [];
+  const re = /\btext\s*:\s*/g;
+  for (let m = re.exec(src); m; m = re.exec(src)) {
+    let depth = 0, i = m.index + m[0].length, str: string | null = null;
+    const start = i;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (str) { if (c === "\\") i++; else if (c === str) str = null; continue; }
+      if (c === '"' || c === "'" || c === "`") str = c;
+      else if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") { if (depth === 0) break; depth--; }
+      else if ((c === "," || c === ";") && depth === 0) break;
+    }
+    out.push(src.slice(start, i).trim());
+  }
+  return out;
+}
+
+/** The bridge's `text:` values that are not a table entry (its ToolReply type's own `text: string` aside), whatever the
+ *  order of the properties and however the text is built. */
+function bridgeViolations(src: string): string[] {
+  return textValues(src).filter((a) => a !== "string" && !/^REFUSAL\.\w+(\(.*\))?$/s.test(a));
 }
 
 /** The gate's `refuse:` values that are not a table entry. */
@@ -108,9 +135,13 @@ test("every error an agent can get from the gate, the browser, the cdp helpers a
     assert.deepEqual(throwViolations(src), [], f);
   }
   const bridge = read("bridge.ts");
-  const texts = [...bridge.matchAll(/text:\s*([^,}]+?),\s*isError: true/g)].map((m) => m[1]);
-  assert.ok(texts.length >= 3, "the bridge's replies were found");
-  for (const a of texts) assert.match(a, /^REFUSAL\./, `bridge.ts: text: ${a}`);
+  assert.ok(textValues(bridge).length >= 4, "the bridge's replies were found");
+  assert.deepEqual(bridgeViolations(bridge), []);
+  // The service's own throws reach the agent through its catch blocks; the two "no browser" ones are caught inside and
+  // replaced by an app-written line.
+  const own = firstArgs(read("service.ts"), "new Error").filter((a) => a !== '"no browser"');
+  assert.ok(own.length >= 3, "the service's throws were found");
+  for (const a of own) assert.match(a, /^REFUSAL\.\w+$/, `service.ts: new Error(${a})`);
   assert.equal(/reason:\s*["'`]/.test(bridge), false, "bridge.ts: the admission reason comes from the table");
   assert.equal(/NOT_STARTED\s*=\s*["'`]/.test(read("admission.ts")), false, "admission.ts takes its sentence from the table too");
 });
@@ -128,6 +159,11 @@ test("the source checks catch a planted literal", () => {
   assert.equal(throwViolations('throw new Told("Oops.", "the person\'s words");').length, 1, "a literal as a Told's agent text");
   assert.equal(throwViolations('throw new Told(REFUSAL.tabGone, "That tab was closed.");').length, 0, "the person's own wording is allowed");
   assert.equal(throwViolations("throw new Error(REFUSAL.pageSlow(`${m} within ${s} s`));").length, 0);
+  assert.equal(bridgeViolations('write({ id, text: "Nope.", isError: true });').length, 1, "a literal in the bridge");
+  assert.equal(bridgeViolations("write({ isError: true, text: `Nope ${why}.`, id });").length, 1, "a template, isError first");
+  assert.equal(bridgeViolations("write({ id, text: REFUSAL.ended, isError: true });").length, 0);
+  assert.equal(throwViolations('throw new CdpTimeout("Oops.", REFUSAL.pageSlow(x));').length, 1, "a literal as a CdpTimeout\'s agent text");
+  assert.equal(throwViolations("throw new CdpTimeout(REFUSAL.pageSlow(x), `The page did not answer ${m}.`);").length, 0, "the person\'s wording");
   assert.equal(gateViolations('return {refuse:"Nope."};').length, 1, "no spacing needed to hide it");
   assert.equal(gateViolations("return { refuse   :   `Nope.` };").length, 1);
   assert.equal(gateViolations("return { refuse: REFUSAL.notWeb };").length, 0);

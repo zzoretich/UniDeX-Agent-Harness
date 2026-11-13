@@ -87,6 +87,7 @@ export const REFUSAL = {
 
   // The bridge's own replies (bridge.ts).
   tooMany: "Too many computer calls at once: wait for one to finish.",
+  alreadyOpen: "This session's computer connection is already open: use that connection, or end the other one first.",
   notStarted: "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.",
   ended: "This session has ended, so its computer connection is closed: start a new session to use the browser.",
   computerFailed: (why: string) => `The computer failed (${why}): call computer_status to see whether the browser is still there.`,

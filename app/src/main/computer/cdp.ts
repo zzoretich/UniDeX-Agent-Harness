@@ -9,7 +9,10 @@ import { REFUSAL } from "./refusals";
 export const CDP_TIMEOUT_MS = 5_000;
 
 /** A command the page did not answer in time. */
-export class CdpTimeout extends Error {}
+export class CdpTimeout extends Error {
+  /** `person` is the plain statement for a line the person reads (an attach note), without the advice meant for the agent. */
+  constructor(text: string, readonly person: string = text) { super(text); }
+}
 
 /** An error with two wordings (session-browser S16): its message is the table's sentence, for the agent; `person` is the plain
  *  statement of what happened, for the activity log and a note, which carry no advice meant for the agent. */
@@ -18,7 +21,7 @@ export class Told extends Error {
 }
 
 /** An error's text for a line the person reads. */
-export const forPerson = (e: unknown): string => (e instanceof Told ? e.person : e instanceof Error ? e.message : String(e));
+export const forPerson = (e: unknown): string => (e instanceof Told || e instanceof CdpTimeout ? e.person : e instanceof Error ? e.message : String(e));
 
 /** The tab or page an action was judged on is no longer the one in front (agent-computer D31, I3b): nothing more of the
  *  action is delivered. */
@@ -37,7 +40,7 @@ export interface CdpTarget { sendCommand(method: string, params?: object): Promi
 /** Sends one DevTools command, rejecting with `CdpTimeout` after `ms`. */
 export function cdp<T = unknown>(target: CdpTarget, method: string, params?: object, ms = CDP_TIMEOUT_MS): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new CdpTimeout(REFUSAL.pageSlow(`${method} within ${ms / 1000} s`))), ms);
+    const timer = setTimeout(() => reject(new CdpTimeout(REFUSAL.pageSlow(`${method} within ${ms / 1000} s`), `The page did not answer ${method} within ${ms / 1000} s.`)), ms);
     const fail = (e: unknown): void => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); };
     try {
       target.sendCommand(method, params).then((v) => { clearTimeout(timer); resolve(v as T); }, fail);

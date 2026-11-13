@@ -6,6 +6,7 @@ import path from "node:path";
 import { ASK_LABELS, cleanTitle, ComputerService, type BrowserLike, type ComputerState } from "../../src/main/computer/service";
 import { AskBroker, type Clock } from "../../src/main/computer/asks";
 import { REFUSAL } from "../../src/main/computer/refusals";
+import { UNREAD } from "../../src/main/computer/reply";
 import { Wheel } from "../../src/main/computer/wheel";
 import { BrowserRecords } from "../../src/main/computer/records";
 import { SiteMarks } from "../../src/main/computer/sites";
@@ -4568,4 +4569,102 @@ test("a line for the person keeps its own wording, not the agent's advice", asyn
   assert.deepEqual(await h.svc.navigate("https://x.test/"), { ok: false, error: "Could not open https://x.test/: ERR_FAILED.", code: "EIO" });
   b.open = async () => { throw new TwoWordings(REFUSAL.browserGone, "This computer was closed."); };
   await h.call(A, "computer_open", { url: "https://x.test/" }).then((r) => assert.equal(r.text, REFUSAL.browserGone, "the agent gets the table's sentence"));
+});
+
+// ---- fix round 3 (session-browser S16): a reply's read never starts after its call's deadline
+
+/** Three reply reads behind one that is stuck in its snapshot: returns the pieces. */
+async function behind() {
+  const { h, b } = await acting();
+  const t0 = h.clock.t;
+  let release!: () => void;
+  b.snapGate = new Promise<void>((r) => { release = r; });
+  const base = b.snapshotsFor.length;
+  const p1 = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  return { h, b, t0, release: () => { release(); b.snapGate = null; }, base, p1 };
+}
+
+test("a call waiting behind another call's read answers at its own deadline, unread", async () => {
+  const { h, b, t0, release, base, p1 } = await behind();
+  await h.clock.advance(1_000);
+  let answered: string | null = null;
+  void h.call(A, "computer_click", { ref: "e1" }).then((r) => { answered = r.text; });
+  await h.clock.advance(44_000);                 // t0 + 45 s: call 1's deadline, not yet call 2's (t0 + 46 s)
+  assert.equal(answered, null);
+  await h.clock.advance(1_001);                  // call 2's own 45 s
+  assert.equal(answered, `Clicked e1. ${UNREAD}`, "the line and the unread sentence, at its own deadline");
+  assert.equal(b.snapshotsFor.length, base + 1, "only call 1's snapshot was started");
+  release();
+  await p1;
+  await flush();
+  assert.equal(b.snapshotsFor.length, base + 1, "and none for call 2 when its turn came");
+  assert.ok(h.clock.t > t0);
+});
+
+test("the calls after it keep their order", async () => {
+  const { h, b, release, base, p1 } = await behind();
+  await h.clock.advance(1_000);
+  void h.call(A, "computer_click", { ref: "e1" });         // call 2, which will give up
+  await h.clock.advance(39_000);
+  const p3 = h.call(A, "computer_click", { ref: "e1" });   // call 3, deadline at 85 s
+  await h.clock.advance(7_000);                            // call 2's deadline passes
+  b.snapSince.length = 0;
+  release();
+  await Promise.all([p1, p3]);
+  assert.equal(b.snapshotsFor.length, base + 2, "call 1's snapshot and call 3's");
+  assert.equal(b.snapSince.length, 1, "call 3's read came after call 1's, which was already under way");
+});
+
+test("a read whose turn comes after the deadline does not start", async () => {
+  const { h, b, release, base, p1 } = await behind();
+  void h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.clock.t += 100_000;                          // the deadline passed with no timer fired yet
+  release();
+  await p1;
+  await flush();
+  assert.equal(b.snapshotsFor.length, base + 1, "no read for the call whose deadline had passed");
+});
+
+test("the person switches the browser off while the outline is being read: the reply says so", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.snapGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.power("chat:a", false);
+  release();
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.switchedOff}`);
+});
+
+test("× on the action's tab, then Take over, during one settle wait: the reply says the tab was closed", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.tab({ kind: "close", index: b.current });
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.tabClosed}`);
+});
+
+test("the agent's hold is not freed by the idle release while its reply's page is being read", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  b.settleGates = [];
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  assert.equal(h.wheel.holder("chat:a")?.kind, "agent");
+  await h.clock.advance(31_000);                 // past the wheel's 30 s idle release
+  assert.equal(h.wheel.holder("chat:a")?.kind, "agent", "still the agent's: a read is in progress");
+  release();
+  await p;
 });
