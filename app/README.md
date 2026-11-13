@@ -65,8 +65,8 @@ and never wait for each other; Vault chat, History and past conversations have n
 narrow strip with a power button, and open, its header names the session and has an On/Off switch. Only the person turns
 it on or off, from the strip, the switch, or **Turn on** on the card that appears when the session's agent first asks to
 open a page (**Not now** declines, and the agent is told and does not ask again for the rest of its turn in Sessions, or
-for 60 seconds in Code). Off closes its tabs and stops the agent's action in flight; closing the last tab also switches
-it off; On brings the tabs back, reloaded. Quitting keeps the tabs (`<user data>/computer/browsers.json`): a thread's
+for 60 seconds in Code). Off closes its tabs and stops the agent's action in flight; the person's close of the last tab also
+switches it off (the agent's leaves it on, at the start page); On brings the tabs back, reloaded. Quitting keeps the tabs (`<user data>/computer/browsers.json`): a thread's
 browser returns after a relaunch, asleep, and a resumed Code conversation gets its tabs back, off. At most
 `computer.awake` browsers (default 4) keep their pages loaded; the least recently used one sleeps, never the one on
 screen or one an agent is using. A browser lives as long as its session: closing a terminal or deleting a thread

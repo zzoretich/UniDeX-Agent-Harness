@@ -18,14 +18,14 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 
 | Status | Items |
 |---|---|
-| covered | 166 |
-| covered in part | 118 |
+| covered | 167 |
+| covered in part | 119 |
 | N/A in the app | 49 |
 | not covered | 6 |
 | manual | 3 |
-| **total** | **342** |
+| **total** | **344** |
 
-Of the 293 items about the app (342 minus the 49 N/A), 284 are asserted (166 fully, 118 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
+Of the 295 items about the app (344 minus the 49 N/A), 287 are asserted (167 fully, 119 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
 not covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -533,7 +533,9 @@ again (`brain-ai`).
 | CP22 | Either host: Reload after a form's result page asks, Deny reloads nothing, Allow sends the form again; Back onto a POST entry and Forward onto an unknown entry ask | covered in part | `computer.spec.ts › a reload after a form POST asks and a reload of a GET page does not`: the reload's card, Deny, Allow. Back onto a POST entry and Forward onto an unknown entry: `computer-service.test.ts › Back onto a POST entry asks, Forward onto an unknown entry asks…`. Both run in a Chat turn only, on the Claude stand-in and the Codex stand-in; no test drives a Code session's tools end to end (the app's side of a Code session is the same service: `computer-service.test.ts`). |
 | CP23 | Either host: `computer_console` on a page that asks for a missing file shows a `[request] 404` line | covered in part | `computer.spec.ts › computer_tab, computer_nav, computer_hover and computer_console work through the bridge` asserts the page's console error and warning as page text; the `[request] 404` line is asserted in `computer-browser.test.ts` and `computer-console.test.ts`, not in an end-to-end test. |
 | CP24 | Either host: hover opens a menu and clicks nothing; a double click reaches a control that reacts to it | covered in part | `computer.spec.ts › computer_tab, computer_nav, computer_hover and computer_console work through the bridge`: the fixture's Menu counts its clicks, and it still reads zero after the hover. Both run in a Chat turn only, on the Claude stand-in and the Codex stand-in; no test drives a Code session's tools end to end (the app's side of a Code session is the same service: `computer-service.test.ts`). |
-| CP25 | Codex only, in order: before `aos upgrade` a Code session asks for the new tools and a Chat turn refuses them, then `aos upgrade`, then they run with no Codex prompt, in plugin and direct mode | covered in part | The approvals the upgrade writes are `cli/codex-host.test.js` and `cli/plugin-manifests.test.js`; the runtime's answer to an app that lacks a tool is `brain/scripts/test/computer-client.test.js`; the app's side is as CP19–CP24. A real Codex session, before and after `aos upgrade`: by hand. |
+| CP25 | Either host: a refusal reads as one sentence with a next step | covered | `computer-refusals.test.ts` loops over every entry of the table (one line, one sentence, the next step), and `computer.spec.ts` asserts the refusals its flows meet. |
+| CP26 | Either host: the agent's close of the last tab leaves the browser on with one new tab at the start page, with no card for the agent's own tab; the start tab it leaves asks before the agent closes it, and Deny keeps it | covered in part | `computer.spec.ts › computer_tab, computer_nav, computer_hover and computer_console work through the bridge` (Chat turns, both stand-ins): the card for the start tab and Deny, the agent's own last tab closing with no card, the tab line naming the start page instead of the closed page. `computer-service.test.ts` for a Code session. |
+| CP27 | Codex only, in order: before `aos upgrade` a Code session asks for the new tools and a Chat turn refuses them, then `aos upgrade`, then they run with no Codex prompt, in plugin and direct mode | covered in part | The approvals the upgrade writes are `cli/codex-host.test.js` and `cli/plugin-manifests.test.js`; the runtime's answer to an app that lacks a tool is `brain/scripts/test/computer-client.test.js`; the app's side is as CP19–CP24. A real Codex session, before and after `aos upgrade`: by hand. |
 
 ## Launch sequence
 

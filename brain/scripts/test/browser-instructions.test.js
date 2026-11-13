@@ -16,6 +16,7 @@ test('a session inside the app is told about its browser', () => {
 test("the paragraph says an action's reply ends with the page, so a snapshot is for a page not just acted on (S16d)", () => {
   assert.ok(BROWSER_INSTRUCTIONS.includes("each reply ends with the page as it is now; computer_snapshot is for any other page"), BROWSER_INSTRUCTIONS);
   assert.ok(!BROWSER_INSTRUCTIONS.includes('computer_snapshot to read it'), BROWSER_INSTRUCTIONS);
+  assert.ok(BROWSER_INSTRUCTIONS.includes('computer_open asks the user to turn it on'), BROWSER_INSTRUCTIONS);
   assert.ok(BROWSER_INSTRUCTIONS.length <= 600, String(BROWSER_INSTRUCTIONS.length));
 });
 

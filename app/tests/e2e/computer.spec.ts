@@ -1435,14 +1435,34 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
         expectReply(after, { isError: false });
         expect(after.text).not.toMatch(/off: computer_open asks/);
         await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "the start page replaced it" }).toContain(searchHost());
-        // The start page that close made is the agent's own tab: closing it, as the last tab, asks nothing and leaves the browser
-        // on with a new start page (S5).
-        expectReply(await a.call("computer_tab", { index: 0, close: true }), { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
+        // (b) The start tab that close left is not the agent's own (S5 leaves it to the person): closing it asks, and Deny keeps it.
+        const startTab = await asked(p, a.call("computer_tab", { index: 0, close: true }), /^Close a tab it did not open: /);
+        await startTab.card.locator('[data-answer="deny"]').click();
+        expectReply(await startTab.reply, { isError: true, text: /^The user denied it/ });
+        expect(tabLines(await a.call("computer_status")), "Deny closed nothing: the start tab is still there").toContain(searchHost());
+        // (a) A tab the agent opens as a NEW tab is its own. With the start tab (the person's) closed on Allow, it is the last tab:
+        // the agent's close of it asks nothing, and the browser stays on with one new tab at the start page.
+        expectReply(await a.call("computer_open", { url: toolsUrl(), newTab: true }), { isError: false, text: acted("Opened the page.", toolsUrl()) });
+        const both = tabLines(await a.call("computer_status"));
+        expect(both).toContain(searchHost());
+        expect(both).toContain(markedHost());
+        const closeStart = await asked(p, a.call("computer_tab", { index: tabIndexOf(both, searchHost()), close: true }), /^Close a tab it did not open: /);
+        await closeStart.card.locator('[data-answer="once"]').click();
+        expectReply(await closeStart.reply, { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
+        const onlyOwn = tabLines(await a.call("computer_status"));
+        expect(onlyOwn, "the agent's own tab is the only one").toContain(markedHost());
+        expect(onlyOwn.split("\n")).toHaveLength(1);
+        const closedLast = await a.call("computer_tab", { index: 0, close: true });
+        expectReply(closedLast, { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
         await expect(cards(p)).toHaveCount(0);
+        // What differs across the close: the page that was closed is gone from the one tab's line, and the start page is in front.
+        await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "one new tab at the start page" }).toContain(searchHost());
+        const after2 = tabLines(await a.call("computer_status"));
+        expect(after2).not.toContain(markedHost());
+        expect(after2.split("\n")).toHaveLength(1);
         const last = await a.call("computer_status");
         expectReply(last, { isError: false });
         expect(last.text).not.toMatch(/off: computer_open asks/);
-        await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "a start page is open again" }).toContain(searchHost());
       } finally { await a.finish(); }
     }
     expectNoErrors(h);
