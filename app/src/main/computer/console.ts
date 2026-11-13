@@ -48,7 +48,7 @@ export const CONSOLE_RATE = 100;
 
 /** The app's own line (no kind in brackets, which every line a page can write has) saying how many messages were not kept; the
  *  reply puts it first, where a host that shortens a long reply keeps it. */
-export const droppedLine = (n: number): string => `${n} more console message${n === 1 ? " was" : "s were"} not kept: the app takes in ${CONSOLE_RATE} a second at most.`;
+export const droppedLine = (n: number): string => `${n} more ${n === 1 ? "message or request was" : "messages and requests were"} not kept: the app takes in ${CONSOLE_RATE} a second at most.`;
 
 export const NO_ENTRIES = "No errors, warnings or failed requests since this page loaded.";
 

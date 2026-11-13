@@ -5189,6 +5189,17 @@ test("a double click on a button that navigates says the first click ran and car
   assert.ok(h.states.flatMap((s) => s.log.map((l) => l.text)).includes("Clicked an unnamed control once: the page changed before the second click, which was not sent"));
 });
 
+test("a Take over between the two clicks says the first click ran", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // As the real browser answers when the wheel is taken between the two presses: the first went, the second was not sent.
+  const real = b.click.bind(b);
+  b.click = async (x, valid, o) => { await real(x, valid, {}); h.svc.select("chat:a"); h.svc.takeOver(); return { once: true }; };
+  const r = await h.call(A, "computer_click", { ref: "e1", double: true });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Clicked e1 once: the page changed before the second click, which was not sent\./);
+});
+
 test("an allowed double click on Submit whose page changed after the first click answers once and raises no second card", async () => {
   const h = make();
   const b = await twoTabs(h);
@@ -5316,7 +5327,7 @@ test("the last tab closed by the person while the start page loads: nothing more
   assert.ok(!b.trail.some((t) => t.startsWith("close")), "no close was made");
 });
 
-test("the last tab moved to another page while the start page loads: it is not closed and the reply says the page changed", async () => {
+test("the old tab changes page while it loads: nothing is closed and the start tab is not left behind", async () => {
   const h = make({ startPage: "https://start.test/" });
   const b = await h.open(A, "https://a.test/only");
   b.onOpen = () => b.commit(0, "https://a.test/elsewhere");          // the person (or the page) moved it during the open
@@ -5324,8 +5335,39 @@ test("the last tab moved to another page while the start page loads: it is not c
   assert.equal(r.isError, true);
   assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
   assert.ok(!/already closed/.test(r.text), r.text);
-  assert.ok(!b.trail.some((t) => t.startsWith("close")), "no close was made");
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere", "https://start.test/"], "the tab is still open, beside the start page");
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere"], "the tab is still open and the start tab this call made is closed again");
+  assert.deepEqual(b.trail.slice(-2), ["open 1", "close 2"]);
+});
+
+test("a Take over while the start page loads: the old tab stays open and the start tab is not left behind", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.onOpen = () => { h.svc.select("chat:a"); h.svc.takeOver(); };
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true, r.text);
+  assert.match(r.text, /^busy: /);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
+});
+
+test("a Stop while the start page loads: the same", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.onOpen = () => h.svc.agentGone(A);                               // the turn was stopped
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true, r.text);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
+  assert.ok(b.trail.filter((t) => t.startsWith("close")).length === 1, "only the start tab was closed again");
+});
+
+test("the start tab left by the agent's close of the last tab asks before the agent closes it", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.equal(b.pages[0].own, undefined, "the start tab is not the agent's own: the person's to keep");
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal((await h.asked()).why, "closetab");
+  h.svc.answer((await h.asked()).id, "deny"); await p;
 });
 
 test("the agent closes the last tab while the start page cannot load: the tab is closed, one tab is open, the browser is on", async () => {

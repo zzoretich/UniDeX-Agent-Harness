@@ -298,6 +298,8 @@ function leavePark(owner: ComputerBrowser): void {
   if (win && !win.isDestroyed()) win.destroy();
 }
 
+/** An address cut for a sentence that ends with something that must survive (a failed open's error code). */
+const clipAddress = (url: string): string => (url.length > 150 ? `${url.slice(0, 149)}…` : url);
 const clipUrl = (url: string): string => (url.length > URL_NOTE_MAX ? `${url.slice(0, URL_NOTE_MAX - 1)}…` : url);
 const schemeOf = (url: string): string => { try { return new URL(url).protocol; } catch { return "unreadable"; } };
 const hostOf = (site: string | null, url: string): string => { try { return new URL(site ?? url).host || url; } catch { return url; } };
@@ -438,7 +440,7 @@ export class ComputerBrowser {
     if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") {
       // The scheme is the page's choice: it goes into the sentence only in the plain form a scheme has, else as "non-web".
       const scheme = (t.refused as string | null)?.replace(/:$/, "") ?? ""; // (the load set it, which the compiler cannot see)
-      const what = `a ${/^[a-z][a-z0-9+.-]{0,19}$/.test(scheme) ? scheme : "non-web"}`;
+      const what = scheme === "unreadable" ? "an unreadable" : `a ${/^[a-z][a-z0-9+.-]{0,19}$/.test(scheme) ? scheme : "non-web"}`;
       throw new Told(REFUSAL.redirectRefused(what), `The page redirected to ${what} URL, which is refused.`);
     }
     // ERR_ABORTED: the page went somewhere else before it finished loading.
@@ -446,7 +448,7 @@ export class ComputerBrowser {
       // The reason is the error's code, never its message (which carries the whole address); the address goes out as a tab's own
       // does: no user name or password, scrubbed, and without the query and fragment where the tab would hide them (PR 5, X1).
       const why = typeof failed.code === "string" && /^[A-Z][A-Z0-9_]{0,60}$/.test(failed.code) ? failed.code : "failed";
-      const shown = this.urlOut(t, href);
+      const shown = clipAddress(this.urlOut(t, href));
       throw new Told(REFUSAL.couldNotOpen(`${shown} (${why})`), `Could not open ${shown}: ${why}.`);
     }
     return { url: this.urlOut(t), title: this.logScrub(t)(t.wc.getTitle()) };
@@ -818,31 +820,29 @@ export class ComputerBrowser {
     // checked again before it: the same document with no navigation asked of it, the call still current, and the control the
     // click reaches at the point one that was judged (the first click may have put another in its place). Otherwise nothing
     // more is sent. A page that changed under the first click is not a failure of the call (PR 5, A2): the first click ran, so
-    // the answer is `once: true`; a call that is no longer current (a Take over) still throws, for it is not the agent's any more.
+    // the answer is `once: true`, and so it is for every other way the second click does not finish.
     const withheld = (): boolean => this.list[this.current] !== t || t.doc !== doc || t.navs !== navs;
-    if (!valid()) throw new PageChanged();
-    if (withheld()) return { once: true };
-    let again: Reached;
+    // The first click has been delivered: whatever stops the second (the call no longer current, a check that fails or times
+    // out, the page changing after the second press) leaves the first having run, and the answer says so (PR 5, P3).
     try {
-      again = await this.stillReaches(t, p, r);
-    } catch (e) {
-      if (e instanceof Error && e.message === REFUSAL.pageChanged) return { once: true };
-      throw e;
+      if (!valid() || withheld()) return { once: true };
+      const again = await this.stillReaches(t, p, r);
+      if (!valid() || withheld()) return { once: true };
+      const second = judgedAt(again);
+      await this.mouse(t, "mousePressed", second, 2);
+      if (!valid() || !this.list.includes(t) || t.doc !== doc) return { once: true };
+      await this.mouse(t, "mouseReleased", second, 2);
+      return { once: false };
+    } catch {
+      return { once: true };
     }
-    if (!valid()) throw new PageChanged();
-    if (withheld()) return { once: true };
-    const second = judgedAt(again);
-    await this.mouse(t, "mousePressed", second, 2);
-    if (!valid() || !this.list.includes(t) || t.doc !== doc) throw new PageChanged();
-    await this.mouse(t, "mouseReleased", second, 2);
-    return { once: false };
   }
 
   /** The hit test, DOM read and walk of a press about to go to `p`, as `resolve` judged it for `r`: throws unless a click there
    *  still reaches a control that was judged, and the page is scrolled as the hit test saw it (R87: a scroll since, a smooth
    *  one still running, the page's script or the person, moves what the point shows). The one check both presses of a double
    *  click make. */
-  private async stillReaches(t: Tab, p: Point, r: Resolved): Promise<Awaited<ReturnType<ComputerBrowser["reachAt"]>>> {
+  private async stillReaches(t: Tab, p: Point, r: Resolved): Promise<Reached> {
     const now = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
     if (!now) throw new Error(REFUSAL.pageChanged);
     const ok = now.dom.remoteFrames.has(now.hit) ? now.hit === r.backendNodeId : accepted(now.dom, now.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
@@ -1273,7 +1273,7 @@ export class ComputerBrowser {
   private wire(t: Tab): void {
     const { wc } = t;
     const note = (s: string): void => this.o.hooks.note(s);
-    const refuse = (url: string, what: string): void => note(`Refused ${what} a ${schemeOf(url)} URL.`);
+    const refuse = (url: string, what: string): void => note(`Refused ${what} ${schemeOf(url) === "unreadable" ? "an unreadable" : `a ${schemeOf(url)}`} URL.`);
     wc.setWindowOpenHandler((d) => {
       if (!navAllowed(d.url)) refuse(d.url, "a new window for");
       else void this.popup(t, d).catch((e: Error) => this.o.hooks.note(`The page's new tab did not open: ${forPerson(e)}`));

@@ -681,15 +681,26 @@ export class ComputerService {
         // (nothing is awaited between them and the making), so the new tab does not depend on the start page loading: a load
         // that fails leaves its tab in place and the close goes on. Only a failure to MAKE the tab refuses, and nothing is closed.
         const had = new Set(b.tabs().map((_t, i) => b.tabUid(i)));
+        // Not the agent's own tab (no `own`): the person's to keep, as the one "+" makes is (X2 sets it only for computer_open).
         try {
-          await b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: agent.label, own: true });
+          await b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: agent.label });
         } catch (e) {
           if (!b.tabs().some((_t, i) => !had.has(b.tabUid(i)))) throw e;
         }
         if (p.browser !== b) return this.stopped(p, lease) ?? fail(REFUSAL.isOff);
+        // The load took time: the call is checked again as a click's delivery is, and if it cannot go on nothing more is closed
+        // and the start tab this call made goes again (unless it is now the only tab; one the person has already used cannot be
+        // told from one they have not, so it is left when it is still there).
+        const startUid = [...b.tabs().keys()].map((i) => b.tabUid(i)).find((u): u is number => u !== null && !had.has(u)) ?? null;
+        const undo = (): void => {
+          const i = startUid === null ? -1 : b.tabIndex(startUid);
+          if (i >= 0 && b.tabs().length > 1) b.close(i);
+        };
+        const interrupted = this.stale(p, agent, lease);
+        if (interrupted) { undo(); return interrupted; }
         // The person may have closed or moved the tab while the start page loaded.
-        if (where() < 0) return already();
-        if (!same()) return refuseAt(REFUSAL.changed, this.url(b));
+        if (where() < 0) { undo(); return already(); }
+        if (!same()) { undo(); return refuseAt(REFUSAL.changed, this.url(b)); }
       }
       const at = where();
       b.close(at);

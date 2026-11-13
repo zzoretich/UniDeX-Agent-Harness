@@ -1630,12 +1630,24 @@ test("a double click whose first click changed the page withholds the second pre
   nav.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") nav.tab.navs++; });
   assert.deepEqual(await nav.b.click(resolved(), () => true, { double: true }), { once: true });
   assert.deepEqual(pairs(nav.page), ["mousePressed 1", "mouseReleased 1"]);
-  // valid() turned false between the two (a Take over): the call is no longer the agent's, so it is still a refusal, not a click.
+  // valid() turned false between the two (a Take over): the first click ran, so that is what the answer says.
   const held = make();
   let on = true;
   held.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") on = false; });
-  await assert.rejects(held.b.click(resolved(), () => on, { double: true }), PageChanged);
+  assert.deepEqual(await held.b.click(resolved(), () => on, { double: true }), { once: true }, "the first click ran: the call is told so, not that it failed");
   assert.deepEqual(pairs(held.page), ["mousePressed 1", "mouseReleased 1"]);
+  // The second check cannot finish (a read fails or times out): the first click ran all the same.
+  const slow = make();
+  let armed = false;
+  slow.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") armed = true; });
+  slow.page.on.set("Page.getLayoutMetrics", () => { if (armed) throw new Error("timed out"); });
+  assert.deepEqual(await slow.b.click(resolved(), () => true, { double: true }), { once: true });
+  assert.deepEqual(pairs(slow.page), ["mousePressed 1", "mouseReleased 1"]);
+  // The call stops being current after the second press went.
+  const after = make();
+  let go = true;
+  after.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mousePressed" && p.clickCount === 2) go = false; });
+  assert.deepEqual(await after.b.click(resolved(), () => go, { double: true }), { once: true });
   // The page moved within its document (pushState): the same control is still there, so the second press goes.
   const same = make();
   same.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") same.tab.seq++; });
@@ -1685,7 +1697,22 @@ async function failedOpen(url: string, err: Error, more: (m: ReturnType<typeof m
   throw new Error("the open did not fail");
 }
 
-test("a failed open names its address without the user name, the password or a carried value", async () => {
+test("a refused redirect to an unreadable address says 'an unreadable URL'", async () => {
+  const m = make();
+  (m.tab.wc as unknown as { loadURL: () => Promise<void> }).loadURL = async () => { (m.tab as { refused: string | null }).refused = "unreadable"; throw Object.assign(new Error("x"), { code: "ERR_UNSAFE_REDIRECT" }); };
+  const e = await m.b.open("https://example.com/", { by: null }).catch((x: Error) => x);
+  assert.ok(e instanceof Error && e.message.includes("an unreadable URL") && !e.message.includes("a unreadable"), String(e));
+});
+
+test("a failed open with a long address keeps its error code: the address is cut before the code is added", async () => {
+  const url = `https://example.com/${"p".repeat(400)}?q=1`;
+  const r = await failedOpen(url, loadError("ERR_CONNECTION_REFUSED", url));
+  assert.ok(r.agent.includes("(ERR_CONNECTION_REFUSED)"), r.agent);
+  assert.ok(r.person.endsWith(": ERR_CONNECTION_REFUSED."), r.person);
+  assert.ok(r.person.length < 260, "the address was cut");
+});
+
+test("a failed open names its address without the user name, the password or a remembered value", async () => {
   const url = "https://user:pw@example.com/path?code=hunter22&x=1#frag";
   const err = loadError("ERR_CONNECTION_REFUSED", url);
   // A tab's own address goes out without its user name or password; a value the tab remembers for the site is scrubbed.
@@ -2304,18 +2331,18 @@ test("a flood is counted, not processed", async () => {
     const text = await b.console();
     const lines = bodyOf(text);
     assert.equal(lines.length, 101);
-    assert.equal(lines[0], "9900 more console messages were not kept: the app takes in 100 a second at most.");
+    assert.equal(lines[0], "9900 more messages and requests were not kept: the app takes in 100 a second at most.");
     assert.ok(lines.slice(1).every((l) => l.startsWith("[error] ")), "every line the page can write starts with its kind");
     // The next second takes another 100, and the newest 200 rule still holds.
     for (let sec = 0; sec < 3; sec++) { mock.timers.tick(1_000); for (let i = 0; i < 500; i++) said(b, tab, "error", `s${sec} ${i}`); }
     assert.equal(kinds(b).length, 200);
     assert.equal(kinds(b).at(-1), "error: s2 99");
-    assert.match(await b.console(), /\n\d{5} more console messages were not kept: the app takes in 100 a second at most\.\n\[error\]/);
+    assert.match(await b.console(), /\n\d{5} more messages and requests were not kept: the app takes in 100 a second at most\.\n\[error\]/);
     // A new page starts the count again.
     committedBy(b, tab, "L9", "https://a.test/new");
     (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/new");
     assert.match(await b.console(), /No errors, warnings or failed requests since this page loaded\./);
-    assert.ok(!(await b.console()).includes("more console messages"));
+    assert.ok(!(await b.console()).includes("more messages and requests"));
   } finally { mock.timers.reset(); }
 });
 
@@ -2467,7 +2494,7 @@ test("the dropped-messages line comes first and says what the app took in", asyn
     const { b, tab } = make();
     for (let i = 0; i < 150; i++) said(b, tab, "error", `flood ${i}`);
     const lines = bodyOf(await b.console());
-    assert.equal(lines[0], "50 more console messages were not kept: the app takes in 100 a second at most.");
+    assert.equal(lines[0], "50 more messages and requests were not kept: the app takes in 100 a second at most.");
     assert.ok(lines.slice(1).every((l) => l.startsWith("[error] ")));
     assert.equal(lines.length, 101);
   } finally { mock.timers.reset(); }
