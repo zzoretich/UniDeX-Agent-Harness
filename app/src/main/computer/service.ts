@@ -125,6 +125,9 @@ const PAGE = { session: "page", label: "the page" } as const;
 /** The busy reply's sentence for a session whose hold is gone: freed, or (R81) its process no longer the registered one. */
 const NOT_HELD = "this session no longer holds the wheel";
 const USER = "You";
+/** What a double click says when its first click changed the page and the second was not sent (PR 5, A2): the end of both the
+ *  agent's reply and the person's log line, after `Clicked <what> once: `. */
+const DOUBLE_ONCE = "the page changed before the second click, which was not sent";
 const LOG_MAX = 200;
 /** How long a settled ask's reply stays for `computer_wait`. */
 const KEEP_MS = 120_000;
@@ -208,7 +211,11 @@ interface AskSpec {
 }
 type Step = { reply: Reply } | { ask: AskSpec };
 /** An asked action: the session that asked, whether its ask has settled, and its reply once it has run. */
-interface Job { session: string; answered: boolean; done: Promise<Reply> }
+interface Job {
+  session: string; answered: boolean; done: Promise<Reply>;
+  /** The slot, to read the page of the reply once it is collected; and that read, made once (PR 5, A5). */
+  slot: Slot; collected: Promise<Reply> | null;
+}
 /** R81 (AC-R3-01): what an acting call holds from its start: its session's cancellation generation (Wheel.gen). The call's
  *  own AgentRef is its registration identity (its pid). Both are checked after every await in the call's path, before an
  *  ask is raised and in the predicate before each input event (`current`, `stale`). */
@@ -396,7 +403,9 @@ export class ComputerService {
   private async look(agent: AgentRef, p: Slot, call: ToolCall): Promise<Reply> {
     // S9: a read in flight keeps its browser awake (looks run outside the queue and the wheel, so trim cannot see them).
     p.looking++;
-    try { return await this.lookTool(agent, p, call); } finally { p.looking--; }
+    // When the look ends the awake limit is applied again, as the reply reads do: a browser that turned on meanwhile may have left
+    // this one over it (PR 5, X4).
+    try { return await this.lookTool(agent, p, call); } finally { p.looking--; this.released(); }
   }
 
   private async lookTool(agent: AgentRef, p: Slot, call: ToolCall): Promise<Reply> {
@@ -608,10 +617,18 @@ export class ComputerService {
     const run = async (x: Resolved): Promise<Reply> => {
       const late = this.stale(p, agent, lease);
       if (late) return late;
-      const lost = await this.deliver(p, agent, lease, (valid) => b.click(x, valid, { double }));
+      let once = false;
+      const lost = await this.deliver(p, agent, lease, async (valid) => { once = (await b.click(x, valid, { double })).once; });
       if (lost) return lost;
       const since = this.clock.now();
-      this.line(p, agent.label, x.shown ? `${done} ${quoted(x.shown)}` : `${done} an unnamed control`, agent);
+      // A double click whose first click changed the page (PR 5, A2): the first click happened, so this is an answer, not a
+      // failure (a retry would raise a second card for what already ran), with the page as it is now.
+      const what = x.shown ? quoted(x.shown) : "an unnamed control";
+      if (once) {
+        this.line(p, agent.label, `Clicked ${what} once: ${DOUBLE_ONCE}`, agent);
+        return this.done(p, b, `Clicked ${did} once: ${DOUBLE_ONCE}.`, since, lease);
+      }
+      this.line(p, agent.label, `${done} ${what}`, agent);
       return this.done(p, b, `${done} ${did}.`, since, lease);
     };
     if (!need) return { reply: take() ? await run(r) : fail(REFUSAL.late) };
@@ -757,13 +774,22 @@ export class ComputerService {
   /** session-browser S17: the pointer moved onto a ref or a point (hover styles and menus), nothing pressed. The target is
    *  resolved as a click's is; the gate lets a hover go, but a Read only session never gets here. */
   private async hoverStep(agent: AgentRef, p: Slot, b: BrowserLike, by: By, take: () => boolean, lease: Lease): Promise<Step> {
-    const r = await b.resolve(by, agent.key);
+    // The move IS the act (PR 5, A4): the call takes the computer before anything moves the pointer, and the target read's own
+    // move onto the point goes only while the call is current, so a person who holds the wheel never sees the pointer move.
+    if (!take()) return { reply: fail(REFUSAL.late) };
+    let r: Resolved;
+    try {
+      r = await b.resolve(by, agent.key, () => this.current(p, agent, lease));
+    } catch (e) {
+      const late = e instanceof PageChanged ? this.stale(p, agent, lease) : null;
+      if (late) return { reply: late };
+      throw e;
+    }
     const read = this.stale(p, agent, lease);
     if (read) return { reply: read };
     const need = this.need(judge({ kind: "hover" }, { access: agent.access, marked: this.markedAt(b, r.tab) }), null, this.siteAt(b, r.tab));
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
     const did = "ref" in by ? by.ref : `at (${by.x}, ${by.y})`;
-    if (!take()) return { reply: fail(REFUSAL.late) };
     const lost = await this.deliver(p, agent, lease, (valid) => b.hoverAt(r, valid));
     if (lost) return { reply: lost };
     const since = this.clock.now();
@@ -803,7 +829,7 @@ export class ComputerService {
       let into = idOf(f);
       if (fresh) {
         const x = fresh;
-        const lost = await this.deliver(p, agent, lease, (valid) => b.click(x, valid));
+        const lost = await this.deliver(p, agent, lease, async (valid) => { await b.click(x, valid); });
         if (lost) return lost;
         const now = await b.focus();
         const after = this.stale(p, agent, lease);
@@ -948,7 +974,8 @@ export class ComputerService {
     let started = false, lost = false;
     let timer: unknown = null;
     const mine = p.replies.then(() => {
-      if (lost || read.late()) return read.unread();
+      // Its turn came with the deadline passed (or the call already answered): the timer for the wait has nothing left to do.
+      if (lost || read.late()) { if (timer !== null) this.clock.clearTimeout(timer); return read.unread(); }
       started = true;
       if (timer !== null) this.clock.clearTimeout(timer);
       return read.run();
@@ -1041,7 +1068,7 @@ export class ComputerService {
     const held = this.o.broker.hold(input, deadline - this.clock.now());
     this.line(p, agent.label, `Asked the user: ${title}`, agent);
     const first = await held;
-    const job: Job = { session: agent.key, answered: false, done: Promise.resolve(fail(REFUSAL.changed)) };
+    const job: Job = { session: agent.key, answered: false, done: Promise.resolve(fail(REFUSAL.changed)), slot: p, collected: null };
     job.done = this.settle(agent, p, s, input, first, job, lease);
     this.jobs.set(first.askId, job);
     void job.done.then(() => { this.clock.setTimeout(() => this.jobs.delete(first.askId), KEEP_MS); });
@@ -1049,7 +1076,14 @@ export class ComputerService {
     if (first.state === "waiting_for_user") return { text: waiting(first.askId) };
     // R76: an answer near the deadline leaves no time for a slow revalidation or action: at the deadline the call says
     // so, as computer_wait does for the same ask, and computer_wait picks the result up.
-    return this.until(job.done, deadline, () => ({ text: job.answered ? running(first.askId) : waiting(first.askId) }));
+    return this.until(this.collect(job), deadline, () => ({ text: job.answered ? running(first.askId) : waiting(first.askId) }));
+  }
+
+  /** An asked action's reply as the agent gets it (the held call, or `computer_wait`): the settle wait and the outline of an
+   *  action that ran are read once, the first time it is collected (session-browser S16; PR 5, A5). */
+  private collect(job: Job): Promise<Reply> {
+    job.collected ??= job.done.then((r) => this.finished(job.slot, r));
+    return job.collected;
   }
 
   /** `work`'s reply, or `late()`'s once the clock reaches `deadline` first (`work` goes on; its reply is kept). */
@@ -1103,8 +1137,9 @@ export class ComputerService {
           this.o.wheel.touch(p.key, agent.key);
         }
       });
-      // The queue is free: the settle wait and the outline of an action that ran (session-browser S16).
-      return await this.finished(p, queued);
+      // Not read here (PR 5, A5): the outline is read, and its refs registered, when the agent collects the result (the held
+      // call, or computer_wait), so refs are never registered for a page the agent did not see.
+      return queued;
       } finally {
         // A power card that was answered but whose open did not run (the process under the key was replaced, the call was
         // stale): the pages a program held behind it open if the person turned the browser on by hand, else they are dropped.
@@ -1203,7 +1238,7 @@ export class ComputerService {
   private waitAsk(agent: AgentRef, id: string, ms: number): Promise<Reply> {
     const job = this.jobs.get(id);
     if (job && job.session !== agent.key) return Promise.resolve(fail(REFUSAL.otherSessionsAsk));
-    const result: Promise<Reply> = job ? job.done : this.o.broker.wait(id).then((o): Reply => {
+    const result: Promise<Reply> = job ? this.collect(job) : this.o.broker.wait(id).then((o): Reply => {
       if (o.state === "waiting_for_user") return { text: waiting(id) };
       if (o.state === "allowed") return { text: "The user allowed it." };
       return o.reason === "unknown ask" ? fail(REFUSAL.noSuchAsk(clean(id, 64))) : fail(o.answer === "deny" ? REFUSAL.askDenied : REFUSAL.askDeniedBecause(o.reason ?? "cancelled"));

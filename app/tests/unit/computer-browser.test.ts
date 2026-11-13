@@ -1545,7 +1545,10 @@ test("a tab closing below the active one during that read: the reload goes to th
   inner.current = 1;
   page.on.set("Page.getNavigationHistory", () => { page.on.clear(); inner.list.splice(1, 1); inner.current = 0; });
   assert.equal(await b.navEntry("reload", bound({ uid: 3 }), () => true), false);
-  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "the neighbour was not reloaded");
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "the closed tab's own page was not reloaded");
+  // The neighbour that takes its place is the second tab, whose page is page2: it was reloaded once above, and not again.
+  assert.equal(inner.list[0].uid, 2);
+  assert.equal(page2.sent.filter((s) => s.method === "Page.reload").length, 1, "the neighbour was not reloaded again");
 });
 
 test("an allowed Back onto a POST entry goes to that entry and no other", async () => {
@@ -1609,23 +1612,23 @@ test("double sends one double click", async () => {
   assert.deepEqual(pairs(page), ["mousePressed 1", "mouseReleased 1"]);
 });
 
-test("a double click stops when its first click replaced the control under the pointer", async () => {
+test("a double click whose first click changed the page withholds the second press and says the first ran", async () => {
   // The first click swaps the judged button for another control at the same point, in the same document.
   const swap = make();
   swap.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") swap.page.hit = 11; });
-  await assert.rejects(swap.b.click(resolved(), () => true, { double: true }), (e: Error) => e.message === REFUSAL.pageChanged);
+  assert.deepEqual(await swap.b.click(resolved(), () => true, { double: true }), { once: true });
   assert.deepEqual(pairs(swap.page), ["mousePressed 1", "mouseReleased 1"], "no second press or release");
   // The document changed between the two.
   const doc = make();
   doc.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") commitNewDocument(doc.tab); });
-  await assert.rejects(doc.b.click(resolved(), () => true, { double: true }), PageChanged);
+  assert.deepEqual(await doc.b.click(resolved(), () => true, { double: true }), { once: true });
   assert.deepEqual(pairs(doc.page), ["mousePressed 1", "mouseReleased 1"]);
   // A navigation the first click requested, not yet committed.
   const nav = make();
   nav.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") nav.tab.navs++; });
-  await assert.rejects(nav.b.click(resolved(), () => true, { double: true }), PageChanged);
+  assert.deepEqual(await nav.b.click(resolved(), () => true, { double: true }), { once: true });
   assert.deepEqual(pairs(nav.page), ["mousePressed 1", "mouseReleased 1"]);
-  // valid() turned false between the two (a Take over).
+  // valid() turned false between the two (a Take over): the call is no longer the agent's, so it is still a refusal, not a click.
   const held = make();
   let on = true;
   held.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") on = false; });
@@ -1634,8 +1637,10 @@ test("a double click stops when its first click replaced the control under the p
   // The page moved within its document (pushState): the same control is still there, so the second press goes.
   const same = make();
   same.page.on.set("Input.dispatchMouseEvent", (p) => { if (p.type === "mouseReleased") same.tab.seq++; });
-  await same.b.click(resolved(), () => true, { double: true });
+  assert.deepEqual(await same.b.click(resolved(), () => true, { double: true }), { once: false });
   assert.deepEqual(pairs(same.page), ["mousePressed 1", "mouseReleased 1", "mousePressed 2", "mouseReleased 2"]);
+  // A plain click never says "once".
+  assert.deepEqual(await make().b.click(resolved(), () => true), { once: false });
 });
 
 test("hoverAt moves the pointer onto the point and presses nothing; it goes only while the call is current", async () => {
@@ -1648,6 +1653,56 @@ test("hoverAt moves the pointer onto the point and presses nothing; it goes only
   tab.seq++;
   await assert.rejects(b.hoverAt(resolved(), () => true), PageChanged);
   assert.deepEqual(page.inputs(), [], "the page moved on: nothing sent");
+});
+
+test("resolve moves the pointer only while the call it was given is current: a Take over before the move sends nothing", async () => {
+  const { b, page } = make();
+  await assert.rejects(b.resolve({ x: 5, y: 5 }, undefined, () => false), PageChanged);
+  assert.deepEqual(page.mice(), [], "no mouseMoved");
+  // The wheel is taken during the secrets read that comes before the move.
+  let held = true;
+  page.on.set("DOM.getDocument", () => { held = false; });
+  await assert.rejects(b.resolve({ x: 5, y: 5 }, undefined, () => held), PageChanged);
+  assert.deepEqual(page.mice(), [], "still no mouseMoved");
+  page.on.clear();
+  const r = await b.resolve({ x: 5, y: 5 }, undefined, () => true);
+  assert.equal(r.tab, 0);
+  assert.equal(page.mice().filter(([ty]) => ty === "mouseMoved").length >= 1, true, "a current call's pointer moves");
+});
+
+// ---- session-browser (PR 5, X1): a failed open names its address as a tab's own address goes out
+
+/** The error Electron's loadURL rejects with: a code, and a message that carries the whole address. */
+const loadError = (code: string | undefined, url: string) => Object.assign(new Error(`${code ?? "ERR_FAILED"} (-2) loading '${url}'`), code ? { code } : {});
+/** `make()`'s only tab, whose loadURL rejects with `err`; returns what open() threw (the agent's sentence and the person's). */
+async function failedOpen(url: string, err: Error, more: (m: ReturnType<typeof make>) => void = () => {}): Promise<{ agent: string; person: string }> {
+  const m = make();
+  (m.tab.wc as unknown as { loadURL: () => Promise<void> }).loadURL = async () => { throw err; };
+  more(m);
+  try { await m.b.open(url, { by: null }); } catch (e) { return { agent: (e as Error).message, person: forPerson(e) }; }
+  throw new Error("the open did not fail");
+}
+
+test("a failed open names its address without the user name, the password or a carried value", async () => {
+  const url = "https://user:pw@example.com/path?code=hunter22&x=1#frag";
+  const err = loadError("ERR_CONNECTION_REFUSED", url);
+  // A tab's own address goes out without its user name or password; a value the tab remembers for the site is scrubbed.
+  const plain = await failedOpen(url, err, (m) => m.tab.memory.remember("https://example.com", { values: ["hunter22"], whole: [] }));
+  for (const text of [plain.agent, plain.person]) {
+    assert.ok(!text.includes("user") && !text.includes("pw@") && !text.includes("hunter22"), text);
+    assert.ok(text.includes("https://example.com/path"), text);
+    assert.ok(text.includes("ERR_CONNECTION_REFUSED"), text);
+  }
+  assert.ok(plain.agent.startsWith("Could not open https://example.com/path") && plain.agent.includes(" (ERR_CONNECTION_REFUSED): "), "the table's sentence with the shown address and why");
+  assert.ok(plain.person.startsWith("Could not open https://example.com/path") && plain.person.endsWith(": ERR_CONNECTION_REFUSED."), "the person's own wording");
+  // Where the tab would hide the query and fragment, so does this.
+  const hidden = await failedOpen(url, err, (m) => { (m.tab as { urlHidden: boolean }).urlHidden = true; });
+  for (const text of [hidden.agent, hidden.person]) {
+    assert.ok(text.includes("https://example.com/path") && !text.includes("code=") && !text.includes("x=1") && !text.includes("frag"), text);
+  }
+  // An error with no code never lets its message (which carries the whole address) through.
+  const nocode = await failedOpen(url, loadError(undefined, url));
+  for (const text of [nocode.agent, nocode.person]) assert.ok(!text.includes("user") && !text.includes("pw") && text.includes("failed"), text);
 });
 
 // ---- session-browser S17 (Task 20, fix round 1)
@@ -1686,6 +1741,31 @@ test("a Take over or a Stop during the allowed move's history read sends nothing
     assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, go);
     assert.deepEqual(nav.moves, [], go);
   }
+});
+
+test("a history read that DevTools, another debugger or a closed tab refuses answers with its own sentence, not 'could not be read'", async () => {
+  // DevTools is open on the tab.
+  const dev = make();
+  historyOf(dev.page, ["e1"], 0);
+  (dev.tab.wc as unknown as { isDevToolsOpened: () => boolean }).isDevToolsOpened = () => true;
+  await assert.rejects(dev.b.entry("reload"), (e: Error) => e.message === REFUSAL.devToolsOpen);
+  // Another debugger holds the tab: the attach on demand fails.
+  const other = make();
+  historyOf(other.page, ["e1"], 0);
+  const dbg = other.tab.wc.debugger as unknown as { isAttached: () => boolean; attach: () => void };
+  dbg.isAttached = () => false;
+  dbg.attach = () => { throw new Error("Another debugger is already attached"); };
+  await assert.rejects(other.b.entry("reload"), (e: Error) => e.message === REFUSAL.otherDebugger);
+  // The tab closed between the look at it and the read.
+  const gone = make();
+  historyOf(gone.page, ["e1"], 0);
+  let looks = 0;
+  (gone.tab.wc as unknown as { isDestroyed: () => boolean }).isDestroyed = () => ++looks > 1;
+  await assert.rejects(gone.b.entry("reload"), (e: Error) => e.message === REFUSAL.tabGone);
+  // Any other failure of the read (a history that cannot be read at that moment) is still "no entry id".
+  const plain = make();
+  plain.page.history = null;
+  assert.equal((await plain.b.entry("reload"))?.id, null);
 });
 
 test("a history that cannot be read is never a bound entry", async () => {
@@ -1744,7 +1824,35 @@ test("an answer to a read sent before the gap does not close it", async () => {
   assert.notEqual(tab.gap, null, "the older read's answer did not close the gap");
   second(); await afterBind();
   assert.equal(tab.gap, null, "a read sent after it did");
-  assert.notEqual(await b.entryMethod("reload"), "GET", "the entry made around the gap is not called new");
+  // The entry made around the gap has no record (the old assertion, "not GET", held whatever the gap did): it stays unknown, and
+  // once the gap has closed a genuinely new same-document entry is GET again.
+  assert.equal(tab.methods.has("e3"), false, "the entry made around the gap was not called new");
+  historyOf(page, ["e1", "e2", "e3", "e4"], 3);
+  pushed(b, tab, "https://a.test/x#n");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "GET", "a new entry after the gap closed is GET, so the gap really closed");
+});
+
+test("a gap is opened at each attach: a POST commit made while the debugger was detached is not recorded GET by a later replaceState", async () => {
+  const { b, page, tab } = make();
+  const dbg = tab.wc.debugger as unknown as { isAttached: () => boolean; attach: (v: string) => void };
+  let attached = false, attaches = 0;
+  dbg.isAttached = () => attached;
+  dbg.attach = () => { attached = true; attaches++; };
+  // The tab's POST commit happened while no debugger was attached: nothing heard its loader, and no read listed its entry.
+  historyOf(page, ["e1"], 0);
+  await b.entry("reload");                       // the first command attaches
+  assert.equal(attaches, 1);
+  assert.notEqual(tab.gap, null, "attaching opens a gap: entries of the tab may be unlisted and still not new");
+  pushed(b, tab, "https://a.test/x#r");          // a replaceState on that entry
+  await afterBind();
+  assert.notEqual(await b.entryMethod("reload"), "GET", "the POST page's entry is not called new, so not GET");
+  assert.equal(tab.gap, null, "the read the bind sent after the attach closed the gap");
+  // A second attach (after a crash or a reload) opens a gap again.
+  attached = false;
+  await b.entry("reload");
+  assert.equal(attaches, 2);
+  assert.notEqual(tab.gap, null);
 });
 
 test("a router's pushState followed by replaceState in one task leaves the route's entry GET", async () => {

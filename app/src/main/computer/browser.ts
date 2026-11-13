@@ -98,6 +98,8 @@ const LEAVING_VALUES = `(() => { const out = []; const sel = ${JSON.stringify(SE
 // it may carry could not be read (G2 below) or a read flooded a kind's reserve (R37).
 const ABORTED = -3;
 const stripQuery = (url: string): string => { try { const u = new URL(url); u.search = ""; u.hash = ""; return u.href; } catch { return url; } };
+/** The refusals of `send` that name their own next step, which a history read passes on instead of "could not be read". */
+const SAYS_WHY: ReadonlySet<string> = new Set([REFUSAL.devToolsOpen, REFUSAL.otherDebugger, REFUSAL.tabGone]);
 const DIALOGS = new Set(["alert", "confirm", "prompt", "beforeunload"]);
 // The focused element behind open shadow roots and readable frames, run in an isolated world (native getters only).
 const ACTIVE_ELEMENT = `(() => { let e = document.activeElement;
@@ -109,6 +111,9 @@ const ACTIVE_ELEMENT = `(() => { let e = document.activeElement;
   }
   return e; })()`;
 
+/** What a hit test at a point found (`reachAt`): the node hit, where the test was made and the scroll it saw, the DOM read, and
+ *  the controls a click there reaches. */
+type Reached = { hit: number; at: Point; off: Point; dom: DomIndex; reached: Reach; own: number };
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
 
@@ -432,7 +437,13 @@ export class ComputerBrowser {
     clearTimeout(timer);
     if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") { const what = t.refused ? `a ${t.refused}` : "a non-web"; throw new Told(REFUSAL.redirectRefused(what), `The page redirected to ${what} URL, which is refused.`); };
     // ERR_ABORTED: the page went somewhere else before it finished loading.
-    if (failed && failed.code !== "ERR_ABORTED") { const why = failed.code ?? failed.message ?? "failed"; throw new Told(REFUSAL.couldNotOpen(`${href} (${why})`), `Could not open ${href}: ${why}.`); };
+    if (failed && failed.code !== "ERR_ABORTED") {
+      // The reason is the error's code, never its message (which carries the whole address); the address goes out as a tab's own
+      // does: no user name or password, scrubbed, and without the query and fragment where the tab would hide them (PR 5, X1).
+      const why = typeof failed.code === "string" && /^[A-Z][A-Z0-9_]{0,60}$/.test(failed.code) ? failed.code : "failed";
+      const shown = this.urlOut(t, href);
+      throw new Told(REFUSAL.couldNotOpen(`${shown} (${why})`), `Could not open ${shown}: ${why}.`);
+    }
     return { url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()) };
   }
 
@@ -503,9 +514,9 @@ export class ComputerBrowser {
   }
 
   /** How the page Back, Forward or Reload would load was fetched (session-browser S17), for the gate: "GET" where it is
-   *  certainly one, "other" for a POST or any other method, "unknown" where it cannot be told (no record of that entry, no
-   *  entry to go to, `about:blank`, a history that cannot be read). The history is read at the moment of the call, so the
-   *  index is the one the move would use. A tab still waking reloads its kept address by GET. */
+   *  certainly one (`about:blank` is one too: it is not fetched), "other" for a POST or any other method, "unknown" where it
+   *  cannot be told (no record of that entry, no entry to go to, a history that cannot be read). The history is read at the
+   *  moment of the call, so the index is the one the move would use. A tab still waking reloads its kept address by GET. */
   async entryMethod(go: ComputerNavGo, tab?: number): Promise<"GET" | "other" | "unknown"> {
     return (await this.entry(go, tab))?.method ?? "unknown";
   }
@@ -515,7 +526,9 @@ export class ComputerBrowser {
     const t = this.list[tab ?? this.current];
     if (!t || t.wc.isDestroyed()) return null;
     if (t.pending) return { uid: t.uid, id: null, url: null, method: go === "reload" ? "GET" : "unknown" };
-    const h = await this.history(t).catch(() => null);
+    // A refusal that says what to do (DevTools open, another debugger, a closed tab) goes on as itself; any other failure of the
+    // read leaves the entry with no id, and the caller says the history could not be read (PR 5, A10).
+    const h = await this.history(t).catch((e: unknown) => { if (e instanceof Told && SAYS_WHY.has(e.message)) throw e; return null; });
     const e = h?.entries[h.currentIndex + (go === "back" ? -1 : go === "forward" ? 1 : 0)];
     if (!e) return { uid: t.uid, id: null, url: null, method: "unknown" };
     return { uid: t.uid, id: String(e.id), url: e.url, method: e.url === "about:blank" ? "GET" : t.methods.get(String(e.id)) ?? "unknown" };
@@ -699,9 +712,11 @@ export class ComputerBrowser {
    * one in the hovered state the press will meet (a row that shows Delete on hover). The target is the control a click
    * there reaches by either walk (`judgeReach`); `click()` delivers at exactly that point. `target.name` is raw (D9: the
    * gate judges what the page shows); `shown` is the name for outgoing text, scrubbed with the values read in this call.
-   * A ref is looked up in `session`'s own table (I2), so it names the node printed for that session or nothing.
+   * A ref is looked up in `session`'s own table (I2), so it names the node printed for that session or nothing. With `valid`
+   * (PR 5, A4), the pointer's move onto the point is made only while it holds (otherwise PageChanged, and nothing moved); a
+   * click's resolve is not given one.
    */
-  async resolve(by: { ref: string } | { x: number; y: number }, session?: string): Promise<Resolved> {
+  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean): Promise<Resolved> {
     const t = this.tab();
     const where = { pageToken: this.tokenOf(t), tab: this.current };
     let named: number | null = null;
@@ -720,7 +735,8 @@ export class ComputerBrowser {
     // D9: the fields' values are read before the pointer arrives as well as after the walk, and `shown` is scrubbed with
     // both (a page that clears a code on mouseenter would otherwise leave it in the name read after the hover).
     const pre = await this.secrets(t);
-    await this.hover(t, p);
+    // `valid` (a hover's, whose move is the act): the pointer goes onto the point only while the call is current.
+    await this.hover(t, p, valid && (() => this.live(valid)));
     const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
       if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error(REFUSAL.covered);
     });
@@ -778,7 +794,7 @@ export class ComputerBrowser {
    *  otherwise it is withheld (PageChanged), so a new document, or a click the person stopped, never gets a mouseup. R87:
    *  the press and its release go to exactly the point the click's own hit test judged, and the press only while the page
    *  is scrolled as it was for that test, read again just before it. */
-  async click(r: Resolved, valid: () => boolean, o: { double?: boolean } = {}): Promise<void> {
+  async click(r: Resolved, valid: () => boolean, o: { double?: boolean } = {}): Promise<{ once: boolean }> {
     const t = this.where(r);
     if (typeof r.backendNodeId !== "number") throw new Error(REFUSAL.pageChanged);
     const p = r.point;
@@ -786,38 +802,50 @@ export class ComputerBrowser {
     // R26: hover the point again, hit-test, read the DOM and walk again, and deliver only while a click there reaches no
     // control the gate did not judge; the press follows the check with no move in between.
     await this.hover(t, p, live);
-    const now = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
-    if (!now) throw new Error(REFUSAL.pageChanged);
-    const ok = now.dom.remoteFrames.has(now.hit) ? now.hit === r.backendNodeId : accepted(now.dom, now.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
-    if (!ok) throw new Error(REFUSAL.pageChanged);
-    // R87: a scroll since the hit test (a smooth scroll still running, the page's script, the person) moves what the
-    // point shows, so it refuses. It is read before the checks below, so nothing is awaited between them and the press.
-    const off = await this.scrolledBy(t);
-    if (off.x !== now.off.x || off.y !== now.off.y) throw new Error(REFUSAL.pageChanged);
+    const now = await this.stillReaches(t, p, r);
     const at = judgedAt(now);
     live();
     const doc = t.doc, navs = t.navs;
     await this.mouse(t, "mousePressed", at);
     if (!valid() || !this.list.includes(t) || t.doc !== doc) throw new PageChanged();
     await this.mouse(t, "mouseReleased", at);
-    if (!o.double) return;
+    if (!o.double) return { once: false };
     // R76 (session-browser S17, R7): the second press is a second act on the page, so what was checked before the first is
     // checked again before it: the same document with no navigation asked of it, the call still current, and the control the
     // click reaches at the point one that was judged (the first click may have put another in its place). Otherwise nothing
-    // more is sent.
-    const gone = (): boolean => !valid() || this.list[this.current] !== t || t.doc !== doc || t.navs !== navs;
-    if (gone()) throw new PageChanged();
-    const again = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
-    if (!again) throw new Error(REFUSAL.pageChanged);
-    const same = again.dom.remoteFrames.has(again.hit) ? again.hit === r.backendNodeId : accepted(again.dom, again.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
-    if (!same) throw new Error(REFUSAL.pageChanged);
-    const moved = await this.scrolledBy(t);
-    if (moved.x !== again.off.x || moved.y !== again.off.y) throw new Error(REFUSAL.pageChanged);
-    if (gone()) throw new PageChanged();
+    // more is sent. A page that changed under the first click is not a failure of the call (PR 5, A2): the first click ran, so
+    // the answer is `once: true`; a call that is no longer current (a Take over) still throws, for it is not the agent's any more.
+    const withheld = (): boolean => this.list[this.current] !== t || t.doc !== doc || t.navs !== navs;
+    if (!valid()) throw new PageChanged();
+    if (withheld()) return { once: true };
+    let again: Reached;
+    try {
+      again = await this.stillReaches(t, p, r);
+    } catch (e) {
+      if (e instanceof Error && e.message === REFUSAL.pageChanged) return { once: true };
+      throw e;
+    }
+    if (!valid()) throw new PageChanged();
+    if (withheld()) return { once: true };
     const second = judgedAt(again);
     await this.mouse(t, "mousePressed", second, 2);
     if (!valid() || !this.list.includes(t) || t.doc !== doc) throw new PageChanged();
     await this.mouse(t, "mouseReleased", second, 2);
+    return { once: false };
+  }
+
+  /** The hit test, DOM read and walk of a press about to go to `p`, as `resolve` judged it for `r`: throws unless a click there
+   *  still reaches a control that was judged, and the page is scrolled as the hit test saw it (R87: a scroll since, a smooth
+   *  one still running, the page's script or the person, moves what the point shows). The one check both presses of a double
+   *  click make. */
+  private async stillReaches(t: Tab, p: Point, r: Resolved): Promise<Awaited<ReturnType<ComputerBrowser["reachAt"]>>> {
+    const now = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
+    if (!now) throw new Error(REFUSAL.pageChanged);
+    const ok = now.dom.remoteFrames.has(now.hit) ? now.hit === r.backendNodeId : accepted(now.dom, now.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
+    if (!ok) throw new Error(REFUSAL.pageChanged);
+    const off = await this.scrolledBy(t);
+    if (off.x !== now.off.x || off.y !== now.off.y) throw new Error(REFUSAL.pageChanged);
+    return now;
   }
 
   /** Moves the pointer onto where `r` was resolved and presses nothing (session-browser S17). Like a click's move, it goes only
@@ -1622,6 +1650,9 @@ export class ComputerBrowser {
       } catch {
         throw new Told(REFUSAL.otherDebugger, "Another debugger is attached to this tab, so it cannot be driven (agent-computer D20).");
       }
+      // Whatever committed while no debugger was attached was heard by none: its entry is unrecorded and unlisted, so a gap opens
+      // (it closes at the first read sent after it) and no same-document entry is called new meanwhile (PR 5, D6).
+      t.gap = t.sent;
       for (const [method, params] of ENABLE) await cdp(t.wc.debugger, method, params);
       await this.watchRequests(t);
     })().finally(() => { t.attaching = null; });
@@ -1910,14 +1941,15 @@ export class ComputerBrowser {
   /** The tab's current URL before its scrub: everything after the origin hidden while its commit is still carrying (R40),
    *  the query and fragment hidden while the document arrived through a navigation whose leaving read failed, a commit no
    *  entry matched, or a read of it flooded the memory (F1, R37, R39). */
-  private shownUrl(t: Tab): string {
-    const url = withoutUserinfo(t.wc.getURL());
+  private shownUrl(t: Tab, raw: string = t.wc.getURL()): string {
+    const url = withoutUserinfo(raw);
     return t.pathHidden ? hideAfterOrigin(url) : this.hidden(t) ? stripQuery(url) : url;
   }
 
-  /** The tab's current URL as it may leave: `shownUrl`, scrubbed for the current site. */
-  private urlOut(t: Tab): string {
-    return this.urlScrub(t, [this.site(t)])(this.shownUrl(t));
+  /** The tab's current URL as it may leave: `shownUrl`, scrubbed for the current site. With `raw` (an address the tab was asked
+   *  to open, which a failed open names), that address goes out the same way, scrubbed for its site as well (PR 5, X1). */
+  private urlOut(t: Tab, raw?: string): string {
+    return this.urlScrub(t, raw === undefined ? [this.site(t)] : [this.site(t), siteOf(raw) ?? "null"])(this.shownUrl(t, raw));
   }
 
   /** G2: the document being left may hold a code the person typed that the agent never read (a GET submit carries it into
@@ -2132,7 +2164,7 @@ export class ComputerBrowser {
    * hidden, the wrapper hit) also starts at each host above it, where the click bubbles (`hostsAbove`). `hit` stays
    * the node the hit test returned; `at` and `off` are the hit test's (`hitAt`), and a press goes to `judgedAt` of them.
    */
-  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; at: Point; off: Point; dom: DomIndex; reached: Reach; own: number }> {
+  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<Reached> {
     const { hit, at, off } = await this.hitAt(t, p);
     const dom = await this.locked(t, () => this.readDom(t));
     if (!dom.names.has(hit)) throw new Error(REFUSAL.pageChanged);

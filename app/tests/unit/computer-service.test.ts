@@ -30,8 +30,10 @@ const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 class FakeClock implements Clock {
   t = 0; private n = 0; private q = new Map<number, { at: number; fn: () => void }>();
   now() { return this.t; }
-  setTimeout(fn: () => void, ms: number) { const id = ++this.n; this.q.set(id, { at: this.t + ms, fn }); return id; }
-  clearTimeout(id: unknown) { this.q.delete(id as number); }
+  /** Every timer set (its id and delay) and every id cleared, so a test can see that a timer was cleared, not just that it did no harm. */
+  setLog: { id: number; ms: number }[] = []; cleared = new Set<number>();
+  setTimeout(fn: () => void, ms: number) { const id = ++this.n; this.setLog.push({ id, ms }); this.q.set(id, { at: this.t + ms, fn }); return id; }
+  clearTimeout(id: unknown) { this.cleared.add(id as number); this.q.delete(id as number); }
   async advance(ms: number) {
     const end = this.t + ms;
     for (;;) {
@@ -60,6 +62,8 @@ class FakeBrowser implements BrowserLike {
   spots = new Map<string, Spot>();
   focused: Focus = { target: null, shown: "", sensitive: false, plainTextarea: false, node: null, frame: null };
   text = "";
+  /** Page texts for the next reads, in order (D9: a test tells each call's read apart), and the table each reply read registered. */
+  pageTexts: string[] = []; registered: string[] = [];
   clicks: Resolved[] = []; typed: string[] = []; keys: string[] = []; scrolls: { dx: number; dy: number; at: number | null }[] = [];
   /** Where each type and key was bound (I3b): the tab and page token the gate judged. */
   bound: ({ tab: number; pageToken: string } | undefined)[] = [];
@@ -136,6 +140,8 @@ class FakeBrowser implements BrowserLike {
   methods: Record<string, "GET" | "other" | "unknown"> = {};
   asked: string[] = [];
   entryGate: Promise<void> | null = null;
+  /** A refusal the history read ends with (DevTools open, another debugger, a closed tab), as the real browser's entry() throws it. */
+  entryError: Error | null = null;
   /** The id of the history entry a move would load, and the address each of Back and Forward would load. */
   entryId: string | null = "e1"; entryUrls: Record<string, string> = {};
   private uids = new WeakMap<object, number>(); private nextUid = 1;
@@ -158,6 +164,7 @@ class FakeBrowser implements BrowserLike {
   async entry(go: string, tab?: number) {
     this.need(tab); this.asked.push(go);
     await this.entryGate;
+    if (this.entryError) throw this.entryError;
     return { uid: this.tabUid(tab ?? this.current)!, id: this.entryId, url: this.entryUrls[go] ?? null, method: this.methods[go] ?? "GET" };
   }
   /** As the real one: moves only if the tab is the active one and the entry is the one the card named. */
@@ -171,6 +178,8 @@ class FakeBrowser implements BrowserLike {
     return true;
   }
   hovers: Resolved[] = [];
+  /** Each resolve that got as far as moving the pointer, and whether it was guarded by the call's validity. */
+  moves: ("guarded" | "free")[] = [];
   async hoverAt(r: Resolved, valid: () => boolean) {
     if (r.pageToken !== this.pageToken()) throw new Error("The page changed: look again.");
     if (!valid()) throw new PageChanged();
@@ -187,7 +196,11 @@ class FakeBrowser implements BrowserLike {
     this.need(tab); this.snapshotsFor.push(session); this.capsFor.push(o.cap); this.snapSince.push(this.lastSettled);
     await this.snapGate;
     const open = `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">`, close = "</untrusted-page>";
-    let lines = this.text.split("\n"), truncated = false;
+    // The page text of this read: the next of `pageTexts` when a test lined some up, else `text`. A read for a session registers
+    // its refs, so what it printed is what its table holds from then on (in `registered`, in the order the reads finished).
+    const body = this.pageTexts.shift() ?? this.text;
+    if (session !== undefined && o.cap !== undefined) this.registered.push(`${session}|${body}`);
+    let lines = body.split("\n"), truncated = false;
     // As formatSnapshot does: whole lines only, the wrapper whole, within the cap.
     if (o.cap !== undefined) {
       let used = 0;                              // the page's own lines only: the wrapper's parts do not count
@@ -205,9 +218,12 @@ class FakeBrowser implements BrowserLike {
     this.need(tab); this.consoleFor.push(tab);
     return `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">\n${this.consoleText}\n</untrusted-page>`;
   }
-  async resolve(by: { ref: string } | { x: number; y: number }, session?: string): Promise<Resolved> {
+  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean): Promise<Resolved> {
     this.need(); this.order.push("resolve"); this.resolvesFor.push(session);
     if (this.resolveGate) await this.resolveGate;
+    // As the real browser does when it is given a predicate (PR 5, A4): the pointer's move goes only while the call is current.
+    if (valid && !valid()) throw new PageChanged();
+    this.moves.push(valid ? "guarded" : "free");
     const key = "ref" in by ? by.ref : `${by.x},${by.y}`;
     const s = this.spots.get(key);
     if (!s) throw new Error(`There is no ${key} on this page now: take a new snapshot.`);
@@ -229,7 +245,9 @@ class FakeBrowser implements BrowserLike {
   valids: (() => boolean)[] = [];
   /** The options each click was given (session-browser S17: `double`). */
   clickOpts: ({ double?: boolean } | undefined)[] = [];
-  async click(r: Resolved, valid?: () => boolean, o?: { double?: boolean }) {
+  /** One-shot: the next double click's first click changes the page, so the browser withholds the second press (`once`). */
+  secondWithheld = false;
+  async click(r: Resolved, valid?: () => boolean, o?: { double?: boolean }): Promise<{ once: boolean }> {
     this.clickOpts.push(o);
     if (r.pageToken !== this.pageToken()) throw new Error("The page changed: look again.");
     if (valid) this.valids.push(valid);
@@ -239,6 +257,10 @@ class FakeBrowser implements BrowserLike {
     this.order.push("click"); this.clicks.push(r);
     const s = [...this.spots.values()].find((x) => x.target.name === r.target.name);
     if (s?.focuses) this.focused = { target: { ...s.target }, shown: s.shown ?? s.target.name, sensitive: !!s.sensitive, plainTextarea: false, node: s.node ?? 7, frame: "F1" };
+    const once = !!o?.double && this.secondWithheld;
+    this.secondWithheld = false;
+    if (once) this.commit(this.current);
+    return { once };
   }
   /** The focus each type and key was told to expect (R76: the browser delivers only while that node has focus). */
   expected: (Pick<Focus, "node" | "frame"> | undefined)[] = [];
@@ -742,6 +764,35 @@ test("waiting_for_user arrives at 45 s, and computer_wait gets the result", asyn
   assert.equal((await w).text, `Clicked e1.${now("https://a.test/")}`);
   assert.equal(b.clicks.length, 1);
   assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1.${now("https://a.test/")}`, "a later wait sees the same result");
+});
+
+test("an asked run's page is read when its result is collected, not before, and only once", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  b.text = "after the click";
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  const ask = await h.asked();
+  await h.clock.advance(45_000);
+  assert.equal((await p).text, `waiting_for_user: call computer_wait with askId "${ask.id}"`);
+  const before = b.snapshotsFor.length;
+  h.svc.answer(ask.id, "once");
+  await flush();
+  assert.equal(b.clicks.length, 1, "the action ran");
+  assert.equal(b.snapshotsFor.length, before, "no one has collected the result: no read, so no refs registered for the agent");
+  const got = await h.call(A, "computer_wait", { askId: ask.id });
+  assert.equal(got.text, `Clicked e1.${now("https://a.test/", "after the click")}`);
+  assert.equal(b.snapshotsFor.length, before + 1, "the read came with the collection");
+  const again = await h.call(A, "computer_wait", { askId: ask.id });
+  assert.equal(again.text, got.text, "a later wait sees the same result");
+  assert.equal(b.snapshotsFor.length, before + 1, "and reads nothing more");
+  // The held call that is answered inside its hold collects it too.
+  const q = h.call(A, "computer_click", { ref: "e1" });
+  const ask2 = await h.asked();
+  const base = b.snapshotsFor.length;
+  h.svc.answer(ask2.id, "once");
+  assert.equal((await q).text, `Clicked e1.${now("https://a.test/", "after the click")}`);
+  assert.equal(b.snapshotsFor.length, base + 1);
 });
 
 test("computer_wait on a pending ask returns waiting_for_user again at its timeout", async () => {
@@ -4628,6 +4679,26 @@ test("a browser is not put to sleep while a reply's page is being read", async (
   assert.equal(x.sleeping, true, "after the read it can sleep");
 });
 
+test("the awake limit is applied again when a look ends", async () => {
+  const h = make();
+  h.cfg.awake = 1;
+  const b = await h.open(A, "https://a.test/");
+  h.svc.agentGone(A);                                    // the turn ended: only the look is left to keep it awake
+  let release!: () => void;
+  b.snapGate = new Promise<void>((r) => { release = r; });
+  const look = h.call(A, "computer_snapshot");
+  await flush();
+  h.svc.power("chat:s2", true); await flush();
+  h.svc.select("chat:s2");                               // the one on screen is never put to sleep
+  await h.clock.advance(0);                              // every trim the turn-on asked for has run, and found the look in flight
+  assert.equal(b.sleeping, false, "a look in flight keeps its browser awake");
+  release();
+  await look;
+  await h.clock.advance(0);
+  assert.equal(b.sleeping, true, "the limit of one is applied when the look ends: a browser that turned on while it ran is not left awake beside it");
+  assert.equal(h.b("chat:s2").sleeping, false);
+});
+
 // ---- fix round 2 (session-browser S16): a line for the person keeps its own words
 
 test("a line for the person keeps its own wording, not the agent's advice", async () => {
@@ -4675,6 +4746,20 @@ test("a call waiting behind another call's read answers at its own deadline, unr
   assert.ok(h.clock.t > t0);
 });
 
+test("a reply read that finds its deadline passed when its turn comes clears the timer it set for the wait", async () => {
+  const { h, release, p1 } = await behind();
+  const mark = h.clock.setLog.length;
+  void h.call(A, "computer_click", { ref: "e1" });            // call 2, waiting behind call 1's stuck read
+  await flush();
+  h.clock.t += 100_000;                                       // its deadline passed with no timer fired yet
+  release();
+  await p1;
+  await flush();
+  const forTheCall = h.clock.setLog.slice(mark).filter((x) => x.ms > 40_000 && x.ms <= 45_000);
+  assert.ok(forTheCall.length >= 1, "the call set its timers for its 45 s");
+  for (const x of forTheCall) assert.ok(h.clock.cleared.has(x.id), `the timer of ${x.ms} ms was left behind`);
+});
+
 test("the calls after it keep their order", async () => {
   const { h, b, release, base, p1 } = await behind();
   await h.clock.advance(1_000);
@@ -4683,10 +4768,16 @@ test("the calls after it keep their order", async () => {
   const p3 = h.call(A, "computer_click", { ref: "e1" });   // call 3, deadline at 85 s
   await h.clock.advance(7_000);                            // call 2's deadline passes
   b.snapSince.length = 0;
+  b.registered.length = 0;
+  b.pageTexts = ["call 1's page", "call 3's page"];
   release();
-  await Promise.all([p1, p3]);
+  const [r1, r3] = await Promise.all([p1, p3]);
   assert.equal(b.snapshotsFor.length, base + 2, "call 1's snapshot and call 3's");
   assert.equal(b.snapSince.length, 1, "call 3's read came after call 1's, which was already under way");
+  // The table: call 1's read registered first, call 3's after it, so the refs the agent holds are those of the last page it was shown.
+  assert.deepEqual(b.registered, ["chat:a|call 1's page", "chat:a|call 3's page"], "the refs were registered in the order of the calls, none for call 2");
+  assert.ok(r1.text.endsWith(now("https://a.test/", "call 1's page")), r1.text);
+  assert.ok(r3.text.endsWith(now("https://a.test/", "call 3's page")), r3.text);
 });
 
 test("a read whose turn comes after the deadline does not start", async () => {
@@ -5043,7 +5134,7 @@ test("computer_console on a browser that is off is refused like the other looks"
   assert.deepEqual(await h.call(A, "computer_console", {}), { text: REFUSAL.isOff, isError: true });
 });
 
-test("a double click is passed to the browser and worded as one; a page that changed under it answers as a click does", async () => {
+test("a double click is passed to the browser and worded as one", async () => {
   const h = make();
   const b = await twoTabs(h);
   const r = await h.call(A, "computer_click", { ref: "e1", double: true });
@@ -5052,11 +5143,39 @@ test("a double click is passed to the browser and worded as one; a page that cha
   assert.ok(h.states.flatMap((s) => s.log.map((l) => l.text)).includes("Double-clicked “Next”"));
   await h.call(A, "computer_click", { ref: "e1" });
   assert.deepEqual(b.clickOpts.at(-1), { double: false });
-  // The browser stops after the first press: the reply is the page-changed sentence.
-  const swapped = b.click.bind(b);
-  b.click = async (x, valid, o) => { await swapped(x, valid, o); if (o?.double) throw new Error(REFUSAL.pageChanged); };
-  const stopped = await h.call(A, "computer_click", { ref: "e1", double: true });
-  assert.deepEqual(stopped, { text: REFUSAL.pageChanged, isError: true });
+});
+
+test("a double click on a button that navigates says the first click ran and carries the new page", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.text = "the page after the click";
+  b.secondWithheld = true;                       // the browser stops after the first press: the page changed
+  const r = await h.call(A, "computer_click", { ref: "e1", double: true });
+  assert.equal(r.isError, undefined, "the first click happened: not a failure");
+  assert.equal(r.text, `Clicked e1 once: the page changed before the second click, which was not sent.${now("https://a.test/two", "the page after the click")}`);
+  assert.equal(b.clicks.length, 1);
+  assert.ok(h.states.flatMap((s) => s.log.map((l) => l.text)).includes("Clicked “Next” once: the page changed before the second click, which was not sent"), "the activity log says it in the person's words");
+  // At a point, and for a control with no name.
+  b.spots.set("3,4", { target: btn(""), shown: "" });
+  b.secondWithheld = true;
+  const at = await h.call(A, "computer_click", { x: 3, y: 4, double: true });
+  assert.ok(at.text.startsWith("Clicked at (3, 4) once: the page changed before the second click, which was not sent."), at.text);
+  assert.ok(h.states.flatMap((s) => s.log.map((l) => l.text)).includes("Clicked an unnamed control once: the page changed before the second click, which was not sent"));
+});
+
+test("an allowed double click on Submit whose page changed after the first click answers once and raises no second card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.spots.set("e2", { target: btn("Submit") });
+  b.secondWithheld = true;
+  const p = h.call(A, "computer_click", { ref: "e2", double: true });
+  const ask = await h.asked();
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Clicked e2 once: the page changed before the second click, which was not sent\./);
+  assert.equal(b.clicks.length, 1, "Submit was pressed once");
+  assert.equal(h.broker.pending().length, 0, "nothing is left to ask again");
 });
 
 test("a double click on a control that asks says so on the card", async () => {
@@ -5106,6 +5225,44 @@ test("the wheel and the lease apply to a tab, a nav and a hover as to a click", 
   const r = await p;
   assert.equal(r.isError, true);
   assert.deepEqual(b.navs, [], "the Back never ran");
+});
+
+test("a hover takes the computer before the pointer moves, and the move goes only while the call is current", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // The target read is under way (the pointer has not moved yet) when the person takes the wheel: nothing moves, and the reply says busy.
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_hover", { ref: "e1" });
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, /^busy: /);
+  assert.deepEqual([b.moves, b.hovers.length], [[], 0], "the pointer never moved");
+  // A hover that goes moves the pointer guarded.
+  h.svc.handBack();
+  b.resolveGate = null;
+  const ok = await h.call(A, "computer_hover", { ref: "e1" });
+  assert.ok(!ok.isError, ok.text);
+  assert.deepEqual(b.moves, ["guarded"]);
+});
+
+test("a hover has taken the computer before its target is read: the 45 s do not cut it once it has started", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  let answered: string | null = null;
+  void h.call(A, "computer_hover", { ref: "e1" }).then((r) => { answered = r.text; });
+  await flush();
+  await h.clock.advance(46_000);
+  assert.equal(answered, null, "not answered 'busy: this call waited its 45 s' while its pointer is about to move");
+  release();
+  await flush();
+  assert.match(answered ?? "", /^Hovered e1\./);
 });
 
 test("each of the three replies ends with the page's outline", async () => {
@@ -5274,7 +5431,7 @@ test("a Take over during the allowed move's history read sends nothing", async (
   const r = await p;
   assert.equal(r.isError, true);
   assert.deepEqual([b.navs, b.reposts], [[], []]);
-  assert.ok(!r.text.startsWith("Reloaded"), r.text);
+  assert.equal(r.text, REFUSAL.busyUser("the user is driving"), "the call is told the user drives, not that the Reload ran");
 });
 
 test("a Stop during the allowed move's history read sends nothing", async () => {
@@ -5294,6 +5451,18 @@ test("a Stop during the allowed move's history read sends nothing", async () => 
   assert.deepEqual([b.navs, b.reposts], [[], []]);
 });
 
+test("a history read that DevTools or another debugger refuses reaches the agent in its own words, with no card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  for (const why of [REFUSAL.devToolsOpen, REFUSAL.otherDebugger, REFUSAL.tabGone]) {
+    b.entryError = new TwoWordings(why, "person's wording");
+    assert.deepEqual(await h.call(A, "computer_nav", { go: "back" }), { text: why, isError: true });
+  }
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, []);
+});
+
 test("a history that cannot be read is refused with no card", async () => {
   const h = make();
   const b = await twoTabs(h);
@@ -5306,6 +5475,21 @@ test("a history that cannot be read is refused with no card", async () => {
   }
   assert.equal(h.broker.pending().length, 0);
   assert.deepEqual(b.navs, []);
+});
+
+test("a tab still waking reloads its kept address with no card, though it has no history entry to bind", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // A woken tab has not committed: its entry has no id and its method is GET (the kept address loads by GET). Back and Forward
+  // from it are not known, so they are refused; only the reload goes.
+  b.entryId = null; b.methods.reload = "GET"; b.methods.back = "unknown"; b.canBack = true;
+  const r = await h.call(A, "computer_nav", { go: "reload" });
+  assert.equal(r.text, `Reloaded.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["reload 1"]);
+  assert.equal(h.broker.pending().length, 0, "no card");
+  const back = await h.call(A, "computer_nav", { go: "back" });
+  assert.equal(back.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["reload 1"], "Back did not go");
 });
 
 test("a failed read at the run sends nothing", async () => {
