@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- The thirteen-tools spec's page, on the origin the spec marks (so clicks go freely): it writes an error and a warning to
+     its console when it loads, shows a state when the pointer is over Menu, and answers a double click on Count. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harbour tools</title>
+<style>
+  body { font: 16px -apple-system, system-ui, sans-serif; margin: 24px; background: #fff; color: #111; }
+  button { display: block; margin: 8px 0; font: inherit; }
+</style>
+</head>
+<body>
+<h1>Harbour tools</h1>
+<button id="menu" type="button">Menu</button>
+<p id="menu-state">Menu closed</p>
+<button id="count" type="button">Count</button>
+<p id="count-state">Double: no</p>
+<script>
+  console.error("fixture console error");
+  console.warn("fixture console warning");
+  document.getElementById("menu").addEventListener("mouseenter", () => { document.getElementById("menu-state").textContent = "Menu open"; });
+  document.getElementById("count").addEventListener("dblclick", () => { document.getElementById("count-state").textContent = "Double: yes"; });
+</script>
+</body>
+</html>

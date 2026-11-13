@@ -10,6 +10,7 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 import type { PtyEvent } from "../../src/shared/ipc";
 import type { ProgramContext } from "../../src/main/policy/programs";
 import { agentArgvRefusal } from "../../src/main/policy/agent-launch";
@@ -134,6 +135,22 @@ test("R70: agentArgvRefusal accepts --no-daemon where launchArgs puts it on a Co
   no("codex", ["resume", "--no-daemon"]);
   no("codex", ["resume", "--no-daemon", "--no-daemon", "--last"]);
   no("codex", ["resume", "019a-thread", "--no-daemon"]);
+});
+
+test("agentArgvRefusal's copy of the computer tools is the runtime's thirteen, so every one is accepted (session-browser S9)", () => {
+  // The unit tests run bundled in out-test/, so the repo root is found by walking up from here.
+  let root = __dirname;
+  while (!fs.existsSync(path.join(root, "brain", "scripts", "sdk", "computer-tools.js"))) {
+    const up = path.dirname(root);
+    assert.notEqual(up, root, "the repo root");
+    root = up;
+  }
+  const runtime = createRequire(__filename)(path.join(root, "brain", "scripts", "sdk", "computer-tools.js")) as { COMPUTER_TOOLS: string[] };
+  const plug = (t: string) => `mcp__plugin_agenticos_agenticos__${t}`;
+  assert.equal(runtime.COMPUTER_TOOLS.length, 13);
+  for (const t of runtime.COMPUTER_TOOLS) assert.equal(agentArgvRefusal("claude", ["--allowedTools", plug(t)]), null, t);
+  assert.equal(agentArgvRefusal("claude", ["--allowedTools", runtime.COMPUTER_TOOLS.map(plug).join(",")]), null);
+  assert.match(agentArgvRefusal("claude", ["--allowedTools", plug("computer_frobnicate")]) ?? "", /^--allowedTools with the value /);
 });
 
 test("agentArgvRefusal: --allowedTools takes one comma-joined value of Bash and the known computer tools, nothing else (agent-computer D33)", () => {

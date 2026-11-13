@@ -19,13 +19,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 | Status | Items |
 |---|---|
 | covered | 166 |
-| covered in part | 111 |
+| covered in part | 113 |
 | N/A in the app | 49 |
 | not covered | 6 |
 | manual | 3 |
-| **total** | **335** |
+| **total** | **337** |
 
-Of the 286 items about the app (335 minus the 49 N/A), 277 are asserted (166 fully, 111 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
+Of the 288 items about the app (337 minus the 49 N/A), 279 are asserted (166 fully, 113 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
 not covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -527,6 +527,8 @@ again (`brain-ai`).
 | CP16 | Claude Code: a page a program opens (a dev server's open flag, `gh auth login --web`, Superpowers' companion with `--open`) in a Code session, a thread and a shell terminal shows in that session's browser after **Turn on**, adds a tab with no card when the browser is on, and opens nothing in the default browser; **Not now** opens nothing and quiets the session; the sign-in completes there | covered in part | `computer.spec.ts › a page a program opens shows in that session's browser after Turn on, and nothing reaches the default browser` (a typed command in a shell terminal, a Code agent's and a Chat turn's command through the fixture's `open-page.js` and the app's own opener; the BROWSER stand-in and `externalOpens` record nothing), `› a seventh open within a minute is dropped; a message without a live id opens nothing`, `› after Take over a program's page opens behind the tab the person is on` (a background tab, the active tab unchanged), and, with `computer.enabled` false, `› a shell's program opens its page in the recording stand-in` (no card, no tab, the stand-in holds the address); `computer-service.test.ts` (the Turn on card, six held addresses, Not now and the quiet period, Read only and the setting off) and `computer-door.test.ts`, `opener.test.ts`. A real dev server, `gh` and Superpowers, and a sign-in completing: by hand. |
 | CP17 | Codex: the same, in plugin and direct mode, and the sandbox notice when a thread's command sandbox refuses the socket | covered in part | As CP16: the door and the card are the app's, the same for either host's stand-in. A real Codex session's command environment and sandbox: by hand. |
 | CP18 | Either host: Open in my browser sends the page you are on to the default browser and keeps the tab; the button is greyed out on an http page, a blank tab and an off or asleep browser | covered in part | `computer.spec.ts › Open in my browser waits for an https page, sends it out keeping the tab, and refuses an http page` (the harness records the OS hand-off instead of opening it; the https page is an address the fixture site cannot serve, so the tab holds a failed load), `hud/src/ui/ComputerPane.test.ts` (the disabled states, the button following a session switch and the pop-out, a click on the disabled button, the call and a refusal), `computer-service.test.ts` (the real address, the kept tab, http refused) and `computer-ipc.test.ts`. A sign-in that needs a passkey or a password manager completing in the real browser: by hand. |
+| CP19 | Claude Code: the thirteen tools in a session: an action's reply ends with the new outline and its refs work in the next call; tab, nav, hover, console and a double click work; a reload of a GET page does not ask and a reload after a form POST does; closing a tab the person opened asks and the agent's close of the last tab leaves the browser on | covered in part | `computer.spec.ts › computer_tab, computer_nav, computer_hover and computer_console work through the bridge`, `› a reload after a form POST asks and a reload of a GET page does not` (both on the Claude stand-in and the Codex stand-in, each in a Chat turn); `computer-service.test.ts`. A real Claude Code session driving the tools: by hand. |
+| CP20 | Codex: the same, in a Code session and a Chat turn, in plugin and direct mode, and the approvals after `aos upgrade` | covered in part | As CP19 for the app's side; the approvals are `cli/codex-host.test.js` and `cli/plugin-manifests.test.js`. A real Codex session, and the approval before and after `aos upgrade`: by hand. |
 
 ## Launch sequence
 

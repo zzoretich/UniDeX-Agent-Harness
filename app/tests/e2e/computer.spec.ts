@@ -50,6 +50,8 @@ async function startSite(): Promise<Site> {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(fs.readFileSync(path.join(dir, `${page}.html`)));
       } else if (url === "/continue" && req.method === "POST") {
         res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+      } else if (url === "/order" && req.method === "POST") {
+        res.writeHead(200, html).end("<!doctype html><title>Ordered</title><p>Ordered</p>");
       } else if (url === "/to-data") {
         res.writeHead(302, { location: "data:text/html,<p>Landed on a data page</p>" }).end();
       } else if (url === "/download/tides.csv") {
@@ -1354,6 +1356,123 @@ test.describe("session browser: one per session, off until the user turns it on 
 });
 
 // ── kept, limited, linked and popped out ─────────────────────────────
+
+// ── the four tools of the thirteen: computer_tab, computer_nav, computer_hover, computer_console, and a double click ───
+
+test.describe("session browser: tab, nav, hover and console, on both hosts (session-browser S16, S17)", () => {
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
+  test.afterAll(async () => { await site?.close(); });
+  const app = useApp({
+    env,
+    prepare: () => { prepare({ claude: true, codex: true }); markSite(`http://marked.test:${site.port}`); },
+  });
+  const toolsUrl = () => `http://marked.test:${site.port}/tools.html`;
+  const orderUrl = () => `http://marked.test:${site.port}/order.html`;
+  const tabLines = (r: { text: string }) => r.text.split("\n").filter((l) => /^ {2}\[\d+\]/.test(l)).join("\n");
+  /** The index a status line gives the tab at `host`: `  [1] …`. */
+  const tabIndexOf = (lines: string, host: string): number => {
+    const m = lines.split("\n").map((l) => /^ {2}\[(\d+)\]/.exec(l)).find((x, i) => x && lines.split("\n")[i].includes(host));
+    if (!m) throw new Error(`no tab at ${host} in:\n${lines}`);
+    return Number(m[1]);
+  };
+  const hits = (urlPath: string, method = "GET"): number => site.seen.filter((x) => x.method === method && x.url === urlPath).length;
+
+  test("computer_tab, computer_nav, computer_hover and computer_console work through the bridge", async () => {
+    const h = app();
+    const { win } = h;
+    for (const host of ["claude", "codex"] as const) {
+      const a = await chatAgent(h, { host, text: `computer: four tools on ${host}` });
+      try {
+        const p = pane(win, "chat");
+        expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: acted("Opened the page.", shopUrl()) });
+        // A second tab, opened by the agent: switching to it and closing it ask nothing.
+        expectReply(await a.call("computer_open", { url: toolsUrl(), newTab: true }), { isError: false, text: acted("Opened the page.", toolsUrl()) });
+        const tabs = tabLines(await a.call("computer_status"));
+        expect(tabs).toContain(shopHost());
+        expect(tabs).toContain(markedHost());
+        // Switching away and back: the reply is the page the tab shows.
+        const second = tabIndexOf(tabs, markedHost());
+        const firstTab = tabIndexOf(tabs, shopHost());
+        expectReply(await a.call("computer_tab", { index: firstTab }), { isError: false, text: acted(`Switched to tab ${firstTab}.`, shopUrl()) });
+        expectReply(await a.call("computer_tab", { index: second }), { isError: false, text: acted(`Switched to tab ${second}.`, toolsUrl()) });
+        await expect(cards(p)).toHaveCount(0);
+        // The console: what the page wrote when it loaded, as page text.
+        const log = await a.call("computer_console");
+        expectReply(log, { isError: false });
+        expect(log.text).toContain("<untrusted-page");
+        expect(log.text).toContain("fixture console error");
+        expect(log.text).toContain("fixture console warning");
+        // Hover moves the pointer only: the page shows what its hover handler shows, and a double click is two clicks.
+        const snap = await a.call("computer_snapshot");
+        expect(snap.text).toContain("Menu closed");
+        const menu = refOf(snap.text, "button", "Menu");
+        expectReply(await a.call("computer_hover", { ref: menu }), { isError: false, text: acted(`Hovered ${menu}.`, toolsUrl()) });
+        await expect.poll(async () => (await a.call("computer_snapshot")).text, { message: "the hover handler ran" }).toContain("Menu open");
+        const count = refOf((await a.call("computer_snapshot")).text, "button", "Count");
+        expectReply(await a.call("computer_click", { ref: count, double: true }), { isError: false, text: acted(`Clicked ${count}.`, toolsUrl()) });
+        await expect.poll(async () => (await a.call("computer_snapshot")).text, { message: "the double click ran" }).toContain("Double: yes");
+        // Back, Forward and Reload of a page loaded by GET go without asking.
+        expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
+        expectReply(await a.call("computer_nav", { go: "back" }), { isError: false, text: acted("Went back.", toolsUrl()) });
+        expectReply(await a.call("computer_nav", { go: "forward" }), { isError: false, text: acted("Went forward.", shopUrl()) });
+        const before = hits("/shop.html");
+        expectReply(await a.call("computer_nav", { go: "reload" }), { isError: false, text: acted("Reloaded.", shopUrl()) });
+        expect(hits("/shop.html")).toBeGreaterThan(before);
+        await expect(cards(p)).toHaveCount(0);
+        // Closing the tab the agent opened (the second) asks nothing.
+        expectReply(await a.call("computer_tab", { index: second, close: true }), { isError: false, text: new RegExp(`^Closed tab ${second}\\.\\n\\nPage now:`) });
+        await expect(cards(p)).toHaveCount(0);
+        // The first tab is the one the switch opened for the person (the agent only navigated it): closing it asks, and as the last tab it leaves the browser on.
+        const held = await asked(p, a.call("computer_tab", { index: 0, close: true }), /^Close a tab it did not open: /);
+        await held.card.locator('[data-answer="once"]').click();
+        expectReply(await held.reply, { isError: false, text: /^Closed tab 0\.\n\nPage now:/ });
+        const after = await a.call("computer_status");
+        expectReply(after, { isError: false });
+        expect(after.text).not.toMatch(/off: computer_open asks/);
+        expect(tabLines(after)).toContain(searchHost());
+      } finally { await a.finish(); }
+    }
+    expectNoErrors(h);
+  });
+
+  test("a reload after a form POST asks and a reload of a GET page does not", async () => {
+    const h = app();
+    const { win } = h;
+    for (const host of ["claude", "codex"] as const) {
+      const a = await chatAgent(h, { host, text: `computer: reload asks after a post on ${host}` });
+      try {
+        const p = pane(win, "chat");
+        const posts = () => hits("/order", "POST");
+        expectReply(await a.call("computer_open", { url: orderUrl() }), { isError: false, text: acted("Opened the page.", orderUrl()) });
+        // A page loaded by GET: Reload loads it again with no card.
+        const before = hits("/order.html");
+        expectReply(await a.call("computer_nav", { go: "reload" }), { isError: false, text: acted("Reloaded.", orderUrl()) });
+        expect(hits("/order.html")).toBeGreaterThan(before);
+        await expect(cards(p)).toHaveCount(0);
+        // The form posts (the spec submits it in the page, as the person would); the page that loads is the answer to a POST.
+        const sent = posts();
+        await inPage<void>(h.app, orderUrl(), `document.getElementById("place").click()`);
+        await expect.poll(posts, { message: "the form posted" }).toBe(sent + 1);
+        const resultUrl = `http://marked.test:${site.port}/order`;
+        await expect.poll(() => inPage<string>(h.app, resultUrl, "document.title"), { message: "the answer loaded" }).toBe("Ordered");
+        // Reload now would send the form again: it asks, and Deny sends nothing.
+        const title = /^Load a page again, which may send a form again: Reload on /;
+        const denied = await asked(p, a.call("computer_nav", { go: "reload" }), title);
+        await denied.card.locator('[data-answer="deny"]').click();
+        expectReply(await denied.reply, { isError: true, text: /^The user denied it/ });
+        expect(posts()).toBe(sent + 1);
+        // Allow once sends it again.
+        const allowed = await asked(p, a.call("computer_nav", { go: "reload" }), title);
+        await allowed.card.locator('[data-answer="once"]').click();
+        expectReply(await allowed.reply, { isError: false, text: acted("Reloaded.", resultUrl) });
+        expect(posts()).toBe(sent + 2);
+        await expect(cards(p)).toHaveCount(0);
+      } finally { await a.finish(); }
+    }
+    expectNoErrors(h);
+  });
+});
 
 test.describe("session browser: kept, limited, linked and popped out (session-browser §6, PR 3)", () => {
   const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };

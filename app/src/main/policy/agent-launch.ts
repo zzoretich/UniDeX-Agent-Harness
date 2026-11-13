@@ -26,7 +26,7 @@ const oneOf = (...allowed: string[]) => (v: string | undefined): boolean => type
 
 /** The computer tools as Claude Code names the agenticos plugin's (hud/src/data/terminalLaunch.ts COMPUTER_TOOLS). */
 const COMPUTER_TOOLS = ["computer_open", "computer_snapshot", "computer_screenshot", "computer_click", "computer_type", "computer_key",
-  "computer_scroll", "computer_wait", "computer_status"] as const satisfies readonly ComputerTool[];
+  "computer_scroll", "computer_wait", "computer_status", "computer_tab", "computer_nav", "computer_hover", "computer_console"] as const satisfies readonly ComputerTool[];
 const ALLOWED_TOOLS: ReadonlySet<string> = new Set(["Bash", ...COMPUTER_TOOLS.map((t) => `mcp__plugin_agenticos_agenticos__${t}`)]);
 
 /** `--allowedTools`' one value: Bash and computer tools, comma-joined, each at most once, no empty entry. */

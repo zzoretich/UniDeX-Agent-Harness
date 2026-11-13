@@ -1366,7 +1366,7 @@ test('direct wiring (a Codex CLI without plugins): init --host both wires the pl
   const older = approved.slice(0, cut).replace('command = "sh"', 'command = "sh"\nstartup_timeout_sec = 30');
   fs.writeFileSync(toml, older);
   const dr2 = aos(sb, ['doctor'], { FAKE_PLUGIN_PATH: path.join(ROOT, 'plugin') });
-  assert.match(dr2.stdout, /FAIL\s+codex MCP declared\s+registered, but .*config\.toml does not approve computer_open, computer_click, computer_type, computer_key, computer_scroll — run: aos upgrade \(it writes them in place/);
+  assert.match(dr2.stdout, /FAIL\s+codex MCP declared\s+registered, but .*config\.toml does not approve computer_open, computer_click, computer_type, computer_key, computer_scroll, computer_tab, computer_nav, computer_hover — run: aos upgrade \(it writes them in place/);
   const fixLog = fs.readFileSync(path.join(sb.dir, 'codex.log'), 'utf8').split('\n').length;
   const up0 = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
   assert.equal(up0.status, 0, up0.stderr + up0.stdout);

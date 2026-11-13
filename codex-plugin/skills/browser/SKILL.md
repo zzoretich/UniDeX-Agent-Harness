@@ -8,9 +8,10 @@ description: Use the UniDeX browser, the browser inside the UniDeX app that the 
 
 # The UniDeX browser
 
-The UniDeX app has a browser that the user watches beside this session. Nine tools of the `agenticos` MCP server drive
+The UniDeX app has a browser that the user watches beside this session. Thirteen tools of the `agenticos` MCP server drive
 it: `mcp__agenticos__computer_status`, `computer_open`, `computer_snapshot`, `computer_screenshot`,
-`computer_click`, `computer_type`, `computer_key`, `computer_scroll` and `computer_wait`. The browser starts off; the user turns it on.
+`computer_click`, `computer_type`, `computer_key`, `computer_scroll`, `computer_wait`, `computer_tab`, `computer_nav`,
+`computer_hover` and `computer_console`. The browser starts off; the user turns it on.
 
 ## Check where you are
 
@@ -30,9 +31,17 @@ documentation, for localhost and for previewing what you built. The user sees ev
 2. The browser starts off. Your first `computer_open` asks the user to turn it on; if they choose Not now, go on without the browser and do not ask again this turn. When the user says they turned it on or opened it for you, call `computer_status` and carry on.
 3. Open the page with `computer_open`.
 4. Read it with `computer_snapshot`, which returns the page's text and a ref for each element you can act on.
-5. Act on an element by its ref with `computer_click`, `computer_type`, `computer_key` or `computer_scroll`.
-6. Read the page again with `computer_snapshot` to see what changed. Refs belong to one snapshot: take a new one
-   after the page changes.
+5. Act on an element by its ref with `computer_click` (`double` for a double click), `computer_type`, `computer_key`, `computer_scroll` or `computer_hover`.
+6. An action's reply already ends with the page as it is now, with refs you can use in your next call, so read it instead
+   of taking a snapshot. `computer_snapshot` is for a page you have not just acted on, or for the rest of a long page.
+   Refs belong to one outline: use the newest.
+
+Four more tools, one line each:
+
+- `computer_tab` switches to a tab by its index, or closes it with `close: true`. Closing a tab you did not open asks the user; closing the last tab leaves the browser on at its start page.
+- `computer_nav` goes `back`, `forward` or `reload`. Onto a page that was loaded by a form it asks the user first, since it may send the form again.
+- `computer_hover` moves the pointer onto a ref, or a point, without clicking (menus, tooltips).
+- `computer_console` reads the page's errors, warnings, uncaught exceptions and failed requests since it loaded, as page text.
 
 Use `computer_screenshot` when the layout matters and the text does not tell you enough.
 

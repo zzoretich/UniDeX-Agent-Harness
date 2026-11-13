@@ -13,6 +13,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - computer.awake (default 4): how many session browsers keep their pages loaded. <!-- no-tour: a setting -->
 - A page that a program in a session opens (a dev server, a sign-in, Superpowers' visual companion) comes to that session's browser. <!-- no-tour: it happens by itself -->
 - Open in my browser sends the https page you are on to your Mac's browser, for a sign-in that needs a passkey or a password manager. <!-- tour: code.computer -->
+- Four more browser tools for agents (switch or close a tab; back, forward and reload; hover; the page's console), a double click, and every action's reply now ends with the page as it is. <!-- no-tour: agent tools -->
 
 ### Changed
 - Every session has its own browser: two sessions in one folder no longer share tabs or wait for each other. <!-- tour: code.computer, sessions.computer -->
@@ -20,6 +21,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - A web link clicked in a session opens in that session's browser, localhost included. <!-- no-tour: a click behaves differently, nothing new to point at -->
 - The pop-out browser window follows the selected session, is titled with its name, and stays open and empty, saying "(off)", while that session's browser is off. <!-- no-tour: the window behaves differently, nothing new to point at -->
 - Picking another model or access level on a Code session restarts its terminal and keeps its browser, with its pages not reloaded. <!-- no-tour: nothing new on screen -->
+
+### Upgrading
+- Codex: run aos upgrade (the app offers it after updating) so the new browser tools are approved. Until then Codex asks for them in a Code session and refuses them in a Chat turn; the nine it had still work.
 
 ### Fixed
 - An approval card in Code's chat stays up while its terminal resizes (switching to the terminal view with ⌘J, opening a pane, resizing the window) until the agent redraws its prompt at the new size. Before, the card and the "Answer the card above first" note could vanish for a moment, and a Send in that moment went to the terminal, where its ⏎ answered the prompt. <!-- no-tour: a fix with no new control -->

@@ -352,11 +352,11 @@ test('the plugin wiring names nothing on this machine: ${PLUGIN_ROOT} in hooks, 
 });
 
 // ── the computer tools' approvals (agent-computer D33) ───────────────────────
-const ACTING = ['computer_open', 'computer_click', 'computer_type', 'computer_key', 'computer_scroll'];
+const ACTING = ['computer_open', 'computer_click', 'computer_type', 'computer_key', 'computer_scroll', 'computer_tab', 'computer_nav', 'computer_hover'];
 const block = (eol = '\n') => ACTING.map((t) => `${eol}[mcp_servers.agenticos.tools.${t}]${eol}approval_mode = "approve"${eol}`).join('');
 const codexServer = `[mcp_servers.agenticos]\ncommand = "sh"\nargs = ["${LAUNCHER}", "mcp-server"]\n\n[mcp_servers.agenticos.env]\nAOS_CONFIG = "${CONFIG}"\nAOS_HOST = "codex"\n`;
 
-test('the acting computer tools are the runtime\'s, and the plugin\'s server entry approves exactly those five (agent-computer D33)', () => {
+test('the acting computer tools are the runtime\'s, and the plugin\'s server entry approves exactly those eight (agent-computer D33)', () => {
   const { COMPUTER_TOOLS, COMPUTER_LOOK } = require('../brain/scripts/sdk/computer-tools.js');
   assert.deepEqual(CH.approvedComputerTools(), COMPUTER_TOOLS.filter((t) => !COMPUTER_LOOK.includes(t)));
   assert.deepEqual(CH.approvedComputerTools(), ACTING);
@@ -366,7 +366,7 @@ test('the acting computer tools are the runtime\'s, and the plugin\'s server ent
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ROOT, 'codex-plugin', '.mcp.json'), 'utf8')), CH.pluginMcpServers());
 });
 
-test('direct mode: after `codex mcp add` the five approvals land in config.toml once, in its own mode, and nothing else changes (agent-computer D33)', () => {
+test('direct mode: after `codex mcp add` the eight approvals land in config.toml once, in its own mode, and nothing else changes (agent-computer D33)', () => {
   const home = tmp('aos-codex-approve-');
   const dir = tmp('aos-skills-approve-');
   const env = { CODEX_HOME: home };
@@ -483,7 +483,7 @@ test('direct mode: approvals that cannot be written, or that the Codex CLI then 
   assert.equal(CH.installCodexHost({ cfg: {}, launcher: LAUNCHER, config: CONFIG, pluginDir: PLUGIN, bin: '/x/codex', run: a.run, env: { CODEX_HOME: home }, dir, io }).mcp, 'unapproved');
   assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), 'model = "x"\n');
   assert.match(warnings.at(-1), /approvals were not written to .*config\.toml \(it has no \[mcp_servers\.agenticos\] table\)/);
-  assert.match(warnings.at(-1), /computer_open, computer_click, computer_type, computer_key, computer_scroll/);
+  assert.match(warnings.at(-1), /computer_open, computer_click, computer_type, computer_key, computer_scroll, computer_tab, computer_nav, computer_hover/);
   // The Codex CLI refuses the file once the approvals are in: it is put back as `codex mcp add` left it.
   const home2 = tmp('aos-codex-rejects-');
   const b = fakeRun({ home: home2, rejectApprovals: true });
@@ -505,7 +505,9 @@ test('withMcpApprovals edits only what it must: a wrong mode in place, a missing
   const partial = `${codexServer}\n[mcp_servers.agenticos.tools.computer_type]\napproval_mode = "prompt" # mine\nenabled = true\n\n[mcp_servers.agenticos.tools.computer_key]\n# a note\n\n[mcp_servers.zeta]\ncommand = "z"\n`;
   assert.equal(ok(partial).text, `${codexServer}\n[mcp_servers.agenticos.tools.computer_type]\napproval_mode = "approve"\nenabled = true\n\n[mcp_servers.agenticos.tools.computer_key]\napproval_mode = "approve"\n# a note\n`
     + '\n[mcp_servers.agenticos.tools.computer_open]\napproval_mode = "approve"\n\n[mcp_servers.agenticos.tools.computer_click]\napproval_mode = "approve"\n'
-    + '\n[mcp_servers.agenticos.tools.computer_scroll]\napproval_mode = "approve"\n\n[mcp_servers.zeta]\ncommand = "z"\n');
+    + '\n[mcp_servers.agenticos.tools.computer_scroll]\napproval_mode = "approve"\n'
+    + '\n[mcp_servers.agenticos.tools.computer_tab]\napproval_mode = "approve"\n\n[mcp_servers.agenticos.tools.computer_nav]\napproval_mode = "approve"\n'
+    + '\n[mcp_servers.agenticos.tools.computer_hover]\napproval_mode = "approve"\n\n[mcp_servers.zeta]\ncommand = "z"\n');
   assert.deepEqual(CH.mcpApprovalsIn(ok(partial).text), ACTING);
   assert.deepEqual(ok(partial).replaced, [{ tool: 'computer_type', was: 'prompt' }], 'a mode the user set is reported');
   // Already approved in single quotes counts; a quoted header counts.
