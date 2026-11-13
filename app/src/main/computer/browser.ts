@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
 import { ASK_ROLES, covers, type Target } from "./categories";
-import { CONSOLE_RATE, CONSOLE_TEXT_MAX, ConsoleLog, consoleText, cutAt, droppedLine, plainAddresses } from "./console";
+import { CONSOLE_RATE, CONSOLE_TEXT_MAX, ConsoleLog, bulletsPlain, consoleText, cutAt, droppedLine, mapAddresses, plainAddresses } from "./console";
 import { cdp, CdpTimeout, FocusMoved, forPerson, isGone, keyEvents, PageChanged, Told, unlessGone } from "./cdp";
 import { downloadName, HeldDownloads, moveInto } from "./downloads";
 import { permissionVerdict, type Focus } from "./gate";
@@ -225,8 +225,8 @@ interface Tab {
   /** The loader the main frame's latest commit reported (Chromium sends `Page.frameNavigated` before Electron's did-navigate,
    *  an error page's too), taken by the commit that follows it: it keeps that document's own failed requests in the log. */
   committedLoader: string | null;
-  /** The scrubber built from the tab's memory for the log, for the site and memory version it was built at. */
-  scrubFor: { site: string; version: number; fn: (s: string) => string } | null;
+  /** The scrubbers built from the tab's memory for the log (text, and address), for the site and memory version they were built at. */
+  scrubFor: { site: string; version: number; fn: (s: string) => string; url: (a: string) => string } | null;
   /** The console messages taken in the current second (from `floodAt`), and those dropped since the document loaded. */
   floodAt: number; floodN: number; dropped: number;
 }
@@ -396,7 +396,7 @@ export class ComputerBrowser {
     if (this.kept) {
       return this.kept.map((k, index) => ({ index, url: this.keptUrl(k), title: this.keptScrub(k)(k.title), openedBy: k.openedBy, active: index === this.keptActive, canBack: false, canForward: false }));
     }
-    return this.list.map((t, index) => t.pending ? { index, url: this.keptUrl(t.pending), title: this.keptScrub(t.pending)(t.pending.title), openedBy: t.openedBy, active: index === this.current, canBack: false, canForward: false } : ({ index, url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current, canBack: t.wc.navigationHistory.canGoBack(), canForward: t.wc.navigationHistory.canGoForward() }));
+    return this.list.map((t, index) => t.pending ? { index, url: this.keptUrl(t.pending), title: this.keptScrub(t.pending)(t.pending.title), openedBy: t.openedBy, active: index === this.current, canBack: false, canForward: false } : ({ index, url: this.urlOut(t), title: this.logScrub(t)(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current, canBack: t.wc.navigationHistory.canGoBack(), canForward: t.wc.navigationHistory.canGoForward() }));
   }
 
   /** The `webContents.id` of the active tab, or null with no tab. Only the e2e seam (`__aosMain.computerPageId`) asks, so a
@@ -444,7 +444,7 @@ export class ComputerBrowser {
       const shown = this.urlOut(t, href);
       throw new Told(REFUSAL.couldNotOpen(`${shown} (${why})`), `Could not open ${shown}: ${why}.`);
     }
-    return { url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()) };
+    return { url: this.urlOut(t), title: this.logScrub(t)(t.wc.getTitle()) };
   }
 
   /** session-browser S16: resolves 300 ms after `since` (a time on the caller's clock, `Date.now()` here: the moment an
@@ -475,6 +475,8 @@ export class ComputerBrowser {
 
   /** A main-frame navigation of `t` started (`settled` watches it). */
   private navBegan(t: Tab): void {
+    // A tab that is closing (or gone) leaves nothing here: a late event of its web contents must not log it again.
+    if (t.closing) return;
     const now = Date.now();
     while (this.navLog.length && (this.navLog.length > 50 || (this.navLog[0].end !== null && this.navLog[0].end < now - 2 * SETTLE_MAX_MS))) this.navLog.shift();
     this.navLog.push({ tab: t, start: now, end: null });
@@ -686,8 +688,9 @@ export class ComputerBrowser {
     // and the values other sites carried into an address); the line then goes through the text scrub.
     const list = t.console.list();
     let body = consoleText(list, this.scrubWith(t, read), this.urlScrub(t, [this.site(t)], read));
-    // The app's own line, with no `[kind]` in front: every line a page can write has one.
-    if (t.dropped) body = `${list.length ? `${body}\n` : ""}${droppedLine(t.dropped)}`;
+    // The app's own line, first (a host that shortens a long reply keeps the start), with no `[kind]` in front: every line a page
+    // can write has one.
+    if (t.dropped) body = `${droppedLine(t.dropped)}${list.length ? `\n${body}` : ""}`;
     return `${untrustedOpen(siteOf(url) ?? "null", url)}\n${body}\n</untrusted-page>`;
   }
 
@@ -1204,6 +1207,8 @@ export class ComputerBrowser {
   private drop(t: Tab): void {
     t.closing = true;
     this.navEnded(t);
+    // Nothing of the tab stays reachable from the browser (its log of navigations, with the tab in each entry).
+    for (let i = this.navLog.length - 1; i >= 0; i--) if (this.navLog[i].tab === t) this.navLog.splice(i, 1);
     if (t.query) clearTimeout(t.query);
     owners.delete(t.wc.id);
     this.attachTo(t, null);
@@ -1332,58 +1337,91 @@ export class ComputerBrowser {
     wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.urlOut(t))} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });
     wc.debugger.on("message", (_e, method: string, params: Record<string, unknown>) => this.onCdp(t, method, params));
-    // session-browser (computer_console): of a console message its level and text are read, and its source only to tell Electron's
-    // own messages (never the frame, and no source address is kept). The protocol's Runtime domain is not enabled, since a page can tell (a logged object's getters run) and sign-in
-    // pages use that to refuse a browser; Electron's own event carries the same messages, uncaught errors included.
-    wc.on("console-message", (e) => this.onConsole(t, e.level, e.message, e.sourceId));
+    // session-browser (computer_console): of a console message its level, its text and its frame are read, and its source only to
+    // tell Electron's own messages (no source address is kept). The frame decides whether it is kept at all (`onConsole`). The
+    // protocol's Runtime domain is not enabled, since a page can tell (a logged object's getters run) and sign-in pages use
+    // that to refuse a browser; Electron's own event carries the same messages, uncaught errors included.
+    wc.on("console-message", (e) => this.onConsole(t, e.level, e.message, e.sourceId, e.frame));
     wc.debugger.on("detach", (_e, reason: string) => { if (!t.closing) note(`The tab's DevTools connection closed (${reason}); the next action reconnects.`); });
   }
 
-  /** A console message of the tab, any frame: an error, a warning or an uncaught exception (Chromium words one `Uncaught …`,
-   *  an unhandled rejection `Uncaught (in promise) …`) is kept; a log, an info or a debug message is not. Of the source only
-   *  the Electron prefix is read, to drop Electron's own messages; no source address is ever stored or printed. */
-  private onConsole(t: Tab, level: string, message: string, source?: string): void {
+  /** Whether `frame` (or a frame above it) is in another process than the tab's main frame, which is how this browser knows a
+   *  frame from another site: a snapshot reads only the frames of the main frame's process, and typing into any other is
+   *  refused (D9). */
+  private otherProcess(t: Tab, frame: { processId: number; parent: unknown } | null | undefined): boolean {
+    const main = t.wc.mainFrame.processId;
+    for (let f = frame as { processId: number; parent: unknown } | null | undefined; f; f = f.parent as typeof f) if (f.processId !== main) return true;
+    return false;
+  }
+
+  /** Whether the tab takes in one more entry in this second: it takes CONSOLE_RATE a second (messages and requests alike) and
+   *  counts the rest without processing them. */
+  private taking(t: Tab): boolean {
+    const now = Date.now();
+    if (now - t.floodAt >= 1_000 || now < t.floodAt) { t.floodAt = now; t.floodN = 0; }
+    if (++t.floodN <= CONSOLE_RATE) return true;
+    t.dropped++;
+    return false;
+  }
+
+  /** A console message of the tab: an error, a warning or an uncaught exception (Chromium words one `Uncaught …`, an unhandled
+   *  rejection `Uncaught (in promise) …`) is kept; a log, an info or a debug message is not. Only a message of the tab's main
+   *  frame or of a frame the snapshot reads (the main frame's process) is kept: a frame from another site is opaque to every
+   *  scrubber here, so what it logs (a password typed into its sign-in) could not be hidden; a message whose frame cannot be
+   *  told is dropped as well. Of the source only the Electron prefix is read, to drop Electron's own messages; no source address
+   *  is ever stored or printed. */
+  private onConsole(t: Tab, level: string, message: string, source?: string, frame?: { processId: number; parent: unknown } | null): void {
     if (typeof message !== "string") return;
     // Electron's own warnings (a development build writes its security warning into every page's console) are not the page's.
     if (typeof source === "string" && source.startsWith("node:electron/")) return;
     if (level !== "error" && level !== "warning") return;
-    // A page can log without end: a tab takes in CONSOLE_RATE a second, and counts the rest without processing them.
-    const now = Date.now();
-    if (now - t.floodAt >= 1_000 || now < t.floodAt) { t.floodAt = now; t.floodN = 0; }
-    if (++t.floodN > CONSOLE_RATE) { t.dropped++; return; }
+    if (!frame || this.otherProcess(t, frame)) return;
+    if (!this.taking(t)) return;
     this.logged(t, level === "warning" ? "warning" : /^Uncaught\b/.test(message) ? "exception" : "error", message);
   }
 
-  /** The tab's text scrub for the log as its memory is now, built once per version of the memory (and site). */
-  private logScrub(t: Tab): (s: string) => string {
+  /** The tab's scrubs for the log as its memory is now (the text scrub, and the address scrub, which also finds a value
+   *  percent-encoded and the values other sites carried into an address), built once per version of the memory (and site). */
+  private logScrubs(t: Tab): NonNullable<Tab["scrubFor"]> {
     const site = this.site(t), version = t.memory.version;
-    if (t.scrubFor && t.scrubFor.site === site && t.scrubFor.version === version) return t.scrubFor.fn;
-    const fn = this.remembered(t, [site]);
-    t.scrubFor = { site, version, fn };
-    return fn;
+    if (t.scrubFor && t.scrubFor.site === site && t.scrubFor.version === version) return t.scrubFor;
+    t.scrubFor = { site, version, fn: this.remembered(t, [site]), url: this.urlScrub(t, [site]) };
+    return t.scrubFor;
   }
 
-  /** An address as the request table and a request's entry keep it: one line, plain (a `data:` address is `data:`), scrubbed
-   *  with the tab's scrub as it is now, then cut at 500 and copied, so a secret across the cut is scrubbed whole first. */
+  private logScrub(t: Tab): (s: string) => string { return this.logScrubs(t).fn; }
+
+  /** `text` as the log keeps it, before its cut: every address plain (no query, fragment or user info, and, while the tab's own
+   *  path is held back, no path: a restored tab has no memory of the secrets its address carries, so the scrub alone would let
+   *  a failed request's query through), then one line with no control character, then plain again (cleaning can join an
+   *  address that a control character had split, and an address a NEL split was never seen whole), each address through the
+   *  tab's address scrub, then the tab's text scrub. */
+  private logLine(t: Tab, text: string): string {
+    const { fn, url } = this.logScrubs(t);
+    const plain = (s: string): string => plainAddresses(s, t.pathHidden);
+    // (The address scrub writes a bare origin with its closing slash; an origin that was held back to just that stays as it was.)
+    return fn(mapAddresses(plain(oneLine(plain(text))), (a) => { const out = url(a); return out === `${a}/` ? a : bulletsPlain(out); }));
+  }
+
+  /** An address as the request table and a request's entry keep it: plain and scrubbed (`logLine`), then cut at 500 and
+   *  copied, so a secret across the cut is scrubbed whole first. */
   private keptAddress(t: Tab, url: string): string {
     if (/^\s*data:/i.test(url)) return "data:";
-    return fresh(cutAt(this.logScrub(t)(plainAddresses(oneLine(url.slice(0, LOG_TAKEN)), t.pathHidden)), ADDRESS_KEPT));
+    return fresh(cutAt(this.logLine(t, url.slice(0, LOG_TAKEN)), ADDRESS_KEPT));
   }
 
   /** One entry of the tab's console log, in this order: the first 8,000 characters as a string of their own (a huge message is
-   *  not kept alive by a slice of it), one line with no control character (first: cleaning can join an address that a control
-   *  character split), every address plain (no query, fragment or user info, and, while the tab's own path is held back, no
-   *  path: a restored tab has no memory of the secrets its address carries, so the scrub alone would let a failed request's
-   *  query through), the tab's scrub as it is now, and the cut at 2,000 (so a secret across the cut is scrubbed whole first).
-   *  It is scrubbed again when read (`console`). */
+   *  not kept alive by a slice of it), then `logLine`, and the cut at 2,000 (so a secret across the cut is scrubbed whole
+   *  first). It is scrubbed again when read (`console`). */
   private logged(t: Tab, kind: "error" | "warning" | "exception" | "request", text: string, loader?: string): void {
-    const taken = fresh(text.slice(0, LOG_TAKEN));
-    const line = this.logScrub(t)(plainAddresses(oneLine(taken), t.pathHidden));
+    const line = this.logLine(t, fresh(text.slice(0, LOG_TAKEN)));
     t.console.add({ at: Date.now(), kind, text: cutAt(line, CONSOLE_TEXT_MAX), ...(loader ? { loader } : {}) });
   }
 
-  /** `Network` events for the log: a request in flight is known by its method, plain address and loader only; a failure (not a
-   *  cancel) and an answer of 400 or more are entries; a finished or failed request is forgotten. */
+  /** `Network` events for the log: a request in flight is known by its method, plain address and loader only, and only when its
+   *  frame is the main frame or one the snapshot reads (a request of any other frame, or one whose event names none, is not
+   *  followed at all); a failure (not a cancel) and an answer of 400 or more are entries, taken in at the same rate as
+   *  messages; a finished or failed request is forgotten. */
   private onRequestEvent(t: Tab, method: string, p: Record<string, unknown>): void {
     const id = typeof p.requestId === "string" ? p.requestId : null;
     if (!id) return;
@@ -1391,8 +1429,9 @@ export class ComputerBrowser {
     switch (method) {
       case "Network.requestWillBeSent": {
         const req = p.request as { method?: unknown; url?: unknown } | undefined;
-        if (typeof req?.method !== "string" || typeof req.url !== "string") return;
         t.requests.delete(id);
+        if (typeof req?.method !== "string" || typeof req.url !== "string") return;
+        if (typeof p.frameId !== "string" || (p.frameId !== t.frame && !t.frames.includes(p.frameId))) return;
         // The method, the address made plain, scrubbed and cut, and the loader, each a copy: nothing else of a request is kept.
         t.requests.set(id, {
           method: fresh(cutAt(req.method, 16)),
@@ -1404,16 +1443,17 @@ export class ComputerBrowser {
       }
       case "Network.responseReceived": {
         const res = p.response as { status?: unknown; url?: unknown } | undefined;
-        if (typeof res?.status !== "number" || res.status < 400) return;
-        const address = typeof res.url === "string" ? this.keptAddress(t, res.url) : known?.address ?? "";
-        this.logged(t, "request", `${res.status} ${known?.method ?? "?"} ${address}`.trim(), typeof p.loaderId === "string" ? p.loaderId : known?.loader);
+        if (!known || typeof res?.status !== "number" || res.status < 400 || !this.taking(t)) return;
+        const address = typeof res.url === "string" ? this.keptAddress(t, res.url) : known.address;
+        this.logged(t, "request", `${res.status} ${known.method} ${address}`, typeof p.loaderId === "string" ? p.loaderId : known.loader);
         return;
       }
       case "Network.loadingFailed": {
         t.requests.delete(id);
-        if (p.canceled === true) return;
+        if (!known || p.canceled === true || !this.taking(t)) return;
+        // The address is last: a `data:` address ends its line, so nothing after it would be kept.
         const why = typeof p.errorText === "string" && p.errorText ? ` (${p.errorText})` : "";
-        this.logged(t, "request", `failed ${known ? `${known.method} ${known.address}` : "request"}${why}`, known?.loader);
+        this.logged(t, "request", `failed${why} ${known.method} ${known.address}`, known.loader);
         return;
       }
       case "Network.loadingFinished":
@@ -1655,6 +1695,8 @@ export class ComputerBrowser {
       t.gap = t.sent;
       for (const [method, params] of ENABLE) await cdp(t.wc.debugger, method, params);
       await this.watchRequests(t);
+      // The main frame's id, so the first load's own requests (before any commit names it) are known for the console log.
+      if (!t.frame) await cdp<{ frameTree: { frame: { id: string } } }>(t.wc.debugger, "Page.getFrameTree").then((r) => { if (!t.frame) t.frame = r.frameTree.frame.id; }).catch(() => undefined);
     })().finally(() => { t.attaching = null; });
     return t.attaching;
   }
@@ -1771,8 +1813,7 @@ export class ComputerBrowser {
   private async focused(t: Tab): Promise<{ b: number | null; dom: DomIndex; gone: boolean } | "remote"> {
     // A cross-site frame's document is in another process, out of this debugger's reach (so is anything inside one):
     // treated as sensitive, so typing into it is refused rather than judged blind (D9).
-    const main = t.wc.mainFrame.processId;
-    for (let f = t.wc.focusedFrame; f; f = f.parent) if (f.processId !== main) return "remote";
+    if (this.otherProcess(t, t.wc.focusedFrame)) return "remote";
     return this.locked(t, async () => {
       const dom = await this.readDom(t);
       // :focus matches in the deepest root that holds focus (an iframe's document, a shadow root), so every root is asked.

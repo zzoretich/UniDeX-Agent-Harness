@@ -1958,8 +1958,9 @@ test("a popup is the agent's own only while the agent holds the wheel and its op
 
 // ---- session-browser (Task 21): computer_console
 
-type Said = { onConsole(t: unknown, level: string, message: string): void };
-const said = (b: ComputerBrowser, tab: unknown, level: string, message: string): void => (b as unknown as Said).onConsole(tab, level, message);
+type Said = { onConsole(t: unknown, level: string, message: string, source?: string, frame?: unknown): void };
+/** A message of the tab's main frame (a message with no frame, or a frame of another site, is not kept). */
+const said = (b: ComputerBrowser, tab: { wc: { mainFrame: unknown } }, level: string, message: string): void => (b as unknown as Said).onConsole(tab, level, message, undefined, tab.wc.mainFrame);
 const kinds = (b: ComputerBrowser): string[] => (b as unknown as { list: { console: ConsoleLog }[] }).list[0].console.list().map((e) => `${e.kind}: ${e.text}`);
 /** A request the page made, as `Network.requestWillBeSent` tells it (any type of resource). */
 const sent = (b: ComputerBrowser, tab: unknown, requestId: string, method: string, url: string, more: Record<string, unknown> = {}): void =>
@@ -1997,7 +1998,7 @@ test("an error, a warning, an exception and a 404 are kept; a log and a cancelle
   assert.deepEqual(kinds(b), [
     "error: E1 console.error", "warning: W1 console.warn", "exception: Uncaught Error: X1 boom",
     "exception: Uncaught (in promise) Error: P1 reject", "error: A1 Assertion failed",
-    "request: 404 GET https://a.test/missing", "request: failed POST https://a.test/api (net::ERR_CONNECTION_REFUSED)",
+    "request: 404 GET https://a.test/missing", "request: failed (net::ERR_CONNECTION_REFUSED) POST https://a.test/api",
   ]);
 });
 
@@ -2017,9 +2018,11 @@ test("an uncaught error is an exception, a console.error is an error", () => {
 
 test("an entry from a frame is kept and a source address is never printed with its query", async () => {
   const { b, tab } = make();
-  // The handler reads the level and the text, and the source only to tell Electron's own messages: the frame is never read.
+  // The handler reads the level and the text, and the source only to tell Electron's own messages; of the frame only its
+  // process and its parents' (never its address).
   const handlers = wiredHandlers(b, tab);
-  const frame = { get url(): string { throw new Error("the frame is not read"); } };
+  const main = tab.wc.mainFrame;
+  const frame = { processId: main.processId, parent: main, get url(): string { throw new Error("the frame's address is not read"); } };
   handlers.get("console-message")!({ level: "error", message: "frame err at https://x.test/f.js?token=SECRET#h", lineNumber: 1, sourceId: "https://x.test/f.js?token=SECRET", frame });
   const text = await b.console();
   assert.match(text, /\[error\] frame err at https:\/\/x\.test\/f\.js$/m);
@@ -2042,7 +2045,8 @@ test("a failed request on a restored tab does not give away its query", async ()
   inner.place = () => {}; inner.attach = async () => {};
   fresh.restore(["https://site.test/cb?code=SECRET"], 0);
   await fresh.wake();
-  const tab = inner.list[0] as { wc: { debugger: object } };
+  const tab = inner.list[0] as { wc: { debugger: object }; frame: string };
+  tab.frame = "F1"; // (the real attach learns the main frame's id; the fake attach here does not)
   const page = new FakePage();
   Object.assign(tab.wc.debugger as object, { isAttached: () => true, sendCommand: (m: string, p?: Record<string, unknown>) => page.send(m, p) });
   sent(fresh, tab, "r1", "GET", "https://site.test/cb?code=SECRET");
@@ -2157,7 +2161,7 @@ test("a failed request whose path holds a typed password, percent-encoded, does 
   said(b, tab, "error", "could not load https://a.test/reset/correct%20horse%20battery/go");
   const text = await b.console();
   assert.ok(!/correct|horse|battery/.test(text), text);
-  assert.match(text, /\[request\] failed GET https:\/\/a\.test\/reset\/•+\/go/);
+  assert.match(text, /\[request\] failed \(net::ERR_FAILED\) GET https:\/\/a\.test\/reset\/•+\/go/);
 });
 
 test("a value another site carried into a path is not printed", async () => {
@@ -2221,7 +2225,8 @@ test("a message is taken at 8,000 characters, as a string of its own: a huge one
 test("the request table keeps nothing of an address or a method it does not keep", () => {
   const { b, tab } = make();
   const before = heapNow();
-  for (let i = 0; i < 100; i++) sent(b, tab, `m${i}`, "G".repeat(1_000_000 + i), `https://a.test/${"p".repeat(1_000_000 + i)}?q=1`);
+  // A 1 MB query behind a longer path: the first 8,000 characters are taken, so the query is what a slice would keep alive.
+  for (let i = 0; i < 100; i++) sent(b, tab, `m${i}`, "G".repeat(1_000_000 + i), `https://a.test/${"p".repeat(10_000)}?q=${"x".repeat(1_000_000 + i)}`);
   const grew = heapNow() - before;
   assert.ok(grew < 5_000_000, `the table holds ${grew} bytes for 100 requests with 1 MB addresses`);
   for (const v of tab.requests.values()) assert.ok(v.method.length <= 16 && v.address.length <= 500 && v.loader.length <= 64);
@@ -2238,7 +2243,7 @@ test("a data address with spaces, quotes and angle brackets in its body prints i
   const text = await b.console();
   assert.ok(!/SECRET|body|more|class/.test(text), text);
   assert.match(text, /\[request\] 404 GET data:$/m);
-  assert.match(text, /\[request\] failed GET data:$/m, "the line ends where a data address does");
+  assert.match(text, /\[request\] failed \(net::ERR_INVALID_URL\) GET data:$/m, "the line ends where a data address does, and keeps its error text");
   assert.match(text, /\[error\] Refused data:$/m, "in a message, a data address ends the line");
 });
 
@@ -2279,12 +2284,12 @@ test("the scrubber is built once for many messages", () => {
   const pool = tab.memory.pool.bind(tab.memory);
   tab.memory.pool = (sites: string[]) => { built++; return pool(sites); };
   for (let i = 0; i < 50; i++) said(b, tab, "error", `message ${i} hunter22secret`);
-  assert.ok(built <= 1, `${built} builds for 50 messages`);
+  assert.ok(built <= 2, `${built} builds for 50 messages (the text scrub and the address scrub, once)`);
   assert.ok(kinds(b).every((k) => !k.includes("hunter")));
   tab.memory.remember("https://a.test", { values: ["second-secret-value"], whole: [] });
   said(b, tab, "error", "has second-secret-value in it");
   assert.ok(!kinds(b).at(-1)!.includes("second-secret"), "a new secret is picked up: the cache follows the memory");
-  assert.ok(built <= 2, `${built} builds after the memory changed`);
+  assert.ok(built <= 4, `${built} builds after the memory changed`);
 });
 
 test("a flood is counted, not processed", async () => {
@@ -2297,13 +2302,13 @@ test("a flood is counted, not processed", async () => {
     const text = await b.console();
     const lines = bodyOf(text);
     assert.equal(lines.length, 101);
-    assert.equal(lines.at(-1), "9900 more console messages were not kept: a page can log 100 a second at most.");
-    assert.ok(lines.slice(0, -1).every((l) => l.startsWith("[error] ")), "every line the page can write starts with its kind");
+    assert.equal(lines[0], "9900 more console messages were not kept: the app takes in 100 a second at most.");
+    assert.ok(lines.slice(1).every((l) => l.startsWith("[error] ")), "every line the page can write starts with its kind");
     // The next second takes another 100, and the newest 200 rule still holds.
     for (let sec = 0; sec < 3; sec++) { mock.timers.tick(1_000); for (let i = 0; i < 500; i++) said(b, tab, "error", `s${sec} ${i}`); }
     assert.equal(kinds(b).length, 200);
     assert.equal(kinds(b).at(-1), "error: s2 99");
-    assert.match(await b.console(), /\n\d{5} more console messages were not kept/);
+    assert.match(await b.console(), /\n\d{5} more console messages were not kept: the app takes in 100 a second at most\.\n\[error\]/);
     // A new page starts the count again.
     committedBy(b, tab, "L9", "https://a.test/new");
     (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/new");
@@ -2335,7 +2340,7 @@ test("an error page shows the request that failed", () => {
   cdpEvent(b, tab, "Network.loadingFailed", { requestId: "L3.r", type: "Document", errorText: "net::ERR_CONNECTION_REFUSED", canceled: false });
   committedBy(b, tab, "L3", "https://down.test/form");
   (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://down.test/form");
-  assert.deepEqual(kinds(b), ["request: failed POST https://down.test/form (net::ERR_CONNECTION_REFUSED)"]);
+  assert.deepEqual(kinds(b), ["request: failed (net::ERR_CONNECTION_REFUSED) POST https://down.test/form"]);
 });
 
 test("the kept entry has no path while the new page's path is hidden", () => {
@@ -2354,8 +2359,151 @@ test("Electron's own security warning is not kept; a page's warning with the sam
   const { b, tab } = make();
   const handlers = wiredHandlers(b, tab);
   const words = "Electron Security Warning (Insecure Content-Security-Policy) This renderer process has either no Content Security Policy";
-  handlers.get("console-message")!({ level: "warning", message: `%c${words}`, sourceId: "node:electron/js2c/sandbox_bundle", lineNumber: 2 });
+  const frame = tab.wc.mainFrame;
+  handlers.get("console-message")!({ level: "warning", message: `%c${words}`, sourceId: "node:electron/js2c/sandbox_bundle", lineNumber: 2, frame });
   assert.deepEqual(kinds(b), []);
-  handlers.get("console-message")!({ level: "warning", message: words, sourceId: "https://a.test/app.js", lineNumber: 2 });
+  handlers.get("console-message")!({ level: "warning", message: words, sourceId: "https://a.test/app.js", lineNumber: 2, frame });
   assert.deepEqual(kinds(b), [`warning: ${words}`]);
+});
+
+// ---- session-browser (PR 5 fix wave, W2): the console keeps only what a snapshot could read
+
+/** A frame as Electron's console-message event names it. The frame's own address is never read (a getter that throws). */
+const frameOf = (processId: number, parent: unknown = null) => ({ processId, parent, get url(): string { throw new Error("the frame's address is not read"); } });
+const consoleFrom = (h: Map<string, (...a: unknown[]) => void>, message: string, frame: unknown): void =>
+  h.get("console-message")!({ level: "error", message, lineNumber: 1, sourceId: "https://a.test/app.js", frame });
+
+test("a cross-site frame's console error is not kept; a same-site frame's is", () => {
+  const { b, tab } = make();
+  const h = wiredHandlers(b, tab);
+  const main = tab.wc.mainFrame;
+  const same = frameOf(main.processId, main), other = frameOf(main.processId + 1, main);
+  consoleFrom(h, "M1 main frame", main);
+  consoleFrom(h, "S1 same-site frame", same);
+  consoleFrom(h, "X1 cross-site frame hunter22", other);
+  consoleFrom(h, "X2 inside a cross-site frame", frameOf(main.processId, other));
+  consoleFrom(h, "U1 frame unknown", undefined);
+  consoleFrom(h, "U2 frame null", null);
+  assert.deepEqual(kinds(b), ["error: M1 main frame", "error: S1 same-site frame"]);
+});
+
+test("a failed request made by a cross-site frame is not kept", () => {
+  const { b, tab } = make();
+  (tab as { frames: string[] }).frames = ["F2"];
+  const urls = new Map<string, string>();
+  const req = (id: string, frameId: unknown, url: string): void => {
+    urls.set(id, url);
+    cdpEvent(b, tab, "Network.requestWillBeSent", { requestId: id, loaderId: "Lx", type: "Fetch", ...(frameId === undefined ? {} : { frameId }), request: { method: "GET", url } });
+  };
+  req("m1", "F1", "https://a.test/main-missing");
+  req("s1", "F2", "https://a.test/same-missing");
+  req("x1", "F9", "https://other.test/cross-missing");
+  req("u1", undefined, "https://other.test/unknown-missing");
+  for (const id of ["m1", "s1", "x1", "u1"]) {
+    cdpEvent(b, tab, "Network.responseReceived", { requestId: id, loaderId: "Lx", type: "Fetch", frameId: "F9", response: { url: urls.get(id), status: 404 } });
+    cdpEvent(b, tab, "Network.loadingFailed", { requestId: id, type: "Fetch", errorText: "net::ERR_FAILED", canceled: false });
+  }
+  assert.deepEqual([...tab.requests.keys()], [], "nothing is left in flight");
+  const lines = kinds(b);
+  assert.equal(lines.length, 4, lines.join("\n"));
+  assert.ok(lines.every((l) => /main-missing|same-missing/.test(l)), lines.join("\n"));
+  assert.ok(!lines.some((l) => /cross|unknown|other\.test/.test(l)), lines.join("\n"));
+});
+
+test("nothing of a closed, slept or destroyed tab stays reachable from the browser", () => {
+  const reach = (b: ComputerBrowser, tab: unknown): number => {
+    const inner = b as unknown as { navLog: { tab: unknown }[]; navWake: Set<{ tab: unknown }> };
+    return inner.navLog.filter((n) => n.tab === tab).length + [...inner.navWake].filter((w) => w.tab === tab).length;
+  };
+  for (const how of ["close", "sleep", "destroy"] as const) {
+    const { b, tab } = makeSleeper();
+    const inner = b as unknown as { navBegan(t: unknown): void };
+    inner.navBegan(tab);
+    assert.equal(reach(b, tab), 1, "set up");
+    if (how === "close") b.close(0); else if (how === "sleep") b.sleep(); else b.destroy();
+    assert.equal(reach(b, tab), 0, `${how}: the tab's navigation log entries are gone`);
+    inner.navBegan(tab);
+    assert.equal(reach(b, tab), 0, `${how}: a late event of the dropped tab is not logged again`);
+  }
+});
+
+test("a failed request's line ends with its address, so a data address keeps the error text", async () => {
+  const { b, tab } = make();
+  sent(b, tab, "d1", "GET", "data:text/html,<p>SECRET body</p>");
+  cdpEvent(b, tab, "Network.loadingFailed", { requestId: "d1", type: "Fetch", errorText: "net::ERR_INVALID_URL", canceled: false });
+  sent(b, tab, "r1", "POST", "https://a.test/api?k=SECRET");
+  cdpEvent(b, tab, "Network.loadingFailed", { requestId: "r1", type: "Fetch", errorText: "net::ERR_CONNECTION_REFUSED", canceled: false });
+  const text = await b.console();
+  assert.match(text, /\[request\] failed \(net::ERR_INVALID_URL\) GET data:$/m);
+  assert.match(text, /\[request\] failed \(net::ERR_CONNECTION_REFUSED\) POST https:\/\/a\.test\/api$/m);
+  assert.ok(!text.includes("SECRET"), text);
+});
+
+test("an address broken by a NEL, a line separator, a tab, a line feed or a NUL loses its query all the same", () => {
+  for (const sep of ["\u0085", " ", "\t", "\n", "\u0000"]) {
+    const { b, tab } = make();
+    said(b, tab, "error", `see https://a.test/p${sep}q?code=SECRET1#frag and ht${sep}tps://b.test/z?code=SECRET2`);
+    const [stored] = kinds(b);
+    assert.ok(!/SECRET|code=|frag/.test(stored), `${JSON.stringify(sep)}: ${stored}`);
+  }
+});
+
+test("a value percent-encoded across the 500th character of an address, or the 2,000th of a message, is not left in part", () => {
+  const { b, tab } = make();
+  tab.memory.remember("https://a.test", { values: ["correct horse battery"], whole: [] });
+  const secret = "correct%20horse%20battery";
+  sent(b, tab, "r1", "GET", `https://a.test/${"p".repeat(500 - "https://a.test/".length - 10)}${secret}/more`);
+  assert.ok(!/correct|%20h|horse/.test(tab.requests.get("r1")!.address), tab.requests.get("r1")!.address.slice(470));
+  said(b, tab, "error", `failed https://a.test/${"p".repeat(2_000 - "error: failed https://a.test/".length - 12)}${secret}/more`);
+  const [stored] = kinds(b);
+  assert.ok(!/correct|%20h|horse/.test(stored), stored.slice(1_960));
+});
+
+test("the dropped-messages line comes first and says what the app took in", async () => {
+  mock.timers.enable({ apis: ["Date"], now: 2_000_000 });
+  try {
+    const { b, tab } = make();
+    for (let i = 0; i < 150; i++) said(b, tab, "error", `flood ${i}`);
+    const lines = bodyOf(await b.console());
+    assert.equal(lines[0], "50 more console messages were not kept: the app takes in 100 a second at most.");
+    assert.ok(lines.slice(1).every((l) => l.startsWith("[error] ")));
+    assert.equal(lines.length, 101);
+  } finally { mock.timers.reset(); }
+});
+
+test("the tab list and a tab's title use the scrubber built for the log", () => {
+  const { b, tab } = make();
+  tab.memory.remember("https://a.test", { values: ["hunter22secret"], whole: [] });
+  tab.wc.getTitle = () => "page hunter22secret";
+  said(b, tab, "error", "one hunter22secret");
+  let built = 0;
+  const pool = tab.memory.pool.bind(tab.memory);
+  tab.memory.pool = (sites: string[]) => { built++; return pool(sites); };
+  for (let i = 0; i < 5; i++) assert.ok(!b.tabs()[0].title.includes("hunter"));
+  assert.equal(built, 5, "one pool read per tab list (its address); the title adds none");
+});
+
+test("request entries are taken in at the same bound as console messages", () => {
+  mock.timers.enable({ apis: ["Date"], now: 3_000_000 });
+  try {
+    const { b, tab } = make();
+    for (let i = 0; i < 1_000; i++) {
+      sent(b, tab, `f${i}`, "GET", `https://a.test/${i}`);
+      cdpEvent(b, tab, "Network.loadingFailed", { requestId: `f${i}`, type: "Fetch", errorText: "net::ERR_FAILED", canceled: false });
+    }
+    assert.equal(kinds(b).length, 100, "at most 100 in a second");
+    assert.equal(tab.dropped, 900);
+  } finally { mock.timers.reset(); }
+});
+
+test("a flood is not processed: the scrub is not even built for a dropped message", () => {
+  mock.timers.enable({ apis: ["Date"], now: 4_000_000 });
+  try {
+    const { b, tab } = make();
+    let looked = 0;
+    const url = tab.wc.getURL;
+    tab.wc.getURL = () => { looked++; return url(); };
+    for (let i = 0; i < 10_000; i++) said(b, tab, "error", `flood ${i}`);
+    assert.ok(looked <= 100, `${looked} messages were processed for a flood of 10,000`);
+  } finally { mock.timers.reset(); }
 });

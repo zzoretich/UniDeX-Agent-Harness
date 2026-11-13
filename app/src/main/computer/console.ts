@@ -1,7 +1,10 @@
 // What a tab's page said about itself since it loaded (session-browser, computer_console): the newest errors, warnings,
 // uncaught exceptions and failed requests, as text for an agent. Pure: no Electron. Every word of it is PAGE TEXT from a page
-// that may be hostile: an entry is made plain, one line and scrubbed before it is kept (the browser does that, with these
-// helpers), and scrubbed again, its addresses through the tab's address scrubber, when it is read (`consoleText`).
+// that may be hostile. Order of work, at storage (the browser does it, with these helpers): the message's frame must be the
+// tab's main frame or one a snapshot reads (otherwise it is dropped unread); then the text is taken (8,000 characters), made
+// plain (addresses without user info, query and fragment), made one line with no control character, made plain again (cleaning
+// can join an address a control character had split), its addresses through the tab's address scrubber, the tab's text
+// scrubber, and cut at 2,000. It is scrubbed once more when read (`consoleText`).
 
 import { oneLine } from "./title";
 
@@ -45,12 +48,16 @@ export class ConsoleLog {
 /** The most console messages a tab takes in a second; the rest are counted, not processed. */
 export const CONSOLE_RATE = 100;
 
-/** The app's own line (no kind in brackets, which every line a page can write has) saying how many messages were not kept. */
-export const droppedLine = (n: number): string => `${n} more console message${n === 1 ? " was" : "s were"} not kept: a page can log ${CONSOLE_RATE} a second at most.`;
+/** The app's own line (no kind in brackets, which every line a page can write has) saying how many messages were not kept; the
+ *  reply puts it first, where a host that shortens a long reply keeps it. */
+export const droppedLine = (n: number): string => `${n} more console message${n === 1 ? " was" : "s were"} not kept: the app takes in ${CONSOLE_RATE} a second at most.`;
 
 export const NO_ENTRIES = "No errors, warnings or failed requests since this page loaded.";
 
-const STOP = /[\s<>"'`]/;
+// An address ends at a space, a quote or an angle bracket, but not at a tab, a line break, a NEL or a line or paragraph
+// separator: the first pass sees them inside an address (cleaning turns them into spaces later), so what follows them in the
+// address, its query included, is cut with it.
+const STOP = /[ \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff<>"'`]/;
 const SCHEME = /[a-z0-9+.-]/i;
 
 /** Calls `edit(scheme, rest, blob)` for every `scheme://…` address in `text` (an address ends at a space, a quote or an angle
@@ -93,6 +100,9 @@ export function plainAddresses(text: string, originOnly = false): string {
   });
 }
 
+/** The address scrub parses an address and so writes a hidden value's bullets percent-encoded; in a log line they read as bullets. */
+export const bulletsPlain = (text: string): string => text.replace(/%E2%80%A2/gi, "•");
+
 /** `text` with every address replaced by `fn(address)` (the address as it stands, whole). */
 export function mapAddresses(text: string, fn: (address: string) => string): string {
   return scan(text, (scheme, rest, blob) => `${blob ? "blob:" : ""}${fn(`${scheme}://${rest}`)}`);
@@ -104,5 +114,5 @@ export function mapAddresses(text: string, fn: (address: string) => string): str
  *  (as a snapshot's quoted names are). */
 export function consoleText(entries: readonly ConsoleEntry[], scrub: (s: string) => string, scrubUrl: (a: string) => string = (a) => a): string {
   if (!entries.length) return NO_ENTRIES;
-  return entries.map((e) => `[${e.kind}] ${oneLine(scrub(mapAddresses(e.text, scrubUrl))).replace(/</g, "\\u003c")}`).join("\n");
+  return entries.map((e) => `[${e.kind}] ${oneLine(scrub(mapAddresses(e.text, (a) => bulletsPlain(scrubUrl(a))))).replace(/</g, "\\u003c")}`).join("\n");
 }
