@@ -18,6 +18,7 @@ import { judge, type AskWhy, type Focus, type Verdict } from "./gate";
 import type { Rect } from "./mask";
 import { REFUSAL } from "./refusals";
 import { OUTLINE_MAX, UNREAD, withPage } from "./reply";
+import { hideAfterOrigin } from "./snapshot";
 import type { AgentRef } from "./registry";
 import { cleanTitle } from "./title";
 import type { SiteMarks } from "./sites";
@@ -33,7 +34,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entryMethod" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -93,7 +94,7 @@ export const ASK_LABELS: Readonly<Record<AskWhy, string>> = Object.freeze({
   submit: "Submit", purchase: "Purchase", send: "Send", delete: "Delete", merge: "Merge", signin: "Sign in", download: "Download",
   unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
   frame: "Act inside a frame from another site", power: "Turn on the browser",
-  closetab: "Close a tab you opened", resend: "Load a page again, which may send a form again",
+  closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again",
 });
 
 const CATEGORIES: ReadonlySet<string> = new Set<AskCategory>(["submit", "purchase", "send", "delete", "merge", "signin", "download"]);
@@ -637,11 +638,13 @@ export class ComputerService {
   private async tabStep(agent: AgentRef, p: Slot, b: BrowserLike, a: { index: number; close: boolean }, take: () => boolean, lease: Lease): Promise<Step> {
     const tab = b.tabs()[a.index];
     if (!tab) return { reply: fail(REFUSAL.noTab(String(a.index))) };
+    // The tab is known by its uid from here on: an index shifts when another tab closes while a card is up.
+    const uid = b.tabUid(a.index);
     const url = tab.url;
     const site = this.siteAt(b, a.index);
     const need = this.need(judge({ kind: "tab", close: a.close, byUser: a.close && tab.openedBy !== agent.label }, { access: agent.access, marked: this.markedAt(b, a.index) }), null, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
-    const still = (): boolean => b.tabs()[a.index]?.url === url;
+    const where = (): number => (uid === null ? -1 : b.tabIndex(uid));
     const run = async (): Promise<Reply> => {
       const late = this.stale(p, agent, lease);
       if (late) return late;
@@ -651,22 +654,26 @@ export class ComputerService {
         this.line(p, agent.label, `Switched to tab ${a.index}`, agent);
         return this.done(p, b, `Switched to tab ${a.index}.`, since, lease);
       }
-      if (!still()) return refuseAt(REFUSAL.changed, this.url(b));
+      if (where() < 0) return refuseAt(REFUSAL.changed, this.url(b));
+      // The start page is opened BEFORE the last tab is closed, so a tab is open all the while.
       if (b.tabs().length === 1) await b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: agent.label });
       const gone = this.stale(p, agent, lease);
       if (gone) return gone;
-      b.close(a.index);
+      // The person may have closed the tab while the start page loaded: then there is nothing more to close.
+      const at = where();
+      if (at >= 0) b.close(at);
       const since = this.clock.now();
-      this.line(p, agent.label, `Closed tab ${a.index}`, agent);
-      return this.done(p, b, `Closed tab ${a.index}.`, since, lease);
+      if (at >= 0) this.line(p, agent.label, `Closed tab ${a.index}`, agent);
+      return this.done(p, b, at >= 0 ? `Closed tab ${a.index}.` : `Tab ${a.index} is already closed.`, since, lease);
     };
     if (!need) return { reply: take() ? await run() : fail(REFUSAL.late) };
+    const title = clean(tab.title, 80);
     return {
       ask: {
         whys: [need], site, target: null,
         action: `Close tab ${a.index}`, kind: "Close tab",
-        detail: `Tab ${a.index} was opened by ${tab.openedBy ?? "you"}, not by this session. ${cardPage(url)}`,
-        revalidate: () => Promise.resolve(still()),
+        detail: `${title ? `${quoted(title)}. ` : ""}${cardPage(url)}`,
+        revalidate: () => Promise.resolve(where() >= 0),
         run,
       },
     };
@@ -681,32 +688,42 @@ export class ComputerService {
     if (!here) return { reply: fail(REFUSAL.noPage) };
     if ((go === "back" && !here.canBack) || (go === "forward" && !here.canForward)) return { reply: refuseAt(REFUSAL.noHistory(go), this.url(b)) };
     const token = b.pageToken();
-    const method = await b.entryMethod(go, tab);
-    // The history was an await: the call must still be current, and the page the one the method was read for.
+    const entry = await b.entry(go, tab);
+    // The history was an await: the call must still be current, and the page the one the entry was read for.
     const read = this.stale(p, agent, lease);
     if (read) return { reply: read };
-    if (b.pageToken() !== token || this.active(b) !== tab) return { reply: refuseAt(REFUSAL.moved, this.url(b)) };
+    if (!entry || b.pageToken() !== token || this.active(b) !== tab) return { reply: refuseAt(REFUSAL.changed, this.url(b)) };
     const site = this.siteAt(b, tab);
-    const need = this.need(judge({ kind: "nav", go, method }, { access: agent.access, marked: this.markedAt(b, tab) }), null, site);
+    const need = this.need(judge({ kind: "nav", go, method: entry.method }, { access: agent.access, marked: this.markedAt(b, tab) }), null, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
-    const verb = go === "back" ? "Go back" : go === "forward" ? "Go forward" : "Reload";
     const went = go === "back" ? "Went back" : go === "forward" ? "Went forward" : "Reloaded";
-    const run = async (): Promise<Reply> => {
-      const late = this.stale(p, agent, lease);
-      if (late) return late;
-      // The move starts a load the page answers to; `repost` only for a reload of what was not a GET, which the person allowed.
-      if (!b.nav(go, tab, { repost: go === "reload" && method !== "GET" })) return refuseAt(REFUSAL.pageChanged, this.url(b));
+    const finish = (): Reply => {
       const since = this.clock.now();
       this.line(p, agent.label, went, agent);
       return this.done(p, b, `${went}.`, since, lease);
     };
-    if (!need) return { reply: take() ? await run() : fail(REFUSAL.late) };
+    if (!need) {
+      // Free: a GET entry. Nothing is awaited between the check above and the move.
+      const late = this.stale(p, agent, lease);
+      if (late) return { reply: late };
+      if (!take()) return { reply: fail(REFUSAL.late) };
+      return { reply: b.nav(go, tab) ? finish() : refuseAt(REFUSAL.pageChanged, this.url(b)) };
+    }
+    // Asked: what the person allows is this entry of this tab. The run reads the history again and moves only if it is still so.
+    const target = go === "reload" || !entry.url ? null : entry.url;
+    const verb = go === "reload" ? "Reload" : target ? `Go ${go} to ${hostOf(siteOf(target))}` : `Go ${go}`;
+    const run = async (): Promise<Reply> => {
+      const late = this.stale(p, agent, lease);
+      if (late) return late;
+      if (!(await b.navEntry(go, entry))) return refuseAt(REFUSAL.changed, this.url(b));
+      return finish();
+    };
     return {
       ask: {
         whys: [need], site, target: null,
-        action: verb, kind: verb,
-        detail: `Loading this page again may send a form again. ${cardPage(b.tabs()[tab]?.url ?? null)}`,
-        revalidate: async () => b.pageToken() === token && this.active(b) === tab && (await b.entryMethod(go, tab).catch(() => null)) === method,
+        action: verb, kind: go === "reload" ? "Reload" : `Go ${go}`,
+        detail: `${target ? `Going ${go} loads ${hideAfterOrigin(target)}, which may send a form again.` : "Loading this page again may send a form again."} ${cardPage(here.url)}`,
+        revalidate: () => Promise.resolve(b.pageToken() === token && this.active(b) === tab),
         run,
       },
     };
@@ -2082,6 +2099,7 @@ export class ComputerService {
         ask: (i) => this.pageAsk(p.key, i),
         note: (text) => { void this.pageNote(p.key, text); },
         changed: () => this.refresh(p.key),
+        userDrives: () => this.o.wheel.holder(p.key)?.kind === "user",
       });
       if (p.key === this.selected && !this.popped) p.browser.show(this.bounds);
     }

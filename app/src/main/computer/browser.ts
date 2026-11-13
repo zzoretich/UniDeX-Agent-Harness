@@ -36,7 +36,11 @@ export interface TabInfo { index: number; url: string; title: string; openedBy: 
  *  `scrub(text, r.tab)`: the tab, not the current one, since a popup may have made another tab current. The scrub
  *  remembers what the tab read on the current site (R32), so text about a page the tab has since left is covered too. */
 export interface Resolved { target: Target; shown: string; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; pageToken: string; tab: number }
-export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void }
+/** `userDrives` (session-browser S17, M5): whether the person holds the wheel now; a popup made then is theirs, not its opener's agent's. */
+export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; userDrives?(): boolean }
+/** The history entry a move would load (session-browser S17), as one read of the tab's history saw it: the tab by its uid, the
+ *  entry by its id (null where none: a waking tab, nothing to go to, an unreadable history) and the method it was loaded by. */
+export interface Entry { uid: number; id: string | null; url: string | null; method: "GET" | "other" | "unknown" }
 /** Where the gate judged an action (I3b): the tab, and the page token it had. `key` and `type` deliver only while both
  *  are still the ones in front. */
 export interface Judged { tab: number; pageToken: string }
@@ -185,8 +189,10 @@ interface Tab {
   /** The method each history entry was loaded by, by entry id, once its document committed; an entry with no record is
    *  "unknown" to the gate. Entries that left the history are forgotten at each bind. */
   methods: Map<string, LoadMethod>;
-  /** The entry ids the history held when the methods were last bound: a same-document entry is "GET" only if it is new. */
-  known: Set<string>;
+  /** The entry ids the last history read listed (every read, also one whose bind was skipped): a same-document entry is "GET"
+   *  only if no read listed it before. `unread`: a bind was dropped before its read, so an entry of the tab may be unlisted
+   *  and still not new: no same-document entry is called new until a read has gone through. */
+  known: Set<string>; unread: boolean;
   /** Main-frame commits and same-document navigations so far: a bind (a tick after one) goes only when no later one came. */
   binds: number;
 }
@@ -452,7 +458,7 @@ export class ComputerBrowser {
   /** The person's Back, Forward or Reload on a tab (the active one by default). A move that cannot happen, or no tab, does
    *  nothing and returns false; true means the move or the reload was started (session-browser S13). The page's own
    *  commit hooks report the result. */
-  nav(go: ComputerNavGo, tab?: number, o: { repost?: boolean } = {}): boolean {
+  nav(go: ComputerNavGo, tab?: number): boolean {
     const t = this.list[tab ?? this.current];
     if (!t || t.wc.isDestroyed()) return false;
     const h = t.wc.navigationHistory;
@@ -463,9 +469,6 @@ export class ComputerBrowser {
       const k = t.pending;
       void this.reload(t, k).catch(() => this.o.hooks.note(`A tab did not reload: ${clipUrl(this.keptUrl(k))}`));
     }
-    // session-browser S17 (R5): a reload the person allowed for a page that was sent a form must send it again; Electron's
-    // own reload does nothing for a POST entry, the protocol's does it with no dialog.
-    else if (o.repost && go === "reload") void this.send(t, "Page.reload").catch(() => this.o.hooks.note("A tab did not reload: the page did not take the reload."));
     else t.wc.reload();
     return true;
   }
@@ -475,14 +478,41 @@ export class ComputerBrowser {
    *  entry to go to, `about:blank`, a history that cannot be read). The history is read at the moment of the call, so the
    *  index is the one the move would use. A tab still waking reloads its kept address by GET. */
   async entryMethod(go: ComputerNavGo, tab?: number): Promise<"GET" | "other" | "unknown"> {
+    return (await this.entry(go, tab))?.method ?? "unknown";
+  }
+
+  /** The entry a move would load, from one read of the history (null with no such tab): its tab by uid, itself by id. */
+  async entry(go: ComputerNavGo, tab?: number): Promise<Entry | null> {
     const t = this.list[tab ?? this.current];
-    if (!t || t.wc.isDestroyed()) return "unknown";
-    if (t.pending) return go === "reload" ? "GET" : "unknown";
+    if (!t || t.wc.isDestroyed()) return null;
+    if (t.pending) return { uid: t.uid, id: null, url: null, method: go === "reload" ? "GET" : "unknown" };
     const h = await this.history(t).catch(() => null);
     const e = h?.entries[h.currentIndex + (go === "back" ? -1 : go === "forward" ? 1 : 0)];
-    if (!e || e.url === "about:blank") return "unknown";
-    return t.methods.get(String(e.id)) ?? "unknown";
+    if (!e) return { uid: t.uid, id: null, url: null, method: "unknown" };
+    return { uid: t.uid, id: String(e.id), url: e.url, method: e.url === "about:blank" ? "unknown" : t.methods.get(String(e.id)) ?? "unknown" };
   }
+
+  /** The move the person allowed on a card, bound to what the card named (session-browser S17): the same tab (by uid), still
+   *  the active one, and the entry the move would load now is the same one (by id, with the same method). The history is read
+   *  again here, and nothing is awaited between that read's check and the act, so a commit or a closed tab meanwhile sends
+   *  nothing (false). A reload of what was not a GET goes through the protocol, which sends the form again with no dialog
+   *  (Electron's own reload does nothing for a POST entry); a protocol reload that fails throws the table's sentence. */
+  async navEntry(go: ComputerNavGo, bound: Entry): Promise<boolean> {
+    const was = this.list[this.current];
+    if (!was || was.uid !== bound.uid) return false;
+    const now = await this.entry(go, this.current);
+    const t = this.list[this.current];
+    if (!now || t !== was || now.uid !== bound.uid || now.id !== bound.id || now.method !== bound.method) return false;
+    if (go === "reload" && bound.method !== "GET" && !t.pending) {
+      await this.send(t, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
+      return true;
+    }
+    return this.nav(go, this.current);
+  }
+
+  /** A tab's uid, which never leaves main, so a card can name the tab it was raised for across an index shift. */
+  tabUid(index: number): number | null { return this.list[index]?.uid ?? null; }
+  tabIndex(uid: number): number { return this.list.findIndex((t) => t.uid === uid); }
 
   private history(t: Tab): Promise<{ currentIndex: number; entries: { id: number | string; url: string }[] }> {
     return this.send(t, "Page.getNavigationHistory");
@@ -499,23 +529,29 @@ export class ComputerBrowser {
   }
 
   private async bind(t: Tab, n: number, how: { loader: LoadMethod | null } | "same"): Promise<void> {
-    if (t.binds !== n || t.closing || t.wc.isDestroyed()) return;
+    if (t.closing || t.wc.isDestroyed()) return;
+    if (t.binds !== n) { t.unread = true; return; }
     const h = await this.history(t);
+    // Every read's answer lists the ids it saw, also when a later commit makes this bind give up (M1): an entry listed once is
+    // never new again.
+    const ids = new Set(h.entries.map((e) => String(e.id)));
+    const before = t.known, hadGap = t.unread;
+    t.known = ids;
+    t.unread = false;
     if (t.binds !== n) return;
     const cur = h.entries[h.currentIndex];
     if (!cur) return;
     const id = String(cur.id);
     if (how === "same") {
       // A same-document entry reloads by a plain GET, but only a NEW entry is known to be one: moving back within the document
-      // onto an entry seen before keeps whatever that entry had (a POST page's own entry, or none).
-      if (!t.known.has(id) && !t.methods.has(id)) t.methods.set(id, "GET");
+      // onto an entry seen before keeps whatever that entry had (a POST page's own entry, or none). With a bind dropped since
+      // the last read, an entry may be unlisted and still be old (a POST page whose own bind never read): in doubt, no record.
+      if (!hadGap && !before.has(id) && !t.methods.has(id)) t.methods.set(id, "GET");
     } else if (how.loader && !(how.loader === "GET" && t.methods.get(id) === "other")) {
       // A reload or a history load of an entry that was a POST never makes it free by showing GET (a redirect, a cache hit).
       t.methods.set(id, how.loader);
     }
-    const ids = new Set(h.entries.map((e) => String(e.id)));
     for (const known of [...t.methods.keys()]) if (!ids.has(known)) t.methods.delete(known);
-    t.known = ids;
   }
 
   /** Closes tab `index`; the next tab (or the last one) becomes active. */
@@ -1056,7 +1092,7 @@ export class ComputerBrowser {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
-      loaders: new Map(), methods: new Map(), known: new Set(), binds: 0,
+      loaders: new Map(), methods: new Map(), known: new Set(), unread: false, binds: 0,
     };
     owners.set(t.wc.id, this.handlers);
     // A background tab leaves the selection on the tab already in front; with none in front it is the one.
@@ -1301,6 +1337,9 @@ export class ComputerBrowser {
 
   private async popup(t: Tab, d: Electron.HandlerDetails): Promise<void> {
     const from = this.site(t), to = siteOf(d.url) ?? "null", doc = t.doc;
+    // M5: a popup made while the person holds the wheel is the person's (their own click opened it), so the agent may not close it
+    // unasked; otherwise it is its opener's.
+    const opener = this.o.hooks.userDrives?.() ? null : t.openedBy;
     // R38 (D9): the popup's URL may carry a code typed into the opener that the agent never read (a target=_blank GET form,
     // window.open with the field's value). The opener document is still alive here, so its sensitive values are read now,
     // in G2's one-command read (the usual command timeout), and remembered for the opener's site before the URL goes out.
@@ -1312,7 +1351,7 @@ export class ComputerBrowser {
     const out = this.urlScrub(t, [from, to], got ?? { values: [], whole: [] });
     const shown = clipUrl(out(got ? d.url : stripQuery(d.url)));
     if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${shown} in a new tab; ${MAX_TABS} tabs are open.`); return; }
-    const nt = await this.addTab(t.openedBy);
+    const nt = await this.addTab(opener);
     // R32: the new tab inherits the opener's secrets for the opener's site only. R35: a value the opener put in the new
     // tab's URL is carried for that URL string only, never into the new tab's site pool. R37 (N2): the opener's own
     // carried set comes along (a code carried into the opener's URL and forwarded to the popup's), kinds kept. R38: the

@@ -105,6 +105,8 @@ class FakeBrowser implements BrowserLike {
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
   async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }) {
     // As the real browser does (session-browser X2): a background tab is added without taking the selection, unless it is the first.
+    this.trail.push(`open ${this.pages.length}`);
+    const hook = this.onOpen; this.onOpen = null; hook?.();
     let at = this.current;
     if (o.newTab || this.current < 0) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by }); at = this.pages.length - 1; if (!keep) this.current = at; }
     else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy };
@@ -117,20 +119,33 @@ class FakeBrowser implements BrowserLike {
   navOk = true;
   /** The `repost` each nav was given (session-browser S17). */
   reposts: (boolean | undefined)[] = [];
-  nav(go: string, tab?: number, o?: { repost?: boolean }): boolean {
+  nav(go: string, tab?: number): boolean {
     if (!this.navOk) return false;
     this.navs.push(`${go}${tab === undefined ? "" : ` ${tab}`}`);
-    this.reposts.push(o?.repost);
+    this.reposts.push(false);
     return true;
   }
   /** The load method of the entry each move would load (session-browser S17); "GET" unless a test sets it, and the moves asked about. */
   methods: Record<string, "GET" | "other" | "unknown"> = {};
   asked: string[] = [];
   entryGate: Promise<void> | null = null;
-  async entryMethod(go: string, tab?: number) {
+  /** The id of the history entry a move would load, and the address each of Back and Forward would load. */
+  entryId = "e1"; entryUrls: Record<string, string> = {};
+  private uids = new WeakMap<object, number>(); private nextUid = 1;
+  tabUid(i: number): number | null { const p = this.pages[i]; if (!p) return null; if (!this.uids.has(p)) this.uids.set(p, this.nextUid++); return this.uids.get(p)!; }
+  tabIndex(uid: number): number { return this.pages.findIndex((_p, i) => this.tabUid(i) === uid); }
+  async entry(go: string, tab?: number) {
     this.need(tab); this.asked.push(go);
     await this.entryGate;
-    return this.methods[go] ?? "GET";
+    return { uid: this.tabUid(tab ?? this.current)!, id: this.entryId, url: this.entryUrls[go] ?? null, method: this.methods[go] ?? "GET" };
+  }
+  /** As the real one: moves only if the tab is the active one and the entry is the one the card named. */
+  async navEntry(go: string, bound: { uid: number; id: string | null; method: string }) {
+    const now = await this.entry(go, this.current);
+    if (now.uid !== bound.uid || now.id !== bound.id || now.method !== bound.method) return false;
+    this.navs.push(`${go} ${this.current}`);
+    this.reposts.push(go === "reload" && bound.method !== "GET");
+    return true;
   }
   hovers: Resolved[] = [];
   async hoverAt(r: Resolved, valid: () => boolean) {
@@ -139,7 +154,10 @@ class FakeBrowser implements BrowserLike {
     this.order.push("hover"); this.hovers.push(r);
   }
   select(i: number) { this.need(i); this.current = i; this.seq++; }
-  close(i: number) { this.need(i); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
+  /** Each open and close in order, with the number of tabs open when it was made (the last tab closes only after another opens). */
+  trail: string[] = [];
+  onOpen: (() => void) | null = null;
+  close(i: number) { this.need(i); this.trail.push(`close ${this.pages.length}`); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
   /** The caps each snapshot was asked with (session-browser S16, I4: a reply asks for the outline's, a snapshot for none). */
   capsFor: (number | undefined)[] = [];
   async snapshot(tab?: number, session?: string, o: { cap?: number } = {}): Promise<Snapshot> {
@@ -767,7 +785,7 @@ test("the ask labels state each category in app-written text", () => {
     submit: "Submit", purchase: "Purchase", send: "Send", delete: "Delete", merge: "Merge", signin: "Sign in", download: "Download",
     unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
     frame: "Act inside a frame from another site", power: "Turn on the browser",
-    closetab: "Close a tab you opened", resend: "Load a page again, which may send a form again",
+    closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again",
   });
 });
 
@@ -4805,7 +4823,7 @@ test("closing a tab the user opened asks; closing its own does not", async () =>
   const p = h.call(A, "computer_tab", { index: 0, close: true });
   const ask = await h.asked();
   assert.equal(ask.why, "closetab");
-  assert.equal(ask.title, "Close a tab you opened: Close tab 0 on a.test?");
+  assert.equal(ask.title, "Close a tab it did not open: Close tab 0 on a.test?");
   assert.equal(b.pages.length, 2, "not closed yet");
   h.svc.answer(ask.id, "once");
   assert.match((await p).text, /^Closed tab 0\./);
@@ -4844,6 +4862,7 @@ test("the agent's close of the last tab leaves the browser on at the start page"
   assert.ok(!r.isError, r.text);
   assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
   assert.equal(b.current, 0);
+  assert.deepEqual(b.trail.slice(-2), ["open 1", "close 2"], "the start page opened first, so a tab was open all the while");
   assert.equal(h.lastState().power, "awake", "not switched off");
   assert.ok(r.text.endsWith(now("https://start.test/")), r.text);
   // The person's last tab, once allowed, leaves the same.
@@ -4952,4 +4971,124 @@ test("each of the three replies ends with the page's outline", async () => {
     assert.ok(r.text.endsWith(now("https://a.test/one", "outline text")), `${tool}: ${r.text}`);
   }
   assert.deepEqual(b.capsFor.slice(-3), [OUTLINE_CAP, OUTLINE_CAP, OUTLINE_CAP], "each asked for the reply-sized outline");
+});
+
+test("the last tab closed by the person while the start page loads: nothing more is closed", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.onOpen = () => { b.pages.splice(0, 1); b.current = -1; };       // the person closed it during the open
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Tab 0 is already closed\./);
+  assert.ok(r.text.endsWith(now("https://start.test/")), "carries the page now in front");
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.ok(!b.trail.some((t) => t.startsWith("close")), "no close was made");
+});
+
+test("an allowed close does not close another tab with the same address", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/same");
+  await h.call(A, "computer_open", { url: "https://a.test/same", newTab: true });
+  b.pages[0].openedBy = null;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  // While the card is up the person closes tab 0 and a new tab opens in the same place with the same address.
+  b.pages[0] = { url: "https://a.test/same", openedBy: null };
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.equal(b.pages.length, 2, "nothing was closed");
+  // And after an index shift the card still closes the tab it named.
+  b.pages[0].openedBy = null;
+  const q = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask2 = await h.asked();
+  const named = b.pages[0];
+  b.pages.unshift({ url: "https://a.test/new", openedBy: "Alpha" });   // a tab inserted before it: its index is now 1
+  h.svc.answer(ask2.id, "once");
+  assert.match((await q).text, /^Closed tab 0\./);
+  assert.ok(!b.pages.includes(named) && b.pages.length === 2, "the named tab went, not the one now at index 0");
+});
+
+test("an allowed reload is bound to the entry on its card: a commit while the card was up sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  b.entryId = "e2";                                          // a new page committed
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.deepEqual([b.navs, b.reposts], [[], []], "no reload of the new page");
+});
+
+test("an allowed reload is bound to its tab: another tab in front sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  b.pages.splice(1, 1); b.current = 0;                       // the card's tab closed; the neighbour is in front
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.deepEqual(b.navs, []);
+});
+
+test("the Back card names where the move goes by its origin only, and the Reload card keeps the current page", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true; b.methods.back = "other"; b.methods.reload = "other";
+  b.entryUrls.back = "https://prev.test/checkout/step?card=4111&token=SECRET";
+  const p = h.call(A, "computer_nav", { go: "back" });
+  const ask = await h.asked();
+  assert.equal(ask.title, "Load a page again, which may send a form again: Go back to prev.test on a.test?");
+  assert.match(ask.detail, /^Going back loads https:\/\/prev\.test\/.*, which may send a form again\. Page: https:\/\/a\.test\/two$/);
+  for (const bit of ["checkout", "4111", "SECRET"]) assert.ok(!ask.detail.includes(bit) && !ask.title.includes(bit) && !ask.notice.includes(bit), bit);
+  h.svc.answer(ask.id, "deny"); await p;
+  const q = h.call(A, "computer_nav", { go: "reload" });
+  const ask2 = await h.asked();
+  assert.equal(ask2.title, "Load a page again, which may send a form again: Reload on a.test?");
+  assert.match(ask2.detail, /^Loading this page again may send a form again\. Page: /);
+  h.svc.answer(ask2.id, "deny"); await q;
+});
+
+test("the closetab card says what is known of the tab and not who opened it", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = "A program";
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.ok(!/opened by|by you/i.test(ask.detail), ask.detail);
+  assert.match(ask.detail, /Page: https:\/\/a\.test\/one$/);
+  h.svc.answer(ask.id, "deny"); await p;
+});
+
+test("a nav whose page moved during the history read answers the changed sentence, not the focus one", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  let release: () => void = () => {};
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_nav", { go: "back" });
+  await flush();
+  b.seq++;
+  release();
+  const r = await p;
+  assert.equal(r.text, `${REFUSAL.changed} ${page("https://a.test/two")}`);
+  assert.deepEqual(b.navs, []);
+});
+
+test("the browser is told when the person drives, for a popup it makes", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  const hooks = b.hooks as BrowserHooks & { userDrives(): boolean };
+  assert.equal(hooks.userDrives(), false);
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  assert.equal(hooks.userDrives(), true);
+  h.svc.handBack();
+  assert.equal(hooks.userDrives(), false);
 });

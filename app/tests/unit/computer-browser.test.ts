@@ -149,7 +149,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
     query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false, worlds: new Map(),
     memory: new SecretMemory(), frame: "F1", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0,
     leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false,
-    loaders: new Map(), methods: new Map(), known: new Set(), binds: 0,
+    loaders: new Map(), methods: new Map(), known: new Set(), unread: false, binds: 0,
   };
   const inner = b as unknown as { list: unknown[]; current: number };
   inner.list.push(tab);
@@ -1473,30 +1473,80 @@ test("main keeps no part of a request but its method", async () => {
   assert.equal(await b.entryMethod("reload"), "other");
 });
 
+const bound = (o: Partial<{ uid: number; id: string | null; method: "GET" | "other" | "unknown" }> = {}) => ({ uid: 1, id: "e1" as string | null, url: null, method: "other" as const, ...o });
+
 test("the allowed reload of a POST entry goes through the protocol, and a free reload does not", async () => {
   const { b, page, nav } = make();
-  assert.equal(b.nav("reload", undefined, { repost: true }), true);
-  await turns();
-  assert.deepEqual(page.sent.filter((s) => s.method === "Page.reload").length, 1, "the protocol's reload was sent");
+  historyOf(page, ["e1"], 0);
+  (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods.set("e1", "other");
+  assert.equal(await b.navEntry("reload", bound()), true);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 1, "the protocol's reload was sent");
   assert.deepEqual(nav.moves, [], "wc.reload() was not");
   page.sent.length = 0;
   assert.equal(b.nav("reload"), true);
-  await turns();
   assert.deepEqual(nav.moves, ["reload"]);
-  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
-  // repost means nothing for Back and Forward, which stay Electron's.
-  nav.back = true; nav.forward = true; nav.moves.length = 0;
-  b.nav("back", undefined, { repost: true }); b.nav("forward", undefined, { repost: true });
-  assert.deepEqual(nav.moves, ["back", "forward"]);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "a free reload is Electron's");
+  // A GET entry the person allowed anyway reloads the plain way; Back and Forward stay Electron's.
+  nav.moves.length = 0; nav.back = true; nav.forward = true;
+  historyOf(page, ["e0", "e1", "e2"], 1);
+  const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
+  methods.set("e0", "other"); methods.set("e1", "GET"); methods.set("e2", "other");
+  assert.equal(await b.navEntry("reload", bound({ method: "GET" })), true);
+  assert.equal(await b.navEntry("back", bound({ id: "e0" })), true);
+  assert.equal(await b.navEntry("forward", bound({ id: "e2" })), true);
+  assert.deepEqual(nav.moves, ["reload", "back", "forward"]);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
 });
 
-test("a reload sent through the protocol that fails is noted for the person, and never breaks the tab", async () => {
-  const { b, page, notes } = make();
+test("a reload sent through the protocol that fails answers with the table's sentence", async () => {
+  const { b, page } = make();
+  historyOf(page, ["e1"], 0);
+  (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods.set("e1", "other");
   page.on.set("Page.reload", () => { throw new Error("Not attached to an active page"); });
-  assert.equal(b.nav("reload", undefined, { repost: true }), true);
-  await turns();
-  assert.deepEqual(notes, ["A tab did not reload: the page did not take the reload."]);
+  await assert.rejects(b.navEntry("reload", bound()), (e: Error) => e.message === REFUSAL.notReloaded);
+});
+
+test("a commit while the allowed reload reads the history: nothing is sent again", async () => {
+  // The page the card named was e1; by the time the history answers, the tab holds e2 (both entries unknown to the table).
+  const { b, page } = make();
+  historyOf(page, ["e1"], 0);
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); historyOf(page, ["e1", "e2"], 1); });
+  // The read answers the history as it is at the moment it is made: e2 is current.
+  assert.equal(await b.navEntry("reload", bound({ method: "unknown" })), false);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+  // And the same, the page having moved on before the run starts.
+  historyOf(page, ["e1", "e2"], 1);
+  assert.equal(await b.navEntry("reload", bound({ method: "unknown" })), false);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("a tab closing during that read does not send the reload to its neighbour", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  const inner = b as unknown as { list: unknown[]; current: number };
+  const other = { ...tab, uid: 2, wc: { ...tab.wc } };
+  inner.list.push(other);
+  inner.current = 1;                       // the card was raised for the second tab (uid 2)
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); inner.list.splice(1, 1); inner.current = 0; });   // it closed meanwhile
+  assert.equal(await b.navEntry("reload", bound({ uid: 2, method: "unknown" })), false);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "the neighbour (uid 1) was not reloaded");
+  assert.deepEqual(inner.list, [tab]);
+});
+
+test("an allowed Back onto a POST entry goes to that entry and no other", async () => {
+  const { b, page, nav } = make();
+  nav.back = true;
+  const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
+  methods.set("e0", "other"); methods.set("e1", "other");
+  historyOf(page, ["e0", "e1", "e2"], 1);
+  assert.equal(await b.navEntry("back", bound({ id: "e0" })), true);
+  assert.deepEqual(nav.moves, ["back"]);
+  // The history changed while the card was up: Back would now load another entry.
+  nav.moves.length = 0;
+  historyOf(page, ["e0", "e1", "e2", "e3"], 2);
+  methods.set("e2", "other");
+  assert.equal(await b.navEntry("back", bound({ id: "e0" })), false);
+  assert.deepEqual(nav.moves, [], "nothing sent");
 });
 
 test("Network is enabled with its buffers at zero; if the protocol refuses those it is enabled plainly; if it fails the tab still attaches", async () => {
@@ -1583,4 +1633,39 @@ test("hoverAt moves the pointer onto the point and presses nothing; it goes only
   tab.seq++;
   await assert.rejects(b.hoverAt(resolved(), () => true), PageChanged);
   assert.deepEqual(page.inputs(), [], "the page moved on: nothing sent");
+});
+
+// ---- session-browser S17 (Task 20, fix round 1)
+
+test("a same-document Back onto a POST page whose bind never read is not recorded GET", async () => {
+  const { b, page, tab } = make();
+  // The POST commit, a pushState and a same-document Back, all before the first tick: only the last bind reads.
+  historyOf(page, ["e1", "e2"], 0);
+  requested(b, tab, "L1", "POST");
+  committedBy(b, tab, "L1");
+  pushed(b, tab);
+  pushed(b, tab, "https://a.test/x");
+  await afterBind();
+  const m = await b.entryMethod("reload");
+  assert.notEqual(m, "GET", `the POST page's entry came out ${m}`);
+  assert.equal(tab.unread, false, "a read went through");
+  // Once a read listed the entries, a new pushState entry is GET again.
+  historyOf(page, ["e1", "e2", "e3"], 2);
+  pushed(b, tab, "https://a.test/x#c");
+  await afterBind();
+  assert.equal(await b.entryMethod("reload"), "GET");
+});
+
+test("a popup opened while the person holds the wheel is the person's; the agent's own click's is its opener's", async () => {
+  for (const [drives, expected] of [[true, null], [false, "Agent"]] as const) {
+    const { b, tab } = make();
+    (tab as { openedBy: string | null }).openedBy = "Agent";
+    let by: string | null | undefined;
+    const inner = b as unknown as { addTab(by: string | null): Promise<unknown>; leavingValues(): Promise<null>; o: { hooks: BrowserHooks } };
+    inner.o.hooks.userDrives = () => drives;
+    inner.leavingValues = async () => null;
+    inner.addTab = async (x) => { by = x; return { memory: new SecretMemory(), opened: null, wc: { loadURL: async () => {} } }; };
+    await (b as unknown as { popup(t: unknown, d: unknown): Promise<void> }).popup(tab, { url: "https://b.test/", referrer: {}, postBody: undefined });
+    assert.equal(by, expected, `person drives: ${drives}`);
+  }
 });

@@ -87,6 +87,7 @@ export const REFUSAL = {
   /** Back or Forward with no entry to go to (session-browser S17); `go` is "back" or "forward". */
   noHistory: (go: string) => `There is no page to go ${go} to: call computer_status to see the tabs, or open a page with computer_open.`,
   tabGone: "That tab was closed: call computer_status to see what is open.",
+  notReloaded: "The page did not reload: call computer_snapshot to see where it stands, then try again.",
   sizeChanged: "The page changed size while the screenshot was taken, so it was not returned: try again.",
   notVisible: "That element is not visible on the page: take a new snapshot.",
   passwordUnread: "Could not read a password field's value to scrub it, so the text was held back: try again.",
