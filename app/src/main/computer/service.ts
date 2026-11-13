@@ -34,7 +34,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -103,7 +103,7 @@ const isCategory = (w: AskWhy): w is AskCategory => CATEGORIES.has(w);
  *  download, permission and frame asks are asked every time. */
 const offersAlways = (w: AskWhy): boolean => w === "unmarked" || (isCategory(w) && w !== "download");
 
-const LOOK: ReadonlySet<string> = new Set(["computer_status", "computer_snapshot", "computer_screenshot", "computer_wait"]);
+const LOOK: ReadonlySet<string> = new Set(["computer_status", "computer_snapshot", "computer_screenshot", "computer_wait", "computer_console"]);
 /** S3: after a Not now (or a switch off) a session's opens answer the same sentence, no card, for this long on Code. */
 export const QUIET_MS = 60_000;
 /** The most addresses held for one Turn on card (session-browser S23); a seventh while it is up is dropped. */
@@ -313,9 +313,6 @@ function parse(call: ToolCall): Parsed | string {
     case "computer_hover":
       if (ref) return { kind: "hover", by: { ref } };
       return finite(a.x) && finite(a.y) ? { kind: "hover", by: { x: a.x, y: a.y } } : REFUSAL.noHover;
-    // Named so the bridge's count is right; its reads come with the console task.
-    case "computer_console":
-      return REFUSAL.consoleSoon;
     case "computer_type":
       return typeof a.text === "string" && a.text && a.text.length <= 20_000 ? { kind: "type", text: a.text, ref } : REFUSAL.noText;
     case "computer_key":
@@ -414,6 +411,8 @@ export class ComputerService {
     // D21: the snapshot is page text, already scrubbed and wrapped as untrusted data with its origin.
     // I2: its refs are this session's own.
     if (call.tool === "computer_snapshot") return { text: (await b.snapshot(tab, agent.key)).text };
+    // session-browser: the tab's console log, already scrubbed and wrapped as untrusted page text; a look, so no outline.
+    if (call.tool === "computer_console") return { text: await b.console(tab) };
     const png = await b.screenshot(tab);
     const shot = tab === undefined ? b.tabs().find((t) => t.active) : b.tabs()[tab];
     return { image: { data: png.toString("base64"), mimeType: "image/png" }, text: `A screenshot of ${shot?.url ? untrustedUrl(shot.url) : "the page"}, with password fields painted over.` };

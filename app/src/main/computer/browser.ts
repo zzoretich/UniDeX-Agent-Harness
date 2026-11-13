@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
 import { ASK_ROLES, covers, type Target } from "./categories";
+import { ConsoleLog, consoleText, plainAddresses } from "./console";
 import { cdp, CdpTimeout, FocusMoved, forPerson, isGone, keyEvents, PageChanged, Told, unlessGone } from "./cdp";
 import { downloadName, HeldDownloads, moveInto } from "./downloads";
 import { permissionVerdict, type Focus } from "./gate";
@@ -22,7 +23,7 @@ import { REFUSAL } from "./refusals";
 import { SETTLE_MAX_MS, SETTLE_WINDOW_MS } from "./reply";
 import { TABS_MAX } from "./records";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
-import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
+import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, untrustedOpen, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf, withoutUserinfo } from "../policy/computer-url";
 import type { ComputerNavGo } from "../../shared/ipc";
 
@@ -68,6 +69,8 @@ const HOVER_MS = 100;
 const URL_NOTE_MAX = 2_000;
 /** session-browser S17: the most main-frame document loaders whose method is kept while they are in flight. */
 const LOADERS_KEPT = 32;
+/** session-browser: the requests in flight whose method and clean address are kept to word a failure (oldest first). */
+const REQUESTS_KEPT = 500;
 /** The buffers `Network` would keep for its own use, none of which this browser reads (it keeps a request's method only). */
 const NO_BUFFERS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 };
 type LoadMethod = "GET" | "other";
@@ -197,6 +200,11 @@ interface Tab {
   known: Set<string>; gap: number | null; sent: number; answered: number;
   /** Main-frame commits and same-document navigations so far: a bind (a tick after one) goes only when no later one came. */
   binds: number;
+  /** session-browser (computer_console): what the page said about itself since its document loaded (cleared at each
+   *  main-frame commit), and the method and address-without-query of each request in flight, by request id: the protocol's
+   *  failure events carry neither. Nothing else of a request is kept (no header, no body). */
+  console: ConsoleLog;
+  requests: Map<string, { method: string; address: string }>;
 }
 
 /** session-browser S9: what a sleeping browser keeps of a tab whose view is gone: its address (to reload), the address as
@@ -622,6 +630,17 @@ export class ComputerBrowser {
       t.refs.set(session, { refs: prev && prev.token === token ? new Map([...prev.refs, ...snap.refs]) : snap.refs, token });
     }
     return snap;
+  }
+
+  /** What the tab's page said about itself since it loaded (session-browser, computer_console): errors, warnings, uncaught
+   *  exceptions and failed requests, one line each, scrubbed with the tab's own scrubber and wrapped as untrusted page text
+   *  like a snapshot. A browser that is asleep has no log. */
+  async console(tab?: number): Promise<string> {
+    if (this.kept) throw new Error(REFUSAL.consoleAsleep);
+    const t = this.tab(tab);
+    const scrub = this.scrubWith(t, await this.secrets(t));
+    const url = this.urlOut(t);
+    return `${untrustedOpen(siteOf(url) ?? "null", url)}\n${consoleText(t.console.list(), scrub)}\n</untrusted-page>`;
   }
 
   /** The viewport as a PNG, with every sensitive field painted over (D9). */
@@ -1103,7 +1122,7 @@ export class ComputerBrowser {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
-      loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0,
+      loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, console: new ConsoleLog(), requests: new Map(),
     };
     owners.set(t.wc.id, this.handlers);
     // A background tab leaves the selection on the tab already in front; with none in front it is the one.
@@ -1250,10 +1269,64 @@ export class ComputerBrowser {
     wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.urlOut(t))} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });
     wc.debugger.on("message", (_e, method: string, params: Record<string, unknown>) => this.onCdp(t, method, params));
+    // session-browser (computer_console): of a console message only its level and text are read (not the source address or the
+    // frame). The protocol's Runtime domain is not enabled, since a page can tell (a logged object's getters run) and sign-in
+    // pages use that to refuse a browser; Electron's own event carries the same messages, uncaught errors included.
+    wc.on("console-message", (e) => this.onConsole(t, e.level, e.message));
     wc.debugger.on("detach", (_e, reason: string) => { if (!t.closing) note(`The tab's DevTools connection closed (${reason}); the next action reconnects.`); });
   }
 
+  /** A console message of the tab, any frame: an error, a warning or an uncaught exception (Chromium words one `Uncaught …`,
+   *  an unhandled rejection `Uncaught (in promise) …`) is kept; a log, an info or a debug message is not. */
+  private onConsole(t: Tab, level: string, message: string): void {
+    if (typeof message !== "string") return;
+    if (level === "error") this.logged(t, /^Uncaught\b/.test(message) ? "exception" : "error", message);
+    else if (level === "warning") this.logged(t, "warning", message);
+  }
+
+  /** One entry of the tab's console log, its addresses without query or fragment (and, while the tab's own path is held back,
+   *  without a path: a restored tab has no memory of the secrets its address carries, so the scrub alone would let a failed
+   *  request's query through). */
+  private logged(t: Tab, kind: "error" | "warning" | "exception" | "request", text: string): void {
+    t.console.add({ at: Date.now(), kind, text: plainAddresses(text, t.pathHidden) });
+  }
+
+  /** `Network` events for the log: a request in flight is known by its method and clean address only; a failure (not a
+   *  cancel) and an answer of 400 or more are entries; a finished or failed request is forgotten. */
+  private onRequestEvent(t: Tab, method: string, p: Record<string, unknown>): void {
+    const id = typeof p.requestId === "string" ? p.requestId : null;
+    if (!id) return;
+    const known = t.requests.get(id);
+    switch (method) {
+      case "Network.requestWillBeSent": {
+        const req = p.request as { method?: unknown; url?: unknown } | undefined;
+        if (typeof req?.method !== "string" || typeof req.url !== "string") return;
+        t.requests.delete(id);
+        t.requests.set(id, { method: req.method, address: plainAddresses(req.url, t.pathHidden) });
+        while (t.requests.size > REQUESTS_KEPT) t.requests.delete(t.requests.keys().next().value!);
+        return;
+      }
+      case "Network.responseReceived": {
+        const res = p.response as { status?: unknown; url?: unknown } | undefined;
+        if (typeof res?.status !== "number" || res.status < 400) return;
+        const address = typeof res.url === "string" ? plainAddresses(res.url, t.pathHidden) : known?.address ?? "";
+        this.logged(t, "request", `${res.status} ${known?.method ?? "?"} ${address}`.trim());
+        return;
+      }
+      case "Network.loadingFailed": {
+        t.requests.delete(id);
+        if (p.canceled === true) return;
+        const why = typeof p.errorText === "string" && p.errorText ? ` (${p.errorText})` : "";
+        this.logged(t, "request", `failed ${known ? `${known.method} ${known.address}` : "request"}${why}`);
+        return;
+      }
+      case "Network.loadingFinished":
+        t.requests.delete(id);
+    }
+  }
+
   private onCdp(t: Tab, method: string, p: Record<string, unknown>): void {
+    if (method.startsWith("Network.")) this.onRequestEvent(t, method, p);
     switch (method) {
       // I3b: the page asked to go elsewhere in this tab (a script, a form, a link), before the browser starts the navigation.
       case "Page.frameRequestedNavigation":
@@ -1866,6 +1939,8 @@ export class ComputerBrowser {
    *  is never held back once they have. A page commit stays hidden when the read of the record it consumed (the oldest
    *  keyed at its URL: the one that commits first) failed; the others keyed there are carried from all the same. */
   private committed(t: Tab, url: string): void {
+    // session-browser (computer_console): the log is the document's; a new one starts it again.
+    t.console.clear();
     const got = t.leaving.commit(url);
     const records = [...got.own, ...got.others];
     // S9: a woken or restored tab's own address stays hidden (R37) until the tab navigates somewhere else.

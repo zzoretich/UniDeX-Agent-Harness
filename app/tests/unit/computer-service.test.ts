@@ -177,6 +177,13 @@ class FakeBrowser implements BrowserLike {
     return { text: `${open}\n${lines.join("\n")}\n${close}`, refs: new Map(), truncated };
   }
   async screenshot(tab?: number) { this.need(tab); return Buffer.from("PNGDATA"); }
+  /** The tabs computer_console was asked for, and the page text it answers with (the real one wraps and scrubs it). */
+  consoleFor: (number | undefined)[] = [];
+  consoleText = "";
+  async console(tab?: number): Promise<string> {
+    this.need(tab); this.consoleFor.push(tab);
+    return `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">\n${this.consoleText}\n</untrusted-page>`;
+  }
   async resolve(by: { ref: string } | { x: number; y: number }, session?: string): Promise<Resolved> {
     this.need(); this.order.push("resolve"); this.resolvesFor.push(session);
     if (this.resolveGate) await this.resolveGate;
@@ -4891,10 +4898,33 @@ test("a bad tab, go, double or hover target says what to give; a tab that is not
   assert.equal(h.broker.pending().length, 0);
 });
 
-test("computer_console is named and says it is not available yet", async () => {
+test("computer_console is a look tool wrapped as page text", async () => {
   const h = make();
-  await twoTabs(h);
-  assert.deepEqual(await h.call(A, "computer_console", {}), { text: REFUSAL.consoleSoon, isError: true });
+  const b = await twoTabs(h);
+  b.consoleText = "[error] boom\n[request] 404 GET https://a.test/x";
+  const wrapped = (url: string): string => `<untrusted-page origin="o" url="${url}">\n[error] boom\n[request] 404 GET https://a.test/x\n</untrusted-page>`;
+  const settles = b.settles.length;
+  // A reply that is the page's text and nothing else: no outline, no settle wait (it is not built with `done`).
+  const url = b.pages[b.current].url;
+  assert.deepEqual(await h.call(A, "computer_console", {}), { text: wrapped(url) });
+  assert.deepEqual(await h.call(A, "computer_console", { tab: 0 }), { text: wrapped(b.pages[0].url) });
+  assert.deepEqual(b.consoleFor, [undefined, 0]);
+  assert.equal(b.settles.length, settles, "no settle wait");
+  assert.deepEqual(await h.call(A, "computer_console", { tab: 9 }).catch((e) => e), { text: "There is no tab 9.", isError: true }, "the browser's own refusal");
+  assert.deepEqual(await h.call(A, "computer_console", { tab: -1 }), { text: REFUSAL.badTab, isError: true });
+  // It answers while the user drives, and never takes the wheel.
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  assert.deepEqual(await h.call(A, "computer_console", {}), { text: wrapped(url) });
+  h.svc.handBack();
+  // A read only session may call it.
+  const R = agent("chat:a", "Reader", "read");
+  assert.deepEqual(await h.call(R, "computer_console", {}), { text: wrapped(url) });
+});
+
+test("computer_console on a browser that is off is refused like the other looks", async () => {
+  const h = off();
+  assert.deepEqual(await h.call(A, "computer_console", {}), { text: REFUSAL.isOff, isError: true });
 });
 
 test("a double click is passed to the browser and worded as one; a page that changed under it answers as a click does", async () => {

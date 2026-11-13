@@ -38,8 +38,8 @@ export const REFUSAL = {
   noKey: "No key: give key, such as Enter or Shift+Tab.",
   noDistance: "No distance: give dy in pixels (and dx if needed).",
   unknownTool: "Unknown tool: use one of the computer_* tools.",
-  /** computer_console is named so the bridge counts thirteen tools; its reads come with the console task (Task 21). */
-  consoleSoon: "The console is not available yet: use computer_snapshot to read the page.",
+  /** computer_console on a browser that is asleep: a tab asleep has no log (session-browser S9); the next call wakes it. */
+  consoleAsleep: "The browser is asleep, so its tabs have no console log: call computer_snapshot to wake it, then look again.",
   badAskId: "Bad askId: give the id from a waiting_for_user reply.",
   badWaitText: "Bad text: give 1 to 200 characters.",
   badClose: "Bad close: give true or false.",
