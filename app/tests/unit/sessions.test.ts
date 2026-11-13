@@ -172,7 +172,7 @@ function onePage(): { browser: BrowserLike; clicks: () => number } {
   let clicks = 0;
   const no = (): never => { throw new Error("not in this test"); };
   const browser: BrowserLike = {
-    destroy: no, sleep: no, wake: no, asleep: no, restore: no, realAddresses: () => ({ urls: [], active: 0 }), activeAddress: () => null,
+    destroy: no, sleep: no, wake: no, asleep: no, restore: no, settled: async () => {}, realAddresses: () => ({ urls: [], active: 0 }), activeAddress: () => null,
     tabs: () => [{ index: 0, url, title: "", openedBy: null, active: true, canBack: false, canForward: false }],
     activeWebContentsId: () => 1,
     pageToken: () => "1.0",

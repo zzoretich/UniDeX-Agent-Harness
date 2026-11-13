@@ -2,11 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { judge, parseKey, permissionVerdict, NAV_KEYS, type Action, type Focus, type Access } from "../../src/main/computer/gate";
 import type { Target } from "../../src/main/computer/categories";
+import { REFUSAL } from "../../src/main/computer/refusals";
 
 const btn = (name: string, extra: Partial<Target> = {}): Target => ({ role: "button", name, inForm: false, fileInput: false, ...extra });
 const field: Focus = { target: { role: "textbox", name: "Email", inForm: true, fileInput: false }, shown: "Email", sensitive: false, plainTextarea: false, node: 1, frame: "F1" };
 const edit = (marked: boolean) => ({ access: "edit" as Access, marked });
-const READ_ONLY = { refuse: "Read only: this session can look but not act (D17)." };
+const READ_ONLY = { refuse: REFUSAL.readOnly };
 
 test("read access lets only the looking actions through", () => {
   const ctx = { access: "read" as Access, marked: true };
@@ -21,7 +22,7 @@ test("read access lets only the looking actions through", () => {
 test("open goes for web pages and is refused otherwise", () => {
   assert.deepEqual(judge({ kind: "open", url: "https://a.test" }, edit(false)), { go: true });
   assert.deepEqual(judge({ kind: "open", url: "about:blank" }, edit(false)), { go: true });
-  assert.deepEqual(judge({ kind: "open", url: "file:///etc/hosts" }, edit(false)), { refuse: "Only http and https pages open." });
+  assert.deepEqual(judge({ kind: "open", url: "file:///etc/hosts" }, edit(false)), { refuse: REFUSAL.notWeb });
 });
 
 test("status, snapshot, screenshot, wait and scroll go", () => {
@@ -55,7 +56,7 @@ test("key rows", () => {
   assert.deepEqual(judge({ kind: "key", key: " ", focus: { ...field, target: btn("Up", { fileInput: true }) } }, edit(true)), { go: true });
 });
 
-const D9 = { refuse: "Typing into a password field is refused (D9)." };
+const D9 = { refuse: REFUSAL.passwordField };
 
 test("a click into a cross-site frame asks frame on every site", () => {
   for (const marked of [true, false]) {
@@ -81,7 +82,7 @@ test("a key into a cross-site frame asks frame on every site, except navigation 
 test("typing into a cross-site frame is refused, sensitive or not", () => {
   const inFrame: Focus = { target: { role: "Iframe", name: "Card", inForm: false, fileInput: false, opaque: true }, shown: "Card", sensitive: false, plainTextarea: false, node: 1, frame: "F1" };
   for (const marked of [true, false]) {
-    assert.deepEqual(judge({ kind: "type", text: "4242", focus: inFrame }, edit(marked)), { refuse: "Typing into a frame from another site is refused (D9)." });
+    assert.deepEqual(judge({ kind: "type", text: "4242", focus: inFrame }, edit(marked)), { refuse: REFUSAL.otherSiteFrame });
     assert.deepEqual(judge({ kind: "type", text: "4242", focus: { ...inFrame, sensitive: true } }, edit(marked)), D9);
   }
 });
@@ -101,8 +102,8 @@ test("NAV_KEYS is exactly the listed keys", () => {
 
 test("type rows", () => {
   const pw = { ...field, sensitive: true };
-  assert.deepEqual(judge({ kind: "type", text: "x", focus: pw }, edit(true)), { refuse: "Typing into a password field is refused (D9)." });
-  assert.deepEqual(judge({ kind: "type", text: "x", focus: pw }, edit(false)), { refuse: "Typing into a password field is refused (D9)." });
+  assert.deepEqual(judge({ kind: "type", text: "x", focus: pw }, edit(true)), { refuse: REFUSAL.passwordField });
+  assert.deepEqual(judge({ kind: "type", text: "x", focus: pw }, edit(false)), { refuse: REFUSAL.passwordField });
   assert.deepEqual(judge({ kind: "type", text: "hi\n", focus: field }, edit(true)), { ask: "return" });
   assert.deepEqual(judge({ kind: "type", text: "hi\n", focus: { ...field, plainTextarea: true } }, edit(true)), { go: true });
   assert.deepEqual(judge({ kind: "type", text: "hi", focus: field }, edit(false)), { ask: "unmarked" });
@@ -143,7 +144,7 @@ test("run and host access judge like edit", () => {
     assert.deepEqual(judge({ kind: "key", key: "Enter", focus: field }, { access, marked: true }), { ask: "return" });
     assert.deepEqual(judge({ kind: "key", key: "a", focus: field }, { access, marked: true }), { go: true });
     assert.deepEqual(judge({ kind: "type", text: "x", focus: field }, { access, marked: true }), { go: true });
-    assert.deepEqual(judge({ kind: "type", text: "x", focus: { ...field, sensitive: true } }, { access, marked: true }), { refuse: "Typing into a password field is refused (D9)." });
+    assert.deepEqual(judge({ kind: "type", text: "x", focus: { ...field, sensitive: true } }, { access, marked: true }), { refuse: REFUSAL.passwordField });
   }
 });
 

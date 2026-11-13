@@ -3,7 +3,7 @@
 // empty stand-in (electron-stub.cjs), so the session and the file dialog the browser uses are given here; a tab is put
 // in the browser as it would be once attached, its webContents a stand-in whose debugger answers from `FakePage`.
 
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import electron from "electron";
@@ -1040,4 +1040,50 @@ test("waking the largest record keeps every tab", async () => {
   assert.equal(fresh.tabs().length, TABS_MAX);
   assert.deepEqual(notes, []);
   void b;
+});
+
+// session-browser S8 (Task 19): `settled(since)` ends 300 ms after the action's last input, or, when a main-frame navigation
+// started in that window, when it has loaded (5 s at the latest). The clock is node's mock one: setTimeout and Date.
+const turns = async (): Promise<void> => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+/** What `settled` is waiting on after each tick; `at` is the milliseconds since the action's input. */
+async function settledAt(drive: (h: { b: ComputerBrowser; tab: unknown; at: (ms: number) => Promise<void> }) => Promise<void>): Promise<number> {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  try {
+    const { b, tab } = make();
+    let done: number | null = null;
+    let now = 0;
+    const at = async (ms: number): Promise<void> => {
+      // Step in whole milliseconds so a timer due at `ms` fires with the clock reading `ms`.
+      while (now < ms) { mock.timers.tick(1); now++; await turns(); }
+    };
+    void b.settled(0).then(() => { done = Date.now(); });
+    await turns();
+    await drive({ b, tab, at });
+    await turns();
+    await at(6000);
+    return done ?? -1;
+  } finally {
+    mock.timers.reset();
+  }
+}
+const began = (b: ComputerBrowser, tab: unknown): void => (b as unknown as { navBegan(t: unknown): void }).navBegan(tab);
+const ended = (b: ComputerBrowser, tab: unknown): void => (b as unknown as { navEnded(t: unknown): void }).navEnded(tab);
+
+test("settled waits 300 ms when nothing navigates", async () => {
+  assert.equal(await settledAt(async () => {}), 300);
+});
+
+test("settled waits for a navigation that starts in the window, 5 s at most", async () => {
+  // Starts at 200, loads at 900: ends at 900.
+  assert.equal(await settledAt(async ({ b, tab, at }) => { await at(200); began(b, tab); await at(900); ended(b, tab); }), 900);
+  // Starts at 200 and never loads: ends at 5,000.
+  assert.equal(await settledAt(async ({ b, tab, at }) => { await at(200); began(b, tab); }), 5000);
+  // Starts at 400, after the window: ends at 300.
+  assert.equal(await settledAt(async ({ b, tab, at }) => { await at(400); began(b, tab); }), 300);
+  // Starts at 100 and has loaded by 250: ends at 300.
+  assert.equal(await settledAt(async ({ b, tab, at }) => { await at(100); began(b, tab); await at(250); ended(b, tab); }), 300);
+});
+
+test("settled ends when the browser is destroyed", async () => {
+  assert.equal(await settledAt(async ({ b, tab, at }) => { await at(200); began(b, tab); await at(500); (b as unknown as { signalDestroyed(): void }).signalDestroyed(); }), 500);
 });

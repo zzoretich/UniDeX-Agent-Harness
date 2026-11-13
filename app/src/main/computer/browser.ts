@@ -18,6 +18,7 @@ import { permissionVerdict, type Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
 import { framesHolding, leavingFrames, LeavingRecords, mergeFrameReads, PendingReads, type Departure } from "./leaving";
 import { SecretMemory, type Secrets } from "./memory";
+import { SETTLE_MAX_MS, SETTLE_WINDOW_MS } from "./reply";
 import { TABS_MAX } from "./records";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
 import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
@@ -321,6 +322,11 @@ export class ComputerBrowser {
   /** Settles when the browser is destroyed, so a wake waiting on a load that will never settle ends with it (S9). */
   private readonly destroyed: Promise<void>;
   private signalDestroyed: () => void = () => undefined;
+  /** The main-frame navigations started lately and when each stopped loading (null while it loads), for `settled`
+   *  (session-browser S8). Only the last few seconds are kept. */
+  private readonly navLog: { tab: Tab; start: number; end: number | null }[] = [];
+  /** Wakes the `settled` calls waiting on a load when one stops. */
+  private readonly navWake = new Set<() => void>();
   private readonly handlers: Handlers = {
     permission: (p, url) => this.askPermission(p, url),
     download: (item, wc) => this.download(item, wc),
@@ -380,6 +386,46 @@ export class ComputerBrowser {
     // ERR_ABORTED: the page went somewhere else before it finished loading.
     if (failed && failed.code !== "ERR_ABORTED") throw new Error(`Could not open ${href}: ${failed.code ?? failed.message ?? "failed"}.`);
     return { url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()) };
+  }
+
+  /** session-browser S8: resolves 300 ms after `since` (a time on the caller's clock, `Date.now()` here: the moment an
+   *  action's last input was sent), or, when a main-frame navigation of the active tab started within that window (or just
+   *  before it, as a click's own does), when that navigation has stopped loading, and at `since` + 5 s at the latest. Never
+   *  rejects; a destroyed browser ends it. */
+  async settled(since: number): Promise<void> {
+    const window = since + SETTLE_WINDOW_MS, limit = since + SETTLE_MAX_MS;
+    await this.pause(window - Date.now());
+    const t = this.list[this.current];
+    // A navigation counts when it started in the window, or up to one window before the input (the event for a click's
+    // own navigation can arrive just ahead of the call that sent it).
+    const loading = (): boolean => !!t && this.navLog.some((n) => n.tab === t && n.end === null && n.start >= since - SETTLE_WINDOW_MS && n.start <= window);
+    let over = this.gone;
+    void this.destroyed.then(() => { over = true; });
+    while (!over && loading() && Date.now() < limit) {
+      let wake: () => void = () => undefined;
+      const stopped = new Promise<void>((r) => { wake = r; this.navWake.add(r); });
+      try { await Promise.race([stopped, this.pause(limit - Date.now()), this.destroyed]); } finally { this.navWake.delete(wake); }
+    }
+  }
+
+  /** Resolves after `ms` (at once when it is not positive). */
+  private pause(ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return new Promise<void>((r) => { setTimeout(r, ms); });
+  }
+
+  /** A main-frame navigation of `t` started (`settled` watches it). */
+  private navBegan(t: Tab): void {
+    const now = Date.now();
+    while (this.navLog.length && (this.navLog.length > 50 || (this.navLog[0].end !== null && this.navLog[0].end < now - 2 * SETTLE_MAX_MS))) this.navLog.shift();
+    this.navLog.push({ tab: t, start: now, end: null });
+  }
+
+  /** Loading stopped on `t`, or the tab went: every navigation of it is over. */
+  private navEnded(t: Tab): void {
+    const now = Date.now();
+    for (const n of this.navLog) if (n.tab === t && n.end === null) n.end = now;
+    for (const wake of [...this.navWake]) wake();
   }
 
   /** Makes tab `index` the active one. */
@@ -931,6 +977,7 @@ export class ComputerBrowser {
 
   private drop(t: Tab): void {
     t.closing = true;
+    this.navEnded(t);
     if (t.query) clearTimeout(t.query);
     owners.delete(t.wc.id);
     this.attachTo(t, null);
@@ -1024,6 +1071,7 @@ export class ComputerBrowser {
     wc.on("did-start-navigation", (e) => {
       if (!e.isMainFrame || e.isSameDocument) return;
       t.navs++;
+      this.navBegan(t);
       // agent-computer D9 (R38, R39): every navigation started gets its own entry (./leaving), never overwriting an earlier
       // one still waiting to commit; from now on a redirect belongs to this navigation. One that is not http or https gets
       // no entry (it is refused, or about:blank).
@@ -1053,7 +1101,7 @@ export class ComputerBrowser {
     // stays on while any navigation is pending (r40b: no stop between A's commit and B's), so this drops them all.
     // session-browser S13: the history may not hold the new entry at did-navigate, so the pane's Back and Forward are
     // read again once loading has stopped.
-    wc.on("did-stop-loading", () => { t.leaving.stop(); this.o.hooks.changed(); });
+    wc.on("did-stop-loading", () => { t.leaving.stop(); this.navEnded(t); this.o.hooks.changed(); });
     wc.on("page-title-updated", () => this.o.hooks.changed());
     wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.urlOut(t))} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });

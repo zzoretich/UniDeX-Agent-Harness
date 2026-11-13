@@ -16,6 +16,8 @@ import { categoriesOf, type AskCategory, type Target } from "./categories";
 import type { ComputerConfig } from "./config";
 import { judge, type AskWhy, type Focus, type Verdict } from "./gate";
 import type { Rect } from "./mask";
+import { REFUSAL } from "./refusals";
+import { UNREAD, withPage } from "./reply";
 import type { AgentRef } from "./registry";
 import { cleanTitle } from "./title";
 import type { SiteMarks } from "./sites";
@@ -31,7 +33,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "select" | "close" | "nav" | "snapshot" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -100,14 +102,6 @@ const isCategory = (w: AskWhy): w is AskCategory => CATEGORIES.has(w);
 const offersAlways = (w: AskWhy): boolean => w === "unmarked" || (isCategory(w) && w !== "download");
 
 const LOOK: ReadonlySet<string> = new Set(["computer_status", "computer_snapshot", "computer_screenshot", "computer_wait"]);
-const OFF = "The Computer pane is off (Settings › Computer).";
-// session-browser S3, S5 (Task 19 moves these into the refusal table).
-export const DECLINED = "The user declined to turn the browser on: go on without the browser.";
-export const IS_OFF = "The browser is off: call computer_open, which asks the user to turn it on.";
-export const OFF_READ_ONLY = "The browser is off and this session is read only: ask the user to turn the browser on.";
-export const SWITCHED_OFF = "The user switched the browser off: go on without the browser.";
-export const QUITTING = "The app is quitting: try again when it is back.";
-export const TAB_CLOSED = "The user closed the tab: call computer_status to see what is open.";
 /** S3: after a Not now (or a switch off) a session's opens answer the same sentence, no card, for this long on Code. */
 export const QUIET_MS = 60_000;
 /** The most addresses held for one Turn on card (session-browser S23); a seventh while it is up is dropped. */
@@ -125,15 +119,7 @@ const ON_BY_HAND = "the user turned the browser on";
 export const PAGE_GONE = "the app's window closed or reloaded";
 /** Why a program's open or its held pages are dropped while the Computer setting is off (main's log line, never an address). */
 const SETTING_OFF = "the computer is off in Settings";
-const CHANGED = "The page changed while you waited: look again.";
-/** D34 (R78): the call's 45 s ran out before it took the computer (queued behind another action, or a slow read). R80:
- *  the action did not run, though a read already under way (a ref scrolled into view, the pointer moved) may have. */
-const LATE = "busy: this call waited its 45 s for the computer and the action did not run: call it again.";
-/** I3b: the focus a key or typing is judged by was read on another page or tab than the one now in front. */
-const MOVED = "The page or tab changed while the focus was read: look again.";
 const PAGE = { session: "page", label: "the page" } as const;
-/** The reply for a call whose slot was replaced by a newer one for the same key (the session restarted). */
-const RESTARTED = "The session restarted: call computer_status and carry on.";
 /** The busy reply's sentence for a session whose hold is gone: freed, or (R81) its process no longer the registered one. */
 const NOT_HELD = "this session no longer holds the wheel";
 const USER = "You";
@@ -217,7 +203,13 @@ interface Job { session: string; answered: boolean; done: Promise<Reply> }
 /** R81 (AC-R3-01): what an acting call holds from its start: its session's cancellation generation (Wheel.gen). The call's
  *  own AgentRef is its registration identity (its pid). Both are checked after every await in the call's path, before an
  *  ask is raised and in the predicate before each input event (`current`, `stale`). */
-interface Lease { gen: number }
+interface Lease {
+  gen: number;
+  /** session-browser S8: the call's 45 s (a time on the service's clock) while it is the call that holds the reply: the
+   *  settle wait before its outline never runs past it. null once the call was turned into an ask, whose reply
+   *  `computer_wait` carries (it has its own limit). */
+  until: number | null;
+}
 
 type By = { ref: string } | { x: number; y: number };
 type Parsed =
@@ -232,6 +224,11 @@ export { cleanTitle } from "./title";
 export const SAVE_MS = 500;
 
 const fail = (text: string): Reply => ({ text, isError: true });
+/** A refusal that also names the page where it stands (the sentence from the table, then the page line). */
+const refuseAt = (sentence: string, url: string | null): Reply => {
+  const text = `${sentence} ${pageLine(url)}`;
+  return fail(text);
+};
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const waiting = (id: string): string => `waiting_for_user: call computer_wait with askId "${id}"`;
@@ -282,22 +279,22 @@ function typeAction(text: string, shown: string): string {
 
 function parse(call: ToolCall): Parsed | string {
   const a = call.args;
-  if (a.ref !== undefined && (typeof a.ref !== "string" || !a.ref || a.ref.length > 32)) return "ref must be a snapshot ref, such as e12.";
+  if (a.ref !== undefined && (typeof a.ref !== "string" || !a.ref || a.ref.length > 32)) return REFUSAL.badRef;
   const ref = typeof a.ref === "string" ? a.ref : null;
   switch (call.tool) {
     case "computer_open":
-      return typeof a.url === "string" && a.url && a.url.length <= 8192 ? { kind: "open", url: a.url, newTab: a.newTab === true } : "Give url, the page to open.";
+      return typeof a.url === "string" && a.url && a.url.length <= 8192 ? { kind: "open", url: a.url, newTab: a.newTab === true } : REFUSAL.noUrl;
     case "computer_click":
       if (ref) return { kind: "click", by: { ref } };
-      return finite(a.x) && finite(a.y) ? { kind: "click", by: { x: a.x, y: a.y } } : "Give either ref, or both x and y.";
+      return finite(a.x) && finite(a.y) ? { kind: "click", by: { x: a.x, y: a.y } } : REFUSAL.noTarget;
     case "computer_type":
-      return typeof a.text === "string" && a.text && a.text.length <= 20_000 ? { kind: "type", text: a.text, ref } : "Give text to type, at most 20,000 characters.";
+      return typeof a.text === "string" && a.text && a.text.length <= 20_000 ? { kind: "type", text: a.text, ref } : REFUSAL.noText;
     case "computer_key":
-      return typeof a.key === "string" && a.key && a.key.length <= 40 ? { kind: "key", key: a.key } : "Give key, such as Enter or Shift+Tab.";
+      return typeof a.key === "string" && a.key && a.key.length <= 40 ? { kind: "key", key: a.key } : REFUSAL.noKey;
     case "computer_scroll":
-      return finite(a.dy) && (a.dx === undefined || finite(a.dx)) ? { kind: "scroll", dx: finite(a.dx) ? a.dx : 0, dy: a.dy, ref } : "Give dy in pixels (and dx if needed).";
+      return finite(a.dy) && (a.dx === undefined || finite(a.dx)) ? { kind: "scroll", dx: finite(a.dx) ? a.dx : 0, dy: a.dy, ref } : REFUSAL.noDistance;
     default:
-      return "Unknown tool.";
+      return REFUSAL.unknownTool;
   }
 }
 
@@ -314,9 +311,9 @@ function outcomeLine(o: Outcome, input: AskInput): string {
 
 /** The reply to an ask that was not allowed, naming it by its app-written notice only (I1). */
 function deniedText(o: Outcome, notice: string): string {
-  if (o.state !== "denied" || o.answer === "deny") return `The user denied: ${bare(notice)}.`;
-  if (o.reason === "timed out") return `The user did not answer in time, so it was denied: ${bare(notice)}.`;
-  return `Cancelled because ${o.reason ?? "it was cancelled"}: ${bare(notice)}.`;
+  if (o.state !== "denied" || o.answer === "deny") return REFUSAL.denied(bare(notice));
+  if (o.reason === "timed out") return REFUSAL.timedOut(bare(notice));
+  return REFUSAL.cancelled(`${o.reason ?? "it was cancelled"} (${bare(notice)})`);
 }
 
 export class ComputerService {
@@ -350,8 +347,8 @@ export class ComputerService {
   async call(given: AgentRef, call: ToolCall): Promise<Reply> {
     // A label that did not come through the registry is cleaned here the same way (session-browser S22).
     const agent: AgentRef = { ...given, label: cleanTitle(given.label) || "Agent" };
-    if (!this.o.config().enabled) return fail(OFF);
-    if (this.quitting) return fail(QUITTING);
+    if (!this.o.config().enabled) return fail(REFUSAL.off);
+    if (this.quitting) return fail(REFUSAL.quitting);
     // session-browser S1: the session is its own browser (it supersedes D3 and D30, where the folder was).
     const p = this.slot(agent.key);
     this.agents.set(agent.key, agent);
@@ -361,8 +358,8 @@ export class ComputerService {
       const deadline = this.clock.now() + this.o.broker.holdMs;
       this.touch(p);
       this.wakeUp(p);
-      if (p.waking && !(await this.within(p.waking, deadline))) return fail(LATE);
-      if (this.slots.get(p.key) !== p) return fail(RESTARTED);
+      if (p.waking && !(await this.within(p.waking, deadline))) return fail(REFUSAL.late);
+      if (this.slots.get(p.key) !== p) return fail(REFUSAL.restarted);
       return LOOK.has(call.tool) ? await this.look(agent, p, call) : await this.act(agent, p, call, deadline);
     } catch (e) {
       return fail(message(e));
@@ -380,10 +377,10 @@ export class ComputerService {
     const a = call.args;
     if (call.tool === "computer_status") return { text: this.status(agent, p) };
     // S3: an ask's id still works while the browser is off (it is how the agent waits on the Turn on ask).
-    if (call.tool === "computer_wait") return p.power === "off" && a.askId === undefined ? fail(IS_OFF) : this.wait(agent, p, a);
-    if (p.power === "off") return fail(IS_OFF);
+    if (call.tool === "computer_wait") return p.power === "off" && a.askId === undefined ? fail(REFUSAL.isOff) : this.wait(agent, p, a);
+    if (p.power === "off") return fail(REFUSAL.isOff);
     const tab = tabArg(a);
-    if (tab === null) return fail("tab must be a tab index, such as 0.");
+    if (tab === null) return fail(REFUSAL.badTab);
     const b = this.browserOf(p);
     // D21: the snapshot is page text, already scrubbed and wrapped as untrusted data with its origin.
     // I2: its refs are this session's own.
@@ -405,13 +402,13 @@ export class ComputerService {
     // D34 (R76): an asked call returns by the broker's hold (45 s) counted from the call's start, whatever it waits on.
     const deadline = start ?? this.clock.now() + this.o.broker.holdMs;
     // R81 (AC-R3-01): the call is bound to its place's generation as it is now, and to the calling process.
-    const lease: Lease = { gen: this.o.wheel.gen(p.key) };
+    const lease: Lease = { gen: this.o.wheel.gen(p.key), until: deadline };
     const parsed = parse(call);
     if (typeof parsed === "string") return fail(parsed);
     if (p.power === "off") {
       // S3: off, only an open gets anywhere, and a Read only session is told to ask the user instead.
-      if (parsed.kind !== "open") return fail(IS_OFF);
-      if (agent.access === "read") return fail(OFF_READ_ONLY);
+      if (parsed.kind !== "open") return fail(REFUSAL.isOff);
+      if (agent.access === "read") return fail(REFUSAL.offReadOnly);
     } else {
       // D17: a Read only session is refused before it can hold the wheel.
       const ro = judge({ kind: "scroll" }, { access: agent.access, marked: false });
@@ -435,12 +432,12 @@ export class ComputerService {
       // R78: the deadline bounds the queue and the target read too: a call that has not taken the computer by then
       // returns, and its step never delivers input or raises an ask.
       return await this.bounded(deadline, async (g) => {
-        const step = await this.serial(p, () => (g.alive() ? this.step(agent, p, parsed, g.take, lease) : Promise.resolve<Step>({ reply: fail(LATE) })));
+        const step = await this.serial(p, () => (g.alive() ? this.step(agent, p, parsed, g.take, lease) : Promise.resolve<Step>({ reply: fail(REFUSAL.late) })));
         if ("reply" in step) return step.reply;
         // R81: writing the card awaited the page's text; no ask is raised for a call that is no longer current.
         const gone = this.stale(p, agent, lease);
         if (gone) return gone;
-        return g.take() ? this.ask(agent, p, step.ask, deadline, lease) : fail(LATE);
+        return g.take() ? this.ask(agent, p, step.ask, deadline, lease) : fail(REFUSAL.late);
       });
     } catch (e) {
       // S5: a browser destroyed under the call rejects it with the browser's own error; the person's stop is the answer.
@@ -486,7 +483,7 @@ export class ComputerService {
       return true;
     };
     return new Promise<Reply>((resolve, reject) => {
-      const timer = this.clock.setTimeout(() => { if (!taken) { gone = true; resolve(fail(LATE)); } }, Math.max(0, deadline - this.clock.now()));
+      const timer = this.clock.setTimeout(() => { if (!taken) { gone = true; resolve(fail(REFUSAL.late)); } }, Math.max(0, deadline - this.clock.now()));
       void work({ take, alive }).then((r) => { this.clock.clearTimeout(timer); resolve(r); }, (e: unknown) => { this.clock.clearTimeout(timer); reject(e); });
     });
   }
@@ -500,11 +497,12 @@ export class ComputerService {
       // The person may switch the browser off or close the tab while it loads: the load then rejects (S5).
       return this.stopped(p, lease) ?? fail(message(e));
     }
-    if (p.browser !== b) return this.stopped(p, lease) ?? fail(IS_OFF);
+    const since = this.clock.now();
+    if (p.browser !== b) return this.stopped(p, lease) ?? fail(REFUSAL.isOff);
     const url = this.url(b);
     // D39: a URL the agent opens itself is logged, not asked.
     this.line(p, agent.label, `Opened ${url ?? a.url}`, agent);
-    return { text: `Opened the page. ${pageLine(url)}` };
+    return this.done(p, b, "Opened the page.", since, lease);
   }
 
   /** Resolves the target, judges it, and runs the action when the verdict is go; returns the ask otherwise. `take` claims
@@ -515,7 +513,7 @@ export class ComputerService {
     if (busy) return { reply: busy };
     if (p.power === "off") {
       // S3: the open that finds the browser off asks the user to turn it on; the allowed ask turns it on and runs the open.
-      if (a.kind !== "open") return { reply: fail(IS_OFF) };
+      if (a.kind !== "open") return { reply: fail(REFUSAL.isOff) };
       // Inside the queue: a denied ask ahead of this call has started the quiet period by now (S3), and a Turn on card
       // already up is the one this call waits on, so a retry never raises a second.
       const quiet = this.quietReply(p, agent);
@@ -532,7 +530,7 @@ export class ComputerService {
         revalidate: () => Promise.resolve(true),
         run: async () => {
           // A session forgotten while its card was up opens nothing (S22).
-          if (this.slots.get(p.key) !== p) return fail(IS_OFF);
+          if (this.slots.get(p.key) !== p) return fail(REFUSAL.isOff);
           if (p.power === "off") this.turnOn(p);
           // Turn on through any card leaves no other Turn on card up, as turning on by hand does.
           this.o.broker.cancel((x) => x.computer === p.key && x.why === "power", ON_BY_HAND);
@@ -545,7 +543,7 @@ export class ComputerService {
     const b = this.browserOf(p);
     switch (a.kind) {
       case "open": {
-        if (!take()) return { reply: fail(LATE) };
+        if (!take()) return { reply: fail(REFUSAL.late) };
         return { reply: await this.doOpen(agent, p, a, lease) };
       }
       case "click": return this.click(agent, p, b, a.by, take, lease);
@@ -555,9 +553,9 @@ export class ComputerService {
         const at = a.ref ? await b.resolve({ ref: a.ref }, agent.key) : undefined;
         const late = this.stale(p, agent, lease);
         if (late) return { reply: late };
-        if (!take()) return { reply: fail(LATE) };
+        if (!take()) return { reply: fail(REFUSAL.late) };
         await b.scroll(a.dx, a.dy, at);
-        return { reply: { text: `Scrolled by (${a.dx}, ${a.dy}). ${pageLine(this.url(b))}` } };
+        return { reply: await this.done(p, b, `Scrolled by (${a.dx}, ${a.dy}).`, this.clock.now(), lease) };
       }
     }
   }
@@ -576,10 +574,11 @@ export class ComputerService {
       if (late) return late;
       const lost = await this.deliver(p, agent, lease, (valid) => b.click(x, valid));
       if (lost) return lost;
+      const since = this.clock.now();
       this.line(p, agent.label, x.shown ? `Clicked ${quoted(x.shown)}` : "Clicked an unnamed control", agent);
-      return { text: `Clicked ${did}. ${pageLine(this.url(b))}` };
+      return this.done(p, b, `Clicked ${did}.`, since, lease);
     };
-    if (!need) return { reply: take() ? await run(r) : fail(LATE) };
+    if (!need) return { reply: take() ? await run(r) : fail(REFUSAL.late) };
     let fresh = r;
     return {
       ask: {
@@ -609,7 +608,7 @@ export class ComputerService {
     const read = this.stale(p, agent, lease);
     if (read) return { reply: read };
     // I3b: the focus judged is this page's in this tab, or nothing goes.
-    if (!r && (b.pageToken() !== token || this.active(b) !== tab)) return { reply: fail(`${MOVED} ${pageLine(this.url(b))}`) };
+    if (!r && (b.pageToken() !== token || this.active(b) !== tab)) return { reply: refuseAt(REFUSAL.moved, this.url(b)) };
     const site = this.siteAt(b, tab);
     const ctx = { access: agent.access, marked: this.markedAt(b, tab) };
     const whys: AskWhy[] = [];
@@ -635,15 +634,15 @@ export class ComputerService {
         const after = this.stale(p, agent, lease);
         if (after) return after;
         // I3b: the click and the focus read must leave the page the gate judged in front; the typing is bound to it.
-        if (b.pageToken() !== fresh.pageToken || this.active(b) !== fresh.tab) return fail(`${MOVED} ${pageLine(this.url(b))}`);
+        if (b.pageToken() !== fresh.pageToken || this.active(b) !== fresh.tab) return refuseAt(REFUSAL.moved, this.url(b));
         const v = this.need(judge({ kind: "type", text, focus: now }, { access: agent.access, marked: this.markedAt(b, fresh.tab) }), now.target, this.siteAt(b, fresh.tab));
         if (v && typeof v === "object") return fail(v.refuse);
-        if (v && !approved.includes(v)) return fail(`The click moved the focus somewhere that asks first: call computer_type again without ref. ${pageLine(this.url(b))}`);
+        if (v && !approved.includes(v)) return refuseAt(REFUSAL.clickMovedFocus, this.url(b));
         into = idOf(now);
       }
       return this.typeInto(agent, p, b, text, fresh ? { tab: fresh.tab, pageToken: fresh.pageToken } : { tab, pageToken: token }, into, lease);
     };
-    if (!whys.length) return { reply: take() ? await run([]) : fail(LATE) };
+    if (!whys.length) return { reply: take() ? await run([]) : fail(REFUSAL.late) };
     return {
       ask: {
         whys, site, target: r ? r.target : f.target,
@@ -674,7 +673,7 @@ export class ComputerService {
     const read = this.stale(p, agent, lease);
     if (read) return { reply: read };
     // I3b: and checked again after it: a navigation or a tab switch during the read refuses the key at once.
-    if (b.pageToken() !== token || this.active(b) !== tab) return { reply: fail(`${MOVED} ${pageLine(this.url(b))}`) };
+    if (b.pageToken() !== token || this.active(b) !== tab) return { reply: refuseAt(REFUSAL.moved, this.url(b)) };
     const site = this.siteAt(b, tab);
     const need = this.need(judge({ kind: "key", key, focus: f }, { access: agent.access, marked: this.markedAt(b, tab) }), f.target, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
@@ -684,10 +683,11 @@ export class ComputerService {
       if (late) return late;
       const lost = await this.deliver(p, agent, lease, (valid) => b.key(key, valid, { tab, pageToken: token }, idOf(f)));
       if (lost) return lost;
+      const since = this.clock.now();
       this.line(p, agent.label, `Pressed ${shownKey}`, agent);
-      return { text: `Pressed ${shownKey}. ${pageLine(this.url(b))}` };
+      return this.done(p, b, `Pressed ${shownKey}.`, since, lease);
     };
-    if (!need) return { reply: take() ? await run() : fail(LATE) };
+    if (!need) return { reply: take() ? await run() : fail(REFUSAL.late) };
     return {
       ask: {
         whys: [need], site, target: f.target,
@@ -734,17 +734,38 @@ export class ComputerService {
       const byUser = this.stopped(p, lease);
       if (byUser) return byUser;
       const why = !keepGoing() ? stopper() : e instanceof FocusMoved ? "the focus moved" : "the page or tab changed";
-      return fail(`Typing stopped part way because ${why}${keepGoing() ? ": look again" : ""}. ${pageLine(this.url(b))}`);
+      return refuseAt(REFUSAL.typingStopped(why), this.url(b));
     }
     if (!keepGoing()) {
       this.line(p, agent.label, "Typing stopped part way", agent);
       const byUser = this.stopped(p, lease);
       if (byUser) return byUser;
-      return fail(`Typing stopped part way because ${stopper()}. ${pageLine(this.url(b))}`);
+      return refuseAt(REFUSAL.typingStopped(stopper()), this.url(b));
     }
+    const since = this.clock.now();
     const n = Array.from(text).length;
     this.line(p, agent.label, `Typed ${n} character${n === 1 ? "" : "s"}`, agent);
-    return { text: `Typed ${n} character${n === 1 ? "" : "s"}. ${pageLine(this.url(b))}` };
+    return this.done(p, b, `Typed ${n} character${n === 1 ? "" : "s"}.`, since, lease);
+  }
+
+  /** session-browser S8: the reply of an acting tool that ran: `line`, then the page as it is now, so the agent need not
+   *  call computer_snapshot after every action. It waits for the page to settle after the action's last input (`since`, on
+   *  the service's clock; never past the call's 45 s while the call holds the reply), then takes the outline
+   *  `computer_snapshot` would (so its refs are good for the next call). The input has been sent: the action happened, so
+   *  nothing here turns it into a failure, throws or hangs: a page that cannot be read afterwards (the browser went off, to
+   *  sleep or away; the snapshot threw) gives `line` and a sentence saying so. A Take over during the wait changes nothing:
+   *  reading the outline is a look. The outline carries the page's address, so `line` does not. */
+  private async done(p: Slot, b: BrowserLike, line: string, since: number, lease: Lease): Promise<Reply> {
+    try {
+      const settled = b.settled(since).catch(() => undefined);
+      if (lease.until === null) await settled;
+      else await this.within(settled, lease.until);
+      if (p.browser !== b || p.power === "off") return { text: `${line} ${UNREAD}` };
+      const snap = await b.snapshot(undefined, p.key);
+      return { text: withPage(line, snap.text, { cut: snap.truncated }) };
+    } catch {
+      return { text: `${line} ${UNREAD}` };
+    }
   }
 
   /** The verdict as what is needed: a refusal, the ask, or null to go. D39: a category ask is skipped when "Always on
@@ -780,6 +801,8 @@ export class ComputerService {
   // ---- asks
 
   private async ask(agent: AgentRef, p: Slot, s: AskSpec, deadline: number, lease: Lease): Promise<Reply> {
+    // The reply of an asked action comes through `computer_wait` or this call's hold, never past its 45 s by a settle wait.
+    lease.until = null;
     const why = s.whys[0];
     // Controller 3: no Always for return, file, download, permission or frame, nor without a site to remember it for.
     // A category ask on a name that also says Download is asked every time too; an unmarked ask there still marks the site.
@@ -793,7 +816,7 @@ export class ComputerService {
     const held = this.o.broker.hold(input, deadline - this.clock.now());
     this.line(p, agent.label, `Asked the user: ${title}`, agent);
     const first = await held;
-    const job: Job = { session: agent.key, answered: false, done: Promise.resolve(fail(CHANGED)) };
+    const job: Job = { session: agent.key, answered: false, done: Promise.resolve(fail(REFUSAL.changed)) };
     job.done = this.settle(agent, p, s, input, first, job, lease);
     this.jobs.set(first.askId, job);
     void job.done.then(() => { this.clock.setTimeout(() => this.jobs.delete(first.askId), KEEP_MS); });
@@ -834,17 +857,17 @@ export class ComputerService {
           else this.keepOrDrop(p, o.reason ?? "cancelled");
         }
         // S3: a Not now, or no answer in time, is told once and then left quiet (a switch off cancels, and says so).
-        if (input.why === "power" && theirs) { this.startQuiet(p, DECLINED, agent); return fail(DECLINED); }
+        if (input.why === "power" && theirs) { this.startQuiet(p, REFUSAL.declined, agent); return fail(REFUSAL.declined); }
         return this.stopped(p, lease) ?? fail(deniedText(o, input.notice));
       }
       // Lenient on purpose: a slot that was forgotten (no slot for the key at all) falls through, and the checks inside the
       // queue answer for it; only a slot replaced by a newer one for the same key is a restart.
       let ran = false;
       try {
-      if (this.slots.get(p.key) !== p && this.slots.has(p.key)) return fail(RESTARTED);
+      if (this.slots.get(p.key) !== p && this.slots.has(p.key)) return fail(REFUSAL.restarted);
       return await this.serial(p, async () => {
         try {
-          if (!this.current(p, agent, lease) || !(await s.revalidate()) || !this.current(p, agent, lease)) return this.stopped(p, lease) ?? fail(`${CHANGED} ${pageLine(p.browser ? this.url(p.browser) : null)}`);
+          if (!this.current(p, agent, lease) || !(await s.revalidate()) || !this.current(p, agent, lease)) return this.stopped(p, lease) ?? refuseAt(REFUSAL.changed, p.browser ? this.url(p.browser) : null);
           ran = true;
           const done = await s.run();
           // R76, R78 (D39): "Always" is saved only for the action that revalidated and reports it was delivered; one the
@@ -937,11 +960,11 @@ export class ComputerService {
   private async wait(agent: AgentRef, p: Slot, a: Record<string, unknown>): Promise<Reply> {
     const sec = finite(a.timeoutSec) ? Math.min(WAIT_MAX_SEC, Math.max(1, Math.floor(a.timeoutSec))) : null;
     if (a.askId !== undefined) {
-      if (typeof a.askId !== "string" || !a.askId || a.askId.length > 64) return fail("askId must be the id from a waiting_for_user reply.");
+      if (typeof a.askId !== "string" || !a.askId || a.askId.length > 64) return fail(REFUSAL.badAskId);
       return this.waitAsk(agent, a.askId, (sec ?? WAIT_MAX_SEC) * 1000);
     }
     if (a.text !== undefined) {
-      if (typeof a.text !== "string" || !a.text || a.text.length > 200) return fail("text must be 1 to 200 characters.");
+      if (typeof a.text !== "string" || !a.text || a.text.length > 200) return fail(REFUSAL.badWaitText);
       return this.waitText(p, a.text, sec ?? TEXT_WAIT_SEC);
     }
     const s = sec ?? 1;
@@ -952,11 +975,11 @@ export class ComputerService {
   /** D34: an asked action's reply once its ask settles, or waiting_for_user again after `ms`. */
   private waitAsk(agent: AgentRef, id: string, ms: number): Promise<Reply> {
     const job = this.jobs.get(id);
-    if (job && job.session !== agent.key) return Promise.resolve(fail("That ask belongs to another session."));
+    if (job && job.session !== agent.key) return Promise.resolve(fail(REFUSAL.otherSessionsAsk));
     const result: Promise<Reply> = job ? job.done : this.o.broker.wait(id).then((o): Reply => {
       if (o.state === "waiting_for_user") return { text: waiting(id) };
       if (o.state === "allowed") return { text: "The user allowed it." };
-      return o.reason === "unknown ask" ? fail(`There is no ask "${clean(id, 64)}".`) : fail(o.answer === "deny" ? "The user denied it." : `Denied: ${o.reason ?? "cancelled"}.`);
+      return o.reason === "unknown ask" ? fail(REFUSAL.noSuchAsk(clean(id, 64))) : fail(o.answer === "deny" ? REFUSAL.askDenied : REFUSAL.askDeniedBecause(o.reason ?? "cancelled"));
     });
     return new Promise<Reply>((resolve) => {
       // An answered ask whose action has not finished (it may be queued behind another) says so, not waiting_for_user.
@@ -1065,7 +1088,7 @@ export class ComputerService {
 
   /** The address bar: the person opens a page (no ask; the agent's approved actions revalidate against the new page). */
   async navigate(url: string): Promise<Result<null>> {
-    if (this.quitting) return { ok: false, error: QUITTING, code: "ENOENT" };
+    if (this.quitting) return { ok: false, error: REFUSAL.quitting, code: "ENOENT" };
     if (!this.selected) return { ok: false, error: "No computer is selected.", code: "ENOENT" };
     if (!navAllowed(url)) return { ok: false, error: "Only http and https pages open.", code: "EROFS" };
     const p = this.slot(this.selected);
@@ -1088,7 +1111,7 @@ export class ComputerService {
    *  on with this address instead of the start page (the tabs it remembered come back first), an asleep one wakes, and the
    *  address opens in a new tab the person opened, in the slot's queue. */
   async openLink(session: string, raw: string): Promise<Result<null>> {
-    if (this.quitting) return { ok: false, error: QUITTING, code: "ENOENT" };
+    if (this.quitting) return { ok: false, error: REFUSAL.quitting, code: "ENOENT" };
     const url = linkUrl(raw);
     if (!url) return { ok: false, error: "That address does not open.", code: "EINVAL" };
     const p = this.slot(session);
@@ -1099,7 +1122,7 @@ export class ComputerService {
     else { this.touch(p); this.wakeUp(p); }
     if (held) {
       await new Promise<void>((r) => { this.clock.setTimeout(r, 0); });
-      if (this.quitting) return { ok: false, error: QUITTING, code: "ENOENT" };
+      if (this.quitting) return { ok: false, error: REFUSAL.quitting, code: "ENOENT" };
       if (this.slots.get(session) !== p || p.power === "off" || !p.browser) return { ok: false, error: "The browser is off.", code: "ENOENT" };
     }
     const b = this.browserOf(p);
@@ -1220,8 +1243,8 @@ export class ComputerService {
       if (theirs) {
         // S3: on a thread the period lasts until the live turn ends; with no turn live, and on Code, it is timed.
         const turn = p.key.startsWith("chat:") ? this.o.liveAgent?.(p.key) : undefined;
-        if (turn) this.startQuiet(p, DECLINED, turn);
-        else p.quiet = { sentence: DECLINED, until: this.clock.now() + QUIET_MS, pid: null };
+        if (turn) this.startQuiet(p, REFUSAL.declined, turn);
+        else p.quiet = { sentence: REFUSAL.declined, until: this.clock.now() + QUIET_MS, pid: null };
       }
     } catch {
       this.dropHeld(p, "the card could not be settled");
@@ -1276,7 +1299,7 @@ export class ComputerService {
    *  address (main only: the page never names it), https only. The tab stays open. The answer waits for the system to take
    *  the page (X4); the log line names no address. */
   async openOutside(): Promise<Result<null>> {
-    if (this.quitting) return { ok: false, error: QUITTING, code: "ENOENT" };
+    if (this.quitting) return { ok: false, error: REFUSAL.quitting, code: "ENOENT" };
     if (!this.selected) return { ok: false, error: "No computer is selected.", code: "ENOENT" };
     const p = this.slots.get(this.selected);
     const none: Result<null> = { ok: false, error: "No page is open.", code: "ENOENT" };
@@ -1712,13 +1735,13 @@ export class ComputerService {
       // Pages a program opened while the browser was off follow the tabs the person's switch opens (session-browser S23).
       flushHeld();
       return;
-    } else if (p.power !== "off") this.switchOff(p, true, true, "the user switched the browser off", SWITCHED_OFF);
+    } else if (p.power !== "off") this.switchOff(p, true, true, "the user switched the browser off", REFUSAL.switchedOff);
     this.refresh(session);
   }
 
   private turnOn(p: Slot): void {
     // While the app quits no browser can be made: refuse before the power changes, or the slot stays awake with none (A5).
-    if (this.quitting) throw new Error(QUITTING);
+    if (this.quitting) throw new Error(REFUSAL.quitting);
     p.power = "awake";
     p.quiet = null;
     this.browserOf(p);
@@ -1791,11 +1814,11 @@ export class ComputerService {
     const tabs = b.tabs();
     const t = tabs[index];
     if (!t) return false;
-    if (tabs.length === 1) { this.switchOff(p, false, false, "the user closed the tab", TAB_CLOSED); this.refresh(p.key); return true; }
+    if (tabs.length === 1) { this.switchOff(p, false, false, "the user closed the tab", REFUSAL.tabClosed); this.refresh(p.key); return true; }
     if (t.active) {
       this.o.wheel.interrupt(p.key);
       this.o.broker.cancel((a) => a.computer === p.key, "the user closed the tab");
-      p.stopped = { gen: this.o.wheel.gen(p.key), sentence: TAB_CLOSED };
+      p.stopped = { gen: this.o.wheel.gen(p.key), sentence: REFUSAL.tabClosed };
     }
     b.close(index);
     return false;
@@ -1864,10 +1887,10 @@ export class ComputerService {
   private browserOf(p: Slot): BrowserLike {
     // S2: reached only while the slot is on; an off slot has no browser, view or process, and a path that forgot to ask
     // fails here instead of making one.
-    if (p.power === "off") throw new Error(IS_OFF);
+    if (p.power === "off") throw new Error(REFUSAL.isOff);
     if (!p.browser) {
       // Nothing is made while the app quits (the views are gone for good unless `quitCancelled`).
-      if (this.quitting) throw new Error(QUITTING);
+      if (this.quitting) throw new Error(REFUSAL.quitting);
       // The hooks read the slot's key when they run, so a browser `move` hands to another key keeps working.
       p.browser = this.o.browser(p.key, {
         ask: (i) => this.pageAsk(p.key, i),
@@ -1890,7 +1913,7 @@ export class ComputerService {
 
   /** "busy: …" for a session that cannot act on `session`'s browser now (agent-computer D31, controller 8). */
   private busy(place: string, sentence: string): string {
-    return this.o.wheel.holder(place)?.kind === "user" ? `busy: ${sentence}: wait for Hand back.` : `busy: ${sentence}`;
+    return this.o.wheel.holder(place)?.kind === "user" ? REFUSAL.busyUser(sentence) : REFUSAL.busy(sentence);
   }
 
   /** Null while `agent` holds the wheel; otherwise the busy reply. Checked again just before input is delivered, since an
@@ -1926,11 +1949,11 @@ export class ComputerService {
     const byUser = this.stopped(p, lease);
     if (byUser) return byUser;
     // A slot the handoff ended is no longer the one in the map: its call ends with the restart, and raises nothing.
-    if (this.slots.get(p.key) !== p) return fail(RESTARTED);
+    if (this.slots.get(p.key) !== p) return fail(REFUSAL.restarted);
     const busy = this.notDriving(p, agent);
     if (busy) return busy;
     if (!this.registered(agent)) return fail(this.busy(p.key, NOT_HELD));
-    if (this.o.wheel.gen(p.key) !== lease.gen) return fail(`${CHANGED} ${pageLine(p.browser ? this.url(p.browser) : null)}`);
+    if (this.o.wheel.gen(p.key) !== lease.gen) return refuseAt(REFUSAL.changed, p.browser ? this.url(p.browser) : null);
     return null;
   }
 

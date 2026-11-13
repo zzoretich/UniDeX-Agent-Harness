@@ -3,6 +3,7 @@
 // the verdict. What asks by label is the D43 vocabulary in ./categories.
 
 import { categoryOf, type AskCategory, type Target } from "./categories";
+import { REFUSAL } from "./refusals";
 import { navAllowed } from "../policy/computer-url";
 
 export type Access = "read" | "edit" | "run" | "host";
@@ -33,8 +34,6 @@ export const NAV_KEYS: ReadonlySet<string> = new Set([
 const LOOKING = new Set(["status", "snapshot", "screenshot", "wait"]);
 const NAV_LOWER: ReadonlySet<string> = new Set([...NAV_KEYS].map((k) => k.toLowerCase()));
 const GO: Verdict = Object.freeze({ go: true as const });
-const D9_REFUSAL = "Typing into a password field is refused (D9).";
-const FRAME_REFUSAL = "Typing into a frame from another site is refused (D9).";
 
 /** A key string split into trimmed, lower-cased parts on "+". A lone space part is "space"; "\r", "\n" and "return"
  *  are "enter". Shared with the browser's key-event builder so both read a key the same way. */
@@ -59,10 +58,10 @@ function click(t: Target, marked: boolean): Verdict {
 
 /** The verdict for `a` given the session's access level and whether the current site is marked. */
 export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verdict {
-  if (ctx.access === "read" && !LOOKING.has(a.kind)) return { refuse: "Read only: this session can look but not act (D17)." };
+  if (ctx.access === "read" && !LOOKING.has(a.kind)) return { refuse: REFUSAL.readOnly };
   switch (a.kind) {
     case "open":
-      return navAllowed(a.url) ? GO : { refuse: "Only http and https pages open." };
+      return navAllowed(a.url) ? GO : { refuse: REFUSAL.notWeb };
     case "click":
       return click(a.target, ctx.marked);
     case "key": {
@@ -72,15 +71,15 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
       if (k.enter && !a.focus.plainTextarea) return { ask: "return" };
       if (NAV_LOWER.has(k.parts.join("+"))) return GO;
       // D9: any other key into a password field is typing into it (Enter asked above; it submits, it does not type).
-      if (a.focus.sensitive && !k.enter) return { refuse: D9_REFUSAL };
+      if (a.focus.sensitive && !k.enter) return { refuse: REFUSAL.passwordField };
       if (a.focus.target?.opaque) return { ask: "frame" };
       if (!ctx.marked) return { ask: "unmarked" };
       if (k.space && a.focus.target) return click(a.focus.target, true);
       return GO;
     }
     case "type": {
-      if (a.focus.sensitive) return { refuse: D9_REFUSAL };
-      if (a.focus.target?.opaque) return { refuse: FRAME_REFUSAL };
+      if (a.focus.sensitive) return { refuse: REFUSAL.passwordField };
+      if (a.focus.target?.opaque) return { refuse: REFUSAL.otherSiteFrame };
       if (/[\r\n]/.test(a.text) && !a.focus.plainTextarea) return { ask: "return" };
       if (!ctx.marked) return { ask: "unmarked" };
       if (a.focus.target?.fileInput) return { ask: "file" };
@@ -95,7 +94,7 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
     default: {
       const _exhaustive: never = a;
       void _exhaustive;
-      return { refuse: "Unknown action." };
+      return { refuse: REFUSAL.unknownAction };
     }
   }
 }
