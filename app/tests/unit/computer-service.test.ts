@@ -116,10 +116,21 @@ class FakeBrowser implements BrowserLike {
   }
   select(i: number) { this.need(i); this.current = i; this.seq++; }
   close(i: number) { this.need(i); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
-  async snapshot(tab?: number, session?: string): Promise<Snapshot> {
-    this.need(tab); this.snapshotsFor.push(session);
+  /** The caps each snapshot was asked with (session-browser S16, I4: a reply asks for the outline's, a snapshot for none). */
+  capsFor: (number | undefined)[] = [];
+  async snapshot(tab?: number, session?: string, o: { cap?: number } = {}): Promise<Snapshot> {
+    this.need(tab); this.snapshotsFor.push(session); this.capsFor.push(o.cap);
     await this.snapGate;
-    return { text: `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">\n${this.text}\n</untrusted-page>`, refs: new Map(), truncated: false };
+    const open = `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">`, close = "</untrusted-page>";
+    let lines = this.text.split("\n"), truncated = false;
+    // As formatSnapshot does: whole lines only, the wrapper whole, within the cap.
+    if (o.cap !== undefined) {
+      let used = open.length + 1 + close.length + 1;
+      const kept: string[] = [];
+      for (const l of lines) { if (used + l.length + 1 > o.cap) { truncated = true; break; } kept.push(l); used += l.length + 1; }
+      lines = kept;
+    }
+    return { text: `${open}\n${lines.join("\n")}\n${close}`, refs: new Map(), truncated };
   }
   async screenshot(tab?: number) { this.need(tab); return Buffer.from("PNGDATA"); }
   async resolve(by: { ref: string } | { x: number; y: number }, session?: string): Promise<Resolved> {
@@ -4260,7 +4271,7 @@ test("an action whose page cannot be read still says it ran", async () => {
   const p = h.call(A, "computer_click", { ref: "e1" });
   await flush();
   assert.equal(b.clicks.length, 1, "the click was sent");
-  h.svc.power("chat:a", false);
+  b.destroy();                                   // the browser went away, and nobody switched it off
   release();
   const r = await p;
   assert.ok(!r.isError, "the action happened: not an error");
@@ -4331,5 +4342,141 @@ test("the settle wait does not keep a held call past its limit", async () => {
   assert.equal(done, true, "answered at its 45 s, not when the page settles");
   const r = await p;
   assert.equal(b.clicks.length, 1);
-  assert.equal(r.text, `Clicked e1.${now("https://a.test/", "Welcome")}`);
+  assert.ok(!r.isError && r.text.startsWith("Clicked e1."), r.text);
+});
+
+// ---- fix round 1 (session-browser S16): the reply is built outside the queue, and says what the person did meanwhile
+
+test("the person's navigation does not wait for an agent's settle wait", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  b.settleGate = new Promise<void>(() => {});   // the page never settles
+  let clicked = false;
+  void h.call(A, "computer_click", { ref: "e1" }).then(() => { clicked = true; });
+  await flush();
+  assert.equal(b.clicks.length, 1, "the click was sent");
+  const nav = await Promise.race([h.svc.navigate("https://a.test/typed"), new Promise((r) => setTimeout(() => r("waited"), 200))]);
+  assert.deepEqual(nav, { ok: true, data: null }, "the address bar did not wait behind the settle wait");
+  assert.equal(clicked, false, "the click's reply is still waiting");
+});
+
+test("a program's page does not wait for an agent's settle wait", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  b.settleGate = new Promise<void>(() => {});
+  void h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  const before = b.pages.length;
+  await h.svc.openFromProgram("chat:a", "https://a.test/from-a-program");
+  await flush();
+  assert.equal(b.pages.length > before || b.pages.some((x) => x.url.includes("from-a-program")), true, "the program's page opened while the click still waited");
+});
+
+test("the person closes the tab during the settle wait: the reply says the action ran and that the tab was closed", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  assert.equal(b.clicks.length, 1);
+  h.svc.tab({ kind: "close", index: b.current });
+  release();
+  const r = await p;
+  assert.ok(!r.isError, "the action ran: not an error");
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.tabClosed}`);
+  assert.ok(!r.text.includes("Page now:"), "no outline of another tab");
+});
+
+test("the person switches the browser off during the settle wait: the reply carries that sentence", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.power("chat:a", false);
+  release();
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.switchedOff}`);
+});
+
+test("a tab switch by the person during the wait is not a stop: the reply carries the tab now in front", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.tab({ kind: "select", index: 0 });
+  release();
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.ok(r.text.endsWith(now("https://a.test/", "Welcome")), r.text);
+});
+
+test("a reply asks the browser for the outline's cap, a snapshot for none", async () => {
+  const { h, b } = await acting();
+  b.capsFor.length = 0;
+  await h.call(A, "computer_click", { ref: "e1" });
+  await h.call(A, "computer_snapshot");
+  assert.deepEqual(b.capsFor, [8000, undefined]);
+});
+
+test("a cut reply is cut by the browser's snapshot and says where the rest is", async () => {
+  const { h, b } = await acting();
+  b.text = Array.from({ length: 2000 }, (_, i) => `line ${i}`).join("\n");
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.ok(r.text.endsWith("\n</untrusted-page>\n(The page goes on: computer_snapshot has the rest.)"));
+});
+
+test("an asked action's reply is not cut by the first call's deadline", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.text = "Cart";
+  b.spots.set("e1", { target: btn("Next") });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  const ask = await h.asked();
+  await h.clock.advance(45_000);
+  assert.match((await p).text, /^waiting_for_user/);
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  h.svc.answer(ask.id, "once");
+  const w = h.call(A, "computer_wait", { askId: ask.id });
+  await h.clock.advance(3_000);                  // past the first call's 45 s, inside the 5 s settle
+  release();
+  assert.equal((await w).text, `Clicked e1.${now("https://a.test/", "Cart")}`, "the outline was read, not cut off by an old deadline");
+});
+
+test("the settle wait is measured from the last input, not from the call's start", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.clickGate = new Promise<void>((r) => { release = r; });
+  b.settles.length = 0;
+  const t0 = h.clock.t;
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await h.clock.advance(2_000);                  // the press is on its way for 2 s
+  release();
+  await h.clock.advance(0);
+  await p;
+  assert.deepEqual(b.settles, [t0 + 2_000]);
+});
+
+test("a deadline that cut the settle wait leaves the outline unread", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  b.settleGate = new Promise<void>(() => {});
+  const snaps = b.snapshotsFor.length;
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await h.clock.advance(44_900);
+  release();
+  await h.clock.advance(200);
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.equal(r.text.startsWith("Clicked e1."), true);
+  assert.match(r.text, /computer_status/);
+  assert.equal(b.snapshotsFor.length, snaps, "no read was started");
 });

@@ -5,6 +5,7 @@
 
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import electron from "electron";
 import { ComputerBrowser, type BrowserHooks, type Resolved } from "../../src/main/computer/browser";
@@ -39,6 +40,9 @@ class FakePage {
    *  that falls above or left of the frame hits nothing, and one on no box hits the body. */
   boxes: Map<number, { x: number; y: number; width: number; height: number }> | null = null;
   scroll = { x: 0, y: 0 };
+  /** A list of buttons the accessibility tree prints, in order (`b` is the node, as in the DOM below), when a test reads the
+   *  page as text; null leaves the tree empty. */
+  ax: { b: number; name: string }[] | null = null;
   /** Runs when the page receives `method`, before it answers (a Take over or a focus move landing mid-read); one that
    *  throws makes that command fail. */
   on = new Map<string, (params: Record<string, unknown>) => void>();
@@ -48,7 +52,8 @@ class FakePage {
   }
   root(): CdpDomNode {
     const o = this.doc * 1000;
-    const body = [this.node(10, "BUTTON", ["id", "b1"], "Go"), this.node(11, "BUTTON", ["id", "b2"], "Go"), this.node(12, "INPUT", ["id", "q", "aria-label", "Search"])]
+    const body = [this.node(10, "BUTTON", ["id", "b1"], "Go"), this.node(11, "BUTTON", ["id", "b2"], "Go"), this.node(12, "INPUT", ["id", "q", "aria-label", "Search"]),
+      ...(this.ax ?? []).map((x) => this.node(x.b, "BUTTON", ["id", `x${x.b}`], x.name))]
       .filter((n) => !this.removed.has(n.backendNodeId - o));
     return {
       nodeId: 1 + o, backendNodeId: 1 + o, nodeType: 9, nodeName: "#document", children: [{
@@ -63,6 +68,14 @@ class FakePage {
       case "DOM.getDocument": return { root: this.root() };
       case "DOM.querySelectorAll": return { nodeIds: params.selector === ":focus" && this.focused !== null ? [this.focused] : [] };
       case "Page.createIsolatedWorld": return { executionContextId: 1 };
+      case "Page.getFrameTree": return { frameTree: { frame: { id: "F1" } } };
+      case "Accessibility.getFullAXTree": {
+        const o = this.doc * 1000, list = this.ax ?? [];
+        return { nodes: [
+          { nodeId: "root", ignored: false, role: { value: "RootWebArea" }, name: { value: "" }, childIds: list.map((x) => `n${x.b}`), backendDOMNodeId: 2 + o },
+          ...list.map((x) => ({ nodeId: `n${x.b}`, ignored: false, role: { value: "button" }, name: { value: x.name }, childIds: [] as string[], backendDOMNodeId: x.b + o })),
+        ] };
+      }
       case "DOM.getNodeForLocation": {
         if (!this.boxes) return { backendNodeId: this.hit };
         const x = params.x as number, y = params.y as number;
@@ -1084,6 +1097,147 @@ test("settled waits for a navigation that starts in the window, 5 s at most", as
   assert.equal(await settledAt(async ({ b, tab, at }) => { await at(100); began(b, tab); await at(250); ended(b, tab); }), 300);
 });
 
-test("settled ends when the browser is destroyed", async () => {
-  assert.equal(await settledAt(async ({ b, tab, at }) => { await at(200); began(b, tab); await at(500); (b as unknown as { signalDestroyed(): void }).signalDestroyed(); }), 500);
+// ---- fix round 1 (session-browser S16, I4): a ref is the node the session was last SHOWN under that number
+
+const items = (n: number, from = 100): { b: number; name: string }[] => Array.from({ length: n }, (_, i) => ({ b: from + i, name: `Item ${from + i}` }));
+const refTo = (tab: unknown, session: string, ref: string): number | undefined =>
+  (tab as { refs: Map<string, { refs: Map<string, { backendNodeId: number }> }> }).refs.get(session)?.refs.get(ref)?.backendNodeId;
+const snapshotText = (b: ComputerBrowser, session: string, cap?: number) => b.snapshot(undefined, session, cap === undefined ? undefined : { cap });
+
+test("a ref beyond a reply's cut still names the node the session was shown", async () => {
+  const { b, page, tab } = make();
+  page.ax = items(600);
+  const full = await b.snapshot(undefined, "s");
+  assert.equal(refTo(tab, "s", "e500"), 599, "the full snapshot showed e500 as the 500th button");
+  // An action inserted three buttons above; the reply shows only its first 8,000 characters.
+  page.ax = [...items(3, 900), ...items(600)];
+  const reply = await snapshotText(b, "s", 8000);
+  assert.ok(reply.truncated && reply.text.length <= 8000, `${reply.text.length}`);
+  assert.equal(refTo(tab, "s", "e500"), 599, "e500 still names the node the session saw under that number, not what is there now");
+  assert.ok(full.text.includes("[e500]"));
+});
+
+test("a ref printed in a reply's outline names the new node", async () => {
+  const { b, page, tab } = make();
+  page.ax = items(600);
+  await b.snapshot(undefined, "s");
+  page.ax = [...items(3, 900), ...items(600)];
+  await snapshotText(b, "s", 8000);
+  assert.equal(refTo(tab, "s", "e1"), 900);
+});
+
+test("a number the session was never shown is refused", async () => {
+  const { b, page, tab } = make();
+  page.ax = items(600);
+  await snapshotText(b, "s", 8000);              // only the first lines were shown
+  assert.equal(refTo(tab, "s", "e500"), undefined, "never registered");
+  await assert.rejects(b.resolve({ ref: "e500" }, "s"), /take a new snapshot/);
+});
+
+test("after a navigation only the reply's printed refs exist", async () => {
+  const { b, page, tab } = make();
+  page.ax = items(600);
+  await b.snapshot(undefined, "s");
+  (tab as { seq: number }).seq++;                // a new document
+  await snapshotText(b, "s", 8000);
+  assert.equal(refTo(tab, "s", "e500"), undefined);
+  assert.equal(refTo(tab, "s", "e1"), 100);
+});
+
+test("an address longer than the cap leaves the wrapper whole", async () => {
+  const { b, page } = make();
+  page.ax = items(5);
+  page.url = `https://a.test/${"p".repeat(5000)}`;
+  const snap = await snapshotText(b, "s", 500);
+  assert.ok(snap.text.startsWith("<untrusted-page "), snap.text.slice(0, 40));
+  assert.ok(snap.text.endsWith("\n</untrusted-page>"), snap.text.slice(-40));
+  assert.equal(snap.truncated, true);
+});
+
+// ---- fix round 1 (session-browser S16, M3): `settled` through the web contents' own events
+
+type AnyTab = { wc: Record<string, unknown> & { debugger: Record<string, unknown> } };
+/** Gives the fake web contents an event source, wires the tab as the browser does, and returns the source. */
+function listen(b: ComputerBrowser, tab: unknown): EventEmitter {
+  const em = new EventEmitter();
+  const t = tab as AnyTab;
+  Object.assign(t.wc, { on: (e: string, f: (...a: unknown[]) => void) => { em.on(e, f); return t.wc; }, setWindowOpenHandler() {}, close() {} });
+  Object.assign(t.wc.debugger, { on() {}, detach() {} });
+  (b as unknown as { wire(t: unknown): void }).wire(tab);
+  return em;
+}
+const navStart = (em: EventEmitter): boolean => em.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false, url: "https://a.test/next" });
+const navStop = (em: EventEmitter): boolean => em.emit("did-stop-loading");
+
+/** Runs `settled(sinceAt)` on a mock clock, firing the plan's events at their milliseconds; when it resolved, in ms. */
+async function settleRun(sinceAt: number, plan: (h: { b: ComputerBrowser; tab: unknown }) => Record<number, () => void>): Promise<number> {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  try {
+    const { b, tab } = make();
+    const events = plan({ b, tab });
+    let done: number | null = null;
+    for (let ms = 0; ms <= 6000; ms++) {
+      events[ms]?.();
+      if (ms === sinceAt) void b.settled(sinceAt).then(() => { done = Date.now(); });
+      await turns();
+      if (done !== null) return done;
+      mock.timers.tick(1);
+    }
+    return -1;
+  } finally {
+    mock.timers.reset();
+  }
+}
+
+test("settled: a navigation that starts after the window does not count, one at 299 ms does", async () => {
+  assert.equal(await settleRun(0, ({ b, tab }) => { const em = listen(b, tab); return { 301: () => navStart(em) }; }), 300, "starting at 301 ms");
+  assert.equal(await settleRun(0, ({ b, tab }) => { const em = listen(b, tab); return { 299: () => navStart(em), 800: () => navStop(em) }; }), 800, "starting at 299 ms, loaded at 800");
+});
+
+test("settled: a navigation that began 200 ms before the input and is still loading counts", async () => {
+  assert.equal(await settleRun(200, ({ b, tab }) => { const em = listen(b, tab); return { 0: () => navStart(em), 900: () => navStop(em) }; }), 900);
+  // ... but one that began 400 ms before it does not.
+  assert.equal(await settleRun(400, ({ b, tab }) => { const em = listen(b, tab); return { 0: () => navStart(em), 900: () => navStop(em) }; }), 700);
+});
+
+test("settled: a background tab's navigation does not count", async () => {
+  assert.equal(await settleRun(0, ({ b, tab }) => {
+    const other = { ...(tab as object), wc: { ...(tab as AnyTab).wc, debugger: { ...(tab as AnyTab).wc.debugger } } };
+    (b as unknown as { list: unknown[] }).list.push(other);   // the second tab is not the active one
+    const em = listen(b, other);
+    return { 100: () => navStart(em) };
+  }), 300);
+});
+
+test("settled: a tab that is closed ends the wait", async () => {
+  assert.equal(await settleRun(0, ({ b, tab }) => {
+    const em = listen(b, tab);
+    return { 100: () => navStart(em), 500: () => (b as unknown as { drop(t: unknown): void }).drop(tab) };
+  }), 500);
+});
+
+test("settled leaves no timer or waiter behind when the wait ends", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  try {
+    const { b, tab } = make();
+    const em = listen(b, tab);
+    navStart(em);
+    const waiters = (): number => (b as unknown as { navWake: Set<unknown> }).navWake.size;
+    let done = false;
+    void b.settled(0).then(() => { done = true; });
+    mock.timers.tick(300); await turns();
+    assert.equal(waiters(), 1, "waiting for the load");
+    navStop(em); await turns();
+    assert.equal(done, true);
+    assert.equal(waiters(), 0);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("settled: the browser being destroyed ends the wait", async () => {
+  assert.equal(await settleRun(0, ({ b, tab }) => {
+    const em = listen(b, tab);
+    return { 100: () => navStart(em), 500: () => b.destroy() };
+  }), 500);
 });

@@ -323,10 +323,10 @@ export class ComputerBrowser {
   private readonly destroyed: Promise<void>;
   private signalDestroyed: () => void = () => undefined;
   /** The main-frame navigations started lately and when each stopped loading (null while it loads), for `settled`
-   *  (session-browser S8). Only the last few seconds are kept. */
+   *  (session-browser S16). Only the last few seconds are kept. */
   private readonly navLog: { tab: Tab; start: number; end: number | null }[] = [];
-  /** Wakes the `settled` calls waiting on a load when one stops. */
-  private readonly navWake = new Set<() => void>();
+  /** The `settled` calls waiting on a tab's load, each woken by its own tab's end (or the browser's). */
+  private readonly navWake = new Set<{ tab: Tab; wake: () => void }>();
   private readonly handlers: Handlers = {
     permission: (p, url) => this.askPermission(p, url),
     download: (item, wc) => this.download(item, wc),
@@ -388,10 +388,10 @@ export class ComputerBrowser {
     return { url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()) };
   }
 
-  /** session-browser S8: resolves 300 ms after `since` (a time on the caller's clock, `Date.now()` here: the moment an
+  /** session-browser S16: resolves 300 ms after `since` (a time on the caller's clock, `Date.now()` here: the moment an
    *  action's last input was sent), or, when a main-frame navigation of the active tab started within that window (or just
    *  before it, as a click's own does), when that navigation has stopped loading, and at `since` + 5 s at the latest. Never
-   *  rejects; a destroyed browser ends it. */
+   *  rejects; the tab closing or the browser being destroyed ends it, and nothing is left behind when it does. */
   async settled(since: number): Promise<void> {
     const window = since + SETTLE_WINDOW_MS, limit = since + SETTLE_MAX_MS;
     await this.pause(window - Date.now());
@@ -399,12 +399,12 @@ export class ComputerBrowser {
     // A navigation counts when it started in the window, or up to one window before the input (the event for a click's
     // own navigation can arrive just ahead of the call that sent it).
     const loading = (): boolean => !!t && this.navLog.some((n) => n.tab === t && n.end === null && n.start >= since - SETTLE_WINDOW_MS && n.start <= window);
-    let over = this.gone;
-    void this.destroyed.then(() => { over = true; });
-    while (!over && loading() && Date.now() < limit) {
-      let wake: () => void = () => undefined;
-      const stopped = new Promise<void>((r) => { wake = r; this.navWake.add(r); });
-      try { await Promise.race([stopped, this.pause(limit - Date.now()), this.destroyed]); } finally { this.navWake.delete(wake); }
+    while (t && !this.gone && loading() && Date.now() < limit) {
+      await new Promise<void>((resolve) => {
+        const w = { tab: t, wake: () => { clearTimeout(timer); this.navWake.delete(w); resolve(); } };
+        const timer = setTimeout(w.wake, limit - Date.now());
+        this.navWake.add(w);
+      });
     }
   }
 
@@ -425,7 +425,7 @@ export class ComputerBrowser {
   private navEnded(t: Tab): void {
     const now = Date.now();
     for (const n of this.navLog) if (n.tab === t && n.end === null) n.end = now;
-    for (const wake of [...this.navWake]) wake();
+    for (const w of [...this.navWake]) if (w.tab === t) w.wake();
   }
 
   /** Makes tab `index` the active one. */
@@ -465,7 +465,7 @@ export class ComputerBrowser {
 
   /** The tab as text for the model. With `session`, its refs become that session's to use (I2: one table per session
    *  per tab); without one (a text wait) no table changes. */
-  async snapshot(tab?: number, session?: string): Promise<Snapshot> {
+  async snapshot(tab?: number, session?: string, o: { cap?: number } = {}): Promise<Snapshot> {
     const t = this.tab(tab);
     // The site and document the reads belong to are fixed before them: a navigation during the reads (a value of the
     // old site read after the page moved on) is remembered for neither.
@@ -496,13 +496,17 @@ export class ComputerBrowser {
     const pool = t.memory.pool([site]), carried = t.memory.carried();
     const url = this.shownUrl(t);
     const snap = formatSnapshot(mergeFrames(trees, dom), {
-      origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP,
+      origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: o.cap ?? SNAPSHOT_CAP,
       values: [...read.values, ...pool.values], whole: [...read.whole, ...pool.whole], otp, urlValues: carried.values, urlWhole: carried.whole,
     });
     if (session) {
       const token = this.tokenOf(t);
       for (const [k, v] of [...t.refs]) if (v.token !== token) t.refs.delete(k);
-      t.refs.set(session, { refs: snap.refs, token });
+      // session-browser S16 (I4): a ref is the node the session was last SHOWN under that number. Every ref printed in this
+      // text replaces that number's meaning; under the same page token a number this text did not print (a reply's outline is
+      // cut) keeps what the session's earlier snapshot of this tab showed it; a number never shown is not registered.
+      const prev = t.refs.get(session);
+      t.refs.set(session, { refs: prev && prev.token === token ? new Map([...prev.refs, ...snap.refs]) : snap.refs, token });
     }
     return snap;
   }
@@ -911,6 +915,7 @@ export class ComputerBrowser {
     this.watched.clear();
     leavePark(this);
     this.gone = true;
+    for (const w of [...this.navWake]) w.wake();
     this.signalDestroyed();
   }
 

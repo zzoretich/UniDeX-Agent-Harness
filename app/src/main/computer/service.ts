@@ -17,7 +17,7 @@ import type { ComputerConfig } from "./config";
 import { judge, type AskWhy, type Focus, type Verdict } from "./gate";
 import type { Rect } from "./mask";
 import { REFUSAL } from "./refusals";
-import { UNREAD, withPage } from "./reply";
+import { OUTLINE_MAX, UNREAD, withPage } from "./reply";
 import type { AgentRef } from "./registry";
 import { cleanTitle } from "./title";
 import type { SiteMarks } from "./sites";
@@ -205,7 +205,7 @@ interface Job { session: string; answered: boolean; done: Promise<Reply> }
  *  ask is raised and in the predicate before each input event (`current`, `stale`). */
 interface Lease {
   gen: number;
-  /** session-browser S8: the call's 45 s (a time on the service's clock) while it is the call that holds the reply: the
+  /** session-browser S16: the call's 45 s (a time on the service's clock) while it is the call that holds the reply: the
    *  settle wait before its outline never runs past it. null once the call was turned into an ask, whose reply
    *  `computer_wait` carries (it has its own limit). */
   until: number | null;
@@ -229,6 +229,8 @@ const refuseAt = (sentence: string, url: string | null): Reply => {
   const text = `${sentence} ${pageLine(url)}`;
   return fail(text);
 };
+/** The reads `done` noted for the replies it made, finished once the queue is free (session-browser S16). */
+const deferred = new WeakMap<Reply, () => Promise<Reply>>();
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const waiting = (id: string): string => `waiting_for_user: call computer_wait with askId "${id}"`;
@@ -431,7 +433,7 @@ export class ComputerService {
     try {
       // R78: the deadline bounds the queue and the target read too: a call that has not taken the computer by then
       // returns, and its step never delivers input or raises an ask.
-      return await this.bounded(deadline, async (g) => {
+      const reply = await this.bounded(deadline, async (g) => {
         const step = await this.serial(p, () => (g.alive() ? this.step(agent, p, parsed, g.take, lease) : Promise.resolve<Step>({ reply: fail(REFUSAL.late) })));
         if ("reply" in step) return step.reply;
         // R81: writing the card awaited the page's text; no ask is raised for a call that is no longer current.
@@ -439,6 +441,8 @@ export class ComputerService {
         if (gone) return gone;
         return g.take() ? this.ask(agent, p, step.ask, deadline, lease) : fail(REFUSAL.late);
       });
+      // The queue is free: the settle wait and the outline (session-browser S16).
+      return await this.finished(reply);
     } catch (e) {
       // S5: a browser destroyed under the call rejects it with the browser's own error; the person's stop is the answer.
       return this.stopped(p, lease) ?? fail(message(e));
@@ -748,20 +752,39 @@ export class ComputerService {
     return this.done(p, b, `Typed ${n} character${n === 1 ? "" : "s"}.`, since, lease);
   }
 
-  /** session-browser S8: the reply of an acting tool that ran: `line`, then the page as it is now, so the agent need not
-   *  call computer_snapshot after every action. It waits for the page to settle after the action's last input (`since`, on
-   *  the service's clock; never past the call's 45 s while the call holds the reply), then takes the outline
-   *  `computer_snapshot` would (so its refs are good for the next call). The input has been sent: the action happened, so
-   *  nothing here turns it into a failure, throws or hangs: a page that cannot be read afterwards (the browser went off, to
-   *  sleep or away; the snapshot threw) gives `line` and a sentence saying so. A Take over during the wait changes nothing:
-   *  reading the outline is a look. The outline carries the page's address, so `line` does not. */
-  private async done(p: Slot, b: BrowserLike, line: string, since: number, lease: Lease): Promise<Reply> {
+  /** session-browser S16: the reply of an acting tool that ran: `line`, then the page as it is now, so the agent need not
+   *  call computer_snapshot after every action. It is built OUTSIDE the slot's queue: this only notes what is to be read (the
+   *  step ends, so the person's address bar, a clicked link and a program's page do not wait behind a settle wait), and the
+   *  caller of the queue finishes it with `finished` once the queue is free. */
+  private done(p: Slot, b: BrowserLike, line: string, since: number, lease: Lease): Reply {
+    const reply: Reply = { text: line };
+    deferred.set(reply, () => this.page(p, b, line, since, lease));
+    return reply;
+  }
+
+  /** The reply after the queue: a reply that `done` made is read now, any other is returned as it is. */
+  private finished(reply: Reply): Promise<Reply> | Reply {
+    const read = deferred.get(reply);
+    return read ? read() : reply;
+  }
+
+  /** The wait and the read of `done`. It waits for the page to settle after the action's last input (`since`, on the
+   *  service's clock; never past the call's 45 s while the call holds the reply: a wait that the deadline cut short starts no
+   *  read at all), then tells what the person did meanwhile (the stop's own sentence when they switched the browser off or
+   *  closed the tab the action ran in: no outline, for it would be another page's), else takes the outline `computer_snapshot`
+   *  would, cut by the browser (so its refs are the ones shown). The input has been sent: the action happened, so nothing here
+   *  turns it into a failure, throws or hangs: a page that cannot be read afterwards gives `line` and a sentence saying so. A
+   *  Take over during the wait changes nothing: reading the outline is a look. The outline carries the page's address, so
+   *  `line` does not. */
+  private async page(p: Slot, b: BrowserLike, line: string, since: number, lease: Lease): Promise<Reply> {
     try {
       const settled = b.settled(since).catch(() => undefined);
       if (lease.until === null) await settled;
-      else await this.within(settled, lease.until);
+      else if (!(await this.within(settled, lease.until))) return { text: `${line} ${UNREAD}` };
+      const stop = this.stopped(p, lease);
+      if (stop) return { text: `${line} ${stop.text}` };
       if (p.browser !== b || p.power === "off") return { text: `${line} ${UNREAD}` };
-      const snap = await b.snapshot(undefined, p.key);
+      const snap = await b.snapshot(undefined, p.key, { cap: OUTLINE_MAX });
       return { text: withPage(line, snap.text, { cut: snap.truncated }) };
     } catch {
       return { text: `${line} ${UNREAD}` };
@@ -865,7 +888,7 @@ export class ComputerService {
       let ran = false;
       try {
       if (this.slots.get(p.key) !== p && this.slots.has(p.key)) return fail(REFUSAL.restarted);
-      return await this.serial(p, async () => {
+      const queued = await this.serial(p, async () => {
         try {
           if (!this.current(p, agent, lease) || !(await s.revalidate()) || !this.current(p, agent, lease)) return this.stopped(p, lease) ?? refuseAt(REFUSAL.changed, p.browser ? this.url(p.browser) : null);
           ran = true;
@@ -878,6 +901,8 @@ export class ComputerService {
           this.o.wheel.touch(p.key, agent.key);
         }
       });
+      // The queue is free: the settle wait and the outline of an action that ran (session-browser S16).
+      return await this.finished(queued);
       } finally {
         // A power card that was answered but whose open did not run (the process under the key was replaced, the call was
         // stale): the pages a program held behind it open if the person turned the browser on by hand, else they are dropped.
