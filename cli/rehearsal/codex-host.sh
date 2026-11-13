@@ -53,12 +53,12 @@ for (const g of d.hooks.SessionEnd) for (const h of g.hooks) if (h.timeout !== 3
 ' "$CODEX_HOME/hooks.json"
 grep -q '^mcp add agenticos --env AOS_CONFIG=' "$FAKE_CODEX_LOG"
 [ -f "$FAKE_CODEX_STATE" ]
-echo "== the direct registration approves the five acting computer tools in config.toml (agent-computer D33)"
-for t in open click type key scroll; do
+echo "== the direct registration approves the eight acting computer tools in config.toml (agent-computer D33)"
+for t in open click type key scroll tab nav hover; do
   grep -A1 "^\[mcp_servers\.agenticos\.tools\.computer_$t\]\$" "$CODEX_HOME/config.toml" | grep -q '^approval_mode = "approve"$' ||
     { echo "config.toml does not approve computer_$t"; cat "$CODEX_HOME/config.toml"; exit 1; }
 done
-if grep -q 'computer_\(status\|snapshot\|screenshot\|wait\)\]' "$CODEX_HOME/config.toml"; then echo "a look tool got an approval table"; exit 1; fi
+if grep -q 'computer_\(status\|snapshot\|screenshot\|wait\|console\)\]' "$CODEX_HOME/config.toml"; then echo "a look tool got an approval table"; exit 1; fi
 grep -q '^model = "fake-model"$' "$CODEX_HOME/config.toml"
 [ -f "$SKILLS/wrap/SKILL.md" ] && [ -f "$SKILLS/remember/SKILL.md" ] && [ -f "$SKILLS/recall/SKILL.md" ]
 ! grep -q 'CLAUDE_PLUGIN_ROOT' "$SKILLS/wrap/SKILL.md"
@@ -101,11 +101,11 @@ grep -q '^plugin add agenticos@agenticos-workbench --json$' "$FAKE_CODEX_LOG"
 [ ! -e "$SKILLS/wrap" ] && [ ! -e "$SKILLS/remember" ]
 [ ! -e "$FAKE_CODEX_STATE" ]
 node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if (c.hosts.codex.install !== "plugin") throw new Error("install: " + c.hosts.codex.install)' "$CLAUDE_CONFIG_DIR/agenticos.json"
-echo "== the direct registration left with its approvals; the plugin's own server entry approves the same five (agent-computer D33)"
+echo "== the direct registration left with its approvals; the plugin's own server entry approves the same eight (agent-computer D33)"
 if grep -q 'mcp_servers\.agenticos' "$CODEX_HOME/config.toml"; then echo "config.toml still has the direct registration's tables"; cat "$CODEX_HOME/config.toml"; exit 1; fi
 node -e '
 const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).mcpServers.agenticos;
-const want = ["computer_open", "computer_click", "computer_type", "computer_key", "computer_scroll"];
+const want = ["computer_open", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_tab", "computer_nav", "computer_hover"];
 if (JSON.stringify(s.tools) !== JSON.stringify(Object.fromEntries(want.map((t) => [t, { approval_mode: "approve" }])))) throw new Error("plugin tools: " + JSON.stringify(s.tools));
 ' "$PLUGIN/.mcp.json"
 

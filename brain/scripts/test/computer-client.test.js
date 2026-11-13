@@ -66,6 +66,21 @@ test('with no list only the nine old tools are sent', async () => {
   }
 });
 
+test('an empty list counts as no list', async () => {
+  const { client, sock } = make();
+  const p = client.call('computer_status', {});
+  await tick(); sock.admit({ admitted: true, session: 's', tools: [] });
+  await tick();
+  assert.deepEqual(calls(sock).map((c) => c.tool), ['computer_status']);
+  sock.reply(calls(sock)[0].id, { text: 'fine' });
+  assert.equal((await p).text, 'fine');
+  // and, as with no list, a double click is refused
+  const d = await client.call('computer_click', { ref: 'e1', double: true });
+  assert.match(d.text, /older than double clicks/);
+  assert.equal(calls(sock).length, 1);
+  client.stop();
+});
+
 test('a double click on an app with no list is refused without a write', async () => {
   const { client, sock } = make();
   const p = client.call('computer_click', { ref: 'e1', double: true });

@@ -216,7 +216,7 @@ const codexDone = (choice: string) => new RegExp(`^Done · ${esc(choice)} · \\d
 const FAILED_DONE = /^Did not finish · (.+ · )?no cost recorded$/;
 /** The value after `flag` in an argv. */
 const argOf = (argv: string[], flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
-// What a Claude turn pre-approves by access (agent-computer D33): the look tools, all nine computer tools, or Bash and all nine.
+// What a Claude turn pre-approves by access (agent-computer D33): the look tools, all thirteen computer tools, or Bash and all thirteen.
 const plug = (t: string) => `mcp__plugin_agenticos_agenticos__${t}`;
 const TOOLS_READ = COMPUTER_LOOK.map(plug).join(",");
 const TOOLS_EDIT = COMPUTER_TOOLS.map(plug).join(",");

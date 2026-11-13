@@ -63,7 +63,7 @@ function createComputerClient({ vault, net = require('net'), readMarker = hudHos
     if (!msg || typeof msg !== 'object') return;
     if (state === 'connecting') {
       if (msg.admitted === true) {
-        if (Array.isArray(msg.tools) && msg.tools.every((t) => typeof t === 'string')) { taken = msg.tools; listed = true; }
+        if (Array.isArray(msg.tools) && msg.tools.length > 0 && msg.tools.every((t) => typeof t === 'string')) { taken = msg.tools; listed = true; }
         settle('ready');
       }
       else if (msg.admitted === false) settle('failed', failure(typeof msg.reason === 'string' && msg.reason ? msg.reason : NO_APP));

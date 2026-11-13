@@ -1355,8 +1355,6 @@ test.describe("session browser: one per session, off until the user turns it on 
   });
 });
 
-// ── kept, limited, linked and popped out ─────────────────────────────
-
 // ── the four tools of the thirteen: computer_tab, computer_nav, computer_hover, computer_console, and a double click ───
 
 test.describe("session browser: tab, nav, hover and console, on both hosts (session-browser S16, S17)", () => {
@@ -1410,7 +1408,7 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
         expectReply(await a.call("computer_hover", { ref: menu }), { isError: false, text: acted(`Hovered ${menu}.`, toolsUrl()) });
         await expect.poll(async () => (await a.call("computer_snapshot")).text, { message: "the hover handler ran" }).toContain("Menu open");
         const count = refOf((await a.call("computer_snapshot")).text, "button", "Count");
-        expectReply(await a.call("computer_click", { ref: count, double: true }), { isError: false, text: acted(`Clicked ${count}.`, toolsUrl()) });
+        expectReply(await a.call("computer_click", { ref: count, double: true }), { isError: false, text: acted(`Double-clicked ${count}.`, toolsUrl()) });
         await expect.poll(async () => (await a.call("computer_snapshot")).text, { message: "the double click ran" }).toContain("Double: yes");
         // Back, Forward and Reload of a page loaded by GET go without asking.
         expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
@@ -1430,7 +1428,7 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
         const after = await a.call("computer_status");
         expectReply(after, { isError: false });
         expect(after.text).not.toMatch(/off: computer_open asks/);
-        expect(tabLines(after)).toContain(searchHost());
+        await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "the start page replaced it" }).toContain(searchHost());
       } finally { await a.finish(); }
     }
     expectNoErrors(h);
@@ -1473,6 +1471,8 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
     expectNoErrors(h);
   });
 });
+
+// ── kept, limited, linked and popped out ─────────────────────────────
 
 test.describe("session browser: kept, limited, linked and popped out (session-browser §6, PR 3)", () => {
   const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
