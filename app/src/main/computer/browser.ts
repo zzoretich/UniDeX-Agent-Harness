@@ -396,7 +396,7 @@ export class ComputerBrowser {
     const t = this.list[this.current];
     // A navigation counts when it started in the window, or up to one window before the input (the event for a click's
     // own navigation can arrive just ahead of the call that sent it).
-    const loading = (): boolean => !!t && this.navLog.some((n) => n.tab === t && n.end === null && n.start >= since - SETTLE_WINDOW_MS && n.start <= window);
+    const loading = (): boolean => !!t && this.navLog.some((n) => n.tab === t && n.end === null && n.start >= since - SETTLE_WINDOW_MS);
     while (t && !this.gone && loading() && Date.now() < limit) {
       await new Promise<void>((resolve) => {
         const w = { tab: t, wake: () => { clearTimeout(timer); this.navWake.delete(w); resolve(); } };
@@ -468,6 +468,9 @@ export class ComputerBrowser {
     // The site and document the reads belong to are fixed before them: a navigation during the reads (a value of the
     // old site read after the page moved on) is remembered for neither.
     const site = this.site(t), doc = t.doc;
+    // session-browser S16: the page token is read before the reads, so refs registered below belong to the page they were
+    // read from: a navigation that lands meanwhile makes them refused, never the old page's nodes under the new token.
+    const token = this.tokenOf(t);
     const dom = await this.locked(t, () => this.readDom(t));
     const before = await this.fieldValues(t, dom);
     const frames: { id: string }[] = [];
@@ -498,7 +501,6 @@ export class ComputerBrowser {
       values: [...read.values, ...pool.values], whole: [...read.whole, ...pool.whole], otp, urlValues: carried.values, urlWhole: carried.whole,
     });
     if (session) {
-      const token = this.tokenOf(t);
       for (const [k, v] of [...t.refs]) if (v.token !== token) t.refs.delete(k);
       // session-browser S16 (I4): a ref is the node the session was last SHOWN under that number. Every ref printed in this
       // text replaces that number's meaning; under the same page token a number this text did not print (a reply's outline is

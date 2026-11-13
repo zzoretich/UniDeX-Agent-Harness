@@ -1112,7 +1112,8 @@ test("a ref beyond a reply's cut still names the node the session was shown", as
   // An action inserted three buttons above; the reply shows only its first 8,000 characters.
   page.ax = [...items(3, 900), ...items(600)];
   const reply = await snapshotText(b, "s", 8000);
-  assert.ok(reply.truncated && reply.text.length <= 8000, `${reply.text.length}`);
+  const body = reply.text.slice(reply.text.indexOf("\n") + 1, reply.text.lastIndexOf("\n</untrusted-page>"));
+  assert.ok(reply.truncated && body.length <= 8000, `${body.length}`);
   assert.equal(refTo(tab, "s", "e500"), 599, "e500 still names the node the session saw under that number, not what is there now");
   assert.ok(full.text.includes("[e500]"));
 });
@@ -1146,12 +1147,31 @@ test("after a navigation only the reply's printed refs exist", async () => {
 
 test("an address longer than the cap leaves the wrapper whole", async () => {
   const { b, page } = make();
-  page.ax = items(5);
+  page.ax = items(60);
   page.url = `https://a.test/${"p".repeat(5000)}`;
   const snap = await snapshotText(b, "s", 500);
   assert.ok(snap.text.startsWith("<untrusted-page "), snap.text.slice(0, 40));
   assert.ok(snap.text.endsWith("\n</untrusted-page>"), snap.text.slice(-40));
   assert.equal(snap.truncated, true);
+});
+
+test("the cap counts outline lines, not the wrapper", async () => {
+  const { b, page } = make();
+  page.ax = items(60);
+  page.url = `https://a.test/${"p".repeat(5000)}`;       // the opening part is about 2,000 characters
+  const snap = await snapshotText(b, "s", 600);
+  assert.ok(snap.text.includes("[e1]"), "an address of any length leaves room for the outline");
+  const body = snap.text.slice(snap.text.indexOf("\n") + 1, snap.text.lastIndexOf("\n</untrusted-page>"));
+  assert.ok(body.length <= 600, `${body.length} characters of outline`);
+});
+
+test("a navigation during a snapshot's reads leaves no usable ref", async () => {
+  const { b, page, tab } = make();
+  page.ax = items(5);
+  page.on.set("Accessibility.getFullAXTree", () => { (tab as { seq: number }).seq++; });   // the page moves on mid-read
+  await b.snapshot(undefined, "s");
+  assert.equal((tab as { refs: Map<string, { token: string }> }).refs.get("s")?.token, "1.0", "registered under the token read before the reads");
+  await assert.rejects(b.resolve({ ref: "e1" }, "s"), /There is no e1 on this page now/);
 });
 
 // ---- fix round 1 (session-browser S16, M3): `settled` through the web contents' own events
@@ -1189,7 +1209,7 @@ async function settleRun(sinceAt: number, plan: (h: { b: ComputerBrowser; tab: u
   }
 }
 
-test("settled: a navigation that starts after the window does not count, one at 299 ms does", async () => {
+test("settled: a navigation that begins after the window ends is not waited for, one at 299 ms is", async () => {
   assert.equal(await settleRun(0, ({ b, tab }) => { const em = listen(b, tab); return { 301: () => navStart(em) }; }), 300, "starting at 301 ms");
   assert.equal(await settleRun(0, ({ b, tab }) => { const em = listen(b, tab); return { 299: () => navStart(em), 800: () => navStop(em) }; }), 800, "starting at 299 ms, loaded at 800");
 });

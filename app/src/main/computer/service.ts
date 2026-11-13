@@ -146,6 +146,13 @@ interface Slot {
   reopening: { urls: string[]; active: number } | null;
   /** S5: why the calls started before the wheel's generation `gen` were stopped by the person. */
   stopped: { gen: number; sentence: string } | null;
+  /** Every stop of the last few (session-browser S16): a call's reply names the first one after it started, whatever followed. */
+  stops: { gen: number; sentence: string }[];
+  /** The agent's reply reads (the settle wait and the outline), one after another in the order their steps ended; nothing of
+   *  the person's ever waits on it. */
+  replies: Promise<unknown>;
+  /** Reply reads in progress: like a look in flight, the browser is not put to sleep and the wheel not freed under them. */
+  reading: number;
   log: LogLine[];
   /** The agent that called on this computer last: where a page's own notes go when no agent holds the wheel. */
   last: AgentRef | null;
@@ -442,7 +449,7 @@ export class ComputerService {
         return g.take() ? this.ask(agent, p, step.ask, deadline, lease) : fail(REFUSAL.late);
       });
       // The queue is free: the settle wait and the outline (session-browser S16).
-      return await this.finished(reply);
+      return await this.finished(p, reply);
     } catch (e) {
       // S5: a browser destroyed under the call rejects it with the browser's own error; the person's stop is the answer.
       return this.stopped(p, lease) ?? fail(message(e));
@@ -763,9 +770,15 @@ export class ComputerService {
   }
 
   /** The reply after the queue: a reply that `done` made is read now, any other is returned as it is. */
-  private finished(reply: Reply): Promise<Reply> | Reply {
+  private finished(p: Slot, reply: Reply): Promise<Reply> | Reply {
     const read = deferred.get(reply);
-    return read ? read() : reply;
+    if (!read) return reply;
+    // One read after another per session, in the order the steps ended, so refs register in the order of the calls; the
+    // chain is the agent's replies' only. The read counts as a look in flight (the browser is not put to sleep under it).
+    p.reading++;
+    const run = p.replies.then(read, read).finally(() => { p.reading--; this.released(); });
+    p.replies = run.catch(() => undefined);
+    return run;
   }
 
   /** The wait and the read of `done`. It waits for the page to settle after the action's last input (`since`, on the
@@ -781,8 +794,8 @@ export class ComputerService {
       const settled = b.settled(since).catch(() => undefined);
       if (lease.until === null) await settled;
       else if (!(await this.within(settled, lease.until))) return { text: `${line} ${UNREAD}` };
-      const stop = this.stopped(p, lease);
-      if (stop) return { text: `${line} ${stop.text}` };
+      const stop = this.stoppedAfter(p, lease);
+      if (stop) return { text: `${line} ${stop}` };
       if (p.browser !== b || p.power === "off") return { text: `${line} ${UNREAD}` };
       const snap = await b.snapshot(undefined, p.key, { cap: OUTLINE_MAX });
       return { text: withPage(line, snap.text, { cut: snap.truncated }) };
@@ -902,7 +915,7 @@ export class ComputerService {
         }
       });
       // The queue is free: the settle wait and the outline of an action that ran (session-browser S16).
-      return await this.finished(queued);
+      return await this.finished(p, queued);
       } finally {
         // A power card that was answered but whose open did not run (the process under the key was replaced, the call was
         // stale): the pages a program held behind it open if the person turned the browser on by hand, else they are dropped.
@@ -1794,7 +1807,7 @@ export class ComputerService {
    *  one just woken or turned on), the selected one, one whose wheel is held, one with a pending ask, or one with work
    *  queued or running (its steps, a wake, On's opens); when every awake one is exempt the limit is passed. */
   private inUse(q: Slot): boolean {
-    return !!this.o.wheel.holder(q.key) || this.o.broker.pending(q.key).length > 0 || q.queued > 0 || q.looking > 0 || !!q.waking || !!q.reopening || q.running > 0;
+    return !!this.o.wheel.holder(q.key) || this.o.broker.pending(q.key).length > 0 || q.queued > 0 || q.looking > 0 || q.reading > 0 || !!q.waking || !!q.reopening || q.running > 0;
   }
 
   private trim(except: Slot | null): void {
@@ -1829,7 +1842,7 @@ export class ComputerService {
     this.dropBrowser(p);
     this.o.broker.cancel((a) => a.computer === p.key, reason);
     this.o.wheel.interrupt(p.key, true);
-    p.stopped = { gen: this.o.wheel.gen(p.key), sentence };
+    this.stop(p, sentence);
     if (quiet) this.startQuiet(p, sentence); else p.quiet = null;
     if (this.selected === p.key) this.tellPopOut();
   }
@@ -1843,7 +1856,7 @@ export class ComputerService {
     if (t.active) {
       this.o.wheel.interrupt(p.key);
       this.o.broker.cancel((a) => a.computer === p.key, "the user closed the tab");
-      p.stopped = { gen: this.o.wheel.gen(p.key), sentence: REFUSAL.tabClosed };
+      this.stop(p, REFUSAL.tabClosed);
     }
     b.close(index);
     return false;
@@ -1859,7 +1872,8 @@ export class ComputerService {
   /** For the wheel: a computer is reserved while an action runs or its holder has an ask pending (D31). A page's ask
    *  attributed to no one never holds the wheel for an agent that did not act. */
   reserved(place: string): boolean {
-    if ((this.slots.get(place)?.running ?? 0) > 0) return true;
+    const q = this.slots.get(place);
+    if ((q?.running ?? 0) > 0 || (q?.reading ?? 0) > 0) return true;
     const h = this.o.wheel.holder(place);
     return h?.kind === "agent" && this.o.broker.pending(place).some((a) => a.session === h.session);
   }
@@ -1905,7 +1919,7 @@ export class ComputerService {
 
   private slot(key: string): Slot {
     let p = this.slots.get(key);
-    if (!p) { p = { key, browser: null, power: "off", remembered: null, title: null, named: null, conversation: null, sig: "null", save: null, known: null, quiet: null, programOpens: [], reopening: null, used: 0, waking: null, queued: 0, looking: 0, stopped: null, log: [], last: null, running: 0, queue: Promise.resolve() }; this.slots.set(key, p); }
+    if (!p) { p = { key, browser: null, power: "off", remembered: null, title: null, named: null, conversation: null, sig: "null", save: null, known: null, quiet: null, programOpens: [], reopening: null, used: 0, waking: null, queued: 0, looking: 0, stopped: null, stops: [], replies: Promise.resolve(), reading: 0, log: [], last: null, running: 0, queue: Promise.resolve() }; this.slots.set(key, p); }
     return p;
   }
 
@@ -1987,6 +2001,20 @@ export class ComputerService {
   private stopped(p: Slot, lease: Lease): Reply | null {
     const s = p.stopped;
     return s && lease.gen < s.gen && this.o.wheel.gen(p.key) === s.gen ? fail(s.sentence) : null;
+  }
+
+  /** The person stopped what was running in this browser: remembered as the latest stop (`stopped`) and in the slot's short
+   *  history, which a reply read later still finds after a Take over or a turn end (session-browser S16). */
+  private stop(p: Slot, sentence: string): void {
+    p.stopped = { gen: this.o.wheel.gen(p.key), sentence };
+    p.stops.push(p.stopped);
+    if (p.stops.length > 4) p.stops.shift();
+  }
+
+  /** The sentence of the first stop after the call began, whatever followed it (a Take over or a turn end moves the wheel's
+   *  generation on), else null. */
+  private stoppedAfter(p: Slot, lease: Lease): string | null {
+    return p.stops.find((s) => s.gen > lease.gen)?.sentence ?? null;
   }
 
   private active(b: BrowserLike): number { return b.tabs().find((t) => t.active)?.index ?? -1; }

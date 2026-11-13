@@ -461,8 +461,10 @@ export function formatSnapshot(nodes: AxNode[], o: {
   const open = `<untrusted-page origin="${attrValue(o.origin)}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;
   const close = "</untrusted-page>";
   const lines = [open, `title ${quote(clip(scrub(o.title)))}`];
-  const reserve = `\n[truncated: ${nodes.length} more nodes]`.length + 1 + close.length;
-  let used = lines[0].length + 1 + lines[1].length;
+  // session-browser S16: the cap counts the page's own lines (the title and the outline), never the wrapper's opening part
+  // (an address can be thousands of characters) or its closing part, which are always whole.
+  const reserve = `\n[truncated: ${nodes.length} more nodes]`.length;
+  let used = lines[1].length;
   const refs: Snapshot["refs"] = new Map();
   let truncated = false;
   let more = 0;

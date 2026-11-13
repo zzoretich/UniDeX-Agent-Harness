@@ -83,7 +83,10 @@ class FakeBrowser implements BrowserLike {
   /** The `since` of each settled() call (session-browser S16), and a gate a test holds to keep the settle wait going. It
    *  resolves at once otherwise, so no test waits in real time. */
   settles: number[] = []; settleGate: Promise<void> | null = null;
-  async settled(since: number) { this.settles.push(since); await this.settleGate; }
+  /** One gate per settled() call, in call order, before the shared one (a test that overlaps two calls). `lastSettled` is the
+   *  `since` of the call that finished waiting last, which the next snapshot records in `snapSince`. */
+  settleGates: Promise<void>[] = []; lastSettled: number | null = null; snapSince: (number | null)[] = [];
+  async settled(since: number) { this.settles.push(since); await (this.settleGates.shift() ?? this.settleGate); this.lastSettled = since; }
   sleep() { this.sleeps++; if (this.sleepThrows) throw new Error("no sleep"); this.sleeping = true; }
   async wake() { this.wakes++; await Promise.race([this.wakeGate, this.goneP]); this.sleeping = false; }
   asleep() { return this.sleeping; }
@@ -119,13 +122,13 @@ class FakeBrowser implements BrowserLike {
   /** The caps each snapshot was asked with (session-browser S16, I4: a reply asks for the outline's, a snapshot for none). */
   capsFor: (number | undefined)[] = [];
   async snapshot(tab?: number, session?: string, o: { cap?: number } = {}): Promise<Snapshot> {
-    this.need(tab); this.snapshotsFor.push(session); this.capsFor.push(o.cap);
+    this.need(tab); this.snapshotsFor.push(session); this.capsFor.push(o.cap); this.snapSince.push(this.lastSettled);
     await this.snapGate;
     const open = `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">`, close = "</untrusted-page>";
     let lines = this.text.split("\n"), truncated = false;
     // As formatSnapshot does: whole lines only, the wrapper whole, within the cap.
     if (o.cap !== undefined) {
-      let used = open.length + 1 + close.length + 1;
+      let used = 0;                              // the page's own lines only: the wrapper's parts do not count
       const kept: string[] = [];
       for (const l of lines) { if (used + l.length + 1 > o.cap) { truncated = true; break; } kept.push(l); used += l.length + 1; }
       lines = kept;
@@ -4479,4 +4482,75 @@ test("a deadline that cut the settle wait leaves the outline unread", async () =
   assert.equal(r.text.startsWith("Clicked e1."), true);
   assert.match(r.text, /computer_status/);
   assert.equal(b.snapshotsFor.length, snaps, "no read was started");
+});
+
+// ---- fix round 2 (session-browser S16): order, stop, look in flight and wrapper
+
+test("a reply for a page with a very long address closes its wrapper and still shows outline lines", async () => {
+  const { h, b } = await acting();
+  b.text = "Welcome\nSecond line";
+  const address = `https://a.test/?${"&".repeat(9000)}`;
+  b.pages[0].url = new URL(address).href;
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.ok(!r.isError, r.text.slice(0, 80));
+  assert.ok(r.text.includes('url="https://a.test/?&'), "the opening part is whole");
+  assert.ok(/">\nWelcome\nSecond line\n<\/untrusted-page>$/.test(r.text), r.text.slice(-80));
+});
+
+test("two overlapping calls of one session register their refs in call order", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.settleGates = [new Promise<void>((r) => { release = r; }), Promise.resolve()];
+  b.snapSince.length = 0;
+  const p1 = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  await h.clock.advance(1_000);
+  const p2 = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  assert.equal(b.clicks.length, 2, "call 2's step ended while call 1's page is still settling");
+  assert.equal(b.snapSince.length, 0, "call 2's page waits for call 1's");
+  release();
+  await Promise.all([p1, p2]);
+  assert.equal(b.snapSince.length, 2);
+  assert.ok(b.snapSince[0]! < b.snapSince[1]!, `the snapshots came in call order: ${b.snapSince.join(", ")}`);
+});
+
+test("Off, then Take over, during one settle wait: the reply says the browser was switched off", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.power("chat:a", false);
+  h.svc.power("chat:a", true);
+  await flush();
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.switchedOff}`);
+});
+
+test("a browser is not put to sleep while a reply's page is being read", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  const x = h.b("chat:s1");
+  x.pages = [{ url: "https://a.test/", openedBy: null }]; x.current = 0;
+  h.sites.mark("https://a.test");
+  x.spots.set("e1", { target: btn("Next") });
+  let release!: () => void;
+  x.settleGate = new Promise<void>((r) => { release = r; });
+  const who = agent("chat:s1", "One");
+  const call = h.svc.call(who, { id: 1, tool: "computer_click", args: { ref: "e1" } });
+  await flush();
+  assert.equal(x.clicks.length, 1);
+  h.svc.agentGone(who);                          // the turn ended: the wheel is free, only the read is left
+  h.svc.power("chat:s2", true); await flush();
+  assert.equal(x.sleeping, false, "the wait and the read count as a look in flight");
+  release();
+  assert.ok(!(await call).isError);
+  h.svc.power("chat:s3", true); await flush();
+  assert.equal(x.sleeping, true, "after the read it can sleep");
 });

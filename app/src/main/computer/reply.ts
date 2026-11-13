@@ -23,21 +23,20 @@ function atLineBreak(s: string, max: number): string {
 }
 
 /**
- * `line`, a blank line, "Page now:", then the outline, cut at the last line break within 8,000 characters and followed by
- * MORE when it was cut (or when `cut` says the outline was already cut upstream). A snapshot is page text wrapped as
- * untrusted (D21): the cut applies to the page's own lines, the wrapper's closing tag always survives the cut, and MORE
- * (the app's own sentence) stands outside the wrapper.
+ * `line`, a blank line, "Page now:", then the outline. A plain outline is cut at the last line break within 8,000 characters
+ * and followed by MORE when it was cut. A snapshot is page text the browser already wrapped as untrusted (D21) and cut
+ * itself, at its cap, on the page's own lines (`snapshot(…, { cap })`): `withPage` never cuts such a text again (a second cut
+ * could break the opening part or the closing tag); it only puts MORE, the app's own sentence, after the wrapper when `cut`
+ * says the browser cut it.
  */
 export function withPage(line: string, outline: string, o: { cut?: boolean } = {}): string {
   const head = `${line}\n\nPage now:\n`;
   const wrapped = outline.startsWith("<untrusted-page") && outline.endsWith(`\n${CLOSE}`);
   let cut = o.cut === true;
   let shown = outline;
-  if (outline.length > OUTLINE_MAX) {
+  if (!wrapped && outline.length > OUTLINE_MAX) {
     cut = true;
-    shown = wrapped
-      ? `${atLineBreak(outline.slice(0, outline.length - CLOSE.length - 1), OUTLINE_MAX - CLOSE.length - 1)}\n${CLOSE}`
-      : atLineBreak(outline, OUTLINE_MAX);
+    shown = atLineBreak(outline, OUTLINE_MAX);
   }
   return `${head}${shown}${cut ? `\n${MORE}` : ""}`;
 }

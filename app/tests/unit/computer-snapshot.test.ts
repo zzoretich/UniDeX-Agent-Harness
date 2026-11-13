@@ -152,7 +152,9 @@ test("snapshot caps size with a note", () => {
   const s = formatSnapshot(nodes, opts());
   const ms = Date.now() - started;
   assert.ok(ms < 2000, `took ${ms} ms`);
-  assert.ok(s.text.length <= 40_000, `${s.text.length} characters`);
+  // The cap counts the page's own lines; the wrapper's opening and closing parts are always whole besides (session-browser S16).
+  const outline = s.text.slice(s.text.indexOf("\n") + 1, s.text.lastIndexOf("\n</untrusted-page>"));
+  assert.ok(outline.length <= 40_000, `${outline.length} characters`);
   assert.equal(s.truncated, true);
   const m = /\n\[truncated: (\d+) more nodes\]\n<\/untrusted-page>$/.exec(s.text);
   assert.ok(m, s.text.slice(-200));

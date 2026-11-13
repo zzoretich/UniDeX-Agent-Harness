@@ -24,13 +24,11 @@ test("withPage cuts a single line with no break at 8,000 characters", () => {
   assert.equal(out, `Done.\n\nPage now:\n${"y".repeat(OUTLINE_MAX)}\n${MORE}`);
 });
 
-test("a cut keeps the page-text wrapper closed and puts the app's sentence outside it", () => {
+test("withPage never cuts a text the browser already wrapped; it only says where the rest is", () => {
   const inner = Array.from({ length: 2000 }, (_, i) => `  [e${i}] button "Item ${i}"`).join("\n");
-  const out = withPage("Clicked e1.", `<untrusted-page origin="https://a.test" url="https://a.test/">\n${inner}\n</untrusted-page>`);
-  assert.ok(out.endsWith(`\n</untrusted-page>\n${MORE}`), "the closing tag, then the sentence");
-  const outline = out.slice(out.indexOf("Page now:\n") + "Page now:\n".length, out.length - MORE.length - 1);
-  assert.ok(outline.length <= OUTLINE_MAX, "the outline itself stays within the cap");
-  assert.equal(out.split("</untrusted-page>").length, 2, "one closing tag");
+  const wrapped = `<untrusted-page origin="https://a.test" url="https://a.test/">\n${inner}\n</untrusted-page>`;
+  assert.equal(withPage("Clicked e1.", wrapped), `Clicked e1.\n\nPage now:\n${wrapped}`, "whole, as the browser made it");
+  assert.equal(withPage("Clicked e1.", wrapped, { cut: true }), `Clicked e1.\n\nPage now:\n${wrapped}\n${MORE}`, "the sentence stands outside the wrapper");
 });
 
 test("an outline cut upstream is followed by the sentence too", () => {
