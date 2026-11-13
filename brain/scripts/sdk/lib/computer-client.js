@@ -27,7 +27,7 @@ const TIMEOUT = 'The UniDeX app did not answer in time: call computer_status to 
 
 // The nine tools an app that sends no `tools` list takes (every app before session-browser).
 const NINE_OLD = ['computer_open', 'computer_snapshot', 'computer_screenshot', 'computer_click', 'computer_type', 'computer_key', 'computer_scroll', 'computer_wait', 'computer_status'];
-const olderThan = (what, then) => `This UniDeX app is older than ${what}: ask the user to update UniDeX, and ${then} meanwhile.`;
+const lacks = (what, then) => `This UniDeX app does not have ${what} yet: ask the user to update UniDeX, and ${then} meanwhile.`;
 
 function failure(text) { return { text, isError: true }; }
 
@@ -130,8 +130,8 @@ function createComputerClient({ vault, net = require('net'), readMarker = hudHos
         if (state === 'failed') return finish(failed);
         if (state !== 'ready') { waiting.add(go); return; }
         // Never write what the app would end the connection over (session-browser R1).
-        if (!taken.includes(tool)) return finish(failure(olderThan(tool, 'use the other computer_* tools')));
-        if (tool === 'computer_click' && args && args.double === true && !listed) return finish(failure(olderThan('double clicks', 'click once')));
+        if (!taken.includes(tool)) return finish(failure(lacks(tool, 'use the other computer_* tools')));
+        if (tool === 'computer_click' && args && args.double === true && !listed) return finish(failure(lacks('double clicks', 'click once')));
         id = nextId++;
         pending.set(id, finish);
         try { sock.write(JSON.stringify({ id, tool, args: args || {} }) + '\n'); } catch { finish(failure(CLOSED)); }

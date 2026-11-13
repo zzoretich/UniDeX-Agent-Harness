@@ -4923,6 +4923,32 @@ test("Reload after a form POST asks; onto GET it does not; an unknown method ask
   h.svc.answer((await h.asked()).id, "deny"); await q;
 });
 
+test("Back onto a POST entry asks, Forward onto an unknown entry asks; Allow once moves, and the card offers no Always", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true; b.canForward = true;
+  b.methods.back = "other"; b.methods.forward = "unknown";
+  const title = /^Load a page again, which may send a form again: /;
+  const back = h.call(A, "computer_nav", { go: "back" });
+  const askBack = await h.asked();
+  assert.equal(askBack.why, "resend");
+  assert.match(askBack.title, title);
+  assert.equal(askBack.always, false, "a form sent again is asked every time");
+  assert.deepEqual([b.navs, b.reposts], [[], []], "nothing moved while the card is up");
+  h.svc.answer(askBack.id, "once");
+  assert.equal((await back).text, `Went back.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["back 1"], "the allowed Back moved the tab (only a Reload re-sends by the protocol)");
+  const fwd = h.call(A, "computer_nav", { go: "forward" });
+  const askFwd = await h.asked();
+  assert.equal(askFwd.why, "resend");
+  assert.match(askFwd.title, title);
+  assert.deepEqual(b.navs, ["back 1"], "nothing moved while the card is up");
+  h.svc.answer(askFwd.id, "once");
+  assert.equal((await fwd).text, `Went forward.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["back 1", "forward 1"]);
+  assert.equal(h.broker.pending().length, 0);
+});
+
 test("Back with nothing to go back to is a refusal with a next step, and raises no ask", async () => {
   const h = make();
   const b = await twoTabs(h);
@@ -5503,6 +5529,33 @@ test("a failed read at the run sends nothing", async () => {
   const r = await p;
   assert.deepEqual(r, { text: REFUSAL.noHistoryRead, isError: true });
   assert.deepEqual([b.navs, b.reposts], [[], []]);
+});
+
+test("Deny on the close card closes nothing and says so; a card that times out closes nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = null; b.pages[0].own = false;                              // the person's tab
+  const denied = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  h.svc.answer(ask.id, "deny");
+  const r = await denied;
+  assert.equal(r.isError, true);
+  assert.match(r.text, /^The user denied it \(Close a tab it did not open: /, "the reply says the user said no");
+  assert.equal(b.pages.length, 2, "Deny closed nothing");
+  // No answer in time: the held call returns within the 45 s, and the result it waits on says it was denied for want of an answer.
+  h.cfg.askTimeoutSec = 60;
+  const late = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask2 = await h.asked();
+  await h.clock.advance(46_000);
+  assert.equal((await late).text, `waiting_for_user: call computer_wait with askId "${ask2.id}"`);
+  const w = h.call(A, "computer_wait", { askId: ask2.id });
+  await h.clock.advance(20_000);
+  const t = await w;
+  assert.equal(t.isError, true);
+  assert.match(t.text, /^The user did not answer in time, so it was denied \(Close a tab it did not open: /);
+  assert.equal(b.pages.length, 2, "a card that timed out closed nothing");
+  assert.equal(h.broker.pending().length, 0);
 });
 
 test("the person navigates the tab while the close card is up: Allow closes nothing", async () => {

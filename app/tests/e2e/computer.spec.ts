@@ -1393,7 +1393,8 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
         const second = tabIndexOf(tabs, markedHost());
         const firstTab = tabIndexOf(tabs, shopHost());
         expectReply(await a.call("computer_tab", { index: firstTab }), { isError: false, text: acted(`Switched to tab ${firstTab}.`, shopUrl()) });
-        expectReply(await a.call("computer_tab", { index: second }), { isError: false, text: acted(`Switched to tab ${second}.`, toolsUrl()) });
+        const onTools = await a.call("computer_tab", { index: second });
+        expectReply(onTools, { isError: false, text: acted(`Switched to tab ${second}.`, toolsUrl()) });
         await expect(cards(p)).toHaveCount(0);
         // The console: what the page wrote when it loaded, as page text.
         const log = await a.call("computer_console");
@@ -1402,12 +1403,17 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
         expect(log.text).toContain("fixture console error");
         expect(log.text).toContain("fixture console warning");
         // Hover moves the pointer only: the page shows what its hover handler shows, and a double click is two clicks.
-        const snap = await a.call("computer_snapshot");
-        expect(snap.text).toContain("Menu closed");
-        const menu = refOf(snap.text, "button", "Menu");
-        expectReply(await a.call("computer_hover", { ref: menu }), { isError: false, text: acted(`Hovered ${menu}.`, toolsUrl()) });
-        await expect.poll(async () => (await a.call("computer_snapshot")).text, { message: "the hover handler ran" }).toContain("Menu open");
-        const count = refOf((await a.call("computer_snapshot")).text, "button", "Count");
+        // The refs come from the REPLY of the call before (the switch's, then the hover's), never from a snapshot: an action's
+        // reply ends with the page, so the next call can use what it names (session-browser S16).
+        expect(onTools.text).toContain("Menu closed");
+        const menu = refOf(onTools.text, "button", "Menu");
+        const hovered = await a.call("computer_hover", { ref: menu });
+        expectReply(hovered, { isError: false, text: acted(`Hovered ${menu}.`, toolsUrl()) });
+        // The page itself is read (not a snapshot, which would give the refs again): the hover handler ran, and the pointer
+        // did not click, so Menu's click counter is still at zero.
+        await expect.poll(() => inPage<string>(h.app, toolsUrl(), `document.getElementById("menu-state").textContent`), { message: "the hover handler ran" }).toBe("Menu open");
+        expect(await inPage<string>(h.app, toolsUrl(), `document.getElementById("menu-clicks").textContent`), "a hover is not a click").toBe("Menu clicks: 0");
+        const count = refOf(hovered.text, "button", "Count");
         expectReply(await a.call("computer_click", { ref: count, double: true }), { isError: false, text: acted(`Double-clicked ${count}.`, toolsUrl()) });
         await expect.poll(async () => (await a.call("computer_snapshot")).text, { message: "the double click ran" }).toContain("Double: yes");
         // Back, Forward and Reload of a page loaded by GET go without asking.
@@ -1429,6 +1435,14 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
         expectReply(after, { isError: false });
         expect(after.text).not.toMatch(/off: computer_open asks/);
         await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "the start page replaced it" }).toContain(searchHost());
+        // The start page that close made is the agent's own tab: closing it, as the last tab, asks nothing and leaves the browser
+        // on with a new start page (S5).
+        expectReply(await a.call("computer_tab", { index: 0, close: true }), { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
+        await expect(cards(p)).toHaveCount(0);
+        const last = await a.call("computer_status");
+        expectReply(last, { isError: false });
+        expect(last.text).not.toMatch(/off: computer_open asks/);
+        await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "a start page is open again" }).toContain(searchHost());
       } finally { await a.finish(); }
     }
     expectNoErrors(h);

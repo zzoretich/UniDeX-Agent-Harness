@@ -36,7 +36,7 @@ test('a tool the app did not list is answered without a write', async () => {
   await tick(); sock.admit({ admitted: true, session: 's', tools: ['computer_open', 'computer_status'] });
   const r = await p;
   assert.equal(r.isError, true);
-  assert.equal(r.text, 'This UniDeX app is older than computer_tab: ask the user to update UniDeX, and use the other computer_* tools meanwhile.');
+  assert.equal(r.text, 'This UniDeX app does not have computer_tab yet: ask the user to update UniDeX, and use the other computer_* tools meanwhile.');
   assert.equal(calls(sock).length, 0);
   // a tool it did list still goes out
   const q = client.call('computer_status', {});
@@ -60,7 +60,7 @@ test('with no list only the nine old tools are sent', async () => {
     for (const r of results.slice(0, 9)) assert.equal(r.text, 'ok');
     for (const [i, r] of results.slice(9).entries()) {
       assert.equal(r.isError, true);
-      assert.equal(r.text, `This UniDeX app is older than ${fresh[i]}: ask the user to update UniDeX, and use the other computer_* tools meanwhile.`);
+      assert.equal(r.text, `This UniDeX app does not have ${fresh[i]} yet: ask the user to update UniDeX, and use the other computer_* tools meanwhile.`);
     }
     client.stop();
   }
@@ -76,7 +76,7 @@ test('an empty list counts as no list', async () => {
   assert.equal((await p).text, 'fine');
   // and, as with no list, a double click is refused
   const d = await client.call('computer_click', { ref: 'e1', double: true });
-  assert.match(d.text, /older than double clicks/);
+  assert.match(d.text, /does not have double clicks yet/);
   assert.equal(calls(sock).length, 1);
   client.stop();
 });
@@ -87,7 +87,7 @@ test('a double click on an app with no list is refused without a write', async (
   await tick(); sock.admit({ admitted: true, session: 's' });
   const r = await p;
   assert.equal(r.isError, true);
-  assert.equal(r.text, 'This UniDeX app is older than double clicks: ask the user to update UniDeX, and click once meanwhile.');
+  assert.equal(r.text, 'This UniDeX app does not have double clicks yet: ask the user to update UniDeX, and click once meanwhile.');
   assert.equal(calls(sock).length, 0);
   // a plain click, and a click with double:false, still go out
   const a = client.call('computer_click', { ref: 'e1' });

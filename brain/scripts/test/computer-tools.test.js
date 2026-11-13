@@ -145,6 +145,22 @@ test('every acting tool says its reply carries the page', async () => {
   }
 });
 
+test("the descriptions say what only the skill said: a snapshot is for a page not just acted on, a ref comes from the newest outline, what asks on nav (S16d)", async () => {
+  const defs = await toolDefs();
+  const props = (n) => defs.get(n).inputSchema.properties;
+  assert.ok(defs.get('computer_snapshot').description.includes("An action's reply already ends with the page, so use this for a page you have not just acted on, or for the rest of a long one."), defs.get('computer_snapshot').description);
+  for (const [name, arg] of [['computer_click', 'ref'], ['computer_type', 'ref'], ['computer_scroll', 'ref'], ['computer_hover', 'ref']]) {
+    assert.ok(props(name)[arg].description.includes("from the newest outline this session was given (a computer_snapshot or an action's reply)"), `${name}.${arg}: ${props(name)[arg].description}`);
+  }
+  assert.ok(defs.get('computer_nav').description.includes('when the page was loaded by a form or how it was loaded is not known'), defs.get('computer_nav').description);
+  // a tab index has the same bounds wherever it is asked for
+  for (const name of ['computer_snapshot', 'computer_screenshot', 'computer_console']) {
+    assert.equal(props(name).tab.type, 'integer', name);
+    assert.equal(props(name).tab.minimum, 0, name);
+    assert.equal(props(name).tab.maximum, props('computer_tab').index.maximum, name);
+  }
+});
+
 test('a new tool reaches an app that lists it, with its arguments', async () => {
   const b = await fakeBridge({ tools: COMPUTER_TOOLS, onCall: (req, reply) => reply({ text: 'ok' }) });
   try {
