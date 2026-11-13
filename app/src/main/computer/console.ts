@@ -42,6 +42,12 @@ export class ConsoleLog {
   list(): readonly ConsoleEntry[] { return this.entries; }
 }
 
+/** The most console messages a tab takes in a second; the rest are counted, not processed. */
+export const CONSOLE_RATE = 100;
+
+/** The app's own line (no kind in brackets, which every line a page can write has) saying how many messages were not kept. */
+export const droppedLine = (n: number): string => `${n} more console message${n === 1 ? " was" : "s were"} not kept: a page can log ${CONSOLE_RATE} a second at most.`;
+
 export const NO_ENTRIES = "No errors, warnings or failed requests since this page loaded.";
 
 const STOP = /[\s<>"'`]/;
@@ -73,7 +79,9 @@ function scan(text: string, edit: (scheme: string, rest: string, blob: boolean) 
  *  query and fragment; with `originOnly` without its path too (a tab whose own address is still held back may not know which
  *  secrets its path carries). A `data:` address is its scheme and nothing after it; a `blob:` address keeps its inner origin only. */
 export function plainAddresses(text: string, originOnly = false): string {
-  const noData = text.replace(/(?<![a-z0-9+.-])data:[^\s<>"'`]*/gi, "data:");
+  // A data address's body can hold any character (a space, a quote, an angle bracket), so no later boundary is safe: the rest of
+  // the line goes with it.
+  const noData = text.replace(/(?<![a-z0-9+.-])data:[^\n\r\u0085\u2028\u2029]*/gi, "data:");
   return scan(noData, (scheme, rest, blob) => {
     const k = rest.search(/[/?#]/);
     const authority = k < 0 ? rest : rest.slice(0, k);

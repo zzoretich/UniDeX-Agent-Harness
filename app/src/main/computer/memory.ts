@@ -33,11 +33,14 @@ export class SecretMemory {
   private sites_ = new Map<string, Map<string, Kind>>();
   /** Values carried into a URL from another site, each to its kind, oldest first (R35: for URL strings only). */
   private carried_ = new Map<string, Kind>();
+  /** Counts the changes to what the memory holds, so a scrubber built from it can be kept until it changes. */
+  version = 0;
 
   /** Adds the secrets just read on `site`, which becomes the most recently used; `keep` (the current site, `site` by
    *  default) is never evicted. A value once seen as a one-time code stays one. Returns true when the read held more
    *  distinct values of one kind than `RESERVE`: the oldest of them may be gone already (R37: the caller fails closed). */
   remember(site: string, s: Secrets, keep: string = site): boolean {
+    this.version++;
     const m = this.touch(site);
     let flooded = false;
     for (const [list, kind] of [[s.values, "pw"], [s.whole, "otp"]] as const) {
@@ -60,6 +63,7 @@ export class SecretMemory {
   /** Remembers values another site carried into a URL of this tab, with their kinds: they scrub URL strings only, at
    *  most `CARRIED`. A value once carried as a one-time code stays one. */
   carry(s: Secrets): void {
+    this.version++;
     for (const [list, kind] of [[s.values, "pw"], [s.whole, "otp"]] as const) {
       for (const raw of list) {
         const v = collapse(raw);
@@ -92,6 +96,7 @@ export class SecretMemory {
   inherit(from: SecretMemory, site: string): void {
     const src = from.sites_.get(site);
     if (!src) return;
+    this.version++;
     const m = this.touch(site);
     for (const [v, k] of src) { m.delete(v); m.set(v, k); }
     this.evictSites(site);

@@ -54,7 +54,8 @@ test("every address with an authority loses its query, fragment, user name and p
   assert.equal(plainAddresses("WSS://Host.example.net/Path?x=1#y"), "WSS://Host.example.net/Path", "an upper-case scheme");
   assert.equal(plainAddresses("ftp://u:pw@example.net/a?b=c"), "ftp://example.net/a");
   assert.equal(plainAddresses("wss://u:pw@example.com/p?x=1", true), "wss://example.com");
-  assert.equal(plainAddresses("see data:text/html;base64,SECRETPAYLOAD?x=1 now"), "see data: now");
+  assert.equal(plainAddresses("see data:text/html;base64,SECRETPAYLOAD?x=1 now"), "see data:", "a data address ends the line: its body can hold anything");
+  assert.equal(plainAddresses("a data:x,<b>S</b>\nnext https://h.example.com/p?q=1"), "a data:\nnext https://h.example.com/p", "only to the end of the line");
   assert.equal(plainAddresses("Data:text/plain,SECRET"), "data:", "any case");
   assert.equal(plainAddresses("metadata:keep this"), "metadata:keep this", "a word that only ends in data:");
   assert.equal(plainAddresses("blob:https://site.example.com/3f2a-uuid?x=1"), "blob:https://site.example.com");
@@ -75,8 +76,9 @@ test("consoleText passes each address through the address scrubber, then the tex
 
 test("a cut never splits a surrogate pair", () => {
   const log = new ConsoleLog();
+  // Two pairs across the cut: the text is 2,002 long and the cut at 1,999 falls between a pair's halves.
   log.add({ at: 0, kind: "error", text: `${"x".repeat(CONSOLE_TEXT_MAX - 2)}\u{1F600}\u{1F600}` });
-  assert.ok(!/[\ud800-\udbff]$/.test(log.list()[0].text));
+  assert.equal(log.list()[0].text, `${"x".repeat(CONSOLE_TEXT_MAX - 2)}…`, "the half pair is gone, only the mark follows");
   assert.equal(cutAt("ab\u{1F600}", 3), "ab", "half a pair goes");
   assert.equal(cutAt("abc", 3), "abc");
 });

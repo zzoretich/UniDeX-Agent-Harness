@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
 import { ASK_ROLES, covers, type Target } from "./categories";
-import { CONSOLE_TEXT_MAX, ConsoleLog, consoleText, cutAt, plainAddresses } from "./console";
+import { CONSOLE_RATE, CONSOLE_TEXT_MAX, ConsoleLog, consoleText, cutAt, droppedLine, plainAddresses } from "./console";
 import { cdp, CdpTimeout, FocusMoved, forPerson, isGone, keyEvents, PageChanged, Told, unlessGone } from "./cdp";
 import { downloadName, HeldDownloads, moveInto } from "./downloads";
 import { permissionVerdict, type Focus } from "./gate";
@@ -70,11 +70,13 @@ const HOVER_MS = 100;
 const URL_NOTE_MAX = 2_000;
 /** session-browser S17: the most main-frame document loaders whose method is kept while they are in flight. */
 const LOADERS_KEPT = 32;
-/** session-browser: the requests in flight whose method and clean address are kept to word a failure (oldest first). */
+/** session-browser: the requests in flight whose method, plain address and loader are kept to word a failure (oldest first). */
 const REQUESTS_KEPT = 500;
 /** The longest address (already plain) the request table keeps, and the most of a console message that is taken. */
 const ADDRESS_KEPT = 500;
 const LOG_TAKEN = 8_000;
+/** A copy of `s` that shares nothing with it (V8 keeps a slice's whole parent string alive). */
+const fresh = (s: string): string => Buffer.from(s).toString();
 /** The buffers `Network` would keep for its own use, none of which this browser reads (it keeps a request's method, a cut plain
  *  address and loader id only, to word a failure). */
 const NO_BUFFERS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 };
@@ -206,13 +208,18 @@ interface Tab {
   /** Main-frame commits and same-document navigations so far: a bind (a tick after one) goes only when no later one came. */
   binds: number;
   /** session-browser (computer_console): what the page said about itself since its document loaded (cleared at each
-   *  main-frame commit), and the method and address-without-query of each request in flight, by request id: the protocol's
-   *  failure events carry neither. Nothing else of a request is kept (no header, no body). */
+   *  main-frame commit but for the committing document's own failed requests), and the method, plain scrubbed address (cut at
+   *  500) and loader of each request in flight, by request id: the protocol's failure events carry no address. Each is a
+   *  string of its own, never a slice of an event's. Nothing else of a request is kept (no header, no body). */
   console: ConsoleLog;
   requests: Map<string, { method: string; address: string; loader: string }>;
-  /** The loader of the latest main-frame document request, and whether no commit has taken it yet: the commit that follows it
-   *  keeps that document's own failed requests in the log (a page that answers 404 shows it). */
-  docLoader: string | null; docFresh: boolean;
+  /** The loader the main frame's latest commit reported (Chromium sends `Page.frameNavigated` before Electron's did-navigate,
+   *  an error page's too), taken by the commit that follows it: it keeps that document's own failed requests in the log. */
+  committedLoader: string | null;
+  /** The scrubber built from the tab's memory for the log, for the site and memory version it was built at. */
+  scrubFor: { site: string; version: number; fn: (s: string) => string } | null;
+  /** The console messages taken in the current second (from `floodAt`), and those dropped since the document loaded. */
+  floodAt: number; floodN: number; dropped: number;
 }
 
 /** session-browser S9: what a sleeping browser keeps of a tab whose view is gone: its address (to reload), the address as
@@ -650,7 +657,10 @@ export class ComputerBrowser {
     const url = this.urlOut(t);
     // An address in the log goes out the way the tab's own address does (its URL scrubber also finds a value percent-encoded
     // and the values other sites carried into an address); the line then goes through the text scrub.
-    const body = consoleText(t.console.list(), this.scrubWith(t, read), this.urlScrub(t, [this.site(t)], read));
+    const list = t.console.list();
+    let body = consoleText(list, this.scrubWith(t, read), this.urlScrub(t, [this.site(t)], read));
+    // The app's own line, with no `[kind]` in front: every line a page can write has one.
+    if (t.dropped) body = `${list.length ? `${body}\n` : ""}${droppedLine(t.dropped)}`;
     return `${untrustedOpen(siteOf(url) ?? "null", url)}\n${body}\n</untrusted-page>`;
   }
 
@@ -1133,7 +1143,7 @@ export class ComputerBrowser {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
-      loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, console: new ConsoleLog(), requests: new Map(), docLoader: null, docFresh: false,
+      loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, console: new ConsoleLog(), requests: new Map(), committedLoader: null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
     };
     owners.set(t.wc.id, this.handlers);
     // A background tab leaves the selection on the tab already in front; with none in front it is the one.
@@ -1280,8 +1290,8 @@ export class ComputerBrowser {
     wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.urlOut(t))} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });
     wc.debugger.on("message", (_e, method: string, params: Record<string, unknown>) => this.onCdp(t, method, params));
-    // session-browser (computer_console): of a console message only its level and text are read (not the source address or the
-    // frame). The protocol's Runtime domain is not enabled, since a page can tell (a logged object's getters run) and sign-in
+    // session-browser (computer_console): of a console message its level and text are read, and its source only to tell Electron's
+    // own messages (never the frame, and no source address is kept). The protocol's Runtime domain is not enabled, since a page can tell (a logged object's getters run) and sign-in
     // pages use that to refuse a browser; Electron's own event carries the same messages, uncaught errors included.
     wc.on("console-message", (e) => this.onConsole(t, e.level, e.message, e.sourceId));
     wc.debugger.on("detach", (_e, reason: string) => { if (!t.closing) note(`The tab's DevTools connection closed (${reason}); the next action reconnects.`); });
@@ -1294,22 +1304,43 @@ export class ComputerBrowser {
     if (typeof message !== "string") return;
     // Electron's own warnings (a development build writes its security warning into every page's console) are not the page's.
     if (typeof source === "string" && source.startsWith("node:electron/")) return;
-    if (level === "error") this.logged(t, /^Uncaught\b/.test(message) ? "exception" : "error", message);
-    else if (level === "warning") this.logged(t, "warning", message);
+    if (level !== "error" && level !== "warning") return;
+    // A page can log without end: a tab takes in CONSOLE_RATE a second, and counts the rest without processing them.
+    const now = Date.now();
+    if (now - t.floodAt >= 1_000 || now < t.floodAt) { t.floodAt = now; t.floodN = 0; }
+    if (++t.floodN > CONSOLE_RATE) { t.dropped++; return; }
+    this.logged(t, level === "warning" ? "warning" : /^Uncaught\b/.test(message) ? "exception" : "error", message);
+  }
+
+  /** The tab's text scrub for the log as its memory is now, built once per version of the memory (and site). */
+  private logScrub(t: Tab): (s: string) => string {
+    const site = this.site(t), version = t.memory.version;
+    if (t.scrubFor && t.scrubFor.site === site && t.scrubFor.version === version) return t.scrubFor.fn;
+    const fn = this.remembered(t, [site]);
+    t.scrubFor = { site, version, fn };
+    return fn;
+  }
+
+  /** An address as the request table and a request's entry keep it: one line, plain (a `data:` address is `data:`), scrubbed
+   *  with the tab's scrub as it is now, then cut at 500 and copied, so a secret across the cut is scrubbed whole first. */
+  private keptAddress(t: Tab, url: string): string {
+    if (/^\s*data:/i.test(url)) return "data:";
+    return fresh(cutAt(this.logScrub(t)(plainAddresses(oneLine(url.slice(0, LOG_TAKEN)), t.pathHidden)), ADDRESS_KEPT));
   }
 
   /** One entry of the tab's console log, in this order: the first 8,000 characters as a string of their own (a huge message is
-   *  not kept alive by a slice of it), every address plain (no query, fragment or user info, and, while the tab's own path is
-   *  held back, no path: a restored tab has no memory of the secrets its address carries, so the scrub alone would let a
-   *  failed request's query through), one line with no control character, the tab's scrub as it is now, and the cut at 2,000
-   *  (so a secret across the cut is scrubbed whole first). It is scrubbed again when read (`console`). */
+   *  not kept alive by a slice of it), one line with no control character (first: cleaning can join an address that a control
+   *  character split), every address plain (no query, fragment or user info, and, while the tab's own path is held back, no
+   *  path: a restored tab has no memory of the secrets its address carries, so the scrub alone would let a failed request's
+   *  query through), the tab's scrub as it is now, and the cut at 2,000 (so a secret across the cut is scrubbed whole first).
+   *  It is scrubbed again when read (`console`). */
   private logged(t: Tab, kind: "error" | "warning" | "exception" | "request", text: string, loader?: string): void {
-    const taken = Buffer.from(text.slice(0, LOG_TAKEN)).toString();
-    const line = this.remembered(t, [this.site(t)])(oneLine(plainAddresses(taken, t.pathHidden)));
+    const taken = fresh(text.slice(0, LOG_TAKEN));
+    const line = this.logScrub(t)(plainAddresses(oneLine(taken), t.pathHidden));
     t.console.add({ at: Date.now(), kind, text: cutAt(line, CONSOLE_TEXT_MAX), ...(loader ? { loader } : {}) });
   }
 
-  /** `Network` events for the log: a request in flight is known by its method and clean address only; a failure (not a
+  /** `Network` events for the log: a request in flight is known by its method, plain address and loader only; a failure (not a
    *  cancel) and an answer of 400 or more are entries; a finished or failed request is forgotten. */
   private onRequestEvent(t: Tab, method: string, p: Record<string, unknown>): void {
     const id = typeof p.requestId === "string" ? p.requestId : null;
@@ -1317,15 +1348,14 @@ export class ComputerBrowser {
     const known = t.requests.get(id);
     switch (method) {
       case "Network.requestWillBeSent": {
-        if (p.type === "Document" && typeof p.loaderId === "string" && (!t.frame || p.frameId === t.frame)) { t.docLoader = p.loaderId; t.docFresh = true; }
         const req = p.request as { method?: unknown; url?: unknown } | undefined;
         if (typeof req?.method !== "string" || typeof req.url !== "string") return;
         t.requests.delete(id);
-        // The method, the address made plain and cut, and the loader: nothing else of a request is kept, and no address uncut.
+        // The method, the address made plain, scrubbed and cut, and the loader, each a copy: nothing else of a request is kept.
         t.requests.set(id, {
-          method: cutAt(req.method, 16),
-          address: cutAt(plainAddresses(req.url.slice(0, LOG_TAKEN), t.pathHidden), ADDRESS_KEPT),
-          loader: typeof p.loaderId === "string" ? cutAt(p.loaderId, 64) : "",
+          method: fresh(cutAt(req.method, 16)),
+          address: this.keptAddress(t, req.url),
+          loader: typeof p.loaderId === "string" ? fresh(cutAt(p.loaderId, 64)) : "",
         });
         while (t.requests.size > REQUESTS_KEPT) t.requests.delete(t.requests.keys().next().value!);
         return;
@@ -1333,7 +1363,7 @@ export class ComputerBrowser {
       case "Network.responseReceived": {
         const res = p.response as { status?: unknown; url?: unknown } | undefined;
         if (typeof res?.status !== "number" || res.status < 400) return;
-        const address = typeof res.url === "string" ? cutAt(plainAddresses(res.url.slice(0, LOG_TAKEN), t.pathHidden), ADDRESS_KEPT) : known?.address ?? "";
+        const address = typeof res.url === "string" ? this.keptAddress(t, res.url) : known?.address ?? "";
         this.logged(t, "request", `${res.status} ${known?.method ?? "?"} ${address}`.trim(), typeof p.loaderId === "string" ? p.loaderId : known?.loader);
         return;
       }
@@ -1385,6 +1415,7 @@ export class ComputerBrowser {
         void this.world(t, frame.id).catch(() => undefined);
         if (frame.parentId) break;
         t.frame = frame.id;
+        t.committedLoader = typeof frame.loaderId === "string" ? frame.loaderId : null;
         this.bindLater(t, { loader: t.loaders.get(frame.loaderId) ?? null });
         t.loaders.delete(frame.loaderId);
         // D9: a document keeps its sensitive set for its life (a back/forward-cache restore brings its set back).
@@ -1975,8 +2006,9 @@ export class ComputerBrowser {
     // session-browser (computer_console): the log is the document's, and a new one starts it again; only the failed or 4xx/5xx
     // request of the committing document itself stays (its loader), made plain again with its origin only if this
     // document's path is held back (it was made plain under the earlier document's state).
-    t.console.keepOnly(t.docFresh ? t.docLoader : null);
-    t.docFresh = false;
+    t.console.keepOnly(t.committedLoader);
+    t.committedLoader = null;
+    t.dropped = 0; t.floodN = 0;
     if (t.pathHidden) t.console.remap((text) => plainAddresses(text, true));
     t.flooded = false;
     if (!records.length) return;

@@ -7,6 +7,8 @@ import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import os from "node:os";
+import v8 from "node:v8";
+import vm from "node:vm";
 import electron from "electron";
 import { ComputerBrowser, type BrowserHooks, type Resolved } from "../../src/main/computer/browser";
 import { FocusMoved, forPerson, PageChanged } from "../../src/main/computer/cdp";
@@ -153,7 +155,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
     memory: new SecretMemory(), frame: "F1", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0,
     leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false,
     loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0,
-    console: new ConsoleLog(), requests: new Map(),
+    console: new ConsoleLog(), requests: new Map(), committedLoader: null as string | null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
   };
   const inner = b as unknown as { list: unknown[]; current: number };
   inner.list.push(tab);
@@ -2016,18 +2018,125 @@ test("a secret across the 2,000th character does not leave its first half", () =
   said(b, tab, "error", `${"x".repeat(1_995)}hunter22secret${"y".repeat(50)}`);
   const [text] = kinds(b);
   assert.ok(!text.includes("hunt") && !text.includes("22secret") && text.includes("•"), text.slice(1_980));
-  // A cut never splits a surrogate pair.
-  said(b, tab, "error", "\u{1F600}".repeat(1_500));
-  const last = (b as unknown as { list: { console: ConsoleLog }[] }).list[0].console.list().at(-1)!.text;
-  assert.ok(last.length <= 2_000 && !/[\ud800-\udbff]$/.test(last), String(last.length));
 });
 
-test("a message is taken at 8,000 characters before anything else is done to it", () => {
+test("a cut never splits a surrogate pair", () => {
   const { b, tab } = make();
-  said(b, tab, "error", `${"a ".repeat(4_000)}https://a.test/late?token=SECRET${"z".repeat(1_000_000)}`);
-  const [text] = kinds(b);
-  assert.ok(text.length <= "error: ".length + 2_000 && !text.includes("SECRET"), String(text.length));
-  assert.ok(!text.includes("late"), "the address past 8,000 characters was never taken");
+  // The "x" puts a pair across the 2,000th character, so a plain cut would leave half of it.
+  said(b, tab, "error", `x${"\u{1F600}".repeat(1_500)}`);
+  const last = (b as unknown as { list: { console: ConsoleLog }[] }).list[0].console.list().at(-1)!.text;
+  assert.ok(last.length === 1_999 && !/[\ud800-\udbff]$/.test(last), `${last.length} characters, the last ${last.charCodeAt(last.length - 1).toString(16)}`);
+});
+
+/** A garbage collection, and the heap used after it. The unit runner does not expose `gc`, so it is asked for. */
+function heapNow(): number {
+  v8.setFlagsFromString("--expose-gc");
+  const gc = vm.runInNewContext("gc") as () => void;
+  gc(); gc();
+  return process.memoryUsage().heapUsed;
+}
+
+test("a message is taken at 8,000 characters, as a string of its own: a huge one is not kept alive by its entry", () => {
+  const { b, tab } = make();
+  const before = heapNow();
+  for (let i = 0; i < 20; i++) said(b, tab, "error", `${"a".repeat(1_000_000 + i)} tail`);
+  const grew = heapNow() - before;
+  assert.ok(grew < 5_000_000, `the log holds ${grew} bytes for 20 messages of 1 MB`);
+  assert.ok(kinds(b).every((k) => k.length <= "error: ".length + 2_000));
+});
+
+test("the request table keeps nothing of an address or a method it does not keep", () => {
+  const { b, tab } = make();
+  const before = heapNow();
+  for (let i = 0; i < 100; i++) sent(b, tab, `m${i}`, "G".repeat(1_000_000 + i), `https://a.test/${"p".repeat(1_000_000 + i)}?q=1`);
+  const grew = heapNow() - before;
+  assert.ok(grew < 5_000_000, `the table holds ${grew} bytes for 100 requests with 1 MB addresses`);
+  for (const v of tab.requests.values()) assert.ok(v.method.length <= 16 && v.address.length <= 500 && v.loader.length <= 64);
+});
+
+test("a data address with spaces, quotes and angle brackets in its body prints its scheme only", async () => {
+  const { b, tab } = make();
+  const body = `data:text/html,<p class="x">SECRET body 'q' </p> more`;
+  sent(b, tab, "d1", "GET", body);
+  assert.equal(tab.requests.get("d1")!.address, "data:");
+  answered(b, tab, "d1", 404, body);
+  cdpEvent(b, tab, "Network.loadingFailed", { requestId: "d1", errorText: "net::ERR_INVALID_URL", canceled: false });
+  said(b, tab, "error", `Refused ${body} then https://a.test/after`);
+  const text = await b.console();
+  assert.ok(!/SECRET|body|more|class/.test(text), text);
+  assert.match(text, /\[request\] 404 GET data:$/m);
+  assert.match(text, /\[request\] failed GET data:$/m, "the line ends where a data address does");
+  assert.match(text, /\[error\] Refused data:$/m, "in a message, a data address ends the line");
+});
+
+test("an address split by a control character loses its query all the same", async () => {
+  const { b, tab } = make();
+  said(b, tab, "error", "see https:\u0000//h.example.com/p?token=X and ht\u001btps://i.example.com/q#frag");
+  const [stored] = kinds(b);
+  assert.ok(!CONTROLS.test(stored), "the kept entry itself holds no control character");
+  assert.ok(!/token|X and|frag/.test(stored), stored);
+  assert.ok(stored.includes("https://h.example.com/p") && stored.includes("https://i.example.com/q"), stored);
+});
+
+test("a secret across the 500th character of a request's address does not leave its first half", () => {
+  const { b, tab } = make();
+  tab.memory.remember("https://a.test", { values: ["hunter22secret"], whole: [] });
+  const url = `https://a.test/${"p".repeat(478)}hunter22secret/more`;
+  sent(b, tab, "r1", "GET", url);
+  assert.ok(!tab.requests.get("r1")!.address.includes("hunt"), tab.requests.get("r1")!.address.slice(480));
+  cdpEvent(b, tab, "Network.loadingFailed", { requestId: "r1", errorText: "net::ERR_FAILED", canceled: false });
+  assert.ok(!kinds(b)[0].includes("hunt"), kinds(b)[0].slice(480));
+});
+
+test("two overlapping navigations: only the committed document's failure is kept", () => {
+  const { b, tab } = make();
+  requested(b, tab, "L1", "GET", { url: "https://a.test/first" });
+  requested(b, tab, "L2", "GET", { url: "https://a.test/second" });
+  answered(b, tab, "L1.r", 404, "https://a.test/first", "L1", "Document");
+  answered(b, tab, "L2.r", 500, "https://a.test/second", "L2", "Document");
+  committedBy(b, tab, "L1", "https://a.test/first");
+  (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/first");
+  assert.deepEqual(kinds(b), ["request: 404 GET https://a.test/first"]);
+});
+
+test("the scrubber is built once for many messages", () => {
+  const { b, tab } = make();
+  tab.memory.remember("https://a.test", { values: ["hunter22secret"], whole: [] });
+  let built = 0;
+  const pool = tab.memory.pool.bind(tab.memory);
+  tab.memory.pool = (sites: string[]) => { built++; return pool(sites); };
+  for (let i = 0; i < 50; i++) said(b, tab, "error", `message ${i} hunter22secret`);
+  assert.ok(built <= 1, `${built} builds for 50 messages`);
+  assert.ok(kinds(b).every((k) => !k.includes("hunter")));
+  tab.memory.remember("https://a.test", { values: ["second-secret-value"], whole: [] });
+  said(b, tab, "error", "has second-secret-value in it");
+  assert.ok(!kinds(b).at(-1)!.includes("second-secret"), "a new secret is picked up: the cache follows the memory");
+  assert.ok(built <= 2, `${built} builds after the memory changed`);
+});
+
+test("a flood is counted, not processed", async () => {
+  mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  try {
+    const { b, tab } = make();
+    for (let i = 0; i < 10_000; i++) said(b, tab, "error", `flood ${i}`);
+    assert.equal(kinds(b).length, 100, "at most 100 in a second are taken in");
+    assert.equal(kinds(b).at(-1), "error: flood 99");
+    const text = await b.console();
+    const lines = bodyOf(text);
+    assert.equal(lines.length, 101);
+    assert.equal(lines.at(-1), "9900 more console messages were not kept: a page can log 100 a second at most.");
+    assert.ok(lines.slice(0, -1).every((l) => l.startsWith("[error] ")), "every line the page can write starts with its kind");
+    // The next second takes another 100, and the newest 200 rule still holds.
+    for (let sec = 0; sec < 3; sec++) { mock.timers.tick(1_000); for (let i = 0; i < 500; i++) said(b, tab, "error", `s${sec} ${i}`); }
+    assert.equal(kinds(b).length, 200);
+    assert.equal(kinds(b).at(-1), "error: s2 99");
+    assert.match(await b.console(), /\n\d{5} more console messages were not kept/);
+    // A new page starts the count again.
+    committedBy(b, tab, "L9", "https://a.test/new");
+    (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/new");
+    assert.match(await b.console(), /No errors, warnings or failed requests since this page loaded\./);
+    assert.ok(!(await b.console()).includes("more console messages"));
+  } finally { mock.timers.reset(); }
 });
 
 test("a page that answers 404 shows its own 404 after it commits", () => {
@@ -2037,9 +2146,11 @@ test("a page that answers 404 shows its own 404 after it commits", () => {
   answered(b, tab, "o1", 500, "https://a.test/old.js", "L1");
   requested(b, tab, "L2", "GET", { url: "https://a.test/gone" });
   answered(b, tab, "L2.r", 404, "https://a.test/gone?x=1", "L2", "Document");
+  committedBy(b, tab, "L2", "https://a.test/gone");
   (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/gone");
   assert.deepEqual(kinds(b), ["request: 404 GET https://a.test/gone"], "the earlier page's entries are gone, the new page's own 404 stays");
   said(b, tab, "error", "new page error");
+  committedBy(b, tab, "L9", "https://a.test/other");
   (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/other");
   assert.deepEqual(kinds(b), [], "and the next commit clears it, with no request of its own to keep");
 });
@@ -2049,6 +2160,7 @@ test("an error page shows the request that failed", () => {
   said(b, tab, "error", "old page error");
   requested(b, tab, "L3", "POST", { url: "https://down.test/form?pw=SECRET" });
   cdpEvent(b, tab, "Network.loadingFailed", { requestId: "L3.r", type: "Document", errorText: "net::ERR_CONNECTION_REFUSED", canceled: false });
+  committedBy(b, tab, "L3", "https://down.test/form");
   (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://down.test/form");
   assert.deepEqual(kinds(b), ["request: failed POST https://down.test/form (net::ERR_CONNECTION_REFUSED)"]);
 });
@@ -2059,6 +2171,7 @@ test("the kept entry has no path while the new page's path is hidden", () => {
   answered(b, tab, "L2.r", 404, "https://a.test/cb/secretpath", "L2", "Document");
   assert.deepEqual(kinds(b), ["request: 404 GET https://a.test/cb/secretpath"]);
   tab.leaving.start("https://a.test/cb/secretpath", { from: ["https://old.test"], read: new Promise(() => {}) });
+  committedBy(b, tab, "L2", "https://a.test/cb/secretpath");
   (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/cb/secretpath");
   assert.equal(tab.pathHidden, true);
   assert.deepEqual(kinds(b), ["request: 404 GET https://a.test"]);
