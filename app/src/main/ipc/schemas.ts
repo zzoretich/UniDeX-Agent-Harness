@@ -94,6 +94,8 @@ export const PtySpawnRequestSchema: z.ZodType<PtySpawnRequest> = z.object({
   env: EnvSet.optional(),
   // session-browser S1: the first process of the terminal this one takes over in; main checks it began that id.
   origin: z.string().regex(/^t[0-9]{1,9}$/).optional(),
+  // session-browser N4: a Read only launch's fallback shell starts without the opener variables (it can only remove them).
+  readOnly: z.boolean().optional(),
 });
 
 /** An agent terminal's key (code-chat R15): a v4 UUID. */

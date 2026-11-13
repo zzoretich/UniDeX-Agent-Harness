@@ -33,6 +33,10 @@ documentation, for localhost and for previewing what you built. The user sees ev
 
 Use `computer_screenshot` when the layout matters and the text does not tell you enough.
 
+## Pages a program opens
+
+A preview server, a command-line sign-in or Superpowers' visual companion is started the usual way: its page opens in this browser by itself; if the browser is off, the user is asked to turn it on first, and if they say Not now the page does not open. To open a local address yourself use `computer_open`, never the `open` command. If a command prints `unidex-open: this session's sandbox blocks the UniDeX browser`, the page did not open: open its address with `computer_open`. If it prints `unidex-open: the UniDeX browser did not answer`, the page may or may not have opened: check with `computer_status`, and if it did not, open its address with `computer_open`.
+
 ## When the user is asked
 
 A reply may say the user is being asked to allow an action. Call `computer_wait` with the id of that ask and do

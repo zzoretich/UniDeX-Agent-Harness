@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentFlags, PtyAgentRequest, PtyAgentResult, PtyEvent, PtySpawnRequest, Result } from "../../shared/ipc";
 import { launchForm, VENDOR, type Sys } from "../computer/admission";
+import { SESSION_VAR } from "../computer/door";
 import type { AgentRef, AgentRegistry } from "../computer/registry";
 import { agentArgvRefusal } from "../policy/agent-launch";
 import { programRefusal, ptyEnv, shellRefusal, UUID_RE, type ProgramContext } from "../policy/programs";
@@ -54,13 +55,15 @@ const HOST_SESSION_VAR = /^(?:CLAUDECODE|CLAUDE_CODE_.*|CLAUDE_AGENT_SDK_.*|CLAU
  * CODEX_SESSION_ID. They describe the session that launched the app (one is a messaging token), not your settings, and an
  * app launchd starts has none; your settings live in the host's own settings and the rc files the terminal's zsh reads.
  * CODEX_HOME, CLAUDE_CONFIG_DIR and everything else stay. AOS_TERMINAL goes too (code-chat F8): an app started inside an
- * agent terminal must not hand that terminal's key to its own.
+ * agent terminal must not hand that terminal's key to its own, and a UniDeX session's browser id likewise: its pages
+ * would open in the outer app's browser (session-browser S23).
  */
 export function terminalBaseEnv(env: NodeJS.ProcessEnv, loginPATH: string | null): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   if (loginPATH) out.PATH = loginPATH;
   for (const k of Object.keys(out)) if (HOST_SESSION_VAR.test(k)) delete out[k];
   delete out.AOS_TERMINAL;
+  delete out[SESSION_VAR];
   return out;
 }
 
@@ -108,6 +111,10 @@ export interface PtyServiceOptions {
    *  `killAll()` (the page going: nothing forgets a session then, session-browser S1). `origin` is the id of the terminal's
    *  first process, which is `id` itself for a first process: the key a Code session's browser is named by. */
   onEnd?: (id: string, terminal: string | null, why: "closed" | "all", origin: string) => void;
+  /** The three opener variables of a Code session (session-browser S23), from `base`, the environment the allowlist let
+   *  through; `session` is `code:<the terminal's first process id>`. Added after the allowlist, so it does not grow. Absent,
+   *  or {} (the Computer surface is off, no door), the environment is exactly what it was. */
+  browserEnv?: (session: string, base: NodeJS.ProcessEnv, o?: { readOnly: boolean }) => Record<string, string>;
   now?: () => number;
 }
 
@@ -197,12 +204,22 @@ export class PtyService {
     return false;
   }
 
+  /** The first process of the terminal `id` belongs to: `origin`'s own origin when main began it in this page, else `id`.
+   *  A page naming a takeover shell (itself an entry with another origin) gets that shell's origin. */
+  private rootOf(id: string, origin?: string): string {
+    const given = origin !== undefined && origin !== id ? this.started.get(origin) : undefined;
+    return given ? given.origin : id;
+  }
+
+  /** The opener variables for a Code session, or none: a failing callback never stops a terminal from starting. */
+  private browserVars(session: string, base: NodeJS.ProcessEnv, readOnly: boolean): Record<string, string> {
+    try { return this.o.browserEnv?.(session, base, { readOnly }) ?? {}; } catch { return {}; }
+  }
+
   /** `origin` is the first process of the terminal this one takes over in (the login shell after the agent): taken only
    *  when main began that id in this page, else the process is its own origin (session-browser S1). */
   private begin(id: string, cwd: string, terminal: string | undefined, origin?: string): void {
-    const given = origin !== undefined && origin !== id ? this.started.get(origin) : undefined;
-    // The root of the chain: a page naming a takeover shell (itself an entry with another origin) gets that shell's origin.
-    const root = given ? given.origin : id;
+    const root = this.rootOf(id, origin);
     this.started.set(id, { cwd, startedAt: (this.o.now ?? Date.now)(), terminal: typeof terminal === "string" && UUID_RE.test(terminal) ? terminal : null, origin: root });
   }
 
@@ -227,9 +244,11 @@ export class PtyService {
     if (folder) return folder;
     const env = ptyEnv(this.baseEnv(), req.env, this.o.context());
     if ("refusal" in env) return refused(env.refusal);
+    // The session is named by the terminal's first process, the root `begin` will record for this one.
+    const vars = this.browserVars(`code:${this.rootOf(req.id, req.origin)}`, env.env, req.readOnly === true);
     let p: PtyProcess;
     try {
-      p = lib.spawn(req.file, [], { name: req.name, cols: req.cols, rows: req.rows, cwd: req.cwd, env: env.env });
+      p = lib.spawn(req.file, [], { name: req.name, cols: req.cols, rows: req.rows, cwd: req.cwd, env: { ...env.env, ...vars } });
     } catch (err) { return failure(err); }
     const { id } = req;
     this.sessions.set(id, p);
@@ -366,9 +385,12 @@ export class PtyService {
       const ready = now && this.switchesOn();
       if (ready !== carries) return flagsRefusal(ready, bin);
     }
+    // An agent is its terminal's first process: the session is its own id.
+    // A Read only agent gets none (session-browser S3): the same fact the registry answers Read only from.
+    const vars = this.browserVars(`code:${req.id}`, env.env, req.access === "read");
     let p: PtyProcess;
     try {
-      p = lib.spawn(bin, [...req.argv], { name: "xterm-256color", cols: req.cols, rows: req.rows, cwd: req.cwd, env: env.env });
+      p = lib.spawn(bin, [...req.argv], { name: "xterm-256color", cols: req.cols, rows: req.rows, cwd: req.cwd, env: { ...env.env, ...vars } });
     } catch (err) { return fallback(`${label} did not start (${(err as NodeJS.ErrnoException)?.code ?? "error"})`); }
     const { id } = req;
     const pid = p.pid;
@@ -395,7 +417,7 @@ export class PtyService {
    * bridge admits. A shell that gives none (a startup file exits, hangs or execs something else) falls back to the
    * typed launch, which runs those files itself. The shell starts from the terminal's base, without the markers of a
    * session that launched the app (R64), so what it gives is the user's own: a CLAUDE_CODE_* an rc file exports reaches
-   * the agent as it reaches a typed launch. CLAUDECODE and AOS_TERMINAL never pass.
+   * the agent as it reaches a typed launch. CLAUDECODE, AOS_TERMINAL and an outer session's browser id never pass.
    */
   private async agentBase(cwd: string, ctx: ProgramContext): Promise<{ env: NodeJS.ProcessEnv } | { reason: string }> {
     const plain = this.baseEnv();
@@ -411,6 +433,7 @@ export class PtyService {
     const out: NodeJS.ProcessEnv = { ...env };
     delete out.CLAUDECODE;
     delete out.AOS_TERMINAL;
+    delete out[SESSION_VAR];
     return { env: out };
   }
 

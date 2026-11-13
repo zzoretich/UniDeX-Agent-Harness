@@ -7,12 +7,24 @@ import { externalAllowed, openPathAction } from "../policy/shell";
 import { PathArgs, UrlArgs } from "./schemas";
 import { onInvoke, onSend, type Trust } from "./trust";
 
-/** Opens a link in the browser when it is https; anything else is refused and logged. Main uses it too. */
-export function openExternalSafe(url: string): void {
+/** Opens a link in the browser when it is https; anything else is refused and logged. Main uses it too. Answers whether it
+ *  opened (Open in my browser reports a refusal, session-browser S24). */
+export function openExternalSafe(url: string): boolean {
   const allowed = externalAllowed(url);
   if (testRecord) recordExternalOpen(url, allowed);
   if (!allowed) console.warn(`[main] refused to open ${url.slice(0, 200)}`);
   else void shell.openExternal(url);
+  return allowed;
+}
+
+/** Open in my browser (session-browser S24, X4): the same rule and the same e2e record as `openExternalSafe`, but the answer
+ *  waits for `shell.openExternal`: true only when it resolved, false when the address is not allowed or the hand-off
+ *  rejected. No line names the address (a rejection's text may carry it). */
+export async function openExternalAwaited(url: string): Promise<boolean> {
+  const allowed = externalAllowed(url);
+  if (testRecord) recordExternalOpen(url, allowed);
+  if (!allowed) { console.warn("[main] refused to open an address"); return false; }
+  try { await shell.openExternal(url); return true; } catch { return false; }
 }
 
 /** Whether this is a dev run or a test build: it records what it opens outside (`__aosMain.externalOpens`). */

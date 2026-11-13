@@ -922,6 +922,65 @@ test("a kept tab whose load fails does not stop the others", async () => {
   assert.ok(notes.some((n) => n.startsWith("A tab did not reload")));
 });
 
+test("activeAddress is the active tab's real address, cleaned, or null with none to give; it throws once the browser is gone (session-browser S24)", () => {
+  makeSleeper();
+  const fresh = new ComputerBrowser({ key: "ws:active", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  (fresh as unknown as { place: () => void }).place = () => {};
+  assert.equal(fresh.activeAddress(), null, "no tab");
+  fresh.restore(["https://example.com/p?x=1", "https://user:pass@example.com/p?x=2"], 1);
+  assert.equal(fresh.activeAddress(), "https://example.com/p?x=2", "the active tab's, with its query, without the user name or password");
+  assert.equal(fresh.realAddresses().urls[0], "https://example.com/p?x=1", "realAddresses answers as before");
+  fresh.destroy();
+  assert.throws(() => fresh.activeAddress(), /gone/);
+});
+
+test("activeAddress on an awake browser: the live tab's real address without a user name or password; a tab not yet committed gives its kept one; none for a destroyed view or a non-web scheme (session-browser S24)", async () => {
+  const awake = makeSleeper("https://user:pw@example.com/p?code=abc");
+  assert.equal(awake.b.activeAddress(), "https://example.com/p?code=abc", "real query kept, user name and password gone");
+  awake.page.url = "about:blank";
+  assert.equal(awake.b.activeAddress(), null, "no address yet");
+  awake.page.url = "file:///etc/hosts";
+  assert.equal(awake.b.activeAddress(), null, "a scheme the browser does not open");
+  awake.page.url = "https://a.test/";
+  (awake.tab.wc as unknown as { isDestroyed: () => boolean }).isDestroyed = () => true;
+  assert.equal(awake.b.activeAddress(), null, "a destroyed view");
+  // A woken tab that has not committed yet answers its kept address, not the blank page it still shows.
+  const { b } = makeSleeper("https://a.test/");
+  const inner = b as unknown as { kept: unknown[] | null };
+  b.sleep();
+  inner.kept = [
+    { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false },
+    { url: "https://slow.test/p?code=S", shown: "https://slow.test/p", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: true },
+  ];
+  (b as unknown as { keptActive: number }).keptActive = 1;
+  let release!: () => void;
+  FakeView.hold.set("https://slow.test/p?code=S", new Promise<void>((r) => { release = r; }));
+  try {
+    // The active tab's load is held, and a wake waits for it up to LOAD_WAIT_MS: start it, look once the tab exists, release, then await.
+    const waking = b.wake();
+    const inner2 = b as unknown as { list: { pending: unknown }[] };
+    for (let i = 0; i < 200 && !inner2.list.some((t) => t.pending); i++) await new Promise((r) => setImmediate(r));
+    assert.equal(b.activeAddress(), "https://slow.test/p?code=S");
+    release();
+    await waking;
+  } finally { release(); FakeView.hold.clear(); }
+});
+
+test("open with background adds a tab without taking the selection; without it the new tab is selected (session-browser X2)", async () => {
+  const { b } = makeSleeper("https://a.test/");
+  await b.open("https://b.test/", { newTab: true, background: true, by: "A program" });
+  assert.deepEqual(b.tabs().map((t) => [t.url, t.active, t.openedBy]), [["https://a.test/", true, null], ["https://b.test/", false, "A program"]], "there, and the active tab is as it was");
+  assert.equal(b.activeAddress(), "https://a.test/");
+  await b.open("https://c.test/", { newTab: true, by: null });
+  assert.deepEqual(b.tabs().map((t) => t.active), [false, false, true], "a tab opened as before takes the selection");
+  // With no tab yet the first one is the active one, background or not.
+  const fresh = new ComputerBrowser({ key: "ws:bg", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  const inner = fresh as unknown as { place: () => void; attach: () => Promise<void> };
+  inner.place = () => {}; inner.attach = async () => {};
+  await fresh.open("https://d.test/", { newTab: true, background: true, by: null });
+  assert.deepEqual(fresh.tabs().map((t) => t.active), [true]);
+});
+
 test("a restored tab's address shows no user name or password", () => {
   makeSleeper();
   const fresh = new ComputerBrowser({ key: "ws:cred", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });

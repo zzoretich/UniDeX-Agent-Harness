@@ -6,11 +6,9 @@
 // Anything unexpected closes that one connection without a reply; no connection's failure reaches another or main. An
 // agent that leaves the app's registry loses its connection (`drop`), and a call from one no longer live is refused (M12).
 
-import { createHash } from "node:crypto";
-import fs from "node:fs";
 import net from "node:net";
-import path from "node:path";
 import type { Admit } from "./admission";
+import { listenPrivate, socketPathIn, unlinkIfBound } from "./unix-socket";
 import { socketFd, type PeerAddon } from "./peer";
 import type { AgentRef } from "./registry";
 
@@ -19,8 +17,7 @@ export interface ToolCall { id: number; tool: ComputerTool; args: Record<string,
 export interface ToolReply { id: number; text: string; image?: { data: string; mimeType: "image/png" }; isError?: boolean }
 
 const TOOLS: ReadonlySet<string> = new Set<ComputerTool>(["computer_status", "computer_open", "computer_snapshot", "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_wait"]);
-/** sockaddr_un.sun_path holds 104 bytes on macOS, the last for the terminator. */
-export const MAX_PATH_BYTES = 103;
+export { MAX_PATH_BYTES } from "./unix-socket";
 const MAX_LINE_BYTES = 1024 * 1024;
 /** Calls in flight per connection (agent-computer D18, backpressure): another is answered at once and never reaches the
  *  service, so one agent cannot queue unbounded work behind the wheel. */
@@ -35,11 +32,7 @@ const ENDED = "This session has ended, so its computer connection is closed.";
  * `$TMPDIR`), which the bridge creates and checks as it does the default one. Null when even that does not fit.
  */
 export function bridgeSocketPath(userData: string, tmp: string): string | null {
-  const own = path.join(userData, "computer", "bridge.sock");
-  if (Buffer.byteLength(own) <= MAX_PATH_BYTES) return own;
-  const id = createHash("sha256").update(path.resolve(userData)).digest("hex").slice(0, 12);
-  const short = path.join(tmp, `unidex-computer-${id}`, "bridge.sock");
-  return Buffer.byteLength(short) <= MAX_PATH_BYTES ? short : null;
+  return socketPathIn(userData, tmp, "bridge.sock");
 }
 
 export interface BridgeOptions {
@@ -68,35 +61,9 @@ export class ComputerBridge {
   drop(pid: number): void { this.admitted.get(pid)?.(); }
 
   async start(): Promise<void> {
-    const { socketPath } = this.o;
-    if (Buffer.byteLength(socketPath) > MAX_PATH_BYTES) throw new Error(`the bridge socket path is longer than ${MAX_PATH_BYTES} bytes: ${socketPath}`);
-    const dir = path.dirname(socketPath);
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // The folder must be a real folder of this user's, never a link: then 0700 (the default and the temp-folder path alike).
-    const d = fs.lstatSync(dir);
-    if (!d.isDirectory() || (typeof process.getuid === "function" && d.uid !== process.getuid())) throw new Error(`${dir} is not a folder of this user's, so the bridge will not listen in it`);
-    fs.chmodSync(dir, 0o700);
-    // Only a leftover socket is replaced; a file, link or folder at the path is somebody's, so refuse.
-    let st: fs.Stats | null = null;
-    try { st = fs.lstatSync(socketPath); } catch { /* nothing there */ }
-    if (st) {
-      if (!st.isSocket()) throw new Error(`${socketPath} exists and is not a socket, so the bridge will not replace it`);
-      fs.unlinkSync(socketPath);
-    }
     const server = net.createServer((s) => this.connection(s));
     server.on("error", () => {});
-    await new Promise<void>((res, rej) => {
-      server.once("error", rej);
-      server.listen(socketPath, () => { server.off("error", rej); res(); });
-    });
-    try {
-      fs.chmodSync(socketPath, 0o600);
-      const b = fs.lstatSync(socketPath);
-      this.bound = { dev: b.dev, ino: b.ino };
-    } catch (err) {
-      await new Promise<void>((res) => server.close(() => res()));
-      throw err;
-    }
+    this.bound = await listenPrivate(server, this.o.socketPath, "the bridge");
     this.server = server;
   }
 
@@ -105,13 +72,9 @@ export class ComputerBridge {
     this.server = null;
     for (const s of this.conns) s.destroy();
     if (server) await new Promise<void>((res) => server.close(() => res()));
-    // libuv unlinks by name on close; make sure of it, but only if the path is still the socket this bridge bound.
     const bound = this.bound;
     this.bound = null;
-    try {
-      const now = fs.lstatSync(this.o.socketPath);
-      if (bound && now.dev === bound.dev && now.ino === bound.ino) fs.unlinkSync(this.o.socketPath);
-    } catch { /* already gone */ }
+    unlinkIfBound(this.o.socketPath, bound);
   }
 
   private connection(sock: net.Socket): void {

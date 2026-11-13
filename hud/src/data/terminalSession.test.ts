@@ -156,6 +156,13 @@ test("a fallback starts the shell and types the launch line, and hands back main
   assert.deepEqual(plain.shells[0].p.written, [`${launchLine(SPEC)}\r`]);
 });
 
+test("a fallback shell for a Read only launch is spawned read only; for an Edit or Run launch it is not (session-browser N4)", async () => {
+  const { shells } = fakeHost(async () => ({ ok: false, error: "", code: "fallback" }));
+  const pool = new TerminalPool({ shell: "/bin/zsh", cwd: "/vault" });
+  for (const access of ["read", "edit", "run"] as const) await pool.createAgent({ spec: { ...SPEC, access }, place: PLACE, meta: META }).ready;
+  assert.deepEqual(shells.map((s) => s.opts.readOnly), [true, undefined, undefined]);
+});
+
 test("a fallback types the launch line before what was typed while the terminal started: typeahead reaches the agent, never the shell's line", async () => {
   let answer: (r: HostResult<HostPtyProcess>) => void = () => {};
   const { shells } = fakeHost(() => new Promise((r) => { answer = r; }));

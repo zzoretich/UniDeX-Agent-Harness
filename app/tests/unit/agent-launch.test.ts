@@ -863,3 +863,82 @@ test("kill reports closed and killAll reports all; a takeover shell's close repo
   t.killAll();
   assert.deepEqual(ended.map((e) => [e[0], e[2]]), [["t6", "all"]]);
 });
+
+// session-browser S23: each terminal's processes carry their own session's opener variables, added after the allowlist.
+test("a shell and a Code agent start with their own session's three variables, a takeover shell with its terminal's", async () => {
+  const asked: Array<[string, string | undefined]> = [];
+  const browserEnv = (session: string, base: NodeJS.ProcessEnv): Record<string, string> => {
+    asked.push([session, base.PATH]);
+    return { BROWSER: "/o/unidex-open.js", BRAINSTORM_OPEN_CMD: "/o/unidex-open.js", AOS_BROWSER_SESSION: `for-${session}` };
+  };
+  const KEY = "aaaaaaaa-0000-4000-8000-000000000013";
+  const { t, spawned } = service({ extra: { browserEnv } });
+  assert.ok(t.spawn({ id: "t1", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24, env: { AOS_TERMINAL: KEY } }).ok);
+  assert.ok((await t.spawnAgent(req({ id: "t2", terminal: KEY }))).ok);
+  assert.ok(t.spawn({ id: "t3", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24, env: { AOS_TERMINAL: KEY }, origin: "t2" }).ok);
+  assert.ok(t.spawn({ id: "t4", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24, env: { AOS_TERMINAL: KEY }, origin: "t3" }).ok);
+  const vars = (i: number): unknown[] => { const e = spawned[i].opts.env as Record<string, string>; return [e.BROWSER, e.BRAINSTORM_OPEN_CMD, e.AOS_BROWSER_SESSION, e.AOS_TERMINAL]; };
+  assert.deepEqual(vars(0), ["/o/unidex-open.js", "/o/unidex-open.js", "for-code:t1", KEY]);
+  assert.deepEqual(vars(1), ["/o/unidex-open.js", "/o/unidex-open.js", "for-code:t2", KEY]);
+  assert.deepEqual(vars(2), ["/o/unidex-open.js", "/o/unidex-open.js", "for-code:t2", KEY], "a takeover shell: the terminal's first process, never its own id");
+  assert.deepEqual(vars(3), ["/o/unidex-open.js", "/o/unidex-open.js", "for-code:t2", KEY], "a page naming a takeover shell gets the chain's root");
+  assert.deepEqual(asked.map((a) => a[0]), ["code:t1", "code:t2", "code:t2", "code:t2"]);
+  assert.ok(asked.every((a) => a[1] === "/usr/bin:/bin"), "the base is the environment the allowlist let through");
+});
+
+test("a shell spawned for a Read only launch's fallback starts without the three variables; any other shell starts with them (session-browser N4)", () => {
+  const browserEnv = (session: string, _base: NodeJS.ProcessEnv, o?: { readOnly: boolean }): Record<string, string> =>
+    (o?.readOnly ? {} : { BROWSER: "/o/unidex-open.js", BRAINSTORM_OPEN_CMD: "/o/unidex-open.js", AOS_BROWSER_SESSION: `for-${session}` });
+  const { t, spawned } = service({ extra: { browserEnv } });
+  const base = { file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 };
+  assert.ok(t.spawn({ ...base, id: "t1", readOnly: true }).ok);
+  assert.ok(t.spawn({ ...base, id: "t2", readOnly: false }).ok);
+  assert.ok(t.spawn({ ...base, id: "t3" }).ok);
+  const has = (i: number): boolean => { const e = spawned[i].opts.env as Record<string, string>; return [e.BROWSER, e.BRAINSTORM_OPEN_CMD, e.AOS_BROWSER_SESSION].every((v) => v !== undefined); };
+  const none = (i: number): boolean => { const e = spawned[i].opts.env as Record<string, string>; return e.BRAINSTORM_OPEN_CMD === undefined && e.AOS_BROWSER_SESSION === undefined; };
+  assert.deepEqual([none(0), has(1), has(2)], [true, true, true]);
+});
+
+test("a Read only Code agent starts without the three variables; Edit and Run agents and a shell start with them (session-browser S3)", async () => {
+  const asked: Array<[string, boolean]> = [];
+  const browserEnv = (session: string, _base: NodeJS.ProcessEnv, o?: { readOnly: boolean }): Record<string, string> => {
+    asked.push([session, o?.readOnly === true]);
+    return o?.readOnly ? {} : { BROWSER: "/o/unidex-open.js", BRAINSTORM_OPEN_CMD: "/o/unidex-open.js", AOS_BROWSER_SESSION: `for-${session}` };
+  };
+  const { t, spawned } = service({ extra: { browserEnv } });
+  assert.ok((await t.spawnAgent({ ...req({ id: "t1" }), access: "read" })).ok);
+  assert.ok((await t.spawnAgent({ ...req({ id: "t2" }), access: "edit" })).ok);
+  assert.ok((await t.spawnAgent({ ...req({ id: "t3" }), access: "run" })).ok);
+  assert.ok((await t.spawnAgent({ ...req({ id: "t4" }), access: "host" })).ok);
+  assert.ok(t.spawn({ id: "t5", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok);
+  const has = (i: number): boolean => { const e = spawned[i].opts.env as Record<string, string>; return [e.BROWSER, e.BRAINSTORM_OPEN_CMD, e.AOS_BROWSER_SESSION].every((v) => v !== undefined); };
+  const none = (i: number): boolean => { const e = spawned[i].opts.env as Record<string, string>; return e.BRAINSTORM_OPEN_CMD === undefined && e.AOS_BROWSER_SESSION === undefined; };
+  assert.deepEqual([none(0), has(1), has(2), has(3), has(4)], [true, true, true, true, true]);
+  assert.deepEqual(asked.map((a) => a[1]), [true, false, false, false, false]);
+});
+
+test("with no variables to add (the Computer surface off) a terminal's environment is exactly what it was", async () => {
+  const { t, spawned } = service({ extra: { browserEnv: () => ({}) } });
+  assert.ok(t.spawn({ id: "t1", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok);
+  assert.ok((await t.spawnAgent(req({ id: "t2" }))).ok);
+  const { t: plain, spawned: before } = service();
+  assert.ok(plain.spawn({ id: "t1", file: "/bin/sh", args: [], cwd: VAULT, name: "xterm-256color", cols: 80, rows: 24 }).ok);
+  assert.ok((await plain.spawnAgent(req({ id: "t2" }))).ok);
+  assert.deepEqual(spawned[0].opts.env, before[0].opts.env);
+  assert.deepEqual(spawned[1].opts.env, before[1].opts.env);
+});
+
+test("an outer app's session variable never reaches a shell or a Code agent when main adds none (session-browser S23)", async () => {
+  const outer = "b2b2";
+  // A shell: the base a terminal starts from is terminalBaseEnv's.
+  const base = terminalBaseEnv({ PATH: "/usr/bin:/bin", BROWSER: "firefox", AOS_BROWSER_SESSION: outer }, null);
+  assert.equal(base.AOS_BROWSER_SESSION, undefined);
+  assert.equal(base.BROWSER, "firefox", "BROWSER stays the user's: it becomes the previous one");
+  // A Code agent: neither the terminal base nor what the login shell gives carries it.
+  const { t, spawned } = service({ extra: { browserEnv: () => ({}), context: shellContext, shellEnv: async () => ({ PATH: "/usr/bin:/bin", HOME, AOS_BROWSER_SESSION: outer }) } });
+  assert.ok((await t.spawnAgent(req({ id: "t1" }))).ok);
+  assert.equal((spawned[0].opts.env as Record<string, string>).AOS_BROWSER_SESSION, undefined);
+  const plain = service({ extra: { browserEnv: () => ({}), env: { PATH: "/usr/bin:/bin", HOME, AOS_BROWSER_SESSION: outer } } });
+  assert.ok((await plain.t.spawnAgent(req({ id: "t1" }))).ok);
+  assert.equal((plain.spawned[0].opts.env as Record<string, string>).AOS_BROWSER_SESSION, undefined);
+});

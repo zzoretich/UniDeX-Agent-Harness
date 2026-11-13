@@ -172,7 +172,7 @@ function onePage(): { browser: BrowserLike; clicks: () => number } {
   let clicks = 0;
   const no = (): never => { throw new Error("not in this test"); };
   const browser: BrowserLike = {
-    destroy: no, sleep: no, wake: no, asleep: no, restore: no, realAddresses: () => ({ urls: [], active: 0 }),
+    destroy: no, sleep: no, wake: no, asleep: no, restore: no, realAddresses: () => ({ urls: [], active: 0 }), activeAddress: () => null,
     tabs: () => [{ index: 0, url, title: "", openedBy: null, active: true, canBack: false, canForward: false }],
     activeWebContentsId: () => 1,
     pageToken: () => "1.0",
@@ -194,7 +194,7 @@ test("R76: Stop during a pending ask ends the turn's computer side at once (its 
   const broker = new AskBroker({ timeoutMs: () => 120_000, clock, onChange: () => computer?.refresh() });
   const wheel = new Wheel({ clock, reserved: (c) => computer?.reserved(c) ?? false, onChange: (c) => computer?.refresh(c) });
   const sites = new SiteMarks(path.join(fs.mkdtempSync(path.join(tmp, "computer-")), "sites.json"));
-  computer = new ComputerService({ records: new BrowserRecords({ file: path.join(tmp, "browsers.json") }), browser: () => page.browser, broker, wheel, sites, clock, config: () => ({ enabled: true, askTimeoutSec: 120, awake: 4 }), emit: () => {}, note: () => {}, liveAgent: (k) => registry.byKey(k) });
+  computer = new ComputerService({ records: new BrowserRecords({ file: path.join(tmp, "browsers.json") }), browser: () => page.browser, broker, wheel, sites, clock, config: () => ({ enabled: true, askTimeoutSec: 120, awake: 4 }), emit: () => {}, note: () => {}, liveAgent: (k) => registry.byKey(k), held: () => true, outside: async () => false, log: () => {} });
   const c = computer;
   const ends: number[] = [];
   // As main wires it (index.ts): a Chat turn's CLI is registered while it runs, and its end ends its computer side.
@@ -947,4 +947,48 @@ test("a Trash that rejects after the file is gone still counts as removed", asyn
   await idle(s);
   assert.deepEqual(await s.remove(r.data.id), { ok: true, data: null });
   assert.deepEqual(removed, [r.data.id]);
+});
+
+test("a Chat turn's CLI starts with its thread's three variables, added after the allowlist; none when there are none to add (session-browser S23)", async () => {
+  const seen: Array<Record<string, string | undefined>> = [];
+  const spawnImpl = ((cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+    if (cmd === CLAUDE) seen.push({ ...(opts.env ?? {}) });
+    return childProcess.spawn(cmd, args, opts);
+  }) as unknown as typeof childProcess.spawn;
+  const asked: Array<[string, string | undefined]> = [];
+  const mk = (extra: Partial<ConstructorParameters<typeof SessionService>[0]>) => new SessionService({ trash: async () => {},
+    vaultRoot: () => vault, enabled: () => true, context: () => context, env: { ...env, BROWSER: "firefox" }, node: () => process.execPath, emit: () => {}, graceMs: 500, spawnImpl, ...extra });
+  const on = mk({ browserEnv: (session, base, o): Record<string, string> => { asked.push([session, base.BROWSER]); return o?.readOnly ? {} : { BROWSER: "/o/open.js", BRAINSTORM_OPEN_CMD: "/o/open.js", AOS_BROWSER_SESSION: "x" }; } });
+  const r = await on.start({ workspace: "harbor-map", host: "claude", text: "hi", access: "edit" });
+  assert.ok(r.ok);
+  await idle(on);
+  assert.equal(seen.length, 1);
+  assert.deepEqual([seen[0].BROWSER, seen[0].BRAINSTORM_OPEN_CMD, seen[0].AOS_BROWSER_SESSION], ["/o/open.js", "/o/open.js", "x"]);
+  assert.deepEqual(asked, [[`chat:${r.data.id}`, "firefox"]], "named by the thread; the base is the CLI's environment before the three are added, so the previous BROWSER is main's");
+  const ro = await on.start({ workspace: "harbor-map", host: "claude", text: "hi", access: "read" });
+  assert.ok(ro.ok);
+  await idle(on);
+  assert.equal(seen.length, 2);
+  assert.deepEqual([seen[1].BROWSER, seen[1].BRAINSTORM_OPEN_CMD, seen[1].AOS_BROWSER_SESSION], ["firefox", undefined, undefined], "a Read only turn gets none of the three (session-browser S3)");
+  seen.pop();
+  const off = mk({ browserEnv: () => ({}) });
+  const r2 = await off.start({ workspace: "harbor-map", host: "claude", text: "hi", access: "read" });
+  assert.ok(r2.ok);
+  await idle(off);
+  assert.equal(seen.length, 2);
+  assert.deepEqual([seen[1].BROWSER, seen[1].BRAINSTORM_OPEN_CMD, seen[1].AOS_BROWSER_SESSION], ["firefox", undefined, undefined], "nothing added");
+});
+
+test("an outer app's session variable never reaches a Chat turn's CLI when main adds none (session-browser S23)", async () => {
+  const seen: Array<Record<string, string | undefined>> = [];
+  const spawnImpl = ((cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+    if (cmd === CLAUDE) seen.push({ ...(opts.env ?? {}) });
+    return childProcess.spawn(cmd, args, opts);
+  }) as unknown as typeof childProcess.spawn;
+  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context,
+    env: { ...env, AOS_BROWSER_SESSION: "b2b2" }, node: () => process.execPath, emit: () => {}, graceMs: 500, spawnImpl, browserEnv: () => ({}) });
+  assert.ok((await s.start({ workspace: "harbor-map", host: "claude", text: "hi", access: "read" })).ok);
+  await idle(s);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].AOS_BROWSER_SESSION, undefined);
 });

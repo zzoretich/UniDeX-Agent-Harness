@@ -145,6 +145,11 @@ const leaks = expectedOut.filter((f) => extractFile(asar, f.slice(1)).toString("
 if (fs.existsSync(PEER) && fs.readFileSync(PEER).includes(home)) leaks.push(PEER_ENTRY);
 check("no home-folder path in the bundled code or the peer addon", leaks.length === 0, leaks.join(", "));
 
+// ── the opener every session's BROWSER points at (session-browser S23) ─
+
+const OPENER = path.join(RES, "opener", "unidex-open.js");
+check("the opener is packaged and executable", fs.existsSync(OPENER) && (fs.statSync(OPENER).mode & 0o111) === 0o111, OPENER);
+
 // ── the runtime it carries, and its update feed (phase 5) ────────────
 
 const PAYLOAD = path.join(RES, "payload");

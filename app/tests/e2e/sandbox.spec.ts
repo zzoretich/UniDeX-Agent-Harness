@@ -60,7 +60,7 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.update).toEqual(["check", "install", "onState", "state"]);
   expect(shape.theme).toEqual(["onChange", "set", "state"]);
   expect(shape.sessions).toEqual(["catalog", "list", "onEvent", "read", "remove", "send", "start", "stop"]);
-  expect(shape.computer).toEqual(["answer", "describe", "handBack", "mark", "move", "nav", "navigate", "onEvent", "openLink", "popOut", "power", "select", "show", "tab", "takeOver"]);
+  expect(shape.computer).toEqual(["answer", "describe", "handBack", "mark", "move", "nav", "navigate", "onEvent", "openLink", "openOutside", "popOut", "power", "select", "show", "tab", "takeOver"]);
   expect(shape.git).toEqual(["commit", "diff", "status"]);
   expect(shape.code).toEqual(["follow", "git", "saveImage", "unfollow", "view"]);
 });

@@ -9,7 +9,7 @@ import { ComputerStore, chatSession, codeSession, pageOfSession, pageToOpen, sto
 function fakeComputer() {
   const subs: Array<(ev: HostComputerEvent) => void> = [];
   const host: HostComputer = {
-    select: async () => null, show: () => {}, navigate: async () => ({ ok: true, data: null }), openLink: async () => ({ ok: true, data: null }), tab: () => {}, nav: () => {}, takeOver: () => {},
+    select: async () => null, show: () => {}, navigate: async () => ({ ok: true, data: null }), openLink: async () => ({ ok: true, data: null }), openOutside: async () => ({ ok: true, data: null }), tab: () => {}, nav: () => {}, takeOver: () => {},
     handBack: () => {}, answer: () => {}, mark: () => {}, popOut: () => {}, power: () => {}, describe: () => {}, move: () => Promise.resolve(false),
     onEvent: (cb) => { subs.push(cb); return () => { subs.splice(subs.indexOf(cb), 1); }; },
   };

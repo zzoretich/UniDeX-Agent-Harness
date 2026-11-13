@@ -12,6 +12,7 @@ export interface ComputerPageService {
   show: (bounds: { x: number; y: number; width: number; height: number } | null, inView?: boolean) => void;
   navigate: (url: string) => Promise<Result<null>>;
   openLink: (session: string, url: string) => Promise<Result<null>>;
+  openOutside: () => Promise<Result<null>>;
   tab: (op: { kind: "new" } | { kind: "close" | "select"; index: number }) => void;
   nav: (go: "back" | "forward" | "reload") => void;
   takeOver: () => void;
@@ -30,6 +31,9 @@ export interface ComputerIpc {
   service: () => ComputerPageService;
   /** Whether main holds this terminal or thread (PtyService.holdsOrigin, SessionService.has). */
   sessions: { terminal(id: string): boolean; thread(id: string): boolean };
+  /** Called after the service completed a `move` for two terminals main holds, whether it answered true or false (not when
+   *  it threw or the keys were refused): the app's door moves its ids with the terminal row (session-browser A8). */
+  moved?: (from: string, to: string) => void;
 }
 
 export const OFF: Extract<Result<never>, { ok: false }> = { ok: false, error: "The Computer pane is off", code: "EPERM" };
@@ -51,6 +55,8 @@ export function registerComputerIpc(trust: Trust, c: ComputerIpc): void {
     if (!sessionAllowed(session, c.sessions)) return { ok: false, error: "That session is not allowed", code: "EPERM" };
     return c.service().openLink(session, url);
   });
+  // session-browser S24: no argument; main reads the active tab's real address, so the page cannot name what leaves.
+  onInvoke(CH.computerOpenOutside, trust, NoArgs, async () => (c.enabled() ? c.service().openOutside() : OFF));
   onSend(CH.computerShow, trust, ComputerShowArgs, ({ bounds, inView }) => when(CH.computerShow, (s) => s.show(bounds ? clampBounds(bounds) : null, inView)));
   onSend(CH.computerTab, trust, ComputerTabArgs, ({ op }) => when(CH.computerTab, (s) => s.tab(op)));
   onSend(CH.computerNav, trust, ComputerNavArgs, ({ go }) => when(CH.computerNav, (s) => s.nav(go)));
@@ -71,6 +77,9 @@ export function registerComputerIpc(trust: Trust, c: ComputerIpc): void {
   onInvoke(CH.computerMove, trust, ComputerMoveArgs, async ({ from, to }) => {
     if (!c.enabled()) { console.warn(`[main] ${CH.computerMove}: ${OFF.error}`); return { ok: true, data: false }; }
     if (!sessionAllowed(from, c.sessions) || !sessionAllowed(to, c.sessions)) return { ok: true, data: false };
-    return { ok: true, data: c.service().move(from, to) };
+    const moved = c.service().move(from, to);
+    // The ids belong to the terminal row, not to whichever browser won (A8); a thrown move never gets here.
+    try { c.moved?.(from, to); } catch { /* the app's map is not the page's concern */ }
+    return { ok: true, data: moved };
   });
 }

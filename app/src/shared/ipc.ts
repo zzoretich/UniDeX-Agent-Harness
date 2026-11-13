@@ -140,6 +140,7 @@ export const CH = {
   computerShow: "computer:show",
   computerNavigate: "computer:navigate",
   computerOpenLink: "computer:open-link",
+  computerOpenOutside: "computer:open-outside",
   computerTab: "computer:tab",
   computerNav: "computer:nav",
   computerTakeOver: "computer:take-over",
@@ -572,6 +573,9 @@ export interface PtySpawnRequest {
   /** session-browser S1: the id of the terminal's FIRST process, named by a process that takes over in a terminal that
    *  already has one (the login shell after the agent). Main takes it only when it began that id in this page. */
   origin?: string;
+  /** session-browser N4: the shell is the typed-line fallback of a Read only agent launch; it starts without the opener
+   *  variables. It can only take variables away, so the page is trusted with it. */
+  readOnly?: boolean;
 }
 
 /**
@@ -738,6 +742,8 @@ export interface AosBridge {
     navigate(url: string): Promise<Result<null>>;
     /** A web link the person clicked in a session opens in that session's browser, turned on if need be (session-browser S14). Failures: the codes are EINVAL (the address is refused), EPERM (the session is not one the app holds, or the Computer surface is off), ENOENT (the app is quitting or the browser was switched off meanwhile), EIO (no tab could be made). A tab that was made but whose page failed to load is ok. */
     openLink(session: string, url: string): Promise<Result<null>>;
+    /** Open in my browser (session-browser S24): the selected browser's active tab goes to the Mac's own browser; main reads its real address, the page names none. Failures: ENOENT (nothing selected, no tab, or the app is quitting), EROFS (the page is not https), EPERM (the Computer surface is off). The tab stays open. */
+    openOutside(): Promise<Result<null>>;
     tab(op: ComputerTabOp): void;
     /** Back, Forward or Reload the active tab. One-way; dropped while the surface is off. */
     nav(go: ComputerNavGo): void;

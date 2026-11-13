@@ -21,7 +21,7 @@ import { AskNotifier, testSwitches } from "./computer/notify";
 import { loadPeer, type PeerAddon } from "./computer/peer";
 import { AgentRegistry } from "./computer/registry";
 import { BrowserRecords } from "./computer/records";
-import { ComputerService } from "./computer/service";
+import { ComputerService, PAGE_GONE } from "./computer/service";
 import { SiteMarks } from "./computer/sites";
 import { Wheel } from "./computer/wheel";
 import { START_PAGE } from "../../../hud/src/data/computerStart";
@@ -33,11 +33,12 @@ import { registerProposalsIpc } from "./ipc/proposals";
 import { registerCodeIpc } from "./ipc/code";
 import { registerSessionIpc } from "./ipc/sessions";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
-import { externalOpens, openExternalSafe, registerShellIpc } from "./ipc/shell";
+import { externalOpens, openExternalAwaited, openExternalSafe, registerShellIpc } from "./ipc/shell";
 import { registerComputerIpc } from "./ipc/computer";
 import { registerThemeIpc } from "./ipc/theme";
 import { trustMainWindow } from "./ipc/trust";
 import { buildAppMenu } from "./menu";
+import { sessionAllowed } from "./policy/computer";
 import { debugSwitches } from "./policy/debug";
 import { parseShells, type ProgramContext } from "./policy/programs";
 import { ReadScope, type AgenticosPaths } from "./policy/read-scope";
@@ -46,6 +47,7 @@ import { SCHEME, parseAgenticosUrl, urlFromArgv } from "./protocol";
 import { quitGate, quitCalledOff } from "./quit-gate";
 import { admit } from "./computer/admission";
 import { BridgeKeeper, ComputerBridge, bridgeSocketPath } from "./computer/bridge";
+import { ComputerDoor, SESSION_VAR, doorSocketPath, openerPath } from "./computer/door";
 import { sweepHeld } from "./computer/downloads";
 import { FsService } from "./services/fs";
 import { ProcService } from "./services/proc";
@@ -77,6 +79,11 @@ if (debugging.length && app.isPackaged && !__AOS_TEST_BUILD__) {
   console.error(`[main] refusing to start with ${debugging.join(", ")}: this build cannot be debugged from outside`);
   process.exit(1);
 }
+
+// session-browser S23: an app started inside another UniDeX session inherits that session's door id. The three session
+// bases drop it, but main's other children (setup jobs, runtime spawns, the proc service) copy process.env, and their
+// pages would open in the outer app's session. Dropped once, before anything spawns; BROWSER stays (it becomes `prev`).
+delete process.env[SESSION_VAR];
 
 // agent-computer D18, D39: the e2e suite's switches, which a packaged build ignores (computer/notify.ts testSwitches).
 // Chromium reads its switches before `ready`: the host rules give the suite's fixture sites unmarked *.test origins.
@@ -114,6 +121,26 @@ let vault = resolveVault();
 const writes = loadWriteSettings();
 // The runtime the app carries (phase 5, I1): what the wizard installs and attach mode upgrades from.
 const payload = findPayload({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, env: process.env });
+
+// session-browser S23: the door a program inside a session knocks on to open a page in that session's browser, and the
+// opener it knocks with. The opener ships under Resources when packaged; a development run reads it from app/resources.
+// No door when no socket path fits; no opener, and no session gets the variables. It starts with the bridge (makeBridge).
+const doorPath = doorSocketPath(app.getPath("userData"), app.getPath("temp"));
+const computerDoor = doorPath ? new ComputerDoor({
+  path: doorPath,
+  enabled: () => computerOn() && computerSettings().enabled,
+  opener: openerPath({ resources: app.isPackaged ? process.resourcesPath : path.join(__dirname, "../../resources"), tmp: app.getPath("temp"), userData: app.getPath("userData") }),
+  // A program's page opens in its session's browser (session-browser S23), with the tools' consent rules. While the app
+  // quits nothing is opened: a quit that is called off leaves the door up, serving until the bridge stops. The log line
+  // names the session, never the address.
+  open: (session, url) => {
+    if (quitting) return;
+    void computerService.openFromProgram(session, url).catch(() => console.warn(`[main] door: an open for ${session} failed`));
+  },
+  log: (line) => console.warn(`[main] ${line}`),
+}) : null;
+/** The opener variables of a session's processes: none while the Computer surface is off (the door's `enabled`) or there is no door. */
+const browserEnv = (session: string, base: NodeJS.ProcessEnv, o?: { readOnly: boolean }): Record<string, string> => computerDoor?.envFor(session, base, o) ?? {};
 
 let shells: string[] = [];
 try { shells = parseShells(fs.readFileSync("/etc/shells", "utf8")); } catch { /* no /etc/shells: only $SHELL */ }
@@ -164,12 +191,17 @@ const ptyService = new PtyService({
   onAgentGone: (agent) => computerService.agentGone(agent),
   // R86: no terminal starts while the app quits (quit-gate.ts), so the quit's wait for their exits is the last one.
   quitting: () => quitting,
+  browserEnv,
   // code-chat R16: a terminal's transcript follower ends when the terminal is closed, not when its agent exits.
   // session-browser S22: closing a row forgets its browser, named by the terminal's FIRST process (a takeover shell's close
   // reports it); the page going ("all") forgets nothing here, `pageGone` handles that.
   onEnd: (id, terminal, why, origin) => {
     codeMirror.end(id, terminal);
-    if (why === "closed") computerService.forget(`code:${origin}`);
+    if (why === "closed") {
+      computerService.forget(`code:${origin}`);
+      // The session ended: its id stops working. Never tied to `destroyed`: turning a browser off keeps the id valid.
+      computerDoor?.revoke(`code:${origin}`);
+    }
   },
 });
 // Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
@@ -192,7 +224,8 @@ function sessionNode(): string | null {
 }
 const sessionService = new SessionService({
   trash: (file) => shell.trashItem(file),
-  onRemoved: (thread) => computerService.forget(`chat:${thread}`),
+  onRemoved: (thread) => { computerService.forget(`chat:${thread}`); computerDoor?.revoke(`chat:${thread}`); },
+  browserEnv,
   vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, computerOn, context: () => context, env: process.env, node: sessionNode,
   // A turn's start and end are when a thread's title may have changed: the browser's label is read again then, not on every state.
   emit: (ev) => { send(CH.sessionEvent, ev); if (ev.event.kind === "prompt" || ev.event.kind === "done") computerService.retitled(`chat:${ev.thread}`); },
@@ -260,9 +293,13 @@ const computerRecords = new BrowserRecords({
   file: path.join(app.getPath("userData"), "computer", "browsers.json"),
   log: (line) => console.warn(`[main] ${line}`),
 });
+/** The terminals and threads main holds: the one check the page's Computer calls and a program's open both use (policy/computer.ts sessionAllowed). */
+const heldSessions = { terminal: (id: string): boolean => ptyService.holdsOrigin(id), thread: (id: string): boolean => sessionService.has(id) };
 const computerService: ComputerService = new ComputerService({
   records: computerRecords,
   threadExists: (session) => session.startsWith("chat:") ? sessionService.exists(session.slice("chat:".length)) : false,
+  // `moved` fires only for a move that answered true (service.ts move). The door's ids follow the terminal, not the browser,
+  // so they move in the computer IPC's `moved` (registerComputerIpc below), whichever way the service answered.
   moved: (from, to) => { const b = computerBrowsers.get(from); if (b) { computerBrowsers.delete(from); computerBrowsers.set(to, b); } },
   label: (session) => (session.startsWith("chat:") ? sessionService.titleOf(session.slice("chat:".length)) : undefined),
   browser: (session, hooks) => {
@@ -287,6 +324,11 @@ const computerService: ComputerService = new ComputerService({
     if (agent.page === "chat" && agent.key.startsWith("chat:")) sessionService.noteEvent(agent.key.slice("chat:".length), line);
   },
   popOut: (session, show) => popOutComputer(session, show),
+  // session-browser S23: the check the page's calls use (registerComputerIpc below), for a program's open; S24, X4: the
+  // external-open rule, so the e2e seam records Open in my browser as it records links, but waiting for the system's answer.
+  held: (session) => sessionAllowed(session, heldSessions),
+  outside: (url) => openExternalAwaited(url),
+  log: (line) => console.warn(`[main] ${line}`),
   // D31: a late bridge close from a session's previous process must not end the turn that replaced it.
   liveAgent: (key) => agentRegistry.byKey(key),
   startPage: computerStartPage,
@@ -341,6 +383,8 @@ let win: BrowserWindow | null = null;
 let tray: StatusTray | null = null;
 let watcher: VaultWatcher | null = null;
 let quitting = false;
+/** Whether the page went (`endPageWork`) while a quit was under way: if that quit is called off, the Code slots end as at any reload. */
+let pageWentWhileQuitting = false;
 let rendererReady = false;
 let commands: CommandInfo[] = [];
 const pendingLinks: ProtocolRequest[] = [];
@@ -352,7 +396,13 @@ const updates = new UpdateService({
   intervalHours: updateConfig.intervalHours,
   load: () => (require("electron-updater") as { autoUpdater: UpdaterLike }).autoUpdater,
   emit: (s) => {
-    if (quitCalledOff({ quitting, updateStatus: s.status })) { quitting = false; computerService.quitCancelled(); }
+    if (quitCalledOff({ quitting, updateStatus: s.status })) {
+      quitting = false;
+      computerService.quitCancelled();
+      // session-browser A6: the page went while the quit was under way (endPageWork returned before `pageGone`), so the Code
+      // slots `quitCancelled` just brought back belong to terminals that no longer exist; the next page counts from t1 again.
+      if (pageWentWhileQuitting) { pageWentWhileQuitting = false; computerService.pageGone(); }
+    }
     send(CH.updateEvent, s);
     setMenu();
   },
@@ -600,9 +650,11 @@ async function makeBridge(root: string): Promise<{ stop(): Promise<void> }> {
     live: (agent) => agentRegistry.get(agent.pid)?.key === agent.key,
   });
   await next.start();
+  // session-browser S23: the door starts where the bridge does; a session started while it is down gets no opener variables.
+  await computerDoor?.start();
   const off = agentRegistry.onRemove((agent) => next.drop(agent.pid));
   recordApp(root, { computerSocket: socketPath });
-  return { stop: async () => { off(); await next.stop(); } };
+  return { stop: async () => { off(); computerDoor?.stop(); await next.stop(); } };
 }
 
 /**
@@ -700,7 +752,9 @@ registerUpdateIpc(trust, {
   check: () => updates.check(),
   install: () => { installRequests += 1; updates.install(); },
 });
-registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, sessions: { terminal: (id) => ptyService.holdsOrigin(id), thread: (id) => sessionService.has(id) } });
+// session-browser A8: the door's ids belong to the terminal row, so they follow it once the page's move completed for two
+// terminals main holds, also when the service kept the replacement's own browser (it answered false).
+registerComputerIpc(trust, { enabled: computerOn, service: () => computerService, sessions: heldSessions, moved: (from, to) => computerDoor?.move(from, to) });
 registerThemeIpc(trust, { state: () => themeState(), set: (source) => setTheme(source) });
 
 /** The page went (closed, crashed, reloaded, or quitting): its terminals go with it, and the children it was waiting on.
@@ -712,8 +766,12 @@ function endPageWork(): void {
   // agent-computer D7, D27: the page's asks go with it (each agent hears it was cancelled), the pop-out closes, and no
   // computer is on screen until the page selects one again. Quitting, the computer is already shut down (before-quit):
   // placing a view now could make a park window, and a window made while quitting keeps will-quit from firing.
-  askBroker.cancel(() => true, "the app's window closed or reloaded");
-  if (quitting) return;
+  askBroker.cancel(() => true, PAGE_GONE);
+  // session-browser S23: the next page's Code keys start again at t1, so an id issued before must not reach the terminal
+  // that reuses its key (a detached program keeps its environment). Bookkeeping, no window: it runs whenever the page
+  // goes, quitting or not (a quit that is called off keeps the app, the door and the next page).
+  computerDoor?.revokeAll("code:");
+  if (quitting) { pageWentWhileQuitting = true; return; }
   closeComputerPop();
   // session-browser S1: the next page counts its terminals from the start, so the Code sessions' browsers go too.
   computerService.pageGone();

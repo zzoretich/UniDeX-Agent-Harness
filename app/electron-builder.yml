@@ -33,6 +33,9 @@ asarUnpack:
 extraResources:
   - from: payload
     to: payload
+  # session-browser S23: the command every session's BROWSER points at; main finds it under Resources/opener.
+  - from: resources/opener
+    to: opener
 # node-pty's N-API prebuild loads in this Electron as it is; a rebuild would compile it from source.
 npmRebuild: false
 

@@ -135,7 +135,7 @@ export class TerminalSession {
   }
 
   /** The user's login shell in this terminal's folder. Throws when terminals are unavailable or it is refused. */
-  private spawnShell(): HostPtyProcess {
+  private spawnShell(readOnly = false): HostPtyProcess {
     return hostPty.spawn(this.shell, [], {
       name: "xterm-256color",
       cols: this.size.cols,
@@ -143,6 +143,7 @@ export class TerminalSession {
       cwd: this.cwd,
       // A process that takes over in a terminal that already has a first one names it, so main ties the two (session-browser S1).
       ...(this.firstPty !== null ? { origin: this.firstPty } : {}),
+      ...(readOnly ? { readOnly: true } : {}),
       env: {
         ...(this.env || {}), TERM: "xterm-256color", COLORTERM: "truecolor", AGENTIC_OS: "1", FORCE_HYPERLINK: "1",
         // An agent terminal's shell (the launch line typed into it) hands its key to the agent it starts (code-chat R15),
@@ -227,9 +228,9 @@ export class TerminalSession {
   /** A deferred terminal's shell, when main fell back (D18), with `first` (the launch line) typed into it before what
    *  was typed while it started, so that typeahead reaches the agent and never the line. Throws as a new terminal's
    *  shell would. */
-  startShell(first = ""): void {
+  startShell(first = "", readOnly = false): void {
     if (this.disposed || this.exited || this.pty) return;
-    const p = this.spawnShell();
+    const p = this.spawnShell(readOnly);
     this.pending = first + this.pending;
     this.attach(p, false);
   }

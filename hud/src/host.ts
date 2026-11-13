@@ -84,6 +84,8 @@ export interface HostPtyOptions {
   env?: Record<string, string>;
   /** The id of the terminal's first process, for a process that takes over in a terminal that has one (session-browser S1). */
   origin?: string;
+  /** The shell is a Read only agent launch's typed-line fallback: main starts it without the opener variables (session-browser N4). */
+  readOnly?: boolean;
 }
 
 /** The conversation a Code session runs: its host and that host's id for it. */
@@ -252,6 +254,8 @@ export interface HostComputer {
   navigate(url: string): Promise<HostResult<null>>;
   /** A web link the person clicked in a session: opens in that session's browser, turned on if need be (session-browser S14). Failures: the codes are EINVAL (the address is refused), EPERM (the session is not one the app holds, or the Computer surface is off), ENOENT (the app is quitting or the browser was switched off meanwhile), EIO (no tab could be made). A tab that was made but whose page failed to load is ok. */
   openLink(session: string, url: string): Promise<HostResult<null>>;
+  /** Open in my browser (session-browser S24): the active tab of the selected browser goes to the Mac's own browser. ENOENT (nothing to send), EROFS (not an https page). The tab stays open. */
+  openOutside(): Promise<HostResult<null>>;
   tab(op: { kind: "new" } | { kind: "close" | "select"; index: number }): void;
   /** The person's Back, Forward or Reload on the active tab (session-browser S13). */
   nav(go: HostComputerNavGo): void;
