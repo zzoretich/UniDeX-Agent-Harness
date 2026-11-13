@@ -11,6 +11,15 @@ export const CDP_TIMEOUT_MS = 5_000;
 /** A command the page did not answer in time. */
 export class CdpTimeout extends Error {}
 
+/** An error with two wordings (session-browser S16): its message is the table's sentence, for the agent; `person` is the plain
+ *  statement of what happened, for the activity log and a note, which carry no advice meant for the agent. */
+export class Told extends Error {
+  constructor(text: string, readonly person: string) { super(text); }
+}
+
+/** An error's text for a line the person reads. */
+export const forPerson = (e: unknown): string => (e instanceof Told ? e.person : e instanceof Error ? e.message : String(e));
+
 /** The tab or page an action was judged on is no longer the one in front (agent-computer D31, I3b): nothing more of the
  *  action is delivered. */
 export class PageChanged extends Error {

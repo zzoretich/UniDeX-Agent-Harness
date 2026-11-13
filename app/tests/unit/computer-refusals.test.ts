@@ -41,46 +41,96 @@ function firstArgs(src: string, name: string): string[] {
 
 /** Arguments of fail( and refuseAt( that are not a table entry written in place: each with its reason. */
 const SERVICE_ALLOWED: Readonly<Record<string, string>> = {
-  "message(e)": "the text of an error another module threw (tabled there)",
-  "parsed": "the sentence parse() took from the table",
-  "ro.refuse": "the gate's verdict, from the table",
-  "v.refuse": "the gate's verdict, from the table",
-  "need.refuse": "the gate's verdict, from the table",
-  "tv.refuse": "the gate's verdict, from the table",
-  "cv.refuse": "the gate's verdict, from the table",
-  "q.sentence": "the quiet sentence, a table entry stored when the period began",
-  "s.sentence": "the stop's sentence, a table entry stored when the person stopped the call",
+  "message(e)": "the .message of an error thrown by browser.ts, cdp.ts or the page: tabled where it is thrown (the next test checks each throw there)",
+  "parsed": "what parse() returned when it was a string: its returns are REFUSAL.badRef, noUrl, noTarget, noText, noKey, noDistance and unknownTool",
+  "ro.refuse": "the gate's verdict: every `refuse:` in gate.ts is a table entry (checked below)",
+  "v.refuse": "the gate's verdict: every `refuse:` in gate.ts is a table entry (checked below)",
+  "need.refuse": "the gate's verdict: every `refuse:` in gate.ts is a table entry (checked below)",
+  "tv.refuse": "the gate's verdict: every `refuse:` in gate.ts is a table entry (checked below)",
+  "cv.refuse": "the gate's verdict: every `refuse:` in gate.ts is a table entry (checked below)",
+  "q.sentence": "the quiet sentence: REFUSAL.declined or switchedOff, stored when the period began",
+  "s.sentence": "the stop's sentence: REFUSAL.switchedOff or tabClosed, stored when the person stopped the call",
   'o.answer === "deny" ? REFUSAL.askDenied : REFUSAL.askDeniedBecause(o.reason ?? "cancelled")': "a choice between two table entries",
   "text": "refuseAt's own variable, built from a table sentence and the page line",
 };
 
+/** The service's fail( and refuseAt( calls whose first argument is not a table entry or an allowed name. */
+function serviceViolations(src: string): string[] {
+  return [...firstArgs(src, "fail"), ...firstArgs(src, "refuseAt")].filter((a) =>
+    !(/^REFUSAL\.\w+(\(.*\))?$/s.test(a) || /^this\.busy\(/.test(a) || /^deniedText\(/.test(a) || a in SERVICE_ALLOWED));
+}
+
+/** The whole text of every call of `name(` in `src` (to its closing parenthesis). */
+function wholeCalls(src: string, name: string): string[] {
+  const out: string[] = [];
+  const re = new RegExp(`(?<![\\w.])${name}\\(`, "g");
+  for (let m = re.exec(src); m; m = re.exec(src)) {
+    let depth = 0, i = m.index + m[0].length, str: string | null = null;
+    const start = i;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (str) { if (c === "\\") i++; else if (c === str) str = null; continue; }
+      if (c === '"' || c === "'" || c === "`") str = c;
+      else if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") { if (depth === 0) break; depth--; }
+    }
+    out.push(src.slice(start, i));
+  }
+  return out;
+}
+
+/** The error constructors of browser.ts and cdp.ts whose call holds a string literal outside a REFUSAL entry's own arguments. */
+function throwViolations(src: string): string[] {
+  const calls = ["new Error", "new CdpTimeout", "new PageChanged", "new FocusMoved"].flatMap((n) => wholeCalls(src, n));
+  // `new Told(table sentence, the person's own wording)`: only the first argument is the agent's.
+  calls.push(...firstArgs(src, "new Told"));
+  return calls.filter((c) => /["'`]/.test(c.replace(/REFUSAL\.\w+(\((?:[^()]|\([^()]*\))*\))?/g, "")));
+}
+
+/** The gate's `refuse:` values that are not a table entry. */
+function gateViolations(src: string): string[] {
+  return [...src.matchAll(/\brefuse\s*:\s*([^}]+?)\s*\}/g)].map((m) => m[1]).filter((a) => a !== "string" && !/^REFUSAL\.\w+$/.test(a));
+}
+
 test("no refusal is written in service.ts: every fail( and refuseAt( takes a table entry", () => {
   const src = read("service.ts");
-  const calls = [...firstArgs(src, "fail"), ...firstArgs(src, "refuseAt")];
-  assert.ok(calls.length > 40, `${calls.length} calls found`);
-  for (const a of calls) {
-    const ok = /^REFUSAL\.\w+(\(.*\))?$/s.test(a) || /^this\.busy\(/.test(a) || /^deniedText\(/.test(a) || a in SERVICE_ALLOWED;
-    assert.ok(ok, `fail/refuseAt takes "${a}": a sentence belongs in refusals.ts`);
-  }
+  assert.ok(firstArgs(src, "fail").length + firstArgs(src, "refuseAt").length > 40);
+  assert.deepEqual(serviceViolations(src), []);
 });
 
 test("every error an agent can get from the gate, the browser, the cdp helpers and the bridge comes from the table", () => {
   const gate = read("gate.ts");
-  const verdicts = [...gate.matchAll(/\{ refuse: ([^}]+) \}/g)].map((m) => m[1]).filter((a) => a !== "string");   // the Verdict type's own `{ refuse: string }`
-  assert.ok(verdicts.length >= 5, "the gate's refusals were found");
-  for (const a of verdicts) assert.match(a, /^REFUSAL\.\w+$/, `gate.ts: ${a}`);
+  assert.ok([...gate.matchAll(/\brefuse\s*:/g)].length >= 6, "the gate's refusals were found");
+  assert.deepEqual(gateViolations(gate), []);
   for (const f of ["browser.ts", "cdp.ts"]) {
     const src = read(f);
-    const args = [...firstArgs(src, "new Error"), ...firstArgs(src, "new CdpTimeout")];
-    if (f === "browser.ts") assert.ok(args.length > 15, `${args.length} throws found`);
-    // `new Error(String(e))` only wraps a value a promise rejected with that was not an Error (its own text, not ours).
-    for (const a of args) if (a !== "String(e)") assert.match(a, /REFUSAL\.\w+/, `${f}: new Error(${a})`);
+    if (f === "browser.ts") assert.ok(wholeCalls(src, "new Error").length > 15, "the throws were found");
+    assert.deepEqual(throwViolations(src), [], f);
   }
   const bridge = read("bridge.ts");
   const texts = [...bridge.matchAll(/text:\s*([^,}]+?),\s*isError: true/g)].map((m) => m[1]);
   assert.ok(texts.length >= 3, "the bridge's replies were found");
   for (const a of texts) assert.match(a, /^REFUSAL\./, `bridge.ts: text: ${a}`);
   assert.equal(/reason:\s*["'`]/.test(bridge), false, "bridge.ts: the admission reason comes from the table");
+  assert.equal(/NOT_STARTED\s*=\s*["'`]/.test(read("admission.ts")), false, "admission.ts takes its sentence from the table too");
+});
+
+test("the source checks catch a planted literal", () => {
+  assert.deepEqual(serviceViolations('return fail("A new sentence.");'), ['"A new sentence."']);
+  assert.equal(serviceViolations("return fail(`Nope ${x}.`);").length, 1);
+  assert.equal(serviceViolations('return refuseAt("Nope.", url);').length, 1);
+  assert.equal(serviceViolations("return fail(REFUSAL.late);").length, 0);
+  assert.equal(throwViolations('throw new Error("Oops.");').length, 1);
+  assert.equal(throwViolations("throw new PageChanged('Oops.');").length, 1, "a literal given to PageChanged");
+  assert.equal(throwViolations('throw new FocusMoved("Oops.");').length, 1, "a literal given to FocusMoved");
+  assert.equal(throwViolations('throw new Error(cond ? REFUSAL.noPage : "Oops.");').length, 1, "a literal anywhere in the call");
+  assert.equal(throwViolations("throw new Error(`Oops ${REFUSAL.noPage}`);").length, 1, "a template around an entry");
+  assert.equal(throwViolations('throw new Told("Oops.", "the person\'s words");').length, 1, "a literal as a Told's agent text");
+  assert.equal(throwViolations('throw new Told(REFUSAL.tabGone, "That tab was closed.");').length, 0, "the person's own wording is allowed");
+  assert.equal(throwViolations("throw new Error(REFUSAL.pageSlow(`${m} within ${s} s`));").length, 0);
+  assert.equal(gateViolations('return {refuse:"Nope."};').length, 1, "no spacing needed to hide it");
+  assert.equal(gateViolations("return { refuse   :   `Nope.` };").length, 1);
+  assert.equal(gateViolations("return { refuse: REFUSAL.notWeb };").length, 0);
 });
 
 test("the password-field sentence exists once", () => {

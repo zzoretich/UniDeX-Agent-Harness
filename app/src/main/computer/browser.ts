@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
 import { ASK_ROLES, covers, type Target } from "./categories";
-import { cdp, CdpTimeout, FocusMoved, isGone, keyEvents, PageChanged, unlessGone } from "./cdp";
+import { cdp, CdpTimeout, FocusMoved, forPerson, isGone, keyEvents, PageChanged, Told, unlessGone } from "./cdp";
 import { downloadName, HeldDownloads, moveInto } from "./downloads";
 import { permissionVerdict, type Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
@@ -362,7 +362,7 @@ export class ComputerBrowser {
    *  with `newTab`) adds the tab behind the active one and leaves the selection where it was, for a page the person did not
    *  ask for while they work in another (session-browser X2); with no active tab the new one is the active one anyway. */
   async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }): Promise<{ url: string; title: string }> {
-    if (!navAllowed(url)) throw new Error(REFUSAL.notWeb);
+    if (!navAllowed(url)) throw new Told(REFUSAL.notWeb, "Only http and https pages open.");
     // §4.2: load the normalised form navAllowed judged, never the raw string.
     const href = new URL(url).href;
     const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true);
@@ -380,9 +380,9 @@ export class ComputerBrowser {
       new Promise<null>((r) => { timer = setTimeout(() => r(null), LOAD_WAIT_MS); }),
     ]);
     clearTimeout(timer);
-    if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") throw new Error(REFUSAL.redirectRefused(t.refused ? `a ${t.refused}` : "a non-web"));
+    if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") { const what = t.refused ? `a ${t.refused}` : "a non-web"; throw new Told(REFUSAL.redirectRefused(what), `The page redirected to ${what} URL, which is refused.`); };
     // ERR_ABORTED: the page went somewhere else before it finished loading.
-    if (failed && failed.code !== "ERR_ABORTED") throw new Error(REFUSAL.couldNotOpen(`${href} (${failed.code ?? failed.message ?? "failed"})`));
+    if (failed && failed.code !== "ERR_ABORTED") { const why = failed.code ?? failed.message ?? "failed"; throw new Told(REFUSAL.couldNotOpen(`${href} (${why})`), `Could not open ${href}: ${why}.`); };
     return { url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()) };
   }
 
@@ -790,7 +790,7 @@ export class ComputerBrowser {
    *  may hold a secret; `tabs()` is the only form that leaves main. */
   realAddresses(): { urls: string[]; active: number } {
     // A destroyed browser has no tabs to give: asking it must never read as "no tabs".
-    if (this.gone) throw new Error(REFUSAL.browserGone);
+    if (this.gone) throw new Told(REFUSAL.browserGone, "the browser is gone");
     if (this.kept) return { urls: this.kept.map((k) => withoutUserinfo(k.url)), active: this.keptActive };
     const urls: string[] = [];
     let active = 0;
@@ -807,7 +807,7 @@ export class ComputerBrowser {
    *  (session-browser S24). MAIN ONLY, like `realAddresses`. Null when the active tab has no address to give: none yet
    *  (about:blank), a destroyed view or a scheme that is not a web page. Throws once the browser is gone. */
   activeAddress(): string | null {
-    if (this.gone) throw new Error(REFUSAL.browserGone);
+    if (this.gone) throw new Told(REFUSAL.browserGone, "the browser is gone");
     let url: string;
     if (this.kept) {
       const k = this.kept[this.keptActive];
@@ -949,7 +949,7 @@ export class ComputerBrowser {
   }
 
   private async addTab(by: string | null, keep?: Kept, background = false): Promise<Tab> {
-    if (this.gone) throw new Error(REFUSAL.browserGone);
+    if (this.gone) throw new Told(REFUSAL.browserGone, "This computer was closed.");
     if (this.list.length >= MAX_TABS) throw new Error(REFUSAL.tooManyTabs(String(MAX_TABS)));
     const view = new WebContentsView({
       webPreferences: {
@@ -975,7 +975,7 @@ export class ComputerBrowser {
     this.place();
     // The debugger's domains answer only once the page has a renderer.
     await t.wc.loadURL("about:blank");
-    await this.attach(t).catch((e: Error) => this.o.hooks.note(e.message));
+    await this.attach(t).catch((e: Error) => this.o.hooks.note(forPerson(e)));
     this.o.hooks.changed();
     return t;
   }
@@ -1049,7 +1049,7 @@ export class ComputerBrowser {
     const refuse = (url: string, what: string): void => note(`Refused ${what} a ${schemeOf(url)} URL.`);
     wc.setWindowOpenHandler((d) => {
       if (!navAllowed(d.url)) refuse(d.url, "a new window for");
-      else void this.popup(t, d).catch((e: Error) => this.o.hooks.note(`The page's new tab did not open: ${e.message}`));
+      else void this.popup(t, d).catch((e: Error) => this.o.hooks.note(`The page's new tab did not open: ${forPerson(e)}`));
       return { action: "deny" };
     });
     // A page's own navigations reach will-frame-navigate (main frame included), which notes the refusal once.
@@ -1319,7 +1319,7 @@ export class ComputerBrowser {
       try {
         t.wc.debugger.attach("1.3");
       } catch {
-        throw new Error(REFUSAL.otherDebugger);
+        throw new Told(REFUSAL.otherDebugger, "Another debugger is attached to this tab, so it cannot be driven (agent-computer D20).");
       }
       for (const [method, params] of ENABLE) await cdp(t.wc.debugger, method, params);
     })().finally(() => { t.attaching = null; });
@@ -1328,8 +1328,8 @@ export class ComputerBrowser {
 
   /** Every command goes through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). */
   private async send<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
-    if (t.wc.isDestroyed()) throw new Error(REFUSAL.tabGone);
-    if (t.wc.isDevToolsOpened()) throw new Error(REFUSAL.devToolsOpen);
+    if (t.wc.isDestroyed()) throw new Told(REFUSAL.tabGone, "That tab was closed.");
+    if (t.wc.isDevToolsOpened()) throw new Told(REFUSAL.devToolsOpen, "DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
     if (t.attaching) await t.attaching;
     else if (!t.wc.debugger.isAttached()) await this.attach(t);
     return cdp<T>(t.wc.debugger, method, params);

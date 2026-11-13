@@ -10,7 +10,7 @@
 
 import { realClock, type Answer, type Ask, type AskBroker, type AskInput, type Clock, type Outcome } from "./asks";
 import type { BrowserHooks, ComputerBrowser, FocusId, Judged, Resolved, TabInfo } from "./browser";
-import { FocusMoved, PageChanged } from "./cdp";
+import { FocusMoved, forPerson, PageChanged } from "./cdp";
 import type { ToolCall, ToolReply } from "./bridge";
 import { categoriesOf, type AskCategory, type Target } from "./categories";
 import type { ComputerConfig } from "./config";
@@ -1141,7 +1141,7 @@ export class ComputerService {
       this.line(p, USER, `Opened ${this.url(b) ?? "the page"}`, null);
       return { ok: true, data: null };
     } catch (e) {
-      return { ok: false, error: message(e), code: "EIO" };
+      return { ok: false, error: forPerson(e), code: "EIO" };
     }
   }
 
@@ -1183,7 +1183,7 @@ export class ComputerService {
       this.refresh(session);
       return { ok: true, data: null };
     } catch (e) {
-      return { ok: false, error: message(e), code: "EIO" };
+      return { ok: false, error: forPerson(e), code: "EIO" };
     }
   }
 
@@ -1366,7 +1366,7 @@ export class ComputerService {
     try {
       // A tab the person opens starts on the start page, the person's own load (nothing asks). An agent's new tab loads
       // its own URL instead, with no start page first (computer_open's newTab).
-      if (op.kind === "new") void this.serial(p, () => b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: null })).catch((e: unknown) => this.line(p, USER, `The new tab did not open: ${message(e)}`, null));
+      if (op.kind === "new") void this.serial(p, () => b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: null })).catch((e: unknown) => this.line(p, USER, `The new tab did not open: ${forPerson(e)}`, null));
       else if (op.kind === "close") { if (this.closeTab(p, b, op.index)) return; }
       else b.select(op.index);
     } catch { /* a stale index: the next state shows the tabs as they are */ }
@@ -1821,7 +1821,7 @@ export class ComputerService {
       if (!idle?.browser) return;
       try { idle.browser.sleep(); } catch (e) {
         // A sleep that failed leaves the browser awake; it is set aside for this pass so the loop ends, and logged once.
-        this.line(idle, USER, `The browser did not go to sleep: ${message(e)}`, null);
+        this.line(idle, USER, `The browser did not go to sleep: ${forPerson(e)}`, null);
         failed.add(idle);
         continue;
       }

@@ -761,7 +761,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const errors = h.errors.length;
       const redirect = await a.call("computer_open", { url: `http://shop.test:${site.port}/to-data` });
       expectReply(redirect, { isError: true });
-      expect(redirect.text).toMatch(/^The page redirected to a .+ URL, which is refused\.$/);
+      expect(redirect.text).toMatch(/^The page redirected to a .+ URL, which this browser refuses: open another page, or ask the user to finish this one in their own browser\.$/);
       expect(site.seen.some((s) => s.url === "/to-data")).toBe(true);
       const snap = await a.call("computer_snapshot");
       expect(snap.text).not.toContain("Landed on a data page");

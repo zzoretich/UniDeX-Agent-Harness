@@ -1,11 +1,12 @@
-// Every sentence the computer service refuses an agent with (session-browser S16, Task 19), in one table so each can be read,
-// reworded and tested in one place. Each is one sentence in the form `<what happened>: <what to do next>.`, with the
-// `computer_*` tool named where the next step is a call. An entry that needs one inserted value is a function of one string
-// (a reason the gate, the wheel or the ask broker gave). Where the page is worth naming, the service adds the page line
-// after the sentence; the entries are the sentences alone. No Electron: the gate imports it too.
+// Every sentence an agent can be refused or told an error with (session-browser S16, Task 19), in one table so each can be
+// read, reworded and tested in one place: the computer service's, the gate's, the browser's and the DevTools helpers' errors,
+// and the bridge's replies. Each is one sentence in the form `<what happened>: <what to do next>.`, with the `computer_*`
+// tool named where the next step is a call. An entry that needs one inserted value is a function of one string. Where the
+// page is worth naming, the service adds the page line after the sentence; the entries are the sentences alone. No Electron.
 //
-// Not here: the reason fragments the service puts in its log lines and card endings, the page calls' error codes, and the
-// texts another module words (the browser's and the snapshot's errors, the door's and the opener's).
+// Not here: the reason fragments the service puts in its log lines and card endings, the lines and notes written for the
+// PERSON (the activity log keeps its own wording: `Told.person` in cdp.ts), the page calls' error codes, and the texts of the
+// door and the opener.
 
 export const REFUSAL = {
   // The browser is off, or leaving (session-browser S3, S5).
@@ -67,7 +68,7 @@ export const REFUSAL = {
   emptyKeyPart: (key: string) => `"${key}" is not a key: a part is empty, so give parts joined by +, such as Shift+Tab.`,
   notModifier: (part: string) => `"${part}" is not a modifier: only Shift, Control, Alt and Meta go before the last part, as in Shift+Tab.`,
   unknownKey: (key: string) => `"${key}" is not a key this browser knows: use a name such as Enter, Tab or ArrowDown.`,
-  redirectRefused: (what: string) => `The page redirected to ${what} URL, which is refused: open the address it should have gone to instead.`,
+  redirectRefused: (what: string) => `The page redirected to ${what} URL, which this browser refuses: open another page, or ask the user to finish this one in their own browser.`,
   couldNotOpen: (what: string) => `Could not open ${what}: check the address, then try again or open another page.`,
   noRefNow: (ref: string) => `There is no ${ref} on this page now: take a new snapshot.`,
   covered: "Something else covers that element now: take a new snapshot.",
@@ -75,12 +76,12 @@ export const REFUSAL = {
   noTab: (index: string) => `There is no tab ${index}: call computer_status to see the tabs.`,
   browserGone: "The browser is gone: call computer_status to see whether it is back.",
   tooManyTabs: (max: string) => `${max} tabs are open: close one first.`,
-  otherDebugger: "Another debugger is attached to this tab, so it cannot be driven: ask the user to close it.",
+  otherDebugger: "Another debugger is attached to this tab, so it cannot be driven: ask the user to close DevTools or the other debugger on that tab.",
   devToolsOpen: "DevTools is open on this tab, so it cannot be driven: ask the user to close it.",
   tabGone: "That tab was closed: call computer_status to see what is open.",
   sizeChanged: "The page changed size while the screenshot was taken, so it was not returned: try again.",
   notVisible: "That element is not visible on the page: take a new snapshot.",
-  passwordUnread: "Could not read a password field's value to scrub it, so the text was held back (D9): try again.",
+  passwordUnread: "Could not read a password field's value to scrub it, so the text was held back: try again.",
   nothingThere: "There is nothing at that point on the page: take a new snapshot or give another x and y.",
   cantTell: "Cannot tell which control this click reaches: take a new snapshot.",
 

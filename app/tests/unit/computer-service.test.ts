@@ -16,7 +16,7 @@ import type { Target } from "../../src/main/computer/categories";
 import type { Snapshot } from "../../src/main/computer/snapshot";
 import type { ComputerTool } from "../../src/main/computer/bridge";
 import type { Rect } from "../../src/main/computer/mask";
-import { PageChanged } from "../../src/main/computer/cdp";
+import { PageChanged, Told as TwoWordings } from "../../src/main/computer/cdp";
 
 const flush = async (): Promise<void> => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
 /** The page line a reply ends with: the address inside the untrusted wrapper, after its origin (D21, R69). */
@@ -4553,4 +4553,19 @@ test("a browser is not put to sleep while a reply's page is being read", async (
   assert.ok(!(await call).isError);
   h.svc.power("chat:s3", true); await flush();
   assert.equal(x.sleeping, true, "after the read it can sleep");
+});
+
+// ---- fix round 2 (session-browser S16): a line for the person keeps its own words
+
+test("a line for the person keeps its own wording, not the agent's advice", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  b.open = async () => { throw new TwoWordings(REFUSAL.browserGone, "This computer was closed."); };
+  h.svc.tab({ kind: "new" });
+  await flush();
+  assert.ok(h.lastState().log.some((l) => l.text === "The new tab did not open: This computer was closed."), JSON.stringify(h.lastState().log.map((l) => l.text)));
+  b.open = async () => { throw new TwoWordings(REFUSAL.couldNotOpen("https://x.test/ (ERR_FAILED)"), "Could not open https://x.test/: ERR_FAILED."); };
+  assert.deepEqual(await h.svc.navigate("https://x.test/"), { ok: false, error: "Could not open https://x.test/: ERR_FAILED.", code: "EIO" });
+  b.open = async () => { throw new TwoWordings(REFUSAL.browserGone, "This computer was closed."); };
+  await h.call(A, "computer_open", { url: "https://x.test/" }).then((r) => assert.equal(r.text, REFUSAL.browserGone, "the agent gets the table's sentence"));
 });
