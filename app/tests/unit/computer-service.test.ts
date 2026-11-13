@@ -4912,10 +4912,13 @@ test("computer_console is a look tool wrapped as page text", async () => {
   assert.equal(b.settles.length, settles, "no settle wait");
   assert.deepEqual(await h.call(A, "computer_console", { tab: 9 }).catch((e) => e), { text: "There is no tab 9.", isError: true }, "the browser's own refusal");
   assert.deepEqual(await h.call(A, "computer_console", { tab: -1 }), { text: REFUSAL.badTab, isError: true });
-  // It answers while the user drives, and never takes the wheel.
+  // It answers while the user drives, and never takes the wheel or raises a card.
   h.svc.select("chat:a");
   h.svc.takeOver();
+  const driving = h.wheel.holder("chat:a");
   assert.deepEqual(await h.call(A, "computer_console", {}), { text: wrapped(url) });
+  assert.deepEqual(h.wheel.holder("chat:a"), driving, "the person still holds the wheel");
+  assert.equal(h.broker.pending().length, 0, "no card was raised");
   h.svc.handBack();
   // A read only session may call it.
   const R = agent("chat:a", "Reader", "read");

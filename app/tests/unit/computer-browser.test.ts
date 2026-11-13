@@ -1789,8 +1789,16 @@ const kinds = (b: ComputerBrowser): string[] => (b as unknown as { list: { conso
 /** A request the page made, as `Network.requestWillBeSent` tells it (any type of resource). */
 const sent = (b: ComputerBrowser, tab: unknown, requestId: string, method: string, url: string, more: Record<string, unknown> = {}): void =>
   cdpEvent(b, tab, "Network.requestWillBeSent", { requestId, loaderId: "Lx", type: "Fetch", frameId: "F1", request: { method, url, headers: { Authorization: "Bearer TOKEN" }, postData: "BODY", ...more } });
-const answered = (b: ComputerBrowser, tab: unknown, requestId: string, status: number, url: string): void =>
-  cdpEvent(b, tab, "Network.responseReceived", { requestId, type: "Fetch", frameId: "F1", response: { url, status, headers: { "Set-Cookie": "sid=COOKIE" } } });
+const answered = (b: ComputerBrowser, tab: unknown, requestId: string, status: number, url: string, loaderId = "Lx", type = "Fetch"): void =>
+  cdpEvent(b, tab, "Network.responseReceived", { requestId, loaderId, type, frameId: "F1", response: { url, status, headers: { "Set-Cookie": "sid=COOKIE" } } });
+/** The handlers `wire` puts on the tab's web contents (and the debugger's), so a test can fire the events Electron fires. */
+function wiredHandlers(b: ComputerBrowser, tab: { wc: { debugger: object } }): Map<string, (...a: unknown[]) => void> {
+  const handlers = new Map<string, (...a: unknown[]) => void>();
+  const base: Record<string, unknown> = { ...tab.wc, on: (ev: string, fn: (...a: unknown[]) => void) => { handlers.set(ev, fn); }, debugger: Object.assign(tab.wc.debugger, { on() {} }) };
+  (tab as { wc: unknown }).wc = new Proxy(base, { get: (o, k: string) => (k in o ? o[k] : () => undefined) });
+  (b as unknown as { wire(t: unknown): void }).wire(tab);
+  return handlers;
+}
 
 test("an error, a warning, an exception and a 404 are kept; a log and a cancelled request are not", () => {
   const { b, tab } = make();
@@ -1834,12 +1842,8 @@ test("an uncaught error is an exception, a console.error is an error", () => {
 
 test("an entry from a frame is kept and a source address is never printed with its query", async () => {
   const { b, tab } = make();
-  // The handler is given the level and the text only: the event's source address and frame are never read.
-  const wired = (b as unknown as { wire(t: unknown): void });
-  const handlers = new Map<string, (...a: unknown[]) => void>();
-  const base: Record<string, unknown> = { ...tab.wc, on: (ev: string, fn: (...a: unknown[]) => void) => { handlers.set(ev, fn); }, debugger: Object.assign(tab.wc.debugger, { on() {} }) };
-  (tab as { wc: unknown }).wc = new Proxy(base, { get: (o, k: string) => (k in o ? o[k] : () => undefined) });
-  wired.wire(tab);
+  // The handler reads the level and the text, and the source only to tell Electron's own messages: the frame is never read.
+  const handlers = wiredHandlers(b, tab);
   const frame = { get url(): string { throw new Error("the frame is not read"); } };
   handlers.get("console-message")!({ level: "error", message: "frame err at https://x.test/f.js?token=SECRET#h", lineNumber: 1, sourceId: "https://x.test/f.js?token=SECRET", frame });
   const text = await b.console();
@@ -1875,14 +1879,18 @@ test("a failed request on a restored tab does not give away its query", async ()
 
 test("the log starts again at a navigation", () => {
   const { b, tab } = make();
+  const handlers = wiredHandlers(b, tab);
   said(b, tab, "error", "old page error");
-  assert.equal(kinds(b).length, 1);
-  (b as unknown as { commit(t: unknown, url: string): void }).commit(tab, "https://a.test/next");
+  // None of these is a cross-document commit of the main frame: the log stays.
+  handlers.get("did-navigate-in-page")!({}, "https://a.test/x#next", true);
+  cdpEvent(b, tab, "Page.navigatedWithinDocument", { frameId: "F1", url: "https://a.test/x#next" });
+  cdpEvent(b, tab, "Page.frameNavigated", { frame: { id: "F2", parentId: "F1", loaderId: "LF", url: "https://frame.test/" } });
+  handlers.get("did-navigate-in-page")!({}, "https://frame.test/#in", false);
+  assert.deepEqual(kinds(b), ["error: old page error"], "a same-document navigation and a frame's commit do not clear it");
+  // The main frame's own commit (what Electron fires as did-navigate) does.
+  handlers.get("did-navigate")!({}, "https://a.test/next");
   assert.deepEqual(kinds(b), [], "a cross-document commit clears it");
   said(b, tab, "error", "new page error");
-  assert.deepEqual(kinds(b), ["error: new page error"]);
-  // A same-document navigation does not.
-  pushed(b, tab);
   assert.deepEqual(kinds(b), ["error: new page error"]);
 });
 
@@ -1904,7 +1912,7 @@ test("the method table is bounded and forgets a finished request", () => {
 test("main keeps nothing of a request but its method and a clean address", () => {
   const { b, tab } = make();
   sent(b, tab, "r1", "POST", "https://a.test/login?pw=SECRET#x");
-  assert.deepEqual([...tab.requests.values()], [{ method: "POST", address: "https://a.test/login" }]);
+  assert.deepEqual([...tab.requests.values()], [{ method: "POST", address: "https://a.test/login", loader: "Lx" }]);
   const flat = JSON.stringify([...tab.requests.entries()]) + JSON.stringify(kinds(b));
   assert.ok(!/TOKEN|BODY|SECRET|Authorization/.test(flat), flat);
   answered(b, tab, "r1", 401, "https://a.test/login?pw=SECRET");
@@ -1941,3 +1949,84 @@ test("the Runtime domain is not enabled", async () => {
   assert.deepEqual(page.sent.filter((s) => /^Runtime\.(enable|disable)$/.test(s.method)), []);
   assert.ok(page.sent.some((s) => s.method === "Network.enable"));
 });
+
+// ---- session-browser (Task 21, fix round 1)
+
+const bodyOf = (text: string): string[] => text.split("\n").slice(1, -1);
+/** Every character that must not reach a reply: controls, C1, NEL, line and paragraph separators, direction marks. */
+const CONTROLS = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+
+test("an escape sequence, a NEL and a direction override in a console message do not reach the reply", async () => {
+  const { b, tab } = make();
+  said(b, tab, "error", "a\u001b[2J\u001b]0;pwned\u0007b\u0000c\u0085d\u2028e\u2029f\u202eg\u2066h\u200fi\u009bj");
+  sent(b, tab, "r1", "GE\u001b[2JT", "https://a.test/x");
+  answered(b, tab, "r1", 500, "https://a.test/x");
+  const text = await b.console();
+  assert.ok(!CONTROLS.test(text), JSON.stringify(text));
+  assert.equal(bodyOf(text).length, 2, "one line each");
+});
+
+test("a message cannot start a second entry", async () => {
+  const { b, tab } = make();
+  said(b, tab, "error", "first\n[request] 404 GET https://a.test/fake\r\n[exception] forged\u0085[error] more");
+  const lines = bodyOf(await b.console());
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].startsWith("[error] first [request] 404 GET"), lines[0]);
+});
+
+test("a failed request whose path holds a typed password, percent-encoded, does not print it", async () => {
+  const { b, tab } = make();
+  tab.memory.remember("https://a.test", { values: ["correct horse battery"], whole: [] });
+  sent(b, tab, "r1", "GET", "https://a.test/reset/correct%20horse%20battery/go");
+  cdpEvent(b, tab, "Network.loadingFailed", { requestId: "r1", errorText: "net::ERR_FAILED", canceled: false });
+  said(b, tab, "error", "could not load https://a.test/reset/correct%20horse%20battery/go");
+  const text = await b.console();
+  assert.ok(!/correct|horse|battery/.test(text), text);
+  assert.match(text, /\[request\] failed GET https:\/\/a\.test\/reset\/•+\/go/);
+});
+
+test("a value another site carried into a path is not printed", async () => {
+  const { b, tab } = make();
+  tab.memory.carry({ values: ["zebra7733pw"], whole: [] });
+  sent(b, tab, "r1", "GET", "https://a.test/cb/zebra7733pw");
+  answered(b, tab, "r1", 404, "https://a.test/cb/zebra7733pw");
+  const text = await b.console();
+  assert.ok(!text.includes("zebra7733pw"), text);
+  assert.match(text, /\[request\] 404 GET https:\/\/a\.test\/cb\/•+/);
+});
+
+test("the request table's size is bounded whatever the page asks for", () => {
+  const { b, tab } = make();
+  const long = `https://a.test/${"p/".repeat(50_000)}?q=${"x".repeat(1000)}`;
+  for (let i = 0; i < 500; i++) sent(b, tab, `r${i}`, "GET", long);
+  for (let i = 0; i < 20; i++) sent(b, tab, `d${i}`, "GET", `data:text/plain;base64,${"A".repeat(100_000)}`);
+  assert.equal(tab.requests.size, 500);
+  const held = JSON.stringify([...tab.requests.entries()]);
+  assert.ok(held.length < 400_000, `${held.length} characters`);
+  for (const v of tab.requests.values()) {
+    assert.deepEqual(Object.keys(v).sort(), ["address", "loader", "method"]);
+    assert.ok(v.address.length <= 500);
+  }
+  assert.ok([...tab.requests.values()].some((v) => v.address === "data:"), "a data address is its scheme only");
+});
+
+test("a secret across the 2,000th character does not leave its first half", () => {
+  const { b, tab } = make();
+  tab.memory.remember("https://a.test", { values: ["hunter22secret"], whole: [] });
+  said(b, tab, "error", `${"x".repeat(1_995)}hunter22secret${"y".repeat(50)}`);
+  const [text] = kinds(b);
+  assert.ok(!text.includes("hunt") && !text.includes("22secret") && text.includes("•"), text.slice(1_980));
+  // A cut never splits a surrogate pair.
+  said(b, tab, "error", "\u{1F600}".repeat(1_500));
+  const last = (b as unknown as { list: { console: ConsoleLog }[] }).list[0].console.list().at(-1)!.text;
+  assert.ok(last.length <= 2_000 && !/[\ud800-\udbff]$/.test(last), String(last.length));
+});
+
+test("a message is taken at 8,000 characters before anything else is done to it", () => {
+  const { b, tab } = make();
+  said(b, tab, "error", `${"a ".repeat(4_000)}https://a.test/late?token=SECRET${"z".repeat(1_000_000)}`);
+  const [text] = kinds(b);
+  assert.ok(text.length <= "error: ".length + 2_000 && !text.includes("SECRET"), String(text.length));
+  assert.ok(!text.includes("late"), "the address past 8,000 characters was never taken");
+});
+

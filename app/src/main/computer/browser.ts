@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
 import { ASK_ROLES, covers, type Target } from "./categories";
-import { ConsoleLog, consoleText, plainAddresses } from "./console";
+import { CONSOLE_TEXT_MAX, ConsoleLog, consoleText, cutAt, plainAddresses } from "./console";
 import { cdp, CdpTimeout, FocusMoved, forPerson, isGone, keyEvents, PageChanged, Told, unlessGone } from "./cdp";
 import { downloadName, HeldDownloads, moveInto } from "./downloads";
 import { permissionVerdict, type Focus } from "./gate";
@@ -22,6 +22,7 @@ import { SecretMemory, type Secrets } from "./memory";
 import { REFUSAL } from "./refusals";
 import { SETTLE_MAX_MS, SETTLE_WINDOW_MS } from "./reply";
 import { TABS_MAX } from "./records";
+import { oneLine } from "./title";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
 import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, untrustedOpen, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf, withoutUserinfo } from "../policy/computer-url";
@@ -71,6 +72,9 @@ const URL_NOTE_MAX = 2_000;
 const LOADERS_KEPT = 32;
 /** session-browser: the requests in flight whose method and clean address are kept to word a failure (oldest first). */
 const REQUESTS_KEPT = 500;
+/** The longest address (already plain) the request table keeps, and the most of a console message that is taken. */
+const ADDRESS_KEPT = 500;
+const LOG_TAKEN = 8_000;
 /** The buffers `Network` would keep for its own use, none of which this browser reads (it keeps a request's method only). */
 const NO_BUFFERS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 };
 type LoadMethod = "GET" | "other";
@@ -204,7 +208,7 @@ interface Tab {
    *  main-frame commit), and the method and address-without-query of each request in flight, by request id: the protocol's
    *  failure events carry neither. Nothing else of a request is kept (no header, no body). */
   console: ConsoleLog;
-  requests: Map<string, { method: string; address: string }>;
+  requests: Map<string, { method: string; address: string; loader: string }>;
 }
 
 /** session-browser S9: what a sleeping browser keeps of a tab whose view is gone: its address (to reload), the address as
@@ -638,9 +642,12 @@ export class ComputerBrowser {
   async console(tab?: number): Promise<string> {
     if (this.kept) throw new Error(REFUSAL.consoleAsleep);
     const t = this.tab(tab);
-    const scrub = this.scrubWith(t, await this.secrets(t));
+    const read = await this.secrets(t);
     const url = this.urlOut(t);
-    return `${untrustedOpen(siteOf(url) ?? "null", url)}\n${consoleText(t.console.list(), scrub)}\n</untrusted-page>`;
+    // An address in the log goes out the way the tab's own address does (its URL scrubber also finds a value percent-encoded
+    // and the values other sites carried into an address); the line then goes through the text scrub.
+    const body = consoleText(t.console.list(), this.scrubWith(t, read), this.urlScrub(t, [this.site(t)], read));
+    return `${untrustedOpen(siteOf(url) ?? "null", url)}\n${body}\n</untrusted-page>`;
   }
 
   /** The viewport as a PNG, with every sensitive field painted over (D9). */
@@ -1284,11 +1291,15 @@ export class ComputerBrowser {
     else if (level === "warning") this.logged(t, "warning", message);
   }
 
-  /** One entry of the tab's console log, its addresses without query or fragment (and, while the tab's own path is held back,
-   *  without a path: a restored tab has no memory of the secrets its address carries, so the scrub alone would let a failed
-   *  request's query through). */
+  /** One entry of the tab's console log, in this order: the first 8,000 characters as a string of their own (a huge message is
+   *  not kept alive by a slice of it), every address plain (no query, fragment or user info, and, while the tab's own path is
+   *  held back, no path: a restored tab has no memory of the secrets its address carries, so the scrub alone would let a
+   *  failed request's query through), one line with no control character, the tab's scrub as it is now, and the cut at 2,000
+   *  (so a secret across the cut is scrubbed whole first). It is scrubbed again when read (`console`). */
   private logged(t: Tab, kind: "error" | "warning" | "exception" | "request", text: string): void {
-    t.console.add({ at: Date.now(), kind, text: plainAddresses(text, t.pathHidden) });
+    const taken = Buffer.from(text.slice(0, LOG_TAKEN)).toString();
+    const line = this.remembered(t, [this.site(t)])(oneLine(plainAddresses(taken, t.pathHidden)));
+    t.console.add({ at: Date.now(), kind, text: cutAt(line, CONSOLE_TEXT_MAX) });
   }
 
   /** `Network` events for the log: a request in flight is known by its method and clean address only; a failure (not a
@@ -1302,14 +1313,19 @@ export class ComputerBrowser {
         const req = p.request as { method?: unknown; url?: unknown } | undefined;
         if (typeof req?.method !== "string" || typeof req.url !== "string") return;
         t.requests.delete(id);
-        t.requests.set(id, { method: req.method, address: plainAddresses(req.url, t.pathHidden) });
+        // The method, the address made plain and cut, and the loader: nothing else of a request is kept, and no address uncut.
+        t.requests.set(id, {
+          method: cutAt(req.method, 16),
+          address: cutAt(plainAddresses(req.url.slice(0, LOG_TAKEN), t.pathHidden), ADDRESS_KEPT),
+          loader: typeof p.loaderId === "string" ? cutAt(p.loaderId, 64) : "",
+        });
         while (t.requests.size > REQUESTS_KEPT) t.requests.delete(t.requests.keys().next().value!);
         return;
       }
       case "Network.responseReceived": {
         const res = p.response as { status?: unknown; url?: unknown } | undefined;
         if (typeof res?.status !== "number" || res.status < 400) return;
-        const address = typeof res.url === "string" ? plainAddresses(res.url, t.pathHidden) : known?.address ?? "";
+        const address = typeof res.url === "string" ? cutAt(plainAddresses(res.url.slice(0, LOG_TAKEN), t.pathHidden), ADDRESS_KEPT) : known?.address ?? "";
         this.logged(t, "request", `${res.status} ${known?.method ?? "?"} ${address}`.trim());
         return;
       }
