@@ -21,7 +21,7 @@ const runtimeTools = req(path.resolve(__dirname, "../../../brain/scripts/sdk/com
 
 // The computer tools a Claude Code launch pre-approves (agent-computer D33), in the plugin form Claude Code names them.
 const plug = (t: string) => `mcp__plugin_agenticos_agenticos__${t}`;
-const NINE = runtimeTools.COMPUTER_TOOLS.map(plug).join(",");
+const ALL = runtimeTools.COMPUTER_TOOLS.map(plug).join(",");
 const LOOK = runtimeTools.COMPUTER_LOOK.map(plug).join(",");
 
 // ── the port of cli/workspace.js ──
@@ -254,12 +254,12 @@ test("quickHost: the remembered host; else the first ready agent; never another 
 // ── the launch line (T10, T11) ──
 
 test("launchArgs per host and access level; Host default passes only the computer tools' approval (agent-computer D33)", () => {
-  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "host", sessionId: "u1" }), ["--session-id", "u1", "--allowedTools", NINE]);
+  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "host", sessionId: "u1" }), ["--session-id", "u1", "--allowedTools", ALL]);
   assert.deepEqual(launchArgs({ host: "claude", bin: null, model: "opus", access: "read" }), ["--model", "opus", "--permission-mode", "plan", "--allowedTools", LOOK]);
-  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "edit" }), ["--permission-mode", "acceptEdits", "--allowedTools", NINE]);
-  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "run" }), ["--permission-mode", "acceptEdits", "--allowedTools", `Bash,${NINE}`]);
-  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "host", resume: "last" }), ["--continue", "--allowedTools", NINE]);
-  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "host", resume: { id: "u2" }, sessionId: "u3" }), ["--resume", "u2", "--allowedTools", NINE]);
+  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "edit" }), ["--permission-mode", "acceptEdits", "--allowedTools", ALL]);
+  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "run" }), ["--permission-mode", "acceptEdits", "--allowedTools", `Bash,${ALL}`]);
+  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "host", resume: "last" }), ["--continue", "--allowedTools", ALL]);
+  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "host", resume: { id: "u2" }, sessionId: "u3" }), ["--resume", "u2", "--allowedTools", ALL]);
   assert.deepEqual(launchArgs({ host: "codex", bin: null, model: null, access: "host" }), []);
   assert.deepEqual(launchArgs({ host: "codex", bin: null, model: "gpt-6-sol", access: "read" }), ["-m", "gpt-6-sol", "-s", "read-only", "-a", "on-request"]);
   assert.deepEqual(launchArgs({ host: "codex", bin: null, model: null, access: "edit" }), ["-s", "workspace-write", "-a", "on-request"]);
@@ -267,10 +267,10 @@ test("launchArgs per host and access level; Host default passes only the compute
 });
 
 test("the HUD's computer tools are the runtime's, and each Claude Code launch pre-approves them by access as one value (agent-computer D33)", () => {
-  assert.deepEqual([...COMPUTER_TOOLS], runtimeTools.COMPUTER_TOOLS, "the nine tools, in the runtime's order");
-  assert.deepEqual([...COMPUTER_LOOK], runtimeTools.COMPUTER_LOOK, "the four look tools");
+  assert.deepEqual([...COMPUTER_TOOLS], runtimeTools.COMPUTER_TOOLS, "the thirteen tools, in the runtime's order");
+  assert.deepEqual([...COMPUTER_LOOK], runtimeTools.COMPUTER_LOOK, "the five look tools");
   assert.match(TERM_ACCESS_NOTE.host, /computer tools are pre-approved/, "Host default says the pane asks instead");
-  const want: Record<string, string> = { host: NINE, read: LOOK, edit: NINE, run: `Bash,${NINE}` };
+  const want: Record<string, string> = { host: ALL, read: LOOK, edit: ALL, run: `Bash,${ALL}` };
   for (const access of TERM_ACCESS) {
     for (const resume of [null, "last" as const, { id: "u2" }]) {
       const argv = launchArgs({ host: "claude", bin: null, model: "opus", access, resume, sessionId: resume ? null : "u1" });
@@ -342,7 +342,7 @@ test("a Spaces resume by id: codex resume <id> names the terminal's folder first
   // --last needs no folder: it only looks at threads recorded in this one.
   assert.deepEqual(launchArgs({ host: "codex", bin: null, model: null, access: "host", resume: "last", cwd: dir }), ["resume", "--last"]);
   // Claude Code finds a thread from any folder (D7's build check): no flag for the folder.
-  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "host", resume: { id }, cwd: dir }), ["--resume", id, "--allowedTools", NINE]);
+  assert.deepEqual(launchArgs({ host: "claude", bin: null, model: null, access: "host", resume: { id }, cwd: dir }), ["--resume", id, "--allowedTools", ALL]);
   assert.equal(previewLine({ host: "codex", bin: null, model: null, access: "host", resume: { id }, cwd: dir }), `exec codex resume -C ${dir} ${id}`);
 });
 
@@ -376,7 +376,7 @@ test("launchArgs refuses a free value that starts with '-': a model, an id or a 
     assert.throws(() => launchLine(s), /starts with "-"/, JSON.stringify(s));
   }
   // A dash inside a value is fine (ids, models).
-  assert.deepEqual(launchArgs({ ...base, host: "claude", model: "claude-opus-5", resume: { id: "3f2c-1" } }), ["--model", "claude-opus-5", "--resume", "3f2c-1", "--allowedTools", NINE]);
+  assert.deepEqual(launchArgs({ ...base, host: "claude", model: "claude-opus-5", resume: { id: "3f2c-1" } }), ["--model", "claude-opus-5", "--resume", "3f2c-1", "--allowedTools", ALL]);
 });
 
 test("launchArgs refuses a free value holding a control character: a scanned folder named with ^U never reaches the shell", () => {
@@ -401,17 +401,17 @@ test("launchArgs refuses a free value holding a control character: a scanned fol
 
 test("launchLine: leading space, the not-found guard, exec, quoting of the binary and of glob-like ids", () => {
   const line = launchLine({ host: "claude", bin: "/opt/my apps/claude", model: "claude-opus-5[1m]", access: "host", sessionId: "3f2c-1" });
-  assert.equal(line, ` command -v '/opt/my apps/claude' >/dev/null 2>&1 && exec '/opt/my apps/claude' --model 'claude-opus-5[1m]' --session-id 3f2c-1 --allowedTools '${NINE}' || { printf '%s\\n' 'Claude Code was not found: run aos doctor'; exit 127; }`);
+  assert.equal(line, ` command -v '/opt/my apps/claude' >/dev/null 2>&1 && exec '/opt/my apps/claude' --model 'claude-opus-5[1m]' --session-id 3f2c-1 --allowedTools '${ALL}' || { printf '%s\\n' 'Claude Code was not found: run aos doctor'; exit 127; }`);
   const codex = launchLine({ host: "codex", bin: null, model: null, access: "host", gitInit: true, envPrefix: "CODEX_HOME='/x' " });
   assert.equal(codex, " [ -e .git ] || git init -q; command -v 'codex' >/dev/null 2>&1 && CODEX_HOME='/x' exec 'codex' || { printf '%s\\n' 'Codex was not found: run aos doctor'; exit 127; }");
 });
 
 test("previewLine is the short form the menu shows", () => {
   assert.equal(previewLine({ host: "claude", bin: "/a/claude", model: "opus", access: "host", sessionId: "3f2c9d" }), "exec claude --model opus --session-id 3f2c… --allowedTools computer_*");
-  // The computer tools' approval reads short: all nine as computer_*, the look tools by name, Bash as itself.
+  // The computer tools' approval reads short: all thirteen as computer_*, the look tools by name, Bash as itself.
   assert.equal(previewLine({ host: "claude", bin: null, model: null, access: "run" }), "exec claude --permission-mode acceptEdits --allowedTools Bash,computer_*");
   assert.equal(previewLine({ host: "claude", bin: null, model: null, access: "read" }),
-    "exec claude --permission-mode plan --allowedTools computer_status,computer_snapshot,computer_screenshot,computer_wait");
+    "exec claude --permission-mode plan --allowedTools computer_status,computer_snapshot,computer_screenshot,computer_wait,computer_console");
   assert.equal(previewLine({ host: "codex", bin: null, model: null, access: "edit", gitInit: true }), "git init -q; exec codex -s workspace-write -a on-request");
 });
 

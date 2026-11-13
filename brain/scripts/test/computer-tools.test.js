@@ -1,5 +1,5 @@
 'use strict';
-// agent-computer D19/D21: the nine computer_* tools against a fake bridge speaking the app's socket protocol.
+// agent-computer D19/D21: the thirteen computer_* tools against a fake bridge speaking the app's socket protocol.
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -32,7 +32,7 @@ function makeVault(socket) {
 }
 
 // A fake bridge: admits (or refuses) the first hello, then hands each request line to `onCall(req, reply, conn)`.
-function fakeBridge({ refuse, onCall, admitDelayMs = 0 }) {
+function fakeBridge({ refuse, onCall, admitDelayMs = 0, tools }) {
   const sock = path.join(ROOT, `b${++seq}.sock`);
   const seen = { hello: 0, calls: [], conns: [] };
   const server = net.createServer((conn) => {
@@ -47,7 +47,7 @@ function fakeBridge({ refuse, onCall, admitDelayMs = 0 }) {
         buf = buf.slice(i + 1);
         if (msg.hello) {
           seen.hello++;
-          if (refuse) { conn.end(JSON.stringify({ admitted: false, reason: refuse }) + '\n'); } else setTimeout(() => conn.write(JSON.stringify({ admitted: true, session: 's' }) + '\n'), admitDelayMs);
+          if (refuse) { conn.end(JSON.stringify({ admitted: false, reason: refuse }) + '\n'); } else setTimeout(() => conn.write(JSON.stringify({ admitted: true, session: 's', ...(tools ? { tools } : {}) }) + '\n'), admitDelayMs);
         } else {
           seen.calls.push(msg);
           onCall && onCall(msg, (r) => conn.write(JSON.stringify({ id: msg.id, ...r }) + '\n'), conn);
@@ -67,8 +67,9 @@ async function withClient(vault, fn, env = {}) {
 }
 const text = (r) => r.content[0].text;
 
-test('the server lists the nine computer tools with look tools read-only and acting tools destructive', async () => {
-  assert.equal(COMPUTER_TOOLS.length, 9);
+test('the server lists the thirteen computer tools with look tools read-only and acting tools destructive', async () => {
+  assert.equal(COMPUTER_TOOLS.length, 13);
+  assert.equal(COMPUTER_LOOK.length, 5);
   await withClient(makeVault(), async (client) => {
     const tools = (await client.listTools()).tools.filter((t) => t.name.startsWith('computer_'));
     assert.deepEqual(tools.map((t) => t.name).sort(), [...COMPUTER_TOOLS].sort());
@@ -87,12 +88,90 @@ async function toolDefs() {
 
 test('every tool names the UniDeX browser', async () => {
   const defs = await toolDefs();
-  assert.equal(defs.size, 9);
+  assert.equal(defs.size, 13);
   for (const [name, def] of defs) {
     assert.match(def.title, /UniDeX browser/, name);
     assert.match(def.description, /^In the UniDeX browser \(the browser inside the UniDeX app, which the user watches beside this session\), /, name);
     assert.doesNotMatch(def.title + def.description, /Computer pane/, name);
   }
+});
+
+const isObjectOrArray = (schema) => schema.type === 'object' || schema.type === 'array';
+
+test('thirteen tools, five that only look, flat arguments', async () => {
+  const defs = await toolDefs();
+  assert.equal(COMPUTER_TOOLS.length, 13);
+  assert.equal(COMPUTER_LOOK.length, 5);
+  assert.deepEqual([...COMPUTER_LOOK].sort(), ['computer_console', 'computer_screenshot', 'computer_snapshot', 'computer_status', 'computer_wait']);
+  for (const [name, def] of defs) {
+    for (const [arg, schema] of Object.entries(def.inputSchema.properties || {})) assert.ok(!isObjectOrArray(schema), `${name}.${arg}`);
+  }
+});
+
+test('the four new tools and double are registered with their arguments', async () => {
+  const defs = await toolDefs();
+  const titles = {
+    computer_tab: 'Switch or close a tab in the UniDeX browser',
+    computer_nav: 'Go back, forward or reload in the UniDeX browser',
+    computer_hover: 'Hover in the UniDeX browser',
+    computer_console: "Read the UniDeX browser's console",
+  };
+  for (const [name, title] of Object.entries(titles)) assert.equal(defs.get(name).title, title, name);
+  const props = (n) => defs.get(n).inputSchema.properties;
+  assert.deepEqual(Object.keys(props('computer_tab')).sort(), ['close', 'index']);
+  assert.equal(props('computer_tab').index.type, 'integer');
+  assert.equal(props('computer_tab').index.minimum, 0);
+  assert.equal(props('computer_tab').index.maximum, 1000);
+  assert.equal(props('computer_tab').close.type, 'boolean');
+  assert.deepEqual(defs.get('computer_tab').inputSchema.required, ['index']);
+  assert.deepEqual(Object.keys(props('computer_nav')), ['go']);
+  assert.deepEqual(props('computer_nav').go.enum, ['back', 'forward', 'reload']);
+  assert.deepEqual(Object.keys(props('computer_hover')).sort(), ['ref', 'x', 'y']);
+  assert.deepEqual(Object.keys(props('computer_console')), ['tab']);
+  assert.equal(props('computer_click').double.type, 'boolean');
+  assert.ok(!(defs.get('computer_click').inputSchema.required || []).includes('double'));
+  assert.match(defs.get('computer_console').description, /errors, warnings, uncaught exceptions and failed requests since the page loaded/);
+  assert.match(defs.get('computer_console').description, /page text/);
+  assert.equal(defs.get('computer_console').annotations.readOnlyHint, true);
+  assert.equal(defs.get('computer_hover').annotations.destructiveHint, true);
+});
+
+test('every acting tool says its reply carries the page', async () => {
+  const defs = await toolDefs();
+  const sentence = 'The reply ends with the page as it is now, with refs you can use in your next call.';
+  for (const [name, def] of defs) {
+    if (COMPUTER_LOOK.includes(name)) assert.ok(!def.description.includes(sentence), name);
+    else assert.ok(def.description.includes(sentence), name);
+  }
+});
+
+test("the descriptions say what only the skill said: a snapshot is for a page not just acted on, a ref comes from the newest outline, what asks on nav (S16d)", async () => {
+  const defs = await toolDefs();
+  const props = (n) => defs.get(n).inputSchema.properties;
+  assert.ok(defs.get('computer_snapshot').description.includes("An action's reply already ends with the page, so use this for a page you have not just acted on, or for the rest of a long one."), defs.get('computer_snapshot').description);
+  for (const [name, arg] of [['computer_click', 'ref'], ['computer_type', 'ref'], ['computer_scroll', 'ref'], ['computer_hover', 'ref']]) {
+    assert.ok(props(name)[arg].description.includes("from the newest outline this session was given (a computer_snapshot or an action's reply)"), `${name}.${arg}: ${props(name)[arg].description}`);
+  }
+  assert.ok(defs.get('computer_nav').description.includes('when the page was loaded by a form or how it was loaded is not known'), defs.get('computer_nav').description);
+  assert.ok(defs.get('computer_console').description.includes('Entries from frames of another site are left out, and it holds the newest 200.'), defs.get('computer_console').description);
+  assert.ok(props('computer_click').double.description.includes('when the first click changes the page the second is not sent, and the reply says so'), props('computer_click').double.description);
+  // a tab index has the same bounds wherever it is asked for
+  for (const name of ['computer_snapshot', 'computer_screenshot', 'computer_console']) {
+    assert.equal(props(name).tab.type, 'integer', name);
+    assert.equal(props(name).tab.minimum, 0, name);
+    assert.equal(props(name).tab.maximum, props('computer_tab').index.maximum, name);
+  }
+});
+
+test('a new tool reaches an app that lists it, with its arguments', async () => {
+  const b = await fakeBridge({ tools: COMPUTER_TOOLS, onCall: (req, reply) => reply({ text: 'ok' }) });
+  try {
+    await withClient(makeVault(b.sock), async (client) => {
+      assert.equal(text(await client.callTool({ name: 'computer_tab', arguments: { index: 1, close: true } })), 'ok');
+      assert.equal(text(await client.callTool({ name: 'computer_click', arguments: { ref: 'e1', double: true } })), 'ok');
+    });
+    assert.deepEqual(b.seen.calls.map((c) => [c.tool, c.args]), [['computer_tab', { index: 1, close: true }], ['computer_click', { ref: 'e1', double: true }]]);
+  } finally { b.close(); }
 });
 
 test('status says what to do outside the app, open says what the browser is for', async () => {

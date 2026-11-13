@@ -12,15 +12,19 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AskInput } from "./asks";
 import { ASK_ROLES, covers, type Target } from "./categories";
-import { cdp, CdpTimeout, FocusMoved, isGone, keyEvents, PageChanged, unlessGone } from "./cdp";
+import { CONSOLE_RATE, CONSOLE_TEXT_MAX, ConsoleLog, bulletsPlain, consoleText, cutAt, droppedLine, mapAddresses, plainAddresses } from "./console";
+import { cdp, CdpTimeout, FocusMoved, forPerson, isGone, keyEvents, PageChanged, Told, unlessGone } from "./cdp";
 import { downloadName, HeldDownloads, moveInto } from "./downloads";
 import { permissionVerdict, type Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
 import { framesHolding, leavingFrames, LeavingRecords, mergeFrameReads, PendingReads, type Departure } from "./leaving";
 import { SecretMemory, type Secrets } from "./memory";
+import { REFUSAL } from "./refusals";
+import { SETTLE_MAX_MS, SETTLE_WINDOW_MS } from "./reply";
 import { TABS_MAX } from "./records";
+import { oneLine } from "./title";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
-import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
+import { domText, formatSnapshot, hideAfterOrigin, indexDom, inUrl, mergeFrames, scrubber, secretsOf, SNAPSHOT_CAP, untrustedOpen, urlScrubber, type CdpAxNode, type CdpDomNode, type DomIndex, type Snapshot } from "./snapshot";
 import { navAllowed, siteOf, withoutUserinfo } from "../policy/computer-url";
 import type { ComputerNavGo } from "../../shared/ipc";
 
@@ -34,7 +38,12 @@ export interface TabInfo { index: number; url: string; title: string; openedBy: 
  *  `scrub(text, r.tab)`: the tab, not the current one, since a popup may have made another tab current. The scrub
  *  remembers what the tab read on the current site (R32), so text about a page the tab has since left is covered too. */
 export interface Resolved { target: Target; shown: string; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; pageToken: string; tab: number }
-export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void }
+/** `agentDrives` (session-browser S17): whether this session's agent holds the wheel now. A popup made at any other time (the
+ *  person drives, or nobody does) is the person's, not its opener's agent's. */
+export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; agentDrives?(): boolean }
+/** The history entry a move would load (session-browser S17), as one read of the tab's history saw it: the tab by its uid, the
+ *  entry by its id (null where none: a waking tab, nothing to go to, an unreadable history) and the method it was loaded by. */
+export interface Entry { uid: number; id: string | null; url: string | null; method: "GET" | "other" | "unknown" }
 /** Where the gate judged an action (I3b): the tab, and the page token it had. `key` and `type` deliver only while both
  *  are still the ones in front. */
 export interface Judged { tab: number; pageToken: string }
@@ -58,10 +67,20 @@ const KEPT_DOCUMENTS = 8;
 const DEFAULT_SIZE = { width: 1280, height: 800 };
 // R26: after the pointer moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
 const HOVER_MS = 100;
-const CANT_TELL = "Cannot tell which control this click reaches: take a new snapshot.";
 const URL_NOTE_MAX = 2_000;
-const D9_REFUSAL = "Typing into a password field is refused (D9).";
-const D9_UNREAD = "Could not read a password field's value to scrub it, so the text was held back (D9): try again.";
+/** session-browser S17: the most main-frame document loaders whose method is kept while they are in flight. */
+const LOADERS_KEPT = 32;
+/** session-browser: the requests in flight whose method, plain address and loader are kept to word a failure (oldest first). */
+const REQUESTS_KEPT = 500;
+/** The longest address (already plain) the request table keeps, and the most of a console message that is taken. */
+const ADDRESS_KEPT = 500;
+const LOG_TAKEN = 8_000;
+/** A copy of `s` that shares nothing with it (V8 keeps a slice's whole parent string alive). */
+const fresh = (s: string): string => Buffer.from(s).toString();
+/** The buffers `Network` would keep for its own use, none of which this browser reads (it keeps a request's method, a cut plain
+ *  address and loader id only, to word a failure). */
+const NO_BUFFERS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 };
+type LoadMethod = "GET" | "other";
 // A field's current value through the native getter (an isolated world sees no page-defined one; "" for anything else)
 // and whether it is a one-time-code field (a short code typed so far is scrubbed as a whole word).
 const VALUE_OF = "function () { return { v: typeof this.value === 'string' ? this.value : '', otp: /(^|\\s)one-time-code(\\s|$)/i.test((this.getAttribute && this.getAttribute('autocomplete')) || '') }; }";
@@ -79,6 +98,8 @@ const LEAVING_VALUES = `(() => { const out = []; const sel = ${JSON.stringify(SE
 // it may carry could not be read (G2 below) or a read flooded a kind's reserve (R37).
 const ABORTED = -3;
 const stripQuery = (url: string): string => { try { const u = new URL(url); u.search = ""; u.hash = ""; return u.href; } catch { return url; } };
+/** The refusals of `send` that name their own next step, which a history read passes on instead of "could not be read". */
+const SAYS_WHY: ReadonlySet<string> = new Set([REFUSAL.devToolsOpen, REFUSAL.otherDebugger, REFUSAL.tabGone]);
 const DIALOGS = new Set(["alert", "confirm", "prompt", "beforeunload"]);
 // The focused element behind open shadow roots and readable frames, run in an isolated world (native getters only).
 const ACTIVE_ELEMENT = `(() => { let e = document.activeElement;
@@ -90,11 +111,18 @@ const ACTIVE_ELEMENT = `(() => { let e = document.activeElement;
   }
   return e; })()`;
 
+/** What a hit test at a point found (`reachAt`): the node hit, where the test was made and the scroll it saw, the DOM read, and
+ *  the controls a click there reaches. */
+type Reached = { hit: number; at: Point; off: Point; dom: DomIndex; reached: Reach; own: number };
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
 
 interface Tab {
   uid: number; view: WebContentsView; wc: WebContents; openedBy: string | null;
+  /** Whether the agent's own `computer_open` made this tab, or a popup that open's page made while the agent held the wheel
+   *  (session-browser PR 5, X2). `openedBy` is only the name shown to the person, and a program's page carries the session's
+   *  label too, so the rule "the agent closes its own tab without asking" reads this instead. MAIN ONLY: never in `tabs()`. */
+  own: boolean;
   /** Main-frame commits and in-page navigations, for `pageToken()` (a ref or a Resolved is stale after either). */
   seq: number;
   /** I3b: main-frame navigations requested or started (renderer-requested ones arrive on the DevTools session in order with
@@ -175,11 +203,39 @@ interface Tab {
    *  a load that failed for good with nothing committed keeps it, so the person can still reload the address. A navigation
    *  started in the tab meanwhile does not replace it; its own commit does, with the live address. */
   pending: Kept | null;
+  /** session-browser S17 (R1, R2): the method of each main-frame document request in flight, by its loader id: "GET", or
+   *  "other" for anything else (the last event of a redirect chain wins). Nothing else of a request is kept. */
+  loaders: Map<string, LoadMethod>;
+  /** The method each history entry was loaded by, by entry id, once its document committed; an entry with no record is
+   *  "unknown" to the gate. Entries that left the history are forgotten at each bind. */
+  methods: Map<string, LoadMethod>;
+  /** The entry ids the latest history read listed (every read, also one whose bind then gave up): a same-document entry is
+   *  "GET" only if no read listed it before. `gap`: a cross-document commit's bind was dropped or its read failed, so an entry
+   *  of the tab may be unlisted and still not new; it holds the number of reads sent by then, and only a read sent AFTER it
+   *  (a higher number) closes it. `sent` and `answered` number the reads sent and the newest one answered. */
+  known: Set<string>; gap: number | null; sent: number; answered: number;
+  /** Main-frame commits and same-document navigations so far: a bind (a tick after one) goes only when no later one came. */
+  binds: number;
+  /** A document commit the protocol reported whose first history read waits for Electron's own commit event (`navigated`). */
+  commitRead: { n: number; how: { loader: LoadMethod | null } } | null;
+  /** session-browser (computer_console): what the page said about itself since its document loaded (cleared at each
+   *  main-frame commit but for the committing document's own failed requests), and the method, plain scrubbed address (cut at
+   *  500) and loader of each request in flight, by request id: the protocol's failure events carry no address. Each is a
+   *  string of its own, never a slice of an event's. Nothing else of a request is kept (no header, no body). */
+  console: ConsoleLog;
+  requests: Map<string, { method: string; address: string; loader: string }>;
+  /** The loader the main frame's latest commit reported (Chromium sends `Page.frameNavigated` before Electron's did-navigate,
+   *  an error page's too), taken by the commit that follows it: it keeps that document's own failed requests in the log. */
+  committedLoader: string | null;
+  /** The scrubbers built from the tab's memory for the log (text, and address), for the site and memory version they were built at. */
+  scrubFor: { site: string; version: number; fn: (s: string) => string; url: (a: string) => string } | null;
+  /** The console messages taken in the current second (from `floodAt`), and those dropped since the document loaded. */
+  floodAt: number; floodN: number; dropped: number;
 }
 
 /** session-browser S9: what a sleeping browser keeps of a tab whose view is gone: its address (to reload), the address as
  *  it may be shown (`shown`: `shownUrl` at sleep), its title, opener and secret memory (which outlives the view, F3). */
-interface Kept { url: string; shown: string; title: string; openedBy: string | null; memory: SecretMemory; urlHidden: boolean }
+interface Kept { url: string; shown: string; title: string; openedBy: string | null; own: boolean; memory: SecretMemory; urlHidden: boolean }
 
 /** A sensitive field's current value and whether the field is a one-time-code field. */
 interface FieldValue { b: number; value: string; otp: boolean }
@@ -244,6 +300,12 @@ function leavePark(owner: ComputerBrowser): void {
   if (win && !win.isDestroyed()) win.destroy();
 }
 
+/** A commit's history read is tried this many times, this far apart (ms), while no later navigation came. */
+const BIND_TRIES = 3;
+const BIND_RETRY_MS = 50;
+/** An address cut for a sentence that ends with something that must survive (a failed open's error code): 120 characters at
+ *  most with its "…", never through a surrogate pair. Exported for its test. */
+export const clipAddress = (url: string): string => (url.length > 120 ? `${cutAt(url, 119)}…` : url);
 const clipUrl = (url: string): string => (url.length > URL_NOTE_MAX ? `${url.slice(0, URL_NOTE_MAX - 1)}…` : url);
 const schemeOf = (url: string): string => { try { return new URL(url).protocol; } catch { return "unreadable"; } };
 const hostOf = (site: string | null, url: string): string => { try { return new URL(site ?? url).host || url; } catch { return url; } };
@@ -321,6 +383,11 @@ export class ComputerBrowser {
   /** Settles when the browser is destroyed, so a wake waiting on a load that will never settle ends with it (S9). */
   private readonly destroyed: Promise<void>;
   private signalDestroyed: () => void = () => undefined;
+  /** The main-frame navigations started lately and when each stopped loading (null while it loads), for `settled`
+   *  (session-browser S16). Only the last few seconds are kept. */
+  private readonly navLog: { tab: Tab; start: number; end: number | null }[] = [];
+  /** The `settled` calls waiting on a tab's load, each woken by its own tab's end (or the browser's). */
+  private readonly navWake = new Set<{ tab: Tab; wake: () => void }>();
   private readonly handlers: Handlers = {
     permission: (p, url) => this.askPermission(p, url),
     download: (item, wc) => this.download(item, wc),
@@ -337,7 +404,7 @@ export class ComputerBrowser {
     if (this.kept) {
       return this.kept.map((k, index) => ({ index, url: this.keptUrl(k), title: this.keptScrub(k)(k.title), openedBy: k.openedBy, active: index === this.keptActive, canBack: false, canForward: false }));
     }
-    return this.list.map((t, index) => t.pending ? { index, url: this.keptUrl(t.pending), title: this.keptScrub(t.pending)(t.pending.title), openedBy: t.openedBy, active: index === this.current, canBack: false, canForward: false } : ({ index, url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current, canBack: t.wc.navigationHistory.canGoBack(), canForward: t.wc.navigationHistory.canGoForward() }));
+    return this.list.map((t, index) => t.pending ? { index, url: this.keptUrl(t.pending), title: this.keptScrub(t.pending)(t.pending.title), openedBy: t.openedBy, active: index === this.current, canBack: false, canForward: false } : ({ index, url: this.urlOut(t), title: this.logScrub(t)(t.wc.getTitle()), openedBy: t.openedBy, active: index === this.current, canBack: t.wc.navigationHistory.canGoBack(), canForward: t.wc.navigationHistory.canGoForward() }));
   }
 
   /** The `webContents.id` of the active tab, or null with no tab. Only the e2e seam (`__aosMain.computerPageId`) asks, so a
@@ -357,11 +424,11 @@ export class ComputerBrowser {
   /** Opens `url`: in the active tab, or (`newTab`, or no tab yet) in a new one that takes the selection. `background` (only
    *  with `newTab`) adds the tab behind the active one and leaves the selection where it was, for a page the person did not
    *  ask for while they work in another (session-browser X2); with no active tab the new one is the active one anyway. */
-  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }): Promise<{ url: string; title: string }> {
-    if (!navAllowed(url)) throw new Error("Only http and https pages open.");
+  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null; own?: boolean }): Promise<{ url: string; title: string }> {
+    if (!navAllowed(url)) throw new Told(REFUSAL.notWeb, "Only http and https pages open.");
     // §4.2: load the normalised form navAllowed judged, never the raw string.
     const href = new URL(url).href;
-    const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true);
+    const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true, o.own === true);
     t.refused = null;
     // R38: a page-started navigation's leaving record is left alone here: that navigation may be past the point where this
     // load can cancel it and commit first, and its record then goes with its own commit (`committed` matches the URL). R39:
@@ -376,10 +443,77 @@ export class ComputerBrowser {
       new Promise<null>((r) => { timer = setTimeout(() => r(null), LOAD_WAIT_MS); }),
     ]);
     clearTimeout(timer);
-    if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") throw new Error(`The page redirected to ${t.refused ? `a ${t.refused}` : "a non-web"} URL, which is refused.`);
+    if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") {
+      // The scheme is the page's choice: it goes into the sentence only in the plain form a scheme has, else as "non-web".
+      const scheme = (t.refused as string | null)?.replace(/:$/, "") ?? ""; // (the load set it, which the compiler cannot see)
+      const what = scheme === "unreadable" ? "an unreadable" : `a ${/^[a-z][a-z0-9+.-]{0,19}$/.test(scheme) ? scheme : "non-web"}`;
+      throw new Told(REFUSAL.redirectRefused(what), `The page redirected to ${what} URL, which is refused.`);
+    }
     // ERR_ABORTED: the page went somewhere else before it finished loading.
-    if (failed && failed.code !== "ERR_ABORTED") throw new Error(`Could not open ${href}: ${failed.code ?? failed.message ?? "failed"}.`);
-    return { url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()) };
+    if (failed && failed.code !== "ERR_ABORTED") {
+      // The reason is the error's code, never its message (which carries the whole address); the address goes out as a tab's own
+      // does: no user name or password, scrubbed, and without the query and fragment where the tab would hide them (PR 5, X1).
+      const why = typeof failed.code === "string" && /^[A-Z][A-Z0-9_]{0,59}$/.test(failed.code) ? failed.code : "failed";
+      const shown = clipAddress(this.urlOut(t, href));
+      throw new Told(REFUSAL.couldNotOpen(`${shown} (${why})`), `Could not open ${shown}: ${why}.`);
+    }
+    return { url: this.urlOut(t), title: this.logScrub(t)(t.wc.getTitle()) };
+  }
+
+  /** Makes a new tab at `url`, in front as `open`'s new tab is and not the agent's own, and answers its uid as soon as the tab
+   *  exists: the load is started and never waited for, so a load that fails later leaves the tab on its error page as any tab's
+   *  does (session-browser S5: the start tab of the agent's close of the last tab, which must not wait on the start page). A
+   *  tab that cannot be made throws the table's `startTab`, never Electron's text. */
+  async openTab(url: string, o: { by: string | null }): Promise<number> {
+    if (!navAllowed(url)) throw new Told(REFUSAL.notWeb, "Only http and https pages open.");
+    // §4.2: load the normalised form navAllowed judged, never the raw string.
+    const href = new URL(url).href;
+    const t = await this.addTab(o.by).catch(() => { throw new Told(REFUSAL.startTab, "The new tab could not be made."); });
+    t.refused = null;
+    void t.wc.loadURL(href).catch(() => undefined);
+    return t.uid;
+  }
+
+  /** session-browser S16: resolves 300 ms after `since` (a time on the caller's clock, `Date.now()` here: the moment an
+   *  action's last input was sent), or, when a main-frame navigation of the active tab started within that window (or just
+   *  before it, as a click's own does), when that navigation has stopped loading, and at `since` + 5 s at the latest. Never
+   *  rejects; the tab closing or the browser being destroyed ends it, and nothing is left behind when it does. */
+  async settled(since: number): Promise<void> {
+    const window = since + SETTLE_WINDOW_MS, limit = since + SETTLE_MAX_MS;
+    await this.pause(window - Date.now());
+    const t = this.list[this.current];
+    // A navigation counts when it started in the window, or up to one window before the input (the event for a click's
+    // own navigation can arrive just ahead of the call that sent it).
+    const loading = (): boolean => !!t && this.navLog.some((n) => n.tab === t && n.end === null && n.start >= since - SETTLE_WINDOW_MS);
+    while (t && !this.gone && loading() && Date.now() < limit) {
+      await new Promise<void>((resolve) => {
+        const w = { tab: t, wake: () => { clearTimeout(timer); this.navWake.delete(w); resolve(); } };
+        const timer = setTimeout(w.wake, limit - Date.now());
+        this.navWake.add(w);
+      });
+    }
+  }
+
+  /** Resolves after `ms` (at once when it is not positive). */
+  private pause(ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return new Promise<void>((r) => { setTimeout(r, ms); });
+  }
+
+  /** A main-frame navigation of `t` started (`settled` watches it). */
+  private navBegan(t: Tab): void {
+    // A tab that is closing (or gone) leaves nothing here: a late event of its web contents must not log it again.
+    if (t.closing) return;
+    const now = Date.now();
+    while (this.navLog.length && (this.navLog.length > 50 || (this.navLog[0].end !== null && this.navLog[0].end < now - 2 * SETTLE_MAX_MS))) this.navLog.shift();
+    this.navLog.push({ tab: t, start: now, end: null });
+  }
+
+  /** Loading stopped on `t`, or the tab went: every navigation of it is over. */
+  private navEnded(t: Tab): void {
+    const now = Date.now();
+    for (const n of this.navLog) if (n.tab === t && n.end === null) n.end = now;
+    for (const w of [...this.navWake]) if (w.tab === t) w.wake();
   }
 
   /** Makes tab `index` the active one. */
@@ -408,6 +542,131 @@ export class ComputerBrowser {
     return true;
   }
 
+  /** The entry a move would load, from one read of the history (null with no such tab): its tab by uid, itself by id, and how
+   *  it would load (session-browser S17, for the gate): "GET" where it is certainly one (`about:blank` is one too: it is not
+   *  fetched), "other" for a POST or any other method, "unknown" where it cannot be told (no record of that entry, no entry to
+   *  go to, a history that cannot be read). The history is read at the moment of the call, so the index is the one the move
+   *  would use. A tab still waking reloads its kept address by GET. */
+  async entry(go: ComputerNavGo, tab?: number): Promise<Entry | null> {
+    const t = this.list[tab ?? this.current];
+    if (!t || t.wc.isDestroyed()) return null;
+    if (t.pending) return { uid: t.uid, id: null, url: null, method: go === "reload" ? "GET" : "unknown" };
+    // A refusal that says what to do (DevTools open, another debugger, a closed tab) goes on as itself; any other failure of the
+    // read leaves the entry with no id, and the caller says the history could not be read (PR 5, A10).
+    const h = await this.history(t).catch((e: unknown) => { if (e instanceof Told && SAYS_WHY.has(e.message)) throw e; return null; });
+    const e = h?.entries[h.currentIndex + (go === "back" ? -1 : go === "forward" ? 1 : 0)];
+    if (!e) return { uid: t.uid, id: null, url: null, method: "unknown" };
+    return { uid: t.uid, id: String(e.id), url: e.url, method: e.url === "about:blank" ? "GET" : t.methods.get(String(e.id)) ?? "unknown" };
+  }
+
+  /** The move the person allowed on a card, bound to what the card named (session-browser S17): the same tab (by uid), still
+   *  the active one, and the entry the move would load now is the same one (by id, with the same method). The history is read
+   *  again here, and nothing is awaited between that read's check and the act, so a commit or a closed tab meanwhile sends
+   *  nothing (false). A reload of what was not a GET goes through the protocol, which sends the form again with no dialog
+   *  (Electron's own reload does nothing for a POST entry); a protocol reload that fails throws the table's sentence. */
+  async navEntry(go: ComputerNavGo, bound: Entry, valid: () => boolean): Promise<boolean> {
+    const was = this.list[this.current];
+    if (!was || was.uid !== bound.uid) return false;
+    const now = await this.entry(go, this.current);
+    const t = this.list[this.current];
+    // R81: the call must still be current after the read, and nothing is awaited between here and the move.
+    if (!valid()) throw new PageChanged();
+    if (!now || t !== was || now.uid !== bound.uid) return false;
+    // An entry with no id is never bound: only a tab still waking (its reload loads the kept address by GET) has none.
+    if (now.id === null && !t.pending) throw new Error(REFUSAL.noHistoryRead);
+    if (now.id !== bound.id || now.method !== bound.method) return false;
+    if (go === "reload" && bound.method !== "GET" && !t.pending) {
+      await this.send(t, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
+      return true;
+    }
+    return this.nav(go, this.current);
+  }
+
+  /** A tab's uid, which never leaves main, so a card can name the tab it was raised for across an index shift. */
+  tabUid(index: number): number | null { return this.list[index]?.uid ?? null; }
+  tabIndex(uid: number): number { return this.list.findIndex((t) => t.uid === uid); }
+  /** Whether the agent's own open made the tab (session-browser PR 5, X2): false for a tab the person, a link, a program or a
+   *  record made, and for a tab that is not there. MAIN ONLY: it decides whether the agent may close the tab unasked. */
+  ownTab(uid: number): boolean { return this.list.find((t) => t.uid === uid)?.own === true; }
+  /** The tab's own page token, its uid with its commit counter (as `pageToken` forms the active tab's), or null when the tab is
+   *  gone: what a card is bound to, so that another page in the same tab, whatever address it shows, is not the card's page
+   *  (session-browser PR 5, D1). MAIN ONLY. */
+  tabToken(uid: number): string | null {
+    const t = this.list.find((x) => x.uid === uid);
+    return t ? this.tokenOf(t) : null;
+  }
+
+  private history(t: Tab): Promise<{ currentIndex: number; entries: { id: number | string; url: string }[] }> {
+    return this.send(t, "Page.getNavigationHistory");
+  }
+
+  /** A main-frame commit (`loader` is the method its loader's request had, null when none was seen) or a same-document
+   *  navigation ("same") happened, as the protocol reports it: the current entry is to be bound to its method, but not from
+   *  inside the protocol's event, where the history read fails. A document's first read (`onCommit`) is sent from Electron's
+   *  own commit event for the tab (`navigated`, at did-navigate, which Chromium sends after the protocol's event), where the
+   *  probe found the read reliable; an error page's (Electron's event may not come for it) and a same-document navigation's go
+   *  a tick after the protocol's event. The count says whether another commit or same-document navigation came since, before
+   *  the read or during it: then the entry is left without a record, never given the later one's method. */
+  private bindLater(t: Tab, how: { loader: LoadMethod | null } | "same", onCommit = false): void {
+    // A document's read still waiting for its commit event is dropped by the next navigation, as `bind` drops a read the count
+    // has passed: its entry is left unrecorded, with the gap open.
+    if (t.commitRead) { t.commitRead = null; t.gap = t.sent; }
+    const n = ++t.binds;
+    if (onCommit && how !== "same") { t.commitRead = { n, how }; return; }
+    setTimeout(() => { void this.bind(t, n, how).catch(() => undefined); }, 0);
+  }
+
+  /** Electron's own commit event for the tab's document (did-navigate): the first read of the commit the protocol reported. */
+  private navigated(t: Tab): void {
+    const r = t.commitRead;
+    if (!r) return;
+    t.commitRead = null;
+    void this.bind(t, r.n, r.how).catch(() => undefined);
+  }
+
+  private async bind(t: Tab, n: number, how: { loader: LoadMethod | null } | "same"): Promise<void> {
+    if (t.closing || t.wc.isDestroyed()) return;
+    // A cross-document commit whose bind is dropped (or whose read fails, below) leaves a gap: its entry is unrecorded and
+    // unlisted, so no same-document entry is called new until a read sent after the gap has gone through. A dropped
+    // same-document bind leaves none: its entry is new to the next read.
+    if (t.binds !== n) { if (how !== "same") t.gap = t.sent; return; }
+    let seq = 0;
+    let h: { currentIndex: number; entries: { id: number | string; url: string }[] };
+    // The first try goes from Electron's commit event (a document) or a tick after the protocol's (an error page, a same-document
+    // navigation), and can still find the history not ready: a read that fails is tried again, up to three tries about 50 ms apart, for as long as no later commit or same-document navigation came
+    // (the count `n` is checked before every try); only then is the entry left unrecorded and the gap opened (PR 5, R6).
+    for (let tries = 1; ; tries++) {
+      seq = ++t.sent;
+      try { h = await this.history(t); break; } catch (e) {
+        // The gap opens at the first failure, not after the last: a navigation during the retries must find it open. A try that
+        // goes through closes it (a read sent after it).
+        if (how !== "same") t.gap = t.sent;
+        if (tries >= BIND_TRIES || t.binds !== n) throw e;
+        await new Promise<void>((r) => { setTimeout(r, BIND_RETRY_MS); });
+        if (t.closing || t.wc.isDestroyed() || t.binds !== n) return;
+      }
+    }
+    // Every read's answer lists the ids it saw, also when a later commit makes this bind give up: an entry listed once is
+    // never new again. An older read answering after a newer one changes nothing.
+    const ids = new Set(h.entries.map((e) => String(e.id)));
+    const before = t.known, gapOpen = t.gap !== null;
+    if (seq > t.answered) { t.answered = seq; t.known = ids; }
+    if (t.gap !== null && seq > t.gap) t.gap = null;
+    if (t.binds !== n) return;
+    const cur = h.entries[h.currentIndex];
+    if (!cur) return;
+    const id = String(cur.id);
+    if (how === "same") {
+      // A same-document entry reloads by a plain GET, but only a NEW entry is known to be one: moving back within the document
+      // onto an entry seen before keeps whatever that entry had (a POST page's own entry, or none). With a gap open, in doubt.
+      if (!gapOpen && !before.has(id) && !t.methods.has(id)) t.methods.set(id, "GET");
+    } else if (how.loader && !(how.loader === "GET" && t.methods.get(id) === "other")) {
+      // A reload or a history load of an entry that was a POST never makes it free by showing GET (a redirect, a cache hit).
+      t.methods.set(id, how.loader);
+    }
+    for (const known of [...t.methods.keys()]) if (!ids.has(known)) t.methods.delete(known);
+  }
+
   /** Closes tab `index`; the next tab (or the last one) becomes active. */
   close(index: number): void {
     this.drop(this.tab(index));
@@ -419,11 +678,14 @@ export class ComputerBrowser {
 
   /** The tab as text for the model. With `session`, its refs become that session's to use (I2: one table per session
    *  per tab); without one (a text wait) no table changes. */
-  async snapshot(tab?: number, session?: string): Promise<Snapshot> {
+  async snapshot(tab?: number, session?: string, o: { cap?: number } = {}): Promise<Snapshot> {
     const t = this.tab(tab);
     // The site and document the reads belong to are fixed before them: a navigation during the reads (a value of the
     // old site read after the page moved on) is remembered for neither.
     const site = this.site(t), doc = t.doc;
+    // session-browser S16: the page token is read before the reads, so refs registered below belong to the page they were
+    // read from: a navigation that lands meanwhile makes them refused, never the old page's nodes under the new token.
+    const token = this.tokenOf(t);
     const dom = await this.locked(t, () => this.readDom(t));
     const before = await this.fieldValues(t, dom);
     const frames: { id: string }[] = [];
@@ -450,15 +712,36 @@ export class ComputerBrowser {
     const pool = t.memory.pool([site]), carried = t.memory.carried();
     const url = this.shownUrl(t);
     const snap = formatSnapshot(mergeFrames(trees, dom), {
-      origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: SNAPSHOT_CAP,
+      origin: siteOf(url) ?? "null", url, title: t.wc.getTitle(), sensitive: t.sensitive, cap: o.cap ?? SNAPSHOT_CAP,
       values: [...read.values, ...pool.values], whole: [...read.whole, ...pool.whole], otp, urlValues: carried.values, urlWhole: carried.whole,
     });
     if (session) {
-      const token = this.tokenOf(t);
       for (const [k, v] of [...t.refs]) if (v.token !== token) t.refs.delete(k);
-      t.refs.set(session, { refs: snap.refs, token });
+      // session-browser S16 (I4): a ref is the node the session was last SHOWN under that number. Every ref printed in this
+      // text replaces that number's meaning; under the same page token a number this text did not print (a reply's outline is
+      // cut) keeps what the session's earlier snapshot of this tab showed it; a number never shown is not registered.
+      const prev = t.refs.get(session);
+      t.refs.set(session, { refs: prev && prev.token === token ? new Map([...prev.refs, ...snap.refs]) : snap.refs, token });
     }
     return snap;
+  }
+
+  /** What the tab's page said about itself since it loaded (session-browser, computer_console): errors, warnings, uncaught
+   *  exceptions and failed requests, one line each, scrubbed with the tab's own scrubber and wrapped as untrusted page text
+   *  like a snapshot. A browser that is asleep has no log. */
+  async console(tab?: number): Promise<string> {
+    if (this.kept) throw new Error(REFUSAL.consoleAsleep);
+    const t = this.tab(tab);
+    const read = await this.secrets(t);
+    const url = this.urlOut(t);
+    // An address in the log goes out the way the tab's own address does (its URL scrubber also finds a value percent-encoded
+    // and the values other sites carried into an address); the line then goes through the text scrub.
+    const list = t.console.list();
+    let body = consoleText(list, this.scrubWith(t, read), this.urlScrub(t, [this.site(t)], read));
+    // The app's own line, first (a host that shortens a long reply keeps the start), with no `[kind]` in front: every line a page
+    // can write has one.
+    if (t.dropped) body = `${droppedLine(t.dropped)}${list.length ? `\n${body}` : ""}`;
+    return `${untrustedOpen(siteOf(url) ?? "null", url)}\n${body}\n</untrusted-page>`;
   }
 
   /** The viewport as a PNG, with every sensitive field painted over (D9). */
@@ -482,9 +765,11 @@ export class ComputerBrowser {
    * one in the hovered state the press will meet (a row that shows Delete on hover). The target is the control a click
    * there reaches by either walk (`judgeReach`); `click()` delivers at exactly that point. `target.name` is raw (D9: the
    * gate judges what the page shows); `shown` is the name for outgoing text, scrubbed with the values read in this call.
-   * A ref is looked up in `session`'s own table (I2), so it names the node printed for that session or nothing.
+   * A ref is looked up in `session`'s own table (I2), so it names the node printed for that session or nothing. With `valid`
+   * (PR 5, A4), the pointer's move onto the point is made only while it holds (otherwise PageChanged, and nothing moved); a
+   * click's resolve is not given one.
    */
-  async resolve(by: { ref: string } | { x: number; y: number }, session?: string): Promise<Resolved> {
+  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean): Promise<Resolved> {
     const t = this.tab();
     const where = { pageToken: this.tokenOf(t), tab: this.current };
     let named: number | null = null;
@@ -492,7 +777,7 @@ export class ComputerBrowser {
     if ("ref" in by) {
       const mine = session ? t.refs.get(session) : undefined;
       const ref = mine?.refs.get(by.ref);
-      if (!mine || !ref || mine.token !== this.tokenOf(t)) throw new Error(`There is no ${by.ref} on this page now: take a new snapshot.`);
+      if (!mine || !ref || mine.token !== this.tokenOf(t)) throw new Error(REFUSAL.noRefNow(by.ref));
       named = ref.backendNodeId;
       await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: named }).catch(() => undefined);
       p = centre(await this.box(t, named));
@@ -503,9 +788,10 @@ export class ComputerBrowser {
     // D9: the fields' values are read before the pointer arrives as well as after the walk, and `shown` is scrubbed with
     // both (a page that clears a code on mouseenter would otherwise leave it in the name read after the hover).
     const pre = await this.secrets(t);
-    await this.hover(t, p);
+    // `valid` (a hover's, whose move is the act): the pointer goes onto the point only while the call is current.
+    await this.hover(t, p, valid && (() => this.live(valid)));
     const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
-      if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error("Something else covers that element now: take a new snapshot.");
+      if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error(REFUSAL.covered);
     });
     const target = await this.judgeReach(t, reached, dom, own);
     const b = reached.controls[0] ?? hit;
@@ -561,28 +847,68 @@ export class ComputerBrowser {
    *  otherwise it is withheld (PageChanged), so a new document, or a click the person stopped, never gets a mouseup. R87:
    *  the press and its release go to exactly the point the click's own hit test judged, and the press only while the page
    *  is scrolled as it was for that test, read again just before it. */
-  async click(r: Resolved, valid: () => boolean): Promise<void> {
+  async click(r: Resolved, valid: () => boolean, o: { double?: boolean } = {}): Promise<{ once: boolean }> {
     const t = this.where(r);
-    if (typeof r.backendNodeId !== "number") throw new Error("The page changed: look again.");
+    if (typeof r.backendNodeId !== "number") throw new Error(REFUSAL.pageChanged);
     const p = r.point;
     const live = (): void => this.live(valid, r);
     // R26: hover the point again, hit-test, read the DOM and walk again, and deliver only while a click there reaches no
     // control the gate did not judge; the press follows the check with no move in between.
     await this.hover(t, p, live);
-    const now = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
-    if (!now) throw new Error("The page changed: look again.");
-    const ok = now.dom.remoteFrames.has(now.hit) ? now.hit === r.backendNodeId : accepted(now.dom, now.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
-    if (!ok) throw new Error("The page changed: look again.");
-    // R87: a scroll since the hit test (a smooth scroll still running, the page's script, the person) moves what the
-    // point shows, so it refuses. It is read before the checks below, so nothing is awaited between them and the press.
-    const off = await this.scrolledBy(t);
-    if (off.x !== now.off.x || off.y !== now.off.y) throw new Error("The page changed: look again.");
+    const now = await this.stillReaches(t, p, r);
     const at = judgedAt(now);
     live();
-    const doc = t.doc;
+    const doc = t.doc, navs = t.navs;
     await this.mouse(t, "mousePressed", at);
     if (!valid() || !this.list.includes(t) || t.doc !== doc) throw new PageChanged();
     await this.mouse(t, "mouseReleased", at);
+    if (!o.double) return { once: false };
+    // R76 (session-browser S17, R7): the second press is a second act on the page, so what was checked before the first is
+    // checked again before it: the same document with no navigation asked of it, the call still current, and the control the
+    // click reaches at the point one that was judged (the first click may have put another in its place). Otherwise nothing
+    // more is sent. A page that changed under the first click is not a failure of the call (PR 5, A2): the first click ran, so
+    // the answer is `once: true`, and so it is for every other way the second click does not finish.
+    const withheld = (): boolean => this.list[this.current] !== t || t.doc !== doc || t.navs !== navs;
+    // The first click has been delivered: whatever stops the second press (the call no longer current, a check that fails or
+    // times out) leaves the first having run, and the answer says so (PR 5, P3). Once the second press has gone (DevTools took
+    // the command), it is a double click whatever happens to its release, which is withheld as the first's would be: the
+    // answer is then `once: false`, and the reply the ordinary double-click line with the page as it is. A press whose command
+    // failed was not dispatched, so it counts as not sent.
+    let pressed = false;
+    try {
+      if (!valid() || withheld()) return { once: true };
+      const again = await this.stillReaches(t, p, r);
+      if (!valid() || withheld()) return { once: true };
+      const second = judgedAt(again);
+      await this.mouse(t, "mousePressed", second, 2);
+      pressed = true;
+      if (!valid() || !this.list.includes(t) || t.doc !== doc) return { once: false };
+      await this.mouse(t, "mouseReleased", second, 2);
+      return { once: false };
+    } catch {
+      return { once: !pressed };
+    }
+  }
+
+  /** The hit test, DOM read and walk of a press about to go to `p`, as `resolve` judged it for `r`: throws unless a click there
+   *  still reaches a control that was judged, and the page is scrolled as the hit test saw it (R87: a scroll since, a smooth
+   *  one still running, the page's script or the person, moves what the point shows). The one check both presses of a double
+   *  click make. */
+  private async stillReaches(t: Tab, p: Point, r: Resolved): Promise<Reached> {
+    const now = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
+    if (!now) throw new Error(REFUSAL.pageChanged);
+    const ok = now.dom.remoteFrames.has(now.hit) ? now.hit === r.backendNodeId : accepted(now.dom, now.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
+    if (!ok) throw new Error(REFUSAL.pageChanged);
+    const off = await this.scrolledBy(t);
+    if (off.x !== now.off.x || off.y !== now.off.y) throw new Error(REFUSAL.pageChanged);
+    return now;
+  }
+
+  /** Moves the pointer onto where `r` was resolved and presses nothing (session-browser S17). Like a click's move, it goes only
+   *  while `valid()` (the call is current) and `r`'s tab and page are still in front; otherwise PageChanged. */
+  async hoverAt(r: Resolved, valid: () => boolean): Promise<void> {
+    const t = this.where(r);
+    await this.hover(t, r.point, () => this.live(valid, r));
   }
 
   /** Types into the focused element: Input.insertText in 200-character chunks, each newline as Enter. R76: each chunk and
@@ -722,8 +1048,8 @@ export class ComputerBrowser {
       const url = withoutUserinfo(t.pending?.url ?? t.wc.getURL());
       if (!navAllowed(url)) continue;
       if (i === this.current) active = kept.length;
-      if (t.pending) { kept.push({ ...t.pending, url, openedBy: t.openedBy, memory: t.memory }); continue; }
-      kept.push({ url, shown: this.shownUrl(t), title: t.wc.getTitle(), openedBy: t.openedBy, memory: t.memory, urlHidden: this.hidden(t) || t.pathHidden });
+      if (t.pending) { kept.push({ ...t.pending, url, openedBy: t.openedBy, own: t.own, memory: t.memory }); continue; }
+      kept.push({ url, shown: this.shownUrl(t), title: t.wc.getTitle(), openedBy: t.openedBy, own: t.own, memory: t.memory, urlHidden: this.hidden(t) || t.pathHidden });
     }
     for (const t of [...this.list]) this.drop(t);
     this.kept = kept;
@@ -740,7 +1066,7 @@ export class ComputerBrowser {
    *  may hold a secret; `tabs()` is the only form that leaves main. */
   realAddresses(): { urls: string[]; active: number } {
     // A destroyed browser has no tabs to give: asking it must never read as "no tabs".
-    if (this.gone) throw new Error("the browser is gone");
+    if (this.gone) throw new Told(REFUSAL.browserGone, "the browser is gone");
     if (this.kept) return { urls: this.kept.map((k) => withoutUserinfo(k.url)), active: this.keptActive };
     const urls: string[] = [];
     let active = 0;
@@ -757,7 +1083,7 @@ export class ComputerBrowser {
    *  (session-browser S24). MAIN ONLY, like `realAddresses`. Null when the active tab has no address to give: none yet
    *  (about:blank), a destroyed view or a scheme that is not a web page. Throws once the browser is gone. */
   activeAddress(): string | null {
-    if (this.gone) throw new Error("the browser is gone");
+    if (this.gone) throw new Told(REFUSAL.browserGone, "the browser is gone");
     let url: string;
     if (this.kept) {
       const k = this.kept[this.keptActive];
@@ -838,7 +1164,7 @@ export class ComputerBrowser {
   restore(tabs: readonly string[], active: number): void {
     if (this.gone || this.kept || this.list.length) return;
     const ok = tabs.filter((u) => navAllowed(u)).map(withoutUserinfo);
-    this.kept = ok.map((url) => ({ url, shown: stripQuery(url), title: "", openedBy: null, memory: new SecretMemory(), urlHidden: true }));
+    this.kept = ok.map((url) => ({ url, shown: stripQuery(url), title: "", openedBy: null, own: false, memory: new SecretMemory(), urlHidden: true }));
     this.keptActive = Math.min(Math.max(0, tabs.slice(0, active + 1).filter((u) => navAllowed(u)).length - 1), Math.max(0, ok.length - 1));
     this.o.hooks.changed();
   }
@@ -865,6 +1191,7 @@ export class ComputerBrowser {
     this.watched.clear();
     leavePark(this);
     this.gone = true;
+    for (const w of [...this.navWake]) w.wake();
     this.signalDestroyed();
   }
 
@@ -877,7 +1204,7 @@ export class ComputerBrowser {
 
   private tab(index?: number): Tab {
     const t = this.list[index ?? this.current];
-    if (!t) throw new Error(index === undefined ? "No page is open: call computer_open first." : `There is no tab ${index}.`);
+    if (!t) throw new Error(index === undefined ? REFUSAL.noPage : REFUSAL.noTab(String(index)));
     return t;
   }
 
@@ -897,9 +1224,9 @@ export class ComputerBrowser {
     return t;
   }
 
-  private async addTab(by: string | null, keep?: Kept, background = false): Promise<Tab> {
-    if (this.gone) throw new Error("This computer was closed.");
-    if (this.list.length >= MAX_TABS) throw new Error(`${MAX_TABS} tabs are open: close one first.`);
+  private async addTab(by: string | null, keep?: Kept, background = false, own = false): Promise<Tab> {
+    if (this.gone) throw new Told(REFUSAL.browserGone, "This computer was closed.");
+    if (this.list.length >= MAX_TABS) throw new Error(REFUSAL.tooManyTabs(String(MAX_TABS)));
     const view = new WebContentsView({
       webPreferences: {
         session: computerSession(), sandbox: true, contextIsolation: true, nodeIntegration: false, nodeIntegrationInSubFrames: false,
@@ -911,9 +1238,10 @@ export class ComputerBrowser {
     });
     const sensitive = new Set<number>();
     const t: Tab = {
-      uid: nextUid++, view, wc: view.webContents, openedBy: by, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
+      uid: nextUid++, view, wc: view.webContents, openedBy: by, own: keep ? keep.own : own, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
+      loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null, console: new ConsoleLog(), requests: new Map(), committedLoader: null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
     };
     owners.set(t.wc.id, this.handlers);
     // A background tab leaves the selection on the tab already in front; with none in front it is the one.
@@ -924,13 +1252,16 @@ export class ComputerBrowser {
     this.place();
     // The debugger's domains answer only once the page has a renderer.
     await t.wc.loadURL("about:blank");
-    await this.attach(t).catch((e: Error) => this.o.hooks.note(e.message));
+    await this.attach(t).catch((e: Error) => this.o.hooks.note(forPerson(e)));
     this.o.hooks.changed();
     return t;
   }
 
   private drop(t: Tab): void {
     t.closing = true;
+    this.navEnded(t);
+    // Nothing of the tab stays reachable from the browser (its log of navigations, with the tab in each entry).
+    for (let i = this.navLog.length - 1; i >= 0; i--) if (this.navLog[i].tab === t) this.navLog.splice(i, 1);
     if (t.query) clearTimeout(t.query);
     owners.delete(t.wc.id);
     this.attachTo(t, null);
@@ -994,10 +1325,10 @@ export class ComputerBrowser {
   private wire(t: Tab): void {
     const { wc } = t;
     const note = (s: string): void => this.o.hooks.note(s);
-    const refuse = (url: string, what: string): void => note(`Refused ${what} a ${schemeOf(url)} URL.`);
+    const refuse = (url: string, what: string): void => note(`Refused ${what} ${schemeOf(url) === "unreadable" ? "an unreadable" : `a ${schemeOf(url)}`} URL.`);
     wc.setWindowOpenHandler((d) => {
       if (!navAllowed(d.url)) refuse(d.url, "a new window for");
-      else void this.popup(t, d).catch((e: Error) => this.o.hooks.note(`The page's new tab did not open: ${e.message}`));
+      else void this.popup(t, d).catch((e: Error) => this.o.hooks.note(`The page's new tab did not open: ${forPerson(e)}`));
       return { action: "deny" };
     });
     // A page's own navigations reach will-frame-navigate (main frame included), which notes the refusal once.
@@ -1024,6 +1355,7 @@ export class ComputerBrowser {
     wc.on("did-start-navigation", (e) => {
       if (!e.isMainFrame || e.isSameDocument) return;
       t.navs++;
+      this.navBegan(t);
       // agent-computer D9 (R38, R39): every navigation started gets its own entry (./leaving), never overwriting an earlier
       // one still waiting to commit; from now on a redirect belongs to this navigation. One that is not http or https gets
       // no entry (it is refused, or about:blank).
@@ -1041,7 +1373,9 @@ export class ComputerBrowser {
       if (t.holdOpen && t.holdUrl) t.holdUrl = e.url;
       t.leaving.redirect(e.url);
     });
-    wc.on("did-navigate", (_e, url) => this.commit(t, url));
+    // session-browser S17 (PR 5, R6): Electron's own commit event is where the history has the new entry: the commit's first read
+    // of the history goes from here (`navigated`), after the commit is counted.
+    wc.on("did-navigate", (_e, url) => { this.commit(t, url); this.navigated(t); });
     // R37 (N1): a main-frame error page (the site refused the connection, the name did not resolve) commits too, with the
     // failed URL as the tab's URL (a GET-submitted code is in it), but Electron emits no did-navigate for it: it emits one
     // did-fail-provisional-load at that commit (probed on Electron 44), and nothing for an aborted navigation (-3).
@@ -1053,22 +1387,158 @@ export class ComputerBrowser {
     // stays on while any navigation is pending (r40b: no stop between A's commit and B's), so this drops them all.
     // session-browser S13: the history may not hold the new entry at did-navigate, so the pane's Back and Forward are
     // read again once loading has stopped.
-    wc.on("did-stop-loading", () => { t.leaving.stop(); this.o.hooks.changed(); });
+    wc.on("did-stop-loading", () => { t.leaving.stop(); this.navEnded(t); this.o.hooks.changed(); });
     wc.on("page-title-updated", () => this.o.hooks.changed());
     wc.on("render-process-gone", (_e, d) => note(`The page ${clipUrl(this.urlOut(t))} stopped (${d.reason}).`));
     wc.on("select-bluetooth-device", (e, _devices, cb) => { e.preventDefault(); cb(""); });
     wc.debugger.on("message", (_e, method: string, params: Record<string, unknown>) => this.onCdp(t, method, params));
+    // session-browser (computer_console): of a console message its level, its text and its frame are read, and its source only to
+    // tell Electron's own messages (no source address is kept). The frame decides whether it is kept at all (`onConsole`). The
+    // protocol's Runtime domain is not enabled, since a page can tell (a logged object's getters run) and sign-in pages use
+    // that to refuse a browser; Electron's own event carries the same messages, uncaught errors included.
+    wc.on("console-message", (e) => this.onConsole(t, e.level, e.message, e.sourceId, e.frame));
     wc.debugger.on("detach", (_e, reason: string) => { if (!t.closing) note(`The tab's DevTools connection closed (${reason}); the next action reconnects.`); });
   }
 
+  /** Whether `frame` (or a frame above it) is in another process than the tab's main frame, which is how this browser knows a
+   *  frame from another site: a snapshot reads only the frames of the main frame's process, and typing into any other is
+   *  refused (D9). */
+  private otherProcess(t: Tab, frame: { processId: number; parent: unknown } | null | undefined): boolean {
+    const main = t.wc.mainFrame.processId;
+    for (let f = frame as { processId: number; parent: unknown } | null | undefined; f; f = f.parent as typeof f) if (f.processId !== main) return true;
+    return false;
+  }
+
+  /** Whether the tab takes in one more entry in this second: it takes CONSOLE_RATE a second (messages and requests alike) and
+   *  counts the rest without processing them. */
+  private taking(t: Tab): boolean {
+    const now = Date.now();
+    if (now - t.floodAt >= 1_000 || now < t.floodAt) { t.floodAt = now; t.floodN = 0; }
+    if (++t.floodN <= CONSOLE_RATE) return true;
+    t.dropped++;
+    return false;
+  }
+
+  /** A console message of the tab: an error, a warning or an uncaught exception (Chromium words one `Uncaught …`, an unhandled
+   *  rejection `Uncaught (in promise) …`) is kept; a log, an info or a debug message is not. Only a message of the tab's main
+   *  frame or of a frame the snapshot reads (the main frame's process) is kept: a frame from another site is opaque to every
+   *  scrubber here, so what it logs (a password typed into its sign-in) could not be hidden; a message whose frame cannot be
+   *  told is dropped as well. Of the source only the Electron prefix is read, to drop Electron's own messages; no source address
+   *  is ever stored or printed. */
+  private onConsole(t: Tab, level: string, message: string, source?: string, frame?: { processId: number; parent: unknown } | null): void {
+    if (typeof message !== "string") return;
+    // Electron's own warnings (a development build writes its security warning into every page's console) are not the page's.
+    if (typeof source === "string" && source.startsWith("node:electron/")) return;
+    if (level !== "error" && level !== "warning") return;
+    if (!frame || this.otherProcess(t, frame)) return;
+    if (!this.taking(t)) return;
+    this.logged(t, level === "warning" ? "warning" : /^Uncaught\b/.test(message) ? "exception" : "error", message);
+  }
+
+  /** The tab's scrubs for the log as its memory is now (the text scrub, and the address scrub, which also finds a value
+   *  percent-encoded and the values other sites carried into an address), built once per version of the memory (and site). */
+  private logScrubs(t: Tab): NonNullable<Tab["scrubFor"]> {
+    const site = this.site(t), version = t.memory.version;
+    if (t.scrubFor && t.scrubFor.site === site && t.scrubFor.version === version) return t.scrubFor;
+    t.scrubFor = { site, version, fn: this.remembered(t, [site]), url: this.urlScrub(t, [site]) };
+    return t.scrubFor;
+  }
+
+  private logScrub(t: Tab): (s: string) => string { return this.logScrubs(t).fn; }
+
+  /** `text` as the log keeps it, before its cut: every address plain (no query, fragment or user info, and, while the tab's own
+   *  path is held back, no path: a restored tab has no memory of the secrets its address carries, so the scrub alone would let
+   *  a failed request's query through), then one line with no control character, then plain again (cleaning can join an
+   *  address that a control character had split, and an address a NEL split was never seen whole), each address through the
+   *  tab's address scrub, then the tab's text scrub. */
+  private logLine(t: Tab, text: string): string {
+    const { fn, url } = this.logScrubs(t);
+    const plain = (s: string): string => plainAddresses(s, t.pathHidden);
+    // (The address scrub writes a bare origin with its closing slash; an origin that was held back to just that stays as it was.)
+    return fn(mapAddresses(plain(oneLine(plain(text))), (a) => { const out = url(a); return out === `${a}/` ? a : bulletsPlain(out); }));
+  }
+
+  /** An address as the request table and a request's entry keep it: plain and scrubbed (`logLine`), then cut at 500 and
+   *  copied, so a secret across the cut is scrubbed whole first. */
+  private keptAddress(t: Tab, url: string): string {
+    if (/^\s*data:/i.test(url)) return "data:";
+    return fresh(cutAt(this.logLine(t, url.slice(0, LOG_TAKEN)), ADDRESS_KEPT));
+  }
+
+  /** One entry of the tab's console log, in this order: the first 8,000 characters as a string of their own (a huge message is
+   *  not kept alive by a slice of it), then `logLine`, and the cut at 2,000 (so a secret across the cut is scrubbed whole
+   *  first). It is scrubbed again when read (`console`). */
+  private logged(t: Tab, kind: "error" | "warning" | "exception" | "request", text: string, loader?: string): void {
+    const line = this.logLine(t, fresh(text.slice(0, LOG_TAKEN)));
+    t.console.add({ at: Date.now(), kind, text: cutAt(line, CONSOLE_TEXT_MAX), ...(loader ? { loader } : {}) });
+  }
+
+  /** `Network` events for the log: a request in flight is known by its method, plain address and loader only, and only when its
+   *  frame is the main frame or one the snapshot reads (a request of any other frame, or one whose event names none, is not
+   *  followed at all); a failure (not a cancel) and an answer of 400 or more are entries, taken in at the same rate as
+   *  messages; a finished or failed request is forgotten. */
+  private onRequestEvent(t: Tab, method: string, p: Record<string, unknown>, req: { method?: unknown; url?: unknown } | undefined): void {
+    const id = typeof p.requestId === "string" ? p.requestId : null;
+    if (!id) return;
+    const known = t.requests.get(id);
+    switch (method) {
+      case "Network.requestWillBeSent": {
+        t.requests.delete(id);
+        if (typeof req?.method !== "string" || typeof req.url !== "string") return;
+        if (typeof p.frameId !== "string" || (p.frameId !== t.frame && !t.frames.includes(p.frameId))) return;
+        // The method, the address made plain, scrubbed and cut, and the loader, each a copy: nothing else of a request is kept.
+        t.requests.set(id, {
+          method: fresh(cutAt(req.method, 16)),
+          address: this.keptAddress(t, req.url),
+          loader: typeof p.loaderId === "string" ? fresh(cutAt(p.loaderId, 64)) : "",
+        });
+        while (t.requests.size > REQUESTS_KEPT) t.requests.delete(t.requests.keys().next().value!);
+        return;
+      }
+      case "Network.responseReceived": {
+        const res = p.response as { status?: unknown; url?: unknown } | undefined;
+        if (!known || typeof res?.status !== "number" || res.status < 400 || !this.taking(t)) return;
+        const address = typeof res.url === "string" ? this.keptAddress(t, res.url) : known.address;
+        this.logged(t, "request", `${res.status} ${known.method} ${address}`, typeof p.loaderId === "string" ? p.loaderId : known.loader);
+        return;
+      }
+      case "Network.loadingFailed": {
+        t.requests.delete(id);
+        if (!known || p.canceled === true || !this.taking(t)) return;
+        // The address is last: a `data:` address ends its line, so nothing after it would be kept.
+        const why = typeof p.errorText === "string" && p.errorText ? ` (${p.errorText})` : "";
+        this.logged(t, "request", `failed${why} ${known.method} ${known.address}`, known.loader);
+        return;
+      }
+      case "Network.loadingFinished":
+        t.requests.delete(id);
+    }
+  }
+
   private onCdp(t: Tab, method: string, p: Record<string, unknown>): void {
+    // A request is parsed once, here: the log (onRequestEvent) and the method table below both read it.
+    const request = method === "Network.requestWillBeSent" ? p.request as { method?: unknown; url?: unknown } | undefined : undefined;
+    if (method.startsWith("Network.")) this.onRequestEvent(t, method, p, request);
     switch (method) {
       // I3b: the page asked to go elsewhere in this tab (a script, a form, a link), before the browser starts the navigation.
       case "Page.frameRequestedNavigation":
         if ((!t.frame || p.frameId === t.frame) && (p.disposition === undefined || p.disposition === "currentTab")) t.navs++;
         break;
+      // session-browser S17 (R2): of a request only the method of a main-frame document is read, by its loader.
+      case "Network.requestWillBeSent": {
+        const verb = request?.method;
+        if (p.type !== "Document" || typeof p.loaderId !== "string" || typeof verb !== "string") break;
+        if (t.frame && p.frameId !== t.frame) break;
+        t.loaders.delete(p.loaderId);
+        t.loaders.set(p.loaderId, verb === "GET" ? "GET" : "other");
+        while (t.loaders.size > LOADERS_KEPT) t.loaders.delete(t.loaders.keys().next().value!);
+        break;
+      }
+      case "Page.navigatedWithinDocument":
+        if (t.frame && p.frameId === t.frame) this.bindLater(t, "same");
+        break;
       case "Page.frameNavigated": {
-        const frame = p.frame as { id: string; parentId?: string; loaderId: string };
+        const frame = p.frame as { id: string; parentId?: string; loaderId: string; url?: string; unreachableUrl?: string };
         // agent-computer D9 (R41): a main-frame commit takes the old document's frames with it; the new ones attach after.
         // R47: the new document's fields are placed by its first DOM read, started now (a restored document's frames
         // attach no new ones, and its fields count as placed nowhere until then).
@@ -1083,6 +1553,12 @@ export class ComputerBrowser {
         void this.world(t, frame.id).catch(() => undefined);
         if (frame.parentId) break;
         t.frame = frame.id;
+        t.committedLoader = typeof frame.loaderId === "string" ? frame.loaderId : null;
+        // This event names the loader (so the method); an error page (Chromium's own document for a load that failed) gets no
+        // did-navigate, so its read keeps the tick after this event.
+        const errorPage = typeof frame.unreachableUrl === "string" || /^chrome-error:/i.test(String(frame.url ?? ""));
+        this.bindLater(t, { loader: t.loaders.get(frame.loaderId) ?? null }, !errorPage);
+        t.loaders.delete(frame.loaderId);
         // D9: a document keeps its sensitive set for its life (a back/forward-cache restore brings its set back).
         t.sensitive = t.documents.get(frame.loaderId) ?? new Set();
         t.documents.delete(frame.loaderId);
@@ -1141,6 +1617,10 @@ export class ComputerBrowser {
 
   private async popup(t: Tab, d: Electron.HandlerDetails): Promise<void> {
     const from = this.site(t), to = siteOf(d.url) ?? "null", doc = t.doc;
+    // A popup inherits its opener's label only while this session's agent holds the wheel (its own action opened it); made while
+    // the person holds it, or nobody does, it is the person's, so the agent may not close it unasked.
+    const agentic = !(this.o.hooks.agentDrives && !this.o.hooks.agentDrives());
+    const opener = agentic ? t.openedBy : null;
     // R38 (D9): the popup's URL may carry a code typed into the opener that the agent never read (a target=_blank GET form,
     // window.open with the field's value). The opener document is still alive here, so its sensitive values are read now,
     // in G2's one-command read (the usual command timeout), and remembered for the opener's site before the URL goes out.
@@ -1152,7 +1632,8 @@ export class ComputerBrowser {
     const out = this.urlScrub(t, [from, to], got ?? { values: [], whole: [] });
     const shown = clipUrl(out(got ? d.url : stripQuery(d.url)));
     if (this.list.length >= MAX_TABS) { this.o.hooks.note(`The page tried to open ${shown} in a new tab; ${MAX_TABS} tabs are open.`); return; }
-    const nt = await this.addTab(t.openedBy);
+    // The same rule for the fact the close rule reads: the agent's own only when its own tab was the opener while it drove.
+    const nt = await this.addTab(opener, undefined, false, agentic && t.own);
     // R32: the new tab inherits the opener's secrets for the opener's site only. R35: a value the opener put in the new
     // tab's URL is carried for that URL string only, never into the new tab's site pool. R37 (N2): the opener's own
     // carried set comes along (a code carried into the opener's URL and forwarded to the popup's), kinds kept. R38: the
@@ -1266,17 +1747,36 @@ export class ComputerBrowser {
       try {
         t.wc.debugger.attach("1.3");
       } catch {
-        throw new Error("Another debugger is attached to this tab, so it cannot be driven (agent-computer D20).");
+        throw new Told(REFUSAL.otherDebugger, "Another debugger is attached to this tab, so it cannot be driven (agent-computer D20).");
       }
+      // Whatever committed while no debugger was attached was heard by none: its entry is unrecorded and unlisted, so a gap opens
+      // (it closes at the first read sent after it) and no same-document entry is called new meanwhile (PR 5, D6).
+      t.gap = t.sent;
       for (const [method, params] of ENABLE) await cdp(t.wc.debugger, method, params);
+      await this.watchRequests(t);
+      // The main frame's id, so the first load's own requests (before any commit names it) are known for the console log.
+      if (!t.frame) await cdp<{ frameTree: { frame: { id: string } } }>(t.wc.debugger, "Page.getFrameTree").then((r) => { if (!t.frame) t.frame = r.frameTree.frame.id; }).catch(() => undefined);
     })().finally(() => { t.attaching = null; });
     return t.attaching;
   }
 
+  /** session-browser S17 (R2): `Network` is enabled to hear which method each main-frame document was fetched by and, for
+   *  computer_console, which requests failed (a plain address, a method and a loader id each, never a header or a body), with its
+   *  buffers at zero; if the protocol refuses those it is enabled plainly. A failure leaves the tab as it was: every entry is
+   *  then "unknown" to the gate, which asks. */
+  private async watchRequests(t: Tab): Promise<void> {
+    try {
+      await cdp(t.wc.debugger, "Network.enable", NO_BUFFERS);
+    } catch (e) {
+      if (e instanceof CdpTimeout) return;
+      await cdp(t.wc.debugger, "Network.enable").catch(() => undefined);
+    }
+  }
+
   /** Every command goes through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). */
   private async send<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
-    if (t.wc.isDestroyed()) throw new Error("That tab was closed.");
-    if (t.wc.isDevToolsOpened()) throw new Error("DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
+    if (t.wc.isDestroyed()) throw new Told(REFUSAL.tabGone, "That tab was closed.");
+    if (t.wc.isDevToolsOpened()) throw new Told(REFUSAL.devToolsOpen, "DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
     if (t.attaching) await t.attaching;
     else if (!t.wc.debugger.isAttached()) await this.attach(t);
     return cdp<T>(t.wc.debugger, method, params);
@@ -1329,7 +1829,7 @@ export class ComputerBrowser {
       const sc = same ? screenScale(size, m2) : null;
       if (!sc) {
         if (attempt === 0) continue;
-        throw new Error("The page changed size while the screenshot was taken, so it was not returned: try again.");
+        throw new Error(REFUSAL.sizeChanged);
       }
       const viewport = { x: 0, y: 0, width: sc.width, height: sc.height };
       // One CSS pixel of margin, so the box's edge stays fully covered once the image is scaled down.
@@ -1362,7 +1862,7 @@ export class ComputerBrowser {
   private async box(t: Tab, backendNodeId: number): Promise<Rect> {
     const q = await this.send<{ quads: number[][] }>(t, "DOM.getContentQuads", { backendNodeId }).catch(unlessGone({ quads: [] as number[][] }));
     const r = q.quads.map(quadRect).find((x) => x.width > 0 && x.height > 0);
-    if (!r) throw new Error("That element is not visible on the page: take a new snapshot.");
+    if (!r) throw new Error(REFUSAL.notVisible);
     return r;
   }
 
@@ -1372,8 +1872,7 @@ export class ComputerBrowser {
   private async focused(t: Tab): Promise<{ b: number | null; dom: DomIndex; gone: boolean } | "remote"> {
     // A cross-site frame's document is in another process, out of this debugger's reach (so is anything inside one):
     // treated as sensitive, so typing into it is refused rather than judged blind (D9).
-    const main = t.wc.mainFrame.processId;
-    for (let f = t.wc.focusedFrame; f; f = f.parent) if (f.processId !== main) return "remote";
+    if (this.otherProcess(t, t.wc.focusedFrame)) return "remote";
     return this.locked(t, async () => {
       const dom = await this.readDom(t);
       // :focus matches in the deepest root that holds focus (an iframe's document, a shadow root), so every root is asked.
@@ -1422,10 +1921,10 @@ export class ComputerBrowser {
       if (t.mainDocs !== docs || now.gone || (first !== null && root !== null && root !== first)) throw new PageChanged();
       if (focus && !sameId(now, focus)) {
         if (focus.node !== null && now.dom !== null && !now.dom.names.has(focus.node)) throw new PageChanged();
-        if (typing && now.refused) throw new Error(D9_REFUSAL);
+        if (typing && now.refused) throw new Error(REFUSAL.passwordField);
         throw new FocusMoved();
       }
-      if (typing && now.refused) throw new Error(D9_REFUSAL);
+      if (typing && now.refused) throw new Error(REFUSAL.passwordField);
     };
   }
 
@@ -1542,14 +2041,15 @@ export class ComputerBrowser {
   /** The tab's current URL before its scrub: everything after the origin hidden while its commit is still carrying (R40),
    *  the query and fragment hidden while the document arrived through a navigation whose leaving read failed, a commit no
    *  entry matched, or a read of it flooded the memory (F1, R37, R39). */
-  private shownUrl(t: Tab): string {
-    const url = withoutUserinfo(t.wc.getURL());
+  private shownUrl(t: Tab, raw: string = t.wc.getURL()): string {
+    const url = withoutUserinfo(raw);
     return t.pathHidden ? hideAfterOrigin(url) : this.hidden(t) ? stripQuery(url) : url;
   }
 
-  /** The tab's current URL as it may leave: `shownUrl`, scrubbed for the current site. */
-  private urlOut(t: Tab): string {
-    return this.urlScrub(t, [this.site(t)])(this.shownUrl(t));
+  /** The tab's current URL as it may leave: `shownUrl`, scrubbed for the current site. With `raw` (an address the tab was asked
+   *  to open, which a failed open names), that address goes out the same way, scrubbed for its site as well (PR 5, X1). */
+  private urlOut(t: Tab, raw?: string): string {
+    return this.urlScrub(t, raw === undefined ? [this.site(t)] : [this.site(t), siteOf(raw) ?? "null"])(this.shownUrl(t, raw));
   }
 
   /** G2: the document being left may hold a code the person typed that the agent never read (a GET submit carries it into
@@ -1651,6 +2151,13 @@ export class ComputerBrowser {
     if (!held) t.holdUrl = null;
     t.urlHidden = held || got.kind === "page" || got.kind === "unknown";
     t.pathHidden = records.length > 0;
+    // session-browser (computer_console): the log is the document's, and a new one starts it again; only the failed or 4xx/5xx
+    // request of the committing document itself stays (its loader), made plain again with its origin only if this
+    // document's path is held back (it was made plain under the earlier document's state).
+    t.console.keepOnly(t.committedLoader);
+    t.committedLoader = null;
+    t.dropped = 0; t.floodN = 0;
+    if (t.pathHidden) t.console.remap((text) => plainAddresses(text, true));
     t.flooded = false;
     if (!records.length) return;
     const doc = t.doc;
@@ -1702,7 +2209,7 @@ export class ComputerBrowser {
         if (e instanceof CdpTimeout) throw e;
         if (fresh) {
           if (isGone(e)) return undefined;
-          throw new Error(D9_UNREAD);
+          throw new Error(REFUSAL.passwordUnread);
         }
         t.worlds.delete(frameId);
         fresh = true;
@@ -1724,11 +2231,11 @@ export class ComputerBrowser {
     try {
       ({ backendNodeId: hit } = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { ...at, includeUserAgentShadowDOM: false, ignorePointerEventsNone: false }));
     } catch (e) {
-      if (e instanceof Error && /^No node found at given location/.test(e.message)) throw new Error("There is nothing at that point on the page.");
+      if (e instanceof Error && /^No node found at given location/.test(e.message)) throw new Error(REFUSAL.nothingThere);
       throw e;
     }
     const after = await this.scrolledBy(t);
-    if (after.x !== off.x || after.y !== off.y) throw new Error("The page changed: look again.");
+    if (after.x !== off.x || after.y !== off.y) throw new Error(REFUSAL.pageChanged);
     return { hit, at, off };
   }
 
@@ -1757,10 +2264,10 @@ export class ComputerBrowser {
    * hidden, the wrapper hit) also starts at each host above it, where the click bubbles (`hostsAbove`). `hit` stays
    * the node the hit test returned; `at` and `off` are the hit test's (`hitAt`), and a press goes to `judgedAt` of them.
    */
-  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; at: Point; off: Point; dom: DomIndex; reached: Reach; own: number }> {
+  private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<Reached> {
     const { hit, at, off } = await this.hitAt(t, p);
     const dom = await this.locked(t, () => this.readDom(t));
-    if (!dom.names.has(hit)) throw new Error("The page changed: look again.");
+    if (!dom.names.has(hit)) throw new Error(REFUSAL.pageChanged);
     check?.(hit, dom);
     if (dom.remoteFrames.has(hit)) return { hit, at, off, dom, reached: { hit, controls: [hit] }, own: 1 };
     const text = await this.slottedText(t, hit, judgedAt({ at, off }), dom);
@@ -1801,7 +2308,7 @@ export class ComputerBrowser {
     const targets: Target[] = [];
     for (const c of r.controls) targets.push(await this.named(t, c, dom));
     if (targets.length === 1) return targets[0];
-    if (own > 1 && targets.slice(0, own).some((x) => !x.name)) throw new Error(CANT_TELL);
+    if (own > 1 && targets.slice(0, own).some((x) => !x.name)) throw new Error(REFUSAL.cantTell);
     const named = targets.filter((x) => x.name);
     if (!named.length) return targets[0];
     // Each further name is added unless the name so far holds it as whole words (then every label in it is matched
@@ -1858,9 +2365,9 @@ export class ComputerBrowser {
     }
   }
 
-  private async mouse(t: Tab, type: "mouseMoved" | "mousePressed" | "mouseReleased", p: Point): Promise<void> {
+  private async mouse(t: Tab, type: "mouseMoved" | "mousePressed" | "mouseReleased", p: Point, clickCount = 1): Promise<void> {
     await this.send(t, "Input.dispatchMouseEvent", {
-      type, x: p.x, y: p.y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1,
+      type, x: p.x, y: p.y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : clickCount,
     });
   }
 

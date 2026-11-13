@@ -29,6 +29,15 @@
         },
         "computer_scroll": {
           "approval_mode": "approve"
+        },
+        "computer_tab": {
+          "approval_mode": "approve"
+        },
+        "computer_nav": {
+          "approval_mode": "approve"
+        },
+        "computer_hover": {
+          "approval_mode": "approve"
         }
       }
     }

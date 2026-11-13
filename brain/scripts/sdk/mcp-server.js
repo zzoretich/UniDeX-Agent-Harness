@@ -23,7 +23,7 @@
  *   - graph_path      — the shortest chain of links between two notes
  *   - wrap_session    — the ONLY tool that writes the vault: apply an in-session extraction (memories, SESSION.md, drafts)
  *   - computer_open, computer_snapshot, computer_screenshot, computer_click, computer_type, computer_key, computer_scroll,
- *     computer_wait, computer_status — the UniDeX app's browser, through its bridge socket (agent-computer D19); they never touch the vault
+ *     computer_wait, computer_status, computer_tab, computer_nav, computer_hover, computer_console — the UniDeX app's browser, through its bridge socket (agent-computer D19); they never touch the vault
  */
 
 const path = require('path');

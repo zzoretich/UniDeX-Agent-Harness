@@ -1,0 +1,13 @@
+<!doctype html>
+<!-- The thirteen-tools spec's form page, on the origin the spec marks: its button posts the form to /order, so the page
+     that loads is the result of a POST, which Reload would send again. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harbour order</title>
+</head>
+<body>
+<h1>Harbour order</h1>
+<form action="/order" method="post"><input type="hidden" name="item" value="rope"><button id="place" type="submit">Place order</button></form>
+</body>
+</html>

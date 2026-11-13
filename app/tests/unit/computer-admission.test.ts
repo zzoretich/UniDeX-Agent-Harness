@@ -7,7 +7,7 @@ import type { ProcInfo } from "../../src/main/computer/peer";
 // A fake process table: pid -> info, code-signing team of the running process, and the static team of a path.
 const SERVER = "/vault/brain/scripts/sdk/mcp-server.js";
 const NOT_STARTED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
-const ALREADY_OPEN = "This session's computer connection is already open.";
+const ALREADY_OPEN = "This process's browser tools are not connected because this session already has a computer connection: go on without the browser tools in this process, and tell the user.";
 const CLAUDE = VENDOR.claude.team;
 const CODEX = VENDOR.codex.team;
 

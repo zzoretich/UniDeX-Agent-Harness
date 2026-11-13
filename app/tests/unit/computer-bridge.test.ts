@@ -15,6 +15,12 @@ import type { PeerAddon } from "../../src/main/computer/peer";
 const AGENT: AgentRef = { pid: 4242, host: "claude", page: "code", key: "code:t1", label: "Code 1", place: "~/proj", access: "read" };
 const peer: PeerAddon = { peerPid: () => 4242, procInfo: () => null, teamId: () => null, processTeamId: () => null };
 
+/** The names the bridge accepts, in the order it lists them to a client (session-browser S16, Task 20). */
+const THIRTEEN = [
+  "computer_status", "computer_open", "computer_snapshot", "computer_screenshot", "computer_click", "computer_type", "computer_key",
+  "computer_scroll", "computer_wait", "computer_tab", "computer_nav", "computer_hover", "computer_console",
+];
+
 const made: string[] = [];
 afterEach(() => { for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
 function tmpSock(): string {
@@ -70,7 +76,7 @@ test("an admitted hello, then a call routed with its AgentRef", async () => {
   const { bridge, socketPath, calls } = await boot();
   const c = client(socketPath);
   c.send({ hello: 1 });
-  assert.deepEqual(await c.line(1), { admitted: true, session: "Code 1" });
+  assert.deepEqual(await c.line(1), { admitted: true, session: "Code 1", tools: THIRTEEN });
   c.send({ id: 1, tool: "computer_status", args: {} });
   assert.deepEqual(await c.line(2), { id: 1, text: "done computer_status" });
   assert.equal(calls[0]!.agent, AGENT);
@@ -124,7 +130,7 @@ test("a handle that throws or rejects replies with an error, and the connection 
   c.send({ hello: 1 });
   await c.line(1);
   c.send({ id: 1, tool: "computer_click", args: {} });
-  assert.deepEqual(await c.line(2), { id: 1, text: "The computer failed: boom", isError: true });
+  assert.deepEqual(await c.line(2), { id: 1, text: "The computer failed (boom): call computer_status to see whether the browser is still there.", isError: true });
   c.send({ id: 2, tool: "computer_click", args: {} });
   assert.deepEqual(await c.line(3), { id: 2, text: "ok" });
   c.sock.destroy();
@@ -227,7 +233,7 @@ test("hello and a first call in one write: the admitted line, then the reply", a
   const { bridge, socketPath } = await boot();
   const c = client(socketPath);
   c.sock.write(`${JSON.stringify({ hello: 1 })}\n${JSON.stringify({ id: 3, tool: "computer_status", args: {} })}\n`);
-  assert.deepEqual(await c.line(1), { admitted: true, session: "Code 1" });
+  assert.deepEqual(await c.line(1), { admitted: true, session: "Code 1", tools: THIRTEEN });
   assert.deepEqual(await c.line(2), { id: 3, text: "done computer_status" });
   c.sock.destroy();
   await bridge.stop();
@@ -433,7 +439,7 @@ test("M12: an agent that leaves the registry loses its connection (drop), and a 
   // Gone from the registry, a call is answered with the refusal and never reaches the computer.
   live = false;
   c.send({ id: 2, tool: "computer_open", args: { url: "https://a.test/" } });
-  assert.deepEqual(await c.line(3), { id: 2, text: "This session has ended, so its computer connection is closed.", isError: true });
+  assert.deepEqual(await c.line(3), { id: 2, text: "This session has ended, so its computer connection is closed: start a new session to use the browser.", isError: true });
   await c.closed();
   assert.equal(calls.length, 1);
   assert.deepEqual(closed, [AGENT]);
@@ -449,4 +455,45 @@ test("M12: an agent that leaves the registry loses its connection (drop), and a 
   bridge.drop(7);
   assert.equal(closed.length, 2, "nothing more to close");
   } finally { await bridge.stop(); }
+});
+
+// ---- session-browser S16 (Task 20): the app says which tools it takes
+
+test("the admission answer lists the thirteen tools", async () => {
+  const { bridge, socketPath } = await boot();
+  const c = client(socketPath);
+  try {
+  c.send({ hello: 1 });
+  const answer = await c.line(1);
+  assert.deepEqual(Object.keys(answer).sort(), ["admitted", "session", "tools"], "nothing else is added to the answer");
+  assert.deepEqual(answer.tools, THIRTEEN);
+  assert.equal(new Set(answer.tools).size, 13);
+  } finally { c.sock.destroy(); await bridge.stop(); }
+});
+
+test("the bridge accepts thirteen tool names and no fourteenth", async () => {
+  const { bridge, socketPath, calls } = await boot();
+  const c = client(socketPath);
+  try {
+  c.send({ hello: 1 });
+  await c.line(1);
+  // One at a time: the bridge answers a fifth call in flight with "too many" before it reaches the handler.
+  for (const [i, tool] of THIRTEEN.entries()) { c.send({ id: i + 1, tool, args: {} }); await c.line(i + 2); }
+  assert.deepEqual(calls.map((x) => x.call.tool), THIRTEEN, "each of the thirteen reached the handler");
+  c.send({ id: 99, tool: "computer_fourteen", args: {} });
+  await c.closed();
+  assert.equal(calls.length, 13, "the fourteenth reached nothing");
+  } finally { c.sock.destroy(); await bridge.stop(); }
+});
+
+test("an unknown tool still ends the connection", async () => {
+  const { bridge, socketPath, calls } = await boot();
+  const c = client(socketPath);
+  try {
+  c.send({ hello: 1 });
+  await c.line(1);
+  c.send({ id: 1, tool: "computer_teleport", args: {} });
+  await c.closed();
+  assert.deepEqual(calls, []);
+  } finally { c.sock.destroy(); await bridge.stop(); }
 });

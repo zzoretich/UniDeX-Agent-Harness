@@ -10,7 +10,7 @@ const { COMPUTER_TOOLS, COMPUTER_LOOK } = require('../sdk/computer-tools.js');
 
 // The computer tools a Claude turn pre-approves (agent-computer D33), in the plugin form Claude Code names them.
 const plug = (t) => `mcp__plugin_agenticos_agenticos__${t}`;
-const NINE = COMPUTER_TOOLS.map(plug).join(',');
+const ALL = COMPUTER_TOOLS.map(plug).join(',');
 const LOOK = COMPUTER_LOOK.map(plug).join(',');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-headless-'));
@@ -191,9 +191,9 @@ test('sessionArgs: a claude turn streams JSON, edits without prompts, and runs u
   const first = H.sessionArgs('claude', { prompt: 'fix the parser', sessionId: 'a1b2', model: 'sonnet', effort: 'high', budget: 1 });
   assert.equal(first.stdin, null, 'nothing on stdin: spawns from the app have none');
   assert.deepEqual(first.argv, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
-    '--session-id', 'a1b2', '--allowedTools', NINE, '--max-budget-usd', '1.00', '--model', 'sonnet', '--effort', 'high', '--', 'fix the parser']);
+    '--session-id', 'a1b2', '--allowedTools', ALL, '--max-budget-usd', '1.00', '--model', 'sonnet', '--effort', 'high', '--', 'fix the parser']);
   const next = H.sessionArgs('claude', { prompt: '-v is a flag here', resume: 'a1b2', allowCommands: true });
-  assert.deepEqual(next.argv.slice(8), ['--resume', 'a1b2', '--allowedTools', `Bash,${NINE}`, '--', '-v is a flag here'], 'a prompt that looks like a flag stays the prompt');
+  assert.deepEqual(next.argv.slice(8), ['--resume', 'a1b2', '--allowedTools', `Bash,${ALL}`, '--', '-v is a flag here'], 'a prompt that looks like a flag stays the prompt');
   assert.ok(!first.argv[first.argv.indexOf('--allowedTools') + 1].split(',').includes('Bash'), 'Bash only when commands are allowed');
   assert.throws(() => H.sessionArgs('claude', { prompt: 'x' }), /sessionId/);
   assert.throws(() => H.sessionArgs('claude', { prompt: '  ', sessionId: 'a' }), /prompt/);
@@ -226,12 +226,12 @@ test('sessionArgs: a claude turn pre-approves the computer tools by access, as o
     return argv[argv.indexOf('--allowedTools') + 1];
   };
   assert.equal(value(claude({ access: 'read' })), 'mcp__plugin_agenticos_agenticos__computer_status,mcp__plugin_agenticos_agenticos__computer_snapshot,'
-    + 'mcp__plugin_agenticos_agenticos__computer_screenshot,mcp__plugin_agenticos_agenticos__computer_wait', 'read: the four look tools');
+    + 'mcp__plugin_agenticos_agenticos__computer_screenshot,mcp__plugin_agenticos_agenticos__computer_wait,mcp__plugin_agenticos_agenticos__computer_console', 'read: the five look tools');
   assert.equal(value(claude({ access: 'read' })), LOOK);
-  assert.equal(value(claude({ access: 'edit' })), NINE, 'edit: all nine');
-  assert.equal(value(claude({})), NINE, 'edit is the default');
-  assert.equal(value(claude({ access: 'run' })), `Bash,${NINE}`, 'run: Bash and all nine');
-  assert.equal(NINE.split(',').length, 9);
+  assert.equal(value(claude({ access: 'edit' })), ALL, 'edit: all thirteen');
+  assert.equal(value(claude({})), ALL, 'edit is the default');
+  assert.equal(value(claude({ access: 'run' })), `Bash,${ALL}`, 'run: Bash and all thirteen');
+  assert.equal(ALL.split(',').length, 13);
   // The variadic flag sits before the next flag, never before the prompt's `--`.
   const first = H.sessionArgs('claude', { prompt: 'p', sessionId: 's1' }).argv;
   assert.equal(first[first.indexOf('--allowedTools') + 2], '--');

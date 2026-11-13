@@ -45,8 +45,8 @@
  *     turn's level, read | edit | run (default edit; the older `allowCommands: true` reads as run). claude: stream-json
  *     events with no one to answer a prompt (a tool not allowed is refused): read runs in plan mode, edit in
  *     acceptEdits, run adds Bash; every level pre-approves the computer tools in one `--allowedTools` value (agent-computer
- *     D33: the app's own ask gate is their only gate) — read the four that only look, edit all nine, run Bash and all
- *     nine (sessionAllowedTools); the first turn runs under the app's own `sessionId`, later turns `--resume` it; capped
+ *     D33: the app's own ask gate is their only gate) — read the five that only look, edit all thirteen, run Bash and all
+ *     thirteen (sessionAllowedTools); the first turn runs under the app's own `sessionId`, later turns `--resume` it; capped
  *     at `budget`; the model `default` passes no --model (the user's own default). codex: `exec --json` (later
  *     `exec resume --json <resume>`), read in the read-only sandbox, edit and run in workspace-write (commands always
  *     run in the sandbox, without network: it cannot edit read-only with no one to approve), our hooks off, never
@@ -398,7 +398,7 @@ const CLAUDE_PLUGIN_TOOL = 'mcp__plugin_agenticos_agenticos__';
 
 /**
  * The one `--allowedTools` value of a Claude turn at `level` (agent-computer D33): read pre-approves the computer tools
- * that only look, edit all nine, run Bash and all nine. One comma-joined value, because the flag is variadic.
+ * that only look, edit all thirteen, run Bash and all thirteen. One comma-joined value, because the flag is variadic.
  */
 function sessionAllowedTools(level) {
   const tools = (level === 'read' ? COMPUTER_LOOK : COMPUTER_TOOLS).map((t) => CLAUDE_PLUGIN_TOOL + t);

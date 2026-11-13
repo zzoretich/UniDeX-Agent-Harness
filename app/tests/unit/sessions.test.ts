@@ -172,15 +172,15 @@ function onePage(): { browser: BrowserLike; clicks: () => number } {
   let clicks = 0;
   const no = (): never => { throw new Error("not in this test"); };
   const browser: BrowserLike = {
-    destroy: no, sleep: no, wake: no, asleep: no, restore: no, realAddresses: () => ({ urls: [], active: 0 }), activeAddress: () => null,
+    destroy: no, sleep: no, wake: no, asleep: no, restore: no, settled: async () => {}, realAddresses: () => ({ urls: [], active: 0 }), activeAddress: () => null,
     tabs: () => [{ index: 0, url, title: "", openedBy: null, active: true, canBack: false, canForward: false }],
     activeWebContentsId: () => 1,
     pageToken: () => "1.0",
     open: async (u) => { url = new URL(u).href; return { url, title: "" }; },
-    select: no, close: no, nav: no, snapshot: no, screenshot: no, focus: no, type: no, key: no, scroll: no, show: () => {},
+    openTab: no, select: no, close: no, nav: no, hoverAt: no, entry: no, navEntry: no, tabUid: no, tabIndex: no, ownTab: no, tabToken: no, snapshot: no, console: no, screenshot: no, focus: no, type: no, key: no, scroll: no, show: () => {},
     scrub: async (t) => t,
     resolve: async () => ({ target: { role: "button", name: "Next", inForm: false, fileInput: false }, shown: "Next", sensitive: false, backendNodeId: 7, judged: [7], point: { x: 1, y: 1 }, pageToken: "1.0", tab: 0 }),
-    click: async (_r, valid) => { if (valid()) clicks++; },
+    click: async (_r, valid) => { if (valid()) clicks++; return { once: false }; },
   };
   return { browser, clicks: () => clicks };
 }
@@ -617,9 +617,9 @@ test("each turn runs with its own model, effort and access; a send that names no
   const calls = (): string[][] => fs.readFileSync(log, "utf8").trim().split("\n").map((l) => (JSON.parse(l) as { argv: string[] }).argv);
   const seen = calls().length;
   const flag = (argv: string[], name: string) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
-  // Every turn pre-approves the computer tools by access (agent-computer D33): the look tools, all nine, or Bash and all nine.
+  // Every turn pre-approves the computer tools by access (agent-computer D33): the look tools, all thirteen, or Bash and all thirteen.
   const plug = (t: string) => `mcp__plugin_agenticos_agenticos__${t}`;
-  const NINE = COMPUTER_TOOLS.map(plug).join(",");
+  const ALL = COMPUTER_TOOLS.map(plug).join(",");
   const r = await s.start({ workspace: "harbor-map", host: "claude", text: "plan it", model: "sonnet", effort: "high", access: "read" });
   assert.ok(r.ok);
   assert.deepEqual([r.data.model, r.data.effort, r.data.access], ["sonnet", "high", "read"]);
@@ -631,8 +631,8 @@ test("each turn runs with its own model, effort and access; a send that names no
   await idle(s);
   const [first, second, third] = calls().slice(seen);
   assert.deepEqual([flag(first, "--permission-mode"), flag(first, "--model"), flag(first, "--effort"), flag(first, "--allowedTools")], ["plan", "sonnet", "high", COMPUTER_LOOK.map(plug).join(",")]);
-  assert.deepEqual([flag(second, "--permission-mode"), flag(second, "--model"), flag(second, "--effort"), flag(second, "--allowedTools")], ["acceptEdits", "opus", "high", `Bash,${NINE}`]);
-  assert.deepEqual([flag(third, "--model"), flag(third, "--allowedTools")], ["opus", `Bash,${NINE}`], "the last turn's choices carry on");
+  assert.deepEqual([flag(second, "--permission-mode"), flag(second, "--model"), flag(second, "--effort"), flag(second, "--allowedTools")], ["acceptEdits", "opus", "high", `Bash,${ALL}`]);
+  assert.deepEqual([flag(third, "--model"), flag(third, "--allowedTools")], ["opus", `Bash,${ALL}`], "the last turn's choices carry on");
   const read = await s.read(r.data.id);
   assert.ok(read.ok);
   assert.deepEqual(read.data.filter((e) => e.kind === "prompt").map((e) => [e.model, e.effort, e.access]), [["sonnet", "high", "read"], ["opus", "high", "run"], ["opus", "high", "run"]]);
@@ -643,7 +643,7 @@ test("each turn runs with its own model, effort and access; a send that names no
   const old = await s.send({ thread: r.data.id, text: "older page", allowCommands: false });
   assert.ok(old.ok);
   await idle(s);
-  assert.equal(flag(calls().at(-1) as string[], "--allowedTools"), NINE, "allowCommands false still reads as edit");
+  assert.equal(flag(calls().at(-1) as string[], "--allowedTools"), ALL, "allowCommands false still reads as edit");
 });
 
 test("catalog: the runtime's answer for each host; a host that does not answer keeps its aliases; refused while Sessions is off", async () => {

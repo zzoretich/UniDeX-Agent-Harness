@@ -410,6 +410,10 @@ export function secretsOf(nodes: CdpAxNode[], sensitive: ReadonlySet<number>): s
 /** A JSON-quoted string that cannot open or close a tag. */
 const quote = (s: string): string => JSON.stringify(s).replace(/</g, "\\u003c");
 const attrValue = (s: string): string => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** The opening part of the wrapper that marks page text as data from a page (`url` cut at `URL_MAX`); the closing part is
+ *  `</untrusted-page>`. Shared with computer_console, whose lines are page text too. */
+export const untrustedOpen = (origin: string, url: string): string =>
+  `<untrusted-page origin="${attrValue(origin)}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;
 const clip = (s: string): string => {
   const one = s.replace(/\s+/g, " ").trim();
   return one.length > NAME_MAX ? `${one.slice(0, NAME_MAX)}…` : one;
@@ -458,11 +462,13 @@ export function formatSnapshot(nodes: AxNode[], o: {
   const scrubUrl = urlScrubber([...secrets, ...(o.urlValues ?? [])], [...whole, ...(o.urlWhole ?? [])]);
 
   const url = scrubUrl(o.url);
-  const open = `<untrusted-page origin="${attrValue(o.origin)}" url="${attrValue(url.length > URL_MAX ? `${url.slice(0, URL_MAX - 1)}…` : url)}">`;
+  const open = untrustedOpen(o.origin, url);
   const close = "</untrusted-page>";
   const lines = [open, `title ${quote(clip(scrub(o.title)))}`];
-  const reserve = `\n[truncated: ${nodes.length} more nodes]`.length + 1 + close.length;
-  let used = lines[0].length + 1 + lines[1].length;
+  // session-browser S16: the cap counts the page's own lines (the title and the outline), never the wrapper's opening part
+  // (an address can be thousands of characters) or its closing part, which are always whole.
+  const reserve = `\n[truncated: ${nodes.length} more nodes]`.length;
+  let used = lines[1].length;
   const refs: Snapshot["refs"] = new Map();
   let truncated = false;
   let more = 0;

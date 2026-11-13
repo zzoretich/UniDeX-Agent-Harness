@@ -58,15 +58,15 @@ checked; else by typing the command into a fresh shell, as before) or a shell, i
 code folder) or Scratch (`data/terminalLaunch.ts`); terminals start with the login shell's `PATH`.
 
 The Computer pane (agent-computer) docks right of a Code terminal and of a Sessions thread: a browser in its
-own partition that a session's agent drives through the agenticos MCP server's nine `computer_*` tools and the person
+own partition that a session's agent drives through the agenticos MCP server's thirteen `computer_*` tools and the person
 answers and takes over (`src/main/computer/`, the HUD's `ui/ComputerPane.ts`). Every session has its own browser, keyed
 by the session (`code:<the terminal's first process>` or `chat:<thread>`): two sessions in one folder keep separate tabs
 and never wait for each other; Vault chat, History and past conversations have none. A browser starts off: the pane is a
 narrow strip with a power button, and open, its header names the session and has an On/Off switch. Only the person turns
 it on or off, from the strip, the switch, or **Turn on** on the card that appears when the session's agent first asks to
 open a page (**Not now** declines, and the agent is told and does not ask again for the rest of its turn in Sessions, or
-for 60 seconds in Code). Off closes its tabs and stops the agent's action in flight; closing the last tab also switches
-it off; On brings the tabs back, reloaded. Quitting keeps the tabs (`<user data>/computer/browsers.json`): a thread's
+for 60 seconds in Code). Off closes its tabs and stops the agent's action in flight; the person's close of the last tab also
+switches it off (the agent's leaves it on, at the start page); On brings the tabs back, reloaded. Quitting keeps the tabs (`<user data>/computer/browsers.json`): a thread's
 browser returns after a relaunch, asleep, and a resumed Code conversation gets its tabs back, off. At most
 `computer.awake` browsers (default 4) keep their pages loaded; the least recently used one sleeps, never the one on
 screen or one an agent is using. A browser lives as long as its session: closing a terminal or deleting a thread

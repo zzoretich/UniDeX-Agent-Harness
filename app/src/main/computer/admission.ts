@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ProcInfo } from "./peer";
 import type { AgentRef, AgentRegistry } from "./registry";
+import { REFUSAL } from "./refusals";
 
 export interface Sys {
   procInfo(pid: number): ProcInfo | null;
@@ -30,8 +31,8 @@ export const VENDOR: Readonly<Record<Host, { team: string; pkg: string }>> = {
 
 export type Admit = { ok: true; agent: AgentRef } | { ok: false; reason: string };
 
-const NOT_STARTED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
-const ALREADY_OPEN = "This session's computer connection is already open.";
+const NOT_STARTED = REFUSAL.notStarted;
+const ALREADY_OPEN = REFUSAL.alreadyOpen;
 
 function real(sys: Sys, p: string): string | null {
   try {

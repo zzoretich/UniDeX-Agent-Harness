@@ -29,11 +29,11 @@ async function withClient(fn, extraEnv) {
   try { return await fn(client); } finally { await client.close(); }
 }
 
-test('the server lists wrap_session next to the fifteen read tools and the nine computer tools', async () => {
+test('the server lists wrap_session next to the fifteen read tools and the thirteen computer tools', async () => {
   await withClient(async (client) => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ['brief_read', 'computer_click', 'computer_key', 'computer_open', 'computer_screenshot', 'computer_scroll', 'computer_snapshot',
-      'computer_status', 'computer_type', 'computer_wait', 'feedback_rules', 'graph_neighbors', 'graph_overview', 'graph_path', 'graph_query',
+    assert.deepEqual(names, ['brief_read', 'computer_click', 'computer_console', 'computer_hover', 'computer_key', 'computer_nav', 'computer_open', 'computer_screenshot',
+      'computer_scroll', 'computer_snapshot', 'computer_status', 'computer_tab', 'computer_type', 'computer_wait', 'feedback_rules', 'graph_neighbors', 'graph_overview', 'graph_path', 'graph_query',
       'memory_list', 'memory_read', 'memory_search', 'pattern_list', 'recall', 'routine_list', 'session_list', 'session_recall', 'snapshot_read',
       'wrap_session']);
   });
@@ -92,8 +92,8 @@ test('wrap_session refuses under AOS_HEADLESS=1 without exiting the server', asy
     assert.equal(res.isError, true);
     assert.match(res.content[0].text, /AOS_HEADLESS/);
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ['brief_read', 'computer_click', 'computer_key', 'computer_open', 'computer_screenshot', 'computer_scroll', 'computer_snapshot',
-      'computer_status', 'computer_type', 'computer_wait', 'feedback_rules', 'graph_neighbors', 'graph_overview', 'graph_path', 'graph_query',
+    assert.deepEqual(names, ['brief_read', 'computer_click', 'computer_console', 'computer_hover', 'computer_key', 'computer_nav', 'computer_open', 'computer_screenshot',
+      'computer_scroll', 'computer_snapshot', 'computer_status', 'computer_tab', 'computer_type', 'computer_wait', 'feedback_rules', 'graph_neighbors', 'graph_overview', 'graph_path', 'graph_query',
       'memory_list', 'memory_read', 'memory_search', 'pattern_list', 'recall', 'routine_list', 'session_list', 'session_recall', 'snapshot_read',
       'wrap_session']);
   }, { AOS_HEADLESS: '1' });

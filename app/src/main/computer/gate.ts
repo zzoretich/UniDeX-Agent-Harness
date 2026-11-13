@@ -3,7 +3,9 @@
 // the verdict. What asks by label is the D43 vocabulary in ./categories.
 
 import { categoryOf, type AskCategory, type Target } from "./categories";
+import { REFUSAL } from "./refusals";
 import { navAllowed } from "../policy/computer-url";
+import type { ComputerNavGo } from "../../shared/ipc";
 
 export type Access = "read" | "edit" | "run" | "host";
 
@@ -19,10 +21,15 @@ export type Action =
   | { kind: "open"; url: string }
   | { kind: "click"; target: Target }
   | { kind: "key"; key: string; focus: Focus }
-  | { kind: "type"; text: string; focus: Focus };
+  | { kind: "type"; text: string; focus: Focus }
+  /** `byUser`: the tab was not made by this session's agent's own `computer_open` (or a popup of its own click): a close of it asks. */
+  | { kind: "tab"; close: boolean; byUser: boolean }
+  /** `method`: how the entry Back, Forward or Reload would load was fetched; "unknown" where it could not be read. */
+  | { kind: "nav"; go: ComputerNavGo; method: "GET" | "other" | "unknown" }
+  | { kind: "hover" };
 
 /** `frame`: input into a frame from another site, which cannot be read or judged by label (asked on every site). */
-export type AskWhy = AskCategory | "unmarked" | "return" | "file" | "permission" | "frame" | "power";
+export type AskWhy = AskCategory | "unmarked" | "return" | "file" | "permission" | "frame" | "power" | "closetab" | "resend";
 export type Verdict = { go: true } | { ask: AskWhy } | { refuse: string };
 
 /** Keys that move focus or dismiss without changing the page's data. */
@@ -33,8 +40,6 @@ export const NAV_KEYS: ReadonlySet<string> = new Set([
 const LOOKING = new Set(["status", "snapshot", "screenshot", "wait"]);
 const NAV_LOWER: ReadonlySet<string> = new Set([...NAV_KEYS].map((k) => k.toLowerCase()));
 const GO: Verdict = Object.freeze({ go: true as const });
-const D9_REFUSAL = "Typing into a password field is refused (D9).";
-const FRAME_REFUSAL = "Typing into a frame from another site is refused (D9).";
 
 /** A key string split into trimmed, lower-cased parts on "+". A lone space part is "space"; "\r", "\n" and "return"
  *  are "enter". Shared with the browser's key-event builder so both read a key the same way. */
@@ -59,10 +64,10 @@ function click(t: Target, marked: boolean): Verdict {
 
 /** The verdict for `a` given the session's access level and whether the current site is marked. */
 export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verdict {
-  if (ctx.access === "read" && !LOOKING.has(a.kind)) return { refuse: "Read only: this session can look but not act (D17)." };
+  if (ctx.access === "read" && !LOOKING.has(a.kind)) return { refuse: REFUSAL.readOnly };
   switch (a.kind) {
     case "open":
-      return navAllowed(a.url) ? GO : { refuse: "Only http and https pages open." };
+      return navAllowed(a.url) ? GO : { refuse: REFUSAL.notWeb };
     case "click":
       return click(a.target, ctx.marked);
     case "key": {
@@ -72,20 +77,28 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
       if (k.enter && !a.focus.plainTextarea) return { ask: "return" };
       if (NAV_LOWER.has(k.parts.join("+"))) return GO;
       // D9: any other key into a password field is typing into it (Enter asked above; it submits, it does not type).
-      if (a.focus.sensitive && !k.enter) return { refuse: D9_REFUSAL };
+      if (a.focus.sensitive && !k.enter) return { refuse: REFUSAL.passwordField };
       if (a.focus.target?.opaque) return { ask: "frame" };
       if (!ctx.marked) return { ask: "unmarked" };
       if (k.space && a.focus.target) return click(a.focus.target, true);
       return GO;
     }
     case "type": {
-      if (a.focus.sensitive) return { refuse: D9_REFUSAL };
-      if (a.focus.target?.opaque) return { refuse: FRAME_REFUSAL };
+      if (a.focus.sensitive) return { refuse: REFUSAL.passwordField };
+      if (a.focus.target?.opaque) return { refuse: REFUSAL.otherSiteFrame };
       if (/[\r\n]/.test(a.text) && !a.focus.plainTextarea) return { ask: "return" };
       if (!ctx.marked) return { ask: "unmarked" };
       if (a.focus.target?.fileInput) return { ask: "file" };
       return GO;
     }
+    // session-browser S17: a hover and a tab switch change nothing the page keeps; closing a tab the agent did not open is
+    // the person's to allow; a load that may send a form again (any entry not known to be a GET) is asked every time.
+    case "hover":
+      return GO;
+    case "tab":
+      return a.close && a.byUser ? { ask: "closetab" } : GO;
+    case "nav":
+      return a.method === "GET" ? GO : { ask: "resend" };
     case "status":
     case "snapshot":
     case "screenshot":
@@ -95,7 +108,7 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
     default: {
       const _exhaustive: never = a;
       void _exhaustive;
-      return { refuse: "Unknown action." };
+      return { refuse: REFUSAL.unknownAction };
     }
   }
 }

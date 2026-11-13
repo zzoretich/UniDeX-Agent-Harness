@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ASK_LABELS, QUITTING, cleanTitle, ComputerService, type BrowserLike, type ComputerState } from "../../src/main/computer/service";
+import { ASK_LABELS, cleanTitle, ComputerService, type BrowserLike, type ComputerState } from "../../src/main/computer/service";
 import { AskBroker, type Clock } from "../../src/main/computer/asks";
+import { REFUSAL } from "../../src/main/computer/refusals";
+import { OUTLINE_MAX as OUTLINE_CAP, UNREAD } from "../../src/main/computer/reply";
 import { Wheel } from "../../src/main/computer/wheel";
 import { BrowserRecords } from "../../src/main/computer/records";
 import { SiteMarks } from "../../src/main/computer/sites";
@@ -15,18 +17,23 @@ import type { Target } from "../../src/main/computer/categories";
 import type { Snapshot } from "../../src/main/computer/snapshot";
 import type { ComputerTool } from "../../src/main/computer/bridge";
 import type { Rect } from "../../src/main/computer/mask";
-import { PageChanged } from "../../src/main/computer/cdp";
+import { PageChanged, Told as TwoWordings } from "../../src/main/computer/cdp";
 
 const flush = async (): Promise<void> => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
 /** The page line a reply ends with: the address inside the untrusted wrapper, after its origin (D21, R69). */
 const page = (url: string): string => `Page: <untrusted-page origin="${new URL(url).origin}">${url}</untrusted-page>`;
+/** What an acting tool's reply ends with (session-browser S16): the page's outline as it is now. The fake browser's page
+ *  text is `body`; the address is in the wrapper's url attribute. */
+const now = (url: string, body = ""): string => `\n\nPage now:\n<untrusted-page origin="o" url="${url}">\n${body}\n</untrusted-page>`;
 const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
 class FakeClock implements Clock {
   t = 0; private n = 0; private q = new Map<number, { at: number; fn: () => void }>();
   now() { return this.t; }
-  setTimeout(fn: () => void, ms: number) { const id = ++this.n; this.q.set(id, { at: this.t + ms, fn }); return id; }
-  clearTimeout(id: unknown) { this.q.delete(id as number); }
+  /** Every timer set (its id and delay) and every id cleared, so a test can see that a timer was cleared, not just that it did no harm. */
+  setLog: { id: number; ms: number }[] = []; cleared = new Set<number>();
+  setTimeout(fn: () => void, ms: number) { const id = ++this.n; this.setLog.push({ id, ms }); this.q.set(id, { at: this.t + ms, fn }); return id; }
+  clearTimeout(id: unknown) { this.cleared.add(id as number); this.q.delete(id as number); }
   async advance(ms: number) {
     const end = this.t + ms;
     for (;;) {
@@ -48,11 +55,15 @@ const restoreFails = new Set<string>();
 
 /** The subset of ComputerBrowser the service drives, over an in-memory page. */
 class FakeBrowser implements BrowserLike {
-  pages: { url: string; openedBy: string | null; hidden?: boolean }[] = [];
+  /** `own`: the agent's own `computer_open` made the tab (the fact the close rule reads, which never leaves main);
+   *  `commits`: the tab's commit counter, which the page token carries (main-frame commits and in-page navigations). */
+  pages: { url: string; openedBy: string | null; hidden?: boolean; own?: boolean; commits?: number }[] = [];
   current = -1; seq = 0;
   spots = new Map<string, Spot>();
   focused: Focus = { target: null, shown: "", sensitive: false, plainTextarea: false, node: null, frame: null };
   text = "";
+  /** Page texts for the next reads, in order (D9: a test tells each call's read apart), and the table each reply read registered. */
+  pageTexts: string[] = []; registered: string[] = [];
   clicks: Resolved[] = []; typed: string[] = []; keys: string[] = []; scrolls: { dx: number; dy: number; at: number | null }[] = [];
   /** Where each type and key was bound (I3b): the tab and page token the gate judged. */
   bound: ({ tab: number; pageToken: string } | undefined)[] = [];
@@ -76,6 +87,13 @@ class FakeBrowser implements BrowserLike {
   /** S9: sleep keeps the pages (the real browser keeps their addresses); wake records when it ran and can be held. */
   sleeps = 0; wakes = 0; sleeping = false; wakeGate: Promise<void> | null = null;
   sleepThrows = false; snapGate: Promise<void> | null = null;
+  /** The `since` of each settled() call (session-browser S16), and a gate a test holds to keep the settle wait going. It
+   *  resolves at once otherwise, so no test waits in real time. */
+  settles: number[] = []; settleGate: Promise<void> | null = null;
+  /** One gate per settled() call, in call order, before the shared one (a test that overlaps two calls). `lastSettled` is the
+   *  `since` of the call that finished waiting last, which the next snapshot records in `snapSince`. */
+  settleGates: Promise<void>[] = []; lastSettled: number | null = null; snapSince: (number | null)[] = [];
+  async settled(since: number) { this.settles.push(since); await (this.settleGates.shift() ?? this.settleGate); this.lastSettled = since; }
   sleep() { this.sleeps++; if (this.sleepThrows) throw new Error("no sleep"); this.sleeping = true; }
   async wake() { this.wakes++; await Promise.race([this.wakeGate, this.goneP]); this.sleeping = false; }
   asleep() { return this.sleeping; }
@@ -86,37 +104,143 @@ class FakeBrowser implements BrowserLike {
   /** Main only (the real address of every tab). */
   realAddresses() { if (this.destroyed > 0) throw new Error("the browser is gone"); return { urls: this.pages.map((p) => p.url), active: Math.max(0, this.current) }; }
   constructor(public session: string, public hooks: BrowserHooks) {}
-  tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.hidden ? p.url.replace(/[?#].*$/, "") : p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: false, canForward: false })); }
+  /** Whether the active tab has a page to go back or forward to (session-browser S13). */
+  canBack = false; canForward = false;
+  tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.hidden ? p.url.replace(/[?#].*$/, "") : p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: index === this.current && this.canBack, canForward: index === this.current && this.canForward })); }
   activeWebContentsId(): number | null { return this.current < 0 ? null : 100 + this.current; }
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
-  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }) {
+  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null; own?: boolean }) {
     // As the real browser does (session-browser X2): a background tab is added without taking the selection, unless it is the first.
+    this.trail.push(`open ${this.pages.length}`);
+    const hook = this.onOpen; this.onOpen = null; hook?.();
     let at = this.current;
-    if (o.newTab || this.current < 0) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by }); at = this.pages.length - 1; if (!keep) this.current = at; }
-    else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy };
+    // As the real browser: a tab that cannot be MADE throws before any exists; a page that cannot LOAD throws after its tab is in place.
+    if (this.makeFails?.(url)) throw new Error(REFUSAL.browserGone);
+    if (o.newTab || this.current < 0) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by, ...(o.own ? { own: true } : {}) }); at = this.pages.length - 1; if (!keep) this.current = at; }
+    else this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy, ...(this.pages[this.current].own ? { own: true } : {}), commits: (this.pages[this.current].commits ?? 0) + 1 };
     this.seq++;
+    const opened = { url: this.pages[at].url, title: "" };
+    if (this.loadFails?.(url)) throw new Error(REFUSAL.couldNotOpen(`${url} (ERR_FAILED)`));
     // The page this call opened, which is the active one unless it went to the background (as the real browser answers).
-    return { url: this.pages[at].url, title: "" };
+    return opened;
   }
+  /** As ComputerBrowser.openTab: a tab in front, not the agent's own, whose uid is answered once it exists; its load is started
+   *  and never waited for, so a page that cannot load leaves the tab on its error page and nothing throws. `onOpen` runs before
+   *  the tab is made, `afterOpen` once it is (the person or a program acts while it is made). */
+  async openTab(url: string, o: { by: string | null }): Promise<number> {
+    this.trail.push(`open ${this.pages.length}`);
+    const hook = this.onOpen; this.onOpen = null; hook?.();
+    if (this.makeFails?.(url)) throw new Error(REFUSAL.browserGone);
+    this.pages.push({ url: new URL(url).href, openedBy: o.by });
+    this.current = this.pages.length - 1;
+    this.seq++;
+    const uid = this.tabUid(this.current)!;
+    { const after = this.afterOpen; this.afterOpen = null; after?.(); }
+    return uid;
+  }
+  /** Pages that cannot be loaded (their tab is made, then the open throws) and pages whose tab cannot be made at all. */
+  loadFails: ((url: string) => boolean) | null = null; makeFails: ((url: string) => boolean) | null = null;
   navs: string[] = [];
   /** False makes a move "that cannot happen" (a stale Back): nothing is recorded and nav returns false. */
   navOk = true;
+  /** The `repost` each nav was given (session-browser S17). */
+  reposts: (boolean | undefined)[] = [];
   nav(go: string, tab?: number): boolean {
     if (!this.navOk) return false;
     this.navs.push(`${go}${tab === undefined ? "" : ` ${tab}`}`);
+    this.reposts.push(false);
     return true;
   }
+  /** The load method of the entry each move would load (session-browser S17); "GET" unless a test sets it, and the moves asked about. */
+  methods: Record<string, "GET" | "other" | "unknown"> = {};
+  asked: string[] = [];
+  entryGate: Promise<void> | null = null;
+  /** A refusal the history read ends with (DevTools open, another debugger, a closed tab), as the real browser's entry() throws it. */
+  entryError: Error | null = null;
+  /** The id of the history entry a move would load, and the address each of Back and Forward would load. */
+  entryId: string | null = "e1"; entryUrls: Record<string, string> = {};
+  private uids = new WeakMap<object, number>(); private nextUid = 1;
+  tabUid(i: number): number | null { const p = this.pages[i]; if (!p) return null; if (!this.uids.has(p)) this.uids.set(p, this.nextUid++); return this.uids.get(p)!; }
+  tabIndex(uid: number): number { return this.pages.findIndex((_p, i) => this.tabUid(i) === uid); }
+  /** As the real browser: whether the agent's own open made the tab (main only), and the tab's page token (uid and commits). */
+  ownTab(uid: number): boolean { return this.pages[this.tabIndex(uid)]?.own === true; }
+  tabToken(uid: number): string | null { const i = this.tabIndex(uid); return i < 0 ? null : `${uid}.${this.pages[i].commits ?? 0}`; }
+  /** The person (or the page) moves tab `i` to another page, or to the same shown address with another hidden part. */
+  commit(i: number, url?: string): void { const p = this.pages[i]; if (url) p.url = url; p.commits = (p.commits ?? 0) + 1; }
+  /** The browser's popup rule (ComputerBrowser.popup, pinned in computer-browser.test.ts): the popup is the agent's own only while the
+   *  agent holds the wheel and the opener is the agent's own; it is opened by the opener's label under the same rule. */
+  popup(from: number, url: string): void {
+    const opener = this.pages[from];
+    const drives = (this.hooks as BrowserHooks & { agentDrives?: () => boolean }).agentDrives;
+    const inherits = !drives || drives();
+    this.pages.push({ url: new URL(url).href, openedBy: inherits ? opener.openedBy : null, own: inherits && opener.own === true });
+    this.current = this.pages.length - 1; this.seq++;
+  }
+  async entry(go: string, tab?: number) {
+    this.need(tab); this.asked.push(go);
+    await this.entryGate;
+    if (this.entryError) throw this.entryError;
+    return { uid: this.tabUid(tab ?? this.current)!, id: this.entryId, url: this.entryUrls[go] ?? null, method: this.methods[go] ?? "GET" };
+  }
+  /** As the real one: moves only if the tab is the active one and the entry is the one the card named. */
+  async navEntry(go: string, bound: { uid: number; id: string | null; method: string }, valid: () => boolean = () => true) {
+    const now = await this.entry(go, this.current);
+    if (!valid()) throw new PageChanged();
+    if (now.id === null) throw new Error(REFUSAL.noHistoryRead);
+    if (now.uid !== bound.uid || now.id !== bound.id || now.method !== bound.method) return false;
+    this.navs.push(`${go} ${this.current}`);
+    this.reposts.push(go === "reload" && bound.method !== "GET");
+    return true;
+  }
+  hovers: Resolved[] = [];
+  /** Each resolve that got as far as moving the pointer, and whether it was guarded by the call's validity. */
+  moves: ("guarded" | "free")[] = [];
+  async hoverAt(r: Resolved, valid: () => boolean) {
+    if (r.pageToken !== this.pageToken()) throw new Error("The page changed: look again.");
+    if (!valid()) throw new PageChanged();
+    this.order.push("hover"); this.hovers.push(r);
+  }
   select(i: number) { this.need(i); this.current = i; this.seq++; }
-  close(i: number) { this.need(i); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
-  async snapshot(tab?: number, session?: string): Promise<Snapshot> {
-    this.need(tab); this.snapshotsFor.push(session);
+  /** Each open and close in order, with the number of tabs open when it was made (the last tab closes only after another opens). */
+  trail: string[] = [];
+  onOpen: (() => void) | null = null;
+  /** Runs once the tab of the next `openTab` is in place (the person or a program acts while it is made). */
+  afterOpen: (() => void) | null = null;
+  close(i: number) { this.need(i); this.trail.push(`close ${this.pages.length}`); this.pages.splice(i, 1); this.current = Math.min(this.current, this.pages.length - 1); this.seq++; }
+  /** The caps each snapshot was asked with (session-browser S16, I4: a reply asks for the outline's, a snapshot for none). */
+  capsFor: (number | undefined)[] = [];
+  async snapshot(tab?: number, session?: string, o: { cap?: number } = {}): Promise<Snapshot> {
+    this.need(tab); this.snapshotsFor.push(session); this.capsFor.push(o.cap); this.snapSince.push(this.lastSettled);
     await this.snapGate;
-    return { text: `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">\n${this.text}\n</untrusted-page>`, refs: new Map(), truncated: false };
+    const open = `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">`, close = "</untrusted-page>";
+    // The page text of this read: the next of `pageTexts` when a test lined some up, else `text`. A read for a session registers
+    // its refs, so what it printed is what its table holds from then on (in `registered`, in the order the reads finished).
+    const body = this.pageTexts.shift() ?? this.text;
+    if (session !== undefined && o.cap !== undefined) this.registered.push(`${session}|${body}`);
+    let lines = body.split("\n"), truncated = false;
+    // As formatSnapshot does: whole lines only, the wrapper whole, within the cap.
+    if (o.cap !== undefined) {
+      let used = 0;                              // the page's own lines only: the wrapper's parts do not count
+      const kept: string[] = [];
+      for (const l of lines) { if (used + l.length + 1 > o.cap) { truncated = true; break; } kept.push(l); used += l.length + 1; }
+      lines = kept;
+    }
+    return { text: `${open}\n${lines.join("\n")}\n${close}`, refs: new Map(), truncated };
   }
   async screenshot(tab?: number) { this.need(tab); return Buffer.from("PNGDATA"); }
-  async resolve(by: { ref: string } | { x: number; y: number }, session?: string): Promise<Resolved> {
+  /** The tabs computer_console was asked for, and the page text it answers with (the real one wraps and scrubs it). */
+  consoleFor: (number | undefined)[] = [];
+  consoleText = "";
+  async console(tab?: number): Promise<string> {
+    this.need(tab); this.consoleFor.push(tab);
+    return `<untrusted-page origin="o" url="${this.pages[tab ?? this.current].url}">\n${this.consoleText}\n</untrusted-page>`;
+  }
+  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean): Promise<Resolved> {
     this.need(); this.order.push("resolve"); this.resolvesFor.push(session);
     if (this.resolveGate) await this.resolveGate;
+    // As the real browser does when it is given a predicate (PR 5, A4): the pointer's move goes only while the call is current.
+    if (valid && !valid()) throw new PageChanged();
+    this.moves.push(valid ? "guarded" : "free");
     const key = "ref" in by ? by.ref : `${by.x},${by.y}`;
     const s = this.spots.get(key);
     if (!s) throw new Error(`There is no ${key} on this page now: take a new snapshot.`);
@@ -136,7 +260,12 @@ class FakeBrowser implements BrowserLike {
   }
   /** The validity predicate each click, key and type was given (R76), so a test can see what it says at delivery. */
   valids: (() => boolean)[] = [];
-  async click(r: Resolved, valid?: () => boolean) {
+  /** The options each click was given (session-browser S17: `double`). */
+  clickOpts: ({ double?: boolean } | undefined)[] = [];
+  /** One-shot: the next double click's first click changes the page, so the browser withholds the second press (`once`). */
+  secondWithheld = false;
+  async click(r: Resolved, valid?: () => boolean, o?: { double?: boolean }): Promise<{ once: boolean }> {
+    this.clickOpts.push(o);
     if (r.pageToken !== this.pageToken()) throw new Error("The page changed: look again.");
     if (valid) this.valids.push(valid);
     if (this.clickGate) await this.clickGate;
@@ -145,6 +274,10 @@ class FakeBrowser implements BrowserLike {
     this.order.push("click"); this.clicks.push(r);
     const s = [...this.spots.values()].find((x) => x.target.name === r.target.name);
     if (s?.focuses) this.focused = { target: { ...s.target }, shown: s.shown ?? s.target.name, sensitive: !!s.sensitive, plainTextarea: false, node: s.node ?? 7, frame: "F1" };
+    const once = !!o?.double && this.secondWithheld;
+    this.secondWithheld = false;
+    if (once) this.commit(this.current);
+    return { once };
   }
   /** The focus each type and key was told to expect (R76: the browser delivers only while that node has focus). */
   expected: (Pick<Focus, "node" | "frame"> | undefined)[] = [];
@@ -246,7 +379,7 @@ test("a Read only click is refused without taking the wheel, while a snapshot wo
   h.svc.agentGone(A);
   const R = agent("chat:a", "Reader", "read");
   const r = await h.call(R, "computer_click", { ref: "e1" });
-  assert.equal(r.text, "Read only: this session can look but not act (D17).");
+  assert.equal(r.text, REFUSAL.readOnly);
   assert.equal(r.isError, true);
   assert.equal(h.wheel.holder("chat:a"), null);
   assert.match((await h.call(R, "computer_snapshot")).text, /hello/);
@@ -403,13 +536,13 @@ test("an unmarked click asks; Deny leaves the page unclicked; Allow once clicks"
   assert.ok(h.notes.some(([k, l]) => k === "chat:a" && l.includes(ask.title)), "the ask is a line in the transcript (D6)");
   h.svc.answer(ask.id, "deny");
   const r = await p;
-  assert.equal(r.text, "The user denied: Act on a site you haven't marked: Click on a.test.");
+  assert.equal(r.text, REFUSAL.denied("Act on a site you haven't marked: Click on a.test"));
   assert.equal(r.isError, true);
   assert.equal(b.clicks.length, 0);
 
   const p2 = h.call(A, "computer_click", { ref: "e1" });
   h.svc.answer((await h.asked()).id, "once");
-  assert.equal((await p2).text, `Clicked e1. ${page("https://a.test/")}`);
+  assert.equal((await p2).text, `Clicked e1.${now("https://a.test/")}`);
   assert.equal(b.clicks.length, 1);
   assert.equal(h.sites.isMarked("https://a.test/"), false);
   // D35 (R60): the agent's thread gets the activity log's own lines, the answers and the click included.
@@ -431,7 +564,7 @@ test("R77: the card's detail names the page as Page: <url>, never in the untrust
   const t = await h.asked();
   assert.equal(t.detail, "Text: “rope”. The textbox “Search”. Page: https://a.test/x?q=1");
   h.svc.answer(t.id, "once");
-  assert.equal((await typed).text, `Typed 4 characters. ${page("https://a.test/x?q=1")}`, "the agent's reply keeps the wrapper");
+  assert.equal((await typed).text, `Typed 4 characters.${now("https://a.test/x?q=1")}`, "the agent's reply keeps the wrapper");
   const pressed = h.call(A, "computer_key", { key: "a" });
   const k = await h.asked();
   assert.equal(k.detail, "Key: a. The textbox “Search”. Page: https://a.test/x?q=1");
@@ -441,7 +574,7 @@ test("R77: the card's detail names the page as Page: <url>, never in the untrust
   const c = await h.asked();
   assert.equal(c.detail, "The button “Next”. Page: https://a.test/x?q=1");
   h.svc.answer(c.id, "once");
-  assert.equal((await clicked).text, `Clicked e2. ${page("https://a.test/x?q=1")}`);
+  assert.equal((await clicked).text, `Clicked e2.${now("https://a.test/x?q=1")}`);
   for (const d of [t.detail, k.detail, c.detail]) assert.ok(!d.includes("untrusted-page"), d);
 });
 
@@ -490,7 +623,7 @@ test("Always on an unmarked ask marks the site, so the next click goes", async (
   h.svc.answer((await h.asked()).id, "always");
   assert.match((await p).text, /^Clicked e1\./);
   assert.equal(h.sites.isMarked("https://a.test/"), true);
-  assert.equal((await h.call(A, "computer_click", { ref: "e1" })).text, `Clicked e1. ${page("https://a.test/x")}`);
+  assert.equal((await h.call(A, "computer_click", { ref: "e1" })).text, `Clicked e1.${now("https://a.test/x")}`);
   assert.equal(h.broker.pending().length, 0);
   assert.equal(b.clicks.length, 2);
 });
@@ -577,7 +710,7 @@ test("R76: a key: Take over landing while it is on its way stops it with the bus
   const real = b.type.bind(b);
   b.type = async (text, valid, at, focus) => { h.svc.takeOver(); if (!valid()) throw new PageChanged(); return real(text, valid, at, focus); };
   const t = await h.call(A, "computer_type", { text: "rope" });
-  assert.equal(t.text, `Typing stopped part way because the user took over. ${page("https://a.test/")}`);
+  assert.equal(t.text, `${REFUSAL.typingStopped("the user took over")} ${page("https://a.test/")}`);
 });
 
 test("Take over cancels a pending ask, and a late Allow does nothing", async () => {
@@ -589,7 +722,7 @@ test("Take over cancels a pending ask, and a late Allow does nothing", async () 
   const ask = await h.asked();
   h.svc.takeOver();
   const r = await p;
-  assert.match(r.text, /^Cancelled because the user took over: /);
+  assert.match(r.text, /^Cancelled because the user took over \(/);
   assert.equal(h.broker.pending().length, 0);
   h.svc.answer(ask.id, "once");
   await flush();
@@ -622,7 +755,7 @@ test("turn end cancels the pending ask", async () => {
   const p = h.call(A, "computer_click", { ref: "e1" });
   await h.asked();
   h.svc.agentGone(A);
-  assert.match((await p).text, /^Cancelled because the turn ended: /);
+  assert.match((await p).text, /^Cancelled because the turn ended \(/);
   assert.equal(h.wheel.holder("chat:a"), null);
   assert.equal(h.broker.pending().length, 0);
   assert.equal(b.clicks.length, 0);
@@ -645,9 +778,38 @@ test("waiting_for_user arrives at 45 s, and computer_wait gets the result", asyn
   await flush();
   assert.match((await h.call(B, "computer_wait", { askId: ask.id })).text, /another session/);
   h.svc.answer(ask.id, "once");
-  assert.equal((await w).text, `Clicked e1. ${page("https://a.test/")}`);
+  assert.equal((await w).text, `Clicked e1.${now("https://a.test/")}`);
   assert.equal(b.clicks.length, 1);
-  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1. ${page("https://a.test/")}`, "a later wait sees the same result");
+  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1.${now("https://a.test/")}`, "a later wait sees the same result");
+});
+
+test("an asked run's page is read when its result is collected, not before, and only once", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  b.text = "after the click";
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  const ask = await h.asked();
+  await h.clock.advance(45_000);
+  assert.equal((await p).text, `waiting_for_user: call computer_wait with askId "${ask.id}"`);
+  const before = b.snapshotsFor.length;
+  h.svc.answer(ask.id, "once");
+  await flush();
+  assert.equal(b.clicks.length, 1, "the action ran");
+  assert.equal(b.snapshotsFor.length, before, "no one has collected the result: no read, so no refs registered for the agent");
+  const got = await h.call(A, "computer_wait", { askId: ask.id });
+  assert.equal(got.text, `Clicked e1.${now("https://a.test/", "after the click")}`);
+  assert.equal(b.snapshotsFor.length, before + 1, "the read came with the collection");
+  const again = await h.call(A, "computer_wait", { askId: ask.id });
+  assert.equal(again.text, got.text, "a later wait sees the same result");
+  assert.equal(b.snapshotsFor.length, before + 1, "and reads nothing more");
+  // The held call that is answered inside its hold collects it too.
+  const q = h.call(A, "computer_click", { ref: "e1" });
+  const ask2 = await h.asked();
+  const base = b.snapshotsFor.length;
+  h.svc.answer(ask2.id, "once");
+  assert.equal((await q).text, `Clicked e1.${now("https://a.test/", "after the click")}`);
+  assert.equal(b.snapshotsFor.length, base + 1);
 });
 
 test("computer_wait on a pending ask returns waiting_for_user again at its timeout", async () => {
@@ -682,7 +844,7 @@ test("disabled config refuses with the Settings line", async () => {
   const h = make({ enabled: false });
   for (const tool of ["computer_status", "computer_open", "computer_click", "computer_snapshot"] as const) {
     const r = await h.call(A, tool, { url: "https://a.test/", ref: "e1" });
-    assert.equal(r.text, "The Computer pane is off (Settings › Computer).");
+    assert.equal(r.text, REFUSAL.off);
     assert.equal(r.isError, true);
   }
   assert.equal(h.wheel.holder("chat:a"), null);
@@ -721,6 +883,7 @@ test("the ask labels state each category in app-written text", () => {
     submit: "Submit", purchase: "Purchase", send: "Send", delete: "Delete", merge: "Merge", signin: "Sign in", download: "Download",
     unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
     frame: "Act inside a frame from another site", power: "Turn on the browser",
+    closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again",
   });
 });
 
@@ -872,7 +1035,7 @@ test("while the user drives, acting tools are busy and look tools work; Hand bac
   h.svc.handBack();
   assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" });
   assert.ok(h.notes.some(([k, l]) => k === "chat:a" && l === "You: Handed back"));
-  assert.equal((await h.call(A, "computer_scroll", { dy: 100 })).text, `Scrolled by (0, 100). ${page("https://a.test/")}`);
+  assert.equal((await h.call(A, "computer_scroll", { dy: 100 })).text, `Scrolled by (0, 100).${now("https://a.test/", "ok")}`);
 });
 
 test("R69: a page-chosen path or query reaches a reply only inside the untrusted wrapper, after the origin (D21)", async () => {
@@ -892,7 +1055,9 @@ test("R69: a page-chosen path or query reaches a reply only inside the untrusted
     if (tool === "computer_wait") await h.clock.advance(1_000);
     const r = await pending;
     assert.ok(!r.isError, `${tool}: ${r.text}`);
-    assert.ok(r.text.includes(wrapped), `${tool} carries the page's address inside the wrapper: ${r.text}`);
+    // An acting tool's reply carries it in the outline's wrapper (session-browser S16); the others in a page line.
+    const acts = ["computer_click", "computer_type", "computer_key", "computer_scroll"].includes(tool);
+    assert.ok(r.text.includes(acts ? `<untrusted-page origin="o" url="${chosen}">` : wrapped), `${tool} carries the page's address inside the wrapper: ${r.text}`);
     const outside = r.text.split(/<untrusted-page[^>]*>[^<]*<\/untrusted-page>/).join("");
     for (const w of words) assert.ok(!outside.includes(w), `${tool}: “${w}” only inside the wrapper: ${r.text}`);
   }
@@ -900,20 +1065,20 @@ test("R69: a page-chosen path or query reaches a reply only inside the untrusted
   b.between = () => { b.seq++; b.between = null; };
   const cut = await h.call(A, "computer_type", { text: "abcdef" });
   assert.equal(cut.isError, true);
-  assert.equal(cut.text, `Typing stopped part way because the page or tab changed: look again. Page: ${wrapped}`);
+  assert.equal(cut.text, `${REFUSAL.typingStopped("the page or tab changed")} Page: ${wrapped}`);
 });
 
 test("acting replies end with the active tab's URL, and a screenshot is an image with one line", async () => {
   const h = make();
   h.sites.mark("https://a.test");
   const b = await h.open(A, "https://a.test/");
-  assert.equal((await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true })).text, `Opened the page. ${page("https://a.test/two")}`);
+  assert.equal((await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true })).text, `Opened the page.${now("https://a.test/two")}`);
   assert.equal(b.pages[1].openedBy, "Alpha");
   b.spots.set("e1", { target: btn("Next") });
   b.focused = { target: box("Search"), shown: "Search", sensitive: false, plainTextarea: false, node: 50, frame: "F1" };
   for (const [tool, args] of [["computer_click", { ref: "e1" }], ["computer_type", { text: "hi" }], ["computer_key", { key: "Tab" }], ["computer_scroll", { dy: 5, ref: "e1" }]] as const) {
     const r = await h.call(A, tool, args);
-    assert.ok(r.text.endsWith(` ${page("https://a.test/two")}`), `${tool}: ${r.text}`);
+    assert.ok(r.text.endsWith(now("https://a.test/two")), `${tool}: ${r.text}`);
   }
   assert.deepEqual(b.keys, ["Tab"]); assert.deepEqual(b.typed, ["hi"]); assert.deepEqual(b.scrolls, [{ dx: 0, dy: 5, at: 7 }]);
   const shot = await h.call(A, "computer_screenshot", { tab: 0 });
@@ -934,7 +1099,7 @@ test("I1: a page's instruction-shaped name reaches no notice, no denied or timed
   const own = (await h.call(A, "computer_status")).text;
   assert.ok(own.includes(`  ${ask.id} ${ask.notice}`) && !own.includes("Ignore"), own);
   h.svc.answer(ask.id, "deny");
-  assert.deepEqual(await p, { text: "The user denied: Act on a site you haven't marked: Click on a.test.", isError: true });
+  assert.deepEqual(await p, { text: REFUSAL.denied("Act on a site you haven't marked: Click on a.test"), isError: true });
   // A page's own ask, attributed to no session (nobody holds the wheel): to the session's status it is another's, so only a
   // count and its kind show; no title, no id.
   h.svc.agentGone(A);
@@ -954,7 +1119,7 @@ test("I1: a page's instruction-shaped name reaches no notice, no denied or timed
   assert.equal((await p2).text, `waiting_for_user: call computer_wait with askId "${ask2.id}"`);
   const w = h.call(A, "computer_wait", { askId: ask2.id });
   await h.clock.advance(20_000);
-  assert.deepEqual(await w, { text: "The user did not answer in time, so it was denied: Act on a site you haven't marked: Click on a.test.", isError: true });
+  assert.deepEqual(await w, { text: REFUSAL.timedOut("Act on a site you haven't marked: Click on a.test"), isError: true });
   // Typing and a key: the action's kind, the agent's own key, never the focused field's page name.
   b.spots.set("e2", { target: box(evil), focuses: true });
   const t = h.call(A, "computer_type", { ref: "e2", text: "hi" });
@@ -967,7 +1132,7 @@ test("I1: a page's instruction-shaped name reaches no notice, no denied or timed
   const ask4 = await h.asked();
   assert.equal(ask4.notice, "Act on a site you haven't marked: Press Space on a.test?");
   h.svc.agentGone(A);
-  assert.deepEqual(await k, { text: "Cancelled because the turn ended: Act on a site you haven't marked: Press Space on a.test.", isError: true });
+  assert.deepEqual(await k, { text: REFUSAL.cancelled("the turn ended (Act on a site you haven't marked: Press Space on a.test)"), isError: true });
 });
 
 test("I1: a page's own ask (a download named by the page) gets an app-written notice: its kind and host", async () => {
@@ -991,7 +1156,9 @@ test("I2: a snapshot keeps its refs for the session that took it, every ref is l
   assert.ok(!(await h.call(A, "computer_scroll", { dy: 10, ref: "e1" })).isError);
   assert.ok(!(await h.call(A, "computer_type", { ref: "e2", text: "x" })).isError);
   assert.ok(!(await h.call(A, "computer_wait", { text: "Ready" })).isError);
-  assert.deepEqual(b.snapshotsFor, ["chat:a", undefined]);
+  // The open that made the page, the explicit snapshot, one outline for each of the three acting tools (all for this
+  // session: their refs are good for the next call), and the text wait, which keeps none.
+  assert.deepEqual(b.snapshotsFor, ["chat:a", "chat:a", "chat:a", "chat:a", "chat:a", undefined]);
   assert.deepEqual(b.resolvesFor, ["chat:a", "chat:a", "chat:a"]);
 });
 
@@ -1044,7 +1211,7 @@ test("typing into a ref clicks it and types under one ask; a password field is r
   assert.equal(b.clicks.length, 1); assert.deepEqual(b.typed, ["hi"]);
   b.focused = { target: box("Password"), shown: "Password", sensitive: true, plainTextarea: false, node: 50, frame: "F1" };
   const r = await h.call(A, "computer_type", { text: "x" });
-  assert.equal(r.text, "Typing into a password field is refused (D9).");
+  assert.equal(r.text, REFUSAL.passwordField);
 });
 
 test("Space on a focused category control asks as a click on it", async () => {
@@ -1056,13 +1223,13 @@ test("Space on a focused category control asks as a click on it", async () => {
   const ask = await h.asked();
   assert.equal(ask.title, "Delete: Press Space with “Delete repo” focused on a.test?");
   h.svc.answer(ask.id, "once");
-  assert.equal((await p).text, `Pressed Space. ${page("https://a.test/")}`);
+  assert.equal((await p).text, `Pressed Space.${now("https://a.test/")}`);
 });
 
 test("bad arguments and refused URLs are answered without taking the wheel", async () => {
   const h = make();
-  assert.equal((await h.call(A, "computer_click", {})).text, "Give either ref, or both x and y.");
-  assert.equal((await h.call(A, "computer_open", { url: "javascript:alert(1)" })).text, "Only http and https pages open.");
+  assert.equal((await h.call(A, "computer_click", {})).text, REFUSAL.noTarget);
+  assert.equal((await h.call(A, "computer_open", { url: "javascript:alert(1)" })).text, REFUSAL.notWeb);
   assert.equal(h.wheel.holder("chat:a"), null);
   assert.match((await h.call(A, "computer_snapshot")).text, /No page is open/);
 });
@@ -1155,7 +1322,7 @@ test("+ opens the start page main was given (the e2e suite's fixture); an agent'
   const r = await h.call(A, "computer_open", { url: "https://a.test/", newTab: true });
   assert.ok(!r.isError, r.text);
   assert.deepEqual(opened, ["https://a.test/"], "one load, the agent's URL");
-  assert.deepEqual(b.pages[1], { url: "https://a.test/", openedBy: "Alpha" });
+  assert.deepEqual(b.pages[1], { url: "https://a.test/", openedBy: "Alpha", own: true }, "the agent's own open is the agent's own tab");
 });
 
 test("an action queued behind another is not delivered once the user has taken over", async () => {
@@ -1265,7 +1432,7 @@ test("I3b: key and type are delivered bound to the tab and page token the gate j
   b.typed = [];
   const r = await h.call(A, "computer_type", { text: "abcdef" });
   assert.deepEqual(b.typed, ["ab"]);
-  assert.deepEqual([r.isError, r.text], [true, `Typing stopped part way because the page or tab changed: look again. ${page("https://a.test/")}`]);
+  assert.deepEqual([r.isError, r.text], [true, `${REFUSAL.typingStopped("the page or tab changed")} ${page("https://a.test/")}`]);
   assert.ok(h.lastState().log.some((l) => l.text === "Typing stopped part way"));
 });
 
@@ -1323,7 +1490,7 @@ test("a failed Always write still runs the approved action and leaks no path", a
   const p = h.call(A, "computer_click", { ref: "e1" });
   h.svc.answer((await h.asked()).id, "always");
   const r = await p;
-  assert.equal(r.text, `Clicked e1. ${page("https://a.test/")}`);
+  assert.equal(r.text, `Clicked e1.${now("https://a.test/")}`);
   assert.equal(b.clicks.length, 1);
   assert.ok(h.lastState().log.some((l) => /^Could not remember Always for a\.test/.test(l.text)));
   for (const t of [...h.outgoing(), r.text]) assert.ok(!t.includes("/private/secret"), `path leaked into: ${t}`);
@@ -1344,7 +1511,7 @@ test("computer_wait on an answered ask whose action is still running says it is 
   await h.clock.advance(2_000);
   assert.equal((await w).text, `running: the user allowed it and the action is still running; call computer_wait with askId "${ask.id}" again`);
   release();
-  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1. ${page("https://a.test/")}`);
+  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1.${now("https://a.test/")}`);
 });
 
 test("R76 (D34): a held call returns by 45 s from its own start: an answer at 44.9 s with a slow revalidation gives the waiting reply, and computer_wait picks the result up", async () => {
@@ -1366,7 +1533,7 @@ test("R76 (D34): a held call returns by 45 s from its own start: an answer at 44
   assert.equal(b.clicks.length, 0);
   b.resolveGate = null;
   release();
-  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1. ${page("https://a.test/")}`);
+  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1.${now("https://a.test/")}`);
   assert.equal(b.clicks.length, 1);
 });
 
@@ -1389,7 +1556,7 @@ test("R76 (D34): the 45 s count from the call's start, so a slow read before the
   assert.equal((await p).text, `waiting_for_user: call computer_wait with askId "${ask.id}"`);
   assert.equal(h.broker.pending().length, 1, "the ask stays pending");
   h.svc.answer(ask.id, "once");
-  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1. ${page("https://a.test/")}`);
+  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1.${now("https://a.test/")}`);
 });
 
 test("R78 (D34): the 45 s bound the queue too: a call queued behind a slow one returns at its deadline without starting an ask, and starts none later", async () => {
@@ -1794,7 +1961,7 @@ test("R81: Take over then Hand back while a click, a key or typing is on its way
   b.between = () => { b.between = null; h.svc.takeOver(); h.svc.handBack(); };
   const typed = await h.call(A, "computer_type", { text: "abcdef" });
   assert.deepEqual(b.typed, ["ab"]);
-  assert.equal(typed.text, `Typing stopped part way because the user took over. ${page("https://a.test/")}`);
+  assert.equal(typed.text, `${REFUSAL.typingStopped("the user took over")} ${page("https://a.test/")}`);
 });
 
 test("R81: Take over then Hand back after Allow, while the action revalidates: nothing is sent", async () => {
@@ -1833,7 +2000,7 @@ test("R81: an old call that resumes after its session key was registered again (
   live.set(A.key, next);
   b.resolveGate = null;
   release();
-  assert.equal((await old).text, "busy: this session no longer holds the wheel");
+  assert.equal((await old).text, REFUSAL.busy("this session no longer holds the wheel"));
   assert.equal(b.clicks.length, 0);
   // One already on its way to the page is stopped by the predicate the same way.
   live.set(A.key, A);
@@ -1844,11 +2011,11 @@ test("R81: an old call that resumes after its session key was registered again (
   assert.equal(b.valids.at(-1)!(), false);
   b.clickGate = null;
   release();
-  assert.equal((await onItsWay).text, "busy: this session no longer holds the wheel");
+  assert.equal((await onItsWay).text, REFUSAL.busy("this session no longer holds the wheel"));
   assert.equal(b.clicks.length, 0);
   // The new process acts as itself; a fresh call from the old one is refused before it touches the wheel.
   assert.match((await h.call(next, "computer_click", { ref: "e1" })).text, /^Clicked e1\./);
-  assert.equal((await h.call(A, "computer_click", { ref: "e1" })).text, "busy: this session no longer holds the wheel");
+  assert.equal((await h.call(A, "computer_click", { ref: "e1" })).text, REFUSAL.busy("this session no longer holds the wheel"));
   assert.equal(b.clicks.length, 1);
 });
 
@@ -1864,9 +2031,9 @@ test("R81: an ordinary call with no interruption still runs, asked or not", asyn
   b.resolveGate = null;
   release();
   h.svc.answer((await h.asked()).id, "once");
-  assert.equal((await asked).text, `Clicked e1. ${page("https://a.test/")}`);
+  assert.equal((await asked).text, `Clicked e1.${now("https://a.test/")}`);
   h.sites.mark("https://a.test");
-  assert.equal((await h.call(A, "computer_click", { ref: "e1" })).text, `Clicked e1. ${page("https://a.test/")}`);
+  assert.equal((await h.call(A, "computer_click", { ref: "e1" })).text, `Clicked e1.${now("https://a.test/")}`);
   b.focused = { target: box("Search"), shown: "Search", sensitive: false, plainTextarea: false, node: 12, frame: "F1" };
   assert.match((await h.call(A, "computer_type", { text: "rope" })).text, /^Typed 4 characters\./);
   assert.match((await h.call(A, "computer_key", { key: "a" })).text, /^Pressed a\./);
@@ -1875,7 +2042,7 @@ test("R81: an ordinary call with no interruption still runs, asked or not", asyn
 
 // ---- Task 8: power (session-browser S2–S5)
 
-import { DECLINED, IS_OFF, OFF_READ_ONLY, QUIET_MS, SWITCHED_OFF, TAB_CLOSED } from "../../src/main/computer/service";
+import { QUIET_MS } from "../../src/main/computer/service";
 
 const off = (): ReturnType<typeof make> => make({ off: true, label: (k) => (k === "chat:a" ? "Claude Code in Vault" : undefined) });
 const OPEN = { url: "https://example.com/x" };
@@ -1914,25 +2081,25 @@ test("Not now is told once, then quiet for 60 s on Code", async () => {
   const C = agent("code:t1", "Claude Code in Vault");
   const first = h.call(C, "computer_open", OPEN);
   h.svc.answer((await h.asked()).id, "deny");
-  assert.equal((await first).text, DECLINED);
+  assert.equal((await first).text, REFUSAL.declined);
   await h.clock.advance(59_000);
   const again = await h.call(C, "computer_open", OPEN);
-  assert.equal(again.text, DECLINED);
+  assert.equal(again.text, REFUSAL.declined);
   assert.equal(h.broker.pending().length, 0, "no new ask");
   await h.clock.advance(QUIET_MS - 59_000 + 2_000);
   const later = h.call(C, "computer_open", OPEN);
   await h.asked();
   h.svc.answer(h.broker.pending()[0].id, "deny");
-  assert.equal((await later).text, DECLINED);
+  assert.equal((await later).text, REFUSAL.declined);
 });
 
 test("a Chat session's quiet period ends with its turn", async () => {
   const h = off();
   const first = h.call(A, "computer_open", OPEN);
   h.svc.answer((await h.asked()).id, "deny");
-  assert.equal((await first).text, DECLINED);
+  assert.equal((await first).text, REFUSAL.declined);
   await h.clock.advance(61_000);
-  assert.equal((await h.call(A, "computer_open", OPEN)).text, DECLINED);
+  assert.equal((await h.call(A, "computer_open", OPEN)).text, REFUSAL.declined);
   assert.equal(h.broker.pending().length, 0);
   h.svc.agentGone(A);
   const next = h.call(A, "computer_open", OPEN);
@@ -1950,8 +2117,8 @@ test("no answer in askTimeoutSec is Not now", async () => {
   assert.match((await first).text, /^waiting_for_user/);
   await h.clock.advance(120_000);
   const done = await h.call(C, "computer_wait", { askId: id });
-  assert.equal(done.text, DECLINED);
-  assert.equal((await h.call(C, "computer_open", OPEN)).text, DECLINED);
+  assert.equal(done.text, REFUSAL.declined);
+  assert.equal((await h.call(C, "computer_open", OPEN)).text, REFUSAL.declined);
   assert.equal(h.broker.pending().length, 0);
 });
 
@@ -1971,7 +2138,7 @@ test("every other tool on an off browser says how to turn it on", async () => {
   const args: [ComputerTool, Record<string, unknown>][] = [["computer_snapshot", {}], ["computer_screenshot", {}], ["computer_click", { ref: "e1" }], ["computer_type", { text: "x" }], ["computer_key", { key: "Enter" }], ["computer_scroll", { dy: 10 }], ["computer_wait", { text: "x" }]];
   for (const [tool, a] of args) {
     const r = await h.call(A, tool, a);
-    assert.equal(r.text, IS_OFF, tool);
+    assert.equal(r.text, REFUSAL.isOff, tool);
     assert.equal(r.isError, true, tool);
   }
   assert.match((await h.call(A, "computer_status")).text, /\(off:/);
@@ -1981,11 +2148,11 @@ test("every other tool on an off browser says how to turn it on", async () => {
 test("a read only session is told to ask the user and never asks", async () => {
   const h = off();
   const R = agent("chat:a", "Reader", "read");
-  assert.equal((await h.call(R, "computer_open", OPEN)).text, OFF_READ_ONLY);
+  assert.equal((await h.call(R, "computer_open", OPEN)).text, REFUSAL.offReadOnly);
   assert.equal(h.broker.pending().length, 0);
   h.svc.power("chat:a", true);
   await flush();
-  assert.notEqual((await h.call(R, "computer_open", OPEN)).text, OFF_READ_ONLY, "on, the old refusal applies");
+  assert.notEqual((await h.call(R, "computer_open", OPEN)).text, REFUSAL.offReadOnly, "on, the old refusal applies");
 });
 
 test("Off stops typing in flight, cancels the session's asks and starts the quiet period", async () => {
@@ -2000,12 +2167,12 @@ test("Off stops typing in flight, cancels the session's asks and starts the quie
   void gate; void release;
   b.spots.set("e1", { target: box("Name"), node: 9 });
   const r = await h.call(A, "computer_type", { text: "abcdef", ref: "e1" });
-  assert.equal(r.text, SWITCHED_OFF);
+  assert.equal(r.text, REFUSAL.switchedOff);
   assert.ok(b.destroyed >= 1, "destroyed");
   assert.equal(h.broker.pending().length, 0);
   assert.equal(h.lastState().power, "off");
   const next = await h.call(A, "computer_open", OPEN);
-  assert.equal(next.text, SWITCHED_OFF);
+  assert.equal(next.text, REFUSAL.switchedOff);
   assert.equal(h.broker.pending().length, 0, "no ask");
 });
 
@@ -2039,7 +2206,7 @@ test("Off wins over an open in flight", async () => {
     h.svc.power("chat:a", false);
     release();
     const r = await first;
-    assert.equal(r.text, SWITCHED_OFF);
+    assert.equal(r.text, REFUSAL.switchedOff);
   } finally { FakeBrowser.prototype.open = orig; }
   assert.equal(h.lastState().power, "off");
   assert.equal(h.b().destroyed, 1);
@@ -2056,7 +2223,7 @@ test("the user's close of the active tab ends the action and the asks, with no q
   h.svc.mark("https://a.test", true);
   b.between = () => { b.between = null; h.svc.tab({ kind: "close", index: b.current }); };
   const r = await h.call(A, "computer_type", { text: "abcdef", ref: "e1" });
-  assert.equal(r.text, TAB_CLOSED);
+  assert.equal(r.text, REFUSAL.tabClosed);
   assert.equal(h.lastState().power, "awake");
   assert.equal(h.lastState().tabs.length, 1);
 });
@@ -2070,7 +2237,7 @@ test("an action the user's closing of the last tab interrupts is told the tab wa
   h.svc.mark("https://a.test", true);
   b.between = () => { b.between = null; h.svc.tab({ kind: "close", index: b.current }); };
   const r = await h.call(A, "computer_type", { text: "abcdef", ref: "e1" });
-  assert.equal(r.text, TAB_CLOSED);
+  assert.equal(r.text, REFUSAL.tabClosed);
   assert.equal(h.lastState().power, "off");
   // No quiet period: the next open raises the Turn on card instead of answering with a refusal.
   const open = h.call(A, "computer_open", OPEN);
@@ -2099,7 +2266,7 @@ test("the user's close of the last tab switches the browser off", async () => {
   h.svc.tab({ kind: "close", index: 0 });
   assert.equal(h.lastState().power, "off");
   assert.equal(b.destroyed, 1);
-  // No quiet period: while still off, an open raises the Turn on card instead of answering TAB_CLOSED.
+  // No quiet period: while still off, an open raises the Turn on card instead of answering REFUSAL.tabClosed.
   const open = h.call(A, "computer_open", OPEN);
   assert.equal((await h.asked()).why, "power");
   await h.clock.advance(45_000);
@@ -2135,7 +2302,7 @@ test("a real browser destroyed mid-call answers the person's stop, not the brows
   b.focused = { target: box("Name"), shown: "Name", sensitive: false, plainTextarea: false, node: 9, frame: null };
   b.spots.set("e1", { target: box("Name"), node: 9 });
   b.type = async () => { h.svc.power("chat:a", false); throw new Error("Debugger is not attached to the target"); };
-  assert.equal((await h.call(A, "computer_type", { text: "abc", ref: "e1" })).text, SWITCHED_OFF);
+  assert.equal((await h.call(A, "computer_type", { text: "abc", ref: "e1" })).text, REFUSAL.switchedOff);
   const h2 = off();
   const R = agent("chat:a", "Claude Code in Vault");
   const first = h2.call(R, "computer_open", OPEN);
@@ -2146,7 +2313,7 @@ test("a real browser destroyed mid-call answers the person's stop, not the brows
     h2.svc.answer(a.id, "once");
     await flush();
     h2.svc.power("chat:a", false);
-    assert.equal((await first).text, SWITCHED_OFF);
+    assert.equal((await first).text, REFUSAL.switchedOff);
   } finally { FakeBrowser.prototype.open = orig; }
 });
 
@@ -2157,8 +2324,8 @@ test("a Chat Off between turns does not silence the next turn; Not now silences 
   const next = h.call(A, "computer_open", OPEN);
   await h.asked();
   h.svc.answer(h.broker.pending()[0].id, "deny");
-  assert.equal((await next).text, DECLINED);
-  assert.equal((await h.call(A, "computer_open", OPEN)).text, DECLINED, "quiet for the rest of that turn");
+  assert.equal((await next).text, REFUSAL.declined);
+  assert.equal((await h.call(A, "computer_open", OPEN)).text, REFUSAL.declined, "quiet for the rest of that turn");
   assert.equal(h.broker.pending().length, 0);
 });
 
@@ -2187,9 +2354,9 @@ test("an open queued behind a denied one raises no card", async () => {
   const second = h.call({ ...C, pid: 2 }, "computer_open", OPEN);
   await flush();
   h.svc.answer(a.id, "deny");
-  assert.equal((await first).text, DECLINED);
+  assert.equal((await first).text, REFUSAL.declined);
   release(); await held;
-  assert.equal((await second).text, DECLINED, "the queued open is refused by the quiet period");
+  assert.equal((await second).text, REFUSAL.declined, "the queued open is refused by the quiet period");
   const powerAsks = new Set(h.states.flatMap((x) => x.asks.filter((k) => k.why === "power").map((k) => k.id)));
   assert.equal(powerAsks.size, 1, "the broker saw exactly one power ask");
 });
@@ -2213,7 +2380,7 @@ test("Off from a closed last tab clears a quiet period that is still on the slot
   // The Not now settles after the person's On: the quiet period is then set on a browser that is on.
   h.svc.answer(a.id, "deny");
   h.svc.power("code:t1", true);
-  assert.equal((await first).text, DECLINED);
+  assert.equal((await first).text, REFUSAL.declined);
   await flush();
   h.svc.select("code:t1");
   h.svc.tab({ kind: "close", index: 0 });
@@ -2261,7 +2428,7 @@ test("an agent's open that arrives while On is still opening its tabs runs after
     assert.equal(order.length, 1, "the agent's open waits for On's");
     release();
     const r = await agentOpen;
-    assert.match(r.text, /^Opened the page\. Page: .*a\.test\/mine/, r.text);
+    assert.match(r.text, /^Opened the page\.\n\nPage now:\n<untrusted-page [^>]*url="[^"]*a\.test\/mine"/, r.text);
   } finally { FakeBrowser.prototype.open = orig; }
   assert.equal(order.length, 2);
 });
@@ -3199,7 +3366,7 @@ test("nothing makes a browser or writes a record while the app is quitting", asy
   h.svc.forgetBrowsers();
   const file = JSON.stringify(h.records.get("chat:a"));
   const r = await h.svc.call(A, { id: 1, tool: "computer_open", args: { url: "https://a.test/2" } });
-  assert.equal(r.text, QUITTING);
+  assert.equal(r.text, REFUSAL.quitting);
   h.svc.select("chat:a");
   await h.svc.navigate("https://a.test/3");
   h.svc.tab({ kind: "new" });
@@ -3300,7 +3467,7 @@ test("a clicked link cancels a pending Turn on card and ends the quiet period", 
   const C = agent("code:t1", "Claude Code in Vault");
   const denied = h.call(C, "computer_open", OPEN);
   h.svc.answer((await h.asked()).id, "deny");
-  assert.equal((await denied).text, DECLINED);
+  assert.equal((await denied).text, REFUSAL.declined);
   assert.deepEqual(await h.svc.openLink("code:t1", "https://a.test/l2"), { ok: true, data: null });
   assert.equal(h.lastState("code:t1").power, "awake");
   // The user closes the last tab: the browser goes off with no quiet period of its own. The old quiet period (Not now) must
@@ -3758,7 +3925,7 @@ test("Not now on that card opens nothing, tells the agent, and drops the program
   for (let i = 0; i < 200 && !powerCards(h).some((c) => c.session === "chat:a"); i++) await flush();
   assert.equal(powerCards(h).length, 1);
   h.svc.answer(powerCards(h)[0].id, "deny");
-  assert.equal((await first).text, DECLINED);
+  assert.equal((await first).text, REFUSAL.declined);
   await flush();
   assert.equal(h.browsers.size, 0, "nothing opened");
   assert.deepEqual(slotOf(h).slot("chat:a").programOpens, [], "the held page is dropped");
@@ -3816,7 +3983,7 @@ test("a program's Not now on a thread lasts until the turn ends", async () => {
   // Looked at before the call's result is awaited: a regression raises a card and the call waits on a clock that never moves.
   await flush();
   assert.equal(h.broker.pending().length, 0, "no card, the same turn's open 61 s later");
-  assert.equal((await call).text, DECLINED);
+  assert.equal((await call).text, REFUSAL.declined);
   await h.svc.openFromProgram("chat:a", PAGE_A);
   assert.equal(h.broker.pending().length, 0, "and a program's");
   h.svc.agentGone(A);
@@ -3830,7 +3997,7 @@ test("after an agent's Not now a program's open raises no card, on Code and on a
     const h = prog({ liveAgent: (k) => (k === key ? who : undefined) });
     const first = h.call(who, "computer_open", OPEN);
     h.svc.answer((await h.asked()).id, "deny");
-    assert.equal((await first).text, DECLINED);
+    assert.equal((await first).text, REFUSAL.declined);
     await h.svc.openFromProgram(key, PAGE_A);
     assert.equal(h.broker.pending().length, 0, `${key}: no card`);
     assert.equal(h.browsers.size, 0);
@@ -3847,7 +4014,7 @@ test("after a program's Not now the agent's open raises no card", async () => {
   const call = h.call(C, "computer_open", OPEN);
   await flush();
   assert.equal(h.broker.pending().length, 0, "no card");
-  assert.equal((await call).text, DECLINED);
+  assert.equal((await call).text, REFUSAL.declined);
 });
 
 test("Off between turns does not silence the next turn's program", async () => {
@@ -4171,4 +4338,1435 @@ test("the page going on a Code session drops the held pages with one line and ra
   assert.match(h.logs[0], /window closed or reloaded/);
   noSecrets(h.logs);
   assert.equal(powerCards(h, "code:t1").length, 0);
+});
+
+// ---- session-browser S16 (Task 19): an acting tool's reply carries the page as it is now
+
+/** A marked page "a.test" with a button e1 and a text field e2 that takes the focus, its text "Welcome". */
+async function acting() {
+  const h = make();
+  h.sites.mark("https://a.test");
+  const b = await h.open(A, "https://a.test/");
+  b.text = "Welcome";
+  b.spots.set("e1", { target: btn("Next") });
+  b.spots.set("e2", { target: box("Name"), focuses: true });
+  b.focused = { target: box("Search"), shown: "Search", sensitive: false, plainTextarea: false, node: 50, frame: "F1" };
+  return { h, b };
+}
+
+test("a click's reply ends with the new outline and its refs work in the next call", async () => {
+  const { h, b } = await acting();
+  await h.clock.advance(1_000);
+  const asks = b.snapshotsFor.length;
+  b.settles.length = 0;
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.equal(r.isError, undefined);
+  assert.equal(r.text, `Clicked e1.${now("https://a.test/", "Welcome")}`);
+  // The outline is the one computer_snapshot takes for this session, so its refs are the session's own for the next call.
+  assert.deepEqual(b.snapshotsFor.slice(asks), ["chat:a"]);
+  // R8: it waited from the moment the click's release was sent, on the service's own clock.
+  assert.deepEqual(b.settles, [1_000]);
+  b.text = "Saved";
+  const next = await h.call(A, "computer_click", { ref: "e1" });
+  assert.ok(!next.isError && next.text.endsWith(now("https://a.test/", "Saved")), next.text);
+  assert.equal(b.resolvesFor.at(-1), "chat:a");
+  assert.equal(b.clicks.length, 2);
+});
+
+test("an open, a type, a key and a scroll each end with the outline", async () => {
+  const { h, b } = await acting();
+  b.text = "Hello there";
+  const calls: [ComputerTool, Record<string, unknown>, string][] = [
+    ["computer_open", { url: "https://a.test/two", newTab: true }, "Opened the page."],
+    ["computer_type", { text: "hi" }, "Typed 2 characters."],
+    ["computer_key", { key: "Tab" }, "Pressed Tab."],
+    ["computer_scroll", { dy: 5 }, "Scrolled by (0, 5)."],
+  ];
+  for (const [tool, args, line] of calls) {
+    const r = await h.call(A, tool, args);
+    assert.ok(!r.isError, r.text);
+    assert.equal(r.text, `${line}${now("https://a.test/two", "Hello there")}`, tool);
+  }
+});
+
+test("the look tools keep their one line: no outline", async () => {
+  const { h } = await acting();
+  const waiting = h.call(A, "computer_wait", { timeoutSec: 1 });
+  await h.clock.advance(1_000);
+  const w = await waiting;
+  assert.ok(!w.text.includes("Page now:"), w.text);
+  assert.ok(!(await h.call(A, "computer_screenshot")).text.includes("Page now:"));
+});
+
+test("a cut reply still closes the page-text wrapper", async () => {
+  const { h, b } = await acting();
+  b.text = Array.from({ length: 2000 }, (_, i) => `line ${i}`).join("\n");
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.ok(!r.isError, r.text);
+  assert.ok(r.text.endsWith("\n</untrusted-page>\n(The page goes on: computer_snapshot has the rest.)"), r.text.slice(-120));
+  assert.equal(r.text.split("</untrusted-page>").length, 2, "the wrapper closes once");
+  assert.ok(r.text.length < 8_300, `${r.text.length} characters`);
+});
+
+test("an action whose page cannot be read still says it ran", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  assert.equal(b.clicks.length, 1, "the click was sent");
+  b.destroy();                                   // the browser went away, and nobody switched it off
+  release();
+  const r = await p;
+  assert.ok(!r.isError, "the action happened: not an error");
+  assert.ok(r.text.startsWith("Clicked e1."), r.text);
+  assert.match(r.text, /computer_status/);
+  assert.ok(!r.text.includes("Page now:"));
+});
+
+test("a snapshot that throws after an action leaves its line and says the page could not be read", async () => {
+  const { h, b } = await acting();
+  b.snapshot = async () => { throw new Error("The page went away"); };
+  const r = await h.call(A, "computer_key", { key: "Tab" });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Pressed Tab\. .*computer_status/);
+});
+
+test("a Take over during the settle wait changes nothing: the outline is a look", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.ok(!r.isError, r.text);
+  assert.equal(r.text, `Clicked e1.${now("https://a.test/", "Welcome")}`);
+});
+
+test("an asked action that ran after the person allowed it ends with the outline", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.text = "Cart: 1 item";
+  b.spots.set("e1", { target: btn("Next") });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  h.svc.answer((await h.asked()).id, "once");
+  const r = await p;
+  assert.equal(r.text, `Clicked e1.${now("https://a.test/", "Cart: 1 item")}`);
+  assert.equal(b.clicks.length, 1);
+});
+
+test("an asked action's reply by computer_wait ends with the outline too", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.text = "Thanks";
+  b.spots.set("e1", { target: btn("Next") });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  const ask = await h.asked();
+  await h.clock.advance(45_000);
+  assert.match((await p).text, /^waiting_for_user/);
+  h.svc.answer(ask.id, "once");
+  assert.equal((await h.call(A, "computer_wait", { askId: ask.id })).text, `Clicked e1.${now("https://a.test/", "Thanks")}`);
+});
+
+test("the settle wait does not keep a held call past its limit", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  b.settleGate = new Promise<void>(() => {});   // the page never settles
+  let done = false;
+  const p = h.call(A, "computer_click", { ref: "e1" }).then((r) => { done = true; return r; });
+  await h.clock.advance(44_900);
+  release();                                     // the click takes the computer at 44.9 s and is sent
+  await h.clock.advance(50);
+  assert.equal(done, false, "still settling before the limit");
+  await h.clock.advance(100);
+  assert.equal(done, true, "answered at its 45 s, not when the page settles");
+  const r = await p;
+  assert.equal(b.clicks.length, 1);
+  assert.ok(!r.isError && r.text.startsWith("Clicked e1."), r.text);
+});
+
+// ---- fix round 1 (session-browser S16): the reply is built outside the queue, and says what the person did meanwhile
+
+test("the person's navigation does not wait for an agent's settle wait", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  b.settleGate = new Promise<void>(() => {});   // the page never settles
+  let clicked = false;
+  void h.call(A, "computer_click", { ref: "e1" }).then(() => { clicked = true; });
+  await flush();
+  assert.equal(b.clicks.length, 1, "the click was sent");
+  const nav = await Promise.race([h.svc.navigate("https://a.test/typed"), new Promise((r) => setTimeout(() => r("waited"), 200))]);
+  assert.deepEqual(nav, { ok: true, data: null }, "the address bar did not wait behind the settle wait");
+  assert.equal(clicked, false, "the click's reply is still waiting");
+});
+
+test("a program's page does not wait for an agent's settle wait", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  b.settleGate = new Promise<void>(() => {});
+  void h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  const before = b.pages.length;
+  await h.svc.openFromProgram("chat:a", "https://a.test/from-a-program");
+  await flush();
+  assert.equal(b.pages.length > before || b.pages.some((x) => x.url.includes("from-a-program")), true, "the program's page opened while the click still waited");
+});
+
+test("the person closes the tab during the settle wait: the reply says the action ran and that the tab was closed", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  assert.equal(b.clicks.length, 1);
+  h.svc.tab({ kind: "close", index: b.current });
+  release();
+  const r = await p;
+  assert.ok(!r.isError, "the action ran: not an error");
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.tabClosed}`);
+  assert.ok(!r.text.includes("Page now:"), "no outline of another tab");
+});
+
+test("the person switches the browser off during the settle wait: the reply carries that sentence", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.power("chat:a", false);
+  release();
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.switchedOff}`);
+});
+
+test("a tab switch by the person during the wait is not a stop: the reply carries the tab now in front", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.tab({ kind: "select", index: 0 });
+  release();
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.ok(r.text.endsWith(now("https://a.test/", "Welcome")), r.text);
+});
+
+test("a reply asks the browser for the outline's cap, a snapshot for none", async () => {
+  const { h, b } = await acting();
+  b.capsFor.length = 0;
+  await h.call(A, "computer_click", { ref: "e1" });
+  await h.call(A, "computer_snapshot");
+  assert.deepEqual(b.capsFor, [8000, undefined]);
+});
+
+test("a cut reply is cut by the browser's snapshot and says where the rest is", async () => {
+  const { h, b } = await acting();
+  b.text = Array.from({ length: 2000 }, (_, i) => `line ${i}`).join("\n");
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.ok(r.text.endsWith("\n</untrusted-page>\n(The page goes on: computer_snapshot has the rest.)"));
+});
+
+test("an asked action's reply is not cut by the first call's deadline", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.text = "Cart";
+  b.spots.set("e1", { target: btn("Next") });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  const ask = await h.asked();
+  await h.clock.advance(45_000);
+  assert.match((await p).text, /^waiting_for_user/);
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  h.svc.answer(ask.id, "once");
+  const w = h.call(A, "computer_wait", { askId: ask.id });
+  await h.clock.advance(3_000);                  // past the first call's 45 s, inside the 5 s settle
+  release();
+  assert.equal((await w).text, `Clicked e1.${now("https://a.test/", "Cart")}`, "the outline was read, not cut off by an old deadline");
+});
+
+test("the settle wait is measured from the last input, not from the call's start", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.clickGate = new Promise<void>((r) => { release = r; });
+  b.settles.length = 0;
+  const t0 = h.clock.t;
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await h.clock.advance(2_000);                  // the press is on its way for 2 s
+  release();
+  await h.clock.advance(0);
+  await p;
+  assert.deepEqual(b.settles, [t0 + 2_000]);
+});
+
+test("a deadline that cut the settle wait leaves the outline unread", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  b.settleGate = new Promise<void>(() => {});
+  const snaps = b.snapshotsFor.length;
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await h.clock.advance(44_900);
+  release();
+  await h.clock.advance(200);
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.equal(r.text.startsWith("Clicked e1."), true);
+  assert.match(r.text, /computer_status/);
+  assert.equal(b.snapshotsFor.length, snaps, "no read was started");
+});
+
+// ---- fix round 2 (session-browser S16): order, stop, look in flight and wrapper
+
+test("a reply for a page with a very long address closes its wrapper and still shows outline lines", async () => {
+  const { h, b } = await acting();
+  b.text = "Welcome\nSecond line";
+  const address = `https://a.test/?${"&".repeat(9000)}`;
+  b.pages[0].url = new URL(address).href;
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.ok(!r.isError, r.text.slice(0, 80));
+  assert.ok(r.text.includes('url="https://a.test/?&'), "the opening part is whole");
+  assert.ok(/">\nWelcome\nSecond line\n<\/untrusted-page>$/.test(r.text), r.text.slice(-80));
+});
+
+test("two overlapping calls of one session register their refs in call order", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.settleGates = [new Promise<void>((r) => { release = r; }), Promise.resolve()];
+  b.snapSince.length = 0;
+  const p1 = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  await h.clock.advance(1_000);
+  const p2 = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  assert.equal(b.clicks.length, 2, "call 2's step ended while call 1's page is still settling");
+  assert.equal(b.snapSince.length, 0, "call 2's page waits for call 1's");
+  release();
+  await Promise.all([p1, p2]);
+  assert.equal(b.snapSince.length, 2);
+  assert.ok(b.snapSince[0]! < b.snapSince[1]!, `the snapshots came in call order: ${b.snapSince.join(", ")}`);
+});
+
+test("Off, then Take over, during one settle wait: the reply says the browser was switched off", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.power("chat:a", false);
+  h.svc.power("chat:a", true);
+  await flush();
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.switchedOff}`);
+});
+
+test("a browser is not put to sleep while a reply's page is being read", async () => {
+  const h = make({ off: true });
+  h.cfg.awake = 1;
+  await turnedOn(h, 1);
+  const x = h.b("chat:s1");
+  x.pages = [{ url: "https://a.test/", openedBy: null }]; x.current = 0;
+  h.sites.mark("https://a.test");
+  x.spots.set("e1", { target: btn("Next") });
+  let release!: () => void;
+  x.settleGate = new Promise<void>((r) => { release = r; });
+  const who = agent("chat:s1", "One");
+  const call = h.svc.call(who, { id: 1, tool: "computer_click", args: { ref: "e1" } });
+  await flush();
+  assert.equal(x.clicks.length, 1);
+  h.svc.agentGone(who);                          // the turn ended: the wheel is free, only the read is left
+  h.svc.power("chat:s2", true); await flush();
+  assert.equal(x.sleeping, false, "the wait and the read count as a look in flight");
+  release();
+  assert.ok(!(await call).isError);
+  h.svc.power("chat:s3", true); await flush();
+  assert.equal(x.sleeping, true, "after the read it can sleep");
+});
+
+test("the awake limit is applied again when a look ends", async () => {
+  const h = make();
+  h.cfg.awake = 1;
+  const b = await h.open(A, "https://a.test/");
+  h.svc.agentGone(A);                                    // the turn ended: only the look is left to keep it awake
+  let release!: () => void;
+  b.snapGate = new Promise<void>((r) => { release = r; });
+  const look = h.call(A, "computer_snapshot");
+  await flush();
+  h.svc.power("chat:s2", true); await flush();
+  h.svc.select("chat:s2");                               // the one on screen is never put to sleep
+  await h.clock.advance(0);                              // every trim the turn-on asked for has run, and found the look in flight
+  assert.equal(b.sleeping, false, "a look in flight keeps its browser awake");
+  release();
+  await look;
+  await h.clock.advance(0);
+  assert.equal(b.sleeping, true, "the limit of one is applied when the look ends: a browser that turned on while it ran is not left awake beside it");
+  assert.equal(h.b("chat:s2").sleeping, false);
+});
+
+// ---- fix round 2 (session-browser S16): a line for the person keeps its own words
+
+test("a line for the person keeps its own wording, not the agent's advice", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  b.open = async () => { throw new TwoWordings(REFUSAL.browserGone, "This computer was closed."); };
+  h.svc.tab({ kind: "new" });
+  await flush();
+  assert.ok(h.lastState().log.some((l) => l.text === "The new tab did not open: This computer was closed."), JSON.stringify(h.lastState().log.map((l) => l.text)));
+  b.open = async () => { throw new TwoWordings(REFUSAL.couldNotOpen("https://x.test/ (ERR_FAILED)"), "Could not open https://x.test/: ERR_FAILED."); };
+  assert.deepEqual(await h.svc.navigate("https://x.test/"), { ok: false, error: "Could not open https://x.test/: ERR_FAILED.", code: "EIO" });
+  b.open = async () => { throw new TwoWordings(REFUSAL.browserGone, "This computer was closed."); };
+  await h.call(A, "computer_open", { url: "https://x.test/" }).then((r) => assert.equal(r.text, REFUSAL.browserGone, "the agent gets the table's sentence"));
+});
+
+// ---- fix round 3 (session-browser S16): a reply's read never starts after its call's deadline
+
+/** Three reply reads behind one that is stuck in its snapshot: returns the pieces. */
+async function behind() {
+  const { h, b } = await acting();
+  const t0 = h.clock.t;
+  let release!: () => void;
+  b.snapGate = new Promise<void>((r) => { release = r; });
+  const base = b.snapshotsFor.length;
+  const p1 = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  return { h, b, t0, release: () => { release(); b.snapGate = null; }, base, p1 };
+}
+
+test("a call waiting behind another call's read answers at its own deadline, unread", async () => {
+  const { h, b, t0, release, base, p1 } = await behind();
+  await h.clock.advance(1_000);
+  let answered: string | null = null;
+  void h.call(A, "computer_click", { ref: "e1" }).then((r) => { answered = r.text; });
+  await h.clock.advance(44_000);                 // t0 + 45 s: call 1's deadline, not yet call 2's (t0 + 46 s)
+  assert.equal(answered, null);
+  await h.clock.advance(1_001);                  // call 2's own 45 s
+  assert.equal(answered, `Clicked e1. ${UNREAD}`, "the line and the unread sentence, at its own deadline");
+  assert.equal(b.snapshotsFor.length, base + 1, "only call 1's snapshot was started");
+  release();
+  await p1;
+  await flush();
+  await h.clock.advance(10_000);
+  assert.equal(b.snapshotsFor.length, base + 1, "and none for call 2 when its turn came, nor later");
+  assert.ok(h.clock.t > t0);
+});
+
+test("a reply read that finds its deadline passed when its turn comes clears the timer it set for the wait", async () => {
+  const { h, release, p1 } = await behind();
+  const mark = h.clock.setLog.length;
+  void h.call(A, "computer_click", { ref: "e1" });            // call 2, waiting behind call 1's stuck read
+  await flush();
+  h.clock.t += 100_000;                                       // its deadline passed with no timer fired yet
+  release();
+  await p1;
+  await flush();
+  const forTheCall = h.clock.setLog.slice(mark).filter((x) => x.ms > 40_000 && x.ms <= 45_000);
+  assert.ok(forTheCall.length >= 1, "the call set its timers for its 45 s");
+  for (const x of forTheCall) assert.ok(h.clock.cleared.has(x.id), `the timer of ${x.ms} ms was left behind`);
+});
+
+test("the calls after it keep their order", async () => {
+  const { h, b, release, base, p1 } = await behind();
+  await h.clock.advance(1_000);
+  void h.call(A, "computer_click", { ref: "e1" });         // call 2, which will give up
+  await h.clock.advance(39_000);
+  const p3 = h.call(A, "computer_click", { ref: "e1" });   // call 3, deadline at 85 s
+  await h.clock.advance(7_000);                            // call 2's deadline passes
+  b.snapSince.length = 0;
+  b.registered.length = 0;
+  b.pageTexts = ["call 1's page", "call 3's page"];
+  release();
+  const [r1, r3] = await Promise.all([p1, p3]);
+  assert.equal(b.snapshotsFor.length, base + 2, "call 1's snapshot and call 3's");
+  assert.equal(b.snapSince.length, 1, "call 3's read came after call 1's, which was already under way");
+  // The table: call 1's read registered first, call 3's after it, so the refs the agent holds are those of the last page it was shown.
+  assert.deepEqual(b.registered, ["chat:a|call 1's page", "chat:a|call 3's page"], "the refs were registered in the order of the calls, none for call 2");
+  assert.ok(r1.text.endsWith(now("https://a.test/", "call 1's page")), r1.text);
+  assert.ok(r3.text.endsWith(now("https://a.test/", "call 3's page")), r3.text);
+});
+
+test("a read whose turn comes after the deadline does not start", async () => {
+  const { h, b, release, base, p1 } = await behind();
+  void h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.clock.t += 100_000;                          // the deadline passed with no timer fired yet
+  release();
+  await p1;
+  await flush();
+  assert.equal(b.snapshotsFor.length, base + 1, "no read for the call whose deadline had passed");
+});
+
+test("the person switches the browser off while the outline is being read: the reply says so", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.snapGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.power("chat:a", false);
+  release();
+  const r = await p;
+  assert.ok(!r.isError);
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.switchedOff}`);
+});
+
+test("× on the action's tab, then Take over, during one settle wait: the reply says the tab was closed", async () => {
+  const { h, b } = await acting();
+  h.svc.select("chat:a");
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.tab({ kind: "close", index: b.current });
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.equal(r.text, `Clicked e1. ${REFUSAL.tabClosed}`);
+});
+
+test("the agent's hold is not freed by the idle release while its reply's page is being read", async () => {
+  const { h, b } = await acting();
+  let release!: () => void;
+  b.settleGate = new Promise<void>((r) => { release = r; });
+  b.settleGates = [];
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  assert.equal(h.wheel.holder("chat:a")?.kind, "agent");
+  await h.clock.advance(31_000);                 // past the wheel's 30 s idle release
+  assert.equal(h.wheel.holder("chat:a")?.kind, "agent", "still the agent's: a read is in progress");
+  release();
+  await p;
+});
+
+test("a read under way at the deadline is given to its call", async () => {
+  const { h, b } = await acting();
+  let settle!: () => void, snap!: () => void;
+  b.settleGate = new Promise<void>((r) => { settle = r; });
+  b.snapGate = new Promise<void>((r) => { snap = r; });
+  const base = b.snapshotsFor.length;
+  let answered: string | null = null;
+  void h.call(A, "computer_click", { ref: "e1" }).then((r) => { answered = r.text; });
+  await h.clock.advance(44_900);
+  settle();                                      // the turn and the settle come before the deadline: the snapshot starts
+  await flush();
+  assert.equal(b.snapshotsFor.length, base + 1, "the read is under way");
+  await h.clock.advance(300);                    // past the call's 45 s, the snapshot still running
+  assert.equal(answered, null, "a read under way is not abandoned");
+  b.text = "Late page";
+  snap();
+  await flush();
+  assert.equal(answered, `Clicked e1.${now("https://a.test/", "Late page")}`, "its text is given to the call, not UNREAD");
+});
+
+
+// ---- session-browser S17 (Task 20): computer_tab, computer_nav, computer_hover and double
+
+/** A session with two tabs by the agent's own label (the second active) and a spot e1 to click or hover. */
+async function twoTabs(h: ReturnType<typeof make>, who: AgentRef = A) {
+  const b = await h.open(who, "https://a.test/one");
+  await h.call(who, "computer_open", { url: "https://a.test/two", newTab: true });
+  b.spots.set("e1", { target: btn("Next") });
+  h.sites.mark("https://a.test");
+  return b;
+}
+
+test("a tab switch, a hover and Back onto a GET entry do not ask", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  const sw = await h.call(A, "computer_tab", { index: 0 });
+  assert.equal(sw.text, `Switched to tab 0.${now("https://a.test/one")}`);
+  assert.equal(b.current, 0);
+  const hv = await h.call(A, "computer_hover", { ref: "e1" });
+  assert.equal(hv.text, `Hovered e1.${now("https://a.test/one")}`);
+  assert.deepEqual(b.hovers.map((r) => r.backendNodeId), [7]);
+  const at = await h.call(A, "computer_hover", { x: 12, y: 34 });
+  assert.equal(at.isError, true, "no spot at that point in the fake page: the browser's own refusal");
+  b.spots.set("12,34", { target: btn("Menu") });
+  assert.equal((await h.call(A, "computer_hover", { x: 12, y: 34 })).text, `Hovered at (12, 34).${now("https://a.test/one")}`);
+  b.canBack = true;
+  const back = await h.call(A, "computer_nav", { go: "back" });
+  assert.equal(back.text, `Went back.${now("https://a.test/one")}`);
+  assert.deepEqual(b.navs, ["back 0"]);
+  assert.deepEqual(b.reposts, [false]);
+  assert.equal(h.broker.pending().length, 0, "nothing asked");
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" }, "the wheel was taken as a click takes it");
+});
+
+test("Reload after a form POST asks; onto GET it does not; an unknown method asks", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // GET: goes, by the browser's own reload.
+  assert.equal((await h.call(A, "computer_nav", { go: "reload" })).text, `Reloaded.${now("https://a.test/two")}`);
+  assert.deepEqual([b.navs, b.reposts], [["reload 1"], [false]]);
+  // POST: asks, and once allowed the reload goes through the protocol.
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  assert.equal(ask.why, "resend");
+  assert.equal(ask.title, "Load a page again, which may send a form again: Reload on a.test?");
+  assert.deepEqual(b.navs, ["reload 1"], "nothing moved yet");
+  h.svc.answer(ask.id, "once");
+  assert.equal((await p).text, `Reloaded.${now("https://a.test/two")}`);
+  assert.deepEqual([b.navs, b.reposts], [["reload 1", "reload 1"], [false, true]]);
+  // An unknown method asks as POST does; Back and Forward too; a denial moves nothing.
+  b.canBack = true; b.canForward = true;
+  for (const [go, method] of [["reload", "unknown"], ["back", "other"], ["forward", "unknown"]] as const) {
+    b.methods[go] = method;
+    const q = h.call(A, "computer_nav", { go });
+    const a = await h.asked();
+    assert.equal(a.why, "resend", go);
+    h.svc.answer(a.id, "deny");
+    const r = await q;
+    assert.equal(r.isError, true, go);
+    assert.match(r.text, /^The user denied it \(/, go);
+  }
+  assert.equal(b.navs.length, 2, "the three denied moves never ran");
+  // The card does not offer Always: a form sent again is asked every time.
+  b.methods.reload = "other";
+  const q = h.call(A, "computer_nav", { go: "reload" });
+  assert.equal((await h.asked()).always, false);
+  h.svc.answer((await h.asked()).id, "deny"); await q;
+});
+
+test("Back onto a POST entry asks, Forward onto an unknown entry asks; Allow once moves, and the card offers no Always", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true; b.canForward = true;
+  b.methods.back = "other"; b.methods.forward = "unknown";
+  const title = /^Load a page again, which may send a form again: /;
+  const back = h.call(A, "computer_nav", { go: "back" });
+  const askBack = await h.asked();
+  assert.equal(askBack.why, "resend");
+  assert.match(askBack.title, title);
+  assert.equal(askBack.always, false, "a form sent again is asked every time");
+  assert.deepEqual([b.navs, b.reposts], [[], []], "nothing moved while the card is up");
+  h.svc.answer(askBack.id, "once");
+  assert.equal((await back).text, `Went back.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["back 1"], "the allowed Back moved the tab (only a Reload re-sends by the protocol)");
+  const fwd = h.call(A, "computer_nav", { go: "forward" });
+  const askFwd = await h.asked();
+  assert.equal(askFwd.why, "resend");
+  assert.match(askFwd.title, title);
+  assert.deepEqual(b.navs, ["back 1"], "nothing moved while the card is up");
+  h.svc.answer(askFwd.id, "once");
+  assert.equal((await fwd).text, `Went forward.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["back 1", "forward 1"]);
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("Back with nothing to go back to is a refusal with a next step, and raises no ask", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.back = "other"; b.methods.forward = "other";
+  const back = await h.call(A, "computer_nav", { go: "back" });
+  assert.equal(back.isError, true);
+  assert.equal(back.text, `${REFUSAL.noHistory("back")} ${page("https://a.test/two")}`);
+  const fwd = await h.call(A, "computer_nav", { go: "forward" });
+  assert.equal(fwd.text, `${REFUSAL.noHistory("forward")} ${page("https://a.test/two")}`);
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, []);
+  assert.deepEqual(b.asked, [], "the method was not even read");
+});
+
+test("closing a tab the user opened asks; closing its own does not", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = null; b.pages[0].own = false;                              // the person's tab
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  assert.equal(ask.title, "Close a tab it did not open: Close tab 0 on a.test?");
+  assert.equal(b.pages.length, 2, "not closed yet");
+  h.svc.answer(ask.id, "once");
+  assert.match((await p).text, /^Closed the tab\./);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/two"]);
+  // Its own (the label this session opens tabs with now) goes without asking.
+  await h.call(A, "computer_open", { url: "https://a.test/three", newTab: true });
+  assert.equal(b.pages[1].openedBy, "Alpha");
+  const own = await h.call(A, "computer_tab", { index: 1, close: true });
+  assert.match(own.text, /^Closed the tab\./);
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/two"]);
+});
+
+test("a program's page asks before the agent closes it, on a thread and on Code", async () => {
+  for (const who of [A, agent("code:t1", "One", "edit", "vault")]) {
+    const h = make();
+    const b = await h.open(who, "https://a.test/one");                       // the agent's own tab
+    // The program's real path: a sign-in page, recorded under the session's own label, the one an agent's tab carries.
+    await h.svc.openFromProgram(who.key, "https://example.com/signin");
+    assert.deepEqual(b.pages.map((x) => x.openedBy), [who.label, who.label], "both read as the session's own, to the person");
+    const p = h.call(who, "computer_tab", { index: 1, close: true });
+    const ask = await h.asked();
+    assert.equal(ask.why, "closetab", who.key);
+    h.svc.answer(ask.id, "deny");
+    assert.equal((await p).isError, true);
+    assert.equal(b.pages.length, 2, "not closed");
+    // The agent's own tab still goes without a card.
+    const own = await h.call(who, "computer_tab", { index: 0, close: true });
+    assert.match(own.text, /^Closed the tab\./, who.key);
+    assert.equal(h.broker.pending().length, 0);
+    assert.deepEqual(b.pages.map((x) => x.url), ["https://example.com/signin"]);
+  }
+});
+
+test("a tab another agent opened asks", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = "Beta"; b.pages[0].own = false;
+  const q = h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal((await h.asked()).why, "closetab");
+  h.svc.answer((await h.asked()).id, "deny"); await q;
+  assert.equal(b.pages.length, 2);
+});
+
+test("a tab the agent opened still closes free after a sleep and wake", async () => {
+  const h = make();
+  h.cfg.awake = 1;
+  const b = await twoTabs(h);
+  h.svc.agentGone(A);                                    // the turn ended: the wheel is free, so the browser can be put to sleep
+  h.svc.power("chat:s2", true); await flush();
+  assert.equal(b.sleeping, true, "the awake limit put it to sleep");
+  // A wake brings the same tabs back as new views (a new uid each) and keeps who made each: the agent's own stays its own.
+  const r = await h.call(A, "computer_tab", { index: 1, close: true });
+  assert.equal(b.wakes, 1, "the call woke it");
+  assert.match(r.text, /^Closed the tab\./);
+  assert.equal(h.broker.pending().length, 0, "no card");
+});
+
+test("a restored tab asks", async () => {
+  const h = make();
+  await twoTabs(h);
+  h.svc.power("chat:a", false);
+  h.svc.power("chat:a", true);
+  await flush();
+  const nb = h.b();
+  assert.equal(nb.restored, 1, "the tabs came back from the record");
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab", "a record does not say who made a tab");
+  h.svc.answer(ask.id, "deny"); await p;
+});
+
+test("a popup made while the person holds the wheel asks before the agent closes it", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  b.popup(1, "https://pop.test/");
+  h.svc.handBack();
+  assert.equal(b.pages[2].own, false);
+  const p = h.call(A, "computer_tab", { index: 2, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  h.svc.answer(ask.id, "once");
+  assert.match((await p).text, /^Closed the tab\./);
+  assert.equal(b.pages.length, 2);
+});
+
+test("a popup made while nobody holds the wheel asks", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  h.svc.agentGone(A);                                      // the turn ended: nobody holds the wheel
+  assert.equal(h.wheel.holder("chat:a"), null);
+  b.popup(1, "https://pop.test/");
+  assert.equal(b.pages[2].own, false);
+  const p = h.call(A, "computer_tab", { index: 2, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  h.svc.answer(ask.id, "once");
+  assert.match((await p).text, /^Closed the tab\./);
+  assert.equal(b.pages.length, 2);
+});
+
+test("a popup the agent's own click opened closes free", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // The agent holds the wheel (its click is under way) and the opener is its own tab.
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" });
+  b.popup(1, "https://pop.test/");
+  assert.equal(b.pages[2].own, true);
+  const r = await h.call(A, "computer_tab", { index: 2, close: true });
+  assert.match(r.text, /^Closed the tab\./);
+  assert.equal(h.broker.pending().length, 0, "no card");
+  assert.equal(b.pages.length, 2);
+  // A popup of a tab the agent did not make is not its own, whoever holds the wheel.
+  b.pages[1].own = false;
+  b.popup(1, "https://pop2.test/");
+  const p = h.call(A, "computer_tab", { index: 2, close: true });
+  assert.equal((await h.asked()).why, "closetab");
+  h.svc.answer((await h.asked()).id, "deny"); await p;
+});
+
+test("the agent's close of the last tab leaves the browser on at the start page", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  assert.equal(b.pages.length, 1);
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.equal(b.current, 0);
+  assert.deepEqual(b.trail.slice(-2), ["open 1", "close 2"], "the start page opened first, so a tab was open all the while");
+  assert.equal(h.lastState().power, "awake", "not switched off");
+  assert.ok(r.text.endsWith(now("https://start.test/")), r.text);
+  // The person's last tab, once allowed, leaves the same.
+  b.pages[0].openedBy = null; b.pages[0].own = false;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  h.svc.answer((await h.asked()).id, "once");
+  assert.ok(!(await p).isError);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.equal(h.lastState().power, "awake");
+});
+
+test("a bad tab, go, double or hover target says what to give; a tab that is not there says to look", async () => {
+  const h = make();
+  await twoTabs(h);
+  for (const index of [-1, 1.5, "0", null, undefined]) assert.deepEqual(await h.call(A, "computer_tab", { index }), { text: REFUSAL.badTab, isError: true }, String(index));
+  assert.deepEqual(await h.call(A, "computer_tab", { index: 0, close: "yes" }), { text: REFUSAL.badClose, isError: true });
+  assert.deepEqual(await h.call(A, "computer_tab", { index: 7 }), { text: REFUSAL.noTab("7"), isError: true });
+  assert.deepEqual(await h.call(A, "computer_tab", { index: 7, close: true }), { text: REFUSAL.noTab("7"), isError: true });
+  for (const go of ["sideways", "", 3, undefined]) assert.deepEqual(await h.call(A, "computer_nav", { go }), { text: REFUSAL.badGo, isError: true }, String(go));
+  assert.deepEqual(await h.call(A, "computer_hover", {}), { text: REFUSAL.noHover, isError: true });
+  assert.deepEqual(await h.call(A, "computer_hover", { x: 1 }), { text: REFUSAL.noHover, isError: true });
+  assert.deepEqual(await h.call(A, "computer_hover", { ref: 5 }), { text: REFUSAL.badRef, isError: true });
+  assert.deepEqual(await h.call(A, "computer_click", { ref: "e1", double: "yes" }), { text: REFUSAL.badDouble, isError: true });
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("computer_console is a look tool wrapped as page text", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.consoleText = "[error] boom\n[request] 404 GET https://a.test/x";
+  const wrapped = (url: string): string => `<untrusted-page origin="o" url="${url}">\n[error] boom\n[request] 404 GET https://a.test/x\n</untrusted-page>`;
+  const settles = b.settles.length;
+  // A reply that is the page's text and nothing else: no outline, no settle wait (it is not built with `done`).
+  const url = b.pages[b.current].url;
+  assert.deepEqual(await h.call(A, "computer_console", {}), { text: wrapped(url) });
+  assert.deepEqual(await h.call(A, "computer_console", { tab: 0 }), { text: wrapped(b.pages[0].url) });
+  assert.deepEqual(b.consoleFor, [undefined, 0]);
+  assert.equal(b.settles.length, settles, "no settle wait");
+  assert.deepEqual(await h.call(A, "computer_console", { tab: 9 }).catch((e) => e), { text: "There is no tab 9.", isError: true }, "the browser's own refusal");
+  assert.deepEqual(await h.call(A, "computer_console", { tab: -1 }), { text: REFUSAL.badTab, isError: true });
+  // It answers while the user drives, and never takes the wheel or raises a card.
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  const driving = h.wheel.holder("chat:a");
+  assert.deepEqual(await h.call(A, "computer_console", {}), { text: wrapped(url) });
+  assert.deepEqual(h.wheel.holder("chat:a"), driving, "the person still holds the wheel");
+  assert.equal(h.broker.pending().length, 0, "no card was raised");
+  h.svc.handBack();
+  // A read only session may call it.
+  const R = agent("chat:a", "Reader", "read");
+  assert.deepEqual(await h.call(R, "computer_console", {}), { text: wrapped(url) });
+});
+
+test("computer_console on a browser that is off is refused like the other looks", async () => {
+  const h = off();
+  assert.deepEqual(await h.call(A, "computer_console", {}), { text: REFUSAL.isOff, isError: true });
+});
+
+test("a double click is passed to the browser and worded as one", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  const r = await h.call(A, "computer_click", { ref: "e1", double: true });
+  assert.equal(r.text, `Double-clicked e1.${now("https://a.test/two")}`);
+  assert.deepEqual(b.clickOpts, [{ double: true }]);
+  assert.ok(h.states.flatMap((s) => s.log.map((l) => l.text)).includes("Double-clicked “Next”"));
+  await h.call(A, "computer_click", { ref: "e1" });
+  assert.deepEqual(b.clickOpts.at(-1), { double: false });
+});
+
+test("a double click on a button that navigates says the first click ran and carries the new page", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.text = "the page after the click";
+  b.secondWithheld = true;                       // the browser stops after the first press: the page changed
+  const r = await h.call(A, "computer_click", { ref: "e1", double: true });
+  assert.equal(r.isError, undefined, "the first click happened: not a failure");
+  assert.equal(r.text, `Clicked e1 once: the second click was not sent.${now("https://a.test/two", "the page after the click")}`);
+  assert.equal(b.clicks.length, 1);
+  assert.ok(h.states.flatMap((s) => s.log.map((l) => l.text)).includes("Clicked “Next” once: the second click was not sent"), "the activity log says it in the person's words");
+  // At a point, and for a control with no name.
+  b.spots.set("3,4", { target: btn(""), shown: "" });
+  b.secondWithheld = true;
+  const at = await h.call(A, "computer_click", { x: 3, y: 4, double: true });
+  assert.ok(at.text.startsWith("Clicked at (3, 4) once: the second click was not sent."), at.text);
+  assert.ok(h.states.flatMap((s) => s.log.map((l) => l.text)).includes("Clicked an unnamed control once: the second click was not sent"));
+});
+
+test("a Take over between the two clicks says the first click ran", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // As the real browser answers when the wheel is taken between the two presses: the first went, the second was not sent.
+  const real = b.click.bind(b);
+  b.click = async (x, valid, o) => { await real(x, valid, {}); h.svc.select("chat:a"); h.svc.takeOver(); return { once: true }; };
+  const r = await h.call(A, "computer_click", { ref: "e1", double: true });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Clicked e1 once: the second click was not sent\./);
+});
+
+test("an allowed double click on Submit whose page changed after the first click answers once and raises no second card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.spots.set("e2", { target: btn("Submit") });
+  b.secondWithheld = true;
+  const p = h.call(A, "computer_click", { ref: "e2", double: true });
+  const ask = await h.asked();
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Clicked e2 once: the second click was not sent\./);
+  assert.equal(b.clicks.length, 1, "Submit was pressed once");
+  assert.equal(h.broker.pending().length, 0, "nothing is left to ask again");
+});
+
+test("a double click on a control that asks says so on the card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.spots.set("e2", { target: btn("Delete") });
+  const p = h.call(A, "computer_click", { ref: "e2", double: true });
+  const ask = await h.asked();
+  assert.equal(ask.title, "Delete: Double-click “Delete” on a.test?");
+  h.svc.answer(ask.id, "deny"); await p;
+});
+
+test("a read only session cannot switch tabs, go back or hover", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  h.svc.agentGone(A);
+  const R = agent("chat:a", "Reader", "read");
+  for (const [tool, args] of [["computer_tab", { index: 0 }], ["computer_tab", { index: 0, close: true }], ["computer_nav", { go: "back" }], ["computer_nav", { go: "reload" }], ["computer_hover", { ref: "e1" }]] as const) {
+    const r = await h.call(R, tool, args);
+    assert.deepEqual(r, { text: REFUSAL.readOnly, isError: true }, `${tool} ${JSON.stringify(args)}`);
+  }
+  assert.equal(h.wheel.holder("chat:a"), null);
+  assert.deepEqual([b.navs, b.hovers.length, b.pages.length, b.current], [[], 0, 2, 1]);
+});
+
+test("the wheel and the lease apply to a tab, a nav and a hover as to a click", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  for (const [tool, args] of [["computer_tab", { index: 0 }], ["computer_nav", { go: "back" }], ["computer_hover", { ref: "e1" }]] as const) {
+    const r = await h.call(A, tool, args);
+    assert.equal(r.isError, true, tool);
+    assert.match(r.text, /^busy: /, tool);
+  }
+  assert.deepEqual([b.navs, b.hovers.length, b.current], [[], 0, 1]);
+  // A Take over while the nav waits for its method: the move never runs.
+  h.svc.handBack();
+  let release: () => void = () => {};
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_nav", { go: "back" });
+  await flush();
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.deepEqual(b.navs, [], "the Back never ran");
+});
+
+test("a hover takes the computer before the pointer moves, and the move goes only while the call is current", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // The target read is under way (the pointer has not moved yet) when the person takes the wheel: nothing moves, and the reply says busy.
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_hover", { ref: "e1" });
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, /^busy: /);
+  assert.deepEqual([b.moves, b.hovers.length], [[], 0], "the pointer never moved");
+  // A hover that goes moves the pointer guarded.
+  h.svc.handBack();
+  b.resolveGate = null;
+  const ok = await h.call(A, "computer_hover", { ref: "e1" });
+  assert.ok(!ok.isError, ok.text);
+  assert.deepEqual(b.moves, ["guarded"]);
+});
+
+test("a hover has taken the computer before its target is read: the 45 s do not cut it once it has started", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  let answered: string | null = null;
+  void h.call(A, "computer_hover", { ref: "e1" }).then((r) => { answered = r.text; });
+  await flush();
+  await h.clock.advance(46_000);
+  assert.equal(answered, null, "not answered 'busy: this call waited its 45 s' while its pointer is about to move");
+  release();
+  await flush();
+  assert.match(answered ?? "", /^Hovered e1\./);
+});
+
+test("each of the three replies ends with the page's outline", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.text = "outline text";
+  b.canBack = true;
+  for (const [tool, args] of [["computer_tab", { index: 0 }], ["computer_hover", { ref: "e1" }], ["computer_nav", { go: "back" }]] as const) {
+    const r = await h.call(A, tool, args);
+    assert.ok(!r.isError, r.text);
+    assert.ok(r.text.endsWith(now("https://a.test/one", "outline text")), `${tool}: ${r.text}`);
+  }
+  assert.deepEqual(b.capsFor.slice(-3), [OUTLINE_CAP, OUTLINE_CAP, OUTLINE_CAP], "each asked for the reply-sized outline");
+});
+
+// The agent's close of the last tab (S5): the start tab is made (its uid answered at once, its load not waited for), then the
+// checks and the close run with nothing awaited between them. `onOpen` acts before the tab is made, `afterOpen` while it is.
+
+test("the old tab is gone while the start tab is made: nothing more is closed", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.onOpen = () => { b.pages.splice(0, 1); b.current = -1; };       // the old tab went just as the start tab was made
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^That tab is already closed\./);
+  assert.ok(r.text.endsWith(now("https://start.test/")), "carries the page now in front");
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.ok(!b.trail.some((t) => t.startsWith("close")), "no close was made");
+});
+
+test("the old tab changes page while the start tab is made: nothing is closed and the start tab in front is left", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.onOpen = () => b.commit(0, "https://a.test/elsewhere");          // the page moved it on just then
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.ok(!/already closed/.test(r.text), r.text);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere", "https://start.test/"], "the start tab is in front: it is left");
+});
+
+test("the old tab is closed without waiting for the start page to load", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.open = () => new Promise<never>(() => {});                       // a load of the start page that never ends
+  const r = await Promise.race([h.call(A, "computer_tab", { index: 0, close: true }), new Promise<null>((res) => setTimeout(() => res(null), 200))]);
+  assert.ok(r, "the call answered: its step did not wait on the start page");
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Closed the tab\./);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"], "the old tab is gone and one tab is open");
+  assert.equal(b.current, 0);
+  assert.equal(h.lastState().power, "awake", "the browser is on");
+});
+
+test("the start page fails to load: the old tab is closed all the same", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.loadFails = (u) => u === "https://start.test/";                   // the tab is made, then its load fails (offline)
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^Closed the tab\./);
+  assert.ok(r.text.endsWith(now("https://start.test/")), `the page now in front: ${r.text}`);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://start.test/"]);
+  assert.equal(b.current, 0);
+  assert.equal(h.lastState().power, "awake", "not switched off");
+  assert.deepEqual(b.trail.slice(-2), ["open 1", "close 2"], "the new tab was made first, so a tab was open all the while");
+  assert.equal(b.destroyed, 0);
+});
+
+test("a tab that cannot be made closes nothing and answers a sentence of ours", async () => {
+  // Whatever the browser threw: a sentence of the table (the browser is gone) or Electron's own text.
+  for (const thrown of [REFUSAL.browserGone, "Error invoking remote method: ERR_FAILED (-2) loading 'https://start.test/'"]) {
+    const h = make({ startPage: "https://start.test/" });
+    const b = await h.open(A, "https://a.test/only");
+    b.open = async () => { throw new Error(thrown); };
+    b.openTab = async () => { throw new Error(thrown); };
+    const r = await h.call(A, "computer_tab", { index: 0, close: true });
+    assert.deepEqual(r, { text: REFUSAL.startTab, isError: true }, thrown);
+    assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
+    assert.ok(!b.trail.some((t) => t.startsWith("close")));
+    assert.equal(h.lastState().power, "awake");
+  }
+});
+
+test("the tab just made is gone by the check: nothing is closed and the reply says the tab was closed", async () => {
+  // From behind (the person went back to the old tab and closed the new one: no stop) and in front (their × on it: a stop,
+  // whose sentence is the same). The start page's load failing after that changes nothing (it once made the reply untrue).
+  for (const front of [false, true]) {
+    const h = make({ startPage: "https://start.test/" });
+    const b = await h.open(A, "https://a.test/only");
+    b.loadFails = (u) => u === "https://start.test/";
+    h.svc.select("chat:a");
+    b.afterOpen = front ? () => h.svc.tab({ kind: "close", index: 1 }) : () => { b.pages.splice(1, 1); b.current = 0; };
+    const r = await h.call(A, "computer_tab", { index: 0, close: true });
+    assert.deepEqual(r, { text: REFUSAL.tabClosed, isError: true }, front ? "in front" : "behind");
+    assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"], "the old tab stays and the browser keeps a tab");
+    assert.equal(h.lastState().power, "awake");
+  }
+});
+
+test("another tab added in between is never the one undone", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.afterOpen = () => {
+    b.pages.splice(1, 1); b.current = 0;                               // the start tab is closed from behind,
+    b.pages.push({ url: "https://program.test/", openedBy: null });    // a program's page opens behind,
+    b.commit(0, "https://a.test/elsewhere");                           // and the old tab moves on
+  };
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true, r.text);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere", "https://program.test/"], "the program's tab is never taken for the start tab");
+  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
+});
+
+test("a Take over between the making and the close closes nothing", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.afterOpen = () => { h.svc.select("chat:a"); h.svc.takeOver(); };
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true, r.text);
+  assert.match(r.text, /^busy: /);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "https://start.test/"], "the start tab in front is left");
+  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
+});
+
+test("the turn ends between the making and the close: the same", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.afterOpen = () => h.svc.agentGone(A);
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true, r.text);
+  assert.match(r.text, /^busy: /);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "https://start.test/"]);
+  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
+});
+
+test("the person goes back to the old tab and navigates it: the start tab behind is closed again and the old tab stays", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.afterOpen = () => { b.current = 0; b.commit(0, "https://a.test/elsewhere"); };
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/elsewhere"]);
+});
+
+test("the start tab left by the agent's close of the last tab asks before the agent closes it", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.ok(!r.isError, r.text);
+  assert.equal(b.pages[0].own, undefined, "the start tab is not the agent's own: the person's to keep");
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal((await h.asked()).why, "closetab");
+  h.svc.answer((await h.asked()).id, "deny"); await p;
+});
+
+test("the call was not current to begin with: nothing is made", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.pages[0].openedBy = null; b.pages[0].own = false;
+  const made = b.trail.length;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  h.svc.select("chat:a");
+  h.svc.takeOver();                                                   // the person takes the wheel while the card is up
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true, r.text);
+  assert.deepEqual(b.trail.slice(made), [], "no start tab was made and nothing was closed");
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"]);
+});
+
+test("an allowed close does not close another tab with the same address", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/same");
+  await h.call(A, "computer_open", { url: "https://a.test/same", newTab: true });
+  b.pages[0].openedBy = null; b.pages[0].own = false;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  // While the card is up the person closes tab 0 and a new tab opens in the same place with the same address: the tab on
+  // the card is gone, so nothing is closed and the answer says so (a tab that is gone, not a page that changed).
+  b.pages[0] = { url: "https://a.test/same", openedBy: null };
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /^That tab is already closed\./);
+  assert.equal(b.pages.length, 2, "nothing was closed");
+  assert.ok(!b.trail.some((t) => t.startsWith("close")));
+  // And after an index shift the card still closes the tab it named.
+  b.pages[0].openedBy = null; b.pages[0].own = false;
+  const q = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask2 = await h.asked();
+  const named = b.pages[0];
+  b.pages.unshift({ url: "https://a.test/new", openedBy: "Alpha" });   // a tab inserted before it: its index is now 1
+  h.svc.answer(ask2.id, "once");
+  assert.match((await q).text, /^Closed the tab\./);
+  assert.ok(!b.pages.includes(named) && b.pages.length === 2, "the named tab went, not the one now at index 0");
+});
+
+test("an allowed close is for the exact page on the card: the same shown address after another commit closes nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = null; b.pages[0].own = false;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  b.commit(0);                                                       // the same tab, the same shown address, another document or a hidden part
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.equal(b.pages.length, 2, "nothing was closed");
+  assert.ok(!/already closed/.test(r.text), "the tab is there: it is not 'already closed'");
+});
+
+test("an allowed reload is bound to the entry on its card: a commit while the card was up sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  b.entryId = "e2";                                          // a new page committed
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.deepEqual([b.navs, b.reposts], [[], []], "no reload of the new page");
+});
+
+test("an allowed reload is bound to its tab: a different tab in the same place sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  // The card's tab is replaced by another at the same index: the page token and the active index are the same.
+  const token = b.pageToken();
+  b.pages[1] = { url: "https://a.test/two", openedBy: null };
+  assert.equal(b.pageToken(), token);
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.deepEqual(b.navs, []);
+});
+
+test("a Take over during the allowed move's history read sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  let release: () => void = () => {};
+  b.entryGate = new Promise<void>((r) => { release = r; });         // the run's own read
+  h.svc.answer(ask.id, "once");
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+  assert.equal(r.text, REFUSAL.busyUser("the user is driving"), "the call is told the user drives, not that the Reload ran");
+});
+
+test("a Stop during the allowed move's history read sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  let release: () => void = () => {};
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  h.svc.answer(ask.id, "once");
+  await flush();
+  h.svc.agentGone(A);                                                // the turn was stopped
+  release();
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+});
+
+test("a history read that DevTools or another debugger refuses reaches the agent in its own words, with no card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  for (const why of [REFUSAL.devToolsOpen, REFUSAL.otherDebugger, REFUSAL.tabGone]) {
+    b.entryError = new TwoWordings(why, "person's wording");
+    assert.deepEqual(await h.call(A, "computer_nav", { go: "back" }), { text: why, isError: true });
+  }
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, []);
+});
+
+test("a history that cannot be read is refused with no card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  b.entryId = null; b.methods.reload = "unknown"; b.methods.back = "unknown";
+  for (const go of ["reload", "back"] as const) {
+    const r = await h.call(A, "computer_nav", { go });
+    assert.equal(r.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`, go);
+    assert.equal(r.isError, true);
+  }
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, []);
+});
+
+test("a tab still waking reloads its kept address with no card, though it has no history entry to bind", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  // A woken tab has not committed: its entry has no id and its method is GET (the kept address loads by GET). Back and Forward
+  // from it are not known, so they are refused; only the reload goes.
+  b.entryId = null; b.methods.reload = "GET"; b.methods.back = "unknown"; b.canBack = true;
+  const r = await h.call(A, "computer_nav", { go: "reload" });
+  assert.equal(r.text, `Reloaded.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["reload 1"]);
+  assert.equal(h.broker.pending().length, 0, "no card");
+  const back = await h.call(A, "computer_nav", { go: "back" });
+  assert.equal(back.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["reload 1"], "Back did not go");
+});
+
+test("a failed read at the run sends nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.methods.reload = "other";
+  const p = h.call(A, "computer_nav", { go: "reload" });
+  const ask = await h.asked();
+  b.entryId = null;                                                  // the run's read fails
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.deepEqual(r, { text: REFUSAL.noHistoryRead, isError: true });
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+});
+
+test("Deny on the close card closes nothing and says so; a card that times out closes nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = null; b.pages[0].own = false;                              // the person's tab
+  const denied = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.equal(ask.why, "closetab");
+  h.svc.answer(ask.id, "deny");
+  const r = await denied;
+  assert.equal(r.isError, true);
+  assert.match(r.text, /^The user denied it \(Close a tab it did not open: /, "the reply says the user said no");
+  assert.equal(b.pages.length, 2, "Deny closed nothing");
+  // No answer in time: the held call returns within the 45 s, and the result it waits on says it was denied for want of an answer.
+  h.cfg.askTimeoutSec = 60;
+  const late = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask2 = await h.asked();
+  await h.clock.advance(46_000);
+  assert.equal((await late).text, `waiting_for_user: call computer_wait with askId "${ask2.id}"`);
+  const w = h.call(A, "computer_wait", { askId: ask2.id });
+  await h.clock.advance(20_000);
+  const t = await w;
+  assert.equal(t.isError, true);
+  assert.match(t.text, /^The user did not answer in time, so it was denied \(Close a tab it did not open: /);
+  assert.equal(b.pages.length, 2, "a card that timed out closed nothing");
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("the person navigates the tab while the close card is up: Allow closes nothing", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = null; b.pages[0].own = false;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  b.commit(0, "https://a.test/somewhere-else");                       // same tab, another page
+  h.svc.answer(ask.id, "once");
+  const r = await p;
+  assert.equal(r.isError, true);
+  assert.match(r.text, new RegExp(`^${esc(REFUSAL.changed)}`));
+  assert.equal(b.pages.length, 2);
+});
+
+test("the Back card names where the move goes by its origin only, and the Reload card keeps the current page", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true; b.methods.back = "other"; b.methods.reload = "other";
+  b.entryUrls.back = "https://prev.test/checkout/step?card=4111&token=SECRET";
+  const p = h.call(A, "computer_nav", { go: "back" });
+  const ask = await h.asked();
+  assert.equal(ask.title, "Load a page again, which may send a form again: Go back to prev.test on a.test?");
+  assert.match(ask.detail, /^Going back loads https:\/\/prev\.test\/.*, which may send a form again\. Page: https:\/\/a\.test\/two$/);
+  for (const bit of ["checkout", "4111", "SECRET"]) assert.ok(!ask.detail.includes(bit) && !ask.title.includes(bit) && !ask.notice.includes(bit), bit);
+  h.svc.answer(ask.id, "deny"); await p;
+  const q = h.call(A, "computer_nav", { go: "reload" });
+  const ask2 = await h.asked();
+  assert.equal(ask2.title, "Load a page again, which may send a form again: Reload on a.test?");
+  assert.match(ask2.detail, /^Loading this page again may send a form again\. Page: /);
+  h.svc.answer(ask2.id, "deny"); await q;
+});
+
+test("the Back and Forward card says the way only when the destination is not a web address, and never says 'this page'", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true; b.canForward = true;
+  for (const [go, url] of [["back", "chrome-error://chromewebdata/"], ["forward", undefined]] as const) {
+    b.methods[go] = "other";
+    if (url) b.entryUrls[go] = url;
+    const p = h.call(A, "computer_nav", { go });
+    const ask = await h.asked();
+    assert.equal(ask.title, `Load a page again, which may send a form again: Go ${go} one page on a.test?`, go);
+    assert.equal(ask.detail, `Going ${go} one page may send a form again. Page: https://a.test/two`, go);
+    for (const bit of ["this page", "•", "chromewebdata"]) assert.ok(!ask.detail.includes(bit) && !ask.title.includes(bit), `${go}: ${bit}`);
+    h.svc.answer(ask.id, "deny"); await p;
+  }
+});
+
+test("the closetab card says what is known of the tab and not who opened it", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.pages[0].openedBy = "A program"; b.pages[0].own = false;
+  const p = h.call(A, "computer_tab", { index: 0, close: true });
+  const ask = await h.asked();
+  assert.ok(!/opened by|by you/i.test(ask.detail), ask.detail);
+  assert.match(ask.detail, /Page: https:\/\/a\.test\/one$/);
+  h.svc.answer(ask.id, "deny"); await p;
+});
+
+test("a nav whose page moved during the history read answers the changed sentence, not the focus one", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true;
+  let release: () => void = () => {};
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_nav", { go: "back" });
+  await flush();
+  b.seq++;
+  release();
+  const r = await p;
+  assert.equal(r.text, `${REFUSAL.changed} ${page("https://a.test/two")}`);
+  assert.deepEqual(b.navs, []);
+});
+
+test("the browser is told whether this session's agent holds the wheel, for a popup it makes", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  const hooks = b.hooks as BrowserHooks & { agentDrives(): boolean };
+  assert.equal(hooks.agentDrives(), true, "the agent's own call holds the wheel");
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  assert.equal(hooks.agentDrives(), false, "the person holds it");
+  // Nobody holds it between turns.
+  const g = make();
+  const gb = await twoTabs(g);
+  g.svc.agentGone(A);
+  assert.equal(g.wheel.holder("chat:a"), null);
+  assert.equal((gb.hooks as BrowserHooks & { agentDrives(): boolean }).agentDrives(), false, "nobody holds it: the turn ended");
 });

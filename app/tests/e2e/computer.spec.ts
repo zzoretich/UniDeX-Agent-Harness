@@ -50,6 +50,8 @@ async function startSite(): Promise<Site> {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(fs.readFileSync(path.join(dir, `${page}.html`)));
       } else if (url === "/continue" && req.method === "POST") {
         res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+      } else if (url === "/order" && req.method === "POST") {
+        res.writeHead(200, html).end("<!doctype html><title>Ordered</title><p>Ordered</p>");
       } else if (url === "/to-data") {
         res.writeHead(302, { location: "data:text/html,<p>Landed on a data page</p>" }).end();
       } else if (url === "/download/tides.csv") {
@@ -145,6 +147,12 @@ function refOf(snapshot: string, role: string, name: string): string {
 
 /** A page's address as a reply carries it: inside the untrusted wrapper, after its origin (agent-computer D21, R69). */
 const wrapped = (url: string): string => `<untrusted-page origin="${new URL(url).origin}">${url}</untrusted-page>`;
+
+/** An acting tool's reply (session-browser S16): its one line, then the page's outline as it is now, whose wrapper names the page. */
+const acted = (line: string, url: string): RegExp => {
+  const re = (x: string): string => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${re(line)}\\n\\nPage now:\\n<untrusted-page origin="${re(new URL(url).origin)}" url="${re(escHtml(url))}">`);
+};
 
 /** Holds a reply to `want`: a refusal or not, and its text when given; the failure shows the whole reply. */
 function expectReply(r: AgentReply, want: { isError: boolean; text?: string | RegExp }): void {
@@ -284,7 +292,7 @@ test.describe("both hosts, the Computer surface on", () => {
       expectReply(status, { isError: false });
       expect(status.text).toMatch(/^Browser: \S/m);
       expect(status.text).toContain("Access: this session can act");
-      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: `Opened the page. Page: ${wrapped(shopUrl())}` });
+      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: acted(`Opened the page.`, shopUrl()) });
       const p = pane(win, "chat");
       await expect(p.locator(".aos-cp-place")).not.toHaveText("");
       await expect(p.locator(".aos-cp-tab.is-active")).toContainText("Harbour shop");
@@ -300,7 +308,7 @@ test.describe("both hosts, the Computer surface on", () => {
       await expect(trust).toHaveText(`Asks first on ${shopHost()}`);
       await trust.click();
       await expect(trust).toHaveText(`Acts freely on ${shopHost()}`);
-      expectReply(await a.call("computer_click", { ref: add }), { isError: false, text: `Clicked ${add}. Page: ${wrapped(shopUrl())}` });
+      expectReply(await a.call("computer_click", { ref: add }), { isError: false, text: acted(`Clicked ${add}.`, shopUrl()) });
       await expect(cards(p)).toHaveCount(0);
       expect((await a.call("computer_snapshot")).text).toContain("Basket: 1 item");
       await trust.click();
@@ -333,7 +341,7 @@ test.describe("both hosts, the Computer surface on", () => {
       await expect(p.locator(".aos-cp-url")).toHaveValue(repoUrl());
       await expect(p.locator(".aos-cp-trust")).toHaveText(`Acts freely on ${markedHost()}`);
       const details = refOf((await a.call("computer_snapshot")).text, "button", "Show details");
-      expectReply(await a.call("computer_click", { ref: details }), { isError: false, text: `Clicked ${details}. Page: ${wrapped(repoUrl())}` });
+      expectReply(await a.call("computer_click", { ref: details }), { isError: false, text: acted(`Clicked ${details}.`, repoUrl()) });
       await expect(cards(p)).toHaveCount(0);
       expect((await a.call("computer_snapshot")).text).toContain("Details shown");
       // D35: a terminal has no transcript, so the pane's activity log keeps the lines.
@@ -411,7 +419,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const snap = (await a.call("computer_snapshot")).text;
       expect(snap).toContain(`Results for ${words}`);
       expect(snap).toContain(`link "${result}"`);
-      expectReply(await a.call("computer_open", { url: result }), { isError: false, text: `Opened the page. Page: ${wrapped(result)}` });
+      expectReply(await a.call("computer_open", { url: result }), { isError: false, text: acted(`Opened the page.`, result) });
       await expect(cards(p)).toHaveCount(0);
       await expect(p.locator(".aos-cp-url")).toHaveValue(result);
       // The tab goes, so the Vault's computer is as the tests before left it.
@@ -472,12 +480,12 @@ test.describe("both hosts, the Computer surface on", () => {
       await expect(p.locator(".aos-cp-count")).toHaveText("1");
       await first.card.locator('[data-answer="deny"]').click();
       // I1: the agent's reply names the ask in app-written words; the page's name for the button stays on the card.
-      expectReply(await first.reply, { isError: true, text: `The user denied: Act on a site you haven't marked: Click on ${shopHost()}.` });
+      expectReply(await first.reply, { isError: true, text: `The user denied it (Act on a site you haven't marked: Click on ${shopHost()}): go on without it unless the user asks for it.` });
       await expect(cards(p)).toHaveCount(0);
       expect((await a.call("computer_snapshot")).text).toContain("Basket: empty");
       const second = await asked(p, a.call("computer_click", { ref: add }), title);
       await second.card.locator('[data-answer="once"]').click();
-      expectReply(await second.reply, { isError: false, text: `Clicked ${add}. Page: ${wrapped(shopUrl())}` });
+      expectReply(await second.reply, { isError: false, text: acted(`Clicked ${add}.`, shopUrl()) });
       expect((await a.call("computer_snapshot")).text).toContain("Basket: 1 item");
       // The thread shows the computer's lines as they happen (D6, D35): the open, the asks and answers, the click.
       const lines = reader(win).locator(".aos-ss-computer .aos-ss-computertext");
@@ -522,9 +530,9 @@ test.describe("both hosts, the Computer surface on", () => {
     try {
       const p = pane(win, "chat");
       expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
-      expectReply(await a.call("computer_scroll", { dy: 900 }), { isError: false, text: `Scrolled by (0, 900). Page: ${wrapped(shopUrl())}` });
+      expectReply(await a.call("computer_scroll", { dy: 900 }), { isError: false, text: acted(`Scrolled by (0, 900).`, shopUrl()) });
       await expect.poll(() => inPage<number>(electron, shopUrl(), "window.scrollY")).toBeGreaterThan(0);
-      expectReply(await a.call("computer_key", { key: "Tab" }), { isError: false, text: `Pressed Tab. Page: ${wrapped(shopUrl())}` });
+      expectReply(await a.call("computer_key", { key: "Tab" }), { isError: false, text: acted(`Pressed Tab.`, shopUrl()) });
       await expect(cards(p)).toHaveCount(0);
       expect(await inPage<string>(electron, shopUrl(), "document.activeElement.id")).toBe("add");
       const title = `Act on a site you haven't marked: Press Space with “Add to basket” focused on ${shopHost()}?`;
@@ -551,7 +559,7 @@ test.describe("both hosts, the Computer surface on", () => {
       expect(await inPage<string>(electron, shopUrl(), 'document.getElementById("search").value')).toBe("");
       const second = await asked(p, a.call("computer_type", { text: "rope", ref: search }), title);
       await second.card.locator('[data-answer="once"]').click();
-      expectReply(await second.reply, { isError: false, text: `Typed 4 characters. Page: ${wrapped(shopUrl())}` });
+      expectReply(await second.reply, { isError: false, text: acted(`Typed 4 characters.`, shopUrl()) });
       expect(await inPage<string>(electron, shopUrl(), 'document.getElementById("search").value')).toBe("rope");
     } finally { await a.finish(); }
     expectNoErrors(h);
@@ -632,7 +640,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const p = pane(win, "chat");
       const space = await asked(p, a.call("computer_key", { key: "Space" }), `Delete: Press Space with “Close (Delete repository)” focused on ${markedHost()}?`);
       await space.card.locator('[data-answer="deny"]').click();
-      expectReply(await space.reply, { isError: true, text: `The user denied: Delete: Press Space on ${markedHost()}.` });
+      expectReply(await space.reply, { isError: true, text: `The user denied it (Delete: Press Space on ${markedHost()}): go on without it unless the user asks for it.` });
       expect((await a.call("computer_snapshot")).text).not.toContain("Repository deleted");
     } finally { await a.finish(); }
     expectNoErrors(h);
@@ -675,7 +683,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const p = pane(win, "chat");
       const ask = await asked(p, a.call("computer_click", { ref: search }), `Act on a site you haven't marked: Click “Search” on ${shopHost()}?`);
       await ask.card.locator('[data-answer="deny"]').click();
-      expectReply(await ask.reply, { isError: true, text: `The user denied: Act on a site you haven't marked: Click on ${shopHost()}.` });
+      expectReply(await ask.reply, { isError: true, text: `The user denied it (Act on a site you haven't marked: Click on ${shopHost()}): go on without it unless the user asks for it.` });
     } finally { await a.finish(); }
     expectNoErrors(h);
   });
@@ -718,7 +726,7 @@ test.describe("both hosts, the Computer surface on", () => {
       expectReply(await a.call("computer_open", { url: typing }), { isError: false });
       const log = refOf((await a.call("computer_snapshot")).text, "textbox", "Log entry");
       const r = await a.call("computer_type", { ref: log, text: "a".repeat(450) });
-      expectReply(r, { isError: true, text: /^Typing stopped part way because the page or tab changed: look again\. Page: / });
+      expectReply(r, { isError: true, text: /^Typing stopped part way because the page or tab changed: call computer_snapshot to see what was typed\. Page: / });
       await expect.poll(() => site.seen.some((x) => x.url === "/landed.html")).toBe(true);
       await expect.poll(async () => (await a.call("computer_snapshot")).text, { timeout: 10_000 }).toContain("Nothing typed here");
     } finally { await a.finish(); }
@@ -750,12 +758,12 @@ test.describe("both hosts, the Computer surface on", () => {
     const h = app();
     const a = await chatAgent(h, { text: "computer: schemes" });
     try {
-      expectReply(await a.call("computer_open", { url: "javascript:document.title='x'" }), { isError: true, text: "Only http and https pages open." });
-      expectReply(await a.call("computer_open", { url: "data:text/html,<p>A data page</p>" }), { isError: true, text: "Only http and https pages open." });
+      expectReply(await a.call("computer_open", { url: "javascript:document.title='x'" }), { isError: true, text: "Only http and https pages open: give an address that starts with http:// or https://." });
+      expectReply(await a.call("computer_open", { url: "data:text/html,<p>A data page</p>" }), { isError: true, text: "Only http and https pages open: give an address that starts with http:// or https://." });
       const errors = h.errors.length;
       const redirect = await a.call("computer_open", { url: `http://shop.test:${site.port}/to-data` });
       expectReply(redirect, { isError: true });
-      expect(redirect.text).toMatch(/^The page redirected to a .+ URL, which is refused\.$/);
+      expect(redirect.text).toMatch(/^The page redirected to a .+ URL, which this browser refuses: open another page, or ask the user to finish this one in their own browser\.$/);
       expect(site.seen.some((s) => s.url === "/to-data")).toBe(true);
       const snap = await a.call("computer_snapshot");
       expect(snap.text).not.toContain("Landed on a data page");
@@ -794,7 +802,7 @@ test.describe("both hosts, the Computer surface on", () => {
       };
       await check("as loaded");
       const snap = (await a.call("computer_snapshot")).text;
-      expectReply(await a.call("computer_type", { text: "guess", ref: refOf(snap, "textbox", "Password") }), { isError: true, text: "Typing into a password field is refused (D9)." });
+      expectReply(await a.call("computer_type", { text: "guess", ref: refOf(snap, "textbox", "Password") }), { isError: true, text: "Typing into a password field is refused: ask the user to type it themselves." });
       // Show password is an ordinary control on the marked site: it goes, and the field shows its text to the eye.
       expectReply(await a.call("computer_click", { ref: refOf(snap, "button", "Show password") }), { isError: false });
       expect(await inPage<string>(electron, loginUrl(), 'document.getElementById("pw").type')).toBe("text");
@@ -820,7 +828,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const snap = await a.call("computer_snapshot");
       expectReply(snap, { isError: false });
       expect((await a.call("computer_screenshot")).image).toBeTruthy();
-      const refused = { isError: true, text: "Read only: this session can look but not act (D17)." };
+      const refused = { isError: true, text: "This session is read only, so it can look but not act: ask the user for more access if the task needs it." };
       expectReply(await a.call("computer_click", { ref: refOf(snap.text, "button", "Add to basket") }), refused);
       expectReply(await a.call("computer_open", { url: shopUrl() }), refused);
       expectReply(await a.call("computer_type", { text: "rope" }), refused);
@@ -950,7 +958,7 @@ test.describe("both hosts, the Computer surface on", () => {
       await take.click();
       const { first, then } = await chain;
       const tookAt = await win.evaluate(() => (window as unknown as { __tookAt: number }).__tookAt);
-      expectReply(first, { isError: true, text: `Cancelled because the user took over: Act on a site you haven't marked: Click on ${shopHost()}.` });
+      expectReply(first, { isError: true, text: `Cancelled because the user took over (Act on a site you haven't marked: Click on ${shopHost()}): call computer_status before you try it again.` });
       expectReply(then, { isError: true, text: "busy: the user is driving: wait for Hand back." });
       const ms = then.at - tookAt;
       console.log(`Take over: the next action was refused ${ms} ms after the click`);
@@ -979,7 +987,7 @@ test.describe("both hosts, the Computer surface on", () => {
     const a = await chatAgent(h, { text: "computer: outsiders" });
     try {
       expectReply(await a.call("computer_status"), { isError: false });
-      expectReply(await a.call("computer_status", {}, "second"), { isError: true, text: "This session's computer connection is already open." });
+      expectReply(await a.call("computer_status", {}, "second"), { isError: true, text: "This process's browser tools are not connected because this session already has a computer connection: go on without the browser tools in this process, and tell the user." });
       expectReply(await a.call("computer_status", {}, "grandchild"), { isError: true, text: NOT_STARTED });
       expectReply(await a.call("computer_status"), { isError: false });
     } finally { await a.finish(); }
@@ -1221,7 +1229,7 @@ test.describe("session browser: one per session, off until the user turns it on 
       if (await strip.count()) await strip.click();
       else await p.locator('button.aos-cp-power[role="switch"]').click();
       await expect(p.locator('button.aos-cp-power[role="switch"]')).toHaveText("On");
-      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: `Opened the page. Page: ${wrapped(shopUrl())}` });
+      expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: acted(`Opened the page.`, shopUrl()) });
       await expect(cards(p)).toHaveCount(0);
     } finally { await a.finish(); }
     expectNoErrors(h);
@@ -1343,6 +1351,157 @@ test.describe("session browser: one per session, off until the user turns it on 
       expect(await inPage<string>(h.app, url, "document.body.innerText", keyB)).toContain("Loads: 1");
       expect(loads(), "the page was loaded once: the hand-over does not reload it").toBe(1);
     } finally { await a.finish(); await b.finish(); }
+    expectNoErrors(h);
+  });
+});
+
+// ── the four tools of the thirteen: computer_tab, computer_nav, computer_hover, computer_console, and a double click ───
+
+test.describe("session browser: tab, nav, hover and console, on both hosts (session-browser S16, S17)", () => {
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
+  test.afterAll(async () => { await site?.close(); });
+  const app = useApp({
+    env,
+    prepare: () => { prepare({ claude: true, codex: true }); markSite(`http://marked.test:${site.port}`); },
+  });
+  const toolsUrl = () => `http://marked.test:${site.port}/tools.html`;
+  const orderUrl = () => `http://marked.test:${site.port}/order.html`;
+  const tabLines = (r: { text: string }) => r.text.split("\n").filter((l) => /^ {2}\[\d+\]/.test(l)).join("\n");
+  /** The index a status line gives the tab at `host`: `  [1] …`. */
+  const tabIndexOf = (lines: string, host: string): number => {
+    const m = lines.split("\n").map((l) => /^ {2}\[(\d+)\]/.exec(l)).find((x, i) => x && lines.split("\n")[i].includes(host));
+    if (!m) throw new Error(`no tab at ${host} in:\n${lines}`);
+    return Number(m[1]);
+  };
+  const hits = (urlPath: string, method = "GET"): number => site.seen.filter((x) => x.method === method && x.url === urlPath).length;
+
+  test("computer_tab, computer_nav, computer_hover and computer_console work through the bridge", async () => {
+    const h = app();
+    const { win } = h;
+    for (const host of ["claude", "codex"] as const) {
+      const a = await chatAgent(h, { host, text: `computer: four tools on ${host}` });
+      try {
+        const p = pane(win, "chat");
+        expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: acted("Opened the page.", shopUrl()) });
+        // A second tab, opened by the agent: switching to it and closing it ask nothing.
+        expectReply(await a.call("computer_open", { url: toolsUrl(), newTab: true }), { isError: false, text: acted("Opened the page.", toolsUrl()) });
+        const tabs = tabLines(await a.call("computer_status"));
+        expect(tabs).toContain(shopHost());
+        expect(tabs).toContain(markedHost());
+        // Switching away and back: the reply is the page the tab shows.
+        const second = tabIndexOf(tabs, markedHost());
+        const firstTab = tabIndexOf(tabs, shopHost());
+        expectReply(await a.call("computer_tab", { index: firstTab }), { isError: false, text: acted(`Switched to tab ${firstTab}.`, shopUrl()) });
+        const onTools = await a.call("computer_tab", { index: second });
+        expectReply(onTools, { isError: false, text: acted(`Switched to tab ${second}.`, toolsUrl()) });
+        await expect(cards(p)).toHaveCount(0);
+        // The console: what the page wrote when it loaded, as page text.
+        const log = await a.call("computer_console");
+        expectReply(log, { isError: false });
+        expect(log.text).toContain("<untrusted-page");
+        expect(log.text).toContain("fixture console error");
+        expect(log.text).toContain("fixture console warning");
+        // Hover moves the pointer only: the page shows what its hover handler shows, and a double click is two clicks.
+        // The refs come from the REPLY of the call before (the switch's, then the hover's), never from a snapshot: an action's
+        // reply ends with the page, so the next call can use what it names (session-browser S16).
+        expect(onTools.text).toContain("Menu closed");
+        const menu = refOf(onTools.text, "button", "Menu");
+        const hovered = await a.call("computer_hover", { ref: menu });
+        expectReply(hovered, { isError: false, text: acted(`Hovered ${menu}.`, toolsUrl()) });
+        // The page itself is read (not a snapshot, which would give the refs again): the hover handler ran, and the pointer
+        // did not click, so Menu's click counter is still at zero.
+        await expect.poll(() => inPage<string>(h.app, toolsUrl(), `document.getElementById("menu-state").textContent`), { message: "the hover handler ran" }).toBe("Menu open");
+        expect(await inPage<string>(h.app, toolsUrl(), `document.getElementById("menu-clicks").textContent`), "a hover is not a click").toBe("Menu clicks: 0");
+        const count = refOf(hovered.text, "button", "Count");
+        expectReply(await a.call("computer_click", { ref: count, double: true }), { isError: false, text: acted(`Double-clicked ${count}.`, toolsUrl()) });
+        await expect.poll(async () => (await a.call("computer_snapshot")).text, { message: "the double click ran" }).toContain("Double: yes");
+        // Back, Forward and Reload of a page loaded by GET go without asking.
+        expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false });
+        expectReply(await a.call("computer_nav", { go: "back" }), { isError: false, text: acted("Went back.", toolsUrl()) });
+        expectReply(await a.call("computer_nav", { go: "forward" }), { isError: false, text: acted("Went forward.", shopUrl()) });
+        const before = hits("/shop.html");
+        expectReply(await a.call("computer_nav", { go: "reload" }), { isError: false, text: acted("Reloaded.", shopUrl()) });
+        expect(hits("/shop.html")).toBeGreaterThan(before);
+        await expect(cards(p)).toHaveCount(0);
+        // Closing the tab the agent opened (the second) asks nothing.
+        expectReply(await a.call("computer_tab", { index: second, close: true }), { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
+        await expect(cards(p)).toHaveCount(0);
+        // The first tab is the one the switch opened for the person (the agent only navigated it): closing it asks, and as the last tab it leaves the browser on.
+        const held = await asked(p, a.call("computer_tab", { index: 0, close: true }), /^Close a tab it did not open: /);
+        await held.card.locator('[data-answer="once"]').click();
+        expectReply(await held.reply, { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
+        const after = await a.call("computer_status");
+        expectReply(after, { isError: false });
+        expect(after.text).not.toMatch(/off: computer_open asks/);
+        await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "the start page replaced it" }).toContain(searchHost());
+        // (b) The start tab that close left is not the agent's own (S5 leaves it to the person): closing it asks, and Deny keeps it.
+        const startTab = await asked(p, a.call("computer_tab", { index: 0, close: true }), /^Close a tab it did not open: /);
+        await startTab.card.locator('[data-answer="deny"]').click();
+        expectReply(await startTab.reply, { isError: true, text: /^The user denied it/ });
+        expect(tabLines(await a.call("computer_status")), "Deny closed nothing: the start tab is still there").toContain(searchHost());
+        // (a) A tab the agent opens as a NEW tab is its own. With the start tab (the person's) closed on Allow, it is the last tab:
+        // the agent's close of it asks nothing, and the browser stays on with one new tab at the start page.
+        expectReply(await a.call("computer_open", { url: toolsUrl(), newTab: true }), { isError: false, text: acted("Opened the page.", toolsUrl()) });
+        const both = tabLines(await a.call("computer_status"));
+        expect(both).toContain(searchHost());
+        expect(both).toContain(markedHost());
+        const closeStart = await asked(p, a.call("computer_tab", { index: tabIndexOf(both, searchHost()), close: true }), /^Close a tab it did not open: /);
+        await closeStart.card.locator('[data-answer="once"]').click();
+        expectReply(await closeStart.reply, { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
+        const onlyOwn = tabLines(await a.call("computer_status"));
+        expect(onlyOwn, "the agent's own tab is the only one").toContain(markedHost());
+        expect(onlyOwn.split("\n")).toHaveLength(1);
+        const closedLast = await a.call("computer_tab", { index: 0, close: true });
+        expectReply(closedLast, { isError: false, text: /^Closed the tab\.\n\nPage now:/ });
+        await expect(cards(p)).toHaveCount(0);
+        // What differs across the close: the page that was closed is gone from the one tab's line, and the start page is in front.
+        await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "one new tab at the start page" }).toContain(searchHost());
+        const after2 = tabLines(await a.call("computer_status"));
+        expect(after2).not.toContain(markedHost());
+        expect(after2.split("\n")).toHaveLength(1);
+        const last = await a.call("computer_status");
+        expectReply(last, { isError: false });
+        expect(last.text).not.toMatch(/off: computer_open asks/);
+      } finally { await a.finish(); }
+    }
+    expectNoErrors(h);
+  });
+
+  test("a reload after a form POST asks and a reload of a GET page does not", async () => {
+    const h = app();
+    const { win } = h;
+    for (const host of ["claude", "codex"] as const) {
+      const a = await chatAgent(h, { host, text: `computer: reload asks after a post on ${host}` });
+      try {
+        const p = pane(win, "chat");
+        const posts = () => hits("/order", "POST");
+        expectReply(await a.call("computer_open", { url: orderUrl() }), { isError: false, text: acted("Opened the page.", orderUrl()) });
+        // A page loaded by GET: Reload loads it again with no card.
+        const before = hits("/order.html");
+        expectReply(await a.call("computer_nav", { go: "reload" }), { isError: false, text: acted("Reloaded.", orderUrl()) });
+        expect(hits("/order.html")).toBeGreaterThan(before);
+        await expect(cards(p)).toHaveCount(0);
+        // The form posts (the spec submits it in the page, as the person would); the page that loads is the answer to a POST.
+        const sent = posts();
+        await inPage<void>(h.app, orderUrl(), `document.getElementById("place").click()`);
+        await expect.poll(posts, { message: "the form posted" }).toBe(sent + 1);
+        const resultUrl = `http://marked.test:${site.port}/order`;
+        await expect.poll(() => inPage<string>(h.app, resultUrl, "document.title"), { message: "the answer loaded" }).toBe("Ordered");
+        // Reload now would send the form again: it asks, and Deny sends nothing.
+        const title = /^Load a page again, which may send a form again: Reload on /;
+        const denied = await asked(p, a.call("computer_nav", { go: "reload" }), title);
+        await denied.card.locator('[data-answer="deny"]').click();
+        expectReply(await denied.reply, { isError: true, text: /^The user denied it/ });
+        expect(posts()).toBe(sent + 1);
+        // Allow once sends it again.
+        const allowed = await asked(p, a.call("computer_nav", { go: "reload" }), title);
+        await allowed.card.locator('[data-answer="once"]').click();
+        expectReply(await allowed.reply, { isError: false, text: acted("Reloaded.", resultUrl) });
+        expect(posts()).toBe(sent + 2);
+        await expect(cards(p)).toHaveCount(0);
+      } finally { await a.finish(); }
+    }
     expectNoErrors(h);
   });
 });
@@ -1622,7 +1781,7 @@ test.describe("a Codex-only machine, the Computer surface on", () => {
       const held = await asked(p, a.call("computer_click", { ref: add }), title);
       await expect(badge(win, "chat")).toHaveText("1");
       await held.card.locator('[data-answer="once"]').click();
-      expectReply(await held.reply, { isError: false, text: `Clicked ${add}. Page: ${wrapped(shopUrl())}` });
+      expectReply(await held.reply, { isError: false, text: acted(`Clicked ${add}.`, shopUrl()) });
       await expect(badge(win, "chat")).toHaveText("");
     } finally { await a.finish(); }
     // Electron itself writes a warning when a page's load fails: here the start page a manual On opens, which nothing

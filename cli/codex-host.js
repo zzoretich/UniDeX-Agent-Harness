@@ -208,7 +208,7 @@ function registerMcp({ bin, run = defaultRun, launcher, config, io, cfg = null, 
 // ── the computer tools' approvals (agent-computer D33) ────────────────────────
 // The app's own ask gate is the computer tools' only gate, so a Workbench session must not meet a Codex refusal first:
 // Codex refuses a tool that is not read-only under approval_policy "never" (a Chat turn) unless the server's
-// `tools.<tool>.approval_mode` is "approve". The four look tools carry the read-only hint and need nothing.
+// `tools.<tool>.approval_mode` is "approve". The five look tools carry the read-only hint and need nothing.
 
 /** The computer tools that act: the runtime's COMPUTER_TOOLS less COMPUTER_LOOK (sdk/computer-tools.js). */
 function approvedComputerTools() {
