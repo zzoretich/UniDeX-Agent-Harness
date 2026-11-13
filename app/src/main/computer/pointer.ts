@@ -62,12 +62,15 @@ export interface PointerSurface {
   place(at: Point): void;
   show(on: boolean): void;
   ready(kind: PointerKind, tag: string): boolean;
+  /** Asks for the image to be made ready in the background (nothing awaited, a failure dropped). Never sets the view's image and
+   *  never shows: a warm must not change what a move is about to put on screen. */
+  prepare(kind: PointerKind, tag: string): void;
   /** True once the surface can show nothing more (disposed, or its window destroyed). */
   gone(): boolean;
 }
 
 type Win = "main" | "pop";
-interface OnScreen { window: Win; surface: PointerSurface; kind: "arrow" | "caret"; tag: string; at: Point }
+interface OnScreen { window: Win; surface: PointerSurface; kind: "arrow" | "caret"; tag: string; at: Point; to: Point; size: Size; within: Box }
 type Waited<T> = { ok: true; v: T } | { ok: false; r: boolean };
 
 export class Pointer {
@@ -166,7 +169,7 @@ export class Pointer {
     const path = travelPath(from, to, travelMs(from, to));
     surface.place(from);
     surface.show(true);
-    const on: OnScreen = { window: o.window, surface, kind: o.kind, tag, at: from };
+    const on: OnScreen = { window: o.window, surface, kind: o.kind, tag, at: from, to, size: r.v, within };
     this.on = on;
     this.settled = true;
     this.arm();
@@ -187,16 +190,27 @@ export class Pointer {
   }
 
   /** Makes the arrow and caret images for `name` ready in the background, so a session's first action finds them cached (a
-   *  cold first draw takes about 140 ms, DRAW_MAX_MS is 200). Nothing is shown or placed, nothing is awaited, a failure is
-   *  swallowed, and a missing or gone surface is a no-op. While a pointer is on screen it does nothing at all: a draw sets the
-   *  view's image, which would replace the one shown. */
+   *  cold first draw takes about 140 ms, DRAW_MAX_MS is 200). It only asks the surface to `prepare` them: nothing is placed,
+   *  shown or set on the view (a move's own image can be mid-draw), nothing is awaited, a failure is swallowed, and a missing
+   *  or gone surface is a no-op. */
   warm(o: { window: Win; name: string }): void {
     try {
       const surface = this.o.surface(o.window);
-      if (!surface || surface.gone() || this.on) return;
+      if (!surface || surface.gone()) return;
       const tag = tagText(o.name);
-      for (const kind of ["arrow", "caret"] as const) surface.draw(kind, tag).catch(() => {});
+      for (const kind of ["arrow", "caret"] as const) surface.prepare(kind, tag);
     } catch { /* a drawing that cannot start is not worth a failure */ }
+  }
+
+  /** The view's box changed. A pointer on screen stays (its timer untouched, the new box remembered) unless the box's origin
+   *  moved from the one its last move was made within, or its image (where it is, and where it is going) no longer lies inside
+   *  the new box: then it hides at once. */
+  keepWithin(box: Box): void {
+    const c = this.on;
+    if (!c) return;
+    const inside = (p: Point) => p.x >= box.x && p.y >= box.y && p.x + c.size.width <= box.x + box.width && p.y + c.size.height <= box.y + box.height;
+    if (box.x !== c.within.x || box.y !== c.within.y || !inside(c.at) || !inside(c.to)) { this.hide(); return; }
+    c.within = { ...box };
   }
 
   /** What is on screen now (the e2e suite reads it through main). */
@@ -434,6 +448,10 @@ export function imageSurface(o: {
       if (on) raise();
     },
     ready(kind, tag) { return o.has(kind, tag, scale(), dark()); },
+    prepare(kind, tag) {
+      if (gone()) return;
+      try { o.tag(kind, tag, scale(), dark()).catch(() => {}); } catch { /* the drawer is gone */ }
+    },
     gone,
     raise,
     dispose() {

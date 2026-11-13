@@ -800,7 +800,8 @@ export class ComputerBrowser {
     // makes (its `before`) and the move.
     if (onPoint && !(await onPoint(p))) throw new PageChanged();
     // `valid` (a hover's, whose move is the act): the pointer goes onto the point only while the call is current.
-    await this.hover(t, p, valid && (() => this.live(valid)));
+    // The move is for the tab and page this call read (`where`): a navigation or tab switch during the travel moves nothing.
+    await this.hover(t, p, valid && (() => this.live(valid, where)));
     const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
       if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error(REFUSAL.covered);
     });

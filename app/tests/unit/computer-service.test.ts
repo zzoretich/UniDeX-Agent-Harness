@@ -334,7 +334,7 @@ const made: string[] = [];
 const tmp = (prefix: string): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); made.push(d); return d; };
 afterEach(() => { for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
 
-function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined; held?: (session: string) => boolean; outside?: (url: string) => Promise<boolean>; pointer?: (clock: FakeClock) => Pick<Pointer, "moveTo" | "pulse" | "hide" | "warm"> } = {}) {
+function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined; held?: (session: string) => boolean; outside?: (url: string) => Promise<boolean>; pointer?: (clock: FakeClock) => Pick<Pointer, "moveTo" | "pulse" | "hide" | "warm" | "keepWithin"> } = {}) {
   const clock = new FakeClock();
   const sites = new SiteMarks(path.join(tmp("aos-service-"), "computer", "sites.json"));
   const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120, awake: 4 };
@@ -5796,7 +5796,7 @@ type Move = Parameters<Pointer["moveTo"]>[0];
  *  real one does). `trace` is the fake browser's `order`, so the order of the pointer's calls and the browser's is one list. */
 function fakePointer(clock: FakeClock, o: { ms?: number } = {}) {
   const f = {
-    moves: [] as Move[], pulses: 0, hides: 0, warms: [] as { window: string; name: string }[], trace: null as string[] | null, ms: o.ms ?? 0, stepMs: 16,
+    moves: [] as Move[], pulses: 0, hides: 0, warms: [] as { window: string; name: string }[], keeps: [] as Rect[], log: null as string[] | null, trace: null as string[] | null, ms: o.ms ?? 0, stepMs: 16,
     result: null as boolean | null, throws: false, after: null as (() => void) | null,
     async moveTo(m: Move): Promise<boolean> {
       f.moves.push(m); f.trace?.push("move");
@@ -5807,7 +5807,8 @@ function fakePointer(clock: FakeClock, o: { ms?: number } = {}) {
     },
     pulse() { f.pulses++; f.trace?.push("pulse"); },
     hide() { f.hides++; f.trace?.push("hide"); },
-    warm(w: { window: string; name: string }) { f.warms.push(w); },
+    warm(w: { window: string; name: string }) { f.warms.push(w); f.log?.push(`warm:${w.window}`); },
+    keepWithin(box: Rect) { f.keeps.push(box); },
   };
   return f;
 }
@@ -5997,10 +5998,12 @@ test("a move that answers false with the call still current is answered as a cha
   assert.equal(b.clicks.length, 0);
 });
 
-test("a travel cut by the call's deadline delivers nothing and answers the late reply", async () => {
+test("a travel cut by the call's deadline delivers nothing and answers the late reply", { timeout: 20_000 }, async () => {
   for (const [tool, args] of [["computer_click", { ref: "e1" }], ["computer_hover", { ref: "e1" }], ["computer_type", { ref: "e2", text: "hi" }]] as const) {
-    const { h, b, ptr } = await pointed({ ms: 250 });
-    ptr.stepMs = 46_000;   // one step of the travel takes the clock past the call's 45 s
+    // One step of 46 s: it ends the travel past the call's 45 s. Without the deadline check the travel is over and the action
+    // is delivered, so this fails on its assertion instead of waiting.
+    const { h, b, ptr } = await pointed({ ms: 16 });
+    ptr.stepMs = 46_000;
     const p = h.call(A, tool, args);
     await h.clock.advance(46_100);
     assert.equal((await p).text, REFUSAL.late, tool);
@@ -6048,7 +6051,7 @@ test("the pointer hides when the selected session changes, when the browser pops
   h.svc.show({ x: 0, y: 0, width: 800, height: 600 });
   assert.equal(ptr.hides, n, "the same box again hides nothing");
   h.svc.show({ x: 0, y: 0, width: 700, height: 600 });
-  moved("the box changed");
+  assert.equal(ptr.hides, n, "a changed box does not hide: the pointer is asked to keep within the new one");
   h.svc.show(null);
   moved("the pane left the view");
   h.svc.show({ x: 0, y: 0, width: 800, height: 600 });
@@ -6126,4 +6129,49 @@ test("a pointer that throws does not fail the click", async () => {
   assert.equal(b.clicks.length, 1);
   assert.ok(h.logs.some((l) => /pointer/i.test(l)), `logged: ${h.logs.join("|")}`);
   assert.ok(h.logs.every((l) => !l.includes("a.test")), "no address in main's log");
+});
+
+test("a view that only got shorter keeps a pointer that still fits: the pointer is asked, the service hides nothing", async () => {
+  const { h, ptr } = await pointed();
+  await h.call(A, "computer_click", { ref: "e1" });   // the pointer is drawn for chat:a
+  const n = ptr.hides;
+  h.svc.show({ x: 0, y: 0, width: 800, height: 500 });
+  assert.equal(ptr.hides, n, "not hidden");
+  assert.deepEqual(ptr.keeps, [{ x: 10, y: 20, width: 800, height: 600 }], "asked to keep within the view's own box (viewBox)");
+  // The same rectangle again asks nothing; a session the pointer was not drawn for asks nothing.
+  h.svc.show({ x: 0, y: 0, width: 800, height: 500 });
+  assert.equal(ptr.keeps.length, 1);
+});
+
+test("a view whose box changes before any pointer was drawn asks nothing", async () => {
+  const { h, ptr } = await pointed();
+  h.svc.show({ x: 0, y: 0, width: 800, height: 500 });
+  assert.deepEqual(ptr.keeps, []);
+});
+
+test("a pane change while popped out hides nothing", async () => {
+  const { h, ptr } = await pointed({ popped: true });
+  await h.call(A, "computer_click", { ref: "e1" });
+  const n = ptr.hides;
+  h.svc.show({ x: 0, y: 0, width: 640, height: 480 });
+  h.svc.show(null);
+  assert.equal(ptr.hides, n, "the pane's rectangle is not the pop-out view's box");
+  assert.deepEqual(ptr.keeps, []);
+});
+
+test("a first pop-out is warmed after its window exists, and nothing is warmed while quitting", async () => {
+  let ptr!: FakePointer;
+  const trace: string[] = [];
+  const h = make({ pointer: (c) => (ptr = fakePointer(c)), popOut: () => { trace.push("window"); }, label: (k) => (k === "chat:a" ? "Aye" : undefined) });
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  h.svc.show({ x: 0, y: 0, width: 800, height: 600 });
+  ptr.log = trace; ptr.warms.length = 0;
+  h.svc.popOut();
+  assert.deepEqual(trace, ["window", "warm:pop"], "the pop-out's window is made, then its pointer images are warmed");
+  const n = ptr.warms.length;
+  h.svc.flushForQuit();
+  h.svc.retitled("chat:a");
+  h.svc.describe("chat:a", { title: "Quit time" });
+  assert.equal(ptr.warms.length, n, "no warm while quitting");
 });

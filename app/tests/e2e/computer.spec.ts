@@ -1013,27 +1013,36 @@ test.describe("both hosts, the Computer surface on", () => {
       // The main window: the pointer is at the button with the session's name.
       await clickAndSee("main", async () => { const c = await centre(); const o = await viewOrigin(); return { x: o.x + c.x, y: o.y + c.y }; });
 
-      // Neither the screenshot (the tab's own capture) nor the outline holds it. Both are looks: the same after it has hidden
-      // itself, byte for byte for the picture. (A click made while a look is taken shows it again for 3 s.)
+      // Neither the screenshot (the tab's own capture) nor the outline holds it. Both are looks: the same as after it has hidden
+      // itself, byte for byte for the picture. The looks are taken with no click in flight (a live click can catch the button's
+      // pressed look): after a click's reply, while the pointer still shows; on a slow machine it may have gone, so up to three tries.
+      let shotShown: AgentReply | null = null;
+      let outlineShown = "";
+      for (let attempt = 0; attempt < 3 && !shotShown; attempt++) {
+        await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+        expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+        const shot = await a.call("computer_screenshot");
+        const outline = (await a.call("computer_snapshot")).text;
+        if ((await pointer()).shown) { shotShown = shot; outlineShown = outline; }
+      }
+      expect(shotShown, "the pointer was still shown while the agent looked").not.toBeNull();
+      expect(shotShown!.image).toBeTruthy();
+      expect(outlineShown).not.toMatch(/pointer/i);
       await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
       const quiet = await a.call("computer_screenshot");
       const quietOutline = (await a.call("computer_snapshot")).text;
-      const reply = a.call("computer_click", { ref: details });
-      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000, message: "the pointer shows" }).toBe(true);
-      const shotShown = await a.call("computer_screenshot");
-      const outlineShown = (await a.call("computer_snapshot")).text;
-      await reply;
-      expect(shotShown.image).toBeTruthy();
-      expect(outlineShown).not.toMatch(/pointer/i);
-      expect(shotShown.image, "the picture is the page, with no pointer in it").toBe(quiet.image);
+      expect(shotShown!.image, "the picture is the page, with no pointer in it").toBe(quiet.image);
       expect(outlineShown, "the outline is the page's, as without a pointer").toBe(quietOutline);
 
-      // Take over while it is shown hides it at once.
+      // Take over while it is shown hides it at once. The click is not awaited before the pointer is needed: its own outcome is
+      // either delivered before the Take over or refused by it.
       await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
-      expectReply(await a.call("computer_click", { ref: details }), { isError: false });
-      await expect.poll(async () => (await pointer()).shown, { timeout: 3_000 }).toBe(true);
+      const taken = a.call("computer_click", { ref: details });
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000, message: "the pointer shows" }).toBe(true);
       await p.locator(".aos-cp-drivebtn", { hasText: "Take over" }).click();
       await expect.poll(async () => (await pointer()).shown, { timeout: 1_000 }).toBe(false);
+      const outcome = await taken;
+      expect(outcome.text, "delivered before the Take over, or refused by it").toMatch(/^(Clicked |busy: the user is driving)/);
       await p.locator(".aos-cp-drivebtn", { hasText: "Hand back" }).click();
 
       // The pop-out window: the same, drawn in that window, whose view starts at its origin.
@@ -1043,10 +1052,11 @@ test.describe("both hosts, the Computer surface on", () => {
       await expect.poll(() => electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")).length)).toBe(1);
       await clickAndSee("pop", centre);
     } finally {
-      // Leaves no pop-out open: the browser goes back to the pane (as the pop-out test does), so a later test's own pop-out press is the first.
-      await electron.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")) w.close(); });
-      await expect(p).not.toHaveClass(/is-popped/);
-      await a.finish();
+      try {
+        // Leaves no pop-out open: the browser goes back to the pane (as the pop-out test does), so a later test's own pop-out press is the first.
+        await electron.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")) w.close(); });
+        await expect(p).not.toHaveClass(/is-popped/);
+      } finally { await a.finish(); }
     }
     expectNoErrors(h);
   });

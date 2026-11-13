@@ -42,7 +42,10 @@ class FakeSurface implements PointerSurface {
   /** What the view shows and whether it is visible, and every image set while it was visible (N1b). */
   visible = false; current: { kind: PointerKind; tag: string } | null = null; setWhileVisible: Array<[PointerKind, string]> = [];
   dead = false;
+  /** What `prepare` was asked for: it makes an image ready and touches neither the view nor its image. */
+  prepared: Array<[PointerKind, string]> = [];
   constructor(private clock: FakeClock) {}
+  prepare(kind: PointerKind, tag: string) { this.prepared.push([kind, tag]); }
   async draw(kind: PointerKind, tag: string) {
     this.log.push(`draw:${kind}`); this.drawn.push([kind, tag]);
     if (this.delay) await new Promise<void>((r) => this.clock.setTimeout(r, this.delay));
@@ -796,30 +799,88 @@ test("a render that never settles is cut at its limit: the draw rejects, the win
   d.dispose();
 });
 
-test("warm makes the images ready and shows nothing", async () => {
+test("warm sets no image and shows nothing", async () => {
   const { s, pointer } = make();
   pointer.warm({ window: "main", name: "Fix login" });
   await flush();
-  assert.deepEqual(s.drawn, [["arrow", "Fix login"], ["caret", "Fix login"]]);
+  assert.deepEqual(s.prepared, [["arrow", "Fix login"], ["caret", "Fix login"]]);
+  assert.deepEqual(s.drawn, [], "no draw: the view's image is never set");
   assert.deepEqual(s.log.filter((l) => l === "show" || l === "place"), [], "nothing placed or shown");
+  assert.equal(s.current, null);
   assert.equal(pointer.state().shown, false);
-  // A failing draw, a missing surface and a gone surface are no-ops that throw nothing.
-  s.fail = true;
-  pointer.warm({ window: "main", name: "Other" });
-  await flush();
+  // A missing surface and a gone surface are no-ops that throw nothing.
   s.dead = true;
   pointer.warm({ window: "main", name: "Gone" });
   make({ surface: false }).pointer.warm({ window: "pop", name: "None" });
-  await flush();
-  assert.deepEqual(s.drawn.map(([, t]) => t), ["Fix login", "Fix login", "Other", "Other"]);
+  assert.equal(s.prepared.length, 2);
 });
 
-test("warm leaves a pointer that is on screen alone", async () => {
+test("a warm during a move's draw does not change the image that lands", async () => {
   const { clock, s, pointer } = make();
-  void pointer.moveTo({ ...base, to: { x: 440, y: 300 }, alive: () => true });
-  await clock.advance(300);
-  s.drawn.length = 0;
-  pointer.warm({ window: "main", name: "Fix login" });
+  let release!: () => void;
+  s.gate = new Promise<void>((r) => { release = r; });
+  const moved = pointer.moveTo({ ...base, to: { x: 440, y: 300 }, alive: () => true });
   await flush();
-  assert.deepEqual(s.drawn, [], "no draw replaces the image of a shown pointer");
+  pointer.warm({ window: "main", name: "Other name" });
+  release(); s.gate = undefined;
+  await clock.advance(300);
+  assert.equal(await moved, true);
+  assert.deepEqual(s.drawn, [["arrow", "Fix login"]], "only the move drew");
+  assert.deepEqual(s.current, { kind: "arrow", tag: "Fix login" });
+});
+
+// ---- keepWithin: a view whose box changed
+
+async function shownAt(to = { x: 440, y: 300 }) {
+  const m = make();
+  const within = { x: 100, y: 50, width: 1000, height: 800 };
+  void m.pointer.moveTo({ ...base, within, to, alive: () => true });
+  await m.clock.advance(300);
+  assert.equal(m.pointer.state().shown, true);
+  return { ...m, within };
+}
+
+test("a view that only got shorter keeps a pointer that still fits", async () => {
+  const { clock, s, pointer, within } = await shownAt();
+  const hides = s.log.filter((l) => l === "hide").length;
+  pointer.keepWithin({ ...within, height: 500 });
+  assert.equal(pointer.state().shown, true);
+  assert.equal(s.log.filter((l) => l === "hide").length, hides, "not hidden");
+  // Its timer is untouched: it still hides 3 s after the move.
+  await clock.advance(HIDE_AFTER_MS);
+  assert.equal(pointer.state().shown, false);
+});
+
+test("a view that moved, or no longer holds the pointer, hides it", async () => {
+  const a = await shownAt();
+  a.pointer.keepWithin({ ...a.within, x: a.within.x + 5 });
+  assert.equal(a.pointer.state().shown, false, "its origin moved");
+  const b = await shownAt();
+  b.pointer.keepWithin({ ...b.within, height: 200 });   // the pointer's image reaches down to y 320, the box to 250
+  assert.equal(b.pointer.state().shown, false, "the image no longer lies inside");
+  const c = await shownAt();
+  c.pointer.keepWithin({ ...c.within, width: 300 });
+  assert.equal(c.pointer.state().shown, false, "the image no longer lies inside (width)");
+  // Nothing on screen: nothing to do.
+  const d = make();
+  assert.doesNotThrow(() => d.pointer.keepWithin(WITHIN));
+});
+
+
+test("imageSurface: prepare asks the drawer for the window's scale and theme and sets no image", async () => {
+  stub.ImageView = FakeView; stub.screen = { getDisplayMatching: () => ({ scaleFactor: 2 }) }; stub.nativeTheme = { shouldUseDarkColors: true };
+  const { win, children } = fakeWindow(); const asked: unknown[][] = [];
+  let fail = false;
+  const surface = imageSurface({ window: win as never, has: () => false, tag: async (...a) => { asked.push(a); if (fail) throw new Error("no"); return img(10, 10); } });
+  const view = FakeView.last!;
+  surface.prepare("arrow", "Fix");
+  await flush();
+  assert.deepEqual(asked, [["arrow", "Fix", 2, true]]);
+  assert.equal(view.image, undefined, "no image set");
+  assert.ok(!children.includes(view), "never shown");
+  fail = true;
+  assert.doesNotThrow(() => surface.prepare("caret", "Fix"));
+  await flush();
+  surface.dispose();
+  assert.doesNotThrow(() => surface.prepare("caret", "Fix"));
 });

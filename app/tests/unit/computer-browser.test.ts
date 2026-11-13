@@ -2768,3 +2768,13 @@ test("resolve's hook runs after the target is read and before the mouse moves, a
   await assert.rejects(b.resolve({ ref: "e3" }, "s1", () => held, async () => { held = false; return true; }), PageChanged);
   assert.deepEqual(page.mice(), [], "the hook's travel ended with the call no longer current: still no mouse");
 });
+
+test("a navigation during a hover's travel moves no mouse: the move is for the page it read", async () => {
+  const { b, page, tab } = scrolled(250);
+  await assert.rejects(b.resolve({ ref: "e3" }, "s1", () => true, async () => { tab.seq++; return true; }), PageChanged);
+  assert.deepEqual(page.mice(), [], "the page moved on: nothing sent");
+  // A tab switch is the same.
+  const other = scrolled(250);
+  await assert.rejects(other.b.resolve({ ref: "e3" }, "s1", () => true, async () => { (other.b as unknown as { current: number }).current = 1; return true; }), PageChanged);
+  assert.deepEqual(other.page.mice(), []);
+});

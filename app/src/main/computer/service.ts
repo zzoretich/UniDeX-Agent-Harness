@@ -86,7 +86,7 @@ export interface ServiceOptions {
   log?: (line: string) => void;
   /** The pointer main draws above the browser (session-browser S18): a click, a hover and typing travel it to the target before
    *  anything is delivered, and it hides at once at a Take over and a switch off. Absent: no pointer, no delay. */
-  pointer?: Pick<Pointer, "moveTo" | "pulse" | "hide" | "warm">;
+  pointer?: Pick<Pointer, "moveTo" | "pulse" | "hide" | "warm" | "keepWithin">;
   clock?: Clock;
 }
 
@@ -986,7 +986,7 @@ export class ComputerService {
    *  awake (a cold first draw would take longer than an action waits for one). */
   private warmPointer(): void {
     const key = this.selected;
-    if (!this.o.pointer || !key || !this.onScreen(key) || this.slots.get(key)?.power !== "awake") return;
+    if (!this.o.pointer || this.quitting || !key || !this.onScreen(key) || this.slots.get(key)?.power !== "awake") return;
     try { this.o.pointer.warm({ window: this.popped ? "pop" : "main", name: this.labelOf(key) }); } catch { /* nothing to warm */ }
   }
 
@@ -1422,10 +1422,18 @@ export class ComputerService {
     const before = this.bounds;
     this.bounds = bounds;
     this.inView = inView;
-    // The view moved or went: a pointer drawn at the old place could lie over the app's own controls.
-    if (!bounds || (before && (before.x !== bounds.x || before.y !== bounds.y || before.width !== bounds.width || before.height !== bounds.height))) this.hidePointer();
+    // The view went: its pointer goes. (Popped out, the pane's rectangle is not the view's box and says nothing about it.)
+    if (!bounds && !this.popped) this.hidePointer();
     if (bounds && !before) this.warmPointer();
     if (this.selected && !this.popped) this.slots.get(this.selected)?.browser?.show(bounds);
+    // The view's box changed (the pane's rectangle did, as each new activity line shrinks it): the pointer drawn for this session
+    // stays if it still lies inside the view's new box and the box's origin did not move; otherwise it hides at once.
+    const changed = !!before && !!bounds && (before.x !== bounds.x || before.y !== bounds.y || before.width !== bounds.width || before.height !== bounds.height);
+    if (changed && !this.popped && this.o.pointer && this.pointerFor !== null && this.pointerFor === this.selected) {
+      let box: Rect | null = null;
+      try { box = this.slots.get(this.selected)?.browser?.viewBox() ?? null; } catch { /* a browser that cannot say has no box */ }
+      if (box) { try { this.o.pointer.keepWithin(box); } catch { /* a pointer that fails shows nothing */ } } else this.hidePointer();
+    }
   }
 
   /** The session the pane has selected, or null. Only the e2e seam (`__aosMain.computerSelected`) calls it. */
@@ -1756,8 +1764,9 @@ export class ComputerService {
     this.browserOf(p);
     this.hidePointer();
     this.popped = true;
-    this.warmPointer();
     this.tellPopOut(true);
+    // After the app has made the pop-out's window: the warm asks that window's surface, which exists only now.
+    this.warmPointer();
     this.refresh(this.selected);
   }
 
