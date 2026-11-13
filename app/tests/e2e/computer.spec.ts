@@ -146,7 +146,7 @@ function refOf(snapshot: string, role: string, name: string): string {
 /** A page's address as a reply carries it: inside the untrusted wrapper, after its origin (agent-computer D21, R69). */
 const wrapped = (url: string): string => `<untrusted-page origin="${new URL(url).origin}">${url}</untrusted-page>`;
 
-/** An acting tool's reply (session-browser S8): its one line, then the page's outline as it is now, whose wrapper names the page. */
+/** An acting tool's reply (session-browser S16): its one line, then the page's outline as it is now, whose wrapper names the page. */
 const acted = (line: string, url: string): RegExp => {
   const re = (x: string): string => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`^${re(line)}\\n\\nPage now:\\n<untrusted-page origin="${re(new URL(url).origin)}" url="${re(escHtml(url))}">`);
@@ -478,7 +478,7 @@ test.describe("both hosts, the Computer surface on", () => {
       await expect(p.locator(".aos-cp-count")).toHaveText("1");
       await first.card.locator('[data-answer="deny"]').click();
       // I1: the agent's reply names the ask in app-written words; the page's name for the button stays on the card.
-      expectReply(await first.reply, { isError: true, text: `The user denied it (Act on a site you haven't marked: Click on ${shopHost()}): go on without it, or ask again if you still need it.` });
+      expectReply(await first.reply, { isError: true, text: `The user denied it (Act on a site you haven't marked: Click on ${shopHost()}): go on without it unless the user asks for it.` });
       await expect(cards(p)).toHaveCount(0);
       expect((await a.call("computer_snapshot")).text).toContain("Basket: empty");
       const second = await asked(p, a.call("computer_click", { ref: add }), title);
@@ -638,7 +638,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const p = pane(win, "chat");
       const space = await asked(p, a.call("computer_key", { key: "Space" }), `Delete: Press Space with “Close (Delete repository)” focused on ${markedHost()}?`);
       await space.card.locator('[data-answer="deny"]').click();
-      expectReply(await space.reply, { isError: true, text: `The user denied it (Delete: Press Space on ${markedHost()}): go on without it, or ask again if you still need it.` });
+      expectReply(await space.reply, { isError: true, text: `The user denied it (Delete: Press Space on ${markedHost()}): go on without it unless the user asks for it.` });
       expect((await a.call("computer_snapshot")).text).not.toContain("Repository deleted");
     } finally { await a.finish(); }
     expectNoErrors(h);
@@ -681,7 +681,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const p = pane(win, "chat");
       const ask = await asked(p, a.call("computer_click", { ref: search }), `Act on a site you haven't marked: Click “Search” on ${shopHost()}?`);
       await ask.card.locator('[data-answer="deny"]').click();
-      expectReply(await ask.reply, { isError: true, text: `The user denied it (Act on a site you haven't marked: Click on ${shopHost()}): go on without it, or ask again if you still need it.` });
+      expectReply(await ask.reply, { isError: true, text: `The user denied it (Act on a site you haven't marked: Click on ${shopHost()}): go on without it unless the user asks for it.` });
     } finally { await a.finish(); }
     expectNoErrors(h);
   });
@@ -826,7 +826,7 @@ test.describe("both hosts, the Computer surface on", () => {
       const snap = await a.call("computer_snapshot");
       expectReply(snap, { isError: false });
       expect((await a.call("computer_screenshot")).image).toBeTruthy();
-      const refused = { isError: true, text: "This session is read only: ask the user to give it more access." };
+      const refused = { isError: true, text: "This session is read only, so it can look but not act: ask the user for more access if the task needs it." };
       expectReply(await a.call("computer_click", { ref: refOf(snap.text, "button", "Add to basket") }), refused);
       expectReply(await a.call("computer_open", { url: shopUrl() }), refused);
       expectReply(await a.call("computer_type", { text: "rope" }), refused);
@@ -956,7 +956,7 @@ test.describe("both hosts, the Computer surface on", () => {
       await take.click();
       const { first, then } = await chain;
       const tookAt = await win.evaluate(() => (window as unknown as { __tookAt: number }).__tookAt);
-      expectReply(first, { isError: true, text: `Cancelled because the user took over (Act on a site you haven't marked: Click on ${shopHost()}): ask again if you still need it.` });
+      expectReply(first, { isError: true, text: `Cancelled because the user took over (Act on a site you haven't marked: Click on ${shopHost()}): call computer_status before you try it again.` });
       expectReply(then, { isError: true, text: "busy: the user is driving: wait for Hand back." });
       const ms = then.at - tookAt;
       console.log(`Take over: the next action was refused ${ms} ms after the click`);

@@ -4,6 +4,7 @@
 // `parseKey` (D39) and throws for anything it does not know, so no key the gate did not judge is delivered.
 
 import { parseKey } from "./gate";
+import { REFUSAL } from "./refusals";
 
 export const CDP_TIMEOUT_MS = 5_000;
 
@@ -13,12 +14,12 @@ export class CdpTimeout extends Error {}
 /** The tab or page an action was judged on is no longer the one in front (agent-computer D31, I3b): nothing more of the
  *  action is delivered. */
 export class PageChanged extends Error {
-  constructor(message = "The page changed: look again.") { super(message); }
+  constructor(message: string = REFUSAL.pageChanged) { super(message); }
 }
 
 /** The element a key or typing was judged on no longer has focus (R76): nothing of the action is delivered. */
 export class FocusMoved extends PageChanged {
-  constructor() { super("The focus moved: look again."); }
+  constructor() { super(REFUSAL.focusMoved); }
 }
 
 /** What `cdp()` needs from Electron's `webContents.debugger`. */
@@ -27,7 +28,7 @@ export interface CdpTarget { sendCommand(method: string, params?: object): Promi
 /** Sends one DevTools command, rejecting with `CdpTimeout` after `ms`. */
 export function cdp<T = unknown>(target: CdpTarget, method: string, params?: object, ms = CDP_TIMEOUT_MS): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new CdpTimeout(`The page did not answer ${method} within ${ms / 1000} s.`)), ms);
+    const timer = setTimeout(() => reject(new CdpTimeout(REFUSAL.pageSlow(`${method} within ${ms / 1000} s`))), ms);
     const fail = (e: unknown): void => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); };
     try {
       target.sendCommand(method, params).then((v) => { clearTimeout(timer); resolve(v as T); }, fail);
@@ -104,16 +105,16 @@ for (const [ch, code, vk, shifted] of [
  */
 export function keyEvents(key: string): KeyEvent[] {
   const { parts } = parseKey(key);
-  if (parts.some((p) => p === "")) throw new Error(`"${key}" is not a key: a part is empty.`);
+  if (parts.some((p) => p === "")) throw new Error(REFUSAL.emptyKeyPart(key));
   const main = parts[parts.length - 1];
   const held = parts.slice(0, -1).map((p) => {
     const m = MODIFIERS[p];
-    if (!m) throw new Error(`"${key}" is not a key: "${p}" is not a modifier (Shift, Control, Alt, Meta).`);
+    if (!m) throw new Error(REFUSAL.notModifier(p));
     return m;
   });
   const own = MODIFIERS[main];
   let def = own?.def ?? KEYS[main];
-  if (!def) throw new Error(`"${key}" is not a key this browser knows.`);
+  if (!def) throw new Error(REFUSAL.unknownKey(key));
   const events: KeyEvent[] = [];
   const ev = (type: KeyEvent["type"], d: KeyDef, modifiers: number, text?: string): void => {
     events.push({ type, key: d.key, code: d.code, windowsVirtualKeyCode: d.vk, modifiers, ...(text === undefined ? {} : { text }) });

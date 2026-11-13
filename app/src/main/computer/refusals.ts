@@ -1,4 +1,4 @@
-// Every sentence the computer service refuses an agent with (session-browser S8, Task 19), in one table so each can be read,
+// Every sentence the computer service refuses an agent with (session-browser S16, Task 19), in one table so each can be read,
 // reworded and tested in one place. Each is one sentence in the form `<what happened>: <what to do next>.`, with the
 // `computer_*` tool named where the next step is a call. An entry that needs one inserted value is a function of one string
 // (a reason the gate, the wheel or the ask broker gave). Where the page is worth naming, the service adds the page line
@@ -45,18 +45,48 @@ export const REFUSAL = {
   typingStopped: (why: string) => `Typing stopped part way because ${why}: call computer_snapshot to see what was typed.`,
 
   // The person's answer to an ask (the ask broker's outcomes).
-  denied: (what: string) => `The user denied it (${what}): go on without it, or ask again if you still need it.`,
-  timedOut: (what: string) => `The user did not answer in time, so it was denied (${what}): ask again if you still need it.`,
-  cancelled: (why: string) => `Cancelled because ${why}: ask again if you still need it.`,
-  askDenied: "The user denied it: go on without it, or ask again if you still need it.",
-  askDeniedBecause: (reason: string) => `Denied because ${reason}: ask again if you still need it.`,
-  noSuchAsk: (id: string) => `There is no ask "${id}": call the action again to ask afresh.`,
+  denied: (what: string) => `The user denied it (${what}): go on without it unless the user asks for it.`,
+  timedOut: (what: string) => `The user did not answer in time, so it was denied (${what}): go on without it, or try once more if the task cannot go on.`,
+  cancelled: (why: string) => `Cancelled because ${why}: call computer_status before you try it again.`,
+  askDenied: "The user denied it: go on without it unless the user asks for it.",
+  askDeniedBecause: (reason: string) => `Denied because ${reason}: call computer_status before you try it again.`,
+  noSuchAsk: (id: string) => `There is no ask "${id}": call computer_snapshot to see whether the action already ran.`,
   otherSessionsAsk: "That ask belongs to another session: wait only on an askId this session was given.",
 
   // The gate's verdicts (gate.ts).
-  readOnly: "This session is read only: ask the user to give it more access.",
+  readOnly: "This session is read only, so it can look but not act: ask the user for more access if the task needs it.",
   notWeb: "Only http and https pages open: give an address that starts with http:// or https://.",
   passwordField: "Typing into a password field is refused: ask the user to type it themselves.",
   otherSiteFrame: "Typing into a frame from another site is refused: ask the user to type it themselves.",
   unknownAction: "Unknown action: use one of the computer_* tools.",
+
+  // The browser's own errors (browser.ts, cdp.ts), which reach the agent as the reply of the call that met them.
+  pageChanged: "The page changed: look again.",
+  focusMoved: "The focus moved: look again.",
+  pageSlow: (what: string) => `The page did not answer in time (${what}): call computer_snapshot to see where it stands, then try again.`,
+  emptyKeyPart: (key: string) => `"${key}" is not a key: a part is empty, so give parts joined by +, such as Shift+Tab.`,
+  notModifier: (part: string) => `"${part}" is not a modifier: only Shift, Control, Alt and Meta go before the last part, as in Shift+Tab.`,
+  unknownKey: (key: string) => `"${key}" is not a key this browser knows: use a name such as Enter, Tab or ArrowDown.`,
+  redirectRefused: (what: string) => `The page redirected to ${what} URL, which is refused: open the address it should have gone to instead.`,
+  couldNotOpen: (what: string) => `Could not open ${what}: check the address, then try again or open another page.`,
+  noRefNow: (ref: string) => `There is no ${ref} on this page now: take a new snapshot.`,
+  covered: "Something else covers that element now: take a new snapshot.",
+  noPage: "No page is open: call computer_open first.",
+  noTab: (index: string) => `There is no tab ${index}: call computer_status to see the tabs.`,
+  browserGone: "The browser is gone: call computer_status to see whether it is back.",
+  tooManyTabs: (max: string) => `${max} tabs are open: close one first.`,
+  otherDebugger: "Another debugger is attached to this tab, so it cannot be driven: ask the user to close it.",
+  devToolsOpen: "DevTools is open on this tab, so it cannot be driven: ask the user to close it.",
+  tabGone: "That tab was closed: call computer_status to see what is open.",
+  sizeChanged: "The page changed size while the screenshot was taken, so it was not returned: try again.",
+  notVisible: "That element is not visible on the page: take a new snapshot.",
+  passwordUnread: "Could not read a password field's value to scrub it, so the text was held back (D9): try again.",
+  nothingThere: "There is nothing at that point on the page: take a new snapshot or give another x and y.",
+  cantTell: "Cannot tell which control this click reaches: take a new snapshot.",
+
+  // The bridge's own replies (bridge.ts).
+  tooMany: "Too many computer calls at once: wait for one to finish.",
+  notStarted: "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.",
+  ended: "This session has ended, so its computer connection is closed: start a new session to use the browser.",
+  computerFailed: (why: string) => `The computer failed (${why}): call computer_status to see whether the browser is still there.`,
 } as const satisfies Readonly<Record<string, string | ((x: string) => string)>>;

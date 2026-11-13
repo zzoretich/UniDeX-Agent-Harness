@@ -11,6 +11,7 @@ import type { Admit } from "./admission";
 import { listenPrivate, socketPathIn, unlinkIfBound } from "./unix-socket";
 import { socketFd, type PeerAddon } from "./peer";
 import type { AgentRef } from "./registry";
+import { REFUSAL } from "./refusals";
 
 export type ComputerTool = "computer_status" | "computer_open" | "computer_snapshot" | "computer_screenshot" | "computer_click" | "computer_type" | "computer_key" | "computer_scroll" | "computer_wait";
 export interface ToolCall { id: number; tool: ComputerTool; args: Record<string, unknown> }
@@ -22,9 +23,6 @@ const MAX_LINE_BYTES = 1024 * 1024;
 /** Calls in flight per connection (agent-computer D18, backpressure): another is answered at once and never reaches the
  *  service, so one agent cannot queue unbounded work behind the wheel. */
 const MAX_IN_FLIGHT = 4;
-const TOO_MANY = "Too many computer calls at once: wait for one to finish.";
-const REFUSED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
-const ENDED = "This session has ended, so its computer connection is closed.";
 
 /**
  * Where the bridge listens: `<userData>/computer/bridge.sock`, or, when that is too long for a Unix socket (a long home
@@ -106,7 +104,7 @@ export class ComputerBridge {
         clearTimeout(timer);
         let verdict: Admit;
         try { verdict = this.o.admit(this.o.peer.peerPid(socketFd(sock))); }
-        catch { verdict = { ok: false, reason: REFUSED }; }
+        catch { verdict = { ok: false, reason: REFUSAL.notStarted }; }
         if (!verdict.ok) { write({ admitted: false, reason: verdict.reason }); sock.end(); return; }
         agent = verdict.agent;
         this.admitted.set(agent.pid, end);
@@ -119,14 +117,14 @@ export class ComputerBridge {
       // M12: an agent that has left the registry (its CLI exited, its terminal closed) gets no more of the computer.
       let alive = true;
       try { alive = this.o.live ? this.o.live(who) : true; } catch { alive = false; }
-      if (!alive) { write({ id: call.id, text: ENDED, isError: true } satisfies ToolReply); sock.end(); end(); return; }
-      if (inFlight >= MAX_IN_FLIGHT) { write({ id: call.id, text: TOO_MANY, isError: true } satisfies ToolReply); return; }
+      if (!alive) { write({ id: call.id, text: REFUSAL.ended, isError: true } satisfies ToolReply); sock.end(); end(); return; }
+      if (inFlight >= MAX_IN_FLIGHT) { write({ id: call.id, text: REFUSAL.tooMany, isError: true } satisfies ToolReply); return; }
       inFlight++;
       void (async () => {
         try {
           write({ id: call.id, ...(await this.o.handle(who, call)) } as ToolReply);
         } catch (err) {
-          try { write({ id: call.id, text: `The computer failed: ${err instanceof Error ? err.message : String(err)}`, isError: true }); } catch { end(); }
+          try { write({ id: call.id, text: REFUSAL.computerFailed(err instanceof Error ? err.message : String(err)), isError: true }); } catch { end(); }
         } finally {
           inFlight--;
         }

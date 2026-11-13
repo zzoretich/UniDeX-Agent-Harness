@@ -1055,7 +1055,7 @@ test("waking the largest record keeps every tab", async () => {
   void b;
 });
 
-// session-browser S8 (Task 19): `settled(since)` ends 300 ms after the action's last input, or, when a main-frame navigation
+// session-browser S16 (Task 19): `settled(since)` ends 300 ms after the action's last input, or, when a main-frame navigation
 // started in that window, when it has loaded (5 s at the latest). The clock is node's mock one: setTimeout and Date.
 const turns = async (): Promise<void> => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
 /** What `settled` is waiting on after each tick; `at` is the milliseconds since the action's input. */

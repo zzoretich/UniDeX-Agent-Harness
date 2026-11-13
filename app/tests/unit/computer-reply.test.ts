@@ -1,4 +1,4 @@
-// What an acting computer tool answers with (session-browser S8, Task 19): its line, then the page as it is now.
+// What an acting computer tool answers with (session-browser S16, Task 19): its line, then the page as it is now.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

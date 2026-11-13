@@ -1,4 +1,4 @@
-// What an acting computer tool answers with (session-browser S8, Task 19): its one-line result, then the page as it is now,
+// What an acting computer tool answers with (session-browser S16, Task 19): its one-line result, then the page as it is now,
 // so the agent does not call computer_snapshot after every action. No Electron.
 
 /** The most characters of the page's outline an acting tool's reply carries. */

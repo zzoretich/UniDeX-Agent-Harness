@@ -21,7 +21,7 @@ import { PageChanged } from "../../src/main/computer/cdp";
 const flush = async (): Promise<void> => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
 /** The page line a reply ends with: the address inside the untrusted wrapper, after its origin (D21, R69). */
 const page = (url: string): string => `Page: <untrusted-page origin="${new URL(url).origin}">${url}</untrusted-page>`;
-/** What an acting tool's reply ends with (session-browser S8): the page's outline as it is now. The fake browser's page
+/** What an acting tool's reply ends with (session-browser S16): the page's outline as it is now. The fake browser's page
  *  text is `body`; the address is in the wrapper's url attribute. */
 const now = (url: string, body = ""): string => `\n\nPage now:\n<untrusted-page origin="o" url="${url}">\n${body}\n</untrusted-page>`;
 const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
@@ -80,7 +80,7 @@ class FakeBrowser implements BrowserLike {
   /** S9: sleep keeps the pages (the real browser keeps their addresses); wake records when it ran and can be held. */
   sleeps = 0; wakes = 0; sleeping = false; wakeGate: Promise<void> | null = null;
   sleepThrows = false; snapGate: Promise<void> | null = null;
-  /** The `since` of each settled() call (session-browser S8), and a gate a test holds to keep the settle wait going. It
+  /** The `since` of each settled() call (session-browser S16), and a gate a test holds to keep the settle wait going. It
    *  resolves at once otherwise, so no test waits in real time. */
   settles: number[] = []; settleGate: Promise<void> | null = null;
   async settled(since: number) { this.settles.push(since); await this.settleGate; }
@@ -911,7 +911,7 @@ test("R69: a page-chosen path or query reaches a reply only inside the untrusted
     if (tool === "computer_wait") await h.clock.advance(1_000);
     const r = await pending;
     assert.ok(!r.isError, `${tool}: ${r.text}`);
-    // An acting tool's reply carries it in the outline's wrapper (session-browser S8); the others in a page line.
+    // An acting tool's reply carries it in the outline's wrapper (session-browser S16); the others in a page line.
     const acts = ["computer_click", "computer_type", "computer_key", "computer_scroll"].includes(tool);
     assert.ok(r.text.includes(acts ? `<untrusted-page origin="o" url="${chosen}">` : wrapped), `${tool} carries the page's address inside the wrapper: ${r.text}`);
     const outside = r.text.split(/<untrusted-page[^>]*>[^<]*<\/untrusted-page>/).join("");
@@ -4196,7 +4196,7 @@ test("the page going on a Code session drops the held pages with one line and ra
   assert.equal(powerCards(h, "code:t1").length, 0);
 });
 
-// ---- session-browser S8 (Task 19): an acting tool's reply carries the page as it is now
+// ---- session-browser S16 (Task 19): an acting tool's reply carries the page as it is now
 
 /** A marked page "a.test" with a button e1 and a text field e2 that takes the focus, its text "Welcome". */
 async function acting() {

@@ -18,6 +18,7 @@ import { permissionVerdict, type Focus } from "./gate";
 import { deviceRects, paintRects, screenScale, type Rect } from "./mask";
 import { framesHolding, leavingFrames, LeavingRecords, mergeFrameReads, PendingReads, type Departure } from "./leaving";
 import { SecretMemory, type Secrets } from "./memory";
+import { REFUSAL } from "./refusals";
 import { SETTLE_MAX_MS, SETTLE_WINDOW_MS } from "./reply";
 import { TABS_MAX } from "./records";
 import { accepted, hostsAbove, reach, within, type Reach, type Start } from "./reach";
@@ -59,10 +60,7 @@ const KEPT_DOCUMENTS = 8;
 const DEFAULT_SIZE = { width: 1280, height: 800 };
 // R26: after the pointer moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
 const HOVER_MS = 100;
-const CANT_TELL = "Cannot tell which control this click reaches: take a new snapshot.";
 const URL_NOTE_MAX = 2_000;
-const D9_REFUSAL = "Typing into a password field is refused (D9).";
-const D9_UNREAD = "Could not read a password field's value to scrub it, so the text was held back (D9): try again.";
 // A field's current value through the native getter (an isolated world sees no page-defined one; "" for anything else)
 // and whether it is a one-time-code field (a short code typed so far is scrubbed as a whole word).
 const VALUE_OF = "function () { return { v: typeof this.value === 'string' ? this.value : '', otp: /(^|\\s)one-time-code(\\s|$)/i.test((this.getAttribute && this.getAttribute('autocomplete')) || '') }; }";
@@ -364,7 +362,7 @@ export class ComputerBrowser {
    *  with `newTab`) adds the tab behind the active one and leaves the selection where it was, for a page the person did not
    *  ask for while they work in another (session-browser X2); with no active tab the new one is the active one anyway. */
   async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null }): Promise<{ url: string; title: string }> {
-    if (!navAllowed(url)) throw new Error("Only http and https pages open.");
+    if (!navAllowed(url)) throw new Error(REFUSAL.notWeb);
     // §4.2: load the normalised form navAllowed judged, never the raw string.
     const href = new URL(url).href;
     const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true);
@@ -382,9 +380,9 @@ export class ComputerBrowser {
       new Promise<null>((r) => { timer = setTimeout(() => r(null), LOAD_WAIT_MS); }),
     ]);
     clearTimeout(timer);
-    if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") throw new Error(`The page redirected to ${t.refused ? `a ${t.refused}` : "a non-web"} URL, which is refused.`);
+    if (t.refused || failed?.code === "ERR_UNSAFE_REDIRECT") throw new Error(REFUSAL.redirectRefused(t.refused ? `a ${t.refused}` : "a non-web"));
     // ERR_ABORTED: the page went somewhere else before it finished loading.
-    if (failed && failed.code !== "ERR_ABORTED") throw new Error(`Could not open ${href}: ${failed.code ?? failed.message ?? "failed"}.`);
+    if (failed && failed.code !== "ERR_ABORTED") throw new Error(REFUSAL.couldNotOpen(`${href} (${failed.code ?? failed.message ?? "failed"})`));
     return { url: this.urlOut(t), title: this.remembered(t, [this.site(t)])(t.wc.getTitle()) };
   }
 
@@ -542,7 +540,7 @@ export class ComputerBrowser {
     if ("ref" in by) {
       const mine = session ? t.refs.get(session) : undefined;
       const ref = mine?.refs.get(by.ref);
-      if (!mine || !ref || mine.token !== this.tokenOf(t)) throw new Error(`There is no ${by.ref} on this page now: take a new snapshot.`);
+      if (!mine || !ref || mine.token !== this.tokenOf(t)) throw new Error(REFUSAL.noRefNow(by.ref));
       named = ref.backendNodeId;
       await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: named }).catch(() => undefined);
       p = centre(await this.box(t, named));
@@ -555,7 +553,7 @@ export class ComputerBrowser {
     const pre = await this.secrets(t);
     await this.hover(t, p);
     const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
-      if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error("Something else covers that element now: take a new snapshot.");
+      if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error(REFUSAL.covered);
     });
     const target = await this.judgeReach(t, reached, dom, own);
     const b = reached.controls[0] ?? hit;
@@ -613,20 +611,20 @@ export class ComputerBrowser {
    *  is scrolled as it was for that test, read again just before it. */
   async click(r: Resolved, valid: () => boolean): Promise<void> {
     const t = this.where(r);
-    if (typeof r.backendNodeId !== "number") throw new Error("The page changed: look again.");
+    if (typeof r.backendNodeId !== "number") throw new Error(REFUSAL.pageChanged);
     const p = r.point;
     const live = (): void => this.live(valid, r);
     // R26: hover the point again, hit-test, read the DOM and walk again, and deliver only while a click there reaches no
     // control the gate did not judge; the press follows the check with no move in between.
     await this.hover(t, p, live);
     const now = await this.reachAt(t, p).catch((e: unknown) => { if (e instanceof CdpTimeout) throw e; return null; });
-    if (!now) throw new Error("The page changed: look again.");
+    if (!now) throw new Error(REFUSAL.pageChanged);
     const ok = now.dom.remoteFrames.has(now.hit) ? now.hit === r.backendNodeId : accepted(now.dom, now.reached, { b: r.backendNodeId, controls: r.judged ?? [] });
-    if (!ok) throw new Error("The page changed: look again.");
+    if (!ok) throw new Error(REFUSAL.pageChanged);
     // R87: a scroll since the hit test (a smooth scroll still running, the page's script, the person) moves what the
     // point shows, so it refuses. It is read before the checks below, so nothing is awaited between them and the press.
     const off = await this.scrolledBy(t);
-    if (off.x !== now.off.x || off.y !== now.off.y) throw new Error("The page changed: look again.");
+    if (off.x !== now.off.x || off.y !== now.off.y) throw new Error(REFUSAL.pageChanged);
     const at = judgedAt(now);
     live();
     const doc = t.doc;
@@ -790,7 +788,7 @@ export class ComputerBrowser {
    *  may hold a secret; `tabs()` is the only form that leaves main. */
   realAddresses(): { urls: string[]; active: number } {
     // A destroyed browser has no tabs to give: asking it must never read as "no tabs".
-    if (this.gone) throw new Error("the browser is gone");
+    if (this.gone) throw new Error(REFUSAL.browserGone);
     if (this.kept) return { urls: this.kept.map((k) => withoutUserinfo(k.url)), active: this.keptActive };
     const urls: string[] = [];
     let active = 0;
@@ -807,7 +805,7 @@ export class ComputerBrowser {
    *  (session-browser S24). MAIN ONLY, like `realAddresses`. Null when the active tab has no address to give: none yet
    *  (about:blank), a destroyed view or a scheme that is not a web page. Throws once the browser is gone. */
   activeAddress(): string | null {
-    if (this.gone) throw new Error("the browser is gone");
+    if (this.gone) throw new Error(REFUSAL.browserGone);
     let url: string;
     if (this.kept) {
       const k = this.kept[this.keptActive];
@@ -928,7 +926,7 @@ export class ComputerBrowser {
 
   private tab(index?: number): Tab {
     const t = this.list[index ?? this.current];
-    if (!t) throw new Error(index === undefined ? "No page is open: call computer_open first." : `There is no tab ${index}.`);
+    if (!t) throw new Error(index === undefined ? REFUSAL.noPage : REFUSAL.noTab(String(index)));
     return t;
   }
 
@@ -949,8 +947,8 @@ export class ComputerBrowser {
   }
 
   private async addTab(by: string | null, keep?: Kept, background = false): Promise<Tab> {
-    if (this.gone) throw new Error("This computer was closed.");
-    if (this.list.length >= MAX_TABS) throw new Error(`${MAX_TABS} tabs are open: close one first.`);
+    if (this.gone) throw new Error(REFUSAL.browserGone);
+    if (this.list.length >= MAX_TABS) throw new Error(REFUSAL.tooManyTabs(String(MAX_TABS)));
     const view = new WebContentsView({
       webPreferences: {
         session: computerSession(), sandbox: true, contextIsolation: true, nodeIntegration: false, nodeIntegrationInSubFrames: false,
@@ -1319,7 +1317,7 @@ export class ComputerBrowser {
       try {
         t.wc.debugger.attach("1.3");
       } catch {
-        throw new Error("Another debugger is attached to this tab, so it cannot be driven (agent-computer D20).");
+        throw new Error(REFUSAL.otherDebugger);
       }
       for (const [method, params] of ENABLE) await cdp(t.wc.debugger, method, params);
     })().finally(() => { t.attaching = null; });
@@ -1328,8 +1326,8 @@ export class ComputerBrowser {
 
   /** Every command goes through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). */
   private async send<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
-    if (t.wc.isDestroyed()) throw new Error("That tab was closed.");
-    if (t.wc.isDevToolsOpened()) throw new Error("DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
+    if (t.wc.isDestroyed()) throw new Error(REFUSAL.tabGone);
+    if (t.wc.isDevToolsOpened()) throw new Error(REFUSAL.devToolsOpen);
     if (t.attaching) await t.attaching;
     else if (!t.wc.debugger.isAttached()) await this.attach(t);
     return cdp<T>(t.wc.debugger, method, params);
@@ -1382,7 +1380,7 @@ export class ComputerBrowser {
       const sc = same ? screenScale(size, m2) : null;
       if (!sc) {
         if (attempt === 0) continue;
-        throw new Error("The page changed size while the screenshot was taken, so it was not returned: try again.");
+        throw new Error(REFUSAL.sizeChanged);
       }
       const viewport = { x: 0, y: 0, width: sc.width, height: sc.height };
       // One CSS pixel of margin, so the box's edge stays fully covered once the image is scaled down.
@@ -1415,7 +1413,7 @@ export class ComputerBrowser {
   private async box(t: Tab, backendNodeId: number): Promise<Rect> {
     const q = await this.send<{ quads: number[][] }>(t, "DOM.getContentQuads", { backendNodeId }).catch(unlessGone({ quads: [] as number[][] }));
     const r = q.quads.map(quadRect).find((x) => x.width > 0 && x.height > 0);
-    if (!r) throw new Error("That element is not visible on the page: take a new snapshot.");
+    if (!r) throw new Error(REFUSAL.notVisible);
     return r;
   }
 
@@ -1475,10 +1473,10 @@ export class ComputerBrowser {
       if (t.mainDocs !== docs || now.gone || (first !== null && root !== null && root !== first)) throw new PageChanged();
       if (focus && !sameId(now, focus)) {
         if (focus.node !== null && now.dom !== null && !now.dom.names.has(focus.node)) throw new PageChanged();
-        if (typing && now.refused) throw new Error(D9_REFUSAL);
+        if (typing && now.refused) throw new Error(REFUSAL.passwordField);
         throw new FocusMoved();
       }
-      if (typing && now.refused) throw new Error(D9_REFUSAL);
+      if (typing && now.refused) throw new Error(REFUSAL.passwordField);
     };
   }
 
@@ -1755,7 +1753,7 @@ export class ComputerBrowser {
         if (e instanceof CdpTimeout) throw e;
         if (fresh) {
           if (isGone(e)) return undefined;
-          throw new Error(D9_UNREAD);
+          throw new Error(REFUSAL.passwordUnread);
         }
         t.worlds.delete(frameId);
         fresh = true;
@@ -1777,11 +1775,11 @@ export class ComputerBrowser {
     try {
       ({ backendNodeId: hit } = await this.send<{ backendNodeId: number }>(t, "DOM.getNodeForLocation", { ...at, includeUserAgentShadowDOM: false, ignorePointerEventsNone: false }));
     } catch (e) {
-      if (e instanceof Error && /^No node found at given location/.test(e.message)) throw new Error("There is nothing at that point on the page.");
+      if (e instanceof Error && /^No node found at given location/.test(e.message)) throw new Error(REFUSAL.nothingThere);
       throw e;
     }
     const after = await this.scrolledBy(t);
-    if (after.x !== off.x || after.y !== off.y) throw new Error("The page changed: look again.");
+    if (after.x !== off.x || after.y !== off.y) throw new Error(REFUSAL.pageChanged);
     return { hit, at, off };
   }
 
@@ -1813,7 +1811,7 @@ export class ComputerBrowser {
   private async reachAt(t: Tab, p: Point, check?: (hit: number, dom: DomIndex) => void): Promise<{ hit: number; at: Point; off: Point; dom: DomIndex; reached: Reach; own: number }> {
     const { hit, at, off } = await this.hitAt(t, p);
     const dom = await this.locked(t, () => this.readDom(t));
-    if (!dom.names.has(hit)) throw new Error("The page changed: look again.");
+    if (!dom.names.has(hit)) throw new Error(REFUSAL.pageChanged);
     check?.(hit, dom);
     if (dom.remoteFrames.has(hit)) return { hit, at, off, dom, reached: { hit, controls: [hit] }, own: 1 };
     const text = await this.slottedText(t, hit, judgedAt({ at, off }), dom);
@@ -1854,7 +1852,7 @@ export class ComputerBrowser {
     const targets: Target[] = [];
     for (const c of r.controls) targets.push(await this.named(t, c, dom));
     if (targets.length === 1) return targets[0];
-    if (own > 1 && targets.slice(0, own).some((x) => !x.name)) throw new Error(CANT_TELL);
+    if (own > 1 && targets.slice(0, own).some((x) => !x.name)) throw new Error(REFUSAL.cantTell);
     const named = targets.filter((x) => x.name);
     if (!named.length) return targets[0];
     // Each further name is added unless the name so far holds it as whole words (then every label in it is matched

@@ -124,7 +124,7 @@ test("a handle that throws or rejects replies with an error, and the connection 
   c.send({ hello: 1 });
   await c.line(1);
   c.send({ id: 1, tool: "computer_click", args: {} });
-  assert.deepEqual(await c.line(2), { id: 1, text: "The computer failed: boom", isError: true });
+  assert.deepEqual(await c.line(2), { id: 1, text: "The computer failed (boom): call computer_status to see whether the browser is still there.", isError: true });
   c.send({ id: 2, tool: "computer_click", args: {} });
   assert.deepEqual(await c.line(3), { id: 2, text: "ok" });
   c.sock.destroy();
@@ -433,7 +433,7 @@ test("M12: an agent that leaves the registry loses its connection (drop), and a 
   // Gone from the registry, a call is answered with the refusal and never reaches the computer.
   live = false;
   c.send({ id: 2, tool: "computer_open", args: { url: "https://a.test/" } });
-  assert.deepEqual(await c.line(3), { id: 2, text: "This session has ended, so its computer connection is closed.", isError: true });
+  assert.deepEqual(await c.line(3), { id: 2, text: "This session has ended, so its computer connection is closed: start a new session to use the browser.", isError: true });
   await c.closed();
   assert.equal(calls.length, 1);
   assert.deepEqual(closed, [AGENT]);
