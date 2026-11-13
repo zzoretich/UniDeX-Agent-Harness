@@ -17,6 +17,7 @@ import type { Target } from "../../src/main/computer/categories";
 import type { Snapshot } from "../../src/main/computer/snapshot";
 import type { ComputerTool } from "../../src/main/computer/bridge";
 import type { Rect } from "../../src/main/computer/mask";
+import type { Pointer, Point } from "../../src/main/computer/pointer";
 import { PageChanged, Told as TwoWordings } from "../../src/main/computer/cdp";
 
 const flush = async (): Promise<void> => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
@@ -46,7 +47,7 @@ class FakeClock implements Clock {
   }
 }
 
-interface Spot { target: Target; shown?: string; sensitive?: boolean; focuses?: boolean; node?: number; judged?: number[] }
+interface Spot { target: Target; shown?: string; sensitive?: boolean; focuses?: boolean; node?: number; judged?: number[]; corner?: Point }
 const btn = (name: string, more: Partial<Target> = {}): Target => ({ role: "button", name, inForm: false, fileInput: false, ...more });
 const box = (name: string, more: Partial<Target> = {}): Target => ({ role: "textbox", name, inForm: false, fileInput: false, ...more });
 
@@ -245,8 +246,15 @@ class FakeBrowser implements BrowserLike {
     const s = this.spots.get(key);
     if (!s) throw new Error(`There is no ${key} on this page now: take a new snapshot.`);
     const node = s.node ?? 7;
-    return { target: { ...s.target }, shown: s.shown ?? s.target.name, sensitive: !!s.sensitive, backendNodeId: node, judged: s.judged ?? [node], point: "ref" in by ? { x: 5, y: 5 } : by, pageToken: this.pageToken(), tab: this.current };
+    return { target: { ...s.target }, shown: s.shown ?? s.target.name, sensitive: !!s.sensitive, backendNodeId: node, judged: s.judged ?? [node], point: "ref" in by ? { x: 5, y: 5 } : by, corner: s.corner ?? ("ref" in by ? { x: 2, y: 3 } : by), pageToken: this.pageToken(), tab: this.current };
   }
+  /** session-browser S18: the view's box in its window (10, 20, 800 x 600), or none while `offBox` (asleep, parked, not shown). */
+  offBox = false;
+  viewBox(): Rect | null { return this.offBox ? null : { x: 10, y: 20, width: 800, height: 600 }; }
+  windowPoint(p: Point, tab?: number): Point | null { return this.offBox || (tab !== undefined && tab !== this.current) ? null : { x: p.x + 10, y: p.y + 20 }; }
+  /** The top-left of the focused element, in the viewport (null: nothing has focus or it cannot be read), and the reads made. */
+  focusAt: Point | null = null; cornerReads = 0;
+  async focusCorner(valid: () => boolean): Promise<Point | null> { this.cornerReads++; this.order.push("corner"); return valid() ? this.focusAt : null; }
   async focus(): Promise<Focus> {
     this.need(); this.order.push("focus");
     const f = { ...this.focused };
@@ -317,7 +325,7 @@ const made: string[] = [];
 const tmp = (prefix: string): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); made.push(d); return d; };
 afterEach(() => { for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
 
-function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined; held?: (session: string) => boolean; outside?: (url: string) => Promise<boolean> } = {}) {
+function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) => string | undefined; popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void; liveAgent?: (key: string) => AgentRef | undefined; startPage?: string; destroyed?: (session: string) => void; moved?: (from: string, to: string) => void; records?: BrowserRecords; threadExists?: (session: string) => boolean | undefined; held?: (session: string) => boolean; outside?: (url: string) => Promise<boolean>; pointer?: (clock: FakeClock) => Pick<Pointer, "moveTo" | "pulse" | "hide"> } = {}) {
   const clock = new FakeClock();
   const sites = new SiteMarks(path.join(tmp("aos-service-"), "computer", "sites.json"));
   const cfg = { enabled: o.enabled ?? true, askTimeoutSec: 120, awake: 4 };
@@ -340,6 +348,7 @@ function make(o: { off?: boolean; enabled?: boolean; label?: (session: string) =
     log: (line) => logs.push(line),
     browser: (session, hooks) => { const b = new FakeBrowser(session, hooks); browsers.set(session, b); return b; },
     broker, wheel, sites, config: () => cfg, emit: (s) => states.push(s), note: (a, line) => notes.push([a.key, line]), clock,
+    ...(o.pointer ? { pointer: o.pointer(clock) } : {}),
     ...(o.popOut ? { popOut: o.popOut } : {}),
     ...(o.label ? { label: o.label } : {}),
     ...(o.destroyed ? { destroyed: o.destroyed } : {}),
@@ -5769,4 +5778,212 @@ test("the browser is told whether this session's agent holds the wheel, for a po
   g.svc.agentGone(A);
   assert.equal(g.wheel.holder("chat:a"), null);
   assert.equal((gb.hooks as BrowserHooks & { agentDrives(): boolean }).agentDrives(), false, "nobody holds it: the turn ended");
+});
+
+// ---- session-browser S18 (Task 24): the pointer in the action path
+
+type Move = Parameters<Pointer["moveTo"]>[0];
+/** A pointer that records what it was asked and, for `ms`, travels on the fake clock (checking `alive` every 16 ms as the
+ *  real one does). `trace` is the fake browser's `order`, so the order of the pointer's calls and the browser's is one list. */
+function fakePointer(clock: FakeClock, o: { ms?: number } = {}) {
+  const f = {
+    moves: [] as Move[], pulses: 0, hides: 0, trace: null as string[] | null, ms: o.ms ?? 0,
+    result: null as boolean | null, throws: false, after: null as (() => void) | null,
+    async moveTo(m: Move): Promise<boolean> {
+      f.moves.push(m); f.trace?.push("move");
+      if (f.throws) throw new Error("no pointer");
+      for (let left = f.ms; left > 0; left -= 16) { await new Promise<void>((r) => { clock.setTimeout(r, 16); }); if (!m.alive()) return false; }
+      f.after?.();
+      return f.result ?? m.alive();
+    },
+    pulse() { f.pulses++; f.trace?.push("pulse"); },
+    hide() { f.hides++; f.trace?.push("hide"); },
+  };
+  return f;
+}
+type FakePointer = ReturnType<typeof fakePointer>;
+
+/** A session with the pointer wired, a marked site, spots e1 (a button) and e2 (a text field that takes focus), on screen. */
+async function pointed(o: { ms?: number; popped?: boolean } = {}) {
+  let ptr!: FakePointer;
+  const h = make({ pointer: (c) => (ptr = fakePointer(c, o)), popOut: () => {} });
+  const b = await h.open(A, "https://a.test/");
+  h.sites.mark("https://a.test");
+  b.spots.set("e1", { target: btn("Next") });
+  b.spots.set("e2", { target: box("Name"), focuses: true, node: 9, corner: { x: 4, y: 6 } });
+  b.spots.set("12,34", { target: btn("Menu") });
+  h.svc.select("chat:a");
+  h.svc.show({ x: 0, y: 0, width: 800, height: 600 });
+  if (o.popped) h.svc.popOut();
+  ptr.trace = b.order; b.order.length = 0;
+  return { h, b, ptr };
+}
+
+test("a click travels first, then is delivered, then pulses", async () => {
+  const { h, b, ptr } = await pointed();
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.match(r.text, /^Clicked e1\./);
+  assert.deepEqual(b.order, ["resolve", "move", "click", "pulse"]);
+  const m = ptr.moves[0];
+  assert.deepEqual([m.window, m.name, m.kind, m.to, m.within], ["main", "Alpha", "arrow", { x: 15, y: 25 }, { x: 10, y: 20, width: 800, height: 600 }], "the target in window coordinates, the view's box, the session's name");
+  assert.equal(m.alive(), true, "alive is the call's own currency");
+  h.svc.takeOver();
+  assert.equal(m.alive(), false, "and it turns false at a Take over");
+  // A double click pulses once.
+  h.svc.handBack();
+  ptr.pulses = 0;
+  assert.match((await h.call(A, "computer_click", { ref: "e1", double: true })).text, /^Double-clicked e1\./);
+  assert.equal(ptr.pulses, 1);
+});
+
+test("a hover and a typed field get the pointer; typing uses the caret", async () => {
+  const { h, b, ptr } = await pointed();
+  assert.match((await h.call(A, "computer_hover", { ref: "e1" })).text, /^Hovered e1\./);
+  assert.deepEqual(b.order, ["resolve", "move", "hover"]);
+  assert.deepEqual([ptr.moves[0].kind, ptr.moves[0].to], ["arrow", { x: 15, y: 25 }]);
+  assert.equal(ptr.pulses, 0, "a hover does not pulse");
+  assert.match((await h.call(A, "computer_hover", { x: 12, y: 34 })).text, /^Hovered at \(12, 34\)\./);
+  assert.deepEqual(ptr.moves[1].to, { x: 22, y: 54 });
+  // Typing into a ref: the caret at the field's top-left corner; the field's own click is not pulsed.
+  b.order.length = 0;
+  assert.match((await h.call(A, "computer_type", { ref: "e2", text: "hi" })).text, /^Typed 2 characters\./);
+  assert.deepEqual(b.order, ["resolve", "move", "click", "focus"]);
+  assert.deepEqual([ptr.moves[2].kind, ptr.moves[2].to], ["caret", { x: 14, y: 26 }]);
+  assert.equal(ptr.pulses, 0, "typing does not pulse");
+});
+
+test("typing with no ref travels to the focused field's corner; with nothing focused it types with no pointer", async () => {
+  const { h, b, ptr } = await pointed();
+  b.focused = { target: box("Search"), shown: "Search", sensitive: false, plainTextarea: false, node: 12, frame: "F1" };
+  b.focusAt = { x: 30, y: 40 };
+  assert.match((await h.call(A, "computer_type", { text: "rope" })).text, /^Typed 4 characters\./);
+  assert.deepEqual([ptr.moves.length, ptr.moves[0].kind, ptr.moves[0].to], [1, "caret", { x: 40, y: 60 }]);
+  assert.deepEqual(b.order, ["focus", "corner", "move"], "the focus is read for the gate, the corner for the pointer, then the travel");
+  // Nothing has focus (or the corner cannot be read): the typing goes on with no pointer.
+  b.focusAt = null;
+  assert.match((await h.call(A, "computer_type", { text: "rope" })).text, /^Typed 4 characters\./);
+  assert.equal(ptr.moves.length, 1, "no second travel");
+});
+
+test("a refused hover does not move the pointer", async () => {
+  const { h, ptr } = await pointed();
+  const R = agent("chat:a", "Reader", "read");
+  const r = await h.call(R, "computer_hover", { ref: "e1" });
+  assert.equal(r.isError, true);
+  assert.equal(r.text, REFUSAL.readOnly);
+  assert.equal(ptr.moves.length, 0);
+});
+
+test("Take over during the travel delivers nothing, within 100 ms", async () => {
+  const { h, b, ptr } = await pointed({ ms: 250 });
+  for (const [tool, args] of [["computer_click", { ref: "e1" }], ["computer_hover", { ref: "e1" }], ["computer_type", { ref: "e2", text: "hi" }]] as const) {
+    ptr.moves.length = 0;
+    const p = h.call(A, tool, args);
+    let reply: string | null = null;
+    void p.then((r) => { reply = r.text; });
+    await h.clock.advance(40);
+    assert.equal(ptr.moves.length, 1, `${tool} is travelling`);
+    assert.equal(reply, null, "still on its way at 40 ms");
+    h.svc.takeOver();
+    await h.clock.advance(60);
+    assert.equal(reply, "busy: the user is driving: wait for Hand back.", `${tool}: the stale reply by 100 ms`);
+    assert.deepEqual([b.clicks.length, b.hovers.length, b.typed.length], [0, 0, 0], `${tool} delivered nothing`);
+    h.svc.handBack();
+  }
+});
+
+test("the look after the travel is the last thing before the delivery", async () => {
+  // A Stop (the person switches the browser off) that lands as the travel ends, the pointer still answering true.
+  for (const [tool, args] of [["computer_click", { ref: "e1" }], ["computer_hover", { ref: "e1" }], ["computer_type", { ref: "e2", text: "hi" }]] as const) {
+    const { h, b, ptr } = await pointed();
+    ptr.result = true;
+    ptr.after = () => h.svc.power("chat:a", false);
+    const r = await h.call(A, tool, args);
+    assert.equal(r.text, REFUSAL.switchedOff, tool);
+    assert.equal(r.isError, true, tool);
+    assert.deepEqual([b.clicks.length, b.hovers.length, b.typed.length], [0, 0, 0], `${tool} delivered nothing`);
+  }
+});
+
+test("a move that answers false with the call still current is answered as a changed page, nothing delivered", async () => {
+  const { h, b, ptr } = await pointed();
+  ptr.result = false;
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /^The page changed while you waited: look again\./);
+  assert.equal(b.clicks.length, 0);
+});
+
+test("Off and Take over hide the pointer at once", async () => {
+  const { h, ptr } = await pointed();
+  let n = ptr.hides;
+  h.svc.takeOver();
+  assert.ok(ptr.hides > n, "Take over hides it");
+  h.svc.handBack();
+  n = ptr.hides;
+  h.svc.power("chat:a", false);
+  assert.ok(ptr.hides > n, "Off hides it");
+});
+
+test("the pointer hides when the selected session changes, when the browser pops out or back, and when the pane leaves", async () => {
+  const { h, ptr } = await pointed({ popped: false });
+  let n = ptr.hides;
+  const moved = (what: string) => { assert.ok(ptr.hides > n, what); n = ptr.hides; };
+  h.svc.show(null);
+  moved("the pane left the view");
+  h.svc.show({ x: 0, y: 0, width: 800, height: 600 });
+  h.svc.popOut();
+  moved("popped out");
+  h.svc.popIn();
+  moved("popped back");
+  await h.ensureOn("chat:b");
+  h.svc.select("chat:b");
+  moved("another session was selected");
+  h.svc.select("chat:a");
+  h.svc.show({ x: 0, y: 0, width: 800, height: 600 });
+  n = ptr.hides;
+  h.svc.forget("chat:a");
+  moved("the session's browser was destroyed");
+});
+
+test("a browser that is off screen is not slowed", async () => {
+  let ptr!: FakePointer;
+  const h = make({ pointer: (c) => (ptr = fakePointer(c, { ms: 250 })) });
+  const b = await h.open(A, "https://a.test/");
+  h.sites.mark("https://a.test");
+  b.spots.set("e1", { target: btn("Next") });
+  // Not selected: no pointer, no delay (the call finishes with no time passing on the clock).
+  assert.match((await h.call(A, "computer_click", { ref: "e1" })).text, /^Clicked e1\./);
+  // Selected but the pane has no rectangle: still off screen.
+  h.svc.select("chat:a");
+  assert.match((await h.call(A, "computer_click", { ref: "e1" })).text, /^Clicked e1\./);
+  assert.equal(ptr.moves.length, 0, "moveTo was not called");
+  assert.equal(ptr.pulses, 0);
+  // On screen but the browser cannot place the target (asleep, parked): the same.
+  h.svc.show({ x: 0, y: 0, width: 800, height: 600 });
+  b.offBox = true;
+  assert.match((await h.call(A, "computer_click", { ref: "e1" })).text, /^Clicked e1\./);
+  assert.equal(ptr.moves.length, 0);
+  // On screen and placed: it travels (and a service with no pointer at all works as before: every other test).
+  b.offBox = false;
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await h.clock.advance(300);
+  assert.match((await p).text, /^Clicked e1\./);
+  assert.equal(ptr.moves.length, 1);
+});
+
+test("the pointer is drawn in the pop-out window while popped out", async () => {
+  const { h, ptr } = await pointed({ popped: true });
+  assert.match((await h.call(A, "computer_click", { ref: "e1" })).text, /^Clicked e1\./);
+  assert.equal(ptr.moves[0].window, "pop");
+});
+
+test("a pointer that throws does not fail the click", async () => {
+  const { h, b, ptr } = await pointed();
+  ptr.throws = true;
+  const r = await h.call(A, "computer_click", { ref: "e1" });
+  assert.match(r.text, /^Clicked e1\./);
+  assert.equal(b.clicks.length, 1);
+  assert.ok(h.logs.some((l) => /pointer/i.test(l)), `logged: ${h.logs.join("|")}`);
+  assert.ok(h.logs.every((l) => !l.includes("a.test")), "no address in main's log");
 });

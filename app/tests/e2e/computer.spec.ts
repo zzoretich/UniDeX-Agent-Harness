@@ -977,6 +977,70 @@ test.describe("both hosts, the Computer surface on", () => {
     expectNoErrors(h);
   });
 
+  test("the pointer shows the session's name at a click, in the main window and the pop-out, and is in neither the screenshot nor the outline (session-browser S18)", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    const name = "computer: pointer";
+    const a = await chatAgent(h, { text: name });
+    type PointerState = { shown: boolean; at: { x: number; y: number } | null; tag: string; window: "main" | "pop" | null };
+    const pointer = (): Promise<PointerState> => electron.evaluate(() => (globalThis as unknown as { __aosMain: { pointer(): PointerState } }).__aosMain.pointer());
+    try {
+      expectReply(await a.call("computer_open", { url: repoUrl() }), { isError: false });
+      const p = pane(win, "chat");
+      const details = refOf((await a.call("computer_snapshot")).text, "button", "Show details");
+      // The button's centre in the page's viewport, and the view's origin in the window it is in (the pane's view box in the main
+      // window; the pop-out's view starts at the window's own origin).
+      const centre = () => inPage<{ x: number; y: number }>(electron, repoUrl(), `(() => { const r = document.getElementById("details").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      const viewOrigin = () => p.locator(".aos-cp-view").evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y }; });
+      const near = (got: { x: number; y: number } | null, want: { x: number; y: number }, what: string) => {
+        expect(got, what).not.toBeNull();
+        expect(Math.abs(got!.x - want.x), `${what}: x ${got!.x} vs ${want.x}`).toBeLessThanOrEqual(2);
+        expect(Math.abs(got!.y - want.y), `${what}: y ${got!.y} vs ${want.y}`).toBeLessThanOrEqual(2);
+      };
+
+      // The main window: the pointer is at the button with the session's name.
+      expectReply(await a.call("computer_click", { ref: details }), { isError: false, text: acted(`Clicked ${details}.`, repoUrl()) });
+      const c = await centre();
+      const o = await viewOrigin();
+      const inMain = await pointer();
+      expect(inMain.shown).toBe(true);
+      expect(inMain.window).toBe("main");
+      expect(inMain.tag).toBe(name);
+      near(inMain.at, { x: o.x + c.x, y: o.y + c.y }, "the main window");
+
+      // Neither the screenshot (the tab's own capture) nor the outline holds it, while it is shown. Both are looks: the same
+      // after it has hidden itself (3 s), byte for byte for the picture.
+      const shotShown = await a.call("computer_screenshot");
+      const outlineShown = (await a.call("computer_snapshot")).text;
+      expect((await pointer()).shown, "still shown while the agent looked").toBe(true);
+      expect(shotShown.image).toBeTruthy();
+      expect(outlineShown).not.toMatch(/pointer/i);
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000, message: "it hides itself" }).toBe(false);
+      expect((await a.call("computer_screenshot")).image).toBe(shotShown.image);
+      expect((await a.call("computer_snapshot")).text).toBe(outlineShown);
+
+      // Take over while it is shown hides it at once.
+      expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+      expect((await pointer()).shown).toBe(true);
+      await p.locator(".aos-cp-drivebtn", { hasText: "Take over" }).click();
+      await expect.poll(async () => (await pointer()).shown, { timeout: 1_000 }).toBe(false);
+      await p.locator(".aos-cp-drivebtn", { hasText: "Hand back" }).click();
+
+      // The pop-out window: the same, drawn in that window, whose view starts at its origin.
+      await p.locator(".aos-cp-popout").click();
+      await expect(p).toHaveClass(/is-popped/);
+      await expect.poll(() => electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")).length)).toBe(1);
+      expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+      const c2 = await centre();
+      const inPop = await pointer();
+      expect(inPop.shown).toBe(true);
+      expect(inPop.window).toBe("pop");
+      expect(inPop.tag).toBe(name);
+      near(inPop.at, c2, "the pop-out");
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
   test("a process the app did not start is refused at hello; so are a session's second connection and a server behind a shell (D18)", async () => {
     const h = app();
     const outsider = await startOutsider("claude");

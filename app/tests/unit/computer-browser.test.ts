@@ -166,7 +166,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
 const at = (tab: { seq: number }) => ({ tab: 0, pageToken: `1.${tab.seq}` });
 const resolved = (o: Partial<Resolved> = {}): Resolved => ({
   target: { role: "button", name: "Go", inForm: false, fileInput: false }, shown: "Go", sensitive: false, backendNodeId: 10, judged: [10],
-  point: { x: 5, y: 5 }, pageToken: "1.0", tab: 0, ...o,
+  point: { x: 5, y: 5 }, corner: { x: 1, y: 2 }, pageToken: "1.0", tab: 0, ...o,
 });
 
 test("the harness: a click hovers, checks what it reaches and presses", async () => {

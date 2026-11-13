@@ -36,8 +36,10 @@ export interface TabInfo { index: number; url: string; title: string; openedBy: 
  *  the gate alone; `shown` is that name scrubbed of every sensitive field's value as read in this same call (D9), the
  *  only name to put in text that leaves the main process. Any other text built from this page goes through
  *  `scrub(text, r.tab)`: the tab, not the current one, since a popup may have made another tab current. The scrub
- *  remembers what the tab read on the current site (R32), so text about a page the tab has since left is covered too. */
-export interface Resolved { target: Target; shown: string; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; pageToken: string; tab: number }
+ *  remembers what the tab read on the current site (R32), so text about a page the tab has since left is covered too.
+ *  `corner` (session-browser S18) is where the pointer's caret goes when the target is typed into: the top-left of the box the
+ *  ref was read at (the point itself for an x, y target), in the page's viewport like `point`. */
+export interface Resolved { target: Target; shown: string; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; corner: { x: number; y: number }; pageToken: string; tab: number }
 /** `agentDrives` (session-browser S17): whether this session's agent holds the wheel now. A popup made at any other time (the
  *  person drives, or nobody does) is the person's, not its opener's agent's. */
 export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; agentDrives?(): boolean }
@@ -774,15 +776,19 @@ export class ComputerBrowser {
     const where = { pageToken: this.tokenOf(t), tab: this.current };
     let named: number | null = null;
     let p: Point;
+    let corner: Point;
     if ("ref" in by) {
       const mine = session ? t.refs.get(session) : undefined;
       const ref = mine?.refs.get(by.ref);
       if (!mine || !ref || mine.token !== this.tokenOf(t)) throw new Error(REFUSAL.noRefNow(by.ref));
       named = ref.backendNodeId;
       await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: named }).catch(() => undefined);
-      p = centre(await this.box(t, named));
+      const rect = await this.box(t, named);
+      corner = { x: rect.x, y: rect.y };
+      p = centre(rect);
     } else {
       p = { x: by.x, y: by.y };
+      corner = p;
     }
     p = { x: Math.round(p.x), y: Math.round(p.y) };
     // D9: the fields' values are read before the pointer arrives as well as after the walk, and `shown` is scrubbed with
@@ -800,7 +806,7 @@ export class ComputerBrowser {
     const shown = this.scrubWith(t, { values: [...pre.values, ...post.values], whole: [...pre.whole, ...post.whole] })(target.name);
     // D9: `hit` is the node the hit test returned, so a sensitive host hit on its padding or its slotted text counts. R87:
     // the point is the one the hit test judged, so the click's hover, its own hit test and its press are made there.
-    return { target, shown, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: judgedAt({ at, off }), ...where };
+    return { target, shown, sensitive: [hit, ...reached.controls].some((n) => t.sensitive.has(n)), backendNodeId: b, judged: reached.controls, point: judgedAt({ at, off }), corner: { x: Math.round(corner.x), y: Math.round(corner.y) }, ...where };
   }
 
   /** What has keyboard focus (D39), and whether it is a password field (D9). `target.name` is raw, for the gate; `shown`
@@ -1028,6 +1034,40 @@ export class ComputerBrowser {
       this.bounds = null;
     }
     this.place();
+  }
+
+  /** session-browser S18: the view's box in its window's coordinates, or null while no tab's view is on screen in a visible
+   *  host window (asleep, parked, the pane out of view, a window hidden). The pointer is drawn inside it. */
+  viewBox(): Rect | null {
+    const t = this.list[this.current];
+    const host = this.host();
+    if (this.gone || this.kept || !t || !this.bounds || !host || !host.isVisible() || t.in !== host) return null;
+    return { ...this.bounds };
+  }
+
+  /** session-browser S18: a point of the page (CSS pixels of the tab's viewport) in the host window's coordinates, where the
+   *  pointer is drawn; null when the view is not on screen (`viewBox`) or `tab` is not the tab in front. A tab has no zoom of
+   *  its own, so a page pixel is a window pixel and only the view's origin is added. */
+  windowPoint(p: Point, tab?: number): Point | null {
+    const box = this.viewBox();
+    if (!box || (tab !== undefined && tab !== this.current)) return null;
+    return { x: Math.round(box.x + p.x), y: Math.round(box.y + p.y) };
+  }
+
+  /** session-browser S18: the top-left of the element that has focus, in the page's viewport (null when nothing has focus,
+   *  the call is no longer current, or the box cannot be read: the pointer is then simply not shown). A read, never an input;
+   *  it throws nothing. */
+  async focusCorner(valid: () => boolean): Promise<Point | null> {
+    try {
+      const t = this.list[this.current];
+      if (!t) return null;
+      const f = await this.focused(t);
+      if (f === "remote" || f.b === null || !valid()) return null;
+      const r = await this.box(t, f.b);
+      return valid() && this.list[this.current] === t ? { x: Math.round(r.x), y: Math.round(r.y) } : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Moves the computer to another window (the pane popped out); it shows there once `show()` gives its rectangle. */
