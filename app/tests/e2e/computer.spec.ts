@@ -1983,6 +1983,9 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
       await expect(outside).toHaveAttribute("aria-label", "Open in my browser");
       // The start page is http (the fixture site): the button waits, and main refuses the page's own call as well.
       await expect(outside).toBeDisabled();
+      // The button also waits while the start page is still loading, and main then has no page to refuse ("No page is
+      // open."): the call below is about the http page, so it goes once the tab is on it.
+      await inPage(h.app, startUrl(), "1");
       const call = () => win.evaluate(() => (window as unknown as { aos: { computer: { openOutside(): Promise<unknown> } } }).aos.computer.openOutside());
       expect(await call()).toEqual({ ok: false, error: "Only https pages open in your browser.", code: "EROFS" });
       // main decided on its own: the refused page never reached the external-open path, so nothing is recorded or logged.
