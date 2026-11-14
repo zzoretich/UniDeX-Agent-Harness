@@ -167,11 +167,12 @@ class FakeBrowser implements BrowserLike {
   ownTab(uid: number): boolean { return this.pages[this.tabIndex(uid)]?.own === true; }
   tabToken(uid: number): string | null { const i = this.tabIndex(uid); return i < 0 ? null : `${uid}.${this.pages[i].commits ?? 0}`; }
   /** The person (or the page) moves tab `i` to another page, or to the same shown address with another hidden part. */
-  commit(i: number, url?: string): void { const p = this.pages[i]; if (url) p.url = url; p.commits = (p.commits ?? 0) + 1; if (i === this.current) this.front(); }
+  commit(i: number, url?: string): void { const p = this.pages[i]; if (url) p.url = url; p.commits = (p.commits ?? 0) + 1; if (i === this.current) this.front(true); }
   /** A same-document change of tab `i` (pushState): the page token moves, the document stays. */
   inPage(i: number): void { const p = this.pages[i]; p.commits = (p.commits ?? 0) + 1; }
-  /** The real browser tells the service when the tab in front changes or its main frame commits another document (`hooks.front`). */
-  private front(): void { (this.hooks as BrowserHooks & { front?: () => void }).front?.(); }
+  /** The real browser tells the service when the tab in front changes (`hooks.front()`; also when the tab in front is selected again
+   *  or a background tab closes) or its main frame commits another document (`hooks.front(true)`). */
+  private front(page = false): void { (this.hooks as BrowserHooks & { front?: (page?: boolean) => void }).front?.(page); }
   /** The browser's popup rule (ComputerBrowser.popup, pinned in computer-browser.test.ts): the popup is the agent's own only while the
    *  agent holds the wheel and the opener is the agent's own; it is opened by the opener's label under the same rule. */
   popup(from: number, url: string): void {
@@ -6369,4 +6370,50 @@ test("a pop-out resize reaches the pointer; with no pointer drawn, or not popped
   const n = ptr.keeps.length;
   h.svc.popResized();
   assert.equal(ptr.keeps.length, n, "not popped out");
+});
+
+// ---- after the wave's re-review
+
+test("typing with no pointer of its own does not keep an earlier pointer", async () => {
+  const { h, b, ptr } = await pointed();
+  await h.call(A, "computer_click", { ref: "e1" });   // the pointer is drawn for chat:a
+  b.focused = { target: box("Search"), shown: "Search", sensitive: false, plainTextarea: false, node: 12, frame: "F1" };
+  b.focusAt = null;                                    // the corner cannot be read: no pointer for this typing
+  ptr.touches = 0;
+  assert.match((await h.call(A, "computer_type", { text: "rope" })).text, /^Typed 4 characters\./);
+  assert.equal(ptr.touches, 0, "the click's arrow is not kept alive by typing that showed nothing");
+});
+
+test("selecting the tab already in front keeps the pointer", async () => {
+  const { h, b, ptr } = await pointed();
+  await h.call(A, "computer_click", { ref: "e1" });
+  const n = ptr.hides;
+  b.select(0);
+  assert.equal(ptr.hides, n);
+});
+
+test("closing a background tab keeps the pointer", async () => {
+  const { h, b, ptr } = await pointed();
+  await b.open("https://a.test/two", { newTab: true, background: true, by: "x" });
+  await h.call(A, "computer_click", { ref: "e1" });
+  const n = ptr.hides;
+  b.close(1);
+  assert.equal(ptr.hides, n);
+});
+
+test("an off-screen click whose call is no longer current moves no mouse", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  h.sites.mark("https://a.test");
+  b.spots.set("e1", { target: btn("Next") });
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  h.svc.select("chat:a");   // selected, but the pane has no rectangle: off screen
+  h.svc.takeOver();
+  release();
+  const r = await p;
+  assert.match(r.text, /^busy: /, r.text);
+  assert.deepEqual([b.moves, b.order.includes("mouse"), b.clicks.length], [[], false, 0], "no hook, and the read's own mouse move is guarded");
 });

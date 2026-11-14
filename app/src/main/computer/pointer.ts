@@ -8,12 +8,14 @@ import { BrowserWindow, ImageView, nativeImage, nativeTheme, screen } from "elec
 import type { NativeImage } from "electron";
 import type { Clock } from "./asks";
 import { realClock } from "./asks";
-import { cleanTitle } from "./title";
+import { TAG_MAX, tagText, wellFormed } from "./title";
+
+// The tag's text rules live in title.ts (pure: the service needs them without loading Electron); re-exported for this module's users.
+export { TAG_MAX, tagText };
 
 export const TRAVEL_MAX_MS = 250;
 export const HIDE_AFTER_MS = 3000;
 export const PULSE_MS = 150;
-export const TAG_MAX = 24;
 /** How long an action waits for the image to be drawn before it goes on with no pointer (the first draw of a name makes a
  *  page and captures it: about 140 ms; every later one is cached). */
 export const DRAW_MAX_MS = 200;
@@ -41,23 +43,6 @@ export function travelPath(from: Point, to: Point, ms: number): Point[] {
     out.push({ x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e });
   }
   return out;
-}
-
-/** The string with every lone surrogate dropped: `encodeURIComponent` throws on one. */
-const wellFormed = (s: string) => s.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "");
-
-/** A spinner or status mark in front of a name: one or two characters that are neither letters, digits nor white space, then
- *  white space and something more. The hosts put one before a Code session's title and change it several times a second. */
-const LEADING_MARK = /^[^\p{L}\p{N}\s]{1,2}\s+(?=\S)/u;
-
-/** The session's name as the tag shows it: scrubbed like a title, without one leading spinner mark (nothing is dropped when
- *  nothing would remain), well formed, at most 24 characters counting the closing "…". */
-export function tagText(name: string): string {
-  const t = wellFormed(cleanTitle(name)).replace(LEADING_MARK, "");
-  if (t.length <= TAG_MAX) return t;
-  let cut = t.slice(0, TAG_MAX - 1);
-  if (/[\ud800-\udbff]$/.test(cut)) cut = cut.slice(0, -1);   // never half of a surrogate pair
-  return `${cut.trimEnd()}…`;
 }
 
 /** What draws it: one per window that shows a browser. `draw` resolves with the image's size in DIPs once the image for a
@@ -185,8 +170,12 @@ export class Pointer {
     // The image's whole box lies inside the view from the first instant: the start moves left and up as far as it must.
     // Both ends inside means every step between them is.
     const from = { x: Math.min(start.x, within.x + within.width - r.v.width), y: Math.min(start.y, within.y + within.height - r.v.height) };
-    const path = travelPath(from, to, travelMs(from, to));
-    surface.place(from);
+    // A target a pixel away from where the pointer already is, shown here, is not a journey (a click's second move, after the
+    // read's, lands within a rounding of the first).
+    const here = this.on && this.on.surface === surface ? this.on.at : null;
+    const near = !!here && Math.hypot(to.x - here.x, to.y - here.y) < 2;
+    const path = near ? [] : travelPath(from, to, travelMs(from, to));
+    surface.place(near ? to : from);
     surface.show(true);
     const on: OnScreen = { window: o.window, surface, kind: o.kind, tag, at: from, to, size: r.v, within };
     this.on = on;
@@ -486,8 +475,11 @@ export function imageSurface(o: {
   const apply = () => { try { view.setBounds({ x: Math.round(at.x), y: Math.round(at.y), width: size.width, height: size.height }); } catch { /* the window went */ } };
   const scale = () => { try { return screen.getDisplayMatching(o.window.getBounds()).scaleFactor; } catch { return 1; } };
   const dark = () => { try { return nativeTheme.shouldUseDarkColors; } catch { return false; } };
-  const raise = () => {
+  let shown = false;
+  const raise = (was: boolean) => {
     if (gone()) return;
+    // Already shown and already the last child: nothing to do (a remove and an add can flicker right before a press).
+    try { const kids = o.window.contentView.children; if (was && kids[kids.length - 1] === view) return; } catch { /* no list: raise */ }
     try { o.window.contentView.removeChildView(view); } catch { /* not a child yet */ }
     try { o.window.contentView.addChildView(view); } catch { /* the window went */ }
   };
@@ -507,8 +499,10 @@ export function imageSurface(o: {
     place(p) { at = p; if (!gone()) apply(); },
     show(on) {
       if (gone()) return;
+      const was = shown;
       try { view.setVisible(on); } catch { return; }
-      if (on) raise();
+      shown = on;
+      if (on) raise(was);
     },
     ready(kind, tag) { return o.has(kind, tag, scale(), dark()); },
     prepare(kind, tag) {

@@ -17,11 +17,11 @@ import type { ComputerConfig } from "./config";
 import { judge, type AskWhy, type Focus, type Verdict } from "./gate";
 import type { Rect } from "./mask";
 import { REFUSAL } from "./refusals";
-import { tagText, type Point, type Pointer } from "./pointer";
+import type { Point, Pointer } from "./pointer";
 import { OUTLINE_MAX, UNREAD, withPage } from "./reply";
 import { hideAfterOrigin } from "./snapshot";
 import type { AgentRef } from "./registry";
-import { cleanTitle } from "./title";
+import { cleanTitle, tagText } from "./title";
 import type { SiteMarks } from "./sites";
 import type { Holder, Wheel } from "./wheel";
 import { CODE_KEY } from "../policy/computer";
@@ -370,6 +370,8 @@ export class ComputerService {
   private popped = false;
   /** The session whose browser the pointer last travelled in (session-browser S18): a hide for another session is none. */
   private pointerFor: string | null = null;
+  /** The uid of the tab the pointer was last drawn over: a tab brought in front that is this one covers nothing new. */
+  private pointerTab: number | null = null;
   /** Set by `flushForQuit`: records are closed, nothing is tracked or written. A browser made later (a quit that failed)
    *  opens them again. */
   private closed = false;
@@ -800,7 +802,7 @@ export class ComputerService {
     };
   }
 
-  /** session-browser S17: the pointer moved onto a ref or a point (hover styles and menus), nothing pressed. The target is
+  /** session-browser S17: the page's mouse moved onto a ref or a point (hover styles and menus), nothing pressed. The target is
    *  resolved as a click's is; the gate lets a hover go, but a Read only session never gets here. */
   private async hoverStep(agent: AgentRef, p: Slot, b: BrowserLike, by: By, take: () => boolean, lease: Lease): Promise<Step> {
     // The move IS the act (PR 5, A4): the call takes the computer before anything moves the page's mouse, and the target read's
@@ -881,7 +883,7 @@ export class ComputerService {
         if (v && !approved.includes(v)) return refuseAt(REFUSAL.clickMovedFocus, this.url(b));
         into = idOf(now);
       }
-      return this.typeInto(agent, p, b, text, fresh ? { tab: fresh.tab, pageToken: fresh.pageToken } : { tab, pageToken: token }, into, lease);
+      return this.typeInto(agent, p, b, text, fresh ? { tab: fresh.tab, pageToken: fresh.pageToken } : { tab, pageToken: token }, into, lease, went.moved);
     };
     if (!whys.length) return { reply: take() ? await run([]) : fail(REFUSAL.late) };
     return {
@@ -999,6 +1001,7 @@ export class ComputerService {
       const within = b.viewBox();
       if (!to || !within) return { reply: null, moved: false };
       this.pointerFor = p.key;
+      this.pointerTab = b.tabUid(tab);
       alive = await pointer.moveTo({ window: this.popped ? "pop" : "main", to, name: this.labelOf(p.key), kind, within, alive: () => this.current(p, agent, lease) && !pastDeadline() });
     } catch {
       try { this.o.log?.("the pointer could not be shown"); } catch { /* main's log is not the service's concern */ }
@@ -1015,6 +1018,16 @@ export class ComputerService {
   private pulse(p: Slot): void {
     if (this.pointerFor !== p.key) return;
     try { this.o.pointer?.pulse(); } catch { /* a pointer that fails never fails the click */ }
+  }
+
+  /** The browser says the tab in front may have changed (`page`: its main frame committed another document). The pointer goes only
+   *  when the tab in front is not the one it was drawn over, or the page in it is another one: selecting the tab already in front
+   *  or closing a background tab covers nothing. */
+  private fronted(p: Slot, page: boolean): void {
+    if (p.key !== this.pointerFor) return;
+    let same = false;
+    try { const b = p.browser; same = !page && !!b && this.pointerTab !== null && b.tabUid(this.active(b)) === this.pointerTab; } catch { /* cannot tell: hide */ }
+    if (!same) this.hidePointer(p.key);
   }
 
   /** The caret stays while a long typing goes on and when it ends (the pointer's own 3 s start from the last touch). */
@@ -1053,6 +1066,7 @@ export class ComputerService {
     // session's travel short): `session` is the one the event is for, and the pointer was drawn for `pointerFor`.
     if (session !== undefined && session !== this.pointerFor) return;
     this.pointerFor = null;
+    this.pointerTab = null;
     try { this.o.pointer?.hide(); } catch { /* nothing to hide */ }
   }
 
@@ -1075,14 +1089,14 @@ export class ComputerService {
    *  (I3b) once the tab or page it was judged on is no longer the one in front. R76: the browser checks the wheel just
    *  before each chunk and key event, after its focus reads too. R81: and only while the call is current (`lease`): a
    *  Take over and Hand back between chunks stops it as a Take over does. */
-  private async typeInto(agent: AgentRef, p: Slot, b: BrowserLike, text: string, at: Judged, focus: FocusId, lease: Lease): Promise<Reply> {
-    // Each look between chunks keeps the caret (a typing of a few thousand characters runs past the pointer's 3 s).
-    const keepGoing = (): boolean => { this.touchPointer(p); return this.current(p, agent, lease); };
+  private async typeInto(agent: AgentRef, p: Slot, b: BrowserLike, text: string, at: Judged, focus: FocusId, lease: Lease, shown: boolean): Promise<Reply> {
+    // Only a typing whose own travel was asked keeps a caret (one that showed nothing must not keep an earlier click's arrow). Each look between chunks keeps it (a typing of a few thousand characters runs past the pointer's 3 s).
+    const keepGoing = (): boolean => { if (shown) this.touchPointer(p); return this.current(p, agent, lease); };
     // The user holds the wheel, or held it since the call started and handed it back; otherwise the hold is gone.
     const stopper = (): string => (this.o.wheel.holder(p.key)?.kind === "user" || (this.holds(p.key, agent.key) && this.registered(agent)) ? "the user took over" : NOT_HELD);
     try {
       await b.type(text, keepGoing, at, focus);
-      this.touchPointer(p);
+      if (shown) this.touchPointer(p);
     } catch (e) {
       if (!(e instanceof PageChanged)) throw e;
       this.line(p, agent.label, "Typing stopped part way", agent);
@@ -2339,8 +2353,8 @@ export class ComputerService {
         ask: (i) => this.pageAsk(p.key, i),
         note: (text) => { void this.pageNote(p.key, text); },
         changed: () => this.refresh(p.key),
-        // The tab in front changed, or its main frame committed another document: the pointer drawn over the old page goes.
-        front: () => this.hidePointer(p.key),
+        // The tab in front changed, or (`page`) its main frame committed another document: the pointer drawn over the old page goes.
+        front: (page) => this.fronted(p, !!page),
         agentDrives: () => this.o.wheel.holder(p.key)?.kind === "agent",
       });
       if (p.key === this.selected && !this.popped) p.browser.show(this.bounds);

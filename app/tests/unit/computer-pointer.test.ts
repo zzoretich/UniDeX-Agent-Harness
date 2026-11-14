@@ -581,6 +581,43 @@ test("touch keeps a shown pointer for another 3 s and shows nothing by itself", 
   const tail: string[] = s.log; assert.ok(!tail.slice(tail.lastIndexOf("hide") + 1).includes("show"));
 });
 
+test("a move of one pixel takes no travel time", async () => {
+  const { clock, s, pointer } = make();
+  void pointer.moveTo({ ...base, to: { x: 440, y: 300 }, alive: () => true });
+  await flush(); await clock.advance(300);
+  let done: boolean | undefined;
+  void pointer.moveTo({ ...base, to: { x: 441, y: 300 }, alive: () => true }).then((v) => { done = v; });
+  await flush();
+  assert.equal(done, true, "no clock time passed");
+  assert.deepEqual(s.places[s.places.length - 1].p, { x: 441, y: 300 }, "placed on the target at once");
+  // Two pixels or more still travels.
+  let far: boolean | undefined;
+  void pointer.moveTo({ ...base, to: { x: 443, y: 300 }, alive: () => true }).then((v) => { far = v; });
+  await flush();
+  assert.equal(far, undefined, "three pixels is a travel");
+  await clock.advance(300);
+  assert.equal(far, true);
+});
+
+test("showing a pointer that is already on top does not re-add its view", async () => {
+  stub.ImageView = FakeView;
+  stub.screen = { getDisplayMatching: () => ({ scaleFactor: 1 }) };
+  stub.nativeTheme = { shouldUseDarkColors: false };
+  const { win, children, ops } = fakeWindow();
+  const surface = imageSurface({ window: win as never, has: () => true, tag: async () => img(90, 30) });
+  const view = FakeView.last!;
+  surface.show(true);
+  assert.equal(ops.adds, 1);
+  surface.show(true);
+  assert.equal(ops.adds, 1, "shown and last: left alone");
+  children.push({ tab: true });                       // a tab came on top
+  surface.show(true);
+  assert.equal(ops.adds, 2, "raised again");
+  assert.equal(children[children.length - 1], view);
+  surface.show(false); surface.show(true);
+  assert.equal(ops.adds, 3, "hidden then shown: raised");
+});
+
 test("a spinner in front of a name is not part of the tag", () => {
   assert.equal(tagText("✳ Fix login"), "Fix login");
   assert.equal(tagText("⠐ Fix login"), "Fix login");
@@ -660,15 +697,16 @@ class FakeView {
   setVisible(v: boolean) { this.visible = v; }
 }
 function fakeWindow() {
-  const children: unknown[] = []; const st = { destroyed: false };
+  const children: unknown[] = []; const st = { destroyed: false }; const ops = { adds: 0 };
   const win = {
     isDestroyed: () => st.destroyed, getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }), getContentBounds: () => ({ x: 0, y: 0, width: 801, height: 601 }),
     contentView: {
-      addChildView: (v: unknown) => { if (st.destroyed) throw new Error("Object has been destroyed"); children.push(v); },
+      children,
+      addChildView: (v: unknown) => { if (st.destroyed) throw new Error("Object has been destroyed"); ops.adds++; children.push(v); },
       removeChildView: (v: unknown) => { if (st.destroyed) throw new Error("Object has been destroyed"); const i = children.indexOf(v); if (i >= 0) children.splice(i, 1); },
     },
   };
-  return { win, children, st };
+  return { win, children, st, ops };
 }
 const img = (w: number, h: number) => ({ getSize: () => ({ width: w, height: h }) }) as never;
 
@@ -820,7 +858,9 @@ test("the drawer draws one at a time, caches, and makes the press image with the
   const { clock, d } = mk();
   assert.equal(FakeWin.made.length, 0, "no window until the first draw");
   const [a, b] = await Promise.all([d.draw("arrow", "One", 1, false), d.draw("caret", "One", 1, false)]);
-  await d.draw("press", "One", 1, false);              // joins the press the arrow started
+  // The arrow itself starts the press image: a click's pulse finds it ready with nobody asking for it.
+  assert.equal(d.has("press", "One", 1, false), true, "asking for an arrow also made the press");
+  await d.draw("press", "One", 1, false);              // joins (or reads) the press the arrow started
   assert.equal(FakeWin.made.length, 1);
   assert.equal(FakeWin.maxActive, 1);
   // arrow, caret, and the press the arrow started: three loads, each its own kind.

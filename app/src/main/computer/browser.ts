@@ -42,7 +42,7 @@ export interface TabInfo { index: number; url: string; title: string; openedBy: 
 export interface Resolved { target: Target; shown: string; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; corner: { x: number; y: number }; pageToken: string; tab: number }
 /** `agentDrives` (session-browser S17): whether this session's agent holds the wheel now. A popup made at any other time (the
  *  person drives, or nobody does) is the person's, not its opener's agent's. */
-export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; agentDrives?(): boolean; front?(): void }
+export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; agentDrives?(): boolean; front?(page?: boolean): void }
 /** The history entry a move would load (session-browser S17), as one read of the tab's history saw it: the tab by its uid, the
  *  entry by its id (null where none: a waking tab, nothing to go to, an unreadable history) and the method it was loaded by. */
 export interface Entry { uid: number; id: string | null; url: string | null; method: "GET" | "other" | "unknown" }
@@ -67,7 +67,7 @@ const QUERY_MS = 100;
 const MAX_TABS = TABS_MAX;
 const KEPT_DOCUMENTS = 8;
 const DEFAULT_SIZE = { width: 1280, height: 800 };
-// R26: after the pointer moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
+// R26: after the page's mouse moves onto a point, how long hover styles and mouseenter handlers get before the hit test.
 const HOVER_MS = 100;
 const URL_NOTE_MAX = 2_000;
 /** session-browser S17: the most main-frame document loaders whose method is kept while they are in flight. */
@@ -796,7 +796,7 @@ export class ComputerBrowser {
       corner = p;
     }
     p = { x: Math.round(p.x), y: Math.round(p.y) };
-    // D9: the fields' values are read before the pointer arrives as well as after the walk, and `shown` is scrubbed with
+    // D9: the fields' values are read before the page's mouse arrives as well as after the walk, and `shown` is scrubbed with
     // both (a page that clears a code on mouseenter would otherwise leave it in the name read after the hover).
     const pre = await this.secrets(t);
     // `onPoint`: the pointer main draws arrives first, then the page's mouse. Nothing is awaited between the look at `valid` that
@@ -919,7 +919,7 @@ export class ComputerBrowser {
     return now;
   }
 
-  /** Moves the pointer onto where `r` was resolved and presses nothing (session-browser S17). Like a click's move, it goes only
+  /** Moves the page's mouse onto where `r` was resolved and presses nothing (session-browser S17). Like a click's move, it goes only
    *  while `valid()` (the call is current) and `r`'s tab and page are still in front; otherwise PageChanged. */
   async hoverAt(r: Resolved, valid: () => boolean): Promise<void> {
     const t = this.where(r);
@@ -2179,7 +2179,7 @@ export class ComputerBrowser {
     this.committed(t, url);
     // The tab in front shows another document: the pointer drawn over the old one is for a page that is gone (S18). A tab behind
     // covers nothing, and a same-document change (`did-navigate-in-page`) never gets here.
-    if (this.list[this.current] === t) this.o.hooks.front?.();
+    if (this.list[this.current] === t) this.o.hooks.front?.(true);
     this.o.hooks.changed();
   }
 
@@ -2301,7 +2301,7 @@ export class ComputerBrowser {
     return { x: v.pageX, y: v.pageY };
   }
 
-  /** Moves the pointer to `p` and gives hover styles and handlers a moment to apply; `before` runs just before the move
+  /** Moves the page's mouse to `p` and gives hover styles and handlers a moment to apply; `before` runs just before the move
    *  (a click's validity check, R76). */
   private async hover(t: Tab, p: Point, before?: () => void): Promise<void> {
     before?.();
