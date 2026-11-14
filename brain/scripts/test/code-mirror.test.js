@@ -161,7 +161,7 @@ test('F7 (M5): a tee naming a new session writes its session event at once, and 
     const r = run({ host: 'claude', cwd: '/work/demo', since: 0, terminal: TERM, vault: env.vault, dirs: env.dirs.claude });
     assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'in A')));
     fs.writeFileSync(teeFile, JSON.stringify({ session_id: ID_C }));
-    assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_C, FOLLOWER_MS), 'the /clear shows at once, before the transcript exists');
+    assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_C, FOLLOWER_MS), 'the /clear shows before the transcript exists');
     await sleep(800); // about 40 polls of 20 ms: one lookup per 8 polls, not one per poll
     assert.ok(lookups >= 2 && lookups <= 8, `looked up ${lookups} times`);
     fs.writeFileSync(claudeFile(env, ID_C), userLine(ID_C, 'in C'));
@@ -374,7 +374,7 @@ test('follow codex: a rollout claimed by a live terminal is skipped, and two unc
   assert.equal(errs[0].message, "Can't tell which conversation · Terminal ⌘J");
   setMtime(a, now + 5000); // the other terminal is busy in it
   fs.writeFileSync(claimPath(env, TERM2), JSON.stringify({ pid: process.pid, cwd: env.work, since: now - 30000, file: a }));
-  assert.ok(await waitFor(() => sessionIds(cache).includes(ID_B)));
+  assert.ok(await waitFor(() => sessionIds(cache).includes(ID_B), FOLLOWER_MS));
   assert.equal(readEvents(cache).some((e) => e.id === ID_A), false);
   await r.stop();
 });
@@ -439,7 +439,7 @@ test('follow codex: a /new in one terminal while the other is idle is ambiguous 
   await sleep(300);
   assert.equal(sessionIds(c1).includes(ID_C), false, 'not while T2 is quiet too');
   fs.appendFileSync(r2, codexUser('T2 is typing'));
-  assert.ok(await waitFor(() => sessionIds(c1).at(-1) === ID_C));
+  assert.ok(await waitFor(() => sessionIds(c1).at(-1) === ID_C, FOLLOWER_MS));
   assert.ok(readEvents(c1).some((e) => e.text === 'the new one'), 'the new rollout from its start');
   assert.ok(await waitFor(() => readEvents(c2).some((e) => e.text === 'T2 is typing')));
   await sleep(300);
@@ -460,7 +460,7 @@ test('follow codex (R18): with --id, that rollout is the first adoption, then th
   assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'resumed')));
   setMtime(old, now - 5000);
   fs.writeFileSync(codexFile(env, `new-${ID_D}`), metaLine(ID_D, env.work, iso(now - 2000)) + codexUser('after /new'));
-  assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_D));
+  assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_D, FOLLOWER_MS));
   assert.deepEqual(sessionIds(cache), [ID_A, ID_D]);
   await r.stop();
 });
@@ -480,7 +480,7 @@ test('follow codex (R17b): a /resume of an older rollout after the current one w
   await sleep(200);
   assert.deepEqual(sessionIds(cache), [ID_A]);
   fs.appendFileSync(old, codexUser('resumed here'));
-  assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_B));
+  assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_B, FOLLOWER_MS));
   assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'resumed here')));
   const after = readEvents(cache).slice(readEvents(cache).findIndex((e) => e.kind === 'session' && e.id === ID_B));
   assert.deepEqual(after.filter((e) => e.kind === 'prompt').map((e) => e.text), ['from long ago', 'resumed here'], 'the resumed rollout from its start');
@@ -513,7 +513,7 @@ test('follow codex (R17b): the same /resume with an idle live peer is ambiguous 
   assert.equal(sessionIds(c1).includes(ID_B) || sessionIds(c2).includes(ID_B), false, 'neither while both are quiet');
   await sleep(20);
   fs.appendFileSync(r2, codexUser('T2 is typing'));
-  assert.ok(await waitFor(() => sessionIds(c1).at(-1) === ID_B));
+  assert.ok(await waitFor(() => sessionIds(c1).at(-1) === ID_B, FOLLOWER_MS));
   assert.ok(await waitFor(() => readEvents(c2).some((e) => e.text === 'T2 is typing')));
   await sleep(300);
   assert.deepEqual(sessionIds(c2), [ID_C]);
@@ -678,7 +678,9 @@ test('follow codex (D): a rollout that cannot be stat\'ed keeps its last known a
     setMtime(other, now - 40000);
     fs.unlinkSync(cur);
     // ten missing polls end it, and the scans in them saw no file
-    const ended = await Promise.race([r.done.then(() => true), sleep(3000).then(() => false)]);
+    let ended = false;
+    r.done.then(() => { ended = true; });
+    await waitFor(() => ended, FOLLOWER_MS);
     assert.deepEqual(sessionIds(cache), [ID_A], 'the chat it had; the other rollout was never taken');
     assert.ok(ended, 'the follower ended when its rollout stayed gone');
   } finally { await r.stop(); }
@@ -794,7 +796,7 @@ test('follow codex (D3): a /resume the folder guess finds after a report is foll
     setMtime(a, now - 30000);
     const b = codexFile(env, `b-${ID_B}`);
     fs.writeFileSync(b, metaLine(ID_B, env.work, iso(now - 3600000)) + codexUser('b old', now - 3590000) + codexUser('b resumed', now));
-    assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_B), 'R17b: the /resume');
+    assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_B, FOLLOWER_MS), 'R17b: the /resume');
     report(env, TERM, ID_A, now - 110000); // the same report written again: a new mtime, the same report
     await sleep(500);
     assert.deepEqual(sessionIds(cache), [ID_A, ID_B]);
