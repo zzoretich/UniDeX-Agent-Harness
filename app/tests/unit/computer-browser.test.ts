@@ -154,7 +154,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
     query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false, worlds: new Map(),
     memory: new SecretMemory(), frame: "F1", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0,
     leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false,
-    loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null,
+    loaders: new Map(), sawForm: false, methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null,
     console: new ConsoleLog(), requests: new Map(), committedLoader: null as string | null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
   };
   const inner = b as unknown as { list: unknown[]; current: number };
@@ -1506,6 +1506,28 @@ test("the allowed reload of a POST entry goes through the protocol, and a free r
   assert.equal(await b.navEntry(bound({ method: "GET" }), () => true), false);
   assert.deepEqual(nav.moves, []);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("a tab that has seen a form's request may hold a form before the entry is bound", () => {
+  const { b, tab } = make();
+  assert.equal(b.mayHoldForm(), false);
+  requested(b, tab, "L1", "POST");            // no commit, no bind: the table is still empty
+  assert.equal((tab.methods as Map<string, string>).size, 0);
+  assert.equal(b.mayHoldForm(), true);
+});
+
+test("a subresource or a frame's document of another method does not make the tab hold a form", () => {
+  const { b, tab } = make();
+  requested(b, tab, "L2", "POST", {}, "F1", "XHR");
+  requested(b, tab, "L3", "POST", {}, "F1", "Fetch");
+  requested(b, tab, "L4", "POST", {}, "F2", "Document");
+  assert.equal(b.mayHoldForm(), false);
+});
+
+test("a tab that has only seen GET documents does not hold a form", () => {
+  const { b, tab } = make();
+  requested(b, tab, "L5", "GET");
+  assert.equal(b.mayHoldForm(), false);
 });
 
 test("mayHoldForm is true only for a tab whose table holds an entry loaded by another method than GET", async () => {
