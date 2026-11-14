@@ -909,7 +909,7 @@ test("the ask labels state each category in app-written text", () => {
     submit: "Submit", purchase: "Purchase", send: "Send", delete: "Delete", merge: "Merge", signin: "Sign in", download: "Download",
     unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
     frame: "Act inside a frame from another site", power: "Turn on the browser",
-    closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again",
+    closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again", resendown: "Send a form again",
   });
 });
 
@@ -1312,8 +1312,227 @@ test("the user's Back reaches the selected browser and is logged (session-browse
   h.svc.nav("back");
   h.svc.nav("forward");
   h.svc.nav("reload");
+  await flush();
   assert.deepEqual(h.b().navs, ["back", "forward", "reload"]);
   assert.deepEqual(h.lastState().log.slice(-3).map((l) => l.text), ["Went back", "Went forward", "Reloaded"]);
+});
+
+/** The person's browser on a page, selected (session-browser S13). */
+async function userOn(h: ReturnType<typeof make>): Promise<FakeBrowser> {
+  await h.ensureOn("chat:a");
+  h.svc.select("chat:a");
+  await h.svc.navigate("https://a.test/form");
+  return h.b();
+}
+const OWN_TITLE = "Send this form again?";
+const OWN_DETAIL = "Reloading this page sends its form again, so what it did may happen twice. Page: https://a.test/form";
+
+test("the person's Reload on a form's result page asks before anything is sent", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  assert.deepEqual([b.navs, b.reposts], [[], []], "nothing reloaded yet");
+  assert.equal(ask.title, OWN_TITLE);
+  assert.equal(ask.detail, OWN_DETAIL);
+  assert.equal(ask.always, false, "no Always button");
+  assert.equal(ask.why, "resendown");
+  assert.equal(ask.sessionLabel, "You", "the person's own card, not an agent's or the page's");
+  const card = h.lastState().asks.filter((a) => a.id === ask.id);
+  assert.equal(card.length, 1, "the pane's state carries the card");
+  assert.ok(!h.lastState().log.some((l) => l.text === "Reloaded"));
+});
+
+test("Send again sends the form again through the protocol and logs Reloaded", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  h.svc.answer(ask.id, "once");
+  await flush();
+  assert.equal(b.navs.length, 1);
+  assert.deepEqual(b.reposts, [true], "the protocol's reload, which sends the form again");
+  assert.equal(h.lastState().log.at(-1)!.text, "Reloaded");
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("Cancel sends nothing", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  h.svc.answer((await h.asked()).id, "deny");
+  await flush();
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+  assert.ok(!h.lastState().log.some((l) => l.text === "Reloaded"));
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("the card's time running out sends nothing", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  await h.clock.advance(121_000);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the card went");
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+});
+
+test("a second Reload while the card is up raises no second card", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  h.svc.nav("reload");
+  await flush();
+  assert.equal(h.broker.pending().length, 1);
+  // Two presses before the history read ends raise one card as well.
+  const g = make();
+  const gb = await userOn(g);
+  gb.methods.reload = "other";
+  let release!: () => void;
+  gb.entryGate = new Promise<void>((r) => { release = r; });
+  g.svc.nav("reload"); g.svc.nav("reload");
+  release();
+  await flush();
+  assert.equal(g.broker.pending().length, 1);
+});
+
+test("the person's Reload on a GET page, a blank page, an unknown entry or an unreadable history reloads at once with no card", async () => {
+  for (const [name, set] of [
+    ["a GET page", (b: FakeBrowser) => { b.methods.reload = "GET"; }],
+    // about:blank is a GET to the browser's entry() (it is not fetched), whatever the table says.
+    ["a blank page", (b: FakeBrowser) => { b.methods.reload = "GET"; b.pages[0].url = "about:blank"; }],
+    ["an unknown entry", (b: FakeBrowser) => { b.methods.reload = "unknown"; }],
+    ["an unreadable history", (b: FakeBrowser) => { b.methods.reload = "other"; b.entryError = new Error("DevTools holds the debugger"); }],
+  ] as const) {
+    const h = make();
+    const b = await userOn(h);
+    set(b);
+    h.svc.nav("reload");
+    await flush();
+    assert.equal(h.broker.pending().length, 0, `${name}: no card`);
+    assert.deepEqual([b.navs, b.reposts], [["reload"], [false]], `${name}: Electron's own reload`);
+    assert.equal(h.lastState().log.at(-1)!.text, "Reloaded", name);
+  }
+});
+
+test("the page changed before Send again: nothing is sent", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  b.methods.reload = "GET";                                   // the entry the move would load is not the one the card named
+  h.svc.answer(ask.id, "once");
+  await flush();
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+  assert.ok(!h.lastState().log.some((l) => l.text === "Reloaded"));
+  // Another entry id: the same.
+  const g = make();
+  const gb = await userOn(g);
+  gb.methods.reload = "other";
+  g.svc.nav("reload");
+  const ask2 = await g.asked();
+  gb.entryId = "e2";
+  g.svc.answer(ask2.id, "once");
+  await flush();
+  assert.deepEqual([gb.navs, gb.reposts], [[], []]);
+});
+
+test("the person's card goes when its tab loads another page, closes, or the browser turns off", async () => {
+  // Another page in the tab.
+  let h = make();
+  let b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  b.commit(0, "https://a.test/elsewhere");
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the page changed");
+  assert.deepEqual(b.navs, []);
+  // The tab closes (another tab stays).
+  h = make();
+  b = await userOn(h);
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  h.svc.select("chat:a"); b.select(0);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  b.close(0);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the tab closed");
+  assert.deepEqual(b.navs, []);
+  // Another tab comes to the front.
+  h = make();
+  b = await userOn(h);
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  b.select(0);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  b.select(1);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the tab is no longer in front");
+  // The browser turns off.
+  h = make();
+  b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  h.svc.power("chat:a", false);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "switched off");
+  assert.deepEqual(b.navs, []);
+});
+
+test("Take over takes the person's own card away, and a computer_status call lists it as one of the page's", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  const status = await h.call(A, "computer_status");
+  assert.match(status.text, /Your pending asks: none/);
+  assert.match(status.text, /The page's pending asks: 1 \(Send a form again\)/);
+  assert.ok(!status.text.includes(OWN_TITLE), "only the count and the kind, as for the page's cards");
+  h.svc.takeOver();
+  await flush();
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, []);
+});
+
+test("the person's Back and Forward never ask", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.back = "other"; b.methods.forward = "other"; b.methods.reload = "GET";
+  h.svc.nav("back");
+  h.svc.nav("forward");
+  await flush();
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, ["back", "forward"]);
+  assert.deepEqual(b.asked, [], "the history was not read for either");
+});
+
+test("the person's card is not an agent's: no agent call waits on it and no wheel is reserved", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  assert.equal(h.wheel.holder("chat:a"), null, "nobody holds the wheel for it");
+  assert.equal(h.svc.reserved("chat:a"), false);
+  // An agent's call goes at once, and its turn's end leaves the card up.
+  await h.open(A, "https://a.test/other");
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" });
+  assert.equal(h.svc.reserved("chat:a"), false, "the agent's hold is not reserved by the person's card");
+  h.svc.agentGone(A);
+  assert.ok(h.broker.pending().some((a) => a.id === ask.id), "an agent's turn ending does not cancel the person's card");
 });
 
 test("a Back that cannot happen logs nothing", async () => {

@@ -7,7 +7,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 ### Added
 - **A public roadmap.** What's coming to UniDeX, from idea to release, at https://zzoretich.github.io/UniDeX-Agent-Harness/, built from roadmap/roadmap.md on every change. <!-- no-tour: a page on GitHub, not in the app -->
 - The browser pane has a visible drag bar, Side, Half and Wide sizes, and it can now grow until the session is 360 px wide. <!-- tour: code.computer-size, sessions.computer-size -->
-- Back, Forward and Reload in the browser pane. <!-- no-tour: standard browser buttons -->
+- Back, Forward and Reload in the browser pane; Reload on a form's result page asks before it sends the form again. <!-- no-tour: standard browser buttons -->
 - A session started from UniDeX is told about its browser three ways: a browser skill, a paragraph the agenticos server sends at connect, and tool descriptions that name the UniDeX browser. <!-- no-tour: nothing new on screen -->
 - Delete thread in Sessions moves a thread to the Trash. <!-- no-tour: one button with a confirmation -->
 - computer.awake (default 4): how many session browsers keep their pages loaded. <!-- no-tour: a setting -->

@@ -99,6 +99,8 @@ export const ASK_LABELS: Readonly<Record<AskWhy, string>> = Object.freeze({
   unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
   frame: "Act inside a frame from another site", power: "Turn on the browser",
   closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again",
+  // The person's own Reload on a form's result page (session-browser S13): no agent raised it.
+  resendown: "Send a form again",
 });
 
 const CATEGORIES: ReadonlySet<string> = new Set<AskCategory>(["submit", "purchase", "send", "delete", "merge", "signin", "download"]);
@@ -126,6 +128,9 @@ export const PAGE_GONE = "the app's window closed or reloaded";
 /** Why a program's open or its held pages are dropped while the Computer setting is off (main's log line, never an address). */
 const SETTING_OFF = "the computer is off in Settings";
 const PAGE = { session: "page", label: "the page" } as const;
+/** The `session` of a card the person's own press raised (the Reload of a form's result page): not an agent's, so no turn's end,
+ *  no call's wait and no wheel reservation ever meets it, and not "the page", which would blame the site. */
+const PERSON = "person";
 /** The busy reply's sentence for a session whose hold is gone: freed, or (R81) its process no longer the registered one. */
 const NOT_HELD = "this session no longer holds the wheel";
 const USER = "You";
@@ -361,6 +366,8 @@ export class ComputerService {
   private readonly jobs = new Map<string, Job>();
   /** The latest ref of each session that called, by session key. */
   private readonly agents = new Map<string, AgentRef>();
+  /** The person's Send this form again card of each session, by session key, and the tab and page it was raised for. */
+  private readonly ownCards = new Map<string, { askId: string; uid: number; token: string }>();
   private selected: string | null = null;
   /** Whether the page says the pane is in view (session-browser S12); false until it says so, and after pageGone. */
   private inView = false;
@@ -1781,15 +1788,73 @@ export class ComputerService {
     this.refresh(p.key);
   }
 
-  /** The person's Back, Forward or Reload on the selected computer's active tab: their own, so nothing asks
-   *  (session-browser S13). */
+  /** The person's Back, Forward or Reload on the selected computer's active tab: their own, so Back and Forward never ask
+   *  (session-browser S13). A Reload of a page a form loaded would send the form again, so it asks the person first, in the
+   *  pane, then sends it (S13, 2026-11-14); it starts work and never throws into the IPC handler. */
   nav(go: ComputerNavGo): void {
     if (!this.selected) return;
     const p = this.slot(this.selected);
     if (p.power === "off") return;
+    if (go === "reload") {
+      void this.reloadOwn(p).catch(() => undefined);
+      return;
+    }
     // Only a move that started is logged: a stale click on a Back that cannot happen says nothing.
     if (!this.browserOf(p).nav(go)) return;
-    this.line(p, USER, go === "back" ? "Went back" : go === "forward" ? "Went forward" : "Reloaded", null);
+    this.line(p, USER, go === "back" ? "Went back" : "Went forward", null);
+  }
+
+  /** The person's Reload: a page not known to have been loaded by another method than GET reloads at once, as Electron's own
+   *  reload does; one a form loaded asks (`resendown`) and, once the person says Send again, sends the form through the protocol
+   *  by the same bound move an agent's allowed reload uses (`navEntry`). A history that cannot be read reloads as it always did. */
+  private async reloadOwn(p: Slot): Promise<void> {
+    const b = this.browserOf(p);
+    const tab = this.active(b);
+    const uid = b.tabUid(tab);
+    const token = uid === null ? null : b.tabToken(uid);
+    const now = (): boolean => this.slots.get(p.key) === p && p.browser === b && p.power !== "off" && uid !== null && b.tabToken(uid) === token && b.tabUid(this.active(b)) === uid;
+    const entry = tab < 0 ? null : await b.entry("reload", tab).catch(() => null);
+    // The press was for the page the person saw: another page, another tab or a browser that is gone by now is not it.
+    if (!now()) return;
+    if (!entry || entry.id === null || entry.method !== "other") {
+      if (b.nav("reload")) this.line(p, USER, "Reloaded", null);
+      return;
+    }
+    if (this.ownCards.has(p.key)) return;
+    const site = this.siteAt(b, tab);
+    const input: AskInput = {
+      computer: p.key, session: PERSON, sessionLabel: USER, why: "resendown", title: "Send this form again?",
+      notice: `${ASK_LABELS.resendown} on ${hostOf(site)}?`,
+      detail: `Reloading this page sends its form again, so what it did may happen twice. ${cardPage(b.tabs()[tab]?.url ?? null)}`,
+      site, always: false,
+    };
+    const held = this.o.broker.hold(input);
+    const raised = this.o.broker.pending(p.key).find((x) => x.session === PERSON);
+    if (raised && uid !== null && token !== null) this.ownCards.set(p.key, { askId: raised.id, uid, token });
+    try {
+      let o = await held;
+      while (o.state === "waiting_for_user") o = await this.o.broker.wait(o.askId);
+      if (o.state !== "allowed") return;
+      try {
+        // Nothing is awaited between navEntry's own check of the tab and entry and the move.
+        if (await b.navEntry("reload", entry, now)) this.line(p, USER, "Reloaded", null);
+      } catch (e) {
+        if (e instanceof PageChanged) return;
+        this.line(p, USER, forPerson(e), null);
+      }
+    } finally {
+      if (raised && this.ownCards.get(p.key)?.askId === raised.id) this.ownCards.delete(p.key);
+    }
+  }
+
+  /** The tab in front or its page changed (the browser's front hook): the person's Send this form again card, raised for one page
+   *  of one tab, goes with it. */
+  private ownCardGone(p: Slot): void {
+    const c = this.ownCards.get(p.key);
+    if (!c) return;
+    let same = false;
+    try { const b = p.browser; same = !!b && b.tabToken(c.uid) === c.token && b.tabUid(this.active(b)) === c.uid; } catch { /* cannot tell: the card goes */ }
+    if (!same) this.o.broker.cancel((a) => a.id === c.askId, "the page changed");
   }
 
   /** Take over (agent-computer D5, D31): the person drives, the session's pending asks are cancelled, and any typing stops
@@ -2360,7 +2425,7 @@ export class ComputerService {
         note: (text) => { void this.pageNote(p.key, text); },
         changed: () => this.refresh(p.key),
         // The tab in front changed, or (`page`) its main frame committed another document: the pointer drawn over the old page goes.
-        front: (page) => this.fronted(p, !!page),
+        front: (page) => { this.fronted(p, !!page); this.ownCardGone(p); },
         agentDrives: () => this.o.wheel.holder(p.key)?.kind === "agent",
       });
       if (p.key === this.selected && !this.popped) p.browser.show(this.bounds);
