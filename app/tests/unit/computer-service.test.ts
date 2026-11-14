@@ -2480,6 +2480,7 @@ test("R81: Take over then Hand back after Allow, while the action revalidates: n
   const r = await p;
   assert.match(r.text, /^The page changed while you waited: look again\./);
   assert.equal(b.clicks.length, 0);
+  assert.deepEqual(b.moves, ["guarded"], "the first read moved the mouse guarded; the look again after Allow carried the real predicate and moved nothing");
 });
 
 test("R81: an old call that resumes after its session key was registered again (the thread's next CLI) sends nothing", async () => {

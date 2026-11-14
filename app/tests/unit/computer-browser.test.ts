@@ -538,7 +538,7 @@ const landed = (page: FakePage) => {
 test("a ref the page has scrolled into view is hit-tested where it is: the scroll is added to the viewport point", async () => {
   // Scrolled by 250, the field's box is at 50–70 in the viewport; at document y 60 (no scroll added) is the second button.
   const { b, page } = scrolled(250);
-  const r = await b.resolve({ ref: "e3" }, "s1");
+  const r = await b.resolve({ ref: "e3" }, "s1", () => true);
   assert.deepEqual([r.backendNodeId, r.target.role, r.target.name, r.point], [12, "textbox", "Search", { x: 50, y: 60 }]);
   assert.deepEqual(hits(page), [[50, 310]]);
   await b.click(r, () => true);
@@ -550,7 +550,7 @@ test("an x, y click on a scrolled page is judged on the control under that point
   // Scrolled by 30, the press at viewport (50, 280) lands on the field (document y 310). Document y 280, shown a scroll's
   // height above the press, is the second button: the gate would judge it while the press went to the field.
   const { b, page } = scrolled(30, { x: 0, y: 260, width: 100, height: 40 });
-  const r = await b.resolve({ x: 50, y: 280 }, "s1");
+  const r = await b.resolve({ x: 50, y: 280 }, "s1", () => true);
   assert.deepEqual([r.backendNodeId, r.target.role, r.target.name], [12, "textbox", "Search"]);
   await b.click(r, () => true);
   assert.deepEqual(hits(page), [[50, 310], [50, 310]], "the click's own check hit-tests the same document point");
@@ -562,7 +562,7 @@ test("an x, y click on a scrolled page is judged on the control under that point
 test("a scroll between the offset's read and the hit test refuses: the node hit belongs to neither position", async () => {
   const { b, page } = scrolled(250);
   page.on.set("DOM.getNodeForLocation", () => { page.scroll.y += 30; });
-  assert.equal(await refusal(b.resolve({ ref: "e3" }, "s1")), "The page changed: look again.");
+  assert.equal(await refusal(b.resolve({ ref: "e3" }, "s1", () => true)), "The page changed: look again.");
   const r = resolved({ target: { role: "textbox", name: "Search", inForm: false, fileInput: false }, backendNodeId: 12, judged: [12], point: { x: 50, y: 60 } });
   page.sent.length = 0;
   page.scroll.y = 250;
@@ -577,7 +577,7 @@ test("R87: a fractional scroll: the press goes to exactly the document point the
   // starts. Viewport (50, 319) is document y 319.5, on the field; the hit test takes whole numbers, so it is made at y 320,
   // on the button. Pressed at (50, 319), the press reached the field while the gate judged the button.
   const { b, page } = scrolled(0.5, { x: 0, y: 320, width: 100, height: 40 });
-  const r = await b.resolve({ x: 50, y: 319 }, "s1");
+  const r = await b.resolve({ x: 50, y: 319 }, "s1", () => true);
   assert.deepEqual([r.backendNodeId, r.target.role, r.target.name], [11, "button", "Go"]);
   const n = page.mice().length;
   await b.click(r, () => true);
@@ -596,7 +596,7 @@ test("R87: a scroll between the click's last hit test and its press refuses, and
   // A smooth scroll still running, the page's own script or the person: the scroll moves after the click's hit test (here
   // while the click reads the DOM) and before the press, so the point no longer shows the node judged.
   const { b, page } = scrolled(250);
-  const r = await b.resolve({ ref: "e3" }, "s1");
+  const r = await b.resolve({ ref: "e3" }, "s1", () => true);
   page.sent.length = 0;
   let moved = false;
   page.on.set("DOM.getDocument", () => { if (!moved) { moved = true; page.scroll.y += 40; } });
@@ -1146,7 +1146,7 @@ test("a number the session was never shown is refused", async () => {
   page.ax = items(600);
   await snapshotText(b, "s", 8000);              // only the first lines were shown
   assert.equal(refTo(tab, "s", "e500"), undefined, "never registered");
-  await assert.rejects(b.resolve({ ref: "e500" }, "s"), /take a new snapshot/);
+  await assert.rejects(b.resolve({ ref: "e500" }, "s", () => true), /take a new snapshot/);
 });
 
 test("after a navigation only the reply's printed refs exist", async () => {
@@ -1185,7 +1185,7 @@ test("a navigation during a snapshot's reads leaves no usable ref", async () => 
   page.on.set("Accessibility.getFullAXTree", () => { (tab as { seq: number }).seq++; });   // the page moves on mid-read
   await b.snapshot(undefined, "s");
   assert.equal((tab as { refs: Map<string, { token: string }> }).refs.get("s")?.token, "1.0", "registered under the token read before the reads");
-  await assert.rejects(b.resolve({ ref: "e1" }, "s"), /There is no e1 on this page now/);
+  await assert.rejects(b.resolve({ ref: "e1" }, "s", () => true), /There is no e1 on this page now/);
 });
 
 // ---- fix round 1 (session-browser S16, M3): `settled` through the web contents' own events
@@ -2797,10 +2797,10 @@ test("focusCorner is the focused field's top-left in the viewport; null for noth
 
 test("Resolved.corner is the box's top-left for a ref and the point itself for an x, y target", async () => {
   const a = scrolled(250);
-  const r = await a.b.resolve({ ref: "e3" }, "s1");
+  const r = await a.b.resolve({ ref: "e3" }, "s1", () => true);
   assert.deepEqual([r.corner, r.point], [{ x: 0, y: 50 }, { x: 50, y: 60 }]);
   const c = scrolled(30, { x: 0, y: 260, width: 100, height: 40 });
-  const p = await c.b.resolve({ x: 50, y: 280 }, "s1");
+  const p = await c.b.resolve({ x: 50, y: 280 }, "s1", () => true);
   assert.deepEqual(p.corner, { x: 50, y: 280 });
 });
 
@@ -3084,9 +3084,64 @@ test("an action that starts on a detached debugger attaches once in its read and
   await s.b.scroll(0, 120, () => true);
   assert.equal(s.d.attaches, 1);
   assert.deepEqual(s.page.inputs(), ["Input.dispatchMouseEvent:mouseWheel"]);
+  // scroll onto a ref: the tab is attached first, then the scroll into view and the wheel go out.
+  const sr = detached();
+  sr.page.boxes = new Map([[12, { x: 0, y: 300, width: 100, height: 20 }]]);
+  (sr.tab.refs as Map<string, unknown>).set("s1", { refs: new Map([["e3", { backendNodeId: 12, frameId: "F1", target: { role: "textbox", name: "Search", inForm: false, fileInput: false } }]]), token: "1.0" });
+  const at3 = await sr.b.resolve({ ref: "e3" }, "s1", () => true);
+  assert.equal(sr.d.attaches, 1);
+  sr.page.sent.length = 0;
+  await sr.b.scroll(0, 120, () => true, at3);
+  assert.equal(sr.d.attaches, 1, "attached once");
+  assert.deepEqual(sr.page.sent.filter((x) => x.method === "DOM.scrollIntoViewIfNeeded" || x.method === "Input.dispatchMouseEvent").map((x) => x.method), ["DOM.scrollIntoViewIfNeeded", "Input.dispatchMouseEvent"]);
   // The browser's own click and hover have no read of their own: they lean on the one just before them, and say so when there is none.
   const alone = detached();
   await assert.rejects(alone.b.click(resolved(), () => true), PageChanged);
   await assert.rejects(alone.b.hoverAt(resolved(), () => true), PageChanged);
   assert.equal(alone.d.attaches, 0);
+});
+
+/** A page with the ref e3 (the field, node 12) in session s1's snapshot, for the scroll into view of a ref. */
+function withRef() {
+  const m = make();
+  m.page.boxes = new Map([[12, { x: 0, y: 300, width: 100, height: 20 }]]);
+  (m.tab.refs as Map<string, unknown>).set("s1", { refs: new Map([["e3", { backendNodeId: 12, frameId: "F1", target: { role: "textbox", name: "Search", inForm: false, fileInput: false } }]]), token: "1.0" });
+  return m;
+}
+const intoView = (page: FakePage): number => page.sent.filter((x) => x.method === "DOM.scrollIntoViewIfNeeded").length;
+
+test("a ref's scroll into view is not sent when the call stops being current while the debugger attaches", async () => {
+  const m = withRef();
+  const live = { on: true }, att = attachment(m.tab);
+  att.begin();
+  const run = assert.rejects(m.b.resolve({ ref: "e3" }, "s1", () => live.on), PageChanged);
+  await later(5);
+  att.end(() => { live.on = false; });
+  await run;
+  assert.equal(intoView(m.page), 0, "the person's page was not scrolled");
+  assert.deepEqual(m.page.mice(), []);
+});
+
+test("a scroll's scroll into view is not sent when the call stops being current while the debugger attaches", async () => {
+  const m = withRef();
+  const at3 = await m.b.resolve({ ref: "e3" }, "s1", () => true);
+  m.page.sent.length = 0;
+  const live = { on: true }, att = attachment(m.tab);
+  att.begin();
+  const run = assert.rejects(m.b.scroll(0, 120, () => live.on, at3), PageChanged);
+  await later(5);
+  att.end(() => { live.on = false; });
+  await run;
+  assert.equal(intoView(m.page), 0);
+  assert.deepEqual(m.page.mice(), []);
+});
+
+test("an element that cannot be scrolled into view still lets the action go on", async () => {
+  const m = withRef();
+  m.page.on.set("DOM.scrollIntoViewIfNeeded", () => { throw new Error("Node is detached from document"); });
+  const at3 = await m.b.resolve({ ref: "e3" }, "s1", () => true);
+  assert.equal(at3.backendNodeId, 12, "resolve went on");
+  await m.b.scroll(0, 120, () => true, at3);
+  assert.equal(intoView(m.page), 2, "both tried");
+  assert.deepEqual(m.page.mice().map((x) => x[0]).filter((t) => t === "mouseWheel"), ["mouseWheel"]);
 });

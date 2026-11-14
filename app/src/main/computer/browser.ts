@@ -793,9 +793,10 @@ export class ComputerBrowser {
    * current on the way) moves nothing and throws PageChanged. R81: `valid` is looked at again after the hook, with nothing
    * awaited between that look and the move.
    */
-  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean, onPoint?: (p: Point, corner: Point, tab: number) => Promise<boolean>): Promise<Resolved> {
+  async resolve(by: { ref: string } | { x: number; y: number }, session: string | undefined, valid: () => boolean, onPoint?: (p: Point, corner: Point, tab: number) => Promise<boolean>): Promise<Resolved> {
     const t = this.tab();
     const where = { pageToken: this.tokenOf(t), tab: this.current };
+    const doc = t.doc;
     let named: number | null = null;
     let p: Point;
     let corner: Point;
@@ -804,7 +805,7 @@ export class ComputerBrowser {
       const ref = mine?.refs.get(by.ref);
       if (!mine || !ref || mine.token !== this.tokenOf(t)) throw new Error(REFUSAL.noRefNow(by.ref));
       named = ref.backendNodeId;
-      await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: named }).catch(() => undefined);
+      await this.intoView(t, named, () => { this.live(valid, where); if (t.doc !== doc) throw new PageChanged(); });
       const rect = await this.box(t, named);
       corner = { x: rect.x, y: rect.y };
       p = centre(rect);
@@ -821,7 +822,7 @@ export class ComputerBrowser {
     if (onPoint && !(await onPoint(p, { x: Math.round(corner.x), y: Math.round(corner.y) }, where.tab))) throw new PageChanged();
     // `valid`: the page's mouse goes onto the point only while the call is current (for a hover the move IS the act).
     // The move is for the tab and page this call read (`where`): a navigation or tab switch during the travel moves nothing.
-    await this.hover(t, p, valid && (() => this.live(valid, where)));
+    await this.hover(t, p, () => this.live(valid, where));
     const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
       if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error(REFUSAL.covered);
     });
@@ -1039,11 +1040,8 @@ export class ComputerBrowser {
     const doc = t.doc;
     let p: Point;
     if (at) {
-      // Not part of the act: it only brings the node into view to measure it (as `resolve`'s own does) and sends no input, though
-      // the page's scroll listeners fire. While attached it goes out in the tick of the caller's look; only during an attach wait
-      // can it come late, which is left. The wheel below is judged after it, and a scroll since is read again by whatever acts
-      // next (R87).
-      await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: at.backendNodeId }).catch(() => undefined);
+      // It moves the page (its scroll listeners fire), so it follows the rule too: the call is looked at in the tick it is sent.
+      await this.intoView(t, at.backendNodeId, () => { if (!valid()) throw new PageChanged(); this.where(at); if (t.doc !== doc) throw new PageChanged(); });
       p = centre(await this.box(t, at.backendNodeId));
     } else {
       const m = await this.send<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(t, "Page.getLayoutMetrics");
@@ -1859,11 +1857,31 @@ export class ComputerBrowser {
   /** Reads, and whatever may wait, go through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). Delivery of an
    *  action goes through `deliver`. */
   private async send<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
+    // Kept as it is, not built on `attached`: a read's command is sent in the same tick when nothing is to be waited for (the
+    // commit event's first read depends on it).
     if (t.wc.isDestroyed()) throw new Told(REFUSAL.tabGone, "That tab was closed.");
     if (t.wc.isDevToolsOpened()) throw new Told(REFUSAL.devToolsOpen, "DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
     if (t.attaching) await t.attaching;
     else if (!t.wc.debugger.isAttached()) await this.attach(t);
     return cdp<T>(t.wc.debugger, method, params);
+  }
+
+  /** Brings a node into view before it is measured. It moves the page, so it is delivered like an input: the tab is attached
+   *  first (a wait, before any look), then `check` (the call is current, the tab and document are the ones judged; it throws
+   *  PageChanged) runs and the command goes out in the same tick. A node that cannot be scrolled is not an error; a PageChanged
+   *  from the check or from `deliver` ends the action. */
+  private async intoView(t: Tab, backendNodeId: number, check: () => void): Promise<void> {
+    await this.attached(t);
+    check();
+    await this.deliver(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch((e: unknown) => { if (e instanceof PageChanged) throw e; });
+  }
+
+  /** The tab's debugger is attached (waiting for an attachment in flight), or the refusal that says why it cannot be. */
+  private async attached(t: Tab): Promise<void> {
+    if (t.wc.isDestroyed()) throw new Told(REFUSAL.tabGone, "That tab was closed.");
+    if (t.wc.isDevToolsOpened()) throw new Told(REFUSAL.devToolsOpen, "DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
+    if (t.attaching) await t.attaching;
+    else if (!t.wc.debugger.isAttached()) await this.attach(t);
   }
 
   /** The command that makes the page do or receive something (an input event, a file, a reload), sent in the very tick of the
