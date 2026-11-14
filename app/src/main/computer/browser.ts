@@ -583,12 +583,9 @@ export class ComputerBrowser {
     if (now.id === null && !t.pending) throw new Error(REFUSAL.noHistoryRead);
     if (now.id !== bound.id || now.method !== bound.method) return false;
     if (bound.method === "GET" || t.pending) return false;
-    // R81: the one command that sends a form again goes out in this very tick. `send` may first wait for an attachment, long
-    // enough for a Take over, Off or page change, so it is not used: a tab that is not ready to be driven right now (gone,
-    // DevTools open, an attachment in flight, the debugger detached) is treated as the page having changed, never attached
-    // and sent.
-    if (t.wc.isDestroyed() || t.wc.isDevToolsOpened() || t.attaching || !t.wc.debugger.isAttached()) throw new PageChanged();
-    await cdp(t.wc.debugger, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
+    // R81: the one command that sends a form again goes out in this very tick (`deliver`: a tab that cannot be driven right now
+    // is the page having changed, never attached and sent). A command that was sent and failed is the table's sentence.
+    await this.deliver(t, "Page.reload").catch((e: unknown) => { throw e instanceof PageChanged ? e : new Error(REFUSAL.notReloaded); });
     return true;
   }
 
@@ -970,7 +967,7 @@ export class ComputerBrowser {
     try {
       for (const [i, line] of lines.entries()) {
         if (i > 0) {
-          await this.keys(t, "Enter", async () => { still(); await ready(false); if (!valid()) throw stop; still(); });
+          await this.keys(t, "Enter", async () => { still(); await ready(false); }, () => { if (!valid()) throw stop; still(); });
         }
         const chars = Array.from(line);
         for (let k = 0; k < chars.length; k += CHUNK) {
@@ -979,7 +976,7 @@ export class ComputerBrowser {
           await ready(true);
           if (!valid()) return;
           still();
-          await this.send(t, "Input.insertText", { text: chars.slice(k, k + CHUNK).join("") });
+          await this.deliver(t, "Input.insertText", { text: chars.slice(k, k + CHUNK).join("") });
         }
       }
     } catch (e) {
@@ -1022,7 +1019,7 @@ export class ComputerBrowser {
         }
         // The document the event goes to is the one in front as it is sent (a commit while it is on its way comes after).
         const doc = t.doc;
-        await this.send(t, "Input.dispatchKeyEvent", e);
+        await this.deliver(t, "Input.dispatchKeyEvent", e);
         if (MODIFIER_KEYS.has(e.key)) { if (e.type === "keyUp") down.delete(e.key); else down.set(e.key, doc); }
       }
       done = true;
@@ -1031,7 +1028,7 @@ export class ComputerBrowser {
       // on the document they went down to, while the call is current.
       if (!done) {
         for (const up of events.slice(i)) {
-          if (up.type === "keyUp" && down.has(up.key) && mayLetGo(up.key)) await this.send(t, "Input.dispatchKeyEvent", up).catch(() => undefined);
+          if (up.type === "keyUp" && down.has(up.key) && mayLetGo(up.key)) await this.deliver(t, "Input.dispatchKeyEvent", up).catch(() => undefined);
         }
       }
     }
@@ -1039,15 +1036,23 @@ export class ComputerBrowser {
 
   async scroll(dx: number, dy: number, at?: Resolved): Promise<void> {
     const t = at ? this.where(at) : this.tab();
+    const doc = t.doc;
     let p: Point;
     if (at) {
+      // Not part of the act: it only brings the node into view to measure it (as `resolve`'s own does), sends no input and runs
+      // no page script; the wheel below is judged after it, and a scroll since is read again by whatever acts next (R87).
       await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: at.backendNodeId }).catch(() => undefined);
       p = centre(await this.box(t, at.backendNodeId));
     } else {
       const m = await this.send<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(t, "Page.getLayoutMetrics");
       p = { x: m.cssVisualViewport.clientWidth / 2, y: m.cssVisualViewport.clientHeight / 2 };
     }
-    await this.send(t, "Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, deltaX: dx, deltaY: dy });
+    // R81: the reads above may have taken a while: the wheel goes only to the tab and document it was aimed at, judged here, with
+    // nothing awaited between this look and the command.
+    if (at) this.where(at);
+    else if (this.list[this.current] !== t) throw new PageChanged();
+    if (t.doc !== doc) throw new PageChanged();
+    await this.deliver(t, "Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, deltaX: dx, deltaY: dy });
   }
 
   /** Places the active view at the pane's rectangle (CSS pixels of the HUD page), or parks it off-screen (null). */
@@ -1797,7 +1802,8 @@ export class ComputerBrowser {
     const host = this.host();
     const r = host && host.isVisible() ? await dialog.showOpenDialog(host, opts) : await dialog.showOpenDialog(opts);
     if (r.canceled || !r.filePaths.length || moved()) return;
-    await this.send(t, "DOM.setFileInputFiles", { files: r.filePaths, backendNodeId: p.backendNodeId })
+    // R81: set in the very tick of the check above (`deliver`), never after a wait for an attachment.
+    await this.deliver(t, "DOM.setFileInputFiles", { files: r.filePaths, backendNodeId: p.backendNodeId })
       .catch((e: Error) => this.o.hooks.note(`The chosen file did not reach the page: ${e.message}`));
   }
 
@@ -1853,6 +1859,18 @@ export class ComputerBrowser {
     if (t.wc.isDevToolsOpened()) throw new Told(REFUSAL.devToolsOpen, "DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
     if (t.attaching) await t.attaching;
     else if (!t.wc.debugger.isAttached()) await this.attach(t);
+    return cdp<T>(t.wc.debugger, method, params);
+  }
+
+  /** The command that makes the page do or receive something (an input event, a file, a reload), sent in the very tick of the
+   *  check that allowed it (R76, R81). `send` may first wait for an attachment, long enough for a Take over, Off, a tab switch or
+   *  another document, and the command would then go to a page the check never judged. So this does not wait for anything: a tab
+   *  that cannot be driven right now (gone, DevTools open, an attachment in flight, the debugger detached) is the page having
+   *  changed (PageChanged), never attached and sent. It is `async` only so that a refusal is a rejection a `.catch` can see; it
+   *  awaits nothing before the command is handed to the debugger. A read stays on `send`: it attaches, so the debugger is attached
+   *  when the action's check, which comes after its reads, is followed by this. */
+  private async deliver<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
+    if (t.wc.isDestroyed() || t.wc.isDevToolsOpened() || t.attaching || !t.wc.debugger.isAttached()) throw new PageChanged();
     return cdp<T>(t.wc.debugger, method, params);
   }
 
@@ -2443,17 +2461,19 @@ export class ComputerBrowser {
   }
 
   private async mouse(t: Tab, type: "mouseMoved" | "mousePressed" | "mouseReleased", p: Point, clickCount = 1): Promise<void> {
-    await this.send(t, "Input.dispatchMouseEvent", {
+    await this.deliver(t, "Input.dispatchMouseEvent", {
       type, x: p.x, y: p.y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : clickCount,
     });
   }
 
-  /** Sends a key's events; `before` runs just before each one (typing's focus and validity checks, R76, R78). */
-  private async keys(t: Tab, key: string, before: () => void | Promise<void>): Promise<void> {
+  /** Sends a key's events; `before` runs first for each one (typing's focus read, R76, R78) and may wait; `last` is the
+   *  validity check that follows it, synchronous, with nothing awaited between it and the event (R81). */
+  private async keys(t: Tab, key: string, before: () => Promise<void>, last: () => void): Promise<void> {
     // keyEvents throws for a key it does not know before anything is sent.
     for (const e of keyEvents(key)) {
       await before();
-      await this.send(t, "Input.dispatchKeyEvent", e);
+      last();
+      await this.deliver(t, "Input.dispatchKeyEvent", e);
     }
   }
 }

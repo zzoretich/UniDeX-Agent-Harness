@@ -242,7 +242,7 @@ inside the surface.
   the wheel, from the process the app registered for it (a thread's next Chat CLI under the same key is another caller),
   and no Take over, Hand back or end of the turn has come since the call began (each starts a new generation of the
   computer, so a call that waited through a Take over and Hand back sends nothing, though the same session drives
-  again). A press's release and a chord's modifier key-ups complete what was already sent: they go when only the page
+  again). An event whose tab cannot be driven at the moment it would be sent (closed, DevTools open on it, the app still attaching to it, or its debugger detached) is dropped, not sent late. A press's release and a chord's modifier key-ups complete what was already sent: they go when only the page
   moved within its document (a mousedown handler's pushState), when a check stopped the chord on that document, and when
   a key failed to send (letting Shift go activates nothing), but only to the document that got the press and only while
   the call is current. After a cross-document commit, a Take over or a Stop they are withheld. The trade: the page may
