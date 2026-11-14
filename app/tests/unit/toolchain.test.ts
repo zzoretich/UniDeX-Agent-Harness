@@ -303,7 +303,8 @@ test("a signature from another team, or none, stops the install before anything 
   assert.deepEqual(fs.readdirSync(m.deps.paths.downloads), []);
   m.state.team = MANIFEST.tools.node.teamId as string;
   m.state.signed = false;
-  await assert.rejects(runToolchainJob("node", m.deps, context()), /node is not validly signed: .*invalid signature/);
+  // The reason after the path is cut at 200 characters, so how much of it shows depends on the temp folder's length.
+  await assert.rejects(runToolchainJob("node", m.deps, context()), /node is not validly signed: /);
 });
 
 test("uv: uv and uvx land in ~/.local/bin", async () => {

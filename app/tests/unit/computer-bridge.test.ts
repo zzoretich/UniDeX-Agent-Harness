@@ -21,10 +21,13 @@ const THIRTEEN = [
   "computer_scroll", "computer_wait", "computer_tab", "computer_nav", "computer_hover", "computer_console",
 ];
 
+// A Unix socket path may be at most 103 bytes on macOS, and a test run's temp root already takes about 70 of them: socket
+// folders go under /tmp, which is short on both macOS and Linux.
+const SOCK_TMP = "/tmp";
 const made: string[] = [];
 afterEach(() => { for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
 function tmpSock(): string {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), "aos-br-"));
+  const d = fs.mkdtempSync(path.join(SOCK_TMP, "aos-br-"));
   made.push(d);
   return path.join(d, "computer", "bridge.sock");
 }
@@ -388,8 +391,8 @@ test("the socket path: the data folder's own, else a short one of its own in the
 });
 
 test("the temp-folder path listens like the default one, in a 0700 folder of this user's; a link there is refused", async () => {
-  // The system temp folder itself, as the app passes it (a folder inside it would make the path too long again).
-  const tmp = os.tmpdir();
+  // A short temp folder itself, as the app passes the system one (a folder inside it would make the path too long again).
+  const tmp = SOCK_TMP;
   const data = fs.mkdtempSync(path.join(tmp, "aos-brt-"));
   made.push(data);
   const long = path.join(data, "x".repeat(110));
