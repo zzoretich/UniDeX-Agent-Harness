@@ -10,7 +10,7 @@
 
 import { realClock, type Answer, type Ask, type AskBroker, type AskInput, type Clock, type Outcome } from "./asks";
 import type { BrowserHooks, ComputerBrowser, FocusId, Judged, Resolved, TabInfo } from "./browser";
-import { FocusMoved, forPerson, PageChanged } from "./cdp";
+import { FocusMoved, forPerson, PageChanged, Told } from "./cdp";
 import type { ToolCall, ToolReply } from "./bridge";
 import { categoriesOf, type AskCategory, type Target } from "./categories";
 import type { ComputerConfig } from "./config";
@@ -34,7 +34,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "openTab" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled" | "viewBox" | "windowPoint" | "focusCorner">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "openTab" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "mayHoldForm" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled" | "viewBox" | "windowPoint" | "focusCorner">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -203,6 +203,9 @@ interface Slot {
   programOpens: string[];
   /** Serialises the computer's acting steps, so one action's hover, check and press never interleave with another's. */
   queue: Promise<unknown>;
+  /** The person's Send this form again card for this session, and the tab and page it was raised for. It lives on the slot,
+   *  not in a map by key: a terminal hand-over renames the slot and the record goes with it. */
+  ownCard: { askId: string; uid: number; token: string } | null;
 }
 
 /** An action the gate asks about. `whys` is never empty; the first names the card. */
@@ -366,8 +369,6 @@ export class ComputerService {
   private readonly jobs = new Map<string, Job>();
   /** The latest ref of each session that called, by session key. */
   private readonly agents = new Map<string, AgentRef>();
-  /** The person's Send this form again card of each session, by session key, and the tab and page it was raised for. */
-  private readonly ownCards = new Map<string, { askId: string; uid: number; token: string }>();
   private selected: string | null = null;
   /** Whether the page says the pane is in view (session-browser S12); false until it says so, and after pageGone. */
   private inView = false;
@@ -799,7 +800,7 @@ export class ComputerService {
       if (late) return late;
       // R81: the move is sent only while the call is still current after the history read (the same delivery path as a click).
       let moved = false;
-      const lost = await this.deliver(p, agent, lease, async (valid) => { moved = await b.navEntry(go, entry, valid); });
+      const lost = await this.deliver(p, agent, lease, async (valid) => { moved = await b.navEntry(entry, valid); });
       if (lost) return lost;
       if (!moved) return refuseAt(REFUSAL.changed, this.url(b));
       return free("Reloaded");
@@ -1462,7 +1463,8 @@ export class ComputerService {
     // name on the wheel, and status then reads "this session".
     const asks = this.o.broker.pending(p.key);
     const own = asks.filter((x) => x.session === agent.key);
-    const others = asks.filter((x) => x.session !== agent.key);
+    const theirs = asks.filter((x) => x.session === PERSON);
+    const others = asks.filter((x) => x.session !== agent.key && x.session !== PERSON);
     return [
       p.power === "off" ? `Browser: ${agent.label} (off: computer_open asks the user to turn it on)` : `Browser: ${agent.label}`,
       `Driving: ${driving}`,
@@ -1472,6 +1474,7 @@ export class ComputerService {
       ...tabs.map((t) => `  [${t.index}]${t.active ? " (active)" : ""} ${untrustedUrl(t.url)} opened by ${t.openedBy ?? "the user"}`),
       own.length ? "Your pending asks:" : "Your pending asks: none",
       ...own.map((x) => `  ${x.id} ${x.notice}`),
+      ...(theirs.length ? [`The user's own pending ask: ${theirs.length} (${[...new Set(theirs.map((x) => ASK_LABELS[x.why]))].join(", ")})`] : []),
       ...(others.length ? [`The page's pending asks: ${others.length} (${[...new Set(others.map((x) => ASK_LABELS[x.why]))].join(", ")})`] : []),
     ].join("\n");
   }
@@ -1804,23 +1807,33 @@ export class ComputerService {
     this.line(p, USER, go === "back" ? "Went back" : "Went forward", null);
   }
 
-  /** The person's Reload: a page not known to have been loaded by another method than GET reloads at once, as Electron's own
-   *  reload does; one a form loaded asks (`resendown`) and, once the person says Send again, sends the form through the protocol
+  /** The person's Reload: a tab that holds no entry a form loaded (`mayHoldForm`) reloads at once with no history read, as Electron's
+   *  own reload does; a page not known to have been loaded by another method than GET reloads the same way after one read; one a form loaded asks (`resendown`) and, once the person says Send again, sends the form through the protocol
    *  by the same bound move an agent's allowed reload uses (`navEntry`). A history that cannot be read reloads as it always did. */
   private async reloadOwn(p: Slot): Promise<void> {
     const b = this.browserOf(p);
     const tab = this.active(b);
-    const uid = b.tabUid(tab);
-    const token = uid === null ? null : b.tabToken(uid);
-    const now = (): boolean => this.slots.get(p.key) === p && p.browser === b && p.power !== "off" && uid !== null && b.tabToken(uid) === token && b.tabUid(this.active(b)) === uid;
-    const entry = tab < 0 ? null : await b.entry("reload", tab).catch(() => null);
-    // The press was for the page the person saw: another page, another tab or a browser that is gone by now is not it.
-    if (!now()) return;
-    if (!entry || entry.id === null || entry.method !== "other") {
+    // A tab no form ever loaded reloads at once, as Electron's own reload does: no history read, nothing awaited.
+    if (tab < 0 || !b.mayHoldForm(tab)) {
       if (b.nav("reload")) this.line(p, USER, "Reloaded", null);
       return;
     }
-    if (this.ownCards.has(p.key)) return;
+    const uid = b.tabUid(tab);
+    const token = uid === null ? null : b.tabToken(uid);
+    const alive = (): boolean => this.slots.get(p.key) === p && p.browser === b && p.power !== "off" && uid !== null && b.tabIndex(uid) >= 0;
+    const now = (): boolean => alive() && b.tabToken(uid!) === token && b.tabUid(this.active(b)) === uid;
+    const entry = await b.entry("reload", tab).catch(() => null);
+    if (!now()) {
+      // The page went on while the history was read: the press is not dropped, the tab it was for reloads the plain way (what
+      // the button did before it asked about forms), unless the tab or the browser is gone.
+      if (alive() && b.nav("reload", b.tabIndex(uid!))) this.line(p, USER, "Reloaded", null);
+      return;
+    }
+    if (!entry || entry.id === null || entry.method !== "other") {
+      if (b.nav("reload", tab)) this.line(p, USER, "Reloaded", null);
+      return;
+    }
+    if (p.ownCard) return;
     const site = this.siteAt(b, tab);
     const input: AskInput = {
       computer: p.key, session: PERSON, sessionLabel: USER, why: "resendown", title: "Send this form again?",
@@ -1830,27 +1843,28 @@ export class ComputerService {
     };
     const held = this.o.broker.hold(input);
     const raised = this.o.broker.pending(p.key).find((x) => x.session === PERSON);
-    if (raised && uid !== null && token !== null) this.ownCards.set(p.key, { askId: raised.id, uid, token });
+    if (raised && uid !== null && token !== null) p.ownCard = { askId: raised.id, uid, token };
     try {
       let o = await held;
       while (o.state === "waiting_for_user") o = await this.o.broker.wait(o.askId);
       if (o.state !== "allowed") return;
       try {
         // Nothing is awaited between navEntry's own check of the tab and entry and the move.
-        if (await b.navEntry("reload", entry, now)) this.line(p, USER, "Reloaded", null);
+        if (await b.navEntry(entry, now)) this.line(p, USER, "Reloaded", null);
       } catch (e) {
         if (e instanceof PageChanged) return;
-        this.line(p, USER, forPerson(e), null);
+        // The person's log is the person's: a refusal worded for an agent's reply is not written here.
+        this.line(p, USER, e instanceof Told ? forPerson(e) : "The form was not sent again.", null);
       }
     } finally {
-      if (raised && this.ownCards.get(p.key)?.askId === raised.id) this.ownCards.delete(p.key);
+      if (raised && p.ownCard?.askId === raised.id) p.ownCard = null;
     }
   }
 
   /** The tab in front or its page changed (the browser's front hook): the person's Send this form again card, raised for one page
    *  of one tab, goes with it. */
   private ownCardGone(p: Slot): void {
-    const c = this.ownCards.get(p.key);
+    const c = p.ownCard;
     if (!c) return;
     let same = false;
     try { const b = p.browser; same = !!b && b.tabToken(c.uid) === c.token && b.tabUid(this.active(b)) === c.uid; } catch { /* cannot tell: the card goes */ }
@@ -2408,7 +2422,7 @@ export class ComputerService {
 
   private slot(key: string): Slot {
     let p = this.slots.get(key);
-    if (!p) { p = { key, browser: null, power: "off", remembered: null, title: null, named: null, conversation: null, sig: "null", save: null, known: null, quiet: null, programOpens: [], reopening: null, used: 0, waking: null, queued: 0, looking: 0, stopped: null, stops: [], replies: Promise.resolve(), reading: 0, log: [], last: null, running: 0, queue: Promise.resolve() }; this.slots.set(key, p); }
+    if (!p) { p = { key, browser: null, power: "off", remembered: null, title: null, named: null, conversation: null, sig: "null", save: null, known: null, quiet: null, programOpens: [], reopening: null, used: 0, waking: null, queued: 0, looking: 0, stopped: null, stops: [], replies: Promise.resolve(), reading: 0, log: [], last: null, running: 0, queue: Promise.resolve(), ownCard: null }; this.slots.set(key, p); }
     return p;
   }
 

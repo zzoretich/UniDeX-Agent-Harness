@@ -177,7 +177,7 @@ function onePage(): { browser: BrowserLike; clicks: () => number } {
     activeWebContentsId: () => 1,
     pageToken: () => "1.0",
     open: async (u) => { url = new URL(u).href; return { url, title: "" }; },
-    openTab: no, select: no, close: no, nav: no, hoverAt: no, entry: no, navEntry: no, tabUid: no, tabIndex: no, ownTab: no, tabToken: no, snapshot: no, console: no, screenshot: no, focus: no, type: no, key: no, scroll: no, show: () => {},
+    openTab: no, select: no, close: no, nav: no, hoverAt: no, entry: no, navEntry: no, mayHoldForm: no, tabUid: no, tabIndex: no, ownTab: no, tabToken: no, snapshot: no, console: no, screenshot: no, focus: no, type: no, key: no, scroll: no, show: () => {},
     scrub: async (t) => t,
     resolve: async () => ({ target: { role: "button", name: "Next", inForm: false, fileInput: false }, shown: "Next", sensitive: false, backendNodeId: 7, judged: [7], point: { x: 1, y: 1 }, corner: { x: 0, y: 0 }, pageToken: "1.0", tab: 0 }),
     click: async (_r, valid) => { if (valid()) clicks++; return { once: false }; },

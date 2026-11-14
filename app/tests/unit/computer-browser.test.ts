@@ -1485,29 +1485,41 @@ test("main keeps no part of a request but its method", async () => {
   assert.equal(await methodOf(b, "reload"), "other");
 });
 
-const bound = (o: Partial<{ uid: number; id: string | null; method: "GET" | "other" | "unknown" }> = {}) => ({ uid: 1, id: "e1" as string | null, url: null, method: "other" as const, ...o });
+const bound = (o: Partial<{ uid: number; id: string | null; method: "GET" | "other" | "unknown" }> = {}) => ({ uid: 1, id: "e1" as string | null, method: "other" as const, ...o });
 
 test("the allowed reload of a POST entry goes through the protocol, and a free reload does not", async () => {
   const { b, page, nav } = make();
   historyOf(page, ["e1"], 0);
   (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods.set("e1", "other");
-  assert.equal(await b.navEntry("reload", bound(), () => true), true);
+  assert.equal(await b.navEntry(bound(), () => true), true);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 1, "the protocol's reload was sent");
   assert.deepEqual(nav.moves, [], "wc.reload() was not");
   page.sent.length = 0;
   assert.equal(b.nav("reload"), true);
   assert.deepEqual(nav.moves, ["reload"]);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "a free reload is Electron's");
-  // A GET entry the person allowed anyway reloads the plain way; Back and Forward stay Electron's.
-  nav.moves.length = 0; nav.back = true; nav.forward = true;
+  // A GET entry is never asked about, so it is never bound: nothing is sent for it.
+  nav.moves.length = 0;
   historyOf(page, ["e0", "e1", "e2"], 1);
   const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
   methods.set("e0", "other"); methods.set("e1", "GET"); methods.set("e2", "other");
-  assert.equal(await b.navEntry("reload", bound({ method: "GET" }), () => true), true);
-  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), true);
-  assert.equal(await b.navEntry("forward", bound({ id: "e2" }), () => true), true);
-  assert.deepEqual(nav.moves, ["reload", "back", "forward"]);
+  assert.equal(await b.navEntry(bound({ method: "GET" }), () => true), false);
+  assert.deepEqual(nav.moves, []);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("mayHoldForm is true only for a tab whose table holds an entry loaded by another method than GET", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
+  assert.equal(b.mayHoldForm(), false, "an empty table");
+  methods.set("e1", "GET");
+  assert.equal(b.mayHoldForm(), false, "only GET");
+  methods.set("e0", "other");
+  assert.equal(b.mayHoldForm(), true, "a form's entry, whichever entry the page is on now");
+  assert.equal(b.mayHoldForm(4), false, "no such tab");
+  (tab as unknown as { pending: unknown }).pending = { url: "https://a.test/" };
+  assert.equal(b.mayHoldForm(), false, "a tab still waking reloads its kept address by GET");
 });
 
 test("a reload sent through the protocol that fails answers with the table's sentence", async () => {
@@ -1515,7 +1527,7 @@ test("a reload sent through the protocol that fails answers with the table's sen
   historyOf(page, ["e1"], 0);
   (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods.set("e1", "other");
   page.on.set("Page.reload", () => { throw new Error("Not attached to an active page"); });
-  await assert.rejects(b.navEntry("reload", bound(), () => true), (e: Error) => e.message === REFUSAL.notReloaded);
+  await assert.rejects(b.navEntry(bound(), () => true), (e: Error) => e.message === REFUSAL.notReloaded);
 });
 
 test("a commit while the allowed reload reads the history: nothing is sent again", async () => {
@@ -1524,11 +1536,11 @@ test("a commit while the allowed reload reads the history: nothing is sent again
   historyOf(page, ["e1"], 0);
   page.on.set("Page.getNavigationHistory", () => { page.on.clear(); historyOf(page, ["e1", "e2"], 1); });
   // The read answers the history as it is at the moment it is made: e2 is current.
-  assert.equal(await b.navEntry("reload", bound({ method: "unknown" }), () => true), false);
+  assert.equal(await b.navEntry(bound({ method: "unknown" }), () => true), false);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
   // And the same, the page having moved on before the run starts.
   historyOf(page, ["e1", "e2"], 1);
-  assert.equal(await b.navEntry("reload", bound({ method: "unknown" }), () => true), false);
+  assert.equal(await b.navEntry(bound({ method: "unknown" }), () => true), false);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
 });
 
@@ -1542,7 +1554,7 @@ test("a tab closing below the active one during that read: the reload goes to th
   inner.list.push(second as never);
   inner.current = 1;                       // the card was raised for the second tab (uid 2, index 1)
   page2.on.set("Page.getNavigationHistory", () => { page2.on.clear(); inner.list.splice(0, 1); inner.current = 0; });   // the tab below it closed
-  assert.equal(await b.navEntry("reload", bound({ uid: 2, id: "f1" }), () => true), true);
+  assert.equal(await b.navEntry(bound({ uid: 2, id: "f1" }), () => true), true);
   assert.equal(page2.sent.filter((s) => s.method === "Page.reload").length, 1, "the card's tab was reloaded");
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
   // And when the card's own tab closes during the read, the neighbour that takes its place is not reloaded.
@@ -1550,27 +1562,11 @@ test("a tab closing below the active one during that read: the reload goes to th
   inner.list.push(third as never);
   inner.current = 1;
   page.on.set("Page.getNavigationHistory", () => { page.on.clear(); inner.list.splice(1, 1); inner.current = 0; });
-  assert.equal(await b.navEntry("reload", bound({ uid: 3 }), () => true), false);
+  assert.equal(await b.navEntry(bound({ uid: 3 }), () => true), false);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "the closed tab's own page was not reloaded");
   // The neighbour that takes its place is the second tab, whose page is page2: it was reloaded once above, and not again.
   assert.equal(inner.list[0].uid, 2);
   assert.equal(page2.sent.filter((s) => s.method === "Page.reload").length, 1, "the neighbour was not reloaded again");
-});
-
-test("an allowed Back onto a POST entry goes to that entry and no other", async () => {
-  const { b, page, nav } = make();
-  nav.back = true;
-  const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
-  methods.set("e0", "other"); methods.set("e1", "other");
-  historyOf(page, ["e0", "e1", "e2"], 1);
-  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), true);
-  assert.deepEqual(nav.moves, ["back"]);
-  // The history changed while the card was up: Back would now load another entry.
-  nav.moves.length = 0;
-  historyOf(page, ["e0", "e1", "e2", "e3"], 2);
-  methods.set("e2", "other");
-  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), false);
-  assert.deepEqual(nav.moves, [], "nothing sent");
 });
 
 test("Network is enabled with its buffers at zero; if the protocol refuses those it is enabled plainly; if it fails the tab still attaches", async () => {
@@ -1769,17 +1765,14 @@ test("a same-document Back onto a POST page whose bind never read is not recorde
 
 test("a Take over or a Stop during the allowed move's history read sends nothing", async () => {
   const { b, page, nav } = make();
-  nav.back = true;
   historyOf(page, ["e0", "e1"], 1);
   const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
   methods.set("e0", "other"); methods.set("e1", "other");
-  for (const [go, id] of [["reload", "e1"], ["back", "e0"]] as const) {
-    let live = true;
-    page.on.set("Page.getNavigationHistory", () => { page.on.clear(); live = false; });   // the person took over while it was read
-    await assert.rejects(b.navEntry(go, bound({ id }), () => live), PageChanged);
-    assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, go);
-    assert.deepEqual(nav.moves, [], go);
-  }
+  let live = true;
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); live = false; });   // the person took over while it was read
+  await assert.rejects(b.navEntry(bound({ id: "e1" }), () => live), PageChanged);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+  assert.deepEqual(nav.moves, []);
 });
 
 test("a history read that DevTools, another debugger or a closed tab refuses answers with its own sentence, not 'could not be read'", async () => {
@@ -1815,12 +1808,12 @@ test("a history that cannot be read is never a bound entry", async () => {
   page.history = null;
   assert.equal((await b.entry("reload"))?.id, null, "an unreadable history has no entry id");
   // At the run: a null id sends nothing and says the history could not be read; an unequal id is false.
-  await assert.rejects(b.navEntry("reload", bound({ id: null }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
-  await assert.rejects(b.navEntry("reload", bound({ id: "e1" }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
+  await assert.rejects(b.navEntry(bound({ id: null }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
+  await assert.rejects(b.navEntry(bound({ id: "e1" }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
   assert.deepEqual(nav.moves, []);
   historyOf(page, ["e2"], 0);
-  assert.equal(await b.navEntry("reload", bound({ id: "e1" }), () => true), false);
+  assert.equal(await b.navEntry(bound({ id: "e1" }), () => true), false);
   // A tab still waking reloads its kept address by GET with no history involved.
   const t = (b as unknown as { list: { pending: unknown }[] }).list[0];
   t.pending = { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false };

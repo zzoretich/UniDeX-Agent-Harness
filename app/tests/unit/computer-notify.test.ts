@@ -174,3 +174,26 @@ test("testSwitches: a dev or e2e run reads the start page, so the suite's new ta
 test("testSwitches: a packaged build ignores all three", () => {
   assert.deepEqual(testSwitches({ AOS_E2E_HOST_RULES: "MAP *.test 127.0.0.1", AOS_E2E_TRUSTED_CLI: "/tmp/e2e/claude", AOS_E2E_START_PAGE: "http://search.test:4100/" }, true), { hostRules: null, trustedCli: [], startPage: null });
 });
+
+test("the person's own form card raises no notice and posts no item, on screen or off; the agent's resend card still does", async () => {
+  const own = ask("o1", { computer: "chat:a", session: "person", sessionLabel: "You", why: "resendown", title: "Send this form again?", notice: "Send a form again on a.test?", always: false });
+  for (const shown of [false, true]) {
+    const h = make({ visible: () => shown });
+    h.n.added(own);
+    h.n.sync([own]);
+    await flush();
+    assert.deepEqual([h.desktops, h.posts, h.reveals], [[], [], []], `${shown ? "on" : "off"} screen: nothing`);
+  }
+  // The agent's own resend card is an agent waiting for an answer: it is noticed as ever.
+  const h = make();
+  h.n.added(ask("r1", { why: "resend", notice: "Send a form again on a.test?" }));
+  await flush();
+  assert.equal(h.desktops.length, 1);
+  assert.equal(h.posts.length, 1);
+  // The person's card does not count as an unanswered notice that holds the session's next one back.
+  const g = make();
+  g.n.added(own);
+  g.n.added(ask("a2", { computer: "chat:a" }));
+  await flush();
+  assert.equal(g.desktops.length, 1, "an agent's ask on the same computer is still noticed");
+});

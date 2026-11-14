@@ -77,7 +77,11 @@ export class AskNotifier {
    *  pane, and is noticed once that one settles if it is still pending and off-screen. Never throws. */
   added(ask: Ask): void {
     if (this.seen.has(ask.id)) return;
-    const who = `${ask.computer}\u0000${ask.session}`;
+    // The person's own Send this form again card: they pressed Reload in this window a moment ago, so no one is waiting
+    // for them, and a notice (worded for an agent) would put their own button press into the vault. It stays in the pane
+    // and times out harmlessly.
+    if (ask.why === "resendown") return;
+    const who =`${ask.computer}\u0000${ask.session}`;
     if ([...this.unanswered.values()].includes(who)) return;
     let shown: boolean;
     try { shown = this.o.visible(ask); } catch { shown = false; }

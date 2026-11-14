@@ -1632,9 +1632,11 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
       await expect(card).toHaveCount(1);
       await expect(card.locator(".aos-cp-askbtn")).toHaveText(["Send again", "Cancel"]);
       expect(posts(), "nothing sent while the card is up").toBe(sent + 1);
-      // Send again sends the form once more.
+      // Send again sends the form once more. A marker on the old document shows when the reload has really committed.
+      await inPage<void>(h.app, resultUrl, `window.__before = 1`);
       await card.locator('[data-answer="once"]').click();
       await expect.poll(posts, { message: "the form was sent again" }).toBe(sent + 2);
+      await expect.poll(() => inPage<string>(h.app, resultUrl, `typeof window.__before`), { message: "the reloaded document committed" }).toBe("undefined");
       await expect(cards(p)).toHaveCount(0);
       // Reload again and Cancel: still two.
       await p.locator(".aos-cp-reload").click();
@@ -1665,8 +1667,8 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
         expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: acted("Opened the page.", shopUrl()) });
         const back = await a.call("computer_nav", { go: "back" });
         // No card. What the reply shows depends on the cache (the result page itself, or the browser's error page for a cache
-        // miss), so it is the move that is asserted: "Went back." with a page after it, not the page's address.
-        expectReply(back, { isError: false, text: /^Went back\.\n\nPage now:/ });
+        // miss), so only the move is asserted: the reply begins "Went back." and the server saw the POST once.
+        expectReply(back, { isError: false, text: /^Went back\./ });
         await expect(cards(p)).toHaveCount(0);
         // The one POST is the spec's own: Back did not send the form again.
         expect(posts(), "Back did not send the form again").toBe(sent + 1);

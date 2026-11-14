@@ -1228,8 +1228,9 @@ test("a power ask opens the strip to its card, without touching the saved collap
   assert.deepEqual(s.saved, []);
 });
 
-test("the person's own form card offers Send again and Cancel; the agent's resend card still offers Allow once and Deny", async () => {
-  const own = ask("o1", "resendown", { session: "person", sessionLabel: "You", title: "Send this form again?", detail: "Reloading this page sends its form again, so what it did may happen twice. Page: https://example.com/order", always: false });
+test("the person's own form card offers Send again and Cancel", async () => {
+  // The helper's default offers Always on a site; the person's own card never shows it.
+  const own = ask("o1", "resendown", { session: "person", sessionLabel: "You", title: "Send this form again?", detail: "Reloading this page sends its form again, so what it did may happen twice. Page: https://example.com/order" });
   const s = setup({ answer: (session) => state(session, { asks: [own] }) });
   s.pane.follow({ session: "code:1", label: "one" });
   await flush();
@@ -1237,10 +1238,13 @@ test("the person's own form card offers Send again and Cancel; the agent's resen
   assert.equal(s.root.querySelector('[data-answer="once"]')!.textContent, "Send again");
   assert.equal(s.root.querySelector('[data-answer="deny"]')!.textContent, "Cancel");
   assert.equal(s.root.querySelector('[data-answer="always"]'), null, "no Always, even if an ask said it offers one");
-  const t = setup({ answer: (session) => state(session, { asks: [ask("r1", "resend", { always: false })] }) });
-  t.pane.follow({ session: "code:1", label: "one" });
+});
+
+test("the agent's resend card still offers Allow once and Deny", async () => {
+  const s = setup({ answer: (session) => state(session, { asks: [ask("r1", "resend", { always: false })] }) });
+  s.pane.follow({ session: "code:1", label: "one" });
   await flush();
-  assert.deepEqual(buttons(t.root.querySelector(".aos-cp-ask")!), ["Allow once", "Deny"]);
+  assert.deepEqual(buttons(s.root.querySelector(".aos-cp-ask")!), ["Allow once", "Deny"]);
 });
 
 test("asleep is drawn as on", async () => {

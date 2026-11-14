@@ -45,7 +45,7 @@ export interface Resolved { target: Target; shown: string; sensitive: boolean; b
 export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; agentDrives?(): boolean; front?(page?: boolean): void }
 /** The history entry a move would load (session-browser S17), as one read of the tab's history saw it: the tab by its uid, the
  *  entry by its id (null where none: a waking tab, nothing to go to, an unreadable history) and the method it was loaded by. */
-export interface Entry { uid: number; id: string | null; url: string | null; method: "GET" | "other" | "unknown" }
+export interface Entry { uid: number; id: string | null; method: "GET" | "other" | "unknown" }
 /** Where the gate judged an action (I3b): the tab, and the page token it had. `key` and `type` deliver only while both
  *  are still the ones in front. */
 export interface Judged { tab: number; pageToken: string }
@@ -553,24 +553,25 @@ export class ComputerBrowser {
   async entry(go: ComputerNavGo, tab?: number): Promise<Entry | null> {
     const t = this.list[tab ?? this.current];
     if (!t || t.wc.isDestroyed()) return null;
-    if (t.pending) return { uid: t.uid, id: null, url: null, method: go === "reload" ? "GET" : "unknown" };
+    if (t.pending) return { uid: t.uid, id: null, method: go === "reload" ? "GET" : "unknown" };
     // A refusal that says what to do (DevTools open, another debugger, a closed tab) goes on as itself; any other failure of the
     // read leaves the entry with no id, and the caller says the history could not be read (PR 5, A10).
     const h = await this.history(t).catch((e: unknown) => { if (e instanceof Told && SAYS_WHY.has(e.message)) throw e; return null; });
     const e = h?.entries[h.currentIndex + (go === "back" ? -1 : go === "forward" ? 1 : 0)];
-    if (!e) return { uid: t.uid, id: null, url: null, method: "unknown" };
-    return { uid: t.uid, id: String(e.id), url: e.url, method: e.url === "about:blank" ? "GET" : t.methods.get(String(e.id)) ?? "unknown" };
+    if (!e) return { uid: t.uid, id: null, method: "unknown" };
+    return { uid: t.uid, id: String(e.id), method: e.url === "about:blank" ? "GET" : t.methods.get(String(e.id)) ?? "unknown" };
   }
 
-  /** The move the person allowed on a card, bound to what the card named (session-browser S17): the same tab (by uid), still
-   *  the active one, and the entry the move would load now is the same one (by id, with the same method). The history is read
-   *  again here, and nothing is awaited between that read's check and the act, so a commit or a closed tab meanwhile sends
-   *  nothing (false). A reload of what was not a GET goes through the protocol, which sends the form again with no dialog
-   *  (Electron's own reload does nothing for a POST entry); a protocol reload that fails throws the table's sentence. */
-  async navEntry(go: ComputerNavGo, bound: Entry, valid: () => boolean): Promise<boolean> {
+  /** The reload the person allowed on a card, bound to what the card named (session-browser S17): the same tab (by uid), still
+   *  the active one, and the entry a reload would load now is the same one (by id, with the same method). Only an entry that was
+   *  not a GET is ever asked about, so a GET entry is never bound: it sends nothing (false). The history is read again here, and
+   *  nothing is awaited between that read's check and the act, so a commit or a closed tab meanwhile sends nothing (false). The
+   *  reload goes through the protocol, which sends the form again with no dialog (Electron's own reload does nothing for a POST
+   *  entry); a protocol reload that fails throws the table's sentence. */
+  async navEntry(bound: Entry, valid: () => boolean): Promise<boolean> {
     const was = this.list[this.current];
     if (!was || was.uid !== bound.uid) return false;
-    const now = await this.entry(go, this.current);
+    const now = await this.entry("reload", this.current);
     const t = this.list[this.current];
     // R81: the call must still be current after the read, and nothing is awaited between here and the move.
     if (!valid()) throw new PageChanged();
@@ -578,11 +579,20 @@ export class ComputerBrowser {
     // An entry with no id is never bound: only a tab still waking (its reload loads the kept address by GET) has none.
     if (now.id === null && !t.pending) throw new Error(REFUSAL.noHistoryRead);
     if (now.id !== bound.id || now.method !== bound.method) return false;
-    if (go === "reload" && bound.method !== "GET" && !t.pending) {
-      await this.send(t, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
-      return true;
-    }
-    return this.nav(go, this.current);
+    if (bound.method === "GET" || t.pending) return false;
+    await this.send(t, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
+    return true;
+  }
+
+  /** Whether any entry of the tab (the active one by default) is recorded as loaded by a form, which is the only entry a
+   *  reload ever asks about: false means a reload of it is Electron's own, with no history read. An entry with no record
+   *  (a commit not bound yet, a read that failed, a gap) is "unknown" and reloads the plain way too, so only a recorded
+   *  "other" counts. Synchronous: it reads the table, never the history. */
+  mayHoldForm(tab?: number): boolean {
+    const t = this.list[tab ?? this.current];
+    if (!t || t.pending) return false;
+    for (const m of t.methods.values()) if (m === "other") return true;
+    return false;
   }
 
   /** A tab's uid, which never leaves main, so a card can name the tab it was raised for across an index shift. */
