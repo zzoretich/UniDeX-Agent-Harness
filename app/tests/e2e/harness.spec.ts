@@ -10,7 +10,8 @@
 import { expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { FX, launchApp, restoreFixture, type AppHandle } from "./harness";
+import * as path from "node:path";
+import { FX, REPO, USER_DATA, USER_DATA_LINK, installComputerAgents, launchApp, removeUserDataLink, restoreFixture, type AppHandle } from "./harness";
 
 let h: AppHandle | null = null;
 let groups: number[] = [];
@@ -73,4 +74,62 @@ test("close() after the app quit by itself returns without an error, as the R46 
   await closed;
   await h.close();
   await h.close();
+});
+
+// removeUserDataLink (harness.ts): what an app that outlived its launch's failure leaves at the link's path is a real
+// folder, which fs.rmSync(link, { force: true }) refuses (EISDIR).
+test.describe("removeUserDataLink", () => {
+  test.afterEach(() => { removeUserDataLink(); });
+
+  test("removeUserDataLink: a link goes and what it points at stays", () => {
+    const kept = path.join(USER_DATA, "link-keeps-me.txt");
+    fs.mkdirSync(USER_DATA, { recursive: true });
+    fs.writeFileSync(kept, "still here\n");
+    removeUserDataLink();
+    fs.symlinkSync(USER_DATA, USER_DATA_LINK);
+    removeUserDataLink();
+    expect(() => fs.lstatSync(USER_DATA_LINK)).toThrow(/ENOENT/);
+    expect(fs.readFileSync(kept, "utf8")).toBe("still here\n");
+    fs.rmSync(kept, { force: true });
+  });
+
+  test("removeUserDataLink: a real folder left at the link's path goes with what is in it", () => {
+    removeUserDataLink();
+    fs.mkdirSync(path.join(USER_DATA_LINK, "computer"), { recursive: true });
+    fs.writeFileSync(path.join(USER_DATA_LINK, "computer", "left.txt"), "x");
+    removeUserDataLink();
+    expect(() => fs.lstatSync(USER_DATA_LINK)).toThrow(/ENOENT/);
+    // What a later launch's setup does next: it must not meet the folder.
+    fs.mkdirSync(path.join(USER_DATA_LINK, "computer"), { recursive: true });
+    installComputerAgents();
+    expect(fs.lstatSync(USER_DATA_LINK).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(USER_DATA_LINK)).toBe(fs.realpathSync(USER_DATA));
+  });
+
+  test("removeUserDataLink: nothing there is fine", () => {
+    removeUserDataLink();
+    expect(() => removeUserDataLink()).not.toThrow();
+    expect(() => fs.lstatSync(USER_DATA_LINK)).toThrow(/ENOENT/);
+  });
+});
+
+/** Electron processes of this checkout (an app this harness launched, with its helpers), never the owner's own app. */
+const launchedHere = () => spawnSync("ps", ["-Aww", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 << 20 }).stdout
+  .split("\n").filter((l) => l.includes(REPO) && /Electron/.test(l)).map((l) => l.trim());
+
+// The launch that failed must end its app: left running, it outlived the run and made a real folder at the link's path.
+test("launchApp: an app whose first window does not come in time is ended, and the launch's own error is what is thrown", async () => {
+  test.setTimeout(60_000);
+  restoreFixture();
+  await expect(launchApp({ firstWindowMs: 1 })).rejects.toThrow(/Timeout 1ms exceeded/);
+  await expect.poll(launchedHere, { timeout: 15_000 }).toEqual([]);
+});
+
+test("launchApp: after a failed launch the next launch in the same file works", async () => {
+  test.setTimeout(120_000);
+  restoreFixture();
+  h = await launchApp();
+  await h.close();
+  h = null;
+  expect(launchedHere()).toEqual([]);
 });

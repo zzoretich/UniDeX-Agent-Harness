@@ -291,6 +291,11 @@ export interface LaunchOptions {
    * passes false.
    */
   launch?: boolean;
+  /**
+   * How long the first window may take (default 30 s, Playwright's own). A spec of the harness itself passes a tiny
+   * value to exercise the failure path.
+   */
+  firstWindowMs?: number;
 }
 
 /** A vault path's key in tour.launched: FNV-1a's 32 bits in hex, as hud/src/tour/launch.ts vaultKey has it. */
@@ -493,6 +498,18 @@ export const AGENT = {
  */
 export const USER_DATA_LINK = path.join(os.tmpdir(), `aos-e2e-${crypto.createHash("sha256").update(ROOT).digest("hex").slice(0, 8)}`);
 
+/**
+ * Removes whatever is at USER_DATA_LINK: the link (only the link: USER_DATA and its contents stay), a file, or a real
+ * folder with what is in it. A real folder can be there because an app that outlived its launch's failure woke after
+ * the link was removed and made the folder itself at that path. Nothing there: nothing to do.
+ */
+export function removeUserDataLink(): void {
+  let st: fs.Stats;
+  try { st = fs.lstatSync(USER_DATA_LINK); } catch { return; }
+  if (st.isDirectory()) fs.rmSync(USER_DATA_LINK, { recursive: true, force: true });
+  else fs.unlinkSync(USER_DATA_LINK);
+}
+
 /** The plugin launcher an agent's MCP server starts through: the vault's copy of plugin/bin/aos. */
 const LAUNCHER = path.join(ROOT, "vault", "brain", "scripts", "bin", "aos");
 
@@ -542,7 +559,7 @@ export type AgentServer = "main" | "second" | "grandchild";
  */
 export function installComputerAgents(): void {
   fs.mkdirSync(USER_DATA, { recursive: true });
-  fs.rmSync(USER_DATA_LINK, { force: true });
+  removeUserDataLink();
   fs.symlinkSync(USER_DATA, USER_DATA_LINK);
   fs.mkdirSync(AGENT.dir, { recursive: true });
   fs.rmSync(AGENT.runs, { recursive: true, force: true });
@@ -876,6 +893,39 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<AppHandle> {
   if (opts.launch !== false) markLaunch();
   opts.prepare?.();
   const app = await electron.launch({ args: [REPO], cwd: REPO, env: appEnv(opts.env), timeout: 60_000 });
+  // From here to the handle, a throw must not leave the app running: it would outlive the run and, finding the file's
+  // clean-up done, write into paths the next launch expects to own (removeUserDataLink).
+  try {
+    return await bringUp(app, opts);
+  } catch (e) {
+    throw await endFailedLaunch(app, e);
+  }
+}
+
+/**
+ * Ends an app whose launch failed, and everything it started, within about 10 s; returns the launch's own error, with
+ * a clean-up failure added to its message as one line. The graceful close gets 2 s only: an app whose main thread is
+ * stuck does not answer it.
+ */
+async function endFailedLaunch(app: ElectronApplication, error: unknown): Promise<unknown> {
+  try {
+    const proc = app.process();
+    const started = new AppProcesses(proc.pid!);
+    await started.update();
+    await Promise.race([app.close().catch(() => undefined), sleep(2_000)]);
+    await started.update(); // what it started on the way out
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+    await started.settle(0);
+  } catch (cleanup) {
+    const line = `\n(and ending the failed launch's app failed: ${cleanup instanceof Error ? cleanup.message : String(cleanup)})`;
+    if (error instanceof Error) error.message += line;
+    else return new Error(`${String(error)}${line}`);
+  }
+  return error;
+}
+
+/** What launchApp does once Electron has started: the first window, the stubs, the ready selector, the handle. */
+async function bringUp(app: ElectronApplication, opts: LaunchOptions): Promise<AppHandle> {
   // AOS_E2E_STRAGGLER=1: a scan the app starts holds its writes for the next restoreFixture (straggler.cjs). Playwright
   // drops NODE_OPTIONS from the launch environment, so it goes into main's own, which every child the app spawns inherits.
   if (process.env.AOS_E2E_STRAGGLER === "1") {
@@ -885,7 +935,7 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<AppHandle> {
   const notices: string[] = [];
   const known = (t: string) => KNOWN_ERRORS.some((re) => re.test(t));
   app.on("console", (m) => { if (m.type() === "error" && !known(m.text())) errors.push(`[main] ${m.text()}`); });
-  const win = await app.firstWindow();
+  const win = await app.firstWindow({ timeout: opts.firstWindowMs ?? 30_000 });
   win.on("pageerror", (e) => errors.push(`[pageerror] ${e.message}\n${e.stack ?? ""}`));
   win.on("console", (m) => {
     const t = m.text();

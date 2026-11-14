@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   AGENT, FX, RC_ONLY, TOUR_BOOK, USER_DATA, addRcOnly, agentRun, badge, command, computerEnv, content, expectNoErrors, installComputerAgents, openTab,
-  USER_DATA_LINK, launchApp, providerState, rail, resizeHud, restoreFixture, startOutsider, useApp, type Agent, type AgentReply, type AppHandle,
+  launchApp, removeUserDataLink, providerState, rail, resizeHud, restoreFixture, startOutsider, useApp, type Agent, type AgentReply, type AppHandle,
 } from "./harness";
 
 // ── the fixture sites ────────────────────────────────────────────────
@@ -76,7 +76,7 @@ async function startSite(): Promise<Site> {
 let site: Site;
 
 // The short link to the app's data folder (harness.ts USER_DATA_LINK) goes once the file's apps have closed.
-test.afterAll(() => { fs.rmSync(USER_DATA_LINK, { force: true }); });
+test.afterAll(() => { removeUserDataLink(); });
 const shopUrl = () => `http://shop.test:${site.port}/shop.html`;
 const repoUrl = () => `http://marked.test:${site.port}/repo.html`;
 const loginUrl = () => `http://marked.test:${site.port}/login.html`;
