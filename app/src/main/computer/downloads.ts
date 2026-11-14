@@ -91,23 +91,28 @@ export function pidAlive(pid: number): boolean {
 
 /**
  * At start: removes the held folders in `tmp` that no running app holds, those a crash or a kill left behind. A folder
- * whose name carries this app's pid, or a live one's, stays; one with no pid in its name is removed. Never throws;
- * returns what it removed.
+ * whose name carries this app's pid, or a live one's, stays (so one made while this runs stays too); one with no pid in
+ * its name is removed. Never throws or rejects; resolves with what it removed. It is asynchronous because the system's
+ * temp folder is not the app's to keep small: listing one with 476,719 entries took 0.4 s on a quiet machine and
+ * 20 to 48 s while another process walked it, and a synchronous listing held the whole app, window included. It reads the
+ * folder entry by entry, so it holds no list of it either.
  */
-export function sweepHeld(tmp: string, alive: (pid: number) => boolean = pidAlive, self: number = process.pid): string[] {
+export async function sweepHeld(tmp: string, alive: (pid: number) => boolean = pidAlive, self: number = process.pid): Promise<string[]> {
   const out: string[] = [];
-  let names: string[] = [];
-  try { names = fs.readdirSync(tmp); } catch { return out; }
-  for (const n of names) {
-    if (!n.startsWith(HELD_PREFIX)) continue;
-    const pid = Number(/^(\d+)-/.exec(n.slice(HELD_PREFIX.length))?.[1]);
-    if (Number.isInteger(pid) && pid > 0 && (pid === self || alive(pid))) continue;
-    const dir = path.join(tmp, n);
-    try {
-      if (!fs.lstatSync(dir).isDirectory()) continue;
-      fs.rmSync(dir, { recursive: true, force: true });
-      out.push(dir);
-    } catch { /* gone, or not ours to remove */ }
-  }
+  try {
+    const dir = await fs.promises.opendir(tmp);
+    for await (const entry of dir) {
+      const n = entry.name;
+      if (!n.startsWith(HELD_PREFIX)) continue;
+      const pid = Number(/^(\d+)-/.exec(n.slice(HELD_PREFIX.length))?.[1]);
+      if (Number.isInteger(pid) && pid > 0 && (pid === self || alive(pid))) continue;
+      const held = path.join(tmp, n);
+      try {
+        if (!(await fs.promises.lstat(held)).isDirectory()) continue;
+        await fs.promises.rm(held, { recursive: true, force: true });
+        out.push(held);
+      } catch { /* gone, or not ours to remove */ }
+    }
+  } catch { /* no such folder, or not a folder: nothing to do */ }
   return out;
 }
