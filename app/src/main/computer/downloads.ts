@@ -100,7 +100,9 @@ export function pidAlive(pid: number): boolean {
 export async function sweepHeld(tmp: string, alive: (pid: number) => boolean = pidAlive, self: number = process.pid): Promise<string[]> {
   const out: string[] = [];
   try {
-    const dir = await fs.promises.opendir(tmp);
+    // 1,024 entries a trip, not the default 32: a folder of 480,000 entries is then about 470 trips to the thread pool
+    // (it is shared with the app's other file work), not 15,000, and one trip's entries are handled in well under a millisecond.
+    const dir = await fs.promises.opendir(tmp, { bufferSize: 1024 });
     for await (const entry of dir) {
       const n = entry.name;
       if (!n.startsWith(HELD_PREFIX)) continue;

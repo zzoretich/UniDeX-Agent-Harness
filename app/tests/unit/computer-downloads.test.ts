@@ -137,7 +137,9 @@ test("sweepHeld: it lists nothing before it returns, so the caller never waits o
   fs.mkdirSync(stale);
   const p = sweepHeld(d, () => false, 1);
   assert.ok(p instanceof Promise);
-  assert.ok(fs.existsSync(stale), "nothing has been listed or removed when the call returns");
+  // This proves only that nothing was removed before the call returned; "it never uses the synchronous listing" proves
+  // that no listing is done synchronously.
+  assert.ok(fs.existsSync(stale), "nothing has been removed by the time the call returns");
   assert.deepEqual(await p, [stale]);
   assert.equal(fs.existsSync(stale), false);
 });
