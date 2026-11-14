@@ -1831,16 +1831,24 @@ export class ComputerService {
     }
     // The read was an await: a tab below the pressed one may have closed, so the pressed tab's index is read again by its uid.
     const at = b.tabIndex(uid!);
-    if (!entry || entry.id === null || entry.method !== "other") {
+    // A history that could not be read says nothing about the page: the plain reload goes, but the log does not claim it did
+    // what a Reload does.
+    if (!entry || entry.id === null) {
+      if (b.nav("reload", at)) this.line(p, USER, "Reload pressed; this page's history could not be read.", null);
+      return;
+    }
+    if (entry.method === "GET") {
       if (b.nav("reload", at)) this.line(p, USER, "Reloaded", null);
       return;
     }
     if (p.ownCard) return;
     const site = this.siteAt(b, at);
+    // "other" is known to be a form's result; "unknown" is a page in a tab that held one, which may be (a plain reload of a
+    // form's result page does nothing), so it asks too.
     const input: AskInput = {
       computer: p.key, session: PERSON, sessionLabel: USER, why: "resendown", title: "Send this form again?",
       notice: `${ASK_LABELS.resendown} on ${hostOf(site)}?`,
-      detail: `Reloading this page sends its form again, so what it did may happen twice. ${cardPage(b.tabs()[at]?.url ?? null)}`,
+      detail: `${entry.method === "other" ? "Reloading this page sends its form again, so what it did may happen twice." : "This page may have been loaded by a form. Reloading it would send that form again, so what it did may happen twice."} ${cardPage(b.tabs()[at]?.url ?? null)}`,
       site, always: false,
     };
     const held = this.o.broker.hold(input);

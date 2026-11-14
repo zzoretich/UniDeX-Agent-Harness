@@ -1522,6 +1522,41 @@ test("mayHoldForm is true only for a tab whose table holds an entry loaded by an
   assert.equal(b.mayHoldForm(), false, "a tab still waking reloads its kept address by GET");
 });
 
+test("the allowed reload is not sent when the call stops being current while the debugger attaches", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  (tab.methods as Map<string, string>).set("e1", "other");
+  let live = true;
+  let settle!: () => void;
+  // After the history read, an attachment is in flight; the call stops being current before it ends.
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); (tab as { attaching: Promise<void> | null }).attaching = new Promise<void>((r) => { settle = () => { (tab as { attaching: Promise<void> | null }).attaching = null; live = false; r(); }; }); });
+  const run = assert.rejects(b.navEntry(bound(), () => live), PageChanged);
+  await new Promise((r) => setTimeout(r, 5));
+  settle?.();
+  await run;
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("the allowed reload is not sent when the debugger is found detached at the moment of delivery", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  (tab.methods as Map<string, string>).set("e1", "other");
+  let attached = true, attaches = 0;
+  Object.assign(tab.wc.debugger, { isAttached: () => attached, attach: () => { attaches++; attached = true; } });
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); attached = false; });
+  await assert.rejects(b.navEntry(bound(), () => true), PageChanged);
+  assert.equal(attaches, 0, "no attach-and-send");
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("a normal allowed reload still sends Page.reload exactly once", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  (tab.methods as Map<string, string>).set("e1", "other");
+  assert.equal(await b.navEntry(bound(), () => true), true);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 1);
+});
+
 test("a reload sent through the protocol that fails answers with the table's sentence", async () => {
   const { b, page } = make();
   historyOf(page, ["e1"], 0);
@@ -2770,18 +2805,21 @@ test("resolve's hook is given the point, the field's corner and the tab, for a r
   assert.deepEqual(seen, [[{ x: 50, y: 60 }, { x: 0, y: 50 }, 0], [{ x: 50, y: 280 }, { x: 50, y: 280 }, 0]], "a typed ref's caret goes to the corner, the others to the point");
 });
 
-test("a cross-document commit of the tab in front tells the service; a same-document change and a tab behind do not", async () => {
+test("a cross-document commit of the tab in front tells the service as a page; a main-frame same-document change tells it as a change of the tab only; a frame's and a tab behind's do not", async () => {
   const { b, tab } = make();
-  let fronts = 0;
-  (b as unknown as { o: { hooks: BrowserHooks } }).o.hooks.front = () => { fronts++; };
+  const told: (boolean | undefined)[] = [];
+  (b as unknown as { o: { hooks: BrowserHooks } }).o.hooks.front = (page) => { told.push(page); };
   const handlers = wiredHandlers(b, tab);
+  handlers.get("did-navigate-in-page")!({}, "https://frame.test/#in", false);
+  assert.deepEqual(told, [], "a frame's change covers nothing");
   handlers.get("did-navigate-in-page")!({}, "https://a.test/x#y", true);
-  assert.equal(fronts, 0, "a same-document change keeps the page");
+  assert.deepEqual(told, [undefined], "a same-document change moves the page token: a card for the page goes, the pointer stays");
   handlers.get("did-navigate")!({}, "https://a.test/next");
-  assert.equal(fronts, 1, "the tab in front shows another document");
+  assert.deepEqual(told, [undefined, true], "the tab in front shows another document");
   (b as unknown as { current: number }).current = -1;
   handlers.get("did-navigate")!({}, "https://a.test/behind");
-  assert.equal(fronts, 1, "a tab that is not in front covers nothing");
+  handlers.get("did-navigate-in-page")!({}, "https://a.test/behind#y", true);
+  assert.equal(told.length, 2, "a tab that is not in front covers nothing");
 });
 
 test("a navigation during a hover's travel moves no mouse: the move is for the page it read", async () => {

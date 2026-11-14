@@ -580,7 +580,12 @@ export class ComputerBrowser {
     if (now.id === null && !t.pending) throw new Error(REFUSAL.noHistoryRead);
     if (now.id !== bound.id || now.method !== bound.method) return false;
     if (bound.method === "GET" || t.pending) return false;
-    await this.send(t, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
+    // R81: the one command that sends a form again goes out in this very tick. `send` may first wait for an attachment, long
+    // enough for a Take over, Off or page change, so it is not used: a tab that is not ready to be driven right now (gone,
+    // DevTools open, an attachment in flight, the debugger detached) is treated as the page having changed, never attached
+    // and sent.
+    if (t.wc.isDestroyed() || t.wc.isDevToolsOpened() || t.attaching || !t.wc.debugger.isAttached()) throw new PageChanged();
+    await cdp(t.wc.debugger, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
     return true;
   }
 
@@ -1442,7 +1447,8 @@ export class ComputerBrowser {
     // failed URL as the tab's URL (a GET-submitted code is in it), but Electron emits no did-navigate for it: it emits one
     // did-fail-provisional-load at that commit (probed on Electron 44), and nothing for an aborted navigation (-3).
     wc.on("did-fail-provisional-load", (_e, code, _d, url, isMainFrame) => { if (isMainFrame && code !== ABORTED) this.commit(t, url); });
-    wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => { if (isMainFrame) { t.seq++; this.o.hooks.changed(); } });
+    // The page token moves with it, so a card raised for the page goes (the service's front hook); the pointer stays for the same tab.
+    wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => { if (isMainFrame) { t.seq++; if (this.list[this.current] === t) this.o.hooks.front?.(); this.o.hooks.changed(); } });
     // R37 (N4): loading stops after every main-frame navigation ends; one that committed consumed its entry at the commit,
     // so an entry still here belongs to a navigation that never committed (a 204, a download, a cancel: Electron 44 emits
     // no did-fail-provisional-load for either, probed) and would otherwise wait for a URL that never commits. R39: loading

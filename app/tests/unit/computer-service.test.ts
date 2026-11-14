@@ -169,7 +169,7 @@ class FakeBrowser implements BrowserLike {
   /** The person (or the page) moves tab `i` to another page, or to the same shown address with another hidden part. */
   commit(i: number, url?: string): void { const p = this.pages[i]; if (url) p.url = url; p.commits = (p.commits ?? 0) + 1; if (i === this.current) this.front(true); }
   /** A same-document change of tab `i` (pushState): the page token moves, the document stays. */
-  inPage(i: number): void { const p = this.pages[i]; p.commits = (p.commits ?? 0) + 1; }
+  inPage(i: number): void { const p = this.pages[i]; p.commits = (p.commits ?? 0) + 1; if (i === this.current) this.front(); }
   /** The real browser tells the service when the tab in front changes (`hooks.front()`; also when the tab in front is selected again
    *  or a background tab closes) or its main frame commits another document (`hooks.front(true)`). */
   private front(page = false): void { (this.hooks as BrowserHooks & { front?: (page?: boolean) => void }).front?.(page); }
@@ -1408,13 +1408,12 @@ test("a second Reload while the card is up raises no second card", async () => {
   assert.equal(g.broker.pending().length, 1);
 });
 
-test("the person's Reload on a GET page, a blank page, an unknown entry or an unreadable history reloads at once with no card", async () => {
+test("in a tab that never held a form, a Reload on a GET page, a blank page or an unknown entry reloads at once with no card", async () => {
   for (const [name, set] of [
     ["a GET page", (b: FakeBrowser) => { b.methods.reload = "GET"; }],
     // about:blank is a GET to the browser's entry() (it is not fetched), whatever the table says.
     ["a blank page", (b: FakeBrowser) => { b.methods.reload = "GET"; b.pages[0].url = "about:blank"; }],
     ["an unknown entry", (b: FakeBrowser) => { b.methods.reload = "unknown"; }],
-    ["an unreadable history", (b: FakeBrowser) => { b.methods.reload = "other"; b.entryError = new Error("DevTools holds the debugger"); }],
   ] as const) {
     const h = make();
     const b = await userOn(h);
@@ -1422,7 +1421,7 @@ test("the person's Reload on a GET page, a blank page, an unknown entry or an un
     h.svc.nav("reload");
     await flush();
     assert.equal(h.broker.pending().length, 0, `${name}: no card`);
-    assert.deepEqual([b.navs, b.reposts], [[name === "an unreadable history" ? "reload 0" : "reload"], [false]], `${name}: Electron's own reload`);
+    assert.deepEqual([b.navs, b.reposts], [["reload"], [false]], `${name}: Electron's own reload`);
     assert.equal(h.lastState().log.at(-1)!.text, "Reloaded", name);
   }
 });
@@ -1600,6 +1599,8 @@ test("Reload in a tab that never loaded a form reloads at once, with no history 
   assert.equal(h.broker.pending().length, 0);
 });
 
+const UNREAD_LINE = "Reload pressed; this page's history could not be read.";
+
 test("a Reload whose history read fails still reloads", async () => {
   const h = make();
   const b = await userOn(h);
@@ -1609,7 +1610,7 @@ test("a Reload whose history read fails still reloads", async () => {
   await flush();
   assert.equal(h.broker.pending().length, 0, "no card");
   assert.deepEqual([b.navs, b.reposts], [["reload 0"], [false]]);
-  assert.equal(h.lastState().log.at(-1)!.text, "Reloaded");
+  assert.equal(h.lastState().log.at(-1)!.text, UNREAD_LINE);
 });
 
 test("a press that goes stale during the read still reloads the page now in front", async () => {
@@ -1693,6 +1694,60 @@ test("the pressed tab closing during the read: nothing reloads", async () => {
   await flush();
   assert.deepEqual(b.navs, []);
   assert.equal(h.broker.pending().length, 0);
+});
+
+test("in a tab that held a form, a Reload on an entry of unknown method asks", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.formEarlier = true; b.methods.reload = "unknown";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  assert.deepEqual([b.navs, b.reposts], [[], []], "nothing reloaded yet");
+  assert.equal(ask.title, OWN_TITLE);
+  assert.equal(ask.detail, "This page may have been loaded by a form. Reloading it would send that form again, so what it did may happen twice. Page: https://a.test/form");
+  assert.equal(ask.why, "resendown");
+  assert.equal(ask.always, false);
+});
+
+test("Send again on that card sends the reload through the protocol", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.formEarlier = true; b.methods.reload = "unknown";
+  h.svc.nav("reload");
+  h.svc.answer((await h.asked()).id, "once");
+  await flush();
+  assert.deepEqual(b.reposts, [true]);
+  assert.equal(h.lastState().log.at(-1)!.text, "Reloaded");
+});
+
+test("in a tab that held a form, a Reload whose history cannot be read reloads plainly and does not log Reloaded", async () => {
+  for (const set of [(b: FakeBrowser) => { b.entryError = new Error("DevTools holds the debugger"); }, (b: FakeBrowser) => { b.entryId = null; }]) {
+    const h = make();
+    const b = await userOn(h);
+    b.formEarlier = true; b.methods.reload = "unknown";
+    set(b);
+    h.svc.nav("reload");
+    await flush();
+    assert.equal(h.broker.pending().length, 0);
+    assert.deepEqual([b.navs, b.reposts], [["reload 0"], [false]]);
+    assert.ok(!h.lastState().log.some((l) => l.text === "Reloaded"));
+    assert.equal(h.lastState().log.at(-1)!.text, UNREAD_LINE);
+  }
+});
+
+test("a same-document change under the person's card removes it, and the next Reload asks again", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  b.inPage(0);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the card went");
+  assert.deepEqual(b.navs, []);
+  h.svc.nav("reload");
+  await flush();
+  assert.equal(h.broker.pending().length, 1, "the next Reload asks again");
 });
 
 test("the person's log holds Reloaded after Send again, nothing after a page change, and an app sentence for a failure", async () => {
