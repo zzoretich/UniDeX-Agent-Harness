@@ -907,7 +907,7 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<AppHandle> {
  * a clean-up failure added to its message as one line. The graceful close gets 2 s only: an app whose main thread is
  * stuck does not answer it.
  */
-async function endFailedLaunch(app: ElectronApplication, error: unknown): Promise<unknown> {
+export async function endFailedLaunch(app: ElectronApplication, error: unknown): Promise<unknown> {
   try {
     const proc = app.process();
     const started = new AppProcesses(proc.pid!);

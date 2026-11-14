@@ -7,11 +7,11 @@
 //
 //   AOS_E2E_STRAGGLER=1 npx playwright test tests/e2e/term-writes.spec.ts tests/e2e/theme.spec.ts
 
-import { expect, test } from "@playwright/test";
+import { _electron as electron, expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, REPO, USER_DATA, USER_DATA_LINK, installComputerAgents, launchApp, removeUserDataLink, restoreFixture, type AppHandle } from "./harness";
+import { FX, REPO, appEnv, endFailedLaunch, USER_DATA, USER_DATA_LINK, installComputerAgents, launchApp, removeUserDataLink, restoreFixture, type AppHandle } from "./harness";
 
 let h: AppHandle | null = null;
 let groups: number[] = [];
@@ -132,4 +132,23 @@ test("launchApp: after a failed launch the next launch in the same file works", 
   await h.close();
   h = null;
   expect(launchedHere()).toEqual([]);
+});
+
+// The path that really happened: a main thread that is stuck does not answer close(). SIGSTOP stops the process as a
+// stuck thread would, so the graceful close can never come back and only the kill ends it.
+test("launchApp: an app that cannot answer close is killed within the bound", async () => {
+  test.setTimeout(60_000);
+  restoreFixture();
+  const app = await electron.launch({ args: [REPO], cwd: REPO, env: appEnv(), timeout: 60_000 });
+  const pid = app.process().pid!;
+  expect(launchedHere().length).toBeGreaterThan(0);
+  process.kill(pid, "SIGSTOP");
+  const own = new Error("the launch's own error");
+  const at = Date.now();
+  const got = await endFailedLaunch(app, own);
+  const took = Date.now() - at;
+  expect(got).toBe(own);
+  expect(own.message).toBe("the launch's own error");
+  expect(took).toBeLessThan(12_000);
+  await expect.poll(launchedHere, { timeout: 5_000 }).toEqual([]);
 });
