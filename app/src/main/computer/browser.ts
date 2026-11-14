@@ -42,7 +42,7 @@ export interface TabInfo { index: number; url: string; title: string; openedBy: 
 export interface Resolved { target: Target; shown: string; sensitive: boolean; backendNodeId: number; judged: number[]; point: { x: number; y: number }; corner: { x: number; y: number }; pageToken: string; tab: number }
 /** `agentDrives` (session-browser S17): whether this session's agent holds the wheel now. A popup made at any other time (the
  *  person drives, or nobody does) is the person's, not its opener's agent's. */
-export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; agentDrives?(): boolean }
+export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; agentDrives?(): boolean; front?(): void }
 /** The history entry a move would load (session-browser S17), as one read of the tab's history saw it: the tab by its uid, the
  *  entry by its id (null where none: a waking tab, nothing to go to, an unreadable history) and the method it was loaded by. */
 export interface Entry { uid: number; id: string | null; url: string | null; method: "GET" | "other" | "unknown" }
@@ -523,6 +523,7 @@ export class ComputerBrowser {
     this.tab(index);
     this.current = index;
     this.place();
+    this.o.hooks.front?.();
     this.o.hooks.changed();
   }
 
@@ -675,6 +676,7 @@ export class ComputerBrowser {
     if (index < this.current) this.current--;
     this.current = Math.min(this.current, this.list.length - 1);
     this.place();
+    this.o.hooks.front?.();
     this.o.hooks.changed();
   }
 
@@ -763,17 +765,18 @@ export class ComputerBrowser {
 
   /**
    * The element a click will hit, for the gate to judge (R26: never the container a ref named). The point is a ref's
-   * centre (scrolled into view first) or the given x, y. The pointer moves there first, so the element judged is the
+   * centre (scrolled into view first) or the given x, y. The page's mouse moves there first, so the element judged is the
    * one in the hovered state the press will meet (a row that shows Delete on hover). The target is the control a click
    * there reaches by either walk (`judgeReach`); `click()` delivers at exactly that point. `target.name` is raw (D9: the
    * gate judges what the page shows); `shown` is the name for outgoing text, scrubbed with the values read in this call.
-   * A ref is looked up in `session`'s own table (I2), so it names the node printed for that session or nothing. With `valid`
-   * (PR 5, A4), the pointer's move onto the point is made only while it holds (otherwise PageChanged, and nothing moved); a
-   * click's resolve is not given one. With `onPoint` (a hover's, session-browser S18), the pointer's travel to the point is awaited
-   * after the box is read and before the mouse moves: false (the call stopped being current on the way) moves nothing and
-   * throws PageChanged. R81: `valid` is looked at again after the hook, with nothing awaited between that look and the move.
+   * A ref is looked up in `session`'s own table (I2), so it names the node printed for that session or nothing. The page's mouse
+   * is moved onto the point by this read, and with `valid` (PR 5, A4) only while it holds (otherwise PageChanged, and nothing
+   * moved). With `onPoint` (every acting step's, session-browser S18), the drawn pointer's travel to the point (or, for a typed
+   * ref, to the field's corner) is awaited after the box is read and before the page's mouse moves: false (the call stopped being
+   * current on the way) moves nothing and throws PageChanged. R81: `valid` is looked at again after the hook, with nothing
+   * awaited between that look and the move.
    */
-  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean, onPoint?: (p: Point) => Promise<boolean>): Promise<Resolved> {
+  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean, onPoint?: (p: Point, corner: Point, tab: number) => Promise<boolean>): Promise<Resolved> {
     const t = this.tab();
     const where = { pageToken: this.tokenOf(t), tab: this.current };
     let named: number | null = null;
@@ -796,10 +799,10 @@ export class ComputerBrowser {
     // D9: the fields' values are read before the pointer arrives as well as after the walk, and `shown` is scrubbed with
     // both (a page that clears a code on mouseenter would otherwise leave it in the name read after the hover).
     const pre = await this.secrets(t);
-    // `onPoint` (a hover's): the pointer main draws arrives first. Nothing is awaited between the look at `valid` that `hover`
-    // makes (its `before`) and the move.
-    if (onPoint && !(await onPoint(p))) throw new PageChanged();
-    // `valid` (a hover's, whose move is the act): the pointer goes onto the point only while the call is current.
+    // `onPoint`: the pointer main draws arrives first, then the page's mouse. Nothing is awaited between the look at `valid` that
+    // `hover` makes (its `before`) and the move.
+    if (onPoint && !(await onPoint(p, { x: Math.round(corner.x), y: Math.round(corner.y) }, where.tab))) throw new PageChanged();
+    // `valid`: the page's mouse goes onto the point only while the call is current (for a hover the move IS the act).
     // The move is for the tab and page this call read (`where`): a navigation or tab switch during the travel moves nothing.
     await this.hover(t, p, valid && (() => this.live(valid, where)));
     const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
@@ -1297,6 +1300,8 @@ export class ComputerBrowser {
     this.wire(t);
     if (!behind) this.current = this.list.length - 1;
     this.place();
+    // A tab brought in front covers the pointer the service drew over the one before (session-browser S18).
+    if (!behind) this.o.hooks.front?.();
     // The debugger's domains answer only once the page has a renderer.
     await t.wc.loadURL("about:blank");
     await this.attach(t).catch((e: Error) => this.o.hooks.note(forPerson(e)));
@@ -2172,6 +2177,9 @@ export class ComputerBrowser {
     // this commit's carry never waits on it.
     t.reads.endAll();
     this.committed(t, url);
+    // The tab in front shows another document: the pointer drawn over the old one is for a page that is gone (S18). A tab behind
+    // covers nothing, and a same-document change (`did-navigate-in-page`) never gets here.
+    if (this.list[this.current] === t) this.o.hooks.front?.();
     this.o.hooks.changed();
   }
 

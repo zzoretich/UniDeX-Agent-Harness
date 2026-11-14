@@ -299,7 +299,7 @@ const computerRecords = new BrowserRecords({
 // screenshot (the tab's own capture) and the outline cannot hold it. The drawer is disposed at quit, and made again if the quit is
 // cancelled. A window that is absent, destroyed, hidden or minimised has no surface.
 let pointerDrawer: ReturnType<typeof tagDrawer> | null = null;
-const drawer = (): ReturnType<typeof tagDrawer> => (pointerDrawer ??= tagDrawer());
+const drawer = (): ReturnType<typeof tagDrawer> => (pointerDrawer ??= tagDrawer({ log: (line) => console.warn(`[main] ${line}`) }));
 const pointerSurfaces = new Map<BrowserWindow, ReturnType<typeof imageSurface>>();
 function pointerSurface(which: "main" | "pop"): PointerSurface | null {
   const w = which === "main" ? win : computerPop?.win;
@@ -313,7 +313,7 @@ function pointerSurface(which: "main" | "pop"): PointerSurface | null {
   }
   return s;
 }
-const computerPointer = new Pointer({ surface: pointerSurface });
+const computerPointer = new Pointer({ surface: pointerSurface, log: (line) => console.warn(`[main] ${line}`) });
 /** The terminals and threads main holds: the one check the page's Computer calls and a program's open both use (policy/computer.ts sessionAllowed). */
 const heldSessions = { terminal: (id: string): boolean => ptyService.holdsOrigin(id), thread: (id: string): boolean => sessionService.has(id) };
 const computerService: ComputerService = new ComputerService({
@@ -525,7 +525,8 @@ function popOutComputer(session: string | null, show: { label: string; on: boole
     });
     w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     w.webContents.on("will-navigate", (e) => e.preventDefault());
-    w.on("resize", () => { if (computerPop?.win === w) computerPop.view?.show(popBounds(w)); });
+    // The view takes the window's new box, then the pointer in it is kept or hidden (the pane's rectangle says nothing while popped out).
+    w.on("resize", () => { if (computerPop?.win === w) { computerPop.view?.show(popBounds(w)); computerService.popResized(); } });
     w.on("close", () => { if (computerPop?.win === w) popBack(); });
     w.on("blur", recheckAsks);
     w.on("hide", recheckAsks);

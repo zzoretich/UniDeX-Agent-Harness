@@ -2769,6 +2769,28 @@ test("resolve's hook runs after the target is read and before the mouse moves, a
   assert.deepEqual(page.mice(), [], "the hook's travel ended with the call no longer current: still no mouse");
 });
 
+test("resolve's hook is given the point, the field's corner and the tab, for a ref and for an x, y target", async () => {
+  const { b } = scrolled(250);
+  const seen: unknown[] = [];
+  await b.resolve({ ref: "e3" }, "s1", () => true, async (p, c, t) => { seen.push([p, c, t]); return true; });
+  await b.resolve({ x: 50, y: 280 }, "s1", () => true, async (p, c, t) => { seen.push([p, c, t]); return true; });
+  assert.deepEqual(seen, [[{ x: 50, y: 60 }, { x: 0, y: 50 }, 0], [{ x: 50, y: 280 }, { x: 50, y: 280 }, 0]], "a typed ref's caret goes to the corner, the others to the point");
+});
+
+test("a cross-document commit of the tab in front tells the service; a same-document change and a tab behind do not", async () => {
+  const { b, tab } = make();
+  let fronts = 0;
+  (b as unknown as { o: { hooks: BrowserHooks } }).o.hooks.front = () => { fronts++; };
+  const handlers = wiredHandlers(b, tab);
+  handlers.get("did-navigate-in-page")!({}, "https://a.test/x#y", true);
+  assert.equal(fronts, 0, "a same-document change keeps the page");
+  handlers.get("did-navigate")!({}, "https://a.test/next");
+  assert.equal(fronts, 1, "the tab in front shows another document");
+  (b as unknown as { current: number }).current = -1;
+  handlers.get("did-navigate")!({}, "https://a.test/behind");
+  assert.equal(fronts, 1, "a tab that is not in front covers nothing");
+});
+
 test("a navigation during a hover's travel moves no mouse: the move is for the page it read", async () => {
   const { b, page, tab } = scrolled(250);
   await assert.rejects(b.resolve({ ref: "e3" }, "s1", () => true, async () => { tab.seq++; return true; }), PageChanged);

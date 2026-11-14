@@ -999,6 +999,8 @@ test.describe("both hosts, the Computer surface on", () => {
        *  then lets the click finish. Never depends on the pointer still being shown after the reply (it hides after 3 s). */
       const clickAndSee = async (window: "main" | "pop", want: () => Promise<{ x: number; y: number }>): Promise<void> => {
         const reply = a.call("computer_click", { ref: details });
+        // Not awaited yet: a rejection while the polls run must not go unhandled (it is awaited, and so reported, below).
+        reply.catch(() => undefined);
         const target = await want();
         let seen: PointerState | null = null;
         await expect.poll(async () => { const s = await pointer(); seen = s; return s.shown && s.window === window && s.tag === name && near(s.at, target); }, { timeout: 8_000, message: `the pointer shows at the button in ${window}` }).toBe(true);
@@ -1038,6 +1040,7 @@ test.describe("both hosts, the Computer surface on", () => {
       // either delivered before the Take over or refused by it.
       await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
       const taken = a.call("computer_click", { ref: details });
+      taken.catch(() => undefined);   // not awaited until the Take over below: a rejection meanwhile is not unhandled
       await expect.poll(async () => (await pointer()).shown, { timeout: 8_000, message: "the pointer shows" }).toBe(true);
       await p.locator(".aos-cp-drivebtn", { hasText: "Take over" }).click();
       await expect.poll(async () => (await pointer()).shown, { timeout: 1_000 }).toBe(false);
@@ -1045,11 +1048,32 @@ test.describe("both hosts, the Computer surface on", () => {
       expect(outcome.text, "delivered before the Take over, or refused by it").toMatch(/^(Clicked |busy: the user is driving)/);
       await p.locator(".aos-cp-drivebtn", { hasText: "Hand back" }).click();
 
+      // The pointer goes when the page under it goes (session-browser S18): a tab brought in front covers it, so it hides at once and
+      // does not wait for its 3 s. A second tab is opened and left; the pointer is shown by a click in the first, then the second
+      // is switched to. A pointer that had hidden on its own before the switch (a slow machine) proves nothing: try again, up to three times.
+      expectReply(await a.call("computer_open", { url: repoUrl(), newTab: true }), { isError: false });
+      expectReply(await a.call("computer_tab", { index: 0 }), { isError: false });
+      let hiddenBySwitch = false;
+      for (let attempt = 0; attempt < 3 && !hiddenBySwitch; attempt++) {
+        await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+        expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+        if (!(await pointer()).shown) continue;
+        expectReply(await a.call("computer_tab", { index: 1 }), { isError: false });
+        await expect.poll(async () => (await pointer()).shown, { timeout: 1_500, message: "a tab switch hides the pointer at once" }).toBe(false);
+        hiddenBySwitch = true;
+        expectReply(await a.call("computer_tab", { index: 0 }), { isError: false });
+      }
+      expect(hiddenBySwitch, "the pointer was shown when the tab was switched").toBe(true);
+      expectReply(await a.call("computer_tab", { index: 1, close: true }), { isError: false });
+
       // The pop-out window: the same, drawn in that window, whose view starts at its origin.
       await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
       await p.locator(".aos-cp-popout").click();
       await expect(p).toHaveClass(/is-popped/);
       await expect.poll(() => electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")).length)).toBe(1);
+      // A first click in the pop-out warms its window's drawer, as the one in the main window does; it may show no pointer.
+      expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
       await clickAndSee("pop", centre);
     } finally {
       try {
