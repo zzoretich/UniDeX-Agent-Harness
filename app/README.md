@@ -82,6 +82,7 @@ when the system does not take the page. The pop-out window follows the selected 
 of the address bar and are the person's own (`computer:nav`, three words and no address). A tab the person opens with **+** starts
 on DuckDuckGo, and words typed in the address bar search it (the HUD's `data/computerStart.ts`, which main imports too;
 the e2e suite points both at a local fixture with `AOS_E2E_START_PAGE`, a switch only an unpackaged build reads).
+Before an agent's click, hover or typing in a browser on screen, a pointer travels to the target with the session's name, pulses on a click and hides 3 seconds after the last action, or at once at Take over or Off (`src/main/computer/pointer.ts`: an `ImageView` drawn above the tab's view, so it is in no screenshot or outline, and the one hidden window of main's own, JavaScript off, that draws its image).
 Main admits only the MCP server of an agent CLI it spawned, over a Unix socket in its data folder (or, when that path is too
 long for a socket, in a 0700 folder of the data folder's own in the user's system temp folder, published in the vault
 marker's `computerSocket`), through the `native/peer` addon. The pane runs while the `computer` surface is on: on by default since its live check on
