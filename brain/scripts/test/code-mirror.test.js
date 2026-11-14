@@ -52,6 +52,11 @@ const readEvents = (file) => {
 const sessionIds = (file) => readEvents(file).filter((e) => e.kind === 'session').map((e) => e.id);
 const claimPath = (env, term) => path.join(env.vault, 'brain', '_index', 'code', `${term}.claim.json`);
 const readClaim = (env, term) => { try { return JSON.parse(fs.readFileSync(claimPath(env, term), 'utf8')); } catch { return null; } };
+// How long a test lets a follower started by run() write something. A follower writes after a whole number of polls (a
+// "can't tell" error needs three folder scans, one every eight polls: 17 polls, about 0.4 s when idle), and each poll
+// sleeps on a timer, so a loaded machine stretches that; waitFor returns the moment its condition holds, so the wide
+// limit costs a passing run nothing.
+const FOLLOWER_MS = 10000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(cond, ms = 4000) {
   const end = Date.now() + ms;
@@ -156,7 +161,7 @@ test('F7 (M5): a tee naming a new session writes its session event at once, and 
     const r = run({ host: 'claude', cwd: '/work/demo', since: 0, terminal: TERM, vault: env.vault, dirs: env.dirs.claude });
     assert.ok(await waitFor(() => readEvents(cache).some((e) => e.text === 'in A')));
     fs.writeFileSync(teeFile, JSON.stringify({ session_id: ID_C }));
-    assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_C, 1000), 'the /clear shows at once, before the transcript exists');
+    assert.ok(await waitFor(() => sessionIds(cache).at(-1) === ID_C, FOLLOWER_MS), 'the /clear shows at once, before the transcript exists');
     await sleep(800); // about 40 polls of 20 ms: one lookup per 8 polls, not one per poll
     assert.ok(lookups >= 2 && lookups <= 8, `looked up ${lookups} times`);
     fs.writeFileSync(claudeFile(env, ID_C), userLine(ID_C, 'in C'));
@@ -226,7 +231,7 @@ test('F7: a transcript that cannot be opened is a missing poll, not the follower
     r.done.then(() => { ended = true; });
     fail = 1000;
     fs.appendFileSync(f, userLine(ID_A, 'third'));
-    assert.ok(await waitFor(() => ended, 2000), 'ten missing polls end it');
+    assert.ok(await waitFor(() => ended, FOLLOWER_MS), 'ten missing polls end it');
     assert.ok(fs.existsSync(cache), 'a gone transcript keeps its cache');
   } finally { fs.openSync = real; }
 });
@@ -241,7 +246,7 @@ test('F7: the follower ends when its parent changes (the app crashed), removing 
   const cache = M.cachePath(env.vault, TERM);
   assert.ok(await waitFor(() => sessionIds(cache).includes(ID_A)));
   parent = 1;
-  assert.ok(await waitFor(() => ended, 1000));
+  assert.ok(await waitFor(() => ended, FOLLOWER_MS));
   await done;
   assert.equal(fs.existsSync(cache), false);
   assert.equal(fs.existsSync(claimPath(env, TERM)), false);
@@ -362,7 +367,7 @@ test('follow codex: a rollout claimed by a live terminal is skipped, and two unc
   fs.writeFileSync(b, metaLine(ID_B, env.work, iso(now)));
   const cache = M.cachePath(env.vault, TERM);
   const r = run({ host: 'codex', cwd: env.work, since: now - 1000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
-  assert.ok(await waitFor(() => readEvents(cache).some((e) => e.kind === 'error')));
+  assert.ok(await waitFor(() => readEvents(cache).some((e) => e.kind === 'error'), FOLLOWER_MS));
   await sleep(500);
   const errs = readEvents(cache).filter((e) => e.kind === 'error');
   assert.equal(errs.length, 1);
@@ -405,7 +410,7 @@ test('follow codex: two terminals started within 5 s are both ambiguous', async 
   const f2 = run({ host: 'codex', cwd: env.work, since: now - 7000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
   const c1 = M.cachePath(env.vault, TERM);
   const c2 = M.cachePath(env.vault, TERM2);
-  assert.ok(await waitFor(() => readEvents(c1).some((e) => e.kind === 'error') && readEvents(c2).some((e) => e.kind === 'error')));
+  assert.ok(await waitFor(() => readEvents(c1).some((e) => e.kind === 'error') && readEvents(c2).some((e) => e.kind === 'error'), FOLLOWER_MS));
   await sleep(400);
   for (const c of [c1, c2]) assert.deepEqual(readEvents(c).map((e) => e.kind), ['error'], 'one error each, no conversation');
   await f1.stop();
@@ -430,7 +435,7 @@ test('follow codex: a /new in one terminal while the other is idle is ambiguous 
   fs.writeFileSync(r3, metaLine(ID_C, env.work, iso(now - 10000)) + codexUser('the new one'));
   const c1 = M.cachePath(env.vault, TERM);
   const c2 = M.cachePath(env.vault, TERM2);
-  assert.ok(await waitFor(() => readEvents(c1).some((e) => e.kind === 'error') && readEvents(c2).some((e) => e.kind === 'error')));
+  assert.ok(await waitFor(() => readEvents(c1).some((e) => e.kind === 'error') && readEvents(c2).some((e) => e.kind === 'error'), FOLLOWER_MS));
   await sleep(300);
   assert.equal(sessionIds(c1).includes(ID_C), false, 'not while T2 is quiet too');
   fs.appendFileSync(r2, codexUser('T2 is typing'));
@@ -503,7 +508,7 @@ test('follow codex (R17b): the same /resume with an idle live peer is ambiguous 
   fs.appendFileSync(old, codexUser('resumed somewhere'));
   const c1 = M.cachePath(env.vault, TERM);
   const c2 = M.cachePath(env.vault, TERM2);
-  assert.ok(await waitFor(() => readEvents(c1).some((e) => e.kind === 'error') && readEvents(c2).some((e) => e.kind === 'error')));
+  assert.ok(await waitFor(() => readEvents(c1).some((e) => e.kind === 'error') && readEvents(c2).some((e) => e.kind === 'error'), FOLLOWER_MS));
   await sleep(300);
   assert.equal(sessionIds(c1).includes(ID_B) || sessionIds(c2).includes(ID_B), false, 'neither while both are quiet');
   await sleep(20);
@@ -614,7 +619,7 @@ test('follow codex (R25, R61): a third terminal beside two stuck no-file twins i
   fs.writeFileSync(r3, metaLine(ID_C, env.work, iso(now - 59500)));
   const f3 = run({ host: 'codex', cwd: env.work, since: now - 60000, terminal: TERM3, vault: env.vault, dirs: env.dirs.codex });
   try {
-    assert.ok(await waitFor(() => readEvents(M.cachePath(env.vault, TERM3)).some((e) => e.kind === 'error'), 2000), 'no chat, one error: the safe failure');
+    assert.ok(await waitFor(() => readEvents(M.cachePath(env.vault, TERM3)).some((e) => e.kind === 'error'), FOLLOWER_MS), 'no chat, one error: the safe failure');
     assert.equal(readClaim(env, TERM3)?.file ?? null, null);
   } finally { await f3.stop(); }
 });
@@ -625,10 +630,10 @@ test('follow codex (R25, R61): a --id follower whose rollout is missing makes a 
   const mine = codexFile(env, `mine-${ID_B}`);
   fs.writeFileSync(mine, metaLine(ID_B, env.work, iso(now - 29500)));
   const lost = run({ host: 'codex', id: ID_A, cwd: env.work, since: now - 90000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
-  assert.ok(await waitFor(() => readClaim(env, TERM) !== null, 2000));
+  assert.ok(await waitFor(() => readClaim(env, TERM) !== null, FOLLOWER_MS));
   const f2 = run({ host: 'codex', cwd: env.work, since: now - 30000, terminal: TERM2, vault: env.vault, dirs: env.dirs.codex });
   try {
-    assert.ok(await waitFor(() => readEvents(M.cachePath(env.vault, TERM2)).some((e) => e.kind === 'error'), 2000), 'it could adopt that rollout, so the neighbour shows no chat');
+    assert.ok(await waitFor(() => readEvents(M.cachePath(env.vault, TERM2)).some((e) => e.kind === 'error'), FOLLOWER_MS), 'it could adopt that rollout, so the neighbour shows no chat');
     assert.equal(readClaim(env, TERM2)?.file ?? null, null);
   } finally { await f2.stop(); await lost.stop(); }
 });
@@ -646,7 +651,7 @@ test('follow codex (R26): subagent and exec rollouts in the folder are never ado
   const r = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
   const cache = M.cachePath(env.vault, TERM);
   try {
-    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === cur, 2000));
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === cur, FOLLOWER_MS));
     setMtime(cur, now - 30000);
     await sleep(100);
     fs.appendFileSync(sub, codexUser('the subagent works on'));
@@ -667,7 +672,7 @@ test('follow codex (D): a rollout that cannot be stat\'ed keeps its last known a
   const r = run({ host: 'codex', cwd: env.work, since: now - 120000, terminal: TERM, vault: env.vault, dirs: env.dirs.codex });
   const cache = M.cachePath(env.vault, TERM);
   try {
-    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === cur, 2000));
+    assert.ok(await waitFor(() => readClaim(env, TERM)?.file === cur, FOLLOWER_MS));
     // R61: another session's rollout appears only after this one has adopted its own.
     fs.writeFileSync(other, metaLine(ID_B, env.work, iso(now - 60000)) + codexUser('another', now - 59000));
     setMtime(other, now - 40000);
