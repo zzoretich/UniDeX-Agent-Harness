@@ -331,7 +331,13 @@ class FakeBrowser implements BrowserLike {
     if (at && (at.tab !== this.current || at.pageToken !== this.pageToken())) throw new PageChanged();
     this.keys.push(k);
   }
-  async scroll(dx: number, dy: number, at?: Resolved) { this.scrolls.push({ dx, dy, at: at?.backendNodeId ?? null }); }
+  scrollGate: Promise<void> | null = null;
+  /** As the real one: the wheel goes only while the call's predicate holds after its reads. */
+  async scroll(dx: number, dy: number, valid: () => boolean, at?: Resolved) {
+    if (this.scrollGate) await this.scrollGate;
+    if (!valid()) throw new PageChanged();
+    this.scrolls.push({ dx, dy, at: at?.backendNodeId ?? null });
+  }
   show(b: Rect | null) { this.shows.push(b); }
   private need(tab?: number) {
     if (!this.pages[tab ?? this.current]) throw new Error(tab === undefined ? "No page is open: call computer_open first." : `There is no tab ${tab}.`);
@@ -2474,6 +2480,7 @@ test("R81: Take over then Hand back after Allow, while the action revalidates: n
   const r = await p;
   assert.match(r.text, /^The page changed while you waited: look again\./);
   assert.equal(b.clicks.length, 0);
+  assert.deepEqual(b.moves, ["guarded"], "the first read moved the mouse guarded; the look again after Allow carried the real predicate and moved nothing");
 });
 
 test("R81: an old call that resumes after its session key was registered again (the thread's next CLI) sends nothing", async () => {
@@ -6863,4 +6870,80 @@ test("an off-screen click whose call is no longer current moves no mouse", async
   const r = await p;
   assert.match(r.text, /^busy: /, r.text);
   assert.deepEqual([b.moves, b.order.includes("mouse"), b.clicks.length], [[], false, 0], "no hook, and the read's own mouse move is guarded");
+});
+
+test("a Take over during a scroll's reads delivers no wheel", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  let release!: () => void;
+  b.scrollGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_scroll", { dy: 100 });
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  assert.equal((await p).text, "busy: the user is driving: wait for Hand back.");
+  assert.deepEqual(b.scrolls, []);
+});
+
+test("a scroll onto a ref reads its target guarded, and a Take over during the read moves no mouse", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_scroll", { dy: 100, ref: "e1" });
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  assert.match((await p).text, /^busy: /);
+  assert.deepEqual([b.moves, b.order.includes("mouse"), b.scrolls], [[], false, []]);
+  h.svc.handBack();
+  b.resolveGate = null;
+  await h.call(A, "computer_scroll", { dy: 100, ref: "e1" });
+  assert.deepEqual(b.moves, ["guarded"], "the target read of a scroll carries the call's predicate");
+});
+
+test("the look again after Allow reads its target guarded", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  h.svc.answer((await h.asked()).id, "once");
+  await p;
+  assert.deepEqual(b.moves, ["guarded", "guarded"], "the first read and the look again after Allow both carry the predicate");
+});
+
+test("a target read that outlives its call's deadline moves no mouse and scrolls nothing afterwards", async () => {
+  for (const [tool, args] of [["computer_click", { ref: "e1" }], ["computer_scroll", { dy: 100, ref: "e1" }]] as const) {
+    const h = make();
+    h.sites.mark("https://a.test");
+    const b = await h.open(A, "https://a.test/");
+    b.spots.set("e1", { target: btn("Next") });
+    let release!: () => void;
+    b.resolveGate = new Promise<void>((r) => { release = r; });
+    const p = h.call(A, tool, args);
+    await flush();
+    await h.clock.advance(45_000);
+    assert.equal((await p).text, REFUSAL.late, `${tool}: the agent is told it did not run`);
+    release();
+    await flush();
+    assert.deepEqual([b.moves, b.order.includes("mouse"), b.clicks.length, b.scrolls], [[], false, 0, []], `${tool}: the read that went on touched nothing`);
+  }
+});
+
+test("an action already claimed still finishes after the deadline", async () => {
+  const h = make();
+  h.sites.mark("https://a.test");
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  let release!: () => void;
+  b.clickGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  await h.clock.advance(46_000);
+  release();
+  assert.match((await p).text, /^Clicked e1\./, "its reply is the click's, not the late one");
+  assert.equal(b.clicks.length, 1);
 });

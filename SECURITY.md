@@ -236,13 +236,13 @@ inside the surface.
   event except the key-up of a free navigation key (Tab, an arrow, Home, End, Page Up, Page Down, Esc), whose own
   key-down moves focus by design. Any other key-up (Space, Enter, a letter) whose key-down moved the focus is withheld and
   the key is reported as moved, and typing stops at the chunk whose input sends the page elsewhere. Every click, key
-  event and chunk of typing goes only while its call is still current, checked just before it is sent and after every
-  read of the page on the way (opening a page and scrolling, which never ask, are checked when the call starts, so one
+  event, chunk of typing, wheel event, hover's move and scroll into view of a target goes only while its call is still current, checked just before it
+  is sent and after every read of the page on the way (opening a page, which never asks, is checked when the call starts, so one
   can still land just after a Take over), and a call that is no longer current raises no ask: the session still holds
   the wheel, from the process the app registered for it (a thread's next Chat CLI under the same key is another caller),
   and no Take over, Hand back or end of the turn has come since the call began (each starts a new generation of the
   computer, so a call that waited through a Take over and Hand back sends nothing, though the same session drives
-  again). A press's release and a chord's modifier key-ups complete what was already sent: they go when only the page
+  again). An event whose tab cannot be driven at the moment it would be sent (closed, DevTools open on it, the app still attaching to it, or its debugger detached) is dropped, not sent late. A press's release and a chord's modifier key-ups complete what was already sent: they go when only the page
   moved within its document (a mousedown handler's pushState), when a check stopped the chord on that document, and when
   a key failed to send (letting Shift go activates nothing), but only to the document that got the press and only while
   the call is current. After a cross-document commit, a Take over or a Stop they are withheld. The trade: the page may

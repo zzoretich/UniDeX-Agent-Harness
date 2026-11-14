@@ -11,7 +11,7 @@ import v8 from "node:v8";
 import vm from "node:vm";
 import electron from "electron";
 import { ComputerBrowser, clipAddress, type BrowserHooks, type Resolved } from "../../src/main/computer/browser";
-import { FocusMoved, forPerson, PageChanged } from "../../src/main/computer/cdp";
+import { CdpTimeout, FocusMoved, forPerson, PageChanged } from "../../src/main/computer/cdp";
 import { ConsoleLog } from "../../src/main/computer/console";
 import { LeavingRecords, PendingReads } from "../../src/main/computer/leaving";
 import { SecretMemory } from "../../src/main/computer/memory";
@@ -538,7 +538,7 @@ const landed = (page: FakePage) => {
 test("a ref the page has scrolled into view is hit-tested where it is: the scroll is added to the viewport point", async () => {
   // Scrolled by 250, the field's box is at 50–70 in the viewport; at document y 60 (no scroll added) is the second button.
   const { b, page } = scrolled(250);
-  const r = await b.resolve({ ref: "e3" }, "s1");
+  const r = await b.resolve({ ref: "e3" }, "s1", () => true);
   assert.deepEqual([r.backendNodeId, r.target.role, r.target.name, r.point], [12, "textbox", "Search", { x: 50, y: 60 }]);
   assert.deepEqual(hits(page), [[50, 310]]);
   await b.click(r, () => true);
@@ -550,7 +550,7 @@ test("an x, y click on a scrolled page is judged on the control under that point
   // Scrolled by 30, the press at viewport (50, 280) lands on the field (document y 310). Document y 280, shown a scroll's
   // height above the press, is the second button: the gate would judge it while the press went to the field.
   const { b, page } = scrolled(30, { x: 0, y: 260, width: 100, height: 40 });
-  const r = await b.resolve({ x: 50, y: 280 }, "s1");
+  const r = await b.resolve({ x: 50, y: 280 }, "s1", () => true);
   assert.deepEqual([r.backendNodeId, r.target.role, r.target.name], [12, "textbox", "Search"]);
   await b.click(r, () => true);
   assert.deepEqual(hits(page), [[50, 310], [50, 310]], "the click's own check hit-tests the same document point");
@@ -562,7 +562,7 @@ test("an x, y click on a scrolled page is judged on the control under that point
 test("a scroll between the offset's read and the hit test refuses: the node hit belongs to neither position", async () => {
   const { b, page } = scrolled(250);
   page.on.set("DOM.getNodeForLocation", () => { page.scroll.y += 30; });
-  assert.equal(await refusal(b.resolve({ ref: "e3" }, "s1")), "The page changed: look again.");
+  assert.equal(await refusal(b.resolve({ ref: "e3" }, "s1", () => true)), "The page changed: look again.");
   const r = resolved({ target: { role: "textbox", name: "Search", inForm: false, fileInput: false }, backendNodeId: 12, judged: [12], point: { x: 50, y: 60 } });
   page.sent.length = 0;
   page.scroll.y = 250;
@@ -577,7 +577,7 @@ test("R87: a fractional scroll: the press goes to exactly the document point the
   // starts. Viewport (50, 319) is document y 319.5, on the field; the hit test takes whole numbers, so it is made at y 320,
   // on the button. Pressed at (50, 319), the press reached the field while the gate judged the button.
   const { b, page } = scrolled(0.5, { x: 0, y: 320, width: 100, height: 40 });
-  const r = await b.resolve({ x: 50, y: 319 }, "s1");
+  const r = await b.resolve({ x: 50, y: 319 }, "s1", () => true);
   assert.deepEqual([r.backendNodeId, r.target.role, r.target.name], [11, "button", "Go"]);
   const n = page.mice().length;
   await b.click(r, () => true);
@@ -596,7 +596,7 @@ test("R87: a scroll between the click's last hit test and its press refuses, and
   // A smooth scroll still running, the page's own script or the person: the scroll moves after the click's hit test (here
   // while the click reads the DOM) and before the press, so the point no longer shows the node judged.
   const { b, page } = scrolled(250);
-  const r = await b.resolve({ ref: "e3" }, "s1");
+  const r = await b.resolve({ ref: "e3" }, "s1", () => true);
   page.sent.length = 0;
   let moved = false;
   page.on.set("DOM.getDocument", () => { if (!moved) { moved = true; page.scroll.y += 40; } });
@@ -1146,7 +1146,7 @@ test("a number the session was never shown is refused", async () => {
   page.ax = items(600);
   await snapshotText(b, "s", 8000);              // only the first lines were shown
   assert.equal(refTo(tab, "s", "e500"), undefined, "never registered");
-  await assert.rejects(b.resolve({ ref: "e500" }, "s"), /take a new snapshot/);
+  await assert.rejects(b.resolve({ ref: "e500" }, "s", () => true), /take a new snapshot/);
 });
 
 test("after a navigation only the reply's printed refs exist", async () => {
@@ -1185,7 +1185,7 @@ test("a navigation during a snapshot's reads leaves no usable ref", async () => 
   page.on.set("Accessibility.getFullAXTree", () => { (tab as { seq: number }).seq++; });   // the page moves on mid-read
   await b.snapshot(undefined, "s");
   assert.equal((tab as { refs: Map<string, { token: string }> }).refs.get("s")?.token, "1.0", "registered under the token read before the reads");
-  await assert.rejects(b.resolve({ ref: "e1" }, "s"), /There is no e1 on this page now/);
+  await assert.rejects(b.resolve({ ref: "e1" }, "s", () => true), /There is no e1 on this page now/);
 });
 
 // ---- fix round 1 (session-browser S16, M3): `settled` through the web contents' own events
@@ -2797,10 +2797,10 @@ test("focusCorner is the focused field's top-left in the viewport; null for noth
 
 test("Resolved.corner is the box's top-left for a ref and the point itself for an x, y target", async () => {
   const a = scrolled(250);
-  const r = await a.b.resolve({ ref: "e3" }, "s1");
+  const r = await a.b.resolve({ ref: "e3" }, "s1", () => true);
   assert.deepEqual([r.corner, r.point], [{ x: 0, y: 50 }, { x: 50, y: 60 }]);
   const c = scrolled(30, { x: 0, y: 260, width: 100, height: 40 });
-  const p = await c.b.resolve({ x: 50, y: 280 }, "s1");
+  const p = await c.b.resolve({ x: 50, y: 280 }, "s1", () => true);
   assert.deepEqual(p.corner, { x: 50, y: 280 });
 });
 
@@ -2852,4 +2852,312 @@ test("a navigation during a hover's travel moves no mouse: the move is for the p
   const other = scrolled(250);
   await assert.rejects(other.b.resolve({ ref: "e3" }, "s1", () => true, async () => { (other.b as unknown as { current: number }).current = 1; return true; }), PageChanged);
   assert.deepEqual(other.page.mice(), []);
+});
+
+// ---- session-browser follow-up: an action is delivered in the same moment as its last check
+//
+// Each test finds, in a first run, the read the action makes just before its first command of a kind, then runs again and
+// changes the world right after that read is answered: an attachment is in flight (so the call stops being current before
+// it ends), or the debugger is found detached. Nothing may wait between the action's last check and its command.
+
+type Made = ReturnType<typeof make>;
+type Act = (m: Made, valid: () => boolean) => Promise<unknown>;
+type Sent = { method: string; params: Record<string, unknown> };
+const mouseOf = (type: string) => (s: Sent): boolean => s.method === "Input.dispatchMouseEvent" && s.params.type === type;
+const command = (method: string) => (s: Sent): boolean => s.method === method;
+
+/** How many entries the page's log holds when the read just before the first command `is` has been logged. */
+async function gapAt(act: Act, is: (s: Sent) => boolean): Promise<number> {
+  const m = make();
+  await act(m, () => true);
+  const i = m.page.sent.findIndex(is);
+  assert.ok(i > 0, "the action reads before its command");
+  return i;
+}
+
+/** Runs `fn` as the read that made the log `n` entries long has been answered, before the action goes on. */
+function afterEntry(page: FakePage, n: number, fn: () => void): void {
+  const orig = page.send.bind(page);
+  page.send = async (method, params) => { const out = await orig(method, params); if (page.sent.length === n) fn(); return out; };
+}
+
+/** An attachment that can be put in flight on the tab and ended with `then` run first (the call stopping being current). */
+function attachment(tab: unknown) {
+  const t = tab as { attaching: Promise<void> | null };
+  let end!: (then?: () => void) => void, began!: () => void;
+  const started = new Promise<void>((r) => { began = r; });
+  return {
+    /** Resolves once the attachment is in flight (the action got as far as the read it is put after). */
+    started,
+    begin(): void { t.attaching = new Promise<void>((r) => { end = (then) => { t.attaching = null; then?.(); r(); }; }); began(); },
+    end: (then?: () => void): void => end(then),
+  };
+}
+
+/** The debugger of the tab, detachable, counting the attaches asked of it. */
+function detachable(tab: Made["tab"]) {
+  const d = { attached: true, attaches: 0 };
+  Object.assign(tab.wc.debugger, { isAttached: () => d.attached, attach: () => { d.attaches++; d.attached = true; } });
+  return d;
+}
+
+const clicks: Act = (m, valid) => m.b.click(resolved(), valid);
+const typing: Act = (m, valid) => { m.page.focused = 12; return m.b.type("rope", valid, at(m.tab), { node: 12, frame: "F1" }); };
+const pressing: Act = (m, valid) => { m.page.focused = 10; return m.b.key("Space", valid, at(m.tab), { node: 10, frame: "F1" }); };
+
+/** The action with an attachment in flight at its last read, which ends with the call no longer current. */
+async function notDeliveredWhileAttaching(act: Act, is: (s: Sent) => boolean, stop: (m: Made, live: { on: boolean }) => void, left: string[]): Promise<void> {
+  const i = await gapAt(act, is);
+  const m = make();
+  const live = { on: true }, att = attachment(m.tab);
+  afterEntry(m.page, i, () => att.begin());
+  const run = assert.rejects(act(m, () => live.on), PageChanged);
+  await att.started;
+  await later(5);
+  att.end(() => stop(m, live));
+  await run;
+  assert.deepEqual(m.page.inputs(), left, "nothing was sent after the call stopped being current");
+}
+
+/** The action with the debugger found detached at its last read: nothing is attached and sent. */
+async function notDeliveredWhenDetached(act: Act, is: (s: Sent) => boolean, left: string[]): Promise<void> {
+  const i = await gapAt(act, is);
+  const m = make();
+  const d = detachable(m.tab);
+  afterEntry(m.page, i, () => { d.attached = false; });
+  await assert.rejects(act(m, () => true), PageChanged);
+  assert.equal(d.attaches, 0, "no attach-and-send");
+  assert.deepEqual(m.page.inputs(), left);
+}
+
+const held = (_m: Made, live: { on: boolean }): void => { live.on = false; };
+const MOVED = "Input.dispatchMouseEvent:mouseMoved";
+
+test("a click is not delivered when the call stops being current while the debugger attaches", async () => {
+  await notDeliveredWhileAttaching(clicks, mouseOf("mousePressed"), held, [MOVED]);
+});
+
+test("a click is not delivered when the debugger is found detached at the moment of delivery", async () => {
+  await notDeliveredWhenDetached(clicks, mouseOf("mousePressed"), [MOVED]);
+});
+
+test("a click that began is never left half-delivered by an attachment: a release the debugger cannot take at once is dropped, never attached and sent", async () => {
+  // The press went out; the debugger detaches before the release. The release follows the existing rule (R81, AC-R3-02): it
+  // goes only to the document that got the press, while the call is current and now also while the tab can be driven; here
+  // it cannot, so it is withheld as a page change and the click says so.
+  const i = await gapAt(clicks, mouseOf("mouseReleased"));
+  const m = make();
+  const d = detachable(m.tab);
+  afterEntry(m.page, i, () => { d.attached = false; });
+  await assert.rejects(clicks(m, () => true), PageChanged);
+  assert.equal(d.attaches, 0);
+  assert.deepEqual(m.page.inputs(), [MOVED, "Input.dispatchMouseEvent:mousePressed"]);
+  // An attachment in flight at the same moment is no different.
+  const n = make();
+  const att = attachment(n.tab);
+  afterEntry(n.page, i, () => att.begin());
+  await assert.rejects(clicks(n, () => true), PageChanged);
+  assert.deepEqual(n.page.inputs(), [MOVED, "Input.dispatchMouseEvent:mousePressed"]);
+});
+
+test("a hover is not delivered when the call stops being current while the debugger attaches", async () => {
+  const m = make();
+  const live = { on: true }, att = attachment(m.tab);
+  att.begin();
+  const run = assert.rejects(m.b.hoverAt(resolved(), () => live.on), PageChanged);
+  await later(5);
+  att.end(() => { live.on = false; });
+  await run;
+  assert.deepEqual(m.page.inputs(), [], "the move was not sent after the wait");
+});
+
+test("a hover is not delivered when the debugger is found detached at the moment of delivery", async () => {
+  const m = make();
+  const d = detachable(m.tab);
+  d.attached = false;
+  await assert.rejects(m.b.hoverAt(resolved(), () => true), PageChanged);
+  assert.equal(d.attaches, 0, "no attach-and-send");
+  assert.deepEqual(m.page.inputs(), []);
+});
+
+test("a type is not delivered when the call stops being current while the debugger attaches", async () => {
+  await notDeliveredWhileAttaching(typing, command("Input.insertText"), held, []);
+});
+
+test("a type is not delivered when the debugger is found detached at the moment of delivery", async () => {
+  await notDeliveredWhenDetached(typing, command("Input.insertText"), []);
+});
+
+test("a key is not delivered when the call stops being current while the debugger attaches", async () => {
+  await notDeliveredWhileAttaching(pressing, command("Input.dispatchKeyEvent"), held, []);
+});
+
+test("a key is not delivered when the debugger is found detached at the moment of delivery", async () => {
+  await notDeliveredWhenDetached(pressing, command("Input.dispatchKeyEvent"), []);
+});
+
+test("a scroll is not delivered when the document changes while the debugger attaches", async () => {
+  const act: Act = (m) => m.b.scroll(0, 120, () => true);
+  await notDeliveredWhileAttaching(act, mouseOf("mouseWheel"), (m) => { m.tab.seq++; m.tab.doc++; }, []);
+});
+
+test("a scroll is not delivered when the debugger is found detached at the moment of delivery", async () => {
+  await notDeliveredWhenDetached((m) => m.b.scroll(0, 120, () => true), mouseOf("mouseWheel"), []);
+});
+
+test("a file is not set on an input when the call stops being current while the debugger attaches", async () => {
+  const { b, page, tab, notes } = make();
+  const att = attachment(tab);
+  // The chosen file comes back from the dialog with an attachment in flight; the page changes before it ends.
+  showOpenDialog = async () => { att.begin(); return { canceled: false, filePaths: ["/files/tide.csv"] }; };
+  const run = (b as unknown as Chooser).chooseFile(tab, { mode: "selectSingle", backendNodeId: 12 });
+  await later(5);
+  att.end(() => { tab.seq++; });
+  await run;
+  assert.deepEqual(setFiles(page), []);
+  assert.equal(notes.length, 1, "the person is told it did not reach the page");
+  // The debugger found detached is the same: nothing is attached and sent.
+  const other = make();
+  const d = detachable(other.tab);
+  showOpenDialog = async () => { d.attached = false; return { canceled: false, filePaths: ["/files/tide.csv"] }; };
+  await (other.b as unknown as Chooser).chooseFile(other.tab, { mode: "selectSingle", backendNodeId: 12 });
+  assert.equal(d.attaches, 0);
+  assert.deepEqual(setFiles(other.page), []);
+});
+
+test("a normal click, double click, hover, type, key and scroll still deliver exactly the events they did", async () => {
+  const sentOf = (page: FakePage, method: string): Record<string, unknown>[] => page.sent.filter((s) => s.method === method).map((s) => s.params);
+  const click = make();
+  await click.b.click(resolved(), () => true);
+  assert.deepEqual(click.page.inputs(), [MOVED, "Input.dispatchMouseEvent:mousePressed", "Input.dispatchMouseEvent:mouseReleased"]);
+  assert.deepEqual(pairs(click.page), ["mousePressed 1", "mouseReleased 1"]);
+  const dbl = make();
+  await dbl.b.click(resolved(), () => true, { double: true });
+  assert.deepEqual(pairs(dbl.page), ["mousePressed 1", "mouseReleased 1", "mousePressed 2", "mouseReleased 2"]);
+  const hov = make();
+  await hov.b.hoverAt(resolved({ point: { x: 30, y: 40 } }), () => true);
+  assert.deepEqual(hov.page.mice(), [["mouseMoved", 30, 40]]);
+  const typed = make();
+  typed.page.focused = 12;
+  await typed.b.type("ab\ncd", () => true, at(typed.tab), { node: 12, frame: "F1" });
+  assert.deepEqual(typed.page.inputs(), ["Input.insertText:ab", "Input.dispatchKeyEvent:keyDown", "Input.dispatchKeyEvent:keyUp", "Input.insertText:cd"]);
+  const key = make();
+  key.page.focused = 10;
+  await key.b.key("Shift+Tab", () => true, at(key.tab), { node: 10, frame: "F1" });
+  assert.deepEqual(key.page.keys(), ["rawKeyDown Shift", "rawKeyDown Tab", "keyUp Tab", "keyUp Shift"]);
+  const wheel = make();
+  await wheel.b.scroll(0, 120, () => true);
+  assert.deepEqual(sentOf(wheel.page, "Input.dispatchMouseEvent"), [{ type: "mouseWheel", x: 200, y: 150, deltaX: 0, deltaY: 120 }]);
+});
+
+test("a scroll is not delivered when the call stops being current during its reads", async () => {
+  const act: Act = (m, valid) => m.b.scroll(0, 120, valid);
+  const i = await gapAt(act, mouseOf("mouseWheel"));
+  const m = make();
+  let live = true;
+  afterEntry(m.page, i, () => { live = false; });
+  await assert.rejects(act(m, () => live), PageChanged);
+  assert.deepEqual(m.page.inputs(), [], "no wheel event after the call stopped being current");
+});
+
+test("an action that starts on a detached debugger attaches once in its read and then delivers", async () => {
+  const detached = () => { const m = make(); const d = detachable(m.tab); d.attached = false; return { ...m, d }; };
+  // resolve, then click: the read attaches; the click's own events follow.
+  const c = detached();
+  const r = await c.b.resolve({ x: 5, y: 5 }, "s1", () => true);
+  assert.equal(c.d.attaches, 1);
+  await c.b.click(r, () => true);
+  assert.equal(c.d.attaches, 1, "attached once, not again");
+  assert.deepEqual(c.page.inputs().filter((s) => s !== MOVED), ["Input.dispatchMouseEvent:mousePressed", "Input.dispatchMouseEvent:mouseReleased"]);
+  // key and type: the focus read attaches.
+  const k = detached();
+  await k.b.key("Space", () => true, at(k.tab), { node: 10, frame: "F1" });
+  assert.equal(k.d.attaches, 1);
+  assert.deepEqual(k.page.inputs(), ["Input.dispatchKeyEvent:keyDown", "Input.dispatchKeyEvent:keyUp"]);
+  const ty = detached();
+  ty.page.focused = 12;
+  await ty.b.type("rope", () => true, at(ty.tab), { node: 12, frame: "F1" });
+  assert.equal(ty.d.attaches, 1);
+  assert.deepEqual(ty.page.inputs(), ["Input.insertText:rope"]);
+  // scroll: the layout read attaches.
+  const s = detached();
+  await s.b.scroll(0, 120, () => true);
+  assert.equal(s.d.attaches, 1);
+  assert.deepEqual(s.page.inputs(), ["Input.dispatchMouseEvent:mouseWheel"]);
+  // scroll onto a ref: the tab is attached first, then the scroll into view and the wheel go out.
+  const sr = detached();
+  sr.page.boxes = new Map([[12, { x: 0, y: 300, width: 100, height: 20 }]]);
+  (sr.tab.refs as Map<string, unknown>).set("s1", { refs: new Map([["e3", { backendNodeId: 12, frameId: "F1", target: { role: "textbox", name: "Search", inForm: false, fileInput: false } }]]), token: "1.0" });
+  const at3 = await sr.b.resolve({ ref: "e3" }, "s1", () => true);
+  assert.equal(sr.d.attaches, 1);
+  sr.page.sent.length = 0;
+  await sr.b.scroll(0, 120, () => true, at3);
+  assert.equal(sr.d.attaches, 1, "attached once");
+  assert.deepEqual(sr.page.sent.filter((x) => x.method === "DOM.scrollIntoViewIfNeeded" || x.method === "Input.dispatchMouseEvent").map((x) => x.method), ["DOM.scrollIntoViewIfNeeded", "Input.dispatchMouseEvent"]);
+  // The browser's own click and hover have no read of their own: they lean on the one just before them, and say so when there is none.
+  const alone = detached();
+  await assert.rejects(alone.b.click(resolved(), () => true), PageChanged);
+  await assert.rejects(alone.b.hoverAt(resolved(), () => true), PageChanged);
+  assert.equal(alone.d.attaches, 0);
+});
+
+/** A page with the ref e3 (the field, node 12) in session s1's snapshot, for the scroll into view of a ref. */
+function withRef() {
+  const m = make();
+  m.page.boxes = new Map([[12, { x: 0, y: 300, width: 100, height: 20 }]]);
+  (m.tab.refs as Map<string, unknown>).set("s1", { refs: new Map([["e3", { backendNodeId: 12, frameId: "F1", target: { role: "textbox", name: "Search", inForm: false, fileInput: false } }]]), token: "1.0" });
+  return m;
+}
+const intoView = (page: FakePage): number => page.sent.filter((x) => x.method === "DOM.scrollIntoViewIfNeeded").length;
+
+test("a ref's scroll into view is not sent when the call stops being current while the debugger attaches", async () => {
+  const m = withRef();
+  const live = { on: true }, att = attachment(m.tab);
+  att.begin();
+  const run = assert.rejects(m.b.resolve({ ref: "e3" }, "s1", () => live.on), PageChanged);
+  await later(5);
+  att.end(() => { live.on = false; });
+  await run;
+  assert.equal(intoView(m.page), 0, "the person's page was not scrolled");
+  assert.deepEqual(m.page.mice(), []);
+});
+
+test("a scroll's scroll into view is not sent when the call stops being current while the debugger attaches", async () => {
+  const m = withRef();
+  const at3 = await m.b.resolve({ ref: "e3" }, "s1", () => true);
+  m.page.sent.length = 0;
+  const live = { on: true }, att = attachment(m.tab);
+  att.begin();
+  const run = assert.rejects(m.b.scroll(0, 120, () => live.on, at3), PageChanged);
+  await later(5);
+  att.end(() => { live.on = false; });
+  await run;
+  assert.equal(intoView(m.page), 0);
+  assert.deepEqual(m.page.mice(), []);
+});
+
+test("an element that cannot be scrolled into view still lets the action go on", async () => {
+  const m = withRef();
+  m.page.on.set("DOM.scrollIntoViewIfNeeded", () => { throw new Error("Node is detached from document"); });
+  const at3 = await m.b.resolve({ ref: "e3" }, "s1", () => true);
+  assert.equal(at3.backendNodeId, 12, "resolve went on");
+  await m.b.scroll(0, 120, () => true, at3);
+  assert.equal(intoView(m.page), 2, "both tried");
+  assert.deepEqual(m.page.mice().map((x) => x[0]).filter((t) => t === "mouseWheel"), ["mouseWheel"]);
+});
+
+test("a scroll into view that times out ends the action before anything is measured or delivered", async () => {
+  const timeout = () => { throw new CdpTimeout("The page did not answer within 5 s.", "The page did not answer DOM.scrollIntoViewIfNeeded within 5 s."); };
+  const m = withRef();
+  m.page.on.set("DOM.scrollIntoViewIfNeeded", timeout);
+  await assert.rejects(m.b.resolve({ ref: "e3" }, "s1", () => true), CdpTimeout);
+  assert.equal(m.page.sent.filter((x) => x.method === "DOM.getNodeForLocation").length, 0, "nothing was hit-tested");
+  assert.deepEqual(m.page.mice(), []);
+  // The same through a scroll onto a ref: no wheel after the timeout.
+  const s = withRef();
+  const at3 = await s.b.resolve({ ref: "e3" }, "s1", () => true);
+  s.page.on.set("DOM.scrollIntoViewIfNeeded", timeout);
+  s.page.sent.length = 0;
+  await assert.rejects(s.b.scroll(0, 120, () => true, at3), CdpTimeout);
+  assert.deepEqual(s.page.mice(), [], "no wheel after the timeout");
 });

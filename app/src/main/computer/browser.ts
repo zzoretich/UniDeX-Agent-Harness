@@ -583,12 +583,9 @@ export class ComputerBrowser {
     if (now.id === null && !t.pending) throw new Error(REFUSAL.noHistoryRead);
     if (now.id !== bound.id || now.method !== bound.method) return false;
     if (bound.method === "GET" || t.pending) return false;
-    // R81: the one command that sends a form again goes out in this very tick. `send` may first wait for an attachment, long
-    // enough for a Take over, Off or page change, so it is not used: a tab that is not ready to be driven right now (gone,
-    // DevTools open, an attachment in flight, the debugger detached) is treated as the page having changed, never attached
-    // and sent.
-    if (t.wc.isDestroyed() || t.wc.isDevToolsOpened() || t.attaching || !t.wc.debugger.isAttached()) throw new PageChanged();
-    await cdp(t.wc.debugger, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
+    // R81: the one command that sends a form again goes out in this very tick (`deliver`: a tab that cannot be driven right now
+    // is the page having changed, never attached and sent). A command that was sent and failed is the table's sentence.
+    await this.deliver(t, "Page.reload").catch((e: unknown) => { throw e instanceof PageChanged ? e : new Error(REFUSAL.notReloaded); });
     return true;
   }
 
@@ -796,9 +793,10 @@ export class ComputerBrowser {
    * current on the way) moves nothing and throws PageChanged. R81: `valid` is looked at again after the hook, with nothing
    * awaited between that look and the move.
    */
-  async resolve(by: { ref: string } | { x: number; y: number }, session?: string, valid?: () => boolean, onPoint?: (p: Point, corner: Point, tab: number) => Promise<boolean>): Promise<Resolved> {
+  async resolve(by: { ref: string } | { x: number; y: number }, session: string | undefined, valid: () => boolean, onPoint?: (p: Point, corner: Point, tab: number) => Promise<boolean>): Promise<Resolved> {
     const t = this.tab();
     const where = { pageToken: this.tokenOf(t), tab: this.current };
+    const doc = t.doc;
     let named: number | null = null;
     let p: Point;
     let corner: Point;
@@ -807,7 +805,7 @@ export class ComputerBrowser {
       const ref = mine?.refs.get(by.ref);
       if (!mine || !ref || mine.token !== this.tokenOf(t)) throw new Error(REFUSAL.noRefNow(by.ref));
       named = ref.backendNodeId;
-      await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: named }).catch(() => undefined);
+      await this.intoView(t, named, () => { this.live(valid, where); if (t.doc !== doc) throw new PageChanged(); });
       const rect = await this.box(t, named);
       corner = { x: rect.x, y: rect.y };
       p = centre(rect);
@@ -824,7 +822,7 @@ export class ComputerBrowser {
     if (onPoint && !(await onPoint(p, { x: Math.round(corner.x), y: Math.round(corner.y) }, where.tab))) throw new PageChanged();
     // `valid`: the page's mouse goes onto the point only while the call is current (for a hover the move IS the act).
     // The move is for the tab and page this call read (`where`): a navigation or tab switch during the travel moves nothing.
-    await this.hover(t, p, valid && (() => this.live(valid, where)));
+    await this.hover(t, p, () => this.live(valid, where));
     const { hit, at, off, dom, reached, own } = await this.reachAt(t, p, (h, d) => {
       if (named !== null && h !== named && !within(d, h, named) && !within(d, named, h)) throw new Error(REFUSAL.covered);
     });
@@ -970,7 +968,7 @@ export class ComputerBrowser {
     try {
       for (const [i, line] of lines.entries()) {
         if (i > 0) {
-          await this.keys(t, "Enter", async () => { still(); await ready(false); if (!valid()) throw stop; still(); });
+          await this.keys(t, "Enter", async () => { still(); await ready(false); }, () => { if (!valid()) throw stop; still(); });
         }
         const chars = Array.from(line);
         for (let k = 0; k < chars.length; k += CHUNK) {
@@ -979,7 +977,7 @@ export class ComputerBrowser {
           await ready(true);
           if (!valid()) return;
           still();
-          await this.send(t, "Input.insertText", { text: chars.slice(k, k + CHUNK).join("") });
+          await this.deliver(t, "Input.insertText", { text: chars.slice(k, k + CHUNK).join("") });
         }
       }
     } catch (e) {
@@ -1022,7 +1020,7 @@ export class ComputerBrowser {
         }
         // The document the event goes to is the one in front as it is sent (a commit while it is on its way comes after).
         const doc = t.doc;
-        await this.send(t, "Input.dispatchKeyEvent", e);
+        await this.deliver(t, "Input.dispatchKeyEvent", e);
         if (MODIFIER_KEYS.has(e.key)) { if (e.type === "keyUp") down.delete(e.key); else down.set(e.key, doc); }
       }
       done = true;
@@ -1031,23 +1029,31 @@ export class ComputerBrowser {
       // on the document they went down to, while the call is current.
       if (!done) {
         for (const up of events.slice(i)) {
-          if (up.type === "keyUp" && down.has(up.key) && mayLetGo(up.key)) await this.send(t, "Input.dispatchKeyEvent", up).catch(() => undefined);
+          if (up.type === "keyUp" && down.has(up.key) && mayLetGo(up.key)) await this.deliver(t, "Input.dispatchKeyEvent", up).catch(() => undefined);
         }
       }
     }
   }
 
-  async scroll(dx: number, dy: number, at?: Resolved): Promise<void> {
+  async scroll(dx: number, dy: number, valid: () => boolean, at?: Resolved): Promise<void> {
     const t = at ? this.where(at) : this.tab();
+    const doc = t.doc;
     let p: Point;
     if (at) {
-      await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: at.backendNodeId }).catch(() => undefined);
+      // It moves the page (its scroll listeners fire), so it follows the rule too: the call is looked at in the tick it is sent.
+      await this.intoView(t, at.backendNodeId, () => { if (!valid()) throw new PageChanged(); this.where(at); if (t.doc !== doc) throw new PageChanged(); });
       p = centre(await this.box(t, at.backendNodeId));
     } else {
       const m = await this.send<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(t, "Page.getLayoutMetrics");
       p = { x: m.cssVisualViewport.clientWidth / 2, y: m.cssVisualViewport.clientHeight / 2 };
     }
-    await this.send(t, "Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, deltaX: dx, deltaY: dy });
+    // R81: the reads above may have taken a while: the wheel goes only while the call is current (`valid`) and to the tab and
+    // document it was aimed at, judged here, with nothing awaited between this look and the command.
+    if (!valid()) throw new PageChanged();
+    if (at) this.where(at);
+    else if (this.list[this.current] !== t) throw new PageChanged();
+    if (t.doc !== doc) throw new PageChanged();
+    await this.deliver(t, "Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, deltaX: dx, deltaY: dy });
   }
 
   /** Places the active view at the pane's rectangle (CSS pixels of the HUD page), or parks it off-screen (null). */
@@ -1797,8 +1803,9 @@ export class ComputerBrowser {
     const host = this.host();
     const r = host && host.isVisible() ? await dialog.showOpenDialog(host, opts) : await dialog.showOpenDialog(opts);
     if (r.canceled || !r.filePaths.length || moved()) return;
-    await this.send(t, "DOM.setFileInputFiles", { files: r.filePaths, backendNodeId: p.backendNodeId })
-      .catch((e: Error) => this.o.hooks.note(`The chosen file did not reach the page: ${e.message}`));
+    // R81: set in the very tick of the check above (`deliver`), never after a wait for an attachment.
+    await this.deliver(t, "DOM.setFileInputFiles", { files: r.filePaths, backendNodeId: p.backendNodeId })
+      .catch((e: Error) => this.o.hooks.note(`The chosen file did not reach the page: ${e instanceof PageChanged ? "the tab could not be reached." : e.message}`));
   }
 
   /** Dialogs are off in computer views (`disableDialogs`); the page got its answer already, and the transcript a note
@@ -1847,12 +1854,46 @@ export class ComputerBrowser {
     }
   }
 
-  /** Every command goes through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). */
+  /** Reads, and whatever may wait, go through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). Delivery of an
+   *  action goes through `deliver`. */
   private async send<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
+    // Kept as it is, not built on `attached`: a read's command is sent in the same tick when nothing is to be waited for (the
+    // commit event's first read depends on it).
     if (t.wc.isDestroyed()) throw new Told(REFUSAL.tabGone, "That tab was closed.");
     if (t.wc.isDevToolsOpened()) throw new Told(REFUSAL.devToolsOpen, "DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
     if (t.attaching) await t.attaching;
     else if (!t.wc.debugger.isAttached()) await this.attach(t);
+    return cdp<T>(t.wc.debugger, method, params);
+  }
+
+  /** Brings a node into view before it is measured. It moves the page, so it is delivered like an input: the tab is attached
+   *  first (a wait, before any look), then `check` (the call is current, the tab and document are the ones judged; it throws
+   *  PageChanged) runs and the command goes out in the same tick. A node that cannot be scrolled is not an error (the command
+   *  failed at once and did nothing); a PageChanged from the check or from `deliver` ends the action, and so does a timeout: the
+   *  command may still run, so nothing is measured or delivered after it. */
+  private async intoView(t: Tab, backendNodeId: number, check: () => void): Promise<void> {
+    await this.attached(t);
+    check();
+    await this.deliver(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch((e: unknown) => { if (e instanceof PageChanged || e instanceof CdpTimeout) throw e; });
+  }
+
+  /** The tab's debugger is attached (waiting for an attachment in flight), or the refusal that says why it cannot be. */
+  private async attached(t: Tab): Promise<void> {
+    if (t.wc.isDestroyed()) throw new Told(REFUSAL.tabGone, "That tab was closed.");
+    if (t.wc.isDevToolsOpened()) throw new Told(REFUSAL.devToolsOpen, "DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
+    if (t.attaching) await t.attaching;
+    else if (!t.wc.debugger.isAttached()) await this.attach(t);
+  }
+
+  /** The command that makes the page do or receive something (an input event, a file, a reload), sent in the very tick of the
+   *  check that allowed it (R76, R81). `send` may first wait for an attachment, long enough for a Take over, Off, a tab switch or
+   *  another document, and the command would then go to a page the check never judged. So this does not wait for anything: a tab
+   *  that cannot be driven right now (gone, DevTools open, an attachment in flight, the debugger detached) is the page having
+   *  changed (PageChanged), never attached and sent. It is `async` only so that a refusal is a rejection a `.catch` can see; it
+   *  awaits nothing before the command is handed to the debugger. A read stays on `send`: it attaches, so the debugger is attached
+   *  when the action's check, which comes after its reads, is followed by this. */
+  private async deliver<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
+    if (t.wc.isDestroyed() || t.wc.isDevToolsOpened() || t.attaching || !t.wc.debugger.isAttached()) throw new PageChanged();
     return cdp<T>(t.wc.debugger, method, params);
   }
 
@@ -2443,17 +2484,19 @@ export class ComputerBrowser {
   }
 
   private async mouse(t: Tab, type: "mouseMoved" | "mousePressed" | "mouseReleased", p: Point, clickCount = 1): Promise<void> {
-    await this.send(t, "Input.dispatchMouseEvent", {
+    await this.deliver(t, "Input.dispatchMouseEvent", {
       type, x: p.x, y: p.y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : clickCount,
     });
   }
 
-  /** Sends a key's events; `before` runs just before each one (typing's focus and validity checks, R76, R78). */
-  private async keys(t: Tab, key: string, before: () => void | Promise<void>): Promise<void> {
+  /** Sends a key's events; `before` runs first for each one (typing's focus read, R76, R78) and may wait; `last` is the
+   *  validity check that follows it, synchronous, with nothing awaited between it and the event (R81). */
+  private async keys(t: Tab, key: string, before: () => Promise<void>, last: () => void): Promise<void> {
     // keyEvents throws for a key it does not know before anything is sent.
     for (const e of keyEvents(key)) {
       await before();
-      await this.send(t, "Input.dispatchKeyEvent", e);
+      last();
+      await this.deliver(t, "Input.dispatchKeyEvent", e);
     }
   }
 }
