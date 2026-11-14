@@ -30,7 +30,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - An approval card in Code's chat stays up while its terminal resizes (switching to the terminal view with ⌘J, opening a pane, resizing the window) until the agent redraws its prompt at the new size. Before, the card and the "Answer the card above first" note could vanish for a moment, and a Send in that moment went to the terminal, where its ⏎ answered the prompt. <!-- no-tour: a fix with no new control -->
 - A local routine (`engine: local`) that runs past its `timeoutSec` is always logged as a timeout. Before, the engine's own timer could fire a moment before the routine's and log the run as an engine error ("ollama timeout"). <!-- no-tour: a fix with no new control -->
 - The app's window no longer waits on a listing of the system temp folder at start. On a Mac with a very full temp folder that wait could be tens of seconds.
-- An agent's click, key or typing is no longer delivered late to a page after you took over, turned the browser off, or the page changed while the app was re-attaching to the tab.
+- An agent's click, key, typing or scrolling is no longer delivered late to a page after you took over, turned the browser off, or the page changed while the app was re-attaching to the tab.
 
 ### Security
 - No address is shown, reported to an agent or saved with a user name or password in it, and a web link with one in its address is not opened. <!-- no-tour: nothing to point at -->

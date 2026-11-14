@@ -610,7 +610,13 @@ export class ComputerService {
       case "type": return this.typeStep(agent, p, b, a.text, a.ref, take, lease);
       case "key": return this.keyStep(agent, p, b, a.key, take, lease);
       case "scroll": {
-        const at = a.ref ? await b.resolve({ ref: a.ref }, agent.key) : undefined;
+        // The target read can move the page's mouse onto the element: it carries the call's predicate (a stale call gets its reply).
+        let at: Resolved | undefined;
+        if (a.ref) {
+          const ref = a.ref;
+          const cut = await this.deliver(p, agent, lease, async (valid) => { at = await b.resolve({ ref }, agent.key, valid); });
+          if (cut) return { reply: cut };
+        }
         const late = this.stale(p, agent, lease);
         if (late) return { reply: late };
         if (!take()) return { reply: fail(REFUSAL.late) };
@@ -666,7 +672,7 @@ export class ComputerService {
         action: r.shown ? `${verb} ${quoted(r.shown)}` : `${verb} an unnamed control`, kind: verb,
         detail: `${await this.described(b, r.target, r.shown, r.tab)}. ${cardPage(b.tabs()[r.tab]?.url ?? null)}`,
         revalidate: async () => {
-          const r2 = await this.reresolve(b, by, r, agent.key);
+          const r2 = await this.reresolve(b, by, r, agent.key, () => this.current(p, agent, lease));
           if (!r2) return false;
           fresh = r2;
           return true;
@@ -908,7 +914,7 @@ export class ComputerService {
         detail: `Text: “${clean(text, 200)}”. ${f.target ? `${await this.described(b, f.target, f.shown, tab)}. ` : ""}${cardPage(b.tabs()[tab]?.url ?? null)}`,
         revalidate: async () => {
           if (r) {
-            const r2 = await this.reresolve(b, { ref: ref! }, r, agent.key);
+            const r2 = await this.reresolve(b, { ref: ref! }, r, agent.key, () => this.current(p, agent, lease));
             if (!r2) return false;
             fresh = r2;
             return true;
@@ -1220,9 +1226,9 @@ export class ComputerService {
    *  next snapshot of the same document rebinds its refs (I2: another session's look and a text wait no longer do) and a
    *  layout shift moves what is under a point, so a same-name control in another row, or a re-rendered node, fails
    *  closed. The browser's click refuses a changed page too. */
-  private async reresolve(b: BrowserLike, by: By, r: Resolved, session: string): Promise<Resolved | null> {
+  private async reresolve(b: BrowserLike, by: By, r: Resolved, session: string, valid: () => boolean): Promise<Resolved | null> {
     if (b.pageToken() !== r.pageToken || this.active(b) !== r.tab) return null;
-    const r2 = await b.resolve(by, session).catch(() => null);
+    const r2 = await b.resolve(by, session, valid).catch(() => null);
     return r2 && r2.pageToken === r.pageToken && r2.tab === r.tab && r2.backendNodeId === r.backendNodeId
       && sameSet(r2.judged, r.judged) && same(r2.target, r.target) ? r2 : null;
   }

@@ -1039,8 +1039,10 @@ export class ComputerBrowser {
     const doc = t.doc;
     let p: Point;
     if (at) {
-      // Not part of the act: it only brings the node into view to measure it (as `resolve`'s own does), sends no input and runs
-      // no page script; the wheel below is judged after it, and a scroll since is read again by whatever acts next (R87).
+      // Not part of the act: it only brings the node into view to measure it (as `resolve`'s own does) and sends no input, though
+      // the page's scroll listeners fire. While attached it goes out in the tick of the caller's look; only during an attach wait
+      // can it come late, which is left. The wheel below is judged after it, and a scroll since is read again by whatever acts
+      // next (R87).
       await this.send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId: at.backendNodeId }).catch(() => undefined);
       p = centre(await this.box(t, at.backendNodeId));
     } else {
@@ -1805,7 +1807,7 @@ export class ComputerBrowser {
     if (r.canceled || !r.filePaths.length || moved()) return;
     // R81: set in the very tick of the check above (`deliver`), never after a wait for an attachment.
     await this.deliver(t, "DOM.setFileInputFiles", { files: r.filePaths, backendNodeId: p.backendNodeId })
-      .catch((e: Error) => this.o.hooks.note(`The chosen file did not reach the page: ${e.message}`));
+      .catch((e: Error) => this.o.hooks.note(`The chosen file did not reach the page: ${e instanceof PageChanged ? "the tab could not be reached." : e.message}`));
   }
 
   /** Dialogs are off in computer views (`disableDialogs`); the page got its answer already, and the transcript a note
@@ -1854,7 +1856,8 @@ export class ComputerBrowser {
     }
   }
 
-  /** Every command goes through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). */
+  /** Reads, and whatever may wait, go through here: attached on demand (after a crash or reload), 5 s timeout (./cdp). Delivery of an
+   *  action goes through `deliver`. */
   private async send<T = unknown>(t: Tab, method: string, params?: object): Promise<T> {
     if (t.wc.isDestroyed()) throw new Told(REFUSAL.tabGone, "That tab was closed.");
     if (t.wc.isDevToolsOpened()) throw new Told(REFUSAL.devToolsOpen, "DevTools is open on this tab, so it cannot be driven (agent-computer D20).");
