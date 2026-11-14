@@ -2997,12 +2997,12 @@ test("a key is not delivered when the debugger is found detached at the moment o
 });
 
 test("a scroll is not delivered when the document changes while the debugger attaches", async () => {
-  const act: Act = (m) => m.b.scroll(0, 120);
+  const act: Act = (m) => m.b.scroll(0, 120, () => true);
   await notDeliveredWhileAttaching(act, mouseOf("mouseWheel"), (m) => { m.tab.seq++; m.tab.doc++; }, []);
 });
 
 test("a scroll is not delivered when the debugger is found detached at the moment of delivery", async () => {
-  await notDeliveredWhenDetached((m) => m.b.scroll(0, 120), mouseOf("mouseWheel"), []);
+  await notDeliveredWhenDetached((m) => m.b.scroll(0, 120, () => true), mouseOf("mouseWheel"), []);
 });
 
 test("a file is not set on an input when the call stops being current while the debugger attaches", async () => {
@@ -3046,6 +3046,16 @@ test("a normal click, double click, hover, type, key and scroll still deliver ex
   await key.b.key("Shift+Tab", () => true, at(key.tab), { node: 10, frame: "F1" });
   assert.deepEqual(key.page.keys(), ["rawKeyDown Shift", "rawKeyDown Tab", "keyUp Tab", "keyUp Shift"]);
   const wheel = make();
-  await wheel.b.scroll(0, 120);
+  await wheel.b.scroll(0, 120, () => true);
   assert.deepEqual(sentOf(wheel.page, "Input.dispatchMouseEvent"), [{ type: "mouseWheel", x: 200, y: 150, deltaX: 0, deltaY: 120 }]);
+});
+
+test("a scroll is not delivered when the call stops being current during its reads", async () => {
+  const act: Act = (m, valid) => m.b.scroll(0, 120, valid);
+  const i = await gapAt(act, mouseOf("mouseWheel"));
+  const m = make();
+  let live = true;
+  afterEntry(m.page, i, () => { live = false; });
+  await assert.rejects(act(m, () => live), PageChanged);
+  assert.deepEqual(m.page.inputs(), [], "no wheel event after the call stopped being current");
 });

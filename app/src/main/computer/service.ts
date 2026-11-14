@@ -614,7 +614,8 @@ export class ComputerService {
         const late = this.stale(p, agent, lease);
         if (late) return { reply: late };
         if (!take()) return { reply: fail(REFUSAL.late) };
-        await b.scroll(a.dx, a.dy, at);
+        const lost = await this.deliver(p, agent, lease, (valid) => b.scroll(a.dx, a.dy, valid, at));
+        if (lost) return { reply: lost };
         return { reply: await this.done(p, b, `Scrolled by (${a.dx}, ${a.dy}).`, this.clock.now(), lease) };
       }
     }

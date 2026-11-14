@@ -1034,7 +1034,7 @@ export class ComputerBrowser {
     }
   }
 
-  async scroll(dx: number, dy: number, at?: Resolved): Promise<void> {
+  async scroll(dx: number, dy: number, valid: () => boolean, at?: Resolved): Promise<void> {
     const t = at ? this.where(at) : this.tab();
     const doc = t.doc;
     let p: Point;
@@ -1047,8 +1047,9 @@ export class ComputerBrowser {
       const m = await this.send<{ cssVisualViewport: { clientWidth: number; clientHeight: number } }>(t, "Page.getLayoutMetrics");
       p = { x: m.cssVisualViewport.clientWidth / 2, y: m.cssVisualViewport.clientHeight / 2 };
     }
-    // R81: the reads above may have taken a while: the wheel goes only to the tab and document it was aimed at, judged here, with
-    // nothing awaited between this look and the command.
+    // R81: the reads above may have taken a while: the wheel goes only while the call is current (`valid`) and to the tab and
+    // document it was aimed at, judged here, with nothing awaited between this look and the command.
+    if (!valid()) throw new PageChanged();
     if (at) this.where(at);
     else if (this.list[this.current] !== t) throw new PageChanged();
     if (t.doc !== doc) throw new PageChanged();

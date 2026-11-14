@@ -331,7 +331,13 @@ class FakeBrowser implements BrowserLike {
     if (at && (at.tab !== this.current || at.pageToken !== this.pageToken())) throw new PageChanged();
     this.keys.push(k);
   }
-  async scroll(dx: number, dy: number, at?: Resolved) { this.scrolls.push({ dx, dy, at: at?.backendNodeId ?? null }); }
+  scrollGate: Promise<void> | null = null;
+  /** As the real one: the wheel goes only while the call's predicate holds after its reads. */
+  async scroll(dx: number, dy: number, valid: () => boolean, at?: Resolved) {
+    if (this.scrollGate) await this.scrollGate;
+    if (!valid()) throw new PageChanged();
+    this.scrolls.push({ dx, dy, at: at?.backendNodeId ?? null });
+  }
   show(b: Rect | null) { this.shows.push(b); }
   private need(tab?: number) {
     if (!this.pages[tab ?? this.current]) throw new Error(tab === undefined ? "No page is open: call computer_open first." : `There is no tab ${tab}.`);
@@ -6863,4 +6869,18 @@ test("an off-screen click whose call is no longer current moves no mouse", async
   const r = await p;
   assert.match(r.text, /^busy: /, r.text);
   assert.deepEqual([b.moves, b.order.includes("mouse"), b.clicks.length], [[], false, 0], "no hook, and the read's own mouse move is guarded");
+});
+
+test("a Take over during a scroll's reads delivers no wheel", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  let release!: () => void;
+  b.scrollGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_scroll", { dy: 100 });
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  assert.equal((await p).text, "busy: the user is driving: wait for Hand back.");
+  assert.deepEqual(b.scrolls, []);
 });
