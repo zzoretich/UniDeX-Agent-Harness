@@ -993,6 +993,79 @@ test("activeAddress on an awake browser: the live tab's real address without a u
   } finally { release(); FakeView.hold.clear(); }
 });
 
+/** A browser with no tab, its window and debugger out of the way, whose `addTab` waits on a gate the test holds (the tab is made
+ *  by the real `addTab` once the gate opens) and counts the tabs it was asked for. */
+function gatedMaker() {
+  const fresh = new ComputerBrowser({ key: "ws:gate", window: () => null, hooks: { ask: async () => true, note: () => {}, changed: () => {} } });
+  const inner = fresh as unknown as { place: () => void; attach: () => Promise<void>; addTab: (...a: unknown[]) => Promise<unknown> };
+  inner.place = () => {}; inner.attach = async () => {};
+  const orig = inner.addTab.bind(fresh);
+  const gate = { asked: 0, release: () => {}, held: null as Promise<void> | null };
+  inner.addTab = async (...a: unknown[]) => { gate.asked++; if (gate.held) await gate.held; return orig(...a); };
+  const hold = (): void => { gate.held = new Promise<void>((r) => { gate.release = r; }); };
+  return { fresh, gate, hold };
+}
+
+test("an open in a new tab loads nothing when the call stops being current while the tab is made (session-browser G)", async () => {
+  const { fresh, gate, hold } = gatedMaker();
+  hold();
+  let live = true;
+  const run = fresh.open("https://a.test/p", { newTab: true, by: "Agent", own: true, valid: () => live });
+  const ended = run.then(() => null, (e: unknown) => e);
+  await turns();
+  live = false;
+  gate.release();
+  assert.ok(await ended instanceof PageChanged, "the call ends as a changed page");
+  assert.deepEqual(fresh.tabs().map((t) => t.url), ["about:blank"], "the tab exists and is blank: not closed under the person, not loaded");
+});
+
+test("a new tab opened for a call that is already stale is not made at all (session-browser G)", async () => {
+  const { fresh, gate } = gatedMaker();
+  await assert.rejects(fresh.open("https://a.test/p", { newTab: true, by: "Agent", own: true, valid: () => false }), PageChanged);
+  assert.equal(gate.asked, 0, "no tab was asked for");
+  assert.equal(fresh.tabs().length, 0);
+  await assert.rejects(fresh.openTab("https://a.test/p", { by: "Agent", valid: () => false }), PageChanged);
+  assert.equal(gate.asked, 0, "nor for the agent's start tab");
+});
+
+test("the agent's new tab (openTab) loads nothing when the call stops being current while the tab is made (session-browser G)", async () => {
+  const { fresh, gate, hold } = gatedMaker();
+  hold();
+  let live = true;
+  const ended = fresh.openTab("https://a.test/p", { by: "Agent", valid: () => live }).then(() => null, (e: unknown) => e);
+  await turns();
+  live = false;
+  gate.release();
+  assert.ok(await ended instanceof PageChanged, "no uid is answered: the call ends as a changed page");
+  await turns();
+  assert.deepEqual(fresh.tabs().map((t) => t.url), ["about:blank"], "the tab stays, blank, and nothing was loaded into it");
+});
+
+test("an open in the current tab loads in the tick of its last look (session-browser G)", async () => {
+  const { b, tab } = make();
+  const order: string[] = [];
+  (tab.wc as unknown as { loadURL: (u: string) => Promise<void> }).loadURL = (u: string) => { order.push(`load ${u}`); return Promise.resolve(); };
+  await b.open("https://a.test/p", { by: "Agent", own: true, valid: () => { order.push("look"); return true; } });
+  assert.deepEqual(order, ["look", "load https://a.test/p"], "the look comes right before the load, nothing between");
+  // A call that is no longer current at the look loads nothing.
+  order.length = 0;
+  await assert.rejects(b.open("https://a.test/q", { by: "Agent", valid: () => { order.push("look"); return false; } }), PageChanged);
+  assert.deepEqual(order, ["look"]);
+});
+
+test("an open with no call behind it (the person's, a program's) loads as before (session-browser G)", async () => {
+  const { fresh, gate, hold } = gatedMaker();
+  hold();
+  const run = fresh.open("https://a.test/p", { newTab: true, by: null });
+  await turns();
+  gate.release();
+  assert.equal((await run).url, "https://a.test/p");
+  assert.deepEqual(fresh.tabs().map((t) => t.url), ["https://a.test/p"]);
+  const uid = await fresh.openTab("https://a.test/q", { by: "Agent" });
+  assert.equal(typeof uid, "number");
+  assert.equal(fresh.tabs().length, 2);
+});
+
 test("open with background adds a tab without taking the selection; without it the new tab is selected (session-browser X2)", async () => {
   const { b } = makeSleeper("https://a.test/");
   await b.open("https://b.test/", { newTab: true, background: true, by: "A program" });

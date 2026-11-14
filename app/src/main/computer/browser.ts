@@ -428,12 +428,18 @@ export class ComputerBrowser {
 
   /** Opens `url`: in the active tab, or (`newTab`, or no tab yet) in a new one that takes the selection. `background` (only
    *  with `newTab`) adds the tab behind the active one and leaves the selection where it was, for a page the person did not
-   *  ask for while they work in another (session-browser X2); with no active tab the new one is the active one anyway. */
-  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null; own?: boolean }): Promise<{ url: string; title: string }> {
+   *  ask for while they work in another (session-browser X2); with no active tab the new one is the active one anyway. `valid`
+   *  (session-browser G) is an agent's call: looked at before a tab is made, and again in the very tick of the load, with nothing
+   *  awaited between; a call no longer current loads nothing and ends as a changed page. A tab it had already made stays, blank:
+   *  never closed under the person, never loaded. No `valid` (the person's open, a program's page, the start page): as before. */
+  async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null; own?: boolean; valid?: () => boolean }): Promise<{ url: string; title: string }> {
     if (!navAllowed(url)) throw new Told(REFUSAL.notWeb, "Only http and https pages open.");
     // §4.2: load the normalised form navAllowed judged, never the raw string.
     const href = new URL(url).href;
-    const t = !o.newTab && this.list[this.current] ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true, o.own === true);
+    const reuse = !o.newTab && this.list[this.current];
+    if (!reuse && o.valid && !o.valid()) throw new PageChanged();
+    const t = reuse ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true, o.own === true);
+    if (o.valid && !o.valid()) throw new PageChanged();
     t.refused = null;
     // R38: a page-started navigation's leaving record is left alone here: that navigation may be past the point where this
     // load can cancel it and commit first, and its record then goes with its own commit (`committed` matches the URL). R39:
@@ -469,11 +475,15 @@ export class ComputerBrowser {
    *  exists: the load is started and never waited for, so a load that fails later leaves the tab on its error page as any tab's
    *  does (session-browser S5: the start tab of the agent's close of the last tab, which must not wait on the start page). A
    *  tab that cannot be made throws the table's `startTab`, never Electron's text. */
-  async openTab(url: string, o: { by: string | null }): Promise<number> {
+  async openTab(url: string, o: { by: string | null; valid?: () => boolean }): Promise<number> {
     if (!navAllowed(url)) throw new Told(REFUSAL.notWeb, "Only http and https pages open.");
     // §4.2: load the normalised form navAllowed judged, never the raw string.
     const href = new URL(url).href;
+    // session-browser G: an agent's call (`valid`) makes no tab once it is stale, and loads nothing into the tab it made when it
+    // stopped being current meanwhile: that tab stays, blank, and no uid is answered.
+    if (o.valid && !o.valid()) throw new PageChanged();
     const t = await this.addTab(o.by).catch(() => { throw new Told(REFUSAL.startTab, "The new tab could not be made."); });
+    if (o.valid && !o.valid()) throw new PageChanged();
     t.refused = null;
     void t.wc.loadURL(href).catch(() => undefined);
     return t.uid;

@@ -237,8 +237,9 @@ inside the surface.
   key-down moves focus by design. Any other key-up (Space, Enter, a letter) whose key-down moved the focus is withheld and
   the key is reported as moved, and typing stops at the chunk whose input sends the page elsewhere. Every click, key
   event, chunk of typing, wheel event, hover's move and scroll into view of a target goes only while its call is still current, checked just before it
-  is sent and after every read of the page on the way (opening a page, which never asks, is checked when the call starts, so one
-  can still land just after a Take over), and a call that is no longer current raises no ask: the session still holds
+  is sent and after every read of the page on the way (an agent's opening of a page, which never asks, is also looked at just before it
+  loads, and before a tab is made for it; a tab it had already made when its call stopped being current stays, blank, and is never
+  loaded or closed under you), and a call that is no longer current raises no ask: the session still holds
   the wheel, from the process the app registered for it (a thread's next Chat CLI under the same key is another caller),
   and no Take over, Hand back or end of the turn has come since the call began (each starts a new generation of the
   computer, so a call that waited through a Take over and Hand back sends nothing, though the same session drives
