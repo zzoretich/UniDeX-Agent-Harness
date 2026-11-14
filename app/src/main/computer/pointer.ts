@@ -46,9 +46,14 @@ export function travelPath(from: Point, to: Point, ms: number): Point[] {
 /** The string with every lone surrogate dropped: `encodeURIComponent` throws on one. */
 const wellFormed = (s: string) => s.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "");
 
-/** The session's name as the tag shows it: scrubbed like a title, well formed, at most 24 characters counting the closing "…". */
+/** A spinner or status mark in front of a name: one or two characters that are neither letters, digits nor white space, then
+ *  white space and something more. The hosts put one before a Code session's title and change it several times a second. */
+const LEADING_MARK = /^[^\p{L}\p{N}\s]{1,2}\s+(?=\S)/u;
+
+/** The session's name as the tag shows it: scrubbed like a title, without one leading spinner mark (nothing is dropped when
+ *  nothing would remain), well formed, at most 24 characters counting the closing "…". */
 export function tagText(name: string): string {
-  const t = wellFormed(cleanTitle(name));
+  const t = wellFormed(cleanTitle(name)).replace(LEADING_MARK, "");
   if (t.length <= TAG_MAX) return t;
   let cut = t.slice(0, TAG_MAX - 1);
   if (/[\ud800-\udbff]$/.test(cut)) cut = cut.slice(0, -1);   // never half of a surrogate pair
@@ -86,7 +91,8 @@ export class Pointer {
   private hideTimer: unknown = null;
   private pulseTimer: unknown = null;
 
-  constructor(private o: { surface: (window: Win) => PointerSurface | null; clock?: Clock }) { this.clock = o.clock ?? realClock; }
+  /** `log` hears an error a move met (one line, never a name or an address). */
+  constructor(private o: { surface: (window: Win) => PointerSurface | null; clock?: Clock; log?: (line: string) => void }) { this.clock = o.clock ?? realClock; }
 
   private sleep(ms: number): Promise<void> { return new Promise((r) => { this.clock.setTimeout(r, ms); }); }
 
@@ -131,6 +137,16 @@ export class Pointer {
    *  the box, shows nothing. */
   async moveTo(o: { window: Win; to: Point; name: string; kind: "arrow" | "caret"; within: Box; alive: () => boolean }): Promise<boolean> {
     const g = ++this.gen;
+    try { return await this.move(o, g); }
+    catch (e) {
+      // Whatever threw, the action goes on and nothing is left on screen or armed (unless a newer move already owns it).
+      try { this.o.log?.(`pointer: a move failed (${e instanceof Error ? e.name : "Error"})`); } catch { /* the log itself failed */ }
+      if (g === this.gen) this.drop();
+      try { return o.alive(); } catch { return true; }
+    }
+  }
+
+  private async move(o: { window: Win; to: Point; name: string; kind: "arrow" | "caret"; within: Box; alive: () => boolean }, g: number): Promise<boolean> {
     this.stopPulse();
     if (this.hideTimer !== null) { this.clock.clearTimeout(this.hideTimer); this.hideTimer = null; }   // this move owns the timer
     this.settled = false;
@@ -165,7 +181,10 @@ export class Pointer {
     if (this.on && this.on.surface !== surface) { this.on.surface.show(false); this.on = null; }
     const kept = this.last[o.window];
     const inside = (p: Point) => p.x >= within.x && p.y >= within.y && p.x < within.x + within.width && p.y < within.y + within.height;
-    const from = kept && inside(kept) ? kept : { x: Math.round(within.x + within.width / 2), y: Math.round(within.y + within.height / 2) };
+    const start = kept && inside(kept) ? kept : { x: Math.round(within.x + within.width / 2), y: Math.round(within.y + within.height / 2) };
+    // The image's whole box lies inside the view from the first instant: the start moves left and up as far as it must.
+    // Both ends inside means every step between them is.
+    const from = { x: Math.min(start.x, within.x + within.width - r.v.width), y: Math.min(start.y, within.y + within.height - r.v.height) };
     const path = travelPath(from, to, travelMs(from, to));
     surface.place(from);
     surface.show(true);
@@ -211,6 +230,12 @@ export class Pointer {
     const inside = (p: Point) => p.x >= box.x && p.y >= box.y && p.x + c.size.width <= box.x + box.width && p.y + c.size.height <= box.y + box.height;
     if (box.x !== c.within.x || box.y !== c.within.y || !inside(c.at) || !inside(c.to)) { this.hide(); return; }
     c.within = { ...box };
+  }
+
+  /** Keeps a pointer that is on screen for another 3 s (typing that runs long keeps its caret); nothing else changes, and with
+   *  nothing on screen it does nothing. */
+  touch(): void {
+    if (this.on && this.settled) this.arm();
   }
 
   /** What is on screen now (the e2e suite reads it through main). */
@@ -299,24 +324,47 @@ export function opaqueBox(bitmap: Uint8Array | Buffer, width: number, height: nu
 const DRAWER_W = 260; const DRAWER_H = 60;
 const CACHE_MAX = 32;
 const RENDER_MAX_MS = 2000;
+/** The hidden window is destroyed after this long with no draw (the cache stays; the next draw makes a fresh window). */
+const IDLE_MAX_MS = 60_000;
+/** One log line a minute at most. */
+const LOG_EVERY_MS = 60_000;
+/** A capture's pixels per DIP is a real display's: anything outside this is not one. */
+const SCALE_MIN = 0.5; const SCALE_MAX = 4;
+
+/** An error of main's own, named so a log line can say what failed without saying what was drawn. */
+const failure = (name: string, message: string) => Object.assign(new Error(message), { name });
 
 /** One reusable hidden window of main's own that makes the pointer's images. Made at the first draw (never at start), draws
- *  one at a time, caches by kind, text, scale and theme (32, the oldest dropped), and asking for an arrow also starts its
- *  press image in the background, so a pulse finds it ready. The image has the same size in DIPs on every display: the
- *  window's capture is as many pixels per DIP as the display it sits on, so the document is zoomed by wanted / that scale
- *  (CSS on its root, never the window's zoom) and the cropped bitmap is wrapped with the wanted scale. A render past
- *  `renderMs` rejects and the window is replaced. `dispose()` ends it for good. */
-export function tagDrawer(o: { renderMs?: number; retryMs?: number } = {}): { draw(kind: PointerKind, text: string, scale: number, dark: boolean): Promise<NativeImage>; has(kind: PointerKind, text: string, scale: number, dark: boolean): boolean; dispose(): void } {
+ *  one at a time, caches by kind, text, scale and theme (32, the least recently used dropped), and asking for an arrow also
+ *  starts its press image in the background, so a pulse finds it ready. The image has the same size in DIPs on every
+ *  display: the window's capture is as many pixels per DIP as the display it sits on, so the document is zoomed by wanted /
+ *  that scale (CSS on its root, never the window's zoom) and the cropped bitmap is wrapped with the wanted scale. An empty
+ *  capture is a failed one (tried again once, then the draw rejects) and a measured scale outside 0.5 to 4 is never kept. A
+ *  render past `renderMs` rejects and the window is replaced; the window is destroyed after `idleMs` with no draw. A failed
+ *  render is logged through `log` (no name, no address), once a minute at most. `dispose()` ends it for good. */
+export function tagDrawer(o: { renderMs?: number; retryMs?: number; idleMs?: number; clock?: Clock; log?: (line: string) => void } = {}): { draw(kind: PointerKind, text: string, scale: number, dark: boolean): Promise<NativeImage>; has(kind: PointerKind, text: string, scale: number, dark: boolean): boolean; dispose(): void } {
   const renderMs = o.renderMs ?? RENDER_MAX_MS;
   const retryMs = o.retryMs ?? 100;
+  const idleMs = o.idleMs ?? IDLE_MAX_MS;
+  const clock = o.clock ?? realClock;
   let win: BrowserWindow | null = null;
   let disposed = false;
   /** Pixels per DIP in the window's capture, once measured. */
   let capScale: number | null = null;
+  let idleTimer: unknown = null;
+  let lastLog = -Infinity;
   let tail: Promise<unknown> = Promise.resolve();
   const cache = new Map<string, NativeImage>();
   const inflight = new Map<string, Promise<NativeImage>>();
   const key = (kind: PointerKind, text: string, scale: number, dark: boolean) => `${kind}\u0000${scale}\u0000${dark ? 1 : 0}\u0000${text}`;
+
+  const stopIdle = () => { if (idleTimer !== null) { clock.clearTimeout(idleTimer); idleTimer = null; } };
+  const armIdle = () => { stopIdle(); if (!disposed && win) idleTimer = clock.setTimeout(() => { idleTimer = null; destroyWindow(); }, idleMs); };
+  const report = (e: unknown) => {
+    if (disposed || !o.log || clock.now() - lastLog < LOG_EVERY_MS) return;
+    lastLog = clock.now();
+    try { o.log(`pointer: a drawing failed (${e instanceof Error ? e.name : "Error"})`); } catch { /* the log itself failed */ }
+  };
 
   function window(): BrowserWindow {
     if (disposed) throw new Error("the pointer drawer is disposed");
@@ -331,11 +379,19 @@ export function tagDrawer(o: { renderMs?: number; retryMs?: number } = {}): { dr
     win.webContents.on("will-navigate", (e) => e.preventDefault());
     return win;
   }
-  function destroyWindow(): void { if (win && !win.isDestroyed()) win.destroy(); win = null; }
+  function destroyWindow(): void { stopIdle(); if (win && !win.isDestroyed()) win.destroy(); win = null; }
 
+  /** A capture with something in it. Electron resolves with an image of 0 x 0 when there is no frame to copy; that is a failed
+   *  capture like a throw, tried again once after a pause. */
   async function capture(w: BrowserWindow): Promise<NativeImage> {
-    try { return await w.webContents.capturePage(); }
-    catch { await new Promise((r) => setTimeout(r, retryMs)); return await w.webContents.capturePage(); }   // F9: once, after a pause
+    const grab = async () => {
+      const shot = await w.webContents.capturePage();
+      const { width, height } = shot.getSize();
+      if (!(width > 0 && height > 0)) throw failure("EmptyCapture", "the capture was empty");
+      return shot;
+    };
+    try { return await grab(); }
+    catch { await new Promise<void>((r) => { clock.setTimeout(r, retryMs); }); return await grab(); }   // F9: once, after a pause
   }
 
   async function render(kind: PointerKind, text: string, scale: number, dark: boolean): Promise<NativeImage> {
@@ -349,12 +405,14 @@ export function tagDrawer(o: { renderMs?: number; retryMs?: number } = {}): { dr
       const shot = await capture(w);
       const { width, height } = shot.getSize();
       const measured = width / w.getContentSize()[0];
+      // Only a real display's scale is kept: anything else fails this draw and leaves the stored one as it was.
+      if (!(Number.isFinite(measured) && measured >= SCALE_MIN && measured <= SCALE_MAX)) throw failure("BadCaptureScale", "the capture's scale was not a display's");
       // The screen's answer was wrong for the display this window sits on: the capture says what it is, draw once more.
       if (attempt === 0 && Math.abs(measured - native) > 0.01) { native = measured; capScale = measured; continue; }
       capScale = measured;
       const bitmap = shot.toBitmap();
       const box = opaqueBox(bitmap, width, height);
-      if (!box) throw new Error("the pointer image came out empty");
+      if (!box) throw failure("EmptyDrawing", "the pointer image came out empty");
       const out = Buffer.alloc(box.width * box.height * 4);
       for (let y = 0; y < box.height; y++) bitmap.copy(out, y * box.width * 4, ((box.y + y) * width + box.x) * 4, ((box.y + y) * width + box.x + box.width) * 4);
       return nativeImage.createFromBitmap(out, { width: box.width, height: box.height, scaleFactor: scale });
@@ -364,9 +422,13 @@ export function tagDrawer(o: { renderMs?: number; retryMs?: number } = {}): { dr
   /** One render with its time limit: past it the window is destroyed (the next draw makes a fresh one) and the queue goes on. */
   function limited(kind: PointerKind, text: string, scale: number, dark: boolean): Promise<NativeImage> {
     if (disposed) return Promise.reject(new Error("the pointer drawer is disposed"));
+    stopIdle();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { destroyWindow(); reject(new Error("the pointer image took too long")); }, renderMs);
-      render(kind, text, scale, dark).then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+      const timer = clock.setTimeout(() => { const e = failure("RenderTimeout", "the pointer image took too long"); destroyWindow(); report(e); reject(e); }, renderMs);
+      render(kind, text, scale, dark).then(
+        (v) => { clock.clearTimeout(timer); armIdle(); resolve(v); },
+        (e) => { clock.clearTimeout(timer); armIdle(); report(e); reject(e); },
+      );
     });
   }
 
@@ -375,6 +437,7 @@ export function tagDrawer(o: { renderMs?: number; retryMs?: number } = {}): { dr
     const k = key(kind, text, scale, dark);
     let p = inflight.get(k);
     const hit = cache.get(k);
+    if (hit) { cache.delete(k); cache.set(k, hit); }   // used again: the newest, so the least recently used goes first
     if (!hit && !p) {
       p = tail.then(() => limited(kind, text, scale, dark)).then((img) => {
         if (!disposed) {
@@ -405,14 +468,14 @@ export function tagDrawer(o: { renderMs?: number; retryMs?: number } = {}): { dr
 
 /** The pointer as an ImageView above the tab views of one window (F8). The image's tip is its top-left corner, so `place`
  *  puts the view's origin on the target and the view covers nothing but its drawing. A destroyed window makes every member
- *  a no-op, and so does `dispose()`, for good. `raise` makes the view the last child again (after a tab swap puts a tab above
- *  it); `show(true)` raises too. */
+ *  a no-op, and so does `dispose()`, for good. `show(true)` makes the view the last child again (a tab swap puts a tab above
+ *  it). */
 export function imageSurface(o: {
   window: BrowserWindow;
   tag: (kind: PointerKind, text: string, scale: number, dark: boolean) => Promise<NativeImage>;
   /** For `ready`: whether `tag` would answer from its cache (the drawer's `has`). */
   has: (kind: PointerKind, text: string, scale: number, dark: boolean) => boolean;
-}): PointerSurface & { raise(): void; dispose(): void } {
+}): PointerSurface & { dispose(): void } {
   const view = new ImageView();
   view.setVisible(false);
   let size: Size = { width: 0, height: 0 };
@@ -453,7 +516,6 @@ export function imageSurface(o: {
       try { o.tag(kind, tag, scale(), dark()).catch(() => {}); } catch { /* the drawer is gone */ }
     },
     gone,
-    raise,
     dispose() {
       if (disposed) return;
       if (!o.window.isDestroyed()) { try { o.window.contentView.removeChildView(view); } catch { /* not a child */ } }

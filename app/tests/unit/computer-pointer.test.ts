@@ -533,6 +533,122 @@ test("timers that fire 10 ms late do not stretch the travel", async () => {
   assert.ok(s.places.length < 16, "late timers skip points instead of stretching the travel");
 });
 
+test("in a narrow view the first move starts where the tagged image fits", async () => {
+  const { clock, s, pointer } = make();
+  s.size = (_k, tag) => (tag ? { width: 200, height: 30 } : { width: 14, height: 22 });
+  const within = { x: 0, y: 0, width: 320, height: 400 };
+  void pointer.moveTo({ ...base, within, to: { x: 50, y: 100 }, alive: () => true });
+  await flush(); await clock.advance(400);
+  // The middle of the view is (160, 200); a 200 wide image there reaches 360. It starts at 120, where it ends at the edge.
+  assert.deepEqual(s.places[0].p, { x: 120, y: 200 });
+  assert.ok(s.places.every((p) => p.p.x + 200 <= 320 && p.p.y + 30 <= 400), "every step lies inside the view");
+  // The same from the bottom.
+  const m = make();
+  m.s.size = (_k, tag) => (tag ? { width: 100, height: 300 } : { width: 14, height: 22 });
+  void m.pointer.moveTo({ ...base, within, to: { x: 50, y: 20 }, alive: () => true });
+  await flush(); await m.clock.advance(400);
+  assert.deepEqual(m.s.places[0].p, { x: 160, y: 100 });
+});
+
+test("a kept position where the new image would cross the edge is pulled in", async () => {
+  const { clock, s, pointer } = make();
+  s.size = (_k, tag) => (tag ? { width: 120, height: 30 } : { width: 14, height: 22 });
+  const within = { x: 0, y: 0, width: 600, height: 500 };
+  void pointer.moveTo({ ...base, name: "", within, to: { x: 580, y: 300 }, alive: () => true });   // a bare mark: it fits there
+  await flush(); await clock.advance(400);
+  assert.deepEqual(pointer.state().at, { x: 580, y: 300 });
+  s.places.length = 0;
+  void pointer.moveTo({ ...base, within, to: { x: 100, y: 100 }, alive: () => true });             // the tag is 120 wide
+  await flush(); await clock.advance(400);
+  assert.deepEqual(s.places[0].p, { x: 480, y: 300 });
+  assert.ok(s.places.every((p) => p.p.x + 120 <= 600));
+});
+
+test("touch keeps a shown pointer for another 3 s and shows nothing by itself", async () => {
+  const { clock, s, pointer } = make();
+  pointer.touch();
+  assert.equal(s.log.length, 0, "nothing on screen: nothing happens");
+  void pointer.moveTo({ ...base, to: { x: 440, y: 300 }, alive: () => true });
+  await flush(); await clock.advance(300);
+  await clock.advance(2000); pointer.touch();
+  await clock.advance(2000);                         // 4300 ms in: past the move's own timer
+  assert.equal(pointer.state().shown, true);
+  await clock.advance(1200);                         // 3 s after the touch
+  assert.equal(pointer.state().shown, false);
+  const hides = s.log.filter((l) => l === "hide").length;
+  pointer.touch(); await clock.advance(5000);
+  assert.equal(s.log.filter((l) => l === "hide").length, hides);
+  const tail: string[] = s.log; assert.ok(!tail.slice(tail.lastIndexOf("hide") + 1).includes("show"));
+});
+
+test("a spinner in front of a name is not part of the tag", () => {
+  assert.equal(tagText("✳ Fix login"), "Fix login");
+  assert.equal(tagText("⠐ Fix login"), "Fix login");
+  assert.equal(tagText("⠐  Fix login"), "Fix login");
+  assert.equal(tagText("✳✻ Fix login"), "Fix login");
+  assert.equal(tagText("[WIP] x"), "[WIP] x");
+  assert.equal(tagText("#123"), "#123");
+  assert.equal(tagText("C++ notes"), "C++ notes");
+  assert.equal(tagText("✳ "), "✳");
+  assert.equal(tagText("✳"), "✳");
+  assert.equal(tagText("1 Fix"), "1 Fix");
+  assert.equal(tagText("*** Fix"), "*** Fix");
+  assert.equal(tagText("✳ ✻ Fix"), "✻ Fix", "one mark at most");
+});
+
+test("a throw inside a move leaves nothing behind and the action goes on", async () => {
+  const clock = new FakeClock(); const s = new FakeSurface(clock);
+  const lines: string[] = [];
+  let n = 0; const realPlace = s.place.bind(s);
+  s.place = (at: Point) => { if (++n === 3) throw new Error("boom with a secret name"); realPlace(at); };
+  const pointer = new Pointer({ surface: () => s, clock, log: (l) => lines.push(l) });
+  let done: boolean | undefined;
+  void pointer.moveTo({ ...base, to: { x: 3000, y: 2000 }, alive: () => true }).then((v) => { done = v; });
+  await flush(); await clock.advance(300);
+  assert.equal(done, true, "resolves alive()");
+  assert.equal(pointer.state().shown, false);
+  assert.equal(s.log[s.log.length - 1], "hide");
+  await clock.advance(5000);
+  assert.equal(s.log.filter((l) => l === "hide").length, 1, "no timer is left armed");
+  assert.equal(lines.length, 1);
+  assert.ok(!/secret/.test(lines[0]));
+  // With a Take over already in, it resolves false.
+  const t = new FakeSurface(clock); t.place = () => { throw new Error("x"); };
+  const p2 = new Pointer({ surface: () => t, clock });
+  assert.equal(await p2.moveTo({ ...base, to: { x: 440, y: 300 }, alive: () => false }), false);
+});
+
+test("a hostile name of 5000 characters gives a tag no longer than the longest allowed", async () => {
+  const hostile = "W".repeat(5000);
+  const longest = "W".repeat(TAG_MAX);
+  assert.equal(tagText(hostile).length, TAG_MAX);
+  assert.equal(tagText(longest), longest);
+  const html = pointerHtml("arrow", tagText(hostile), false);
+  assert.ok(html.includes(`>${tagText(hostile)}</div>`));
+  assert.ok(!html.includes("W".repeat(TAG_MAX + 1)));
+  assert.match(html, /\.tag\{[^}]*max-width:200px;[^}]*overflow:hidden;white-space:nowrap/);
+  const { clock, s, pointer } = make();
+  void pointer.moveTo({ ...base, name: hostile, to: { x: 440, y: 300 }, alive: () => true });
+  await flush(); await clock.advance(300);
+  assert.ok(s.drawn.every(([, tag]) => tag.length <= TAG_MAX));
+});
+
+test("an edge drop hides a pointer that is on the other window's surface", async () => {
+  const { clock, main, pop, pointer } = makeTwo();
+  main.size = pop.size = (_k, tag) => (tag ? { width: 120, height: 30 } : { width: 14, height: 22 });
+  void pointer.moveTo({ ...base, to: { x: 440, y: 300 }, alive: () => true });
+  await flush(); await clock.advance(400);
+  assert.equal(main.visible, true);
+  const within = { x: 0, y: 0, width: 700, height: 400 };
+  assert.equal(await pointer.moveTo({ ...base, window: "pop", within, to: { x: 695, y: 100 }, alive: () => true }), true);
+  assert.equal(main.visible, false, "the pointer on the other window is gone");
+  assert.equal(pop.visible, false);
+  assert.ok(!pop.log.includes("show"));
+  assert.equal(pointer.state().shown, false);
+  await clock.advance(5000);
+  assert.equal(main.log.filter((l) => l === "hide").length, 1);
+});
+
 // ---- imageSurface -------------------------------------------------------------------------------------------------
 
 class FakeView {
@@ -585,7 +701,7 @@ test("imageSurface puts the view's origin on the target, raises it when shown, a
   assert.equal(children.filter((c) => c === view).length, 1);
   surface.show(false); assert.equal(view.visible, false);
   st.destroyed = true;
-  assert.doesNotThrow(() => { surface.place({ x: 1, y: 1 }); surface.show(true); surface.show(false); surface.raise(); surface.dispose(); });
+  assert.doesNotThrow(() => { surface.place({ x: 1, y: 1 }); surface.show(true); surface.show(false); surface.dispose(); });
   await assert.rejects(surface.draw("press", "Fix"), "nothing to draw on");
   assert.equal(surface.gone(), true);
 });
@@ -614,7 +730,7 @@ test("imageSurface: dispose is final", async () => {
   await surface.draw("arrow", "x");
   surface.show(true); assert.ok(children.includes(view));
   surface.dispose(); assert.ok(!children.includes(view));
-  surface.show(true); surface.raise(); surface.place({ x: 5, y: 5 });
+  surface.show(true); surface.place({ x: 5, y: 5 });
   assert.ok(!children.includes(view), "never added again");
 });
 
@@ -632,7 +748,9 @@ test("imageSurface: ready reads the drawer's cache", () => {
 const doc = (u: string) => decodeURIComponent(u.slice("data:text/html;charset=utf-8,".length));
 
 class FakeWin {
-  static made: FakeWin[] = []; static active = 0; static maxActive = 0; static urls: string[] = []; static failCaptures = 0; static captures = 0;
+  static made: FakeWin[] = []; static active = 0; static maxActive = 0; static urls: string[] = []; static failCaptures = 0; static emptyCaptures = 0; static captures = 0;
+  /** What the window answers for its content width (null: the truth): a capture over this gives a measured scale. */
+  static reportedWidth: number | null = null;
   /** The display the window sits on: the capture is this many pixels per DIP. */
   static display = 1; static hang = false;
   opts: Record<string, unknown>; destroyed = false; handlers = new Map<string, (...a: unknown[]) => void>();
@@ -646,12 +764,14 @@ class FakeWin {
       FakeWin.urls.push(u); this.lastUrl = u;
       if (FakeWin.hang) await new Promise(() => {});
       FakeWin.active++; FakeWin.maxActive = Math.max(FakeWin.maxActive, FakeWin.active);
-      await new Promise((r) => setTimeout(r, 2)); FakeWin.active--;
+      await flush(); FakeWin.active--;
     },
     capturePage: async () => {
       if (this.destroyed) throw new Error("Object has been destroyed");
       FakeWin.captures++;
       if (FakeWin.failCaptures > 0) { FakeWin.failCaptures--; throw new Error("UnknownVizError"); }
+      // Electron resolves, it does not reject, when there is no frame to copy: an image of 0 x 0.
+      if (FakeWin.emptyCaptures > 0) { FakeWin.emptyCaptures--; return { toBitmap: () => Buffer.alloc(0), getSize: () => ({ width: 0, height: 0 }) }; }
       // The document draws an 80 x 36 DIP mark at 3,2 px, scaled by its root's zoom and by the display, clipped to the window.
       const m = /zoom:([0-9.]+)/.exec(doc(this.lastUrl)); const zoom = m ? Number(m[1]) : 1;
       const W = Math.round(this.content[0] * FakeWin.display); const H = Math.round(this.content[1] * FakeWin.display);
@@ -663,7 +783,7 @@ class FakeWin {
   };
   constructor(opts: Record<string, unknown>) { this.opts = opts; FakeWin.made.push(this); }
   setContentSize(w: number, h: number) { this.content = [w, h]; this.sizes.push([w, h]); }
-  getContentSize() { return this.content; }
+  getContentSize() { return [FakeWin.reportedWidth ?? this.content[0], this.content[1]]; }
   getBounds() { return { x: 0, y: 0, width: 260, height: 60 }; }
   setTitle() {}
   isDestroyed() { return this.destroyed; }
@@ -671,7 +791,7 @@ class FakeWin {
 }
 /** `screenSays`: what the screen lookup answers (the drawer's first guess); FakeWin.display is the truth. */
 function drawerEnv(screenSays = 1, display = 1) {
-  FakeWin.made = []; FakeWin.active = 0; FakeWin.maxActive = 0; FakeWin.urls = []; FakeWin.failCaptures = 0; FakeWin.captures = 0; FakeWin.hang = false;
+  FakeWin.made = []; FakeWin.active = 0; FakeWin.maxActive = 0; FakeWin.urls = []; FakeWin.failCaptures = 0; FakeWin.emptyCaptures = 0; FakeWin.captures = 0; FakeWin.hang = false; FakeWin.reportedWidth = null;
   FakeWin.display = display;
   stub.BrowserWindow = FakeWin;
   stub.screen = { getDisplayMatching: () => ({ scaleFactor: screenSays }) };
@@ -679,14 +799,28 @@ function drawerEnv(screenSays = 1, display = 1) {
 }
 type Made = { buf: Buffer; width: number; height: number; scaleFactor: number };
 const dip = (i: unknown) => { const m = i as Made; return [m.width / m.scaleFactor, m.height / m.scaleFactor]; };
-const later = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A drawer on a fake clock: nothing in it waits on real time. */
+function mk(o: { renderMs?: number; retryMs?: number; idleMs?: number; log?: (l: string) => void } = {}) {
+  const clock = new FakeClock();
+  return { clock, d: tagDrawer({ clock, ...o }) };
+}
+/** Lets the clock run on (50 ms at a time) until `p` has settled: a draw that waits for a retry or a limit. */
+async function settle<T>(clock: FakeClock, p: Promise<T>): Promise<{ ok: true; v: T } | { ok: false; e: unknown }> {
+  let out: { ok: true; v: T } | { ok: false; e: unknown } | undefined;
+  p.then((v) => { out = { ok: true, v }; }, (e) => { out = { ok: false, e }; });
+  for (let i = 0; i < 200 && !out; i++) { await flush(); await clock.advance(50); }
+  if (!out) throw new Error("did not settle");
+  return out;
+}
+/** Lets queued microtasks and the fake window's loads run. */
+const idle = async () => { for (let i = 0; i < 20; i++) await flush(); };
 
 test("the drawer draws one at a time, caches, and makes the press image with the arrow", async () => {
   drawerEnv();
-  const d = tagDrawer();
+  const { clock, d } = mk();
   assert.equal(FakeWin.made.length, 0, "no window until the first draw");
   const [a, b] = await Promise.all([d.draw("arrow", "One", 1, false), d.draw("caret", "One", 1, false)]);
-  await later(30);
+  await d.draw("press", "One", 1, false);              // joins the press the arrow started
   assert.equal(FakeWin.made.length, 1);
   assert.equal(FakeWin.maxActive, 1);
   // arrow, caret, and the press the arrow started: three loads, each its own kind.
@@ -712,8 +846,8 @@ test("the drawer draws one at a time, caches, and makes the press image with the
   assert.equal(d.has("press", "One", 1, false), true);
   assert.equal(d.has("press", "Two", 1, false), false);
   // One retry after a failed capture; two failures reject.
-  FakeWin.failCaptures = 1; await d.draw("caret", "Retry", 1, false);
-  FakeWin.failCaptures = 2; await assert.rejects(d.draw("caret", "Never", 1, false));
+  FakeWin.failCaptures = 1; assert.equal((await settle(clock, d.draw("caret", "Retry", 1, false))).ok, true);
+  FakeWin.failCaptures = 2; assert.equal((await settle(clock, d.draw("caret", "Never", 1, false))).ok, false);
   assert.ok(doc(FakeWin.urls[0]).includes("One"));
   assert.equal(FakeWin.made[0].zoomCalls, 0, "the page is never zoomed by the window");
   d.dispose(); assert.equal(FakeWin.made[0].destroyed, true);
@@ -722,7 +856,7 @@ test("the drawer draws one at a time, caches, and makes the press image with the
 test("the image's DIP size is the same for wanted 1 and 2 on a 1x and on a 2x drawer display", async () => {
   for (const display of [1, 2]) {
     drawerEnv(display, display);
-    const d = tagDrawer();
+    const { d } = mk();
     for (const wanted of [1, 2]) {
       const i = await d.draw("caret", `n${wanted}`, wanted, false);
       assert.deepEqual(dip(i), [80, 36], `display ${display}, wanted ${wanted}`);
@@ -737,7 +871,7 @@ test("the image's DIP size is the same for wanted 1 and 2 on a 1x and on a 2x dr
 
 test("when the screen's answer is wrong, the measured scale corrects it and the drawing is made again", async () => {
   drawerEnv(1, 2);   // the lookup says 1x, the capture is 2x
-  const d = tagDrawer();
+  const { d } = mk();
   const i = await d.draw("caret", "x", 2, false);
   assert.deepEqual(dip(i), [80, 36]);
   assert.equal((i as unknown as Made).scaleFactor, 2);
@@ -748,21 +882,66 @@ test("when the screen's answer is wrong, the measured scale corrects it and the 
   d.dispose();
 });
 
+test("one empty capture fails that draw and the next draw works", async () => {
+  drawerEnv();
+  const { clock, d } = mk();
+  // An empty capture is a failed one: it is tried again once, and a second empty one rejects the draw.
+  FakeWin.emptyCaptures = 2;
+  assert.equal((await settle(clock, d.draw("caret", "a", 1, false))).ok, false);
+  const next = await settle(clock, d.draw("caret", "b", 1, false));
+  assert.equal(next.ok, true, "the drawer is not switched off");
+  assert.deepEqual(dip((next as { ok: true; v: unknown }).v), [80, 36]);
+  assert.deepEqual(FakeWin.made[0].sizes[FakeWin.made[0].sizes.length - 1], [260, 60], "no zoom of Infinity, no size of 0");
+  // A single empty capture is passed by the retry.
+  FakeWin.emptyCaptures = 1;
+  assert.equal((await settle(clock, d.draw("caret", "c", 1, false))).ok, true);
+  d.dispose();
+});
+
+test("a measured scale of 0, NaN or 40 is never kept", async () => {
+  for (const reported of [Infinity, NaN, 6.5, 260 / 0.1]) {   // measured: 0, NaN, 40, 0.1
+    drawerEnv();
+    const { clock, d } = mk();
+    await d.draw("caret", "good", 1, false);                  // the scale 1 is measured and kept
+    FakeWin.reportedWidth = reported;
+    assert.equal((await settle(clock, d.draw("caret", `bad${reported}`, 1, false))).ok, false, `reported ${reported}`);
+    FakeWin.reportedWidth = null;
+    const sizes = FakeWin.made[0].sizes.length;
+    const again = await settle(clock, d.draw("caret", "again", 1, false));
+    assert.equal(again.ok, true, `reported ${reported}`);
+    assert.deepEqual(FakeWin.made[0].sizes[sizes], [260, 60], "the stored scale is still 1");
+    d.dispose();
+  }
+});
+
 test("the drawer keeps at most 32 images, dropping the oldest", async () => {
   drawerEnv();
-  const d = tagDrawer();
+  const { d } = mk();
   for (let i = 0; i < 33; i++) await d.draw("caret", `n${i}`, 1, false);
   assert.equal(d.has("caret", "n0", 1, false), false);
   assert.equal(d.has("caret", "n32", 1, false), true);
   d.dispose();
 });
 
+test("an image used again outlives 32 newer ones", async () => {
+  drawerEnv();
+  const { d } = mk();
+  await d.draw("caret", "keep", 1, false);
+  for (let i = 0; i < 10; i++) await d.draw("caret", `a${i}`, 1, false);
+  await d.draw("caret", "keep", 1, false);               // used again: it is the newest now
+  for (let i = 0; i < 31; i++) await d.draw("caret", `b${i}`, 1, false);
+  assert.equal(d.has("caret", "keep", 1, false), true, "least recently used goes first");
+  assert.equal(d.has("caret", "a0", 1, false), false);
+  assert.equal(d.has("caret", "b30", 1, false), true);
+  d.dispose();
+});
+
 test("an arrow drawn and the drawer disposed at once: one window was ever made, and press is not there", async () => {
   drawerEnv();
-  const d = tagDrawer();
+  const { d } = mk();
   await d.draw("arrow", "A", 1, false);
   d.dispose();
-  await later(40);
+  await idle();
   assert.equal(FakeWin.made.length, 1);
   assert.equal(FakeWin.made[0].destroyed, true);
   assert.equal(d.has("press", "A", 1, false), false);
@@ -773,11 +952,11 @@ test("an arrow drawn and the drawer disposed at once: one window was ever made, 
 
 test("an arrow found in the cache starts a press that failed before", async () => {
   drawerEnv();
-  const d = tagDrawer({ retryMs: 1 });
+  const { clock, d } = mk();
   await d.draw("caret", "warm", 1, false);
   await d.draw("arrow", "C", 1, false);
   FakeWin.failCaptures = 2;                      // the press that follows fails: its capture and its retry
-  await assert.rejects(d.draw("press", "C", 1, false));
+  assert.equal((await settle(clock, d.draw("press", "C", 1, false))).ok, false);
   assert.equal(d.has("press", "C", 1, false), false, "the press failed");
   await d.draw("arrow", "C", 1, false);          // the arrow is cached now
   await d.draw("press", "C", 1, false);          // joins the press the arrow started
@@ -787,15 +966,65 @@ test("an arrow found in the cache starts a press that failed before", async () =
 
 test("a render that never settles is cut at its limit: the draw rejects, the window is replaced, the queue goes on", async () => {
   drawerEnv();
-  const d = tagDrawer({ renderMs: 40 });
+  const { clock, d } = mk({ renderMs: 40 });
   await d.draw("caret", "ok", 1, false);
   FakeWin.hang = true;
-  await assert.rejects(d.draw("caret", "stuck", 1, false));
+  assert.equal((await settle(clock, d.draw("caret", "stuck", 1, false))).ok, false);
   assert.equal(FakeWin.made[0].destroyed, true);
   FakeWin.hang = false;
   const i = await d.draw("caret", "after", 1, false);
   assert.deepEqual(dip(i), [80, 36]);
   assert.equal(FakeWin.made.length, 2, "a fresh window");
+  d.dispose();
+});
+
+test("a failed drawing is logged once a minute, with no name and no address in the line", async () => {
+  drawerEnv();
+  const lines: string[] = [];
+  const { clock, d } = mk({ log: (l) => lines.push(l) });
+  FakeWin.failCaptures = 4;
+  await settle(clock, d.draw("caret", "Secret project name", 1, false));
+  await settle(clock, d.draw("caret", "Another secret name", 1, false));
+  assert.equal(lines.length, 1, "the second failure within a minute is not logged again");
+  assert.match(lines[0], /^pointer: a drawing failed \(\w+\)$/);
+  assert.ok(!/secret|data:|http/i.test(lines[0]));
+  await clock.advance(60_000);
+  FakeWin.failCaptures = 2;
+  await settle(clock, d.draw("caret", "A third one", 1, false));
+  assert.equal(lines.length, 2, "a minute later it is logged again");
+  // A drawing that was cut off by dispose is not a failure to report.
+  const before = lines.length;
+  d.dispose();
+  await d.draw("caret", "x", 1, false).catch(() => {});
+  assert.equal(lines.length, before);
+});
+
+test("the hidden window is destroyed after 60 s with no draw, the cache stays, and the next draw makes a fresh one", async () => {
+  drawerEnv();
+  const { clock, d } = mk();
+  await d.draw("caret", "A", 1, false);
+  await clock.advance(59_000);
+  assert.equal(FakeWin.made[0].destroyed, false);
+  await d.draw("caret", "B", 1, false);          // a draw starts the minute again
+  await clock.advance(59_000);
+  assert.equal(FakeWin.made[0].destroyed, false);
+  await clock.advance(2_000);
+  assert.equal(FakeWin.made[0].destroyed, true);
+  assert.equal(d.has("caret", "A", 1, false), true, "the cache stays");
+  await d.draw("caret", "A", 1, false);
+  assert.equal(FakeWin.made.length, 1, "a cached image needs no window");
+  await d.draw("caret", "C", 1, false);
+  assert.equal(FakeWin.made.length, 2);
+  d.dispose();
+  assert.equal(FakeWin.made[1].destroyed, true);
+});
+
+test("the idle limit is an option", async () => {
+  drawerEnv();
+  const { clock, d } = mk({ idleMs: 500 });
+  await d.draw("caret", "A", 1, false);
+  await clock.advance(600);
+  assert.equal(FakeWin.made[0].destroyed, true);
   d.dispose();
 });
 
@@ -884,3 +1113,36 @@ test("imageSurface: prepare asks the drawer for the window's scale and theme and
   surface.dispose();
   assert.doesNotThrow(() => surface.prepare("caret", "Fix"));
 });
+
+test("keepWithin does not re-arm the timer of a pointer it keeps", async () => {
+  const { clock, pointer, within } = await shownAt();
+  await clock.advance(2000);
+  pointer.keepWithin({ ...within, height: 600 });
+  assert.equal(pointer.state().shown, true);
+  await clock.advance(1200);                      // the move's own timer is due (about 3240 ms after it started); a re-armed one is not
+  assert.equal(pointer.state().shown, false);
+});
+
+test("keepWithin hides a pointer whose image no longer fits, though its point does", async () => {
+  const { s, pointer, within } = await shownAt();   // the image is 30 x 20 at (440, 300)
+  pointer.keepWithin({ ...within, height: 260 });   // the box ends at y 310: the point 300 is inside, the image (to 320) is not
+  assert.equal(pointer.state().shown, false);
+  assert.equal(s.log[s.log.length - 1], "hide");
+  const b = await shownAt();
+  b.pointer.keepWithin({ ...b.within, width: 360 });   // ends at x 460; the image reaches 470
+  assert.equal(b.pointer.state().shown, false);
+});
+
+test("keepWithin hides a pointer whose target no longer fits, though the pointer now does", async () => {
+  const { clock, s, pointer } = make();
+  const within = { x: 100, y: 50, width: 1000, height: 800 };
+  void pointer.moveTo({ ...base, within, to: { x: 1000, y: 800 }, alive: () => true });   // from the view's middle (600, 450)
+  await flush(); await clock.advance(32);
+  assert.equal(pointer.state().shown, true);
+  const at = pointer.state().at!;
+  assert.ok(at.x < 1000, "still travelling");
+  pointer.keepWithin({ ...within, height: 760 });   // the box ends at y 810: the image at the target (to 820) no longer fits; where it is now, it does
+  assert.equal(pointer.state().shown, false);
+  assert.equal(s.log[s.log.length - 1], "hide");
+});
+
