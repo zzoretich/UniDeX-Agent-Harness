@@ -56,7 +56,7 @@ function registerComputerTools(server, z, client) {
       IN + 'switch to the tab at index (as computer_status lists them), or close it with close set to true. Closing a tab you did not open asks the user first; closing the last tab leaves the browser on at its start page.' + PAGE + SAFETY,
       { index: z.number().int().min(0).max(1000).describe('The tab index, as computer_status lists the tabs'), close: z.boolean().optional().describe('Close the tab instead of switching to it') }],
     computer_nav: ['Go back, forward or reload in the UniDeX browser',
-      IN + 'go back, go forward or reload the active tab. Reloading, or going back or forward onto, a page asks the user first when the page was loaded by a form or how it was loaded is not known, since it may send the form again.' + PAGE + SAFETY,
+      IN + 'go back, go forward or reload the active tab. Going back or forward never asks. Reloading a page asks the user first when a form loaded it or how it was loaded is not known, since a reload may send the form again.' + PAGE + SAFETY,
       { go: z.enum(['back', 'forward', 'reload']).describe('back, forward or reload') }],
     computer_hover: ['Hover in the UniDeX browser',
       IN + 'move the pointer over an element by ref, or to a point by x and y in page pixels, without clicking, to open a menu or show a tooltip. Give either ref, or both x and y.' + PAGE + SAFETY,

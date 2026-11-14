@@ -1612,6 +1612,70 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
     }
     expectNoErrors(h);
   });
+
+  test("the person's Reload on a form's result page asks, and Send again sends it", async () => {
+    const h = app();
+    const { win } = h;
+    const a = await chatAgent(h, { host: "claude", text: "computer: the person's reload after a post" });
+    try {
+      const p = pane(win, "chat");
+      const posts = () => hits("/order", "POST");
+      expectReply(await a.call("computer_open", { url: orderUrl() }), { isError: false, text: acted("Opened the page.", orderUrl()) });
+      const sent = posts();
+      await inPage<void>(h.app, orderUrl(), `document.getElementById("place").click()`);
+      await expect.poll(posts, { message: "the form posted" }).toBe(sent + 1);
+      const resultUrl = `http://marked.test:${site.port}/order`;
+      await expect.poll(() => inPage<string>(h.app, resultUrl, "document.title"), { message: "the answer loaded" }).toBe("Ordered");
+      // The pane's own Reload asks first and sends nothing yet.
+      const card = cards(p).filter({ hasText: "Send this form again?" });
+      await p.locator(".aos-cp-reload").click();
+      await expect(card).toHaveCount(1);
+      await expect(card.locator(".aos-cp-askbtn")).toHaveText(["Send again", "Cancel"]);
+      expect(posts(), "nothing sent while the card is up").toBe(sent + 1);
+      // Send again sends the form once more. A marker on the old document shows when the reload has really committed.
+      await inPage<void>(h.app, resultUrl, `window.__before = 1`);
+      await card.locator('[data-answer="once"]').click();
+      await expect.poll(posts, { message: "the form was sent again" }).toBe(sent + 2);
+      await expect.poll(() => inPage<string>(h.app, resultUrl, `typeof window.__before`), { message: "the reloaded document committed" }).toBe("undefined");
+      await expect(cards(p)).toHaveCount(0);
+      // Reload again and Cancel: still two.
+      await p.locator(".aos-cp-reload").click();
+      await expect(card).toHaveCount(1);
+      await card.locator('[data-answer="deny"]').click();
+      await expect(cards(p)).toHaveCount(0);
+      expect(posts(), "Cancel sent nothing").toBe(sent + 2);
+    } finally { await a.finish(); }
+    expectNoErrors(h);
+  });
+
+  // Pins the probe's finding (plan F7) for the next Electron upgrade: Back never sends a form again.
+  test("Back onto a form's result page does not ask and does not send the form again", async () => {
+    const h = app();
+    const { win } = h;
+    for (const host of ["claude", "codex"] as const) {
+      const a = await chatAgent(h, { host, text: `computer: back after a post on ${host}` });
+      try {
+        const p = pane(win, "chat");
+        const posts = () => hits("/order", "POST");
+        expectReply(await a.call("computer_open", { url: orderUrl() }), { isError: false, text: acted("Opened the page.", orderUrl()) });
+        const sent = posts();
+        await inPage<void>(h.app, orderUrl(), `document.getElementById("place").click()`);
+        await expect.poll(posts, { message: "the form posted" }).toBe(sent + 1);
+        const resultUrl = `http://marked.test:${site.port}/order`;
+        await expect.poll(() => inPage<string>(h.app, resultUrl, "document.title"), { message: "the answer loaded" }).toBe("Ordered");
+        // Go on to another page in the same tab, then Back onto the result page.
+        expectReply(await a.call("computer_open", { url: shopUrl() }), { isError: false, text: acted("Opened the page.", shopUrl()) });
+        const back = await a.call("computer_nav", { go: "back" });
+        // No card. What the reply shows depends on the cache (the result page itself, or the browser's error page for a cache
+        // miss), so only the move is asserted: the reply begins "Went back." and the server saw the POST once.
+        expectReply(back, { isError: false, text: /^Went back\./ });
+        await expect(cards(p)).toHaveCount(0);
+        // The one POST is the spec's own: Back did not send the form again.
+        expect(posts(), "Back did not send the form again").toBe(sent + 1);
+      } finally { await a.finish(); }
+    }
+    expectNoErrors(h);
+  });
 });
 
 // ── kept, limited, linked and popped out ─────────────────────────────

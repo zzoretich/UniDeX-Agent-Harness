@@ -45,7 +45,7 @@ export interface Resolved { target: Target; shown: string; sensitive: boolean; b
 export interface BrowserHooks { ask(i: Pick<AskInput, "why" | "title" | "detail" | "site">): Promise<boolean>; note(text: string): void; changed(): void; agentDrives?(): boolean; front?(page?: boolean): void }
 /** The history entry a move would load (session-browser S17), as one read of the tab's history saw it: the tab by its uid, the
  *  entry by its id (null where none: a waking tab, nothing to go to, an unreadable history) and the method it was loaded by. */
-export interface Entry { uid: number; id: string | null; url: string | null; method: "GET" | "other" | "unknown" }
+export interface Entry { uid: number; id: string | null; method: "GET" | "other" | "unknown" }
 /** Where the gate judged an action (I3b): the tab, and the page token it had. `key` and `type` deliver only while both
  *  are still the ones in front. */
 export interface Judged { tab: number; pageToken: string }
@@ -208,6 +208,9 @@ interface Tab {
   /** session-browser S17 (R1, R2): the method of each main-frame document request in flight, by its loader id: "GET", or
    *  "other" for anything else (the last event of a redirect chain wins). Nothing else of a request is kept. */
   loaders: Map<string, LoadMethod>;
+  /** Set when a main-frame document request of another method than GET was seen, before any entry is bound to it; never cleared
+   *  for the tab's life (`mayHoldForm`). */
+  sawForm: boolean;
   /** The method each history entry was loaded by, by entry id, once its document committed; an entry with no record is
    *  "unknown" to the gate. Entries that left the history are forgotten at each bind. */
   methods: Map<string, LoadMethod>;
@@ -553,24 +556,25 @@ export class ComputerBrowser {
   async entry(go: ComputerNavGo, tab?: number): Promise<Entry | null> {
     const t = this.list[tab ?? this.current];
     if (!t || t.wc.isDestroyed()) return null;
-    if (t.pending) return { uid: t.uid, id: null, url: null, method: go === "reload" ? "GET" : "unknown" };
+    if (t.pending) return { uid: t.uid, id: null, method: go === "reload" ? "GET" : "unknown" };
     // A refusal that says what to do (DevTools open, another debugger, a closed tab) goes on as itself; any other failure of the
     // read leaves the entry with no id, and the caller says the history could not be read (PR 5, A10).
     const h = await this.history(t).catch((e: unknown) => { if (e instanceof Told && SAYS_WHY.has(e.message)) throw e; return null; });
     const e = h?.entries[h.currentIndex + (go === "back" ? -1 : go === "forward" ? 1 : 0)];
-    if (!e) return { uid: t.uid, id: null, url: null, method: "unknown" };
-    return { uid: t.uid, id: String(e.id), url: e.url, method: e.url === "about:blank" ? "GET" : t.methods.get(String(e.id)) ?? "unknown" };
+    if (!e) return { uid: t.uid, id: null, method: "unknown" };
+    return { uid: t.uid, id: String(e.id), method: e.url === "about:blank" ? "GET" : t.methods.get(String(e.id)) ?? "unknown" };
   }
 
-  /** The move the person allowed on a card, bound to what the card named (session-browser S17): the same tab (by uid), still
-   *  the active one, and the entry the move would load now is the same one (by id, with the same method). The history is read
-   *  again here, and nothing is awaited between that read's check and the act, so a commit or a closed tab meanwhile sends
-   *  nothing (false). A reload of what was not a GET goes through the protocol, which sends the form again with no dialog
-   *  (Electron's own reload does nothing for a POST entry); a protocol reload that fails throws the table's sentence. */
-  async navEntry(go: ComputerNavGo, bound: Entry, valid: () => boolean): Promise<boolean> {
+  /** The reload the person allowed on a card, bound to what the card named (session-browser S17): the same tab (by uid), still
+   *  the active one, and the entry a reload would load now is the same one (by id, with the same method). Only an entry that was
+   *  not a GET is ever asked about, so a GET entry is never bound: it sends nothing (false). The history is read again here, and
+   *  nothing is awaited between that read's check and the act, so a commit or a closed tab meanwhile sends nothing (false). The
+   *  reload goes through the protocol, which sends the form again with no dialog (Electron's own reload does nothing for a POST
+   *  entry); a protocol reload that fails throws the table's sentence. */
+  async navEntry(bound: Entry, valid: () => boolean): Promise<boolean> {
     const was = this.list[this.current];
     if (!was || was.uid !== bound.uid) return false;
-    const now = await this.entry(go, this.current);
+    const now = await this.entry("reload", this.current);
     const t = this.list[this.current];
     // R81: the call must still be current after the read, and nothing is awaited between here and the move.
     if (!valid()) throw new PageChanged();
@@ -578,11 +582,27 @@ export class ComputerBrowser {
     // An entry with no id is never bound: only a tab still waking (its reload loads the kept address by GET) has none.
     if (now.id === null && !t.pending) throw new Error(REFUSAL.noHistoryRead);
     if (now.id !== bound.id || now.method !== bound.method) return false;
-    if (go === "reload" && bound.method !== "GET" && !t.pending) {
-      await this.send(t, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
-      return true;
-    }
-    return this.nav(go, this.current);
+    if (bound.method === "GET" || t.pending) return false;
+    // R81: the one command that sends a form again goes out in this very tick. `send` may first wait for an attachment, long
+    // enough for a Take over, Off or page change, so it is not used: a tab that is not ready to be driven right now (gone,
+    // DevTools open, an attachment in flight, the debugger detached) is treated as the page having changed, never attached
+    // and sent.
+    if (t.wc.isDestroyed() || t.wc.isDevToolsOpened() || t.attaching || !t.wc.debugger.isAttached()) throw new PageChanged();
+    await cdp(t.wc.debugger, "Page.reload").catch(() => { throw new Error(REFUSAL.notReloaded); });
+    return true;
+  }
+
+  /** Whether any entry of the tab (the active one by default) is recorded as loaded by a form, which is the only entry a
+   *  reload ever asks about: false means a reload of it is Electron's own, with no history read. A form's request seen in the tab
+   *  counts at once, before its entry is bound (the bind comes after the commit). An entry with no record
+   *  (a commit not bound yet, a read that failed, a gap) is "unknown" and reloads the plain way too, so only a recorded
+   *  "other" counts. Synchronous: it reads the table, never the history. */
+  mayHoldForm(tab?: number): boolean {
+    const t = this.list[tab ?? this.current];
+    if (!t || t.pending) return false;
+    if (t.sawForm) return true;
+    for (const m of t.methods.values()) if (m === "other") return true;
+    return false;
   }
 
   /** A tab's uid, which never leaves main, so a card can name the tab it was raised for across an index shift. */
@@ -1291,7 +1311,7 @@ export class ComputerBrowser {
       uid: nextUid++, view, wc: view.webContents, openedBy: by, own: keep ? keep.own : own, seq: 0, navs: 0, in: null, sensitive, documents: new Map([["", sensitive]]),
       query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false,
       worlds: new Map(), memory: keep?.memory ?? new SecretMemory(), holdUrl: null, holdOpen: false, pending: null, loading: null, frame: "", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0, leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false, doc: 0,
-      loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null, console: new ConsoleLog(), requests: new Map(), committedLoader: null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
+      loaders: new Map(), sawForm: false, methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null, console: new ConsoleLog(), requests: new Map(), committedLoader: null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
     };
     owners.set(t.wc.id, this.handlers);
     // A background tab leaves the selection on the tab already in front; with none in front it is the one.
@@ -1432,7 +1452,8 @@ export class ComputerBrowser {
     // failed URL as the tab's URL (a GET-submitted code is in it), but Electron emits no did-navigate for it: it emits one
     // did-fail-provisional-load at that commit (probed on Electron 44), and nothing for an aborted navigation (-3).
     wc.on("did-fail-provisional-load", (_e, code, _d, url, isMainFrame) => { if (isMainFrame && code !== ABORTED) this.commit(t, url); });
-    wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => { if (isMainFrame) { t.seq++; this.o.hooks.changed(); } });
+    // The page token moves with it, so a card raised for the page goes (the service's front hook); the pointer stays for the same tab.
+    wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => { if (isMainFrame) { t.seq++; if (this.list[this.current] === t) this.o.hooks.front?.(); this.o.hooks.changed(); } });
     // R37 (N4): loading stops after every main-frame navigation ends; one that committed consumed its entry at the commit,
     // so an entry still here belongs to a navigation that never committed (a 204, a download, a cancel: Electron 44 emits
     // no did-fail-provisional-load for either, probed) and would otherwise wait for a URL that never commits. R39: loading
@@ -1583,6 +1604,7 @@ export class ComputerBrowser {
         if (t.frame && p.frameId !== t.frame) break;
         t.loaders.delete(p.loaderId);
         t.loaders.set(p.loaderId, verb === "GET" ? "GET" : "other");
+        if (verb !== "GET") t.sawForm = true;
         while (t.loaders.size > LOADERS_KEPT) t.loaders.delete(t.loaders.keys().next().value!);
         break;
       }

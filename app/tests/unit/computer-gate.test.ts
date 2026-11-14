@@ -183,11 +183,15 @@ test("a tab switch, a hover and Back, Forward or Reload onto a GET entry do not 
   }
 });
 
-test("Reload after a form POST asks; onto GET it does not; an unknown method asks", () => {
-  for (const go of ["back", "forward", "reload"] as const) {
-    assert.deepEqual(judge({ kind: "nav", go, method: "other" }, edit(true)), { ask: "resend" }, `${go} onto another method`);
-    assert.deepEqual(judge({ kind: "nav", go, method: "unknown" }, edit(true)), { ask: "resend" }, `${go} onto an unknown method`);
-    assert.deepEqual(judge({ kind: "nav", go, method: "GET" }, edit(false)), { go: true }, `${go} onto GET`);
+test("Reload after a form POST asks; onto GET it does not; an unknown method asks; Back and Forward never ask", () => {
+  assert.deepEqual(judge({ kind: "nav", go: "reload", method: "other" }, edit(true)), { ask: "resend" }, "reload onto another method");
+  assert.deepEqual(judge({ kind: "nav", go: "reload", method: "unknown" }, edit(true)), { ask: "resend" }, "reload onto an unknown method");
+  assert.deepEqual(judge({ kind: "nav", go: "reload", method: "GET" }, edit(false)), { go: true }, "reload onto GET");
+  // Back and Forward cannot send a form again on this Electron (the plan's F7): whatever the method, they go.
+  for (const go of ["back", "forward"] as const) {
+    for (const method of ["other", "unknown", "GET"] as const) {
+      for (const marked of [false, true]) assert.deepEqual(judge({ kind: "nav", go, method }, edit(marked)), { go: true }, `${go} onto ${method}`);
+    }
   }
   // The site's mark does not change it: a form sent again is the person's to allow.
   assert.deepEqual(judge({ kind: "nav", go: "reload", method: "other" }, edit(false)), { ask: "resend" });

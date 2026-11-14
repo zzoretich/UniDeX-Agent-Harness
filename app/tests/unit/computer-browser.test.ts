@@ -154,7 +154,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
     query: null, lock: Promise.resolve(), attaching: null, refs: new Map(), refused: null, closing: false, worlds: new Map(),
     memory: new SecretMemory(), frame: "F1", frames: [], fieldFrames: new Map(), detached: new Set(), placed: false, mainDocs: 0,
     leaving: new LeavingRecords(), reads: new PendingReads(), opened: null, urlHidden: false, pathHidden: false, flooded: false,
-    loaders: new Map(), methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null,
+    loaders: new Map(), sawForm: false, methods: new Map(), known: new Set(), gap: null, sent: 0, answered: 0, binds: 0, commitRead: null,
     console: new ConsoleLog(), requests: new Map(), committedLoader: null as string | null, scrubFor: null, floodAt: 0, floodN: 0, dropped: 0,
   };
   const inner = b as unknown as { list: unknown[]; current: number };
@@ -1485,29 +1485,98 @@ test("main keeps no part of a request but its method", async () => {
   assert.equal(await methodOf(b, "reload"), "other");
 });
 
-const bound = (o: Partial<{ uid: number; id: string | null; method: "GET" | "other" | "unknown" }> = {}) => ({ uid: 1, id: "e1" as string | null, url: null, method: "other" as const, ...o });
+const bound = (o: Partial<{ uid: number; id: string | null; method: "GET" | "other" | "unknown" }> = {}) => ({ uid: 1, id: "e1" as string | null, method: "other" as const, ...o });
 
 test("the allowed reload of a POST entry goes through the protocol, and a free reload does not", async () => {
   const { b, page, nav } = make();
   historyOf(page, ["e1"], 0);
   (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods.set("e1", "other");
-  assert.equal(await b.navEntry("reload", bound(), () => true), true);
+  assert.equal(await b.navEntry(bound(), () => true), true);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 1, "the protocol's reload was sent");
   assert.deepEqual(nav.moves, [], "wc.reload() was not");
   page.sent.length = 0;
   assert.equal(b.nav("reload"), true);
   assert.deepEqual(nav.moves, ["reload"]);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "a free reload is Electron's");
-  // A GET entry the person allowed anyway reloads the plain way; Back and Forward stay Electron's.
-  nav.moves.length = 0; nav.back = true; nav.forward = true;
+  // A GET entry is never asked about, so it is never bound: nothing is sent for it.
+  nav.moves.length = 0;
   historyOf(page, ["e0", "e1", "e2"], 1);
   const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
   methods.set("e0", "other"); methods.set("e1", "GET"); methods.set("e2", "other");
-  assert.equal(await b.navEntry("reload", bound({ method: "GET" }), () => true), true);
-  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), true);
-  assert.equal(await b.navEntry("forward", bound({ id: "e2" }), () => true), true);
-  assert.deepEqual(nav.moves, ["reload", "back", "forward"]);
+  assert.equal(await b.navEntry(bound({ method: "GET" }), () => true), false);
+  assert.deepEqual(nav.moves, []);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("a tab that has seen a form's request may hold a form before the entry is bound", () => {
+  const { b, tab } = make();
+  assert.equal(b.mayHoldForm(), false);
+  requested(b, tab, "L1", "POST");            // no commit, no bind: the table is still empty
+  assert.equal((tab.methods as Map<string, string>).size, 0);
+  assert.equal(b.mayHoldForm(), true);
+});
+
+test("a subresource or a frame's document of another method does not make the tab hold a form", () => {
+  const { b, tab } = make();
+  requested(b, tab, "L2", "POST", {}, "F1", "XHR");
+  requested(b, tab, "L3", "POST", {}, "F1", "Fetch");
+  requested(b, tab, "L4", "POST", {}, "F2", "Document");
+  assert.equal(b.mayHoldForm(), false);
+});
+
+test("a tab that has only seen GET documents does not hold a form", () => {
+  const { b, tab } = make();
+  requested(b, tab, "L5", "GET");
+  assert.equal(b.mayHoldForm(), false);
+});
+
+test("mayHoldForm is true only for a tab whose table holds an entry loaded by another method than GET", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
+  assert.equal(b.mayHoldForm(), false, "an empty table");
+  methods.set("e1", "GET");
+  assert.equal(b.mayHoldForm(), false, "only GET");
+  methods.set("e0", "other");
+  assert.equal(b.mayHoldForm(), true, "a form's entry, whichever entry the page is on now");
+  assert.equal(b.mayHoldForm(4), false, "no such tab");
+  (tab as unknown as { pending: unknown }).pending = { url: "https://a.test/" };
+  assert.equal(b.mayHoldForm(), false, "a tab still waking reloads its kept address by GET");
+});
+
+test("the allowed reload is not sent when the call stops being current while the debugger attaches", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  (tab.methods as Map<string, string>).set("e1", "other");
+  let live = true;
+  let settle!: () => void;
+  // After the history read, an attachment is in flight; the call stops being current before it ends.
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); (tab as { attaching: Promise<void> | null }).attaching = new Promise<void>((r) => { settle = () => { (tab as { attaching: Promise<void> | null }).attaching = null; live = false; r(); }; }); });
+  const run = assert.rejects(b.navEntry(bound(), () => live), PageChanged);
+  await new Promise((r) => setTimeout(r, 5));
+  settle?.();
+  await run;
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("the allowed reload is not sent when the debugger is found detached at the moment of delivery", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  (tab.methods as Map<string, string>).set("e1", "other");
+  let attached = true, attaches = 0;
+  Object.assign(tab.wc.debugger, { isAttached: () => attached, attach: () => { attaches++; attached = true; } });
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); attached = false; });
+  await assert.rejects(b.navEntry(bound(), () => true), PageChanged);
+  assert.equal(attaches, 0, "no attach-and-send");
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+});
+
+test("a normal allowed reload still sends Page.reload exactly once", async () => {
+  const { b, page, tab } = make();
+  historyOf(page, ["e1"], 0);
+  (tab.methods as Map<string, string>).set("e1", "other");
+  assert.equal(await b.navEntry(bound(), () => true), true);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 1);
 });
 
 test("a reload sent through the protocol that fails answers with the table's sentence", async () => {
@@ -1515,7 +1584,7 @@ test("a reload sent through the protocol that fails answers with the table's sen
   historyOf(page, ["e1"], 0);
   (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods.set("e1", "other");
   page.on.set("Page.reload", () => { throw new Error("Not attached to an active page"); });
-  await assert.rejects(b.navEntry("reload", bound(), () => true), (e: Error) => e.message === REFUSAL.notReloaded);
+  await assert.rejects(b.navEntry(bound(), () => true), (e: Error) => e.message === REFUSAL.notReloaded);
 });
 
 test("a commit while the allowed reload reads the history: nothing is sent again", async () => {
@@ -1524,11 +1593,11 @@ test("a commit while the allowed reload reads the history: nothing is sent again
   historyOf(page, ["e1"], 0);
   page.on.set("Page.getNavigationHistory", () => { page.on.clear(); historyOf(page, ["e1", "e2"], 1); });
   // The read answers the history as it is at the moment it is made: e2 is current.
-  assert.equal(await b.navEntry("reload", bound({ method: "unknown" }), () => true), false);
+  assert.equal(await b.navEntry(bound({ method: "unknown" }), () => true), false);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
   // And the same, the page having moved on before the run starts.
   historyOf(page, ["e1", "e2"], 1);
-  assert.equal(await b.navEntry("reload", bound({ method: "unknown" }), () => true), false);
+  assert.equal(await b.navEntry(bound({ method: "unknown" }), () => true), false);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
 });
 
@@ -1542,7 +1611,7 @@ test("a tab closing below the active one during that read: the reload goes to th
   inner.list.push(second as never);
   inner.current = 1;                       // the card was raised for the second tab (uid 2, index 1)
   page2.on.set("Page.getNavigationHistory", () => { page2.on.clear(); inner.list.splice(0, 1); inner.current = 0; });   // the tab below it closed
-  assert.equal(await b.navEntry("reload", bound({ uid: 2, id: "f1" }), () => true), true);
+  assert.equal(await b.navEntry(bound({ uid: 2, id: "f1" }), () => true), true);
   assert.equal(page2.sent.filter((s) => s.method === "Page.reload").length, 1, "the card's tab was reloaded");
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
   // And when the card's own tab closes during the read, the neighbour that takes its place is not reloaded.
@@ -1550,27 +1619,11 @@ test("a tab closing below the active one during that read: the reload goes to th
   inner.list.push(third as never);
   inner.current = 1;
   page.on.set("Page.getNavigationHistory", () => { page.on.clear(); inner.list.splice(1, 1); inner.current = 0; });
-  assert.equal(await b.navEntry("reload", bound({ uid: 3 }), () => true), false);
+  assert.equal(await b.navEntry(bound({ uid: 3 }), () => true), false);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, "the closed tab's own page was not reloaded");
   // The neighbour that takes its place is the second tab, whose page is page2: it was reloaded once above, and not again.
   assert.equal(inner.list[0].uid, 2);
   assert.equal(page2.sent.filter((s) => s.method === "Page.reload").length, 1, "the neighbour was not reloaded again");
-});
-
-test("an allowed Back onto a POST entry goes to that entry and no other", async () => {
-  const { b, page, nav } = make();
-  nav.back = true;
-  const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
-  methods.set("e0", "other"); methods.set("e1", "other");
-  historyOf(page, ["e0", "e1", "e2"], 1);
-  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), true);
-  assert.deepEqual(nav.moves, ["back"]);
-  // The history changed while the card was up: Back would now load another entry.
-  nav.moves.length = 0;
-  historyOf(page, ["e0", "e1", "e2", "e3"], 2);
-  methods.set("e2", "other");
-  assert.equal(await b.navEntry("back", bound({ id: "e0" }), () => true), false);
-  assert.deepEqual(nav.moves, [], "nothing sent");
 });
 
 test("Network is enabled with its buffers at zero; if the protocol refuses those it is enabled plainly; if it fails the tab still attaches", async () => {
@@ -1769,17 +1822,14 @@ test("a same-document Back onto a POST page whose bind never read is not recorde
 
 test("a Take over or a Stop during the allowed move's history read sends nothing", async () => {
   const { b, page, nav } = make();
-  nav.back = true;
   historyOf(page, ["e0", "e1"], 1);
   const methods = (b as unknown as { list: { methods: Map<string, string> }[] }).list[0].methods;
   methods.set("e0", "other"); methods.set("e1", "other");
-  for (const [go, id] of [["reload", "e1"], ["back", "e0"]] as const) {
-    let live = true;
-    page.on.set("Page.getNavigationHistory", () => { page.on.clear(); live = false; });   // the person took over while it was read
-    await assert.rejects(b.navEntry(go, bound({ id }), () => live), PageChanged);
-    assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0, go);
-    assert.deepEqual(nav.moves, [], go);
-  }
+  let live = true;
+  page.on.set("Page.getNavigationHistory", () => { page.on.clear(); live = false; });   // the person took over while it was read
+  await assert.rejects(b.navEntry(bound({ id: "e1" }), () => live), PageChanged);
+  assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
+  assert.deepEqual(nav.moves, []);
 });
 
 test("a history read that DevTools, another debugger or a closed tab refuses answers with its own sentence, not 'could not be read'", async () => {
@@ -1815,12 +1865,12 @@ test("a history that cannot be read is never a bound entry", async () => {
   page.history = null;
   assert.equal((await b.entry("reload"))?.id, null, "an unreadable history has no entry id");
   // At the run: a null id sends nothing and says the history could not be read; an unequal id is false.
-  await assert.rejects(b.navEntry("reload", bound({ id: null }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
-  await assert.rejects(b.navEntry("reload", bound({ id: "e1" }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
+  await assert.rejects(b.navEntry(bound({ id: null }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
+  await assert.rejects(b.navEntry(bound({ id: "e1" }), () => true), (e: Error) => e.message === REFUSAL.noHistoryRead);
   assert.equal(page.sent.filter((s) => s.method === "Page.reload").length, 0);
   assert.deepEqual(nav.moves, []);
   historyOf(page, ["e2"], 0);
-  assert.equal(await b.navEntry("reload", bound({ id: "e1" }), () => true), false);
+  assert.equal(await b.navEntry(bound({ id: "e1" }), () => true), false);
   // A tab still waking reloads its kept address by GET with no history involved.
   const t = (b as unknown as { list: { pending: unknown }[] }).list[0];
   t.pending = { url: "https://a.test/", shown: "https://a.test/", title: "", openedBy: null, memory: new SecretMemory(), urlHidden: false };
@@ -2777,18 +2827,21 @@ test("resolve's hook is given the point, the field's corner and the tab, for a r
   assert.deepEqual(seen, [[{ x: 50, y: 60 }, { x: 0, y: 50 }, 0], [{ x: 50, y: 280 }, { x: 50, y: 280 }, 0]], "a typed ref's caret goes to the corner, the others to the point");
 });
 
-test("a cross-document commit of the tab in front tells the service; a same-document change and a tab behind do not", async () => {
+test("a cross-document commit of the tab in front tells the service as a page; a main-frame same-document change tells it as a change of the tab only; a frame's and a tab behind's do not", async () => {
   const { b, tab } = make();
-  let fronts = 0;
-  (b as unknown as { o: { hooks: BrowserHooks } }).o.hooks.front = () => { fronts++; };
+  const told: (boolean | undefined)[] = [];
+  (b as unknown as { o: { hooks: BrowserHooks } }).o.hooks.front = (page) => { told.push(page); };
   const handlers = wiredHandlers(b, tab);
+  handlers.get("did-navigate-in-page")!({}, "https://frame.test/#in", false);
+  assert.deepEqual(told, [], "a frame's change covers nothing");
   handlers.get("did-navigate-in-page")!({}, "https://a.test/x#y", true);
-  assert.equal(fronts, 0, "a same-document change keeps the page");
+  assert.deepEqual(told, [undefined], "a same-document change moves the page token: a card for the page goes, the pointer stays");
   handlers.get("did-navigate")!({}, "https://a.test/next");
-  assert.equal(fronts, 1, "the tab in front shows another document");
+  assert.deepEqual(told, [undefined, true], "the tab in front shows another document");
   (b as unknown as { current: number }).current = -1;
   handlers.get("did-navigate")!({}, "https://a.test/behind");
-  assert.equal(fronts, 1, "a tab that is not in front covers nothing");
+  handlers.get("did-navigate-in-page")!({}, "https://a.test/behind#y", true);
+  assert.equal(told.length, 2, "a tab that is not in front covers nothing");
 });
 
 test("a navigation during a hover's travel moves no mouse: the move is for the page it read", async () => {

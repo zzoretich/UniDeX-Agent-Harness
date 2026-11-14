@@ -159,7 +159,7 @@ class FakeBrowser implements BrowserLike {
   /** A refusal the history read ends with (DevTools open, another debugger, a closed tab), as the real browser's entry() throws it. */
   entryError: Error | null = null;
   /** The id of the history entry a move would load, and the address each of Back and Forward would load. */
-  entryId: string | null = "e1"; entryUrls: Record<string, string> = {};
+  entryId: string | null = "e1";
   private uids = new WeakMap<object, number>(); private nextUid = 1;
   tabUid(i: number): number | null { const p = this.pages[i]; if (!p) return null; if (!this.uids.has(p)) this.uids.set(p, this.nextUid++); return this.uids.get(p)!; }
   tabIndex(uid: number): number { return this.pages.findIndex((_p, i) => this.tabUid(i) === uid); }
@@ -169,7 +169,7 @@ class FakeBrowser implements BrowserLike {
   /** The person (or the page) moves tab `i` to another page, or to the same shown address with another hidden part. */
   commit(i: number, url?: string): void { const p = this.pages[i]; if (url) p.url = url; p.commits = (p.commits ?? 0) + 1; if (i === this.current) this.front(true); }
   /** A same-document change of tab `i` (pushState): the page token moves, the document stays. */
-  inPage(i: number): void { const p = this.pages[i]; p.commits = (p.commits ?? 0) + 1; }
+  inPage(i: number): void { const p = this.pages[i]; p.commits = (p.commits ?? 0) + 1; if (i === this.current) this.front(); }
   /** The real browser tells the service when the tab in front changes (`hooks.front()`; also when the tab in front is selected again
    *  or a background tab closes) or its main frame commits another document (`hooks.front(true)`). */
   private front(page = false): void { (this.hooks as BrowserHooks & { front?: (page?: boolean) => void }).front?.(page); }
@@ -183,14 +183,19 @@ class FakeBrowser implements BrowserLike {
     this.current = this.pages.length - 1; this.seq++;
     this.front();
   }
+  /** As ComputerBrowser.mayHoldForm: whether any entry of the tab is recorded as loaded by a form (here: the reload's method). */
+  mayHoldForm(_tab?: number): boolean { return this.formEarlier || this.methods.reload === "other"; }
+  /** A form's result is further back in the tab (the table holds an "other" for another entry than the current one). */
+  formEarlier = false;
   async entry(go: string, tab?: number) {
     this.need(tab); this.asked.push(go);
     await this.entryGate;
     if (this.entryError) throw this.entryError;
-    return { uid: this.tabUid(tab ?? this.current)!, id: this.entryId, url: this.entryUrls[go] ?? null, method: this.methods[go] ?? "GET" };
+    return { uid: this.tabUid(tab ?? this.current)!, id: this.entryId, method: this.methods[go] ?? "GET" };
   }
   /** As the real one: moves only if the tab is the active one and the entry is the one the card named. */
-  async navEntry(go: string, bound: { uid: number; id: string | null; method: string }, valid: () => boolean = () => true) {
+  async navEntry(bound: { uid: number; id: string | null; method: string }, valid: () => boolean = () => true) {
+    const go = "reload";
     const now = await this.entry(go, this.current);
     if (!valid()) throw new PageChanged();
     if (now.id === null) throw new Error(REFUSAL.noHistoryRead);
@@ -909,7 +914,7 @@ test("the ask labels state each category in app-written text", () => {
     submit: "Submit", purchase: "Purchase", send: "Send", delete: "Delete", merge: "Merge", signin: "Sign in", download: "Download",
     unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
     frame: "Act inside a frame from another site", power: "Turn on the browser",
-    closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again",
+    closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again", resendown: "Send a form again",
   });
 });
 
@@ -1312,8 +1317,469 @@ test("the user's Back reaches the selected browser and is logged (session-browse
   h.svc.nav("back");
   h.svc.nav("forward");
   h.svc.nav("reload");
+  await flush();
   assert.deepEqual(h.b().navs, ["back", "forward", "reload"]);
   assert.deepEqual(h.lastState().log.slice(-3).map((l) => l.text), ["Went back", "Went forward", "Reloaded"]);
+});
+
+/** The person's browser on a page, selected (session-browser S13). */
+async function userOn(h: ReturnType<typeof make>, key = "chat:a"): Promise<FakeBrowser> {
+  await h.ensureOn(key);
+  h.svc.select(key);
+  await h.svc.navigate("https://a.test/form");
+  return h.b(key);
+}
+const OWN_TITLE = "Send this form again?";
+const OWN_DETAIL = "Reloading this page sends its form again, so what it did may happen twice. Page: https://a.test/form";
+
+test("the person's Reload on a form's result page asks before anything is sent", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  assert.deepEqual([b.navs, b.reposts], [[], []], "nothing reloaded yet");
+  assert.equal(ask.title, OWN_TITLE);
+  assert.equal(ask.detail, OWN_DETAIL);
+  assert.equal(ask.always, false, "no Always button");
+  assert.equal(ask.why, "resendown");
+  assert.equal(ask.sessionLabel, "You", "the person's own card, not an agent's or the page's");
+  const card = h.lastState().asks.filter((a) => a.id === ask.id);
+  assert.equal(card.length, 1, "the pane's state carries the card");
+  assert.ok(!h.lastState().log.some((l) => l.text === "Reloaded"));
+});
+
+test("Send again sends the form again through the protocol and logs Reloaded", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  h.svc.answer(ask.id, "once");
+  await flush();
+  assert.equal(b.navs.length, 1);
+  assert.deepEqual(b.reposts, [true], "the protocol's reload, which sends the form again");
+  assert.equal(h.lastState().log.at(-1)!.text, "Reloaded");
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("Cancel sends nothing", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  h.svc.answer((await h.asked()).id, "deny");
+  await flush();
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+  assert.ok(!h.lastState().log.some((l) => l.text === "Reloaded"));
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("the card's time running out sends nothing", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  await h.clock.advance(121_000);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the card went");
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+});
+
+test("a second Reload while the card is up raises no second card", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  h.svc.nav("reload");
+  await flush();
+  assert.equal(h.broker.pending().length, 1);
+  // Two presses before the history read ends raise one card as well.
+  const g = make();
+  const gb = await userOn(g);
+  gb.methods.reload = "other";
+  let release!: () => void;
+  gb.entryGate = new Promise<void>((r) => { release = r; });
+  g.svc.nav("reload"); g.svc.nav("reload");
+  release();
+  await flush();
+  assert.equal(g.broker.pending().length, 1);
+});
+
+test("in a tab that never held a form, a Reload on a GET page, a blank page or an unknown entry reloads at once with no card", async () => {
+  for (const [name, set] of [
+    ["a GET page", (b: FakeBrowser) => { b.methods.reload = "GET"; }],
+    // about:blank is a GET to the browser's entry() (it is not fetched), whatever the table says.
+    ["a blank page", (b: FakeBrowser) => { b.methods.reload = "GET"; b.pages[0].url = "about:blank"; }],
+    ["an unknown entry", (b: FakeBrowser) => { b.methods.reload = "unknown"; }],
+  ] as const) {
+    const h = make();
+    const b = await userOn(h);
+    set(b);
+    h.svc.nav("reload");
+    await flush();
+    assert.equal(h.broker.pending().length, 0, `${name}: no card`);
+    assert.deepEqual([b.navs, b.reposts], [["reload"], [false]], `${name}: Electron's own reload`);
+    assert.equal(h.lastState().log.at(-1)!.text, "Reloaded", name);
+  }
+});
+
+test("the page changed before Send again: nothing is sent", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  b.methods.reload = "GET";                                   // the entry the move would load is not the one the card named
+  h.svc.answer(ask.id, "once");
+  await flush();
+  assert.deepEqual([b.navs, b.reposts], [[], []]);
+  assert.ok(!h.lastState().log.some((l) => l.text === "Reloaded"));
+  // Another entry id: the same.
+  const g = make();
+  const gb = await userOn(g);
+  gb.methods.reload = "other";
+  g.svc.nav("reload");
+  const ask2 = await g.asked();
+  gb.entryId = "e2";
+  g.svc.answer(ask2.id, "once");
+  await flush();
+  assert.deepEqual([gb.navs, gb.reposts], [[], []]);
+});
+
+test("the person's card goes when its tab closes and when the browser turns off", async () => {
+  // Another page in the tab.
+  let h = make();
+  let b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  b.commit(0, "https://a.test/elsewhere");
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the page changed");
+  assert.deepEqual(b.navs, []);
+  // The tab closes (another tab stays).
+  h = make();
+  b = await userOn(h);
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  h.svc.select("chat:a"); b.select(0);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  b.close(0);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the tab closed");
+  assert.deepEqual(b.navs, []);
+  // Another tab comes to the front.
+  h = make();
+  b = await userOn(h);
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  b.select(0);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  b.select(1);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the tab is no longer in front");
+  // The browser turns off.
+  h = make();
+  b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  h.svc.power("chat:a", false);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "switched off");
+  assert.deepEqual(b.navs, []);
+});
+
+test("Take over takes the person's own card away, and a computer_status call lists it as the user's own", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  const status = await h.call(A, "computer_status");
+  assert.match(status.text, /Your pending asks: none/);
+  assert.match(status.text, /The user's own pending ask: 1 \(Send a form again\)/);
+  assert.ok(!/The page's pending asks/.test(status.text), "not the page's");
+  assert.ok(!status.text.includes(OWN_TITLE), "only the count and the kind, as for the page's cards");
+  h.svc.takeOver();
+  await flush();
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, []);
+});
+
+test("the person's Back and Forward never ask", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.back = "other"; b.methods.forward = "other"; b.methods.reload = "GET";
+  h.svc.nav("back");
+  h.svc.nav("forward");
+  await flush();
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, ["back", "forward"]);
+  assert.deepEqual(b.asked, [], "the history was not read for either");
+});
+
+test("the person's card is not an agent's: no agent call waits on it and no wheel is reserved", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  assert.equal(h.wheel.holder("chat:a"), null, "nobody holds the wheel for it");
+  assert.equal(h.svc.reserved("chat:a"), false);
+  // An agent's call goes at once, and its turn's end leaves the card up.
+  await h.open(A, "https://a.test/other");
+  assert.deepEqual(h.wheel.holder("chat:a"), { kind: "agent", session: "chat:a", label: "Alpha" });
+  assert.equal(h.svc.reserved("chat:a"), false, "the agent's hold is not reserved by the person's card");
+  h.svc.agentGone(A);
+  assert.ok(h.broker.pending().some((a) => a.id === ask.id), "an agent's turn ending does not cancel the person's card");
+});
+
+test("after the person's card ends, the next Reload on that page asks again", async () => {
+  const endings: [string, (h: ReturnType<typeof make>, b: FakeBrowser, ask: { id: string }) => Promise<void> | void][] = [
+    ["Cancel", (h, _b, ask) => { h.svc.answer(ask.id, "deny"); }],
+    ["the card's time running out", async (h) => { await h.clock.advance(121_000); }],
+    ["the page changing", (_h, b) => { b.commit(0, "https://a.test/elsewhere"); }],
+    ["the tab closing", async (h, b) => { await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true }); h.svc.select("chat:a"); b.select(0); b.close(0); }],
+    ["Take over", (h) => { h.svc.takeOver(); }],
+    ["Off and On again", async (h) => { h.svc.power("chat:a", false); await flush(); h.svc.power("chat:a", true); await flush(); }],
+    ["Send again", (h, _b, ask) => { h.svc.answer(ask.id, "once"); }],
+  ];
+  for (const [name, end] of endings) {
+    const h = make();
+    let b = await userOn(h);
+    b.methods.reload = "other";
+    if (name === "the tab closing") { await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true }); h.svc.select("chat:a"); b.select(0); }
+    h.svc.nav("reload");
+    const ask = await h.asked();
+    await end(h, b, ask);
+    await flush();
+    assert.equal(h.broker.pending().length, 0, `${name}: the card went`);
+    b = h.b();
+    b.methods.reload = "other";
+    h.svc.nav("reload");
+    await flush();
+    assert.equal(h.broker.pending().length, 1, `${name}: the next Reload asks again`);
+  }
+});
+
+test("after a terminal hand-over the next Reload on a form's result page asks again", async () => {
+  const h = make();
+  const old = await userOn(h, "code:t1");
+  old.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  assert.equal(h.svc.move("code:t1", "code:t2"), true);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the hand-over cancelled the card");
+  // The next page counts its terminals from the start: a new session takes the old key.
+  h.on.delete("code:t1");
+  const next = await userOn(h, "code:t1");
+  next.methods.reload = "other";
+  h.svc.nav("reload");
+  await flush();
+  assert.equal(h.broker.pending().length, 1, "the new session's Reload asks");
+});
+
+test("Reload in a tab that never loaded a form reloads at once, with no history read", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "GET";
+  b.entry = async () => { throw new Error("the history was read"); };
+  h.svc.nav("reload");
+  // Synchronously: before anything is awaited.
+  assert.deepEqual(b.navs, ["reload"]);
+  assert.equal(h.lastState().log.at(-1)!.text, "Reloaded");
+  await flush();
+  assert.equal(h.broker.pending().length, 0);
+});
+
+const UNREAD_LINE = "Reload pressed; this page's history could not be read.";
+
+test("a Reload whose history read fails still reloads", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  b.entryError = new Error("the read broke");
+  h.svc.nav("reload");
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "no card");
+  assert.deepEqual([b.navs, b.reposts], [["reload 0"], [false]]);
+  assert.equal(h.lastState().log.at(-1)!.text, UNREAD_LINE);
+});
+
+test("a press that goes stale during the read still reloads the page now in front", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  let release!: () => void;
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  h.svc.nav("reload");
+  b.inPage(0);                                                // a same-document change lands during the read
+  release();
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "no card for a page that is not the one pressed on");
+  assert.deepEqual([b.navs, b.reposts], [["reload 0"], [false]], "the plain reload of the page now in front");
+  // A tab that is gone, or a browser turned off, during the read gets nothing.
+  const g = make();
+  const gb = await userOn(g);
+  gb.methods.reload = "other";
+  let free!: () => void;
+  gb.entryGate = new Promise<void>((r) => { free = r; });
+  g.svc.nav("reload");
+  g.svc.power("chat:a", false);
+  free();
+  await flush();
+  assert.deepEqual(gb.navs, []);
+});
+
+/** Three tabs, the person on the middle one, a form's result further back in it (a GET page now). */
+async function threeTabs(h: ReturnType<typeof make>): Promise<FakeBrowser> {
+  const b = await userOn(h);
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  await h.call(A, "computer_open", { url: "https://a.test/three", newTab: true });
+  h.svc.select("chat:a"); b.select(1);
+  b.formEarlier = true; b.methods.reload = "GET";
+  return b;
+}
+
+test("Reload on a GET page in a tab that loaded a form earlier reads the history and reloads with no card", async () => {
+  const h = make();
+  const b = await threeTabs(h);
+  h.svc.nav("reload");
+  await flush();
+  assert.deepEqual(b.asked, ["reload"], "the history was read");
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, ["reload 1"]);
+});
+
+test("a tab below the pressed one closing during the read: the pressed tab reloads, no other", async () => {
+  const h = make();
+  const b = await threeTabs(h);
+  let release!: () => void;
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  h.svc.nav("reload");
+  b.pages.splice(0, 1); b.current = 0;                        // the pressed tab (was 1) is now 0, as the real browser keeps it in front
+  release();
+  await flush();
+  assert.deepEqual(b.navs, ["reload 0"], "the pressed tab, at its new index, not the one that moved into index 1");
+  // Two tabs: the index it had no longer exists.
+  const g = make();
+  const gb = await userOn(g);
+  await g.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  g.svc.select("chat:a");
+  gb.formEarlier = true; gb.methods.reload = "GET";
+  let free!: () => void;
+  gb.entryGate = new Promise<void>((r) => { free = r; });
+  g.svc.nav("reload");
+  gb.pages.splice(0, 1); gb.current = 0;
+  free();
+  await flush();
+  assert.deepEqual(gb.navs, ["reload 0"]);
+});
+
+test("the pressed tab closing during the read: nothing reloads", async () => {
+  const h = make();
+  const b = await threeTabs(h);
+  let release!: () => void;
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  h.svc.nav("reload");
+  b.pages.splice(1, 1); b.current = 1;
+  release();
+  await flush();
+  assert.deepEqual(b.navs, []);
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("in a tab that held a form, a Reload on an entry of unknown method asks", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.formEarlier = true; b.methods.reload = "unknown";
+  h.svc.nav("reload");
+  const ask = await h.asked();
+  assert.deepEqual([b.navs, b.reposts], [[], []], "nothing reloaded yet");
+  assert.equal(ask.title, OWN_TITLE);
+  assert.equal(ask.detail, "This page may have been loaded by a form. Reloading it would send that form again, so what it did may happen twice. Page: https://a.test/form");
+  assert.equal(ask.why, "resendown");
+  assert.equal(ask.always, false);
+});
+
+test("Send again on that card sends the reload through the protocol", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.formEarlier = true; b.methods.reload = "unknown";
+  h.svc.nav("reload");
+  h.svc.answer((await h.asked()).id, "once");
+  await flush();
+  assert.deepEqual(b.reposts, [true]);
+  assert.equal(h.lastState().log.at(-1)!.text, "Reloaded");
+});
+
+test("in a tab that held a form, a Reload whose history cannot be read reloads plainly and does not log Reloaded", async () => {
+  for (const set of [(b: FakeBrowser) => { b.entryError = new Error("DevTools holds the debugger"); }, (b: FakeBrowser) => { b.entryId = null; }]) {
+    const h = make();
+    const b = await userOn(h);
+    b.formEarlier = true; b.methods.reload = "unknown";
+    set(b);
+    h.svc.nav("reload");
+    await flush();
+    assert.equal(h.broker.pending().length, 0);
+    assert.deepEqual([b.navs, b.reposts], [["reload 0"], [false]]);
+    assert.ok(!h.lastState().log.some((l) => l.text === "Reloaded"));
+    assert.equal(h.lastState().log.at(-1)!.text, UNREAD_LINE);
+  }
+});
+
+test("a same-document change under the person's card removes it, and the next Reload asks again", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  await h.asked();
+  b.inPage(0);
+  await flush();
+  assert.equal(h.broker.pending().length, 0, "the card went");
+  assert.deepEqual(b.navs, []);
+  h.svc.nav("reload");
+  await flush();
+  assert.equal(h.broker.pending().length, 1, "the next Reload asks again");
+});
+
+test("the person's log holds Reloaded after Send again, nothing after a page change, and an app sentence for a failure", async () => {
+  const h = make();
+  const b = await userOn(h);
+  b.methods.reload = "other";
+  h.svc.nav("reload");
+  h.svc.answer((await h.asked()).id, "once");
+  await flush();
+  assert.equal(h.lastState().log.at(-1)!.text, "Reloaded");
+  // A page change takes the card away and writes nothing.
+  const g = make();
+  const gb = await userOn(g);
+  gb.methods.reload = "other";
+  g.svc.nav("reload");
+  await g.asked();
+  const before = g.lastState().log.length;
+  gb.commit(0, "https://a.test/elsewhere");
+  await flush();
+  assert.equal(g.lastState().log.length, before);
+  // A reload that fails is not worded for an agent's reply.
+  const f = make();
+  const fb = await userOn(f);
+  fb.methods.reload = "other";
+  f.svc.nav("reload");
+  const ask = await f.asked();
+  fb.entryId = null;
+  f.svc.answer(ask.id, "once");
+  await flush();
+  const line = f.lastState().log.at(-1)!.text;
+  assert.equal(line, "Send again did not complete.");
+  assert.ok(!line.includes(REFUSAL.noHistoryRead));
 });
 
 test("a Back that cannot happen logs nothing", async () => {
@@ -4946,19 +5412,16 @@ test("Reload after a form POST asks; onto GET it does not; an unknown method ask
   h.svc.answer(ask.id, "once");
   assert.equal((await p).text, `Reloaded.${now("https://a.test/two")}`);
   assert.deepEqual([b.navs, b.reposts], [["reload 1", "reload 1"], [false, true]]);
-  // An unknown method asks as POST does; Back and Forward too; a denial moves nothing.
-  b.canBack = true; b.canForward = true;
-  for (const [go, method] of [["reload", "unknown"], ["back", "other"], ["forward", "unknown"]] as const) {
-    b.methods[go] = method;
-    const q = h.call(A, "computer_nav", { go });
-    const a = await h.asked();
-    assert.equal(a.why, "resend", go);
-    h.svc.answer(a.id, "deny");
-    const r = await q;
-    assert.equal(r.isError, true, go);
-    assert.match(r.text, /^The user denied it \(/, go);
-  }
-  assert.equal(b.navs.length, 2, "the three denied moves never ran");
+  // An unknown method asks as POST does; a denial moves nothing.
+  b.methods.reload = "unknown";
+  const unknown = h.call(A, "computer_nav", { go: "reload" });
+  const a = await h.asked();
+  assert.equal(a.why, "resend");
+  h.svc.answer(a.id, "deny");
+  const denied = await unknown;
+  assert.equal(denied.isError, true);
+  assert.match(denied.text, /^The user denied it \(/);
+  assert.equal(b.navs.length, 2, "the denied reload never ran");
   // The card does not offer Always: a form sent again is asked every time.
   b.methods.reload = "other";
   const q = h.call(A, "computer_nav", { go: "reload" });
@@ -4966,29 +5429,31 @@ test("Reload after a form POST asks; onto GET it does not; an unknown method ask
   h.svc.answer((await h.asked()).id, "deny"); await q;
 });
 
-test("Back onto a POST entry asks, Forward onto an unknown entry asks; Allow once moves, and the card offers no Always", async () => {
+test("Back onto a POST entry and Forward onto an unknown entry go free: no card, the move made (session-browser S17)", async () => {
   const h = make();
   const b = await twoTabs(h);
   b.canBack = true; b.canForward = true;
   b.methods.back = "other"; b.methods.forward = "unknown";
-  const title = /^Load a page again, which may send a form again: /;
-  const back = h.call(A, "computer_nav", { go: "back" });
-  const askBack = await h.asked();
-  assert.equal(askBack.why, "resend");
-  assert.match(askBack.title, title);
-  assert.equal(askBack.always, false, "a form sent again is asked every time");
-  assert.deepEqual([b.navs, b.reposts], [[], []], "nothing moved while the card is up");
-  h.svc.answer(askBack.id, "once");
-  assert.equal((await back).text, `Went back.${now("https://a.test/two")}`);
-  assert.deepEqual(b.navs, ["back 1"], "the allowed Back moved the tab (only a Reload re-sends by the protocol)");
-  const fwd = h.call(A, "computer_nav", { go: "forward" });
-  const askFwd = await h.asked();
-  assert.equal(askFwd.why, "resend");
-  assert.match(askFwd.title, title);
-  assert.deepEqual(b.navs, ["back 1"], "nothing moved while the card is up");
-  h.svc.answer(askFwd.id, "once");
-  assert.equal((await fwd).text, `Went forward.${now("https://a.test/two")}`);
-  assert.deepEqual(b.navs, ["back 1", "forward 1"]);
+  const back = await h.call(A, "computer_nav", { go: "back" });
+  assert.equal(back.text, `Went back.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["back 1"], "the Back moved the tab (only a Reload re-sends, by the protocol)");
+  const fwd = await h.call(A, "computer_nav", { go: "forward" });
+  assert.equal(fwd.text, `Went forward.${now("https://a.test/two")}`);
+  assert.deepEqual([b.navs, b.reposts], [["back 1", "forward 1"], [false, false]]);
+  assert.equal(h.broker.pending().length, 0, "nothing asked");
+});
+
+test("Back onto a POST entry goes free, with no history read", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true; b.canForward = true;
+  b.methods.back = "other"; b.methods.forward = "other";
+  // A history read that never settles, and one that throws: neither is waited on.
+  b.entryGate = new Promise<void>(() => {});
+  assert.equal((await h.call(A, "computer_nav", { go: "back" })).text, `Went back.${now("https://a.test/two")}`);
+  b.entryGate = null; b.entryError = new Error("the read failed");
+  assert.equal((await h.call(A, "computer_nav", { go: "forward" })).text, `Went forward.${now("https://a.test/two")}`);
+  assert.deepEqual(b.asked, [], "the history was not read for either move");
   assert.equal(h.broker.pending().length, 0);
 });
 
@@ -5298,13 +5763,13 @@ test("the wheel and the lease apply to a tab, a nav and a hover as to a click", 
   h.svc.handBack();
   let release: () => void = () => {};
   b.entryGate = new Promise<void>((r) => { release = r; });
-  const p = h.call(A, "computer_nav", { go: "back" });
+  const p = h.call(A, "computer_nav", { go: "reload" });
   await flush();
   h.svc.takeOver();
   release();
   const r = await p;
   assert.equal(r.isError, true);
-  assert.deepEqual(b.navs, [], "the Back never ran");
+  assert.deepEqual(b.navs, [], "the Reload never ran");
 });
 
 test("a hover takes the computer before the pointer moves, and the move goes only while the call is current", async () => {
@@ -5629,25 +6094,31 @@ test("a Stop during the allowed move's history read sends nothing", async () => 
 test("a history read that DevTools or another debugger refuses reaches the agent in its own words, with no card", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.canBack = true;
   for (const why of [REFUSAL.devToolsOpen, REFUSAL.otherDebugger, REFUSAL.tabGone]) {
     b.entryError = new TwoWordings(why, "person's wording");
-    assert.deepEqual(await h.call(A, "computer_nav", { go: "back" }), { text: why, isError: true });
+    assert.deepEqual(await h.call(A, "computer_nav", { go: "reload" }), { text: why, isError: true });
   }
   assert.equal(h.broker.pending().length, 0);
   assert.deepEqual(b.navs, []);
 });
 
-test("a history that cannot be read is refused with no card", async () => {
+test("Back with DevTools holding the debugger still goes", async () => {
   const h = make();
   const b = await twoTabs(h);
   b.canBack = true;
-  b.entryId = null; b.methods.reload = "unknown"; b.methods.back = "unknown";
-  for (const go of ["reload", "back"] as const) {
-    const r = await h.call(A, "computer_nav", { go });
-    assert.equal(r.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`, go);
-    assert.equal(r.isError, true);
-  }
+  b.entryError = new TwoWordings(REFUSAL.devToolsOpen, "person's wording");
+  assert.equal((await h.call(A, "computer_nav", { go: "back" })).text, `Went back.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["back 1"]);
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("a history that cannot be read is refused with no card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.entryId = null; b.methods.reload = "unknown";
+  const r = await h.call(A, "computer_nav", { go: "reload" });
+  assert.equal(r.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`);
+  assert.equal(r.isError, true);
   assert.equal(h.broker.pending().length, 0);
   assert.deepEqual(b.navs, []);
 });
@@ -5655,16 +6126,16 @@ test("a history that cannot be read is refused with no card", async () => {
 test("a tab still waking reloads its kept address with no card, though it has no history entry to bind", async () => {
   const h = make();
   const b = await twoTabs(h);
-  // A woken tab has not committed: its entry has no id and its method is GET (the kept address loads by GET). Back and Forward
-  // from it are not known, so they are refused; only the reload goes.
+  // A woken tab has not committed: its entry has no id and its method is GET (the kept address loads by GET). Back is not
+  // read at all, so it goes whatever the entry's id.
   b.entryId = null; b.methods.reload = "GET"; b.methods.back = "unknown"; b.canBack = true;
   const r = await h.call(A, "computer_nav", { go: "reload" });
   assert.equal(r.text, `Reloaded.${now("https://a.test/two")}`);
   assert.deepEqual(b.navs, ["reload 1"]);
   assert.equal(h.broker.pending().length, 0, "no card");
   const back = await h.call(A, "computer_nav", { go: "back" });
-  assert.equal(back.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`);
-  assert.deepEqual(b.navs, ["reload 1"], "Back did not go");
+  assert.equal(back.text, `Went back.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["reload 1", "back 1"]);
 });
 
 test("a failed read at the run sends nothing", async () => {
@@ -5721,38 +6192,15 @@ test("the person navigates the tab while the close card is up: Allow closes noth
   assert.equal(b.pages.length, 2);
 });
 
-test("the Back card names where the move goes by its origin only, and the Reload card keeps the current page", async () => {
+test("the Reload card names the current page", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.canBack = true; b.methods.back = "other"; b.methods.reload = "other";
-  b.entryUrls.back = "https://prev.test/checkout/step?card=4111&token=SECRET";
-  const p = h.call(A, "computer_nav", { go: "back" });
-  const ask = await h.asked();
-  assert.equal(ask.title, "Load a page again, which may send a form again: Go back to prev.test on a.test?");
-  assert.match(ask.detail, /^Going back loads https:\/\/prev\.test\/.*, which may send a form again\. Page: https:\/\/a\.test\/two$/);
-  for (const bit of ["checkout", "4111", "SECRET"]) assert.ok(!ask.detail.includes(bit) && !ask.title.includes(bit) && !ask.notice.includes(bit), bit);
-  h.svc.answer(ask.id, "deny"); await p;
+  b.methods.reload = "other";
   const q = h.call(A, "computer_nav", { go: "reload" });
   const ask2 = await h.asked();
   assert.equal(ask2.title, "Load a page again, which may send a form again: Reload on a.test?");
   assert.match(ask2.detail, /^Loading this page again may send a form again\. Page: /);
   h.svc.answer(ask2.id, "deny"); await q;
-});
-
-test("the Back and Forward card says the way only when the destination is not a web address, and never says 'this page'", async () => {
-  const h = make();
-  const b = await twoTabs(h);
-  b.canBack = true; b.canForward = true;
-  for (const [go, url] of [["back", "chrome-error://chromewebdata/"], ["forward", undefined]] as const) {
-    b.methods[go] = "other";
-    if (url) b.entryUrls[go] = url;
-    const p = h.call(A, "computer_nav", { go });
-    const ask = await h.asked();
-    assert.equal(ask.title, `Load a page again, which may send a form again: Go ${go} one page on a.test?`, go);
-    assert.equal(ask.detail, `Going ${go} one page may send a form again. Page: https://a.test/two`, go);
-    for (const bit of ["this page", "•", "chromewebdata"]) assert.ok(!ask.detail.includes(bit) && !ask.title.includes(bit), `${go}: ${bit}`);
-    h.svc.answer(ask.id, "deny"); await p;
-  }
 });
 
 test("the closetab card says what is known of the tab and not who opened it", async () => {
@@ -5769,10 +6217,9 @@ test("the closetab card says what is known of the tab and not who opened it", as
 test("a nav whose page moved during the history read answers the changed sentence, not the focus one", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.canBack = true;
   let release: () => void = () => {};
   b.entryGate = new Promise<void>((r) => { release = r; });
-  const p = h.call(A, "computer_nav", { go: "back" });
+  const p = h.call(A, "computer_nav", { go: "reload" });
   await flush();
   b.seq++;
   release();

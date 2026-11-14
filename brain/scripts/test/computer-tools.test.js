@@ -152,7 +152,7 @@ test("the descriptions say what only the skill said: a snapshot is for a page no
   for (const [name, arg] of [['computer_click', 'ref'], ['computer_type', 'ref'], ['computer_scroll', 'ref'], ['computer_hover', 'ref']]) {
     assert.ok(props(name)[arg].description.includes("from the newest outline this session was given (a computer_snapshot or an action's reply)"), `${name}.${arg}: ${props(name)[arg].description}`);
   }
-  assert.ok(defs.get('computer_nav').description.includes('when the page was loaded by a form or how it was loaded is not known'), defs.get('computer_nav').description);
+  assert.ok(defs.get('computer_nav').description.includes('Going back or forward never asks. Reloading a page asks the user first when a form loaded it or how it was loaded is not known'), defs.get('computer_nav').description);
   assert.ok(defs.get('computer_console').description.includes('Entries from frames of another site are left out, and it holds the newest 200.'), defs.get('computer_console').description);
   assert.ok(props('computer_click').double.description.includes('when the first click changes the page the second is not sent, and the reply says so'), props('computer_click').double.description);
   // a tab index has the same bounds wherever it is asked for

@@ -10,7 +10,7 @@
 
 import { realClock, type Answer, type Ask, type AskBroker, type AskInput, type Clock, type Outcome } from "./asks";
 import type { BrowserHooks, ComputerBrowser, FocusId, Judged, Resolved, TabInfo } from "./browser";
-import { FocusMoved, forPerson, PageChanged } from "./cdp";
+import { FocusMoved, forPerson, PageChanged, Told } from "./cdp";
 import type { ToolCall, ToolReply } from "./bridge";
 import { categoriesOf, type AskCategory, type Target } from "./categories";
 import type { ComputerConfig } from "./config";
@@ -19,7 +19,6 @@ import type { Rect } from "./mask";
 import { REFUSAL } from "./refusals";
 import type { Point, Pointer } from "./pointer";
 import { OUTLINE_MAX, UNREAD, withPage } from "./reply";
-import { hideAfterOrigin } from "./snapshot";
 import type { AgentRef } from "./registry";
 import { cleanTitle, tagText } from "./title";
 import type { SiteMarks } from "./sites";
@@ -35,7 +34,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "openTab" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled" | "viewBox" | "windowPoint" | "focusCorner">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "openTab" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "mayHoldForm" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled" | "viewBox" | "windowPoint" | "focusCorner">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -100,6 +99,8 @@ export const ASK_LABELS: Readonly<Record<AskWhy, string>> = Object.freeze({
   unmarked: "Act on a site you haven't marked", return: "Press Return", file: "Choose a file", permission: "Grant a permission",
   frame: "Act inside a frame from another site", power: "Turn on the browser",
   closetab: "Close a tab it did not open", resend: "Load a page again, which may send a form again",
+  // The person's own Reload on a form's result page (session-browser S13): no agent raised it.
+  resendown: "Send a form again",
 });
 
 const CATEGORIES: ReadonlySet<string> = new Set<AskCategory>(["submit", "purchase", "send", "delete", "merge", "signin", "download"]);
@@ -127,6 +128,9 @@ export const PAGE_GONE = "the app's window closed or reloaded";
 /** Why a program's open or its held pages are dropped while the Computer setting is off (main's log line, never an address). */
 const SETTING_OFF = "the computer is off in Settings";
 const PAGE = { session: "page", label: "the page" } as const;
+/** The `session` of a card the person's own press raised (the Reload of a form's result page): not an agent's, so no turn's end,
+ *  no call's wait and no wheel reservation ever meets it, and not "the page", which would blame the site. */
+const PERSON = "person";
 /** The busy reply's sentence for a session whose hold is gone: freed, or (R81) its process no longer the registered one. */
 const NOT_HELD = "this session no longer holds the wheel";
 const USER = "You";
@@ -199,6 +203,9 @@ interface Slot {
   programOpens: string[];
   /** Serialises the computer's acting steps, so one action's hover, check and press never interleave with another's. */
   queue: Promise<unknown>;
+  /** The person's Send this form again card for this session, and the tab and page it was raised for. It lives on the slot,
+   *  not in a map by key: a terminal hand-over renames the slot and the record goes with it. */
+  ownCard: { askId: string; uid: number; token: string } | null;
 }
 
 /** An action the gate asks about. `whys` is never empty; the first names the card. */
@@ -745,14 +752,30 @@ export class ComputerService {
     };
   }
 
-  /** session-browser S17: Back, Forward or Reload of the active tab. The gate reads the method the entry would load by: a GET
-   *  goes, anything else asks `resend`. Nothing to go back or forward to is a refusal, not an ask. An allowed reload of an entry
-   *  that was not a GET goes through the protocol, which sends the form again (Electron's own reload does nothing for it). */
+  /** session-browser S17: Back, Forward or Reload of the active tab. Back and Forward never ask and never read the history: on
+   *  this Electron they cannot send a form again (the plan's F7), so the method of the entry does not matter; nothing to go back
+   *  or forward to is a refusal, not an ask. A Reload reads the method the entry would load by: a GET goes, anything else asks
+   *  `resend`, and an allowed reload of an entry that was not a GET goes through the protocol, which sends the form again
+   *  (Electron's own reload does nothing for it). */
   private async navStep(agent: AgentRef, p: Slot, b: BrowserLike, go: ComputerNavGo, take: () => boolean, lease: Lease): Promise<Step> {
     const tab = this.active(b);
     const here = b.tabs()[tab];
     if (!here) return { reply: fail(REFUSAL.noPage) };
     if ((go === "back" && !here.canBack) || (go === "forward" && !here.canForward)) return { reply: refuseAt(REFUSAL.noHistory(go), this.url(b)) };
+    const free = (went: string): Reply => {
+      const since = this.clock.now();
+      this.line(p, agent.label, went, agent);
+      return this.done(p, b, `${went}.`, since, lease);
+    };
+    if (go !== "reload") {
+      // The method is not read, so only the access level is judged. Nothing is awaited between the check and the move.
+      const need = this.need(judge({ kind: "nav", go, method: "unknown" }, { access: agent.access, marked: this.markedAt(b, tab) }), null, this.siteAt(b, tab));
+      if (need && typeof need === "object") return { reply: fail(need.refuse) };
+      const late = this.stale(p, agent, lease);
+      if (late) return { reply: late };
+      if (!take()) return { reply: fail(REFUSAL.late) };
+      return { reply: b.nav(go, tab) ? free(go === "back" ? "Went back" : "Went forward") : refuseAt(REFUSAL.pageChanged, this.url(b)) };
+    }
     const token = b.pageToken();
     const entry = await b.entry(go, tab);
     // The history was an await: the call must still be current, and the page the one the entry was read for.
@@ -760,42 +783,33 @@ export class ComputerService {
     if (read) return { reply: read };
     if (!entry || b.pageToken() !== token || this.active(b) !== tab) return { reply: refuseAt(REFUSAL.changed, this.url(b)) };
     // An entry with no id cannot be bound to a card: only a tab still waking (its reload loads the kept address) has none.
-    if (entry.id === null && !(go === "reload" && entry.method === "GET")) return { reply: refuseAt(REFUSAL.noHistoryRead, this.url(b)) };
+    if (entry.id === null && entry.method !== "GET") return { reply: refuseAt(REFUSAL.noHistoryRead, this.url(b)) };
     const site = this.siteAt(b, tab);
     const need = this.need(judge({ kind: "nav", go, method: entry.method }, { access: agent.access, marked: this.markedAt(b, tab) }), null, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
-    const went = go === "back" ? "Went back" : go === "forward" ? "Went forward" : "Reloaded";
-    const finish = (): Reply => {
-      const since = this.clock.now();
-      this.line(p, agent.label, went, agent);
-      return this.done(p, b, `${went}.`, since, lease);
-    };
     if (!need) {
       // Free: a GET entry. Nothing is awaited between the check above and the move.
       const late = this.stale(p, agent, lease);
       if (late) return { reply: late };
       if (!take()) return { reply: fail(REFUSAL.late) };
-      return { reply: b.nav(go, tab) ? finish() : refuseAt(REFUSAL.pageChanged, this.url(b)) };
+      return { reply: b.nav(go, tab) ? free("Reloaded") : refuseAt(REFUSAL.pageChanged, this.url(b)) };
     }
     // Asked: what the person allows is this entry of this tab. The run reads the history again and moves only if it is still so.
-    // The destination is named by its origin only; one that is not a web address is not named, only the way.
-    const target = go !== "reload" && entry.url && /^https?:\/\//i.test(entry.url) ? entry.url : null;
-    const verb = go === "reload" ? "Reload" : target ? `Go ${go} to ${hostOf(siteOf(target))}` : `Go ${go} one page`;
     const run = async (): Promise<Reply> => {
       const late = this.stale(p, agent, lease);
       if (late) return late;
       // R81: the move is sent only while the call is still current after the history read (the same delivery path as a click).
       let moved = false;
-      const lost = await this.deliver(p, agent, lease, async (valid) => { moved = await b.navEntry(go, entry, valid); });
+      const lost = await this.deliver(p, agent, lease, async (valid) => { moved = await b.navEntry(entry, valid); });
       if (lost) return lost;
       if (!moved) return refuseAt(REFUSAL.changed, this.url(b));
-      return finish();
+      return free("Reloaded");
     };
     return {
       ask: {
         whys: [need], site, target: null,
-        action: verb, kind: go === "reload" ? "Reload" : `Go ${go}`,
-        detail: `${go === "reload" ? "Loading this page again may send a form again." : target ? `Going ${go} loads ${hideAfterOrigin(target)}, which may send a form again.` : `Going ${go} one page may send a form again.`} ${cardPage(here.url)}`,
+        action: "Reload", kind: "Reload",
+        detail: `Loading this page again may send a form again. ${cardPage(here.url)}`,
         revalidate: () => Promise.resolve(b.pageToken() === token && this.active(b) === tab),
         run,
       },
@@ -1449,7 +1463,8 @@ export class ComputerService {
     // name on the wheel, and status then reads "this session".
     const asks = this.o.broker.pending(p.key);
     const own = asks.filter((x) => x.session === agent.key);
-    const others = asks.filter((x) => x.session !== agent.key);
+    const theirs = asks.filter((x) => x.session === PERSON);
+    const others = asks.filter((x) => x.session !== agent.key && x.session !== PERSON);
     return [
       p.power === "off" ? `Browser: ${agent.label} (off: computer_open asks the user to turn it on)` : `Browser: ${agent.label}`,
       `Driving: ${driving}`,
@@ -1459,6 +1474,7 @@ export class ComputerService {
       ...tabs.map((t) => `  [${t.index}]${t.active ? " (active)" : ""} ${untrustedUrl(t.url)} opened by ${t.openedBy ?? "the user"}`),
       own.length ? "Your pending asks:" : "Your pending asks: none",
       ...own.map((x) => `  ${x.id} ${x.notice}`),
+      ...(theirs.length ? [`The user's own pending ask: ${theirs.length} (${[...new Set(theirs.map((x) => ASK_LABELS[x.why]))].join(", ")})`] : []),
       ...(others.length ? [`The page's pending asks: ${others.length} (${[...new Set(others.map((x) => ASK_LABELS[x.why]))].join(", ")})`] : []),
     ].join("\n");
   }
@@ -1775,15 +1791,94 @@ export class ComputerService {
     this.refresh(p.key);
   }
 
-  /** The person's Back, Forward or Reload on the selected computer's active tab: their own, so nothing asks
-   *  (session-browser S13). */
+  /** The person's Back, Forward or Reload on the selected computer's active tab: their own, so Back and Forward never ask
+   *  (session-browser S13). A Reload of a page a form loaded would send the form again, so it asks the person first, in the
+   *  pane, then sends it (S13, 2026-11-14); it starts work and never throws into the IPC handler. */
   nav(go: ComputerNavGo): void {
     if (!this.selected) return;
     const p = this.slot(this.selected);
     if (p.power === "off") return;
+    if (go === "reload") {
+      void this.reloadOwn(p).catch(() => undefined);
+      return;
+    }
     // Only a move that started is logged: a stale click on a Back that cannot happen says nothing.
     if (!this.browserOf(p).nav(go)) return;
-    this.line(p, USER, go === "back" ? "Went back" : go === "forward" ? "Went forward" : "Reloaded", null);
+    this.line(p, USER, go === "back" ? "Went back" : "Went forward", null);
+  }
+
+  /** The person's Reload: a tab that holds no entry a form loaded (`mayHoldForm`) reloads at once with no history read, as Electron's
+   *  own reload does; a page not known to have been loaded by another method than GET reloads the same way after one read; one a form loaded asks (`resendown`) and, once the person says Send again, sends the form through the protocol
+   *  by the same bound move an agent's allowed reload uses (`navEntry`). A history that cannot be read reloads as it always did. */
+  private async reloadOwn(p: Slot): Promise<void> {
+    const b = this.browserOf(p);
+    const tab = this.active(b);
+    // A tab no form ever loaded reloads at once, as Electron's own reload does: no history read, nothing awaited.
+    if (tab < 0 || !b.mayHoldForm(tab)) {
+      if (b.nav("reload")) this.line(p, USER, "Reloaded", null);
+      return;
+    }
+    const uid = b.tabUid(tab);
+    const token = uid === null ? null : b.tabToken(uid);
+    const alive = (): boolean => this.slots.get(p.key) === p && p.browser === b && p.power !== "off" && uid !== null && b.tabIndex(uid) >= 0;
+    const now = (): boolean => alive() && b.tabToken(uid!) === token && b.tabUid(this.active(b)) === uid;
+    const entry = await b.entry("reload", tab).catch(() => null);
+    if (!now()) {
+      // The page went on while the history was read: the press is not dropped, the tab it was for reloads the plain way (what
+      // the button did before it asked about forms), unless the tab or the browser is gone.
+      if (alive() && b.nav("reload", b.tabIndex(uid!))) this.line(p, USER, "Reloaded", null);
+      return;
+    }
+    // The read was an await: a tab below the pressed one may have closed, so the pressed tab's index is read again by its uid.
+    const at = b.tabIndex(uid!);
+    // A history that could not be read says nothing about the page: the plain reload goes, but the log does not claim it did
+    // what a Reload does.
+    if (!entry || entry.id === null) {
+      if (b.nav("reload", at)) this.line(p, USER, "Reload pressed; this page's history could not be read.", null);
+      return;
+    }
+    if (entry.method === "GET") {
+      if (b.nav("reload", at)) this.line(p, USER, "Reloaded", null);
+      return;
+    }
+    if (p.ownCard) return;
+    const site = this.siteAt(b, at);
+    // "other" is known to be a form's result; "unknown" is a page in a tab that held one, which may be (a plain reload of a
+    // form's result page does nothing), so it asks too.
+    const input: AskInput = {
+      computer: p.key, session: PERSON, sessionLabel: USER, why: "resendown", title: "Send this form again?",
+      notice: `${ASK_LABELS.resendown} on ${hostOf(site)}?`,
+      detail: `${entry.method === "other" ? "Reloading this page sends its form again, so what it did may happen twice." : "This page may have been loaded by a form. Reloading it would send that form again, so what it did may happen twice."} ${cardPage(b.tabs()[at]?.url ?? null)}`,
+      site, always: false,
+    };
+    const held = this.o.broker.hold(input);
+    const raised = this.o.broker.pending(p.key).find((x) => x.session === PERSON);
+    if (raised && uid !== null && token !== null) p.ownCard = { askId: raised.id, uid, token };
+    try {
+      let o = await held;
+      while (o.state === "waiting_for_user") o = await this.o.broker.wait(o.askId);
+      if (o.state !== "allowed") return;
+      try {
+        // Nothing is awaited between navEntry's own check of the tab and entry and the move.
+        if (await b.navEntry(entry, now)) this.line(p, USER, "Reloaded", null);
+      } catch (e) {
+        if (e instanceof PageChanged) return;
+        // The person's log is the person's: a refusal worded for an agent's reply is not written here.
+        this.line(p, USER, e instanceof Told ? forPerson(e) : "Send again did not complete.", null);
+      }
+    } finally {
+      if (raised && p.ownCard?.askId === raised.id) p.ownCard = null;
+    }
+  }
+
+  /** The tab in front or its page changed (the browser's front hook): the person's Send this form again card, raised for one page
+   *  of one tab, goes with it. */
+  private ownCardGone(p: Slot): void {
+    const c = p.ownCard;
+    if (!c) return;
+    let same = false;
+    try { const b = p.browser; same = !!b && b.tabToken(c.uid) === c.token && b.tabUid(this.active(b)) === c.uid; } catch { /* cannot tell: the card goes */ }
+    if (!same) this.o.broker.cancel((a) => a.id === c.askId, "the page changed");
   }
 
   /** Take over (agent-computer D5, D31): the person drives, the session's pending asks are cancelled, and any typing stops
@@ -2337,7 +2432,7 @@ export class ComputerService {
 
   private slot(key: string): Slot {
     let p = this.slots.get(key);
-    if (!p) { p = { key, browser: null, power: "off", remembered: null, title: null, named: null, conversation: null, sig: "null", save: null, known: null, quiet: null, programOpens: [], reopening: null, used: 0, waking: null, queued: 0, looking: 0, stopped: null, stops: [], replies: Promise.resolve(), reading: 0, log: [], last: null, running: 0, queue: Promise.resolve() }; this.slots.set(key, p); }
+    if (!p) { p = { key, browser: null, power: "off", remembered: null, title: null, named: null, conversation: null, sig: "null", save: null, known: null, quiet: null, programOpens: [], reopening: null, used: 0, waking: null, queued: 0, looking: 0, stopped: null, stops: [], replies: Promise.resolve(), reading: 0, log: [], last: null, running: 0, queue: Promise.resolve(), ownCard: null }; this.slots.set(key, p); }
     return p;
   }
 
@@ -2354,7 +2449,7 @@ export class ComputerService {
         note: (text) => { void this.pageNote(p.key, text); },
         changed: () => this.refresh(p.key),
         // The tab in front changed, or (`page`) its main frame committed another document: the pointer drawn over the old page goes.
-        front: (page) => this.fronted(p, !!page),
+        front: (page) => { this.fronted(p, !!page); this.ownCardGone(p); },
         agentDrives: () => this.o.wheel.holder(p.key)?.kind === "agent",
       });
       if (p.key === this.selected && !this.popped) p.browser.show(this.bounds);
