@@ -110,6 +110,13 @@ class FakeBrowser implements BrowserLike {
   tabs(): TabInfo[] { return this.pages.map((p, index) => ({ index, url: p.hidden ? p.url.replace(/[?#].*$/, "") : p.url, title: "", openedBy: p.openedBy, active: index === this.current, canBack: index === this.current && this.canBack, canForward: index === this.current && this.canForward })); }
   activeWebContentsId(): number | null { return this.current < 0 ? null : 100 + this.current; }
   pageToken(): string { return this.pages[this.current] ? `${this.current}.${this.seq}` : "none"; }
+  /** As the real browser's `leave` (session-browser G): the tab a stale call made stays blank and is the person's; one not in front goes again. */
+  private leave(i: number): void {
+    const p = this.pages[i];
+    if (!p) return;
+    p.url = "about:blank"; p.own = false;
+    if (i !== this.current && this.pages.length > 1) this.close(i);
+  }
   /** The addresses that were loaded, in order: an agent's open whose call stopped being current (`valid`) loads nothing. */
   loaded: string[] = [];
   async open(url: string, o: { newTab?: boolean; background?: boolean; by: string | null; own?: boolean; valid?: () => boolean }) {
@@ -123,7 +130,7 @@ class FakeBrowser implements BrowserLike {
     // As the real browser: a tab that cannot be MADE throws before any exists; a page that cannot LOAD throws after its tab is in place.
     if (this.makeFails?.(url)) throw new Error(REFUSAL.browserGone);
     if (makes) { const keep = !!o.background && this.current >= 0; this.pages.push({ url: new URL(url).href, openedBy: o.by, ...(o.own ? { own: true } : {}) }); at = this.pages.length - 1; if (!keep) this.current = at; }
-    if (o.valid && !o.valid()) throw new PageChanged();
+    if (o.valid && !o.valid()) { if (makes) this.leave(at); throw new PageChanged(); }
     if (!makes) this.pages[this.current] = { url: new URL(url).href, openedBy: this.pages[this.current].openedBy, ...(this.pages[this.current].own ? { own: true } : {}), commits: (this.pages[this.current].commits ?? 0) + 1 };
     this.loaded.push(new URL(url).href);
     this.seq++;
@@ -146,7 +153,7 @@ class FakeBrowser implements BrowserLike {
     this.seq++;
     const uid = this.tabUid(this.current)!;
     { const after = this.afterOpen; this.afterOpen = null; after?.(); }
-    if (o.valid && !o.valid()) throw new PageChanged();
+    if (o.valid && !o.valid()) { this.leave(this.tabIndex(uid)); throw new PageChanged(); }
     this.loaded.push(new URL(url).href);
     return uid;
   }
@@ -5947,8 +5954,8 @@ test("a Take over between the making and the close closes nothing", async () => 
   b.afterOpen = () => { h.svc.select("chat:a"); h.svc.takeOver(); };
   const r = await h.call(A, "computer_tab", { index: 0, close: true });
   assert.equal(r.isError, true, r.text);
-  assert.match(r.text, /^busy: /);
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "https://start.test/"], "the start tab in front is left");
+  assert.equal(r.text, "busy: the user is driving: wait for Hand back.");
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "about:blank"], "the start tab in front is left, blank");
   assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
 });
 
@@ -5959,7 +5966,7 @@ test("the turn ends between the making and the close: the same", async () => {
   const r = await h.call(A, "computer_tab", { index: 0, close: true });
   assert.equal(r.isError, true, r.text);
   assert.match(r.text, /^busy: /);
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "https://start.test/"]);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "about:blank"]);
   assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
 });
 
@@ -5991,17 +5998,60 @@ test("a Take over while the agent's start tab is being made loads nothing and an
   assert.equal(r.isError, true, r.text);
   assert.equal(r.text, "busy: the user is driving: wait for Hand back.");
   assert.equal(starts(), before, "the start page was never loaded by this call");
-  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "https://start.test/"], "the tab it made stays, and nothing of the person's is closed");
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only", "about:blank"], "the tab it made stays, blank, and nothing of the person's is closed");
   assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
 });
 
-test("Off while the agent's page is being opened loads nothing", async () => {
+test("Off while the agent's page is being opened loads nothing and answers that the browser was switched off", async () => {
   const h = make();
   const b = await h.open(A, "https://a.test/");
   b.onOpen = () => h.svc.power("chat:a", false);
   const r = await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  assert.equal(r.isError, true, r.text);
+  assert.equal(r.text, REFUSAL.switchedOff);
   assert.ok(!b.loaded.includes("https://a.test/two"), "the new address was never loaded");
-  assert.ok(!/Opened the page/.test(r.text), r.text);
+});
+
+test("Off while the agent's start tab is being made loads nothing and closes nothing (computer_tab, last tab)", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  const starts = (): number => b.loaded.filter((u) => u === "https://start.test/").length, before = starts();
+  b.afterOpen = () => h.svc.power("chat:a", false);
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.equal(r.isError, true, r.text);
+  assert.equal(r.text, REFUSAL.switchedOff);
+  assert.equal(starts(), before);
+  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), []);
+});
+
+test("a tab left blank by a stale open is not the agent's to close without asking", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.onOpen = () => { h.svc.select("chat:a"); h.svc.takeOver(); };
+  const stale = await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  assert.equal(stale.text, "busy: the user is driving: wait for Hand back.");
+  h.svc.handBack();
+  assert.equal(b.pages.length, 2, "the blank tab is in front");
+  assert.equal(b.pages[1].own, false);
+  void h.call(A, "computer_tab", { index: 1, close: true });
+  assert.equal((await h.asked()).why, "closetab");
+  assert.deepEqual(b.trail.filter((t) => t.startsWith("close")), [], "nothing was closed without the person's Allow");
+});
+
+test("a start tab made behind the person for a stale call is closed again; one made in front stays", async () => {
+  const h = make({ startPage: "https://start.test/" });
+  const b = await h.open(A, "https://a.test/only");
+  b.afterOpen = () => { b.current = 0; h.svc.select("chat:a"); h.svc.takeOver(); };
+  const r = await h.call(A, "computer_tab", { index: 0, close: true });
+  assert.match(r.text, /^busy: /);
+  assert.deepEqual(b.pages.map((x) => x.url), ["https://a.test/only"], "the person is on the old tab: the start tab behind is closed again");
+  h.svc.handBack();
+  const c = make({ startPage: "https://start.test/" });
+  const bc = await c.open(A, "https://a.test/only");
+  bc.afterOpen = () => { c.svc.select("chat:a"); c.svc.takeOver(); };
+  await c.call(A, "computer_tab", { index: 0, close: true });
+  assert.deepEqual(bc.pages.map((x) => x.url), ["https://a.test/only", "about:blank"], "in front: it stays, blank");
+  assert.equal(bc.pages[1].own, false);
 });
 
 test("the person goes back to the old tab and navigates it: the start tab behind is closed again and the old tab stays", async () => {

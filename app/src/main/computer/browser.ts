@@ -439,7 +439,7 @@ export class ComputerBrowser {
     const reuse = !o.newTab && this.list[this.current];
     if (!reuse && o.valid && !o.valid()) throw new PageChanged();
     const t = reuse ? this.list[this.current] : await this.addTab(o.by, undefined, o.background === true, o.own === true);
-    if (o.valid && !o.valid()) throw new PageChanged();
+    if (o.valid && !o.valid()) { if (!reuse) this.leave(t); throw new PageChanged(); }
     t.refused = null;
     // R38: a page-started navigation's leaving record is left alone here: that navigation may be past the point where this
     // load can cancel it and commit first, and its record then goes with its own commit (`committed` matches the URL). R39:
@@ -483,10 +483,19 @@ export class ComputerBrowser {
     // stopped being current meanwhile: that tab stays, blank, and no uid is answered.
     if (o.valid && !o.valid()) throw new PageChanged();
     const t = await this.addTab(o.by).catch(() => { throw new Told(REFUSAL.startTab, "The new tab could not be made."); });
-    if (o.valid && !o.valid()) throw new PageChanged();
+    if (o.valid && !o.valid()) { this.leave(t); throw new PageChanged(); }
     t.refused = null;
     void t.wc.loadURL(href).catch(() => undefined);
     return t.uid;
+  }
+
+  /** session-browser G: what a call that stopped being current leaves of the tab it made. The tab is the person's from now on
+   *  (no longer the agent's own, so a later close of it asks); one that is not in front goes again, as the start tab of a close
+   *  always did (nobody can be looking at it); one in front stays, blank, and is never closed under the person. */
+  private leave(t: Tab): void {
+    t.own = false;
+    const i = this.list.indexOf(t);
+    if (i >= 0 && i !== this.current && this.list.length > 1) this.close(i);
   }
 
   /** session-browser S16: resolves 300 ms after `since` (a time on the caller's clock, `Date.now()` here: the moment an

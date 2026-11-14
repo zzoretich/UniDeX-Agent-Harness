@@ -730,7 +730,9 @@ export class ComputerService {
         }
         // From here to the close nothing is awaited, so what is checked is what the close meets. The new tab is known by the uid
         // `openTab` answered, never as "a tab not there before". When the call cannot go on, nothing of the person's is closed:
-        // the new tab goes again only if it is still there and not the tab in front (nobody can be looking at it).
+        // the new tab goes again only if it is still there and not the tab in front (nobody can be looking at it). A call that
+        // stopped being current while the tab was made never gets here: `openTab` closes a tab behind and frees one in front itself
+        // (session-browser G), so `interrupted` below is the defence for a lease lost in this very tick, which nothing awaits.
         const undo = (): void => {
           const i = b.tabIndex(made);
           if (i >= 0 && !b.tabs()[i].active && b.tabs().length > 1) b.close(i);
