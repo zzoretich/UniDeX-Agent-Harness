@@ -24,7 +24,7 @@ export type Action =
   | { kind: "type"; text: string; focus: Focus }
   /** `byUser`: the tab was not made by this session's agent's own `computer_open` (or a popup of its own click): a close of it asks. */
   | { kind: "tab"; close: boolean; byUser: boolean }
-  /** `method`: how the entry Back, Forward or Reload would load was fetched; "unknown" where it could not be read. */
+  /** `method`: how the entry a Reload would load was fetched; "unknown" where it could not be read. Only a Reload asks about it; Back and Forward are judged by access alone and pass "unknown". */
   | { kind: "nav"; go: ComputerNavGo; method: "GET" | "other" | "unknown" }
   | { kind: "hover" };
 

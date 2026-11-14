@@ -184,7 +184,9 @@ class FakeBrowser implements BrowserLike {
     this.front();
   }
   /** As ComputerBrowser.mayHoldForm: whether any entry of the tab is recorded as loaded by a form (here: the reload's method). */
-  mayHoldForm(_tab?: number): boolean { return this.methods.reload === "other"; }
+  mayHoldForm(_tab?: number): boolean { return this.formEarlier || this.methods.reload === "other"; }
+  /** A form's result is further back in the tab (the table holds an "other" for another entry than the current one). */
+  formEarlier = false;
   async entry(go: string, tab?: number) {
     this.need(tab); this.asked.push(go);
     await this.entryGate;
@@ -1635,6 +1637,64 @@ test("a press that goes stale during the read still reloads the page now in fron
   assert.deepEqual(gb.navs, []);
 });
 
+/** Three tabs, the person on the middle one, a form's result further back in it (a GET page now). */
+async function threeTabs(h: ReturnType<typeof make>): Promise<FakeBrowser> {
+  const b = await userOn(h);
+  await h.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  await h.call(A, "computer_open", { url: "https://a.test/three", newTab: true });
+  h.svc.select("chat:a"); b.select(1);
+  b.formEarlier = true; b.methods.reload = "GET";
+  return b;
+}
+
+test("Reload on a GET page in a tab that loaded a form earlier reads the history and reloads with no card", async () => {
+  const h = make();
+  const b = await threeTabs(h);
+  h.svc.nav("reload");
+  await flush();
+  assert.deepEqual(b.asked, ["reload"], "the history was read");
+  assert.equal(h.broker.pending().length, 0);
+  assert.deepEqual(b.navs, ["reload 1"]);
+});
+
+test("a tab below the pressed one closing during the read: the pressed tab reloads, no other", async () => {
+  const h = make();
+  const b = await threeTabs(h);
+  let release!: () => void;
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  h.svc.nav("reload");
+  b.pages.splice(0, 1); b.current = 0;                        // the pressed tab (was 1) is now 0, as the real browser keeps it in front
+  release();
+  await flush();
+  assert.deepEqual(b.navs, ["reload 0"], "the pressed tab, at its new index, not the one that moved into index 1");
+  // Two tabs: the index it had no longer exists.
+  const g = make();
+  const gb = await userOn(g);
+  await g.call(A, "computer_open", { url: "https://a.test/two", newTab: true });
+  g.svc.select("chat:a");
+  gb.formEarlier = true; gb.methods.reload = "GET";
+  let free!: () => void;
+  gb.entryGate = new Promise<void>((r) => { free = r; });
+  g.svc.nav("reload");
+  gb.pages.splice(0, 1); gb.current = 0;
+  free();
+  await flush();
+  assert.deepEqual(gb.navs, ["reload 0"]);
+});
+
+test("the pressed tab closing during the read: nothing reloads", async () => {
+  const h = make();
+  const b = await threeTabs(h);
+  let release!: () => void;
+  b.entryGate = new Promise<void>((r) => { release = r; });
+  h.svc.nav("reload");
+  b.pages.splice(1, 1); b.current = 1;
+  release();
+  await flush();
+  assert.deepEqual(b.navs, []);
+  assert.equal(h.broker.pending().length, 0);
+});
+
 test("the person's log holds Reloaded after Send again, nothing after a page change, and an app sentence for a failure", async () => {
   const h = make();
   const b = await userOn(h);
@@ -1663,7 +1723,7 @@ test("the person's log holds Reloaded after Send again, nothing after a page cha
   f.svc.answer(ask.id, "once");
   await flush();
   const line = f.lastState().log.at(-1)!.text;
-  assert.equal(line, "The form was not sent again.");
+  assert.equal(line, "Send again did not complete.");
   assert.ok(!line.includes(REFUSAL.noHistoryRead));
 });
 

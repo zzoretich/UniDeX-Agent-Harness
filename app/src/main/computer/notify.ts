@@ -81,7 +81,7 @@ export class AskNotifier {
     // for them, and a notice (worded for an agent) would put their own button press into the vault. It stays in the pane
     // and times out harmlessly.
     if (ask.why === "resendown") return;
-    const who =`${ask.computer}\u0000${ask.session}`;
+    const who = `${ask.computer}\u0000${ask.session}`;
     if ([...this.unanswered.values()].includes(who)) return;
     let shown: boolean;
     try { shown = this.o.visible(ask); } catch { shown = false; }

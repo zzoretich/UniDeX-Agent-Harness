@@ -1829,16 +1829,18 @@ export class ComputerService {
       if (alive() && b.nav("reload", b.tabIndex(uid!))) this.line(p, USER, "Reloaded", null);
       return;
     }
+    // The read was an await: a tab below the pressed one may have closed, so the pressed tab's index is read again by its uid.
+    const at = b.tabIndex(uid!);
     if (!entry || entry.id === null || entry.method !== "other") {
-      if (b.nav("reload", tab)) this.line(p, USER, "Reloaded", null);
+      if (b.nav("reload", at)) this.line(p, USER, "Reloaded", null);
       return;
     }
     if (p.ownCard) return;
-    const site = this.siteAt(b, tab);
+    const site = this.siteAt(b, at);
     const input: AskInput = {
       computer: p.key, session: PERSON, sessionLabel: USER, why: "resendown", title: "Send this form again?",
       notice: `${ASK_LABELS.resendown} on ${hostOf(site)}?`,
-      detail: `Reloading this page sends its form again, so what it did may happen twice. ${cardPage(b.tabs()[tab]?.url ?? null)}`,
+      detail: `Reloading this page sends its form again, so what it did may happen twice. ${cardPage(b.tabs()[at]?.url ?? null)}`,
       site, always: false,
     };
     const held = this.o.broker.hold(input);
@@ -1854,7 +1856,7 @@ export class ComputerService {
       } catch (e) {
         if (e instanceof PageChanged) return;
         // The person's log is the person's: a refusal worded for an agent's reply is not written here.
-        this.line(p, USER, e instanceof Told ? forPerson(e) : "The form was not sent again.", null);
+        this.line(p, USER, e instanceof Told ? forPerson(e) : "Send again did not complete.", null);
       }
     } finally {
       if (raised && p.ownCard?.askId === raised.id) p.ownCard = null;
