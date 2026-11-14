@@ -92,13 +92,15 @@ export function judge(a: Action, ctx: { access: Access; marked: boolean }): Verd
       return GO;
     }
     // session-browser S17: a hover and a tab switch change nothing the page keeps; closing a tab the agent did not open is
-    // the person's to allow; a load that may send a form again (any entry not known to be a GET) is asked every time.
+    // the person's to allow; a Reload onto an entry not known to be a GET may send a form again, so it asks every time. Back and
+    // Forward are free whatever the entry's method: on this Electron they never send a form again (the cache answers, or the load
+    // fails with ERR_CACHE_MISS), and only the protocol's reload does (the plan's F7).
     case "hover":
       return GO;
     case "tab":
       return a.close && a.byUser ? { ask: "closetab" } : GO;
     case "nav":
-      return a.method === "GET" ? GO : { ask: "resend" };
+      return a.go === "reload" && a.method !== "GET" ? { ask: "resend" } : GO;
     case "status":
     case "snapshot":
     case "screenshot":

@@ -4946,19 +4946,16 @@ test("Reload after a form POST asks; onto GET it does not; an unknown method ask
   h.svc.answer(ask.id, "once");
   assert.equal((await p).text, `Reloaded.${now("https://a.test/two")}`);
   assert.deepEqual([b.navs, b.reposts], [["reload 1", "reload 1"], [false, true]]);
-  // An unknown method asks as POST does; Back and Forward too; a denial moves nothing.
-  b.canBack = true; b.canForward = true;
-  for (const [go, method] of [["reload", "unknown"], ["back", "other"], ["forward", "unknown"]] as const) {
-    b.methods[go] = method;
-    const q = h.call(A, "computer_nav", { go });
-    const a = await h.asked();
-    assert.equal(a.why, "resend", go);
-    h.svc.answer(a.id, "deny");
-    const r = await q;
-    assert.equal(r.isError, true, go);
-    assert.match(r.text, /^The user denied it \(/, go);
-  }
-  assert.equal(b.navs.length, 2, "the three denied moves never ran");
+  // An unknown method asks as POST does; a denial moves nothing.
+  b.methods.reload = "unknown";
+  const unknown = h.call(A, "computer_nav", { go: "reload" });
+  const a = await h.asked();
+  assert.equal(a.why, "resend");
+  h.svc.answer(a.id, "deny");
+  const denied = await unknown;
+  assert.equal(denied.isError, true);
+  assert.match(denied.text, /^The user denied it \(/);
+  assert.equal(b.navs.length, 2, "the denied reload never ran");
   // The card does not offer Always: a form sent again is asked every time.
   b.methods.reload = "other";
   const q = h.call(A, "computer_nav", { go: "reload" });
@@ -4966,29 +4963,31 @@ test("Reload after a form POST asks; onto GET it does not; an unknown method ask
   h.svc.answer((await h.asked()).id, "deny"); await q;
 });
 
-test("Back onto a POST entry asks, Forward onto an unknown entry asks; Allow once moves, and the card offers no Always", async () => {
+test("Back onto a POST entry and Forward onto an unknown entry go free: no card, the move made (session-browser S17)", async () => {
   const h = make();
   const b = await twoTabs(h);
   b.canBack = true; b.canForward = true;
   b.methods.back = "other"; b.methods.forward = "unknown";
-  const title = /^Load a page again, which may send a form again: /;
-  const back = h.call(A, "computer_nav", { go: "back" });
-  const askBack = await h.asked();
-  assert.equal(askBack.why, "resend");
-  assert.match(askBack.title, title);
-  assert.equal(askBack.always, false, "a form sent again is asked every time");
-  assert.deepEqual([b.navs, b.reposts], [[], []], "nothing moved while the card is up");
-  h.svc.answer(askBack.id, "once");
-  assert.equal((await back).text, `Went back.${now("https://a.test/two")}`);
-  assert.deepEqual(b.navs, ["back 1"], "the allowed Back moved the tab (only a Reload re-sends by the protocol)");
-  const fwd = h.call(A, "computer_nav", { go: "forward" });
-  const askFwd = await h.asked();
-  assert.equal(askFwd.why, "resend");
-  assert.match(askFwd.title, title);
-  assert.deepEqual(b.navs, ["back 1"], "nothing moved while the card is up");
-  h.svc.answer(askFwd.id, "once");
-  assert.equal((await fwd).text, `Went forward.${now("https://a.test/two")}`);
-  assert.deepEqual(b.navs, ["back 1", "forward 1"]);
+  const back = await h.call(A, "computer_nav", { go: "back" });
+  assert.equal(back.text, `Went back.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["back 1"], "the Back moved the tab (only a Reload re-sends, by the protocol)");
+  const fwd = await h.call(A, "computer_nav", { go: "forward" });
+  assert.equal(fwd.text, `Went forward.${now("https://a.test/two")}`);
+  assert.deepEqual([b.navs, b.reposts], [["back 1", "forward 1"], [false, false]]);
+  assert.equal(h.broker.pending().length, 0, "nothing asked");
+});
+
+test("Back onto a POST entry goes free, with no history read", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.canBack = true; b.canForward = true;
+  b.methods.back = "other"; b.methods.forward = "other";
+  // A history read that never settles, and one that throws: neither is waited on.
+  b.entryGate = new Promise<void>(() => {});
+  assert.equal((await h.call(A, "computer_nav", { go: "back" })).text, `Went back.${now("https://a.test/two")}`);
+  b.entryGate = null; b.entryError = new Error("the read failed");
+  assert.equal((await h.call(A, "computer_nav", { go: "forward" })).text, `Went forward.${now("https://a.test/two")}`);
+  assert.deepEqual(b.asked, [], "the history was not read for either move");
   assert.equal(h.broker.pending().length, 0);
 });
 
@@ -5298,13 +5297,13 @@ test("the wheel and the lease apply to a tab, a nav and a hover as to a click", 
   h.svc.handBack();
   let release: () => void = () => {};
   b.entryGate = new Promise<void>((r) => { release = r; });
-  const p = h.call(A, "computer_nav", { go: "back" });
+  const p = h.call(A, "computer_nav", { go: "reload" });
   await flush();
   h.svc.takeOver();
   release();
   const r = await p;
   assert.equal(r.isError, true);
-  assert.deepEqual(b.navs, [], "the Back never ran");
+  assert.deepEqual(b.navs, [], "the Reload never ran");
 });
 
 test("a hover takes the computer before the pointer moves, and the move goes only while the call is current", async () => {
@@ -5629,25 +5628,31 @@ test("a Stop during the allowed move's history read sends nothing", async () => 
 test("a history read that DevTools or another debugger refuses reaches the agent in its own words, with no card", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.canBack = true;
   for (const why of [REFUSAL.devToolsOpen, REFUSAL.otherDebugger, REFUSAL.tabGone]) {
     b.entryError = new TwoWordings(why, "person's wording");
-    assert.deepEqual(await h.call(A, "computer_nav", { go: "back" }), { text: why, isError: true });
+    assert.deepEqual(await h.call(A, "computer_nav", { go: "reload" }), { text: why, isError: true });
   }
   assert.equal(h.broker.pending().length, 0);
   assert.deepEqual(b.navs, []);
 });
 
-test("a history that cannot be read is refused with no card", async () => {
+test("Back with DevTools holding the debugger still goes", async () => {
   const h = make();
   const b = await twoTabs(h);
   b.canBack = true;
-  b.entryId = null; b.methods.reload = "unknown"; b.methods.back = "unknown";
-  for (const go of ["reload", "back"] as const) {
-    const r = await h.call(A, "computer_nav", { go });
-    assert.equal(r.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`, go);
-    assert.equal(r.isError, true);
-  }
+  b.entryError = new TwoWordings(REFUSAL.devToolsOpen, "person's wording");
+  assert.equal((await h.call(A, "computer_nav", { go: "back" })).text, `Went back.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["back 1"]);
+  assert.equal(h.broker.pending().length, 0);
+});
+
+test("a history that cannot be read is refused with no card", async () => {
+  const h = make();
+  const b = await twoTabs(h);
+  b.entryId = null; b.methods.reload = "unknown";
+  const r = await h.call(A, "computer_nav", { go: "reload" });
+  assert.equal(r.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`);
+  assert.equal(r.isError, true);
   assert.equal(h.broker.pending().length, 0);
   assert.deepEqual(b.navs, []);
 });
@@ -5655,16 +5660,16 @@ test("a history that cannot be read is refused with no card", async () => {
 test("a tab still waking reloads its kept address with no card, though it has no history entry to bind", async () => {
   const h = make();
   const b = await twoTabs(h);
-  // A woken tab has not committed: its entry has no id and its method is GET (the kept address loads by GET). Back and Forward
-  // from it are not known, so they are refused; only the reload goes.
+  // A woken tab has not committed: its entry has no id and its method is GET (the kept address loads by GET). Back is not
+  // read at all, so it goes whatever the entry's id.
   b.entryId = null; b.methods.reload = "GET"; b.methods.back = "unknown"; b.canBack = true;
   const r = await h.call(A, "computer_nav", { go: "reload" });
   assert.equal(r.text, `Reloaded.${now("https://a.test/two")}`);
   assert.deepEqual(b.navs, ["reload 1"]);
   assert.equal(h.broker.pending().length, 0, "no card");
   const back = await h.call(A, "computer_nav", { go: "back" });
-  assert.equal(back.text, `${REFUSAL.noHistoryRead} ${page("https://a.test/two")}`);
-  assert.deepEqual(b.navs, ["reload 1"], "Back did not go");
+  assert.equal(back.text, `Went back.${now("https://a.test/two")}`);
+  assert.deepEqual(b.navs, ["reload 1", "back 1"]);
 });
 
 test("a failed read at the run sends nothing", async () => {
@@ -5721,38 +5726,17 @@ test("the person navigates the tab while the close card is up: Allow closes noth
   assert.equal(b.pages.length, 2);
 });
 
-test("the Back card names where the move goes by its origin only, and the Reload card keeps the current page", async () => {
+test("the Reload card keeps the current page and names no other address", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.canBack = true; b.methods.back = "other"; b.methods.reload = "other";
-  b.entryUrls.back = "https://prev.test/checkout/step?card=4111&token=SECRET";
-  const p = h.call(A, "computer_nav", { go: "back" });
-  const ask = await h.asked();
-  assert.equal(ask.title, "Load a page again, which may send a form again: Go back to prev.test on a.test?");
-  assert.match(ask.detail, /^Going back loads https:\/\/prev\.test\/.*, which may send a form again\. Page: https:\/\/a\.test\/two$/);
-  for (const bit of ["checkout", "4111", "SECRET"]) assert.ok(!ask.detail.includes(bit) && !ask.title.includes(bit) && !ask.notice.includes(bit), bit);
-  h.svc.answer(ask.id, "deny"); await p;
+  b.methods.reload = "other";
+  b.entryUrls.reload = "https://prev.test/checkout/step?card=4111&token=SECRET";
   const q = h.call(A, "computer_nav", { go: "reload" });
   const ask2 = await h.asked();
   assert.equal(ask2.title, "Load a page again, which may send a form again: Reload on a.test?");
   assert.match(ask2.detail, /^Loading this page again may send a form again\. Page: /);
+  for (const bit of ["checkout", "4111", "SECRET", "prev.test"]) assert.ok(!ask2.detail.includes(bit) && !ask2.title.includes(bit) && !ask2.notice.includes(bit), bit);
   h.svc.answer(ask2.id, "deny"); await q;
-});
-
-test("the Back and Forward card says the way only when the destination is not a web address, and never says 'this page'", async () => {
-  const h = make();
-  const b = await twoTabs(h);
-  b.canBack = true; b.canForward = true;
-  for (const [go, url] of [["back", "chrome-error://chromewebdata/"], ["forward", undefined]] as const) {
-    b.methods[go] = "other";
-    if (url) b.entryUrls[go] = url;
-    const p = h.call(A, "computer_nav", { go });
-    const ask = await h.asked();
-    assert.equal(ask.title, `Load a page again, which may send a form again: Go ${go} one page on a.test?`, go);
-    assert.equal(ask.detail, `Going ${go} one page may send a form again. Page: https://a.test/two`, go);
-    for (const bit of ["this page", "•", "chromewebdata"]) assert.ok(!ask.detail.includes(bit) && !ask.title.includes(bit), `${go}: ${bit}`);
-    h.svc.answer(ask.id, "deny"); await p;
-  }
 });
 
 test("the closetab card says what is known of the tab and not who opened it", async () => {
@@ -5769,10 +5753,9 @@ test("the closetab card says what is known of the tab and not who opened it", as
 test("a nav whose page moved during the history read answers the changed sentence, not the focus one", async () => {
   const h = make();
   const b = await twoTabs(h);
-  b.canBack = true;
   let release: () => void = () => {};
   b.entryGate = new Promise<void>((r) => { release = r; });
-  const p = h.call(A, "computer_nav", { go: "back" });
+  const p = h.call(A, "computer_nav", { go: "reload" });
   await flush();
   b.seq++;
   release();

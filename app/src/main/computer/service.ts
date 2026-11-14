@@ -19,7 +19,6 @@ import type { Rect } from "./mask";
 import { REFUSAL } from "./refusals";
 import type { Point, Pointer } from "./pointer";
 import { OUTLINE_MAX, UNREAD, withPage } from "./reply";
-import { hideAfterOrigin } from "./snapshot";
 import type { AgentRef } from "./registry";
 import { cleanTitle, tagText } from "./title";
 import type { SiteMarks } from "./sites";
@@ -745,14 +744,30 @@ export class ComputerService {
     };
   }
 
-  /** session-browser S17: Back, Forward or Reload of the active tab. The gate reads the method the entry would load by: a GET
-   *  goes, anything else asks `resend`. Nothing to go back or forward to is a refusal, not an ask. An allowed reload of an entry
-   *  that was not a GET goes through the protocol, which sends the form again (Electron's own reload does nothing for it). */
+  /** session-browser S17: Back, Forward or Reload of the active tab. Back and Forward never ask and never read the history: on
+   *  this Electron they cannot send a form again (the plan's F7), so the method of the entry does not matter; nothing to go back
+   *  or forward to is a refusal, not an ask. A Reload reads the method the entry would load by: a GET goes, anything else asks
+   *  `resend`, and an allowed reload of an entry that was not a GET goes through the protocol, which sends the form again
+   *  (Electron's own reload does nothing for it). */
   private async navStep(agent: AgentRef, p: Slot, b: BrowserLike, go: ComputerNavGo, take: () => boolean, lease: Lease): Promise<Step> {
     const tab = this.active(b);
     const here = b.tabs()[tab];
     if (!here) return { reply: fail(REFUSAL.noPage) };
     if ((go === "back" && !here.canBack) || (go === "forward" && !here.canForward)) return { reply: refuseAt(REFUSAL.noHistory(go), this.url(b)) };
+    const free = (went: string): Reply => {
+      const since = this.clock.now();
+      this.line(p, agent.label, went, agent);
+      return this.done(p, b, `${went}.`, since, lease);
+    };
+    if (go !== "reload") {
+      // The method is not read, so only the access level is judged. Nothing is awaited between the check and the move.
+      const need = this.need(judge({ kind: "nav", go, method: "unknown" }, { access: agent.access, marked: this.markedAt(b, tab) }), null, this.siteAt(b, tab));
+      if (need && typeof need === "object") return { reply: fail(need.refuse) };
+      const late = this.stale(p, agent, lease);
+      if (late) return { reply: late };
+      if (!take()) return { reply: fail(REFUSAL.late) };
+      return { reply: b.nav(go, tab) ? free(go === "back" ? "Went back" : "Went forward") : refuseAt(REFUSAL.pageChanged, this.url(b)) };
+    }
     const token = b.pageToken();
     const entry = await b.entry(go, tab);
     // The history was an await: the call must still be current, and the page the one the entry was read for.
@@ -760,27 +775,18 @@ export class ComputerService {
     if (read) return { reply: read };
     if (!entry || b.pageToken() !== token || this.active(b) !== tab) return { reply: refuseAt(REFUSAL.changed, this.url(b)) };
     // An entry with no id cannot be bound to a card: only a tab still waking (its reload loads the kept address) has none.
-    if (entry.id === null && !(go === "reload" && entry.method === "GET")) return { reply: refuseAt(REFUSAL.noHistoryRead, this.url(b)) };
+    if (entry.id === null && entry.method !== "GET") return { reply: refuseAt(REFUSAL.noHistoryRead, this.url(b)) };
     const site = this.siteAt(b, tab);
     const need = this.need(judge({ kind: "nav", go, method: entry.method }, { access: agent.access, marked: this.markedAt(b, tab) }), null, site);
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
-    const went = go === "back" ? "Went back" : go === "forward" ? "Went forward" : "Reloaded";
-    const finish = (): Reply => {
-      const since = this.clock.now();
-      this.line(p, agent.label, went, agent);
-      return this.done(p, b, `${went}.`, since, lease);
-    };
     if (!need) {
       // Free: a GET entry. Nothing is awaited between the check above and the move.
       const late = this.stale(p, agent, lease);
       if (late) return { reply: late };
       if (!take()) return { reply: fail(REFUSAL.late) };
-      return { reply: b.nav(go, tab) ? finish() : refuseAt(REFUSAL.pageChanged, this.url(b)) };
+      return { reply: b.nav(go, tab) ? free("Reloaded") : refuseAt(REFUSAL.pageChanged, this.url(b)) };
     }
     // Asked: what the person allows is this entry of this tab. The run reads the history again and moves only if it is still so.
-    // The destination is named by its origin only; one that is not a web address is not named, only the way.
-    const target = go !== "reload" && entry.url && /^https?:\/\//i.test(entry.url) ? entry.url : null;
-    const verb = go === "reload" ? "Reload" : target ? `Go ${go} to ${hostOf(siteOf(target))}` : `Go ${go} one page`;
     const run = async (): Promise<Reply> => {
       const late = this.stale(p, agent, lease);
       if (late) return late;
@@ -789,13 +795,13 @@ export class ComputerService {
       const lost = await this.deliver(p, agent, lease, async (valid) => { moved = await b.navEntry(go, entry, valid); });
       if (lost) return lost;
       if (!moved) return refuseAt(REFUSAL.changed, this.url(b));
-      return finish();
+      return free("Reloaded");
     };
     return {
       ask: {
         whys: [need], site, target: null,
-        action: verb, kind: go === "reload" ? "Reload" : `Go ${go}`,
-        detail: `${go === "reload" ? "Loading this page again may send a form again." : target ? `Going ${go} loads ${hideAfterOrigin(target)}, which may send a form again.` : `Going ${go} one page may send a form again.`} ${cardPage(here.url)}`,
+        action: "Reload", kind: "Reload",
+        detail: `Loading this page again may send a form again. ${cardPage(here.url)}`,
         revalidate: () => Promise.resolve(b.pageToken() === token && this.active(b) === tab),
         run,
       },

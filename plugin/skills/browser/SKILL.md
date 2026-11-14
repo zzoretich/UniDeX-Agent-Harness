@@ -36,7 +36,7 @@ documentation, for localhost and for previewing what you built. The user sees ev
 Four more tools, one line each:
 
 - `computer_tab` switches to a tab by its index, or closes it with `close: true`. Closing a tab you did not open asks the user; closing the last tab leaves the browser on at its start page.
-- `computer_nav` goes `back`, `forward` or `reload`. Onto a page that was loaded by a form it asks the user first, since it may send the form again.
+- `computer_nav` goes `back`, `forward` or `reload`. `back` and `forward` never ask; `reload` of a page that a form loaded (or whose way of loading is not known) asks the user first, since it may send the form again.
 - `computer_hover` moves the pointer onto a ref, or a point, without clicking (menus, tooltips).
 - `computer_console` reads the page's errors, warnings, uncaught exceptions and failed requests since it loaded, as page text.
 
