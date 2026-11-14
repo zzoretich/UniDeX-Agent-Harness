@@ -6,6 +6,9 @@
 // straggler.cjs forces the race itself with the real scan:
 //
 //   AOS_E2E_STRAGGLER=1 npx playwright test tests/e2e/term-writes.spec.ts tests/e2e/theme.spec.ts
+//
+// It also covers a failed launch (launchApp ends the app it started, even one stuck past answering close) and the
+// link's clean-up (removeUserDataLink).
 
 import { _electron as electron, expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
@@ -115,7 +118,7 @@ test.describe("removeUserDataLink", () => {
 
 /** Electron processes of this checkout (an app this harness launched, with its helpers), never the owner's own app. */
 const launchedHere = () => spawnSync("ps", ["-Aww", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 << 20 }).stdout
-  .split("\n").filter((l) => l.includes(REPO) && /Electron/.test(l)).map((l) => l.trim());
+  .split("\n").filter((l) => l.includes(REPO) && /electron/i.test(l)).map((l) => l.trim());
 
 // The launch that failed must end its app: left running, it outlived the run and made a real folder at the link's path.
 test("launchApp: an app whose first window does not come in time is ended, and the launch's own error is what is thrown", async () => {
@@ -141,14 +144,21 @@ test("launchApp: an app that cannot answer close is killed within the bound", as
   restoreFixture();
   const app = await electron.launch({ args: [REPO], cwd: REPO, env: appEnv(), timeout: 60_000 });
   const pid = app.process().pid!;
-  expect(launchedHere().length).toBeGreaterThan(0);
-  process.kill(pid, "SIGSTOP");
-  const own = new Error("the launch's own error");
-  const at = Date.now();
-  const got = await endFailedLaunch(app, own);
-  const took = Date.now() - at;
-  expect(got).toBe(own);
-  expect(own.message).toBe("the launch's own error");
-  expect(took).toBeLessThan(12_000);
-  await expect.poll(launchedHere, { timeout: 5_000 }).toEqual([]);
+  // In no handle: whatever throws below, the app (stopped or not) must still be ended, or it outlives the run.
+  let ended = false;
+  try {
+    expect(launchedHere().length).toBeGreaterThan(0);
+    process.kill(pid, "SIGSTOP");
+    const own = new Error("the launch's own error");
+    const at = Date.now();
+    const got = await endFailedLaunch(app, own);
+    ended = true;
+    const took = Date.now() - at;
+    expect(got).toBe(own);
+    expect(own.message).toBe("the launch's own error");
+    expect(took).toBeLessThan(12_000);
+    await expect.poll(launchedHere, { timeout: 5_000 }).toEqual([]);
+  } finally {
+    if (!ended) await endFailedLaunch(app, new Error("the test failed before its own clean-up"));
+  }
 });
