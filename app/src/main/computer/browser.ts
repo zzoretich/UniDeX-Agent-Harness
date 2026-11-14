@@ -1868,12 +1868,13 @@ export class ComputerBrowser {
 
   /** Brings a node into view before it is measured. It moves the page, so it is delivered like an input: the tab is attached
    *  first (a wait, before any look), then `check` (the call is current, the tab and document are the ones judged; it throws
-   *  PageChanged) runs and the command goes out in the same tick. A node that cannot be scrolled is not an error; a PageChanged
-   *  from the check or from `deliver` ends the action. */
+   *  PageChanged) runs and the command goes out in the same tick. A node that cannot be scrolled is not an error (the command
+   *  failed at once and did nothing); a PageChanged from the check or from `deliver` ends the action, and so does a timeout: the
+   *  command may still run, so nothing is measured or delivered after it. */
   private async intoView(t: Tab, backendNodeId: number, check: () => void): Promise<void> {
     await this.attached(t);
     check();
-    await this.deliver(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch((e: unknown) => { if (e instanceof PageChanged) throw e; });
+    await this.deliver(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch((e: unknown) => { if (e instanceof PageChanged || e instanceof CdpTimeout) throw e; });
   }
 
   /** The tab's debugger is attached (waiting for an attachment in flight), or the refusal that says why it cannot be. */

@@ -6914,3 +6914,36 @@ test("the look again after Allow reads its target guarded", async () => {
   await p;
   assert.deepEqual(b.moves, ["guarded", "guarded"], "the first read and the look again after Allow both carry the predicate");
 });
+
+test("a target read that outlives its call's deadline moves no mouse and scrolls nothing afterwards", async () => {
+  for (const [tool, args] of [["computer_click", { ref: "e1" }], ["computer_scroll", { dy: 100, ref: "e1" }]] as const) {
+    const h = make();
+    h.sites.mark("https://a.test");
+    const b = await h.open(A, "https://a.test/");
+    b.spots.set("e1", { target: btn("Next") });
+    let release!: () => void;
+    b.resolveGate = new Promise<void>((r) => { release = r; });
+    const p = h.call(A, tool, args);
+    await flush();
+    await h.clock.advance(45_000);
+    assert.equal((await p).text, REFUSAL.late, `${tool}: the agent is told it did not run`);
+    release();
+    await flush();
+    assert.deepEqual([b.moves, b.order.includes("mouse"), b.clicks.length, b.scrolls], [[], false, 0, []], `${tool}: the read that went on touched nothing`);
+  }
+});
+
+test("an action already claimed still finishes after the deadline", async () => {
+  const h = make();
+  h.sites.mark("https://a.test");
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  let release!: () => void;
+  b.clickGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  await flush();
+  await h.clock.advance(46_000);
+  release();
+  assert.match((await p).text, /^Clicked e1\./, "its reply is the click's, not the late one");
+  assert.equal(b.clicks.length, 1);
+});

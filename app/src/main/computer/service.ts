@@ -486,7 +486,7 @@ export class ComputerService {
       // R78: the deadline bounds the queue and the target read too: a call that has not taken the computer by then
       // returns, and its step never delivers input or raises an ask.
       const reply = await this.bounded(deadline, async (g) => {
-        const step = await this.serial(p, () => (g.alive() ? this.step(agent, p, parsed, g.take, lease) : Promise.resolve<Step>({ reply: fail(REFUSAL.late) })));
+        const step = await this.serial(p, () => (g.alive() ? this.step(agent, p, parsed, g.take, lease, g.alive) : Promise.resolve<Step>({ reply: fail(REFUSAL.late) })));
         if ("reply" in step) return step.reply;
         // R81: writing the card awaited the page's text; no ask is raised for a call that is no longer current.
         const gone = this.stale(p, agent, lease);
@@ -565,7 +565,7 @@ export class ComputerService {
   /** Resolves the target, judges it, and runs the action when the verdict is go; returns the ask otherwise. `take` claims
    *  the computer just before input is delivered (R78: false once the call's deadline has passed). R81: after the queue,
    *  and after each read of the page, the call must still be current (`lease`). */
-  private async step(agent: AgentRef, p: Slot, a: Parsed, take: () => boolean, lease: Lease): Promise<Step> {
+  private async step(agent: AgentRef, p: Slot, a: Parsed, take: () => boolean, lease: Lease, alive: () => boolean): Promise<Step> {
     const busy = this.stale(p, agent, lease);
     if (busy) return { reply: busy };
     if (p.power === "off") {
@@ -603,18 +603,18 @@ export class ComputerService {
         if (!take()) return { reply: fail(REFUSAL.late) };
         return { reply: await this.doOpen(agent, p, a, lease) };
       }
-      case "click": return this.click(agent, p, b, a.by, a.double, take, lease);
+      case "click": return this.click(agent, p, b, a.by, a.double, take, lease, alive);
       case "tab": return this.tabStep(agent, p, b, a, take, lease);
       case "nav": return this.navStep(agent, p, b, a.go, take, lease);
       case "hover": return this.hoverStep(agent, p, b, a.by, take, lease);
-      case "type": return this.typeStep(agent, p, b, a.text, a.ref, take, lease);
+      case "type": return this.typeStep(agent, p, b, a.text, a.ref, take, lease, alive);
       case "key": return this.keyStep(agent, p, b, a.key, take, lease);
       case "scroll": {
         // The target read can move the page's mouse onto the element: it carries the call's predicate (a stale call gets its reply).
         let at: Resolved | undefined;
         if (a.ref) {
           const ref = a.ref;
-          const cut = await this.deliver(p, agent, lease, async (valid) => { at = await b.resolve({ ref }, agent.key, valid); });
+          const cut = await this.deliver(p, agent, lease, async (valid) => { at = await b.resolve({ ref }, agent.key, () => valid() && alive(), undefined); }, alive);
           if (cut) return { reply: cut };
         }
         const late = this.stale(p, agent, lease);
@@ -627,9 +627,9 @@ export class ComputerService {
     }
   }
 
-  private async click(agent: AgentRef, p: Slot, b: BrowserLike, by: By, double: boolean, take: () => boolean, lease: Lease): Promise<Step> {
+  private async click(agent: AgentRef, p: Slot, b: BrowserLike, by: By, double: boolean, take: () => boolean, lease: Lease, alive: () => boolean): Promise<Step> {
     // session-browser S18: the pointer arrives before the page's mouse moves (inside the read, after the box is read).
-    const got = await this.resolveFirst(p, agent, lease, b, by, "arrow");
+    const got = await this.resolveFirst(p, agent, lease, b, by, "arrow", alive);
     if ("reply" in got) return { reply: got.reply };
     const r = got.r;
     // R81: a Take over and Hand back (or the process's replacement) during the target read ends the call here.
@@ -849,11 +849,11 @@ export class ComputerService {
   }
 
   /** D39: typing into a ref is a click on it and the typing, under one ask; after the click the focus is judged again. */
-  private async typeStep(agent: AgentRef, p: Slot, b: BrowserLike, text: string, ref: string | null, take: () => boolean, lease: Lease): Promise<Step> {
+  private async typeStep(agent: AgentRef, p: Slot, b: BrowserLike, text: string, ref: string | null, take: () => boolean, lease: Lease, alive: () => boolean): Promise<Step> {
     // A typed ref: the caret arrives at the field's corner before the page's mouse moves onto it (session-browser S18).
     let r: Resolved | null = null;
     if (ref) {
-      const got = await this.resolveFirst(p, agent, lease, b, { ref }, "caret");
+      const got = await this.resolveFirst(p, agent, lease, b, { ref }, "caret", alive);
       if ("reply" in got) return { reply: got.reply };
       r = got.r;
     }
@@ -973,7 +973,7 @@ export class ComputerService {
    *  pointer would show (R2): no hook otherwise. The hook answering false (the call stopped being current on the way) moves nothing
    *  and the step answers as a call that is no longer current does. R81 inside `resolve`: `valid` is looked at again after the hook,
    *  with nothing awaited between that look and the move. */
-  private async resolveFirst(p: Slot, agent: AgentRef, lease: Lease, b: BrowserLike, by: By, kind: "arrow" | "caret"): Promise<{ r: Resolved } | { reply: Reply }> {
+  private async resolveFirst(p: Slot, agent: AgentRef, lease: Lease, b: BrowserLike, by: By, kind: "arrow" | "caret", alive?: () => boolean): Promise<{ r: Resolved } | { reply: Reply }> {
     let cut: Reply | null = null;
     const arrive = this.pointerOn(p) ? async (at: Point, corner: Point, tab: number): Promise<boolean> => {
       const went = await this.travel(p, agent, lease, b, kind, tab, kind === "caret" ? corner : at);
@@ -981,9 +981,11 @@ export class ComputerService {
       return !went.reply;
     } : undefined;
     try {
-      return { r: await b.resolve(by, agent.key, () => this.current(p, agent, lease), arrive) };
+      return { r: await b.resolve(by, agent.key, () => this.current(p, agent, lease) && (alive?.() ?? true), arrive) };
     } catch (e) {
       if (cut) return { reply: cut };
+      // Before the action is claimed the read also ends with the call's deadline (the agent was told it did not run).
+      if (alive && !alive()) return { reply: fail(REFUSAL.late) };
       const late = e instanceof PageChanged ? this.stale(p, agent, lease) : null;
       if (late) return { reply: late };
       throw e;
@@ -1095,11 +1097,13 @@ export class ComputerService {
    *  input event (R81: the call is still current: this session holds the wheel, under the generation the call started
    *  with, from the process the registry holds; the browser checks the tab and page itself). When the predicate stopped
    *  it, the busy or changed reply; any other refusal (the page changed) goes on as the browser's error. */
-  private async deliver(p: Slot, agent: AgentRef, lease: Lease, send: (valid: () => boolean) => Promise<void>): Promise<Reply | null> {
+  private async deliver(p: Slot, agent: AgentRef, lease: Lease, send: (valid: () => boolean) => Promise<void>, alive?: () => boolean): Promise<Reply | null> {
     try {
       await send(() => this.current(p, agent, lease));
       return null;
     } catch (e) {
+      // A read that runs before the action is claimed (`alive`) also ends with the call's deadline.
+      if (alive && !alive()) return fail(REFUSAL.late);
       const late = e instanceof PageChanged ? this.stale(p, agent, lease) : null;
       if (late) return late;
       throw e;

@@ -11,7 +11,7 @@ import v8 from "node:v8";
 import vm from "node:vm";
 import electron from "electron";
 import { ComputerBrowser, clipAddress, type BrowserHooks, type Resolved } from "../../src/main/computer/browser";
-import { FocusMoved, forPerson, PageChanged } from "../../src/main/computer/cdp";
+import { CdpTimeout, FocusMoved, forPerson, PageChanged } from "../../src/main/computer/cdp";
 import { ConsoleLog } from "../../src/main/computer/console";
 import { LeavingRecords, PendingReads } from "../../src/main/computer/leaving";
 import { SecretMemory } from "../../src/main/computer/memory";
@@ -3144,4 +3144,20 @@ test("an element that cannot be scrolled into view still lets the action go on",
   await m.b.scroll(0, 120, () => true, at3);
   assert.equal(intoView(m.page), 2, "both tried");
   assert.deepEqual(m.page.mice().map((x) => x[0]).filter((t) => t === "mouseWheel"), ["mouseWheel"]);
+});
+
+test("a scroll into view that times out ends the action before anything is measured or delivered", async () => {
+  const timeout = () => { throw new CdpTimeout("The page did not answer within 5 s.", "The page did not answer DOM.scrollIntoViewIfNeeded within 5 s."); };
+  const m = withRef();
+  m.page.on.set("DOM.scrollIntoViewIfNeeded", timeout);
+  await assert.rejects(m.b.resolve({ ref: "e3" }, "s1", () => true), CdpTimeout);
+  assert.equal(m.page.sent.filter((x) => x.method === "DOM.getNodeForLocation").length, 0, "nothing was hit-tested");
+  assert.deepEqual(m.page.mice(), []);
+  // The same through a scroll onto a ref: no wheel after the timeout.
+  const s = withRef();
+  const at3 = await s.b.resolve({ ref: "e3" }, "s1", () => true);
+  s.page.on.set("DOM.scrollIntoViewIfNeeded", timeout);
+  s.page.sent.length = 0;
+  await assert.rejects(s.b.scroll(0, 120, () => true, at3), CdpTimeout);
+  assert.deepEqual(s.page.mice(), [], "no wheel after the timeout");
 });
