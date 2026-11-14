@@ -13,6 +13,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - computer.awake (default 4): how many session browsers keep their pages loaded. <!-- no-tour: a setting -->
 - A page that a program in a session opens (a dev server, a sign-in, Superpowers' visual companion) comes to that session's browser. <!-- no-tour: it happens by itself -->
 - Open in my browser sends the https page you are on to your Mac's browser, for a sign-in that needs a passkey or a password manager. <!-- tour: code.computer -->
+- A pointer shows where a session's agent is about to click, hover or type, with the session's name. <!-- tour: code.computer, sessions.computer -->
 - Four more browser tools for agents (switch or close a tab; back, forward and reload; hover; the page's console), a double click, and every action's reply now ends with the page as it is. <!-- no-tour: agent tools -->
 
 ### Changed

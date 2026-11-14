@@ -2,6 +2,17 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.7.0",
+      "entries": [
+        {
+          "id": "session-browser",
+          "title": "Every session has its own browser",
+          "body": "Each Code terminal and each Sessions thread now has its own browser, off until you turn it on, so two sessions in one folder no longer share tabs. Links you click in a session, and pages its programs open, come to that browser. The agent has more ways to drive it, and a pointer with the session's name shows where it is about to click, hover or type. Take over stops the agent's driving at once. Drag the browser's bar, or pick Side, Half or Wide, to make it bigger.",
+          "steps": ["code.computer", "code.computer-power", "code.computer-size", "sessions.computer"]
+        }
+      ]
+    },
+    {
       "version": "2.6.0",
       "entries": [
         {

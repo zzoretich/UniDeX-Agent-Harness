@@ -22,6 +22,7 @@ import { loadPeer, type PeerAddon } from "./computer/peer";
 import { AgentRegistry } from "./computer/registry";
 import { BrowserRecords } from "./computer/records";
 import { ComputerService, PAGE_GONE } from "./computer/service";
+import { imageSurface, Pointer, tagDrawer, type PointerSurface } from "./computer/pointer";
 import { SiteMarks } from "./computer/sites";
 import { Wheel } from "./computer/wheel";
 import { START_PAGE } from "../../../hud/src/data/computerStart";
@@ -293,6 +294,26 @@ const computerRecords = new BrowserRecords({
   file: path.join(app.getPath("userData"), "computer", "browsers.json"),
   log: (line) => console.warn(`[main] ${line}`),
 });
+// session-browser S18: the pointer drawn above a browser's tab. One drawer (a hidden window of main's own, made at its first
+// draw) and one ImageView per window, made on first use and disposed with its window; never a child of a tab's view, so a
+// screenshot (the tab's own capture) and the outline cannot hold it. The drawer is disposed at quit, and made again if the quit is
+// cancelled. A window that is absent, destroyed, hidden or minimised has no surface.
+let pointerDrawer: ReturnType<typeof tagDrawer> | null = null;
+const drawer = (): ReturnType<typeof tagDrawer> => (pointerDrawer ??= tagDrawer({ log: (line) => console.warn(`[main] ${line}`) }));
+const pointerSurfaces = new Map<BrowserWindow, ReturnType<typeof imageSurface>>();
+function pointerSurface(which: "main" | "pop"): PointerSurface | null {
+  const w = which === "main" ? win : computerPop?.win;
+  if (!w || w.isDestroyed() || !w.isVisible() || w.isMinimized()) return null;
+  let s = pointerSurfaces.get(w);
+  if (!s) {
+    const made = imageSurface({ window: w, tag: (kind, text, scale, dark) => drawer().draw(kind, text, scale, dark), has: (kind, text, scale, dark) => drawer().has(kind, text, scale, dark) });
+    s = made;
+    pointerSurfaces.set(w, made);
+    w.once("closed", () => { made.dispose(); pointerSurfaces.delete(w); });
+  }
+  return s;
+}
+const computerPointer = new Pointer({ surface: pointerSurface, log: (line) => console.warn(`[main] ${line}`) });
 /** The terminals and threads main holds: the one check the page's Computer calls and a program's open both use (policy/computer.ts sessionAllowed). */
 const heldSessions = { terminal: (id: string): boolean => ptyService.holdsOrigin(id), thread: (id: string): boolean => sessionService.has(id) };
 const computerService: ComputerService = new ComputerService({
@@ -324,6 +345,7 @@ const computerService: ComputerService = new ComputerService({
     if (agent.page === "chat" && agent.key.startsWith("chat:")) sessionService.noteEvent(agent.key.slice("chat:".length), line);
   },
   popOut: (session, show) => popOutComputer(session, show),
+  pointer: computerPointer,
   // session-browser S23: the check the page's calls use (registerComputerIpc below), for a program's open; S24, X4: the
   // external-open rule, so the e2e seam records Open in my browser as it records links, but waiting for the system's answer.
   held: (session) => sessionAllowed(session, heldSessions),
@@ -503,7 +525,8 @@ function popOutComputer(session: string | null, show: { label: string; on: boole
     });
     w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     w.webContents.on("will-navigate", (e) => e.preventDefault());
-    w.on("resize", () => { if (computerPop?.win === w) computerPop.view?.show(popBounds(w)); });
+    // The view takes the window's new box, then the pointer in it is kept or hidden (the pane's rectangle says nothing while popped out).
+    w.on("resize", () => { if (computerPop?.win === w) { computerPop.view?.show(popBounds(w)); computerService.popResized(); } });
     w.on("close", () => { if (computerPop?.win === w) popBack(); });
     w.on("blur", recheckAsks);
     w.on("hide", recheckAsks);
@@ -549,6 +572,10 @@ function shutdownComputer(): void {
   // Closes the records: nothing the shutdown does next (destroying browsers, cancelling asks) may rewrite them, and it
   // may run twice (before-quit, will-quit). A quit that fails reopens them when a browser is next made.
   computerService.flushForQuit();
+  // Nothing is drawn once the app quits, and the drawer's hidden window must not keep the quit from finishing.
+  computerPointer.hide();
+  pointerDrawer?.dispose();
+  pointerDrawer = null;
   for (const b of computerBrowsers.values()) { try { b.destroy(); } catch { /* already gone */ } }
   computerBrowsers.clear();
   computerService.forgetBrowsers();
@@ -900,4 +927,6 @@ if (!app.requestSingleInstanceLock()) {
   computerPageId: (session?: string) => computerService.activeWebContentsId(session),
   // The session the pane has selected, so a spec can turn its browser on (a browser starts off, session-browser S2).
   computerSelected: () => computerService.selectedSession(),
+  // The pointer as it is now (session-browser S18): shown, its point in the window's coordinates, the tag's text, the window.
+  pointer: () => computerPointer.state(),
 };

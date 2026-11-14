@@ -19,13 +19,13 @@ list at the top of app-smoke.md is the release process, not app behaviour: it is
 | Status | Items |
 |---|---|
 | covered | 167 |
-| covered in part | 119 |
+| covered in part | 120 |
 | N/A in the app | 49 |
 | not covered | 6 |
 | manual | 3 |
-| **total** | **344** |
+| **total** | **345** |
 
-Of the 295 items about the app (344 minus the 49 N/A), 286 are asserted (167 fully, 119 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
+Of the 296 items about the app (345 minus the 49 N/A), 287 are asserted (167 fully, 120 in part), 3 are manual (TM21, CP6, CP7), and the other 6 are
 not covered, for the reasons below. Every write surface is enabled and tested. The
 "in part" rows need something the fixture or the app lacks (a dispatched seat, a Codex database, the clipboard, the
 OS handing over an `agenticos://` link, a published update, a vault without the briefing routine, a host's model run,
@@ -536,6 +536,7 @@ again (`brain-ai`).
 | CP25 | Either host: a refusal reads as one sentence with a next step | covered | `computer-refusals.test.ts` loops over every entry of the table (one line, one sentence, the next step), and `computer.spec.ts` asserts the refusals its flows meet. |
 | CP26 | Either host: the agent's close of the last tab leaves the browser on with one new tab at the start page, with no card for the agent's own tab; the start tab it leaves asks before the agent closes it, and Deny keeps it | covered in part | `computer.spec.ts › computer_tab, computer_nav, computer_hover and computer_console work through the bridge` (Chat turns, both stand-ins): the card for the start tab and Deny, the agent's own last tab closing with no card, the tab line naming the start page instead of the closed page. `computer-service.test.ts` for a Code session. |
 | CP27 | Codex only, in order: before `aos upgrade` a Code session asks for the new tools and a Chat turn refuses them, then `aos upgrade`, then they run with no Codex prompt, in plugin and direct mode | covered in part | The approvals the upgrade writes are `cli/codex-host.test.js` and `cli/plugin-manifests.test.js`; the runtime's answer to an app that lacks a tool is `brain/scripts/test/computer-client.test.js`; the app's side is as CP19–CP24. A real Codex session, before and after `aos upgrade`: by hand. |
+| CP28 | Either host: a pointer with the session's name travels to a click, a hover and a typed field, in the main window and in the pop-out, is in no screenshot or outline the agent gets, and disappears at Take over, at Off and after 3 seconds | covered in part | `computer.spec.ts › the pointer shows the session's name at a click, in the main window and the pop-out, and is in neither the screenshot nor the outline` (a Chat turn's stand-in: the pointer's state through `__aosMain.pointer()` after a click in each window, the tag, the point within 2 px of the button, the screenshot and the outline the same shown and hidden, Take over hiding it), `computer-service.test.ts` (the order of the travel, the delivery and the pulse, the caret for typing, Take over during the travel delivering nothing, the hides, no delay for a browser off screen) and `computer-pointer.test.ts` (the travel, the drawing and the view). By hand (the smoke list's pointer item: a click, a hover and typing, Take over, Off and On, the pop-out, a screenshot after a click): how it looks, with the page showing through, no flicker, a click beside the pointer reaching the page, its size on a second display, in both themes, at the edges of the page and over a real site. |
 
 ## Launch sequence
 

@@ -17,10 +17,11 @@ import type { ComputerConfig } from "./config";
 import { judge, type AskWhy, type Focus, type Verdict } from "./gate";
 import type { Rect } from "./mask";
 import { REFUSAL } from "./refusals";
+import type { Point, Pointer } from "./pointer";
 import { OUTLINE_MAX, UNREAD, withPage } from "./reply";
 import { hideAfterOrigin } from "./snapshot";
 import type { AgentRef } from "./registry";
-import { cleanTitle } from "./title";
+import { cleanTitle, tagText } from "./title";
 import type { SiteMarks } from "./sites";
 import type { Holder, Wheel } from "./wheel";
 import { CODE_KEY } from "../policy/computer";
@@ -34,7 +35,7 @@ export interface LogLine { at: number; session: string; text: string }
 export interface ComputerState { session: string; label: string; tabs: TabInfo[]; holder: Holder; asks: readonly Ask[]; log: readonly LogLine[]; marked: boolean; poppedOut: boolean; power: ComputerPower }
 
 /** The part of `ComputerBrowser` the service drives. */
-export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "openTab" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled">;
+export type BrowserLike = Pick<ComputerBrowser, "tabs" | "activeWebContentsId" | "pageToken" | "open" | "openTab" | "select" | "close" | "nav" | "snapshot" | "console" | "screenshot" | "resolve" | "focus" | "scrub" | "click" | "hoverAt" | "entry" | "navEntry" | "tabUid" | "tabIndex" | "ownTab" | "tabToken" | "type" | "key" | "scroll" | "show" | "destroy" | "sleep" | "wake" | "asleep" | "restore" | "realAddresses" | "activeAddress" | "settled" | "viewBox" | "windowPoint" | "focusCorner">;
 
 /** The tabs without `about:blank` (a tab that has not loaded yet is not worth restoring), the active index following its tab. */
 function withoutBlank(t: { urls: string[]; active: number }): { urls: string[]; active: number } {
@@ -83,6 +84,10 @@ export interface ServiceOptions {
   outside: (url: string) => Promise<boolean>;
   /** A line for main's log. Never an address or an id (session-browser S23). */
   log?: (line: string) => void;
+  /** The pointer main draws above the browser (session-browser S18): a click, a hover and typing travel it to the target before
+   *  the page's mouse moves and before anything is delivered, and it hides at once at a Take over, a switch off and when the page
+   *  under it goes. Absent: no pointer, no delay. */
+  pointer?: Pick<Pointer, "moveTo" | "pulse" | "touch" | "hide" | "warm" | "keepWithin">;
   clock?: Clock;
 }
 
@@ -131,6 +136,8 @@ const USER = "You";
  *  (the browser answers `once: false`), since that press was sent. */
 const DOUBLE_ONCE = "the second click was not sent";
 const LOG_MAX = 200;
+/** The most a read of the focused field's corner may take before typing goes on with no pointer (session-browser S18). */
+const CORNER_MS = 150;
 /** How long a settled ask's reply stays for `computer_wait`. */
 const KEEP_MS = 120_000;
 const POLL_MS = 500;
@@ -361,6 +368,10 @@ export class ComputerService {
   private stamp = 0;
   private bounds: Rect | null = null;
   private popped = false;
+  /** The session whose browser the pointer last travelled in (session-browser S18): a hide for another session is none. */
+  private pointerFor: string | null = null;
+  /** The uid of the tab the pointer was last drawn over: a tab brought in front that is this one covers nothing new. */
+  private pointerTab: number | null = null;
   /** Set by `flushForQuit`: records are closed, nothing is tracked or written. A browser made later (a quit that failed)
    *  opens them again. */
   private closed = false;
@@ -603,7 +614,10 @@ export class ComputerService {
   }
 
   private async click(agent: AgentRef, p: Slot, b: BrowserLike, by: By, double: boolean, take: () => boolean, lease: Lease): Promise<Step> {
-    const r = await b.resolve(by, agent.key);
+    // session-browser S18: the pointer arrives before the page's mouse moves (inside the read, after the box is read).
+    const got = await this.resolveFirst(p, agent, lease, b, by, "arrow");
+    if ("reply" in got) return { reply: got.reply };
+    const r = got.r;
     // R81: a Take over and Hand back (or the process's replacement) during the target read ends the call here.
     const read = this.stale(p, agent, lease);
     if (read) return { reply: read };
@@ -614,11 +628,17 @@ export class ComputerService {
     // A double click is a second act on the page, so the card and the log say so (session-browser S17).
     const verb = double ? "Double-click" : "Click", done = double ? "Double-clicked" : "Clicked";
     const run = async (x: Resolved): Promise<Reply> => {
+      // session-browser S18: the pointer shows (again, after a card) at the target the press will land on: where it already is
+      // this costs nothing. The travel is an await, so it goes BEFORE the look below: R81, nothing is awaited between that look
+      // and the delivery.
+      const went = await this.travel(p, agent, lease, b, "arrow", x.tab, x.point);
+      if (went.reply) return went.reply;
       const late = this.stale(p, agent, lease);
       if (late) return late;
       let once = false;
       const lost = await this.deliver(p, agent, lease, async (valid) => { once = (await b.click(x, valid, { double })).once; });
       if (lost) return lost;
+      if (went.moved) this.pulse(p);
       const since = this.clock.now();
       // A double click whose first click changed the page (PR 5, A2): the first click happened, so this is an answer, not a
       // failure (a retry would raise a second card for what already ran), with the page as it is now.
@@ -782,25 +802,24 @@ export class ComputerService {
     };
   }
 
-  /** session-browser S17: the pointer moved onto a ref or a point (hover styles and menus), nothing pressed. The target is
+  /** session-browser S17: the page's mouse moved onto a ref or a point (hover styles and menus), nothing pressed. The target is
    *  resolved as a click's is; the gate lets a hover go, but a Read only session never gets here. */
   private async hoverStep(agent: AgentRef, p: Slot, b: BrowserLike, by: By, take: () => boolean, lease: Lease): Promise<Step> {
-    // The move IS the act (PR 5, A4): the call takes the computer before anything moves the pointer, and the target read's own
-    // move onto the point goes only while the call is current, so a person who holds the wheel never sees the pointer move.
+    // The move IS the act (PR 5, A4): the call takes the computer before anything moves the page's mouse, and the target read's
+    // own move onto the point goes only while the call is current, so a person who holds the wheel never sees the page react.
     if (!take()) return { reply: fail(REFUSAL.late) };
-    let r: Resolved;
-    try {
-      r = await b.resolve(by, agent.key, () => this.current(p, agent, lease));
-    } catch (e) {
-      const late = e instanceof PageChanged ? this.stale(p, agent, lease) : null;
-      if (late) return { reply: late };
-      throw e;
-    }
+    // session-browser S18: the pointer arrives before the page's mouse moves (for a hover the move IS the act).
+    const got = await this.resolveFirst(p, agent, lease, b, by, "arrow");
+    if ("reply" in got) return { reply: got.reply };
+    const r = got.r;
     const read = this.stale(p, agent, lease);
     if (read) return { reply: read };
     const need = this.need(judge({ kind: "hover" }, { access: agent.access, marked: this.markedAt(b, r.tab) }), null, this.siteAt(b, r.tab));
     if (need && typeof need === "object") return { reply: fail(need.refuse) };
     const did = "ref" in by ? by.ref : `at (${by.x}, ${by.y})`;
+    // The look again after the gate (R81: nothing is awaited between it and the delivery).
+    const late = this.stale(p, agent, lease);
+    if (late) return { reply: late };
     const lost = await this.deliver(p, agent, lease, (valid) => b.hoverAt(r, valid));
     if (lost) return { reply: lost };
     const since = this.clock.now();
@@ -810,7 +829,13 @@ export class ComputerService {
 
   /** D39: typing into a ref is a click on it and the typing, under one ask; after the click the focus is judged again. */
   private async typeStep(agent: AgentRef, p: Slot, b: BrowserLike, text: string, ref: string | null, take: () => boolean, lease: Lease): Promise<Step> {
-    const r = ref ? await b.resolve({ ref }, agent.key) : null;
+    // A typed ref: the caret arrives at the field's corner before the page's mouse moves onto it (session-browser S18).
+    let r: Resolved | null = null;
+    if (ref) {
+      const got = await this.resolveFirst(p, agent, lease, b, { ref }, "caret");
+      if ("reply" in got) return { reply: got.reply };
+      r = got.r;
+    }
     // The page token and tab are read before the focus and compared after it, so a navigation during the read refuses.
     const token = r ? r.pageToken : b.pageToken();
     const tab = r ? r.tab : this.active(b);
@@ -834,6 +859,12 @@ export class ComputerService {
     }
     let fresh = r;
     const run = async (approved: readonly AskWhy[]): Promise<Reply> => {
+      // session-browser S18: the caret shows at the field's top-left corner (again, after a card; where it is, this costs nothing)
+      // before the first look below (the field's own click is not pulsed). With no ref the field is the one with focus, whose
+      // corner is read only when a pointer would show, and for 150 ms at most.
+      const spot = fresh ? { tab: fresh.tab, corner: fresh.corner as Point | null } : { tab, corner: this.pointerOn(p) ? await this.cornerOf(b, p, agent, lease) : null };
+      const went = await this.travel(p, agent, lease, b, "caret", spot.tab, spot.corner);
+      if (went.reply) return went.reply;
       const late = this.stale(p, agent, lease);
       if (late) return late;
       // R76: the typing goes into the element judged: the focus read now (after a ref's click) or the one the gate judged.
@@ -852,7 +883,7 @@ export class ComputerService {
         if (v && !approved.includes(v)) return refuseAt(REFUSAL.clickMovedFocus, this.url(b));
         into = idOf(now);
       }
-      return this.typeInto(agent, p, b, text, fresh ? { tab: fresh.tab, pageToken: fresh.pageToken } : { tab, pageToken: token }, into, lease);
+      return this.typeInto(agent, p, b, text, fresh ? { tab: fresh.tab, pageToken: fresh.pageToken } : { tab, pageToken: token }, into, lease, went.moved);
     };
     if (!whys.length) return { reply: take() ? await run([]) : fail(REFUSAL.late) };
     return {
@@ -915,6 +946,130 @@ export class ComputerService {
     };
   }
 
+  /** session-browser S18: the read of the target a click, a hover or a typed ref acts on, with the pointer's travel inside it: the
+   *  pointer arrives (at the point; a caret at the field's corner) after the target's box is read and before the page's mouse moves,
+   *  so a page that reacts to its mouse (a menu, a tooltip) reacts after the person has seen the pointer arrive. Only while a
+   *  pointer would show (R2): no hook otherwise. The hook answering false (the call stopped being current on the way) moves nothing
+   *  and the step answers as a call that is no longer current does. R81 inside `resolve`: `valid` is looked at again after the hook,
+   *  with nothing awaited between that look and the move. */
+  private async resolveFirst(p: Slot, agent: AgentRef, lease: Lease, b: BrowserLike, by: By, kind: "arrow" | "caret"): Promise<{ r: Resolved } | { reply: Reply }> {
+    let cut: Reply | null = null;
+    const arrive = this.pointerOn(p) ? async (at: Point, corner: Point, tab: number): Promise<boolean> => {
+      const went = await this.travel(p, agent, lease, b, kind, tab, kind === "caret" ? corner : at);
+      cut = went.reply;
+      return !went.reply;
+    } : undefined;
+    try {
+      return { r: await b.resolve(by, agent.key, () => this.current(p, agent, lease), arrive) };
+    } catch (e) {
+      if (cut) return { reply: cut };
+      const late = e instanceof PageChanged ? this.stale(p, agent, lease) : null;
+      if (late) return { reply: late };
+      throw e;
+    }
+  }
+
+  /** The focused field's corner for the caret, read for 150 ms at most on the service's clock: a read that is late or fails gives
+   *  no pointer, and the typing goes on at once (session-browser S18). */
+  private cornerOf(b: BrowserLike, p: Slot, agent: AgentRef, lease: Lease): Promise<Point | null> {
+    return new Promise<Point | null>((done) => {
+      const timer = this.clock.setTimeout(() => done(null), CORNER_MS);
+      const end = (c: Point | null): void => { this.clock.clearTimeout(timer); done(c); };
+      b.focusCorner(() => this.current(p, agent, lease)).then(end, () => end(null));
+    });
+  }
+
+  /** Whether a pointer would show for this session: one is wired and the session's browser is on screen (selected, with a
+   *  rectangle or popped out). A browser that is not on screen gets no pointer and no delay (session-browser S18). */
+  private pointerOn(p: Slot): boolean {
+    return !!this.o.pointer && this.onScreen(p.key);
+  }
+
+  /** session-browser S18: the pointer travels to `point` (a point of the tab's page) before an action is delivered. `reply` is
+   *  null to go on; otherwise the reply the call ends with: false from the pointer means the call stopped being current on the
+   *  way (a Take over, a switch off) or ran past its deadline, answered as a stale call is, or as a late one; nothing is
+   *  delivered. `moved` says whether the pointer was asked to travel for this action (a click pulses only then). It never turns a step
+   *  into a failure: no pointer, a browser not on screen, a target the browser cannot place, or a pointer that throws goes on as
+   *  if there were none. */
+  private async travel(p: Slot, agent: AgentRef, lease: Lease, b: BrowserLike, kind: "arrow" | "caret", tab: number, point: Point | null): Promise<{ reply: Reply | null; moved: boolean }> {
+    const pointer = this.o.pointer;
+    if (!pointer || !point || !this.pointerOn(p)) return { reply: null, moved: false };
+    const pastDeadline = (): boolean => lease.until !== null && this.clock.now() >= lease.until;
+    let alive: boolean;
+    try {
+      const to = b.windowPoint(point, tab);
+      const within = b.viewBox();
+      if (!to || !within) return { reply: null, moved: false };
+      this.pointerFor = p.key;
+      this.pointerTab = b.tabUid(tab);
+      alive = await pointer.moveTo({ window: this.popped ? "pop" : "main", to, name: this.labelOf(p.key), kind, within, alive: () => this.current(p, agent, lease) && !pastDeadline() });
+    } catch {
+      try { this.o.log?.("the pointer could not be shown"); } catch { /* main's log is not the service's concern */ }
+      return { reply: null, moved: false };
+    }
+    if (alive) return { reply: null, moved: true };
+    // Stale says why a call that is no longer current ended; a call that ran out of its time on the way is late; a pointer that
+    // answers false with neither has no sentence of its own: it is the changed-page reply.
+    return { reply: this.stale(p, agent, lease) ?? (pastDeadline() ? fail(REFUSAL.late) : refuseAt(REFUSAL.changed, this.url(b))), moved: true };
+  }
+
+  /** The press image, after a click that travelled was delivered: only while the pointer on screen was drawn for this session
+   *  (another session's pointer may have taken the screen while this click was being delivered). */
+  private pulse(p: Slot): void {
+    if (this.pointerFor !== p.key) return;
+    try { this.o.pointer?.pulse(); } catch { /* a pointer that fails never fails the click */ }
+  }
+
+  /** The browser says the tab in front may have changed (`page`: its main frame committed another document). The pointer goes only
+   *  when the tab in front is not the one it was drawn over, or the page in it is another one: selecting the tab already in front
+   *  or closing a background tab covers nothing. */
+  private fronted(p: Slot, page: boolean): void {
+    if (p.key !== this.pointerFor) return;
+    let same = false;
+    try { const b = p.browser; same = !page && !!b && this.pointerTab !== null && b.tabUid(this.active(b)) === this.pointerTab; } catch { /* cannot tell: hide */ }
+    if (!same) this.hidePointer(p.key);
+  }
+
+  /** The caret stays while a long typing goes on and when it ends (the pointer's own 3 s start from the last touch). */
+  private touchPointer(p: Slot): void {
+    if (this.pointerFor !== p.key) return;
+    try { this.o.pointer?.touch(); } catch { /* a pointer that fails never fails the typing */ }
+  }
+
+  /** The view's box changed or the pop-out was resized: the pointer drawn for the selected session stays if its image still lies
+   *  inside the view's new box and the box's origin did not move; otherwise it hides at once (session-browser S18). */
+  private keepPointer(): void {
+    if (!this.o.pointer || this.pointerFor === null || this.pointerFor !== this.selected) return;
+    let box: Rect | null = null;
+    try { box = this.slots.get(this.selected)?.browser?.viewBox() ?? null; } catch { /* a browser that cannot say has no box */ }
+    if (box) { try { this.o.pointer.keepWithin(box); } catch { /* a pointer that fails shows nothing */ } } else this.hidePointer();
+  }
+
+  /** The pop-out window was resized (index.ts, after the view took its new box): the pointer in it is kept or hidden as for a
+   *  pane change. The pane's own rectangle says nothing while popped out, so this is the one place the pop-out's box reaches it. */
+  popResized(): void {
+    if (this.popped) this.keepPointer();
+  }
+
+  /** Makes the pointer's images for the selected session's name ready in the background, once its browser is on screen and
+   *  awake (a cold first draw would take longer than an action waits for one). */
+  private warmPointer(): void {
+    const key = this.selected;
+    if (!this.o.pointer || this.quitting || !key || !this.onScreen(key) || this.slots.get(key)?.power !== "awake") return;
+    try { this.o.pointer.warm({ window: this.popped ? "pop" : "main", name: this.labelOf(key) }); } catch { /* nothing to warm */ }
+  }
+
+  /** The pointer goes at once: whenever the window stops showing the browser it was drawn for (session-browser S18). Without
+   *  `session`: whatever is shown goes. */
+  private hidePointer(session?: string): void {
+    // A switch-off, a closed tab, a destroyed browser or a stopped turn of ANOTHER session hides nothing (it would cut that
+    // session's travel short): `session` is the one the event is for, and the pointer was drawn for `pointerFor`.
+    if (session !== undefined && session !== this.pointerFor) return;
+    this.pointerFor = null;
+    this.pointerTab = null;
+    try { this.o.pointer?.hide(); } catch { /* nothing to hide */ }
+  }
+
   /** R76 (S-AC-03): runs a click's or a key's delivery with the validity predicate the browser checks just before each
    *  input event (R81: the call is still current: this session holds the wheel, under the generation the call started
    *  with, from the process the registry holds; the browser checks the tab and page itself). When the predicate stopped
@@ -934,12 +1089,14 @@ export class ComputerService {
    *  (I3b) once the tab or page it was judged on is no longer the one in front. R76: the browser checks the wheel just
    *  before each chunk and key event, after its focus reads too. R81: and only while the call is current (`lease`): a
    *  Take over and Hand back between chunks stops it as a Take over does. */
-  private async typeInto(agent: AgentRef, p: Slot, b: BrowserLike, text: string, at: Judged, focus: FocusId, lease: Lease): Promise<Reply> {
-    const keepGoing = (): boolean => this.current(p, agent, lease);
+  private async typeInto(agent: AgentRef, p: Slot, b: BrowserLike, text: string, at: Judged, focus: FocusId, lease: Lease, shown: boolean): Promise<Reply> {
+    // Only a typing whose own travel was asked keeps a caret (one that showed nothing must not keep an earlier click's arrow). Each look between chunks keeps it (a typing of a few thousand characters runs past the pointer's 3 s).
+    const keepGoing = (): boolean => { if (shown) this.touchPointer(p); return this.current(p, agent, lease); };
     // The user holds the wheel, or held it since the call started and handed it back; otherwise the hold is gone.
     const stopper = (): string => (this.o.wheel.holder(p.key)?.kind === "user" || (this.holds(p.key, agent.key) && this.registered(agent)) ? "the user took over" : NOT_HELD);
     try {
       await b.type(text, keepGoing, at, focus);
+      if (shown) this.touchPointer(p);
     } catch (e) {
       if (!(e instanceof PageChanged)) throw e;
       this.line(p, agent.label, "Typing stopped part way", agent);
@@ -1315,6 +1472,7 @@ export class ComputerService {
     const q = session ? this.slot(session) : null;
     if (q) { q.named = null; this.touch(q); this.wakeUp(q, false); }
     if (session !== this.selected) {
+      this.hidePointer();
       if (this.selected) this.slots.get(this.selected)?.browser?.show(null);
       this.selected = session;
       if (session) {
@@ -1325,6 +1483,7 @@ export class ComputerService {
     }
     // The browser being left no longer counts as selected, so the limit is applied after the change.
     if (q) this.trim(q);
+    this.warmPointer();
     return session ? this.state(this.slot(session)) : null;
   }
 
@@ -1332,9 +1491,17 @@ export class ComputerService {
    *  window places the view; the rectangle is kept for when the pane pops back in.
    *  `inView`: the page's pane is in view (its page is the one showing), with or without a rectangle; a `power` ask's notice reads it (session-browser S12). */
   show(bounds: Rect | null, inView: boolean = bounds !== null): void {
+    const before = this.bounds;
     this.bounds = bounds;
     this.inView = inView;
+    // The view went: its pointer goes. (Popped out, the pane's rectangle is not the view's box and says nothing about it.)
+    if (!bounds && !this.popped) this.hidePointer();
+    if (bounds && !before) this.warmPointer();
     if (this.selected && !this.popped) this.slots.get(this.selected)?.browser?.show(bounds);
+    // The view's box changed (the pane's rectangle did, as each new activity line shrinks it): the pointer drawn for this session
+    // stays if it still lies inside the view's new box and the box's origin did not move; otherwise it hides at once.
+    const changed = !!before && !!bounds && (before.x !== bounds.x || before.y !== bounds.y || before.width !== bounds.width || before.height !== bounds.height);
+    if (changed && !this.popped) this.keepPointer();
   }
 
   /** The session the pane has selected, or null. Only the e2e seam (`__aosMain.computerSelected`) calls it. */
@@ -1622,6 +1789,7 @@ export class ComputerService {
   /** Take over (agent-computer D5, D31): the person drives, the session's pending asks are cancelled, and any typing stops
    *  at its next chunk. */
   takeOver(): void {
+    this.hidePointer();
     const place = this.selected;
     if (!place || this.slot(place).power === "off") return;
     const h = this.o.wheel.holder(place);
@@ -1662,8 +1830,11 @@ export class ComputerService {
     const p = this.slot(this.selected);
     if (p.power === "off") return;
     this.browserOf(p);
+    this.hidePointer();
     this.popped = true;
     this.tellPopOut(true);
+    // After the app has made the pop-out's window: the warm asks that window's surface, which exists only now.
+    this.warmPointer();
     this.refresh(this.selected);
   }
 
@@ -1685,6 +1856,7 @@ export class ComputerService {
   /** The pop-out window closed (the app has moved the views back to the main window): the selected computer goes back
    *  to the pane's latest rectangle. */
   popIn(): void {
+    this.hidePointer();
     this.popped = false;
     if (this.selected) this.slots.get(this.selected)?.browser?.show(this.bounds);
     this.refresh();
@@ -1696,6 +1868,8 @@ export class ComputerService {
   agentGone(agent: AgentRef): void {
     const live = this.o.liveAgent?.(agent.key);
     if (live && live.pid !== agent.pid) return;
+    // The turn is over (or stopped): the pointer drawn for it goes (another session's stays).
+    this.hidePointer(agent.key);
     this.o.wheel.turnEnded(agent.key);
     this.o.broker.cancel((a) => a.session === agent.key, "the turn ended");
     this.agents.delete(agent.key);
@@ -1724,6 +1898,7 @@ export class ComputerService {
    *  one's tabs (session-browser S1). Chat sessions are untouched: a thread's id is stable. Safe to call twice. */
   pageGone(): void {
     this.inView = false;
+    this.hidePointer();
     if (this.releasing !== null) { this.clock.clearTimeout(this.releasing); this.releasing = null; }
     for (const [key, p] of [...this.slots]) {
       if (!key.startsWith("code:")) {
@@ -1809,6 +1984,8 @@ export class ComputerService {
   describe(session: string, d: { title?: string; conversation?: Conversation }): void {
     const p = this.slot(session);
     const title = d.title === undefined ? "" : cleanTitle(d.title);
+    // A host's spinner changes a title several times a second: the pointer's images are made again only when the tag changes.
+    const before = tagText(this.labelOf(session));
     if (title) p.title = title;
     if (d.conversation) {
       p.conversation = { host: d.conversation.host, id: d.conversation.id };
@@ -1817,7 +1994,7 @@ export class ComputerService {
         if (r && r.tabs.length) p.remembered = { urls: r.tabs, active: r.active };
       }
     }
-    if (this.selected === session) this.tellPopOut();
+    if (this.selected === session) { if (tagText(this.labelOf(session)) !== before) this.warmPointer(); this.tellPopOut(); }
     this.refresh(session);
   }
 
@@ -1856,6 +2033,8 @@ export class ComputerService {
     if (t?.conversation) p.conversation = t.conversation;
     this.slots.set(to, p);
     if (this.selected === from) this.selected = to;
+    // The pointer drawn for the session is the moved session's still.
+    if (this.pointerFor === from) this.pointerFor = to;
     // A `to` that was selected stays so, now showing the moved browser where the pane (or the pop-out) puts it.
     if (this.selected === to && t) {
       if (!this.popped) p.browser?.show(this.bounds);
@@ -1949,6 +2128,7 @@ export class ComputerService {
 
   /** Destroys a slot's browser, if it has one, and tells the app to forget its handle (pageGone and Off share it). */
   private dropBrowser(p: Slot): void {
+    this.hidePointer(p.key);
     const b = p.browser;
     p.browser = null;
     p.waking = null;
@@ -2020,7 +2200,7 @@ export class ComputerService {
     this.browserOf(p);
     this.touch(p);
     this.trim(p);
-    if (this.selected === p.key) this.tellPopOut();
+    if (this.selected === p.key) { this.warmPointer(); this.tellPopOut(); }
   }
 
   private touch(p: Slot): void { p.used = ++this.stamp; }
@@ -2072,6 +2252,7 @@ export class ComputerService {
     // A copy: On's `done` compares `reopening` by identity, and an earlier On finishing must not clear a later one's (A8).
     p.remembered = remember && p.reopening ? { urls: [...p.reopening.urls], active: p.reopening.active } : remember && real && real.urls.length ? real : null;
     p.power = "off";
+    this.hidePointer(p.key);
     // The pages a card was holding go with a line, as a Not now's do (session-browser A7); the person's own act, so main's log says nothing.
     this.dropHeld(p, null);
     this.dropBrowser(p);
@@ -2089,6 +2270,7 @@ export class ComputerService {
     if (!t) return false;
     if (tabs.length === 1) { this.switchOff(p, false, false, "the user closed the tab", REFUSAL.tabClosed); this.refresh(p.key); return true; }
     if (t.active) {
+      this.hidePointer(p.key);
       this.o.wheel.interrupt(p.key);
       this.o.broker.cancel((a) => a.computer === p.key, "the user closed the tab");
       this.stop(p, REFUSAL.tabClosed);
@@ -2101,6 +2283,7 @@ export class ComputerService {
    *  update's quit that failed). */
   forgetBrowsers(): void {
     // Never recomputes a record: the browsers are destroyed already and would answer "no tabs".
+    this.hidePointer();
     for (const p of this.slots.values()) p.browser = null;
   }
 
@@ -2149,7 +2332,7 @@ export class ComputerService {
     if (!p) return;
     p.named = null;
     this.refresh(session);
-    if (session === this.selected) this.tellPopOut();
+    if (session === this.selected) { this.warmPointer(); this.tellPopOut(); }
   }
 
   private slot(key: string): Slot {
@@ -2170,6 +2353,8 @@ export class ComputerService {
         ask: (i) => this.pageAsk(p.key, i),
         note: (text) => { void this.pageNote(p.key, text); },
         changed: () => this.refresh(p.key),
+        // The tab in front changed, or (`page`) its main frame committed another document: the pointer drawn over the old page goes.
+        front: (page) => this.fronted(p, !!page),
         agentDrives: () => this.o.wheel.holder(p.key)?.kind === "agent",
       });
       if (p.key === this.selected && !this.popped) p.browser.show(this.bounds);

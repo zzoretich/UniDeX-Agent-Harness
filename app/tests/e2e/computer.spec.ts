@@ -977,6 +977,114 @@ test.describe("both hosts, the Computer surface on", () => {
     expectNoErrors(h);
   });
 
+  test("the pointer shows the session's name at a click, in the main window and the pop-out, and is in neither the screenshot nor the outline (session-browser S18)", async () => {
+    const h = app();
+    const { win, app: electron } = h;
+    const name = "computer: pointer";
+    const a = await chatAgent(h, { text: name });
+    type PointerState = { shown: boolean; at: { x: number; y: number } | null; tag: string; window: "main" | "pop" | null };
+    const pointer = (): Promise<PointerState> => electron.evaluate(() => (globalThis as unknown as { __aosMain: { pointer(): PointerState } }).__aosMain.pointer());
+    const p = pane(win, "chat");
+    try {
+      expectReply(await a.call("computer_open", { url: repoUrl() }), { isError: false });
+      const details = refOf((await a.call("computer_snapshot")).text, "button", "Show details");
+      // The button's centre in the page's viewport, and the view's origin in the window it is in (the pane's view box in the main
+      // window; the pop-out's view starts at the window's own origin). The suite runs the HUD at zoom 1, so the pane's CSS
+      // pixels are the window's pixels.
+      const centre = () => inPage<{ x: number; y: number }>(electron, repoUrl(), `(() => { const r = document.getElementById("details").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      const viewOrigin = () => p.locator(".aos-cp-view").evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y }; });
+      const near = (got: { x: number; y: number } | null, want: { x: number; y: number }): boolean =>
+        !!got && Math.abs(got.x - want.x) <= 2 && Math.abs(got.y - want.y) <= 2;
+      /** Starts a click and, while it runs, polls main's pointer until it is shown at `want` in `window` with the session's name;
+       *  then lets the click finish. Never depends on the pointer still being shown after the reply (it hides after 3 s). */
+      const clickAndSee = async (window: "main" | "pop", want: () => Promise<{ x: number; y: number }>): Promise<void> => {
+        const reply = a.call("computer_click", { ref: details });
+        // Not awaited yet: a rejection while the polls run must not go unhandled (it is awaited, and so reported, below).
+        reply.catch(() => undefined);
+        const target = await want();
+        let seen: PointerState | null = null;
+        await expect.poll(async () => { const s = await pointer(); seen = s; return s.shown && s.window === window && s.tag === name && near(s.at, target); }, { timeout: 8_000, message: `the pointer shows at the button in ${window}` }).toBe(true);
+        expect(seen).not.toBeNull();
+        expectReply(await reply, { isError: false });
+      };
+
+      // A first click warms the drawer (a cold first draw can take longer than an action waits for it); it may show no pointer.
+      expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+
+      // The main window: the pointer is at the button with the session's name.
+      await clickAndSee("main", async () => { const c = await centre(); const o = await viewOrigin(); return { x: o.x + c.x, y: o.y + c.y }; });
+
+      // Neither the screenshot (the tab's own capture) nor the outline holds it. Both are looks: the same as after it has hidden
+      // itself, byte for byte for the picture. The looks are taken with no click in flight (a live click can catch the button's
+      // pressed look): after a click's reply, while the pointer still shows; on a slow machine it may have gone, so up to three tries.
+      let shotShown: AgentReply | null = null;
+      let outlineShown = "";
+      for (let attempt = 0; attempt < 3 && !shotShown; attempt++) {
+        await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+        expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+        const shot = await a.call("computer_screenshot");
+        const outline = (await a.call("computer_snapshot")).text;
+        if ((await pointer()).shown) { shotShown = shot; outlineShown = outline; }
+      }
+      expect(shotShown, "the pointer was still shown while the agent looked").not.toBeNull();
+      expect(shotShown!.image).toBeTruthy();
+      expect(outlineShown).not.toMatch(/pointer/i);
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+      const quiet = await a.call("computer_screenshot");
+      const quietOutline = (await a.call("computer_snapshot")).text;
+      expect(shotShown!.image, "the picture is the page, with no pointer in it").toBe(quiet.image);
+      expect(outlineShown, "the outline is the page's, as without a pointer").toBe(quietOutline);
+
+      // Take over while it is shown hides it at once. The click is not awaited before the pointer is needed: its own outcome is
+      // either delivered before the Take over or refused by it.
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+      const taken = a.call("computer_click", { ref: details });
+      taken.catch(() => undefined);   // not awaited until the Take over below: a rejection meanwhile is not unhandled
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000, message: "the pointer shows" }).toBe(true);
+      await p.locator(".aos-cp-drivebtn", { hasText: "Take over" }).click();
+      await expect.poll(async () => (await pointer()).shown, { timeout: 1_000 }).toBe(false);
+      const outcome = await taken;
+      expect(outcome.text, "delivered before the Take over, or refused by it").toMatch(/^(Clicked |busy: the user is driving)/);
+      await p.locator(".aos-cp-drivebtn", { hasText: "Hand back" }).click();
+
+      // The pointer goes when the page under it goes (session-browser S18): a tab brought in front covers it, so it hides at once and
+      // does not wait for its 3 s. A second tab is opened and left; the pointer is shown by a click in the first, then the second
+      // is switched to. A pointer that had hidden on its own before the switch (a slow machine) proves nothing: try again, up to three times.
+      expectReply(await a.call("computer_open", { url: repoUrl(), newTab: true }), { isError: false });
+      expectReply(await a.call("computer_tab", { index: 0 }), { isError: false });
+      let hiddenBySwitch = false;
+      for (let attempt = 0; attempt < 3 && !hiddenBySwitch; attempt++) {
+        await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+        expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+        if (!(await pointer()).shown) continue;
+        expectReply(await a.call("computer_tab", { index: 1 }), { isError: false });
+        await expect.poll(async () => (await pointer()).shown, { timeout: 1_500, message: "a tab switch hides the pointer at once" }).toBe(false);
+        hiddenBySwitch = true;
+        expectReply(await a.call("computer_tab", { index: 0 }), { isError: false });
+      }
+      expect(hiddenBySwitch, "the pointer was shown when the tab was switched").toBe(true);
+      expectReply(await a.call("computer_tab", { index: 1, close: true }), { isError: false });
+
+      // The pop-out window: the same, drawn in that window, whose view starts at its origin.
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+      await p.locator(".aos-cp-popout").click();
+      await expect(p).toHaveClass(/is-popped/);
+      await expect.poll(() => electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")).length)).toBe(1);
+      // A first click in the pop-out warms its window's drawer, as the one in the main window does; it may show no pointer.
+      expectReply(await a.call("computer_click", { ref: details }), { isError: false });
+      await expect.poll(async () => (await pointer()).shown, { timeout: 8_000 }).toBe(false);
+      await clickAndSee("pop", centre);
+    } finally {
+      try {
+        // Leaves no pop-out open: the browser goes back to the pane (as the pop-out test does), so a later test's own pop-out press is the first.
+        await electron.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")) w.close(); });
+        await expect(p).not.toHaveClass(/is-popped/);
+      } finally { await a.finish(); }
+    }
+    expectNoErrors(h);
+  });
+
   test("a process the app did not start is refused at hello; so are a session's second connection and a server behind a shell (D18)", async () => {
     const h = app();
     const outsider = await startOutsider("claude");

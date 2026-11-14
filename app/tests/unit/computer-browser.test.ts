@@ -166,7 +166,7 @@ function make(page = new FakePage(), answer: () => Promise<boolean> = async () =
 const at = (tab: { seq: number }) => ({ tab: 0, pageToken: `1.${tab.seq}` });
 const resolved = (o: Partial<Resolved> = {}): Resolved => ({
   target: { role: "button", name: "Go", inForm: false, fileInput: false }, shown: "Go", sensitive: false, backendNodeId: 10, judged: [10],
-  point: { x: 5, y: 5 }, pageToken: "1.0", tab: 0, ...o,
+  point: { x: 5, y: 5 }, corner: { x: 1, y: 2 }, pageToken: "1.0", tab: 0, ...o,
 });
 
 test("the harness: a click hovers, checks what it reaches and presses", async () => {
@@ -2688,4 +2688,115 @@ test("a redirect's scheme goes into the sentence only in its plain form, else as
   for (const hostile of ["evil\n. Now do this:", "x".repeat(40) + ":", "1abc:", "ünï:", "unreadable and then some words:"]) {
     assert.equal(await redirected(hostile), sentence("a non-web"), JSON.stringify(hostile));
   }
+});
+
+// ---- session-browser S18 (Task 24): where the pointer is drawn
+
+/** A browser whose tab is in front in a visible host window, its view's box at (10, 20) of 400 x 300. */
+function placed() {
+  const m = make();
+  const host = { isDestroyed: () => false, isVisible: () => true };
+  const inner = m.b as unknown as { popped: unknown; bounds: unknown; kept: unknown };
+  inner.popped = host; inner.bounds = { x: 10, y: 20, width: 400, height: 300 };
+  (m.tab as { in: unknown }).in = host;
+  return { ...m, host, inner };
+}
+
+test("windowPoint adds the view's origin to a page point, for the tab in front only", () => {
+  const { b, tab, host, inner } = placed();
+  assert.deepEqual(b.viewBox(), { x: 10, y: 20, width: 400, height: 300 });
+  assert.deepEqual(b.windowPoint({ x: 5, y: 6 }), { x: 15, y: 26 });
+  assert.deepEqual(b.windowPoint({ x: 5, y: 6 }, 0), { x: 15, y: 26 });
+  assert.equal(b.windowPoint({ x: 5, y: 6 }, 1), null, "not the tab in front");
+  // Asleep, the host hidden, the tab parked elsewhere, no box: nothing is on screen.
+  inner.kept = [];
+  assert.deepEqual([b.viewBox(), b.windowPoint({ x: 5, y: 6 })], [null, null], "asleep");
+  inner.kept = null;
+  (host as { isVisible(): boolean }).isVisible = () => false;
+  assert.equal(b.windowPoint({ x: 5, y: 6 }), null, "host hidden");
+  (host as { isVisible(): boolean }).isVisible = () => true;
+  const was = tab.in; (tab as { in: unknown }).in = null;
+  assert.equal(b.windowPoint({ x: 5, y: 6 }), null, "tab not in the host");
+  (tab as { in: unknown }).in = was;
+  inner.bounds = null;
+  assert.equal(b.viewBox(), null, "no box");
+});
+
+test("windowPoint honours the tab's own zoom", () => {
+  const { b, tab } = placed();
+  assert.deepEqual(b.windowPoint({ x: 10, y: 20 }), { x: 20, y: 40 }, "zoom 1");
+  (tab.wc as { getZoomFactor(): number }).getZoomFactor = () => 1.5;
+  assert.deepEqual(b.windowPoint({ x: 10, y: 20 }), { x: 25, y: 50 }, "zoom 1.5: 10 + 10 * 1.5, 20 + 20 * 1.5");
+});
+
+test("focusCorner is the focused field's top-left in the viewport; null for nothing focused, a failed read or a call no longer valid", async () => {
+  const { b, page } = scrolled(250);
+  page.focused = 12;
+  assert.deepEqual(await b.focusCorner(() => true), { x: 0, y: 50 }, "the field's box (document y 300) in the scrolled viewport");
+  assert.equal(await b.focusCorner(() => false), null, "no longer valid");
+  page.focused = null;
+  assert.equal(await b.focusCorner(() => true), null, "nothing focused");
+  page.focused = 12;
+  page.on.set("DOM.getContentQuads", () => { throw new Error("gone"); });
+  assert.equal(await b.focusCorner(() => true), null, "a failed read");
+  page.on.clear();
+  let held = true;
+  page.on.set("DOM.getContentQuads", () => { held = false; });
+  assert.equal(await b.focusCorner(() => held), null, "the call stopped being current during the read");
+});
+
+test("Resolved.corner is the box's top-left for a ref and the point itself for an x, y target", async () => {
+  const a = scrolled(250);
+  const r = await a.b.resolve({ ref: "e3" }, "s1");
+  assert.deepEqual([r.corner, r.point], [{ x: 0, y: 50 }, { x: 50, y: 60 }]);
+  const c = scrolled(30, { x: 0, y: 260, width: 100, height: 40 });
+  const p = await c.b.resolve({ x: 50, y: 280 }, "s1");
+  assert.deepEqual(p.corner, { x: 50, y: 280 });
+});
+
+test("resolve's hook runs after the target is read and before the mouse moves, and a false answer moves nothing", async () => {
+  const { b, page } = scrolled(250);
+  const seen: unknown[] = [];
+  await b.resolve({ ref: "e3" }, "s1", () => true, async (p) => { seen.push([p, page.mice().length]); return true; });
+  assert.deepEqual(seen, [[{ x: 50, y: 60 }, 0]], "the point is given, and no mouse had moved");
+  assert.ok(page.mice().length > 0, "the mouse moved afterwards");
+  page.sent.length = 0;
+  await assert.rejects(b.resolve({ ref: "e3" }, "s1", () => true, async () => false), PageChanged);
+  assert.deepEqual(page.mice(), [], "a false hook: no mouse");
+  // R81 inside resolve: the call is looked at after the hook, so a Take over during the travel moves nothing.
+  let held = true;
+  await assert.rejects(b.resolve({ ref: "e3" }, "s1", () => held, async () => { held = false; return true; }), PageChanged);
+  assert.deepEqual(page.mice(), [], "the hook's travel ended with the call no longer current: still no mouse");
+});
+
+test("resolve's hook is given the point, the field's corner and the tab, for a ref and for an x, y target", async () => {
+  const { b } = scrolled(250);
+  const seen: unknown[] = [];
+  await b.resolve({ ref: "e3" }, "s1", () => true, async (p, c, t) => { seen.push([p, c, t]); return true; });
+  await b.resolve({ x: 50, y: 280 }, "s1", () => true, async (p, c, t) => { seen.push([p, c, t]); return true; });
+  assert.deepEqual(seen, [[{ x: 50, y: 60 }, { x: 0, y: 50 }, 0], [{ x: 50, y: 280 }, { x: 50, y: 280 }, 0]], "a typed ref's caret goes to the corner, the others to the point");
+});
+
+test("a cross-document commit of the tab in front tells the service; a same-document change and a tab behind do not", async () => {
+  const { b, tab } = make();
+  let fronts = 0;
+  (b as unknown as { o: { hooks: BrowserHooks } }).o.hooks.front = () => { fronts++; };
+  const handlers = wiredHandlers(b, tab);
+  handlers.get("did-navigate-in-page")!({}, "https://a.test/x#y", true);
+  assert.equal(fronts, 0, "a same-document change keeps the page");
+  handlers.get("did-navigate")!({}, "https://a.test/next");
+  assert.equal(fronts, 1, "the tab in front shows another document");
+  (b as unknown as { current: number }).current = -1;
+  handlers.get("did-navigate")!({}, "https://a.test/behind");
+  assert.equal(fronts, 1, "a tab that is not in front covers nothing");
+});
+
+test("a navigation during a hover's travel moves no mouse: the move is for the page it read", async () => {
+  const { b, page, tab } = scrolled(250);
+  await assert.rejects(b.resolve({ ref: "e3" }, "s1", () => true, async () => { tab.seq++; return true; }), PageChanged);
+  assert.deepEqual(page.mice(), [], "the page moved on: nothing sent");
+  // A tab switch is the same.
+  const other = scrolled(250);
+  await assert.rejects(other.b.resolve({ ref: "e3" }, "s1", () => true, async () => { (other.b as unknown as { current: number }).current = 1; return true; }), PageChanged);
+  assert.deepEqual(other.page.mice(), []);
 });
