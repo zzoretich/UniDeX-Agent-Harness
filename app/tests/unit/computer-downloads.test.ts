@@ -1,6 +1,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import nodeFs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { HELD_PREFIX, HeldDownloads, downloadName, downloadPath, moveInto, sweepHeld, type MoveOps } from "../../src/main/computer/downloads";
@@ -115,7 +116,7 @@ test("HeldDownloads: each download a private 0700 folder named with the app's pi
   assert.equal(h.size, 0);
 });
 
-test("sweepHeld: at start, held folders no running app holds go; this app's and a live app's stay", () => {
+test("sweepHeld: at start, held folders no running app holds go; this app's and a live app's stay", async () => {
   const d = tmp();
   const mk = (n: string) => { const p = path.join(d, n); fs.mkdirSync(p); fs.writeFileSync(path.join(p, "f"), "x"); return p; };
   const dead = mk(`${HELD_PREFIX}111-aaaaaa`);
@@ -124,8 +125,73 @@ test("sweepHeld: at start, held folders no running app holds go; this app's and 
   const old = mk(`${HELD_PREFIX}dddddd`);
   const other = mk("someone-else-111-x");
   fs.writeFileSync(path.join(d, `${HELD_PREFIX}444-file`), "not a folder");
-  const removed = sweepHeld(d, (pid) => pid === 222, 333);
+  const removed = await sweepHeld(d, (pid) => pid === 222, 333);
   assert.deepEqual(removed.sort(), [dead, old].sort());
   for (const p of [live, self, other, path.join(d, `${HELD_PREFIX}444-file`)]) assert.ok(fs.existsSync(p), p);
-  assert.deepEqual(sweepHeld(path.join(d, "missing")), [], "no folder, nothing to do");
+  assert.deepEqual(await sweepHeld(path.join(d, "missing")), [], "no folder, nothing to do");
+});
+
+test("sweepHeld: it lists nothing before it returns, so the caller never waits on the folder", async () => {
+  const d = tmp();
+  const stale = path.join(d, `${HELD_PREFIX}111-aaaaaa`);
+  fs.mkdirSync(stale);
+  const p = sweepHeld(d, () => false, 1);
+  assert.ok(p instanceof Promise);
+  // This proves only that nothing was removed before the call returned; "it never uses the synchronous listing" proves
+  // that no listing is done synchronously.
+  assert.ok(fs.existsSync(stale), "nothing has been removed by the time the call returns");
+  assert.deepEqual(await p, [stale]);
+  assert.equal(fs.existsSync(stale), false);
+});
+
+test("sweepHeld: it never uses the synchronous listing", async () => {
+  const d = tmp();
+  const stale = path.join(d, `${HELD_PREFIX}111-aaaaaa`);
+  fs.mkdirSync(stale);
+  // The default export is the module object downloads.ts itself calls, so replacing a function here is what it would use.
+  const { readdirSync, opendirSync } = nodeFs;
+  const boom = (): never => { throw new Error("synchronous listing"); };
+  (nodeFs as { readdirSync: unknown }).readdirSync = boom;
+  (nodeFs as { opendirSync: unknown }).opendirSync = boom;
+  try {
+    assert.deepEqual(await sweepHeld(d, () => false, 1), [stale]);
+  } finally {
+    (nodeFs as { readdirSync: unknown }).readdirSync = readdirSync;
+    (nodeFs as { opendirSync: unknown }).opendirSync = opendirSync;
+  }
+  assert.equal(fs.existsSync(stale), false);
+});
+
+test("sweepHeld: a folder that cannot be listed resolves with nothing, never a rejection", async () => {
+  const d = tmp();
+  const file = path.join(d, "a-file");
+  fs.writeFileSync(file, "x");
+  assert.deepEqual(await sweepHeld(path.join(d, "missing"), () => false, 1), []);
+  assert.deepEqual(await sweepHeld(file, () => false, 1), []);
+});
+
+test("sweepHeld: among many other entries it removes only the held ones", async () => {
+  const d = tmp();
+  for (let i = 0; i < 1000; i++) fs.writeFileSync(path.join(d, `file-${i}`), "");
+  for (let i = 0; i < 1000; i++) fs.mkdirSync(path.join(d, i % 2 ? `dir-${i}` : `x-${HELD_PREFIX}${i}`));
+  const stale = [111, 222, 444].map((n) => path.join(d, `${HELD_PREFIX}${n}-aaaaaa`));
+  for (const s of stale) { fs.mkdirSync(s); fs.writeFileSync(path.join(s, "f"), "x"); }
+  const mine = path.join(d, `${HELD_PREFIX}333-cccccc`);
+  fs.mkdirSync(mine);
+  const removed = await sweepHeld(d, () => false, 333);
+  assert.deepEqual(removed.sort(), stale.sort());
+  assert.equal(fs.readdirSync(d).length, 2001);
+  assert.ok(fs.existsSync(mine));
+});
+
+test("sweepHeld: a symlink named like a held folder is left, and so is what it points at", async () => {
+  const d = tmp();
+  const target = path.join(tmp(), "precious");
+  fs.mkdirSync(target);
+  fs.writeFileSync(path.join(target, "f"), "x");
+  const link = path.join(d, `${HELD_PREFIX}111-aaaaaa`);
+  fs.symlinkSync(target, link);
+  assert.deepEqual(await sweepHeld(d, () => false, 1), []);
+  assert.ok(fs.lstatSync(link).isSymbolicLink());
+  assert.ok(fs.existsSync(path.join(target, "f")));
 });

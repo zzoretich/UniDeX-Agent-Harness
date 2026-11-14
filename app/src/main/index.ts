@@ -887,8 +887,6 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     restoreComputer();
-    // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay).
-    sweepHeld(app.getPath("temp"));
     // code-chat R59: the Code composer's images go about three months after their month ended, checked now and once a day
     // while the app stays open (M2). Asynchronous, so nothing here waits for it; the surface being off does not keep old
     // images.
@@ -900,6 +898,9 @@ if (!app.requestSingleInstanceLock()) {
     nativeTheme.on("updated", broadcastTheme);
     setMenu();
     createWindow();
+    // agent-computer D39: downloads a crash or a kill left waiting in the temp folder go (a running app's stay). After the
+    // window and in the background, because the temp folder's size is not the app's to control.
+    void sweepHeld(app.getPath("temp"));
     if (vault.root) attachVault(vault.root, vault.source);
     updates.start();
     const cold = urlFromArgv(process.argv);
