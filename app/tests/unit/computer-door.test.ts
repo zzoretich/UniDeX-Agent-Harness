@@ -13,6 +13,9 @@ import type { Clock } from "../../src/main/computer/asks";
 // message path is driven through `accept`, the socket through a real temp socket.
 
 const UUID = "chat:0b5c1f0e-4a4e-4c3a-9d0e-6a1b2c3d4e5f";
+// A Unix socket path may be at most 103 bytes on macOS, and a test run's temp root already takes about 70 of them: socket
+// folders go under /tmp, which is short on both macOS and Linux.
+const SOCK_TMP = "/tmp";
 const made: string[] = [];
 afterEach(() => { for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
 
@@ -133,7 +136,7 @@ test("doorSocketPath is bridge.sock's rule with door.sock", () => {
 });
 
 async function boot(idleMs?: number, enabled?: () => boolean) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), "aos-dr-"));
+  const d = fs.mkdtempSync(path.join(SOCK_TMP, "aos-dr-"));
   made.push(d);
   const sock = path.join(d, "computer", "door.sock");
   const opened: Array<[string, string]> = [];
@@ -332,7 +335,7 @@ test("start answers false and logs one line when it cannot listen", async () => 
 
 // ── the opener and the session's environment (Task 17) ────────────────────
 
-function shortDir(): string { const d = fs.mkdtempSync(path.join(os.tmpdir(), "ud-")); made.push(d); return d; }
+function shortDir(): string { const d = fs.mkdtempSync(path.join(SOCK_TMP, "ud-")); made.push(d); return d; }
 
 test("envFor gives the three variables, and none while the door is down", async () => {
   const dir = shortDir();

@@ -209,7 +209,7 @@ function machine(files: Record<string, Buffer>, manifest: Manifest, o: Partial<T
     if (file === "/usr/bin/codesign") {
       const f = args.at(-1) as string;
       if (args[0] === "-dv") return { code: 0, out: `Executable=${f}\nIdentifier=stand-in\nTeamIdentifier=${state.teamFor[f] ?? state.teamFor[path.basename(f)] ?? state.team}\n` };
-      return state.signed && !state.broken.has(f) ? { code: 0, out: "" } : { code: 1, out: `${f}: invalid signature (code or signature have been modified)` };
+      return state.signed && !state.broken.has(f) ? { code: 0, out: "" } : { code: 1, out: `${path.basename(f)}: invalid signature (code or signature have been modified)` };
     }
     if (file === "/usr/sbin/spctl") return state.gatekeeper ? { code: 0, out: "accepted\nsource=Notarized Developer ID" } : { code: 3, out: "rejected" };
     if (file === "/usr/bin/plutil") return state.appVersion ? { code: 0, out: `${state.appVersion}\n` } : { code: 1, out: "No value at that key path" };
