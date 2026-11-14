@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-11-14
+
 ### Added
 - **A public roadmap.** What's coming to UniDeX, from idea to release, at https://zzoretich.github.io/UniDeX-Agent-Harness/, built from roadmap/roadmap.md on every change. <!-- no-tour: a page on GitHub, not in the app -->
 - The browser pane has a visible drag bar, Side, Half and Wide sizes, and it can now grow until the session is 360 px wide. <!-- tour: code.computer-size, sessions.computer-size -->
@@ -787,7 +789,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.7.0
 [2.6.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.6.0
 [2.5.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.5.0
 [2.4.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.4.0
