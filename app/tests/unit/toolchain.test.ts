@@ -209,7 +209,7 @@ function machine(files: Record<string, Buffer>, manifest: Manifest, o: Partial<T
     if (file === "/usr/bin/codesign") {
       const f = args.at(-1) as string;
       if (args[0] === "-dv") return { code: 0, out: `Executable=${f}\nIdentifier=stand-in\nTeamIdentifier=${state.teamFor[f] ?? state.teamFor[path.basename(f)] ?? state.team}\n` };
-      return state.signed && !state.broken.has(f) ? { code: 0, out: "" } : { code: 1, out: `${f}: invalid signature (code or signature have been modified)` };
+      return state.signed && !state.broken.has(f) ? { code: 0, out: "" } : { code: 1, out: `${path.basename(f)}: invalid signature (code or signature have been modified)` };
     }
     if (file === "/usr/sbin/spctl") return state.gatekeeper ? { code: 0, out: "accepted\nsource=Notarized Developer ID" } : { code: 3, out: "rejected" };
     if (file === "/usr/bin/plutil") return state.appVersion ? { code: 0, out: `${state.appVersion}\n` } : { code: 1, out: "No value at that key path" };
@@ -303,8 +303,7 @@ test("a signature from another team, or none, stops the install before anything 
   assert.deepEqual(fs.readdirSync(m.deps.paths.downloads), []);
   m.state.team = MANIFEST.tools.node.teamId as string;
   m.state.signed = false;
-  // The reason after the path is cut at 200 characters, so how much of it shows depends on the temp folder's length.
-  await assert.rejects(runToolchainJob("node", m.deps, context()), /node is not validly signed: /);
+  await assert.rejects(runToolchainJob("node", m.deps, context()), /node is not validly signed: .*invalid signature/);
 });
 
 test("uv: uv and uvx land in ~/.local/bin", async () => {

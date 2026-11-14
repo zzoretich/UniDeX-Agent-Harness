@@ -75,9 +75,8 @@ if (topLevel) {
   try {
     const root = makeRunRoot(tmp, process.pid);
     process.env.TMPDIR = root;
-    const owner = process.pid;
+    // Only the top-level runner registers this: a child inherits the marker, so it never gets here and cannot remove the root.
     process.on('exit', () => {
-      if (process.pid !== owner) return;
       try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
     });
   } catch (e) {
