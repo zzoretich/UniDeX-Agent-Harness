@@ -6884,3 +6884,32 @@ test("a Take over during a scroll's reads delivers no wheel", async () => {
   assert.equal((await p).text, "busy: the user is driving: wait for Hand back.");
   assert.deepEqual(b.scrolls, []);
 });
+
+test("a scroll onto a ref reads its target guarded, and a Take over during the read moves no mouse", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  let release!: () => void;
+  b.resolveGate = new Promise<void>((r) => { release = r; });
+  const p = h.call(A, "computer_scroll", { dy: 100, ref: "e1" });
+  await flush();
+  h.svc.select("chat:a");
+  h.svc.takeOver();
+  release();
+  assert.match((await p).text, /^busy: /);
+  assert.deepEqual([b.moves, b.order.includes("mouse"), b.scrolls], [[], false, []]);
+  h.svc.handBack();
+  b.resolveGate = null;
+  await h.call(A, "computer_scroll", { dy: 100, ref: "e1" });
+  assert.deepEqual(b.moves, ["guarded"], "the target read of a scroll carries the call's predicate");
+});
+
+test("the look again after Allow reads its target guarded", async () => {
+  const h = make();
+  const b = await h.open(A, "https://a.test/");
+  b.spots.set("e1", { target: btn("Next") });
+  const p = h.call(A, "computer_click", { ref: "e1" });
+  h.svc.answer((await h.asked()).id, "once");
+  await p;
+  assert.deepEqual(b.moves, ["guarded", "guarded"], "the first read and the look again after Allow both carry the predicate");
+});

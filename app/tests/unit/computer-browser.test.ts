@@ -3059,3 +3059,34 @@ test("a scroll is not delivered when the call stops being current during its rea
   await assert.rejects(act(m, () => live), PageChanged);
   assert.deepEqual(m.page.inputs(), [], "no wheel event after the call stopped being current");
 });
+
+test("an action that starts on a detached debugger attaches once in its read and then delivers", async () => {
+  const detached = () => { const m = make(); const d = detachable(m.tab); d.attached = false; return { ...m, d }; };
+  // resolve, then click: the read attaches; the click's own events follow.
+  const c = detached();
+  const r = await c.b.resolve({ x: 5, y: 5 }, "s1", () => true);
+  assert.equal(c.d.attaches, 1);
+  await c.b.click(r, () => true);
+  assert.equal(c.d.attaches, 1, "attached once, not again");
+  assert.deepEqual(c.page.inputs().filter((s) => s !== MOVED), ["Input.dispatchMouseEvent:mousePressed", "Input.dispatchMouseEvent:mouseReleased"]);
+  // key and type: the focus read attaches.
+  const k = detached();
+  await k.b.key("Space", () => true, at(k.tab), { node: 10, frame: "F1" });
+  assert.equal(k.d.attaches, 1);
+  assert.deepEqual(k.page.inputs(), ["Input.dispatchKeyEvent:keyDown", "Input.dispatchKeyEvent:keyUp"]);
+  const ty = detached();
+  ty.page.focused = 12;
+  await ty.b.type("rope", () => true, at(ty.tab), { node: 12, frame: "F1" });
+  assert.equal(ty.d.attaches, 1);
+  assert.deepEqual(ty.page.inputs(), ["Input.insertText:rope"]);
+  // scroll: the layout read attaches.
+  const s = detached();
+  await s.b.scroll(0, 120, () => true);
+  assert.equal(s.d.attaches, 1);
+  assert.deepEqual(s.page.inputs(), ["Input.dispatchMouseEvent:mouseWheel"]);
+  // The browser's own click and hover have no read of their own: they lean on the one just before them, and say so when there is none.
+  const alone = detached();
+  await assert.rejects(alone.b.click(resolved(), () => true), PageChanged);
+  await assert.rejects(alone.b.hoverAt(resolved(), () => true), PageChanged);
+  assert.equal(alone.d.attaches, 0);
+});
