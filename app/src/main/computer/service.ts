@@ -549,10 +549,12 @@ export class ComputerService {
     const b = this.browserOf(p);
     try {
       // The agent's own open: the one place a tab becomes the agent's own (session-browser PR 5, X2).
-      await b.open(a.url, { newTab: a.newTab, by: agent.label, own: true });
+      // session-browser G: the page loads only while this call is still current, looked at again just before the load.
+      await b.open(a.url, { newTab: a.newTab, by: agent.label, own: true, valid: () => this.current(p, agent, lease) });
     } catch (e) {
-      // The person may switch the browser off or close the tab while it loads: the load then rejects (S5).
-      return this.stopped(p, lease) ?? fail(message(e));
+      // The person may switch the browser off or close the tab while it loads: the load then rejects (S5). A call that stopped
+      // being current while its tab was made loaded nothing: it gets the reply a stale click gets.
+      return this.stopped(p, lease) ?? (e instanceof PageChanged ? this.stale(p, agent, lease) : null) ?? fail(message(e));
     }
     const since = this.clock.now();
     if (p.browser !== b) return this.stopped(p, lease) ?? fail(REFUSAL.isOff);
@@ -719,15 +721,18 @@ export class ComputerService {
         // as the one "+" makes is (X2 sets it only for computer_open).
         let made: number;
         try {
-          made = await b.openTab(this.o.startPage ?? START_PAGE, { by: agent.label });
-        } catch {
-          // The tab could not be made: nothing is closed, and the reply is the person's stop or a sentence of ours, never the
-          // browser's text.
-          return this.stopped(p, lease) ?? (p.browser === b ? fail(REFUSAL.startTab) : fail(REFUSAL.isOff));
+          made = await b.openTab(this.o.startPage ?? START_PAGE, { by: agent.label, valid: () => this.current(p, agent, lease) }); // the app's own start page: see `openTab`
+        } catch (e) {
+          // The tab could not be made, or the call stopped being current while it was: nothing is closed and nothing is loaded
+          // (a tab made meanwhile stays, the person's, on the start page). The reply is the person's stop, the stale call's own, or a sentence of ours,
+          // never the browser's text.
+          return this.stopped(p, lease) ?? (e instanceof PageChanged ? this.stale(p, agent, lease) : null) ?? (p.browser === b ? fail(REFUSAL.startTab) : fail(REFUSAL.isOff));
         }
         // From here to the close nothing is awaited, so what is checked is what the close meets. The new tab is known by the uid
         // `openTab` answered, never as "a tab not there before". When the call cannot go on, nothing of the person's is closed:
-        // the new tab goes again only if it is still there and not the tab in front (nobody can be looking at it).
+        // the new tab goes again only if it is still there and not the tab in front (nobody can be looking at it). A call that
+        // stopped being current while the tab was made never gets here: `openTab` closes a tab behind and frees one in front itself
+        // (session-browser G), so `interrupted` below is the defence for a lease lost in this very tick, which nothing awaits.
         const undo = (): void => {
           const i = b.tabIndex(made);
           if (i >= 0 && !b.tabs()[i].active && b.tabs().length > 1) b.close(i);
