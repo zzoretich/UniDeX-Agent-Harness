@@ -721,10 +721,10 @@ export class ComputerService {
         // as the one "+" makes is (X2 sets it only for computer_open).
         let made: number;
         try {
-          made = await b.openTab(this.o.startPage ?? START_PAGE, { by: agent.label, valid: () => this.current(p, agent, lease) });
+          made = await b.openTab(this.o.startPage ?? START_PAGE, { by: agent.label, valid: () => this.current(p, agent, lease) }); // the app's own start page: see `openTab`
         } catch (e) {
           // The tab could not be made, or the call stopped being current while it was: nothing is closed and nothing is loaded
-          // (a tab made meanwhile stays, blank). The reply is the person's stop, the stale call's own, or a sentence of ours,
+          // (a tab made meanwhile stays, the person's, on the start page). The reply is the person's stop, the stale call's own, or a sentence of ours,
           // never the browser's text.
           return this.stopped(p, lease) ?? (e instanceof PageChanged ? this.stale(p, agent, lease) : null) ?? (p.browser === b ? fail(REFUSAL.startTab) : fail(REFUSAL.isOff));
         }

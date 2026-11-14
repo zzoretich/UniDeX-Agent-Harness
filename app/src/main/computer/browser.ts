@@ -474,7 +474,10 @@ export class ComputerBrowser {
   /** Makes a new tab at `url`, in front as `open`'s new tab is and not the agent's own, and answers its uid as soon as the tab
    *  exists: the load is started and never waited for, so a load that fails later leaves the tab on its error page as any tab's
    *  does (session-browser S5: the start tab of the agent's close of the last tab, which must not wait on the start page). A
-   *  tab that cannot be made throws the table's `startTab`, never Electron's text. */
+   *  tab that cannot be made throws the table's `startTab`, never Electron's text. `url` is the app's OWN start page, never an
+   *  agent's address (its one caller, the agent's close of the last tab, passes `startPage`): so a call that stops being current
+   *  (`valid`, session-browser G) still has that page shown in a start tab left in front, which is the person's from then on, and
+   *  ends as a changed page with no uid; an agent's address is loaded only by `open`, which loads nothing for a stale call. */
   async openTab(url: string, o: { by: string | null; valid?: () => boolean }): Promise<number> {
     if (!navAllowed(url)) throw new Told(REFUSAL.notWeb, "Only http and https pages open.");
     // §4.2: load the normalised form navAllowed judged, never the raw string.
@@ -483,7 +486,13 @@ export class ComputerBrowser {
     // stopped being current meanwhile: that tab stays, blank, and no uid is answered.
     if (o.valid && !o.valid()) throw new PageChanged();
     const t = await this.addTab(o.by).catch(() => { throw new Told(REFUSAL.startTab, "The new tab could not be made."); });
-    if (o.valid && !o.valid()) { this.leave(t); throw new PageChanged(); }
+    if (o.valid && !o.valid()) {
+      // The address is the app's own start page, never an agent's: a start tab left in front shows it, as a tab of the person's does
+      // (a blank one is dropped on sleep and on Off and On); one made behind the person is closed again and loads nothing.
+      this.leave(t);
+      if (this.list.includes(t)) { t.refused = null; void t.wc.loadURL(href).catch(() => undefined); }
+      throw new PageChanged();
+    }
     t.refused = null;
     void t.wc.loadURL(href).catch(() => undefined);
     return t.uid;
