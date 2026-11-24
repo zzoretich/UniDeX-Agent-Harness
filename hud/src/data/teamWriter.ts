@@ -44,6 +44,20 @@ export function setArgs(team: string, member: string, key: "provider" | "model" 
 export function addMemberArgs(team: string, agent: string): string[] { return ["member", "add", team, agent]; }
 export function removeMemberArgs(team: string, member: string): string[] { return ["member", "remove", team, member]; }
 
+const TEAM_ID_RE = /^[a-z][a-z0-9-]{0,40}$/;
+
+/** A team id from a display name: ASCII lowercase words joined by `-`, starting with a letter, at most 41 characters; null when none is left. */
+export function teamIdFrom(name: string): string | null {
+  const id = name.normalize("NFKD").replace(/[^\x00-\x7f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^[^a-z]+/, "").slice(0, 41).replace(/-+$/, "");
+  return TEAM_ID_RE.test(id) ? id : null;
+}
+
+/** `aos team new`: the id, the display name and the lead agent, then the parent team when there is one. */
+export function newTeamArgs(id: string, name: string, lead: string, parent?: string | null): string[] {
+  return ["new", id, "--name", name, "--lead", lead, ...(parent ? ["--parent", parent] : [])];
+}
+
 /**
  * A note from the user to the lead: `@<lead>` leads the text, so the lead sees it addressed to them and team.js never
  * reads the text as a flag. Null for an empty message. The text goes as one argv entry, never through a shell.

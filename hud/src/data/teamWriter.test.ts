@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  TEAM_CLI, LIST_ARGS, teamRunner, approveArgs, budgetArgs, pauseArgs, setArgs, addMemberArgs, removeMemberArgs, postArgs,
+  TEAM_CLI, LIST_ARGS, teamRunner, approveArgs, budgetArgs, pauseArgs, setArgs, addMemberArgs, removeMemberArgs, postArgs, teamIdFrom, newTeamArgs,
   presetsOf, teamFailure, modelChoices, ignoredModel, ListJson, Presets,
 } from "./teamWriter";
 import { Team, readTeams, budgetFloor, diskAdapter } from "./teams";
@@ -158,4 +158,30 @@ test("a note to the lead lands in the channel as the user's, dollar signs intact
   ok(await w.runner.run(postArgs("lab", "lead", "can we keep site-02 under $40?")!));
   const last = (await w.team("lab")).channel.pop();
   assert.deepEqual([last?.from, last?.kind, last?.text], ["user", "note", "@lead can we keep site-02 under $40?"]);
+});
+
+test("a team id comes from its name, or none", () => {
+  assert.equal(teamIdFrom("Field Research"), "field-research");
+  assert.equal(teamIdFrom("  Ops  2 "), "ops-2");
+  assert.equal(teamIdFrom("Ünïcode Crew"), "unicode-crew");
+  assert.equal(teamIdFrom("123"), null);
+  assert.equal(teamIdFrom("🙂"), null);
+  assert.equal(teamIdFrom("x".repeat(60))?.length, 41);
+});
+
+test("newTeamArgs: id, name and lead in the order the surface admits, a parent last", () => {
+  assert.deepEqual(newTeamArgs("field", "Field Research", "dev-writer"), ["new", "field", "--name", "Field Research", "--lead", "dev-writer"]);
+  assert.deepEqual(newTeamArgs("field", "Field Research", "dev-writer", "dev"), ["new", "field", "--name", "Field Research", "--lead", "dev-writer", "--parent", "dev"]);
+  assert.deepEqual(newTeamArgs("field", "Field Research", "dev-writer", null).length, 6);
+});
+
+test("new through the runner writes a TEAM.md that readTeams parses", async () => {
+  const w = world();
+  ok(await w.runner.run(newTeamArgs("field", "Field Research", "team-scout")));
+  const t = await w.team("field");
+  assert.ok(t, "readTeams finds the new team");
+  assert.equal(t.name, "Field Research");
+  assert.ok(fs.existsSync(path.join(w.vault, "persona/teams/field/TEAM.md")));
+  const dup = await w.runner.run(newTeamArgs("field", "Again", "team-scout"));
+  assert.notEqual(dup.code, 0);
 });
