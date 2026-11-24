@@ -448,12 +448,17 @@ function agentFiles(agent, { claudeDir, codexDir }) {
   return { claude: f(claudeDir, '.md'), codex: f(codexDir, '.toml') };
 }
 
+/** The member id an agent gets on a team: its name, lowercased, without the team's prefix. */
+function memberIdFor(teamId, agent) {
+  return agent.toLowerCase().replace(new RegExp(`^${teamId}-`), '').replace(/[^a-z0-9-]/g, '-').replace(/^[^a-z]+/, '').slice(0, 40);
+}
+
 function addMember(t, { agent, env = process.env, claudeDir, codexDir }) {
   assertInteractive(env, 'Adding a member');
   if (!AGENT_RE.test(agent || '')) throw new UsageError(`bad agent name: ${agent || '(none)'}`);
   const where = agentFiles(agent, { claudeDir, codexDir });
   if (!where.claude && !where.codex) throw new Refusal(`no agent named ${agent} in either host's agents folder`);
-  const id = agent.toLowerCase().replace(new RegExp(`^${t.id}-`), '').replace(/[^a-z0-9-]/g, '-').replace(/^[^a-z]+/, '').slice(0, 40);
+  const id = memberIdFor(t.id, agent);
   if (!ID_RE.test(id)) throw new UsageError(`cannot derive a member id from ${agent}`);
   if (member(t, id)) throw new Refusal(`${t.id} already has a member ${id}`);
   const fields = {
@@ -488,6 +493,50 @@ function initTeam(root, { templatesDir, id = 'example' }) {
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^id: example$/m, `id: ${id}`));
   }
   return { team: id, dir: dest };
+}
+
+/** Make persona/teams/<id>/ with one member, the lead the user picked, and the example template's gates, notify and budget. */
+function newTeam(root, { id, name, lead, parent = null, templatesDir, env = process.env, claudeDir, codexDir, now = new Date() }) {
+  assertInteractive(env, 'Creating a team');
+  if (!ID_RE.test(id || '')) throw new UsageError(`bad team id: ${id || '(none)'}`);
+  const title = String(name || '').trim();
+  if (!title || title.length > 60 || /[\r\n]/.test(title)) throw new UsageError('--name must be 1 to 60 characters on one line');
+  if (!AGENT_RE.test(lead || '')) throw new UsageError(`bad agent name: ${lead || '(none)'}`);
+  const where = agentFiles(lead, { claudeDir, codexDir });
+  if (!where.claude && !where.codex) throw new Refusal(`no agent named ${lead} in either host's agents folder`);
+  const memberId = memberIdFor(id, lead);
+  if (!ID_RE.test(memberId)) throw new UsageError(`cannot derive a member id from ${lead}`);
+  const tpl = path.join(templatesDir, 'example', 'TEAM.md');
+  if (!fs.existsSync(tpl)) throw new Refusal(`no example team template in ${templatesDir}`);
+  const base = parseFrontmatter(fs.readFileSync(tpl, 'utf8'));
+  fs.mkdirSync(root, { recursive: true });
+  return withLock(path.join(root, '.new-team'), () => {
+    let parentLead = null;
+    if (parent) {
+      if (!listTeams(root).includes(parent)) throw new Refusal(`no team ${parent}`);
+      parentLead = readTeam(root, parent).lead;
+    }
+    const dest = path.join(root, id);
+    if (fs.existsSync(dest)) throw new Refusal(`persona/teams/${id} already exists`);
+    const budget = base.budget || {};
+    const list = (v) => `[${[].concat(v || []).join(', ')}]`;
+    const head = [
+      '---', 'type: team', `id: ${id}`, `name: ${formatScalar(title)}`, `lead: ${formatScalar(memberId)}`,
+      ...(parent ? [`parent: ${formatScalar(parent)}`, `reportsTo: ${formatScalar(parentLead)}`] : []),
+      `gates: ${list(base.gates)}`, `notify: ${list(base.notify)}`,
+      `budget: {${Object.entries(budget).map(([k, v]) => `${k}: ${v}`).join(', ')}}`,
+      `updated: ${now.toISOString().slice(0, 10)}`, '---', '',
+    ].join('\n');
+    const text = addMemberBlock(head, {
+      id: memberId, name: titleCase(memberId), role: 'Team lead', agent: lead, provider: where.claude ? 'claude' : 'codex',
+      model: 'inherit', effort: 'inherit', stage: ['all'], skills: [], voice: '', paused: false,
+    });
+    const full = `${text.replace(/\n*$/, '\n')}\n# ${title} team\n`;
+    parseFrontmatter(full); // never write a TEAM.md the parser would refuse
+    fs.mkdirSync(dest);
+    fs.writeFileSync(path.join(dest, 'TEAM.md'), full);
+    return { team: id, member: memberId, agent: lead, dir: dest };
+  });
 }
 
 // ── live runs: the markers, the killed-run sweep, and wait (D7, D11) ──
@@ -649,6 +698,6 @@ module.exports = {
   KINDS, DEFAULT_STAGES, STATUSES, GATE_STATES, PROVIDERS, EFFORTS, SET_KEYS, ID_RE, ITEM_RE, Refusal, UsageError,
   teamsRoot, parseScalar, formatScalar, parseFrontmatter, rewriteMember, addMemberBlock, removeMemberBlock, readTeam, listTeams,
   guardPut, readJsonl, appendJsonl, boardItems, owners, member, leadOf, post, tail, withLock, withBoard, matches, checkExpect, writeItem, put,
-  decideGate, setBudget, setPaused, presetsFor, setMember, agentFiles, addMember, removeMember, initTeam,
+  decideGate, setBudget, setPaused, presetsFor, setMember, agentFiles, memberIdFor, addMember, removeMember, initTeam, newTeam,
   runningDir, processStart, dispatchAlive, liveMarkers, reapKilledRuns, runLine, waitForRun, memberStatus, pendingGates, readState,
 };
