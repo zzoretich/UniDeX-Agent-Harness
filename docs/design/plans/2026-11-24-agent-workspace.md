@@ -104,7 +104,7 @@ VALUE :32, a `case 'new'` beside `init` :243). Test `brain/scripts/test/teams.te
 `newTeamArgs(id: string, name: string, lead: string, parent?: string | null): string[]` in `teamWriter.ts`.
 
 - [ ] **Step 1: Write the failing tests.**
-  - `teamWriter.test.ts` › `a team id comes from its name, or none`: `teamIdFrom("Field Research") === "field-research"`, `teamIdFrom("  Ops  2 ") === "ops-2"`, `teamIdFrom("Ünïcode Crew") === "nicode-crew"`, `teamIdFrom("123") === null`, `teamIdFrom("🙂") === null`, `teamIdFrom("x".repeat(60))?.length === 41`.
+  - `teamWriter.test.ts` › `a team id comes from its name, or none`: `teamIdFrom("Field Research") === "field-research"`, `teamIdFrom("  Ops  2 ") === "ops-2"`, `teamIdFrom("Ünïcode Crew") === "unicode-crew"`, `teamIdFrom("123") === null`, `teamIdFrom("🙂") === null`, `teamIdFrom("x".repeat(60))?.length === 41`.
   - same file › `newTeamArgs`: `newTeamArgs("field","Field Research","dev-writer")` deep-equals `["new","field","--name","Field Research","--lead","dev-writer"]`; with `"dev"` adds `"--parent","dev"`.
   - same file › `new through the runner writes a TEAM.md that readTeams parses` (as the other runner tests: temp vault, real `team.js`, an agent file in a temp Claude dir).
   - `write-policy.test.ts`: a `"team-create"` entry: ok `team.js new field --name "Field Research" --lead dev-writer` and with `--parent dev`; no: a name with a line break, a dash-led name, `--lead` before `--name`, `init field` (stays a `teams` rule question), and the surface is not in the verified default.
