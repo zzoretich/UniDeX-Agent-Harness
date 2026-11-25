@@ -5796,3 +5796,55 @@ button.aos-aw-primary:not(.clickable-icon):hover:not(:disabled) { background: va
 .aos-aw-panetitle { margin: 0 0 6px; font-size: 16px; font-weight: 650; }
 .aos-aw-paneline { margin-bottom: 4px; color: var(--udx-text-2); font-size: 12.5px; }
 .aos-aw-dim { color: var(--udx-text-3); }
+.aos-aw-dot.is-ok { background: var(--udx-ok-dot); }
+.aos-aw-dot.is-stale { background: var(--udx-warn-dot); }
+
+/* Needs you (D5) and a team's gates: the gate cards (renderGateCard's .aos-at-* classes) in one violet box. */
+.aos-aw-gates { margin: 12px 0 14px; padding: 0 14px 2px; border: 1px solid var(--udx-gate-dot); border-radius: 8px; background: var(--udx-gate-bg); }
+.aos-aw-gateshead { padding-top: 9px; color: var(--udx-gate); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; }
+
+/* A team (D6): the header line and ❯_ talk to the lead, the paused banner, NOW, then the views. */
+.aos-aw-teamhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.aos-aw-teamhead .aos-aw-panetitle { margin: 0; }
+.aos-aw-teamline { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-teamacts { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-aw-teamacts button.aos-aw-btn:not(.clickable-icon) { font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-paused { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.aos-aw-paused button.aos-aw-btn:not(.clickable-icon) { margin: 0 0 0 auto; }
+.aos-aw-state { margin-top: 8px; color: var(--udx-text-2); font-size: 12px; }
+.aos-aw-skipped { margin-top: 6px; font-size: 11.5px; }
+.aos-aw-now { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 14px 0 4px; }
+.aos-aw-nowlabel { margin-right: 2px; color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; }
+.aos-aw-who {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 2px 3px; border: 1px solid var(--udx-line); border-radius: 999px;
+  background: var(--udx-bg); font-size: 12px;
+}
+.aos-aw-who.is-blocked { border-color: var(--udx-danger-dot); }
+.aos-aw-avatar {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--udx-raised-2); color: var(--udx-text-2); font-size: 9.5px; font-weight: 700;
+}
+.aos-aw-avatar.is-lead { background: var(--udx-inv); color: var(--udx-inv-text); }
+.aos-aw-whoitem { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; }
+.aos-aw-nowrest { color: var(--udx-text-3); font-size: 12px; }
+.aos-aw-views { display: flex; gap: 2px; margin: 16px 0 6px; border-bottom: 1px solid var(--udx-line); }
+button.aos-aw-view:not(.clickable-icon) {
+  display: inline-flex; align-items: baseline; gap: 6px; height: auto; margin-bottom: -1px; padding: 6px 12px 7px; border: none;
+  border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 12.5px; cursor: pointer;
+}
+button.aos-aw-view:not(.clickable-icon):hover { color: var(--udx-text); }
+button.aos-aw-view.is-active:not(.clickable-icon) { border-bottom-color: var(--udx-text); color: var(--udx-text); font-weight: 600; }
+.aos-aw-viewcount { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 10.5px; font-weight: 400; }
+.aos-aw-viewpane { padding-top: 4px; }
+
+/* Activity (D7): newest first, each event its age, a tone dot and what happened. */
+.aos-aw-event { display: grid; grid-template-columns: 36px 7px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 7px 0; border-top: 1px solid var(--udx-line); }
+.aos-aw-event:first-child { border-top: none; }
+.aos-aw-evtime { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; text-align: right; }
+.aos-aw-event .aos-aw-dot { align-self: center; }
+.aos-aw-evtext { font-size: 12.5px; overflow-wrap: anywhere; }
+.aos-aw-empty { padding: 10px 0; font-size: 12.5px; }
+button.aos-aw-older:not(.clickable-icon) {
+  height: auto; margin: 6px 0 0 46px; padding: 2px 0; border: none; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 12px; cursor: pointer;
+}
+button.aos-aw-older:not(.clickable-icon):hover { color: var(--udx-text); text-decoration: underline; text-underline-offset: 2px; }

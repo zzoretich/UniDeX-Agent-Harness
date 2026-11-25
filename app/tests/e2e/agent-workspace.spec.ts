@@ -1,12 +1,14 @@
-// Agent Workspace (spec 2026-11-12-agent-workspace-design D2-D5, D13, D16): one rail button for agents and the teams they
+// Agent Workspace (spec 2026-11-12-agent-workspace-design D2-D7, D13, D16): one rail button for agents and the teams they
 // sit in. The rail button and its gate count, the `agents` alias and links, the tree (Needs you, the teams nested by
 // parent with their members, the bench, plugin agents folded) and its keys, the filter, the header (counts, sharing, sync
-// now, + New team) and the stale-cache sync. The panes the tree selects come later; here each names its node. Read-only.
+// now, + New team) and the stale-cache sync; the Needs you pane (every pending gate card: presets, Approve asks first,
+// Redirect ❯_) and a team's pane (its header line, NOW, its gates, Activity). The agent pane comes later. Read-only:
+// approving and the other writes are in teams-writes.spec.ts.
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, HUD_SETTINGS, badge, content, openTab, pulseArea, rail, useApp } from "./harness";
+import { FX, HUD_SETTINGS, badge, content, guardWrites, openTab, pulseArea, rail, terminalText, useApp } from "./harness";
 
 const AGENTS = "brain/_index/agents.json";
 const SYNC = "▶ aos.js agents sync";
@@ -50,6 +52,12 @@ async function redrawUnder(filter: Locator, rel: string): Promise<void> {
 const savedNode = (): string | null => {
   try { return (JSON.parse(fs.readFileSync(HUD_SETTINGS, "utf8")) as { agentWorkspace?: { node?: string | null } }).agentWorkspace?.node ?? null; } catch { return null; }
 };
+/** What the team spent in the last seven days, as the pane writes it: the fixture's runs are dated from when it was built. */
+function weekSpend(team: string): string {
+  const runs = fs.readFileSync(FX.v(`persona/teams/${team}/runs.jsonl`), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ts: string; usd: number | null });
+  const cents = Math.round(100 * runs.reduce((n, r) => (Date.now() - Date.parse(r.ts) < 7 * 86_400_000 && typeof r.usd === "number" ? n + r.usd : n), 0));
+  return cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`;
+}
 const railIds = (win: Page) => win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
 const link = (win: Page, params: Record<string, string>) =>
   win.evaluate((p) => (window as unknown as { aosHost: { app: { handleProtocol(a: string, p: Record<string, string>): boolean } } }).aosHost.app.handleProtocol("agenticos", p), params);
@@ -249,6 +257,197 @@ test.describe("Agent Workspace", () => {
     expect(syncs()).toBe(0);
     await C().locator("button.aos-aw-sync").click();
     await expect.poll(syncs).toBe(1);
+  });
+
+  // ── Needs you (D5): today's NEEDS YOU strip as a node of its own, every card through renderGateCard ──
+
+  const needsPane = () => C().locator(".aos-aw-pane[data-node='needs']");
+  const gate = (item: string) => needsPane().locator(".aos-at-gate", { has: app().win.locator(".aos-at-itemid", { hasText: item }) });
+  async function needsYou(): Promise<void> {
+    await openTab(app().win, "agent-teams");
+    await row("needs").click();
+    await expect(needsPane()).toBeVisible();
+  }
+
+  test("NEEDS YOU: each pending gate with item, gate, wait, spend, pitch and presets", async () => {
+    await needsYou();
+    await expect(needsPane().locator(".aos-aw-panetitle")).toHaveText("Needs you");
+    await expect(needsPane().locator(".aos-aw-paneline")).toHaveText("2 gates waiting on you across 2 teams");
+    await expect(needsPane().locator(".aos-at-gate")).toHaveCount(2);
+    const g = gate("harbor-01");
+    await expect(g.locator(".aos-at-teamtag")).toHaveText("Example");
+    await expect(g.locator(".aos-at-itemtitle")).toHaveText("Tide table parser");
+    await expect(g.locator(".aos-at-gatename")).toHaveText("Discuss gate");
+    await expect(g.locator(".aos-at-gatemeta")).toContainText(/waiting \d+[mhd]/);
+    await expect(g.locator(".aos-at-gatemeta")).toContainText("$6 spent of $10");
+    await expect(g.locator(".aos-at-pitch .aos-at-from")).toHaveText("Lead");
+    await expect(g.locator(".aos-at-pitchtext")).toContainText("Discuss gate open on harbor-01: scope is the tide parser; I propose $10.");
+    await expect(g.locator(".aos-at-pitchtext .aos-at-mention")).toHaveText(["@user"]);
+    // Presets: half, the proposal, double; one below what is already spent is disabled.
+    await expect(g.locator(".aos-at-preset")).toHaveText(["$5", "$10 proposed", "$20"]);
+    await expect(g.locator(".aos-at-preset.is-active")).toHaveText("$10 proposed");
+    await expect(g.locator(".aos-at-preset", { hasText: "$5" })).toBeDisabled();
+    await expect(g.locator(".aos-at-preset", { hasText: "$5" })).toHaveAttribute("title", "below the $6 already spent or held");
+    await expect(g.locator(".aos-at-floor")).toHaveText("at least $6");
+    await expect(g.locator(".aos-at-step")).toHaveText(["−", "+"]);
+    await expect(g.locator(".aos-at-stepvalue")).toHaveText("$10");
+    await expect(g.locator(".aos-at-approve")).toHaveText("Approve · $10");
+    await expect(g.locator(".aos-at-gateacts button", { hasText: "Redirect" })).toHaveText("Redirect ❯_");
+    // The sub-team's gate, with its own budget ladder.
+    await expect(gate("survey-01").locator(".aos-at-teamtag")).toHaveText("Survey");
+    await expect(gate("survey-01").locator(".aos-at-gatename")).toHaveText("Plan gate");
+    await expect(gate("survey-01").locator(".aos-at-approve")).toHaveText("Approve · $5");
+  });
+
+  test("a preset or − / + changes the Approve amount, writing nothing", async () => {
+    const h = app();
+    await needsYou();
+    const writes = await guardWrites(h);
+    await gate("harbor-01").locator(".aos-at-preset", { hasText: "$20" }).click();
+    await expect(gate("harbor-01").locator(".aos-at-approve")).toHaveText("Approve · $20");
+    await gate("harbor-01").locator(".aos-at-step", { hasText: "−" }).click();
+    await expect(gate("harbor-01").locator(".aos-at-approve")).toHaveText("Approve · $15");
+    await gate("harbor-01").locator(".aos-at-preset", { hasText: "$10 proposed" }).click();
+    await expect(gate("harbor-01").locator(".aos-at-approve")).toHaveText("Approve · $10");
+    expect(await guardWrites(h)).toEqual(writes);
+  });
+
+  test("Approve asks first; Cancel writes nothing", async () => {
+    const h = app();
+    await needsYou();
+    const writes = await guardWrites(h);
+    const spawns = (await h.guard()).filter((e) => e.kind === "spawn").length;
+    await gate("harbor-01").locator(".aos-at-approve").click();
+    const modal = h.win.locator(".modal");
+    await expect(modal.locator(".modal-content h3")).toHaveText("Approve the Discuss gate on harbor-01?");
+    await expect(modal.locator(".modal-content p")).toContainText("Tide table parser. harbor-01 moves on from discuss, and Lead takes the next step with a $10 phase budget ($6 spent so far).");
+    await modal.locator("button", { hasText: "Cancel" }).click();
+    await expect(h.win.locator(".modal")).toHaveCount(0);
+    expect(await guardWrites(h)).toEqual(writes);
+    expect((await h.guard()).filter((e) => e.kind === "spawn" && / gate /.test(e.what))).toEqual([]);
+    expect((await h.guard()).filter((e) => e.kind === "spawn").length).toBeGreaterThanOrEqual(spawns);
+    await expect(gate("harbor-01")).toBeVisible();
+  });
+
+  test("Redirect ❯_ opens the lead", async () => {
+    const { win } = app();
+    await needsYou();
+    await gate("harbor-01").locator(".aos-at-gateacts button", { hasText: "Redirect" }).click();
+    await expect(rail(win, "term")).toHaveClass(/is-active/);
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("[fixture claude stub] --agent team-lead");
+    expect((await terminalText(win)).replace(/\s+/g, " ")).toContain("gate redirect");
+  });
+
+  // ── a team (D6, D7): its header line, who is at work, its gates, then Activity · Items · Channel · Settings ──
+
+  test("a team: header line, NOW strip, its gates, Activity first with the fixture's events newest first, older adds more", async () => {
+    const { win } = app();
+    await openTab(win, "agent-teams");
+    await row("team:example").click();
+    const p = pane();
+    await expect(p).toHaveAttribute("data-node", "team:example");
+    await expect(p.locator(".aos-aw-panetitle")).toHaveText("Example");
+    await expect(p.locator(".aos-aw-teamline")).toHaveText(`lead Lead · 3 members · 4 open · ${weekSpend("example")} this week`);
+    await expect(p.locator("button.aos-aw-talk")).toHaveText(["❯_ talk to Lead"]);
+    // NOW: the reviewer owns a blocked item; the lead and the builder are idle (no run is live).
+    const now = p.locator(".aos-aw-now");
+    await expect(now.locator(".aos-aw-nowlabel")).toHaveText("NOW");
+    await expect(now.locator(".aos-aw-whoname")).toHaveText(["Reviewer"]);
+    await expect(now.locator(".aos-aw-who")).toHaveClass(/is-blocked/);
+    await expect(now.locator(".aos-aw-whoitem")).toHaveText(["harbor-03"]);
+    await expect(now.locator(".aos-aw-nowrest")).toHaveText("2 idle");
+    // This team's gate, its team not named; the sub-team's gate is under Survey and Needs you.
+    await expect(p.locator(".aos-aw-gates .aos-aw-gateshead")).toHaveText("NEEDS YOU · 1");
+    await expect(p.locator(".aos-aw-gates .aos-at-gate .aos-at-itemid")).toHaveText(["harbor-01"]);
+    await expect(p.locator(".aos-aw-gates .aos-at-teamtag")).toHaveCount(0);
+    await expect(p.locator(".aos-aw-gates .aos-at-approve")).toHaveText("Approve · $10");
+    // The views, Activity first.
+    await expect(p.locator(".aos-aw-views")).toHaveAttribute("role", "tablist");
+    await expect(p.locator(".aos-aw-view .aos-aw-viewlabel")).toHaveText(["Activity", "Items", "Channel", "Settings"]);
+    await expect(p.locator(".aos-aw-view[aria-selected='true']")).toHaveAttribute("data-view", "activity");
+    await expect(p.locator(".aos-aw-evtext")).toHaveText([
+      "Reviewer: Offline sync fails on an empty cache; @builder should add a guard.",
+      "Builder: Tile cache written; 3 commits. Back to @lead.",
+      "Lead: @builder takes harbor-02 in execute.",
+      "Lead added harbor-01: Tide table parser",
+      "Lead opened the discuss gate on harbor-01",
+      "Lead added harbor-04: Offline tiles",
+      "Lead added harbor-03: Offline sync",
+      "Lead added harbor-02: Chart tile cache",
+      "Lead added harbor-00: Scaffold the viewer",
+      "Reviewer finished harbor-03: failed · codex",
+      "Builder finished harbor-02: ok · claude · $2.40",
+    ]);
+    await expect(p.locator(".aos-aw-evtime").first()).toHaveText(/^\d+[mhd]$/);
+    await expect(p.locator(".aos-aw-event").first().locator(".aos-aw-dot")).toHaveClass(/is-failed/);
+    await expect(p.locator(".aos-aw-event").nth(4).locator(".aos-aw-dot")).toHaveClass(/is-gate/);
+    await expect(p.locator("button.aos-aw-older")).toHaveCount(0);
+
+    // A seat's run goes live (its marker, from another machine, so no sweep closes it): the builder is at work.
+    const running = FX.v("persona/teams/example/running");
+    fs.mkdirSync(running, { recursive: true });
+    fs.writeFileSync(path.join(running, "example-harbor-02-builder-z.json"), JSON.stringify({
+      schema: 1, run: "example-harbor-02-builder-z", team: "example", member: "builder", item: "harbor-02", provider: "claude",
+      pid: 999999, pidStart: 0, host: "another-machine.test", startedAt: new Date(Date.now() - 4 * 60_000).toISOString(), reservedUsd: 2,
+    }));
+    try {
+      await expect(now.locator(".aos-aw-whoname")).toHaveText(["Builder", "Reviewer"]);
+      await expect(now.locator(".aos-aw-who").first()).toHaveClass(/is-working/);
+      await expect(now.locator(".aos-aw-whoitem").first()).toHaveText(/^harbor-02 · [45]m$/);
+      await expect(now.locator(".aos-aw-nowrest")).toHaveText("1 idle");
+      // Its start joins the feed at its time (the fixture's own events may be newer: it was built minutes ago).
+      const started = p.locator(".aos-aw-event", { hasText: "Builder started harbor-02 (execute) on claude" });
+      await expect(started).toHaveCount(1);
+      await expect(started.locator(".aos-aw-dot")).toHaveClass(/is-live/);
+      await expect(p.locator(".aos-aw-event")).toHaveCount(12);
+    } finally {
+      fs.rmSync(running, { recursive: true, force: true });
+    }
+    await expect(now.locator(".aos-aw-whoname")).toHaveText(["Reviewer"]);
+
+    // Older posts than the feed's first 50 events: "older" adds the next 50.
+    const channel = FX.v("persona/teams/example/channel.jsonl");
+    const was = fs.readFileSync(channel, "utf8");
+    const old = Array.from({ length: 45 }, (_, i) => JSON.stringify({
+      schema: 1, ts: new Date(Date.now() - 3 * 86_400_000 - i * 60_000).toISOString(), team: "example", from: "lead", item: null, kind: "note", text: `log line ${i + 1}`,
+    }));
+    fs.writeFileSync(channel, `${old.join("\n")}\n${was}`);
+    try {
+      await expect(p.locator(".aos-aw-event")).toHaveCount(50);
+      await expect(p.locator(".aos-aw-evtext").nth(11)).toHaveText("Lead: log line 1");
+      await expect(p.locator(".aos-aw-evtext").last()).toHaveText("Lead: log line 39");
+      await p.locator("button.aos-aw-older").click();
+      await expect(p.locator(".aos-aw-event")).toHaveCount(56);
+      await expect(p.locator(".aos-aw-evtext").last()).toHaveText("Lead: log line 45");
+      await expect(p.locator("button.aos-aw-older")).toHaveCount(0);
+    } finally {
+      fs.writeFileSync(channel, was);
+    }
+    await expect(p.locator(".aos-aw-event")).toHaveCount(11);
+  });
+
+  test("a team's views: a click or an arrow key picks one, keeping the keyboard; the pick holds across teams", async () => {
+    const { win } = app();
+    await openTab(win, "agent-teams");
+    await row("team:example").click();
+    const selected = () => pane().locator(".aos-aw-view[aria-selected='true']");
+    await expect(selected()).toHaveAttribute("data-view", "activity");
+    await pane().locator(".aos-aw-view[data-view='items']").click();
+    await expect(selected()).toHaveAttribute("data-view", "items");
+    await expect(pane().locator(".aos-aw-viewpane")).toHaveAttribute("data-view", "items");
+    await expect(pane().locator(".aos-aw-event")).toHaveCount(0);
+    await expect(selected()).toBeFocused();
+    await win.keyboard.press("ArrowRight");
+    await expect(selected()).toHaveAttribute("data-view", "channel");
+    await expect(selected()).toBeFocused();
+    // Another team shows the same view; Activity is one click away.
+    await row("team:survey").click();
+    await expect(pane()).toHaveAttribute("data-node", "team:survey");
+    await expect(selected()).toHaveAttribute("data-view", "channel");
+    await pane().locator(".aos-aw-view[data-view='activity']").click();
+    await expect(selected()).toHaveAttribute("data-view", "activity");
+    // One board row, two events at its time, in the order they happened (activityOf names a member by its id).
+    await expect(pane().locator(".aos-aw-evtext")).toHaveText(["Surveylead added survey-01: Pick survey sites", "Surveylead opened the plan gate on survey-01"]);
   });
 });
 

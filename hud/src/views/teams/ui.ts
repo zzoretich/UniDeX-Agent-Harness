@@ -6,7 +6,9 @@ import type { SessionHost } from "../../data/aosConfig";
 import type { Presets } from "../../data/teamWriter";
 import { Team, BoardItem, Post, Tone, TEAMS_DIR, sessionCommand, redirectPrompt, shq, splitMentions } from "../../data/teams";
 
-export type TeamsView = "board" | "roster" | "interact" | "manage";
+/** The old Agent Teams tab's views, and the Agent Workspace team pane's (agent-workspace D6): Activity · Items · Channel ·
+ *  Settings. The old names stay until that tab retires. */
+export type TeamsView = "board" | "roster" | "interact" | "manage" | "activity" | "items" | "channel" | "settings";
 export const VIEWS: { id: TeamsView; label: string }[] = [
   { id: "board", label: "Board" }, { id: "roster", label: "Roster" }, { id: "interact", label: "Interact" }, { id: "manage", label: "Manage" },
 ];
@@ -23,6 +25,7 @@ export interface TeamsUiState {
   channelItem: string | null;       // the Interact filter
   drafts: Map<string, string>;      // team id → its unsent message to the lead (never carried to another team)
   addPick: Map<string, string>;     // team id → the agent picked in "Add a member", kept across redraws until it is added
+  activityPages?: Map<string, number>; // team id → how many pages of its Activity are shown (the Agent Workspace)
 }
 
 export interface Confirm { title: string; message: string; cta: string }

@@ -13,6 +13,8 @@ import { FOLDED_BY_DEFAULT, NodeKey, TreeRow, pickNode, seatsOf, workspaceTree }
 import { sanitizeAgentWorkspace, type AgentWorkspaceChoice } from "../settingsDefaults";
 import { TeamsCtx, TeamsUiState, Confirm } from "./teams/ui";
 import { focusedRow, focusRow, foldTeams, renderTree } from "./workspace/Tree";
+import { renderNeeds } from "./workspace/NeedsPane";
+import { renderTeamPane, teamView } from "./workspace/TeamPane";
 import { formatAgo } from "./RoutinesTab";
 import { env, shell } from "../host";
 
@@ -47,9 +49,11 @@ export class AgentWorkspaceTab {
   private presets: Presets | null = null;
   private runtimeNote: string | null = null;
   private readError: string | null = null;
-  /** The team panes' place in their team (TeamsCtx); the files are the state. */
+  /** The team panes' place in their team (TeamsCtx), for this tab instance only: the view shown (D6, Activity first) and
+   *  each team's Activity pages among it. The files are the state. */
   private ui: TeamsUiState = {
-    team: null, view: "board", gateUsd: new Map(), budgetUsd: new Map(), openItem: null, showDone: new Set(), channelItem: null, drafts: new Map(), addPick: new Map(),
+    team: null, view: "activity", gateUsd: new Map(), budgetUsd: new Map(), openItem: null, showDone: new Set(), channelItem: null, drafts: new Map(), addPick: new Map(),
+    activityPages: new Map(),
   };
   private busyKeys = new Set<string>();
   private errors = new Map<string, string>();
@@ -230,7 +234,7 @@ export class AgentWorkspaceTab {
       render: () => this.render(),
       select: (id, view, item) => {
         this.setSelected(`team:${id}`, true);
-        if (view) this.ui.view = view;
+        if (view) this.ui.view = teamView(view);
         if (item !== undefined) this.ui.openItem = item;
         this.render();
       },
@@ -314,6 +318,9 @@ export class AgentWorkspaceTab {
     const treeTop = this.treeHost?.scrollTop ?? 0;
     const oldPane = host.querySelector<HTMLElement>(".aos-aw-pane");
     const paneWas = oldPane ? { node: oldPane.dataset.node, top: oldPane.scrollTop } : null;
+    // A control in the pane that had the keyboard (a view tab, "older") names itself with data-focus, to get it back.
+    const active = host.ownerDocument.activeElement;
+    const paneFocus = oldPane && active instanceof HTMLElement && oldPane.contains(active) ? active.closest<HTMLElement>("[data-focus]")?.dataset.focus ?? null : null;
     host.empty();
     this.treeHost = null;
     if (this.loaded) this.settle();
@@ -343,7 +350,10 @@ export class AgentWorkspaceTab {
     this.treeHost.scrollTop = treeTop;
     if (paneWas && paneWas.node === node) pane.scrollTop = paneWas.top;
     if (caret) { filter.focus({ preventScroll: true }); filter.setSelectionRange(caret.start, caret.end); }
-    else focusRow(this.treeHost, rowFocus);
+    else if (rowFocus) focusRow(this.treeHost, rowFocus);
+    else if (paneFocus && paneWas?.node === node) {
+      Array.from(pane.querySelectorAll<HTMLElement>("[data-focus]")).find((e) => e.dataset.focus === paneFocus)?.focus({ preventScroll: true });
+    }
   }
 
   /** The header (D13): what there is, the sharing state, sync now and + New team, and what is wrong. */
@@ -391,33 +401,18 @@ export class AgentWorkspaceTab {
     });
   }
 
-  /** The selected node. Its full pane per kind comes with the panes; until then a title and what the files say. */
+  /** The selected node: Needs you and a team have their panes (D5, D6); an agent's profile comes with its pane, until then
+   *  a title and what the files say. */
   private renderPane(pane: HTMLElement, node: NodeKey): void {
     const title = (text: string) => pane.createEl("h2", { cls: "aos-aw-panetitle", text });
     const line = (text: string, cls = "aos-aw-paneline") => pane.createDiv({ cls, text });
     if (node === "needs") {
-      pane.setAttr("aria-label", "Needs you");
-      title("Needs you");
-      const n = gateCards(this.teams).length;
-      line(n ? `${plural(n, "gate")} waiting on you across ${plural(new Set(gateCards(this.teams).map((c) => c.team.id)).size, "team")}` : "Nothing waits on you.");
+      renderNeeds(pane, (t) => this.ctx(t), this.teams);
       return;
     }
     if (node.startsWith("team:")) {
       const t = this.teams.find((x) => x.id === node.slice("team:".length));
-      if (!t) return;
-      pane.setAttr("aria-label", `${t.name || t.id} team`);
-      title(t.name || t.id);
-      if (t.error) {
-        const file = t.errorFile ?? "TEAM.md";
-        const box = pane.createDiv({ cls: "aos-aw-note is-error" });
-        box.createDiv({ text: `${TEAMS_DIR}/${t.id}/${file}: ${t.error}` });
-        const open = box.createEl("button", { cls: "aos-aw-btn", text: `Open ${file}`, attr: { type: "button" } });
-        open.addEventListener("click", () => this.ctx(t).openFile(`${TEAMS_DIR}/${t.id}/${file}`));
-        return;
-      }
-      const lead = t.members.find((m) => m.id === t.lead);
-      line([`lead ${lead?.name ?? (t.lead || "none")}`, plural(t.members.length, "member"), `${t.board.filter((i) => i.status !== "done").length} open`].join(" · "));
-      if (t.disabled) line("This team is paused: no seat can be dispatched until it resumes.", "aos-aw-paneline aos-aw-dim");
+      if (t) renderTeamPane(pane, this.ctx(t), this.ui.view, (v) => { this.ui.view = v; this.render(); });
       return;
     }
     if (node.startsWith("agent:")) {

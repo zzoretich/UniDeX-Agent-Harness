@@ -34,7 +34,12 @@ function withMember(text: string, member: string, key: string, value: string): s
 }
 
 const C = (win: Page) => content(win);
-const gate = (win: Page, item: string) => C(win).locator(".aos-at-needs .aos-at-gate", { has: win.locator(".aos-at-itemid", { hasText: item }) });
+// Needs you, a node of the Agent Workspace tree (agent-workspace D5): every pending gate card, as the old NEEDS YOU strip.
+const gate = (win: Page, item: string) => C(win).locator(".aos-aw-pane[data-node='needs'] .aos-at-gate", { has: win.locator(".aos-at-itemid", { hasText: item }) });
+async function needsYou(win: Page): Promise<void> {
+  await C(win).locator(".aos-aw-tree .aos-aw-row[data-key='needs']").click();
+  await expect(C(win).locator(".aos-aw-pane")).toHaveAttribute("data-node", "needs");
+}
 const view = (win: Page, name: string) => C(win).locator(".aos-at-view", { hasText: name });
 const modal = (win: Page) => win.locator(".modal");
 async function example(win: Page, pane: "Board" | "Roster" | "Interact" | "Manage"): Promise<void> {
@@ -89,6 +94,7 @@ test("Agent Teams is the one surface on: the status bar names it and what it may
 
 test("an approve drawn before the lead changed the item is refused by --expect: nothing is recorded, and the card catches up (AT3)", async () => {
   const { win } = app();
+  await needsYou(win);
   await expect(gate(win, "harbor-01").locator(".aos-at-itemtitle")).toHaveText("Tide table parser");
   await holdEvents(win, true);
   try {
@@ -109,6 +115,7 @@ test("an approve drawn before the lead changed the item is refused by --expect: 
 
 test("Approve records the decision on the board and in the channel, and opens the lead in Code (AT3)", async () => {
   const { win } = app();
+  await needsYou(win);
   await expect(badge(win, "agent-teams")).toHaveText("2");
   await gate(win, "harbor-01").locator(".aos-at-approve", { hasText: "Approve · $10" }).click();
   await expect(modal(win).locator("h3")).toHaveText("Approve the Discuss gate on harbor-01?");

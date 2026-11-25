@@ -1,13 +1,13 @@
-// Agent Teams (app-smoke: Agent Teams tab): teams written by `aos team init / put / post` — the pending gates
-// ("Needs you"), the team chips with a sub-team and a broken TEAM.md, the Work board, an item's detail, Roster, Interact
-// and the Approve dialog's cancel path; with the Agent Teams surface off, an approve and a seat pick are refused.
-// Approving, budgets, posting and Manage's changes themselves are in teams-writes.spec.ts. Redirect / Talk open a
-// terminal session, checked against the stub CLI.
+// Agent Teams (app-smoke: Agent Teams tab): teams written by `aos team init / put / post` — the team chips with a
+// sub-team and a broken TEAM.md, the Work board, an item's detail, Roster, Interact; with the Agent Teams surface off, an
+// approve and a seat pick are refused. Needs you's gate cards (presets, Approve's cancel path, Redirect) moved to
+// agent-workspace.spec.ts. Approving, budgets, posting and Manage's changes themselves are in teams-writes.spec.ts. Talk
+// opens a terminal session, checked against the stub CLI.
 
 import { expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { FX, appEnv, badge, content, guardWrites, openTab, rail, terminalText, useApp } from "./harness";
+import { FX, appEnv, badge, content, openTab, rail, useApp } from "./harness";
 
 const app = useApp();
 const C = () => content(app().win);
@@ -27,61 +27,6 @@ test("rail: Agent Teams between Memory and Agents with a count of pending gates"
   await expect(badge(win, "agent-teams")).toHaveText("2");
   await expect(badge(win, "agent-teams")).not.toHaveClass(/is-urgent/);
   await expect(C().locator(".aos-rt-count")).toHaveText("2 gates waiting · 3 teams");
-});
-
-test("NEEDS YOU leads with each pending gate: item, gate, wait, spend, the lead's pitch and the budget presets", async () => {
-  await expect(needs().locator(".aos-at-needshead")).toHaveText("NEEDS YOU · 2");
-  const g = gate("harbor-01");
-  await expect(g.locator(".aos-at-teamtag")).toHaveText("Example");
-  await expect(g.locator(".aos-at-itemtitle")).toHaveText("Tide table parser");
-  await expect(g.locator(".aos-at-gatename")).toHaveText("Discuss gate");
-  await expect(g.locator(".aos-at-gatemeta")).toContainText(/waiting \d+[mhd]/);
-  await expect(g.locator(".aos-at-gatemeta")).toContainText("$6 spent of $10");
-  await expect(g.locator(".aos-at-pitch .aos-at-from")).toHaveText("Lead");
-  await expect(g.locator(".aos-at-pitchtext")).toContainText("Discuss gate open on harbor-01: scope is the tide parser; I propose $10.");
-  await expect(g.locator(".aos-at-pitchtext .aos-at-mention")).toHaveText(["@user"]);
-  // Presets: half, the proposal, double; one below what is already spent is disabled.
-  await expect(g.locator(".aos-at-preset")).toHaveText(["$5", "$10 proposed", "$20"]);
-  await expect(g.locator(".aos-at-preset.is-active")).toHaveText("$10 proposed");
-  await expect(g.locator(".aos-at-preset", { hasText: "$5" })).toBeDisabled();
-  await expect(g.locator(".aos-at-preset", { hasText: "$5" })).toHaveAttribute("title", "below the $6 already spent or held");
-  await expect(g.locator(".aos-at-floor")).toHaveText("at least $6");
-  await expect(g.locator(".aos-at-step")).toHaveText(["−", "+"]);
-  await expect(g.locator(".aos-at-stepvalue")).toHaveText("$10");
-  await expect(g.locator(".aos-at-approve")).toHaveText("Approve · $10");
-  await expect(g.locator(".aos-at-gateacts button", { hasText: "Redirect" })).toHaveText("Redirect ❯_");
-  // The sub-team's gate, with its own budget ladder.
-  await expect(gate("survey-01").locator(".aos-at-gatename")).toHaveText("Plan gate");
-  await expect(gate("survey-01").locator(".aos-at-approve")).toHaveText("Approve · $5");
-});
-
-test("a budget preset or − / + changes the amount on the Approve button, writing nothing", async () => {
-  const h = app();
-  const writes = await guardWrites(h);
-  const g = gate("harbor-01");
-  await g.locator(".aos-at-preset", { hasText: "$20" }).click();
-  await expect(gate("harbor-01").locator(".aos-at-approve")).toHaveText("Approve · $20");
-  await gate("harbor-01").locator(".aos-at-step", { hasText: "−" }).click();
-  await expect(gate("harbor-01").locator(".aos-at-approve")).toHaveText("Approve · $15");
-  await gate("harbor-01").locator(".aos-at-preset", { hasText: "$10 proposed" }).click();
-  await expect(gate("harbor-01").locator(".aos-at-approve")).toHaveText("Approve · $10");
-  expect(await guardWrites(h)).toEqual(writes);
-});
-
-test("Approve asks first; Cancel records nothing and runs nothing", async () => {
-  const h = app();
-  const writes = await guardWrites(h);
-  const spawns = (await h.guard()).filter((e) => e.kind === "spawn").length;
-  await gate("harbor-01").locator(".aos-at-approve").click();
-  const modal = h.win.locator(".modal");
-  await expect(modal.locator(".modal-content h3")).toHaveText("Approve the Discuss gate on harbor-01?");
-  await expect(modal.locator(".modal-content p")).toContainText("Tide table parser. harbor-01 moves on from discuss, and Lead takes the next step with a $10 phase budget ($6 spent so far).");
-  await modal.locator("button", { hasText: "Cancel" }).click();
-  await expect(h.win.locator(".modal")).toHaveCount(0);
-  expect(await guardWrites(h)).toEqual(writes);
-  expect((await h.guard()).filter((e) => e.kind === "spawn" && / gate /.test(e.what))).toEqual([]);
-  expect((await h.guard()).filter((e) => e.kind === "spawn").length).toBeGreaterThanOrEqual(spawns);
-  await expect(gate("harbor-01")).toBeVisible();
 });
 
 test("team chips: the broken TEAM.md has a rose !, the sub-team is indented under its parent", async () => {
@@ -223,16 +168,6 @@ test("manage: seat pickers, the running switch, add and remove, and no text box"
   expect(offered.some((o) => o.startsWith("field-researcher"))).toBe(true);
   expect(offered.some((o) => o.startsWith("team-builder"))).toBe(false);
   await view("Board").click();
-});
-
-test("Redirect ❯_ opens Code running the lead's agent with the gate and the line that records the redirect", async () => {
-  const { win } = app();
-  const btn = gate("harbor-01").locator(".aos-at-gateacts button", { hasText: "Redirect" });
-  await btn.click();
-  await expect(win.locator(".aos-wb-railbtn[data-tab='term']")).toHaveClass(/is-active/);
-  await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("[fixture claude stub] --agent team-lead");
-  const text = await terminalText(win);
-  expect(text.replace(/\s+/g, " ")).toContain("gate redirect");
 });
 
 test("with the Agent Teams surface off, an approve and a seat pick are refused: the card says why, and the board, the channel and TEAM.md stay", async () => {
