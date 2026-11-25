@@ -104,7 +104,7 @@ test("failures: a 2.7.0 runtime answers a new team with an unknown flag, and tha
 
 test("failures: with no write surface allowing it, a new team is refused plainly, pointing at aos team new, never echoing what was typed", () => {
   const r = (stderr: string, extra: Partial<AosResult> = {}): AosResult => ({ code: 1, stdout: "", stderr, timedOut: false, ...extra });
-  const line = "This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
+  const line = "Creating teams is off in this app. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
   // The app refuses the spawn itself (its error names the argv, the typed name with it), or aos relays the refusal.
   const app = r("", { code: -1, error: "UniDeX: spawn node …/team.js new harbor-crew --name Harbor Crew --lead builder refused; no write surface that allows it is on" });
   const relayed = r("aos: UniDeX: node refused; no write surface that allows it is on\n");

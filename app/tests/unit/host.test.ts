@@ -112,12 +112,12 @@ test("normalizePath matches Obsidian's", () => {
 test("write surfaces: every verified surface by default; AOS_APP_WRITE narrows or widens a run", () => {
   const verified = SURFACES.filter((s) => s.verified).map((s) => s.id);
   assert.deepEqual(loadWriteSettings({}), { surfaces: verified, source: "default" });
-  // Two surfaces are unverified today: Hosts waits for a host added live through it (install-import B2), and New agent
-  // teams for a live check (agent-workspace D14). Everything else is
-  // verified, including MCP server changes (connectors-tab D21), the Computer pane since its live check on each host
-  // (agent-computer D26, 2026-11-08) and Code chat since its live check on each host (code-chat T15, 2026-11-10).
-  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id).sort(), ["hosts", "team-create"]);
-  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 2);
+  // One surface is unverified today: Hosts waits for a host added live through it (install-import B2). Everything else
+  // is verified, including MCP server changes (connectors-tab D21), the Computer pane since its live check on each host
+  // (agent-computer D26, 2026-11-08), Code chat since its live check on each host (code-chat T15, 2026-11-10) and New
+  // agent teams since its live check on each host (agent-workspace D14, 2026-11-25).
+  assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id).sort(), ["hosts"]);
+  assert.ok(verified.length > 0 && verified.length === SURFACES.length - 1);
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo,chat" }), { surfaces: ["todo", "chat"], source: "AOS_APP_WRITE" });
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "" }), { surfaces: [], source: "AOS_APP_WRITE" });
   // A surface not verified yet (a new one starts this way) stays off by default; AOS_APP_WRITE can still turn it on

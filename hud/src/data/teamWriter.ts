@@ -110,7 +110,7 @@ const UPGRADE: TeamFailure = { text: "this vault's runtime is older than this ap
 /** The app's own refusal of a spawn that no write surface allows: in the spawn's error, or relayed by aos on stderr. */
 const SURFACE_OFF = /no write surface that allows it is on/;
 /** + New team with the team-create surface off (agent-workspace R31): what to do instead, never what was typed. */
-const NO_TEAM_CREATE = "This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
+const NO_TEAM_CREATE = "Creating teams is off in this app. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
 
 /**
  * The one line to show for a refused or failed write of `verb` (the argv's first word). A stale --expect says the card
