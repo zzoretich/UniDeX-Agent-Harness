@@ -426,8 +426,9 @@ test.describe("Agent Workspace", () => {
       "Reviewer: Offline sync fails on an empty cache; @builder should add a guard.",
       "Builder: Tile cache written; 3 commits. Back to @lead.",
       "Lead: @builder takes harbor-02 in execute.",
+      // The lead posted its pitch after moving the board (R28): it rides on the gate, and is not a post of its own.
+      'Lead opened the discuss gate on harbor-01: "Discuss gate open on harbor-01: scope is the tide parser; I propose $10. See notes, or ask @user."',
       "Lead added harbor-01: Tide table parser",
-      "Lead opened the discuss gate on harbor-01",
       "Lead added harbor-04: Offline tiles",
       "Lead added harbor-03: Offline sync",
       "Lead added harbor-02: Chart tile cache",
@@ -437,7 +438,7 @@ test.describe("Agent Workspace", () => {
     ]);
     await expect(p.locator(".aos-aw-evtime").first()).toHaveText(/^\d+[mhd]$/);
     await expect(p.locator(".aos-aw-event").first().locator(".aos-aw-dot")).toHaveClass(/is-failed/);
-    await expect(p.locator(".aos-aw-event").nth(4).locator(".aos-aw-dot")).toHaveClass(/is-gate/);
+    await expect(p.locator(".aos-aw-event").nth(3).locator(".aos-aw-dot")).toHaveClass(/is-gate/);
     await expect(p.locator("button.aos-aw-older")).toHaveCount(0);
 
     // A seat's run goes live (its marker, from another machine, so no sweep closes it): the builder is at work.
@@ -498,8 +499,9 @@ test.describe("Agent Workspace", () => {
     await expect(selected()).toHaveAttribute("data-view", "channel");
     await pane().locator(".aos-aw-view[data-view='activity']").click();
     await expect(selected()).toHaveAttribute("data-view", "activity");
-    // One board row, two events at its time, in the order they happened; the member by its roster name, as the tree has it.
-    await expect(pane().locator(".aos-aw-evtext")).toHaveText(["Survey Lead added survey-01: Pick survey sites", "Survey Lead opened the plan gate on survey-01"]);
+    // One board row, two events at its time, newest first as the feed is (the gate opened on the item just added); the
+    // member by its roster name, as the tree has it.
+    await expect(pane().locator(".aos-aw-evtext")).toHaveText(["Survey Lead opened the plan gate on survey-01", "Survey Lead added survey-01: Pick survey sites"]);
   });
 
   // ── a team's Items (D8), Channel (D9) and Settings (D10) ──

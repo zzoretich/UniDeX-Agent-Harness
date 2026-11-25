@@ -41,25 +41,103 @@ test("activity: the lab's gate, runs, marker and posts, newest first", async () 
   assert.ok(ACTIVITY_PAGE === 50);
 });
 
-test("no gate post is a post event for any fixture team", async () => {
+test("each fixture team's lead pitch is folded into its gate-open, never also a post", async () => {
   for (const t of await readTeams(diskAdapter(VAULT))) {
     const gateTexts = new Set(t.channel.filter((p) => p.kind === "gate").map((p) => p.text));
     assert.ok(!activityOf(t).some((e) => e.kind === "post" && [...gateTexts].some((g) => e.text.endsWith(g))), t.id);
   }
 });
 
-test("a gate-open takes the latest earlier lead pitch, or none", () => {
-  const row = (ts: string, id: string) => JSON.stringify({ ts, by: "lead", id, title: id, stage: "discuss", owner: "lead", status: "gate", gate: { name: "discuss", state: "pending" } });
-  const post = (ts: string, text: string, item: string) => JSON.stringify({ ts, from: "lead", kind: "gate", item, text });
-  const t = teamFrom({
-    id: "x", teamMd: "---\nname: X\nlead: lead\n---\n", runs: null, markers: [], state: null, disabled: false,
-    board: [row("2026-01-01T00:10:00.000Z", "a-1"), row("2026-01-01T00:10:00.000Z", "b-1")].join("\n") + "\n",
-    channel: [post("2026-01-01T00:01:00.000Z", "old", "a-1"), post("2026-01-01T00:09:00.000Z", "new", "a-1"), post("2026-01-01T00:11:00.000Z", "later", "b-1")].join("\n") + "\n",
-  });
-  const ev = activityOf(t).filter((e) => e.kind === "gate-open");
-  assert.ok(ev.find((e) => e.item === "a-1")?.text.endsWith('"new"'));
-  assert.ok(!ev.find((e) => e.item === "b-1")?.text.includes('"'));
-  assert.ok(!activityOf(t).some((e) => e.kind === "post"));
+// The lead moves the board first and posts second, so a gate's pitch usually lands after its row (agent-workspace R28).
+const GATE_MD = "---\nname: X\nlead: lead\nmembers:\n  - id: lead\n    name: Lead\n  - id: hand\n    name: Hand\n---\n";
+const gateRow = (ts: string, id: string, gate: Record<string, unknown> | null, o: Record<string, unknown> = {}) =>
+  JSON.stringify({ ts, by: "lead", id, title: id, stage: "discuss", owner: "lead", status: gate && gate.state === "pending" ? "gate" : "working", gate, budget: { usd: 10 }, ...o });
+const gatePost = (ts: string, text: string, item: string | null, from = "lead") => JSON.stringify({ ts, from, kind: "gate", item, text });
+const gateTeam = (board: string[], channel: string[]) => teamFrom({
+  id: "x", teamMd: GATE_MD, runs: null, markers: [], state: null, disabled: false,
+  board: board.length ? `${board.join("\n")}\n` : null, channel: channel.length ? `${channel.join("\n")}\n` : null,
+});
+const at = (m: number) => new Date(Date.parse("2026-01-01T00:00:00.000Z") + m * 60_000).toISOString();
+
+test("a gate-open folds the lead's last pitch after the item's previous snapshot, one posted after its row too", () => {
+  const pending = { name: "discuss", state: "pending" };
+  const t = gateTeam(
+    [gateRow(at(10), "a-1", pending), gateRow(at(10), "b-1", pending)],
+    [gatePost(at(1), "old", "a-1"), gatePost(at(9), "new", "a-1"), gatePost(at(11), "later", "b-1")],
+  );
+  const ev = activityOf(t);
+  const opens = ev.filter((e) => e.kind === "gate-open");
+  assert.equal(opens.find((e) => e.item === "a-1")?.text, 'Lead opened the discuss gate on a-1: "new"');
+  // A minute after its row, while the gate is pending: attached, and not also a post.
+  assert.equal(opens.find((e) => e.item === "b-1")?.text, 'Lead opened the discuss gate on b-1: "later"');
+  assert.deepEqual(ev.filter((e) => e.kind === "post").map((e) => e.text), ["Lead: old"], "only the folded pitches leave the feed");
+});
+
+test("two gates on one item: each gate-open quotes its own pitch, posted after its own row, never the other's", () => {
+  const t = gateTeam(
+    [
+      gateRow(at(0), "a-1", null),
+      gateRow(at(10), "a-1", { name: "discuss", state: "pending" }),
+      gateRow(at(20), "a-1", { name: "discuss", state: "approved", by: "user", ts: at(20), note: "" }, { stage: "plan", by: "user" }),
+      gateRow(at(30), "a-1", { name: "plan", state: "pending" }, { stage: "plan" }),
+    ],
+    [gatePost(at(11), "discuss pitch", "a-1"), gatePost(at(31), "plan pitch", "a-1")],
+  );
+  const ev = activityOf(t);
+  assert.deepEqual(ev.filter((e) => e.kind === "gate-open").map((e) => e.text), [
+    'Lead opened the plan gate on a-1: "plan pitch"',
+    'Lead opened the discuss gate on a-1: "discuss pitch"',
+  ]);
+  assert.equal(ev.filter((e) => e.kind === "post").length, 0);
+});
+
+test("a gate post that matches no gate-open stays in the feed as a post", () => {
+  const t = gateTeam(
+    [
+      gateRow(at(10), "a-1", { name: "discuss", state: "pending" }),
+      gateRow(at(20), "a-1", { name: "discuss", state: "approved", by: "user", ts: at(20), note: "" }, { stage: "plan", by: "user" }),
+    ],
+    // After the gate ended and before another opened; on no item; a seat's, not the lead's.
+    [gatePost(at(25), "late word", "a-1"), gatePost(at(26), "no gate here", null), gatePost(at(12), "a seat's view", "a-1", "hand")],
+  );
+  const ev = activityOf(t);
+  assert.equal(ev.find((e) => e.kind === "gate-open")?.text, "Lead opened the discuss gate on a-1");
+  assert.deepEqual(ev.filter((e) => e.kind === "post").map((e) => e.text), ["Lead: no gate here", "Lead: late word", "Hand: a seat's view"]);
+});
+
+test("events at one time read newest first: the one pushed later comes first", () => {
+  const t = gateTeam([gateRow(at(10), "a-1", { name: "discuss", state: "pending" })], []);
+  assert.deepEqual(activityOf(t).map((e) => e.kind), ["gate-open", "item-new"]);
+  // One snapshot that moves the stage and the budget: the budget, pushed after the move, reads above it.
+  const moved = gateTeam([gateRow(at(0), "b-1", null), gateRow(at(5), "b-1", null, { stage: "plan", budget: { usd: 20 } })], []);
+  assert.deepEqual(activityOf(moved).map((e) => e.kind), ["budget", "stage", "item-new"]);
+});
+
+test("a budget change is an event: who set it, the new amount and the old", () => {
+  const t = gateTeam([gateRow(at(0), "a-1", null), gateRow(at(5), "a-1", null, { by: "user", budget: { usd: 25 } })], []);
+  const b = activityOf(t).filter((e) => e.kind === "budget");
+  assert.deepEqual(b.map((e) => [e.ts, e.member, e.item, e.text]), [[at(5), "user", "a-1", "You set the budget for a-1 to $25 (was $10)"]]);
+});
+
+test("a gate decision shows once, not again on the item's later snapshots; the user's note rides on it", () => {
+  const redirected = { name: "plan", state: "redirected", by: "user", ts: at(20), note: "split the parser out first" };
+  const t = gateTeam(
+    [
+      gateRow(at(10), "a-1", { name: "plan", state: "pending" }),
+      gateRow(at(20), "a-1", redirected, { by: "user" }),
+      gateRow(at(30), "a-1", redirected, { owner: "hand" }),
+      gateRow(at(40), "a-1", redirected, { stage: "plan" }),
+    ],
+    // The runtime's own record of the decision: the decided line carries what it said.
+    [gatePost(at(20), "Plan gate redirected by the user: split the parser out first; @lead takes the next step", "a-1", "user")],
+  );
+  const ev = activityOf(t);
+  const decided = ev.filter((e) => e.kind === "gate-decided");
+  assert.deepEqual(decided.map((e) => [e.ts, e.text]), [[at(20), 'You redirected the plan gate on a-1: "split the parser out first"']]);
+  assert.equal(ev.filter((e) => e.kind === "post").length, 0);
+  // With no note, the line ends at the item.
+  const plain = gateTeam([gateRow(at(10), "b-1", { name: "ship", state: "approved", by: "user", ts: at(10), note: "" })], []);
+  assert.equal(activityOf(plain).find((e) => e.kind === "gate-decided")?.text, "You approved the ship gate on b-1");
 });
 
 test("run-end names the provider and never dangles a separator", async () => {
@@ -105,8 +183,8 @@ test("activity names a member as the roster does, one off the roster by its id, 
     "Survey Lead finished s-1: ok · claude · $1",
     "You: thanks",
     "Fieldhand: on site",
-    "Survey Lead added s-1: Sites",
     "Survey Lead opened the plan gate on s-1",
+    "Survey Lead added s-1: Sites",
   ]);
 });
 

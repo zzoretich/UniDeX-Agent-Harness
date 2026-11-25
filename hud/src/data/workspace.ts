@@ -1,7 +1,7 @@
 // workspace.ts — the Agent Workspace's data side (spec 2026-11-12-agent-workspace-design, D7). Pure over a Team, which
 // is itself built only from the team's own files; nothing here reads storage.
 import { runTone, usd, titleCase, orderTeams, memberStatus, gateCards, memberTone, pendingGates } from "./teams";
-import type { BoardItem, Team, Tone, MemberStatus, RunRow } from "./teams";
+import type { BoardItem, Post, Team, Tone, MemberStatus, RunRow } from "./teams";
 import { groupAgents, filterAgents } from "./agents";
 import type { AgentsCache, AgentRow } from "./agents";
 
@@ -19,28 +19,40 @@ function namer(t: Team): (id: string | null | undefined) => string {
 
 const isPending = (it: BoardItem | undefined): boolean => !!it && it.status === "gate" && it.gate?.state === "pending";
 
+/** A gate opened in the board history, and the window the lead's pitch for it falls in (agent-workspace R28): strictly
+ *  after the item's snapshot before the gate opened (none for an item's first snapshot), up to the snapshot that ended
+ *  it; `until` stays null while the gate is still pending. As gatePitch bounds the gate card by pendingAfter. */
+interface GateOpen { ev: ActivityEvent; item: string; name: string; after: string; until: string | null }
+
 /** What happened on the team, newest first: board snapshots, finished runs, live markers and channel posts. */
 export function activityOf(t: Team): ActivityEvent[] {
   const who = namer(t);
   const out: ActivityEvent[] = [];
   const prev = new Map<string, BoardItem>();
+  const opens: GateOpen[] = [];
+  const pending = new Map<string, GateOpen>();
   for (const it of t.history) {
     const p = prev.get(it.id);
     prev.set(it.id, it);
+    // The first snapshot where the item's gate is no longer that pending gate ends its pitch window.
+    const was = pending.get(it.id);
+    if (was && !(isPending(it) && it.gate?.name === was.name)) { was.until = it.ts; pending.delete(it.id); }
     if (!p) {
       out.push({ ts: it.ts, kind: "item-new", member: it.by, item: it.id, tone: "is-neutral", text: `${who(it.by)} added ${it.id}${it.title ? `: ${it.title}` : ""}` });
     } else if (p.stage !== it.stage) {
       out.push({ ts: it.ts, kind: "stage", member: it.by, item: it.id, tone: "is-neutral", text: `${who(it.by)} moved ${it.id} from ${p.stage || "none"} to ${it.stage}` });
     }
-    if (isPending(it) && !(isPending(p) && p?.gate?.name === it.gate?.name)) {
-      // The lead's pitch rides on the event: its latest gate post on the item at or before this snapshot.
-      const pitch = [...t.channel].reverse().find((c) => c.item === it.id && c.kind === "gate" && c.from === t.lead && c.ts && c.ts <= it.ts);
-      out.push({ ts: it.ts, kind: "gate-open", member: it.by, item: it.id, tone: "is-gate", text: `${who(it.by)} opened the ${it.gate?.name} gate on ${it.id}${pitch?.text ? `: "${pitch.text}"` : ""}` });
+    if (isPending(it) && it.gate && !(isPending(p) && p?.gate?.name === it.gate.name)) {
+      const ev: ActivityEvent = { ts: it.ts, kind: "gate-open", member: it.by, item: it.id, tone: "is-gate", text: `${who(it.by)} opened the ${it.gate.name} gate on ${it.id}` };
+      out.push(ev);
+      const open: GateOpen = { ev, item: it.id, name: it.gate.name, after: p?.ts ?? "", until: null };
+      opens.push(open);
+      pending.set(it.id, open);
     }
     const g = it.gate;
     if (g && g.by === "user" && g.ts && (!p?.gate || p.gate.name !== g.name || p.gate.ts !== g.ts)) {
       const verb = g.state === "approved" ? "approved" : g.state === "redirected" ? "redirected" : g.state === "rejected" ? "rejected" : `decided (${g.state})`;
-      out.push({ ts: g.ts, kind: "gate-decided", member: "user", item: it.id, tone: g.state === "approved" ? "is-ok" : "is-stale", text: `You ${verb} the ${g.name} gate on ${it.id}` });
+      out.push({ ts: g.ts, kind: "gate-decided", member: "user", item: it.id, tone: g.state === "approved" ? "is-ok" : "is-stale", text: `You ${verb} the ${g.name} gate on ${it.id}${g.note ? `: "${g.note}"` : ""}` });
     }
     if (p && p.budget.usd !== it.budget.usd) {
       out.push({ ts: it.ts, kind: "budget", member: it.by, item: it.id, tone: "is-neutral", text: `${who(it.by)} set the budget for ${it.id} to ${usd(it.budget.usd)} (was ${usd(p.budget.usd)})` });
@@ -58,13 +70,35 @@ export function activityOf(t: Team): ActivityEvent[] {
       text: `${who(m.member)} started ${m.item ?? "a run"}${stage ? ` (${stage})` : ""}${m.provider ? ` on ${m.provider}` : ""}`,
     });
   }
-  // Gate posts are already gate-open (with the pitch) and gate-decided events; the rest of the channel is the team talking.
+  // Each gate-open quotes the lead's last gate post on its item inside its window; the lead's gate posts are indexed by
+  // item once, in file order. Only a post folded this way leaves the feed.
+  const pitches = new Map<string, Post[]>();
+  for (const c of t.channel) {
+    if (c.kind !== "gate" || c.from !== t.lead || !c.item || !c.ts) continue;
+    const list = pitches.get(c.item);
+    if (list) list.push(c); else pitches.set(c.item, [c]);
+  }
+  const folded = new Set<Post>();
+  for (const o of opens) {
+    const list = pitches.get(o.item) ?? [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const c = list[i];
+      if ((o.after && c.ts <= o.after) || (o.until !== null && c.ts > o.until)) continue;
+      folded.add(c);
+      if (c.text) o.ev.text += `: "${c.text}"`;
+      break;
+    }
+  }
+  // The rest of the channel is the team talking. The user's gate posts are the runtime's record of a decision, which
+  // its gate-decided event carries (the user's note included).
   for (const p of t.channel) {
-    if (p.kind === "gate") continue;
+    if (folded.has(p) || (p.kind === "gate" && p.from === "user")) continue;
     out.push({ ts: p.ts, kind: "post", member: p.from, item: p.item, tone: p.kind === "blocker" ? "is-failed" : "is-neutral", text: `${who(p.from)}: ${p.text}` });
   }
-  // Newest first; a stable sort keeps one row's events in the order they were pushed.
-  return out.filter((e) => e.ts).sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+  // Newest first; events at one time read newest first too, the one pushed later (a gate opened on an item just added,
+  // a budget set as the stage moved) above the one before it.
+  return out.map((e, i) => ({ e, i })).filter((x) => x.e.ts)
+    .sort((a, b) => (a.e.ts < b.e.ts ? 1 : a.e.ts > b.e.ts ? -1 : b.i - a.i)).map((x) => x.e);
 }
 
 export type StripCell = "done" | "current" | "gate" | "blocked" | "todo";
