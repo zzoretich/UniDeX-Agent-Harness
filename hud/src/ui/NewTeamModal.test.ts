@@ -123,6 +123,16 @@ test("newTeamCheck: the id follows the name; why Create is off: no name, a bad n
   assert.equal(newTeamCheck({ name: "Harbor Crew", lead: "" }, ts, [], []).reason, "No host is on: turn Claude Code or Codex on in Settings, then pick a lead.");
 });
 
+test("newTeamCheck before the agents list was ever scanned: not scanned yet, sync now in the header; never that none can lead", async () => {
+  const ts = await teams();
+  const unscanned = newTeamCheck({ name: "Harbor Crew", lead: "" }, ts, [], ["claude", "codex"], false);
+  assert.deepEqual(unscanned, { id: "harbor-crew", reason: "Your agents are not scanned yet: use sync now in the header, then pick a lead." });
+  assert.doesNotMatch(unscanned.reason ?? "", /None of your agents/);
+  // A name's own faults still come first; once scanned, the usual reasons.
+  assert.equal(newTeamCheck({ name: "", lead: "" }, ts, [], ["claude"], false).reason, "Name the team: its id is made from the name.");
+  assert.match(newTeamCheck({ name: "Harbor Crew", lead: "" }, ts, [], ["claude"], true).reason ?? "", /^None of your agents can lead a team on Claude Code/);
+});
+
 /** Opens the dialog over the fixture's teams; `verdicts` answers each Create in turn. */
 async function open(verdicts: boolean[], o: { failure?: string | null; hosts?: ("claude" | "codex")[] } = {}) {
   body.kids = [];
@@ -199,6 +209,7 @@ test("Create sends the trimmed name, the lead and the parent; a refusal keeps th
   d.type("  Harbor Crew ");
   d.pick(d.lead, "builder");
   d.pick(d.parent, "lab");
+  d.create.focus();
   d.create.fire("click");
   assert.deepEqual(d.calls, [["new", "harbor-crew", "--name", "Harbor Crew", "--lead", "builder", "--parent", "lab"]]);
   // While it runs: Creating…, every field held, and a second click sends nothing.
@@ -209,6 +220,7 @@ test("Create sends the trimmed name, the lead and the parent; a refusal keeps th
   assert.equal(d.calls.length, 1);
   await d.answer();
   assert.equal(d.m.closed, 0, "a refusal keeps the dialog open");
+  assert.equal(doc.activeElement, d.name, "the keyboard goes back to the name field");
   assert.equal(d.create.text, "Create");
   assert.ok([d.create, d.name, d.lead, d.parent].every((e) => !e.disabled), "Create is on again");
   const err = d.modal.one("aos-aw-newerror");
@@ -249,5 +261,49 @@ test("on a Codex-only machine the lead picker lists agents with a Codex file; wi
   assert.equal(lead.disabled, true);
   assert.deepEqual(lead.options.map((x) => x.text), ["no agent can lead here"]);
   assert.equal(modal.one("aos-aw-newwhy").text, "None of your agents can lead a team on Codex: a lead needs its own file, <name>.toml, in Codex's agents folder.");
+  assert.equal(modal.all().find((e) => e.tag === "button" && e.text === "Create")!.disabled, true);
+});
+
+test("a Create whose run throws is a refusal in the dialog: Creating… never sticks, Create is on again, the name has the keyboard", async () => {
+  body.kids = [];
+  const ts = await teams();
+  const m = new NewTeamModal({} as never, {
+    agents: AGENTS, teams: ts, hosts: ["claude"],
+    onCreate: async () => { throw new Error("the runtime could not be started"); },
+    failure: () => null,
+  });
+  m.open();
+  const modal = body.kids[0];
+  const name = modal.all().find((e) => e.tag === "input")!;
+  const lead = modal.all().filter((e) => e.tag === "select")[0];
+  const create = modal.all().find((e) => e.tag === "button" && e.text === "Create")!;
+  name.value = "Harbor Crew";
+  name.fire("input");
+  lead.value = "team-lead";
+  lead.fire("change");
+  create.focus();
+  create.fire("click");
+  await flush();
+  assert.equal((m as unknown as FakeModal).closed, 0);
+  assert.equal(create.text, "Create");
+  assert.equal(create.disabled, false);
+  assert.ok([name, lead].every((e) => !e.disabled));
+  assert.equal(modal.one("aos-aw-newerror").text, "The team was not created: the runtime could not be started");
+  assert.equal(doc.activeElement, name);
+});
+
+test("before the agents list was ever scanned, the lead picker says so and points at sync now; Create stays off", async () => {
+  body.kids = [];
+  const m = new NewTeamModal({} as never, { agents: [], teams: [], hosts: ["claude", "codex"], scanned: false, onCreate: async () => true });
+  m.open();
+  const modal = body.kids[0];
+  const name = modal.all().find((e) => e.tag === "input")!;
+  name.value = "Harbor Crew";
+  name.fire("input");
+  const lead = modal.all().filter((e) => e.tag === "select")[0];
+  assert.deepEqual(lead.options.map((x) => x.text), ["agents not scanned yet"]);
+  assert.equal(lead.disabled, true);
+  assert.equal(modal.one("aos-aw-newwhy").text, "Your agents are not scanned yet: use sync now in the header, then pick a lead.");
+  assert.doesNotMatch(modal.text, /None of your agents|no agent can lead/);
   assert.equal(modal.all().find((e) => e.tag === "button" && e.text === "Create")!.disabled, true);
 });

@@ -155,6 +155,19 @@ test("activity: the lab's events as activityOf gives them; an empty feed is one 
   assert.match(note.text, /^No activity yet/);
 });
 
+test("activity: a channel post's row holds its whole text in its title (the row shows three lines of it); other rows hold none", async () => {
+  const lab = await team("lab");
+  const root = new El("section");
+  renderActivity(html(root), harness(lab).c, 1, () => {});
+  const ev = activityOf(lab);
+  const rows = root.find("aos-aw-event");
+  assert.ok(ev.some((e) => e.kind === "post") && ev.some((e) => e.kind !== "post"));
+  rows.forEach((r, i) => {
+    assert.ok(r.cls.has(`is-${ev[i].kind}`));
+    assert.equal(r.attrs.get("title"), ev[i].kind === "post" ? ev[i].text : undefined, ev[i].text);
+  });
+});
+
 // ── the team pane (D6) ──
 
 test("team pane: the header line and a talk button per enabled host that has the lead's agent", async () => {
@@ -835,6 +848,44 @@ test("agent profile: a plugin agent is the header and HOSTS only, with no SEAT, 
   assert.equal(r.all().filter((e) => e.tag === "button" && /^(un)?share$/.test(e.text)).length, 0);
   assert.deepEqual(r.find("aos-aw-run").map((b) => b.text), ["❯_ claude"]);
   assert.match(r.one("aos-aw-hostfoot").text, /listed from kit, not copied/);
+});
+
+test("agent profile: a plugin agent seated in a team (a hand-edited agent:) gets NOW and its SEAT blocks; never Seat in… or the share chip", async () => {
+  const kit = teamFrom({
+    id: "kit", disabled: false, markers: [], state: null, board: null, runs: null, channel: null,
+    teamMd: "---\nid: kit\nname: Kit\nlead: boss\nmembers:\n  - id: boss\n    name: Boss\n    agent: team-lead\n  - id: helper\n    name: Helper\n    role: Helps out\n    agent: kit:helper\n    provider: claude\n    model: inherit\n    effort: low\n    stage: [plan]\n---\n",
+  });
+  const p = profile(agentRow("kit:helper"), [kit]);
+  const r = p.root;
+  assert.deepEqual(secs(r), ["seat", "hosts"]);
+  assert.equal(r.one("aos-aw-now").one("aos-aw-nowrest").text, "not running");
+  const seat = r.one("aos-aw-seat");
+  assert.equal(seat.attrs.get("data-team"), "kit");
+  assert.equal(seat.one("aos-aw-seatrole").text, "Helps out");
+  assert.deepEqual(["provider", "model", "effort"].map((k) => select(seat, `aos-aw-pick-${k}`).value), ["claude", "inherit", "low"]);
+  seat.press(/^Pause seat$/);
+  seat.press(/^Remove from Kit$/);
+  assert.deepEqual(p.acts.map((a) => [a.key, a.args]), [["pause:kit:helper", ["pause", "kit", "helper"]], ["remove:kit:helper", ["member", "remove", "kit", "helper"]]]);
+  for (const cls of ["aos-aw-seatin", "aos-aw-sharechip", "aos-aw-runsline"]) assert.equal(r.find(cls).length, 0, cls);
+  assert.equal(r.all().filter((e) => e.tag === "button" && /^(un)?share$/.test(e.text)).length, 0);
+  assert.match(r.one("aos-aw-hostfoot").text, /listed from kit, not copied/);
+  // Seated nowhere, it is the header and HOSTS only.
+  assert.deepEqual(secs(profile(agentRow("kit:helper"), [YARD]).root), ["hosts"]);
+});
+
+test("agent profile: a disabled ❯_ says sync now copies the agent only for one of yours waiting to be shared; otherwise why, or nothing", async () => {
+  const teams = await fixture();
+  const title = (a: AgentRow, sharing: boolean) => {
+    const b = profile(a, teams, { hosts: ["claude", "codex"], sharing }).root.find("aos-aw-run").find((x) => x.attrs.get("data-host") === "codex");
+    assert.ok(b?.disabled, a.id);
+    return b.attrs.get("title");
+  };
+  assert.equal(title(agentRow("scout"), true), "scout has no Codex file: sync now copies it");
+  assert.equal(title(agentRow("scout"), false), "scout has no Codex file", "sharing off: sync now copies nothing");
+  assert.equal(title({ ...agentRow("scout"), status: "excluded" }, true), "scout has no Codex file: it is not shared");
+  assert.equal(title(agentRow("kit:helper"), true), "helper has no Codex file: it is listed from kit, not copied");
+  assert.equal(title({ ...agentRow("kit:helper"), origin: { ...agentRow("kit:helper").origin, scope: "config", plugin: null } }, true), "helper has no Codex file: it is listed from config.toml, not copied");
+  for (const status of ["invalid", "edited", "differs", "error", "listed"]) assert.equal(title({ ...agentRow("scout"), status }, true), "scout has no Codex file", status);
 });
 
 test("a member whose agent is missing: its seat with \"no agent\"; before the agents list is scanned it never says the agent is missing", async () => {

@@ -84,6 +84,9 @@ export class AgentWorkspaceTab {
    *  only a later read that still lacks it lets another node stand in. `appliedGen` is the read last applied. */
   private expecting: { node: NodeKey; gen: number } | null = null;
   private appliedGen = 0;
+  /** hostEnv() as the render under way read it: set by render() before it draws and cleared after, so a render's ctx()
+   *  calls share one read and nothing outlives it. */
+  private renderEnv: Record<SessionHost, string> | null = null;
 
   constructor(private plugin: AgenticOSPlugin, private wb: WorkbenchView) {}
 
@@ -204,7 +207,7 @@ export class AgentWorkspaceTab {
     try {
       const r = await this.runner().run(args);
       ok = r.code === 0;
-      if (ok) { const line = r.stdout.trim().split("\n")[0]; if (line) new Notice(line); } else this.errors.set(key, teamFailure(r).text);
+      if (ok) { const line = r.stdout.trim().split("\n")[0]; if (line) new Notice(line); } else this.errors.set(key, teamFailure(r, args[0]).text);
     } finally { this.busyKeys.delete(key); }
     await this.refresh();   // the vault event may lag the CLI's exit
     return ok;
@@ -246,7 +249,7 @@ export class AgentWorkspaceTab {
     return {
       app: this.plugin.app, teams: this.teams, team, agents: this.agents, hosts: this.hosts, presets: this.presets, now: new Date(), ui: this.ui,
       teamCmd: teamCommand(this.plugin.vaultRoot(), this.plugin.nodeBin()),
-      hostEnv: this.hostEnv(),
+      hostEnv: this.renderEnv ?? this.hostEnv(),
       busy: (k) => this.busyKeys.has(k), error: (k) => this.errors.get(k) ?? null,
       act: (k, args, confirm) => this.act(k, args, confirm),
       term: (cmd, host) => { if (!this.wb.runInTerm(cmd, { host: host ?? "shell", origin: "Agent Workspace" })) this.noTerminal(cmd); },
@@ -353,7 +356,7 @@ export class AgentWorkspaceTab {
 
   private newTeam(): void {
     new NewTeamModal(this.plugin.app, {
-      agents: this.agents.agents, teams: this.teams, hosts: this.hosts,
+      agents: this.agents.agents, teams: this.teams, hosts: this.hosts, scanned: this.agents.scannedAt !== null,
       // newTeamArgs: ["new", <id>, …]
       onCreate: async (args) => { const ok = await this.act(NEW_KEY, args); if (ok) this.created(`team:${args[1]}`); return ok; },
       failure: () => this.errors.get(NEW_KEY) ?? null,
@@ -371,6 +374,12 @@ export class AgentWorkspaceTab {
     if (!this.wb.isTabActive(TAB)) return;
     const host = this.host;
     if (!host) return;
+    // One read of agenticos.json's host folders for every pane this render draws; the next render reads it again.
+    this.renderEnv = this.hostEnv();
+    try { this.paint(host); } finally { this.renderEnv = null; }
+  }
+
+  private paint(host: HTMLElement): void {
     // A redraw (a sync landing, a clock tick, a selection) keeps the filter's focus and caret, the row that has the
     // keyboard, and where the tree and the pane were scrolled to.
     const was = host.querySelector<HTMLInputElement>("input.aos-aw-filter");

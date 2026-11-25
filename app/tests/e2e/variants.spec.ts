@@ -315,8 +315,9 @@ test.describe("a Codex-only machine", () => {
       await dlg.locator("input.aos-aw-newname").fill("Harbor Ops");
       await lead.selectOption("harbor-pilot");
       await dlg.locator("button", { hasText: "Create" }).click();
-      // This app writes nothing (no surface is on), so the app refuses it, and the dialog says why.
-      await expect(dlg.locator(".aos-aw-newerror")).toContainText("refused; no write surface that allows it is on");
+      // This app writes nothing (no surface is on), so the app refuses it, and the dialog says so and names the command
+      // for a terminal (R31).
+      await expect(dlg.locator(".aos-aw-newerror")).toHaveText("This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].");
       await expect.poll(async () => (await h.guard()).filter((e) => e.kind === "spawn" && / new /.test(e.what)).map((e) => e.what))
         .toEqual([expect.stringMatching(/\/team\.js new harbor-ops --name Harbor Ops --lead harbor-pilot$/)]);
       await win.keyboard.press("Escape");

@@ -95,8 +95,8 @@ function weekSpend(team: string, member?: string): string {
 const railIds = (win: Page) => win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
 const link = (win: Page, params: Record<string, string>) =>
   win.evaluate((p) => (window as unknown as { aosHost: { app: { handleProtocol(a: string, p: Record<string, string>): boolean } } }).aosHost.app.handleProtocol("agenticos", p), params);
-/** WorkbenchView.open, as a link or Pulse calls it, with a node to reveal. */
-const reveal = (win: Page, target: { tab: string; node?: string }) =>
+/** WorkbenchView.open, as a link or Pulse calls it, with a node to reveal, or as a tour step does, with a pane by kind. */
+const reveal = (win: Page, target: { tab: string; node?: string; pane?: "needs" | "team" | "agent" }) =>
   win.evaluate((t) => (window as unknown as { aosHost: { app: { workspace: { getLeavesOfType(v: string): Array<{ view: { open(t: object): boolean } }> } } } })
     .aosHost.app.workspace.getLeavesOfType("agentic-os-workbench")[0].view.open(t), target);
 
@@ -164,6 +164,29 @@ test.describe("Agent Workspace", () => {
     await expect(pane()).toHaveAttribute("data-node", "team:survey");
     await expect(row("team:survey")).toHaveAttribute("aria-selected", "true");
     await expect.poll(savedNode).toBe("team:survey");
+    await openTab(win, "pulse");
+    await openTab(win, "agent-teams");
+    await expect(pane()).toHaveAttribute("data-node", "team:survey");
+  });
+
+  test("a tour step's pane by kind shows that pane and is never saved as the selection (R26)", async () => {
+    const { win } = app();
+    await openTab(win, "agent-teams");
+    await row("team:survey").click();
+    await expect.poll(savedNode).toBe("team:survey");
+    // An agent's profile: the selected team is not an agent, so the tree's first agent shows; the pick stays Survey.
+    expect(await reveal(win, { tab: "agent-teams", pane: "agent" })).toBe(true);
+    await expect(pane()).toHaveAttribute("data-node", "agent:team-lead");
+    await expect(pane().locator(".aos-aw-agent")).toBeVisible();
+    await win.waitForTimeout(300);
+    expect(savedNode()).toBe("team:survey");
+    // A team's pane: the agent shown is not a team, so the first team shows; still not saved.
+    expect(await reveal(win, { tab: "agent-teams", pane: "team" })).toBe(true);
+    await expect(pane()).toHaveAttribute("data-node", "team:example");
+    await expect(pane().locator(".aos-aw-panetitle")).toHaveText("Example");
+    await win.waitForTimeout(300);
+    expect(savedNode()).toBe("team:survey");
+    // The next rail click shows the user's own pick.
     await openTab(win, "pulse");
     await openTab(win, "agent-teams");
     await expect(pane()).toHaveAttribute("data-node", "team:survey");
@@ -514,6 +537,23 @@ test.describe("Agent Workspace", () => {
       await expect(p.locator(".aos-aw-event")).toHaveCount(56);
       await expect(p.locator(".aos-aw-evtext").last()).toHaveText("Lead: log line 45");
       await expect(p.locator("button.aos-aw-older")).toHaveCount(0);
+    } finally {
+      fs.writeFileSync(channel, was);
+    }
+    await expect(p.locator(".aos-aw-event")).toHaveCount(11);
+
+    // A long post shows three lines of itself, its whole text on hover; a short one is not cut.
+    const long = `${"Soundings along the north channel, ".repeat(40).trim()} done.`;
+    fs.writeFileSync(channel, `${was}${JSON.stringify({ schema: 1, ts: new Date().toISOString(), team: "example", from: "lead", item: null, kind: "note", text: long })}\n`);
+    try {
+      const post = p.locator(".aos-aw-event.is-post").first();
+      await expect(post).toHaveAttribute("title", `Lead: ${long}`);
+      const cut = (row: Locator) => row.locator(".aos-aw-evtext").evaluate((el) => {
+        const lh = parseFloat(getComputedStyle(el).lineHeight) || parseFloat(getComputedStyle(el).fontSize) * 1.2;
+        return { lines: Math.round(el.clientHeight / lh), cut: el.scrollHeight > el.clientHeight + 1 };
+      });
+      expect(await cut(post)).toEqual({ lines: 3, cut: true });
+      expect((await cut(p.locator(".aos-aw-event.is-post").nth(1))).cut).toBe(false);
     } finally {
       fs.writeFileSync(channel, was);
     }

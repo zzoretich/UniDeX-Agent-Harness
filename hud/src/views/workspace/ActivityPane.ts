@@ -14,7 +14,8 @@ export function renderActivity(host: HTMLElement, ctx: TeamsCtx, page: number, o
   const shown = events.slice(0, Math.max(1, page) * ACTIVITY_PAGE);
   const feed = host.createDiv({ cls: "aos-aw-feed", attr: { role: "list", "aria-label": `${ctx.team.name} activity` } });
   for (const e of shown) {
-    const row = feed.createDiv({ cls: `aos-aw-event is-${e.kind}`, attr: { role: "listitem" } });
+    // A channel post can run to hundreds of words: its row shows three lines (styles.css), the whole text on hover.
+    const row = feed.createDiv({ cls: `aos-aw-event is-${e.kind}`, attr: { role: "listitem", ...(e.kind === "post" ? { title: e.text } : {}) } });
     row.createSpan({ cls: "aos-aw-evtime", text: since(e.ts, ctx.now), attr: { title: e.ts } });
     row.createSpan({ cls: `aos-aw-dot ${e.tone}`, attr: { "aria-hidden": "true" } });
     row.createSpan({ cls: "aos-aw-evtext", text: e.text });

@@ -5758,6 +5758,8 @@ button.aos-aw-view.is-active:not(.clickable-icon) { border-bottom-color: var(--u
 .aos-aw-evtime { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; text-align: right; }
 .aos-aw-event .aos-aw-dot { align-self: center; }
 .aos-aw-evtext { font-size: 12.5px; overflow-wrap: anywhere; }
+/* A channel post: three lines, the whole text in the row's title. */
+.aos-aw-event.is-post .aos-aw-evtext { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .aos-aw-empty { padding: 10px 0; font-size: 12.5px; }
 button.aos-aw-older:not(.clickable-icon) {
   height: auto; margin: 6px 0 0 46px; padding: 2px 0; border: none; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 12px; cursor: pointer;

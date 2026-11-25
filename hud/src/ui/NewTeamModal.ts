@@ -22,6 +22,9 @@ export interface NewTeamOptions {
   hosts?: readonly AgentHost[];
   /** Why the last Create was refused, as the tab recorded it. */
   failure?(): string | null;
+  /** Whether the agents list was ever scanned (agents.json scannedAt). Until it is, no agent can be called unfit to lead:
+   *  the dialog says to sync. True when left out. */
+  scanned?: boolean;
 }
 
 /** aos team new's limit on a name, which the team-create surface's argv rule shares. */
@@ -42,8 +45,12 @@ export interface NewTeamCheck {
   reason: string | null;
 }
 
-/** What Create would make of the fields: the id, and the first thing that keeps Create off. */
-export function newTeamCheck(f: { name: string; lead: string }, teams: readonly Team[], leads: readonly AgentRow[], hosts: readonly AgentHost[]): NewTeamCheck {
+/** Before the first `aos agents sync` there is no agents list to pick a lead from. */
+export const NOT_SCANNED = "Your agents are not scanned yet: use sync now in the header, then pick a lead.";
+
+/** What Create would make of the fields: the id, and the first thing that keeps Create off. `scanned` is false before
+ *  the agents list was ever scanned, when no lead can be offered yet for that reason alone. */
+export function newTeamCheck(f: { name: string; lead: string }, teams: readonly Team[], leads: readonly AgentRow[], hosts: readonly AgentHost[], scanned = true): NewTeamCheck {
   const name = f.name.trim();
   const id = teamIdFrom(name);
   const off = (reason: string): NewTeamCheck => ({ id, reason });
@@ -53,7 +60,7 @@ export function newTeamCheck(f: { name: string; lead: string }, teams: readonly 
   if (name.startsWith("-")) return off("A name cannot start with -.");
   if (!id) return off("No team id can be made from this name: put a letter (a–z) in it.");
   if (teams.some((t) => t.id === id)) return off(`A team with the id ${id} already exists.`);
-  if (!leads.length) return off(noLead(hosts));
+  if (!leads.length) return off(scanned ? noLead(hosts) : NOT_SCANNED);
   if (!leads.some((a) => a.id === f.lead)) return off("Pick the agent that leads it.");
   return { id, reason: null };
 }
@@ -68,10 +75,12 @@ function noLead(hosts: readonly AgentHost[]): string {
 
 export class NewTeamModal extends Modal {
   private hosts: readonly AgentHost[];
+  private scanned: boolean;
 
   constructor(app: App, private o: NewTeamOptions) {
     super(app);
     this.hosts = o.hosts ?? ["claude", "codex"];
+    this.scanned = o.scanned ?? true;
   }
 
   onOpen(): void {
@@ -102,7 +111,7 @@ export class NewTeamModal extends Modal {
     if (leads.length) {
       lead.createEl("option", { value: "", text: "pick one of your agents" });
       for (const a of leads) lead.createEl("option", { value: a.id, text: a.description ? `${a.name}: ${a.description.slice(0, 60)}` : a.name });
-    } else lead.createEl("option", { value: "", text: "no agent can lead here" });
+    } else lead.createEl("option", { value: "", text: this.scanned ? "no agent can lead here" : "agents not scanned yet" });
 
     const parentField = contentEl.createEl("label", { cls: "aos-aw-newfield" });
     parentField.createSpan({ cls: "aos-aw-newlabel", text: "Parent" });
@@ -117,13 +126,13 @@ export class NewTeamModal extends Modal {
     const create = acts.createEl("button", { cls: "aos-aw-btn aos-aw-primary", text: "Create", attr: { type: "button" } });
 
     let busy = false;
-    const check = (): NewTeamCheck => newTeamCheck({ name: name.value, lead: lead.value }, this.o.teams, leads, this.hosts);
+    const check = (): NewTeamCheck => newTeamCheck({ name: name.value, lead: lead.value }, this.o.teams, leads, this.hosts, this.scanned);
     const update = (): void => {
       const c = check();
       idLine.setText(c.id ? `id ${c.id} · persona/teams/${c.id}/` : "id —");
       why.setText(c.reason ?? "");
       // The name is at fault once there is one and the reason is the name's (no id, taken, a bad character).
-      const nameAtFault = !!name.value.trim() && !!c.reason && !/^(Pick|None|No host)/.test(c.reason);
+      const nameAtFault = !!name.value.trim() && !!c.reason && c.reason !== NOT_SCANNED && !/^(Pick|None|No host)/.test(c.reason);
       if (nameAtFault) name.setAttr("aria-invalid", "true"); else name.removeAttribute("aria-invalid");
       create.setText(busy ? "Creating…" : "Create");
       create.disabled = busy || !!c.reason;
@@ -139,14 +148,19 @@ export class NewTeamModal extends Modal {
       error.setText("");
       update();
       let ok = false;
+      let threw: string | null = null;
       try {
         ok = await this.o.onCreate(newTeamArgs(c.id, name.value.trim(), lead.value, parent.value || null));
+      } catch (e) {
+        // A run that throws is a refusal like any other: Creating… never sticks.
+        threw = e instanceof Error ? e.message : String(e);
       } finally {
         busy = false;
       }
       if (ok) { this.close(); return; }
-      error.setText(this.o.failure?.() || "The team was not created.");
+      error.setText(this.o.failure?.() || (threw ? `The team was not created: ${threw}` : "The team was not created."));
       update();
+      name.focus();
     };
 
     name.addEventListener("input", edited);

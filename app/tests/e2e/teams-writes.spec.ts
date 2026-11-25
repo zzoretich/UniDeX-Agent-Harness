@@ -357,8 +357,10 @@ test.describe("with the Agent Teams surface on", () => {
     await dlg.locator("select.aos-aw-newlead").selectOption("field-researcher");
     const create = dlg.locator("button", { hasText: "Create" });
     await create.click();
-    // The app refuses the spawn (the surface is off); the dialog stays open with why, and Create is on again.
-    await expect(dlg.locator(".aos-aw-newerror")).toContainText("refused; no write surface that allows it is on");
+    // The app refuses the spawn (the surface is off); the dialog stays open saying so and naming the command for a
+    // terminal, never the typed name (R31), and Create is on again.
+    await expect(dlg.locator(".aos-aw-newerror")).toHaveText("This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].");
+    await expect(dlg.locator(".aos-aw-newerror")).not.toContainText("Harbor Crew");
     await expect(create).toBeEnabled();
     await expect(dlg.locator("input.aos-aw-newname")).toHaveValue("Harbor Crew");
     await expect.poll(news).toEqual([expect.stringMatching(/\/team\.js new harbor-crew --name Harbor Crew --lead field-researcher$/)]);

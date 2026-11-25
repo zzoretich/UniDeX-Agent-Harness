@@ -3,10 +3,11 @@
 // block per team it sits in (team, role, stages, provider / model / effort pickers, pause seat, Remove from <team>) and
 // Seat in…, the readable teams it is not on; HOSTS (each host's file, original or translated copy, how to reach it,
 // read-only, the share chip and share / unshare); RECENT RUNS (its seats' runs across teams, this week's spend, a link
-// to Runs). A plugin or config.toml agent is the header and HOSTS only. A member whose agent is missing is its SEAT block
-// with a note, which never calls the agent missing before the agents list was ever scanned. Every control is a picker or
-// a button, never a text box (ui/noTextBoxes.test.ts scans this file). A team write is one `aos team` call through that
-// team's ctx; ❯_ and share / unshare go to the tab (`run`, `share`), which owns every spawn.
+// to Runs). A plugin or config.toml agent is the header and HOSTS only, plus NOW and its SEAT blocks when a hand-edited
+// `agent:` seats it (R30). A member whose agent is missing is its SEAT block with a note, which never calls the agent
+// missing before the agents list was ever scanned. Every control is a picker or a button, never a text box
+// (ui/noTextBoxes.test.ts scans this file). A team write is one `aos team` call through that team's ctx; ❯_ and share /
+// unshare go to the tab (`run`, `share`), which owns every spawn.
 import { AGENT_HOSTS, addable, isYours, runCommand, sourceLabel, statusChip as shareState } from "../../data/agents";
 import type { AgentRow } from "../../data/agents";
 import type { SessionHost } from "../../data/aosConfig";
@@ -45,12 +46,24 @@ export function renderAgent(host: HTMLElement, o: AgentPaneOptions): void {
   host.setAttr("aria-label", a.name);
   header(root, a, o);
   const yours = isYours(a);
-  if (yours) {
+  // A plugin or config.toml agent seated by a hand-edited `agent:` keeps its seats' controls (agent-workspace R30), but
+  // never Seat in… (addable() refuses it) or the share chip; seated nowhere, it is the header and HOSTS only.
+  if (yours || o.seats.length) {
     nowStrip(root, o);
-    seatSection(root, o, a);
+    seatSection(root, o, yours ? a : null);
   }
   hostsSection(root, a, o, yours);
   if (yours) recentRuns(root, o);
+}
+
+/** Why ❯_ on `h` is disabled: the agent has no file there, and what (if anything) would change that. Only one of your
+ *  own agents waiting to be shared is copied by sync now, and only while sharing is on. */
+function noFileWhy(a: AgentRow, h: SessionHost, sharing: boolean): string {
+  const why = !isYours(a) ? `it is listed from ${sourceLabel(a)}, not copied`
+    : a.status === "pending" && sharing ? "sync now copies it"
+      : a.status === "excluded" ? "it is not shared"
+        : "";
+  return `${a.name} has no ${HOST_LABEL[h]} file${why ? `: ${why}` : ""}`;
 }
 
 function section(root: HTMLElement, id: string, label: string): HTMLElement {
@@ -76,8 +89,7 @@ function header(root: HTMLElement, a: AgentRow, o: AgentPaneOptions): void {
   const acts = head.createDiv({ cls: "aos-aw-agentacts" });
   for (const h of o.hosts) {
     const cmd = runCommand(a, h);
-    const why = `${a.name} has no ${HOST_LABEL[h]} file${o.sharing && a.status !== "excluded" ? ": sync now copies it" : ""}`;
-    const title = !cmd ? why : h === "claude" ? `Start a Claude Code session as ${a.name}: ${cmd}` : `Start a Codex session that spawns ${a.name} for the task it asks for: ${cmd}`;
+    const title = !cmd ? noFileWhy(a, h, o.sharing) : h === "claude" ? `Start a Claude Code session as ${a.name}: ${cmd}` : `Start a Codex session that spawns ${a.name} for the task it asks for: ${cmd}`;
     const b = acts.createEl("button", { cls: "aos-aw-btn aos-aw-run", text: `❯_ ${h}`, attr: { type: "button", "data-host": h, title } });
     b.disabled = !cmd;
     if (cmd) b.addEventListener("click", () => o.run(cmd, h));
