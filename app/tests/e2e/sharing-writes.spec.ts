@@ -1,7 +1,8 @@
 // Skills and Agents sharing with its write surface on (AOS_APP_WRITE=sharing), the rows of app-smoke: Skills
 // and Agents, on a machine with both session hosts (sharing on). unshare and share run `aos skills|agents exclude|include
 // <id>`: the runtime rewrites brain/config.json's exclude list, then syncs, which removes the item's mirror in the other
-// host's folder or writes it again. The tests read the config, the mirror and the runtime's cache after each click.
+// host's folder or writes it again. The tests read the config, the mirror and the runtime's cache after each click. An
+// agent is shared or unshared from its profile in Agent Workspace (agent-workspace D11), whose header has sync now (D13).
 
 import { expect, test, type Page } from "@playwright/test";
 import * as fs from "node:fs";
@@ -118,47 +119,62 @@ test("Skills: unshare records the exclusion and removes the Codex copy; share wr
   expect(others()).toEqual(othersBefore);
 });
 
-test("Agents: unshare removes the Codex agent file; share writes it back byte for byte (AG4)", async () => {
-  const { win } = app();
-  await openTab(win, "agents");
-  await expect(C(win).locator(".aos-rt-note").first()).toHaveText(/^sharing on — each host's agents are copied into the other at the end of every session · as of \d+[sm] ago$/);
-  const file = agentMirror("team-reviewer");
-  const before = fs.readFileSync(file, "utf8");
-  expect(before).toContain("# aos-mirror: ");
-  const others = () => Object.fromEntries(["field-researcher", "survey-lead", "team-builder", "team-lead"].map((id) => [id, fs.readFileSync(agentMirror(id), "utf8")]));
-  const othersBefore = others();
-  await expect(row(win, "team-reviewer").locator(".aos-pulse-chip")).toHaveText("on both");
+test.describe("an agent's profile in Agent Workspace", () => {
+  // AG4: unshare removes the Codex agent file; share writes it back byte for byte.
+  test("unshare / share", async () => {
+    const { win } = app();
+    await openTab(win, "agent-teams");
+    await expect(C(win).locator(".aos-aw-sharing")).toHaveText(/^sharing on · as of \d+[sm] ago$/);
+    await C(win).locator(".aos-aw-tree .aos-aw-row[data-key='agent:team-reviewer']").first().click();
+    const pane = C(win).locator(".aos-aw-pane[data-node='agent:team-reviewer']");
+    const hosts = pane.locator(".aos-aw-sec[data-sec='hosts']");
+    const shareButton = (label: "share" | "unshare") => hosts.locator("button.aos-aw-share", { hasText: new RegExp(`^${label}$`) });
+    const file = agentMirror("team-reviewer");
+    const before = fs.readFileSync(file, "utf8");
+    expect(before).toContain("# aos-mirror: ");
+    const others = () => Object.fromEntries(["field-researcher", "survey-lead", "team-builder", "team-lead"].map((id) => [id, fs.readFileSync(agentMirror(id), "utf8")]));
+    const othersBefore = others();
+    await expect(hosts.locator(".aos-aw-sharechip")).toHaveText("on both");
+    await expect(hosts.locator(".aos-aw-hostrow[data-host='codex'] .aos-aw-hostvia")).toHaveText("translated copy");
 
-  await toggle(win, "team-reviewer", "unshare").click();
-  await expect(win.locator(".notice-container")).toContainText("▶ aos.js agents exclude team-reviewer");
-  await expect.poll(config).toBe(withExclude("agents", ["team-reviewer"]));
-  await expect.poll(() => fs.existsSync(file)).toBe(false);
-  await expect.poll(() => status("agents", "team-reviewer")).toBe("excluded");
-  await expect(row(win, "team-reviewer")).toHaveClass(/is-off/);
-  await expect(row(win, "team-reviewer").locator(".aos-pulse-chip")).toHaveText("not shared");
-  expect(fs.existsSync(path.join(FX.claude, "agents", "team-reviewer.md"))).toBe(true);
-  expect(others()).toEqual(othersBefore);
+    await shareButton("unshare").click();
+    await expect(win.locator(".notice-container")).toContainText("▶ aos.js agents exclude team-reviewer");
+    await expect.poll(config).toBe(withExclude("agents", ["team-reviewer"]));
+    await expect.poll(() => fs.existsSync(file)).toBe(false);
+    await expect.poll(() => status("agents", "team-reviewer")).toBe("excluded");
+    await expect(hosts.locator(".aos-aw-sharechip")).toHaveText("not shared");
+    await expect(pane.locator(".aos-aw-hostpill[data-host='codex']")).toHaveClass(/is-absent/);
+    expect(fs.existsSync(path.join(FX.claude, "agents", "team-reviewer.md"))).toBe(true);
+    expect(others()).toEqual(othersBefore);
 
-  await toggle(win, "team-reviewer", "share").click();
-  await expect(win.locator(".notice-container")).toContainText("▶ aos.js agents include team-reviewer");
-  await expect.poll(config).toBe(pristineConfig());
-  await expect.poll(() => status("agents", "team-reviewer")).toBe("universal");
-  // An agent's mirror carries no timestamp: it comes back byte for byte.
-  expect(fs.readFileSync(file, "utf8")).toBe(before);
-  await expect(row(win, "team-reviewer").locator(".aos-pulse-chip")).toHaveText("on both");
-  expect(others()).toEqual(othersBefore);
+    await shareButton("share").click();
+    await expect(win.locator(".notice-container")).toContainText("▶ aos.js agents include team-reviewer");
+    await expect.poll(config).toBe(pristineConfig());
+    await expect.poll(() => status("agents", "team-reviewer")).toBe("universal");
+    // An agent's mirror carries no timestamp: it comes back byte for byte.
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    await expect(hosts.locator(".aos-aw-sharechip")).toHaveText("on both");
+    await expect(pane.locator(".aos-aw-hostpill[data-host='codex']")).toHaveClass(/is-on/);
+    expect(others()).toEqual(othersBefore);
+  });
 });
 
 test("sync now runs the runtime's sync and the list re-renders from its cache (SK2, AG2)", async () => {
   const { win } = app();
-  for (const kind of ["skills", "agents"] as const) {
-    await openTab(win, kind);
-    const at = cache(kind).sync.at;
-    await C(win).locator(".aos-rt-actions button", { hasText: "sync now" }).click();
-    await expect(win.locator(".notice-container")).toContainText(`▶ aos.js ${kind} sync`);
-    await expect.poll(() => cache(kind).sync.at, { timeout: 30_000 }).not.toBe(at);
-    await expect(C(win).locator(".aos-rt-note").first()).toHaveText(/ · as of \d+s ago$/);
-  }
+  // Skills: its tab's own sync now.
+  await openTab(win, "skills");
+  const skillsAt = cache("skills").sync.at;
+  await C(win).locator(".aos-rt-actions button", { hasText: "sync now" }).click();
+  await expect(win.locator(".notice-container")).toContainText("▶ aos.js skills sync");
+  await expect.poll(() => cache("skills").sync.at, { timeout: 30_000 }).not.toBe(skillsAt);
+  await expect(C(win).locator(".aos-rt-note").first()).toHaveText(/ · as of \d+s ago$/);
+  // Agents: the Agent Workspace header's sync now (agent-workspace D13), and its sharing state's age.
+  await openTab(win, "agent-teams");
+  const agentsAt = cache("agents").sync.at;
+  await C(win).locator("button.aos-aw-sync").click();
+  await expect(win.locator(".notice-container")).toContainText("▶ aos.js agents sync");
+  await expect.poll(() => cache("agents").sync.at, { timeout: 30_000 }).not.toBe(agentsAt);
+  await expect(C(win).locator(".aos-aw-sharing")).toHaveText(/^sharing on · as of \d+s ago$/);
 });
 
 test("with only Skills & Agents on, other surfaces stay refused: a To-Do tick cannot write TODO.md", async () => {

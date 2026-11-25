@@ -3,8 +3,10 @@
 // parent with their members, the bench, plugin agents folded) and its keys, the filter, the header (counts, sharing, sync
 // now, + New team) and the stale-cache sync; the Needs you pane (every pending gate card: presets, Approve asks first,
 // Redirect ❯_) and a team's pane (its header line, NOW, its gates, Activity, Items as a list or today's board with an
-// item's detail, the Channel, Settings) and the broken team's error card. The agent pane comes later. Read-only:
-// approving, budgets, posting, pausing and adding a member are in teams-writes.spec.ts.
+// item's detail, the Channel, Settings) and the broken team's error card; an agent's profile (D11: its header, NOW, a SEAT
+// block per team, Seat in…, HOSTS, RECENT RUNS; a bench agent, a plugin agent) and a member whose agent is missing (D12).
+// Read-only: approving, budgets, posting, pausing, a seat's pickers, Seat in…, Remove and adding a member are in
+// teams-writes.spec.ts, and share / unshare in sharing-writes.spec.ts.
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
@@ -44,6 +46,26 @@ function workspaceFixture(): void {
   fs.writeFileSync(team, fs.readFileSync(team, "utf8").replace("\n---\n\n# Survey team", `\n${seat}---\n\n# Survey team`));
 }
 
+/** workspaceFixture, and a Survey member whose agent is in no host's folder (D12). */
+function profileFixture(): void {
+  workspaceFixture();
+  const team = FX.v("persona/teams/survey/TEAM.md");
+  const seat = "  - id: scribe\n    name: Scribe\n    role: Keeps the survey log\n    agent: harbor-ghost\n    provider: claude\n    model: inherit\n    effort: inherit\n    stage: [all]\n";
+  fs.writeFileSync(team, fs.readFileSync(team, "utf8").replace("\n---\n\n# Survey team", `\n${seat}---\n\n# Survey team`));
+}
+
+/** A live run marker for one of the example team's seats, from another machine, so no sweep closes it. */
+function liveRun(member: string, item: string, minutesAgo: number): string {
+  const running = FX.v("persona/teams/example/running");
+  fs.mkdirSync(running, { recursive: true });
+  const run = `example-${item}-${member}-z`;
+  fs.writeFileSync(path.join(running, `${run}.json`), JSON.stringify({
+    schema: 1, run, team: "example", member, item, provider: "claude",
+    pid: 999999, pidStart: 0, host: "another-machine.test", startedAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(), reservedUsd: 2,
+  }));
+  return running;
+}
+
 /** Redraws the tab as a sync landing does (its cache rewritten, the same bytes) and waits until the filter that had the
  *  focus is replaced. */
 async function redrawUnder(filter: Locator, rel: string): Promise<void> {
@@ -61,9 +83,11 @@ const savedNode = (): string | null => {
 const savedItems = (): string | null => {
   try { return (JSON.parse(fs.readFileSync(HUD_SETTINGS, "utf8")) as { agentWorkspace?: { items?: string } }).agentWorkspace?.items ?? null; } catch { return null; }
 };
-/** What the team spent in the last seven days, as the pane writes it: the fixture's runs are dated from when it was built. */
-function weekSpend(team: string): string {
-  const runs = fs.readFileSync(FX.v(`persona/teams/${team}/runs.jsonl`), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ts: string; usd: number | null });
+/** What the team (or one of its members) spent in the last seven days, as the panes write it: the fixture's runs are dated
+ *  from when it was built. */
+function weekSpend(team: string, member?: string): string {
+  const runs = fs.readFileSync(FX.v(`persona/teams/${team}/runs.jsonl`), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { ts: string; usd: number | null; member: string })
+    .filter((r) => !member || r.member === member);
   const cents = Math.round(100 * runs.reduce((n, r) => (Date.now() - Date.parse(r.ts) < 7 * 86_400_000 && typeof r.usd === "number" ? n + r.usd : n), 0));
   return cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`;
 }
@@ -411,12 +435,7 @@ test.describe("Agent Workspace", () => {
     await expect(p.locator("button.aos-aw-older")).toHaveCount(0);
 
     // A seat's run goes live (its marker, from another machine, so no sweep closes it): the builder is at work.
-    const running = FX.v("persona/teams/example/running");
-    fs.mkdirSync(running, { recursive: true });
-    fs.writeFileSync(path.join(running, "example-harbor-02-builder-z.json"), JSON.stringify({
-      schema: 1, run: "example-harbor-02-builder-z", team: "example", member: "builder", item: "harbor-02", provider: "claude",
-      pid: 999999, pidStart: 0, host: "another-machine.test", startedAt: new Date(Date.now() - 4 * 60_000).toISOString(), reservedUsd: 2,
-    }));
+    const running = liveRun("builder", "harbor-02", 4);
     try {
       await expect(now.locator(".aos-aw-whoname")).toHaveText(["Builder", "Reviewer"]);
       await expect(now.locator(".aos-aw-who").first()).toHaveClass(/is-working/);
@@ -715,6 +734,156 @@ test.describe.serial("Agent Workspace: Items as a list or a board", () => {
   });
 });
 
+// An agent's profile (D11) and a member whose agent is missing (D12), on their own app: no sync now runs here, so the
+// bench's harbor-scout and the plugin's keeper, which have no file in any host's folder, stay listed.
+test.describe("Agent Workspace: an agent's profile", () => {
+  const app = useApp({ prepare: profileFixture });
+  const C = () => content(app().win);
+  const row = (key: string) => C().locator(`.aos-aw-tree .aos-aw-row[data-key="${key}"]`);
+  const pane = () => C().locator(".aos-aw-pane");
+  const seat = (team: string) => pane().locator(`.aos-aw-seat[data-team='${team}']`);
+  const sections = () => pane().locator(".aos-aw-sec").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.sec));
+  async function show(key: string): Promise<void> {
+    await openTab(app().win, "agent-teams");
+    await row(key).first().click();
+    await expect(pane()).toHaveAttribute("data-node", key);
+  }
+
+  test("a seated agent: hosts, ❯_ per enabled host, copy, open; NOW; one SEAT block per team with pickers; recent runs and the week's spend", async () => {
+    const h = app();
+    const { win } = h;
+    await show("agent:team-builder");
+    const p = pane();
+    await expect(p).toHaveAttribute("aria-label", "team-builder");
+    await expect(p.locator(".aos-aw-panetitle")).toHaveText("team-builder");
+    // A Claude Code agent on a Claude Code-only machine: its pill on, Codex's absent, one ❯_.
+    await expect(p.locator(".aos-aw-hostpill")).toHaveText(["claude", "codex"]);
+    await expect(p.locator(".aos-aw-hostpill[data-host='claude']")).toHaveClass(/is-on/);
+    await expect(p.locator(".aos-aw-hostpill[data-host='codex']")).toHaveClass(/is-absent/);
+    await expect(p.locator("button.aos-aw-run")).toHaveText(["❯_ claude"]);
+    await expect(p.locator("button.aos-aw-copy")).toHaveAttribute("title", "copy @agent-team-builder");
+    const file = path.join(FX.claude, "agents", "team-builder.md");
+    await p.locator("button.aos-aw-open").click();
+    await expect.poll(async () => (await h.opened()).map((o) => `${o.fn} ${o.arg}`)).toContain(`openPath ${file}`);
+    await expect(p.locator("input[type='text'], input[type='search'], input:not([type]), textarea")).toHaveCount(0);
+    expect(await sections()).toEqual(["seat", "hosts", "runs"]);
+
+    // SEAT: one block per team, with its role, what it is doing and its stages; the pickers hold the seat's own values,
+    // from the presets aos team list names.
+    await expect(p.locator(".aos-aw-seat")).toHaveCount(2);
+    await expect(p.locator(".aos-aw-seat .aos-aw-seatteam")).toHaveText(["Example", "Survey"]);
+    await expect(p.locator(".aos-aw-seat .aos-aw-seatrole")).toHaveText(["Builds the work", "Builds the survey tools"]);
+    await expect(p.locator(".aos-aw-seat .aos-aw-seatstate")).toHaveText(["idle · harbor-02", "idle"]);
+    await expect(p.locator(".aos-aw-seat .aos-aw-seatline")).toHaveText(["builder · stages discuss, plan, execute", "builder · stages build"]);
+    for (const team of ["example", "survey"]) {
+      for (const [k, v] of [["provider", "claude"], ["model", "inherit"], ["effort", "high"]]) {
+        const sel = seat(team).locator(`.aos-aw-pick-${k} select`);
+        await expect(sel).toBeEnabled();
+        await expect(sel).toHaveValue(v);
+      }
+    }
+    await expect(seat("example").locator("button")).toHaveText(["Pause seat", "Remove from Example"]);
+    // Its team's name shows the team.
+    await seat("survey").locator("a.aos-aw-seatteam").click();
+    await expect(pane()).toHaveAttribute("data-node", "team:survey");
+    await show("agent:team-builder");
+
+    // HOSTS: Claude Code's own file and how to reach it; sharing is off on a one-host machine, so nothing to share.
+    const hosts = p.locator(".aos-aw-sec[data-sec='hosts']");
+    await expect(hosts.locator(".aos-aw-hostrow")).toHaveCount(1);
+    await expect(hosts.locator(".aos-aw-hostrow[data-host='claude'] .aos-aw-hostvia")).toHaveText("original");
+    await expect(hosts.locator(".aos-aw-hostinvoke")).toHaveText("@agent-team-builder");
+    await expect(hosts.locator(".aos-aw-hostfile")).toHaveText(file);
+    await expect(hosts.locator(".aos-aw-sharechip")).toHaveText("not shared yet");
+    await expect(hosts.locator("button.aos-aw-share")).toHaveCount(0);
+
+    // NOW: nothing runs; a seat's run goes live and shows by team, and its seat says so.
+    const now = p.locator(".aos-aw-now");
+    await expect(now.locator(".aos-aw-nowrest")).toHaveText("not running");
+    const running = liveRun("builder", "harbor-02", 4);
+    try {
+      await expect(now.locator(".aos-aw-whoname")).toHaveText(["Example"]);
+      await expect(now.locator(".aos-aw-whoitem")).toHaveText(/^harbor-02 · claude · [45]m$/);
+      await expect(seat("example").locator(".aos-aw-seatstate")).toHaveText("working on harbor-02");
+    } finally {
+      fs.rmSync(running, { recursive: true, force: true });
+    }
+    await expect(now.locator(".aos-aw-nowrest")).toHaveText("not running");
+
+    // RECENT RUNS: its seats' runs across teams and this week's spend; Runs → opens the Runs tab.
+    await expect(p.locator(".aos-aw-weekusd")).toHaveText(`${weekSpend("example", "builder")} this week`);
+    await expect(p.locator(".aos-aw-runtext")).toHaveText(["Example · harbor-02 · ok · claude · $2.40"]);
+    await p.locator("a.aos-aw-runslink").click();
+    await expect(rail(win, "runs")).toHaveClass(/is-active/);
+
+    // ❯_ claude starts a Claude Code session as the agent.
+    await show("agent:team-builder");
+    await pane().locator("button.aos-aw-run").click();
+    await expect(rail(win, "term")).toHaveClass(/is-active/);
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("[fixture claude stub] --agent team-builder");
+  });
+
+  test("a bench agent; a plugin agent shows no SEAT or sharing; a member without an agent shows its seat and \"no agent\"", async () => {
+    // The bench: no seat, Seat in… every readable team (not the broken one), no runs.
+    await show("agent:harbor-scout");
+    const p = pane();
+    await expect(p.locator(".aos-aw-panetitle")).toHaveText("harbor-scout");
+    expect(await sections()).toEqual(["seat", "hosts", "runs"]);
+    await expect(p.locator(".aos-aw-seat")).toHaveCount(0);
+    await expect(p.locator(".aos-aw-sec[data-sec='seat'] .aos-aw-empty")).toHaveText("seated in no team: it is on the bench");
+    await expect(p.locator(".aos-aw-seatin select option")).toHaveText(["pick a team", "Example", "Survey"]);
+    await expect(p.locator(".aos-aw-seatin button", { hasText: "Seat" })).toBeDisabled();
+    await expect(p.locator(".aos-aw-now .aos-aw-nowrest")).toHaveText("not running");
+    await expect(p.locator(".aos-aw-weekusd")).toHaveText("$0 this week");
+    await expect(p.locator(".aos-aw-sec[data-sec='runs'] .aos-aw-empty")).toHaveText("no runs: it sits in no team");
+
+    // A plugin's agent: the header and HOSTS only.
+    await row("section:plugins").click();
+    await row("agent:logbook:keeper").click();
+    await expect(pane()).toHaveAttribute("data-node", "agent:logbook:keeper");
+    await expect(p.locator(".aos-aw-panetitle")).toHaveText("keeper");
+    await expect(p.locator(".aos-aw-source")).toHaveText("logbook");
+    expect(await sections()).toEqual(["hosts"]);
+    for (const cls of ["aos-aw-now", "aos-aw-seat", "aos-aw-seatin", "aos-aw-sharechip", "aos-aw-share"]) await expect(p.locator(`.${cls}`), cls).toHaveCount(0);
+    await expect(p.locator(".aos-aw-hostfoot")).toContainText("listed from logbook, not copied");
+    await expect(p.locator("button.aos-aw-run")).toHaveText(["❯_ claude"]);
+    await row("section:plugins").click();
+
+    // A member whose agent is in no host's folder: dim "no agent" in the tree; its pane is its seat with that note.
+    const scribe = row("member:survey/scribe");
+    await expect(scribe.locator(".aos-aw-label")).toHaveText("Scribe");
+    await expect(scribe.locator(".aos-aw-noagent")).toHaveText("no agent");
+    await scribe.click();
+    await expect(pane()).toHaveAttribute("data-node", "member:survey/scribe");
+    await expect(p.locator(".aos-aw-panetitle")).toHaveText("Scribe");
+    await expect(p.locator(".aos-aw-noagentnote")).toHaveText("no agent: harbor-ghost is not one of your agents, so this seat cannot run");
+    expect(await sections()).toEqual(["seat"]);
+    await expect(p.locator(".aos-aw-seat")).toHaveCount(1);
+    await expect(seat("survey").locator(".aos-aw-seatrole")).toHaveText("Keeps the survey log");
+    await expect(seat("survey").locator("button")).toHaveText(["Pause seat", "Remove from Survey"]);
+    await expect(p.locator(".aos-aw-seatin")).toHaveCount(0);
+  });
+
+  // This app runs with no write surface on (the app's default here), so `aos team` is refused before it starts.
+  test("with the Agent Teams surface off, a seat pick is refused: the seat says why, and the board, the channel and TEAM.md stay", async () => {
+    const h = app();
+    await show("agent:team-reviewer");
+    const dir = FX.v("persona/teams/example");
+    const files = () => ["board.jsonl", "channel.jsonl", "TEAM.md"].map((f) => fs.readFileSync(`${dir}/${f}`, "utf8"));
+    const before = files();
+    const sets = async () => (await h.guard()).filter((e) => e.kind === "spawn" && / set /.test(e.what)).map((e) => e.what);
+    expect(await sets()).toEqual([]);
+    const effort = () => seat("example").locator(".aos-aw-pick-effort select");
+    await expect(effort()).toBeEnabled();
+    await effort().selectOption("low");
+    await expect(seat("example").locator(".aos-at-error")).toContainText("refused; no write surface that allows it is on");
+    await expect.poll(sets).toEqual([expect.stringMatching(/\/team\.js set example reviewer effort low$/)]);
+    expect(files()).toEqual(before);
+    await expect(effort()).toHaveValue("high");
+    await h.win.evaluate(() => { (window as unknown as { aosHost: { guard: { log: unknown[] } } }).aosHost.guard.log.length = 0; });
+  });
+});
+
 test.describe("a stale agents cache", () => {
   const backdate = (): void => {
     const c = readCache();
@@ -735,7 +904,7 @@ test.describe("a stale agents cache", () => {
     expect(syncs()).toBe(1);
   });
 
-  test("with no agents cache, BENCH holds a dim note that is never picked", async () => {
+  test("with no agents cache, BENCH holds a dim note that is never picked; a member has no \"no agent\" mark, and its pane is its seat", async () => {
     const { win } = app();
     await openTab(win, "agent-teams");
     const before = await C().locator(".aos-aw-pane").getAttribute("data-node");
@@ -748,7 +917,18 @@ test.describe("a stale agents cache", () => {
     // aria-disabled: Playwright will not click it, so the click is sent to it as the mouse would.
     await note.dispatchEvent("click");
     await expect(C().locator(".aos-aw-pane")).toHaveAttribute("data-node", before ?? "needs");
-    // Members whose agent is not in the (empty) cache keep their place under their team.
-    await expect(C().locator(".aos-aw-tree [data-key='member:example/lead'] .aos-aw-label")).toHaveText("Lead");
+    // Members whose agent is not in the (empty) cache keep their place under their team, with no "no agent" mark: nothing
+    // can be called missing before the list is built (Review focus 2). The pane falls back to the seat.
+    const lead = C().locator(".aos-aw-tree [data-key='member:example/lead']");
+    await expect(lead.locator(".aos-aw-label")).toHaveText("Lead");
+    await expect(lead.locator(".aos-aw-noagent")).toHaveCount(0);
+    expect(await lead.getAttribute("title")).toBeNull();
+    await lead.click();
+    const pane = C().locator(".aos-aw-pane");
+    await expect(pane).toHaveAttribute("data-node", "member:example/lead");
+    await expect(pane.locator(".aos-aw-panetitle")).toHaveText("Lead");
+    await expect(pane.locator(".aos-aw-noagentnote")).toHaveText("the agents list is not scanned yet — sync now builds it; this seat runs team-lead");
+    await expect(pane.locator(".aos-aw-seat[data-team='example'] .aos-aw-seatrole")).toHaveText("Team lead");
+    await expect(pane).not.toContainText("not one of your agents");
   });
 });

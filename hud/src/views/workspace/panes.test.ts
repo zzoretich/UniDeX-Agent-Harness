@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as path from "path";
-import { Team, readTeams, diskAdapter, teamFrom, gateCards } from "../../data/teams";
+import { Team, readTeams, diskAdapter, teamFrom, gateCards, memberStatus } from "../../data/teams";
 import { parseAgents } from "../../data/agents";
-import { ACTIVITY_PAGE, activityOf } from "../../data/workspace";
+import type { AgentRow, AgentsCache } from "../../data/agents";
+import { ACTIVITY_PAGE, activityOf, agentRuns, seatsOf } from "../../data/workspace";
+import type { Presets } from "../../data/teamWriter";
 import type { SessionHost } from "../../data/aosConfig";
 import type { TeamsCtx, TeamsView, Confirm } from "../teams/ui";
 import { since } from "../teams/ui";
@@ -12,6 +14,7 @@ import { renderTeamPane, teamView } from "./TeamPane";
 import { renderNeeds } from "./NeedsPane";
 import { renderItems } from "./ItemsPane";
 import { renderSettings } from "./SettingsPane";
+import { renderAgent } from "./AgentPane";
 
 // The Agent Workspace's Needs you, team and Activity panes (spec 2026-11-12-agent-workspace-design D5-D7), drawn into a
 // small fake of Obsidian's DOM helpers and driven through the ctx the tab hands them, against the shared fixture vault.
@@ -70,7 +73,7 @@ function harness(t: Team, teams: Team[] = [t], o: { hosts?: SessionHost[]; busy?
   let renders = 0;
   const ui = {
     team: t.id, view: "activity" as TeamsView, gateUsd: new Map(), budgetUsd: new Map(), openItem: null, showDone: new Set<string>(),
-    channelItem: null, drafts: new Map(), addPick: new Map(), activityPages: new Map<string, number>(),
+    channelItem: null, drafts: new Map(), addPick: new Map(), activityPages: new Map<string, number>(), seatPick: new Map<string, string>(),
   };
   const c = {
     app: {}, teams, team: t, agents: o.agents ?? AGENTS, hosts: o.hosts ?? ["claude"], presets: null, now: NOW, ui,
@@ -638,4 +641,238 @@ test("team pane: Settings is the Settings view", async () => {
   const panel = root.one("aos-aw-viewpane");
   assert.equal(panel.attrs.get("data-view"), "settings");
   assert.equal(panel.find("aos-aw-facts").length, 1);
+});
+
+// ── an agent's profile (D11, D12) ──
+
+const PRESETS: Presets = {
+  provider: ["claude", "codex", "opposite"], model: ["inherit", "claude-sonnet-5", "gpt-5"], effort: ["inherit", "low", "medium", "high"],
+  models: { claude: ["claude-sonnet-5"], codex: ["gpt-5"] },
+};
+/** The builder on both hosts (its Codex side a translated copy), shared; scout on Claude Code only, read-only and not yet
+ *  shared; odd, whose file is named otherwise; and a plugin's agent. */
+const PROFILE = parseAgents(JSON.stringify({ schema: 1, scannedAt: "2026-09-20T12:00:00.000Z", sync: { on: true }, agents: [
+  {
+    id: "team-builder", name: "team-builder", description: "Builds the work.", status: "universal",
+    origin: { host: "claude", scope: "user", path: "/a/agents/team-builder.md" },
+    on: {
+      claude: { path: "/a/agents/team-builder.md", via: "native", invoke: "@agent-team-builder", run: "claude --agent team-builder" },
+      codex: { path: "/c/agents/team-builder.toml", via: "mirror", invoke: "team-builder", run: "codex 'Use the team-builder agent.'" },
+    },
+  },
+  {
+    id: "scout", name: "scout", status: "pending", readOnly: true, origin: { host: "claude", scope: "user", path: "/a/agents/scout.md" },
+    on: { claude: { path: "/a/agents/scout.md", via: "native", invoke: "@agent-scout", run: "claude --agent scout" } },
+  },
+  { id: "odd", name: "odd", origin: { host: "claude", scope: "user", path: "/a/agents/other-name.md" }, on: { claude: { path: "/a/agents/other-name.md", invoke: "@agent-odd", run: "claude --agent odd" } } },
+  {
+    id: "kit:helper", name: "helper", description: "Helps.", origin: { host: "claude", scope: "plugin", plugin: "kit", path: "/a/plugins/kit/agents/helper.md" },
+    on: { claude: { path: "/a/plugins/kit/agents/helper.md", via: "native", invoke: "@agent-helper", run: "claude --agent helper" } },
+  },
+] }));
+const agentRow = (id: string): AgentRow => { const a = PROFILE.agents.find((x) => x.id === id); assert.ok(a, id); return a; };
+/** A second team the builder sits in, on Codex, under another lead. */
+const YARD = teamFrom({
+  id: "yard", disabled: false, markers: [], state: null, board: null, runs: null, channel: null,
+  teamMd: "---\nid: yard\nname: Yard\nlead: boss\nmembers:\n  - id: boss\n    name: Boss\n    agent: team-lead\n  - id: hand\n    name: Hand\n    role: Helps out\n    agent: team-builder\n    provider: codex\n    model: inherit\n    effort: low\n    stage: [plan]\n---\n",
+});
+
+/** renderAgent as the tab calls it: the seats and runs from the teams, every team's ctx sharing one log of acts. */
+function profile(agent: AgentRow | null, teams: Team[], o: {
+  hosts?: SessionHost[]; member?: { team: Team; id: string }; agents?: AgentsCache; presets?: Presets | null; sharing?: boolean;
+  busy?: (k: string) => boolean; error?: (k: string) => string | null;
+} = {}) {
+  const agents = o.agents ?? PROFILE;
+  const base = harness(teams[0], teams, { agents, hosts: o.hosts, busy: o.busy });
+  const shares: [string, boolean][] = [];
+  const runs: [string, SessionHost][] = [];
+  let runsOpened = 0;
+  const ctxFor = (t: Team) => ({ ...base.c, team: t, presets: o.presets === undefined ? PRESETS : o.presets, ...(o.error ? { error: o.error } : {}) }) as TeamsCtx;
+  const m = o.member;
+  const seats = agent ? seatsOf(teams, agent.id) : m ? memberStatus(m.team).filter((x) => x.id === m.id).map((member) => ({ team: m.team, member })) : [];
+  const draw = () => {
+    const root = new El("section");
+    renderAgent(html(root), {
+      agent, member: m ?? null, seats, runs: agent ? agentRuns(teams, agent.id, NOW) : { runs: [], weekUsd: 0 }, ctxFor, hosts: o.hosts ?? ["claude"], teams,
+      share: (r, on) => { shares.push([r.id, on]); }, run: (cmd, h) => { runs.push([cmd, h]); },
+      sharing: o.sharing ?? agents.sync.on, openRuns: () => { runsOpened++; },
+    });
+    return root;
+  };
+  return { root: draw(), draw, ...base, shares, runs, runsOpened: () => runsOpened };
+}
+const select = (box: El, cls: string): El => { const s = box.one(cls).all().find((e) => e.tag === "select"); assert.ok(s, `no select in .${cls}`); return s; };
+const secs = (root: El) => root.find("aos-aw-sec").map((s) => s.attrs.get("data-sec"));
+
+test("agent profile: the header's host pills, ❯_ per enabled host, ⧉ and open; NOW; one SEAT block per team; HOSTS; recent runs and the week's spend", async () => {
+  const lab = await team("lab");
+  const p = profile(agentRow("team-builder"), [lab, YARD], { hosts: ["claude", "codex"] });
+  const r = p.root;
+  assert.equal(r.one("aos-aw-panetitle").text, "team-builder");
+  assert.deepEqual(r.find("aos-aw-hostpill").map((e) => [e.text, e.cls.has("is-on")]), [["claude", true], ["codex", true]]);
+  assert.equal(r.one("aos-aw-agentdesc").text, "Builds the work.");
+  assert.deepEqual(r.find("aos-aw-run").map((b) => [b.text, b.disabled]), [["❯_ claude", false], ["❯_ codex", false]]);
+  r.press(/^❯_ codex$/);
+  assert.deepEqual(p.runs, [["codex 'Use the team-builder agent.'", "codex"]]);
+  assert.equal(r.one("aos-aw-copy").attrs.get("title"), "copy @agent-team-builder");
+  assert.equal(r.one("aos-aw-open").attrs.get("title"), "Open /a/agents/team-builder.md");
+  assert.deepEqual(secs(r), ["seat", "hosts", "runs"]);
+  // NOW: the lab seat's live run, with its age.
+  const now = r.one("aos-aw-now");
+  assert.deepEqual(now.find("aos-aw-whoname").map((e) => e.text), ["Lab"]);
+  assert.equal(now.one("aos-aw-whoitem").text, "site-02 · claude · 10m");
+  // SEAT: one block per team, its team, role, state and stages; the pickers hold each seat's own values.
+  const seats = r.find("aos-aw-seat");
+  assert.deepEqual(seats.map((s) => s.attrs.get("data-team")), ["lab", "yard"]);
+  assert.deepEqual(seats.map((s) => s.one("aos-aw-seatteam").text), ["Lab", "Yard"]);
+  assert.deepEqual(seats.map((s) => s.one("aos-aw-seatrole").text), ["Builds the work", "Helps out"]);
+  assert.deepEqual(seats.map((s) => s.one("aos-aw-seatstate").text), ["working on site-02", "idle"]);
+  assert.deepEqual(seats.map((s) => s.one("aos-aw-seatline").text), ["builder · stages discuss, plan, execute", "hand · stages plan"]);
+  assert.deepEqual(["provider", "model", "effort"].map((k) => select(seats[0], `aos-aw-pick-${k}`).value), ["claude", "claude-sonnet-5", "high"]);
+  assert.deepEqual(["provider", "model", "effort"].map((k) => select(seats[1], `aos-aw-pick-${k}`).value), ["codex", "inherit", "low"]);
+  // A Codex seat's model picker offers only what Codex runs.
+  assert.deepEqual(select(seats[1], "aos-aw-pick-model").kids.map((o) => o.text), ["inherit", "gpt-5"]);
+  const effort = select(seats[1], "aos-aw-pick-effort");
+  effort.value = "high";
+  effort.fire("change");
+  assert.deepEqual(p.acts.map((a) => [a.key, a.args]), [["set:yard:hand:effort", ["set", "yard", "hand", "effort", "high"]]]);
+  // The team's name selects the team.
+  seats[1].one("aos-aw-seatteam").fire("click");
+  assert.deepEqual(p.selects, [["yard", undefined, undefined]]);
+  // HOSTS: each side's file, original or translated copy, how to reach it; the share chip and unshare.
+  assert.deepEqual(r.find("aos-aw-hostrow").map((e) => [e.attrs.get("data-host"), e.one("aos-aw-hostvia").text, e.one("aos-aw-hostinvoke").text, e.one("aos-aw-hostfile").text]), [
+    ["claude", "original", "@agent-team-builder", "/a/agents/team-builder.md"], ["codex", "translated copy", "team-builder", "/c/agents/team-builder.toml"],
+  ]);
+  assert.equal(r.one("aos-aw-sharechip").text, "on both");
+  r.press(/^unshare$/);
+  assert.deepEqual(p.shares, [["team-builder", false]]);
+  // RECENT RUNS: its seats' runs across teams, this week's spend, a link to Runs.
+  assert.equal(r.one("aos-aw-weekusd").text, "$3.44 this week");
+  assert.deepEqual(r.find("aos-aw-runtext").map((e) => e.text), ["Lab · site-01 · ok · claude · $3.44"]);
+  r.press(/^Runs →$/);
+  assert.equal(p.runsOpened(), 1);
+});
+
+test("agent profile: pause seat, and Remove from <team> asks first; the lead is offered Remove too and the runtime's refusal shows on its seat", async () => {
+  const lab = await team("lab");
+  const p = profile(agentRow("team-builder"), [lab, YARD]);
+  const seat = p.root.find("aos-aw-seat")[0];
+  seat.press(/^Pause seat$/);
+  seat.press(/^Remove from Lab$/);
+  assert.deepEqual(p.acts.map((a) => [a.key, a.args]), [["pause:lab:builder", ["pause", "lab", "builder"]], ["remove:lab:builder", ["member", "remove", "lab", "builder"]]]);
+  assert.equal(p.acts[0].confirm, undefined);
+  assert.equal(p.acts[1].confirm?.title, "Remove Builder from Lab?");
+  assert.match(p.acts[1].confirm?.message ?? "", /^Builder's block leaves persona\/teams\/lab\/TEAM\.md\. Its agent, team-builder, stays in your agents\./);
+  assert.equal(p.acts[1].confirm?.cta, "Remove");
+  // Busy, the buttons say so.
+  const busy = profile(agentRow("team-builder"), [lab, YARD], { busy: (k) => k === "pause:lab:builder" || k === "remove:yard:hand" });
+  const [b0, b1] = busy.root.find("aos-aw-seat");
+  assert.equal(b0.one("aos-aw-pauseseat").text, "Pausing…");
+  assert.ok(b0.one("aos-aw-pauseseat").disabled);
+  assert.equal(b1.one("aos-aw-remove").text, "Removing…");
+  // The lead: Remove is offered, and what the runtime says comes back on its seat.
+  const lead = profile({ ...agentRow("team-builder"), id: "team-lead", name: "team-lead" }, [lab], {
+    error: (k) => (k === "remove:lab:lead" ? "the lead cannot be removed; make another member the lead in TEAM.md first" : null),
+  });
+  const ls = lead.root.one("aos-aw-seat");
+  assert.equal(ls.one("aos-aw-lead").text, "lead");
+  assert.equal(ls.one("aos-aw-remove").text, "Remove from Lab");
+  assert.equal(ls.one("aos-at-error").text, "the lead cannot be removed; make another member the lead in TEAM.md first");
+});
+
+test("agent profile: Seat in… lists the readable teams it is not on; the pick survives a redraw; Seat runs member add", async () => {
+  const teams = await fixture();
+  const p = profile(agentRow("team-builder"), teams);
+  const box = p.root.one("aos-aw-seatin");
+  const sel = box.all().find((e) => e.tag === "select")!;
+  assert.deepEqual(sel.kids.map((o) => o.text), ["pick a team", "Ops"], "not Lab, which it is on, nor the broken team");
+  const go = () => p.root.one("aos-aw-seatin").all().find((e) => e.tag === "button")!;
+  assert.ok(go().disabled, "nothing picked yet");
+  sel.value = "ops";
+  sel.fire("change");
+  assert.equal(p.ui.seatPick.get("team-builder"), "ops");
+  const again = p.draw();
+  const box2 = again.one("aos-aw-seatin");
+  assert.equal(box2.all().find((e) => e.tag === "select")!.value, "ops");
+  const seat = box2.all().find((e) => e.tag === "button")!;
+  assert.equal(seat.text, "Seat");
+  assert.ok(!seat.disabled);
+  seat.fire("click");
+  assert.deepEqual(p.acts.map((a) => [a.key, a.args]), [["seatin:team-builder", ["member", "add", "ops", "team-builder"]]]);
+  await settled();
+  assert.equal(p.ui.seatPick.has("team-builder"), false, "a seated agent's pick is dropped");
+  // An agent whose file is named otherwise cannot be seated, and is told why; one on every team says so.
+  assert.match(profile(agentRow("odd"), teams).root.one("aos-aw-seatin").text, /named differently from odd.*rename the file to odd\.md/);
+  assert.match(profile(agentRow("team-builder"), [YARD]).root.one("aos-aw-seatin").text, /it sits in every team/);
+});
+
+test("agent profile: a bench agent has no seat and no runs; with sharing off, no share or unshare; read-only shows", async () => {
+  const teams = await fixture();
+  const p = profile(agentRow("scout"), teams, { sharing: false });
+  const r = p.root;
+  assert.deepEqual(secs(r), ["seat", "hosts", "runs"]);
+  assert.equal(r.find("aos-aw-seat").length, 0);
+  assert.match(r.one("aos-aw-sec").text, /seated in no team: it is on the bench/);
+  assert.equal(r.one("aos-aw-now").one("aos-aw-nowrest").text, "not running");
+  assert.equal(r.one("aos-aw-ro").text, "read-only");
+  assert.equal(r.one("aos-aw-sharechip").text, "not shared yet");
+  assert.equal(r.all().filter((e) => e.tag === "button" && /^(un)?share$/.test(e.text)).length, 0);
+  assert.equal(r.one("aos-aw-weekusd").text, "$0 this week");
+  assert.equal(r.find("aos-aw-runrow").length, 0);
+  // Sharing on, a pending agent can be unshared; an excluded one shared.
+  profile(agentRow("scout"), teams, { sharing: true }).root.press(/^unshare$/);
+  const out = profile({ ...agentRow("scout"), status: "excluded" }, teams, { sharing: true });
+  assert.equal(out.root.one("aos-aw-sharechip").text, "not shared");
+  out.root.press(/^share$/);
+  assert.deepEqual(out.shares, [["scout", true]]);
+});
+
+test("agent profile: a plugin agent is the header and HOSTS only, with no SEAT, Seat in… or share chip", async () => {
+  const teams = await fixture();
+  const r = profile(agentRow("kit:helper"), teams).root;
+  assert.equal(r.one("aos-aw-panetitle").text, "helper");
+  assert.equal(r.one("aos-aw-source").text, "kit");
+  assert.deepEqual(secs(r), ["hosts"]);
+  for (const cls of ["aos-aw-now", "aos-aw-seat", "aos-aw-seatin", "aos-aw-sharechip", "aos-aw-runsline"]) assert.equal(r.find(cls).length, 0, cls);
+  assert.equal(r.all().filter((e) => e.tag === "button" && /^(un)?share$/.test(e.text)).length, 0);
+  assert.deepEqual(r.find("aos-aw-run").map((b) => b.text), ["❯_ claude"]);
+  assert.match(r.one("aos-aw-hostfoot").text, /listed from kit, not copied/);
+});
+
+test("a member whose agent is missing: its seat with \"no agent\"; before the agents list is scanned it never says the agent is missing", async () => {
+  const teams = await fixture();
+  const ops = teams.find((t) => t.id === "ops")!;
+  const p = profile(null, teams, { member: { team: ops, id: "scout" } });
+  const r = p.root;
+  assert.equal(r.one("aos-aw-panetitle").text, "Scout");
+  assert.equal(r.one("aos-aw-noagentnote").text, "no agent: ops-scout is not one of your agents, so this seat cannot run");
+  assert.deepEqual(secs(r), ["seat"]);
+  const seat = r.one("aos-aw-seat");
+  assert.equal(seat.attrs.get("data-team"), "ops");
+  assert.equal(seat.one("aos-aw-seatstate").text, "paused");
+  assert.equal(r.find("aos-aw-seatin").length, 0);
+  seat.press(/^Resume seat$/);
+  assert.deepEqual(p.acts.map((a) => [a.key, a.args]), [["pause:ops:scout", ["resume", "ops", "scout"]]]);
+  // Its team is paused: the lead's seat says so, and is not itself paused.
+  const chief = profile(null, teams, { member: { team: ops, id: "chief" } }).root.one("aos-aw-seat");
+  assert.equal(chief.one("aos-aw-seatstate").text, "paused with its team");
+  assert.equal(chief.one("aos-aw-pauseseat").text, "Pause seat");
+  // No agents list yet: the seat, and a note that never calls the agent missing.
+  const unscanned = profile(null, teams, { member: { team: ops, id: "scout" }, agents: parseAgents(null) }).root;
+  assert.equal(unscanned.one("aos-aw-noagentnote").text, "the agents list is not scanned yet — sync now builds it; this seat runs ops-scout");
+  assert.doesNotMatch(unscanned.text, /not one of your agents/);
+  assert.equal(unscanned.find("aos-aw-seat").length, 1);
+});
+
+test("agent profile on a Codex-only machine: ❯_ codex alone, disabled with why when the agent has no Codex file; HOSTS says it is not in Codex", async () => {
+  const teams = await fixture();
+  const r = profile(agentRow("scout"), teams, { hosts: ["codex"], sharing: false }).root;
+  const runs = r.find("aos-aw-run");
+  assert.deepEqual(runs.map((b) => [b.text, b.disabled]), [["❯_ codex", true]]);
+  assert.equal(runs[0].attrs.get("title"), "scout has no Codex file");
+  assert.deepEqual(r.find("aos-aw-hostrow").map((e) => [e.attrs.get("data-host"), e.one("aos-aw-hostvia").text]), [["claude", "original"], ["codex", "not in Codex"]]);
+  // The builder has its Codex copy: ❯_ codex runs it.
+  const b = profile(agentRow("team-builder"), teams, { hosts: ["codex"] });
+  b.root.press(/^❯_ codex$/);
+  assert.deepEqual(b.runs, [["codex 'Use the team-builder agent.'", "codex"]]);
 });

@@ -3,8 +3,8 @@
 import type { App } from "obsidian";
 import type { AgentsCache } from "../../data/agents";
 import type { SessionHost } from "../../data/aosConfig";
-import type { Presets } from "../../data/teamWriter";
-import { Team, BoardItem, Post, Tone, TEAMS_DIR, sessionCommand, redirectPrompt, shq, splitMentions } from "../../data/teams";
+import { Presets, setArgs, modelChoices, ignoredModel } from "../../data/teamWriter";
+import { Team, Member, BoardItem, Post, Tone, TEAMS_DIR, sessionCommand, redirectPrompt, shq, splitMentions } from "../../data/teams";
 
 /** The old Agent Teams tab's views, and the Agent Workspace team pane's (agent-workspace D6): Activity · Items · Channel ·
  *  Settings. The old names stay until that tab retires. */
@@ -26,6 +26,7 @@ export interface TeamsUiState {
   drafts: Map<string, string>;      // team id → its unsent message to the lead (never carried to another team)
   addPick: Map<string, string>;     // team id → the agent picked in "Add a member", kept across redraws until it is added
   activityPages?: Map<string, number>; // team id → how many pages of its Activity are shown (the Agent Workspace)
+  seatPick?: Map<string, string>;   // agent id → the team picked in its profile's "Seat in…", kept until it is seated
 }
 
 export interface Confirm { title: string; message: string; cta: string }
@@ -75,6 +76,58 @@ export function providerPill(parent: HTMLElement, provider: string | null): void
 
 export function errorLine(parent: HTMLElement, text: string | null): void {
   if (text) parent.createDiv({ cls: "aos-at-error", text, attr: { role: "alert" } });
+}
+
+// ── a seat's pickers: the old Manage pane's rows and the Agent Workspace's agent profile (agent-workspace D11) ──
+
+export type SeatKey = "provider" | "model" | "effort";
+export const SEAT_KEYS: { key: SeatKey; label: string }[] = [{ key: "provider", label: "Provider" }, { key: "model", label: "Model" }, { key: "effort", label: "Effort" }];
+/** The classes a seat's pickers are drawn with: the wrapping label (and `<pick>-<key>`), its caption, the ignored note. */
+export interface PickClasses { pick: string; label: string; note: string }
+const AT_PICK: PickClasses = { pick: "aos-at-pick", label: "aos-at-label", note: "aos-at-note" };
+
+/** A labelled select of presets; a value outside them stays visible, marked "(ignored)" when its provider does not run
+ *  it and "(custom)" otherwise, and is left as is until another is picked. Returns the select. */
+export function picker(parent: HTMLElement, key: SeatKey, label: string, options: string[], current: string | null, disabled: boolean,
+  onPick: (v: string) => void, ignored: string | null = null, cls: PickClasses = AT_PICK): HTMLSelectElement {
+  const wrap = parent.createEl("label", { cls: `${cls.pick} ${cls.pick}-${key}`, attr: ignored ? { title: ignored } : {} });
+  wrap.createSpan({ cls: cls.label, text: label });
+  const sel = wrap.createEl("select", { cls: "dropdown" });
+  const cur = current ?? "inherit";
+  const list = options.includes(cur) ? options : [cur, ...options];
+  for (const v of list) sel.createEl("option", { value: v, text: options.includes(v) ? v : `${v} (${ignored ? "ignored" : "custom"})` });
+  sel.value = cur;
+  sel.disabled = disabled || !options.length;
+  sel.addEventListener("change", () => { if (sel.value !== cur && options.includes(sel.value)) onPick(sel.value); });
+  return sel;
+}
+
+/**
+ * A seat's provider, model and effort pickers in `ctx`'s team, each pick one `aos team set`. They offer only the presets
+ * `aos team list --json` names (until it has, each shows its value, disabled). The lead runs in the user's own session,
+ * so it has no opposite provider (lib/teams.js setMember refuses it); the model picker offers only what the seat's
+ * provider runs, and a model it ignores is noted. Each select names its write in data-focus, so a redraw keeps the keyboard.
+ */
+export function seatPickers(parent: HTMLElement, ctx: TeamsCtx, m: Member, cls: PickClasses = AT_PICK): void {
+  const t = ctx.team;
+  const p = ctx.presets;
+  for (const { key, label } of SEAT_KEYS) {
+    const k = `set:${t.id}:${m.id}:${key}`;
+    const options = !p ? [] : key === "model" ? modelChoices(p, m.provider) : p[key].filter((v) => !(m.id === t.lead && key === "provider" && v === "opposite"));
+    const ignored = p && key === "model" ? ignoredModel(p, m.provider, m.model) : null;
+    picker(parent, key, label, options, m[key], !p || ctx.busy(k), (v) => void ctx.act(k, setArgs(t.id, m.id, key, v)), ignored, cls).setAttr("data-focus", k);
+    if (ignored) parent.createDiv({ cls: cls.note, text: `${m.model}: ${ignored}` });
+  }
+}
+
+/** The first error among a seat's writes (its pickers, its pause, its removal), or null. */
+export function seatError(ctx: TeamsCtx, m: Member): string | null {
+  const t = ctx.team;
+  for (const k of [...SEAT_KEYS.map((x) => `set:${t.id}:${m.id}:${x.key}`), `pause:${t.id}:${m.id}`, `remove:${t.id}:${m.id}`]) {
+    const e = ctx.error(k);
+    if (e) return e;
+  }
+  return null;
 }
 
 /** "12m", "3h", "2d": how long since `iso`. */

@@ -1,5 +1,5 @@
 // Agent Teams with its write surface on (AOS_APP_WRITE=teams), the rows of app-smoke: Agent Teams tab, now in the Agent
-// Workspace (Needs you, a team's Items, Channel and Settings). Every change is one `aos team` call (the vault's
+// Workspace (Needs you, a team's Items, Channel and Settings, an agent's profile). Every change is one `aos team` call (the vault's
 // brain/scripts/team.js); the tab never writes persona/teams/ itself. The tests read what team.js leaves: board.jsonl
 // and channel.jsonl (append-only), TEAM.md (rewritten line by line) and the DISABLED switch. A gate approval and a budget
 // raise on a paused item open the lead in the Term, which in the fixture is a stub `claude` that only echoes: no seat is
@@ -41,12 +41,7 @@ async function needsYou(win: Page): Promise<void> {
   await C(win).locator(".aos-aw-tree .aos-aw-row[data-key='needs']").click();
   await expect(C(win).locator(".aos-aw-pane")).toHaveAttribute("data-node", "needs");
 }
-const view = (win: Page, name: string) => C(win).locator(".aos-at-view", { hasText: name });
 const modal = (win: Page) => win.locator(".modal");
-async function example(win: Page, pane: "Board" | "Roster" | "Interact" | "Manage"): Promise<void> {
-  await C(win).locator(".aos-at-teamchip", { hasText: "Example" }).click();
-  await view(win, pane).click();
-}
 /** A team node of the Agent Workspace tree, on one of its views (agent-workspace D6). */
 async function teamView(win: Page, team: string, v: "items" | "channel" | "settings"): Promise<void> {
   await C(win).locator(`.aos-aw-tree .aos-aw-row[data-key='team:${team}']`).click();
@@ -58,7 +53,32 @@ const viewPane = (win: Page, v: string) => C(win).locator(`.aos-aw-pane .aos-aw-
 /** Redraws the tab as its clock or a sweep's re-read does. */
 const redraw = (win: Page) => win.evaluate(() => (window as unknown as { aosHost: { app: { workspace: { getLeavesOfType(t: string): Array<{ view: { getTab(id: string): { render(): void } } }> } } } })
   .aosHost.app.workspace.getLeavesOfType("agentic-os-workbench")[0].view.getTab("agent-teams").render());
-const memberRow = (win: Page, name: string) => C(win).locator(".aos-at-pane-manage .aos-at-mrow", { has: win.locator(".aos-at-name", { hasText: new RegExp(`^${name}`) }) });
+/** An agent's profile in the Agent Workspace (agent-workspace D11): its tree row (the first, when it sits in two teams). */
+async function profile(win: Page, agent: string): Promise<void> {
+  await C(win).locator(`.aos-aw-tree .aos-aw-row[data-key='agent:${agent}']`).first().click();
+  await expect(C(win).locator(".aos-aw-pane")).toHaveAttribute("data-node", `agent:${agent}`);
+}
+/** The profile's SEAT block for one team. */
+const seat = (win: Page, team: string) => C(win).locator(`.aos-aw-pane .aos-aw-seat[data-team='${team}']`);
+
+/**
+ * Runs a test's body, then puts the fixture back even when the body failed; a restore that fails after a failed body is
+ * dropped, so the body's own failure is the one reported.
+ */
+async function restoring(body: () => Promise<void>, restore: () => void): Promise<void> {
+  let passed = false;
+  try {
+    await body();
+    passed = true;
+  } finally {
+    try { restore(); } catch (e) { if (passed) throw e; }
+  }
+}
+/** The example team as the fixture has it: no DISABLED switch, TEAM.md byte for byte. */
+function restoreExample(): void {
+  fs.rmSync(file("DISABLED"), { force: true });
+  if (read("TEAM.md") !== pristine("TEAM.md")) fs.writeFileSync(file("TEAM.md"), pristine("TEAM.md"));
+}
 
 /**
  * Holds back what would redraw the tab from disk, so it keeps drawing what it last read (another writer's change has not
@@ -200,86 +220,122 @@ test("settings: Pause writes DISABLED and Resume removes it; Add a member puts a
   const { win } = app();
   await teamView(win, "example", "settings");
   const s = viewPane(win, "settings");
-  await s.locator("button.aos-aw-pause", { hasText: "Pause" }).click();
-  await expect.poll(() => fs.existsSync(file("DISABLED")) ? read("DISABLED") : null).toBe("Paused from aos team pause. Delete this file, or run aos team resume, to resume.\n");
-  await expect(C(win).locator(".aos-aw-paused")).toContainText("This team is paused: no seat can be dispatched until it resumes.");
-  await expect(s.locator(".aos-aw-runstate")).toHaveText("Paused: no seat can be dispatched until it resumes");
-  await s.locator("button.aos-aw-pause", { hasText: "Resume" }).click();
-  await expect.poll(() => fs.existsSync(file("DISABLED"))).toBe(false);
-  await expect(s.locator("button.aos-aw-pause")).toHaveText("Pause");
-  await expect(C(win).locator(".aos-aw-paused")).toHaveCount(0);
+  await restoring(async () => {
+    await s.locator("button.aos-aw-pause", { hasText: "Pause" }).click();
+    await expect.poll(() => fs.existsSync(file("DISABLED")) ? read("DISABLED") : null).toBe("Paused from aos team pause. Delete this file, or run aos team resume, to resume.\n");
+    await expect(C(win).locator(".aos-aw-paused")).toContainText("This team is paused: no seat can be dispatched until it resumes.");
+    await expect(s.locator(".aos-aw-runstate")).toHaveText("Paused: no seat can be dispatched until it resumes");
+    await s.locator("button.aos-aw-pause", { hasText: "Resume" }).click();
+    await expect.poll(() => fs.existsSync(file("DISABLED"))).toBe(false);
+    await expect(s.locator("button.aos-aw-pause")).toHaveText("Pause");
+    await expect(C(win).locator(".aos-aw-paused")).toHaveCount(0);
 
-  const pick = s.locator(".aos-aw-add select");
-  await pick.selectOption("field-researcher");
-  // A redraw before the click (the tab's clock, a sweep's re-read) keeps the pick.
-  await redraw(win);
-  await expect(pick).toHaveValue("field-researcher");
-  await s.locator(".aos-aw-add button", { hasText: "Add" }).click();
-  try {
+    const pick = s.locator(".aos-aw-add select");
+    await pick.selectOption("field-researcher");
+    // A redraw before the click (the tab's clock, a sweep's re-read) keeps the pick.
+    await redraw(win);
+    await expect(pick).toHaveValue("field-researcher");
+    await s.locator(".aos-aw-add button", { hasText: "Add" }).click();
     await expect(win.locator(".notice-container")).toContainText("added field-researcher (agent field-researcher) to example");
     await expect.poll(() => read("TEAM.md")).toContain("  - id: field-researcher\n    name: Field-researcher\n    role: Member\n    agent: field-researcher\n");
     // On the team now: the picker no longer offers it, and the team's header counts it.
     await expect(s.locator(".aos-aw-add select option", { hasText: /^field-researcher/ })).toHaveCount(0);
     await expect(C(win).locator(".aos-aw-teamline")).toContainText("4 members");
-  } finally {
-    // Its seat leaves as it came, through team.js (Remove is the agent profile's), so TEAM.md is the fixture's again.
+    // Its seat leaves as it came, through team.js (Remove is the agent profile's), and TEAM.md is the fixture's again.
     teamCli("member", "remove", "example", "field-researcher");
-  }
-  await expect.poll(() => read("TEAM.md")).toBe(pristine("TEAM.md"));
+    await expect.poll(() => read("TEAM.md")).toBe(pristine("TEAM.md"));
+  }, restoreExample);
 });
 
-test("Manage: an effort pick rewrites its TEAM.md line, and picking it back restores the file byte for byte (AT8)", async () => {
-  const { win } = app();
-  await example(win, "Manage");
-  const effort = memberRow(win, "Reviewer").locator(".aos-at-pick-effort select");
-  await expect(effort).toHaveValue("high");
-  await effort.selectOption("low");
-  await expect(win.locator(".notice-container")).toContainText("reviewer on example: effort is now low");
-  await expect.poll(() => read("TEAM.md")).toBe(withMember(pristine("TEAM.md"), "reviewer", "effort", "low"));
-  await expect(memberRow(win, "Reviewer").locator(".aos-at-pick-effort select")).toHaveValue("low");
-  await memberRow(win, "Reviewer").locator(".aos-at-pick-effort select").selectOption("high");
-  await expect.poll(() => read("TEAM.md")).toBe(pristine("TEAM.md"));
-});
+// ── an agent's profile (agent-workspace D11): a seat's pickers, pause seat, Remove from <team>, Seat in… ──
 
-test("Manage: a member's switch pauses and resumes it; the team switch writes DISABLED and Resume removes it (AT8)", async () => {
-  const { win } = app();
-  await example(win, "Manage");
-  await memberRow(win, "Builder").locator(".aos-at-switch input").uncheck();
-  await expect.poll(() => read("TEAM.md")).toBe(withMember(pristine("TEAM.md"), "builder", "paused", "true"));
-  await expect(memberRow(win, "Builder")).toHaveClass(/is-off/);
-  await memberRow(win, "Builder").locator(".aos-at-switch input").check();
-  await expect.poll(() => read("TEAM.md")).toBe(pristine("TEAM.md"));
+test.describe("an agent's profile in Agent Workspace", () => {
+  test("an effort pick rewrites its TEAM.md line and back", async () => {
+    const { win } = app();
+    await profile(win, "team-reviewer");
+    const effort = () => seat(win, "example").locator(".aos-aw-pick-effort select");
+    await restoring(async () => {
+      await expect(effort()).toBeEnabled();   // the presets aos team list names have come
+      await expect(effort()).toHaveValue("high");
+      await effort().selectOption("low");
+      await expect(win.locator(".notice-container")).toContainText("reviewer on example: effort is now low");
+      await expect.poll(() => read("TEAM.md")).toBe(withMember(pristine("TEAM.md"), "reviewer", "effort", "low"));
+      await expect(effort()).toHaveValue("low");
+      await effort().selectOption("high");
+      await expect.poll(() => read("TEAM.md")).toBe(pristine("TEAM.md"));
+      await expect(effort()).toHaveValue("high");
+    }, restoreExample);
+  });
 
-  const running = C(win).locator(".aos-at-manage-top .aos-at-switch");
-  await running.locator("input").uncheck();
-  await expect.poll(() => fs.existsSync(file("DISABLED")) ? read("DISABLED") : null).toBe("Paused from aos team pause. Delete this file, or run aos team resume, to resume.\n");
-  const banner = C(win).locator(".aos-at-paused");
-  await expect(banner).toContainText("This team is paused: no seat can be dispatched until it resumes.");
-  await banner.locator("button", { hasText: "Resume" }).click();
-  await expect.poll(() => fs.existsSync(file("DISABLED"))).toBe(false);
-  await expect(C(win).locator(".aos-at-manage-top .aos-at-switch")).toHaveText("Team running");
-});
+  test("pause seat", async () => {
+    const { win } = app();
+    await profile(win, "team-builder");
+    const s = seat(win, "example");
+    await restoring(async () => {
+      await s.locator("button.aos-aw-pauseseat", { hasText: "Pause seat" }).click();
+      await expect.poll(() => read("TEAM.md")).toBe(withMember(pristine("TEAM.md"), "builder", "paused", "true"));
+      await expect(s).toHaveClass(/is-paused/);
+      await expect(s.locator(".aos-aw-seatstate")).toHaveText("paused");
+      await expect(C(win).locator(".aos-aw-tree .aos-aw-row[data-key='agent:team-builder'] .aos-aw-dot")).toHaveClass(/is-off/);
+      await s.locator("button.aos-aw-pauseseat", { hasText: "Resume seat" }).click();
+      await expect.poll(() => read("TEAM.md")).toBe(pristine("TEAM.md"));
+      await expect(s).not.toHaveClass(/is-paused/);
+      await expect(s.locator("button.aos-aw-pauseseat")).toHaveText("Pause seat");
+    }, restoreExample);
+  });
 
-test("Manage: Add puts an agent on the team; Remove asks first and takes its block out again (AT8)", async () => {
-  const { win } = app();
-  await example(win, "Manage");
-  await C(win).locator(".aos-at-add select").selectOption("field-researcher");
-  // A redraw before the click (the tab's clock, a sweep's re-read) keeps the pick: it once came back empty, Add disabled.
-  await win.evaluate(() => (window as unknown as { aosHost: { app: { workspace: { getLeavesOfType(t: string): Array<{ view: { getTab(id: string): { render(): void } } }> } } } })
-    .aosHost.app.workspace.getLeavesOfType("agentic-os-workbench")[0].view.getTab("agent-teams").render());
-  await expect(C(win).locator(".aos-at-add select")).toHaveValue("field-researcher");
-  await C(win).locator(".aos-at-add button", { hasText: "Add" }).click();
-  await expect(win.locator(".notice-container")).toContainText("added field-researcher (agent field-researcher) to example");
-  await expect.poll(() => read("TEAM.md")).toContain("  - id: field-researcher\n    name: Field-researcher\n    role: Member\n    agent: field-researcher\n");
-  const row = memberRow(win, "Field-researcher");
-  await row.locator("button", { hasText: "Remove" }).click();
-  await expect(modal(win).locator("h3")).toHaveText("Remove Field-researcher from Example?");
-  await modal(win).locator("button", { hasText: "Cancel" }).click();
-  await expect(memberRow(win, "Field-researcher")).toHaveCount(1);
-  await memberRow(win, "Field-researcher").locator("button", { hasText: "Remove" }).click();
-  await modal(win).locator("button.mod-cta", { hasText: "Remove" }).click();
-  await expect.poll(() => read("TEAM.md")).toBe(pristine("TEAM.md"));
-  await expect(memberRow(win, "Field-researcher")).toHaveCount(0);
+  test("Remove from <team> asks first; the lead's refusal is shown", async () => {
+    const { win } = app();
+    await restoring(async () => {
+      // field-researcher, a Survey member, seated on Example too, as the lead would seat it.
+      teamCli("member", "add", "example", "field-researcher");
+      await profile(win, "field-researcher");
+      await expect(seat(win, "example")).toHaveCount(1);
+      const remove = () => seat(win, "example").locator("button.aos-aw-remove");
+      await expect(remove()).toHaveText("Remove from Example");
+      await remove().click();
+      await expect(modal(win).locator("h3")).toHaveText("Remove Field-researcher from Example?");
+      await modal(win).locator("button", { hasText: "Cancel" }).click();
+      await expect(modal(win)).toHaveCount(0);
+      expect(read("TEAM.md")).toContain("  - id: field-researcher\n");
+      await remove().click();
+      await modal(win).locator("button.mod-cta", { hasText: "Remove" }).click();
+      await expect.poll(() => read("TEAM.md")).toBe(pristine("TEAM.md"));
+      // Its Survey seat stays.
+      await expect(seat(win, "example")).toHaveCount(0);
+      await expect(seat(win, "survey")).toHaveCount(1);
+
+      // The lead: asked first too; the runtime refuses, its seat says why, and TEAM.md stays.
+      await profile(win, "team-lead");
+      await seat(win, "example").locator("button.aos-aw-remove", { hasText: "Remove from Example" }).click();
+      await expect(modal(win).locator("h3")).toHaveText("Remove Lead from Example?");
+      await modal(win).locator("button.mod-cta", { hasText: "Remove" }).click();
+      await expect(seat(win, "example").locator(".aos-at-error")).toHaveText("the lead cannot be removed; make another member the lead in TEAM.md first");
+      expect(read("TEAM.md")).toBe(pristine("TEAM.md"));
+    }, restoreExample);
+  });
+
+  test("Seat in… lists only teams it is not on and adds it", async () => {
+    const { win } = app();
+    await profile(win, "field-researcher");
+    const seatIn = C(win).locator(".aos-aw-pane .aos-aw-seatin");
+    await restoring(async () => {
+      // On Survey already, and the broken team cannot be read: Example is the one team offered.
+      await expect(seatIn.locator("select option")).toHaveText(["pick a team", "Example"]);
+      await expect(seatIn.locator("button", { hasText: "Seat" })).toBeDisabled();
+      await seatIn.locator("select").selectOption("example");
+      // A redraw before the click (the tab's clock, a sweep's re-read) keeps the pick.
+      await redraw(win);
+      await expect(seatIn.locator("select")).toHaveValue("example");
+      await seatIn.locator("button", { hasText: "Seat" }).click();
+      await expect(win.locator(".notice-container")).toContainText("added field-researcher (agent field-researcher) to example");
+      await expect.poll(() => read("TEAM.md")).toContain("  - id: field-researcher\n    name: Field-researcher\n    role: Member\n    agent: field-researcher\n");
+      // A SEAT block per team now, and no team left to offer.
+      await expect(C(win).locator(".aos-aw-pane .aos-aw-seat .aos-aw-seatteam")).toHaveText(["Example", "Survey"]);
+      await expect(seat(win, "example").locator(".aos-aw-seatrole")).toHaveText("Member");
+      await expect(seatIn).toContainText("it sits in every team");
+    }, restoreExample);
+  });
 });
 
 test("with only Agent Teams on, other surfaces stay refused: a To-Do tick cannot write TODO.md", async () => {

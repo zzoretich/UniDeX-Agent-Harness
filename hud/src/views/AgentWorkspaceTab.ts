@@ -5,16 +5,17 @@ import type AgenticOSPlugin from "../../main";
 import type { RevealTarget, WorkbenchView } from "./WorkbenchView";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { readAgenticosJson, sessionHosts, SessionHost, claudeConfigDir as envClaudeConfigDir } from "../data/aosConfig";
-import { AgentsCache, AGENTS_PATH, emptyAgents, readAgents, agentsStale, groupAgents, asOf } from "../data/agents";
+import { AgentsCache, AgentRow, AGENTS_PATH, emptyAgents, readAgents, agentsStale, groupAgents, asOf } from "../data/agents";
 import { AOS_CLI } from "../data/aosRun";
-import { Team, TEAMS_DIR, readTeams, diskAdapter, teamCommand, envPrefix, touchesTeams, gateBadge, gateCards } from "../data/teams";
+import { Team, TEAMS_DIR, readTeams, diskAdapter, teamCommand, envPrefix, touchesTeams, gateBadge, gateCards, memberStatus } from "../data/teams";
 import { TeamRunner, teamRunner, teamFailure, presetsOf, Presets, ListJson, LIST_ARGS } from "../data/teamWriter";
-import { FOLDED_BY_DEFAULT, NodeKey, TreeRow, pickNode, seatsOf, workspaceTree } from "../data/workspace";
+import { FOLDED_BY_DEFAULT, NodeKey, TreeRow, agentRuns, pickNode, seatsOf, workspaceTree } from "../data/workspace";
 import { sanitizeAgentWorkspace, type AgentWorkspaceChoice } from "../settingsDefaults";
 import { TeamsCtx, TeamsUiState, Confirm } from "./teams/ui";
 import { focusedRow, focusRow, foldTeams, renderTree } from "./workspace/Tree";
 import { renderNeeds } from "./workspace/NeedsPane";
 import { renderTeamPane, teamView } from "./workspace/TeamPane";
+import { renderAgent, type AgentPaneOptions } from "./workspace/AgentPane";
 import { formatAgo } from "./RoutinesTab";
 import { env, shell } from "../host";
 
@@ -53,7 +54,7 @@ export class AgentWorkspaceTab {
    *  each team's Activity pages among it. The files are the state. */
   private ui: TeamsUiState = {
     team: null, view: "activity", gateUsd: new Map(), budgetUsd: new Map(), openItem: null, showDone: new Set(), channelItem: null, drafts: new Map(), addPick: new Map(),
-    activityPages: new Map(),
+    activityPages: new Map(), seatPick: new Map(),
   };
   private busyKeys = new Set<string>();
   private errors = new Map<string, string>();
@@ -146,11 +147,16 @@ export class AgentWorkspaceTab {
 
   // ── the runtime (every write spawns it; its file events re-render) ──
 
-  private syncAgents(): void {
-    this.agentsSyncAt = Date.now();
-    this.plugin.runBrainScript(AOS_CLI, ["agents", "sync"], () => this.schedule(), {
+  /** `aos agents …` against this tab's vault and config folder. */
+  private agentsCli(args: string[]): void {
+    this.plugin.runBrainScript(AOS_CLI, ["agents", ...args], () => this.schedule(), {
       env: { AOS_VAULT: this.plugin.vaultRoot(), AOS_CONFIG: path.join(this.plugin.claudeConfigDir(), "agenticos.json"), CLAUDE_CONFIG_DIR: this.plugin.claudeConfigDir() },
     });
+  }
+
+  private syncAgents(): void {
+    this.agentsSyncAt = Date.now();
+    this.agentsCli(["sync"]);
   }
 
   private runner(): TeamRunner {
@@ -423,14 +429,13 @@ export class AgentWorkspaceTab {
         const t = r.kind === "team" ? this.teams.find((x) => `team:${x.id}` === r.key) : undefined;
         return t?.error ? `${t.errorFile ?? "TEAM.md"}: ${t.error}` : null;
       },
+      scanned: this.agents.scannedAt !== null,
     });
   }
 
-  /** The selected node: Needs you and a team have their panes (D5, D6; a team's Items, Channel and Settings, D8-D10); an
-   *  agent's profile comes with its pane, until then a title and what the files say. */
+  /** The selected node: Needs you, a team (D5, D6; its Items, Channel and Settings, D8-D10), an agent's profile (D11) or
+   *  a member whose agent is missing, its seat (D12). */
   private renderPane(pane: HTMLElement, node: NodeKey): void {
-    const title = (text: string) => pane.createEl("h2", { cls: "aos-aw-panetitle", text });
-    const line = (text: string, cls = "aos-aw-paneline") => pane.createDiv({ cls, text });
     if (node === "needs") {
       renderNeeds(pane, (t) => this.ctx(t), this.teams);
       return;
@@ -442,23 +447,30 @@ export class AgentWorkspaceTab {
     }
     if (node.startsWith("agent:")) {
       const a = this.agents.agents.find((x) => x.id === node.slice("agent:".length));
-      if (!a) return;
-      pane.setAttr("aria-label", a.name);
-      title(a.name);
-      if (a.description) line(a.description);
-      const seats = seatsOf(this.teams, a.id);
-      const yours = groupAgents([a]).yours.length > 0;
-      line(seats.length ? `Seated in ${seats.map((s) => s.team.name || s.team.id).join(", ")}` : yours ? "On the bench: seated in no team" : `Listed from ${a.origin.plugin ?? "Codex's config.toml"}`, "aos-aw-paneline aos-aw-dim");
+      if (a) renderAgent(pane, this.agentPane(a, null));
       return;
     }
     if (node.startsWith("member:")) {
       const [teamId, memberId] = node.slice("member:".length).split("/");
       const t = this.teams.find((x) => x.id === teamId);
-      const m = t?.members.find((x) => x.id === memberId);
-      if (!t || !m) return;
-      pane.setAttr("aria-label", m.name || m.id);
-      title(m.name || m.id);
-      line(`${t.name || t.id} · ${m.role || "member"} · no agent: ${m.agent ? `${m.agent} is not one of your agents` : "its seat names none"}`, "aos-aw-paneline aos-aw-dim");
+      if (t?.members.some((m) => m.id === memberId)) renderAgent(pane, this.agentPane(null, { team: t, id: memberId }));
     }
+  }
+
+  /** What an agent's profile, or an agentless member's seat, is handed: its seats and runs, each team's ctx, and the
+   *  tab's own spawns (❯_ with the host's folder, share / unshare through `aos agents`). */
+  private agentPane(agent: AgentRow | null, member: { team: Team; id: string } | null): AgentPaneOptions {
+    const seats = agent ? seatsOf(this.teams, agent.id) : member ? memberStatus(member.team).filter((m) => m.id === member.id).map((m) => ({ team: member.team, member: m })) : [];
+    return {
+      agent, member, seats, runs: agent ? agentRuns(this.teams, agent.id, new Date()) : { runs: [], weekUsd: 0 },
+      ctxFor: (t) => this.ctx(t), hosts: this.hosts, teams: this.teams,
+      share: (r, on) => this.agentsCli([on ? "include" : "exclude", r.id]),
+      run: (cmd, host) => {
+        const full = `${this.hostEnv()[host]}${cmd}`;
+        if (!this.wb.runInTerm(full, { host, origin: "Agent Workspace" })) this.noTerminal(full);
+      },
+      sharing: this.agents.sync.on,
+      openRuns: () => this.wb.setTab("runs"),
+    };
   }
 }

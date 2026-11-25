@@ -5913,3 +5913,54 @@ a.aos-aw-link:hover { color: var(--udx-info); text-decoration-color: currentColo
 .aos-aw-add select { max-width: 320px; font-size: 12px; }
 .aos-aw-addhint { flex-basis: 100%; font-size: 11.5px; }
 .aos-aw-leftout { font-size: 11.5px; }
+/* An agent's profile (agent-workspace D11, D12): the header, NOW, SEAT blocks and Seat in…, HOSTS, RECENT RUNS. */
+.aos-aw-agent { display: flex; flex-direction: column; gap: 4px; max-width: 760px; }
+.aos-aw-agenthead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.aos-aw-agenthead .aos-aw-panetitle { margin: 0; }
+.aos-aw-hostpills { display: inline-flex; gap: 4px; }
+.aos-aw-hostpill { padding: 0 6px; border: 1px solid var(--udx-line-2); border-radius: 8px; color: var(--udx-text-2); font-family: var(--udx-mono); font-size: 10.5px; }
+.aos-aw-hostpill.is-on { border-color: var(--udx-info-dot); color: var(--udx-info); }
+.aos-aw-hostpill.is-absent { color: var(--udx-text-3); text-decoration: line-through; }
+.aos-aw-source { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; }
+.aos-aw-agentacts { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-aw-agentacts button.aos-aw-btn:not(.clickable-icon) { font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-agentdesc { color: var(--udx-text-2); font-size: 12.5px; }
+.aos-aw-noagentnote { color: var(--udx-text-3); font-size: 12.5px; }
+.aos-aw-sec { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.aos-aw-sechead { color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; }
+.aos-aw-seat { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-bg); }
+.aos-aw-seat.is-paused { background: var(--udx-off-bg); }
+.aos-aw-seathead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12.5px; }
+.aos-aw-seatteam { font-weight: 600; }
+.aos-aw-seatrole { color: var(--udx-text-2); }
+.aos-aw-seatstate { margin-left: auto; color: var(--udx-text-3); font-size: 11.5px; }
+.aos-aw-seatstate.is-live { color: var(--udx-info); }
+.aos-aw-seatstate.is-failed { color: var(--udx-danger); }
+.aos-aw-seatstate.is-off { color: var(--udx-off); }
+.aos-aw-seatline { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; }
+.aos-aw-picks { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+.aos-aw-pick { display: flex; flex-direction: column; gap: 2px; }
+.aos-aw-picklabel { color: var(--udx-text-3); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.aos-aw-pick select { min-width: 96px; font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-pick-model select { min-width: 150px; }
+.aos-aw-picknote { flex-basis: 100%; color: var(--udx-warn); font-size: 11px; }
+.aos-aw-seatacts { display: flex; flex-wrap: wrap; gap: 6px; }
+button.aos-aw-danger:not(.clickable-icon) { color: var(--udx-danger); }
+button.aos-aw-danger:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-danger-bg); }
+.aos-aw-seathint { font-size: 11.5px; }
+.aos-aw-seatin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding-top: 4px; }
+.aos-aw-seatin select { max-width: 260px; font-size: 12px; }
+.aos-aw-hostrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 12px; }
+.aos-aw-hostrow.is-absent { color: var(--udx-text-3); }
+.aos-aw-hostname { min-width: 96px; font-weight: 600; }
+.aos-aw-hostvia { color: var(--udx-text-2); }
+.aos-aw-hostinvoke { font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-hostfile { flex: 1 1 200px; min-width: 0; overflow: hidden; color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-hostfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
+.aos-aw-ro { padding: 0 6px; border: 1px solid var(--udx-line-2); border-radius: 8px; color: var(--udx-text-2); font-size: 10.5px; }
+.aos-aw-runsline { display: flex; align-items: baseline; gap: 12px; }
+.aos-aw-weekusd { font-family: var(--udx-mono); font-size: 12px; }
+.aos-aw-runrow { display: grid; grid-template-columns: 36px 7px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 5px 0; border-top: 1px solid var(--udx-line); }
+.aos-aw-runrow .aos-aw-dot { align-self: center; }
+.aos-aw-runtext { font-size: 12.5px; overflow-wrap: anywhere; }
+.aos-aw-runsmore { font-size: 11.5px; }

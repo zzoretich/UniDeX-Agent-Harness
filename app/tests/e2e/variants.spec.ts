@@ -264,6 +264,22 @@ test.describe("a Codex-only machine", () => {
     await expect(redirect).toHaveAttribute("title", /in Codex/);
   });
 
+  test("Agent Workspace: an agent's profile offers ❯_ codex alone, off with why while the agent has no Codex file", async () => {
+    const { win } = app();
+    await openTab(win, "agent-teams");
+    await content(win).locator(".aos-aw-tree .aos-aw-row[data-key='agent:team-builder']").first().click();
+    const pane = content(win).locator(".aos-aw-pane[data-node='agent:team-builder']");
+    // The fixture's agents are Claude Code's, and sharing needs both hosts: nothing has copied this one into Codex.
+    const run = pane.locator("button.aos-aw-run");
+    await expect(run).toHaveText(["❯_ codex"]);
+    await expect(run).toBeDisabled();
+    await expect(run).toHaveAttribute("title", "team-builder has no Codex file");
+    await expect(pane.locator(".aos-aw-hostrow[data-host='codex'] .aos-aw-hostvia")).toHaveText("not in Codex");
+    await expect(pane.locator(".aos-aw-hostrow[data-host='claude'] .aos-aw-hostvia")).toHaveText("original");
+    // Its seat draws as on any machine.
+    await expect(pane.locator(".aos-aw-seat[data-team='example'] .aos-aw-pick-effort select")).toHaveValue("high");
+  });
+
   test("Routines: the Codex section names why it is empty, with its age", async () => {
     const { win } = app();
     await openTab(win, "routines");

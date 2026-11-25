@@ -1,14 +1,12 @@
 // ManagePane.ts — the Agent Teams tab's Manage area (spec 2026-09-28-agent-teams-design §4.4, D4, D12). Every control is
 // a picker, a switch or a button, never a text box (ui/noTextBoxes.test.ts scans this file): provider, model and effort
 // offer only the presets `aos team set` accepts, which `aos team list --json` names; a member is added by picking one of
-// the user's own agents, and removed after a confirm. Each change is one `aos team` call that rewrites TEAM.md.
-import { groupAgents, addable, AgentRow } from "../../data/agents";
+// the user's own agents, and removed after a confirm. Each change is one `aos team` call that rewrites TEAM.md. The seat
+// pickers are ui.ts's, shared with the Agent Workspace's agent profile until this pane retires.
+import { groupAgents, addable } from "../../data/agents";
 import { Member } from "../../data/teams";
-import { setArgs, pauseArgs, addMemberArgs, removeMemberArgs, modelChoices, ignoredModel } from "../../data/teamWriter";
-import { TeamsCtx, errorLine } from "./ui";
-
-type SetKey = "provider" | "model" | "effort";
-const KEYS: { key: SetKey; label: string }[] = [{ key: "provider", label: "Provider" }, { key: "model", label: "Model" }, { key: "effort", label: "Effort" }];
+import { pauseArgs, addMemberArgs, removeMemberArgs } from "../../data/teamWriter";
+import { TeamsCtx, errorLine, seatPickers, seatError } from "./ui";
 
 export function renderManage(host: HTMLElement, ctx: TeamsCtx): void {
   const t = ctx.team;
@@ -21,13 +19,13 @@ export function renderManage(host: HTMLElement, ctx: TeamsCtx): void {
   errorLine(host, ctx.error(`pause:${t.id}`));
 
   const table = host.createDiv({ cls: "aos-inv-table aos-at-manage" });
-  for (const m of t.members) memberRow(table, ctx, m, p);
+  for (const m of t.members) memberRow(table, ctx, m);
 
   addMember(host, ctx);
   host.createDiv({ cls: "aos-dim aos-at-hint", text: `Each change rewrites persona/teams/${t.id}/TEAM.md through aos team. A run already going keeps the settings it started with.` });
 }
 
-function memberRow(table: HTMLElement, ctx: TeamsCtx, m: Member, p: TeamsCtx["presets"]): void {
+function memberRow(table: HTMLElement, ctx: TeamsCtx, m: Member): void {
   const t = ctx.team;
   const lead = m.id === t.lead;
   const row = table.createDiv({ cls: `aos-inv-row aos-at-mrow${m.paused ? " is-off" : ""}` });
@@ -36,16 +34,7 @@ function memberRow(table: HTMLElement, ctx: TeamsCtx, m: Member, p: TeamsCtx["pr
   if (lead) name.createSpan({ cls: "aos-pill aos-pill-dim aos-at-leadpill", text: "lead" });
   who.createDiv({ cls: "aos-dim aos-at-role", text: m.role || m.id });
 
-  const picks = row.createDiv({ cls: "aos-at-picks" });
-  for (const { key, label } of KEYS) {
-    const k = `set:${t.id}:${m.id}:${key}`;
-    // The lead runs in the user's own session, so it has no opposite provider (lib/teams.js setMember refuses it); a
-    // seat's model picker offers only what its provider runs.
-    const options = !p ? [] : key === "model" ? modelChoices(p, m.provider) : p[key].filter((v) => !(lead && key === "provider" && v === "opposite"));
-    const ignored = p && key === "model" ? ignoredModel(p, m.provider, m.model) : null;
-    picker(picks, key, label, options, m[key], !p || ctx.busy(k), (v) => void ctx.act(k, setArgs(t.id, m.id, key, v)), ignored);
-    if (ignored) picks.createDiv({ cls: "aos-at-note", text: `${m.model}: ${ignored}` });
-  }
+  seatPickers(row.createDiv({ cls: "aos-at-picks" }), ctx, m);
   switchChip(row, ctx, `pause:${t.id}:${m.id}`, m.paused ? "paused" : "on", !m.paused, (on) => pauseArgs(t.id, !on, m.id),
     `Paused, ${m.name} is never dispatched`);
   const acts = row.createDiv({ cls: "aos-at-rowacts" });
@@ -59,24 +48,8 @@ function memberRow(table: HTMLElement, ctx: TeamsCtx, m: Member, p: TeamsCtx["pr
       cta: "Remove",
     }));
   }
-  for (const key of [...KEYS.map((x) => `set:${t.id}:${m.id}:${x.key}`), `pause:${t.id}:${m.id}`, `remove:${t.id}:${m.id}`]) {
-    const e = ctx.error(key);
-    if (e) { errorLine(table, `${m.name}: ${e}`); break; }
-  }
-}
-
-/** A labelled select of presets; a value outside them stays visible, marked "(ignored)" when its provider does not run
- *  it and "(custom)" otherwise, and is left as is until another is picked. */
-function picker(parent: HTMLElement, key: SetKey, label: string, options: string[], current: string | null, disabled: boolean, onPick: (v: string) => void, ignored: string | null = null): void {
-  const wrap = parent.createEl("label", { cls: `aos-at-pick aos-at-pick-${key}`, attr: ignored ? { title: ignored } : {} });
-  wrap.createSpan({ cls: "aos-at-label", text: label });
-  const sel = wrap.createEl("select", { cls: "dropdown" });
-  const cur = current ?? "inherit";
-  const list = options.includes(cur) ? options : [cur, ...options];
-  for (const v of list) sel.createEl("option", { value: v, text: options.includes(v) ? v : `${v} (${ignored ? "ignored" : "custom"})` });
-  sel.value = cur;
-  sel.disabled = disabled || !options.length;
-  sel.addEventListener("change", () => { if (sel.value !== cur && options.includes(sel.value)) onPick(sel.value); });
+  const e = seatError(ctx, m);
+  if (e) errorLine(table, `${m.name}: ${e}`);
 }
 
 /** The Settings tab's switch chip: checked is on; a change runs `args(on)`. */

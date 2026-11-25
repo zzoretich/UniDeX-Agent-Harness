@@ -18,6 +18,9 @@ export interface TreeOptions {
   onFold(k: NodeKey): void;
   /** A row's tooltip (the broken team's error), when it has one. */
   describe?(r: TreeRow): string | null;
+  /** Whether the agents list was ever scanned (agents.json scannedAt). Until it is, no member's agent can be called
+   *  missing, so an agentless member's row carries no "no agent" mark. */
+  scanned?: boolean;
 }
 
 /** Hides what sits under each folded team (its members, its sub-teams and theirs): the rows after it that are deeper,
@@ -109,7 +112,7 @@ export function renderTree(host: HTMLElement, rows: ShownRow[], o: TreeOptions):
     if (r.kind === "team" || r.kind === "member") el.createSpan({ cls: `aos-aw-dot ${r.tone ?? "is-neutral"}`, attr: { "aria-hidden": "true" } });
     el.createSpan({ cls: "aos-aw-label", text: r.label });
     if (r.lead) el.createSpan({ cls: "aos-aw-lead", text: "lead" });
-    if (r.kind === "member" && r.key.startsWith("member:")) el.createSpan({ cls: "aos-aw-noagent", text: "no agent", attr: { title: "No agent of yours has this name: its seat points at a missing agent" } });
+    if (r.kind === "member" && r.key.startsWith("member:") && o.scanned !== false) el.createSpan({ cls: "aos-aw-noagent", text: "no agent", attr: { title: "No agent of yours has this name: its seat points at a missing agent" } });
     if (r.broken) el.createSpan({ cls: "aos-aw-broken", text: "!", attr: { "aria-label": "could not be read" } });
     if (r.count !== undefined && (r.kind === "section" || r.count > 0)) el.createSpan({ cls: "aos-aw-count", text: String(r.count) });
     el.addEventListener("click", () => {
