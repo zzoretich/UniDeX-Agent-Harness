@@ -61,6 +61,17 @@ test("a gate-open takes the latest earlier lead pitch, or none", () => {
   assert.ok(!activityOf(t).some((e) => e.kind === "post"));
 });
 
+test("run-end names the provider and never dangles a separator", async () => {
+  const rev = activityOf(await lab()).find((e) => e.kind === "run-end" && e.member === "reviewer" && e.item === "site-03");
+  assert.ok(rev?.text.includes("codex"));
+  const t = teamFrom({
+    id: "x", teamMd: "---\nname: X\nlead: lead\n---\n", board: null, channel: null, markers: [], state: null, disabled: false,
+    runs: JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", member: "a", item: "a-1" }) + "\n",
+  });
+  const e = activityOf(t).find((x) => x.kind === "run-end");
+  assert.ok(e && !/[:·]\s*$/.test(e.text));
+});
+
 test("a user gate post is left out", () => {
   const t = teamFrom({
     id: "x", teamMd: "---\nname: X\nlead: lead\n---\n", board: null, runs: null, markers: [], state: null, disabled: false,

@@ -39,8 +39,8 @@ export function activityOf(t: Team): ActivityEvent[] {
     }
   }
   for (const r of t.runs) {
-    const bits = [r.status, r.usd != null ? usd(r.usd) : ""].filter(Boolean).join(" · ");
-    out.push({ ts: r.ts, kind: "run-end", member: r.member || null, item: r.item, tone: runTone(r.status), text: `${who(r.member)} finished ${r.item ?? "a run"}: ${bits}` });
+    const bits = [r.status === "?" ? "" : r.status, r.provider ?? "", r.usd != null ? usd(r.usd) : ""].filter(Boolean).join(" · ");
+    out.push({ ts: r.ts, kind: "run-end", member: r.member || null, item: r.item, tone: runTone(r.status), text: `${who(r.member)} finished ${r.item ?? "a run"}${bits ? `: ${bits}` : ""}` });
   }
   for (const m of t.live) {
     if (!m.startedAt) continue;
