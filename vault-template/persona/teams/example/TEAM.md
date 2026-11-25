@@ -49,13 +49,13 @@ A starting point for your own team. Rename it, or copy the folder to `persona/te
 
 - **Members** point at your own agents by name (`agent:`): a Claude Code agent file or a Codex agent file. Create
   `team-lead`, `team-builder` and `team-reviewer`, or change the names to agents you already have.
-- **The lead** runs in your session (or the Agent Teams tab's terminal) and moves the board with `aos team put`. It
+- **The lead** runs in your session (or the Agent Workspace tab's terminal) and moves the board with `aos team put`. It
   dispatches the other seats with `aos team dispatch <team> <member> <item> --detach`, then returns; run the `wait`
   line it prints in the background and call the lead again when it exits.
 - **`provider: opposite`** runs the reviewer on whichever provider did not build the item, so no model grades its own
   work. It needs both Claude Code and Codex.
 - **Gates** (`discuss`, `ship`) are yours to decide: `aos team gate approve|redirect`, or the Approve and Redirect
-  buttons in the Agent Teams tab. A headless run can never record one.
+  buttons in the Agent Workspace tab. A headless run can never record one.
 - **Budgets** are per board item (`budget.default` is the allowance before the Discuss gate), capping Claude spend;
   Codex runs are counted as runs.
 

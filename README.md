@@ -72,8 +72,8 @@ New setup offers the [Superpowers](https://github.com/obra/superpowers) third-pa
   <tr>
     <td width="50%" valign="top">
       <img src="docs/assets/icon-dev.svg" width="40" alt="" /><br />
-      <b>Agent teams</b><br />
-      A lead moves work across a board and dispatches seats into git worktrees on Claude Code or Codex, with reviewers on the other provider. You decide the gates.
+      <b>Agent Workspace</b><br />
+      Your agents and your teams in one tab. A lead moves work across a board and dispatches seats into git worktrees on Claude Code or Codex, with reviewers on the other provider. You decide the gates.
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/icon-brain.svg" width="40" alt="" /><br />
@@ -109,7 +109,7 @@ New setup offers the [Superpowers](https://github.com/obra/superpowers) third-pa
     <td width="50%" valign="top">
       <img src="docs/assets/icon-hud.svg" width="40" alt="" /><br />
       <b>The UniDeX app</b><br />
-      A macOS app over all of it: Pulse, Spaces, Sessions on either host, Brain, Agent Teams, Proposals, Skills, Routines, Files and more, with one Settings panel where every setting is a toggle or a picker. Its Computer pane is a browser a session's agent drives beside you, asking first before it acts on a site you haven't marked.
+      A macOS app over all of it: Pulse, Spaces, Sessions on either host, Brain, Agent Workspace, Proposals, Skills, Routines, Files and more, with one Settings panel where every setting is a toggle or a picker. Its Computer pane is a browser a session's agent drives beside you, asking first before it acts on a site you haven't marked.
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/icon-cost.svg" width="40" alt="" /><br />
@@ -132,8 +132,8 @@ On the app's Code tab, a Claude Code or Codex session opens as a chat over the l
       <br /><sub><b>Spaces.</b> Each project as a dossier: where it stands, the last Claude Code or Codex thread, the next step, and Resume in Code.</sub>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/assets/screens/agent-teams.png" width="100%" alt="Agent Teams: gates waiting on you, then a team's work board" />
-      <br /><sub><b>Agent Teams.</b> The gates waiting on you, with the lead's case and a budget, then each team's board, roster and channel.</sub>
+      <img src="docs/assets/screens/agent-workspace.png" width="100%" alt="Agent Workspace: the tree of teams and their members on the left, Needs you on the right with two gates waiting" />
+      <br /><sub><b>Agent Workspace.</b> Your agents and your teams in one tab: on the left a tree of each team and its members, then the bench and plugin agents; on the right Needs you, every gate waiting on you with the lead's case and a budget.</sub>
     </td>
   </tr>
   <tr>
