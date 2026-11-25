@@ -2,7 +2,7 @@
 // a picker, a switch or a button, never a text box (ui/noTextBoxes.test.ts scans this file): provider, model and effort
 // offer only the presets `aos team set` accepts, which `aos team list --json` names; a member is added by picking one of
 // the user's own agents, and removed after a confirm. Each change is one `aos team` call that rewrites TEAM.md.
-import { groupAgents, AgentRow } from "../../data/agents";
+import { groupAgents, addable, AgentRow } from "../../data/agents";
 import { Member } from "../../data/teams";
 import { setArgs, pauseArgs, addMemberArgs, removeMemberArgs, modelChoices, ignoredModel } from "../../data/teamWriter";
 import { TeamsCtx, errorLine } from "./ui";
@@ -128,11 +128,4 @@ function addMember(host: HTMLElement, ctx: TeamsCtx): void {
   row.createSpan({ cls: "aos-dim aos-at-hint", text: "joins as a Member on every stage, on the host that has the agent; set its seat above" });
   leftOut();
   errorLine(host, ctx.error(key));
-}
-
-/** Whether `aos team member add` can find this agent: it looks for <agents>/<name>.md or .toml by the name it is given,
- *  so an agent whose file is named differently from the agent is refused (lib/teams.js agentFiles). */
-export function addable(a: AgentRow): boolean {
-  const base = (p: string | undefined) => (p ? (p.split("/").pop() ?? "").replace(/\.(md|toml)$/, "") : null);
-  return [a.on.claude?.path, a.on.codex?.path].some((p) => base(p) === a.id);
 }

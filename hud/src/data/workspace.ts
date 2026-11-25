@@ -1,7 +1,9 @@
 // workspace.ts — the Agent Workspace's data side (spec 2026-11-12-agent-workspace-design, D7). Pure over a Team, which
 // is itself built only from the team's own files; nothing here reads storage.
-import { runTone, usd, titleCase } from "./teams";
-import type { BoardItem, Team, Tone } from "./teams";
+import { runTone, usd, titleCase, orderTeams, memberStatus, gateCards, memberTone, pendingGates } from "./teams";
+import type { BoardItem, Team, Tone, MemberStatus, RunRow } from "./teams";
+import { groupAgents, filterAgents } from "./agents";
+import type { AgentsCache, AgentRow } from "./agents";
 
 export const ACTIVITY_PAGE = 50;
 
@@ -80,4 +82,122 @@ export function itemOrder(t: Team): { open: BoardItem[]; done: BoardItem[] } {
   const open = t.board.map((it, i) => ({ it, i })).filter((x) => x.it.status !== "done")
     .sort((a, b) => rank(a.it) - rank(b.it) || a.i - b.i).map((x) => x.it);
   return { open, done };
+}
+
+// ── the org tree (spec D4, D5, D11, D12, D15) ──
+
+/** "needs", "team:<team>", "agent:<agentId>", or "member:<team>/<member>" (a member whose agent is not in agents.json). */
+export type NodeKey = string;
+export interface TreeRow { key: NodeKey; kind: "needs" | "section" | "team" | "member" | "agent"; label: string; depth: number; tone: Tone | null; lead?: boolean; broken?: boolean; count?: number }
+
+export interface Seat { team: Team; member: MemberStatus }
+
+/** Every seat the agent holds, one per team that lists it (a team that failed to parse has no seats). */
+export function seatsOf(teams: Team[], agentId: string): Seat[] {
+  const out: Seat[] = [];
+  for (const team of teams) {
+    if (team.error) continue;
+    for (const member of memberStatus(team)) if (member.agent === agentId) out.push({ team, member });
+  }
+  return out;
+}
+
+/** Your own agents that sit in no team. */
+export function benchOf(agents: AgentsCache, teams: Team[]): AgentRow[] {
+  const seated = new Set<string>();
+  for (const t of teams) if (!t.error) for (const m of t.members) if (m.agent) seated.add(m.agent);
+  return groupAgents(agents.agents).yours.filter((a) => !seated.has(a.id));
+}
+
+const DAY_MS = 86_400_000;
+/** Dollars spent in the last 7 × 24 h; a run with no cost counts nothing. */
+export function weekUsd(runs: RunRow[], now: Date): number {
+  const from = now.getTime() - 7 * DAY_MS;
+  return runs.reduce((n, r) => { const at = Date.parse(r.ts); return Number.isFinite(at) && at >= from && r.usd != null ? n + r.usd : n; }, 0);
+}
+
+/** Every run made by the agent's seats, newest first, with the team it ran in, and what they cost this week. */
+export function agentRuns(teams: Team[], agentId: string, now: Date): { runs: (RunRow & { team: string })[]; weekUsd: number } {
+  const runs: (RunRow & { team: string })[] = [];
+  for (const { team, member } of seatsOf(teams, agentId)) for (const r of team.runs) if (r.member === member.id) runs.push({ ...r, team: team.id });
+  runs.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+  return { runs, weekUsd: weekUsd(runs, now) };
+}
+
+// Teams and the bench start open and the plugins section starts folded; `folded` holds the sections the user has toggled
+// away from that start, so a section is folded when its default differs from its being in the set. A search ignores folds.
+const FOLDED_BY_DEFAULT: ReadonlySet<NodeKey> = new Set(["section:plugins"]);
+const hasText = (q: string, ...parts: (string | null | undefined)[]): boolean => parts.some((p) => !!p && p.toLowerCase().includes(q));
+
+/** The left tree: Needs you, TEAMS (nested by parent, each team then its members, lead first), BENCH, PLUGINS & CONFIG.TOML.
+ *  The query matches team, member and agent names and descriptions; a matching member keeps its team and the team's parents. */
+export function workspaceTree(teams: Team[], agents: AgentsCache, o: { query: string; folded: ReadonlySet<NodeKey> }): TreeRow[] {
+  const q = o.query.trim().toLowerCase();
+  const byId = new Map(agents.agents.map((a) => [a.id, a]));
+  const open = (key: NodeKey): boolean => !!q || FOLDED_BY_DEFAULT.has(key) === o.folded.has(key);
+  const rows: TreeRow[] = [];
+  const gates = gateCards(teams).length;
+  rows.push({ key: "needs", kind: "needs", label: "Needs you", depth: 0, tone: gates ? "is-gate" : null, count: gates });
+
+  // TEAMS
+  const ordered = orderTeams(teams);
+  type Shown = { team: Team; depth: number; all: boolean; members: MemberStatus[] };
+  const shown = new Map<string, Shown>();
+  for (const { team, depth } of ordered) {
+    const members = team.error ? [] : memberStatus(team).sort((a, b) => Number(b.lead) - Number(a.lead));
+    const agent = (m: MemberStatus) => (m.agent ? byId.get(m.agent) : undefined);
+    const all = !q || hasText(q, team.name, team.id);
+    const mine = all ? members : members.filter((m) => hasText(q, m.name, m.id, m.role, agent(m)?.name, agent(m)?.description));
+    if (all || mine.length) shown.set(team.id, { team, depth, all, members: mine });
+  }
+  // A kept team keeps its parents, so a child never floats at the wrong depth.
+  for (const id of [...shown.keys()]) {
+    let p = shown.get(id)!.team.parent;
+    for (let n = 0; p && n < teams.length; n++) {
+      const up = ordered.find((x) => x.team.id === p);
+      if (!up) break;
+      if (!shown.has(up.team.id)) shown.set(up.team.id, { team: up.team, depth: up.depth, all: false, members: [] });
+      p = up.team.parent;
+    }
+  }
+  const teamRows = ordered.filter((x) => shown.has(x.team.id));
+  rows.push({ key: "section:teams", kind: "section", label: "TEAMS", depth: 0, tone: null, count: teamRows.length });
+  if (open("section:teams")) {
+    for (const { team } of teamRows) {
+      const s = shown.get(team.id)!;
+      const pending = team.error ? 0 : pendingGates(team).length;
+      const working = s.members.some((m) => m.status === "working");
+      const tone: Tone | null = team.error ? "is-failed" : pending ? "is-gate" : team.disabled ? "is-off" : working ? "is-live" : null;
+      rows.push({ key: `team:${team.id}`, kind: "team", label: team.name || team.id, depth: 1 + s.depth, tone, ...(team.error ? { broken: true } : {}), ...(pending ? { count: pending } : {}) });
+      for (const m of s.members) {
+        const a = m.agent ? byId.get(m.agent) : undefined;
+        rows.push({ key: a ? `agent:${a.id}` : `member:${team.id}/${m.id}`, kind: "member", label: m.name || m.id, depth: 2 + s.depth, tone: memberTone(m.status), ...(m.lead ? { lead: true } : {}) });
+      }
+    }
+  }
+
+  // BENCH
+  const bench = filterAgents(benchOf(agents, teams), q);
+  rows.push({ key: "section:bench", kind: "section", label: "BENCH", depth: 0, tone: null, count: bench.length });
+  if (open("section:bench")) {
+    if (agents.scannedAt === null) rows.push({ key: "bench:unscanned", kind: "section", label: "not scanned yet — sync now", depth: 1, tone: null });
+    for (const a of bench) rows.push({ key: `agent:${a.id}`, kind: "agent", label: a.name, depth: 1, tone: null });
+  }
+
+  // PLUGINS & CONFIG.TOML
+  const listed = filterAgents(groupAgents(agents.agents).listed, q);
+  rows.push({ key: "section:plugins", kind: "section", label: "PLUGINS & CONFIG.TOML", depth: 0, tone: null, count: listed.length });
+  if (open("section:plugins")) for (const a of listed) rows.push({ key: `agent:${a.id}`, kind: "agent", label: a.name, depth: 1, tone: null });
+  return rows;
+}
+
+/** Which node the tab shows: the one asked for (a link or the router) if it is in the tree; Needs you when a link arrives
+ *  with gates waiting; the saved node if it is still there; Needs you when gates wait; else the first team, then the first agent. */
+export function pickNode(o: { saved: NodeKey | null; via: "rail" | "link"; asked: NodeKey | null; gates: number; tree: TreeRow[] }): NodeKey {
+  const has = (k: NodeKey | null): k is NodeKey => !!k && o.tree.some((r) => r.key === k);
+  if (has(o.asked)) return o.asked;
+  if (o.via === "link" && o.gates > 0) return "needs";
+  if (has(o.saved)) return o.saved;
+  if (o.gates > 0) return "needs";
+  return o.tree.find((r) => r.kind === "team")?.key ?? o.tree.find((r) => r.kind === "agent" || r.kind === "member")?.key ?? "needs";
 }

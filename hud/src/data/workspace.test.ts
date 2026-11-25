@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import * as fs from "fs";
 import * as path from "path";
 import { Team, TeamFiles, readTeams, teamFrom, parseJsonl, latestRows, diskAdapter } from "./teams";
-import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip } from "./workspace";
+import { parseAgents, emptyAgents } from "./agents";
+import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip, workspaceTree, seatsOf, benchOf, agentRuns, weekUsd, pickNode, TreeRow } from "./workspace";
 
 const VAULT = path.resolve(__dirname, "fixtures/teams-vault");
 const LAB_BOARD = path.join(VAULT, "persona/teams/lab/board.jsonl");
@@ -132,4 +133,131 @@ test("the strip: done before the stage, the stage's state, todo after", async ()
   assert.deepEqual(stageStrip(t, { ...by("site-02"), status: "blocked" }), ["done", "done", "blocked", "todo", "todo"]);
   const ops = (await readTeams(diskAdapter(VAULT))).find((x) => x.id === "ops")!;
   assert.equal(stageStrip(ops, ops.board[0]).length, 3);
+});
+
+// ── the tree, seats, bench, runs and which node shows ──
+
+const agentRow = (id: string, scope = "user", description = "") => ({
+  id, name: id, description, origin: { host: "claude", scope, plugin: scope === "plugin" ? "pl" : null, path: `/x/agents/${id}.md` },
+  on: { claude: { invoke: `@agent-${id}`, path: `/x/agents/${id}.md`, run: `claude --agent ${id}` } },
+});
+const cache = (rows: ReturnType<typeof agentRow>[]) => parseAgents(JSON.stringify({ schema: 1, scannedAt: "2026-09-20T00:00:00.000Z", agents: rows }));
+const AGENTS = cache([
+  agentRow("team-lead"), agentRow("team-builder"), agentRow("ops-chief"), agentRow("solo", "user", "writes haiku"),
+  agentRow("plug", "plugin"), agentRow("cfg", "config"),
+]);
+const keys = (rows: TreeRow[]) => rows.map((r) => r.key);
+async function all(): Promise<Team[]> { return readTeams(diskAdapter(VAULT)); }
+
+test("tree: needs first, lab then ops under it, members lead first, the broken team marked, bench and folded plugins", async () => {
+  const teams = await all();
+  const tree = workspaceTree(teams, AGENTS, { query: "", folded: new Set() });
+  assert.equal(tree[0].key, "needs");
+  assert.equal(tree[0].kind, "needs");
+  assert.equal(tree[0].count, teams.flatMap((t) => (t.error ? [] : t.board.filter((i) => i.status === "gate" && i.gate?.state === "pending"))).length);
+  assert.ok(tree[0].count! > 0);
+  const ks = keys(tree);
+  assert.ok(ks.indexOf("section:teams") === 1);
+  const at = (k: string) => tree.find((r) => r.key === k)!;
+  assert.ok(ks.indexOf("team:lab") < ks.indexOf("team:ops"));
+  assert.equal(at("team:lab").depth, 1);
+  assert.equal(at("team:ops").depth, 2);
+  assert.equal(at("team:broken").broken, true);
+  const lab = ks.indexOf("team:lab");
+  assert.deepEqual(ks.slice(lab + 1, lab + 4), ["agent:team-lead", "agent:team-builder", "member:lab/reviewer"]);
+  assert.equal(at("agent:team-lead").lead, true);
+  assert.equal(at("agent:team-lead").label, "Lead");
+  assert.equal(at("agent:team-lead").depth, 2);
+  assert.equal(at("agent:ops-chief").depth, 3);
+  const broken = ks.indexOf("team:broken");
+  assert.ok(!tree[broken + 1] || tree[broken + 1].kind !== "member");
+  assert.ok(ks.includes("section:bench"));
+  assert.deepEqual(tree.filter((r) => r.depth === 1 && r.kind === "agent").map((r) => r.key).slice(0, 1), ["agent:solo"]);
+  assert.ok(ks.includes("section:plugins"));
+  assert.ok(!ks.includes("agent:plug"), "plugins are folded by default");
+  const open = workspaceTree(teams, AGENTS, { query: "", folded: new Set(["section:plugins"]) });
+  assert.ok(keys(open).includes("agent:plug") && keys(open).includes("agent:cfg"));
+  const shut = workspaceTree(teams, AGENTS, { query: "", folded: new Set(["section:teams"]) });
+  assert.ok(!keys(shut).includes("team:lab") && keys(shut).includes("section:teams"));
+});
+
+test("tree with no agents cache: members by member name, bench empty", async () => {
+  const tree = workspaceTree(await all(), emptyAgents(), { query: "", folded: new Set() });
+  const ks = keys(tree);
+  assert.ok(ks.includes("member:lab/lead") && ks.includes("member:ops/chief"));
+  assert.equal(tree.find((r) => r.key === "member:lab/lead")!.label, "Lead");
+  const bench = ks.indexOf("section:bench");
+  assert.deepEqual(tree.slice(bench + 1).filter((r) => r.depth > 0 && r.kind !== "section" || (r.depth > 0 && r.label.includes("not scanned"))).map((r) => r.label).slice(0, 1), ["not scanned yet — sync now"]);
+  assert.ok(!tree.some((r) => r.kind === "agent"));
+});
+
+test("tree with a missing parent and a cycle lists each team once", () => {
+  const mk = (id: string, parent: string | null) => teamFrom({
+    id, teamMd: `---\nname: ${id}\nlead: l\n${parent ? `parent: ${parent}\n` : ""}members:\n  - id: l\n    name: L\n---\n`,
+    board: null, channel: null, runs: null, markers: [], state: null, disabled: false,
+  });
+  const tree = workspaceTree([mk("a", "b"), mk("b", "a"), mk("c", "nope")], emptyAgents(), { query: "", folded: new Set() });
+  const teamRows = tree.filter((r) => r.kind === "team");
+  assert.deepEqual(teamRows.map((r) => r.key).sort(), ["team:a", "team:b", "team:c"]);
+  assert.ok(teamRows.every((r) => r.depth === 1));
+});
+
+test("an agent in two teams shows under both and not on the bench", async () => {
+  const [lab0, ops0] = [(await all()).find((t) => t.id === "lab")!, (await all()).find((t) => t.id === "ops")!];
+  const ops = { ...ops0, members: ops0.members.map((m, i) => (i === 0 ? { ...m, agent: "team-lead" } : m)) };
+  const teams = [lab0, ops];
+  assert.deepEqual(seatsOf(teams, "team-lead").map((s) => `${s.team.id}/${s.member.id}`), ["lab/lead", "ops/chief"]);
+  assert.equal(seatsOf(teams, "team-lead")[0].member.lead, true);
+  assert.deepEqual(seatsOf(teams, "nobody"), []);
+  const tree = workspaceTree(teams, AGENTS, { query: "", folded: new Set() });
+  assert.equal(tree.filter((r) => r.key === "agent:team-lead").length, 2);
+  assert.deepEqual(benchOf(AGENTS, teams).map((a) => a.id), ["ops-chief", "solo"], "the chief lost its seat, the lead keeps one in lab");
+  assert.ok(!benchOf(AGENTS, teams).some((a) => a.id === "plug"));
+});
+
+test("seatsOf skips a broken team", async () => {
+  const lab0 = (await all()).find((t) => t.id === "lab")!;
+  assert.deepEqual(seatsOf([{ ...lab0, error: "bad" }], "team-lead"), []);
+});
+
+test("the filter keeps a matching member's team and hides the rest", async () => {
+  const teams = await all();
+  const tree = workspaceTree(teams, AGENTS, { query: "scout", folded: new Set() });
+  const ks = keys(tree);
+  assert.ok(ks.includes("team:ops") && ks.includes("team:lab"), "the matching team keeps its parent");
+  assert.ok(ks.includes("member:ops/scout"));
+  assert.ok(!ks.includes("agent:ops-chief") && !ks.includes("agent:team-lead") && !ks.includes("team:broken"));
+  const hay = workspaceTree(teams, AGENTS, { query: "haiku", folded: new Set() }).filter((r) => r.kind === "agent").map((r) => r.key);
+  assert.deepEqual(hay, ["agent:solo"]);
+  assert.ok(workspaceTree(teams, AGENTS, { query: "haiku", folded: new Set() })[0].key === "needs");
+});
+
+test("agentRuns sums only the last seven days", async () => {
+  const lab0 = (await all()).find((t) => t.id === "lab")!;
+  const now = new Date("2026-09-25T12:00:00.000Z");
+  const run = (ts: string, member: string, usd: number | null) => ({ ts, member, item: "i", provider: "claude", status: "ok", usd, ms: 1 });
+  const t = { ...lab0, runs: [run("2026-09-01T00:00:00.000Z", "builder", 5), run("2026-09-20T11:50:00.000Z", "builder", 3.44), run("2026-09-24T00:00:00.000Z", "builder", 1), run("2026-09-24T00:00:00.000Z", "reviewer", 9), run("2026-09-24T01:00:00.000Z", "builder", null)] };
+  const r = agentRuns([t], "team-builder", now);
+  assert.equal(r.runs.length, 4);
+  assert.ok(r.runs.every((x) => x.team === "lab" && x.member === "builder"));
+  assert.equal(r.runs[0].ts, "2026-09-24T01:00:00.000Z");
+  assert.ok(Math.abs(r.weekUsd - 4.44) < 1e-9);
+  assert.equal(agentRuns([t], "nobody", now).runs.length, 0);
+  assert.equal(weekUsd(t.runs, now), 13.44);
+});
+
+test("pickNode: asked, then needs by link, saved, needs, first team, first agent, needs", async () => {
+  const teams = await all();
+  const tree = workspaceTree(teams, AGENTS, { query: "", folded: new Set() });
+  const o = { saved: null, via: "rail" as const, asked: null, gates: 0, tree };
+  assert.equal(pickNode({ ...o, asked: "team:ops", saved: "team:lab", via: "link", gates: 2 }), "team:ops");
+  assert.equal(pickNode({ ...o, asked: "team:gone", saved: "team:lab", via: "link", gates: 2 }), "needs");
+  assert.equal(pickNode({ ...o, saved: "team:lab", via: "link", gates: 2 }), "needs");
+  assert.equal(pickNode({ ...o, saved: "team:lab", gates: 2 }), "team:lab");
+  assert.equal(pickNode({ ...o, saved: "team:gone", gates: 2 }), "needs");
+  assert.equal(pickNode({ ...o, saved: "team:gone" }), "team:broken");
+  assert.equal(pickNode(o), "team:broken");
+  const noTeams = workspaceTree([], AGENTS, { query: "", folded: new Set() });
+  assert.equal(pickNode({ ...o, tree: noTeams }), "agent:team-lead");
+  assert.equal(pickNode({ ...o, tree: workspaceTree([], emptyAgents(), { query: "", folded: new Set() }) }), "needs");
 });
