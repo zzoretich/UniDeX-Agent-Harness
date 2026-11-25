@@ -8,14 +8,13 @@ import { RunsTab } from "./RunsTab";
 import { RoutinesTab } from "./RoutinesTab";
 import { SkillsTab } from "./SkillsTab";
 import { ConnectorsTab } from "./ConnectorsTab";
-import { AgentsTab } from "./AgentsTab";
 import { SessionsTab } from "./SessionsTab";
 import { TermTab } from "./TermTab";
 import { ProposalsTab } from "./ProposalsTab";
 import { TodoTab } from "./TodoTab";
 import { SettingsTab } from "./SettingsTab";
 import { NotificationsTab } from "./NotificationsTab";
-import { AgentTeamsTab } from "./AgentTeamsTab";
+import { AgentWorkspaceTab } from "./AgentWorkspaceTab";
 import { PROPOSALS_DIR } from "../data/proposals";
 import { gatherPulseInputs, pulseFacts } from "../data/pulseFacts";
 import { touchesPulse } from "./pulse/meta";
@@ -43,7 +42,7 @@ export const VIEW_TYPE_WORKBENCH = "agentic-os-workbench";
 interface RailTab { id: string; icon: string; label: string }
 
 /** The rail in three sections with a line between them (spec 2026-10-09-rail-sections-code D1): what reaches you and
- *  where you work, then what you keep and do, then the brain and its agents. Pulse is still Home (D4) though
+ *  where you work, then what you keep and do, then the brain and its tools. Pulse is still Home (D4) though
  *  Notifications heads the rail. Sessions keeps the id "chat" it had as the Chat tab, and Code the id "term" it had as
  *  Term (D7), so links and commands that name them still open them. */
 const RAIL_SECTIONS: RailTab[][] = [
@@ -52,6 +51,9 @@ const RAIL_SECTIONS: RailTab[][] = [
     { id: "pulse", icon: "activity", label: "Pulse" },
     { id: "term", icon: "terminal", label: "Code" },
     { id: "chat", icon: "message-square", label: "Sessions" },
+    // One tab for agents and their teams (spec 2026-11-12-agent-workspace D2, D3): Agents' icon, right after Sessions,
+    // with the gate badge; the id stays "agent-teams" and "agents" is an alias (TAB_ALIASES).
+    { id: "agent-teams", icon: "bot", label: "Agent Workspace" },
   ],
   [
     { id: "todo", icon: "square-check", label: "To-Do" },
@@ -63,8 +65,6 @@ const RAIL_SECTIONS: RailTab[][] = [
   [
     // The Brain hub (spec 2026-10-11-brain-hub D16): the label is Brain, the id stays "memory" so links and commands hold.
     { id: "memory", icon: "brain", label: "Brain" },
-    { id: "agent-teams", icon: "users", label: "Agent Teams" },
-    { id: "agents", icon: "bot", label: "Agents" },
     { id: "skills", icon: "sparkles", label: "Skills" },
     // Every MCP server and connector both hosts can use (spec 2026-10-23-connectors-tab D2), right after Skills.
     { id: "connectors", icon: "plug", label: "Connectors" },
@@ -77,8 +77,13 @@ const SETTINGS_TAB: RailTab = { id: "settings", icon: "settings", label: "Settin
 
 /** The Line UDX mark (UniDeX D10): one stroke weight with round ends, drawn in the text colour. */
 const MARK_PATH = "M6 6V26a14 14 0 0 0 28 0V6 M48 6V40H60a17 17 0 0 0 0-34H48Z M92 6L124 40 M124 6L92 40";
-/** Every tab id setTab() can build: what an agenticos://workbench?tab=<id> link may name (statusline spec D10). */
-export const WORKBENCH_TAB_IDS: readonly string[] = [...RAIL.map((t) => t.id), SETTINGS_TAB.id];
+/** A retired tab id and the tab that now shows its content (agent-workspace D3): links from older runtimes'
+ *  statuslines, Settings' "Manage in Agents" and the palette's Agents command keep landing. Resolved first in setTab
+ *  and open. */
+export const TAB_ALIASES: Record<string, string> = { agents: "agent-teams" };
+/** Every tab id setTab() can build: what an agenticos://workbench?tab=<id> link may name (statusline spec D10), the
+ *  aliases included. */
+export const WORKBENCH_TAB_IDS: readonly string[] = [...RAIL.map((t) => t.id), ...Object.keys(TAB_ALIASES), SETTINGS_TAB.id];
 
 /**
  * Where open() lands (spaces-redesign D12): a tab, and for Spaces, Sessions and Code what to show in it. Every field
@@ -98,6 +103,8 @@ export interface WorkbenchTarget {
   mode?: BrainMode | null;
   queue?: ReviewQueue | null;
   memory?: string | null;
+  /** Agent Workspace only (agent-workspace D5): the tree node to show, "team:<id>", "agent:<id>" or "needs". */
+  node?: string;
 }
 /** What a tab's reveal() is handed: the target without its tab, only the fields that were set. */
 export type RevealTarget = Omit<WorkbenchTarget, "tab">;
@@ -486,8 +493,8 @@ export class WorkbenchView extends ItemView {
     } catch { return { count: 0, breaking: false }; }   // no brain/notifications yet
   }
 
-  /** Runs `command` in a new Term session in the vault and shows it (Skills, Agents, Proposals, Notifications, Agent
-   *  Teams, Settings). `host` is the agent the command starts, for its dot in the list; `origin` is the row's subtitle.
+  /** Runs `command` in a new Term session in the vault and shows it (Skills, Proposals, Notifications, Agent Workspace,
+   *  Settings). `host` is the agent the command starts, for its dot in the list; `origin` is the row's subtitle.
    *  False when no session could start (the Term tab then shows its install hint), so a caller whose command must not
    *  be lost can say so. An agent's command is typed as `exec <agent>` (R40): the terminal ends with the agent, never
    *  leaving a login shell behind the chat's composer. `chat: false` marks a command that is not a conversation
@@ -576,14 +583,15 @@ export class WorkbenchView extends ItemView {
   /**
    * The one way into a tab from another tab or a link (spaces-redesign D12): shows `target.tab` (left as it is when it
    * is already shown), then hands the rest to that tab's reveal(): Spaces selects the workspace, its pane and thread;
-   * Sessions scopes its list to the workspace and opens the thread; Code scopes its list to the workspace's group.
-   * Select only: it never resumes, opens a terminal, drafts or runs a verb. False when the tab cannot be shown: not a
-   * tab id, or Sessions with no host signed in and no past session (its rail button is hidden, D32; local-first A17;
-   * install-import B11).
+   * Sessions scopes its list to the workspace and opens the thread; Code scopes its list to the workspace's group;
+   * Agent Workspace shows the node, or with none Needs you while a gate is pending. A retired id (TAB_ALIASES) opens the
+   * tab that took its place. Select only: it never resumes, opens a terminal, drafts or runs a verb. False when the tab
+   * cannot be shown: not a tab id, or Sessions with no host signed in and no past session (its rail button is hidden,
+   * D32; local-first A17; install-import B11).
    */
   open(target: WorkbenchTarget): boolean {
-    const { tab } = target;
-    if (!WORKBENCH_TAB_IDS.includes(tab)) return false;
+    if (!WORKBENCH_TAB_IDS.includes(target.tab)) return false;
+    const tab = TAB_ALIASES[target.tab] ?? target.tab;
     if (tab === "chat" && !this.plugin.sessionsShown()) return false;
     if (this.activeTab !== tab || !this.tabs[tab]) this.setTab(tab);
     const reveal: RevealTarget = {};
@@ -593,7 +601,10 @@ export class WorkbenchView extends ItemView {
     if (target.mode) reveal.mode = target.mode;
     if (target.queue) reveal.queue = target.queue;
     if (target.memory) reveal.memory = target.memory;
-    if (Object.keys(reveal).length) revealOf(this.tabs[tab])?.(reveal);
+    if (target.node) reveal.node = target.node;
+    // Agent Workspace hears every link, a bare one too: with a gate pending, a link that names no node shows Needs you
+    // where a rail click shows the saved node (agent-workspace D5).
+    if (Object.keys(reveal).length || tab === "agent-teams") revealOf(this.tabs[tab])?.(reveal);
     return true;
   }
 
@@ -613,15 +624,15 @@ export class WorkbenchView extends ItemView {
     if (id === "routines") return new RoutinesTab(this.plugin, this);
     if (id === "skills") return new SkillsTab(this.plugin, this);
     if (id === "connectors") return new ConnectorsTab(this.plugin, this);
-    if (id === "agents") return new AgentsTab(this.plugin, this);
-    if (id === "agent-teams") return new AgentTeamsTab(this.plugin, this);
+    if (id === "agent-teams") return new AgentWorkspaceTab(this.plugin, this);
     if (id === "chat") return new SessionsTab(this.plugin, this);
     if (id === "term") return new TermTab(this.plugin, this);
     if (id === "settings") return new SettingsTab(this.plugin, this);
     return null;
   }
 
-  setTab(id: string): void {
+  setTab(tabId: string): void {
+    const id = TAB_ALIASES[tabId] ?? tabId;
     // The tab on its way out is told (it stays mounted in memory): Brain moves its badge marker when Review was shown (D16).
     if (id !== this.activeTab) this.tabs[this.activeTab]?.leave?.();
     this.activeTab = id;

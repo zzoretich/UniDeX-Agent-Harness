@@ -38,7 +38,7 @@ const LIVE = argv.includes("--live");
 const KEEP = argv.includes("--keep");
 const EXE = path.join(APP, "Contents", "MacOS", path.basename(APP, ".app"));
 const VERSION = JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8")).version;
-const TABS = ["pulse", "files", "todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "agents", "agent-teams", "chat", "term", "settings"];
+const TABS = ["pulse", "files", "todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "agent-teams", "chat", "term", "settings"];
 
 if (!fs.existsSync(EXE)) { console.error(`no packaged app at ${APP}: run \`npm run dist:test\``); process.exit(2); }
 

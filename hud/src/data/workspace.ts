@@ -126,7 +126,8 @@ export function agentRuns(teams: Team[], agentId: string, now: Date): { runs: (R
 
 // Teams and the bench start open and the plugins section starts folded; `folded` holds the sections the user has toggled
 // away from that start, so a section is folded when its default differs from its being in the set. A search ignores folds.
-const FOLDED_BY_DEFAULT: ReadonlySet<NodeKey> = new Set(["section:plugins"]);
+// Passed as `folded` itself, it opens every section (the tab picks its node from that whole tree).
+export const FOLDED_BY_DEFAULT: ReadonlySet<NodeKey> = new Set(["section:plugins"]);
 const hasText = (q: string, ...parts: (string | null | undefined)[]): boolean => parts.some((p) => !!p && p.toLowerCase().includes(q));
 
 /** The left tree: Needs you, TEAMS (nested by parent, each team then its members, lead first), BENCH, PLUGINS & CONFIG.TOML.

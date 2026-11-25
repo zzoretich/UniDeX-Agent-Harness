@@ -176,7 +176,7 @@ export class PulsePopup extends Modal {
           const beats = Object.entries(m.heartbeat?.beats ?? {}).sort((a, b) => String(b[1].lastRunAt ?? "").localeCompare(String(a[1].lastRunAt ?? "")));
           this.row(l, { tone: beats.some(([, b]) => b.status === "missed" || b.status === "failed") ? "danger" : "ok", title: `${m.facts.persona} — Chief of Staff`, meta: beats.slice(0, 4).map(([s, b]) => `${s} ${b.status}${b.lastRunAt ? ` ${formatRelative(b.lastRunAt)}` : ""}`).join(" · ") || "no duty has run yet" });
         }
-        for (const t of m.teams) this.row(l, { tone: t.gates ? "gate" : t.working ? "info" : "off", title: `${t.name} — team`, meta: `${pl(t.members, "seat")} · ${t.working} working · ${t.blocked} blocked · ${pl(t.gates, "gate")}${t.paused ? " · paused" : ""}`, acts: [{ label: "Board →", jump: true, run: () => openTab(ctx, "agent-teams") }] });
+        for (const t of m.teams) this.row(l, { tone: t.gates ? "gate" : t.working ? "info" : "off", title: `${t.name} — team`, meta: `${pl(t.members, "seat")} · ${t.working} working · ${t.blocked} blocked · ${pl(t.gates, "gate")}${t.paused ? " · paused" : ""}`, acts: [{ label: "Board →", jump: true, run: () => openTab(ctx, "agent-teams", `team:${t.id}`) }] });
         for (const s of [...m.staff].sort((a, b) => b.heartbeatMtime - a.heartbeatMtime)) {
           const hb = s.heartbeat;
           const at = hb?.completed_at || hb?.started_at;

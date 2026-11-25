@@ -13,7 +13,7 @@ const box = async (win: Page, selector: string) => {
   return b;
 };
 
-test("after Code and Agent Teams, the content area carries none of their classes", async () => {
+test("after Code and Agent Workspace, the content area carries none of their classes", async () => {
   const { win } = app();
   await openTab(win, "agent-teams");
   await openTab(win, "term");
@@ -22,7 +22,7 @@ test("after Code and Agent Teams, the content area carries none of their classes
     await openTab(win, t);
     const cls = ((await C().getAttribute("class")) ?? "").split(/\s+/);
     expect(cls, t).toContain("aos-wb-content");
-    expect(cls.filter((c) => c.startsWith("aos-term") || c === "aos-at"), t).toEqual([]);
+    expect(cls.filter((c) => c.startsWith("aos-term") || c === "aos-at" || c.startsWith("aos-aw")), t).toEqual([]);
   }
 });
 
@@ -54,11 +54,14 @@ test("after a visit to Code, the tabs keep their layout: lists beside their read
   expect(xs.length).toBeGreaterThan(2);
   expect(new Set(xs).size).toBe(1);
 
-  // Agent Teams: the team switch above the board.
+  // Agent Workspace (agent-workspace D4): the header above, the tree on the left, the selected node's pane beside it.
   await openTab(win, "agent-teams");
-  const teams = await box(win, ".aos-at-teams");
-  const board = await box(win, ".aos-at-board");
-  expect(teams.y + teams.height).toBeLessThanOrEqual(board.y + 1);
+  const head = await box(win, ".aos-aw-head");
+  const tree = await box(win, ".aos-aw-side");
+  const node = await box(win, ".aos-aw-pane");
+  expect(head.y + head.height).toBeLessThanOrEqual(tree.y + 1);
+  expect(tree.x + tree.width).toBeLessThanOrEqual(node.x + 1);
+  expect(Math.abs(tree.y - node.y)).toBeLessThan(2);
 });
 
 test("after a visit to Code, Spaces keeps its three panes side by side, and below 1100 px folds the right pane under the dossier (spaces-redesign D3)", async () => {

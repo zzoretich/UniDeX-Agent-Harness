@@ -66,8 +66,10 @@ test("rail: three sections in order with a line between them, Sessions with no h
   await expect(win.locator(".aos-wb-railfoot .aos-wb-railbtn[data-tab='settings']")).toHaveCount(1);
   await expect(rail(win, "files").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "file-text");
   await expect(rail(win, "skills").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "sparkles");
-  await expect(rail(win, "agents").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "bot");
-  await expect(rail(win, "agent-teams").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "users");
+  // One Agent Workspace button with Agents' icon, after Sessions; the id stays "agent-teams" (agent-workspace D2, D3).
+  await expect(rail(win, "agent-teams").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "bot");
+  await expect(rail(win, "agent-teams")).toHaveAttribute("aria-label", "Agent Workspace");
+  await expect(rail(win, "agents")).toHaveCount(0);
   await expect(rail(win, "settings").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "settings");
   // The head: search and capture; the foot: Help, light and dark, App settings, then Settings. Getting started is put
   // away here (the harness marks the tour as behind this Mac); tour.spec.ts covers it.
@@ -135,7 +137,7 @@ test("rail: Enter or Space on a focused button opens its tab", async () => {
   await openTab(win, "pulse");
 });
 
-test("rail badges count the fixture: Pulse, to-do, proposals, notifications (rose for breaking), agent teams", async () => {
+test("rail badges count the fixture: Pulse, to-do, proposals, notifications (rose for breaking), Agent Workspace's gates", async () => {
   const { win } = app();
   const e = expected();
   await expect(badge(win, "todo")).toHaveText(String(e.todo.badge));
@@ -147,7 +149,7 @@ test("rail badges count the fixture: Pulse, to-do, proposals, notifications (ros
   // Pulse counts what needs the user (spec 2026-10-08-pulse-cockpit-design P5): the fixture has a health error, so it is rose.
   await expect(badge(win, "pulse")).toHaveText(/^\d+$/);
   await expect(badge(win, "pulse")).toHaveClass(/is-urgent/);
-  for (const id of ["spaces", "memory", "runs", "routines", "skills", "agents", "term", "settings"]) {
+  for (const id of ["spaces", "memory", "runs", "routines", "skills", "term", "settings"]) {
     await expect(badge(win, id)).toHaveClass(/is-empty/);
   }
 });
@@ -172,7 +174,7 @@ test("status bar: READ-ONLY, the live marker and the runtime's status-line segme
   await expect(bar).toContainText(`${errors}err`);
 });
 
-test("status bar: a gate opens Agent Teams, an alert Notifications, a flag persona/STATE.md", async () => {
+test("status bar: a gate opens Agent Workspace, an alert Notifications, a flag persona/STATE.md", async () => {
   const { win } = app();
   const bar = win.locator(".aos-host-status .aos-statusbar");
   await bar.locator(".aos-sbar-link", { hasText: "◆ 2 gates" }).click();
@@ -188,7 +190,7 @@ test("status bar: a gate opens Agent Teams, an alert Notifications, a flag perso
   await expect(win.locator(".aos-host-tab.is-active .aos-host-tab-title")).toHaveText("Workbench");
 });
 
-test("status bar keeps working with the Workbench closed; a gate reopens it on Agent Teams", async () => {
+test("status bar keeps working with the Workbench closed; a gate reopens it on Agent Workspace", async () => {
   const { win } = app();
   const wb = win.locator(".aos-host-tab", { has: win.locator(".aos-host-tab-title", { hasText: /^Workbench$/ }) });
   await wb.locator(".aos-host-tab-close").click();
@@ -211,7 +213,9 @@ test("commands: the plugin registers its palette commands; each 'Open Workbench:
   for (const id of ["open-workbench", "open-sidebar-hud", "open-memory-inspector", "open-run-inspector", "new-terminal", "quick-capture", "open-omnisearch"]) {
     expect(ids).toContain(`agentic-os:${id}`);
   }
-  expect(cmds.find((c) => c.id === "agentic-os:open-workbench-agent-teams")?.name).toBe("Open Workbench: Agent Teams");
+  // Both old command ids open Agent Workspace (agent-workspace D3); the Agents one says where it lands.
+  expect(cmds.find((c) => c.id === "agentic-os:open-workbench-agent-teams")?.name).toBe("Open Workbench: Agent Workspace");
+  expect(cmds.find((c) => c.id === "agentic-os:open-workbench-agents")?.name).toBe("Open Workbench: Agents (Agent Workspace)");
   expect(cmds.find((c) => c.id === "agentic-os:open-workbench-settings")?.name).toBe("Open Workbench: Settings");
   // The Chat tab became Sessions; its id (and so its command's) stays "chat", so links and hotkeys keep working.
   expect(cmds.find((c) => c.id === "agentic-os:open-workbench-chat")?.name).toBe("Open Workbench: Sessions");
@@ -224,6 +228,9 @@ test("commands: the plugin registers its palette commands; each 'Open Workbench:
     await expect(rail(win, t)).toHaveClass(/is-active/);
   }
   await openTab(win, "pulse");
+  expect(await command(win, "agentic-os:open-workbench-agents")).toBe(true);
+  await expect(rail(win, "agent-teams")).toHaveClass(/is-active/);
+  await openTab(win, "pulse");
 });
 
 test("agenticos:// links open the named tab; an unknown tab leaves the current one", async () => {
@@ -235,6 +242,10 @@ test("agenticos:// links open the named tab; an unknown tab leaves the current o
   await win.waitForTimeout(300);
   await expect(rail(win, "notifications")).toHaveClass(/is-active/);
   await open({ tab: "agent-teams" });
+  await expect(rail(win, "agent-teams")).toHaveClass(/is-active/);
+  // The Agents tab's id is an alias for Agent Workspace (agent-workspace D3).
+  await openTab(win, "pulse");
+  await open({ tab: "agents" });
   await expect(rail(win, "agent-teams")).toHaveClass(/is-active/);
   await openTab(win, "pulse");
 });
