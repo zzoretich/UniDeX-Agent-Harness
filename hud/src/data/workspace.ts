@@ -25,7 +25,9 @@ export function activityOf(t: Team): ActivityEvent[] {
       out.push({ ts: it.ts, kind: "stage", member: it.by, item: it.id, tone: "is-neutral", text: `${who(it.by)} moved ${it.id} from ${p.stage || "none"} to ${it.stage}` });
     }
     if (isPending(it) && !(isPending(p) && p?.gate?.name === it.gate?.name)) {
-      out.push({ ts: it.ts, kind: "gate-open", member: it.by, item: it.id, tone: "is-gate", text: `${who(it.by)} opened the ${it.gate?.name} gate on ${it.id}` });
+      // The lead's pitch rides on the event: its latest gate post on the item at or before this snapshot.
+      const pitch = [...t.channel].reverse().find((c) => c.item === it.id && c.kind === "gate" && c.from === t.lead && c.ts && c.ts <= it.ts);
+      out.push({ ts: it.ts, kind: "gate-open", member: it.by, item: it.id, tone: "is-gate", text: `${who(it.by)} opened the ${it.gate?.name} gate on ${it.id}${pitch?.text ? `: "${pitch.text}"` : ""}` });
     }
     const g = it.gate;
     if (g && g.by === "user" && g.ts && (!p?.gate || p.gate.name !== g.name || p.gate.ts !== g.ts)) {
@@ -48,9 +50,9 @@ export function activityOf(t: Team): ActivityEvent[] {
       text: `${who(m.member)} started ${m.item ?? "a run"}${stage ? ` (${stage})` : ""}${m.provider ? ` on ${m.provider}` : ""}`,
     });
   }
-  // The user's gate answer is already a gate-decided event; the rest of the channel is the team talking.
+  // Gate posts are already gate-open (with the pitch) and gate-decided events; the rest of the channel is the team talking.
   for (const p of t.channel) {
-    if (p.kind === "gate" && p.from === "user") continue;
+    if (p.kind === "gate") continue;
     out.push({ ts: p.ts, kind: "post", member: p.from, item: p.item, tone: p.kind === "blocker" ? "is-failed" : "is-neutral", text: `${who(p.from)}: ${p.text}` });
   }
   // Newest first; a stable sort keeps one row's events in the order they were pushed.

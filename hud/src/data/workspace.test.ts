@@ -34,7 +34,31 @@ test("activity: the lab's gate, runs, marker and posts, newest first", async () 
   assert.ok(ev.some((e) => e.kind === "gate-decided" && e.item === "site-02" && e.ts === "2026-09-20T10:30:00.000Z"));
   assert.ok(ev.every((e) => e.item !== "site-04"));
   assert.ok(ev.some((e) => e.kind === "post" && e.member === "lead"));
+  assert.ok(!ev.some((e) => e.kind === "post" && e.item === "site-01" && e.ts === "2026-09-20T12:00:00.000Z"), "a gate post is folded into gate-open");
+  const open = ev.find((e) => e.kind === "gate-open" && e.item === "site-01");
+  assert.ok(open?.text.endsWith('"Discuss gate open on site-01: scope is the landing page; I propose $20, with $3.44 spent. See notes@lead, or ask @user."'));
   assert.ok(ACTIVITY_PAGE === 50);
+});
+
+test("no gate post is a post event for any fixture team", async () => {
+  for (const t of await readTeams(diskAdapter(VAULT))) {
+    const gateTexts = new Set(t.channel.filter((p) => p.kind === "gate").map((p) => p.text));
+    assert.ok(!activityOf(t).some((e) => e.kind === "post" && [...gateTexts].some((g) => e.text.endsWith(g))), t.id);
+  }
+});
+
+test("a gate-open takes the latest earlier lead pitch, or none", () => {
+  const row = (ts: string, id: string) => JSON.stringify({ ts, by: "lead", id, title: id, stage: "discuss", owner: "lead", status: "gate", gate: { name: "discuss", state: "pending" } });
+  const post = (ts: string, text: string, item: string) => JSON.stringify({ ts, from: "lead", kind: "gate", item, text });
+  const t = teamFrom({
+    id: "x", teamMd: "---\nname: X\nlead: lead\n---\n", runs: null, markers: [], state: null, disabled: false,
+    board: [row("2026-01-01T00:10:00.000Z", "a-1"), row("2026-01-01T00:10:00.000Z", "b-1")].join("\n") + "\n",
+    channel: [post("2026-01-01T00:01:00.000Z", "old", "a-1"), post("2026-01-01T00:09:00.000Z", "new", "a-1"), post("2026-01-01T00:11:00.000Z", "later", "b-1")].join("\n") + "\n",
+  });
+  const ev = activityOf(t).filter((e) => e.kind === "gate-open");
+  assert.ok(ev.find((e) => e.item === "a-1")?.text.endsWith('"new"'));
+  assert.ok(!ev.find((e) => e.item === "b-1")?.text.includes('"'));
+  assert.ok(!activityOf(t).some((e) => e.kind === "post"));
 });
 
 test("a user gate post is left out", () => {
@@ -48,6 +72,7 @@ test("a user gate post is left out", () => {
   const ev = activityOf(t);
   assert.equal(ev.length, 1);
   assert.equal(ev[0].kind, "post");
+  assert.equal(ev[0].text.endsWith("hello"), true);
 });
 
 test("activity over 2,000 generated rows stays sorted and one row can give two events", () => {
