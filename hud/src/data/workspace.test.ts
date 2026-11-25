@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "fs";
 import * as path from "path";
 import { Team, TeamFiles, readTeams, teamFrom, parseJsonl, latestRows, diskAdapter } from "./teams";
-import { activityOf, ACTIVITY_PAGE } from "./workspace";
+import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip } from "./workspace";
 
 const VAULT = path.resolve(__dirname, "fixtures/teams-vault");
 const LAB_BOARD = path.join(VAULT, "persona/teams/lab/board.jsonl");
@@ -106,4 +106,30 @@ test("activity over 2,000 generated rows stays sorted and one row can give two e
   assert.ok(mine.some((e) => e.kind === "gate-decided" && e.ts === at(2000)));
   assert.ok(mine.some((e) => e.kind === "stage" && e.ts === at(2001)));
   assert.equal(ev.filter((e) => e.kind === "item-new").length, 40);
+});
+
+test("items: pending gate, blocked, working, open, paused, then done", async () => {
+  const t = await lab();
+  const { open, done } = itemOrder(t);
+  assert.equal(open[0].id, "site-01");
+  assert.ok(done.some((i) => i.id === "site-00"));
+  assert.equal(open.length + done.length, t.board.length);
+  const mk = (id: string, status: string, gate: string | null = null) =>
+    ({ ...t.board[0], id, status, gate: gate ? { name: "g", state: gate, by: null, ts: null, note: "" } : null });
+  const fake = { ...t, board: [mk("a", "paused"), mk("b", "todo"), mk("c", "working"), mk("d", "blocked"), mk("e", "gate", "approved"), mk("f", "gate", "pending"), mk("g", "done"), mk("h", "working")] };
+  const o = itemOrder(fake);
+  assert.deepEqual(o.open.map((i) => i.id), ["f", "d", "c", "h", "b", "e", "a"]);
+  assert.deepEqual(o.done.map((i) => i.id), ["g"]);
+});
+
+test("the strip: done before the stage, the stage's state, todo after", async () => {
+  const t = await lab();
+  const by = (id: string) => t.board.find((b) => b.id === id)!;
+  assert.deepEqual(stageStrip(t, by("site-02")), ["done", "done", "current", "todo", "todo"]);
+  assert.deepEqual(stageStrip(t, by("site-01")), ["gate", "todo", "todo", "todo", "todo"]);
+  assert.deepEqual(stageStrip(t, by("site-00")), ["done", "done", "done", "done", "done"]);
+  assert.deepEqual(stageStrip(t, { ...by("site-02"), stage: "gone" }), ["todo", "todo", "todo", "todo", "todo"]);
+  assert.deepEqual(stageStrip(t, { ...by("site-02"), status: "blocked" }), ["done", "done", "blocked", "todo", "todo"]);
+  const ops = (await readTeams(diskAdapter(VAULT))).find((x) => x.id === "ops")!;
+  assert.equal(stageStrip(ops, ops.board[0]).length, 3);
 });

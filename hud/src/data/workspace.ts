@@ -58,3 +58,26 @@ export function activityOf(t: Team): ActivityEvent[] {
   // Newest first; a stable sort keeps one row's events in the order they were pushed.
   return out.filter((e) => e.ts).sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
 }
+
+export type StripCell = "done" | "current" | "gate" | "blocked" | "todo";
+
+/** One cell per team stage: done before the item's stage, its state at it, todo after. A finished item is all done;
+ *  an item whose stage the team no longer lists is all todo. */
+export function stageStrip(t: Team, it: BoardItem): StripCell[] {
+  if (it.status === "done") return t.stages.map(() => "done");
+  const at = t.stages.indexOf(it.stage);
+  if (at < 0) return t.stages.map(() => "todo");
+  const here: StripCell = it.status === "gate" ? "gate" : it.status === "blocked" ? "blocked" : "current";
+  return t.stages.map((_, i) => (i < at ? "done" : i === at ? here : "todo"));
+}
+
+const rank = (it: BoardItem): number =>
+  isPending(it) ? 0 : it.status === "blocked" ? 1 : it.status === "working" ? 2 : it.status === "paused" ? 4 : 3;
+
+/** The Items list: what needs the user first (pending gate, blocked), then working, other open, paused; done apart. Ties keep board order. */
+export function itemOrder(t: Team): { open: BoardItem[]; done: BoardItem[] } {
+  const done = t.board.filter((i) => i.status === "done");
+  const open = t.board.map((it, i) => ({ it, i })).filter((x) => x.it.status !== "done")
+    .sort((a, b) => rank(a.it) - rank(b.it) || a.i - b.i).map((x) => x.it);
+  return { open, done };
+}
