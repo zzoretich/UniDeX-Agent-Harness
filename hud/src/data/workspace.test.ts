@@ -87,6 +87,29 @@ test("a user gate post is left out", () => {
   assert.equal(ev[0].text.endsWith("hello"), true);
 });
 
+test("activity names a member as the roster does, one off the roster by its id, and the user as You", () => {
+  // The tree shows a member by its roster name, so the feed does too: "Survey Lead", never "Surveylead".
+  const t = teamFrom({
+    id: "survey", teamMd: "---\nname: Survey\nlead: surveylead\nmembers:\n  - id: surveylead\n    name: Survey Lead\n    agent: survey-lead\n---\n",
+    board: JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", by: "surveylead", id: "s-1", title: "Sites", stage: "plan", status: "gate", gate: { name: "plan", state: "pending" } }) + "\n",
+    channel: [
+      JSON.stringify({ ts: "2026-01-01T00:01:00.000Z", from: "fieldhand", kind: "note", item: null, text: "on site" }),
+      JSON.stringify({ ts: "2026-01-01T00:02:00.000Z", from: "user", kind: "note", item: null, text: "thanks" }),
+    ].join("\n") + "\n",
+    runs: JSON.stringify({ ts: "2026-01-01T00:03:00.000Z", member: "surveylead", item: "s-1", provider: "claude", status: "ok", usd: 1 }) + "\n",
+    markers: [JSON.stringify({ run: "survey-s-1-surveylead-b", member: "surveylead", item: "s-1", provider: "claude", startedAt: "2026-01-01T00:04:00.000Z" })],
+    state: null, disabled: false,
+  });
+  assert.deepEqual(activityOf(t).map((e) => e.text), [
+    "Survey Lead started s-1 (plan) on claude",
+    "Survey Lead finished s-1: ok · claude · $1",
+    "You: thanks",
+    "Fieldhand: on site",
+    "Survey Lead added s-1: Sites",
+    "Survey Lead opened the plan gate on s-1",
+  ]);
+});
+
 test("activity over 2,000 generated rows stays sorted and one row can give two events", () => {
   const rows: string[] = [];
   const base = Date.parse("2026-02-01T00:00:00.000Z");

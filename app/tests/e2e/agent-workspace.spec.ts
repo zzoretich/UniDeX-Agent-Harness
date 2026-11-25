@@ -446,8 +446,8 @@ test.describe("Agent Workspace", () => {
     await expect(selected()).toHaveAttribute("data-view", "channel");
     await pane().locator(".aos-aw-view[data-view='activity']").click();
     await expect(selected()).toHaveAttribute("data-view", "activity");
-    // One board row, two events at its time, in the order they happened (activityOf names a member by its id).
-    await expect(pane().locator(".aos-aw-evtext")).toHaveText(["Surveylead added survey-01: Pick survey sites", "Surveylead opened the plan gate on survey-01"]);
+    // One board row, two events at its time, in the order they happened; the member by its roster name, as the tree has it.
+    await expect(pane().locator(".aos-aw-evtext")).toHaveText(["Survey Lead added survey-01: Pick survey sites", "Survey Lead opened the plan gate on survey-01"]);
   });
 });
 

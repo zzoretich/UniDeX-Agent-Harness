@@ -10,12 +10,18 @@ export const ACTIVITY_PAGE = 50;
 export type ActivityKind = "run-start" | "run-end" | "item-new" | "stage" | "gate-open" | "gate-decided" | "budget" | "post";
 export interface ActivityEvent { ts: string; kind: ActivityKind; member: string | null; item: string | null; text: string; tone: Tone }
 
-const who = (id: string | null | undefined): string => (!id ? "Someone" : id === "user" ? "You" : titleCase(id));
+/** How the feed names who did something (agent-workspace R18): as the team's roster names the member, so the feed and the
+ *  tree agree; the title-cased id for one not on the roster (dispatch, a member since removed); "You" for the user. */
+function namer(t: Team): (id: string | null | undefined) => string {
+  const names = new Map(t.members.map((m) => [m.id, m.name]));
+  return (id) => (!id ? "Someone" : id === "user" ? "You" : names.get(id) ?? titleCase(id));
+}
 
 const isPending = (it: BoardItem | undefined): boolean => !!it && it.status === "gate" && it.gate?.state === "pending";
 
 /** What happened on the team, newest first: board snapshots, finished runs, live markers and channel posts. */
 export function activityOf(t: Team): ActivityEvent[] {
+  const who = namer(t);
   const out: ActivityEvent[] = [];
   const prev = new Map<string, BoardItem>();
   for (const it of t.history) {
