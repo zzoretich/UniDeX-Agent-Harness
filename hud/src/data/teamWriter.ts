@@ -110,7 +110,7 @@ const UPGRADE: TeamFailure = { text: "this vault's runtime is older than this ap
 /** The app's own refusal of a spawn that no write surface allows: in the spawn's error, or relayed by aos on stderr. */
 const SURFACE_OFF = /no write surface that allows it is on/;
 /** + New team with the team-create surface off (agent-workspace R31): what to do instead, never what was typed. */
-const NO_TEAM_CREATE = "This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
+const NO_TEAM_CREATE = "Creating teams is off in this app. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
 
 /**
  * The one line to show for a refused or failed write of `verb` (the argv's first word). A stale --expect says the card
@@ -122,6 +122,9 @@ export function teamFailure(r: AosResult, verb?: string): TeamFailure {
   if (verb === "new" && SURFACE_OFF.test(`${r.error ?? ""}\n${r.stderr}`)) return { text: NO_TEAM_CREATE, stale: false, upgrade: false };
   if (r.error) return { text: `could not run aos team: ${r.error}`, stale: false, upgrade: false };
   if (/Cannot find module|MODULE_NOT_FOUND/.test(r.stderr)) return { ...UPGRADE };
+  // A runtime from before `aos team new` reads flags first, so it stops at `--name` (exit 2) and prints a usage
+  // without the verb; one that knows the verb lists it there, and its own usage errors stay as they are.
+  if (verb === "new" && r.code === 2 && /\busage: /.test(r.stderr) && !/\baos team new\b/.test(r.stderr)) return { ...UPGRADE };
   const lines = r.stderr.split("\n").map((l) => l.trim()).filter(Boolean);
   const own = lines.filter((l) => l.startsWith("team: ") && !l.startsWith("team: found a killed run")).pop();
   const text = (own ?? lines[0] ?? `aos team exited ${r.code}`).replace(/^team: (refused: )?/, "");

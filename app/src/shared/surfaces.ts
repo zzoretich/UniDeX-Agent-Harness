@@ -489,8 +489,9 @@ export const SURFACES: readonly Surface[] = [
       { script: "team.js", args: argv("new", TEAM_ID, "--name", NAME, "--lead", ID) },
       { script: "team.js", args: argv("new", TEAM_ID, "--name", NAME, "--lead", ID, "--parent", TEAM_ID) },
     ],
-    // Off until a live check on each host: a team created through it with a Claude Code agent and with a Codex agent.
-    verified: false,
+    // On since its live check on each host (2026-11-25): a team created through it with a Claude Code agent as its lead,
+    // and one with a Codex-only agent on a Codex-only install.
+    verified: true,
   },
   {
     id: "files",

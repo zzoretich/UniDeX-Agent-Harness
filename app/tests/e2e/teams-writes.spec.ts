@@ -359,7 +359,7 @@ test.describe("with the Agent Teams surface on", () => {
     await create.click();
     // The app refuses the spawn (the surface is off); the dialog stays open saying so and naming the command for a
     // terminal, never the typed name (R31), and Create is on again.
-    await expect(dlg.locator(".aos-aw-newerror")).toHaveText("This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].");
+    await expect(dlg.locator(".aos-aw-newerror")).toHaveText("Creating teams is off in this app. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].");
     await expect(dlg.locator(".aos-aw-newerror")).not.toContainText("Harbor Crew");
     await expect(create).toBeEnabled();
     await expect(dlg.locator("input.aos-aw-newname")).toHaveValue("Harbor Crew");
@@ -381,7 +381,7 @@ test.describe("with the Agent Teams surface on", () => {
   });
 });
 
-// + New team writes through a surface of its own, New agent teams (team-create), off until a live check per host
+// + New team writes through a surface of its own, New agent teams (team-create), on by default since its live check
 // (agent-workspace D14): this app turns it on beside Agent Teams.
 test.describe("with New agent teams (team-create) on", () => {
   const app = useApp({ env: { AOS_APP_WRITE: "teams,team-create" } });

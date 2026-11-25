@@ -70,9 +70,41 @@ test("failures: a runtime that predates the verb asks for the same upgrade as on
   assert.deepEqual(old, { text: "this vault's runtime is older than this app: run aos upgrade", stale: false, upgrade: true });
 });
 
+// What 2.7.0's team.js prints for `team new … --name … --lead …`: it stops at the first flag it does not know (exit 2).
+const TEAM_JS_2_7_0 = [
+  "team: unknown flag --name",
+  "usage: aos team list [--json]",
+  "       aos team status|roster|board <team> [--json]",
+  "       aos team item <team> <id> [--json]",
+  "       aos team tail <team> [--item <id>] [-n 20] [--json]",
+  "       aos team post <team> --from <id> [--item <id>] [--kind <kind>] <text...>",
+  "       aos team put <team> --from <lead> [--expect '<json>'] '<patch json>'",
+  "       aos team dispatch <team> <member> <item> [--wave N[,M]] [--note <text>] [--provider claude|codex] [--max-usd N] [--timeout-min 120] [--dry-run | --detach]",
+  "       aos team merge <team> <item> <member> --from <lead>",
+  "       aos team wait <team> <item> <member> [--since <iso>] [--timeout-min 180] [--json]",
+  "       aos team gate approve|redirect <team> <item> --expect '<json>' [--usd N] [--note <text>]",
+  "       aos team budget <team> <item> <usd> --expect '<json>'",
+  "       aos team pause|resume <team> [<member>]",
+  "       aos team set <team> <member> provider|model|effort <preset>",
+  "       aos team member add <team> <agent>  ·  aos team member remove <team> <member>",
+  "       aos team init [<id>]",
+  "",
+].join("\n");
+
+test("failures: a 2.7.0 runtime answers a new team with an unknown flag, and that asks for the upgrade too", () => {
+  const r = (stderr: string, extra: Partial<AosResult> = {}): AosResult => ({ code: 2, stdout: "", stderr, timedOut: false, ...extra });
+  assert.deepEqual(teamFailure(r(TEAM_JS_2_7_0), "new"), { text: "this vault's runtime is older than this app: run aos upgrade", stale: false, upgrade: true });
+  // A runtime that knows the verb lists it in its usage, so its own usage errors still reach the dialog as they are.
+  const usage = TEAM_JS_2_7_0.split("\n").slice(1).join("\n");
+  const current = r(`team: new needs --name and --lead\n${usage}       aos team new <id> --name <text> --lead <agent> [--parent <team>]\n`);
+  assert.deepEqual(teamFailure(current, "new"), { text: "new needs --name and --lead", stale: false, upgrade: false });
+  // Another verb's unknown flag is that verb's own mistake, not an old runtime.
+  assert.equal(teamFailure(r(TEAM_JS_2_7_0), "set").upgrade, false);
+});
+
 test("failures: with no write surface allowing it, a new team is refused plainly, pointing at aos team new, never echoing what was typed", () => {
   const r = (stderr: string, extra: Partial<AosResult> = {}): AosResult => ({ code: 1, stdout: "", stderr, timedOut: false, ...extra });
-  const line = "This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
+  const line = "Creating teams is off in this app. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
   // The app refuses the spawn itself (its error names the argv, the typed name with it), or aos relays the refusal.
   const app = r("", { code: -1, error: "UniDeX: spawn node …/team.js new harbor-crew --name Harbor Crew --lead builder refused; no write surface that allows it is on" });
   const relayed = r("aos: UniDeX: node refused; no write surface that allows it is on\n");

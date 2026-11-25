@@ -1049,12 +1049,12 @@ test("the vault's identity is taken at each check: a vault folder removed and ma
   } finally { d.done(); }
 });
 
-test("team-create admits only aos team new as the page builds it, and is off until its live check", () => {
+test("team-create admits only aos team new as the page builds it, and is on since its live check", () => {
   const p = new WritePolicy(VAULT, ["team-create"]);
   const teams = new WritePolicy(VAULT, ["teams"]);
   const args = ["new", "field", "--name", "Field Research", "--lead", "dev-writer"];
   assert.equal(p.canSpawn(NODE, [`${S}/team.js`, ...args]), true);
   assert.equal(teams.canSpawn(NODE, [`${S}/team.js`, ...args]), false, "the teams surface does not admit new");
   assert.equal(p.canSpawn(NODE, [`${S}/team.js`, "init"]), false, "and this one does not admit init");
-  assert.equal(SURFACES.find((s) => s.id === "team-create")?.verified, false, "off by default until a live check on each host");
+  assert.equal(SURFACES.find((s) => s.id === "team-create")?.verified, true, "on by default since its live check on each host (2026-11-25)");
 });
