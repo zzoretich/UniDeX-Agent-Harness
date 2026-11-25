@@ -268,7 +268,7 @@ test.describe("Agent Workspace", () => {
     await expect(row("agent:logbook:keeper")).toHaveCount(0);
   });
 
-  test("the header: counts, sharing state, sync now, + New team", async () => {
+  test("the header: counts, sharing state, sync now, + New team opens its dialog", async () => {
     const h = app();
     const { win } = h;
     await openTab(win, "agent-teams");
@@ -276,14 +276,19 @@ test.describe("Agent Workspace", () => {
     // Your agents (not plugin ones), every team, live runs, pending gates.
     await expect(C().locator(".aos-aw-counts")).toHaveText("6 agents · 3 teams · 0 running · 2 gates");
     await expect(C().locator(".aos-aw-sharing")).toHaveText("sharing off — sharing needs both hosts enabled");
-    // + New team is there; its dialog comes later, so a click opens nothing and runs nothing. (The tab's own background
-    // refreshes may land meanwhile: the team sweep and the agents sync.)
+    // + New team opens its dialog (D14) with the keyboard in the name field and Create off; Escape closes it, and
+    // nothing ran. (The tab's own background refreshes may land meanwhile: the team sweep and the agents sync.)
     const btn = C().locator("button.aos-aw-new");
     await expect(btn).toHaveText("+ New team");
     const ours = async () => (await h.guard()).filter((e) => !/ list --json$|agents sync$/.test(e.what)).length;
     const spawns = await ours();
     await btn.click();
-    await win.waitForTimeout(300);
+    const dlg = win.locator(".modal.mod-aw-newteam");
+    await expect(dlg.locator("h3")).toHaveText("New team");
+    await expect(dlg.locator("input.aos-aw-newname")).toBeFocused();
+    await expect(dlg.locator("button", { hasText: "Create" })).toBeDisabled();
+    await expect(dlg.locator(".aos-aw-newwhy")).toHaveText("Name the team: its id is made from the name.");
+    await win.keyboard.press("Escape");
     await expect(win.locator(".modal")).toHaveCount(0);
     expect(await ours()).toBe(spawns);
     // The cache is fresh: no sync started on its own; sync now asks for one.

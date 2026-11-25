@@ -74,14 +74,33 @@ test.describe("an empty vault: no persona, to-dos, notifications or teams", () =
     await expect(content(win).locator(".aos-rt-actions button")).toHaveCount(0);
   });
 
-  test("Agent Teams: no teams yet, the Seed button and the /team hint", async () => {
+  test("no teams: Bench lists every agent, the pane offers Seed the example team and + New team", async () => {
     const { win } = app();
     await openTab(win, "agent-teams");
-    const empty = content(win).locator(".aos-at-empty");
-    await expect(empty.locator(".aos-at-emptytitle")).toHaveText("No teams yet");
-    await expect(empty.locator("button.mod-cta")).toHaveText("Seed the example team");
-    await expect(empty.locator(".aos-at-emptyacts .aos-dim")).toContainText("It lands in persona/teams/example/.");
-    await expect(empty.locator(".aos-at-emptyacts .aos-dim")).toContainText("In a session: /team.");
+    // Agent Workspace's empty state (agent-workspace D15): TEAMS reads No teams yet with its two buttons and the /team hint.
+    const tree = content(win).locator(".aos-aw-tree");
+    await expect(tree.locator(".aos-aw-row[data-key='section:teams'] .aos-aw-count")).toHaveText("0");
+    const note = tree.locator(".aos-aw-row[data-key='teams:none']");
+    await expect(note).toHaveText("No teams yet");
+    await expect(note).toHaveAttribute("aria-disabled", "true");
+    const box = tree.locator(".aos-aw-notebox");
+    await expect(box).toHaveAttribute("aria-label", "No teams yet");
+    await expect(box.locator("button")).toHaveText(["Seed the example team", "+ New team"]);
+    await expect(box.locator(".aos-aw-notehint")).toHaveText("It lands in persona/teams/example/. In a session: /team.");
+    // BENCH: every agent of yours, none gone because no team exists (the fixture's are all yours).
+    const yours = (JSON.parse(fs.readFileSync(FX.v("brain/_index/agents.json"), "utf8")) as { agents: { id: string; origin: { scope: string } }[] }).agents
+      .filter((a) => a.origin.scope === "user" || a.origin.scope === "mirror").map((a) => `agent:${a.id}`);
+    expect(yours.length).toBeGreaterThan(0);
+    await expect(tree.locator(".aos-aw-row[data-key='section:bench'] .aos-aw-count")).toHaveText(String(yours.length));
+    expect(await tree.locator(".aos-aw-row.is-agent").evaluateAll((rs) => rs.map((r) => (r as HTMLElement).dataset.key))).toEqual(yours);
+    await expect(content(win).locator(".aos-aw-counts")).toHaveText(`${yours.length} agents · 0 teams · 0 running · 0 gates`);
+    // The pane shows what it shows today with no team: the first agent of yours.
+    await expect(content(win).locator(".aos-aw-pane")).toHaveAttribute("data-node", yours[0]);
+    // + New team from the empty state opens the dialog.
+    await box.locator("button", { hasText: "+ New team" }).click();
+    await expect(win.locator(".modal.mod-aw-newteam h3")).toHaveText("New team");
+    await win.keyboard.press("Escape");
+    await expect(win.locator(".modal")).toHaveCount(0);
   });
 
   test("sidebar: no heartbeat pill on a vault whose watchdog never ran", async () => {
@@ -262,6 +281,51 @@ test.describe("a Codex-only machine", () => {
     const redirect = content(win).locator(".aos-aw-pane[data-node='needs'] .aos-at-gate", { hasText: "harbor-01" }).locator("button", { hasText: "Redirect" });
     await expect(redirect).toHaveText("Redirect ❯_");
     await expect(redirect).toHaveAttribute("title", /in Codex/);
+    // It runs: the lead's session starts in Code through codex (the fixture's codex is a stub that echoes).
+    await redirect.click();
+    await expect(rail(win, "term")).toHaveClass(/is-active/);
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("[fixture codex stub] The user is redirecting the Discuss gate on harbor-01");
+  });
+
+  test("Agent Workspace: + New team's lead picker offers only your agents with a Codex file, and Create runs aos team new", async () => {
+    const h = app();
+    const { win } = h;
+    // One agent of yours on Codex, as `aos agents sync` lists a <name>.toml in Codex's agents folder; the fixture's own
+    // agents are Claude Code's.
+    const toml = path.join(FX.home, ".codex", "agents", "harbor-pilot.toml");
+    const cache = FX.v("brain/_index/agents.json");
+    const before = fs.readFileSync(cache, "utf8");
+    try {
+      fs.mkdirSync(path.dirname(toml), { recursive: true });
+      fs.writeFileSync(toml, 'name = "harbor-pilot"\ndescription = "Pilots the harbor crew"\ndeveloper_instructions = "Lead the harbor crew."\n');
+      editJson(cache, (j) => {
+        j.agents.push({
+          id: "harbor-pilot", name: "harbor-pilot", description: "Pilots the harbor crew", origin: { host: "codex", scope: "user", plugin: null, path: toml },
+          on: { claude: null, codex: { path: toml, via: "original", invoke: "harbor-pilot", run: "codex 'Use the harbor-pilot agent. Ask me what it should work on.'" } },
+          readOnly: false, status: "listed", note: null,
+        });
+      });
+      await openTab(win, "agent-teams");
+      await expect(content(win).locator(".aos-aw-tree .aos-aw-row[data-key='agent:harbor-pilot']")).toHaveCount(1);
+      await content(win).locator("button.aos-aw-new").click();
+      const dlg = win.locator(".modal.mod-aw-newteam");
+      await expect(dlg.locator("input.aos-aw-newname")).toBeFocused();
+      const lead = dlg.locator("select.aos-aw-newlead");
+      expect(await lead.locator("option").evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value))).toEqual(["", "harbor-pilot"]);
+      await dlg.locator("input.aos-aw-newname").fill("Harbor Ops");
+      await lead.selectOption("harbor-pilot");
+      await dlg.locator("button", { hasText: "Create" }).click();
+      // This app writes nothing (no surface is on), so the app refuses it, and the dialog says why.
+      await expect(dlg.locator(".aos-aw-newerror")).toContainText("refused; no write surface that allows it is on");
+      await expect.poll(async () => (await h.guard()).filter((e) => e.kind === "spawn" && / new /.test(e.what)).map((e) => e.what))
+        .toEqual([expect.stringMatching(/\/team\.js new harbor-ops --name Harbor Ops --lead harbor-pilot$/)]);
+      await win.keyboard.press("Escape");
+      await expect(dlg).toHaveCount(0);
+    } finally {
+      fs.rmSync(toml, { force: true });
+      fs.writeFileSync(cache, before);
+      await h.win.evaluate(() => { (window as unknown as { aosHost: { guard: { log: unknown[] } } }).aosHost.guard.log.length = 0; });
+    }
   });
 
   test("Agent Workspace: an agent's profile offers ❯_ codex alone, off with why while the agent has no Codex file", async () => {
@@ -856,16 +920,20 @@ test.describe("a runtime that predates aos config (before 0.17)", () => {
 test.describe("no teams yet, with the Agent Teams surface on", () => {
   const app = useApp({ env: { AOS_APP_WRITE: "teams" }, prepare: () => fs.rmSync(FX.v("persona/teams"), { recursive: true, force: true }) });
 
-  test("Seed the example team runs aos team init, which writes the example team (AT1)", async () => {
+  test("Seed the example team runs aos team init, which writes the example team and selects it (AT1)", async () => {
     const { win } = app();
     await openTab(win, "agent-teams");
-    await expect(content(win).locator(".aos-at-emptytitle")).toHaveText("No teams yet");
-    await content(win).locator("button.mod-cta", { hasText: "Seed the example team" }).click();
+    const tree = content(win).locator(".aos-aw-tree");
+    await expect(tree.locator(".aos-aw-row[data-key='teams:none']")).toHaveText("No teams yet");
+    await tree.locator(".aos-aw-notebox button", { hasText: "Seed the example team" }).click();
     await expect(win.locator(".notice-container")).toContainText("seeded persona/teams/example/ from the example team");
     await expect.poll(() => fs.existsSync(FX.v("persona/teams/example/TEAM.md"))).toBe(true);
-    // One team: no chip bar, the team's own section.
-    await expect(content(win).locator(".aos-rt-count")).toHaveText("0 gates waiting · 1 team");
-    await expect(content(win).getByRole("region", { name: "Example team" })).toContainText("lead Lead · 3 members · 0 open");
+    // The note gives way to the team, which is selected and shown; the header counts it.
+    await expect(tree.locator(".aos-aw-row[data-key='teams:none']")).toHaveCount(0);
+    await expect(tree.locator(".aos-aw-row[data-key='team:example']")).toHaveAttribute("aria-selected", "true");
+    await expect(content(win).locator(".aos-aw-pane")).toHaveAttribute("data-node", "team:example");
+    await expect(content(win).locator(".aos-aw-pane .aos-aw-teamline")).toContainText("3 members");
+    await expect(content(win).locator(".aos-aw-counts")).toContainText("· 1 team ·");
     expect((await app().guard()).map((e) => `${e.kind} ${e.what}`)).toEqual([]);
   });
 });

@@ -4,15 +4,16 @@ import * as path from "path";
 import type AgenticOSPlugin from "../../main";
 import type { RevealTarget, WorkbenchView } from "./WorkbenchView";
 import { ConfirmModal } from "../ui/ConfirmModal";
-import { readAgenticosJson, sessionHosts, SessionHost, claudeConfigDir as envClaudeConfigDir } from "../data/aosConfig";
+import { NewTeamModal } from "../ui/NewTeamModal";
+import { readAgenticosJson, sessionHosts, invocationHint, SessionHost, claudeConfigDir as envClaudeConfigDir } from "../data/aosConfig";
 import { AgentsCache, AgentRow, AGENTS_PATH, emptyAgents, readAgents, agentsStale, groupAgents, asOf } from "../data/agents";
 import { AOS_CLI } from "../data/aosRun";
 import { Team, TEAMS_DIR, readTeams, diskAdapter, teamCommand, envPrefix, touchesTeams, gateBadge, gateCards, memberStatus } from "../data/teams";
-import { TeamRunner, teamRunner, teamFailure, presetsOf, Presets, ListJson, LIST_ARGS } from "../data/teamWriter";
-import { FOLDED_BY_DEFAULT, NodeKey, TreeRow, agentRuns, pickNode, seatsOf, workspaceTree } from "../data/workspace";
+import { TeamRunner, teamRunner, teamFailure, presetsOf, Presets, ListJson, LIST_ARGS, INIT_ARGS } from "../data/teamWriter";
+import { FOLDED_BY_DEFAULT, NO_TEAMS, NodeKey, TreeRow, agentRuns, pickNode, seatsOf, workspaceTree } from "../data/workspace";
 import { sanitizeAgentWorkspace, type AgentWorkspaceChoice } from "../settingsDefaults";
 import { TeamsCtx, TeamsUiState, Confirm } from "./teams/ui";
-import { focusedRow, focusRow, foldTeams, renderTree } from "./workspace/Tree";
+import { focusedRow, focusRow, foldTeams, renderNoTeams, renderTree } from "./workspace/Tree";
 import { renderNeeds } from "./workspace/NeedsPane";
 import { renderTeamPane, teamView } from "./workspace/TeamPane";
 import { renderAgent, type AgentPaneOptions } from "./workspace/AgentPane";
@@ -29,11 +30,14 @@ const TORN_RETRIES = 5;
 /** A stale agents cache asks for `aos agents sync` at most this often. */
 const SYNC_EVERY_MS = 60_000;
 const TAB = "agent-teams";
+/** The busy and error keys of + New team's `aos team new` and of Seed the example team's `aos team init`. */
+const NEW_KEY = "new";
+const INIT_KEY = "init";
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 
 /**
- * AGENT WORKSPACE (spec 2026-11-12-agent-workspace-design D1-D5, D13, D16) — one tab for your agents and the teams
+ * AGENT WORKSPACE (spec 2026-11-12-agent-workspace-design D1-D5, D13-D16) — one tab for your agents and the teams
  * they sit in, in place of the Agents and Agent Teams tabs. Left, an org tree (workspace/Tree.ts over
  * data/workspace.ts): Needs you, the teams nested by parent with their members, the bench, plugin agents folded. Right,
  * the selected node. It reads persona/teams/ and brain/_index/agents.json itself and writes only through the runtime
@@ -75,6 +79,10 @@ export class AgentWorkspaceTab {
   /** How the tab was last brought up (D5), to settle once the files are read: a rail click (setTab) shows the saved
    *  node; a link (open) shows the node it names, else Needs you while a gate is pending. */
   private want: { via: "rail" | "link"; asked: NodeKey | null } | null = null;
+  /** A team the user just made, shown while the read that lists it lands: `gen` is the newest read when it was made, so
+   *  only a later read that still lacks it lets another node stand in. `appliedGen` is the read last applied. */
+  private expecting: { node: NodeKey; gen: number } | null = null;
+  private appliedGen = 0;
 
   constructor(private plugin: AgenticOSPlugin, private wb: WorkbenchView) {}
 
@@ -129,6 +137,7 @@ export class AgentWorkspaceTab {
     let err: string | null = null;
     try { teams = await readTeams(diskAdapter(this.plugin.vaultRoot())); } catch (e) { err = `${TEAMS_DIR} could not be read: ${e instanceof Error ? e.message : String(e)}`; }
     if (gen !== this.readGen) return;
+    this.appliedGen = gen;
     if (teams) this.teams = teams;
     this.readError = err;
     this.agents = readAgents(this.plugin.vaultRoot());
@@ -266,6 +275,7 @@ export class AgentWorkspaceTab {
   }
 
   private setSelected(node: NodeKey, remember: boolean): void {
+    if (this.expecting && this.expecting.node !== node) this.expecting = null;
     if (node.startsWith("team:")) {
       const id = node.slice("team:".length);
       if (id !== this.ui.team) { this.ui.channelItem = null; this.ui.openItem = null; }
@@ -318,9 +328,37 @@ export class AgentWorkspaceTab {
       const node = pickNode({ saved: this.choice().node, via: want.via, asked: want.asked, gates, tree: whole });
       this.setSelected(node, !!want.asked && node === want.asked);
     } else if (!this.selected || !whole.some((r) => r.key === this.selected)) {
+      // A team just made waits for the read that lists it (ruling: never swapped for another node meanwhile).
+      const exp = this.expecting;
+      if (exp && exp.node === this.selected && this.appliedGen <= exp.gen) return;
       // The saved node may come back with the next read (a cache being rewritten).
       this.setSelected(pickNode({ saved: this.choice().node, via: "rail", asked: null, gates, tree: whole }), false);
     }
+    if (this.expecting && whole.some((r) => r.key === this.expecting?.node)) this.expecting = null;
+  }
+
+  /** A team the user just made (+ New team, Seed the example team) is their pick (D5): shown and remembered. Its folder
+   *  is on disk, but a read that started before the CLI exited may still be the newest: until one lists it, it stays. */
+  private created(node: NodeKey): void {
+    this.expecting = { node, gen: this.readGen };
+    this.select(node);
+    if (this.expecting) this.schedule();
+  }
+
+  // ── + New team (D14) and Seed the example team (D15), each one `aos team` call through act ──
+
+  private newTeam(): void {
+    new NewTeamModal(this.plugin.app, {
+      agents: this.agents.agents, teams: this.teams, hosts: this.hosts,
+      // newTeamArgs: ["new", <id>, …]
+      onCreate: async (args) => { const ok = await this.act(NEW_KEY, args); if (ok) this.created(`team:${args[1]}`); return ok; },
+      failure: () => this.errors.get(NEW_KEY) ?? null,
+    }).open();
+  }
+
+  /** `aos team init` with no id seeds persona/teams/example/. */
+  private seed(): void {
+    void this.act(INIT_KEY, INIT_ARGS).then((ok) => { if (ok) this.created("team:example"); });
   }
 
   // ── render ──
@@ -407,8 +445,8 @@ export class AgentWorkspaceTab {
     const acts = head.createDiv({ cls: "aos-aw-actions" });
     const sync = acts.createEl("button", { cls: "aos-aw-btn aos-aw-sync", text: "sync now", attr: { type: "button", "data-tour": "agent-workspace-sync", title: "aos agents sync: share each host's agents with the other and refresh this list" } });
     sync.addEventListener("click", () => this.syncAgents());
-    // + New team (D14): its dialog is wired in a later step; the button holds its place.
-    acts.createEl("button", { cls: "aos-aw-btn aos-aw-primary aos-aw-new", text: "+ New team", attr: { type: "button", title: "Make a team with a lead you pick" } });
+    const add = acts.createEl("button", { cls: "aos-aw-btn aos-aw-primary aos-aw-new", text: "+ New team", attr: { type: "button", title: "Make a team with a lead you pick" } });
+    add.addEventListener("click", () => this.newTeam());
 
     if (this.loaded && !this.agents.codexAgents.on && this.hosts.includes("codex")) {
       root.createDiv({ cls: "aos-aw-note is-warn", text: `${this.agents.codexAgents.reason ?? "Codex subagents are off"} — Codex will not spawn these agents until it is on` });
@@ -430,6 +468,11 @@ export class AgentWorkspaceTab {
         return t?.error ? `${t.errorFile ?? "TEAM.md"}: ${t.error}` : null;
       },
       scanned: this.agents.scannedAt !== null,
+      extras: new Map([[NO_TEAMS, (box: HTMLElement) => renderNoTeams(box, {
+        seeding: this.busyKeys.has(INIT_KEY), error: this.errors.get(INIT_KEY) ?? null,
+        hint: `It lands in ${TEAMS_DIR}/example/. In a session: ${invocationHint("team", readAgenticosJson(this.plugin.claudeConfigDir()))}.`,
+        seed: () => this.seed(), newTeam: () => this.newTeam(),
+      })]]),
     });
   }
 
@@ -443,6 +486,7 @@ export class AgentWorkspaceTab {
     if (node.startsWith("team:")) {
       const t = this.teams.find((x) => x.id === node.slice("team:".length));
       if (t) renderTeamPane(pane, this.ctx(t), this.ui.view, (v) => { this.ui.view = v; this.render(); }, { mode: this.choice().items, onMode: (m) => this.setItemsMode(m) });
+      else if (this.expecting?.node === node) pane.createDiv({ cls: "aos-aw-paneline aos-aw-dim", text: `Reading ${node.slice("team:".length)}…` });
       return;
     }
     if (node.startsWith("agent:")) {

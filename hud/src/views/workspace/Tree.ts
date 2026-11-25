@@ -4,10 +4,13 @@
 // selects a row (on a section: folds or opens it). Rows are drawn by index: an agent seated on two teams, or a seated
 // plugin agent, has a row under each with one key, and every row whose key is the selection is highlighted. No runtime
 // import of obsidian here, so the pure helpers are unit-tested.
+import { NO_AGENTS, NO_TEAMS } from "../../data/workspace";
 import type { NodeKey, TreeRow } from "../../data/workspace";
 
 /** The row workspaceTree puts under BENCH when there is no agents cache: a dim note, never folded or selected. */
 export const UNSCANNED: NodeKey = "bench:unscanned";
+/** Every such note: that one, No teams yet and BENCH's empty line (D15). */
+const NOTES: ReadonlySet<NodeKey> = new Set([UNSCANNED, NO_TEAMS, NO_AGENTS]);
 
 /** A row as the tree shows it: `folded` marks a team whose members and sub-teams are hidden. */
 export type ShownRow = TreeRow & { folded?: boolean };
@@ -21,6 +24,9 @@ export interface TreeOptions {
   /** Whether the agents list was ever scanned (agents.json scannedAt). Until it is, no member's agent can be called
    *  missing, so an agentless member's row carries no "no agent" mark. */
   scanned?: boolean;
+  /** What a note holds besides its text (No teams yet: its buttons), drawn in a group right after it. The note row
+   *  itself is aria-disabled, which would disable a control inside it, so they sit beside it. */
+  extras?: ReadonlyMap<NodeKey, (box: HTMLElement) => void>;
 }
 
 /** Hides what sits under each folded team (its members, its sub-teams and theirs): the rows after it that are deeper,
@@ -55,7 +61,7 @@ export function parentOf(rows: readonly TreeRow[], i: number): number {
 export function rowState(rows: readonly ShownRow[], i: number): { open: boolean; foldable: boolean; pickable: boolean; note: boolean } {
   const r = rows[i];
   const open = (rows[i + 1]?.depth ?? -1) > r.depth;
-  const note = r.key === UNSCANNED;
+  const note = NOTES.has(r.key);
   // A section with nothing in it has nothing to fold; a team folds when it has members or sub-teams.
   const foldable = !note && (r.kind === "section" ? open || (r.count ?? 0) > 0 : r.kind === "team" ? open || !!r.folded : false);
   return { open, foldable, pickable: !note && r.kind !== "section", note };
@@ -101,6 +107,12 @@ export function renderTree(host: HTMLElement, rows: ShownRow[], o: TreeOptions):
       el.setAttr("aria-disabled", "true");
       el.createSpan({ cls: "aos-aw-label", text: r.label });
       els.push(null);
+      const extra = o.extras?.get(r.key);
+      if (extra) {
+        const box = host.createDiv({ cls: "aos-aw-notebox", attr: { role: "group", "aria-label": r.label } });
+        box.style.setProperty("--aos-aw-depth", String(r.depth));
+        extra(box);
+      }
       return;
     }
     el.setAttr("tabindex", "-1");
@@ -159,4 +171,30 @@ export function renderTree(host: HTMLElement, rows: ShownRow[], o: TreeOptions):
     e.preventDefault();
   };
   focusRow(host, keep);
+}
+
+export interface NoTeamsOptions {
+  /** Seed the example team is running (`aos team init`). */
+  seeding: boolean;
+  /** Why the last seed was refused, if it was. */
+  error: string | null;
+  /** Where the seed lands and the /team hint for the hosts that are on. */
+  hint: string;
+  seed(): void;
+  newTeam(): void;
+}
+
+/** What No teams yet holds (D15): Seed the example team and + New team, the hint, and a seed's refusal. */
+export function renderNoTeams(box: HTMLElement, o: NoTeamsOptions): void {
+  const acts = box.createDiv({ cls: "aos-aw-noteacts" });
+  const seed = acts.createEl("button", {
+    cls: "aos-aw-btn", text: o.seeding ? "Seeding…" : "Seed the example team",
+    attr: { type: "button", title: "aos team init: a copy of the example team; point each member at one of your agents in its TEAM.md" },
+  });
+  seed.disabled = o.seeding;
+  seed.addEventListener("click", () => o.seed());
+  const add = acts.createEl("button", { cls: "aos-aw-btn aos-aw-primary", text: "+ New team", attr: { type: "button", title: "Make a team with a lead you pick" } });
+  add.addEventListener("click", () => o.newTeam());
+  box.createDiv({ cls: "aos-aw-notehint", text: o.hint });
+  if (o.error) box.createDiv({ cls: "aos-aw-error", text: o.error, attr: { role: "alert" } });
 }

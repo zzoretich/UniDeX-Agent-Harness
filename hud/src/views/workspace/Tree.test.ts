@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { foldTeams, parentOf, rowState, UNSCANNED } from "./Tree";
+import { foldTeams, parentOf, rowState, renderNoTeams, UNSCANNED } from "./Tree";
+import { NO_AGENTS, NO_TEAMS } from "../../data/workspace";
 import type { TreeRow } from "../../data/workspace";
 
 const r = (key: string, kind: TreeRow["kind"], depth: number, extra: Partial<TreeRow> = {}): TreeRow => ({ key, kind, label: key, depth, tone: null, ...extra });
@@ -60,4 +61,57 @@ test("rowState: sections fold when they hold something, teams when they have row
   const unscanned = [r("section:bench", "section", 0, { count: 0 }), r(UNSCANNED, "section", 1)];
   assert.deepEqual(rowState(unscanned, 1), { open: false, foldable: false, pickable: false, note: true });
   assert.deepEqual(rowState(unscanned, 0), { open: true, foldable: true, pickable: false, note: false });
+});
+
+test("rowState: No teams yet and BENCH's empty line are notes, never folded or picked; TEAMS folds them away", () => {
+  const empty = [r("section:teams", "section", 0, { count: 0 }), r(NO_TEAMS, "section", 1), r("section:bench", "section", 0, { count: 0 }), r(NO_AGENTS, "section", 1)];
+  for (const i of [1, 3]) assert.deepEqual(rowState(empty, i), { open: false, foldable: false, pickable: false, note: true });
+  assert.deepEqual(rowState(empty, 0), { open: true, foldable: true, pickable: false, note: false });
+});
+
+// A small fake of Obsidian's DOM helpers, for what the No teams yet note holds.
+type Opts = { cls?: string; text?: string; attr?: Record<string, string> };
+class El {
+  kids: El[] = [];
+  cls: Set<string>;
+  attrs: Map<string, string>;
+  disabled = false;
+  private on = new Map<string, (() => void)[]>();
+  constructor(public tag: string, o: Opts = {}, public own = o.text ?? "") {
+    this.cls = new Set((o.cls ?? "").split(/\s+/).filter(Boolean));
+    this.attrs = new Map(Object.entries(o.attr ?? {}));
+  }
+  createEl(tag: string, o?: Opts): El { const e = new El(tag, o); this.kids.push(e); return e; }
+  createDiv(o?: Opts): El { return this.createEl("div", o); }
+  createSpan(o?: Opts): El { return this.createEl("span", o); }
+  addEventListener(ev: string, fn: () => void): void { this.on.set(ev, [...(this.on.get(ev) ?? []), fn]); }
+  click(): void { for (const fn of this.on.get("click") ?? []) fn(); }
+  get text(): string { return this.own + this.kids.map((k) => k.text).join(""); }
+  all(): El[] { return [this, ...this.kids.flatMap((k) => k.all())]; }
+}
+
+test("renderNoTeams: Seed the example team and + New team, the hint, a seed's refusal; Seeding… while it runs", () => {
+  let seeds = 0, news = 0;
+  const box = new El("div");
+  const o = { seeding: false, error: null as string | null, hint: "It lands in persona/teams/example/. In a session: /team.", seed: () => { seeds++; }, newTeam: () => { news++; } };
+  renderNoTeams(box as unknown as HTMLElement, o);
+  const buttons = box.all().filter((e) => e.tag === "button");
+  assert.deepEqual(buttons.map((b) => b.text), ["Seed the example team", "+ New team"]);
+  assert.ok(buttons.every((b) => b.attrs.get("type") === "button" && !b.disabled));
+  assert.ok(buttons[1].cls.has("aos-aw-primary"));
+  assert.match(buttons[0].attrs.get("title") ?? "", /^aos team init/);
+  buttons[0].click();
+  buttons[1].click();
+  assert.deepEqual([seeds, news], [1, 1]);
+  assert.ok(box.all().some((e) => e.cls.has("aos-aw-notehint") && e.text === o.hint));
+  assert.ok(!box.all().some((e) => e.cls.has("aos-aw-error")));
+
+  const busy = new El("div");
+  renderNoTeams(busy as unknown as HTMLElement, { ...o, seeding: true, error: "persona/teams/example already exists" });
+  const [seed] = busy.all().filter((e) => e.tag === "button");
+  assert.equal(seed.text, "Seeding…");
+  assert.equal(seed.disabled, true);
+  const err = busy.all().find((e) => e.cls.has("aos-aw-error"));
+  assert.equal(err?.text, "persona/teams/example already exists");
+  assert.equal(err?.attrs.get("role"), "alert");
 });

@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  parseAgents, readAgents, agentsStale, groupAgents, filterAgents, agentCounts, sourceLabel, statusChip, runCommand, asOf, AGENTS_PATH,
+  parseAgents, readAgents, agentsStale, groupAgents, filterAgents, agentCounts, sourceLabel, statusChip, runCommand, asOf, addable, addableOn, AGENTS_PATH,
 } from "./agents";
 
 const claude = (name: string, via = "native") => ({ path: `/c/agents/${name}.md`, via, invoke: `@agent-${name}`, run: `claude --agent ${name}` });
@@ -104,4 +104,15 @@ test("asOf: the last sync, else the last scan", () => {
   const c = parseAgents(JSON.stringify(CACHE));
   assert.equal(asOf(c), "2026-09-23T12:00:00.000Z");
   assert.equal(asOf({ ...c, sync: { ...c.sync, at: null }, scannedAt: "2026-09-23T11:00:00.000Z" }), "2026-09-23T11:00:00.000Z");
+});
+
+test("addableOn: only the given hosts' files count, each named as the agent (a new team's lead, agent-workspace D14)", () => {
+  const [reviewer, explorer, prExplorer] = parseAgents(JSON.stringify(CACHE)).agents;
+  // reviewer: a Claude Code file and its Codex copy, both named reviewer.
+  assert.deepEqual([addable(reviewer), addableOn(reviewer, ["claude"]), addableOn(reviewer, ["codex"])], [true, true, true]);
+  // explorer: Claude Code only.
+  assert.deepEqual([addableOn(explorer, ["claude"]), addableOn(explorer, ["codex"]), addableOn(explorer, ["claude", "codex"])], [true, false, true]);
+  // pr-explorer: its Codex file is pr_explorer.toml, so only its Claude Code copy (pr-explorer.md) is found by that name.
+  assert.deepEqual([addableOn(prExplorer, ["codex"]), addableOn(prExplorer, ["claude"]), addable(prExplorer)], [false, true, true]);
+  assert.equal(addableOn(reviewer, []), false, "no host on: nothing can lead");
 });

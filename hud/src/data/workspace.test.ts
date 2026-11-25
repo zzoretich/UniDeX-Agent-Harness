@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Team, TeamFiles, readTeams, teamFrom, parseJsonl, latestRows, diskAdapter } from "./teams";
 import { parseAgents, emptyAgents } from "./agents";
-import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip, workspaceTree, seatsOf, benchOf, agentRuns, weekUsd, pickNode, TreeRow } from "./workspace";
+import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip, workspaceTree, seatsOf, benchOf, agentRuns, weekUsd, pickNode, TreeRow, NO_TEAMS, NO_AGENTS } from "./workspace";
 
 const VAULT = path.resolve(__dirname, "fixtures/teams-vault");
 const LAB_BOARD = path.join(VAULT, "persona/teams/lab/board.jsonl");
@@ -212,6 +212,35 @@ test("tree with no agents cache: members by member name, bench empty", async () 
   const bench = ks.indexOf("section:bench");
   assert.deepEqual(tree.slice(bench + 1).filter((r) => r.depth > 0 && r.kind !== "section" || (r.depth > 0 && r.label.includes("not scanned"))).map((r) => r.label).slice(0, 1), ["not scanned yet — sync now"]);
   assert.ok(!tree.some((r) => r.kind === "agent"));
+});
+
+test("tree with no teams (D15): TEAMS reads No teams yet, BENCH lists every agent of yours; with none of yours, today's Agents empty line", async () => {
+  const tree = workspaceTree([], AGENTS, { query: "", folded: new Set() });
+  const ks = keys(tree);
+  assert.deepEqual(ks.slice(0, 3), ["needs", "section:teams", NO_TEAMS]);
+  assert.deepEqual(tree[2], { key: NO_TEAMS, kind: "section", label: "No teams yet", depth: 1, tone: null });
+  const bench = ks.indexOf("section:bench");
+  assert.equal(tree[bench].count, 4);
+  assert.deepEqual(ks.slice(bench + 1, bench + 5), ["agent:team-lead", "agent:team-builder", "agent:ops-chief", "agent:solo"], "every agent of yours, none hidden");
+  assert.ok(!ks.includes(NO_AGENTS));
+  // A filter's empty list is the filter's own: no note. A folded TEAMS hides it, as it hides teams.
+  assert.ok(!keys(workspaceTree([], AGENTS, { query: "solo", folded: new Set() })).includes(NO_TEAMS));
+  assert.ok(!keys(workspaceTree([], AGENTS, { query: "", folded: new Set(["section:teams"]) })).includes(NO_TEAMS));
+  // A team, even a broken one, ends the empty state.
+  assert.ok(!keys(workspaceTree(await all(), AGENTS, { query: "", folded: new Set() })).includes(NO_TEAMS));
+
+  // No agents of yours either (a scanned cache with only a plugin's): BENCH says so, as the Agents tab did.
+  const none = workspaceTree([], cache([agentRow("plug", "plugin")]), { query: "", folded: new Set() });
+  const at = keys(none).indexOf(NO_AGENTS);
+  assert.ok(at > keys(none).indexOf("section:bench") && at < keys(none).indexOf("section:plugins"));
+  assert.deepEqual(none[at], { key: NO_AGENTS, kind: "section", label: "none yet — an agent is a .md file in Claude Code's agents folder or a .toml file in Codex's", depth: 1, tone: null });
+  assert.ok(keys(none).includes(NO_TEAMS));
+  assert.equal(pickNode({ saved: null, via: "rail", asked: null, gates: 0, tree: none }), "needs", "a note is never picked");
+  // Teams with no agents of yours: the line too; never scanned: the unscanned note instead; a filter: neither.
+  assert.ok(keys(workspaceTree(await all(), cache([]), { query: "", folded: new Set() })).includes(NO_AGENTS));
+  const unscanned = keys(workspaceTree([], emptyAgents(), { query: "", folded: new Set() }));
+  assert.ok(unscanned.includes("bench:unscanned") && !unscanned.includes(NO_AGENTS));
+  assert.ok(!keys(workspaceTree([], cache([]), { query: "x", folded: new Set() })).includes(NO_AGENTS));
 });
 
 test("tree with a missing parent and a cycle lists each team once", () => {

@@ -134,10 +134,16 @@ export function agentRuns(teams: Team[], agentId: string, now: Date): { runs: (R
 // away from that start, so a section is folded when its default differs from its being in the set. A search ignores folds.
 // Passed as `folded` itself, it opens every section (the tab picks its node from that whole tree).
 export const FOLDED_BY_DEFAULT: ReadonlySet<NodeKey> = new Set(["section:plugins"]);
+/** The notes the tree holds when there is nothing to list (D15): under TEAMS with no team (the tab draws Seed the example
+ *  team and + New team with it), and under BENCH when the agents list has none of yours. Rows of kind "section", never
+ *  picked or folded, like the unscanned note. */
+export const NO_TEAMS: NodeKey = "teams:none";
+export const NO_AGENTS: NodeKey = "bench:none";
 const hasText = (q: string, ...parts: (string | null | undefined)[]): boolean => parts.some((p) => !!p && p.toLowerCase().includes(q));
 
 /** The left tree: Needs you, TEAMS (nested by parent, each team then its members, lead first), BENCH, PLUGINS & CONFIG.TOML.
- *  The query matches team, member and agent names and descriptions; a matching member keeps its team and the team's parents. */
+ *  The query matches team, member and agent names and descriptions; a matching member keeps its team and the team's parents.
+ *  With no team, TEAMS holds the NO_TEAMS note and BENCH every agent of yours; with none of yours, BENCH holds NO_AGENTS. */
 export function workspaceTree(teams: Team[], agents: AgentsCache, o: { query: string; folded: ReadonlySet<NodeKey> }): TreeRow[] {
   const q = o.query.trim().toLowerCase();
   const byId = new Map(agents.agents.map((a) => [a.id, a]));
@@ -169,6 +175,7 @@ export function workspaceTree(teams: Team[], agents: AgentsCache, o: { query: st
   }
   const teamRows = ordered.filter((x) => shown.has(x.team.id));
   rows.push({ key: "section:teams", kind: "section", label: "TEAMS", depth: 0, tone: null, count: teamRows.length });
+  if (open("section:teams") && !teams.length && !q) rows.push({ key: NO_TEAMS, kind: "section", label: "No teams yet", depth: 1, tone: null });
   if (open("section:teams")) {
     for (const { team } of teamRows) {
       const s = shown.get(team.id)!;
@@ -188,6 +195,9 @@ export function workspaceTree(teams: Team[], agents: AgentsCache, o: { query: st
   rows.push({ key: "section:bench", kind: "section", label: "BENCH", depth: 0, tone: null, count: bench.length });
   if (open("section:bench")) {
     if (agents.scannedAt === null) rows.push({ key: "bench:unscanned", kind: "section", label: "not scanned yet — sync now", depth: 1, tone: null });
+    else if (!q && !groupAgents(agents.agents).yours.length) {
+      rows.push({ key: NO_AGENTS, kind: "section", label: "none yet — an agent is a .md file in Claude Code's agents folder or a .toml file in Codex's", depth: 1, tone: null });
+    }
     for (const a of bench) rows.push({ key: `agent:${a.id}`, kind: "agent", label: a.name, depth: 1, tone: null });
   }
 

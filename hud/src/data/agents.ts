@@ -150,9 +150,13 @@ export function runCommand(r: AgentRow, host: AgentHost): string | null {
 /** "as of 3m ago" material: the newest of the scan and the last sync. */
 export function asOf(cache: AgentsCache): string | null { return cache.sync.at ?? cache.scannedAt; }
 
-/** Whether `aos team member add` can find this agent: it looks for <agents>/<name>.md or .toml by the name it is given,
- *  so an agent whose file is named differently from the agent is refused (lib/teams.js agentFiles). */
-export function addable(a: AgentRow): boolean {
+/** Whether `aos team member add` (and `team new --lead`) can find this agent: it looks for <agents>/<name>.md or .toml by
+ *  the name it is given, so an agent whose file is named differently from the agent is refused (lib/teams.js agentFiles). */
+export function addable(a: AgentRow): boolean { return addableOn(a, AGENT_HOSTS); }
+
+/** addable, counting only the files of `hosts`: a new team's lead on a Codex-only machine needs a Codex file
+ *  (agent-workspace D14). */
+export function addableOn(a: AgentRow, hosts: readonly AgentHost[]): boolean {
   const base = (p: string | undefined) => (p ? (p.split("/").pop() ?? "").replace(/\.(md|toml)$/, "") : null);
-  return [a.on.claude?.path, a.on.codex?.path].some((p) => base(p) === a.id);
+  return hosts.some((h) => base(a.on[h]?.path) === a.id);
 }
