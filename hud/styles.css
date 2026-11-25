@@ -1903,8 +1903,6 @@ body {
 .aos-sk-actions { flex: 0 0 auto; font-family: var(--aos-mono); font-size: 10.5px; white-space: nowrap; }
 /* MCP SERVERS moved to Connectors (spec 2026-10-23-connectors-tab D2): the one line that links there. */
 .aos-sk-mcpmoved { margin: 14px 0 4px; font-size: 11.5px; }
-.aos-ag-ro { margin-left: 6px; font-size: 9.5px; vertical-align: 1px; }
-.aos-ag-warn { color: var(--aos-amber); }
 
 /* ── Settings tab (spec 2026-09-24-settings-tab) ─────────────────────────────── */
 .aos-st-section { margin-bottom: 14px; }
@@ -1961,13 +1959,9 @@ body {
 .aos-st-chip { padding: 3px 8px; font-size: 11px; font-family: var(--aos-mono); }
 .aos-st-value { font-family: var(--aos-mono); font-size: 12px; color: var(--aos-dim); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ── Agent Teams tab (spec 2026-09-28-agent-teams-design §4.4) ───────────────
-   Cyan is live work and the current selection, amber is waiting on the user, rose is blocked or failed, green is done.
-   Gates lead ("Needs you"), then one team: its chips, its views, its pane. */
-.aos-at { container-type: inline-size; }
-.aos-at button:focus-visible, .aos-at [role="button"]:focus-visible, .aos-at a:focus-visible, .aos-at select:focus-visible {
-  outline: 1px solid var(--udx-focus); outline-offset: 1px;
-}
+/* ── A team's gate cards, board, item detail and channel (spec 2026-09-28-agent-teams-design §4.4) ───────────────
+   Drawn by teams/BoardPane.ts and teams/InteractPane.ts inside the Agent Workspace (agent-workspace D5, D8, D9).
+   Cyan is live work and the current selection, amber is waiting on the user, rose is blocked or failed, green is done. */
 .aos-at-hint { font-size: 11px; margin: 4px 0 8px; }
 .aos-at-error { color: var(--aos-rose); font-size: 11px; margin-top: 6px; }
 .aos-at-label { color: var(--aos-dim); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
@@ -1979,12 +1973,7 @@ body {
 .aos-at-chip { padding: 0 7px; font-size: 10.5px; gap: 5px; white-space: nowrap; }
 .aos-at-chip .aos-pulse-dot { width: 6px; height: 6px; }
 
-/* Needs you: every pending gate across teams, one ruled section. */
-.aos-at-needs {
-  border: 1px solid var(--udx-gate-dot); background: var(--udx-gate-bg);
-  padding: 8px 12px 4px; margin: 4px 0 16px;
-}
-.aos-at-needshead { color: var(--udx-gate); font-size: 10px; letter-spacing: 1px; margin-bottom: 2px; }
+/* A gate card: Needs you's and a team's (the box around them is .aos-aw-gates). */
 .aos-at-gate { padding: 8px 0 10px; }
 .aos-at-gate + .aos-at-gate { border-top: 1px solid var(--udx-line); }
 .aos-at-gate.is-busy { opacity: 0.7; }
@@ -2014,47 +2003,14 @@ a.aos-at-itemid:hover { text-decoration: underline; text-underline-offset: 2px; 
 .aos-at-stepvalue { min-width: 44px; text-align: center; color: var(--aos-text); font-variant-numeric: tabular-nums; }
 .aos-at-floor { font-size: 10.5px; }
 .aos-at-gateacts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
-.aos-root .aos-at-approve, .aos-root .aos-at-send, .aos-at-empty .mod-cta {
+.aos-root .aos-at-approve, .aos-root .aos-at-send {
   background: var(--udx-inv); border: 1px solid var(--udx-inv); color: var(--udx-inv-text); box-shadow: none;
   font-family: var(--aos-mono); font-size: 11.5px; padding: 3px 12px; height: auto; cursor: pointer;
 }
-.aos-root .aos-at-approve:hover:not(:disabled), .aos-root .aos-at-send:hover:not(:disabled), .aos-at-empty .mod-cta:hover:not(:disabled) {
+.aos-root .aos-at-approve:hover:not(:disabled), .aos-root .aos-at-send:hover:not(:disabled) {
   background: var(--udx-inv-hover);
 }
 .aos-root .aos-at-approve:disabled, .aos-root .aos-at-send:disabled { opacity: 0.45; cursor: default; }
-
-/* Teams, and the chosen team's views. */
-.aos-at-teams { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
-.aos-at-teamchip {
-  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; height: auto; box-shadow: none; cursor: pointer;
-  background: var(--aos-panel); border: 1px solid var(--aos-border); border-radius: 3px;
-  color: var(--aos-dim); font-family: var(--aos-mono); font-size: 11.5px;
-}
-.aos-at-teamchip:hover { color: var(--aos-text); }
-.aos-at-teamchip.is-active { color: var(--aos-cyan); border-color: var(--aos-cyan); }
-.aos-at-teamchip.is-paused { opacity: 0.7; }
-.aos-at-teamchip.is-broken { border-color: var(--udx-danger-dot); }
-.aos-at-depth { color: var(--aos-dim); }
-.aos-at-chipcount {
-  min-width: 15px; padding: 0 4px; border-radius: 7px; background: var(--udx-gate-bg); color: var(--udx-gate);
-  font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
-}
-.aos-at-chipmark { color: var(--aos-rose); font-weight: 700; }
-.aos-at-teamhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 4px; }
-.aos-at-teamname { color: var(--aos-cyan); font-size: 14px; font-weight: 600; letter-spacing: 0.5px; }
-.aos-at-teamhead .aos-dim { font-size: 11px; }
-.aos-at-state { font-size: 11.5px; color: var(--aos-text); opacity: 0.85; margin: 2px 0 8px; }
-.aos-at-paused { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.aos-at-paused .aos-ws-action { margin-left: auto; }
-.aos-at-views { display: flex; gap: 2px; border-bottom: 1px solid var(--aos-border); margin: 10px 0 12px; }
-.aos-at-view {
-  background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; box-shadow: none; height: auto;
-  color: var(--aos-dim); font-family: var(--aos-mono); font-size: 11.5px; padding: 5px 12px 6px; margin-bottom: -1px; cursor: pointer;
-  display: inline-flex; gap: 6px; align-items: baseline;
-}
-.aos-at-view:hover { color: var(--aos-text); }
-.aos-at-view.is-active { color: var(--aos-cyan); border-bottom-color: var(--aos-cyan); }
-.aos-at-viewcount { font-size: 10px; }
 
 /* Work board: one column per stage. */
 .aos-at-board {
@@ -2112,46 +2068,7 @@ a.aos-at-itemid:hover { text-decoration: underline; text-underline-offset: 2px; 
 .aos-at-runwho { flex: 0 0 90px; color: var(--aos-text); }
 .aos-at-runwhen { margin-left: auto; font-size: 10.5px; white-space: nowrap; }
 
-/* Roster and Manage rows. */
-.aos-at-roster, .aos-at-manage { max-height: none; }
-.aos-at-member, .aos-at-mrow { gap: 12px; flex-wrap: wrap; padding: 6px 10px; }
-.aos-at-member.is-off, .aos-at-mrow.is-off { opacity: 0.6; }
-.aos-at-who { flex: 1 1 170px; min-width: 0; }
-.aos-at-name { color: var(--aos-text); display: flex; align-items: center; gap: 6px; }
-.aos-at-leadpill { font-size: 9.5px; padding: 0 5px; }
-.aos-at-role { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.aos-at-seat { flex: 0 0 210px; display: flex; align-items: center; gap: 6px; min-width: 0; }
-.aos-at-provider { font-size: 10px; padding: 0 6px; }
-.aos-at-model { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.aos-at-mstate { flex: 0 0 150px; display: flex; align-items: center; gap: 6px; }
-.aos-at-itemlink { font-family: var(--aos-mono); }
-.aos-at-last { flex: 0 0 140px; font-size: 10.5px; white-space: nowrap; }
-.aos-at-runstatus.is-ok { color: var(--aos-green); }
-.aos-at-runstatus.is-failed { color: var(--aos-rose); }
-.aos-at-runstatus.is-stale { color: var(--aos-amber); }
-.aos-at-runstatus.is-neutral { color: var(--aos-dim); }
-.aos-at-rowacts { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-left: auto; font-family: var(--aos-mono); font-size: 10.5px; white-space: nowrap; }
-/* Manage: one grid so every member's pickers line up, lead row (no Remove) included. */
-.aos-at-manage .aos-at-mrow { display: grid; grid-template-columns: minmax(120px, 1fr) auto 72px 76px; column-gap: 14px; align-items: center; }
-.aos-at-pick-provider select { width: 104px; }
-.aos-at-pick-model select { width: 160px; }
-.aos-at-pick-effort select { width: 96px; }
-.aos-at-mrow .aos-at-rowacts { justify-content: flex-end; }
-.aos-at-mrow .aos-at-switch { justify-self: start; }
-.aos-at-tree { font-size: 11.5px; }
-.aos-at-treerow { padding: 2px 0; }
-.aos-at-manage-top { display: flex; gap: 8px; margin-bottom: 10px; }
-.aos-at-switch { padding: 3px 8px; font-size: 11px; font-family: var(--aos-mono); }
-.aos-at-picks { display: flex; flex-wrap: wrap; gap: 8px; }
-.aos-at-pick { display: flex; flex-direction: column; gap: 2px; }
-.aos-at-pick select { font-family: var(--aos-mono); font-size: 11px; height: auto; padding: 2px 22px 2px 6px; }
-.aos-at-danger:hover:not(:disabled) { color: var(--aos-rose); border-color: var(--aos-rose); }
-.aos-at-note { flex-basis: 100%; color: var(--aos-amber); font-size: 10.5px; }
-.aos-at-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 4px; }
-.aos-at-add select { font-family: var(--aos-mono); font-size: 11px; height: auto; padding: 2px 22px 2px 6px; max-width: 320px; }
-.aos-at-add .aos-at-hint { margin: 0; }
-
-/* Interact: the channel, and a message to the lead. */
+/* The Channel: the posts, and a message to the lead. */
 .aos-at-interactbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
 .aos-at-channel {
   background: var(--aos-panel); border: 1px solid var(--aos-border); padding: 4px 10px;
@@ -2181,18 +2098,9 @@ a.aos-at-itemid:hover { text-decoration: underline; text-underline-offset: 2px; 
 .aos-at-msg:focus { border-color: var(--aos-cyan); outline: none; box-shadow: none; }
 .aos-at-msg::placeholder { color: var(--aos-dim); }
 
-/* Empty: the first team. */
-.aos-at-empty { max-width: 62ch; padding: 18px 0; font-size: 12.5px; line-height: 1.6; }
-.aos-at-emptytitle { color: var(--aos-cyan); font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-.aos-at-emptyacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; font-size: 11px; }
-
-/* A narrow pane: roster rows fold, the seat and state go under the name. */
+/* A narrow view pane (.aos-aw-viewpane is the container): the board's columns narrow. */
 @container (max-width: 560px) {
-  .aos-at-seat, .aos-at-mstate, .aos-at-last { flex: 1 1 45%; }
-  .aos-at-rowacts { margin-left: 0; }
   .aos-at-board { grid-auto-columns: minmax(150px, 78%); }
-  .aos-at-manage .aos-at-mrow { grid-template-columns: 1fr auto; row-gap: 6px; }
-  .aos-at-mrow .aos-at-picks { grid-column: 1 / -1; }
 }
 
 /* ══ Files: a Finder window onto the vault (spec 2026-10-17-files-finder) ═════════════════════════════════════════════
@@ -2573,7 +2481,7 @@ mark.aos-fx-qlat { color: inherit; }
 
 /* Small section labels: caps, grey, in the text face (colours set above for state stay). */
 .aos-panel-head, .aos-tile-label, .aos-sb-section-label, .aos-capture-section-label, .aos-ri-stat-l, .aos-ri-section-head,
-.aos-pulse-rowlabel, .aos-briefing-label, .aos-rt-subhead, .aos-at-label, .aos-at-needshead, .aos-at-gatename, .aos-at-colhead,
+.aos-pulse-rowlabel, .aos-briefing-label, .aos-rt-subhead, .aos-at-label, .aos-at-gatename, .aos-at-colhead,
 .aos-at-facts dt, .aos-nt-h, .aos-memscope-body h3, .aos-pr-md h4, .aos-cost-top-head {
   font-family: var(--udx-sans); font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
 }
@@ -5727,3 +5635,267 @@ button.aos-tc-access:not(.clickable-icon)[aria-disabled="true"], .aos-tc-modelwr
 /* Why the access and model chips wait, for screen readers (M5); sighted users read it on hover. */
 .aos-tc-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 button.aos-tc-snip[aria-checked="true"]:not(.clickable-icon) { background: var(--udx-raised); }
+
+/* ── Agent Workspace (spec 2026-11-12-agent-workspace-design D4, D13): one tab for agents and their teams. The header,
+   then the org tree on the left and the selected node beside it. Dots: blue working, red blocked, violet a gate
+   waiting on you, a ring paused, dim idle. ─────────────────────────────────────────────────────────────────────── */
+.aos-wb-content:has(> .aos-aw) { display: flex; padding: 0; overflow: hidden; }
+.aos-aw {
+  position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--udx-bg);
+  color: var(--udx-text); font-family: var(--udx-sans); font-size: 13px; line-height: 1.45;
+}
+.aos-aw :focus-visible { outline: 2px solid var(--udx-focus); outline-offset: -2px; }
+.aos-aw-head { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; padding: 14px 20px 12px; border-bottom: 1px solid var(--udx-line); }
+.aos-aw-title { font-size: 14px; font-weight: 650; }
+.aos-aw-counts, .aos-aw-sharing { font-family: var(--udx-mono); font-size: 11px; color: var(--udx-text-3); }
+.aos-aw-actions { margin-left: auto; display: flex; gap: 6px; }
+button.aos-aw-btn:not(.clickable-icon) {
+  height: 28px; padding: 0 10px; border: 1px solid var(--udx-line-2); border-radius: 6px; background: var(--udx-bg); box-shadow: none;
+  color: var(--udx-text); font-size: 12px; font-weight: 500; white-space: nowrap;
+}
+button.aos-aw-btn:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-raised); }
+button.aos-aw-primary:not(.clickable-icon) { border-color: var(--udx-inv); background: var(--udx-inv); color: var(--udx-inv-text); font-weight: 600; }
+button.aos-aw-primary:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-inv-hover); }
+.aos-aw-note { flex: none; margin: 8px 20px 0; padding: 6px 10px; border: 1px solid var(--udx-line); border-radius: 6px; font-size: 12px; }
+.aos-aw-note.is-warn { color: var(--udx-warn); border-color: var(--udx-warn-dot); background: var(--udx-warn-bg); }
+.aos-aw-note.is-error { color: var(--udx-danger); border-color: var(--udx-danger-dot); background: var(--udx-danger-bg); }
+.aos-aw-pane .aos-aw-note { margin: 8px 0 0; }
+.aos-aw-note button.aos-aw-btn:not(.clickable-icon) { margin-top: 6px; }
+
+/* The tree (D4, §4.2). */
+.aos-aw-body { flex: 1; min-height: 0; display: flex; }
+.aos-aw-side {
+  flex: 0 0 240px; max-width: 240px; min-height: 0; display: flex; flex-direction: column; box-sizing: border-box;
+  border-right: 1px solid var(--udx-line); background: var(--udx-surface);
+}
+.aos-aw input.aos-aw-filter {
+  flex: none; height: 28px; margin: 10px 10px 6px; padding: 0 8px; box-sizing: border-box; border: 1px solid var(--udx-line); border-radius: 6px;
+  background: var(--udx-field); box-shadow: none; color: var(--udx-text); font-family: var(--udx-sans); font-size: 12px;
+}
+.aos-aw input.aos-aw-filter:focus { border-color: var(--udx-focus); }
+.aos-aw-tree { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 10px; }
+.aos-aw-row {
+  display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 8px 0 calc(6px + var(--aos-aw-depth, 0) * 14px);
+  border-radius: 6px; color: var(--udx-text); font-size: 12.5px; cursor: pointer; user-select: none;
+}
+.aos-aw-row:hover { background: var(--udx-raised); }
+.aos-aw-row.is-selected, .aos-aw-row.is-selected:hover { background: var(--udx-raised-2); font-weight: 550; }
+.aos-aw-row.is-section { margin-top: 10px; color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; }
+.aos-aw-row.is-needs, .aos-aw-row.is-team { font-weight: 600; }
+.aos-aw-row.is-needs.is-gate { color: var(--udx-gate); }
+.aos-aw-row.is-note { color: var(--udx-text-3); font-style: italic; cursor: default; }
+.aos-aw-row.is-note:hover { background: none; }
+.aos-aw-chev { flex: none; width: 10px; color: var(--udx-text-3); font-size: 10px; }
+.aos-aw-dot { flex: none; width: 7px; height: 7px; box-sizing: border-box; border-radius: 50%; background: var(--udx-off-dot); }
+.aos-aw-dot.is-live { background: var(--udx-info-dot); }
+.aos-aw-dot.is-failed { background: var(--udx-danger-dot); }
+.aos-aw-dot.is-gate { background: var(--udx-gate-dot); }
+.aos-aw-dot.is-off { background: transparent; border: 1px solid var(--udx-off-dot); }
+.aos-aw-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-lead { flex: none; padding: 0 5px; border-radius: 8px; background: var(--udx-inv); color: var(--udx-inv-text); font-size: 9.5px; font-weight: 600; }
+.aos-aw-noagent { flex: none; color: var(--udx-text-3); font-size: 10.5px; font-weight: 400; }
+.aos-aw-broken { flex: none; color: var(--udx-danger); font-weight: 700; }
+.aos-aw-row.is-broken .aos-aw-label { color: var(--udx-danger); }
+.aos-aw-count { margin-left: auto; padding-left: 6px; color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; font-weight: 400; letter-spacing: 0; }
+.aos-aw-row.is-gate .aos-aw-count { color: var(--udx-gate); }
+/* No teams yet (D15): Seed the example team and + New team, beside the note under TEAMS. */
+.aos-aw-notebox { padding: 2px 8px 8px calc(22px + var(--aos-aw-depth, 0) * 14px); }
+.aos-aw-noteacts { display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-aw-notehint { margin-top: 6px; color: var(--udx-text-3); font-size: 11px; line-height: 1.4; }
+.aos-aw-error { margin-top: 6px; color: var(--udx-danger); font-size: 11.5px; line-height: 1.4; }
+
+/* The selected node's pane. */
+.aos-aw-pane { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 16px 24px 24px; }
+.aos-aw-panetitle { margin: 0 0 6px; font-size: 16px; font-weight: 650; }
+.aos-aw-paneline { margin-bottom: 4px; color: var(--udx-text-2); font-size: 12.5px; }
+.aos-aw-dim { color: var(--udx-text-3); }
+.aos-aw-dot.is-ok { background: var(--udx-ok-dot); }
+.aos-aw-dot.is-stale { background: var(--udx-warn-dot); }
+
+/* Needs you (D5) and a team's gates: the gate cards (renderGateCard's .aos-at-* classes) in one violet box. */
+.aos-aw-gates { margin: 12px 0 14px; padding: 0 14px 2px; border: 1px solid var(--udx-gate-dot); border-radius: 8px; background: var(--udx-gate-bg); }
+.aos-aw-gateshead { padding-top: 9px; color: var(--udx-gate); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; }
+
+/* A team (D6): the header line and ❯_ talk to the lead, the paused banner, NOW, then the views. */
+.aos-aw-teamhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.aos-aw-teamhead .aos-aw-panetitle { margin: 0; }
+.aos-aw-teamline { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-teamacts { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-aw-teamacts button.aos-aw-btn:not(.clickable-icon) { font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-paused { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.aos-aw-paused button.aos-aw-btn:not(.clickable-icon) { margin: 0 0 0 auto; }
+.aos-aw-state { margin-top: 8px; color: var(--udx-text-2); font-size: 12px; }
+.aos-aw-skipped { margin-top: 6px; font-size: 11.5px; }
+.aos-aw-now { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 14px 0 4px; }
+.aos-aw-nowlabel { margin-right: 2px; color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; }
+.aos-aw-who {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 2px 3px; border: 1px solid var(--udx-line); border-radius: 999px;
+  background: var(--udx-bg); font-size: 12px;
+}
+.aos-aw-who.is-blocked { border-color: var(--udx-danger-dot); }
+.aos-aw-avatar {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--udx-raised-2); color: var(--udx-text-2); font-size: 9.5px; font-weight: 700;
+}
+.aos-aw-avatar.is-lead { background: var(--udx-inv); color: var(--udx-inv-text); }
+.aos-aw-whoitem { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; }
+.aos-aw-nowrest { color: var(--udx-text-3); font-size: 12px; }
+/* The view bar: the tabs, then the shown view's own controls (Items' list · board). */
+.aos-aw-viewbar { display: flex; align-items: flex-end; gap: 8px; margin: 16px 0 6px; border-bottom: 1px solid var(--udx-line); }
+.aos-aw-views { display: flex; gap: 2px; }
+button.aos-aw-view:not(.clickable-icon) {
+  display: inline-flex; align-items: baseline; gap: 6px; height: auto; margin-bottom: -1px; padding: 6px 12px 7px; border: none;
+  border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 12.5px; cursor: pointer;
+}
+button.aos-aw-view:not(.clickable-icon):hover { color: var(--udx-text); }
+button.aos-aw-view.is-active:not(.clickable-icon) { border-bottom-color: var(--udx-text); color: var(--udx-text); font-weight: 600; }
+.aos-aw-viewcount { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 10.5px; font-weight: 400; }
+.aos-aw-viewpane { padding-top: 4px; container-type: inline-size; }
+
+/* Activity (D7): newest first, each event its age, a tone dot and what happened. */
+.aos-aw-event { display: grid; grid-template-columns: 36px 7px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 7px 0; border-top: 1px solid var(--udx-line); }
+.aos-aw-event:first-child { border-top: none; }
+.aos-aw-evtime { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; text-align: right; }
+.aos-aw-event .aos-aw-dot { align-self: center; }
+.aos-aw-evtext { font-size: 12.5px; overflow-wrap: anywhere; }
+/* A channel post: three lines, the whole text in the row's title. */
+.aos-aw-event.is-post .aos-aw-evtext { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.aos-aw-empty { padding: 10px 0; font-size: 12.5px; }
+button.aos-aw-older:not(.clickable-icon) {
+  height: auto; margin: 6px 0 0 46px; padding: 2px 0; border: none; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 12px; cursor: pointer;
+}
+button.aos-aw-older:not(.clickable-icon):hover { color: var(--udx-text); text-decoration: underline; text-underline-offset: 2px; }
+
+/* Items (D8): a flat list, what needs you first. The strip has one segment per stage: done green, current blue, a gate
+   waiting on you violet, blocked red, to do an empty outline. Done items fold behind their toggle; the detail sits below. */
+.aos-aw-itemsmode { display: inline-flex; gap: 2px; margin: 0 0 5px auto; padding: 2px; border: 1px solid var(--udx-line); border-radius: 6px; background: var(--udx-surface); }
+button.aos-aw-mode:not(.clickable-icon) {
+  height: 22px; padding: 0 9px; border: none; border-radius: 4px; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 11.5px; cursor: pointer;
+}
+button.aos-aw-mode:not(.clickable-icon):hover { color: var(--udx-text); }
+button.aos-aw-mode.is-active:not(.clickable-icon) { background: var(--udx-raised-2); color: var(--udx-text); font-weight: 600; }
+.aos-aw-items { display: flex; flex-direction: column; }
+.aos-aw-item {
+  display: grid; grid-template-columns: 88px minmax(0, 1fr) auto 92px minmax(0, 160px) 88px; align-items: center; gap: 12px;
+  padding: 7px 8px; border-top: 1px solid var(--udx-line); border-radius: 4px; font-size: 12.5px; cursor: pointer;
+}
+.aos-aw-item:first-child { border-top-color: transparent; }
+.aos-aw-item:hover { background: var(--udx-raised); }
+.aos-aw-item.is-open, .aos-aw-item.is-open:hover { background: var(--udx-raised-2); }
+.aos-aw-item.is-done { color: var(--udx-text-3); }
+.aos-aw-itemid { overflow: hidden; font-family: var(--udx-mono); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-itemtitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-strip { display: inline-flex; gap: 2px; }
+.aos-aw-seg { width: 16px; height: 6px; box-sizing: border-box; border: 1px solid var(--udx-line-2); border-radius: 2px; background: transparent; }
+.aos-aw-seg.is-done { border-color: var(--udx-ok-dot); background: var(--udx-ok-dot); }
+.aos-aw-seg.is-current { border-color: var(--udx-info-dot); background: var(--udx-info-dot); }
+.aos-aw-seg.is-gate { border-color: var(--udx-gate-dot); background: var(--udx-gate-dot); }
+.aos-aw-seg.is-blocked { border-color: var(--udx-danger-dot); background: var(--udx-danger-dot); }
+.aos-aw-itemstate { color: var(--udx-text-3); font-size: 11.5px; white-space: nowrap; }
+.aos-aw-itemstate.is-gate { color: var(--udx-gate); }
+.aos-aw-itemstate.is-failed { color: var(--udx-danger); }
+.aos-aw-itemstate.is-live { color: var(--udx-info); }
+.aos-aw-itemstate.is-ok { color: var(--udx-ok); }
+.aos-aw-holder { min-width: 0; overflow: hidden; color: var(--udx-text-2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-live { display: inline-flex; align-items: center; gap: 5px; color: var(--udx-info); }
+.aos-aw-livedot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--udx-info-dot); animation: aos-aw-live 1.8s ease-in-out infinite; }
+@keyframes aos-aw-live { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .aos-aw-livedot { animation: none; } }
+.aos-aw-money { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11.5px; text-align: right; white-space: nowrap; }
+button.aos-aw-donetoggle:not(.clickable-icon) {
+  align-self: flex-start; height: auto; margin: 4px 0 0; padding: 3px 8px; border: none; background: none; box-shadow: none;
+  color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; cursor: pointer;
+}
+button.aos-aw-donetoggle:not(.clickable-icon):hover { color: var(--udx-text); }
+/* A narrow pane: id, title and strip on the first line; state, who and budget under them. */
+@container (max-width: 560px) {
+  .aos-aw-item { grid-template-columns: 72px minmax(0, 1fr) auto; row-gap: 3px; }
+}
+
+/* Settings (D10): the team's facts, read only, then Pause / Resume, Add a member and Open TEAM.md. */
+.aos-aw-settings { display: flex; flex-direction: column; gap: 10px; max-width: 660px; padding-top: 6px; }
+.aos-aw-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 18px; margin: 0; font-size: 12.5px; }
+.aos-aw-facts dt { padding-top: 2px; color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.aos-aw-facts dd { margin: 0; overflow-wrap: anywhere; }
+a.aos-aw-link { color: var(--udx-text); text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px; }
+a.aos-aw-link:hover { color: var(--udx-info); text-decoration-color: currentColor; }
+.aos-aw-sethint { font-size: 12px; }
+.aos-aw-setrow, .aos-aw-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding-top: 10px; border-top: 1px solid var(--udx-line); }
+.aos-aw-runstate { font-size: 12.5px; }
+.aos-aw-runstate.is-paused { color: var(--udx-warn); }
+.aos-aw-setrow button.aos-aw-pause:not(.clickable-icon) { margin-left: auto; }
+.aos-aw-setlabel { font-size: 12.5px; font-weight: 600; }
+.aos-aw-add select { max-width: 320px; font-size: 12px; }
+.aos-aw-addhint { flex-basis: 100%; font-size: 11.5px; }
+.aos-aw-leftout { font-size: 11.5px; }
+/* An agent's profile (agent-workspace D11, D12): the header, NOW, SEAT blocks and Seat in…, HOSTS, RECENT RUNS. */
+.aos-aw-agent { display: flex; flex-direction: column; gap: 4px; max-width: 760px; }
+.aos-aw-agenthead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.aos-aw-agenthead .aos-aw-panetitle { margin: 0; }
+.aos-aw-hostpills { display: inline-flex; gap: 4px; }
+.aos-aw-hostpill { padding: 0 6px; border: 1px solid var(--udx-line-2); border-radius: 8px; color: var(--udx-text-2); font-family: var(--udx-mono); font-size: 10.5px; }
+.aos-aw-hostpill.is-on { border-color: var(--udx-info-dot); color: var(--udx-info); }
+.aos-aw-hostpill.is-absent { color: var(--udx-text-3); text-decoration: line-through; }
+.aos-aw-source { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; }
+.aos-aw-agentacts { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.aos-aw-agentacts button.aos-aw-btn:not(.clickable-icon) { font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-agentdesc { color: var(--udx-text-2); font-size: 12.5px; }
+.aos-aw-noagentnote { color: var(--udx-text-3); font-size: 12.5px; }
+.aos-aw-sec { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.aos-aw-sechead { color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; }
+.aos-aw-seat { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--udx-line); border-radius: 8px; background: var(--udx-bg); }
+.aos-aw-seat.is-paused { background: var(--udx-off-bg); }
+.aos-aw-seathead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12.5px; }
+.aos-aw-seatteam { font-weight: 600; }
+.aos-aw-seatrole { color: var(--udx-text-2); }
+.aos-aw-seatstate { margin-left: auto; color: var(--udx-text-3); font-size: 11.5px; }
+.aos-aw-seatstate.is-live { color: var(--udx-info); }
+.aos-aw-seatstate.is-failed { color: var(--udx-danger); }
+.aos-aw-seatstate.is-off { color: var(--udx-off); }
+.aos-aw-seatline { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; }
+.aos-aw-picks { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+.aos-aw-pick { display: flex; flex-direction: column; gap: 2px; }
+.aos-aw-picklabel { color: var(--udx-text-3); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.aos-aw-pick select { min-width: 96px; font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-pick-model select { min-width: 150px; }
+.aos-aw-picknote { flex-basis: 100%; color: var(--udx-warn); font-size: 11px; }
+.aos-aw-seatacts { display: flex; flex-wrap: wrap; gap: 6px; }
+button.aos-aw-danger:not(.clickable-icon) { color: var(--udx-danger); }
+button.aos-aw-danger:not(.clickable-icon):hover:not(:disabled) { background: var(--udx-danger-bg); }
+.aos-aw-seathint { font-size: 11.5px; }
+.aos-aw-seatin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding-top: 4px; }
+.aos-aw-seatin select { max-width: 260px; font-size: 12px; }
+.aos-aw-hostrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 12px; }
+.aos-aw-hostrow.is-absent { color: var(--udx-text-3); }
+.aos-aw-hostname { min-width: 96px; font-weight: 600; }
+.aos-aw-hostvia { color: var(--udx-text-2); }
+.aos-aw-hostinvoke { font-family: var(--udx-mono); font-size: 11.5px; }
+.aos-aw-hostfile { flex: 1 1 200px; min-width: 0; overflow: hidden; color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-hostfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
+.aos-aw-ro { padding: 0 6px; border: 1px solid var(--udx-line-2); border-radius: 8px; color: var(--udx-text-2); font-size: 10.5px; }
+.aos-aw-runsline { display: flex; align-items: baseline; gap: 12px; }
+.aos-aw-weekusd { font-family: var(--udx-mono); font-size: 12px; }
+.aos-aw-runrow { display: grid; grid-template-columns: 36px 7px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 5px 0; border-top: 1px solid var(--udx-line); }
+.aos-aw-runrow .aos-aw-dot { align-self: center; }
+.aos-aw-runtext { font-size: 12.5px; overflow-wrap: anywhere; }
+.aos-aw-runsmore { font-size: 11.5px; }
+
+/* + New team (agent-workspace D14): a name with its id under it, a lead and a parent picker, why Create is off. */
+.modal.mod-aw-newteam { width: min(460px, calc(100vw - 32px)); }
+.aos-aw-newteam { color: var(--udx-text); font-family: var(--udx-sans); font-size: 13px; line-height: 1.45; }
+.aos-aw-newtitle { margin: 0; font-size: 15px; font-weight: 650; }
+.aos-aw-newsub { margin: 4px 0 0; color: var(--udx-text-2); font-size: 12.5px; }
+.aos-aw-newfield { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+.aos-aw-newlabel { color: var(--udx-text-3); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.aos-aw-newteam input.aos-aw-newname {
+  height: 30px; padding: 0 8px; box-sizing: border-box; border: 1px solid var(--udx-line-2); border-radius: 6px; background: var(--udx-field);
+  box-shadow: none; color: var(--udx-text); font-family: var(--udx-sans); font-size: 13px;
+}
+.aos-aw-newteam input.aos-aw-newname:focus { border-color: var(--udx-focus); }
+.aos-aw-newteam input.aos-aw-newname[aria-invalid="true"] { border-color: var(--udx-danger-dot); }
+.aos-aw-newid { margin-top: 4px; color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; }
+.aos-aw-newteam select { font-size: 12px; }
+.aos-aw-newwhy { min-height: 1.45em; margin-top: 12px; color: var(--udx-text-2); font-size: 12px; }
+.aos-aw-newerror { margin-top: 6px; color: var(--udx-danger); font-size: 12px; }
+.aos-aw-newerror:empty { display: none; }
+.aos-aw-newacts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }

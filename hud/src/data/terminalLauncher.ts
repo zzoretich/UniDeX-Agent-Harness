@@ -183,7 +183,7 @@ export class TerminalLauncher {
     // null is the host's own default: only an absent one falls back to the settings.
     const model = modelArg(host, opts.model !== undefined ? opts.model : sanitizeSessionChoice(this.plugin.settings.sessionChoice).models[host]);
     const access = opts.access ?? sanitizeTerminalChoice(this.plugin.settings.terminalChoice).access as TermAccess;
-    // The folder each host uses, set on the line only when a new terminal would find another (AgentTeamsTab.hostEnv).
+    // The folder each host uses, set on the line only when a new terminal would find another (AgentWorkspaceTab.hostEnv).
     const envCodex = path.resolve(env.get("CODEX_HOME") || path.join(this.home(), ".codex"));
     const dir = host === "claude" ? this.plugin.claudeConfigDir() : cfg?.hosts?.codex?.home || envCodex;
     const prefix = host === "claude"

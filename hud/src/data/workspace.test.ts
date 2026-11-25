@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Team, TeamFiles, readTeams, teamFrom, parseJsonl, latestRows, diskAdapter } from "./teams";
 import { parseAgents, emptyAgents } from "./agents";
-import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip, workspaceTree, seatsOf, benchOf, agentRuns, weekUsd, pickNode, TreeRow } from "./workspace";
+import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip, workspaceTree, seatsOf, benchOf, agentRuns, weekUsd, pickNode, paneNode, isWorkspacePane, TreeRow, NO_TEAMS, NO_AGENTS } from "./workspace";
 
 const VAULT = path.resolve(__dirname, "fixtures/teams-vault");
 const LAB_BOARD = path.join(VAULT, "persona/teams/lab/board.jsonl");
@@ -41,25 +41,103 @@ test("activity: the lab's gate, runs, marker and posts, newest first", async () 
   assert.ok(ACTIVITY_PAGE === 50);
 });
 
-test("no gate post is a post event for any fixture team", async () => {
+test("each fixture team's lead pitch is folded into its gate-open, never also a post", async () => {
   for (const t of await readTeams(diskAdapter(VAULT))) {
     const gateTexts = new Set(t.channel.filter((p) => p.kind === "gate").map((p) => p.text));
     assert.ok(!activityOf(t).some((e) => e.kind === "post" && [...gateTexts].some((g) => e.text.endsWith(g))), t.id);
   }
 });
 
-test("a gate-open takes the latest earlier lead pitch, or none", () => {
-  const row = (ts: string, id: string) => JSON.stringify({ ts, by: "lead", id, title: id, stage: "discuss", owner: "lead", status: "gate", gate: { name: "discuss", state: "pending" } });
-  const post = (ts: string, text: string, item: string) => JSON.stringify({ ts, from: "lead", kind: "gate", item, text });
-  const t = teamFrom({
-    id: "x", teamMd: "---\nname: X\nlead: lead\n---\n", runs: null, markers: [], state: null, disabled: false,
-    board: [row("2026-01-01T00:10:00.000Z", "a-1"), row("2026-01-01T00:10:00.000Z", "b-1")].join("\n") + "\n",
-    channel: [post("2026-01-01T00:01:00.000Z", "old", "a-1"), post("2026-01-01T00:09:00.000Z", "new", "a-1"), post("2026-01-01T00:11:00.000Z", "later", "b-1")].join("\n") + "\n",
-  });
-  const ev = activityOf(t).filter((e) => e.kind === "gate-open");
-  assert.ok(ev.find((e) => e.item === "a-1")?.text.endsWith('"new"'));
-  assert.ok(!ev.find((e) => e.item === "b-1")?.text.includes('"'));
-  assert.ok(!activityOf(t).some((e) => e.kind === "post"));
+// The lead moves the board first and posts second, so a gate's pitch usually lands after its row (agent-workspace R28).
+const GATE_MD = "---\nname: X\nlead: lead\nmembers:\n  - id: lead\n    name: Lead\n  - id: hand\n    name: Hand\n---\n";
+const gateRow = (ts: string, id: string, gate: Record<string, unknown> | null, o: Record<string, unknown> = {}) =>
+  JSON.stringify({ ts, by: "lead", id, title: id, stage: "discuss", owner: "lead", status: gate && gate.state === "pending" ? "gate" : "working", gate, budget: { usd: 10 }, ...o });
+const gatePost = (ts: string, text: string, item: string | null, from = "lead") => JSON.stringify({ ts, from, kind: "gate", item, text });
+const gateTeam = (board: string[], channel: string[]) => teamFrom({
+  id: "x", teamMd: GATE_MD, runs: null, markers: [], state: null, disabled: false,
+  board: board.length ? `${board.join("\n")}\n` : null, channel: channel.length ? `${channel.join("\n")}\n` : null,
+});
+const at = (m: number) => new Date(Date.parse("2026-01-01T00:00:00.000Z") + m * 60_000).toISOString();
+
+test("a gate-open folds the lead's last pitch after the item's previous snapshot, one posted after its row too", () => {
+  const pending = { name: "discuss", state: "pending" };
+  const t = gateTeam(
+    [gateRow(at(10), "a-1", pending), gateRow(at(10), "b-1", pending)],
+    [gatePost(at(1), "old", "a-1"), gatePost(at(9), "new", "a-1"), gatePost(at(11), "later", "b-1")],
+  );
+  const ev = activityOf(t);
+  const opens = ev.filter((e) => e.kind === "gate-open");
+  assert.equal(opens.find((e) => e.item === "a-1")?.text, 'Lead opened the discuss gate on a-1: "new"');
+  // A minute after its row, while the gate is pending: attached, and not also a post.
+  assert.equal(opens.find((e) => e.item === "b-1")?.text, 'Lead opened the discuss gate on b-1: "later"');
+  assert.deepEqual(ev.filter((e) => e.kind === "post").map((e) => e.text), ["Lead: old"], "only the folded pitches leave the feed");
+});
+
+test("two gates on one item: each gate-open quotes its own pitch, posted after its own row, never the other's", () => {
+  const t = gateTeam(
+    [
+      gateRow(at(0), "a-1", null),
+      gateRow(at(10), "a-1", { name: "discuss", state: "pending" }),
+      gateRow(at(20), "a-1", { name: "discuss", state: "approved", by: "user", ts: at(20), note: "" }, { stage: "plan", by: "user" }),
+      gateRow(at(30), "a-1", { name: "plan", state: "pending" }, { stage: "plan" }),
+    ],
+    [gatePost(at(11), "discuss pitch", "a-1"), gatePost(at(31), "plan pitch", "a-1")],
+  );
+  const ev = activityOf(t);
+  assert.deepEqual(ev.filter((e) => e.kind === "gate-open").map((e) => e.text), [
+    'Lead opened the plan gate on a-1: "plan pitch"',
+    'Lead opened the discuss gate on a-1: "discuss pitch"',
+  ]);
+  assert.equal(ev.filter((e) => e.kind === "post").length, 0);
+});
+
+test("a gate post that matches no gate-open stays in the feed as a post", () => {
+  const t = gateTeam(
+    [
+      gateRow(at(10), "a-1", { name: "discuss", state: "pending" }),
+      gateRow(at(20), "a-1", { name: "discuss", state: "approved", by: "user", ts: at(20), note: "" }, { stage: "plan", by: "user" }),
+    ],
+    // After the gate ended and before another opened; on no item; a seat's, not the lead's.
+    [gatePost(at(25), "late word", "a-1"), gatePost(at(26), "no gate here", null), gatePost(at(12), "a seat's view", "a-1", "hand")],
+  );
+  const ev = activityOf(t);
+  assert.equal(ev.find((e) => e.kind === "gate-open")?.text, "Lead opened the discuss gate on a-1");
+  assert.deepEqual(ev.filter((e) => e.kind === "post").map((e) => e.text), ["Lead: no gate here", "Lead: late word", "Hand: a seat's view"]);
+});
+
+test("events at one time read newest first: the one pushed later comes first", () => {
+  const t = gateTeam([gateRow(at(10), "a-1", { name: "discuss", state: "pending" })], []);
+  assert.deepEqual(activityOf(t).map((e) => e.kind), ["gate-open", "item-new"]);
+  // One snapshot that moves the stage and the budget: the budget, pushed after the move, reads above it.
+  const moved = gateTeam([gateRow(at(0), "b-1", null), gateRow(at(5), "b-1", null, { stage: "plan", budget: { usd: 20 } })], []);
+  assert.deepEqual(activityOf(moved).map((e) => e.kind), ["budget", "stage", "item-new"]);
+});
+
+test("a budget change is an event: who set it, the new amount and the old", () => {
+  const t = gateTeam([gateRow(at(0), "a-1", null), gateRow(at(5), "a-1", null, { by: "user", budget: { usd: 25 } })], []);
+  const b = activityOf(t).filter((e) => e.kind === "budget");
+  assert.deepEqual(b.map((e) => [e.ts, e.member, e.item, e.text]), [[at(5), "user", "a-1", "You set the budget for a-1 to $25 (was $10)"]]);
+});
+
+test("a gate decision shows once, not again on the item's later snapshots; the user's note rides on it", () => {
+  const redirected = { name: "plan", state: "redirected", by: "user", ts: at(20), note: "split the parser out first" };
+  const t = gateTeam(
+    [
+      gateRow(at(10), "a-1", { name: "plan", state: "pending" }),
+      gateRow(at(20), "a-1", redirected, { by: "user" }),
+      gateRow(at(30), "a-1", redirected, { owner: "hand" }),
+      gateRow(at(40), "a-1", redirected, { stage: "plan" }),
+    ],
+    // The runtime's own record of the decision: the decided line carries what it said.
+    [gatePost(at(20), "Plan gate redirected by the user: split the parser out first; @lead takes the next step", "a-1", "user")],
+  );
+  const ev = activityOf(t);
+  const decided = ev.filter((e) => e.kind === "gate-decided");
+  assert.deepEqual(decided.map((e) => [e.ts, e.text]), [[at(20), 'You redirected the plan gate on a-1: "split the parser out first"']]);
+  assert.equal(ev.filter((e) => e.kind === "post").length, 0);
+  // With no note, the line ends at the item.
+  const plain = gateTeam([gateRow(at(10), "b-1", { name: "ship", state: "approved", by: "user", ts: at(10), note: "" })], []);
+  assert.equal(activityOf(plain).find((e) => e.kind === "gate-decided")?.text, "You approved the ship gate on b-1");
 });
 
 test("run-end names the provider and never dangles a separator", async () => {
@@ -85,6 +163,29 @@ test("a user gate post is left out", () => {
   assert.equal(ev.length, 1);
   assert.equal(ev[0].kind, "post");
   assert.equal(ev[0].text.endsWith("hello"), true);
+});
+
+test("activity names a member as the roster does, one off the roster by its id, and the user as You", () => {
+  // The tree shows a member by its roster name, so the feed does too: "Survey Lead", never "Surveylead".
+  const t = teamFrom({
+    id: "survey", teamMd: "---\nname: Survey\nlead: surveylead\nmembers:\n  - id: surveylead\n    name: Survey Lead\n    agent: survey-lead\n---\n",
+    board: JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", by: "surveylead", id: "s-1", title: "Sites", stage: "plan", status: "gate", gate: { name: "plan", state: "pending" } }) + "\n",
+    channel: [
+      JSON.stringify({ ts: "2026-01-01T00:01:00.000Z", from: "fieldhand", kind: "note", item: null, text: "on site" }),
+      JSON.stringify({ ts: "2026-01-01T00:02:00.000Z", from: "user", kind: "note", item: null, text: "thanks" }),
+    ].join("\n") + "\n",
+    runs: JSON.stringify({ ts: "2026-01-01T00:03:00.000Z", member: "surveylead", item: "s-1", provider: "claude", status: "ok", usd: 1 }) + "\n",
+    markers: [JSON.stringify({ run: "survey-s-1-surveylead-b", member: "surveylead", item: "s-1", provider: "claude", startedAt: "2026-01-01T00:04:00.000Z" })],
+    state: null, disabled: false,
+  });
+  assert.deepEqual(activityOf(t).map((e) => e.text), [
+    "Survey Lead started s-1 (plan) on claude",
+    "Survey Lead finished s-1: ok · claude · $1",
+    "You: thanks",
+    "Fieldhand: on site",
+    "Survey Lead opened the plan gate on s-1",
+    "Survey Lead added s-1: Sites",
+  ]);
 });
 
 test("activity over 2,000 generated rows stays sorted and one row can give two events", () => {
@@ -191,6 +292,35 @@ test("tree with no agents cache: members by member name, bench empty", async () 
   assert.ok(!tree.some((r) => r.kind === "agent"));
 });
 
+test("tree with no teams (D15): TEAMS reads No teams yet, BENCH lists every agent of yours; with none of yours, today's Agents empty line", async () => {
+  const tree = workspaceTree([], AGENTS, { query: "", folded: new Set() });
+  const ks = keys(tree);
+  assert.deepEqual(ks.slice(0, 3), ["needs", "section:teams", NO_TEAMS]);
+  assert.deepEqual(tree[2], { key: NO_TEAMS, kind: "section", label: "No teams yet", depth: 1, tone: null });
+  const bench = ks.indexOf("section:bench");
+  assert.equal(tree[bench].count, 4);
+  assert.deepEqual(ks.slice(bench + 1, bench + 5), ["agent:team-lead", "agent:team-builder", "agent:ops-chief", "agent:solo"], "every agent of yours, none hidden");
+  assert.ok(!ks.includes(NO_AGENTS));
+  // A filter's empty list is the filter's own: no note. A folded TEAMS hides it, as it hides teams.
+  assert.ok(!keys(workspaceTree([], AGENTS, { query: "solo", folded: new Set() })).includes(NO_TEAMS));
+  assert.ok(!keys(workspaceTree([], AGENTS, { query: "", folded: new Set(["section:teams"]) })).includes(NO_TEAMS));
+  // A team, even a broken one, ends the empty state.
+  assert.ok(!keys(workspaceTree(await all(), AGENTS, { query: "", folded: new Set() })).includes(NO_TEAMS));
+
+  // No agents of yours either (a scanned cache with only a plugin's): BENCH says so, as the Agents tab did.
+  const none = workspaceTree([], cache([agentRow("plug", "plugin")]), { query: "", folded: new Set() });
+  const at = keys(none).indexOf(NO_AGENTS);
+  assert.ok(at > keys(none).indexOf("section:bench") && at < keys(none).indexOf("section:plugins"));
+  assert.deepEqual(none[at], { key: NO_AGENTS, kind: "section", label: "none yet — an agent is a .md file in Claude Code's agents folder or a .toml file in Codex's", depth: 1, tone: null });
+  assert.ok(keys(none).includes(NO_TEAMS));
+  assert.equal(pickNode({ saved: null, via: "rail", asked: null, gates: 0, tree: none }), "needs", "a note is never picked");
+  // Teams with no agents of yours: the line too; never scanned: the unscanned note instead; a filter: neither.
+  assert.ok(keys(workspaceTree(await all(), cache([]), { query: "", folded: new Set() })).includes(NO_AGENTS));
+  const unscanned = keys(workspaceTree([], emptyAgents(), { query: "", folded: new Set() }));
+  assert.ok(unscanned.includes("bench:unscanned") && !unscanned.includes(NO_AGENTS));
+  assert.ok(!keys(workspaceTree([], cache([]), { query: "x", folded: new Set() })).includes(NO_AGENTS));
+});
+
 test("tree with a missing parent and a cycle lists each team once", () => {
   const mk = (id: string, parent: string | null) => teamFrom({
     id, teamMd: `---\nname: ${id}\nlead: l\n${parent ? `parent: ${parent}\n` : ""}members:\n  - id: l\n    name: L\n---\n`,
@@ -262,4 +392,23 @@ test("pickNode: asked, then needs by link, saved, needs, first team, first agent
   const noTeams = workspaceTree([], AGENTS, { query: "", folded: new Set() });
   assert.equal(pickNode({ ...o, tree: noTeams }), "agent:team-lead");
   assert.equal(pickNode({ ...o, tree: workspaceTree([], emptyAgents(), { query: "", folded: new Set() }) }), "needs");
+});
+
+test("paneNode (the tour's route, D18): the selected node when it fits, else the first team or agent in the tree", async () => {
+  const teams = await all();
+  const tree = workspaceTree(teams, AGENTS, { query: "", folded: new Set() });
+  assert.equal(paneNode("needs", "team:ops", tree), "needs");
+  assert.equal(paneNode("team", "team:ops", tree), "team:ops", "the team the user is on stays");
+  assert.equal(paneNode("team", "agent:solo", tree), "team:lab", "else the first team");
+  assert.equal(paneNode("team", null, tree), "team:lab");
+  assert.equal(paneNode("agent", "agent:solo", tree), "agent:solo", "the agent the user is on stays");
+  assert.equal(paneNode("agent", "member:lab/reviewer", tree), "member:lab/reviewer", "a member without an agent shows its seat");
+  assert.equal(paneNode("agent", "team:lab", tree), "agent:team-lead", "else the first agent: the first team's lead");
+  assert.equal(paneNode("team", "team:gone", tree), "team:lab", "a selection gone from the tree does not count");
+  const onlyBroken = workspaceTree([{ ...teams.find((x) => x.id === "lab")!, error: "bad" }], emptyAgents(), { query: "", folded: new Set() });
+  assert.equal(paneNode("team", null, onlyBroken), "team:lab", "a broken team when every team is");
+  const empty = workspaceTree([], emptyAgents(), { query: "", folded: new Set() });
+  assert.equal(paneNode("team", null, empty), null);
+  assert.equal(paneNode("agent", null, empty), null);
+  assert.deepEqual(["needs", "team", "agent", "files", null].map(isWorkspacePane), [true, true, true, false, false]);
 });

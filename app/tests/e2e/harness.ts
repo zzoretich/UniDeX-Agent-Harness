@@ -1021,11 +1021,12 @@ export function useApp(opts: LaunchOptions = {}): () => AppHandle {
 // ── helpers the specs share ──────────────────────────────────────────
 
 /** The rail's three sections (spec 2026-10-09-rail-sections-code D1), a line between each; "chat" (Sessions) only with a host
- *  signed in (local-first A17) or past sessions on disk for its History (install-import B11). */
+ *  signed in (local-first A17) or past sessions on disk for its History (install-import B11). Agent Workspace keeps the
+ *  id "agent-teams" and follows Sessions (agent-workspace D2, D3). */
 export const RAIL_SECTIONS = [
-  ["notifications", "pulse", "term", "chat"],
+  ["notifications", "pulse", "term", "chat", "agent-teams"],
   ["todo", "spaces", "files", "routines", "proposals"],
-  ["memory", "agent-teams", "agents", "skills", "connectors", "runs"],
+  ["memory", "skills", "connectors", "runs"],
 ];
 export const RAIL_ORDER = RAIL_SECTIONS.flat();
 

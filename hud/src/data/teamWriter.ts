@@ -1,4 +1,4 @@
-// teamWriter.ts — the Agent Teams tab's only write path (spec 2026-09-28-agent-teams-design D3, D4, D12). Every change runs
+// teamWriter.ts — the Agent Workspace's only team write path (spec 2026-09-28-agent-teams-design D3, D4, D12). Every change runs
 // `aos team`, the vendored brain/scripts/team.js, through runAos with its `cli` override and waits for the CLI's verdict:
 // the tab never writes persona/teams/ itself, and the file event re-renders. Each board write sends the `ts` of the row
 // the user saw as --expect, so a card drawn before someone else's decision is refused rather than overwriting it.
@@ -6,7 +6,7 @@
 import * as path from "path";
 import { runAos, runAosJson } from "./aosRun";
 import type { AosRunOptions, AosResult, AosJsonResult, SpawnFn } from "./aosRun";
-import { BoardItem, expectOf } from "./teams";
+import { BoardItem, TEAM_ID_RE, expectOf } from "./teams";
 
 /** The vendored team CLI, relative to the vault (`aos upgrade` copies brain/scripts). */
 export const TEAM_CLI = "brain/scripts/team.js";
@@ -43,8 +43,6 @@ export function setArgs(team: string, member: string, key: "provider" | "model" 
 }
 export function addMemberArgs(team: string, agent: string): string[] { return ["member", "add", team, agent]; }
 export function removeMemberArgs(team: string, member: string): string[] { return ["member", "remove", team, member]; }
-
-const TEAM_ID_RE = /^[a-z][a-z0-9-]{0,40}$/;
 
 /** A team id from a display name: ASCII lowercase words joined by `-`, starting with a letter, at most 41 characters; null when none is left. */
 export function teamIdFrom(name: string): string | null {
@@ -108,19 +106,26 @@ export function ignoredModel(p: Presets, provider: string | null, model: string 
 
 export interface TeamFailure { text: string; stale: boolean; upgrade: boolean }
 
+const UPGRADE: TeamFailure = { text: "this vault's runtime is older than this app: run aos upgrade", stale: false, upgrade: true };
+/** The app's own refusal of a spawn that no write surface allows: in the spawn's error, or relayed by aos on stderr. */
+const SURFACE_OFF = /no write surface that allows it is on/;
+/** + New team with the team-create surface off (agent-workspace R31): what to do instead, never what was typed. */
+const NO_TEAM_CREATE = "This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
+
 /**
- * The one line to show for a refused or failed write. A stale --expect says the card was out of date; a runtime without
- * team.js asks for `aos upgrade`. The sweep's "found a killed run" lines are news, not the failure.
+ * The one line to show for a refused or failed write of `verb` (the argv's first word). A stale --expect says the card
+ * was out of date; a runtime without team.js, or one that predates the verb, asks for `aos upgrade`; a new team the
+ * app's write access refuses points at `aos team new`. The sweep's "found a killed run" lines are news, not the failure.
  */
-export function teamFailure(r: AosResult): TeamFailure {
+export function teamFailure(r: AosResult, verb?: string): TeamFailure {
   if (r.timedOut) return { text: "aos team did not answer in time", stale: false, upgrade: false };
+  if (verb === "new" && SURFACE_OFF.test(`${r.error ?? ""}\n${r.stderr}`)) return { text: NO_TEAM_CREATE, stale: false, upgrade: false };
   if (r.error) return { text: `could not run aos team: ${r.error}`, stale: false, upgrade: false };
-  if (/Cannot find module|MODULE_NOT_FOUND/.test(r.stderr)) {
-    return { text: "this vault's runtime has no aos team yet: run aos upgrade", stale: false, upgrade: true };
-  }
+  if (/Cannot find module|MODULE_NOT_FOUND/.test(r.stderr)) return { ...UPGRADE };
   const lines = r.stderr.split("\n").map((l) => l.trim()).filter(Boolean);
   const own = lines.filter((l) => l.startsWith("team: ") && !l.startsWith("team: found a killed run")).pop();
   const text = (own ?? lines[0] ?? `aos team exited ${r.code}`).replace(/^team: (refused: )?/, "");
+  if (/^unknown verb \S+$/.test(text)) return { ...UPGRADE };
   const stale = /^--expect failed on (\S+):/.exec(text);
   if (stale) return { text: `${stale[1]} changed after this view was drawn, so nothing was written. The tab now shows it as it is.`, stale: true, upgrade: false };
   return { text, stale: false, upgrade: false };

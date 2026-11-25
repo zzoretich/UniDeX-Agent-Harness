@@ -1,15 +1,14 @@
-// ui.ts — what the Agent Teams tab's panes share: the context the tab hands each pane, and small render helpers. Kept
-// apart from AgentTeamsTab.ts so the panes never import the tab (a cycle esbuild would resolve at runtime, by luck).
+// ui.ts — what the Agent Workspace's team panes share (teams/BoardPane, teams/InteractPane, workspace/*): the context the
+// tab hands each pane, and small render helpers. Kept apart from AgentWorkspaceTab.ts so the panes never import the tab
+// (a cycle esbuild would resolve at runtime, by luck).
 import type { App } from "obsidian";
 import type { AgentsCache } from "../../data/agents";
 import type { SessionHost } from "../../data/aosConfig";
-import type { Presets } from "../../data/teamWriter";
-import { Team, BoardItem, Post, Tone, TEAMS_DIR, sessionCommand, redirectPrompt, shq, splitMentions } from "../../data/teams";
+import { Presets, setArgs, modelChoices, ignoredModel } from "../../data/teamWriter";
+import { Team, Member, BoardItem, Post, Tone, TEAMS_DIR, sessionCommand, redirectPrompt, shq, splitMentions } from "../../data/teams";
 
-export type TeamsView = "board" | "roster" | "interact" | "manage";
-export const VIEWS: { id: TeamsView; label: string }[] = [
-  { id: "board", label: "Board" }, { id: "roster", label: "Roster" }, { id: "interact", label: "Interact" }, { id: "manage", label: "Manage" },
-];
+/** A team pane's views (agent-workspace D6): Activity · Items · Channel · Settings. */
+export type TeamsView = "activity" | "items" | "channel" | "settings";
 export const HOST_LABEL: Record<SessionHost, string> = { claude: "Claude Code", codex: "Codex" };
 
 /** What the tab remembers between renders (the files are the state; this is only the user's place in them). */
@@ -20,9 +19,11 @@ export interface TeamsUiState {
   budgetUsd: Map<string, number>;   // "<team>/<item>" → the budget picked in the item's detail
   openItem: string | null;          // the board item whose detail is open
   showDone: Set<string>;            // "<team>/<stage>" columns showing their done items
-  channelItem: string | null;       // the Interact filter
+  channelItem: string | null;       // the Channel's item filter
   drafts: Map<string, string>;      // team id → its unsent message to the lead (never carried to another team)
   addPick: Map<string, string>;     // team id → the agent picked in "Add a member", kept across redraws until it is added
+  activityPages?: Map<string, number>; // team id → how many pages of its Activity are shown (the Agent Workspace)
+  seatPick?: Map<string, string>;   // agent id → the team picked in its profile's "Seat in…", kept until it is seated
 }
 
 export interface Confirm { title: string; message: string; cta: string }
@@ -61,17 +62,59 @@ export function statusChip(parent: HTMLElement, tone: Tone, text: string, title?
   return el;
 }
 
-const PROVIDER_PILL: Record<string, string> = { claude: "aos-pill-cyan", codex: "aos-pill-amber" };
-export function providerPill(parent: HTMLElement, provider: string | null): void {
-  const p = provider ?? "?";
-  parent.createSpan({
-    cls: `aos-pill ${PROVIDER_PILL[p] ?? "aos-pill-dim"} aos-at-provider`, text: p,
-    attr: { title: p === "opposite" ? "runs on whichever provider did not build the item" : `runs on ${p === "codex" ? "Codex" : p === "claude" ? "Claude Code" : p}` },
-  });
-}
-
 export function errorLine(parent: HTMLElement, text: string | null): void {
   if (text) parent.createDiv({ cls: "aos-at-error", text, attr: { role: "alert" } });
+}
+
+// ── a seat's pickers: the Agent Workspace's agent profile (agent-workspace D11) ──
+
+export type SeatKey = "provider" | "model" | "effort";
+export const SEAT_KEYS: { key: SeatKey; label: string }[] = [{ key: "provider", label: "Provider" }, { key: "model", label: "Model" }, { key: "effort", label: "Effort" }];
+/** The classes a seat's pickers are drawn with: the wrapping label (and `<pick>-<key>`), its caption, the ignored note. */
+export interface PickClasses { pick: string; label: string; note: string }
+
+/** A labelled select of presets; a value outside them stays visible, marked "(ignored)" when its provider does not run
+ *  it and "(custom)" otherwise, and is left as is until another is picked. Returns the select. */
+export function picker(parent: HTMLElement, key: SeatKey, label: string, options: string[], current: string | null, disabled: boolean,
+  onPick: (v: string) => void, ignored: string | null, cls: PickClasses): HTMLSelectElement {
+  const wrap = parent.createEl("label", { cls: `${cls.pick} ${cls.pick}-${key}`, attr: ignored ? { title: ignored } : {} });
+  wrap.createSpan({ cls: cls.label, text: label });
+  const sel = wrap.createEl("select", { cls: "dropdown" });
+  const cur = current ?? "inherit";
+  const list = options.includes(cur) ? options : [cur, ...options];
+  for (const v of list) sel.createEl("option", { value: v, text: options.includes(v) ? v : `${v} (${ignored ? "ignored" : "custom"})` });
+  sel.value = cur;
+  sel.disabled = disabled || !options.length;
+  sel.addEventListener("change", () => { if (sel.value !== cur && options.includes(sel.value)) onPick(sel.value); });
+  return sel;
+}
+
+/**
+ * A seat's provider, model and effort pickers in `ctx`'s team, each pick one `aos team set`. They offer only the presets
+ * `aos team list --json` names (until it has, each shows its value, disabled). The lead runs in the user's own session,
+ * so it has no opposite provider (lib/teams.js setMember refuses it); the model picker offers only what the seat's
+ * provider runs, and a model it ignores is noted. Each select names its write in data-focus, so a redraw keeps the keyboard.
+ */
+export function seatPickers(parent: HTMLElement, ctx: TeamsCtx, m: Member, cls: PickClasses): void {
+  const t = ctx.team;
+  const p = ctx.presets;
+  for (const { key, label } of SEAT_KEYS) {
+    const k = `set:${t.id}:${m.id}:${key}`;
+    const options = !p ? [] : key === "model" ? modelChoices(p, m.provider) : p[key].filter((v) => !(m.id === t.lead && key === "provider" && v === "opposite"));
+    const ignored = p && key === "model" ? ignoredModel(p, m.provider, m.model) : null;
+    picker(parent, key, label, options, m[key], !p || ctx.busy(k), (v) => void ctx.act(k, setArgs(t.id, m.id, key, v)), ignored, cls).setAttr("data-focus", k);
+    if (ignored) parent.createDiv({ cls: cls.note, text: `${m.model}: ${ignored}` });
+  }
+}
+
+/** The first error among a seat's writes (its pickers, its pause, its removal), or null. */
+export function seatError(ctx: TeamsCtx, m: Member): string | null {
+  const t = ctx.team;
+  for (const k of [...SEAT_KEYS.map((x) => `set:${t.id}:${m.id}:${x.key}`), `pause:${t.id}:${m.id}`, `remove:${t.id}:${m.id}`]) {
+    const e = ctx.error(k);
+    if (e) return e;
+  }
+  return null;
 }
 
 /** "12m", "3h", "2d": how long since `iso`. */
@@ -120,13 +163,12 @@ export function postRow(parent: HTMLElement, t: Team, p: Post, now: Date, showIt
  * One button per enabled host that has a command; a single host drops the host name from the label. Nothing renders
  * when no host has one, unless `none` says why.
  */
-export function hostButtons(parent: HTMLElement, ctx: TeamsCtx, label: string, commandFor: (h: SessionHost) => string | null, title: (h: SessionHost, cmd: string) => string, none?: string, { quiet = false } = {}): void {
+export function hostButtons(parent: HTMLElement, ctx: TeamsCtx, label: string, commandFor: (h: SessionHost) => string | null, title: (h: SessionHost, cmd: string) => string, none?: string): void {
   const list = ctx.hosts.map((h) => ({ h, cmd: commandFor(h) })).filter((x): x is { h: SessionHost; cmd: string } => !!x.cmd);
   if (!list.length) { if (none) parent.createSpan({ cls: "aos-dim aos-at-hint", text: none }); return; }
   for (const { h, cmd } of list) {
-    // Quiet: a row of many members gets the Agents tab's "❯_ claude" links, not a wall of buttons.
-    const text = quiet ? `❯_ ${h}` : ctx.hosts.length > 1 ? `${label} ❯_ ${h}` : `${label} ❯_`;
-    const b = quiet ? parent.createEl("a", { cls: "aos-link", text, href: "#", attr: { title: title(h, cmd) } }) : parent.createEl("button", { cls: "aos-ws-action aos-at-btn", text, attr: { title: title(h, cmd) } });
+    const text = ctx.hosts.length > 1 ? `${label} ❯_ ${h}` : `${label} ❯_`;
+    const b = parent.createEl("button", { cls: "aos-ws-action aos-at-btn", text, attr: { title: title(h, cmd) } });
     b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); ctx.term(cmd, h); });
   }
 }

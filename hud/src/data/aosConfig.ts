@@ -78,7 +78,7 @@ export interface VaultConfig {
   memory: { usageDays: number; neverUsedDays: number; dupScore: number; clusterMin: number; mapMin: number };
   // Universal skills (spec 2026-09-23-universal-skills D6): the Skills tab reads the runtime's cache, not these; mirrored so the defaults stay whole.
   skills: { sync: boolean; exclude: string[] };
-  // Universal agents (spec 2026-09-23-universal-agents D6): the Agents tab reads the runtime's cache, not these; mirrored likewise.
+  // Universal agents (spec 2026-09-23-universal-agents D6): Agent Workspace reads the runtime's cache, not these; mirrored likewise.
   agents: { sync: boolean; exclude: string[] };
   // The Connectors tab (spec 2026-10-23-connectors-tab D22): its check cadence while open, the usage window, and the
   // live check's per-server timeout and parallelism. The tab reads checkEveryMin; the runtime reads the rest.

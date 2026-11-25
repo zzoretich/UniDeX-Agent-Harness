@@ -125,7 +125,7 @@ function pane(t: Team, recorded: boolean, hosts: SessionHost[] = ["claude"]) {
   const opened: string[] = [];
   const c = {
     ...ctx([LEAD_BOTH]), teams: [t], team: t, hosts, now: new Date("2026-09-28T12:00:00.000Z"),
-    ui: { team: t.id, view: "board", gateUsd: new Map(), budgetUsd: new Map(), openItem: null, showDone: new Set(), channelItem: null, drafts: new Map(), addPick: new Map() },
+    ui: { team: t.id, view: "items", gateUsd: new Map(), budgetUsd: new Map(), openItem: null, showDone: new Set(), channelItem: null, drafts: new Map(), addPick: new Map() },
     busy: () => false, error: () => null, render: () => {}, select: () => {},
     act: async (_k: string, args: string[], confirm?: Confirm) => { acts.push({ args, confirm }); return recorded; },
     term: (cmd: string) => { opened.push(cmd); },

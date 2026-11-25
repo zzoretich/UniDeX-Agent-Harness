@@ -61,6 +61,30 @@ test("failures: the CLI's own reason, a stale card said plainly, a missing runti
   assert.equal(teamFailure(r("")).text, "aos team exited 1");
 });
 
+test("failures: a runtime that predates the verb asks for the same upgrade as one with no team.js", () => {
+  const r = (stderr: string, extra: Partial<AosResult> = {}): AosResult => ({ code: 2, stdout: "", stderr, timedOut: false, ...extra });
+  const missing = teamFailure(r("Error: Cannot find module '/v/brain/scripts/team.js'\n", { code: 1 }));
+  // team.js from before `new` answers with a usage error and its usage lines.
+  const old = teamFailure(r("team: unknown verb new\nusage: aos team list [--json]\n       aos team init [<id>]\n"), "new");
+  assert.deepEqual(old, missing);
+  assert.deepEqual(old, { text: "this vault's runtime is older than this app: run aos upgrade", stale: false, upgrade: true });
+});
+
+test("failures: with no write surface allowing it, a new team is refused plainly, pointing at aos team new, never echoing what was typed", () => {
+  const r = (stderr: string, extra: Partial<AosResult> = {}): AosResult => ({ code: 1, stdout: "", stderr, timedOut: false, ...extra });
+  const line = "This app cannot create teams yet. In a terminal, run aos team new <id> --name <text> --lead <agent> [--parent <team>].";
+  // The app refuses the spawn itself (its error names the argv, the typed name with it), or aos relays the refusal.
+  const app = r("", { code: -1, error: "UniDeX: spawn node …/team.js new harbor-crew --name Harbor Crew --lead builder refused; no write surface that allows it is on" });
+  const relayed = r("aos: UniDeX: node refused; no write surface that allows it is on\n");
+  assert.deepEqual(teamFailure(app, "new"), { text: line, stale: false, upgrade: false });
+  assert.equal(teamFailure(relayed, "new").text, line);
+  assert.doesNotMatch(teamFailure(app, "new").text, /harbor|Harbor Crew|builder/);
+  // Another verb keeps the app's own words; so does a new team refused for another reason.
+  assert.equal(teamFailure(app, "gate").text, `could not run aos team: ${app.error}`);
+  assert.equal(teamFailure(app).text, `could not run aos team: ${app.error}`);
+  assert.equal(teamFailure(r("team: refused: persona/teams/harbor-crew already exists\n"), "new").text, "persona/teams/harbor-crew already exists");
+});
+
 test("list --json through the runner: an unreadable team is a row, and the presets come back", async () => {
   const w = world();
   const r = await w.runner.json<ListJson>(LIST_ARGS);

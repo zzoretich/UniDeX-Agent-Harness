@@ -202,7 +202,7 @@ export function watchFlags(p: string, o: { selected: string | null; selectedPath
   return out;
 }
 
-/** The panes each flag redraws: only the ones whose data changed (the AgentTeamsTab pattern, per pane). */
+/** The panes each flag redraws: only the ones whose data changed (the Agent Workspace's pattern, per pane). */
 export const PANES_FOR: Record<Flag, readonly Pane[]> = {
   snapshot: ["list", "centre", "right"],
   select: ["list", "centre", "right"],
@@ -558,7 +558,7 @@ export function arrowKeys(list: HTMLElement, sel: string): void {
 }
 
 /**
- * Redraws `el` with `draw`, keeping the user's place (the AgentTeamsTab pattern, per pane): the focused element by its
+ * Redraws `el` with `draw`, keeping the user's place (the Agent Workspace's pattern, per pane): the focused element by its
  * data-spc-key (and a text field's caret), and the scroll of every [data-spc-scroll] inside it and of `outer`.
  */
 export function keepPlace(el: HTMLElement, draw: () => void, outer: Array<HTMLElement | null> = []): void {

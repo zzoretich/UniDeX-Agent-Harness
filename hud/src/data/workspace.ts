@@ -1,7 +1,7 @@
 // workspace.ts — the Agent Workspace's data side (spec 2026-11-12-agent-workspace-design, D7). Pure over a Team, which
 // is itself built only from the team's own files; nothing here reads storage.
 import { runTone, usd, titleCase, orderTeams, memberStatus, gateCards, memberTone, pendingGates } from "./teams";
-import type { BoardItem, Team, Tone, MemberStatus, RunRow } from "./teams";
+import type { BoardItem, Post, Team, Tone, MemberStatus, RunRow } from "./teams";
 import { groupAgents, filterAgents } from "./agents";
 import type { AgentsCache, AgentRow } from "./agents";
 
@@ -10,31 +10,49 @@ export const ACTIVITY_PAGE = 50;
 export type ActivityKind = "run-start" | "run-end" | "item-new" | "stage" | "gate-open" | "gate-decided" | "budget" | "post";
 export interface ActivityEvent { ts: string; kind: ActivityKind; member: string | null; item: string | null; text: string; tone: Tone }
 
-const who = (id: string | null | undefined): string => (!id ? "Someone" : id === "user" ? "You" : titleCase(id));
+/** How the feed names who did something (agent-workspace R18): as the team's roster names the member, so the feed and the
+ *  tree agree; the title-cased id for one not on the roster (dispatch, a member since removed); "You" for the user. */
+function namer(t: Team): (id: string | null | undefined) => string {
+  const names = new Map(t.members.map((m) => [m.id, m.name]));
+  return (id) => (!id ? "Someone" : id === "user" ? "You" : names.get(id) ?? titleCase(id));
+}
 
 const isPending = (it: BoardItem | undefined): boolean => !!it && it.status === "gate" && it.gate?.state === "pending";
 
+/** A gate opened in the board history, and the window the lead's pitch for it falls in (agent-workspace R28): strictly
+ *  after the item's snapshot before the gate opened (none for an item's first snapshot), up to the snapshot that ended
+ *  it; `until` stays null while the gate is still pending. As gatePitch bounds the gate card by pendingAfter. */
+interface GateOpen { ev: ActivityEvent; item: string; name: string; after: string; until: string | null }
+
 /** What happened on the team, newest first: board snapshots, finished runs, live markers and channel posts. */
 export function activityOf(t: Team): ActivityEvent[] {
+  const who = namer(t);
   const out: ActivityEvent[] = [];
   const prev = new Map<string, BoardItem>();
+  const opens: GateOpen[] = [];
+  const pending = new Map<string, GateOpen>();
   for (const it of t.history) {
     const p = prev.get(it.id);
     prev.set(it.id, it);
+    // The first snapshot where the item's gate is no longer that pending gate ends its pitch window.
+    const was = pending.get(it.id);
+    if (was && !(isPending(it) && it.gate?.name === was.name)) { was.until = it.ts; pending.delete(it.id); }
     if (!p) {
       out.push({ ts: it.ts, kind: "item-new", member: it.by, item: it.id, tone: "is-neutral", text: `${who(it.by)} added ${it.id}${it.title ? `: ${it.title}` : ""}` });
     } else if (p.stage !== it.stage) {
       out.push({ ts: it.ts, kind: "stage", member: it.by, item: it.id, tone: "is-neutral", text: `${who(it.by)} moved ${it.id} from ${p.stage || "none"} to ${it.stage}` });
     }
-    if (isPending(it) && !(isPending(p) && p?.gate?.name === it.gate?.name)) {
-      // The lead's pitch rides on the event: its latest gate post on the item at or before this snapshot.
-      const pitch = [...t.channel].reverse().find((c) => c.item === it.id && c.kind === "gate" && c.from === t.lead && c.ts && c.ts <= it.ts);
-      out.push({ ts: it.ts, kind: "gate-open", member: it.by, item: it.id, tone: "is-gate", text: `${who(it.by)} opened the ${it.gate?.name} gate on ${it.id}${pitch?.text ? `: "${pitch.text}"` : ""}` });
+    if (isPending(it) && it.gate && !(isPending(p) && p?.gate?.name === it.gate.name)) {
+      const ev: ActivityEvent = { ts: it.ts, kind: "gate-open", member: it.by, item: it.id, tone: "is-gate", text: `${who(it.by)} opened the ${it.gate.name} gate on ${it.id}` };
+      out.push(ev);
+      const open: GateOpen = { ev, item: it.id, name: it.gate.name, after: p?.ts ?? "", until: null };
+      opens.push(open);
+      pending.set(it.id, open);
     }
     const g = it.gate;
     if (g && g.by === "user" && g.ts && (!p?.gate || p.gate.name !== g.name || p.gate.ts !== g.ts)) {
       const verb = g.state === "approved" ? "approved" : g.state === "redirected" ? "redirected" : g.state === "rejected" ? "rejected" : `decided (${g.state})`;
-      out.push({ ts: g.ts, kind: "gate-decided", member: "user", item: it.id, tone: g.state === "approved" ? "is-ok" : "is-stale", text: `You ${verb} the ${g.name} gate on ${it.id}` });
+      out.push({ ts: g.ts, kind: "gate-decided", member: "user", item: it.id, tone: g.state === "approved" ? "is-ok" : "is-stale", text: `You ${verb} the ${g.name} gate on ${it.id}${g.note ? `: "${g.note}"` : ""}` });
     }
     if (p && p.budget.usd !== it.budget.usd) {
       out.push({ ts: it.ts, kind: "budget", member: it.by, item: it.id, tone: "is-neutral", text: `${who(it.by)} set the budget for ${it.id} to ${usd(it.budget.usd)} (was ${usd(p.budget.usd)})` });
@@ -52,13 +70,35 @@ export function activityOf(t: Team): ActivityEvent[] {
       text: `${who(m.member)} started ${m.item ?? "a run"}${stage ? ` (${stage})` : ""}${m.provider ? ` on ${m.provider}` : ""}`,
     });
   }
-  // Gate posts are already gate-open (with the pitch) and gate-decided events; the rest of the channel is the team talking.
+  // Each gate-open quotes the lead's last gate post on its item inside its window; the lead's gate posts are indexed by
+  // item once, in file order. Only a post folded this way leaves the feed.
+  const pitches = new Map<string, Post[]>();
+  for (const c of t.channel) {
+    if (c.kind !== "gate" || c.from !== t.lead || !c.item || !c.ts) continue;
+    const list = pitches.get(c.item);
+    if (list) list.push(c); else pitches.set(c.item, [c]);
+  }
+  const folded = new Set<Post>();
+  for (const o of opens) {
+    const list = pitches.get(o.item) ?? [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const c = list[i];
+      if ((o.after && c.ts <= o.after) || (o.until !== null && c.ts > o.until)) continue;
+      folded.add(c);
+      if (c.text) o.ev.text += `: "${c.text}"`;
+      break;
+    }
+  }
+  // The rest of the channel is the team talking. The user's gate posts are the runtime's record of a decision, which
+  // its gate-decided event carries (the user's note included).
   for (const p of t.channel) {
-    if (p.kind === "gate") continue;
+    if (folded.has(p) || (p.kind === "gate" && p.from === "user")) continue;
     out.push({ ts: p.ts, kind: "post", member: p.from, item: p.item, tone: p.kind === "blocker" ? "is-failed" : "is-neutral", text: `${who(p.from)}: ${p.text}` });
   }
-  // Newest first; a stable sort keeps one row's events in the order they were pushed.
-  return out.filter((e) => e.ts).sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+  // Newest first; events at one time read newest first too, the one pushed later (a gate opened on an item just added,
+  // a budget set as the stage moved) above the one before it.
+  return out.map((e, i) => ({ e, i })).filter((x) => x.e.ts)
+    .sort((a, b) => (a.e.ts < b.e.ts ? 1 : a.e.ts > b.e.ts ? -1 : b.i - a.i)).map((x) => x.e);
 }
 
 export type StripCell = "done" | "current" | "gate" | "blocked" | "todo";
@@ -126,11 +166,18 @@ export function agentRuns(teams: Team[], agentId: string, now: Date): { runs: (R
 
 // Teams and the bench start open and the plugins section starts folded; `folded` holds the sections the user has toggled
 // away from that start, so a section is folded when its default differs from its being in the set. A search ignores folds.
-const FOLDED_BY_DEFAULT: ReadonlySet<NodeKey> = new Set(["section:plugins"]);
+// Passed as `folded` itself, it opens every section (the tab picks its node from that whole tree).
+export const FOLDED_BY_DEFAULT: ReadonlySet<NodeKey> = new Set(["section:plugins"]);
+/** The notes the tree holds when there is nothing to list (D15): under TEAMS with no team (the tab draws Seed the example
+ *  team and + New team with it), and under BENCH when the agents list has none of yours. Rows of kind "section", never
+ *  picked or folded, like the unscanned note. */
+export const NO_TEAMS: NodeKey = "teams:none";
+export const NO_AGENTS: NodeKey = "bench:none";
 const hasText = (q: string, ...parts: (string | null | undefined)[]): boolean => parts.some((p) => !!p && p.toLowerCase().includes(q));
 
 /** The left tree: Needs you, TEAMS (nested by parent, each team then its members, lead first), BENCH, PLUGINS & CONFIG.TOML.
- *  The query matches team, member and agent names and descriptions; a matching member keeps its team and the team's parents. */
+ *  The query matches team, member and agent names and descriptions; a matching member keeps its team and the team's parents.
+ *  With no team, TEAMS holds the NO_TEAMS note and BENCH every agent of yours; with none of yours, BENCH holds NO_AGENTS. */
 export function workspaceTree(teams: Team[], agents: AgentsCache, o: { query: string; folded: ReadonlySet<NodeKey> }): TreeRow[] {
   const q = o.query.trim().toLowerCase();
   const byId = new Map(agents.agents.map((a) => [a.id, a]));
@@ -162,6 +209,7 @@ export function workspaceTree(teams: Team[], agents: AgentsCache, o: { query: st
   }
   const teamRows = ordered.filter((x) => shown.has(x.team.id));
   rows.push({ key: "section:teams", kind: "section", label: "TEAMS", depth: 0, tone: null, count: teamRows.length });
+  if (open("section:teams") && !teams.length && !q) rows.push({ key: NO_TEAMS, kind: "section", label: "No teams yet", depth: 1, tone: null });
   if (open("section:teams")) {
     for (const { team } of teamRows) {
       const s = shown.get(team.id)!;
@@ -181,6 +229,9 @@ export function workspaceTree(teams: Team[], agents: AgentsCache, o: { query: st
   rows.push({ key: "section:bench", kind: "section", label: "BENCH", depth: 0, tone: null, count: bench.length });
   if (open("section:bench")) {
     if (agents.scannedAt === null) rows.push({ key: "bench:unscanned", kind: "section", label: "not scanned yet — sync now", depth: 1, tone: null });
+    else if (!q && !groupAgents(agents.agents).yours.length) {
+      rows.push({ key: NO_AGENTS, kind: "section", label: "none yet — an agent is a .md file in Claude Code's agents folder or a .toml file in Codex's", depth: 1, tone: null });
+    }
     for (const a of bench) rows.push({ key: `agent:${a.id}`, kind: "agent", label: a.name, depth: 1, tone: null });
   }
 
@@ -201,4 +252,25 @@ export function pickNode(o: { saved: NodeKey | null; via: "rail" | "link"; asked
   if (o.gates > 0) return "needs";
   const teams = o.tree.filter((r) => r.kind === "team");
   return (teams.find((r) => !r.broken) ?? teams[0])?.key ?? o.tree.find((r) => r.kind === "agent" || r.kind === "member")?.key ?? "needs";
+}
+
+/** The panes a link may ask for by kind rather than by node (agent-workspace D18: the tour routes there): Needs you, a
+ *  team's, an agent's profile. tour/steps.ts keeps its own copy, to stay import-free of the tab's data. */
+export const WORKSPACE_PANES = ["needs", "team", "agent"] as const;
+export type WorkspacePane = (typeof WORKSPACE_PANES)[number];
+export const isWorkspacePane = (v: unknown): v is WorkspacePane => (WORKSPACE_PANES as readonly unknown[]).includes(v);
+
+/** The node that shows a pane of `kind`: the selected node when it is one (a team, or an agent or agentless member);
+ *  else the first team that is not broken (the first team if all are), or the first agent in the tree (a member whose
+ *  agent is missing when there is none); null when the tree has no such node. */
+export function paneNode(kind: WorkspacePane, selected: NodeKey | null, tree: TreeRow[]): NodeKey | null {
+  if (kind === "needs") return "needs";
+  const fits = (r: TreeRow): boolean => (kind === "team" ? r.kind === "team" : r.key.startsWith("agent:") || r.key.startsWith("member:"));
+  const sel = tree.find((r) => r.key === selected && fits(r));
+  if (sel) return sel.key;
+  if (kind === "team") {
+    const teams = tree.filter((r) => r.kind === "team");
+    return (teams.find((r) => !r.broken) ?? teams[0])?.key ?? null;
+  }
+  return tree.find((r) => r.key.startsWith("agent:"))?.key ?? tree.find((r) => r.key.startsWith("member:"))?.key ?? null;
 }

@@ -115,8 +115,10 @@ export default class AgenticOSPlugin extends Plugin {
     // commands
     this.addCommand({ id: "open-workbench",       name: "Open Workbench",        callback: () => { void this.activate(VIEW_TYPE_WORKBENCH); } });
     for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "connectors", "agents", "agent-teams", "chat", "term", "settings"] as const) {
-      // The Brain tab keeps the id "memory" (brain-hub D16), so its command id holds and only the name changes.
-      const name = t === "todo" ? "To-Do" : t === "agent-teams" ? "Agent Teams" : t === "chat" ? "Sessions" : t === "term" ? "Code" : t === "memory" ? "Brain" : `${t[0].toUpperCase()}${t.slice(1)}`;
+      // The Brain tab keeps the id "memory" (brain-hub D16), so its command id holds and only the name changes. Agent
+      // Workspace keeps "agent-teams", and the Agents command, kept, lands there too (agent-workspace D3).
+      const name = t === "todo" ? "To-Do" : t === "agent-teams" ? "Agent Workspace" : t === "agents" ? "Agents (Agent Workspace)"
+        : t === "chat" ? "Sessions" : t === "term" ? "Code" : t === "memory" ? "Brain" : `${t[0].toUpperCase()}${t.slice(1)}`;
       this.addCommand({ id: `open-workbench-${t}`, name: `Open Workbench: ${name}`,
         callback: () => { void this.openWorkbenchTab(t); } });
     }
@@ -443,7 +445,9 @@ export default class AgenticOSPlugin extends Plugin {
         el.addClass("aos-sbar-link");
         el.addEventListener("click", (e) => {
           e.stopPropagation();
-          if (seg.tab) void this.openWorkbenchTab(seg.tab);
+          // As a link (WorkbenchView.open): a gate segment shows Agent Workspace's Needs you (agent-workspace D5).
+          const tab = seg.tab;
+          if (tab) void this.openWorkbench({ tab }).then((ok) => { if (!ok) void this.openWorkbenchTab(tab); });
           else if (seg.file) void this.app.workspace.openLinkText(seg.file, "", false);
         });
       }

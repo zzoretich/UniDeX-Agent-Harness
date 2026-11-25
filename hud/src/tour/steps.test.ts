@@ -70,15 +70,16 @@ test("anchors are stable attributes or classes, never positional", () => {
   }
 });
 
-test("a step's pane: a Spaces pane on Spaces, History on Sessions (install-import B11), nothing else", () => {
+test("a step's pane: a Spaces pane on Spaces, History on Sessions (install-import B11), a pane by kind on Agent Workspace (D18), nothing else", () => {
   const book = (tab: string, pane: string) => ({
     schema: 1, core: "c", actions: [],
     chapters: [{ id: "c", title: "C", summary: "s", steps: [{ id: "a", tab, pane, anchor: ".x", title: "T", body: "B", advance: "next", since: "2.0.0" }] }],
   });
   assert.deepEqual(validateBook(book("spaces", "history")), []);
   assert.deepEqual(validateBook(book("chat", "history")), []);
-  for (const [tab, pane] of [["chat", "overview"], ["pulse", "history"], ["spaces", "nowhere"]]) {
-    assert.match(validateBook(book(tab, pane)).join("\n"), /needs tab spaces and a Spaces pane, or tab chat and history/, `${tab} ${pane}`);
+  for (const pane of ["needs", "team", "agent"]) assert.deepEqual(validateBook(book("agent-teams", pane)), [], pane);
+  for (const [tab, pane] of [["chat", "overview"], ["pulse", "history"], ["spaces", "nowhere"], ["agent-teams", "history"], ["spaces", "team"]]) {
+    assert.match(validateBook(book(tab, pane)).join("\n"), /needs tab spaces and a Spaces pane, tab chat and history, or tab agent-teams and needs, team or agent/, `${tab} ${pane}`);
   }
   // Sessions keeps its own chapter for "Tour this tab"; History is a chapter of its own, shown with no host too.
   assert.equal(chapterForTab(BOOK, "chat")?.id, "sessions");

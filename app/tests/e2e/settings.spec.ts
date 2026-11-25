@@ -109,7 +109,7 @@ test("quickLinks and external labels open their file; skills.exclude switches to
   await row("skills.exclude").locator("button", { hasText: "Manage in Skills" }).click();
   await expect(rail(h.win, "skills")).toHaveClass(/is-active/);
   await openTab(h.win, "settings");
-  await expect(row("agents.exclude").locator("button")).toHaveText("Manage in Agents");
+  await expect(row("agents.exclude").locator("button")).toHaveText("Manage in Agent Workspace");
 });
 
 test("hosts & install: read-only values and the doctor / upgrade terminal buttons", async () => {

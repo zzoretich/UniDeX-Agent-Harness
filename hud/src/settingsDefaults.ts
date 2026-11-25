@@ -47,6 +47,12 @@ export interface TerminalChoice {
  *  data/filesModel.ts, kept here so this module stays import-free. */
 export type FilesViewId = "icons" | "list" | "columns";
 export type FilesSortKey = "name" | "modified" | "size" | "kind";
+/** The Agent Workspace tab's remembered choice: the selected tree node key ("needs", "team:<id>", "agent:<id>",
+ *  "member:<team>/<member>"; null: none yet) and whether Items shows the list or the board. */
+export interface AgentWorkspaceChoice {
+  node: string | null;
+  items: "list" | "board";
+}
 export interface FilesChoice {
   view: FilesViewId;
   sort: { key: FilesSortKey; desc: boolean };
@@ -94,6 +100,8 @@ export interface AgenticOSSettings {
   tour: TourState;
   // Files (spec 2026-10-17-files-finder D21): read through sanitizeFilesChoice
   files: FilesChoice;
+  // Agent Workspace: the selected tree node and the Items view; read through sanitizeAgentWorkspace
+  agentWorkspace: AgentWorkspaceChoice;
   // The Computer pane (agent-computer D4): read through computerPaneStart, written through rememberComputerPane
   computerPane: ComputerPaneChoice;
 }
@@ -124,6 +132,7 @@ export const DEFAULT_SETTINGS: AgenticOSSettings = {
   brainReviewSeenAt: null,
   tour: DEFAULT_TOUR_STATE,
   files: { view: "icons", sort: { key: "name", desc: false }, preview: false, favorites: null, recents: [], updateLinks: true },
+  agentWorkspace: { node: null, items: "list" },
   computerPane: {},
 };
 
@@ -251,6 +260,16 @@ export function rememberTerminalChoice(
   if (pick.agentPlace) c.agentPlace = pick.agentPlace;
   if (pick.workspace) c.recent = [pick.workspace, ...c.recent.filter((n) => n !== pick.workspace)];
   return sanitizeTerminalChoice(c);
+}
+
+// ── Agent Workspace ──
+export const AGENT_WORKSPACE_NODE_MAX = 200;
+
+/** A clean copy of a stored Agent Workspace choice; anything missing or malformed reads as its default. */
+export function sanitizeAgentWorkspace(raw: unknown): AgentWorkspaceChoice {
+  const r = isRecord(raw) ? raw : {};
+  const node = typeof r.node === "string" && r.node.length > 0 && r.node.length <= AGENT_WORKSPACE_NODE_MAX ? r.node : null;
+  return { node, items: r.items === "board" ? "board" : "list" };
 }
 
 // ── Files (spec 2026-10-17-files-finder D21) ──

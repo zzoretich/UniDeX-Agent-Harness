@@ -4,7 +4,7 @@ import {
   DEFAULT_SETTINGS, DEAD_SETTINGS_KEYS,
   sanitizeSessionChoice, sanitizeVaultChoice, rememberSessionChoice, rememberVaultChoice,
   sanitizeTerminalChoice, rememberTerminalChoice, TERM_RECENT_MAX,
-  sanitizeFilesChoice, rememberFilesChoice, FILES_FAVORITES_MAX, FILES_RECENTS_MAX,
+  sanitizeAgentWorkspace, sanitizeFilesChoice, rememberFilesChoice, FILES_FAVORITES_MAX, FILES_RECENTS_MAX,
   sanitizeComputerPane, paneMax, paneSizeWidth, paneSizeOf, computerPaneStart, rememberComputerPane, COMPUTER_PANE_NARROW,
 } from "./settingsDefaults";
 
@@ -253,4 +253,15 @@ test("the three sizes", () => {
 
 test("a stored width is no longer cut at 900", () => {
   assert.equal(sanitizeComputerPane({ code: { width: 1400 } }).code.width, 1400);
+});
+
+test("the Agent Workspace choice defaults to no node and the list, and bad parts fall back", () => {
+  assert.deepEqual(DEFAULT_SETTINGS.agentWorkspace, { node: null, items: "list" });
+  for (const raw of [undefined, null, {}, [], "board", 3]) assert.deepEqual(sanitizeAgentWorkspace(raw), DEFAULT_SETTINGS.agentWorkspace, String(raw));
+  assert.deepEqual(sanitizeAgentWorkspace({ node: "team:t1", items: "board" }), { node: "team:t1", items: "board" });
+  assert.deepEqual(sanitizeAgentWorkspace({ node: "needs", items: "grid" }), { node: "needs", items: "list" });
+  assert.deepEqual(sanitizeAgentWorkspace({ node: 42, items: "board" }), { node: null, items: "board" });
+  assert.equal(sanitizeAgentWorkspace({ node: "" }).node, null);
+  assert.equal(sanitizeAgentWorkspace({ node: "x".repeat(201) }).node, null);
+  assert.equal(sanitizeAgentWorkspace({ node: "x".repeat(200) }).node, "x".repeat(200));
 });

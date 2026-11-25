@@ -43,9 +43,11 @@ export function openFile(ctx: PulseCtx, path: string): void {
   void ctx.plugin.app.workspace.openLinkText(path, "", true);
 }
 
-export function openTab(ctx: PulseCtx, id: string): void {
+/** Into a tab as a link does (WorkbenchView.open): Agent Workspace shows `node` when one is named ("team:<id>"), else
+ *  Needs you while a gate is pending (agent-workspace D5). */
+export function openTab(ctx: PulseCtx, id: string, node?: string): void {
   ctx.close();
-  ctx.view.setTab(id);
+  if (!ctx.view.open(node ? { tab: id, node } : { tab: id })) ctx.view.setTab(id);
 }
 
 /** Into the Brain tab (rail id "memory") on a mode, Review's queue or a memory in Library (brain-hub D15). Select only. */

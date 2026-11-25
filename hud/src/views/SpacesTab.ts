@@ -64,7 +64,7 @@ const DEBOUNCE_MS = 250;
  * (PreviewPane). This class is the orchestrator: it watches what the panes read (snapshot.json, the maps,
  * brain/_index/sessions/**, workspaces/x/workspace.md, TODO.md, persona/proposals/, brain/memory/projects/), the
  * terminal pool and the Sessions events, through one 250 ms debounce, reads only what changed, and redraws only the
- * panes that show it, keeping focus and scroll (the AgentTeamsTab pattern). It writes no workspace file itself: Resume,
+ * panes that show it, keeping focus and scroll (the Agent Workspace's pattern). It writes no workspace file itself: Resume,
  * Terminal and New session are Code terminals, map and regen are runtime scripts, and PR 3's actions (New, Adopt, Hide,
  * Archive, Restore, Rename, Pin, status, Draft, Link code folder; D13–D18) run named `aos workspace` verbs through the
  * spaces surface, every move after its confirmation (§6). + to-do and Link to-dos… go through the To-Do surface's

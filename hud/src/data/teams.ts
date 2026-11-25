@@ -1,4 +1,4 @@
-// teams.ts — the Agent Teams tab's reader (spec 2026-09-28-agent-teams-design §4.4, D12). The store is
+// teams.ts — the Agent Workspace's team reader (spec 2026-09-28-agent-teams-design §4.4, D12). The store is
 // persona/teams/<id>/ and its one writer is `aos team` (brain/scripts/team.js, lib/teams.js); this module reads the same
 // files by the same rules, which the shared fixture vault proves (teams.test.ts reads it with both). Pure over its text
 // inputs; only readTeams touches storage, through a tiny adapter so tests stub it without "obsidian".
