@@ -281,7 +281,10 @@ export class AgentWorkspaceTab {
     if (this.query && !workspaceTree(this.teams, this.agents, { query: this.query, folded: this.folded }).some((r) => r.key === key)) this.query = "";
   }
 
-  /** Settles which node shows (pickNode): once per visit, and again when the shown node is gone from the files. */
+  /** Settles which node shows (pickNode): once per visit, and again when the shown node is gone from the files. Showing
+   *  a node is not picking it (D5, §4.2): only the node a link or Pulse names is remembered, as a click in the tree is.
+   *  A link's Needs you, the first visit's default and a stand-in for a node that is gone show without being saved, so
+   *  the next rail click still shows the user's own pick. */
   private settle(): void {
     const whole = this.wholeTree();
     const gates = gateCards(this.teams).length;
@@ -289,9 +292,10 @@ export class AgentWorkspaceTab {
     if (want) {
       this.want = null;
       if (want.asked) this.unfoldTo(want.asked, whole);
-      this.setSelected(pickNode({ saved: this.choice().node, via: want.via, asked: want.asked, gates, tree: whole }), true);
+      const node = pickNode({ saved: this.choice().node, via: want.via, asked: want.asked, gates, tree: whole });
+      this.setSelected(node, !!want.asked && node === want.asked);
     } else if (!this.selected || !whole.some((r) => r.key === this.selected)) {
-      // Not remembered: the saved node may come back with the next read (a cache being rewritten).
+      // The saved node may come back with the next read (a cache being rewritten).
       this.setSelected(pickNode({ saved: this.choice().node, via: "rail", asked: null, gates, tree: whole }), false);
     }
   }

@@ -6,7 +6,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, badge, content, openTab, pulseArea, rail, useApp } from "./harness";
+import { FX, HUD_SETTINGS, badge, content, openTab, pulseArea, rail, useApp } from "./harness";
 
 const AGENTS = "brain/_index/agents.json";
 const SYNC = "▶ aos.js agents sync";
@@ -46,6 +46,10 @@ async function redrawUnder(filter: Locator, rel: string): Promise<void> {
   await expect.poll(() => old!.evaluate((e) => e.isConnected)).toBe(false);
 }
 
+/** The node the HUD saved (settings.agentWorkspace.node), null when none is. */
+const savedNode = (): string | null => {
+  try { return (JSON.parse(fs.readFileSync(HUD_SETTINGS, "utf8")) as { agentWorkspace?: { node?: string | null } }).agentWorkspace?.node ?? null; } catch { return null; }
+};
 const railIds = (win: Page) => win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
 const link = (win: Page, params: Record<string, string>) =>
   win.evaluate((p) => (window as unknown as { aosHost: { app: { handleProtocol(a: string, p: Record<string, string>): boolean } } }).aosHost.app.handleProtocol("agenticos", p), params);
@@ -82,34 +86,45 @@ test.describe("Agent Workspace", () => {
 
   test("tab=agents and tab=agent-teams links open it; a link with a gate pending shows Needs you", async () => {
     const { win } = app();
-    // The first visit, with gates pending, shows Needs you.
+    // The first visit, with gates pending, shows Needs you, and remembers nothing: only a pick is saved.
     await openTab(win, "agent-teams");
     await expect(pane()).toHaveAttribute("data-node", "needs");
     await expect(pane().locator(".aos-aw-panetitle")).toHaveText("Needs you");
+    await win.waitForTimeout(300);
+    expect(savedNode()).toBeNull();
     await row("team:example").click();
     await expect(pane()).toHaveAttribute("data-node", "team:example");
     await expect(row("team:example")).toHaveAttribute("aria-selected", "true");
+    await expect.poll(savedNode).toBe("team:example");
     // A rail click shows the saved selection.
     await openTab(win, "pulse");
     await openTab(win, "agent-teams");
     await expect(pane()).toHaveAttribute("data-node", "team:example");
-    // A link with no node shows Needs you while a gate is pending, through the old id too.
+    // A link with no node shows Needs you while a gate is pending, through the old id too; showing it is not picking
+    // it, so the next rail click shows the saved team again.
     await openTab(win, "pulse");
     expect(await link(win, { tab: "agents" })).toBe(true);
     await expect(rail(win, "agent-teams")).toHaveClass(/is-active/);
     await expect(pane()).toHaveAttribute("data-node", "needs");
-    await row("team:example").click();
+    await openTab(win, "pulse");
+    await openTab(win, "agent-teams");
+    await expect(pane()).toHaveAttribute("data-node", "team:example");
+    expect(savedNode()).toBe("team:example");
     await openTab(win, "pulse");
     expect(await link(win, { tab: "agent-teams" })).toBe(true);
     await expect(rail(win, "agent-teams")).toHaveClass(/is-active/);
     await expect(pane()).toHaveAttribute("data-node", "needs");
-    // Pulse's per-team Board → names its team, which wins over the gates.
+    // Pulse's per-team Board → names its team, which wins over the gates and is remembered.
     await openTab(win, "pulse");
     const pop = await pulseArea(win, "agents");
     await pop.locator(".aos-pp-row", { hasText: "Survey — team" }).locator("button", { hasText: "Board →" }).click();
     await expect(rail(win, "agent-teams")).toHaveClass(/is-active/);
     await expect(pane()).toHaveAttribute("data-node", "team:survey");
     await expect(row("team:survey")).toHaveAttribute("aria-selected", "true");
+    await expect.poll(savedNode).toBe("team:survey");
+    await openTab(win, "pulse");
+    await openTab(win, "agent-teams");
+    await expect(pane()).toHaveAttribute("data-node", "team:survey");
   });
 
   test("the tree: Needs you, Example with Survey under it, members lead first, the broken team marked, Bench, Plugins folded", async () => {
