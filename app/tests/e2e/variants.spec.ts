@@ -255,10 +255,11 @@ test.describe("a Codex-only machine", () => {
     await expect(content(win).locator(".aos-nt-actions button", { hasText: "Deep dive" })).toHaveAttribute("title", "Opens a Codex session in the vault running: codex '$agenticos:ask-brain tide tables'");
   });
 
-  test("Agent Teams: Redirect runs the lead through codex", async () => {
+  test("Agent Workspace: Needs you's Redirect runs the lead through codex", async () => {
     const { win } = app();
     await openTab(win, "agent-teams");
-    const redirect = content(win).locator(".aos-at-needs .aos-at-gate", { hasText: "harbor-01" }).locator("button", { hasText: "Redirect" });
+    await content(win).locator(".aos-aw-tree .aos-aw-row[data-key='needs']").click();
+    const redirect = content(win).locator(".aos-aw-pane[data-node='needs'] .aos-at-gate", { hasText: "harbor-01" }).locator("button", { hasText: "Redirect" });
     await expect(redirect).toHaveText("Redirect ❯_");
     await expect(redirect).toHaveAttribute("title", /in Codex/);
   });
@@ -650,10 +651,11 @@ test.describe("both hosts", () => {
     await expect(content(win).locator(".aos-nt-actions").first().locator("button", { hasText: "Deep dive" })).toHaveText(["Deep dive ❯_ claude", "Deep dive ❯_ codex"]);
   });
 
-  test("Agent Teams: one Redirect button per host", async () => {
+  test("Agent Workspace: a gate in Needs you has one Redirect button per host", async () => {
     const { win } = app();
     await openTab(win, "agent-teams");
-    const gate = content(win).locator(".aos-at-needs .aos-at-gate", { hasText: "harbor-01" });
+    await content(win).locator(".aos-aw-tree .aos-aw-row[data-key='needs']").click();
+    const gate = content(win).locator(".aos-aw-pane[data-node='needs'] .aos-at-gate", { hasText: "harbor-01" });
     await expect(gate.locator("button", { hasText: "Redirect" })).toHaveText(["Redirect ❯_ claude", "Redirect ❯_ codex"]);
   });
 

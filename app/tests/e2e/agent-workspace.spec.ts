@@ -6,9 +6,10 @@
 // approving and the other writes are in teams-writes.spec.ts.
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, HUD_SETTINGS, badge, content, guardWrites, openTab, pulseArea, rail, terminalText, useApp } from "./harness";
+import { FX, HUD_SETTINGS, appEnv, badge, content, guardWrites, openTab, pulseArea, rail, terminalText, useApp } from "./harness";
 
 const AGENTS = "brain/_index/agents.json";
 const SYNC = "▶ aos.js agents sync";
@@ -329,6 +330,24 @@ test.describe("Agent Workspace", () => {
     await expect(gate("harbor-01")).toBeVisible();
   });
 
+  // This block runs with no write surface on (the app's default here), so `aos team` is refused before it starts.
+  test("with the Agent Teams surface off, an approve is refused: the card says why, nothing is written, the lead is not opened", async () => {
+    const h = app();
+    await needsYou();
+    const dir = FX.v("persona/teams/example");
+    const files = () => ["board.jsonl", "channel.jsonl", "TEAM.md"].map((f) => fs.readFileSync(`${dir}/${f}`, "utf8"));
+    const before = files();
+    const gateSpawns = async () => (await h.guard()).filter((e) => e.kind === "spawn" && / gate /.test(e.what)).map((e) => e.what);
+    expect(await gateSpawns()).toEqual([]);
+    await gate("harbor-01").locator(".aos-at-approve").click();
+    await h.win.locator(".modal button.mod-cta", { hasText: "Approve" }).click();
+    await expect(gate("harbor-01").locator(".aos-at-error")).toContainText("refused; no write surface that allows it is on");
+    await expect(rail(h.win, "agent-teams")).toHaveClass(/is-active/);   // the lead was not opened
+    await expect.poll(gateSpawns).toEqual([expect.stringMatching(/\/team\.js gate approve example harbor-01 --expect .* --usd 10$/)]);
+    expect(files()).toEqual(before);
+    await h.win.evaluate(() => { (window as unknown as { aosHost: { guard: { log: unknown[] } } }).aosHost.guard.log.length = 0; });
+  });
+
   test("Redirect ❯_ opens the lead", async () => {
     const { win } = app();
     await needsYou();
@@ -448,6 +467,22 @@ test.describe("Agent Workspace", () => {
     await expect(selected()).toHaveAttribute("data-view", "activity");
     // One board row, two events at its time, in the order they happened; the member by its roster name, as the tree has it.
     await expect(pane().locator(".aos-aw-evtext")).toHaveText(["Survey Lead added survey-01: Pick survey sites", "Survey Lead opened the plan gate on survey-01"]);
+  });
+
+  // Last in this block: it adds a gate to the board the tests above count.
+  test("a gate put on the board by the lead shows on the rail within a second, with another tab active, and in Needs you", async () => {
+    const { win } = app();
+    await openTab(win, "memory");
+    const put = spawnSync(process.execPath, [FX.v("brain/scripts/team.js"), "put", "example", "--from", "lead", JSON.stringify({ id: "harbor-05", title: "Tile legend", stage: "ship", status: "gate", owner: "lead", gate: { name: "ship", state: "pending" } })],
+      { env: appEnv(), encoding: "utf8" });
+    expect(put.status, put.stderr).toBe(0);
+    await expect(badge(win, "agent-teams")).toHaveText("3", { timeout: 2000 });
+    await needsYou();
+    await expect(row("needs").locator(".aos-aw-count")).toHaveText("3");
+    await expect(needsPane().locator(".aos-aw-paneline")).toHaveText("3 gates waiting on you across 2 teams");
+    await expect(needsPane().locator(".aos-at-gate")).toHaveCount(3);
+    await expect(gate("harbor-05").locator(".aos-at-gatename")).toHaveText("Ship gate");
+    await expect(gate("harbor-05").locator(".aos-at-teamtag")).toHaveText("Example");
   });
 });
 

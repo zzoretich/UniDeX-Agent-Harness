@@ -1,18 +1,15 @@
 // Agent Teams (app-smoke: Agent Teams tab): teams written by `aos team init / put / post` — the team chips with a
-// sub-team and a broken TEAM.md, the Work board, an item's detail, Roster, Interact; with the Agent Teams surface off, an
-// approve and a seat pick are refused. Needs you's gate cards (presets, Approve's cancel path, Redirect) moved to
-// agent-workspace.spec.ts. Approving, budgets, posting and Manage's changes themselves are in teams-writes.spec.ts. Talk
-// opens a terminal session, checked against the stub CLI.
+// sub-team and a broken TEAM.md, the Work board, an item's detail, Roster, Interact; with the Agent Teams surface off, a
+// seat pick is refused. Needs you's gate cards (presets, Approve's cancel path and its refusal, Redirect, a new gate on
+// the rail) moved to agent-workspace.spec.ts. Approving, budgets, posting and Manage's changes themselves are in
+// teams-writes.spec.ts. Talk opens a terminal session, checked against the stub CLI.
 
 import { expect, test } from "@playwright/test";
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { FX, appEnv, badge, content, openTab, rail, useApp } from "./harness";
+import { FX, badge, content, openTab, rail, useApp } from "./harness";
 
 const app = useApp();
 const C = () => content(app().win);
-const needs = () => C().locator(".aos-at-needs");
-const gate = (item: string) => needs().locator(".aos-at-gate", { has: app().win.locator(".aos-at-itemid", { hasText: item }) });
 const chipFor = (name: string) => C().locator(".aos-at-teamchip", { hasText: name });
 const view = (name: string) => C().locator(".aos-at-view", { hasText: name });
 
@@ -170,38 +167,21 @@ test("manage: seat pickers, the running switch, add and remove, and no text box"
   await view("Board").click();
 });
 
-test("with the Agent Teams surface off, an approve and a seat pick are refused: the card says why, and the board, the channel and TEAM.md stay", async () => {
+// The approve half of this test moved to agent-workspace.spec.ts (Needs you); the seat pick moves with the agent profile.
+test("with the Agent Teams surface off, a seat pick is refused: the row says why, and the board, the channel and TEAM.md stay", async () => {
   const h = app();
   const dir = FX.v("persona/teams/example");
   const files = () => ["board.jsonl", "channel.jsonl", "TEAM.md"].map((f) => fs.readFileSync(`${dir}/${f}`, "utf8"));
   const before = files();
-  await gate("harbor-01").locator(".aos-at-approve").click();
-  await h.win.locator(".modal button.mod-cta", { hasText: "Approve" }).click();
-  await expect(gate("harbor-01").locator(".aos-at-error")).toContainText("refused; no write surface that allows it is on");
-  await expect(rail(h.win, "agent-teams")).toHaveClass(/is-active/);   // the lead was not opened
   await chipFor("Example").click();
   await view("Manage").click();
   const effort = C().locator(".aos-at-pane-manage .aos-at-mrow", { has: h.win.locator(".aos-at-name", { hasText: /^Reviewer/ }) }).locator(".aos-at-pick-effort select");
   await effort.selectOption("low");
   await expect(C().locator(".aos-at-pane-manage .aos-at-error")).toContainText("Reviewer: could not run aos team:");
   await expect.poll(async () => (await h.guard()).filter((e) => e.kind === "spawn").map((e) => e.what)).toEqual([
-    expect.stringMatching(/\/team\.js gate approve example harbor-01 --expect .* --usd 10$/),
     expect.stringMatching(/\/team\.js set example reviewer effort low$/),
   ]);
   expect(files()).toEqual(before);
   await view("Board").click();
   await h.win.evaluate(() => { (window as unknown as { aosHost: { guard: { log: unknown[] } } }).aosHost.guard.log.length = 0; });
-});
-
-// Last: it adds a gate to the board the tests above count.
-test("a gate put on the board by the lead shows on the rail within a second, with another tab active", async () => {
-  const { win } = app();
-  await openTab(win, "memory");
-  const put = spawnSync(process.execPath, [FX.v("brain/scripts/team.js"), "put", "example", "--from", "lead", JSON.stringify({ id: "harbor-05", title: "Tile legend", stage: "ship", status: "gate", owner: "lead", gate: { name: "ship", state: "pending" } })],
-    { env: appEnv(), encoding: "utf8" });
-  expect(put.status, put.stderr).toBe(0);
-  await expect(badge(win, "agent-teams")).toHaveText("3", { timeout: 2000 });
-  await openTab(win, "agent-teams");
-  await expect(C().locator(".aos-at-needshead")).toHaveText("NEEDS YOU · 3");
-  await expect(gate("harbor-05").locator(".aos-at-gatename")).toHaveText("Ship gate");
 });
