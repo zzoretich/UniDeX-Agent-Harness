@@ -5827,7 +5827,9 @@ button.aos-aw-primary:not(.clickable-icon):hover:not(:disabled) { background: va
 .aos-aw-avatar.is-lead { background: var(--udx-inv); color: var(--udx-inv-text); }
 .aos-aw-whoitem { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; }
 .aos-aw-nowrest { color: var(--udx-text-3); font-size: 12px; }
-.aos-aw-views { display: flex; gap: 2px; margin: 16px 0 6px; border-bottom: 1px solid var(--udx-line); }
+/* The view bar: the tabs, then the shown view's own controls (Items' list · board). */
+.aos-aw-viewbar { display: flex; align-items: flex-end; gap: 8px; margin: 16px 0 6px; border-bottom: 1px solid var(--udx-line); }
+.aos-aw-views { display: flex; gap: 2px; }
 button.aos-aw-view:not(.clickable-icon) {
   display: inline-flex; align-items: baseline; gap: 6px; height: auto; margin-bottom: -1px; padding: 6px 12px 7px; border: none;
   border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 12.5px; cursor: pointer;
@@ -5835,7 +5837,7 @@ button.aos-aw-view:not(.clickable-icon) {
 button.aos-aw-view:not(.clickable-icon):hover { color: var(--udx-text); }
 button.aos-aw-view.is-active:not(.clickable-icon) { border-bottom-color: var(--udx-text); color: var(--udx-text); font-weight: 600; }
 .aos-aw-viewcount { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 10.5px; font-weight: 400; }
-.aos-aw-viewpane { padding-top: 4px; }
+.aos-aw-viewpane { padding-top: 4px; container-type: inline-size; }
 
 /* Activity (D7): newest first, each event its age, a tone dot and what happened. */
 .aos-aw-event { display: grid; grid-template-columns: 36px 7px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 7px 0; border-top: 1px solid var(--udx-line); }
@@ -5848,3 +5850,66 @@ button.aos-aw-older:not(.clickable-icon) {
   height: auto; margin: 6px 0 0 46px; padding: 2px 0; border: none; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 12px; cursor: pointer;
 }
 button.aos-aw-older:not(.clickable-icon):hover { color: var(--udx-text); text-decoration: underline; text-underline-offset: 2px; }
+
+/* Items (D8): a flat list, what needs you first. The strip has one segment per stage: done green, current blue, a gate
+   waiting on you violet, blocked red, to do an empty outline. Done items fold behind their toggle; the detail sits below. */
+.aos-aw-itemsmode { display: inline-flex; gap: 2px; margin: 0 0 5px auto; padding: 2px; border: 1px solid var(--udx-line); border-radius: 6px; background: var(--udx-surface); }
+button.aos-aw-mode:not(.clickable-icon) {
+  height: 22px; padding: 0 9px; border: none; border-radius: 4px; background: none; box-shadow: none; color: var(--udx-text-3); font-size: 11.5px; cursor: pointer;
+}
+button.aos-aw-mode:not(.clickable-icon):hover { color: var(--udx-text); }
+button.aos-aw-mode.is-active:not(.clickable-icon) { background: var(--udx-raised-2); color: var(--udx-text); font-weight: 600; }
+.aos-aw-items { display: flex; flex-direction: column; }
+.aos-aw-item {
+  display: grid; grid-template-columns: 88px minmax(0, 1fr) auto 92px minmax(0, 160px) 88px; align-items: center; gap: 12px;
+  padding: 7px 8px; border-top: 1px solid var(--udx-line); border-radius: 4px; font-size: 12.5px; cursor: pointer;
+}
+.aos-aw-item:first-child { border-top-color: transparent; }
+.aos-aw-item:hover { background: var(--udx-raised); }
+.aos-aw-item.is-open, .aos-aw-item.is-open:hover { background: var(--udx-raised-2); }
+.aos-aw-item.is-done { color: var(--udx-text-3); }
+.aos-aw-itemid { overflow: hidden; font-family: var(--udx-mono); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-itemtitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-strip { display: inline-flex; gap: 2px; }
+.aos-aw-seg { width: 16px; height: 6px; box-sizing: border-box; border: 1px solid var(--udx-line-2); border-radius: 2px; background: transparent; }
+.aos-aw-seg.is-done { border-color: var(--udx-ok-dot); background: var(--udx-ok-dot); }
+.aos-aw-seg.is-current { border-color: var(--udx-info-dot); background: var(--udx-info-dot); }
+.aos-aw-seg.is-gate { border-color: var(--udx-gate-dot); background: var(--udx-gate-dot); }
+.aos-aw-seg.is-blocked { border-color: var(--udx-danger-dot); background: var(--udx-danger-dot); }
+.aos-aw-itemstate { color: var(--udx-text-3); font-size: 11.5px; white-space: nowrap; }
+.aos-aw-itemstate.is-gate { color: var(--udx-gate); }
+.aos-aw-itemstate.is-failed { color: var(--udx-danger); }
+.aos-aw-itemstate.is-live { color: var(--udx-info); }
+.aos-aw-itemstate.is-ok { color: var(--udx-ok); }
+.aos-aw-holder { min-width: 0; overflow: hidden; color: var(--udx-text-2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.aos-aw-live { display: inline-flex; align-items: center; gap: 5px; color: var(--udx-info); }
+.aos-aw-livedot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--udx-info-dot); animation: aos-aw-live 1.8s ease-in-out infinite; }
+@keyframes aos-aw-live { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .aos-aw-livedot { animation: none; } }
+.aos-aw-money { color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11.5px; text-align: right; white-space: nowrap; }
+button.aos-aw-donetoggle:not(.clickable-icon) {
+  align-self: flex-start; height: auto; margin: 4px 0 0; padding: 3px 8px; border: none; background: none; box-shadow: none;
+  color: var(--udx-text-3); font-family: var(--udx-mono); font-size: 11px; cursor: pointer;
+}
+button.aos-aw-donetoggle:not(.clickable-icon):hover { color: var(--udx-text); }
+/* A narrow pane: id, title and strip on the first line; state, who and budget under them. */
+@container (max-width: 560px) {
+  .aos-aw-item { grid-template-columns: 72px minmax(0, 1fr) auto; row-gap: 3px; }
+}
+
+/* Settings (D10): the team's facts, read only, then Pause / Resume, Add a member and Open TEAM.md. */
+.aos-aw-settings { display: flex; flex-direction: column; gap: 10px; max-width: 660px; padding-top: 6px; }
+.aos-aw-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 18px; margin: 0; font-size: 12.5px; }
+.aos-aw-facts dt { padding-top: 2px; color: var(--udx-text-3); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.aos-aw-facts dd { margin: 0; overflow-wrap: anywhere; }
+a.aos-aw-link { color: var(--udx-text); text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px; }
+a.aos-aw-link:hover { color: var(--udx-info); text-decoration-color: currentColor; }
+.aos-aw-sethint { font-size: 12px; }
+.aos-aw-setrow, .aos-aw-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding-top: 10px; border-top: 1px solid var(--udx-line); }
+.aos-aw-runstate { font-size: 12.5px; }
+.aos-aw-runstate.is-paused { color: var(--udx-warn); }
+.aos-aw-setrow button.aos-aw-pause:not(.clickable-icon) { margin-left: auto; }
+.aos-aw-setlabel { font-size: 12.5px; font-weight: 600; }
+.aos-aw-add select { max-width: 320px; font-size: 12px; }
+.aos-aw-addhint { flex-basis: 100%; font-size: 11.5px; }
+.aos-aw-leftout { font-size: 11.5px; }

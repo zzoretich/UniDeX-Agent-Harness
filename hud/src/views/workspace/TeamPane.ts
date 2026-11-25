@@ -1,13 +1,18 @@
 // TeamPane.ts — a team node's pane in the Agent Workspace (spec 2026-11-12-agent-workspace-design D6): a header line (lead,
 // members, open items, spend this week) with ❯_ talk to the lead per enabled host, the paused banner, a NOW strip of the
 // members working or blocked (the idle ones counted), this team's gate cards (renderGateCard, unchanged), then the
-// Activity · Items · Channel · Settings views, Activity by default. A team whose files cannot be read shows its error.
+// Activity · Items · Channel · Settings views, Activity by default: Items as a list or today's board (D8), the Channel is
+// today's Interact pane (D9), Settings the team's facts and its few controls (D10). A team whose files cannot be read
+// shows its error.
 import { Team, TEAMS_DIR, gateCards, memberStatus, memberTone, usd } from "../../data/teams";
 import { weekUsd } from "../../data/workspace";
 import { pauseArgs } from "../../data/teamWriter";
 import { TeamsCtx, TeamsView, HOST_LABEL, errorLine, since, talkCommand } from "../teams/ui";
 import { renderGateCard } from "../teams/BoardPane";
+import { renderInteract } from "../teams/InteractPane";
 import { renderActivity } from "./ActivityPane";
+import { ItemsMode, renderItems } from "./ItemsPane";
+import { renderSettings } from "./SettingsPane";
 
 export const TEAM_VIEWS: { id: TeamsView; label: string }[] = [
   { id: "activity", label: "Activity" }, { id: "items", label: "Items" }, { id: "channel", label: "Channel" }, { id: "settings", label: "Settings" },
@@ -26,7 +31,11 @@ export function teamView(v: TeamsView): TeamsView {
 
 const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-export function renderTeamPane(host: HTMLElement, ctx: TeamsCtx, view: TeamsView, onView: (v: TeamsView) => void): void {
+/** How Items shows (the HUD's settings.agentWorkspace.items) and how a pick on its toggle is saved. */
+export interface ItemsChoice { mode: ItemsMode; onMode: (m: ItemsMode) => void }
+
+export function renderTeamPane(host: HTMLElement, ctx: TeamsCtx, view: TeamsView, onView: (v: TeamsView) => void,
+  items: ItemsChoice = { mode: "list", onMode: () => {} }): void {
   const t = ctx.team;
   host.setAttr("aria-label", `${t.name || t.id} team`);
   const head = host.createDiv({ cls: "aos-aw-teamhead" });
@@ -57,7 +66,7 @@ export function renderTeamPane(host: HTMLElement, ctx: TeamsCtx, view: TeamsView
   }
 
   const shown = teamView(view);
-  viewTabs(host, t, open, shown, onView);
+  const bar = viewTabs(host, t, open, shown, onView);
   const label = TEAM_VIEWS.find((v) => v.id === shown)?.label ?? shown;
   const panel = host.createDiv({ cls: "aos-aw-viewpane", attr: { role: "tabpanel", "aria-label": label, "data-view": shown } });
   if (shown === "activity") {
@@ -65,8 +74,12 @@ export function renderTeamPane(host: HTMLElement, ctx: TeamsCtx, view: TeamsView
     const pages = ctx.ui.activityPages;
     const page = pages?.get(t.id) ?? 1;
     renderActivity(panel, ctx, page, () => { pages?.set(t.id, page + 1); ctx.render(); });
+  } else if (shown === "items") {
+    renderItems(panel, ctx, items.mode, items.onMode, bar);
+  } else if (shown === "channel") {
+    renderInteract(panel, ctx);
   } else {
-    panel.createDiv({ cls: "aos-aw-paneline aos-aw-dim", text: `${label} comes with the next step.` });
+    renderSettings(panel, ctx);
   }
 }
 
@@ -124,10 +137,12 @@ function nowStrip(host: HTMLElement, ctx: TeamsCtx, t: Team): void {
   if (rest) strip.createSpan({ cls: "aos-aw-nowrest", text: rest });
 }
 
-/** The views as a tablist: a click picks one; the arrows, Home and End move along the tabs and pick the one they land on,
- *  which keeps the keyboard (the tab puts the focus back on it after it redraws: data-focus). */
-function viewTabs(host: HTMLElement, t: Team, open: number, shown: TeamsView, onView: (v: TeamsView) => void): void {
-  const tabs = host.createDiv({ cls: "aos-aw-views", attr: { role: "tablist", "aria-label": `${t.name} views` } });
+/** The view bar: the views as a tablist, and room after it for the shown view's own controls (Items' list · board). A
+ *  click picks a view; the arrows, Home and End move along the tabs and pick the one they land on, which keeps the
+ *  keyboard (the tab puts the focus back on it after it redraws: data-focus). Returns the bar. */
+function viewTabs(host: HTMLElement, t: Team, open: number, shown: TeamsView, onView: (v: TeamsView) => void): HTMLElement {
+  const bar = host.createDiv({ cls: "aos-aw-viewbar" });
+  const tabs = bar.createDiv({ cls: "aos-aw-views", attr: { role: "tablist", "aria-label": `${t.name} views` } });
   const els: HTMLElement[] = [];
   for (const v of TEAM_VIEWS) {
     const on = v.id === shown;
@@ -150,6 +165,7 @@ function viewTabs(host: HTMLElement, t: Team, open: number, shown: TeamsView, on
     els[j].focus();
     onView(TEAM_VIEWS[j].id);
   });
+  return bar;
 }
 
 /** A team whose TEAM.md or board cannot be read: what is wrong, and the file to fix. */

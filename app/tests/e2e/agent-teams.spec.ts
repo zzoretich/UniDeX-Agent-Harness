@@ -1,8 +1,8 @@
 // Agent Teams (app-smoke: Agent Teams tab): teams written by `aos team init / put / post` — the team chips with a
-// sub-team and a broken TEAM.md, the Work board, an item's detail, Roster, Interact; with the Agent Teams surface off, a
-// seat pick is refused. Needs you's gate cards (presets, Approve's cancel path and its refusal, Redirect, a new gate on
-// the rail) moved to agent-workspace.spec.ts. Approving, budgets, posting and Manage's changes themselves are in
-// teams-writes.spec.ts. Talk opens a terminal session, checked against the stub CLI.
+// sub-team and a broken TEAM.md, Roster; with the Agent Teams surface off, a seat pick is refused. Needs you's gate
+// cards (presets, Approve's cancel path and its refusal, Redirect, a new gate on the rail), the Work board and an item's
+// detail (a team's Items) and Interact (its Channel) moved to agent-workspace.spec.ts. Approving, budgets, posting and
+// Manage's changes themselves are in teams-writes.spec.ts. Talk opens a terminal session, checked against the stub CLI.
 
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs";
@@ -45,60 +45,6 @@ test("the broken team shows an error card naming the line, with Open TEAM.md", a
   await chipFor("Example").click();
 });
 
-test("board: one column per stage, ◆ on gated stages, status chips, done items folded", async () => {
-  await chipFor("Example").click();
-  await view("Board").click();
-  await expect(C().locator(".aos-at-teamhead")).toContainText("lead Lead · 3 members · 4 open");
-  const cols = C().locator(".aos-at-col");
-  await expect(cols.locator(".aos-at-colhead > span:first-child")).toHaveText(["DISCUSS", "PLAN", "EXECUTE", "VERIFY", "SHIP"]);
-  await expect(C().locator(".aos-at-col", { hasText: "DISCUSS" }).locator(".aos-at-gatemark")).toHaveText("◆");
-  await expect(C().locator(".aos-at-col", { hasText: "SHIP" }).locator(".aos-at-gatemark")).toHaveText("◆");
-  await expect(C().locator(".aos-at-col", { hasText: "EXECUTE" }).locator(".aos-at-gatemark")).toHaveCount(0);
-  const card = (id: string) => C().locator(".aos-at-card", { has: app().win.locator(".aos-at-itemid", { hasText: id }) });
-  await expect(card("harbor-01").locator(".aos-at-chip")).toHaveText("discuss gate");
-  await expect(card("harbor-01")).toHaveClass(/is-gate/);
-  await expect(card("harbor-02").locator(".aos-at-chip")).toHaveText("working");
-  await expect(card("harbor-03").locator(".aos-at-chip")).toHaveText("blocked");
-  await expect(card("harbor-04").locator(".aos-at-chip")).toHaveText("paused");
-  await expect(card("harbor-02").locator(".aos-at-cardmeta")).toContainText("Builder");
-  await expect(card("harbor-00")).toHaveCount(0);
-  const done = C().locator(".aos-at-col", { hasText: "SHIP" }).locator(".aos-at-donetoggle");
-  await expect(done).toHaveText("1 done");
-  await done.click();
-  await expect(card("harbor-00")).toHaveClass(/is-done/);
-  await C().locator(".aos-at-donetoggle").click();
-});
-
-test("an item's detail: facts, the latest posts and its runs", async () => {
-  await chipFor("Example").click();
-  await view("Board").click();
-  await C().locator(".aos-at-card", { hasText: "harbor-02" }).click();
-  const d = C().locator(".aos-at-detail");
-  await expect(d.locator(".aos-at-detailtitle")).toHaveText("Chart tile cache");
-  const facts = await d.locator(".aos-at-facts dt").allTextContents();
-  expect(facts).toEqual(["Stage", "Owner", "Budget", "Project"]);
-  await expect(d.locator(".aos-at-facts dd")).toHaveText(["execute · working", "Builder", "$0 spent of $10", "harbor-map · phase 02 · workspaces/harbor-map"]);
-  await expect(d.locator(".aos-at-posts .aos-at-post")).toHaveCount(2);
-  await expect(d.locator(".aos-at-posts .aos-at-kind")).toHaveText(["assign", "handoff"]);
-  await expect(d.locator(".aos-at-runs .aos-inv-row")).toHaveCount(1);
-  await expect(d.locator(".aos-at-runs .aos-at-runwho")).toHaveText("Builder");
-  await expect(d.locator(".aos-at-runs")).toContainText("$2.40");
-  // A working item offers its budget stepper; Set budget stays disabled until the amount changes.
-  await expect(d.locator(".aos-at-budget button", { hasText: "Set budget" })).toBeDisabled();
-  await d.locator(".aos-at-close").click();
-  await expect(C().locator(".aos-at-detail")).toHaveCount(0);
-});
-
-test("a paused item's detail says raising its budget lets work resume and opens the lead", async () => {
-  await chipFor("Example").click();
-  await view("Board").click();
-  await C().locator(".aos-at-card", { hasText: "harbor-04" }).click();
-  const d = C().locator(".aos-at-detail");
-  await expect(d.locator(".aos-at-facts dd").first()).toHaveText("plan · paused");
-  await expect(d.locator(".aos-at-budget .aos-at-hint")).toHaveText("paused at its budget: raising it lets work resume, and opens Lead to take the next step");
-  await d.locator(".aos-at-close").click();
-});
-
 test("roster: members with provider pill, model and effort, status, current item, last run and Talk links", async () => {
   await chipFor("Example").click();
   await view("Roster").click();
@@ -127,23 +73,6 @@ test("a sub-team's roster names its parent and who its lead reports to", async (
   await expect(C().locator(".aos-at-treerow").first()).toHaveText("part of Example");
   await expect(C().locator(".aos-at-treerow").nth(1)).toHaveText("Survey Lead reports to lead");
   await chipFor("Example").click();
-});
-
-test("interact: the channel with @mentions highlighted and item filter chips; the message box is there", async () => {
-  await chipFor("Example").click();
-  await view("Interact").click();
-  const posts = C().locator(".aos-at-channel .aos-at-post");
-  await expect(posts).toHaveCount(4);
-  await expect(C().locator(".aos-at-channel .aos-at-mention.is-known").first()).toHaveText("@builder");
-  await expect(C().locator(".aos-nt-filters .aos-nt-chip")).toHaveText(["All", "harbor-01", "harbor-03", "harbor-02"]);
-  await C().locator(".aos-nt-filters .aos-nt-chip", { hasText: "harbor-03" }).click();
-  await expect(C().locator(".aos-at-channel .aos-at-post")).toHaveCount(1);
-  await expect(C().locator(".aos-at-channel .aos-at-kind")).toHaveText("blocker");
-  await C().locator(".aos-nt-filters .aos-nt-chip", { hasText: "All" }).click();
-  await expect(C().locator("textarea.aos-at-msg")).toHaveAttribute("placeholder", "Message @lead. Enter sends, Shift+Enter adds a line.");
-  await expect(C().locator(".aos-at-send")).toBeDisabled();
-  await expect(C().locator(".aos-at-interactbar button")).toHaveText("Talk to Lead ❯_");
-  await view("Board").click();
 });
 
 test("manage: seat pickers, the running switch, add and remove, and no text box", async () => {

@@ -1,15 +1,19 @@
-// Agent Workspace (spec 2026-11-12-agent-workspace-design D2-D7, D13, D16): one rail button for agents and the teams they
-// sit in. The rail button and its gate count, the `agents` alias and links, the tree (Needs you, the teams nested by
+// Agent Workspace (spec 2026-11-12-agent-workspace-design D2-D10, D13, D16): one rail button for agents and the teams
+// they sit in. The rail button and its gate count, the `agents` alias and links, the tree (Needs you, the teams nested by
 // parent with their members, the bench, plugin agents folded) and its keys, the filter, the header (counts, sharing, sync
 // now, + New team) and the stale-cache sync; the Needs you pane (every pending gate card: presets, Approve asks first,
-// Redirect ❯_) and a team's pane (its header line, NOW, its gates, Activity). The agent pane comes later. Read-only:
-// approving and the other writes are in teams-writes.spec.ts.
+// Redirect ❯_) and a team's pane (its header line, NOW, its gates, Activity, Items as a list or today's board with an
+// item's detail, the Channel, Settings) and the broken team's error card. The agent pane comes later. Read-only:
+// approving, budgets, posting, pausing and adding a member are in teams-writes.spec.ts.
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FX, HUD_SETTINGS, appEnv, badge, content, guardWrites, openTab, pulseArea, rail, terminalText, useApp } from "./harness";
+import {
+  FX, HUD_SETTINGS, appEnv, badge, closeNotes, content, guardWrites, launchApp, notePath, openTab, pulseArea, rail, restoreFixture, terminalText, useApp,
+  type AppHandle,
+} from "./harness";
 
 const AGENTS = "brain/_index/agents.json";
 const SYNC = "▶ aos.js agents sync";
@@ -52,6 +56,10 @@ async function redrawUnder(filter: Locator, rel: string): Promise<void> {
 /** The node the HUD saved (settings.agentWorkspace.node), null when none is. */
 const savedNode = (): string | null => {
   try { return (JSON.parse(fs.readFileSync(HUD_SETTINGS, "utf8")) as { agentWorkspace?: { node?: string | null } }).agentWorkspace?.node ?? null; } catch { return null; }
+};
+/** How the HUD saved the Items view (settings.agentWorkspace.items), null when it saved none. */
+const savedItems = (): string | null => {
+  try { return (JSON.parse(fs.readFileSync(HUD_SETTINGS, "utf8")) as { agentWorkspace?: { items?: string } }).agentWorkspace?.items ?? null; } catch { return null; }
 };
 /** What the team spent in the last seven days, as the pane writes it: the fixture's runs are dated from when it was built. */
 function weekSpend(team: string): string {
@@ -469,6 +477,144 @@ test.describe("Agent Workspace", () => {
     await expect(pane().locator(".aos-aw-evtext")).toHaveText(["Survey Lead added survey-01: Pick survey sites", "Survey Lead opened the plan gate on survey-01"]);
   });
 
+  // ── a team's Items (D8), Channel (D9) and Settings (D10) ──
+
+  const viewPane = (v: string) => pane().locator(`.aos-aw-viewpane[data-view='${v}']`);
+  async function teamView(team: string, v: "activity" | "items" | "channel" | "settings"): Promise<void> {
+    await openTab(app().win, "agent-teams");
+    await row(`team:${team}`).click();
+    await expect(pane()).toHaveAttribute("data-node", `team:${team}`);
+    await pane().locator(`.aos-aw-view[data-view='${v}']`).click();
+    await expect(viewPane(v)).toBeVisible();
+  }
+  const item = (id: string) => viewPane("items").locator(".aos-aw-item", { has: app().win.locator(".aos-aw-itemid", { hasText: id }) });
+  const detail = () => viewPane("items").locator(".aos-at-detail");
+
+  test("a row opens the item's detail: facts, posts, runs, budget", async () => {
+    await teamView("example", "items");
+    await expect(item("harbor-02")).toHaveAttribute("aria-expanded", "false");
+    await item("harbor-02").click();
+    await expect(item("harbor-02")).toHaveAttribute("aria-expanded", "true");
+    await expect(item("harbor-02")).toHaveClass(/is-open/);
+    const d = detail();
+    await expect(d.locator(".aos-at-detailtitle")).toHaveText("Chart tile cache");
+    expect(await d.locator(".aos-at-facts dt").allTextContents()).toEqual(["Stage", "Owner", "Budget", "Project"]);
+    await expect(d.locator(".aos-at-facts dd")).toHaveText(["execute · working", "Builder", "$0 spent of $10", "harbor-map · phase 02 · workspaces/harbor-map"]);
+    await expect(d.locator(".aos-at-posts .aos-at-post")).toHaveCount(2);
+    await expect(d.locator(".aos-at-posts .aos-at-kind")).toHaveText(["assign", "handoff"]);
+    await expect(d.locator(".aos-at-runs .aos-inv-row")).toHaveCount(1);
+    await expect(d.locator(".aos-at-runs .aos-at-runwho")).toHaveText("Builder");
+    await expect(d.locator(".aos-at-runs")).toContainText("$2.40");
+    // A working item offers its budget stepper; Set budget stays disabled until the amount changes.
+    await expect(d.locator(".aos-at-budget button", { hasText: "Set budget" })).toBeDisabled();
+    // Its posts link opens the Channel on that item.
+    await d.locator("a", { hasText: "All posts on this item in Channel" }).click();
+    await expect(viewPane("channel")).toBeVisible();
+    await expect(viewPane("channel").locator(".aos-nt-chip.is-active")).toHaveText("harbor-02");
+    await expect(viewPane("channel").locator(".aos-at-channel .aos-at-post")).toHaveCount(2);
+    await viewPane("channel").locator(".aos-nt-chip", { hasText: "All" }).click();
+    await pane().locator(".aos-aw-view[data-view='items']").click();
+    await expect(detail().locator(".aos-at-detailtitle")).toHaveText("Chart tile cache");
+    await detail().locator(".aos-at-close").click();
+    await expect(detail()).toHaveCount(0);
+    await expect(item("harbor-02")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("a paused item's detail says raising its budget lets work resume and opens the lead", async () => {
+    await teamView("example", "items");
+    await item("harbor-04").click();
+    const d = detail();
+    await expect(d.locator(".aos-at-facts dd").first()).toHaveText("plan · paused");
+    await expect(d.locator(".aos-at-budget .aos-at-hint")).toHaveText("paused at its budget: raising it lets work resume, and opens Lead to take the next step");
+    await d.locator(".aos-at-close").click();
+    await expect(detail()).toHaveCount(0);
+  });
+
+  test("a gate card's item link opens the team's Items with that item's detail, from the team and from Needs you", async () => {
+    await teamView("example", "activity");
+    await pane().locator(".aos-aw-gates .aos-at-gate .aos-at-itemid", { hasText: "harbor-01" }).click();
+    await expect(pane().locator(".aos-aw-view[aria-selected='true']")).toHaveAttribute("data-view", "items");
+    await expect(item("harbor-01")).toHaveAttribute("aria-expanded", "true");
+    await expect(detail().locator(".aos-at-detailtitle")).toHaveText("Tide table parser");
+    await expect(detail().locator(".aos-at-gate .aos-at-approve")).toHaveText("Approve · $10");
+    await detail().locator(".aos-at-close").click();
+    await row("needs").click();
+    await C().locator(".aos-aw-pane[data-node='needs'] .aos-at-gate .aos-at-itemid", { hasText: "survey-01" }).click();
+    await expect(pane()).toHaveAttribute("data-node", "team:survey");
+    await expect(item("survey-01")).toHaveAttribute("aria-expanded", "true");
+    await expect(detail().locator(".aos-at-detailtitle")).toHaveText("Pick survey sites");
+    await detail().locator(".aos-at-close").click();
+  });
+
+  test("channel: the posts with @mentions highlighted and item filter chips; the message box; drafts kept per team across a switch", async () => {
+    await teamView("example", "channel");
+    const ch = viewPane("channel");
+    await expect(ch.locator(".aos-at-channel .aos-at-post")).toHaveCount(4);
+    await expect(ch.locator(".aos-at-channel .aos-at-mention.is-known").first()).toHaveText("@builder");
+    await expect(ch.locator(".aos-nt-filters .aos-nt-chip")).toHaveText(["All", "harbor-01", "harbor-03", "harbor-02"]);
+    await ch.locator(".aos-nt-filters .aos-nt-chip", { hasText: "harbor-03" }).click();
+    await expect(ch.locator(".aos-at-channel .aos-at-post")).toHaveCount(1);
+    await expect(ch.locator(".aos-at-channel .aos-at-kind")).toHaveText("blocker");
+    await ch.locator(".aos-nt-filters .aos-nt-chip", { hasText: "All" }).click();
+    await expect(ch.locator("textarea.aos-at-msg")).toHaveAttribute("placeholder", "Message @lead. Enter sends, Shift+Enter adds a line.");
+    await expect(ch.locator(".aos-at-send")).toBeDisabled();
+    await expect(ch.locator(".aos-at-interactbar button")).toHaveText("Talk to Lead ❯_");
+    // An unsent message stays with its team: across a view switch, and apart from another team's.
+    await ch.locator("textarea.aos-at-msg").fill("Check the tide cache first");
+    await expect(ch.locator(".aos-at-send")).toBeEnabled();
+    await pane().locator(".aos-aw-view[data-view='activity']").click();
+    await pane().locator(".aos-aw-view[data-view='channel']").click();
+    await expect(viewPane("channel").locator("textarea.aos-at-msg")).toHaveValue("Check the tide cache first");
+    await row("team:survey").click();
+    await expect(viewPane("channel").locator("textarea.aos-at-msg")).toHaveValue("");
+    await expect(viewPane("channel").locator("textarea.aos-at-msg")).toHaveAttribute("placeholder", "Message @surveylead. Enter sends, Shift+Enter adds a line.");
+    await row("team:example").click();
+    await expect(viewPane("channel").locator("textarea.aos-at-msg")).toHaveValue("Check the tide cache first");
+    await viewPane("channel").locator("textarea.aos-at-msg").fill("");
+  });
+
+  test("settings: lead, reports to, parent, stages, gates and budget read-only; Pause; the Add picker; Open TEAM.md", async () => {
+    const { win } = app();
+    await teamView("example", "settings");
+    const s = viewPane("settings");
+    await expect(s.locator(".aos-aw-facts dt")).toHaveText(["Lead", "Reports to", "Parent", "Stages", "Gates", "Default budget"]);
+    await expect(s.locator(".aos-aw-facts dd")).toHaveText(["Lead", "none", "none", "discuss → plan → execute → verify → ship", "discuss, ship", "$10"]);
+    await expect(s.locator("input[type='text'], input[type='search'], input:not([type]), textarea")).toHaveCount(0);
+    await expect(s.locator(".aos-aw-runstate")).toHaveText("Running: its seats can be dispatched");
+    await expect(s.locator("button.aos-aw-pause")).toHaveText("Pause");
+    // Add a member offers your agents that are not on the team. (The bench's harbor-scout has no agent file, so the
+    // header test's sync now has taken it out of the list by now.)
+    const offered = await s.locator(".aos-aw-add select option").allTextContents();
+    expect(offered[0]).toBe("pick one of your agents");
+    for (const a of ["field-researcher", "survey-lead"]) expect(offered.some((o) => o.startsWith(`${a}:`)), a).toBe(true);
+    for (const a of ["team-lead", "team-builder", "team-reviewer"]) expect(offered.some((o) => o.startsWith(a)), a).toBe(false);
+    await expect(s.locator(".aos-aw-add button", { hasText: "Add" })).toBeDisabled();
+    // Open TEAM.md opens the team's file as a note.
+    await s.locator("button", { hasText: "Open TEAM.md" }).click();
+    await expect(notePath(win)).toHaveText("persona/teams/example/TEAM.md");
+    await closeNotes(win);
+    // A sub-team: who its lead reports to, and its parent, a link to the parent's Settings.
+    await teamView("survey", "settings");
+    await expect(s.locator(".aos-aw-facts dd")).toHaveText(["Survey Lead", "Lead (Example)", "Example", "plan → build → ship", "plan", "$5"]);
+    await s.locator(".aos-aw-facts a", { hasText: "Example" }).click();
+    await expect(pane()).toHaveAttribute("data-node", "team:example");
+    await expect(pane().locator(".aos-aw-view[aria-selected='true']")).toHaveAttribute("data-view", "settings");
+  });
+
+  test("the broken team's pane is the error card with Open TEAM.md", async () => {
+    const { win } = app();
+    await openTab(win, "agent-teams");
+    await row("team:broken").click();
+    await expect(pane()).toHaveAttribute("data-node", "team:broken");
+    const card = pane().locator(".aos-aw-note.is-error");
+    await expect(card).toContainText("persona/teams/broken/TEAM.md: unsupported TEAM.md line");
+    await expect(pane().locator(".aos-aw-views")).toHaveCount(0);
+    await expect(pane().locator(".aos-aw-now")).toHaveCount(0);
+    await card.locator("button", { hasText: "Open TEAM.md" }).click();
+    await expect(notePath(win)).toHaveText("persona/teams/broken/TEAM.md");
+    await closeNotes(win);
+  });
+
   // Last in this block: it adds a gate to the board the tests above count.
   test("a gate put on the board by the lead shows on the rail within a second, with another tab active, and in Needs you", async () => {
     const { win } = app();
@@ -483,6 +629,89 @@ test.describe("Agent Workspace", () => {
     await expect(needsPane().locator(".aos-at-gate")).toHaveCount(3);
     await expect(gate("harbor-05").locator(".aos-at-gatename")).toHaveText("Ship gate");
     await expect(gate("harbor-05").locator(".aos-at-teamtag")).toHaveText("Example");
+  });
+});
+
+// The Items view's list · board choice is the HUD's (settings.agentWorkspace.items): its own app, closed and launched again.
+test.describe.serial("Agent Workspace: Items as a list or a board", () => {
+  let h: AppHandle | null = null;
+  const app = (): AppHandle => { if (!h) throw new Error("the app is not running"); return h; };
+  test.beforeAll(async () => { restoreFixture(); h = await launchApp(); });
+  test.afterAll(async () => { await h?.close(); h = null; });
+  const C = () => content(app().win);
+  const pane = () => C().locator(".aos-aw-pane");
+  const items = () => pane().locator(".aos-aw-viewpane[data-view='items']");
+  const mode = (m: string) => pane().locator(`.aos-aw-viewbar .aos-aw-itemsmode .aos-aw-mode[data-mode='${m}']`);
+  async function exampleItems(): Promise<void> {
+    await openTab(app().win, "agent-teams");
+    await C().locator(".aos-aw-tree .aos-aw-row[data-key='team:example']").click();
+    await pane().locator(".aos-aw-view[data-view='items']").click();
+    await expect(items()).toBeVisible();
+  }
+
+  test("items: rows in needs-me order with the stage strip; the toggle shows the board and is remembered after a restart", async () => {
+    await exampleItems();
+    // The list: a pending gate, then blocked, working, paused; done folded behind its toggle.
+    const rows = items().locator(".aos-aw-item");
+    await expect(rows.locator(".aos-aw-itemid")).toHaveText(["harbor-01", "harbor-03", "harbor-02", "harbor-04"]);
+    await expect(rows.locator(".aos-aw-itemtitle")).toHaveText(["Tide table parser", "Offline sync", "Chart tile cache", "Offline tiles"]);
+    await expect(rows.locator(".aos-aw-itemstate")).toHaveText(["discuss gate", "blocked", "working", "paused"]);
+    await expect(rows.locator(".aos-aw-holder")).toHaveText(["Lead", "Reviewer", "Builder", "Lead"]);
+    await expect(rows.locator(".aos-aw-money")).toHaveText(["$6 / $10", "$0 / $10", "$0 / $10", "$0 / $10"]);
+    // One segment per stage: done green, current blue, the gate violet, blocked red, the rest empty.
+    const strip = (i: number) => rows.nth(i).locator(".aos-aw-seg").evaluateAll((els) => els.map((e) => [...e.classList].find((c) => c.startsWith("is-"))));
+    expect(await strip(0)).toEqual(["is-gate", "is-todo", "is-todo", "is-todo", "is-todo"]);
+    expect(await strip(1)).toEqual(["is-done", "is-done", "is-done", "is-blocked", "is-todo"]);
+    expect(await strip(2)).toEqual(["is-done", "is-done", "is-current", "is-todo", "is-todo"]);
+    expect(await strip(3)).toEqual(["is-done", "is-current", "is-todo", "is-todo", "is-todo"]);
+    await expect(rows.nth(0).locator(".aos-aw-strip")).toHaveAttribute("aria-label", "discuss: gate waiting on you, plan: to do, execute: to do, verify: to do, ship: to do");
+    const done = items().locator(".aos-aw-donetoggle");
+    await expect(done).toHaveText("1 done");
+    await done.click();
+    await expect(rows).toHaveCount(5);
+    await expect(rows.nth(4)).toHaveClass(/is-done/);
+    await expect(rows.nth(4).locator(".aos-aw-itemid")).toHaveText("harbor-00");
+    await items().locator(".aos-aw-donetoggle").click();
+    await expect(rows).toHaveCount(4);
+    await expect(mode("list")).toHaveAttribute("aria-pressed", "true");
+
+    // The board: one column per stage, ◆ on gated stages, status chips, done items folded.
+    await mode("board").click();
+    await expect(mode("board")).toHaveAttribute("aria-pressed", "true");
+    await expect(items().locator(".aos-aw-item")).toHaveCount(0);
+    const cols = items().locator(".aos-at-col");
+    await expect(cols.locator(".aos-at-colhead > span:first-child")).toHaveText(["DISCUSS", "PLAN", "EXECUTE", "VERIFY", "SHIP"]);
+    await expect(items().locator(".aos-at-col", { hasText: "DISCUSS" }).locator(".aos-at-gatemark")).toHaveText("◆");
+    await expect(items().locator(".aos-at-col", { hasText: "SHIP" }).locator(".aos-at-gatemark")).toHaveText("◆");
+    await expect(items().locator(".aos-at-col", { hasText: "EXECUTE" }).locator(".aos-at-gatemark")).toHaveCount(0);
+    const card = (id: string) => items().locator(".aos-at-card", { has: app().win.locator(".aos-at-itemid", { hasText: id }) });
+    await expect(card("harbor-01").locator(".aos-at-chip")).toHaveText("discuss gate");
+    await expect(card("harbor-01")).toHaveClass(/is-gate/);
+    await expect(card("harbor-02").locator(".aos-at-chip")).toHaveText("working");
+    await expect(card("harbor-03").locator(".aos-at-chip")).toHaveText("blocked");
+    await expect(card("harbor-04").locator(".aos-at-chip")).toHaveText("paused");
+    await expect(card("harbor-02").locator(".aos-at-cardmeta")).toContainText("Builder");
+    await expect(card("harbor-00")).toHaveCount(0);
+    const boardDone = items().locator(".aos-at-col", { hasText: "SHIP" }).locator(".aos-at-donetoggle");
+    await expect(boardDone).toHaveText("1 done");
+    await boardDone.click();
+    await expect(card("harbor-00")).toHaveClass(/is-done/);
+    await items().locator(".aos-at-donetoggle").click();
+    // A card opens the same detail below the board.
+    await card("harbor-02").click();
+    await expect(items().locator(".aos-at-detail .aos-at-detailtitle")).toHaveText("Chart tile cache");
+    await items().locator(".aos-at-detail .aos-at-close").click();
+    await expect.poll(savedItems).toBe("board");
+
+    // A restart keeps the board.
+    await app().close();
+    h = await launchApp();
+    await exampleItems();
+    await expect(mode("board")).toHaveAttribute("aria-pressed", "true");
+    await expect(items().locator(".aos-at-board")).toBeVisible();
+    await mode("list").click();
+    await expect(items().locator(".aos-aw-item")).toHaveCount(4);
+    await expect.poll(savedItems).toBe("list");
   });
 });
 

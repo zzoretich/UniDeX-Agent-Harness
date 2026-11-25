@@ -66,6 +66,8 @@ export class AgentWorkspaceTab {
   private agentsSyncAt = 0;
   private readGen = 0;
   private query = "";
+  /** The channel last drawn ("<team>/<item filter>"), so a redraw of the same one keeps the reader's place in it. */
+  private channelKey: string | null = null;
   /** Sections toggled away from their default, and folded teams (workspaceTree, foldTeams). */
   private folded = new Set<NodeKey>();
   private selected: NodeKey | null = null;
@@ -237,6 +239,8 @@ export class AgentWorkspaceTab {
         if (view) this.ui.view = teamView(view);
         if (item !== undefined) this.ui.openItem = item;
         this.render();
+        // A link that names an item (a gate card's id) opens its detail under the Items list: bring it into view.
+        if (item) this.host?.querySelector<HTMLElement>(".aos-aw-pane .aos-at-detail")?.scrollIntoView({ block: "nearest" });
       },
       openFile: (p) => this.openFile(p),
     };
@@ -245,6 +249,15 @@ export class AgentWorkspaceTab {
   // ── selection ──
 
   private choice(): AgentWorkspaceChoice { return sanitizeAgentWorkspace(this.plugin.settings.agentWorkspace); }
+
+  /** Items as a list or a board (D8), remembered in settings.agentWorkspace.items for every team. */
+  private setItemsMode(items: AgentWorkspaceChoice["items"]): void {
+    if (this.choice().items !== items) {
+      this.plugin.settings.agentWorkspace = { ...this.choice(), items };
+      void this.plugin.saveSettings();
+    }
+    this.render();
+  }
 
   private setSelected(node: NodeKey, remember: boolean): void {
     if (node.startsWith("team:")) {
@@ -318,9 +331,16 @@ export class AgentWorkspaceTab {
     const treeTop = this.treeHost?.scrollTop ?? 0;
     const oldPane = host.querySelector<HTMLElement>(".aos-aw-pane");
     const paneWas = oldPane ? { node: oldPane.dataset.node, top: oldPane.scrollTop } : null;
-    // A control in the pane that had the keyboard (a view tab, "older") names itself with data-focus, to get it back.
+    // A control in the pane that had the keyboard (a view tab, an item row, "older") names itself with data-focus, to get
+    // it back; an unsent message to the lead keeps its focus and caret.
     const active = host.ownerDocument.activeElement;
     const paneFocus = oldPane && active instanceof HTMLElement && oldPane.contains(active) ? active.closest<HTMLElement>("[data-focus]")?.dataset.focus ?? null : null;
+    const typing = oldPane && active instanceof HTMLTextAreaElement && active.classList.contains("aos-at-msg") && oldPane.contains(active) ? { start: active.selectionStart, end: active.selectionEnd } : null;
+    // The channel follows new posts only when the reader is already at its end; reading further up, it stays put.
+    const ch = oldPane?.querySelector<HTMLElement>(".aos-at-channel") ?? null;
+    const chKey = `${this.ui.team ?? ""}/${this.ui.channelItem ?? ""}`;
+    const follow = !ch || this.channelKey !== chKey || ch.scrollHeight - ch.scrollTop - ch.clientHeight < 24;
+    const chTop = ch?.scrollTop ?? 0;
     host.empty();
     this.treeHost = null;
     if (this.loaded) this.settle();
@@ -349,8 +369,13 @@ export class AgentWorkspaceTab {
 
     this.treeHost.scrollTop = treeTop;
     if (paneWas && paneWas.node === node) pane.scrollTop = paneWas.top;
+    const ch2 = pane.querySelector<HTMLElement>(".aos-at-channel");
+    if (ch2) ch2.scrollTop = follow ? ch2.scrollHeight : chTop;
+    this.channelKey = ch2 ? chKey : null;
+    const box = typing && paneWas?.node === node ? pane.querySelector<HTMLTextAreaElement>("textarea.aos-at-msg") : null;
     if (caret) { filter.focus({ preventScroll: true }); filter.setSelectionRange(caret.start, caret.end); }
     else if (rowFocus) focusRow(this.treeHost, rowFocus);
+    else if (box && typing && !box.disabled) { box.focus({ preventScroll: true }); box.setSelectionRange(typing.start, typing.end); }
     else if (paneFocus && paneWas?.node === node) {
       Array.from(pane.querySelectorAll<HTMLElement>("[data-focus]")).find((e) => e.dataset.focus === paneFocus)?.focus({ preventScroll: true });
     }
@@ -401,8 +426,8 @@ export class AgentWorkspaceTab {
     });
   }
 
-  /** The selected node: Needs you and a team have their panes (D5, D6); an agent's profile comes with its pane, until then
-   *  a title and what the files say. */
+  /** The selected node: Needs you and a team have their panes (D5, D6; a team's Items, Channel and Settings, D8-D10); an
+   *  agent's profile comes with its pane, until then a title and what the files say. */
   private renderPane(pane: HTMLElement, node: NodeKey): void {
     const title = (text: string) => pane.createEl("h2", { cls: "aos-aw-panetitle", text });
     const line = (text: string, cls = "aos-aw-paneline") => pane.createDiv({ cls, text });
@@ -412,7 +437,7 @@ export class AgentWorkspaceTab {
     }
     if (node.startsWith("team:")) {
       const t = this.teams.find((x) => x.id === node.slice("team:".length));
-      if (t) renderTeamPane(pane, this.ctx(t), this.ui.view, (v) => { this.ui.view = v; this.render(); });
+      if (t) renderTeamPane(pane, this.ctx(t), this.ui.view, (v) => { this.ui.view = v; this.render(); }, { mode: this.choice().items, onMode: (m) => this.setItemsMode(m) });
       return;
     }
     if (node.startsWith("agent:")) {

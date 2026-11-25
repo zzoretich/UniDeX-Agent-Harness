@@ -1,5 +1,6 @@
-// BoardPane.ts — the Agent Teams tab's Work board (spec 2026-09-28-agent-teams-design §4.4): one column per stage, an
-// item's detail, and the gate card the "Needs you" strip shares. Approve and budget changes go through `aos team` with
+// BoardPane.ts — the Work board (spec 2026-09-28-agent-teams-design §4.4), now the board mode of a team's Items in the
+// Agent Workspace (agent-workspace D8): one column per stage, an item's detail (the Items list opens it too), and the gate
+// card Needs you and the team pane share. Approve and budget changes go through `aos team` with
 // the rendered row's ts as --expect (D3); Redirect opens the lead in the terminal to take the user's note, and a recorded
 // Approve, or a raised budget on a paused item, opens it to take the next step: the lead picks the seat (D10).
 import {
@@ -19,8 +20,8 @@ export function renderGateCard(parent: HTMLElement, ctx: TeamsCtx, card: GateCar
 
   const head = el.createDiv({ cls: "aos-at-gatehead" });
   if (showTeam) head.createSpan({ cls: "aos-at-teamtag", text: t.name });
-  const id = head.createEl("a", { cls: "aos-at-itemid", text: it.id, href: "#", attr: { title: "show on the board" } });
-  id.addEventListener("click", (e) => { e.preventDefault(); ctx.select(t.id, "board", it.id); });
+  const id = head.createEl("a", { cls: "aos-at-itemid", text: it.id, href: "#", attr: { title: "show in the team's Items" } });
+  id.addEventListener("click", (e) => { e.preventDefault(); ctx.select(t.id, "items", it.id); });
   if (it.title) head.createSpan({ cls: "aos-at-itemtitle", text: it.title });
 
   const meta = el.createDiv({ cls: "aos-at-gatemeta" });
@@ -97,7 +98,7 @@ function stepper(parent: HTMLElement, value: number, next: (dir: -1 | 1) => numb
 export function renderBoard(host: HTMLElement, ctx: TeamsCtx): void {
   const t = ctx.team;
   if (!t.board.length) {
-    host.createDiv({ cls: "aos-at-emptyline aos-dim", text: `No work items yet. The lead adds them with aos team put: tell ${t.members.find((m) => m.id === t.lead)?.name ?? "the lead"} what to build in Interact.` });
+    host.createDiv({ cls: "aos-at-emptyline aos-dim", text: `No work items yet. The lead adds them with aos team put: tell ${t.members.find((m) => m.id === t.lead)?.name ?? "the lead"} what to build in Channel.` });
     return;
   }
   const grid = host.createDiv({ cls: "aos-at-board" });
@@ -117,7 +118,7 @@ export function renderBoard(host: HTMLElement, ctx: TeamsCtx): void {
     }
   }
   const open = t.board.find((i) => i.id === ctx.ui.openItem);
-  if (open) detail(host, ctx, t, open);
+  if (open) renderItemDetail(host, ctx, t, open);
 }
 
 function card(col: HTMLElement, ctx: TeamsCtx, t: Team, it: BoardItem): void {
@@ -145,7 +146,8 @@ function card(col: HTMLElement, ctx: TeamsCtx, t: Team, it: BoardItem): void {
   el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
 }
 
-function detail(host: HTMLElement, ctx: TeamsCtx, t: Team, it: BoardItem): void {
+/** An item's detail: its facts, its gate card or budget editor, the latest posts on it and its last runs; ✕ closes it. */
+export function renderItemDetail(host: HTMLElement, ctx: TeamsCtx, t: Team, it: BoardItem): void {
   const d = host.createDiv({ cls: "aos-at-detail", attr: { "aria-label": `${it.id} detail` } });
   const head = d.createDiv({ cls: "aos-at-detailhead" });
   head.createSpan({ cls: "aos-at-itemid", text: it.id });
@@ -174,8 +176,8 @@ function detail(host: HTMLElement, ctx: TeamsCtx, t: Team, it: BoardItem): void 
     d.createDiv({ cls: "aos-rt-subhead aos-dim", text: "LATEST POSTS" });
     const list = d.createDiv({ cls: "aos-at-posts" });
     for (const p of posts) postRow(list, t, p, ctx.now, false);
-    const all = d.createEl("a", { cls: "aos-link", text: "All posts on this item in Interact", href: "#" });
-    all.addEventListener("click", (e) => { e.preventDefault(); ctx.ui.channelItem = it.id; ctx.select(t.id, "interact"); });
+    const all = d.createEl("a", { cls: "aos-link", text: "All posts on this item in Channel", href: "#" });
+    all.addEventListener("click", (e) => { e.preventDefault(); ctx.ui.channelItem = it.id; ctx.select(t.id, "channel"); });
   }
   const runs = t.runs.filter((r) => r.item === it.id).slice(-5).reverse();
   if (runs.length) {
