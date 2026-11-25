@@ -255,8 +255,10 @@ test("pickNode: asked, then needs by link, saved, needs, first team, first agent
   assert.equal(pickNode({ ...o, saved: "team:lab", via: "link", gates: 2 }), "needs");
   assert.equal(pickNode({ ...o, saved: "team:lab", gates: 2 }), "team:lab");
   assert.equal(pickNode({ ...o, saved: "team:gone", gates: 2 }), "needs");
-  assert.equal(pickNode({ ...o, saved: "team:gone" }), "team:broken");
-  assert.equal(pickNode(o), "team:broken");
+  assert.equal(pickNode({ ...o, saved: "team:gone" }), "team:lab");
+  assert.equal(pickNode(o), "team:lab");
+  const onlyBroken = workspaceTree([{ ...teams.find((x) => x.id === "lab")!, error: "bad" }], emptyAgents(), { query: "", folded: new Set() });
+  assert.equal(pickNode({ ...o, tree: onlyBroken }), "team:lab");
   const noTeams = workspaceTree([], AGENTS, { query: "", folded: new Set() });
   assert.equal(pickNode({ ...o, tree: noTeams }), "agent:team-lead");
   assert.equal(pickNode({ ...o, tree: workspaceTree([], emptyAgents(), { query: "", folded: new Set() }) }), "needs");

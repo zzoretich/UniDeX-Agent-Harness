@@ -192,12 +192,13 @@ export function workspaceTree(teams: Team[], agents: AgentsCache, o: { query: st
 }
 
 /** Which node the tab shows: the one asked for (a link or the router) if it is in the tree; Needs you when a link arrives
- *  with gates waiting; the saved node if it is still there; Needs you when gates wait; else the first team, then the first agent. */
+ *  with gates waiting; the saved node if it is still there; Needs you when gates wait; else the first team that is not broken (the first team if all are), then the first agent. */
 export function pickNode(o: { saved: NodeKey | null; via: "rail" | "link"; asked: NodeKey | null; gates: number; tree: TreeRow[] }): NodeKey {
   const has = (k: NodeKey | null): k is NodeKey => !!k && o.tree.some((r) => r.key === k);
   if (has(o.asked)) return o.asked;
   if (o.via === "link" && o.gates > 0) return "needs";
   if (has(o.saved)) return o.saved;
   if (o.gates > 0) return "needs";
-  return o.tree.find((r) => r.kind === "team")?.key ?? o.tree.find((r) => r.kind === "agent" || r.kind === "member")?.key ?? "needs";
+  const teams = o.tree.filter((r) => r.kind === "team");
+  return (teams.find((r) => !r.broken) ?? teams[0])?.key ?? o.tree.find((r) => r.kind === "agent" || r.kind === "member")?.key ?? "needs";
 }
