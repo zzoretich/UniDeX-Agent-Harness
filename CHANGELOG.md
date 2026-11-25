@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.8.0] — 2026-11-25
+
 ### Added
 - **Activity** for each team: what happened on it, newest first: items added and moved, gates opened and decided, runs started and finished, and the channel's posts. <!-- tour: agent-workspace.activity -->
 - A team's **Items** as a list, what needs you first with each item's stage strip; a toggle shows the board instead and is kept for every team. <!-- tour: agent-workspace.items -->
@@ -799,7 +801,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.7.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.8.0...HEAD
+[2.8.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.8.0
 [2.7.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.7.0
 [2.6.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.6.0
 [2.5.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.5.0
