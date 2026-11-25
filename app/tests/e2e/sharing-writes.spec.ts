@@ -120,7 +120,7 @@ test("Skills: unshare records the exclusion and removes the Codex copy; share wr
 });
 
 test.describe("an agent's profile in Agent Workspace", () => {
-  // AG4: unshare removes the Codex agent file; share writes it back byte for byte.
+  // AW16: unshare removes the Codex agent file; share writes it back byte for byte.
   test("unshare / share", async () => {
     const { win } = app();
     await openTab(win, "agent-teams");
@@ -159,7 +159,7 @@ test.describe("an agent's profile in Agent Workspace", () => {
   });
 });
 
-test("sync now runs the runtime's sync and the list re-renders from its cache (SK2, AG2)", async () => {
+test("sync now runs the runtime's sync and the list re-renders from its cache (SK2, AW3)", async () => {
   const { win } = app();
   // Skills: its tab's own sync now.
   await openTab(win, "skills");

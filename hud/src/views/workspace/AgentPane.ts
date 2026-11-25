@@ -39,7 +39,7 @@ export interface AgentPaneOptions {
 
 /** The agent's profile, or (no agent) the member's seat with why it has none. */
 export function renderAgent(host: HTMLElement, o: AgentPaneOptions): void {
-  const root = host.createDiv({ cls: "aos-aw-agent" });
+  const root = host.createDiv({ cls: "aos-aw-agent", attr: { "data-tour": "agent-workspace-agent" } });
   const a = o.agent;
   if (!a) { memberPane(host, root, o); return; }
   host.setAttr("aria-label", a.name);

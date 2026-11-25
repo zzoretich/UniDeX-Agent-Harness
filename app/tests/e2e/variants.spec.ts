@@ -74,7 +74,7 @@ test.describe("an empty vault: no persona, to-dos, notifications or teams", () =
     await expect(content(win).locator(".aos-rt-actions button")).toHaveCount(0);
   });
 
-  test("no teams: Bench lists every agent, the pane offers Seed the example team and + New team", async () => {
+  test("no teams: Bench lists every agent, the tree offers Seed the example team and + New team under TEAMS", async () => {
     const { win } = app();
     await openTab(win, "agent-teams");
     // Agent Workspace's empty state (agent-workspace D15): TEAMS reads No teams yet with its two buttons and the /team hint.
@@ -287,7 +287,7 @@ test.describe("a Codex-only machine", () => {
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("[fixture codex stub] The user is redirecting the Discuss gate on harbor-01");
   });
 
-  test("Agent Workspace: + New team's lead picker offers only your agents with a Codex file, and Create runs aos team new", async () => {
+  test("Agent Workspace: + New team's lead picker offers only your agents with a Codex file; Create is refused in this read-only app, its aos team new argv logged", async () => {
     const h = app();
     const { win } = h;
     // One agent of yours on Codex, as `aos agents sync` lists a <name>.toml in Codex's agents folder; the fixture's own
@@ -920,7 +920,7 @@ test.describe("a runtime that predates aos config (before 0.17)", () => {
 test.describe("no teams yet, with the Agent Teams surface on", () => {
   const app = useApp({ env: { AOS_APP_WRITE: "teams" }, prepare: () => fs.rmSync(FX.v("persona/teams"), { recursive: true, force: true }) });
 
-  test("Seed the example team runs aos team init, which writes the example team and selects it (AT1)", async () => {
+  test("Seed the example team runs aos team init, which writes the example team and selects it (AW4)", async () => {
     const { win } = app();
     await openTab(win, "agent-teams");
     const tree = content(win).locator(".aos-aw-tree");

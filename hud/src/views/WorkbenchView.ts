@@ -34,6 +34,7 @@ import { currentTheme, onThemeChange } from "../ui/theme";
 import type { NewTerminalActions } from "../ui/NewTerminalMenu";
 import { TERM_HOST_LABEL, isContextPlace, placeOf, termRunLine, workspacePlace, type Place, type TermHost } from "../data/terminalLaunch";
 import type { SpacesPane } from "../data/statusline";
+import type { WorkspacePane } from "../data/workspace";
 import { codeSession, computerStore } from "../data/computerStore";
 
 export const VIEW_TYPE_WORKBENCH = "agentic-os-workbench";
@@ -78,8 +79,8 @@ const SETTINGS_TAB: RailTab = { id: "settings", icon: "settings", label: "Settin
 /** The Line UDX mark (UniDeX D10): one stroke weight with round ends, drawn in the text colour. */
 const MARK_PATH = "M6 6V26a14 14 0 0 0 28 0V6 M48 6V40H60a17 17 0 0 0 0-34H48Z M92 6L124 40 M124 6L92 40";
 /** A retired tab id and the tab that now shows its content (agent-workspace D3): links from older runtimes'
- *  statuslines, Settings' "Manage in Agents" and the palette's Agents command keep landing. Resolved first in setTab
- *  and open. */
+ *  statuslines, Settings' agents.exclude button (editIn "agents") and the palette's Agents command keep landing.
+ *  Resolved first in setTab and open. */
 export const TAB_ALIASES: Record<string, string> = { agents: "agent-teams" };
 /** Every tab id setTab() can build: what an agenticos://workbench?tab=<id> link may name (statusline spec D10), the
  *  aliases included. */
@@ -95,8 +96,9 @@ export interface WorkbenchTarget {
   /** A workspace name: Spaces selects it; Sessions and Code scope their lists to it. */
   workspace?: string | null;
   /** Spaces: the pane to show for the workspace (statusline.ts SPACES_PANES); Sessions: "history" shows its History
-   *  (install-import B11; the tour routes there). */
-  pane?: SpacesPane | null;
+   *  (install-import B11; the tour routes there); Agent Workspace: a pane by kind, Needs you, a team's or an agent's
+   *  profile (workspace.ts WORKSPACE_PANES; the tour routes there, agent-workspace D18). */
+  pane?: SpacesPane | WorkspacePane | null;
   /** A thread id: Sessions opens that thread; Spaces shows it in the workspace's history. */
   thread?: string | null;
   /** Brain only (brain-hub D15): the mode to show, Review's queue, a memory path to show in Library. */

@@ -1,4 +1,4 @@
-// InteractPane.ts — the Agent Teams tab's Interact area (spec 2026-09-28-agent-teams-design D12): the team channel with its
+// InteractPane.ts — a team's Channel in the Agent Workspace (agent-workspace D9; agent-teams D12): the team channel with its
 // @mentions, a filter by item, "Talk to <lead>" per enabled host, and a message box to the lead. The box is data entry,
 // which the settings rule allows; its text posts to the channel as the user, addressed @<lead>, through `aos team post`.
 import { channelView, CHANNEL_WINDOW } from "../../data/teams";
@@ -16,7 +16,7 @@ export function renderInteract(host: HTMLElement, ctx: TeamsCtx): void {
   const bar = host.createDiv({ cls: "aos-at-interactbar" });
   hostButtons(bar, ctx, `Talk to ${leadName}`, (h) => talkCommand(ctx, lead?.agent ?? null, h),
     (h, cmd) => `Start a ${HOST_LABEL[h]} session as ${leadName}: ${cmd}`,
-    ctx.hosts.length ? `${leadName}'s agent (${lead?.agent ?? "none"}) is not in the Agents list: sync it in the Agents tab` : "Enable Claude Code or Codex to talk to the lead");
+    ctx.hosts.length ? `${leadName}'s agent (${lead?.agent ?? "none"}) is not in the agents list: sync now, at the top of Agent Workspace, refreshes it` : "Enable Claude Code or Codex to talk to the lead");
 
   const recent: string[] = [];
   for (const p of [...t.channel].reverse()) if (p.item && !recent.includes(p.item)) recent.push(p.item);

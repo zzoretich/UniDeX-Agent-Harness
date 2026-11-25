@@ -10,7 +10,7 @@ import type { SessionHost } from "../../data/aosConfig";
 import type { TeamsCtx, TeamsView, Confirm } from "../teams/ui";
 import { since } from "../teams/ui";
 import { renderActivity } from "./ActivityPane";
-import { renderTeamPane, teamView } from "./TeamPane";
+import { renderTeamPane } from "./TeamPane";
 import { renderNeeds } from "./NeedsPane";
 import { renderItems } from "./ItemsPane";
 import { renderSettings } from "./SettingsPane";
@@ -231,17 +231,15 @@ test("team pane: this team's gate cards only, then Activity · Items · Channel 
   assert.ok(tab[1].focused);
 });
 
-test("team pane: the other views hold their place; a view the old tab named shows its new counterpart", async () => {
+test("team pane: the other views hold their place", async () => {
   const lab = await team("lab");
-  for (const [asked, shown] of [["items", "items"], ["channel", "channel"], ["settings", "settings"], ["board", "items"], ["interact", "channel"], ["roster", "settings"], ["manage", "settings"]] as const) {
-    assert.equal(teamView(asked), shown);
+  for (const view of ["items", "channel", "settings"] as const) {
     const root = new El("section");
-    renderTeamPane(html(root), harness(lab).c, asked, () => {});
-    assert.equal(root.find("aos-aw-view").find((b) => b.attrs.get("aria-selected") === "true")?.attrs.get("data-view"), shown);
-    assert.equal(root.one("aos-aw-viewpane").attrs.get("data-view"), shown);
+    renderTeamPane(html(root), harness(lab).c, view, () => {});
+    assert.equal(root.find("aos-aw-view").find((b) => b.attrs.get("aria-selected") === "true")?.attrs.get("data-view"), view);
+    assert.equal(root.one("aos-aw-viewpane").attrs.get("data-view"), view);
     assert.equal(root.find("aos-aw-event").length, 0);
   }
-  assert.equal(teamView("activity"), "activity");
 });
 
 test("team pane: the Activity page count is kept per team in the tab's state; older adds a page and redraws", () => {

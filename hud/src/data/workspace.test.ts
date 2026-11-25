@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Team, TeamFiles, readTeams, teamFrom, parseJsonl, latestRows, diskAdapter } from "./teams";
 import { parseAgents, emptyAgents } from "./agents";
-import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip, workspaceTree, seatsOf, benchOf, agentRuns, weekUsd, pickNode, TreeRow, NO_TEAMS, NO_AGENTS } from "./workspace";
+import { activityOf, ACTIVITY_PAGE, itemOrder, stageStrip, workspaceTree, seatsOf, benchOf, agentRuns, weekUsd, pickNode, paneNode, isWorkspacePane, TreeRow, NO_TEAMS, NO_AGENTS } from "./workspace";
 
 const VAULT = path.resolve(__dirname, "fixtures/teams-vault");
 const LAB_BOARD = path.join(VAULT, "persona/teams/lab/board.jsonl");
@@ -314,4 +314,23 @@ test("pickNode: asked, then needs by link, saved, needs, first team, first agent
   const noTeams = workspaceTree([], AGENTS, { query: "", folded: new Set() });
   assert.equal(pickNode({ ...o, tree: noTeams }), "agent:team-lead");
   assert.equal(pickNode({ ...o, tree: workspaceTree([], emptyAgents(), { query: "", folded: new Set() }) }), "needs");
+});
+
+test("paneNode (the tour's route, D18): the selected node when it fits, else the first team or agent in the tree", async () => {
+  const teams = await all();
+  const tree = workspaceTree(teams, AGENTS, { query: "", folded: new Set() });
+  assert.equal(paneNode("needs", "team:ops", tree), "needs");
+  assert.equal(paneNode("team", "team:ops", tree), "team:ops", "the team the user is on stays");
+  assert.equal(paneNode("team", "agent:solo", tree), "team:lab", "else the first team");
+  assert.equal(paneNode("team", null, tree), "team:lab");
+  assert.equal(paneNode("agent", "agent:solo", tree), "agent:solo", "the agent the user is on stays");
+  assert.equal(paneNode("agent", "member:lab/reviewer", tree), "member:lab/reviewer", "a member without an agent shows its seat");
+  assert.equal(paneNode("agent", "team:lab", tree), "agent:team-lead", "else the first agent: the first team's lead");
+  assert.equal(paneNode("team", "team:gone", tree), "team:lab", "a selection gone from the tree does not count");
+  const onlyBroken = workspaceTree([{ ...teams.find((x) => x.id === "lab")!, error: "bad" }], emptyAgents(), { query: "", folded: new Set() });
+  assert.equal(paneNode("team", null, onlyBroken), "team:lab", "a broken team when every team is");
+  const empty = workspaceTree([], emptyAgents(), { query: "", folded: new Set() });
+  assert.equal(paneNode("team", null, empty), null);
+  assert.equal(paneNode("agent", null, empty), null);
+  assert.deepEqual(["needs", "team", "agent", "files", null].map(isWorkspacePane), [true, true, true, false, false]);
 });

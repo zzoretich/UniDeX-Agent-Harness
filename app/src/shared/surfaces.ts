@@ -378,7 +378,7 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "sharing",
     label: "Skills & Agents",
-    source: "views/SkillsTab.ts, views/AgentsTab.ts (share, unshare)",
+    source: "views/SkillsTab.ts, views/AgentWorkspaceTab.ts with views/workspace/AgentPane.ts (share, unshare)",
     writes: [],
     spawns: [{ script: "cli/aos.js", args: argv(/skills|agents/, /include|exclude/, ID) }],
     verified: true,
@@ -464,7 +464,7 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "teams",
     label: "Agent Teams",
-    source: "data/teamWriter.ts (views/AgentTeamsTab.ts, views/teams/BoardPane.ts, ManagePane.ts, InteractPane.ts)",
+    source: "data/teamWriter.ts (views/AgentWorkspaceTab.ts, views/teams/BoardPane.ts, InteractPane.ts, views/workspace/TeamPane.ts, SettingsPane.ts, AgentPane.ts)",
     writes: [],
     spawns: [
       { script: "team.js", args: /^init$/ },

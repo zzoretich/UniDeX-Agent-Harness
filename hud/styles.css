@@ -1903,8 +1903,6 @@ body {
 .aos-sk-actions { flex: 0 0 auto; font-family: var(--aos-mono); font-size: 10.5px; white-space: nowrap; }
 /* MCP SERVERS moved to Connectors (spec 2026-10-23-connectors-tab D2): the one line that links there. */
 .aos-sk-mcpmoved { margin: 14px 0 4px; font-size: 11.5px; }
-.aos-ag-ro { margin-left: 6px; font-size: 9.5px; vertical-align: 1px; }
-.aos-ag-warn { color: var(--aos-amber); }
 
 /* ── Settings tab (spec 2026-09-24-settings-tab) ─────────────────────────────── */
 .aos-st-section { margin-bottom: 14px; }
@@ -1961,13 +1959,9 @@ body {
 .aos-st-chip { padding: 3px 8px; font-size: 11px; font-family: var(--aos-mono); }
 .aos-st-value { font-family: var(--aos-mono); font-size: 12px; color: var(--aos-dim); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ── Agent Teams tab (spec 2026-09-28-agent-teams-design §4.4) ───────────────
-   Cyan is live work and the current selection, amber is waiting on the user, rose is blocked or failed, green is done.
-   Gates lead ("Needs you"), then one team: its chips, its views, its pane. */
-.aos-at { container-type: inline-size; }
-.aos-at button:focus-visible, .aos-at [role="button"]:focus-visible, .aos-at a:focus-visible, .aos-at select:focus-visible {
-  outline: 1px solid var(--udx-focus); outline-offset: 1px;
-}
+/* ── A team's gate cards, board, item detail and channel (spec 2026-09-28-agent-teams-design §4.4) ───────────────
+   Drawn by teams/BoardPane.ts and teams/InteractPane.ts inside the Agent Workspace (agent-workspace D5, D8, D9).
+   Cyan is live work and the current selection, amber is waiting on the user, rose is blocked or failed, green is done. */
 .aos-at-hint { font-size: 11px; margin: 4px 0 8px; }
 .aos-at-error { color: var(--aos-rose); font-size: 11px; margin-top: 6px; }
 .aos-at-label { color: var(--aos-dim); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
@@ -1979,12 +1973,7 @@ body {
 .aos-at-chip { padding: 0 7px; font-size: 10.5px; gap: 5px; white-space: nowrap; }
 .aos-at-chip .aos-pulse-dot { width: 6px; height: 6px; }
 
-/* Needs you: every pending gate across teams, one ruled section. */
-.aos-at-needs {
-  border: 1px solid var(--udx-gate-dot); background: var(--udx-gate-bg);
-  padding: 8px 12px 4px; margin: 4px 0 16px;
-}
-.aos-at-needshead { color: var(--udx-gate); font-size: 10px; letter-spacing: 1px; margin-bottom: 2px; }
+/* A gate card: Needs you's and a team's (the box around them is .aos-aw-gates). */
 .aos-at-gate { padding: 8px 0 10px; }
 .aos-at-gate + .aos-at-gate { border-top: 1px solid var(--udx-line); }
 .aos-at-gate.is-busy { opacity: 0.7; }
@@ -2014,47 +2003,14 @@ a.aos-at-itemid:hover { text-decoration: underline; text-underline-offset: 2px; 
 .aos-at-stepvalue { min-width: 44px; text-align: center; color: var(--aos-text); font-variant-numeric: tabular-nums; }
 .aos-at-floor { font-size: 10.5px; }
 .aos-at-gateacts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
-.aos-root .aos-at-approve, .aos-root .aos-at-send, .aos-at-empty .mod-cta {
+.aos-root .aos-at-approve, .aos-root .aos-at-send {
   background: var(--udx-inv); border: 1px solid var(--udx-inv); color: var(--udx-inv-text); box-shadow: none;
   font-family: var(--aos-mono); font-size: 11.5px; padding: 3px 12px; height: auto; cursor: pointer;
 }
-.aos-root .aos-at-approve:hover:not(:disabled), .aos-root .aos-at-send:hover:not(:disabled), .aos-at-empty .mod-cta:hover:not(:disabled) {
+.aos-root .aos-at-approve:hover:not(:disabled), .aos-root .aos-at-send:hover:not(:disabled) {
   background: var(--udx-inv-hover);
 }
 .aos-root .aos-at-approve:disabled, .aos-root .aos-at-send:disabled { opacity: 0.45; cursor: default; }
-
-/* Teams, and the chosen team's views. */
-.aos-at-teams { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
-.aos-at-teamchip {
-  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; height: auto; box-shadow: none; cursor: pointer;
-  background: var(--aos-panel); border: 1px solid var(--aos-border); border-radius: 3px;
-  color: var(--aos-dim); font-family: var(--aos-mono); font-size: 11.5px;
-}
-.aos-at-teamchip:hover { color: var(--aos-text); }
-.aos-at-teamchip.is-active { color: var(--aos-cyan); border-color: var(--aos-cyan); }
-.aos-at-teamchip.is-paused { opacity: 0.7; }
-.aos-at-teamchip.is-broken { border-color: var(--udx-danger-dot); }
-.aos-at-depth { color: var(--aos-dim); }
-.aos-at-chipcount {
-  min-width: 15px; padding: 0 4px; border-radius: 7px; background: var(--udx-gate-bg); color: var(--udx-gate);
-  font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
-}
-.aos-at-chipmark { color: var(--aos-rose); font-weight: 700; }
-.aos-at-teamhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 4px; }
-.aos-at-teamname { color: var(--aos-cyan); font-size: 14px; font-weight: 600; letter-spacing: 0.5px; }
-.aos-at-teamhead .aos-dim { font-size: 11px; }
-.aos-at-state { font-size: 11.5px; color: var(--aos-text); opacity: 0.85; margin: 2px 0 8px; }
-.aos-at-paused { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.aos-at-paused .aos-ws-action { margin-left: auto; }
-.aos-at-views { display: flex; gap: 2px; border-bottom: 1px solid var(--aos-border); margin: 10px 0 12px; }
-.aos-at-view {
-  background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; box-shadow: none; height: auto;
-  color: var(--aos-dim); font-family: var(--aos-mono); font-size: 11.5px; padding: 5px 12px 6px; margin-bottom: -1px; cursor: pointer;
-  display: inline-flex; gap: 6px; align-items: baseline;
-}
-.aos-at-view:hover { color: var(--aos-text); }
-.aos-at-view.is-active { color: var(--aos-cyan); border-bottom-color: var(--aos-cyan); }
-.aos-at-viewcount { font-size: 10px; }
 
 /* Work board: one column per stage. */
 .aos-at-board {
@@ -2112,46 +2068,7 @@ a.aos-at-itemid:hover { text-decoration: underline; text-underline-offset: 2px; 
 .aos-at-runwho { flex: 0 0 90px; color: var(--aos-text); }
 .aos-at-runwhen { margin-left: auto; font-size: 10.5px; white-space: nowrap; }
 
-/* Roster and Manage rows. */
-.aos-at-roster, .aos-at-manage { max-height: none; }
-.aos-at-member, .aos-at-mrow { gap: 12px; flex-wrap: wrap; padding: 6px 10px; }
-.aos-at-member.is-off, .aos-at-mrow.is-off { opacity: 0.6; }
-.aos-at-who { flex: 1 1 170px; min-width: 0; }
-.aos-at-name { color: var(--aos-text); display: flex; align-items: center; gap: 6px; }
-.aos-at-leadpill { font-size: 9.5px; padding: 0 5px; }
-.aos-at-role { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.aos-at-seat { flex: 0 0 210px; display: flex; align-items: center; gap: 6px; min-width: 0; }
-.aos-at-provider { font-size: 10px; padding: 0 6px; }
-.aos-at-model { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.aos-at-mstate { flex: 0 0 150px; display: flex; align-items: center; gap: 6px; }
-.aos-at-itemlink { font-family: var(--aos-mono); }
-.aos-at-last { flex: 0 0 140px; font-size: 10.5px; white-space: nowrap; }
-.aos-at-runstatus.is-ok { color: var(--aos-green); }
-.aos-at-runstatus.is-failed { color: var(--aos-rose); }
-.aos-at-runstatus.is-stale { color: var(--aos-amber); }
-.aos-at-runstatus.is-neutral { color: var(--aos-dim); }
-.aos-at-rowacts { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-left: auto; font-family: var(--aos-mono); font-size: 10.5px; white-space: nowrap; }
-/* Manage: one grid so every member's pickers line up, lead row (no Remove) included. */
-.aos-at-manage .aos-at-mrow { display: grid; grid-template-columns: minmax(120px, 1fr) auto 72px 76px; column-gap: 14px; align-items: center; }
-.aos-at-pick-provider select { width: 104px; }
-.aos-at-pick-model select { width: 160px; }
-.aos-at-pick-effort select { width: 96px; }
-.aos-at-mrow .aos-at-rowacts { justify-content: flex-end; }
-.aos-at-mrow .aos-at-switch { justify-self: start; }
-.aos-at-tree { font-size: 11.5px; }
-.aos-at-treerow { padding: 2px 0; }
-.aos-at-manage-top { display: flex; gap: 8px; margin-bottom: 10px; }
-.aos-at-switch { padding: 3px 8px; font-size: 11px; font-family: var(--aos-mono); }
-.aos-at-picks { display: flex; flex-wrap: wrap; gap: 8px; }
-.aos-at-pick { display: flex; flex-direction: column; gap: 2px; }
-.aos-at-pick select { font-family: var(--aos-mono); font-size: 11px; height: auto; padding: 2px 22px 2px 6px; }
-.aos-at-danger:hover:not(:disabled) { color: var(--aos-rose); border-color: var(--aos-rose); }
-.aos-at-note { flex-basis: 100%; color: var(--aos-amber); font-size: 10.5px; }
-.aos-at-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 4px; }
-.aos-at-add select { font-family: var(--aos-mono); font-size: 11px; height: auto; padding: 2px 22px 2px 6px; max-width: 320px; }
-.aos-at-add .aos-at-hint { margin: 0; }
-
-/* Interact: the channel, and a message to the lead. */
+/* The Channel: the posts, and a message to the lead. */
 .aos-at-interactbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
 .aos-at-channel {
   background: var(--aos-panel); border: 1px solid var(--aos-border); padding: 4px 10px;
@@ -2181,18 +2098,9 @@ a.aos-at-itemid:hover { text-decoration: underline; text-underline-offset: 2px; 
 .aos-at-msg:focus { border-color: var(--aos-cyan); outline: none; box-shadow: none; }
 .aos-at-msg::placeholder { color: var(--aos-dim); }
 
-/* Empty: the first team. */
-.aos-at-empty { max-width: 62ch; padding: 18px 0; font-size: 12.5px; line-height: 1.6; }
-.aos-at-emptytitle { color: var(--aos-cyan); font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-.aos-at-emptyacts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; font-size: 11px; }
-
-/* A narrow pane: roster rows fold, the seat and state go under the name. */
+/* A narrow view pane (.aos-aw-viewpane is the container): the board's columns narrow. */
 @container (max-width: 560px) {
-  .aos-at-seat, .aos-at-mstate, .aos-at-last { flex: 1 1 45%; }
-  .aos-at-rowacts { margin-left: 0; }
   .aos-at-board { grid-auto-columns: minmax(150px, 78%); }
-  .aos-at-manage .aos-at-mrow { grid-template-columns: 1fr auto; row-gap: 6px; }
-  .aos-at-mrow .aos-at-picks { grid-column: 1 / -1; }
 }
 
 /* ══ Files: a Finder window onto the vault (spec 2026-10-17-files-finder) ═════════════════════════════════════════════
@@ -2573,7 +2481,7 @@ mark.aos-fx-qlat { color: inherit; }
 
 /* Small section labels: caps, grey, in the text face (colours set above for state stay). */
 .aos-panel-head, .aos-tile-label, .aos-sb-section-label, .aos-capture-section-label, .aos-ri-stat-l, .aos-ri-section-head,
-.aos-pulse-rowlabel, .aos-briefing-label, .aos-rt-subhead, .aos-at-label, .aos-at-needshead, .aos-at-gatename, .aos-at-colhead,
+.aos-pulse-rowlabel, .aos-briefing-label, .aos-rt-subhead, .aos-at-label, .aos-at-gatename, .aos-at-colhead,
 .aos-at-facts dt, .aos-nt-h, .aos-memscope-body h3, .aos-pr-md h4, .aos-cost-top-head {
   font-family: var(--udx-sans); font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
 }

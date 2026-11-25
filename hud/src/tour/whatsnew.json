@@ -2,6 +2,17 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.8.0",
+      "entries": [
+        {
+          "id": "agent-workspace",
+          "title": "Agents and teams in one tab",
+          "body": "Agents and Agent Teams are now one tab, Agent Workspace. On the left, a tree of your teams with their members, the bench of agents on no team, and plugin agents. On the right, what you pick: every gate waiting on you, a team's Activity, its Items as a list or the board, its Channel and Settings, or an agent's profile with its seats, hosts and recent runs. + New team makes a team with a lead you pick.",
+          "steps": ["agent-workspace.tree", "agent-workspace.needs", "agent-workspace.activity", "agent-workspace.items", "agent-workspace.agent", "agent-workspace.sync"]
+        }
+      ]
+    },
+    {
       "version": "2.7.0",
       "entries": [
         {

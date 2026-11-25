@@ -5,7 +5,14 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 ## [Unreleased]
 
 ### Added
+- **Activity** for each team: what happened on it, newest first: items added and moved, gates opened and decided, runs started and finished, and the channel's posts. <!-- tour: agent-workspace.activity -->
+- A team's **Items** as a list, what needs you first with each item's stage strip; a toggle shows the board instead and is kept for every team. <!-- tour: agent-workspace.items -->
+- **An agent's profile**: its hosts with ❯_ per enabled host, what it is doing now, a SEAT block per team with its provider, model and effort, Seat in… another team, share or unshare, and its recent runs and this week's spend. <!-- tour: agent-workspace.agent -->
+- **+ New team** makes a team with a name, a lead you pick from your agents, and a parent team if you want one. <!-- tour: agent-workspace.sync -->
 - `aos team new <id> --name <text> --lead <agent> [--parent <team>]` makes an empty team with the lead you pick. <!-- no-tour: a CLI verb -->
+
+### Changed
+- **Agents and Agent Teams are one tab, Agent Workspace.** A tree of your teams with their members, the bench and plugin agents on the left; Needs you, a team or an agent's profile on the right. Links, Pulse and Settings that opened either tab open it. <!-- tour: agent-workspace.tree -->
 
 ## [2.7.0] — 2026-11-14
 

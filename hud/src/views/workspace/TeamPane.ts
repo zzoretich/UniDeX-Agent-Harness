@@ -18,17 +18,6 @@ export const TEAM_VIEWS: { id: TeamsView; label: string }[] = [
   { id: "activity", label: "Activity" }, { id: "items", label: "Items" }, { id: "channel", label: "Channel" }, { id: "settings", label: "Settings" },
 ];
 
-/** The view a team pane shows for any TeamsView: the old tab's names (a gate card's item link asks for "board", an item's
- *  posts for "interact") land on the view that took their place. */
-export function teamView(v: TeamsView): TeamsView {
-  switch (v) {
-    case "board": return "items";
-    case "interact": return "channel";
-    case "roster": case "manage": return "settings";
-    default: return v;
-  }
-}
-
 const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 /** How Items shows (the HUD's settings.agentWorkspace.items) and how a pick on its toggle is saved. */
@@ -65,18 +54,17 @@ export function renderTeamPane(host: HTMLElement, ctx: TeamsCtx, view: TeamsView
     for (const c of cards) renderGateCard(box, ctx, c, { showTeam: false });
   }
 
-  const shown = teamView(view);
-  const bar = viewTabs(host, t, open, shown, onView);
-  const label = TEAM_VIEWS.find((v) => v.id === shown)?.label ?? shown;
-  const panel = host.createDiv({ cls: "aos-aw-viewpane", attr: { role: "tabpanel", "aria-label": label, "data-view": shown } });
-  if (shown === "activity") {
+  const bar = viewTabs(host, t, open, view, onView);
+  const label = TEAM_VIEWS.find((v) => v.id === view)?.label ?? view;
+  const panel = host.createDiv({ cls: "aos-aw-viewpane", attr: { role: "tabpanel", "aria-label": label, "data-view": view } });
+  if (view === "activity") {
     // The page count lives in the tab's state, per team, so a redraw (a file event, the clock) keeps what "older" showed.
     const pages = ctx.ui.activityPages;
     const page = pages?.get(t.id) ?? 1;
     renderActivity(panel, ctx, page, () => { pages?.set(t.id, page + 1); ctx.render(); });
-  } else if (shown === "items") {
+  } else if (view === "items") {
     renderItems(panel, ctx, items.mode, items.onMode, bar);
-  } else if (shown === "channel") {
+  } else if (view === "channel") {
     renderInteract(panel, ctx);
   } else {
     renderSettings(panel, ctx);
@@ -148,7 +136,7 @@ function viewTabs(host: HTMLElement, t: Team, open: number, shown: TeamsView, on
     const on = v.id === shown;
     const b = tabs.createEl("button", {
       cls: `aos-aw-view${on ? " is-active" : ""}`,
-      attr: { type: "button", role: "tab", "aria-selected": String(on), tabindex: on ? "0" : "-1", "data-view": v.id, "data-focus": `view:${v.id}` },
+      attr: { type: "button", role: "tab", "aria-selected": String(on), tabindex: on ? "0" : "-1", "data-view": v.id, "data-focus": `view:${v.id}`, "data-tour": `agent-workspace-${v.id}` },
     });
     b.createSpan({ cls: "aos-aw-viewlabel", text: v.label });
     if (v.id === "items" && open) b.createSpan({ cls: "aos-aw-viewcount", text: String(open), attr: { "aria-label": `${open} open` } });

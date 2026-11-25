@@ -6,14 +6,15 @@
 // item's detail, the Channel, Settings) and the broken team's error card; an agent's profile (D11: its header, NOW, a SEAT
 // block per team, Seat in…, HOSTS, RECENT RUNS; a bench agent, a plugin agent) and a member whose agent is missing (D12).
 // Read-only: approving, budgets, posting, pausing, a seat's pickers, Seat in…, Remove and adding a member are in
-// teams-writes.spec.ts, and share / unshare in sharing-writes.spec.ts.
+// teams-writes.spec.ts, and share / unshare in sharing-writes.spec.ts; here, with both hosts and the sharing surface off,
+// an agent's unshare is refused (it moved from skills-agents.spec.ts with the Agents tab).
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  FX, HUD_SETTINGS, appEnv, badge, closeNotes, content, guardWrites, launchApp, notePath, openTab, pulseArea, rail, restoreFixture, terminalText, useApp,
+  FX, HUD_SETTINGS, appEnv, badge, closeNotes, content, guardWrites, launchApp, notePath, openTab, pulseArea, rail, restoreFixture, shareBothHosts, terminalText, useApp,
   type AppHandle,
 } from "./harness";
 
@@ -828,7 +829,7 @@ test.describe("Agent Workspace: an agent's profile", () => {
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("[fixture claude stub] --agent team-builder");
   });
 
-  test("a bench agent; a plugin agent shows no SEAT or sharing; a member without an agent shows its seat and \"no agent\"", async () => {
+  test("a bench agent; a read-only agent's pill; a plugin agent shows no SEAT or sharing; a member without an agent shows its seat and \"no agent\"", async () => {
     // The bench: no seat, Seat in… every readable team (not the broken one), no runs.
     await show("agent:harbor-scout");
     const p = pane();
@@ -841,6 +842,12 @@ test.describe("Agent Workspace: an agent's profile", () => {
     await expect(p.locator(".aos-aw-now .aos-aw-nowrest")).toHaveText("not running");
     await expect(p.locator(".aos-aw-weekusd")).toHaveText("$0 this week");
     await expect(p.locator(".aos-aw-sec[data-sec='runs'] .aos-aw-empty")).toHaveText("no runs: it sits in no team");
+    await expect(p.locator(".aos-aw-ro")).toHaveCount(0);
+
+    // An agent whose tools cannot write (Read, Grep, Glob) carries the read-only pill in HOSTS.
+    await row("agent:field-researcher").first().click();
+    await expect(pane()).toHaveAttribute("data-node", "agent:field-researcher");
+    await expect(p.locator(".aos-aw-sec[data-sec='hosts'] .aos-aw-ro")).toHaveText("read-only");
 
     // A plugin's agent: the header and HOSTS only.
     await row("section:plugins").click();
@@ -935,5 +942,29 @@ test.describe("a stale agents cache", () => {
     await expect(pane.locator(".aos-aw-noagentnote")).toHaveText("the agents list is not scanned yet — sync now builds it; this seat runs team-lead");
     await expect(pane.locator(".aos-aw-seat[data-team='example'] .aos-aw-seatrole")).toHaveText("Team lead");
     await expect(pane).not.toContainText("not one of your agents");
+  });
+});
+
+test.describe("both hosts, with the sharing surface off", () => {
+  const app = useApp({ prepare: shareBothHosts });
+  const C = () => content(app().win);
+
+  test("an agent's unshare is refused: the Notice says why, and the config and the Codex copy stay", async () => {
+    const h = app();
+    const cfg = fs.readFileSync(FX.v("brain/config.json"), "utf8");
+    const copy = path.join(FX.home, ".codex", "agents", "team-reviewer.toml");
+    const before = fs.readFileSync(copy, "utf8");
+    await openTab(h.win, "agent-teams");
+    await C().locator(".aos-aw-tree .aos-aw-row[data-key='agent:team-reviewer']").first().click();
+    const hosts = C().locator(".aos-aw-pane[data-node='agent:team-reviewer'] .aos-aw-sec[data-sec='hosts']");
+    await expect(hosts.locator(".aos-aw-sharechip")).toHaveText("on both");
+    await hosts.locator("button.aos-aw-share", { hasText: /^unshare$/ }).click();
+    await expect.poll(async () => (await h.guard()).filter((e) => e.kind === "spawn").map((e) => e.what))
+      .toContainEqual(expect.stringMatching(/\/cli\/aos\.js agents exclude team-reviewer$/));
+    await expect(h.win.locator(".notice-container")).toContainText("spawn failed: brain/scripts/cli/aos.js");
+    await expect(hosts.locator(".aos-aw-sharechip")).toHaveText("on both");
+    expect(fs.readFileSync(FX.v("brain/config.json"), "utf8")).toBe(cfg);
+    expect(fs.readFileSync(copy, "utf8")).toBe(before);
+    await h.win.evaluate(() => { (window as unknown as { aosHost: { guard: { log: unknown[] } } }).aosHost.guard.log.length = 0; });
   });
 });

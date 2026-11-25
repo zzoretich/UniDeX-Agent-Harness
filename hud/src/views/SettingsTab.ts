@@ -380,7 +380,7 @@ export class SettingsTab {
       s.addButton((b) => {
         if (row.editIn === "skills" || row.editIn === "agents") {
           const tab = row.editIn;
-          b.setButtonText(`Manage in ${tab === "skills" ? "Skills" : "Agents"}`).onClick(() => this.view.setTab(tab));
+          b.setButtonText(`Manage in ${tab === "skills" ? "Skills" : "Agent Workspace"}`).onClick(() => this.view.setTab(tab));
         } else {
           b.setButtonText(`Edit ${row.source === "machine" ? "agenticos.json" : "brain/config.json"}`).onClick(() => { if (file) this.openFile(file); });
         }

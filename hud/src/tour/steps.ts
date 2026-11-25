@@ -14,7 +14,8 @@ export interface TourStep {
   tab?: string;
   /** Brain only: the mode to show. */
   mode?: string;
-  /** Spaces: the pane to show for the selected workspace; Sessions: "history", its History (install-import B11). */
+  /** Spaces: the pane to show for the selected workspace; Sessions: "history", its History (install-import B11); Agent
+   *  Workspace: "needs", "team" or "agent", the pane to show by kind (agent-workspace D18). */
   pane?: string;
   /** A CSS selector for the one control the step spotlights. */
   anchor: string;
@@ -68,6 +69,9 @@ const TOUR_MODES: readonly string[] = BRAIN_MODES;
 const TOUR_PANES: readonly string[] = SPACES_PANES;
 /** The Sessions tab's one pane a step may show: History (install-import B11). */
 const SESSIONS_PANES: readonly string[] = ["history"];
+/** The Agent Workspace's panes by kind (data/workspace.ts WORKSPACE_PANES; kept here so this module stays import-free of
+ *  the tab's data): Needs you, the selected or first team, the selected or first agent (agent-workspace D18). */
+const WORKSPACE_PANES: readonly string[] = ["needs", "team", "agent"];
 /** The detectors checklist.ts knows. */
 export const TOUR_DETECTORS = ["session", "routine", "memory-reviewed", "persona"];
 
@@ -106,8 +110,9 @@ export function validateBook(book: unknown, o: { selectorOk?: (s: string) => boo
       stepIds.add(s.id);
       if (s.tab !== undefined && !TOUR_TABS.includes(s.tab)) out.push(`${where}: unknown tab ${s.tab}`);
       if (s.mode !== undefined && (s.tab !== "memory" || !TOUR_MODES.includes(s.mode))) out.push(`${where}: mode ${s.mode} needs tab memory and a Brain mode`);
-      if (s.pane !== undefined && !((s.tab === "spaces" && TOUR_PANES.includes(s.pane)) || (s.tab === "chat" && SESSIONS_PANES.includes(s.pane)))) {
-        out.push(`${where}: pane ${s.pane} needs tab spaces and a Spaces pane, or tab chat and history`);
+      if (s.pane !== undefined && !((s.tab === "spaces" && TOUR_PANES.includes(s.pane)) || (s.tab === "chat" && SESSIONS_PANES.includes(s.pane))
+        || (s.tab === "agent-teams" && WORKSPACE_PANES.includes(s.pane)))) {
+        out.push(`${where}: pane ${s.pane} needs tab spaces and a Spaces pane, tab chat and history, or tab agent-teams and needs, team or agent`);
       }
       if (typeof s.anchor !== "string" || !s.anchor.trim()) out.push(`${where}: no anchor`);
       else if (o.selectorOk && !o.selectorOk(s.anchor)) out.push(`${where}: anchor is not a valid selector: ${s.anchor}`);

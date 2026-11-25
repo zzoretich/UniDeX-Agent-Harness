@@ -219,3 +219,24 @@ export function pickNode(o: { saved: NodeKey | null; via: "rail" | "link"; asked
   const teams = o.tree.filter((r) => r.kind === "team");
   return (teams.find((r) => !r.broken) ?? teams[0])?.key ?? o.tree.find((r) => r.kind === "agent" || r.kind === "member")?.key ?? "needs";
 }
+
+/** The panes a link may ask for by kind rather than by node (agent-workspace D18: the tour routes there): Needs you, a
+ *  team's, an agent's profile. tour/steps.ts keeps its own copy, to stay import-free of the tab's data. */
+export const WORKSPACE_PANES = ["needs", "team", "agent"] as const;
+export type WorkspacePane = (typeof WORKSPACE_PANES)[number];
+export const isWorkspacePane = (v: unknown): v is WorkspacePane => (WORKSPACE_PANES as readonly unknown[]).includes(v);
+
+/** The node that shows a pane of `kind`: the selected node when it is one (a team, or an agent or agentless member);
+ *  else the first team that is not broken (the first team if all are), or the first agent in the tree (a member whose
+ *  agent is missing when there is none); null when the tree has no such node. */
+export function paneNode(kind: WorkspacePane, selected: NodeKey | null, tree: TreeRow[]): NodeKey | null {
+  if (kind === "needs") return "needs";
+  const fits = (r: TreeRow): boolean => (kind === "team" ? r.kind === "team" : r.key.startsWith("agent:") || r.key.startsWith("member:"));
+  const sel = tree.find((r) => r.key === selected && fits(r));
+  if (sel) return sel.key;
+  if (kind === "team") {
+    const teams = tree.filter((r) => r.kind === "team");
+    return (teams.find((r) => !r.broken) ?? teams[0])?.key ?? null;
+  }
+  return tree.find((r) => r.key.startsWith("agent:"))?.key ?? tree.find((r) => r.key.startsWith("member:"))?.key ?? null;
+}

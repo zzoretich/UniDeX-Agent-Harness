@@ -1,4 +1,4 @@
-// teamWriter.ts — the Agent Teams tab's only write path (spec 2026-09-28-agent-teams-design D3, D4, D12). Every change runs
+// teamWriter.ts — the Agent Workspace's only team write path (spec 2026-09-28-agent-teams-design D3, D4, D12). Every change runs
 // `aos team`, the vendored brain/scripts/team.js, through runAos with its `cli` override and waits for the CLI's verdict:
 // the tab never writes persona/teams/ itself, and the file event re-renders. Each board write sends the `ts` of the row
 // the user saw as --expect, so a card drawn before someone else's decision is refused rather than overwriting it.

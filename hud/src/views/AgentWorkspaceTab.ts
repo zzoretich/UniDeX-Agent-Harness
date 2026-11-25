@@ -10,12 +10,12 @@ import { AgentsCache, AgentRow, AGENTS_PATH, emptyAgents, readAgents, agentsStal
 import { AOS_CLI } from "../data/aosRun";
 import { Team, TEAMS_DIR, readTeams, diskAdapter, teamCommand, envPrefix, touchesTeams, gateBadge, gateCards, memberStatus } from "../data/teams";
 import { TeamRunner, teamRunner, teamFailure, presetsOf, Presets, ListJson, LIST_ARGS, INIT_ARGS } from "../data/teamWriter";
-import { FOLDED_BY_DEFAULT, NO_TEAMS, NodeKey, TreeRow, agentRuns, pickNode, seatsOf, workspaceTree } from "../data/workspace";
+import { FOLDED_BY_DEFAULT, NO_TEAMS, NodeKey, TreeRow, WorkspacePane, agentRuns, isWorkspacePane, paneNode, pickNode, seatsOf, workspaceTree } from "../data/workspace";
 import { sanitizeAgentWorkspace, type AgentWorkspaceChoice } from "../settingsDefaults";
 import { TeamsCtx, TeamsUiState, Confirm } from "./teams/ui";
 import { focusedRow, focusRow, foldTeams, renderNoTeams, renderTree } from "./workspace/Tree";
 import { renderNeeds } from "./workspace/NeedsPane";
-import { renderTeamPane, teamView } from "./workspace/TeamPane";
+import { renderTeamPane } from "./workspace/TeamPane";
 import { renderAgent, type AgentPaneOptions } from "./workspace/AgentPane";
 import { formatAgo } from "./RoutinesTab";
 import { env, shell } from "../host";
@@ -77,8 +77,9 @@ export class AgentWorkspaceTab {
   private folded = new Set<NodeKey>();
   private selected: NodeKey | null = null;
   /** How the tab was last brought up (D5), to settle once the files are read: a rail click (setTab) shows the saved
-   *  node; a link (open) shows the node it names, else Needs you while a gate is pending. */
-  private want: { via: "rail" | "link"; asked: NodeKey | null } | null = null;
+   *  node; a link (open) shows the node it names, else Needs you while a gate is pending. The tour names a pane by kind
+   *  instead (D18): Needs you, a team's or an agent's profile, shown without being saved. */
+  private want: { via: "rail" | "link"; asked: NodeKey | null; pane?: WorkspacePane } | null = null;
   /** A team the user just made, shown while the read that lists it lands: `gen` is the newest read when it was made, so
    *  only a later read that still lacks it lets another node stand in. `appliedGen` is the read last applied. */
   private expecting: { node: NodeKey; gen: number } | null = null;
@@ -111,9 +112,10 @@ export class AgentWorkspaceTab {
   /** Another tab is shown: the next visit settles its own node. */
   leave(): void { this.want = null; }
 
-  /** What open() hands the tab after mounting it (D5): the node a link or Pulse names, or none. */
+  /** What open() hands the tab after mounting it (D5): the node a link or Pulse names, or none; or the pane a tour step
+   *  names (D18). */
   reveal(t: RevealTarget): void {
-    this.want = { via: "link", asked: t.node ?? null };
+    this.want = { via: "link", asked: t.node ?? null, ...(isWorkspacePane(t.pane) ? { pane: t.pane } : {}) };
     if (this.loaded) this.render();
   }
 
@@ -251,7 +253,7 @@ export class AgentWorkspaceTab {
       render: () => this.render(),
       select: (id, view, item) => {
         this.setSelected(`team:${id}`, true);
-        if (view) this.ui.view = teamView(view);
+        if (view) this.ui.view = view;
         if (item !== undefined) this.ui.openItem = item;
         this.render();
         // A link that names an item (a gate card's id) opens its detail under the Items list: bring it into view.
@@ -316,16 +318,18 @@ export class AgentWorkspaceTab {
 
   /** Settles which node shows (pickNode): once per visit, and again when the shown node is gone from the files. Showing
    *  a node is not picking it (D5, §4.2): only the node a link or Pulse names is remembered, as a click in the tree is.
-   *  A link's Needs you, the first visit's default and a stand-in for a node that is gone show without being saved, so
-   *  the next rail click still shows the user's own pick. */
+   *  A link's Needs you, a tour step's pane, the first visit's default and a stand-in for a node that is gone show
+   *  without being saved, so the next rail click still shows the user's own pick. */
   private settle(): void {
     const whole = this.wholeTree();
     const gates = gateCards(this.teams).length;
     const want = this.want;
     if (want) {
       this.want = null;
-      if (want.asked) this.unfoldTo(want.asked, whole);
-      const node = pickNode({ saved: this.choice().node, via: want.via, asked: want.asked, gates, tree: whole });
+      // A pane asked for by kind: the selected node when it is one, else the first in the tree (paneNode).
+      const asked = want.asked ?? (want.pane ? paneNode(want.pane, this.selected, whole) : null);
+      if (asked) this.unfoldTo(asked, whole);
+      const node = pickNode({ saved: this.choice().node, via: want.via, asked, gates, tree: whole });
       this.setSelected(node, !!want.asked && node === want.asked);
     } else if (!this.selected || !whole.some((r) => r.key === this.selected)) {
       // A team just made waits for the read that lists it (ruling: never swapped for another node meanwhile).

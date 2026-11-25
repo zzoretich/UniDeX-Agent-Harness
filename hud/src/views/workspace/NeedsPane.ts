@@ -11,11 +11,12 @@ export function renderNeeds(host: HTMLElement, ctxFor: (t: Team) => TeamsCtx, te
   host.setAttr("aria-label", "Needs you");
   host.createEl("h2", { cls: "aos-aw-panetitle", text: "Needs you" });
   const cards = gateCards(teams);
+  // The tour's Needs you step (agent-workspace D18) points at the gates, or at the line that says there are none.
   if (!cards.length) {
-    host.createDiv({ cls: "aos-aw-paneline aos-aw-dim", text: "Nothing waits on you." });
+    host.createDiv({ cls: "aos-aw-paneline aos-aw-dim", text: "Nothing waits on you.", attr: { "data-tour": "agent-workspace-needs" } });
     return;
   }
   host.createDiv({ cls: "aos-aw-paneline", text: `${plural(cards.length, "gate")} waiting on you across ${plural(new Set(cards.map((c) => c.team.id)).size, "team")}` });
-  const list = host.createEl("section", { cls: "aos-aw-gates", attr: { "aria-label": "Gates waiting on you" } });
+  const list = host.createEl("section", { cls: "aos-aw-gates", attr: { "aria-label": "Gates waiting on you", "data-tour": "agent-workspace-needs" } });
   for (const c of cards) renderGateCard(list, ctxFor(c.team), c, { showTeam: teams.length > 1 });
 }

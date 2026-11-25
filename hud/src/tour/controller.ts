@@ -5,10 +5,9 @@
 // saveData.
 import { Notice, setIcon } from "obsidian";
 import type AgenticOSPlugin from "../../main";
-import { VIEW_TYPE_WORKBENCH, WorkbenchView } from "../views/WorkbenchView";
+import { VIEW_TYPE_WORKBENCH, WorkbenchView, type WorkbenchTarget } from "../views/WorkbenchView";
 import { invocationHint, readAgenticosJson, sessionHosts } from "../data/aosConfig";
 import type { BrainMode } from "../data/brainModel";
-import type { SpacesPane } from "../data/statusline";
 import { hudHost, shell } from "../host";
 import { TourEngine, type ProbeResult, type TourEnd, type TourItem } from "./engine";
 import { fillText, holds, type TourContext } from "./predicates";
@@ -98,13 +97,14 @@ export class TourController {
     return v instanceof WorkbenchView ? v : null;
   }
 
-  /** A step's route: the Workbench in front, then its tab (and Brain mode or Spaces pane) through open(). */
+  /** A step's route: the Workbench in front, then its tab (and Brain mode, or Spaces' or Agent Workspace's pane) through
+   *  open(). */
   private async route(step: TourStep): Promise<boolean> {
     const v = await this.view();
     if (!v) return false;
     if (!step.tab) return true;
-    // steps.ts validateBook holds mode to a Brain mode and pane to a Spaces pane.
-    return v.open({ tab: step.tab, mode: (step.mode ?? null) as BrainMode | null, pane: (step.pane ?? null) as SpacesPane | null });
+    // steps.ts validateBook holds mode to a Brain mode and pane to the pane its tab knows.
+    return v.open({ tab: step.tab, mode: (step.mode ?? null) as BrainMode | null, pane: (step.pane ?? null) as WorkbenchTarget["pane"] });
   }
 
   // ── running chapters ──

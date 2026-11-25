@@ -1,8 +1,8 @@
-// Skills and Agents (app-smoke: Skills, Agents): the inventories `aos skills sync` / `aos agents sync` wrote for a
-// Claude-Code-only machine (sharing off), host pills, source pills and chips, the filter, and the run / copy / open
-// actions (the stale-cache sync is checked by its notice, which the HUD raises whether the spawn is allowed or refused).
-// On a machine with both hosts and the sharing surface off, unshare is refused. share / unshare themselves, and sync
-// now, are in sharing-writes.spec.ts.
+// Skills (app-smoke: Skills): the inventory `aos skills sync` wrote for a Claude-Code-only machine (sharing off), host
+// pills, source pills and chips, the filter, and the run / copy / open actions (the stale-cache sync is checked by its
+// notice, which the HUD raises whether the spawn is allowed or refused). On a machine with both hosts and the sharing
+// surface off, unshare is refused. share / unshare themselves, and sync now, are in sharing-writes.spec.ts. Agents live
+// in Agent Workspace now (agent-workspace.spec.ts, with its stale-cache sync and a refused unshare).
 
 import { expect, test, type Locator } from "@playwright/test";
 import * as fs from "node:fs";
@@ -21,7 +21,7 @@ async function redrawUnder(filter: Locator, rel: string): Promise<void> {
   await expect.poll(() => old!.evaluate((e) => e.isConnected)).toBe(false);
 }
 
-test.describe("Skills and Agents", () => {
+test.describe("Skills", () => {
   const app = useApp();
   const C = () => content(app().win);
   const skillRow = (name: string) => C().locator(".aos-sk-row", { has: app().win.locator(".aos-sk-name > div:first-child", { hasText: new RegExp(`^${name}`) }) });
@@ -98,36 +98,6 @@ test.describe("Skills and Agents", () => {
       await h.app.evaluate(({ clipboard }, text) => clipboard.writeText(text), saved);
     }
   });
-
-  test("Agents: head counts, the sharing note, the read-only pill and how to reach an agent", async () => {
-    await openTab(app().win, "agents");
-    const cache = readVaultJson<{ agents: Row[] }>("brain/_index/agents.json");
-    const mine = cache.agents.filter(yours);
-    const listed = cache.agents.filter((r) => !yours(r));
-    await expect(C().locator(".aos-rt-count")).toHaveText(`0 on both · ${mine.length} Claude Code only · 0 Codex only · ${listed.length} from plugins and config.toml`);
-    await expect(C().locator(".aos-rt-note").first()).toHaveText("sharing off — sharing needs both hosts enabled");
-    await expect(C().locator(".aos-sk-list .aos-rt-subhead").first()).toHaveText(`YOUR AGENTS (${mine.length})`);
-    const researcher = skillRow("field-researcher");
-    await expect(researcher.locator(".aos-ag-ro")).toHaveText("read-only");
-    await expect(C().locator(".aos-ag-ro")).toHaveCount(1);
-    await expect(researcher.locator(".aos-sk-pills .aos-pill")).toHaveText(["claude", "codex"]);
-    await expect(researcher.locator(".aos-sk-actions a").first()).toHaveAttribute("title", /claude --agent field-researcher/);
-    await expect(researcher.locator(".aos-sk-actions a", { hasText: "⧉" })).toHaveAttribute("title", "copy @agent-field-researcher");
-  });
-
-  test("Agents: the filter narrows without losing focus", async () => {
-    const { win } = app();
-    await openTab(win, "agents");
-    const filter = C().locator("input.aos-sk-filter");
-    await filter.click();
-    await win.keyboard.type("te");
-    // A redraw mid-typing keeps the letters and the focus.
-    await redrawUnder(filter, "brain/_index/agents.json");
-    await win.keyboard.type("am-");
-    await expect(C().locator(".aos-sk-row .aos-sk-name > div:first-child")).toHaveText(["team-builder", "team-lead", "team-reviewer"]);
-    await expect(filter).toBeFocused();
-    await filter.fill("");
-  });
 });
 
 test.describe("stale inventories", () => {
@@ -138,9 +108,9 @@ test.describe("stale inventories", () => {
     j.scannedAt = new Date(Date.now() - 60 * 60_000).toISOString();
     fs.writeFileSync(file, `${JSON.stringify(j, null, 2)}\n`);
   };
-  const app = useApp({ prepare: () => { backdate("brain/_index/skills.json"); backdate("brain/_index/agents.json"); } });
+  const app = useApp({ prepare: () => { backdate("brain/_index/skills.json"); } });
 
-  test("opening Skills with a cache older than ten minutes spawns `aos skills sync` once; Agents the same", async () => {
+  test("opening Skills with a cache older than ten minutes spawns `aos skills sync` once", async () => {
     const h = app();
     await openTab(h.win, "skills");
     await expect.poll(() => h.notices.filter((n) => n === "▶ aos.js skills sync").length).toBe(1);
@@ -148,8 +118,6 @@ test.describe("stale inventories", () => {
     await openTab(h.win, "skills");
     await h.win.waitForTimeout(500);
     expect(h.notices.filter((n) => n === "▶ aos.js skills sync").length).toBe(1);
-    await openTab(h.win, "agents");
-    await expect.poll(() => h.notices.filter((n) => n === "▶ aos.js agents sync").length).toBe(1);
   });
 });
 
@@ -157,22 +125,20 @@ test.describe("both hosts, with the sharing surface off", () => {
   const app = useApp({ prepare: shareBothHosts });
   const C = () => content(app().win);
 
-  test("unshare is refused for a skill and an agent: the Notice says why, and the config and the Codex copies stay", async () => {
+  test("unshare is refused for a skill: the Notice says why, and the config and the Codex copy stay", async () => {
     const h = app();
     const cfg = fs.readFileSync(FX.v("brain/config.json"), "utf8");
-    const copies = [path.join(FX.home, ".agents", "skills", "tide-report", "SKILL.md"), path.join(FX.home, ".codex", "agents", "team-reviewer.toml")];
-    const before = copies.map((f) => fs.readFileSync(f, "utf8"));
-    for (const [kind, name] of [["skills", "tide-report"], ["agents", "team-reviewer"]] as const) {
-      await openTab(h.win, kind);
-      const r = C().locator(".aos-sk-row", { has: h.win.locator(".aos-sk-name > div:first-child", { hasText: new RegExp(`^${name}`) }) });
-      await r.locator(".aos-sk-actions a", { hasText: /^unshare$/ }).click();
-      await expect.poll(async () => (await h.guard()).filter((e) => e.kind === "spawn").map((e) => e.what))
-        .toContainEqual(expect.stringMatching(new RegExp(`/cli/aos\\.js ${kind} exclude ${name}$`)));
-      await expect(h.win.locator(".notice-container")).toContainText("spawn failed: brain/scripts/cli/aos.js");
-      await expect(r.locator(".aos-pulse-chip")).toHaveText("on both");
-    }
+    const copy = path.join(FX.home, ".agents", "skills", "tide-report", "SKILL.md");
+    const before = fs.readFileSync(copy, "utf8");
+    await openTab(h.win, "skills");
+    const r = C().locator(".aos-sk-row", { has: h.win.locator(".aos-sk-name > div:first-child", { hasText: /^tide-report/ }) });
+    await r.locator(".aos-sk-actions a", { hasText: /^unshare$/ }).click();
+    await expect.poll(async () => (await h.guard()).filter((e) => e.kind === "spawn").map((e) => e.what))
+      .toContainEqual(expect.stringMatching(/\/cli\/aos\.js skills exclude tide-report$/));
+    await expect(h.win.locator(".notice-container")).toContainText("spawn failed: brain/scripts/cli/aos.js");
+    await expect(r.locator(".aos-pulse-chip")).toHaveText("on both");
     expect(fs.readFileSync(FX.v("brain/config.json"), "utf8")).toBe(cfg);
-    expect(copies.map((f) => fs.readFileSync(f, "utf8"))).toEqual(before);
+    expect(fs.readFileSync(copy, "utf8")).toBe(before);
     await h.win.evaluate(() => { (window as unknown as { aosHost: { guard: { log: unknown[] } } }).aosHost.guard.log.length = 0; });
   });
 });

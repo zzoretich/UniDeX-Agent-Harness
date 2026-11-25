@@ -15,7 +15,7 @@ export interface AosRunOptions {
   configDir: string;        // Plugin.claudeConfigDir(): AOS_CONFIG is <configDir>/agenticos.json
   timeoutMs?: number;       // default 60 s; the child is killed after it
   cli?: string;             // the CLI path, when not the vendored one (tests)
-  env?: Record<string, string>;  // variables set on top of the host's environment (AgentTeamsTab: CLAUDE_CONFIG_DIR)
+  env?: Record<string, string>;  // variables set on top of the host's environment (AgentWorkspaceTab: CLAUDE_CONFIG_DIR)
   onStdout?: (chunk: string) => void;  // each chunk of stdout as it arrives (the importer's progress, data/importer.ts)
 }
 

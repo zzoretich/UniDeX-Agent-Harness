@@ -1,5 +1,5 @@
-// Agent Teams with its write surface on (AOS_APP_WRITE=teams), the rows of app-smoke: Agent Teams tab, now in the Agent
-// Workspace (Needs you, a team's Items, Channel and Settings, an agent's profile), and + New team with New agent teams
+// Agent Teams with its write surface on (AOS_APP_WRITE=teams), the rows of app-smoke: Agent Workspace (Needs you, a
+// team's Items, Channel and Settings, an agent's profile), and + New team with New agent teams
 // (team-create) off and, in an app of its own, on (agent-workspace D14). Every change is one `aos team` call (the vault's
 // brain/scripts/team.js); the tab never writes persona/teams/ itself. The tests read what team.js leaves: board.jsonl
 // and channel.jsonl (append-only), TEAM.md (rewritten line by line) and the DISABLED switch. A gate approval and a budget
@@ -133,7 +133,7 @@ test.describe("with the Agent Teams surface on", () => {
     await expect(mode).toHaveAttribute("title", /^Agent Teams: team\.js\n/);
   });
 
-  test("an approve drawn before the lead changed the item is refused by --expect: nothing is recorded, and the card catches up (AT3)", async () => {
+  test("an approve drawn before the lead changed the item is refused by --expect: nothing is recorded, and the card catches up (AW7)", async () => {
     const { win } = app();
     await needsYou(win);
     await expect(gate(win, "harbor-01").locator(".aos-at-itemtitle")).toHaveText("Tide table parser");
@@ -154,7 +154,7 @@ test.describe("with the Agent Teams surface on", () => {
     }
   });
 
-  test("Approve records the decision on the board and in the channel, and opens the lead in Code (AT3)", async () => {
+  test("Approve records the decision on the board and in the channel, and opens the lead in Code (AW7)", async () => {
     const { win } = app();
     await needsYou(win);
     await expect(badge(win, "agent-teams")).toHaveText("2");
@@ -175,7 +175,7 @@ test.describe("with the Agent Teams surface on", () => {
     await expect(badge(win, "agent-teams")).toHaveText("1");
   });
 
-  test("an item's budget: Set to $X records the new total; on a paused item work resumes and the lead opens (AT5)", async () => {
+  test("an item's budget: Set to $X records the new total; on a paused item work resumes and the lead opens (AW10)", async () => {
     const { win } = app();
     await teamView(win, "example", "items");
     await viewPane(win, "items").locator(".aos-aw-item", { hasText: "harbor-04" }).click();
@@ -193,7 +193,7 @@ test.describe("with the Agent Teams surface on", () => {
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toContain("[fixture claude stub] --agent team-lead");
   });
 
-  test("channel: mentions, item filter, Enter posts to the lead, the draft survives a switch (AT7)", async () => {
+  test("channel: mentions, item filter, Enter posts to the lead, the draft survives a switch (AW11)", async () => {
     const { win } = app();
     await teamView(win, "example", "channel");
     const ch = viewPane(win, "channel");
