@@ -70,7 +70,7 @@ test.describe("the Workbench", () => {
     test(tab, async () => {
       await openTab(h.win, tab);
       await h.win.waitForTimeout(1500);
-      await shot(h.win, tab);
+      await shot(h.win, tab === "agent-teams" ? "agent-workspace" : tab);  // the tab id stays agent-teams; the picture is Agent Workspace
     });
   }
 

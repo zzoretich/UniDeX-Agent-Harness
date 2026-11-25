@@ -1,11 +1,11 @@
 ---
-description: Show and run the vault's agent teams (the Workbench Agent Teams tab) - boards, pending gates and live runs; record a gate the user decides; and how a lead dispatches seats and every member posts with `aos team`
+description: Show and run the vault's agent teams (the Workbench Agent Workspace tab) - boards, pending gates and live runs; record a gate the user decides; and how a lead dispatches seats and every member posts with `aos team`
 allowed-tools: Bash, Read
 argument-hint: [list | status <team> | board <team> | tail <team> [--item <id>] | gate approve|redirect <team> <item> | init | new <id> --name <text> --lead <agent>]
 ---
 
 Agent teams live in `<vault>/persona/teams/<team>/`: `TEAM.md` (the roster), `board.jsonl` (work items), `channel.jsonl`
-(the team's thread) and `runs.jsonl` (one row per seat run). The Workbench **Agent Teams** tab shows the same files.
+(the team's thread) and `runs.jsonl` (one row per seat run). The Workbench **Agent Workspace** tab shows the same files.
 Arguments: $ARGUMENTS
 
 Run `aos team` with those arguments in the shell (fallback launcher: `sh "${CLAUDE_PLUGIN_ROOT}/bin/aos" team`).

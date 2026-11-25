@@ -20,8 +20,8 @@ UniDeX on a demo vault, in its light theme with one picture in dark. Everything 
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="assets/screens/agent-teams.png" width="100%" alt="Agent Teams: gates waiting on you, then a team's work board" />
-      <br /><sub><b>Agent Teams.</b> The gates waiting on you, with the lead's case and a budget, then each team's board, roster and channel.</sub>
+      <img src="assets/screens/agent-workspace.png" width="100%" alt="Agent Workspace: gates waiting on you, then a team's work board" />
+      <br /><sub><b>Agent Workspace.</b> Your agents and your teams in one tab: the gates waiting on you, with the lead's case and a budget, then each team's board, roster and channel.</sub>
     </td>
     <td width="50%" valign="top">
       <img src="assets/screens/notifications.png" width="100%" alt="Notifications: an edition from an agent, with its sections and buttons" />
