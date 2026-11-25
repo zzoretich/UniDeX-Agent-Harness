@@ -76,11 +76,13 @@ export function focusedRow(host: HTMLElement): { key: NodeKey; nth: number } | n
   return { key, nth: Math.max(0, same.indexOf(el)) };
 }
 
-/** Gives the keyboard back to that row after a redraw, when it is still shown. */
-export function focusRow(host: HTMLElement, at: { key: NodeKey; nth: number } | null): void {
+/** Gives the keyboard back to that row after a redraw, when it is still shown, leaving the tree where it was scrolled to:
+ *  a redraw (the clock, a file event) never pulls the tree back to a row the user has scrolled away from. `scroll` brings
+ *  the row into view instead, for a redraw the user's own key or click in the tree caused. */
+export function focusRow(host: HTMLElement, at: { key: NodeKey; nth: number } | null, o: { scroll?: boolean } = {}): void {
   if (!at) return;
   const same = Array.from(host.querySelectorAll<HTMLElement>(".aos-aw-row")).filter((r) => r.dataset.key === at.key);
-  (same[at.nth] ?? same[0])?.focus({ preventScroll: false });
+  (same[at.nth] ?? same[0])?.focus({ preventScroll: !o.scroll });
 }
 
 export function renderTree(host: HTMLElement, rows: ShownRow[], o: TreeOptions): void {
@@ -170,7 +172,8 @@ export function renderTree(host: HTMLElement, rows: ShownRow[], o: TreeOptions):
     }
     e.preventDefault();
   };
-  focusRow(host, keep);
+  // Only a fold or the filter redraws the tree alone, after a key or click in it: the row it left keeps the keyboard, in view.
+  focusRow(host, keep, { scroll: true });
 }
 
 export interface NoTeamsOptions {

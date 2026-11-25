@@ -267,6 +267,47 @@ test.describe("Agent Workspace", () => {
     await expect.poll(shape).toEqual(["1 Needs you", "1 TEAMS", "1 BENCH", "1 PLUGINS & CONFIG.TOML", "2 keeper"]);
     await filter.fill("");
     await expect(row("agent:logbook:keeper")).toHaveCount(0);
+    // A filter shows every match, folds aside: a fold toggle under it (a section's row, a team's chevron) changes nothing,
+    // so clearing the filter brings the tree back as it was.
+    await filter.fill("sur");
+    await row("section:teams").click();
+    await row("team:example").locator(".aos-aw-chev").click();
+    await expect(row("team:survey")).toBeVisible();
+    await filter.fill("");
+    await expect(row("section:teams")).toHaveAttribute("aria-expanded", "true");
+    await expect(row("team:example")).toHaveAttribute("aria-expanded", "true");
+    await expect(row("agent:team-lead")).toBeVisible();
+  });
+
+  test("a redraw keeps the tree where it was scrolled, though a row it scrolled away from has the keyboard", async () => {
+    const { win } = app();
+    await openTab(win, "agent-teams");
+    // A short tree, so it scrolls. Each redraw builds a new tree element, so the height rides on a style sheet.
+    await win.evaluate(() => {
+      const s = document.createElement("style");
+      s.id = "aw-short-tree";
+      s.textContent = ".aos-aw-tree { flex: none !important; height: 120px !important; }";
+      document.head.appendChild(s);
+    });
+    try {
+      await row("needs").click();
+      await expect(row("needs")).toBeFocused();
+      const top = await tree().evaluate((el) => { el.scrollTop = el.scrollHeight; return el.scrollTop; });
+      expect(top).toBeGreaterThan(0);
+      // A sync landing redraws the tab (its cache rewritten, the same bytes), as the 30 s clock does.
+      const old = await tree().elementHandle();
+      fs.writeFileSync(FX.v(AGENTS), fs.readFileSync(FX.v(AGENTS)));
+      await expect.poll(() => old!.evaluate((e) => e.isConnected)).toBe(false);
+      await expect(row("needs")).toBeFocused();
+      expect(await tree().evaluate((el) => el.scrollTop)).toBe(top);
+      // A key in the tree still brings the row it moves to into view.
+      await win.keyboard.press("End");
+      await win.keyboard.press("Home");
+      await expect(row("needs")).toBeFocused();
+      expect(await tree().evaluate((el) => el.scrollTop)).toBe(0);
+    } finally {
+      await win.evaluate(() => document.getElementById("aw-short-tree")?.remove());
+    }
   });
 
   test("the header: counts, sharing state, sync now, + New team opens its dialog", async () => {

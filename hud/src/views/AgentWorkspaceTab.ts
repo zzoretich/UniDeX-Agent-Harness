@@ -422,7 +422,8 @@ export class AgentWorkspaceTab {
     this.channelKey = ch2 ? chKey : null;
     const box = typing && paneWas?.node === node ? pane.querySelector<HTMLTextAreaElement>("textarea.aos-at-msg") : null;
     if (caret) { filter.focus({ preventScroll: true }); filter.setSelectionRange(caret.start, caret.end); }
-    else if (rowFocus) focusRow(this.treeHost, rowFocus);
+    // The row keeps the keyboard where the tree was scrolled to: a redraw never pulls the tree back to it.
+    else if (rowFocus) focusRow(this.treeHost, rowFocus, { scroll: false });
     else if (box && typing && !box.disabled) { box.focus({ preventScroll: true }); box.setSelectionRange(typing.start, typing.end); }
     else if (paneFocus && paneWas?.node === node) {
       Array.from(pane.querySelectorAll<HTMLElement>("[data-focus]")).find((e) => e.dataset.focus === paneFocus)?.focus({ preventScroll: true });
@@ -466,7 +467,8 @@ export class AgentWorkspaceTab {
     renderTree(host, rows, {
       selected: this.selected ?? "",
       onSelect: (k) => this.select(k),
-      onFold: (k) => { this.toggleFold(k); this.drawTree(); },
+      // A filter shows every match and ignores the folds, so a toggle under one would change what is hidden out of sight.
+      onFold: (k) => { if (this.query.trim()) return; this.toggleFold(k); this.drawTree(); },
       describe: (r) => {
         const t = r.kind === "team" ? this.teams.find((x) => `team:${x.id}` === r.key) : undefined;
         return t?.error ? `${t.errorFile ?? "TEAM.md"}: ${t.error}` : null;

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { foldTeams, parentOf, rowState, renderNoTeams, UNSCANNED } from "./Tree";
+import { foldTeams, focusRow, parentOf, rowState, renderNoTeams, UNSCANNED } from "./Tree";
 import { NO_AGENTS, NO_TEAMS } from "../../data/workspace";
 import type { TreeRow } from "../../data/workspace";
 
@@ -114,4 +114,21 @@ test("renderNoTeams: Seed the example team and + New team, the hint, a seed's re
   const err = busy.all().find((e) => e.cls.has("aos-aw-error"));
   assert.equal(err?.text, "persona/teams/example already exists");
   assert.equal(err?.attrs.get("role"), "alert");
+});
+
+test("focusRow: a redraw gives the row the keyboard back without scrolling the tree; scroll: true brings it into view", () => {
+  // A row as the tree draws it: its key in data-key; focus records whether it was asked not to scroll.
+  const calls: [string, boolean | undefined][] = [];
+  const row = (key: string, id: string) => ({ dataset: { key }, focus: (o?: FocusOptions) => { calls.push([id, o?.preventScroll]); } });
+  const rows = [row("team:example", "a"), row("agent:team-builder", "b"), row("agent:team-builder", "c")];
+  const host = { querySelectorAll: (sel: string) => (sel === ".aos-aw-row" ? rows : []) } as unknown as HTMLElement;
+  focusRow(host, { key: "agent:team-builder", nth: 1 });
+  assert.deepEqual(calls, [["c", true]], "the row that had it, never scrolled to (a redraw keeps where the tree was scrolled)");
+  focusRow(host, { key: "team:example", nth: 0 }, { scroll: true });
+  assert.deepEqual(calls[1], ["a", false], "a redraw the user's own key in the tree caused shows the row");
+  focusRow(host, { key: "agent:team-builder", nth: 5 });
+  assert.deepEqual(calls[2], ["b", true], "a row whose place is gone falls back to the key's first");
+  focusRow(host, { key: "agent:gone", nth: 0 });
+  focusRow(host, null);
+  assert.equal(calls.length, 3, "nothing to give it back to");
 });
