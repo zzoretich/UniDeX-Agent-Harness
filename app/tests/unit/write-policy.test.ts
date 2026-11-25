@@ -199,6 +199,21 @@ const COMMANDS: Record<string, { ok: Array<[string, string[]]>; no: Array<[strin
       [NODE, [`${S}/team.js`, "post", "example", "--from", "lead", "--kind", "note", "hi"]], [NODE, [`${S}/team.js`, "gate", "redirect", "example", "harbor-01", "--expect", expect]],
       [NODE, [`${S}/team.js`, "disband", "example"]]],
   },
+  "team-create": {
+    ok: [[NODE, [`${S}/team.js`, "new", "field", "--name", "Field Research", "--lead", "dev-writer"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--name", "Field Research", "--lead", "dev-writer", "--parent", "dev"]]],
+    no: [[NODE, [`${S}/team.js`, "new", "field", "--name", "Two" + String.fromCharCode(10) + "lines", "--lead", "dev-writer"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--name", "-dash", "--lead", "dev-writer"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--lead", "dev-writer", "--name", "Field Research"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--name", "Field Research", "--lead", "dev-writer", "--parent", "-x"]],
+      [NODE, [`${S}/team.js`, "init", "field"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--name", "x".repeat(61), "--lead", "dev-writer"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--name", "a\rb", "--lead", "dev-writer"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--name", "a" + String.fromCharCode(0x2028) + "b", "--lead", "dev-writer"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--name", "a" + String.fromCharCode(9) + "b", "--lead", "dev-writer"]],
+      [NODE, [`${S}/team.js`, "new", "Field", "--name", "Field", "--lead", "dev-writer"]],
+      [NODE, [`${S}/team.js`, "new", "field", "--name", "Field", "--lead", "dev-writer", "--parent", "Dev"]]],
+  },
   chat: {
     ok: [[NODE, [`${S}/sdk/recall-cli.js`, "where are the tide notes?"]],
       // One leading dash is text to both scripts, as in Obsidian: a question typed as a bullet.
@@ -1032,4 +1047,14 @@ test("the vault's identity is taken at each check: a vault folder removed and ma
     assert.equal(p.canMoveTree(at("notes/fl")), false);
     assert.equal(p.canWrite(at("notes/a.md")), true);
   } finally { d.done(); }
+});
+
+test("team-create admits only aos team new as the page builds it, and is off until its live check", () => {
+  const p = new WritePolicy(VAULT, ["team-create"]);
+  const teams = new WritePolicy(VAULT, ["teams"]);
+  const args = ["new", "field", "--name", "Field Research", "--lead", "dev-writer"];
+  assert.equal(p.canSpawn(NODE, [`${S}/team.js`, ...args]), true);
+  assert.equal(teams.canSpawn(NODE, [`${S}/team.js`, ...args]), false, "the teams surface does not admit new");
+  assert.equal(p.canSpawn(NODE, [`${S}/team.js`, "init"]), false, "and this one does not admit init");
+  assert.equal(SURFACES.find((s) => s.id === "team-create")?.verified, false, "off by default until a live check on each host");
 });

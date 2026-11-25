@@ -4,6 +4,9 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Added
+- `aos team new <id> --name <text> --lead <agent> [--parent <team>]` makes an empty team with the lead you pick. <!-- no-tour: a CLI verb -->
+
 ## [2.7.0] — 2026-11-14
 
 ### Added

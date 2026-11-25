@@ -306,6 +306,59 @@ test('member status: working from a live marker, blocked from the board, paused,
   assert.deepEqual(T.pendingGates(w.t()), []);
 });
 
+function agentDirs() {
+  const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-claude-'));
+  const codexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-codex-'));
+  fs.mkdirSync(path.join(claudeDir, 'agents')); fs.mkdirSync(path.join(codexDir, 'agents'));
+  fs.writeFileSync(path.join(claudeDir, 'agents', 'dev-writer.md'), '---\nname: dev-writer\n---\nWrites.\n');
+  return { claudeDir, codexDir };
+}
+
+test('new: a team with the picked lead as its only member, the template\'s gates and budget, parsed back by readTeam', () => {
+  const w = world();
+  const dirs = agentDirs();
+  assert.deepEqual(T.newTeam(w.root, { id: 'field', name: 'Field Research', lead: 'dev-writer', templatesDir: TEMPLATES, env: INTERACTIVE, ...dirs }),
+    { team: 'field', member: 'dev-writer', agent: 'dev-writer', dir: path.join(w.root, 'field') });
+  const t = T.readTeam(w.root, 'field');
+  assert.equal(t.name, 'Field Research');
+  assert.equal(t.lead, 'dev-writer');
+  assert.deepEqual(t.gates, ['discuss', 'ship']);
+  assert.equal(t.budget.default, 10);
+  assert.equal(t.members.length, 1);
+  assert.deepEqual([t.members[0].role, t.members[0].stage, t.members[0].provider], ['Team lead', ['all'], 'claude']);
+});
+
+test('new: --parent sets parent and reportsTo the parent\'s lead', () => {
+  const w = world();
+  T.newTeam(w.root, { id: 'field', name: 'Field', lead: 'dev-writer', parent: 'dev', templatesDir: TEMPLATES, env: INTERACTIVE, ...agentDirs() });
+  const t = T.readTeam(w.root, 'field');
+  assert.deepEqual([t.parent, t.reportsTo], ['dev', 'lead']);
+});
+
+test('new: refused headless, for an unknown agent, a taken id, a bad id, a missing parent, an empty or multi-line name', () => {
+  const w = world();
+  const base = { id: 'field', name: 'Field', lead: 'dev-writer', templatesDir: TEMPLATES, env: INTERACTIVE, ...agentDirs() };
+  assert.throws(() => T.newTeam(w.root, { ...base, env: HEADLESS }), T.Refusal);
+  assert.throws(() => T.newTeam(w.root, { ...base, lead: 'ghost' }), /no agent named ghost/);
+  assert.throws(() => T.newTeam(w.root, { ...base, id: 'dev' }), /already exists/);
+  assert.throws(() => T.newTeam(w.root, { ...base, id: 'Field' }), T.UsageError);
+  assert.throws(() => T.newTeam(w.root, { ...base, parent: 'nope' }), /no team nope/);
+  assert.throws(() => T.newTeam(w.root, { ...base, name: '  ' }), T.UsageError);
+  assert.throws(() => T.newTeam(w.root, { ...base, name: 'a\nb' }), T.UsageError);
+  assert.throws(() => T.newTeam(w.root, { ...base, name: 'a\tb' }), T.UsageError);
+  assert.throws(() => T.newTeam(w.root, { ...base, name: 'a\u2028b' }), T.UsageError);
+  assert.equal(fs.existsSync(path.join(w.root, 'field')), false);
+});
+
+test('the CLI: new prints the team it made; a missing --lead is exit 2', async () => {
+  const w = world();
+  const dirs = agentDirs();
+  const r = await cli(w, ['new', 'field', '--name', 'Field', '--lead', 'dev-writer'], { dirs });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /created persona\/teams\/field\//);
+  assert.equal((await cli(w, ['new', 'other', '--name', 'Other'], { dirs })).code, 2);
+});
+
 test('the CLI: list, status --json, usage is exit 2, a refusal is exit 1, and a gate goes through --expect', async () => {
   const w = world();
   assert.match((await cli(w, ['list'])).out, /^team\s+lead\s+members/);

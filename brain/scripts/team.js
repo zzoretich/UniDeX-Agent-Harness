@@ -27,9 +27,10 @@ const USAGE = `usage: aos team list [--json]
        aos team set <team> <member> provider|model|effort <preset>
        aos team member add <team> <agent>  ·  aos team member remove <team> <member>
        aos team init [<id>]
+       aos team new <id> --name <text> --lead <agent> [--parent <team>]
 `;
 const BOOL = new Set(['json', 'dry-run', 'detach']);
-const VALUE = new Set(['from', 'item', 'kind', 'expect', 'wave', 'note', 'provider', 'timeout-min', 'since', 'usd', 'max-usd']);
+const VALUE = new Set(['from', 'item', 'kind', 'expect', 'wave', 'note', 'provider', 'timeout-min', 'since', 'usd', 'max-usd', 'name', 'lead', 'parent']);
 
 /** { flags, positional, pass } — `pass` is argv without --detach, for the detached run to repeat. */
 function parseArgs(argv) {
@@ -243,6 +244,13 @@ async function main(argv, {
       case 'init': {
         const r = T.initTeam(root, { templatesDir: templatesDir(), id: rest[0] || 'example' });
         say(`seeded persona/teams/${r.team}/ from the example team; edit its TEAM.md to point each member at one of your agents`);
+        return 0;
+      }
+      case 'new': {
+        need(1, '<id> --name <text> --lead <agent>');
+        if (!flags.name || !flags.lead) throw new T.UsageError('new needs --name and --lead');
+        const r = T.newTeam(root, { id: rest[0], name: flags.name, lead: flags.lead, parent: flags.parent || null, templatesDir: templatesDir(), env, ...(dirs || hostDirs(env)) });
+        say(`created persona/teams/${r.team}/ with ${r.member} (agent ${r.agent}) as its lead`);
         return 0;
       }
       default:

@@ -1,10 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseAgents } from "../../data/agents";
+import { parseAgents, addable } from "../../data/agents";
 import { Team, BoardItem, teamFrom, teamCommand, envPrefix, redirectPrompt, nextStepPrompt, isBudgetGate, expectOf, shq } from "../../data/teams";
 import type { SessionHost } from "../../data/aosConfig";
 import { TeamsCtx, Confirm, redirectCommand, talkCommand, nextStepCommand, since, postTime } from "./ui";
-import { addable } from "./ManagePane";
 import { renderGateCard, renderBoard } from "./BoardPane";
 
 // Host parity for the tab's terminal buttons (spec 2026-09-28-agent-teams-design §5): each enabled host gets its own

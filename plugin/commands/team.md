@@ -1,7 +1,7 @@
 ---
 description: Show and run the vault's agent teams (the Workbench Agent Teams tab) - boards, pending gates and live runs; record a gate the user decides; and how a lead dispatches seats and every member posts with `aos team`
 allowed-tools: Bash, Read
-argument-hint: [list | status <team> | board <team> | tail <team> [--item <id>] | gate approve|redirect <team> <item> | init]
+argument-hint: [list | status <team> | board <team> | tail <team> [--item <id>] | gate approve|redirect <team> <item> | init | new <id> --name <text> --lead <agent>]
 ---
 
 Agent teams live in `<vault>/persona/teams/<team>/`: `TEAM.md` (the roster), `board.jsonl` (work items), `channel.jsonl`
@@ -16,6 +16,10 @@ example team in `persona/teams/example/` and offer to run it.
 
 **`status`, `board`, `tail`, `item`, `roster`:** pass them through and summarize in at most five lines, anything
 waiting on the user first.
+
+**A new team.** Run `aos team new <id> --name <text> --lead <agent> [--parent <team>]` only when the user asks for a team,
+with the lead they name. It makes an empty team with that agent as its only member. It is the user's decision, so a
+headless run cannot.
 
 **A gate the user decides.** Only the user approves or redirects a gate, and a headless run cannot record one.
 1. Read the item: `aos team item <team> <item>`, and the tail of its thread: `aos team tail <team> --item <item> -n 10`.

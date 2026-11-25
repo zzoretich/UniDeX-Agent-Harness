@@ -39,7 +39,9 @@ export interface MemberStatus extends Member {
 export interface Team {
   id: string; name: string; lead: string; reportsTo: string | null; parent: string | null;
   stages: string[]; gates: string[]; budgetDefault: number; disabled: boolean; members: Member[];
-  state: string[]; board: BoardItem[]; channel: Post[]; runs: RunRow[]; live: Marker[];
+  state: string[]; board: BoardItem[];
+  /** Every complete board row as an item, in file order: the snapshots the activity feed walks. */
+  history: BoardItem[]; channel: Post[]; runs: RunRow[]; live: Marker[];
   /** When each pending gate began waiting, by item id (the first snapshot of the current pending gate). */
   pendingSince: Record<string, string>;
   /** The item's last snapshot before its current pending gate opened: a pitch posted before it was for an earlier gate. */
@@ -218,7 +220,7 @@ export interface TeamFiles {
 export function teamFrom(f: TeamFiles): Team {
   const base: Team = {
     id: f.id, name: f.id, lead: "", reportsTo: null, parent: null, stages: DEFAULT_STAGES, gates: [], budgetDefault: 0,
-    disabled: f.disabled, members: [], state: [], board: [], channel: [], runs: [], live: [], pendingSince: {}, pendingAfter: {}, skipped: 0, torn: false, error: null, errorFile: null, warnings: [],
+    disabled: f.disabled, members: [], state: [], board: [], history: [], channel: [], runs: [], live: [], pendingSince: {}, pendingAfter: {}, skipped: 0, torn: false, error: null, errorFile: null, warnings: [],
   };
   let fm: Record<string, Scalar>;
   try { fm = parseFrontmatter(f.teamMd); } catch (e) { return { ...base, error: (e as Error).message, errorFile: "TEAM.md" }; }
@@ -236,6 +238,7 @@ export function teamFrom(f: TeamFiles): Team {
     members: Array.isArray(fm.members) ? fm.members.map(memberFrom).filter((m): m is Member => m !== null) : [],
     state: parseState(f.state),
     board: [...latestRows(board.rows).values()].map(itemFrom),
+    history: board.rows.filter((r) => typeof r.id === "string").map(itemFrom),
     channel: channel.rows.map(postFrom),
     runs: runs.rows.map(runFrom),
     live: f.markers.map((t) => { try { const o = obj(JSON.parse(t)); return o ? markerFrom(o) : null; } catch { return null; } }).filter((m): m is Marker => m !== null),
