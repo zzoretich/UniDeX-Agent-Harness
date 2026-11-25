@@ -500,7 +500,7 @@ function newTeam(root, { id, name, lead, parent = null, templatesDir, env = proc
   assertInteractive(env, 'Creating a team');
   if (!ID_RE.test(id || '')) throw new UsageError(`bad team id: ${id || '(none)'}`);
   const title = String(name || '').trim();
-  if (!title || title.length > 60 || /[\r\n]/.test(title)) throw new UsageError('--name must be 1 to 60 characters on one line');
+  if (!title || title.length > 60 || /[\0-\x1f\x7f-\x9f\u2028\u2029]/.test(String(name))) throw new UsageError('--name must be 1 to 60 characters on one line, with no control character');
   if (!AGENT_RE.test(lead || '')) throw new UsageError(`bad agent name: ${lead || '(none)'}`);
   const where = agentFiles(lead, { claudeDir, codexDir });
   if (!where.claude && !where.codex) throw new Refusal(`no agent named ${lead} in either host's agents folder`);

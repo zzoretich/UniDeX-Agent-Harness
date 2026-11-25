@@ -63,7 +63,8 @@ export function argv(...parts: ReadonlyArray<string | RegExp>): (a: readonly str
 // One argument of a given kind. None may start with "-", so a value can never be read as a flag.
 const ID = /[A-Za-z0-9][\w.:@-]*/;          // a team, item, member, agent or skill id; a config key
 const WORD = /[^\s-][^\s]*/;                // a preset, a model name
-const NAME = /[^\s-][^\n\r]{0,59}/;          // a new team's display name: one line, no dash first
+const NAME = /[^\s\-\0-\x1f\x7f-\x9f\u2028\u2029][^\0-\x1f\x7f-\x9f\u2028\u2029]{0,59}/; // a new team's display name: one line, no control or line separator, no space or dash first
+const TEAM_ID = /[a-z][a-z0-9-]{0,40}/;     // a team id, as the runtime's ID_RE
 const TEXT = /[^-][\s\S]*/;                 // free text: a todo, a post, a path
 // A workspace (spaces-redesign §6): an existing folder's name, which the runtime checks again. Not ".", "..", ".x" or "_x"
 // (hidden and archived folders), no path separator, no NUL or line break (U+2028 and U+2029 included), at most 128
@@ -485,8 +486,8 @@ export const SURFACES: readonly Surface[] = [
     source: "ui/NewTeamModal.ts (views/AgentWorkspaceTab.ts): + New team, spec 2026-11-12-agent-workspace D14",
     writes: [],
     spawns: [
-      { script: "team.js", args: argv("new", ID, "--name", NAME, "--lead", ID) },
-      { script: "team.js", args: argv("new", ID, "--name", NAME, "--lead", ID, "--parent", ID) },
+      { script: "team.js", args: argv("new", TEAM_ID, "--name", NAME, "--lead", ID) },
+      { script: "team.js", args: argv("new", TEAM_ID, "--name", NAME, "--lead", ID, "--parent", TEAM_ID) },
     ],
     // Off until a live check on each host: a team created through it with a Claude Code agent and with a Codex agent.
     verified: false,

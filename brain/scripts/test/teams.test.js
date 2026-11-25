@@ -345,6 +345,8 @@ test('new: refused headless, for an unknown agent, a taken id, a bad id, a missi
   assert.throws(() => T.newTeam(w.root, { ...base, parent: 'nope' }), /no team nope/);
   assert.throws(() => T.newTeam(w.root, { ...base, name: '  ' }), T.UsageError);
   assert.throws(() => T.newTeam(w.root, { ...base, name: 'a\nb' }), T.UsageError);
+  assert.throws(() => T.newTeam(w.root, { ...base, name: 'a\tb' }), T.UsageError);
+  assert.throws(() => T.newTeam(w.root, { ...base, name: 'a\u2028b' }), T.UsageError);
   assert.equal(fs.existsSync(path.join(w.root, 'field')), false);
 });
 
