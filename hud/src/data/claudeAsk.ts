@@ -14,7 +14,7 @@ import * as path from "path";
 import { env, fs, spawn as hostSpawn, utf8, type HostCatalog, type HostCatalogHost, type HostChild, type HostSpawnOptions, type SpawnFn } from "../host";
 import { lastStderrLine, type AskHandle, type AskResult } from "./askSpawner";
 import { readAgenticosJson, readProviderState, AgenticosJson, ProviderState, type SessionHost } from "./aosConfig";
-import { catalogHost, findModel, hostChoices, usdText, type HostChoice, type RememberedChoice } from "./agentSessions";
+import { EFFORTS, catalogHost, findModel, hostChoices, usdText, type HostChoice, type RememberedChoice } from "./agentSessions";
 import type { VaultChoice } from "../settingsDefaults";
 
 export interface ClaudeAskOptions {
@@ -51,8 +51,6 @@ export function composePrompt(question: string, recallContext: string): string {
   return ctx ? `CONTEXT (recall hits from the vault):\n${ctx}\n\nQUESTION: ${question}` : `QUESTION: ${question}`;
 }
 
-/** The levels `claude --effort` takes, all of which the chat surface admits (spec 2026-10-07-sessions-ux U9). */
-export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 export const CHAT_FEATURE = "reason:chat";
 
 /** One argument the chat surface reads as a model: no whitespace and no leading "-", so it can never pass for a flag. */
@@ -283,31 +281,6 @@ export function vaultHostChoices(cfg: AgenticosJson | null, state: ProviderState
   const claudeIn = opts.local ? state?.claude?.loggedIn === true : chatRoute(state) === "claude";
   return hostChoices(cfg, state).map((c) =>
     c.host === "claude" && c.ready && !claudeIn ? { ...c, ready: false, reason: `${c.label} is not logged in` } : c);
-}
-
-/** Why the menu shows only the aliases: the app's catalog was not there to ask. */
-export const ALIAS_REASON = "Only the aliases: the hosts' own lists are not available";
-
-/** The runtime's fallback (lib/host-catalog.js, spec U4) for a window without the catalog: Claude's aliases, which
- *  always resolve, and Codex's own default. */
-export function aliasCatalog(now: Date, reason = ALIAS_REASON): HostCatalog {
-  const at = now.toISOString();
-  const entry = (models: HostCatalogHost["models"]): HostCatalogHost =>
-    ({ ok: false, reason, version: null, fetchedAt: at, defaultModel: null, defaultEffort: null, models, commands: [] });
-  const alias = (id: string, name: string, description: string) => ({ id, name, description, efforts: [...EFFORTS], main: true });
-  return {
-    schema: 1, fetchedAt: at,
-    hosts: {
-      claude: entry([
-        alias("default", "Default", "The reasoner model"),
-        alias("opus", "Opus", "The latest Opus"),
-        alias("fable", "Fable", "The latest Fable"),
-        alias("sonnet", "Sonnet", "The latest Sonnet"),
-        alias("haiku", "Haiku", "The latest Haiku"),
-      ]),
-      codex: entry([]),
-    },
-  };
 }
 
 /**

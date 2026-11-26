@@ -2,7 +2,7 @@ import { Notice, setIcon } from "obsidian";
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
 import { codeChatOn, fs, hudHost, sessionsHost, type HostCatalog } from "../host";
-import { aliasCatalog } from "../data/claudeAsk";
+import { aliasCatalog } from "../data/agentSessions";
 import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import { hasChat, processKey, type TerminalSession } from "../data/terminalSession";

@@ -4,11 +4,11 @@ import type AgenticOSPlugin from "../../main";
 import type { WorkbenchView } from "./WorkbenchView";
 import { runAsk, isAskBusy, AskHandle, AskResult } from "../data/askSpawner";
 import {
-  runClaudeAsk, CHAT_FEATURE, aliasCatalog, readReasonSpendToday, vaultHostChoices, vaultModeLine, vaultRemembered, vaultSpendLine, vaultStart, vaultAsked,
+  runClaudeAsk, CHAT_FEATURE, readReasonSpendToday, vaultHostChoices, vaultModeLine, vaultRemembered, vaultSpendLine, vaultStart, vaultAsked,
   vaultEngine, vaultRoute, localDownOf, localDownText, runOnceLabel, type VaultRoute,
 } from "../data/claudeAsk";
 import { readAgenticosJson, readProviderState, readVaultConfig, type ProviderName, type SessionHost, type VaultConfig } from "../data/aosConfig";
-import { catalogHost, modelArg, modelName, type HostChoice } from "../data/agentSessions";
+import { aliasCatalog, catalogHost, modelArg, modelName, type HostChoice } from "../data/agentSessions";
 import { sessionsHost, type HostCatalog } from "../host";
 import { rememberVaultChoice, sanitizeVaultChoice } from "../settingsDefaults";
 import { AccessMenu } from "../ui/AccessMenu";

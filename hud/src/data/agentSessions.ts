@@ -731,3 +731,33 @@ export function filterCommands(commands: CatalogCommand[], query: string, limit 
   const ranked = commands.map((c, i) => ({ c, i, r: rank(c) })).filter((x) => x.r >= 0).sort((a, b) => a.r - b.r || a.i - b.i);
   return { items: ranked.slice(0, Math.max(0, limit)).map((x) => x.c), total: ranked.length };
 }
+
+// ── the aliases a window without the catalog offers (moved from claudeAsk.ts, remove-sessions D10) ──
+
+/** The levels `claude --effort` takes, all of which the chat surface admits (spec 2026-10-07-sessions-ux U9). */
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+
+/** Why the menu shows only the aliases: the app's catalog was not there to ask. */
+export const ALIAS_REASON = "Only the aliases: the hosts' own lists are not available";
+
+/** The runtime's fallback (lib/host-catalog.js, spec U4) for a window without the catalog: Claude's aliases, which
+ *  always resolve, and Codex's own default. */
+export function aliasCatalog(now: Date, reason = ALIAS_REASON): HostCatalog {
+  const at = now.toISOString();
+  const entry = (models: HostCatalogHost["models"]): HostCatalogHost =>
+    ({ ok: false, reason, version: null, fetchedAt: at, defaultModel: null, defaultEffort: null, models, commands: [] });
+  const alias = (id: string, name: string, description: string) => ({ id, name, description, efforts: [...EFFORTS], main: true });
+  return {
+    schema: 1, fetchedAt: at,
+    hosts: {
+      claude: entry([
+        alias("default", "Default", "The reasoner model"),
+        alias("opus", "Opus", "The latest Opus"),
+        alias("fable", "Fable", "The latest Fable"),
+        alias("sonnet", "Sonnet", "The latest Sonnet"),
+        alias("haiku", "Haiku", "The latest Haiku"),
+      ]),
+      codex: entry([]),
+    },
+  };
+}

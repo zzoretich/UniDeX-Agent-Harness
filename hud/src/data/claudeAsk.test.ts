@@ -7,9 +7,10 @@ import * as path from "node:path";
 import type { HostChild, HostSpawnOptions } from "../host";
 import {
   runClaudeAsk, buildClaudeArgs, claudeChatModel, composePrompt, parseClaudeJson, headlessEnv, resolveClaudeBin, chatRoute, ClaudeAskDeps, CHAT_SYSTEM_PROMPT,
-  ALIAS_REASON, aliasCatalog, readReasonSpendToday, reasonSpendToday, vaultAsked, vaultHostChoices, vaultModeLine, vaultRemembered, vaultSpendLine, vaultStart,
+  readReasonSpendToday, reasonSpendToday, vaultAsked, vaultHostChoices, vaultModeLine, vaultRemembered, vaultSpendLine, vaultStart,
   vaultEngine, vaultRoute, localDownOf, localDownText, runOnceLabel,
 } from "./claudeAsk";
+import { aliasCatalog } from "./agentSessions";
 import { DEFAULT_SETTINGS } from "../settingsDefaults";
 
 function fakeChild(stdout: string, code = 0, stderr = ""): HostChild {
@@ -230,20 +231,6 @@ test("vaultHostChoices: Claude needs the login chatRoute checks; Codex is the co
     "a login no probe confirmed is not enough for claude -p");
   assert.deepEqual(ready(vaultHostChoices({ hosts: { codex: { enabled: true } } }, ps("claude", true))), ["claude:Claude Code is off on this machine", "codex:ready"]);
   assert.deepEqual(ready(vaultHostChoices(null, ps("codex", false))), ["claude:Claude Code is not logged in", "codex:Codex is off on this machine"]);
-});
-
-test("aliasCatalog: Claude's aliases at Vault's levels, Codex's own default, both marked as a short list", () => {
-  const now = new Date("2026-10-07T12:00:00Z");
-  const c = aliasCatalog(now);
-  assert.equal(c.fetchedAt, now.toISOString());
-  assert.deepEqual(c.hosts.claude!.models.map((m) => m.id), ["default", "opus", "fable", "sonnet", "haiku"]);
-  assert.ok(c.hosts.claude!.models.every((m) => m.main && m.efforts.join() === "low,medium,high,xhigh,max"));
-  assert.deepEqual(c.hosts.codex!.models, []);
-  assert.equal(c.hosts.claude!.ok, false);
-  assert.equal(c.hosts.codex!.reason, ALIAS_REASON);
-  assert.equal(aliasCatalog(now, "why").hosts.claude!.reason, "why");
-  c.hosts.claude!.models[0].efforts.push("ultra");
-  assert.equal(aliasCatalog(now).hosts.claude!.models[0].efforts.length, 5, "each call is a fresh copy");
 });
 
 test("vaultRemembered: the stored pick, else the reasoner's; a model the host's list dropped is forgotten", () => {
