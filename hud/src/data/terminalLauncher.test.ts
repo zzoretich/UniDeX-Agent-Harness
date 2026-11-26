@@ -406,3 +406,20 @@ test("spec: the chips' restart carries the values they show, never the settings'
   const b = launchArgs(w.launcher.spec("codex", { resume: { id }, cwd: "/work/demo", model: "gpt-x", access: "edit", chosen: { access: true } }));
   assert.deepEqual(b, ["resume", "-C", "/work/demo", id, "-s", "workspace-write", "-a", "on-request"]);
 });
+
+test("remove-sessions D15: a model remembered for Claude is the next Claude launch's model, and Codex keeps its own", () => {
+  const w = world([]);
+  w.launcher.rememberModel("claude", "opus");
+  assert.equal(w.launcher.spec("claude").model, "opus");
+  assert.equal(w.launcher.spec("codex").model, null, "the other host's default is untouched");
+  assert.match(w.launcher.modelLabel("claude"), /opus/i);
+  assert.equal(w.launcher.modelLabel("codex"), "Codex default");
+});
+
+test("remove-sessions D15: remembering null goes back to the host's default", () => {
+  const w = world([]);
+  w.launcher.rememberModel("claude", "opus");
+  w.launcher.rememberModel("claude", null);
+  assert.equal(w.launcher.spec("claude").model, null);
+  assert.equal(w.launcher.modelLabel("claude"), "Default model");
+});

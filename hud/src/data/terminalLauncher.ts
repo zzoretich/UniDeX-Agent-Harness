@@ -18,7 +18,7 @@ import {
   workspacePlace, workspaceStubs,
 } from "./terminalLaunch";
 import type { LaunchSpec, Place, PlaceWhy, PlaceWorld, TermAccess, TermHost, TermHostChoice } from "./terminalLaunch";
-import { rememberTerminalChoice, sanitizeSessionChoice, sanitizeTerminalChoice } from "../settingsDefaults";
+import { rememberSessionChoice, rememberTerminalChoice, sanitizeSessionChoice, sanitizeTerminalChoice } from "../settingsDefaults";
 import { KEBAB_RE, WS_RE, verbResult, workspaceArgs } from "./spacesModel";
 import type { ManifestFields, VerbResult } from "./spacesModel";
 import type { TerminalChoice } from "../settingsDefaults";
@@ -137,7 +137,15 @@ export class TerminalLauncher {
     void this.plugin.saveSettings();
   }
 
-  /** The model a launch of `host` passes, in words: the one remembered from Sessions, else the host's default. */
+  /** Code's model chip picked `model` (remove-sessions D15): it becomes the model new terminals of `host` start with (null:
+   *  the host's default), in settings.sessionChoice, which the Sessions composer wrote before. The other host keeps its own. */
+  rememberModel(host: "claude" | "codex", model: string | null): void {
+    this.plugin.settings.sessionChoice = rememberSessionChoice(this.plugin.settings.sessionChoice, { host, model });
+    void this.plugin.saveSettings();
+  }
+
+  /** The model a launch of `host` passes, in words: your last pick in a Code chip (remove-sessions D15), else the host's
+   *  default. */
   modelLabel(host: "claude" | "codex"): string {
     return modelArg(host, sanitizeSessionChoice(this.plugin.settings.sessionChoice).models[host]) ?? (host === "claude" ? "Default model" : "Codex default");
   }
