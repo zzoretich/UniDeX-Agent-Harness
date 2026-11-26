@@ -108,13 +108,13 @@ Vault chat, its spend line and its per-thread browser. **History** moves into th
 4. **Session data:** History reads the scan's session index and digests as today (`sessionHistory.ts`), both hosts'
    sessions; never a transcript.
 5. **MCP:** none. 6. **Degradation:** History lists past sessions with no host signed in; Resume is disabled with its
-   reason when the session's host is off or signed out (today's `resumeFor`).
+   reason while the session's host is signed out, and absent while that host is off (today's `resumeFor`).
 7. **Docs:** README, `docs/install.md` Hosts, `docs/app-smoke.md` History item per host, COVERAGE rows.
 
 | Mode | How the user invokes it | What runs | What they see if it can't |
 |---|---|---|---|
-| Claude Code only | Code tab; "All history"; old `tab=chat` links | a Code terminal running `claude`; History Resume `claude --resume <id>` | Codex rows in History with Resume disabled and its reason |
-| Codex only (plugin · direct) | the same | a Code terminal running `codex`; Resume `codex resume -C <folder> <id>` (`variants.spec.ts`) | Claude rows with Resume disabled |
+| Claude Code only | Code tab; "All history"; old `tab=chat` links | a Code terminal running `claude`; History Resume `claude --resume <id>` | Codex rows in History: no Resume while Codex is off, Resume disabled with its reason while it is signed out |
+| Codex only (plugin · direct) | the same | a Code terminal running `codex`; Resume `codex resume -C <folder> <id>` (`variants.spec.ts`) | Claude rows with no Resume (Claude is off) |
 | Both | the same | each row resumes on its own host | — |
 
 ## 6. Out of scope
