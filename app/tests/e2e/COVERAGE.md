@@ -45,7 +45,7 @@ a live host session, Ollama's embeddings, the look in both themes). The writes, 
 - Files (F14–F16, F19–F22) in `files-writes.spec.ts`;
 - the note editor, the app's own Notes surface (beyond the checklist), in `notes-writes.spec.ts`;
 - the settings window (I3, S1, S11) in `settings-window.spec.ts`;
-- the Computer pane (CP1–CP5's flows) in `computer.spec.ts`, with `AOS_APP_WRITE=computer,sessions` and the test
+- the Computer pane (CP1–CP5's flows) in `computer.spec.ts`, with `AOS_APP_WRITE=computer` and the test
   build's switches (`AOS_E2E_TRUSTED_CLI` names its stand-in agent CLIs, `AOS_E2E_HOST_RULES` maps its `*.test` sites
   to the fixture server, `AOS_E2E_START_PAGE` puts the start page and its search on that server; the harness points it
   at a loopback address for every other run, so none reaches the real DuckDuckGo): agents the app spawns as a Code terminal's own process, each starting the

@@ -63,7 +63,7 @@ type ValueRule = (value: string, ctx: ProgramContext) => boolean;
 const oneOf = (list: (ctx: ProgramContext) => readonly string[]): ValueRule =>
   (v, ctx) => list(ctx).some((p) => path.resolve(p) === path.resolve(v) || realOrSelf(p) === realOrSelf(v));
 
-/** The variables a spawn may set, and what each may be set to. The pins the HUD sends (aosRun, claudeAsk, main.ts). */
+/** The variables a spawn may set, and what each may be set to. The pins the HUD sends (aosRun, main.ts). */
 const SPAWN_VARS: Record<string, ValueRule> = {
   AOS_VAULT: (v, ctx) => !!ctx.vaultRoot && oneOf((c) => [c.vaultRoot as string])(v, ctx),
   AOS_CONFIG: oneOf((ctx) => agenticosFiles(ctx)),

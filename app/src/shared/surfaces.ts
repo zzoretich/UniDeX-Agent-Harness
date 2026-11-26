@@ -43,8 +43,9 @@ export interface Surface {
   except?: readonly string[];
   /**
    * Whose writes it admits: the HUD's (the default), checked by the guarded fs and the vault adapter; the app's note
-   * editor's, checked only by the editor's save (canSave); or a service of main's own (Sessions), which main runs only
-   * while the surface is on and whose writes and commands are never the page's: the HUD's rules leave it out.
+   * editor's, checked only by the editor's save (canSave); or a service of main's own (the Computer's notices, the Code
+   * chat's mirror), which main runs only while the surface is on and whose writes and commands are never the page's: the
+   * HUD's rules leave it out.
    */
   scope?: "hud" | "editor" | "main";
   spawns: readonly SpawnRule[];
@@ -81,9 +82,6 @@ const KEBAB = /[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?/;
 const HASH = /none|[0-9a-f]{16,64}/;
 // An outside folder (adopt, hide, unhide): absolute or under ~/, no NUL or line break (U+2028 and U+2029 included).
 const PATH = /(?:\/|~\/)[^\0\n\r\u2028\u2029]+/;
-// Chat's question. recall-cli.js and ask.js read only whole `--…` arguments as flags, so a question may start with one
-// dash ("- what is due?"), as it may in Obsidian; `--` never, which keeps out `--warm` and ask.js's `--write=<file>`.
-const QUESTION = /(?!--)[\s\S]+/;
 const ANY = /[\s\S]*/;                      // a value the runtime parses itself (aos config set)
 // The Code chat's mirror (code-chat R13): a host session id as lib/sessions.js takes it (not dash-led, no ".."), a terminal's
 // key (a v4 UUID, the AOS_TERMINAL a Code launch's agent carries), the epoch milliseconds a terminal started, and an
@@ -95,10 +93,6 @@ const MIRROR_CWD = /\/[^\0\n\r\u2028\u2029]*/;
 const USD = /\d+(\.\d+)?/;
 const JSON_OBJ = /\{[\s\S]*\}/;
 const SLUG = /[a-z0-9][a-z0-9-]{1,40}/;     // RoutinesTab's routine slug
-// Vault chat's chosen host, model and effort for ask.js (spec 2026-10-07-sessions-ux U9): one argument each.
-const ASK_HOST = /--host=(?:claude|codex)/;
-const ASK_MODEL = new RegExp(`--model=${WORD.source}`);
-const ASK_EFFORT = /--effort=(?:minimal|low|medium|high|xhigh|max)/;
 // A computer ask notice's title (agent-computer D27; lib/notifications.js validate), which main/services/hosts.ts checks
 // against this rule before it runs notify.js: one line of 1-160 characters, not dash-led, so it can never read as a flag.
 const NOTICE_TITLE = /[^\s-][^\r\n\u2028\u2029]{0,159}/;
@@ -158,14 +152,6 @@ export const BACKGROUND: readonly SpawnRule[] = [
   { script: "scan-vault.js", args: /^(--quiet)?$/ },
   { script: "team.js", args: /^list( --json)?$/ },
 ];
-
-/** `claude -p` exactly as data/claudeAsk.ts builds it: no tools, no settings, no MCP, no session, a budget cap, JSON out.
- *  The effort is any level `claude --effort` takes (Vault chat's menu, spec 2026-10-07-sessions-ux U9). */
-const claudeAsk = (effort: boolean): SpawnRule => ({
-  bin: "claude",
-  args: argv("-p", ANY, "--model", WORD, ...(effort ? ["--effort", /low|medium|high|xhigh|max/] : []), "--tools", "", "--setting-sources", "",
-    "--strict-mcp-config", "--no-session-persistence", "--system-prompt", ANY, "--max-budget-usd", USD, "--output-format", "json"),
-});
 
 /** Every subset of `flags`, each keeping the order given: a command's optional flags as data, in one fixed order. */
 const inOrder = (flags: readonly string[]): string[][] => flags.reduce<string[][]>((all, f) => [...all, ...all.map((s) => [...s, f])], [[]]);
@@ -624,26 +610,6 @@ export const SURFACES: readonly Surface[] = [
     verified: true,
   },
   {
-    id: "chat",
-    label: "Chat",
-    source: "views/ChatTab.ts (the chat log), data/claudeAsk.ts (recall, claude -p, the spend ledger), data/askSpawner.ts (local ask)",
-    writes: ["brain/_index/agentic-os-chat.jsonl", "brain/_index/provider-spend.jsonl"],
-    spawns: [
-      { script: "sdk/recall-cli.js", args: argv(QUESTION) },
-      { script: "sdk/ask.js", args: argv("--local", QUESTION) },
-      // A Vault question under provider local (local-first A2): ask.js runs it where ai.chat says, the local engine by
-      // default. Added in 2.0 beside the verified rules above; e2e (local.spec.ts) drives it through this policy.
-      { script: "sdk/ask.js", args: argv("--local", "--chat", QUESTION) },
-      { script: "sdk/ask.js", args: argv("--local", ASK_HOST, QUESTION) },
-      { script: "sdk/ask.js", args: argv("--local", ASK_HOST, ASK_MODEL, QUESTION) },
-      { script: "sdk/ask.js", args: argv("--local", ASK_HOST, ASK_EFFORT, QUESTION) },
-      { script: "sdk/ask.js", args: argv("--local", ASK_HOST, ASK_MODEL, ASK_EFFORT, QUESTION) },
-      claudeAsk(false),
-      claudeAsk(true),
-    ],
-    verified: true,
-  },
-  {
     id: "proposals",
     label: "Instruction proposals",
     source: "main/ipc/proposals.ts for views/ProposalsTab.ts: the app-bundled applier accepts a reviewed digest and one-use token, validates exact paths and hashes, and applies or restores an instruction change",
@@ -651,23 +617,6 @@ export const SURFACES: readonly Surface[] = [
     writes: ["persona/ledger.jsonl", "persona/proposals/*.md", "persona/IDENTITY.md", "persona/PLAYBOOK.md", "persona/duties/**", "persona/routines/**", "persona/*/IDENTITY.md", "persona/*/PLAYBOOK.md", "persona/*/duties/**", "persona/*/routines/**", "persona/*/skills/**", "persona/teams/*/TEAM.md", "brain/memory/feedback/*.md", "CLAUDE.md", "AGENTS.md", "AGENTICOS.md"],
     spawns: [],
     // Checked by the Proposals Electron fixture: preview, apply, and Undo run through the real main bridge.
-    verified: true,
-  },
-  {
-    id: "sessions",
-    label: "Sessions",
-    source: "main/services/sessions.ts and main/services/git.ts, for views/SessionsTab.ts (spec 2026-10-07-unidex-sessions): main runs each turn through the runtime's lib/sessions.js in a workspace folder, keeps the thread, and diffs and commits the workspace repository; Delete thread moves only the thread's own file to the Trash and leaves the host's own transcript alone; the page only names a workspace, a host and a prompt",
-    scope: "main",
-    writes: ["brain/_index/sessions/*/*.jsonl", "brain/_index/provider-spend.jsonl", "brain/_index/agent-runs/runs.jsonl"],
-    folders: ["brain/_index/sessions", "brain/_index/sessions/*", "brain/_index/agent-runs"],
-    spawns: [
-      { script: "lib/sessions.js", args: argv("args", JSON_OBJ) },
-      { script: "lib/sessions.js", args: argv("events", "--host", /claude|codex/) },
-      { script: "lib/sessions.js", args: argv("events", "--host", /claude|codex/, "--model", WORD) },
-      { script: "lib/sessions.js", args: argv("record", JSON_OBJ) },
-    ],
-    // Checked live on 2026-10-07 (plan 2026-10-07-unidex-sessions C3): a turn and a resume on each host through the runtime
-    // and the real CLIs, recorded in the ledger and in Runs.
     verified: true,
   },
   {
@@ -704,8 +653,8 @@ export const SURFACES: readonly Surface[] = [
     // process, the model chip restarted the same conversation, Diff showed the branch and kept its scroll, and pasted images
     // reached each TUI as [Image #N]. The fixes it found are in the same release (code-chat R61–R73).
     scope: "main",
-    // remove-sessions D11: the catalog of each host's models and commands (hosts:catalog, for the composer and Routines)
-    // re-homed here from the Sessions surface; main answers it whichever surfaces are on, as it did there for Code.
+    // remove-sessions D11: the catalog of each host's models and commands (hosts:catalog, for the composer and Routines),
+    // which main answers whichever surfaces are on (services/hosts.ts); it was the Sessions surface's until that went.
     writes: ["brain/_index/code/*.jsonl", "brain/_index/code/*.claim.json", "brain/_index/host-catalog.json"],
     folders: ["brain/_index/code"],
     spawns: [

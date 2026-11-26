@@ -3,11 +3,11 @@
 // HUD sends and small enough that one call cannot exhaust main.
 
 import { z } from "zod";
-import { CHAT_KEY, CODE_KEY } from "../policy/computer";
+import { CODE_KEY } from "../policy/computer";
 import { navAllowed, siteOf } from "../policy/computer-url";
 import { UUID_RE } from "../policy/programs";
 import { MAX_IMAGE_BASE64 } from "../services/code-images";
-import type { CodeFollowRequest, CodeGitRequest, CodeSaveImageRequest, CodeUnfollowRequest, CodeViewRequest, ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SessionSendRequest, SessionStartRequest, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
+import type { CodeFollowRequest, CodeGitRequest, CodeSaveImageRequest, CodeUnfollowRequest, CodeViewRequest, ExecRequest, ImportRunRequest, InstallRequest, PersonaAnswers, PtyAgentRequest, PtySpawnRequest, ReadyInfo, SetupFixId, SpawnRequest, ThemeSource, WriteVia } from "../../shared/ipc";
 
 const MB = 1024 * 1024;
 
@@ -40,7 +40,7 @@ export const ThemeSetArgs = z.object({ source: z.enum(["system", "light", "dark"
 
 // The Computer pane's calls (agent-computer D5, D32). `select`'s session must have the shape of a session key; that main
 // holds it is checked in ipc/computer.ts (sessionAllowed, session-browser S1).
-const SessionKey = z.string().max(64).refine((k) => CODE_KEY.test(k) || CHAT_KEY.test(k), "a session");
+const SessionKey = z.string().max(64).refine((k) => CODE_KEY.test(k), "a session");
 export const ComputerSelectArgs = z.object({ session: SessionKey.nullable() }).strict();
 // Finite only: main clamps to 0-10000 (policy/computer.ts clampBounds), so a briefly off-screen layout still lands.
 const Coord = z.number().finite();
@@ -210,42 +210,5 @@ export const ImportRunSchema: z.ZodType<ImportRunRequest> = z.object({
 /** The host whose wiring an earlier install left on (inspection F7), and the choice it would be dropped by. */
 export const UnwireArgs = z.object({ host: z.enum(["claude", "codex"]), choice: z.enum(["claude", "codex", "both", "none"]) }).strict();
 
-// Sessions (spec 2026-10-07-unidex-sessions S3): the page names a workspace, a thread, a host, a prompt or a file; main
-// and the runtime decide everything else.
-/** A thread id, as main makes them (randomUUID). */
-const ThreadId = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-/** A folder under <vault>/workspaces: one segment, not hidden, not the team worktrees (services/hosts.ts WORKSPACE_RE). */
-const WorkspaceName = z.string().max(128).regex(/^[^._/\\\0][^/\\\0]*$/);
-const Prompt = z.string().max(64 * 1024).refine((s) => s.trim().length > 0 && !s.includes("\0"), "a prompt");
-/** A model, never one that could read as a flag. */
-const SessionModel = Model.refine((s) => !s.startsWith("-"), "a model name");
-
-/** Every level either host takes; the runtime passes a host only its own (headless.js SESSION_EFFORTS). */
-const SessionEffort = z.enum(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
-const SessionAccess = z.enum(["read", "edit", "run"]);
-
-export const SessionStartSchema: z.ZodType<SessionStartRequest> = z.object({
-  workspace: WorkspaceName,
-  host: z.enum(["claude", "codex"]),
-  text: Prompt,
-  model: SessionModel.nullable().optional(),
-  effort: SessionEffort.nullable().optional(),
-  access: SessionAccess.optional(),
-  allowCommands: z.boolean().optional(),
-}).strict();
-export const SessionSendSchema: z.ZodType<SessionSendRequest> = z.object({
-  thread: ThreadId,
-  text: Prompt,
-  model: SessionModel.nullable().optional(),
-  effort: SessionEffort.nullable().optional(),
-  access: SessionAccess.optional(),
-  allowCommands: z.boolean().optional(),
-}).strict();
 /** hosts:catalog (remove-sessions D11): only whether to ask the hosts again. */
 export const HostsCatalogArgs = z.object({ refresh: z.literal(true).optional() }).strict();
-export const ThreadArgs = z.object({ thread: ThreadId }).strict();
-/** session:remove takes the same shape as the stop call (a thread id, never a path). */
-export const SessionRemoveSchema = ThreadArgs;
-export const GitStatusArgs = z.object({ workspace: WorkspaceName }).strict();
-export const GitDiffArgs = z.object({ workspace: WorkspaceName, file: Text(4096).refine((f) => f.length > 0, "a file").optional() }).strict();
-export const GitCommitArgs = z.object({ workspace: WorkspaceName, message: Text(64 * 1024).refine((m) => m.trim().length > 0, "a message") }).strict();

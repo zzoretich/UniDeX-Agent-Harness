@@ -11,7 +11,7 @@ import { ComputerAnswerArgs, ComputerMarkArgs, ComputerNavArgs, ComputerNavigate
 import { clampBounds, sessionAllowed } from "../../src/main/policy/computer";
 
 const T = "0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f";
-const HAS = { terminal: (id: string) => ["t3", "t5", "t6", "t7"].includes(id), thread: (id: string) => id === T };
+const HAS = { terminal: (id: string) => ["t3", "t5", "t6", "t7"].includes(id) };
 
 const STATE = { session: "code:t3", label: "", tabs: [], holder: null, asks: [], log: [], marked: false, poppedOut: false, power: "off" } as ComputerState;
 const calls: string[] = [];
@@ -81,8 +81,6 @@ test("the handler passes arguments through unchanged, and clamps show's rectangl
   assert.deepEqual(seen, [["https://example.com:8443", false]]);
   send(CH.computerTab, { op: { kind: "select", index: 3 } });
   assert.deepEqual(seen, [{ kind: "select", index: 3 }]);
-  assert.deepEqual(await invoke(CH.computerSelect, { session: `chat:${T}` }), { ok: true, data: STATE });
-  assert.deepEqual(calls, [`select chat:${T}`]);
 });
 
 test("show clamps its numbers to 0-10000 before the service sees them", () => {
@@ -141,21 +139,20 @@ test("invalid arguments never reach the service", async () => {
 
 test("sessionAllowed", () => {
   assert.equal(sessionAllowed("code:t3", HAS), true);
-  assert.equal(sessionAllowed(`chat:${T}`, HAS), true);
-  for (const k of ["code:t4", "code:t3x", "code:3", "code:t3\0", "chat:nope", `chat:${T.toUpperCase()}`, "vault", "ws:x", "dir:/", "home", ""]) assert.equal(sessionAllowed(k, HAS), false, k);
-  assert.equal(sessionAllowed("code:t2", { terminal: (id) => id === "t1", thread: () => false }), false, "a takeover shell's id names no session");
-  assert.equal(sessionAllowed("code:t1234567890", { terminal: () => true, thread: () => true }), false, "ten digits is not a terminal id");
-  assert.equal(sessionAllowed(`chat:${T.replace("-4c7b", "-1c7b")}`, { terminal: () => true, thread: () => true }), false, "only a v4 UUID is a thread");
+  for (const k of ["code:t4", "code:t3x", "code:3", "code:t3\0", `chat:${T}`, "chat:nope", `chat:${T.toUpperCase()}`, "vault", "ws:x", "dir:/", "home", ""]) assert.equal(sessionAllowed(k, HAS), false, k);
+  assert.equal(sessionAllowed("code:t2", { terminal: (id) => id === "t1" }), false, "a takeover shell's id names no session");
+  assert.equal(sessionAllowed("code:t1234567890", { terminal: () => true }), false, "ten digits is not a terminal id");
+  assert.equal(sessionAllowed(`chat:${T}`, { terminal: () => true }), false, "a Sessions thread's key is no session (remove-sessions)");
 });
 
 test("computer:select refuses a key the app does not hold", async () => {
   // A well-formed key of a session main does not hold: the policy refuses it.
-  for (const session of ["code:t9", `chat:${T.replace("0b9d", "1b9d")}`]) {
+  for (const session of ["code:t9"]) {
     assert.deepEqual(await invoke(CH.computerSelect, { session }), { ok: false, error: "That session is not allowed", code: "EINVAL" }, session);
     assert.deepEqual(calls, [], session);
   }
-  // A place, or anything else that is no session key, never gets past the schema.
-  for (const session of ["vault", "ws:x", "home", "dir:/"]) {
+  // A place, a Sessions thread's key, or anything else that is no session key, never gets past the schema.
+  for (const session of ["vault", "ws:x", "home", "dir:/", `chat:${T}`]) {
     assert.deepEqual(await invoke(CH.computerSelect, { session }), { ok: false, error: "invalid arguments", code: "EINVAL" }, session);
     assert.deepEqual(calls, [], session);
   }
@@ -175,7 +172,7 @@ test("computer:power is refused for a session main does not hold, and for argume
   send(CH.computerPower, { session: "code:t9", on: true });
   assert.deepEqual(calls, [], "a terminal main does not hold");
   send(CH.computerPower, { session: "chat:00000000-0000-4000-8000-000000000000", on: true });
-  assert.deepEqual(calls, [], "a thread main does not hold");
+  assert.deepEqual(calls, [], "a Sessions thread's key is no session key");
   send(CH.computerPower, { session: "code:t3", on: true, extra: 1 });
   assert.deepEqual(calls, [], "strict");
   send(CH.computerPower, { session: "code:t3", on: "yes" });

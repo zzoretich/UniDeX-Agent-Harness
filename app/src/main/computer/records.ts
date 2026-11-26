@@ -2,9 +2,9 @@
 // addresses and which tab was active, so a quit and a relaunch bring each browser back. Tab addresses are stored with a
 // user name and password removed, otherwise as they are, like the profile's own history; this file stays in main and is
 // never sent anywhere. Scrubbing happens where an address is given to an agent, which is not this module's job.
-// Stored at <file>, written 0600 by temp file and rename. A key is opaque here except for three prefixes: `code:` (a
-// Code terminal's session, alive only while its page lives), `chat:` (a Sessions thread, stable across runs) and
-// `orphan:` (what orphanCode() makes of a code record: kept by conversation so a resumed conversation can adopt it).
+// Stored at <file>, written 0600 by temp file and rename. A key is opaque here except for two prefixes: `code:` (a Code
+// terminal's session, alive only while its page lives) and `orphan:` (what orphanCode() makes of a code record: kept by
+// conversation so a resumed conversation can adopt it).
 
 import fs from "node:fs";
 import path from "node:path";

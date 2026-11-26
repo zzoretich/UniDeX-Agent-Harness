@@ -312,13 +312,12 @@ test("resumeTarget: host off is disabled with the aos init fix, also when the ch
 });
 
 test("remove-sessions D5: an app row from an older snapshot (or a runtime not yet upgraded) resumes nowhere new and never says to open Sessions", () => {
-  const thread = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeffff0000";
-  const s = snap([row(ID1, { kind: "app", via: "app", resumable: false, reason: "A Sessions thread: open it in Sessions", thread })]);
+  const s = snap([row(ID1, { kind: "app", via: "app", resumable: false, reason: "A Sessions thread: open it in Sessions" })]);
   const t = resumeTarget({ workspace: "site", id: ID1 }, s, choices(), CTX);
   assert.deepEqual(t, { kind: "disabled", disabled: true, reason: OLD_SESSIONS_TEXT });
   assert.doesNotMatch(OLD_SESSIONS_TEXT, /open it in Sessions/);
   // The collector's rewrite (a plain headless row) resumes in Code when the host allows it.
-  const next = snap([row(ID1, { kind: "headless", via: "app", resumable: true, reason: null, thread })]);
+  const next = snap([row(ID1, { kind: "headless", via: "app", resumable: true, reason: null })]);
   assert.equal(resumeTarget({ workspace: "site", id: ID1 }, next, choices(), CTX).kind, "terminal");
 });
 

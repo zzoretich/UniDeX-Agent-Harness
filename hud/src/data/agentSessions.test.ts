@@ -4,17 +4,14 @@ import {
   ALIAS_REASON, aliasCatalog,
   ACCESS_LEVELS, CODEX_ACCESS_NOTE, DEFAULT_ACCESS, EFFORT_TITLE, SESSION_EFFORTS, VAULT_EFFORTS, accessHostLine, accessLabel,
   catalogHost, catalogSource, chipText, choiceText, commandQuery, commandTyping, countsText, defaultChoice, diffTotals,
-  doneFooter, doneLine, durationText, effortLabel, effortsFor, fileCounts, fileStatusLabel, filterCommands, findModel, groupThreads,
+  doneFooter, doneLine, durationText, effortLabel, effortsFor, fileCounts, fileStatusLabel, filterCommands, findModel,
   hostChoices, isAccess, lastTurnUsd, mergeEvents, modelArg, modelName, relPath, searchModels, sessionSpendToday, spendLine, splitModels, statusSummary, threadAge,
   catalogModelId, sameModel, transcriptModelName,
-  threadMeta, threadRows, timelineRows, toolCallLine, toolLine, toolResultText, turnChoices, turnElapsed, turnOpen, usdText,
+  threadRows, timelineRows, toolCallLine, toolLine, toolResultText, turnChoices, turnElapsed, turnOpen, usdText,
   workingText, workspaceNames, type CatalogCommand, type ThreadRow, type ToolCall,
 } from "./agentSessions";
-import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionEvent, HostSessionThread } from "../host";
+import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionEvent } from "../host";
 
-const thread = (id: string, workspace: string, updated: string, extra: Partial<HostSessionThread> = {}): HostSessionThread => ({
-  id, workspace, host: "claude", model: null, effort: null, access: "edit", title: id, created: updated, updated, turns: 1, running: false, usd: 0, ...extra,
-});
 const ev = (kind: HostSessionEvent["kind"], turn: number, fields: Record<string, unknown> = {}): HostSessionEvent => ({ t: "2026-10-07T10:00:00.000Z", kind, turn, ...fields });
 
 test("workspaceNames: plain folder names, sorted; hidden folders and the team worktrees are left out", () => {
@@ -22,20 +19,9 @@ test("workspaceNames: plain folder names, sorted; hidden folders and the team wo
   assert.deepEqual(workspaceNames([]), []);
 });
 
-test("groupThreads: by workspace, newest first within each, the workspace with the newest thread first", () => {
-  const groups = groupThreads([
-    thread("a", "harbor-map", "2026-10-07T09:00:00Z"),
-    thread("b", "tide", "2026-10-07T11:00:00Z"),
-    thread("c", "harbor-map", "2026-10-07T10:00:00Z"),
-  ]);
-  assert.deepEqual(groups.map((g) => [g.workspace, g.threads.map((t) => t.id)]), [["tide", ["b"]], ["harbor-map", ["c", "a"]]]);
-  assert.deepEqual(groupThreads([]), []);
-});
-
-test("threadMeta and usdText: turns, then the spend (Codex's marked as an estimate)", () => {
-  assert.equal(threadMeta(thread("a", "w", "x")), "1 turn");
-  assert.equal(threadMeta(thread("a", "w", "x", { turns: 2, usd: 0.04 })), "2 turns · $0.04");
-  assert.equal(threadMeta(thread("a", "w", "x", { host: "codex", turns: 3, usd: 0.0012 })), "3 turns · ≈$0.0012");
+test("usdText: two places, four under a cent", () => {
+  assert.equal(usdText(0.04), "$0.04");
+  assert.equal(usdText(0.0012), "$0.0012");
   assert.equal(usdText(0), "$0.00");
   assert.equal(usdText(1.5), "$1.50");
 });

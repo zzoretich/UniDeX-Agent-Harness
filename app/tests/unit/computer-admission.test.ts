@@ -6,7 +6,7 @@ import type { ProcInfo } from "../../src/main/computer/peer";
 
 // A fake process table: pid -> info, code-signing team of the running process, and the static team of a path.
 const SERVER = "/vault/brain/scripts/sdk/mcp-server.js";
-const NOT_STARTED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
+const NOT_STARTED = "Not started by UniDeX: start this session from the Code page's New menu.";
 const ALREADY_OPEN = "This process's browser tools are not connected because this session already has a computer connection: go on without the browser tools in this process, and tell the user.";
 const CLAUDE = VENDOR.claude.team;
 const CODEX = VENDOR.codex.team;
@@ -262,7 +262,7 @@ test("M13: a peer whose parent and grandparent are not registered is refused bef
     processTeamId: (pid) => { signed++; return pid === 400 ? VENDOR.codex.team : null; },
     realpath: (p) => p,
   };
-  assert.deepEqual(admit(500, { reg, sys, server: SERVER }), { ok: false, reason: "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread." });
+  assert.deepEqual(admit(500, { reg, sys, server: SERVER }), { ok: false, reason: "Not started by UniDeX: start this session from the Code page's New menu." });
   assert.equal(signed, 0, "no signature check for a chain the app never registered");
   // The npm Codex shim registered as the grandparent: then its native child is checked, and admitted.
   reg.add({ pid: 300, host: "codex", page: "code", key: "code:t1", label: "Codex", place: "vault", access: "edit" });

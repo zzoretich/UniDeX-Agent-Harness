@@ -29,8 +29,8 @@ export interface ComputerIpc {
   /** Whether the Computer surface is on (read per call). */
   enabled: () => boolean;
   service: () => ComputerPageService;
-  /** Whether main holds this terminal or thread (PtyService.holdsOrigin, SessionService.has). */
-  sessions: { terminal(id: string): boolean; thread(id: string): boolean };
+  /** Whether main holds this terminal (PtyService.holdsOrigin). */
+  sessions: { terminal(id: string): boolean };
   /** Called after the service completed a `move` for two terminals main holds, whether it answered true or false (not when
    *  it threw or the keys were refused): the app's door moves its ids with the terminal row (session-browser A8). */
   moved?: (from: string, to: string) => void;

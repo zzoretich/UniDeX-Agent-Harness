@@ -112,7 +112,7 @@ export const REFUSAL = {
   // The bridge's own replies (bridge.ts).
   tooMany: "Too many computer calls at once: wait for one to finish.",
   alreadyOpen: "This process's browser tools are not connected because this session already has a computer connection: go on without the browser tools in this process, and tell the user.",
-  notStarted: "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.",
+  notStarted: "Not started by UniDeX: start this session from the Code page's New menu.",
   ended: "This session has ended, so its computer connection is closed: start a new session to use the browser.",
   computerFailed: takes((why) => `The computer failed (${why}): call computer_status to see whether the browser is still there.`),
 } as const satisfies Readonly<Record<string, string | ((x: string) => string)>>;

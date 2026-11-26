@@ -169,35 +169,20 @@ export interface HostAgentFlags { noDaemon: boolean; bin?: string | null }
  *  carries; the page rebuilds the line from it and asks once more. */
 export type HostPtyAgentResult = HostResult<HostPtyProcess> | { ok: false; error: string; code: "flags"; flags: { noDaemon: boolean; bin: string | null } };
 
+/** The agent hosts: a Code terminal's agent, the catalog, the model a new terminal starts with (sessionChoice). */
 export type HostSessionHost = "claude" | "codex";
 
-/** What a turn may do (spec 2026-10-07-sessions-ux U7). */
+/** What an agent may do: read only, edit files, or edit and run commands (the settings' sessionChoice keeps one). */
 export type HostSessionAccess = "read" | "edit" | "run";
 
-/** One event of a thread: prompt (with its model, effort and access), session, text, tool, tool_result, patch, plan,
- *  usage, error or done, and its turn. `computer` (with `text`) is a Computer pane line, sent live and never stored
- *  (agent-computer D35). */
+/** One event of a conversation in the runtime's lib/session-events.js shape (the Code chat's mirror caches, a past chat):
+ *  prompt, session, text, tool, tool_result, patch, plan, usage, error or done, and its turn. `computer` (with `text`) is a
+ *  Computer pane line (agent-computer D35). */
 export interface HostSessionEvent {
   t: string;
   kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done" | "computer";
   turn: number;
   [field: string]: unknown;
-}
-
-export interface HostSessionThread {
-  id: string;
-  workspace: string;
-  host: HostSessionHost;
-  /** The latest turn's choices; the next turn reuses them unless it names others. */
-  model: string | null;
-  effort: string | null;
-  access: HostSessionAccess;
-  title: string;
-  created: string;
-  updated: string;
-  turns: number;
-  running: boolean;
-  usd: number;
 }
 
 /** One host's models and the commands a prompt may start with (the runtime's lib/host-catalog.js). */
@@ -301,20 +286,7 @@ export interface HostHosts {
   catalog(refresh?: boolean): Promise<HostResult<HostCatalog>>;
 }
 
-export interface HostSessions {
-  /** Opens a thread in a workspace and starts its first turn; events follow on onEvent. */
-  start(req: { workspace: string; host: HostSessionHost; text: string; model?: string | null; effort?: string | null; access?: HostSessionAccess; allowCommands?: boolean }): Promise<HostResult<HostSessionThread>>;
-  /** The thread's next turn; a field left out reuses the thread's last. */
-  send(req: { thread: string; text: string; model?: string | null; effort?: string | null; access?: HostSessionAccess; allowCommands?: boolean }): Promise<HostResult<HostSessionThread>>;
-  stop(thread: string): void;
-  /** Moves the thread's file to the Trash and forgets its browser (session-browser S13, S6). */
-  remove(thread: string): Promise<HostResult<null>>;
-  list(): Promise<HostResult<HostSessionThread[]>>;
-  read(thread: string): Promise<HostResult<HostSessionEvent[]>>;
-  onEvent(cb: (ev: { thread: string; event: HostSessionEvent }) => void): () => void;
-}
-
-/** A workspace's repository: its branch and the files that differ from HEAD (`git status --porcelain=v2` codes). */
+/** A repository's branch and the files that differ from HEAD (`git status --porcelain=v2` codes), for Code's Diff pane. */
 export interface HostGitStatus {
   repo: boolean;
   branch: string | null;
@@ -325,12 +297,6 @@ export interface HostGitStatus {
 }
 
 export interface HostGitDiff { stat: string; text: string; truncated: boolean }
-
-export interface HostGit {
-  status(workspace: string): Promise<HostResult<HostGitStatus>>;
-  diff(workspace: string, file?: string): Promise<HostResult<HostGitDiff>>;
-  commit(workspace: string, message: string): Promise<HostResult<{ commit: string }>>;
-}
 
 export interface HostProposalPreview {
   name: string; slug: string; digest: string; token: string; recheck: string | null; legacy?: boolean;
@@ -352,15 +318,12 @@ export interface HudHost {
   pty: HostPty;
   shell: HostShell;
   env: HostEnv;
-  /** Agent sessions and their repositories: only the app has them (its main runs the turns); undefined elsewhere. */
-  sessions?: HostSessions;
   /** The host CLIs' models and commands (remove-sessions D11): the app's alone. */
   hosts?: HostHosts;
   /** The Computer pane's calls: only the app has them; undefined elsewhere. */
   computer?: HostComputer;
   /** The Code chat view's transcript mirror: only the app has it; undefined elsewhere. */
   code?: HostCode;
-  git?: HostGit;
   proposals?: HostProposals;
 }
 
@@ -431,12 +394,6 @@ export function codeChatOn(): boolean { return hudHost().code?.enabled === true;
 
 /** The installed host's catalog of models and commands, or null when it has none (plain Node). */
 export function hostsHost(): HostHosts | null { return hudHost().hosts ?? null; }
-
-/** The installed host's sessions and git, or null when it has none (plain Node). */
-export function sessionsHost(): { sessions: HostSessions; git: HostGit } | null {
-  const h = hudHost();
-  return h.sessions && h.git ? { sessions: h.sessions, git: h.git } : null;
-}
 
 export const env: HostEnv = {
   get: (name) => hudHost().env.get(name),

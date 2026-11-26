@@ -438,7 +438,7 @@ test("openerPath uses a copy when its own path holds whitespace", () => {
 test("an id issued before the page went opens nothing after it, though its key is in use again", () => {
   const { door, opened, msg } = rig();
   const before = door.issue("code:t1");
-  door.issue("chat:" + "a".repeat(8));
+  door.issue("code:t2");
   door.revokeAll("code:");
   const after = door.issue("code:t1");
   assert.notEqual(before, after);

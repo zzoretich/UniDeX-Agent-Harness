@@ -295,9 +295,9 @@ test("spawnAgent: closing the terminal, and every terminal ending with the page,
   assert.equal(registry.get(b), undefined);
   assert.equal(registry.get(c), undefined);
   // A late exit of a forgotten agent leaves a newer registration of the same pid alone.
-  registry.add({ pid: b, host: "claude", page: "chat", key: "chat:thread-1", label: "x", place: "ws:harbor-map", access: "edit" });
+  registry.add({ pid: b, host: "claude", page: "code", key: "code:t9", label: "x", place: "ws:harbor-map", access: "edit" });
   spawned[1].p.exit(0);
-  assert.equal(registry.get(b)?.key, "chat:thread-1");
+  assert.equal(registry.get(b)?.key, "code:t9");
 });
 
 test("spawnAgent: an agent still being resolved when every terminal ends with its page is never started", async () => {

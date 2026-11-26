@@ -113,7 +113,7 @@ export function workbenchTabFrom(params: Record<string, string | undefined>, ids
 export const SPACES_PANES = ["overview", "files", "history", "linked"] as const;
 export type SpacesPane = (typeof SPACES_PANES)[number];
 
-/** A thread id as the app takes one: the ThreadId of app/src/main/ipc/schemas.ts (statusline.test.ts pins the two). */
+/** A host session id that can be resumed by id: a UUID, as Claude Code and Codex name theirs (History and Spaces check it). */
 export const THREAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** What a link may select: a tab, and for Spaces a workspace with its pane and thread (WorkbenchView.open's target). */

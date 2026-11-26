@@ -3,10 +3,9 @@
 // (D7, D34) and the browser, and serves the operations the pane calls (D5, D32). D9: text that leaves the main process
 // (ask titles and details, replies, log lines, notes) never carries a raw page-derived name: a target's name goes out as
 // `Resolved.shown` / `Focus.shown`, other page text through `browser.scrub(text, tab)`, while the gate judges the raw
-// target. I1: even scrubbed, a page's name for a control stays on the person's side (the card, the activity log, a Chat
-// thread's live lines); a notice and every reply to an agent name an ask by its app-written labels, the action's kind and
-// the site's host only (`AskInput.notice`). Nothing here touches Electron, so the unit tests drive it with a fake browser
-// and a fake clock.
+// target. I1: even scrubbed, a page's name for a control stays on the person's side (the card and the activity log); a
+// notice and every reply to an agent name an ask by its app-written labels, the action's kind and the site's host only
+// (`AskInput.notice`). Nothing here touches Electron, so the unit tests drive it with a fake browser and a fake clock.
 
 import { realClock, type Answer, type Ask, type AskBroker, type AskInput, type Clock, type Outcome } from "./asks";
 import type { BrowserHooks, ComputerBrowser, FocusId, Judged, Resolved, TabInfo } from "./browser";
@@ -48,13 +47,8 @@ export interface ServiceOptions {
   browser: (session: string, hooks: BrowserHooks) => BrowserLike;
   /** The service destroyed that session's browser (the page went); the app forgets its handle. */
   destroyed?: (session: string) => void;
-  /** Main's own name for a session key, for a state when no agent of the session is registered: a thread's title. */
-  label?: (session: string) => string | undefined;
   /** The app tells main's browser handle map that a Code session's browser now belongs to another key (`move`). */
   moved?: (from: string, to: string) => void;
-  /** Whether a Sessions thread still exists; `boot` forgets the record of one that is confirmed missing (session-browser S6).
-   *  `undefined` means "cannot tell" (no vault attached, its sessions folder unreadable): the record is kept. */
-  threadExists?: (session: string) => boolean | undefined;
   /** Each browser's power and tabs, kept across a quit (session-browser S6, S7). */
   records: BrowserRecords;
   broker: AskBroker;
@@ -63,9 +57,6 @@ export interface ServiceOptions {
   sites: SiteMarks;
   config: () => ComputerConfig;
   emit: (s: ComputerState) => void;
-  /** A line for the agent's Chat thread (a live `computer` event) or Code session (D35). The service has already put it
-   *  in the session's activity log (`ComputerState.log`). */
-  note: (agent: AgentRef, line: string) => void;
   /** Moves the session's browser into the pop-out window (the app's window code). `front` is set only by the user's own
    *  Pop out press: the window comes forward even when it already exists; a follow never sets it. */
   popOut?: (session: string | null, show: { label: string; on: boolean; front?: boolean }) => void;
@@ -75,7 +66,7 @@ export interface ServiceOptions {
   /** Where a tab the person opens (the pane's +) starts: START_PAGE (hud/src/data/computerStart.ts, DuckDuckGo) unless
    *  main was given the e2e suite's fixture (computer/notify.ts testSwitches). */
   startPage?: string;
-  /** Whether the app holds this session (a terminal or a thread): the check the page's calls use. A program's open for any
+  /** Whether the app holds this session (its terminal): the check the page's calls use. A program's open for any
    *  other session is dropped and makes no slot (session-browser S23). Absent: no session is held. */
   held?: (session: string) => boolean;
   /** Sends an address to the Mac's own browser (index.ts) and says, once the system has taken it, whether it went: true only
@@ -110,7 +101,7 @@ const isCategory = (w: AskWhy): w is AskCategory => CATEGORIES.has(w);
 const offersAlways = (w: AskWhy): boolean => w === "unmarked" || (isCategory(w) && w !== "download");
 
 const LOOK: ReadonlySet<string> = new Set(["computer_status", "computer_snapshot", "computer_screenshot", "computer_wait", "computer_console"]);
-/** S3: after a Not now (or a switch off) a session's opens answer the same sentence, no card, for this long on Code. */
+/** S3: after a Not now (or a switch off) a session's opens answer the same sentence, no card, for this long. */
 export const QUIET_MS = 60_000;
 /** The most addresses held for one Turn on card (session-browser S23); a seventh while it is up is dropped. */
 const PROGRAM_HOLD = 6;
@@ -157,9 +148,9 @@ interface Slot {
   /** The REAL addresses Off closed and the one that was active, for On to reopen (S5). Main only: they reopen through
    *  `restore`, so the agent sees them only in the hidden form (S9). */
   remembered: { urls: string[]; active: number } | null;
-  /** S3: the sentence a `computer_open` gets without a card, until `until` (a time on the service's clock; null on Chat:
-   *  until the agent's turn ends). Cleared by a manual On. A timestamp, not a timer, so dropping a slot leaves nothing. */
-  quiet: { sentence: string; until: number | null; pid: number | null } | null;
+  /** S3: the sentence a `computer_open` gets without a card, until `until` (a time on the service's clock, QUIET_MS after
+   *  it began). Cleared by a manual On. A timestamp, not a timer, so dropping a slot leaves nothing. */
+  quiet: { sentence: string; until: number } | null;
   /** The tabs On is reopening, until it has finished: Off before then remembers these, not the half-made set. */
   reopening: { urls: string[]; active: number } | null;
   /** S5: why the calls started before the wheel's generation `gen` were stopped by the person. */
@@ -172,8 +163,6 @@ interface Slot {
   /** Reply reads in progress: like a look in flight, the browser is not put to sleep and the wheel not freed under them. */
   reading: number;
   log: LogLine[];
-  /** The agent that called on this computer last: where a page's own notes go when no agent holds the wheel. */
-  last: AgentRef | null;
   /** Actions under way (the wheel never frees under one, D31). */
   running: number;
   /** S9: a counter value, higher the more recently the session was used (selected, or an agent called). */
@@ -186,9 +175,6 @@ interface Slot {
   looking: number;
   /** S6: the name the Code page described this session by (cleaned), ahead of every other name. */
   title: string | null;
-  /** The name main gave the session (`ServiceOptions.label`, cleaned) as last read, "" when it had none; null when not read
-   *  yet. Read once per slot: `retitled` and `select` drop it, so a state emit never reads a thread's file. */
-  named: string | null;
   /** S7: the conversation this Code session runs, kept with its record. */
   conversation: Conversation | null;
   /** The record last scheduled for writing, as JSON, so only a change schedules another. */
@@ -363,7 +349,7 @@ function deniedText(o: Outcome, notice: string): string {
 }
 
 export class ComputerService {
-  /** Each session's browser, by session key (`code:<the id of the terminal's first process>` (`TerminalSession.originPty`), `chat:<thread>`). */
+  /** Each session's browser, by session key (`code:<the id of the terminal's first process>`, `TerminalSession.originPty`). */
   private readonly slots = new Map<string, Slot>();
   /** Each asked action's reply by ask id, for `computer_wait`; the session that asked. */
   private readonly jobs = new Map<string, Job>();
@@ -472,16 +458,14 @@ export class ComputerService {
       const v = judge({ kind: "open", url: parsed.url }, { access: agent.access, marked: false });
       if ("refuse" in v) return fail(v.refuse);
       if (p.power === "off") {
-        const q = this.quietReply(p, agent);
+        const q = this.quietReply(p);
         if (q) return q;
       }
     }
-    // R81: a process the registry no longer holds for its key (the thread's next CLI replaced it) never takes the wheel.
+    // R81: a process the registry no longer holds for its key (another process registered under it since) never takes the wheel.
     if (!this.registered(agent)) return fail(this.busy(p.key, NOT_HELD));
     const took = this.o.wheel.take(p.key, agent.key, agent.label);
     if (!took.ok) return fail(this.busy(p.key, took.busy));
-    // Only a session that acted gets the page's own notes when no one holds the wheel (a look never does).
-    p.last = agent;
     try {
       // R78: the deadline bounds the queue and the target read too: a call that has not taken the computer by then
       // returns, and its step never delivers input or raises an ask.
@@ -503,27 +487,19 @@ export class ComputerService {
     }
   }
 
-  /** S3: the quiet sentence while this agent's opens are being refused without a card, else null (and the period is over).
-   *  A Chat period belongs to the turn (the process) it started in; a Code period to the clock. */
-  private quietReply(p: Slot, agent: AgentRef): Reply | null {
+  /** S3: the quiet sentence while the session's opens are being refused without a card, else null (and the period is over). */
+  private quietReply(p: Slot): Reply | null {
     const q = p.quiet;
-    return this.quietOn(p, agent.pid) && q ? fail(q.sentence) : null;
+    return this.quietNow(p) && q ? fail(q.sentence) : null;
   }
 
-  /** Whether the quiet period of S3 is on for a caller whose turn is `pid`; an ended period is cleared. */
-  private quietOn(p: Slot, pid: number | undefined): boolean {
+  /** Whether the quiet period of S3 is on (until its time on the service's clock), for an agent's open and a program's
+   *  alike; an ended period is cleared. */
+  private quietNow(p: Slot): boolean {
     const q = p.quiet;
-    if (q && (q.until === null ? q.pid !== null && q.pid === pid : this.clock.now() < q.until)) return true;
+    if (q && this.clock.now() < q.until) return true;
     p.quiet = null;
     return false;
-  }
-
-  /** Whether the quiet period of S3 is on for a program's open (it has no process of its own: a Chat period lasts until the
-   *  turn it started in ends); an ended period is cleared. */
-  private quietNow(p: Slot): boolean {
-    // A period with no end time lasts while the turn it started in is the session's live one; with no turn (the person's Off
-    // between turns made it) it is over at once, for a program as for an agent.
-    return this.quietOn(p, (this.o.liveAgent?.(p.key) ?? this.agents.get(p.key))?.pid);
   }
 
   /** D34 (R76, R78): `work`'s reply, bound to the call's deadline until it takes the computer. `take()`, called just
@@ -560,7 +536,7 @@ export class ComputerService {
     if (p.browser !== b) return this.stopped(p, lease) ?? fail(REFUSAL.isOff);
     const url = this.url(b);
     // D39: a URL the agent opens itself is logged, not asked.
-    this.line(p, agent.label, `Opened ${url ?? a.url}`, agent);
+    this.line(p, agent.label, `Opened ${url ?? a.url}`);
     return this.done(p, b, "Opened the page.", since, lease);
   }
 
@@ -575,7 +551,7 @@ export class ComputerService {
       if (a.kind !== "open") return { reply: fail(REFUSAL.isOff) };
       // Inside the queue: a denied ask ahead of this call has started the quiet period by now (S3), and a Turn on card
       // already up is the one this call waits on, so a retry never raises a second.
-      const quiet = this.quietReply(p, agent);
+      const quiet = this.quietReply(p);
       if (quiet) return { reply: quiet };
       const up = this.o.broker.pending(p.key).find((x) => x.why === "power" && x.session === agent.key);
       if (up) return { reply: { text: waiting(up.id) } };
@@ -660,10 +636,10 @@ export class ComputerService {
       // failure (a retry would raise a second card for what already ran), with the page as it is now.
       const what = x.shown ? quoted(x.shown) : "an unnamed control";
       if (once) {
-        this.line(p, agent.label, `Clicked ${what} once: ${DOUBLE_ONCE}`, agent);
+        this.line(p, agent.label, `Clicked ${what} once: ${DOUBLE_ONCE}`);
         return this.done(p, b, `Clicked ${did} once: ${DOUBLE_ONCE}.`, since, lease);
       }
-      this.line(p, agent.label, `${done} ${what}`, agent);
+      this.line(p, agent.label, `${done} ${what}`);
       return this.done(p, b, `${done} ${did}.`, since, lease);
     };
     if (!need) return { reply: take() ? await run(r) : fail(REFUSAL.late) };
@@ -708,7 +684,7 @@ export class ComputerService {
       if (!a.close) {
         b.select(a.index);
         const since = this.clock.now();
-        this.line(p, agent.label, `Switched to tab ${a.index}`, agent);
+        this.line(p, agent.label, `Switched to tab ${a.index}`);
         return this.done(p, b, `Switched to tab ${a.index}.`, since, lease);
       }
       const already = (): Reply => this.done(p, b, "That tab is already closed.", this.clock.now(), lease);
@@ -747,7 +723,7 @@ export class ComputerService {
       const at = where();
       b.close(at);
       const since = this.clock.now();
-      this.line(p, agent.label, `Closed tab ${at}`, agent);
+      this.line(p, agent.label, `Closed tab ${at}`);
       return this.done(p, b, "Closed the tab.", since, lease);
     };
     if (!need) return { reply: take() ? await run() : fail(REFUSAL.late) };
@@ -776,7 +752,7 @@ export class ComputerService {
     if ((go === "back" && !here.canBack) || (go === "forward" && !here.canForward)) return { reply: refuseAt(REFUSAL.noHistory(go), this.url(b)) };
     const free = (went: string): Reply => {
       const since = this.clock.now();
-      this.line(p, agent.label, went, agent);
+      this.line(p, agent.label, went);
       return this.done(p, b, `${went}.`, since, lease);
     };
     if (go !== "reload") {
@@ -849,7 +825,7 @@ export class ComputerService {
     const lost = await this.deliver(p, agent, lease, (valid) => b.hoverAt(r, valid));
     if (lost) return { reply: lost };
     const since = this.clock.now();
-    this.line(p, agent.label, r.shown ? `Hovered ${quoted(r.shown)}` : "Hovered an unnamed control", agent);
+    this.line(p, agent.label, r.shown ? `Hovered ${quoted(r.shown)}` : "Hovered an unnamed control");
     return { reply: this.done(p, b, `Hovered ${did}.`, since, lease) };
   }
 
@@ -953,7 +929,7 @@ export class ComputerService {
       const lost = await this.deliver(p, agent, lease, (valid) => b.key(key, valid, { tab, pageToken: token }, idOf(f)));
       if (lost) return lost;
       const since = this.clock.now();
-      this.line(p, agent.label, `Pressed ${shownKey}`, agent);
+      this.line(p, agent.label, `Pressed ${shownKey}`);
       return this.done(p, b, `Pressed ${shownKey}.`, since, lease);
     };
     if (!need) return { reply: take() ? await run() : fail(REFUSAL.late) };
@@ -1129,21 +1105,21 @@ export class ComputerService {
       if (shown) this.touchPointer(p);
     } catch (e) {
       if (!(e instanceof PageChanged)) throw e;
-      this.line(p, agent.label, "Typing stopped part way", agent);
+      this.line(p, agent.label, "Typing stopped part way");
       const byUser = this.stopped(p, lease);
       if (byUser) return byUser;
       const why = !keepGoing() ? stopper() : e instanceof FocusMoved ? "the focus moved" : "the page or tab changed";
       return refuseAt(REFUSAL.typingStopped(why), this.url(b));
     }
     if (!keepGoing()) {
-      this.line(p, agent.label, "Typing stopped part way", agent);
+      this.line(p, agent.label, "Typing stopped part way");
       const byUser = this.stopped(p, lease);
       if (byUser) return byUser;
       return refuseAt(REFUSAL.typingStopped(stopper()), this.url(b));
     }
     const since = this.clock.now();
     const n = Array.from(text).length;
-    this.line(p, agent.label, `Typed ${n} character${n === 1 ? "" : "s"}`, agent);
+    this.line(p, agent.label, `Typed ${n} character${n === 1 ? "" : "s"}`);
     return this.done(p, b, `Typed ${n} character${n === 1 ? "" : "s"}.`, since, lease);
   }
 
@@ -1264,7 +1240,7 @@ export class ComputerService {
     const notice = s.card?.notice ?? `${labels}: ${s.kind} on ${hostOf(s.site)}?`;
     const input: AskInput = { computer: p.key, session: agent.key, sessionLabel: p.title ?? agent.label, why, title, notice, detail: s.detail, site: s.site, always };
     const held = this.o.broker.hold(input, deadline - this.clock.now());
-    this.line(p, agent.label, `Asked the user: ${title}`, agent);
+    this.line(p, agent.label, `Asked the user: ${title}`);
     const first = await held;
     const job: Job = { session: agent.key, answered: false, done: Promise.resolve(fail(REFUSAL.changed)), slot: p, collected: null };
     job.done = this.settle(agent, p, s, input, first, job, lease);
@@ -1302,7 +1278,7 @@ export class ComputerService {
       job.answered = true;
       // Controller 4 (D31): the wheel's idle timer restarts at the answer, so it cannot free before the revalidation.
       this.o.wheel.touch(p.key, agent.key);
-      this.line(p, agent.label, outcomeLine(o, input), agent);
+      this.line(p, agent.label, outcomeLine(o, input));
       // S4: the person turned the browser on by hand while the Turn on card was up: the held open runs on it.
       if (o.state !== "allowed" && !(input.why === "power" && o.reason === ON_BY_HAND)) {
         // Pages a program opened behind this card (session-browser S23): the person's no drops them; any other ending (the
@@ -1314,7 +1290,7 @@ export class ComputerService {
           else this.keepOrDrop(p, o.reason ?? "cancelled");
         }
         // S3: a Not now, or no answer in time, is told once and then left quiet (a switch off cancels, and says so).
-        if (input.why === "power" && theirs) { this.startQuiet(p, REFUSAL.declined, agent); return fail(REFUSAL.declined); }
+        if (input.why === "power" && theirs) { this.startQuiet(p, REFUSAL.declined); return fail(REFUSAL.declined); }
         return this.stopped(p, lease) ?? fail(deniedText(o, input.notice));
       }
       // Lenient on purpose: a slot that was forgotten (no slot for the key at all) falls through, and the checks inside the
@@ -1361,7 +1337,7 @@ export class ComputerService {
         else if (isCategory(w) && s.target) for (const c of categoriesOf(s.target)) this.o.sites.allowCategory(site, c);
       }
     } catch {
-      this.line(p, USER, `Could not remember Always for ${hostOf(site)}: this action goes ahead, and the next one asks again.`, null);
+      this.line(p, USER, `Could not remember Always for ${hostOf(site)}: this action goes ahead, and the next one asks again.`);
     }
     this.refresh();
   }
@@ -1373,7 +1349,6 @@ export class ComputerService {
       const p = this.slot(place);
       const h = this.o.wheel.holder(place);
       const who = h?.kind === "agent" ? { session: h.session, label: h.label } : PAGE;
-      const agent = h?.kind === "agent" ? this.agents.get(h.session) ?? null : null;
       let title: string, detail: string;
       try {
         // D9: the browser's text names page-chosen things (a file name): scrubbed before it leaves.
@@ -1389,11 +1364,11 @@ export class ComputerService {
         notice: `${ASK_LABELS[i.why]} on ${hostOf(i.site)}?`, detail, site: i.site, always: false,
       };
       const held = this.o.broker.hold(input);
-      this.line(p, who.label, `Asked the user: ${input.title}`, agent);
+      this.line(p, who.label, `Asked the user: ${input.title}`);
       let o = await held;
       while (o.state === "waiting_for_user") o = await this.o.broker.wait(o.askId);
       if (h?.kind === "agent") this.o.wheel.touch(place, h.session);
-      this.line(p, who.label, outcomeLine(o, input), agent);
+      this.line(p, who.label, outcomeLine(o, input));
       return o.state === "allowed";
     } catch {
       return false;
@@ -1405,8 +1380,6 @@ export class ComputerService {
    *  when the scrub cannot run. */
   private async pageNote(place: string, text: string): Promise<void> {
     const p = this.slot(place);
-    const h = this.o.wheel.holder(place);
-    const to = h?.kind === "agent" ? this.agents.get(h.session) ?? p.last : p.last;
     let out: string;
     try {
       if (!p.browser) throw new Error("no browser");
@@ -1414,7 +1387,7 @@ export class ComputerService {
     } catch {
       out = "The page acted on its own; the details are held back because they could not be checked for password values.";
     }
-    this.line(p, PAGE.label, out, to);
+    this.line(p, PAGE.label, out);
   }
 
   private async wait(agent: AgentRef, p: Slot, a: Record<string, unknown>): Promise<Reply> {
@@ -1502,7 +1475,7 @@ export class ComputerService {
   select(session: string | null): ComputerState | null {
     if (this.quitting) return null;
     const q = session ? this.slot(session) : null;
-    if (q) { q.named = null; this.touch(q); this.wakeUp(q, false); }
+    if (q) { this.touch(q); this.wakeUp(q, false); }
     if (session !== this.selected) {
       this.hidePointer();
       if (this.selected) this.slots.get(this.selected)?.browser?.show(null);
@@ -1572,7 +1545,7 @@ export class ComputerService {
       // In the slot's queue, behind a wake that is under way, so it never overlaps the opens On is still making, or an agent's action.
       await this.serial(p, () => b.open(url, { by: null }));
       if (p.browser !== b) return { ok: false, error: "The browser is off.", code: "ENOENT" };
-      this.line(p, USER, `Opened ${this.url(b) ?? "the page"}`, null);
+      this.line(p, USER, `Opened ${this.url(b) ?? "the page"}`);
       return { ok: true, data: null };
     } catch (e) {
       return { ok: false, error: forPerson(e), code: "EIO" };
@@ -1608,12 +1581,12 @@ export class ComputerService {
         });
       } catch (e) {
         if (!made || p.browser !== b) throw e;
-        this.line(p, USER, `The page did not open: ${url.replace(/[?#].*$/, "")}`, null);
+        this.line(p, USER, `The page did not open: ${url.replace(/[?#].*$/, "")}`);
         this.refresh(session);
         return { ok: true, data: null };
       }
       if (p.browser !== b) return { ok: false, error: "The browser is off.", code: "ENOENT" };
-      this.line(p, USER, `Opened ${this.url(b) ?? "the page"}`, null);
+      this.line(p, USER, `Opened ${this.url(b) ?? "the page"}`);
       this.refresh(session);
       return { ok: true, data: null };
     } catch (e) {
@@ -1660,7 +1633,7 @@ export class ComputerService {
     const title = `${label} wants to turn its browser on and open ${hostOf(siteOf(url))}`;
     const input: AskInput = { computer: p.key, session: PROGRAM, sessionLabel: label, why: "power", title, notice: "turn the browser on", detail: cardPage(withoutUserinfo(url)), site: null, always: false };
     const held = this.o.broker.hold(input);
-    this.line(p, label, `Asked the user: ${title}`, null);
+    this.line(p, label, `Asked the user: ${title}`);
     void this.settleProgram(p, input, held);
   }
 
@@ -1680,23 +1653,23 @@ export class ComputerService {
     const n = p.programOpens.length;
     if (!n) return;
     p.programOpens = [];
-    this.line(p, this.programName(p.key), `${n} page${n === 1 ? "" : "s"} a program opened ${n === 1 ? "was" : "were"} not opened`, null);
+    this.line(p, this.programName(p.key), `${n} page${n === 1 ? "" : "s"} a program opened ${n === 1 ? "was" : "were"} not opened`);
     if (reason !== null) this.o.log?.(`door: ${n} open${n === 1 ? "" : "s"} for ${clean(p.key, 64)} ${n === 1 ? "was" : "were"} dropped (${clean(reason, 80)})`);
   }
 
   /** The answer to a program's Turn on card. Turn on (or the person turning the browser on by hand, which `setPower` has
-   *  already run) opens what was held; anything else drops it, and a Not now or no answer starts the quiet period. A
-   *  thread's period lasts until the live turn ends; with no turn live, and on Code, it is timed. Never rejects. */
+   *  already run) opens what was held; anything else drops it, and a Not now or no answer starts the quiet period (timed,
+   *  QUIET_MS). Never rejects. */
   private async settleProgram(p: Slot, input: AskInput, first: Promise<Outcome>): Promise<void> {
     try {
       let o = await first;
       while (o.state === "waiting_for_user") o = await this.o.broker.wait(o.askId);
       // An agent's card took the session's one place: the held addresses ride it, and this card's end says nothing.
       if (o.state === "denied" && o.reason === PROGRAM_YIELD) {
-        this.line(p, this.programName(p.key), "The Turn on card gave way to the agent's; the pages wait on that one", null);
+        this.line(p, this.programName(p.key), "The Turn on card gave way to the agent's; the pages wait on that one");
         return;
       }
-      this.line(p, this.programName(p.key), outcomeLine(o, input), null);
+      this.line(p, this.programName(p.key), outcomeLine(o, input));
       if (o.state === "allowed" && this.slots.get(p.key) === p) {
         // The setting was switched off while the card was up: it turns nothing on and opens nothing (session-browser A3).
         if (!this.o.config().enabled) { this.dropHeld(p, SETTING_OFF); return; }
@@ -1712,12 +1685,8 @@ export class ComputerService {
       if (o.state === "denied" && o.reason === ON_BY_HAND) return;
       const theirs = o.state === "denied" && (o.answer === "deny" || o.reason === "timed out");
       this.dropHeld(p, theirs ? null : o.reason ?? "cancelled");
-      if (theirs) {
-        // S3: on a thread the period lasts until the live turn ends; with no turn live, and on Code, it is timed.
-        const turn = p.key.startsWith("chat:") ? this.o.liveAgent?.(p.key) : undefined;
-        if (turn) this.startQuiet(p, REFUSAL.declined, turn);
-        else p.quiet = { sentence: REFUSAL.declined, until: this.clock.now() + QUIET_MS, pid: null };
-      }
+      // S3: the quiet period, timed.
+      if (theirs) this.startQuiet(p, REFUSAL.declined);
     } catch {
       this.dropHeld(p, "the card could not be settled");
     }
@@ -1760,11 +1729,11 @@ export class ComputerService {
       });
     } catch {
       if (p.browser !== b) return;
-      this.line(p, by, made ? `The page did not open: ${url.replace(/[?#].*$/, "")}` : "A page a program opened did not open", null);
+      this.line(p, by, made ? `The page did not open: ${url.replace(/[?#].*$/, "")}` : "A page a program opened did not open");
       return;
     }
     if (p.browser !== b) return;
-    this.line(p, by, `Opened ${opened ?? "the page"}`, null);
+    this.line(p, by, `Opened ${opened ?? "the page"}`);
   }
 
   /** Open in my browser (session-browser S24): the selected browser's active tab goes to the Mac's own browser by its real
@@ -1787,7 +1756,7 @@ export class ComputerService {
     let opened = false;
     try { opened = await this.o.outside(url); } catch { opened = false; }
     if (!opened) return { ok: false, error: "Your browser did not open the page.", code: "EIO" };
-    this.line(p, USER, "Opened the page in your browser", null);
+    this.line(p, USER, "Opened the page in your browser");
     return { ok: true, data: null };
   }
 
@@ -1800,7 +1769,7 @@ export class ComputerService {
     try {
       // A tab the person opens starts on the start page, the person's own load (nothing asks). An agent's new tab loads
       // its own URL instead, with no start page first (computer_open's newTab).
-      if (op.kind === "new") void this.serial(p, () => b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: null })).catch((e: unknown) => this.line(p, USER, `The new tab did not open: ${forPerson(e)}`, null));
+      if (op.kind === "new") void this.serial(p, () => b.open(this.o.startPage ?? START_PAGE, { newTab: true, by: null })).catch((e: unknown) => this.line(p, USER, `The new tab did not open: ${forPerson(e)}`));
       else if (op.kind === "close") { if (this.closeTab(p, b, op.index)) return; }
       else b.select(op.index);
     } catch { /* a stale index: the next state shows the tabs as they are */ }
@@ -1820,7 +1789,7 @@ export class ComputerService {
     }
     // Only a move that started is logged: a stale click on a Back that cannot happen says nothing.
     if (!this.browserOf(p).nav(go)) return;
-    this.line(p, USER, go === "back" ? "Went back" : "Went forward", null);
+    this.line(p, USER, go === "back" ? "Went back" : "Went forward");
   }
 
   /** The person's Reload: a tab that holds no entry a form loaded (`mayHoldForm`) reloads at once with no history read, as Electron's
@@ -1831,7 +1800,7 @@ export class ComputerService {
     const tab = this.active(b);
     // A tab no form ever loaded reloads at once, as Electron's own reload does: no history read, nothing awaited.
     if (tab < 0 || !b.mayHoldForm(tab)) {
-      if (b.nav("reload")) this.line(p, USER, "Reloaded", null);
+      if (b.nav("reload")) this.line(p, USER, "Reloaded");
       return;
     }
     const uid = b.tabUid(tab);
@@ -1842,7 +1811,7 @@ export class ComputerService {
     if (!now()) {
       // The page went on while the history was read: the press is not dropped, the tab it was for reloads the plain way (what
       // the button did before it asked about forms), unless the tab or the browser is gone.
-      if (alive() && b.nav("reload", b.tabIndex(uid!))) this.line(p, USER, "Reloaded", null);
+      if (alive() && b.nav("reload", b.tabIndex(uid!))) this.line(p, USER, "Reloaded");
       return;
     }
     // The read was an await: a tab below the pressed one may have closed, so the pressed tab's index is read again by its uid.
@@ -1850,11 +1819,11 @@ export class ComputerService {
     // A history that could not be read says nothing about the page: the plain reload goes, but the log does not claim it did
     // what a Reload does.
     if (!entry || entry.id === null) {
-      if (b.nav("reload", at)) this.line(p, USER, "Reload pressed; this page's history could not be read.", null);
+      if (b.nav("reload", at)) this.line(p, USER, "Reload pressed; this page's history could not be read.");
       return;
     }
     if (entry.method === "GET") {
-      if (b.nav("reload", at)) this.line(p, USER, "Reloaded", null);
+      if (b.nav("reload", at)) this.line(p, USER, "Reloaded");
       return;
     }
     if (p.ownCard) return;
@@ -1876,11 +1845,11 @@ export class ComputerService {
       if (o.state !== "allowed") return;
       try {
         // Nothing is awaited between navEntry's own check of the tab and entry and the move.
-        if (await b.navEntry(entry, now)) this.line(p, USER, "Reloaded", null);
+        if (await b.navEntry(entry, now)) this.line(p, USER, "Reloaded");
       } catch (e) {
         if (e instanceof PageChanged) return;
         // The person's log is the person's: a refusal worded for an agent's reply is not written here.
-        this.line(p, USER, e instanceof Told ? forPerson(e) : "Send again did not complete.", null);
+        this.line(p, USER, e instanceof Told ? forPerson(e) : "Send again did not complete.");
       }
     } finally {
       if (raised && p.ownCard?.askId === raised.id) p.ownCard = null;
@@ -1903,20 +1872,16 @@ export class ComputerService {
     this.hidePointer();
     const place = this.selected;
     if (!place || this.slot(place).power === "off") return;
-    const h = this.o.wheel.holder(place);
     this.o.wheel.takeOver(place);
     this.o.broker.cancel((a) => a.computer === place, "the user took over");
-    const agent = h?.kind === "agent" ? this.agents.get(h.session) ?? null : null;
-    this.line(this.slot(place), USER, "Took over", agent);
+    this.line(this.slot(place), USER, "Took over");
   }
 
   handBack(): void {
     const place = this.selected;
     if (!place || this.slot(place).power === "off") return;
     this.o.wheel.handBack(place);
-    const h = this.o.wheel.holder(place);
-    const agent = h?.kind === "agent" ? this.agents.get(h.session) ?? null : null;
-    this.line(this.slot(place), USER, "Handed back", agent);
+    this.line(this.slot(place), USER, "Handed back");
   }
 
   /** The person's answer. A late answer (settled, cancelled, unknown) does nothing; "always" on an ask that offers no
@@ -1931,7 +1896,7 @@ export class ComputerService {
     try {
       if (on) this.o.sites.mark(origin); else this.o.sites.unmark(origin);
     } catch {
-      if (this.selected) this.line(this.slot(this.selected), USER, `Could not save the mark for ${hostOf(origin)}.`, null);
+      if (this.selected) this.line(this.slot(this.selected), USER, `Could not save the mark for ${hostOf(origin)}.`);
     }
     this.refresh();
   }
@@ -1984,10 +1949,6 @@ export class ComputerService {
     this.o.wheel.turnEnded(agent.key);
     this.o.broker.cancel((a) => a.session === agent.key, "the turn ended");
     this.agents.delete(agent.key);
-    // S3: a Chat session's quiet period ends with its turn.
-    const q = this.slots.get(agent.key);
-    if (q?.quiet && q.quiet.until === null) q.quiet = null;
-    for (const p of this.slots.values()) if (p.last?.key === agent.key) p.last = null;
     this.refresh();
     this.released();
   }
@@ -2004,22 +1965,14 @@ export class ComputerService {
     }, 0);
   }
 
-  /** The page went (closed, crashed or reloaded): every Code session's browser is destroyed and forgotten, with its asks,
-   *  wheel and log, because the next page counts its terminals from the start and a new `code:t1` must not reach the old
-   *  one's tabs (session-browser S1). Chat sessions are untouched: a thread's id is stable. Safe to call twice. */
+  /** The page went (closed, crashed or reloaded): every session's browser (each is a Code terminal's) is destroyed and
+   *  forgotten, with its asks, wheel and log, because the next page counts its terminals from the start and a new
+   *  `code:t1` must not reach the old one's tabs (session-browser S1). Safe to call twice. */
   pageGone(): void {
     this.inView = false;
     this.hidePointer();
     if (this.releasing !== null) { this.clock.clearTimeout(this.releasing); this.releasing = null; }
-    for (const [key, p] of [...this.slots]) {
-      if (!key.startsWith("code:")) {
-        // A thread's browser outlives the page, but its views go: asleep, as after a relaunch (S6).
-        // The exemptions `trim` applies: a thread's agent outlives a reload, so work under way keeps its views.
-        if (p.power === "awake" && p.browser && !this.inUse(p)) {
-          try { p.browser.sleep(); p.power = "asleep"; } catch { /* it stays awake; the limit sleeps it later */ }
-        }
-        continue;
-      }
+    for (const p of [...this.slots.values()]) {
       // The record gets the state as it is now before the browser goes, so the orphan below keeps the tabs: `track` first,
       // as `flush` does, since a save is pending only for a change it has already seen.
       this.track(p);
@@ -2029,9 +1982,9 @@ export class ComputerService {
       this.dropHeld(p, PAGE_GONE);
       this.endSlot(p, PAGE_GONE);
     }
-    for (const k of [...this.agents.keys()]) if (k.startsWith("code:")) this.agents.delete(k);
-    for (const [id, j] of [...this.jobs]) if (j.session.startsWith("code:")) this.jobs.delete(id);
-    if (this.selected?.startsWith("code:")) this.selected = null;
+    this.agents.clear();
+    this.jobs.clear();
+    this.selected = null;
     // The next page counts its terminals from the start: every Code record waits under its conversation instead (S7).
     // Nothing touches the file once the records are closed for a quit (will-quit calls this too).
     if (!this.closed) { try { this.o.records.orphanCode(); } catch { /* the records are best effort */ } }
@@ -2053,7 +2006,7 @@ export class ComputerService {
     this.dropBrowser(p);
   }
 
-  /** Close session, Delete thread (session-browser S22): the session's browser, tabs and record go. */
+  /** Close session (session-browser S22): the session's browser, tabs and record go. */
   forget(session: string): void {
     const p = this.slots.get(session);
     if (p) {
@@ -2066,28 +2019,15 @@ export class ComputerService {
     if (p) this.refresh();
   }
 
-  /** Once, before the first call: a thread's record comes back. On, it returns asleep with its tabs (they load when the
-   *  session is next used); off, it keeps its tabs for On. Code records are orphans by now (`orphanCode`), whose tabs a
-   *  resumed conversation adopts (`describe`). */
+  /** Once, before the first call: a browser record left from a Sessions thread (a `chat:` key) is dropped (remove-sessions
+   *  D8). Nothing else comes back here: Code records are orphans by now (`orphanCode`), whose tabs a resumed conversation
+   *  adopts (`describe`). Never throws. */
   boot(): void {
-    for (const key of this.o.records.keys()) {
-      // No slot can exist for a key yet: `boot` runs once, right after construction, before any call (the guard is cheap).
-      if (!key.startsWith("chat:") || this.slots.has(key)) continue;
-      const r = this.o.records.get(key);
-      if (!r) continue;
-      let exists: boolean | undefined;
-      try { exists = this.o.threadExists?.(key); } catch { /* cannot tell: keep the record */ }
-      if (exists === false) { try { this.o.records.forget(key); } catch { /* best effort */ } continue; }
-      const p = this.slot(key);
-      if (r.conversation) p.conversation = r.conversation;
-      const kept = r.tabs.length ? { urls: r.tabs, active: r.active } : null;
-      // A browser is never on with no tabs (nothing to restore): it comes back off (session-browser A4). One record that
-      // cannot be restored must not stop the others: its slot stays off with its tabs remembered.
-      if (r.on && kept) {
-        p.power = "asleep";
-        try { this.browserOf(p).restore(r.tabs, r.active); } catch { this.dropBrowser(p); p.power = "off"; p.remembered = kept; }
-      } else p.remembered = kept;
-      p.sig = JSON.stringify(this.recordOf(p));
+    let keys: string[];
+    try { keys = this.o.records.keys(); } catch { return; /* the records are best effort */ }
+    for (const key of keys) {
+      if (!/^chat:/.test(key)) continue;
+      try { this.o.records.forget(key); } catch { /* best effort */ }
     }
   }
 
@@ -2138,8 +2078,6 @@ export class ComputerService {
     p.key = to;
     // Nothing in the moved slot refers to the old terminal's agent; a title and conversation already described for `to` win.
     this.agents.delete(from);
-    p.last = null;
-    if (p.quiet) p.quiet.pid = null;
     if (t?.title) p.title = t.title;
     if (t?.conversation) p.conversation = t.conversation;
     this.slots.set(to, p);
@@ -2183,8 +2121,8 @@ export class ComputerService {
   }
 
   /** The quit did not happen (an update's install failed): the app goes on. A slot that was on has lost its views but the
-   *  session is still on, so it returns ASLEEP with its last-known addresses as kept tabs, as a thread's browser does after
-   *  a relaunch: the pane shows them, the next select or call wakes it with them, Off remembers them. Records work again. */
+   *  session is still on, so it returns ASLEEP with its last-known addresses as kept tabs: the pane shows them, the next
+   *  select or call wakes it with them, Off remembers them. Records work again. */
   quitCancelled(): void {
     if (!this.quitting) return;
     this.quitting = false;
@@ -2248,11 +2186,9 @@ export class ComputerService {
     try { this.o.destroyed?.(p.key); } catch { /* the app's map is not the service's concern */ }
   }
 
-  /** S3: the quiet period: a Chat session's lasts until its turn ends, a Code session's QUIET_MS. */
-  private startQuiet(p: Slot, sentence: string, agent?: AgentRef): void {
-    // A Chat period belongs to the turn that is live now (none: it is over at once, e.g. Off between turns).
-    const pid = agent?.pid ?? this.o.liveAgent?.(p.key)?.pid ?? this.agents.get(p.key)?.pid ?? null;
-    p.quiet = { sentence, until: p.key.startsWith("chat:") ? null : this.clock.now() + QUIET_MS, pid };
+  /** S3: the quiet period, QUIET_MS from now. */
+  private startQuiet(p: Slot, sentence: string): void {
+    p.quiet = { sentence, until: this.clock.now() + QUIET_MS };
     p.programOpens = [];
   }
 
@@ -2286,7 +2222,7 @@ export class ComputerService {
         // The remembered addresses are real: they reopen through `restore`, so each is hidden from the agent until the tab
         // next navigates (S9), and a tab that does not load is named by its hidden form only.
         b.restore(r.urls, r.active);
-        const w: Promise<void> = this.serial(p, () => b.wake()).catch(() => this.line(p, USER, "The tabs did not open.", null)).finally(() => { if (p.waking === w) p.waking = null; done(); });
+        const w: Promise<void> = this.serial(p, () => b.wake()).catch(() => this.line(p, USER, "The tabs did not open.")).finally(() => { if (p.waking === w) p.waking = null; done(); });
         p.waking = w;
         this.refresh(session);
         flushHeld();
@@ -2294,7 +2230,7 @@ export class ComputerService {
       }
       if (noStart) { this.refresh(session); flushHeld(); return; }
       void this.serial(p, async () => {
-        try { await b.open(this.o.startPage ?? START_PAGE, { by: null }); } catch { if (p.browser === b) this.line(p, USER, `The page did not open: ${(this.o.startPage ?? START_PAGE).replace(/[?#].*$/, "")}`, null); }
+        try { await b.open(this.o.startPage ?? START_PAGE, { by: null }); } catch { if (p.browser === b) this.line(p, USER, `The page did not open: ${(this.o.startPage ?? START_PAGE).replace(/[?#].*$/, "")}`); }
       }).finally(done);
       // Pages a program opened while the browser was off follow the tabs the person's switch opens (session-browser S23).
       flushHeld();
@@ -2323,7 +2259,7 @@ export class ComputerService {
     if (p.power !== "asleep" || !p.browser) return;
     const b = p.browser;
     p.power = "awake";
-    const w: Promise<void> = this.serial(p, () => b.wake()).catch(() => this.line(p, USER, `The tabs did not wake.`, null)).finally(() => { if (p.waking === w) p.waking = null; this.refresh(p.key); });
+    const w: Promise<void> = this.serial(p, () => b.wake()).catch(() => this.line(p, USER, `The tabs did not wake.`)).finally(() => { if (p.waking === w) p.waking = null; this.refresh(p.key); });
     p.waking = w;
     if (trim) this.trim(p);
     this.refresh(p.key);
@@ -2347,7 +2283,7 @@ export class ComputerService {
       if (!idle?.browser) return;
       try { idle.browser.sleep(); } catch (e) {
         // A sleep that failed leaves the browser awake; it is set aside for this pass so the loop ends, and logged once.
-        this.line(idle, USER, `The browser did not go to sleep: ${forPerson(e)}`, null);
+        this.line(idle, USER, `The browser did not go to sleep: ${forPerson(e)}`);
         failed.add(idle);
         continue;
       }
@@ -2426,29 +2362,15 @@ export class ComputerService {
     return { session: p.key, label: this.labelOf(p.key), tabs, holder: this.o.wheel.holder(p.key), asks: this.o.broker.pending(p.key), log: [...p.log], marked: active ? this.o.sites.isMarked(active.url) : false, poppedOut: this.popped, power: p.power };
   }
 
-  /** The newest agent's label, else main's own name for the session, else none (session-browser S1). */
+  /** The name the Code page described the session by, else the live agent's label, else the newest registered agent's,
+   *  else none (session-browser S1, S6). */
   private labelOf(key: string): string {
-    const p = this.slots.get(key);
-    const given = p?.title ?? this.o.liveAgent?.(key)?.label ?? this.agents.get(key)?.label;
-    if (given !== undefined) return given;
-    // main's own name reads a file (a Chat thread's): kept on the slot; a session with no slot is not cached.
-    if (!p) return cleanTitle(this.o.label?.(key) ?? "");
-    return p.named ??= cleanTitle(this.o.label?.(key) ?? "");
-  }
-
-  /** A session's name in main may have changed (a Chat thread's title, when its turn starts or ends): the next label is
-   *  read again, and the pane hears of it. Never makes a slot for a session that has none. */
-  retitled(session: string): void {
-    const p = this.slots.get(session);
-    if (!p) return;
-    p.named = null;
-    this.refresh(session);
-    if (session === this.selected) { this.warmPointer(); this.tellPopOut(); }
+    return this.slots.get(key)?.title ?? this.o.liveAgent?.(key)?.label ?? this.agents.get(key)?.label ?? "";
   }
 
   private slot(key: string): Slot {
     let p = this.slots.get(key);
-    if (!p) { p = { key, browser: null, power: "off", remembered: null, title: null, named: null, conversation: null, sig: "null", save: null, known: null, quiet: null, programOpens: [], reopening: null, used: 0, waking: null, queued: 0, looking: 0, stopped: null, stops: [], replies: Promise.resolve(), reading: 0, log: [], last: null, running: 0, queue: Promise.resolve(), ownCard: null }; this.slots.set(key, p); }
+    if (!p) { p = { key, browser: null, power: "off", remembered: null, title: null, conversation: null, sig: "null", save: null, known: null, quiet: null, programOpens: [], reopening: null, used: 0, waking: null, queued: 0, looking: 0, stopped: null, stops: [], replies: Promise.resolve(), reading: 0, log: [], running: 0, queue: Promise.resolve(), ownCard: null }; this.slots.set(key, p); }
     return p;
   }
 
@@ -2501,8 +2423,8 @@ export class ComputerService {
   }
 
   /** R81 (AC-R3-01): whether `agent` is still the process the app's registry holds for its session key. A replacement
-   *  under the same key (a thread's next Chat CLI) is another caller, so an old call of the first never acts for it. With
-   *  no registry wired (some tests), the session key alone. */
+   *  under the same key (another process registered for it) is another caller, so an old call of the first never acts for
+   *  it. With no registry wired (some tests), the session key alone. */
   private registered(agent: AgentRef): boolean {
     if (!this.o.liveAgent) return true;
     try { return this.o.liveAgent(agent.key)?.pid === agent.pid; } catch { return false; }
@@ -2556,17 +2478,11 @@ export class ComputerService {
   private siteAt(b: BrowserLike, tab: number): string | null { return siteOf(b.tabs()[tab]?.url ?? ""); }
   private markedAt(b: BrowserLike, tab: number): boolean { const u = b.tabs()[tab]?.url; return u ? this.o.sites.isMarked(u) : false; }
 
-  /** A line in the session's activity log, and (with `agent`) the same line for that agent's Chat thread (D35, D6, D21),
-   *  naming you when you acted (a page's own line already says what the page did). */
-  private line(p: Slot, session: string, text: string, agent: AgentRef | null): void {
+  /** A line in the session's activity log (D35, D6, D21), under who acted: an agent, you, or the page. */
+  private line(p: Slot, session: string, text: string): void {
     p.log.push({ at: this.clock.now(), session, text });
     if (p.log.length > LOG_MAX) p.log.splice(0, p.log.length - LOG_MAX);
-    if (agent) this.note(agent, session === USER ? `${USER}: ${text}` : text);
     this.refresh(p.key);
-  }
-
-  private note(agent: AgentRef, text: string): void {
-    try { this.o.note(agent, text); } catch { /* a line that cannot be written never fails the action */ }
   }
 
   private sleep(ms: number): Promise<void> {

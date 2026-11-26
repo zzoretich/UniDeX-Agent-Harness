@@ -73,8 +73,8 @@ test("main's fallback and refusals come back as they are; a bridge that fails on
 test("the Computer pane's host says whether the computer surface is on for this run (agent-computer D26, ruling R54)", () => {
   const on = (writeSurfaces: string[]) => createBridgeHost(fakeAos(async () => ({ ok: true, data: { pid: 1 } })).aos, { ...INFO, writeSurfaces } as BootInfo).host.computer?.enabled;
   assert.equal(on([]), false);
-  assert.equal(on(["sessions", "todo"]), false);
-  assert.equal(on(["sessions", "computer"]), true);
+  assert.equal(on(["code", "todo"]), false);
+  assert.equal(on(["code", "computer"]), true);
 });
 
 test("the Computer pane's host carries main's start page, fixed at boot (DuckDuckGo, or the e2e suite's fixture in its runs)", () => {

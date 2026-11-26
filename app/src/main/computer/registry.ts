@@ -7,8 +7,8 @@ import { cleanTitle } from "./title";
 export interface AgentRef {
   pid: number;
   host: "claude" | "codex";
-  page: "chat" | "code";
-  /** chat:<thread> | code:<the id of the terminal's first process> */
+  page: "code";
+  /** code:<the id of the terminal's first process> */
   key: string;
   label: string;
   place: string;
@@ -43,7 +43,7 @@ export class AgentRegistry {
     return this.agents.get(pid);
   }
 
-  /** The live agent registered under a session key (chat:<thread>, code:<the id of the terminal's first process>), the newest first. */
+  /** The live agent registered under a session key (code:<the id of the terminal's first process>), the newest first. */
   byKey(key: string): AgentRef | undefined {
     let found: AgentRef | undefined;
     for (const a of this.agents.values()) if (a.key === key) found = a;

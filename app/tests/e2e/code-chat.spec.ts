@@ -489,6 +489,9 @@ test.describe("the Code chat surface on", () => {
     await expect(chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger")).toBeEnabled();
     // Marks on what must survive: the bubble, the switch's focused button, and the open model menu's search.
     await chat(win).locator(".aos-tc-modelwrap .aos-hm-trigger").click();
+    // The hosts' catalog answers whichever surfaces are on (remove-sessions D11) and can land after the menu opens, which
+    // redraws it once (the search and its focus carried over): the marks are taken once it is in.
+    await expect(chat(win).locator(".aos-hm-search")).toHaveAttribute("placeholder", /^Search \d+ Claude Code models$/);
     await chat(win).locator(".aos-hm-search").fill("son");
     await win.evaluate(() => {
       const w = window as unknown as Record<string, Element | null>;

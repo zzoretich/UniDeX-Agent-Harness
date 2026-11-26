@@ -74,7 +74,7 @@ export interface PtyServiceOptions {
   emit: (ev: PtyEvent) => void;
   /** Loads node-pty (the tests pass a fake). */
   load: () => PtyLib;
-  /** agent-computer D18: the binary a Code launch runs, as the runtime resolves it, or why none (SessionService.resolveBin). */
+  /** agent-computer D18: the binary a Code launch runs, as the runtime resolves it, or why none (HostService.resolveBin). */
   resolveBin?: (host: "claude" | "codex") => Promise<BinResolution>;
   /** The agents this app spawned: a Code launch's CLI is registered while it runs. */
   registry?: AgentRegistry;

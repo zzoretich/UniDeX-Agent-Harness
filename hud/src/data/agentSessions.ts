@@ -7,7 +7,7 @@
 import type { AgenticosJson, ProviderState, SessionHost } from "./aosConfig";
 import { sessionHosts } from "./aosConfig";
 import { ago } from "./notifications";
-import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionAccess, HostSessionEvent, HostSessionThread } from "../host";
+import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionAccess, HostSessionEvent } from "../host";
 
 export const HOST_LABEL: Record<SessionHost, string> = { claude: "Claude Code", codex: "Codex" };
 /** What the composer says in place of Allow commands on a Codex thread (spec S5). */
@@ -18,29 +18,9 @@ export function workspaceNames(names: string[]): string[] {
   return names.filter((n) => !!n && !n.startsWith(".") && !n.startsWith("_")).sort((a, b) => a.localeCompare(b));
 }
 
-export interface ThreadGroup { workspace: string; threads: HostSessionThread[] }
-
-/** Threads by workspace, newest first within each, and the workspace with the newest thread first. */
-export function groupThreads(threads: HostSessionThread[]): ThreadGroup[] {
-  const newest = (a: HostSessionThread, b: HostSessionThread) => (a.updated < b.updated ? 1 : a.updated > b.updated ? -1 : 0);
-  const by = new Map<string, HostSessionThread[]>();
-  for (const t of [...threads].sort(newest)) {
-    const list = by.get(t.workspace) ?? [];
-    list.push(t);
-    by.set(t.workspace, list);
-  }
-  return [...by.entries()].map(([workspace, list]) => ({ workspace, threads: list }));
-}
-
 /** Dollars as the HUD shows them: four places under a cent, else two. */
 export function usdText(usd: number): string {
   return `$${usd > 0 && usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)}`;
-}
-
-/** A thread's line under its title in the list: turns and spend (Codex's is an estimate). */
-export function threadMeta(t: HostSessionThread): string {
-  const turns = `${t.turns} turn${t.turns === 1 ? "" : "s"}`;
-  return t.usd > 0 ? `${turns} · ${t.host === "codex" ? "≈" : ""}${usdText(t.usd)}` : turns;
 }
 
 export interface ToolCall { name: string; toolKind: string; filePath: string | null; summary: string }
