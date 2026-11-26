@@ -46,6 +46,7 @@ test("Settings ▸ Local engine: the engine, its state, the model, the embedder 
   await expect(box.locator('[data-row="today"] .aos-st-localvalue')).toHaveText(/local calls? today/);
   await expect(box.locator('[data-act="local-pull"]')).toHaveText("Pull the model");
   await expect(box.locator('[data-act="local-status"]')).toHaveText("❯_ aos local");
-  // The ai.* switches are rows of their own in the provider section.
-  await expect(content(win).locator(".aos-st-row .aos-st-key", { hasText: /^ai\.chat$/ })).toHaveCount(1);
+  // The ai.* switches are rows of their own in the provider section; Vault chat's went with it (remove-sessions D12).
+  await expect(content(win).locator(".aos-st-row .aos-st-key", { hasText: /^ai\.ask$/ })).toHaveCount(1);
+  await expect(content(win).locator(".aos-st-row .aos-st-key", { hasText: /^ai\.chat$/ })).toHaveCount(0);
 });
