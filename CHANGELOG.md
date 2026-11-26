@@ -4,6 +4,19 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+### Changed
+- **History moved into Code.** **All history** at the foot of Code's list shows every past Claude Code and Codex session on this Mac over Code's stage, by day, with the filter and **Resume** in a new terminal; it works with no host signed in too. <!-- tour: code.history -->
+- Code's model chip remembers its pick: new terminals of that host start on the model you last picked there. <!-- no-tour: the chip already has its step -->
+- Spaces and Pulse open Code: Spaces' Resume always starts a Code terminal, and Pulse's live rows are Code terminals. <!-- no-tour: the same controls, a new target -->
+
+### Removed
+- **The Sessions tab**, with its session runner, the day's session spend line and each thread's browser. Code runs Claude Code and Codex in real terminals with a chat view, which covers it. Old links to Sessions open Code.
+- **Vault chat.** Ask about your notes in any Code session instead (`/ask-brain`, or just ask).
+- **In-app commit** (Sessions' Review changes). Commit from a terminal: ask the agent, or run git yourself.
+
+### Upgrading
+- Your old Sessions threads stay where they were, in `brain/_index/sessions/<workspace>/`; UniDeX no longer reads them. Each one was a real host session, so `claude --resume <id>` or `codex resume <id>` in a terminal still opens it, and Spaces lists them as headless sessions.
+
 ## [2.8.0] — 2026-11-25
 
 ### Added
