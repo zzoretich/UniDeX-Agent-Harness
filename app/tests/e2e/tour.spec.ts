@@ -72,7 +72,7 @@ test.describe("a Mac that has not seen the tour (Claude Code, no provider)", () 
     const { win } = h;
     await helpMenu(win, "tour-start");
     await expect(pop(win)).toHaveAttribute("data-step", "core.rail");
-    // The popover takes the focus and is a live region; Sessions is gated here (no provider), so nine stops.
+    // The popover takes the focus and is a live region; nine stops (remove-sessions D13: none on Sessions).
     await expect(pop(win)).toBeFocused();
     await expect(pop(win)).toHaveAttribute("role", "dialog");
     await expect(pop(win)).toHaveAttribute("aria-live", "polite");
@@ -249,10 +249,11 @@ test.describe("a Mac that has not seen the tour (Claude Code, no provider)", () 
       expect(r.filter((x) => x.status === "missing" || x.status === "unrouted"), `chapter ${c.id}`).toEqual([]);
       gated.push(...r.filter((x) => x.status === "gated").map((x) => x.ref));
     }
-    // What this machine lacks, and only that: Sessions (no provider), Codex's own steps, the checklist put away, and the
-    // Computer pane, whose surface this run leaves out (AOS_APP_WRITE=""; computer.spec.ts finds its anchors with it on).
-    expect(gated.filter((r) => r.startsWith("sessions."))).toHaveLength(TOUR_BOOK.chapters.find((c) => c.id === "sessions")!.steps.length);
-    expect(gated).toEqual(expect.arrayContaining(["core.sessions", "code.start-codex", "routines.codex", "settings.claude-off", "code.computer"]));
+    // What this machine lacks, and only that: Codex's own steps, the checklist put away, and the Computer pane, whose
+    // surface this run leaves out (AOS_APP_WRITE=""; computer.spec.ts finds its anchors with it on). Code ▸ History
+    // (code.history) is routed and found like any step (remove-sessions D13).
+    expect(gated).toEqual(expect.arrayContaining(["code.start-codex", "routines.codex", "settings.claude-off", "code.computer"]));
+    expect(gated).not.toContain("code.history");
     expect(gated).not.toContain("code.start-claude");
     expectNoErrors(h);
   });
@@ -282,17 +283,15 @@ test.describe("a Codex-only machine (variants.spec.ts's)", () => {
     },
   });
 
-  test("the welcome tour names Codex and stops at Sessions, which is on the rail", async () => {
+  test("the welcome tour names Codex, and Code follows Pulse (remove-sessions D13)", async () => {
     const { win } = app();
     await helpMenu(win, "tour-start");
     await expect(pop(win)).toHaveAttribute("data-step", "core.rail");
-    await expect(pop(win).locator(".aos-tour-meta")).toHaveText("Welcome tour · 1 of 10");
+    await expect(pop(win).locator(".aos-tour-meta")).toHaveText("Welcome tour · 1 of 9");
     await pop(win).locator(".aos-tour-next").click();
     await rail(win, "pulse").click();
-    await expect(pop(win)).toHaveAttribute("data-step", "core.sessions");
-    await expect(pop(win).locator(".aos-tour-body")).toContainText("run Codex in a workspace");
-    await rail(win, "chat").click();
     await expect(pop(win)).toHaveAttribute("data-step", "core.code");
+    await expect(pop(win).locator(".aos-tour-body")).toContainText("start Codex");
     await expect(pop(win).locator(".aos-tour-body")).not.toContainText("Claude Code");
     await win.keyboard.press("Escape");
     await expect(overlay(win)).toHaveCount(0);
@@ -308,37 +307,7 @@ test.describe("a Codex-only machine (variants.spec.ts's)", () => {
       gated.push(...r.filter((x) => x.status === "gated").map((x) => x.ref));
     }
     expect(gated).toEqual(expect.arrayContaining(["code.start-claude", "routines.cloud", "settings.codex-off", "code.computer"]));
-    // Sessions runs here: its three Computer pane steps (the pane, its size buttons and its power switch) are gated, its surface off.
-    expect(gated.filter((r) => r.startsWith("sessions.") || r === "core.sessions")).toEqual(["sessions.computer", "sessions.computer-size", "sessions.computer-power"]);
-    expectNoErrors(h);
-  });
-
-  // Known since PR 8: Vault chat, Sessions' first thread, took the focus at every redraw, so the popover over Sessions
-  // lost it (and with it the keys). The redraw is forced here: the tab drawn again while a step is up.
-  test("a step on Sessions keeps the focus in its popover when the tab redraws under it", async () => {
-    const h = app();
-    const { win } = h;
-    await openTab(win, "chat");
-    // The chapter probe above routed Sessions to its History (sessions-history.list): back to Vault, whose chat redraws.
-    await content(win).locator('.aos-ss-row[data-thread="vault"]').click();
-    await expect(content(win).locator("textarea.aos-asst-input")).toBeVisible();
-    await helpMenu(win, "tour-tab");
-    await expect(pop(win)).toHaveAttribute("data-step", "sessions.list");
-    await expect(pop(win)).toBeFocused();
-    for (let i = 0; i < 2; i++) {
-      await win.evaluate(() => {
-        const ws = (window as unknown as { aosHost: { plugin: { app: { workspace: { getLeavesOfType(t: string): Array<{ view: { setTab(id: string): void } }> } } } } }).aosHost.plugin.app.workspace;
-        ws.getLeavesOfType("agentic-os-workbench")[0].view.setTab("chat");
-      });
-      await expect(content(win).locator("textarea.aos-asst-input")).toBeVisible();
-      await win.waitForTimeout(500);
-      await expect(pop(win)).toBeFocused();
-    }
-    // The keys still reach the tour: → moves on.
-    await win.keyboard.press("ArrowRight");
-    await expect(pop(win)).toHaveAttribute("data-step", "sessions.new-session");
-    await win.keyboard.press("Escape");
-    await expect(overlay(win)).toHaveCount(0);
+    expect(gated.filter((r) => r.startsWith("sessions")), "remove-sessions D13: no Sessions steps").toEqual([]);
     expectNoErrors(h);
   });
 });

@@ -37,7 +37,9 @@ export class TermTab {
    *  "history"` shows Code ▸ History instead (remove-sessions D3; the tour and old Sessions links route there). Select only. */
   reveal(target: { workspace?: string | null; pane?: string | null }): void {
     if (target.pane === "history") { this.panel?.showHistory(); return; }
-    this.panel?.reveal(target);
+    // Any other link to Code shows its terminals: History gives way; the scope changes only when a workspace is named.
+    this.panel?.closeHistory();
+    if (target.workspace !== undefined) this.panel?.reveal(target);
   }
   async refresh(): Promise<void> { this.panel?.focus(); this.panel?.refreshSidebar(); this.panel?.enter(); }
   unmount(): void { this.panel?.unmount(); this.panel = null; this.host = null; }

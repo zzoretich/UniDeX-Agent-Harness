@@ -68,15 +68,11 @@ export class TourController {
     if (this.ctxCache && now - this.ctxCache.at < 1000) return this.ctxCache.ctx;
     let cfg: ReturnType<typeof readAgenticosJson> = null;
     try { cfg = readAgenticosJson(this.plugin.claudeConfigDir()); } catch { /* unreadable: Claude Code only, as sessionHosts reads it */ }
-    let chat = false;
-    try { chat = this.plugin.chatAvailable(); } catch { /* no provider state */ }
-    let sessions = chat;
-    try { sessions = this.plugin.sessionsShown(); } catch { /* as chat */ }
     // The Computer pane's steps need its surface on (agent-computer D26): the app says so at boot.
     const computer = hudHost().computer?.enabled === true;
     // The Code chat's steps need its surface on (code-chat C13), fixed at boot as the Computer's is.
     const code = hudHost().code?.enabled === true;
-    const base: TourContext = { hosts: sessionHosts(cfg), chat, sessions, checklist: false, computer, code, cmd: (name) => invocationHint(name, cfg) };
+    const base: TourContext = { hosts: sessionHosts(cfg), checklist: false, computer, code, cmd: (name) => invocationHint(name, cfg) };
     base.checklist = buildChecklist(BOOK, this.state(), base).shown;
     this.ctxCache = { at: now, ctx: base };
     return base;

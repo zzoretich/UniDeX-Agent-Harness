@@ -51,9 +51,9 @@ const RAIL_SECTIONS: RailTab[][] = [
     { id: "notifications", icon: "bell", label: "Notifications" },
     { id: "pulse", icon: "activity", label: "Pulse" },
     { id: "term", icon: "terminal", label: "Code" },
-    { id: "chat", icon: "message-square", label: "Sessions" },
-    // One tab for agents and their teams (spec 2026-11-12-agent-workspace D2, D3): Agents' icon, right after Sessions,
-    // with the gate badge; the id stays "agent-teams" and "agents" is an alias (TAB_ALIASES).
+    // One tab for agents and their teams (spec 2026-11-12-agent-workspace D2, D3): Agents' icon, right after Code (where
+    // Sessions was, remove-sessions D1), with the gate badge; the id stays "agent-teams" and "agents" is an alias
+    // (TAB_ALIASES).
     { id: "agent-teams", icon: "bot", label: "Agent Workspace" },
   ],
   [
@@ -80,8 +80,9 @@ const SETTINGS_TAB: RailTab = { id: "settings", icon: "settings", label: "Settin
 const MARK_PATH = "M6 6V26a14 14 0 0 0 28 0V6 M48 6V40H60a17 17 0 0 0 0-34H48Z M92 6L124 40 M124 6L92 40";
 /** A retired tab id and the tab that now shows its content (agent-workspace D3): links from older runtimes'
  *  statuslines, Settings' agents.exclude button (editIn "agents") and the palette's Agents command keep landing.
+ *  Sessions' "chat" lands on Code (remove-sessions D4): `pane: "history"` opens Code ▸ History, a thread is ignored.
  *  Resolved first in setTab and open. */
-export const TAB_ALIASES: Record<string, string> = { agents: "agent-teams" };
+export const TAB_ALIASES: Record<string, string> = { agents: "agent-teams", chat: "term" };
 /** Every tab id setTab() can build: what an agenticos://workbench?tab=<id> link may name (statusline spec D10), the
  *  aliases included. */
 export const WORKBENCH_TAB_IDS: readonly string[] = [...RAIL.map((t) => t.id), ...Object.keys(TAB_ALIASES), SETTINGS_TAB.id];
@@ -605,8 +606,9 @@ export class WorkbenchView extends ItemView {
     if (target.memory) reveal.memory = target.memory;
     if (target.node) reveal.node = target.node;
     // Agent Workspace hears every link, a bare one too: with a gate pending, a link that names no node shows Needs you
-    // where a rail click shows the saved node (agent-workspace D5).
-    if (Object.keys(reveal).length || tab === "agent-teams") revealOf(this.tabs[tab])?.(reveal);
+    // where a rail click shows the saved node (agent-workspace D5). Code does too: a link to Code shows its terminals,
+    // so History over the stage gives way (remove-sessions D3); a rail click leaves it.
+    if (Object.keys(reveal).length || tab === "agent-teams" || tab === "term") revealOf(this.tabs[tab])?.(reveal);
     return true;
   }
 

@@ -1,19 +1,13 @@
 // What a step's `when` may name, and the words its text fills in (tour C5, C8). A step whose `when` fails is skipped,
-// so a Codex-only, a no-host or a Sessions-hidden install sees only what it has. The context is built by the plugin from
-// sessionHosts() (agenticos.json's hosts), chatAvailable() (an enabled host signed in, by provider-state.json's login
-// caches), sessionsShown() (that, or a past session for History) and the app's Computer surface; this module only reads
-// it. Pure, so node:test can load it.
+// so a Codex-only or a no-host install sees only what it has. The context is built by the plugin from sessionHosts()
+// (agenticos.json's hosts) and the app's Computer and Code surfaces; this module only reads it. Pure, so node:test can
+// load it.
 
 export type TourHost = "claude" | "codex";
 
 export interface TourContext {
   /** The session hosts this Mac runs (sessionHosts()). */
   hosts: TourHost[];
-  /** An enabled host is signed in, so Sessions runs sessions (chatAvailable(), local-first A17). */
-  chat: boolean;
-  /** Sessions is on the rail: a host signed in, or History has a past session to show (sessionsShown(), install-import
-   *  B11). Absent: the same as `chat`. */
-  sessions?: boolean;
   /** The Getting started item is on the rail (not put away, not finished). */
   checklist: boolean;
   /** The app runs the Computer pane (its surface is on, agent-computer D26): off, the pane is only a collapsed strip,
@@ -27,7 +21,7 @@ export interface TourContext {
 }
 
 /** Every predicate a step may name in `when`; `!` before one negates it. */
-export const PREDICATES = ["hasHost:claude", "hasHost:codex", "chatAvailable", "sessionsShown", "codexOnly", "noHost", "checklistShown", "computerOn", "codeChatOn"] as const;
+export const PREDICATES = ["hasHost:claude", "hasHost:codex", "codexOnly", "noHost", "checklistShown", "computerOn", "codeChatOn"] as const;
 export type Predicate = typeof PREDICATES[number];
 
 const HOST_NAME: Record<TourHost, string> = { claude: "Claude Code", codex: "Codex" };
@@ -41,8 +35,6 @@ function test(p: Predicate, ctx: TourContext): boolean {
   switch (p) {
     case "hasHost:claude": return ctx.hosts.includes("claude");
     case "hasHost:codex": return ctx.hosts.includes("codex");
-    case "chatAvailable": return ctx.chat;
-    case "sessionsShown": return ctx.sessions ?? ctx.chat;
     case "codexOnly": return ctx.hosts.length === 1 && ctx.hosts[0] === "codex";
     case "noHost": return ctx.hosts.length === 0;
     case "checklistShown": return ctx.checklist;

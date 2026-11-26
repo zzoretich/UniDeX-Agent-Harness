@@ -42,6 +42,17 @@ test("the shipped whatsnew.json is valid and has 2.0.0's entries, each with a Sh
   for (const e of two!.entries) assert.ok(e.steps.length > 0, e.id);
 });
 
+test("remove-sessions D13: the next release's entry says Sessions is gone and shows code.history; no ref names a Sessions step", () => {
+  const all = WHATS_NEW.releases.flatMap((r) => r.entries.flatMap((e) => e.steps));
+  assert.ok(!all.some((ref) => ref === "sessions" || ref.startsWith("sessions.") || ref.startsWith("sessions-history")), all.join(" "));
+  const entry = WHATS_NEW.releases.flatMap((r) => r.entries).find((e) => e.id === "sessions-retired");
+  assert.ok(entry);
+  assert.equal(entry.title, "Sessions is now part of Code");
+  assert.deepEqual(entry.steps, ["code.history"]);
+  assert.match(entry.body, /Vault chat is gone too/);
+  assert.deepEqual(WHATS_NEW.releases.find((r) => r.version === "2.0.0")!.entries.find((e) => e.id === "sessions-history")!.steps, ["code.history"]);
+});
+
 test("the launch card: an install from before the tour always gets it, with the full tour; later, only what is new (C10)", () => {
   const shipped = WHATS_NEW.releases;
   const first = launchWhatsNew(shipped, null, "2.0.0");

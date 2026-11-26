@@ -394,8 +394,8 @@ export class TerminalPanel {
     this.renderTabs();
   }
 
-  /** History's Close: back to the selected terminal. */
-  private closeHistory(): void {
+  /** History's Close, and a link to Code that names no pane: back to the selected terminal. */
+  closeHistory(): void {
     if (!this.stage.historyShown()) return;
     this.stage.closeHistory();
     this.renderTabs();
