@@ -707,9 +707,14 @@ test('D12: aos upgrade strips retired keys from brain/config.json and keeps user
   const sb = initialized();
   const vaultCfg = path.join(sb.vault, 'brain', 'config.json');
   fs.writeFileSync(vaultCfg, JSON.stringify({ sessions: { perDayUsd: 25, perTurnUsd: 2 }, ai: { chat: 'claude', ask: 'host' }, scan: { fileMapBudget: 7 } }));
+  // The 2.0 local-first migration (Go local, `aos migrate local-first --apply`) wrote ai.* into agenticos.json too.
+  const cfgPath = path.join(sb.cfg, 'agenticos.json');
+  fs.writeFileSync(cfgPath, JSON.stringify({ ...readJson(cfgPath), ai: { chat: 'local', ask: 'local' } }, null, 2));
   const r = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.match(r.stdout, /^ {3}removed retired keys: sessions, ai\.chat$/m);
+  assert.match(r.stdout, /^ {3}removed retired keys from agenticos\.json: ai\.chat$/m);
+  assert.deepEqual(readJson(cfgPath).ai, { ask: 'local' }, 'agenticos.json keeps the user\'s other ai.* values');
   const vc = readJson(vaultCfg);
   assert.equal(vc.sessions, undefined);
   assert.equal(vc.ai && vc.ai.chat, undefined);

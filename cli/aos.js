@@ -1402,7 +1402,10 @@ async function upgrade(flags) {
   const hosts = hostsOf(cfg);
   await act(`migrate ${configPath()} keys (version → ${version})`, () => {
     const next = buildUserConfig(cfg, { vault, version, bin: hosts.claude ? bin : undefined, codexBin: hosts.codex ? codexBin(cfg) : undefined });
+    // remove-sessions D12: 2.0's local-first migration wrote ai.chat here too; a retired key would read as unknown.
+    const removed = require(path.join(repo, 'brain', 'scripts', 'lib', 'config-write.js')).dropRetired(next);
     writeJson(configPath(), next);
+    if (removed.length) out.log(`   removed retired keys from agenticos.json: ${removed.join(', ')}`);
     noteClaudeBinChange(vault, cfg.claude && cfg.claude.bin, next.claude.bin);
   });
   if (hosts.codex) {
