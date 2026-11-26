@@ -111,10 +111,10 @@ test.describe("Agent Workspace", () => {
   const shape = () => rows().evaluateAll((els) => els.map((e) => `${e.getAttribute("aria-level")} ${e.querySelector(".aos-aw-label")?.textContent ?? ""}`));
   const syncs = () => app().notices.filter((n) => n === SYNC).length;
 
-  test("rail: Agent Workspace after Sessions with the bot icon and the gate count; no Agents button", async () => {
+  test("rail: Agent Workspace after Code with the bot icon and the gate count; no Agents button", async () => {
     const { win } = app();
     const ids = await railIds(win);
-    expect(ids.indexOf("agent-teams")).toBe(ids.indexOf("chat") + 1);
+    expect(ids.indexOf("agent-teams")).toBe(ids.indexOf("term") + 1);   // where Sessions was (remove-sessions D1)
     // It closes the first section: the first line between sections comes right after it.
     const seq = await win.locator(".aos-wb-railtabs > *").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab ?? (e.classList.contains("aos-wb-railsep") ? "|" : "?")));
     expect(seq[seq.indexOf("agent-teams") + 1]).toBe("|");

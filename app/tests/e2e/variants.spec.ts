@@ -8,7 +8,7 @@ import { expect, test } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { CODEX_STUB, FX, RAIL_SECTIONS, appEnv, badge, claudeCalls, codexCalls, command, content, drawer, expected, guardWrites, installChatStubs, openTab, rail, terminalText, useApp, closePulse, pulseArea } from "./harness";
+import { CODEX_STUB, FX, RAIL_SECTIONS, appEnv, badge, claudeCalls, codexCalls, command, content, drawer, expectNoErrors, expected, guardWrites, installChatStubs, openTab, rail, terminalText, useApp, closePulse, pulseArea } from "./harness";
 import { SURFACES } from "../../src/shared/surfaces";
 
 const editJson = (file: string, fn: (j: Record<string, any>) => void) => {
@@ -145,86 +145,25 @@ test.describe("session costing off", () => {
 });
 
 test.describe("a provider on record, Claude Code signed in", () => {
-  // What the scripts publish in provider-state.json once a provider resolves; the HUD only reads it. Sessions follows the
-  // hosts' logins in it (local-first A17), not the provider's name: `state(name, loggedIn)` sets Claude's.
+  // What the scripts publish in provider-state.json once a provider resolves; the HUD only reads it. Code's launcher
+  // follows the hosts' logins in it (local-first A17), not the provider's name: `state(name, loggedIn)` sets Claude's.
   const state = (name: string, loggedIn: boolean) => () => editJson(FX.v("brain/_index/provider-state.json"), (j) => {
     j.name = name; j.reason = "fixture"; j.claude = { loggedIn };
   });
-  // The chat stubs only prove that no CLI runs: Chat's surface is off here.
-  const app = useApp({ prepare: () => { installChatStubs(); state("claude", true)(); } });
+  const app = useApp({ prepare: () => { state("claude", true)(); } });
 
-  test("Pulse is Home with a host signed in too; Sessions closes the first section, after Code; the mark returns to Pulse", async () => {
+  test("Pulse is Home with a host signed in too; Agent Workspace closes the first section, after Code (no Sessions, remove-sessions D1); the mark returns to Pulse", async () => {
     const { win } = app();
     const ids = await win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
-    expect(ids.slice(0, 4)).toEqual(["notifications", "pulse", "term", "chat"]);
-    // All fifteen buttons and the two lines, Sessions included (spec 2026-10-09-rail-sections-code D1, D5).
+    expect(ids.slice(0, 4)).toEqual(["notifications", "pulse", "term", "agent-teams"]);
+    // Every button and the two lines (spec 2026-10-09-rail-sections-code D1, D5).
     const seq = await win.locator(".aos-wb-railtabs > *").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab ?? (e.classList.contains("aos-wb-railsep") ? "|" : "?")));
     expect(seq).toEqual(RAIL_SECTIONS.map((s) => s.join(",")).join(",|,").split(","));
     await expect(win.locator(".aos-wb-railsep[role='separator']")).toHaveCount(2);
     await expect(rail(win, "pulse")).toHaveClass(/is-active/);
-    await openTab(win, "chat");
+    await openTab(win, "term");
     await win.locator(".aos-wb-mark").click();
     await expect(rail(win, "pulse")).toHaveClass(/is-active/);
-  });
-
-  test("Vault chat under claude names the reasoner and its cap; a local provider reads local ask.js", async () => {
-    const { win } = app();
-    await openTab(win, "chat");
-    await expect(content(win).locator(".aos-asst-head .aos-title")).toHaveText("Vault");
-    // Claude Code is the ready host: the menu's Default is the configured reasoner.
-    await expect(content(win).locator(".aos-asst-mode")).toHaveText(" · Claude Code (claude-opus-5, capped)");
-    await expect(content(win).locator("textarea.aos-asst-input")).toHaveAttribute("placeholder", "Ask about your notes…");
-    await expect(content(win).locator(".aos-asst-actions button")).toHaveText("Send (⌘↵)");
-    await expect(content(win).locator('.aos-asst-tools .aos-am[data-access="read"] .aos-am-trigger.is-fixed')).toHaveText("Read only");
-    await expect(content(win).locator('.aos-asst-tools .aos-hm[data-mode="vault"] .aos-hm-chiphost')).toHaveText("Claude Code");
-    state("ollama", false)();
-    await openTab(win, "pulse");
-    await openTab(win, "chat");
-    await expect(content(win).locator(".aos-asst-mode")).toHaveText(" · local ask.js");
-    state("codex", false)();
-    await openTab(win, "pulse");
-    await openTab(win, "chat");
-    await expect(content(win).locator(".aos-asst-mode")).toHaveText(" · codex via ask.js (reasoner caps)");
-  });
-
-  test("Chat surface off: a question is refused on either route; the tab says why, nothing is logged or billed, no CLI runs", async () => {
-    const h = app();
-    const chatLog = FX.v("brain/_index/agentic-os-chat.jsonl");
-    const ledger = FX.v("brain/_index/provider-spend.jsonl");
-    const ledger0 = fs.existsSync(ledger) ? fs.readFileSync(ledger, "utf8") : null;
-    const send = async (q: string) => {
-      await content(h.win).locator("textarea.aos-asst-input").fill(q);
-      await content(h.win).locator(".aos-asst-actions button", { hasText: "Send (⌘↵)" }).click();
-    };
-    const lastError = () => content(h.win).locator(".aos-asst-turn-assistant:not(.aos-asst-live) .aos-text-rose").last();
-
-    // Claude: recall and `claude -p` are refused, and the refusal is the turn's error.
-    state("claude", true)();
-    await openTab(h.win, "pulse");
-    await openTab(h.win, "chat");
-    await send("Refused on the Claude route?");
-    await expect(lastError()).toContainText("UniDeX: ");
-    await expect(lastError()).toContainText("claude -p");
-    // The local route: ask.js is refused.
-    state("ollama", false)();
-    await openTab(h.win, "pulse");
-    await openTab(h.win, "chat");
-    await expect(content(h.win).locator(".aos-asst-mode")).toHaveText(" · local ask.js");
-    await send("Refused on the local route?");
-    await expect(lastError()).toContainText("brain/scripts/sdk/ask.js --local Refused on the local route? refused; no write surface that allows it is on");
-
-    const spawns = (await h.guard()).filter((e) => e.kind === "spawn").map((e) => e.what);
-    expect(spawns).toHaveLength(3);
-    expect(spawns[0]).toMatch(/recall-cli\.js Refused on the Claude route\?$/);
-    expect(spawns[1]).toMatch(/claude -p /);
-    expect(spawns[2]).toMatch(/brain\/scripts\/sdk\/ask\.js --local Refused on the local route\?$/);
-    // Each question and each answer tried to reach the chat log.
-    expect(await guardWrites(h)).toEqual(Array(4).fill("write brain/_index/agentic-os-chat.jsonl"));
-    expect(fs.existsSync(chatLog)).toBe(false);
-    expect(fs.existsSync(ledger) ? fs.readFileSync(ledger, "utf8") : null).toBe(ledger0);
-    expect(claudeCalls()).toEqual([]);
-    expect(codexCalls()).toEqual([]);
-    await h.win.evaluate(() => { (window as unknown as { aosHost: { guard: { log: unknown[] } } }).aosHost.guard.log.length = 0; });
   });
 });
 
@@ -233,7 +172,7 @@ test.describe("a Codex-only machine", () => {
     prepare: () => {
       editJson(agenticos, (j) => { j.hosts.claude.enabled = false; j.hosts.codex.enabled = true; });
       aos("routines", "hosts", "--refresh");   // the Codex section: this machine has no Codex automations database
-      // What the provider probe leaves on such a machine: Codex, logged in, so Sessions is on the rail.
+      // What the provider probe leaves on such a machine: Codex, logged in.
       editJson(FX.v("brain/_index/provider-state.json"), (j) => {
         j.name = "codex"; j.reason = "fixture"; j.codex = { ...(j.codex ?? {}), loggedIn: true, checkedAt: new Date().toISOString() };
       });
@@ -361,29 +300,22 @@ test.describe("a Codex-only machine", () => {
     await expect(row("codex.model")).not.toHaveClass(/is-dim/);
   });
 
-  test("Sessions: the host and model menu offers Codex alone, Claude Code a disabled button off on this Mac; Vault asks Codex", async () => {
-    const { win } = app();
-    await openTab(win, "chat");
-    // Vault: Codex is the one host ready for a question, so the chip reads Codex; until it is picked, a question takes
-    // today's route (ask.js on the codex provider, with its fallback), and the header says so.
-    await expect(content(win).locator(".aos-asst-mode")).toHaveText(" · codex via ask.js (reasoner caps)");
-    await expect(content(win).locator('.aos-asst-tools .aos-hm[data-mode="vault"] .aos-hm-chiphost')).toHaveText("Codex");
-    await content(win).locator(".aos-ss-newbtn").click();
-    const menu = content(win).locator('.aos-ss-toolbar .aos-hm[data-mode="new"]');
-    const chip = menu.locator(".aos-hm-trigger");
-    await expect(chip).toHaveAttribute("data-host", "codex");
-    await expect(chip.locator(".aos-hm-chiphost")).toHaveText("Codex");
-    await chip.click();
-    const claude = menu.locator('.aos-hm-pop .aos-hm-host[data-host="claude"]');
-    await expect(claude).toBeDisabled();
-    await expect(claude).toHaveAttribute("title", "Claude Code is off on this machine");
-    // `aos hosts add claude` keeps Codex on (install-import B2), so the line names it whatever else is on.
-    await expect(menu.locator('.aos-hm-offline[data-host="claude"]')).toHaveText("Claude Code is off on this Mac: aos hosts add claude turns it on");
-    await expect(menu.locator('.aos-hm-host[data-host="codex"]')).toHaveAttribute("aria-pressed", "true");
-    await menu.locator(".aos-hm-search").press("Escape");
-    await expect(menu.locator(".aos-hm-pop")).toHaveCount(0);
-    // Without the Sessions surface nothing runs here; sessions.spec's Codex-only machine runs a Codex turn.
-    await expect(content(win).locator(".aos-ss-list .aos-ss-note")).toHaveText("Workspace sessions are unavailable: the Sessions surface is off.");
+  test("Codex only: History lists both hosts' sessions; a Codex row resumes with codex resume -C, a Claude row has no Resume (remove-sessions D3, host parity)", async () => {
+    const h = app();
+    const { win } = h;
+    await openTab(win, "term");
+    await content(win).locator("button.aos-tl-allhistory").click();
+    const hist = content(win).locator(".aos-ch");
+    await expect(hist).toBeVisible();
+    await expect(hist.locator('.aos-ch-row[data-host="claude"]').first()).toBeVisible();
+    await expect(hist.locator('.aos-ch-row[data-host="claude"] button.aos-ch-resume')).toHaveCount(0);
+    const codexRow = hist.locator('.aos-ch-row[data-host="codex"]').filter({ has: win.locator("button.aos-ch-resume:not([disabled])") }).first();
+    await expect(codexRow).toBeVisible();
+    const id = expected().history.digests.codex.id;
+    await hist.locator(`.aos-ch-row[data-host="codex"][data-key$="${id}"] button.aos-ch-resume`).click();
+    await expect(hist).toBeHidden();
+    await expect.poll(() => terminalText(win), { timeout: 10_000 }).toMatch(new RegExp(`\\[fixture codex stub\\] resume -C \\S+ ${id}`));
+    expectNoErrors(h);
   });
 
   test("Spaces: Resume follows the thread's host: a Claude Code thread's is off with how to turn it on, a Codex thread's types `codex resume` in ws:<name>; no New Claude Code session row (spaces-redesign D7, D31)", async () => {
